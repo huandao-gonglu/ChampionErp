@@ -31,7 +31,7 @@ def test_stop_interrupts_model_without_waiting_for_next_delta(tmp_path, phase):
         if phase == "text":
             yield "已经输出的部分"
         elif phase == "tool_arguments":
-            yield {0: DeltaToolCall(name="write", json_args='{"draft_id":', tool_call_id="write")}
+            yield {0: DeltaToolCall(name="run_code", json_args='{"code":', tool_call_id="write")}
         entered.set()
         try:
             await asyncio.sleep(60)
@@ -138,7 +138,9 @@ def test_stop_during_sync_tool_prevents_followup_and_preserves_actual_receipt(tm
 
     async def model(messages, info):
         requests.append(1)
-        yield {0: DeltaToolCall(name="slow", json_args='{"draft_id":"a"}', tool_call_id="slow")}
+        yield {0: DeltaToolCall(name="run_code", json_args=json.dumps({
+            "code": "for i in range(2):\n    await slow(draft_id=str(i))",
+        }), tool_call_id="slow")}
 
     ui = service(tmp_path, FunctionModel(stream_function=model), tools(binding("slow", slow, write=True)))
     run = ui.prepare_run(body())
@@ -154,7 +156,7 @@ def test_stop_during_sync_tool_prevents_followup_and_preserves_actual_receipt(tm
         release.set()
         thread.join(3)
     for _ in range(100):
-        receipt = ui.call_store.receipt(CONVERSATION, "slow")
+        receipt = ui.call_store.receipt(CONVERSATION, "slow__1")
         if receipt["status"] == "completed":
             break
         threading.Event().wait(0.01)

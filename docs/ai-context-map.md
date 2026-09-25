@@ -1,5 +1,31 @@
 # AI Context Map
 
+## 主 Agent 的通用 Python 执行
+
+`erp_web/services/ai_code_mode.py` 装配官方 CodeMode、原生调用额度检查和脚本输出限制；
+`ai_agent_factory.py` 依据 Execution Profile 接入，主对话启用。
+`DirectAndPythonToolset.get_tools` 通过官方公开扩展点保留业务工具直接入口，并提供可选的 `run_code`；
+简单操作直接调用，循环、转换和计算才使用 Python。两种入口复用同一个 Tool Bridge 和业务执行边界，
+调用、REPL、审批与生命周期仍由官方实现负责，不另建数据接口或业务批量 DSL。
+当前依赖为 Pydantic AI 2.44.0 / Harness 0.34.0 / Monty 0.0.23；旧条目中的版本号记录当时核对依据。
+职责、限制、原生机制选型及验收见 [通用 Python 执行](agent-python-execution.md)。
+
+`ai_tool_bridge.py` 将已有输出 Schema 通过原生 `Tool.prepare` / `ToolDefinition.return_schema`
+交给 CodeMode 生成返回类型；`ai_tool_contract_description.py` 只补充 Python 签名不显示的参数约束说明。
+`draft_attributes_read(scope=sku)` 默认读取全部已选启用 SKU，可用 `limit` 和 `next_offset` 主动分段。
+返回 `updated_at` 与具名 `DraftAttributeSku` 字段，脚本无需为了猜测结构反复读取。
+`schemas/draft_changes.py` 定义成组局部修改契约；`runtime_units/draft_changes_capability.py`
+提供 `draft_changes_apply`：同一草稿的公共/SKU 属性、包装和库存可混合，平台校验在商品锁外，
+锁内重读版本、范围和状态，全部通过后只调用一次 `save_draft_content`。
+`category_attribute_updates.AttributeUpdateValidation` 在一次提交内复用类目定义及已核验候选；
+`product_attribute_patch.py` 由单项和成组工具共用纯属性合并规则，不包含脚本执行或模型循环。
+
+
+内部业务通过 `ProductStore.load_draft_content` / `save_draft_content` 读取和保存规范化内容；
+后者是草稿保存规则的唯一实现，保留互斥、版本冲突、归一化和发布状态失效检查。
+`load_draft_detail_from_index` / `save_draft_detail` 为页面薄包装，另行生成商品上下文和列表索引。
+属性、图片、文案、核价及 SKU 包装/勾选操作使用内容入口，避免逐项扫描全库页面列表。
+
 本文件列出后端主要公共入口、依赖方向和测试边界。它面向后续维护者与 AI，
 不替代模块内契约。
 
@@ -90,7 +116,7 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   Function Call、图片生成和图片编辑全部使用独立 probe binding。探测不读取待测 capability
   声明，Function Call 必须完成 tool call → tool result → final response 的完整往返。
 - `erp_web/services/ai_model_config.py`：保存带 `configuration_fingerprint` 的 v2 能力证明；Provider、
-  Base URL、模型名、API style、transport 配置或受控 `extra` 改变后，规范化阶段会移除失效证明及
+  Base URL、模型名、API style、模型 Thinking 开关、transport 配置或受控 `extra` 改变后，规范化阶段会移除失效证明及
   对应 capability，旧版无指纹配置仍可读取并通过重新探测升级。
 - `erp_web/services/ai_model_discovery.py`：与推理解耦的远端模型目录发现；按 Catalog 的可选发现
   策略复用 Pydantic Provider 持有的 client，目录不可用不改变推理能力判定。
@@ -99,14 +125,16 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
 - `erp_web/services/ai_gateway_cli_provider.py`：CLI Provider 实现。
 - `erp_web/services/ai_gateway_browser_provider.py`：浏览器 Provider 实现。
 - `erp_web/services/ai_gateway_provider_types.py`：Provider 共享请求 shape。
-- `erp_web/services/ai_generation_settings.py`：功能绑定统一生成配置的归一化、
-  能力描述与 Pydantic `ModelSettings`/受控 `extra_body` 映射；业务层不得直接拼接
-  `reasoning_effort`、`enable_thinking` 等厂商字段。
+- `erp_web/services/ai_generation_settings.py`：模型 Thinking 默认值、功能绑定统一生成配置的
+  归一化、能力描述与 Pydantic `ModelSettings`/受控 `extra_body` 映射；功能绑定覆盖模型默认，
+  模型默认覆盖高级请求 JSON。oMLX 通过显式 Catalog 项映射 `chat_template_kwargs.enable_thinking`，
+  能力探测和正式请求共享映射；业务层不得直接拼接 `reasoning_effort`、`enable_thinking` 等厂商字段。
 - `erp_web/services/ai_model_factory.py`：Pydantic AI Model/Provider 的唯一创建入口；正式业务
   使用 `create_pydantic_model_binding` 并校验已启用能力，能力发现使用
   `create_pydantic_probe_binding`，只根据待测操作选择 Chat/Responses/Images Model，不允许用
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
-  timeout、模型类型与密钥脱敏规则。
+  timeout、模型类型与密钥脱敏规则。显式 Thinking 设置若会被原生模型 profile 忽略，
+  Factory 在请求前报配置错误，防止界面选择关闭后仍发送默认请求。
 - `erp_web/services/ai_agent_factory.py`：唯一 Pydantic Agent 装配与运行入口。`ai_model_errors.py` 统一保留嵌套 Direct Model 错误的 HTTP 状态、可重试性和安全原因，供 Agent 与业务工具边界使用。
 - `erp_web/services/copy_service.py`：`copy.generate` 通过同一工厂运行独立文案 Agent。
   使用原生 `PromptedOutput` 校验输出结构，生成后不再额外调用 AI 复核语言、事实或营销措辞。
@@ -420,8 +448,9 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   `PartStartEvent` / `PartDeltaEvent` / `PartEndEvent` 交给 observer；未绑定展示时仍执行原非流式
   请求。root Direct 请求完成前后把官方 request/response 保存到 presentation conversation；Direct Model 不伪报 `had_agent_run`，同一 presentation 的后续 Direct 请求不创建第二条
   start/finish 流。OpenAI Responses 官方终态包含完整 response，且 `output` 为数组；部分第三方
-  网关会在内容增量完整后发送 `response.completed.response.output=null`，Pydantic AI 2.22.0 至
-  2.37.0 均会在终态辅助函数中迭代该空值。Direct 边界仅在异常精确来自该 Pydantic 辅助函数、
+  网关会在内容增量完整后发送 `response.completed.response.output=null`，Pydantic AI 2.44.0
+  仍会在终态解析中迭代该空值。Direct 边界仅在异常来自 Pydantic OpenAI adapter，且异常帧
+  确实正在处理 `response.completed`、其中 `response.output is None`，
   API style 为 `openai_responses` 且 `response_stream.get()` 已有有效 parts 时将其恢复为正常 EOF；
   其他异常不吞掉。待 Pydantic AI 原生兼容空 output，或所有已支持网关遵循官方 schema 后删除
   此临时适配。
@@ -528,13 +557,13 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   只转换为平台原文检索词，枚举 ID 不做跨类目硬编码。
 - `erp_web/schemas/category_brand.py`：平台品牌身份及无品牌查询词；仅采用平台实际返回的候选。
 - `erp_web/product_model/category_model.py`：类目选择、属性有效性与发布必填项判断。
-- `erp_web/runtime_units/product_capabilities.py`：属性任务优先使用 `draft_attributes_read(scope=common)`，一次返回 `product` 商品/来源事实、`targets` 全部目标的类目及完整已填公共属性、共用包装尺寸和 SKU 数量，不携带图片或 SKU 明细。指定 `scope=sku` 和明确平台/站点后，才按 `next_offset` 分页读取已选启用 SKU 的有效事实和差异属性。
+- `erp_web/runtime_units/product_capabilities.py`：属性任务优先使用 `draft_attributes_read(scope=common)`，一次返回 `product` 商品/来源事实、`targets` 全部目标的类目及完整已填公共属性、共用包装尺寸和 SKU 数量，不携带图片或 SKU 明细。指定 `scope=sku` 和明确平台/站点后，一次读取全部已选启用 SKU 的有效事实和差异属性；大量数据可用 `limit` / `next_offset` 分段。
 - `category_attributes_query` 默认 `scope=common`，SKU 任务使用 `scope=sku`，检查全部定义可用 `scope=all`；`write_scope` 标明可写范围，排除字段通过 `excluded_attributes` 的精简记录说明。过滤沿用原始分页游标，空页仍按 `has_more` 继续；不丢弃必填或可选属性。`category_attribute_values_query` 查询真实候选，小字典优先空查询，独立目标/候选并行，同一目标集中写入。主对话负责事实判断、语义匹配、翻译和缺资料时询问用户；不设前 20 个可选属性的限制。
 - `product_attributes_update` / `draft_sku_attributes_update` 分别保存公共属性和指定 SKU 的差异属性。`erp_web/runtime_units/category_attribute_updates.py` 只执行确定性校验：服务端重读类目定义，核对作用域、只读字段、值类型/数量/单位以及平台枚举 ID 与原文。网络校验后在商品锁内重读当前目标，再局部合并本次字段，拒绝变化后的类目、停用或未选 SKU。
 - `erp_web/runtime_units/category_attribute_access.py` 是查询与写入共用的纯作用域规则：公共、SKU、托管及只读字段一致判定。托管字段在枚举查询前拒绝；Ozon 单字符枚举值用字典分页按 ID 和原文精确核对，不走至少两字符的搜索端点，不跳过枚举真实性校验。本地查询参数错误不可重试，网络故障保留可重试属性。
 - 属性填写只有主对话这一条 AI 路径。页面入口、专用属性 Agent/复核模型、局部 HTTP 调用和复合草稿准备里的隐式属性步骤均已删除。`draft_prepare_for_market` 返回的完成步骤只包含目标、文案、图片、类目和定价；主对话随后按需直接填写属性。
-- `erp_web/services/global_agent_chat_service.py` 与 `config/agents.md` 规定事实复用、公共/SKU 边界、无品牌优先及缺口汇报。继续使用已安装的 Pydantic AI 2.43.0 原生工具调用、消息历史和指令装配；此次不需要新增 Agent loop 或生命周期。
-- `front/src/composables/useAiAttributeResults.ts` 仅把本轮成功写入回执投影到当前草稿同一类目的属性表，逐字段更新；历史回放和失败结果不覆盖表单，不触发业务调用。眼睛开关继续控制发送时的页面背景。
+- `erp_web/services/global_agent_chat_service.py` 与 `config/agents.md` 规定事实复用、公共/SKU 边界、无品牌优先及缺口汇报。继续使用已安装的 Pydantic AI 2.44.0 原生工具调用、消息历史和指令装配；此次不需要新增 Agent loop 或生命周期。
+- `front/src/composables/useAiAttributeResults.ts` 仅把本轮成功写入回执投影到当前草稿同一类目的属性表，成组回执同时局部更新包装、库存与保存版本，保留未提交的表单字段；历史回放和失败结果不覆盖表单，不触发业务调用。眼睛开关继续控制发送时的页面背景。
 - `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
   `dictionary_value_id + value`（ID 原样按字符串存取，不做数值化），搜索输入不进入草稿；
   实时候选按 `next_cursor/has_more` 追加并按 ID 去重，大品牌字典通过“加载更多”继续读取；
@@ -965,7 +994,7 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 
 ### SKU 平台属性填写
 
-主对话通过 `draft_attributes_read(scope=sku)` 按目标分页读取 SKU 事实，通过 `draft_sku_attributes_update` 明确提交当前 SKU 的差异值；后端不再分批调用其他模型。公共属性写入拒绝变体字段，SKU 写入拒绝公共字段，均不改来源商品事实。`DraftSkuAttributesEditor.vue` 继续复用平台枚举、集合和单位控件进行手工编辑；`DraftSkuPanel.vue` 只负责选品及详情位置。
+主对话通过 `draft_attributes_read(scope=sku)` 按目标读取 SKU 事实（默认全部，可主动分段），多项修改通过 `draft_changes_apply` 一次提交差异，单项可用 `draft_sku_attributes_update`；后端不再分批调用其他模型。公共属性写入拒绝变体字段，SKU 写入拒绝公共字段，均不改来源商品事实。`DraftSkuAttributesEditor.vue` 继续复用平台枚举、集合和单位控件进行手工编辑；`DraftSkuPanel.vue` 只负责选品及详情位置。
 
 `sku_custom_attributes.py` 继续负责 Mercado User Products 自定义规格的纯契约，发布编译与组合预检共用。来源规格和历史 `source_option_translations` 数据仍可读取，当前属性填写由主对话直接按事实判断。
 

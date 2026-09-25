@@ -20,6 +20,7 @@ from erp_web.product_model.sku_model import editable_selected_skus, effective_sk
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category import category_attribute_value_is_valid
 from erp_web.runtime_units.category_attribute_updates import validate_attribute_updates
+from erp_web.runtime_units.product_attribute_patch import apply_attribute_patch, shared_attribute_fields
 from erp_web.schemas.product_capabilities import (
     DraftSkuAttributesUpdateRequest,
     DraftAttributesReadRequest,
@@ -52,13 +53,13 @@ class ProductCapabilityStore(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    def load_draft_detail_from_index(
+    def load_draft_content(
         self,
         draft_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
         ...
 
-    def save_draft_detail(
+    def save_draft_content(
         self,
         draft_payload: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
@@ -115,21 +116,16 @@ def _load_draft(
     product_store: ProductCapabilityStore,
     draft_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    result, error, _status = product_store.load_draft_detail_from_index(draft_id)
+    result, error, _status = product_store.load_draft_content(draft_id)
     _raise_store_error(
         error,
         default_code="DRAFT_NOT_FOUND",
         default_message="草稿不存在。",
     )
     draft = result.get("draft") if isinstance(result.get("draft"), dict) else {}
-    product_context = (
-        result.get("productContext")
-        if isinstance(result.get("productContext"), dict)
-        else {}
-    )
     product = (
-        product_context.get("raw")
-        if isinstance(product_context.get("raw"), dict)
+        result.get("product")
+        if isinstance(result.get("product"), dict)
         else {}
     )
     if not draft or not product:
@@ -480,30 +476,18 @@ def update_product_attributes(
             existing = projection.get("attributes") or {}
         if any(before_attributes.get(key) != existing.get(key) for key in request.updates):
             raise BusinessCapabilityError("DRAFT_ATTRIBUTES_CHANGED", "校验期间待填写属性已被其他操作修改，请重新读取后决定；本次未写入。")
-        attributes = deepcopy(existing)
-        for key, value in request.updates.items():
-            if value is None:
-                attributes.pop(key, None)
-            else:
-                attributes[key] = deepcopy(value)
-        changed_keys = [key for key in request.updates if existing.get(key) != attributes.get(key)]
-        draft_fields = {}
-        if platform == "mercadolibre" and not sku_id:
-            # Mercado 品牌/型号的 owner 是草稿根字段；枚举 ID 仅作为同名元数据保存。
-            for attr_id, field in (("BRAND", "brand"), ("MODEL", "model")):
-                if attr_id not in request.updates:
-                    continue
-                if before_root_fields[field] != _text(draft.get(field)):
-                    raise BusinessCapabilityError("DRAFT_ATTRIBUTES_CHANGED", f"校验期间草稿 {field} 已变化，本次未写入。")
-                value = request.updates[attr_id]
-                if isinstance(value, dict):
-                    value = value.get("values", [{}])[0].get("value") if "values" in value else value.get("value")
-                draft_fields[field] = _text(value)
-                if _text(draft.get(field)) != draft_fields[field] and attr_id not in changed_keys:
-                    changed_keys.append(attr_id)
-            if any(_text(draft.get(field)) != value for field, value in draft_fields.items()):
-                _assert_shared_draft_mutable(draft)
-                draft.update(draft_fields)
+        attributes, changed_keys = apply_attribute_patch(existing, request.updates)
+        draft_fields = shared_attribute_fields(platform, request.updates, sku_id=sku_id)
+        for attr_id, field in (("BRAND", "brand"), ("MODEL", "model")):
+            if field not in draft_fields:
+                continue
+            if before_root_fields[field] != _text(draft.get(field)):
+                raise BusinessCapabilityError("DRAFT_ATTRIBUTES_CHANGED", f"校验期间草稿 {field} 已变化，本次未写入。")
+            if _text(draft.get(field)) != draft_fields[field] and attr_id not in changed_keys:
+                changed_keys.append(attr_id)
+        if any(_text(draft.get(field)) != value for field, value in draft_fields.items()):
+            _assert_shared_draft_mutable(draft)
+            draft.update(draft_fields)
         saved = draft
         if changed_keys:
             if sku_id:
@@ -512,7 +496,7 @@ def update_product_attributes(
                 draft, target, product=product, product_store=product_store,
                 updates={} if sku_id else {"attributes": attributes},
             )
-            result, error, _status = product_store.save_draft_detail(merged)
+            result, error, _status = product_store.save_draft_content(merged)
             _raise_store_error(error, default_code="PRODUCT_ATTRIBUTES_UPDATE_FAILED", default_message="草稿属性保存失败。")
             saved = result["draft"]
             if sku_id:
@@ -644,7 +628,7 @@ def prepare_product_images(
     else:
         updated.update(deepcopy(_PUBLISH_PREPARATION_RESET))
         updated["status"] = "claimed"
-    result, error, _status = product_store.save_draft_detail(updated)
+    result, error, _status = product_store.save_draft_content(updated)
     _raise_store_error(
         error,
         default_code="PRODUCT_IMAGES_PREPARE_FAILED",
@@ -694,7 +678,7 @@ def product_read(
 
 @ai_tool(
     name="draft_attributes_read",
-    description="属性任务优先使用此工具：默认一次返回商品/来源事实、全部平台目标的类目和完整已填公共属性、草稿共用包装尺寸，不返回图片与 SKU 列表，无需先调用 draft_read/product_read。只有处理 SKU 属性或包装时使用 scope=sku，明确平台/站点并按 next_offset 分页读取；逐 SKU 包装不自动继承共用尺寸。平台定义另用 category_attributes_query 按相同 scope 查询。",
+    description="属性任务优先使用此工具：默认一次返回商品/来源事实、全部平台目标的类目和完整已填公共属性、草稿共用包装尺寸，不返回图片与 SKU 列表，无需先调用 draft_read/product_read。只有处理 SKU 属性或包装时使用 scope=sku，明确平台/站点，默认读取全部已选启用 SKU；大量数据可传 limit 分段读取并按 next_offset 继续。逐 SKU 包装不自动继承共用尺寸。平台定义另用 category_attributes_query 按相同 scope 查询。Python 中将完整返回值保留为 draft_data，后续计算直接复用，不再读一遍；给模型只返回目标、SKU 总数及少量规格样本，不直接输出整份 draft_data。",
     permission="product.read", side_effect="none", recovery_policy="retry_safe", version="2",
 )
 def draft_attributes_read(
@@ -721,15 +705,17 @@ def draft_attributes_read(
     items = []
     if request.scope == "sku":
         key = f"{target_facts[0].platform}:{target_facts[0].site}".lower()
-        for source, row in selected[request.offset:request.offset + request.limit]:
+        stop = request.offset + request.limit if request.limit is not None else None
+        for source, row in selected[request.offset:stop]:
             fact = effective_sku(source, row)
             items.append({"sku_id": row["sku_id"], "name": fact.get("name", ""),
                           "options": deepcopy(fact.get("options") or {}),
                           "package_dimensions": deepcopy(fact.get("package_dimensions") or {}),
+                          "stock": _text(row.get("stock")),
                           "attributes": deepcopy(row.get("attributes_by_target", {}).get(key, {}))})
     end = request.offset + len(items)
     return DraftAttributesReadResult(
-        draft_id=request.draft_id, product=_product_facts(product), targets=target_facts,
+        draft_id=request.draft_id, updated_at=_text(draft.get("updated_at")), product=_product_facts(product), targets=target_facts,
         package_dimensions=deepcopy(draft.get("package_dimensions") or {}),
         skus=items, sku_count=len(selected),
         next_offset=end if request.scope == "sku" and end < len(selected) else None,
@@ -738,7 +724,7 @@ def draft_attributes_read(
 
 @ai_tool(
     name=PRODUCT_ATTRIBUTES_UPDATE_TOOL,
-    description="保存草稿指定类目的公共属性。读取 draft_attributes_read 与 category_attributes_query(scope=common) 后，将同一目标已确定的值合并到一次 updates 提交；只写 write_scope=common 的字段，托管/只读字段不可写。SKU 差异字段用 draft_sku_attributes_update。返回实际已存值和必填缺口；写入成功不等于全部属性填齐。工具不推断、不调用模型。",
+    description="保存草稿指定类目的公共属性。读取 draft_attributes_read 与 category_attributes_query(scope=common) 后，将同一目标已确定的值合并到一次 updates 提交；只写 write_scope=common 的字段，托管/只读字段不可写。多项公共/SKU 修改可合并用 draft_changes_apply。返回实际已存值和必填缺口；写入成功不等于全部属性填齐。工具不推断、不调用模型。",
     permission="product.write",
     side_effect="write",
     approval_required=False,
@@ -757,7 +743,7 @@ def product_attributes_update(
 
 @ai_tool(
     name="draft_sku_attributes_update",
-    description="保存草稿指定目标、指定 SKU 的平台类目差异属性；包装长宽高和重量使用 draft_sku_package_update，不得作为此工具的 updates 属性。先用 draft_attributes_read(scope=sku) 读取该 SKU 事实和已填值，再查询 scope=sku 的平台定义与枚举并由主对话决定填写值。不修改公共属性或其他 SKU，不调用模型。每个 SKU 单独提交，不把整商品混合规格当作单个 SKU 事实。",
+    description="保存草稿指定目标、指定 SKU 的平台类目差异属性；包装长宽高和重量使用 draft_sku_package_update，不得作为此工具的 updates 属性。先用 draft_attributes_read(scope=sku) 读取该 SKU 事实和已填值，再查询 scope=sku 的平台定义与枚举并由主对话决定填写值。不修改公共属性或其他 SKU，不调用模型。单个 SKU 修改用本工具；多 SKU 修改应使用 draft_changes_apply 一次提交全部差异，避免逐项保存整份草稿。",
     permission="product.write", side_effect="write", approval_required=False,
     idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual", version="1",
 )

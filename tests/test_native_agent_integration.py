@@ -18,6 +18,7 @@ from erp_web.services.ai_chat_run_registry import AiChatRunRegistry
 from erp_web.services.approval_session import ApprovalSession
 from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnClaimStore
 from erp_web.stores.agent_call_store import AgentCallStore
+from tests.ai_code_mode_helpers import python_call, business_returns, available_python_functions
 from tests.test_ai_agent_stream_session import _factory
 from erp_web.schemas.ai_tools import AiToolDefinition, ToolApprovalSnapshot
 from erp_web.services.ai_tool_registry import (
@@ -144,7 +145,7 @@ def test_multiple_external_calls_commit_before_dispatch_and_resume_with_more_too
             }
         elif len(results) == 2:
             yield {
-                0: DeltaToolCall(
+                0: python_call(
                     name="read_latest",
                     json_args='{"draft_id":"0"}',
                     tool_call_id="read-1",
@@ -274,17 +275,17 @@ def test_running_user_correction_is_received_before_next_write(tmp_path):
             for p in m.parts
             if isinstance(p, UserPromptPart)
         ]
-        if not results:
-            yield {
-                0: DeltaToolCall(
-                    name="slow", json_args='{"draft_id":"a"}', tool_call_id="slow"
-                )
-            }
-        elif "改为只读" in texts:
+        if "改为只读" in texts:
             yield "改为只读查询"
+        elif not results:
+            yield {0: DeltaToolCall(
+                name="run_code", json_args=json.dumps({
+                    "code": "await slow(draft_id='a')\nawait write(draft_id='a')",
+                }), tool_call_id="slow-then-write",
+            )}
         else:
             yield {
-                0: DeltaToolCall(
+                0: python_call(
                     name="write", json_args='{"draft_id":"a"}', tool_call_id="write"
                 )
             }
@@ -392,11 +393,11 @@ def test_new_request_after_cancel_keeps_code_defined_tools(tmp_path):
         names = [tool.name for tool in info.function_tools]
         observations.append((latest, names))
         if any(isinstance(p, ToolReturnPart) and p.tool_name == "product_attributes_update"
-                 for m in messages for p in m.parts):
+                 for p in business_returns(messages)):
             yield "公共属性已处理"
         else:
-            assert "product_attributes_update" in names
-            yield {0: DeltaToolCall(name="product_attributes_update", json_args='{"draft_id":"draft-1"}', tool_call_id="fill-after-cancel")}
+            assert "async def product_attributes_update" in available_python_functions(info)
+            yield {0: python_call(name="product_attributes_update", json_args='{"draft_id":"draft-1"}', tool_call_id="fill-after-cancel")}
 
     ui = service(tmp_path, FunctionModel(stream_function=model), tools(binding(
         "product_attributes_update", lambda args, ctx: executed.append(args["draft_id"]) or {"ok": True}, write=True)))
@@ -416,11 +417,13 @@ def test_followup_keeps_code_defined_tools_while_model_selects_operation(tmp_pat
         expected = {"填写公共属性": "product_attributes_update", "填写全部 SKU": "draft_sku_attributes_update"}[latest]
         names = {tool.name for tool in info.function_tools}
         observations.append((latest, names))
-        assert names == {"product_attributes_update", "draft_sku_attributes_update"}
-        if any(isinstance(p, ToolReturnPart) and p.tool_name == expected for m in messages for p in m.parts):
+        assert names == {"run_code", "product_attributes_update", "draft_sku_attributes_update"}
+        assert "async def product_attributes_update" in available_python_functions(info)
+        assert "async def draft_sku_attributes_update" in available_python_functions(info)
+        if any(isinstance(p, ToolReturnPart) and p.tool_name == expected for p in business_returns(messages)):
             yield "已处理"
         else:
-            yield {0: DeltaToolCall(name=expected, json_args='{"draft_id":"draft-1"}', tool_call_id=expected)}
+            yield {0: python_call(name=expected, json_args='{"draft_id":"draft-1"}', tool_call_id=expected)}
 
     ui = service(tmp_path, FunctionModel(stream_function=model), tools(*[
         binding(name, lambda args, ctx, name=name: executed.append(name) or {}, write=True)

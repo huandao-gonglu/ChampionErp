@@ -20,10 +20,12 @@ from pydantic_ai.providers.openai import OpenAIProvider
 PROVIDER_ID_OPENAI = "openai"
 PROVIDER_ID_DEEPSEEK = "deepseek"
 PROVIDER_ID_ALIBABA = "alibaba"
+PROVIDER_ID_OMLX = "omlx"
 
 PROVIDER_FAMILY_GENERIC_OPENAI = "generic_openai"
 PROVIDER_FAMILY_OPENAI = "openai"
 PROVIDER_FAMILY_ALIBABA = "alibaba"
+PROVIDER_FAMILY_OMLX = "omlx"
 
 API_STYLE_OPENAI_COMPATIBLE = "openai_compatible"
 API_STYLE_OPENAI_RESPONSES = "openai_responses"
@@ -77,6 +79,21 @@ _PROVIDER_SPECS = (
             API_STYLE_OPENAI_RESPONSES,
         ),
         supported_model_kinds=("chat", "responses", "images"),
+        base_url_editable=True,
+        discovery_strategy="openai_models",
+    ),
+    AiProviderSpec(
+        provider_id=PROVIDER_ID_OMLX,
+        label="oMLX（本地模型）",
+        description="通过 OpenAI 兼容接口连接 oMLX，默认使用 Chat Completions，支持模型 Thinking 开关。",
+        provider_family=PROVIDER_FAMILY_OMLX,
+        default_base_url="http://127.0.0.1:8000/v1",
+        default_api_style=API_STYLE_OPENAI_COMPATIBLE,
+        supported_api_styles=(
+            API_STYLE_OPENAI_COMPATIBLE,
+            API_STYLE_OPENAI_RESPONSES,
+        ),
+        supported_model_kinds=("chat", "responses"),
         base_url_editable=True,
         discovery_strategy="openai_models",
     ),
@@ -177,9 +194,11 @@ __all__ = [
     "PROVIDER_FAMILY_ALIBABA",
     "PROVIDER_FAMILY_GENERIC_OPENAI",
     "PROVIDER_FAMILY_OPENAI",
+    "PROVIDER_FAMILY_OMLX",
     "PROVIDER_ID_ALIBABA",
     "PROVIDER_ID_DEEPSEEK",
     "PROVIDER_ID_OPENAI",
+    "PROVIDER_ID_OMLX",
     "create_pydantic_provider",
     "normalize_provider_id",
     "provider_family_for_model",

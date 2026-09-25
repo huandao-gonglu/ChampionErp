@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import pytest
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -180,7 +180,8 @@ def test_real_agent_function_model_round_trip_preserves_schema_and_tool_call_id(
             assert len(agent_info.function_tools) == 1
             pydantic_definition = agent_info.function_tools[0]
             assert pydantic_definition.name == definition.name
-            assert pydantic_definition.description == definition.description
+            assert pydantic_definition.description.startswith(definition.description + "\n\n")
+            assert "item_id: minLength=1" in pydantic_definition.description
             assert (
                 pydantic_definition.parameters_json_schema
                 == definition.to_dict()["input_schema"]
@@ -428,13 +429,13 @@ def test_bridge_enforces_deadline_and_output_limit() -> None:
         execution_context(),
         max_output_bytes=32,
     )
-    with pytest.raises(AiToolBridgeError) as too_large:
+    with pytest.raises(ModelRetry, match="超过上限 32 字节") as too_large:
         execute_bridge(
             PydanticToolBridge(large_toolset),
             large_dependencies,
             call_id="large-output",
         )
-    assert too_large.value.code == "TOOL_OUTPUT_TOO_LARGE"
+    assert "limit" in str(too_large.value)
     assert large_runtime.unique_call_count == 1
     assert size_executions == 1
 

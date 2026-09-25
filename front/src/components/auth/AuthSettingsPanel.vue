@@ -93,8 +93,10 @@ const BROWSER_MODE_EXISTING_BROWSER = 'existing_browser'
 const PROVIDER_ID_OPENAI = 'openai'
 const PROVIDER_ID_DEEPSEEK = 'deepseek'
 const PROVIDER_ID_ALIBABA = 'alibaba'
+const PROVIDER_ID_OMLX = 'omlx'
 const fallbackProviders = [
   { id: PROVIDER_ID_OPENAI, label: 'OpenAI', description: 'OpenAI 服务预设；代理可修改 Base URL，API 协议可选 Chat Completions 或 Responses', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
+  { id: PROVIDER_ID_OMLX, label: 'oMLX（本地模型）', description: '通过 OpenAI 兼容接口连接 oMLX，默认使用 Chat Completions，支持模型 Thinking 开关', provider_family: 'omlx', default_base_url: 'http://127.0.0.1:8000/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
   { id: PROVIDER_ID_DEEPSEEK, label: 'DeepSeek', description: '使用 Pydantic AI 的 DeepSeekProvider', provider_family: 'generic_openai', default_base_url: 'https://api.deepseek.com', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible'], base_url_editable: false },
   { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '使用 Pydantic AI 的 AlibabaProvider', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
 ]
@@ -204,6 +206,7 @@ function normalizeProviderId(value: unknown): string {
 
 function providerLabel(providerId: string): string {
   if (providerId === PROVIDER_ID_OPENAI) return 'OpenAI'
+  if (providerId === PROVIDER_ID_OMLX) return 'oMLX（本地模型）'
   if (providerId === PROVIDER_ID_DEEPSEEK) return 'DeepSeek'
   if (providerId === PROVIDER_ID_ALIBABA) return '阿里云百炼 / Qwen'
   return providerId || '未选择服务商'
@@ -334,6 +337,9 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     quality: firstText(record.quality),
     size: firstText(record.size),
     timeout_seconds: firstText(record.timeout_seconds),
+    ...(connectionType === API_CONNECTION_TYPE && typeof record.thinking_enabled === 'boolean'
+      ? { thinking_enabled: record.thinking_enabled }
+      : {}),
     capabilities: asStringArray(record.capabilities),
     capability_profiles: normalizeCapabilityProfiles(record.capability_profiles),
     cli_tool: cliTool,
@@ -523,6 +529,8 @@ const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) =
 const selectedAiModelConnectionType = computed(() => normalizeConnectionType(modelField('connection_type', API_CONNECTION_TYPE)))
 const selectedAiModelIsApi = computed(() => selectedAiModelConnectionType.value === API_CONNECTION_TYPE)
 const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value === CLI_CONNECTION_TYPE)
+const selectedModelThinkingSupported = computed(() => firstText(asRecord(derivedGenerationCapabilities(selectedAiModel.value).reasoning).status) === 'supported')
+const selectedModelThinkingExplicit = computed(() => typeof selectedAiModel.value?.thinking_enabled === 'boolean')
 const selectedProviderSpec = computed(() => providerOptions.value.find((item) => item.id === modelField('provider_id')))
 const selectedProviderApiStyleOptions = computed(() => selectedProviderSpec.value?.supportedApiStyles || ['openai_compatible'])
 const selectedProviderBaseUrlEditable = computed(() => selectedProviderSpec.value?.baseUrlEditable !== false)
@@ -898,6 +906,15 @@ function apiKeyPlaceholder(): string {
   return masked ? `已配置 ${masked}，留空保持原值` : 'API Key'
 }
 
+function setModelThinking(value: boolean | null) {
+  const model = selectedAiModel.value
+  if (!model || aiControlsLocked.value || !selectedModelThinkingSupported.value) return
+  if ((model.thinking_enabled ?? null) === value) return
+  if (value === null) delete model.thinking_enabled
+  else model.thinking_enabled = value
+  clearCapabilityProofs(model)
+}
+
 function setSelectedModelField(field: string, value: string | boolean) {
   if (!selectedAiModel.value) return
   if (aiControlsLocked.value) return
@@ -979,6 +996,9 @@ function setSelectedModelField(field: string, value: string | boolean) {
         selectedAiModel.value.base_url = nextProvider.defaultBaseUrl
       }
     }
+  }
+  if ((field === 'provider_id' || field === 'connection_type') && !selectedModelThinkingSupported.value) {
+    delete selectedAiModel.value.thinking_enabled
   }
   if (field === 'cli_tool' && typeof value === 'string') {
     selectedAiModel.value.provider = cliToolLabel(value)
@@ -1091,6 +1111,8 @@ function derivedGenerationCapabilities(model: UnknownRecord | null): UnknownReco
     base.reasoning = { status: 'unknown', modes: [], efforts: [], supports_budget_tokens: false, note: '通用兼容接口没有统一的推理字段；请先选择准确厂商。' }
   } else if (providerFamily === 'openai') {
     base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], supports_budget_tokens: false, note: '参数会按所选 API 协议转换，模型是否接受该强度由厂商校验。' }
+  } else if (providerFamily === 'omlx') {
+    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: [], supports_budget_tokens: false, note: 'oMLX 支持通过模型聊天模板开启或关闭 Thinking。' }
   } else if (apiStyle === 'openai_responses') {
     base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], supports_budget_tokens: false, note: 'Responses 使用 reasoning.effort；关闭推理转换为 effort=none。' }
   } else {
@@ -1415,6 +1437,8 @@ function capabilitySignature(model: UnknownRecord | null): string {
 function aiModelPayloadForCheck(): UnknownRecord {
   const model = selectedAiModel.value ? { ...selectedAiModel.value } : {}
   delete model.model_options
+  // 显式传 null，避免探测接口合并已保存配置时恢复被清除的开关。
+  model.thinking_enabled = typeof model.thinking_enabled === 'boolean' ? model.thinking_enabled : null
   return model
 }
 
@@ -1980,6 +2004,31 @@ function handleYunexpressEnvironmentChange(value: string) {
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">超时秒数</span>
                   <input class="input" :value="modelField('timeout_seconds')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('timeout_seconds', eventText($event))" />
                 </label>
+                <div v-if="selectedAiModelIsApi" class="md:col-span-2 rounded-lg border border-accent-200 bg-white px-3 py-2 dark:border-dark-700 dark:bg-dark-900">
+                  <div class="flex items-center justify-between gap-3">
+                    <label class="flex items-center gap-2 text-sm text-accent-900 dark:text-accent-100">
+                      <input
+                        data-testid="ai-model-thinking"
+                        type="checkbox"
+                        :checked="selectedAiModel.thinking_enabled === true"
+                        :indeterminate="selectedModelThinkingSupported && !selectedModelThinkingExplicit"
+                        :disabled="aiControlsLocked || !selectedModelThinkingSupported"
+                        @change="setModelThinking(eventChecked($event))"
+                      />
+                      <span>启用 Thinking（深度思考）</span>
+                    </label>
+                    <button v-if="selectedModelThinkingSupported && selectedModelThinkingExplicit" type="button" data-testid="reset-ai-model-thinking" class="text-xs text-accent-500 hover:text-accent-700 dark:text-accent-400" :disabled="aiControlsLocked" @click="setModelThinking(null)">恢复默认</button>
+                  </div>
+                  <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">
+                    <template v-if="!selectedModelThinkingSupported">当前服务商尚未接入 Thinking 控制，不发送开关参数；是否思考由服务商决定。</template>
+                    <template v-else>
+                      {{ !selectedModelThinkingExplicit ? '未设置：沿用高级配置或服务商默认。' : selectedAiModel.thinking_enabled ? '已勾选：请求开启思考。' : '未勾选：请求关闭思考。' }}
+                      能力探测直接使用此设置；正式请求可由功能绑定覆盖。更改后请重新探测能力。
+                    </template>
+                  </p>
+                  <p v-if="modelField('provider_id') === PROVIDER_ID_OPENAI" class="mt-1 text-xs text-accent-500 dark:text-accent-400">OpenAI 的推理参数取决于模型支持情况；连接 oMLX 时请选择“oMLX（本地模型）”服务商。</p>
+                  <p v-if="modelField('provider_id') === PROVIDER_ID_OMLX && modelField('api_style') === 'openai_responses'" class="mt-1 text-xs text-amber-700 dark:text-amber-300">部分 oMLX 版本的 Responses 流会在关闭思考后仍把正文标为思考；建议使用 Chat Completions。</p>
+                </div>
                 <details class="md:col-span-2 rounded-lg border border-dashed border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
                   <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级配置</summary>
                   <div v-if="selectedAiModelIsApi" class="mt-3 grid gap-3 md:grid-cols-2">

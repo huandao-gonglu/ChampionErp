@@ -28,6 +28,7 @@ from tests.native_domain_fixture import (
     _PlatformNetworkBoundary,
 )
 from tests.runtime_test_utils import seed_store_currency
+from tests.ai_code_mode_helpers import python_call, business_returns
 from tests.test_native_agent_integration import service, body, CONVERSATION
 
 
@@ -138,24 +139,16 @@ def test_fifteen_selected_drafts_prepare_concurrently_and_report_real_remaining_
     )
 
     async def model(messages, info):
-        results = [
-            p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)
-        ]
+        results = business_returns(messages)
         if not results:
-            yield {
-                i: DeltaToolCall(
-                    name="draft_prepare_for_market",
-                    json_args=json.dumps(
-                        {
-                            "draft_id": draft_id,
-                            "target_platform": "ozon",
-                            "regenerate_copy": True,
-                        }
-                    ),
-                    tool_call_id=f"prepare-{i}",
-                )
-                for i, draft_id in enumerate(selected)
-            }
+            yield {0: DeltaToolCall(
+                name="run_code",
+                json_args=json.dumps({"code": (
+                    "import asyncio\n"
+                    f"await asyncio.gather(*[draft_prepare_for_market(draft_id=draft_id, target_platform='ozon', regenerate_copy=True) for draft_id in {selected!r}])"
+                )}),
+                tool_call_id="prepare",
+            )}
         else:
             assert len(results) == 15
             errors = [
@@ -201,12 +194,10 @@ def test_native_approval_to_real_publish_job_and_model_reconciliation(
     context._publishing_bus = bus
 
     async def model(messages, info):
-        results = [
-            p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)
-        ]
+        results = business_returns(messages)
         if not results:
             yield {
-                0: DeltaToolCall(
+                0: python_call(
                     name="draft_prepare_for_market",
                     json_args=json.dumps(
                         {
@@ -220,7 +211,7 @@ def test_native_approval_to_real_publish_job_and_model_reconciliation(
             }
         elif len(results) == 1:
             assert "error" not in results[-1].content, results[-1].content
-            yield {0: DeltaToolCall(name="product_attributes_update", json_args=json.dumps({
+            yield {0: python_call(name="product_attributes_update", json_args=json.dumps({
                 "draft_id": ids[0], "platform": "ozon", "site": "global", "category_id": "94765",
                 "updates": {"85": "Champion", "4191": "Описание вентилятора"},
             }), tool_call_id="attributes")}

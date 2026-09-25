@@ -474,18 +474,26 @@ def test_projection_module_has_no_provider_protocol_or_model_branches() -> None:
         assert provider_import not in source
 
 
-def test_no_pydantic_ai_harness_dependency_or_import() -> None:
+def test_python_execution_uses_official_code_mode_at_one_boundary() -> None:
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-    assert "pydantic_ai_harness" not in requirements
-    assert "pydantic-ai-harness" not in requirements
-    offenders: list[str] = []
-    for path in python_files("erp_web"):
-        text = path.read_text(encoding="utf-8")
-        if "pydantic_ai_harness" in text:
-            offenders.append(_relative_posix(path))
-    assert not offenders, "项目代码不得导入或引用 pydantic_ai_harness：\n" + "\n".join(
-        offenders
-    )
+    assert "pydantic-ai-harness[codemode]==" in requirements
+    owners = {
+        _relative_posix(path)
+        for path, target in imported_targets(python_files(ROOT / "erp_web"))
+        if target.startswith("pydantic_ai_harness")
+    }
+    assert owners == {"erp_web/services/ai_code_mode.py"}
+    source = (ROOT / "erp_web/services/ai_code_mode.py").read_text(encoding="utf-8")
+    assert "CodeMode(" in source and "check_before_tool_call" in source
+    assert "definition.approval_required" in source
+    assert 'definition.execution_mode != "persistent_job"' in source
+    assert not any(name in source for name in ("exec(", "eval(", "subprocess", "sqlite3", "runtime_units", "draft_id", "sku_id"))
+    # 两种入口只调整可见工具，不能重新实现官方执行、重试或 REPL 生命周期。
+    tree = parse_python(ROOT / "erp_web/services/ai_code_mode.py")
+    wrapper = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "DirectAndPythonToolset")
+    assert {node.name for node in wrapper.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))} == {"get_tools"}
+    from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_PROFILE
+    assert GLOBAL_CHAT_PROFILE.python_tools
 
 
 def test_history_projection_uses_official_model_request_hook() -> None:
@@ -495,6 +503,39 @@ def test_history_projection_uses_official_model_request_hook() -> None:
     # 不得调用私有 _agent_graph 或读取 Pydantic 内部 new_message_index。
     assert "_agent_graph" not in source
     assert "new_message_index" not in source
+
+
+def test_internal_draft_operations_do_not_build_page_responses() -> None:
+    """内部属性、图片、文案和核价复用 Store 内容入口，页面另行组装。"""
+    for relative in (
+        "erp_web/runtime_units/product_capabilities.py",
+        "erp_web/runtime_units/draft_changes_capability.py",
+        "erp_web/runtime_units/market_capability_support.py",
+        "erp_web/runtime_units/market_prepare_capabilities.py",
+        "erp_web/runtime_units/market_pricing_capability.py",
+    ):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "load_draft_detail_from_index" not in source, relative
+        assert "save_draft_detail" not in source, relative
+    source = (ROOT / "erp_web/stores/product_store.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    store = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ProductStore")
+    methods = {node.name: node for node in store.body if isinstance(node, ast.FunctionDef)}
+    for name in ("load_draft_content", "save_draft_content"):
+        called = {node.func.attr for node in ast.walk(methods[name]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+        assert not called.intersection({"load_products_index", "load_drafts_index", "draft_product_context", "_draft_detail_response"})
+
+
+def test_grouped_draft_changes_remain_a_business_capability() -> None:
+    """批量保存不另建脚本执行器、数据库写入或 Agent 循环。"""
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG, _WRITE_CAPABILITIES
+    assert "draft_changes_apply" in _WRITE_CAPABILITIES
+    tool = APPLICATION_CAPABILITY_CATALOG.tools["draft_changes_apply"]
+    assert tool.definition.required_permission == "draft.write"
+    source = (ROOT / "erp_web/runtime_units/draft_changes_capability.py").read_text(encoding="utf-8")
+    assert "save_draft_content" in source and "mutation_scope" in source
+    assert "expected_updated_at" in source
+    assert not any(name in source for name in ("pydantic_ai", "sqlite3", "upsert_draft_model", "exec(", "eval("))
 
 
 def test_mercadolibre_publish_has_no_direct_http_or_ai_bypass() -> None:

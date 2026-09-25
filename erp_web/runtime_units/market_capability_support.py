@@ -80,19 +80,14 @@ def load_draft(
     product_store: MarketPrepareStore,
     draft_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    result, error, _status = product_store.load_draft_detail_from_index(draft_id)
+    result, error, _status = product_store.load_draft_content(draft_id)
     raise_store_error(
         error,
         default_code="DRAFT_NOT_FOUND",
         default_message="草稿不存在。",
     )
     draft = result.get("draft") if isinstance(result.get("draft"), dict) else {}
-    context = (
-        result.get("productContext")
-        if isinstance(result.get("productContext"), dict)
-        else {}
-    )
-    product = context.get("raw") if isinstance(context.get("raw"), dict) else {}
+    product = result.get("product") if isinstance(result.get("product"), dict) else {}
     if not draft or not product:
         raise BusinessCapabilityError(
             "DRAFT_CONTEXT_INVALID",

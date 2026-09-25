@@ -31,6 +31,7 @@ class AiModelConfig(TypedDict, total=False):
     capabilities: list[str]
     capability_profiles: dict[str, AiCapabilityProfile]
     timeout_seconds: int
+    thinking_enabled: bool  # 缺省时沿用高级请求配置或服务商默认。
     extra: dict[str, Any]
     enabled: bool
 

@@ -232,6 +232,17 @@ def _build_pydantic_model_binding(
                 provider=provider,
                 profile=profile,
             )
+        if "thinking" in model_settings:
+            # 原生 prepare_request 会忽略不适用的开关；在配置边界明确报错，
+            # 避免页面选择“关闭”后仍按服务商默认执行。
+            always_thinking = pydantic_model.profile.get("thinking_always_enabled", False)
+            if not pydantic_model.profile.get("supports_thinking", False) and not always_thinking:
+                raise AiModelFactoryError(
+                    f"服务商 {provider_spec.label} 未为模型 {model_name} 提供可用的 Thinking 参数映射。"
+                    "请确认服务商选择；连接 oMLX 时请选择“oMLX（本地模型）”。"
+                )
+            if model_settings["thinking"] is False and always_thinking:
+                raise AiModelFactoryError(f"模型 {model_name} 的原生能力声明不支持关闭 Thinking。")
     except AiModelFactoryError:
         raise
     except ValueError as exc:

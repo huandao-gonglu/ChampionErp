@@ -39,6 +39,7 @@ def test_default_env_template_and_public_config(
         "openai",
         "deepseek",
         "alibaba",
+        "omlx",
     }
     assert all(item["supported_api_styles"] for item in public["providers"])
     assert all(

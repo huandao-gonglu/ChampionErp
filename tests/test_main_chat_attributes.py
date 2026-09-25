@@ -5,8 +5,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from pydantic_ai.messages import ToolReturnPart
-from pydantic_ai.models.function import FunctionModel, DeltaToolCall
+from pydantic_ai.models.function import FunctionModel
 
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.facades import agent_capability_facade
@@ -23,6 +22,7 @@ from erp_web.schemas.product_capabilities import (
 from erp_web.schemas.product_write_capabilities import DraftReadRequest
 from erp_web.services.capability_errors import BusinessCapabilityError
 from tests.test_native_domain_workflow import setup_domain
+from tests.ai_code_mode_helpers import python_call, business_returns
 from tests.test_native_agent_integration import service, body
 
 
@@ -206,13 +206,13 @@ def test_native_main_chat_reads_queries_and_writes_without_a_focused_agent(subje
         ("draft_attributes_read", {"draft_id": draft_id, "scope": "sku"}),
     ]
     async def model(messages, info):
-        returns = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
+        returns = business_returns(messages)
         if returns:
             assert returns[-1].content.get("ok") is not False, returns[-1].content
         seen[:] = [part.tool_name for part in returns]
         if len(returns) < len(steps):
             name, args = steps[len(returns)]
-            yield {0: DeltaToolCall(name=name, json_args=json.dumps(args), tool_call_id=f"step-{len(returns)}")}
+            yield {0: python_call(name=name, json_args=json.dumps(args), tool_call_id=f"step-{len(returns)}")}
         else:
             assert returns[3].content["attributes"][4]["id"] == "7199"
             saved = returns[-1].content

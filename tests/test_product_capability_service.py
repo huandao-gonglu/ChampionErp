@@ -114,15 +114,15 @@ class _Products:
     ) -> dict:
         return deepcopy(self.product)
 
-    def load_draft_detail_from_index(self, draft_id: str):
+    def load_draft_content(self, draft_id: str):
         if draft_id != self.draft["draft_id"]:
             return {}, {"error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND"}, 404
         return {
             "draft": deepcopy(self.draft),
-            "productContext": {"raw": deepcopy(self.product)},
+            "product": deepcopy(self.product),
         }, None, 200
 
-    def save_draft_detail(self, draft_payload: dict):
+    def save_draft_content(self, draft_payload: dict):
         self.save_calls += 1
         self.draft = deepcopy(draft_payload)
         return {"draft": deepcopy(self.draft)}, None, 200

@@ -4,8 +4,7 @@ import asyncio
 import json
 
 import pytest
-from pydantic_ai.messages import ToolReturnPart
-from pydantic_ai.models.function import FunctionModel, DeltaToolCall
+from pydantic_ai.models.function import FunctionModel
 
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.runtime_units import category_attribute_updates as validation
@@ -16,6 +15,7 @@ from erp_web.schemas.product_capabilities import DraftAttributesReadRequest
 from erp_web.schemas.product_write_capabilities import DraftReadRequest
 from erp_web.services.capability_errors import BusinessCapabilityError
 from tests.test_main_chat_attributes import subject, enum, request
+from tests.ai_code_mode_helpers import python_call, business_returns
 from tests.test_native_agent_integration import service, body
 
 
@@ -135,12 +135,12 @@ def test_native_two_target_common_attributes_finish_in_five_model_requests(subje
     calls = []
 
     async def model(messages, info):
-        returns = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
+        returns = business_returns(messages)
         assert all(part.content.get("ok") is not False for part in returns)
         round_index = len(calls)
         calls.append(len(returns))
         if round_index < len(rounds):
-            yield {i: DeltaToolCall(name=name, json_args=json.dumps(args), tool_call_id=f"round-{round_index}-{i}") for i, (name, args) in enumerate(rounds[round_index])}
+            yield {i: python_call(name=name, json_args=json.dumps(args), tool_call_id=f"round-{round_index}-{i}") for i, (name, args) in enumerate(rounds[round_index])}
         else:
             assert len(returns) == 9
             assert all(part.content["missing_required_attribute_ids"] == [] for part in returns[-2:])

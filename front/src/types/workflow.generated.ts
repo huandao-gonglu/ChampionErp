@@ -84,6 +84,7 @@ export interface BackendAiModelConfig {
   capabilities?: Array<string>
   capability_profiles?: Record<string, BackendAiCapabilityProfile>
   timeout_seconds?: number
+  thinking_enabled?: boolean
   extra?: Record<string, unknown>
   enabled?: boolean
 }

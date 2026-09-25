@@ -12,11 +12,10 @@ fi
 
 PY="$ROOT_DIR/.venv/bin/python"
 
-# Install dependencies needed by the backend test suite.
-if ! "$PY" -c "import pytest, requests, PIL, dotenv, pydantic_ai, opentelemetry.sdk; from importlib.metadata import version; assert version('pydantic-ai-slim') == '2.43.0'; assert version('opentelemetry-sdk') == '1.44.0'" >/dev/null 2>&1; then
-  echo "[setup] Installing backend test dependencies"
-  "$PY" -m pip install --upgrade pip
-  "$PY" -m pip install -r "$ROOT_DIR/requirements-dev.txt"
+# 同时检查测试依赖及其引用的后端依赖，版本只维护在 requirements 中。
+if ! "$PY" -m pip install --dry-run --no-index --disable-pip-version-check --quiet -r "$ROOT_DIR/requirements-dev.txt" >/dev/null 2>&1; then
+  echo "[setup] 后端测试依赖缺失或版本不符，正在安装…"
+  "$PY" -m pip install --disable-pip-version-check --quiet -r "$ROOT_DIR/requirements-dev.txt"
 fi
 
 # Do not auto-open browser while tests spawn erp_web.server.

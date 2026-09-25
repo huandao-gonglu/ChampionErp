@@ -95,10 +95,12 @@ def _is_openai_responses_null_output_terminal_error(
     traceback = exc.__traceback__
     while traceback is not None:
         frame = traceback.tb_frame
+        chunk = frame.f_locals.get("chunk")
         if (
             frame.f_globals.get("__name__") == "pydantic_ai.models.openai"
-            and frame.f_code.co_name
-            == "_unambiguous_null_id_tool_search_output"
+            and getattr(chunk, "type", None) == "response.completed"
+            and getattr(chunk, "response", None) is not None
+            and chunk.response.output is None
         ):
             return True
         traceback = traceback.tb_next

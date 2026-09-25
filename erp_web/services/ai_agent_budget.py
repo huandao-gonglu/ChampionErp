@@ -21,7 +21,7 @@ def agent_budget_instructions(ctx: RunContext[AiAgentDependencies]) -> str:
             return f"本轮剩余 {seconds:.0f} 秒，请立即汇总各目标已写入内容、失败和未完成项，不要再开始耗时业务工具。"
     return (
         f"当前工具调用额度：已执行 {ctx.usage.tool_calls} 次，剩余 {remaining} 次；"
-        "同一响应中的每次工具调用分别计数；批量工具的一次调用只计一次。"
+        "同一响应中的每次工具调用分别计数；run_code 及其中每次业务函数调用也分别计数。"
         "额度是上限，不是目标；已有足够信息就提交最终输出。"
         + ("所有业务工具现已关闭，只能提交最终输出。" if remaining == 0 else "")
     )

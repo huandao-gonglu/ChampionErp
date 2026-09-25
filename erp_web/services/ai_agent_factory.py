@@ -50,6 +50,7 @@ from erp_web.stores.pydantic_message_store import (
 
 from .ai_agent_budget import agent_budget_error, agent_budget_instructions
 from .ai_agent_dependencies import AiAgentDependencies
+from .ai_code_mode import build_python_capabilities
 from .ai_agent_instrumentation import AiAgentInstrumentation, AiAgentTrace
 from .ai_model_factory import (
     AiModelFactoryError,
@@ -124,6 +125,7 @@ class AiAgentExecutionProfile(Generic[OutputT]):
     retries: int = 2
     result_version: str = "v1"
     allow_write: bool = False
+    python_tools: bool = False
 
     def __post_init__(self) -> None:
         if not self.use_case_id or not self.toolset_id or not self.budget_profile:
@@ -899,7 +901,8 @@ class AiAgentFactory:
             # 部分兼容服务只保留最后一条 system 消息，拆开发送会丢失业务约束。
             support = ctx.deps.tool_runtime.run_support
             background = support.context_instructions() if support is not None else ""
-            return "\n\n".join(filter(None, (instructions, background, agent_budget_instructions(ctx))))
+            receipts = support.code_failure_instructions(ctx.messages) if support is not None else ""
+            return "\n\n".join(filter(None, (instructions, background, receipts, agent_budget_instructions(ctx))))
 
         agent: Agent[AiAgentDependencies, OutputT] = Agent(
             model_override or binding.model,
@@ -913,6 +916,10 @@ class AiAgentFactory:
             capabilities=[
                 Hooks(before_node_run=receive_user_updates, model_request=project_model_request),
                 PrepareTools(_prepare_tools_within_usage_limit),
+                *(build_python_capabilities(
+                    toolset, max_tool_calls=profile.max_tool_calls, retries=profile.retries,
+                    max_output_bytes=profile.max_tool_output_bytes,
+                ) if profile.python_tools else []),
             ],
         )
         agent.instrument = self.instrumentation.settings

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext, Tool
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred
+from pydantic_ai.tools import ToolDefinition
 
 from erp_web.schemas.ai_tools import (
     AiToolCommand,
@@ -19,6 +20,7 @@ from erp_web.schemas.ai_tools import (
 
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_tool_registry import AiToolSet
+from .ai_tool_contract_description import parameter_constraints
 from .capability_errors import BusinessCapabilityError
 
 
@@ -124,6 +126,13 @@ class PydanticToolBridge:
                 payload.get("error") if isinstance(payload.get("error"), dict) else {}
             )
             error_code = str(error.get("code") or "TOOL_EXECUTION_FAILED")
+            if error_code == "TOOL_OUTPUT_TOO_LARGE" and binding.definition.side_effect == "none":
+                # 读取可通过缩小范围安全纠正；由原生重试返回模型决定参数。
+                # 写入已经发生的输出错误仍走未知结果处理，不能触发重放。
+                raise ModelRetry(
+                    f"{error.get('message') or error_code}。请缩小读取范围；"
+                    "工具支持分页时设置较小的 limit 并按游标分段处理，不要原样重试。"
+                )
             if dependencies.tool_runtime.is_model_visible_error(call_id) or error.get(
                 "details", {}
             ).get("outcome_unknown"):
@@ -271,15 +280,28 @@ class PydanticToolBridge:
         invoke.__name__ = definition.name
         # 可信 Injected 参数不暴露给模型；from_schema 仅保留机械参数适配。
         # 同步函数由 Pydantic 在线程中执行，独立调用使用原生并发调度。
-        return Tool.from_schema(
+        contract = definition.to_dict()
+
+        def prepare_contract(
+            ctx: RunContext[AiAgentDependencies], tool_def: ToolDefinition,
+        ) -> ToolDefinition:
+            # from_schema 不接收返回 Schema；通过原生 prepare 交给 CodeMode
+            # 生成返回类型，避免模型靠试写猜测回执字段。
+            return replace(tool_def, return_schema=contract["output_schema"])
+
+        tool = Tool.from_schema(
             invoke,
             name=definition.name,
-            description=definition.description,
-            json_schema=definition.to_dict()["input_schema"],
+            description="\n\n".join(filter(None, (
+                definition.description, parameter_constraints(contract["input_schema"]),
+            ))),
+            json_schema=contract["input_schema"],
             takes_ctx=True,
             sequential=False,
             args_validator=validate_arguments,
         )
+        tool.prepare = prepare_contract
+        return tool
 
     def as_toolset(self) -> FunctionToolset[AiAgentDependencies]:
         return FunctionToolset(

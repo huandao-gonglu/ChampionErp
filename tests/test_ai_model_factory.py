@@ -50,7 +50,7 @@ def test_public_provider_catalog_does_not_expose_generic_adapter_as_second_opena
         item["id"]: item for item in ai_provider_catalog.public_provider_catalog()
     }
 
-    assert set(providers) == {"openai", "deepseek", "alibaba"}
+    assert set(providers) == {"openai", "deepseek", "alibaba", "omlx"}
     assert providers["openai"]["label"] == "OpenAI"
     assert providers["openai"]["supported_api_styles"] == [
         "openai_compatible",
@@ -65,8 +65,8 @@ def test_pydantic_ai_dependency_is_locked_to_verified_public_api() -> None:
         .splitlines()
     )
 
-    assert requirements.count("pydantic-ai-slim[openai]==2.43.0") == 1
-    assert version("pydantic-ai-slim") == "2.43.0"
+    assert requirements.count("pydantic-ai-slim[openai]==2.44.0") == 1
+    assert version("pydantic-ai-slim") == "2.44.0"
     assert all(
         item is not None
         for item in (

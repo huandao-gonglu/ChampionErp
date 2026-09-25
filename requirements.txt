@@ -1,5 +1,7 @@
 openai>=3.8.0
-pydantic-ai-slim[openai]==2.43.0
+pydantic-ai-slim[openai]==2.44.0
+pydantic-ai-harness[codemode]==0.34.0
+pydantic-monty==0.0.23
 opentelemetry-sdk==1.44.0
 pillow>=10.0.0
 requests>=2.31.0

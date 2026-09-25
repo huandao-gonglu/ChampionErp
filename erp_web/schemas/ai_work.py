@@ -30,7 +30,16 @@ class AiWorkUiMessagesDetail(PydanticMessageHistorySummary):
     messages: list[dict[str, Any]]
 
 
+class BusinessWriteReceipt(TypedDict):
+    """UIMessage.metadata.business_write_receipts 中的实际保存回执，不是 Agent 事件。"""
+
+    tool_call_id: str
+    tool_name: str
+    output: dict[str, Any]
+
+
 __all__ = [
+    "BusinessWriteReceipt",
     "AiWorkUiMessagesDetail",
     "PydanticMessageHistoryDetail",
     "PydanticMessageHistorySummary",

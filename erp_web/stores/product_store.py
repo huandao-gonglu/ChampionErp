@@ -1099,6 +1099,26 @@ class ProductStore:
     def load_draft_detail_from_index(
         self, draft_id: str
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        result, error, status = self.load_draft_content(draft_id)
+        if error is not None:
+            return result, error, status
+        return self._draft_detail_response(result), None, status
+
+    def _draft_detail_response(self, content: dict[str, Any]) -> dict[str, Any]:
+        """页面响应在业务读写完成后组装，内部逐项操作不扫描页面索引。"""
+        result = dict(content)
+        product = result.pop("product")
+        result.update(
+            productContext=self.draft_product_context(product),
+            productsIndex=self.load_products_index(),
+            draftsIndex=self.load_drafts_index(),
+        )
+        return result
+
+    def load_draft_content(
+        self, draft_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        """读取规范化草稿及关联商品，供业务能力复用。"""
         draft_id = str(draft_id or "").strip()
         if not draft_id:
             return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
@@ -1119,9 +1139,7 @@ class ProductStore:
             {
                 "ok": True,
                 "draft": draft,
-                "productContext": self.draft_product_context(product),
-                "productsIndex": self.load_products_index(),
-                "draftsIndex": self.load_drafts_index(),
+                "product": product,
             },
             None,
             200,
@@ -1295,7 +1313,7 @@ class ProductStore:
         for row in rows:
             row["selected"] = row["sku_id"] in selected
         # 复用编辑器保存的归一化和预检失效规则，不在能力层读改写整份草稿。
-        _result, error, status = self.save_draft_detail(
+        _result, error, status = self.save_draft_content(
             {"draft_id": draft_id, "sku_items": rows}
         )
         return {"changed": error is None}, error, status
@@ -1339,15 +1357,24 @@ class ProductStore:
         if not changed_count:
             return {"changed_count": 0, "updated_at": existing["updated_at"]}, None, 200
         # 携带锁内读取的全部目标，避免局部 SKU 修改缩减多平台草稿；复用保存的预检失效规则。
-        result, error, status = self.save_draft_detail({**existing, "sku_items": rows})
+        result, error, status = self.save_draft_content({**existing, "sku_items": rows})
         if error is not None:
             return {}, error, status
         return {"changed_count": changed_count, "updated_at": result["draft"]["updated_at"]}, None, 200
 
-    @product_mutation("product")
     def save_draft_detail(
         self, draft_payload: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        result, error, status = self.save_draft_content(draft_payload)
+        if error is not None:
+            return result, error, status
+        return self._draft_detail_response(result), None, status
+
+    @product_mutation("product")
+    def save_draft_content(
+        self, draft_payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        """草稿保存唯一实现；保留互斥、版本检查和发布状态失效规则。"""
         draft_id = str(
             draft_payload.get("draft_id") or draft_payload.get("draftId") or ""
         ).strip()
@@ -1695,9 +1722,7 @@ class ProductStore:
             {
                 "ok": True,
                 "draft": draft,
-                "productContext": self.draft_product_context(product),
-                "productsIndex": self.load_products_index(),
-                "draftsIndex": self.load_drafts_index(),
+                "product": product,
                 "message": "草稿已保存。",
             },
             None,

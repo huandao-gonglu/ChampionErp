@@ -446,7 +446,7 @@ def _persist_sales_target_selection(
         {"sites_to_sell": selected_sales_targets},
     )
     saved_selection, selection_error, _selection_status = (
-        product_store.save_draft_detail(selected_draft)
+        product_store.save_draft_content(selected_draft)
     )
     raise_store_error(
         selection_error,
@@ -792,7 +792,7 @@ def prepare_target_pricing(
         draft=updated,
         target=target,
     )
-    saved, error, _status = product_store.save_draft_detail(updated)
+    saved, error, _status = product_store.save_draft_content(updated)
     raise_store_error(
         error,
         default_code="PRICING_PERSIST_FAILED",

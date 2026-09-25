@@ -4,12 +4,13 @@ import asyncio
 import json
 
 import pytest
-from pydantic_ai.messages import TextPart, ToolReturnPart, UserPromptPart
-from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.messages import TextPart, UserPromptPart
+from pydantic_ai.models.function import FunctionModel
 
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.schemas.ai_tools import AiToolExecutionError
 from tests.test_draft_edit_capabilities import execution, seed_draft
+from tests.ai_code_mode_helpers import python_call, business_returns, available_python_functions
 from tests.test_native_agent_integration import CONVERSATION, body, service
 
 
@@ -121,15 +122,15 @@ def test_confirmation_keeps_tools_and_write_receipt_reaches_followup_model(subje
     async def model(messages, info):
         latest = [p.content for m in messages for p in m.parts if isinstance(p, UserPromptPart)][-1]
         requests.append(latest)
-        assert "draft_sku_package_update" in {t.name for t in info.function_tools}
-        assert "draft_sku_attributes_update" in {t.name for t in info.function_tools}
+        assert "async def draft_sku_package_update" in available_python_functions(info)
+        assert "async def draft_sku_attributes_update" in available_python_functions(info)
         if latest == "重新读取草稿":
             yield "草稿共用尺寸是 13 × 10 × 5 cm，是否应用到前两个 SKU？"
             return
-        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        returns = business_returns(messages)
         if latest == "是" and not returns:
             assert any(isinstance(p, TextPart) and "13 × 10 × 5" in p.content for m in messages for p in m.parts)
-            yield {0: DeltaToolCall(name="draft_sku_package_update", json_args=json.dumps(arguments(draft_id)), tool_call_id="package-write")}
+            yield {0: python_call(name="draft_sku_package_update", json_args=json.dumps(arguments(draft_id)), tool_call_id="package-write")}
         else:
             receipt = returns[-1]
             assert receipt.tool_name == "draft_sku_package_update"
@@ -146,5 +147,5 @@ def test_confirmation_keeps_tools_and_write_receipt_reaches_followup_model(subje
         asyncio.run(ui.prepare_run(body(text, identifier, target_draft_ids=[draft_id])).stream(lambda _: None))
     assert requests == ["重新读取草稿", "是", "是", "你没有把尺寸写入草稿吗"]
     history = ui.chat_service.trusted_history(CONVERSATION)
-    assert [p.tool_name for m in history for p in m.parts if isinstance(p, ToolReturnPart)] == ["draft_sku_package_update"]
+    assert [p.tool_name for p in business_returns(history)] == ["draft_sku_package_update"]
     assert app.db.load_draft_model(draft_id)["sku_items"][0]["overrides"]["package_dimensions"]["length_cm"] == "13.0"

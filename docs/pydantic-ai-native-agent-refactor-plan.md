@@ -2,7 +2,7 @@
 
 > 状态：原生代码替换已完成；真实模型验收及未完成项见 [交付记录](pydantic-ai-native-agent-refactor-delivery.md)。\
 > 日期：2026-09-09。\
-> 已确定方向：尽可能复用 Pydantic AI core，不引入 `pydantic-ai-harness`。\
+> 当前方向：Agent 生命周期继续由 Pydantic AI core 负责；2026-09-24 增加官方 Harness 的 CodeMode 和输出限制，用于通用 Python 工具编排，见 [Python 执行说明](agent-python-execution.md)。\
 > 本轮实施依据：本文取代旧计划中“固定步骤交给 GlobalTaskController、仅终态回到 Agent、任务期间封锁会话”的设计。已有领域能力、数据保护和安全要求继续有效。
 
 ## 1. 要交付的行为

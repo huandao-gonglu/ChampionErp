@@ -9,6 +9,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import httpx
+from openai import AsyncOpenAI
+from openai.types.responses.response import Response
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import (
@@ -22,14 +25,13 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models import ModelRequestParameters, OutputObjectDefinition
-from pydantic_ai.models import openai as pydantic_openai_model
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.models.function import DeltaThinkingPart, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.native_tools import ImageGenerationTool
 from pydantic_ai.providers import Provider
+from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.profiles import ModelProfile
-from openai.types.responses.response import Response
 
 from erp_web.context import get_context
 from erp_web.services import ai_direct_request_service, ai_model_probe_service
@@ -574,42 +576,24 @@ def test_ordinary_direct_chat_publishes_and_persists_when_presentation_is_bound(
 
 def test_probe_recovers_responses_null_output_after_complete_stream(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    response = ModelResponse(parts=[TextPart("Hello!")])
-
-    class NullOutputTerminalStream:
-        def __init__(self) -> None:
-            self._started = False
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            if not self._started:
-                self._started = True
-                return PartStartEvent(index=0, part=TextPart("Hello!"))
-            malformed = Response.model_construct(output=None)
-            pydantic_openai_model._unambiguous_null_id_tool_search_output(
-                malformed
-            )
-            raise StopAsyncIteration
-
-        def get(self) -> ModelResponse:
-            return response
-
-    stream = NullOutputTerminalStream()
-
-    @asynccontextmanager
-    async def fake_model_request_stream(*args, **kwargs):
-        del args, kwargs
-        yield stream
-
-    monkeypatch.setattr(
-        ai_direct_request_service.direct,
-        "model_request_stream",
-        fake_model_request_stream,
-    )
+    # 通过公开 Provider 和模拟 HTTP 验证真实流解析，不再调用 Pydantic 私有辅助函数。
+    wire_response = {
+        "id": "response-test", "object": "response", "created_at": 0,
+        "model": "test-model", "status": "in_progress", "output": [],
+    }
+    wire_events = [
+        {"type": "response.created", "response": wire_response},
+        {"type": "response.output_item.added", "output_index": 0, "item": {
+            "type": "message", "id": "message-test", "role": "assistant", "content": [], "status": "in_progress",
+        }},
+        {"type": "response.output_text.delta", "item_id": "message-test", "output_index": 0, "content_index": 0, "delta": "Hello!"},
+        {"type": "response.completed", "response": {**wire_response, "status": "completed", "output": None}},
+    ]
+    content = "".join(f"data: {json.dumps({**event, 'sequence_number': i})}\n\n" for i, event in enumerate(wire_events))
+    client = AsyncOpenAI(api_key="isolated-test", http_client=httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"}, content=content)),
+    ))
     registry = AiPresentationRegistry()
     reserved = reserve_presentation(registry, display_title="测试 AI 模型")
     presentation_id = str(reserved["presentation_id"])
@@ -618,6 +602,7 @@ def test_probe_recovers_responses_null_output_after_complete_stream(
     binding = replace(
         _binding(output="Hello!", required=("chat",)),
         api_style="openai_responses",
+        model=OpenAIResponsesModel("test-model", provider=OpenAIProvider(openai_client=client)),
     )
 
     with bind_presentation_context(scope):
@@ -627,7 +612,7 @@ def test_probe_recovers_responses_null_output_after_complete_stream(
             messages=[{"role": "user", "content": "hello"}],
         )
 
-    assert actual is response
+    assert actual.text == "Hello!"
     registry.finish_request(presentation_id, request_failed=False)
     encoded = b"".join(
         registry.iter_chunks(presentation_id, wait_timeout=0.2)

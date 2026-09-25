@@ -378,6 +378,7 @@ class VercelAiUiService:
         ui = VercelAIAdapter.dump_messages(
             history.model_messages() if history else [], sdk_version=VERCEL_SDK_VERSION
         )
+        script_receipts = self.call_store.script_write_receipts(conversation_id)
         visible = []
         for message in ui:
             metadata = message.metadata or {}
@@ -386,6 +387,15 @@ class VercelAiUiService:
                 if not text:
                     continue
                 message = message.model_copy(update={"parts": [TextUIPart(text=text)]})
+            receipts = [
+                receipt for part in message.parts
+                if part.type == "tool-run_code"
+                for receipt in script_receipts.get(part.tool_call_id, [])
+            ]
+            if receipts:
+                message = message.model_copy(update={"metadata": {
+                    **metadata, "business_write_receipts": receipts,
+                }})
             visible.append(message)
         ui = visible
         pending = self.call_store.pending(conversation_id)

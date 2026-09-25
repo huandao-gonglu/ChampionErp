@@ -207,11 +207,10 @@ start_image_https_tunnel() {
   echo "[log] Image Tunnel log: $IMAGE_TUNNEL_LOG"
 }
 
-if ! "$PY" -c "import requests, PIL, dotenv, openai, pydantic_ai, opentelemetry.sdk, snowballstemmer; from importlib.metadata import version; assert version('pydantic-ai-slim') == '2.43.0'; assert version('opentelemetry-sdk') == '1.44.0'; assert version('snowballstemmer') == '3.1.1'" >/dev/null 2>&1; then
-  echo "[setup] Installing backend dependencies"
-  "$PY" -m pip install --upgrade pip
-  "$PY" -m pip install -r "$ROOT_DIR/requirements.txt"
-  "$PY" -m pip install requests pillow python-dotenv
+# 按依赖文件离线检查版本及可选依赖，避免另存一套包名和版本号。
+if ! "$PY" -m pip install --dry-run --no-index --disable-pip-version-check --quiet -r "$ROOT_DIR/requirements.txt" >/dev/null 2>&1; then
+  echo "[setup] 后端依赖缺失或版本不符，正在安装…"
+  "$PY" -m pip install --disable-pip-version-check --quiet -r "$ROOT_DIR/requirements.txt"
 fi
 
 dotenv_value() {

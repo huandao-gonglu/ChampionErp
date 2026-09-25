@@ -320,6 +320,15 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
     }
     if connection_type == CONNECTION_TYPE_API:
         normalized["provider_id"] = provider_id
+        thinking_enabled = raw.get("thinking_enabled")
+        if thinking_enabled is not None:
+            if not isinstance(thinking_enabled, bool):
+                raise ValueError("模型 Thinking 开关必须是布尔值，留空表示使用服务商默认。")
+            normalized["thinking_enabled"] = thinking_enabled
+            ai_generation_settings.validate_generation_settings_for_model(
+                normalized,
+                {"reasoning": {"mode": "enabled" if thinking_enabled else "disabled"}},
+            )
     capability_profiles = normalize_capability_profiles(raw.get("capability_profiles"))
     if capability_profiles:
         normalized["capability_profiles"] = capability_profiles
@@ -494,6 +503,8 @@ def model_configuration_fingerprint(model: dict[str, Any]) -> str:
         "model": model_name(model),
     }
     if connection_type == CONNECTION_TYPE_API:
+        if isinstance(model.get("thinking_enabled"), bool):
+            payload["thinking_enabled"] = model["thinking_enabled"]
         payload.update(
             {
                 "provider_id": str(model.get("provider_id") or "").strip(),

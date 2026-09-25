@@ -1,4 +1,4 @@
-"""功能绑定的统一生成配置与 HTTP Provider 参数映射。"""
+"""模型默认值、功能绑定生成配置与 Pydantic ModelSettings 参数映射。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from .ai_provider_catalog import (
     PROVIDER_FAMILY_ALIBABA,
     PROVIDER_FAMILY_GENERIC_OPENAI,
     PROVIDER_FAMILY_OPENAI,
+    PROVIDER_FAMILY_OMLX,
     provider_family_for_model,
 )
 
@@ -183,6 +184,15 @@ def generation_capabilities(model: dict[str, Any]) -> dict[str, Any]:
             "note": "参数会按当前 API 协议转换；具体模型是否接受该强度仍由 OpenAI 校验。",
         }
         return base
+    if family == PROVIDER_FAMILY_OMLX:
+        base["reasoning"] = {
+            "status": "supported",
+            "modes": list(REASONING_MODES),
+            "efforts": [],
+            "supports_budget_tokens": False,
+            "note": "oMLX 支持通过模型聊天模板开启或关闭 Thinking。",
+        }
+        return base
     if api_style == API_STYLE_OPENAI_RESPONSES:
         base["reasoning"] = {
             "status": "supported",
@@ -218,6 +228,9 @@ def _validate_reasoning_mapping(
             raise ValueError("OpenAI 映射不支持统一的 reasoning.budget_tokens。")
         if effort == "max":
             raise ValueError("OpenAI 映射不支持 max 推理强度。")
+    elif family == PROVIDER_FAMILY_OMLX:
+        if effort or budget_tokens is not None:
+            raise ValueError("oMLX 当前只支持推理开关，不支持统一推理强度或预算。")
     elif api_style == API_STYLE_OPENAI_RESPONSES:
         if budget_tokens is not None:
             raise ValueError("阿里云 Responses 映射不支持 reasoning.budget_tokens。")
@@ -250,10 +263,19 @@ def pydantic_model_settings_payload(
 
     本函数保持依赖无关，只返回普通字典；Pydantic 类型的构造仍由
     ``ai_model_factory`` 唯一负责。模型级 ``extra.request_body`` 中已被统一
-    generation 接管的字段会被移除，确保功能绑定配置拥有最终优先级。
+    generation 接管的字段会被移除。覆盖顺序为功能绑定、模型 Thinking
+    默认值、自定义请求 JSON；均未设置时使用服务商默认行为。
     """
 
     normalized = validate_generation_settings_for_model(model, settings)
+    if "reasoning" not in normalized and isinstance(model.get("thinking_enabled"), bool):
+        normalized["reasoning"] = {
+            "mode": (
+                REASONING_MODE_ENABLED
+                if model["thinking_enabled"]
+                else REASONING_MODE_DISABLED
+            )
+        }
     extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
     if "provider_max_retries" in extra:
         raise ValueError(
@@ -291,7 +313,15 @@ def pydantic_model_settings_payload(
             "thinking_budget",
         ):
             extra_body.pop(field, None)
-        if family == PROVIDER_FAMILY_ALIBABA:
+        if family == PROVIDER_FAMILY_OMLX:
+            raw_template_kwargs = extra_body.get("chat_template_kwargs")
+            if raw_template_kwargs is not None and not isinstance(raw_template_kwargs, dict):
+                raise ValueError("oMLX 的 chat_template_kwargs 必须是 JSON 对象。")
+            template_kwargs = dict(raw_template_kwargs or {})
+            template_kwargs.pop("reasoning_effort", None)
+            template_kwargs["enable_thinking"] = mode == REASONING_MODE_ENABLED
+            extra_body["chat_template_kwargs"] = template_kwargs
+        elif family == PROVIDER_FAMILY_ALIBABA:
             if api_style == API_STYLE_OPENAI_COMPATIBLE:
                 extra_body["enable_thinking"] = mode == REASONING_MODE_ENABLED
                 if mode == REASONING_MODE_ENABLED and budget_tokens is not None:

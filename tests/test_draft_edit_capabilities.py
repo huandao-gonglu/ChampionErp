@@ -7,7 +7,7 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 from pydantic_ai.messages import ToolReturnPart, ModelRequest, UserPromptPart
-from pydantic_ai.models.function import FunctionModel, DeltaToolCall
+from pydantic_ai.models.function import FunctionModel
 
 from erp_web.context import get_context
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
@@ -15,6 +15,7 @@ from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.product_write_capabilities import DraftSkuSelectionUpdateRequest
 from tests.test_erp_db import sample_product
+from tests.ai_code_mode_helpers import python_call, business_returns, available_python_functions
 from tests.test_native_agent_integration import service, body, CONVERSATION
 
 
@@ -57,18 +58,18 @@ def test_native_agent_copies_five_drafts_then_selects_one_sku_each(tmp_path):
     copied_ids = []
 
     async def model(messages, info):
-        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        returns = business_returns(messages)
         copies = [p for p in returns if p.tool_name == "draft_duplicate"]
         selections = [p for p in returns if p.tool_name == "draft_sku_selection_update"]
-        assert {"draft_duplicate", "draft_sku_selection_update"} <= {t.name for t in info.function_tools}
+        assert all(f"async def {name}" in available_python_functions(info) for name in ("draft_duplicate", "draft_sku_selection_update"))
         if len(copies) < 5:
-            yield {0: DeltaToolCall(name="draft_duplicate", json_args=json.dumps({"draft_id": source_id}),
+            yield {0: python_call(name="draft_duplicate", json_args=json.dumps({"draft_id": source_id}),
                                    tool_call_id=f"copy-{len(copies)}")}
         elif not selections:
             copied_ids[:] = [p.content["draft_id"] for p in copies]
             assert len(set(copied_ids)) == 5
             yield {
-                i: DeltaToolCall(name="draft_sku_selection_update", json_args=json.dumps({
+                i: python_call(name="draft_sku_selection_update", json_args=json.dumps({
                     "draft_id": copied_id, "selected_sku_ids": [f"sku-{i}"],
                 }), tool_call_id=f"select-{i}")
                 for i, copied_id in enumerate(copied_ids)
@@ -100,17 +101,17 @@ def test_native_agent_copies_five_drafts_then_selects_one_sku_each(tmp_path):
     async def replay(messages, info):
         if not any(isinstance(p, ToolReturnPart) and p.tool_call_id == "copy-0"
                    for p in messages[-1].parts):
-            yield {0: DeltaToolCall(name="draft_duplicate", json_args=json.dumps({"draft_id": source_id}), tool_call_id="copy-0")}
+            yield {0: python_call(name="draft_duplicate", json_args=json.dumps({"draft_id": source_id}), tool_call_id="copy-0")}
         else:
             yield "已核对原复制回执。"
 
     before_ids = {r["draft_id"] for r in app.db.list_draft_records(scope="all")}
-    original_receipt = ui.call_store.receipt(CONVERSATION, "copy-0")["output_json"]
+    original_receipt = ui.call_store.receipt(CONVERSATION, "copy-0__1")["output_json"]
     resumed = service(tmp_path, FunctionModel(stream_function=replay), toolset)
     app._agent_calls = resumed.call_store
     asyncio.run(resumed.prepare_run(body("核对复制回执", message_id="user-replay", target_draft_ids=[source_id])).stream(lambda _: None))
     assert {r["draft_id"] for r in app.db.list_draft_records(scope="all")} == before_ids
-    assert resumed.call_store.receipt(CONVERSATION, "copy-0")["output_json"] == original_receipt
+    assert resumed.call_store.receipt(CONVERSATION, "copy-0__1")["output_json"] == original_receipt
 
 
 def test_selection_is_atomic_idempotent_and_preserves_other_sku_fields():

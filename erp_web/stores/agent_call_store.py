@@ -16,6 +16,7 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
 
 from erp_web.db import ErpDatabase, utc_now
+from erp_web.schemas.ai_work import BusinessWriteReceipt
 from erp_web.stores.pydantic_message_store import (
     canonical_model_messages_json,
     PydanticMessageStoreError,
@@ -35,12 +36,12 @@ class AgentCallStore:
         """按真实输入时间读取本轮业务回执，不存储重试计数或执行计划。"""
         with self.db._connect() as conn:
             rows = conn.execute(
-                """SELECT tool_name,arguments_json,output_json,status FROM ai_tool_receipts
+                """SELECT tool_call_id,tool_name,arguments_json,output_json,status FROM ai_tool_receipts
                 WHERE conversation_id=? AND updated_at >= COALESCE(
                     (SELECT MAX(created_at) FROM ai_chat_inbox WHERE conversation_id=?), '')
                 ORDER BY updated_at""", (conversation_id, conversation_id),
             ).fetchall()
-        return [{"tool_name": row["tool_name"], "status": row["status"],
+        return [{"tool_call_id": row["tool_call_id"], "tool_name": row["tool_name"], "status": row["status"],
                  "arguments": json.loads(row["arguments_json"]),
                  "output": json.loads(row["output_json"] or "null")} for row in rows]
 
@@ -57,6 +58,26 @@ class AgentCallStore:
             ).fetchall()
         return [{"arguments": json.loads(row["arguments_json"]),
                  "output": json.loads(row["output_json"])} for row in rows]
+
+    def script_write_receipts(self, conversation_id: str) -> dict[str, list[BusinessWriteReceipt]]:
+        """按官方 CodeMode 子调用 ID 归属汇总已落盘写回执，失败脚本也可展示成功部分。"""
+        with self.db._connect() as conn:
+            rows = conn.execute(
+                """SELECT tool_call_id,tool_name,output_json FROM ai_tool_receipts
+                WHERE conversation_id=? AND status='completed' AND output_json IS NOT NULL
+                AND instr(tool_call_id, '__') > 0 ORDER BY updated_at, rowid""",
+                (conversation_id,),
+            ).fetchall()
+        grouped: dict[str, list[BusinessWriteReceipt]] = {}
+        for row in rows:
+            parent_id, _, sequence = row["tool_call_id"].rpartition("__")
+            output = json.loads(row["output_json"])
+            if not sequence.isdigit() or not isinstance(output, dict):
+                continue
+            grouped.setdefault(parent_id, []).append({
+                "tool_call_id": row["tool_call_id"], "tool_name": row["tool_name"], "output": output,
+            })
+        return grouped
 
     def pending(
         self, conversation_id: str

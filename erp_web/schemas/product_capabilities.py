@@ -3,6 +3,7 @@ from __future__ import annotations
 """商品读取、属性设置和草稿图片准备的类型化契约。"""
 
 from typing import Annotated, Literal
+from typing_extensions import TypedDict
 
 from pydantic import (
     BaseModel,
@@ -11,6 +12,7 @@ from pydantic import (
     JsonValue,
     StringConstraints,
     model_validator,
+    with_config,
 )
 
 
@@ -124,9 +126,9 @@ class DraftAttributesReadRequest(BaseModel):
     draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
     platform: TrimmedText = ""
     site: TrimmedText = ""
-    scope: Literal["common", "sku"] = Field(default="common", description="common 读取商品事实和全部目标的公共属性，不返回 SKU 列表；sku 按指定平台/站点分页读取 SKU。")
+    scope: Literal["common", "sku"] = Field(default="common", description="common 读取商品事实和全部目标的公共属性，不返回 SKU 列表；sku 按指定平台/站点读取全部已选启用 SKU，也可用 limit 分段读取。")
     offset: int = Field(default=0, ge=0)
-    limit: int = Field(default=25, ge=1, le=50)
+    limit: int | None = Field(default=None, ge=1, description="省略或 null 时读取剩余全部 SKU；需要分段处理大量数据时传入每次读取条数，并按 next_offset 继续。")
 
 
 class DraftAttributeTarget(BaseModel):
@@ -139,16 +141,29 @@ class DraftAttributeTarget(BaseModel):
     attributes: dict[str, JsonValue]
 
 
+@with_config(ConfigDict(extra="forbid"))
+class DraftAttributeSku(TypedDict):
+    """脚本可以直接索引的逐 SKU 事实，字段结构在执行前可知。"""
+
+    sku_id: str
+    name: str
+    options: Annotated[dict[str, JsonValue], Field(description="该 SKU 的商品规格原文，按规格名称映射到值；编码等提取优先使用此字段。")]
+    package_dimensions: dict[str, JsonValue]
+    stock: str
+    attributes: dict[str, JsonValue]
+
+
 class DraftAttributesReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     draft_id: str
+    updated_at: str
     product: ProductFacts
     targets: list[DraftAttributeTarget]
     package_dimensions: dict[str, JsonValue] = Field(
         default_factory=dict,
         description="草稿共用包装尺寸（cm/kg）；skus[].package_dimensions 是逐 SKU 的有效包装尺寸，缺失时不会自动继承此值。",
     )
-    skus: list[dict[str, JsonValue]] = Field(default_factory=list, max_length=50)
+    skus: list[DraftAttributeSku] = Field(default_factory=list)
     sku_count: int
     next_offset: int | None = None
 
@@ -196,6 +211,7 @@ __all__ = [
     "DraftAttributesReadRequest",
     "DraftAttributesReadResult",
     "DraftAttributeTarget",
+    "DraftAttributeSku",
     "DraftSkuAttributesUpdateRequest",
     "ProductAttributesUpdateRequest",
     "ProductAttributesUpdateResult",

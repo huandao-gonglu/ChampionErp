@@ -20,6 +20,7 @@ from erp_web.runtime_units.collect_capabilities import COLLECTION_AI_CAPABILITIE
 from erp_web.runtime_units.content_capabilities import CONTENT_AI_CAPABILITIES
 from erp_web.runtime_units.draft_capabilities import DRAFT_QUERY_AI_CAPABILITIES
 from erp_web.runtime_units.draft_edit_capabilities import DRAFT_EDIT_AI_CAPABILITIES
+from erp_web.runtime_units.draft_changes_capability import DRAFT_CHANGES_AI_CAPABILITIES
 from erp_web.runtime_units.image_capabilities import IMAGE_AI_CAPABILITIES
 from erp_web.runtime_units.logistics_capabilities import LOGISTICS_AI_CAPABILITIES
 from erp_web.runtime_units.market_prepare_capabilities import (
@@ -81,6 +82,7 @@ ALL_AI_CAPABILITIES = (
     *DRAFT_QUERY_CAPABILITIES,
     *DRAFT_WRITE_CAPABILITIES,
     *DRAFT_EDIT_AI_CAPABILITIES,
+    *DRAFT_CHANGES_AI_CAPABILITIES,
     *CONTENT_CAPABILITIES,
     *IMAGE_CAPABILITIES,
     *PLATFORM_QUERY_CAPABILITIES,
@@ -142,6 +144,7 @@ _WRITE_CAPABILITIES = frozenset(
         "draft_duplicate",
         "draft_sku_selection_update",
         "draft_sku_package_update",
+        "draft_changes_apply",
         "draft_pricing_apply",
         "draft_delete",
         "product_attributes_update",

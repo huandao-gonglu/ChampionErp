@@ -35,7 +35,9 @@ from pydantic_ai.settings import ModelSettings
 from erp_web.ai_capability_composition import (
     GLOBAL_CHAT_CAPABILITIES,
     _WRITE_CAPABILITIES,
+    APPLICATION_CAPABILITY_CATALOG,
 )
+from tests.ai_code_mode_helpers import python_call
 from erp_web.context import get_context
 from erp_web.http_handler import Handler
 
@@ -83,8 +85,11 @@ def test_stop_endpoint_validates_request(chat_server, payload):
     assert status in {400, 422}
 CONVERSATION = "conversation_global_chat_" + "f" * 32
 
-#: global.chat 主 Agent 工具 = Direct 只读能力 + 任务控制能力（动态同源）。
-EXPECTED_GLOBAL_CHAT_TOOLS = set(GLOBAL_CHAT_CAPABILITIES | _WRITE_CAPABILITIES)
+#: 所有业务工具保留直接入口，同步且无需审批的工具还可在 Python 中调用。
+EXPECTED_GLOBAL_CHAT_TOOLS = {"run_code"} | {
+    tool.definition.name for tool in APPLICATION_CAPABILITY_CATALOG.tools.values()
+    if tool.definition.name in GLOBAL_CHAT_CAPABILITIES | _WRITE_CAPABILITIES
+}
 
 
 def test_global_chat_profile_supports_bounded_multi_step_task_observation() -> None:
@@ -305,13 +310,13 @@ def test_sse_run_streams_official_tool_chunks(
         nonlocal turns
         turns += 1
         if turns == 1:
-            # global.chat 主 Agent 暴露 Direct 只读能力 + 任务控制能力。
+            # 主对话同时提供直接业务工具和可选 Python 入口。
             assert {
                 tool.name for tool in agent_info.function_tools
             } == EXPECTED_GLOBAL_CHAT_TOOLS
             yield {
                 0: DeltaThinkingPart(content="先查询当前草稿。"),
-                1: DeltaToolCall(
+                1: python_call(
                     name="drafts_query",
                     json_args='{"scope":"active","view":"summary"}',
                     tool_call_id="draft-query-1",
@@ -870,12 +875,12 @@ def test_disconnect_during_multi_tool_turn_persists_complete_tool_pairs(
         turns += 1
         if turns == 1:
             yield {
-                0: DeltaToolCall(
+                0: python_call(
                     name="drafts_query",
                     json_args='{"scope":"active","view":"summary"}',
                     tool_call_id="disconnect-drafts",
                 ),
-                1: DeltaToolCall(
+                1: python_call(
                     name="products_index_query",
                     json_args="{}",
                     tool_call_id="disconnect-products",
@@ -939,12 +944,12 @@ def test_business_failure_in_multi_tool_turn_persists_complete_tool_pairs(
         turns += 1
         if turns == 1:
             yield {
-                0: DeltaToolCall(
+                0: python_call(
                     name="drafts_query",
                     json_args='{"scope":"active","view":"summary"}',
                     tool_call_id="success-before-failure",
                 ),
-                1: DeltaToolCall(
+                1: python_call(
                     name="product_read",
                     json_args='{"product_id":"already-deleted"}',
                     tool_call_id="missing-product",

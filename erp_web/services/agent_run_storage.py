@@ -9,7 +9,7 @@ import threading
 from typing import Any
 
 from pydantic_ai import ModelRequestNode, ModelRetry, RunContext, UserPromptNode
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, RetryPromptPart
 
 from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_page_context import page_context_instructions
@@ -36,6 +36,36 @@ class AgentRunStorage:
     def context_instructions(self) -> str:
         """由原生动态 instructions 读取本轮背景，关闭时不复用旧页面。"""
         return page_context_instructions(self.page_context)
+
+    def code_failure_instructions(self, messages: list) -> str:
+        """脚本异常后补充已有业务回执，避免把整段脚本当作从未执行。"""
+        if not messages or not isinstance(messages[-1], ModelRequest):
+            return ""
+        prefixes = tuple(
+            f"{part.tool_call_id}__" for part in messages[-1].parts
+            if isinstance(part, RetryPromptPart) and part.tool_name == "run_code"
+        )
+        if not prefixes:
+            return ""
+        rows = [row for row in self.store.current_turn_receipts(self.conversation_id)
+                if row["tool_call_id"].startswith(prefixes)]
+        if not rows:
+            return ""
+        lines = ["刚才脚本的实际写回执如下。脚本报错不会撤销已完成操作；只处理未完成部分，禁止整段重放。"]
+        size = 0
+        for index, row in enumerate(rows):
+            output = row["output"] or {}
+            summary = {key: row[key] for key in ("tool_call_id", "tool_name", "status", "arguments")}
+            summary["ok"] = output.get("ok", row["status"] == "completed" and not output.get("error"))
+            summary["error"] = output.get("error")
+            line = json.dumps(summary, ensure_ascii=False)
+            # 这是提示中的摘要，不改写数据库回执；缺证据时须查询当前状态。
+            if len(line) > 2000 or size + len(line) > 24000:
+                lines.append(f"另有 {len(rows) - index} 条回执未展开；不能据此假定未执行，请查询业务状态后继续。")
+                break
+            lines.append(line)
+            size += len(line)
+        return "\n".join(lines)
 
     def canonical(self, ctx: RunContext) -> list:
         return [*self.history, *(m for m in ctx.messages if m.run_id == ctx.run_id)]

@@ -25,6 +25,13 @@ export const GLOBAL_CHAT_CONVERSATION_PREFIX = 'conversation_global_chat_'
 /** Vercel `UIMessagePart`（默认泛型），供纯展示组件渲染单个 part。 */
 export type AiUiPart = UIMessage['parts'][number]
 
+/** 服务端在 UIMessage.metadata 中附加的脚本写回执，不改变原生工具状态。 */
+export interface BusinessWriteReceipt {
+  tool_call_id: string
+  tool_name: string
+  output: Record<string, unknown>
+}
+
 /**
  * `/ui-messages` 派生读取响应。`messages` 是官方 Adapter `dump_messages()`
  * 以 JSON alias 序列化出的 Vercel `UIMessage[]`。

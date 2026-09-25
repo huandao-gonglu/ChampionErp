@@ -188,14 +188,14 @@ class _Products:
     ) -> dict:
         return deepcopy(self.product) if product_id == "product-1" else {}
 
-    def load_draft_detail_from_index(self, draft_id: str):
+    def load_draft_content(self, draft_id: str):
         draft = self.drafts.get(draft_id)
         if draft is None:
             return {}, {"error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND"}, 404
         return (
             {
                 "draft": deepcopy(draft),
-                "productContext": {"raw": deepcopy(self.product)},
+                "product": deepcopy(self.product),
             },
             None,
             200,
@@ -212,10 +212,10 @@ class _Products:
     def save_draft_category_fields(self, draft_id, platform, site, before, updates):
         from erp_web.runtime_units.draft_publish_context import merge_target_listing_into_draft
         draft = merge_target_listing_into_draft(self.drafts[draft_id], {"platform": platform, "site": site}, updates)
-        self.save_draft_detail(draft)
+        self.save_draft_content(draft)
         return draft
 
-    def save_draft_detail(self, draft_payload: dict):
+    def save_draft_content(self, draft_payload: dict):
         self.save_draft_calls += 1
         self.saved_draft_payloads.append(deepcopy(draft_payload))
         draft_id = str(draft_payload.get("draft_id") or "")

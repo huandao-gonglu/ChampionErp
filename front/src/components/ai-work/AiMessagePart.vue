@@ -26,6 +26,8 @@ const tool = computed<ToolPartLike>(() => props.part as unknown as ToolPartLike)
 
 const toolName = computed(() => {
   const name = tool.value.toolName || partType.value.replace(/^tool-/, '')
+  if (name === 'run_code') return '执行 Python'
+  if (name === 'draft_changes_apply') return '保存草稿修改'
   return name || 'tool'
 })
 
