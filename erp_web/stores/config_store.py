@@ -26,6 +26,7 @@ from erp_web.context import AppPaths
 from erp_web.db import ErpDatabase
 from erp_web.marketplace_registry import MARKETPLACE_SPECS, marketplace_spec
 from erp_web.runtime_units.json_store import write_json
+from erp_web.schemas.ai_approval import AiToolApprovalMode, normalize_ai_tool_approval_mode
 from erp_web.services.config_service import (
     is_sensitive_config_key,
     mask_nested_config,
@@ -461,8 +462,15 @@ class ConfigStore:
             )
         return normalized_runtime
 
-    def save_app_config(self, config: dict[str, Any]) -> None:
+    def save_app_config(
+        self, config: dict[str, Any], *, approval_mode: AiToolApprovalMode | None = None,
+    ) -> None:
         with self._save_lock:
+            # 普通设置保存可能持有旧快照；审批偏好只通过专用受信入口更新。
+            config = {**config, "ai_tool_approval_mode": (
+                self.ai_tool_approval_mode() if approval_mode is None
+                else normalize_ai_tool_approval_mode(approval_mode)
+            )}
             config = self.normalize_app_config(config)
             static_config, secrets = _split_app_runtime_secrets(config)
             previous_secrets = self._db.load_runtime_secrets(
@@ -480,6 +488,18 @@ class ConfigStore:
                     previous_secrets,
                 )
                 raise
+
+    def ai_tool_approval_mode(self) -> AiToolApprovalMode:
+        """审批时读取最新偏好，避免长运行继续沿用已撤回的完全授权。"""
+        with self._save_lock:
+            return normalize_ai_tool_approval_mode(self.load_app_config()["ai_tool_approval_mode"])
+
+    def save_ai_tool_approval_mode(self, mode: AiToolApprovalMode) -> AiToolApprovalMode:
+        """在同一配置锁内更新单项，保留模型与店铺等其他配置。"""
+        with self._save_lock:
+            config = self.load_app_config()
+            self.save_app_config(config, approval_mode=mode)
+            return self.ai_tool_approval_mode()
 
     def merge_app_config_fields(
         self,

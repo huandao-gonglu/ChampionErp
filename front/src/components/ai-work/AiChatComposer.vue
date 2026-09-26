@@ -3,6 +3,7 @@ import { computed, onDeactivated, ref, watch } from 'vue'
 import { useEventListener } from '@vueuse/core'
 import { PhEye, PhEyeSlash, PhPlus } from '@phosphor-icons/vue'
 import AiChatCommandPanel from './AiChatCommandPanel.vue'
+import AiApprovalModeSelect from './AiApprovalModeSelect.vue'
 import { useChatCommands } from '@/composables/useChatCommands'
 import { useAiPageContextStore } from '@/stores/aiPageContext'
 
@@ -192,8 +193,9 @@ function onKeydown(event: KeyboardEvent) {
           @compositionstart="onCompositionStart"
           @compositionend="composing = false"
         ></textarea>
-        <div class="mt-1 flex items-center justify-between gap-3">
+        <div class="mt-1 flex flex-wrap items-center justify-between gap-2">
           <div class="flex min-w-0 items-center gap-1">
+            <AiApprovalModeSelect />
             <button
               type="button"
               class="flex size-9 shrink-0 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 disabled:cursor-not-allowed disabled:opacity-50 dark:text-accent-300 dark:hover:bg-dark-700 dark:hover:text-white"

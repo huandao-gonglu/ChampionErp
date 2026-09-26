@@ -293,64 +293,6 @@ class DraftStockUpdateResult(BaseModel):
     changed: bool = False
 
 
-class DraftPricingApplyRequest(BaseModel):
-    """Focused write：把确定性核价结果持久化为平台草稿的最终售价。
-
-    ``pricing_input`` 与 ``draft_prepare_for_market.pricing_input`` 同形：
-    common 共享成本、target/targets 目标输入；只计算不应用不会落库。
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    draft_id: Annotated[
-        TrimmedText,
-        StringConstraints(min_length=1, max_length=160),
-    ]
-    target_platform: Annotated[
-        TrimmedText,
-        StringConstraints(max_length=40),
-    ] = ""
-    site: Annotated[TrimmedText, StringConstraints(max_length=40)] = ""
-    source_conversation_id: str = Field(
-        default="",
-        max_length=160,
-        description="资料来源会话 ID；跨会话引用仍由服务端校验归属。",
-    )
-    source_message_id: str = Field(
-        default="",
-        max_length=200,
-        description="conversation_facts_query 返回的真实用户消息 ID；不接受模型自报来源。",
-    )
-    sales_target: list[
-        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=120)]
-    ] = Field(
-        default_factory=list,
-        max_length=100,
-        description=(
-            "Mercado Libre CBT 销售目标；仅使用已保存选择或带 source_message_id 的用户事实。每项格式为 "
-            'SITE_ID:logistic_type，例如 ["MLM:remote", "MLB:remote"]；'
-            "不要猜测用户销售目标。"
-        ),
-    )
-    pricing_input: dict[str, JsonValue] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def require_pricing_input(self) -> "DraftPricingApplyRequest":
-        if not self.pricing_input:
-            raise ValueError("pricing_input 不能为空；只计算不应用不会落库。")
-        return self
-
-
-class DraftPricingApplyResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    draft_id: str = Field(default="", max_length=160)
-    target_key: str = Field(default="", max_length=120)
-    applied_price: str = Field(default="", max_length=80)
-    fingerprint: str = Field(default="", max_length=160)
-    changed: bool = False
-
-
 class ProductProfilePatchRequest(BaseModel):
     """Focused write：商品主档部分补丁；未提供字段保持原值。"""
 
@@ -381,8 +323,6 @@ __all__ = [
     "DraftSkuSelectionUpdateResult",
     "DraftDeleteRequest",
     "DraftDeleteResult",
-    "DraftPricingApplyRequest",
-    "DraftPricingApplyResult",
     "DraftReadRequest",
     "DraftReadResult",
     "DraftSaveRequest",

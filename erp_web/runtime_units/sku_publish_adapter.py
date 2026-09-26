@@ -11,7 +11,7 @@ from erp_web.schemas.publish_capabilities import PublishIssueSku
 from .collect_helpers import collect_time_iso
 from .publish_context import PreparedPublishContext
 from .sku_precheck import summarize_sku_precheck
-from .sku_publish_projection import grouping_contract, sku_context, sku_quote_errors, target_key, validate_grouping
+from .sku_publish_projection import SkuGroupingMember, grouping_contract, sku_context, sku_quote_errors, target_key, validate_grouping
 
 PENDING = {"pending_confirmation", "publish_pending_confirmation"}
 SUCCESS = {"published", "imported", "real_publish_success", "success"}
@@ -80,7 +80,8 @@ class SkuGroupPublishingAdapter:
             for field in self.item_adapter.required_attributes_missing(sku_context(context, fact, row, grouping), config)))
 
     def validate_draft(self, context: PreparedPublishContext, config: dict[str, Any]) -> dict[str, Any]:
-        errors, warnings, rows, projections = [], [], [], []
+        errors, warnings, rows = [], [], []
+        members: list[SkuGroupingMember] = []
         grouping_issues = []
         selected_sku_ids: set[str] = set()
         grouping = grouping_contract(context)
@@ -102,12 +103,12 @@ class SkuGroupPublishingAdapter:
                     own_errors.append({**self._issue(str(exc), "image_asset_id"), "next_action": "在 SKU 页从图片池重新选择图片"})
                     errors.extend(_sku_issues(own_errors, fact, row))
                     continue
-                projections.append(projected)
+                members.append(SkuGroupingMember.from_projection(projected))
                 check = self.item_adapter.validate_draft(projected, config)
                 errors.extend(_sku_issues([*check.get("errors", []), *own_errors], fact, row))
                 warnings.extend(_sku_issues(check.get("warnings", []), fact, row))
                 rows.append({"sku_id": row["sku_id"], "sku": row["sku"], "precheck": check})
-            grouping_issues = validate_grouping(context, grouping, projections)
+            grouping_issues = validate_grouping(context, grouping, members)
             if len(selected) > 1 and grouping["mode"] == "combined" and self.platform == "mercadolibre":
                 # User Products 每个变体可独立定价；传统模型要求同价，不能悄悄拆成多个商品。
                 if record(config.get("mercadolibre")).get("listing_model") != "user_products":
@@ -130,17 +131,17 @@ class SkuGroupPublishingAdapter:
         if not selected:
             raise ValueError("没有选择发布 SKU")
         items = []
-        projections = []
+        members: list[SkuGroupingMember] = []
         for fact, row in selected:
             projected = sku_context(context, fact, row, grouping)
-            projections.append(projected)
+            members.append(SkuGroupingMember.from_projection(projected))
             payload = self.item_adapter.build_payload(projected, config)
             if self.platform == "mercadolibre" and "family_name" in payload:
                 payload["family_name"] = grouping["name"] if grouping["mode"] == "combined" else f"{grouping['name']} {row['sku']}"
             content = deepcopy(payload)
             content.pop("_publication", None)
             items.append({"sku_id": row["sku_id"], "sku": row["sku"], "payload": payload, "fingerprint": sku_fingerprint(content)})
-        errors = validate_grouping(context, grouping, projections)
+        errors = validate_grouping(context, grouping, members)
         if errors:
             raise ValueError("；".join(issue.message for issue in errors))
         return {"kind": "sku_group", "platform": self.platform, "product_id": context.product.get("product_id"), "draft_id": context.draft.get("draft_id"), "target_key": target_key(context), "grouping": grouping, "items": items}

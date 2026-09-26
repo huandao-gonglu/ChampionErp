@@ -232,6 +232,7 @@ class PydanticToolBridge:
                     str(ctx.tool_call_id),
                     definition.name,
                     arguments,
+                    execution_metadata=metadata,
                 ):
                     receipt = support.store.receipt(
                         support.conversation_id, str(ctx.tool_call_id)

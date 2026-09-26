@@ -19,9 +19,10 @@ from pydantic_ai import (
     UsageLimits,
     capture_run_messages,
 )
-from pydantic_ai.capabilities import Hooks, PrepareTools
+from pydantic_ai.capabilities import HandleDeferredToolCalls, Hooks, PrepareTools
 from pydantic_ai.usage import RunUsage
 from .agent_run_storage import receive_user_updates
+from .ai_approval_policy import handle_configured_tool_approvals
 from .ai_run_cancellation import current_cancellation_token, check_cancellation
 from pydantic_ai.exceptions import (
     AgentRunError,
@@ -915,6 +916,7 @@ class AiAgentFactory:
             name=profile.use_case_id.replace(".", "_"),
             capabilities=[
                 Hooks(before_node_run=receive_user_updates, model_request=project_model_request),
+                HandleDeferredToolCalls(handler=handle_configured_tool_approvals),
                 PrepareTools(_prepare_tools_within_usage_limit),
                 *(build_python_capabilities(
                     toolset, max_tool_calls=profile.max_tool_calls, retries=profile.retries,

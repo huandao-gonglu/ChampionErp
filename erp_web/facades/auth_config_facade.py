@@ -321,6 +321,8 @@ def _save_settings_payload_unlocked(
         app_dir = _app_dir()
         incoming_app = body.get("appConfig")
         if isinstance(incoming_app, dict) and incoming_app:
+            # 授权偏好只允许专用受信入口修改，设置页的旧快照不能覆盖当前授权。
+            incoming_app = {key: value for key, value in incoming_app.items() if key != "ai_tool_approval_mode"}
             save_app_config(merge_app_config_fields(load_app_config(), incoming_app))
         incoming_store = body.get("storeConfig")
         if isinstance(incoming_store, dict) and incoming_store:

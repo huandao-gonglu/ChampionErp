@@ -15,6 +15,7 @@ from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_PROFILE
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
 from erp_web.services.vercel_ai_ui_service import VercelAiChatRun
 from erp_web.services.ai_run_cancellation import bind_cancellation_token, check_cancellation
+from erp_web.services.ai_approval_policy import automatic_approval_results
 
 _logger = logging.getLogger(__name__)
 
@@ -58,6 +59,15 @@ class AgentJobService:
             pending = self.store.pending(conversation_id)
             if pending:
                 requests, results, _ = pending
+                # 切换为完全授权后，也处理已暂停且尚未决定的原生审批。
+                # 已批准或拒绝的决定不覆盖；这里只提交结果，恢复仍由原有入口负责。
+                remaining = requests.remaining(results)
+                if remaining is not None and remaining.approvals:
+                    automatic = automatic_approval_results(
+                        remaining, mode=self.ui_service.chat_service.approval_mode_reader(),
+                    )
+                    if automatic is not None:
+                        self.store.record_results(conversation_id, automatic)
                 for call in requests.calls:
                     if call.tool_call_id in results.calls:
                         continue

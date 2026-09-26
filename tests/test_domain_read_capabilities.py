@@ -31,9 +31,8 @@ from erp_web.runtime_units.category_query_capabilities import (
     category_precheck,
     category_search,
 )
-from erp_web.runtime_units.pricing_upc_capabilities import (
-    PricingUpcCapabilityScope,
-    pricing_calculate,
+from erp_web.runtime_units.upc_capabilities import (
+    UpcCapabilityScope,
     upc_assign,
     upc_import,
 )
@@ -62,8 +61,7 @@ from erp_web.schemas.platform_query_capabilities import (
     PublishJobsQueryRequest,
     PublishLogsQueryRequest,
 )
-from erp_web.schemas.pricing_upc_capabilities import (
-    PricingCalculateRequest,
+from erp_web.schemas.upc_capabilities import (
     UpcAssignRequest,
     UpcImportRequest,
 )
@@ -477,135 +475,10 @@ def test_category_queries_thread_bounded_timeout_to_live_io() -> None:
 # ---------------------------------------------------------------- 定价 / UPC
 
 
-def test_pricing_calculate_passthrough_and_failure() -> None:
-    context = get_context()
-
-    def calculator(input_data: dict[str, Any]) -> dict[str, Any]:
-        assert input_data["targets"] == [{"platform": "mercadolibre"}]
-        assert input_data["usd_cny_rate"] == 7.2
-        return {
-            "ok": True,
-            "targets": [{"platform": "mercadolibre", "price": "99"}],
-            "exchange_rates": {"ok": True, "source": "manual"},
-            "exchange_rate_mode": "manual",
-        }
-
-    scope = PricingUpcCapabilityScope(
-        pricing_calculator=calculator,
-        products=context.products,
-        database=context.db,
-    )
-    result = pricing_calculate(
-        PricingCalculateRequest(
-            targets=({"platform": "mercadolibre"},),
-            usd_cny_rate="7.2",
-        ),
-        scope=scope,
-    )
-    assert dict(result.targets[0])["price"] == "99"
-    assert result.exchange_rate_mode == "manual"
-    assert (
-        PricingCalculateRequest(
-            targets=({"platform": "mercadolibre"},),
-            mxn_usd_rate="17",
-        ).mxn_usd_rate
-        == 17.0
-    )
-
-    def failing(input_data: dict[str, Any]) -> dict[str, Any]:
-        return {"ok": False, "error": "核价失败：缺少成本"}
-
-    failing_scope = PricingUpcCapabilityScope(
-        pricing_calculator=failing,
-        products=context.products,
-        database=context.db,
-    )
-    with pytest.raises(BusinessCapabilityError) as error:
-        pricing_calculate(
-            PricingCalculateRequest(targets=({"platform": "mercadolibre"},)),
-            scope=failing_scope,
-        )
-    assert error.value.code == "PRICING_CALCULATE_FAILED"
-
-
-def test_pricing_calculate_surfaces_structured_field_errors() -> None:
-    """确定性校验失败必须返回结构化字段错误，而不是统一抹平。"""
-
-    context = get_context()
-
-    def calculator(input_data: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ok": False,
-            # 引擎把字段级错误放进 errors 数组；顶层没有 error。
-            "errors": [
-                {"field": "cost_cny", "message": "采购成本缺失"},
-                {"field": "shipping_amount", "message": "物流报价金额必须大于 0"},
-            ],
-            "results": [],
-        }
-
-    scope = PricingUpcCapabilityScope(
-        pricing_calculator=calculator,
-        products=context.products,
-        database=context.db,
-    )
-    with pytest.raises(BusinessCapabilityError) as error:
-        pricing_calculate(
-            PricingCalculateRequest(targets=({"platform": "ozon"},)),
-            scope=scope,
-        )
-    assert error.value.code == "PRICING_INPUT_INVALID"
-    assert "采购成本缺失" in str(error.value)
-    errors = error.value.details["errors"]
-    assert [item["field"] for item in errors] == [
-        "cost_cny",
-        "shipping_amount",
-    ]
-
-
-def test_pricing_calculate_manual_price_deterministic() -> None:
-    """手动售价 200 CNY 的 Ozon 核价：利润 141 CNY、利润率 70.5%。"""
-
-    from erp_web.services import pricing_service
-
-    context = get_context()
-    scope = PricingUpcCapabilityScope(
-        pricing_calculator=pricing_service.pricing_result,
-        products=context.products,
-        database=context.db,
-    )
-    result = pricing_calculate(
-        PricingCalculateRequest(
-            targets=(
-                {
-                    "platform": "ozon",
-                    "site": "global",
-                    "listing_currency": "CNY",
-                    "pricing_mode": "manual",
-                    "manual_price": {"amount": "200", "currency": "CNY"},
-                    "shipping_quote_mode": "manual",
-                    "shipping_currency": "CNY",
-                    "shipping_amount": "10",
-                },
-            ),
-            common={"cost_cny": "9"},
-        ),
-        scope=scope,
-    )
-    target = dict(result.targets[0])
-    assert target.get("ok") is True
-    assert float(target.get("profit_cny")) == pytest.approx(141.0)
-    assert float(target.get("margin_percent")) == pytest.approx(70.5)
-    applied = target.get("applied_price")
-    assert applied["amount"] == "200.00"
-    assert applied["currency"] == "CNY"
-
-
 def test_upc_import_and_assign_roundtrip() -> None:
     context = get_context()
     _seed_product("product-upc")
-    scope = PricingUpcCapabilityScope(
-        pricing_calculator=lambda data: {"ok": True, "targets": []},
+    scope = UpcCapabilityScope(
         products=context.products,
         database=context.db,
     )
@@ -637,8 +510,7 @@ def test_upc_import_and_assign_roundtrip() -> None:
 def test_upc_assign_empty_pool() -> None:
     context = get_context()
     _seed_product("product-empty-upc")
-    scope = PricingUpcCapabilityScope(
-        pricing_calculator=lambda data: {"ok": True, "targets": []},
+    scope = UpcCapabilityScope(
         products=context.products,
         database=context.db,
     )

@@ -8,7 +8,7 @@ import pytest
 from erp_web.product_model.sku_model import collected_skus, merge_collected_skus, normalize_product_skus
 from erp_web.runtime_units.publish_context import PreparedPublishContext
 from erp_web.runtime_units.sku_publish_adapter import SkuGroupPublishingAdapter
-from erp_web.runtime_units.sku_publish_projection import grouping_contract, sku_context, sku_quote_errors, validate_grouping
+from erp_web.runtime_units.sku_publish_projection import SkuGroupingMember, grouping_contract, sku_context, sku_quote_errors, validate_grouping
 from erp_web.schemas.category_definition import CategoryAttributeDefinition, CategoryDefinition
 from tests.runtime_test_utils import temp_app_context
 
@@ -223,23 +223,24 @@ def test_combination_uses_platform_variant_dimensions_not_source_names():
     context = PreparedPublishContext(**{**context.__dict__, "category_definition": definition})
     grouping = grouping_contract(context)
     projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
-    assert "2 个 SKU 的平台差异属性全部为空" in validate_grouping(context, grouping, projections)[0].message
-    assert "颜色（color）" in validate_grouping(context, grouping, projections)[0].message
+    members = [SkuGroupingMember.from_projection(item) for item in projections]
+    assert "2 个 SKU 的平台差异属性全部为空" in validate_grouping(context, grouping, members)[0].message
+    assert "颜色（color）" in validate_grouping(context, grouping, members)[0].message
     for row, color in zip(draft["sku_items"], ("红", "蓝")):
         row["attributes_by_target"] = {"ozon:global": {"color": color}}
     projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
-    assert validate_grouping(context, grouping, projections) == []
+    assert validate_grouping(context, grouping, [SkuGroupingMember.from_projection(item) for item in projections]) == []
     assert all(item.draft["attributes"]["group"] == "组" for item in projections)
     for row, label in zip(draft["sku_items"], ("红", "Красный")):
         row["attributes_by_target"]["ozon:global"]["color"] = {"values": [{"dictionary_value_id": "red", "value": label}]}
     projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
-    issue = validate_grouping(context, grouping, projections)[0].message
-    assert "属性组合相同" in issue
-    assert "规格 0、规格 1" in issue
+    issue = validate_grouping(context, grouping, [SkuGroupingMember.from_projection(item) for item in projections])[0]
+    assert "属性组合相同" in issue.message
+    assert [sku.name for sku in issue.affected_skus] == ["规格 0", "规格 1"]
     draft["sku_items"][0]["attributes_by_target"]["ozon:global"]["color"] = "红"
     draft["sku_items"][1]["attributes_by_target"]["ozon:global"]["color"] = {"values": [{"value": "红"}]}
     projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
-    assert "属性组合相同" in validate_grouping(context, grouping, projections)[0].message
+    assert "属性组合相同" in validate_grouping(context, grouping, [SkuGroupingMember.from_projection(item) for item in projections])[0].message
 
 
 def test_new_collection_url_does_not_inherit_previous_product(tmp_path):
@@ -333,7 +334,7 @@ def test_mercado_custom_variants_distinguish_skus_without_category_variant_field
     context = PreparedPublishContext(product=product, draft=draft, target=draft["target_sites"][0], platform="mercadolibre")
     grouping = grouping_contract(context)
     def projections():
-        return [sku_context(context, fact, row, grouping) for fact, row in zip(product["sku_items"], draft["sku_items"])]
+        return [SkuGroupingMember.from_projection(sku_context(context, fact, row, grouping)) for fact, row in zip(product["sku_items"], draft["sku_items"])]
     assert validate_grouping(context, grouping, projections()) == []
     draft["sku_items"][1]["custom_attributes_by_target"]["mercadolibre:cbt"][0]["value"] = "3D"
     assert "平台属性组合相同" in validate_grouping(context, grouping, projections())[0].message

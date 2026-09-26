@@ -408,17 +408,19 @@ class AgentCallStore:
         call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        *, execution_metadata: dict[str, Any] | None = None,
     ) -> bool:
         with self.db._connect() as conn:
             with conn:
                 cursor = conn.execute(
-                    """INSERT INTO ai_tool_receipts(conversation_id,tool_call_id,tool_name,arguments_json,status,updated_at)
-                    VALUES(?,?,?,?,'executing',?) ON CONFLICT(conversation_id,tool_call_id) DO NOTHING""",
+                    """INSERT INTO ai_tool_receipts(conversation_id,tool_call_id,tool_name,arguments_json,execution_json,status,updated_at)
+                    VALUES(?,?,?,?,?,'executing',?) ON CONFLICT(conversation_id,tool_call_id) DO NOTHING""",
                     (
                         conversation_id,
                         call_id,
                         tool_name,
                         json.dumps(arguments, ensure_ascii=False),
+                        json.dumps(execution_metadata or {}, ensure_ascii=False),
                         utc_now(),
                     ),
                 )

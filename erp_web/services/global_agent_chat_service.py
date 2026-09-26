@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 from pydantic_ai import DeferredToolRequests
 from erp_web.ai_capability_composition import application_capability_permissions
@@ -13,6 +14,7 @@ from erp_web.services.ai_prompt_templates import load_ai_use_case_prompt_pair
 from erp_web.services.agent_run_storage import AgentRunStorage
 from erp_web.services.agent_memory import load_agent_memory_instructions
 from erp_web.stores.agent_call_store import AgentCallStore
+from erp_web.schemas.ai_approval import AiToolApprovalMode, normalize_ai_tool_approval_mode
 
 GLOBAL_CHAT_USE_CASE_ID = GLOBAL_CHAT_PROFILE_ID = GLOBAL_CHAT_TOOLSET_ID = (
     "global.chat"
@@ -46,7 +48,7 @@ NATIVE_INSTRUCTIONS = """你是本地 ERP 的主 Agent。根据用户目标直�
 开展新的业务操作时，先复用对话中仍有效的事实，仅按需读取目标草稿、关联商品、店铺/平台资料。缺字段或可修复错误时，先查询、纠正参数或选择适用工具；只询问确实缺失或冲突的信息。
 多条独立草稿可以并发准备，一条缺资料时继续处理其他可执行草稿。不处理用户未选中的草稿。
 商品共用事实可以复用，平台类目、售价、币种和销售目标必须按站点范围处理。模型猜测不能成为用户决定；来源引用只能来自真实用户消息或已保存事实。
-草稿准备不包含发布授权。发布、删除等需审批操作必须由用户批准；在可独立完成的准备之后再收集审批。
+草稿准备不包含发布授权。发布、删除等需审批操作由服务端按照用户在界面保存的模式处理：询问审批时等待确认，完全授权时自动批准。模型不能自行批准、切换模式或要求用户重复确认；仍只执行用户要求的操作。
 后台工具暂停时已启动的领域 Job 继续运行，Agent 等待结果。恢复后可继续查询和调用业务工具，不能把排队、远端处理中或未知结果汇报成成功。
 收到纠正或取消后优先遵守最新要求。按草稿报告已完成内容、剩余缺口和证据；预算耗尽时明确未完成事项。
 用户只要求类目、公共属性时，只执行这些操作；完整准备能力会额外修改文案、图片和价格，不能用于窄范围任务的失败恢复。
@@ -58,7 +60,7 @@ NATIVE_INSTRUCTIONS = """你是本地 ERP 的主 Agent。根据用户目标直�
 平台公共属性用 product_attributes_update 写入，同一平台/站点的已确定字段合并为一次 updates；单个 SKU 差异属性可直接用 draft_sku_attributes_update；多个 SKU 的差异通过 draft_changes_apply 一次提交，需要计算差异时在 Python 中完成。提交 category_id 和真实值；后端只校验和保存。补齐缺失值时保留已有有效值；用户要求按指定规则统一填写或修正时，将本次范围内不符合规则的旧值一起修正。按本次范围核对定义与回执：公共属性任务不要求遍历 SKU。单次写入成功不等于全部字段填齐；有明确回执无需再读取验证，直接简洁汇报已保存、缺资料和失败项。确定性参数/作用域错误只在参数已修正后重试，不能原样重试。完整准备能力完成后仍需按此流程单独填写属性。
 工具是否可用由代码的 Catalog、Execution Profile、业务权限和资源额度决定；只调用当前实际提供的工具，历史消息或提示词提到的名称不代表当前可用。严格遵循当前工具 Schema 和用途，不能猜测工具、参数或把字段塞进不对应的属性工具。
 用户询问刚才是否执行、保存或完成某项操作时，先依据原生历史中的工具调用和执行回执直接回答，再决定是否需要核实当前状态。明确区分未尝试、执行前被拒绝、部分成功、确认成功和结果未知；计划、口头承诺、发送调用都不算写入成功，传输成功但业务 ok=false 也不算成功。执行前 Unknown tool name 或参数校验拒绝表示该调用未执行；超时、响应丢失或结果投影失败不能据此断言没有写入。已有明确回执时不要以重新读取作为回答前置条件；读取到字段存在也不能证明是自己刚才写的。
-用户说“是、继续、按这个做”时，结合完整对话中紧邻的提议、既有目标和纠正理解其含义；只执行对应的明确操作，不扩大到无关字段。用户只是追问操作结果时直接回答，不自动继续写入。发布和删除仍走原生工具审批。
+用户说“是、继续、按这个做”时，结合完整对话中紧邻的提议、既有目标和纠正理解其含义；只执行对应的明确操作，不扩大到无关字段。用户只是追问操作结果时直接回答，不自动继续写入。发布和删除仍走原生工具审批，由服务端按用户保存的审批模式处理。
 SKU 包装长宽高和重量使用 draft_sku_package_update 写入，存入指定 SKU 的 overrides.package_dimensions；它们不属于平台类目属性。先读 draft_attributes_read(scope=sku) 确定 SKU 和尺寸，将用户明确同意共用一组尺寸的 SKU ID 一起提交，省略 weight_kg 可保留各 SKU 原有重量。草稿共用 package_dimensions 存在不代表逐 SKU 已填写，汇报时说明实际写入层级及 SKU 范围。
 同一平台依赖重复失败时不再反复换类目或复合工具；先完成其他平台。工具暂不可用或预算接近耗尽时，立即按现有工具回执汇总实际写入、失败与缺资料项。
 """
@@ -74,9 +76,13 @@ class GlobalAgentChatService:
         toolset: Any,
         factory: Any = None,
         call_store: AgentCallStore | None = None,
+        approval_mode_reader: Callable[[], AiToolApprovalMode] | None = None,
     ) -> None:
         self.app_dir = Path(app_dir)
         self.app_config = dict(app_config or {})
+        self.approval_mode_reader = approval_mode_reader or (
+            lambda: normalize_ai_tool_approval_mode(self.app_config.get("ai_tool_approval_mode", "ask"))
+        )
         self.message_store = message_store
         self.toolset = toolset
         self.call_store = call_store or AgentCallStore(message_store.db)
@@ -116,6 +122,7 @@ class GlobalAgentChatService:
             conversation_id,
             messages,
             history.history_version if history else 0,
+            approval_mode_reader=self.approval_mode_reader,
         )
         pending = self.call_store.pending(conversation_id)
         if pending is not None and not self.call_store.ready(conversation_id):

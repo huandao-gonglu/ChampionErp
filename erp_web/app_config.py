@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.services import ai_model_config, ai_prompt_templates
+from erp_web.schemas.ai_approval import normalize_ai_tool_approval_mode
 
 from .product_research_config import (
     default_product_research_config,
@@ -65,6 +66,7 @@ def mask_secret(value: Any) -> str:
 
 def default_app_config() -> dict[str, Any]:
     return {
+        "ai_tool_approval_mode": "ask",
         "auto_ai_recognition": "0",
         "alibaba_cookie": "",
         "1688_api": {
@@ -170,6 +172,9 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     canonical = {
         key: incoming[key] for key in PRESERVED_APP_CONFIG_KEYS if key in incoming
     }
+    canonical["ai_tool_approval_mode"] = normalize_ai_tool_approval_mode(
+        incoming.get("ai_tool_approval_mode", "ask")
+    )
     canonical["auto_ai_recognition"] = str(
         canonical.get("auto_ai_recognition") or defaults["auto_ai_recognition"]
     )

@@ -7,6 +7,7 @@ from erp_web.schemas.requests import validate_request_payload
 
 from .common import JsonRequestHandler
 from ..facades import auth_config_facade
+from ..facades import ai_approval_facade
 
 
 PostHandler = Callable[[JsonRequestHandler], None]
@@ -29,6 +30,13 @@ def _send(
 ) -> None:
     payload, status = result
     handler.send_json(payload, status)
+
+
+def handle_ai_approval_mode_save(handler: JsonRequestHandler) -> None:
+    _send(handler, ai_approval_facade.save_approval_mode_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path),
+        approval_token=_approval_token(handler),
+    ))
 
 
 def handle_ai_config_save(handler: JsonRequestHandler) -> None:
@@ -136,6 +144,7 @@ def handle_clear_store_auth(handler: JsonRequestHandler) -> None:
 
 
 POST_HANDLERS: dict[str, PostHandler] = {
+    "/api/ai/approval-mode": handle_ai_approval_mode_save,
     "/api/ai-config/save": handle_ai_config_save,
     "/api/mercadolibre/auth-link": handle_mercadolibre_auth_link,
     "/api/mercadolibre/auth-checklist": handle_mercadolibre_auth_checklist,

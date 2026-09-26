@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import type { UIMessage } from 'ai'
 import AiMessagePart from './AiMessagePart.vue'
+import type { PendingToolCall } from '@/types/aiWork'
 
 defineProps<{
   messages: UIMessage[]
+  pendingToolCalls?: PendingToolCall[]
 }>()
 </script>
 
@@ -32,6 +34,7 @@ defineProps<{
             v-for="(part, index) in message.parts"
             :key="`${message.id}-${index}`"
             :part="part"
+            :pending-kind="'toolCallId' in part ? pendingToolCalls?.find(call => call.tool_call_id === part.toolCallId)?.kind : undefined"
           />
         </div>
       </div>

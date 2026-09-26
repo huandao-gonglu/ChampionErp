@@ -7,23 +7,27 @@ import asyncio
 import json
 import threading
 from typing import Any
+from collections.abc import Callable
 
 from pydantic_ai import ModelRequestNode, ModelRetry, RunContext, UserPromptNode
 from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, RetryPromptPart
 
 from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_page_context import page_context_instructions
+from erp_web.schemas.ai_approval import AiToolApprovalMode
 from erp_web.services.ai_run_cancellation import check_cancellation
 
 
 class AgentRunStorage:
     def __init__(
         self, store: AgentCallStore, conversation_id: str, history: list, version: int,
+        *, approval_mode_reader: Callable[[], AiToolApprovalMode] = lambda: "ask",
     ) -> None:
         self.store = store
         self.conversation_id = conversation_id
         self.history = list(history)
         self.version = version
+        self.approval_mode_reader = approval_mode_reader
         self.consumed: set[int] = set()
         self.lock = threading.RLock()
         self.target_draft_ids: tuple[str, ...] = store.selected_drafts(conversation_id)

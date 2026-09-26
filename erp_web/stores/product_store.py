@@ -236,13 +236,12 @@ def _draft_images_ready(draft: dict[str, Any]) -> bool:
 
 
 def _draft_pricing_ready(draft: dict[str, Any]) -> bool:
-    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
-    targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
-    return any(
-        isinstance(item, dict)
-        and isinstance(item.get("applied_price"), dict)
-        and str(item["applied_price"].get("amount") or "").strip()
-        for item in targets.values()
+    rows = [row for row in draft.get("sku_items", []) if row.get("selected")]
+    keys = {f"{target.get('platform')}:{target.get('site')}".lower() for target in draft.get("target_sites", [])}
+    return bool(rows and keys) and all(
+        row.get("pricing", {}).get("applied") is True
+        and keys <= row.get("pricing", {}).get("targets", {}).keys()
+        for row in rows
     )
 
 
@@ -1373,6 +1372,7 @@ class ProductStore:
     @product_mutation("product")
     def save_draft_content(
         self, draft_payload: dict[str, Any],
+        *, calculated_pricing: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
         """草稿保存唯一实现；保留互斥、版本检查和发布状态失效规则。"""
         draft_id = str(
@@ -1690,6 +1690,14 @@ class ProductStore:
             merged["pricing"] = {}
             for row in merged.get("sku_items", []):
                 row.setdefault("pricing", {})["applied"] = False
+        if calculated_pricing is not None:
+            # 仅核价服务传入经验证的本轮结果；HTTP 草稿内容不能设置此参数。
+            # 新销售目标与新报价在同一次保存中生效，避免先保存选择的半完成状态。
+            merged["pricing"] = deepcopy(calculated_pricing["pricing"])
+            for row in merged.get("sku_items", []):
+                pricing = calculated_pricing["skus"].get(row["sku_id"])
+                if pricing is not None:
+                    row["pricing"] = deepcopy(pricing)
         merged = normalize_platform_draft(
             merged,
             platform,

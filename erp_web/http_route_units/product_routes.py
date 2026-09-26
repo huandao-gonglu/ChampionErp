@@ -6,17 +6,23 @@ from typing import Callable
 from erp_web.schemas.requests import validate_request_payload
 
 from .common import JsonRequestHandler
-from ..facades import product_facade
+from ..facades import product_facade, draft_pricing_facade
 
 PostHandler = Callable[[JsonRequestHandler], None]
 
 
-def handle_calculate_price(handler: JsonRequestHandler) -> None:
-    handler.send_json(
-        product_facade.calculate_sku_prices(
-            validate_request_payload(handler.read_body(), endpoint=handler.path)
-        )
+def handle_draft_pricing_preview(handler: JsonRequestHandler) -> None:
+    result, status = draft_pricing_facade.price_draft_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path), apply=False,
     )
+    handler.send_json(result, status)
+
+
+def handle_draft_pricing_apply(handler: JsonRequestHandler) -> None:
+    result, status = draft_pricing_facade.price_draft_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path), apply=True,
+    )
+    handler.send_json(result, status)
 
 
 def handle_assign_upc(handler: JsonRequestHandler) -> None:
@@ -82,7 +88,8 @@ def handle_delete_draft(handler: JsonRequestHandler) -> None:
 
 
 POST_HANDLERS: dict[str, PostHandler] = {
-    "/api/calculate-price": handle_calculate_price,
+    "/api/draft-pricing/preview": handle_draft_pricing_preview,
+    "/api/draft-pricing/apply": handle_draft_pricing_apply,
     "/api/assign-upc": handle_assign_upc,
     "/api/upc-pool/import": handle_import_upcs,
     "/api/save-product": handle_save_product,

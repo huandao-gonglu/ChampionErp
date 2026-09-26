@@ -108,6 +108,7 @@ export interface BackendAiUseCaseBinding {
 }
 
 export interface BackendAppConfig {
+  ai_tool_approval_mode?: "ask" | "full"
   ai_models?: Array<BackendAiModelConfig>
   ai_use_case_bindings?: Record<string, BackendAiUseCaseBinding>
   ai_use_case_prompts?: Record<string, Record<string, string>>

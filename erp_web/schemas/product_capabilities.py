@@ -143,7 +143,10 @@ class DraftAttributeTarget(BaseModel):
 
 @with_config(ConfigDict(extra="forbid"))
 class DraftAttributeSku(TypedDict):
-    """脚本可以直接索引的逐 SKU 事实，字段结构在执行前可知。"""
+    """逐 SKU 的有效事实，支持直接查看成本及其来源。"""
+
+    cost_cny: str
+    cost_source: str
 
     sku_id: str
     name: str

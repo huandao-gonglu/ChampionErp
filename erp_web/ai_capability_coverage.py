@@ -76,6 +76,10 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(
+        method="POST", path="/api/ai/approval-mode", business_domain="AI 授权偏好",
+        disposition="excluded", reason="仅受信 UI 可设置工具审批偏好，模型不能自行授权。",
+    ),
+    AiCapabilityCoverageEntry(
         method="POST",
         path="/api/collect-verification",
         business_domain="浏览器调试",
@@ -406,10 +410,14 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="POST",
-        path="/api/calculate-price",
+        path="/api/draft-pricing/preview",
         business_domain="定价与 UPC",
         disposition="capability",
-        capability_names=("pricing_calculate",),
+        capability_names=("draft_pricing_preview",),
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/draft-pricing/apply", business_domain="定价与 UPC",
+        disposition="capability", capability_names=("draft_pricing_apply",),
     ),
     # -------------------------------------------------- 类目与属性（POST）
     AiCapabilityCoverageEntry(

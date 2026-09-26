@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from erp_web.schemas.draft_capabilities import DraftPublishReadiness
+from erp_web.schemas.draft_pricing import PricingParameters
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
@@ -95,7 +96,7 @@ class DraftPrepareForMarketRequest(BaseModel):
         ),
     )
     # 只接受核价业务输入；平台、站点与发布币种仍从可信草稿目标注入。
-    pricing_input: dict[str, JsonValue] = Field(default_factory=dict)
+    pricing: PricingParameters = Field(default_factory=PricingParameters)
     regenerate_copy: bool = False
 
 

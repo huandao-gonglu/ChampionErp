@@ -1,4 +1,4 @@
-"""整批 SKU 核价的 HTTP 输入与结果契约。"""
+"""整批 SKU 核价的内部引擎输入与结果契约。"""
 from typing import Any, TypedDict
 
 from .requests import RequestValidationError

@@ -82,7 +82,8 @@ describe('AiMessagePart', () => {
 
   it('历史导出的未返回工具不能被断言为等待审批', () => {
     const pending = mountPart({ type: 'tool-category_match', state: 'approval-requested' })
-    expect(pending.text()).toContain('等待工具结果或审批')
+    expect(pending.text()).toContain('等待工具结果')
+    expect(pending.text()).not.toContain('审批')
   })
 
   it('未知 part 折叠为调试信息且不影响消息', () => {

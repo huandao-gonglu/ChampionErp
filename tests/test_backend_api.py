@@ -159,45 +159,6 @@ def test_image_translate_api_returns_configuration_warning_without_key(backend_s
 
 
 
-def test_calculate_price_api_blocks_until_store_currency_ready(backend_server: str) -> None:
-    """店铺发布币种未就绪时，核价必须确定性阻断（迁移方案 §11/§17）。"""
-
-    data = post_json(
-        backend_server,
-        "/api/calculate-price",
-        {"items": [{"sku_id": "sku-1", "input": {
-            "platform": "mercadolibre",
-            "site": "MLM",
-            "exchange_rate_mode": "manual",
-            "usd_cny_rate": 7.2,
-            "mxn_usd_rate": 18,
-            "common": {
-                "purchase_cost": 30,
-                "weight_kg": 0.5,
-                "length_cm": 20,
-                "width_cm": 15,
-                "height_cm": 10,
-                "usd_cny_rate": 7.2,
-                "mxn_usd_rate": 18,
-            },
-            "targets": [{
-                "target_key": "mercadolibre:mlm",
-                "platform": "mercadolibre",
-                "site": "MLM",
-                "target_margin_percent": 30,
-                "commission_percent": 16,
-                "shipping_quote_mode": "auto",
-            }],
-        }}]},
-    )
-
-    assert data["ok"] is True
-    data = data["items"][0]["result"]
-    assert data["ok"] is False
-    assert data["error_code"] == "STORE_CURRENCY_UNRESOLVED"
-    assert data["platform"] == "mercadolibre"
-
-
 def test_generate_copy_api_returns_error_without_key(backend_server: str, sample_product: dict) -> None:
     saved = post_json(backend_server, "/api/save-product", {"product": sample_product})
     product_id = saved["product"]["product_id"]

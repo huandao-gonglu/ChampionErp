@@ -1,11 +1,12 @@
 """将草稿选中的规格投影为平台单品输入；不持久化临时单品视图。"""
 
 from copy import deepcopy
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from erp_web.schemas.category import category_attribute_value_is_valid
-from erp_web.schemas.publish_capabilities import PublishRelatedIssue
+from erp_web.schemas.publish_capabilities import PublishIssueSku, PublishValidationIssue
 from erp_web.schemas.sku_custom_attributes import custom_attribute_entries, custom_attribute_key
 from erp_web.schemas.category_grouping import (
     apply_listing_grouping_attributes, is_listing_grouping_attribute, listing_group_name,
@@ -36,6 +37,9 @@ def sku_quote_errors(fact: dict[str, Any], row: dict[str, Any], draft: dict[str,
     expected = {"cost_cny": fact.get("cost_cny"), **record(fact.get("package_dimensions"))}
     shared = record(record(draft.get("pricing")).get("common"))
     own = record(record(row.get("pricing_overrides")).get("common"))
+    for field in ("battery", "liquid"):
+        if bool(shared.get(field, False)) != bool(basis.get(field, False)):
+            return ["带电或液体条件已变化，请重新核价"]
     for field in ("domestic_freight_cny", "packaging_cost_cny", "other_cost_cny"):
         expected[field] = own.get(field, shared.get(field, 0))
     if shared.get("exchange_rate_mode") == "manual":
@@ -44,10 +48,16 @@ def sku_quote_errors(fact: dict[str, Any], row: dict[str, Any], draft: dict[str,
                 expected[field] = shared[field]
     target_template = record(record(record(draft.get("pricing")).get("targets")).get(key))
     own_target = record(record(record(row.get("pricing_overrides")).get("targets")).get(key))
+    shipping_mode = "manual" if "shipping_amount" in own_target else target_template.get("shipping_quote_mode")
     for field in ("commission_percent", "payment_fee_percent", "other_fee_percent", "target_margin_percent", "markup_percent", "shipping_amount"):
+        # 自动运费是逐 SKU 报价结果，共用模板中的金额不参与它的有效性比较。
+        if field == "shipping_amount" and shipping_mode == "auto":
+            continue
         if field in target_template or field in own_target:
             expected[field] = own_target.get(field, target_template.get(field))
     for field in ("pricing_mode", "shipping_quote_mode", "shipping_currency"):
+        if field == "shipping_currency" and shipping_mode == "auto":
+            continue
         if field in target_template:
             desired = "manual" if field == "pricing_mode" and own_target.get("manual_price") else target_template[field]
             if field == "shipping_quote_mode" and "shipping_amount" in own_target:
@@ -86,7 +96,21 @@ def grouping_contract(context: PreparedPublishContext) -> dict[str, Any]:
 
 
 def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict[str, Any], grouping: dict[str, Any]) -> PreparedPublishContext:
-    product = deepcopy(context.product)
+    # 先缩小输入再复制，避免每个 SKU 都携带整组报价、其它平台草稿及上次预检。
+    # 来源规格只服务采集；发布使用已经合并覆盖值的 fact，并保留完整图片池。
+    transient_fields = {"sku_items", "target_sites", "last_precheck", "category_precheck", "pricing", "validation_errors", "publication", "last_publish_task"}
+    single_draft = {key: value for key, value in context.draft.items() if key not in transient_fields}
+    single_draft["sku_items"] = [row]
+    single_draft["target_sites"] = [
+        {key: value for key, value in target.items() if key not in transient_fields}
+        for target in context.draft.get("target_sites", [])
+    ]
+    product = deepcopy({
+        **context.product,
+        "source": {key: value for key, value in record(context.product.get("source")).items() if key not in {"skus", "variants"}},
+        "sku_items": [fact],
+        "drafts": {context.platform: single_draft},
+    })
     draft = product["drafts"][context.platform]
     key = target_key(context)
     pricing = deepcopy(record(row.get("pricing")))
@@ -136,6 +160,24 @@ def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict
     return context.with_product(product)
 
 
+@dataclass(frozen=True)
+class SkuGroupingMember:
+    """组内比较只保留规格身份和平台属性，不保留商品、图片与核价副本。"""
+
+    identity: PublishIssueSku
+    attributes: dict[str, Any]
+    custom_attributes: list[dict[str, Any]]
+
+    @classmethod
+    def from_projection(cls, context: PreparedPublishContext) -> "SkuGroupingMember":
+        fact = context.product["sku_items"][0]
+        return cls(
+            identity=PublishIssueSku(sku_id=fact["id"], sku=context.draft["sku"], name=text(fact.get("name"))),
+            attributes=deepcopy(record(context.draft.get("attributes"))),
+            custom_attributes=deepcopy(context.draft.get("sku_custom_attributes") or []),
+        )
+
+
 def _variant_value(value: Any) -> Any:
     """比较平台值身份，枚举展示文本与集合顺序不构成规格差异。"""
     if isinstance(value, dict):
@@ -151,18 +193,24 @@ def _variant_value(value: Any) -> Any:
     return text(value) or None
 
 
-def _grouping_issue(message: str, code: str = "SKU_GROUPING_INVALID") -> PublishRelatedIssue:
-    return PublishRelatedIssue(
+def _grouping_issue(
+    message: str,
+    code: str = "SKU_GROUPING_INVALID",
+    *,
+    affected_skus: list[PublishIssueSku] | None = None,
+) -> PublishValidationIssue:
+    return PublishValidationIssue(
         code=code,
         field="sku_items",
         message=message,
         severity="error",
         next_action="前往 SKU → 属性 / 详情，填写真实规格差异；若类目无法表达这些差异，请调整类目或刊登方式。",
+        affected_skus=affected_skus or [],
     )
 
 
-def validate_grouping(context: PreparedPublishContext, grouping: dict[str, Any], projections: list[PreparedPublishContext]) -> list[PublishRelatedIssue]:
-    if len(projections) < 2 or grouping["mode"] != "combined":
+def validate_grouping(context: PreparedPublishContext, grouping: dict[str, Any], members: list[SkuGroupingMember]) -> list[PublishValidationIssue]:
+    if len(members) < 2 or grouping["mode"] != "combined":
         return []
     if not grouping["name"]:
         return [_grouping_issue("组合展示需要填写平台组名")]
@@ -173,8 +221,8 @@ def validate_grouping(context: PreparedPublishContext, grouping: dict[str, Any],
     if context.platform == "mercadolibre":
         definition = context.category_definition
         definitions = (*definition.required, *definition.optional) if definition else ()
-        for projection in projections:
-            entries, errors = custom_attribute_entries(projection.draft.get("sku_custom_attributes"), definitions)
+        for member in members:
+            entries, errors = custom_attribute_entries(member.custom_attributes, definitions)
             if errors:
                 return [_grouping_issue(message) for message in errors]
             custom_values.append({"custom:" + custom_attribute_key(item["name"]): item["values"][0]["name"] for item in entries})
@@ -182,32 +230,34 @@ def validate_grouping(context: PreparedPublishContext, grouping: dict[str, Any],
             return [_grouping_issue("组合内所有 SKU 必须使用相同的自定义属性名称，并分别填写真实规格值")]
     if not keys and not any(custom_values):
         return [_grouping_issue("当前类目尚未提供可区分变体的属性，请刷新类目定义并确认规格属性")]
-    values = [{key: _variant_value(p.draft.get("attributes", {}).get(key)) for key in keys} for p in projections]
+    values = [{key: _variant_value(member.attributes.get(key)) for key in keys} for member in members]
     for value, custom in zip(values, custom_values):
         value.update(custom)
     definition = context.category_definition
     fields = "、".join(f"{definition.attribute_by_id(key).name}（{key}）" if definition and definition.attribute_by_id(key) else key for key in keys)
     if custom_values and custom_values[0]:
         fields = "、".join(filter(None, [fields, *[key.removeprefix("custom:") for key in custom_values[0]]]))
+    # 字段说明有界，全部字段仍参与比较；规格清单单独放入 affected_skus。
+    if len(fields) > 600:
+        fields = fields[:597] + "…"
     if all(all(value is None for value in item.values()) for item in values):
         return [_grouping_issue(
-            f"所选 {len(projections)} 个 SKU 的平台差异属性全部为空，当前无法区分组合内的规格。可用于区分规格的字段：{fields}。请填写必填项及真实存在的差异，无需填满所有可选字段；补齐后仍需检查规格组合是否重复。",
+            f"所选 {len(members)} 个 SKU 的平台差异属性全部为空，当前无法区分组合内的规格。可用于区分规格的字段：{fields}。请填写必填项及真实存在的差异，无需填满所有可选字段；补齐后仍需检查规格组合是否重复。",
             "SKU_VARIATION_ATTRIBUTES_EMPTY",
+            affected_skus=[member.identity for member in members],
         )]
     combos = [sku_fingerprint(item) for item in values]
     if len(combos) != len(set(combos)):
-        groups: dict[str, list[str]] = {}
-        names = {fact["id"]: text(fact.get("name")) for fact in context.product.get("sku_items", [])}
-        sellers = {text(row.get("sku")): names.get(row["sku_id"], row["sku_id"]) for row in context.draft.get("sku_items", [])}
-        for combo, projection in zip(combos, projections):
-            seller = text(projection.draft.get("sku"))
-            groups.setdefault(combo, []).append(sellers.get(seller) or seller)
-        duplicates = "；".join("、".join(names) for names in groups.values() if len(names) > 1)
+        groups: dict[str, list[PublishIssueSku]] = {}
+        for combo, member in zip(combos, members):
+            groups.setdefault(combo, []).append(member.identity)
+        duplicates = [skus for skus in groups.values() if len(skus) > 1]
         return [_grouping_issue(
-            f"以下 SKU 的平台属性组合相同：{duplicates}。可区分字段：{fields}。请填写真实差异；若该类目无法表达这些差异，请调整组合方式。",
+            f"第 {index} 组共 {len(skus)} 个 SKU 的平台属性组合相同。可区分字段：{fields}。请填写真实差异；若该类目无法表达这些差异，请调整组合方式。",
             "SKU_VARIATION_COMBINATION_DUPLICATE",
-        )]
-    attrs = [record(p.draft.get("attributes")) for p in projections]
+            affected_skus=skus,
+        ) for index, skus in enumerate(duplicates, 1)]
+    attrs = [member.attributes for member in members]
     parent_keys = set(grouping["parent_ids"])
     if context.platform == "yandex":
         parent_keys = set().union(*(set(item) for item in attrs)) - set(keys)
@@ -217,4 +267,4 @@ def validate_grouping(context: PreparedPublishContext, grouping: dict[str, Any],
     return []
 
 
-__all__ = ["grouping_contract", "same_number", "sku_context", "sku_quote_errors", "target_key", "validate_grouping"]
+__all__ = ["SkuGroupingMember", "grouping_contract", "same_number", "sku_context", "sku_quote_errors", "target_key", "validate_grouping"]

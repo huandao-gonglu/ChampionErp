@@ -14,6 +14,7 @@ interface ToolPartLike {
 
 const props = defineProps<{
   part: AiUiPart
+  pendingKind?: 'approval' | 'external'
 }>()
 
 const partType = computed(() => (props.part as { type: string }).type)
@@ -45,8 +46,9 @@ const toolStatusLabel = computed(() => {
     case 'input-available':
       return '工具已就绪'
     case 'approval-requested':
-      // 原生历史导出也用此状态表示尚未返回的工具，不能据此断言正在审批。
-      return '等待工具结果或审批'
+      // 历史导出的状态还包含普通未返回调用；审批以服务端待办为准。
+      return props.pendingKind === 'approval' ? '等待审批'
+        : props.pendingKind === 'external' ? '等待后台任务结果' : '等待工具结果'
     case 'approval-responded':
       return '已响应审批'
     case 'output-available':

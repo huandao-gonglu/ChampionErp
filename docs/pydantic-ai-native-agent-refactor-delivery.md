@@ -26,6 +26,17 @@
 
 已删除固定 Controller、步骤 union、四个任务控制工具、独立任务状态 Store、Deferred task-link、持久化事件 outbox、旧 continuation/progress service、全局任务 HTTP 路由、旧任务卡以及 `task_approval_mode`。对应旧 prompt、只验证旧流程的测试和 mock 已移除或改写。旧设计正文由版本控制保存，当前文档只指向有效方案。
 
+2026-09-25 按用户要求恢复“询问审批 / 完全授权”这一独立产品能力，使用 `ai_tool_approval_mode` 和受信 UI 入口接入当前原生审批。旧任务控制器、旧模式接口及状态机继续退役；具体边界见下文。
+
+### 2026-09-25 审批选择恢复
+
+- 已核对当前安装的 `pydantic-ai-slim 2.44.0`、`pydantic-ai-harness 0.34.0`，并阅读官方 [Deferred Tools](https://ai.pydantic.dev/deferred-tools/) 与本地 `HandleDeferredToolCalls` 实现。
+- 直接使用原生 `HandleDeferredToolCalls` 处理同进程自动批准，返回原生 `DeferredToolResults`；人工审批仍沿用已有 UI Adapter 与受信批准入口。没有新增 Agent loop、审批协议或等待状态机。
+- 服务端读取最新全局模式。`ask` 等待人工决定；`full` 自动批准具有服务端快照的请求。切换到 `full` 后，已有暂停请求通过同一个策略提交原生结果，由原有 Job 扫描/恢复入口继续；已批准或拒绝的结果不覆盖。
+- 自动批准保留工具名/版本、参数、operation key、call ID、审批版本及 digest，记录授权来源和时间。审批模式不进入模型工具参数；普通设置保存不能用旧配置快照覆盖授权模式。
+- 审批偏好只由 `POST /api/ai/approval-mode` 接受带可信 token 的 UI 修改，持久化为 `ai_tool_approval_mode`，缺省 `ask`。当前真实配置不会因本次代码修改自动切到 `full`。
+- 界面按服务端待审批事实显示“等待审批”；仅有历史导出 `approval-requested` 状态时显示“等待工具结果”。
+
 仍保留：发布/研究等独立领域 Job、自身幂等/对账状态、focused 类目和属性 Agent、独立 AI Presentation。这些能力不充当旧任务执行器的 fallback。
 
 ## 数据处置

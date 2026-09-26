@@ -40,6 +40,7 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
     {
         "erp_web/services/ai_agent_factory.py",
         "erp_web/services/ai_tool_bridge.py",
+        "erp_web/services/ai_approval_policy.py",
         "erp_web/services/global_agent_chat_service.py",
         "erp_web/services/agent_job_service.py",
         "erp_web/services/agent_run_storage.py",
@@ -384,10 +385,10 @@ def test_write_capability_outputs_exclude_unbounded_aggregates() -> None:
 
 
 def test_save_receipts_do_not_use_unbounded_dict_resource() -> None:
+    from erp_web.schemas.draft_pricing import DraftPricingResult
     from erp_web.schemas.product_write_capabilities import (
         DraftDuplicateResult,
         DraftSkuSelectionUpdateResult,
-        DraftPricingApplyResult,
         DraftSaveResult,
         DraftStockUpdateResult,
         ProductProfilePatchResult,
@@ -401,7 +402,7 @@ def test_save_receipts_do_not_use_unbounded_dict_resource() -> None:
         DraftSaveResult,
         ProductProfilePatchResult,
         DraftStockUpdateResult,
-        DraftPricingApplyResult,
+        DraftPricingResult,
     ):
         for field_name, field in model.model_fields.items():
             annotation = str(field.annotation)
@@ -512,7 +513,7 @@ def test_internal_draft_operations_do_not_build_page_responses() -> None:
         "erp_web/runtime_units/draft_changes_capability.py",
         "erp_web/runtime_units/market_capability_support.py",
         "erp_web/runtime_units/market_prepare_capabilities.py",
-        "erp_web/runtime_units/market_pricing_capability.py",
+        "erp_web/runtime_units/draft_pricing.py",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "load_draft_detail_from_index" not in source, relative
@@ -679,3 +680,20 @@ def test_description_belongs_only_to_drafts():
     for shape in (Product, ProductSource, ProductFacts, ProductProfilePatch):
         assert "description" not in shape.__annotations__
     assert "description" in PlatformDraft.__annotations__
+
+
+def test_draft_pricing_has_one_business_entry_and_no_raw_ai_or_http_calculator() -> None:
+    """页面、AI 与复合准备共享业务装配；通用脚本能力无需承担 SKU 取数核价。"""
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
+    from erp_web.http_route_units.product_routes import POST_HANDLERS
+    assert "pricing_calculate" not in APPLICATION_CAPABILITY_CATALOG.tools
+    assert {"draft_pricing_preview", "draft_pricing_apply"} <= APPLICATION_CAPABILITY_CATALOG.tools.keys()
+    assert "/api/calculate-price" not in POST_HANDLERS
+    assert {"/api/draft-pricing/preview", "/api/draft-pricing/apply"} <= POST_HANDLERS.keys()
+    for relative in ("erp_web/facades/draft_pricing_facade.py", "erp_web/runtime_units/draft_pricing_capabilities.py", "erp_web/runtime_units/market_prepare_capabilities.py"):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "from erp_web.runtime_units.draft_pricing import" in source
+        assert "price_draft(" in source
+    assert not (ROOT / "erp_web/runtime_units/market_pricing_capability.py").exists()
+    front = (ROOT / "front/src/stores/workflow/actions/pricing.ts").read_text(encoding="utf-8")
+    assert "priceDraft(" in front and "inputForSku" not in front and "saveDraftApi" not in front

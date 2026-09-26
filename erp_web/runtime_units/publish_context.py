@@ -41,6 +41,10 @@ class PreparedPublishContext:
     platform: str = ""
     #: 定义加载失败的可重试原因（用于预检提示，不阻断身份类检查）。
     definition_error: str = ""
+    #: 仅在本次评估中共享，键为类目和授权凭据；不进入持久化与日志。
+    category_currency_cache: dict[tuple[str, str], tuple[str, ...]] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
 
     @property
     def category_id(self) -> str:
@@ -65,6 +69,7 @@ class PreparedPublishContext:
             category_definition=self.category_definition,
             platform=self.platform,
             definition_error=self.definition_error,
+            category_currency_cache=self.category_currency_cache,
         )
 
     @property

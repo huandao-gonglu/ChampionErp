@@ -678,7 +678,7 @@ def product_read(
 
 @ai_tool(
     name="draft_attributes_read",
-    description="属性任务优先使用此工具：默认一次返回商品/来源事实、全部平台目标的类目和完整已填公共属性、草稿共用包装尺寸，不返回图片与 SKU 列表，无需先调用 draft_read/product_read。只有处理 SKU 属性或包装时使用 scope=sku，明确平台/站点，默认读取全部已选启用 SKU；大量数据可传 limit 分段读取并按 next_offset 继续。逐 SKU 包装不自动继承共用尺寸。平台定义另用 category_attributes_query 按相同 scope 查询。Python 中将完整返回值保留为 draft_data，后续计算直接复用，不再读一遍；给模型只返回目标、SKU 总数及少量规格样本，不直接输出整份 draft_data。",
+    description="属性任务优先使用此工具：默认一次返回商品/来源事实、全部平台目标的类目和完整已填公共属性、草稿共用包装尺寸，不返回图片与 SKU 列表，无需先调用 draft_read/product_read。查看 SKU 成本、属性或包装时使用 scope=sku，明确平台/站点，默认读取全部已选启用 SKU；大量数据可传 limit 分段读取并按 next_offset 继续。返回逐 SKU 的 cost_cny 和 cost_source；核价直接调用 draft_pricing_preview/apply，由系统取数，无需先读成本。逐 SKU 包装不自动继承共用尺寸。平台定义另用 category_attributes_query 按相同 scope 查询。Python 中将完整返回值保留为 draft_data，后续计算直接复用，不再读一遍；给模型只返回目标、SKU 总数及少量规格样本，不直接输出整份 draft_data。",
     permission="product.read", side_effect="none", recovery_policy="retry_safe", version="2",
 )
 def draft_attributes_read(
@@ -711,6 +711,8 @@ def draft_attributes_read(
             items.append({"sku_id": row["sku_id"], "name": fact.get("name", ""),
                           "options": deepcopy(fact.get("options") or {}),
                           "package_dimensions": deepcopy(fact.get("package_dimensions") or {}),
+                          "cost_cny": _text(fact.get("cost_cny")),
+                          "cost_source": "draft_override" if "cost_cny" in (row.get("overrides") or {}) else "product_sku",
                           "stock": _text(row.get("stock")),
                           "attributes": deepcopy(row.get("attributes_by_target", {}).get(key, {}))})
     end = request.offset + len(items)

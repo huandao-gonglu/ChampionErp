@@ -535,11 +535,6 @@ export interface PricingResult {
   exchangeRateCached: boolean
 }
 
-export interface SkuPricingBatch {
-  items: { skuId: string; result: PricingResult }[]
-  metrics: { batchId: string; durationMs: number; ozonDiscoveryMs: number }
-}
-
 export interface CategorySelection {
   platform: Marketplace
   categoryId: string

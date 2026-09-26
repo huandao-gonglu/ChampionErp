@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from erp_web.schemas.category_definition import CategoryDefinition
-from erp_web.schemas.publish_capabilities import PublishRelatedIssue
+from erp_web.schemas.publish_capabilities import PublishValidationIssue
 
 
 def _group_issues(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -42,7 +42,7 @@ def _describe_attribute_issue(issue: dict[str, Any], definition: CategoryDefinit
 def summarize_sku_precheck(
     errors: list[dict[str, Any]],
     warnings: list[dict[str, Any]],
-    grouping_issues: list[PublishRelatedIssue],
+    grouping_issues: list[PublishValidationIssue],
     *,
     definition: CategoryDefinition | None,
     selected_sku_ids: set[str],
@@ -67,7 +67,7 @@ def summarize_sku_precheck(
         if primary is None:
             grouped_errors.append(issue.model_dump())
         else:
-            primary.setdefault("related_issues", []).append(issue.model_dump())
+            primary.setdefault("related_issues", []).append(issue.model_dump(exclude={"affected_skus", "related_issues"}))
     return grouped_errors, grouped_warnings
 
 

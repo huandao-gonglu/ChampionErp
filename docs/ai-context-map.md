@@ -278,7 +278,7 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
   → ai_chat_facade → VercelAiUiService → GlobalAgentChatService
     → AiAgentFactory → Pydantic Agent → 原生 Tool → AiToolRuntime → 领域 Capability
       ├─ 普通结果/缺字段 → 原生模型继续决策
-      ├─ ApprovalRequired → 原生工具卡 → DeferredToolResults
+      ├─ ApprovalRequired → 原生 HandleDeferredToolCalls（完全授权）或工具卡（询问审批）→ DeferredToolResults
       └─ CallDeferred → 原生请求和历史同事务落盘
           → AgentJobService 领取领域 Job → 真实终态 → DeferredToolResults → 同一入口恢复
 ```
@@ -291,6 +291,9 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 - `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：机械参数校验、原生并发、审批快照与 Deferred 转接；不选择下一步。
 - `erp_web/services/tool_approval.py`：业务审批内容 digest，绑定工具名/版本、operation key、原生 call ID 和审批版本；执行前重核。
+- `erp_web/schemas/ai_approval.py`、`erp_web/services/ai_approval_policy.py`：工具审批偏好 `ask/full` 与原生 `HandleDeferredToolCalls` 接法。完全授权只产生带原快照的 `DeferredToolResults.approvals`，不修改工具权限、不跳过执行校验，也不接管 Agent 循环。
+- `erp_web/facades/ai_approval_facade.py`：`POST /api/ai/approval-mode` 的受信 UI 入口，要求 `X-Approval-Token`；模式存入 `app_config.ai_tool_approval_mode`，只读值随 `/api/state` 返回。普通设置保存保留最新授权偏好，模型没有修改模式的工具。
+- `front/src/components/ai-work/AiApprovalModeSelect.vue`：主对话与浮动对话共用的“询问审批 / 完全授权”选择器，全局保存。完全授权覆盖后续调用和未决定的审批，既有批准/拒绝不改写；普通未返回工具只显示“等待工具结果”，审批标签以服务端 `pending_tool_calls` 为准。
 - `erp_web/services/agent_run_storage.py`：原生 hook 到消息 CAS、输入收件箱与副作用检查点的适配。
 - `config/agents.md`、`erp_web/services/agent_memory.py`：ERP 主 Agent 的长期业务记忆与唯一文件读取边界。`GlobalAgentChatService.instructions()` 在每次新运行或 Deferred 恢复时加载当前应用目录下的文件，沿现有 Factory 的原生 `instructions` 注入系统上下文；不增加 Agent loop 或消息协议。它不受页面背景眼睛开关影响，不加载仓库开发用 `AGENTS.md`，不回退到其他实例的记忆。文件为 UTF-8、上限 32 KiB；缺失或空文件表示没有附加记忆，读取失败、非法编码和超限明确报错，不静默截断规则。文件编辑在下次 run 生效；当前仅提供文件读取，未提供 Agent 自主写入记忆工具。接入主 Agent 记忆不表示已有专用属性 Agent 的规则和校验已经完成迁移。
 - `erp_web/schemas/ai_page_context.py`：主对话页面背景的有界契约与中文指令渲染，只接受页面枚举和资源 ID。`vercel_ai_ui_service.py` 校验请求的 `page_context` 后写入原生消息 metadata，缺省表示本条消息不携带背景；客户端消息 metadata 仍被丢弃。`AgentRunStorage` 随用户输入更新背景，Factory 使用 Pydantic AI 原生动态 `instructions` 注入模型系统上下文，不创建独立系统消息历史或新 Agent loop；Deferred 恢复复用已保存快照，后续关闭开关会清除当前背景。
@@ -325,7 +328,10 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
   类目匹配函数由 facade 注入，runtime 不反向 import facade。
 - `erp_web/runtime_units/attribute_fill_capabilities.py`：规则填充与 focused 属性 Agent adapter；
   未解决的真实必填属性返回类型化 `RequiredInput`。
-- `erp_web/runtime_units/market_pricing_capability.py`：确定性核价和草稿持久化。
+- `erp_web/runtime_units/draft_pricing.py`：页面、AI 与市场准备共用的逐 SKU 核价装配、预览和原子应用。
+- `erp_web/schemas/draft_pricing.py`：显式费用补丁与页面未保存的 SKU 编辑契约；AI 不接收逐 SKU 原始计算输入。
+- `erp_web/runtime_units/draft_pricing_capabilities.py`：`draft_pricing_preview` / `draft_pricing_apply` 薄适配。
+- `erp_web/runtime_units/pricing_results.py`：结果与 Mercado 销售条件的纯校验。
 - `erp_web/runtime_units/market_prepare_capabilities.py`：`draft_prepare_for_market` 的高层顺序编排；
   复用现有目标草稿、文案、图片、类目、属性和核价 owner，不复制领域实现；文案重生成以稳定
   conversation/tool_call operation key 与文案同次持久化，重启后不会重复消费同一次 `regenerate_copy`。
@@ -648,17 +654,25 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 发布币种与核价
 
-- 国际物流入口：`/api/calculate-price` → `product_facade.calculate_sku_prices`
-  → `runtime_units/pricing_batch.py` → `pricing_runtime.PricingSession`
-  → `services/pricing_shipping.py` → `international_shipping/ShippingModule.quote()`。
-  HTTP 一次接收 `items: [{sku_id, input}]`，返回同 ID 的 `items: [{sku_id, result}]`
-  和 `metrics`（批次号、SKU/市场报价/失败计数、总耗时、Ozon 公共查询耗时），契约在
-  `schemas/pricing_batch.py`。前端核价和应用售价都提交整批请求；不再逐 SKU 发送 HTTP。
-  一批只加载一次店铺配置、实时汇率和 Mercado token，物流实例固定费率版本并复用
-  Ozon 仓库/配送渠道；公共查询失败也在本批复用错误，下一批重新读取。每个 SKU 的
-  成本、包装、货值和 Mercado 远端运费仍独立计算。`erp.pricing` 日志记录批次、
-  每 25 个 SKU 的进度、失败原因与耗时。Agent 单项核价继续调用 `calculate_price`，
-  它与 HTTP 批次使用同一个 Session 算法，没有另一套定价实现。
+- 页面入口为 `/api/draft-pricing/preview` 与 `/api/draft-pricing/apply`，经
+  `facades/draft_pricing_facade.py` 调用 `runtime_units/draft_pricing.py::price_draft`。
+  AI 的 `draft_pricing_preview` / `draft_pricing_apply` 及市场准备也使用此业务入口。
+  请求为草稿 ID、目标范围与本次费用修改；省略参数复用草稿保存配置。系统读取已勾选且启用
+  SKU 的采购成本、包装资料和逐 SKU 费用覆盖，绝不以商品主档成本替代缺失规格成本。
+  `common.domestic_freight_cny` 仅表示国内物流，目标的 `shipping_amount` 仅表示国际运费。
+  页面通过类型化 `sku_updates` 携带未保存的成本/尺寸覆盖和选择，通过 `target_selections`
+  携带当前 Mercado 销售条件；后端验证成员范围。其他页面编辑保留在前端。
+- 预览不保存草稿或已应用售价；应用重新执行同样计算并验证全部 SKU × 市场结果，
+  成功后通过 Store 一次保存公共参数模板和 `sku_items[].pricing`。发布只使用逐 SKU 结果。
+  计算前后比较商品、草稿和店铺配置，网络报价在商品锁外进行，保存时在商品锁内重读，
+  冲突返回 `DRAFT_CHANGED`。公共模板不保存首个 SKU 的结果冒充所有 SKU 的售价。
+  缺失信息返回 SKU、市场和字段；AI 只补问实际缺失项，正常核价无需先读取成本。
+  显式查看成本可用 `draft_attributes_read(scope=sku)` 的 `cost_cny` / `cost_source`。
+- 内部批量引擎 `pricing_batch.calculate_sku_prices` 使用 `pricing_runtime.PricingSession`
+  和 `services/pricing_shipping.py` → `international_shipping/ShippingModule.quote()`。
+  `items: [{sku_id, input}]` 仅是内部引擎契约；HTTP 和 Agent 不再自行拼装。
+  一批共享店铺、汇率、Mercado token、Ozon 仓库/配送渠道；每个 SKU 独立计算成本与运费。
+  批次返回逐 SKU 结果和 `metrics`；`erp.pricing` 记录每 25 个 SKU 的进度与耗时。
   模块负责 Ozon/Yandex 费率版本和三平台物流计算，返回全部候选；ERP 使用既有汇率
   换成物流字段 CNY/USD 后选最低价。模块通过回调使用当前售价算法校验货值，
   不反向导入 ERP。Mercado 的内置运费表已删除，多销售国家分别请求报价并计算售价。
@@ -720,14 +734,12 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   只会禁止 User Products wire contract，不得阻断传统 `/global/items`，也不得在某个
   endpoint 报错后切换模型。区域账号不映射到任何发布模型，本项目仍不提供区域
   `/items` 直发。
-- CBT 草稿缺少或包含未授权目的地时，核价 Capability 返回受限
-  `sales_target` 多选项；选项由当前账号 `marketplace_bindings` 机械生成，并按当前
-  草稿文案语言对应的 child market 过滤，稳定值为
-  `SITE_ID:logistic_type`（例如 `MLM:remote`）。仅任务卡经 `submit_input` 明确提交的
-  选择会生效，初始计划中的模型值会被忽略；单独的 `MLM` 因无法区分物流方式而无效。
-  选择通过账号目标契约后先规范化保存到 `target_sites[].sites_to_sell`，由 ProductStore
-  清除旧核价/预检，再继续当前核价步骤；该字段不属于 `pricing_input`。已有前端选择时
-  AI 直接复用；AI 补充的选择也写回同一字段，不能形成任务专属的第二份选择状态。
+- CBT 核价的销售国家/物流必须通过当前账号 `marketplace_bindings`、文案语言和
+  `listing_model` 契约校验。AI 预览/应用复用草稿已有选择；复合市场准备若传入
+  `sales_target`，必须有 `source_message_id` 对应的真实用户选择依据。
+  页面选择通过 `target_selections` 提交，选择与成功报价在一次保存中生效；
+  核价失败不会留下只保存了部分选择的中间状态。各 SKU 的 `price/net_proceeds`
+  只写入各自的 `pricing.targets[key].sites_to_sell`，公共目标保留非金额销售条件。
 - `sites_to_sell[]` 同时属于核价指纹和发布审批快照：任一销售国家或物流方式
   及其市场级 `price/net_proceeds/listing_type_id/free_shipping/sale_terms/status` 变化都会清除旧核价、
   预检与发布就绪状态，撤销旧发布预览，但保留已发生的远端商品身份。人工审批摘要
@@ -782,7 +794,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 ## 商品发布
 
 - `erp_web/product_model/sku_model.py`：商品实际 SKU、来源快照、草稿选品与每行卖家编码的唯一契约。商品保存全部实际规格；草稿通过 `sku_id` 引用，卖家编码绑定 `draft_id + sku_id`。已发送的编码和远端关联不能由普通保存覆盖。
-- `erp_web/runtime_units/sku_publish_projection.py`：逐 SKU 合并草稿覆盖值、目标属性和独立核价结果，并校验平台组合条件。临时单品投影不写回主档。
+- `erp_web/runtime_units/publish_context.py`：一次发布评估共享类目定义及类目币种查询结果。币种结果仅在当前上下文及其 SKU 投影间复用（包括空结果），按类目与授权隔离，不跨请求缓存或持久化。
+- `erp_web/runtime_units/sku_publish_projection.py`：逐 SKU 合并草稿覆盖值、目标属性和独立核价结果，并校验平台组合条件。先缩小输入再复制：临时单品视图只带当前 SKU、当前平台草稿和图片池，不带整组选品、来源规格或历史预检结果，也不写回主档。组内校验只保留 `SkuGroupingMember` 的身份与属性，不保留所有商品投影；重复组合逐组返回有界说明，完整规格列表保存在 `PublishValidationIssue.affected_skus`。
 - `erp_web/runtime_units/sku_precheck.py`：平台无关的纯预检问题汇总。以错误码、类目差异字段和受影响 SKU 集合关联必填缺失与整组空值检查；其它组合约束独立阻断。以 `erp_web/schemas/publish_capabilities.py` 中的 `PublishIssueSku`、`PublishRelatedIssue` 保留规格身份与关联校验，并按类目定义定位填写入口。
 - `erp_web/runtime_units/sku_publish_adapter.py`：注册表唯一发布入口，委托 `sku_precheck.py` 汇总 SKU 预检错误和提醒；编译带每项身份的冻结 SKU 清单；平台叶子适配器保留原生单品 I/O。每项写前落盘、写后保存响应，成功项按内容指纹跳过，未知结果禁止再次创建，异步确认仅推进原任务。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。

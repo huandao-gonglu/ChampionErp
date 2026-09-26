@@ -17,7 +17,6 @@ import type {
   MercadoLibreUserProduct,
   MercadoLibreUserProductsPage,
   PricingInput,
-  SkuPricingBatch,
   PricingDestinationResult,
   PricingResult,
   PricingTargetResult,
@@ -44,6 +43,7 @@ import {
   getString,
   isRecord,
   normalizeDraftMutation,
+  normalizeDraftDetail,
   normalizeDraftsIndex,
   normalizeMercadoLibreOrderNotification,
   normalizeProductOperation,
@@ -371,49 +371,38 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
   }
 }
 
-function pricingPayload(input: PricingInput): UnknownRecord {
-  const common = {
-    battery: input.battery ?? false,
-    liquid: input.liquid ?? false,
-    purchase_cost: input.purchaseCostCny,
-    domestic_freight: input.domesticFreightCny,
-    packaging_cost: input.packagingCostCny,
-    other_cost: input.otherCostCny,
-    weight_kg: input.weightKg,
-    length_cm: input.lengthCm,
-    width_cm: input.widthCm,
-    height_cm: input.heightCm,
-    usd_cny_rate: input.exchangeRateMode === 'manual' ? input.usdCnyRate : '',
-    mxn_usd_rate: input.exchangeRateMode === 'manual' ? input.mxnUsdRate : '',
-    rub_cny_rate: input.exchangeRateMode === 'manual' ? input.rubCnyRate : '',
-    exchange_rate_mode: input.exchangeRateMode,
-  }
-  const targets = input.targets.length
-    ? input.targets.map((target) => ({
-      target_key: target.targetKey,
-      platform: target.platform,
-      site: target.site,
-      sites_to_sell: toBackendSitesToSell(target.sitesToSell),
-      listing_currency: target.listingCurrency,
-      commission_percent: target.commissionPercent,
-      payment_fee_percent: target.paymentFeePercent,
-      other_fee_percent: target.otherFeePercent,
-      pricing_mode: target.pricingMode,
-      target_margin_percent: target.targetMarginPercent,
-      markup_percent: target.markupPercent,
-      shipping_quote_mode: target.shippingQuoteMode,
-      shipping_currency: target.shippingCurrency,
-      shipping_amount: target.shippingAmount,
-      ...(target.categoryId ? { category_id: target.categoryId } : {}),
-      manual_price: target.manualPrice,
-    }))
-    : []
+/** 只传页面当前的费用和覆盖配置，SKU 采购成本与包装事实由后端装配。 */
+export function draftPricingPayload(draft: DraftDetail, input: PricingInput): UnknownRecord {
   return {
-    ...common,
-    platform: input.platform,
-    site: input.site,
-    common,
-    targets,
+    draft_id: draft.draftId,
+    expected_updated_at: draft.updatedAt,
+    target_keys: input.targets.map(target => target.targetKey.toLowerCase()),
+    common: {
+      battery: input.battery ?? false, liquid: input.liquid ?? false,
+      domestic_freight_cny: input.domesticFreightCny,
+      packaging_cost_cny: input.packagingCostCny, other_cost_cny: input.otherCostCny,
+      exchange_rate_mode: input.exchangeRateMode,
+      ...(input.exchangeRateMode === 'manual' ? {
+        usd_cny_rate: input.usdCnyRate, mxn_usd_rate: input.mxnUsdRate, rub_cny_rate: input.rubCnyRate,
+      } : {}),
+    },
+    targets: Object.fromEntries(input.targets.map(target => [target.targetKey.toLowerCase(), {
+      commission_percent: target.commissionPercent, payment_fee_percent: target.paymentFeePercent,
+      other_fee_percent: target.otherFeePercent, pricing_mode: target.pricingMode,
+      target_margin_percent: target.targetMarginPercent, markup_percent: target.markupPercent,
+      shipping_quote_mode: target.shippingQuoteMode, shipping_currency: target.shippingCurrency,
+      shipping_amount: target.shippingAmount, manual_price: target.manualPrice,
+    }])),
+    target_selections: Object.fromEntries(draft.targetSites.filter(target =>
+      target.platform === 'mercadolibre' && target.site.toLowerCase() === 'cbt',
+    ).map(target => [`${target.platform}:${target.site}`.toLowerCase(), toBackendSitesToSell(target.sitesToSell)])),
+    sku_updates: draft.skuItems.map(row => ({
+      sku_id: row.sku_id, selected: row.selected,
+      overrides: Object.fromEntries(Object.entries(row.overrides || {}).filter(([key]) =>
+        key === 'cost_cny' || key === 'package_dimensions',
+      )),
+      pricing_overrides: row.pricing_overrides || {},
+    })),
   }
 }
 
@@ -451,32 +440,41 @@ function normalizePricingResult(data: UnknownRecord, input: PricingInput): Prici
   }
 }
 
-/** 一次提交全部 SKU；结果按 SKU ID 校验，避免顺序变化造成串价。 */
-export async function calculateSkuPrices(items: { skuId: string; input: PricingInput }[]): Promise<SkuPricingBatch> {
-  const response = await apiClient.post('/api/calculate-price', {
-    items: items.map(item => ({ sku_id: item.skuId, input: pricingPayload(item.input) })),
-  }, { timeout: 0 }) // Mercado 按 SKU 请求远端运费，整批时长可能超过普通请求上限。
+export interface DraftPricingBatch {
+  items: { skuId: string; result: PricingResult }[]
+  pricingBySku: Record<string, UnknownRecord>
+  applied: boolean
+  errors: UnknownRecord[]
+  draft?: DraftDetail
+  productsIndex?: ProductIndexItem[]
+  draftsIndex?: DraftIndexItem[]
+  metrics: { batchId: string; durationMs: number; ozonDiscoveryMs: number }
+}
+
+export async function priceDraft(draft: DraftDetail, input: PricingInput, apply = false): Promise<DraftPricingBatch> {
+  const response = await apiClient.post(`/api/draft-pricing/${apply ? 'apply' : 'preview'}`,
+    draftPricingPayload(draft, input), { timeout: 0 })
   const data = asRecord(response.data)
-  ensureOk(data, '批量核价失败')
-  const rawItems = Array.isArray(data.items) ? data.items.map(asRecord) : []
-  const byId = new Map(rawItems.map(item => [getString(item, ['sku_id']), asRecord(item.result)]))
-  if (rawItems.length !== items.length || byId.size !== items.length || items.some(item => !byId.has(item.skuId))) {
+  ensureOk(data, '草稿核价失败')
+  const items = Array.isArray(data.items) ? data.items.map(asRecord) : []
+  const expected = new Set(draft.skuItems.filter(row => row.selected).map(row => row.sku_id))
+  const ids = new Set(items.map(item => getString(item, ['sku_id'])))
+  if (items.length !== expected.size || ids.size !== expected.size || [...expected].some(id => !ids.has(id))) {
     throw new Error('核价返回的 SKU 与本次选择不一致，请重新核价。')
   }
   const metrics = asRecord(data.metrics)
   return {
-    items: items.map(item => {
-      try {
-        return { skuId: item.skuId, result: normalizePricingResult(byId.get(item.skuId)!, item.input) }
-      } catch (error) {
-        throw new Error(`SKU ${item.skuId}：${error instanceof Error ? error.message : '核价失败'}`)
-      }
-    }),
-    metrics: {
-      batchId: getString(metrics, ['batch_id']),
-      durationMs: getNumber(metrics, ['duration_ms']),
-      ozonDiscoveryMs: getNumber(metrics, ['ozon_discovery_ms']),
-    },
+    items: items.filter(item => Array.isArray(asRecord(item.result).results)).map(item => ({
+      skuId: getString(item, ['sku_id']), result: normalizePricingResult(asRecord(item.result), input),
+    })),
+    pricingBySku: asRecord(data.sku_pricing) as Record<string, UnknownRecord>,
+    applied: data.applied === true,
+    errors: Array.isArray(data.errors) ? data.errors.map(asRecord) : [],
+    draft: data.draft ? normalizeDraftDetail(data.draft) : undefined,
+    productsIndex: data.productsIndex ? normalizeProductsIndex(data.productsIndex) : undefined,
+    draftsIndex: data.draftsIndex ? normalizeDraftsIndex(data.draftsIndex) : undefined,
+    metrics: { batchId: getString(metrics, ['batch_id']), durationMs: getNumber(metrics, ['duration_ms']),
+      ozonDiscoveryMs: getNumber(metrics, ['ozon_discovery_ms']) },
   }
 }
 

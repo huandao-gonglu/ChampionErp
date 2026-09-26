@@ -15,16 +15,11 @@ from typing import Annotated, Any, Protocol
 from erp_web.runtime_units.draft_category_resolution import (
     resolve_draft_category_pairs,
 )
-from erp_web.runtime_units.market_pricing_capability import (
-    prepare_target_pricing,
-)
 from erp_web.schemas.ai_tools import ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.product_write_capabilities import (
     DraftDeleteRequest,
     DraftDeleteResult,
-    DraftPricingApplyRequest,
-    DraftPricingApplyResult,
     DraftReadRequest,
     DraftReadResult,
     DraftReadView,
@@ -40,7 +35,6 @@ from erp_web.schemas.product_write_capabilities import (
     ProductSaveResult,
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
-from erp_web.services.capability_input_provenance import user_supplied_input
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.tool_approval import verify_execution_approval
 
@@ -440,7 +434,6 @@ DRAFT_READ_TOOL = "draft_read"
 DRAFT_SAVE_TOOL = "draft_save"
 DRAFT_DELETE_TOOL = "draft_delete"
 DRAFT_STOCK_UPDATE_TOOL = "draft_stock_update"
-DRAFT_PRICING_APPLY_TOOL = "draft_pricing_apply"
 
 
 def _normalized_ids(ids: Any) -> list[str]:
@@ -777,74 +770,6 @@ def draft_stock_update(
     )
 
 
-@ai_tool(
-    name=DRAFT_PRICING_APPLY_TOOL,
-    description=(
-        "把确定性核价结果持久化为平台草稿的最终售价；只计算不应用不会落库。"
-        "pricing_input 与 draft_prepare_for_market.pricing_input 同形。"
-    ),
-    permission="draft.write",
-    side_effect="write",
-    approval_required=False,
-    idempotency="required",
-    idempotency_keys=("operation_key",),
-    recovery_policy="manual",
-    version="3",
-)
-def draft_pricing_apply(
-    request: DraftPricingApplyRequest,
-    scope: Annotated[ProductWriteCapabilityScope, Injected()],
-    execution: Annotated[AiExecutionContext, Injected()],
-) -> DraftPricingApplyResult:
-    result, error, _status = scope.products.load_draft_detail_from_index(
-        request.draft_id
-    )
-    _raise_store_error(
-        error,
-        default_code="DRAFT_NOT_FOUND",
-        default_message="草稿不存在。",
-    )
-    draft = _dict_value(result.get("draft"))
-    platform = request.target_platform or _text(draft.get("platform"))
-    if not platform:
-        raise BusinessCapabilityError(
-            "DRAFT_PLATFORM_MISSING",
-            "无法确定草稿的目标平台。",
-        )
-    applied = prepare_target_pricing(
-        target_draft_id=request.draft_id,
-        target_platform=platform,
-        site=request.site,
-        sales_target=(
-            request.sales_target
-            if user_supplied_input(
-                execution.business_scope,
-                "sales_target",
-                value=request.sales_target,
-                source_message_id=request.source_message_id,
-                entity_id=request.draft_id,
-            )
-            else []
-        ),
-        pricing_input=dict(request.pricing_input),
-        product_store=scope.products,  # type: ignore[arg-type]
-    )
-    applied_price = applied.get("applied_price")
-    amount = _text(
-        applied_price.get("amount") if isinstance(applied_price, dict) else ""
-    )
-    currency = _text(
-        applied_price.get("currency") if isinstance(applied_price, dict) else ""
-    )
-    return DraftPricingApplyResult(
-        draft_id=request.draft_id,
-        target_key=_text(applied.get("target_key"))[:120],
-        applied_price=f"{amount} {currency}".strip()[:80],
-        fingerprint=_text(applied.get("calculation_fingerprint"))[:160],
-        changed=bool(amount),
-    )
-
-
 PRODUCT_WRITE_AI_CAPABILITIES = (
     product_save,
     product_delete,
@@ -856,13 +781,11 @@ DRAFT_WRITE_AI_CAPABILITIES = (
     draft_save,
     draft_delete,
     draft_stock_update,
-    draft_pricing_apply,
 )
 
 
 __all__ = [
     "DRAFT_DELETE_TOOL",
-    "DRAFT_PRICING_APPLY_TOOL",
     "DRAFT_READ_TOOL",
     "DRAFT_SAVE_TOOL",
     "DRAFT_STOCK_UPDATE_TOOL",
@@ -874,7 +797,6 @@ __all__ = [
     "ProductDraftWriteStore",
     "ProductWriteCapabilityScope",
     "draft_delete",
-    "draft_pricing_apply",
     "draft_read",
     "draft_save",
     "draft_stock_update",

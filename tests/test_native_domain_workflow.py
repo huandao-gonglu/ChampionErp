@@ -47,6 +47,13 @@ def setup_domain(monkeypatch, count=1):
         product["product_id"] = f"product-native-{i}"
         product["source"].setdefault("attributes", {})["测试缺资料"] = i == 14
         draft = product["drafts"]["ozon"]
+        # 复合准备现在重新核价全部已选 SKU；测试显式提供本地固定费用与手动汇率。
+        draft["pricing"].setdefault("common", {}).update(
+            exchange_rate_mode="manual", usd_cny_rate=7, mxn_usd_rate=20, rub_cny_rate=12,
+        )
+        draft["pricing"]["targets"]["ozon:global"].update(
+            shipping_quote_mode="manual", shipping_currency="CNY", shipping_amount=5,
+        )
         product["sku_items"] = [
             {
                 "id": f"sku-{i}",

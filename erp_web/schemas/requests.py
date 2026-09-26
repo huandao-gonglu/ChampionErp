@@ -178,11 +178,16 @@ _SHIPMENT = _contract(required_any=(("shipment", "order", "payload"),))
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/ai/approval-mode": _contract(
+        fields={"mode": FieldRule("enum", choices=frozenset({"ask", "full"}))},
+        required=("mode",),
+    ),
     "/api/ai-config/save": _EMPTY,
     "/api/v1/ai-presentations": _EMPTY,
     "/api/assign-upc": _EMPTY,
     "/api/browser-debug/open-profile": _EMPTY,
-    "/api/calculate-price": _contract(fields={"items": ARRAY}, required=("items",)),
+    "/api/draft-pricing/preview": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
+    "/api/draft-pricing/apply": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
     "/api/v1/category-match": _contract(
         required=("platform",),
         required_any=(

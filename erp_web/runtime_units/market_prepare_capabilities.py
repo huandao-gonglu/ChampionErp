@@ -29,11 +29,10 @@ from erp_web.runtime_units.market_capability_support import (
     select_target,
     text,
 )
-from erp_web.runtime_units.market_pricing_capability import (
-    PricingCalculator,
-    prepare_target_pricing,
-)
-from erp_web.runtime_units.pricing_runtime import calculate_price
+from erp_web.runtime_units.draft_pricing import BatchCalculator, price_draft
+from erp_web.runtime_units.pricing_batch import calculate_sku_prices
+from erp_web.runtime_units.pricing_results import _sales_targets_from_selectors, _sales_targets_with_existing_conditions
+from erp_web.schemas.draft_pricing import DraftPricingHttpRequest
 from erp_web.runtime_units.product_capabilities import prepare_product_images
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.draft_capabilities import DraftPublishReadiness
@@ -358,7 +357,7 @@ def prepare_draft_for_market(
     app_config_loader: AppConfigLoader = _load_app_config,
     image_capability: ImagePrepareCapability = prepare_product_images,
     category_capability: CategoryCapability | None = None,
-    pricing_calculator: PricingCalculator = calculate_price,
+    pricing_calculator: BatchCalculator = calculate_sku_prices,
     copy_operation_key: str = "",
 ) -> DraftPrepareForMarketResult:
     """按稳定目标草稿串联准备步骤；不执行发布或发布预检。"""
@@ -415,15 +414,19 @@ def prepare_draft_for_market(
         )
     completed_parts.append("category")
 
-    prepare_target_pricing(
-        target_draft_id=target_draft_id,
-        target_platform=platform,
-        site=text(target.get("site")),
-        sales_target=request.sales_target,
-        pricing_input=request.pricing_input,
-        product_store=product_store,
-        pricing_calculator=pricing_calculator,
+    key = f"{platform}:{target.get('site')}".lower()
+    selections = {}
+    if request.sales_target:
+        selections[key] = _sales_targets_with_existing_conditions(
+            _sales_targets_from_selectors(request.sales_target), target.get("sites_to_sell"),
+        )
+    priced = price_draft(
+        DraftPricingHttpRequest(draft_id=target_draft_id, target_keys=[key],
+            **request.pricing.model_dump(exclude_unset=True), target_selections=selections),
+        product_store=product_store, apply=True, calculator=pricing_calculator,
     )
+    if not priced["applied"]:
+        raise BusinessCapabilityError("PRICING_INPUT_INVALID", "核价未能应用，请处理返回的具体问题。", details={"errors": priced["errors"]})
     completed_parts.append("pricing")
 
     readiness = _finalize_readiness(

@@ -42,9 +42,9 @@ from erp_web.runtime_units.mercadolibre_orders import mercadolibre_recent_orders
 from erp_web.runtime_units.platform_query_capabilities import (
     PlatformQueryCapabilityScope,
 )
-from erp_web.runtime_units.pricing_runtime import calculate_price
-from erp_web.runtime_units.pricing_upc_capabilities import (
-    PricingUpcCapabilityScope,
+from erp_web.runtime_units.draft_pricing_capabilities import DraftPricingCapabilityScope
+from erp_web.runtime_units.upc_capabilities import (
+    UpcCapabilityScope,
 )
 from erp_web.runtime_units.product_capabilities import ProductCapabilityScope
 from erp_web.runtime_units.product_write_capabilities import (
@@ -213,8 +213,8 @@ def build_capability_binding_scope(
                 ),
                 product_loader=context.products.load_required_product_from_body,
             ),
-            PricingUpcCapabilityScope: PricingUpcCapabilityScope(
-                pricing_calculator=calculate_price,
+            DraftPricingCapabilityScope: DraftPricingCapabilityScope(products=context.products),
+            UpcCapabilityScope: UpcCapabilityScope(
                 products=context.products,
                 database=context.db,
             ),

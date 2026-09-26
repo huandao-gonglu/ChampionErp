@@ -6,7 +6,7 @@ import {
   normalizePublishPrecheck,
   normalizeSitesToSell,
 } from '@/api/workflow/normalizers'
-import { createDefaultCollectDiagnostics } from '@/constants/initialState'
+import { createDefaultCollectDiagnostics, createDefaultPricingInput } from '@/constants/initialState'
 import {
   draftTargetsForLanguage,
   isMercadoLibreParentSite,
@@ -1138,26 +1138,28 @@ export function createWorkflowRuntime() {
     const draftDetail = currentDraft.value
     const hasDraft = Boolean(draftDetail.draftId)
     const pricing = hasDraft && isRecord(draftDetail.pricing) ? draftDetail.pricing : {}
+    const defaults = createDefaultPricingInput()
     const common = isRecord(pricing.common) ? pricing.common as UnknownRecord : {}
     const context = currentDraftProductContext.value
     const pkg = draftDetail.packageDimensions
     pricingInput.value.purchaseCostCny = recordNumber(common, ['purchaseCostCny', 'purchase_cost_cny', 'purchase_cost'], parseNumber(context.cost || context.sourcePrice || product.value.cost || product.value.source.price || pricingInput.value.purchaseCostCny))
-    pricingInput.value.domesticFreightCny = recordNumber(common, ['domesticFreightCny', 'domestic_freight_cny', 'domestic_freight'], pricingInput.value.domesticFreightCny)
-    pricingInput.value.packagingCostCny = recordNumber(common, ['packagingCostCny', 'packaging_cost_cny', 'packaging_cost'], pricingInput.value.packagingCostCny)
-    pricingInput.value.otherCostCny = recordNumber(common, ['otherCostCny', 'other_cost_cny', 'other_cost'], pricingInput.value.otherCostCny)
+    pricingInput.value.domesticFreightCny = recordNumber(common, ['domesticFreightCny', 'domestic_freight_cny', 'domestic_freight'], defaults.domesticFreightCny)
+    pricingInput.value.packagingCostCny = recordNumber(common, ['packagingCostCny', 'packaging_cost_cny', 'packaging_cost'], defaults.packagingCostCny)
+    pricingInput.value.otherCostCny = recordNumber(common, ['otherCostCny', 'other_cost_cny', 'other_cost'], defaults.otherCostCny)
     pricingInput.value.battery = common.battery === true
     pricingInput.value.liquid = common.liquid === true
     pricingInput.value.weightKg = recordNumber(common, ['weightKg', 'weight_kg'], parseNumber(pkg.weightKg || context.weightKg || product.value.source.weightKg || pricingInput.value.weightKg))
     pricingInput.value.lengthCm = recordNumber(common, ['lengthCm', 'length_cm'], parseNumber(pkg.lengthCm || context.dimensions.lengthCm || product.value.source.dimensions.lengthCm || pricingInput.value.lengthCm))
     pricingInput.value.widthCm = recordNumber(common, ['widthCm', 'width_cm'], parseNumber(pkg.widthCm || context.dimensions.widthCm || product.value.source.dimensions.widthCm || pricingInput.value.widthCm))
     pricingInput.value.heightCm = recordNumber(common, ['heightCm', 'height_cm'], parseNumber(pkg.heightCm || context.dimensions.heightCm || product.value.source.dimensions.heightCm || pricingInput.value.heightCm))
-    pricingInput.value.usdCnyRate = recordNumber(common, ['usdCnyRate', 'usd_cny_rate'], pricingInput.value.usdCnyRate)
-    pricingInput.value.mxnUsdRate = recordNumber(common, ['mxnUsdRate', 'mxn_usd_rate'], pricingInput.value.mxnUsdRate)
-    pricingInput.value.rubCnyRate = recordNumber(common, ['rubCnyRate', 'rub_cny_rate'], pricingInput.value.rubCnyRate)
+    pricingInput.value.usdCnyRate = recordNumber(common, ['usdCnyRate', 'usd_cny_rate'], defaults.usdCnyRate)
+    pricingInput.value.mxnUsdRate = recordNumber(common, ['mxnUsdRate', 'mxn_usd_rate'], defaults.mxnUsdRate)
+    pricingInput.value.rubCnyRate = recordNumber(common, ['rubCnyRate', 'rub_cny_rate'], defaults.rubCnyRate)
+    pricingInput.value.exchangeRateMode = recordString(common, ['exchange_rate_mode'], 'live') === 'manual' ? 'manual' : 'live'
     pricingInput.value.platform = hasDraft ? draftDetail.platform : activeMarketplace.value
     pricingInput.value.site = hasDraft ? draftDetail.site : activeMarketplaceSite()
     pricingInput.value.targets = hasDraft ? pricingTargetsFromDraft(draftDetail).map((target) => pricingTargetInput(target, pricing)) : []
-    pricingResult.value = hasDraft ? pricingResultFromDraft(pricing, pricingInput.value.targets) : null
+    pricingResult.value = hasDraft ? pricingResultFromDraft(draftDetail.skuItems.find(row => row.selected)?.pricing || {}, pricingInput.value.targets) : null
   }
 
   function syncDraftPackageDimensionsFromPricingInput() {

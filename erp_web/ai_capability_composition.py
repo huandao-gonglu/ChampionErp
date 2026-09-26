@@ -29,8 +29,9 @@ from erp_web.runtime_units.market_prepare_capabilities import (
 from erp_web.runtime_units.platform_query_capabilities import (
     PLATFORM_QUERY_AI_CAPABILITIES,
 )
-from erp_web.runtime_units.pricing_upc_capabilities import (
-    PRICING_UPC_AI_CAPABILITIES,
+from erp_web.runtime_units.draft_pricing_capabilities import DRAFT_PRICING_AI_CAPABILITIES
+from erp_web.runtime_units.upc_capabilities import (
+    UPC_AI_CAPABILITIES,
 )
 from erp_web.runtime_units.product_capabilities import PRODUCT_AI_CAPABILITIES
 from erp_web.runtime_units.product_write_capabilities import (
@@ -63,7 +64,7 @@ DRAFT_WRITE_CAPABILITIES = DRAFT_WRITE_AI_CAPABILITIES
 CONTENT_CAPABILITIES = CONTENT_AI_CAPABILITIES
 IMAGE_CAPABILITIES = IMAGE_AI_CAPABILITIES
 PLATFORM_QUERY_CAPABILITIES = PLATFORM_QUERY_AI_CAPABILITIES
-PRICING_UPC_CAPABILITIES = PRICING_UPC_AI_CAPABILITIES
+UPC_CAPABILITIES = UPC_AI_CAPABILITIES
 STORE_AUTH_CAPABILITIES = STORE_AUTH_AI_CAPABILITIES
 LOGISTICS_CAPABILITIES = LOGISTICS_AI_CAPABILITIES
 COLLECTION_CAPABILITIES = COLLECTION_AI_CAPABILITIES
@@ -86,7 +87,8 @@ ALL_AI_CAPABILITIES = (
     *CONTENT_CAPABILITIES,
     *IMAGE_CAPABILITIES,
     *PLATFORM_QUERY_CAPABILITIES,
-    *PRICING_UPC_CAPABILITIES,
+    *UPC_CAPABILITIES,
+    *DRAFT_PRICING_AI_CAPABILITIES,
     *STORE_AUTH_CAPABILITIES,
     *LOGISTICS_CAPABILITIES,
     *COLLECTION_CAPABILITIES,
@@ -117,7 +119,7 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
         "category_attributes_query",
         "category_attribute_values_query",
         "category_precheck",
-        "pricing_calculate",
+        "draft_pricing_preview",
         "store_auth_checklist",
         "store_auth_check",
         "logistics_shipment_preview",
@@ -269,7 +271,7 @@ __all__ = [
     "LOGISTICS_CAPABILITIES",
     "MARKET_PREPARE_CAPABILITIES",
     "PLATFORM_QUERY_CAPABILITIES",
-    "PRICING_UPC_CAPABILITIES",
+    "UPC_CAPABILITIES",
     "PRODUCT_CAPABILITIES",
     "PRODUCT_WRITE_CAPABILITIES",
     "PUBLISH_ADMIN_CAPABILITIES",

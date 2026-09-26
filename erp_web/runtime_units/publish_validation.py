@@ -71,7 +71,7 @@ from .publish_ozon import (
     ozon_invalid_dictionary_attributes,
     ozon_required_attributes_missing,
 )
-from .market_pricing_capability import _pricing_target_is_usable
+from .pricing_results import _pricing_target_is_usable
 from .publish_yandex import (
     _public_picture_invalid,
     yandex_invalid_dictionary_attributes,
@@ -302,6 +302,7 @@ def validate_mercadolibre_draft(
     category_record: dict[str, Any] | None = None,
     *,
     category_definition: CategoryDefinition | None = None,
+    category_currency_cache: dict[tuple[str, str], tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     raw_sites_to_sell = mercadolibre_selected_raw_sites_to_sell(product)
     product = normalize_product_fields(product)
@@ -535,10 +536,12 @@ def validate_mercadolibre_draft(
                 )
             )
     if store_listing_currency_ready(store_state) and category_id:
-        allowed_currencies = mercadolibre_category_allowed_currencies(
-            category_id,
-            str(store.get("access_token") or "").strip(),
-        )
+        # SKU 投影共享本次评估的查询结果；空结果也必须复用，避免失败时逐 SKU 重试。
+        currency_cache = category_currency_cache if category_currency_cache is not None else {}
+        currency_key = (category_id, str(store.get("access_token") or "").strip())
+        if currency_key not in currency_cache:
+            currency_cache[currency_key] = tuple(mercadolibre_category_allowed_currencies(*currency_key))
+        allowed_currencies = currency_cache[currency_key]
         if allowed_currencies and store_state["listing_currency"] not in allowed_currencies:
             errors.append(
                 precheck_item(

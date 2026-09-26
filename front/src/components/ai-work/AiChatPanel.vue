@@ -56,12 +56,12 @@ watch(() => props.messages, () => {
         </div>
         <h3 class="mt-4 text-base font-black">告诉全局 Agent 你想了解什么</h3>
         <p class="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500 dark:text-accent-300">
-          可以查询业务事实，也可以让全局 Agent 准备草稿或执行商品操作；高风险操作会等待你确认。
+          可以查询业务事实，也可以让全局 Agent 准备草稿或执行商品操作；审批方式由输入框中的权限选择决定。
         </p>
       </div>
 
       <!-- 消息气泡 -->
-      <AiMessageList v-else :messages="messages" />
+      <AiMessageList v-else :messages="messages" :pending-tool-calls="chatStore.pendingToolCalls" />
 
       <!-- 流式状态提示 -->
       <p

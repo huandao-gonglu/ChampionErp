@@ -207,6 +207,7 @@ class MercadoLibrePublishingAdapter:
             config,
             context.category_record,
             category_definition=context.category_definition,
+            category_currency_cache=context.category_currency_cache,
         )
         return _flag_definition_unavailable(context, result)
 

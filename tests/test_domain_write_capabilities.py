@@ -36,7 +36,6 @@ from erp_web.runtime_units.product_write_capabilities import (
     _draft_delete_approval_snapshot,
     _product_delete_approval_snapshot,
     draft_delete,
-    draft_pricing_apply,
     draft_read,
     draft_save,
     draft_stock_update,
@@ -62,7 +61,6 @@ from erp_web.schemas.image_capabilities import (
 )
 from erp_web.schemas.product_write_capabilities import (
     DraftDeleteRequest,
-    DraftPricingApplyRequest,
     DraftReadRequest,
     DraftSaveRequest,
     DraftStockUpdateRequest,
@@ -468,86 +466,6 @@ def test_product_profile_attribute_patch_can_be_verified_by_product_read() -> No
     )
     assert facts.product.attributes == {"适用年龄": "1-99岁"}
     assert "适用年龄" not in facts.product.source_attributes
-
-
-def test_draft_pricing_apply_requires_existing_draft() -> None:
-    scope = _write_scope()
-    with pytest.raises(BusinessCapabilityError) as missing:
-        draft_pricing_apply(
-            DraftPricingApplyRequest(
-                draft_id="draft-missing",
-                pricing_input={"target": {"manual_price": "1"}},
-            ),
-            scope=scope,
-            execution=_execution("op-pricing-missing"),
-        )
-    assert missing.value.code == "DRAFT_NOT_FOUND"
-
-
-def test_draft_pricing_apply_only_accepts_user_submitted_sales_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """模型初始计划中的选择被忽略，Controller 标记的用户选择才可生效。"""
-
-    saved_product = _seed_product("product-pricing-sales-target")
-    draft_id = str(saved_product["drafts"]["mercadolibre"]["draft_id"])
-    received: list[list[str]] = []
-
-    def fake_prepare_target_pricing(**kwargs: Any) -> dict[str, Any]:
-        received.append(list(kwargs.get("sales_target") or []))
-        return {
-            "target_key": "mercadolibre:cbt",
-            "applied_price": {"amount": "100", "currency": "USD"},
-            "calculation_fingerprint": "fingerprint-1",
-        }
-
-    monkeypatch.setattr(
-        "erp_web.runtime_units.product_write_capabilities.prepare_target_pricing",
-        fake_prepare_target_pricing,
-    )
-    request = DraftPricingApplyRequest(
-        draft_id=draft_id,
-        target_platform="mercadolibre",
-        site="CBT",
-        sales_target=["MLM:remote", "MLB:remote"],
-        pricing_input={"common": {"purchase_cost": "100"}},
-    )
-
-    draft_pricing_apply(
-        request,
-        scope=_write_scope(),
-        execution=_execution("op-pricing-model-target"),
-    )
-    trusted_execution = AiExecutionContext(
-        task_run_id="task-1",
-        attempt_id="attempt-1",
-        deadline_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        budget_profile="test",
-        business_scope={
-            "task_id": "task-1",
-            "tool_call_id": "step-1",
-            "saved_user_facts": json.dumps(
-                {"sales_target": ["MLM:remote", "MLB:remote"]}
-            ),
-        },
-        idempotency_context={"operation_key": "op-pricing-user-target"},
-    )
-    draft_pricing_apply(
-        request,
-        scope=_write_scope(),
-        execution=trusted_execution,
-    )
-
-    assert received == [[], ["MLM:remote", "MLB:remote"]]
-
-
-def test_draft_pricing_apply_sales_target_rejects_legacy_scalar_selector() -> None:
-    with pytest.raises(ValueError):
-        DraftPricingApplyRequest(
-            draft_id="draft-pricing",
-            sales_target="MLM:remote",  # type: ignore[arg-type]
-            pricing_input={"common": {"purchase_cost": "100"}},
-        )
 
 
 def test_product_delete_requires_trusted_approval_context() -> None:
