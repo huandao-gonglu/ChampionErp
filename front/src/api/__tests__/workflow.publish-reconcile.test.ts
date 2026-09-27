@@ -23,6 +23,7 @@ describe('发布任务对账 API', () => {
     expect(apiClient.post).toHaveBeenCalledWith('/api/publish-bus/reconcile', {
       job_id: 'job-unknown',
       platform: 'mercadolibre',
+      trigger: 'manual',
     })
     expect(result.resolution).toBe('applied')
   })

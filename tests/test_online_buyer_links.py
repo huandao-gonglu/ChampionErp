@@ -51,16 +51,16 @@ def test_mercado_keeps_each_market_and_distinguishes_same_site_listings():
     ]
 
 
-def test_yandex_sync_carries_the_platform_url(monkeypatch):
+def test_yandex_sync_carries_the_platform_url():
     adapter = object.__new__(YandexOnlineAdapter)
     adapter.token, adapter.business, adapter.campaign = "token", "456", "789"
     adapter.account_id, adapter.settings, adapter.mode = "456:789", {}, "none"
-    monkeypatch.setattr("erp_web.runtime_units.online_yandex.api.fetch_yandex_offer_mapping", lambda *args: [{
-        "offer": {"offerId": "seller-sku", "name": "测试商品"},
-        "showcaseUrls": [{"showcaseType": "B2C", "showcaseUrl": YANDEX_URL}],
-    }])
-    monkeypatch.setattr("erp_web.runtime_units.online_yandex.api.fetch_yandex_campaign_offer", lambda *args, **kwargs: [])
-    adapter.request = lambda path, *args, **kwargs: {"result": {"hiddenOffers": [], "offerCards": [], "offers": []}}
+    adapter.warehouses = []
+    adapter.request = lambda path, *args, **kwargs: {"result": {
+        "offerMappings": [{"offer": {"offerId": "seller-sku", "name": "测试商品"},
+                           "showcaseUrls": [{"showcaseType": "B2C", "showcaseUrl": YANDEX_URL}]}],
+        "hiddenOffers": [], "offerCards": [], "offers": [],
+    }}
     result = adapter.read("seller-sku")
     assert str(result.buyer_links[0].url) == YANDEX_URL
 

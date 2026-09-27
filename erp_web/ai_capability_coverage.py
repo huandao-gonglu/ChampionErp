@@ -196,6 +196,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(method="GET", path="/api/online-products", business_domain="在线商品", disposition="capability", capability_names=("online_products_read",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/sync", business_domain="在线商品", disposition="capability", capability_names=("online_products_sync",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/refresh-status", business_domain="在线商品", disposition="capability", capability_names=("online_products_refresh_status",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="capability", capability_names=("online_products_change",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/reconcile", business_domain="在线商品", disposition="capability", capability_names=("online_products_reconcile",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/retry", business_domain="在线商品", disposition="capability", capability_names=("online_products_retry",)),
@@ -632,16 +633,9 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         business_domain="发布",
         disposition="internal_only",
         reason=(
-            "受信发布任务 UI 的显式只读对账门面；会根据远端 task 终态释放"
+            "发布任务 UI 手动或查看触发的只读确认门面；会根据远端 task 终态释放"
             "持久发布锁，不允许 Agent 自主触发或把它当成发布重试。"
         ),
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/publish-product",
-        business_domain="发布",
-        disposition="capability",
-        capability_names=("product_publish_direct",),
     ),
     # -------------------------------------------------- 物流（POST）
     AiCapabilityCoverageEntry(

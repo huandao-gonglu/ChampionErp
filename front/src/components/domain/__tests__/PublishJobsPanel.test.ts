@@ -434,12 +434,12 @@ describe('PublishJobsPanel', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('发布中')
+    expect(wrapper.text()).toContain('提交中')
     expect(wrapper.text()).toContain('等待平台确认')
     expect(wrapper.text()).not.toContain('失败原因')
   })
 
-  it('only offers read-only reconciliation for an outcome-unknown platform', async () => {
+  it('offers read-only reconciliation for an outcome-unknown platform', async () => {
     const unknownJob = {
       ...job,
       status: 'outcome_unknown' as const,
@@ -470,7 +470,7 @@ describe('PublishJobsPanel', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('不会再次提交创建或更新请求')
+    expect(wrapper.text()).toContain('查询最新结果')
     expect(wrapper.text()).toContain('美客多 · Global Selling 全局刊登（CBT）')
     expect(wrapper.text()).not.toContain('mercadolibre')
     await wrapper.get('[data-testid="publish-job-reconcile"]').trigger('click')

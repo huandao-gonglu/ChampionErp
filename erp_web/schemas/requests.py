@@ -179,6 +179,7 @@ _SHIPMENT = _contract(required_any=(("shipment", "order", "payload"),))
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/online-products/sync": _contract(fields={"platform": FieldRule("enum", choices=frozenset({"mercadolibre", "ozon", "yandex"})), "idempotency_key": STRING}, required=("platform", "idempotency_key")),
+    "/api/online-products/refresh-status": _contract(fields={"listing_id": STRING}, required=("listing_id",)),
     "/api/online-products/change": _contract(fields={"listing_id": STRING, "version": STRING, "operation": STRING, "scope_id": STRING, "changes": OBJECT, "idempotency_key": STRING}, required=("listing_id", "version", "operation", "changes", "idempotency_key")),
     "/api/online-products/reconcile": _contract(fields={"job_id": STRING}, required=("job_id",)),
     "/api/online-products/retry": _contract(fields={"job_id": STRING, "idempotency_key": STRING}, required=("job_id", "idempotency_key")),
@@ -256,11 +257,11 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required_any=(("draft_id", "draftId"),),
     ),
     "/api/publish-bus/reconcile": _contract(
+        fields={"trigger": STRING},
         required=("job_id", "platform"),
     ),
     "/api/publish-payload-preview": _DRAFT,
     "/api/publish-precheck": _DRAFT,
-    "/api/publish-product": _PRODUCT,
     "/api/save-draft": _contract(required_any=(("draft", "draft_id", "draftId"),)),
     "/api/save-product": _contract(required=("product",)),
     "/api/save-settings": _EMPTY,

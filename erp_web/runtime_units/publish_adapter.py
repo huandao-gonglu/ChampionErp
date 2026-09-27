@@ -44,6 +44,8 @@ from .publish_yandex import (
     build_yandex_publish_payload,
     map_yandex_publish_error,
     poll_yandex_publish_status,
+    advance_yandex_submission,
+    restore_yandex_publish_result,
     publish_yandex_payload,
     validate_yandex_publish_payload,
     yandex_required_attributes_missing,
@@ -253,24 +255,14 @@ class MercadoLibrePublishingAdapter:
         result: dict[str, Any],
         config: dict[str, Any],
     ) -> dict[str, Any]:
-        store = (
-            config.get(self.platform)
-            if isinstance(config.get(self.platform), dict)
-            else {}
-        )
         token = self._require_auth_token(config)
         try:
             return poll_mercadolibre_publish_status(
                 result,
                 token,
-                max_confirmation_polls=max(
-                    1,
-                    int(store.get("publish_confirmation_max_polls") or 300),
-                ),
             )
         except PublishAdapterError as exc:
-            # 此处只执行 task GET；读失败不能证明此前 PUT 失败。重试耗尽后
-            # PublishingBus 必须进入 outcome_unknown 并保留活动锁。
+            # 此处只执行 task GET；统一确认入口记录读错误并保留上次发布状态。
             raise PublishAdapterError(
                 exc.code,
                 str(exc),
@@ -284,17 +276,6 @@ class MercadoLibrePublishingAdapter:
                 retryable=False,
                 details={"outcome_unknown": True},
             ) from exc
-
-    def publish_poll_interval_seconds(self, config: dict[str, Any]) -> float:
-        store = (
-            config.get(self.platform)
-            if isinstance(config.get(self.platform), dict)
-            else {}
-        )
-        return max(
-            0.2,
-            float(store.get("publish_poll_interval_seconds") or 1.0),
-        )
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         from .runtime_api import publish_product
@@ -360,8 +341,6 @@ class OzonPublishingAdapter:
             payload,
             str(store.get("client_id") or "").strip(),
             str(store.get("api_key") or "").strip(),
-            timeout_seconds=float(store.get("publish_timeout_seconds") or 30),
-            poll_interval_seconds=float(store.get("publish_poll_interval_seconds") or 0.5),
         )
 
     def map_publish_error(self, error: Exception) -> dict[str, Any]:
@@ -411,10 +390,6 @@ class OzonPublishingAdapter:
             "status": "real_publish_success",
             "result": polled,
         }
-
-    def publish_poll_interval_seconds(self, config: dict[str, Any]) -> float:
-        store = config.get(self.platform) if isinstance(config.get(self.platform), dict) else {}
-        return max(0.05, float(store.get("publish_poll_interval_seconds") or 0.5))
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         from .runtime_api import publish_product
@@ -495,13 +470,19 @@ class YandexPublishingAdapter:
         result: dict[str, Any],
         config: dict[str, Any],
     ) -> dict[str, Any]:
-        """根据已持久化 checkpoint 推进下一个 mutation 或只读确认。"""
+        """只读检查已提交的 Yandex 发布结果。"""
 
         return poll_yandex_publish_status(result, config)
 
-    def publish_poll_interval_seconds(self, config: dict[str, Any]) -> float:
+    def advance_submission(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        return advance_yandex_submission(result, config)
+
+    def restore_publish_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        return restore_yandex_publish_result(result)
+
+    def submission_step_interval_seconds(self, config: dict[str, Any]) -> float:
         store = config.get(self.platform) if isinstance(config.get(self.platform), dict) else {}
-        return min(30.0, max(0.5, float(store.get("publish_poll_interval_seconds") or 2.0)))
+        return min(30.0, max(0.5, float(store.get("publish_step_interval_seconds") or 2.0)))
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         from .runtime_api import publish_product

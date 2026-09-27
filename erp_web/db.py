@@ -1953,7 +1953,7 @@ class ErpDatabase:
                             WHERE draft_id = ?
                               AND status IN (
                                 'pending', 'queued', 'running', 'retrying',
-                                'completed', 'outcome_unknown'
+                                'completed', 'outcome_unknown', 'pending_confirmation'
                               )
                               AND instr(
                                 ',' || lower(platform) || ',',
@@ -2077,7 +2077,7 @@ class ErpDatabase:
                 FROM publish_jobs
                 WHERE status IN (
                     'pending', 'queued', 'running', 'retrying', 'completed',
-                    'outcome_unknown'
+                    'outcome_unknown', 'pending_confirmation'
                 )
                 ORDER BY created_at ASC
                 """,

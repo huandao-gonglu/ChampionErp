@@ -42,9 +42,6 @@ from erp_web.runtime_units.source_inspect_capability import (
     SOURCE_INSPECT_AI_CAPABILITIES,
 )
 from erp_web.runtime_units.publish_capabilities import PUBLISH_AI_CAPABILITIES
-from erp_web.runtime_units.publish_admin_capabilities import (
-    PUBLISH_ADMIN_AI_CAPABILITIES,
-)
 from erp_web.runtime_units.research_capabilities import RESEARCH_AI_CAPABILITIES
 from erp_web.runtime_units.store_auth_capabilities import (
     STORE_AUTH_AI_CAPABILITIES,
@@ -71,7 +68,6 @@ LOGISTICS_CAPABILITIES = LOGISTICS_AI_CAPABILITIES
 COLLECTION_CAPABILITIES = COLLECTION_AI_CAPABILITIES
 RESEARCH_CAPABILITIES = RESEARCH_AI_CAPABILITIES
 SOURCE_INSPECT_CAPABILITIES = SOURCE_INSPECT_AI_CAPABILITIES
-PUBLISH_ADMIN_CAPABILITIES = PUBLISH_ADMIN_AI_CAPABILITIES
 
 ALL_AI_CAPABILITIES = (
     *ONLINE_PRODUCT_AI_CAPABILITIES,
@@ -96,7 +92,6 @@ ALL_AI_CAPABILITIES = (
     *COLLECTION_CAPABILITIES,
     *RESEARCH_CAPABILITIES,
     *SOURCE_INSPECT_CAPABILITIES,
-    *PUBLISH_ADMIN_CAPABILITIES,
 )
 
 APPLICATION_CAPABILITY_CATALOG = AiToolCatalog.compile(ALL_AI_CAPABILITIES)
@@ -140,6 +135,7 @@ _WRITE_CAPABILITIES = frozenset(
     {
         "online_products_change",
         "online_products_sync",
+        "online_products_refresh_status",
         "online_products_reconcile",
         "online_products_retry",
         "drafts_query",
@@ -184,7 +180,6 @@ _WRITE_CAPABILITIES = frozenset(
         "claim_products",
         "research_hot_products_search",
         "research_run_status_query",
-        "product_publish_direct",
     }
 )
 
@@ -279,7 +274,6 @@ __all__ = [
     "UPC_CAPABILITIES",
     "PRODUCT_CAPABILITIES",
     "PRODUCT_WRITE_CAPABILITIES",
-    "PUBLISH_ADMIN_CAPABILITIES",
     "PUBLISH_CAPABILITIES",
     "RESEARCH_CAPABILITIES",
     "SOURCE_INSPECT_CAPABILITIES",

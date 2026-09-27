@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Iterator
-from urllib.parse import quote, urlencode
+from typing import Any
+from urllib.parse import quote
 
 from erp_web.marketplaces.config_http import request_json
 from erp_web.marketplaces.online_buyer_links import mercado_buyer_links
 from erp_web.product_model import canonicalize_mercadolibre_siteless_user_product_id
+from erp_web.marketplaces.online_sync import raise_if_access_blocked
+from erp_web.runtime_units.online_mercadolibre_read import sync_mercado
+from erp_web.runtime_units.online_product_status import mercado_status
 from erp_web.schemas.online_products import Capability, MarketSnapshot, OnlineListing, PriceScope, StockScope, listing_identity
 from erp_web.marketplaces.mercadolibre_mapping import validate_user_product_mapping
 from erp_web.runtime_units.store_credentials import get_mercadolibre_access_token
@@ -32,35 +35,11 @@ class MercadoOnlineAdapter:
     def get(self, path: str, *, version: bool = False) -> Any:
         return request_json("GET", API+path, self.token, extra_headers={"X-API-Version": "2"} if version else None)
 
-    def discover(self) -> Iterator[str]:
-        cursor = ""
-        seen: set[str] = set()
-        cursors: set[str] = set()
-        while True:
-            query = {"search_type": "scan", "limit": "50"}
-            if cursor:
-                query["scroll_id"] = cursor
-            page = self.get(f"/marketplace/users/{quote(self.account_id, safe='')}/items/search?"+urlencode(query))
-            if not isinstance(page, dict) or str(page.get("seller_id")) != self.account_id or not isinstance(page.get("results"), list):
-                raise ValueError("Mercado 搜索响应身份或分页格式无效")
-            ids = page["results"]
-            if not ids:
-                return
-            fresh = [str(i) for i in ids if str(i) not in seen]
-            if not fresh:
-                raise ValueError("Mercado 搜索重复返回同一页，已停止；旧快照保留")
-            for item_id in fresh:
-                if not item_id.startswith("CBT"):
-                    raise ValueError("全局账号搜索返回非 CBT 身份，不能猜测父商品")
-                seen.add(item_id)
-                yield item_id
-            total = page.get("paging", {}).get("total")
-            if isinstance(total, int) and len(seen) >= total:
-                return
-            cursor = str(page.get("scroll_id") or "")
-            if not cursor or cursor in cursors:
-                raise ValueError("Mercado scan 游标缺失或重复，无法确认全量同步完成")
-            cursors.add(cursor)
+    def sync(self, ids=None):
+        return sync_mercado(self, ids)
+
+    def read_status(self, listing):
+        return mercado_status(self, listing)
 
     def read(self, remote_id: str) -> OnlineListing:
         parent = self.get("/marketplace/items/"+quote(remote_id, safe=""))
@@ -108,6 +87,7 @@ class MercadoOnlineAdapter:
                     writable=active and child.get("status") in ("active", "paused") and bool(currency) and (not up_id or net is not None),
                     reason="" if not up_id or net is not None else "尚未取得可核对的净收入报价"))
             except Exception as exc:
+                raise_if_access_blocked(exc)
                 errors.append(f"{item_id}：{exc}")
                 markets.append(MarketSnapshot(id=item_id, site_id=str(ref.get("site_id") or ""), logistic_type=str(ref.get("logistic_type") or "")))
         base = up or parent

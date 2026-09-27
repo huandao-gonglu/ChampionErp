@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -188,27 +188,6 @@ const pendingItems = computed(() => productsIndex.value.filter((item) => {
   return values.some((value) => ['failed', 'not_ready', 'pending', 'partial'].includes(value))
 }))
 
-const hasActivePublishJobs = computed(() => publishJobs.value.some((job) => (
-  job.status === 'queued' || job.status === 'running'
-)))
-
-let publishJobsPollTimer: ReturnType<typeof setInterval> | undefined
-
-function stopPublishJobsPolling() {
-  if (publishJobsPollTimer) {
-    clearInterval(publishJobsPollTimer)
-    publishJobsPollTimer = undefined
-  }
-}
-
-function syncPublishJobsPolling() {
-  stopPublishJobsPolling()
-  if (activeNav.value !== 'publish' || !hasActivePublishJobs.value) return
-  publishJobsPollTimer = setInterval(() => {
-    void store.refreshPublishJobs({ quiet: true })
-  }, 2500)
-}
-
 async function openProductEditor(item?: ProductIndexItem) {
   if (item) await store.loadProduct(item)
   editorMode.value = 'text'
@@ -348,6 +327,7 @@ async function refreshDomainForNav(key: string) {
 }
 
 function navigate(key: string) {
+  if (key === 'publish' && activeNav.value === key) return
   activeNav.value = key
   const nextQuery = key === 'dashboard' ? {} : { tab: key }
   if (route.path !== '/' || String(route.query.tab || '') !== String(nextQuery.tab || '')) {
@@ -378,15 +358,15 @@ onMounted(async () => {
   await refreshDomainForNav(activeNav.value)
 })
 
-onActivated(() => { syncPublishJobsPolling(); checkDraftUpdates() })
-onDeactivated(stopPublishJobsPolling)
+onActivated(() => {
+  checkDraftUpdates()
+  if (initialStateLoaded && activeNav.value === 'publish') void refreshDomainForNav('publish')
+})
 onBeforeUnmount(() => {
-  stopPublishJobsPolling()
   window.removeEventListener('beforeunload', warnUnsavedImages)
   window.removeEventListener('focus', checkDraftUpdates)
 })
 
-watch([activeNav, hasActivePublishJobs], syncPublishJobsPolling)
 
 watch(
   () => route.query,
@@ -534,7 +514,6 @@ watch(
               @select="store.selectPublishJob"
               @load-more="store.loadMorePublishJobs"
               @enqueue="store.enqueuePublish"
-              @publish-direct="store.publishDirect"
               @reconcile="publishingStore.reconcileSelectedPublishJob"
             />
             <RunLog :logs="logs" />

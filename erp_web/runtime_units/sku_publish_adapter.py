@@ -24,6 +24,8 @@ def _sku_issues(issues: list[dict[str, Any]], fact: dict[str, Any], row: dict[st
 
 def remote_status(result: dict[str, Any]) -> str:
     status = text(result.get("status")).lower()
+    if status == "pending_submission":
+        return status
     if status in PENDING:
         return "pending_confirmation"
     if status in SUCCESS and result.get("ok") is not False:
@@ -170,7 +172,7 @@ class SkuGroupPublishingAdapter:
         for item in payload["items"]:
             existing = get_context().products.sku_publication(payload["draft_id"], item["sku_id"], payload["target_key"])
             status = existing.get("status")
-            if status in {"dispatching", "outcome_unknown", "pending_confirmation"}:
+            if status in {"dispatching", "outcome_unknown", "pending_confirmation", "pending_submission"}:
                 states.append({**existing, "status": "outcome_unknown" if status == "dispatching" else status})
                 continue
             if status == "published" and existing.get("fingerprint") == item["fingerprint"]:
@@ -194,39 +196,63 @@ class SkuGroupPublishingAdapter:
             states.append(self._save(payload, item, result))
         return self._aggregate(payload, states)
 
-    def poll_publish_status(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    def advance_submission(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         states = []
+        for state in result["sku_results"]:
+            if state["status"] != "pending_submission":
+                states.append(state)
+                continue
+            advanced = self.item_adapter.advance_submission(state["result"], config)
+            states.append(self._save(result["envelope"], state, advanced))
+        return self._aggregate(result["envelope"], states)
+
+    def restore_publish_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        restore = getattr(self.item_adapter, "restore_publish_result", None)
+        if not callable(restore):
+            return result
+        states = []
+        for state in result["sku_results"]:
+            restored = restore(state["result"])
+            states.append({**state, "result": restored, "status": remote_status(restored)})
+        return self._aggregate(result["envelope"], states)
+
+    def poll_publish_status(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        states, errors = [], []
         envelope = result["envelope"]
         for state in result["sku_results"]:
-            # 只读对账可继续确认已有任务；未知且没有任务身份的结果仍禁止重发。
             can_reconcile = state["status"] == "outcome_unknown" and remote_task_ids(state["result"])
             if state["status"] != "pending_confirmation" and not can_reconcile:
                 states.append(state)
                 continue
             try:
                 polled = self.item_adapter.poll_publish_status(state["result"], config)
+                if polled.get("status") == "outcome_unknown":
+                    raise ValueError(polled.get("error") or "本次查询未返回可验证的结果。")
             except Exception as exc:
-                polled = {**deepcopy(state["result"]), "ok": False, "status": "outcome_unknown", "error": str(exc)}
+                # 只读查询失败不能把已受理 SKU 改成失败或提交结果不明。
+                errors.append(f"{state['sku']}：{exc}")
+                states.append(state)
+                continue
             states.append(self._save(envelope, state, polled))
-        return self._aggregate(envelope, states)
+        return {**self._aggregate(envelope, states), "check_error": "；".join(errors)}
 
     def _aggregate(self, envelope: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any]:
         statuses = {state["status"] for state in states}
-        status = "published" if statuses == {"published"} else "pending_confirmation" if "pending_confirmation" in statuses else "outcome_unknown" if "outcome_unknown" in statuses else "partial" if "published" in statuses else "failed"
+        status = "pending_submission" if "pending_submission" in statuses else "published" if statuses == {"published"} else "pending_confirmation" if "pending_confirmation" in statuses else "outcome_unknown" if "outcome_unknown" in statuses else "partial" if "published" in statuses else "failed"
         grouping = deepcopy(envelope["grouping"])
         group_ids = [text(state.get("siteless_family_id") or state.get("group_id")) for state in states]
         grouping["status"] = "not_requested" if grouping["mode"] != "combined" or len(states) == 1 else "confirmed" if all(group_ids) and len(set(group_ids)) == 1 else "mismatch" if len(set(filter(None, group_ids))) > 1 else "awaiting_remote_confirmation"
         grouping["remote_group_ids"] = sorted(set(filter(None, group_ids)))
-        return {"ok": status in {"published", "pending_confirmation"}, "status": status, "sku_results": states, "grouping": grouping,
-                "error": "；".join(f"{row['sku']}：{row.get('error') or row['status']}" for row in states if row["status"] not in {"published", "pending_confirmation"}),
+        return {"ok": status in {"published", "pending_confirmation", "pending_submission"}, "status": status, "sku_results": states, "grouping": grouping,
+                "error": "；".join(f"{row['sku']}：{row.get('error') or row['status']}" for row in states if row["status"] not in {"published", "pending_confirmation", "pending_submission"}),
                 "task_ids": list(dict.fromkeys(task for row in states for task in remote_task_ids(row["result"]))),
                 "envelope": {key: deepcopy(envelope[key]) for key in ("draft_id", "target_key", "grouping")}}
 
     def map_publish_error(self, error: Exception) -> dict[str, Any]:
         return self.item_adapter.map_publish_error(error)
 
-    def publish_poll_interval_seconds(self, config: dict[str, Any]) -> float:
-        return self.item_adapter.publish_poll_interval_seconds(config)
+    def submission_step_interval_seconds(self, config: dict[str, Any]) -> float:
+        return self.item_adapter.submission_step_interval_seconds(config)
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         from .runtime_api import publish_product

@@ -41,7 +41,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       return
     }
     if (key === 'publish') {
-      await combined.refreshPublishJobs()
+      await combined.refreshPublishJobs({ checkOnView: true })
       return
     }
     if (key === 'logs') {
@@ -186,7 +186,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     runPrecheck: combined.runPrecheck,
     previewPayload: combined.previewPayload,
     enqueuePublish: combined.enqueuePublish,
-    publishDirect: combined.publishDirect,
     refreshPublishJob: combined.refreshPublishJob,
     refreshPublishJobs: combined.refreshPublishJobs,
     loadMorePublishJobs: combined.loadMorePublishJobs,

@@ -288,7 +288,7 @@ def test_ozon_payload_validation_rejects_invalid_and_duplicate_attribute_ids() -
     assert "Ozon 属性 123 缺少值" in errors
 
 
-def test_publish_ozon_waits_for_imported_terminal_state() -> None:
+def test_publish_ozon_returns_receipt_without_querying_status() -> None:
     calls: list[tuple[str, dict]] = []
 
     def request(method, url, client_id, api_key, payload):
@@ -320,50 +320,8 @@ def test_publish_ozon_waits_for_imported_terminal_state() -> None:
             "api-key",
         )
 
-    assert result["ok"] is True
-    assert result["status"] == "imported"
-    assert result["task_id"] == 172549793
-    assert result["external_id"] == "137285792"
-    assert calls == [
-        (OZON_PRODUCT_IMPORT_URL, {"items": [{"offer_id": "OZON-SKU-1"}]}),
-        (OZON_PRODUCT_IMPORT_INFO_URL, {"task_id": 172549793}),
-    ]
-
-
-def test_publish_ozon_returns_pending_confirmation_when_local_wait_expires() -> None:
-    responses = [
-        {"result": {"task_id": 172549793}},
-        {
-            "result": {
-                "items": [
-                    {
-                        "offer_id": "OZON-SKU-1",
-                        "status": "pending",
-                        "errors": [],
-                    }
-                ]
-            }
-        },
-    ]
-    with patch(
-        "erp_web.runtime_units.publish_ozon.request_ozon_json",
-        side_effect=responses,
-    ), patch(
-        "erp_web.runtime_units.publish_ozon.time.monotonic",
-        side_effect=[0.0, 1.0],
-    ):
-        result = publish_ozon_payload(
-            {"items": [{"offer_id": "OZON-SKU-1"}]},
-            "client-id",
-            "api-key",
-            timeout_seconds=0.1,
-        )
-
-    assert result["ok"] is True
-    assert result["status"] == "pending_confirmation"
-    assert result["task_id"] == 172549793
-    assert result["offer_id"] == "OZON-SKU-1"
-    assert "external_id" not in result
+    assert result == {"ok": True, "status": "pending_confirmation", "task_id": 172549793}
+    assert calls == [(OZON_PRODUCT_IMPORT_URL, {"items": [{"offer_id": "OZON-SKU-1"}]})]
 
 
 def test_poll_ozon_import_status_rejects_failed_terminal_without_error_rows() -> None:
@@ -414,13 +372,9 @@ def test_publish_ozon_rejects_item_level_errors_and_maps_attribute() -> None:
     ]
     with patch(
         "erp_web.runtime_units.publish_ozon.request_ozon_json",
-        side_effect=responses,
+        side_effect=responses[1:],
     ), pytest.raises(RuntimeError) as caught:
-        publish_ozon_payload(
-            {"items": [{"offer_id": "OZON-SKU-1"}]},
-            "client-id",
-            "api-key",
-        )
+        poll_ozon_import_status(10, "client-id", "api-key")
 
     mapped = map_ozon_publish_error(caught.value)
     assert mapped["error_code"] == "ATTRIBUTE_INVALID"
@@ -454,13 +408,9 @@ def test_publish_ozon_does_not_treat_item_warning_as_failure() -> None:
     ]
     with patch(
         "erp_web.runtime_units.publish_ozon.request_ozon_json",
-        side_effect=responses,
+        side_effect=responses[1:],
     ):
-        result = publish_ozon_payload(
-            {"items": [{"offer_id": "OZON-SKU-1"}]},
-            "client-id",
-            "api-key",
-        )
+        result = poll_ozon_import_status(10, "client-id", "api-key")
 
     assert result["ok"] is True
     assert result["product_id"] == 22

@@ -10,6 +10,11 @@ def handle_sync(handler):
     handler.send_json(result, status)
 
 
+def handle_refresh_status(handler):
+    result, status = online_product_facade.mutate("refresh-status", validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
 def handle_change(handler):
     result, status = online_product_facade.mutate("change", validate_request_payload(handler.read_body(), endpoint=handler.path))
     handler.send_json(result, status)
@@ -26,6 +31,7 @@ def handle_retry(handler):
 
 
 POST_HANDLERS = {
+    "/api/online-products/refresh-status": handle_refresh_status,
     "/api/online-products/sync": handle_sync,
     "/api/online-products/change": handle_change,
     "/api/online-products/reconcile": handle_reconcile,

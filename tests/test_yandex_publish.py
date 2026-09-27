@@ -20,6 +20,7 @@ from erp_web.runtime_units.publish_yandex import (
     build_yandex_publish_payload,
     map_yandex_publish_error,
     poll_yandex_publish_status,
+    advance_yandex_submission,
     publish_yandex_payload,
     validate_yandex_publish_payload,
     yandex_invalid_dictionary_attributes,
@@ -265,9 +266,9 @@ def _drive_to_terminal(
 ) -> dict[str, Any]:
     current = _allow_poll(deepcopy(result))
     for _ in range(max_steps):
-        current = poll_yandex_publish_status(current, config)
-        if str(current.get("status") or "") != "publish_pending_confirmation":
-            return current
+        current = (advance_yandex_submission if current.get("status") == "pending_submission" else poll_yandex_publish_status)(current, config)
+        if str(current.get("status") or "") != "pending_submission":
+            return poll_yandex_publish_status(current, config) if current.get("status") == "publish_pending_confirmation" else current
         current = _allow_poll(current)
     raise AssertionError("状态机未在限定步数内到达终态")
 
@@ -582,8 +583,8 @@ def test_publish_executes_only_first_mutation(remote) -> None:
     result = publish_yandex_payload(payload, config)
 
     assert result["ok"] is True
-    assert result["status"] == "publish_pending_confirmation"
-    assert _inner(result)["status"] == "pending_confirmation"
+    assert result["status"] == "pending_submission"
+    assert _inner(result)["status"] == "pending_submission"
     checkpoint = _checkpoint(result)
     assert checkpoint["completed_steps"] == ["offer_mapping"]
     assert checkpoint["phase"] == "campaign_offer"
@@ -600,7 +601,7 @@ def test_full_flow_success_without_repeating_steps(remote) -> None:
 
     result = publish_yandex_payload(payload, config)
     result = _allow_poll(result)
-    result = _allow_poll(poll_yandex_publish_status(result, config))
+    result = _allow_poll(advance_yandex_submission(result, config))
     assert _checkpoint(result)["completed_steps"] == ["offer_mapping", "campaign_offer"]
 
     # 模拟重启：直接拿持久化的 pending result 继续，不回退已完成步骤。
@@ -654,7 +655,7 @@ def test_retryable_error_backs_off_then_continues(remote, monkeypatch) -> None:
     monkeypatch.setattr(publish_yandex, "update_yandex_offer_mapping", flaky_mapping)
 
     result = publish_yandex_payload(payload, config)
-    assert result["status"] == "publish_pending_confirmation"
+    assert result["status"] == "pending_submission"
     checkpoint = _checkpoint(result)
     assert checkpoint["retries"] == 1
     assert checkpoint["next_poll_at"] > time.time()
@@ -662,19 +663,19 @@ def test_retryable_error_backs_off_then_continues(remote, monkeypatch) -> None:
 
     # 退避窗口内轮询不发起远端请求
     before = len(recorder_calls)
-    unchanged = poll_yandex_publish_status(result, config)
+    unchanged = advance_yandex_submission(result, config)
     assert len(recorder_calls) == before
-    assert unchanged["status"] == "publish_pending_confirmation"
+    assert unchanged["status"] == "pending_submission"
 
     # 退避结束后重试仍然失败，继续累积退避
-    retried = poll_yandex_publish_status(_allow_poll(deepcopy(result)), config)
+    retried = advance_yandex_submission(_allow_poll(deepcopy(result)), config)
     assert len(recorder_calls) == before + 1
     assert _checkpoint(retried)["retries"] == 2
 
     # 重试上限后转为终态失败
     exhausted = deepcopy(_allow_poll(retried))
     exhausted["result"]["checkpoint"]["retries"] = 8
-    terminal = poll_yandex_publish_status(exhausted, config)
+    terminal = advance_yandex_submission(exhausted, config)
     assert terminal["status"] == "real_publish_failed"
     assert terminal["error_code"] == "YANDEX_RATE_LIMITED"
 
@@ -761,15 +762,15 @@ def test_confirmation_quarantine_blocks_success(remote) -> None:
     assert terminal["checkpoint"]["evidence"]["quarantine"]["offerId"] == "SKU-001"
 
 
-def test_confirmation_pending_eventually_times_out(remote) -> None:
+def test_confirmation_pending_remains_pending(remote) -> None:
     remote.mapping_status = "CHECKING"
-    config = _config(publish_confirmation_poll_limit=2)
+    config = _config()
     payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
-    assert terminal["status"] == "real_publish_failed"
-    assert terminal["error_code"] == "YANDEX_CONFIRMATION_TIMEOUT"
+    assert terminal["status"] == "publish_pending_confirmation"
+    assert "error_code" not in terminal
 
 
 def test_confirmation_edit_rejected_by_card_status_despite_published(remote) -> None:
@@ -804,19 +805,19 @@ def test_confirmation_no_card_errors_is_failure(remote) -> None:
     assert terminal["error_code"] == "YANDEX_CARD_UPDATE_REJECTED"
 
 
-def test_confirmation_card_processing_polls_then_times_out(remote) -> None:
+def test_confirmation_card_processing_remains_pending(remote) -> None:
     """卡片变更审核中（HAS_CARD_CAN_UPDATE_PROCESSING）：即使 Campaign 已
-    PUBLISHED 也不能确认本次变更生效，须继续有界轮询直至超时。"""
+    PUBLISHED 也不能确认本次变更生效，保持待确认，不能按等待次数判定失败。"""
 
     remote.mapping_status = "PUBLISHED"
     remote.card_status = "HAS_CARD_CAN_UPDATE_PROCESSING"
-    config = _config(publish_confirmation_poll_limit=2)
+    config = _config()
     payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
-    assert terminal["status"] == "real_publish_failed"
-    assert terminal["error_code"] == "YANDEX_CONFIRMATION_TIMEOUT"
+    assert terminal["status"] == "publish_pending_confirmation"
+    assert "error_code" not in terminal
 
 
 def test_confirmation_published_with_action_required_card_fails(remote) -> None:
@@ -1001,7 +1002,7 @@ def test_yandex_adapter_end_to_end_through_publishing_bus(remote) -> None:
     )
     from erp_web.runtime_units.publishing_bus_core import PublishingBus
 
-    config = _config(publish_poll_interval_seconds=0.5)
+    config = _config(publish_step_interval_seconds=0.5)
     product = _product()
     payload = build_yandex_publish_payload(product, config, _record())
     binding = resolve_publish_store_binding("yandex", config)
@@ -1042,9 +1043,11 @@ def test_yandex_adapter_end_to_end_through_publishing_bus(remote) -> None:
             },
         )
         bus.wait(queued["job_id"], timeout=30)
+        assert bus.get_status(queued["job_id"])["status"] == "pending_confirmation"
+        bus.check_publish_result(queued["job_id"], "yandex")
         state = bus.get_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     platform_state = state["platforms"]["yandex"]
     assert platform_state["status"] == "success"
@@ -1138,7 +1141,7 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
 
     monkeypatch.setattr(yandex_http.urllib.request, "urlopen", fake_urlopen)
 
-    config = _config(publish_poll_interval_seconds=0.5)
+    config = _config(publish_step_interval_seconds=0.5)
     product = _product()
     payload = build_yandex_publish_payload(product, config, _record())
     binding = resolve_publish_store_binding("yandex", config)
@@ -1179,9 +1182,11 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
             },
         )
         bus.wait(queued["job_id"], timeout=30)
+        assert bus.get_status(queued["job_id"])["status"] == "pending_confirmation"
+        bus.check_publish_result(queued["job_id"], "yandex")
         state = bus.get_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     platform_state = state["platforms"]["yandex"]
     assert platform_state["status"] == "success"
@@ -1420,3 +1425,26 @@ def test_migrated_description_reaches_yandex_catalog():
     payload = build_yandex_publish_payload(product, _config(), _record())
     assert payload["catalog"]["offer"]["description"] == migrated["description"]
     assert "Компактный корпус" in payload["catalog"]["offer"]["description"]
+
+
+def test_yandex_confirmation_never_advances_unfinished_write_steps(remote):
+    config = _config()
+    payload = build_yandex_publish_payload(_product(), config, _record())
+    result = publish_yandex_payload(payload, config)
+    with pytest.raises(ValueError, match="不会执行写操作"):
+        poll_yandex_publish_status(result, config)
+    assert remote.count("update_yandex_offer_mapping") == 1
+    assert remote.count("update_yandex_campaign_offer") == 0
+
+
+def test_yandex_restores_old_pending_checkpoint_as_unfinished_submission(remote):
+    config = _config()
+    payload = build_yandex_publish_payload(_product(), config, _record())
+    result = publish_yandex_payload(payload, config)
+    result["status"] = "publish_pending_confirmation"
+    result["result"]["status"] = "pending_confirmation"
+    restored = publish_yandex.restore_yandex_publish_result(result)
+    assert restored["status"] == "pending_submission"
+    terminal = _drive_to_terminal(restored, config)
+    assert terminal["status"] == "real_publish_success"
+    assert remote.count("update_yandex_offer_mapping") == 1

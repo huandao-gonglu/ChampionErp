@@ -1,10 +1,5 @@
 import { createWorkflowCategoryActions } from './category'
 import { createWorkflowPublishPrecheckActions } from './publishPrecheck'
-import {
-  fetchPublishLogs,
-  publishProductDirect,
-} from '@/api/workflow/publishing'
-import { fetchDraftsIndex } from '@/api/workflow/catalog'
 import { marketplaces } from '@/constants/initialState'
 import { isMercadoLibrePlatform } from '@/utils/draftTargetOptions'
 import type {
@@ -78,13 +73,13 @@ type WorkflowPublishingActionsPort = Pick<
 
 export function createWorkflowPublishingActions(runtime: WorkflowPublishingActionsPort) {
   const {
-    product, draftsIndex, currentDraft, categoryAttributeTranslations,
+    product, currentDraft, categoryAttributeTranslations,
     categoryAttributeTranslationsSource, categoryResultTranslations, categoryResultTranslationsSource, categoryPrecheck, precheck,
     payloadPreview, publishJob, publishJobStatus,
-    publishLogs, activeMarketplace, platformOptions, publishResult, activePublishTargetKey,
-    loading, addLog, setError,
+    activeMarketplace, platformOptions, activePublishTargetKey,
+    setError,
     currentPublishTargets, activeMarketplaceSite, persistActiveTargetListingFields, invalidateCategoryAttributeLoad,
-    applyTargetListingToDraft, pricingTargetKey, applyMutationIndexes, restorePrecheckFromProduct,
+    applyTargetListingToDraft, pricingTargetKey, restorePrecheckFromProduct,
     restoreCategoryFromProduct
   } = runtime
 
@@ -103,29 +98,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     payloadPreview.value = null
     applyTargetListingToDraft(selected)
   }
-  async function publishDirect() {
-    if (activeMarketplace.value === 'mercadolibre') {
-      setError('Mercado Libre 仅支持通过发布队列提交。')
-      return
-    }
-    loading.value = true
-    setError('')
-    try {
-      const result = await publishProductDirect(product.value, activeMarketplace.value)
-      publishResult.value = result.raw
-      if (result.product) product.value = result.product
-      applyMutationIndexes(result)
-      draftsIndex.value = result.draftsIndex?.length ? result.draftsIndex : await fetchDraftsIndex()
-      publishLogs.value = await fetchPublishLogs()
-      addLog(`直接发布返回：${result.status || (result.ok ? 'success' : 'failed')} ${result.message || result.error || ''}`)
-      if (!result.ok && result.error) setError(result.error)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '直接发布失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
   function setMarketplace(value: Marketplace) {
     if (marketplaces.includes(value)) {
       invalidateCategoryAttributeLoad()
@@ -167,6 +139,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   return {
     ...createWorkflowCategoryActions(runtime),
     ...createWorkflowPublishPrecheckActions(runtime),
-    publishDirect, setMarketplace, setMarketplaceSite, selectPublishTarget,
+    setMarketplace, setMarketplaceSite, selectPublishTarget,
   }
 }

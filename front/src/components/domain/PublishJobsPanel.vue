@@ -29,7 +29,6 @@ const emit = defineEmits<{
   select: [jobId: string]
   loadMore: []
   enqueue: []
-  publishDirect: []
   reconcile: [jobId: string, platform: Marketplace]
 }>()
 
@@ -77,7 +76,8 @@ interface PublishErrorPresentation {
 
 const statusLabels: Record<string, string> = {
   queued: '排队中',
-  running: '发布中',
+  running: '提交中',
+  pending_confirmation: '已受理，待确认',
   success: '发布成功',
   failed: '发布失败',
   partial: '部分成功',
@@ -93,6 +93,7 @@ const stageLabels: Record<string, string> = {
   publishing: '提交平台',
   publishing_approved_payload: '提交已确认 Payload',
   waiting_platform_confirmation: '等待平台确认',
+  submitting_steps: '提交发布步骤',
   retrying: '等待重试',
   finished: '已结束',
   failed: '已结束',
@@ -209,6 +210,11 @@ function publishErrorPresentation(source: PublishErrorSource): PublishErrorPrese
 }
 
 function platformErrorPresentation(item: PublishJobPlatformSummary) {
+  if (item.status === 'outcome_unknown') return {
+    code: item.errorCode,
+    summary: item.error || '尚未核实平台是否完成本次发布。',
+    nextAction: '先查询最新结果或在平台后台核实，确认前不要重新发布。',
+  }
   const marketError = (item.marketResults || [])
     .map(marketErrorPresentation)
     .find((error): error is PublishErrorPresentation => Boolean(error))
@@ -228,6 +234,10 @@ function marketErrorPresentation(item: PublishJobMarketResultSummary) {
 }
 
 function jobErrorPresentation(job: PublishJobListItem) {
+  if (job.status === 'outcome_unknown') {
+    const uncertain = job.platforms.find((item) => item.status === 'outcome_unknown')
+    if (uncertain) return platformErrorPresentation(uncertain)
+  }
   const marketError = job.platforms
     .flatMap((item) => item.marketResults || [])
     .map(marketErrorPresentation)
@@ -283,7 +293,9 @@ function platformTargetLabel(
 }
 
 function formatTime(value: string) {
-  return String(value || '').replace('T', ' ').replace(/Z$/, '').slice(0, 19) || '-'
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('sv-SE')
 }
 
 function selectJob(jobId: string) {
@@ -296,12 +308,11 @@ function selectJob(jobId: string) {
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="card-title">发布任务</h2>
-        <p class="muted mt-1">每次发布入队生成一条独立任务，运行中的任务会自动刷新。</p>
+        <p class="muted mt-1">提交后延迟检查一次；进入本页或查看任务时按时间条件查询，也可手动查询最新结果。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-outline" :disabled="loading" @click="emit('refresh')">刷新列表</button>
         <button class="btn btn-primary" :disabled="busy || !precheckOk" @click="emit('enqueue')">发布入队</button>
-        <button class="btn btn-outline" :disabled="busy || activeMarketplace === 'mercadolibre' || !precheckOk" @click="emit('publishDirect')">非 ML 直接发布</button>
       </div>
     </div>
 
@@ -312,7 +323,8 @@ function selectJob(jobId: string) {
           <select v-model="statusFilter" class="input">
             <option value="">全部状态</option>
             <option value="queued">排队中</option>
-            <option value="running">发布中</option>
+            <option value="running">提交中</option>
+            <option value="pending_confirmation">已受理，待确认</option>
             <option value="success">发布成功</option>
             <option value="failed">发布失败</option>
             <option value="partial">部分成功</option>
@@ -409,7 +421,7 @@ function selectJob(jobId: string) {
           </dl>
 
           <div v-if="selectedJobErrorPresentation" data-testid="publish-job-error-guidance" class="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-200">
-            <p class="font-semibold">失败原因</p>
+            <p class="font-semibold">{{ selectedJob.status === 'outcome_unknown' ? '结果待核实' : '失败原因' }}</p>
             <p class="mt-1 break-words"><span class="font-medium">原因：</span>{{ selectedJobErrorPresentation.summary }}</p>
             <p v-if="selectedJobErrorPresentation.nextAction" class="mt-2 break-words font-medium">处理建议：{{ selectedJobErrorPresentation.nextAction }}</p>
           </div>
@@ -444,8 +456,13 @@ function selectJob(jobId: string) {
                   </template>
                 </div>
               </div>
-              <div v-if="item.status === 'outcome_unknown'" class="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-900/70 dark:bg-amber-950/30">
-                <p class="text-xs text-amber-800 dark:text-amber-200">只读取已保存的远端 task 终态，不会再次提交创建或更新请求。</p>
+              <div v-if="['pending_confirmation', 'outcome_unknown'].includes(item.status)" class="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-900/70 dark:bg-amber-950/30">
+                <p class="text-xs text-amber-800 dark:text-amber-200">{{ item.status === 'pending_confirmation' ? '平台已受理，尚未确认最终结果。' : '提交结果不明，请查询或到平台后台核实。' }}</p>
+                <p v-if="item.confirmation?.submittedAt" class="mt-1 text-xs">提交于 {{ formatTime(item.confirmation.submittedAt) }}</p>
+                <p v-if="item.confirmation?.lastCheckedAt" class="mt-1 text-xs">上次检查：{{ formatTime(item.confirmation.lastCheckedAt) }}</p>
+                <p v-if="item.confirmation?.nextCheckAt" class="mt-1 text-xs">预计 {{ formatTime(item.confirmation.nextCheckAt) }} 自动检查一次</p>
+                <p v-else class="mt-1 text-xs">没有后续自动检查计划，可稍后查询。</p>
+                <p v-if="item.confirmation?.checkError" class="mt-1 text-xs text-amber-800 dark:text-amber-200">本次查询未完成：{{ item.confirmation.checkError }}</p>
                 <button
                   data-testid="publish-job-reconcile"
                   type="button"
@@ -453,7 +470,7 @@ function selectJob(jobId: string) {
                   :disabled="loading || busy"
                   @click="emit('reconcile', selectedJob.jobId, item.platform)"
                 >
-                  只读对账
+                  查询最新结果
                 </button>
               </div>
             </article>

@@ -307,7 +307,7 @@ def test_publishing_bus_blocks_before_publish_when_required_attributes_are_missi
         bus.wait(queued["job_id"], timeout=2)
         state = bus.get_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     platform_state = state["platforms"]["mercadolibre"]
     assert state["status"] == "completed"
@@ -348,7 +348,7 @@ def test_publishing_bus_reuses_persisted_job_for_same_idempotency_facts() -> Non
         )
         bus.wait(first["job_id"], timeout=2)
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert replay["job_id"] == first["job_id"]
     assert first["idempotent_replay"] is False
@@ -382,7 +382,7 @@ def test_publishing_bus_reuses_idempotency_mapping_after_restart(tmp_path) -> No
         )
         first_bus.wait(first["job_id"], timeout=2)
     finally:
-        first_bus.executor.shutdown(wait=True)
+        first_bus.close()
 
     restarted_bus = PublishingBus(
         database,
@@ -399,7 +399,7 @@ def test_publishing_bus_reuses_idempotency_mapping_after_restart(tmp_path) -> No
         )
         public_state = restarted_bus.get_public_status(replay["job_id"])
     finally:
-        restarted_bus.executor.shutdown(wait=True)
+        restarted_bus.close()
 
     assert replay["job_id"] == first["job_id"]
     assert replay["idempotent_replay"] is True
@@ -478,7 +478,7 @@ def test_publishing_bus_rejects_idempotency_key_bound_to_different_facts() -> No
                 )
             assert raised.value.code == "PUBLISH_IDEMPOTENCY_CONFLICT"
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert len(store.states) == 1
     assert adapter.publish_calls == 1
@@ -525,7 +525,7 @@ def test_approved_publish_uses_exact_persisted_payload_and_hides_binding() -> No
         internal = bus.get_status(queued["job_id"])
         public = bus.get_public_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert adapter.legacy_publish_calls == 0
     assert adapter.published_payloads == [approved_payload]
@@ -568,7 +568,7 @@ def test_approved_publish_blocks_changed_store_identity_before_network() -> None
         bus.wait(queued["job_id"], timeout=2)
         state = bus.get_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     platform_state = state["platforms"]["mercadolibre"]
     assert platform_state["status"] == "failed"
@@ -610,7 +610,7 @@ def test_approved_publish_rejects_payload_changed_after_digest() -> None:
                 approved_publications=approvals,
             )
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert store.states == {}
     assert adapter.published_payloads == []
@@ -650,7 +650,7 @@ def test_recover_publish_job_after_restart_matches_all_confirmation_facts(
         )
         first_bus.wait(first["job_id"], timeout=2)
     finally:
-        first_bus.executor.shutdown(wait=True)
+        first_bus.close()
 
     restarted = PublishingBus(
         database,
@@ -719,7 +719,7 @@ def test_publishing_bus_requires_trusted_idempotency_key() -> None:
                 idempotency_key=" ",
             )
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert store.states == {}
 
@@ -755,7 +755,7 @@ def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
     try:
         result = bus.list_jobs(status="failed")
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert result["next_cursor"] == ""
     assert result["items"] == [
@@ -785,6 +785,7 @@ def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
                     "error_code": "OZON_CONTRACT_CURRENCY_MISMATCH",
                     "next_action": "按店铺合同币种重新核价后发布。",
                     "updated_at": "",
+                    "confirmation": {},
                 }
             ],
             "created_at": "2026-08-06 22:01:40",
@@ -895,7 +896,7 @@ def test_publishing_bus_lists_mercadolibre_sales_markets_without_payload_leaks()
             for item in bus.list_jobs(platform="mercadolibre")["items"]
         }
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     mla = items["20260829-203906-86e8145e"]
     assert mla["status"] == "success"
@@ -956,7 +957,7 @@ def test_publishing_bus_sales_markets_fall_back_to_frozen_product_snapshot() -> 
     try:
         result = bus.list_jobs()
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert result["items"][0]["platforms"][0]["sites_to_sell"] == [
         {"site_id": "MCO", "logistic_type": "remote"}
@@ -1017,7 +1018,7 @@ def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> No
         bus.wait(queued["job_id"], timeout=2)
         state = bus.get_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     platform_state = state["platforms"]["mercadolibre"]
     assert platform_state["status"] == "failed"
@@ -1077,9 +1078,6 @@ def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
                 },
             }
 
-        @staticmethod
-        def publish_poll_interval_seconds(config: dict[str, Any]) -> float:
-            return 0.01
 
     store = _MemoryPublishJobStore()
     adapter = AsyncAdapter()
@@ -1103,9 +1101,11 @@ def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
             },
         )
         bus.wait(queued["job_id"], timeout=2)
+        assert adapter.poll_calls == 0
+        bus.check_publish_result(queued["job_id"], "ozon")
         state = bus.get_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert adapter.publish_calls == 1
     assert adapter.poll_calls == 1
@@ -1176,9 +1176,6 @@ def test_publishing_bus_resumes_saved_platform_poll_without_resubmitting() -> No
                 },
             }
 
-        @staticmethod
-        def publish_poll_interval_seconds(config: dict[str, Any]) -> float:
-            return 0.01
 
     store = RecoverableStore()
     store.states["job-pending"] = {
@@ -1230,9 +1227,11 @@ def test_publishing_bus_resumes_saved_platform_poll_without_resubmitting() -> No
     try:
         assert bus.recover_pending_jobs() == ["job-pending"]
         bus.wait("job-pending", timeout=2)
+        assert adapter.poll_calls == 0
+        bus.check_publish_result("job-pending", "ozon")
         state = bus.get_status("job-pending")
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert adapter.publish_calls == 0
     assert adapter.poll_calls == 1
@@ -1293,7 +1292,7 @@ def test_publishing_bus_does_not_duplicate_product_in_platform_result() -> None:
         bus.wait(queued["job_id"], timeout=2)
         state = bus.get_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     result = state["platforms"]["ozon"]["result"]
     assert "product" not in result
@@ -1378,7 +1377,7 @@ def test_terminal_hook_persists_product_and_log_without_status_poll(
         )
         bus.wait(queued["job_id"], timeout=2)
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     persisted_product = context.db.load_product_model(
         saved["product_id"]
@@ -1775,7 +1774,7 @@ def test_completed_job_without_terminal_marker_is_compensated_after_restart(
     try:
         recovered = bus.recover_pending_jobs()
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     persisted_job = context.db.load_publish_job("job-crash-window")
     persisted_product = context.db.load_product_model(
@@ -1905,7 +1904,7 @@ def test_publish_recovery_fences_crash_during_remote_write(tmp_path) -> None:
         recovered = bus.recover_pending_jobs()
         persisted = bus.get_status("job-write-crash")
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert recovered == ["job-write-crash"]
     assert persisted["status"] == "outcome_unknown"
@@ -1985,13 +1984,13 @@ def test_outcome_unknown_task_can_be_reconciled_without_replaying_write() -> Non
         auto_resume_pending=False,
     )
     try:
-        result = bus.reconcile_outcome_unknown(
+        result = bus.check_publish_result(
             "job-unknown",
             "mercadolibre",
         )
         persisted = bus.get_status("job-unknown")
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert result["resolved"] is True
     assert result["resolution"] == "applied"
@@ -2052,20 +2051,20 @@ def test_outcome_unknown_reconciliation_keeps_lock_while_task_is_pending() -> No
         auto_resume_pending=False,
     )
     try:
-        result = bus.reconcile_outcome_unknown(
+        result = bus.check_publish_result(
             "job-pending-reconcile",
             "mercadolibre",
         )
         persisted = bus.get_status("job-pending-reconcile")
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
     assert result["resolved"] is False
     assert result["resolution"] == "pending"
-    assert persisted["status"] == "outcome_unknown"
+    assert persisted["status"] == "pending_confirmation"
     assert (
         persisted["platforms"]["mercadolibre"]["status"]
-        == "outcome_unknown"
+        == "pending_confirmation"
     )
     assert persisted["terminal_results_persisted"] is True
     assert terminal_states == []
@@ -2103,9 +2102,9 @@ def test_outcome_unknown_without_task_id_cannot_be_auto_reconciled() -> None:
     )
     try:
         with pytest.raises(ValueError, match="没有远端 task_id"):
-            bus.reconcile_outcome_unknown("job-no-task", "mercadolibre")
+            bus.check_publish_result("job-no-task", "mercadolibre")
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
 
 def test_mercadolibre_adapter_uses_root_owned_required_attributes() -> None:

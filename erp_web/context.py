@@ -355,7 +355,7 @@ class AppContext:
         if online_products is not None:
             online_products.close()
         if publishing_bus is not None:
-            publishing_bus.executor.shutdown(wait=True)
+            publishing_bus.close()
 
 
 _context_lock = threading.Lock()

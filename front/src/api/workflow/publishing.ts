@@ -18,7 +18,6 @@ import type {
   PricingDestinationResult,
   PricingResult,
   PricingTargetResult,
-  Product,
   ProductIndexItem,
   PublishJob,
   PublishJobListItem,
@@ -30,7 +29,6 @@ import type {
 import type {
   DraftMutationResponse,
   PayloadPreviewResult,
-  ProductOperationResult,
 } from './normalizers'
 import {
   asRecord,
@@ -43,7 +41,6 @@ import {
   normalizeDraftDetail,
   normalizeDraftsIndex,
   normalizeMercadoLibreOrderNotification,
-  normalizeProductOperation,
   normalizeProductsIndex,
   normalizePublishLogs,
   normalizePublishPrecheck,
@@ -55,7 +52,7 @@ import {
   stringList,
   toBackendSitesToSell,
 } from './normalizers'
-import { requiredDraftTarget, requiredProductId } from './shared'
+import { requiredDraftTarget } from './shared'
 
 export async function fetchPublishLogs(): Promise<PublishLogItem[]> {
   const response = await apiClient.get('/api/publish-logs')
@@ -94,6 +91,12 @@ function normalizePublishJobListItem(value: unknown): PublishJobListItem {
         errorCode: getString(item, ['error_code', 'errorCode']),
         nextAction: getString(item, ['next_action', 'nextAction']),
         updatedAt: getString(item, ['updated_at', 'updatedAt']),
+        confirmation: {
+          submittedAt: getString(asRecord(item.confirmation), ['submitted_at']),
+          nextCheckAt: getString(asRecord(item.confirmation), ['next_check_at']),
+          lastCheckedAt: getString(asRecord(item.confirmation), ['last_checked_at']),
+          checkError: getString(asRecord(item.confirmation), ['check_error']),
+        },
       }
     })
     : []
@@ -483,25 +486,18 @@ export async function fetchPublishJob(jobId: string): Promise<UnknownRecord> {
   return asRecord(data.job)
 }
 
-export async function reconcilePublishJob(jobId: string, platform: Marketplace): Promise<UnknownRecord> {
+export async function reconcilePublishJob(jobId: string, platform: Marketplace, trigger: 'manual' | 'view' = 'manual'): Promise<UnknownRecord> {
   const normalizedJobId = String(jobId || '').trim()
   const normalizedPlatform = String(platform || '').trim().toLowerCase()
   if (!normalizedJobId || !normalizedPlatform) throw new Error('发布结果对账需要 Job ID 与平台。')
   const response = await apiClient.post('/api/publish-bus/reconcile', {
     job_id: normalizedJobId,
     platform: normalizedPlatform,
+    trigger,
   })
   const data = asRecord(response.data)
   ensureOk(data, '发布结果对账失败')
-  return data
-}
-
-export async function publishProductDirect(product: Product, platform: Marketplace): Promise<ProductOperationResult> {
-  if (String(platform || '').trim().toLowerCase() === 'mercadolibre') {
-    throw new Error('Mercado Libre 仅支持通过发布队列提交刊登。')
-  }
-  const response = await apiClient.post('/api/publish-product', { product_id: requiredProductId(product, '发布商品'), platform }, { validateStatus: () => true })
-  return normalizeProductOperation(response.data)
+  return { ...data, summary: normalizePublishJobListItem(data.summary) }
 }
 
 export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = ''): Promise<CategorySelection> {

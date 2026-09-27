@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
@@ -87,7 +88,9 @@ class OnlineProduct(BaseModel):
     capabilities: dict[str, Capability] = Field(default_factory=dict)
     version: str = ""
     synced_at: str = ""
+    status_checked_at: str = ""
     errors: list[str] = Field(default_factory=list)
+    details_state: Literal["pending", "ready", "failed"] = "ready"
     desired_sale_state: str = ""
     sale_state: str = "unknown"
     local_product_id: str = ""
@@ -96,6 +99,49 @@ class OnlineProduct(BaseModel):
 
 class OnlineListing(OnlineProduct):
     snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class MarketStatus(BaseModel):
+    """单件刷新只携带市场身份与状态，不更新市场价格。"""
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    raw_status: str = Field(min_length=1)
+    raw_sub_status: list[str] = Field(default_factory=list)
+
+
+class OnlineStatus(BaseModel):
+    """平台已核验的单件状态；不包含价格、库存和内容数据。"""
+    model_config = ConfigDict(extra="forbid")
+    remote_id: str
+    raw_status: str = Field(min_length=1)
+    sale_state: str
+    raw_sub_status: list[str] = Field(default_factory=list)
+    markets: list[MarketStatus] = Field(default_factory=list)
+
+
+class RefreshStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    listing_id: str = Field(min_length=1)
+
+
+@dataclass
+class OnlineSyncBatch:
+    """平台同步的领域批次；目录先展示，完整详情或失败再逐项落库。"""
+
+    phase: Literal["catalog", "details"]
+    listings: list[OnlineListing] = field(default_factory=list)
+    errors: dict[str, str] = field(default_factory=dict)
+    discovery_complete: bool = False
+
+
+class OnlineProductGroup(BaseModel):
+    """列表父节点；item_ids 只引用本页匹配的刊登，父节点不接受商品修改。"""
+
+    id: str
+    title: str
+    kind: Literal["group", "single"]
+    item_ids: list[str]
+    total_count: int
 
 
 class OnlineChange(BaseModel):

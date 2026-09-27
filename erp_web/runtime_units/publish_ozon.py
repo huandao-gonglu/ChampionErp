@@ -7,7 +7,6 @@ from copy import deepcopy
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import re
-import time
 from typing import Any
 
 from erp_web.marketplaces.config_http import request_ozon_json
@@ -28,8 +27,6 @@ OZON_PRODUCT_IMPORT_URL = "https://api-seller.ozon.ru/v3/product/import"
 OZON_PRODUCT_IMPORT_INFO_URL = (
     "https://api-seller.ozon.ru/v1/product/import/info"
 )
-OZON_IMPORT_TIMEOUT_SECONDS = 30.0
-OZON_IMPORT_POLL_INTERVAL_SECONDS = 0.5
 
 
 def _positive_decimal(value: Any, field: str) -> Decimal:
@@ -483,11 +480,8 @@ def publish_ozon_payload(
     payload: dict[str, Any],
     client_id: str,
     api_key: str,
-    *,
-    timeout_seconds: float = OZON_IMPORT_TIMEOUT_SECONDS,
-    poll_interval_seconds: float = OZON_IMPORT_POLL_INTERVAL_SECONDS,
 ) -> dict[str, Any]:
-    """提交商品并在本地等待窗口内确认；超时则返回可继续轮询的 task_id。"""
+    """提交商品并立即返回任务回执；结果由统一确认入口单次查询。"""
 
     created = request_ozon_json(
         "POST",
@@ -504,14 +498,7 @@ def publish_ozon_payload(
             + json.dumps(created, ensure_ascii=False)
         )
 
-    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
-    while True:
-        status = poll_ozon_import_status(task_id, client_id, api_key)
-        if status["status"] == "imported":
-            return status
-        if time.monotonic() >= deadline:
-            return status
-        time.sleep(max(0.05, float(poll_interval_seconds)))
+    return {"ok": True, "status": "pending_confirmation", "task_id": task_id}
 
 
 def map_ozon_publish_error(error: Exception) -> dict[str, Any]:

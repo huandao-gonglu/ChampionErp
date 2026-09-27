@@ -372,6 +372,13 @@ export interface BackendProduct {
   updated_at?: string
 }
 
+export interface BackendPublishConfirmation {
+  submitted_at?: string
+  next_check_at?: string
+  last_checked_at?: string
+  check_error?: string
+}
+
 export interface BackendPublishPlatformState {
   platform?: string
   product_id?: string
@@ -385,6 +392,7 @@ export interface BackendPublishPlatformState {
   created_at?: string
   updated_at?: string
   category_id?: string
+  confirmation?: BackendPublishConfirmation
 }
 
 export interface BackendPublishJob {
@@ -426,6 +434,7 @@ export interface BackendPublishJobPlatformSummary {
   error_code: string
   next_action: string
   updated_at: string
+  confirmation: BackendPublishConfirmation
 }
 
 export interface BackendPublishJobSummary {

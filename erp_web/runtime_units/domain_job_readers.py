@@ -96,7 +96,7 @@ def _publish_focus_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None
         item
         for item in entries
         if str(item.get("status") or "").strip().lower()
-        in {"queued", "pending", "running", "retrying"}
+        in {"queued", "pending", "running", "retrying", "pending_confirmation"}
     ]
     candidates = active or entries
     for item in candidates:
@@ -203,6 +203,15 @@ def _publish_display_fields(
     }
 
     focus = _publish_focus_entry(entries)
+    if (focus or {}).get("status") == "pending_confirmation":
+        confirmation = (focus or {}).get("confirmation") or {}
+        fields.update({
+            "stage_code": "waiting_platform_confirmation",
+            "stage_label": "已受理，待确认",
+            "summary": "平台已受理；等待首次检查或查看任务时查询最新结果",
+            "next_check_at": _parse_datetime(confirmation.get("next_check_at")),
+        })
+        return fields
     checkpoint = _publish_checkpoint(focus)
     if checkpoint is not None:
         phase = str(checkpoint.get("phase") or "").strip().lower()
@@ -304,7 +313,7 @@ class PublishJobStatusReader:
         status: str
         error = ""
         if not statuses or any(
-            value in {"queued", "pending", "running", "retrying"} for value in statuses
+            value in {"queued", "pending", "running", "retrying", "pending_confirmation"} for value in statuses
         ):
             status = "running"
         elif all(value == "success" for value in statuses):

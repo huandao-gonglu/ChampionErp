@@ -281,16 +281,12 @@ def test_unsupported_publish_paths_fail_closed(monkeypatch) -> None:
 
     for platform in unsupported:
         assert_unsupported(publish_product({}, platform, {}))
-        published, _ = publish_facade.publish_product_payload(
-            {"platform": platform}
-        )
         previewed, _ = publish_facade.preview_publish_payload(
             {"platform": platform}
         )
         queued, _ = publish_facade.enqueue_publish_job(
             {"platform": platform}
         )
-        assert_unsupported(published)
         assert_unsupported(previewed)
         assert_unsupported(queued)
 

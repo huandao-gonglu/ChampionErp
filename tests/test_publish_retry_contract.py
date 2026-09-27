@@ -107,7 +107,7 @@ def _run_bus(adapter: _FakeAdapter, *, max_retries: int) -> dict[str, Any]:
         bus.wait(queued["job_id"], timeout=5)
         return bus.get_status(queued["job_id"])
     finally:
-        bus.executor.shutdown(wait=True)
+        bus.close()
 
 
 def test_transient_adapter_error_is_retried_until_success() -> None:
@@ -139,63 +139,6 @@ def test_transient_adapter_error_exhausts_attempts_then_fails() -> None:
     assert platform_state["result"]["error_map"]["retryable"] is True
     assert adapter.publish_calls == 2
 
-
-def test_uncertain_remote_outcome_retries_reads_then_keeps_reconciliation_lock() -> None:
-    class _PendingConfirmationAdapter(_FakeAdapter):
-        def __init__(self) -> None:
-            super().__init__([])
-            self.poll_calls = 0
-            self.poll_outcomes = [
-                PublishAdapterError(
-                    "MERCADOLIBRE_SERVER_ERROR",
-                    "确认读取 5xx",
-                    retryable=True,
-                    details={"outcome_unknown": True},
-                ),
-                PublishAdapterError(
-                    "MERCADOLIBRE_SERVER_ERROR",
-                    "确认读取 5xx",
-                    retryable=True,
-                    details={"outcome_unknown": True},
-                ),
-            ]
-
-        def publish(
-            self,
-            product: dict[str, Any],
-            platform: str,
-            config: dict[str, Any],
-        ) -> dict[str, Any]:
-            self.publish_calls += 1
-            return {
-                "ok": True,
-                "status": "pending_confirmation",
-                "task_id": "task-1",
-            }
-
-        def poll_publish_status(
-            self,
-            result: dict[str, Any],
-            config: dict[str, Any],
-        ) -> dict[str, Any]:
-            self.poll_calls += 1
-            raise self.poll_outcomes.pop(0)
-
-        @staticmethod
-        def publish_poll_interval_seconds(config: dict[str, Any]) -> float:
-            return 0.0
-
-    adapter = _PendingConfirmationAdapter()
-
-    state = _run_bus(adapter, max_retries=1)
-
-    platform_state = state["platforms"]["mercadolibre"]
-    assert state["status"] == "outcome_unknown"
-    assert platform_state["status"] == "outcome_unknown"
-    assert platform_state["result"]["outcome_unknown"] is True
-    assert platform_state["result"]["task_id"] == "task-1"
-    assert adapter.publish_calls == 1
-    assert adapter.poll_calls == 2
 
 
 def test_deterministic_adapter_error_is_not_retried() -> None:

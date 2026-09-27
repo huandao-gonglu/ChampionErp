@@ -38,7 +38,6 @@ from .publish_capabilities import (
     request_product_publish,
 )
 from .publish_context import prepare_publish_context
-from .runtime_api import publish_product
 
 ResponseWithStatus = tuple[ApiResponse, int]
 
@@ -206,53 +205,19 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     }, 200
 
 
-def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    platform = _requested_platform(body)
-    if not platform:
-        return {
-            "ok": False,
-            "error": "直接发布必须显式指定 platform。",
-            "error_code": "PUBLISH_DIRECT_PLATFORM_REQUIRED",
-        }, 400
-    if platform == "mercadolibre":
-        return {
-            "ok": False,
-            "error": (
-                "Mercado Libre User Products 只能通过预览、人工确认与"
-                " PublishingBus 持久队列发布。"
-            ),
-            "error_code": "MERCADOLIBRE_PUBLISH_BUS_REQUIRED",
-        }, 409
-    unsupported = _unsupported_if_explicit(body)
-    if unsupported:
-        return unsupported
-    product, error_response, status = (
-        get_context().products.load_required_product_from_body(body)
-    )
-    if error_response:
-        return error_response, status
-    try:
-        result = publish_product(
-            product,
-            platform,
-            get_context().config.load_store_config(),
-        )
-        return result, 200 if result.get("ok") else 400
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 400
-
-
-
-
 def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
-    """对未知发布结果做只读远端确认，不重放任何发布写请求。"""
+    """按手动或查看触发规则检查一次发布结果，不重放发布写请求。"""
 
     job_id = str(body.get("job_id") or "").strip()
     platform = _requested_platform(body)
     try:
-        result = get_publishing_bus().reconcile_outcome_unknown(
+        trigger = str(body.get("trigger") or "manual")
+        if trigger not in {"manual", "view"}:
+            raise ValueError("页面查询只支持手动或查看触发。")
+        result = get_publishing_bus().check_publish_result(
             job_id,
             platform,
+            trigger=trigger,
         )
         return result, 200
     except FileNotFoundError as exc:
@@ -376,5 +341,4 @@ __all__ = [
     "enqueue_publish_job",
     "precheck_publish_payload",
     "preview_publish_payload",
-    "publish_product_payload",
 ]

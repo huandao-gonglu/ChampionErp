@@ -98,7 +98,30 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     }
   }
 
-  async function refreshPublishJobs(options: { quiet?: boolean } = {}) {
+  async function checkJobsOnView(jobs: PublishJobListItem[]) {
+    // 同一任务的平台依次确认，避免较早的摘要覆盖较新的平台结果。
+    const pendingJobs = jobs.filter((job) => job.platforms.some((item) => (
+      ['pending_confirmation', 'outcome_unknown'].includes(item.status)
+    )))
+    for (let offset = 0; offset < pendingJobs.length; offset += 3) {
+      await Promise.all(pendingJobs.slice(offset, offset + 3).map(async (job) => {
+        for (const item of job.platforms) {
+          if (!['pending_confirmation', 'outcome_unknown'].includes(item.status)) continue
+          try {
+            const result = await reconcilePublishJob(job.jobId, item.platform, 'view')
+            if (result.summary) {
+              const summary = result.summary as unknown as PublishJobListItem
+              publishJobs.value = publishJobs.value.map((current) => current.jobId === job.jobId ? summary : current)
+            }
+          } catch (exc) {
+            activity.setError(exc instanceof Error ? exc.message : '查询发布结果失败')
+          }
+        }
+      }))
+    }
+  }
+
+  async function refreshPublishJobs(options: { quiet?: boolean; checkOnView?: boolean } = {}) {
     if (publishJobsLoading.value) return
     publishJobsLoading.value = true
     if (!options.quiet) activity.setError('')
@@ -111,6 +134,7 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
       selectedPublishJobId.value = page.items.some((item) => item.jobId === preferredId)
         ? preferredId
         : page.items[0]?.jobId || ''
+      if (options.checkOnView) await checkJobsOnView(page.items)
       if (selectedPublishJobId.value) await fetchSelectedPublishJob(true)
       else publishJobStatus.value = null
       if (!options.quiet) activity.addLog(`发布任务已刷新：${page.items.length} 条。`)
@@ -143,10 +167,17 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
 
   async function selectPublishJob(jobId: string) {
     const selectedId = String(jobId || '').trim()
-    if (!selectedId || selectedId === selectedPublishJobId.value) return
+    if (!selectedId || publishJobsLoading.value) return
     selectedPublishJobId.value = selectedId
     publishJobStatus.value = null
-    await refreshPublishJob()
+    publishJobsLoading.value = true
+    try {
+      const selected = publishJobs.value.find((job) => job.jobId === selectedId)
+      if (selected) await checkJobsOnView([selected])
+      await fetchSelectedPublishJob(true)
+    } finally {
+      publishJobsLoading.value = false
+    }
   }
 
   async function reconcileSelectedPublishJob(jobId: string, platform: Marketplace) {
@@ -159,15 +190,14 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     try {
       const result = await reconcilePublishJob(normalizedJobId, normalizedPlatform)
       const resolution = String(result.resolution || '').trim()
-      activity.addLog(
-        resolution === 'applied'
-          ? `发布任务 ${normalizedJobId} 已对账：远端变更已生效。`
-          : resolution === 'partially_applied'
-            ? `发布任务 ${normalizedJobId} 已对账：远端仅部分生效，请按市场错误处理。`
-          : resolution === 'not_applied'
-            ? `发布任务 ${normalizedJobId} 已对账：远端变更未生效。`
-            : `发布任务 ${normalizedJobId} 仍在处理中，保持结果待对账且不会重放发布。`,
-      )
+      const messages: Record<string, string> = {
+        applied: '平台已确认发布成功', partially_applied: '平台仅部分发布成功，请查看具体结果',
+        not_applied: '平台已确认发布失败', pending: '平台仍在处理，可稍后查询',
+        query_failed: '本次查询失败，保留上次发布状态，请查看查询错误',
+        cooldown: '刚刚查询过，请稍后再查', checking: '已有查询正在执行',
+        terminal_or_submitting: '任务已结束或仍在提交，请查看当前状态',
+      }
+      activity.addLog(`发布任务 ${normalizedJobId}：${messages[resolution] || '结果仍待核实'}`)
       shouldRefresh = true
     } catch (exc) {
       activity.setError(exc instanceof Error ? exc.message : '发布结果对账失败')

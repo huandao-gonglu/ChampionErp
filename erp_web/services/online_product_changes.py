@@ -8,6 +8,8 @@ from erp_web.schemas.online_products import ChangeRequest, OnlineListing
 
 
 def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
+    if listing.details_state != "ready" or listing.errors:
+        raise ValueError("商品详情尚未完整同步，请完成同步后再修改")
     capability = listing.capabilities.get(request.operation)
     if not capability or not capability.enabled:
         raise ValueError(capability.reason if capability else "该商品不支持此操作")

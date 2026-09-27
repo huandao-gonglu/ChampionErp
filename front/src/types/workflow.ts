@@ -26,6 +26,7 @@ export {
   type BackendDraftTargetSite,
   type BackendPlatformDraft,
   type BackendProduct,
+  type BackendPublishConfirmation,
   type BackendPublishPlatformState,
   type BackendPublishJob,
   type BackendPublishJobSiteToSellSummary,
@@ -646,16 +647,24 @@ export interface PublishPrecheck {
 
 export interface PublishJob {
   jobId: string
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'outcome_unknown'
+  status: 'queued' | 'running' | 'pending_confirmation' | 'completed' | 'failed' | 'outcome_unknown'
   platforms: Marketplace[]
   createdAt: string
   draftId?: string
   targetKey?: string
 }
 
-export type PublishJobDisplayStatus = 'queued' | 'running' | 'success' | 'failed' | 'partial' | 'outcome_unknown'
+export type PublishJobDisplayStatus = 'pending_confirmation' | 'queued' | 'running' | 'success' | 'failed' | 'partial' | 'outcome_unknown'
+
+export interface PublishConfirmation {
+  submittedAt: string
+  nextCheckAt: string
+  lastCheckedAt: string
+  checkError: string
+}
 
 export interface PublishJobPlatformSummary {
+  confirmation?: PublishConfirmation
   platform: Marketplace
   draftId: string
   site: string

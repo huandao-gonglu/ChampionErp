@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 
 from tests.architecture.support import (
     ROOT,
@@ -70,6 +71,17 @@ def test_international_shipping_has_no_erp_or_agent_dependencies():
 
 def _relative_posix(path) -> str:
     return path.relative_to(ROOT).as_posix()
+
+
+def test_frontend_backdrops_do_not_close_from_a_single_self_event():
+    """新增弹窗不能绕过公共的按下/松开来源校验，重新引入拖选误关。"""
+    binding = re.compile(r"(?:@|v-on:)(?:click|mousedown|mouseup|pointerdown|pointerup)((?:\.[\w-]+)*)\s*=")
+    violations = []
+    for path in (ROOT / "front/src").rglob("*.vue"):
+        for match in binding.finditer(path.read_text(encoding="utf-8")):
+            if "self" in match.group(1).split("."):
+                violations.append(f"{_relative_posix(path)}: {match.group()}")
+    assert not violations, "遮罩关闭须使用 WorkspaceDialog 或 useBackdropDismiss：\n" + "\n".join(violations)
 
 
 def test_agent_memory_is_loaded_only_by_the_main_chat_service():
@@ -313,7 +325,7 @@ def test_online_management_has_one_entry_and_retires_local_publication_routes() 
 
 def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools():
     from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
-    expected = {"online_products_read", "online_products_change", "online_products_sync", "online_products_reconcile", "online_products_retry"}
+    expected = {"online_products_read", "online_products_refresh_status", "online_products_change", "online_products_sync", "online_products_reconcile", "online_products_retry"}
     assert {name for name in APPLICATION_CAPABILITY_CATALOG.tools if name.startswith("online_")} == expected
     source = (ROOT / "erp_web/runtime_units/online_product_capabilities.py").read_text()
     assert "online_product_service import OnlineProductService" in source
@@ -553,18 +565,19 @@ def test_grouped_draft_changes_remain_a_business_capability() -> None:
     assert not any(name in source for name in ("pydantic_ai", "sqlite3", "upsert_draft_model", "exec(", "eval("))
 
 
-def test_mercadolibre_publish_has_no_direct_http_or_ai_bypass() -> None:
-    workflow_source = (ROOT / "erp_web/runtime_units/publish_workflows.py").read_text(
-        encoding="utf-8"
-    )
-    capability_source = (
-        ROOT / "erp_web/runtime_units/publish_admin_capabilities.py"
-    ).read_text(encoding="utf-8")
+def test_publish_confirmation_has_one_submission_and_one_read_entry() -> None:
+    from erp_web.http_route_units.publish_routes import POST_HANDLERS
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
 
-    assert 'if platform == "mercadolibre"' in workflow_source
-    assert '"MERCADOLIBRE_PUBLISH_BUS_REQUIRED"' in workflow_source
-    assert 'if platform == "mercadolibre"' in capability_source
-    assert '"MERCADOLIBRE_PUBLISH_BUS_REQUIRED"' in capability_source
+    assert "/api/publish-product" not in POST_HANDLERS
+    assert "product_publish_direct" not in APPLICATION_CAPABILITY_CATALOG.tools
+    assert "/api/publish-bus/reconcile" in POST_HANDLERS
+    source = (ROOT / "erp_web/runtime_units/publish_result_confirmation.py").read_text()
+    assert "poll_publish_status" in source
+    assert "publish_payload(" not in source
+    assert "pydantic_ai" not in source
+    frontend = (ROOT / "front/src/views/workflow/WorkflowView.vue").read_text()
+    assert "publishJobsPollTimer" not in frontend
 
 
 def test_platform_publish_registry_uses_sku_group_entry_point() -> None:
@@ -711,3 +724,22 @@ def test_draft_pricing_has_one_business_entry_and_no_raw_ai_or_http_calculator()
     assert not (ROOT / "erp_web/runtime_units/market_pricing_capability.py").exists()
     front = (ROOT / "front/src/stores/workflow/actions/pricing.ts").read_text(encoding="utf-8")
     assert "priceDraft(" in front and "inputForSku" not in front and "saveDraftApi" not in front
+
+
+def test_online_sync_uses_platform_readers_and_pure_snapshot_projection():
+    """同步统一消费领域批次，平台负责批量或有限并发，投影层保持纯函数。"""
+    from erp_web.runtime_units.online_mercadolibre import MercadoOnlineAdapter
+    from erp_web.runtime_units.online_ozon import OzonOnlineAdapter
+    from erp_web.runtime_units.online_yandex import YandexOnlineAdapter
+    import inspect
+    for adapter, entry in ((MercadoOnlineAdapter, "sync_mercado"), (OzonOnlineAdapter, "sync_ozon"), (YandexOnlineAdapter, "sync_yandex")):
+        assert not hasattr(adapter, "discover")
+        assert entry in inspect.getsource(adapter.sync)
+    sync = (ROOT / "erp_web/services/online_product_sync.py").read_text()
+    assert "adapter.sync(" in sync and "adapter.read(" not in sync
+    shared = (ROOT / "erp_web/marketplaces/online_sync.py").read_text()
+    assert "single_listing_batches" not in shared
+    for platform in ("yandex", "ozon"):
+        projection = ast.parse((ROOT / f"erp_web/runtime_units/online_{platform}_snapshot.py").read_text())
+        imports = [node.module or "" for node in ast.walk(projection) if isinstance(node, ast.ImportFrom)]
+        assert not any(any(part in module for part in ("http", "stores", "context", "service")) for module in imports)

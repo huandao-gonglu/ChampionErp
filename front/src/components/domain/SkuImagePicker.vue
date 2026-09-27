@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
 import type { ImageAsset } from '@/types/workflow'
+import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -14,6 +15,7 @@ const emit = defineEmits<{ 'update:modelValue': [assetId: string]; inherit: [] }
 const open = ref(false)
 const dialog = ref<HTMLElement | null>(null)
 const trigger = ref<HTMLButtonElement | null>(null)
+const { recordBackdropPointer, dismissFromBackdrop, resetBackdropPointer } = useBackdropDismiss(close)
 const current = computed(() => props.images.find(image => image.id === props.modelValue))
 async function show() {
   open.value = true
@@ -22,6 +24,7 @@ async function show() {
 }
 function close() {
   open.value = false
+  resetBackdropPointer()
   trigger.value?.focus()
 }
 function trapFocus(event: KeyboardEvent) {
@@ -47,7 +50,7 @@ function choose(assetId: string) {
       </div>
     </div>
     <Teleport to="body">
-      <div v-if="open" ref="dialog" role="dialog" aria-modal="true" :aria-label="`选择${label}`" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4" @click.self="close" @keydown.esc.stop="close" @keydown.tab="trapFocus">
+      <div v-if="open" ref="dialog" role="dialog" aria-modal="true" :aria-label="`选择${label}`" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4" @pointerdown="recordBackdropPointer" @pointerup="dismissFromBackdrop" @pointercancel="resetBackdropPointer" @keydown.esc.stop="close" @keydown.tab="trapFocus">
         <section class="max-h-[80vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-dark-900">
           <div class="mb-4 flex items-center justify-between"><h3 class="font-bold">{{ label }} · 从图片池选择</h3><button type="button" class="btn btn-outline" @click="close">关闭</button></div>
           <p v-if="!images.length" class="py-6 text-sm text-slate-500">图片池为空，请先在图片页上传图片。</p>

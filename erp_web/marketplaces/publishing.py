@@ -1350,7 +1350,6 @@ def _pending_update_result(
         },
         "task_results": [],
         "confirmation_started_at": _now_iso(),
-        "confirmation_poll_count": 0,
     }
 
 
@@ -2605,10 +2604,8 @@ def publish_mercadolibre(payload: dict[str, Any], token: str) -> dict[str, Any]:
 def poll_mercadolibre_publish_status(
     pending: dict[str, Any],
     token: str,
-    *,
-    max_confirmation_polls: int = 300,
 ) -> dict[str, Any]:
-    """确认 Global Update 异步任务；成功后再执行尚未添加的 marketplace。"""
+    """只读确认 Global Update 异步任务，绝不执行后续写操作。"""
 
     task_ids = [
         str(item or "").strip()
@@ -2680,11 +2677,6 @@ def poll_mercadolibre_publish_status(
             status == "succeeded" for status in relevant_status_values
         ):
             task_unconfirmed = True
-    poll_count = max(
-        0,
-        int(pending.get("confirmation_poll_count") or 0),
-    ) + 1
-    bounded_max_polls = max(1, int(max_confirmation_polls or 300))
     if task_unconfirmed:
         return _confirmation_outcome_unknown(
             pending,
@@ -2697,27 +2689,14 @@ def poll_mercadolibre_publish_status(
                 "user_products[].status=succeeded 终态，必须先对账。"
             ),
         )
-    # 根任务或当前 User Product 仍在 processing 时必须继续只读轮询；
+    # 根任务或当前 User Product 仍在 processing 时保持待确认；
     # sibling 的 processing/failed 状态不属于当前 publication。
     if still_pending:
-        if poll_count >= bounded_max_polls:
-            return _confirmation_outcome_unknown(
-                pending,
-                publication=publication,
-                task_ids=task_ids,
-                task_results=task_results,
-                error_code="MERCADOLIBRE_CONFIRMATION_TIMEOUT",
-                error=(
-                    "Mercado Libre 异步任务超过最大确认轮次仍未结束，"
-                    "已停止等待且禁止重放写请求。"
-                ),
-            )
         return {
             **pending,
             "ok": True,
             "status": "pending_confirmation",
             "task_results": task_results,
-            "confirmation_poll_count": poll_count,
         }
 
     continuation = (

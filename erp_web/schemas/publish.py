@@ -5,6 +5,15 @@ from typing import Any, TypedDict
 from .product import Product
 
 
+class PublishConfirmation(TypedDict, total=False):
+    """一次发布的确认计划与最近检查；空 next_check_at 表示没有自动检查计划。"""
+
+    submitted_at: str
+    next_check_at: str
+    last_checked_at: str
+    check_error: str
+
+
 class PublishPlatformState(TypedDict, total=False):
     platform: str
     product_id: str
@@ -18,6 +27,7 @@ class PublishPlatformState(TypedDict, total=False):
     created_at: str
     updated_at: str
     category_id: str
+    confirmation: PublishConfirmation
 
 
 class PublishJob(TypedDict, total=False):
@@ -65,6 +75,7 @@ class PublishJobPlatformSummary(TypedDict):
     error_code: str
     next_action: str
     updated_at: str
+    confirmation: PublishConfirmation
 
 
 class PublishJobSummary(TypedDict):
@@ -87,6 +98,7 @@ class PublishJobSummary(TypedDict):
 
 
 __all__ = [
+    "PublishConfirmation",
     "PublishJob",
     "PublishJobMarketResultSummary",
     "PublishJobPlatformSummary",

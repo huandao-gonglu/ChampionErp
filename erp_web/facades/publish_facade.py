@@ -22,12 +22,6 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return publish_workflows.preview_publish_payload(body)
 
 
-def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    return publish_workflows.publish_product_payload(body)
-
-
-
-
 def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
     return publish_workflows.reconcile_publish_job(body)
 
@@ -40,6 +34,5 @@ __all__ = [
     "enqueue_publish_job",
     "precheck_publish_payload",
     "preview_publish_payload",
-    "publish_product_payload",
     "reconcile_publish_job",
 ]

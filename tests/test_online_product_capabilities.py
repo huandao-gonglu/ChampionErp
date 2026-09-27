@@ -24,7 +24,7 @@ from erp_web.services.agent_job_service import AgentJobService
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.online_product_service import OnlineProductService
 from tests.test_online_products import RemoteFixture, listing
-from tests.test_publish_admin_capabilities import _approved_execution, _execution
+from tests.approval_support import _approved_execution, _execution
 from tests.test_native_agent_integration import CONVERSATION, body, service
 
 

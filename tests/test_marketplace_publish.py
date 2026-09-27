@@ -2373,7 +2373,7 @@ def test_mercadolibre_async_mixed_processing_snapshot_stays_pending() -> None:
         )
 
     assert result["status"] == "pending_confirmation"
-    assert result["confirmation_poll_count"] == 1
+    assert result["task_id"] == "task-mixed"
 
 
 def test_mercadolibre_async_finished_failed_is_confirmed_failure() -> None:

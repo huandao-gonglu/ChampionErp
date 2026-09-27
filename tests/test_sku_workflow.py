@@ -301,7 +301,8 @@ def test_pending_skus_keep_all_task_ids_and_resume_confirmation_without_republis
         pending = adapter.publish_payload(payload, {})
         assert pending['task_ids'] == ['task-SELL-0', 'task-SELL-1']
         uncertain = adapter.poll_publish_status(pending, {})
-        assert uncertain['status'] == 'outcome_unknown'
+        assert uncertain['status'] == 'pending_confirmation'
+        assert '暂时无法读取任务' in uncertain['check_error']
         assert uncertain['task_ids'] == pending['task_ids']
         recovered = adapter.poll_publish_status(uncertain, {})
         assert recovered['status'] == 'published'

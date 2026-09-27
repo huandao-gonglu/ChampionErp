@@ -7,10 +7,15 @@
 | `GET /api/online-products`（列表或 id 详情） | `online_products_read` | 直接读取；也可在 Code Mode 中分页、筛选和计算 |
 | `POST /api/online-products/change` | `online_products_change` | 一个入口处理既有 price / stock / content / sale_state，原生审批和后台任务 |
 | `POST /api/online-products/sync` | `online_products_sync` | 沿用领域同步任务，仅读取平台并刷新本地快照 |
+| `POST /api/online-products/refresh-status` | `online_products_refresh_status` | 按 listing_id 直接查询单件状态并更新本地记录，不扫描店铺、不创建 Job |
 | `POST /api/online-products/reconcile` | `online_products_reconcile` | 只向平台回读已提交修改的结果，不重发修改 |
 | `POST /api/online-products/retry` | `online_products_retry` | 原生审批后交由既有失败重试规则判断 |
 
 `online_products_read` 沿用 GET 参数：`id,platform,q,status,market,page`。结果的 `items` 和 `item` 使用同一个公开商品契约，包含价格、库存范围、内容、买家链接、修改能力、版本和同步时间，不包含原始平台快照。列表附带原有摘要和操作记录；接口分支未使用的结果字段采用类型默认值，不更改 HTTP 返回。
+
+`online_products_refresh_status` 接受真实在线刊登 `listing_id`，直接复用 `OnlineProductService.refresh_status`，只合并商品和关联市场状态。返回的 `status_checked_at` 是本次核验时间，`synced_at`、价格、库存、内容保持不变；不能据此声称其他字段也是实时的。工具仅写本地快照、无需平台写入审批，仍使用现有 Runtime 的可信执行身份和 Pydantic AI 原生工具生命周期。它不会替代 `online_products_reconcile` 确认待处理的修改任务。
+
+列表每页包含 25 个组合父节点或独立商品：`groups.item_ids` 引用本页 `items`，组合不会拆到不同页，因而 `items` 可以超过 25 条。`total` 是筛选后的节点数，`listing_total` 是匹配刊登数，`summary.total` 是全店刊登数。完整读取继续按 `total/per_page` 翻页并累计 `items`；不能把父节点数当作 SKU 数，也不能把组 ID 用于商品修改。筛选只返回匹配的刊登，组的 `total_count` 用于解释部分命中。
 
 不增加“查询 SKU 数量”“查零库存”“改红色库存”等工具，也不开放 SQL、任意网络或数据库写入。AI 可直接理解商品字段；需要循环和统计时，使用现有 `run_code` 调用相同读取函数，完整分页后返回必要摘要。未知库存、未授权、同步失败与零库存/零商品不同；统计结果只能表述为实际读取的同步快照。平台没有提供足够规格信息时须澄清，不能猜测变体。
 

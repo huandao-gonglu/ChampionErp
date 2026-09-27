@@ -8,8 +8,10 @@ import pytest
 from erp_web.context import get_context
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.runtime_units.online_mercadolibre import MercadoOnlineAdapter
-from erp_web.runtime_units.online_yandex import YandexOnlineAdapter, available_stock
-from erp_web.schemas.online_products import Capability, ChangeRequest, OnlineListing, PriceScope, StockScope, snapshot_version
+from erp_web.runtime_units.online_yandex import YandexOnlineAdapter
+from erp_web.runtime_units.online_yandex_snapshot import available_stock
+from erp_web.runtime_units.online_mercadolibre_read import catalog_pages
+from erp_web.schemas.online_products import Capability, ChangeRequest, OnlineListing, OnlineSyncBatch, PriceScope, StockScope, snapshot_version
 from erp_web.services.online_product_changes import validate_changes
 from erp_web.services.online_product_service import OnlineProductService
 from erp_web.stores.online_product_store import OnlineConflict
@@ -34,8 +36,12 @@ class RemoteFixture:
         self.receipt = {"success":True}
         self.apply = True
         self.pending = False
-    def discover(self):
-        return iter(self.rows)
+    def sync(self, ids=None):
+        for remote_id in ids if ids is not None else self.rows:
+            try:
+                yield OnlineSyncBatch("details", listings=[self.read(remote_id)])
+            except Exception as exc:
+                yield OnlineSyncBatch("details", errors={remote_id: str(exc)})
     def read(self, remote):
         if self.read_error:
             raise self.read_error
@@ -206,16 +212,16 @@ def test_scan_follows_cursor_deduplicates_and_rejects_identity():
     calls=[]
     def get(path): calls.append(path);return next(pages)
     adapter.get=get
-    assert list(adapter.discover())==["CBT1","CBT2"]
+    assert [key for page in catalog_pages(adapter) for key in page]==["CBT1","CBT2"]
     assert "scroll_id=next" in calls[1]
     adapter.get=lambda path:{"seller_id":"other","results":[]}
-    with pytest.raises(ValueError):list(adapter.discover())
+    with pytest.raises(ValueError):[key for page in catalog_pages(adapter) for key in page]
 
 
 def test_scan_missing_cursor_is_partial_not_complete():
     adapter=object.__new__(MercadoOnlineAdapter);adapter.account_id="seller"
     adapter.get=lambda path:{"seller_id":"seller","results":["CBT1"],"paging":{"total":2}}
-    iterator=adapter.discover();assert next(iterator)=="CBT1"
+    iterator=catalog_pages(adapter);assert next(iterator)==["CBT1"]
     with pytest.raises(ValueError):next(iterator)
 
 

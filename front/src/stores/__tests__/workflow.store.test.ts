@@ -64,7 +64,6 @@ vi.mock('@/api/workflow/publishing', async (importOriginal) => ({
   fetchMercadoLibreOrders: vi.fn(),
   reconcilePublishJob: vi.fn(),
   runCategoryPrecheck: vi.fn(),
-  publishProductDirect: vi.fn(),
 }))
 
 vi.mock('@/api/workflow/translation', () => ({
@@ -1092,16 +1091,6 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fetchProductsIndex).toHaveBeenCalledOnce()
     expect(workflowApi.fetchPublishLogs).toHaveBeenCalledOnce()
     expect(workflowApi.fetchMercadoLibreOrders).toHaveBeenCalledOnce()
-  })
-
-  it('Mercado Libre 不允许绕过发布队列调用直接发布', async () => {
-    const store = useWorkflowStore()
-    store.activeMarketplace = 'mercadolibre'
-
-    await store.publishDirect()
-
-    expect(workflowApi.publishProductDirect).not.toHaveBeenCalled()
-    expect(store.error).toContain('发布队列')
   })
 
   it('restores the latest persisted publish job when the queue opens', async () => {

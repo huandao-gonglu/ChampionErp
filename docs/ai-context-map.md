@@ -78,12 +78,23 @@
 
 ## 在线商品管理
 
-- `http_route_units/online_product_routes.py` 是列表/详情及同步、修改、回读、失败重试的唯一 HTTP 入口。
+- `http_route_units/online_product_routes.py` 是列表/详情及同步、单件状态刷新、修改、回读、失败重试的唯一 HTTP 入口。
   `facades/online_product_facade.py` 负责请求转换；`facades/online_product_factory.py` 显式装配三个平台适配器。
 - `services/online_product_service.py` 编排 ERP 领域任务，通过注入访问适配器，不反向导入 runtime。
-  `services/online_product_changes.py` 负责确定性变更校验与字段回读比较。
+  `refresh_status` 直接查询单件状态；`POST /api/online-products/refresh-status` 不入同步队列，返回更新后的公开商品。
+  `stores/online_product_store.py::update_status` 校验并发版本后仅合并状态及 `status_checked_at`，保留价格、库存、内容和完整同步时间。
+  `services/online_product_sync.py` 消费 `OnlineSyncBatch`、保存目录记录与详情进度，详情失败保留旧业务快照。
+  `services/online_product_changes.py` 负责确定性变更校验与字段回读比较；详情未完整同步时禁止修改。
+  `services/online_product_listing.py` 从快照中的平台组合标识生成父节点，筛选 SKU 后按节点分页，组合不跨页；
+  `total` 统计节点，`listing_total` 统计匹配刊登，公开 `groups.item_ids` 引用本页 `items`，父节点不接受修改。
 - `runtime_units/online_mercadolibre.py`、`online_yandex.py`、`online_ozon.py` 负责平台发现、读取和最小变更。
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
+  `runtime_units/online_yandex_read.py` 负责完整目录分页、隐藏清单分页和每批 100 个 SKU 的详情读取，最多 3 个接口并发；
+  `online_yandex_snapshot.py` 只做响应投影。全店同步不再循环调用单件 `read`；单件完整读取用于修改前校验和确认。
+  `runtime_units/online_product_status.py` 是三个平台的单件状态读取入口，限定目标身份，不扫描全店，不调用独立价格或库存接口。
+  `online_mercadolibre_read.py` 先完整扫描目录，再用最多 3 件的并发窗口读取父商品及关联站点，保留 User Products mapping 校验；
+  `online_ozon_read.py` 先扫描 ALL 与 ARCHIVED 目录，再每批最多 100 件读取详情与价格，`online_ozon_snapshot.py` 只做投影。
+  三个平台统一产出同步批次，`marketplaces/online_sync.py` 仅提供目录占位和授权/限流中断规则，旧通用串行读取器已移除。
 - `schemas/online_products.py` 定义平台刊登、市场、具名价格/库存范围及变更契约；
   `stores/online_product_store.py` 独占 `online_listings` / `online_jobs`。远端商品不要求有本地商品或草稿，
   不伪造 publication，不修改 `ProductStore` 的归属。
@@ -93,7 +104,7 @@
 - 任务以提交键防重，同目标互斥；全店同步与该账号修改互斥。写前核对当前店铺及平台业务版本，
   写前日志区分已发送与未发送；未知结果只回读、不自动重放。每次领取生成独立租约，过期执行者不可提交结果。
   工作线程在应用启动时恢复队列，前端轮询仅负责展示；部分同步失败保留旧快照，不推断删除。
-- `runtime_units/online_product_capabilities.py` 将现有读取、统一修改、同步、回读、重试接口直接装配进主 Agent。
+- `runtime_units/online_product_capabilities.py` 将现有读取、单件状态刷新、统一修改、同步、回读、重试接口直接装配进主 Agent。
   `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。
   商品数量、SKU 分析等由读取返回值与已有 Code Mode 组合完成，不新增场景工具、查询 DSL 或平台写入旁路。
 - 审批和持久调用直接使用现有 Tool Bridge 的 Pydantic Deferred 机制；`online_product_job_reader.py` 只读取现有领域任务回执。
@@ -836,6 +847,22 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   店铺商品发现、查询和销售状态管理由在线商品模块负责。
 - `erp_web/facades/publish_facade.py`：HTTP 层唯一发布 facade；业务编排进入
   `erp_web/runtime_units/publish_workflows.py`。
+- `erp_web/runtime_units/publish_result_confirmation.py`：发布结果确认的唯一 owner。
+  提交回执持久化后进入 `pending_confirmation`，释放发布 worker；默认 120 秒后检查一次。
+  首次检查计划保存在平台状态的 `confirmation.next_check_at`，重启只恢复未消费计划；
+  首次检查仍在处理也不再安排下一次。`confirmation.last_checked_at/check_error` 保存最近
+  检查时间与查询错误；读失败不改变发布结果，不重放写请求，不释放活动发布锁。
+  `POST /api/publish-bus/reconcile` 的 `trigger=manual/view` 统一调用单次确认；手动冷却
+  30 秒，查看触发首次需满 120 秒，此后距上次查询满 300 秒。普通 GET 只读本地记录。
+  查看触发仅限进入发布列表（当前页）和打开/切换任务详情；筛选、排序、搜索、翻页、
+  焦点变化、普通刷新都不触发远端查询。没有 next_check_at 时页面不能承诺持续自动检查。
+  同一任务/平台在进程内合并并发查询；平台回执及店铺身份校验仍保留。
+  Yandex 的已批准写步骤由 `advance_yandex_submission` 推进，未完成时是
+  `pending_submission`；`poll_yandex_publish_status` 只能只读确认，不能推进写入。
+  本机制属于 ERP 领域任务调度，不属于 Agent 生命周期。已核对安装的 Pydantic AI
+  2.44.0 及 [Deferred Tools 官方文档](https://ai.pydantic.dev/deferred-tools/)：Agent 暂停与
+  恢复继续使用原生 Deferred Tools，Job Reader 仅投影持久结果；不新增 Agent loop、
+  消息历史或事件协议，也不通过定时器调用模型。
 - `erp_web/runtime_units/publish_adapter.py`：发布平台适配器注册表。只有这里注册且
   在 `marketplace_registry.py` 声明 `CAP_PUBLISH` 的平台才允许进入真实发布流程。
 - `erp_web/services/mercadolibre_target_contract.py` 与
@@ -863,9 +890,9 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   先调用 `POST /global/user-products/{id}` 并确认映射；只有当前 payload 与本地
   `confirmed_payload` 存在可证明的字段差异时才执行共享字段 `PUT`，纯新增市场不发送
   无关更新，缺少可信旧快照的复杂字段不猜测重提。若 PUT
-  异步则只轮询 `/user-products-families/tasks/{task_id}`，任务根必须 `finished` 且每个
-  User Product 都有明确 succeeded/failed 终态。poll 阶段不得再发新增市场 mutation。
-  写响应身份漂移、确认响应畸形、超时或崩溃窗口统一进入 `outcome_unknown`，保留活动
+  异步则按统一确认策略单次读取 `/user-products-families/tasks/{task_id}`，任务根必须 `finished` 且每个
+  User Product 都有明确 succeeded/failed 终态。确认阶段不得再发新增市场 mutation。
+  写响应身份漂移、确认响应畸形、写请求结果不明或崩溃窗口进入 `outcome_unknown`，保留活动
   锁并禁止自动重放。存在 task ID 时，用户可从发布任务页触发只读对账；只有确认
   `applied/partially_applied/not_applied` 后才把 job 收敛到终态并释放同草稿/平台锁，
   初次 unknown 与最终对账结论分别保存审计日志。没有 task ID 的未知
@@ -876,7 +903,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   市场字段由 `confirmed_payload` 锁定，变更时必须创建新的 Global Item。响应只把通过
   operation 闭包校验的 `item_id/site_items` 作为真实成功身份；绝不恢复区域 `/items`。
 - `erp_web/runtime_units/platform_query_capabilities.py` 提供商品、订单及发布任务查询；
-  `publish_admin_capabilities.py` 提供非 Mercado 直接发布审批能力。在线商品当前由人工页面操作。
+  所有平台发布统一经过预览确认与持久队列；在线商品由人工页面操作。
 - `erp_web/runtime_units/publish_ozon.py`：Ozon `/v3/product/import` payload、
   草稿目标站点中的 `type_id/category_id + description_category_id` 配对、异步导入
   终态确认及错误字段映射；不得从商品级 `local_platform_categories` 回捞发布类目。
@@ -995,8 +1022,8 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 - `tests/test_native_domain_workflow.py`：15 条所选草稿、真实准备服务与平台 mock 的审批/Job 纵向验收。
 - `tests/test_native_reliability.py`：商品并发、旧快照拒绝、取消、CAS、未知副作用重启、模型异常与慢客户端恢复。
 - `tests/test_domain_write_capabilities.py`、`tests/test_domain_collect_capabilities.py`、
-  `tests/test_publish_admin_capabilities.py`：商品/草稿写能力、采集凭据规则与
-  发布管理审批 digest 的行为测试。
+  `tests/test_publish_result_confirmation.py`：商品/草稿写能力、采集凭据规则与
+  发布确认时间门槛、恢复、单次调度和并发去重测试。
 - `tests/test_draft_query_service.py`、`tests/test_market_prepare_capabilities.py`、
   `tests/test_product_capability_service.py`、`tests/test_publish_capability_service.py`：查询快照、
   目标市场纵向能力、商品 mutation、店铺身份 digest 和幂等发布 adapter。

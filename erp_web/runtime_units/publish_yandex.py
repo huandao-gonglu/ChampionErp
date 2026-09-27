@@ -85,9 +85,8 @@ _CARD_STATUS_PROCESSING = frozenset(
 )
 
 DEFAULT_STEP_RETRY_LIMIT = 8
-DEFAULT_CONFIRMATION_POLL_LIMIT = 30
-DEFAULT_POLL_INTERVAL_SECONDS = 2.0
-MAX_POLL_INTERVAL_SECONDS = 30.0
+DEFAULT_STEP_INTERVAL_SECONDS = 2.0
+MAX_STEP_INTERVAL_SECONDS = 30.0
 MAX_PICTURES = 30
 
 
@@ -865,11 +864,11 @@ def _timeout_seconds(config: dict[str, Any]) -> float:
     return max(1.0, float(store.get("publish_timeout_seconds") or 30))
 
 
-def _poll_interval_seconds(config: dict[str, Any]) -> float:
+def _step_interval_seconds(config: dict[str, Any]) -> float:
     store = _yandex_store(config)
     return min(
-        MAX_POLL_INTERVAL_SECONDS,
-        max(0.5, float(store.get("publish_poll_interval_seconds") or DEFAULT_POLL_INTERVAL_SECONDS)),
+        MAX_STEP_INTERVAL_SECONDS,
+        max(0.5, float(store.get("publish_step_interval_seconds") or DEFAULT_STEP_INTERVAL_SECONDS)),
     )
 
 
@@ -878,30 +877,25 @@ def _step_retry_limit(config: dict[str, Any]) -> int:
     return max(1, int(store.get("publish_step_retry_limit") or DEFAULT_STEP_RETRY_LIMIT))
 
 
-def _confirmation_poll_limit(config: dict[str, Any]) -> int:
-    store = _yandex_store(config)
-    return max(
-        1,
-        int(store.get("publish_confirmation_poll_limit") or DEFAULT_CONFIRMATION_POLL_LIMIT),
-    )
-
-
 def _backoff_at(checkpoint: YandexPublishCheckpoint, config: dict[str, Any]) -> float:
-    interval = _poll_interval_seconds(config)
+    interval = _step_interval_seconds(config)
     factor = 2 ** min(max(0, checkpoint.retries), 5)
-    return time.time() + min(MAX_POLL_INTERVAL_SECONDS, interval * factor)
+    return time.time() + min(MAX_STEP_INTERVAL_SECONDS, interval * factor)
 
 
 def _pending_result(
     plan: dict[str, Any],
     checkpoint: YandexPublishCheckpoint,
 ) -> dict[str, Any]:
+    submitting = _next_pending_step(checkpoint) is not None
+    if not submitting:
+        checkpoint.next_poll_at = 0
     return {
         "ok": True,
-        "status": "publish_pending_confirmation",
+        "status": "pending_submission" if submitting else "publish_pending_confirmation",
         "result": {
             "platform": "yandex",
-            "status": "pending_confirmation",
+            "status": "pending_submission" if submitting else "pending_confirmation",
             "offer_id": checkpoint.offer_id,
             "plan": deepcopy(plan),
             "checkpoint": checkpoint.model_dump(),
@@ -1065,7 +1059,7 @@ def _execute_mutation(
         return _terminal_failure(plan, checkpoint, map_yandex_publish_error(exc))
     _record_response(checkpoint, step, body)
     checkpoint.retries = 0
-    checkpoint.next_poll_at = time.time() + _poll_interval_seconds(config)
+    checkpoint.next_poll_at = time.time() + _step_interval_seconds(config)
     checkpoint.completed_steps.append(step)
     checkpoint.phase = _phase_after(step)
     return None
@@ -1113,7 +1107,7 @@ def publish_yandex_payload(
         offer_id=str(plan.get("offer_id")),
         campaign_id=campaign_id,
         business_id=business_id,
-        next_poll_at=time.time() + _poll_interval_seconds(config),
+        next_poll_at=time.time() + _step_interval_seconds(config),
     )
     step = _next_pending_step(checkpoint)
     if step is None:
@@ -1165,26 +1159,19 @@ def _confirmation_readback(
     """只读回读 Business 商品映射与 Campaign 商品状态。"""
 
     timeout = _timeout_seconds(config)
-    try:
-        mappings = fetch_yandex_offer_mapping(
-            api_token,
-            checkpoint.business_id,
-            [checkpoint.offer_id],
-            timeout_seconds=timeout,
-        )
-        offers = fetch_yandex_campaign_offer(
-            api_token,
-            checkpoint.campaign_id,
-            offer_ids=[checkpoint.offer_id],
-            timeout_seconds=timeout,
-        )
-        quarantined = _quarantined_offer(plan, api_token, checkpoint, config)
-    except YandexApiError as exc:
-        if exc.retryable and checkpoint.retries < _confirmation_poll_limit(config):
-            checkpoint.retries += 1
-            checkpoint.next_poll_at = _backoff_at(checkpoint, config)
-            return _pending_result(plan, checkpoint)
-        return _terminal_failure(plan, checkpoint, map_yandex_publish_error(exc))
+    mappings = fetch_yandex_offer_mapping(
+        api_token,
+        checkpoint.business_id,
+        [checkpoint.offer_id],
+        timeout_seconds=timeout,
+    )
+    offers = fetch_yandex_campaign_offer(
+        api_token,
+        checkpoint.campaign_id,
+        offer_ids=[checkpoint.offer_id],
+        timeout_seconds=timeout,
+    )
+    quarantined = _quarantined_offer(plan, api_token, checkpoint, config)
 
     if quarantined is not None:
         checkpoint.evidence["quarantine"] = deepcopy(quarantined)
@@ -1251,25 +1238,6 @@ def _confirmation_readback(
             },
         )
     if card_status in _CARD_STATUS_PROCESSING:
-        # 卡片变更仍在审核：即使 Campaign 已显示 PUBLISHED 也不能确认本次
-        # 变更生效，继续有界轮询。
-        if checkpoint.retries >= _confirmation_poll_limit(config):
-            return _terminal_failure(
-                plan,
-                checkpoint,
-                {
-                    "summary": (
-                        "Yandex 卡片变更审核超时（cardStatus="
-                        f"{card_status}），请稍后在店铺后台核对变更结果。"
-                    ),
-                    "field_errors": {},
-                    "error_code": "YANDEX_CONFIRMATION_TIMEOUT",
-                    "retryable": True,
-                    "raw": "",
-                },
-            )
-        checkpoint.retries += 1
-        checkpoint.next_poll_at = _backoff_at(checkpoint, config)
         return _pending_result(plan, checkpoint)
 
     if campaign_status == _SUCCESS_CAMPAIGN_STATUS:
@@ -1323,23 +1291,6 @@ def _confirmation_readback(
             },
         )
     if campaign_status in _PENDING_CAMPAIGN_STATUSES:
-        if checkpoint.retries >= _confirmation_poll_limit(config):
-            return _terminal_failure(
-                plan,
-                checkpoint,
-                {
-                    "summary": (
-                        "Yandex 发布确认超时：平台仍在处理，"
-                        "请稍后在店铺后台核对商品状态。"
-                    ),
-                    "field_errors": {},
-                    "error_code": "YANDEX_CONFIRMATION_TIMEOUT",
-                    "retryable": True,
-                    "raw": "",
-                },
-            )
-        checkpoint.retries += 1
-        checkpoint.next_poll_at = _backoff_at(checkpoint, config)
         return _pending_result(plan, checkpoint)
     return _terminal_failure(
         plan,
@@ -1354,15 +1305,11 @@ def _confirmation_readback(
     )
 
 
-def poll_yandex_publish_status(
+def _load_submission(
     result: dict[str, Any],
     config: dict[str, Any],
-) -> dict[str, Any]:
-    """依据已持久化 checkpoint 执行下一个 mutation 或只读确认。
-
-    重启恢复时 PublishingBus 直接把持久化的 pending result 交回本函数；
-    已完成步骤记录在 checkpoint 中，不会重复执行。
-    """
+) -> tuple[dict[str, Any], YandexPublishCheckpoint, str]:
+    """读取并校验持久化的发布计划与店铺身份。"""
 
     inner = result.get("result") if isinstance(result.get("result"), dict) else result
     plan = inner.get("plan") if isinstance(inner.get("plan"), dict) else None
@@ -1381,17 +1328,36 @@ def poll_yandex_publish_status(
     api_token, campaign_id, business_id = _yandex_publish_credentials(config)
     _assert_plan_binding(plan, campaign_id, business_id)
 
-    # 有界退避：未到允许轮询时间时不发起远端请求。
+    return plan, checkpoint, api_token
+
+
+def advance_yandex_submission(result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """只推进已批准写步骤，步骤完成后返回待确认，不读取最终状态。"""
+    plan, checkpoint, api_token = _load_submission(result, config)
     if checkpoint.next_poll_at > time.time():
         return _pending_result(plan, checkpoint)
-
     step = _next_pending_step(checkpoint)
     if step is None:
-        return _confirmation_readback(plan, checkpoint, api_token, config)
+        return _pending_result(plan, checkpoint)
     pending = _execute_mutation(step, plan, checkpoint, api_token, config)
-    if pending is not None:
-        return pending
-    return _pending_result(plan, checkpoint)
+    return pending if pending is not None else _pending_result(plan, checkpoint)
+
+
+def restore_yandex_publish_result(result: dict[str, Any]) -> dict[str, Any]:
+    """迁移旧持久化等待记录：未完成的写步骤恢复为提交态。"""
+    if result.get("status") not in {"pending_confirmation", "publish_pending_confirmation", "pending_submission"}:
+        return result
+    inner = result.get("result") if isinstance(result.get("result"), dict) else result
+    checkpoint = YandexPublishCheckpoint(**inner["checkpoint"])
+    return _pending_result(inner["plan"], checkpoint)
+
+
+def poll_yandex_publish_status(result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """只读确认；未完成写步骤的任务必须由发布 worker 处理。"""
+    plan, checkpoint, api_token = _load_submission(result, config)
+    if _next_pending_step(checkpoint) is not None:
+        raise ValueError("Yandex 仍有未完成的提交步骤，结果查询不会执行写操作。")
+    return _confirmation_readback(plan, checkpoint, api_token, config)
 
 
 def map_yandex_publish_error(error: Exception) -> dict[str, Any]:
@@ -1432,6 +1398,8 @@ __all__ = [
     "YANDEX_PUBLISH_STEPS",
     "build_yandex_publish_payload",
     "map_yandex_publish_error",
+    "advance_yandex_submission",
+    "restore_yandex_publish_result",
     "poll_yandex_publish_status",
     "publish_yandex_payload",
     "validate_yandex_publish_payload",

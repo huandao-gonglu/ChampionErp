@@ -52,15 +52,9 @@ from erp_web.runtime_units.product_capabilities import ProductCapabilityScope
 from erp_web.runtime_units.product_write_capabilities import (
     ProductWriteCapabilityScope,
 )
-from erp_web.runtime_units.publish_admin_capabilities import (
-    PublishAdminCapabilityScope,
-)
 from erp_web.runtime_units.publish_bus import load_publish_logs
 from erp_web.runtime_units.publish_capabilities import PublishCapabilityScope
 from erp_web.runtime_units.research_capabilities import ResearchCapabilityScope
-from erp_web.runtime_units.runtime_api import (
-    publish_product as run_direct_publish,
-)
 from erp_web.runtime_units.source_collect_workflows import (
     collect_1688_payload_service,
     collect_batch_products,
@@ -287,11 +281,6 @@ def build_capability_binding_scope(
                 run_creator=lambda body: _create_research_run(context, body),
                 run_loader=product_research_service.get_hot_product_run,
                 active_run_loader=(product_research_service.get_active_hot_product_run),
-            ),
-            PublishAdminCapabilityScope: PublishAdminCapabilityScope(
-                direct_publisher=run_direct_publish,
-                product_loader=context.products.load_required_product_from_body,
-                store_config_loader=context.config.load_store_config,
             ),
         }
     )

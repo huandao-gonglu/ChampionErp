@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from erp_web.schemas.online_products import JobStatus, OnlineProduct, Operation, Platform
+from erp_web.schemas.online_products import JobStatus, OnlineProduct, OnlineProductGroup, Operation, Platform
 
 
 class OnlineRequest(BaseModel):
@@ -49,9 +49,11 @@ class OnlineReadResult(BaseModel):
     ok: bool
     item: OnlineProduct | None = None
     items: list[OnlineProduct] = Field(default_factory=list)
+    groups: list[OnlineProductGroup] = Field(default_factory=list)
     platform: Platform | None = None
     account_id: str = ""
     total: int = 0
+    listing_total: int = 0
     page: int = 1
     per_page: int = 25
     summary: dict[str, int] = Field(default_factory=dict)

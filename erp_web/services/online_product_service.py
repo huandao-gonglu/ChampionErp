@@ -9,6 +9,8 @@ from uuid import uuid4
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.schemas.online_products import ChangeRequest, snapshot_version
 from erp_web.services.online_product_changes import confirmation, validate_changes
+from erp_web.services.online_product_listing import listing_page
+from erp_web.services.online_product_sync import run_sync
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
 
 logger = logging.getLogger(__name__)
@@ -75,23 +77,13 @@ class OnlineProductService:
         account = account_identity(platform, config)
         records = self.store.listings(platform, account) if account else []
         jobs = self.store.jobs(platform, account) if account else []
-        all_records = records
-        if query:
-            records = [r for r in records if query.casefold() in f"{r.title} {r.seller_sku} {r.remote_id}".casefold()]
-        if status:
-            records = [r for r in records if r.raw_status == status]
-        if market:
-            records = [r for r in records if any(m.site_id == market for m in r.markets)]
-        page = max(1, page)
         latest_sync = next((j for j in jobs if j["operation"] == "sync"), None)
-        def public(listing):
-            return listing.model_dump(exclude={"snapshot"})
         return {"ok": True, "platform": platform, "account_id": account,
-            "items": [public(r) for r in records[(page-1)*25:page*25]], "total": len(records), "page": page, "per_page": 25,
-            "summary": {"total": len(all_records), "active": sum(r.sale_state == "active" for r in all_records),
-                        "paused": sum(r.sale_state == "paused" for r in all_records), "attention": sum(r.sale_state not in ("active", "paused") or bool(r.errors) for r in all_records)},
-            "markets": sorted({m.site_id for r in all_records for m in r.markets}),
-            "statuses": sorted({r.raw_status for r in all_records}), "latest_sync": latest_sync,
+            **listing_page(records, query=query, status=status, market=market, page=page),
+            "summary": {"total": len(records), "active": sum(r.sale_state == "active" for r in records),
+                        "paused": sum(r.sale_state == "paused" for r in records), "attention": sum(r.sale_state not in ("active", "paused") or bool(r.errors) for r in records)},
+            "markets": sorted({m.site_id for r in records for m in r.markets}),
+            "statuses": sorted({r.raw_status for r in records}), "latest_sync": latest_sync,
             "state": "authorization_required" if not account else ("never_synced" if not latest_sync else "authorization_failed" if "AUTH" in latest_sync["result"].get("error_code", "") else "sync_failed" if latest_sync["status"] == "failed" else "ready"),
             "jobs": jobs, "store_name": str(config.get(platform, {}).get("shop_name") or account),
         }
@@ -99,6 +91,17 @@ class OnlineProductService:
     def detail(self, listing_id: str) -> dict[str, Any]:
         listing = self.store.get(listing_id)
         self._config(listing.platform, listing.account_id)
+        return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
+
+    def refresh_status(self, listing_id: str) -> dict[str, Any]:
+        before = self.store.get(listing_id)
+        self._config(before.platform, before.account_id)
+        self.store.assert_status_refreshable(before)
+        adapter = self._adapter(before.platform, before.account_id)
+        status = adapter.read_status(before)
+        # 查询过程中切换店铺或并发更新时，不允许旧响应覆盖当前记录。
+        self._config(before.platform, before.account_id)
+        listing = self.store.update_status(before, status)
         return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
 
     def sync(self, platform: str, key: str, *, ids: list[str] | None = None) -> dict[str, Any]:
@@ -140,26 +143,7 @@ class OnlineProductService:
                 self._confirm(job, adapter, result)
                 return True
             if job["operation"] == "sync":
-                known = {row.remote_id for row in self.store.listings(job["platform"], job["account_id"])}
-                for remote_id in job["request"].get("ids") or adapter.discover():
-                    if self._stop.is_set():
-                        self._update(job, "queued", result)
-                        return True
-                    try:
-                        listing = adapter.read(remote_id)
-                        if not listing.errors or remote_id not in known:
-                            self.store.save(listing, lease=job)
-                        if listing.errors:
-                            raise ValueError("；".join(listing.errors))
-                        result["created" if remote_id not in known else "updated"] += 1
-                        result["completed"] += 1
-                        result["items"].append({"remote_id": remote_id, "status": "confirmed"})
-                    except Exception as exc:
-                        result["failed"] += 1
-                        result["items"].append({"remote_id": remote_id, "status": "failed", "error": str(exc)})
-                    self._update(job, "running", result)
-                result["discovery_complete"] = True
-                self._update(job, "partial" if result["failed"] else "confirmed", result)
+                run_sync(self, job, adapter, result)
                 return True
             request = ChangeRequest.model_validate(job["request"])
             before = self.store.get(request.listing_id)
@@ -191,7 +175,7 @@ class OnlineProductService:
             status = "outcome_unknown" if dispatched and not rejected else "failed"
             if rejected and job["operation"] == "sale_state" and result.get("before"):
                 self.store.sale_intent(job["target_id"], result["before"].get("desired_sale_state", ""), lease=job)
-            if job["operation"] == "sync" and result["completed"]:
+            if job["operation"] == "sync" and (result["completed"] or result.get("discovered")):
                 status = "partial"
             self._update(job, status, result, dispatched=dispatched)
         return True
