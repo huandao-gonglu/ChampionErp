@@ -12,7 +12,7 @@ import * as stateApi from '@/api/workflow/state'
 import * as translationApi from '@/api/workflow/translation'
 import { jsonProbeMessages, JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabilityProbe'
 import { withAiForeground } from '@/services/withAiForeground'
-import type { AuthResult, DraftDetail, DraftIndexItem, Product, UnknownRecord } from '@/types/workflow'
+import type { AuthResult, DraftDetail, DraftIndexItem, Product } from '@/types/workflow'
 
 vi.mock('@/api/workflow/state', () => ({
   fetchState: vi.fn(),
@@ -3082,6 +3082,38 @@ describe('workflow store live API flow', () => {
     expect(store.pricingInput.targets).toHaveLength(1)
     expect(store.pricingInput.targets[0].targetKey).toBe('mercadolibre:cbt')
     expect(store.pricingInput.targets[0].manualPrice).toBeNull()
+  })
+
+  it('重新加载 AI 修改的利润后，用最新参数和版本继续核价', async () => {
+    const store = useWorkflowStore()
+    store.platformOptions = [{ key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] }]
+    const saved = createEmptyDraftDetail('yandex')
+    saved.draftId = 'draft-1'
+    saved.updatedAt = 'version-after-ai'
+    saved.site = 'global'
+    saved.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'CNY' }]
+    saved.pricing = {
+      common: { domestic_freight_cny: 20, other_cost_cny: 30 },
+      targets: { 'yandex:global': { target_margin_percent: 20, commission_percent: 20 } },
+    }
+    saved.skuItems = [{ sku_id: 'sku-1', sku: 'SKU-1', stock: '5', selected: true, overrides: {}, attributes_by_target: {}, publications: {},
+      pricing: { applied: true, targets: { 'yandex:global': { listing_currency: 'CNY', applied_price: { amount: '198.28', currency: 'CNY' } } } },
+    }]
+    store.currentDraft = { ...saved, updatedAt: 'version-before-ai' }
+    store.pricingInput.otherCostCny = 99
+    store.acceptLoadedDraft(draftMutation(saved))
+
+    expect(store.currentDraft.updatedAt).toBe('version-after-ai')
+    expect(store.pricingInput.otherCostCny).toBe(30)
+    expect(store.pricingInput.targets[0]?.targetMarginPercent).toBe(20)
+    expect(store.pricingResult?.results[0]?.appliedPrice).toEqual({ amount: '198.28', currency: 'CNY' })
+    vi.mocked(workflowApi.priceDraft).mockResolvedValue({ items: [], applied: false, pricingBySku: {}, errors: [], metrics: { batchId: 'batch', durationMs: 0, ozonDiscoveryMs: 0 } })
+    await store.calculatePrice()
+    const [draft, input] = vi.mocked(workflowApi.priceDraft).mock.calls[0]!
+    expect(publishingApi.draftPricingPayload(draft, input)).toMatchObject({
+      expected_updated_at: 'version-after-ai',
+      targets: { 'yandex:global': { target_margin_percent: 20 } },
+    })
   })
 
   it('类目预检前会把核价页尺寸同步到草稿', async () => {

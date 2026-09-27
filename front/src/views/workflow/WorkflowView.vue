@@ -32,7 +32,7 @@ import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
-import { useAiAttributeResults } from '@/composables/useAiAttributeResults'
+import { useAiDraftSync } from '@/composables/useAiDraftSync'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
@@ -53,7 +53,6 @@ const {
   currentDraft,
   currentDraftProductContext,
 } = storeToRefs(catalogStore)
-useAiAttributeResults(currentDraft)
 const imageSaveState = useDraftImageSaveState(currentDraft, () => store.saveCurrentDraft())
 const imageSaveStatus = imageSaveState.status
 const {
@@ -114,6 +113,22 @@ const editorOpen = ref(false)
 const draftWorkspaceOpen = ref(false)
 const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
 const draftWorkspaceItem = ref<DraftIndexItem | null>(null)
+const draftSync = useAiDraftSync({
+  draft: currentDraft, input: pricingInput, loading,
+  accept: result => store.acceptLoadedDraft(result),
+  clearError: () => activityStore.setError(''),
+})
+const draftSyncMessage = computed(() => draftSync.message.value || error.value)
+const draftRefreshing = draftSync.refreshing
+
+async function reloadDraft() {
+  if (draftSync.dirty.value && !window.confirm('重新加载将放弃当前页面未保存的修改，使用最新保存的草稿。是否继续？')) return
+  await draftSync.refresh(true)
+}
+
+function checkDraftUpdates() {
+  if (draftWorkspaceOpen.value) void draftSync.refresh()
+}
 const draftWorkspaceImagesLoadedFor = ref('')
 const editorMode = ref<'text' | 'images'>('text')
 const imageEditorTitle = ref('商品库图片编辑')
@@ -357,14 +372,19 @@ function warnUnsavedImages(event: BeforeUnloadEvent) {
 }
 onMounted(async () => {
   window.addEventListener('beforeunload', warnUnsavedImages)
+  window.addEventListener('focus', checkDraftUpdates)
   await store.loadState()
   initialStateLoaded = true
   await refreshDomainForNav(activeNav.value)
 })
 
-onActivated(syncPublishJobsPolling)
+onActivated(() => { syncPublishJobsPolling(); checkDraftUpdates() })
 onDeactivated(stopPublishJobsPolling)
-onBeforeUnmount(() => { stopPublishJobsPolling(); window.removeEventListener('beforeunload', warnUnsavedImages) })
+onBeforeUnmount(() => {
+  stopPublishJobsPolling()
+  window.removeEventListener('beforeunload', warnUnsavedImages)
+  window.removeEventListener('focus', checkDraftUpdates)
+})
 
 watch([activeNav, hasActivePublishJobs], syncPublishJobsPolling)
 
@@ -694,6 +714,10 @@ watch(
           :active-tab="draftWorkspaceTab"
           :draft-title="draftWorkspaceTitle"
           :draft-id="currentDraft.draftId"
+          :sync-message="draftSyncMessage"
+          :refreshing="draftRefreshing"
+          :reload-disabled="loading"
+          @reload="reloadDraft"
           @update-active-tab="switchDraftWorkspaceTab"
           @close="closeDraftWorkspace"
         >

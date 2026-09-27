@@ -33,6 +33,7 @@ class AiPageContext(BaseModel):
     section: Literal["text", "images", "category", "skus", "pricing", "precheck"] | None = None
     product_id: ContextId | None = None
     draft_id: ContextId | None = None
+    listing_id: ContextId | None = None
     platform: ContextId | None = None
     site: ContextId | None = None
     sku_id: ContextId | None = None
@@ -53,6 +54,7 @@ def page_context_instructions(context: dict | None) -> str:
         lines.append(f"当前区域：{SECTION_LABELS[page.section]}")
     for field, label in (
         ("product_id", "当前商品 ID"), ("draft_id", "当前草稿 ID"),
+        ("listing_id", "当前在线商品 ID"),
         ("platform", "当前平台"), ("site", "当前站点"),
         ("sku_id", "当前 SKU ID"), ("attribute_id", "当前属性 ID"),
     ):

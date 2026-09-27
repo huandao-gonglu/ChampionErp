@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from enum import StrEnum
+from typing import Annotated, Literal
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from erp_web.runtime_units.collect_capabilities import collect_from_browser_tab
 from erp_web.schemas.ai_tools import (
@@ -134,6 +135,24 @@ class UnionRequest(BaseModel):
     value: str | int
 
 
+class PlatformChoice(StrEnum):
+    YANDEX = "yandex"
+    OZON = "ozon"
+
+
+class NullableChoices(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    platform: Literal["yandex", "ozon"] | None = None
+    fixed_platform: Literal["yandex"] | None = None
+    enum_platform: PlatformChoice | None = None
+
+
+@ai_tool(name="test_nullable_choices", description="验证可空枚举的输入与输出", permission="test.read")
+def echo_nullable_choices(request: NullableChoices) -> NullableChoices:
+    return request
+
+
 class RecursiveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -184,13 +203,52 @@ def test_compiler_expands_models_and_hides_all_injected_parameters() -> None:
     assert "$ref" not in json.dumps(schema)
     assert schema["additionalProperties"] is False
     assert schema["properties"]["nested"]["additionalProperties"] is False
-    assert schema["properties"]["optional_note"]["type"] == ["string", "null"]
+    for note in (None, "说明"):
+        validate_json_schema({"nested": {"keyword": "fan"}, "optional_note": note}, schema)
+    with pytest.raises(AiToolSchemaError):
+        validate_json_schema({"nested": {"keyword": "fan"}, "optional_note": 1}, schema)
     assert "scope" not in schema["properties"]
     assert "execution" not in schema["properties"]
     assert tool.definition.injected_type_names == (
         "erp_web.schemas.ai_trace.AiExecutionContext",
         "test_ai_tool_catalog.LookupScope",
     )
+
+
+@pytest.mark.parametrize("field,allowed", [
+    ("platform", ("yandex", "ozon")),
+    ("fixed_platform", ("yandex",)),
+    ("enum_platform", ("yandex", "ozon")),
+])
+@pytest.mark.parametrize("value", [None, "yandex", "ozon", "unknown", "", 42])
+def test_nullable_enum_and_const_match_pydantic_through_runtime(field, allowed, value):
+    """可空分支允许 null，同时保留非空枚举/常量约束；输入输出使用同一契约。"""
+    catalog = AiToolCatalog.compile((echo_nullable_choices,))
+    toolset = catalog.bind(
+        toolset_id="test.nullable", allowed_tools=("test_nullable_choices",),
+        scope=AiToolBindingScope.from_values(), declared_permissions={"test.read"},
+    )
+    definition = toolset.get("test_nullable_choices").definition
+    arguments = {field: value}
+    valid = value is None or value in allowed
+    if valid:
+        expected = NullableChoices.model_validate(arguments).model_dump(mode="json")
+        validate_json_schema(arguments, definition.input_schema)
+        validate_json_schema(expected, definition.output_schema)
+    else:
+        with pytest.raises(ValidationError):
+            NullableChoices.model_validate(arguments)
+        for schema in (definition.input_schema, definition.output_schema):
+            with pytest.raises(AiToolSchemaError):
+                validate_json_schema(arguments, schema)
+    runtime = AiToolRuntime(toolset=toolset, execution_context=execution_context())
+    result = runtime.execute(AiToolCommand(
+        call_id="nullable", tool_name="test_nullable_choices", tool_version="1",
+        arguments=arguments, round=1,
+    ))
+    assert result.ok is valid
+    if valid:
+        assert result.to_dict()["output"] == expected
 
 
 def test_compiler_preserves_input_option_label_and_value() -> None:

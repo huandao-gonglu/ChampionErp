@@ -144,6 +144,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     refreshDraftsIndex: combined.refreshDraftsIndex,
     loadProduct: combined.loadProduct,
     loadDraft: combined.loadDraft,
+    acceptLoadedDraft: combined.acceptLoadedDraft,
     loadDraftForPricing: combined.loadDraftForPricing,
     duplicateDraft: combined.duplicateDraft,
     updateDraftTargets: combined.updateDraftTargets,

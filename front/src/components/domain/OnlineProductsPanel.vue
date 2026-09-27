@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import OnlineContentEditor from './OnlineContentEditor.vue'
 import OnlineBuyerLinks from './OnlineBuyerLinks.vue'
+import { useAiPageContext } from '@/composables/useAiPageContext'
 import { fetchOnlineDetail, fetchOnlineProducts, onlineAction, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
 
 const platform = ref<OnlinePlatform>('mercadolibre')
@@ -12,6 +13,7 @@ const query = ref(''), status = ref(''), market = ref(''), currentPage = ref(1)
 const loading = ref(false), busy = ref(false), error = ref(''), notice = ref('')
 const showRecords = ref(false), selectedJob = ref<OnlineJob | null>(null), selected = ref<OnlineListing | null>(null)
 const modal = ref<OnlineOperation | 'sync' | ''>('')
+useAiPageContext(() => ({ page: 'onlineProducts', platform: platform.value, listing_id: selected.value?.id }), 10)
 const scope = ref(''), value = ref('')
 const saleTarget = ref('paused')
 const contentChanges = ref<Record<string,unknown>>({})

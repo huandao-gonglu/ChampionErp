@@ -311,6 +311,17 @@ def test_online_management_has_one_entry_and_retires_local_publication_routes() 
         assert retired not in routes
 
 
+def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools():
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
+    expected = {"online_products_read", "online_products_change", "online_products_sync", "online_products_reconcile", "online_products_retry"}
+    assert {name for name in APPLICATION_CAPABILITY_CATALOG.tools if name.startswith("online_")} == expected
+    source = (ROOT / "erp_web/runtime_units/online_product_capabilities.py").read_text()
+    assert "online_product_service import OnlineProductService" in source
+    assert "@ai_tool(" in source
+    for forbidden in ("requests.", "urllib", "sqlite3", "adapter.write", "Agent(", "while True"):
+        assert forbidden not in source
+
+
 def test_mercadolibre_publisher_only_has_explicit_cbt_write_paths() -> None:
     source = (ROOT / "erp_web/marketplaces/publishing.py").read_text(encoding="utf-8")
     for retired in (

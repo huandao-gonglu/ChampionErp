@@ -66,7 +66,8 @@ class BuyerLink(BaseModel):
         return str(parsed)
 
 
-class OnlineListing(BaseModel):
+class OnlineProduct(BaseModel):
+    """页面与 AI 共用的在线商品公开字段，不包含平台原始响应。"""
     model_config = ConfigDict(extra="forbid")
     id: str
     platform: Platform
@@ -84,7 +85,6 @@ class OnlineListing(BaseModel):
     stocks: list[StockScope] = Field(default_factory=list)
     content: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, Capability] = Field(default_factory=dict)
-    snapshot: dict[str, Any] = Field(default_factory=dict)
     version: str = ""
     synced_at: str = ""
     errors: list[str] = Field(default_factory=list)
@@ -94,13 +94,20 @@ class OnlineListing(BaseModel):
     local_draft_id: str = ""
 
 
-class ChangeRequest(BaseModel):
+class OnlineListing(OnlineProduct):
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class OnlineChange(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     listing_id: str = Field(min_length=1)
     version: str = Field(min_length=1)
     operation: Literal["price", "stock", "content", "sale_state"]
     scope_id: str = ""
-    changes: dict[str, Any]
+    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表。")
+
+
+class ChangeRequest(OnlineChange):
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 

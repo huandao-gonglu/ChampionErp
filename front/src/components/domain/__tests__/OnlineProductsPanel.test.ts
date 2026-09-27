@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAiPageContextStore } from '@/stores/aiPageContext'
 import OnlineProductsPanel from '../OnlineProductsPanel.vue'
 import { fetchOnlineDetail, fetchOnlineProducts, onlineAction, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
 
@@ -12,12 +14,26 @@ const item: OnlineListing = {
 }
 function response(): OnlinePage { return {items:[item],total:1,page:1,per_page:25,account_id:'shop-1',store_name:'当前店铺',state:'ready',markets:[],statuses:['active'],summary:{total:1,active:1,paused:0,attention:0},latest_sync:null,jobs:[]} }
 let wrapper: VueWrapper | undefined
-beforeEach(() => {vi.useFakeTimers(); vi.clearAllMocks();vi.mocked(fetchOnlineProducts).mockResolvedValue(response());vi.mocked(fetchOnlineDetail).mockResolvedValue(item)})
+beforeEach(() => {setActivePinia(createPinia());vi.useFakeTimers(); vi.clearAllMocks();vi.mocked(fetchOnlineProducts).mockResolvedValue(response());vi.mocked(fetchOnlineDetail).mockResolvedValue(item)})
 afterEach(() => {wrapper?.unmount();wrapper=undefined;document.body.innerHTML='';vi.useRealTimers()})
 function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,global:{stubs:{Teleport:true}}});return wrapper}
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
 
 describe('在线商品页面',()=>{
+  it('AI 背景使用当前平台与在线刊登 ID，关闭详情和卸载后清理',async()=>{
+    render();await flushPromises()
+    const context=useAiPageContextStore()
+    expect(context.current).toMatchObject({page:'onlineProducts',platform:'mercadolibre'})
+    await click('管理 →')
+    expect(context.current?.listing_id).toBe('remote-1')
+    expect(context.current?.draft_id).toBeUndefined()
+    await click('关闭 ×')
+    expect(context.current?.listing_id).toBeUndefined()
+    await click('Yandex Market')
+    expect(context.current?.platform).toBe('yandex')
+    wrapper!.unmount();wrapper=undefined
+    expect(context.current).toBeNull()
+  })
   it('展示 API 商品并读取详情，页面加载不会发起平台修改',async()=>{
     render();await flushPromises()
     expect(wrapper!.findAll('[data-testid="online-listing"]')).toHaveLength(1)

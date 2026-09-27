@@ -194,11 +194,11 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="excluded",
         reason="SPA 页面壳，前端静态路由，无业务行为。",
     ),
-    AiCapabilityCoverageEntry(method="GET", path="/api/online-products", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
-    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/sync", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
-    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
-    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/reconcile", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
-    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/retry", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
+    AiCapabilityCoverageEntry(method="GET", path="/api/online-products", business_domain="在线商品", disposition="capability", capability_names=("online_products_read",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/sync", business_domain="在线商品", disposition="capability", capability_names=("online_products_sync",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="capability", capability_names=("online_products_change",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/reconcile", business_domain="在线商品", disposition="capability", capability_names=("online_products_reconcile",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/retry", business_domain="在线商品", disposition="capability", capability_names=("online_products_retry",)),
     # -------------------------------------------------- 平台查询（GET）
     AiCapabilityCoverageEntry(
         method="GET",

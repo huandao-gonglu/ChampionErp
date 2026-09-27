@@ -12,6 +12,8 @@ from typing import Any
 from erp_web.context import AppContext, get_context
 from erp_web.facades.agent_draft_scope import authorized_draft_ids
 from erp_web.runtime_units.conversation_fact_capabilities import ConversationFactScope
+from erp_web.runtime_units.online_product_capabilities import ONLINE_PRODUCT_JOB_TYPE, OnlineProductCapabilityScope
+from erp_web.runtime_units.online_product_job_reader import OnlineProductJobReader
 from erp_web.facades.category_match_facade import (
     match_category as run_category_match,
 )
@@ -146,6 +148,7 @@ def build_capability_binding_scope(
 
     return AiToolBindingScope(
         {
+            OnlineProductCapabilityScope: OnlineProductCapabilityScope(lambda: context.online_products),
             ConversationFactScope: ConversationFactScope(
                 context.agent_calls, context.chat_turn_claims
             ),
@@ -309,6 +312,7 @@ def build_job_status_readers(
 
     active_context = context or get_context()
     return {
+        ONLINE_PRODUCT_JOB_TYPE: OnlineProductJobReader(OnlineProductCapabilityScope(lambda: active_context.online_products).job),
         PUBLISH_JOB_TYPE: PublishJobStatusReader(active_context.publishing_bus),
         PRODUCT_RESEARCH_JOB_TYPE: ResearchJobStatusReader(),
     }

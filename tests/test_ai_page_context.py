@@ -18,6 +18,14 @@ PAGE_A = {
 }
 
 
+def test_online_listing_context_is_not_a_local_product_or_draft():
+    from erp_web.schemas.ai_page_context import page_context_instructions
+    text = page_context_instructions({"page": "onlineProducts", "platform": "yandex", "listing_id": "online-123"})
+    assert "当前在线商品 ID：online-123" in text
+    assert "当前草稿 ID" not in text
+    assert "额外授权" in text
+
+
 def test_background_is_native_instructions_and_switch_off_clears_old_location(tmp_path):
     observed = []
 

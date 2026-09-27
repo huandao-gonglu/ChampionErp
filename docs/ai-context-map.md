@@ -93,12 +93,17 @@
 - 任务以提交键防重，同目标互斥；全店同步与该账号修改互斥。写前核对当前店铺及平台业务版本，
   写前日志区分已发送与未发送；未知结果只回读、不自动重放。每次领取生成独立租约，过期执行者不可提交结果。
   工作线程在应用启动时恢复队列，前端轮询仅负责展示；部分同步失败保留旧快照，不推断删除。
-- 这些是平台业务任务，不涉及模型、Agent run、Deferred、审批或消息协议；无需创建或替代 Pydantic AI 基础设施。
-  在线管理 AI 入口未列入本轮范围，覆盖清单明确登记 `internal_only`。
+- `runtime_units/online_product_capabilities.py` 将现有读取、统一修改、同步、回读、重试接口直接装配进主 Agent。
+  `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。
+  商品数量、SKU 分析等由读取返回值与已有 Code Mode 组合完成，不新增场景工具、查询 DSL 或平台写入旁路。
+- 审批和持久调用直接使用现有 Tool Bridge 的 Pydantic Deferred 机制；`online_product_job_reader.py` 只读取现有领域任务回执。
+  `confirmed` 才确认成功；部分完成、未知结果和自动回读耗尽保留原状态并结束本次工具等待，不自动重放。
+  改库存、调价、内容与停售共用一个 `online_products_change`，所需权限、审批和提交身份由原有 Runtime 处理。
 - 前端复用工作台的 `/online-products` 导航及 `OnlineProductsPanel.vue` / `OnlineContentEditor.vue`。
   `OnlineBuyerLinks.vue` 在列表和详情提供单链接直达、多站点选择及缺失提示；点击不调用后端或 AI。
+  页面背景传递当前平台和 `listing_id`，不混用本地商品或草稿 ID，也不作为授权。
   旧本地 publication 列表、旧独立暂停 HTTP/AI 工具及其前端已删除；持久化 publication 的读取迁移保留。
-- 已验证范围、外部阻碍、平台契约及验收记录见 [在线商品管理](online-product-management/README.md)。
+- AI 接入边界、平台限制及验收方式见 [在线商品 AI](online-product-ai.md)。
 
 ## AI Provider 与 AI Work
 
@@ -244,6 +249,7 @@ CLI / Browser use case
   不可变契约元数据；装饰时不注册、不读取配置，也不执行领域逻辑。
 - `erp_web/services/ai_tool_compiler.py`：受限同步函数签名、Pydantic `TypeAdapter`、本地
   `$defs/$ref` 展开、Schema 支持子集和机械 executor adapter 的唯一编译 owner。
+  保留 Pydantic 原生 `anyOf` 分支，包含可空枚举与常量；不得把非空分支约束展平到 `null`。
 - `erp_web/services/ai_tool_catalog.py`：调用方显式函数清单、场景 allowlist、Execution Profile
   权限与独立可信 Binding Scope 的唯一 Catalog 抽象；不扫描包或依赖 import side effect。
 - `erp_web/services/ai_tool_registry.py`：不可变 run-scoped ToolSet 与
@@ -590,7 +596,7 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `erp_web/runtime_units/category_attribute_access.py` 是查询与写入共用的纯作用域规则：公共、SKU、托管及只读字段一致判定。托管字段在枚举查询前拒绝；Ozon 单字符枚举值用字典分页按 ID 和原文精确核对，不走至少两字符的搜索端点，不跳过枚举真实性校验。本地查询参数错误不可重试，网络故障保留可重试属性。
 - 属性填写只有主对话这一条 AI 路径。页面入口、专用属性 Agent/复核模型、局部 HTTP 调用和复合草稿准备里的隐式属性步骤均已删除。`draft_prepare_for_market` 返回的完成步骤只包含目标、文案、图片、类目和定价；主对话随后按需直接填写属性。
 - `erp_web/services/global_agent_chat_service.py` 与 `config/agents.md` 规定事实复用、公共/SKU 边界、无品牌优先及缺口汇报。继续使用已安装的 Pydantic AI 2.44.0 原生工具调用、消息历史和指令装配；此次不需要新增 Agent loop 或生命周期。
-- `front/src/composables/useAiAttributeResults.ts` 仅把本轮成功写入回执投影到当前草稿同一类目的属性表，成组回执同时局部更新包装、库存与保存版本，保留未提交的表单字段；历史回放和失败结果不覆盖表单，不触发业务调用。眼睛开关继续控制发送时的页面背景。
+- `front/src/composables/useAiDraftSync.ts` 在原生对话历史提交、流结束及返回草稿工作台时读取最新业务数据，统一同步属性、包装、库存、核价参数、SKU 售价和保存版本。无未保存编辑时自动更新；有编辑时保留页面并提示重新加载，覆盖前需确认。重新加载是只读操作，不重放 AI 工具或提交表单；过期读取响应不能覆盖切换后的草稿。`DraftWorkspacePanel` 在工作台内持续显示错误与“重新加载最新数据”入口。眼睛开关继续控制发送时的页面背景。
 - `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
   `dictionary_value_id + value`（ID 原样按字符串存取，不做数值化），搜索输入不进入草稿；
   实时候选按 `next_cursor/has_more` 追加并按 ID 去重，大品牌字典通过“加载更多”继续读取；

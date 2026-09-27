@@ -49,6 +49,7 @@ from erp_web.runtime_units.research_capabilities import RESEARCH_AI_CAPABILITIES
 from erp_web.runtime_units.store_auth_capabilities import (
     STORE_AUTH_AI_CAPABILITIES,
 )
+from erp_web.runtime_units.online_product_capabilities import ONLINE_PRODUCT_AI_CAPABILITIES
 from erp_web.services.ai_tool_catalog import AiToolBindingScope, AiToolCatalog
 from erp_web.services.ai_tool_registry import AiToolSet
 
@@ -73,6 +74,7 @@ SOURCE_INSPECT_CAPABILITIES = SOURCE_INSPECT_AI_CAPABILITIES
 PUBLISH_ADMIN_CAPABILITIES = PUBLISH_ADMIN_AI_CAPABILITIES
 
 ALL_AI_CAPABILITIES = (
+    *ONLINE_PRODUCT_AI_CAPABILITIES,
     *CONVERSATION_FACT_CAPABILITIES,
     *PRODUCT_CAPABILITIES,
     *PRODUCT_WRITE_CAPABILITIES,
@@ -102,6 +104,7 @@ APPLICATION_CAPABILITY_CATALOG = AiToolCatalog.compile(ALL_AI_CAPABILITIES)
 #: 主 Agent 的查询和纯计算能力。
 GLOBAL_CHAT_CAPABILITIES = frozenset(
     {
+        "online_products_read",
         "conversation_facts_query",
         "drafts_query",
         "product_read",
@@ -135,6 +138,10 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
 #: owner 并膨胀上下文，已从常用 allowlist 移除，只保留为 internal。
 _WRITE_CAPABILITIES = frozenset(
     {
+        "online_products_change",
+        "online_products_sync",
+        "online_products_reconcile",
+        "online_products_retry",
         "drafts_query",
         "product_read",
         "draft_attributes_read",

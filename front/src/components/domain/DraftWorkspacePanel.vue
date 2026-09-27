@@ -5,11 +5,15 @@ const props = defineProps<{
   activeTab: DraftWorkspaceTab
   draftTitle: string
   draftId: string
+  syncMessage?: string
+  refreshing?: boolean
+  reloadDisabled?: boolean
 }>()
 
 const emit = defineEmits<{
   updateActiveTab: [tab: DraftWorkspaceTab]
   close: []
+  reload: []
 }>()
 
 const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = [
@@ -33,9 +37,15 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <slot name="actions" />
+          <button v-if="!props.syncMessage" class="btn btn-outline" :disabled="props.refreshing || props.reloadDisabled || !props.draftId" @click="emit('reload')">{{ props.refreshing ? '正在加载…' : '重新加载最新数据' }}</button>
           <button class="btn btn-outline" @click="emit('close')">关闭</button>
         </div>
       </header>
+
+      <div v-if="props.syncMessage" role="alert" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+        <p class="min-w-0 flex-1">{{ props.syncMessage }}</p>
+        <button type="button" class="btn btn-outline shrink-0" :disabled="props.refreshing || props.reloadDisabled || !props.draftId" @click="emit('reload')">{{ props.refreshing ? '正在加载…' : '重新加载最新数据' }}</button>
+      </div>
 
       <nav class="grid gap-2 rounded-2xl border border-accent-200 bg-slate-50 p-2 dark:border-dark-700 dark:bg-dark-950/70 sm:grid-cols-2 xl:grid-cols-6" aria-label="草稿编辑功能">
         <button

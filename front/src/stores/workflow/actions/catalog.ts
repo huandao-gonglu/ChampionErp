@@ -19,6 +19,7 @@ import {
   uploadImages,
 } from '@/api/workflow/catalog'
 import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow/catalog'
+import type { DraftMutationResponse } from '@/api/workflow/normalizers'
 import { assignUpc as assignUpcApi } from '@/api/workflow/settings'
 import { listingLanguageValue } from '@/constants/locales'
 import { withAiForeground } from '@/services/withAiForeground'
@@ -75,6 +76,7 @@ type WorkflowCatalogActionsPort = Pick<
   | 'configuredSelectedTargets'
   | 'targetPlatforms'
   | 'syncActivePublishTarget'
+  | 'selectedPublishTarget'
   | 'draftDetailFromProduct'
   | 'applyMutationIndexes'
   | 'restorePrecheckFromProduct'
@@ -93,7 +95,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     categoryResults, categoryRecommendations, categoryAutoMatchProductName, categoryPrecheck, precheck, precheckResults,
     payloadPreview, copyGenerating, activeMarketplace, appConfig, storeConfig, loading,
     addLog, setError, currentStage, mergeTargetDetails, persistActiveTargetListingFields,
-    invalidateCategoryAttributeLoad, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, syncActivePublishTarget,
+    invalidateCategoryAttributeLoad, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, syncActivePublishTarget, selectedPublishTarget,
     draftDetailFromProduct, applyMutationIndexes, restorePrecheckFromProduct, restoreCategoryFromProduct, syncCollectDiagnosticsFromProduct,
     syncPricingInputFromProduct, syncDraftPackageDimensionsFromPricingInput,
   } = runtime
@@ -144,23 +146,30 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     }
   }
 
+  function acceptLoadedDraft(result: DraftMutationResponse, preserveTarget = true) {
+    const previousTarget = preserveTarget ? selectedPublishTarget.value : undefined
+    invalidateCategoryAttributeLoad()
+    currentDraft.value = result.draft
+    currentDraftProductContext.value = result.productContext
+    activeMarketplace.value = result.draft.platform
+    categoryRecommendations.value = {}
+    categoryAutoMatchProductName.value = ''
+    syncActivePublishTarget(previousTarget, true)
+    categoryResults.value = []
+    precheck.value = null
+    precheckResults.value = {}
+    payloadPreview.value = null
+    applyMutationIndexes(result)
+    syncPricingInputFromProduct()
+  }
+
   async function loadDraft(item: DraftIndexItem) {
     invalidateCategoryAttributeLoad()
     loading.value = true
     setError('')
     try {
       const result = await loadDraftApi(item.draftId)
-      currentDraft.value = result.draft
-      currentDraftProductContext.value = result.productContext
-      activeMarketplace.value = result.draft.platform
-      categoryRecommendations.value = {}
-      categoryAutoMatchProductName.value = ''
-      syncActivePublishTarget(undefined, true)
-      categoryResults.value = []
-      precheck.value = null
-      payloadPreview.value = null
-      applyMutationIndexes(result)
-      syncPricingInputFromProduct()
+      acceptLoadedDraft(result, false)
       addLog(`已加载草稿：${item.title || item.productTitle || item.draftId}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '加载草稿失败')
@@ -781,6 +790,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
 
 
   return {
+    acceptLoadedDraft,
     refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, duplicateDraft, updateDraftTargets,
     updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, toggleProductSelection,
     selectAllProducts, claimProductsToDrafts, generateCopyForSelectedProducts, enqueueSelectedProducts,

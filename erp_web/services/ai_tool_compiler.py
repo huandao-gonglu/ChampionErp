@@ -66,9 +66,6 @@ _SCHEMA_KEYWORDS = frozenset(
         "$ref",
     }
 )
-_NON_ASSERTION_KEYWORDS = frozenset(
-    {"title", "description", "format", "default", "examples"}
-)
 
 
 class AiToolCompilerError(ValueError):
@@ -216,38 +213,12 @@ def _compile_schema(raw_schema: Mapping[str, Any], *, label: str) -> dict[str, A
             branches = node.get("anyOf")
             if not isinstance(branches, list) or not branches:
                 raise AiToolCompilerError(f"{path}.anyOf 必须是非空数组")
-            compiled_branches = [
+            # 保留 Pydantic 原生分支。把可空 union 展平为 type 数组会让
+            # enum/const 等非空分支约束错误地作用于 null，改变原契约。
+            node["anyOf"] = [
                 resolve(branch, path=f"{path}.anyOf[{index}]", stack=stack)
                 for index, branch in enumerate(branches)
             ]
-            nullable = [
-                branch
-                for branch in compiled_branches
-                if branch.get("type") == "null"
-                and set(branch).issubset({"type", *_NON_ASSERTION_KEYWORDS})
-            ]
-            non_null = [
-                branch for branch in compiled_branches if branch not in nullable
-            ]
-            if len(branches) == 2 and len(nullable) == 1 and len(non_null) == 1:
-                normalized = dict(non_null[0])
-                branch_type = normalized.get("type")
-                if not isinstance(branch_type, str) or branch_type == "null":
-                    raise AiToolCompilerError(f"{path}.anyOf 的非空分支缺少简单 type")
-                normalized["type"] = [branch_type, "null"]
-                for key, value in node.items():
-                    if key == "anyOf":
-                        continue
-                    if key in normalized and normalized[key] != value:
-                        raise AiToolCompilerError(f"{path}.anyOf sibling 无法无损合并")
-                    normalized[key] = value
-                node = normalized
-            else:
-                # 保留一般 anyOf 断言，例如“两个字段至少提供一个”。Runtime
-                # 会执行同一组分支，因此模型 Schema 与 request adapter 不再分叉。
-                normalized = dict(node)
-                normalized["anyOf"] = compiled_branches
-                node = normalized
 
         if "oneOf" in node:
             node = _compile_discriminated_union(
