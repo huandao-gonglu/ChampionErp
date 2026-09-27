@@ -62,8 +62,6 @@ vi.mock('@/api/workflow/publishing', async (importOriginal) => ({
   fetchPublishJob: vi.fn(),
   fetchPublishJobs: vi.fn(),
   fetchMercadoLibreOrders: vi.fn(),
-  fetchMercadoLibreUserProducts: vi.fn(),
-  pauseMercadoLibreUserProduct: vi.fn(),
   reconcilePublishJob: vi.fn(),
   runCategoryPrecheck: vi.fn(),
   publishProductDirect: vi.fn(),
@@ -1077,21 +1075,6 @@ describe('workflow store live API flow', () => {
       total: 0,
       checkedAt: '',
     })
-    vi.mocked(workflowApi.fetchMercadoLibreUserProducts).mockResolvedValue({
-      items: [],
-      refreshErrors: [],
-      refreshScope: 'identity_mapping_only',
-      checkedAt: '',
-      pagination: {
-        page: 1,
-        perPage: 50,
-        offset: 0,
-        total: 0,
-        totalPages: 0,
-        hasPrev: false,
-        hasNext: false,
-      },
-    })
 
     const store = useWorkflowStore()
     store.mercadolibreAuthChecklist = {
@@ -1109,9 +1092,6 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fetchProductsIndex).toHaveBeenCalledOnce()
     expect(workflowApi.fetchPublishLogs).toHaveBeenCalledOnce()
     expect(workflowApi.fetchMercadoLibreOrders).toHaveBeenCalledOnce()
-    expect(workflowApi.fetchMercadoLibreUserProducts).toHaveBeenCalledOnce()
-    expect(workflowApi.fetchMercadoLibreUserProducts).toHaveBeenCalledWith('active', 1, 50, false)
-    expect(store.mercadoLibreUserProductsRefreshScope).toBe('identity_mapping_only')
   })
 
   it('Mercado Libre 不允许绕过发布队列调用直接发布', async () => {

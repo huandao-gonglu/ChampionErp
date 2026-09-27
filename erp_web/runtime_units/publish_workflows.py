@@ -38,7 +38,6 @@ from .publish_capabilities import (
     request_product_publish,
 )
 from .publish_context import prepare_publish_context
-from .publish_mercadolibre import mercadolibre_pause_user_product
 from .runtime_api import publish_product
 
 ResponseWithStatus = tuple[ApiResponse, int]
@@ -243,18 +242,6 @@ def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return {"ok": False, "error": str(exc)}, 400
 
 
-def pause_mercadolibre_user_product(body: dict[str, Any]) -> ResponseWithStatus:
-    try:
-        result = mercadolibre_pause_user_product(
-            str(body.get("siteless_user_product_id") or "")
-        )
-        if result.get("ok"):
-            return result, 200
-        return result, 404 if result.get(
-            "error_code"
-        ) == "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND" else 400
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 400
 
 
 def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
@@ -386,7 +373,6 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 __all__ = [
-    "pause_mercadolibre_user_product",
     "enqueue_publish_job",
     "precheck_publish_payload",
     "preview_publish_payload",

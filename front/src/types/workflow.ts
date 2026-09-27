@@ -858,14 +858,6 @@ export interface PublishLogItem {
   raw: UnknownRecord
 }
 
-export interface MercadoLibreUserProduct extends MercadoLibrePublication {
-  productId: string
-  draftId: string
-  title: string
-  thumbnail: string
-  raw: UnknownRecord
-}
-
 export interface MercadoLibreOrderLine {
   itemId: string
   title: string
@@ -911,24 +903,6 @@ export interface MercadoLibreOrdersPage {
   items: MercadoLibreOrderItem[]
   notifications: MercadoLibreOrderNotification[]
   total: number
-  checkedAt: string
-}
-
-export interface MercadoLibreUserProductPagination {
-  page: number
-  perPage: number
-  offset: number
-  total: number
-  totalPages: number
-  hasPrev: boolean
-  hasNext: boolean
-}
-
-export interface MercadoLibreUserProductsPage {
-  items: MercadoLibreUserProduct[]
-  pagination: MercadoLibreUserProductPagination
-  refreshErrors: UnknownRecord[]
-  refreshScope: string
   checkedAt: string
 }
 

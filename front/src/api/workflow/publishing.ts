@@ -14,8 +14,6 @@ import type {
   MercadoLibreOrderItem,
   MercadoLibreOrderLine,
   MercadoLibreOrdersPage,
-  MercadoLibreUserProduct,
-  MercadoLibreUserProductsPage,
   PricingInput,
   PricingDestinationResult,
   PricingResult,
@@ -34,7 +32,6 @@ import type {
   PayloadPreviewResult,
   ProductOperationResult,
 } from './normalizers'
-import { normalizeMercadoLibrePublication } from './normalizers/product'
 import {
   asRecord,
   ensureOk,
@@ -188,89 +185,6 @@ export async function fetchMercadoLibreOrders(limit = 10, offset = 0): Promise<M
     total: getNumber(pagination, ['total']),
     checkedAt: getString(data, ['checked_at', 'checkedAt']),
   }
-}
-
-function normalizeMercadoLibreUserProduct(value: unknown): MercadoLibreUserProduct {
-  const record = asRecord(value)
-  const publication = normalizeMercadoLibrePublication(record) || {
-    model: '',
-    accountUserId: '',
-    sitelessUserProductId: '',
-    sitelessFamilyId: '',
-    parentItemId: '',
-    parentUserProductId: '',
-    sellerId: '',
-    status: '',
-    familyName: '',
-    markets: [],
-    confirmedPayload: {},
-    error: '',
-    lastOperation: {},
-    updatedAt: '',
-  }
-  return {
-    ...publication,
-    productId: getString(record, ['product_id', 'productId']),
-    draftId: getString(record, ['draft_id', 'draftId']),
-    title: getString(record, ['title'], publication.familyName),
-    thumbnail: getString(record, ['thumbnail']),
-    updatedAt: getString(record, ['updated_at', 'updatedAt'])
-      || publication.markets.map((market) => market.updatedAt).filter(Boolean).sort().at(-1)
-      || '',
-    raw: record,
-  }
-}
-
-function normalizeMercadoLibrePagination(value: unknown, fallbackPage: number, fallbackPerPage: number) {
-  const record = asRecord(value)
-  const total = getNumber(record, ['total'])
-  const perPage = getNumber(record, ['per_page', 'perPage']) || fallbackPerPage
-  const page = getNumber(record, ['page']) || fallbackPage
-  const totalPages = getNumber(record, ['total_pages', 'totalPages']) || Math.max(1, Math.ceil(total / Math.max(1, perPage)))
-  return {
-    page,
-    perPage,
-    offset: getNumber(record, ['offset']),
-    total,
-    totalPages,
-    hasPrev: getBoolean(record, ['has_prev', 'hasPrev']) || page > 1,
-    hasNext: getBoolean(record, ['has_next', 'hasNext']) || (total > 0 && page < totalPages),
-  }
-}
-
-export async function fetchMercadoLibreUserProducts(
-  status = 'active',
-  page = 1,
-  perPage = 50,
-  refreshIdentityMapping = false,
-): Promise<MercadoLibreUserProductsPage> {
-  const params = new URLSearchParams({
-    status,
-    page: String(page),
-    per_page: String(perPage),
-    refresh: String(refreshIdentityMapping),
-  })
-  const response = await apiClient.get(`/api/mercadolibre/user-products?${params.toString()}`)
-  const data = asRecord(response.data)
-  ensureOk(data, '读取 Mercado Libre User Products 失败')
-  return {
-    items: Array.isArray(data.items) ? data.items.map(normalizeMercadoLibreUserProduct) : [],
-    pagination: normalizeMercadoLibrePagination(data.pagination, page, perPage),
-    refreshErrors: Array.isArray(data.refresh_errors) ? data.refresh_errors.map(asRecord) : [],
-    refreshScope: getString(data, ['refresh_scope']),
-    checkedAt: getString(data, ['checked_at']),
-  }
-}
-
-export async function pauseMercadoLibreUserProduct(sitelessUserProductId: string): Promise<UnknownRecord> {
-  const normalizedId = String(sitelessUserProductId || '').trim()
-  if (!normalizedId) throw new Error('暂停 Mercado Libre User Product 需要 Siteless User Product ID。')
-  const response = await apiClient.post('/api/mercadolibre/pause-user-product', {
-    siteless_user_product_id: normalizedId,
-  })
-  const data = asRecord(response.data)
-  ensureOk(data, '暂停 Mercado Libre User Product 失败')
-  return data
 }
 
 function normalizeMoney(value: unknown, currency: string) {

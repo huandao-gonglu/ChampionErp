@@ -9,9 +9,6 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.runtime_units import publish_workflows
-from erp_web.runtime_units.draft_publish_context import (
-    load_required_draft_publish_context,
-)
 from erp_web.schemas.api import ApiResponse
 
 ResponseWithStatus = tuple[ApiResponse, int]
@@ -29,8 +26,6 @@ def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return publish_workflows.publish_product_payload(body)
 
 
-def pause_mercadolibre_user_product(body: dict[str, Any]) -> ResponseWithStatus:
-    return publish_workflows.pause_mercadolibre_user_product(body)
 
 
 def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
@@ -43,7 +38,6 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
 
 __all__ = [
     "enqueue_publish_job",
-    "pause_mercadolibre_user_product",
     "precheck_publish_payload",
     "preview_publish_payload",
     "publish_product_payload",

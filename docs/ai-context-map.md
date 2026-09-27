@@ -69,15 +69,36 @@
 
 ## SQLite 数据库版本边界
 
-- `erp_web/db.py` 是 SQLite schema 与版本门禁的唯一 owner，当前
-  `SCHEMA_VERSION=15`。数据库文件不存在或 `user_version=0` 且没有任何用户 schema
-  object 时，才会在单事务内创建当前结构。
-- 现有数据库只在版本为 15 且全部 table、column、constraint、index、view、trigger 与当前
-  建库 SQL 的完整结构签名一致时打开。非空 v0、v1–v14、未来版本和结构残缺/额外的 v15
-  都在写入前失败；运行时不升级、修复、删除或重建数据库。
-- 旧库切换是显式运维流程：先导出需保留的配置与授权，再停止应用、删除主库及
-  `-wal`/`-shm`，创建全新 v15 后导回配置。`upc_pool.json` 是已购买 UPC 的显式资产导入，
-  不是旧 schema 兼容路径。
+- `erp_web/db.py` 是 schema 与版本门禁的唯一 owner，当前 `SCHEMA_VERSION=16`。
+  真正空库才自动建表；已有库只接受完整当前结构，运行时不修补、不升级。
+- 完整 v15 库使用 `scripts/migrate_online_products.py <数据库>` 显式升级到 v16。
+  脚本先创建权限 0600 的 SQLite 一致性备份，再在事务内校验原结构、添加在线商品两表及索引。
+  商品、草稿、授权、发布及 Agent 持久数据全部保留。其他版本或残缺结构在写入前拒绝。
+- `upc_pool.json` 是已购买 UPC 的显式资产导入，不属于 schema 迁移。
+
+## 在线商品管理
+
+- `http_route_units/online_product_routes.py` 是列表/详情及同步、修改、回读、失败重试的唯一 HTTP 入口。
+  `facades/online_product_facade.py` 负责请求转换；`facades/online_product_factory.py` 显式装配三个平台适配器。
+- `services/online_product_service.py` 编排 ERP 领域任务，通过注入访问适配器，不反向导入 runtime。
+  `services/online_product_changes.py` 负责确定性变更校验与字段回读比较。
+- `runtime_units/online_mercadolibre.py`、`online_yandex.py`、`online_ozon.py` 负责平台发现、读取和最小变更。
+  复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
+- `schemas/online_products.py` 定义平台刊登、市场、具名价格/库存范围及变更契约；
+  `stores/online_product_store.py` 独占 `online_listings` / `online_jobs`。远端商品不要求有本地商品或草稿，
+  不伪造 publication，不修改 `ProductStore` 的归属。
+- `marketplaces/online_buyer_links.py` 纯函数提取平台买家链接，规范化为 `BuyerLink`，随列表/详情返回。
+  Yandex 使用 B2C `showcaseUrls`，Mercado 使用站点子刊登 `permalink`；不猜测缺失地址。
+  `scripts/backfill_online_buyer_links.py` 补齐当前账号存量链接，只更新导航元数据，保留业务版本及同步时间。
+- 任务以提交键防重，同目标互斥；全店同步与该账号修改互斥。写前核对当前店铺及平台业务版本，
+  写前日志区分已发送与未发送；未知结果只回读、不自动重放。每次领取生成独立租约，过期执行者不可提交结果。
+  工作线程在应用启动时恢复队列，前端轮询仅负责展示；部分同步失败保留旧快照，不推断删除。
+- 这些是平台业务任务，不涉及模型、Agent run、Deferred、审批或消息协议；无需创建或替代 Pydantic AI 基础设施。
+  在线管理 AI 入口未列入本轮范围，覆盖清单明确登记 `internal_only`。
+- 前端复用工作台的 `/online-products` 导航及 `OnlineProductsPanel.vue` / `OnlineContentEditor.vue`。
+  `OnlineBuyerLinks.vue` 在列表和详情提供单链接直达、多站点选择及缺失提示；点击不调用后端或 AI。
+  旧本地 publication 列表、旧独立暂停 HTTP/AI 工具及其前端已删除；持久化 publication 的读取迁移保留。
+- 已验证范围、外部阻碍、平台契约及验收记录见 [在线商品管理](online-product-management/README.md)。
 
 ## AI Provider 与 AI Work
 
@@ -802,22 +823,11 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。
 - 前端 `SkuImagePicker.vue` 从素材池选图；图片页“关联 SKU”复用商品/草稿保存入口。`replace_selected` 处理结果只替换当前草稿的相应 SKU 引用，换图不使核价失效。无调用方的 `set_sku` 素材标记 action 已删除。
 - 商品 schema 当前为 4；保留本地商品及草稿的 SKU 图片地址迁移能力，不恢复旧的按下标选品格式。详见 `docs/sku-workflow.md`。
-- `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、非 Mercado
-  平台同步发布、发布队列、`POST /api/mercadolibre/pause-user-product` 与
-  `POST /api/publish-bus/reconcile` HTTP 入口。reconcile 只读取 job 已持久化的远端
-  task 终态，绝不重放 publish mutation。
-  Mercado Libre 明确拒绝 `/api/publish-product` 直发旁路，只允许预览、人工确认与
-  PublishingBus 持久队列。暂停请求只接受
-  `siteless_user_product_id`，不得把本地站点 item ID 当作全局商品身份。
-- `erp_web/http_route_units/get_routes.py`：发布任务列表、指定 Job 详情与
-  `GET /api/mercadolibre/user-products` 的只读查询入口。Mercado User Products 列表
-  以本地草稿 `publication` 为主索引；仅显式 `refresh=true` 时，才按已经持久化的
-  Siteless ID 调用 `/marketplace/user-products/{id}/mapping` 刷新 Item/Local UP
-  身份映射。mapping 必须是官方顶层单元素数组，且 Siteless ID、CBT owner、父 Item/UP
-  及站点映射全部与当前账号和本地 publication 闭包一致；空数组、多元素、身份漂移或
-  非法 `UP...` 标识只记录 refresh error，不能覆盖已确认身份。mapping 不提供权威状态、售价或刊登类型，因此已有业务事实保持为本地
-  snapshot，不能把 mapping 读取称为远端状态刷新。禁止用
-  `/users/{id}/items/search` 或本地站点 item 搜索拼出全量 families。
+- `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、非 Mercado 平台同步发布、
+  发布队列及 `POST /api/publish-bus/reconcile`。reconcile 只查询已持久化任务，不重放发布修改。
+  Mercado Libre 只允许预览、确认与 PublishingBus 持久队列。
+- `erp_web/http_route_units/get_routes.py`：发布任务列表与指定 Job 详情。
+  店铺商品发现、查询和销售状态管理由在线商品模块负责。
 - `erp_web/facades/publish_facade.py`：HTTP 层唯一发布 facade；业务编排进入
   `erp_web/runtime_units/publish_workflows.py`。
 - `erp_web/runtime_units/publish_adapter.py`：发布平台适配器注册表。只有这里注册且
@@ -835,16 +845,11 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   不支持”，不得仅凭一次类目切换实验诊断为类目不兼容；当前不可运营市场也
   只根据真实远端响应映射，不固化为永久预检规则。新确定性规则必须有当前官方路线文档，
   并严格限定 business model、物流和市场，不能把旧承运商或单次发布结果扩大化。
-- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布、User
-  Products 查询/暂停与错误处理。一个本地 Mercado 草稿只持久化一个
+- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布与错误处理。一个本地 Mercado 草稿只持久化一个
   `publication` 聚合；`publication.model` 明确区分 `user_products` 与
   `traditional_global_items`，前者以 `siteless_user_product_id` 为全局身份，后者以
   `parent_item_id` 为 CBT 全局身份，`publication.markets[]` 统一保存各销售市场的
   item/user-product 投影。
-  暂停统一调用 `PUT /global/user-products/{siteless_user_product_id}`，成功后同步持久化
-  远端明确确认的市场状态；HTTP 206/部分响应只暂停被确认的市场，未确认市场保留原状态
-  并记录 `error/last_operation`。网络、5xx 或不可验证响应统一标记 `outcome_unknown`，
-  不得假定全部市场已经暂停，也不得从 User Products 管理动作回退到传统 Item 路径。
 - `erp_web/marketplaces/publishing.py`：只按已验证授权写入 payload 的
   `_listing_model` 显式分发，远端错误不会触发 fallback。User Products 首次创建向
   `POST /global/user-products/families` 发送单元素数组，并要求响应 cardinality、
@@ -864,10 +869,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   operation，已有 Item 绝不重复 POST。标准发布不执行全量 PUT；父根 payload 与已创建
   市场字段由 `confirmed_payload` 锁定，变更时必须创建新的 Global Item。响应只把通过
   operation 闭包校验的 `item_id/site_items` 作为真实成功身份；绝不恢复区域 `/items`。
-- `erp_web/runtime_units/platform_query_capabilities.py` 与
-  `publish_admin_capabilities.py`：AI 侧对应唯一能力名分别为
-  `mercadolibre_user_products_query` 和 `mercadolibre_user_product_pause`。旧的远端 item
-  列表、item close 与二次真实发布确认能力已经退役；真实发布统一走当前发布工作流。
+- `erp_web/runtime_units/platform_query_capabilities.py` 提供商品、订单及发布任务查询；
+  `publish_admin_capabilities.py` 提供非 Mercado 直接发布审批能力。在线商品当前由人工页面操作。
 - `erp_web/runtime_units/publish_ozon.py`：Ozon `/v3/product/import` payload、
   草稿目标站点中的 `type_id/category_id + description_category_id` 配对、异步导入
   终态确认及错误字段映射；不得从商品级 `local_platform_categories` 回捞发布类目。

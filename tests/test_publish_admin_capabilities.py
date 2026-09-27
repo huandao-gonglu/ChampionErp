@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Workstream D 第四批：审批写 Capability（发布管理）行为测试。
 
-覆盖 product_publish_direct / mercadolibre_user_product_pause 的服务端审批
+覆盖 product_publish_direct 的服务端审批
 快照绑定、失败映射，以及 User Product 暂停经由 Global Task
 审批闸门的纵向流程（含可信审批身份、任务版本过期负向场景）。
 审批摘要与参数只能由服务端快照生成，模型不提供 approval payload。
@@ -15,18 +15,14 @@ import pytest
 
 from erp_web.facades import publish_facade
 from erp_web.runtime_units.publish_admin_capabilities import (
-    MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
     PRODUCT_PUBLISH_DIRECT_TOOL,
     PublishAdminCapabilityScope,
-    _mercadolibre_user_product_pause_approval_snapshot,
     _publish_direct_approval_snapshot,
-    mercadolibre_user_product_pause,
     product_publish_direct,
 )
 from erp_web.schemas.ai_tools import AiToolExecutionError, ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.publish_admin_capabilities import (
-    MercadoLibreUserProductPauseRequest,
     ProductPublishDirectRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
@@ -94,11 +90,6 @@ def _publish_scope(**overrides: Any) -> PublishAdminCapabilityScope:
             200,
         ),
         store_config_loader=lambda: {"mercadolibre": {}},
-        user_product_pauser=lambda siteless_id: {
-            "ok": True,
-            "status": "paused",
-            "message": f"{siteless_id} 已提交暂停。",
-        },
     )
     defaults.update(overrides)
     return PublishAdminCapabilityScope(**defaults)
@@ -304,102 +295,3 @@ def test_product_publish_direct_rejects_mercadolibre_queue_bypass() -> None:
     )
     assert status == 409
     assert response["error_code"] == "MERCADOLIBRE_PUBLISH_BUS_REQUIRED"
-
-
-def test_user_product_pause_approval_gate_and_success() -> None:
-    captured: dict[str, Any] = {}
-
-    def pauser(siteless_id: str) -> dict[str, Any]:
-        captured["siteless_id"] = siteless_id
-        return {"ok": True, "status": "paused", "message": f"{siteless_id} 已暂停"}
-
-    scope = _publish_scope(user_product_pauser=pauser)
-    request = MercadoLibreUserProductPauseRequest(siteless_user_product_id="UP123")
-
-    with pytest.raises(AiToolExecutionError) as missing:
-        mercadolibre_user_product_pause(
-            request,
-            scope=scope,
-            execution=_execution(),
-        )
-    assert missing.value.code == "TOOL_APPROVAL_CONTEXT_REQUIRED"
-    assert captured == {}
-
-    snapshot = _mercadolibre_user_product_pause_approval_snapshot(request, scope)
-    assert snapshot.canonical_payload["siteless_user_product_id"] == "UP123"
-    result = mercadolibre_user_product_pause(
-        request,
-        scope=scope,
-        execution=_approved_execution(
-            snapshot,
-            MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
-        ),
-    )
-    assert result.ok is True
-    assert result.status == "paused"
-    assert captured == {"siteless_id": "UP123"}
-
-    stale_snapshot = _mercadolibre_user_product_pause_approval_snapshot(
-        MercadoLibreUserProductPauseRequest(siteless_user_product_id="UP999"),
-        scope,
-    )
-    with pytest.raises(AiToolExecutionError) as stale:
-        mercadolibre_user_product_pause(
-            request,
-            scope=scope,
-            execution=_approved_execution(
-                stale_snapshot,
-                MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
-            ),
-        )
-    assert stale.value.code == "USER_PRODUCT_PAUSE_APPROVAL_STALE"
-
-    failing_scope = _publish_scope(
-        user_product_pauser=lambda siteless_id: {
-            "ok": False,
-            "error": "User Product 不存在",
-            "error_code": "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND",
-        }
-    )
-    failing_snapshot = _mercadolibre_user_product_pause_approval_snapshot(
-        request,
-        failing_scope,
-    )
-    with pytest.raises(BusinessCapabilityError) as failed:
-        mercadolibre_user_product_pause(
-            request,
-            scope=failing_scope,
-            execution=_approved_execution(
-                failing_snapshot,
-                MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
-            ),
-        )
-    assert failed.value.code == "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND"
-
-
-def test_user_product_pause_post_dispatch_error_is_outcome_unknown() -> None:
-    """暂停请求发出后抛错（含超时）：必须结果未知且禁止自动重试。"""
-
-    request = MercadoLibreUserProductPauseRequest(siteless_user_product_id="UP999")
-
-    def broken_pauser(siteless_id: str) -> dict[str, Any]:
-        del siteless_id
-        raise TimeoutError("平台接口超时")
-
-    broken_scope = _publish_scope(user_product_pauser=broken_pauser)
-    snapshot = _mercadolibre_user_product_pause_approval_snapshot(
-        request,
-        broken_scope,
-    )
-    with pytest.raises(BusinessCapabilityError) as outcome:
-        mercadolibre_user_product_pause(
-            request,
-            scope=broken_scope,
-            execution=_approved_execution(
-                snapshot,
-                MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
-            ),
-        )
-    assert outcome.value.code == "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN"
-    assert outcome.value.retryable is False
-    assert outcome.value.details == {"outcome_unknown": True}

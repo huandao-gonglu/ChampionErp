@@ -28,7 +28,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
       if (combined.mercadolibreAuthChecklist.value?.tokenReady) {
         await Promise.all([
           combined.refreshMercadoLibreOrders(),
-          combined.refreshMercadoLibreUserProducts(),
         ])
       }
       return
@@ -47,10 +46,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
     if (key === 'logs') {
       await combined.refreshPublishLogs()
-      return
-    }
-    if (key === 'mlUserProducts') {
-      await combined.refreshMercadoLibreUserProducts()
       return
     }
     if (key === 'auth') await combined.loadAiConfig()
@@ -105,15 +100,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     mercadoLibreOrderNotifications: combined.mercadoLibreOrderNotifications,
     mercadoLibreOrdersTotal: combined.mercadoLibreOrdersTotal,
     mercadoLibreOrdersCheckedAt: combined.mercadoLibreOrdersCheckedAt,
-    mercadoLibreUserProducts: combined.mercadoLibreUserProducts,
-    mercadoLibreUserProductStatus: combined.mercadoLibreUserProductStatus,
-    mercadoLibreUserProductPage: combined.mercadoLibreUserProductPage,
-    mercadoLibreUserProductPerPage: combined.mercadoLibreUserProductPerPage,
-    mercadoLibreUserProductTotal: combined.mercadoLibreUserProductTotal,
-    mercadoLibreUserProductTotalPages: combined.mercadoLibreUserProductTotalPages,
-    mercadoLibreUserProductRefreshErrors: combined.mercadoLibreUserProductRefreshErrors,
-    mercadoLibreUserProductsRefreshScope: combined.mercadoLibreUserProductsRefreshScope,
-    mercadoLibreUserProductsCheckedAt: combined.mercadoLibreUserProductsCheckedAt,
     activeMarketplace: combined.activeMarketplace,
     platformOptions: combined.platformOptions,
     logs: combined.logs,
@@ -206,8 +192,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     selectPublishJob: combined.selectPublishJob,
     refreshPublishLogs: combined.refreshPublishLogs,
     refreshMercadoLibreOrders: combined.refreshMercadoLibreOrders,
-    refreshMercadoLibreUserProducts: combined.refreshMercadoLibreUserProducts,
-    pauseMercadoLibreUserProductById: combined.pauseMercadoLibreUserProductById,
     loadAiConfig: combined.loadAiConfig,
     saveAiSettings: combined.saveAiSettings,
     testAiSettings: combined.testAiSettings,

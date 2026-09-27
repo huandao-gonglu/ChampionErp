@@ -12,7 +12,7 @@ ContextId = Annotated[
 PAGE_LABELS = {
     "dashboard": "仪表盘", "research": "选品调研", "collect": "采集",
     "library": "商品库", "drafts": "草稿箱", "publish": "发布队列",
-    "mlUserProducts": "ML User Products", "pending": "待处理",
+    "onlineProducts": "在线商品", "pending": "待处理",
     "auth": "平台授权与设置", "logs": "发布日志", "ai_work": "主对话",
     "product_editor": "商品编辑", "draft_editor": "草稿编辑",
 }
@@ -27,7 +27,7 @@ class AiPageContext(BaseModel):
 
     page: Literal[
         "dashboard", "research", "collect", "library", "drafts", "publish",
-        "mlUserProducts", "pending", "auth", "logs", "ai_work",
+        "onlineProducts", "pending", "auth", "logs", "ai_work",
         "product_editor", "draft_editor",
     ]
     section: Literal["text", "images", "category", "skus", "pricing", "precheck"] | None = None

@@ -4,7 +4,6 @@ import type {
   MercadoLibreAuthChecklist,
   MercadoLibreOrderItem,
   MercadoLibreOrderNotification,
-  MercadoLibreUserProduct,
   Product,
   ProductIndexItem,
   PublishJob,
@@ -23,9 +22,6 @@ const props = defineProps<{
   ordersTotal: number
   ordersCheckedAt: string
   notificationUrl: string
-  userProducts: MercadoLibreUserProduct[]
-  userProductTotal: number
-  userProductStatus: string
   authChecklist: MercadoLibreAuthChecklist | null
   publishJob: PublishJob | null
   logs: string[]
@@ -38,7 +34,6 @@ const emit = defineEmits<{
   refreshProducts: []
   refreshLogs: []
   refreshOrders: []
-  refreshUserProducts: []
   openProduct: [item: ProductIndexItem]
   editImages: [item: ProductIndexItem]
   collect: []
@@ -116,9 +111,9 @@ const dashboardMetrics = computed(() => [
     tone: 'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200',
   },
   {
-    label: 'ML 在线',
-    value: props.userProductTotal || props.userProducts.length,
-    detail: props.userProductStatus || 'active',
+    label: '在线商品',
+    value: '查看',
+    detail: '从店铺同步商品',
     tone: 'border-slate-200 bg-white text-slate-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200',
   },
 ])
@@ -546,7 +541,7 @@ function stringifyJson(value: unknown) {
             </div>
             <div class="flex gap-2">
               <button type="button" class="btn btn-outline py-2" @click="emit('refreshLogs')">日志</button>
-              <button type="button" class="btn btn-outline py-2" @click="emit('refreshUserProducts')">ML User Products</button>
+              <button type="button" class="btn btn-outline py-2" @click="emit('navigate', 'onlineProducts')">在线商品</button>
             </div>
           </div>
 

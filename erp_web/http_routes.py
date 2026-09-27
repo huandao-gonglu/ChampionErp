@@ -20,6 +20,7 @@ from .http_route_units import (
     product_routes,
     product_research_routes,
     publish_routes,
+    online_product_routes,
     translation_routes,
 )
 from .http_route_units.common import JsonRequestHandler, UserInputError
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_PAGE_ROUTES = get_routes.FRONTEND_PAGE_ROUTES
 GET_ROUTE_UNITS = (
+    online_product_routes,
     get_routes,
     ai_work_routes,
     ai_presentation_routes,
@@ -60,6 +62,7 @@ POST_ROUTE_UNITS = (
     logistics_routes,
     mercadolibre_routes,
     publish_routes,
+    online_product_routes,
     translation_routes,
 )
 POST_ROUTE_UNITS_BY_PATH = {

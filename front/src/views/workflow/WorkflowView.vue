@@ -14,7 +14,7 @@ import DraftSkuAttributesEditor from '@/components/domain/DraftSkuAttributesEdit
 import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
 import DraftWorkspacePanel, { type DraftWorkspaceTab } from '@/components/domain/DraftWorkspacePanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
-import MercadoLibrePublishedPanel from '@/components/domain/MercadoLibrePublishedPanel.vue'
+import OnlineProductsPanel from '@/components/domain/OnlineProductsPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
 import ProductImageEditorPanel from '@/components/domain/ProductImageEditorPanel.vue'
@@ -80,15 +80,6 @@ const {
   mercadoLibreOrderNotifications,
   mercadoLibreOrdersTotal,
   mercadoLibreOrdersCheckedAt,
-  mercadoLibreUserProducts,
-  mercadoLibreUserProductStatus,
-  mercadoLibreUserProductPage,
-  mercadoLibreUserProductPerPage,
-  mercadoLibreUserProductTotal,
-  mercadoLibreUserProductTotalPages,
-  mercadoLibreUserProductRefreshErrors,
-  mercadoLibreUserProductsRefreshScope,
-  mercadoLibreUserProductsCheckedAt,
   publishResult,
   activeMarketplace,
   platformOptions,
@@ -427,9 +418,6 @@ watch(
             :orders-total="mercadoLibreOrdersTotal"
             :orders-checked-at="mercadoLibreOrdersCheckedAt"
             :notification-url="mercadolibreNotificationUrl"
-            :user-products="mercadoLibreUserProducts"
-            :user-product-total="mercadoLibreUserProductTotal"
-            :user-product-status="mercadoLibreUserProductStatus"
             :auth-checklist="mercadolibreAuthChecklist"
             :publish-job="publishJob"
             :logs="logs"
@@ -439,7 +427,6 @@ watch(
             @refresh-products="store.refreshProductsIndex"
             @refresh-logs="store.refreshPublishLogs"
             @refresh-orders="store.refreshMercadoLibreOrders"
-            @refresh-user-products="store.refreshMercadoLibreUserProducts"
             @open-product="openProductEditor"
             @edit-images="openProductImageEditor"
             @collect="navigate('collect')"
@@ -534,24 +521,7 @@ watch(
             <pre v-if="publishResult" class="max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishResult, null, 2) }}</pre>
           </div>
 
-          <div v-else-if="activeNav === 'mlUserProducts'" class="space-y-6">
-            <PageHeader title="ML User Products" description="按 Siteless User Product 查看本地 publication 快照；刷新仅对账远端身份映射，不同步状态与价格。" />
-            <MercadoLibrePublishedPanel
-              :user-products="mercadoLibreUserProducts"
-              :status="mercadoLibreUserProductStatus"
-              :page="mercadoLibreUserProductPage"
-              :per-page="mercadoLibreUserProductPerPage"
-              :total="mercadoLibreUserProductTotal"
-              :total-pages="mercadoLibreUserProductTotalPages"
-              :refresh-errors="mercadoLibreUserProductRefreshErrors"
-              :refresh-scope="mercadoLibreUserProductsRefreshScope"
-              :checked-at="mercadoLibreUserProductsCheckedAt"
-              :loading="loading"
-              :error="error"
-              @refresh="store.refreshMercadoLibreUserProducts"
-              @pause-user-product="(userProduct) => store.pauseMercadoLibreUserProductById(userProduct.sitelessUserProductId)"
-            />
-          </div>
+          <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" />
 
           <div v-else-if="activeNav === 'pending'" class="space-y-6">
             <PageHeader title="待处理" description="汇总采集、文案、图片、类目、预检或发布仍处于 pending / failed / not_ready / partial 的商品。" />

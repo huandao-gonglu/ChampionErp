@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-"""发布管理 Capability：非 Mercado 直接发布与 Mercado User Product 暂停。
-
-两者都会对外部平台产生真实影响，因此全部是 task + approval 能力：
-审批摘要与规范化参数由服务端快照函数生成（含商品标题等服务端事实），
-digest 绑定冻结参数、步骤、任务版本与 Capability 版本；执行时重算快照
-复核，防止模型伪造审批或批准后目标漂移。领域逻辑仍由 ``runtime_api`` /
-``publish_mercadolibre`` 拥有，Capability 只做类型化编排。
-"""
+"""非 Mercado 直接发布的审批 Capability；领域执行继续复用发布编排。"""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,8 +11,6 @@ from typing import Annotated, Any
 from erp_web.schemas.ai_tools import ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.publish_admin_capabilities import (
-    MercadoLibreUserProductPauseRequest,
-    MercadoLibreUserProductPauseResult,
     ProductPublishDirectRequest,
     ProductPublishDirectResult,
 )
@@ -99,11 +90,9 @@ class PublishAdminCapabilityScope:
         tuple[dict[str, Any], dict[str, Any] | None, int],
     ]
     store_config_loader: Callable[[], dict[str, Any]]
-    user_product_pauser: Callable[[str], dict[str, Any]]
 
 
 PRODUCT_PUBLISH_DIRECT_TOOL = "product_publish_direct"
-MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL = "mercadolibre_user_product_pause"
 
 
 def _load_product(
@@ -175,20 +164,6 @@ def _publish_direct_approval_snapshot(
     )
 
 
-def _mercadolibre_user_product_pause_approval_snapshot(
-    request: MercadoLibreUserProductPauseRequest,
-    scope: PublishAdminCapabilityScope,
-) -> ToolApprovalSnapshot:
-    del scope
-    return ToolApprovalSnapshot(
-        summary=(
-            f"暂停 Mercado Siteless User Product {request.siteless_user_product_id}"
-        ),
-        canonical_payload={
-            "siteless_user_product_id": request.siteless_user_product_id,
-            "platform": "mercadolibre",
-        },
-    )
 
 
 @ai_tool(
@@ -255,85 +230,16 @@ def product_publish_direct(
     )
 
 
-@ai_tool(
-    name=MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
-    description=(
-        "暂停 Mercado Siteless User Product 及其市场刊登；"
-        "需要人工在受信界面批准后才会执行。"
-    ),
-    permission="platform.write",
-    side_effect="write",
-    approval_required=True,
-    approval_snapshot=_mercadolibre_user_product_pause_approval_snapshot,
-    idempotency="required",
-    idempotency_keys=("operation_key",),
-    recovery_policy="manual",
-    version="1",
-)
-def mercadolibre_user_product_pause(
-    request: MercadoLibreUserProductPauseRequest,
-    scope: Annotated[PublishAdminCapabilityScope, Injected()],
-    execution: Annotated[AiExecutionContext, Injected()],
-) -> MercadoLibreUserProductPauseResult:
-    verify_execution_approval(
-        execution,
-        snapshot=_mercadolibre_user_product_pause_approval_snapshot(
-            request,
-            scope,
-        ),
-        capability_name=MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
-        capability_version="1",
-        stale_code="USER_PRODUCT_PAUSE_APPROVAL_STALE",
-    )
-    try:
-        result = scope.user_product_pauser(request.siteless_user_product_id)
-    except BusinessCapabilityError:
-        raise
-    except Exception as exc:
-        # 暂停请求已发往平台后，任何异常都不能按普通可重试失败处理。
-        raise BusinessCapabilityError(
-            "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN",
-            f"User Product 暂停请求已发出，平台侧结果未知：{exc}",
-            retryable=False,
-            details={"outcome_unknown": True},
-        ) from exc
-    if not isinstance(result, dict) or not result.get("ok"):
-        if isinstance(result, dict) and result.get("outcome_unknown") is True:
-            details = _dict_value(result.get("details"))
-            details["outcome_unknown"] = True
-            raise BusinessCapabilityError(
-                "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN",
-                _text(result.get("error"))
-                or "User Product 暂停请求已发出，平台侧结果未知。",
-                retryable=False,
-                details=details,
-            )
-        raise BusinessCapabilityError(
-            _text(result.get("error_code") if isinstance(result, dict) else "")
-            or "USER_PRODUCT_PAUSE_FAILED",
-            _text(result.get("error") if isinstance(result, dict) else "")
-            or "Mercado User Product 暂停失败。",
-        )
-    return MercadoLibreUserProductPauseResult(
-        ok=True,
-        platform="mercadolibre",
-        siteless_user_product_id=request.siteless_user_product_id,
-        status=_text(result.get("status")),
-        message=_text(result.get("message")),
-    )
 
 
 PUBLISH_ADMIN_AI_CAPABILITIES = (
     product_publish_direct,
-    mercadolibre_user_product_pause,
 )
 
 
 __all__ = [
-    "MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL",
     "PRODUCT_PUBLISH_DIRECT_TOOL",
     "PUBLISH_ADMIN_AI_CAPABILITIES",
     "PublishAdminCapabilityScope",
-    "mercadolibre_user_product_pause",
     "product_publish_direct",
 ]

@@ -17,7 +17,6 @@ from erp_web.runtime_units.logistics_capabilities import (
 )
 from erp_web.runtime_units.platform_query_capabilities import (
     PlatformQueryCapabilityScope,
-    mercadolibre_user_products_query,
     platform_orders_query,
     products_index_query,
     publish_job_status_query,
@@ -55,7 +54,6 @@ from erp_web.schemas.logistics_capabilities import (
 )
 from erp_web.schemas.platform_query_capabilities import (
     PlatformOrdersQueryRequest,
-    MercadoLibreUserProductsQueryRequest,
     ProductsIndexQueryRequest,
     PublishJobStatusQueryRequest,
     PublishJobsQueryRequest,
@@ -147,7 +145,6 @@ def test_products_index_query_matches_http_loader() -> None:
     _seed_product("product-beta")
     scope = PlatformQueryCapabilityScope(
         products=context.products,
-        user_products_loader=lambda **kwargs: {"ok": True},
         orders_loader=lambda **kwargs: {"ok": True},
         publish_logs_loader=lambda limit=200: [],
         publishing_bus=context.publishing_bus,
@@ -177,7 +174,6 @@ def test_products_index_position_resolution_rejects_stale_snapshot() -> None:
     _seed_product("product-before")
     scope = PlatformQueryCapabilityScope(
         products=context.products,
-        user_products_loader=lambda **kwargs: {"ok": True},
         orders_loader=lambda **kwargs: {"ok": True},
         publish_logs_loader=lambda limit=200: [],
         publishing_bus=context.publishing_bus,
@@ -197,7 +193,7 @@ def test_products_index_position_resolution_rejects_stale_snapshot() -> None:
     assert stale.value.code == "PRODUCTS_INDEX_SNAPSHOT_STALE"
 
 
-def test_user_product_and_order_queries_map_error_codes() -> None:
+def test_order_queries_map_error_codes() -> None:
     context = get_context()
     failing = {
         "ok": False,
@@ -206,23 +202,17 @@ def test_user_product_and_order_queries_map_error_codes() -> None:
     }
     scope = PlatformQueryCapabilityScope(
         products=context.products,
-        user_products_loader=lambda **kwargs: dict(failing),
         orders_loader=lambda **kwargs: dict(failing),
         publish_logs_loader=lambda limit=200: [],
         publishing_bus=context.publishing_bus,
     )
-    with pytest.raises(BusinessCapabilityError) as items_error:
-        mercadolibre_user_products_query(
-            MercadoLibreUserProductsQueryRequest(), scope=scope
-        )
-    assert items_error.value.code == "AUTH_INVALID"
     with pytest.raises(BusinessCapabilityError) as orders_error:
         platform_orders_query(PlatformOrdersQueryRequest(), scope=scope)
     assert orders_error.value.code == "AUTH_INVALID"
 
-    unsupported = MercadoLibreUserProductsQueryRequest(platform="ozon")
+    unsupported = PlatformOrdersQueryRequest(platform="ozon")
     with pytest.raises(BusinessCapabilityError) as platform_error:
-        mercadolibre_user_products_query(unsupported, scope=scope)
+        platform_orders_query(unsupported, scope=scope)
     assert platform_error.value.code == "PLATFORM_QUERY_UNSUPPORTED"
 
 
@@ -231,7 +221,6 @@ def test_publish_logs_jobs_and_status_queries() -> None:
     logs = [{"platform": "mercadolibre", "status": "success"}]
     scope = PlatformQueryCapabilityScope(
         products=context.products,
-        user_products_loader=lambda **kwargs: {"ok": True},
         orders_loader=lambda **kwargs: {"ok": True},
         publish_logs_loader=lambda limit=200: list(logs)[:limit],
         publishing_bus=context.publishing_bus,

@@ -161,6 +161,17 @@ class AppContext:
         self._ai_presentations: "AiPresentationRegistry | None" = None
         self._approval_session: "ApprovalSession | None" = None
         self._category_catalog: "CategoryCatalog | None" = None
+        self._online_products = None
+
+    @property
+    def online_products(self):
+        if self._online_products is None:
+            with self._lazy_lock:
+                if self._online_products is None:
+                    from erp_web.facades.online_product_factory import create_online_product_service
+
+                    self._online_products = create_online_product_service(self)
+        return self._online_products
 
     @property
     def agent_calls(self):
@@ -340,6 +351,9 @@ class AppContext:
                 return
             self._closed = True
             publishing_bus = self._publishing_bus
+            online_products = self._online_products
+        if online_products is not None:
+            online_products.close()
         if publishing_bus is not None:
             publishing_bus.executor.shutdown(wait=True)
 

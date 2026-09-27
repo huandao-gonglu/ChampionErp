@@ -19,7 +19,7 @@ export default {
     library: { title: '商品库', subtitle: '本地商品母库' },
     drafts: { title: '草稿箱', subtitle: '平台草稿、继续编辑' },
     publish: { title: '发布队列', subtitle: '任务状态、日志' },
-    mlUserProducts: { title: 'ML User Products', subtitle: 'Siteless 与市场投影' },
+    onlineProducts: { title: '在线商品', subtitle: '店铺商品、价格与库存' },
     pending: { title: '待处理', subtitle: '未完成 / 失败商品' },
     auth: { title: '平台授权', subtitle: '授权、AI、汇率' },
     logs: { title: '发布日志', subtitle: '请求、响应、错误' },
@@ -33,9 +33,9 @@ export default {
       title: '发布队列',
       description: '发布队列、任务状态和运行日志。',
     },
-    mlUserProducts: {
-      title: 'ML User Products',
-      description: '按 Siteless User Product 查看全局商品与市场投影。',
+    onlineProducts: {
+      title: '在线商品',
+      description: '同步店铺已有商品，管理销售状态、价格、库存与内容。',
     },
     pending: {
       title: '待处理',

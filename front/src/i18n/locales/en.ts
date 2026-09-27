@@ -19,7 +19,7 @@ export default {
     library: { title: 'Library', subtitle: 'Local product master' },
     drafts: { title: 'Drafts', subtitle: 'Platform drafts, continue editing' },
     publish: { title: 'Publish Queue', subtitle: 'Jobs and logs' },
-    mlUserProducts: { title: 'ML User Products', subtitle: 'Siteless and market projections' },
+    onlineProducts: { title: 'Online products', subtitle: 'Store products, prices and stock' },
     pending: { title: 'Pending', subtitle: 'Incomplete or failed items' },
     auth: { title: 'Platform Auth', subtitle: 'Auth, AI, exchange rates' },
     logs: { title: 'Publish Logs', subtitle: 'Requests, responses, errors' },
@@ -33,9 +33,9 @@ export default {
       title: 'Publish Queue',
       description: 'Publishing jobs, task status, and run logs.',
     },
-    mlUserProducts: {
-      title: 'ML User Products',
-      description: 'Review Siteless User Products and their market projections.',
+    onlineProducts: {
+      title: 'Online products',
+      description: 'Sync and manage existing store products, prices, stock and content.',
     },
     pending: {
       title: 'Pending',

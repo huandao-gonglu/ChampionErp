@@ -40,28 +40,11 @@ class ProductPublishDirectResult(BaseModel):
     result: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class MercadoLibreUserProductPauseRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    siteless_user_product_id: Annotated[
-        TrimmedText,
-        StringConstraints(min_length=1, max_length=160),
-    ]
 
 
-class MercadoLibreUserProductPauseResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    ok: bool = False
-    platform: TrimmedText = ""
-    siteless_user_product_id: TrimmedText = ""
-    status: TrimmedText = ""
-    message: TrimmedText = ""
 
 
 __all__ = [
-    "MercadoLibreUserProductPauseRequest",
-    "MercadoLibreUserProductPauseResult",
     "ProductPublishDirectRequest",
     "ProductPublishDirectResult",
 ]

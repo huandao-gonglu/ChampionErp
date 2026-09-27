@@ -49,6 +49,7 @@ def main() -> None:
     log_file = configure_logging(paths.app_dir)
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     resume_pending_publish_jobs()
+    get_context().online_products  # 启动持久化在线商品任务恢复与执行。
     port = pick_web_port(paths.web_port)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     start_agent_job_worker()

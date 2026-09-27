@@ -26,26 +26,8 @@ class ProductsIndexQueryResult(BaseModel):
     selected_items: tuple[dict[str, JsonValue], ...] = ()
 
 
-class MercadoLibreUserProductsQueryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = (
-        "mercadolibre"
-    )
-    status: Annotated[TrimmedText, StringConstraints(max_length=40)] = "all"
-    page: int = Field(default=1, ge=1)
-    per_page: int = Field(default=50, ge=1, le=100)
 
 
-class MercadoLibreUserProductsQueryResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    platform: TrimmedText
-    status: TrimmedText = ""
-    items: tuple[dict[str, JsonValue], ...] = ()
-    pagination: dict[str, JsonValue] = Field(default_factory=dict)
-    refresh_errors: tuple[dict[str, JsonValue], ...] = ()
-    checked_at: TrimmedText = ""
 
 
 class PlatformOrdersQueryRequest(BaseModel):
@@ -114,8 +96,6 @@ class PublishJobStatusQueryResult(BaseModel):
 __all__ = [
     "PlatformOrdersQueryRequest",
     "PlatformOrdersQueryResult",
-    "MercadoLibreUserProductsQueryRequest",
-    "MercadoLibreUserProductsQueryResult",
     "ProductsIndexQueryRequest",
     "ProductsIndexQueryResult",
     "PublishJobStatusQueryRequest",

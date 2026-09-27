@@ -110,7 +110,6 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
         "product_publish_validate",
         "draft_read",
         "products_index_query",
-        "mercadolibre_user_products_query",
         "platform_orders_query",
         "publish_logs_query",
         "publish_jobs_query",
@@ -179,7 +178,6 @@ _WRITE_CAPABILITIES = frozenset(
         "research_hot_products_search",
         "research_run_status_query",
         "product_publish_direct",
-        "mercadolibre_user_product_pause",
     }
 )
 

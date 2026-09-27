@@ -250,7 +250,6 @@ def test_external_side_effect_capabilities_never_auto_retry_after_dispatch() -> 
 
     external_dispatch_capabilities = (
         "logistics_shipment_create",
-        "mercadolibre_user_product_pause",
         "product_publish_direct",
     )
     offenders: list[str] = []

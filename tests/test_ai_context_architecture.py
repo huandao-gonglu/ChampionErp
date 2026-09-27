@@ -287,19 +287,22 @@ def test_frontend_has_no_task_write_refresh_call() -> None:
     assert not offenders, "前端不得保留任何任务写刷新调用：\n" + "\n".join(offenders)
 
 
-def test_mercadolibre_admin_uses_only_user_products_contract() -> None:
-    """管理入口不得恢复本地 item 列表、关闭或特殊确认双轨。"""
+def test_online_management_has_one_entry_and_retires_local_publication_routes() -> None:
+    """在线管理只有持久化远端快照入口，不允许旧本地列表或暂停旁路。"""
 
     routes = "\n".join(
         (ROOT / path).read_text(encoding="utf-8")
         for path in (
             "erp_web/http_route_units/get_routes.py",
+            "erp_web/http_route_units/online_product_routes.py",
             "erp_web/http_route_units/publish_routes.py",
             "erp_web/schemas/requests.py",
         )
     )
-    assert "/api/mercadolibre/user-products" in routes
-    assert "/api/mercadolibre/pause-user-product" in routes
+    assert "/api/online-products" in routes
+    assert "/api/online-products/change" in routes
+    assert "/api/mercadolibre/user-products" not in routes
+    assert "/api/mercadolibre/pause-user-product" not in routes
     for retired in (
         "/api/mercadolibre/published-items",
         "/api/mercadolibre/close-item",

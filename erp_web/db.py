@@ -32,9 +32,11 @@ from erp_web.product_model.merge_model import (
 )
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 REQUIRED_TABLES = (
+    "online_listings",
+    "online_jobs",
     "store_auth",
     "runtime_secrets",
     "products",
@@ -57,6 +59,39 @@ REQUIRED_TABLES = (
 
 # Research run statuses that never change again (mirrors product_research_service).
 _TERMINAL_RESEARCH_STATUSES = ("completed", "failed")
+
+ONLINE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS online_listings (
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    synced_at TEXT NOT NULL,
+    desired_sale_state TEXT NOT NULL DEFAULT '',
+    UNIQUE(platform, account_id, remote_id)
+);
+CREATE INDEX IF NOT EXISTS online_listings_account ON online_listings(platform, account_id);
+CREATE TABLE IF NOT EXISTS online_jobs (
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    request_json TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    owner TEXT NOT NULL DEFAULT '',
+    lease_until REAL NOT NULL DEFAULT 0,
+    dispatched INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS online_jobs_active_target ON online_jobs(platform, account_id, target_id)
+    WHERE status IN ('queued','running','submitted','waiting_confirmation','outcome_unknown');
+"""
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS store_auth (
@@ -274,7 +309,7 @@ CREATE TABLE IF NOT EXISTS ai_chat_inbox (
  UNIQUE(conversation_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_ai_chat_inbox_pending ON ai_chat_inbox(conversation_id,status,sequence);
-"""
+""" + ONLINE_SCHEMA_SQL
 
 # ---------------------------------------------------------------------------
 # Schema helpers
@@ -664,7 +699,7 @@ class ErpDatabase:
             raise RuntimeError(
                 "数据库 schema 版本 "
                 f"{inspected_version} 不受支持（当前版本 {SCHEMA_VERSION}）；"
-                "仅接受真正空库或结构完整的当前 schema。旧数据库请先显式导出"
+                "仅接受真正空库或结构完整的当前 schema。v15 数据库请运行 scripts/migrate_online_products.py；其他旧数据库请先显式导出"
                 "所需配置，删除后重新初始化；运行时不会迁移、修复或删除数据库。"
             )
         if is_empty_database:

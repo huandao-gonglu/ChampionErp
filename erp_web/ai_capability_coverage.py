@@ -22,6 +22,7 @@ from erp_web.http_route_units import (
     ai_work_routes,
     get_routes,
     image_routes,
+    online_product_routes,
 )
 from erp_web.http_routes import POST_API_ROUTES
 
@@ -69,6 +70,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     endpoints: set[tuple[str, str]] = set()
     endpoints.update(("GET", path) for path in get_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
+    endpoints.update(("GET", path) for path in online_product_routes.GET_API_ROUTES)
     endpoints.update(("POST", path) for path in POST_API_ROUTES)
     endpoints.update(("POST", path) for path in image_routes.IMAGE_POST_PATHS)
     return frozenset(endpoints)
@@ -76,7 +78,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(
-        method="POST", path="/api/ai/approval-mode", business_domain="AI 授权偏好",
+        method="POST", path="/api/ai/approval-mode", business_domain="授权基础设施",
         disposition="excluded", reason="仅受信 UI 可设置工具审批偏好，模型不能自行授权。",
     ),
     AiCapabilityCoverageEntry(
@@ -124,7 +126,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="GET",
-        path="/ml-items",
+        path="/online-products",
         business_domain="前端页面",
         disposition="excluded",
         reason="SPA 页面壳，前端静态路由，无业务行为。",
@@ -192,6 +194,11 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="excluded",
         reason="SPA 页面壳，前端静态路由，无业务行为。",
     ),
+    AiCapabilityCoverageEntry(method="GET", path="/api/online-products", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/sync", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/reconcile", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/retry", business_domain="在线商品", disposition="internal_only", reason="在线管理当前仅由人工页面调用；AI 操作入口不在本轮范围。"),
     # -------------------------------------------------- 平台查询（GET）
     AiCapabilityCoverageEntry(
         method="GET",
@@ -206,13 +213,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         business_domain="商品与草稿",
         disposition="capability",
         capability_names=("drafts_query",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="GET",
-        path="/api/mercadolibre/user-products",
-        business_domain="平台商品与订单",
-        disposition="capability",
-        capability_names=("mercadolibre_user_products_query",),
     ),
     AiCapabilityCoverageEntry(
         method="GET",
@@ -642,13 +642,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         business_domain="发布",
         disposition="capability",
         capability_names=("product_publish_direct",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/mercadolibre/pause-user-product",
-        business_domain="发布",
-        disposition="capability",
-        capability_names=("mercadolibre_user_product_pause",),
     ),
     # -------------------------------------------------- 物流（POST）
     AiCapabilityCoverageEntry(

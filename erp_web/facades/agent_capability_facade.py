@@ -55,10 +55,6 @@ from erp_web.runtime_units.publish_admin_capabilities import (
 )
 from erp_web.runtime_units.publish_bus import load_publish_logs
 from erp_web.runtime_units.publish_capabilities import PublishCapabilityScope
-from erp_web.runtime_units.publish_mercadolibre import (
-    mercadolibre_pause_user_product,
-    mercadolibre_user_products,
-)
 from erp_web.runtime_units.research_capabilities import ResearchCapabilityScope
 from erp_web.runtime_units.runtime_api import (
     publish_product as run_direct_publish,
@@ -195,7 +191,6 @@ def build_capability_binding_scope(
             ),
             PlatformQueryCapabilityScope: PlatformQueryCapabilityScope(
                 products=context.products,
-                user_products_loader=mercadolibre_user_products,
                 orders_loader=mercadolibre_recent_orders,
                 publish_logs_loader=load_publish_logs,
                 publishing_bus=context.publishing_bus,
@@ -294,7 +289,6 @@ def build_capability_binding_scope(
                 direct_publisher=run_direct_publish,
                 product_loader=context.products.load_required_product_from_body,
                 store_config_loader=context.config.load_store_config,
-                user_product_pauser=mercadolibre_pause_user_product,
             ),
         }
     )

@@ -178,6 +178,10 @@ _SHIPMENT = _contract(required_any=(("shipment", "order", "payload"),))
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/online-products/sync": _contract(fields={"platform": FieldRule("enum", choices=frozenset({"mercadolibre", "ozon", "yandex"})), "idempotency_key": STRING}, required=("platform", "idempotency_key")),
+    "/api/online-products/change": _contract(fields={"listing_id": STRING, "version": STRING, "operation": STRING, "scope_id": STRING, "changes": OBJECT, "idempotency_key": STRING}, required=("listing_id", "version", "operation", "changes", "idempotency_key")),
+    "/api/online-products/reconcile": _contract(fields={"job_id": STRING}, required=("job_id",)),
+    "/api/online-products/retry": _contract(fields={"job_id": STRING, "idempotency_key": STRING}, required=("job_id", "idempotency_key")),
     "/api/ai/approval-mode": _contract(
         fields={"mode": FieldRule("enum", choices=frozenset({"ask", "full"}))},
         required=("mode",),
@@ -237,9 +241,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/logistics/yunexpress/preview": _SHIPMENT,
     "/api/mercadolibre/auth-checklist": _EMPTY,
     "/api/mercadolibre/auth-link": _contract(required=("app_id", "redirect_uri")),
-    "/api/mercadolibre/pause-user-product": _contract(
-        required=("siteless_user_product_id",)
-    ),
     "/api/mercadolibre/exchange-code": _contract(
         required_any=(("code_or_url", "code"),)
     ),

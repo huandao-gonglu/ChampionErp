@@ -1,9 +1,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
-  pauseMercadoLibreUserProduct,
   fetchMercadoLibreOrders,
-  fetchMercadoLibreUserProducts,
   fetchPublishJob,
   fetchPublishJobs,
   fetchPublishLogs,
@@ -21,7 +19,6 @@ import type {
   MarketplaceOption,
   MercadoLibreOrderItem,
   MercadoLibreOrderNotification,
-  MercadoLibreUserProduct,
   PayloadPreviewState,
   PricingInput,
   PricingResult,
@@ -69,15 +66,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
   const mercadoLibreOrderNotifications = ref<MercadoLibreOrderNotification[]>([])
   const mercadoLibreOrdersTotal = ref(0)
   const mercadoLibreOrdersCheckedAt = ref('')
-  const mercadoLibreUserProducts = ref<MercadoLibreUserProduct[]>([])
-  const mercadoLibreUserProductStatus = ref('active')
-  const mercadoLibreUserProductPage = ref(1)
-  const mercadoLibreUserProductPerPage = ref(50)
-  const mercadoLibreUserProductTotal = ref(0)
-  const mercadoLibreUserProductTotalPages = ref(1)
-  const mercadoLibreUserProductRefreshErrors = ref<UnknownRecord[]>([])
-  const mercadoLibreUserProductsRefreshScope = ref('')
-  const mercadoLibreUserProductsCheckedAt = ref('')
   const activeMarketplace = ref<Marketplace>('mercadolibre')
   const platformOptions = ref<MarketplaceOption[]>([])
   const publishResult = ref<UnknownRecord | null>(null)
@@ -202,52 +190,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     }
   }
 
-  async function refreshMercadoLibreUserProducts(
-    status: string = mercadoLibreUserProductStatus.value,
-    page?: number,
-    perPage?: number,
-    refreshIdentityMapping = false,
-  ) {
-    activity.loading = true
-    activity.setError('')
-    try {
-      const nextStatus = status || mercadoLibreUserProductStatus.value
-      const nextPerPage = perPage || mercadoLibreUserProductPerPage.value
-      const nextPage = page || (nextStatus === mercadoLibreUserProductStatus.value ? mercadoLibreUserProductPage.value : 1)
-      const result = await fetchMercadoLibreUserProducts(nextStatus, nextPage, nextPerPage, refreshIdentityMapping)
-      if (!result.items.length && result.pagination.total > 0 && nextPage > 1) {
-        // 第一次请求已完成全量 identity mapping 对账；回退页只读取本地快照，避免重复远端调用。
-        const previous = await fetchMercadoLibreUserProducts(nextStatus, nextPage - 1, nextPerPage, false)
-        mercadoLibreUserProducts.value = previous.items
-        mercadoLibreUserProductPage.value = previous.pagination.page
-        mercadoLibreUserProductPerPage.value = previous.pagination.perPage
-        mercadoLibreUserProductTotal.value = previous.pagination.total
-        mercadoLibreUserProductTotalPages.value = previous.pagination.totalPages
-        mercadoLibreUserProductRefreshErrors.value = previous.refreshErrors
-        mercadoLibreUserProductsRefreshScope.value = previous.refreshScope
-        mercadoLibreUserProductsCheckedAt.value = previous.checkedAt
-      } else {
-        mercadoLibreUserProducts.value = result.items
-        mercadoLibreUserProductPage.value = result.pagination.page
-        mercadoLibreUserProductPerPage.value = result.pagination.perPage
-        mercadoLibreUserProductTotal.value = result.pagination.total
-        mercadoLibreUserProductTotalPages.value = result.pagination.totalPages
-        mercadoLibreUserProductRefreshErrors.value = result.refreshErrors
-        mercadoLibreUserProductsRefreshScope.value = result.refreshScope
-        mercadoLibreUserProductsCheckedAt.value = result.checkedAt
-      }
-      mercadoLibreUserProductStatus.value = nextStatus
-      const scopeNote = mercadoLibreUserProductsRefreshScope.value === 'identity_mapping_only'
-        ? '身份映射已对账；状态与价格仍来自本地 publication 快照。'
-        : '已读取本地 publication 快照。'
-      activity.addLog(`Mercado Libre User Products ${scopeNote}第 ${mercadoLibreUserProductPage.value}/${mercadoLibreUserProductTotalPages.value} 页，当前 ${mercadoLibreUserProducts.value.length} 条，共 ${mercadoLibreUserProductTotal.value} 条。`)
-    } catch (exc) {
-      activity.setError(exc instanceof Error ? exc.message : '读取 Mercado Libre User Products 失败')
-    } finally {
-      activity.loading = false
-    }
-  }
-
   async function refreshMercadoLibreOrders() {
     activity.loading = true
     activity.setError('')
@@ -261,20 +203,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : '读取 Mercado Libre 订单失败'
       activity.addLog(`Mercado Libre 订单暂不可用：${message}`)
-    } finally {
-      activity.loading = false
-    }
-  }
-
-  async function pauseMercadoLibreUserProductById(sitelessUserProductId: string) {
-    activity.loading = true
-    activity.setError('')
-    try {
-      const result = await pauseMercadoLibreUserProduct(sitelessUserProductId)
-      activity.addLog(String(result.message || `${sitelessUserProductId} 已暂停。`))
-      await refreshMercadoLibreUserProducts(mercadoLibreUserProductStatus.value, mercadoLibreUserProductPage.value, mercadoLibreUserProductPerPage.value)
-    } catch (exc) {
-      activity.setError(exc instanceof Error ? exc.message : '暂停 Mercado Libre User Product 失败')
     } finally {
       activity.loading = false
     }
@@ -317,15 +245,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     mercadoLibreOrderNotifications,
     mercadoLibreOrdersTotal,
     mercadoLibreOrdersCheckedAt,
-    mercadoLibreUserProducts,
-    mercadoLibreUserProductStatus,
-    mercadoLibreUserProductPage,
-    mercadoLibreUserProductPerPage,
-    mercadoLibreUserProductTotal,
-    mercadoLibreUserProductTotalPages,
-    mercadoLibreUserProductRefreshErrors,
-    mercadoLibreUserProductsRefreshScope,
-    mercadoLibreUserProductsCheckedAt,
     activeMarketplace,
     platformOptions,
     publishResult,
@@ -336,8 +255,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     selectPublishJob,
     reconcileSelectedPublishJob,
     refreshPublishLogs,
-    refreshMercadoLibreUserProducts,
     refreshMercadoLibreOrders,
-    pauseMercadoLibreUserProductById,
   }
 })
