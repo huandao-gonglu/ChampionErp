@@ -22,6 +22,10 @@ class ProductPublishValidateRequest(BaseModel):
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
 
 
+class ProductPublishPrepareRequest(ProductPublishValidateRequest):
+    check_public_access: bool = Field(default=False, description="按需从当前服务器探测实际图片 URL；不代表平台侧抓取结果")
+
+
 class PublishIssueSku(BaseModel):
     """预检问题涉及的实际规格；与问题原因分开保存，便于汇总和定位。"""
 
@@ -122,6 +126,23 @@ class ProductPublishValidationResult(BaseModel):
     validation_digest: Annotated[TrimmedText, StringConstraints(max_length=128)] = ""
 
 
+class ImagePublicAccessCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    url: str
+    status: Literal["reachable", "failed", "inconclusive"]
+    http_status: int | None = None
+    content_type: str = ""
+    message: str
+
+
+class ProductPublishPrepareResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    validation: ProductPublishValidationResult
+    public_access_checks: list[ImagePublicAccessCheck] = Field(default_factory=list)
+
+
 class PublishRequestConfirmation(BaseModel):
     """由 服务端 从已持久化确认状态构造，不能来自模型参数。"""
 
@@ -190,6 +211,9 @@ class ProductPublishCapabilityRequest(BaseModel):
 
 
 __all__ = [
+    "ImagePublicAccessCheck",
+    "ProductPublishPrepareRequest",
+    "ProductPublishPrepareResult",
     "ProductPublishCapabilityRequest",
     "ProductPublishDestination",
     "ProductPublishRequest",

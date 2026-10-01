@@ -73,7 +73,6 @@ from .publish_ozon import (
 )
 from .pricing_results import _pricing_target_is_usable
 from .publish_yandex import (
-    _public_picture_invalid,
     yandex_invalid_dictionary_attributes,
     yandex_invalid_unit_attributes,
     yandex_mapped_parameter_count,
@@ -737,19 +736,14 @@ def validate_yandex_draft(
     images = _draft_images(product, "yandex", draft)
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
-    elif any(_public_picture_invalid(image) for image in images):
-        source = product.get("source") if isinstance(product.get("source"), dict) else {}
-        delivery_errors = [
-            str(item.get("delivery_error") or "").strip()
-            for item in source.get("image_pool") or []
-            if isinstance(item, dict) and str(item.get("delivery_error") or "").strip()
-        ]
-        message = (
-            "；".join(dict.fromkeys(delivery_errors))
-            if delivery_errors
-            else "Yandex 发布图片必须是平台可访问的 HTTPS 公网 URL"
+    else:
+        problems = get_context().image_delivery.inspect_product(product, "yandex")
+        errors.extend(
+            precheck_item(problem.code, f"images.{problem.asset_id}", problem.message, "error", problem.next_action)
+            for problem in problems
         )
-        errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", message, "error", "配置图片 HTTPS provider 后重新执行发布预检"))
+        if not problems and any(not str(image).startswith(("https://", "http://")) for image in images):
+            errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", "发布图片需要 HTTP(S) 公网地址", "error", "调用 product_publish_prepare 准备发布图片后重新校验"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     for field in ("length_cm", "width_cm", "height_cm"):
         try:
@@ -820,19 +814,14 @@ def validate_ozon_draft(
     images = _draft_images(product, "ozon", draft)
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
-    elif any(not str(image).startswith(("https://", "http://")) for image in images):
-        source = product.get("source") if isinstance(product.get("source"), dict) else {}
-        delivery_errors = [
-            str(item.get("delivery_error") or "").strip()
-            for item in source.get("image_pool") or []
-            if isinstance(item, dict) and str(item.get("delivery_error") or "").strip()
-        ]
-        message = (
-            "；".join(dict.fromkeys(delivery_errors))
-            if delivery_errors
-            else "Ozon 发布图片必须是平台可访问的 HTTP(S) 公网 URL"
+    else:
+        problems = get_context().image_delivery.inspect_product(product, "ozon")
+        errors.extend(
+            precheck_item(problem.code, f"images.{problem.asset_id}", problem.message, "error", problem.next_action)
+            for problem in problems
         )
-        errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", message, "error", "配置图片 HTTPS provider 后重新执行发布预检"))
+        if not problems and any(not str(image).startswith(("https://", "http://")) for image in images):
+            errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", "发布图片需要 HTTP(S) 公网地址", "error", "调用 product_publish_prepare 准备发布图片后重新校验"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     for field in ("length_cm", "width_cm", "height_cm"):
         try:

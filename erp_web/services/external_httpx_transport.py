@@ -15,24 +15,53 @@ class AuditedStream(httpx.AsyncByteStream):
         self.response, self.transport = response, transport
         self.manager, self.request_id, self.ctx = manager, request_id, ctx
         self.finished = False
+        self.closed = False
+
+    def _finish(self, *, closed=False, error=None):
+        if self.finished:
+            return
+        # aclose 与异步生成器回收都可能到达这里，只允许第一次结算。
+        self.finished = True
+        if error is not None:
+            self.manager.network_error(
+                self.request_id, self.ctx,
+                cancelled=isinstance(error, asyncio.CancelledError),
+            )
+        elif closed:
+            self.manager.stream_closed(
+                self.request_id, self.response.status_code,
+            )
+        else:
+            self.manager.result(
+                self.request_id, self.ctx, self.response.status_code,
+                self.response.headers, b"",
+            )
 
     async def __aiter__(self):
         try:
             async for chunk in self.response.aiter_raw():
                 yield chunk
-            self.manager.result(self.request_id,self.ctx,self.response.status_code,self.response.headers,b"")
-            self.finished = True
+            self._finish()
+        except GeneratorExit:
+            # SDK 可在协议终止事件后关闭迭代器，无需继续读取 HTTP EOF。
+            self._finish(closed=True)
+            raise
         except BaseException as exc:
-            self.manager.network_error(self.request_id,self.ctx,cancelled=isinstance(exc,asyncio.CancelledError))
-            self.finished = True
+            self._finish(error=exc)
             raise
 
     async def aclose(self):
+        if self.closed:
+            return
+        self.closed = True
         try:
-            await self.response.aclose()
-            if not self.finished:
-                self.manager.network_error(self.request_id,self.ctx,cancelled=True)
-                self.finished = True
+            try:
+                await self.response.aclose()
+            except BaseException as exc:
+                self._finish(error=exc)
+                raise
+            else:
+                self._finish(closed=True)
         finally:
             await self.transport.aclose()
 

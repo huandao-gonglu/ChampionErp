@@ -352,7 +352,7 @@ def test_sdk_queue_cancellation_is_audited_without_sending():
     assert latest["sent"] == 0 and latest["completed"] is not None
 
 
-def test_sdk_stream_success_and_early_close_have_distinct_results():
+def test_http_stream_eof_and_caller_close_have_distinct_results():
     import asyncio
     from erp_web.services.external_httpx_transport import ManagedAsyncTransport
 
@@ -374,8 +374,9 @@ def test_sdk_stream_success_and_early_close_have_distinct_results():
 
     asyncio.run(run())
     rows = get_context().external_requests.store.query()["items"]
-    assert [row["result"]["outcome"] for row in rows] == ["outcome_unknown", "success"]
+    assert [row["result"]["outcome"] for row in rows] == ["stream_closed", "success"]
     assert all(row["completed"] is not None for row in rows)
+    assert get_context().external_requests.store.blocks() == []
 
 
 def test_category_definition_and_candidates_share_raw_response():

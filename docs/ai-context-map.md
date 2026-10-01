@@ -44,6 +44,8 @@
 - `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传、采集与物流发送均接入。
   `services/external_httpx_transport.py` 经原生 Provider 的 http_client 注入 SDK，同样检查共享状态，原生 SDK 自动重试关闭。
+  流式审计只结算一次：HTTP EOF 记成功，SDK 主动关闭记 `stream_closed`，实际读取异常才记网络中断。
+  `GeneratorExit` 不累计网络失败；传输层不解析模型终止事件，也不推断 Agent 是否完成。
   Pydantic AI 仍独占模型/Agent 生命周期，不新增模型请求旁路。
 - `services/platform_request_policy.py` 纯解析 HTTP 与业务拒绝；`stores/external_request_store.py` 用独立
   `external-requests.sqlite3` 保存尝试、限额、阻断与恢复，不改变 ERP 主库版本。
@@ -970,9 +972,13 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `erp_web/runtime_units/publish_capabilities.py`：发布摘要包含当前已授权店铺的脱敏稳定
   `store_identity`；validation digest 同时绑定商品、草稿、平台、站点、店铺身份和最终 payload。
   `product_publish_validate` 是严格只读边界，不调用平台 `prepare_product`，因此普通上架预检
-  不会上传图片或改写商品。受信的 `publish-payload-preview` 工作流才显式调用
-  `prepare_and_evaluate_publish_validation`：先完成无副作用草稿预检，通过后准备平台素材
-  （Mercado 本地图片上传并写回 picture ID），再以同一份类目定义编译最终 payload 与 digest。
+  不会上传图片或改写商品。写工具 `product_publish_prepare` 与受信的
+  `publish-payload-preview` 共用 `prepare_and_evaluate_publish_validation`：Yandex/Ozon
+  先物化本地图片；Mercado 先预检，通过后才上传图片并写回 picture ID。
+  准备工具从数据库回读校验并保存结果，返回类型化 validation；只进入写场景 allowlist，
+  继续使用现有 Pydantic AI 工具注入、回执与范围约束，不新增 Agent 生命周期。
+  `check_public_access=true` 可按需探测 Yandex/Ozon 所选图片的实际 URL，结果独立返回，
+  不作为发布审批或平台抓取成功的证据。
   确认后提交会重新执行确定性校验并常量时间比较 digest，随后把已批准 payload/digest/identity 写入
   PublishingBus job。worker 现取凭据，但外发前复核店铺身份与完整 digest，并直接发送冻结 payload；
   不会重新构造已确认内容。Capability 还会在重校验与队列准入前按完整确认事实恢复既有 job，封闭
@@ -986,11 +992,17 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `ERP_IMAGE_HTTPS_BASE_URL` 重新计算的缓存；平台发布模块不得读取隧道、磁盘根目录
   或对象存储配置。`existing_url` 只接受已有公网 URL，`local_static` 把本地文件按内容
   hash 复制到独立公开目录，可由 Quick Tunnel、Named Tunnel 或普通静态服务器暴露。
+  `inspect_product` 只读区分 `IMAGE_PROVIDER_NOT_CONFIGURED`、`IMAGE_NOT_PREPARED`、
+  `IMAGE_SOURCE_MISSING`、`IMAGE_PUBLIC_URL_STALE` 等状态；不以 URL 格式推断网络不可达。
+  图片准备仅在商品短锁内合并交付字段，保留并发编辑的其他图片和说明。
+- `erp_web/services/image_public_access.py`：通过统一外部请求管理器对实际图片 URL 做
+  有超时的 HEAD 探测；返回 HTTP 状态和图片 Content-Type。不支持 HEAD 或返回 HTML
+  时标记未确认，探测失败仅代表当前服务器视角；不轮询隧道、不改变确定性校验结果。
 - `scripts/dev.sh` 默认以 `ERP_IMAGE_HTTPS_TUNNEL=auto` 管理 Quick Tunnel 生命周期：
   检测到 `cloudflared` 后先取得随机 HTTPS 地址并注入后端环境，开发服务退出时一并停止；
   `required` 在 Tunnel 不可用时阻断启动，`off` 禁用自动 Tunnel。固定域名环境直接设置
   `ERP_IMAGE_HTTPS_BASE_URL`，不会创建 Quick Tunnel。
-- Ozon 与 Yandex 适配器在草稿校验和 payload 构造前调用图片 delivery（Yandex 以公网
+- 显式准备路径中的 Ozon 与 Yandex 适配器在草稿校验前调用图片 delivery（Yandex 以公网
   URL 列表投递 `pictures`）；Mercado Libre 保持平台图片上传接口与 `ml-id:*` 流程，
   不经过通用 HTTPS 图片服务。
 

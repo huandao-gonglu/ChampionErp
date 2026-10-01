@@ -71,6 +71,12 @@ class ExternalRequestManager:
             self.store.record_failure_streak(ctx)
         return failure
 
+    def stream_closed(self, request_id, status):
+        """记录调用方主动关闭；传输层不推测模型完成、取消或业务写入结果。"""
+        self.store.finish(request_id, result={
+            "http_status": status, "outcome": "stream_closed",
+        })
+
     def network_error(self, request_id, ctx, *, cancelled=False):
         self.store.finish(request_id,result={"outcome":"outcome_unknown" if ctx.semantics == "write" else "cancelled" if cancelled else "network_error", "cancelled":cancelled,
             "code":"EXTERNAL_NETWORK_INTERRUPTED"})

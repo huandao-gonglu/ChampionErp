@@ -52,6 +52,14 @@ class DeliveredImage:
     provider: str
 
 
+@dataclass(frozen=True)
+class ImageDeliveryProblem:
+    asset_id: str
+    code: str
+    message: str
+    next_action: str
+
+
 class ImageHttpsProvider(Protocol):
     """将图片物化为稳定 storage key 与公网 HTTPS URL 的 provider 契约。"""
 
@@ -97,7 +105,7 @@ class LocalStaticHttpsProvider:
                 f"{IMAGE_HTTPS_BASE_URL_ENV} 必须是 https:// 开头的公网地址"
             )
         self.public_base_url = settings.public_base_url
-        self.public_root = settings.public_root
+        self.public_root = settings.public_root.resolve()
 
     @staticmethod
     def _safe_storage_key(value: str) -> str:
@@ -115,8 +123,17 @@ class LocalStaticHttpsProvider:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def _public_url(self, storage_key: str) -> str:
+    def public_url(self, storage_key: str) -> str:
         return f"{self.public_base_url}/{urllib.parse.quote(storage_key, safe='/')}"
+
+    def stored_path(self, storage_key: str) -> Path:
+        key = self._safe_storage_key(storage_key)
+        destination = (self.public_root / key).resolve()
+        try:
+            destination.relative_to(self.public_root)
+        except ValueError as exc:
+            raise ImageDeliveryError("图片 storage_key 超出公开目录") from exc
+        return destination
 
     def deliver(
         self,
@@ -139,11 +156,7 @@ class LocalStaticHttpsProvider:
             raise ImageDeliveryError("图片本地文件不存在，且没有可复用的 storage_key")
 
         key = self._safe_storage_key(key)
-        destination = (self.public_root / key).resolve()
-        try:
-            destination.relative_to(self.public_root)
-        except ValueError as exc:
-            raise ImageDeliveryError("图片 storage_key 超出公开目录") from exc
+        destination = self.stored_path(key)
 
         if source is not None and not destination.exists():
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +176,7 @@ class LocalStaticHttpsProvider:
 
         return DeliveredImage(
             storage_key=key,
-            public_url=self._public_url(key),
+            public_url=self.public_url(key),
             content_sha256=digest,
             provider=self.name,
         )
@@ -247,6 +260,63 @@ class ImageDeliveryService:
             if str(item.get("id") or "").strip()
         }
 
+    def inspect_product(
+        self, product: dict[str, object], platform: str,
+    ) -> list[ImageDeliveryProblem]:
+        """只读检查所选图片的当前交付状态；不复制文件、不写数据、不探测网络。"""
+        source = product.get("source") if isinstance(product.get("source"), dict) else {}
+        pool = normalize_image_pool(source.get("image_pool") or [], "source")
+        target_ids = self._target_asset_ids(product, pool, platform)
+        settings = self.settings_provider(self.paths)
+        problems: list[ImageDeliveryProblem] = []
+        prepare_action = "调用 product_publish_prepare 准备当前草稿的发布图片，再重新校验"
+        for item in pool:
+            asset_id = str(item.get("id") or "")
+            if asset_id not in target_ids:
+                continue
+            url = str(item.get("url") or "").strip()
+            key = str(item.get("storage_key") or "")
+            managed = bool(key or item.get("delivery_provider"))
+            if url.startswith(("https://", "http://")) and not managed:
+                continue
+            code, message, action = "", "", prepare_action
+            if url.startswith(("data:", "blob:", "ml-id:")) and not self._source_path(item):
+                code, message = "IMAGE_NOT_PUBLIC", "图片地址不能直接用于该平台发布"
+                action = "将图片导入本地图片池，再调用 product_publish_prepare"
+            else:
+                try:
+                    provider = build_image_https_provider(settings)
+                    if isinstance(provider, ExistingUrlOnlyProvider):
+                        raise ImageDeliveryError(
+                            "本地图片尚未配置 HTTPS provider；请设置 "
+                            f"{IMAGE_HTTPS_PROVIDER_ENV}=local_static 和 {IMAGE_HTTPS_BASE_URL_ENV}"
+                        )
+                except ImageDeliveryError as exc:
+                    code, message = "IMAGE_PROVIDER_NOT_CONFIGURED", str(exc)
+                    action = "修正图片 HTTPS provider 配置后调用 product_publish_prepare"
+                else:
+                    stored = None
+                    try:
+                        if isinstance(provider, LocalStaticHttpsProvider) and key:
+                            stored = provider.stored_path(key)
+                    except ImageDeliveryError as exc:
+                        code, message = "IMAGE_STORAGE_INVALID", str(exc)
+                    if not code:
+                        if self._source_path(item) is None and not (stored and stored.is_file()):
+                            code, message = "IMAGE_SOURCE_MISSING", "本地源图片和可复用的公开图片文件均不存在"
+                            action = "重新导入此图片后调用 product_publish_prepare"
+                        elif not key or not stored or not stored.is_file() or not url:
+                            code, message = "IMAGE_NOT_PREPARED", "图片 HTTPS provider 已配置，但此图片尚未完成发布准备"
+                        elif item.get("delivery_provider") != settings.provider or url != provider.public_url(key):
+                            code, message = "IMAGE_PUBLIC_URL_STALE", "图片托管地址与当前 HTTPS provider 配置不一致，需要刷新"
+                        if item.get("delivery_error") and code == "IMAGE_NOT_PREPARED":
+                            code, message = "IMAGE_PREPARATION_FAILED", f"上次图片准备失败：{item['delivery_error']}"
+            if code:
+                problems.append(ImageDeliveryProblem(asset_id, code, message, action))
+        for asset_id in sorted(target_ids - {str(item.get("id") or "") for item in pool}):
+            problems.append(ImageDeliveryProblem(asset_id, "IMAGE_SOURCE_MISSING", "草稿引用的图片已不在图片池中", "从图片池重新选择图片"))
+        return problems
+
     def prepare_product(
         self,
         product: dict[str, object],
@@ -294,7 +364,7 @@ class ImageDeliveryService:
                 item["delivery_provider"] = delivered.provider
                 item["url"] = delivered.public_url
                 item.pop("delivery_error", None)
-            except ImageDeliveryError as exc:
+            except (ImageDeliveryError, OSError) as exc:
                 item["delivery_error"] = str(exc)
 
         source["image_pool"] = pool
@@ -309,6 +379,7 @@ __all__ = [
     "IMAGE_HTTPS_PROVIDER_ENV",
     "IMAGE_HTTPS_ROOT_ENV",
     "ImageDeliveryError",
+    "ImageDeliveryProblem",
     "ImageDeliveryService",
     "ImageDeliverySettings",
     "ImageHttpsProvider",

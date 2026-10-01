@@ -778,3 +778,18 @@ def test_external_api_sends_have_one_managed_boundary():
     bus = (ROOT / "erp_web/runtime_units/publishing_bus_core.py").read_text()
     assert "max_retries" not in bus and "retry_delay_seconds" not in bus
     assert "fetch_ozon_shop_name" not in (ROOT / "erp_web/marketplaces/category_services.py").read_text()
+
+
+def test_publish_preparation_is_an_explicit_write_tool():
+    """图片准备使用现有原生工具边界，查询场景只暴露只读发布校验。"""
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG, GLOBAL_CHAT_CAPABILITIES, _WRITE_CAPABILITIES
+
+    prepare = APPLICATION_CAPABILITY_CATALOG.tools["product_publish_prepare"].definition
+    validate = APPLICATION_CAPABILITY_CATALOG.tools["product_publish_validate"].definition
+    request = APPLICATION_CAPABILITY_CATALOG.tools["product_publish_request"].definition
+    assert prepare.side_effect == "write"
+    assert not prepare.approval_required
+    assert validate.side_effect == "none"
+    assert request.approval_required
+    assert "product_publish_prepare" in _WRITE_CAPABILITIES
+    assert "product_publish_prepare" not in GLOBAL_CHAT_CAPABILITIES

@@ -157,6 +157,7 @@ _WRITE_CAPABILITIES = frozenset(
         "category_match",
         "draft_prepare_for_market",
         "product_publish_validate",
+        "product_publish_prepare",
         "product_publish_request",
         "copy_generate",
         "copy_generate_batch",

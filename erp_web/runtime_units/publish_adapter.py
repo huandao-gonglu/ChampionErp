@@ -54,7 +54,7 @@ from .publish_yandex import (
 logger = logging.getLogger(__name__)
 
 
-def persist_materialized_image_pool(prepared: dict[str, Any]) -> dict[str, Any]:
+def persist_materialized_image_pool(prepared: dict[str, Any], original: dict[str, Any]) -> dict[str, Any]:
     """把图片物化结果（storage_key 与公网 URL）回写到商品图片池。
 
     只回写图片池，不携带发布投影草稿，避免覆盖复合平台草稿的其他目标；
@@ -68,7 +68,36 @@ def persist_materialized_image_pool(prepared: dict[str, Any]) -> dict[str, Any]:
     pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
     if not product_id or not pool:
         return prepared
-    saved = save_image_pool_for_product(product_id, pool)
+    fields = ("url", "storage_key", "content_sha256", "delivery_provider", "delivery_error")
+    original_pool = {item["id"]: item for item in original.get("source", {}).get("image_pool", [])}
+    updates = {
+        item["id"]: item for item in pool
+        if item["id"] in original_pool and any(
+            str(item.get(field) or "") != str(original_pool[item["id"]].get(field) or "")
+            for field in fields
+        )
+    }
+    products = get_context().products
+    # 文件准备已完成；短锁内只合并交付字段，不覆盖并发编辑的图片或草稿。
+    with products.mutation_scope({"product_id": product_id}):
+        current = products.load_product_from_index(product_id, "")
+        if not current:
+            raise ValueError("发布图片关联的商品不存在")
+        current_pool = current.get("source", {}).get("image_pool", [])
+        current_ids = {item["id"] for item in current_pool}
+        if set(updates) - current_ids:
+            raise ValueError("图片准备期间图片已被删除，请重新读取草稿")
+        for item in current_pool:
+            update = updates.get(item["id"])
+            if update is None:
+                continue
+            before = original_pool[item["id"]]
+            if any(str(item.get(field) or "") not in {
+                str(before.get(field) or ""), str(update.get(field) or ""),
+            } for field in ("path", *fields)):
+                raise ValueError("图片准备期间源图片或托管信息已变更，请重新准备")
+            item.update({field: update.get(field, "") for field in fields})
+        saved = save_image_pool_for_product(product_id, current_pool) if updates else {"ok": True, "product": current}
     saved_product = saved.get("product") if saved.get("ok") else None
     saved_source = (
         saved_product.get("source")
@@ -81,7 +110,7 @@ def persist_materialized_image_pool(prepared: dict[str, Any]) -> dict[str, Any]:
         else None
     )
     if not saved_pool:
-        return prepared
+        raise ValueError(saved.get("error") or "发布图片准备结果未能保存到商品图片池")
     prepared_source = prepared.get("source") if isinstance(prepared.get("source"), dict) else {}
     prepared["source"] = {**prepared_source, "image_pool": saved_pool}
     return prepared
@@ -293,7 +322,7 @@ class OzonPublishingAdapter:
 
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         prepared = get_context().image_delivery.prepare_product(product, self.platform)
-        return persist_materialized_image_pool(prepared)
+        return persist_materialized_image_pool(prepared, product)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         product = normalize_product_fields(product)
@@ -411,7 +440,7 @@ class YandexPublishingAdapter:
 
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         prepared = get_context().image_delivery.prepare_product(product, self.platform)
-        return persist_materialized_image_pool(prepared)
+        return persist_materialized_image_pool(prepared, product)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         # 类目身份只来自平台草稿；不再回落到商品级规则副本。

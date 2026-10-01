@@ -11,6 +11,8 @@ from erp_web.product_model import (
     normalize_draft_image_refs,
     normalize_mercadolibre_sites_to_sell,
 )
+from erp_web.product_model.sku_model import selected_skus
+from erp_web.product_model.sku_image_model import sku_image_asset
 from erp_web.runtime_units.draft_publish_context import (
     load_required_draft_publish_context,
     save_draft_precheck_result,
@@ -23,6 +25,7 @@ from erp_web.runtime_units.publish_confirmation import (
     resolve_publish_store_binding,
 )
 from erp_web.runtime_units.publish_context import prepare_publish_context
+from erp_web.runtime_units.publish_helpers import _draft_images
 from erp_web.schemas.ai_tools import (
     PUBLISH_JOB_TYPE,
     JobReferenceResult,
@@ -32,6 +35,8 @@ from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.publish_capabilities import (
     ProductPublishCapabilityRequest,
     ProductPublishDestination,
+    ProductPublishPrepareRequest,
+    ProductPublishPrepareResult,
     ProductPublishRequest,
     ProductPublishRequestResult,
     ProductPublishSummary,
@@ -43,6 +48,7 @@ from erp_web.schemas.publish_capabilities import (
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.image_public_access import check_image_public_access
 from erp_web.services.tool_approval import verify_execution_approval
 
 
@@ -350,7 +356,7 @@ def evaluate_publish_validation(
     """只读地校验当前已持久化发布事实并生成 payload digest。
 
     该入口不会调用 ``adapter.prepare_product``。Mercado 本地图片上传等素材
-    准备只能由显式的 payload 预览写流程触发，避免 ``side_effect=none`` 的
+    准备只能由显式的发布准备或 payload 预览写流程触发，避免 ``side_effect=none`` 的
     AI capability 在“校验”期间悄悄写平台和本地商品状态。
     """
 
@@ -493,6 +499,37 @@ def validate_product_publish(
     """复用平台 adapter 完成草稿预检、payload 校验与摘要 digest。"""
 
     return evaluate_publish_validation(request, context=context).result
+
+
+def prepare_product_publish(
+    request: ProductPublishPrepareRequest,
+    *,
+    context: AppContext | None = None,
+) -> ProductPublishPrepareResult:
+    """复用素材准备写路径；以落盘后回读的事实校验，不创建发布任务。"""
+    active_context = context or get_context()
+    target = ProductPublishValidateRequest(
+        draft_id=request.draft_id, platform=request.platform, site=request.site,
+    )
+    prepare_and_evaluate_publish_validation(target, context=active_context)
+    evaluation = evaluate_publish_validation(target, context=active_context)
+    try:
+        saved = save_draft_precheck_result(evaluation.context, evaluation.precheck, context=active_context)
+        if saved.get("ok") is not True:
+            raise ValueError(saved.get("error") or "未确认预检结果已保存")
+    except Exception as exc:
+        raise BusinessCapabilityError("PUBLISH_PRECHECK_PERSIST_FAILED", f"发布校验结果保存失败：{exc}") from exc
+    checks = []
+    if request.check_public_access and evaluation.platform in {"yandex", "ozon"}:
+        product = evaluation.prepared_product
+        draft = product.get("drafts", {}).get(evaluation.platform, {})
+        urls = _draft_images(product, evaluation.platform, draft)
+        for fact, _ in selected_skus(product, draft):
+            asset = sku_image_asset(product, fact)
+            if asset and asset.get("url"):
+                urls.append(str(asset["url"]))
+        checks = check_image_public_access(urls)
+    return ProductPublishPrepareResult(validation=evaluation.result, public_access_checks=checks)
 
 
 def request_product_publish(
@@ -656,14 +693,39 @@ class PublishCapabilityScope:
 
 
 PRODUCT_PUBLISH_VALIDATE_TOOL = "product_publish_validate"
+PRODUCT_PUBLISH_PREPARE_TOOL = "product_publish_prepare"
 PRODUCT_PUBLISH_REQUEST_TOOL = "product_publish_request"
+
+
+@ai_tool(
+    name=PRODUCT_PUBLISH_PREPARE_TOOL,
+    description=(
+        "为指定草稿和目标准备发布图片，保存后回读并校验。Yandex/Ozon 将本地图片物化为当前 HTTPS 地址；"
+        "Mercado 在草稿预检通过后上传图片。可按需探测 Yandex/Ozon 实际图片 URL。"
+        "用于完成草稿、修复 IMAGE_NOT_PREPARED 或 IMAGE_PUBLIC_URL_STALE；不会提交商品发布。"
+    ),
+    permission="product.publish",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def product_publish_prepare(
+    request: ProductPublishPrepareRequest,
+    scope: Annotated[PublishCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> ProductPublishPrepareResult:
+    del execution
+    return prepare_product_publish(request, context=scope.context)
 
 
 @ai_tool(
     name=PRODUCT_PUBLISH_VALIDATE_TOOL,
     description=(
         "对草稿目标市场执行确定性发布校验，返回摘要、校验错误与 "
-        "validation_digest；通过后才允许提交发布。"
+        "validation_digest；严格只读，不准备图片、不探测图片可访问性。需要准备发布图片时先调用 product_publish_prepare；通过后才允许提交发布。"
     ),
     permission="product.publish",
     side_effect="none",
@@ -818,12 +880,16 @@ def product_publish_request(
 
 
 PUBLISH_AI_CAPABILITIES = (
+    product_publish_prepare,
     product_publish_validate,
     product_publish_request,
 )
 
 
 __all__ = [
+    "PRODUCT_PUBLISH_PREPARE_TOOL",
+    "product_publish_prepare",
+    "prepare_product_publish",
     "PRODUCT_PUBLISH_REQUEST_TOOL",
     "PRODUCT_PUBLISH_VALIDATE_TOOL",
     "PUBLISH_AI_CAPABILITIES",

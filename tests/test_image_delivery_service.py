@@ -121,3 +121,46 @@ def test_local_image_without_https_provider_is_left_for_precheck_to_reject(tmp_p
     assert item["url"] == ""
     assert "尚未配置 HTTPS provider" in item["delivery_error"]
 
+
+
+def test_inspection_distinguishes_preparation_and_current_configuration(tmp_path: Path) -> None:
+    source = tmp_path / "main.jpg"
+    source.write_bytes(b"image")
+    product = _product(source)
+    service = _service(tmp_path, provider="local_static", base_url="https://first.example.test")
+    assert [issue.code for issue in service.inspect_product(product, "ozon")] == ["IMAGE_NOT_PREPARED"]
+    assert not (tmp_path / "data/images/public").exists()
+
+    prepared = service.prepare_product(product, "ozon")
+    assert service.inspect_product(prepared, "ozon") == []
+    item = prepared["source"]["image_pool"][0]
+    destination = tmp_path / "data/images/public" / item["storage_key"]
+    before = destination.stat().st_mtime_ns
+    again = service.prepare_product(prepared, "ozon")
+    assert again == prepared
+    assert destination.stat().st_mtime_ns == before
+
+    changed = _service(tmp_path, provider="local_static", base_url="https://second.example.test")
+    assert [issue.code for issue in changed.inspect_product(prepared, "ozon")] == ["IMAGE_PUBLIC_URL_STALE"]
+    source.unlink()
+    refreshed = changed.prepare_product(prepared, "ozon")
+    assert changed.inspect_product(refreshed, "ozon") == []
+    assert destination.stat().st_mtime_ns == before
+    destination.unlink()
+    assert [issue.code for issue in changed.inspect_product(refreshed, "ozon")] == ["IMAGE_SOURCE_MISSING"]
+
+
+def test_inspection_excludes_unselected_errors_and_distinguishes_missing_source(tmp_path: Path) -> None:
+    source = tmp_path / "main.jpg"
+    source.write_bytes(b"image")
+    product = _product(source)
+    product["source"]["image_pool"].append({"id": "other", "delivery_error": "无关错误"})
+    unconfigured = _service(tmp_path, provider="existing_url")
+    issues = unconfigured.inspect_product(product, "ozon")
+    assert len(issues) == 1
+    assert issues[0].code == "IMAGE_PROVIDER_NOT_CONFIGURED"
+    source.unlink()
+    configured = _service(tmp_path, provider="local_static", base_url="https://images.example.test")
+    issues = configured.inspect_product(product, "ozon")
+    assert len(issues) == 1
+    assert issues[0].code == "IMAGE_SOURCE_MISSING"
