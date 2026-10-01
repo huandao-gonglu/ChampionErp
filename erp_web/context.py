@@ -162,6 +162,18 @@ class AppContext:
         self._approval_session: "ApprovalSession | None" = None
         self._category_catalog: "CategoryCatalog | None" = None
         self._online_products = None
+        self._external_requests = None
+
+    @property
+    def external_requests(self):
+        if self._external_requests is None:
+            with self._lazy_lock:
+                if self._external_requests is None:
+                    from erp_web.services.external_request_manager import ExternalRequestManager
+                    from erp_web.stores.external_request_store import ExternalRequestStore
+
+                    self._external_requests = ExternalRequestManager(ExternalRequestStore(self.paths.data_dir / "external-requests.sqlite3"))
+        return self._external_requests
 
     @property
     def online_products(self):

@@ -132,7 +132,6 @@ def test_publish_jobs_never_persist_credentials(tmp_path) -> None:
                 "app_secret": app_secret,
             }
         },
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:

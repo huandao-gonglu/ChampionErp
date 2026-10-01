@@ -195,7 +195,6 @@ def test_native_approval_to_real_publish_job_and_model_reconciliation(
         terminal_callback=lambda state: persist_publish_bus_terminal_results(
             state, context=context
         ),
-        max_retries=0,
         auto_resume_pending=False,
     )
     context._publishing_bus = bus

@@ -82,13 +82,11 @@ class _FakeAdapter:
         return []
 
 
-def _run_bus(adapter: _FakeAdapter, *, max_retries: int) -> dict[str, Any]:
+def _run_bus(adapter: _FakeAdapter) -> dict[str, Any]:
     bus = PublishingBus(
         _MemoryPublishJobStore(),
         adapters={"mercadolibre": adapter},
         config_provider=lambda: {"mercadolibre": {}},
-        max_retries=max_retries,
-        retry_delay_seconds=0.0,
         auto_resume_pending=False,
     )
     try:
@@ -110,34 +108,34 @@ def _run_bus(adapter: _FakeAdapter, *, max_retries: int) -> dict[str, Any]:
         bus.close()
 
 
-def test_transient_adapter_error_is_retried_until_success() -> None:
+def test_transient_adapter_error_does_not_replay_publish() -> None:
     adapter = _FakeAdapter(
         [
             PublishAdapterError("OZON_SERVER_ERROR", "远端 5xx", retryable=True),
             {"ok": True, "status": "success", "id": "item-1"},
         ]
     )
-    state = _run_bus(adapter, max_retries=1)
+    state = _run_bus(adapter)
     platform_state = state["platforms"]["mercadolibre"]
-    assert platform_state["status"] == "success"
-    assert platform_state["attempts"] == 2
-    assert adapter.publish_calls == 2
+    assert platform_state["status"] == "failed"
+    assert platform_state["attempts"] == 1
+    assert adapter.publish_calls == 1
 
 
-def test_transient_adapter_error_exhausts_attempts_then_fails() -> None:
+def test_repeated_transient_results_do_not_expand_attempts() -> None:
     adapter = _FakeAdapter(
         [
             PublishAdapterError("OZON_SERVER_ERROR", "远端 5xx", retryable=True),
             PublishAdapterError("OZON_SERVER_ERROR", "远端 5xx", retryable=True),
         ]
     )
-    state = _run_bus(adapter, max_retries=1)
+    state = _run_bus(adapter)
     platform_state = state["platforms"]["mercadolibre"]
     assert platform_state["status"] == "failed"
-    assert platform_state["attempts"] == 2
+    assert platform_state["attempts"] == 1
     assert platform_state["result"]["error_code"] == "OZON_SERVER_ERROR"
     assert platform_state["result"]["error_map"]["retryable"] is True
-    assert adapter.publish_calls == 2
+    assert adapter.publish_calls == 1
 
 
 
@@ -152,7 +150,7 @@ def test_deterministic_adapter_error_is_not_retried() -> None:
             )
         ]
     )
-    state = _run_bus(adapter, max_retries=3)
+    state = _run_bus(adapter)
     platform_state = state["platforms"]["mercadolibre"]
     assert platform_state["status"] == "failed"
     assert platform_state["attempts"] == 1
@@ -184,7 +182,7 @@ def test_partial_platform_result_remains_partial_instead_of_becoming_failed() ->
         ]
     )
 
-    state = _run_bus(adapter, max_retries=0)
+    state = _run_bus(adapter)
 
     assert state["status"] == "completed"
     assert state["platforms"]["mercadolibre"]["status"] == "partial"
@@ -217,7 +215,7 @@ def test_partial_platform_result_remains_partial_instead_of_becoming_failed() ->
 
 def test_unclassified_exception_defaults_to_not_retryable() -> None:
     adapter = _FakeAdapter([RuntimeError("本地确定性错误")])
-    state = _run_bus(adapter, max_retries=3)
+    state = _run_bus(adapter)
     platform_state = state["platforms"]["mercadolibre"]
     assert platform_state["status"] == "failed"
     assert platform_state["attempts"] == 1
@@ -239,7 +237,7 @@ def test_mercadolibre_request_json_classifies_http_errors(monkeypatch) -> None:
         (403, "MERCADOLIBRE_AUTH_FAILED", False),
         (404, "MERCADOLIBRE_NOT_FOUND", False),
         (400, "MERCADOLIBRE_REQUEST_INVALID", False),
-        (429, "MERCADOLIBRE_RATE_LIMITED", True),
+        (429, "MERCADOLIBRE_RATE_LIMITED", False),
         (500, "MERCADOLIBRE_SERVER_ERROR", True),
         (503, "MERCADOLIBRE_SERVER_ERROR", True),
     ]
@@ -313,6 +311,11 @@ def test_ozon_request_classifies_http_and_network_errors(monkeypatch) -> None:
     url = "https://api-seller.ozon.ru/v3/product/import"
 
     def patch_urlopen(exc: Exception) -> None:
+        # 分类用例相互隔离；共享阻断的验收在 test_external_requests。
+        from erp_web.context import get_context
+        manager = get_context().external_requests
+        for block in manager.store.blocks():
+            manager.store.recover(block["platform"],block["account_id"],block["scope"],block["scope_key"],reason="离线用例切换")
         def fake_urlopen(*_args: Any, **_kwargs: Any) -> Any:
             raise exc
 
@@ -329,21 +332,21 @@ def test_ozon_request_classifies_http_and_network_errors(monkeypatch) -> None:
     with pytest.raises(PublishAdapterError) as exc_info:
         config_http.request_ozon_json("POST", url, "client", "key", {})
     assert exc_info.value.code == "OZON_RATE_LIMITED"
-    assert exc_info.value.retryable is True
+    assert exc_info.value.retryable is False
 
     patch_urlopen(TimeoutError("The read operation timed out"))
     with pytest.raises(PublishAdapterError) as exc_info:
         config_http.request_ozon_json("POST", url, "client", "key", {})
-    assert exc_info.value.code == "OZON_TIMEOUT"
-    assert exc_info.value.retryable is True
-    # map_ozon_publish_error 依赖消息中的 timeout 标记
-    assert "timeout" in str(exc_info.value)
+    assert exc_info.value.code == "EXTERNAL_WRITE_OUTCOME_UNKNOWN"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.details["outcome_unknown"] is True
 
     patch_urlopen(urllib.error.URLError(ConnectionResetError("reset")))
     with pytest.raises(PublishAdapterError) as exc_info:
         config_http.request_ozon_json("POST", url, "client", "key", {})
-    assert exc_info.value.code == "OZON_NETWORK"
-    assert exc_info.value.retryable is True
+    assert exc_info.value.code == "EXTERNAL_WRITE_OUTCOME_UNKNOWN"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.details["remote_write_dispatched"] is True
 
 
 def test_ozon_deadline_guard_keeps_timeout_error() -> None:

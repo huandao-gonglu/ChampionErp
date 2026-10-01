@@ -10,6 +10,8 @@ import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +22,10 @@ from erp_web.schemas.mercadolibre import (
 )
 
 from .publisher import PublishAdapterError
+from erp_web.services.platform_request_policy import retry_after
 
 # 平台 HTTP 边界把远端失败分类为类型化 PublishAdapterError：
-# PublishingBus 只对 retryable=True 的失败重试，确定性 4xx 不再被反复外发。
+# 平台只描述错误；传输重试由统一请求管理器控制，发布总线不重放业务操作。
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 420, 423, 425, 429})
 _DEFAULT_MERCADOLIBRE_TIMEOUT_SECONDS = 30
 # ``POST /global/items`` 会同步编排多个本地市场。真实四市场请求可能在
@@ -61,8 +64,11 @@ def _typed_http_failure(
     platform_prefix: str,
     message: str,
     status_code: int,
+    response_headers=None,
 ) -> PublishAdapterError:
     details: dict[str, Any] = {"http_status": int(status_code)}
+    if response_headers:
+        details["resume_at"] = retry_after(response_headers)
     if status_code in (401, 403):
         code = f"{platform_prefix}_AUTH_FAILED"
         retryable = False
@@ -71,7 +77,7 @@ def _typed_http_failure(
         retryable = False
     elif status_code in (420, 429):
         code = f"{platform_prefix}_RATE_LIMITED"
-        retryable = True
+        retryable = False
     elif _http_failure_retryable(status_code):
         code = f"{platform_prefix}_SERVER_ERROR"
         retryable = True
@@ -214,6 +220,7 @@ def request_json(
             platform_prefix="MERCADOLIBRE",
             message=f"{method} {url} failed: {exc.code} {detail}",
             status_code=exc.code,
+            response_headers=exc.headers,
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise _typed_network_failure(
@@ -257,7 +264,7 @@ def upload_mercadolibre_picture(path: str | Path, token: str) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with managed_urlopen(request, timeout=60, source=__name__) as response:
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -266,6 +273,7 @@ def upload_mercadolibre_picture(path: str | Path, token: str) -> dict[str, Any]:
             platform_prefix="MERCADOLIBRE",
             message=f"POST Mercado Libre picture upload failed: {exc.code} {detail}",
             status_code=exc.code,
+            response_headers=exc.headers,
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise _typed_network_failure(
@@ -399,7 +407,7 @@ def request_ozon_json(
     data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with managed_urlopen(request, timeout=timeout_seconds, source=__name__) as response:
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -408,6 +416,7 @@ def request_ozon_json(
             platform_prefix="OZON",
             message=f"{method} {url} failed: {exc.code} {detail}",
             status_code=exc.code,
+            response_headers=exc.headers,
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise _typed_network_failure(

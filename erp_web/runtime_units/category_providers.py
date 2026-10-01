@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import time
 import urllib.parse
+import urllib.error
 from datetime import timedelta
 from typing import Any
 
@@ -31,6 +32,8 @@ from erp_web.schemas.category_definition import (
     CategoryDefinition,
     CategoryDetail,
 )
+
+from .category_http_cache import cached_category_http
 
 from .category_definition_cache import (
     DEFINITION_CACHE_FRESH_TTL,
@@ -126,6 +129,17 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             return f"https://api.mercadolibre.com/marketplace/domain_discovery/search?q={quoted_query}&limit={safe_limit}"
         return f"https://api.mercadolibre.com/sites/{urllib.parse.quote(site)}/domain_discovery/search?q={quoted_query}&limit={safe_limit}"
 
+    @staticmethod
+    def _request_with_auth_refresh(url, access_token=None, **kwargs):
+        try:
+            return http_json(url, access_token, **kwargs)
+        except Exception as exc:
+            status = exc.code if isinstance(exc, urllib.error.HTTPError) else (getattr(exc,"details",{}) or {}).get("http_status")
+            if status != 401 or not access_token:
+                raise
+            token = get_mercadolibre_access_token({"mercadolibre":{"access_token":access_token}}, force_refresh=True)
+            return http_json(url, token, **kwargs)
+
     def _scoped_http_client(self, deadline_at: float | None):
         def scoped_http_client(
             url: str,
@@ -137,8 +151,8 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             normalized_method = str(method or "GET").strip().upper()
             if deadline_at is None:
                 if normalized_method == "GET" and payload is None:
-                    return http_json(url, access_token)
-                return http_json(
+                    return cached_category_http(self._request_with_auth_refresh, url, access_token)
+                return cached_category_http(self._request_with_auth_refresh,
                     url,
                     access_token,
                     method=normalized_method,
@@ -146,12 +160,12 @@ class MercadoLibreCategoryProvider(CategoryProvider):
                 )
             timeout = _remaining_timeout(deadline_at, 8) or 8
             if normalized_method == "GET" and payload is None:
-                return http_json(
+                return cached_category_http(self._request_with_auth_refresh,
                     url,
                     access_token,
                     timeout_seconds=timeout,
                 )
-            return http_json(
+            return cached_category_http(self._request_with_auth_refresh,
                 url,
                 access_token,
                 timeout_seconds=timeout,
@@ -406,9 +420,9 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         if resolved_site == "CBT":
             access_token = self._access_token_and_scope()[0]
         if timeout_seconds is None:
-            data = http_json(discovery_url, access_token)
+            data = self._request_with_auth_refresh(discovery_url, access_token)
         else:
-            data = http_json(
+            data = self._request_with_auth_refresh(
                 discovery_url,
                 access_token,
                 timeout_seconds=_remaining_timeout(

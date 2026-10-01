@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+
+from erp_web.runtime_units.online_change_confirmation import mercado_change
 from urllib.parse import quote
 
 from erp_web.marketplaces.config_http import request_json
@@ -128,6 +130,9 @@ class MercadoOnlineAdapter:
                 "content": Capability(enabled=active and not errors, fields=content_fields, scope="全局商品及关联市场", reason="User Products 的 family_name 会影响同族商品，本表单不修改族名" if up_id else "有销量后标题受限；描述写入路径未开放"),
                 "sale_state": Capability(enabled=active and not errors, scope="全局商品及全部关联市场", reason="已关闭或受限商品不可直接恢复" if not active else ""),
             })
+
+    def read_confirmation(self, listing, request):
+        return mercado_change(self, listing, request)
 
     def write(self, listing: OnlineListing, operation: str, scope: str, changes: dict[str, Any]) -> dict[str, Any]:
         up_id = listing.snapshot.get("siteless_id")

@@ -30,6 +30,10 @@ class CategorySearchError(AiToolExecutionError):
 def _classified_error(exc: Exception) -> CategorySearchError:
     if isinstance(exc, CategorySearchError):
         return exc
+    if getattr(exc,"details",{}).get("auth_error_code") == "AUTH_NOT_CONFIGURED":
+        return CategorySearchError("CATEGORY_CREDENTIALS_MISSING",str(exc),retryable=False)
+    if hasattr(exc, "code") and hasattr(exc, "retryable"):
+        return CategorySearchError(exc.code, str(exc), retryable=exc.retryable, details=getattr(exc, "details", None))
     message = str(exc) or exc.__class__.__name__
     lowered = message.casefold()
     if any(
@@ -59,7 +63,7 @@ def _classified_error(exc: Exception) -> CategorySearchError:
         return CategorySearchError(
             "CATEGORY_RATE_LIMITED",
             message,
-            retryable=True,
+            retryable=False,
         )
     if isinstance(exc, TimeoutError) or "timeout" in lowered or "timed out" in lowered:
         return CategorySearchError(
@@ -170,6 +174,7 @@ def _candidates(
 
 @dataclass(frozen=True)
 class OzonCategorySearcher:
+    shares_corpus = True
     provider: Any
     site: str
     limit: int = 8
@@ -318,6 +323,7 @@ class OzonCategorySearcher:
 
 @dataclass(frozen=True)
 class YandexCategorySearcher:
+    shares_corpus = True
     """Yandex 类目搜索：本地缓存树上的规范化匹配。"""
 
     provider: Any

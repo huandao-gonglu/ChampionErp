@@ -16,6 +16,8 @@ import shutil
 import time
 import urllib.parse
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from pathlib import Path
 from typing import Any
 
@@ -293,7 +295,7 @@ def download_remote_image(app_dir: Path | str, url: str, product_id: str = "", i
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with managed_urlopen(request, timeout=15, source=__name__) as response:
             content_type = str(response.headers.get("Content-Type") or "").lower()
             raw = response.read(MAX_REMOTE_BYTES + 1)
         if len(raw) > MAX_REMOTE_BYTES:

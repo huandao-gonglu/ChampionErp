@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from erp_web.services.external_request_context import request_operation
+
 import copy
 import hmac
 import threading
@@ -99,23 +101,6 @@ class PublishApprovalBindingError(RuntimeError):
     """持久化的人工确认与 worker 即将外发的事实不再一致。"""
 
     code = "PUBLISH_APPROVAL_BINDING_INVALID"
-
-
-def _publish_exception_retryable(exc: BaseException) -> bool:
-    """按类型化错误契约决定总线是否重试。
-
-    - 确认绑定失效是确定性失败，重试只会再次被阻止；
-    - 平台 HTTP 边界分类出的 :class:`PublishAdapterError` 以自身
-      ``retryable`` 为准（限流/锁/5xx/超时等瞬时失败才重试）；
-    - 未被分类的异常默认不可重试，避免确定性 4xx 或本地错误
-      被总线反复外发。
-    """
-
-    if isinstance(exc, PublishApprovalBindingError):
-        return False
-    if isinstance(exc, PublishAdapterError):
-        return bool(exc.retryable)
-    return False
 
 
 ACTIVE_JOB_STATUSES = frozenset({"pending", "queued", "running", "retrying"})
@@ -448,16 +433,12 @@ class PublishingBus:
             Callable[[dict[str, Any]], dict[str, Any] | None] | None
         ) = None,
         max_workers: int = 6,
-        max_retries: int = 1,
-        retry_delay_seconds: float = 0.25,
         auto_resume_pending: bool = True,
     ) -> None:
         self.store = store
         self.adapters = adapters
         self.config_provider = config_provider or (lambda: {})
         self.terminal_callback = terminal_callback
-        self.max_retries = max(0, int(max_retries))
-        self.retry_delay_seconds = max(0.0, float(retry_delay_seconds))
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="PublishingBus")
         self._lock = threading.RLock()
         self._futures: dict[str, list[Future[Any]]] = {}
@@ -998,269 +979,252 @@ class PublishingBus:
         }
 
     def _run_platform(self, job_id: str, product: dict[str, Any], platform: str) -> None:
+        with request_operation("publishing_bus",operation_id=job_id,trigger="background"):
+            self._run_platform_once(job_id,product,platform)
+
+    def _run_platform_once(self, job_id: str, product: dict[str, Any], platform: str) -> None:
         adapter = self.adapters[platform]
-        attempts = 0
-        max_attempts = self.max_retries + 1
-
-        while attempts < max_attempts:
-            attempts += 1
-            stored_result: dict[str, Any] | None = None
-            try:
-                # 每次执行时现取店铺配置（凭据来自 store_auth 表），不落任何 job 持久化。
-                config = self.config_provider()
-                config = config if isinstance(config, dict) else {}
-                state = self._read_state(job_id)
-                platform_state = (
-                    state.get("platforms", {}).get(platform)
-                    if isinstance(state.get("platforms"), dict)
-                    else {}
-                )
-                stored_result = (
-                    platform_state.get("result")
-                    if isinstance(platform_state, dict)
-                    and isinstance(platform_state.get("result"), dict)
-                    else None
-                )
-                approvals = (
-                    state.get("approved_publications")
-                    if isinstance(state.get("approved_publications"), dict)
-                    else {}
-                )
-                approval = (
-                    approvals.get(platform)
-                    if isinstance(approvals.get(platform), dict)
-                    else None
-                )
-                if self._is_pending_publish_result(stored_result) or (stored_result or {}).get("status") == "pending_submission":
-                    if approval is not None:
-                        self._approved_payload_for_worker(
-                            platform=platform,
-                            state=state,
-                            approval=approval,
-                            adapter=adapter,
-                            config=config,
-                        )
-                    result: Any = stored_result
-                    self._set_platform(
-                        job_id,
-                        platform,
-                        status="running",
-                        stage="waiting_platform_confirmation",
-                        error="",
-                        attempts=attempts,
+        attempts = 1
+        stored_result: dict[str, Any] | None = None
+        try:
+            # 每次执行时现取店铺配置（凭据来自 store_auth 表），不落任何 job 持久化。
+            config = self.config_provider()
+            config = config if isinstance(config, dict) else {}
+            state = self._read_state(job_id)
+            platform_state = (
+                state.get("platforms", {}).get(platform)
+                if isinstance(state.get("platforms"), dict)
+                else {}
+            )
+            stored_result = (
+                platform_state.get("result")
+                if isinstance(platform_state, dict)
+                and isinstance(platform_state.get("result"), dict)
+                else None
+            )
+            approvals = (
+                state.get("approved_publications")
+                if isinstance(state.get("approved_publications"), dict)
+                else {}
+            )
+            approval = (
+                approvals.get(platform)
+                if isinstance(approvals.get(platform), dict)
+                else None
+            )
+            if self._is_pending_publish_result(stored_result) or (stored_result or {}).get("status") == "pending_submission":
+                if approval is not None:
+                    self._approved_payload_for_worker(
+                        platform=platform,
+                        state=state,
+                        approval=approval,
+                        adapter=adapter,
+                        config=config,
                     )
-                else:
-                    if approval is not None:
-                        result = self._publish_approved_payload(
-                            job_id=job_id,
-                            platform=platform,
-                            state=state,
-                            approval=approval,
-                            adapter=adapter,
-                            config=config,
-                            attempts=attempts,
-                        )
-                    else:
-                        self._set_platform(job_id, platform, status="running", stage="resolving_category", attempts=attempts)
-                        resolved = adapter.resolve_category(product, config)
-                        product = resolved if isinstance(resolved, dict) else product
-                        drafts = (
-                            product.get("drafts")
-                            if isinstance(product.get("drafts"), dict)
-                            else {}
-                        )
-                        draft = (
-                            drafts.get(platform)
-                            if isinstance(drafts.get(platform), dict)
-                            else {}
-                        )
-                        self._set_platform(
-                            job_id,
-                            platform,
-                            stage="validating_required_attributes",
-                            category_id=str(
-                                draft.get("category_id")
-                                or ""
-                            ),
-                            attempts=attempts,
-                        )
-                        missing = adapter.required_attributes_missing(
-                            prepare_publish_context(product, platform),
-                            config,
-                        )
-                        if missing:
-                            self._set_platform(
-                                job_id,
-                                platform,
-                                status="failed",
-                                stage="failed",
-                                error="缺失必填属性：" + "，".join(str(item) for item in missing),
-                                attempts=attempts,
-                            )
-                            return
-                        self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
-                        result = adapter.publish(product, platform, config)
-
-                while isinstance(result, dict) and result.get("status") == "pending_submission":
-                    # 仅推进已批准且未完成的写步骤；结果确认不得进入此路径。
-                    stored_result = self._persisted_platform_result(result)
-                    self._set_platform(job_id, platform, status="running", stage="submitting_steps", result=stored_result, attempts=attempts)
-                    interval = adapter.submission_step_interval_seconds(config)
-                    time.sleep(max(0.05, float(interval)))
-                    result = adapter.advance_submission(result, config)
-
-                if self._is_pending_publish_result(result):
-                    self.confirmation.accept(job_id, platform, result)
-                    return
-
-                persisted_result = (
-                    self._persisted_platform_result(result)
-                )
-                result_status = (
-                    str(result.get("status") or "").strip().lower()
-                    if isinstance(result, dict)
-                    else ""
-                )
-                success_evidence = (
-                    isinstance(result, dict)
-                    and result.get("ok") is True
-                    and (
-                        result_status
-                        in {
-                            "published",
-                            "success",
-                            "real_publish_success",
-                        }
-                        or bool(
-                            result.get("id")
-                            or result.get("item_id")
-                            or result.get("external_id")
-                        )
-                    )
-                )
-                if not success_evidence:
-                    failure_status = (
-                        result_status
-                        if result_status
-                        in {
-                            "failed",
-                            PARTIAL_JOB_STATUS,
-                            "not_ready",
-                            "ready_for_real_publish",
-                            "skipped",
-                            OUTCOME_UNKNOWN_JOB_STATUS,
-                        }
-                        else "failed"
-                    )
-                    error = (
-                        str(result.get("error") or "")
-                        if isinstance(result, dict)
-                        else ""
-                    )
-                    self._set_platform(
-                        job_id,
-                        platform,
-                        status=failure_status,
-                        stage=failure_status,
-                        error=error
-                        or "发布适配器未返回可验证的成功结果",
-                        result=persisted_result,
-                        attempts=attempts,
-                    )
-                    return
+                result: Any = stored_result
                 self._set_platform(
                     job_id,
                     platform,
-                    status="success",
-                    stage="finished",
-                    result=persisted_result,
+                    status="running",
+                    stage="waiting_platform_confirmation",
+                    error="",
                     attempts=attempts,
                 )
-                return
-            except Exception as exc:
-                exception_error_map = (
-                    exc.to_error_map()
-                    if isinstance(exc, PublishAdapterError)
-                    else {}
-                )
-                outcome_unknown = bool(
-                    isinstance(exc, PublishAdapterError)
-                    and exc.details.get("outcome_unknown") is True
-                )
-                confirmation_read = self._is_pending_publish_result(
-                    stored_result
-                )
-                retryable = bool(
-                    _publish_exception_retryable(exc)
-                    and attempts < max_attempts
-                    and (not outcome_unknown or confirmation_read)
-                )
-                if outcome_unknown and not retryable:
-                    safe_details = {
-                        key: exc.details[key]
-                        for key in (
-                            "http_status",
-                            "remote_write_dispatched",
-                            "outcome_unknown",
-                        )
-                        if key in exc.details
-                    }
+            else:
+                if approval is not None:
+                    result = self._publish_approved_payload(
+                        job_id=job_id,
+                        platform=platform,
+                        state=state,
+                        approval=approval,
+                        adapter=adapter,
+                        config=config,
+                        attempts=attempts,
+                    )
+                else:
+                    self._set_platform(job_id, platform, status="running", stage="resolving_category", attempts=attempts)
+                    resolved = adapter.resolve_category(product, config)
+                    product = resolved if isinstance(resolved, dict) else product
+                    drafts = (
+                        product.get("drafts")
+                        if isinstance(product.get("drafts"), dict)
+                        else {}
+                    )
+                    draft = (
+                        drafts.get(platform)
+                        if isinstance(drafts.get(platform), dict)
+                        else {}
+                    )
                     self._set_platform(
                         job_id,
                         platform,
-                        status=OUTCOME_UNKNOWN_JOB_STATUS,
-                        stage=OUTCOME_UNKNOWN_JOB_STATUS,
-                        error=str(exc),
-                        result={
-                            **(
-                                copy.deepcopy(stored_result)
-                                if confirmation_read
-                                and isinstance(stored_result, dict)
-                                else {}
-                            ),
-                            "ok": False,
-                            "status": OUTCOME_UNKNOWN_JOB_STATUS,
-                            "error_code": exc.code,
-                            "error": str(exc),
-                            "error_map": exception_error_map,
-                            "outcome_unknown": True,
-                            "details": safe_details,
-                        },
+                        stage="validating_required_attributes",
+                        category_id=str(
+                            draft.get("category_id")
+                            or ""
+                        ),
                         attempts=attempts,
                     )
-                    return
-                failure_status = "retrying" if retryable else "failed"
-                exception_result = (
-                    copy.deepcopy(stored_result)
-                    if confirmation_read
-                    and retryable
-                    and isinstance(stored_result, dict)
-                    else {
-                        "ok": False,
-                        "status": failure_status,
-                    }
-                )
-                exception_result["error"] = str(exc)
-                if isinstance(exc, PublishAdapterError):
-                    exception_result.update(
-                        {
-                            "error_code": exc.code,
-                            "error_map": exception_error_map,
-                        }
+                    missing = adapter.required_attributes_missing(
+                        prepare_publish_context(product, platform),
+                        config,
                     )
+                    if missing:
+                        self._set_platform(
+                            job_id,
+                            platform,
+                            status="failed",
+                            stage="failed",
+                            error="缺失必填属性：" + "，".join(str(item) for item in missing),
+                            attempts=attempts,
+                        )
+                        return
+                    self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
+                    result = adapter.publish(product, platform, config)
+
+            while isinstance(result, dict) and result.get("status") == "pending_submission":
+                # 仅推进已批准且未完成的写步骤；结果确认不得进入此路径。
+                stored_result = self._persisted_platform_result(result)
+                self._set_platform(job_id, platform, status="running", stage="submitting_steps", result=stored_result, attempts=attempts)
+                interval = adapter.submission_step_interval_seconds(config)
+                time.sleep(max(0.05, float(interval)))
+                result = adapter.advance_submission(result, config)
+
+            if self._is_pending_publish_result(result):
+                self.confirmation.accept(job_id, platform, result)
+                return
+
+            persisted_result = (
+                self._persisted_platform_result(result)
+            )
+            result_status = (
+                str(result.get("status") or "").strip().lower()
+                if isinstance(result, dict)
+                else ""
+            )
+            success_evidence = (
+                isinstance(result, dict)
+                and result.get("ok") is True
+                and (
+                    result_status
+                    in {
+                        "published",
+                        "success",
+                        "real_publish_success",
+                    }
+                    or bool(
+                        result.get("id")
+                        or result.get("item_id")
+                        or result.get("external_id")
+                    )
+                )
+            )
+            if not success_evidence:
+                failure_status = (
+                    result_status
+                    if result_status
+                    in {
+                        "failed",
+                        PARTIAL_JOB_STATUS,
+                        "not_ready",
+                        "ready_for_real_publish",
+                        "skipped",
+                        OUTCOME_UNKNOWN_JOB_STATUS,
+                    }
+                    else "failed"
+                )
+                error = (
+                    str(result.get("error") or "")
+                    if isinstance(result, dict)
+                    else ""
+                )
                 self._set_platform(
                     job_id,
                     platform,
                     status=failure_status,
                     stage=failure_status,
-                    error=str(exc),
-                    result=exception_result,
+                    error=error
+                    or "发布适配器未返回可验证的成功结果",
+                    result=persisted_result,
                     attempts=attempts,
                 )
-                if not retryable:
-                    return
-                time.sleep(self.retry_delay_seconds)
-        self._update_job_status(job_id)
+                return
+            self._set_platform(
+                job_id,
+                platform,
+                status="success",
+                stage="finished",
+                result=persisted_result,
+                attempts=attempts,
+            )
+            return
+        except Exception as exc:
+            exception_error_map = (
+                exc.to_error_map()
+                if isinstance(exc, PublishAdapterError)
+                else {}
+            )
+            outcome_unknown = bool(
+                isinstance(exc, PublishAdapterError)
+                and exc.details.get("outcome_unknown") is True
+            )
+            confirmation_read = self._is_pending_publish_result(
+                stored_result
+            )
+            if outcome_unknown:
+                safe_details = {
+                    key: exc.details[key]
+                    for key in (
+                        "http_status",
+                        "remote_write_dispatched",
+                        "outcome_unknown",
+                    )
+                    if key in exc.details
+                }
+                self._set_platform(
+                    job_id,
+                    platform,
+                    status=OUTCOME_UNKNOWN_JOB_STATUS,
+                    stage=OUTCOME_UNKNOWN_JOB_STATUS,
+                    error=str(exc),
+                    result={
+                        **(
+                            copy.deepcopy(stored_result)
+                            if confirmation_read
+                            and isinstance(stored_result, dict)
+                            else {}
+                        ),
+                        "ok": False,
+                        "status": OUTCOME_UNKNOWN_JOB_STATUS,
+                        "error_code": exc.code,
+                        "error": str(exc),
+                        "error_map": exception_error_map,
+                        "outcome_unknown": True,
+                        "details": safe_details,
+                    },
+                    attempts=attempts,
+                )
+                return
+            failure_status = "failed"
+            exception_result = {"ok": False, "status": failure_status}
+            exception_result["error"] = str(exc)
+            if isinstance(exc, PublishAdapterError):
+                exception_result.update(
+                    {
+                        "error_code": exc.code,
+                        "error_map": exception_error_map,
+                    }
+                )
+            self._set_platform(
+                job_id,
+                platform,
+                status=failure_status,
+                stage=failure_status,
+                error=str(exc),
+                result=exception_result,
+                attempts=attempts,
+            )
+            return
 
     def _publish_approved_payload(
         self,

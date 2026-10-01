@@ -6,6 +6,7 @@ import urllib.parse
 
 from erp_web.http_route_units import image_routes
 from .context import get_context
+from .services.external_request_context import request_operation
 from .http_route_units import (
     ai_chat_routes,
     ai_presentation_routes,
@@ -82,6 +83,7 @@ __all__ = [
 ]
 
 
+@request_operation("http_get")
 def handle_get(handler: JsonRequestHandler) -> None:
     parsed = urllib.parse.urlparse(handler.path)
     try:
@@ -138,6 +140,7 @@ def _claim_presentation_scope(handler: JsonRequestHandler):
     return scope
 
 
+@request_operation("http_post")
 def handle_post(handler: JsonRequestHandler) -> None:
     parsed = urllib.parse.urlparse(handler.path)
     if (

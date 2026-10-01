@@ -8,6 +8,8 @@ import re
 import ssl
 import time
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -360,7 +362,7 @@ def download_images(urls: list[str], dest_dir: Path) -> list[str]:
                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
                 },
             )
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with managed_urlopen(request, timeout=30, source=__name__) as response:
                 content_type = str(response.headers.get("Content-Type") or "")
                 data = response.read(MAX_IMAGE_BYTES + 1)
             if len(data) > MAX_IMAGE_BYTES:
@@ -398,20 +400,7 @@ def fetch_url_html(url: str, cookie: str = "") -> str:
     }
     if cookie.strip():
         headers["Cookie"] = cookie.strip()
-    errors: list[str] = []
-    contexts = [ssl.create_default_context(), ssl._create_unverified_context()]
-    for attempt in range(3):
-        for context in contexts:
-            request = urllib.request.Request(url, headers=headers)
-            try:
-                with urllib.request.urlopen(request, timeout=25, context=context) as response:
-                    raw = response.read(900_000)
-                return raw.decode("utf-8", errors="ignore")
-            except Exception as exc:
-                errors.append(str(exc))
-                time.sleep(0.8 + attempt * 0.6)
-    tail = errors[-1] if errors else "unknown error"
-    raise RuntimeError(
-        "网页打开超时或 SSL 握手失败。请先在浏览器打开一次该链接，"
-        f"再重新获取；最后错误: {tail}"
-    )
+    request = urllib.request.Request(url, headers=headers)
+    with managed_urlopen(request, timeout=25, source=__name__) as response:
+        raw = response.read(900_000)
+    return raw.decode("utf-8", errors="ignore")

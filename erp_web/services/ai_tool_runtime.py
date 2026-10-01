@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from erp_web.services.external_request_context import request_operation
+
 import hashlib
 import json
 import time
@@ -158,8 +160,9 @@ class AiToolRuntime:
         # 仅按调用身份防止同一调用同时执行；不同调用和只读查询不缓存旧结果。
         with self._cache_lock:
             lock = self._call_locks.setdefault(command.call_id, threading.Lock())
-        with lock:
-            return self._execute(command, execution_context or self.execution_context)
+        execution = execution_context or self.execution_context
+        with lock, request_operation("ai_tool:"+command.tool_name, operation_id=execution.task_run_id, trigger="agent_tool",deadline_at=execution.deadline_at.timestamp(),cancellation_check=execution.cancellation_check):
+            return self._execute(command, execution)
 
     def _execute(
         self, command: AiToolCommand, execution: AiExecutionContext

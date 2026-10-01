@@ -987,7 +987,7 @@ def test_configured_api_provider_connection_uses_saved_request_mapping(monkeypat
         def __exit__(self, exc_type, exc, traceback):
             return False
 
-        def read(self) -> bytes:
+        def read(self, size: int = -1) -> bytes:
             return json.dumps(
                 {
                     "data": {

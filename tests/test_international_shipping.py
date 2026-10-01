@@ -247,7 +247,7 @@ def test_ozon_incomplete_pagination_is_rejected():
 
 def test_platform_client_blocks_unrelated_side_effects():
     with pytest.raises(ValueError, match='只允许'):
-        PlatformClient('ozon', CONFIG['ozon']).call('/v3/product/import', body={})
+        PlatformClient('ozon', CONFIG['ozon'], opener=lambda *a, **k: pytest.fail('不得联网')).call('/v3/product/import', body={})
 
 
 @pytest.mark.parametrize('fixed,rate,divisor,weight,expected_fee,expected_g', [

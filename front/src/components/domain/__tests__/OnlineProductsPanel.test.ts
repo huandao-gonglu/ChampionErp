@@ -24,6 +24,41 @@ function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,glob
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
 
 describe('在线商品页面',()=>{
+  it.each(['waiting_confirmation', 'outcome_unknown', 'confirmed'])('任务 %s 不维持定时轮询', async status => {
+    const job: OnlineJob = {id:'waiting',operation:'price',platform:'mercadolibre',status,target_id:item.id,created_at:'',updated_at:'',request:{},result:{}}
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[job]})
+    render(); await flushPromises()
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(fetchOnlineProducts).toHaveBeenCalledTimes(1)
+  })
+  it('页面隐藏时停止活跃任务轮询，恢复可见后读取一次', async () => {
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    try {
+      const job: OnlineJob = {id:'running',operation:'sync',platform:'mercadolibre',status:'running',target_id:'*',created_at:'',updated_at:'',request:{},result:{}}
+      vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[job]})
+      render(); await flushPromises()
+      hidden.mockReturnValue(true)
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(fetchOnlineProducts).toHaveBeenCalledTimes(1)
+      hidden.mockReturnValue(false)
+      document.dispatchEvent(new Event('visibilitychange'))
+      await flushPromises()
+      expect(fetchOnlineProducts).toHaveBeenCalledTimes(2)
+    } finally { hidden.mockRestore() }
+  })
+  it('首次自动确认到期后只读取一次本地结果，不推进平台任务', async () => {
+    const job: OnlineJob = {id:'submitted',operation:'price',platform:'mercadolibre',status:'submitted',target_id:item.id,created_at:'',updated_at:'',request:{},result:{automatic_confirmation_pending:true,next_confirmation_at:Date.now()/1000+120}}
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[job]})
+    render(); await flushPromises()
+    await vi.advanceTimersByTimeAsync(120000)
+    expect(fetchOnlineProducts).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(fetchOnlineProducts).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(fetchOnlineProducts).toHaveBeenCalledTimes(2)
+    expect(onlineAction).not.toHaveBeenCalled()
+  })
   it('单件刷新只查询目标状态，同时更新列表和详情并保留完整同步时间',async()=>{
     const old={...item,synced_at:'2026-09-20T01:00:00Z'}
     vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),items:[old]})
@@ -70,10 +105,12 @@ describe('在线商品页面',()=>{
     expect(fetchOnlineProducts).toHaveBeenCalledTimes(2)
   })
   it('刷新之前发出的列表旧响应不能覆盖新状态',async()=>{
+    const backgroundJob:OnlineJob={id:'other',operation:'price',platform:'mercadolibre',status:'running',target_id:'other-item',created_at:'',updated_at:'',request:{},result:{}}
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[backgroundJob]})
     render();await flushPromises()
     let stale!: (value:OnlinePage)=>void
     vi.mocked(fetchOnlineProducts).mockReturnValueOnce(new Promise(done=>{stale=done}))
-    await vi.advanceTimersByTimeAsync(15000)
+    await vi.advanceTimersByTimeAsync(5000)
     const next={...item,raw_status:'paused',sale_state:'paused',status_checked_at:'2026-09-27T02:00:00Z'}
     vi.mocked(refreshOnlineStatus).mockResolvedValue(next)
     vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),items:[next]})

@@ -1,7 +1,11 @@
 """Yandex 只读同步：目录分页先行，详情按 100 个 SKU 分批，最多 3 个接口并发。"""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
+from threading import Event
+
+from erp_web.marketplaces.online_sync import raise_if_access_blocked
 from typing import Any, Iterator
 
 from erp_web.runtime_units.online_yandex_snapshot import build_listing, build_stocks, catalog_listing
@@ -103,12 +107,31 @@ def read_batch(adapter, mappings, hidden: set[str]) -> OnlineSyncBatch:
         requests["stock:campaign"] = lambda: stock_result(adapter,
             f"/v2/campaigns/{adapter.campaign}/offers/stocks", {"offerIds": ids})
     responses, errors = {}, []
+    stopped = Event()
+    def run(request):
+        if stopped.is_set():
+            raise RuntimeError("本批次已因访问受阻而停止")
+        try:
+            return request()
+        except Exception as exc:
+            try:
+                raise_if_access_blocked(exc)
+            except Exception:
+                stopped.set()
+                raise
+            raise
+
     with ThreadPoolExecutor(max_workers=MAX_REQUESTS, thread_name_prefix="yandex-sync-read") as pool:
-        futures = {name: pool.submit(request) for name, request in requests.items()}
-        for name, future in futures.items():
+        futures = {pool.submit(copy_context().run, run, request): name for name, request in requests.items()}
+        for future in as_completed(futures):
+            name = futures[future]
             try:
                 responses[name] = future.result()
             except Exception as exc:
+                if stopped.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                raise_if_access_blocked(exc)
                 label = {"campaign": "店铺状态", "cards": "商品卡片", "prices": "价格"}.get(name, "库存")
                 errors.append(f"{label}：{exc}")
     result = OnlineSyncBatch("details")
@@ -145,6 +168,7 @@ def sync_yandex(adapter, ids=None) -> Iterator[OnlineSyncBatch]:
     try:
         hidden = hidden_ids(adapter)
     except Exception as exc:
+        raise_if_access_blocked(exc)
         yield OnlineSyncBatch("details", errors={row["offer"]["offerId"]: str(exc) for row in mappings})
         return
     for offset in range(0, len(mappings), BATCH_SIZE):

@@ -6,6 +6,8 @@ import json
 import threading
 import time
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from copy import deepcopy
 from typing import Any
 
@@ -166,7 +168,7 @@ class ExchangeRateService:
                     return stored_result
         try:
             request = urllib.request.Request(api_url, headers={"Accept": "application/json", "User-Agent": "ChampionERP/1.0"})
-            with urllib.request.urlopen(request, timeout=cfg["timeout_seconds"]) as response:
+            with managed_urlopen(request, timeout=cfg["timeout_seconds"], source=__name__) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             fallback = self._stored_result(stale=True, error=f"实时汇率获取失败：{exc}")

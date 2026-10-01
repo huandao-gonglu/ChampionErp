@@ -5,6 +5,8 @@ from copy import deepcopy
 from functools import cached_property
 from typing import Any
 
+from erp_web.runtime_units.online_change_confirmation import yandex_change
+
 from erp_web.marketplaces import yandex_http as api
 from erp_web.marketplaces.yandex_currency import yandex_wire_currency
 from erp_web.schemas.online_products import OnlineListing
@@ -22,9 +24,6 @@ class YandexOnlineAdapter:
         self.campaign = str(self.config.get("campaign_id") or "")
         if not self.token or not self.business or not self.campaign:
             raise ValueError("请先验证 Yandex 店铺授权")
-        campaign = api.fetch_yandex_campaign(self.token, self.campaign)
-        if str(campaign.get("business", {}).get("id")) != self.business:
-            raise ValueError("Yandex 店铺与账号绑定不一致")
         self.account_id = self.business+":"+self.campaign
         self.mode = str(self.config.get("stock_update_mode") or "none")
 
@@ -54,6 +53,9 @@ class YandexOnlineAdapter:
         if result.errors:
             raise ValueError(result.errors.get(remote_id) or "Yandex 商品读取不完整")
         return result.listings[0]
+
+    def read_confirmation(self, listing, request):
+        return yandex_change(self, listing, request)
 
     def write(self, listing: OnlineListing, operation: str, scope: str, changes: dict[str, Any]) -> dict[str, Any]:
         try:

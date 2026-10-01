@@ -17,9 +17,12 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from typing import Any
 
 from .publisher import PublishAdapterError
+from erp_web.services.platform_request_policy import retry_after
 
 YANDEX_MARKET_API_HOST = "https://api.partner.market.yandex.ru"
 
@@ -197,7 +200,7 @@ def _http_error_classification(
         return (
             "YANDEX_RATE_LIMITED",
             "Yandex 接口被限流",
-            True,
+            False,
             "等待后重试，并降低类目/状态轮询频率",
         )
     if status_code == 423:
@@ -211,7 +214,7 @@ def _http_error_classification(
         return (
             "YANDEX_RATE_LIMITED",
             "Yandex 接口被限流",
-            True,
+            False,
             "等待后重试，并降低类目/状态轮询频率",
         )
     if 500 <= status_code < 600:
@@ -332,7 +335,7 @@ def request_yandex_json(
     request = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     timeout = max(0.1, float(timeout_seconds))
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with managed_urlopen(request, timeout=timeout, source=__name__) as response:
             raw = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -369,8 +372,10 @@ def request_yandex_json(
             http_status=int(exc.code),
             errors=errors,
             warnings=warnings,
-            details={"next_action": next_action},
+            details={"next_action": next_action, "resume_at": retry_after(exc.headers or {})},
         ) from exc
+    except PublishAdapterError:
+        raise
     except Exception as exc:  # noqa: BLE001 - 网络层错误统一分类
         code, message, retryable, next_action = _network_error_classification(exc)
         raise YandexApiError(

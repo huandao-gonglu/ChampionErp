@@ -140,7 +140,7 @@ function stopPolling() {
 }
 
 async function pollRun(runId: string) {
-  if (!runId || polling) return
+  if (!runId || polling || document.hidden) return
   polling = true
   try {
     const next = await fetchProductResearchHotProductRun(runId)
@@ -163,7 +163,7 @@ function startPolling(runId: string) {
   stopPolling()
   pollTimer = window.setInterval(() => {
     void pollRun(runId)
-  }, 500)
+  }, 2000)
   void pollRun(runId)
 }
 

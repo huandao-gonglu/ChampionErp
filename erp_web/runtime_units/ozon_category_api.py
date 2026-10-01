@@ -49,7 +49,6 @@ OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL = (
     "https://api-seller.ozon.ru/v1/description-category/attribute/values/search"
 )
 _STALE_RETRY_COOLDOWN_SECONDS = 60
-_ATTRIBUTE_VALUE_PAGE_SIZE = 2000
 _ATTRIBUTE_VALUE_CACHE_TTL_SECONDS = 15 * 60
 
 
@@ -139,6 +138,8 @@ def _credential_scope_hash(client_id: str) -> str:
 
 
 def _is_auth_error(exc: Exception) -> bool:
+    if (getattr(exc,"details",{}) or {}).get("http_status") in (401,403) or getattr(exc,"retryable",None) is False:
+        return True
     message = str(exc).casefold()
     return any(
         marker in message
@@ -198,42 +199,10 @@ def _load_tree_from_remote(
     *,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
-    """从 Ozon 读取类目树；瞬时网络错误在同一 deadline 内只重试一次。"""
-
-    deadline_at = (
-        time.monotonic() + float(timeout_seconds)
-        if timeout_seconds is not None
-        else None
-    )
-    response: dict[str, Any] | None = None
-    for attempt in range(2):
-        try:
-            if deadline_at is None:
-                response = request_ozon_json(
-                    "POST",
-                    OZON_CATEGORY_TREE_URL,
-                    client_id,
-                    api_key,
-                    {"language": "DEFAULT"},
-                )
-            else:
-                remaining = deadline_at - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("Ozon 类目树 deadline 已耗尽")
-                response = request_ozon_json(
-                    "POST",
-                    OZON_CATEGORY_TREE_URL,
-                    client_id,
-                    api_key,
-                    {"language": "DEFAULT"},
-                    timeout_seconds=remaining,
-                )
-            break
-        except Exception as exc:
-            if attempt or not _is_transient_provider_error(exc):
-                raise
-    if response is None:
-        raise RuntimeError("Ozon 类目树请求未返回结果。")
+    """读取一次类目树；传输重试只由统一请求入口管理。"""
+    options = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
+    response = request_ozon_json("POST", OZON_CATEGORY_TREE_URL, client_id, api_key,
+                                 {"language": "DEFAULT"}, **options)
     result = response.get("result") if isinstance(response, dict) else None
     if not isinstance(result, list):
         raise RuntimeError("Ozon 类目树响应缺少 result 列表。")
@@ -760,19 +729,26 @@ def _attribute_value_page(
     client_id: str,
     api_key: str,
     timeout_seconds: float,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     cache_key = ":".join(
         (
             _credential_scope_hash(client_id),
             str(description_category_id),
             str(type_id),
             str(attribute_id),
-            str(last_value_id),
         )
     )
     cached = _attribute_values_cache.get(cache_key)
-    if isinstance(cached, list):
-        return cached
+    if isinstance(cached, dict):
+        values = cached["values"]
+        if cached["start_after"] == last_value_id:
+            return values,cached["has_more"]
+        for offset,row in enumerate(values):
+            if row["id"] == str(last_value_id):
+                remainder = values[offset+1:]
+                if remainder or not cached["has_more"]:
+                    return remainder,cached["has_more"]
+                break
     response = request_ozon_json(
         "POST",
         OZON_CATEGORY_ATTRIBUTE_VALUES_URL,
@@ -784,7 +760,7 @@ def _attribute_value_page(
             "attribute_id": attribute_id,
             "language": "DEFAULT",
             "last_value_id": last_value_id,
-            "limit": _ATTRIBUTE_VALUE_PAGE_SIZE,
+            "limit": 2000,
         },
         timeout_seconds=timeout_seconds,
     )
@@ -803,12 +779,9 @@ def _attribute_value_page(
         and _text(item.get("id"))
         and _text(item.get("value"))
     ]
-    _attribute_values_cache.set(
-        cache_key,
-        values,
-        ttl_seconds=_ATTRIBUTE_VALUE_CACHE_TTL_SECONDS,
-    )
-    return values
+    has_more = bool(response.get("has_next")) if "has_next" in response else len(raw_values) >= 2000
+    _attribute_values_cache.set(cache_key, {"start_after":last_value_id,"values":values,"has_more":has_more}, ttl_seconds=_ATTRIBUTE_VALUE_CACHE_TTL_SECONDS)
+    return values,has_more
 
 
 def _search_attribute_values(
@@ -867,11 +840,7 @@ def _search_attribute_values(
         and _text(item.get("id"))
         and _text(item.get("value"))
     ]
-    _attribute_values_cache.set(
-        cache_key,
-        values,
-        ttl_seconds=_ATTRIBUTE_VALUE_CACHE_TTL_SECONDS,
-    )
+    _attribute_values_cache.set(cache_key, values, ttl_seconds=_ATTRIBUTE_VALUE_CACHE_TTL_SECONDS)
     return values
 
 
@@ -956,7 +925,7 @@ def fetch_ozon_category_attribute_values(
     remaining = deadline_at - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("Ozon 属性枚举读取超时。")
-    page = _attribute_value_page(
+    page,remote_has_more = _attribute_value_page(
         description_category_id=description_category_id,
         type_id=type_id,
         attribute_id=requested_attribute_id,
@@ -966,7 +935,7 @@ def fetch_ozon_category_attribute_values(
         timeout_seconds=remaining,
     )
     result_values = page[:safe_limit]
-    has_more = len(page) > safe_limit or len(page) >= _ATTRIBUTE_VALUE_PAGE_SIZE
+    has_more = len(page) > safe_limit or remote_has_more
     return {
         "ok": True,
         "platform": "ozon",

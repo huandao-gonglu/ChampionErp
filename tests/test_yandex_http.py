@@ -46,7 +46,7 @@ class _FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
         return self._data
 
     def __enter__(self) -> "_FakeResponse":
@@ -152,8 +152,8 @@ def test_request_requires_token_without_network(harness) -> None:
         (403, "YANDEX_PERMISSION_DENIED", False),
         # 非 Campaign 端点的 404 不再套用 CAMPAIGN_NOT_FOUND。
         (404, "YANDEX_NOT_FOUND", False),
-        (420, "YANDEX_RATE_LIMITED", True),
-        (429, "YANDEX_RATE_LIMITED", True),
+        (420, "YANDEX_RATE_LIMITED", False),
+        (429, "YANDEX_RATE_LIMITED", False),
         (500, "YANDEX_SERVER_ERROR", True),
         (503, "YANDEX_SERVER_ERROR", True),
     ],

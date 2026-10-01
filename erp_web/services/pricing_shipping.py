@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from erp_web.services.external_request_manager import managed_urlopen
+
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from erp_web.services.mercadolibre_target_contract import mercadolibre_binding_f
 class PricingShipping:
     def __init__(self, rules_dir: Path, store_config: dict):
         self.store_config = store_config
-        self.module = ShippingModule(rules_dir, store_config)
+        self.module = ShippingModule(rules_dir, store_config, opener=managed_urlopen)
 
     def __call__(self, common: dict, target: dict) -> ShippingResolution:
         currency = str(target.get('shipping_currency') or ('USD' if target.get('platform') == 'mercadolibre' else 'CNY'))

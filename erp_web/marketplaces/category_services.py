@@ -262,53 +262,6 @@ def estimate_mercadolibre_shipping(
     return round(min(costs), 2)
 
 
-def fetch_ozon_shop_name(client_id: str, api_key: str) -> str:
-    def result_name(data: dict[str, Any]) -> str:
-        result = data.get("result") if isinstance(data, dict) else None
-        candidates: list[Any] = []
-        if isinstance(result, list):
-            candidates = result
-        elif isinstance(result, dict):
-            for key in ("warehouses", "items", "products"):
-                values = result.get(key)
-                if isinstance(values, list):
-                    candidates = values
-                    break
-        for item in candidates:
-            if isinstance(item, dict):
-                name = item.get("name") or item.get("warehouse_name") or item.get("offer_id")
-                if name:
-                    return str(name)
-        return ""
-
-    checks = [
-        (
-            "warehouse/list",
-            "https://api-seller.ozon.ru/v1/warehouse/list",
-            {},
-        ),
-        (
-            "product/list v3",
-            "https://api-seller.ozon.ru/v3/product/list",
-            {"filter": {"visibility": "ALL"}, "limit": 1, "last_id": ""},
-        ),
-        (
-            "product/info/stocks",
-            "https://api-seller.ozon.ru/v3/product/info/stocks",
-            {"filter": {"visibility": "ALL"}, "limit": 1, "last_id": ""},
-        ),
-    ]
-    errors = []
-    for name, url, payload in checks:
-        try:
-            data = request_ozon_json("POST", url, client_id, api_key, payload)
-        except Exception as exc:
-            errors.append(f"{name}: {exc}")
-            continue
-        return result_name(data) or f"Ozon {client_id}"
-    raise RuntimeError(" / ".join(errors))
-
-
 def fetch_ozon_seller_info(client_id: str, api_key: str) -> dict[str, Any]:
     """Return Ozon seller account metadata used by publishing capabilities."""
 

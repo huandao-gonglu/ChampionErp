@@ -11,5 +11,5 @@ def catalog_listing(platform, account_id, remote_id, *, model, seller_sku=""):
 
 def raise_if_access_blocked(error):
     """账号拒绝或限流后停止新请求，不把整店重复请求当作失败重试。"""
-    if isinstance(error, PublishAdapterError) and error.details.get("http_status") in (401, 403, 420, 429):
+    if isinstance(error, PublishAdapterError) and (error.details.get("http_status") in (401, 403, 420, 429) or error.details.get("local_rejection") or error.details.get("scope")):
         raise error

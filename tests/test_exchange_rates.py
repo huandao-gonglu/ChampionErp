@@ -26,7 +26,7 @@ class _FakeRatesResponse:
     def __exit__(self, exc_type, exc, traceback):
         return False
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
         return json.dumps(self._payload).encode("utf-8")
 
 

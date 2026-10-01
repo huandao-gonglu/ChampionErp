@@ -17,7 +17,7 @@ export interface OnlineListing {
 export interface OnlineJob {
   id: string; operation: string; platform: OnlinePlatform; status: string; created_at: string; updated_at: string; target_id: string
   request: Record<string, unknown>
-  result: { before?: {title?:string}; platform_confirmation?: {note?:string}; platform_errors?: unknown[]; error?: string; completed?: number; failed?: number; created?: number; updated?: number; discovery_complete?: boolean; phase?: 'catalog' | 'details' | 'complete'; discovered?: number; changes?: Record<string, unknown>; confirmation?: Record<string, boolean>; evidence?: {synced_at: string}; items?: Array<{remote_id: string; status: string; error?: string}> }
+  result: { automatic_confirmation_pending?: boolean; next_confirmation_at?: number; last_confirmation_at?: number; before?: {title?:string}; platform_confirmation?: {note?:string}; platform_errors?: unknown[]; error?: string; completed?: number; failed?: number; created?: number; updated?: number; discovery_complete?: boolean; phase?: 'catalog' | 'details' | 'complete'; discovered?: number; changes?: Record<string, unknown>; confirmation?: Record<string, boolean>; evidence?: {synced_at: string}; items?: Array<{remote_id: string; status: string; error?: string}> }
 }
 export interface OnlineProductGroup {
   id: string; title: string; kind: 'group' | 'single'; item_ids: string[]; total_count: number

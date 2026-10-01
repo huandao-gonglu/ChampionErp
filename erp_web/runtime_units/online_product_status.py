@@ -1,4 +1,5 @@
 """单件在线状态读取：限定已知商品身份，不扫描目录，不读取价格和库存接口。"""
+from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
@@ -17,9 +18,9 @@ def yandex_status(adapter, listing):
         return index_rows(rows, allowed={remote_id})
 
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="online-status") as pool:
-        offer_future = pool.submit(fetch, f"/v2/campaigns/{adapter.campaign}/offers", "offers")
-        card_future = pool.submit(fetch, f"/v2/businesses/{adapter.business}/offer-cards", "offerCards")
-        hidden_future = pool.submit(hidden_ids, adapter, remote_id)
+        offer_future = pool.submit(copy_context().run, fetch, f"/v2/campaigns/{adapter.campaign}/offers", "offers")
+        card_future = pool.submit(copy_context().run, fetch, f"/v2/businesses/{adapter.business}/offer-cards", "offerCards")
+        hidden_future = pool.submit(copy_context().run, hidden_ids, adapter, remote_id)
         offers, cards, hidden = offer_future.result(), card_future.result(), hidden_future.result()
     if remote_id not in offers:
         raise ValueError("Yandex 未返回该商品的店铺状态，已保留原记录")

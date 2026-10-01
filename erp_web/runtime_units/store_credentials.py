@@ -527,28 +527,11 @@ def _ensure_mercadolibre_auth_ready_unlocked(
             "next_action": "请先完成授权测试",
         }
 
-    def http_status(error: Exception | str) -> int:
-        if not isinstance(error, PublishAdapterError):
-            return 0
-        try:
-            return int(error.details.get("http_status") or 0)
-        except (TypeError, ValueError):
-            return 0
+    if not force_refresh:
+        return {"ok": True, "token": token, "seller": store.get("shop_name") or store.get("user_id") or ""}
 
-    def refreshable_access_rejection(error: Exception | str) -> bool:
-        if isinstance(error, PublishAdapterError):
-            return (
-                error.code == "MERCADOLIBRE_AUTH_FAILED"
-                and http_status(error) == 401
-                and error.details.get("remote_write_dispatched") is not True
-                and error.details.get("outcome_unknown") is not True
-            )
-        text = str(error).lower()
-        return (
-            "invalid access token" in text
-            or "invalid_token" in text
-            or bool(re.search(r"failed:\s*401(?:\s|$)", text))
-        )
+    def http_status(error):
+        return int(error.details.get("http_status") or 0) if isinstance(error, PublishAdapterError) else 0
 
     def explicit_auth_failure(error: Exception | str) -> bool:
         if isinstance(error, PublishAdapterError):
@@ -568,21 +551,6 @@ def _ensure_mercadolibre_auth_ready_unlocked(
                 "token expired",
             )
         ) or bool(re.search(r"failed:\s*(?:401|403)(?:\s|$)", text))
-
-    def sync_identity(token_value: str) -> str:
-        profile = sync_mercadolibre_identity(store, token_value)
-        name = profile.get("nickname") or profile.get("user_id") or ""
-        store.update(
-            _store_auth_result_fields(
-                "mercadolibre",
-                "测试成功",
-                name or token_value,
-                next_action="授权身份有效；发布前仍需通过币种与销售目标预检",
-            )
-        )
-        store["auth_error_code"] = ""
-        store["auth_error_message"] = ""
-        return str(name)
 
     def refresh_and_sync(failed_token: str) -> dict[str, Any]:
         nonlocal token
@@ -705,28 +673,6 @@ def _ensure_mercadolibre_auth_ready_unlocked(
         except Exception as exc:
             return failure(exc, failed_token=failed_token)
 
-    try:
-        name = sync_identity(token)
-        get_context().config.update_store_config_fields(
-            "mercadolibre",
-            store,
-        )
-        return {
-            "ok": True,
-            "token": token,
-            "seller": name or store.get("user_id") or "",
-        }
-    except Exception as exc:
-        if (
-            refreshable_access_rejection(exc)
-            and str(store.get("refresh_token") or "").strip()
-        ):
-            failed_token = token
-            try:
-                return refresh_and_sync(failed_token)
-            except Exception as refresh_exc:
-                return failure(refresh_exc, failed_token=failed_token)
-        return failure(exc)
 
 
 def get_mercadolibre_access_token(
@@ -811,7 +757,7 @@ def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
         )
         name = str(ozon.get("shop_name") or client_id)
     else:
-        name = publisher.fetch_ozon_shop_name(client_id, api_key)
+        name = str(ozon.get("shop_name") or company.get("name") or client_id)
     store = config.setdefault("ozon", {})
     store["shop_name"] = name or store.get("shop_name", "")
     store.update(_store_auth_result_fields("ozon", "测试成功", name or client_id))

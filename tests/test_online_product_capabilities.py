@@ -281,6 +281,11 @@ def test_native_approval_deferred_job_and_platform_readback(online, tmp_path, mo
         receipt = ui.call_store.receipt(CONVERSATION, "online-change")
         assert receipt["status"] == "waiting_job"
         domain.run_once()
+        from test_online_products import expire
+        pending = domain.store.jobs("mercadolibre","seller")[0]
+        assert pending["status"] == "submitted"
+        expire(domain,pending["id"])
+        domain.run_once()
         for row in ui.call_store.work():
             worker.execute_or_reconcile(row)
         worker.scan()

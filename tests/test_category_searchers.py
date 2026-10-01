@@ -130,7 +130,7 @@ def test_factory_rejects_platform_without_concrete_implementation() -> None:
 
 
 def test_yandex_search_classifies_rate_limit_and_auth_errors() -> None:
-    # Yandex Market 限流使用 HTTP 420；必须被识别为可重试限流
+    # Yandex Market 限流使用 HTTP 420；必须结束当前批次，不能让模型立即换词重试
     providers = {"yandex": Provider("yandex")}
     searcher = create_category_searcher(
         "yandex",
@@ -139,8 +139,8 @@ def test_yandex_search_classifies_rate_limit_and_auth_errors() -> None:
     )
 
     for message, expected_code, expected_retryable in [
-        ("GET https://api.partner.market.yandex.ru/v2/categories/tree failed: 420 rate limited", "CATEGORY_RATE_LIMITED", True),
-        ("Yandex 接口限流", "CATEGORY_RATE_LIMITED", True),
+        ("GET https://api.partner.market.yandex.ru/v2/categories/tree failed: 420 rate limited", "CATEGORY_RATE_LIMITED", False),
+        ("Yandex 接口限流", "CATEGORY_RATE_LIMITED", False),
         ("GET https://api.partner.market.yandex.ru/v2/categories/tree failed: 401 unauthorized", "CATEGORY_AUTH_REJECTED", False),
         ("请先填写 Yandex API-Key Token。", "CATEGORY_CREDENTIALS_MISSING", False),
         ("request timed out", "CATEGORY_PROVIDER_TIMEOUT", True),

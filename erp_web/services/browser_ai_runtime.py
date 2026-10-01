@@ -16,6 +16,8 @@ import subprocess
 import time
 import urllib.parse
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from pathlib import Path
 from typing import Any
 
@@ -185,7 +187,7 @@ def _find_chrome_path() -> str:
 
 
 def _http_json(url: str, timeout: int = 5) -> Any:
-    with urllib.request.urlopen(url, timeout=timeout) as response:
+    with managed_urlopen(url, timeout=timeout, source=__name__) as response:
         raw = response.read()
     return json.loads(raw.decode("utf-8")) if raw else None
 
@@ -239,10 +241,10 @@ def _target_for_url(port: int, url: str) -> dict[str, Any]:
     if target:
         return target
     try:
-        with urllib.request.urlopen(
+        with managed_urlopen(
             f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}",
             timeout=5,
-        ):
+         source=__name__):
             pass
     except Exception:
         pass

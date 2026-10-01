@@ -185,7 +185,6 @@ def test_ozon_auth_test_locks_company_currency() -> None:
             "fetch_ozon_seller_info",
             return_value={"company": {"currency": "cny"}},
         ),
-        patch.object(publisher, "fetch_ozon_shop_name", return_value="OZON-SHOP"),
     ):
         result = store_credentials.test_store_auth("ozon")
 
@@ -224,7 +223,6 @@ def test_ozon_auth_test_missing_currency_marks_refresh_failed() -> None:
         patch.object(
             publisher, "fetch_ozon_seller_info", return_value={"company": {}}
         ),
-        patch.object(publisher, "fetch_ozon_shop_name", return_value="OZON-SHOP"),
     ):
         result = store_credentials.test_store_auth("ozon")
 
@@ -254,7 +252,6 @@ def test_ozon_auth_preview_test_does_not_persist_currency() -> None:
             "fetch_ozon_seller_info",
             return_value={"company": {"currency": "CNY"}},
         ),
-        patch.object(publisher, "fetch_ozon_shop_name", return_value="OZON-SHOP"),
     ):
         result = store_credentials.test_store_auth(
             "ozon",
@@ -643,43 +640,6 @@ def test_mercadolibre_missing_user_products_tag_claims_traditional_publish_ready
     assert config["mercadolibre"]["auth_next_action"] == "已可用于发布"
 
 
-def test_mercadolibre_identity_refresh_derives_traditional_listing_model(tmp_path: Path) -> None:
-    with temp_app_context(tmp_path):
-        get_context().config.save_store_config(
-            {
-                "mercadolibre": {
-                    "access_token": "ml-token",
-                    "user_id": "99",
-                    "site_id": "CBT",
-                    "account_site_id": "CBT",
-                    "user_product_seller": False,
-                    "auth_status": "测试成功",
-                    "auth_next_action": "旧能力错误",
-                }
-            }
-        )
-        with patch.object(
-            publisher,
-            "fetch_mercadolibre_user_profile",
-            return_value={
-                "user_id": "99",
-                "nickname": "GLOBAL_STORE",
-                "site_id": "CBT",
-                "tags": [],
-            },
-        ):
-            result = store_credentials.ensure_mercadolibre_auth_ready(
-                get_context().config.load_store_config()
-            )
-
-        assert result["ok"] is True
-        saved = get_context().config.load_store_config()["mercadolibre"]
-        assert saved["listing_model"] == "traditional_global_items"
-        assert saved["user_product_seller"] is False
-        assert saved["auth_next_action"] == (
-            "授权身份有效；发布前仍需通过币种与销售目标预检"
-        )
-
 
 def test_mercadolibre_token_refresh_persists_new_identity_capabilities(
     tmp_path: Path,
@@ -788,6 +748,8 @@ def test_cbt_category_search_gets_token_through_shared_refresh_boundary(
         ) -> list[dict[str, Any]]:
             del timeout_seconds
             assert "/marketplace/domain_discovery/search" in url
+            if access_token == "access-old":
+                raise PublishAdapterError("MERCADOLIBRE_AUTH_FAILED", "业务请求返回 401", details={"http_status":401})
             assert access_token == "access-new"
             return [
                 {
@@ -1004,7 +966,7 @@ def test_publish_auth_refresh_allows_currency_discovery_failure(
         assert saved["currency_error_code"] == "MERCADOLIBRE_SERVER_ERROR"
 
 
-def test_publish_auth_preflight_preserves_retryable_identity_failure(
+def test_publish_auth_getter_does_not_probe_identity(
     tmp_path: Path,
 ) -> None:
     with temp_app_context(tmp_path):
@@ -1031,9 +993,8 @@ def test_publish_auth_preflight_preserves_retryable_identity_failure(
                 config
             )
 
-        assert result["ok"] is False
-        assert result["platform_error_code"] == "MERCADOLIBRE_NETWORK"
-        assert result["retryable"] is True
+        assert result["ok"] is True
+        assert result["token"] == "access-token"
         saved = get_context().config.load_store_config()["mercadolibre"]
         assert saved["auth_status"] == "测试成功"
 
@@ -1078,7 +1039,7 @@ def test_publish_auth_preflight_reloads_latest_persisted_token(
 
         assert result["ok"] is True
         assert result["token"] == "access-new"
-        assert checked_tokens == ["access-new"]
+        assert checked_tokens == []
         assert stale_config["mercadolibre"]["access_token"] == "access-new"
         saved = get_context().config.load_store_config()["mercadolibre"]
         assert saved["access_token"] == "access-new"

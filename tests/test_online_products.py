@@ -46,6 +46,8 @@ class RemoteFixture:
         if self.read_error:
             raise self.read_error
         return self.rows[remote].model_copy(deep=True)
+    def read_confirmation(self, listing, request):
+        return self.read(listing.remote_id)
     def write(self, item, operation, scope, changes):
         self.writes.append((operation,scope,changes))
         if self.write_error:
@@ -74,7 +76,7 @@ def price_request(service, **overrides):
 
 def expire(service, job):
     with service.store.db._connect() as conn:
-        conn.execute("UPDATE online_jobs SET lease_until=0 WHERE id=?",(job,))
+        conn.execute("UPDATE online_jobs SET lease_until=0,result_json=json_set(result_json,'$.next_confirmation_at',0,'$.last_confirmation_at',0) WHERE id=?",(job,))
         conn.commit()
 
 
@@ -110,6 +112,10 @@ def test_price_is_confirmed_only_after_readback_and_repeated_key_returns_origina
     job=service.change(body)["job"]
     assert service.change(body)["job"]["id"] == job["id"]
     service.run_once()
+    assert service.store.job(job["id"])["status"] == "submitted"
+    assert not service.run_once()
+    expire(service,job["id"])
+    service.run_once()
     assert service.store.job(job["id"])["status"] == "confirmed"
     assert service.change(body)["job"]["id"] == job["id"]
     assert len(remote.writes)==1
@@ -124,6 +130,35 @@ def test_preflight_conflict_does_not_dispatch(setup_online):
     assert not remote.writes
     assert service.store.job(job["id"])["status"]=="failed"
     assert service.store.get("CBT1").title=="店铺已修改"
+
+
+def test_confirmation_failure_keeps_cooldown_and_never_replays_write(setup_online):
+    service, remote = setup_online
+    job = service.change(price_request(service))["job"]
+    service.run_once()
+    expire(service, job["id"])
+    remote.read_error = TimeoutError("平台暂未响应")
+    service.run_once()
+    result = service.store.job(job["id"])
+    assert result["status"] == "outcome_unknown"
+    assert result["result"]["automatic_confirmation_pending"] is False
+    with pytest.raises(OnlineConflict, match="等待窗口"):
+        service.reconcile(job["id"])
+    assert not service.run_once()
+    assert len(remote.writes) == 1
+
+
+def test_partial_confirmation_preserves_full_sync_timestamp(setup_online):
+    service, remote = setup_online
+    before = service.store.get("CBT1")
+    job = service.change(price_request(service))["job"]
+    service.run_once()
+    expire(service, job["id"])
+    service.run_once()
+    current = service.store.get("CBT1")
+    assert current.synced_at == before.synced_at
+    assert current.status_checked_at == before.status_checked_at
+    assert current.prices[0].amount == "15.25"
 
 
 def test_unknown_never_replayed_and_readonly_reconcile_can_confirm(setup_online):
@@ -163,10 +198,14 @@ def test_readback_authorization_failure_does_not_authorize_replay(setup_online):
     remote.apply=False
     job=service.change(price_request(service))["job"]
     service.run_once()
+    assert service.store.job(job["id"])["status"]=="submitted"
+    expire(service,job["id"])
+    service.run_once()
     assert service.store.job(job["id"])["status"]=="waiting_confirmation"
     remote.read_error=PublishAdapterError("AUTH","授权失效",details={"http_status":403})
     expire(service,job["id"])
-    service.run_once()
+    assert not service.run_once()
+    service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"]=="outcome_unknown"
     assert len(remote.writes)==1
 
@@ -176,8 +215,12 @@ def test_async_receipt_does_not_confirm_before_task_finishes(setup_online):
     remote.pending=True
     job=service.change(price_request(service))["job"]
     service.run_once()
+    assert service.store.job(job["id"])["status"]=="submitted"
+    expire(service,job["id"])
+    service.run_once()
     assert service.store.job(job["id"])["status"]=="waiting_confirmation"
     remote.pending=False
+    expire(service,job["id"])
     assert service.reconcile(job["id"])["job"]["status"]=="confirmed"
 
 
@@ -185,6 +228,8 @@ def test_partial_receipt_does_not_retry_whole_mutation(setup_online):
     service,remote=setup_online
     remote.receipt={"success":True,"listing_sites":[{"id":"MLM1","success":False,"errors":[{"message":"价格无效"}]}]}
     job=service.change(price_request(service))["job"]
+    service.run_once()
+    expire(service,job["id"])
     service.run_once()
     assert service.store.job(job["id"])["status"]=="partial"
     with pytest.raises(OnlineConflict): service.retry(job["id"],uuid4().hex)

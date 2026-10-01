@@ -743,3 +743,38 @@ def test_online_sync_uses_platform_readers_and_pure_snapshot_projection():
         projection = ast.parse((ROOT / f"erp_web/runtime_units/online_{platform}_snapshot.py").read_text())
         imports = [node.module or "" for node in ast.walk(projection) if isinstance(node, ast.ImportFrom)]
         assert not any(any(part in module for part in ("http", "stores", "context", "service")) for module in imports)
+
+
+def test_external_api_sends_have_one_managed_boundary():
+    """所有 urllib 与 SDK 传输发送都在受控边界，防止新业务绕过共享阻断。"""
+    allowed = {"erp_web/services/external_request_manager.py", "erp_web/services/external_httpx_transport.py"}
+    violations = []
+    for path in python_files(ROOT / "erp_web"):
+        relative = _relative_posix(path)
+        if relative in allowed:
+            continue
+        tree = parse_python(path)
+        imports = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports[alias.asname or alias.name.split('.')[0]] = alias.name if alias.asname else alias.name.split('.')[0]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                for alias in node.names:
+                    imports[alias.asname or alias.name] = node.module + '.' + alias.name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                target = ast.unparse(node.func)
+                root, separator, rest = target.partition('.')
+                target = imports.get(root, root) + (separator + rest if separator else '')
+                if target in {"urllib.request.urlopen", "urllib.request.urlretrieve", "urllib.request.build_opener", "http.client.HTTPConnection", "http.client.HTTPSConnection", "urllib3.PoolManager"}:
+                    violations.append(f"{relative}:{node.lineno}:{target}")
+                if target.startswith(("requests.", "httpx.", "httpx2.", "aiohttp.")) and target.rsplit(".",1)[-1] in {"get","post","put","delete","request","stream","Client","AsyncClient","ClientSession","Session","AsyncHTTPTransport","HTTPTransport"} and root in imports:
+                    if relative != "erp_web/services/ai_provider_catalog.py":
+                        violations.append(f"{relative}:{node.lineno}:{target}")
+    assert not violations, "外部发送必须经过统一管理："+"\n".join(violations)
+    factory = (ROOT / "erp_web/services/ai_provider_catalog.py").read_text()
+    assert "ManagedAsyncTransport" in factory and "provider.client.max_retries = 0" in factory
+    bus = (ROOT / "erp_web/runtime_units/publishing_bus_core.py").read_text()
+    assert "max_retries" not in bus and "retry_delay_seconds" not in bus
+    assert "fetch_ozon_shop_name" not in (ROOT / "erp_web/marketplaces/category_services.py").read_text()

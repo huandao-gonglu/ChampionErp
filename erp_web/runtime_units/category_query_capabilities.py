@@ -38,6 +38,8 @@ def _dict_rows(value: Any) -> tuple[dict[str, Any], ...]:
 
 
 def _live_api_error(exc: Exception) -> BusinessCapabilityError:
+    if hasattr(exc, "code") and hasattr(exc, "retryable"):
+        return BusinessCapabilityError(exc.code, str(exc), retryable=exc.retryable, details=getattr(exc, "details", None))
     if isinstance(exc, ValueError):
         return BusinessCapabilityError("CATEGORY_QUERY_INVALID", str(exc), retryable=False)
     return BusinessCapabilityError(

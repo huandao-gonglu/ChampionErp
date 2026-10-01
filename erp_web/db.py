@@ -696,11 +696,24 @@ class ErpDatabase:
             and inspected_schema == _current_schema_signature()
         )
         if not is_empty_database and not is_current_database:
+            actual = {(row[0], row[1]): row for row in inspected_schema}
+            expected = {(row[0], row[1]): row for row in _current_schema_signature()}
+            differences = []
+            for label, objects in (
+                ("多余对象", actual.keys() - expected.keys()),
+                ("缺失对象", expected.keys() - actual.keys()),
+                ("定义不一致", {key for key in actual.keys() & expected.keys() if actual[key] != expected[key]}),
+            ):
+                if objects:
+                    differences.append(label + "：" + "、".join(name for _, name in sorted(objects)[:20]))
+            detail = "；".join(differences) or "数据库版本标记不匹配"
             raise RuntimeError(
-                "数据库 schema 版本 "
-                f"{inspected_version} 不受支持（当前版本 {SCHEMA_VERSION}）；"
-                "仅接受真正空库或结构完整的当前 schema。v15 数据库请运行 scripts/migrate_online_products.py；其他旧数据库请先显式导出"
-                "所需配置，删除后重新初始化；运行时不会迁移、修复或删除数据库。"
+                f"数据库 schema 校验失败（数据库版本 {inspected_version}，当前版本 {SCHEMA_VERSION}）；"
+                f"{detail}；仅接受真正空库或结构完整的当前 schema。"
+                "请先备份并核对结构，不要删除含业务数据的数据库。"
+                "完整 v15 数据库使用 scripts/migrate_online_products.py；"
+                "v16 主库遗留 external_* 审计表使用 scripts/migrate_external_request_audit.py；"
+                "运行时不会迁移、修复或删除数据库。"
             )
         if is_empty_database:
             with self._connect() as conn:

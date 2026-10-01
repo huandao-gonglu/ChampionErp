@@ -8,6 +8,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from copy import deepcopy
 from typing import Any
 
@@ -150,7 +152,7 @@ def request_1688_product_detail(config: dict[str, str], offer_id: str) -> dict[s
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with managed_urlopen(request, timeout=timeout, source=__name__) as response:
             text = response.read().decode("utf-8", errors="replace")
             status = getattr(response, "status", 200)
     except urllib.error.HTTPError as exc:

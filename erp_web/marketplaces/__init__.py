@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from .category_services import (
     fetch_ozon_seller_info,
-    fetch_ozon_shop_name,
     mercadolibre_category_allowed_currencies,
     mercadolibre_category_attributes_for_publish,
     mercadolibre_category_path,
@@ -40,7 +39,6 @@ __all__ = [
     "fetch_mercadolibre_shop_name",
     "fetch_mercadolibre_site_listing",
     "fetch_mercadolibre_user_profile",
-    "fetch_ozon_shop_name",
     "fetch_ozon_seller_info",
     "generate_pkce_pair",
     "is_mercadolibre_auth_error",

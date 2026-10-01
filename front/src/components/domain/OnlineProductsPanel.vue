@@ -39,13 +39,14 @@ const saleTarget = ref('paused')
 const contentChanges = ref<Record<string,unknown>>({})
 const preview = ref(false), submitKey = ref('')
 let timer: ReturnType<typeof setTimeout> | undefined
+const observedConfirmations = new Set<string>()
 let sequence = 0
 let disposed = false
 const jobFilter = ref('')
 const jobs = computed(() => page.value?.jobs.filter(j => !jobFilter.value || j.status === jobFilter.value) || [])
 const price = computed(() => selected.value?.prices.find(p => p.id === scope.value))
 const stock = computed(() => selected.value?.stocks.find(s => s.id === scope.value))
-const hasActive = computed(() => page.value?.jobs.some(j => ['queued','running','submitted','waiting_confirmation'].includes(j.status)))
+const hasActive = computed(() => page.value?.jobs.some(j => ['queued','running'].includes(j.status)))
 const activeSync = computed(() => page.value?.jobs.find(j => j.operation === 'sync' && ['queued', 'running'].includes(j.status)))
 const stale = computed(() => !!page.value?.latest_sync && Date.now() - Date.parse(page.value.latest_sync.updated_at) > 3600000)
 const saleState = computed(() => selected.value?.sale_state === 'paused' ? 'active' : 'paused')
@@ -88,7 +89,7 @@ function time(s: string) { return s ? new Date(s).toLocaleString('zh-CN', {hour1
 function badge(s: string) { return ['confirmed','active'].includes(s) ? 'badge-success' : ['failed','outcome_unknown'].includes(s) ? 'badge-warning' : 'badge-muted' }
 function priceKind(s: string) { return ({net_proceeds:'净收入报价',base_price:'基础价',sale_price:'售价'} as Record<string,string>)[s] || s }
 async function refresh(quiet = false) {
-  if (disposed) return
+  if (disposed || (quiet && document.hidden)) return
   const ticket = ++sequence
   if (!quiet) loading.value = true
   try {
@@ -104,7 +105,16 @@ async function refresh(quiet = false) {
     if(ticket === sequence) loading.value = false
     if (!disposed && ticket === sequence) {
       clearTimeout(timer)
-      timer = setTimeout(() => void refresh(true), hasActive.value ? 3000 : 15000)
+      if (!document.hidden && hasActive.value) timer = setTimeout(() => void refresh(true), 5000)
+      else if (!document.hidden) {
+        const pending = page.value?.jobs
+          .filter(job => job.status === 'submitted' && job.result.automatic_confirmation_pending && !observedConfirmations.has(job.id))
+          .sort((a, b) => Number(a.result.next_confirmation_at) - Number(b.result.next_confirmation_at))[0]
+        if (pending) timer = setTimeout(() => {
+          observedConfirmations.add(pending.id)
+          void refresh(true)
+        }, Math.max(5000, Number(pending.result.next_confirmation_at || 0) * 1000 - Date.now() + 5000))
+      }
     }
   }
 }
@@ -193,8 +203,15 @@ async function jobAction(action: 'reconcile' | 'retry', job: OnlineJob) {
 }
 function filter() {currentPage.value=1; void refresh()}
 watch(platform, () => { viewEpoch++; statusErrors.value={}; modal.value=''; notice.value=''; page.value=null; selected.value=null; selectedJob.value=null; expandedGroups.value.clear(); status.value=market.value=''; filter() })
-onMounted(() => void refresh())
-onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer)})
+function visibilityChanged() {
+  clearTimeout(timer)
+  if (!document.hidden) void refresh(true)
+}
+onMounted(() => {
+  document.addEventListener('visibilitychange', visibilityChanged)
+  void refresh()
+})
+onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.removeEventListener('visibilitychange', visibilityChanged)})
 </script>
 
 <template>

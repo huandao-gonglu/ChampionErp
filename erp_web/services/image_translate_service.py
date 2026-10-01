@@ -15,6 +15,8 @@ import mimetypes
 import os
 import time
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from pathlib import Path
 from typing import Any, Callable
 
@@ -116,7 +118,7 @@ def _bytes_from_result(result: dict[str, Any]) -> tuple[bytes, str]:
     if url.startswith(("http://", "https://")):
         request = urllib.request.Request(url, headers={"User-Agent": "champion-erp-image-ai/1.0"})
         try:
-            with urllib.request.urlopen(request, timeout=IMAGE_AI_TIMEOUT_SECONDS) as response:
+            with managed_urlopen(request, timeout=IMAGE_AI_TIMEOUT_SECONDS, source=__name__) as response:
                 content_type = str(response.headers.get("Content-Type") or "")
                 raw = response.read(MAX_PROVIDER_IMAGE_BYTES + 1)
             if len(raw) <= MAX_PROVIDER_IMAGE_BYTES:

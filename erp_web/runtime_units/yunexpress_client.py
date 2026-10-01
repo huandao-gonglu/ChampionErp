@@ -6,6 +6,12 @@ import hashlib
 import hmac
 import json
 import time
+from threading import RLock
+
+from erp_web.context import get_context
+from erp_web.schemas.external_requests import ExternalRequestBlocked
+from erp_web.services.external_request_context import credential_fingerprint, request_context
+from erp_web.services.external_request_manager import managed_urlopen
 import urllib.error
 import urllib.request
 from copy import deepcopy
@@ -146,7 +152,7 @@ def _request_error_message(exc: urllib.error.HTTPError) -> str:
 class YunExpressClient:
     def __init__(self, config: dict[str, Any], urlopen: UrlOpen | None = None) -> None:
         self.config = normalize_yunexpress_config(config)
-        self.urlopen = urlopen or urllib.request.urlopen
+        self._transport = urlopen
         self.timeout = _timeout_seconds(self.config.get("timeout_seconds"))
 
     @property
@@ -178,6 +184,34 @@ class YunExpressClient:
             "raw": result,
         }
 
+    def cached_access_token(self, *, timeout_seconds=None):
+        # 按应用上下文隔离；跨业务入口复用，同凭据的首次获取只发送一次。
+        context = get_context()
+        key = credential_fingerprint((self.base_url,self.config["app_id"],self.config["app_secret"],self.config["source_key"]))
+        with context._lazy_lock:
+            if not hasattr(context, "_yunexpress_tokens"):
+                context._yunexpress_tokens = {}
+            entry = context._yunexpress_tokens.setdefault(key, {"lock": RLock(), "expires": 0, "token": None})
+        with entry["lock"]:
+            if entry["token"] and entry["expires"] > time.monotonic():
+                return dict(entry["token"])
+            result = self.request_access_token(timeout_seconds=timeout_seconds)
+            try:
+                lifetime = max(0, float(result.get("expires_in") or 0)-60)
+            except (TypeError, ValueError):
+                lifetime = 0
+            entry.update(token=dict(result), expires=time.monotonic()+lifetime)
+            return result
+
+    def invalidate_access_token(self):
+        context = get_context()
+        key = credential_fingerprint((self.base_url,self.config["app_id"],self.config["app_secret"],self.config["source_key"]))
+        with context._lazy_lock:
+            entry = getattr(context, "_yunexpress_tokens", {}).get(key)
+        if entry:
+            with entry["lock"]:
+                entry.update(token=None, expires=0)
+
     def create_package_order(
         self,
         payload: dict[str, Any],
@@ -188,7 +222,7 @@ class YunExpressClient:
         token = _text(access_token)
         token_result: dict[str, Any] = {}
         if not token:
-            token_result = self.request_access_token(timeout_seconds=timeout_seconds)
+            token_result = self.cached_access_token(timeout_seconds=timeout_seconds)
             token = str(token_result.get("access_token") or "")
         result = self._post_json(
             CREATE_PACKAGE_PATH,
@@ -228,11 +262,19 @@ class YunExpressClient:
         # 外层剩余时间；未提供时退回配置默认值。
         effective_timeout = self.timeout if timeout_seconds is None else timeout_seconds
         try:
-            with self.urlopen(request, timeout=effective_timeout) as response:
+            ctx = request_context(request.full_url, headers, method="POST", timeout=effective_timeout,
+                source="yunexpress", platform="yunexpress", account_id=self.base_url+":"+self.config["app_id"])
+            with managed_urlopen(request, timeout=effective_timeout, request_context=ctx, transport=self._transport, source=__name__) as response:
                 return _response_json(response)
+        except ExternalRequestBlocked as exc:
+            if exc.details.get("http_status") == 401:
+                self.invalidate_access_token()
+            raise
         except TimeoutError as exc:
             raise TimeoutError(f"云途 API 请求超时：{path}") from exc
         except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                self.invalidate_access_token()
             raise RuntimeError(_request_error_message(exc)) from exc
         except urllib.error.URLError as exc:
             if isinstance(getattr(exc, "reason", None), TimeoutError):

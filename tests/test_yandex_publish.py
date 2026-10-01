@@ -1018,8 +1018,6 @@ def test_yandex_adapter_end_to_end_through_publishing_bus(remote) -> None:
         _MemoryPublishJobStore(),
         adapters={"yandex": YandexPublishingAdapter()},
         config_provider=lambda: deepcopy(config),
-        max_retries=0,
-        retry_delay_seconds=0.05,
         auto_resume_pending=False,
     )
     try:
@@ -1084,7 +1082,7 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
         def __init__(self, payload: dict[str, Any]) -> None:
             self._data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
-        def read(self) -> bytes:
+        def read(self, size: int = -1) -> bytes:
             return self._data
 
         def __enter__(self) -> "_Response":
@@ -1157,8 +1155,6 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
         _MemoryPublishJobStore(),
         adapters={"yandex": YandexPublishingAdapter()},
         config_provider=lambda: deepcopy(config),
-        max_retries=0,
-        retry_delay_seconds=0.05,
         auto_resume_pending=False,
     )
     try:

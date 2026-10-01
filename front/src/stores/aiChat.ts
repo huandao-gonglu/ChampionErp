@@ -71,7 +71,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   async function resyncFromServer(conversationId: string, attempt = 0): Promise<void> {
     if (activeConversationId.value !== conversationId) return
     if (isBusy.value) {
-      if (stopping.value) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 100)
+      if (stopping.value) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 500)
       return
     }
     const requestGeneration = ++generation
@@ -83,7 +83,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
       if (!pendingInputIds.size) latestMessageId.value = detail.latest_message_id ?? latestMessageId.value
       if (runActive.value && detail.run_status === 'cancelled') stopping.value = true
       if (stopping.value && runActive.value) {
-        retryTimer = setTimeout(() => void resyncFromServer(conversationId), 200)
+        retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
         return
       }
       stopping.value = false
@@ -95,7 +95,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
       receivedMessages.value = receivedMessages.value.filter(row => pending.has(row.message_id))
       receivedNotice.value = pending.size ? '已收到，等待当前操作结束后应用' : ''
       connectEvents(conversationId)
-      if (runActive.value) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 200)
+      if (runActive.value && typeof EventSource === 'undefined') retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
     } catch {
       if (requestGeneration !== generation || activeConversationId.value !== conversationId) return
       if (attempt < 3) retryTimer = setTimeout(() => void resyncFromServer(conversationId, attempt + 1), 500 * 2 ** attempt)

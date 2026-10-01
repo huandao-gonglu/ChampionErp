@@ -7,6 +7,8 @@ import subprocess
 import time
 import urllib.parse
 import urllib.request
+
+from erp_web.services.external_request_manager import managed_urlopen
 from typing import Any
 
 from erp_web.context import get_context
@@ -144,7 +146,7 @@ def cdp_target_for_url(port: int, url: str) -> dict[str, Any]:
         f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}",
         method="PUT",
     )
-    with urllib.request.urlopen(request, timeout=5) as response:
+    with managed_urlopen(request, timeout=5, source=__name__) as response:
         target = json.load(response)
     if not isinstance(target, dict) or not target.get("webSocketDebuggerUrl"):
         raise RuntimeError("Chrome 未返回新页面，请刷新浏览器连接后重试。")
@@ -324,7 +326,7 @@ def fetch_page_html_with_status(url: str, cookie: str = "") -> tuple[str, int]:
     if cookie.strip():
         headers["Cookie"] = cookie.strip()
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with managed_urlopen(request, timeout=20, source=__name__) as response:
         raw = response.read()
         html = raw.decode("utf-8", errors="ignore")
         return html, int(getattr(response, "status", 200) or 200)

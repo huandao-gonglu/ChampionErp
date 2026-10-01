@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+
+from erp_web.services.external_request_context import request_operation
 from typing import Any
 from uuid import uuid4
 
@@ -132,10 +135,16 @@ class OnlineProductService:
         job = self.store.claim(self.owner)
         if not job:
             return False
+        with request_operation("online_products", operation_id=job["id"], trigger="auto_confirmation" if job["dispatched"] else "background", cancel=self._stop):
+            return self._run_job(job)
+
+    def _run_job(self, job):
         dispatched = bool(job["dispatched"])
         write_returned = False
         result: dict[str, Any] = job["result"] if dispatched else {"items": [], "completed": 0, "failed": 0, "created": 0, "updated": 0}
         try:
+            if dispatched and job["operation"] != "sync":
+                self._prepare_confirmation(job, result)
             adapter = self._adapter(job["platform"], job["account_id"])
             if job["dispatched"] and job["operation"] != "sync":
                 dispatched = True
@@ -163,8 +172,9 @@ class OnlineProductService:
             receipt = adapter.write(fresh, request.operation, request.scope_id, request.changes)
             write_returned = True
             result["receipt"] = receipt
-            self._update(job, "running", result, dispatched=True)
-            self._confirm(job, adapter, result)
+            result["next_confirmation_at"] = time.time() + 120
+            result["automatic_confirmation_pending"] = True
+            self._update(job, "submitted", result, dispatched=True)
         except Exception as exc:
             code = int(exc.details.get("http_status") or 0) if isinstance(exc, PublishAdapterError) else 0
             # 回读阶段的 4xx 不能证明之前的修改未执行。
@@ -183,19 +193,28 @@ class OnlineProductService:
     def _update(self, job, status, result, **kwargs):
         self.store.update_job(job["id"], status, result, owner=job["lease_token"], **kwargs)
 
+    def _prepare_confirmation(self, job, result):
+        # 发起前持久化冷却时间，认证失败或网络异常也不能绕过查询间隔。
+        result["polls"] = int(result.get("polls", 0)) + 1
+        result["automatic_confirmation_pending"] = False
+        result["last_confirmation_at"] = time.time()
+        result.pop("next_confirmation_at", None)
+        self._update(job, "running", result, dispatched=True)
+
     def _confirm(self, job: dict[str, Any], adapter, result: dict[str, Any]):
         request = ChangeRequest.model_validate(job["request"])
         current = self.store.get(request.listing_id)
-        fresh = adapter.read(current.remote_id)
+        fresh = adapter.read_confirmation(current, request)
         fresh.desired_sale_state = current.desired_sale_state
+        fresh.synced_at = current.synced_at
+        fresh.status_checked_at = current.status_checked_at
         platform_result = adapter.confirmation_details(fresh, request.operation, result.get("receipt", {}), request.scope_id)
         result["platform_confirmation"] = platform_result
         checked = confirmation(fresh, request) if not fresh.errors else {}
         result["confirmation"] = checked
         result["read_errors"] = fresh.errors
-        result["polls"] = int(result.get("polls", 0))+1
         if not fresh.errors:
-            fresh = self.store.save(fresh, lease=job)
+            fresh = self.store.save(fresh, lease=job, full_snapshot=False)
         status = "confirmed" if checked and all(checked.values()) else ("outcome_unknown" if job["status"] == "outcome_unknown" else "waiting_confirmation")
         errors = receipt_errors(result.get("receipt", {})) + platform_result.get("errors", [])
         if platform_result.get("pending"):
@@ -218,7 +237,9 @@ class OnlineProductService:
         job = self.store.claim_reconcile(job_id)
         result = job["result"]
         try:
-            self._confirm(job, self._adapter(job["platform"], job["account_id"]), result)
+            self._prepare_confirmation(job, result)
+            with request_operation("online_products", operation_id=job["id"], trigger="manual_confirmation"):
+                self._confirm(job, self._adapter(job["platform"], job["account_id"]), result)
         except Exception as exc:
             result["error"] = str(exc)
             self._update(job, "outcome_unknown", result, dispatched=True)

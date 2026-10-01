@@ -76,18 +76,24 @@ class CategoryKeywordBatchSearch:
 
         results: dict[str, CategorySearchResult | Exception] = dict(self._cache)
         if pending:
-            # 这里只并发领域查询，不创建模型循环；provider 继续使用入口绑定的超时与 deadline。
-            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="category-search") as pool:
-                futures = [pool.submit(copy_context().run, search, keyword) for keyword in pending]
-                outcomes = [future.result() for future in futures]
-            for keyword, outcome in zip(pending, outcomes, strict=True):
-                if keyword not in self.ledger.attempts:
-                    self.ledger.record_attempt(keyword)
-                results[keyword] = outcome
-                if isinstance(outcome, Exception):
-                    self.ledger.record_error(outcome)
-                else:
-                    self._cache[keyword] = outcome
+            # 共享语料的平台先执行一次准备，后续关键词复用本次成功或失败。
+            blocked = None
+            batches = ([pending[:1]] + [pending[i:i+3] for i in range(1,len(pending),3)]) if getattr(self.searcher,"shares_corpus",False) else [pending[i:i+3] for i in range(0,len(pending),3)]
+            with ThreadPoolExecutor(max_workers=3,thread_name_prefix="category-search") as pool:
+                for batch in batches:
+                    outcomes = [blocked]*len(batch) if blocked else [f.result() for f in [pool.submit(copy_context().run,search,word) for word in batch]]
+                    for keyword,outcome in zip(batch,outcomes,strict=True):
+                        if keyword not in self.ledger.attempts:
+                            self.ledger.record_attempt(keyword)
+                        results[keyword] = outcome
+                        if isinstance(outcome,Exception):
+                            self.ledger.record_error(outcome)
+                            details = getattr(outcome,"details",{}) or {}
+                            code = str(getattr(outcome,"code",""))
+                            if getattr(self.searcher,"shares_corpus",False) or details.get("http_status") in (401,403,420,429) or any(part in code for part in ("AUTH","RATE_LIMIT","CREDENTIAL","DISABLED","REVOKED")):
+                                blocked = outcome
+                        else:
+                            self._cache[keyword] = outcome
 
         errors: list[CategoryKeywordSearchError] = []
         successes: list[CategorySearchResult] = []

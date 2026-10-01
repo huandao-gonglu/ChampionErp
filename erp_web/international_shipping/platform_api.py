@@ -6,13 +6,15 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+
 from decimal import Decimal, ROUND_CEILING
 
 from .models import Candidate, Package, PriceForShipping, QuoteResult, money, number
 
 
 class PlatformClient:
-    def __init__(self, platform: str, credentials: dict):
+    def __init__(self, platform: str, credentials: dict, *, opener):
+        self.opener = opener
         self.platform = platform
         if platform == 'ozon':
             if not credentials.get('client_id') or not credentials.get('api_key'):
@@ -39,7 +41,7 @@ class PlatformClient:
         data = json.dumps(body).encode() if body is not None else None
         request = urllib.request.Request(url, data=data, headers={**self.headers, 'Accept': 'application/json', 'Content-Type': 'application/json'})
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with self.opener(request, timeout=20) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as exc:
             hint = '，请在店铺授权页检查或刷新授权' if exc.code in (401, 403) else ''

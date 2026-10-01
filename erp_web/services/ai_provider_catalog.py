@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
+import httpx2 as httpx
+
+from erp_web.services.external_httpx_transport import ManagedAsyncTransport
+from erp_web.services.external_request_context import credential_fingerprint
+
 from pydantic_ai.providers import Provider
 from pydantic_ai.providers.alibaba import AlibabaProvider
 from pydantic_ai.providers.deepseek import DeepSeekProvider
@@ -181,11 +186,18 @@ def create_pydantic_provider(
             f"AI Provider {spec.label} 使用固定 Base URL；"
             "请使用该服务商的官方地址。"
         )
+    http_client = httpx.AsyncClient(transport=ManagedAsyncTransport(
+        platform="ai:"+provider_id, account_id=credential_fingerprint(normalized_base_url + "\0" + api_key),
+    ))
     if spec.provider_id == PROVIDER_ID_DEEPSEEK:
-        return DeepSeekProvider(api_key=api_key)
-    if spec.provider_id == PROVIDER_ID_ALIBABA:
-        return AlibabaProvider(base_url=normalized_base_url, api_key=api_key)
-    return OpenAIProvider(base_url=normalized_base_url, api_key=api_key)
+        provider = DeepSeekProvider(api_key=api_key, http_client=http_client)
+    elif spec.provider_id == PROVIDER_ID_ALIBABA:
+        provider = AlibabaProvider(base_url=normalized_base_url, api_key=api_key, http_client=http_client)
+    else:
+        provider = OpenAIProvider(base_url=normalized_base_url, api_key=api_key, http_client=http_client)
+    # SDK 默认重试会重放结果未知的推理请求；统一入口默认不自动重试。
+    provider.client.max_retries = 0
+    return provider
 
 
 __all__ = [

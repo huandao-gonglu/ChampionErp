@@ -38,6 +38,20 @@
 - `erp_web/runtime_units/json_store.py`：运行时 JSON 文件原子读写的依赖轻量 owner；
   配置、发布产物和其他领域模块不得再从类目 Store 借用通用文件写入能力。
 
+## 统一外部请求管理
+
+- `schemas/external_requests.py` 定义 RequestContext、阻断与写入未知契约；平台错误由 `schemas/platform_errors.py` 持有。
+- `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
+- `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传、采集与物流发送均接入。
+  `services/external_httpx_transport.py` 经原生 Provider 的 http_client 注入 SDK，同样检查共享状态，原生 SDK 自动重试关闭。
+  Pydantic AI 仍独占模型/Agent 生命周期，不新增模型请求旁路。
+- `services/platform_request_policy.py` 纯解析 HTTP 与业务拒绝；`stores/external_request_store.py` 用独立
+  `external-requests.sqlite3` 保存尝试、限额、阻断与恢复，不改变 ERP 主库版本。
+  放行与租约分配在短事务内完成；账号停用跨模块、重启及换 Key 保留，接口拒绝只影响该接口。
+- 默认不自动重试；显式只读预算最多 3 次，写入未知禁止重放。平台适配器解释业务，管理器不推进领域任务。
+- `scripts/external_requests.py` 提供 query/blocks/configure/recover/recoveries；恢复不发送探测请求。
+  具体范围、平台依据、保留策略及 01–11 项验收见 [实施与运维说明](external-request-management.md)。
+
 ## 草稿操作后的继续保存
 
 - `copy_facade.generate_copy_payload` 通过 `current_draft_id` 绑定用户选中的独立草稿。`copy_generation.save_copy_result` 将该操作上下文交给 `ProductStore.save_draft_copy_result`；Store 必须在商品归一化前取出草稿 ID，不能丢失后改为同平台最新草稿。文案仅合入指定草稿的最新内容，已删除的目标不得被重建。
@@ -75,6 +89,10 @@
   脚本先创建权限 0600 的 SQLite 一致性备份，再在事务内校验原结构、添加在线商品两表及索引。
   商品、草稿、授权、发布及 Agent 持久数据全部保留。其他版本或残缺结构在写入前拒绝。
 - `upc_pool.json` 是已购买 UPC 的显式资产导入，不属于 schema 迁移。
+- 2026-09-28 请求管理开发中间版本曾将 `external_*` 审计表写入 v16 主库。
+  `scripts/migrate_external_request_audit.py <主库>` 仅识别这套完整遗留结构：先保存权限 0600 的
+  一致性备份，再迁到独立审计库；目标提交成功后才移除主库审计表，业务数据及主库版本不变。
+  运行时不会自动迁移；结构拒绝信息列出多余、缺失或定义不一致的对象，不再把同版本结构差异误报为版本过旧。
 
 ## 在线商品管理
 
@@ -90,7 +108,8 @@
 - `runtime_units/online_mercadolibre.py`、`online_yandex.py`、`online_ozon.py` 负责平台发现、读取和最小变更。
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
   `runtime_units/online_yandex_read.py` 负责完整目录分页、隐藏清单分页和每批 100 个 SKU 的详情读取，最多 3 个接口并发；
-  `online_yandex_snapshot.py` 只做响应投影。全店同步不再循环调用单件 `read`；单件完整读取用于修改前校验和确认。
+  `online_yandex_snapshot.py` 只做响应投影。全店同步不再循环调用单件 `read`；单件完整读取只用于修改前校验。
+  `runtime_units/online_change_confirmation.py` 按修改字段和范围回读，不重复下载完整聚合。
   `runtime_units/online_product_status.py` 是三个平台的单件状态读取入口，限定目标身份，不扫描全店，不调用独立价格或库存接口。
   `online_mercadolibre_read.py` 先完整扫描目录，再用最多 3 件的并发窗口读取父商品及关联站点，保留 User Products mapping 校验；
   `online_ozon_read.py` 先扫描 ALL 与 ARCHIVED 目录，再每批最多 100 件读取详情与价格，`online_ozon_snapshot.py` 只做投影。
@@ -104,6 +123,8 @@
 - 任务以提交键防重，同目标互斥；全店同步与该账号修改互斥。写前核对当前店铺及平台业务版本，
   写前日志区分已发送与未发送；未知结果只回读、不自动重放。每次领取生成独立租约，过期执行者不可提交结果。
   工作线程在应用启动时恢复队列，前端轮询仅负责展示；部分同步失败保留旧快照，不推断删除。
+  在线修改提交后至少 120 秒首次自动确认一次，此后只接受人工确认且间隔 30 秒；失败也保留冷却时间。
+  局部确认更新版本与对应字段，保留完整同步时间。
 - `runtime_units/online_product_capabilities.py` 将现有读取、单件状态刷新、统一修改、同步、回读、重试接口直接装配进主 Agent。
   `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。
   商品数量、SKU 分析等由读取返回值与已有 Code Mode 组合完成，不新增场景工具、查询 DSL 或平台写入旁路。
@@ -527,8 +548,8 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   `CategoryProvider` 实现与注册表；平台 API shape 在这里归一化为当前定义和明确
   `platform_binding`。Mercado Libre CBT 类目预测固定调用
   `/marketplace/domain_discovery/search`，并统一通过
-  `store_credentials.get_mercadolibre_access_token()` 取得已校验、必要时已刷新的
-  Global Selling Access Token；Provider 不得直接读取凭据。区域站点仍调用
+  `store_credentials.get_mercadolibre_access_token()` 读取已保存的
+  Global Selling Access Token；只有实际业务请求明确返回 401 后才执行一次共享刷新；Provider 不得直接读取凭据。区域站点仍调用
   `/sites/{site}/domain_discovery/search`。
 - `erp_web/runtime_units/category_definition_cache.py`：统一属性定义持久缓存 owner；24 小时
   fresh、最多 7 天 transient stale，401/403、凭据缺失、禁用类目和结构错误不得用 stale
@@ -740,8 +761,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `marketplace_bindings`，不得从静态注册表推断。
   授权失败或凭据/身份变化会清除币种 ready 状态；核价层不再有远端币种补取副作用。
   `store_credentials.get_mercadolibre_access_token()` 是业务代码取得 Mercado Libre
-  token 的唯一入口：它在凭据锁内重读 SQLite 最新值，经 `/users/me` 校验，并在明确
-  401 时以 CAS 语义刷新一次 access/refresh token。类目、订单、图片与发布调用不得
+  token 的唯一入口：普通读取从 SQLite 取得最新值，不请求 `/users/me` 或回写配置。
+  真实业务请求明确返回 401 时，以凭据锁和 CAS 语义刷新一次 access/refresh token。类目、订单、图片与发布调用不得
   从配置字典直接提取 token；刷新实现不再属于 `publish_mercadolibre.py`。
 - `erp_web/http_route_units/auth_config_routes.py::/api/store-auth/currency`：受控人工
   币种选择/填写接口；`/api/save-settings` 只接受注册表凭据字段与非敏感静态字段，
@@ -957,12 +978,9 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   不会重新构造已确认内容。Capability 还会在重校验与队列准入前按完整确认事实恢复既有 job，封闭
   “job 已落库、工具回执尚未保存 job_id”的崩溃窗口。店铺切换、payload 篡改或事实冲突都会在网络
   调用前安全失败。
-- 发布错误类型化重试契约：PublishingBus 只在适配器抛出
-  `PublishAdapterError(retryable=True)` 且未耗尽重试次数时重试；店铺绑定校验失败
-  （`PublishApprovalBindingError`）与未分类异常一律立即终态失败。
-  `erp_web/marketplaces/config_http.py` 按状态码把 HTTP 失败分类为平台类型化错误
-  （401/403 认证失败、404 资源不存在、408/420/423/425/429 与 5xx 可重试），
-  网络/超时错误同样类型化；既有消息格式保持不变，字符串解析方不受影响。
+- 发布错误类型化契约：PublishingBus 不自动重放失败的业务提交；写入结果未知进入
+  `outcome_unknown` 并保留待核实状态。HTTP 420/429 不返回可立即重试标志，认证及限流
+  类型化错误经工具边界继续保留。只有统一请求管理器可以按显式只读预算重试。
 - `erp_web/services/image_delivery_service.py`：发布图片 HTTPS delivery 唯一边界。
   图片保存 provider-neutral 的 `storage_key`，公网 URL 只是根据当前 provider 与
   `ERP_IMAGE_HTTPS_BASE_URL` 重新计算的缓存；平台发布模块不得读取隧道、磁盘根目录
@@ -980,9 +998,9 @@ Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `ta
 轮询 `/v1/product/import/info`；只有每个商品返回 `status=imported` 且没有逐项错误，
 才写入 `real_publish_success`。拿到 `task_id` 本身不算发布成功。
 
-Yandex 上架确认同样是异步操作。`offer-mappings/update` 提交后必须由 poll 回读
-Business 商品映射与 Campaign 商品状态确认终态；确认轮询超过上限仍未终态时任务失败，
-pending 状态不得记为发布成功。确认时 cardStatus（官方 OfferCardStatusType，无
+Yandex 上架确认同样是异步操作。`offer-mappings/update` 提交后通过统一延迟确认策略回读
+Business 商品映射与 Campaign 商品状态确认终态；每次显式确认只查询一次，
+pending 状态不得记为发布成功，也不触发无限自动轮询。确认时 cardStatus（官方 OfferCardStatusType，无
 PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_CARD_ERRORS`
 表示本次变更未被接受（即使 Campaign 仍为 PUBLISHED），审核中状态继续有界轮询；
 只有卡片接受态配合 Campaign `PUBLISHED` 才判定成功。Business 级库存（无仓库组）

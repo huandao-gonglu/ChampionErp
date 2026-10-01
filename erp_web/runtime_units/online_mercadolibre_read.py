@@ -1,4 +1,5 @@
 """Mercado 目录先行，完整商品详情最多三路并发；不丢弃站点映射和净收入。"""
+from contextvars import copy_context
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from urllib.parse import quote, urlencode
 
@@ -57,7 +58,7 @@ def sync_mercado(adapter, ids=None):
         def submit():
             remote_id = next(remaining, None)
             if remote_id is not None:
-                pending[pool.submit(adapter.read, remote_id)] = remote_id
+                pending[pool.submit(copy_context().run, adapter.read, remote_id)] = remote_id
 
         for _ in range(MAX_REQUESTS):
             submit()

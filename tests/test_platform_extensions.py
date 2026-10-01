@@ -288,7 +288,6 @@ def test_publishing_bus_blocks_before_publish_when_required_attributes_are_missi
         store,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: {"mercadolibre": {}},
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -323,7 +322,6 @@ def test_publishing_bus_reuses_persisted_job_for_same_idempotency_facts() -> Non
     bus = PublishingBus(
         store,
         adapters={"mercadolibre": adapter, "ozon": adapter},
-        max_retries=0,
         auto_resume_pending=False,
     )
     target = {
@@ -370,7 +368,6 @@ def test_publishing_bus_reuses_idempotency_mapping_after_restart(tmp_path) -> No
     first_bus = PublishingBus(
         database,
         adapters={"mercadolibre": adapter},
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -387,7 +384,6 @@ def test_publishing_bus_reuses_idempotency_mapping_after_restart(tmp_path) -> No
     restarted_bus = PublishingBus(
         database,
         adapters={"mercadolibre": adapter},
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -414,7 +410,6 @@ def test_publishing_bus_rejects_idempotency_key_bound_to_different_facts() -> No
     bus = PublishingBus(
         store,
         adapters={"mercadolibre": adapter, "ozon": adapter},
-        max_retries=0,
         auto_resume_pending=False,
     )
     key = "global-task-2:publish-step-1"
@@ -499,7 +494,6 @@ def test_approved_publish_uses_exact_persisted_payload_and_hides_binding() -> No
         store,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(config),
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -548,7 +542,6 @@ def test_approved_publish_blocks_changed_store_identity_before_network() -> None
         store,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(current_config),
-        max_retries=1,
         auto_resume_pending=False,
     )
     try:
@@ -591,7 +584,6 @@ def test_approved_publish_rejects_payload_changed_after_digest() -> None:
         store,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(config),
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -631,7 +623,6 @@ def test_recover_publish_job_after_restart_matches_all_confirmation_facts(
         database,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(config),
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -656,7 +647,6 @@ def test_recover_publish_job_after_restart_matches_all_confirmation_facts(
         database,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(config),
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -999,7 +989,6 @@ def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> No
         store,
         adapters={"mercadolibre": InvalidSuccessAdapter()},
         terminal_callback=on_terminal,
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -1084,7 +1073,6 @@ def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
     bus = PublishingBus(
         store,
         adapters={"ozon": adapter},
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -1221,7 +1209,6 @@ def test_publishing_bus_resumes_saved_platform_poll_without_resubmitting() -> No
     bus = PublishingBus(
         store,
         adapters={"ozon": adapter},
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -1273,7 +1260,6 @@ def test_publishing_bus_does_not_duplicate_product_in_platform_result() -> None:
     bus = PublishingBus(
         store,
         adapters={"ozon": FailedAdapter()},
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:
@@ -1358,7 +1344,6 @@ def test_terminal_hook_persists_product_and_log_without_status_poll(
                 context=context,
             )
         ),
-        max_retries=0,
         auto_resume_pending=False,
     )
     try:

@@ -516,7 +516,6 @@ def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id()
         patch.object(store_credentials, "summarize_store_auth_states", return_value={"ozon": {"status": "测试成功"}}),
         patch("erp_web.runtime_units.ozon_category_api.fetch_ozon_category_tree_summary", return_value={"product_type_count": 2, "sample": {"type_id": "94765"}}) as fetch_tree,
         patch.object(publisher, "fetch_ozon_seller_info", return_value={"company": {"currency": "CNY"}}) as fetch_seller,
-        patch.object(publisher, "fetch_ozon_shop_name") as fetch_shop,
     ):
         result = store_credentials.test_store_auth("ozon", "category")
 
@@ -524,7 +523,6 @@ def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id()
         force_refresh=True,
         credentials=("client-id", "api-key"),
     )
-    fetch_shop.assert_not_called()
     fetch_seller.assert_called_once_with("client-id", "api-key")
     save_config.assert_called_once_with(config)
     assert result["ok"] is True
@@ -605,7 +603,7 @@ def test_ozon_category_corpus_uses_seven_day_stale_cache_on_network_error(
     assert info["stale"] is True
     assert repeated_info["cache_source"] == "stale_cache"
     # 首次刷新包含一次瞬时错误重试；60 秒冷却内的多轮搜索不重复打远端。
-    assert request.call_count == 2
+    assert request.call_count == 1
 
 
 def test_ozon_category_corpus_treats_cache_as_fresh_for_24_hours(

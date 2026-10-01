@@ -1,0 +1,97 @@
+# 外部请求管理与账号请求审计实施
+
+实施日期：2026-09-28。对应 [账号 API 请求审计](account-api-request-audit-2026-09-27.md) 的 01–11 项及统一管理设计。本次使用隔离配置、假响应和网络屏蔽测试，没有调用真实平台账号验证，也没有解除任何运行账号的封禁。
+
+## 入口与职责
+
+- `schemas/external_requests.py` 定义不可变请求上下文及本地阻断、写入结果未知异常；`schemas/platform_errors.py` 持有平台错误公共类型。
+- `services/external_request_context.py` 关联 HTTP 操作、后台 Job、AI Tool 任务及触发方式。发送前只读取本地身份，不做账号预检查。凭据只存 SHA-256 指纹。
+- `services/external_request_manager.py` 是 urllib 外发唯一入口，`http_client.py`、平台 JSON、表单、图片上传、采集与物流客户端均通过它发送。独立物流模块通过必需的 opener 参数注入入口，不依赖 ERP。
+- `services/external_httpx_transport.py` 是 SDK 的原生 Transport 适配层，使用同一个管理器和存储；流式响应在读取结束或提前关闭时结算。SDK 自动重试关闭。
+- `services/platform_request_policy.py` 纯解析 HTTP、业务错误及恢复时间；商品、授权和发布业务仍由原适配器解释。
+- `stores/external_request_store.py` 负责请求审计、短事务内检查与并发名额分配、持久阻断及明确恢复记录。控制锁不跨网络等待。
+- `scripts/external_requests.py` 提供本地查询、统计、配置和恢复；无额外 HTTP 路由或平台探测。
+
+模型仍从 `ai_model_factory.py` / `ai_provider_catalog.py` 装配，Agent 生命周期、消息、工具、审批及 Deferred 全部继续由 Pydantic AI 原生能力负责。本地核对版本为 Pydantic AI 2.44.0、OpenAI SDK 3.13.0、HTTPX2 2.9.1；通过 [Provider 公共 http_client 参数](https://ai.pydantic.dev/api/providers/) 注入传输，没有自建模型推理或 Agent 循环。ERP 跨平台账号限流与审计不属于 Agent 生命周期能力，因此保留为独立业务基础设施。
+
+## 放行与恢复
+
+请求关联平台、账号、接口、凭据指纹、业务操作、原请求、尝试序号、来源、触发方式、读写语义和时间边界。Ozon/Yandex 的 POST 查询按接口语义识别为只读；未声明的请求保守按写入处理。
+
+| 证据 | 控制范围与后续行为 |
+| --- | --- |
+| 明确 API 停用或账号封禁 | 持久账号阻断；重启、换任务、简单换 Key 不解除 |
+| Token 过期或凭据撤销 | 凭据指纹阻断；合法刷新得到的新凭据可按平台协议使用 |
+| 403 / 接口权限拒绝 | 接口阻断；无关接口和其他账号继续使用 |
+| 420 / 429 | 共享暂停；遵守有效 Retry-After，无恢复时间则本轮结束、等待明确恢复 |
+| Yandex 资源配额 | 结合 `X-RateLimit-Resource-Until` / `Remaining` 暂停该接口；成功但 Remaining=0 也约束后续请求 |
+| 确定性请求错误 | 同一业务操作中，相同接口和参数指纹不得重发 |
+| 同接口连续失败 | 10 分钟内默认连续 5 次实际失败后阻断；阈值可配置，成功会中断连续序列 |
+| 写入超时、断连或不确定服务端失败 | 记录 `outcome_unknown`，原操作相同请求本地阻止；不重放写入 |
+
+默认所有请求只有一次尝试。显式只读请求可通过 `RequestContext.max_attempts` 开启最多 3 次的服务端失败重试，共用原时间预算，每次独立记账并重新检查。业务层与 SDK 不叠加传输重试；发布确认、真实 401 后一次合法 Token 刷新属于独立业务动作。
+
+Yandex 按官方 [限额规则](https://yandex.ru/dev/market/partner-api/doc/ru/concepts/limits) 对同一个 campaign/business 最多放行 4 个并发请求；其他平台不猜测统一速率，使用明确配置的并发和每分钟上限。账号或接口策略共同生效。队列检查取消和时间边界；已发送的请求不能保证撤回，日志的 `sent=1` 只表示进入传输阶段，不证明平台已收到或执行。
+
+账号归属优先使用本地稳定业务 ID。没有已保存身份的首次授权使用凭据指纹作为临时范围；模型连接没有远端账号 ID，按服务地址与凭据指纹隔离，避免同服务商的不同凭据互相阻断。既有稳定商城账号的账号阻断不依赖 Key 指纹。
+
+## 审计存储与运维
+
+请求管理使用应用数据目录下独立的 `external-requests.sqlite3`（schema v1、WAL、文件权限 0600）。ERP 主库仍为 v16，不迁移、不更改业务数据。重启后继续读取阻断记录。
+
+审计仅保存白名单：标识、时间、决策、等待规则、HTTP 状态、规范错误码与中文摘要、平台 Request ID、恢复时间。不会保存 URL 查询、Token、Authorization、完整请求/响应或错误原文。未知服务的接口路径只记指纹；AI 只保留已知 API 路径后缀。排队、取消、本地拒绝、成功、失败、重试均有记录，统计分别计算操作数、尝试数、网络尝试数和本地拒绝数。
+
+默认保留 30 天、最多 100000 条已完成尝试；恢复记录同样有界。清理在新请求入账时进行，SQLite 复用已释放页；超过保留期仍无结果的历史尝试按中断/结果未知处理后清理，不能当作成功。正在执行的记录不参与正常容量淘汰。请求/操作范围的短期阻断保留一天；账号、凭据、接口的未解除阻断不因审计清理丢失。
+
+首次阻断写中文告警，同一故障合并告警并累加本地阻止次数。业务请求同时得到类型化错误及恢复说明。下列命令不访问平台；恢复前应已解决对应平台问题，理由不得填写凭据。
+
+```bash
+# 查看当前阻断与最近请求；查询支持 platform/account-id/interface/operation-id/decision/outcome/http-status。
+.venv/bin/python scripts/external_requests.py blocks
+.venv/bin/python scripts/external_requests.py query --platform ozon --limit 100
+.venv/bin/python scripts/external_requests.py query --operation-id '<任务编号>' --since 1790524800
+
+# 按已核实的平台契约配置；* 是账号全部接口，其他值使用审计中的接口标识。
+# 数字仅为命令示例，不能视为 Ozon 的官方额度；未提供的字段表示不额外限制。
+.venv/bin/python scripts/external_requests.py configure --platform ozon --concurrency 2 --requests-per-minute 60 --consecutive-failure-limit 5
+
+# 按 blocks 返回的完整范围恢复；账号范围的 scope-key 是空字符串。
+.venv/bin/python scripts/external_requests.py recover --platform ozon --account-id '<Client ID>' --scope account --scope-key '' --reason '已获得平台恢复确认'
+.venv/bin/python scripts/external_requests.py recoveries
+```
+
+## 逐项业务整改
+
+| 审计项 | 当前行为与离线验收 |
+| --- | --- |
+| 01 Ozon 关键词搜索 | Ozon/Yandex 共享语料先准备一次；失败后不启动其余关键词网络请求。64 词 403 测试只发送 1 次；移除 Ozon 类目树即时重试 |
+| 02 Yandex 同步 | 拒绝传播为类型化异常，取消未开始的并发任务、停止后续 SKU 批；已有在途请求可以完成 |
+| 03 发布重试 | 删除总线固定延迟重试及 max_retries 配置；每次业务提交只执行一次，未知结果进入对账状态 |
+| 04 错误语义 | 属性定义和候选工具保留已有错误 code、details、retryable，403/429 不再被转换为可立即重试 |
+| 05 Mercado Token getter | 普通读取只使用保存凭据；5 次读取产生 0 次身份请求、0 次配置回写。真实业务 401 后仍走互斥与 CAS 刷新 |
+| 06 Yandex 构造 | 使用已授权保存的 business/campaign；5 次适配器构造产生 0 次归属查询，保留本地账号检查 |
+| 07 Ozon 名称 | 删除仓库/商品/库存探测函数及调用；名称来自本地别名或 seller/info 已有字段 |
+| 08 修改确认 | 提交后至少 120 秒首次自动确认一次，此后人工触发且间隔 30 秒；失败也保留冷却。仅读本次字段，保留未读字段与完整同步时间 |
+| 09 云途 Token | 同一 AppContext 按凭据及有效期跨客户端复用；5 次下单是 1 次 Token + 5 次订单。过期/明确失效清理，不重放订单；明确授权测试仍请求一次 |
+| 10 属性候选 | Mercado 定义与候选共享有界 15 分钟原始响应缓存；Ozon 保留已使用的 2000 条平台分页契约，并复用后续值，前端前两页只请求平台一次 |
+| 11 本地轮询 | 在线任务 queued/running 时 5 秒读取，页面隐藏暂停，等待人工/终态无周期读取；首次自动确认到期后一次本地读取。研究状态 2 秒、隐藏暂停；AI SSE 可用时不并行短轮询 |
+
+Mercado 字段确认使用官方 [商品字段过滤](https://global-selling.mercadolibre.com/devsite/manage-sales-global-selling/variations-global-selling/) 能力；User Product 无可用字段投影时只读取对应资源，不重新聚合关联市场、价格、库存和内容。Yandex 价格隔离与内容异步回执检查继续保留。
+
+## 验证与边界
+
+### 2026-09-30 启动故障修复
+
+本机 v16 主库遗留了开发中间版本的 4 张 `external_*` 表及 2 个索引，含 4 条请求审计；最终实现已使用独立审计库，主库的完整结构校验因此拒绝启动。上次只在隔离数据库验证，漏查了实际主库中的遗留对象。
+
+`scripts/migrate_external_request_audit.py erp.sqlite3` 现在提供针对这套已知结构的显式迁出：先将主库一致性备份保存到 `data/backups/`（0600），完整复制审计、阻断、策略和恢复记录，再移除源审计表。目标库已有相同记录时可继续迁移；冲突记录或未知结构会拒绝处理，不覆盖、不丢弃。原历史请求没有的 `quota_key` 使用空值，策略新增的连续失败阈值使用默认值，不推测历史调用身份。
+
+本机已完成迁出，逐行摘要验证所有业务表内容未变，主库完整性和默认 AppContext 初始化通过。修复没有运行真实平台任务。新增回归覆盖这套遗留结构、备份权限、业务数据与阻断保留、目标冲突和中断后重跑，并验证请求管理器永远不向主库添加审计表。启动诊断同时改为列出具体结构差异，避免“版本 16 不支持当前版本 16”的误导性提示。本次后端完整回归 2043 项及 47 个子测试通过，编译与差异格式检查通过。
+
+### 原实施验证
+
+`tests/test_external_requests.py` 覆盖账号跨模块/排队阻断、重启、Key 替换、接口隔离、恢复记录、429 等待取消、HTTP 200 业务错误、独立重试审计、写入未知、SDK 流结束和排队取消、Token 和类目缓存复用。在线商品、发布、类目、授权及前端既有测试按当前契约同步调整；架构守卫限制直接底层发送并确认已退役入口不存在。
+
+最终验证：后端完整测试 2038 项及 47 个子测试通过；前端 61 个测试文件、505 项测试通过；TypeScript 类型检查、Python 编译检查与 `git diff --check` 通过。后端在隔离配置和禁止非本机 DNS/socket 连接的环境中运行。
+
+本次验收不以真实被封账号试探平台，不能据此判断封禁根因或宣称平台已经恢复。流式/原生 SDK 错误继续按原生客户端传播，管理器负责记账和阻止后续请求；不解析模型流事件、不介入 Agent 生命周期。浏览器读取 ERP 本地列表的次数与平台外发次数始终分开统计。

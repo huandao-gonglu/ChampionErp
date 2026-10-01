@@ -15,7 +15,8 @@ logger = logging.getLogger("erp.pricing")
 
 
 class ShippingModule:
-    def __init__(self, rules_dir: Path, credentials: dict[str, dict]):
+    def __init__(self, rules_dir: Path, credentials: dict[str, dict], *, opener):
+        self.opener = opener
         self.rules_dir = rules_dir
         self.credentials = credentials
         self.snapshots: dict[str, dict] = {}
@@ -32,7 +33,7 @@ class ShippingModule:
     ) -> QuoteResult:
         if platform == 'mercadolibre':
             return quote_mercadolibre(
-                PlatformClient(platform, self.credentials.get(platform, {})), package,
+                PlatformClient(platform, self.credentials.get(platform, {}), opener=self.opener), package,
                 binding or {}, price_for_shipping, cny_per_usd=cny_per_usd, category_id=category_id,
                 listing_type_id=listing_type_id, free_shipping=free_shipping,
             )
@@ -52,7 +53,7 @@ class ShippingModule:
             started = perf_counter()
             logger.info("Ozon 公共渠道查询开始：读取 rFBS 仓库和配送渠道，本批 SKU 共用")
             try:
-                self.methods = discover_ozon(PlatformClient(platform, self.credentials.get(platform, {})))
+                self.methods = discover_ozon(PlatformClient(platform, self.credentials.get(platform, {}), opener=self.opener))
             except ValueError as exc:
                 # 本轮公共查询失败后直接复用错误，下轮新建实例才重试。
                 self.errors[platform] = str(exc)

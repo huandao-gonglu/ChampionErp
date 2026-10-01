@@ -101,7 +101,7 @@ describe('停止操作', () => {
     await vi.waitFor(() => expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1))
     expect(store.stopping).toBe(true)
     expect(store.messages).toEqual(partial)
-    await vi.waitFor(() => expect(store.stopping).toBe(false))
+    await vi.waitFor(() => expect(store.stopping).toBe(false), { timeout: 3000 })
     expect(store.receivedNotice).toBe('')
     expect(store.error).toBeUndefined()
   })
