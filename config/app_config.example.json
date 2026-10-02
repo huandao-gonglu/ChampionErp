@@ -1,4 +1,5 @@
 {
+  "image_hosting": { "default_profile_id": "", "profiles": [] },
   "ai_tool_approval_mode": "ask",
   "auto_ai_recognition": "0",
   "alibaba_cookie": "",

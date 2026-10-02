@@ -1,37 +1,48 @@
-"""按需探测实际图片地址；连通性证据与确定性发布校验分开返回。"""
+"""匿名 GET 的当前服务器访问证据；不代表市场侧已抓取成功。"""
+from __future__ import annotations
 
+import hashlib
 from urllib.error import HTTPError
 from urllib.request import Request
 
+from erp_web.schemas.external_requests import ExternalRequestBlocked
+from erp_web.schemas.image_hosting import ImageHostingError
 from erp_web.schemas.publish_capabilities import ImagePublicAccessCheck
+from erp_web.services.external_request_context import request_context
 from erp_web.services.external_request_manager import managed_urlopen
+from erp_web.services.image_hosting_config import validate_public_url
+from erp_web.services.image_hosting_transport import safe_image_urlopen
+from erp_web.services.image_content import image_content
 
 
-def _check_image(url: str) -> ImagePublicAccessCheck:
+def _check_image(url: str, *, expected_sha256: str = "", profile_id: str = "anonymous") -> ImagePublicAccessCheck:
     try:
-        with managed_urlopen(Request(url, method="HEAD"), timeout=8, source=__name__) as response:
+        validate_public_url(url)
+        ctx = request_context(url, method="GET", timeout=10, source=__name__, platform="image_hosting:public", account_id=profile_id, semantics="read")
+        with managed_urlopen(Request(url, method="GET", headers={"Accept": "image/*"}), timeout=10,
+                             request_context=ctx, transport=safe_image_urlopen, source=__name__) as response:
             status = response.status
             content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].lower()
-        image_response = 200 <= status < 300 and content_type.startswith("image/")
-        return ImagePublicAccessCheck(
-            url=url, status="reachable" if image_response else "inconclusive",
-            http_status=status, content_type=content_type,
-            message="当前服务器 HEAD 请求成功，返回图片类型；尚未验证平台侧抓取或图片内容" if image_response else "当前服务器收到响应，但未确认返回有效图片",
-        )
+            raw = response.read()
+        image_content(raw)
+        if not 200 <= status < 300 or not content_type.startswith("image/"):
+            raise ValueError("未返回图片类型")
+        if expected_sha256 and hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise ValueError("图片内容与上传对象不一致")
+        return ImagePublicAccessCheck(url=url, status="reachable", http_status=status, content_type=content_type,
+                                      message="匿名读取成功，图片内容有效")
     except HTTPError as exc:
-        return ImagePublicAccessCheck(
-            url=url, status="inconclusive" if exc.code in {405, 501} else "failed",
-            http_status=exc.code,
-            message="图片服务不支持 HEAD，无法确认可访问性" if exc.code in {405, 501} else f"当前服务器探测图片返回 HTTP {exc.code}",
-        )
-    except Exception as exc:
-        return ImagePublicAccessCheck(url=url, status="failed", message=f"当前服务器探测图片失败：{exc}")
+        status = exc.code
+        exc.close()
+        return ImagePublicAccessCheck(url=url, status="failed", http_status=status, message=f"匿名 GET 返回 HTTP {status}，请检查公开权限及地址（不跟随重定向）")
+    except (ImageHostingError, ExternalRequestBlocked) as exc:
+        return ImagePublicAccessCheck(url=url, status="failed", message=str(exc))
+    except Exception:
+        return ImagePublicAccessCheck(url=url, status="failed", message="匿名图片读取或内容校验失败，请检查公开权限、图片内容与网络")
 
 
 def check_image_public_access(urls: list[str]) -> list[ImagePublicAccessCheck]:
-    """只探测传入的实际 HTTP(S) 图片地址，每个唯一 URL 最多一次。"""
-    unique_urls = list(dict.fromkeys(url for url in urls if url.startswith(("https://", "http://"))))
-    return [_check_image(url) for url in unique_urls]
+    return [_check_image(url) for url in dict.fromkeys(urls) if url.startswith(("https://", "http://"))]
 
 
-__all__ = ["check_image_public_access"]
+__all__ = ["check_image_public_access", "_check_image"]

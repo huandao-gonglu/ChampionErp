@@ -793,3 +793,31 @@ def test_publish_preparation_is_an_explicit_write_tool():
     assert request.approval_required
     assert "product_publish_prepare" in _WRITE_CAPABILITIES
     assert "product_publish_prepare" not in GLOBAL_CHAT_CAPABILITIES
+
+
+def test_image_hosting_has_one_sdk_boundary_and_no_retired_delivery():
+    """S3 只在交付边界装配；预检/worker 不上传，隧道路径彻底退役。"""
+    sdk_imports = {
+        _relative_posix(path)
+        for path, target in imported_targets(python_files(ROOT / "erp_web"))
+        if target.startswith(("botocore", "boto3"))
+    }
+    assert sdk_imports == {"erp_web/services/s3_image_storage.py"}
+    assert not (ROOT / "scripts/image_https_tunnel.sh").exists()
+    for path in [*(ROOT / "erp_web").rglob("*.py"), ROOT / "scripts/dev.sh", ROOT / "config/.env.example"]:
+        source = path.read_text()
+        for retired in ("prepare_is_local_only", "LocalStaticHttpsProvider", "ExistingUrlOnlyProvider", "ERP_IMAGE_HTTPS_", "local_static"):
+            assert retired not in source, (path, retired)
+    storage = (ROOT / "erp_web/services/s3_image_storage.py").read_text()
+    assert '"before-send.s3"' in storage and "managed_urlopen" in storage
+    assert '"total_max_attempts": 1' in storage
+    assert 'request_checksum_calculation="when_required"' in storage
+    config = (ROOT / "erp_web/services/image_hosting_config.py").read_text()
+    assert not any(word in config for word in ("get_context", "urlopen", "sqlite3", "requests."))
+    content = (ROOT / "erp_web/services/image_content.py").read_text()
+    assert not any(word in content for word in ("get_context", "urlopen", "sqlite3", "requests.", "botocore"))
+    facade = (ROOT / "erp_web/facades/image_hosting_facade.py").read_text()
+    assert ".client." not in facade
+    routes = (ROOT / "erp_web/http_route_units/image_hosting_routes.py").read_text()
+    assert "runtime_units" not in routes
+    assert routes.count("handler.read_body()") == routes.count("validate_request_payload(handler.read_body(), endpoint=handler.path)")

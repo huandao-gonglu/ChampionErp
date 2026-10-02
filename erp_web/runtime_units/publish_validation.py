@@ -654,6 +654,7 @@ def validate_yandex_draft(
     product: dict[str, Any],
     config: dict[str, Any],
     category_record: dict[str, Any] | None = None,
+    *, image_stage: str = "final",
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "yandex")
@@ -737,12 +738,12 @@ def validate_yandex_draft(
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
     else:
-        problems = get_context().image_delivery.inspect_product(product, "yandex")
+        problems = get_context().image_delivery.inspect_product(product, "yandex", stage=image_stage)
         errors.extend(
             precheck_item(problem.code, f"images.{problem.asset_id}", problem.message, "error", problem.next_action)
             for problem in problems
         )
-        if not problems and any(not str(image).startswith(("https://", "http://")) for image in images):
+        if image_stage == "final" and not problems and any(not str(image).startswith(("https://", "http://")) for image in images):
             errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", "发布图片需要 HTTP(S) 公网地址", "error", "调用 product_publish_prepare 准备发布图片后重新校验"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     for field in ("length_cm", "width_cm", "height_cm"):
@@ -768,6 +769,7 @@ def validate_ozon_draft(
     product: dict[str, Any],
     config: dict[str, Any],
     category_record: dict[str, Any] | None = None,
+    *, image_stage: str = "final",
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "ozon")
@@ -815,12 +817,12 @@ def validate_ozon_draft(
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
     else:
-        problems = get_context().image_delivery.inspect_product(product, "ozon")
+        problems = get_context().image_delivery.inspect_product(product, "ozon", stage=image_stage)
         errors.extend(
             precheck_item(problem.code, f"images.{problem.asset_id}", problem.message, "error", problem.next_action)
             for problem in problems
         )
-        if not problems and any(not str(image).startswith(("https://", "http://")) for image in images):
+        if image_stage == "final" and not problems and any(not str(image).startswith(("https://", "http://")) for image in images):
             errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", "发布图片需要 HTTP(S) 公网地址", "error", "调用 product_publish_prepare 准备发布图片后重新校验"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     for field in ("length_cm", "width_cm", "height_cm"):

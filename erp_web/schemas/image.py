@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from erp_web.schemas.image_hosting import ImageDeliveryFields
 
-class ImageItem(TypedDict, total=False):
+
+class ImageItem(ImageDeliveryFields, total=False):
     id: str
-    url: str
     path: str
     preview_url: str
     width: int
@@ -26,9 +27,6 @@ class ImageItem(TypedDict, total=False):
     target_language: str
     provider: str
     translate_job_id: str
-    storage_key: str
-    content_sha256: str
-    delivery_provider: str
     delivery_error: str
     platform_picture_id: str
     mercadolibre_picture_id: str

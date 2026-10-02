@@ -12,6 +12,7 @@ from .http_route_units import (
     ai_presentation_routes,
     ai_work_routes,
     auth_config_routes,
+    image_hosting_routes,
     category_routes,
     collect_routes,
     copy_routes,
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_PAGE_ROUTES = get_routes.FRONTEND_PAGE_ROUTES
 GET_ROUTE_UNITS = (
+    image_hosting_routes,
     online_product_routes,
     get_routes,
     ai_work_routes,
@@ -52,6 +54,7 @@ GET_API_ROUTES = frozenset(
     for path in getattr(route_unit, "GET_API_ROUTES", frozenset())
 )
 POST_ROUTE_UNITS = (
+    image_hosting_routes,
     ai_chat_routes,
     ai_presentation_routes,
     collect_routes,

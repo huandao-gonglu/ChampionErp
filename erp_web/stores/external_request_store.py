@@ -139,11 +139,12 @@ class ExternalRequestStore:
             conn.commit()
         return None, 0
 
-    def finish(self, request_id, *, decision=None, result=None):
+    def finish(self, request_id, *, decision=None, result=None, not_sent=False):
         # result 仅接收管理器构造的白名单摘要，禁止传平台响应对象。
         with self._connect() as conn:
-            conn.execute("UPDATE external_attempts SET completed=?,decision=COALESCE(?,decision),result=json_patch(result,?),lease_until=0 WHERE id=?",
-                         (time.time(),decision,json.dumps(result or {},ensure_ascii=False),request_id))
+            conn.execute("UPDATE external_attempts SET completed=?,decision=COALESCE(?,decision),result=json_patch(result,?),lease_until=0,"
+                         "sent=CASE WHEN ? THEN 0 ELSE sent END,released=CASE WHEN ? THEN NULL ELSE released END WHERE id=?",
+                         (time.time(),decision,json.dumps(result or {},ensure_ascii=False),not_sent,not_sent,request_id))
             conn.commit()
 
     def block(self, ctx, failure):

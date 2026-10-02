@@ -178,6 +178,10 @@ _SHIPMENT = _contract(required_any=(("shipment", "order", "payload"),))
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/image-hosting/save": _contract(fields={"profile": OBJECT}, required=("profile",)),
+    "/api/image-hosting/test": _contract(fields={"profile": OBJECT}, required=("profile",)),
+    "/api/image-hosting/default": _contract(fields={"id": STRING}),
+    "/api/image-hosting/delete": _contract(fields={"id": STRING}, required=("id",)),
     "/api/online-products/sync": _contract(fields={"platform": FieldRule("enum", choices=frozenset({"mercadolibre", "ozon", "yandex"})), "idempotency_key": STRING}, required=("platform", "idempotency_key")),
     "/api/online-products/refresh-status": _contract(fields={"listing_id": STRING}, required=("listing_id",)),
     "/api/online-products/change": _contract(fields={"listing_id": STRING, "version": STRING, "operation": STRING, "scope_id": STRING, "changes": OBJECT, "idempotency_key": STRING}, required=("listing_id", "version", "operation", "changes", "idempotency_key")),

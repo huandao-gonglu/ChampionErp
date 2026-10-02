@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
 import { jsonProbeMessages } from '@/constants/aiCapabilityProbe'
 import type { AuthResult, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
@@ -79,7 +80,7 @@ const form = reactive({
 })
 
 const selectedStorePlatform = ref<Marketplace>('mercadolibre')
-type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research'
+type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
@@ -131,6 +132,7 @@ const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: st
   { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
   { key: 'stores', label: '店铺授权', summary: '按一级平台保存，子站点共用凭证' },
   { key: 'apis', label: '采集、核价与物流', summary: '汇率、1688 采集和云途物流 API' },
+  { key: 'image_hosting', label: '图片托管', summary: 'S3 存储、默认目标与公开读取测试' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
 ]
 
@@ -2540,6 +2542,10 @@ function handleYunexpressEnvironmentChange(value: string) {
             <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700 dark:text-blue-200">下一步：{{ props.lastResult.nextAction }}</div>
             <pre class="mt-3 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(props.lastResult.raw, null, 2) }}</pre>
           </div>
+        </section>
+
+        <section v-if="activeAuthSettingsTab === 'image_hosting'">
+          <ImageHostingSettingsPanel />
         </section>
 
         <section v-show="activeAuthSettingsTab === 'research'">

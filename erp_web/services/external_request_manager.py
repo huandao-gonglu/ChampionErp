@@ -11,7 +11,7 @@ import urllib.request
 
 from erp_web.context import get_context
 from erp_web.services.platform_request_policy import classify_response, platform_error_codes, response_quota_pause
-from erp_web.schemas.external_requests import ExternalRequestBlocked, ExternalRequestOutcomeUnknown, RequestFailure
+from erp_web.schemas.external_requests import ExternalRequestBlocked, ExternalRequestNotSent, ExternalRequestOutcomeUnknown, RequestFailure
 from erp_web.services.external_request_context import request_context
 
 
@@ -124,6 +124,10 @@ class ExternalRequestManager:
                     raise ExternalRequestOutcomeUnknown(http_status=exc.code) from exc
                 if not (failure and failure.retryable and ctx.semantics == "read" and attempt < ctx.max_attempts and time.time()+ctx.retry_delay < deadline):
                     raise urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers, io.BytesIO(raw)) from exc
+            except ExternalRequestNotSent as exc:
+                self.store.finish(request_id, decision="rejected", not_sent=True,
+                                  result={**asdict(exc.failure), "outcome": "not_sent"})
+                raise
             except ExternalRequestBlocked:
                 raise
             except BaseException as exc:

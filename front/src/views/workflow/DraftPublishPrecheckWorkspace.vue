@@ -25,10 +25,10 @@ function invalidateSharedValidation() {
   <div class="space-y-5">
     <section class="rounded-lg border border-accent-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-900/80" data-testid="publish-batch-actions">
       <h2 class="card-title">发布预检</h2>
-      <p class="muted mt-1">统一检查所有市场、准备发布预览，再一次确认加入队列。未通过的市场保留问题清单。</p>
+      <p class="muted mt-1">预检只读取当前发布状态。准备发布预览会校验基础资料，并可能上传图片；完成后再确认加入队列。</p>
       <div class="mt-4 flex flex-wrap gap-3">
         <button class="btn btn-outline" :disabled="loading || !publishBatch.pending.length" @click="publishBatch.precheckAll">全部预检</button>
-        <button class="btn btn-outline" :disabled="loading || !publishBatch.passed.length" @click="publishBatch.previewAll">准备发布预览（{{ publishBatch.passed.length }}）</button>
+        <button class="btn btn-outline" :disabled="loading || !publishBatch.preparable.length" @click="publishBatch.previewAll">准备素材与发布预览（{{ publishBatch.preparable.length }}）</button>
         <button class="btn btn-primary" :disabled="loading || !publishBatch.ready.length" @click="publishBatch.enqueueAll">确认发布已就绪市场（{{ publishBatch.ready.length }}）</button>
       </div>
       <p class="muted mt-3">共 {{ targetEditors.length }} 个目标 · 待处理 {{ publishBatch.pending.length }} 个 · 预检通过 {{ publishBatch.passed.length }} 个 · 已就绪 {{ publishBatch.ready.length }} 个 · 已入队 {{ publishBatch.queuedCount }} 个</p>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """发布校验与确认后提交的薄 Capability adapter。"""
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 import hmac
 from typing import Annotated, Any, Protocol
@@ -255,6 +256,54 @@ def _load_context(
     return loaded
 
 
+def _publish_input_snapshot(product: dict[str, Any], platform: str) -> dict[str, Any]:
+    """去掉预检写入的派生状态，只比较影响发布的草稿输入。"""
+    metadata = {
+        "status", "publish_status", "validation_errors", "last_precheck",
+        "last_precheck_target", "updated_at",
+    }
+    draft = product.get("drafts", {}).get(platform, {})
+    snapshot = {key: value for key, value in draft.items() if key not in metadata}
+    if "target_sites" in snapshot:
+        snapshot["target_sites"] = [
+            {key: value for key, value in target.items() if key not in metadata}
+            for target in snapshot["target_sites"]
+        ]
+    return snapshot
+
+
+def _delivery_input_snapshot(context: AppContext, product: dict[str, Any], platform: str) -> dict[str, Any]:
+    pool = product.get("source", {}).get("image_pool", [])
+    ids = context.image_delivery._target_asset_ids(product, pool, platform)
+    fields = (
+        "path", "url", "content_sha256", "hosting_profile_id",
+        "delivery_fingerprint", "storage_key",
+    )
+    return {
+        "asset_ids": ids,
+        "images": {
+            row["id"]: {field: row.get(field, "") for field in fields}
+            for row in pool if row["id"] in ids
+        },
+        "sku_items": product.get("sku_items"),
+    }
+
+
+def _verify_delivery_admission(context: AppContext, evaluation: _ValidationEvaluation, latest_product: dict[str, Any]) -> None:
+    platform = evaluation.platform
+    if (
+        context.image_delivery.inspect_product(latest_product, platform)
+        or _publish_input_snapshot(latest_product, platform)
+        != _publish_input_snapshot(evaluation.prepared_product, platform)
+        or _delivery_input_snapshot(context, latest_product, platform)
+        != _delivery_input_snapshot(context, evaluation.prepared_product, platform)
+    ):
+        raise BusinessCapabilityError(
+            "PUBLISH_CONFIRMATION_STALE",
+            "图片交付或草稿内容已变化，请重新准备并确认",
+        )
+
+
 def _evaluate_prepared_publish_context(
     publish_context: dict[str, Any],
     *,
@@ -401,16 +450,7 @@ def prepare_and_evaluate_publish_validation(
     *,
     context: AppContext | None = None,
 ) -> _ValidationEvaluation:
-    """显式准备发布素材后生成最终 payload 预览与 digest。
-
-    这是写路径：Mercado 会在这里上传本地图片并持久化 picture ID。为避免
-    无效草稿产生外部写入，先用同一份类目定义执行草稿预检；只有没有阻断
-    项时才准备素材。准备后通过 ``PreparedPublishContext.with_product`` 复用
-    已加载的定义，保证预检与 payload 编译同源。
-
-    Yandex/Ozon 的素材准备只是本地图片物化（没有平台外写），在预检前执行；
-    否则“非 HTTPS URL”校验会拦住自己的物化路径，本地图片永远无法发布。
-    """
+    """先校验源素材，再显式上传，回读并执行最终校验与 digest。"""
 
     active_context = context or get_context()
     publish_context = _load_context(request, context=active_context)
@@ -421,19 +461,14 @@ def prepare_and_evaluate_publish_validation(
             "PUBLISH_PLATFORM_UNSUPPORTED",
             f"平台 {platform or request.platform} 尚未接入发布能力。",
         )
-    local_only_prepare = bool(getattr(adapter, "prepare_is_local_only", False))
     try:
         config = active_context.config.load_store_config()
         source_product = publish_context["product"]
         if not isinstance(source_product, dict):
             raise TypeError("发布上下文中的商品不是对象")
-        if local_only_prepare:
-            source_product = adapter.prepare_product(source_product, config)
-            if not isinstance(source_product, dict):
-                raise TypeError("平台 adapter 返回的商品不是对象")
-            publish_context["product"] = source_product
         prepared_context = prepare_publish_context(source_product, platform)
-        precheck = adapter.validate_draft(prepared_context, config)
+        precheck = (adapter.validate_draft(prepared_context, config, image_stage="source")
+                    if platform in {"yandex", "ozon"} else adapter.validate_draft(prepared_context, config))
         if not isinstance(precheck, dict):
             raise TypeError("平台 adapter 返回的校验结果不是对象")
     except Exception as exc:
@@ -467,27 +502,29 @@ def prepare_and_evaluate_publish_validation(
             precheck=precheck,
         )
 
-    prepared_product = source_product
-    if not local_only_prepare:
-        try:
-            prepared_product = adapter.prepare_product(source_product, config)
-            if not isinstance(prepared_product, dict):
-                raise TypeError("平台 adapter 返回的商品不是对象")
-        except Exception as exc:
-            raise BusinessCapabilityError(
-                "PUBLISH_ASSET_PREPARATION_FAILED",
-                f"发布素材准备失败：{exc}",
-                details={"outcome_unknown": True},
-            ) from exc
+    try:
+        prepared_product = adapter.prepare_product(source_product, config)
+        if not isinstance(prepared_product, dict):
+            raise TypeError("平台 adapter 返回的商品不是对象")
+    except Exception as exc:
+        raise BusinessCapabilityError(
+            getattr(exc, "code", "PUBLISH_ASSET_PREPARATION_FAILED"),
+            f"发布素材准备失败：{exc}",
+            details={"outcome_unknown": getattr(exc, "code", "") == "IMAGE_UPLOAD_OUTCOME_UNKNOWN"},
+        ) from exc
 
-    publish_context["product"] = prepared_product
+    # 以短锁写回后的当前草稿生成确认内容，保留上传期间其他用户编辑。
+    refreshed = _load_context(request, context=active_context)
+    current_product = refreshed["product"]
+    current_draft = current_product.get("drafts", {}).get(platform, {})
+    source_draft = source_product.get("drafts", {}).get(platform, {})
+    if any(current_draft.get(key) != source_draft.get(key) for key in ("category_id", "description_category_id", "type_id", "images", "sku_items")):
+        raise BusinessCapabilityError("IMAGE_DELIVERY_STALE", "素材准备期间草稿类目或图片选择已变化，请重新准备")
+    final_context = prepared_context.with_product(current_product)
+    final_precheck = adapter.validate_draft(final_context, config)
     return _evaluate_prepared_publish_context(
-        publish_context,
-        platform=platform,
-        adapter=adapter,
-        config=config,
-        prepared_context=prepared_context.with_product(prepared_product),
-        precheck=precheck,
+        refreshed, platform=platform, adapter=adapter, config=config,
+        prepared_context=final_context, precheck=final_precheck,
     )
 
 
@@ -604,65 +641,63 @@ def request_product_publish(
             "商品或发布 payload 已变化，原发布确认已失效。",
         )
 
-    # 提交发布是写路径：以最新评估结果落盘预检，作为发布队列准入的可信事实。
-    # 纯只读的 product_publish_validate 不落盘（side_effect="none" 契约），
-    # 预检持久化统一发生在受信的写入口。
-    try:
-        save_draft_precheck_result(
-            evaluation.context,
-            evaluation.precheck,
-            context=active_context,
-        )
-    except Exception as exc:
-        raise BusinessCapabilityError(
-            "PUBLISH_PRECHECK_PERSIST_FAILED",
-            f"发布预检落盘失败：{exc}",
-            retryable=True,
-        ) from exc
-
-    refreshed = _load_context(validation_request, context=active_context)
-    product = refreshed["product"]
-    try:
-        eligible = active_context.products.publish_queue_platforms(
-            product,
-            [evaluation.platform],
-        )
-    except Exception as exc:
-        raise BusinessCapabilityError(
-            "PUBLISH_QUEUE_CHECK_FAILED",
-            f"发布队列准入检查失败：{exc}",
-            retryable=True,
-        ) from exc
-    if evaluation.platform not in eligible:
-        raise BusinessCapabilityError(
-            "PUBLISH_QUEUE_NOT_READY",
-            "当前草稿未通过发布队列准入。",
-        )
     if evaluation.approved_payload is None:
         raise BusinessCapabilityError(
             "PUBLISH_PAYLOAD_MISSING",
             "发布校验未生成可绑定的 payload。",
         )
     try:
-        result = bus.enqueue(
-            product,
-            [evaluation.platform],
-            targets={
-                evaluation.platform: {
-                    "draft_id": request.draft_id,
-                    "site": evaluation.site,
-                    "product_id": _text(product.get("product_id")),
-                }
-            },
-            idempotency_key=request.idempotency_key,
-            approved_publications={
-                evaluation.platform: {
-                    "payload": evaluation.approved_payload,
-                    "validation_digest": evaluation.result.validation_digest,
-                    "store_identity": evaluation.result.summary.store_identity,
-                }
-            },
-        )
+        with ExitStack() as admission:
+            precheck_context = evaluation.context
+            if evaluation.platform in {"yandex", "ozon"}:
+                # 准入只检查本地事实，不加载新类目或发网络请求。配置切换与
+                # 商品写入不能插入交付复核、预检写回和冻结 job 落库之间。
+                admission.enter_context(active_context.products.mutation_scope(
+                    {"product_id": evaluation.prepared_product.get("product_id")}
+                ))
+                admission.enter_context(active_context.config.image_hosting_commit_scope())
+                precheck_context = _load_context(validation_request, context=active_context)
+                _verify_delivery_admission(active_context, evaluation, precheck_context["product"])
+            # 只读校验不落盘；写入口合并当前草稿的派生预检状态，避免覆盖新编辑。
+            try:
+                save_draft_precheck_result(precheck_context, evaluation.precheck, context=active_context)
+            except Exception as exc:
+                raise BusinessCapabilityError(
+                    "PUBLISH_PRECHECK_PERSIST_FAILED", f"发布预检落盘失败：{exc}", retryable=True,
+                ) from exc
+            refreshed = _load_context(validation_request, context=active_context)
+            product = refreshed["product"]
+            try:
+                eligible = active_context.products.publish_queue_platforms(product, [evaluation.platform])
+            except Exception as exc:
+                raise BusinessCapabilityError(
+                    "PUBLISH_QUEUE_CHECK_FAILED", f"发布队列准入检查失败：{exc}", retryable=True,
+                ) from exc
+            if evaluation.platform not in eligible:
+                raise BusinessCapabilityError("PUBLISH_QUEUE_NOT_READY", "当前草稿未通过发布队列准入。")
+            if evaluation.platform in {"yandex", "ozon"}:
+                latest = _load_context(validation_request, context=active_context)
+                product = latest["product"]
+                _verify_delivery_admission(active_context, evaluation, product)
+            result = bus.enqueue(
+                product,
+                [evaluation.platform],
+                targets={
+                    evaluation.platform: {
+                        "draft_id": request.draft_id,
+                        "site": evaluation.site,
+                        "product_id": _text(product.get("product_id")),
+                    }
+                },
+                idempotency_key=request.idempotency_key,
+                approved_publications={
+                    evaluation.platform: {
+                        "payload": evaluation.approved_payload,
+                        "validation_digest": evaluation.result.validation_digest,
+                        "store_identity": evaluation.result.summary.store_identity,
+                    }
+                },
+            )
     except Exception as exc:
         raise BusinessCapabilityError(
             _text(getattr(exc, "code", "")) or "PUBLISH_ENQUEUE_FAILED",
@@ -700,9 +735,9 @@ PRODUCT_PUBLISH_REQUEST_TOOL = "product_publish_request"
 @ai_tool(
     name=PRODUCT_PUBLISH_PREPARE_TOOL,
     description=(
-        "为指定草稿和目标准备发布图片，保存后回读并校验。Yandex/Ozon 将本地图片物化为当前 HTTPS 地址；"
+        "为指定草稿和目标准备发布图片，保存后回读并校验。Yandex/Ozon 可能将本地图片上传到当前默认 S3 托管；"
         "Mercado 在草稿预检通过后上传图片。可按需探测 Yandex/Ozon 实际图片 URL。"
-        "用于完成草稿、修复 IMAGE_NOT_PREPARED 或 IMAGE_PUBLIC_URL_STALE；不会提交商品发布。"
+        "用于完成草稿、修复 IMAGE_NOT_PREPARED 或 IMAGE_DELIVERY_STALE；不会提交商品发布。"
     ),
     permission="product.publish",
     side_effect="write",

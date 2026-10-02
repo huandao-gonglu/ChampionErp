@@ -108,6 +108,7 @@ export interface BackendAiUseCaseBinding {
 }
 
 export interface BackendAppConfig {
+  image_hosting?: Record<string, unknown>
   ai_tool_approval_mode?: "ask" | "full"
   ai_models?: Array<BackendAiModelConfig>
   ai_use_case_bindings?: Record<string, BackendAiUseCaseBinding>
@@ -125,8 +126,13 @@ export interface BackendStoreConfig {
 }
 
 export interface BackendImageItem {
-  id?: string
+  hosting_profile_id?: string
+  delivery_fingerprint?: string
+  delivery_provider?: string
+  storage_key?: string
+  content_sha256?: string
   url?: string
+  id?: string
   path?: string
   preview_url?: string
   width?: number
@@ -147,9 +153,6 @@ export interface BackendImageItem {
   target_language?: string
   provider?: string
   translate_job_id?: string
-  storage_key?: string
-  content_sha256?: string
-  delivery_provider?: string
   delivery_error?: string
   platform_picture_id?: string
   mercadolibre_picture_id?: string

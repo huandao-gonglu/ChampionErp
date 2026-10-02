@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { publishPrecheckPassed } from '@/utils/publishReadiness'
+import { publishPrecheckPassed, publishPreparationAllowed } from '@/utils/publishReadiness'
 import { groupPrecheckIssues, precheckIssueIdentity as issueIdentity } from '@/utils/precheckIssues'
 import PublishPrecheckSkuDetails from './PublishPrecheckSkuDetails.vue'
 import PublishPrecheckRelatedIssues from './PublishPrecheckRelatedIssues.vue'
@@ -101,6 +101,7 @@ const hasPayloadConfirmation = computed(() => Boolean(
 ))
 const publishReadiness = computed(() => {
   if (!props.precheck) return '执行全部预检后，这里会显示该市场的问题清单。'
+  if (!effectivePrecheckPassed.value && publishPreparationAllowed(props.precheck)) return '图片尚未准备或托管目标已变化，请点击“准备素材与发布预览”。该操作可能上传图片。'
   if (!effectivePrecheckPassed.value) return `还有 ${blockingIssueCount.value} 项未通过，请按处理建议修正后重新预检。`
   if (!hasPayloadConfirmation.value) return '预检通过，可统一准备发布预览。'
   return '预检和发布预览已就绪，等待统一确认加入队列。'

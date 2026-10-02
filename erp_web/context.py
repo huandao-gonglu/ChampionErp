@@ -296,7 +296,7 @@ class AppContext:
                         ImageDeliveryService,
                     )
 
-                    self._image_delivery = ImageDeliveryService(self.paths)
+                    self._image_delivery = ImageDeliveryService(self.paths, self.config.load_app_config)
         return self._image_delivery
 
     @property

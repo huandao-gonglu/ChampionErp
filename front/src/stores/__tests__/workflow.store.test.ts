@@ -272,7 +272,37 @@ describe('workflow store live API flow', () => {
     wrapper.unmount()
   })
 
-  it('批量预览跳过未通过目标，入队排除分市场阻断、缺失或错配指纹', async () => {
+  it('本地图片尚未准备时允许显式准备预览，最终通过前不能入队', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const [yandex, ozon] = store.targetEditors
+    yandex.state.precheck = {
+      ok: false, errors: ['图片尚未准备'], warnings: [],
+      errorItems: [{ code: 'IMAGE_NOT_PREPARED', field: 'images', message: '图片尚未准备', severity: 'error', nextAction: '准备素材' }],
+      warningItems: [], checkedAt: '',
+    }
+    ozon.state.precheck = {
+      ok: false, errors: ['缺少类目'], warnings: [],
+      errorItems: [{ code: 'CATEGORY_REQUIRED', field: 'category_id', message: '缺少类目', severity: 'error', nextAction: '选择类目' }],
+      warningItems: [], checkedAt: '',
+    }
+    expect(store.publishBatch.preparable.map((editor) => editor.key)).toEqual(['yandex:global'])
+    await store.publishBatch.enqueueAll()
+    expect(workflowApi.enqueuePublish).not.toHaveBeenCalled()
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.previewPublishPayload).mockImplementation(async (draft, target) => {
+      const prepared: DraftDetail = JSON.parse(JSON.stringify(draft))
+      prepared.targetSites[0].lastPrecheck = { ok: true, errors: [], warnings: [] }
+      return { draft: prepared, platform: target.platform, site: target.site, target: {}, status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'prepared-images', summary: {}, warnings: [] }
+    })
+    await store.publishBatch.previewAll()
+    expect(workflowApi.previewPublishPayload).toHaveBeenCalledOnce()
+    expect(workflowApi.previewPublishPayload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ platform: 'yandex' }))
+    expect(store.publishBatch.ready.map((editor) => editor.key)).toEqual(['yandex:global'])
+    expect(workflowApi.enqueuePublish).not.toHaveBeenCalled()
+  })
+
+  it('批量预览跳过业务阻断目标，入队排除分市场阻断、缺失或错配指纹', async () => {
     const store = useWorkflowStore()
     store.currentDraft = multiMarketCategoryDraft()
     const [yandex, ozon] = store.targetEditors

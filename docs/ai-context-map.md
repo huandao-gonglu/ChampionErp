@@ -40,7 +40,9 @@
 
 ## 统一外部请求管理
 
-- `schemas/external_requests.py` 定义 RequestContext、阻断与写入未知契约；平台错误由 `schemas/platform_errors.py` 持有。
+- `schemas/external_requests.py` 定义 RequestContext、阻断与写入未知契约；
+  `ExternalRequestNotSent` 表示传输层确认尚未发送 HTTP 请求。管理器将它记录为
+  `not_sent` 本地拒绝，释放租约且不触发写入结果未知阻断；平台错误由 `schemas/platform_errors.py` 持有。
 - `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传、采集与物流发送均接入。
   `services/external_httpx_transport.py` 经原生 Provider 的 http_client 注入 SDK，同样检查共享状态，原生 SDK 自动重试关闭。
@@ -50,6 +52,8 @@
 - `services/platform_request_policy.py` 纯解析 HTTP 与业务拒绝；`stores/external_request_store.py` 用独立
   `external-requests.sqlite3` 保存尝试、限额、阻断与恢复，不改变 ERP 主库版本。
   放行与租约分配在短事务内完成；账号停用跨模块、重启及换 Key 保留，接口拒绝只影响该接口。
+  `image_hosting:public` 的匿名 401/403 仅拒绝本次请求，不认定 S3 凭据失效；
+  用户修正桶公开权限后可再次显式检查。
 - 默认不自动重试；显式只读预算最多 3 次，写入未知禁止重放。平台适配器解释业务，管理器不推进领域任务。
 - `scripts/external_requests.py` 提供 query/blocks/configure/recover/recoveries；恢复不发送探测请求。
   具体范围、平台依据、保留策略及 01–11 项验收见 [实施与运维说明](external-request-management.md)。
@@ -974,12 +978,14 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `product_publish_validate` 是严格只读边界，不调用平台 `prepare_product`，因此普通上架预检
   不会上传图片或改写商品。写工具 `product_publish_prepare` 与受信的
   `publish-payload-preview` 共用 `prepare_and_evaluate_publish_validation`：Yandex/Ozon
-  先物化本地图片；Mercado 先预检，通过后才上传图片并写回 picture ID。
+  先校验草稿与源素材，再将本地图片上传到当前默认 S3 托管目标，短锁写回并回读后
+  做最终校验；Mercado 先预检，通过后才上传图片并写回 picture ID。
   准备工具从数据库回读校验并保存结果，返回类型化 validation；只进入写场景 allowlist，
   继续使用现有 Pydantic AI 工具注入、回执与范围约束，不新增 Agent 生命周期。
   `check_public_access=true` 可按需探测 Yandex/Ozon 所选图片的实际 URL，结果独立返回，
   不作为发布审批或平台抓取成功的证据。
-  确认后提交会重新执行确定性校验并常量时间比较 digest，随后把已批准 payload/digest/identity 写入
+  确认后提交会重新执行确定性校验并常量时间比较 digest，在短锁内复核当前图片交付、
+  选择和草稿输入，随后把已批准 payload/digest/identity 写入
   PublishingBus job。worker 现取凭据，但外发前复核店铺身份与完整 digest，并直接发送冻结 payload；
   不会重新构造已确认内容。Capability 还会在重校验与队列准入前按完整确认事实恢复既有 job，封闭
   “job 已落库、工具回执尚未保存 job_id”的崩溃窗口。店铺切换、payload 篡改或事实冲突都会在网络
@@ -987,24 +993,51 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - 发布错误类型化契约：PublishingBus 不自动重放失败的业务提交；写入结果未知进入
   `outcome_unknown` 并保留待核实状态。HTTP 420/429 不返回可立即重试标志，认证及限流
   类型化错误经工具边界继续保留。只有统一请求管理器可以按显式只读预算重试。
+- `erp_web/schemas/image_hosting.py`：S3 配置、交付字段、错误及测试结果的共享契约。
+  `app_config.py` / `stores/config_store.py` 仍是唯一配置 owner：`image_hosting` 保存多个
+  稳定 id 配置和一个默认项；Access Key ID 与 Secret Access Key 仅写入 SQLite
+  `runtime_secrets`，公开响应只提供配置状态。省略或提交掩码保留秘密，`clear_secrets`
+  显式清空；默认项先解除或切换才能删除，删除配置不触碰远端业务对象。
+- `erp_web/services/image_hosting_config.py`：纯字段校验、目标指纹及公开 URL 拼接。
+  上传 Endpoint 与公开入口独立配置；目标指纹绑定 Endpoint、Region、Bucket、路径、
+  公开入口与寻址方式。改名与凭据轮换不改变对象身份，凭据轮换使测试版本失效。
+- `erp_web/services/image_content.py`：纯图片字节校验与格式识别；统一限制读取大小，
+  提供真实内容哈希，独立于 S3、网络和持久化。
+- `erp_web/services/s3_image_storage.py`：唯一 S3 SDK 装配边界，使用固定版本 botocore
+  的公开 `before-send` hook 将已签名请求交给统一外部请求管理器。显式注入凭据，
+  不读取机器默认 AWS profile；禁用 SDK 重试、区域重定向及可选校验和协议。
+  生产交付仅用 HeadObject / PutObject，按真实字节与格式生成
+  `<key_prefix>/assets/<sha256前两位>/<sha256>.<扩展名>`，检查 SHA-256 元数据和长度。
+  只有明确 404 才上传，冲突、403、限流与未知结果均停止，下一次显式准备先查对象。
 - `erp_web/services/image_delivery_service.py`：发布图片 HTTPS delivery 唯一边界。
-  图片保存 provider-neutral 的 `storage_key`，公网 URL 只是根据当前 provider 与
-  `ERP_IMAGE_HTTPS_BASE_URL` 重新计算的缓存；平台发布模块不得读取隧道、磁盘根目录
-  或对象存储配置。`existing_url` 只接受已有公网 URL，`local_static` 把本地文件按内容
-  hash 复制到独立公开目录，可由 Quick Tunnel、Named Tunnel 或普通静态服务器暴露。
-  `inspect_product` 只读区分 `IMAGE_PROVIDER_NOT_CONFIGURED`、`IMAGE_NOT_PREPARED`、
-  `IMAGE_SOURCE_MISSING`、`IMAGE_PUBLIC_URL_STALE` 等状态；不以 URL 格式推断网络不可达。
-  图片准备仅在商品短锁内合并交付字段，保留并发编辑的其他图片和说明。
-- `erp_web/services/image_public_access.py`：通过统一外部请求管理器对实际图片 URL 做
-  有超时的 HEAD 探测；返回 HTTP 状态和图片 Content-Type。不支持 HEAD 或返回 HTML
-  时标记未确认，探测失败仅代表当前服务器视角；不轮询隧道、不改变确定性校验结果。
-- `scripts/dev.sh` 默认以 `ERP_IMAGE_HTTPS_TUNNEL=auto` 管理 Quick Tunnel 生命周期：
-  检测到 `cloudflared` 后先取得随机 HTTPS 地址并注入后端环境，开发服务退出时一并停止；
-  `required` 在 Tunnel 不可用时阻断启动，`off` 禁用自动 Tunnel。固定域名环境直接设置
-  `ERP_IMAGE_HTTPS_BASE_URL`，不会创建 Quick Tunnel。
-- 显式准备路径中的 Ozon 与 Yandex 适配器在草稿校验前调用图片 delivery（Yandex 以公网
-  URL 列表投递 `pictures`）；Mercado Libre 保持平台图片上传接口与 `ml-id:*` 流程，
-  不经过通用 HTTPS 图片服务。
+  外部 HTTPS 直链是素材来源；本地图片与已管理交付使用当前默认 S3 目标，记录
+  `hosting_profile_id/delivery_fingerprint/delivery_provider/storage_key/content_sha256/url`。
+  `inspect_product(stage="source")` 只读检查源素材，最终阶段要求交付与当前目标一致；
+  普通 HTTP 预检和 `product_publish_validate` 均不上传。显式准备覆盖草稿及所选 SKU 图片。
+  无默认配置、源丢失、尚未准备及目标变化分别返回类型化错误和下一步提示。
+- `erp_web/runtime_units/image_delivery_persistence.py`：网络完成后在商品与配置短锁内
+  检查源内容、图片选择和目标快照，只合并交付字段，保留其他用户编辑。
+  队列准入再次复核，已经入队的 worker 发送冻结 URL，不因默认托管切换重新上传。
+- `erp_web/services/image_hosting_transport.py`：S3 和匿名图片请求共用的 HTTPS 安全传输。
+  拒绝私网、云元数据和重定向，连接固定已验证的公网 IP，保留原主机的 TLS 校验；
+  下载受时间、字节数与图片尺寸限制。DNS、建连及 TLS 握手的发送前失败返回
+  `ExternalRequestNotSent`；Fake-IP 保留地址给出明确的 DNS/代理排查提示。
+- `erp_web/services/image_public_access.py`：统一请求管理器下的匿名 GET 检查，不携带
+  存储凭据、店铺授权或 Cookie。验证实际图片类型和内容；结果仅代表当前服务器视角，
+  不作为市场抓取成功或确定性 digest 的证据。
+- `erp_web/facades/image_hosting_facade.py` / `http_route_units/image_hosting_routes.py`：
+  图片托管配置的薄 HTTP 编排。`GET /api/image-hosting` 读取脱敏列表；
+  `POST /api/image-hosting/save|default|delete` 仅改配置，`POST /api/image-hosting/test`
+  对本次表单配置显式上传小图片、检查对象并匿名 GET，最后尽力删除本次独立测试 key。
+  上传、公开读取与清理分开报告，测试结果绑定配置版本，不静默保存未保存表单。
+  测试结果记录上传和匿名检查是否已执行；PUT 发送前被拦截时跳过匿名 GET 与
+  DELETE，不声称有残留对象。PUT 后 HEAD 失败仍尝试精确清理本次测试 key。
+- `front/src/components/auth/ImageHostingSettingsPanel.vue`：设置中的列表、凭据表单、
+  默认项与显式测试。复用 WorkspaceDialog，提交中禁止关闭和重复提交；修改表单后
+  旧测试结果失效。高级设置提供可取消的“移除已保存凭据”，保存时一次移除两项；
+  默认配置须先解除默认，普通输入留空保留原凭据。
+  批量发布允许尚未准备的图片进入“准备素材与发布预览”，最终通过
+  并确认后才能入队。Mercado Libre 保持平台图片接口与 `ml-id:*`，不走 S3。
 
 Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `task_id` 后，必须
 轮询 `/v1/product/import/info`；只有每个商品返回 `status=imported` 且没有逐项错误，

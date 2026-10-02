@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -13,8 +14,6 @@ from erp_web.runtime_units import publish_capabilities, publish_workflows
 
 class _Adapter:
     platform = "yandex"
-    # 与真实 YandexPublishingAdapter 一致：素材准备是本地图片物化。
-    prepare_is_local_only = True
 
     def __init__(self) -> None:
         self.prepare_calls = 0
@@ -22,14 +21,14 @@ class _Adapter:
     def prepare_product(self, product: dict, config: dict) -> dict:
         self.prepare_calls += 1
         prepared = deepcopy(product)
-        # 模拟本地物化：本地路径图片获得公网 HTTPS URL。
+        # 模拟显式上传的交付结果。
         pool = prepared.get("source", {}).get("image_pool", [])
         for item in pool:
             if isinstance(item, dict) and not str(item.get("url") or "").startswith("https://"):
-                item["url"] = f"https://tunnel.example.test/{item.get('id')}.jpg"
+                item["url"] = f"https://images.example.test/{item.get('id')}.jpg"
         return prepared
 
-    def validate_draft(self, context, config: dict) -> dict:
+    def validate_draft(self, context, config: dict, *, image_stage="final") -> dict:
         return {
             "platform": "yandex",
             "ok": True,
@@ -53,6 +52,9 @@ class _Adapter:
 
 
 class _Products:
+    def mutation_scope(self, arguments):
+        return nullcontext()
+
     def publish_queue_platforms(self, product: dict, requested_platforms=None) -> list[str]:
         return list(requested_platforms or [])
 
@@ -117,7 +119,8 @@ def workflow_boundary(monkeypatch):
         }
     }
     context = SimpleNamespace(
-        config=SimpleNamespace(load_store_config=lambda: deepcopy(store_config)),
+        config=SimpleNamespace(load_store_config=lambda: deepcopy(store_config), image_hosting_commit_scope=nullcontext),
+        image_delivery=SimpleNamespace(inspect_product=lambda product, platform: [], _target_asset_ids=lambda *args: set()),
         products=_Products(),
         publishing_bus=bus,
     )
@@ -199,17 +202,16 @@ def test_precheck_does_not_prepare_or_upload_assets(workflow_boundary) -> None:
 
     assert status == 200
     assert response["platforms"]["yandex"]["ok"] is True
-    # Yandex 声明本地物化：预检先物化本地图片，再校验 HTTPS URL。
-    assert adapter.prepare_calls == 1
+    assert adapter.prepare_calls == 0
 
 
-def test_precheck_materializes_local_images_before_validating(
+def test_precheck_reports_unprepared_local_images_without_uploading(
     workflow_boundary,
 ) -> None:
-    """本地图片必须先物化再校验，否则 IMAGE_NOT_PUBLIC 拦住自己的物化路径。"""
+    """普通预检保留尚未准备状态，显式准备入口负责上传。"""
 
     adapter, _store_config, _bus = workflow_boundary
-    adapter.validate_draft = lambda context, config: (
+    adapter.validate_draft = lambda context, config, **kwargs: (
         {
             "platform": "yandex",
             "ok": False,
@@ -256,8 +258,8 @@ def test_precheck_materializes_local_images_before_validating(
         workflows.load_required_draft_publish_context = original_loader
 
     assert status == 200
-    assert response["platforms"]["yandex"]["ok"] is True
-    assert adapter.prepare_calls == 1
+    assert response["platforms"]["yandex"]["ok"] is False
+    assert adapter.prepare_calls == 0
 
 
 def test_enqueue_requires_explicit_confirmation_and_digest(workflow_boundary) -> None:
@@ -316,7 +318,7 @@ def test_preview_precheck_failure_returns_structured_errors(
     workflow_boundary,
 ) -> None:
     adapter, _store, _bus = workflow_boundary
-    adapter.validate_draft = lambda context, config: {
+    adapter.validate_draft = lambda context, config, **kwargs: {
         "platform": "yandex",
         "ok": False,
         "errors": [

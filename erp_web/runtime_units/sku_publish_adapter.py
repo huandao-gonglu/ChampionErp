@@ -57,9 +57,10 @@ class SkuGroupPublishingAdapter:
     def __init__(self, item_adapter: PlatformPublisher) -> None:
         self.item_adapter = item_adapter
         self.platform = item_adapter.platform
-        self.prepare_is_local_only = getattr(item_adapter, "prepare_is_local_only", False)
 
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        if self.platform in {"yandex", "ozon"}:
+            return self.item_adapter.prepare_product(product, config)
         prepared = deepcopy(product)
         draft = record(record(prepared.get("drafts")).get(self.platform))
         images = deepcopy(draft.get("images", []))
@@ -81,7 +82,7 @@ class SkuGroupPublishingAdapter:
         return list(dict.fromkeys(f"{row['sku']}：{field}" for fact, row in selected_skus(context.product, context.draft)
             for field in self.item_adapter.required_attributes_missing(sku_context(context, fact, row, grouping), config)))
 
-    def validate_draft(self, context: PreparedPublishContext, config: dict[str, Any]) -> dict[str, Any]:
+    def validate_draft(self, context: PreparedPublishContext, config: dict[str, Any], *, image_stage: str = "final") -> dict[str, Any]:
         errors, warnings, rows = [], [], []
         members: list[SkuGroupingMember] = []
         grouping_issues = []
@@ -106,7 +107,8 @@ class SkuGroupPublishingAdapter:
                     errors.extend(_sku_issues(own_errors, fact, row))
                     continue
                 members.append(SkuGroupingMember.from_projection(projected))
-                check = self.item_adapter.validate_draft(projected, config)
+                check = (self.item_adapter.validate_draft(projected, config) if image_stage == "final"
+                         else self.item_adapter.validate_draft(projected, config, image_stage=image_stage))
                 errors.extend(_sku_issues([*check.get("errors", []), *own_errors], fact, row))
                 warnings.extend(_sku_issues(check.get("warnings", []), fact, row))
                 rows.append({"sku_id": row["sku_id"], "sku": row["sku"], "precheck": check})

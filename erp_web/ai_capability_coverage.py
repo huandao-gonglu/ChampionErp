@@ -22,6 +22,7 @@ from erp_web.http_route_units import (
     ai_work_routes,
     get_routes,
     image_routes,
+    image_hosting_routes,
     online_product_routes,
 )
 from erp_web.http_routes import POST_API_ROUTES
@@ -71,12 +72,18 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     endpoints.update(("GET", path) for path in get_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in online_product_routes.GET_API_ROUTES)
+    endpoints.update(("GET", path) for path in image_hosting_routes.GET_API_ROUTES)
     endpoints.update(("POST", path) for path in POST_API_ROUTES)
     endpoints.update(("POST", path) for path in image_routes.IMAGE_POST_PATHS)
     return frozenset(endpoints)
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    AiCapabilityCoverageEntry(method="GET", path="/api/image-hosting", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/save", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/default", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/delete", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/test", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
     AiCapabilityCoverageEntry(
         method="POST", path="/api/ai/approval-mode", business_domain="授权基础设施",
         disposition="excluded", reason="仅受信 UI 可设置工具审批偏好，模型不能自行授权。",

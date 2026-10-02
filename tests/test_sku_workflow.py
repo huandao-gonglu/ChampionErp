@@ -29,7 +29,6 @@ def product_fixture():
 
 class ItemBoundary:
     platform = "ozon"
-    prepare_is_local_only = True
 
     def __init__(self):
         self.calls = []

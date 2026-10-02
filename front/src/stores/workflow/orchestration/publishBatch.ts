@@ -1,6 +1,6 @@
 import { computed, reactive, watch } from 'vue'
 import type { DraftPublishOperation } from '@/types/workflow'
-import { publishPrecheckPassed } from '@/utils/publishReadiness'
+import { publishPrecheckPassed, publishPreparationAllowed } from '@/utils/publishReadiness'
 import type { createDraftTargetEditors } from './targetEditors'
 import type { WorkflowRuntime } from './runtime'
 
@@ -12,6 +12,7 @@ export function createDraftPublishBatch(runtime: WorkflowRuntime, editors: Targe
   const progress = reactive({ operation: '' as DraftPublishOperation | '', completed: 0, total: 0, message: '', error: '' })
   const pending = computed(() => editors.value.filter((editor) => !editor.state.queuedPublishJobId))
   const passed = computed(() => pending.value.filter((editor) => publishPrecheckPassed(editor.state.precheck)))
+  const preparable = computed(() => pending.value.filter((editor) => publishPreparationAllowed(editor.state.precheck)))
   const ready = computed(() => passed.value.filter((editor) => (
     !editor.state.publishFailure && editor.state.payloadPreview?.validationDigest && editor.state.payloadPreview.targetKey === editor.key
   )))
@@ -90,16 +91,15 @@ export function createDraftPublishBatch(runtime: WorkflowRuntime, editors: Targe
 
   function retry(editor: TargetEditor) {
     if (!editor.state.publishFailure || editor.state.queuedPublishJobId) return
-    const operation = editor.state.publishFailure.operation === 'precheck' || !publishPrecheckPassed(editor.state.precheck)
-      ? 'precheck' : 'preview'
+    const operation = publishPreparationAllowed(editor.state.precheck) ? 'preview' : 'precheck'
     // 发布失败也先重新预览，继续通过统一确认按钮提交。
     return run(operation, [editor])
   }
 
   return reactive({
-    progress, pending, passed, ready, queuedCount,
+    progress, pending, passed, preparable, ready, queuedCount,
     precheckAll: () => run('precheck', pending.value),
-    previewAll: () => run('preview', passed.value),
+    previewAll: () => run('preview', preparable.value),
     enqueueAll: () => run('publish', ready.value),
     retry,
   })

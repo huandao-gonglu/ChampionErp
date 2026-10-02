@@ -13,7 +13,7 @@ import httpx2 as httpx
 import pytest
 
 from erp_web.context import get_context
-from erp_web.schemas.external_requests import ExternalRequestBlocked, ExternalRequestOutcomeUnknown, RequestContext
+from erp_web.schemas.external_requests import ExternalRequestBlocked, ExternalRequestNotSent, ExternalRequestOutcomeUnknown, RequestContext, RequestFailure
 from erp_web.services.external_request_manager import ExternalRequestManager
 from erp_web.stores.external_request_store import ExternalRequestStore
 
@@ -159,6 +159,45 @@ def test_write_timeout_is_unknown_and_never_replayed():
     with pytest.raises(ExternalRequestBlocked):
         request(manager,ctx,send)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("semantics", ["read", "write"])
+def test_transport_rejection_before_http_is_not_an_unknown_write(semantics):
+    manager = get_context().external_requests
+    ctx = context(semantics=semantics, max_attempts=3)
+    calls = []
+    def reject(*args, **kwargs):
+        calls.append(1)
+        raise ExternalRequestNotSent(RequestFailure("IMAGE_DNS_NONPUBLIC", "域名解析到非公开地址，已阻止发送"))
+    with pytest.raises(ExternalRequestNotSent) as error:
+        request(manager, ctx, reject)
+    assert calls == [1]
+    assert error.value.details["definitively_rejected"] is True
+    assert not error.value.details.get("outcome_unknown")
+    audit = manager.store.query()
+    assert audit["stats"]["network_attempts"] == 0
+    assert audit["stats"]["local_rejections"] == 1
+    row = audit["items"][0]
+    assert row["sent"] == 0 and row["released"] is None and row["lease_until"] == 0
+    assert row["result"]["outcome"] == "not_sent"
+    assert not manager.store.blocks()
+    # 修复网络后，同一操作允许显式发送；没有被错误的写入未知规则冻结。
+    request(manager, ctx, lambda *args, **kwargs: Response()).close()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_anonymous_image_auth_failure_does_not_disable_future_checks(status):
+    manager = get_context().external_requests
+    ctx = context(platform="image_hosting:public", account_id="images-main", credential_id="public", max_attempts=3)
+    with pytest.raises(urllib.error.HTTPError) as error:
+        request(manager, ctx, rejected(status, b'{}'))
+    assert error.value.code == status
+    block = manager.store.blocks()[0]
+    assert block["scope"] == "request"
+    assert block["failure"]["code"] == ("IMAGE_HOSTING_PUBLIC_AUTH_REQUIRED" if status == 401 else "IMAGE_HOSTING_PUBLIC_ACCESS_DENIED")
+    # 相同地址和账号的下一次显式检查可发送，不要求刷新不存在的匿名凭据。
+    request(manager, replace(ctx, operation_id="after-public-access-change"), lambda *a, **kw: Response()).close()
+    assert manager.store.query()["stats"]["network_attempts"] == 2
 
 
 def test_sdk_transport_uses_the_same_account_pause():

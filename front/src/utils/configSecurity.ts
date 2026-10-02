@@ -1,6 +1,8 @@
 import type { UnknownRecord } from '@/types/workflow'
 
 const sensitiveConfigKeys = new Set([
+  'access_key_id',
+  'secret_access_key',
   'access_token',
   'alibaba_cookie',
   'api_key',

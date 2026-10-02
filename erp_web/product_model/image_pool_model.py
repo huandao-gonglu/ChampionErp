@@ -130,6 +130,8 @@ def normalize_image_pool_item(item: Any, order: int = 0, origin_hint: str = "sou
         ("target_language", ("target_language",)),
         ("provider", ("provider",)),
         ("translate_job_id", ("translate_job_id",)),
+        ("hosting_profile_id", ("hosting_profile_id",)),
+        ("delivery_fingerprint", ("delivery_fingerprint",)),
         ("storage_key", ("storage_key",)),
         ("content_sha256", ("content_sha256",)),
         ("delivery_provider", ("delivery_provider",)),

@@ -60,6 +60,14 @@ class ExternalRequestBlocked(PublishAdapterError):
         })
 
 
+class ExternalRequestNotSent(ExternalRequestBlocked):
+    """传输层确认尚未发送 HTTP 请求；只携带脱敏后的固定原因。"""
+
+    def __init__(self, failure: RequestFailure):
+        super().__init__(failure, sent=False)
+        self.failure = failure
+
+
 class ExternalRequestOutcomeUnknown(PublishAdapterError):
     def __init__(self, *, http_status=0):
         super().__init__(

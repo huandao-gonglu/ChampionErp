@@ -56,6 +56,7 @@ class AiUseCaseBinding(TypedDict, total=False):
 
 
 class AppConfig(TypedDict, total=False):
+    image_hosting: dict[str, Any]
     ai_tool_approval_mode: AiToolApprovalMode
     ai_models: list[AiModelConfig]
     ai_use_case_bindings: dict[str, AiUseCaseBinding]

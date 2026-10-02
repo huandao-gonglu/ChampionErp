@@ -63,6 +63,10 @@ def classify_response(platform, status, headers, raw):
     # 非 JSON 错误页只用于判别，不进入审计日志。
     if status >= 400 and not parts:
         text = raw[:4096].decode("utf-8",errors="replace").casefold()
+    if platform == "image_hosting:public" and status in (401, 403):
+        # 匿名读取没有可刷新凭据；公开权限修正后的新测试应能重新请求。
+        code = "IMAGE_HOSTING_PUBLIC_AUTH_REQUIRED" if status == 401 else "IMAGE_HOSTING_PUBLIC_ACCESS_DENIED"
+        return RequestFailure(code, "图片地址拒绝匿名读取，请检查桶公开权限和公开地址", "request", status=status)
     prefix = re.sub(r"[^A-Z0-9_]", "_", platform.upper())
     if "api access disabled" in text or "account suspended" in text or "account blocked" in text:
         return RequestFailure(prefix+"_ACCOUNT_DISABLED", "平台已停用该账号的 API；请完成平台恢复后明确解除阻断", "account", status=status)

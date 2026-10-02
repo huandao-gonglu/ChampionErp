@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.services import ai_model_config, ai_prompt_templates
+from erp_web.services.image_hosting_config import normalize_image_hosting
 from erp_web.schemas.ai_approval import normalize_ai_tool_approval_mode
 
 from .product_research_config import (
@@ -66,6 +67,7 @@ def mask_secret(value: Any) -> str:
 
 def default_app_config() -> dict[str, Any]:
     return {
+        "image_hosting": {"default_profile_id": "", "profiles": []},
         "ai_tool_approval_mode": "ask",
         "auto_ai_recognition": "0",
         "alibaba_cookie": "",
@@ -288,6 +290,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
         else "未配置"
     )
     canonical["yunexpress"] = next_yunexpress
+    canonical["image_hosting"] = normalize_image_hosting(incoming.get("image_hosting"))
     canonical["ai_models"] = ai_models
     canonical["ai_use_case_bindings"] = ai_use_case_bindings
     canonical["ai_use_case_prompts"] = ai_use_case_prompts

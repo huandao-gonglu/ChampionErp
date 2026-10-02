@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,9 @@ from erp_web.db import ErpDatabase
 from erp_web.marketplace_registry import MARKETPLACE_SPECS, marketplace_spec
 from erp_web.runtime_units.json_store import write_json
 from erp_web.schemas.ai_approval import AiToolApprovalMode, normalize_ai_tool_approval_mode
+from erp_web.schemas.image_hosting import ImageHostingError
+from erp_web.services.image_hosting_config import config_version, require_ready
+from erp_web.services.image_hosting_credentials import merge_profile
 from erp_web.services.config_service import (
     is_sensitive_config_key,
     mask_nested_config,
@@ -427,6 +430,10 @@ class ConfigStore:
         return app_config_runtime.normalize_app_config(config)
 
     def load_app_config(self) -> dict[str, Any]:
+        with self._save_lock:
+            return self._load_app_config_unlocked()
+
+    def _load_app_config_unlocked(self) -> dict[str, Any]:
         if self._app_config_path.exists():
             try:
                 raw = json.loads(
@@ -472,6 +479,9 @@ class ConfigStore:
                 else normalize_ai_tool_approval_mode(approval_mode)
             )}
             config = self.normalize_app_config(config)
+            hosting = config["image_hosting"]
+            if hosting["default_profile_id"]:
+                require_ready(next(item for item in hosting["profiles"] if item["id"] == hosting["default_profile_id"]))
             static_config, secrets = _split_app_runtime_secrets(config)
             previous_secrets = self._db.load_runtime_secrets(
                 _APP_RUNTIME_SECRET_NAMESPACE
@@ -520,6 +530,9 @@ class ConfigStore:
             if key not in allowed_keys:
                 logger.warning("merge_app_config_fields 忽略未知 appConfig 顶层键: %s", key)
                 continue
+            if key == "image_hosting":
+                merged[key] = self.merge_image_hosting_fields(merged.get(key, {}), value)
+                continue
             section = merged.get(key)
             if isinstance(value, dict) and isinstance(section, dict):
                 for field, field_value in value.items():
@@ -533,6 +546,95 @@ class ConfigStore:
             else:
                 merged[key] = deepcopy(value)
         return merged
+
+    @contextmanager
+    def image_hosting_commit_scope(self):
+        """仅供锁外上传后的目标检查与短锁写回使用。"""
+        with self._save_lock:
+            yield
+
+    def merge_image_hosting_fields(self, current: dict, incoming: dict) -> dict:
+        if not isinstance(incoming, dict) or set(incoming) - {"default_profile_id", "profiles"}:
+            raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "图片托管配置包含未知字段")
+        saved = {item["id"]: item for item in current.get("profiles", [])}
+        profiles = current.get("profiles", [])
+        if "profiles" in incoming:
+            if not isinstance(incoming["profiles"], list):
+                raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "托管配置列表无效")
+            profiles = []
+            for item in incoming["profiles"]:
+                if not isinstance(item, dict):
+                    raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "托管配置必须是对象")
+                identity = str(item.get("id") or "")
+                if identity and identity not in saved:
+                    raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "托管配置 id 必须由后端生成")
+                profiles.append(merge_profile(saved.get(identity), item))
+        return {"profiles": profiles, "default_profile_id": incoming.get("default_profile_id", current.get("default_profile_id", ""))}
+
+    def save_image_hosting_profile(self, incoming: dict) -> str:
+        with self._save_lock:
+            config = self.load_app_config()
+            hosting = config["image_hosting"]
+            identity = str(incoming.get("id") or "")
+            saved = next((item for item in hosting["profiles"] if item["id"] == identity), None)
+            if identity and saved is None:
+                raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "托管配置不存在，请刷新列表")
+            profile = merge_profile(saved, incoming)
+            hosting["profiles"] = [profile if item["id"] == identity else item for item in hosting["profiles"]] if saved else [*hosting["profiles"], profile]
+            self.save_app_config(config)
+            return profile["id"]
+
+    def set_image_hosting_default(self, identity: str) -> None:
+        with self._save_lock:
+            config = self.load_app_config()
+            config["image_hosting"]["default_profile_id"] = identity
+            self.save_app_config(config)
+
+    def delete_image_hosting_profile(self, identity: str) -> None:
+        with self._save_lock:
+            config = self.load_app_config()
+            hosting = config["image_hosting"]
+            if identity == hosting["default_profile_id"]:
+                raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "请先解除或切换默认配置，再删除")
+            if not any(item["id"] == identity for item in hosting["profiles"]):
+                raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "托管配置不存在")
+            hosting["profiles"] = [item for item in hosting["profiles"] if item["id"] != identity]
+            self.save_app_config(config)
+            tests = self._db.load_runtime_secrets("image_hosting_tests")
+            tests.pop(identity, None)
+            self._db.replace_runtime_secrets("image_hosting_tests", tests)
+
+    def image_hosting_test_profile(self, incoming: dict) -> dict:
+        with self._save_lock:
+            identity = str(incoming.get("id") or "")
+            saved = next((item for item in self.load_app_config()["image_hosting"]["profiles"] if item["id"] == identity), None)
+            if identity and saved is None:
+                raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "托管配置不存在")
+            return require_ready(merge_profile(saved, incoming))
+
+    def record_image_hosting_test(self, result: dict) -> None:
+        with self._save_lock:
+            identity = result["profile_id"]
+            saved = next((item for item in self.load_app_config()["image_hosting"]["profiles"] if item["id"] == identity), None)
+            if saved and config_version(saved) == result["config_version"]:
+                tests = self._db.load_runtime_secrets("image_hosting_tests")
+                tests[identity] = result
+                self._db.replace_runtime_secrets("image_hosting_tests", tests)
+
+    def public_image_hosting(self) -> dict:
+        with self._save_lock:
+            hosting = self.load_app_config()["image_hosting"]
+            tests = self._db.load_runtime_secrets("image_hosting_tests")
+            profiles = []
+            for profile in hosting["profiles"]:
+                version = config_version(profile)
+                public = {key: value for key, value in profile.items() if key not in {"access_key_id", "secret_access_key"}}
+                public.update({key + "_configured": bool(profile.get(key)) for key in ("access_key_id", "secret_access_key")})
+                public["config_version"] = version
+                test = tests.get(profile["id"])
+                public["last_test"] = test if test and test.get("config_version") == version else None
+                profiles.append(public)
+            return {**hosting, "profiles": profiles}
 
     # -- store config -----------------------------------------------------------
 

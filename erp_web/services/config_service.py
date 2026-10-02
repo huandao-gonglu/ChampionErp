@@ -15,6 +15,8 @@ from . import ai_model_config, ai_prompt_templates
 
 
 SENSITIVE_CONFIG_KEYS = {
+    "access_key_id",
+    "secret_access_key",
     "access_token",
     "alibaba_cookie",
     "api_key",
@@ -162,6 +164,12 @@ def public_app_config(
     load_env(app_dir)
     safe = json.loads(json.dumps(app_config or {}, ensure_ascii=False))
     public = mask_nested_config(safe)
+    hosting = public.get("image_hosting", {})
+    for profile in hosting.get("profiles", []):
+        raw = next((item for item in safe["image_hosting"]["profiles"] if item["id"] == profile["id"]), {})
+        for key in ("access_key_id", "secret_access_key"):
+            profile[key + "_configured"] = bool(raw.get(key))
+            profile.pop(key, None)
     raw_yunexpress = safe.get("yunexpress") if isinstance(safe.get("yunexpress"), dict) else {}
     public_yunexpress = public.get("yunexpress") if isinstance(public.get("yunexpress"), dict) else {}
     if raw_yunexpress and public_yunexpress:

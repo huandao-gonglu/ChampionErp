@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""发布预检前的本地图片物化（Yandex/Ozon local_static provider）回归测试。"""
+"""普通发布预检的图片只读边界回归。"""
 
 from __future__ import annotations
 
@@ -72,75 +72,28 @@ def _yandex_product(image_path: Path) -> dict:
     }
 
 
-def test_precheck_materializes_local_images_before_yandex_validation(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """本地图片先物化再校验；物化结果回写商品图片池。"""
 
-    image = tmp_path / "incoming" / "main.jpg"
-    image.parent.mkdir(parents=True)
-    image.write_bytes(b"champion-yandex-image")
-    monkeypatch.setenv("ERP_IMAGE_HTTPS_PROVIDER", "local_static")
-    monkeypatch.setenv("ERP_IMAGE_HTTPS_BASE_URL", "https://tunnel.example.test")
-    monkeypatch.setenv("ERP_IMAGE_HTTPS_ROOT", str(tmp_path / "public"))
+def test_precheck_does_not_upload_local_images(tmp_path, monkeypatch):
+    from tests.image_hosting_test_utils import configure, FakeS3, image_bytes
+    image = tmp_path / "main.png"
+    image.write_bytes(image_bytes())
+    remote = FakeS3(monkeypatch)
+    with temp_app_context(tmp_path / "app") as context:
+        configure(context)
+        saved = context.products.save_product(_yandex_product(image))
+        before = context.db.load_product_model(saved["product_id"])
+        response, status = publish_workflows.precheck_publish_payload({"draft_id": saved["drafts"]["yandex"]["draft_id"], "platform": "yandex", "site": "global"})
+        assert status == 200
+        assert "IMAGE_NOT_PREPARED" in [item["code"] for item in response["platforms"]["yandex"]["errors"]]
+        assert context.db.load_product_model(saved["product_id"])["source"]["image_pool"] == before["source"]["image_pool"]
+        assert not remote.calls
 
+
+def test_unconfigured_local_source_has_actionable_error(tmp_path):
+    from tests.image_hosting_test_utils import image_bytes
+    image = tmp_path / "main.png"; image.write_bytes(image_bytes())
     with temp_app_context(tmp_path / "app") as context:
         saved = context.products.save_product(_yandex_product(image))
-        product_id = str(saved["product_id"])
-        draft_id = str(saved["drafts"]["yandex"]["draft_id"])
-
-        response, status = publish_workflows.precheck_publish_payload(
-            {"draft_id": draft_id, "platform": "yandex", "site": "global"}
-        )
-
+        response, status = publish_workflows.precheck_publish_payload({"draft_id": saved["drafts"]["yandex"]["draft_id"], "platform": "yandex", "site": "global"})
         assert status == 200
-        codes = [
-            str(item.get("code") or "")
-            for item in response["platforms"]["yandex"]["errors"]
-        ]
-        assert "IMAGE_NOT_PUBLIC" not in codes
-        assert "IMAGE_MISSING" not in codes
-
-        persisted = context.db.load_product_model(product_id)
-        pool = persisted["source"]["image_pool"]
-        item = next(entry for entry in pool if entry.get("id") == "image-1")
-        assert str(item.get("url") or "").startswith(
-            "https://tunnel.example.test/assets/"
-        )
-        assert str(item.get("storage_key") or "").startswith("assets/")
-        assert item.get("delivery_provider") == "local_static"
-
-        materialized = (
-            tmp_path / "public" / str(item["storage_key"])
-        )
-        assert materialized.is_file()
-
-
-def test_precheck_reports_provider_error_when_local_images_cannot_materialize(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """未配置 HTTPS provider 时，预检错误必须指向 provider 配置而不是泛化文案。"""
-
-    image = tmp_path / "incoming" / "main.jpg"
-    image.parent.mkdir(parents=True)
-    image.write_bytes(b"champion-yandex-image")
-    monkeypatch.setenv("ERP_IMAGE_HTTPS_PROVIDER", "existing_url")
-    monkeypatch.delenv("ERP_IMAGE_HTTPS_BASE_URL", raising=False)
-
-    with temp_app_context(tmp_path / "app") as context:
-        saved = context.products.save_product(_yandex_product(image))
-        draft_id = str(saved["drafts"]["yandex"]["draft_id"])
-
-        response, status = publish_workflows.precheck_publish_payload(
-            {"draft_id": draft_id, "platform": "yandex", "site": "global"}
-        )
-
-        assert status == 200
-        message = "；".join(
-            str(item.get("message") or "")
-            for item in response["platforms"]["yandex"]["errors"]
-        )
-        assert "尚未配置 HTTPS provider" in message
-        assert "ERP_IMAGE_HTTPS_PROVIDER=local_static" in message
+        assert "IMAGE_HOSTING_NOT_CONFIGURED" in [item["code"] for item in response["platforms"]["yandex"]["errors"]]
