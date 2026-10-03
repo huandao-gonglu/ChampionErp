@@ -844,27 +844,29 @@ class ErpDbTests(unittest.TestCase):
     def test_new_drafts_for_same_product_receive_different_stable_skus(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = self._db(Path(tmp))
-            product_id = db.upsert_product_model(sample_product())
+            product = sample_product()
+            product["sku_items"] = [{"id": "single", "name": "默认规格", "active": True}]
+            product_id = db.upsert_product_model(product)
 
             first_id = db.upsert_draft_model(
                 product_id,
                 "ozon",
-                {"title": "First", "status": "claimed", "sku": "其他"},
+                {"title": "First", "status": "claimed", "sku_items": [{"sku_id": "single", "selected": True}]},
             )
             second_id = db.upsert_draft_model(
                 product_id,
                 "ozon",
-                {"title": "Second", "status": "claimed", "sku": ""},
+                {"title": "Second", "status": "claimed", "sku_items": [{"sku_id": "single", "selected": True}]},
             )
             first = db.load_draft_model(first_id)
             second = db.load_draft_model(second_id)
 
             self.assertNotEqual(first_id, second_id)
-            self.assertNotEqual(first["sku"], second["sku"])
-            self.assertTrue(first["sku"].startswith("OZ-"))
+            self.assertNotEqual(first["sku_items"][0]["sku"], second["sku_items"][0]["sku"])
+            self.assertTrue(first["sku_items"][0]["sku"].startswith("SKU-"))
             self.assertEqual(
-                db.load_draft_model(first_id)["sku"],
-                first["sku"],
+                db.load_draft_model(first_id)["sku_items"][0]["sku"],
+                first["sku_items"][0]["sku"],
             )
 
             db.upsert_draft_model(
@@ -874,12 +876,12 @@ class ErpDbTests(unittest.TestCase):
                     "draft_id": first_id,
                     "title": "First updated",
                     "status": "claimed",
-                    "sku": "",
+                    "sku_items": [{"sku_id": "single", "selected": True}],
                 },
             )
             self.assertEqual(
-                db.load_draft_model(first_id)["sku"],
-                first["sku"],
+                db.load_draft_model(first_id)["sku_items"][0]["sku"],
+                first["sku_items"][0]["sku"],
             )
 
     def test_draft_persistence_rejects_non_canonical_root_fields(
@@ -1145,6 +1147,7 @@ class ErpDbTests(unittest.TestCase):
             db = self._db(Path(tmp))
             db.import_upcs(["725272000021"])
             product = sample_product()
+            product["sku_items"] = [{"id": "single", "name": "默认规格", "active": True, "barcode": ""}]
 
             with mock.patch.object(
                 db,
@@ -1155,7 +1158,7 @@ class ErpDbTests(unittest.TestCase):
                     RuntimeError,
                     "injected product save failure",
                 ):
-                    db.assign_upc_to_product_model(product)
+                    db.assign_upcs_to_product_model(product)
 
             self.assertEqual(
                 db.upc_pool_stats(),
@@ -1163,12 +1166,12 @@ class ErpDbTests(unittest.TestCase):
             )
             self.assertEqual(db.list_product_records(), [])
 
-            upc, product_id = db.assign_upc_to_product_model(product)
-            self.assertEqual(upc, "725272000021")
+            assignments, product_id = db.assign_upcs_to_product_model(product)
+            self.assertEqual(assignments, [{"sku_id": "single", "upc": "725272000021"}])
             saved = db.load_product_model(product_id)
-            self.assertEqual(saved["upc"], upc)
+            self.assertEqual(saved["sku_items"][0]["barcode"], "725272000021")
             self.assertTrue(
-                all(draft["upc"] == upc for draft in saved["drafts"].values())
+                all("upc" not in draft for draft in saved["drafts"].values())
             )
             self.assertEqual(
                 db.upc_pool_stats(),

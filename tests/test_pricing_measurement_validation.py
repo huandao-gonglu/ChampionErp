@@ -7,7 +7,7 @@ from erp_web.runtime_units import publish_validation
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
 
-def _draft_with_basis(basis: dict[str, Any]) -> dict:
+def _sku_product_with_basis(basis: dict[str, Any]) -> dict:
     operations = [
         {
             "site_id": "MLM",
@@ -30,7 +30,7 @@ def _draft_with_basis(basis: dict[str, Any]) -> dict:
         "destination_pricing_modes": modes,
     }
     fingerprint = pricing_calculation_fingerprint(normalized_basis)
-    return {
+    draft = {
         "platform": "mercadolibre",
         "site": "CBT",
         "listing_currency": "USD",
@@ -56,6 +56,13 @@ def _draft_with_basis(basis: dict[str, Any]) -> dict:
             ],
         },
     }
+
+    quote = draft.pop("selected_pricing")
+    package = draft.pop("package_dimensions")
+    draft["sku_items"] = [{"sku_id": "single", "sku": "SELL-FIRST", "selected": True,
+                           "pricing": {"applied": True, "targets": {"mercadolibre:cbt": quote}}}]
+    product = {"sku_items": [{"id": "single", "active": True, "package_dimensions": package}]}
+    return product, draft
 
 
 def test_same_precise_package_measurements_do_not_invalidate_pricing(monkeypatch) -> None:
@@ -90,7 +97,8 @@ def test_same_precise_package_measurements_do_not_invalidate_pricing(monkeypatch
         "sites_to_sell": [],
     }
 
-    errors = publish_validation._selected_price_errors({}, _draft_with_basis(basis))
+    product, draft = _sku_product_with_basis(basis)
+    errors = publish_validation._selected_price_errors(product, draft)
 
     assert errors == []
 
@@ -127,7 +135,8 @@ def test_old_rounded_weight_basis_remains_stale(monkeypatch) -> None:
         "sites_to_sell": [],
     }
 
-    errors = publish_validation._selected_price_errors({}, _draft_with_basis(basis))
+    product, draft = _sku_product_with_basis(basis)
+    errors = publish_validation._selected_price_errors(product, draft)
 
     assert errors[0]["code"] == "PRICING_STALE"
     assert "重量或包装尺寸已变化" in errors[0]["message"]

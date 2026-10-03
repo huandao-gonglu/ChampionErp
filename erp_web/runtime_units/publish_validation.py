@@ -47,6 +47,7 @@ from erp_web.services.listing_currency_service import (
     store_listing_currency_from_auth,
     store_listing_currency_ready,
 )
+from erp_web.product_model.sku_model import single_sku_publish_draft
 from erp_web.stores.product_store import normalize_product_fields
 from erp_web.schemas.category_definition import CategoryDefinition
 from erp_web.runtime_units.category_definition_support import (
@@ -148,6 +149,7 @@ _STORE_CURRENCY_PRECHECK_ERRORS: dict[str, tuple[str, str, str]] = {
 
 
 def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> list[dict[str, str]]:
+    draft = single_sku_publish_draft(product, draft)
     platform = str(draft.get("platform") or "").strip().lower()
     # 发布前必须重新加载当前店铺配置：店铺授权配置是发布币种唯一事实源。
     store_config = get_context().config.load_store_config()
@@ -657,7 +659,7 @@ def validate_yandex_draft(
     *, image_stage: str = "final",
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "yandex")
+    draft = _draft_for_selected_target(product, "yandex")
     store = config.get("yandex", {}) if isinstance(config.get("yandex"), dict) else {}
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
@@ -772,7 +774,7 @@ def validate_ozon_draft(
     *, image_stage: str = "final",
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "ozon")
+    draft = _draft_for_selected_target(product, "ozon")
     store = config.get("ozon", {}) if isinstance(config.get("ozon"), dict) else {}
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []

@@ -9,7 +9,6 @@ from erp_web.schemas.category import (
     category_attribute_value_is_valid,
 )
 
-from .attribute_matching import source_package_dimensions
 from .defaults import default_draft
 from .merge_model import normalize_product_model
 from .sku_model import selected_skus
@@ -21,17 +20,6 @@ def _category_path_text(record: dict[str, Any] | None) -> str:
     path_original = record.get("path_original") if isinstance(record.get("path_original"), list) else []
     path = path_cn or path_original
     return " > ".join([str(item).strip() for item in path if str(item).strip()])
-
-
-def _source_dimension_dict(product: dict[str, Any]) -> dict[str, str]:
-    source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    dimensions = source_package_dimensions(source)
-    return {
-        "length_cm": str(dimensions.get("length_cm") or product.get("package_length_cm") or "").strip(),
-        "width_cm": str(dimensions.get("width_cm") or product.get("package_width_cm") or "").strip(),
-        "height_cm": str(dimensions.get("height_cm") or product.get("package_height_cm") or "").strip(),
-        "weight_kg": str(source.get("weight_kg") or product.get("weight_kg") or "").strip(),
-    }
 
 
 def apply_category_target_updates(
@@ -136,14 +124,6 @@ def apply_category_selection(product: dict[str, Any], platform: str, category_re
     }
     draft["brand"] = str(draft.get("brand") or normalized.get("brand") or normalized.get("source", {}).get("brand") or "Generic").strip() or "Generic"
     draft["model"] = str(draft.get("model") or normalized.get("model") or normalized.get("source", {}).get("model") or "General").strip() or "General"
-    dims = _source_dimension_dict(normalized)
-    draft_pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-    draft["package_dimensions"] = {
-        "length_cm": str(draft_pkg.get("length_cm") or dims["length_cm"] or "").strip(),
-        "width_cm": str(draft_pkg.get("width_cm") or dims["width_cm"] or "").strip(),
-        "height_cm": str(draft_pkg.get("height_cm") or dims["height_cm"] or "").strip(),
-        "weight_kg": str(draft_pkg.get("weight_kg") or dims["weight_kg"] or "").strip(),
-    }
     draft = apply_category_target_updates(
         draft,
         platform,
@@ -194,11 +174,8 @@ def _required_attribute_is_satisfied(
         if isinstance(draft.get("attributes"), dict)
         else {}
     )
-    gtin_value = str(
-        draft.get("upc")
-        or attributes.get("GTIN")
-        or ""
-    ).strip()
+    selected = selected_skus(normalized, draft)
+    gtin_value = bool(selected) and all(str(fact.get("barcode") or "").strip() for fact, _ in selected)
     if attr_id_upper == "EMPTY_GTIN_REASON" and gtin_value:
         return True
     if attr_id_upper == "EMPTY_GTIN_REASON" and draft.get("allow_gtin_exemption"):
@@ -216,18 +193,16 @@ def _required_attribute_is_satisfied(
     if attr_id_upper == "MODEL":
         return bool(str(attributes.get(attr_id) or draft.get("model") or "").strip())
     if attr_id_upper == "SELLER_SKU":
-        return bool(str(draft.get("sku") or "").strip())
+        return bool(selected) and all(str(row.get("sku") or "").strip() for _, row in selected)
     if attr_id_upper == "ITEM_CONDITION":
         # 当前 Mercado 发布能力只支持 New，wire 值由 listing_model 契约生成。
         return platform == "mercadolibre"
     package_field = _PACKAGE_ATTRIBUTE_FIELDS.get(attr_id_upper)
-    package = (
-        draft.get("package_dimensions")
-        if isinstance(draft.get("package_dimensions"), dict)
-        else {}
-    )
-    if package_field and str(package.get(package_field) or "").strip():
-        return True
+    if package_field:
+        return bool(selected) and all(
+            str((fact.get("package_dimensions") or {}).get(package_field) or "").strip()
+            for fact, _ in selected
+        )
     return category_attribute_value_is_valid(definition, attributes.get(attr_id))
 
 

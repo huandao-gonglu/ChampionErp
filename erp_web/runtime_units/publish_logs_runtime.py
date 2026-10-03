@@ -181,7 +181,7 @@ def append_platform_publish_log(
             "next_action": next_action,
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "shop": platform,
-            "sku": str(draft.get("sku") or ""),
+            "sku": "、".join(str(row.get("sku") or "") for row in draft.get("sku_items", []) if row.get("selected")),
             "error": error_message,
             "image": _first_product_image(product),
         }

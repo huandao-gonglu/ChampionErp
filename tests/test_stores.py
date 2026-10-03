@@ -171,10 +171,6 @@ def _tampered_publish_state_payload(draft: dict) -> dict:
     return {
         "draft_id": draft["draft_id"],
         **forged_state,
-        "publication": {
-            "model": "user_products",
-            "siteless_user_product_id": "UP-CLIENT-FORGED",
-        },
         "target_sites": [target],
     }
 
@@ -227,7 +223,7 @@ def test_save_draft_detail_ignores_client_publish_state_when_content_is_unchange
         assert item["last_precheck"] == previous["last_precheck"]
         assert item["last_precheck_target"] == previous["last_precheck_target"]
         assert item["last_publish_task"] == previous["last_publish_task"]
-    assert draft["publication"] == existing["publication"]
+    assert "publication" not in draft
     assert "mercadolibre" in result["productContext"]["raw"]["publish_preview"]
 
 
@@ -259,7 +255,7 @@ def test_save_draft_detail_derives_invalidation_and_rejects_forged_state_when_co
         assert item["last_precheck"] == {}
         assert item["last_precheck_target"] == {}
         assert item["last_publish_task"] == previous["last_publish_task"]
-    assert draft["publication"] == existing["publication"]
+    assert "publication" not in draft
     assert "mercadolibre" not in result["productContext"]["raw"]["publish_preview"]
 
 
@@ -325,7 +321,7 @@ def test_trusted_publish_state_writer_persists_state_only_updates() -> None:
             assert item[field] == value
     assert result["draft"]["title"] == existing["title"]
     assert result["draft"]["attributes"] == existing["attributes"]
-    assert result["draft"]["publication"] == existing["publication"]
+    assert "publication" not in result["draft"]
 
 
 def test_runtime_product_store_functions_delegate_to_context_store() -> None:
@@ -853,34 +849,10 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
     draft = normalized["drafts"]["mercadolibre"]
     assert "price" not in draft
     assert draft["search_terms"] == ["legacy keyword"]
-    assert draft["package_dimensions"] == {
-        "length_cm": "10",
-        "width_cm": "8",
-        "height_cm": "3",
-        "weight_kg": "0.5",
-    }
+    assert "package_dimensions" not in draft
     assert draft["category_precheck"] == {"ok": True}
     assert "future_draft_field" not in draft
-    assert draft["publication"] == {
-        "model": "user_products",
-        "parent_item_id": "CBT100",
-        "siteless_user_product_id": "UP100",
-        "siteless_family_id": "FAMILY100",
-        "family_name": "Canonical family",
-        "confirmed_payload": {},
-        "markets": [
-            {
-                "site_id": "MLM",
-                "seller_id": "991",
-                "logistic_type": "remote",
-                "item_id": "MLM100",
-                "user_product_id": "UP-MLM100",
-                "status": "active",
-                "currency_id": "USD",
-                "price": "21.50",
-            }
-        ],
-    }
+    assert "publication" not in draft
     target = draft["target_sites"][0]
     assert target["site"] == "CBT"
     assert target["category_id"] == "CBT-CANONICAL"
@@ -924,9 +896,9 @@ def test_product_normalization_preserves_explicit_empty_platform_upc() -> None:
     )
 
     assert normalized["upc"] == "725272000243"
-    assert normalized["drafts"]["mercadolibre"]["upc"] == ""
+    assert "upc" not in normalized["drafts"]["mercadolibre"]
     assert normalized["drafts"]["mercadolibre"]["allow_gtin_exemption"] is True
-    assert normalized["drafts"]["ozon"]["upc"] == "4601234567890"
+    assert "upc" not in normalized["drafts"]["ozon"]
 
 
 @pytest.mark.parametrize(

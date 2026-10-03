@@ -12,15 +12,13 @@ from erp_web.schemas.product import (
     Product,
 )
 
-from .attribute_matching import infer_source_attribute_matches, source_package_dimensions
+from .attribute_matching import infer_source_attribute_matches
 from .common import PLATFORMS, SOURCE_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
 from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
 from .draft_image_model import normalize_draft_image_refs
 from .image_pool_model import image_pool_refs, normalize_image_pool
 from .sku_model import normalize_product_skus, normalize_draft_skus, merge_collected_skus
 from .sku_image_model import migrate_sku_image_addresses
-from .platform_sku import resolve_platform_draft_sku
-from .mercadolibre_publication import normalize_mercadolibre_publication
 
 
 _REMOVED_PRODUCT_FIELDS = {
@@ -47,6 +45,7 @@ _REMOVED_PRODUCT_FIELDS = {
     "local_platform_categories",
 }
 _REMOVED_DRAFT_FIELDS = {
+    "stock", "sku", "upc", "package_dimensions", "packageDimensions", "publication",
     "bullets",
     "barcode",
     "gtin",
@@ -586,32 +585,6 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
 
     current["brand"] = str(current.get("brand") or product.get("brand") or source.get("brand") or "Generic").strip() or "Generic"
     current["model"] = str(current.get("model") or product.get("model") or source.get("model") or "General").strip() or "General"
-    # 来源 SKU 是供应商数据，不是平台刊登身份；平台草稿单独拥有 SKU。
-    current["sku"] = str(current.get("sku") or "").strip()
-    # UPC/GTIN 是平台草稿自己的发布事实。显式清空必须保留，否则图片上传等
-    # 整商品归一化路径会把商品主档旧 UPC 回填，令预览与发布重校验生成不同
-    # payload。购买 UPC 的分配流程会显式写入各草稿，不需要这里提供隐式回退。
-    current["upc"] = str(
-        current.get("upc")
-        or current.get("gtin")
-        or current.get("barcode")
-        or ""
-    ).strip()
-    current["stock"] = str(current.get("stock") or product.get("stock") or "").strip()
-    current_pkg = (
-        current.get("package_dimensions")
-        if isinstance(current.get("package_dimensions"), dict)
-        else current.get("packageDimensions")
-        if isinstance(current.get("packageDimensions"), dict)
-        else {}
-    )
-    source_dims = source_package_dimensions(source)
-    current["package_dimensions"] = {
-        "length_cm": str(current_pkg.get("length_cm") or current_pkg.get("lengthCm") or source_dims.get("length_cm") or product.get("package_length_cm") or "").strip(),
-        "width_cm": str(current_pkg.get("width_cm") or current_pkg.get("widthCm") or source_dims.get("width_cm") or product.get("package_width_cm") or "").strip(),
-        "height_cm": str(current_pkg.get("height_cm") or current_pkg.get("heightCm") or source_dims.get("height_cm") or product.get("package_height_cm") or "").strip(),
-        "weight_kg": str(current_pkg.get("weight_kg") or current_pkg.get("weightKg") or source.get("weight_kg") or product.get("weight_kg") or "").strip(),
-    }
     # 平台属性只属于当前平台草稿。来源站属性保留在 source.attributes，
     # 不得因为草稿为空而复制进 Mercado/Ozon/Yandex 的发布字段。
     current["attributes"] = deepcopy(current.get("attributes") or {})
@@ -714,35 +687,6 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         if isinstance(current.get("shipping"), dict)
         else {}
     )
-    package_dimensions = (
-        current.get("package_dimensions")
-        if isinstance(current.get("package_dimensions"), dict)
-        else current.get("packageDimensions")
-        if isinstance(current.get("packageDimensions"), dict)
-        else {}
-    )
-    current["package_dimensions"] = {
-        "length_cm": str(
-            package_dimensions.get("length_cm")
-            or package_dimensions.get("lengthCm")
-            or ""
-        ).strip(),
-        "width_cm": str(
-            package_dimensions.get("width_cm")
-            or package_dimensions.get("widthCm")
-            or ""
-        ).strip(),
-        "height_cm": str(
-            package_dimensions.get("height_cm")
-            or package_dimensions.get("heightCm")
-            or ""
-        ).strip(),
-        "weight_kg": str(
-            package_dimensions.get("weight_kg")
-            or package_dimensions.get("weightKg")
-            or ""
-        ).strip(),
-    }
     current["publish_status"] = str(
         current.get("publish_status")
         or current.get("publishStatus")
@@ -795,15 +739,6 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
             if isinstance(current.get(alias), dict)
             else {}
         )
-    current["publication"] = (
-        normalize_mercadolibre_publication(
-            current.get("publication")
-            if isinstance(current.get("publication"), dict)
-            else {}
-        )
-        if platform == "mercadolibre"
-        else {}
-    )
     # target_sites[] 是平台类目内容的唯一事实来源。根类目字段只是首个
     # （primary）目标的派生投影，不能保留编辑器当前选中兄弟市场的值；
     # 否则会形成 platform=yandex、category_id=Ozon 的混合草稿。根状态与
@@ -832,11 +767,6 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
     if mode not in {"combined", "separate"}:
         raise ValueError("不支持的 SKU 分组方式")
     current["grouping"] = {"mode": mode, "name": str(grouping.get("name") or current.get("title") or "").strip()}
-    current["sku"] = resolve_platform_draft_sku(
-        current,
-        platform,
-        product_id=current.get("product_id") or product.get("product_id"),
-    )
     return _canonical_platform_draft_output(current)
 
 

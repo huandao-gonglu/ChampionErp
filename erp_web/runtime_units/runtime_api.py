@@ -278,8 +278,6 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
     updated = apply_precheck_to_product(product, platform, precheck, status=final_status if ok else status)
     updated_draft = _draft_for_platform(updated, platform)
     publication = mercadolibre_publication_from_result(result)
-    if publication:
-        updated_draft["publication"] = publication
     if ok or publication:
         updated_draft["last_publish_task"] = {
             **(

@@ -17,6 +17,7 @@ from erp_web.stores.product_store import normalize_product_fields
 
 from .publish_helpers import (
     _draft_for_platform,
+    _draft_for_selected_target,
     _draft_images,
     _required_attribute_summary,
     _selected_price_and_currency,
@@ -210,7 +211,7 @@ def ozon_required_attributes_missing(
     """返回排除发布构造器可自动补齐字段后的 Ozon 必填属性。"""
 
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "ozon")
+    draft = _draft_for_selected_target(product, "ozon")
     regular, complex_attributes = _ozon_attributes(
         product,
         draft,
@@ -237,7 +238,7 @@ def ozon_invalid_dictionary_attributes(
     category_record: dict[str, Any] | None = None,
 ) -> list[str]:
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "ozon")
+    draft = _draft_for_selected_target(product, "ozon")
     definitions = _attribute_definitions(category_record)
     raw_attributes = (
         draft.get("attributes")
@@ -260,7 +261,7 @@ def build_ozon_publish_payload(
     category_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "ozon")
+    draft = _draft_for_selected_target(product, "ozon")
     type_id, description_category_id = ozon_category_pair(product)
     package = (
         draft.get("package_dimensions")

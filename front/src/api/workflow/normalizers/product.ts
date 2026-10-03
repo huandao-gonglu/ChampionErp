@@ -7,8 +7,6 @@ import type {
   DraftProductContext,
   ImageAsset,
   Marketplace,
-  MercadoLibreMarketPublication,
-  MercadoLibrePublication,
   MarketplaceDraft,
   Product,
   ProductSku,
@@ -34,108 +32,6 @@ import {
   toBackendDraftImageRef,
   toBackendTargetSite,
 } from './core'
-
-function nullablePrice(value: unknown): number | string | null {
-  if (value === null || value === undefined || value === '') return null
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null
-  return typeof value === 'string' ? value.trim() || null : null
-}
-
-function publicationError(value: unknown): string | UnknownRecord | unknown[] {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) {
-    return value.map((item) => isRecord(item) ? { ...asRecord(item) } : item)
-  }
-  return isRecord(value) ? { ...asRecord(value) } : ''
-}
-
-export function normalizeMercadoLibrePublication(value: unknown): MercadoLibrePublication | null {
-  if (!isRecord(value)) return null
-  const record = asRecord(value)
-  const model = getString(record, ['model'])
-  if (model !== 'user_products' && model !== 'traditional_global_items') return null
-  const seenSites = new Set<string>()
-  const markets = (Array.isArray(record.markets) ? record.markets : []).flatMap((item): MercadoLibreMarketPublication[] => {
-    const market = asRecord(item)
-    const siteId = getString(market, ['site_id']).toUpperCase()
-    if (!siteId || seenSites.has(siteId)) return []
-    seenSites.add(siteId)
-    return [{
-      siteId,
-      itemId: getString(market, ['item_id']),
-      userProductId: getString(market, ['user_product_id']),
-      sellerId: getString(market, ['seller_id']),
-      logisticType: getString(market, ['logistic_type']).toLowerCase(),
-      status: getString(market, ['status']),
-      price: nullablePrice(market.price),
-      netProceeds: nullablePrice(market.net_proceeds),
-      freeShipping: typeof market.free_shipping === 'boolean' ? market.free_shipping : null,
-      saleTerms: (Array.isArray(market.sale_terms) ? market.sale_terms : [])
-        .filter((term) => isRecord(term))
-        .map((term) => ({ ...asRecord(term) })),
-      currencyId: getString(market, ['currency_id']),
-      listingTypeId: getString(market, ['listing_type_id']),
-      error: publicationError(market.error),
-      lastOperation: isRecord(market.last_operation) ? { ...asRecord(market.last_operation) } : {},
-      updatedAt: getString(market, ['updated_at']),
-    }]
-  })
-  const publication: MercadoLibrePublication = {
-    model,
-    accountUserId: getString(record, ['account_user_id']),
-    sitelessUserProductId: getString(record, ['siteless_user_product_id']),
-    sitelessFamilyId: getString(record, ['siteless_family_id']),
-    parentItemId: getString(record, ['parent_item_id']),
-    parentUserProductId: getString(record, ['parent_user_product_id']),
-    sellerId: getString(record, ['seller_id']),
-    status: getString(record, ['status']),
-    familyName: getString(record, ['family_name']),
-    markets,
-    confirmedPayload: isRecord(record.confirmed_payload) ? { ...asRecord(record.confirmed_payload) } : {},
-    error: publicationError(record.error),
-    lastOperation: isRecord(record.last_operation) ? { ...asRecord(record.last_operation) } : {},
-    updatedAt: getString(record, ['updated_at']),
-  }
-  if (model === 'traditional_global_items') {
-    return publication.parentItemId ? publication : null
-  }
-  return publication.sitelessUserProductId || publication.markets.length ? publication : null
-}
-
-export function toBackendMercadoLibrePublication(publication: MercadoLibrePublication): UnknownRecord {
-  return {
-    model: publication.model,
-    account_user_id: publication.accountUserId,
-    siteless_user_product_id: publication.sitelessUserProductId,
-    siteless_family_id: publication.sitelessFamilyId,
-    parent_item_id: publication.parentItemId,
-    parent_user_product_id: publication.parentUserProductId,
-    seller_id: publication.sellerId,
-    status: publication.status,
-    family_name: publication.familyName,
-    markets: publication.markets.map((market) => ({
-      site_id: market.siteId,
-      item_id: market.itemId,
-      user_product_id: market.userProductId,
-      seller_id: market.sellerId,
-      logistic_type: market.logisticType,
-      status: market.status,
-      price: market.price,
-      net_proceeds: market.netProceeds,
-      free_shipping: market.freeShipping,
-      sale_terms: market.saleTerms.map((term) => ({ ...term })),
-      currency_id: market.currencyId,
-      listing_type_id: market.listingTypeId,
-      error: market.error,
-      last_operation: { ...market.lastOperation },
-      updated_at: market.updatedAt,
-    })),
-    confirmed_payload: { ...publication.confirmedPayload },
-    error: publication.error,
-    last_operation: { ...publication.lastOperation },
-    updated_at: publication.updatedAt,
-  }
-}
 
 const REMOVED_PRODUCT_FIELDS = [
   'id',
@@ -190,7 +86,6 @@ function assertCurrentProductWireSchema(record: UnknownRecord): void {
 export function normalizeDraft(value: unknown, language: string): MarketplaceDraft {
   const record = asRecord(value)
   const draft = createEmptyDraft(language)
-  const packageDimensions = asRecord(record.package_dimensions)
   const saleTerms = Array.isArray(record.sale_terms)
     ? record.sale_terms.map((item) => asRecord(item))
     : []
@@ -227,22 +122,12 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     images: normalizeDraftImageRefs(record.images),
     status: getString(record, ['status'], draft.status) as MarketplaceDraft['status'],
     language: draftLanguage,
-    stock: getString(record, ['stock']),
-    sku: getString(record, ['sku']),
-    upc: getString(record, ['upc']),
-    packageDimensions: {
-      lengthCm: getString(packageDimensions, ['length_cm']),
-      widthCm: getString(packageDimensions, ['width_cm']),
-      heightCm: getString(packageDimensions, ['height_cm']),
-      weightKg: getString(packageDimensions, ['weight_kg']),
-    },
     saleTerms,
     allowGtinExemption: getBoolean(record, ['allow_gtin_exemption']),
     validationErrors,
     publishStatus: getString(record, ['publish_status']),
     lastPrecheck: asRecord(record.last_precheck),
     lastPrecheckTarget: asRecord(record.last_precheck_target),
-    publication: normalizeMercadoLibrePublication(record.publication),
   }
 }
 
@@ -344,22 +229,12 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
     images: draft.images.map(toBackendDraftImageRef),
     status: draft.status,
     language: draft.language,
-    stock: draft.stock,
-    sku: draft.sku,
-    upc: draft.upc,
-    package_dimensions: {
-      length_cm: draft.packageDimensions.lengthCm,
-      width_cm: draft.packageDimensions.widthCm,
-      height_cm: draft.packageDimensions.heightCm,
-      weight_kg: draft.packageDimensions.weightKg,
-    },
     sale_terms: draft.saleTerms,
     allow_gtin_exemption: draft.allowGtinExemption,
     validation_errors: draft.validationErrors,
     publish_status: draft.publishStatus,
     last_precheck: draft.lastPrecheck,
     last_precheck_target: draft.lastPrecheckTarget,
-    publication: draft.publication ? toBackendMercadoLibrePublication(draft.publication) : null,
   }
 }
 

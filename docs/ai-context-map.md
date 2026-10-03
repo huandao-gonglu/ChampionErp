@@ -66,6 +66,8 @@
 
 ## 商品采集
 
+- 1688 图片由 `source_collect_parsers.py` 优先读取 `gallery.fields.mainImage`，再通过 `html_extract_service.fetch_1688_detail_html` 读取独立 `description.fields.detailUrl` 的详情内容；SKU 图仅由规格关联入池。`collect_helpers.normalize_collect_source_images` 统一下载全部公共图和规格图，以原 URL 保留稳定资产身份，不再截断前五张，也不重复保存本地路径和远程 URL。详情读取失败显式报告采集失败，不能以已有 SKU 图片假报完整采集。
+
 - 商品库推到草稿统一从 `/api/claim-products` → `collect_facade.claim_products_payload` → `collect_helpers.claim_products_to_platforms`，请求必须显式携带 `product_ids` 与 `targets`（平台、销售市场、注册语言）。每个商品按语言创建一份独立草稿，市场只包含该语言下勾选的项目；美客多销售市场按授权物流操作归入 CBT 的 `sites_to_sell`。响应的 `claimed_count` 统计成功商品数，`draft_count` 统计实际创建草稿数。
 - 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
 
@@ -638,7 +640,7 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   只转换为平台原文检索词，枚举 ID 不做跨类目硬编码。
 - `erp_web/schemas/category_brand.py`：平台品牌身份及无品牌查询词；仅采用平台实际返回的候选。
 - `erp_web/product_model/category_model.py`：类目选择、属性有效性与发布必填项判断。
-- `erp_web/runtime_units/product_capabilities.py`：属性任务优先使用 `draft_attributes_read(scope=common)`，一次返回 `product` 商品/来源事实、`targets` 全部目标的类目及完整已填公共属性、共用包装尺寸和 SKU 数量，不携带图片或 SKU 明细。指定 `scope=sku` 和明确平台/站点后，一次读取全部已选启用 SKU 的有效事实和差异属性；大量数据可用 `limit` / `next_offset` 分段。
+- `erp_web/runtime_units/product_capabilities.py`：属性任务优先使用 `draft_attributes_read(scope=common)`，一次返回 `product` 商品/来源事实、`targets` 全部目标的类目及完整已填公共属性和 SKU 数量，不携带图片或 SKU 明细。指定 `scope=sku` 和明确平台/站点后，一次读取全部已选启用 SKU 的有效事实和差异属性；大量数据可用 `limit` / `next_offset` 分段。
 - `category_attributes_query` 默认 `scope=common`，SKU 任务使用 `scope=sku`，检查全部定义可用 `scope=all`；`write_scope` 标明可写范围，排除字段通过 `excluded_attributes` 的精简记录说明。过滤沿用原始分页游标，空页仍按 `has_more` 继续；不丢弃必填或可选属性。`category_attribute_values_query` 查询真实候选，小字典优先空查询，独立目标/候选并行，同一目标集中写入。主对话负责事实判断、语义匹配、翻译和缺资料时询问用户；不设前 20 个可选属性的限制。
 - `product_attributes_update` / `draft_sku_attributes_update` 分别保存公共属性和指定 SKU 的差异属性。`erp_web/runtime_units/category_attribute_updates.py` 只执行确定性校验：服务端重读类目定义，核对作用域、只读字段、值类型/数量/单位以及平台枚举 ID 与原文。网络校验后在商品锁内重读当前目标，再局部合并本次字段，拒绝变化后的类目、停用或未选 SKU。
 - `erp_web/runtime_units/category_attribute_access.py` 是查询与写入共用的纯作用域规则：公共、SKU、托管及只读字段一致判定。托管字段在枚举查询前拒绝；Ozon 单字符枚举值用字典分页按 ID 和原文精确核对，不走至少两字符的搜索端点，不跳过枚举真实性校验。本地查询参数错误不可重试，网络故障保留可重试属性。
@@ -915,8 +917,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   不支持”，不得仅凭一次类目切换实验诊断为类目不兼容；当前不可运营市场也
   只根据真实远端响应映射，不固化为永久预检规则。新确定性规则必须有当前官方路线文档，
   并严格限定 business model、物流和市场，不能把旧承运商或单次发布结果扩大化。
-- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布与错误处理。一个本地 Mercado 草稿只持久化一个
-  `publication` 聚合；`publication.model` 明确区分 `user_products` 与
+- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布与错误处理。每个 SKU 按发布目标在
+  `sku_items[].publications[target].result.publication` 保存远端事实；其中 `model` 明确区分 `user_products` 与
   `traditional_global_items`，前者以 `siteless_user_product_id` 为全局身份，后者以
   `parent_item_id` 为 CBT 全局身份，`publication.markets[]` 统一保存各销售市场的
   item/user-product 投影。
@@ -1134,4 +1136,4 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 
 主对话不能将混合 SKU 的汇总描述套给每个规格，不能从图片比例猜测尺寸、重量、品牌或认证。当前读工具提供来源文字与结构化 SKU 事实；资料不足时在主对话询问用户，不启动额外的属性图片填写或复核 Agent。
 
-`draft_read`、按草稿查询的 `product_read` 与 `draft_attributes_read` 均返回草稿共用的 `package_dimensions`（cm/kg）。`draft_attributes_read(scope=sku)` 的 `skus[].package_dimensions` 单独保留来源 SKU 与草稿覆盖后的有效包装尺寸；商品主档尺寸为空或 SKU 尺寸为零，不代表草稿共用尺寸不存在。读取不自动将共用尺寸套用到所有 SKU，实际发货资料仍按逐 SKU 事实校验。
+草稿根级 `stock`、`sku`、`upc`、`package_dimensions` 和 `publication` 已退役，`draft_stock_update` 已删除。`draft_read` 按所选 SKU 返回库存、编码和逐目标售价摘要；`draft_attributes_read(scope=sku)` 返回 SKU 的有效条码、成本、包装和差异属性。公共费用/定价规则、图片、属性和整组发布状态继续保留。单 SKU 平台请求使用 `sku_model.single_sku_publish_draft` 临时派生销售资料，不持久化第二份草稿销售字段。UPC 的 `ProductStore.assign_upcs_to_product` 在商品锁内重读后，通过数据库事务为缺条码的启用 SKU 各分配唯一号码；HTTP `/api/assign-upc` 与 AI `upc_assign` 均要求明确商品，允许限定 SKU，保留已有条码，号码不足整批回滚。

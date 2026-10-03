@@ -39,7 +39,7 @@
 
 ## 草稿成组保存
 
-`draft_changes_apply` 是 ERP 的领域保存能力：脚本提供一份草稿的字段差异列表，每个 SKU 至多一项，公共属性用空 `sku_id`。单项可同时包含 `attributes`、`package_dimensions` 和 `stock`。编码提取、分组、单位换算等规则仍由 AI 写 Python 完成，运行时代码不包含颜色、编码或某种商品的规则。
+`draft_changes_apply` 是 ERP 的领域保存能力：脚本提供一份草稿的字段差异列表，每个 SKU 至多一项，公共属性用空 `sku_id`；库存和包装必须指定 SKU。SKU 项可同时包含 `attributes`、`package_dimensions` 和 `stock`。编码提取、分组、单位换算等规则仍由 AI 写 Python 完成，运行时代码不包含颜色、编码或某种商品的规则。
 
 - `draft_attributes_read` 返回读取版本 `updated_at`；SKU 明细使用具名字段 `DraftAttributeSku`，直接公开 `options` 等结构，不要求模型先探查字段名。
 - 提交必须提供 `expected_updated_at`。网络校验前和获得商品锁后均检查版本、类目、SKU 所属/启用/选中状态和已发布限制；版本变化时整组不写，重新读取再计算。

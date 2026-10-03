@@ -41,10 +41,10 @@ class _Adapter:
         draft = context.product["drafts"]["yandex"]
         return {
             "platform": "yandex",
-            "offer_id": draft["sku"],
+            "offer_id": draft["sku_items"][0]["sku"],
             "campaign_id": "111",
             "business_id": "222",
-            "price": {"level": "campaign", "offers": [{"offerId": draft["sku"], "price": {"value": "1299", "currencyId": "RUB"}}]},
+            "price": {"level": "campaign", "offers": [{"offerId": draft["sku_items"][0]["sku"], "price": {"value": "1299", "currencyId": "RUB"}}]},
         }
 
     def validate_payload(self, payload: dict, config: dict) -> list[str]:
@@ -86,12 +86,11 @@ def _yandex_context() -> dict:
         "platform": "yandex",
         "site": "global",
         "title": "便携风扇",
-        "sku": "SKU-001",
+        "sku_items": [{"sku_id": "single", "sku": "SKU-001", "selected": True, "stock": "5",
+                       "pricing": {"targets": {"yandex:global": {"applied_price": {"amount": "1299", "currency": "RUB"}}}}}],
         "category_id": "91596",
         "images": [{"asset_id": "image-1", "role": "main", "order": 0}],
-        "selected_pricing": {"applied_price": {"amount": "1299", "currency": "RUB"}},
         "listing_currency": "RUB",
-        "price": "1299",
     }
     return {
         "draft": deepcopy(draft),
@@ -181,7 +180,7 @@ def test_preview_returns_digest_summary_and_sanitized_payload(workflow_boundary)
     assert response["status"] == "preview_only"
     assert response["validation_digest"]
     assert len(response["validation_digest"]) == 64
-    assert response["summary"]["price"] == "1299"
+    assert response["summary"]["sku_items"][0]["price"] == "1299"
     assert response["summary"]["store_label"] == "示例店铺"
     # 店铺身份不能泄露明文 business_id/campaign_id
     assert "222" not in response["summary"]["store_identity"]

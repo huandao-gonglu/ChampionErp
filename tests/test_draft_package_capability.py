@@ -21,9 +21,6 @@ def subject():
     product = app.products.load_product_from_index(draft["product_id"])
     for i, sku in enumerate(product["sku_items"]):
         sku["package_dimensions"] = {"length_cm": "0", "width_cm": "0", "height_cm": "0", "weight_kg": str(i + 1)}
-    product["drafts"]["mercadolibre"]["package_dimensions"] = {
-        "length_cm": "13", "width_cm": "10", "height_cm": "5", "weight_kg": "1",
-    }
     app.products.save_product(product)
     draft = app.db.load_draft_model(draft_id)
     draft["target_sites"].append({
@@ -55,7 +52,7 @@ def test_package_write_is_local_preserves_weights_and_targets_and_is_repeatable(
         }
         assert row["overrides"]["cost_cny"] == before["sku_items"][int(row["sku_id"][-1])]["overrides"]["cost_cny"]
     assert saved["sku_items"][2:] == before["sku_items"][2:]
-    assert saved["package_dimensions"] == before["package_dimensions"]
+    assert "package_dimensions" not in saved
     assert [(t["platform"], t["site"], t["category_id"], t["attributes"]) for t in saved["target_sites"]] == [
         (t["platform"], t["site"], t["category_id"], t["attributes"]) for t in before["target_sites"]
     ]

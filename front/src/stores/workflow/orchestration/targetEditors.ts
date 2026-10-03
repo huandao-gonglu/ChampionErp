@@ -153,7 +153,6 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
         title: value.title, globalTitle: value.globalTitle, description: value.description,
         brand: value.brand, model: value.model, language: value.language,
         skuItems: value.skuItems, grouping: value.grouping, images: value.images, pricing: value.pricing,
-        sku: value.sku, stock: value.stock, upc: value.upc, packageDimensions: value.packageDimensions,
         saleTerms: value.saleTerms, allowGtinExemption: value.allowGtinExemption,
         categoryId: value.categoryId, descriptionCategoryId: value.descriptionCategoryId,
         categoryPath: value.categoryPath, attributes: value.attributes,

@@ -10,7 +10,7 @@ from typing import Annotated, Any, Protocol
 from erp_web.context import AppContext, get_context
 from erp_web.product_model import (
     normalize_draft_image_refs,
-    normalize_mercadolibre_sites_to_sell,
+    mercadolibre_sales_condition_basis,
 )
 from erp_web.product_model.sku_model import selected_skus
 from erp_web.product_model.sku_image_model import sku_image_asset
@@ -154,16 +154,6 @@ def _summary(
         else {}
     )
     draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
-    selected = (
-        draft.get("selected_pricing")
-        if isinstance(draft.get("selected_pricing"), dict)
-        else {}
-    )
-    applied = (
-        selected.get("applied_price")
-        if isinstance(selected.get("applied_price"), dict)
-        else {}
-    )
     try:
         store_binding = resolve_publish_store_binding(platform, config)
     except ValueError as exc:
@@ -181,7 +171,7 @@ def _summary(
         )
         destinations = tuple(
             ProductPublishDestination(**target)
-            for target in normalize_mercadolibre_sites_to_sell(source_targets)
+            for target in mercadolibre_sales_condition_basis(source_targets)
             if target.get("site_id") and target.get("logistic_type")
         )
     sku_summaries = []
@@ -217,11 +207,7 @@ def _summary(
         or _text(payload.get("family_name") if isinstance(payload, dict) else "")
         or _text(draft.get("title")),
         category_id=_text(draft.get("category_id")),
-        listing_currency=_text(
-            applied.get("currency") or draft.get("listing_currency")
-        ).upper(),
-        price=_text(applied.get("amount") or draft.get("price")),
-        stock=_text(draft.get("stock")),
+        listing_currency=_text(draft.get("listing_currency")).upper(),
         image_count=len(normalize_draft_image_refs(draft.get("images"))),
         destinations=destinations,
     )
@@ -808,7 +794,7 @@ def _publish_request_approval_snapshot(
     return ToolApprovalSnapshot(
         summary=(
             f"发布草稿 {summary.draft_id} 到 {summary.platform}："
-            f"《{summary.title}》 {summary.listing_currency} {summary.price}"
+            f"《{summary.title}》，{len(summary.sku_items)} 个 SKU"
             f"，图片 {summary.image_count} 张"
             + (f"，销售目标 {destination_text}" if destination_text else "")
         ),
@@ -818,10 +804,10 @@ def _publish_request_approval_snapshot(
             "image_count": summary.image_count,
             "listing_currency": summary.listing_currency,
             "platform": summary.platform,
-            "price": summary.price,
             "product_id": summary.product_id,
             "site": summary.site,
-            "stock": summary.stock,
+            "sku_items": [item.model_dump(mode="json") for item in summary.sku_items],
+            "grouping_mode": summary.grouping_mode,
             "store_identity": summary.store_identity,
             "title": summary.title,
             "validation_digest": evaluation.result.validation_digest,

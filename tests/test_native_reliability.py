@@ -42,12 +42,12 @@ def test_same_product_patches_do_not_lose_fields_and_stale_draft_is_rejected(
     original = context.products.draft_record(ids[0])
     first = {**original, "title": "第一次更新"}
     assert context.products.save_draft_detail(first)[2] == 200
-    stale = {**original, "stock": "999"}
+    stale = {**original, "description": "过期版本更新"}
     assert context.products.save_draft_detail(stale)[2] == 409
     assert context.products.draft_record(ids[0])["title"] == "第一次更新"
     # 普通局部补丁不携带旧快照，可以继续合并独立字段。
     assert (
-        context.products.save_draft_detail({"draft_id": ids[0], "stock": "8"})[2] == 200
+        context.products.save_draft_detail({"draft_id": ids[0], "description": "局部补丁"})[2] == 200
     )
     assert context.products.draft_record(ids[0])["title"] == "第一次更新"
 

@@ -228,8 +228,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                         {"asset_id": "img_1", "role": "main", "order": 0}
                     ],
                     "copy_generated_at": "2026-08-28T07:00:00Z",
-                    "sku": "ML-ORIGINAL-SKU",
-                    "upc": "012345678905",
                     "copy_operation_key": "copy-operation-original",
                     "validation_errors": persisted_validation_errors,
                     "category_precheck": precheck,
@@ -238,13 +236,16 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "publish_status": "real_publish_success",
                     "status": "published",
                     "last_publish_task": publish_task,
-                    "publication": {
-                        "model": "user_products",
-                        "siteless_user_product_id": "UP-ORIGINAL",
-                    },
                     "target_sites": [original_target],
                 }
             )
+            product_model = get_context().db.load_product_model(saved["product_id"])
+            product_model["sku_items"] = [{"id": "single", "name": "默认规格", "active": True}]
+            get_context().products.save_product(product_model)
+            original["sku_items"] = [{"sku_id": "single", "selected": True, "sku": "ML-ORIGINAL-SKU",
+                                      "overrides": {"barcode": "012345678905"},
+                                      "publications": {"mercadolibre:cbt": {"result": {"publication": {
+                                          "model": "user_products", "siteless_user_product_id": "UP-ORIGINAL"}}}}}]
             get_context().db.upsert_draft_model(
                 saved["product_id"],
                 "mercadolibre",
@@ -326,9 +327,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     }
                 ],
             )
-            self.assertNotEqual(duplicated["sku"], original_before["sku"])
-            self.assertTrue(duplicated["sku"].startswith("ML-"))
-            self.assertEqual(duplicated["upc"], "")
+            self.assertNotEqual(duplicated["sku_items"][0]["sku"], original_before["sku_items"][0]["sku"])
+            self.assertTrue(duplicated["sku_items"][0]["sku"].startswith("SKU-"))
+            self.assertNotIn("upc", duplicated)
+            self.assertEqual(duplicated["sku_items"][0]["overrides"]["barcode"], "012345678905")
             self.assertEqual(duplicated["copy_operation_key"], "")
             self.assertEqual(duplicated["created_at"], "2026-08-30T09:00:00Z")
             self.assertEqual(duplicated["updated_at"], "2026-08-30T09:00:00Z")
@@ -344,7 +346,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             ):
                 self.assertEqual(duplicated[field], {})
                 self.assertEqual(duplicated_target[field], {})
-            self.assertEqual(duplicated["publication"], {})
+            self.assertNotIn("publication", duplicated)
+            self.assertEqual(duplicated["sku_items"][0]["publications"], {})
             self.assertEqual(duplicated_target["status"], "")
             self.assertEqual(
                 get_context().db.load_draft_model(original_id),
@@ -968,7 +971,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "status": "ready_to_publish",
                 "last_publish_task": publish_task,
             }
+            product["sku_items"] = [{"id": "single", "name": "默认规格", "active": True,
+                                     "package_dimensions": {"length_cm": "10", "width_cm": "8", "height_cm": "12", "weight_kg": "0.2"}}]
             draft = product["drafts"]["mercadolibre"]
+            draft["sku_items"] = [{"sku_id": "single", "selected": True}]
             draft.update(
                 {
                     "enabled": True,
@@ -980,14 +986,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "category_id": "CBT1000",
                     "attributes": {"BRAND": "BrandX", "MODEL": "X1"},
                     "images": [{"asset_id": "img-1", "role": "main", "order": 0}],
-                    "package_dimensions": {
-                        "length_cm": "10",
-                        "width_cm": "8",
-                        "height_cm": "12",
-                        "weight_kg": "0.2",
-                    },
                     "sale_terms": {"warranty": "30 days"},
-                    "stock": "5",
                     "pricing": pricing,
                     "target_sites": [target],
                     "validation_errors": [{"code": "OLD_WARNING"}],
@@ -1019,13 +1018,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                         {"asset_id": "img-1", "role": "main", "order": 0},
                         {"asset_id": "img-2", "role": "gallery", "order": 1},
                     ],
-                    "package_dimensions": {
-                        "length_cm": "11",
-                        "width_cm": "8",
-                        "height_cm": "12",
-                        "weight_kg": "0.2",
-                    },
                     "sale_terms": {"warranty": "90 days"},
+                    "sku_items": [{**saved_draft["sku_items"][0], "overrides": {"package_dimensions": {"length_cm": "11"}}}],
                     # 模拟前端把旧成功状态一并回传；保存边界不能信任它们。
                     "validation_errors": [{"code": "OLD_WARNING"}],
                     "category_precheck": stale_precheck,
@@ -1374,15 +1368,15 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
-    def test_1688_collect_images_are_limited_to_first_five(self) -> None:
+    def test_1688_collect_images_preserve_all_public_images(self) -> None:
         source = {
             "images": [f"https://img.example/{index}.jpg" for index in range(8)],
         }
 
         normalized = collect_helpers.normalize_collect_source_images(source, "1688", "http", ["mercadolibre"])
 
-        self.assertEqual(len(normalized["image_pool"]), 5)
-        self.assertEqual(normalized["images"], [f"https://img.example/{index}.jpg" for index in range(5)])
+        self.assertEqual(len(normalized["image_pool"]), 8)
+        self.assertEqual(normalized["images"], [f"https://img.example/{index}.jpg" for index in range(8)])
 
     def test_failed_new_collect_creates_failed_sqlite_record(self) -> None:
         def run(app_dir: Path) -> None:
@@ -2158,6 +2152,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
     def test_claiming_published_product_creates_a_new_active_draft(self) -> None:
         def run(app_dir: Path) -> None:
             product = sample_product("Published item", "https://example.com/published-item")
+            product["sku_items"] = [{"id": "single", "name": "默认规格", "active": True}]
+            product["drafts"]["mercadolibre"]["sku_items"] = [{"sku_id": "single", "selected": True}]
             product["drafts"]["mercadolibre"].update(
                 {
                     "enabled": True,
@@ -2165,14 +2161,13 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "description": "Published description",
                     "category_id": "CBT123",
                     "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-                    "stock": "5",
                     "publish_status": "real_publish_success",
                     "status": "published",
                 }
             )
             saved = get_context().products.save_product(product)
             published_sku = str(
-                saved["drafts"]["mercadolibre"]["sku"]
+                saved["drafts"]["mercadolibre"]["sku_items"][0]["sku"]
             )
 
             result = collect_helpers.claim_products_to_platforms([saved["product_id"]], ["mercadolibre"])
@@ -2186,7 +2181,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             claimed = get_context().db.load_draft_model(
                 result["items"][0]["draft_ids"][0]
             )
-            self.assertNotEqual(claimed["sku"], published_sku)
+            self.assertNotEqual(claimed["sku_items"][0]["sku"], published_sku)
 
         self.with_temp_app(run)
 
@@ -2367,10 +2362,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(draft["publish_status"], "published")
             self.assertEqual(draft["status"], "published")
             self.assertEqual(draft["last_publish_task"]["job_id"], "job-persist-1")
-            self.assertEqual(
-                draft["publication"]["siteless_user_product_id"],
-                "U9001",
-            )
+            self.assertNotIn("publication", draft)
+            self.assertEqual(draft["last_publish_task"]["siteless_user_product_id"], "U9001")
 
             logs = publish_bus.load_publish_logs()
             matching = [item for item in logs if item.get("job_id") == "job-persist-1"]

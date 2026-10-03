@@ -109,7 +109,7 @@ def test_unrelated_missing_attributes_do_not_hide_combination_error(case, monkey
 
     def validate(projected, _config):
         field = "attributes.brand" if case == "共同属性缺失" else "attributes.color"
-        missing = case != "没有必填项缺失" and (case != "缺失范围不同" or projected.draft["sku"] == "SELL-0")
+        missing = case != "没有必填项缺失" and (case != "缺失范围不同" or projected.draft["sku_items"][0]["sku"] == "SELL-0")
         return {"ok": not missing, "errors": [issue(field=field, next_action="前往类目属性页补齐必填属性")] if missing else [], "warnings": []}
 
     monkeypatch.setattr(leaf, "validate_draft", validate)
@@ -175,7 +175,7 @@ def test_different_fields_reasons_and_actions_remain_separate(monkeypatch):
     variants = [issue(), issue(field="attributes.4295"), issue(message="颜色值不受支持"), issue(next_action="刷新类目后重新选择")]
 
     def validate(context, _config):
-        return {"ok": False, "errors": variants if context.draft["sku"] == "SELL-0" else [issue()], "warnings": []}
+        return {"ok": False, "errors": variants if context.draft["sku_items"][0]["sku"] == "SELL-0" else [issue()], "warnings": []}
 
     monkeypatch.setattr(leaf, "validate_draft", validate)
     result = sku_publish_adapter.SkuGroupPublishingAdapter(leaf).validate_draft(context_for(product), {})

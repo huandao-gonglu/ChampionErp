@@ -14,7 +14,6 @@ from .draft_publish_context import (
 )
 from .image_pool_core import source_image_refs
 from .publish_helpers import (
-    mercadolibre_publication_from_result,
     precheck_item,
     remote_publish_identity,
 )
@@ -229,9 +228,6 @@ def apply_publish_bus_result_to_draft(
     if "grouping" in sku_result:
         last_publish_task["grouping"] = sku_result["grouping"]
     updates["last_publish_task"] = last_publish_task
-    publication = mercadolibre_publication_from_result(item.get("result"))
-    if platform == "mercadolibre" and publication:
-        updates["publication"] = publication
     target = {
         "platform": platform,
         "site": str(item.get("site") or draft.get("site") or ""),
@@ -318,7 +314,7 @@ def append_publish_bus_terminal_log(
             "next_action": str(error_details.get("next_action") or ""),
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "shop": platform,
-            "sku": str(draft.get("sku") or ""),
+            "sku": "、".join(str(row.get("sku") or "") for row in draft.get("sku_items", []) if row.get("selected")),
             "error": str(
                 error_details.get("summary")
                 or item.get("error")

@@ -25,22 +25,12 @@ export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
     images: [],
     status: 'pending',
     language,
-    stock: '',
-    sku: '',
-    upc: '',
-    packageDimensions: {
-      lengthCm: '',
-      widthCm: '',
-      heightCm: '',
-      weightKg: '',
-    },
     saleTerms: [],
     allowGtinExemption: false,
     validationErrors: [],
     publishStatus: '',
     lastPrecheck: {},
     lastPrecheckTarget: {},
-    publication: null,
   }
 }
 

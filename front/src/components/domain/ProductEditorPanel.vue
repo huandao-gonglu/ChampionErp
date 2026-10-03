@@ -40,6 +40,7 @@ watch(() => props.product.productId, () => {
         <p class="muted mt-1">维护商品原始资料、供应链字段和内部资料；平台标题、本地化商品描述和价格在草稿箱单独编辑。</p>
       </div>
       <div class="flex flex-wrap gap-2">
+        <button class="btn btn-outline" :disabled="props.loading || !attributesValid || !props.product.skuItems.some(sku => sku.active && !sku.barcode)" @click="emit('assignUpc')">为缺条码 SKU 分配 UPC</button>
         <button class="btn btn-primary" :disabled="props.loading || !attributesValid" @click="emit('save')">保存商品</button>
       </div>
     </div>

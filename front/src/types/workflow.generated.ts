@@ -317,12 +317,8 @@ export interface BackendPlatformDraft {
   target_sites?: Array<BackendDraftTargetSite>
   attributes?: Record<string, unknown>
   pricing?: Record<string, unknown>
-  stock?: string
-  sku?: string
-  upc?: string
   search_terms?: Array<string>
   language?: string
-  package_dimensions?: Record<string, string>
   validation_errors?: Array<unknown>
   images?: Array<BackendDraftImageRef>
   sale_terms?: Array<Record<string, unknown>>
@@ -332,7 +328,6 @@ export interface BackendPlatformDraft {
   last_precheck?: Record<string, unknown>
   last_precheck_target?: Record<string, unknown>
   last_publish_task?: Record<string, unknown>
-  publication?: BackendMercadoLibrePublication
   ai_copy_ready?: boolean
   copy_generated_at?: string
   copy_source?: string

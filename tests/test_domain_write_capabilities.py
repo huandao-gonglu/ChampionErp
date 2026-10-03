@@ -38,7 +38,6 @@ from erp_web.runtime_units.product_write_capabilities import (
     draft_delete,
     draft_read,
     draft_save,
-    draft_stock_update,
     product_delete,
     product_profile_patch,
     product_save,
@@ -63,7 +62,6 @@ from erp_web.schemas.product_write_capabilities import (
     DraftDeleteRequest,
     DraftReadRequest,
     DraftSaveRequest,
-    DraftStockUpdateRequest,
     ProductDeleteRequest,
     ProductProfilePatchRequest,
     ProductSaveRequest,
@@ -359,7 +357,7 @@ def test_write_receipts_are_bounded_and_exclude_full_aggregates() -> None:
 
     draft_receipt = draft_save(
         DraftSaveRequest(
-            draft={"draft_id": draft_id, "stock": "10", "platform": "mercadolibre"}
+            draft={"draft_id": draft_id, "title": "新草稿标题", "platform": "mercadolibre"}
         ),
         scope=scope,
         execution=_execution("op-receipt-draft"),
@@ -380,42 +378,8 @@ def test_write_receipts_are_bounded_and_exclude_full_aggregates() -> None:
     # 写入确实生效（回执紧凑不等于丢数据）。
     reloaded = context.products.load_product_from_index("product-receipt-large", "")
     assert str(reloaded.get("stock")) == "200"
-    assert str(context.db.load_draft_model(draft_id).get("stock")) == "10"
+    assert context.db.load_draft_model(draft_id)["title"] == "新草稿标题"
 
-
-def test_draft_stock_update_owns_publish_stock() -> None:
-    """库存 focused write：只改平台草稿库存，不触碰商品主档库存。"""
-
-    context = get_context()
-    saved_product = _seed_product("product-stock-focused")
-    draft_id = str(saved_product["drafts"]["mercadolibre"]["draft_id"])
-    scope = _write_scope()
-
-    result = draft_stock_update(
-        DraftStockUpdateRequest(draft_id=draft_id, stock="10"),
-        scope=scope,
-        execution=_execution("op-stock-focused"),
-    )
-    assert result.draft_id == draft_id
-    assert result.stock == "10"
-    assert result.changed is True
-    assert _receipt_bytes(result) < 8 * 1024
-
-    # 草稿库存已更新；商品主档库存不受影响（owner 分离）。
-    assert str(context.db.load_draft_model(draft_id).get("stock")) == "10"
-    reloaded = context.products.load_product_from_index("product-stock-focused", "")
-    assert str(reloaded.get("stock")) != "10"
-
-    with pytest.raises(BusinessCapabilityError) as missing:
-        draft_stock_update(
-            DraftStockUpdateRequest(draft_id="draft-missing", stock="5"),
-            scope=scope,
-            execution=_execution("op-stock-missing"),
-        )
-    assert missing.value.code == "DRAFT_NOT_FOUND"
-
-    with pytest.raises(Exception):
-        DraftStockUpdateRequest(draft_id=draft_id, stock="not-a-number")
 
 
 def test_product_profile_patch_is_partial() -> None:

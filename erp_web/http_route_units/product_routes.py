@@ -26,7 +26,10 @@ def handle_draft_pricing_apply(handler: JsonRequestHandler) -> None:
 
 
 def handle_assign_upc(handler: JsonRequestHandler) -> None:
-    handler.send_json(product_facade.assign_upc())
+    result, status = product_facade.assign_upc(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
+    handler.send_json(result, status)
 
 
 def handle_import_upcs(handler: JsonRequestHandler) -> None:

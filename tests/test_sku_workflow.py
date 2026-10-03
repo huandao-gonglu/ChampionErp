@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from erp_web.product_model.sku_model import collected_skus, merge_collected_skus, normalize_product_skus
+from erp_web.product_model.sku_model import collected_skus, merge_collected_skus, normalize_product_skus, single_sku_publish_draft
 from erp_web.runtime_units.publish_context import PreparedPublishContext
 from erp_web.runtime_units.sku_publish_adapter import SkuGroupPublishingAdapter
 from erp_web.runtime_units.sku_publish_projection import SkuGroupingMember, grouping_contract, sku_context, sku_quote_errors, validate_grouping
@@ -44,7 +44,8 @@ class ItemBoundary:
         return []
 
     def build_payload(self, context, config):
-        return {"offer_id": context.draft["sku"], "cost": context.product["cost"], "weight": context.draft["package_dimensions"]["weight_kg"], "attributes": context.draft["attributes"]}
+        draft = single_sku_publish_draft(context.product, {**context.draft, "platform": "ozon", "site": "global"})
+        return {"offer_id": draft["sku"], "cost": context.product["cost"], "weight": draft["package_dimensions"]["weight_kg"], "attributes": draft["attributes"]}
 
     def validate_payload(self, payload, config):
         return [] if payload.get("offer_id") else ["缺少卖家编码"]
@@ -165,7 +166,7 @@ def test_each_sku_projects_own_cost_package_and_draft_overrides(tmp_path):
         fact, row = selected_skus(product, draft)[1]
         projected = sku_context(context, fact, row, grouping_contract(context))
         assert projected.product["cost"] == "65"
-        assert projected.draft["package_dimensions"]["weight_kg"] == "2.5"
+        assert projected.product["sku_items"][0]["package_dimensions"]["weight_kg"] == "2.5"
         assert product["sku_items"][1]["cost_cny"] == "70"
         assert sku_quote_errors(fact, row, draft, "ozon:global")
         payload = SkuGroupPublishingAdapter(ItemBoundary()).build_payload(context, {})

@@ -98,7 +98,7 @@ def grouping_contract(context: PreparedPublishContext) -> dict[str, Any]:
 def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict[str, Any], grouping: dict[str, Any]) -> PreparedPublishContext:
     # 先缩小输入再复制，避免每个 SKU 都携带整组报价、其它平台草稿及上次预检。
     # 来源规格只服务采集；发布使用已经合并覆盖值的 fact，并保留完整图片池。
-    transient_fields = {"sku_items", "target_sites", "last_precheck", "category_precheck", "pricing", "validation_errors", "publication", "last_publish_task"}
+    transient_fields = {"sku_items", "target_sites", "last_precheck", "category_precheck", "pricing", "validation_errors", "last_publish_task"}
     single_draft = {key: value for key, value in context.draft.items() if key not in transient_fields}
     single_draft["sku_items"] = [row]
     single_draft["target_sites"] = [
@@ -133,16 +133,12 @@ def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict
             return attr_id not in variants or not category_attribute_value_is_valid(variants[attr_id], attrs.get(attr_id))
         # 公共页留下的旧缺失提示不能在每个已补齐的 SKU 上继续重复出现。
         reviews = [item for item in reviews if still_needs_review(item)]
-    publication = record(record(row.get("publications")).get(key))
-    remote = record(publication.get("result"))
-    draft.update({"sku": row["sku"], "stock": row.get("stock", ""), "upc": fact.get("barcode", ""),
-                  "package_dimensions": deepcopy(record(fact.get("package_dimensions"))), "pricing": pricing,
+    draft.update({"pricing": pricing,
                   "sku_custom_attributes": deepcopy(record(row.get("custom_attributes_by_target")).get(key, [])),
-                  "attributes": attrs, "validation_errors": reviews, "publication": deepcopy(record(remote.get("publication"))),
-                  "last_publish_task": deepcopy(publication)})
+                  "attributes": attrs, "validation_errors": reviews})
     # 普通字段修改不能携带整组远端身份；每次投影只关联这一 SKU。
     for target in draft.get("target_sites", []):
-        target.update({"attributes": deepcopy(attrs), "validation_errors": deepcopy(reviews), "publication": deepcopy(record(remote.get("publication"))), "last_publish_task": deepcopy(publication)})
+        target.update({"attributes": deepcopy(attrs), "validation_errors": deepcopy(reviews)})
         target["listing_currency"] = quote.get("listing_currency", "")
         target["currency_fingerprint"] = quote.get("currency_fingerprint", "")
         if context.platform == "mercadolibre":
@@ -172,7 +168,7 @@ class SkuGroupingMember:
     def from_projection(cls, context: PreparedPublishContext) -> "SkuGroupingMember":
         fact = context.product["sku_items"][0]
         return cls(
-            identity=PublishIssueSku(sku_id=fact["id"], sku=context.draft["sku"], name=text(fact.get("name"))),
+            identity=PublishIssueSku(sku_id=fact["id"], sku=context.draft["sku_items"][0]["sku"], name=text(fact.get("name"))),
             attributes=deepcopy(record(context.draft.get("attributes"))),
             custom_attributes=deepcopy(context.draft.get("sku_custom_attributes") or []),
         )

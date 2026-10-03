@@ -298,8 +298,11 @@ def extract_1688_context_data(html: str) -> dict[str, Any]:
             except ValueError:
                 pass
     price = f"{min(prices):g}" if prices else ""
-    image_urls = normalize_list(gallery_fields.get("mainImage") or gallery_fields.get("offerImgList"))
+    main_image_urls = normalize_list(gallery_fields.get("mainImage") or gallery_fields.get("offerImgList"))
+    image_urls = list(main_image_urls)
     image_urls.extend(sku_image_lookup.values())
+    description = _json_object_after(html, '"description":')
+    description_fields = description.get("fields") if isinstance(description.get("fields"), dict) else {}
 
     return {
         "title": title,
@@ -311,6 +314,8 @@ def extract_1688_context_data(html: str) -> dict[str, Any]:
         "weight_kg": weight_kg,
         "dimensions_text": dimensions_text,
         "image_urls": list(dict.fromkeys([url for url in image_urls if url])),
+        "main_image_urls": main_image_urls,
+        "detail_url": str(description_fields.get("detailUrl") or "").strip(),
         "offer_id": _clean_attribute_value((data_json.get("offerBaseInfo") or {}).get("offerId") if isinstance(data_json.get("offerBaseInfo"), dict) else temp_model.get("offerId"), 80),
     }
 
@@ -454,15 +459,11 @@ def finalize_collected_product(
 
 
 def collect_product_image_urls(html: str, page_url: str, snapshot_image_urls: list[Any] | None = None, limit: int = 20) -> list[str]:
-    """Prefer product-image candidates from HTML over raw DOM image order.
-
-    1688 pages contain many UI icons before the real product gallery in
-    ``document.images``.  The HTML extractor finds product-specific fields such
-    as og:image/mainUrl/imageUrl first, then we append DOM image URLs as a
-    fallback.
-    """
+    """结构化主图优先，避免 SKU、缩略图和推荐图挤占主图名额。"""
 
     candidates: list[Any] = []
+    if "1688.com" in (urllib.parse.urlparse(page_url).hostname or ""):
+        candidates.extend(extract_1688_context_data(html).get("main_image_urls", []))
     try:
         candidates.extend(html_extract_service.extract_product_image_urls(html, page_url, limit=max(limit * 2, 20)))
     except Exception:
@@ -490,6 +491,41 @@ def collect_product_image_urls(html: str, page_url: str, snapshot_image_urls: li
         if len(clean) >= limit:
             break
     return clean
+
+
+class _DetailImageParser(HTMLParser):
+    """只读取详情内容中的图片，不执行接口返回的 JavaScript。"""
+
+    def __init__(self, page_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.page_url = page_url
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "img":
+            return
+        values = dict(attrs)
+        raw = values.get("data-src") or values.get("src") or ""
+        url = html_extract_service.normalize_image_url(raw, self.page_url)
+        if urllib.parse.urlparse(url).scheme in {"https", "http"} and url not in self.urls:
+            self.urls.append(url)
+
+
+def extract_1688_detail_images(payload: str, page_url: str) -> list[str]:
+    """解析 offer_details JSON 或详情 HTML，保留全部图片及原始顺序。"""
+    content = payload.strip()
+    if not content.startswith("<"):
+        start = content.find("{")
+        try:
+            data, _ = json.JSONDecoder().raw_decode(content[start:])
+        except (ValueError, TypeError) as exc:
+            raise ValueError("1688 详情接口未返回有效图片内容") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("content"), str):
+            raise ValueError("1688 详情接口缺少 content")
+        content = data["content"]
+    parser = _DetailImageParser(page_url)
+    parser.feed(content)
+    return parser.urls
 
 
 def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> dict[str, Any]:
@@ -568,24 +604,26 @@ def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> di
     if parsed_weight and not product.get("weight_kg"):
         product["weight_kg"] = parsed_weight
 
-    source_dir = get_context().paths.source_dir
-    source_dir.mkdir(parents=True, exist_ok=True)
-    image_paths: list[str] = []
-    context_images = normalize_list(context.get("image_urls"))
-    if context_images:
-        image_urls = list(dict.fromkeys(context_images + image_urls))
-    extracted_image_urls = collect_product_image_urls(html, page_url, image_urls, limit=20)
-    if extracted_image_urls:
-        try:
-            image_paths = html_extract_service.download_images(extracted_image_urls, source_dir)
-        except Exception:
-            image_paths = []
+    # 公共图与规格图分别建立引用；统一由采集入库边界下载一次，保留原 URL
+    # 作为稳定身份，不能同时把下载路径和远程 URL 创建成两个素材。
+    public_images = list(context.get("main_image_urls") or [])
+    if not public_images:
+        sku_images = {row.get("image") for row in context.get("skus", [])}
+        public_images = [url for url in collect_product_image_urls(html, page_url, image_urls)
+                         if url not in sku_images]
+    detail_url = context.get("detail_url")
+    if detail_url:
+        payload = html_extract_service.fetch_1688_detail_html(detail_url)
+        public_images.extend(extract_1688_detail_images(payload, detail_url))
+    public_images = list(dict.fromkeys(
+        html_extract_service.normalize_image_url(url, page_url) for url in public_images if url
+    ))
 
     return finalize_collected_product(
         product,
         "1688",
         page_url,
-        image_refs=image_paths + extracted_image_urls,
+        image_refs=public_images,
         price=price,
         currency=currency,
     )
@@ -688,6 +726,7 @@ def parse_generic_product(raw_data: str | dict[str, Any], page_url: str = "") ->
 
 __all__ = [
     "collect_product_image_urls",
+    "extract_1688_detail_images",
     "extract_1688_attribute_table",
     "extract_1688_attributes",
     "extract_1688_context_data",

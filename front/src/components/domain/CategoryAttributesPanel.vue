@@ -47,7 +47,6 @@ const emit = defineEmits<{
   applyCategory: []
   translateCategoryResults: []
   translateCategoryAttributes: []
-  updatePackageDimension: [field: PackageDimensionField, value: string]
   invalidateCategoryPrecheck: []
   categoryPrecheck: []
 }>()
@@ -80,24 +79,14 @@ const sharedMercadoLibreMarketSummary = computed(() => (
 const showRequiredAttributes = ref(props.skuScope)
 const showOptionalAttributes = ref(props.skuScope)
 const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | null>>({})
-type PackageDimensionField = keyof DraftDetail['packageDimensions']
-type PackageDimensionAttributeMapping = {
-  field: PackageDimensionField
-  unit: 'cm' | 'kg'
-}
 type RootDraftAttributeField = 'brand' | 'model'
 
-const MERCADO_PACKAGE_DIMENSION_ATTRIBUTES: Record<string, PackageDimensionAttributeMapping> = {
-  PACKAGE_LENGTH: { field: 'lengthCm', unit: 'cm' },
-  PACKAGE_WIDTH: { field: 'widthCm', unit: 'cm' },
-  PACKAGE_HEIGHT: { field: 'heightCm', unit: 'cm' },
-  PACKAGE_WEIGHT: { field: 'weightKg', unit: 'kg' },
-}
 const MERCADO_ROOT_DRAFT_ATTRIBUTES: Record<string, RootDraftAttributeField> = {
   BRAND: 'brand',
   MODEL: 'model',
 }
 const MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS = new Set([
+  'PACKAGE_LENGTH', 'PACKAGE_WIDTH', 'PACKAGE_HEIGHT', 'PACKAGE_WEIGHT',
   'SELLER_SKU',
   'GTIN',
   'UPC',
@@ -268,11 +257,6 @@ function usesRemoteAttributeOptions(attr: CategoryAttributeDefinition) {
     || Boolean(attr.hasMoreValues)
 }
 
-function packageDimensionAttribute(attrId: string): PackageDimensionAttributeMapping | null {
-  if (props.target.platform !== 'mercadolibre') return null
-  return MERCADO_PACKAGE_DIMENSION_ATTRIBUTES[attrId] || null
-}
-
 function rootDraftAttribute(attrId: string): RootDraftAttributeField | null {
   if (props.target.platform !== 'mercadolibre') return null
   return MERCADO_ROOT_DRAFT_ATTRIBUTES[attrId] || null
@@ -295,22 +279,6 @@ function setRootDraftAttributeValue(attrId: string, value: string) {
   activeDraft.value[field] = value.trim()
   // BRAND/MODEL 的唯一事实源是草稿根字段，attributes 不保留重复值。
   delete activeDraft.value.attributes[attrId]
-  invalidateEditedAttribute(attrId)
-}
-
-function packageDimensionAttributeValue(attrId: string) {
-  const mapping = packageDimensionAttribute(attrId)
-  return mapping ? activeDraft.value.packageDimensions[mapping.field] : ''
-}
-
-function setPackageDimensionAttributeValue(attrId: string, value: string) {
-  const mapping = packageDimensionAttribute(attrId)
-  if (!mapping) return
-  const normalizedValue = value.trim()
-  activeDraft.value.packageDimensions[mapping.field] = normalizedValue
-  // PACKAGE_* 是发布边界从规范化包装尺寸派生的 wire 属性，不保留第二份值。
-  delete activeDraft.value.attributes[attrId]
-  emit('updatePackageDimension', mapping.field, normalizedValue)
   invalidateEditedAttribute(attrId)
 }
 
@@ -900,24 +868,7 @@ function targetLabel(target: MarketplaceTargetSite) {
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
               <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">该属性需要核对，请确认商品资料。</span>
-              <div v-if="packageDimensionAttribute(attr.id)" class="mt-1">
-                <div class="flex gap-2">
-                  <input
-                    :ref="(el) => setAttributeInputRef(attr.id, el)"
-                    :value="packageDimensionAttributeValue(attr.id)"
-                    class="input"
-                    :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
-                    :data-attribute-id="attr.id"
-                    :data-package-dimension-field="packageDimensionAttribute(attr.id)?.field"
-                    inputmode="decimal"
-                    placeholder="请输入草稿包装尺寸"
-                    @input="setPackageDimensionAttributeValue(attr.id, ($event.target as HTMLInputElement).value)"
-                  />
-                  <span class="input flex w-20 shrink-0 items-center justify-center bg-accent-50 text-accent-500 dark:bg-dark-800 dark:text-accent-300">{{ packageDimensionAttribute(attr.id)?.unit }}</span>
-                </div>
-                <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">来自草稿包装尺寸，修改后同步用于发布预检和 Mercado Payload。</p>
-              </div>
-              <div v-else-if="rootDraftAttribute(attr.id) && !usesRootDraftAttributePicker(attr)" class="mt-1">
+              <div v-if="rootDraftAttribute(attr.id) && !usesRootDraftAttributePicker(attr)" class="mt-1">
                 <input
                   :ref="(el) => setAttributeInputRef(attr.id, el)"
                   :value="rootDraftAttributeValue(attr.id)"
@@ -1054,23 +1005,7 @@ function targetLabel(target: MarketplaceTargetSite) {
               <span class="text-xs font-semibold text-slate-500">{{ attributeLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
-              <div v-if="packageDimensionAttribute(attr.id)" class="mt-1">
-                <div class="flex gap-2">
-                  <input
-                    :ref="(el) => setAttributeInputRef(attr.id, el)"
-                    :value="packageDimensionAttributeValue(attr.id)"
-                    class="input"
-                    :data-attribute-id="attr.id"
-                    :data-package-dimension-field="packageDimensionAttribute(attr.id)?.field"
-                    inputmode="decimal"
-                    placeholder="请输入草稿包装尺寸"
-                    @input="setPackageDimensionAttributeValue(attr.id, ($event.target as HTMLInputElement).value)"
-                  />
-                  <span class="input flex w-20 shrink-0 items-center justify-center bg-accent-50 text-accent-500 dark:bg-dark-800 dark:text-accent-300">{{ packageDimensionAttribute(attr.id)?.unit }}</span>
-                </div>
-                <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">来自草稿包装尺寸，修改后同步用于发布预检和 Mercado Payload。</p>
-              </div>
-              <div v-else-if="rootDraftAttribute(attr.id) && !usesRootDraftAttributePicker(attr)" class="mt-1">
+              <div v-if="rootDraftAttribute(attr.id) && !usesRootDraftAttributePicker(attr)" class="mt-1">
                 <input
                   :ref="(el) => setAttributeInputRef(attr.id, el)"
                   :value="rootDraftAttributeValue(attr.id)"

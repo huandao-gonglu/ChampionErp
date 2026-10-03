@@ -142,24 +142,16 @@ class DraftReadView(BaseModel):
     description: TrimmedText = ""
     brand: TrimmedText = ""
     model: TrimmedText = ""
-    sku: TrimmedText = ""
-    upc: TrimmedText = ""
-    stock: TrimmedText = ""
     language: TrimmedText = ""
     category_id: TrimmedText = ""
     description_category_id: TrimmedText = ""
     category_path: TrimmedText = ""
     attributes: dict[str, JsonValue] = Field(default_factory=dict)
-    package_dimensions: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description="草稿共用包装尺寸：length_cm、width_cm、height_cm、weight_kg；逐 SKU 的有效包装尺寸用 draft_attributes_read(scope=sku) 读取，不自动继承共用值。",
-    )
     image_count: int = 0
     validation_errors: tuple[JsonValue, ...] = ()
     category_precheck: dict[str, JsonValue] = Field(default_factory=dict)
     last_precheck: dict[str, JsonValue] = Field(default_factory=dict)
     last_publish_task: dict[str, JsonValue] = Field(default_factory=dict)
-    publication: dict[str, JsonValue] = Field(default_factory=dict)
     pricing_summary: dict[str, JsonValue] = Field(default_factory=dict)
     sku_items: tuple[dict[str, JsonValue], ...] = ()
     sku_count: int = 0
@@ -259,40 +251,6 @@ class DraftDeleteResult(BaseModel):
     affected_product_ids: tuple[str, ...] = ()
 
 
-class DraftStockUpdateRequest(BaseModel):
-    """Focused write：平台草稿库存的唯一 owner 写入。
-
-    发布流程中的库存以平台草稿为 owner；商品主档库存只能作为默认值或
-    来源事实，不得替代目标市场草稿库存。
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    draft_id: Annotated[
-        TrimmedText,
-        StringConstraints(min_length=1, max_length=160),
-    ]
-    stock: Annotated[
-        TrimmedText,
-        StringConstraints(min_length=1, max_length=40),
-    ]
-
-    @model_validator(mode="after")
-    def require_numeric_stock(self) -> "DraftStockUpdateRequest":
-        if not self.stock.isdigit():
-            raise ValueError("stock 必须是非负整数字符串，例如 10。")
-        return self
-
-
-class DraftStockUpdateResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    draft_id: str = Field(default="", max_length=160)
-    stock: str = Field(default="", max_length=40)
-    updated_at: str = Field(default="", max_length=64)
-    changed: bool = False
-
-
 class ProductProfilePatchRequest(BaseModel):
     """Focused write：商品主档部分补丁；未提供字段保持原值。"""
 
@@ -327,8 +285,6 @@ __all__ = [
     "DraftReadResult",
     "DraftSaveRequest",
     "DraftSaveResult",
-    "DraftStockUpdateRequest",
-    "DraftStockUpdateResult",
     "ProductDeleteRequest",
     "ProductDeleteResult",
     "ProductProfilePatch",

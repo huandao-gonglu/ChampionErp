@@ -108,8 +108,6 @@ class ProductPublishSummary(BaseModel):
     title: Annotated[TrimmedText, StringConstraints(max_length=500)] = ""
     category_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     listing_currency: Annotated[TrimmedText, StringConstraints(max_length=16)] = ""
-    price: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    stock: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     image_count: int = Field(default=0, ge=0)
     sku_items: tuple[ProductPublishSkuSummary, ...] = ()
     grouping_mode: str = ""

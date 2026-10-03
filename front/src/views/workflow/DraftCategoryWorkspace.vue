@@ -34,10 +34,6 @@ useAiPageContext(() => {
   }
 }, 10)
 
-const emit = defineEmits<{
-  updatePackageDimension: [field: 'lengthCm' | 'widthCm' | 'heightCm' | 'weightKg', value: string]
-}>()
-
 let active = true
 onBeforeUnmount(() => { active = false })
 onMounted(async () => {
@@ -96,7 +92,6 @@ onMounted(async () => {
           @apply-category="editor.run(editor.actions.loadCategoryAttributes)"
           @translate-category-results="editor.run(editor.actions.translateCategoryResults)"
           @translate-category-attributes="editor.run(editor.actions.translateCategoryAttributes)"
-          @update-package-dimension="(field, value) => emit('updatePackageDimension', field, value)"
           @invalidate-category-precheck="editor.actions.invalidateCategoryPrecheck"
           @category-precheck="editor.run(editor.actions.runCategoryOnlyPrecheck)"
         />

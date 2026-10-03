@@ -32,6 +32,8 @@ from erp_web.services.mercadolibre_attribute_contract import (
 from erp_web.stores.config_store import summarize_store_auth_states
 from erp_web.stores.product_store import normalize_product_fields
 
+from erp_web.product_model.sku_model import single_sku_publish_draft
+
 from .copy_generation import apply_product_drafts_to_plan, build_plan_for_platform
 from .draft_publish_context import draft_for_publish_target
 from .image_pool_core import (
@@ -39,23 +41,6 @@ from .image_pool_core import (
     current_image_pool,
     image_pool_refs_for_platform,
 )
-
-def assign_upc() -> dict[str, Any]:
-    """在同一事务内为当前商品占用 UPC 并保存商品/草稿。"""
-    product = normalize_product_fields(get_context().products.load_product())
-    value, saved = get_context().products.assign_upc_to_product(product)
-    if not value:
-        return {"ok": False, "error": "UPC 池为空，请先在设置中导入 UPC"}
-    return {
-        "ok": True,
-        "upc": value,
-        "product": saved,
-        "productsIndex": get_context().products.load_products_index(),
-        "imagePool": current_image_pool(saved),
-        "upcPool": get_context().db.upc_pool_stats(),
-        "message": f"UPC 已分配：{value}",
-    }
-
 
 def build_mercadolibre_publish_payload(
     product: dict[str, Any],
@@ -672,7 +657,7 @@ def _draft_for_selected_target(
         else []
     )
     if not targets:
-        return draft
+        return single_sku_publish_draft(product, draft)
     platform_key = str(platform or "").strip().lower()
     site_id = str(draft.get("site") or draft.get("site_id") or "").strip()
     target = next(
@@ -693,11 +678,10 @@ def _draft_for_selected_target(
         None,
     )
     if target is None:
-        return draft
-    return draft_for_publish_target(
-        draft,
-        normalize_draft_target_site(target, platform_key),
-    )
+        return single_sku_publish_draft(product, draft)
+    return single_sku_publish_draft(product, draft_for_publish_target(
+        draft, normalize_draft_target_site(target, platform_key),
+    ))
 
 
 def _selected_price_and_currency(
@@ -830,7 +814,6 @@ __all__ = [
     "_has_main_image",
     "_masked_auth_status",
     "_required_attribute_summary",
-    "assign_upc",
     "build_mercadolibre_publish_payload",
     "compact_precheck",
     "compact_precheck_items",

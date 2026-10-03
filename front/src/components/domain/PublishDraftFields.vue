@@ -23,14 +23,8 @@ const warrantyUnitOptions: Array<{ value: WarrantyUnit; label: string }> = [
 
 const activeDraft = computed(() => {
   const draft = props.draft
-  if (!draft.packageDimensions) {
-    draft.packageDimensions = { lengthCm: '', widthCm: '', heightCm: '', weightKg: '' }
-  }
   if (!Array.isArray(draft.saleTerms)) {
     draft.saleTerms = []
-  }
-  if (typeof draft.upc !== 'string') {
-    draft.upc = ''
   }
   if (typeof draft.allowGtinExemption !== 'boolean') {
     draft.allowGtinExemption = false

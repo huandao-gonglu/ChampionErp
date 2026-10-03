@@ -102,7 +102,7 @@ describe('publishPrecheck API mapping', () => {
     const product = createEmptyProduct()
     product.productId = 'prod-1'
     product.drafts.mercadolibre.title = 'Draft title'
-    product.drafts.mercadolibre.stock = '10'
+    product.drafts.mercadolibre.skuItems = [{ sku_id: 'sku-1', selected: true, sku: 'SELL-1', stock: '10', overrides: {}, attributes_by_target: {}, pricing: {}, publications: {} }]
     product.drafts.mercadolibre.status = 'claimed'
     product.raw = {
       drafts: {

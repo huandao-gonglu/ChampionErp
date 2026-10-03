@@ -122,3 +122,27 @@ def temp_app_context(app_dir: Path) -> Iterator[AppContext]:
                 clear_context()
             else:
                 set_context(previous)
+
+
+def sku_publish_fixture(product: dict[str, Any], platform: str) -> dict[str, Any]:
+    """将平台协议测试的单品参数装配到实际 SKU 契约，不给生产代码提供旧字段回退。"""
+    from copy import deepcopy
+    draft = product["drafts"][platform]
+    pricing = deepcopy(draft.get("pricing") or {})
+    pricing["applied"] = True
+    quotes = pricing.get("targets") or {}
+    basis = next(iter(quotes.values()), {}).get("calculation_basis", {})
+    fact = {"id": "single", "name": draft.get("title", "测试规格"), "active": True,
+            "cost_cny": product.get("cost") or basis.get("cost_cny", ""),
+            "barcode": draft.pop("upc", ""), "package_dimensions": draft.pop("package_dimensions", {})}
+    row = {"sku_id": "single", "selected": True, "sku": draft.pop("sku", "SELL-1"),
+           "stock": draft.pop("stock", ""), "pricing": pricing,
+           "overrides": {}, "attributes_by_target": {}, "publications": {}}
+    key = f"{platform}:{draft.get('site', 'global')}".lower()
+    remote = draft.pop("publication", {})
+    task = draft.pop("last_publish_task", {})
+    if remote or task:
+        row["publications"][key] = {**task, "result": {**task, "publication": remote}}
+    product["sku_items"] = [fact]
+    draft["sku_items"] = [row]
+    return product

@@ -155,7 +155,7 @@ describe('类目 Schema 分离（废弃字段不再读写）', () => {
     expect(normalized.productId).toBe('')
     expect(normalized.categoryId).toBe('')
     expect(normalized.pricing).toEqual({})
-    expect(normalized.packageDimensions.lengthCm).toBe('')
+    expect(normalized).not.toHaveProperty('packageDimensions')
     expect(normalized.targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
   })
 

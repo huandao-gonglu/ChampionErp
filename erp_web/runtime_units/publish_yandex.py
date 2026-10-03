@@ -43,7 +43,7 @@ from erp_web.stores.product_store import normalize_product_fields
 
 from .collect_helpers import collect_time_iso
 from .publish_helpers import (
-    _draft_for_platform,
+    _draft_for_selected_target,
     _draft_images,
     _required_attribute_summary,
     _selected_price_and_currency,
@@ -213,7 +213,7 @@ def yandex_invalid_dictionary_attributes(
     """返回草稿中缺少平台枚举选择的 strict_enum 属性 ID。"""
 
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "yandex")
+    draft = _draft_for_selected_target(product, "yandex")
     definitions = _record_schema_definitions(category_record)
     attributes = (
         draft.get("attributes")
@@ -250,7 +250,7 @@ def yandex_invalid_unit_attributes(
     """返回草稿值单位不在类目允许范围内的属性 ID。"""
 
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "yandex")
+    draft = _draft_for_selected_target(product, "yandex")
     definitions = _record_schema_definitions(category_record)
     attributes = (
         draft.get("attributes")
@@ -293,7 +293,7 @@ def yandex_mapped_parameter_count(
     """
 
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "yandex")
+    draft = _draft_for_selected_target(product, "yandex")
     definitions = _record_schema_definitions(category_record)
     attributes = (
         draft.get("attributes")
@@ -611,7 +611,7 @@ def build_yandex_publish_payload(
     """构造确定性复合 payload：目录商品 / 上架条件 / 价格 / 库存。"""
 
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "yandex")
+    draft = _draft_for_selected_target(product, "yandex")
     store = _yandex_store(config)
     conflict = yandex_offer_identity_conflict(draft)
     if conflict:

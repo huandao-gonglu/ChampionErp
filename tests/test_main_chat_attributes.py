@@ -148,12 +148,11 @@ def test_paginated_read_preserves_each_sku_facts_and_all_saved_attributes(subjec
 
 
 @pytest.mark.parametrize("missing_dimension", ["", "0.0"])
-def test_read_tools_preserve_shared_dimensions_without_filling_missing_sku_dimensions(
+def test_read_tools_expose_sku_dimensions_without_shared_fallback(
     subject, missing_dimension,
 ):
-    """复现主档为空、草稿有尺寸、SKU 未填的现场，三个读取入口都保留事实层级。"""
+    """主档无尺寸时，读取只返回 SKU 事实及该 SKU 的覆盖值。"""
     app, draft_id, _ = subject
-    dimensions = {"length_cm": "13", "width_cm": "10", "height_cm": "5", "weight_kg": "0.65"}
     product = app.products.load_product_from_index("product-native-0")
     product["dimensions"] = ""
     product["source"]["dimensions"] = {}
@@ -162,7 +161,6 @@ def test_read_tools_preserve_shared_dimensions_without_filling_missing_sku_dimen
             key: missing_dimension for key in ("length_cm", "width_cm", "height_cm")
         })
     draft = product["drafts"]["ozon"]
-    draft["package_dimensions"] = dimensions
     draft["sku_items"][1]["overrides"] = {"package_dimensions": {"length_cm": "26"}}
     app.products.save_product(product)
     before = app.products.load_product_from_index("product-native-0")
@@ -174,15 +172,15 @@ def test_read_tools_preserve_shared_dimensions_without_filling_missing_sku_dimen
     product_result = product_read(
         ProductReadRequest(draft_id=draft_id, platform="ozon", site="global"), scope,
     ).model_dump(mode="json")
-    assert draft_result["draft"]["package_dimensions"] == dimensions
-    assert product_result["draft"]["package_dimensions"] == dimensions
+    assert "package_dimensions" not in draft_result["draft"]
+    assert "package_dimensions" not in product_result["draft"]
     assert product_result["product"]["dimensions"] == ""
 
     for offset in (0, 1):
         result = draft_attributes_read(
             DraftAttributesReadRequest(draft_id=draft_id, scope="sku", offset=offset, limit=1), scope,
         ).model_dump(mode="json")
-        assert result["package_dimensions"] == dimensions
+        assert "package_dimensions" not in result
         sku_dimensions = result["skus"][0]["package_dimensions"]
         assert sku_dimensions["length_cm"] == (missing_dimension if offset == 0 else "26")
         assert sku_dimensions["width_cm"] == sku_dimensions["height_cm"] == missing_dimension

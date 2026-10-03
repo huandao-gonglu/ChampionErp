@@ -428,7 +428,6 @@ def test_save_receipts_do_not_use_unbounded_dict_resource() -> None:
         DraftDuplicateResult,
         DraftSkuSelectionUpdateResult,
         DraftSaveResult,
-        DraftStockUpdateResult,
         ProductProfilePatchResult,
         ProductSaveResult,
     )
@@ -439,7 +438,6 @@ def test_save_receipts_do_not_use_unbounded_dict_resource() -> None:
         ProductSaveResult,
         DraftSaveResult,
         ProductProfilePatchResult,
-        DraftStockUpdateResult,
         DraftPricingResult,
     ):
         for field_name, field in model.model_fields.items():
@@ -475,7 +473,6 @@ def test_generic_object_saves_not_in_global_task_allowlist() -> None:
         )
     for focused in (
         "product_profile_patch",
-        "draft_stock_update",
         "draft_duplicate",
         "draft_sku_selection_update",
         "draft_sku_package_update",
@@ -833,3 +830,16 @@ def test_image_hosting_has_one_sdk_boundary_and_no_retired_delivery():
     routes = (ROOT / "erp_web/http_route_units/image_hosting_routes.py").read_text()
     assert "runtime_units" not in routes
     assert routes.count("handler.read_body()") == routes.count("validate_request_payload(handler.read_body(), endpoint=handler.path)")
+
+
+def test_draft_sales_facts_are_owned_only_by_skus() -> None:
+    from erp_web.schemas.product import PlatformDraft
+    from erp_web.schemas.product_write_capabilities import DraftReadView
+    from erp_web.ai_capability_composition import _WRITE_CAPABILITIES
+    from erp_web.runtime_units.product_write_capabilities import DRAFT_WRITE_AI_CAPABILITIES
+
+    retired = {"sku", "stock", "upc", "package_dimensions", "publication"}
+    assert not retired.intersection(PlatformDraft.__annotations__)
+    assert not retired.intersection(DraftReadView.model_fields)
+    assert "draft_stock_update" not in _WRITE_CAPABILITIES
+    assert all(function.__name__ != "draft_stock_update" for function in DRAFT_WRITE_AI_CAPABILITIES)

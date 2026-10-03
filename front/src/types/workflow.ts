@@ -142,43 +142,6 @@ export interface MarketplaceSiteToSell {
   netProceeds?: string
 }
 
-export interface MercadoLibreMarketPublication {
-  siteId: string
-  itemId: string
-  userProductId: string
-  sellerId: string
-  logisticType: string
-  status: string
-  price: number | string | null
-  netProceeds: number | string | null
-  freeShipping: boolean | null
-  saleTerms: UnknownRecord[]
-  currencyId: string
-  listingTypeId: string
-  error: string | UnknownRecord | unknown[]
-  lastOperation: UnknownRecord
-  updatedAt: string
-}
-
-/** 一个内部商品对应的 Mercado Libre Siteless User Product 及其市场投影。 */
-export interface MercadoLibrePublication {
-  model: string
-  accountUserId: string
-  sitelessUserProductId: string
-  sitelessFamilyId: string
-  parentItemId: string
-  parentUserProductId: string
-  sellerId: string
-  status: string
-  familyName: string
-  markets: MercadoLibreMarketPublication[]
-  /** 已被 Mercado 确认的字段快照，用于后续增量 PUT，前端不得丢弃。 */
-  confirmedPayload: UnknownRecord
-  error: string | UnknownRecord | unknown[]
-  lastOperation: UnknownRecord
-  updatedAt: string
-}
-
 /** 发布预览确认态：payload、digest 与摘要同生命周期，预览被清空即失效。 */
 export interface PayloadPreviewState {
   platform: Marketplace
@@ -341,22 +304,12 @@ export interface MarketplaceDraft {
   images: DraftImageRef[]
   status: WorkflowStatus
   language: string
-  stock: string
-  sku: string
-  upc: string
-  packageDimensions: {
-    lengthCm: string
-    widthCm: string
-    heightCm: string
-    weightKg: string
-  }
   saleTerms: UnknownRecord[]
   allowGtinExemption: boolean
   validationErrors: Array<UnknownRecord | string>
   publishStatus: string
   lastPrecheck: UnknownRecord
   lastPrecheckTarget: UnknownRecord
-  publication: MercadoLibrePublication | null
 }
 
 export interface Product {

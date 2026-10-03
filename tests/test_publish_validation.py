@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from tests.runtime_test_utils import sku_publish_fixture
 
 import erp_web.runtime_units.publish_validation as publish_validation
 from erp_web.context import get_context
@@ -103,7 +104,7 @@ def _ml_cbt_product(
         "MODEL": "Model",
         "GTIN": "123456789012",
     }
-    return {
+    return sku_publish_fixture({
         "sku": "SKU-CBT",
         "drafts": {
             "mercadolibre": {
@@ -152,7 +153,7 @@ def _ml_cbt_product(
                 "is_main": True,
             }
         ],
-    }
+    }, "mercadolibre")
 
 
 def _ml_category_definition():
@@ -291,7 +292,7 @@ def test_mercadolibre_traditional_precheck_accepts_net_proceeds_binding() -> Non
 
 def test_mercadolibre_traditional_precheck_rejects_unconfirmed_parent_payload() -> None:
     product = _ml_cbt_product()
-    product["drafts"]["mercadolibre"]["publication"] = {
+    product["drafts"]["mercadolibre"]["sku_items"][0]["publications"]["mercadolibre:cbt"] = {"result": {"publication": {
         "model": "traditional_global_items",
         "parent_item_id": "CBT100",
         "markets": [
@@ -301,7 +302,7 @@ def test_mercadolibre_traditional_precheck_rejects_unconfirmed_parent_payload() 
                 "item_id": "MLM100",
             }
         ],
-    }
+    }}}
 
     result = _validate(
         product,
@@ -316,7 +317,7 @@ def test_mercadolibre_traditional_precheck_rejects_unconfirmed_parent_payload() 
 
 def test_mercadolibre_traditional_precheck_rejects_parent_category_change() -> None:
     product = _ml_cbt_product(category_id="CBT2")
-    product["drafts"]["mercadolibre"]["publication"] = {
+    product["drafts"]["mercadolibre"]["sku_items"][0]["publications"]["mercadolibre:cbt"] = {"result": {"publication": {
         "model": "traditional_global_items",
         "parent_item_id": "CBT100",
         "confirmed_payload": {"contract_version": 1, "category_id": "CBT1"},
@@ -327,7 +328,7 @@ def test_mercadolibre_traditional_precheck_rejects_parent_category_change() -> N
                 "item_id": "MLM100",
             }
         ],
-    }
+    }}}
 
     result = _validate(
         product,
@@ -344,7 +345,7 @@ def test_mercadolibre_precheck_does_not_restore_product_upc_for_exempt_draft() -
     product = _ml_cbt_product()
     product["upc"] = "725272000243"
     draft = product["drafts"]["mercadolibre"]
-    draft["upc"] = ""
+    product["sku_items"][0]["barcode"] = ""
     draft["allow_gtin_exemption"] = True
     draft["target_sites"][0]["attributes"].pop("GTIN", None)
 
@@ -743,7 +744,7 @@ def test_mercadolibre_precheck_projects_parent_contract() -> None:
 
 def test_mercadolibre_precheck_groups_official_package_minimums_under_parent() -> None:
     product = _ml_cbt_product()
-    product["drafts"]["mercadolibre"]["package_dimensions"] = {
+    product["sku_items"][0]["package_dimensions"] = {
         "length_cm": "2.9",
         "width_cm": "4",
         "height_cm": "5",
@@ -957,7 +958,7 @@ def test_mercadolibre_precheck_projects_package_rule_to_market_scope() -> None:
     )
     draft = product["drafts"]["mercadolibre"]
     draft["global_title"] = "Dog house"
-    draft["package_dimensions"] = {
+    product["sku_items"][0]["package_dimensions"] = {
         "length_cm": "46",
         "width_cm": "44",
         "height_cm": "100",
@@ -1195,7 +1196,7 @@ def test_mercadolibre_precheck_invalidates_pricing_when_sales_targets_change() -
             {"site_id": "MLB", "logistic_type": "remote"}
         ],
     }
-    product["drafts"]["mercadolibre"]["pricing"] = {
+    product["drafts"]["mercadolibre"]["sku_items"][0]["pricing"] = {
         "targets": {
             "mercadolibre:cbt": {
                 "listing_currency": "USD",

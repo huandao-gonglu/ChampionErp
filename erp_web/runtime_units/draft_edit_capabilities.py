@@ -96,7 +96,7 @@ def draft_sku_selection_update(
         "修改指定草稿中指定已选启用 SKU 的实际包装长宽高（cm）或重量（kg）。"
         "先用 draft_attributes_read(scope=sku) 读取 SKU ID 和现有尺寸；sku_ids 列出的 SKU 应用同一组明确值，"
         "不同尺寸分组调用。只更新 package_dimensions 中提供的字段，省略重量可保留各 SKU 原有重量。"
-        "写入草稿 SKU 的 overrides.package_dimensions，不修改商品主档、草稿共用尺寸、平台属性或其他 SKU。"
+        "写入草稿 SKU 的 overrides.package_dimensions，不修改商品主档、平台属性或其他 SKU。"
         "返回已处理 SKU、字段值和 changed_count；这是包装资料写入口，不要用 draft_sku_attributes_update 写包装字段。"
     ),
     permission="draft.write",

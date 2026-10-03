@@ -28,8 +28,8 @@ export interface StoreSettingsResult {
   storeAuthSummary: UnknownRecord
 }
 
-export async function assignUpc(): Promise<ProductMutationResponse> {
-  const response = await apiClient.post('/api/assign-upc', {})
+export async function assignUpc(productId: string): Promise<ProductMutationResponse> {
+  const response = await apiClient.post('/api/assign-upc', { product_id: productId })
   return normalizeProductMutation(response.data)
 }
 

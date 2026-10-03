@@ -259,8 +259,9 @@ def test_duplicate_draft_api_creates_an_independent_draft(
     assert duplicated["ok"] is True
     assert duplicated["draft"]["draft_id"] != original_id
     assert duplicated["draft"]["product_id"] == saved["product"]["product_id"]
-    assert duplicated["draft"]["sku"]
-    assert duplicated["draft"]["upc"] == ""
+    assert "sku" not in duplicated["draft"]
+    assert "upc" not in duplicated["draft"]
+    assert all(row["sku"] for row in duplicated["draft"]["sku_items"])
     assert any(
         item["draft_id"] == original_id for item in duplicated["draftsIndex"]
     )

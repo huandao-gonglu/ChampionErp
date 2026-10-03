@@ -25,8 +25,6 @@ from erp_web.schemas.product_write_capabilities import (
     DraftReadView,
     DraftSaveRequest,
     DraftSaveResult,
-    DraftStockUpdateRequest,
-    DraftStockUpdateResult,
     ProductDeleteRequest,
     ProductDeleteResult,
     ProductProfilePatchRequest,
@@ -181,7 +179,7 @@ def _ai_draft_product_context(value: Any) -> dict[str, Any]:
     compact["sku_items"] = [
         {
             key: _bounded_attribute_value(row.get(key))
-            for key in ("id", "name", "cost_cny", "options", "package_dimensions", "active")
+            for key in ("id", "name", "cost_cny", "supplier_stock", "barcode", "options", "package_dimensions", "active")
         }
         for row in context.get("sku_items", [])[:100]
     ]
@@ -283,66 +281,21 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
     for site in target_sites[:_DRAFT_VIEW_TARGET_MAX]:
         if isinstance(site, dict):
             bounded_targets.append(_bounded_dict_subset(site, _DRAFT_VIEW_TARGET_KEYS))
-    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
-    pricing_targets = (
-        pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
-    )
     pricing_summary: dict[str, Any] = {}
-    for target_key, target_value in list(pricing_targets.items())[:16]:
-        applied = (
-            target_value.get("applied_price")
-            if isinstance(target_value, dict)
-            and isinstance(target_value.get("applied_price"), dict)
-            else {}
-        )
-        pricing_summary[_text(target_key)[:80]] = {
-            "listing_currency": _bounded_text(
-                (target_value or {}).get("listing_currency"), max_length=16
-            )
-            if isinstance(target_value, dict)
-            else "",
-            "amount": _bounded_text(applied.get("amount"), max_length=40),
-            "currency": _bounded_text(applied.get("currency"), max_length=16),
-        }
-    publication = (
-        draft.get("publication") if isinstance(draft.get("publication"), dict) else {}
-    )
-    bounded_publication = _bounded_dict_subset(
-        publication,
-        (
-            "model",
-            "account_user_id",
-            "parent_item_id",
-            "parent_user_product_id",
-            "siteless_user_product_id",
-            "siteless_family_id",
-            "seller_id",
-            "family_name",
-            "status",
-            "updated_at",
-        ),
-    )
-    bounded_publication["markets"] = [
-        _bounded_dict_subset(
-            item,
-            (
-                "site_id",
-                "seller_id",
-                "logistic_type",
-                "item_id",
-                "user_product_id",
-                "status",
-                "price",
-                "currency_id",
-                "listing_type_id",
-                "error",
-                "updated_at",
-            ),
-            max_length=500,
-        )
-        for item in publication.get("markets", [])[:30]
-        if isinstance(item, dict)
-    ]
+    for row in draft.get("sku_items", [])[:100]:
+        if not row.get("selected"):
+            continue
+        pricing = _dict_value(row.get("pricing"))
+        for key, quote in list(_dict_value(pricing.get("targets")).items())[:16]:
+            quote = _dict_value(quote)
+            applied = _dict_value(quote.get("applied_price"))
+            pricing_summary.setdefault(_text(key)[:80], []).append({
+                "sku_id": _bounded_text(row.get("sku_id"), max_length=160),
+                "sku": _bounded_text(row.get("sku"), max_length=160),
+                "amount": _bounded_text(applied.get("amount"), max_length=40),
+                "currency": _bounded_text(applied.get("currency"), max_length=16),
+                "applied": pricing.get("applied") is True,
+            })
     return DraftReadView(
         draft_id=_bounded_text(draft.get("draft_id"), max_length=160),
         product_id=_bounded_text(draft.get("product_id"), max_length=160),
@@ -355,9 +308,6 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         description=_bounded_text(draft.get("description"), max_length=8_000),
         brand=_bounded_text(draft.get("brand"), max_length=200),
         model=_bounded_text(draft.get("model"), max_length=200),
-        sku=_bounded_text(draft.get("sku"), max_length=160),
-        upc=_bounded_text(draft.get("upc"), max_length=80),
-        stock=_bounded_text(draft.get("stock"), max_length=40),
         language=_bounded_text(draft.get("language"), max_length=40),
         category_id=_bounded_text(draft.get("category_id"), max_length=160),
         description_category_id=_bounded_text(
@@ -365,11 +315,6 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         ),
         category_path=_bounded_text(draft.get("category_path"), max_length=500),
         attributes=bounded_attributes,
-        package_dimensions=_bounded_dict_subset(
-            draft.get("package_dimensions"),
-            ("length_cm", "width_cm", "height_cm", "weight_kg"),
-            max_length=80,
-        ),
         image_count=len(images),
         validation_errors=tuple(bounded_errors),
         category_precheck=_dict_value(draft.get("category_precheck")),
@@ -377,7 +322,6 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         last_publish_task=_bounded_dict_subset(
             draft.get("last_publish_task"), _DRAFT_VIEW_PUBLISH_TASK_KEYS
         ),
-        publication=bounded_publication,
         pricing_summary=pricing_summary,
         sku_count=len(draft.get("sku_items", [])),
         sku_items=tuple(
@@ -433,7 +377,6 @@ PRODUCT_PROFILE_PATCH_TOOL = "product_profile_patch"
 DRAFT_READ_TOOL = "draft_read"
 DRAFT_SAVE_TOOL = "draft_save"
 DRAFT_DELETE_TOOL = "draft_delete"
-DRAFT_STOCK_UPDATE_TOOL = "draft_stock_update"
 
 
 def _normalized_ids(ids: Any) -> list[str]:
@@ -589,7 +532,7 @@ def product_delete(
 
 @ai_tool(
     name=DRAFT_READ_TOOL,
-    description="按 draft_id 读取草稿的类型化有界视图与精简关联商品上下文，包含草稿共用 package_dimensions（cm/kg）。逐 SKU 的有效包装尺寸用 draft_attributes_read 读取；商品或 SKU 尺寸为空不代表草稿无尺寸，共用尺寸也不代表已应用到所有 SKU。",
+    description="按 draft_id 读取草稿公共资料、所选 SKU 编码/库存和逐 SKU 核价摘要。条码、包装及成本属于 SKU，可用 draft_attributes_read(scope=sku) 读取有效资料。",
     permission="draft.read",
     side_effect="none",
     recovery_policy="retry_safe",
@@ -733,43 +676,6 @@ def product_profile_patch(
     )
 
 
-@ai_tool(
-    name=DRAFT_STOCK_UPDATE_TOOL,
-    description=(
-        "更新平台草稿的库存；发布流程中的库存以平台草稿为 owner，"
-        "商品主档库存只是默认值，不能用 product 主档库存替代草稿库存。"
-    ),
-    permission="draft.write",
-    side_effect="write",
-    approval_required=False,
-    idempotency="required",
-    idempotency_keys=("operation_key",),
-    recovery_policy="manual",
-    version="1",
-)
-def draft_stock_update(
-    request: DraftStockUpdateRequest,
-    scope: Annotated[ProductWriteCapabilityScope, Injected()],
-    execution: Annotated[AiExecutionContext, Injected()],
-) -> DraftStockUpdateResult:
-    del execution
-    result, error, status = scope.products.save_draft_detail(
-        {"draft_id": request.draft_id, "stock": request.stock}
-    )
-    _raise_store_error(
-        error,
-        default_code="DRAFT_NOT_FOUND" if status == 404 else "DRAFT_SAVE_FAILED",
-        default_message="草稿不存在。" if status == 404 else "草稿库存更新失败。",
-    )
-    saved_draft = _dict_value(result.get("draft"))
-    return DraftStockUpdateResult(
-        draft_id=_text(saved_draft.get("draft_id"))[:160],
-        stock=_text(saved_draft.get("stock"))[:40] or request.stock,
-        updated_at=_text(saved_draft.get("updated_at"))[:64],
-        changed=True,
-    )
-
-
 PRODUCT_WRITE_AI_CAPABILITIES = (
     product_save,
     product_delete,
@@ -780,7 +686,6 @@ DRAFT_WRITE_AI_CAPABILITIES = (
     draft_read,
     draft_save,
     draft_delete,
-    draft_stock_update,
 )
 
 
@@ -788,7 +693,6 @@ __all__ = [
     "DRAFT_DELETE_TOOL",
     "DRAFT_READ_TOOL",
     "DRAFT_SAVE_TOOL",
-    "DRAFT_STOCK_UPDATE_TOOL",
     "DRAFT_WRITE_AI_CAPABILITIES",
     "PRODUCT_DELETE_TOOL",
     "PRODUCT_PROFILE_PATCH_TOOL",
@@ -799,7 +703,6 @@ __all__ = [
     "draft_delete",
     "draft_read",
     "draft_save",
-    "draft_stock_update",
     "product_delete",
     "product_profile_patch",
     "product_save",

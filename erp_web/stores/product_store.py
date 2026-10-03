@@ -365,13 +365,9 @@ _DRAFT_PUBLISH_CONTENT_FIELDS = (
     "brand",
     "model",
     "pricing",
-    "stock",
-    "sku",
     "sku_items",
-    "upc",
     "search_terms",
     "language",
-    "package_dimensions",
     "images",
     "sale_terms",
     "allow_gtin_exemption",
@@ -396,11 +392,8 @@ _DRAFT_SERVER_OWNED_PUBLISH_FIELDS = (
     "last_precheck",
     "last_precheck_target",
     "last_publish_task",
-    "publication",
 )
-_TARGET_SERVER_OWNED_PUBLISH_FIELDS = tuple(
-    field for field in _DRAFT_SERVER_OWNED_PUBLISH_FIELDS if field != "publication"
-)
+_TARGET_SERVER_OWNED_PUBLISH_FIELDS = _DRAFT_SERVER_OWNED_PUBLISH_FIELDS
 _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS: dict[str, Any] = {
     "status": "",
     "publish_status": "",
@@ -408,7 +401,6 @@ _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS: dict[str, Any] = {
     "last_precheck": {},
     "last_precheck_target": {},
     "last_publish_task": {},
-    "publication": {},
 }
 
 
@@ -794,18 +786,17 @@ class ProductStore:
             self._db.load_product_model(product_id)
         )
 
-    def assign_upc_to_product(
-        self,
-        data: dict[str, Any],
-    ) -> tuple[str, dict[str, Any]]:
-        """Atomically claim a UPC and persist the canonical product."""
-        product = self.sync_product_workflow_statuses(
-            enrich_product_image_dimensions(normalize_product_fields(data))
-        )
-        upc, product_id = self._db.assign_upc_to_product_model(product)
-        if not upc:
-            return "", product
-        return upc, self.load_product_from_index(product_id, "")
+    @product_mutation("product")
+    def assign_upcs_to_product(
+        self, data: dict[str, Any], sku_ids: tuple[str, ...] = (),
+    ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+        """锁内重读商品后分配 SKU 条码，保留其他草稿与 SKU 的修改。"""
+        product_id = str(data.get("product_id") or "").strip()
+        product = self._db.load_product_model(product_id)
+        if not product:
+            raise ValueError("商品不存在，请先保存商品。")
+        assignments, product_id = self._db.assign_upcs_to_product_model(product, sku_ids)
+        return assignments, self.load_product_from_index(product_id, "")
 
     def collection_product(self, source_url: str) -> dict[str, Any]:
         """重复采集合并同一来源商品；新 URL 从空白商品开始。"""
@@ -1197,8 +1188,6 @@ class ProductStore:
             duplicated.pop(field, None)
         duplicated.update(
             {
-                "sku": "",
-                "upc": "",
                 "copy_operation_key": "",
                 "validation_errors": _pending_attribute_review_errors(
                     existing.get("validation_errors")
@@ -1393,6 +1382,10 @@ class ProductStore:
                 },
                 400,
             )
+        retired_fields = {"stock", "sku", "upc", "package_dimensions", "packageDimensions", "publication"}.intersection(draft_payload)
+        if retired_fields:
+            return {}, {"ok": False, "error_code": "RETIRED_DRAFT_SALES_FIELDS",
+                        "error": "销售资料已由 SKU 接管，请在 SKU 中修改：" + "、".join(sorted(retired_fields))}, 400
         existing = self._db.load_draft_model(draft_id)
         if not existing:
             return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
@@ -1482,49 +1475,27 @@ class ProductStore:
                     selected_site,
                 )
             ]
-        publication = normalize_mercadolibre_publication(existing.get("publication"))
-        if (
-            str(targets[0].get("platform") or "").strip().lower() == "mercadolibre"
-            and publication
-        ):
-            requested_operations = {
-                (
-                    str(item.get("site_id") or "").strip().upper(),
-                    str(item.get("logistic_type") or "").strip().lower(),
+        # 各 SKU 的远端事实独立保护；目标删除不得绕过已发布市场约束。
+        requested_operations = {
+            (str(item.get("site_id") or "").upper(), str(item.get("logistic_type") or "").lower())
+            for target in targets if target.get("platform") == "mercadolibre"
+            for item in normalize_mercadolibre_sites_to_sell(target.get("sites_to_sell"))
+        }
+        for row in existing.get("sku_items", []):
+            for key, state in row.get("publications", {}).items():
+                if not key.startswith("mercadolibre:"):
+                    continue
+                result = state.get("result") if isinstance(state, dict) else {}
+                publication = normalize_mercadolibre_publication(
+                    result.get("publication") if isinstance(result, dict) else {}
                 )
-                for item in normalize_mercadolibre_sites_to_sell(
-                    targets[0].get("sites_to_sell")
-                )
-            }
-            published_operations = {
-                (
-                    str(item.get("site_id") or "").strip().upper(),
-                    str(item.get("logistic_type") or "").strip().lower(),
-                )
-                for item in publication.get("markets", [])
-                if isinstance(item, dict) and str(item.get("item_id") or "").strip()
-            }
-            removed_operations = sorted(
-                published_operations.difference(requested_operations)
-            )
-            if removed_operations:
-                labels = "、".join(
-                    f"{site_id}:{logistic_type}"
-                    for site_id, logistic_type in removed_operations
-                )
-                return (
-                    {},
-                    {
-                        "ok": False,
-                        "error": (
-                            "不能通过编辑 sites_to_sell 删除已创建的 Mercado 市场投影："
-                            f"{labels}；请使用明确的市场状态操作"
-                        ),
-                        "error_code": "MERCADOLIBRE_PUBLISHED_MARKET_REMOVAL_FORBIDDEN",
-                        "draft_id": draft_id,
-                    },
-                    400,
-                )
+                published_operations = {
+                    (str(item.get("site_id") or "").upper(), str(item.get("logistic_type") or "").lower())
+                    for item in publication.get("markets", []) if item.get("item_id")
+                }
+                if published_operations - requested_operations:
+                    return {}, {"ok": False, "error": "不能通过编辑删除 SKU 已创建的 Mercado 市场刊登。",
+                                "error_code": "MERCADOLIBRE_PUBLISHED_MARKET_REMOVAL_FORBIDDEN", "draft_id": draft_id}, 400
         changed_cbt_targets = _changed_mercadolibre_cbt_targets(
             existing,
             targets,
@@ -1548,12 +1519,6 @@ class ProductStore:
             "target_sites": targets,
             "language": primary_target["language"],
         }
-        # publication 是发布响应写入的远端事实，通用草稿保存接口不能覆盖。
-        merged["publication"] = deepcopy(
-            existing.get("publication")
-            if isinstance(existing.get("publication"), dict)
-            else {}
-        )
         sku_publications = {
             row["sku_id"]: row.get("publications", {})
             for row in existing.get("sku_items", [])

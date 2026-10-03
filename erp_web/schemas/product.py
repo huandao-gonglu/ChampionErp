@@ -108,12 +108,8 @@ class PlatformDraft(TypedDict, total=False):
     target_sites: list[DraftTargetSite]
     attributes: dict[str, Any]
     pricing: dict[str, Any]
-    stock: str
-    sku: str
-    upc: str
     search_terms: list[str]
     language: str
-    package_dimensions: dict[str, str]
     validation_errors: list[Any]
     images: list[DraftImageRef]
     sale_terms: list[dict[str, Any]]
@@ -123,7 +119,6 @@ class PlatformDraft(TypedDict, total=False):
     last_precheck: dict[str, Any]
     last_precheck_target: dict[str, Any]
     last_publish_task: dict[str, Any]
-    publication: MercadoLibrePublication
     ai_copy_ready: bool
     copy_generated_at: str
     copy_source: str

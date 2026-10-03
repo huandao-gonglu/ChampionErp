@@ -1775,52 +1775,43 @@ class ErpDatabase:
             conn.commit()
             return upc
 
-    def assign_upc_to_product_model(
-        self,
-        product: dict[str, Any],
-    ) -> tuple[str, str]:
-        """Claim a purchased UPC and persist its product in one transaction."""
+    def assign_upcs_to_product_model(
+        self, product: dict[str, Any], sku_ids: tuple[str, ...] = (),
+    ) -> tuple[list[dict[str, str]], str]:
+        """在同一事务中给缺条码的启用 SKU 各领取一个 UPC；不足时不部分扣池。"""
         self._maybe_seed_upc_pool()
-        product_input = dict(_dict(product))
-        _validate_product_write_shape(product_input)
-        product = normalize_product_model(product_input)
+        _validate_product_write_shape(product)
+        product = normalize_product_model(product)
         product_id = product_identity(product)
         product["product_id"] = product_id
-        drafts = _dict(product.get("drafts"))
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    """
-                    SELECT upc FROM upc_pool
-                    WHERE status = 'free'
-                    ORDER BY upc
-                    LIMIT 1
-                    """
-                ).fetchone()
-                if not row:
-                    conn.rollback()
-                    return "", product_id
-                upc = str(row["upc"])
-                product["upc"] = upc
-                for draft in drafts.values():
-                    if isinstance(draft, dict):
-                        draft["upc"] = upc
-                product["drafts"] = drafts
-                self._upsert_product_model_in_connection(conn, product)
-                cursor = conn.execute(
-                    """
-                    UPDATE upc_pool
-                    SET status = 'used', product_id = ?, assigned_at = ?
-                    WHERE upc = ? AND status = 'free'
-                    """,
+        requested = set(sku_ids)
+        facts = {row["id"]: row for row in product.get("sku_items", [])}
+        if len(requested) != len(sku_ids) or any(key not in facts or not facts[key].get("active", True) for key in requested):
+            raise ValueError("只能给当前商品的启用 SKU 分配 UPC，SKU ID 不得重复。")
+        candidates = [row for row in facts.values() if row.get("active", True)
+                      and (not requested or row["id"] in requested) and not str(row.get("barcode") or "").strip()]
+        if not candidates:
+            return [], product_id
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            available = conn.execute(
+                "SELECT upc FROM upc_pool WHERE status = 'free' ORDER BY upc LIMIT ?", (len(candidates),)
+            ).fetchall()
+            if len(available) != len(candidates):
+                conn.rollback()
+                raise ValueError("UPC 池数量不足，请先导入足够的 UPC。")
+            assignments = []
+            for fact, available_row in zip(candidates, available, strict=True):
+                upc = str(available_row["upc"])
+                fact["barcode"] = upc
+                assignments.append({"sku_id": fact["id"], "upc": upc})
+                conn.execute(
+                    "UPDATE upc_pool SET status = 'used', product_id = ?, assigned_at = ? WHERE upc = ? AND status = 'free'",
                     (product_id, utc_now(), upc),
                 )
-                if cursor.rowcount != 1:
-                    conn.rollback()
-                    return "", product_id
-                conn.commit()
-                return upc, product_id
+            self._upsert_product_model_in_connection(conn, product)
+            conn.commit()
+            return assignments, product_id
 
     def upc_pool_stats(self) -> dict[str, int]:
         with self._connect() as conn:

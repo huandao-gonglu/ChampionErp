@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from erp_web.product_model.attribute_matching import source_package_dimensions
+
 import pytest
 
 from erp_web.product_model import (
@@ -194,11 +196,11 @@ def test_category_selection_keeps_only_current_platform_schema_values() -> None:
         "WEIGHT": {"value": "182", "unit": "g"},
     }
     assert selected["source"]["attributes"]["产地"] == "广东"
-    assert draft["package_dimensions"] == {
+    assert "package_dimensions" not in draft
+    assert source_package_dimensions(selected["source"]) == {
         "length_cm": "5.5",
         "width_cm": "6",
         "height_cm": "16",
-        "weight_kg": "0.182",
     }
 
 

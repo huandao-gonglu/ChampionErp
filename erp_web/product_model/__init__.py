@@ -59,9 +59,6 @@ from .mercadolibre_publication import (
 )
 from .platform_sku import (
     draft_has_remote_listing,
-    generated_platform_sku,
-    is_placeholder_sku,
-    resolve_platform_draft_sku,
 )
 
 __all__ = [
@@ -84,7 +81,6 @@ __all__ = [
     "draft_image_refs_from_assets",
     "draft_image_refs_from_pool",
     "draft_has_remote_listing",
-    "generated_platform_sku",
     "image_pool_refs",
     "merge_source_partial_result",
     "mercadolibre_sales_condition_basis",
@@ -106,8 +102,6 @@ __all__ = [
     "normalize_product_model",
     "parse_dimension_measurement",
     "parse_dimensions_text",
-    "is_placeholder_sku",
-    "resolve_platform_draft_sku",
     "source_package_dimensions",
     "text_or_empty",
     "unresolved_required_category_attributes",

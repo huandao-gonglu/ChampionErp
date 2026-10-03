@@ -83,7 +83,6 @@ type WorkflowCatalogActionsPort = Pick<
   | 'restoreCategoryFromProduct'
   | 'syncCollectDiagnosticsFromProduct'
   | 'syncPricingInputFromProduct'
-  | 'syncDraftPackageDimensionsFromPricingInput'
 >
 
 type DraftTargetSelectionSource = Pick<DraftDetail, 'draftId' | 'language' | 'targetSites'>
@@ -97,7 +96,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     addLog, setError, currentStage, mergeTargetDetails, persistActiveTargetListingFields,
     invalidateCategoryAttributeLoad, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, syncActivePublishTarget, selectedPublishTarget,
     draftDetailFromProduct, applyMutationIndexes, restorePrecheckFromProduct, restoreCategoryFromProduct, syncCollectDiagnosticsFromProduct,
-    syncPricingInputFromProduct, syncDraftPackageDimensionsFromPricingInput,
+    syncPricingInputFromProduct,
   } = runtime
 
   async function refreshProductsIndex() {
@@ -636,7 +635,6 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     loading.value = true
     setError('')
     try {
-      syncDraftPackageDimensionsFromPricingInput()
       persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
       const result = await saveDraftApi(currentDraft.value)
       currentDraft.value = result.draft
@@ -661,15 +659,14 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     loading.value = true
     setError('')
     try {
-      const result = await assignUpcApi()
-      const assignedUpc = String(result.raw?.upc || result.product.upc || '')
-      if (result.product.productId || result.product.name || result.product.source.title) {
-        product.value = result.product
-      } else if (assignedUpc) {
-        product.value.upc = assignedUpc
-      }
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
-      addLog(`UPC 已分配：${assignedUpc || product.value.upc || '已写入商品'}`)
+      const saved = await saveProductApi(product.value)
+      product.value = saved.product
+      applyMutationIndexes(saved)
+      const result = await assignUpcApi(product.value.productId)
+      product.value = result.product
+      applyMutationIndexes(result)
+      const assignments = Array.isArray(result.raw?.assignments) ? result.raw.assignments : []
+      addLog(`已为 ${assignments.length} 个 SKU 分配 UPC，已有条码保持不变。`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '分配 UPC 失败')
     } finally {

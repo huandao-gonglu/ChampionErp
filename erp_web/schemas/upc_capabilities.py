@@ -24,12 +24,16 @@ class UpcAssignRequest(BaseModel):
         StringConstraints(min_length=1, max_length=160),
     ]
 
+    sku_ids: tuple[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)], ...] = Field(
+        default=(), description="需要领取 UPC 的启用 SKU；省略时处理全部缺条码的启用 SKU，不覆盖已有条码。",
+    )
+
 
 class UpcAssignResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     product_id: TrimmedText
-    upc: TrimmedText
+    assignments: list[dict[str, str]] = Field(default_factory=list)
     upc_pool: dict[str, JsonValue] = Field(default_factory=dict)
 
 

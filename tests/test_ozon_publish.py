@@ -22,7 +22,7 @@ from erp_web.services.listing_currency_service import compute_currency_fingerpri
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
 from tests.publish_category_support import record_from_schema
-from tests.runtime_test_utils import seed_store_currency
+from tests.runtime_test_utils import seed_store_currency, sku_publish_fixture
 
 #: 店铺授权配置是发布币种唯一事实源：测试显式创建 ready 店铺配置。
 _STORE_CURRENCY_FINGERPRINT = compute_currency_fingerprint(
@@ -95,7 +95,7 @@ def _product() -> dict:
         "99999": "不得发送非类目数字属性",
         "BRAND": "不得发送跨平台辅助字段",
     }
-    return {
+    return sku_publish_fixture({
         "product_id": "product-ozon",
         "name": "Тестовый товар",
         "sku": "OZON-SKU-1",
@@ -157,7 +157,7 @@ def _product() -> dict:
                 "validation_errors": [],
             }
         },
-    }
+    }, "ozon")
 
 
 def _config() -> dict:

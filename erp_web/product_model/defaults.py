@@ -112,21 +112,11 @@ def default_draft(platform: str) -> dict[str, Any]:
         "attributes": {},
         "brand": "",
         "model": "",
-        "sku": "",
-        "upc": "",
-        "stock": "",
         "images": [],
-        "package_dimensions": {
-            "length_cm": "",
-            "width_cm": "",
-            "height_cm": "",
-            "weight_kg": "",
-        },
         "pricing": default_pricing(platform),
         "validation_errors": [],
         "status": "collected",
         "publish_status": "",
-        "publication": {},
         "copy_operation_key": "",
     }
 

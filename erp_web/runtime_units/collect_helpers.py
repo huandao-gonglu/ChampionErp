@@ -22,7 +22,6 @@ from erp_web.product_model import (
     normalize_image_pool,
     normalize_draft_image_refs,
     normalize_platforms,
-    source_package_dimensions,
 )
 from erp_web.product_model.common import normalize_list
 from erp_web.product_model.image_pool_model import normalize_image_pool_item
@@ -265,10 +264,7 @@ def normalize_collect_source_images(source_updates: dict[str, Any], platform: st
     refs: list[Any] = list(pool)
     if not refs:
         refs.extend(normalize_list(source.get("images")))
-    image_limit = source_site(platform).image_limit
-    if image_limit is not None:
-        refs = refs[:image_limit]
-    # 商品展示图的数量限制不截断规格图；同一原图只入池一次。
+    # 完整保留公共主图、详情图与规格图；同一原图只入池一次。
     assets: list[dict[str, Any]] = []
     for index, item in enumerate(refs):
         if isinstance(item, str):
@@ -338,7 +334,6 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
         return get_context().products.sync_product_workflow_statuses(
             normalized
         )
-    dims = source_package_dimensions(source)
     placeholder_titles = {"", "-", "unknown", "draft title", "untitled", "未命名"}
 
     def use_existing(value: Any) -> bool:
@@ -357,20 +352,13 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
         draft["brand"] = draft.get("brand") or source.get("brand") or "Generic"
         draft["model"] = draft.get("model") or normalized.get("model") or "General"
         draft["status"] = "claimed"
-        draft["package_dimensions"] = {
-            **(draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}),
-            "length_cm": (draft.get("package_dimensions") or {}).get("length_cm") or dims.get("length_cm") or "",
-            "width_cm": (draft.get("package_dimensions") or {}).get("width_cm") or dims.get("width_cm") or "",
-            "height_cm": (draft.get("package_dimensions") or {}).get("height_cm") or dims.get("height_cm") or "",
-            "weight_kg": (draft.get("package_dimensions") or {}).get("weight_kg") or source.get("weight_kg") or "",
-        }
+
     return get_context().products.sync_product_workflow_statuses(normalized)
 
 
 def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
-    dims = source_package_dimensions(source)
     product_id = str(normalized.get("product_id") or "").strip()
     draft = default_draft(platform)
     draft.update(
@@ -384,16 +372,7 @@ def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str,
             "images": draft_image_refs_from_pool(normalized, platform),
             "brand": str(normalized.get("brand") or source.get("brand") or "Generic"),
             "model": str(normalized.get("model") or source.get("model") or "General"),
-            # 新草稿代表新的平台刊登；持久化时按 draft_id 生成唯一 SKU。
-            "sku": "",
-            "stock": str(normalized.get("stock") or ""),
             "status": "claimed",
-            "package_dimensions": {
-                "length_cm": str(dims.get("length_cm") or dims.get("lengthCm") or ""),
-                "width_cm": str(dims.get("width_cm") or dims.get("widthCm") or ""),
-                "height_cm": str(dims.get("height_cm") or dims.get("heightCm") or ""),
-                "weight_kg": str(source.get("weight_kg") or normalized.get("weight_kg") or ""),
-            },
         }
     )
     return draft

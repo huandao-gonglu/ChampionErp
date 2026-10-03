@@ -30,7 +30,7 @@ from erp_web.runtime_units.publish_yandex import (
 )
 
 from tests.publish_category_support import record_from_schema
-from tests.runtime_test_utils import seed_store_currency
+from tests.runtime_test_utils import seed_store_currency, sku_publish_fixture
 
 API_TOKEN = "secret-api-token-123"
 
@@ -157,7 +157,7 @@ def _draft(**overrides: Any) -> dict[str, Any]:
 
 
 def _product(**draft_overrides: Any) -> dict[str, Any]:
-    return {
+    return sku_publish_fixture({
         "product_id": "product-y1",
         "name": "便携风扇",
         "brand": "BrandX",
@@ -175,7 +175,7 @@ def _product(**draft_overrides: Any) -> dict[str, Any]:
                 }
             ]
         },
-    }
+    }, "yandex")
 
 
 def _allow_poll(result: dict[str, Any]) -> dict[str, Any]:
@@ -485,7 +485,7 @@ def test_build_payload_enforces_numeric_constraints() -> None:
 
 def test_build_payload_decimal_price_is_number() -> None:
     product = _product()
-    product["drafts"]["yandex"]["pricing"]["targets"]["yandex:global"][
+    product["drafts"]["yandex"]["sku_items"][0]["pricing"]["targets"]["yandex:global"][
         "applied_price"
     ] = {"amount": "1299.50", "currency": "RUB"}
 
@@ -522,7 +522,7 @@ def test_build_payload_rejects_invalid_inputs() -> None:
     generated_first = build_yandex_publish_payload(_product(sku=""), _config(), _record())
     generated_second = build_yandex_publish_payload(_product(sku=""), _config(), _record())
     assert generated_first["offer_id"] == generated_second["offer_id"]
-    assert generated_first["offer_id"].startswith("YDX-")
+    assert generated_first["offer_id"].startswith("SKU-")
     # 类目不是正整数
     with pytest.raises(ValueError, match="类目 ID"):
         build_yandex_publish_payload(_product(category_id="abc"), _config(), _record())

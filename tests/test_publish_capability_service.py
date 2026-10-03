@@ -52,7 +52,7 @@ class _Adapter:
         payload = {
             "title": draft["title"],
             "category_id": draft["category_id"],
-            "price": draft["price"],
+            "price": draft["sku_items"][0]["pricing"]["targets"][f"mercadolibre:{draft['site'].lower()}"]["applied_price"]["amount"],
             "pictures": [{"id": "image-1"}],
         }
         if isinstance(draft.get("sites_to_sell"), list):
@@ -111,9 +111,9 @@ def _context() -> dict:
         "site": "MLM",
         "title": "Portable fan",
         "category_id": "MLM123",
-        "price": "199",
         "listing_currency": "MXN",
-        "stock": "5",
+        "sku_items": [{"sku_id": "single", "sku": "SELL-1", "selected": True, "stock": "5",
+                       "pricing": {"targets": {"mercadolibre:mlm": {"applied_price": {"amount": "199", "currency": "MXN"}}}}}],
         "images": [{"asset_id": "image-1", "role": "main", "order": 0}],
         "selected_pricing": {"applied_price": {"amount": "199", "currency": "MXN"}},
     }
@@ -198,7 +198,8 @@ def test_publish_validate_returns_stable_digest_and_is_pure(
     assert first.passed is True
     assert first.validation_digest == second.validation_digest
     assert len(first.validation_digest) == 64
-    assert first.summary.price == "199"
+    assert first.summary.sku_items[0].price == "199"
+    assert first.summary.sku_items[0].stock == "5"
     assert first.summary.store_label == "示例店铺"
     assert "seller-1" not in first.summary.store_identity
 
@@ -456,6 +457,10 @@ def test_cbt_publish_approval_shows_and_binds_actual_destinations(
             "selected_pricing": {"applied_price": {"amount": "18", "currency": "USD"}},
         }
     )
+    draft["sku_items"][0]["pricing"] = {"targets": {"mercadolibre:cbt": {
+        "applied_price": {"amount": "18", "currency": "USD"},
+        "sites_to_sell": deepcopy(draft["sites_to_sell"]),
+    }}}
     loaded["draft"] = deepcopy(draft)
     loaded["site"] = "CBT"
     loaded["target"] = {
@@ -490,13 +495,11 @@ def test_cbt_publish_approval_shows_and_binds_actual_destinations(
         {
             "site_id": "MLB",
             "logistic_type": "remote",
-            "price": 200.0,
             "listing_type_id": "gold_special",
         },
         {
             "site_id": "MLM",
             "logistic_type": "remote",
-            "net_proceeds": "15.50",
             "listing_type_id": "gold_special",
             "status": "active",
             "free_shipping": True,
@@ -508,6 +511,8 @@ def test_cbt_publish_approval_shows_and_binds_actual_destinations(
             ],
         },
     ]
+
+    assert first.canonical_payload["sku_items"][0]["destinations"][0]["price"] == 200.0
 
     loaded["product"]["drafts"]["mercadolibre"]["sites_to_sell"] = [
         {"site_id": "MLM", "logistic_type": "remote"}

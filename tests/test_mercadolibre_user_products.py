@@ -165,7 +165,7 @@ def test_publish_bus_result_writes_publication_and_siteless_identity() -> None:
         },
     )
 
-    assert updated["publication"] == publication
+    assert "publication" not in updated
     assert updated["last_publish_task"] == {
         "job_id": "job-1",
         "status": "published",
@@ -379,50 +379,33 @@ def test_publish_bus_malformed_error_map_falls_back_to_one_publish_error() -> No
     ]
 
 
-def test_generic_draft_save_cannot_overwrite_persisted_publication(tmp_path) -> None:
+def test_generic_draft_save_cannot_overwrite_persisted_sku_publication(tmp_path) -> None:
+    from copy import deepcopy
+
     with temp_app_context(tmp_path):
-        saved = get_context().products.save_product(
-            {
-                "name": "Portable fan",
-                "drafts": {
-                    "mercadolibre": {
-                        "platform": "mercadolibre",
-                        "site": "CBT",
-                        "title": "Portable fan",
-                        "publication": _publication(),
-                        "target_sites": [
-                            {
-                                "platform": "mercadolibre",
-                                "site": "CBT",
-                                "sites_to_sell": [
-                                    {
-                                        "site_id": "MLM",
-                                        "logistic_type": "remote",
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                },
-            }
-        )
+        saved = get_context().products.save_product({
+            "name": "Portable fan",
+            "sku_items": [{"id": "single", "name": "默认规格", "active": True}],
+            "drafts": {"mercadolibre": {
+                "platform": "mercadolibre", "site": "CBT", "title": "Portable fan",
+                "sku_items": [{"sku_id": "single", "selected": True,
+                               "publications": {"mercadolibre:cbt": {"status": "success", "result": {"publication": _publication()}}}}],
+                "target_sites": [{"platform": "mercadolibre", "site": "CBT",
+                                  "sites_to_sell": [{"site_id": "MLM", "logistic_type": "remote"}]}],
+            }},
+        })
         draft = saved["drafts"]["mercadolibre"]
-
-        payload, error, status = get_context().products.save_draft_detail(
-            {
-                "draft_id": draft["draft_id"],
-                "platform": "mercadolibre",
-                "site": "CBT",
-                "title": "Updated local title",
-                "publication": {
-                    "siteless_user_product_id": "FORGED",
-                    "markets": [],
-                },
-                "target_sites": draft["target_sites"],
-            }
-        )
-
-        assert error is None
-        assert status == 200
+        forged = deepcopy(draft["sku_items"])
+        forged[0]["publications"] = {"mercadolibre:cbt": {"result": {"publication": {"siteless_user_product_id": "FORGED"}}}}
+        payload, error, status = get_context().products.save_draft_detail({
+            "draft_id": draft["draft_id"], "title": "Updated local title",
+            "sku_items": forged, "target_sites": draft["target_sites"],
+        })
+        assert error is None and status == 200
         assert payload["draft"]["title"] == "Updated local title"
-        assert payload["draft"]["publication"] == _publication()
+        assert "publication" not in payload["draft"]
+        assert payload["draft"]["sku_items"][0]["publications"] == draft["sku_items"][0]["publications"]
+        _, error, status = get_context().products.save_draft_detail({
+            "draft_id": draft["draft_id"], "publication": {"siteless_user_product_id": "FORGED"},
+        })
+        assert status == 400 and error["error_code"] == "RETIRED_DRAFT_SALES_FIELDS"

@@ -163,6 +163,31 @@ def selected_skus(product: dict[str, Any], draft: dict[str, Any]) -> list[tuple[
     return result
 
 
+def single_sku_publish_draft(product: dict[str, Any], draft: dict[str, Any]) -> dict[str, Any]:
+    """平台单规格适配器的临时视图；销售字段只从 SKU 派生，禁止持久化此视图。"""
+    selected = selected_skus(product, draft)
+    if len(selected) > 1:
+        raise ValueError("平台单规格适配器只能处理一个所选 SKU")
+    fact, row = selected[0] if selected else ({}, {})
+    key = f"{draft.get('platform', '')}:{draft.get('site', '')}".lower()
+    pricing = deepcopy(record(row.get("pricing")))
+    quote = record(record(pricing.get("targets")).get(key))
+    state = record(record(row.get("publications")).get(key))
+    result = record(state.get("result"))
+    applied = record(quote.get("applied_price"))
+    return {
+        **deepcopy(draft),
+        "sku": text(row.get("sku")),
+        "stock": text(row.get("stock")),
+        "upc": text(fact.get("barcode")),
+        "package_dimensions": deepcopy(record(fact.get("package_dimensions"))),
+        "pricing": pricing,
+        "selected_pricing": deepcopy(quote),
+        "price": text(applied.get("amount")),
+        "publication": deepcopy(record(result.get("publication"))),
+        "last_publish_task": deepcopy(state),
+    }
+
 
 def editable_selected_skus(product: dict[str, Any], draft: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """批量编辑只处理已选且启用的事实，发布仍使用 selected_skus 的严格校验。"""
@@ -184,4 +209,4 @@ def retain_sku_publications(previous: dict[str, Any], incoming: dict[str, Any]) 
     return result
 
 
-__all__ = ["retain_sku_publications", "PACKAGE_FIELDS", "SKU_FACT_FIELDS", "collected_skus", "effective_sku", "editable_selected_skus", "merge_collected_skus", "new_draft_sku_rows", "normalize_draft_skus", "normalize_product_skus", "selected_skus", "sku_fingerprint"]
+__all__ = ["single_sku_publish_draft", "retain_sku_publications", "PACKAGE_FIELDS", "SKU_FACT_FIELDS", "collected_skus", "effective_sku", "editable_selected_skus", "merge_collected_skus", "new_draft_sku_rows", "normalize_draft_skus", "normalize_product_skus", "selected_skus", "sku_fingerprint"]

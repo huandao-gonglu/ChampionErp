@@ -579,66 +579,20 @@ describe('CategoryAttributesPanel', () => {
     expect(draft.attributes.BRAND).toBeUndefined()
   })
 
-  it('Mercado 包装属性映射并修改草稿的规范化包装尺寸', async () => {
+  it('包装属性由 SKU 派生，公共属性页不提供第二份包装编辑入口', () => {
     const draft = createEmptyDraftDetail('mercadolibre')
-    draft.draftId = 'draft-mercado-package-dimensions'
+    draft.draftId = 'draft-package'
     draft.site = 'CBT'
     draft.categoryId = 'CBT455865'
-    draft.packageDimensions = {
-      lengthCm: '21',
-      widthCm: '15.5',
-      heightCm: '12',
-      weightKg: '0.419',
-    }
-    draft.attributes = {
-      PACKAGE_LENGTH: '旧的重复值',
-      PACKAGE_WIDTH: '旧的重复值',
-      PACKAGE_HEIGHT: '旧的重复值',
-      PACKAGE_WEIGHT: '旧的重复值',
-    }
     const category: CategorySelection = {
-      platform: 'mercadolibre',
-      categoryId: 'CBT455865',
-      categoryPath: 'Computers / Portable Fans',
-      requiredAttributes: [
-        { id: 'PACKAGE_LENGTH', name: 'Package length', required: true, options: [] },
-        { id: 'PACKAGE_WIDTH', name: 'Package width', required: true, options: [] },
-        { id: 'PACKAGE_HEIGHT', name: 'Package height', required: true, options: [] },
-        { id: 'PACKAGE_WEIGHT', name: 'Package weight', required: true, options: [] },
-      ],
-      optionalAttributes: [],
-      fetchedAt: '2026-08-28T00:00:00Z',
-      raw: {},
+      platform: 'mercadolibre', categoryId: 'CBT455865', categoryPath: '商品',
+      requiredAttributes: ['PACKAGE_LENGTH', 'PACKAGE_WIDTH', 'PACKAGE_HEIGHT', 'PACKAGE_WEIGHT'].map(id => ({ id, name: id, required: true, options: [] })),
+      optionalAttributes: [], fetchedAt: '2026-10-03T00:00:00Z', raw: {},
     }
-    const wrapper = mount(CategoryAttributesPanel, {
-      props: {
-        ...panelProps(draft, category),
-        target: mercadoTarget,
-      },
-    })
-
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
-
-    expect(wrapper.get<HTMLInputElement>('[data-attribute-id="PACKAGE_LENGTH"]').element.value).toBe('21')
-    expect(wrapper.get<HTMLInputElement>('[data-attribute-id="PACKAGE_WIDTH"]').element.value).toBe('15.5')
-    expect(wrapper.get<HTMLInputElement>('[data-attribute-id="PACKAGE_HEIGHT"]').element.value).toBe('12')
-    expect(wrapper.get<HTMLInputElement>('[data-attribute-id="PACKAGE_WEIGHT"]').element.value).toBe('0.419')
-    expect(wrapper.text()).toContain('来自草稿包装尺寸')
-
-    const updates = [
-      ['PACKAGE_LENGTH', 'lengthCm', '23'],
-      ['PACKAGE_WIDTH', 'widthCm', '16'],
-      ['PACKAGE_HEIGHT', 'heightCm', '13'],
-      ['PACKAGE_WEIGHT', 'weightKg', '0.5'],
-    ] as const
-    for (const [attributeId, field, value] of updates) {
-      await wrapper.get<HTMLInputElement>(`[data-attribute-id="${attributeId}"]`).setValue(value)
-      expect(draft.packageDimensions[field]).toBe(value)
-      expect(draft.attributes[attributeId]).toBeUndefined()
-    }
-
-    expect(wrapper.emitted('updatePackageDimension')).toEqual(updates.map(([, field, value]) => [field, value]))
-    expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(updates.length)
+    const wrapper = mount(CategoryAttributesPanel, { props: { ...panelProps(draft, category), target: mercadoTarget } })
+    expect(wrapper.find('[data-package-dimension-field]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('来自草稿包装尺寸')
+    expect(draft).not.toHaveProperty('packageDimensions')
   })
 
   it('Mercado 属性编辑器隐藏发布编译器管理的影子字段', async () => {
@@ -669,12 +623,11 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('必填属性 1 个')
+    expect(wrapper.text()).toContain('必填属性 0 个')
     expect(wrapper.text()).toContain('可选属性 1 个')
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     await wrapper.findAll('button').find((button) => button.text().startsWith('可选属性'))!.trigger('click')
 
-    expect(wrapper.find('[data-attribute-id="PACKAGE_LENGTH"]').exists()).toBe(true)
+    expect(wrapper.find('[data-attribute-id="PACKAGE_LENGTH"]').exists()).toBe(false)
     expect(wrapper.find('[data-attribute-id="VOLTAGE"]').exists()).toBe(true)
     expect(wrapper.find('[data-attribute-id="ITEM_CONDITION"]').exists()).toBe(false)
     expect(wrapper.find('[data-attribute-id="SELLER_SKU"]').exists()).toBe(false)

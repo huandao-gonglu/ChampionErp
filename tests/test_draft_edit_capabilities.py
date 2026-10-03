@@ -90,7 +90,8 @@ def test_native_agent_copies_five_drafts_then_selects_one_sku_each(tmp_path):
         draft = app.db.load_draft_model(copied_id)
         assert [r["sku_id"] for r in draft["sku_items"] if r["selected"]] == [f"sku-{i}"]
         assert len(draft["sku_items"]) == 5
-        assert draft["publication"] == {}
+        assert "publication" not in draft
+        assert all(not row["publications"] for row in draft["sku_items"])
         for row, before in zip(draft["sku_items"], original["sku_items"]):
             assert row["sku"] != before["sku"]
             assert row["overrides"] == before["overrides"]

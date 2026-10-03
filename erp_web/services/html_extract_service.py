@@ -404,3 +404,16 @@ def fetch_url_html(url: str, cookie: str = "") -> str:
     with managed_urlopen(request, timeout=25, source=__name__) as response:
         raw = response.read(900_000)
     return raw.decode("utf-8", errors="ignore")
+
+
+def fetch_1688_detail_html(url: str) -> str:
+    """读取 1688 独立详情接口；失败必须显式报告，不能假报完整采集。"""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"https", "http"} or parsed.hostname not in {
+        "itemcdn.tmall.com", "desc.alicdn.com",
+    } or parsed.username or parsed.password or parsed.port not in {None, 80, 443}:
+        raise ValueError("1688 详情接口地址不属于支持的官方域名")
+    try:
+        return fetch_url_html(parsed._replace(scheme="https").geturl())
+    except Exception as exc:
+        raise RuntimeError("1688 详情图片读取失败，请重试采集") from exc

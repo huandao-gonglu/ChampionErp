@@ -24,10 +24,10 @@ class ProductUpcStore(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    def assign_upc_to_product(
+    def assign_upcs_to_product(
         self,
-        data: dict[str, Any],
-    ) -> tuple[str, dict[str, Any]]:
+        data: dict[str, Any], sku_ids: tuple[str, ...] = (),
+    ) -> tuple[list[dict[str, str]], dict[str, Any]]:
         ...
 
 
@@ -57,7 +57,7 @@ UPC_IMPORT_TOOL = "upc_import"
 
 @ai_tool(
     name=UPC_ASSIGN_TOOL,
-    description="从本地 UPC 池为指定商品原子分配一个 UPC 并保存商品。",
+    description="从本地 UPC 池为商品中缺条码的启用 SKU 分别分配唯一 UPC；可限定 sku_ids，保留已有条码，池数量不足时整批不修改。",
     permission="product.write",
     side_effect="write",
     approval_required=False,
@@ -75,15 +75,12 @@ def upc_assign(
     product = scope.products.load_product_from_index(request.product_id, "")
     if _text(product.get("product_id")) != request.product_id:
         raise BusinessCapabilityError("PRODUCT_NOT_FOUND", "商品不存在。")
-    upc, _saved = scope.products.assign_upc_to_product(product)
-    if not upc:
-        raise BusinessCapabilityError(
-            "UPC_POOL_EMPTY",
-            "UPC 池为空，请先在设置中导入 UPC。",
-        )
+    try:
+        assignments, _saved = scope.products.assign_upcs_to_product(product, request.sku_ids)
+    except ValueError as exc:
+        raise BusinessCapabilityError("UPC_ASSIGN_FAILED", str(exc)) from exc
     return UpcAssignResult(
-        product_id=request.product_id,
-        upc=upc,
+        product_id=request.product_id, assignments=assignments,
         upc_pool=dict(scope.database.upc_pool_stats()),
     )
 

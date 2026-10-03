@@ -28,7 +28,10 @@ def listing_grouping_value(
         return listing_group_name(draft)
     if not definition.get("required"):
         return ""
-    identity = str((draft.get("sku") if seller_sku is None else seller_sku) or "").strip()
+    if seller_sku is None:
+        selected = [row for row in draft.get("sku_items", []) if row.get("selected")]
+        seller_sku = selected[0].get("sku", "") if len(selected) == 1 else ""
+    identity = str(seller_sku or "").strip()
     if not identity:
         return ""
     return "sku-" + sha256(identity.encode("utf-8")).hexdigest()[:24]

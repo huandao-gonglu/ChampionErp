@@ -126,6 +126,7 @@ def _seed_product(product_id: str = "product-d1") -> dict[str, Any]:
             "product_id": product_id,
             "name": "D1 sample",
             "sku": f"{product_id}-sku",
+            "sku_items": [{"id": "single", "name": "默认规格", "active": True, "barcode": ""}],
             "source": {
                 "title": "D1 sample",
                 "source_platform": "1688",
@@ -483,9 +484,10 @@ def test_upc_import_and_assign_roundtrip() -> None:
         scope=scope,
         execution=_execution(),
     )
-    assert assigned.upc in {"100000000001", "100000000002"}
+    assert len(assigned.assignments) == 1
+    assert assigned.assignments[0]["upc"] in {"100000000001", "100000000002"}
     reloaded = context.products.load_product_from_index("product-upc", "")
-    assert str(reloaded.get("upc")) == assigned.upc
+    assert reloaded["sku_items"][0]["barcode"] == assigned.assignments[0]["upc"]
 
     with pytest.raises(BusinessCapabilityError) as missing:
         upc_assign(
@@ -509,7 +511,7 @@ def test_upc_assign_empty_pool() -> None:
             scope=scope,
             execution=_execution(),
         )
-    assert error.value.code == "UPC_POOL_EMPTY"
+    assert error.value.code == "UPC_ASSIGN_FAILED"
 
 
 # ---------------------------------------------------------------- 店铺授权

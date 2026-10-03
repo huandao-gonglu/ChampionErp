@@ -84,14 +84,8 @@ class ProductDraftFacts(BaseModel):
     category_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     category_path: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
     attribute_ids: list[str] = Field(default_factory=list, max_length=500)
-    package_dimensions: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description="草稿共用包装尺寸：length_cm、width_cm、height_cm、weight_kg；与商品主档尺寸、逐 SKU 包装尺寸分别保留，不代表已应用到每个 SKU。",
-    )
     image_asset_ids: list[str] = Field(default_factory=list, max_length=100)
     listing_currency: Annotated[TrimmedText, StringConstraints(max_length=16)] = ""
-    price: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    stock: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
 
 
 class ProductReadResult(BaseModel):
@@ -148,6 +142,8 @@ class DraftAttributeSku(TypedDict):
     cost_cny: str
     cost_source: str
 
+    sku: str
+    barcode: str
     sku_id: str
     name: str
     options: Annotated[dict[str, JsonValue], Field(description="该 SKU 的商品规格原文，按规格名称映射到值；编码等提取优先使用此字段。")]
@@ -162,10 +158,6 @@ class DraftAttributesReadResult(BaseModel):
     updated_at: str
     product: ProductFacts
     targets: list[DraftAttributeTarget]
-    package_dimensions: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description="草稿共用包装尺寸（cm/kg）；skus[].package_dimensions 是逐 SKU 的有效包装尺寸，缺失时不会自动继承此值。",
-    )
     skus: list[DraftAttributeSku] = Field(default_factory=list)
     sku_count: int
     next_offset: int | None = None

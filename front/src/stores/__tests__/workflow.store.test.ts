@@ -1424,7 +1424,6 @@ describe('workflow store live API flow', () => {
     draft.productId = 'product-current-form-data'
     draft.sourceProductId = 'product-current-form-data'
     draft.site = 'CBT'
-    draft.upc = ''
     draft.allowGtinExemption = true
     draft.saleTerms = [
       { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
@@ -1445,7 +1444,6 @@ describe('workflow store live API flow', () => {
     await store.runPrecheck()
 
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
-      upc: '',
       allowGtinExemption: true,
       saleTerms: [
         { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
@@ -1453,8 +1451,7 @@ describe('workflow store live API flow', () => {
     }))
     expect(workflowApi.publishPrecheck).toHaveBeenCalledWith(
       expect.objectContaining({
-        upc: '',
-        allowGtinExemption: true,
+          allowGtinExemption: true,
         saleTerms: [
           { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
         ],
@@ -1706,7 +1703,7 @@ describe('workflow store live API flow', () => {
     draft.validationErrors = ['旧发布校验']
     draft.lastPrecheck = { ok: true }
     draft.lastPrecheckTarget = { site: 'CBT', sites_to_sell: [{ site_id: 'MLM', logistic_type: 'remote' }] }
-    draft.publication = {
+    const publication = {
       model: 'MODEL-1',
       accountUserId: 'account-user-1',
       sitelessUserProductId: 'UP-SITELESS-1',
@@ -1738,6 +1735,7 @@ describe('workflow store live API flow', () => {
       lastOperation: {},
       updatedAt: '2026-08-24T00:00:00Z',
     }
+    draft.skuItems = [{ sku_id: 'sku-1', selected: true, sku: 'SELL-1', stock: '10', overrides: {}, attributes_by_target: {}, pricing: {}, publications: { 'mercadolibre:cbt': { result: { publication } } } }]
     draft.targetSites = [{
       platform: 'mercadolibre',
       site: 'CBT',
@@ -1810,7 +1808,7 @@ describe('workflow store live API flow', () => {
       lastPrecheck: {},
       lastPrecheckTarget: {},
     }))
-    expect(store.currentDraft.publication).toEqual(expect.objectContaining({
+    expect((store.currentDraft.skuItems[0]!.publications['mercadolibre:cbt']!.result as Record<string, unknown>).publication).toEqual(expect.objectContaining({
       sitelessUserProductId: 'UP-SITELESS-1',
       markets: [expect.objectContaining({ siteId: 'MLM', itemId: 'MLM-ITEM-1' })],
     }))
@@ -3135,7 +3133,7 @@ describe('workflow store live API flow', () => {
     })
   })
 
-  it('类目预检前会把核价页尺寸同步到草稿', async () => {
+  it('类目预检不会把公共核价表单尺寸写入草稿', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
     draft.productId = 'product-1'
@@ -3180,14 +3178,8 @@ describe('workflow store live API flow', () => {
 
     await store.runCategoryOnlyPrecheck()
 
-    expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
-      packageDimensions: {
-        lengthCm: '21',
-        widthCm: '15.5',
-        heightCm: '12',
-        weightKg: '0.419',
-      },
-    }))
+    expect(workflowApi.saveDraft).toHaveBeenCalledOnce()
+    expect(vi.mocked(workflowApi.saveDraft).mock.calls[0]![0]).not.toHaveProperty('packageDimensions')
     expect(workflowApi.runCategoryPrecheck).toHaveBeenCalledOnce()
     store.currentDraft.title = '预检后继续编辑'
     expect(await store.saveCurrentDraft()).toBe(true)

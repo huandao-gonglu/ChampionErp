@@ -128,7 +128,7 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
 #: 主 Agent 的 focused 写能力。
 #:
 #: 高频写入已迁移到 focused Capability：库存/售价以平台草稿为 owner
-#: （draft_stock_update / draft_pricing_apply），商品主档走部分补丁
+#: （draft_changes_apply / draft_pricing_apply），商品主档走部分补丁
 #: （product_profile_patch）。通用 product_save / draft_save 容易误选
 #: owner 并膨胀上下文，已从常用 allowlist 移除，只保留为 internal。
 _WRITE_CAPABILITIES = frozenset(
@@ -144,7 +144,6 @@ _WRITE_CAPABILITIES = frozenset(
         "draft_read",
         "product_profile_patch",
         "product_delete",
-        "draft_stock_update",
         "draft_duplicate",
         "draft_sku_selection_update",
         "draft_sku_package_update",

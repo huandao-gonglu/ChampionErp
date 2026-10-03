@@ -7,11 +7,23 @@ from erp_web.runtime_units.draft_category_resolution import (
     resolve_draft_category_pairs as _resolve_draft_category_pairs,
 )
 from erp_web.runtime_units.image_pool import current_image_pool, current_source_images
-from erp_web.runtime_units.publish_helpers import assign_upc
+from erp_web.schemas.upc_capabilities import UpcAssignRequest
 from erp_web.schemas.api import ApiResponse
 from erp_web.schemas.product import Product
 
 ResponseWithStatus = tuple[ApiResponse, int]
+
+
+def assign_upc(body: dict[str, Any]) -> ResponseWithStatus:
+    request = UpcAssignRequest.model_validate(body)
+    context = get_context()
+    try:
+        assignments, saved = context.products.assign_upcs_to_product({"product_id": request.product_id}, request.sku_ids)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "error_code": "UPC_ASSIGN_FAILED"}, 400
+    return {"ok": True, "assignments": assignments, "product": saved,
+            "productsIndex": context.products.load_products_index(), "imagePool": current_image_pool(saved),
+            "upcPool": context.db.upc_pool_stats(), "message": f"已为 {len(assignments)} 个 SKU 分配 UPC"}, 200
 
 
 def save_product_payload(body: dict[str, Any]) -> ApiResponse:

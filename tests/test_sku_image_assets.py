@@ -14,7 +14,7 @@ from tests.runtime_test_utils import temp_app_context
 from tests.test_sku_workflow import ItemBoundary, context_for, product_fixture
 
 
-def test_collection_materializes_all_sku_images_beyond_gallery_limit(tmp_path, monkeypatch):
+def test_collection_materializes_all_public_and_sku_images(tmp_path, monkeypatch):
     downloaded = []
 
     def download(_app, url, _product, index):
@@ -29,9 +29,9 @@ def test_collection_materializes_all_sku_images_beyond_gallery_limit(tmp_path, m
     with temp_app_context(tmp_path):
         source = normalize_collect_source_images(raw, "1688", "browser")
         skus = collected_skus(source)
-        assert len(downloaded) == 34
-        assert len(source["image_pool"]) == 34
-        assert len(draft_image_refs_from_pool({"source": source})) == 5
+        assert len(downloaded) == 37
+        assert len(source["image_pool"]) == 37
+        assert len(draft_image_refs_from_pool({"source": source})) == 8
         assert skus[0]["image_asset_id"] == skus[-1]["image_asset_id"]
         assert all(sku["image_asset_id"] for sku in skus)
         assert all(sku["image_asset_id"] != source["skus"][index]["image"] for index, sku in enumerate(skus))

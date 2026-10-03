@@ -91,7 +91,6 @@ class SourceSiteSpec:
     region_check: PageCheck = _never
     supports_api_collect: bool = False
     playwright_fallback: bool = False
-    image_limit: int | None = None
     required_quality_fields: tuple[str, ...] = ("title", "images")
 
     def matches(self, value: str) -> bool:
@@ -195,7 +194,6 @@ SOURCE_SITES: tuple[SourceSiteSpec, ...] = (
         captcha_check=_captcha_1688,
         supports_api_collect=True,
         playwright_fallback=True,
-        image_limit=5,
         # 包装资料属于核价/发布条件；来源未提供时仍允许采集入库。
         required_quality_fields=("title", "images"),
     ),

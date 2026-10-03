@@ -414,10 +414,6 @@ def merge_target_listing_into_draft(
     context: AppContext | None = None,
 ) -> dict[str, Any]:
     merged = deepcopy(draft)
-    if isinstance(updates.get("publication"), dict):
-        # Mercado Siteless publication 属于平台草稿，不属于 target_sites[] 的
-        # 预检/定价快照。
-        merged["publication"] = deepcopy(updates["publication"])
     selected_key = _target_key(str(target.get("platform") or ""), str(target.get("site") or ""))
     targets = draft_publish_targets(merged, context=context)
     if not targets and target.get("platform") and target.get("site"):

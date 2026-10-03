@@ -583,9 +583,10 @@ def test_assign_upc_writes_current_product_and_returns_full_payload(
             '{"values":["725272000007"],"used":[]}',
             encoding="utf-8",
         )
-        get_context().products.save_product(
+        saved = get_context().products.save_product(
             {
                 "name": "UPC test product",
+                "sku_items": [{"id": "single", "name": "默认规格", "active": True, "barcode": ""}],
                 # 只有具备真实业务内容的草稿才会持久化；默认草稿模板不是
                 # 独立平台事实，不能用商品主档 UPC 隐式回填。
                 "drafts": {
@@ -597,10 +598,12 @@ def test_assign_upc_writes_current_product_and_returns_full_payload(
             }
         )
 
-        result = publish_helpers.assign_upc()
+        from erp_web.facades.product_facade import assign_upc
+        result, status = assign_upc({"product_id": saved["product_id"]})
+        assert status == 200
 
         assert result["ok"] is True
-        assert result["upc"] == "725272000007"
-        assert result["product"]["upc"] == "725272000007"
-        assert result["product"]["drafts"]["mercadolibre"]["upc"] == "725272000007"
+        assert result["assignments"] == [{"sku_id": "single", "upc": "725272000007"}]
+        assert result["product"]["sku_items"][0]["barcode"] == "725272000007"
+        assert "upc" not in result["product"]["drafts"]["mercadolibre"]
         assert isinstance(result["productsIndex"], list)
