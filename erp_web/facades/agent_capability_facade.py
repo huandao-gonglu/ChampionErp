@@ -66,7 +66,6 @@ from erp_web.runtime_units.store_credentials import test_store_auth
 from erp_web.runtime_units.yunexpress_client import YunExpressClient
 from erp_web.schemas.ai_tools import (
     PRODUCT_RESEARCH_JOB_TYPE,
-    PUBLISH_JOB_TYPE,
 )
 from erp_web.ai_capability_composition import (
     application_capability_permissions,
@@ -78,7 +77,6 @@ from erp_web.services.ai_tool_registry import AiToolSet
 
 
 from erp_web.runtime_units.domain_job_readers import (
-    PublishJobStatusReader,
     ResearchJobStatusReader,
 )
 
@@ -286,14 +284,6 @@ def build_capability_binding_scope(
     )
 
 
-# -- Job 进度白名单映射 -----------------------------------------------------
-#
-# 以下常量与辅助函数把 PublishingBus / 选品研究已持久化的专用状态映射为
-# ``JobStateSnapshot`` 的通用展示字段。只做字段白名单与长度约束，绝不把
-# 凭据、完整 payload 或原始平台对象带入 UI。
-
-
-#: 发布 Job 内部步骤的稳定顺序；用作通用活动列表骨架。
 def build_job_status_readers(
     context: AppContext | None = None,
 ) -> dict[str, Any]:
@@ -302,7 +292,6 @@ def build_job_status_readers(
     active_context = context or get_context()
     return {
         ONLINE_PRODUCT_JOB_TYPE: OnlineProductJobReader(OnlineProductCapabilityScope(lambda: active_context.online_products).job),
-        PUBLISH_JOB_TYPE: PublishJobStatusReader(active_context.publishing_bus),
         PRODUCT_RESEARCH_JOB_TYPE: ResearchJobStatusReader(),
     }
 

@@ -356,6 +356,7 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
     → AiAgentFactory → Pydantic Agent → 原生 Tool → AiToolRuntime → 领域 Capability
       ├─ 普通结果/缺字段 → 原生模型继续决策
       ├─ ApprovalRequired → 原生 HandleDeferredToolCalls（完全授权）或工具卡（询问审批）→ DeferredToolResults
+      │   └─ product_publish_request → PublishingBus 接收 → 返回提交回执 → AI 汇报已提交并结束发布操作
       └─ CallDeferred → 原生请求和历史同事务落盘
           → AgentJobService 领取领域 Job → 真实终态 → DeferredToolResults → 同一入口恢复
 ```
@@ -376,13 +377,15 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 - `erp_web/schemas/ai_page_context.py`：主对话页面背景的有界契约与中文指令渲染，只接受页面枚举和资源 ID。`vercel_ai_ui_service.py` 校验请求的 `page_context` 后写入原生消息 metadata，缺省表示本条消息不携带背景；客户端消息 metadata 仍被丢弃。`AgentRunStorage` 随用户输入更新背景，Factory 使用 Pydantic AI 原生动态 `instructions` 注入模型系统上下文，不创建独立系统消息历史或新 Agent loop；Deferred 恢复复用已保存快照，后续关闭开关会清除当前背景。
 - `front/src/stores/aiPageContext.ts`、`useAiPageContext.ts`：可见页面及编辑区域提供定位信息，输入框眼睛开关默认开启并在本机记住选择；普通发送和运行中追加消息均在发送瞬间复制背景。关闭编辑器、切换页面或 KeepAlive 停用时撤销该区域背景，页面背景不作为写权限，也不携带表单未保存值。
 - `erp_web/stores/agent_call_store.py`：原生 Deferred 请求/结果序列化、收件箱和领域执行回执；不存步骤计划、Agent 状态或事件副本。
-- `erp_web/services/agent_job_service.py`：固定大小线程池领取和对账领域 Job；scanner 不执行模型。等待平台真实结果后恢复原生 Agent，允许再调用工具。
-- `erp_web/runtime_units/domain_job_readers.py`：发布与研究 Job 的只读终态和有界活动证据。
+- `erp_web/runtime_units/publish_capabilities.py::product_publish_request`：原生审批通过后同步提交 PublishingBus，返回 `ProductPublishRequestResult` 即结束 AI 的发布操作；不使用 `CallDeferred`、`JobReferenceResult` 或发布 Job Reader 等待平台终态。平台发布及结果确认继续由发布领域负责，用户可在发布任务界面查看。
+- `erp_web/services/agent_job_service.py`：固定大小线程池领取和对账需要结果的领域 Job；scanner 不执行模型。选品研究、在线商品等后台工具通过 `DeferredToolResults` 返回结果后恢复原生 Agent。
+- `erp_web/runtime_units/domain_job_readers.py`：选品研究 Job 的只读终态和有界活动证据。
 - `erp_web/schemas/domain_jobs.py`：Job Reader 的有界生命周期/活动证据，供模型了解真实终态。
 - `erp_web/stores/product_mutation.py`：商品聚合的短期互斥；`ProductStore` 的局部读改写保护、草稿旧快照冲突检测。锁不跨模型调用或人工等待。
 - `erp_web/runtime_units/conversation_fact_capabilities.py`：按草稿、会话归属查询真实用户消息；引用不能由模型自报可信标志替代。
 
 原生 Deferred 要求当前批次全部调用结果/审批齐备才恢复模型。部分结果先落盘，独立领域 Job 可并发。
+发布仅使用原生审批和普通工具返回：已核对当前安装的 Pydantic AI 2.44.0 及[官方审批文档](https://ai.pydantic.dev/deferred-tools/)，原生能力满足需求，无需自建完成协议或等待状态机。提交回执表示队列接收成功，不表示平台发布成功；模型不得主动轮询、等待或因后台失败重新发布，用户另行请求查看或处理时才继续。
 新增用户消息始终可接收，在下一个原生模型边界生效。取消不会撤销已经发出的平台操作；未开始的调用先返回用户要求已更新，等待模型重新决定。
 
 缺资料是工具业务结果，包含字段、原因、选项和工具参数路径；主 Agent 可以先读取关联商品、草稿、平台和有权限历史。

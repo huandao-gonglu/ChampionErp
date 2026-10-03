@@ -17,7 +17,6 @@ from erp_web.runtime_units import category_catalog, category_store
 from erp_web.runtime_units.category_catalog import CategoryCatalog
 from erp_web.services.ai_tool_registry import AiToolSet, deadline_aware_tool_executor
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
-from erp_web.services.agent_job_service import AgentJobService
 from erp_web.runtime_units.publish_bus import persist_publish_bus_terminal_results
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
 from erp_web.runtime_units.sku_publish_adapter import SkuGroupPublishingAdapter
@@ -182,22 +181,44 @@ def test_fifteen_selected_drafts_prepare_concurrently_and_report_real_remaining_
     assert context.db.list_publish_jobs()[0] == []
 
 
-@pytest.mark.parametrize("remote_success", [True, False])
-def test_native_approval_to_real_publish_job_and_model_reconciliation(
-    tmp_path, monkeypatch, remote_success
+@pytest.mark.parametrize("publish_outcome", ["success", "failed", "enqueue_failed"])
+@pytest.mark.parametrize("approval_mode", ["ask", "full"])
+def test_publish_submission_finishes_chat_before_remote_result(
+    tmp_path, monkeypatch, publish_outcome, approval_mode
 ):
+    """队列提交后结束 AI 回合，后台成功或失败均不会再触发模型。"""
     context, ids = setup_domain(monkeypatch)
-    adapter = _PlatformNetworkBoundary(succeed=remote_success)
+    adapter = _PlatformNetworkBoundary(succeed=publish_outcome == "success")
+    dispatched = threading.Event()
+    release_remote = threading.Event()
+    terminal = threading.Event()
+    publish_payload = adapter.publish_payload
+
+    def blocked_publish(payload, config):
+        dispatched.set()
+        assert release_remote.wait(timeout=10), "测试未释放后台平台请求"
+        return publish_payload(payload, config)
+
+    monkeypatch.setattr(adapter, "publish_payload", blocked_publish)
+
+    def persist_terminal(state):
+        persist_publish_bus_terminal_results(state, context=context)
+        terminal.set()
+
     bus = PublishingBus(
         context.db,
         adapters={"ozon": SkuGroupPublishingAdapter(adapter)},
         config_provider=context.config.load_store_config,
-        terminal_callback=lambda state: persist_publish_bus_terminal_results(
-            state, context=context
-        ),
+        terminal_callback=persist_terminal,
         auto_resume_pending=False,
     )
     context._publishing_bus = bus
+    submission_results = []
+    if publish_outcome == "enqueue_failed":
+        def reject_enqueue(*args, **kwargs):
+            raise RuntimeError("模拟发布队列入库失败")
+
+        monkeypatch.setattr(bus, "enqueue", reject_enqueue)
 
     async def model(messages, info):
         results = business_returns(messages)
@@ -231,16 +252,27 @@ def test_native_approval_to_real_publish_job_and_model_reconciliation(
                 )
             }
         else:
-            yield "发布成功" if results[-1].content.get("ok") else "平台拒绝，发布失败"
+            submitted = results[-1].content
+            if publish_outcome == "enqueue_failed":
+                assert submitted["ok"] is False
+                assert submitted["error"]["code"] == "PUBLISH_ENQUEUE_FAILED"
+                assert "job_id" not in submitted
+                yield "发布任务提交失败，未加入队列。"
+                return
+            assert submitted["job_id"]
+            assert submitted["draft_id"] == ids[0]
+            assert submitted["platform"] == "ozon"
+            assert "job_type" not in submitted
+            assert "error" not in submitted
+            submission_results.append(submitted)
+            yield "发布任务已提交，请在发布任务中查看结果。"
 
     ui = service(
         tmp_path,
         FunctionModel(stream_function=model),
         capabilities.build_global_chat_toolset(context),
     )
-    worker = AgentJobService(
-        ui_service=ui, job_readers=capabilities.build_job_status_readers(context)
-    )
+    ui.chat_service.approval_mode_reader = lambda: approval_mode
     try:
         asyncio.run(ui.prepare_run(body(target_draft_ids=ids)).stream(lambda _: None))
         parts = [
@@ -249,34 +281,57 @@ def test_native_approval_to_real_publish_job_and_model_reconciliation(
             for p in m["parts"]
             if p.get("state") == "approval-requested"
         ]
-        assert len(parts) == 1 and adapter.publish_calls == 0, ui.dump_ui_messages(
-            CONVERSATION
-        )
-        parts[0]["state"] = "approval-responded"
-        parts[0]["approval"]["approved"] = True
-        approval = json.dumps(
-            {
-                "id": CONVERSATION,
-                "trigger": "submit-message",
-                "messages": [{"id": "approval", "role": "assistant", "parts": parts}],
-            }
-        ).encode()
-        asyncio.run(
-            ui.prepare_run(approval, approval_token="test-token").stream(lambda _: None)
-        )
-        assert adapter.publish_calls == 0
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            worker.scan()
-            if ui.call_store.pending(
+        if approval_mode == "ask":
+            assert len(parts) == 1 and adapter.publish_calls == 0, ui.dump_ui_messages(
                 CONVERSATION
-            ) is None and not ui.run_registry.is_active(CONVERSATION):
-                break
-            time.sleep(0.02)
-        assert adapter.publish_calls == 1
+            )
+            assert not dispatched.is_set()
+            parts[0]["state"] = "approval-responded"
+            parts[0]["approval"]["approved"] = True
+            approval = json.dumps(
+                {
+                    "id": CONVERSATION,
+                    "trigger": "submit-message",
+                    "messages": [{"id": "approval", "role": "assistant", "parts": parts}],
+                }
+            ).encode()
+            asyncio.run(
+                ui.prepare_run(approval, approval_token="test-token").stream(lambda _: None)
+            )
+        if publish_outcome == "enqueue_failed":
+            assert not dispatched.is_set()
+            assert adapter.publish_calls == 0
+            assert context.db.list_publish_jobs()[0] == []
+            assert ui.call_store.pending(CONVERSATION) is None
+            assert ui.call_store.work() == []
+            assert not ui.run_registry.is_active(CONVERSATION)
+            text = json.dumps(ui.dump_ui_messages(CONVERSATION), ensure_ascii=False)
+            assert "发布任务提交失败" in text
+            assert "发布任务已提交" not in text
+            return
+        assert dispatched.wait(timeout=5)
+        assert adapter.publish_calls == 0
+        assert not terminal.is_set()
         assert ui.call_store.pending(CONVERSATION) is None
+        assert not ui.run_registry.is_active(CONVERSATION)
+        assert ui.call_store.work() == []
+        receipt = ui.call_store.receipt(CONVERSATION, "publish")
+        assert receipt["status"] == "completed"
+        assert receipt["job_json"] is None
+        assert len(submission_results) == 1
         text = json.dumps(ui.dump_ui_messages(CONVERSATION), ensure_ascii=False)
-        assert ("发布成功" if remote_success else "平台拒绝，发布失败") in text
+        assert "发布任务已提交" in text
+        release_remote.set()
+        assert terminal.wait(timeout=5)
+        assert adapter.publish_calls == 1
+        state = bus.get_public_status(submission_results[0]["job_id"])
+        assert state["platforms"]["ozon"]["status"] == (
+            "success" if publish_outcome == "success" else "failed"
+        )
+        assert len(submission_results) == 1
+        assert ui.call_store.pending(CONVERSATION) is None
+        assert ui.call_store.work() == []
+        assert json.dumps(ui.dump_ui_messages(CONVERSATION), ensure_ascii=False) == text
     finally:
-        worker.close()
+        release_remote.set()
         bus.executor.shutdown(wait=True)

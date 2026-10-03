@@ -28,8 +28,6 @@ from erp_web.runtime_units.publish_confirmation import (
 from erp_web.runtime_units.publish_context import prepare_publish_context
 from erp_web.runtime_units.publish_helpers import _draft_images
 from erp_web.schemas.ai_tools import (
-    PUBLISH_JOB_TYPE,
-    JobReferenceResult,
     ToolApprovalSnapshot,
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
@@ -818,8 +816,10 @@ def _publish_request_approval_snapshot(
 @ai_tool(
     name=PRODUCT_PUBLISH_REQUEST_TOOL,
     description=(
-        "提交真实发布；破坏性操作，需要人工在受信界面批准后才会执行，"
+        "将发布任务提交到后台队列；按服务端审批模式批准后执行，"
         "执行时会重新校验并核对冻结的审批快照。"
+        "返回 job_id 即表示提交成功，本次发布操作到此结束；"
+        "向用户汇报已提交，不等待或主动轮询平台发布结果。"
     ),
     permission="product.publish",
     side_effect="write",
@@ -828,14 +828,13 @@ def _publish_request_approval_snapshot(
     idempotency="required",
     idempotency_keys=("operation_key",),
     recovery_policy="idempotent",
-    execution_mode="persistent_job",
     version="1",
 )
 def product_publish_request(
     request: ProductPublishCapabilityRequest,
     scope: Annotated[PublishCapabilityScope, Injected()],
     execution: Annotated[AiExecutionContext, Injected()],
-) -> JobReferenceResult:
+) -> ProductPublishRequestResult:
     from datetime import datetime
 
     operation_key = str(
@@ -872,7 +871,7 @@ def product_publish_request(
         stale_code="PUBLISH_CONFIRMATION_STALE",
     )
     validation_digest = str(snapshot.canonical_payload.get("validation_digest") or "")
-    result = request_product_publish(
+    return request_product_publish(
         ProductPublishRequest(
             draft_id=request.draft_id,
             platform=request.platform,
@@ -887,16 +886,6 @@ def product_publish_request(
         ),
         publishing_bus=scope.publishing_bus,
         context=scope.context,
-    )
-    return JobReferenceResult(
-        job_id=result.job_id,
-        job_type=PUBLISH_JOB_TYPE,
-        status=(
-            result.status
-            if result.status in {"queued", "pending", "running", "retrying"}
-            else "queued"
-        ),
-        summary="发布任务已提交，正在等待平台真实终态。",
     )
 
 

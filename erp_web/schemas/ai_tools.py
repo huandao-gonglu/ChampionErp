@@ -904,7 +904,6 @@ class JobReferenceResult(BaseModel):
 
 
 # 领域无关的 Job 类别常量；Job Status Reader 注册表按它们解析读取器。
-PUBLISH_JOB_TYPE = "publish"
 PRODUCT_RESEARCH_JOB_TYPE = "product_research"
 
 
@@ -988,7 +987,6 @@ __all__ = [
     "AiToolSideEffect",
     "JobReferenceResult",
     "PRODUCT_RESEARCH_JOB_TYPE",
-    "PUBLISH_JOB_TYPE",
     "TOOL_APPROVAL_REQUIRED",
     "TOOL_INPUT_REQUIRED",
     "ToolApprovalSnapshot",

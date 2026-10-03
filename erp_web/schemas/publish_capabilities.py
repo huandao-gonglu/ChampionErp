@@ -178,6 +178,8 @@ class ProductPublishRequest(BaseModel):
 
 
 class ProductPublishRequestResult(BaseModel):
+    """发布队列已接收的提交回执；AI 发布操作以此结束，平台终态由后台确认。"""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     job_id: Annotated[
@@ -186,7 +188,9 @@ class ProductPublishRequestResult(BaseModel):
     ]
     draft_id: Annotated[TrimmedText, StringConstraints(max_length=160)]
     platform: Annotated[TrimmedText, StringConstraints(max_length=80)]
-    status: Annotated[TrimmedText, StringConstraints(max_length=80)]
+    status: Annotated[TrimmedText, StringConstraints(max_length=80)] = Field(
+        description="后台发布任务状态；提交回执不要求等待平台发布成功",
+    )
     idempotent_replay: bool = False
 
 

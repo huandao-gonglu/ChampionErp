@@ -804,6 +804,21 @@ def test_publish_preparation_is_an_explicit_write_tool():
     assert "product_publish_prepare" not in GLOBAL_CHAT_CAPABILITIES
 
 
+def test_publish_submission_ends_ai_operation_without_terminal_job_wait():
+    """发布仅等待原生审批，队列接收后通过普通工具回执完成。"""
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
+    from erp_web.facades.agent_capability_facade import build_job_status_readers
+
+    request = APPLICATION_CAPABILITY_CATALOG.tools["product_publish_request"].definition
+    assert request.execution_mode == "sync"
+    assert request.approval_required
+    assert "job_type" not in request.output_schema.get("properties", {})
+    assert "job_id" in request.output_schema["required"]
+    assert "publish" not in build_job_status_readers()
+    reader_source = (ROOT / "erp_web/runtime_units/domain_job_readers.py").read_text()
+    assert "class PublishJobStatusReader" not in reader_source
+
+
 def test_image_hosting_has_one_sdk_boundary_and_no_retired_delivery():
     """S3 只在交付边界装配；预检/worker 不上传，隧道路径彻底退役。"""
     sdk_imports = {
