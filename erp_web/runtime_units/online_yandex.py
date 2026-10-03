@@ -12,6 +12,7 @@ from erp_web.marketplaces.yandex_currency import yandex_wire_currency
 from erp_web.schemas.online_products import OnlineListing
 from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, read_batch, sync_yandex
 from erp_web.runtime_units.online_product_status import yandex_status
+from erp_web.runtime_units.category_catalog import get_category_catalog
 
 
 class YandexOnlineAdapter:
@@ -37,6 +38,19 @@ class YandexOnlineAdapter:
 
     def request(self, path: str, body=None, *, query=None, method="POST"):
         return api.request_yandex_json(method, path, self.token, body, query=query)
+
+    def attribute_names(self, category_id: str):
+        """一次适配器运行中按类目共用名称查询；定义仍由 Catalog 缓存管理。"""
+        if not hasattr(self, "_attribute_names"):
+            self._attribute_names = {}
+        if category_id not in self._attribute_names:
+            try:
+                definition = get_category_catalog().attribute_definitions("yandex", category_id, site="global")
+                self._attribute_names[category_id] = ({a.id: a.name for a in (*definition.required, *definition.optional)}, "")
+            except Exception as exc:
+                # 名称查询失败不丢失已读到的属性值和卡片反馈，也不伪装成名称已加载。
+                self._attribute_names[category_id] = ({}, f"读取属性名称失败：{exc}")
+        return self._attribute_names[category_id]
 
     def sync(self, ids=None):
         return sync_yandex(self, ids)

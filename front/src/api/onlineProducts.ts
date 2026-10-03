@@ -5,6 +5,7 @@ export type OnlineOperation = 'price' | 'stock' | 'content' | 'sale_state'
 export interface PriceScope { id: string; label: string; amount: string | null; currency: string; kind: string; writable: boolean; reason: string }
 export interface StockScope { id: string; label: string; quantity: number | null; writable: boolean; reason: string }
 export interface BuyerLink { label: string; url: string; site_id: string }
+export interface PlatformIssue { severity: 'error' | 'warning'; source: string; code: string; message: string; comment: string }
 export interface SourceImageOption {
   asset_id: string; fingerprint: string; preview_url: string; existing_picture_id: string; existing_url: string
 }
@@ -16,8 +17,9 @@ export interface OnlineListing {
   buyer_links: BuyerLink[]
   details_state: 'pending' | 'ready' | 'failed'
   raw_status: string; sale_state: string; raw_sub_status: string[]; prices: PriceScope[]; stocks: StockScope[]; version: string; synced_at: string; status_checked_at: string; errors: string[]; desired_sale_state: string
+  platform_issues: PlatformIssue[]
   markets: Array<{ id: string; site_id: string; logistic_type: string; raw_status: string; price: string | null; currency: string }>
-  content: { title?: string; description?: string; pictures?: Array<string | {id: string; url: string}>; attributes?: Array<Record<string, unknown>> }
+  content: { title?: string; description?: string; pictures?: Array<string | {id: string; url: string}>; attributes?: Array<Record<string, unknown>>; attribute_names_error?: string }
   capabilities: Record<OnlineOperation, {enabled: boolean; reason: string; scope: string; fields: string[]}>
 }
 export interface OnlineJob {

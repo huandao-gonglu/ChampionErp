@@ -108,7 +108,7 @@
   `facades/online_product_facade.py` 负责请求转换；`facades/online_product_factory.py` 显式装配三个平台适配器。
 - `services/online_product_service.py` 编排 ERP 领域任务，通过注入访问适配器，不反向导入 runtime。
   `refresh_status` 直接查询单件状态；`POST /api/online-products/refresh-status` 不入同步队列，返回更新后的公开商品。
-  `stores/online_product_store.py::update_status` 校验并发版本后仅合并状态及 `status_checked_at`，保留价格、库存、内容和完整同步时间。
+  `stores/online_product_store.py::update_status` 校验并发版本后合并状态、平台反馈及 `status_checked_at`，保留价格、库存、内容和完整同步时间。
   `services/online_product_sync.py` 消费 `OnlineSyncBatch`、保存目录记录与详情进度，详情失败保留旧业务快照。
   `services/online_product_changes.py` 负责确定性变更校验与字段回读比较；详情未完整同步时禁止修改。
   `services/online_product_images.py` 按发布记录中的远端身份和账号精确关联源草稿，
@@ -125,12 +125,18 @@
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
   `runtime_units/online_yandex_read.py` 负责完整目录分页、隐藏清单分页和每批 100 个 SKU 的详情读取，最多 3 个接口并发；
   `online_yandex_snapshot.py` 只做响应投影。全店同步不再循环调用单件 `read`；单件完整读取只用于修改前校验。
+  Yandex 属性名称通过统一 `CategoryCatalog.attribute_definitions` 按类目关联，适配器一次运行内共用名称查询；
+  名称查询失败保留属性值及平台反馈，并公开 `content.attribute_names_error`，不让整件详情同步失败。
+  `online_yandex_snapshot.py::card_issues` 将卡片 `errors` / `warnings` 投影为具名 `PlatformIssue`，保留平台原文及补充说明；
+  完整同步、单件状态刷新及内容回读共用此投影。缺少目标卡片响应时状态查询失败，避免误清除旧反馈。
   `runtime_units/online_change_confirmation.py` 按修改字段和范围回读，不重复下载完整聚合。
   `runtime_units/online_product_status.py` 是三个平台的单件状态读取入口，限定目标身份，不扫描全店，不调用独立价格或库存接口。
   `online_mercadolibre_read.py` 先完整扫描目录，再用最多 3 件的并发窗口读取父商品及关联站点，保留 User Products mapping 校验；
   `online_ozon_read.py` 先扫描 ALL 与 ARCHIVED 目录，再每批最多 100 件读取详情与价格，`online_ozon_snapshot.py` 只做投影。
   三个平台统一产出同步批次，`marketplaces/online_sync.py` 仅提供目录占位和授权/限流中断规则，旧通用串行读取器已移除。
-- `schemas/online_products.py` 定义平台刊登、市场、具名价格/库存范围及变更契约；
+- `schemas/online_products.py` 定义平台刊登、市场、具名价格/库存范围、平台错误/警告及变更契约；
+  `platform_issues` 与 ERP 同步错误 `errors` 分开，旧快照缺字段时默认空列表；平台反馈不改变销售状态。
+  属性展示名称、名称读取提示及平台反馈不参与业务内容版本；编号、值和单位仍参与并发校验。
   `stores/online_product_store.py` 独占 `online_listings` / `online_jobs`。远端商品不要求有本地商品或草稿，
   不伪造 publication，不修改 `ProductStore` 的归属。
 - `marketplaces/online_buyer_links.py` 纯函数提取平台买家链接，规范化为 `BuyerLink`，随列表/详情返回。
@@ -151,6 +157,9 @@
   在线图片编辑使用内嵌源草稿多选区，图集第一张为主图；排序和移除按钮提供禁用原因及操作提示。
   `OnlinePicturePreview.vue` 提供失败占位与重试；进入预览时保留编辑组件，返回继续编辑。
   `OnlineBuyerLinks.vue` 在列表和详情提供单链接直达、多站点选择及缺失提示；点击不调用后端或 AI。
+  `OnlineProductDetails.vue` 在详情直接展示属性名称、编号、值和平台错误/警告，保留换行及原文；
+  `onlineAttributeDisplay.ts` 统一详情及编辑表单的展示。列表显示反馈数量，需关注统计包含平台反馈，
+  Yandex 卡片处理中、修改未被接受与销售状态分别展示；刷新状态会更新反馈，属性名称由完整同步补齐。
   页面背景传递当前平台和 `listing_id`，不混用本地商品或草稿 ID，也不作为授权。
   旧本地 publication 列表、旧独立暂停 HTTP/AI 工具及其前端已删除；持久化 publication 的读取迁移保留。
 - AI 接入边界、平台限制及验收方式见 [在线商品 AI](online-product-ai.md)。

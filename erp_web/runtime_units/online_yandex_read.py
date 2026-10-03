@@ -142,10 +142,23 @@ def read_batch(adapter, mappings, hidden: set[str]) -> OnlineSyncBatch:
     for mapping in mappings:
         remote_id = mapping["offer"]["offerId"]
         try:
+            if remote_id not in responses["cards"]:
+                raise ValueError("平台未返回该商品的卡片信息，已保留原记录")
+            card = responses["cards"][remote_id]
+            names, names_error = {}, ""
+            if card.get("parameterValues"):
+                category_id = str(mapping["offer"].get("marketCategoryId") or
+                                  card.get("mapping", {}).get("marketCategoryId") or
+                                  mapping.get("mapping", {}).get("marketCategoryId") or "")
+                if category_id:
+                    names, names_error = adapter.attribute_names(category_id)
+                else:
+                    names_error = "平台未返回类目编号，暂时无法关联属性名称"
             result.listings.append(build_listing(mapping, responses["campaign"].get(remote_id, {}), remote_id in hidden,
-                responses["cards"].get(remote_id, {}), responses["prices"].get(remote_id, {}).get("price", {}),
+                card, responses["prices"].get(remote_id, {}).get("price", {}),
                 build_stocks(adapter.mode, adapter.warehouses, stocks, remote_id),
-                account_id=adapter.account_id, campaign_id=adapter.campaign, settings=adapter.settings))
+                account_id=adapter.account_id, campaign_id=adapter.campaign, settings=adapter.settings,
+                attribute_names=names, attribute_names_error=names_error))
         except Exception as exc:
             result.errors[remote_id] = str(exc)
     return result

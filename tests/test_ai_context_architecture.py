@@ -767,6 +767,20 @@ def test_online_sync_uses_platform_readers_and_pure_snapshot_projection():
         assert not any(any(part in module for part in ("http", "stores", "context", "service")) for module in imports)
 
 
+def test_online_feedback_is_public_and_yandex_names_use_the_category_catalog():
+    """卡片反馈不混入同步错误，属性名称走统一类目入口且投影保持纯函数。"""
+    import inspect
+    from erp_web.runtime_units.online_yandex import YandexOnlineAdapter
+    from erp_web.schemas.online_products import OnlineProduct, OnlineStatus, PlatformIssue
+    assert 'platform_issues' in OnlineProduct.model_fields
+    assert 'platform_issues' in OnlineStatus.model_fields
+    assert 'snapshot' not in OnlineProduct.model_fields
+    assert set(PlatformIssue.model_fields) == {'severity', 'source', 'code', 'message', 'comment'}
+    source = inspect.getsource(YandexOnlineAdapter.attribute_names)
+    assert 'get_category_catalog().attribute_definitions' in source
+    assert 'request(' not in source
+
+
 def test_external_api_sends_have_one_managed_boundary():
     """所有 urllib 与 SDK 传输发送都在受控边界，防止新业务绕过共享阻断。"""
     allowed = {"erp_web/services/external_request_manager.py", "erp_web/services/external_httpx_transport.py"}

@@ -5,7 +5,23 @@ from typing import Any
 
 from erp_web.marketplaces.online_buyer_links import yandex_buyer_links
 from erp_web.marketplaces.yandex_currency import yandex_internal_currency
-from erp_web.schemas.online_products import Capability, MarketSnapshot, OnlineListing, PriceScope, StockScope, listing_identity
+from erp_web.schemas.online_products import Capability, MarketSnapshot, OnlineListing, PlatformIssue, PriceScope, StockScope, listing_identity
+
+
+def card_issues(card):
+    """保留平台错误和警告的原文及说明，不把警告推断成商品不可售。"""
+    return [PlatformIssue(severity=severity, code=str(row.get("code") or ""),
+                          message=str(row.get("message") or row.get("comment") or "平台未提供反馈说明"),
+                          comment=str(row.get("comment") or ""))
+            for field, severity in (("errors", "error"), ("warnings", "warning"))
+            for row in card.get(field, []) or [] if isinstance(row, dict)]
+
+
+def card_attributes(card, names=None):
+    """只补充展示名称，保留参数、枚举和单位身份。"""
+    names = names or {}
+    return [{"id": str(row["parameterId"]), **row, "name": names.get(str(row["parameterId"]), "")}
+            for row in card.get("parameterValues", []) if row.get("parameterId")]
 
 
 def available_stock(rows: list[dict[str, Any]]) -> int | None:
@@ -40,7 +56,8 @@ def build_stocks(mode, warehouses, stock_results, remote_id):
     return stocks
 
 
-def build_listing(mapping, campaign, hidden, card, default_price, stocks, *, account_id, campaign_id, settings):
+def build_listing(mapping, campaign, hidden, card, default_price, stocks, *, account_id, campaign_id, settings,
+                  attribute_names=None, attribute_names_error=""):
     offer = mapping["offer"]
     remote_id = offer["offerId"]
     prices = []
@@ -53,12 +70,13 @@ def build_listing(mapping, campaign, hidden, card, default_price, stocks, *, acc
             writable=enabled and not offer.get("archived") and bool(raw.get("currencyId") or settings.get("currency")),
             reason="店铺仅使用账号基础价" if not enabled else ""))
     raw_status = str(campaign.get("status") or ("ARCHIVED" if offer.get("archived") else offer.get("cardStatus") or ""))
-    attrs = [{"id": str(a["parameterId"]), **a} for a in card.get("parameterValues", []) if a.get("parameterId")]
-    content = {"title": str(offer.get("name") or ""), "description": str(offer.get("description") or ""), "pictures": offer.get("pictures") or [], "attributes": attrs}
+    attrs = card_attributes(card, attribute_names)
+    content = {"title": str(offer.get("name") or ""), "description": str(offer.get("description") or ""), "pictures": offer.get("pictures") or [], "attributes": attrs,
+               "attribute_names_error": attribute_names_error}
     return OnlineListing(id=listing_identity("yandex", account_id, remote_id), platform="yandex", account_id=account_id,
         remote_id=remote_id, model="business_offer", title=content["title"], seller_sku=remote_id, thumbnail=next(iter(content["pictures"]), ""),
         buyer_links=yandex_buyer_links(mapping),
-        sale_state="paused" if hidden else ("active" if raw_status == "PUBLISHED" else "unknown"), raw_status=raw_status, raw_sub_status=[str(card.get("cardStatus") or "")], prices=prices, stocks=stocks,
+        sale_state="paused" if hidden else ("active" if raw_status == "PUBLISHED" else "unknown"), raw_status=raw_status, raw_sub_status=[str(card.get("cardStatus") or "")], platform_issues=card_issues(card), prices=prices, stocks=stocks,
         markets=[MarketSnapshot(id=campaign_id, site_id=campaign_id, seller_id=account_id.split(":", 1)[0], raw_status=raw_status)], content=content,
         snapshot={"mapping": mapping.get("mapping", {}), "offer": offer, "default_price": default_price, "campaign": campaign, "card": card, "hidden": hidden},
         capabilities={"price": Capability(enabled=any(p.writable for p in prices), scope="所选账号 / 店铺"),

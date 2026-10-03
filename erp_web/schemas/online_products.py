@@ -67,6 +67,17 @@ class BuyerLink(BaseModel):
         return str(parsed)
 
 
+class PlatformIssue(BaseModel):
+    """平台对商品的业务反馈；与 ERP 同步失败分开保存。"""
+
+    model_config = ConfigDict(extra="forbid")
+    severity: Literal["error", "warning"]
+    source: str = "card"
+    code: str = ""
+    message: str
+    comment: str = ""
+
+
 class OnlineProduct(BaseModel):
     """页面与 AI 共用的在线商品公开字段，不包含平台原始响应。"""
     model_config = ConfigDict(extra="forbid")
@@ -81,6 +92,7 @@ class OnlineProduct(BaseModel):
     buyer_links: list[BuyerLink] = Field(default_factory=list)
     raw_status: str = ""
     raw_sub_status: list[str] = Field(default_factory=list)
+    platform_issues: list[PlatformIssue] = Field(default_factory=list)
     markets: list[MarketSnapshot] = Field(default_factory=list)
     prices: list[PriceScope] = Field(default_factory=list)
     stocks: list[StockScope] = Field(default_factory=list)
@@ -134,6 +146,7 @@ class OnlineStatus(BaseModel):
     raw_status: str = Field(min_length=1)
     sale_state: str
     raw_sub_status: list[str] = Field(default_factory=list)
+    platform_issues: list[PlatformIssue] = Field(default_factory=list)
     markets: list[MarketStatus] = Field(default_factory=list)
 
 
@@ -185,6 +198,13 @@ def listing_identity(platform: str, account: str, remote_id: str) -> str:
 
 def snapshot_version(listing: OnlineListing) -> str:
     """版本只覆盖业务事实，时间戳、请求序号与能力提示不制造冲突。"""
-    return digest({key: listing.model_dump()[key] for key in (
+    data = listing.model_dump()
+    content = data["content"]
+    if listing.platform == "yandex":
+        content.pop("attribute_names_error", None)
+    if listing.platform == "yandex" and isinstance(content.get("attributes"), list):
+        content["attributes"] = [{key: value for key, value in row.items() if key != "name"}
+                                 for row in content["attributes"]]
+    return digest({key: data[key] for key in (
         "remote_id", "model", "title", "sale_state", "raw_status", "raw_sub_status", "markets", "prices", "stocks", "content",
     )})

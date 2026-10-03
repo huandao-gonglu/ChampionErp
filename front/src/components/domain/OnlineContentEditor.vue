@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch, toRaw } from 'vue'
 import { fetchOnlineSourceImages, type OnlineListing, type SourceImageOption, type SourceImageSelection } from '@/api/onlineProducts'
 import OnlinePicturePreview from './OnlinePicturePreview.vue'
+import { onlineAttributeName, onlineAttributeText } from './onlineAttributeDisplay'
 const props = defineProps<{listing: OnlineListing}>()
 const emit = defineEmits<{change:[value:Record<string,unknown>]; picturePreviews:[urls:string[]]}>()
 type Picture = string | {id: string; url: string} | {asset_id: string; fingerprint: string; preview_url: string}
@@ -27,8 +28,7 @@ function editable(a: Record<string, unknown>) {
   return typeof a.value_name==='string' || typeof a.value==='string' || typeof a.value==='number'
 }
 function attrText(a: Record<string, unknown>) {
-  if(Array.isArray(a.values)) return a.values.map(v=>String(v.name || '')).join('、')
-  return String(a.value_name ?? a.value ?? a.valueId ?? '')
+  return onlineAttributeText(a)
 }
 for(const a of attributes.value) values.value[String(a.id)] = attrText(a)
 function pictureUrl(p: Picture) {return typeof p==='string'?p:'asset_id' in p?p.preview_url:p.url}
@@ -137,7 +137,7 @@ watch(changes, value => {
         </template>
       </div>
     </section>
-    <section v-if="listing.capabilities.content.fields.includes('attributes')"><h3 class="font-medium">商品属性</h3><div class="mt-4 grid gap-4 sm:grid-cols-2"><label v-for="a in attributes" :key="String(a.id)" class="block"><span class="flex items-center gap-2"><input v-model="selectedAttributes" type="checkbox" :value="String(a.id)" :disabled="!editable(a)" />{{ a.name || a.parameterName || a.id }}</span><input v-model="values[String(a.id)]" :disabled="!editable(a) || !selectedAttributes.includes(String(a.id))" class="input mt-2" /><span v-if="!editable(a)" class="muted">身份字段、枚举或复杂属性在此仅供查看</span></label></div></section>
+    <section v-if="listing.capabilities.content.fields.includes('attributes')"><h3 class="font-medium">商品属性</h3><div class="mt-4 grid gap-4 sm:grid-cols-2"><label v-for="a in attributes" :key="String(a.id)" class="block"><span class="flex items-center gap-2"><input v-model="selectedAttributes" type="checkbox" :value="String(a.id)" :disabled="!editable(a)" />{{ onlineAttributeName(a) }}</span><span class="muted mt-1 block text-xs">属性编号：{{ a.id }}</span><input v-model="values[String(a.id)]" :disabled="!editable(a) || !selectedAttributes.includes(String(a.id))" class="input mt-2" /><span v-if="!editable(a)" class="muted">身份字段、枚举或复杂属性在此仅供查看</span></label></div></section>
     <label v-if="listing.capabilities.content.fields.includes('description')" class="block"><span class="flex items-center gap-2"><input v-model="selectedFields" type="checkbox" value="description" />商品描述</span><textarea v-model="description" :disabled="!selectedFields.includes('description')" class="input mt-3" rows="7" /></label><p v-else class="muted">当前商品暂不支持在此更新描述。</p>
   </div>
 </template>

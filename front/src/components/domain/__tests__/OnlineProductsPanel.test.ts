@@ -9,7 +9,7 @@ vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnline
 const item: OnlineListing = {
   id: 'remote-1', platform: 'mercadolibre', account_id: 'shop-1', remote_id: 'CBT123', model: 'traditional_global_items',
   details_state: 'ready', buyer_links: [], title: '店铺同步商品', seller_sku: 'seller-sku', thumbnail: '', raw_status: 'active', sale_state: 'active', raw_sub_status: [], version: 'v1', synced_at: '', status_checked_at: '', errors: [], desired_sale_state: '',
-  prices: [{id:'global',label:'全局基础价',amount:'12',currency:'USD',kind:'base_price',writable:true,reason:''}], stocks: [], markets: [], content: {title:'店铺同步商品'},
+  platform_issues: [], prices: [{id:'global',label:'全局基础价',amount:'12',currency:'USD',kind:'base_price',writable:true,reason:''}], stocks: [], markets: [], content: {title:'店铺同步商品'},
   capabilities: {price:{enabled:true,fields:[],scope:'全局',reason:''},stock:{enabled:false,fields:[],scope:'',reason:'未取得库存位置'},content:{enabled:true,fields:['title'],scope:'全局',reason:''},sale_state:{enabled:true,fields:[],scope:'全局',reason:''}},
 }
 function response(): OnlinePage { return {items:[item],groups:[{id:'single-1',title:item.title,kind:'single',item_ids:[item.id],total_count:1}],total:1,listing_total:1,page:1,per_page:25,account_id:'shop-1',store_name:'当前店铺',state:'ready',markets:[],statuses:['active'],summary:{total:1,active:1,paused:0,attention:0},latest_sync:null,jobs:[]} }
@@ -24,6 +24,42 @@ function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,glob
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
 
 describe('在线商品页面',()=>{
+  it('直接展示属性名称和平台反馈，刷新后清除已消失的警告且保持在售', async () => {
+    const row: OnlineListing = {...item, platform:'yandex', raw_status:'PUBLISHED', raw_sub_status:['HAS_CARD_CAN_UPDATE_PROCESSING'],
+      content:{attributes:[{id:'57046341',parameterId:57046341,name:'Другие параметры',value:'Материал: Плюш\nТип: Игрушка'}]},
+      platform_issues:[{severity:'warning',source:'card',code:'',message:'Не доставляется',comment:'Проверьте размеры упаковки'},
+        {severity:'error',source:'card',code:'FORMAT',message:'Неверный формат',comment:'Используйте название: значение'}]}
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),items:[row]})
+    vi.mocked(fetchOnlineDetail).mockResolvedValue(row)
+    render(); await flushPromises(); await click('管理 →')
+    expect(wrapper!.get('[data-testid="online-listing"]').text()).toContain('1 个平台错误 · 1 个平台警告')
+    const detail = wrapper!.get('[aria-label="商品详情"]')
+    expect(detail.text()).toContain('在售')
+    expect(detail.text()).toContain('卡片状态：卡片修改处理中')
+    expect(detail.get('[data-testid="online-attributes"]').text()).toContain('Другие параметры')
+    expect(detail.get('[data-testid="online-attributes"]').text()).toContain('属性编号：57046341')
+    expect(detail.get('dd').text()).toBe('Материал: Плюш\nТип: Игрушка')
+    expect(detail.get('[data-severity="warning"]').text()).toContain('Проверьте размеры упаковки')
+    expect(detail.get('[data-severity="error"]').text()).toContain('Используйте название: значение')
+    expect(detail.get('[data-testid="platform-feedback"]').text()).toContain('现有反馈可能来自上次处理')
+    const next = {...row,platform_issues:[],raw_sub_status:['HAS_CARD_CAN_UPDATE'],status_checked_at:'2026-10-03T01:00:00Z'}
+    vi.mocked(refreshOnlineStatus).mockResolvedValue(next)
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),items:[next]})
+    await detail.get('[data-testid="detail-refresh-status"]').trigger('click'); await flushPromises()
+    expect(wrapper!.find('[data-severity="warning"]').exists()).toBe(false)
+    expect(wrapper!.get('[data-testid="platform-feedback"]').text()).toContain('当前记录没有具体错误或警告')
+    expect(wrapper!.get('[data-testid="online-listing"]').text()).toContain('在售')
+    expect(wrapper!.get('[data-testid="online-attributes"]').text()).toContain('Другие параметры')
+    expect(onlineAction).not.toHaveBeenCalled()
+  })
+  it('属性名称查询失败时展示原因并保留原值', async () => {
+    vi.mocked(fetchOnlineDetail).mockResolvedValue({...item,content:{attributes:[{id:'1',value:'Плюш'}],attribute_names_error:'类目查询超时'}})
+    render(); await flushPromises(); await click('管理 →')
+    const attributes = wrapper!.get('[data-testid="online-attributes"]')
+    expect(attributes.text()).toContain('类目查询超时')
+    expect(attributes.text()).toContain('名称暂未取得')
+    expect(attributes.get('dd').text()).toBe('Плюш')
+  })
   it('选图排序后从预览返回保留编辑，提交仅包含资产身份', async () => {
     const row: OnlineListing = {...item, content: {pictures: [{id:'existing',url:'https://images.example.com/existing.jpg'}]},
       capabilities:{...item.capabilities,content:{enabled:true,fields:['pictures'],scope:'全局',reason:''}}}

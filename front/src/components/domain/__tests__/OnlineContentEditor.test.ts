@@ -26,6 +26,15 @@ async function click(text: string) {await wrapper.findAll('button').find(button 
 function pictures() {return wrapper.emitted('change')!.at(-1)![0] as {pictures: unknown[]}}
 
 describe('在线商品图片编辑', () => {
+  it('Yandex 属性展示名称，提交保持参数身份且不夹带展示名称', async () => {
+    render({...listing,platform:'yandex',content:{attributes:[{id:'1',parameterId:1,name:'Материал',value:'Плюш',unitId:2}]},
+      capabilities:{...listing.capabilities,content:{enabled:true,fields:['attributes'],scope:'商品',reason:''}}})
+    expect(wrapper.text()).toContain('Материал')
+    expect(wrapper.text()).toContain('属性编号：1')
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await wrapper.get('input:not([type="checkbox"])').setValue('Хлопок')
+    expect(wrapper.emitted('change')!.at(-1)![0]).toEqual({attributes:[{id:'1',parameterId:1,value:'Хлопок',unitId:2}]})
+  })
   it('按钮提供 hint，边界禁止移动，删除不清空图集', async () => {
     render()
     expect(wrapper.get('[aria-label="右移图片 1"]').attributes('title')).toBe('请先勾选商品图片')

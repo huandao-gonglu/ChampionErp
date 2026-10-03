@@ -86,7 +86,7 @@ class OnlineProductService:
         return {"ok": True, "platform": platform, "account_id": account,
             **listing_page(records, query=query, status=status, market=market, page=page),
             "summary": {"total": len(records), "active": sum(r.sale_state == "active" for r in records),
-                        "paused": sum(r.sale_state == "paused" for r in records), "attention": sum(r.sale_state not in ("active", "paused") or bool(r.errors) for r in records)},
+                        "paused": sum(r.sale_state == "paused" for r in records), "attention": sum(r.sale_state not in ("active", "paused") or bool(r.errors) or bool(r.platform_issues) for r in records)},
             "markets": sorted({m.site_id for r in records for m in r.markets}),
             "statuses": sorted({r.raw_status for r in records}), "latest_sync": latest_sync,
             "state": "authorization_required" if not account else ("never_synced" if not latest_sync else "authorization_failed" if "AUTH" in latest_sync["result"].get("error_code", "") else "sync_failed" if latest_sync["status"] == "failed" else "ready"),

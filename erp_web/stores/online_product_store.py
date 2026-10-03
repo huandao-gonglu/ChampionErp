@@ -90,6 +90,7 @@ class OnlineProductStore:
                 raise OnlineConflict("商品市场关系已变化，请同步店铺商品")
             current.raw_status = status.raw_status
             current.raw_sub_status = status.raw_sub_status
+            current.platform_issues = status.platform_issues
             current.sale_state = status.sale_state
             for market in current.markets:
                 if market.id in markets:

@@ -3,7 +3,7 @@ from urllib.parse import quote
 
 from erp_web.marketplaces.yandex_currency import yandex_internal_currency
 from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, index_rows, pages, stock_result
-from erp_web.runtime_units.online_yandex_snapshot import build_stocks
+from erp_web.runtime_units.online_yandex_snapshot import build_stocks, card_attributes, card_issues
 
 
 def mercado_change(adapter, listing, request):
@@ -121,6 +121,9 @@ def yandex_change(adapter, listing, request):
             fresh.title = str(fresh.content.get("title") or "")
         card = one(f"/v2/businesses/{adapter.business}/offer-cards","offerCards")
         fresh.snapshot["card"] = card
+        fresh.raw_sub_status = [str(card["cardStatus"])] if card.get("cardStatus") else []
+        fresh.platform_issues = card_issues(card)
         if "attributes" in request.changes:
-            fresh.content["attributes"] = [{"id":str(a["parameterId"]),**a} for a in card.get("parameterValues",[]) if a.get("parameterId")]
+            names = {str(a["id"]): str(a.get("name") or "") for a in listing.content.get("attributes", [])}
+            fresh.content["attributes"] = card_attributes(card, names)
     return fresh

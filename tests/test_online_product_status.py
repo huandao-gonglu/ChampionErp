@@ -13,7 +13,7 @@ from erp_web.runtime_units.online_mercadolibre import MercadoOnlineAdapter
 from erp_web.runtime_units.online_ozon import OzonOnlineAdapter
 from erp_web.runtime_units.online_yandex import YandexOnlineAdapter
 from erp_web.runtime_units.online_product_capabilities import OnlineProductCapabilityScope, online_products_refresh_status
-from erp_web.schemas.online_products import MarketSnapshot, MarketStatus, OnlineStatus, RefreshStatusRequest
+from erp_web.schemas.online_products import MarketSnapshot, MarketStatus, OnlineStatus, PlatformIssue, RefreshStatusRequest
 from erp_web.services.online_product_service import OnlineProductService
 from erp_web.stores.online_product_store import OnlineConflict
 from tests.test_online_products import listing
@@ -64,6 +64,21 @@ def test_unchanged_status_updates_check_time_but_not_business_version(setup_stat
     assert first["version"] == second["version"]
     assert first["synced_at"] == second["synced_at"]
     assert first["status_checked_at"] < second["status_checked_at"]
+
+
+def test_status_refresh_replaces_feedback_without_changing_content_or_creating_version_conflicts(setup_status):
+    service, remote, _ = setup_status
+    first = service.refresh_status('CBT1')['item']
+    remote.read_status.return_value.platform_issues = [PlatformIssue(severity='warning', message='尺寸警告', comment='请核对包装')]
+    second = service.refresh_status('CBT1')['item']
+    assert second['platform_issues'][0]['comment'] == '请核对包装'
+    assert second['version'] == first['version']
+    assert second['content'] == first['content'] and second['synced_at'] == first['synced_at']
+    assert second['errors'] == first['errors'] == []
+    remote.read_status.return_value.platform_issues = []
+    third = service.refresh_status('CBT1')['item']
+    assert not third['platform_issues'] and third['version'] == second['version']
+    assert not service.store.jobs('mercadolibre', 'seller')
 
 
 @pytest.mark.parametrize("exception", [TimeoutError("查询超时"), PublishAdapterError("AUTH", "授权失效")])
@@ -197,13 +212,16 @@ def test_yandex_status_requests_only_the_target_and_skips_price_stock_and_settin
             return {"result": {"hiddenOffers": [{"offerId": "sku-1"}]}}
         assert body == {"offerIds": ["sku-1"]} and query is None
         if path.endswith("/offer-cards"):
-            return {"result": {"offerCards": [{"offerId": "sku-1", "cardStatus": "HAS_CARD_CAN_UPDATE"}]}}
+            return {"result": {"offerCards": [{"offerId": "sku-1", "cardStatus": "HAS_CARD_CAN_UPDATE",
+                "errors": [{"message": "Ошибка формата", "comment": "Название: значение"}],
+                "warnings": [{"message": "Размер упаковки"}]}]}}
         assert path == "/v2/campaigns/2/offers"
         return {"result": {"offers": [{"offerId": "sku-1", "status": "PUBLISHED"}]}}
     adapter.request = request
     result = adapter.read_status(listing("sku-1"))
     assert result.raw_status == "PUBLISHED" and result.sale_state == "paused"
     assert result.raw_sub_status == ["HAS_CARD_CAN_UPDATE"] and len(calls) == 3
+    assert [(issue.severity, issue.message) for issue in result.platform_issues] == [('error', 'Ошибка формата'), ('warning', 'Размер упаковки')]
 
 
 @pytest.mark.parametrize("rows", [[], [{"offerId": "other", "status": "PUBLISHED"}], [{"offerId": "sku-1"}]])
@@ -216,6 +234,19 @@ def test_yandex_missing_or_foreign_status_is_not_success(rows):
     adapter.request = request
     with pytest.raises(ValueError):
         adapter.read_status(listing("sku-1"))
+
+
+def test_yandex_missing_target_card_does_not_turn_unknown_feedback_into_empty_feedback():
+    adapter = object.__new__(YandexOnlineAdapter)
+    adapter.business, adapter.campaign = '1', '2'
+    def request(path, *args, **kwargs):
+        if path.endswith('/offers'):
+            return {'result': {'offers': [{'offerId': 'sku-1', 'status': 'PUBLISHED'}]}}
+        key = 'hiddenOffers' if path.endswith('hidden-offers') else 'offerCards'
+        return {'result': {key: []}}
+    adapter.request = request
+    with pytest.raises(ValueError, match='已保留原记录'):
+        adapter.read_status(listing('sku-1'))
 
 
 @pytest.mark.parametrize("archived", [False, True])
