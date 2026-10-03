@@ -562,6 +562,11 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `erp_web/schemas/category_definition.py`：内部 `CategoryDefinition`、有界公共属性/枚举
   分页 View 与稳定 fingerprint 的唯一 shape owner。内部定义不含平台原始 `raw` 或完整
   枚举全集，公共 View 也不暴露 `platform_binding`。
+- Yandex“其他属性”（57046341）在 Provider 中声明 `name_value_lines` 文本格式；
+  `schemas/category.py` 统一校验每行的“属性名:属性值”。公共摘要仅投影 `text_format` 和
+  `format_hint`，供主 Agent 生成属性与前端多行编辑使用，不暴露内部 constraints。
+  属性写工具、草稿发布预检和 payload 编译均执行同一规则；该选填字段只保留没有专用
+  平台字段的来源事实，不重复材质等已映射属性，不把整组 SKU 的概括描述套给各规格。
 - `erp_web/runtime_units/category_catalog.py`：业务消费者的统一类目读取入口；负责 Provider
   解析、定义 Loader 注入与有界公共投影。类目匹配、属性填充、预检、payload 编译、前端和
   Agent 工具不得绕过 Catalog/注入 Loader 直接读取平台规则。

@@ -59,6 +59,36 @@ afterEach(() => {
 })
 
 describe('CategoryAttributesPanel', () => {
+  it.each([true, false])('平台格式文本支持多行编辑和逐行纠错（必填：%s）', async (required) => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'formatted-draft'
+    draft.categoryId = 'category'
+    draft.attributes = { extra: '用途: 玩耍\n错误段落' }
+    draft.validationErrors = ['extra']
+    const attr = {
+      id: 'extra', name: '其他属性', required, textFormat: 'name_value_lines' as const,
+      formatHint: '每行填写“属性名:属性值”，多项换行',
+    }
+    const category: CategorySelection = {
+      platform: 'yandex', categoryId: 'category', categoryPath: '宠物玩具',
+      requiredAttributes: required ? [attr] : [],
+      optionalAttributes: required ? [] : [attr], fetchedAt: '2026-10-03T00:00:00Z', raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, { props: { ...panelProps(draft, category), target: yandexTarget } })
+    await wrapper.findAll('button').find((button) => button.text().includes(required ? '必填属性 1 个' : '可选属性 1 个'))!.trigger('click')
+    const editor = wrapper.get('textarea[data-attribute-id="extra"]')
+    expect(editor.attributes('aria-invalid')).toBe('true')
+    expect(wrapper.get('[role="alert"]').text()).toContain('第 2 行缺少英文冒号')
+    expect(wrapper.text()).toContain(attr.formatHint)
+    await editor.setValue('用途: 玩耍\n参考: https://example.com/a:b')
+    expect(editor.attributes('aria-invalid')).toBe('false')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(draft.attributes.extra).toBe('用途: 玩耍\n参考: https://example.com/a:b')
+    expect(draft.validationErrors).not.toContain('extra')
+    await editor.setValue('')
+    expect(draft.attributes.extra).toBe('')
+  })
+
   it('分组属性由刊登设置派生，切换模式后不保留人工输入或待复核项', async () => {
     const draft = createEmptyDraftDetail('ozon')
     draft.draftId = 'grouping-draft'

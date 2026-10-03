@@ -23,7 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 #: 定义序列化格式版本；归一化形状变化时必须递增，使旧缓存自动失效。
-DEFINITION_FORMAT_VERSION = 5
+DEFINITION_FORMAT_VERSION = 6
 
 #: options 有界预览上限；公共视图与内部定义共用该边界。
 ATTRIBUTE_OPTIONS_PREVIEW_LIMIT = 50
@@ -171,6 +171,9 @@ class CategoryAttributeSummary(BaseModel):
     value_mode: str = ""
     allow_custom_values: bool = False
     read_only: bool = False
+    #: 仅暴露编辑和生成需要的文本格式，不透传内部 constraints。
+    text_format: Literal["", "name_value_lines"] = ""
+    format_hint: str = ""
     is_dictionary: bool = False
     is_collection: bool = False
     max_value_count: int | None = None

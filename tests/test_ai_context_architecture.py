@@ -69,6 +69,19 @@ def test_international_shipping_has_no_erp_or_agent_dependencies():
     assert not (ROOT / "erp_web/http_route_units/tariff_routes.py").exists()
 
 
+def test_category_text_format_is_bounded_metadata_without_platform_ids_in_editor():
+    """AI 和编辑器共享有界格式摘要，规则 helper 不依赖持久化或平台请求。"""
+    from erp_web.schemas.category_definition import CategoryAttributeSummary
+
+    fields = CategoryAttributeSummary.model_fields
+    assert {"text_format", "format_hint"}.issubset(fields)
+    assert "constraints" not in fields
+    editor = (ROOT / "front/src/components/domain/CategoryAttributesPanel.vue").read_text()
+    assert "57046341" not in editor
+    imports = imported_targets([ROOT / "erp_web/schemas/category.py"])
+    assert not any(target.startswith(("erp_web.runtime_units", "erp_web.stores", "sqlite3", "urllib")) for _, target in imports)
+
+
 def _relative_posix(path) -> str:
     return path.relative_to(ROOT).as_posix()
 

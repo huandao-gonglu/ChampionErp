@@ -35,6 +35,7 @@ from erp_web.marketplaces.yandex_http import (
     update_yandex_stock,
 )
 from erp_web.schemas.category import (
+    category_attribute_text_format_error,
     category_attribute_unit_is_valid,
     category_attribute_value_mode,
 )
@@ -243,6 +244,20 @@ def yandex_invalid_dictionary_attributes(
     return sorted(invalid)
 
 
+def yandex_invalid_text_attributes(
+    product: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """返回已填文本属性的格式错误，供草稿预检定位具体行。"""
+    draft = _draft_for_selected_target(normalize_product_fields(product), "yandex")
+    attributes = draft.get("attributes") or {}
+    return {
+        attr_id: error
+        for attr_id, definition in _record_schema_definitions(category_record).items()
+        if (error := category_attribute_text_format_error(definition, attributes.get(attr_id)))
+    }
+
+
 def yandex_invalid_unit_attributes(
     product: dict[str, Any],
     category_record: dict[str, Any] | None = None,
@@ -395,6 +410,9 @@ def _compile_parameter_values(
         if not attr_id.isdigit() or int(attr_id) <= 0 or attr_id not in definitions:
             continue
         definition = definitions.get(attr_id) or {}
+        format_error = category_attribute_text_format_error(definition, raw_value)
+        if format_error:
+            raise ValueError(f"Yandex 属性 {attr_id}：{format_error}")
         parameter_id = int(attr_id)
         value_mode = category_attribute_value_mode(definition)
         rows: list[dict[str, Any]] = []
@@ -1405,6 +1423,7 @@ __all__ = [
     "validate_yandex_publish_payload",
     "yandex_invalid_dictionary_attributes",
     "yandex_invalid_unit_attributes",
+    "yandex_invalid_text_attributes",
     "yandex_offer_identity_conflict",
     "yandex_required_attributes_missing",
 ]

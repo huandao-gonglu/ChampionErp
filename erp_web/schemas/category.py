@@ -336,12 +336,49 @@ def _has_joined_collection_options(definition: dict[str, Any], value: Any) -> bo
     return text not in options and len(parts) > 1 and all(part in options for part in parts)
 
 
+def category_attribute_text_format(definition: dict[str, Any]) -> str:
+    """读取平台归一化的文本格式；公共摘要仅暴露这一有界规则。"""
+    constraints = definition.get("constraints") if isinstance(definition.get("constraints"), dict) else {}
+    return str(definition.get("text_format") or constraints.get("text_format") or "")
+
+
+def category_attribute_text_format_hint(definition: dict[str, Any]) -> str:
+    if category_attribute_text_format(definition) == "name_value_lines":
+        return "每行填写“属性名:属性值”，使用英文冒号，多项换行；仅填写当前商品适用的事实，不重复已有专用属性，不填写整组 SKU 的概括描述。"
+    return ""
+
+
+def category_attribute_text_format_error(definition: dict[str, Any], value: Any) -> str:
+    """校验平台特定文本格式，不推测或自动改写业务内容；空值由必填规则处理。"""
+    if category_attribute_text_format(definition) != "name_value_lines":
+        return ""
+    if isinstance(value, dict):
+        if "values" in value:
+            return "请填写每行一个“属性名:属性值”的文本，不使用枚举集合"
+        value = value.get("value")
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        return "请填写每行一个“属性名:属性值”的文本"
+    for index, line in enumerate(value.splitlines(), 1):
+        if not line.strip():
+            continue
+        name, separator, content = line.partition(":")
+        if not separator:
+            return f"第 {index} 行缺少英文冒号，请按“属性名:属性值”填写"
+        if not name.strip() or not content.strip():
+            return f"第 {index} 行的属性名和属性值均不能为空"
+    return ""
+
+
 def category_attribute_value_is_valid(
     definition: dict[str, Any],
     value: Any,
 ) -> bool:
     """按唯一值模式判断草稿属性值是否满足平台结构约束。"""
 
+    if category_attribute_text_format_error(definition, value):
+        return False
     attr_id = str(definition.get("id") or "").strip()
     value_mode = category_attribute_value_mode(definition)
     uses_unit = category_attribute_uses_unit(definition)
@@ -681,6 +718,9 @@ __all__ = [
     "normalize_category_attribute_number_unit_value",
     "normalize_category_attribute_unit",
     "category_attribute_schema",
+    "category_attribute_text_format",
+    "category_attribute_text_format_error",
+    "category_attribute_text_format_hint",
     "category_attribute_unit_is_valid",
     "category_attribute_uses_numeric_unit",
     "category_attribute_uses_unit",

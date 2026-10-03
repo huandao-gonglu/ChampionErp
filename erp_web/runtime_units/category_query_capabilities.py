@@ -162,7 +162,7 @@ def category_search(
 
 @ai_tool(
     name=CATEGORY_ATTRIBUTES_QUERY_TOOL,
-    description="分页查询类目属性：默认 scope=common 只返回可写公共属性，SKU 任务用 scope=sku。write_scope 标明写入范围；excluded_attributes 仅说明排除的托管、只读或其他范围字段，不能写入它们。按 has_more/cursor 继续，包括过滤后的空页。已有 options 可直接使用，缺候选时并行查询所需字典。",
+    description="分页查询类目属性：默认 scope=common 只返回可写公共属性，SKU 任务用 scope=sku。write_scope 标明写入范围；excluded_attributes 仅说明排除的托管、只读或其他范围字段，不能写入它们。填写文本时遵循 text_format 和 format_hint，只填写适用的商品事实；选填且没有额外信息的字段可不填。按 has_more/cursor 继续，包括过滤后的空页。已有 options 可直接使用，缺候选时并行查询所需字典。",
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",

@@ -369,6 +369,19 @@ describe('Mercado 类目属性编辑契约', () => {
     vi.clearAllMocks()
   })
 
+  it('平台文本格式和填写提示透传到编辑定义', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: { ok: true, category_id: 'pet-toys', attributes: [{
+        id: 'extra', name: '其他属性', required: false, value_type: 'text',
+        text_format: 'name_value_lines', format_hint: '每行填写“属性名:属性值”',
+      }] },
+    })
+    const result = await fetchCategoryAttrs('yandex', 'pet-toys', 'global')
+    expect(result.optionalAttributes[0]).toEqual(expect.objectContaining({
+      textFormat: 'name_value_lines', formatHint: '每行填写“属性名:属性值”',
+    }))
+  })
+
   it('保留 open enum、collection 与有界预览标记', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {

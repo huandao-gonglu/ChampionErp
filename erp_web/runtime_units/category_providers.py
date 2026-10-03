@@ -683,7 +683,11 @@ def _yandex_parameter_definition(parameter: dict[str, Any]) -> dict[str, Any]:
         # 单位名称 → Yandex unitId；发布期把选中单位编译为 wire unitId。
         "unit_ids": unit_ids,
         "default_unit_id": str(parameter.get("default_unit_id") or "").strip(),
-        "constraints": dict(parameter.get("constraints") or {}),
+        # 此字段的格式由平台回执明确要求；普通 TEXT 不套用此规则。
+        "constraints": {
+            **dict(parameter.get("constraints") or {}),
+            **({"text_format": "name_value_lines"} if parameter_id == "57046341" else {}),
+        },
         "dictionary_id": dictionary_id,
         "is_dictionary": bool(dictionary_id),
         "is_collection": bool(parameter.get("is_collection")),

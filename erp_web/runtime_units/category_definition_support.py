@@ -17,6 +17,10 @@ import ssl
 import urllib.error
 from typing import Any
 
+from erp_web.schemas.category import (
+    category_attribute_text_format,
+    category_attribute_text_format_hint,
+)
 from erp_web.schemas.category_grouping import is_listing_grouping_attribute
 from erp_web.schemas.category_definition import (
     ATTRIBUTE_OPTIONS_PREVIEW_LIMIT,
@@ -428,6 +432,8 @@ def public_attribute_summary(
         value_mode=definition.value_mode,
         allow_custom_values=definition.allow_custom_values,
         read_only=definition.read_only,
+        text_format=category_attribute_text_format({"constraints": definition.constraints}),
+        format_hint=category_attribute_text_format_hint({"constraints": definition.constraints}),
         is_dictionary=definition.is_dictionary,
         is_collection=definition.is_collection,
         max_value_count=definition.max_value_count,

@@ -75,6 +75,7 @@ from .publish_ozon import (
 from .pricing_results import _pricing_target_is_usable
 from .publish_yandex import (
     yandex_invalid_dictionary_attributes,
+    yandex_invalid_text_attributes,
     yandex_invalid_unit_attributes,
     yandex_mapped_parameter_count,
     yandex_offer_identity_conflict,
@@ -709,6 +710,12 @@ def validate_yandex_draft(
                 "前往类目属性页选择类目允许的单位",
             )
         )
+    for attr_id, message in yandex_invalid_text_attributes(product, category_record).items():
+        errors.append(precheck_item(
+            "ATTRIBUTE_TEXT_FORMAT_INVALID", f"attributes.{attr_id}",
+            f"Yandex 属性 {attr_id}：{message}", "error",
+            "前往类目属性页按每行一个“属性名:属性值”修正，选填且无额外信息时可清空",
+        ))
     # 必填属性是否解决由共享 owner 唯一裁定，这里不复制规则。
     for field in yandex_required_attributes_missing(product, category_record):
         attr_id = str(field).split(".", 1)[-1]

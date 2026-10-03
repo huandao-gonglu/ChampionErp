@@ -65,6 +65,9 @@ export interface CategoryAttributeDefinition {
   /** 本地 options 只是有界预览；true 时必须提供平台分页搜索入口。 */
   hasMoreValues?: boolean
   readOnly?: boolean
+  /** 平台属性定义提供的文本格式及填写说明。 */
+  textFormat?: '' | 'name_value_lines'
+  formatHint?: string
   unit?: string
   /** 平台允许的计量单位列表（如 Yandex 带单位参数），空 = 无需选单位。 */
   unitOptions?: string[]

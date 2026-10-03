@@ -1412,6 +1412,38 @@ def test_build_payload_requires_at_least_one_parameter_value() -> None:
     assert len(payload["catalog"]["offer"]["parameterValues"]) >= 1
 
 
+def test_other_characteristics_format_blocks_precheck_and_payload_and_allows_omission():
+    from erp_web.runtime_units.category_providers import _yandex_parameter_definition
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+
+    schema = deepcopy(_CATEGORY_SCHEMA)
+    schema["optional"].append(_yandex_parameter_definition({
+        "parameter_id": "57046341", "parameter_type": "TEXT", "name": "Прочие характеристики",
+    }))
+    record = _record(schema)
+    attrs = {"85": {"values": [{"dictionary_value_id": "123", "value": "风扇"}]},
+             "57046341": "Материал: плюш\n整组款式概括描述"}
+    checked = validate_yandex_draft(_validatable_product(attributes=attrs), _config(), record)
+    issue = next(item for item in checked["errors"] if item["code"] == "ATTRIBUTE_TEXT_FORMAT_INVALID")
+    assert issue["field"] == "attributes.57046341"
+    assert "第 2 行" in issue["message"]
+    with pytest.raises(ValueError, match="第 2 行缺少英文冒号"):
+        build_yandex_publish_payload(_product(attributes=attrs), _config(), record)
+
+    for invalid in ({"values": [{"value": "用途: 玩耍"}]}, ["用途: 玩耍"]):
+        attrs["57046341"] = invalid
+        with pytest.raises(ValueError, match="每行一个"):
+            build_yandex_publish_payload(_product(attributes=attrs), _config(), record)
+
+    attrs["57046341"] = "Назначение: для игр\nИсточник: https://example.com/a:b"
+    payload = build_yandex_publish_payload(_product(attributes=attrs), _config(), record)
+    wire = next(v for v in payload["catalog"]["offer"]["parameterValues"] if v["parameterId"] == 57046341)
+    assert wire["value"] == attrs["57046341"]
+    assert "ATTRIBUTE_TEXT_FORMAT_INVALID" not in _error_codes(validate_yandex_draft(_validatable_product(attributes=attrs), _config(), record))
+    del attrs["57046341"]
+    assert "ATTRIBUTE_TEXT_FORMAT_INVALID" not in _error_codes(validate_yandex_draft(_validatable_product(attributes=attrs), _config(), record))
+
+
 def test_migrated_description_reaches_yandex_catalog():
     product = _product()
     draft = product["drafts"]["yandex"]

@@ -535,6 +535,8 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         allowCustomValues: getBoolean(record, ['allow_custom_values', 'allowCustomValues']),
         hasMoreValues: getBoolean(record, ['has_more_values', 'hasMoreValues']),
         readOnly: getBoolean(record, ['read_only', 'readOnly']),
+        textFormat: getString(record, ['text_format']) === 'name_value_lines' ? 'name_value_lines' : '',
+        formatHint: getString(record, ['format_hint']),
         unitOptions: Array.isArray(record.unit_options)
           ? record.unit_options.map((option) => getString(asRecord(option), ['name'])).filter(Boolean)
           : stringList(record.unit_options),

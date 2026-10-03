@@ -78,7 +78,7 @@ const sharedMercadoLibreMarketSummary = computed(() => (
 
 const showRequiredAttributes = ref(props.skuScope)
 const showOptionalAttributes = ref(props.skuScope)
-const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | null>>({})
+const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null>>({})
 type RootDraftAttributeField = 'brand' | 'model'
 
 const MERCADO_ROOT_DRAFT_ATTRIBUTES: Record<string, RootDraftAttributeField> = {
@@ -214,6 +214,7 @@ function attributeOptionLabel(attrId: string, option: string) {
 }
 
 function attributePlaceholder(attr: CategoryAttributeDefinition) {
+  if (attr.textFormat === 'name_value_lines') return '属性名:属性值（每行一项）'
   if (isStrictEnumAttribute(attr)) return attr.isCollection ? '请选择一个或多个平台值' : '请选择平台允许的值'
   if (isOpenEnumAttribute(attr)) return attr.isCollection ? '选择建议值或添加自定义值' : '选择建议值或输入自定义值'
   if (attr.isCollection) return '添加一个或多个属性值'
@@ -326,6 +327,23 @@ function unitAttributeValue(attrId: string): { value: string; unit: string } {
   }
   if ('values' in raw) return { value: '', unit: '' }
   return { value: String(raw.value ?? ''), unit: String(raw.unit ?? '') }
+}
+
+function setFormattedAttributeValue(attr: CategoryAttributeDefinition, value: string) {
+  activeDraft.value.attributes[attr.id] = value
+  invalidateEditedAttribute(attr.id)
+}
+
+function attributeTextFormatError(attr: CategoryAttributeDefinition) {
+  if (attr.textFormat !== 'name_value_lines') return ''
+  const lines = unitAttributeValue(attr.id).value.split(/\r\n|\r|\n/)
+  for (const [index, line] of lines.entries()) {
+    if (!line.trim()) continue
+    const colon = line.indexOf(':')
+    if (colon < 0) return `第 ${index + 1} 行缺少英文冒号，请按“属性名:属性值”填写`
+    if (!line.slice(0, colon).trim() || !line.slice(colon + 1).trim()) return `第 ${index + 1} 行的属性名和属性值均不能为空`
+  }
+  return ''
 }
 
 function unitAttributeSelectedUnit(attr: CategoryAttributeDefinition) {
@@ -669,7 +687,7 @@ function invalidateEditedAttribute(attrId: string) {
 
 function setAttributeInputRef(attrId: string, el: Element | ComponentPublicInstance | null) {
   const node = el && '$el' in el ? el.$el : el
-  attributeInputRefs.value[attrId] = node instanceof HTMLInputElement || node instanceof HTMLSelectElement ? node : null
+  attributeInputRefs.value[attrId] = node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement ? node : null
 }
 
 function reviewAttributeLabel(attrId: string) {
@@ -966,6 +984,17 @@ function targetLabel(target: MarketplaceTargetSite) {
                   <option v-for="unitOption in attr.unitOptions" :key="unitOption" :value="unitOption">{{ unitOption }}</option>
                 </select>
               </div>
+              <textarea
+                v-else-if="attr.textFormat === 'name_value_lines'"
+                :ref="(el) => setAttributeInputRef(attr.id, el)"
+                :value="unitAttributeValue(attr.id).value"
+                class="input mt-1 min-h-24"
+                :data-attribute-id="attr.id"
+                :placeholder="attributePlaceholder(attr)"
+                :aria-invalid="Boolean(attributeTextFormatError(attr))"
+                :aria-describedby="`attribute-format-${targetIdentityKey}-${attr.id}`"
+                @input="setFormattedAttributeValue(attr, ($event.target as HTMLTextAreaElement).value)"
+              />
               <select
                 v-else-if="attr.options?.length"
                 :ref="(el) => setAttributeInputRef(attr.id, el)"
@@ -988,6 +1017,8 @@ function targetLabel(target: MarketplaceTargetSite) {
                 :placeholder="attributePlaceholder(attr)"
                 @input="invalidateEditedAttribute(attr.id)"
               />
+              <span v-if="attr.textFormat" :id="`attribute-format-${targetIdentityKey}-${attr.id}`" class="mt-1 block text-xs text-slate-500">{{ attr.formatHint }}</span>
+              <span v-if="attributeTextFormatError(attr)" role="alert" class="mt-1 block text-xs text-rose-600">{{ attributeTextFormatError(attr) }}</span>
             </label>
           </div>
         </div>
@@ -1100,11 +1131,24 @@ function targetLabel(target: MarketplaceTargetSite) {
                   <option v-for="unitOption in attr.unitOptions" :key="unitOption" :value="unitOption">{{ unitOption }}</option>
                 </select>
               </div>
+              <textarea
+                v-else-if="attr.textFormat === 'name_value_lines'"
+                :ref="(el) => setAttributeInputRef(attr.id, el)"
+                :value="unitAttributeValue(attr.id).value"
+                class="input mt-1 min-h-24"
+                :data-attribute-id="attr.id"
+                :placeholder="attributePlaceholder(attr)"
+                :aria-invalid="Boolean(attributeTextFormatError(attr))"
+                :aria-describedby="`attribute-format-${targetIdentityKey}-${attr.id}`"
+                @input="setFormattedAttributeValue(attr, ($event.target as HTMLTextAreaElement).value)"
+              />
               <select v-else-if="attr.options?.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" @change="invalidateEditedAttribute(attr.id)">
                 <option value="">{{ attributePlaceholder(attr) }}</option>
                 <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
               </select>
               <input v-else :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" :placeholder="attributePlaceholder(attr)" @input="invalidateEditedAttribute(attr.id)" />
+              <span v-if="attr.textFormat" :id="`attribute-format-${targetIdentityKey}-${attr.id}`" class="mt-1 block text-xs text-slate-500">{{ attr.formatHint }}</span>
+              <span v-if="attributeTextFormatError(attr)" role="alert" class="mt-1 block text-xs text-rose-600">{{ attributeTextFormatError(attr) }}</span>
             </label>
           </div>
         </div>
