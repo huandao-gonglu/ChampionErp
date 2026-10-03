@@ -1,5 +1,12 @@
 import { vi } from 'vitest'
 
+// jsdom 不提供布局观察；需要模拟尺寸变化的用例单独替换此实现。
+globalThis.ResizeObserver = class {
+  observe = vi.fn()
+  unobserve = vi.fn()
+  disconnect = vi.fn()
+}
+
 const localStorageMock = {
   getItem: vi.fn(() => null),
   setItem: vi.fn(),
