@@ -21,6 +21,10 @@
 
 统一修改输入复用 `OnlineChange`，字段为 `listing_id,version,operation,scope_id,changes`；HTTP 的 `ChangeRequest` 继承它并保留 `idempotency_key`。AI 提交键由现有可信执行身份机械生成，不由模型挑选或覆盖。库存使用绝对数量；价格保留范围和币种；内容仅修改后端允许字段，图片仍使用完整目标列表。业务校验、账号隔离、冲突检查、任务互斥和平台回读继续由原服务执行。
 
+图片新增从 `GET /api/online-products/source-images?listing_id=...` 读取关联源草稿的资产选项；AI 使用现有 `online_products_read` 的 `id` 和 `include_source_images=true` 读取同一结果。提交 `{asset_id,fingerprint}`，不能手填新 URL 或任意平台图片 ID。关联同时核验发布账号和远端商品身份；没有唯一来源时仍可调整现有图集。后台只准备本次选择，保留源草稿和图片池；Mercado 复用上传接口取得图片 ID，Yandex 复用 HTTPS 交付服务。任务回执保存准备后的完整目标图集，回读据此确认顺序与图片身份，不再次上传。
+
+Mercado 新图片的上传与关联依据官方[图片文档](https://global-selling.mercadolibre.com/devsite/manage-questions-answers-global-selling/pictures)和 [User Products 图片更新规则](https://global-selling.mercadolibre.com/devsite/en_us/price-per-variation-cbt)。传统 Item 新图先关联 `/items/{id}/pictures` 再提交完整图集；User Products 上传后直接更新 `/global/user-products/{id}`。
+
 修改与失败重试使用现有审批模式：`ask` 显示原生审批卡，`full` 使用已有自动批准机制。摘要和参数绑定在服务器生成，执行时重核；不能通过换参数或切换店铺复用审批。同步和回读不会修改平台商品，无需额外人工审批。所有持久操作均在原生 Deferred 提交后由现有 Agent Job Service 投递。
 
 `OnlineProductJobReader` 把 `online_jobs` 投影成现有 `JobStateSnapshot`。只有 `confirmed` 为成功；`partial`、`outcome_unknown`、失败及自动回读耗尽以未完成成功的工具结果返回，`last_external_status` 保留领域原始状态。通用状态 `failed` 不代表平台明确拒绝写入；模型须看原状态和操作记录，不得重放未知结果。Reader 不触发模型、平台请求或新任务。

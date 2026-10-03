@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any
 
 from erp_web.schemas.online_products import ChangeRequest, OnlineListing
@@ -51,13 +52,25 @@ def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
             pictures = changes["pictures"]
             if not isinstance(pictures, list) or not 1 <= len(pictures) <= 30:
                 raise ValueError("图片必须是完整的目标列表，保留 1–30 张")
+            identities = []
             for picture in pictures:
-                if listing.platform == "mercadolibre":
-                    allowed = {str(p.get("id")) for p in listing.content.get("pictures", [])}
-                    if not isinstance(picture, dict) or str(picture.get("id")) not in allowed:
-                        raise ValueError("Mercado 此表单仅支持已有平台图片的排序与移除")
-                elif not isinstance(picture, str) or not picture.startswith("https://"):
-                    raise ValueError("图片需要平台可访问的 HTTPS 地址")
+                if isinstance(picture, dict) and "asset_id" in picture:
+                    if (set(picture) != {"asset_id", "fingerprint"} or not isinstance(picture["asset_id"], str)
+                            or not picture["asset_id"] or not isinstance(picture["fingerprint"], str)
+                            or not re.fullmatch(r"[0-9a-f]{64}", picture["fingerprint"])):
+                        raise ValueError("源图片必须包含有效的资产 ID 和内容版本")
+                    identities.append(("asset", picture["asset_id"]))
+                elif listing.platform == "mercadolibre":
+                    allowed = {str(p.get("id")) for p in listing.content.get("pictures", []) if isinstance(p, dict)}
+                    if not isinstance(picture, dict) or set(picture) - {"id", "url"} or str(picture.get("id")) not in allowed:
+                        raise ValueError("新增图片必须从关联源草稿选择")
+                    identities.append(("id", str(picture["id"])))
+                else:
+                    if not isinstance(picture, str) or picture not in listing.content.get("pictures", []):
+                        raise ValueError("新增图片必须从关联源草稿选择")
+                    identities.append(("url", picture))
+            if len(set(identities)) != len(identities):
+                raise ValueError("目标图集不能包含重复图片")
         if "attributes" in changes:
             rows = changes["attributes"]
             if not isinstance(rows, list) or not rows or any(not isinstance(row, dict) or not row.get("id") for row in rows):

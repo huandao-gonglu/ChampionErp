@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from erp_web.schemas.online_products import JobStatus, OnlineProduct, OnlineProductGroup, Operation, Platform
+from erp_web.schemas.online_products import JobStatus, OnlineProduct, OnlineProductGroup, Operation, Platform, SourceImageSelection
 
 
 class OnlineRequest(BaseModel):
@@ -17,6 +17,7 @@ class OnlineReadRequest(OnlineRequest):
     status: str = ""
     market: str = ""
     page: int = Field(default=1, ge=1)
+    include_source_images: bool = Field(default=False, description="提供 id 时同时读取关联源草稿的图片资产与内容版本，供在线图片修改选择；不提供 id 时无效。")
 
 
 class OnlineSyncRequest(OnlineRequest):
@@ -48,6 +49,7 @@ class OnlineReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ok: bool
     item: OnlineProduct | None = None
+    source_images: SourceImageSelection | None = None
     items: list[OnlineProduct] = Field(default_factory=list)
     groups: list[OnlineProductGroup] = Field(default_factory=list)
     platform: Platform | None = None

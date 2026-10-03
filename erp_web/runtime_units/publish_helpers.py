@@ -311,6 +311,9 @@ def remote_publish_identity(result: Any) -> dict[str, Any]:
             identity["external_id"] = str(external_id)
         if operation not in (None, "") and "operation" not in identity:
             identity["operation"] = str(operation)
+        for key in ("business_id", "campaign_id", "client_id"):
+            if candidate.get(key) not in (None, "") and key not in identity:
+                identity[key] = str(candidate[key])
     return identity
 
 

@@ -38,7 +38,11 @@ POST_HANDLERS = {
     "/api/online-products/retry": handle_retry,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
-GET_API_ROUTES = frozenset({"/api/online-products"})
+GET_HANDLERS = {
+    "/api/online-products": online_product_facade.read,
+    "/api/online-products/source-images": online_product_facade.read_source_images,
+}
+GET_API_ROUTES = frozenset(GET_HANDLERS)
 
 
 def handle_post(handler, parsed):
@@ -54,7 +58,7 @@ def handle_get(handler, parsed):
         return False
     query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
     try:
-        handler.send_json(online_product_facade.read(query))
+        handler.send_json(GET_HANDLERS[parsed.path](query))
     except ValueError as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 400)
     return True

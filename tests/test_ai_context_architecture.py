@@ -334,6 +334,18 @@ def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools()
         assert forbidden not in source
 
 
+def test_online_source_images_use_existing_delivery_and_upload_boundaries():
+    """源选图只负责业务关联；网络上传与 HTTPS 交付复用已有边界。"""
+    routes = (ROOT / "erp_web/http_route_units/online_product_routes.py").read_text()
+    assert "/api/online-products/source-images" in routes
+    images = (ROOT / "erp_web/services/online_product_images.py").read_text()
+    assert "image_delivery.prepare_product" in images
+    assert not any(name.startswith("erp_web.runtime_units") for _, name in imported_targets([ROOT / "erp_web/services/online_product_images.py"]))
+    upload = (ROOT / "erp_web/runtime_units/online_mercadolibre_images.py").read_text()
+    assert "from erp_web.marketplaces.config_http import upload_mercadolibre_picture" in upload
+    assert "safe_image_urlopen" in upload
+
+
 def test_mercadolibre_publisher_only_has_explicit_cbt_write_paths() -> None:
     source = (ROOT / "erp_web/marketplaces/publishing.py").read_text(encoding="utf-8")
     for retired in (

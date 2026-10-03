@@ -109,6 +109,14 @@
   `stores/online_product_store.py::update_status` 校验并发版本后仅合并状态及 `status_checked_at`，保留价格、库存、内容和完整同步时间。
   `services/online_product_sync.py` 消费 `OnlineSyncBatch`、保存目录记录与详情进度，详情失败保留旧业务快照。
   `services/online_product_changes.py` 负责确定性变更校验与字段回读比较；详情未完整同步时禁止修改。
+  `services/online_product_images.py` 按发布记录中的远端身份和账号精确关联源草稿，
+  `GET /api/online-products/source-images?listing_id=...` 返回可选图片资产与内容版本；
+  新图仅接受 `{asset_id, fingerprint}`，提交及执行前均校验归属和版本，禁止手填地址绕过来源。
+  `online_products_read` 的 `include_source_images=true` 在读取单件详情时复用相同选图查询，不新增工具。
+  HTTPS 图集复用 `ImageDeliveryService`，Mercado 图集经 `online_mercadolibre_images.py`
+  复用现有上传客户端取得图片 ID；传统 Item 先关联新图片，User Products 提交完整图片 ID 列表。
+  准备后的实际目标图集写入领域任务回执，自动及人工回读比较该图集，不比较本地资产引用。
+  图片准备不修改源草稿、SKU 默认图或源图片池，临时上传文件随准备作用域清理。
   `services/online_product_listing.py` 从快照中的平台组合标识生成父节点，筛选 SKU 后按节点分页，组合不跨页；
   `total` 统计节点，`listing_total` 统计匹配刊登，公开 `groups.item_ids` 引用本页 `items`，父节点不接受修改。
 - `runtime_units/online_mercadolibre.py`、`online_yandex.py`、`online_ozon.py` 负责平台发现、读取和最小变更。
@@ -138,6 +146,8 @@
   `confirmed` 才确认成功；部分完成、未知结果和自动回读耗尽保留原状态并结束本次工具等待，不自动重放。
   改库存、调价、内容与停售共用一个 `online_products_change`，所需权限、审批和提交身份由原有 Runtime 处理。
 - 前端复用工作台的 `/online-products` 导航及 `OnlineProductsPanel.vue` / `OnlineContentEditor.vue`。
+  在线图片编辑使用内嵌源草稿多选区，图集第一张为主图；排序和移除按钮提供禁用原因及操作提示。
+  `OnlinePicturePreview.vue` 提供失败占位与重试；进入预览时保留编辑组件，返回继续编辑。
   `OnlineBuyerLinks.vue` 在列表和详情提供单链接直达、多站点选择及缺失提示；点击不调用后端或 AI。
   页面背景传递当前平台和 `listing_id`，不混用本地商品或草稿 ID，也不作为授权。
   旧本地 publication 列表、旧独立暂停 HTTP/AI 工具及其前端已删除；持久化 publication 的读取迁移保留。

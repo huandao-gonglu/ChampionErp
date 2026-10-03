@@ -105,6 +105,8 @@ def online_products_read(request: OnlineReadRequest, scope: Annotated[OnlineProd
     service = scope.service()
     result = (_call(service.detail, request.id) if request.id else
               _call(service.list, request.platform, query=request.q, status=request.status, market=request.market, page=request.page))
+    if request.id and request.include_source_images:
+        result["source_images"] = _call(service.source_images, request.id)
     return OnlineReadResult.model_validate(result)
 
 

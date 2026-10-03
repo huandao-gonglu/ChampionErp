@@ -20,6 +20,13 @@ def read(query: dict[str, str]) -> dict[str, Any]:
     return service.list(query.get("platform") or "mercadolibre", query=query.get("q", ""), status=query.get("status", ""), market=query.get("market", ""), page=page)
 
 
+def read_source_images(query: dict[str, str]) -> dict[str, Any]:
+    listing_id = query.get("listing_id", "").strip()
+    if not listing_id:
+        raise ValueError("listing_id 不能为空")
+    return get_context().online_products.source_images(listing_id)
+
+
 def mutate(action: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
     service = get_context().online_products
     try:

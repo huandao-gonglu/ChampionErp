@@ -13,6 +13,7 @@ from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.schemas.online_products import ChangeRequest, snapshot_version
 from erp_web.services.online_product_changes import confirmation, validate_changes
 from erp_web.services.online_product_listing import listing_page
+from erp_web.services.online_product_images import OnlineProductImages
 from erp_web.services.online_product_sync import run_sync
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
 
@@ -35,6 +36,7 @@ class OnlineProductService:
         self.context = context
         self.adapter_factories = adapter_factories
         self.store = OnlineProductStore(context.db)
+        self.images = OnlineProductImages(context)
         self.owner = uuid4().hex
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -96,6 +98,14 @@ class OnlineProductService:
         self._config(listing.platform, listing.account_id)
         return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
 
+    def source_images(self, listing_id: str) -> dict[str, Any]:
+        listing = self.store.get(listing_id)
+        self._config(listing.platform, listing.account_id)
+        capability = listing.capabilities.get("content")
+        if not capability or not capability.enabled or "pictures" not in capability.fields:
+            raise ValueError("该商品不支持修改图片")
+        return self.images.selection(listing).model_dump()
+
     def refresh_status(self, listing_id: str) -> dict[str, Any]:
         before = self.store.get(listing_id)
         self._config(before.platform, before.account_id)
@@ -127,6 +137,8 @@ class OnlineProductService:
         if listing.version != request.version:
             raise OnlineConflict("商品快照已更新，请重新查看并确认变更")
         validate_changes(listing, request)
+        if "pictures" in request.changes:
+            self.images.validate(listing, request.changes["pictures"])
         job = self.store.enqueue(listing.platform, listing.account_id, request.operation, listing.id, request.model_dump(), request.idempotency_key)
         self._wake.set()
         return {"ok": True, "job": job}
@@ -164,12 +176,24 @@ class OnlineProductService:
                 raise OnlineConflict("平台商品已变化或读取不完整，未提交修改；请重新同步并确认")
             validate_changes(fresh, request)
             result = {"before": before.model_dump(exclude={"snapshot"}), "changes": request.changes, "scope_id": request.scope_id}
+            prepared_changes = dict(request.changes)
+            if "pictures" in prepared_changes:
+                prepared_changes["pictures"] = self.images.prepare(fresh, prepared_changes["pictures"], adapter)
+                if any(isinstance(picture, dict) and "asset_id" in picture for picture in request.changes["pictures"]):
+                    # 上传等待后再核对平台事实，尚未修改刊登时发现冲突直接停止。
+                    fresh = adapter.read(before.remote_id)
+                    fresh.desired_sale_state = before.desired_sale_state
+                    if fresh.errors or snapshot_version(fresh) != request.version:
+                        raise OnlineConflict("图片准备期间平台商品已变化，请重新同步并确认")
+                    self.images.validate(fresh, request.changes["pictures"])
+            self._config(before.platform, before.account_id)
+            result["prepared_changes"] = prepared_changes
             # 写前日志是崩溃边界；此后任何没有明确拒绝证据的错误都按结果未知处理。
             self._update(job, "running", result, dispatched=True)
             dispatched = True
             if request.operation == "sale_state" and request.changes["state"] == "paused":
                 self.store.sale_intent(before.id, "paused", lease=job)
-            receipt = adapter.write(fresh, request.operation, request.scope_id, request.changes)
+            receipt = adapter.write(fresh, request.operation, request.scope_id, prepared_changes)
             write_returned = True
             result["receipt"] = receipt
             result["next_confirmation_at"] = time.time() + 120
@@ -179,7 +203,8 @@ class OnlineProductService:
             code = int(exc.details.get("http_status") or 0) if isinstance(exc, PublishAdapterError) else 0
             # 回读阶段的 4xx 不能证明之前的修改未执行。
             definite = isinstance(exc, PublishAdapterError) and exc.details.get("definitively_rejected") is True
-            rejected = not job["dispatched"] and not write_returned and (definite or 400 <= code < 500 and code not in (408, 425))
+            earlier_write = isinstance(exc, PublishAdapterError) and exc.details.get("remote_write_dispatched") is True
+            rejected = not job["dispatched"] and not write_returned and not earlier_write and (definite or 400 <= code < 500 and code not in (408, 425))
             result["error"] = str(exc)
             result["error_code"] = getattr(exc, "code", "ONLINE_OPERATION_FAILED")
             status = "outcome_unknown" if dispatched and not rejected else "failed"
@@ -203,6 +228,8 @@ class OnlineProductService:
 
     def _confirm(self, job: dict[str, Any], adapter, result: dict[str, Any]):
         request = ChangeRequest.model_validate(job["request"])
+        if result.get("prepared_changes") is not None:
+            request = request.model_copy(update={"changes": result["prepared_changes"]})
         current = self.store.get(request.listing_id)
         fresh = adapter.read_confirmation(current, request)
         fresh.desired_sale_state = current.desired_sale_state

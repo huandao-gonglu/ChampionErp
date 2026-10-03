@@ -101,6 +101,24 @@ class OnlineListing(OnlineProduct):
     snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
+class SourceImageOption(BaseModel):
+    """关联源商品的图片选项；提交时仅使用资产身份与内容版本。"""
+
+    asset_id: str
+    fingerprint: str
+    preview_url: str
+    existing_picture_id: str = ""
+    existing_url: str = ""
+
+
+class SourceImageSelection(BaseModel):
+    ok: bool = True
+    local_product_id: str = ""
+    local_draft_id: str = ""
+    images: list[SourceImageOption] = Field(default_factory=list)
+    reason: str = ""
+
+
 class MarketStatus(BaseModel):
     """单件刷新只携带市场身份与状态，不更新市场价格。"""
     model_config = ConfigDict(extra="forbid")
@@ -150,7 +168,7 @@ class OnlineChange(BaseModel):
     version: str = Field(min_length=1)
     operation: Literal["price", "stock", "content", "sale_state"]
     scope_id: str = ""
-    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表。")
+    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表；保留的图片使用当前平台 ID/地址，新增图片只允许关联源草稿的 {asset_id,fingerprint} 引用。")
 
 
 class ChangeRequest(OnlineChange):

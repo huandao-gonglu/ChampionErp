@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAiPageContextStore } from '@/stores/aiPageContext'
 import OnlineProductsPanel from '../OnlineProductsPanel.vue'
-import { fetchOnlineDetail, fetchOnlineProducts, onlineAction, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
+import { fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
 
-vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), onlineAction: vi.fn(), refreshOnlineStatus: vi.fn() }))
+vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), refreshOnlineStatus: vi.fn() }))
 const item: OnlineListing = {
   id: 'remote-1', platform: 'mercadolibre', account_id: 'shop-1', remote_id: 'CBT123', model: 'traditional_global_items',
   details_state: 'ready', buyer_links: [], title: '店铺同步商品', seller_sku: 'seller-sku', thumbnail: '', raw_status: 'active', sale_state: 'active', raw_sub_status: [], version: 'v1', synced_at: '', status_checked_at: '', errors: [], desired_sale_state: '',
@@ -24,6 +24,29 @@ function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,glob
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
 
 describe('在线商品页面',()=>{
+  it('选图排序后从预览返回保留编辑，提交仅包含资产身份', async () => {
+    const row: OnlineListing = {...item, content: {pictures: [{id:'existing',url:'https://images.example.com/existing.jpg'}]},
+      capabilities:{...item.capabilities,content:{enabled:true,fields:['pictures'],scope:'全局',reason:''}}}
+    vi.mocked(fetchOnlineDetail).mockResolvedValue(row)
+    vi.mocked(fetchOnlineSourceImages).mockResolvedValue({ok:true,local_product_id:'product',local_draft_id:'draft',reason:'',images:[
+      {asset_id:'asset',fingerprint:'a'.repeat(64),preview_url:'/file?path=image',existing_picture_id:'',existing_url:''},
+    ]})
+    vi.mocked(onlineAction).mockResolvedValue({id:'job',operation:'content',platform:'mercadolibre',status:'queued',created_at:'',updated_at:'',target_id:row.id,request:{},result:{}})
+    wrapper=mount(OnlineProductsPanel,{attachTo:document.body});
+    const screen = new DOMWrapper(document.body)
+    async function click(text: string) {await screen.findAll('button').find(button=>button.text()===text)!.trigger('click'); await flushPromises()}
+    await flushPromises(); await click('管理 →'); await click('编辑内容')
+    await screen.get('input[value="pictures"]').setValue(true)
+    await click('从源草稿添加图片'); await screen.get('[aria-label="选择源草稿图片 1"]').trigger('click')
+    await click('添加选中图片（1）'); await screen.get('[aria-label="左移图片 2"]').trigger('click')
+    await click('预览变更'); await click('返回编辑')
+    expect(screen.findAll('[data-testid="target-picture"]')).toHaveLength(2)
+    expect(screen.get<HTMLInputElement>('input[value="pictures"]').element.checked).toBe(true)
+    await click('预览变更'); await click('确认提交')
+    expect(onlineAction).toHaveBeenCalledWith('change',expect.objectContaining({changes:{pictures:[
+      {asset_id:'asset',fingerprint:'a'.repeat(64)}, {id:'existing',url:'https://images.example.com/existing.jpg'},
+    ]}}))
+  })
   it.each(['waiting_confirmation', 'outcome_unknown', 'confirmed'])('任务 %s 不维持定时轮询', async status => {
     const job: OnlineJob = {id:'waiting',operation:'price',platform:'mercadolibre',status,target_id:item.id,created_at:'',updated_at:'',request:{},result:{}}
     vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[job]})

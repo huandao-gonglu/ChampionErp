@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import OnlineContentEditor from './OnlineContentEditor.vue'
+import OnlinePicturePreview from './OnlinePicturePreview.vue'
 import OnlineBuyerLinks from './OnlineBuyerLinks.vue'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
@@ -37,6 +38,7 @@ useAiPageContext(() => ({ page: 'onlineProducts', platform: platform.value, list
 const scope = ref(''), value = ref('')
 const saleTarget = ref('paused')
 const contentChanges = ref<Record<string,unknown>>({})
+const contentPicturePreviews = ref<string[]>([])
 const preview = ref(false), submitKey = ref('')
 let timer: ReturnType<typeof setTimeout> | undefined
 const observedConfirmations = new Set<string>()
@@ -153,6 +155,7 @@ async function refreshStatus(row: OnlineListing) {
 function begin(operation: OnlineOperation | 'sync') {
   modal.value = operation; preview.value = false; submitKey.value = crypto.randomUUID(); error.value = ''
   contentChanges.value = {}
+  contentPicturePreviews.value = []
   saleTarget.value = saleState.value
   scope.value = operation === 'price' ? selected.value?.prices.find(p=>p.writable)?.id || '' : operation === 'stock' ? selected.value?.stocks.find(s=>s.writable)?.id || '' : 'global'
   resetValue()
@@ -185,7 +188,6 @@ function displayValue(field: string, data: unknown): string {
   }
   return data == null ? '未提供' : String(data)
 }
-function pictureUrl(p: string | {url:string}) { return typeof p==='string' ? p : p.url }
 async function submit() {
   busy.value = true; error.value = ''
   try {
@@ -280,14 +282,14 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
           <template v-if="modal==='sync'"><p>同步 {{ platforms[platform] }} 店铺：{{ page?.store_name }}</p><div class="rounded-lg bg-accent-50 p-5"><b>同步范围</b><p class="mt-3">当前账号全部可读取商品、所有关联市场及在售、停售、缺货、审核中和归档记录。</p></div><p class="muted">此操作只读取平台商品。部分失败会保留已有快照；离开页面后后台继续同步。</p><button class="btn btn-primary w-full" :disabled="busy" @click="submit">开始同步</button></template>
           <template v-else-if="selected">
             <p class="font-medium">{{ selected.title }}</p><p class="muted">作用范围：{{ modal==='price' ? price?.label : modal==='stock' ? stock?.label : selected.capabilities[modal]?.scope }}</p>
+            <div v-if="modal==='content'" v-show="!preview" key="content-editor"><OnlineContentEditor :key="selected.id" :listing="selected" @change="contentChanges=$event" @picture-previews="contentPicturePreviews=$event" /></div>
             <template v-if="!preview">
               <template v-if="modal==='price'"><label class="block">价格范围<select v-model="scope" class="input mt-2" @change="resetValue"><option v-for="p in selected.prices" :key="p.id" :value="p.id" :disabled="!p.writable">{{ p.label }} · {{ priceKind(p.kind) }} · {{ p.currency }}</option></select></label><p class="muted">当前：{{ price?.currency }} {{ price?.amount }} · {{ priceKind(price?.kind || '') }}</p><label class="block">新价格（{{ price?.currency }}）<input v-model="value" class="input mt-2" inputmode="decimal" /></label></template>
               <template v-if="modal==='stock'"><label class="block">库存范围<select v-model="scope" class="input mt-2" @change="resetValue"><option v-for="s in selected.stocks" :key="s.id" :value="s.id" :disabled="!s.writable">{{ s.label }}</option></select></label><p class="muted">当前库存：{{ stock?.quantity }}。设置绝对数量，不是增减量。</p><label class="block">目标可售数量<input v-model="value" type="number" min="0" step="1" class="input mt-2" /></label></template>
               <template v-if="modal==='sale_state'"><label class="block">目标销售状态<select v-model="saleTarget" class="input mt-2"><option value="paused">停售（已暂停时可重新确认主动停售）</option><option value="active">恢复销售</option></select></label><p class="rounded-lg bg-amber-50 p-5 text-amber-800">{{ saleTarget==='paused'?'主动停售会影响上述范围内的销售市场，库存同步不会取消停售意图。':'恢复请求仍须满足平台库存、审核及账号限制；提交成功不代表已经恢复在售。' }}</p><p>{{ selected.markets.map(m=>`${m.site_id} · ${m.logistic_type}`).join('、') }}</p></template>
-              <OnlineContentEditor v-if="modal==='content'" :key="selected.id" :listing="selected" @change="contentChanges=$event" />
               <button class="btn btn-primary w-full" @click="makePreview">预览变更</button>
             </template>
-            <template v-else><div v-for="(next,field) in changes" :key="field" class="rounded-lg border p-4"><b>{{ fieldNames[field] || field }}</b><p class="muted mt-2 break-all">原：{{ displayValue(field, beforeValue(field)) }}</p><p class="mt-2 break-all text-primary-700">新：{{ displayValue(field, next) }}</p><div v-if="field==='pictures'" class="mt-3 flex flex-wrap gap-2"><img v-for="(p,index) in next as Array<string | {url:string}>" :key="index" referrerpolicy="no-referrer" :src="pictureUrl(p)" :alt="`目标图片 ${index+1}`" class="size-16 rounded border object-contain" /></div></div><p class="muted">提交前将重新读取平台字段；发生并发变化时会停止修改。</p><div class="flex gap-3"><button class="btn btn-outline" :disabled="busy" @click="preview=false">返回编辑</button><button class="btn btn-primary flex-1" :disabled="busy" @click="submit">{{ busy?'正在提交…':'确认提交' }}</button></div></template>
+            <template v-else><div v-for="(next,field) in changes" :key="field" class="rounded-lg border p-4"><b>{{ fieldNames[field] || field }}</b><p class="muted mt-2 break-all">原：{{ displayValue(field, beforeValue(field)) }}</p><p class="mt-2 break-all text-primary-700">新：{{ displayValue(field, next) }}</p><div v-if="field==='pictures'" class="mt-3 flex flex-wrap gap-2"><OnlinePicturePreview v-for="(url,index) in contentPicturePreviews" :key="index" :src="url" :alt="`目标图片 ${index+1}`" class="size-16" /></div></div><p class="muted">提交前将重新读取平台字段；发生并发变化时会停止修改。</p><div class="flex gap-3"><button class="btn btn-outline" :disabled="busy" @click="preview=false">返回编辑</button><button class="btn btn-primary flex-1" :disabled="busy" @click="submit">{{ busy?'正在提交…':'确认提交' }}</button></div></template>
           </template>
         </section>
       </div>

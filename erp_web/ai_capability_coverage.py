@@ -202,6 +202,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="SPA 页面壳，前端静态路由，无业务行为。",
     ),
     AiCapabilityCoverageEntry(method="GET", path="/api/online-products", business_domain="在线商品", disposition="capability", capability_names=("online_products_read",)),
+    AiCapabilityCoverageEntry(method="GET", path="/api/online-products/source-images", business_domain="在线商品", disposition="capability", capability_names=("online_products_read",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/sync", business_domain="在线商品", disposition="capability", capability_names=("online_products_sync",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/refresh-status", business_domain="在线商品", disposition="capability", capability_names=("online_products_refresh_status",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="capability", capability_names=("online_products_change",)),

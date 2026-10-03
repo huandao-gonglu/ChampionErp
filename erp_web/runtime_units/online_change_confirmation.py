@@ -60,7 +60,9 @@ def mercado_change(adapter, listing, request):
         for field in request.changes:
             if field not in row:
                 raise ValueError(f"平台未返回确认字段：{field}")
-            fresh.content[field] = row[field]
+            fresh.content[field] = ([{"id": picture["id"], "url": picture.get("secure_url") or picture.get("url") or ""}
+                for picture in row[field] if isinstance(picture, dict) and picture.get("id")]
+                if field == "pictures" else row[field])
         if "title" in request.changes:
             fresh.title = str(row["title"])
     return fresh

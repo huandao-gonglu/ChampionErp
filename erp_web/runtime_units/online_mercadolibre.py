@@ -5,9 +5,11 @@ from copy import deepcopy
 from typing import Any
 
 from erp_web.runtime_units.online_change_confirmation import mercado_change
+from erp_web.runtime_units.online_mercadolibre_images import prepare_mercado_pictures
 from urllib.parse import quote
 
 from erp_web.marketplaces.config_http import request_json
+from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.marketplaces.online_buyer_links import mercado_buyer_links
 from erp_web.product_model import canonicalize_mercadolibre_siteless_user_product_id
 from erp_web.marketplaces.online_sync import raise_if_access_blocked
@@ -134,6 +136,9 @@ class MercadoOnlineAdapter:
     def read_confirmation(self, listing, request):
         return mercado_change(self, listing, request)
 
+    def prepare_pictures(self, pictures, assets):
+        return prepare_mercado_pictures(self, pictures, assets)
+
     def write(self, listing: OnlineListing, operation: str, scope: str, changes: dict[str, Any]) -> dict[str, Any]:
         up_id = listing.snapshot.get("siteless_id")
         target = up_id or listing.remote_id
@@ -161,7 +166,20 @@ class MercadoOnlineAdapter:
             payload = deepcopy(changes)
             if "pictures" in payload:
                 payload["pictures"] = [{"id": p["id"]} for p in payload["pictures"]]
-        result = request_json("PUT", API+path+quote(str(target), safe=""), self.token, payload)
+        # 传统刊登的新图片需先关联 Item；User Products 直接提交上传后的完整 ID 列表。
+        linked = False
+        try:
+            if operation == "content" and "pictures" in payload and not up_id:
+                existing = {picture["id"] for picture in listing.content.get("pictures", [])}
+                for picture in payload["pictures"]:
+                    if picture["id"] not in existing:
+                        request_json("POST", API+"/items/"+quote(listing.remote_id, safe="")+"/pictures", self.token, picture)
+                        linked = True
+            result = request_json("PUT", API+path+quote(str(target), safe=""), self.token, payload)
+        except PublishAdapterError as exc:
+            if linked:
+                exc.details["remote_write_dispatched"] = True
+            raise
         if not isinstance(result, dict):
             raise RuntimeError("Mercado 修改响应无法识别，需要只读对账")
         return result

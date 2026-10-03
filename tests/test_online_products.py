@@ -334,6 +334,8 @@ def test_online_http_contracts(backend_server):
     assert page.json()["state"]=="authorization_required"
     invalid=requests.post(backend_server+"/api/online-products/change",json={"operation":"price"},timeout=10)
     assert invalid.status_code==400
+    missing_source=requests.get(backend_server+"/api/online-products/source-images",timeout=10)
+    assert missing_source.status_code==400 and "listing_id" in missing_source.json()["error"]
 
 
 def test_user_product_price_targets_one_market_without_fallback(monkeypatch):
