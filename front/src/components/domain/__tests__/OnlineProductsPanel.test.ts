@@ -12,10 +12,10 @@ const item: OnlineListing = {
   platform_issues: [], prices: [{id:'global',label:'全局基础价',amount:'12',currency:'USD',kind:'base_price',writable:true,reason:''}], stocks: [], markets: [], content: {title:'店铺同步商品'},
   capabilities: {price:{enabled:true,fields:[],scope:'全局',reason:''},stock:{enabled:false,fields:[],scope:'',reason:'未取得库存位置'},content:{enabled:true,fields:['title'],scope:'全局',reason:''},sale_state:{enabled:true,fields:[],scope:'全局',reason:''}},
 }
-function response(): OnlinePage { return {items:[item],groups:[{id:'single-1',title:item.title,kind:'single',item_ids:[item.id],total_count:1}],total:1,listing_total:1,page:1,per_page:25,account_id:'shop-1',store_name:'当前店铺',state:'ready',markets:[],statuses:['active'],summary:{total:1,active:1,paused:0,attention:0},latest_sync:null,jobs:[]} }
+function response(): OnlinePage { return {items:[item],groups:[{id:'single-1',title:item.title,kind:'single',item_ids:[item.id],total_count:1,feedback_summary:{affected_sku_count:0,error_count:0,warning_count:0}}],total:1,listing_total:1,page:1,per_page:25,account_id:'shop-1',store_name:'当前店铺',state:'ready',markets:[],statuses:['active'],summary:{total:1,active:1,paused:0,attention:0},latest_sync:null,jobs:[]} }
 function groupedResponse(): OnlinePage {
   const variants = Array.from({length:30}, (_, i) => ({...item, id:`variant-${i}`, seller_sku:`sku-${i}`}))
-  return {...response(),items:variants,listing_total:30,groups:[{id:'group-1',title:'组合商品名称',kind:'group',item_ids:variants.map(row=>row.id),total_count:30}]}
+  return {...response(),items:variants,listing_total:30,groups:[{id:'group-1',title:'组合商品名称',kind:'group',item_ids:variants.map(row=>row.id),total_count:30,feedback_summary:{affected_sku_count:0,error_count:0,warning_count:0}}]}
 }
 let wrapper: VueWrapper | undefined
 beforeEach(() => {setActivePinia(createPinia());vi.useFakeTimers(); vi.clearAllMocks();vi.mocked(fetchOnlineProducts).mockResolvedValue(response());vi.mocked(fetchOnlineDetail).mockResolvedValue(item)})
@@ -272,6 +272,39 @@ describe('在线商品页面',()=>{
     expect(wrapper!.get('[data-testid="online-group"]').text()).toContain('当前筛选匹配 1 / 30 个 SKU')
     await wrapper!.get('[data-testid="toggle-group"]').trigger('click')
     expect(wrapper!.findAll('[data-testid="online-listing"]')).toHaveLength(1)
+  })
+  it('组合折叠时显示整个组合的反馈，筛选隐藏异常 SKU 也不会漏报',async()=>{
+    const result=groupedResponse()
+    result.items=result.items.slice(0,1);result.listing_total=1;result.groups[0].item_ids=[result.items[0].id]
+    result.groups[0].feedback_summary={affected_sku_count:2,error_count:2,warning_count:3}
+    vi.mocked(fetchOnlineProducts).mockResolvedValue(result)
+    render();await flushPromises()
+    expect(wrapper!.findAll('[data-testid="online-listing"]')).toHaveLength(0)
+    const feedback=wrapper!.get('[data-testid="group-feedback"]')
+    expect(feedback.text()).toContain('整个组合：2 个 SKU 有平台反馈')
+    expect(feedback.text()).toContain('2 条平台错误')
+    expect(feedback.text()).toContain('3 条平台警告')
+    await wrapper!.get('[data-testid="toggle-group"]').trigger('click')
+    expect(wrapper!.findAll('[data-testid="online-listing"]')).toHaveLength(1)
+    expect(wrapper!.get('[data-testid="group-feedback"]').text()).toContain('3 条平台警告')
+    expect(onlineAction).not.toHaveBeenCalled()
+  })
+  it('SKU 刷新后立即调整父行提示，列表查询失败时仍保留隐藏 SKU 的反馈',async()=>{
+    const result=groupedResponse()
+    result.items=result.items.slice(0,1);result.listing_total=1;result.groups[0].item_ids=[result.items[0].id]
+    result.items[0].platform_issues=[{severity:'warning',source:'card',code:'',message:'配送警告',comment:''}]
+    result.groups[0].feedback_summary={affected_sku_count:2,error_count:2,warning_count:2}
+    vi.mocked(fetchOnlineProducts).mockResolvedValue(result)
+    render();await flushPromises();await wrapper!.get('[data-testid="toggle-group"]').trigger('click')
+    vi.mocked(refreshOnlineStatus).mockResolvedValue({...result.items[0],platform_issues:[]})
+    vi.mocked(fetchOnlineProducts).mockRejectedValueOnce(new Error('列表查询失败'))
+    await wrapper!.get('[data-testid="refresh-status"]').trigger('click');await flushPromises()
+    const feedback=wrapper!.get('[data-testid="group-feedback"]')
+    expect(feedback.text()).toContain('整个组合：1 个 SKU 有平台反馈')
+    expect(feedback.text()).toContain('2 条平台错误')
+    expect(feedback.text()).toContain('1 条平台警告')
+    expect(wrapper!.get('[data-testid="online-listing"]').text()).not.toContain('平台警告')
+    expect(onlineAction).not.toHaveBeenCalled()
   })
   it('AI 背景使用当前平台与在线刊登 ID，关闭详情和卸载后清理',async()=>{
     render();await flushPromises()

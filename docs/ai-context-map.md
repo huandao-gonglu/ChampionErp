@@ -121,6 +121,8 @@
   图片准备不修改源草稿、SKU 默认图或源图片池，临时上传文件随准备作用域清理。
   `services/online_product_listing.py` 从快照中的平台组合标识生成父节点，筛选 SKU 后按节点分页，组合不跨页；
   `total` 统计节点，`listing_total` 统计匹配刊登，公开 `groups.item_ids` 引用本页 `items`，父节点不接受修改。
+  `groups.feedback_summary` 汇总整个组合的受影响 SKU 数、平台错误和警告条数，覆盖当前筛选隐藏的 SKU；
+  前端父行在折叠时也显示汇总，单件状态刷新按该 SKU 的变化调整父行计数，不影响其他 SKU 的反馈。
 - `runtime_units/online_mercadolibre.py`、`online_yandex.py`、`online_ozon.py` 负责平台发现、读取和最小变更。
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
   `runtime_units/online_yandex_read.py` 负责完整目录分页、隐藏清单分页和每批 100 个 SKU 的详情读取，最多 3 个接口并发；

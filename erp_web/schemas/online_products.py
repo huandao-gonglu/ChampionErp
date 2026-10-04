@@ -165,6 +165,14 @@ class OnlineSyncBatch:
     discovery_complete: bool = False
 
 
+class OnlineFeedbackSummary(BaseModel):
+    """组合内全部 SKU 的平台反馈计数；条数与受影响 SKU 数分别计算。"""
+
+    affected_sku_count: int = Field(default=0, ge=0)
+    error_count: int = Field(default=0, ge=0)
+    warning_count: int = Field(default=0, ge=0)
+
+
 class OnlineProductGroup(BaseModel):
     """列表父节点；item_ids 只引用本页匹配的刊登，父节点不接受商品修改。"""
 
@@ -173,6 +181,7 @@ class OnlineProductGroup(BaseModel):
     kind: Literal["group", "single"]
     item_ids: list[str]
     total_count: int
+    feedback_summary: OnlineFeedbackSummary = Field(default_factory=OnlineFeedbackSummary)
 
 
 class OnlineChange(BaseModel):

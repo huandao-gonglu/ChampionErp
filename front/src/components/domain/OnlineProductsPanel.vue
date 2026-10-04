@@ -88,11 +88,15 @@ function canRetry(job: OnlineJob) {
     : job.status === 'failed')
 }
 function label(s: string) { return labels[s] || s || '未知' }
-function issueSummary(row: OnlineListing) {
+function feedbackCounts(row: OnlineListing) {
   const issues = row.platform_issues || []
-  const errors = issues.filter(issue => issue.severity === 'error').length
-  const warnings = issues.filter(issue => issue.severity === 'warning').length
-  return [errors ? `${errors} 个平台错误` : '', warnings ? `${warnings} 个平台警告` : ''].filter(Boolean).join(' · ')
+  return {affected_sku_count: issues.length ? 1 : 0,
+    error_count: issues.filter(issue => issue.severity === 'error').length,
+    warning_count: issues.filter(issue => issue.severity === 'warning').length}
+}
+function issueSummary(row: OnlineListing) {
+  const counts = feedbackCounts(row)
+  return [counts.error_count ? `${counts.error_count} 个平台错误` : '', counts.warning_count ? `${counts.warning_count} 个平台警告` : ''].filter(Boolean).join(' · ')
 }
 function time(s: string) { return s ? new Date(s).toLocaleString('zh-CN', {hour12:false}) : '尚未同步' }
 function badge(s: string) { return ['confirmed','active'].includes(s) ? 'badge-success' : ['failed','outcome_unknown'].includes(s) ? 'badge-warning' : 'badge-muted' }
@@ -151,6 +155,17 @@ async function refreshStatus(row: OnlineListing) {
     if (disposed || epoch !== viewEpoch || page.value?.account_id !== result.account_id) return
     // 让刷新前发出的本地列表请求失效，避免旧响应覆盖刚查到的状态。
     sequence++
+    const previous = page.value.items.find(item => item.id === result.id)
+    if (previous) {
+      const before = feedbackCounts(previous), after = feedbackCounts(result)
+      // 只调整已刷新 SKU 的贡献，保留被当前筛选隐藏的其他 SKU 的反馈。
+      for (const group of page.value.groups.filter(group => group.item_ids.includes(result.id))) {
+        if (!group.feedback_summary) continue
+        group.feedback_summary.affected_sku_count += after.affected_sku_count - before.affected_sku_count
+        group.feedback_summary.error_count += after.error_count - before.error_count
+        group.feedback_summary.warning_count += after.warning_count - before.warning_count
+      }
+    }
     page.value.items = page.value.items.map(item => item.id === result.id ? result : item)
     if (selected.value?.id === result.id) selected.value = result
     await refresh(true)
@@ -256,6 +271,11 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
                 <p v-if="group.rows.length < group.total_count" class="font-medium">当前筛选匹配 {{ group.rows.length }} / {{ group.total_count }} 个 SKU</p>
                 <p v-else class="font-medium">{{ group.rows.length }} 个 SKU 统一展示</p>
                 <p class="muted mt-1">展开查看各 SKU 的价格、库存和销售状态</p>
+                <div v-if="group.feedback_summary?.affected_sku_count" class="mt-2 flex flex-wrap items-center gap-2 text-sm" data-testid="group-feedback">
+                  <span>整个组合：{{ group.feedback_summary.affected_sku_count }} 个 SKU 有平台反馈</span>
+                  <span v-if="group.feedback_summary.error_count" class="rounded bg-rose-50 px-2 py-1 text-rose-700 dark:bg-rose-950/30 dark:text-rose-200">{{ group.feedback_summary.error_count }} 条平台错误</span>
+                  <span v-if="group.feedback_summary.warning_count" class="rounded bg-amber-50 px-2 py-1 text-amber-700 dark:bg-amber-950/30 dark:text-amber-200">{{ group.feedback_summary.warning_count }} 条平台警告</span>
+                </div>
               </td>
             </tr>
             <template v-if="group.kind === 'single' || expandedGroups.has(group.id)">

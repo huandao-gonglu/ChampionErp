@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from erp_web.schemas.online_products import OnlineListing, OnlineProductGroup, digest
+from erp_web.schemas.online_products import OnlineFeedbackSummary, OnlineListing, OnlineProductGroup, digest
 
 
 def _group_identity(listing: OnlineListing) -> str:
@@ -38,7 +38,11 @@ def listing_page(records: list[OnlineListing], *, query: str, status: str, marke
         first = members[0]
         group = OnlineProductGroup(id=key, title=first.title or first.remote_id,
                                    kind="group" if len(members) > 1 else "single",
-                                   item_ids=[row.id for row in matched], total_count=len(members))
+                                   item_ids=[row.id for row in matched], total_count=len(members),
+                                   feedback_summary=OnlineFeedbackSummary(
+                                       affected_sku_count=sum(bool(row.platform_issues) for row in members),
+                                       error_count=sum(issue.severity == "error" for row in members for issue in row.platform_issues),
+                                       warning_count=sum(issue.severity == "warning" for row in members for issue in row.platform_issues)))
         matched_groups.append((group, matched))
 
     page = max(1, page)

@@ -27,8 +27,10 @@ export interface OnlineJob {
   request: Record<string, unknown>
   result: { automatic_confirmation_pending?: boolean; next_confirmation_at?: number; last_confirmation_at?: number; before?: {title?:string}; platform_confirmation?: {note?:string}; platform_errors?: unknown[]; error?: string; completed?: number; failed?: number; created?: number; updated?: number; discovery_complete?: boolean; phase?: 'catalog' | 'details' | 'complete'; discovered?: number; changes?: Record<string, unknown>; confirmation?: Record<string, boolean>; evidence?: {synced_at: string}; items?: Array<{remote_id: string; status: string; error?: string}> }
 }
+export interface OnlineFeedbackSummary { affected_sku_count: number; error_count: number; warning_count: number }
 export interface OnlineProductGroup {
   id: string; title: string; kind: 'group' | 'single'; item_ids: string[]; total_count: number
+  feedback_summary: OnlineFeedbackSummary
 }
 export interface OnlinePage {
   items: OnlineListing[]; groups: OnlineProductGroup[]; total: number; listing_total: number; page: number; per_page: number; account_id: string; store_name: string; state: string; markets: string[]; statuses: string[]

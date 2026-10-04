@@ -5,7 +5,7 @@ import pytest
 
 from erp_web.context import get_context
 from erp_web.schemas.online_product_capabilities import OnlineReadResult
-from erp_web.schemas.online_products import MarketSnapshot, OnlineListing, snapshot_version
+from erp_web.schemas.online_products import MarketSnapshot, OnlineListing, PlatformIssue, snapshot_version
 from erp_web.services.online_product_listing import listing_page
 from erp_web.services.online_product_service import OnlineProductService
 
@@ -62,10 +62,34 @@ def test_filter_keeps_parent_and_counts_but_only_returns_matching_skus():
     group_id = page(rows)["groups"][0]["id"]
     result = page(rows, query=" SKU-1 ", status="PUBLISHED", market="RU")
     assert result["total"] == result["listing_total"] == 1
-    assert result["groups"] == [{"id": group_id, "kind": "group", "title": "同名商品", "item_ids": ["id-1"], "total_count": 2}]
+    assert result["groups"] == [{"id": group_id, "kind": "group", "title": "同名商品", "item_ids": ["id-1"], "total_count": 2,
+                                 "feedback_summary": {"affected_sku_count": 0, "error_count": 0, "warning_count": 0}}]
     assert [row["id"] for row in result["items"]] == ["id-1"]
     assert page(rows, query="不存在")["groups"] == []
     assert page(rows, page=2)["items"] == []
+
+
+def test_group_feedback_counts_all_members_and_keeps_issue_counts_separate_from_sku_counts():
+    rows = [product(1, '组合', platform_issues=[PlatformIssue(severity='error', message='格式错误'),
+                                                   PlatformIssue(severity='error', message='缺少属性'),
+                                                   PlatformIssue(severity='warning', message='配送警告')]),
+            product(2, '组合', platform_issues=[PlatformIssue(severity='warning', message='配送警告')]),
+            product(3, '组合'),
+            product(4, platform_issues=[PlatformIssue(severity='error', message='其他商品错误')])]
+    before = [row.model_dump() for row in rows]
+    result = page(rows, query='sku-3')
+    assert [row['id'] for row in result['items']] == ['id-3']
+    group = result['groups'][0]
+    assert group['total_count'] == 3 and group['item_ids'] == ['id-3']
+    assert group['feedback_summary'] == {'affected_sku_count': 2, 'error_count': 2, 'warning_count': 2}
+    assert [row.model_dump() for row in rows] == before
+
+
+def test_group_feedback_updates_when_a_member_has_new_platform_feedback():
+    rows = [product(1, '组合', platform_issues=[PlatformIssue(severity='warning', message='配送警告')]), product(2, '组合')]
+    assert page(rows)['groups'][0]['feedback_summary'] == {'affected_sku_count': 1, 'error_count': 0, 'warning_count': 1}
+    rows[0].platform_issues = []
+    assert page(rows)['groups'][0]['feedback_summary'] == {'affected_sku_count': 0, 'error_count': 0, 'warning_count': 0}
 
 
 def test_existing_snapshots_support_grouped_http_and_ai_without_migration():
