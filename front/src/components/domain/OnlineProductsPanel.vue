@@ -13,6 +13,8 @@ const platforms: Record<OnlinePlatform, string> = {mercadolibre: 'Mercado Libre'
 const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '已提交', waiting_confirmation: '等待平台确认', confirmed: '已生效', PUBLISHED: '在售', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
 const page = ref<OnlinePage | null>(null)
 const expandedGroups = ref(new Set<string>())
+// 转到聊天输入框后仍保留最近操作的商品，避免发送时丢失指代。
+const focusedProduct = ref<{group_id: string; listing_id?: string} | null>(null)
 const listingGroups = computed(() => {
   const items = new Map(page.value?.items.map(row => [row.id, row]))
   return page.value?.groups.map(group => ({
@@ -21,6 +23,7 @@ const listingGroups = computed(() => {
   })) || []
 })
 function toggleGroup(id: string) {
+  focusedProduct.value = {group_id: id}
   if (expandedGroups.value.has(id)) expandedGroups.value.delete(id)
   else expandedGroups.value.add(id)
 }
@@ -35,7 +38,13 @@ const detailBackdrop = useBackdropDismiss(() => { if (!modal.value) selected.val
 const modalBackdrop = useBackdropDismiss(() => { if (!busy.value) modal.value = '' })
 watch(selected, detailBackdrop.resetBackdropPointer)
 watch(modal, modalBackdrop.resetBackdropPointer)
-useAiPageContext(() => ({ page: 'onlineProducts', platform: platform.value, listing_id: selected.value?.id }), 10)
+useAiPageContext(() => ({
+  page: 'onlineProducts', platform: platform.value,
+  group_id: selected.value
+    ? page.value?.groups.find(group => group.item_ids.includes(selected.value!.id))?.id
+    : focusedProduct.value?.group_id,
+  listing_id: selected.value?.id || focusedProduct.value?.listing_id,
+}), 10)
 const scope = ref(''), value = ref('')
 const saleTarget = ref('paused')
 const contentChanges = ref<Record<string,unknown>>({})
@@ -108,8 +117,15 @@ async function refresh(quiet = false) {
   try {
     const result = await fetchOnlineProducts({platform:platform.value, q:query.value, status:status.value, market:market.value, page:currentPage.value})
     if (ticket !== sequence) return
-    if (page.value?.account_id !== result.account_id) expandedGroups.value.clear()
+    if (page.value?.account_id !== result.account_id) {
+      expandedGroups.value.clear()
+      focusedProduct.value = null
+      selected.value = null
+    }
     page.value = result
+    const focus = focusedProduct.value
+    if (focus && !result.groups.some(group => group.id === focus.group_id
+      && (!focus.listing_id || group.item_ids.includes(focus.listing_id)))) focusedProduct.value = null
     if (selected.value && !modal.value) selected.value = result.items.find(row => row.id === selected.value?.id) || selected.value
     error.value = ''
     if (selectedJob.value) selectedJob.value = result.jobs.find(j=>j.id===selectedJob.value?.id) || selectedJob.value
@@ -132,6 +148,8 @@ async function refresh(quiet = false) {
   }
 }
 async function detail(row: OnlineListing) {
+  const group = page.value?.groups.find(group => group.item_ids.includes(row.id))
+  if (group) focusedProduct.value = {group_id: group.id, listing_id: row.id}
   error.value = ''
   const epoch = viewEpoch
   try {
@@ -225,8 +243,9 @@ async function jobAction(action: 'reconcile' | 'retry', job: OnlineJob) {
   try { selectedJob.value = await onlineAction(action, {job_id: job.id, ...(action==='retry' ? {idempotency_key:crypto.randomUUID()} : {})}); await refresh(true) }
   catch(e) {error.value = e instanceof Error ? e.message : '操作失败'} finally {busy.value=false}
 }
-function filter() {currentPage.value=1; void refresh()}
-watch(platform, () => { viewEpoch++; statusErrors.value={}; modal.value=''; notice.value=''; page.value=null; selected.value=null; selectedJob.value=null; expandedGroups.value.clear(); status.value=market.value=''; filter() })
+function filter() {focusedProduct.value=null; currentPage.value=1; void refresh()}
+watch([currentPage, showRecords], () => { focusedProduct.value = null }, {flush:'sync'})
+watch(platform, () => { viewEpoch++; focusedProduct.value=null; statusErrors.value={}; modal.value=''; notice.value=''; page.value=null; selected.value=null; selectedJob.value=null; expandedGroups.value.clear(); status.value=market.value=''; filter() })
 function visibilityChanged() {
   clearTimeout(timer)
   if (!document.hidden) void refresh(true)
@@ -256,7 +275,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
         <table class="w-full min-w-[950px] text-left text-sm">
           <thead><tr><th>商品</th><th>市场 / 价格</th><th>库存</th><th>销售状态</th><th>最近同步</th><th>操作</th></tr></thead>
           <tbody v-for="group in listingGroups" :key="group.id">
-            <tr v-if="group.kind === 'group'" class="online-group" data-testid="online-group">
+            <tr v-if="group.kind === 'group'" class="online-group" data-testid="online-group" @click="focusedProduct={group_id:group.id}" @focusin="focusedProduct={group_id:group.id}">
               <td>
                 <button type="button" class="group flex max-w-sm items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-4" data-testid="toggle-group" :aria-expanded="expandedGroups.has(group.id)" :aria-label="`${expandedGroups.has(group.id) ? '收起' : '展开'}组合商品：${group.title}`" @click="toggleGroup(group.id)">
                   <span aria-hidden="true" class="flex size-11 shrink-0 items-center justify-center rounded-lg border border-primary-200 bg-white text-primary-700 transition-colors group-hover:border-primary-400 group-hover:bg-primary-100 dark:border-primary-700 dark:bg-dark-800 dark:text-primary-300 dark:group-hover:bg-primary-900/40">
@@ -279,7 +298,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
               </td>
             </tr>
             <template v-if="group.kind === 'single' || expandedGroups.has(group.id)">
-              <tr v-for="row in group.rows" :key="row.id" data-testid="online-listing" :class="{'online-child': group.kind === 'group'}">
+              <tr v-for="row in group.rows" :key="row.id" data-testid="online-listing" :class="{'online-child': group.kind === 'group'}" @click="focusedProduct={group_id:group.id,listing_id:row.id}" @focusin="focusedProduct={group_id:group.id,listing_id:row.id}">
                 <td><div class="flex max-w-sm items-center gap-3" :class="{'ml-7 border-l-2 border-primary-200 pl-4': group.kind === 'group'}"><img v-if="row.thumbnail" referrerpolicy="no-referrer" :src="row.thumbnail" alt="" class="size-12 shrink-0 rounded-lg object-cover" /><div v-else class="size-12 shrink-0 rounded-lg bg-accent-100" /><div><p class="line-clamp-2 font-medium">{{ row.title || row.remote_id }}</p><p class="muted mt-1 break-all">{{ row.seller_sku || row.remote_id }}</p></div></div></td>
                 <td><p v-if="row.prices[0]">{{ row.prices[0].currency }} {{ row.prices[0].amount ?? '未知' }}<span v-if="row.prices.length>1"> · {{ row.prices.length }} 个价格范围</span></p><p v-else>尚未取得价格</p><p class="muted mt-1">{{ row.prices[0] ? priceKind(row.prices[0].kind) : '' }} · {{ [...new Set(row.markets.map(m=>m.site_id))].join(' · ') }}</p></td>
                 <td><p>{{ row.stocks[0]?.quantity ?? '未知' }}<span v-if="row.stocks.length>1"> 等 {{ row.stocks.length }} 个范围</span></p><p class="muted mt-1">{{ row.stocks[0]?.label || '未取得库存范围' }}</p></td>
@@ -305,8 +324,16 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
       <div v-if="selected" class="online-overlay" @pointerdown="detailBackdrop.recordBackdropPointer" @pointerup="detailBackdrop.dismissFromBackdrop" @pointercancel="detailBackdrop.resetBackdropPointer"><aside role="dialog" aria-modal="true" aria-label="商品详情" class="online-drawer"><div class="flex justify-between"><h2 class="text-xl font-bold">商品详情</h2><button class="text-primary-700" @click="selected=null">关闭 ×</button></div><div class="my-8 flex items-center gap-4"><img v-if="selected.thumbnail" referrerpolicy="no-referrer" :src="selected.thumbnail" alt="" class="size-20 rounded-lg" /><div><h3 class="text-lg font-semibold">{{ selected.title }}</h3><p class="muted mt-2">SKU {{ selected.seller_sku || '未提供' }} · {{ platforms[selected.platform] }}</p></div></div><div class="flex flex-wrap items-center gap-4"><span :class="badge(selected.raw_status)">{{ label(selected.raw_status) }}</span><span class="muted">最近同步：{{ time(selected.synced_at) }}</span><OnlineBuyerLinks :links="selected.buyer_links" /><button type="button" data-testid="detail-refresh-status" class="btn btn-outline" :disabled="statusRefreshBlocked(selected)" @click="refreshStatus(selected)">{{ checkingStatus.has(selected.id) ? '查询中…' : '刷新状态' }}</button></div><p class="muted mt-3">状态查询：{{ selected.status_checked_at ? time(selected.status_checked_at) : '尚未查询' }} · 更新本商品状态及平台反馈，价格、库存和内容保留最近同步结果。</p><p v-if="statusErrors[selected.id]" role="alert" class="mt-3 text-rose-700">{{ statusErrors[selected.id] }}</p><p class="mt-3 text-sm">卡片状态：{{ selected.raw_sub_status.map(label).join('、') || '平台未提供' }}</p><p class="muted mt-1 text-xs">平台原始状态：{{ selected.raw_status }} {{ selected.raw_sub_status.join('、') }}</p><p v-if="detailState(selected)" class="mt-3 text-amber-700">{{ detailState(selected) }}，完成后可修改。</p><p v-for="e in selected.errors" :key="e" class="mt-3 text-sm text-rose-700">{{ e }}</p><div class="my-6 grid grid-cols-2 gap-3 md:grid-cols-4"><button v-for="op in ['price','stock','content','sale_state'] as const" :key="op" class="btn btn-outline" :disabled="checkingStatus.has(selected.id) || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities[op]?.enabled" :title="selected.capabilities[op]?.reason" @click="begin(op)">{{ op==='sale_state'?(saleState==='active'?'恢复销售':'停售商品'):label(op) }}</button></div><p v-for="(cap,op) in selected.capabilities" v-show="cap.reason" :key="op" class="muted mb-2">{{ label(op) }}：{{ cap.reason }}</p><OnlineProductDetails :listing="selected" /><h3 class="mt-8 font-semibold">销售市场</h3><div class="online-card my-5 overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr><th>销售市场</th><th>价格 / 币种</th><th>销售状态</th></tr></thead><tbody><tr v-for="m in selected.markets" :key="m.id"><td>{{ m.site_id }} · {{ m.logistic_type }}<p class="muted mt-1">{{ m.id }}</p></td><td>{{ m.currency }} {{ m.price ?? '未知' }}</td><td>{{ label(m.raw_status) }}</td></tr></tbody></table></div><div v-for="s in selected.stocks" :key="s.id" class="my-3 rounded-lg bg-primary-50 p-5 text-primary-800"><b>{{ s.label }}：{{ s.quantity ?? '未知' }}</b><p class="mt-2 text-sm">{{ s.reason || '设置绝对数量，仅影响这个库存范围。' }}</p></div><h3 class="mt-8 font-semibold">平台身份</h3><p class="muted mt-3 break-all">{{ selected.remote_id }} · {{ selected.model }}</p><p class="muted mt-2">来源：店铺同步 · 账号 {{ selected.account_id }}</p></aside></div>
       <div v-if="modal" class="online-overlay online-modal-layer" @pointerdown="modalBackdrop.recordBackdropPointer" @pointerup="modalBackdrop.dismissFromBackdrop" @pointercancel="modalBackdrop.resetBackdropPointer">
         <section role="dialog" aria-modal="true" :aria-label="modal==='sync'?'同步商品':label(modal)" class="online-modal space-y-5" :class="modal==='content' && !preview ? 'online-content-form' : ''">
-          <header class="flex justify-between"><h2 class="text-xl font-bold">{{ modal==='sync'?'同步商品':preview?'确认本次变更':label(modal) }}</h2><button :disabled="busy" @click="modal=''">关闭 ×</button></header><p v-if="error" role="alert" class="text-rose-700">{{ error }}</p>
-          <template v-if="modal==='sync'"><p>同步 {{ platforms[platform] }} 店铺：{{ page?.store_name }}</p><div class="rounded-lg bg-accent-50 p-5"><b>同步范围</b><p class="mt-3">当前账号全部可读取商品、所有关联市场及在售、停售、缺货、审核中和归档记录。</p></div><p class="muted">此操作只读取平台商品。部分失败会保留已有快照；离开页面后后台继续同步。</p><button class="btn btn-primary w-full" :disabled="busy" @click="submit">开始同步</button></template>
+          <header class="flex justify-between"><h2 class="text-xl font-bold">{{ modal==='sync'?'同步商品':preview?'确认本次变更':label(modal) }}</h2><button :disabled="busy" @click="modal=''">关闭 ×</button></header><p v-if="error" role="alert" class="text-rose-700 dark:text-rose-300">{{ error }}</p>
+          <template v-if="modal==='sync'">
+            <p class="break-words">同步 {{ platforms[platform] }} 店铺：{{ page?.store_name }}</p>
+            <div class="rounded-lg border border-accent-200 bg-accent-50 p-5 text-accent-800 dark:border-dark-700 dark:bg-dark-800 dark:text-accent-100">
+              <b>同步范围</b>
+              <p class="mt-3 leading-relaxed">当前账号全部可读取商品、所有关联市场及在售、停售、缺货、审核中和归档记录。</p>
+            </div>
+            <p class="muted">此操作只读取平台商品。部分失败会保留已有快照；离开页面后后台继续同步。</p>
+            <button class="btn btn-primary w-full" :disabled="busy" @click="submit">{{ busy ? '正在提交…' : '开始同步' }}</button>
+          </template>
           <template v-else-if="selected">
             <p class="font-medium">{{ selected.title }}</p><p class="muted">作用范围：{{ modal==='price' ? price?.label : modal==='stock' ? stock?.label : selected.capabilities[modal]?.scope }}</p>
             <div v-if="modal==='content'" v-show="!preview" key="content-editor"><OnlineContentEditor :key="selected.id" :listing="selected" @change="contentChanges=$event" @picture-previews="contentPicturePreviews=$event" /></div>

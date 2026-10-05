@@ -59,7 +59,9 @@ def test_yandex_sync_carries_the_platform_url():
     adapter.request = lambda path, *args, **kwargs: {"result": {
         "offerMappings": [{"offer": {"offerId": "seller-sku", "name": "测试商品"},
                            "showcaseUrls": [{"showcaseType": "B2C", "showcaseUrl": YANDEX_URL}]}],
-        "hiddenOffers": [], "offerCards": [], "offers": [],
+        "hiddenOffers": [],
+        "offerCards": [{"offerId": "seller-sku", "cardStatus": "HAS_CARD_CAN_UPDATE"}],
+        "offers": [],
     }}
     result = adapter.read("seller-sku")
     assert str(result.buyer_links[0].url) == YANDEX_URL

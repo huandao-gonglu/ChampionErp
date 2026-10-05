@@ -34,6 +34,7 @@ class AiPageContext(BaseModel):
     product_id: ContextId | None = None
     draft_id: ContextId | None = None
     listing_id: ContextId | None = None
+    group_id: ContextId | None = None
     platform: ContextId | None = None
     site: ContextId | None = None
     sku_id: ContextId | None = None
@@ -55,9 +56,16 @@ def page_context_instructions(context: dict | None) -> str:
     for field, label in (
         ("product_id", "当前商品 ID"), ("draft_id", "当前草稿 ID"),
         ("listing_id", "当前在线商品 ID"),
+        ("group_id", "当前在线商品节点 ID"),
         ("platform", "当前平台"), ("site", "当前站点"),
         ("sku_id", "当前 SKU ID"), ("attribute_id", "当前属性 ID"),
     ):
         if value := getattr(page, field):
             lines.append(f"{label}：{value}")
+    if page.page == "onlineProducts":
+        lines.append(
+            "listing_id 指向当前焦点刊登/SKU；group_id 指向当前焦点组合或独立节点，"
+            "只提供 group_id 时不能把代表 SKU 当作整组。读取组合成员使用 group_id 和 view=listings。"
+            "两者都没有时，未提供当前焦点商品；不能把列表第一项推断成当前展开或选中的商品。"
+        )
     return "\n".join(lines)

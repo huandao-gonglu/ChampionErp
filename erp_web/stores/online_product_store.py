@@ -147,6 +147,19 @@ class OnlineProductStore:
             rows = conn.execute("SELECT * FROM online_jobs WHERE platform=? AND account_id=? ORDER BY created_at DESC LIMIT 100", (platform, account)).fetchall()
         return [self._job(row) for row in rows]
 
+    def latest_sync_summary(self, platform: str, account: str) -> dict[str, Any] | None:
+        """查询最新同步的固定进度字段，避免为商品读取加载历史任务及逐项回执。"""
+        with self.db._connect() as conn:
+            row = conn.execute("""SELECT id,status,updated_at,
+                json_extract(result_json,'$.discovered') AS discovered,
+                json_extract(result_json,'$.completed') AS completed,
+                json_extract(result_json,'$.failed') AS failed,
+                json_extract(result_json,'$.discovery_complete') AS discovery_complete,
+                COALESCE(json_extract(result_json,'$.error_code'),'') AS error_code
+                FROM online_jobs WHERE platform=? AND account_id=? AND operation='sync'
+                ORDER BY created_at DESC,id DESC LIMIT 1""", (platform, account)).fetchone()
+        return dict(row) if row is not None else None
+
     def idempotent_job(self, key: str) -> dict[str, Any] | None:
         with self.db._connect() as conn:
             row = conn.execute("SELECT * FROM online_jobs WHERE idempotency_key=?", (key,)).fetchone()

@@ -6,7 +6,7 @@ import pytest
 from erp_web.context import get_context
 from erp_web.schemas.online_product_capabilities import OnlineReadResult
 from erp_web.schemas.online_products import MarketSnapshot, OnlineListing, PlatformIssue, snapshot_version
-from erp_web.services.online_product_listing import listing_page
+from erp_web.services.online_product_listing import listing_page, listing_summary_page
 from erp_web.services.online_product_service import OnlineProductService
 
 
@@ -102,8 +102,11 @@ def test_existing_snapshots_support_grouped_http_and_ai_without_migration():
         result = service.list("yandex")
         assert result["total"] == 1 and result["listing_total"] == result["summary"]["total"] == 30
         assert len(result["items"]) == 30
-        validated = OnlineReadResult.model_validate(result).model_dump()
-        assert {key: validated[key] for key in result} == result
+        compact = service.read_page("yandex", limit=1)
+        validated = OnlineReadResult.model_validate(compact)
+        assert validated.total == 1 and validated.listing_total == 30
+        assert len(validated.items) == 1 and validated.groups[0].total_count == 30
+        assert validated.items[0].id == result["items"][0]["id"]
         assert service.list("yandex", page=2)["items"] == []
         assert service.detail(rows[0].id)["item"]["id"] == rows[0].id
         for row in rows:
@@ -112,3 +115,47 @@ def test_existing_snapshots_support_grouped_http_and_ai_without_migration():
             assert stored.synced_at == row.synced_at
     finally:
         service.close()
+
+
+def compact_page(rows, **overrides):
+    return listing_summary_page(rows, **{"query": "", "status": "", "market": "", "page": 1,
+                                         "limit": 25, "view": "groups", **overrides})
+
+
+def test_summary_pages_split_large_groups_without_losing_order_or_members():
+    variants = [product(i, "组合 A", content={"description": "商品说明" * 10000}) for i in range(198)]
+    singles = [product(i) for i in range(198, 224)]
+    rows = [variants[0], *singles[:12], *variants[1:], *singles[12:]]
+    first = compact_page(rows, limit=1)
+    assert first["total"] == 27 and first["listing_total"] == 224 and first["next_page"] == 2
+    assert len(first["items"]) == len(first["groups"]) == 1
+    group = first["groups"][0]
+    assert group["total_count"] == group["matched_count"] == 198
+    assert group["representative_id"] == first["items"][0]["id"] == "id-0"
+    assert "item_ids" not in group and "content" not in first["items"][0]
+    expected = [row["id"] for number in (1, 2) for row in page(rows, page=number)["items"]]
+    actual = []
+    number = 1
+    while number is not None:
+        result = compact_page(rows, view="listings", page=number, limit=17)
+        assert result["total"] == 224 and len(result["items"]) <= 17
+        actual.extend(row["id"] for row in result["items"])
+        number = result["next_page"]
+    assert actual == expected and len(set(actual)) == 224
+    members = compact_page(rows, view="listings", group_id=group["id"], page=4, limit=50)
+    assert members["total"] == 198 and members["next_page"] is None
+    assert [row["id"] for row in members["items"]] == [row.id for row in variants[150:]]
+
+
+def test_summary_group_filters_preserve_counts_and_do_not_expand_matches():
+    rows = [product(1, "组合", raw_status="PUBLISHED", markets=[MarketSnapshot(id="1", site_id="RU")]),
+            product(2, "组合", raw_status="DISABLED"), product(3)]
+    group_id = compact_page(rows)["groups"][0]["id"]
+    for view in ("groups", "listings"):
+        result = compact_page(rows, view=view, group_id=group_id, query="sku-1", status="PUBLISHED", market="RU")
+        assert [item["id"] for item in result["items"]] == ["id-1"]
+        assert result["groups"][0]["total_count"] == 2
+        assert result["groups"][0]["matched_count"] == 1
+        assert result["next_page"] is None
+        assert compact_page(rows, view=view, group_id="不存在")["items"] == []
+        assert compact_page(rows, view=view, page=100)["next_page"] is None

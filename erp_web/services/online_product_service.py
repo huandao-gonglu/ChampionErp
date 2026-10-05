@@ -6,13 +6,13 @@ import threading
 import time
 
 from erp_web.services.external_request_context import request_operation
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.schemas.online_products import ChangeRequest, snapshot_version
 from erp_web.services.online_product_changes import confirmation, validate_changes
-from erp_web.services.online_product_listing import listing_page
+from erp_web.services.online_product_listing import listing_page, listing_summary_page
 from erp_web.services.online_product_images import OnlineProductImages
 from erp_web.services.online_product_sync import run_sync
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
@@ -77,21 +77,35 @@ class OnlineProductService:
             raise OnlineConflict("授权刷新后店铺身份变化，操作已停止")
         return adapter
 
-    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1) -> dict[str, Any]:
+    def _list_context(self, platform: str):
         config = self.context.config.load_store_config()
         account = account_identity(platform, config)
         records = self.store.listings(platform, account) if account else []
-        jobs = self.store.jobs(platform, account) if account else []
-        latest_sync = next((j for j in jobs if j["operation"] == "sync"), None)
-        return {"ok": True, "platform": platform, "account_id": account,
-            **listing_page(records, query=query, status=status, market=market, page=page),
+        latest_sync = self.store.latest_sync_summary(platform, account) if account else None
+        return records, {"ok": True, "platform": platform, "account_id": account,
             "summary": {"total": len(records), "active": sum(r.sale_state == "active" for r in records),
                         "paused": sum(r.sale_state == "paused" for r in records), "attention": sum(r.sale_state not in ("active", "paused") or bool(r.errors) or bool(r.platform_issues) for r in records)},
             "markets": sorted({m.site_id for r in records for m in r.markets}),
             "statuses": sorted({r.raw_status for r in records}), "latest_sync": latest_sync,
-            "state": "authorization_required" if not account else ("never_synced" if not latest_sync else "authorization_failed" if "AUTH" in latest_sync["result"].get("error_code", "") else "sync_failed" if latest_sync["status"] == "failed" else "ready"),
-            "jobs": jobs, "store_name": str(config.get(platform, {}).get("shop_name") or account),
+            "state": "authorization_required" if not account else ("never_synced" if not latest_sync else "authorization_failed" if "AUTH" in latest_sync["error_code"] else "sync_failed" if latest_sync["status"] == "failed" else "ready"),
+            "store_name": str(config.get(platform, {}).get("shop_name") or account),
         }
+
+    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1) -> dict[str, Any]:
+        records, context = self._list_context(platform)
+        jobs = self.store.jobs(platform, context["account_id"]) if context["account_id"] else []
+        return {**context, **listing_page(records, query=query, status=status, market=market, page=page),
+                "jobs": jobs, "latest_sync": next((job for job in jobs if job["operation"] == "sync"), None)}
+
+    def read_page(self, platform: str, *, query: str = "", status: str = "", market: str = "",
+                  page: int = 1, limit: int = 25, view: Literal["groups", "listings"] = "groups",
+                  group_id: str = "") -> dict[str, Any]:
+        """按页面同序提供有界摘要；组内 SKU 可跨页，完整内容通过 detail 读取。"""
+        if not 1 <= limit <= 50 or page < 1 or view not in ("groups", "listings"):
+            raise ValueError("在线商品分页参数无效")
+        records, context = self._list_context(platform)
+        return {**context, **listing_summary_page(records, query=query, status=status, market=market,
+                page=page, limit=limit, view=view, group_id=group_id)}
 
     def detail(self, listing_id: str) -> dict[str, Any]:
         listing = self.store.get(listing_id)

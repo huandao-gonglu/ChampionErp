@@ -11,7 +11,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from erp_web.context import get_context
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset, build_job_status_readers
 from erp_web.runtime_units.online_product_capabilities import (
-    ONLINE_PRODUCT_JOB_TYPE, OnlineProductCapabilityScope,
+    OnlineProductCapabilityScope,
     _change_snapshot, _retry_snapshot, online_products_change, online_products_read,
     online_products_sync, online_products_retry, online_products_reconcile,
 )
@@ -46,11 +46,13 @@ def change(domain, **kwargs):
                         operation="price", scope_id="global", changes={"amount": "15.25", "currency": "USD"}, **kwargs)
 
 
-def test_reads_reuse_page_and_detail_payload_and_enforce_current_account(online):
+def test_reads_share_page_order_and_detail_payload_and_enforce_current_account(online):
     _, domain, _, scope, config = online
     page = domain.list("mercadolibre")
     result = online_products_read(OnlineReadRequest(), scope).model_dump()
-    assert {key: result[key] for key in page} == page
+    assert result["items"][0]["id"] == page["items"][0]["id"]
+    assert result["groups"][0]["id"] == page["groups"][0]["id"]
+    assert "jobs" not in result and "content" not in result["items"][0]
     detail = online_products_read(OnlineReadRequest(id="CBT1"), scope).model_dump()["item"]
     assert detail == domain.detail("CBT1")["item"]
     assert "snapshot" not in detail
@@ -58,6 +60,104 @@ def test_reads_reuse_page_and_detail_payload_and_enforce_current_account(online)
     assert online_products_read(OnlineReadRequest(), scope).total == 0
     with pytest.raises(BusinessCapabilityError, match="店铺身份"):
         online_products_read(OnlineReadRequest(id="CBT1"), scope)
+
+
+@pytest.fixture
+def large_online_group(online):
+    """重现 198 个变体、长详情和大同步回执，不接触真实店铺。"""
+    app, domain, remote, scope, config = online
+    config["yandex"] = {"business_id": "business", "campaign_id": "campaign"}
+    for number in range(198):
+        row = listing(f"YDX{number:03}")
+        row.platform, row.account_id, row.model = "yandex", "business:campaign", "business_offer"
+        row.snapshot = {"offer": {"groupId": "真实组合"}}
+        row.content = {"description": "长描述不应随列表返回。" * 1000, "attributes": [{"name": "尺寸", "value": "20×20"}]}
+        row.stocks[0].quantity = None if number == 0 else number % 3
+        domain.store.save(row)
+    job = domain.store.enqueue("yandex", "business:campaign", "sync", "*", {}, "test-large-sync")
+    with domain.store.db._connect() as conn:
+        conn.execute("UPDATE online_jobs SET status='confirmed',result_json=? WHERE id=?", (json.dumps({
+            "discovered": 198, "completed": 198, "failed": 0, "discovery_complete": True,
+            "items": [{"remote_id": "大回执" * 10000}] * 3,
+        }), job["id"]))
+        conn.commit()
+    return online
+
+
+@pytest.mark.parametrize("entry", ["direct", "python"])
+def test_first_online_product_needs_one_bounded_read(large_online_group, tmp_path, monkeypatch, entry):
+    app, domain, _, scope, _ = large_online_group
+    http_page = domain.list("yandex")
+    assert len(json.dumps(http_page, ensure_ascii=False).encode()) > 262144
+    expected = http_page["items"][0]["id"]
+
+    def forbid_full_payload(*args, **kwargs):
+        pytest.fail("AI 列表不得调用页面完整载荷或加载历史任务")
+    monkeypatch.setattr(domain, "list", forbid_full_payload)
+    monkeypatch.setattr(domain.store, "jobs", forbid_full_payload)
+    compact = online_products_read(OnlineReadRequest(platform="yandex", limit=1), scope)
+    assert compact.items[0].id == expected
+    assert compact.groups[0].total_count == compact.groups[0].matched_count == 198
+    assert compact.latest_sync.completed == 198 and compact.latest_sync.discovery_complete is True
+    assert len(compact.model_dump_json().encode()) < 5000
+    empty = online_products_read(OnlineReadRequest(platform="yandex", q="没有此商品"), scope)
+    assert empty.total == 0 and empty.summary["total"] == 198 and empty.latest_sync.completed == 198
+    assert len(empty.model_dump_json().encode()) < 2000
+    requests, outputs = [], []
+
+    async def model(messages, info):
+        requests.append(1)
+        assert not any(isinstance(p, RetryPromptPart) for m in messages for p in m.parts)
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        if returned:
+            outputs.append(returned[-1].content)
+            yield "第一个在线商品是测试商品，组合包含 198 个 SKU。"
+        elif entry == "direct":
+            yield {0: DeltaToolCall(name="online_products_read", tool_call_id="first", json_args=json.dumps({
+                "platform": "yandex", "limit": 1,
+            }))}
+        else:
+            yield {0: DeltaToolCall(name="run_code", tool_call_id="first", json_args=json.dumps({"code":
+                "r = await online_products_read(platform='yandex', limit=1)\n"
+                "{'id': r['items'][0]['id'], 'count': r['groups'][0]['total_count']}"
+            }))}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    chunks = []
+    asyncio.run(ui.prepare_run(body("当前在线商品的第一个是什么")).stream(chunks.append))
+    assert len(requests) == 2 and len(outputs) == 1, b"".join(chunks).decode()
+    assert (outputs[0]["items"][0]["id"] if entry == "direct" else outputs[0]["id"]) == expected
+    assert not ui.call_store.current_turn_receipts(CONVERSATION)
+
+
+def test_code_mode_pages_all_group_members_under_normal_output_limit(large_online_group, tmp_path):
+    app, _, _, _, _ = large_online_group
+    outputs = []
+
+    async def model(messages, info):
+        assert not any(isinstance(p, RetryPromptPart) for m in messages for p in m.parts)
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        if returned:
+            outputs.append(returned[-1].content)
+            yield "已读取组合全部 198 个 SKU。"
+        else:
+            yield {0: DeltaToolCall(name="run_code", tool_call_id="members", json_args=json.dumps({"code":
+                "first = await online_products_read(platform='yandex', limit=1)\n"
+                "group_id = first['groups'][0]['id']\n"
+                "number = 1\nrows = []\n"
+                "while number is not None:\n"
+                "    result = await online_products_read(platform='yandex', view='listings', group_id=group_id, page=number, limit=25)\n"
+                "    rows.extend(result['items'])\n"
+                "    number = result['next_page']\n"
+                "{'count': len(rows), 'unique': len(set(row['id'] for row in rows)), "
+                "'unknown': sum(1 for row in rows if row['stocks'][0]['quantity'] is None), "
+                "'zero': sum(1 for row in rows if row['stocks'][0]['quantity'] == 0)}"
+            }))}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    chunks = []
+    asyncio.run(ui.prepare_run(body("统计第一个组合的库存")).stream(chunks.append))
+    assert outputs == [{"count": 198, "unique": 198, "unknown": 1, "zero": 65}], b"".join(chunks).decode()
 
 
 @pytest.mark.parametrize("entry", ["direct", "python", "python_retry"])
@@ -136,10 +236,10 @@ def test_code_mode_can_compute_over_all_pages_without_new_query_functions(online
             yield "统计完成，未知库存单独列出。"
         else:
             yield {0: DeltaToolCall(name="run_code", tool_call_id="count", json_args=json.dumps({"code":
-                "page = await online_products_read(platform='mercadolibre')\n"
+                "page = await online_products_read(platform='mercadolibre', view='listings')\n"
                 "items = page['items']\n"
                 "for number in range(2, (page['total'] + page['per_page'] - 1) // page['per_page'] + 1):\n"
-                "    next_page = await online_products_read(platform='mercadolibre', page=number)\n"
+                "    next_page = await online_products_read(platform='mercadolibre', view='listings', page=number)\n"
                 "    items.extend(next_page['items'])\n"
                 "{'total': len(items), 'zero': sum(1 for item in items if item['stocks'][0]['quantity'] == 0), "
                 "'unknown': sum(1 for item in items if item['stocks'][0]['quantity'] is None)}"
@@ -170,7 +270,9 @@ def test_one_change_tool_reuses_all_existing_mutations(online, operation, scope_
     assert repeated.job_id == result.job_id
     job = domain.store.job(result.job_id)
     assert {key: job["request"][key] for key in type(request).model_fields} == request.model_dump()
-    assert result.job_type == ONLINE_PRODUCT_JOB_TYPE
+    assert result.accepted is True and result.status == "queued"
+    assert result.listing_id == request.listing_id
+    assert "job_type" not in result.model_dump()
     assert not remote.writes
 
 
@@ -212,6 +314,7 @@ def test_sync_and_failure_retry_reuse_business_jobs(online):
     retry = OnlineJobRequest(job_id=result.job_id)
     execution = _approved_execution(_retry_snapshot(retry, scope), "online_products_retry", operation_key="retry")
     retried = online_products_retry(retry, scope, execution)
+    assert retried.accepted is True and "job_type" not in retried.model_dump()
     assert domain.store.job(retried.job_id)["request"]["ids"] == ["CBT2"]
     assert not remote.writes
 
@@ -247,18 +350,26 @@ def test_job_reader_preserves_platform_state_without_infinite_wait(status, polls
 
 
 @pytest.mark.parametrize("mode", ["ask", "full"])
-def test_native_approval_deferred_job_and_platform_readback(online, tmp_path, mode):
+@pytest.mark.parametrize("count", [1, 3])
+def test_native_approval_finishes_batch_after_enqueue_without_platform_wait(online, tmp_path, mode, count):
     app, domain, remote, _, _ = online
-    request = change(domain).model_dump()
+    requests = []
+    for index in range(count):
+        row = listing(f"CBT{index + 1}")
+        domain.store.save(row)
+        remote.rows[row.id] = row
+        requests.append(change(domain).model_copy(update={"listing_id": row.id,
+                        "version": domain.store.get(row.id).version}).model_dump())
     results = []
 
     async def model(messages, info):
         returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
         if returned:
-            results.append(returned[-1].content)
-            yield "价格已由平台回读确认。"
+            results.extend(part.content for part in returned)
+            yield "修改请求已提交，远端处理结果请在操作记录查看。"
         else:
-            yield {0: DeltaToolCall(name="online_products_change", json_args=json.dumps(request), tool_call_id="online-change")}
+            yield {index: DeltaToolCall(name="online_products_change", json_args=json.dumps(request),
+                                       tool_call_id=f"online-change-{index}") for index, request in enumerate(requests)}
 
     ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
     ui.chat_service.approval_mode_reader = lambda: mode
@@ -267,9 +378,10 @@ def test_native_approval_deferred_job_and_platform_readback(online, tmp_path, mo
     if mode == "ask":
         parts = [part for message in ui.dump_ui_messages(CONVERSATION)["messages"] for part in message["parts"]
                  if part.get("state") == "approval-requested"]
-        assert len(parts) == 1
-        parts[0]["state"] = "approval-responded"
-        parts[0]["approval"]["approved"] = True
+        assert len(parts) == count
+        for part in parts:
+            part["state"] = "approval-responded"
+            part["approval"]["approved"] = True
         payload = json.dumps({"id": CONVERSATION, "trigger": "submit-message",
                               "messages": [{"id": "approval", "role": "assistant", "parts": parts}]}).encode()
         asyncio.run(ui.prepare_run(payload, approval_token="test-token").stream(lambda _: None))
@@ -278,23 +390,26 @@ def test_native_approval_deferred_job_and_platform_readback(online, tmp_path, mo
         for row in ui.call_store.work():
             worker.execute_or_reconcile(row)
         assert not remote.writes
-        receipt = ui.call_store.receipt(CONVERSATION, "online-change")
-        assert receipt["status"] == "waiting_job"
-        domain.run_once()
-        from test_online_products import expire
-        pending = domain.store.jobs("mercadolibre","seller")[0]
-        assert pending["status"] == "submitted"
-        expire(domain,pending["id"])
-        domain.run_once()
-        for row in ui.call_store.work():
-            worker.execute_or_reconcile(row)
+        for index in range(count):
+            receipt = ui.call_store.receipt(CONVERSATION, f"online-change-{index}")
+            assert receipt["status"] == "completed"
+        assert len(domain.store.jobs("mercadolibre", "seller")) == count
+        assert all(job["status"] == "queued" for job in domain.store.jobs("mercadolibre", "seller"))
         worker.scan()
         for _ in range(200):
             if not ui.run_registry.is_active(CONVERSATION):
                 break
             time.sleep(.01)
+        assert not remote.writes
+        assert len(results) == count and all(result["accepted"] for result in results)
+        assert all("evidence" not in result and "job_type" not in result for result in results)
+        assert not ui.call_store.pending(CONVERSATION)
+        # Agent 已结束后，领域任务仍可独立执行；远端失败不会重新唤醒模型。
+        remote.write_error = TimeoutError("平台响应时间不确定")
+        domain.run_once()
         assert len(remote.writes) == 1
-        assert results and results[-1]["ok"] is True
-        assert results[-1]["evidence"]["last_external_status"] == "confirmed"
+        assert any(job["status"] == "outcome_unknown" for job in domain.store.jobs("mercadolibre", "seller"))
+        worker.scan()
+        assert len(results) == count and not ui.run_registry.is_active(CONVERSATION)
     finally:
         worker.close()

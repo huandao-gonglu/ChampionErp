@@ -347,6 +347,35 @@ def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools()
         assert forbidden not in source
 
 
+def test_online_ai_lists_use_bounded_projection_instead_of_page_payload():
+    """工具列表不能重新携带整组详情或历史任务；单件详情保留公开业务契约。"""
+    from erp_web.schemas.online_product_capabilities import OnlineReadRequest, OnlineReadResult
+    request = OnlineReadRequest.model_json_schema()["properties"]
+    assert request["limit"]["minimum"] == 1 and request["limit"]["maximum"] == 50
+    schema = OnlineReadResult.model_json_schema()
+    assert "jobs" not in schema["properties"]
+    summary = schema["$defs"]["OnlineListingSummary"]["properties"]
+    assert not {"content", "snapshot", "capabilities"} & summary.keys()
+    assert "item_ids" not in schema["$defs"]["OnlineGroupSummary"]["properties"]
+    sync = schema["$defs"]["OnlineSyncSummary"]["properties"]
+    assert not {"items", "request", "result"} & sync.keys()
+    source = (ROOT / "erp_web/runtime_units/online_product_capabilities.py").read_text()
+    assert "_call(service.read_page," in source
+    assert "_call(service.list," not in source
+
+
+def test_online_changes_complete_on_submission_without_remote_job_wait():
+    """修改仍走原生审批/持久投递，但回执不能把 Agent 绑定到平台终态。"""
+    from erp_web.schemas.online_product_capabilities import OnlineSubmissionResult
+    from erp_web.runtime_units.online_product_capabilities import online_products_change, online_products_retry
+    from typing import get_type_hints
+    for capability in (online_products_change, online_products_retry):
+        assert get_type_hints(capability)["return"] is OnlineSubmissionResult
+    fields = OnlineSubmissionResult.model_fields
+    assert "accepted" in fields and "job_id" in fields
+    assert "job_type" not in fields and "evidence" not in fields
+
+
 def test_online_source_images_use_existing_delivery_and_upload_boundaries():
     """源选图只负责业务关联；网络上传与 HTTPS 交付复用已有边界。"""
     routes = (ROOT / "erp_web/http_route_units/online_product_routes.py").read_text()

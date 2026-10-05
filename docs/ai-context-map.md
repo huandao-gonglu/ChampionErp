@@ -123,6 +123,10 @@
   `total` 统计节点，`listing_total` 统计匹配刊登，公开 `groups.item_ids` 引用本页 `items`，父节点不接受修改。
   `groups.feedback_summary` 汇总整个组合的受影响 SKU 数、平台错误和警告条数，覆盖当前筛选隐藏的 SKU；
   前端父行在折叠时也显示汇总，单件状态刷新按该 SKU 的变化调整父行计数，不影响其他 SKU 的反馈。
+  AI 列表唯一入口为 `OnlineProductService.read_page` → `listing_summary_page`，复用页面的组合身份、顺序和筛选。
+  默认 `view=groups` 仅返回父节点和代表刊登；`view=listings` 按 SKU 分页，可用 `group_id` 限定成员。
+  `limit` 为 1–50，按 `next_page` 遍历，组合可跨页；列表不携带内容详情、完整成员 ID 列表或历史任务。
+  `OnlineProductStore.latest_sync_summary` 仅读取最新同步的固定状态与进度；AI 详情和写入仍复用原有领域服务。
 - `runtime_units/online_mercadolibre.py`、`online_yandex.py`、`online_ozon.py` 负责平台发现、读取和最小变更。
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
   `runtime_units/online_yandex_read.py` 负责完整目录分页、隐藏清单分页和每批 100 个 SKU 的详情读取，最多 3 个接口并发；
@@ -152,7 +156,8 @@
 - `runtime_units/online_product_capabilities.py` 将现有读取、单件状态刷新、统一修改、同步、回读、重试接口直接装配进主 Agent。
   `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。
   商品数量、SKU 分析等由读取返回值与已有 Code Mode 组合完成，不新增场景工具、查询 DSL 或平台写入旁路。
-- 审批和持久调用直接使用现有 Tool Bridge 的 Pydantic Deferred 机制；`online_product_job_reader.py` 只读取现有领域任务回执。
+- 审批和持久调用直接使用现有 Tool Bridge 的 Pydantic Deferred 机制；修改和重试返回 `OnlineSubmissionResult`，任务入队即完成 AI 工具调用，批量提交继续处理剩余目标，不等待远端终态。
+  平台写入与回读由后台独立处理，在操作记录查看；`online_product_job_reader.py` 继续为同步及已持久化引用读取领域回执。
   `confirmed` 才确认成功；部分完成、未知结果和自动回读耗尽保留原状态并结束本次工具等待，不自动重放。
   改库存、调价、内容与停售共用一个 `online_products_change`，所需权限、审批和提交身份由原有 Runtime 处理。
 - 前端复用工作台的 `/online-products` 导航及 `OnlineProductsPanel.vue` / `OnlineContentEditor.vue`。
@@ -162,7 +167,7 @@
   `OnlineProductDetails.vue` 在详情直接展示属性名称、编号、值和平台错误/警告，保留换行及原文；
   `onlineAttributeDisplay.ts` 统一详情及编辑表单的展示。列表显示反馈数量，需关注统计包含平台反馈，
   Yandex 卡片处理中、修改未被接受与销售状态分别展示；刷新状态会更新反馈，属性名称由完整同步补齐。
-  页面背景传递当前平台和 `listing_id`，不混用本地商品或草稿 ID，也不作为授权。
+  页面背景传递当前平台、最近点击或键盘聚焦的 `group_id` / `listing_id`，区分组合与单件；转入聊天保留定位，切换平台、筛选、页码和操作记录或目标消失时清理。无焦点不能推断首项，不混用本地商品或草稿 ID，也不作为授权。
   旧本地 publication 列表、旧独立暂停 HTTP/AI 工具及其前端已删除；持久化 publication 的读取迁移保留。
 - AI 接入边界、平台限制及验收方式见 [在线商品 AI](online-product-ai.md)。
 
