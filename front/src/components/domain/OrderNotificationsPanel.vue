@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
 import { orderPlatformNames, orderStateNames } from '@/types/orders'
+import OrderAmountDetails from './OrderAmountDetails.vue'
 const store = useOrderNotificationsStore()
 const publicUrl = ref('')
 const copied = ref('')
@@ -117,7 +118,20 @@ onMounted(async () => {
             <td class="p-2">
               <p>{{ order.order_id }}</p>
               <p>{{ order.title || '暂无商品标题' }}</p>
-              <p v-if="order.amount" class="muted">{{ order.amount }} {{ order.currency }}</p>
+              <OrderAmountDetails :value="order" :platform="order.platform" />
+              <details v-if="order.items.length" class="mt-2">
+                <summary class="cursor-pointer text-sm">
+                  共 {{ order.items.reduce((total, item) => total + item.quantity, 0) }} 件 · 查看商品明细
+                </summary>
+                <ul class="mt-2 space-y-3">
+                  <li v-for="(item, index) in order.items" :key="`${item.sku}:${index}`" class="border-l-2 border-accent-200 pl-3 dark:border-dark-700">
+                    <p>{{ item.title || '暂无商品标题' }}</p>
+                    <p class="muted">SKU：{{ item.sku || '未提供' }} · 数量 {{ item.quantity }}</p>
+                    <OrderAmountDetails :value="item" :platform="order.platform" />
+                    <p class="muted">该 SKU 全部数量的小计</p>
+                  </li>
+                </ul>
+              </details>
             </td>
             <td class="p-2">
               <span :class="order.state === 'pending_shipment' ? 'badge-info' : 'badge-muted'">{{

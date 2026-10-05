@@ -1169,5 +1169,6 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 - 后台处理：`erp_web/services/order_notification_service.py`，领域任务领取、平台隔离、重试和定期对账；不参与 Agent 生命周期。
 - 持久化：`erp_web/stores/order_notification_store.py`，独立订单库中的收件箱、快照、租约和未读提醒；`order_notification_migration.py` 仅执行主库历史通知的幂等导入。
 - 共享契约：`erp_web/schemas/orders.py`。AI `platform_orders_query` 与界面读取同一份本地快照，不触发同步远端查询，不获取回调凭据。
+- 金额：`orders_yandex.py::normalize_yandex_amount` 负责订单及 SKU 行的十进制金额归一化，`OrderAmountBreakdown` 保留付款、补贴和积分抵扣。`OrderAmountDetails.vue` 明确商品金额与旧付款快照的口径，不将其标成净到账；明细按平台行小计展示，不再乘数量。
 - 前端：`front/src/stores/orderNotifications.ts`、`OrderNotificationsPanel.vue` 和 `OrderAlertBanner.vue`；原发布 store 中的单平台订单状态已移除。
 - 原 `/api/mercadolibre/orders` 和 `mercadolibre_orders.py` 已退役；接入、状态映射、持久化与验证范围见 [订单通知说明](order-notifications.md)。

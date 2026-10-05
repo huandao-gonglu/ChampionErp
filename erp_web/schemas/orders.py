@@ -30,10 +30,21 @@ def timestamp(value: str) -> float:
     return parsed.timestamp()
 
 
+class OrderAmountBreakdown(BaseModel):
+    """同币种的商品金额组成，不包含配送费用或结算扣费。"""
+
+    payment: str
+    subsidy: str = "0.00"
+    cashback: str = "0.00"
+
+
 class OrderLine(BaseModel):
     sku: str = ""
     title: str = ""
     quantity: int = 0
+    amount: str = ""
+    currency: str = ""
+    amount_breakdown: OrderAmountBreakdown | None = None
 
 
 class OrderSnapshot(BaseModel):
@@ -48,6 +59,7 @@ class OrderSnapshot(BaseModel):
     state: OrderState = "unknown"
     amount: str = ""
     currency: str = ""
+    amount_breakdown: OrderAmountBreakdown | None = None
     updated_at: str = ""
     items: list[OrderLine] = Field(default_factory=list)
 

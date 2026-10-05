@@ -1,7 +1,17 @@
 export type OrderPlatform = 'mercadolibre' | 'ozon' | 'yandex'
 export type OrderState =
   'pending_shipment' | 'processing' | 'shipped' | 'delivered' | 'cancelled' | 'unknown'
-export interface OrderSnapshot {
+export interface OrderAmount {
+  amount: string
+  currency: string
+  amount_breakdown?: { payment: string; subsidy: string; cashback: string } | null
+}
+export interface OrderLine extends OrderAmount {
+  sku: string
+  title: string
+  quantity: number
+}
+export interface OrderSnapshot extends OrderAmount {
   id: string
   platform: OrderPlatform
   account_id: string
@@ -11,11 +21,9 @@ export interface OrderSnapshot {
   status: string
   shipping_status: string
   state: OrderState
-  amount: string
-  currency: string
   updated_at: string
   checked_at: string
-  items: { sku: string; title: string; quantity: number }[]
+  items: OrderLine[]
 }
 export interface OrderNotification {
   id: number

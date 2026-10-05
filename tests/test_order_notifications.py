@@ -513,3 +513,143 @@ def test_expired_worker_cannot_finish_before_reclaim(store):
     store.finish(job, now=now + 181)
     assert store.read({"ozon": "3"})["notifications"][0]["status"] == "running"
     assert store.claim({"ozon": "3"}, now=now + 182)["claim"] != job["claim"]
+
+
+def yandex_price_row(prices, count=1):
+    return {
+        "orderId": 62668010304,
+        "campaignId": 4,
+        "programType": "FBS",
+        "status": "PROCESSING",
+        "substatus": "READY_TO_SHIP",
+        "prices": prices,
+        "items": [{"offerId": "example", "count": count, "prices": prices}],
+    }
+
+
+def money_part(value, currency="CNY"):
+    return {"value": value, "currencyId": currency}
+
+
+def test_yandex_order_amount_includes_subsidy_and_excludes_delivery(store):
+    row = yandex_price_row(
+        {
+            "payment": money_part(48.1),
+            "subsidy": money_part(25.9),
+            "delivery": {"payment": money_part(10), "subsidy": money_part(5)},
+        }
+    )
+    row["items"] = [
+        {
+            "offerId": sku,
+            "count": 1,
+            "prices": {
+                "payment": money_part(24.05),
+                "subsidy": money_part(12.95),
+            },
+        }
+        for sku in ("sku-a", "sku-b")
+    ]
+    result = YandexOrderAdapter(CONFIG).normalize(row)
+    assert result.amount == "74.00" and result.currency == "CNY"
+    assert result.amount_breakdown.payment == "48.10"
+    assert result.amount_breakdown.subsidy == "25.90"
+    assert [item.amount for item in result.items] == ["37.00", "37.00"]
+    # 新金额与明细须经持久化后原样返回，而不是仅在适配器中有效。
+    store.enqueue(
+        OrderEvent(
+            platform="yandex",
+            account_id="4",
+            topic="ORDER_UPDATED",
+            resource="62668010304",
+        )
+    )
+    now = time.time()
+    job = store.claim({"yandex": "4"}, now=now)
+    assert store.save_snapshot(job, result, now=now)
+    saved = store.read({"yandex": "4"})["items"][0]
+    assert saved["amount_breakdown"]["subsidy"] == "25.90"
+    assert saved["items"][0]["amount"] == "37.00"
+
+
+def test_yandex_cashback_decimal_sum_is_not_multiplied_by_quantity():
+    result = YandexOrderAdapter(CONFIG).normalize(
+        yandex_price_row(
+            {
+                "payment": money_part(0.1),
+                "subsidy": money_part(0.2),
+                "cashback": money_part(0.3),
+            },
+            count=3,
+        )
+    )
+    assert result.amount == result.items[0].amount == "0.60"
+    assert result.amount_breakdown.cashback == "0.30"
+
+
+@pytest.mark.parametrize(
+    "prices,amount",
+    [
+        (None, ""),
+        ({"subsidy": money_part(25.9)}, ""),
+        ({"payment": money_part(0)}, "0.00"),
+        ({"payment": money_part(48.1), "subsidy": None, "cashback": None}, "48.10"),
+    ],
+)
+def test_yandex_missing_amount_is_distinct_from_zero(prices, amount):
+    result = YandexOrderAdapter(CONFIG).normalize(yandex_price_row(prices))
+    assert result.amount == amount
+    assert (result.amount_breakdown is None) == (amount == "")
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        money_part("NaN"),
+        money_part("Infinity"),
+        money_part(-1),
+        money_part("oops"),
+        money_part(25.9, "RUR"),
+    ],
+)
+def test_yandex_invalid_amount_or_mixed_currency_is_rejected(part):
+    from erp_web.schemas.orders import OrderDataError
+
+    with pytest.raises(OrderDataError):
+        YandexOrderAdapter(CONFIG).normalize(
+            yandex_price_row(
+                {
+                    "payment": money_part(48.1),
+                    "subsidy": part,
+                }
+            )
+        )
+
+
+def test_persisted_old_order_retains_payment_without_inventing_subsidy(store):
+    old = yandex_price_row(None)
+    result = YandexOrderAdapter(CONFIG).normalize(old)
+    raw = result.model_dump(exclude={"amount_breakdown"})
+    raw["amount"] = "48.1"
+    raw["currency"] = "CNY"
+    for item in raw["items"]:
+        for key in ("amount", "currency", "amount_breakdown"):
+            item.pop(key)
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO orders VALUES (?,?,?,?,?,?,?)",
+            (
+                result.identity,
+                "yandex",
+                "4",
+                result.state,
+                json.dumps(raw),
+                0,
+                "",
+            ),
+        )
+        conn.commit()
+    saved = store.read({"yandex": "4"})["items"][0]
+    assert saved["amount"] == "48.1"
+    assert saved["amount_breakdown"] is None
+    assert saved["items"][0]["amount"] == ""

@@ -2,14 +2,54 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 from erp_web.marketplaces.yandex_http import request_yandex_json
 from erp_web.runtime_units.order_notifications import identifier
 from erp_web.schemas.orders import (
+    OrderAmountBreakdown,
     OrderDataError,
     OrderLine,
     OrderNotReadyError,
     OrderSnapshot,
 )
+
+
+def normalize_yandex_amount(prices):
+    """平台已按数量汇总金额；使用十进制定点加总，不能再次乘商品数量。"""
+    if not prices or prices.get("payment") is None:
+        return {"amount": "", "currency": "", "amount_breakdown": None}
+    payment = prices["payment"]
+    currency = payment.get("currencyId") if isinstance(payment, dict) else None
+    if not isinstance(currency, str) or not currency:
+        raise OrderDataError("Yandex 商品金额缺少币种")
+    amounts = {}
+    for key in ("payment", "subsidy", "cashback"):
+        part = prices.get(key)
+        if part is None:
+            amounts[key] = Decimal(0)
+            continue
+        if not isinstance(part, dict) or part.get("currencyId") != currency:
+            raise OrderDataError("Yandex 商品金额组成的币种不一致")
+        try:
+            value = Decimal(str(part.get("value")))
+        except InvalidOperation as exc:
+            raise OrderDataError("Yandex 商品金额不是有效数字") from exc
+        if not value.is_finite() or value < 0:
+            raise OrderDataError("Yandex 商品金额必须为非负有限数字")
+        amounts[key] = value
+
+    def money(value):
+        # 至少保留两位小数，不提前舍入平台返回的精度。
+        return format(value, f".{max(2, -value.as_tuple().exponent)}f")
+
+    return {
+        "amount": money(sum(amounts.values(), Decimal(0))),
+        "currency": currency,
+        "amount_breakdown": OrderAmountBreakdown(
+            **{key: money(value) for key, value in amounts.items()}
+        ),
+    }
 
 
 class YandexOrderAdapter:
@@ -70,10 +110,10 @@ class YandexOrderAdapter:
                 sku=str(item.get("offerId") or ""),
                 title=str(item.get("offerName") or ""),
                 quantity=int(item.get("count") or 0),
+                **normalize_yandex_amount(item.get("prices")),
             )
             for item in row.get("items") or []
         ]
-        payment = (row.get("prices") or {}).get("payment") or {}
         return OrderSnapshot(
             platform="yandex",
             account_id=self.account,
@@ -83,8 +123,7 @@ class YandexOrderAdapter:
             status=status,
             shipping_status=substatus,
             state=state,
-            amount=str(payment.get("value") or ""),
-            currency=str(payment.get("currencyId") or ""),
+            **normalize_yandex_amount(row.get("prices")),
             updated_at=str(row.get("updateDate") or ""),
             items=items,
         )
