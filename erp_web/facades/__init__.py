@@ -8,7 +8,7 @@ __all__ = [
     "get_facade",
     "image_facade",
     "logistics_facade",
-    "mercadolibre_facade",
+    "order_notification_facade",
     "product_facade",
     "product_research_facade",
     "publish_facade",

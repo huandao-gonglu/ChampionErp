@@ -25,11 +25,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
         combined.refreshProductsIndex(),
         combined.refreshPublishLogs(),
       ])
-      if (combined.mercadolibreAuthChecklist.value?.tokenReady) {
-        await Promise.all([
-          combined.refreshMercadoLibreOrders(),
-        ])
-      }
       return
     }
     if (key === 'pending' || key === 'library') {
@@ -96,10 +91,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     publishJobsLoading: combined.publishJobsLoading,
     publishJobsLastUpdated: combined.publishJobsLastUpdated,
     publishLogs: combined.publishLogs,
-    mercadoLibreOrders: combined.mercadoLibreOrders,
-    mercadoLibreOrderNotifications: combined.mercadoLibreOrderNotifications,
-    mercadoLibreOrdersTotal: combined.mercadoLibreOrdersTotal,
-    mercadoLibreOrdersCheckedAt: combined.mercadoLibreOrdersCheckedAt,
     activeMarketplace: combined.activeMarketplace,
     platformOptions: combined.platformOptions,
     logs: combined.logs,
@@ -191,7 +182,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loadMorePublishJobs: combined.loadMorePublishJobs,
     selectPublishJob: combined.selectPublishJob,
     refreshPublishLogs: combined.refreshPublishLogs,
-    refreshMercadoLibreOrders: combined.refreshMercadoLibreOrders,
     loadAiConfig: combined.loadAiConfig,
     saveAiSettings: combined.saveAiSettings,
     testAiSettings: combined.testAiSettings,

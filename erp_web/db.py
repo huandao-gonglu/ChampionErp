@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS upc_pool (
     assigned_at TEXT
 );
 
+-- 历史持久化通知仅供单次导入；运行时新写入由 OrderNotificationStore 持有。
 CREATE TABLE IF NOT EXISTS order_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     topic TEXT NOT NULL DEFAULT '',
@@ -1825,46 +1826,6 @@ class ErpDatabase:
                 or 0
             )
         return {"total": total, "free": free, "used": total - free}
-
-    # -- order_notifications ------------------------------------------------------
-
-    def insert_order_notification(self, notification: dict[str, Any]) -> int:
-        notification = _dict(notification)
-        received_at = str(notification.get("received_at") or "") or utc_now()
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO order_notifications (topic, resource, order_id, raw_json, received_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    str(notification.get("topic") or ""),
-                    str(notification.get("resource") or ""),
-                    str(notification.get("order_id") or ""),
-                    json_dumps(notification),
-                    received_at,
-                ),
-            )
-            conn.commit()
-            return int(cursor.lastrowid or 0)
-
-    def list_order_notifications(self, limit: int = 200) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM order_notifications ORDER BY id DESC LIMIT ?",
-                (max(1, int(limit or 200)),),
-            ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            item = json_loads(row["raw_json"], {})
-            if not isinstance(item, dict):
-                item = {}
-            item.setdefault("topic", row["topic"])
-            item.setdefault("resource", row["resource"])
-            item.setdefault("order_id", row["order_id"])
-            item.setdefault("received_at", row["received_at"])
-            items.append(item)
-        return items
 
     # -- publish_jobs ------------------------------------------------------------
 

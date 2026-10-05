@@ -24,6 +24,7 @@ from erp_web.http_route_units import (
     image_routes,
     image_hosting_routes,
     online_product_routes,
+    order_routes,
 )
 from erp_web.http_routes import POST_API_ROUTES
 
@@ -72,6 +73,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     endpoints.update(("GET", path) for path in get_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in online_product_routes.GET_API_ROUTES)
+    endpoints.update(("GET", path) for path in order_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in image_hosting_routes.GET_API_ROUTES)
     endpoints.update(("POST", path) for path in POST_API_ROUTES)
     endpoints.update(("POST", path) for path in image_routes.IMAGE_POST_PATHS)
@@ -208,6 +210,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="capability", capability_names=("online_products_change",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/reconcile", business_domain="在线商品", disposition="capability", capability_names=("online_products_reconcile",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/retry", business_domain="在线商品", disposition="capability", capability_names=("online_products_retry",)),
+    AiCapabilityCoverageEntry(method="GET", path="/api/orders/integrations", business_domain="授权基础设施", disposition="internal_only", reason="本机可信界面读取回调地址，含专用接入凭据，不向模型提供。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/orders/configure", business_domain="授权基础设施", disposition="internal_only", reason="用户配置公网回调接入地址。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/orders/sync", business_domain="订单通知", disposition="internal_only", reason="用户显式请求后台订单对账。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/orders/retry", business_domain="订单通知", disposition="internal_only", reason="用户检查故障后重试失败通知。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/orders/acknowledge", business_domain="订单通知", disposition="internal_only", reason="用户标记订单提醒已读。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/ozon/notifications", business_domain="订单通知", disposition="excluded", reason="Ozon 外部通知协议入口。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/yandex/notifications", business_domain="订单通知", disposition="excluded", reason="Yandex 外部通知协议入口。"),
     # -------------------------------------------------- 平台查询（GET）
     AiCapabilityCoverageEntry(
         method="GET",
@@ -225,7 +234,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="GET",
-        path="/api/mercadolibre/orders",
+        path="/api/orders",
         business_domain="平台商品与订单",
         disposition="capability",
         capability_names=("platform_orders_query",),

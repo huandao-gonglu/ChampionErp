@@ -211,7 +211,7 @@ def test_order_queries_map_error_codes() -> None:
         platform_orders_query(PlatformOrdersQueryRequest(), scope=scope)
     assert orders_error.value.code == "AUTH_INVALID"
 
-    unsupported = PlatformOrdersQueryRequest(platform="ozon")
+    unsupported = PlatformOrdersQueryRequest(platform="unsupported")
     with pytest.raises(BusinessCapabilityError) as platform_error:
         platform_orders_query(unsupported, scope=scope)
     assert platform_error.value.code == "PLATFORM_QUERY_UNSUPPORTED"

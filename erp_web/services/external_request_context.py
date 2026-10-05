@@ -50,7 +50,7 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
             account_id = account_id or str(store.get("user_id") or (form.get("client_id") or [""])[0])
     account_id = account_id or ("credential:"+credential_id)
     # POST 查询由平台契约列举；未声明的请求保守按写入处理。
-    read_post = platform == "ozon" and any(part in parsed.path for part in ("/info", "/list", "/tree", "/attribute", "/seller/info")) and not any(part in parsed.path for part in ("/update", "/import", "/delete"))
+    read_post = platform == "ozon" and any(part in parsed.path for part in ("/info", "/list", "/tree", "/attribute", "/seller/info", "/posting/fbs/get", "/posting/fbo/get")) and not any(part in parsed.path for part in ("/update", "/import", "/delete"))
     if platform == "yandex":
         read_post = method.upper() == "POST" and not any(part in parsed.path for part in ("/update","/delete","/create")) and not parsed.path.endswith("/hidden-offers")
     # 接口标识去掉 URL 参数与动态数字 ID，避免敏感查询进入日志。

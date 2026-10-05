@@ -250,6 +250,12 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required_any=(("code_or_url", "code"),)
     ),
     "/api/mercadolibre/notifications": _EMPTY,
+    "/api/ozon/notifications": _EMPTY,
+    "/api/yandex/notifications": _EMPTY,
+    "/api/orders/sync": RequestContract(fields={"platform": STRING}),
+    "/api/orders/retry": RequestContract(fields={"event_id": FieldRule("integer", minimum=1)}, required=("event_id",)),
+    "/api/orders/acknowledge": RequestContract(fields={"through_id": FieldRule("integer", minimum=0)}, required=("through_id",)),
+    "/api/orders/configure": RequestContract(fields={"public_url": STRING}, required=("public_url",)),
     "/api/mercadolibre/real-auth-test": _PRODUCT,
     "/api/mercadolibre/refresh-token": _EMPTY,
     "/api/open-1688-browser": _EMPTY,

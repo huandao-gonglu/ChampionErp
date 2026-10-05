@@ -914,3 +914,23 @@ def test_draft_sales_facts_are_owned_only_by_skus() -> None:
     assert not retired.intersection(DraftReadView.model_fields)
     assert "draft_stock_update" not in _WRITE_CAPABILITIES
     assert all(function.__name__ != "draft_stock_update" for function in DRAFT_WRITE_AI_CAPABILITIES)
+
+
+def test_orders_have_one_persistent_pipeline_and_thin_routes():
+    """三平台共用收件箱，页面读取不能推进平台请求，退役入口不得重建。"""
+    root = ROOT / 'erp_web'
+    assert not (root / 'runtime_units/mercadolibre_orders.py').exists()
+    assert not (root / 'http_route_units/mercadolibre_routes.py').exists()
+    route = root / 'http_route_units/order_routes.py'
+    imports = imported_targets([route])
+    assert not any(target.startswith('erp_web.runtime_units') for _, target in imports)
+    service = (root / 'services/order_notification_service.py').read_text()
+    receive = service.split('    def receive(', 1)[1].split('    def integrations(', 1)[0]
+    assert 'self.store.receive(' in receive
+    assert '.read(' not in receive and '.sync(' not in receive
+    for path in [root / 'services/order_notification_service.py', root / 'stores/order_notification_store.py']:
+        assert 'pydantic_ai' not in path.read_text()
+    assert '/api/mercadolibre/orders' not in (ROOT / 'front/src/api/orders.ts').read_text()
+    ozon = (root / 'runtime_units/orders_ozon.py').read_text()
+    assert '/v3/posting/fbs/list' not in ozon
+    assert '/v2/posting/fbo/list' not in ozon

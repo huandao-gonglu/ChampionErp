@@ -1199,23 +1199,6 @@ class ErpDbTests(unittest.TestCase):
             db._maybe_seed_upc_pool()
             self.assertEqual(db.upc_pool_stats(), {"total": 2, "free": 0, "used": 2})
 
-    def test_order_notifications_insert_and_list_desc(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            db = self._db(Path(tmp))
-            for index in range(3):
-                db.insert_order_notification(
-                    {
-                        "topic": "orders_v2",
-                        "resource": f"/orders/{index}",
-                        "order_id": str(index),
-                    }
-                )
-
-            items = db.list_order_notifications(limit=2)
-
-            self.assertEqual([item["order_id"] for item in items], ["2", "1"])
-            self.assertEqual(items[0]["resource"], "/orders/2")
-
     def test_publish_jobs_roundtrip_and_pending_scan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = self._db(Path(tmp))
