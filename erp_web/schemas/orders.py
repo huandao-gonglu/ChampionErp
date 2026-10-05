@@ -64,7 +64,10 @@ class OrderSnapshot(BaseModel):
     currency: str = ""
     amount_breakdown: OrderAmountBreakdown | None = None
     updated_at: str = ""
-    shipment_deadline: str = ""
+    shipment_deadline: str = Field(
+        default="",
+        description="平台发货日期或截止时间，保留日期/本地时间/带时区时间的原始精度",
+    )
     items: list[OrderLine] = Field(default_factory=list)
 
     @property

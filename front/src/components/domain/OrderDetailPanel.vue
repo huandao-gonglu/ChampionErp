@@ -94,7 +94,7 @@ onMounted(load)
           class="order-row order-deadline"
           :class="{ urgent: shipment.urgent }"
         >
-          <span>发货截止 {{ shipment.text }}</span><span>{{ shipment.note }}</span>
+          <span>{{ detail.order.platform === 'yandex' ? '发货日期' : '发货截止' }} {{ shipment.text }}</span><span>{{ shipment.note }}</span>
         </div>
         <div class="order-detail-amount">
           <OrderAmountDetails :value="detail.order" :platform="detail.order.platform" />

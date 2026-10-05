@@ -653,3 +653,88 @@ def test_persisted_old_order_retains_payment_without_inventing_subsidy(store):
     assert saved["amount"] == "48.1"
     assert saved["amount_breakdown"] is None
     assert saved["items"][0]["amount"] == ""
+
+
+@pytest.mark.parametrize(
+    ("shipment", "expected"),
+    [
+        ({"shipmentDate": "2026-10-13"}, "2026-10-13"),
+        (
+            {"shipmentDate": "2026-10-13", "shipmentTime": "12:30:00"},
+            "2026-10-13T12:30:00",
+        ),
+        ({"shipmentDate": "2026-10-13", "shipmentTime": None}, "2026-10-13"),
+        ({}, ""),
+    ],
+)
+def test_yandex_shipment_preserves_platform_precision(shipment, expected):
+    row = yandex_price_row(None)
+    row["delivery"] = {"shipment": shipment, "dates": {"toDate": "2026-10-20"}}
+    assert YandexOrderAdapter(CONFIG).normalize(row).shipment_deadline == expected
+
+
+def test_yandex_shipment_date_rejects_invalid_calendar():
+    row = yandex_price_row(None)
+    row["delivery"] = {"shipment": {"shipmentDate": "2026-02-30"}}
+    with pytest.raises(ValueError, match="发货日期或时间格式无效"):
+        YandexOrderAdapter(CONFIG).normalize(row)
+
+
+def test_yandex_resync_fills_old_snapshot_shipment_date(store, monkeypatch):
+    row = yandex_price_row(None)
+    monkeypatch.setattr(
+        "erp_web.runtime_units.orders_yandex.request_yandex_json",
+        lambda *args, **kwargs: {"orders": [row]},
+    )
+    svc = service(store, {"yandex": YandexOrderAdapter})
+    for sequence in (1, 2):
+        if sequence == 2:
+            row["delivery"] = {"shipment": {"shipmentDate": "2026-10-13"}}
+        store.enqueue(
+            OrderEvent(
+                platform="yandex",
+                account_id="4",
+                topic="ORDER_UPDATED",
+                resource="62668010304",
+                payload={"sequence": sequence},
+            )
+        )
+        assert svc.process_one("yandex")
+    saved = store.read({"yandex": "4"})["items"][0]
+    assert saved["shipment_deadline"] == "2026-10-13"
+
+
+@pytest.mark.parametrize(("site", "prefix"), [("CBT", "/marketplace"), ("MLM", "")])
+def test_ml_dispatch_deadline_uses_sla(monkeypatch, site, prefix):
+    config = deepcopy(CONFIG)
+    config["mercadolibre"]["account_site_id"] = site
+    adapter = MercadoLibreOrderAdapter(config)
+    calls = []
+
+    def request(path):
+        calls.append(path)
+        if path.endswith("/sla"):
+            return {"expected_date": "2026-10-13T18:00:00-03:00"}
+        return {"status": "ready_to_ship", "logistic_type": "cross_docking"}
+
+    monkeypatch.setattr(adapter, "request", request)
+    row = {"id": 7, "seller": {"id": 1}, "status": "paid", "shipping": {"id": 8}}
+    result = adapter.normalize(row)
+    assert calls[-1] == f"{prefix}/shipments/8/sla"
+    assert result.shipment_deadline == "2026-10-13T18:00:00-03:00"
+    calls.clear()
+    adapter.normalize({**row, "status": "cancelled"})
+    assert not any(path.endswith("/sla") for path in calls)
+
+
+def test_ozon_dispatch_date_uses_shipment_field():
+    row = {
+        "posting_number": "10-1",
+        "status": "awaiting_packaging",
+        "shipment_date": "2026-10-13T12:00:00Z",
+        "delivery_date": "2026-10-20T12:00:00Z",
+    }
+    assert (
+        OzonOrderAdapter(CONFIG).normalize(row, "fbs").shipment_deadline
+        == row["shipment_date"]
+    )

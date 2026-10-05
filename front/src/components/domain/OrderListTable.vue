@@ -37,7 +37,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
             <th class="order-numeric">金额</th>
             <th>平台状态</th>
             <th>采购进度</th>
-            <th>发货截止</th>
+            <th>发货日期 / 截止</th>
             <th>操作</th>
           </tr>
         </thead>

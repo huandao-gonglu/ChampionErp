@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, time
 from decimal import Decimal, InvalidOperation
 
 from erp_web.marketplaces.yandex_http import request_yandex_json
@@ -50,6 +51,20 @@ def normalize_yandex_amount(prices):
             **{key: money(value) for key, value in amounts.items()}
         ),
     }
+
+
+def normalize_yandex_shipment(delivery):
+    """保留平台提供的日期精度；未返回时间或时区时不补造零点或偏移。"""
+    shipment = (delivery or {}).get("shipment") or {}
+    value = shipment.get("shipmentDate")
+    if not value:
+        return ""
+    try:
+        day = date.fromisoformat(value).isoformat()
+        clock = shipment.get("shipmentTime")
+        return f"{day}T{time.fromisoformat(clock).isoformat()}" if clock else day
+    except (TypeError, ValueError) as exc:
+        raise OrderDataError("Yandex 发货日期或时间格式无效") from exc
 
 
 class YandexOrderAdapter:
@@ -127,6 +142,7 @@ class YandexOrderAdapter:
             state=state,
             **normalize_yandex_amount(row.get("prices")),
             updated_at=str(row.get("updateDate") or ""),
+            shipment_deadline=normalize_yandex_shipment(row.get("delivery")),
             items=items,
         )
 

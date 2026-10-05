@@ -61,6 +61,17 @@ class MercadoLibreOrderAdapter:
             "paid",
         }:
             state = "processing"
+        shipment_deadline = ""
+        if state == "pending_shipment" and (row.get("shipping") or {}).get("id"):
+            shipment_id = identifier(row["shipping"]["id"])
+            # 跨境父账号与本地账号使用各自的 SLA 资源，不以买家送达日期代替发货截止。
+            prefix = (
+                "/marketplace"
+                if self.config["mercadolibre"].get("account_site_id") == "CBT"
+                else ""
+            )
+            sla = self.request(f"{prefix}/shipments/{shipment_id}/sla")
+            shipment_deadline = str(sla.get("expected_date") or "")
         items = [
             OrderLine(
                 remote_id=str((item.get("item") or {}).get("id") or ""),
@@ -87,6 +98,7 @@ class MercadoLibreOrderAdapter:
             items=items,
             amount=str(row.get("total_amount") or ""),
             currency=str(row.get("currency_id") or ""),
+            shipment_deadline=shipment_deadline,
             updated_at=max(dates, key=timestamp) if dates else "",
         )
 

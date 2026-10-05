@@ -129,3 +129,12 @@ location / { return 404; }
 - 沿用应用现有全局导航，原型的侧栏与登录身份示例不替换整个工作台。订单区域样式隔离在 `orderCenter.css`，支持窄屏横向表格和深色主题。
 
 本次界面重构验证：前端全量 70 个文件、561 项测试通过；后端订单采购与架构相关 63 项测试通过；Vue 类型检查、相关文件 ESLint 和 Vite 生产构建通过。构建保留已有的大包提示。核对了 Penpot 导出图与设计属性，未使用浏览器界面自动化进行像素级验收。
+
+## 发货日期与截止精度
+
+- Yandex 使用 `delivery.shipment.shipmentDate` 和可选 `shipmentTime`，不使用买家送达区间 `delivery.dates`。只有日期时保存 `YYYY-MM-DD`，没有时区的时分保留平台原值；前端分别显示“仅提供日期”或“平台时间（未提供时区）”，不擅自补零点或生成倒计时。字段定义见 [Yandex Business Orders](https://yandex.ru/dev/market/partner-api/doc/ru/reference/orders/getBusinessOrders)。
+- Mercado Libre 待发货且由卖家履约的订单读取 `/shipments/{id}/sla` 的 `expected_date`；已验证为 CBT 的跨境父账号使用 `/marketplace/shipments/{id}/sla`。取消订单和 Fulfillment 不请求 SLA，不使用买家预计送达时间冒充发货截止。依据：[本地账号 SLA](https://developers.mercadolibre.com.mx/es_mx/envios)、[Global Selling SLA](https://global-selling.mercadolibre.com/devsite/manage-shipments)。
+- Ozon 保留 `shipment_date`；带时区的时间才按绝对时刻计算剩余小时。
+- 2026-10-05 只读核对真实订单 `62668010304`，Yandex 返回 `shipmentDate=2026-10-13`，未提供 `shipmentTime`。先前缺失来自适配器漏接，旧快照会在新后端重新同步时补齐，不需要数据库迁移或手动造日期。
+
+发货日期补齐验证：后端全量 2264 项、47 个子测试通过；前端日期精度与订单交互相关 16 项通过，类型检查、Ruff、ESLint 和生产构建通过。

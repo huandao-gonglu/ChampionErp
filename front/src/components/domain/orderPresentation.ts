@@ -45,6 +45,18 @@ export function dateTime(value: string) {
     : '未提供'
 }
 export function deadline(value: string | undefined, now: number) {
+  // 无时区的日期/时间是平台日历信息，不能按用户电脑时区生成截止倒计时。
+  const calendar = value?.match(/^(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?)?$/)
+  if (calendar) {
+    const parsed = new Date(`${value}${calendar[2] ? 'Z' : 'T00:00:00Z'}`)
+    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== calendar[1])
+      return { text: '未提供', note: '', urgent: false }
+    return {
+      text: calendar[2] ? `${calendar[1]} ${calendar[2]}` : calendar[1],
+      note: calendar[2] ? '平台时间（未提供时区）' : '仅提供日期',
+      urgent: false,
+    }
+  }
   const time = value ? Date.parse(value) : NaN
   if (!Number.isFinite(time)) return { text: '未提供', note: '', urgent: false }
   const hours = (time - now) / 3_600_000
