@@ -46,6 +46,7 @@ class OzonOrderAdapter:
             state = "processing"
         items = [
             OrderLine(
+                remote_id=str(item.get("sku") or ""),
                 sku=str(item.get("offer_id") or item.get("sku") or ""),
                 title=str(item.get("name") or ""),
                 quantity=int(item.get("quantity") or 0),
@@ -61,6 +62,7 @@ class OzonOrderAdapter:
             status=status,
             state=state,
             items=items,
+            shipment_deadline=str(row.get("shipment_date") or ""),
             # in_process_at 是创建/开始处理时间，不是状态版本；不能据此丢弃后续状态。
             updated_at=str(row.get("updated_at") or ""),
         )

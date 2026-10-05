@@ -4,6 +4,7 @@ import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 from erp_web.facades import order_notification_facade as facade
+from erp_web.facades import order_procurement_facade as procurement
 from erp_web.schemas.requests import validate_request_payload
 
 
@@ -67,6 +68,26 @@ def handle_configure(handler):
     _command(handler, "configure")
 
 
+def _procurement_command(handler, action):
+    try:
+        body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+        handler.send_json(procurement.command(action, body))
+    except (ValueError, TypeError) as exc:
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
+
+
+def handle_source(handler):
+    _procurement_command(handler, "select-source")
+
+
+def handle_purchase(handler):
+    _procurement_command(handler, "record-purchase")
+
+
+def handle_cancel_purchase(handler):
+    _procurement_command(handler, "cancel-purchase")
+
+
 POST_HANDLERS = {
     "/api/mercadolibre/notifications": handle_mercadolibre,
     "/api/ozon/notifications": handle_ozon,
@@ -75,11 +96,16 @@ POST_HANDLERS = {
     "/api/orders/retry": handle_retry,
     "/api/orders/acknowledge": handle_acknowledge,
     "/api/orders/configure": handle_configure,
+    "/api/orders/select-source": handle_source,
+    "/api/orders/record-purchase": handle_purchase,
+    "/api/orders/cancel-purchase": handle_cancel_purchase,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {
     "/api/orders": facade.read_orders,
     "/api/orders/integrations": facade.integrations,
+    "/api/orders/summary": facade.summary,
+    "/api/orders/detail": procurement.detail,
 }
 GET_API_ROUTES = frozenset(GET_HANDLERS)
 
@@ -101,10 +127,14 @@ def handle_get(handler, parsed):
         allowed = {
             key: value
             for key, value in query.items()
-            if key in {"platform", "state", "limit", "offset"}
+            if key in {"platform", "state", "limit", "offset", "q"}
         }
         handler.send_json(
-            callback(**allowed) if parsed.path == "/api/orders" else callback()
+            callback(**allowed)
+            if parsed.path == "/api/orders"
+            else callback(order_id=query.get("order_id", ""))
+            if parsed.path == "/api/orders/detail"
+            else callback()
         )
     except (ValueError, TypeError) as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 400)

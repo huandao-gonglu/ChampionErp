@@ -14,6 +14,8 @@ import DraftSkuAttributesEditor from '@/components/domain/DraftSkuAttributesEdit
 import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
 import DraftWorkspacePanel, { type DraftWorkspaceTab } from '@/components/domain/DraftWorkspacePanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
+import OrderCenterPanel from '@/components/domain/OrderCenterPanel.vue'
+import OrderIntegrationSettings from '@/components/domain/OrderIntegrationSettings.vue'
 import OnlineProductsPanel from '@/components/domain/OnlineProductsPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
@@ -504,6 +506,7 @@ watch(
             <pre v-if="publishResult" class="max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishResult, null, 2) }}</pre>
           </div>
 
+          <OrderCenterPanel v-else-if="activeNav === 'orders'" />
           <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" />
 
           <div v-else-if="activeNav === 'pending'" class="space-y-6">
@@ -546,8 +549,9 @@ watch(
             </section>
           </div>
 
+          <div v-else-if="activeNav === 'auth'" class="space-y-6">
+          <OrderIntegrationSettings />
           <AuthSettingsPanel
-            v-else-if="activeNav === 'auth'"
             :app-config="appConfig"
             :ai-config="aiConfig"
             :store-config="storeConfig"
@@ -571,6 +575,7 @@ watch(
             @exchange-ml-code="store.exchangeMlCode"
             @clear-auth="store.clearPlatformAuth"
           />
+          </div>
 
           <div v-else class="space-y-6">
             <PageHeader title="发布日志" description="展示发布请求、响应、错误码和下一步处理建议。" />

@@ -10,6 +10,7 @@ export interface WorkflowNavItem {
 
 export const workflowNavItems: WorkflowNavItem[] = [
   { key: 'dashboard', title: '仪表盘', titleKey: 'nav.dashboard.title', subtitle: '流程总览', subtitleKey: 'nav.dashboard.subtitle', icon: '▦' },
+  { key: 'orders', title: '订单中心', subtitle: '订单、采购与履约', icon: '▤' },
   { key: 'research', title: '选品调研', titleKey: 'nav.research.title', subtitle: '市场需求、机会评分', subtitleKey: 'nav.research.subtitle', icon: '◈' },
   { key: 'collect', title: '采集', titleKey: 'nav.collect.title', subtitle: '链接、Cookie、浏览器标签', subtitleKey: 'nav.collect.subtitle', icon: '☷' },
   { key: 'library', title: '商品库', titleKey: 'nav.library.title', subtitle: '本地商品母库', subtitleKey: 'nav.library.subtitle', icon: '▱' },

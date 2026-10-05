@@ -10,7 +10,7 @@ ContextId = Annotated[
 ]
 
 PAGE_LABELS = {
-    "dashboard": "仪表盘", "research": "选品调研", "collect": "采集",
+    "orders": "订单中心", "dashboard": "仪表盘", "research": "选品调研", "collect": "采集",
     "library": "商品库", "drafts": "草稿箱", "publish": "发布队列",
     "onlineProducts": "在线商品", "pending": "待处理",
     "auth": "平台授权与设置", "logs": "发布日志", "ai_work": "主对话",
@@ -26,7 +26,7 @@ class AiPageContext(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     page: Literal[
-        "dashboard", "research", "collect", "library", "drafts", "publish",
+        "orders", "dashboard", "research", "collect", "library", "drafts", "publish",
         "onlineProducts", "pending", "auth", "logs", "ai_work",
         "product_editor", "draft_editor",
     ]

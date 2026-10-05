@@ -107,6 +107,8 @@ class YandexOrderAdapter:
             )
         items = [
             OrderLine(
+                line_id=str(item.get("id") or ""),
+                remote_id=str(item.get("offerId") or ""),
                 sku=str(item.get("offerId") or ""),
                 title=str(item.get("offerName") or ""),
                 quantity=int(item.get("count") or 0),

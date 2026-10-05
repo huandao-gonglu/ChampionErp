@@ -39,6 +39,9 @@ class OrderAmountBreakdown(BaseModel):
 
 
 class OrderLine(BaseModel):
+    line_id: str = ""
+    remote_id: str = ""
+    variant_id: str = ""
     sku: str = ""
     title: str = ""
     quantity: int = 0
@@ -61,6 +64,7 @@ class OrderSnapshot(BaseModel):
     currency: str = ""
     amount_breakdown: OrderAmountBreakdown | None = None
     updated_at: str = ""
+    shipment_deadline: str = ""
     items: list[OrderLine] = Field(default_factory=list)
 
     @property

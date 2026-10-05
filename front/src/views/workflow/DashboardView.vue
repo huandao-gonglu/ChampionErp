@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import OrderNotificationsPanel from '@/components/domain/OrderNotificationsPanel.vue'
+import OrderSummaryCard from '@/components/domain/OrderSummaryCard.vue'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
 import type {
   MercadoLibreAuthChecklist,
@@ -162,7 +162,7 @@ function formatDate(value: string) {
   }).format(new Date(timestamp))
 }
 
-function scrollToOrders() { document.getElementById('order-center')?.scrollIntoView({ behavior: 'smooth' }) }
+function scrollToOrders() { emit('navigate', 'orders') }
 </script>
 
 <template>
@@ -238,7 +238,7 @@ function scrollToOrders() { document.getElementById('order-center')?.scrollIntoV
       </div>
     </section>
 
-    <OrderNotificationsPanel id="order-center" />
+    <OrderSummaryCard id="order-center" />
 
     <section class="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_400px]">
       <div class="space-y-5">

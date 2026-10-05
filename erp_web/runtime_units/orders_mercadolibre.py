@@ -63,6 +63,8 @@ class MercadoLibreOrderAdapter:
             state = "processing"
         items = [
             OrderLine(
+                remote_id=str((item.get("item") or {}).get("id") or ""),
+                variant_id=str((item.get("item") or {}).get("variation_id") or ""),
                 sku=str((item.get("item") or {}).get("seller_sku") or ""),
                 title=str((item.get("item") or {}).get("title") or ""),
                 quantity=int(item.get("quantity") or 0),

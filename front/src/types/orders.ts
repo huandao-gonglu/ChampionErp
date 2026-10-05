@@ -23,6 +23,8 @@ export interface OrderSnapshot extends OrderAmount {
   state: OrderState
   updated_at: string
   checked_at: string
+  shipment_deadline?: string
+  procurement_status?: string
   items: OrderLine[]
 }
 export interface OrderNotification {
@@ -74,4 +76,65 @@ export const orderStateNames: Record<OrderState, string> = {
   delivered: '已送达',
   cancelled: '已取消 / 退回',
   unknown: '状态待确认',
+}
+
+export interface OrderSummary {
+  ok: boolean
+  counts: Partial<Record<OrderState, number>>
+  unread: number
+  alerts: OrderAlert[]
+  latest_alert_id: number
+  attention_count: number
+  recent: Pick<
+    OrderSnapshot,
+    'id' | 'platform' | 'order_id' | 'title' | 'state' | 'amount' | 'currency'
+  >[]
+}
+export interface ProcurementSource {
+  supplier: string
+  source_platform: string
+  product_url: string
+  source_sku_id: string
+  specification: string
+  sku_url: string
+  sku_url_verified: boolean
+}
+export interface SalesSkuBinding {
+  id: string
+  product_id: string
+  draft_id: string
+  sku_id: string
+  seller_sku: string
+  publication_id: string
+  source: ProcurementSource
+}
+export interface PurchaseRecord {
+  id: string
+  line_key: string
+  request_id: string
+  quantity: number
+  purchase_order_number: string
+  source: ProcurementSource
+  created_at: string
+  status: 'purchased' | 'cancelled'
+  cancelled_at: string
+}
+export interface ProcurementLine {
+  line: OrderLine
+  selection: {
+    line_key: string
+    revision: number
+    status: 'unmatched' | 'matched' | 'ambiguous' | 'confirmed'
+    source: ProcurementSource | null
+    candidates: SalesSkuBinding[]
+    reason: string
+  }
+  records: PurchaseRecord[]
+  purchased_quantity: number
+  remaining_quantity: number
+}
+export interface OrderDetail {
+  ok: boolean
+  order: OrderSnapshot
+  lines: ProcurementLine[]
 }

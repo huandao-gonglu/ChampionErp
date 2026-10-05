@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { fetchOrders, fetchOrderIntegrations, orderCommand } from '@/api/orders'
-import type { OrderIntegrations, OrdersPage } from '@/types/orders'
+import { fetchOrders, fetchOrderIntegrations, fetchOrderSummary, orderCommand } from '@/api/orders'
+import type { OrderIntegrations, OrdersPage, OrderSummary } from '@/types/orders'
 
 export const useOrderNotificationsStore = defineStore('order-notifications', () => {
   const page = ref<OrdersPage>({
@@ -15,6 +15,19 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
     latest_alert_id: 0,
   })
   const integrations = ref<OrderIntegrations>({ public_url: '', platforms: [] })
+  const summary = ref<OrderSummary>({
+    ok: true,
+    counts: {},
+    unread: 0,
+    alerts: [],
+    latest_alert_id: 0,
+    attention_count: 0,
+    recent: [],
+  })
+  const summaryError = ref('')
+  const query = ref('')
+  const listActive = ref(false)
+  let summaryGeneration = 0
   const platform = ref('')
   const state = ref('')
   const offset = ref(0)
@@ -22,7 +35,7 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
   const busy = ref(false)
   const lastCheckedAt = ref('')
   const desktopEnabled = ref(false)
-  const pendingCount = computed(() => page.value.counts.pending_shipment || 0)
+  const pendingCount = computed(() => summary.value.counts.pending_shipment || 0)
   let timer: ReturnType<typeof setTimeout> | undefined
   let running = false
   let generation = 0
@@ -36,11 +49,24 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
         platform: platform.value,
         state: state.value,
         offset: offset.value,
+        q: query.value,
       })
       if (current !== generation) return
       page.value = result
       error.value = ''
       lastCheckedAt.value = new Date().toISOString()
+    } catch (exc) {
+      if (current === generation)
+        error.value = exc instanceof Error ? exc.message : '订单通知读取失败'
+    }
+  }
+  async function refreshSummary() {
+    const current = ++summaryGeneration
+    try {
+      const result = await fetchOrderSummary()
+      if (current !== summaryGeneration) return
+      summary.value = result
+      summaryError.value = ''
       if (
         seenAlert !== null &&
         result.latest_alert_id > seenAlert &&
@@ -62,12 +88,12 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
       }
       seenAlert = Math.max(seenAlert || 0, result.latest_alert_id)
     } catch (exc) {
-      if (current === generation)
-        error.value = exc instanceof Error ? exc.message : '订单通知读取失败'
+      if (current === summaryGeneration)
+        summaryError.value = exc instanceof Error ? exc.message : '订单摘要读取失败'
     }
   }
   async function tick(epoch: number) {
-    await refresh()
+    await Promise.all([refreshSummary(), ...(listActive.value ? [refresh()] : [])])
     if (running && epoch === lifecycle)
       timer = setTimeout(() => {
         void tick(epoch)
@@ -82,6 +108,7 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
     running = false
     lifecycle++
     generation++
+    summaryGeneration++
     if (timer) clearTimeout(timer)
   }
   async function filter(nextPlatform: string, nextState: string, nextOffset = 0) {
@@ -106,7 +133,7 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
     try {
       await orderCommand(action, body)
       if (action === 'configure') await loadIntegrations()
-      await refresh()
+      await Promise.all([refreshSummary(), ...(listActive.value ? [refresh()] : [])])
     } catch (exc) {
       error.value = exc instanceof Error ? exc.message : '订单通知操作失败'
     } finally {
@@ -127,6 +154,11 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
   }
   return {
     page,
+    summary,
+    summaryError,
+    refreshSummary,
+    query,
+    listActive,
     integrations,
     platform,
     state,

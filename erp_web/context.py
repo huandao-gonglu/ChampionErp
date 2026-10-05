@@ -164,6 +164,19 @@ class AppContext:
         self._online_products = None
         self._external_requests = None
         self._order_notifications = None
+        self._order_procurement = None
+
+    @property
+    def order_procurement(self):
+        # 初始化订单 worker 在锁外完成，避免跨领域装配重入同一把锁。
+        self.order_notifications
+        if self._order_procurement is None:
+            with self._lazy_lock:
+                if self._order_procurement is None:
+                    from erp_web.facades.order_procurement_facade import create_service
+
+                    self._order_procurement = create_service(self)
+        return self._order_procurement
 
     @property
     def order_notifications(self):

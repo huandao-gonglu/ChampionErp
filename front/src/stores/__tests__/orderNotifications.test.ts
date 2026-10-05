@@ -1,12 +1,18 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
-import { fetchOrders, fetchOrderIntegrations, orderCommand } from '@/api/orders'
+import { fetchOrders, fetchOrderIntegrations, fetchOrderSummary, orderCommand } from '@/api/orders'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
-import OrderNotificationsPanel from '@/components/domain/OrderNotificationsPanel.vue'
+import OrderCenterPanel from '@/components/domain/OrderCenterPanel.vue'
 import type { OrdersPage } from '@/types/orders'
 
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ query: {} }),
+  useRouter: () => ({ push: vi.fn() }),
+}))
+
 vi.mock('@/api/orders', () => ({
+  fetchOrderSummary: vi.fn(),
   fetchOrders: vi.fn(),
   fetchOrderIntegrations: vi.fn(),
   orderCommand: vi.fn(),
@@ -26,6 +32,7 @@ const page = (patch: Partial<OrdersPage> = {}): OrdersPage => ({
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
+  vi.mocked(fetchOrderSummary).mockResolvedValue({ ...page(), attention_count: 0, recent: [] })
   vi.mocked(fetchOrders).mockResolvedValue(page())
   vi.mocked(fetchOrderIntegrations).mockResolvedValue({ public_url: '', platforms: [] })
   vi.mocked(orderCommand).mockResolvedValue({ ok: true })
@@ -44,7 +51,7 @@ describe('订单通知状态', () => {
     await store.refresh()
     vi.mocked(fetchOrders).mockRejectedValueOnce(new Error('网络不可用'))
     await store.refresh()
-    expect(store.pendingCount).toBe(55)
+    expect(store.page.counts.pending_shipment).toBe(55)
     expect(store.error).toBe('网络不可用')
   })
   it('筛选请求后到达的旧响应不能覆盖新列表', async () => {
@@ -66,6 +73,7 @@ describe('订单通知状态', () => {
       platform: 'yandex',
       state: 'pending_shipment',
       offset: 0,
+      q: '',
     })
   })
   it('轮询只读且停止后不再请求', async () => {
@@ -74,13 +82,13 @@ describe('订单通知状态', () => {
     store.start()
     store.start()
     await flushPromises()
-    expect(fetchOrders).toHaveBeenCalledTimes(1)
+    expect(fetchOrderSummary).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(5000)
-    expect(fetchOrders).toHaveBeenCalledTimes(2)
+    expect(fetchOrderSummary).toHaveBeenCalledTimes(2)
     expect(orderCommand).not.toHaveBeenCalled()
     store.stop()
     await vi.advanceTimersByTimeAsync(20000)
-    expect(fetchOrders).toHaveBeenCalledTimes(2)
+    expect(fetchOrderSummary).toHaveBeenCalledTimes(2)
   })
   it('标记已读仅提交已展示的提醒游标', async () => {
     const store = useOrderNotificationsStore()
@@ -96,18 +104,24 @@ describe('订单通知状态', () => {
     vi.stubGlobal('Notification', notify)
     const store = useOrderNotificationsStore()
     await store.enableDesktop()
-    vi.mocked(fetchOrders).mockResolvedValueOnce(page({ latest_alert_id: 10 }))
-    await store.refresh()
+    vi.mocked(fetchOrderSummary).mockResolvedValueOnce({
+      ...page({ latest_alert_id: 10 }),
+      recent: [],
+      attention_count: 0,
+    })
+    await store.refreshSummary()
     expect(notify).not.toHaveBeenCalled()
-    vi.mocked(fetchOrders).mockResolvedValue(
-      page({
+    vi.mocked(fetchOrderSummary).mockResolvedValue({
+      ...page({
         latest_alert_id: 11,
         unread: 1,
         alerts: [{ id: 11, platform: 'ozon', order_id: '11', title: '测试商品', created_at: '' }],
-      })
-    )
-    await store.refresh()
-    await store.refresh()
+      }),
+      recent: [],
+      attention_count: 0,
+    })
+    await store.refreshSummary()
+    await store.refreshSummary()
     expect(notify).toHaveBeenCalledTimes(1)
   })
 })
@@ -149,7 +163,8 @@ describe('订单通知页面', () => {
         },
       ],
     })
-    const wrapper = mount(OrderNotificationsPanel)
+    vi.mocked(fetchOrders).mockResolvedValue(store.page)
+    const wrapper = mount(OrderCenterPanel, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
     await flushPromises()
     expect(wrapper.text()).toContain('Mercado Libre')
     expect(wrapper.text()).toContain('Ozon')

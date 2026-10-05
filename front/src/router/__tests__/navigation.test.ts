@@ -14,6 +14,7 @@ describe('工作流顶级导航', () => {
     expect(navKeys).not.toContain('category')
     expect(routePaths).toContain('/pricing')
     expect(routePaths).toContain('/publish')
+    expect(navKeys).toContain('orders')
     expect(navKeys).toContain('drafts')
     expect(navKeys).toContain('publish')
     expect(router.resolve({ name: 'WorkflowHome' }).meta.keepAlive).toBe(true)

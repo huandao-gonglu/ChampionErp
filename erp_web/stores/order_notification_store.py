@@ -284,6 +284,7 @@ class OrderNotificationStore:
         state: str = "",
         offset: int = 0,
         limit: int = 50,
+        query: str = "",
     ):
         scopes = list(accounts.items())
         where = " OR ".join("(platform=? AND account_id=?)" for _ in scopes) or "0"
@@ -301,9 +302,13 @@ class OrderNotificationStore:
                 f"({where})"
                 + (" AND state=?" if state else "")
                 + (" AND platform=?" if platform else "")
+                + (" AND (instr(lower(snapshot),lower(?))>0)" if query else "")
             )
             filtered_args = (
-                args + ((state,) if state else ()) + ((platform,) if platform else ())
+                args
+                + ((state,) if state else ())
+                + ((platform,) if platform else ())
+                + ((query,) if query else ())
             )
             total = conn.execute(
                 f"SELECT COUNT(*) FROM orders WHERE {filtered}", filtered_args
@@ -345,6 +350,39 @@ class OrderNotificationStore:
                 "latest_alert_id": latest,
             }
         ).model_dump(mode="json")
+
+    def summary(self, accounts):
+        page = self.read(accounts, limit=5)
+        where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
+        args = tuple(value for pair in accounts.items() for value in pair)
+        with self.connect() as conn:
+            attention = conn.execute(
+                f"SELECT COUNT(*) FROM inbox WHERE ({where}) AND status IN ('failed','retry')",
+                args,
+            ).fetchone()[0]
+        return {
+            "ok": True,
+            "counts": page["counts"],
+            "unread": page["unread"],
+            "alerts": page["alerts"][:5],
+            "latest_alert_id": page["latest_alert_id"],
+            "recent": [
+                {
+                    key: row[key]
+                    for key in (
+                        "id",
+                        "platform",
+                        "order_id",
+                        "title",
+                        "state",
+                        "amount",
+                        "currency",
+                    )
+                }
+                for row in page["items"]
+            ],
+            "attention_count": attention,
+        }
 
     def tracked(self, platform: str, account: str) -> list[OrderSnapshot]:
         with self.connect() as conn:

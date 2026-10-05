@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING, Any
 
 from erp_web.context import get_context
 from erp_web.services import html_extract_service
+from erp_web.runtime_units.order_source_bindings import bindings_from_publish_job
+from erp_web.stores.order_notification_store import OrderNotificationStore
+from erp_web.stores.order_procurement_store import OrderProcurementStore
 
 from .collect_helpers import collect_time_iso
 from .draft_publish_context import (
@@ -406,6 +409,12 @@ def persist_publish_bus_terminal_results(
             "site": str(item.get("site") or saved_draft.get("site") or ""),
             "status": terminal_status,
         }
+    bindings = bindings_from_publish_job(job_state)
+    if bindings:
+        orders = OrderNotificationStore(
+            runtime_context.paths.data_dir / "order-notifications.sqlite3"
+        )
+        OrderProcurementStore(orders).add_bindings(bindings)
     if persisted_drafts:
         job_state["persisted_drafts"] = persisted_drafts
     return job_state
