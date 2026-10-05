@@ -75,10 +75,6 @@ const {
   publishJobsLoading,
   publishJobsLastUpdated,
   publishLogs,
-  mercadoLibreOrders,
-  mercadoLibreOrderNotifications,
-  mercadoLibreOrdersTotal,
-  mercadoLibreOrdersCheckedAt,
   publishResult,
   activeMarketplace,
   platformOptions,
@@ -166,12 +162,6 @@ function syncPricingPackageDimension(field: PackageDimensionField, value: string
   const parsedValue = Number(normalizedValue)
   pricingInput.value[field] = normalizedValue && Number.isFinite(parsedValue) ? parsedValue : 0
 }
-
-const mercadolibreNotificationUrl = computed(() => {
-  const ml = storeConfig.value.mercadolibre as UnknownRecord | undefined
-  if (!ml || typeof ml !== 'object' || Array.isArray(ml)) return ''
-  return String(ml.notification_url || ml.notifications_url || ml.webhook_url || '')
-})
 
 const pendingItems = computed(() => productsIndex.value.filter((item) => {
   const values = [
@@ -413,11 +403,6 @@ watch(
             :selected-ids="selectedProductIds"
             :progress-percent="progressPercent"
             :publish-logs="publishLogs"
-            :orders="mercadoLibreOrders"
-            :order-notifications="mercadoLibreOrderNotifications"
-            :orders-total="mercadoLibreOrdersTotal"
-            :orders-checked-at="mercadoLibreOrdersCheckedAt"
-            :notification-url="mercadolibreNotificationUrl"
             :auth-checklist="mercadolibreAuthChecklist"
             :publish-job="publishJob"
             :logs="logs"
@@ -426,7 +411,6 @@ watch(
             @navigate="navigate"
             @refresh-products="store.refreshProductsIndex"
             @refresh-logs="store.refreshPublishLogs"
-            @refresh-orders="store.refreshMercadoLibreOrders"
             @open-product="openProductEditor"
             @edit-images="openProductImageEditor"
             @collect="navigate('collect')"

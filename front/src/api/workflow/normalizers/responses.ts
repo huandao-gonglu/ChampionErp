@@ -3,7 +3,6 @@ import type {
   DraftIndexItem,
   Marketplace,
   MercadoLibreAuthChecklist,
-  MercadoLibreOrderNotification,
   Product,
   ProductIndexItem,
   PrecheckIssue,
@@ -406,22 +405,6 @@ export function normalizeMercadoLibreAuthChecklist(value: unknown): MercadoLibre
     fields,
     nextAction: getString(record, ['next_action']),
     copyText: getString(record, ['copy_text']),
-    raw: record,
-  }
-}
-
-export function normalizeMercadoLibreOrderNotification(value: unknown): MercadoLibreOrderNotification {
-  const record = asRecord(value)
-  return {
-    topic: getString(record, ['topic']),
-    resource: getString(record, ['resource']),
-    userId: getString(record, ['user_id']),
-    applicationId: getString(record, ['application_id']),
-    attempts: getNumber(record, ['attempts']),
-    sent: getString(record, ['sent']),
-    receivedAt: getString(record, ['received_at']),
-    orderId: getString(record, ['order_id']),
-    error: getString(record, ['error']),
     raw: record,
   }
 }

@@ -50,6 +50,7 @@ describe('工作台路由状态保活', () => {
           AiWorkFloatingButton: true,
           NavigationProgress: true,
           Toast: true,
+          OrderAlertBanner: true,
         },
       },
     })

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
+import OrderNotificationsPanel from '@/components/domain/OrderNotificationsPanel.vue'
+import { useOrderNotificationsStore } from '@/stores/orderNotifications'
 import type {
   MercadoLibreAuthChecklist,
-  MercadoLibreOrderItem,
-  MercadoLibreOrderNotification,
   Product,
   ProductIndexItem,
   PublishJob,
@@ -17,11 +17,6 @@ const props = defineProps<{
   selectedIds: string[]
   progressPercent: number
   publishLogs: PublishLogItem[]
-  orders: MercadoLibreOrderItem[]
-  orderNotifications: MercadoLibreOrderNotification[]
-  ordersTotal: number
-  ordersCheckedAt: string
-  notificationUrl: string
   authChecklist: MercadoLibreAuthChecklist | null
   publishJob: PublishJob | null
   logs: string[]
@@ -33,7 +28,6 @@ const emit = defineEmits<{
   navigate: [key: string]
   refreshProducts: []
   refreshLogs: []
-  refreshOrders: []
   openProduct: [item: ProductIndexItem]
   editImages: [item: ProductIndexItem]
   collect: []
@@ -43,7 +37,7 @@ const emit = defineEmits<{
 const blockingStatuses = new Set(['failed', 'not_ready', 'pending', 'partial'])
 const readyStatuses = new Set(['ready_to_publish', 'published'])
 const doneStatuses = new Set(['done', 'success', 'ready', 'ready_to_publish', 'published', 'completed'])
-const activeDetailPanel = ref<'overview' | 'orders'>('overview')
+const orderStore = useOrderNotificationsStore()
 
 const currentProductTitle = computed(() => (
   props.product.source.title
@@ -148,84 +142,6 @@ const healthItems = computed(() => [
 
 const latestLog = computed(() => props.logs[0] || '等待操作。')
 
-const notificationEndpoint = computed(() => {
-  if (props.notificationUrl.trim()) return props.notificationUrl.trim()
-  if (typeof window === 'undefined') return '/api/mercadolibre/notifications'
-  return `${window.location.origin}/api/mercadolibre/notifications`
-})
-
-function notificationOrder(notification: MercadoLibreOrderNotification): Record<string, unknown> {
-  const rawOrder = notification.raw.order
-  return rawOrder && typeof rawOrder === 'object' && !Array.isArray(rawOrder) ? rawOrder as Record<string, unknown> : {}
-}
-
-function orderFromNotificationIsWaitingShipment(notification: MercadoLibreOrderNotification) {
-  if (notification.topic && notification.topic !== 'orders_v2') return false
-  const order = notificationOrder(notification)
-  const orderStatus = String(order.status || '').toLowerCase()
-  const shippingStatus = String(order.shipping_status || order.shippingStatus || '').toLowerCase()
-  const terminal = ['cancelled', 'canceled', 'shipped', 'delivered', 'not_delivered', 'closed']
-  return !terminal.includes(orderStatus) && !terminal.includes(shippingStatus)
-}
-
-const pendingShipmentCount = computed(() => {
-  const keys = new Set<string>()
-  for (const notification of props.orderNotifications) {
-    if (!orderFromNotificationIsWaitingShipment(notification)) continue
-    const key = notification.orderId || notification.resource || `${notification.receivedAt}-${notification.sent}`
-    if (key) keys.add(key)
-  }
-  return keys.size
-})
-
-const pendingShipmentNotifications = computed(() => props.orderNotifications.filter(orderFromNotificationIsWaitingShipment))
-
-const orderNotificationDetails = computed(() => pendingShipmentNotifications.value.map((notification) => {
-  const order = notificationOrder(notification)
-  const rawItems = Array.isArray(order.items) ? order.items : []
-  const itemTitles = rawItems
-    .map((item) => {
-      const record = item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {}
-      return String(record.title || '').trim()
-    })
-    .filter(Boolean)
-  return {
-    key: notification.orderId || notification.resource || `${notification.receivedAt}-${notification.sent}`,
-    orderId: notification.orderId || String(order.id || ''),
-    topic: notification.topic || 'orders_v2',
-    resource: notification.resource,
-    status: String(order.status || (notification.error ? 'pending' : 'received') || ''),
-    shippingStatus: String(order.shipping_status || order.shippingStatus || ''),
-    receivedAt: notification.receivedAt,
-    sent: notification.sent,
-    itemTitle: itemTitles[0] || notification.resource || '订单通知',
-    error: notification.error,
-    raw: notification.raw,
-  }
-}))
-
-const orderEvents = computed(() => {
-  const fromOrders = props.orders.map((order) => ({
-    key: `order-${order.id}`,
-    title: order.itemTitles[0] || order.items[0]?.title || order.id || 'Mercado Libre 订单',
-    subtitle: [order.buyerNickname, order.shippingStatus].filter(Boolean).join(' / '),
-    status: order.status || 'order',
-    amount: order.totalAmount || order.paidAmount,
-    currency: order.currencyId,
-    time: order.dateClosed || order.dateCreated || order.lastUpdated,
-  }))
-  const fromNotifications = props.orderNotifications.map((item) => ({
-    key: `notification-${item.receivedAt}-${item.resource}`,
-    title: item.orderId ? `订单 ${item.orderId}` : item.resource || '订单通知',
-    subtitle: item.topic || 'orders_v2',
-    status: item.error ? 'pending' : 'received',
-    amount: 0,
-    currency: '',
-    time: item.receivedAt || item.sent,
-  }))
-  return [...fromOrders, ...fromNotifications].slice(0, 4)
-})
-
 function statusClass(status: string) {
   const value = String(status || '').toLowerCase()
   if (value === 'failed') return 'badge-danger'
@@ -246,18 +162,7 @@ function formatDate(value: string) {
   }).format(new Date(timestamp))
 }
 
-function formatMoney(amount: number, currency: string) {
-  if (!amount) return ''
-  return `${currency || ''} ${amount.toLocaleString('en-US', { maximumFractionDigits: 2 })}`.trim()
-}
-
-function showOrderDetails() {
-  activeDetailPanel.value = 'orders'
-}
-
-function stringifyJson(value: unknown) {
-  return JSON.stringify(value, null, 2)
-}
+function scrollToOrders() { document.getElementById('order-center')?.scrollIntoView({ behavior: 'smooth' }) }
 </script>
 
 <template>
@@ -295,12 +200,11 @@ function stringifyJson(value: unknown) {
             <button
               type="button"
               class="rounded-lg border border-cyan-200 bg-cyan-50 p-4 text-left text-cyan-700 transition hover:border-cyan-400 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-400 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-200 dark:hover:bg-cyan-500/20"
-              :class="activeDetailPanel === 'orders' ? 'ring-2 ring-cyan-400' : ''"
-              @click="showOrderDetails"
+              @click="scrollToOrders"
             >
               <p class="text-sm font-semibold">待发货</p>
-              <p class="mt-2 text-3xl font-black">{{ pendingShipmentCount }}</p>
-              <p class="mt-1 text-xs opacity-80">{{ orderNotifications.length ? '点击查看通知' : '等待 orders_v2' }}</p>
+              <p class="mt-2 text-3xl font-black">{{ orderStore.pendingCount }}</p>
+              <p class="mt-1 text-xs opacity-80">点击查看三平台订单</p>
             </button>
           </div>
         </div>
@@ -334,79 +238,7 @@ function stringifyJson(value: unknown) {
       </div>
     </section>
 
-    <section
-      v-if="activeDetailPanel === 'orders'"
-      class="rounded-lg border border-cyan-200 bg-white p-5 shadow-card dark:border-cyan-500/30 dark:bg-dark-900/80"
-    >
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 class="card-title">待发货订单通知详情</h2>
-          <p class="muted mt-1">数值来自 Mercado Libre `orders_v2` 回调通知，按订单号或 resource 去重。</p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button type="button" class="btn btn-outline" @click="emit('refreshOrders')">刷新订单通知</button>
-          <button type="button" class="btn btn-outline" @click="activeDetailPanel = 'overview'">收起</button>
-        </div>
-      </div>
-
-      <div class="mt-4 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
-        <p class="text-xs font-semibold text-accent-500 dark:text-accent-400">Webhook URL</p>
-        <p class="mt-1 break-all font-mono text-xs text-accent-800 dark:text-accent-100">{{ notificationEndpoint }}</p>
-        <div class="mt-2 flex flex-wrap gap-2">
-          <span class="badge-info">orders_v2</span>
-          <span class="badge-muted">POST</span>
-          <span class="badge-muted">{{ orderNotifications.length }} 条通知</span>
-          <span class="badge-muted">{{ pendingShipmentCount }} 个待发货</span>
-        </div>
-      </div>
-
-      <div class="mt-4 space-y-3">
-        <article
-          v-for="notification in orderNotificationDetails"
-          :key="notification.key"
-          class="rounded-lg border border-accent-200 p-4 dark:border-dark-700"
-        >
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div class="min-w-0">
-              <p class="truncate text-sm font-semibold text-accent-950 dark:text-white">{{ notification.itemTitle }}</p>
-              <p class="mt-1 break-all text-xs text-accent-500 dark:text-accent-400">{{ notification.resource }}</p>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <span :class="statusClass(notification.status)">{{ notification.status || 'received' }}</span>
-              <span v-if="notification.shippingStatus" class="badge-muted">{{ notification.shippingStatus }}</span>
-            </div>
-          </div>
-          <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <dt class="text-xs font-semibold text-accent-500 dark:text-accent-400">订单号</dt>
-              <dd class="mt-1 break-all text-accent-900 dark:text-accent-100">{{ notification.orderId || '-' }}</dd>
-            </div>
-            <div>
-              <dt class="text-xs font-semibold text-accent-500 dark:text-accent-400">Topic</dt>
-              <dd class="mt-1 text-accent-900 dark:text-accent-100">{{ notification.topic }}</dd>
-            </div>
-            <div>
-              <dt class="text-xs font-semibold text-accent-500 dark:text-accent-400">收到时间</dt>
-              <dd class="mt-1 text-accent-900 dark:text-accent-100">{{ formatDate(notification.receivedAt) }}</dd>
-            </div>
-            <div>
-              <dt class="text-xs font-semibold text-accent-500 dark:text-accent-400">发送时间</dt>
-              <dd class="mt-1 text-accent-900 dark:text-accent-100">{{ formatDate(notification.sent) }}</dd>
-            </div>
-          </dl>
-          <p v-if="notification.error" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
-            {{ notification.error }}
-          </p>
-          <details class="mt-3 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
-            <summary class="cursor-pointer text-sm font-semibold text-accent-700 dark:text-accent-200">原始通知 JSON</summary>
-            <pre class="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs text-accent-700 dark:text-accent-200">{{ stringifyJson(notification.raw) }}</pre>
-          </details>
-        </article>
-        <p v-if="!orderNotificationDetails.length" class="rounded-lg border border-dashed border-accent-300 p-6 text-center text-sm text-accent-500 dark:border-dark-600 dark:text-accent-300">
-          暂无待发货通知。上线后 Mercado Libre `orders_v2` 回调到达时，这里会展示通知详情。
-        </p>
-      </div>
-    </section>
+    <OrderNotificationsPanel id="order-center" />
 
     <section class="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_400px]">
       <div class="space-y-5">
@@ -555,45 +387,6 @@ function stringifyJson(value: unknown) {
               <p v-if="log.errorMessage" class="mt-2 line-clamp-2 text-xs text-rose-600 dark:text-rose-200">{{ log.errorMessage }}</p>
             </article>
             <p v-if="!publishLogs.length" class="rounded-lg border border-dashed border-accent-300 p-4 text-center text-sm text-accent-500 dark:border-dark-600 dark:text-accent-300">暂无发布日志。</p>
-          </div>
-        </section>
-
-        <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <h2 class="card-title">订单通知</h2>
-              <p class="muted mt-1">{{ orderEvents.length ? '最近订单 / 回调' : '等待 orders_v2 回调' }}</p>
-            </div>
-            <button type="button" class="btn btn-outline py-2" @click="emit('refreshOrders')">刷新</button>
-          </div>
-
-          <div class="mt-4 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
-            <p class="text-xs font-semibold text-accent-500 dark:text-accent-400">Webhook URL</p>
-            <p class="mt-1 break-all font-mono text-xs text-accent-800 dark:text-accent-100">{{ notificationEndpoint }}</p>
-            <div class="mt-2 flex flex-wrap gap-2">
-              <span class="badge-info">orders_v2</span>
-              <span class="badge-muted">POST</span>
-              <span v-if="ordersCheckedAt" class="badge-muted">{{ formatDate(ordersCheckedAt) }}</span>
-            </div>
-          </div>
-
-          <div class="mt-4 space-y-3">
-            <article v-for="event in orderEvents" :key="event.key" class="rounded-lg border border-accent-200 p-3 dark:border-dark-700">
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <p class="truncate text-sm font-semibold text-accent-950 dark:text-white">{{ event.title }}</p>
-                  <p class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400">{{ event.subtitle || formatDate(event.time) }}</p>
-                </div>
-                <span :class="statusClass(event.status)">{{ event.status }}</span>
-              </div>
-              <div class="mt-2 flex items-center justify-between gap-3 text-xs text-accent-500 dark:text-accent-400">
-                <span>{{ formatDate(event.time) }}</span>
-                <span v-if="event.amount" class="font-semibold text-accent-800 dark:text-accent-100">{{ formatMoney(event.amount, event.currency) }}</span>
-              </div>
-            </article>
-            <p v-if="!orderEvents.length" class="rounded-lg border border-dashed border-accent-300 p-4 text-center text-sm text-accent-500 dark:border-dark-600 dark:text-accent-300">
-              暂无订单通知；上线后在 Mercado Libre App 通知配置里填入上方 URL。
-            </p>
           </div>
         </section>
       </aside>

@@ -11,9 +11,6 @@ import type {
   DraftDetail,
   Marketplace,
   MarketplaceTargetSite,
-  MercadoLibreOrderItem,
-  MercadoLibreOrderLine,
-  MercadoLibreOrdersPage,
   PricingInput,
   PricingDestinationResult,
   PricingResult,
@@ -40,7 +37,6 @@ import {
   normalizeDraftMutation,
   normalizeDraftDetail,
   normalizeDraftsIndex,
-  normalizeMercadoLibreOrderNotification,
   normalizeProductsIndex,
   normalizePublishLogs,
   normalizePublishPrecheck,
@@ -136,57 +132,6 @@ export async function fetchPublishJobs(options: {
   return {
     items: Array.isArray(data.items) ? data.items.map(normalizePublishJobListItem) : [],
     nextCursor: getString(data, ['next_cursor', 'nextCursor']),
-  }
-}
-
-function normalizeMercadoLibreOrderLine(value: unknown): MercadoLibreOrderLine {
-  const record = asRecord(value)
-  return {
-    itemId: getString(record, ['item_id', 'itemId']),
-    title: getString(record, ['title']),
-    sellerSku: getString(record, ['seller_sku', 'sellerSku']),
-    quantity: getString(record, ['quantity']),
-  }
-}
-
-function normalizeMercadoLibreOrderItem(value: unknown): MercadoLibreOrderItem {
-  const record = asRecord(value)
-  return {
-    id: getString(record, ['id']),
-    status: getString(record, ['status']),
-    statusDetail: getString(record, ['status_detail', 'statusDetail']),
-    dateCreated: getString(record, ['date_created', 'dateCreated']),
-    dateClosed: getString(record, ['date_closed', 'dateClosed']),
-    lastUpdated: getString(record, ['last_updated', 'lastUpdated']),
-    totalAmount: getNumber(record, ['total_amount', 'totalAmount']),
-    paidAmount: getNumber(record, ['paid_amount', 'paidAmount']),
-    currencyId: getString(record, ['currency_id', 'currencyId']),
-    buyerId: getString(record, ['buyer_id', 'buyerId']),
-    buyerNickname: getString(record, ['buyer_nickname', 'buyerNickname']),
-    shippingId: getString(record, ['shipping_id', 'shippingId']),
-    shippingStatus: getString(record, ['shipping_status', 'shippingStatus']),
-    paymentStatuses: stringList(record.payment_statuses ?? record.paymentStatuses),
-    items: Array.isArray(record.items) ? record.items.map(normalizeMercadoLibreOrderLine) : [],
-    itemTitles: stringList(record.item_titles ?? record.itemTitles),
-    itemIds: stringList(record.item_ids ?? record.itemIds),
-    raw: record,
-  }
-}
-
-export async function fetchMercadoLibreOrders(limit = 10, offset = 0): Promise<MercadoLibreOrdersPage> {
-  const params = new URLSearchParams({
-    limit: String(limit),
-    offset: String(offset),
-  })
-  const response = await apiClient.get(`/api/mercadolibre/orders?${params.toString()}`)
-  const data = asRecord(response.data)
-  ensureOk(data, '读取 Mercado Libre 订单失败')
-  const pagination = asRecord(data.pagination)
-  return {
-    items: Array.isArray(data.items) ? data.items.map(normalizeMercadoLibreOrderItem) : [],
-    notifications: Array.isArray(data.notifications) ? data.notifications.map(normalizeMercadoLibreOrderNotification) : [],
-    total: getNumber(pagination, ['total']),
-    checkedAt: getString(data, ['checked_at', 'checkedAt']),
   }
 }
 

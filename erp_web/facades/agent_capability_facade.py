@@ -40,7 +40,7 @@ from erp_web.runtime_units.logistics_capabilities import LogisticsCapabilityScop
 from erp_web.runtime_units.market_prepare_capabilities import (
     MarketPrepareCapabilityScope,
 )
-from erp_web.runtime_units.mercadolibre_orders import mercadolibre_recent_orders
+from erp_web.facades.order_notification_facade import read_orders
 from erp_web.runtime_units.platform_query_capabilities import (
     PlatformQueryCapabilityScope,
 )
@@ -186,7 +186,7 @@ def build_capability_binding_scope(
             ),
             PlatformQueryCapabilityScope: PlatformQueryCapabilityScope(
                 products=context.products,
-                orders_loader=mercadolibre_recent_orders,
+                orders_loader=read_orders,
                 publish_logs_loader=load_publish_logs,
                 publishing_bus=context.publishing_bus,
             ),

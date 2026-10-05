@@ -1,7 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
-  fetchMercadoLibreOrders,
   fetchPublishJob,
   fetchPublishJobs,
   fetchPublishLogs,
@@ -17,8 +16,6 @@ import type {
   CategorySelection,
   Marketplace,
   MarketplaceOption,
-  MercadoLibreOrderItem,
-  MercadoLibreOrderNotification,
   PayloadPreviewState,
   PricingInput,
   PricingResult,
@@ -62,10 +59,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
   const publishJobsLoading = ref(false)
   const publishJobsLastUpdated = ref('')
   const publishLogs = ref<PublishLogItem[]>([])
-  const mercadoLibreOrders = ref<MercadoLibreOrderItem[]>([])
-  const mercadoLibreOrderNotifications = ref<MercadoLibreOrderNotification[]>([])
-  const mercadoLibreOrdersTotal = ref(0)
-  const mercadoLibreOrdersCheckedAt = ref('')
   const activeMarketplace = ref<Marketplace>('mercadolibre')
   const platformOptions = ref<MarketplaceOption[]>([])
   const publishResult = ref<UnknownRecord | null>(null)
@@ -220,24 +213,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     }
   }
 
-  async function refreshMercadoLibreOrders() {
-    activity.loading = true
-    activity.setError('')
-    try {
-      const result = await fetchMercadoLibreOrders(10, 0)
-      mercadoLibreOrders.value = result.items
-      mercadoLibreOrderNotifications.value = result.notifications
-      mercadoLibreOrdersTotal.value = result.total
-      mercadoLibreOrdersCheckedAt.value = result.checkedAt
-      activity.addLog(`Mercado Libre 订单已刷新：${result.items.length} 条，通知 ${result.notifications.length} 条。`)
-    } catch (exc) {
-      const message = exc instanceof Error ? exc.message : '读取 Mercado Libre 订单失败'
-      activity.addLog(`Mercado Libre 订单暂不可用：${message}`)
-    } finally {
-      activity.loading = false
-    }
-  }
-
   return {
     pricingInput,
     pricingResult,
@@ -271,10 +246,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     publishJobsLoading,
     publishJobsLastUpdated,
     publishLogs,
-    mercadoLibreOrders,
-    mercadoLibreOrderNotifications,
-    mercadoLibreOrdersTotal,
-    mercadoLibreOrdersCheckedAt,
     activeMarketplace,
     platformOptions,
     publishResult,
@@ -285,6 +256,5 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     selectPublishJob,
     reconcileSelectedPublishJob,
     refreshPublishLogs,
-    refreshMercadoLibreOrders,
   }
 })

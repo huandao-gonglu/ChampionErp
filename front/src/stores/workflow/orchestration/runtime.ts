@@ -191,10 +191,6 @@ export function createWorkflowRuntime() {
     publishJobsLoading,
     publishJobsLastUpdated,
     publishLogs,
-    mercadoLibreOrders,
-    mercadoLibreOrderNotifications,
-    mercadoLibreOrdersTotal,
-    mercadoLibreOrdersCheckedAt,
     activeMarketplace,
     platformOptions,
     publishResult,
@@ -206,8 +202,7 @@ export function createWorkflowRuntime() {
     loadMorePublishJobs,
     selectPublishJob,
     refreshPublishLogs,
-    refreshMercadoLibreOrders,
-  } = publishingStore
+    } = publishingStore
   const {
     appConfig,
     aiConfig,
@@ -1177,10 +1172,9 @@ export function createWorkflowRuntime() {
     categoryAttributeTranslations, categoryAttributeTranslationsSource, categoryAttributeTranslating, categoryAttributeLoading, categoryAttributeError, categoryResultTranslations,
     categoryResultTranslationsSource, categoryResultTranslating, categoryPrecheck, precheck, precheckResults, payloadPreview,
     copyGenerating, publishJob, publishJobStatus, publishJobs, selectedPublishJobId, publishJobsNextCursor, publishJobsLoading,
-    publishJobsLastUpdated, publishLogs, mercadoLibreOrders, mercadoLibreOrderNotifications,
-    mercadoLibreOrdersTotal, mercadoLibreOrdersCheckedAt,         activeMarketplace, platformOptions, publishResult, activePublishTargetKey,
+    publishJobsLastUpdated, publishLogs, activeMarketplace, platformOptions, publishResult, activePublishTargetKey,
     refreshPublishJob, refreshPublishJobs, loadMorePublishJobs, selectPublishJob, refreshPublishLogs,
-    refreshMercadoLibreOrders, appConfig,
+    appConfig,
     aiConfig, storeConfig, storeAuthSummary, mercadolibreAuthChecklist, lastAuthResult, authLink,
     loadAiConfig, saveAiSettings, testAiSettings, testPlatformApiConfig, saveStoreConfig, saveStoreCurrency, testAuth,
     loadMercadoLibreChecklist, generateMercadoLibreAuthLink, openMercadoLibreAuth, refreshMercadoLibreAuthToken, runMercadoLibreAuthTest, exchangeMlCode,

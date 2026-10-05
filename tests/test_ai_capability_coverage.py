@@ -113,6 +113,8 @@ def test_business_endpoints_are_capability_or_internal_only() -> None:
     }
     allowed_business_exclusions = {
         ("POST", "/api/mercadolibre/notifications"),
+        ("POST", "/api/ozon/notifications"),
+        ("POST", "/api/yandex/notifications"),
         ("POST", "/api/collect-extension-payload"),
     }
     for entry in AI_CAPABILITY_COVERAGE_MANIFEST:

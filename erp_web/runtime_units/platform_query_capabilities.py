@@ -96,7 +96,7 @@ def _products_index_snapshot_id(items: tuple[dict[str, Any], ...]) -> str:
 
 def _require_platform(platform: str) -> str:
     normalized = _text(platform).lower()
-    if normalized != "mercadolibre":
+    if normalized not in {"mercadolibre", "ozon", "yandex"}:
         raise BusinessCapabilityError(
             "PLATFORM_QUERY_UNSUPPORTED",
             f"平台 {platform} 暂未接入平台查询能力。",
@@ -156,7 +156,7 @@ def products_index_query(
 
 @ai_tool(
     name=PLATFORM_ORDERS_QUERY_TOOL,
-    description="查询目标平台店铺最近订单列表（远端只读）。",
+    description="查询 Mercado Libre、Ozon、Yandex 的本地订单最新快照及通知处理情况。",
     permission="platform.read",
     side_effect="none",
     recovery_policy="retry_safe",
@@ -168,7 +168,7 @@ def platform_orders_query(
 ) -> PlatformOrdersQueryResult:
     platform = _require_platform(request.platform)
     result = _require_ok(
-        scope.orders_loader(limit=request.limit, offset=request.offset),
+        scope.orders_loader(platform=platform, limit=request.limit, offset=request.offset),
         default_code="PLATFORM_ORDERS_QUERY_FAILED",
         default_message="平台订单查询失败。",
     )

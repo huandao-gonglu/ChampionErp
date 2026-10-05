@@ -12,10 +12,6 @@ from erp_web.runtime_units.image_pool import (
     current_image_pool,
     current_source_images,
 )
-from erp_web.runtime_units.mercadolibre_orders import (
-    load_mercadolibre_order_notifications,
-    mercadolibre_recent_orders,
-)
 from erp_web.runtime_units.publish_adapter import get_publishing_bus
 from erp_web.runtime_units.publish_bus import (
     load_publish_logs,
@@ -65,7 +61,6 @@ __all__ = [
     "html_page",
     "load_app_config",
     "load_drafts_index",
-    "load_mercadolibre_order_notifications",
     "load_product",
     "load_products_index",
     "load_publish_logs",
@@ -73,7 +68,6 @@ __all__ = [
     "marketplace_options",
     "mask_secret",
     "mercadolibre_auth_checklist",
-    "mercadolibre_recent_orders",
     "persist_publish_bus_terminal_results",
     "summarize_store_auth_states",
 ]

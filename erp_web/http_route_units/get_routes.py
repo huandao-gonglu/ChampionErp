@@ -19,7 +19,6 @@ from ..facades.get_facade import (
     html_page,
     load_app_config,
     load_drafts_index,
-    load_mercadolibre_order_notifications,
     load_product,
     load_products_index,
     load_publish_logs,
@@ -27,7 +26,6 @@ from ..facades.get_facade import (
     marketplace_options,
     mask_secret,
     mercadolibre_auth_checklist,
-    mercadolibre_recent_orders,
     summarize_store_auth_states,
 )
 GetHandler = Callable[[JsonRequestHandler, object], None]
@@ -53,7 +51,6 @@ FRONTEND_PAGE_ROUTES = {
 GET_API_ROUTES = {
     "/api/ai-config",
     "/api/browser-debug/status",
-    "/api/mercadolibre/orders",
     "/api/drafts-index",
     "/api/products-index",
     "/api/publish-bus/jobs",
@@ -133,17 +130,6 @@ def handle_publish_logs(handler: JsonRequestHandler, parsed: object) -> None:
     handler.send_json({"ok": True, "items": load_publish_logs(limit=limit)})
 
 
-
-
-def handle_mercadolibre_orders(handler: JsonRequestHandler, parsed: object) -> None:
-    params = urllib.parse.parse_qs(parsed.query)
-    limit = int((params.get("limit") or ["10"])[0] or 10)
-    offset = int((params.get("offset") or ["0"])[0] or 0)
-    try:
-        result = mercadolibre_recent_orders(limit=limit, offset=offset)
-        handler.send_json(result, 200 if result.get("ok") else 400)
-    except Exception as exc:
-        handler.send_json({"ok": False, "error": str(exc), "items": [], "notifications": load_mercadolibre_order_notifications()}, 400)
 
 
 def handle_ai_config(handler: JsonRequestHandler, parsed: object) -> None:
@@ -230,7 +216,6 @@ GET_HANDLERS: dict[str, GetHandler] = {
     "/api/drafts-index": handle_drafts_index,
     "/api/browser-debug/status": handle_browser_debug_status,
     "/api/publish-logs": handle_publish_logs,
-    "/api/mercadolibre/orders": handle_mercadolibre_orders,
     "/api/ai-config": handle_ai_config,
     "/api/publish-bus/jobs": handle_publish_bus_jobs,
     "/api/publish-bus/status": handle_publish_bus_status,

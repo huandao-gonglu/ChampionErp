@@ -70,7 +70,6 @@ const form = reactive({
   mlAppId: '',
   mlClientSecret: '',
   mlRedirectUri: DEFAULT_ML_REDIRECT_URI,
-  mlNotificationUrl: '',
   mlCode: '',
   mlCategoryId: '',
   yandexApiToken: '',
@@ -481,7 +480,6 @@ function fillFromProps() {
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
-  form.mlNotificationUrl = String(ml.notification_url || ml.notifications_url || ml.webhook_url || '')
   form.yandexApiToken = String(yandex.api_token || '')
   form.yandexCampaignId = String(yandex.campaign_id || '')
   form.ozonClientId = String(ozon.client_id || '')
@@ -1562,7 +1560,7 @@ watch(() => props.loading, (loading) => {
 
 function storePayload(): UnknownRecord {
   return {
-    mercadolibre: { app_id: form.mlAppId, client_secret: form.mlClientSecret, app_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri, notification_url: form.mlNotificationUrl },
+    mercadolibre: { app_id: form.mlAppId, client_secret: form.mlClientSecret, app_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri },
     yandex: { api_token: form.yandexApiToken, campaign_id: form.yandexCampaignId },
     ozon: { client_id: form.ozonClientId, api_key: form.ozonApiKey },
   }
@@ -2286,7 +2284,6 @@ function handleYunexpressEnvironmentChange(value: string) {
               <input v-model="form.mlAppId" class="input mt-3" placeholder="App ID" />
               <input v-model="form.mlClientSecret" type="password" class="input mt-2" placeholder="Client Secret" />
               <input v-model="form.mlRedirectUri" class="input mt-2" placeholder="Redirect URI" />
-              <input v-model="form.mlNotificationUrl" class="input mt-2" placeholder="订单通知回调 URL，例如 https://erp.example.com/api/mercadolibre/notifications" />
               <input v-model="form.mlCode" class="input mt-2" placeholder="回跳 URL 或 code=TG-xxxx" />
               <input v-model="form.mlCategoryId" class="input mt-2" placeholder="真实类目 ID，可用于 07D 类目测试" />
               <div class="mt-3 flex flex-wrap gap-2">

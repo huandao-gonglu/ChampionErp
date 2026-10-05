@@ -163,6 +163,17 @@ class AppContext:
         self._category_catalog: "CategoryCatalog | None" = None
         self._online_products = None
         self._external_requests = None
+        self._order_notifications = None
+
+    @property
+    def order_notifications(self):
+        if self._order_notifications is None:
+            with self._lazy_lock:
+                if self._order_notifications is None:
+                    from erp_web.facades.order_notification_facade import create_order_notification_service
+
+                    self._order_notifications = create_order_notification_service(self)
+        return self._order_notifications
 
     @property
     def external_requests(self):
@@ -364,6 +375,9 @@ class AppContext:
             self._closed = True
             publishing_bus = self._publishing_bus
             online_products = self._online_products
+            order_notifications = self._order_notifications
+        if order_notifications is not None:
+            order_notifications.close()
         if online_products is not None:
             online_products.close()
         if publishing_bus is not None:

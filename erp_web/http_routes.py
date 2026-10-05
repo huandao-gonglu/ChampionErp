@@ -18,7 +18,7 @@ from .http_route_units import (
     copy_routes,
     get_routes,
     logistics_routes,
-    mercadolibre_routes,
+    order_routes,
     product_routes,
     product_research_routes,
     publish_routes,
@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_PAGE_ROUTES = get_routes.FRONTEND_PAGE_ROUTES
 GET_ROUTE_UNITS = (
+    order_routes,
     image_hosting_routes,
     online_product_routes,
     get_routes,
@@ -64,7 +65,7 @@ POST_ROUTE_UNITS = (
     product_routes,
     product_research_routes,
     logistics_routes,
-    mercadolibre_routes,
+    order_routes,
     publish_routes,
     online_product_routes,
     translation_routes,

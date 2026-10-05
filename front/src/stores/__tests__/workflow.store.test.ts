@@ -61,7 +61,6 @@ vi.mock('@/api/workflow/publishing', async (importOriginal) => ({
   fetchPublishLogs: vi.fn(),
   fetchPublishJob: vi.fn(),
   fetchPublishJobs: vi.fn(),
-  fetchMercadoLibreOrders: vi.fn(),
   reconcilePublishJob: vi.fn(),
   runCategoryPrecheck: vi.fn(),
 }))
@@ -1098,12 +1097,7 @@ describe('workflow store live API flow', () => {
   it('hydrates dashboard domain data after the bootstrap state is split', async () => {
     vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
     vi.mocked(workflowApi.fetchPublishLogs).mockResolvedValue([])
-    vi.mocked(workflowApi.fetchMercadoLibreOrders).mockResolvedValue({
-      items: [],
-      notifications: [],
-      total: 0,
-      checkedAt: '',
-    })
+
 
     const store = useWorkflowStore()
     store.mercadolibreAuthChecklist = {
@@ -1120,7 +1114,6 @@ describe('workflow store live API flow', () => {
 
     expect(workflowApi.fetchProductsIndex).toHaveBeenCalledOnce()
     expect(workflowApi.fetchPublishLogs).toHaveBeenCalledOnce()
-    expect(workflowApi.fetchMercadoLibreOrders).toHaveBeenCalledOnce()
   })
 
   it('restores the latest persisted publish job when the queue opens', async () => {

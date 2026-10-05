@@ -50,6 +50,7 @@ def main() -> None:
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     resume_pending_publish_jobs()
     get_context().online_products  # 启动持久化在线商品任务恢复与执行。
+    get_context().order_notifications  # 启动订单通知重试和周期对账。
     port = pick_web_port(paths.web_port)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     start_agent_job_worker()
