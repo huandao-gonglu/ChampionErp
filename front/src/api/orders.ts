@@ -1,3 +1,4 @@
+import { ORDER_PAGE_SIZE } from '@/types/orders'
 import { apiClient } from '@/api/client'
 import type { OrderIntegrations, OrdersPage, OrderSummary, OrderDetail } from '@/types/orders'
 
@@ -7,7 +8,11 @@ export async function fetchOrders(query: {
   offset: number
   q?: string
 }): Promise<OrdersPage> {
-  const params = new URLSearchParams({ ...query, offset: String(query.offset), limit: '50' })
+  const params = new URLSearchParams({
+    ...query,
+    offset: String(query.offset),
+    limit: String(ORDER_PAGE_SIZE),
+  })
   return (await apiClient.get<OrdersPage>(`/api/orders?${params}`, { timeout: 10000 })).data
 }
 export async function fetchOrderIntegrations(): Promise<OrderIntegrations> {

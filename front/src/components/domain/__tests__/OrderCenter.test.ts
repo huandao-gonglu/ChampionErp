@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import OrderProcurementLine from '../OrderProcurementLine.vue'
+import OrderPurchaseDialog from '../OrderPurchaseDialog.vue'
+import OrderSourceDialog from '../OrderSourceDialog.vue'
 import OrderDetailPanel from '../OrderDetailPanel.vue'
 import OrderSummaryCard from '../OrderSummaryCard.vue'
 import { procurementCommand, fetchOrderDetail } from '@/api/orders'
@@ -15,6 +17,7 @@ vi.mock('@/api/orders', () => ({
   fetchOrderIntegrations: vi.fn(),
   orderCommand: vi.fn(),
 }))
+enableAutoUnmount(afterEach)
 const source: ProcurementSource = {
   supplier: '供应商',
   source_platform: '1688',
@@ -42,7 +45,13 @@ const order: OrderSnapshot = {
   items: [],
 }
 const item = (confirmed = true): ProcurementLine => ({
-  line: { sku: 'SALE-1', title: '商品', quantity: 2, amount: '74.00', currency: 'CNY' },
+  line: {
+    sku: 'SALE-1',
+    title: '商品',
+    quantity: 2,
+    amount: '74.00',
+    currency: 'CNY',
+  },
   selection: {
     line_key: 'line-1',
     revision: confirmed ? 1 : 0,
@@ -67,7 +76,10 @@ const item = (confirmed = true): ProcurementLine => ({
 })
 const detail = (): OrderDetail => ({ ok: true, order, lines: [item()] })
 const stubs = {
-  RouterLink: { props: ['to'], template: '<a :data-to="JSON.stringify(to)"><slot /></a>' },
+  RouterLink: {
+    props: ['to'],
+    template: '<a :data-to="JSON.stringify(to)"><slot /></a>',
+  },
 }
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -77,7 +89,9 @@ beforeEach(() => {
 })
 describe('订单采购交互', () => {
   it('商品链接不会冒充规格直达，打开链接不记录采购', async () => {
-    const wrapper = mount(OrderProcurementLine, { props: { order, item: item() } })
+    const wrapper = mount(OrderProcurementLine, {
+      props: { order, item: item() },
+    })
     expect(wrapper.get('a').text()).toBe('打开采购商品')
     expect(wrapper.get('a').attributes('href')).toBe(source.product_url)
     expect(wrapper.text()).toContain('来源 SKU：source-red')
@@ -93,10 +107,12 @@ describe('订单采购交互', () => {
     expect(wrapper.get('a').attributes('href')).toContain('skuId=source-red')
   })
   it('确认来源提交候选身份和当前版本', async () => {
-    const wrapper = mount(OrderProcurementLine, { props: { order, item: item(false) } })
+    const wrapper = mount(OrderProcurementLine, {
+      props: { order, item: item(false) },
+    })
     await wrapper
       .findAll('button')
-      .find((b) => b.text() === '确认此采购来源')!
+      .find((b) => b.text() === '确认来源')!
       .trigger('click')
     await flushPromises()
     expect(procurementCommand).toHaveBeenCalledWith('select-source', {
@@ -108,7 +124,10 @@ describe('订单采购交互', () => {
     expect(wrapper.emitted('updated')).toHaveLength(1)
   })
   it('超时后重试复用请求身份', async () => {
-    const wrapper = mount(OrderProcurementLine, { props: { order, item: item() } })
+    const wrapper = mount(OrderPurchaseDialog, {
+      props: { orderId: order.id, item: item() },
+      global: { stubs: { teleport: true } },
+    })
     const form = wrapper.findAll('form').at(-1)!
     await form.get('input[type="number"]').setValue(1)
     await form.findAll('input')[1]!.setValue('PO-123')
@@ -151,16 +170,19 @@ describe('订单采购交互', () => {
     expect(wrapper.text()).not.toContain('记录已采购')
   })
   it('详情承载金额组成和采购操作', async () => {
-    const wrapper = mount(OrderDetailPanel, { props: { orderId: order.id } })
+    const wrapper = mount(OrderDetailPanel, {
+      props: { orderId: order.id },
+      global: { stubs: { teleport: true } },
+    })
     await flushPromises()
     expect(fetchOrderDetail).toHaveBeenCalledWith(order.id)
     expect(wrapper.text()).toContain('74.00 CNY')
     expect(wrapper.text()).toContain('付款 48.10 CNY')
     expect(wrapper.text()).toContain('平台补贴 25.90 CNY')
-    expect(wrapper.text()).toContain('实际采购记录')
+    expect(wrapper.text()).toContain('商品与采购')
     await wrapper
       .findAll('button')
-      .find((b) => b.text() === '返回订单中心')!
+      .find((b) => b.attributes('aria-label') === '关闭订单详情')!
       .trigger('click')
     expect(wrapper.emitted('back')).toHaveLength(1)
   })
@@ -184,5 +206,122 @@ describe('订单采购交互', () => {
     expect(
       wrapper.findAll('a').some((link) => link.attributes('data-to')?.includes(order.id))
     ).toBe(true)
+  })
+})
+
+describe('订单采购弹窗', () => {
+  const global = { stubs: { teleport: true } }
+  it('作废必须确认，提交前不改变采购记录', async () => {
+    const data = item()
+    data.records = [
+      {
+        id: 'record-1',
+        line_key: 'line-1',
+        request_id: 'r',
+        quantity: 1,
+        purchase_order_number: 'PO-1',
+        source,
+        created_at: '',
+        status: 'purchased',
+        cancelled_at: '',
+      },
+    ]
+    const wrapper = mount(OrderProcurementLine, {
+      props: { order, item: data },
+      global,
+    })
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '作废')!
+      .trigger('click')
+    expect(procurementCommand).not.toHaveBeenCalled()
+    expect(wrapper.get('dialog').text()).toContain('不会取消采购平台订单')
+    await wrapper
+      .get('dialog')
+      .findAll('button')
+      .find((button) => button.text() === '确认作废')!
+      .trigger('click')
+    await flushPromises()
+    expect(procurementCommand).toHaveBeenCalledWith('cancel-purchase', {
+      order_id: order.id,
+      record_id: 'record-1',
+    })
+  })
+  it('修改来源在弹窗保存，改变规格后清除直达确认', async () => {
+    const data = item()
+    data.selection.source = {
+      ...source,
+      sku_url: source.product_url + '?sku=red',
+      sku_url_verified: true,
+    }
+    const wrapper = mount(OrderSourceDialog, {
+      props: { orderId: order.id, item: data },
+      global,
+    })
+    const labels = wrapper.findAll('label')
+    await labels
+      .find((label) => label.text() === '采购规格')!
+      .get('input')
+      .setValue('蓝色 L')
+    expect((wrapper.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(procurementCommand).toHaveBeenCalledWith(
+      'select-source',
+      expect.objectContaining({
+        revision: 1,
+        source: expect.objectContaining({
+          specification: '蓝色 L',
+          sku_url_verified: false,
+        }),
+      })
+    )
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+  it('提交中的采购弹窗不能关闭，重复点击只提交一次', async () => {
+    let finish!: (value: OrderDetail) => void
+    vi.mocked(procurementCommand).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
+    )
+    const wrapper = mount(OrderPurchaseDialog, {
+      props: { orderId: order.id, item: item() },
+      global,
+    })
+    await wrapper.get('input[maxlength="200"]').setValue('PO-1')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('dialog').trigger('cancel')
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(procurementCommand).toHaveBeenCalledTimes(1)
+    finish(detail())
+    await flushPromises()
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+  it('多个 SKU 分别记录采购，缺少确认的 SKU 不能登记', async () => {
+    const second = item(false)
+    second.line.sku = 'SALE-2'
+    second.selection.line_key = 'line-2'
+    vi.mocked(fetchOrderDetail).mockResolvedValue({
+      ...detail(),
+      lines: [item(), second],
+    })
+    const wrapper = mount(OrderDetailPanel, {
+      props: { orderId: order.id },
+      global,
+    })
+    await flushPromises()
+    const lines = wrapper.findAllComponents(OrderProcurementLine)
+    expect(lines[0]!.findAll('button').some((button) => button.text() === '记录采购')).toBe(true)
+    expect(lines[1]!.findAll('button').some((button) => button.text() === '记录采购')).toBe(false)
+    await lines[0]!
+      .findAll('button')
+      .find((button) => button.text() === '记录采购')!
+      .trigger('click')
+    expect(wrapper.findComponent(OrderPurchaseDialog).props('item').selection.line_key).toBe(
+      'line-1'
+    )
   })
 })

@@ -1,10 +1,15 @@
+export const ORDER_PAGE_SIZE = 9
 export type OrderPlatform = 'mercadolibre' | 'ozon' | 'yandex'
 export type OrderState =
   'pending_shipment' | 'processing' | 'shipped' | 'delivered' | 'cancelled' | 'unknown'
 export interface OrderAmount {
   amount: string
   currency: string
-  amount_breakdown?: { payment: string; subsidy: string; cashback: string } | null
+  amount_breakdown?: {
+    payment: string
+    subsidy: string
+    cashback: string
+  } | null
 }
 export interface OrderLine extends OrderAmount {
   sku: string

@@ -90,6 +90,15 @@ describe('订单通知状态', () => {
     await vi.advanceTimersByTimeAsync(20000)
     expect(fetchOrderSummary).toHaveBeenCalledTimes(2)
   })
+  it('总数减少后自动退回最后有效页', async () => {
+    const store = useOrderNotificationsStore()
+    store.offset = 18
+    vi.mocked(fetchOrders).mockResolvedValueOnce(page({ total: 10 }))
+    vi.mocked(fetchOrders).mockResolvedValueOnce(page({ total: 10 }))
+    await store.refresh()
+    expect(store.offset).toBe(9)
+    expect(fetchOrders).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 9 }))
+  })
   it('标记已读仅提交已展示的提醒游标', async () => {
     const store = useOrderNotificationsStore()
     await store.command('acknowledge', { through_id: 12 })
@@ -164,16 +173,23 @@ describe('订单通知页面', () => {
       ],
     })
     vi.mocked(fetchOrders).mockResolvedValue(store.page)
-    const wrapper = mount(OrderCenterPanel, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    const wrapper = mount(OrderCenterPanel, {
+      global: { stubs: { teleport: true, RouterLink: { template: '<a><slot /></a>' } } },
+    })
     await flushPromises()
     expect(wrapper.text()).toContain('Mercado Libre')
     expect(wrapper.text()).toContain('Ozon')
     expect(wrapper.text()).toContain('Yandex')
-    expect(wrapper.text()).toContain('55 个待发货')
+    expect(wrapper.text()).toContain('待发货 55')
     expect(wrapper.text()).toContain('状态待确认')
     await wrapper
       .findAll('button')
-      .find((button) => button.text() === '重新处理')!
+      .find((button) => button.text() === '通知 0')!
+      .trigger('click')
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '重试')!
       .trigger('click')
     await flushPromises()
     expect(orderCommand).toHaveBeenCalledWith('retry', { event_id: 7 })

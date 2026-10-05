@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { fetchOrders, fetchOrderIntegrations, fetchOrderSummary, orderCommand } from '@/api/orders'
+import { ORDER_PAGE_SIZE } from '@/types/orders'
 import type { OrderIntegrations, OrdersPage, OrderSummary } from '@/types/orders'
 
 export const useOrderNotificationsStore = defineStore('order-notifications', () => {
@@ -14,7 +15,10 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
     unread: 0,
     latest_alert_id: 0,
   })
-  const integrations = ref<OrderIntegrations>({ public_url: '', platforms: [] })
+  const integrations = ref<OrderIntegrations>({
+    public_url: '',
+    platforms: [],
+  })
   const summary = ref<OrderSummary>({
     ok: true,
     counts: {},
@@ -52,6 +56,13 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
         q: query.value,
       })
       if (current !== generation) return
+      const lastOffset =
+        Math.max(0, Math.ceil(result.total / ORDER_PAGE_SIZE) - 1) * ORDER_PAGE_SIZE
+      if (offset.value > lastOffset) {
+        offset.value = lastOffset
+        await refresh()
+        return
+      }
       page.value = result
       error.value = ''
       lastCheckedAt.value = new Date().toISOString()

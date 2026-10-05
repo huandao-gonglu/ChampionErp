@@ -1,0 +1,234 @@
+/* 订单管理原型：局部视觉变量不影响其他工作台页面。 */
+.order-ui {
+  --order-bg: #f4f4f5;
+  --order-surface: #fff;
+  --order-soft: #fafafa;
+  --order-text: #18181b;
+  --order-muted: #71717a;
+  --order-border: #e4e4e7;
+  color: var(--order-text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.dark .order-ui {
+  --order-bg: #18181b;
+  --order-surface: #202024;
+  --order-soft: #27272a;
+  --order-text: #f4f4f5;
+  --order-muted: #a1a1aa;
+  --order-border: #3f3f46;
+}
+.order-ui .order-muted {
+  color: var(--order-muted);
+  font-size: 12px;
+}
+.order-ui .order-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.order-ui .order-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.order-ui .order-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 20px;
+  border: 1px solid var(--order-border);
+  border-radius: 6px;
+  background: var(--order-surface);
+  color: var(--order-text);
+  white-space: nowrap;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.order-ui .order-button:hover {
+  background: var(--order-soft);
+}
+.order-ui .order-primary {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: white;
+  font-weight: 600;
+}
+.order-ui .order-primary:hover {
+  background: #15803d;
+}
+.order-ui .order-danger {
+  color: #be123c;
+  border-color: #fecdd3;
+}
+.order-ui button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.order-ui :is(button, a, input, select):focus-visible {
+  outline: 2px solid #16a34a;
+  outline-offset: 2px;
+}
+.order-ui .order-link {
+  border: 0;
+  background: transparent;
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.order-ui .order-link:hover {
+  color: #15803d;
+}
+.order-ui .order-input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--order-border);
+  border-radius: 5px;
+  background: var(--order-surface);
+  color: var(--order-text);
+  font-size: 13px;
+}
+.order-ui .order-input::placeholder {
+  color: var(--order-muted);
+}
+.order-ui .order-badge {
+  display: inline-block;
+  min-width: 84px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  text-align: center;
+  font-size: 12px;
+  white-space: nowrap;
+  background: var(--order-bg);
+}
+.order-ui .order-badge[data-tone='blue'] {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+.order-ui .order-badge[data-tone='green'] {
+  color: #15803d;
+  background: #f0fdf4;
+}
+.order-ui .order-badge[data-tone='amber'] {
+  color: #b45309;
+  background: #fffbeb;
+}
+.order-ui .order-badge[data-tone='red'] {
+  color: #be123c;
+  background: #fff1f2;
+}
+.dark .order-ui .order-badge {
+  filter: brightness(0.85);
+}
+.order-ui .order-error {
+  color: #be123c;
+  background: #fff1f2;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 12px 0;
+}
+.order-ui .order-success {
+  color: #15803d;
+  padding: 8px 0;
+}
+.order-ui .order-section {
+  padding: 22px 0;
+  border-bottom: 1px solid var(--order-border);
+}
+.order-ui .order-source {
+  margin-top: 24px;
+  padding: 16px;
+  border-radius: 7px;
+  background: var(--order-soft);
+  overflow-wrap: anywhere;
+}
+.order-ui .order-source p {
+  margin-top: 8px;
+}
+.order-ui .order-form {
+  display: grid;
+  gap: 24px;
+}
+.order-ui .order-form label {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+.order-ui .order-form .order-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.order-ui .order-form-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.order-ui .order-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.order-ui .order-record {
+  padding: 16px 0;
+  border-top: 1px solid var(--order-border);
+  overflow-wrap: anywhere;
+}
+.order-ui .order-record p {
+  margin-top: 6px;
+}
+dialog.order-ui {
+  background: var(--order-surface);
+  color: var(--order-text);
+  border-color: var(--order-border);
+  border-radius: 10px;
+  box-shadow: none;
+}
+dialog.order-ui::backdrop {
+  background: rgb(0 0 0 / 18%);
+}
+dialog.order-ui > header {
+  padding: 20px 24px;
+  border-color: var(--order-border);
+}
+dialog.order-ui > header h3 {
+  font-size: 18px;
+}
+dialog.order-ui > header button {
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  padding: 4px 12px;
+  box-shadow: none;
+  color: var(--order-text);
+}
+dialog.order-ui > div {
+  padding: 24px;
+}
+dialog.order-ui > footer {
+  padding: 16px 24px;
+  border-color: var(--order-border);
+}
+dialog.order-ui[data-variant='drawer'] {
+  border-radius: 0;
+}
+@media (max-width: 600px) {
+  .order-ui .order-form-columns {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  .order-ui .order-row {
+    flex-wrap: wrap;
+  }
+  dialog.order-ui > div {
+    padding: 16px;
+  }
+}

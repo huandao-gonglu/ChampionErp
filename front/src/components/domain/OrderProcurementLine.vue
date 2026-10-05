@@ -1,262 +1,243 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { procurementCommand } from '@/api/orders'
-import type { OrderDetail, OrderSnapshot, ProcurementLine, ProcurementSource } from '@/types/orders'
+import type { OrderDetail, OrderSnapshot, ProcurementLine, PurchaseRecord } from '@/types/orders'
+import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import OrderSourceDialog from './OrderSourceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
-const props = defineProps<{ item: ProcurementLine; order: OrderSnapshot }>()
-const emit = defineEmits<{ updated: [detail: OrderDetail] }>()
+import { dateTime } from './orderPresentation'
+const props = defineProps<{
+  item: ProcurementLine
+  order: OrderSnapshot
+  showPurchaseAction?: boolean
+}>()
+const emit = defineEmits<{
+  updated: [detail: OrderDetail]
+  purchase: [key: string]
+  lock: [locked: boolean]
+}>()
 const error = ref('')
+const notice = ref('')
 const busy = ref(false)
+const sourceEditor = ref(false)
+const cancelledRecord = ref<PurchaseRecord | null>(null)
 const selection = computed(() => props.item.selection)
-const source = reactive<ProcurementSource>({
-  supplier: '',
-  source_platform: '',
-  product_url: '',
-  source_sku_id: '',
-  specification: '',
-  sku_url: '',
-  sku_url_verified: false,
-  ...props.item.selection.source,
-})
-const quantity = ref(Math.max(1, props.item.remaining_quantity))
-const purchaseNumber = ref('')
 const editable = computed(
   () =>
     !['cancelled', 'delivered'].includes(props.order.state) &&
     !!selection.value.line_key &&
     !selection.value.reason.includes('缺少唯一身份')
 )
-let lastPurchase = { fingerprint: '', id: '' }
-async function execute(
-  action: 'select-source' | 'record-purchase' | 'cancel-purchase',
-  body: Record<string, unknown>
-) {
+watch(
+  () => busy.value || sourceEditor.value || !!cancelledRecord.value,
+  (value) => emit('lock', value)
+)
+onBeforeUnmount(() => emit('lock', false))
+async function execute(action: 'select-source' | 'cancel-purchase', body: Record<string, unknown>) {
   if (busy.value) return
   busy.value = true
   error.value = ''
   try {
-    const result = await procurementCommand(action, { order_id: props.order.id, ...body })
-    emit('updated', result)
-    if (action === 'record-purchase') {
-      purchaseNumber.value = ''
-      lastPurchase = { fingerprint: '', id: '' }
-    }
+    emit('updated', await procurementCommand(action, { order_id: props.order.id, ...body }))
+    cancelledRecord.value = null
+    notice.value = action === 'select-source' ? '采购来源已确认' : '采购记录已作废'
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : '采购操作失败，请刷新后重试'
   } finally {
     busy.value = false
   }
 }
-function select(candidateId = '') {
+function select(candidateId: string) {
   return execute('select-source', {
     line_key: selection.value.line_key,
     revision: selection.value.revision,
-    ...(candidateId ? { candidate_id: candidateId } : { source: { ...source } }),
+    candidate_id: candidateId,
   })
-}
-function recordPurchase() {
-  const body = {
-    line_key: selection.value.line_key,
-    revision: selection.value.revision,
-    quantity: quantity.value,
-    purchase_order_number: purchaseNumber.value.trim(),
-  }
-  const fingerprint = JSON.stringify(body)
-  if (lastPurchase.fingerprint !== fingerprint)
-    lastPurchase = { fingerprint, id: crypto.randomUUID() }
-  return execute('record-purchase', { ...body, request_id: lastPurchase.id })
 }
 async function copySpecification() {
   try {
     await navigator.clipboard.writeText(
       selection.value.source?.specification || props.item.line.title
     )
+    notice.value = '规格已复制'
   } catch {
     error.value = '复制失败，请手动复制规格文字'
   }
 }
 </script>
 <template>
-  <article
-    class="rounded-lg border border-accent-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-900"
-  >
-    <div class="flex flex-wrap justify-between gap-3">
+  <article class="order-procurement-line order-section">
+    <div class="order-row">
       <div>
-        <h3 class="font-semibold">{{ item.line.title || '暂无商品标题' }}</h3>
-        <p class="muted mt-1">
-          销售 SKU：{{ item.line.sku || '未提供' }} · 数量 {{ item.line.quantity }}
+        <h4 class="font-semibold">{{ item.line.title || '暂无商品标题' }}</h4>
+        <p class="order-muted mt-1">
+          {{ item.line.sku || 'SKU 未提供' }} · {{ item.line.quantity }} 件
         </p>
       </div>
-      <span class="badge-info">已采购 {{ item.purchased_quantity }} / {{ item.line.quantity }}</span>
+      <span class="order-badge" :data-tone="item.remaining_quantity ? 'amber' : 'green'">已采购 {{ item.purchased_quantity }} / {{ item.line.quantity }}</span>
     </div>
-    <OrderAmountDetails :value="item.line" :platform="order.platform" />
-    <p class="muted">该 SKU 全部数量的小计</p>
-    <p v-if="error" role="alert" class="mt-3 text-red-600">{{ error }}</p>
-    <section class="mt-5 rounded-lg bg-accent-50 p-4 dark:bg-dark-950" aria-label="采购来源">
-      <h4 class="font-semibold">
-        采购来源 ·
-        {{
+    <details class="order-muted mt-2">
+      <summary class="cursor-pointer">SKU 金额明细</summary>
+      <OrderAmountDetails :value="item.line" :platform="order.platform" />
+      <p>该 SKU 全部数量的小计</p>
+    </details>
+    <section class="order-source" aria-label="采购来源">
+      <div class="order-row">
+        <h5 class="font-semibold">采购来源</h5>
+        <span
+          class="order-badge"
+          :data-tone="selection.status === 'confirmed' ? 'green' : 'amber'"
+        >{{
           {
             unmatched: '待关联',
-            matched: '已匹配，待确认',
-            ambiguous: '存在多个候选',
+            matched: '待确认',
+            ambiguous: '待选择',
             confirmed: '已确认',
           }[selection.status]
-        }}
-      </h4>
-      <p v-if="selection.reason" class="muted mt-2">{{ selection.reason }}</p>
+        }}</span>
+      </div>
       <template v-if="selection.source">
-        <p class="mt-2">
-          {{ selection.source.supplier || selection.source.source_platform || '采购商品' }}
+        <p>
+          {{
+            [selection.source.source_platform, selection.source.supplier]
+              .filter(Boolean)
+              .join(' · ') || '采购商品'
+          }}
         </p>
-        <p>采购规格：{{ selection.source.specification }}</p>
-        <p class="muted">来源 SKU：{{ selection.source.source_sku_id || '未提供，请核对规格' }}</p>
-        <div class="mt-3 flex flex-wrap gap-2">
-          <a
-            class="btn btn-primary"
-            :href="
-              selection.source.sku_url_verified
-                ? selection.source.sku_url
-                : selection.source.product_url
-            "
-            target="_blank"
-            rel="noopener noreferrer"
-          >{{
-            selection.source.sku_url_verified ? '直达采购规格（人工确认）' : '打开采购商品'
-          }}</a>
-          <button class="btn btn-outline" @click="copySpecification">复制采购规格</button>
+        <p class="font-medium">{{ selection.source.specification }}</p>
+        <p class="order-muted">
+          来源 SKU：{{ selection.source.source_sku_id || '未提供，请核对规格' }}
+        </p>
+        <div class="order-row mt-4">
+          <div class="order-actions">
+            <a
+              class="order-button"
+              :href="
+                selection.source.sku_url_verified
+                  ? selection.source.sku_url
+                  : selection.source.product_url
+              "
+              target="_blank"
+              rel="noopener noreferrer"
+              :title="
+                selection.source.sku_url_verified
+                  ? '人工确认的 SKU 直达链接'
+                  : '打开商品页后，请核对上述规格'
+              "
+            >{{
+              selection.source.sku_url_verified ? '直达采购规格（人工确认）' : '打开采购商品'
+            }}</a><button class="order-button" @click="copySpecification">复制规格</button>
+          </div>
+          <button v-if="editable" class="order-link" :disabled="busy" @click="sourceEditor = true">
+            修改来源
+          </button>
         </div>
-        <p v-if="!selection.source.sku_url_verified" class="muted mt-2">
-          此链接仅打开商品页，请按上述规格核对；系统不会假定已自动选中 SKU。
-        </p>
       </template>
-      <div v-if="selection.status !== 'confirmed' && editable" class="mt-3 space-y-3">
-        <div
-          v-for="candidate in selection.candidates"
-          :key="candidate.id"
-          class="rounded border border-accent-200 p-3 dark:border-dark-700"
-        >
+      <template v-else>
+        <p class="order-muted">{{ selection.reason }}</p>
+        <button v-if="editable" class="order-button mt-3" @click="sourceEditor = true">
+          关联采购来源
+        </button>
+      </template>
+    </section>
+    <template v-if="selection.status !== 'confirmed' && editable">
+      <p v-if="selection.source" class="order-muted mt-5">核对商品与规格后，确认采购来源。</p>
+      <div v-for="candidate in selection.candidates" :key="candidate.id" class="mt-4">
+        <div v-if="selection.candidates.length > 1" class="order-muted mb-2">
           <p>
             {{ candidate.source.specification }} · 来源 SKU
-            {{ candidate.source.source_sku_id || '未提供' }}
+            {{ candidate.source.source_sku_id }}
           </p>
-          <p class="muted break-all">{{ candidate.source.product_url }}</p>
-          <p class="muted">
-            内部 SKU {{ candidate.sku_id }} · 发布记录 {{ candidate.publication_id }}
-          </p>
-          <button class="btn btn-outline mt-2" :disabled="busy" @click="select(candidate.id)">
-            确认此采购来源
+          <a :href="candidate.source.product_url" target="_blank" rel="noopener noreferrer">{{ candidate.source.supplier || candidate.source.source_platform }} · 查看候选商品</a>
+        </div>
+        <button class="order-button order-primary" :disabled="busy" @click="select(candidate.id)">
+          {{ selection.candidates.length > 1 ? '确认此采购来源' : '确认来源' }}
+        </button>
+      </div>
+    </template>
+    <button
+      v-if="
+        showPurchaseAction &&
+          selection.status === 'confirmed' &&
+          order.state === 'pending_shipment' &&
+          item.remaining_quantity > 0
+      "
+      class="order-button order-primary mt-4"
+      :disabled="busy"
+      @click="$emit('purchase', selection.line_key)"
+    >
+      记录采购
+    </button>
+    <p v-if="error" class="order-error" role="alert">{{ error }}</p>
+    <p v-if="notice" class="order-success" role="status">{{ notice }}</p>
+    <section v-if="item.records.length" class="mt-6" aria-label="采购记录">
+      <h5 class="font-semibold mb-3">采购记录</h5>
+      <article v-for="record in item.records" :key="record.id" class="order-record">
+        <div class="order-row">
+          <strong>{{ record.purchase_order_number }} · {{ record.quantity }} 件</strong><span
+            class="order-badge"
+            :data-tone="record.status === 'cancelled' ? 'neutral' : 'green'"
+          >{{ record.status === 'cancelled' ? '已作废' : '已采购' }}</span>
+        </div>
+        <p class="order-muted">
+          {{ record.source.supplier || record.source.source_platform }} ·
+          {{ record.source.specification }} · 来源 SKU
+          {{ record.source.source_sku_id }}
+        </p>
+        <div class="order-row mt-2">
+          <span class="order-muted">{{ dateTime(record.created_at) }}</span>
+          <div class="order-actions">
+            <a
+              :href="record.source.product_url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="order-link"
+            >当时采购商品</a><button
+              v-if="record.status !== 'cancelled'"
+              class="order-link"
+              :disabled="busy"
+              @click="cancelledRecord = record"
+            >
+              作废
+            </button>
+          </div>
+        </div>
+      </article>
+    </section>
+    <OrderSourceDialog
+      v-if="sourceEditor"
+      :item="item"
+      :order-id="order.id"
+      @close="sourceEditor = false"
+      @updated="$emit('updated', $event)"
+    />
+    <WorkspaceDialog
+      v-if="cancelledRecord"
+      :open="true"
+      title="作废采购记录"
+      width="496px"
+      class="order-ui"
+      :close-disabled="busy"
+      @close="cancelledRecord = null"
+    >
+      <p class="font-semibold">
+        {{ cancelledRecord?.purchase_order_number }} · {{ cancelledRecord?.quantity }} 件
+      </p>
+      <p class="order-muted mt-3">
+        仅撤销 ERP 采购记录，不会取消采购平台订单。原记录及采购规格将保留，作废后可重新记录采购。
+      </p>
+      <p v-if="error" class="order-error" role="alert">{{ error }}</p>
+      <template #footer>
+        <div class="order-footer">
+          <button class="order-button" :disabled="busy" @click="cancelledRecord = null">取消</button><button
+            class="order-button order-danger"
+            :disabled="busy"
+            @click="execute('cancel-purchase', { record_id: cancelledRecord?.id })"
+          >
+            确认作废
           </button>
         </div>
-      </div>
-      <details v-if="editable" class="mt-4">
-        <summary class="cursor-pointer font-semibold">
-          {{ selection.status === 'confirmed' ? '更换来源或补充规格直达链接' : '人工关联采购来源' }}
-        </summary>
-        <form class="mt-3 grid gap-3 sm:grid-cols-2" @submit.prevent="select()">
-          <label>采购平台<input
-            v-model="source.source_platform"
-            class="input mt-1 w-full"
-            placeholder="例如 1688"
-            maxlength="100"
-          /></label>
-          <label>供应商<input v-model="source.supplier" class="input mt-1 w-full" maxlength="200" /></label>
-          <label class="sm:col-span-2">采购商品链接<input
-            v-model="source.product_url"
-            class="input mt-1 w-full"
-            type="url"
-            required
-            maxlength="2000"
-          /></label>
-          <label>来源 SKU 编号<input
-            v-model="source.source_sku_id"
-            class="input mt-1 w-full"
-            maxlength="200"
-          /></label>
-          <label>准确采购规格<input
-            v-model="source.specification"
-            class="input mt-1 w-full"
-            required
-            placeholder="颜色、尺寸、款式等"
-            maxlength="1000"
-          /></label>
-          <label class="sm:col-span-2">规格直达链接（可选）<input
-            v-model="source.sku_url"
-            class="input mt-1 w-full"
-            type="url"
-            maxlength="2000"
-          /></label>
-          <label class="sm:col-span-2"><input v-model="source.sku_url_verified" type="checkbox" />
-            我已打开链接，确认会选中上述来源 SKU</label>
-          <p class="muted sm:col-span-2">
-            更换来源只影响后续采购，已有采购记录保留原供应商和规格。
-          </p>
-          <button class="btn btn-primary justify-self-start" :disabled="busy">确认采购来源</button>
-        </form>
-      </details>
-    </section>
-    <section class="mt-5" aria-label="实际采购记录">
-      <h4 class="font-semibold">实际采购记录</h4>
-      <form
-        v-if="
-          selection.status === 'confirmed' &&
-            order.state === 'pending_shipment' &&
-            item.remaining_quantity > 0
-        "
-        class="mt-3 flex flex-wrap items-end gap-3"
-        @submit.prevent="recordPurchase"
-      >
-        <label>已采购数量<input
-          v-model.number="quantity"
-          class="input mt-1 block w-28"
-          type="number"
-          min="1"
-          :max="item.remaining_quantity"
-          required
-        /></label>
-        <label>采购单号<input
-          v-model="purchaseNumber"
-          class="input mt-1 block"
-          required
-          maxlength="200"
-        /></label>
-        <button class="btn btn-primary" :disabled="busy">记录已采购</button>
-      </form>
-      <p class="muted mt-2">
-        请在采购平台完成下单后记录。作废仅撤销 ERP 记录，不会取消采购平台订单。
-      </p>
-      <ul class="mt-3 space-y-3">
-        <li
-          v-for="record in item.records"
-          :key="record.id"
-          class="border-t border-accent-200 pt-3 dark:border-dark-700"
-        >
-          <p>
-            {{ record.purchase_order_number }} · {{ record.quantity }} 件 ·
-            {{ record.status === 'cancelled' ? '已作废' : '已采购' }}
-          </p>
-          <p class="muted">
-            {{ record.source.supplier || record.source.source_platform }} ·
-            {{ record.source.specification }} · 来源 SKU {{ record.source.source_sku_id }}
-          </p>
-          <a
-            :href="record.source.product_url"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-cyan-700"
-          >查看当时采购商品</a>
-          <p class="muted">{{ new Date(record.created_at).toLocaleString('zh-CN') }}</p>
-          <button
-            v-if="record.status !== 'cancelled'"
-            class="btn btn-outline mt-2"
-            :disabled="busy"
-            @click="execute('cancel-purchase', { record_id: record.id })"
-          >
-            作废本条记录
-          </button>
-        </li>
-      </ul>
-      <p v-if="!item.records.length" class="muted mt-3">尚无采购记录。</p>
-    </section>
+      </template>
+    </WorkspaceDialog>
   </article>
 </template>
