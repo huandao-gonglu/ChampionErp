@@ -1,6 +1,6 @@
 # AiWork 对话与前台 Pydantic 实时展示
 
-> 状态：当前有效契约（2026-09-03）。
+> 状态：当前有效契约。
 >
 > 本文已合并旧的浮窗接管方案、通用 Pydantic Agent 可观测层重构计划和实施文档；历史推导、迁移步骤及重复测试细节不再保留。
 >
@@ -11,7 +11,7 @@
 AiWork 浮窗是当前标签页的 AI 活动入口：
 
 - 默认展示可输入的全局聊天 `global.chat`。
-- 用户点击类目匹配、AI 填充属性或 AI 模型能力测试等前台能力后，对应 presentation 临时接管浮窗，只读展示 Pydantic 的文字、思考和工具事件。
+- 用户点击类目匹配、文案生成或 AI 模型能力测试等前台能力后，对应 presentation 临时接管浮窗，只读展示 Pydantic 的文字、思考和工具事件。
 - 业务请求结束后，浮窗恢复原全局聊天；全局聊天的 conversation、消息、输入和活动流不得被覆盖或重建。
 - 点击浮窗时在当前标签页导航到 AiWork 页面，并继续观看同一实时流；运行结束后切换为服务端历史。
 - 业务结果始终来自原业务接口，实时消息只用于展示。
@@ -68,7 +68,7 @@ flowchart LR
 
 - presentation 只观察运行，不启动业务、不选择 model、prompt、ToolSet 或权限。
 - 不提供客户端可指定 `use_case_id` 的万能 Agent 执行接口。
-- 类目候选、属性修改和其他类型化结果只由原业务接口返回；不得从 assistant 文本或 tool card 反解业务结果。
+- 类目候选、生成文案和其他类型化结果只由原业务接口返回；不得从 assistant 文本或 tool card 反解业务结果。
 - SSE 失败不得改变业务成功；SSE 正常也不得掩盖业务失败。
 
 ### 3.2 消息事实唯一
@@ -140,7 +140,7 @@ return withAiForeground(
 
 - global.chat 实时对话与历史；
 - 类目匹配；
-- AI 填充类目属性；
+- 公共/SKU 属性填写由主对话执行，结果经业务保存回执同步页面，不再有局部属性 Agent presentation；
 - 单个/批量商品文案生成和本地化改写；
 - 图生图、图片翻译/重绘；
 - 候选类目与平台属性翻译；
@@ -157,22 +157,21 @@ return withAiForeground(
 - 多个 foreground presentation 并发展示；
 - 多进程/多 worker 共享 registry；
 - 页面刷新后自动恢复活动 presentation；
-- child Agent 的完整独立消息流；
-- Global Task 审批卡的跨页面恢复与多窗口一致性。
+- child Agent 的完整独立消息流。
 
 HTTP 公共边界记录最终响应状态：正常返回的 4xx/5xx 将 presentation 标记为 `failed`；“200 + 业务判断失败”仍按成功完成请求处理，以保持业务判断结果与请求/基础设施失败的区别。
 
 ## 8. 验收标准
 
 - 默认浮窗可以继续 global.chat，流式过程中导航到 AiWork 不重建或中断 `Chat`。
-- 类目匹配、属性填充、文案、翻译、图片和产品调研的手动 AI 操作使用同一个 presentation 协议，并显示首次 user 输入。
+- 类目匹配、文案、翻译、图片和产品调研的手动 AI 操作使用同一个 presentation 协议，并显示首次 user 输入。
 - 专用 Images API 无供应商实时增量时，先完成非流式图片请求，再通过 Pydantic `CompletedStreamedResponse` 向 presentation 重放官方响应事件。
 - AI 模型能力测试沿用同一 presentation 协议；Pydantic Direct Model 的真实文本增量可在浮窗查看，业务判定仍来自 `/api/test-ai-model` 响应。
 - presentation 接管期间 global.chat 的消息、输入和连接保持不变，业务收尾后恢复。
 - 业务 response 是唯一结果事实，展示连接故障不改变业务结果。
 - root conversation 与持久化历史 ID 一致；同一请求最多一个 root stream；child 不建立第二条 SSE。
 - presentation root Direct Model 的请求与响应使用官方 `ModelMessage[]` 持久化，完成后可从 AiWork 历史重新打开。
-- `run_sync()` 与流式运行共享统一 native-event 执行内核；需审批写工具只走 Global Task。
+- `run_sync()` 与流式运行共享统一 native-event 执行内核；需审批写工具经 Tool Bridge 使用原生 Deferred 审批。
 - 无 Agent 路径、业务失败、观察断连和缓冲溢出都能确定收尾。
 - 新增一个基于 `AiAgentFactory` 的前台能力时，不增加业务专用 SSE、run facade 或 result endpoint。
 - 旧 category-specific run 协议和自研 UI 消息投影无生产代码残留。

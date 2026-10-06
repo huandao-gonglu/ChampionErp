@@ -1,5 +1,7 @@
 # Pydantic AI 原生 Agent 重构计划
 
+> 历史重构计划（2026-09），不要求重新执行阶段步骤或清库。依赖版本、工具与审批能力已继续演进，当前架构见 [AI 上下文地图](ai-context-map.md)；真实模型验收状态保留在 [交付记录](pydantic-ai-native-agent-refactor-delivery.md)。当次数据删除授权不适用于后续任务。
+
 > 状态：原生代码替换已完成；真实模型验收及未完成项见 [交付记录](pydantic-ai-native-agent-refactor-delivery.md)。\
 > 日期：2026-09-09。\
 > 当前方向：Agent 生命周期继续由 Pydantic AI core 负责；2026-09-24 增加官方 Harness 的 CodeMode 和输出限制，用于通用 Python 工具编排，见 [Python 执行说明](agent-python-execution.md)。\
@@ -168,15 +170,6 @@ pnpm --dir front build
 
 架构守卫验证唯一 Agent 入口、领域边界和退役实现缺席；保留部分补丁、写回执、权限及幂等测试。删除只要求严格 steps 顺序、第二个 Deferred 必须拒绝、任务期间必须封锁会话的旧断言。
 
-## 8. 文档与交付要求
+## 8. 后续说明
 
-实现时同步更新 `docs/ai-context-map.md`、`AGENTS.md` 的实际 owner、请求/响应 Schema、工具覆盖清单及前端类型。本文待实施期间不把当前架构地图提前写成目标架构。
-
-下列文件中已被本文替代的方案，在实现完成后删除过期设计正文，历史过程由版本控制保留；仍有效的领域和可靠性要求迁入当前文档：
-
-- `docs/global-ai-capability-migration-plan.md` 中固定 Global Task 步骤设计。
-- `docs/pydantic-ai-global-task-deferred-migration-plan.md` 中整任务 Deferred、单调用限制和会话封锁设计。
-- `docs/pydantic-ai-global-task-deferred-architecture-simplification-review.md` 中以保留固定 Controller 为前提的候选方案。
-- `docs/ai-tool-context-boundary-repair-plan.md`、`docs/global-task-execution-progress-visibility-plan.md` 中旧步骤输入和进度投影绑定。
-
-交付报告必须列出原生能力接法、删除项、仍保留的适配代码及理由、数据处置、A1–A14 证据和实际失败项。改动规模按覆盖边界和验收结果判断，不以减少行数或测试总数宣称完成。
+旧 Global Task 计划、上下文修复计划和进度方案已被本次原生 Agent 重构替代，原文由版本控制保留；重复的退役占位文档已清理。当前职责与领域约束集中在 [AI 上下文地图](ai-context-map.md)，当次处置与 A1–A14 证据见 [交付记录](pydantic-ai-native-agent-refactor-delivery.md)。

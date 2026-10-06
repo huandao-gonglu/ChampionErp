@@ -1,12 +1,14 @@
 # Pydantic AI Global Task Deferred 迁移重新验收报告
 
+> 历史验收报告（2026-08-22）。被审查的固定 Global Task 实现已退役；本文的 P1/P2、旧路径和修复顺序不作为当前缺陷清单。后续替换见 [原生 Agent 交付记录](pydantic-ai-native-agent-refactor-delivery.md)，现行边界见 [AI 上下文地图](ai-context-map.md)。
+
 ## 1. 报告信息
 
 | 项目 | 内容 |
 | --- | --- |
 | 验收日期 | 2026-08-22 |
 | 验收对象 | 当前工作区中的 Pydantic AI Global Task Deferred 迁移及最新整改 |
-| 对照文档 | `docs/pydantic-ai-global-task-deferred-migration-plan.md` |
+| 对照方案 | 已退役的 Global Task Deferred 迁移计划（原文见版本历史） |
 | Pydantic AI 版本 | 2.22.0 |
 | 验收方式 | 代码审查、官方 encoder/client 顺序比对、竞态与背压故障探针、全量自动化回归 |
 | 验收结论 | **不通过：1 项 P1 未关闭，新增 1 项 P2** |
@@ -73,7 +75,7 @@ A-18。
 - `erp_web/services/vercel_ai_ui_service.py:109-134`
 - `erp_web/services/vercel_ai_ui_service.py:217-230`
 - `erp_web/services/vercel_ai_ui_service.py:308-328`
-- `docs/pydantic-ai-global-task-deferred-migration-plan.md:432-438`
+- 当时迁移计划的第 432–438 行（计划已退役，原文见版本历史）
 
 迁移计划当前允许丢弃中间文本/推理 delta 和 `tool-input-delta`，但明确要求工具结构事件、
 `finish` 与请求结束哨兵保证送达。实现仍有三条反例。
