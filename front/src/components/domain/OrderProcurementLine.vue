@@ -74,7 +74,7 @@ async function copySpecification() {
         <p class="order-muted">销售 SKU：{{ item.line.sku || '未提供' }}</p>
         <div class="order-line-quantities">
           <span>订购 <strong>{{ item.line.quantity }}</strong> 件</span>
-          <span class="order-badge" :data-tone="item.remaining_quantity ? 'amber' : 'green'">已采购 {{ item.purchased_quantity }} / {{ item.line.quantity }}</span>
+          <span class="order-badge" :data-tone="item.remaining_quantity ? 'amber' : 'green'">已登记 {{ item.purchased_quantity }} / {{ item.line.quantity }}</span>
         </div>
       </div>
     </header>

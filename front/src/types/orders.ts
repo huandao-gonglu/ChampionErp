@@ -18,6 +18,7 @@ export interface OrderLine extends OrderAmount {
   image_url?: string
 }
 export interface OrderSnapshot extends OrderAmount {
+  delivery?: import('./fulfillment').DeliverySource
   id: string
   platform: OrderPlatform
   account_id: string
@@ -31,6 +32,7 @@ export interface OrderSnapshot extends OrderAmount {
   checked_at: string
   shipment_deadline?: string
   procurement_status?: string
+  fulfillment_summary?: import('./fulfillment').FulfillmentSummary | null
   items: OrderLine[]
 }
 export interface OrderNotification {

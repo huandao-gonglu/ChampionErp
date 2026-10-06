@@ -97,6 +97,8 @@ class YandexOrderAdapter:
             seen.add(cursor)
 
     def normalize(self, row):
+        delivery = row.get("delivery") or {}
+        country = str(delivery.get("countryCode") or "").upper()
         if str(row.get("campaignId") or "") != self.account:
             raise OrderDataError("Yandex 订单不属于当前店铺")
         status = str(row.get("status") or "")
@@ -144,6 +146,13 @@ class YandexOrderAdapter:
             updated_at=str(row.get("updateDate") or ""),
             shipment_deadline=normalize_yandex_shipment(row.get("delivery")),
             items=items,
+            delivery={
+                "warehouse_id": str(delivery.get("warehouseId") or ""),
+                "method_id": str(delivery.get("deliveryServiceId") or ""),
+                "method_name": str(delivery.get("serviceName") or ""),
+                "carrier": str(delivery.get("deliveryPartnerType") or ""),
+                "country": country if len(country) == 2 and country.isalpha() else "",
+            },
         )
 
     def read(self, event):

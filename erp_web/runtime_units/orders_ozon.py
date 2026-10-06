@@ -29,6 +29,8 @@ class OzonOrderAdapter:
         )
 
     def normalize(self, row, model):
+        delivery = row.get("delivery_method") or {}
+        country = str(row.get("country") or (row.get("analytics_data") or {}).get("country") or "").upper()
         status = str(row.get("status") or "")
         state = {
             "delivering": "shipped",
@@ -62,6 +64,15 @@ class OzonOrderAdapter:
             status=status,
             state=state,
             items=items,
+            delivery={
+                "warehouse_id": str(delivery.get("warehouse_id") or ""),
+                "warehouse_name": str(delivery.get("warehouse") or delivery.get("warehouse_name") or ""),
+                "method_id": str(delivery.get("id") or ""),
+                "method_name": str(delivery.get("name") or ""),
+                "carrier": str(delivery.get("tpl_provider") or ""),
+                "tracking_number": str(row.get("tracking_number") or ""),
+                "country": country if len(country) == 2 and country.isalpha() else "",
+            },
             shipment_deadline=str(row.get("shipment_date") or ""),
             # in_process_at 是创建/开始处理时间，不是状态版本；不能据此丢弃后续状态。
             updated_at=str(row.get("updated_at") or ""),

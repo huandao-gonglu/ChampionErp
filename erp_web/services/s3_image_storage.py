@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import os
 import re
 from dataclasses import replace
@@ -113,6 +114,19 @@ class S3ImageStorage:
     def delete_test_image(self, key: str) -> None:
         self._require_test_key(key)
         self.client.delete_object(Bucket=self.profile["bucket"], Key=key)
+
+    def deliver_pdf(self, *, data: bytes, scope: str) -> str:
+        """面单使用独立命名空间；复用签名、安全传输与对象完整性核验。"""
+        if not re.fullmatch(r"[0-9a-f]{64}", scope):
+            raise ValueError("面单对象范围无效")
+        digest = hashlib.sha256(data).hexdigest()
+        prefix = self.profile["key_prefix"]
+        key = f"{prefix + '/' if prefix else ''}fulfillment-labels/{scope}/{digest}.pdf"
+        if not self._head(key, digest, len(data)):
+            self._put_image(key, data, digest, "application/pdf", cache_control="no-store")
+        if not self._head(key, digest, len(data)):
+            raise ValueError("面单对象上传后不存在")
+        return public_url(self.profile, key)
 
     def deliver(self, *, source_path: Path | None, storage_key: str = "", content_sha256: str = "") -> DeliveredImage:
         try:

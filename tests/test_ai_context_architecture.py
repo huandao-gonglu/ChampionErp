@@ -971,3 +971,17 @@ def test_order_procurement_keeps_routes_thin_and_dashboard_summary_only():
     source = (ROOT / "erp_web/runtime_units/order_source_bindings.py").read_text()
     assert "approved_publications" in source
     assert "load_draft" not in source
+
+
+def test_platform_labels_reuse_marketplace_transport_and_pdf_hosting_boundary():
+    """面单读取不新建授权旁路、SDK 或 Agent 生命周期，HTTP 路由仅调用 facade。"""
+    service = ROOT / "erp_web/services/platform_label_service.py"
+    targets = {target for _, target in imported_targets([service])}
+    assert "erp_web.marketplaces.yandex_http.request_yandex_pdf" in targets
+    assert "erp_web.services.fulfillment_label_service.deliver_label_bytes" in targets
+    assert not any(target.startswith(("erp_web.runtime_units", "pydantic_ai", "urllib", "boto")) for target in targets)
+    route = ROOT / "erp_web/http_route_units/fulfillment_routes.py"
+    assert not any(target.startswith(("erp_web.runtime_units", "erp_web.services")) for _, target in imported_targets([route]))
+    source = service.read_text()
+    assert 'box.get("fulfilmentId")' in source
+    assert 'box.get("orderNum")' not in source

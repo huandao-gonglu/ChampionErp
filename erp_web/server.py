@@ -51,6 +51,7 @@ def main() -> None:
     resume_pending_publish_jobs()
     get_context().online_products  # 启动持久化在线商品任务恢复与执行。
     get_context().order_notifications  # 启动订单通知重试和周期对账。
+    get_context().fulfillment  # 恢复预报核实、仓库状态同步及平台取消传播。
     port = pick_web_port(paths.web_port)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     start_agent_job_worker()

@@ -7,8 +7,11 @@ import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
 import OrderProcurementLine from './OrderProcurementLine.vue'
 import OrderPurchaseDialog from './OrderPurchaseDialog.vue'
-import { amountLabel, deadline, money, platformStatusLabel, stateTone } from './orderPresentation'
+import OrderFulfillmentPanel from './OrderFulfillmentPanel.vue'
+import { amountLabel, deadline, money, platformStatusLabel, platformStatusNote, stateTone } from './orderPresentation'
 const props = defineProps<{ orderId: string }>()
+const activeTab = ref<'procurement' | 'fulfillment'>('procurement')
+const fulfillmentLocked = ref(false)
 const emit = defineEmits<{ back: []; updated: [] }>()
 const detail = ref<OrderDetail | null>(null)
 const error = ref('')
@@ -22,7 +25,7 @@ const totals = computed(() => ({
   ordered: detail.value?.lines.reduce((sum, line) => sum + line.line.quantity, 0) || 0,
   purchased: detail.value?.lines.reduce((sum, line) => sum + line.purchased_quantity, 0) || 0,
 }))
-const locked = computed(() => locks.size > 0 || !!purchaseKey.value)
+const locked = computed(() => locks.size > 0 || !!purchaseKey.value || fulfillmentLocked.value)
 const shipment = computed(() => deadline(detail.value?.order.shipment_deadline, Date.now()))
 async function load() {
   if (loading.value) return
@@ -71,15 +74,15 @@ onMounted(load)
         </div>
         <p class="order-muted mt-1">
           {{ orderPlatformNames[detail.order.platform] }} /
-          {{ detail.order.fulfillment || '履约未提供' }}
+          {{ detail.order.delivery?.fulfillment_model || detail.order.fulfillment || '履约未提供' }}
         </p>
         <p
-          v-if="detail.order.platform === 'yandex' && detail.order.status === 'PROCESSING' && detail.order.shipping_status === 'READY_TO_SHIP'"
+          v-if="platformStatusNote(detail.order)"
           class="order-muted mt-1"
         >
-          平台已确认备妥，等待交接发货；仍计入待发货，与采购记录独立。
+          {{ platformStatusNote(detail.order) }}
         </p>
-        <dl class="order-overview">
+        <dl v-if="activeTab === 'procurement'" class="order-overview">
           <div>
             <dt>{{ amountLabel(detail.order, detail.order.platform) }}</dt>
             <dd>{{ money(detail.order.amount) }} <small>{{ detail.order.currency }}</small></dd>
@@ -89,20 +92,25 @@ onMounted(load)
             <dd>{{ shipment.text }}<span class="order-overview-note order-muted">{{ shipment.note }}</span></dd>
           </div>
           <div>
-            <dt>采购进度</dt>
+            <dt>采购登记数量</dt>
             <dd>{{ totals.purchased }} <small>/ {{ totals.ordered }} 件</small><span class="order-overview-note order-muted">{{ detail.lines.length }} 个 SKU</span></dd>
           </div>
         </dl>
-        <details class="order-financial-details">
+        <details v-if="activeTab === 'procurement'" class="order-financial-details">
           <summary>查看金额明细</summary>
           <OrderAmountDetails :value="detail.order" :platform="detail.order.platform" />
         </details>
       </header>
-      <div class="order-section-heading">
+      <nav class="order-actions my-6" aria-label="订单详情内容">
+        <button class="order-button" :class="{ 'order-primary': activeTab === 'procurement' }" :disabled="locked" @click="activeTab = 'procurement'">商品与采购</button>
+        <button class="order-button" :class="{ 'order-primary': activeTab === 'fulfillment' }" :disabled="locked" @click="activeTab = 'fulfillment'">跨境履约</button>
+      </nav>
+      <OrderFulfillmentPanel v-if="activeTab === 'fulfillment'" :order="detail" @updated="emit('updated')" @lock="fulfillmentLocked = $event" />
+      <div v-if="activeTab === 'procurement'" class="order-section-heading">
         <h3>商品与采购</h3>
         <span class="order-muted">逐项核对规格并登记采购</span>
       </div>
-      <div class="order-product-list">
+      <div v-if="activeTab === 'procurement'" class="order-product-list">
         <OrderProcurementLine
           v-for="(line, index) in detail.lines"
           :key="`${line.selection.line_key}:${index}`"
@@ -113,13 +121,12 @@ onMounted(load)
           @lock="setLock(`${line.selection.line_key}:${index}`, $event)"
         />
       </div>
-      <p v-if="!detail.lines.length" class="order-muted py-8">
+      <p v-if="activeTab === 'procurement' && !detail.lines.length" class="order-muted py-8">
         平台尚未提供商品明细，请同步订单后重试。
       </p>
     </template>
     <template #footer>
-      <div class="order-row">
-        <p class="order-muted">采购记录与平台发货状态独立，操作位于对应商品卡片。</p>
+      <div class="order-actions justify-end">
         <button class="order-button" :disabled="locked" @click="$emit('back')">关闭详情</button>
       </div>
     </template>

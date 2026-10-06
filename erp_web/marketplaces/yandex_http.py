@@ -291,6 +291,75 @@ def _business_error_from_body(
     )
 
 
+def _read_yandex_response(request, token, path, timeout):
+    """JSON 和 PDF 共用传输、错误分类与凭据脱敏，不写业务状态。"""
+    try:
+        with managed_urlopen(request, timeout=timeout, source=__name__) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")
+        except (OSError, ValueError):
+            detail = ""
+        masked_detail = _mask_for_error(detail, token)
+        # HTTPError 响应体同样携带平台 errors[]/warnings[] 与错误码
+        # （例如 403 FORBIDDEN / Access denied），必须解析并脱敏后保留，
+        # 不能只按 HTTP 状态码粗分类后丢弃。
+        error_body: dict[str, Any] = {}
+        stripped = detail.strip()
+        if stripped:
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict):
+                    error_body = parsed
+            except json.JSONDecodeError:
+                error_body = {}
+        errors = _masked_error_rows(_body_errors(error_body), token)
+        warnings = _masked_error_rows(_body_warnings(error_body), token)
+        code, message, retryable, next_action = _http_error_classification(
+            int(exc.code),
+            request.get_method(),
+            path,
+            errors,
+            masked_detail,
+        )
+        raise YandexApiError(
+            code,
+            _mask_for_error(message, token),
+            retryable=retryable,
+            http_status=int(exc.code),
+            errors=errors,
+            warnings=warnings,
+            details={"next_action": next_action, "resume_at": retry_after(exc.headers or {})},
+        ) from exc
+    except PublishAdapterError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 网络层错误统一分类
+        code, message, retryable, next_action = _network_error_classification(exc)
+        raise YandexApiError(
+            code,
+            _mask_for_error(message, token),
+            retryable=retryable,
+            details={"next_action": next_action},
+        ) from exc
+
+
+def request_yandex_pdf(path: str, api_token: str) -> bytes:
+    """只从官方订单面单路径下载 PDF，不使用回执中的临时 URL。"""
+    if not re.fullmatch(r"/v2/campaigns/[1-9][0-9]*/orders/[1-9][0-9]*/delivery/labels", path):
+        raise YandexApiError("YANDEX_LABEL_PATH_INVALID", "Yandex 面单订单或店铺标识无效")
+    token = str(api_token or "").strip()
+    if not token:
+        raise YandexApiError("YANDEX_CREDENTIALS_MISSING", "请先完成 Yandex 店铺授权")
+    request = urllib.request.Request(
+        YANDEX_MARKET_API_HOST + path + "?format=A7",
+        headers={"Api-Key": token, "Accept": "application/pdf"},
+        method="GET",
+    )
+    return _read_yandex_response(request, token, path, _DEFAULT_TIMEOUT_SECONDS)
+
+
 def request_yandex_json(
     method: str,
     path: str,
@@ -334,56 +403,7 @@ def request_yandex_json(
     )
     request = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     timeout = max(0.1, float(timeout_seconds))
-    try:
-        with managed_urlopen(request, timeout=timeout, source=__name__) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")
-        except (OSError, ValueError):
-            detail = ""
-        masked_detail = _mask_for_error(detail, token)
-        # HTTPError 响应体同样携带平台 errors[]/warnings[] 与错误码
-        # （例如 403 FORBIDDEN / Access denied），必须解析并脱敏后保留，
-        # 不能只按 HTTP 状态码粗分类后丢弃。
-        error_body: dict[str, Any] = {}
-        stripped = detail.strip()
-        if stripped:
-            try:
-                parsed = json.loads(stripped)
-                if isinstance(parsed, dict):
-                    error_body = parsed
-            except json.JSONDecodeError:
-                error_body = {}
-        errors = _masked_error_rows(_body_errors(error_body), token)
-        warnings = _masked_error_rows(_body_warnings(error_body), token)
-        code, message, retryable, next_action = _http_error_classification(
-            int(exc.code),
-            method.upper(),
-            normalized_path,
-            errors,
-            masked_detail,
-        )
-        raise YandexApiError(
-            code,
-            _mask_for_error(message, token),
-            retryable=retryable,
-            http_status=int(exc.code),
-            errors=errors,
-            warnings=warnings,
-            details={"next_action": next_action, "resume_at": retry_after(exc.headers or {})},
-        ) from exc
-    except PublishAdapterError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - 网络层错误统一分类
-        code, message, retryable, next_action = _network_error_classification(exc)
-        raise YandexApiError(
-            code,
-            _mask_for_error(message, token),
-            retryable=retryable,
-            details={"next_action": next_action},
-        ) from exc
+    raw = _read_yandex_response(request, token, normalized_path, timeout).decode("utf-8", errors="replace")
     try:
         body = json.loads(raw) if raw else {}
     except json.JSONDecodeError as exc:

@@ -39,6 +39,8 @@ class MercadoLibreOrderAdapter:
             shipping = self.request("/shipments/" + identifier(shipping["id"]))
         status = str(row.get("status") or "")
         shipping_status = str(shipping.get("status") or "")
+        option = shipping.get("shipping_option") or {}
+        country = str(((shipping.get("receiver_address") or {}).get("country") or {}).get("id") or "").upper()
         state = "unknown"
         if status in {"cancelled", "invalid"}:
             state = "cancelled"
@@ -91,6 +93,16 @@ class MercadoLibreOrderAdapter:
             platform="mercadolibre",
             account_id=self.account,
             order_id=order_id,
+            delivery={
+                "fulfillment_model": str(shipping.get("logistic_type") or shipping.get("mode") or ""),
+                "warehouse_id": str((shipping.get("origin") or {}).get("warehouse_id") or (shipping.get("sender_address") or {}).get("id") or ""),
+                "method_id": str(option.get("id") or ""),
+                "method_name": str(option.get("name") or ""),
+                "carrier": str(shipping.get("mode") or ""),
+                "country": country if len(country) == 2 and country.isalpha() else "",
+                "shipment_id": str(shipping.get("id") or ""),
+                "tracking_number": str(shipping.get("tracking_number") or ""),
+            },
             status=status,
             shipping_status=shipping_status,
             state=state,

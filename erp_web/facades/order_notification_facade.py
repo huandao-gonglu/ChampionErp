@@ -56,10 +56,12 @@ def read_orders(*, platform="", state="", limit=50, offset=0, q=""):
     orders = procurement.present_orders(
         [OrderView.model_validate(row) for row in result["items"]]
     )
+    fulfillment_summaries = get_context().fulfillment.store.summaries(orders)
     result["items"] = [
         {
             **order.model_dump(mode="json"),
             "procurement_status": procurement.store.progress(order),
+            "fulfillment_summary": fulfillment_summaries.get(order.id),
         }
         for order in orders
     ]

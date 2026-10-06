@@ -165,6 +165,18 @@ class AppContext:
         self._external_requests = None
         self._order_notifications = None
         self._order_procurement = None
+        self._fulfillment = None
+
+    @property
+    def fulfillment(self):
+        self.order_notifications
+        if self._fulfillment is None:
+            with self._lazy_lock:
+                if self._fulfillment is None:
+                    from erp_web.facades.fulfillment_facade import create_service
+
+                    self._fulfillment = create_service(self)
+        return self._fulfillment
 
     @property
     def order_procurement(self):
@@ -389,6 +401,9 @@ class AppContext:
             publishing_bus = self._publishing_bus
             online_products = self._online_products
             order_notifications = self._order_notifications
+            fulfillment = self._fulfillment
+        if fulfillment is not None:
+            fulfillment.close()
         if order_notifications is not None:
             order_notifications.close()
         if online_products is not None:

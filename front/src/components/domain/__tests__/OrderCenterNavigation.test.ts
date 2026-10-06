@@ -75,12 +75,12 @@ async function render() {
 }
 describe('紧凑订单列表', () => {
   it.each([
-    ['PROCESSING', 'STARTED', 'pending_shipment', '备货中'],
-    ['PROCESSING', 'PACKAGING', 'pending_shipment', '打包中'],
-    ['PROCESSING', 'READY_TO_SHIP', 'pending_shipment', '已备妥'],
-    ['PROCESSING', 'NEW_STAGE', 'processing', '处理中'],
-    ['DELIVERY', 'READY_TO_SHIP', 'shipped', '已发货'],
-  ] as const)('Yandex %s / %s 在列表与详情显示真实阶段', async (status, shipping_status, state, label) => {
+    ['PROCESSING', 'STARTED', 'pending_shipment', '待发货', '平台备货中'],
+    ['PROCESSING', 'PACKAGING', 'pending_shipment', '待发货', '平台打包中'],
+    ['PROCESSING', 'READY_TO_SHIP', 'pending_shipment', '待发货', '平台已备妥，等待交接发货'],
+    ['PROCESSING', 'NEW_STAGE', 'processing', '处理中', ''],
+    ['DELIVERY', 'READY_TO_SHIP', 'shipped', '已发货', ''],
+  ] as const)('Yandex %s / %s 在列表与详情区分平台主状态和附注', async (status, shipping_status, state, label, note) => {
     const remoteOrder: OrderSnapshot = {
       ...orders[0]!, platform: 'yandex', status, shipping_status, state,
     }
@@ -97,7 +97,11 @@ describe('紧凑订单列表', () => {
     await wrapper.get('a[aria-label="查看订单 0"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('dialog header .order-badge').text()).toBe(label)
-    expect(wrapper.get('dialog').text().includes('等待交接发货')).toBe(label === '已备妥')
+    if (note) {
+      expect(wrapper.get('tbody tr td:nth-child(4)').text()).toContain(note)
+      expect(wrapper.get('dialog').text()).toContain(note)
+    }
+    expect(wrapper.get('dialog').text().includes('等待交接发货')).toBe(shipping_status === 'READY_TO_SHIP' && status === 'PROCESSING')
     expect(store.state).toBe(state)
   })
   it('详情在列表上打开，关闭后保持平台、状态、搜索和页码', async () => {
@@ -108,6 +112,10 @@ describe('紧凑订单列表', () => {
     store.offset = 9
     const { wrapper, router } = await render()
     expect(wrapper.findAll('tbody tr')).toHaveLength(9)
+    expect(wrapper.findAll('tbody a')).toHaveLength(9)
+    expect(wrapper.find('a[aria-label*="跨境履约"]').exists()).toBe(false)
+    expect(wrapper.get('thead').text()).toContain('ERP 处理进度')
+    expect(wrapper.get('thead').text()).not.toContain('采购进度')
     expect(wrapper.findAll('tbody img')).toHaveLength(9)
     expect(wrapper.get('tbody img').attributes('src')).toContain('sku-0.jpg')
     await wrapper.get('a[aria-label="查看订单 0"]').trigger('click')

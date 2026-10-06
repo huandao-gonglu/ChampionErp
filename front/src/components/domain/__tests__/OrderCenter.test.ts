@@ -182,7 +182,7 @@ describe('订单采购交互', () => {
     expect(wrapper.text()).toContain('平台补贴 25.90 CNY')
     expect(wrapper.text()).toContain('商品与采购')
     expect(wrapper.get('.order-line-product img').attributes('src')).toContain('SALE-1.jpg')
-    expect(wrapper.get('.order-overview').text()).toContain('采购进度')
+    expect(wrapper.get('.order-overview').text()).toContain('采购登记数量')
     expect(wrapper.get('.order-financial-details').attributes('open')).toBeUndefined()
     expect(wrapper.findAll('button').filter((button) => button.text() === '记录采购')).toHaveLength(1)
     await wrapper

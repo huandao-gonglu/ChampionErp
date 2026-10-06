@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, inject, reactive, ref, watch } from 'vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
+import CrossborderBusSettingsPanel from '@/components/auth/CrossborderBusSettingsPanel.vue'
+import { routeLocationKey } from 'vue-router'
 import { jsonProbeMessages } from '@/constants/aiCapabilityProbe'
 import type { AuthResult, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 import {
@@ -67,8 +69,12 @@ const form = reactive({
 })
 
 const selectedStorePlatform = ref<Marketplace>('mercadolibre')
-type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting'
+type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting' | 'crossborderbus'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
+const authRoute = inject(routeLocationKey, undefined)
+watch(() => authRoute?.query.auth_section, section => {
+  if (section === 'crossborderbus') activeAuthSettingsTab.value = 'crossborderbus'
+}, { immediate: true })
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
 const aiUseCaseBindings = ref<Record<string, UnknownRecord>>({})
@@ -121,6 +127,7 @@ const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: st
   { key: 'apis', label: '采集与核价', summary: '汇率与 1688 采集 API' },
   { key: 'image_hosting', label: '图片托管', summary: 'S3 存储、默认目标与公开读取测试' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
+  { key: 'crossborderbus', label: '跨境巴士', summary: '账号授权与默认履约方案' },
 ]
 
 const capabilityOptions = [
@@ -2407,6 +2414,7 @@ function copy(text: string) {
         <section v-show="activeAuthSettingsTab === 'research'">
           <ProductResearchSettingsPanel :ai-use-case-prompts="aiUseCasePrompts" embedded />
         </section>
+        <CrossborderBusSettingsPanel v-if="activeAuthSettingsTab === 'crossborderbus'" />
       </div>
     </section>
   </div>

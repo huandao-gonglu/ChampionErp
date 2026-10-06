@@ -175,6 +175,13 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/crossborderbus/authorize": _contract(fields={"client_secret": STRING, "user_name": STRING, "password": STRING}),
+    "/api/crossborderbus/catalog": _EMPTY,
+    "/api/crossborderbus/save-rule": _contract(fields={"section_id": FieldRule("integer", minimum=1), "warehouse_id": FieldRule("integer", minimum=1), "service_ids": ARRAY, "compatible_warehouse_ids": ARRAY, "confirmed": BOOLEAN, "auto_submit": BOOLEAN}, required=("platform", "account_id", "fulfillment", "platform_warehouse_id", "delivery_method_id", "delivery_method_name", "country", "section_id", "warehouse_id", "compatible_warehouse_ids", "confirmed")),
+    "/api/crossborderbus/delete-rule": _contract(fields={"id": STRING}, required=("id",)),
+    "/api/orders/fulfillment/upload-label": _contract(fields={"order_id": STRING, "revision": FieldRule("integer", minimum=0), "content_base64": STRING}, required=("order_id", "revision", "content_base64")),
+    "/api/orders/fulfillment/fetch-label": _contract(fields={"order_id": STRING, "revision": FieldRule("integer", minimum=0)}, required=("order_id", "revision")),
+    **{f"/api/orders/fulfillment/{action}": _contract(fields={"order_id": STRING, "revision": FieldRule("integer", minimum=0), "plan": OBJECT, "parcels": ARRAY, "label": OBJECT}, required=("order_id", "revision")) for action in ("label", "parcels", "plan", "pause", "resume", "submit", "sync", "retry", "cancel")},
     "/api/image-hosting/save": _contract(fields={"profile": OBJECT}, required=("profile",)),
     "/api/image-hosting/test": _contract(fields={"profile": OBJECT}, required=("profile",)),
     "/api/image-hosting/default": _contract(fields={"id": STRING}),

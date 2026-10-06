@@ -93,3 +93,48 @@ def test_sdk_default_transport_is_never_used(tmp_path, monkeypatch):
     FakeS3(monkeypatch)
     path = tmp_path / "main.png"; path.write_bytes(image_bytes())
     assert S3ImageStorage(profile()).deliver(source_path=path).storage_key
+
+
+def test_pdf_delivery_shares_operation_for_probe_upload_verification_and_public_read(monkeypatch):
+    from erp_web.services import fulfillment_label_service as labels
+    from erp_web.services.external_request_context import request_operation
+    from erp_web.services.external_request_manager import BufferedResponse
+    from tests.image_hosting_test_utils import configure
+    remote = FakeS3(monkeypatch)
+    configure()
+    pdf = b"%PDF-1.7\nlabel fixture\n%%EOF"
+    monkeypatch.setattr(labels, "safe_image_urlopen", lambda request, **kw: BufferedResponse(pdf, headers={}, status=200, url=request.full_url))
+    with request_operation("fulfillment:fetch-label", operation_id="same-pdf-operation"):
+        result = labels.deliver_label_bytes(get_context().config.load_app_config(), "order-123", pdf)
+        assert result["url"].endswith(".pdf")
+        assert [call["method"] for call in remote.calls] == ["HEAD", "PUT", "HEAD"]
+        assert labels.deliver_label_bytes(get_context().config.load_app_config(), "order-123", pdf) == result
+    assert len(remote.uploads) == 1
+    assert get_context().external_requests.store.blocks() == []
+    audit = get_context().external_requests.store.query(operation_id="same-pdf-operation")
+    assert audit["stats"]["network_attempts"] == 7
+    assert all(item["result"]["outcome"] == "success" for item in audit["items"])
+
+
+@pytest.mark.parametrize("stage", ["upload", "public"])
+def test_label_error_reports_failed_stage_and_retains_safe_transport_reason(monkeypatch, stage):
+    from erp_web.services import fulfillment_label_service as labels
+    from erp_web.schemas.fulfillment import FulfillmentError
+    from erp_web.schemas.external_requests import ExternalRequestNotSent, RequestFailure
+    configure_profile = profile()
+    monkeypatch.setattr(labels, "default_profile", lambda config: configure_profile)
+    class Storage:
+        def __init__(self, config):
+            pass
+        def deliver_pdf(self, **kwargs):
+            if stage == "upload":
+                raise ImageHostingError("IMAGE_UPLOAD_FAILED", "S3 请求返回 HTTP 403，请检查对象读写权限")
+            return "https://images.example.test/label.pdf"
+    monkeypatch.setattr(labels, "S3ImageStorage", Storage)
+    def public_failed(*args, **kwargs):
+        raise ExternalRequestNotSent(RequestFailure("IMAGE_DNS_NONPUBLIC", "域名解析到非公开地址，请检查 DNS"))
+    monkeypatch.setattr(labels, "managed_urlopen", public_failed)
+    with pytest.raises(FulfillmentError) as error:
+        labels.deliver_label_bytes({}, "order-123", b"%PDF-1.7\nfixture\n%%EOF")
+    assert ("S3 面单上传及对象校验" if stage == "upload" else "面单公开下载核验") in str(error.value)
+    assert ("HTTP 403" if stage == "upload" else "检查 DNS") in str(error.value)

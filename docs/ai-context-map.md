@@ -1076,3 +1076,18 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 - `order_source_bindings.py::published_sku_image` 从冻结 SKU 图片覆盖/事实引用或公共主图解析缩略图；`OrderProcurementService.present_orders` 按受信店铺与远端 SKU 身份为列表、详情补充相同图片，不读取当前草稿或远端商品。图片不参与绑定身份，历史绑定在装配时仅补齐缺失图片。
 - `OrderThumbnail.vue` 统一商品缩略图及加载失败占位；`OrderProcurementLine.vue` 按 SKU 卡片承载来源确认与采购操作，`OrderPurchaseRecords.vue` 展示可展开的采购历史，`OrderSourceDialog.vue` 和 `OrderPurchaseDialog.vue` 分别负责来源编辑、采购登记。所有弹窗、抽屉共用 `WorkspaceDialog.vue` 与完整遮罩手势校验。
 - `OrderIntegrationSettings.vue` 承载设置页回调接入。未验证的平台规格链接只能作为商品链接展示，修改来源规格或链接后必须重新核验直达能力。
+
+## 跨境巴士履约 V1
+
+`http_route_units/fulfillment_routes.py` → `facades/fulfillment_facade.py` →
+`services/fulfillment_service.py` 是唯一履约入口。`AppContext.fulfillment` 装配并持有后台任务，
+服务只接收当前平台账号和采购详情提供函数，不反向导入 runtime unit。
+`schemas/fulfillment.py` 定义内部配送及公开履约契约；`stores/fulfillment_store.py` 共用订单 SQLite，
+负责唯一订单、版本 CAS、创建/取消占位、编辑租约和重启核实。
+`services/crossborderbus_client.py` 适配官方协议和企业 Token 刷新，全部请求经过统一外部请求管理。
+`services/platform_label_service.py` 负责 Yandex 单箱平台 PDF 与箱条码读取，复用现有店铺授权，不自动分箱或推进平台发货状态。`POST /api/orders/fulfillment/fetch-label` 为带版本校验的人工获取入口；默认自动预报在资料齐备后通过同一占位流程获取面单，失败独立记录并退避重试。
+
+`services/fulfillment_label_service.py` 使用现有 `S3ImageStorage` SDK 边界交付 PDF 面单并核验公开内容。
+原有平台订单身份及状态不变；列表另行读取履约摘要，详情承载履约操作及异常处理。
+授权和默认方案在已有授权模块中配置，不提供首次接入页、独立日志页或模型代报工具。
+协议、产品闭环、核实限制和验收见 [跨境履约说明](crossborder-fulfillment.md)。

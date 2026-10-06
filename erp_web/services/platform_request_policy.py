@@ -45,8 +45,12 @@ def retry_after(headers, *, now=None):
             return None
 
 
-def classify_response(platform, status, headers, raw):
+def classify_response(platform, status, headers, raw, *, method=""):
     """只从错误字段识别业务失败；商品内容中的文字不得改变请求控制。"""
+    # S3 HeadObject 的 404 是“对象尚不存在”的查询事实，上传前会正常出现。
+    # SDK 仍接收原始 404；仅阻断与失败计数不将它当成接口拒绝。
+    if platform == "image_hosting:s3" and method.upper() == "HEAD" and status == 404:
+        return None
     try:
         body = json.loads(raw) if raw else {}
     except (ValueError, UnicodeError):

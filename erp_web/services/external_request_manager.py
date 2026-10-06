@@ -56,8 +56,8 @@ class ExternalRequestManager:
             raise ExternalRequestBlocked(failure)
         return delay
 
-    def result(self, request_id, ctx, status, headers, raw):
-        failure = classify_response(ctx.platform,status,headers,raw)
+    def result(self, request_id, ctx, status, headers, raw, *, method=""):
+        failure = classify_response(ctx.platform,status,headers,raw,method=method)
         pause = failure or response_quota_pause(ctx.platform,headers)
         if pause:
             if self.store.block(ctx,pause):
@@ -109,7 +109,7 @@ class ExternalRequestManager:
                     headers = getattr(response,"headers",None)
                     if headers is None:
                         headers = {}
-                    failure = self.result(request_id,ctx,status,headers,raw)
+                    failure = self.result(request_id,ctx,status,headers,raw,method=request.get_method())
                     if failure and failure.scope and failure.scope != "request":
                         raise ExternalRequestBlocked(failure,sent=True)
                     return BufferedResponse(raw,headers=headers,status=status,url=request.full_url)
@@ -118,7 +118,7 @@ class ExternalRequestManager:
                     raw = exc.read(32 * 1024 * 1024)
                 finally:
                     exc.close()
-                failure = self.result(request_id,ctx,exc.code,exc.headers or {},raw)
+                failure = self.result(request_id,ctx,exc.code,exc.headers or {},raw,method=request.get_method())
                 if ctx.semantics == "write" and (exc.code >= 500 or exc.code == 408):
                     self.network_error(request_id, ctx)
                     raise ExternalRequestOutcomeUnknown(http_status=exc.code) from exc

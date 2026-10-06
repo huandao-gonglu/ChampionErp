@@ -10,6 +10,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from erp_web.schemas.fulfillment import DeliverySource, FulfillmentSummary
+
 Platform = Literal["mercadolibre", "ozon", "yandex"]
 PLATFORMS = ("mercadolibre", "ozon", "yandex")
 OrderState = Literal[
@@ -73,6 +75,7 @@ class OrderSnapshot(BaseModel):
         description="平台发货日期或截止时间，保留日期/本地时间/带时区时间的原始精度",
     )
     items: list[OrderLine] = Field(default_factory=list)
+    delivery: DeliverySource = Field(default_factory=DeliverySource)
 
     @property
     def identity(self) -> str:
@@ -125,6 +128,7 @@ def configured_accounts(config: dict[str, Any]) -> dict[str, str]:
 class OrderView(OrderSnapshot):
     id: str
     checked_at: str
+    fulfillment_summary: FulfillmentSummary | None = None
 
 
 class NotificationView(BaseModel):

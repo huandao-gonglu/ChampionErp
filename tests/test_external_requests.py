@@ -244,6 +244,28 @@ def test_repeated_bad_parameters_and_configured_failure_streak_stop_locally():
         request(manager,context(interface="/unstable"),lambda *a,**k: Response())
 
 
+def test_s3_head_not_found_does_not_block_same_operation_post_upload_check():
+    manager = get_context().external_requests
+    ctx = context(platform="image_hosting:s3", account_id="hosting", interface="/resource/object", operation_id="pdf-upload", fingerprint="same-head")
+    head = urllib.request.Request("https://s3.example.test/bucket/label.pdf", method="HEAD")
+    with pytest.raises(urllib.error.HTTPError) as error:
+        manager.open(head, request_context_value=ctx, transport=rejected(404, b""))
+    assert error.value.code == 404
+    with manager.open(head, request_context_value=ctx, transport=lambda *a, **kw: Response(b"", status=200)) as response:
+        assert response.status == 200
+    assert manager.store.blocks() == []
+    audit = manager.store.query(platform="image_hosting:s3")
+    assert audit["stats"]["network_attempts"] == 2
+    assert all(item["result"]["outcome"] == "success" for item in audit["items"])
+    assert {item["result"]["http_status"] for item in audit["items"]} == {200, 404}
+
+
+@pytest.mark.parametrize("platform,method,status", [("image_hosting:s3", "PUT", 404), ("image_hosting:s3", "GET", 404), ("image_hosting:public", "HEAD", 404), ("ozon", "HEAD", 404), ("image_hosting:s3", "HEAD", 403), ("image_hosting:s3", "HEAD", 500)])
+def test_only_s3_head_404_is_an_expected_not_found_result(platform, method, status):
+    from erp_web.services.platform_request_policy import classify_response
+    assert classify_response(platform, status, {}, b"", method=method) is not None
+
+
 def test_mercado_ordinary_getter_performs_no_identity_or_config_write(monkeypatch):
     from erp_web.runtime_units.store_credentials import get_mercadolibre_access_token
     from erp_web import marketplaces

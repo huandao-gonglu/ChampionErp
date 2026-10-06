@@ -25,6 +25,7 @@ from erp_web.http_route_units import (
     image_hosting_routes,
     online_product_routes,
     order_routes,
+    fulfillment_routes,
 )
 from erp_web.http_routes import POST_API_ROUTES
 
@@ -74,6 +75,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in online_product_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in order_routes.GET_API_ROUTES)
+    endpoints.update(("GET", path) for path in fulfillment_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in image_hosting_routes.GET_API_ROUTES)
     endpoints.update(("POST", path) for path in POST_API_ROUTES)
     endpoints.update(("POST", path) for path in image_routes.IMAGE_POST_PATHS)
@@ -81,6 +83,26 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="跨境履约", disposition="internal_only", reason="V1 由可信订单界面确认合作范围、面单、采购包裹及取消；后台执行确定性履约，不开放模型代报或代取消。") for method, path in (
+        ("GET", "/api/crossborderbus/settings"),
+        ("GET", "/api/crossborderbus/services"),
+        ("GET", "/api/orders/fulfillment"),
+        ("POST", "/api/crossborderbus/authorize"),
+        ("POST", "/api/crossborderbus/catalog"),
+        ("POST", "/api/crossborderbus/save-rule"),
+        ("POST", "/api/crossborderbus/delete-rule"),
+        ("POST", "/api/orders/fulfillment/upload-label"),
+        ("POST", "/api/orders/fulfillment/fetch-label"),
+        ("POST", "/api/orders/fulfillment/label"),
+        ("POST", "/api/orders/fulfillment/parcels"),
+        ("POST", "/api/orders/fulfillment/plan"),
+        ("POST", "/api/orders/fulfillment/pause"),
+        ("POST", "/api/orders/fulfillment/resume"),
+        ("POST", "/api/orders/fulfillment/submit"),
+        ("POST", "/api/orders/fulfillment/sync"),
+        ("POST", "/api/orders/fulfillment/retry"),
+        ("POST", "/api/orders/fulfillment/cancel"),
+    )),
     AiCapabilityCoverageEntry(method="GET", path="/api/image-hosting", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/save", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/default", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),

@@ -115,7 +115,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
     <p v-if="store.error" role="alert" class="order-error">{{ store.error }}</p>
-    <nav class="order-tabs" aria-label="订单状态">
+    <nav class="order-tabs" aria-label="平台订单状态">
       <button
         v-for="tab in tabs"
         :key="tab.key"
