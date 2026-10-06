@@ -37,6 +37,7 @@ const orders: OrderSnapshot[] = Array.from({ length: 9 }, (_, index) => ({
       quantity: 2,
       amount: '24.00',
       currency: 'RUB',
+      image_url: `https://images.example/sku-${index}.jpg`,
     },
   ],
 }))
@@ -107,6 +108,8 @@ describe('紧凑订单列表', () => {
     store.offset = 9
     const { wrapper, router } = await render()
     expect(wrapper.findAll('tbody tr')).toHaveLength(9)
+    expect(wrapper.findAll('tbody img')).toHaveLength(9)
+    expect(wrapper.get('tbody img').attributes('src')).toContain('sku-0.jpg')
     await wrapper.get('a[aria-label="查看订单 0"]').trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.query.order).toBe(orders[0]!.id)

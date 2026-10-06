@@ -7,7 +7,7 @@ import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
 import OrderProcurementLine from './OrderProcurementLine.vue'
 import OrderPurchaseDialog from './OrderPurchaseDialog.vue'
-import { deadline, platformStatusLabel, stateTone } from './orderPresentation'
+import { amountLabel, deadline, money, platformStatusLabel, stateTone } from './orderPresentation'
 const props = defineProps<{ orderId: string }>()
 const emit = defineEmits<{ back: []; updated: [] }>()
 const detail = ref<OrderDetail | null>(null)
@@ -18,26 +18,10 @@ const purchaseKey = ref('')
 const purchaseItem = computed(() =>
   detail.value?.lines.find((line) => line.selection.line_key === purchaseKey.value)
 )
-const eligible = computed(() =>
-  detail.value?.order.state === 'pending_shipment'
-    ? detail.value.lines.filter(
-        (line) => line.selection.status === 'confirmed' && line.remaining_quantity > 0
-      )
-    : []
-)
-const allPurchased = computed(
-  () =>
-    !!detail.value?.lines.length &&
-    detail.value.lines.every((line) => line.remaining_quantity === 0 && line.line.quantity > 0)
-)
-const footerHint = computed(() => {
-  if (!detail.value) return '正在读取订单'
-  if (allPurchased.value) return '采购已记录，平台履约状态保持独立。'
-  if (detail.value.order.state !== 'pending_shipment') return '当前平台状态不支持新增采购记录。'
-  return eligible.value.length
-    ? '在采购平台下单后，回到这里记录。'
-    : '先确认采购来源，再记录已采购数量。'
-})
+const totals = computed(() => ({
+  ordered: detail.value?.lines.reduce((sum, line) => sum + line.line.quantity, 0) || 0,
+  purchased: detail.value?.lines.reduce((sum, line) => sum + line.purchased_quantity, 0) || 0,
+}))
 const locked = computed(() => locks.size > 0 || !!purchaseKey.value)
 const shipment = computed(() => deadline(detail.value?.order.shipment_deadline, Date.now()))
 async function load() {
@@ -67,7 +51,7 @@ onMounted(load)
     :open="true"
     title="订单详情"
     variant="drawer"
-    width="656px"
+    width="720px"
     class="order-ui order-detail"
     :close-disabled="locked"
     @close="$emit('back')"
@@ -95,52 +79,48 @@ onMounted(load)
         >
           平台已确认备妥，等待交接发货；仍计入待发货，与采购记录独立。
         </p>
-        <div
-          v-if="detail.order.state === 'pending_shipment'"
-          class="order-row order-deadline"
-          :class="{ urgent: shipment.urgent }"
-        >
-          <span>{{ detail.order.platform === 'yandex' ? '发货日期' : '发货截止' }} {{ shipment.text }}</span><span>{{ shipment.note }}</span>
-        </div>
-        <div class="order-detail-amount">
+        <dl class="order-overview">
+          <div>
+            <dt>{{ amountLabel(detail.order, detail.order.platform) }}</dt>
+            <dd>{{ money(detail.order.amount) }} <small>{{ detail.order.currency }}</small></dd>
+          </div>
+          <div :class="{ urgent: detail.order.state === 'pending_shipment' && shipment.urgent }">
+            <dt>{{ detail.order.platform === 'yandex' ? '发货日期' : '发货截止' }}</dt>
+            <dd>{{ shipment.text }}<span class="order-overview-note order-muted">{{ shipment.note }}</span></dd>
+          </div>
+          <div>
+            <dt>采购进度</dt>
+            <dd>{{ totals.purchased }} <small>/ {{ totals.ordered }} 件</small><span class="order-overview-note order-muted">{{ detail.lines.length }} 个 SKU</span></dd>
+          </div>
+        </dl>
+        <details class="order-financial-details">
+          <summary>查看金额明细</summary>
           <OrderAmountDetails :value="detail.order" :platform="detail.order.platform" />
-        </div>
+        </details>
       </header>
-      <h3 class="font-semibold mt-5">商品与采购</h3>
-      <OrderProcurementLine
-        v-for="(line, index) in detail.lines"
-        :key="`${line.selection.line_key}:${index}`"
-        :item="line"
-        :order="detail.order"
-        :show-purchase-action="detail.lines.length > 1"
-        @updated="update"
-        @purchase="purchaseKey = $event"
-        @lock="setLock(`${line.selection.line_key}:${index}`, $event)"
-      />
+      <div class="order-section-heading">
+        <h3>商品与采购</h3>
+        <span class="order-muted">逐项核对规格并登记采购</span>
+      </div>
+      <div class="order-product-list">
+        <OrderProcurementLine
+          v-for="(line, index) in detail.lines"
+          :key="`${line.selection.line_key}:${index}`"
+          :item="line"
+          :order="detail.order"
+          @updated="update"
+          @purchase="purchaseKey = $event"
+          @lock="setLock(`${line.selection.line_key}:${index}`, $event)"
+        />
+      </div>
       <p v-if="!detail.lines.length" class="order-muted py-8">
         平台尚未提供商品明细，请同步订单后重试。
       </p>
     </template>
     <template #footer>
       <div class="order-row">
-        <p class="order-muted">
-          {{ footerHint }}
-        </p>
-        <button
-          v-if="allPurchased"
-          class="order-button order-primary"
-          :disabled="locked"
-          @click="$emit('back')"
-        >
-          完成
-        </button><button
-          v-else
-          class="order-button order-primary"
-          :disabled="!eligible.length || locked || loading"
-          @click="purchaseKey = eligible[0]!.selection.line_key"
-        >
-          记录采购
-        </button>
+        <p class="order-muted">采购记录与平台发货状态独立，操作位于对应商品卡片。</p>
+        <button class="order-button" :disabled="locked" @click="$emit('back')">关闭详情</button>
       </div>
     </template>
   </WorkspaceDialog>
@@ -153,41 +133,32 @@ onMounted(load)
   />
 </template>
 <style scoped>
-h2 {
-  font-size: 23px;
-  font-weight: 700;
-}
-.order-deadline {
-  margin-top: 16px;
-  padding: 10px 12px;
-  border-radius: 5px;
-  background: var(--order-soft);
-  font-size: 12px;
-}
-.order-deadline.urgent {
-  background: #fffbeb;
-  color: #b45309;
-}
-.order-detail-amount {
-  padding: 16px 0;
-  border-bottom: 1px solid var(--order-border);
-}
-.order-detail-amount :deep(.mt-2) {
+h2 { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+.order-overview {
   display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  margin: 0;
+  grid-template-columns: 1.2fr 1fr 0.8fr;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid var(--order-border);
+  border-radius: 8px;
+  background: var(--order-soft);
 }
-.order-detail-amount :deep(.font-semibold) {
-  font-size: 23px;
-}
-.order-detail-amount :deep(.muted) {
-  grid-column: 1 / -1;
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--order-muted);
-}
-.order-detail :deep(.order-procurement-line:last-child) {
-  border-bottom: 0;
+.order-overview > div { min-width: 0; }
+.order-overview dt { color: var(--order-muted); font-size: 11px; }
+.order-overview dd { margin-top: 8px; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.order-overview small { font-size: 12px; font-weight: 400; }
+.order-overview-note { display: block; font-weight: 400; }
+.urgent dd { color: #b45309; }
+.order-financial-details { margin-top: 12px; font-size: 12px; }
+.order-financial-details summary { cursor: pointer; color: var(--order-muted); }
+.order-financial-details :deep(.mt-2) { padding: 12px; background: var(--order-soft); border-radius: 6px; }
+.order-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 24px 0 12px; }
+.order-section-heading h3 { font-size: 14px; font-weight: 600; }
+.order-product-list { display: grid; gap: 16px; }
+@media (max-width: 480px) {
+  .order-overview { grid-template-columns: 1fr 1fr; gap: 16px 12px; }
+  .order-overview > div:first-child { grid-column: 1 / -1; }
+  .order-section-heading { flex-wrap: wrap; }
 }
 </style>

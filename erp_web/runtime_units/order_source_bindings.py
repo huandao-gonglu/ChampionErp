@@ -2,9 +2,62 @@
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlsplit
+
 from pydantic import ValidationError
 
+from erp_web.product_model.draft_image_model import normalize_draft_image_refs
 from erp_web.schemas.order_procurement import ProcurementSource, SalesSkuBinding
+
+
+def published_sku_image(product: dict, platform: str, fact: dict) -> str:
+    """只解析冻结发布资料；规格覆盖优先，缺失的指定资产不能换成其他规格。"""
+    draft = (product.get("drafts") or {}).get(platform) or {}
+    row = next(
+        (
+            row
+            for row in draft.get("sku_items", [])
+            if row.get("sku_id") == fact.get("id")
+        ),
+        {},
+    )
+    asset_id = (row.get("overrides") or {}).get(
+        "image_asset_id", fact.get("image_asset_id")
+    )
+    if not asset_id:
+        refs = normalize_draft_image_refs(draft.get("images"))
+        asset_id = next((ref["asset_id"] for ref in refs if ref["role"] == "main"), "")
+    if not asset_id:
+        return ""
+    asset = next(
+        (
+            item
+            for item in (product.get("source") or {}).get("image_pool", [])
+            if item.get("id") == asset_id
+        ),
+        {},
+    )
+    for key in ("preview_url", "url"):
+        value = str(asset.get(key) or "").strip()
+        try:
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme in {"https", "http"}
+                and parsed.hostname
+                and not parsed.username
+                and not parsed.password
+            ):
+                return value
+            if (
+                not parsed.scheme
+                and not parsed.netloc
+                and parsed.path == "/file"
+                and parse_qs(parsed.query).get("path")
+            ):
+                return value
+        except ValueError:
+            continue
+    return ""
 
 
 def bindings_from_publish_job(job: dict) -> list[SalesSkuBinding]:
@@ -66,6 +119,7 @@ def bindings_from_publish_job(job: dict) -> list[SalesSkuBinding]:
                         sku_id=state["sku_id"],
                         source=origin,
                         publication_id=str(job.get("job_id") or ""),
+                        image_url=published_sku_image(product, platform, fact),
                     )
                 )
     return bindings

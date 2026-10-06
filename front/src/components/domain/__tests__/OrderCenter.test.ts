@@ -51,6 +51,7 @@ const item = (confirmed = true): ProcurementLine => ({
     quantity: 2,
     amount: '74.00',
     currency: 'CNY',
+    image_url: 'https://images.example/SALE-1.jpg',
   },
   selection: {
     line_key: 'line-1',
@@ -180,6 +181,10 @@ describe('订单采购交互', () => {
     expect(wrapper.text()).toContain('付款 48.10 CNY')
     expect(wrapper.text()).toContain('平台补贴 25.90 CNY')
     expect(wrapper.text()).toContain('商品与采购')
+    expect(wrapper.get('.order-line-product img').attributes('src')).toContain('SALE-1.jpg')
+    expect(wrapper.get('.order-overview').text()).toContain('采购进度')
+    expect(wrapper.get('.order-financial-details').attributes('open')).toBeUndefined()
+    expect(wrapper.findAll('button').filter((button) => button.text() === '记录采购')).toHaveLength(1)
     await wrapper
       .findAll('button')
       .find((b) => b.attributes('aria-label') === '关闭订单详情')!
@@ -303,6 +308,7 @@ describe('订单采购弹窗', () => {
   it('多个 SKU 分别记录采购，缺少确认的 SKU 不能登记', async () => {
     const second = item(false)
     second.line.sku = 'SALE-2'
+    second.line.image_url = 'https://images.example/SALE-2.jpg'
     second.selection.line_key = 'line-2'
     vi.mocked(fetchOrderDetail).mockResolvedValue({
       ...detail(),
@@ -314,6 +320,8 @@ describe('订单采购弹窗', () => {
     })
     await flushPromises()
     const lines = wrapper.findAllComponents(OrderProcurementLine)
+    expect(lines[0]!.get('img').attributes('src')).toContain('SALE-1.jpg')
+    expect(lines[1]!.get('img').attributes('src')).toContain('SALE-2.jpg')
     expect(lines[0]!.findAll('button').some((button) => button.text() === '记录采购')).toBe(true)
     expect(lines[1]!.findAll('button').some((button) => button.text() === '记录采购')).toBe(false)
     await lines[0]!

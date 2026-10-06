@@ -53,10 +53,16 @@ def read_orders(*, platform="", state="", limit=50, offset=0, q=""):
         query=str(q).strip()[:200],
     )
     procurement = get_context().order_procurement
-    for row in result["items"]:
-        row["procurement_status"] = procurement.store.progress(
-            OrderView.model_validate(row)
-        )
+    orders = procurement.present_orders(
+        [OrderView.model_validate(row) for row in result["items"]]
+    )
+    result["items"] = [
+        {
+            **order.model_dump(mode="json"),
+            "procurement_status": procurement.store.progress(order),
+        }
+        for order in orders
+    ]
     result["pagination"] = {
         "limit": max(1, min(int(limit), 100)),
         "offset": max(0, int(offset)),

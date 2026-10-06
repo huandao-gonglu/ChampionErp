@@ -15,6 +15,7 @@ export interface OrderLine extends OrderAmount {
   sku: string
   title: string
   quantity: number
+  image_url?: string
 }
 export interface OrderSnapshot extends OrderAmount {
   id: string

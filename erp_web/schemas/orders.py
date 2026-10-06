@@ -45,6 +45,10 @@ class OrderLine(BaseModel):
     sku: str = ""
     title: str = ""
     quantity: int = 0
+    image_url: str = Field(
+        default="",
+        description="由店铺及销售 SKU 唯一匹配的发布快照图片；无可靠匹配时为空",
+    )
     amount: str = ""
     currency: str = ""
     amount_breakdown: OrderAmountBreakdown | None = None

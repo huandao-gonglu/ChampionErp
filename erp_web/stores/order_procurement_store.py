@@ -73,7 +73,11 @@ class OrderProcurementStore:
         with self.orders.connect() as conn:
             for binding in bindings:
                 conn.execute(
-                    "INSERT OR IGNORE INTO sales_sku_bindings VALUES (?,?,?,?,?)",
+                    """INSERT INTO sales_sku_bindings VALUES (?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET binding_json=json_set(
+                        sales_sku_bindings.binding_json, '$.image_url', json_extract(excluded.binding_json, '$.image_url'))
+                    WHERE COALESCE(json_extract(sales_sku_bindings.binding_json, '$.image_url'), '')=''
+                    AND COALESCE(json_extract(excluded.binding_json, '$.image_url'), '')!=''""",
                     (
                         binding.identity,
                         binding.platform,

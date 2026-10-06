@@ -14,6 +14,7 @@ from erp_web.schemas.order_procurement import (
     SourceSelection,
     order_line_key,
 )
+from erp_web.schemas.orders import OrderView
 from erp_web.stores.order_procurement_store import OrderProcurementStore, line_signature
 
 
@@ -25,9 +26,37 @@ class OrderProcurementService:
         self.accounts_provider = accounts_provider
         self.identity_provider = identity_provider
 
+    def present_orders(self, orders: list[OrderView]) -> list[OrderView]:
+        """为列表和详情补充图片，不修改平台快照或采购事实，不查询远端商品。"""
+        identities = {
+            platform: self.identity_provider(platform)
+            for platform in {order.platform for order in orders}
+        }
+        images = {}
+        result = []
+        for order in orders:
+            lines = []
+            for line in order.items:
+                key = (order.platform, line.sku, line.remote_id, line.variant_id)
+                if key not in images:
+                    identity = identities[order.platform]
+                    candidates = (
+                        self.store.candidates(order.platform, identity, line)
+                        if identity
+                        else []
+                    )
+                    matches = {
+                        (row.product_id, row.sku_id, row.image_url)
+                        for row in candidates
+                    }
+                    images[key] = next(iter(matches))[2] if len(matches) == 1 else ""
+                lines.append(line.model_copy(update={"image_url": images[key]}))
+            result.append(order.model_copy(update={"items": lines}))
+        return result
+
     def detail(self, order_id: str) -> dict:
         accounts = self.accounts_provider()
-        order = self.store.order(order_id, accounts)
+        order = self.present_orders([self.store.order(order_id, accounts)])[0]
         counts = Counter(order_line_key(line) for line in order.items)
         lines = []
         identity = self.identity_provider(order.platform)

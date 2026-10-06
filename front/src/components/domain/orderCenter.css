@@ -142,16 +142,6 @@
   padding: 22px 0;
   border-bottom: 1px solid var(--order-border);
 }
-.order-ui .order-source {
-  margin-top: 24px;
-  padding: 16px;
-  border-radius: 7px;
-  background: var(--order-soft);
-  overflow-wrap: anywhere;
-}
-.order-ui .order-source p {
-  margin-top: 8px;
-}
 .order-ui .order-form {
   display: grid;
   gap: 24px;

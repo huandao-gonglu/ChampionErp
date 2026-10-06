@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { orderPlatformNames, ORDER_PAGE_SIZE } from '@/types/orders'
 import type { OrdersPage } from '@/types/orders'
+import OrderThumbnail from './OrderThumbnail.vue'
 import {
   amountLabel,
   deadline,
@@ -45,19 +46,24 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
         <tbody>
           <tr v-for="order in page.items" :key="order.id">
             <td>
-              <div class="order-item-meta">
-                <span>{{ order.order_id }}</span><span class="order-muted" :title="order.items.map((item) => item.sku).join(' / ')">{{
-                  order.items.length > 1
-                    ? `${order.items.length} 个 SKU`
-                    : order.items[0]?.sku || 'SKU 未提供'
-                }}
-                  ·
-                  {{ order.items.reduce((n, item) => n + item.quantity, 0) }}
-                  件</span>
+              <div class="order-product-cell">
+                <OrderThumbnail :src="order.items[0]?.image_url" :title="order.items[0]?.title || order.title || '商品'" />
+                <div class="order-product-copy">
+                  <div class="order-item-meta">
+                    <span>{{ order.order_id }}</span><span class="order-muted" :title="order.items.map((item) => item.sku).join(' / ')">{{
+                      order.items.length > 1
+                        ? `${order.items.length} 个 SKU`
+                        : order.items[0]?.sku || 'SKU 未提供'
+                    }}
+                      ·
+                      {{ order.items.reduce((n, item) => n + item.quantity, 0) }}
+                      件</span>
+                  </div>
+                  <p class="order-title" :title="order.title">
+                    {{ order.title || '暂无商品标题' }}
+                  </p>
+                </div>
               </div>
-              <p class="order-title" :title="order.title">
-                {{ order.title || '暂无商品标题' }}
-              </p>
             </td>
             <td>
               <p>{{ orderPlatformNames[order.platform] }}</p>
@@ -174,6 +180,8 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
   gap: 12px;
   font-size: 12px;
 }
+.order-product-cell { display: flex; align-items: center; gap: 10px; }
+.order-product-copy { min-width: 0; flex: 1; }
 .order-item-meta span {
   overflow: hidden;
   white-space: nowrap;

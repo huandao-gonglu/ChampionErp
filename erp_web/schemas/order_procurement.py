@@ -59,11 +59,12 @@ class SalesSkuBinding(BaseModel):
     sku_id: str
     source: ProcurementSource
     publication_id: str
+    image_url: str = ""
 
     @property
     def identity(self) -> str:
         # 发布记录号不参与身份；重复发布同一关联不会增加候选。
-        data = self.model_dump(exclude={"publication_id", "id"})
+        data = self.model_dump(exclude={"publication_id", "id", "image_url"})
         return hashlib.sha256(
             json.dumps(data, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()

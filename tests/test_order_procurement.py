@@ -341,7 +341,7 @@ def test_http_detail_source_and_purchase_contract(domain):
 
 
 def test_summary_counts_all_failures_and_ignores_list_pagination(domain):
-    service, order, _ = domain
+    service, _, _ = domain
     orders = service.store.orders
     for index in range(55):
         orders.enqueue(
@@ -362,3 +362,123 @@ def test_summary_counts_all_failures_and_ignores_list_pagination(domain):
     assert "notifications" not in summary
     assert orders.read({"yandex": "4"}, query="SALE-1")["total"] == 1
     assert orders.read({"yandex": "4"}, query="absent")["total"] == 0
+
+
+def image_job():
+    value = job()
+    product = value["product"]
+    product["source"]["image_pool"] = [
+        {"id": key, "url": f"https://images.example/{key}.jpg"}
+        for key in ("red", "translated", "main")
+    ]
+    product["sku_items"][0]["image_asset_id"] = "red"
+    product["drafts"] = {
+        "yandex": {
+            "images": [{"asset_id": "main", "role": "main", "order": 0}],
+            "sku_items": [{"sku_id": "internal-red", "overrides": {}}],
+        }
+    }
+    return value
+
+
+def test_frozen_thumbnail_respects_sku_override_and_missing_asset():
+    value = image_job()
+    draft = value["product"]["drafts"]["yandex"]
+    assert bindings_from_publish_job(value)[0].image_url.endswith("/red.jpg")
+    draft["sku_items"][0]["overrides"]["image_asset_id"] = "translated"
+    assert bindings_from_publish_job(value)[0].image_url.endswith("/translated.jpg")
+    draft["sku_items"][0]["overrides"]["image_asset_id"] = "missing"
+    assert bindings_from_publish_job(value)[0].image_url == ""
+    draft["sku_items"][0]["overrides"]["image_asset_id"] = ""
+    assert bindings_from_publish_job(value)[0].image_url.endswith("/main.jpg")
+
+
+@pytest.mark.parametrize(
+    "preview",
+    [
+        "javascript:alert(1)",
+        "//unknown.example/image.jpg",
+        "https://user:secret@example.com/image.jpg",
+        "/api/orders/sync",
+    ],
+)
+def test_thumbnail_rejects_unsafe_preview_and_uses_asset_url(preview):
+    value = image_job()
+    value["product"]["source"]["image_pool"][0]["preview_url"] = preview
+    assert (
+        bindings_from_publish_job(value)[0].image_url
+        == "https://images.example/red.jpg"
+    )
+
+
+def test_thumbnail_accepts_existing_local_image_route():
+    value = image_job()
+    preview = "/file?path=%2Fapp%2Fdata%2Fimages%2Fred.jpg"
+    value["product"]["source"]["image_pool"][0]["preview_url"] = preview
+    assert bindings_from_publish_job(value)[0].image_url == preview
+
+
+def test_historical_thumbnail_backfill_preserves_binding_and_purchase(domain):
+    service, order, key = domain
+    old = bindings_from_publish_job(job())[0]
+    # 模拟上线前的 JSON，不包含新增字段。
+    with service.store.orders.connect() as conn:
+        conn.execute(
+            "INSERT INTO sales_sku_bindings VALUES (?,?,?,?,?)",
+            (
+                old.identity,
+                old.platform,
+                old.store_identity,
+                old.seller_sku,
+                old.model_dump_json(exclude={"image_url"}),
+            ),
+        )
+        conn.commit()
+    service.select_source(
+        {
+            "order_id": order.identity,
+            "line_key": key,
+            "revision": 0,
+            "candidate_id": old.identity,
+        }
+    )
+    service.record_purchase(purchase_body(order, key))
+    new = bindings_from_publish_job(image_job())[0]
+    assert new.identity == old.identity
+    service.store.add_bindings([new])
+    service.store.add_bindings([new])
+    detail = service.detail(order.identity)
+    line = detail["lines"][0]
+    assert len(line["selection"]["candidates"]) == 1
+    assert line["selection"]["status"] == "confirmed"
+    assert line["purchased_quantity"] == 1
+    assert (
+        line["line"]["image_url"]
+        == detail["order"]["items"][0]["image_url"]
+        == new.image_url
+    )
+    listed = service.present_orders([result_order(service, order)])
+    assert listed[0].items[0].image_url == new.image_url
+    assert result_order(service, order).items[0].image_url == ""
+    # 已保存的冻结图片不会被后续资料改写。
+    changed = new.model_copy(update={"image_url": "https://images.example/changed.jpg"})
+    service.store.add_bindings([changed])
+    assert (
+        service.detail(order.identity)["lines"][0]["line"]["image_url"] == new.image_url
+    )
+
+
+def test_thumbnail_never_uses_another_shop_or_ambiguous_sku(domain):
+    service, order, _ = domain
+    value = image_job()
+    value["approved_publications"]["yandex"]["store_identity"] = "shop-b"
+    service.store.add_bindings(bindings_from_publish_job(value))
+    assert service.detail(order.identity)["lines"][0]["line"]["image_url"] == ""
+    service.store.add_bindings(bindings_from_publish_job(image_job()))
+    assert service.detail(order.identity)["lines"][0]["line"]["image_url"].endswith(
+        "/red.jpg"
+    )
+    ambiguous = image_job()
+    ambiguous["product"]["product_id"] = "another-product"
+    service.store.add_bindings(bindings_from_publish_job(ambiguous))
+    assert service.detail(order.identity)["lines"][0]["line"]["image_url"] == ""
