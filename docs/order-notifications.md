@@ -33,6 +33,8 @@
 - Yandex：FBS/DBS/EXPRESS 的 `PROCESSING` 且阶段为 `STARTED`、`READY_TO_SHIP` 或 `PACKAGING`。FBY 不计作卖家待发货。
 - 未知或缺失状态显示“状态待确认”，不计入待发货。
 
+订单中心列表和详情将 Yandex `PROCESSING` 的具体阶段展示为 `STARTED`「备货中」、`PACKAGING`「打包中」、`READY_TO_SHIP`「已备妥」。统一的「待发货」筛选与计数仍包含这些阶段；备妥不表示已交接或已发货，采购记录也不会修改平台状态。状态以平台同步结果为准，在 Yandex 后台操作后可等待回调/周期对账，或点击「同步订单」。未知阶段保留统一状态文案，原始状态可通过状态标签提示查看。[Yandex FBS 状态流程](https://yandex.ru/dev/market/partner-api/doc/ru/step-by-step/fbs)。
+
 页面每 5 秒读取本地数据，无需等待平台授权或远端查询。保留上次成功结果并显示读取错误。桌面通知须用户点击开启并由浏览器授权；首次加载不重复弹出历史提醒。页面未读提醒可跨重启保留。
 
 ## 商品金额口径

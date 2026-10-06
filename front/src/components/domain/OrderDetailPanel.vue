@@ -2,12 +2,12 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { fetchOrderDetail } from '@/api/orders'
 import type { OrderDetail } from '@/types/orders'
-import { orderPlatformNames, orderStateNames } from '@/types/orders'
+import { orderPlatformNames } from '@/types/orders'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
 import OrderProcurementLine from './OrderProcurementLine.vue'
 import OrderPurchaseDialog from './OrderPurchaseDialog.vue'
-import { deadline, stateTone } from './orderPresentation'
+import { deadline, platformStatusLabel, stateTone } from './orderPresentation'
 const props = defineProps<{ orderId: string }>()
 const emit = defineEmits<{ back: []; updated: [] }>()
 const detail = ref<OrderDetail | null>(null)
@@ -81,13 +81,19 @@ onMounted(load)
       <header>
         <div class="order-row">
           <h2>{{ detail.order.order_id }}</h2>
-          <span class="order-badge" :data-tone="stateTone(detail.order.state)">{{
-            orderStateNames[detail.order.state]
+          <span class="order-badge" :data-tone="stateTone(detail.order.state)" :title="`${detail.order.status} ${detail.order.shipping_status}`">{{
+            platformStatusLabel(detail.order)
           }}</span>
         </div>
         <p class="order-muted mt-1">
           {{ orderPlatformNames[detail.order.platform] }} /
           {{ detail.order.fulfillment || '履约未提供' }}
+        </p>
+        <p
+          v-if="detail.order.platform === 'yandex' && detail.order.status === 'PROCESSING' && detail.order.shipping_status === 'READY_TO_SHIP'"
+          class="order-muted mt-1"
+        >
+          平台已确认备妥，等待交接发货；仍计入待发货，与采购记录独立。
         </p>
         <div
           v-if="detail.order.state === 'pending_shipment'"

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { orderPlatformNames, orderStateNames, ORDER_PAGE_SIZE } from '@/types/orders'
+import { orderPlatformNames, ORDER_PAGE_SIZE } from '@/types/orders'
 import type { OrdersPage } from '@/types/orders'
 import {
   amountLabel,
   deadline,
   money,
+  platformStatusLabel,
   procurementNames,
   procurementTone,
   stateTone,
@@ -71,7 +72,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
                 class="order-badge"
                 :data-tone="stateTone(order.state)"
                 :title="`${order.status} ${order.shipping_status}`"
-              >{{ orderStateNames[order.state] }}</span>
+              >{{ platformStatusLabel(order) }}</span>
             </td>
             <td>
               <span class="order-badge" :data-tone="procurementTone(order.procurement_status)">{{

@@ -1,4 +1,20 @@
-import type { OrderAmount, OrderPlatform, OrderState } from '@/types/orders'
+import { orderStateNames } from '@/types/orders'
+import type { OrderAmount, OrderPlatform, OrderSnapshot, OrderState } from '@/types/orders'
+
+const yandexProcessingNames: Record<string, string> = {
+  STARTED: '备货中',
+  PACKAGING: '打包中',
+  READY_TO_SHIP: '已备妥',
+}
+
+export function platformStatusLabel(
+  order: Pick<OrderSnapshot, 'platform' | 'status' | 'shipping_status' | 'state'>
+) {
+  // 具体阶段用于展示；统一状态继续负责跨平台筛选、提醒与采购规则。
+  if (order.platform === 'yandex' && order.status === 'PROCESSING')
+    return yandexProcessingNames[order.shipping_status] || orderStateNames[order.state]
+  return orderStateNames[order.state]
+}
 
 export const procurementNames: Record<string, string> = {
   unpurchased: '待采购',
