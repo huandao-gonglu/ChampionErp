@@ -837,15 +837,6 @@ describe('workflow store live API flow', () => {
           masked_access_token: 'toke...cret',
           status: '已配置',
         },
-        yunexpress: {
-          app_id: 'yun-...p-id',
-          app_secret: 'yun-...cret',
-          source_key: 'yun-...-key',
-          masked_app_id: 'yun-...p-id',
-          masked_app_secret: 'yun-...cret',
-          masked_source_key: 'yun-...-key',
-          status: '已配置',
-        },
       },
       storeConfig: {},
       storeAuthSummary: {},
@@ -857,21 +848,16 @@ describe('workflow store live API flow', () => {
     await store.loadState()
 
     const api1688 = store.appConfig['1688_api'] as Record<string, unknown>
-    const yunexpress = store.appConfig.yunexpress as Record<string, unknown>
     expect(store.appConfig.alibaba_cookie).toBe('')
     expect(api1688.app_key).toBe('')
     expect(api1688.app_secret).toBe('')
     expect(api1688.access_token).toBe('')
     expect(api1688.masked_app_secret).toBe('app...cret')
-    expect(yunexpress.app_id).toBe('')
-    expect(yunexpress.app_secret).toBe('')
-    expect(yunexpress.source_key).toBe('')
-    expect(yunexpress.masked_app_secret).toBe('yun-...cret')
     expect(store.collectForm).not.toHaveProperty('alibabaCookie')
     expect(store.collectForm).not.toHaveProperty('alibabaAppSecret')
   })
 
-  it('does not retain submitted 1688 or YunExpress plaintext credentials', async () => {
+  it('保存后不在状态中保留提交的 1688 明文凭据', async () => {
     vi.mocked(workflowApi.saveAiConfig).mockResolvedValue({
       raw: {
         '1688_api': {
@@ -883,15 +869,6 @@ describe('workflow store live API flow', () => {
           masked_access_token: 'subm...oken',
           status: '已配置',
         },
-        yunexpress: {
-          app_id: 'subm...p-id',
-          app_secret: 'subm...cret',
-          source_key: 'subm...-key',
-          masked_app_id: 'subm...p-id',
-          masked_app_secret: 'subm...cret',
-          masked_source_key: 'subm...-key',
-          status: '已配置',
-        },
       },
     })
     const submitted = {
@@ -899,11 +876,6 @@ describe('workflow store live API flow', () => {
         app_key: 'submitted-1688-app-key',
         app_secret: 'submitted-1688-app-secret',
         access_token: 'submitted-1688-access-token',
-      },
-      yunexpress: {
-        app_id: 'submitted-yun-app-id',
-        app_secret: 'submitted-yun-app-secret',
-        source_key: 'submitted-yun-source-key',
       },
     }
 
@@ -919,14 +891,10 @@ describe('workflow store live API flow', () => {
       'submitted-1688-app-key',
       'submitted-1688-app-secret',
       'submitted-1688-access-token',
-      'submitted-yun-app-id',
-      'submitted-yun-app-secret',
-      'submitted-yun-source-key',
     ]) {
       expect(serialized).not.toContain(secret)
     }
     expect((store.appConfig['1688_api'] as Record<string, unknown>).app_secret).toBe('')
-    expect((store.appConfig.yunexpress as Record<string, unknown>).source_key).toBe('')
   })
 
   it('keeps a newly saved API key configured when the provider model is still blank', async () => {

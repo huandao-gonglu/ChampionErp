@@ -8,13 +8,6 @@ from typing import Any
 import pytest
 
 from erp_web.context import get_context
-from erp_web.runtime_units.logistics_capabilities import (
-    LOGISTICS_SHIPMENT_CREATE_TOOL,
-    LogisticsCapabilityScope,
-    _logistics_shipment_approval_snapshot,
-    logistics_shipment_create,
-    logistics_shipment_preview,
-)
 from erp_web.runtime_units.platform_query_capabilities import (
     PlatformQueryCapabilityScope,
     platform_orders_query,
@@ -40,17 +33,13 @@ from erp_web.runtime_units.store_auth_capabilities import (
     store_auth_check,
     store_auth_checklist,
 )
-from erp_web.schemas.ai_tools import AiToolExecutionError, ToolApprovalSnapshot
+from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category_query_capabilities import (
     CategoryAttributeValuesQueryRequest,
     CategoryAttributesQueryRequest,
     CategoryPrecheckRequest,
     CategorySearchRequest,
-)
-from erp_web.schemas.logistics_capabilities import (
-    LogisticsShipmentCreateRequest,
-    LogisticsShipmentPreviewRequest,
 )
 from erp_web.schemas.platform_query_capabilities import (
     PlatformOrdersQueryRequest,
@@ -68,7 +57,6 @@ from erp_web.schemas.store_auth_capabilities import (
     StoreAuthChecklistRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.tool_approval import approval_binding_digest
 
 
 def _execution(
@@ -81,41 +69,6 @@ def _execution(
         budget_profile="test",
         business_scope={"task_id": "task-1", "tool_call_id": "step-1"},
         idempotency_context={"operation_key": operation_key},
-    )
-
-
-def _approved_execution(
-    snapshot: ToolApprovalSnapshot,
-    capability_name: str,
-    *,
-    operation_key: str = "op-1",
-    tool_call_id: str = "step-1",
-    approval_revision: int = 1,
-    deadline_seconds: float = 300,
-) -> AiExecutionContext:
-    """模拟 Controller 批准后注入的可信审批上下文（digest + 任务版本）。"""
-
-    digest = approval_binding_digest(
-        snapshot=snapshot,
-        capability_name=capability_name,
-        capability_version="1",
-        operation_key=operation_key,
-        tool_call_id=tool_call_id,
-        approval_revision=approval_revision,
-    )
-    return AiExecutionContext(
-        task_run_id="task-1",
-        attempt_id="attempt-1",
-        deadline_at=datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds),
-        budget_profile="test",
-        business_scope={
-            "task_id": "task-1",
-            "tool_call_id": tool_call_id,
-            "approver": "local-ui:test",
-        },
-        idempotency_context={"operation_key": operation_key},
-        approval_digest=digest,
-        approval_revision=approval_revision,
     )
 
 
@@ -549,231 +502,3 @@ def test_store_auth_checklist_and_check() -> None:
     )
     assert failed.ok is False
     assert "token 已过期" in failed.message
-
-
-# ---------------------------------------------------------------- 物流
-
-
-def _valid_shipment() -> dict[str, Any]:
-    return {
-        "product_code": "YC001",
-        "receiver": {"name": "Test Buyer", "country": "MX"},
-        "packages": [{"weight": 0.5}],
-        "declaration_info": [{"name_en": "fan"}],
-    }
-
-
-def test_logistics_preview_and_create_with_server_snapshot() -> None:
-    context = get_context()
-    captured: dict[str, Any] = {}
-
-    class _FakeClient:
-        def __init__(self, config: dict[str, Any]) -> None:
-            captured["config"] = config
-
-        def create_package_order(
-            self,
-            payload: dict[str, Any],
-            access_token: str = "",
-            *,
-            timeout_seconds: float | None = None,
-        ) -> dict[str, Any]:
-            captured["payload"] = payload
-            captured["timeout_seconds"] = timeout_seconds
-            return {"response": {"success": True, "result": {"waybill": "WB1"}}}
-
-    scope = LogisticsCapabilityScope(
-        context=context,
-        client_factory=_FakeClient,
-    )
-    shipment = _valid_shipment()
-    preview = logistics_shipment_preview(
-        LogisticsShipmentPreviewRequest(shipment=shipment), scope=scope
-    )
-    # 预览是纯只读：不再携带审批 payload，审批信息只由服务端快照生成。
-    assert not hasattr(preview, "approval")
-    assert preview.request_payload
-
-    request = LogisticsShipmentCreateRequest(shipment=shipment)
-    # 没有可信审批上下文的直接执行必须被拒绝。
-    with pytest.raises(AiToolExecutionError) as missing:
-        logistics_shipment_create(request, scope=scope, execution=_execution())
-    assert missing.value.code == "TOOL_APPROVAL_CONTEXT_REQUIRED"
-    assert "payload" not in captured
-
-    snapshot = _logistics_shipment_approval_snapshot(request, scope)
-    assert "Test Buyer" in snapshot.summary
-    assert snapshot.canonical_payload["shipment"] == shipment
-
-    created = logistics_shipment_create(
-        request,
-        scope=scope,
-        execution=_approved_execution(snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL),
-    )
-    assert created.message
-    assert captured["payload"]["product_code"] == "YC001"
-    # 底层 HTTP 调用必须收到有界 timeout（bounded 上限 20s，受外层剩余时间约束）。
-    assert captured["timeout_seconds"] is not None
-    assert 0 < captured["timeout_seconds"] <= 20
-
-    # 批准后篡改运单内容 → 原审批失效。
-    tampered = dict(shipment)
-    tampered["product_code"] = "OTHER"
-    with pytest.raises(AiToolExecutionError) as stale:
-        logistics_shipment_create(
-            LogisticsShipmentCreateRequest(shipment=tampered),
-            scope=scope,
-            execution=_approved_execution(snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL),
-        )
-    assert stale.value.code == "LOGISTICS_APPROVAL_STALE"
-
-
-def test_logistics_preview_and_create_error_mapping() -> None:
-    context = get_context()
-    scope = LogisticsCapabilityScope(
-        context=context,
-        client_factory=lambda config: None,  # type: ignore[arg-type,return-value]
-    )
-    with pytest.raises(BusinessCapabilityError) as incomplete:
-        logistics_shipment_preview(
-            LogisticsShipmentPreviewRequest(shipment={"product_code": "YC001"}),
-            scope=scope,
-        )
-    assert incomplete.value.code == "LOGISTICS_PREVIEW_INCOMPLETE"
-
-    shipment = _valid_shipment()
-    request = LogisticsShipmentCreateRequest(shipment=shipment)
-
-    class _RejectedClient:
-        def __init__(self, config: dict[str, Any]) -> None:
-            pass
-
-        def create_package_order(
-            self,
-            payload: dict[str, Any],
-            access_token: str = "",
-            *,
-            timeout_seconds: float | None = None,
-        ) -> dict[str, Any]:
-            return {
-                "response": {
-                    "success": False,
-                    "code": "ADDR_INVALID",
-                    "msg": "地址无效",
-                }
-            }
-
-    rejected_scope = LogisticsCapabilityScope(
-        context=context,
-        client_factory=_RejectedClient,
-    )
-    rejected_snapshot = _logistics_shipment_approval_snapshot(request, rejected_scope)
-    with pytest.raises(BusinessCapabilityError) as rejected:
-        logistics_shipment_create(
-            request,
-            scope=rejected_scope,
-            execution=_approved_execution(
-                rejected_snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL
-            ),
-        )
-    assert rejected.value.code == "LOGISTICS_CREATE_REJECTED"
-
-    class _BrokenClient:
-        def __init__(self, config: dict[str, Any]) -> None:
-            pass
-
-        def create_package_order(
-            self,
-            payload: dict[str, Any],
-            access_token: str = "",
-            *,
-            timeout_seconds: float | None = None,
-        ) -> dict[str, Any]:
-            raise RuntimeError("connection refused")
-
-    broken_scope = LogisticsCapabilityScope(
-        context=context,
-        client_factory=_BrokenClient,
-    )
-    broken_snapshot = _logistics_shipment_approval_snapshot(request, broken_scope)
-    with pytest.raises(BusinessCapabilityError) as broken:
-        logistics_shipment_create(
-            request,
-            scope=broken_scope,
-            execution=_approved_execution(
-                broken_snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL
-            ),
-        )
-    # 外部下单请求已发出后失败：结果是未知的，必须禁止自动重试。
-    assert broken.value.code == "LOGISTICS_CREATE_OUTCOME_UNKNOWN"
-    assert broken.value.retryable is False
-    assert broken.value.details == {"outcome_unknown": True}
-
-    class _TimeoutClient:
-        def __init__(self, config: dict[str, Any]) -> None:
-            pass
-
-        def create_package_order(
-            self,
-            payload: dict[str, Any],
-            access_token: str = "",
-            *,
-            timeout_seconds: float | None = None,
-        ) -> dict[str, Any]:
-            raise TimeoutError("云途 API 请求超时")
-
-    timeout_scope = LogisticsCapabilityScope(
-        context=context,
-        client_factory=_TimeoutClient,
-    )
-    timeout_snapshot = _logistics_shipment_approval_snapshot(request, timeout_scope)
-    with pytest.raises(BusinessCapabilityError) as timed_out:
-        logistics_shipment_create(
-            request,
-            scope=timeout_scope,
-            execution=_approved_execution(
-                timeout_snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL
-            ),
-        )
-    # 超时后的副作用同样不得记录为普通可重试失败。
-    assert timed_out.value.code == "LOGISTICS_CREATE_OUTCOME_UNKNOWN"
-    assert timed_out.value.retryable is False
-    assert timed_out.value.details == {"outcome_unknown": True}
-
-
-def test_logistics_create_uses_outer_remaining_when_shorter_than_default() -> None:
-    """P1-4：外层剩余时间短于内层默认（20s）时，必须实际采用外层剩余时间。"""
-
-    context = get_context()
-    captured: dict[str, Any] = {}
-
-    class _Client:
-        def __init__(self, config: dict[str, Any]) -> None:
-            pass
-
-        def create_package_order(
-            self,
-            payload: dict[str, Any],
-            access_token: str = "",
-            *,
-            timeout_seconds: float | None = None,
-        ) -> dict[str, Any]:
-            captured["timeout_seconds"] = timeout_seconds
-            return {"response": {"success": True, "result": {"waybill": "WB1"}}}
-
-    scope = LogisticsCapabilityScope(context=context, client_factory=_Client)
-    request = LogisticsShipmentCreateRequest(shipment=_valid_shipment())
-    snapshot = _logistics_shipment_approval_snapshot(request, scope)
-
-    # 外层只剩 3s，远小于云途默认 20s：底层 HTTP 必须收到 ~3s，而不是 20s。
-    logistics_shipment_create(
-        request,
-        scope=scope,
-        execution=_approved_execution(
-            snapshot,
-            LOGISTICS_SHIPMENT_CREATE_TOOL,
-            deadline_seconds=3,
-        ),
-    )
-    assert captured["timeout_seconds"] is not None
-    assert 0 < captured["timeout_seconds"] <= 3

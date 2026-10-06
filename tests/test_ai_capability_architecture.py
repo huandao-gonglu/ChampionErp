@@ -211,7 +211,6 @@ def test_blocking_io_capabilities_thread_bounded_timeout() -> None:
         "category_attributes_query",
         "category_attribute_values_query",
         "category_precheck",
-        "logistics_shipment_create",
     )
     offenders: list[str] = []
     for name in blocking_io_capabilities:
@@ -242,24 +241,6 @@ def test_category_search_catalog_uses_keyword_list_contract() -> None:
     assert "product_type" in properties
     assert "keywords" in properties and "query" not in properties
     assert properties["keywords"]["maxItems"] == 64
-
-
-def test_external_side_effect_capabilities_never_auto_retry_after_dispatch() -> None:
-    """调用外部平台的写能力，在请求发出后不得把异常包装成 retryable=True：
-    副作用结果未知时必须按 outcome_unknown 处理，禁止自动重试造成重复操作。"""
-
-    external_dispatch_capabilities = (
-        "logistics_shipment_create",
-    )
-    offenders: list[str] = []
-    for name in external_dispatch_capabilities:
-        tool = APPLICATION_CAPABILITY_CATALOG.tools[name]
-        source = inspect.getsource(tool.function)
-        if "retryable=True" in source:
-            offenders.append(name)
-    assert offenders == [], (
-        "以下外部写能力不得在副作用发出后声明 retryable=True：" + ", ".join(offenders)
-    )
 
 
 # -- P2-5：Job Status Reader 注册表领域无关，Controller 不依赖领域模块 ------

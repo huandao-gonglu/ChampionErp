@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.context import get_context
-from erp_web.facades import collect_facade, logistics_facade
+from erp_web.facades import collect_facade
 from erp_web.runtime_units import source_collect_1688_api
 from erp_web.services import config_service
 
@@ -88,47 +88,3 @@ def test_1688_config_uses_saved_truth_instead_of_public_masks(
         assert resolved["app_secret"] == saved["app_secret"]
         assert resolved["access_token"] == saved["access_token"]
     assert resolved_from_public_form["app_secret"] != public["app_secret"]
-
-
-def test_yunexpress_test_uses_saved_truth_instead_of_public_masks(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    saved = {
-        "environment": "sandbox",
-        "base_url": "https://openapi-sbx.yunexpress.cn",
-        "app_id": "saved-yun-app-id",
-        "app_secret": "saved-yun-app-secret",
-        "source_key": "saved-yun-source-key",
-    }
-    captured: dict[str, Any] = {}
-
-    class FakeYunExpressClient:
-        def __init__(self, config: dict[str, Any]) -> None:
-            captured.update(config)
-
-        def request_access_token(self) -> dict[str, Any]:
-            return {"access_token": "transient-token", "expires_in": 7200}
-
-    monkeypatch.setattr(
-        get_context().config,
-        "load_app_config",
-        lambda: {"yunexpress": saved},
-    )
-    monkeypatch.setattr(
-        logistics_facade,
-        "YunExpressClient",
-        FakeYunExpressClient,
-    )
-    public = config_service.public_app_config(
-        tmp_path,
-        {"yunexpress": saved},
-    )["yunexpress"]
-
-    result = logistics_facade.test_yunexpress_config(public)
-
-    assert result["ok"] is True
-    assert captured["app_id"] == saved["app_id"]
-    assert captured["app_secret"] == saved["app_secret"]
-    assert captured["source_key"] == saved["source_key"]
-    assert captured["app_secret"] != public["app_secret"]

@@ -22,7 +22,6 @@ from erp_web.runtime_units.draft_capabilities import DRAFT_QUERY_AI_CAPABILITIES
 from erp_web.runtime_units.draft_edit_capabilities import DRAFT_EDIT_AI_CAPABILITIES
 from erp_web.runtime_units.draft_changes_capability import DRAFT_CHANGES_AI_CAPABILITIES
 from erp_web.runtime_units.image_capabilities import IMAGE_AI_CAPABILITIES
-from erp_web.runtime_units.logistics_capabilities import LOGISTICS_AI_CAPABILITIES
 from erp_web.runtime_units.market_prepare_capabilities import (
     MARKET_PREPARE_AI_CAPABILITIES,
 )
@@ -64,7 +63,6 @@ IMAGE_CAPABILITIES = IMAGE_AI_CAPABILITIES
 PLATFORM_QUERY_CAPABILITIES = PLATFORM_QUERY_AI_CAPABILITIES
 UPC_CAPABILITIES = UPC_AI_CAPABILITIES
 STORE_AUTH_CAPABILITIES = STORE_AUTH_AI_CAPABILITIES
-LOGISTICS_CAPABILITIES = LOGISTICS_AI_CAPABILITIES
 COLLECTION_CAPABILITIES = COLLECTION_AI_CAPABILITIES
 RESEARCH_CAPABILITIES = RESEARCH_AI_CAPABILITIES
 SOURCE_INSPECT_CAPABILITIES = SOURCE_INSPECT_AI_CAPABILITIES
@@ -88,7 +86,6 @@ ALL_AI_CAPABILITIES = (
     *UPC_CAPABILITIES,
     *DRAFT_PRICING_AI_CAPABILITIES,
     *STORE_AUTH_CAPABILITIES,
-    *LOGISTICS_CAPABILITIES,
     *COLLECTION_CAPABILITIES,
     *RESEARCH_CAPABILITIES,
     *SOURCE_INSPECT_CAPABILITIES,
@@ -119,7 +116,6 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
         "draft_pricing_preview",
         "store_auth_checklist",
         "store_auth_check",
-        "logistics_shipment_preview",
         "collect_1688_clean",
         "research_run_status_query",
     }
@@ -168,8 +164,6 @@ _WRITE_CAPABILITIES = frozenset(
         "image_pool_sync_generated",
         "image_translate",
         "image_edit",
-        "logistics_shipment_preview",
-        "logistics_shipment_create",
         "upc_assign",
         "upc_import",
         "source_collect",
@@ -268,7 +262,6 @@ __all__ = [
     "_WRITE_CAPABILITIES",
     "IMAGE_CAPABILITIES",
     "INTERNAL_ONLY_CAPABILITIES",
-    "LOGISTICS_CAPABILITIES",
     "MARKET_PREPARE_CAPABILITIES",
     "PLATFORM_QUERY_CAPABILITIES",
     "UPC_CAPABILITIES",

@@ -15,8 +15,6 @@ from .product_research_config import (
 
 DEFAULT_EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD"
 PRESERVED_APP_CONFIG_KEYS = {"auto_ai_recognition", "alibaba_cookie"}
-YUNEXPRESS_SANDBOX_BASE_URL = "https://openapi-sbx.yunexpress.cn"
-YUNEXPRESS_PRODUCTION_BASE_URL = "https://openapi.yunexpress.cn"
 _RETIRED_AI_CONFIG_KEYS = frozenset(
     {
         "api_provider",
@@ -38,20 +36,6 @@ _RETIRED_AI_CONFIG_KEYS = frozenset(
         "openai_image_model",
         "openai_image_quality",
         "openai_model",
-    }
-)
-_RETIRED_YUNEXPRESS_KEYS = frozenset(
-    {
-        "appId",
-        "appSecret",
-        "sourceKey",
-        "productCode",
-        "sourceCode",
-        "platformAccountCode",
-        "labelType",
-        "weightUnit",
-        "sizeUnit",
-        "timeoutSeconds",
     }
 )
 
@@ -79,20 +63,6 @@ def default_app_config() -> dict[str, Any]:
             "method": "alibaba.product.get",
             "api_version": "1.0",
             "sign_method": "md5",
-            "timeout_seconds": "20",
-        },
-        "yunexpress": {
-            "environment": "sandbox",
-            "base_url": YUNEXPRESS_SANDBOX_BASE_URL,
-            "app_id": "",
-            "app_secret": "",
-            "source_key": "",
-            "product_code": "",
-            "source_code": "",
-            "platform_account_code": "",
-            "label_type": "PDF",
-            "weight_unit": "KG",
-            "size_unit": "CM",
             "timeout_seconds": "20",
         },
         "ai_models": ai_model_config.default_ai_models(),
@@ -218,78 +188,6 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
         else "未配置"
     )
     canonical["1688_api"] = next_1688_api
-    raw_yunexpress = (
-        incoming.get("yunexpress")
-        if isinstance(incoming.get("yunexpress"), dict)
-        else {}
-    )
-    retired_yunexpress_keys = sorted(set(raw_yunexpress) & _RETIRED_YUNEXPRESS_KEYS)
-    if retired_yunexpress_keys:
-        raise ValueError(
-            "yunexpress 含有已退役的 camelCase 字段："
-            + ", ".join(retired_yunexpress_keys)
-        )
-    defaults_yunexpress = defaults["yunexpress"]
-    environment = (
-        str(raw_yunexpress.get("environment") or defaults_yunexpress["environment"])
-        .strip()
-        .lower()
-    )
-    if environment not in {"sandbox", "production"}:
-        environment = "sandbox"
-    default_base_url = (
-        YUNEXPRESS_PRODUCTION_BASE_URL
-        if environment == "production"
-        else YUNEXPRESS_SANDBOX_BASE_URL
-    )
-    next_yunexpress = {
-        "environment": environment,
-        "base_url": str(raw_yunexpress.get("base_url") or default_base_url)
-        .strip()
-        .rstrip("/")
-        or default_base_url,
-        "app_id": str(raw_yunexpress.get("app_id") or "").strip(),
-        "app_secret": str(raw_yunexpress.get("app_secret") or "").strip(),
-        "source_key": str(raw_yunexpress.get("source_key") or "").strip(),
-        "product_code": str(raw_yunexpress.get("product_code") or "").strip(),
-        "source_code": str(raw_yunexpress.get("source_code") or "").strip(),
-        "platform_account_code": str(
-            raw_yunexpress.get("platform_account_code") or ""
-        ).strip(),
-        "label_type": str(
-            raw_yunexpress.get("label_type") or defaults_yunexpress["label_type"]
-        )
-        .strip()
-        .upper()
-        or "PDF",
-        "weight_unit": str(
-            raw_yunexpress.get("weight_unit") or defaults_yunexpress["weight_unit"]
-        )
-        .strip()
-        .upper()
-        or "KG",
-        "size_unit": str(
-            raw_yunexpress.get("size_unit") or defaults_yunexpress["size_unit"]
-        )
-        .strip()
-        .upper()
-        or "CM",
-        "timeout_seconds": str(
-            raw_yunexpress.get("timeout_seconds")
-            or defaults_yunexpress["timeout_seconds"]
-        ).strip(),
-    }
-    next_yunexpress["masked_app_id"] = mask_secret(next_yunexpress["app_id"])
-    next_yunexpress["masked_app_secret"] = mask_secret(next_yunexpress["app_secret"])
-    next_yunexpress["masked_source_key"] = mask_secret(next_yunexpress["source_key"])
-    next_yunexpress["status"] = (
-        "已配置"
-        if next_yunexpress["app_id"]
-        and next_yunexpress["app_secret"]
-        and next_yunexpress["source_key"]
-        else "未配置"
-    )
-    canonical["yunexpress"] = next_yunexpress
     canonical["image_hosting"] = normalize_image_hosting(incoming.get("image_hosting"))
     canonical["ai_models"] = ai_models
     canonical["ai_use_case_bindings"] = ai_use_case_bindings

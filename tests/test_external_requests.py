@@ -244,21 +244,6 @@ def test_repeated_bad_parameters_and_configured_failure_streak_stop_locally():
         request(manager,context(interface="/unstable"),lambda *a,**k: Response())
 
 
-def test_yunexpress_tokens_are_reused_across_clients_and_explicit_auth_is_fresh():
-    from erp_web.runtime_units.yunexpress_client import YunExpressClient, TOKEN_PATH
-    calls = []
-    def send(req,**kwargs):
-        calls.append(req.full_url)
-        return Response(json.dumps({"accessToken":"token-123","expiresIn":7200} if req.full_url.endswith(TOKEN_PATH) else {"success":True}).encode())
-    config = {"app_id":"app-1","app_secret":"secret","source_key":"source"}
-    for _ in range(5):
-        YunExpressClient(config,urlopen=send).create_package_order({})
-    assert sum(url.endswith(TOKEN_PATH) for url in calls) == 1
-    assert len(calls) == 6
-    YunExpressClient(config,urlopen=send).request_access_token()
-    assert sum(url.endswith(TOKEN_PATH) for url in calls) == 2
-
-
 def test_mercado_ordinary_getter_performs_no_identity_or_config_write(monkeypatch):
     from erp_web.runtime_units.store_credentials import get_mercadolibre_access_token
     from erp_web import marketplaces

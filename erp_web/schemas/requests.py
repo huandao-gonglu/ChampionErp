@@ -79,11 +79,9 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "product": OBJECT,
     "provider": OBJECT,
     "replacement": OBJECT,
-    "shipment": OBJECT,
     "storeConfig": OBJECT,
     "target": OBJECT,
     "inputs": OBJECT,
-    "yunexpress": OBJECT,
     "attributes": ARRAY,
     "categories": ARRAY,
     "draft_ids": STRING_OR_ARRAY,
@@ -172,7 +170,6 @@ _EMPTY = _contract()
 _PRODUCT = _contract(required=("product_id",))
 _DRAFT = _contract(required_any=(("draft_id", "draftId"),))
 _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"),))
-_SHIPMENT = _contract(required_any=(("shipment", "order", "payload"),))
 
 
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
@@ -242,8 +239,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/image-translate": _contract(required=("product_id", "source_image_ids")),
     "/api/load-draft": _DRAFT,
     "/api/load-product": _contract(required_any=(("product_id", "product_file_path"),)),
-    "/api/logistics/yunexpress/create-shipment": _SHIPMENT,
-    "/api/logistics/yunexpress/preview": _SHIPMENT,
     "/api/mercadolibre/auth-checklist": _EMPTY,
     "/api/mercadolibre/auth-link": _contract(required=("app_id", "redirect_uri")),
     "/api/mercadolibre/exchange-code": _contract(

@@ -659,21 +659,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
             "持久发布锁，不允许 Agent 自主触发或把它当成发布重试。"
         ),
     ),
-    # -------------------------------------------------- 物流（POST）
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/logistics/yunexpress/preview",
-        business_domain="物流",
-        disposition="capability",
-        capability_names=("logistics_shipment_preview",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/logistics/yunexpress/create-shipment",
-        business_domain="物流",
-        disposition="capability",
-        capability_names=("logistics_shipment_create",),
-    ),
     # -------------------------------------------------- 店铺授权（POST）
     AiCapabilityCoverageEntry(
         method="POST",

@@ -30,7 +30,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   saveAi: [config: UnknownRecord]
   testAi: [model: UnknownRecord]
-  testApi: [kind: 'exchange_rate' | '1688' | 'yunexpress', config: UnknownRecord, testValue?: string]
+  testApi: [kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue?: string]
   saveStore: [config: UnknownRecord]
   saveCurrency: [platform: Marketplace, currency: string]
   testAuth: [platform: Marketplace, scope?: string, config?: UnknownRecord]
@@ -55,18 +55,6 @@ const form = reactive({
   alibabaApiVersion: '1.0',
   alibabaApiTimeoutSeconds: '20',
   alibabaTestOfferId: '',
-  yunexpressEnvironment: 'sandbox',
-  yunexpressBaseUrl: 'https://openapi-sbx.yunexpress.cn',
-  yunexpressAppId: '',
-  yunexpressAppSecret: '',
-  yunexpressSourceKey: '',
-  yunexpressProductCode: '',
-  yunexpressSourceCode: '',
-  yunexpressPlatformAccountCode: '',
-  yunexpressLabelType: 'PDF',
-  yunexpressWeightUnit: 'KG',
-  yunexpressSizeUnit: 'CM',
-  yunexpressTimeoutSeconds: '20',
   mlAppId: '',
   mlClientSecret: '',
   mlRedirectUri: DEFAULT_ML_REDIRECT_URI,
@@ -130,7 +118,7 @@ const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: st
   { key: 'ai_models', label: 'AI 模型', summary: '配置模型、能力和连接测试' },
   { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
   { key: 'stores', label: '店铺授权', summary: '按一级平台保存，子站点共用凭证' },
-  { key: 'apis', label: '采集、核价与物流', summary: '汇率、1688 采集和云途物流 API' },
+  { key: 'apis', label: '采集与核价', summary: '汇率与 1688 采集 API' },
   { key: 'image_hosting', label: '图片托管', summary: 'S3 存储、默认目标与公开读取测试' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
 ]
@@ -446,7 +434,6 @@ function normalizeUseCasePrompts(value: unknown): Record<string, UnknownRecord> 
 function fillFromProps() {
   const pricing = asRecord(props.appConfig.pricing_defaults)
   const alibabaApi = asRecord(props.appConfig['1688_api'])
-  const yunexpress = asRecord(props.appConfig.yunexpress)
   const ml = asRecord(props.storeConfig.mercadolibre)
   const yandex = asRecord(props.storeConfig.yandex)
   const ozon = asRecord(props.storeConfig.ozon)
@@ -465,18 +452,6 @@ function fillFromProps() {
   form.alibabaApiMethod = firstText(alibabaApi.method, form.alibabaApiMethod)
   form.alibabaApiVersion = firstText(alibabaApi.api_version, form.alibabaApiVersion)
   form.alibabaApiTimeoutSeconds = firstText(alibabaApi.timeout_seconds, form.alibabaApiTimeoutSeconds)
-  form.yunexpressEnvironment = firstText(yunexpress.environment, form.yunexpressEnvironment)
-  form.yunexpressBaseUrl = firstText(yunexpress.base_url, form.yunexpressBaseUrl)
-  form.yunexpressAppId = ''
-  form.yunexpressAppSecret = ''
-  form.yunexpressSourceKey = ''
-  form.yunexpressProductCode = firstText(yunexpress.product_code, form.yunexpressProductCode)
-  form.yunexpressSourceCode = firstText(yunexpress.source_code, form.yunexpressSourceCode)
-  form.yunexpressPlatformAccountCode = firstText(yunexpress.platform_account_code, form.yunexpressPlatformAccountCode)
-  form.yunexpressLabelType = firstText(yunexpress.label_type, form.yunexpressLabelType)
-  form.yunexpressWeightUnit = firstText(yunexpress.weight_unit, form.yunexpressWeightUnit)
-  form.yunexpressSizeUnit = firstText(yunexpress.size_unit, form.yunexpressSizeUnit)
-  form.yunexpressTimeoutSeconds = firstText(yunexpress.timeout_seconds, form.yunexpressTimeoutSeconds)
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
@@ -571,18 +546,9 @@ const selectedAiModelImageCapable = computed(() => modelHasImageCapability(selec
 const exchangeRateReady = computed(() => Boolean(form.exchangeRateApiUrl.trim()))
 const exchangeRateHint = computed(() => props.loading ? '正在处理，请稍候' : '请填写汇率 API URL')
 const savedAlibabaApi = computed(() => asRecord(props.appConfig['1688_api']))
-const savedYunexpressApi = computed(() => asRecord(props.appConfig.yunexpress))
 const savedAlibabaCredentialsReady = computed(() => (
   firstText(savedAlibabaApi.value.status) === '已配置'
   || Boolean(firstText(savedAlibabaApi.value.masked_app_key) && firstText(savedAlibabaApi.value.masked_app_secret))
-))
-const savedYunexpressCredentialsReady = computed(() => (
-  firstText(savedYunexpressApi.value.status) === '已配置'
-  || Boolean(
-    firstText(savedYunexpressApi.value.masked_app_id)
-    && firstText(savedYunexpressApi.value.masked_app_secret)
-    && firstText(savedYunexpressApi.value.masked_source_key),
-  )
 ))
 const alibabaApiReady = computed(() => Boolean(
   form.alibabaApiBaseUrl.trim()
@@ -597,23 +563,6 @@ const alibabaApiHint = computed(() => {
     ? '将使用已保存凭据；也可填写一组仅供本次请求使用的新凭据'
     : '请填写 1688 App Key、App Secret 和 API 请求地址'
 })
-const yunexpressApiReady = computed(() => Boolean(
-  form.yunexpressBaseUrl.trim()
-  && (
-    savedYunexpressCredentialsReady.value
-    || (
-      form.yunexpressAppId.trim()
-      && form.yunexpressAppSecret.trim()
-      && form.yunexpressSourceKey.trim()
-    )
-  )
-))
-const yunexpressApiHint = computed(() => {
-  if (props.loading) return '正在处理，请稍候'
-  return savedYunexpressCredentialsReady.value
-    ? '将使用已保存凭据；也可填写一组仅供本次请求使用的新凭据'
-    : '请填写云途 App ID、App Secret、SourceKey 和 Base URL'
-})
 const alibabaAppKeyPlaceholder = computed(() => {
   const masked = firstText(savedAlibabaApi.value.masked_app_key)
   return masked ? `已配置 ${masked}；留空沿用` : 'App Key'
@@ -626,20 +575,8 @@ const alibabaAccessTokenPlaceholder = computed(() => {
   const masked = firstText(savedAlibabaApi.value.masked_access_token)
   return masked ? `已配置 ${masked}；留空沿用` : 'Access Token / Session，可选'
 })
-const yunexpressAppIdPlaceholder = computed(() => {
-  const masked = firstText(savedYunexpressApi.value.masked_app_id)
-  return masked ? `已配置 ${masked}；留空沿用` : 'App ID'
-})
-const yunexpressAppSecretPlaceholder = computed(() => {
-  const masked = firstText(savedYunexpressApi.value.masked_app_secret)
-  return masked ? `已配置 ${masked}；留空沿用` : 'App Secret / 应用秘钥'
-})
-const yunexpressSourceKeyPlaceholder = computed(() => {
-  const masked = firstText(savedYunexpressApi.value.masked_source_key)
-  return masked ? `已配置 ${masked}；留空沿用` : 'SourceKey'
-})
 const lastConfigResultChannel = computed(() => String(props.lastResult?.raw?.channel || ''))
-const showApiConfigResult = computed(() => ['exchange_rate', '1688', 'yunexpress'].includes(lastConfigResultChannel.value))
+const showApiConfigResult = computed(() => ['exchange_rate', '1688'].includes(lastConfigResultChannel.value))
 
 function useCaseBindingGenerationPayload(binding: UnknownRecord): UnknownRecord | null {
   const generation = asRecord(binding.generation)
@@ -772,20 +709,6 @@ function aiPayload(): UnknownRecord {
       api_version: form.alibabaApiVersion.trim(),
       timeout_seconds: form.alibabaApiTimeoutSeconds.trim(),
     },
-    yunexpress: {
-      environment: form.yunexpressEnvironment.trim(),
-      base_url: form.yunexpressBaseUrl.trim(),
-      app_id: form.yunexpressAppId.trim(),
-      app_secret: form.yunexpressAppSecret.trim(),
-      source_key: form.yunexpressSourceKey.trim(),
-      product_code: form.yunexpressProductCode.trim(),
-      source_code: form.yunexpressSourceCode.trim(),
-      platform_account_code: form.yunexpressPlatformAccountCode.trim(),
-      label_type: form.yunexpressLabelType.trim(),
-      weight_unit: form.yunexpressWeightUnit.trim(),
-      size_unit: form.yunexpressSizeUnit.trim(),
-      timeout_seconds: form.yunexpressTimeoutSeconds.trim(),
-    },
   }
 }
 
@@ -859,9 +782,6 @@ function clearTransientPlatformApiCredentials() {
   form.alibabaAppKey = ''
   form.alibabaAppSecret = ''
   form.alibabaAccessToken = ''
-  form.yunexpressAppId = ''
-  form.yunexpressAppSecret = ''
-  form.yunexpressSourceKey = ''
 }
 
 function emitAiSettingsAndClearTransientCredentials() {
@@ -887,14 +807,6 @@ function testAlibabaApi() {
   form.alibabaAppKey = ''
   form.alibabaAppSecret = ''
   form.alibabaAccessToken = ''
-}
-
-function testYunexpressApi() {
-  const payload = asRecord(aiPayload().yunexpress)
-  emit('testApi', 'yunexpress', payload)
-  form.yunexpressAppId = ''
-  form.yunexpressAppSecret = ''
-  form.yunexpressSourceKey = ''
 }
 
 function modelField(field: string, fallback = ''): string {
@@ -1797,13 +1709,6 @@ const mlHasRefreshToken = computed(() => Boolean(props.mercadolibreChecklist?.fi
 function copy(text: string) {
   if (text) void navigator.clipboard?.writeText(text)
 }
-
-function handleYunexpressEnvironmentChange(value: string) {
-  form.yunexpressEnvironment = value
-  form.yunexpressBaseUrl = value === 'production'
-    ? 'https://openapi.yunexpress.cn'
-    : 'https://openapi-sbx.yunexpress.cn'
-}
 </script>
 
 <template>
@@ -2448,8 +2353,8 @@ function handleYunexpressEnvironmentChange(value: string) {
         <section v-show="activeAuthSettingsTab === 'apis'" class="space-y-4">
           <div class="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
             <div>
-              <h3 class="font-semibold text-accent-950 dark:text-white">采集、核价与物流 API</h3>
-              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">维护汇率服务、1688 采集 API 和云途物流 API。</p>
+              <h3 class="font-semibold text-accent-950 dark:text-white">采集与核价 API</h3>
+              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">维护汇率服务与 1688 采集 API。</p>
             </div>
             <button data-testid="save-platform-api-settings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="props.loading" @click="saveApiSettings">保存 API 设置</button>
           </div>
@@ -2483,52 +2388,6 @@ function handleYunexpressEnvironmentChange(value: string) {
                 <input v-model="form.alibabaApiBaseUrl" class="input md:col-span-2 font-mono text-xs" placeholder="API 请求地址" />
                 <input v-model="form.alibabaApiTimeoutSeconds" class="input" placeholder="超时秒数" />
                 <input v-model="form.alibabaTestOfferId" class="input md:col-span-2" placeholder="测试商品 ID / 详情链接，可选" />
-              </div>
-            </div>
-
-            <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70 xl:col-span-2">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h4 class="font-semibold text-accent-950 dark:text-white">云途物流 API</h4>
-                  <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">用于发货时创建云途订单、获取运单号、面单和后续轨迹。</p>
-                </div>
-                <button data-testid="test-yunexpress-api" class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !yunexpressApiReady" :title="yunexpressApiReady ? '' : yunexpressApiHint" @click="testYunexpressApi">测试 token</button>
-              </div>
-              <div class="mt-3 grid gap-3 md:grid-cols-2">
-                <label class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">环境</span>
-                  <select :value="form.yunexpressEnvironment" class="input" @change="handleYunexpressEnvironmentChange(eventText($event))">
-                    <option value="sandbox">沙盒 UAT</option>
-                    <option value="production">正式环境</option>
-                  </select>
-                </label>
-                <input v-model="form.yunexpressBaseUrl" class="input font-mono text-xs" placeholder="Base URL，例如 https://openapi-sbx.yunexpress.cn" />
-                <input v-model="form.yunexpressAppId" data-testid="transient-yunexpress-app-id" class="input" :placeholder="yunexpressAppIdPlaceholder" autocomplete="off" spellcheck="false" />
-                <input v-model="form.yunexpressAppSecret" data-testid="transient-yunexpress-app-secret" type="password" class="input" :placeholder="yunexpressAppSecretPlaceholder" autocomplete="off" spellcheck="false" />
-                <input v-model="form.yunexpressSourceKey" data-testid="transient-yunexpress-source-key" type="password" class="input" :placeholder="yunexpressSourceKeyPlaceholder" autocomplete="off" spellcheck="false" />
-                <input v-model="form.yunexpressProductCode" class="input" placeholder="默认物流产品编码，例如 S1002" />
-                <input v-model="form.yunexpressSourceCode" class="input" placeholder="订单来源代码，可选" />
-                <input v-model="form.yunexpressPlatformAccountCode" class="input" placeholder="平台子账号代码，可选" />
-                <label class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">面单类型</span>
-                  <select v-model="form.yunexpressLabelType" class="input">
-                    <option value="PDF">PDF</option>
-                    <option value="PNG">PNG</option>
-                    <option value="ZPL">ZPL</option>
-                  </select>
-                </label>
-                <div class="grid gap-3 sm:grid-cols-3">
-                  <select v-model="form.yunexpressWeightUnit" class="input">
-                    <option value="KG">KG</option>
-                    <option value="G">G</option>
-                    <option value="LBS">LBS</option>
-                  </select>
-                  <select v-model="form.yunexpressSizeUnit" class="input">
-                    <option value="CM">CM</option>
-                    <option value="INCH">INCH</option>
-                  </select>
-                  <input v-model="form.yunexpressTimeoutSeconds" class="input" placeholder="超时秒数" />
-                </div>
               </div>
             </div>
           </div>

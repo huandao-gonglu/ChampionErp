@@ -51,6 +51,31 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
 )
 
 
+def test_retired_yunexpress_has_no_config_routes_or_agent_tools():
+    """云途入口已退役，配置、HTTP 与主 Agent 不得继续暴露相关功能。"""
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
+    from erp_web.app_config import default_app_config, normalize_app_config
+    from erp_web.http_routes import POST_API_ROUTES
+    from erp_web.schemas.requests import REQUEST_CONTRACTS
+
+    assert "yunexpress" not in default_app_config()
+    assert "yunexpress" not in normalize_app_config({})
+    for paths in (POST_API_ROUTES, REQUEST_CONTRACTS):
+        assert not any(path.startswith("/api/logistics/yunexpress/") for path in paths)
+    assert not any(
+        name.startswith("logistics_shipment_")
+        for name in APPLICATION_CAPABILITY_CATALOG.tools
+    )
+    for path in (
+        "erp_web/runtime_units/yunexpress_client.py",
+        "erp_web/runtime_units/logistics_capabilities.py",
+        "erp_web/schemas/logistics_capabilities.py",
+        "erp_web/facades/logistics_facade.py",
+        "erp_web/http_route_units/logistics_routes.py",
+    ):
+        assert not (ROOT / path).exists(), path
+
+
 def test_international_shipping_has_no_erp_or_agent_dependencies():
     """物流模块只接收参数，不读取 ERP 账号、启动 Agent 或维护第二套核价流程。"""
     folder = ROOT / "erp_web/international_shipping"

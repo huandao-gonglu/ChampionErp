@@ -170,10 +170,6 @@ def public_app_config(
         for key in ("access_key_id", "secret_access_key"):
             profile[key + "_configured"] = bool(raw.get(key))
             profile.pop(key, None)
-    raw_yunexpress = safe.get("yunexpress") if isinstance(safe.get("yunexpress"), dict) else {}
-    public_yunexpress = public.get("yunexpress") if isinstance(public.get("yunexpress"), dict) else {}
-    if raw_yunexpress and public_yunexpress:
-        public_yunexpress["app_id"] = mask_secret(raw_yunexpress.get("app_id"))
     return public
 
 
@@ -261,13 +257,6 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
         merged["1688_api"] = _merge_masked_secret_section(
             current_1688_api,
             incoming_1688_api,
-        )
-    if isinstance(incoming.get("yunexpress"), dict):
-        current_yunexpress = merged.get("yunexpress") if isinstance(merged.get("yunexpress"), dict) else {}
-        incoming_yunexpress = incoming.get("yunexpress") if isinstance(incoming.get("yunexpress"), dict) else {}
-        merged["yunexpress"] = _merge_masked_secret_section(
-            current_yunexpress,
-            incoming_yunexpress,
         )
     ai_model_config.validate_ai_use_case_generation_bindings(merged)
     ai_model_config.validate_ai_model_request_overrides(merged)

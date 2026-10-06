@@ -519,7 +519,7 @@ class ConfigStore:
         """Whitelist merge for client-supplied appConfig payloads (no mass assignment).
 
         Only known top-level app-config keys are accepted; nested dict sections
-        (e.g. 1688_api / yunexpress / ai_use_case_bindings) are shallow-merged so a
+        (e.g. 1688_api / ai_use_case_bindings) are shallow-merged so a
         partial update does not wipe sibling fields. Unknown keys are ignored with
         a warning.
         """

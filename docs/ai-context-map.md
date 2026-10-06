@@ -44,7 +44,7 @@
   `ExternalRequestNotSent` 表示传输层确认尚未发送 HTTP 请求。管理器将它记录为
   `not_sent` 本地拒绝，释放租约且不触发写入结果未知阻断；平台错误由 `schemas/platform_errors.py` 持有。
 - `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
-- `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传、采集与物流发送均接入。
+- `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传与采集请求均接入。
   `services/external_httpx_transport.py` 经原生 Provider 的 http_client 注入 SDK，同样检查共享状态，原生 SDK 自动重试关闭。
   流式审计只结算一次：HTTP EOF 记成功，SDK 主动关闭记 `stream_closed`，实际读取异常才记网络中断。
   `GeneratorExit` 不累计网络失败；传输层不解析模型终止事件，也不推断 Agent 是否完成。

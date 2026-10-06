@@ -7,7 +7,6 @@ __all__ = [
     "copy_facade",
     "get_facade",
     "image_facade",
-    "logistics_facade",
     "order_notification_facade",
     "order_procurement_facade",
     "product_facade",

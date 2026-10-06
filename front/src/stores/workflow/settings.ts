@@ -76,7 +76,7 @@ function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig
   }
   if (isRecord(safeSubmittedConfig.ai_use_case_bindings)) merged.ai_use_case_bindings = safeSubmittedConfig.ai_use_case_bindings
   if (isRecord(safeSubmittedConfig.ai_use_case_prompts)) merged.ai_use_case_prompts = safeSubmittedConfig.ai_use_case_prompts
-  for (const section of ['1688_api', 'yunexpress', 'pricing_defaults']) {
+  for (const section of ['1688_api', 'pricing_defaults']) {
     const publicSection = isRecord(safePublicConfig[section]) ? safePublicConfig[section] as UnknownRecord : {}
     const submittedSection = isRecord(safeSubmittedConfig[section]) ? safeSubmittedConfig[section] as UnknownRecord : {}
     merged[section] = { ...publicSection, ...submittedSection }
@@ -172,7 +172,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     }
   }
 
-  async function testPlatformApiConfig(kind: 'exchange_rate' | '1688' | 'yunexpress', config: UnknownRecord, testValue = '') {
+  async function testPlatformApiConfig(kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue = '') {
     activity.loading = true
     activity.setError('')
     try {

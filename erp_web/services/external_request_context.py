@@ -33,7 +33,7 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
     parsed = urllib.parse.urlsplit(url)
     headers = {k.lower():v for k,v in (headers or {}).items()}
     host = parsed.hostname or "external"
-    platform = platform or ({"api-seller.ozon.ru":"ozon", "api.mercadolibre.com":"mercadolibre", "api.partner.market.yandex.ru":"yandex"}.get(host)) or ("yunexpress" if host.endswith("yunexpress.cn") else host)
+    platform = platform or ({"api-seller.ozon.ru":"ozon", "api.mercadolibre.com":"mercadolibre", "api.partner.market.yandex.ru":"yandex"}.get(host)) or host
     secret = headers.get("api-key") or headers.get("authorization") or headers.get("token") or ""
     credential_id = credential_fingerprint(secret)
     if platform == "ozon":
@@ -56,7 +56,7 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
     # 接口标识去掉 URL 参数与动态数字 ID，避免敏感查询进入日志。
     interface = re.sub(r"/[0-9]+(?=/|$)", "/:id", (parsed.path or "/"))[:240]
     known_ai_path = any(parsed.path.endswith(path) for path in ("/chat/completions", "/responses", "/embeddings", "/images/generations", "/images/edits"))
-    if platform not in {"ozon","mercadolibre","yandex","yunexpress"} and not (platform.startswith("ai:") and known_ai_path):
+    if platform not in {"ozon","mercadolibre","yandex"} and not (platform.startswith("ai:") and known_ai_path):
         interface = "/resource/"+credential_fingerprint(parsed.path or "/")
     elif platform.startswith("ai:"):
         interface = next(path for path in ("/chat/completions", "/responses", "/embeddings", "/images/generations", "/images/edits") if parsed.path.endswith(path))

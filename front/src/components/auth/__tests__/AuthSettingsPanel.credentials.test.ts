@@ -28,17 +28,6 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
           api_version: '1.0',
           timeout_seconds: '20',
         },
-        yunexpress: {
-          app_id: 'mask...p-id',
-          app_secret: 'mask...cret',
-          source_key: 'mask...-key',
-          masked_app_id: 'mask...p-id',
-          masked_app_secret: 'mask...cret',
-          masked_source_key: 'mask...-key',
-          status: '已配置',
-          environment: 'sandbox',
-          base_url: 'https://example.test/yunexpress',
-        },
       },
       aiConfig,
       storeConfig,
@@ -58,6 +47,19 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
 }
 
 describe('AuthSettingsPanel credential lifecycle', () => {
+  it('API 设置仅提供汇率与 1688，不再显示或提交云途配置', async () => {
+    const wrapper = mountPanel()
+
+    await wrapper.get('[data-testid="auth-settings-tab-apis"]').trigger('click')
+    expect(wrapper.text()).toContain('核价汇率')
+    expect(wrapper.text()).toContain('1688 采集 API')
+    expect(wrapper.text()).not.toContain('云途')
+    expect(wrapper.find('[data-testid="test-yunexpress-api"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="save-platform-api-settings"]').trigger('click')
+    expect(wrapper.emitted('saveAi')?.[0]?.[0]).not.toHaveProperty('yunexpress')
+  })
+
   it('异步配置尚未返回时可渲染空平台状态', async () => {
     const wrapper = mountPanel({}, [])
 
@@ -81,13 +83,10 @@ describe('AuthSettingsPanel credential lifecycle', () => {
     expect(JSON.stringify(event?.[1])).not.toContain('mask...cret')
   })
 
-  it('clears explicit 1688 and YunExpress credentials after each request', async () => {
+  it('每次请求后清空临时填写的 1688 凭据', async () => {
     const wrapper = mountPanel()
     const appKey = wrapper.get('[data-testid="transient-1688-app-key"]')
     const appSecret = wrapper.get('[data-testid="transient-1688-app-secret"]')
-    const sourceKey = wrapper.get('[data-testid="transient-yunexpress-source-key"]')
-    const yunAppId = wrapper.get('[data-testid="transient-yunexpress-app-id"]')
-    const yunAppSecret = wrapper.get('[data-testid="transient-yunexpress-app-secret"]')
 
     await appKey.setValue('request-1688-app-key')
     await appSecret.setValue('request-1688-app-secret')
@@ -98,19 +97,6 @@ describe('AuthSettingsPanel credential lifecycle', () => {
     }))
     expect((appKey.element as HTMLInputElement).value).toBe('')
     expect((appSecret.element as HTMLInputElement).value).toBe('')
-
-    await yunAppId.setValue('request-yun-app-id')
-    await yunAppSecret.setValue('request-yun-app-secret')
-    await sourceKey.setValue('request-yun-source-key')
-    await wrapper.get('[data-testid="test-yunexpress-api"]').trigger('click')
-    expect(wrapper.emitted('testApi')?.[1]?.[1]).toEqual(expect.objectContaining({
-      app_id: 'request-yun-app-id',
-      app_secret: 'request-yun-app-secret',
-      source_key: 'request-yun-source-key',
-    }))
-    expect((yunAppId.element as HTMLInputElement).value).toBe('')
-    expect((yunAppSecret.element as HTMLInputElement).value).toBe('')
-    expect((sourceKey.element as HTMLInputElement).value).toBe('')
   })
 
   it('Ozon 授权测试直接提交尚未保存的表单凭据', async () => {

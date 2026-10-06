@@ -36,7 +36,6 @@ from erp_web.runtime_units.draft_publish_context import (
     load_required_draft_publish_context,
 )
 from erp_web.runtime_units.image_capabilities import ImageCapabilityScope
-from erp_web.runtime_units.logistics_capabilities import LogisticsCapabilityScope
 from erp_web.runtime_units.market_prepare_capabilities import (
     MarketPrepareCapabilityScope,
 )
@@ -63,7 +62,6 @@ from erp_web.runtime_units.source_collect_workflows import (
 )
 from erp_web.runtime_units.store_auth_capabilities import StoreAuthCapabilityScope
 from erp_web.runtime_units.store_credentials import test_store_auth
-from erp_web.runtime_units.yunexpress_client import YunExpressClient
 from erp_web.schemas.ai_tools import (
     PRODUCT_RESEARCH_JOB_TYPE,
 )
@@ -211,10 +209,6 @@ def build_capability_binding_scope(
             StoreAuthCapabilityScope: StoreAuthCapabilityScope(
                 checklist_loader=context.config.mercadolibre_auth_checklist,
                 auth_tester=test_store_auth,
-            ),
-            LogisticsCapabilityScope: LogisticsCapabilityScope(
-                context=context,
-                client_factory=YunExpressClient,
             ),
             ProductWriteCapabilityScope: ProductWriteCapabilityScope(
                 products=context.products,

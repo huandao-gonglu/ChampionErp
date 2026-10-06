@@ -562,11 +562,6 @@ def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates()
             "app_secret": "1688-app-secret",
             "access_token": "1688-access-token",
         },
-        "yunexpress": {
-            "app_id": "yun-app-id",
-            "app_secret": "yun-app-secret",
-            "source_key": "yun-source-key",
-        },
         "ai_models": [
             {
                 "id": "private-model",
@@ -603,8 +598,6 @@ def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates()
         "cookie-private-value",
         "1688-app-secret",
         "1688-access-token",
-        "yun-app-secret",
-        "yun-source-key",
         "sk-private-model-key",
         "ml-private-app-secret",
         "ml-private-token",
