@@ -4,13 +4,15 @@ import OnlineContentEditor from './OnlineContentEditor.vue'
 import OnlinePicturePreview from './OnlinePicturePreview.vue'
 import OnlineBuyerLinks from './OnlineBuyerLinks.vue'
 import OnlineProductDetails from './OnlineProductDetails.vue'
+import OnlinePlatformFeedback from './OnlinePlatformFeedback.vue'
+import { onlineAttributeName } from './onlineAttributeDisplay'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import { fetchOnlineDetail, fetchOnlineProducts, onlineAction, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
 
 const platform = ref<OnlinePlatform>('mercadolibre')
 const platforms: Record<OnlinePlatform, string> = {mercadolibre: 'Mercado Libre', ozon: 'Ozon', yandex: 'Yandex Market'}
-const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '已提交', waiting_confirmation: '等待平台确认', confirmed: '已生效', PUBLISHED: '在售', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
+const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '已提交', waiting_confirmation: '等待平台确认', confirmed: '已生效', PUBLISHED: '在售', NO_STOCKS: '缺货', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
 const page = ref<OnlinePage | null>(null)
 const expandedGroups = ref(new Set<string>())
 // 转到聊天输入框后仍保留最近操作的商品，避免发送时丢失指代。
@@ -62,6 +64,9 @@ const hasActive = computed(() => page.value?.jobs.some(j => ['queued','running']
 const activeSync = computed(() => page.value?.jobs.find(j => j.operation === 'sync' && ['queued', 'running'].includes(j.status)))
 const stale = computed(() => !!page.value?.latest_sync && Date.now() - Date.parse(page.value.latest_sync.updated_at) > 3600000)
 const saleState = computed(() => selected.value?.sale_state === 'paused' ? 'active' : 'paused')
+const cardNotice = computed(() => selected.value?.raw_sub_status
+  .filter(status => ['HAS_CARD_CAN_NOT_UPDATE', 'HAS_CARD_CAN_UPDATE_ERRORS', 'NO_CARD_NEED_CONTENT', 'NO_CARD_MARKET_WILL_CREATE', 'NO_CARD_ERRORS', 'NO_CARD_ADD_TO_CAMPAIGN'].includes(status))
+  .map(label).join('、') || '')
 const fieldNames: Record<string,string> = {preserved_pause:'保持主动停售',amount:'价格', currency:'币种', quantity:'绝对库存', title:'标题', description:'描述', pictures:'完整图片列表', attributes:'属性', state:'销售状态'}
 const changes = computed<Record<string, unknown>>(() => {
   if (modal.value === 'price') return {amount: value.value, currency: price.value?.currency || ''}
@@ -108,7 +113,7 @@ function issueSummary(row: OnlineListing) {
   return [counts.error_count ? `${counts.error_count} 个平台错误` : '', counts.warning_count ? `${counts.warning_count} 个平台警告` : ''].filter(Boolean).join(' · ')
 }
 function time(s: string) { return s ? new Date(s).toLocaleString('zh-CN', {hour12:false}) : '尚未同步' }
-function badge(s: string) { return ['confirmed','active'].includes(s) ? 'badge-success' : ['failed','outcome_unknown'].includes(s) ? 'badge-warning' : 'badge-muted' }
+function badge(s: string) { return ['confirmed','active','PUBLISHED'].includes(s) ? 'badge-success' : ['failed','outcome_unknown','NO_STOCKS'].includes(s) ? 'badge-danger' : 'badge-muted' }
 function priceKind(s: string) { return ({net_proceeds:'净收入报价',base_price:'基础价',sale_price:'售价'} as Record<string,string>)[s] || s }
 async function refresh(quiet = false) {
   if (disposed || (quiet && document.hidden)) return
@@ -321,7 +326,95 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
     </template>
 
     <Teleport to="body">
-      <div v-if="selected" class="online-overlay" @pointerdown="detailBackdrop.recordBackdropPointer" @pointerup="detailBackdrop.dismissFromBackdrop" @pointercancel="detailBackdrop.resetBackdropPointer"><aside role="dialog" aria-modal="true" aria-label="商品详情" class="online-drawer"><div class="flex justify-between"><h2 class="text-xl font-bold">商品详情</h2><button class="text-primary-700" @click="selected=null">关闭 ×</button></div><div class="my-8 flex items-center gap-4"><img v-if="selected.thumbnail" referrerpolicy="no-referrer" :src="selected.thumbnail" alt="" class="size-20 rounded-lg" /><div><h3 class="text-lg font-semibold">{{ selected.title }}</h3><p class="muted mt-2">SKU {{ selected.seller_sku || '未提供' }} · {{ platforms[selected.platform] }}</p></div></div><div class="flex flex-wrap items-center gap-4"><span :class="badge(selected.raw_status)">{{ label(selected.raw_status) }}</span><span class="muted">最近同步：{{ time(selected.synced_at) }}</span><OnlineBuyerLinks :links="selected.buyer_links" /><button type="button" data-testid="detail-refresh-status" class="btn btn-outline" :disabled="statusRefreshBlocked(selected)" @click="refreshStatus(selected)">{{ checkingStatus.has(selected.id) ? '查询中…' : '刷新状态' }}</button></div><p class="muted mt-3">状态查询：{{ selected.status_checked_at ? time(selected.status_checked_at) : '尚未查询' }} · 更新本商品状态及平台反馈，价格、库存和内容保留最近同步结果。</p><p v-if="statusErrors[selected.id]" role="alert" class="mt-3 text-rose-700">{{ statusErrors[selected.id] }}</p><p class="mt-3 text-sm">卡片状态：{{ selected.raw_sub_status.map(label).join('、') || '平台未提供' }}</p><p class="muted mt-1 text-xs">平台原始状态：{{ selected.raw_status }} {{ selected.raw_sub_status.join('、') }}</p><p v-if="detailState(selected)" class="mt-3 text-amber-700">{{ detailState(selected) }}，完成后可修改。</p><p v-for="e in selected.errors" :key="e" class="mt-3 text-sm text-rose-700">{{ e }}</p><div class="my-6 grid grid-cols-2 gap-3 md:grid-cols-4"><button v-for="op in ['price','stock','content','sale_state'] as const" :key="op" class="btn btn-outline" :disabled="checkingStatus.has(selected.id) || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities[op]?.enabled" :title="selected.capabilities[op]?.reason" @click="begin(op)">{{ op==='sale_state'?(saleState==='active'?'恢复销售':'停售商品'):label(op) }}</button></div><p v-for="(cap,op) in selected.capabilities" v-show="cap.reason" :key="op" class="muted mb-2">{{ label(op) }}：{{ cap.reason }}</p><OnlineProductDetails :listing="selected" /><h3 class="mt-8 font-semibold">销售市场</h3><div class="online-card my-5 overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr><th>销售市场</th><th>价格 / 币种</th><th>销售状态</th></tr></thead><tbody><tr v-for="m in selected.markets" :key="m.id"><td>{{ m.site_id }} · {{ m.logistic_type }}<p class="muted mt-1">{{ m.id }}</p></td><td>{{ m.currency }} {{ m.price ?? '未知' }}</td><td>{{ label(m.raw_status) }}</td></tr></tbody></table></div><div v-for="s in selected.stocks" :key="s.id" class="my-3 rounded-lg bg-primary-50 p-5 text-primary-800"><b>{{ s.label }}：{{ s.quantity ?? '未知' }}</b><p class="mt-2 text-sm">{{ s.reason || '设置绝对数量，仅影响这个库存范围。' }}</p></div><h3 class="mt-8 font-semibold">平台身份</h3><p class="muted mt-3 break-all">{{ selected.remote_id }} · {{ selected.model }}</p><p class="muted mt-2">来源：店铺同步 · 账号 {{ selected.account_id }}</p></aside></div>
+      <div v-if="selected" class="online-overlay" @pointerdown="detailBackdrop.recordBackdropPointer" @pointerup="detailBackdrop.dismissFromBackdrop" @pointercancel="detailBackdrop.resetBackdropPointer">
+        <aside :key="selected.id" role="dialog" aria-modal="true" aria-label="商品详情" class="online-drawer">
+          <header class="flex items-center justify-between gap-4">
+            <h2 class="text-xl font-bold">商品详情</h2>
+            <button class="text-primary-700 dark:text-primary-300" @click="selected=null">关闭 ×</button>
+          </header>
+          <div class="my-6 flex items-start gap-4">
+            <img v-if="selected.thumbnail" referrerpolicy="no-referrer" :src="selected.thumbnail" alt="" class="size-20 shrink-0 rounded-lg object-cover" />
+            <div class="min-w-0">
+              <h3 class="break-words text-lg font-semibold">{{ selected.title || selected.remote_id }}</h3>
+              <p class="muted mt-2 break-all">SKU {{ selected.seller_sku || '未提供' }} · {{ platforms[selected.platform] }}</p>
+              <p class="muted mt-1">{{ page?.store_name }}</p>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <span :class="badge(selected.sale_state==='paused' ? 'paused' : selected.raw_status)">{{ selected.sale_state==='paused' ? '已停售' : labels[selected.raw_status] || '状态待确认' }}</span>
+            <OnlineBuyerLinks :links="selected.buyer_links" />
+            <button type="button" data-testid="detail-refresh-status" class="ml-auto text-sm text-primary-700 disabled:opacity-50 dark:text-primary-300" :disabled="statusRefreshBlocked(selected)" title="只刷新销售状态和平台反馈" @click="refreshStatus(selected)">{{ checkingStatus.has(selected.id) ? '查询中…' : '刷新状态' }}</button>
+          </div>
+          <p class="muted mt-2 text-xs">{{ selected.status_checked_at ? `状态查询：${time(selected.status_checked_at)}` : `最近同步：${time(selected.synced_at)}` }}</p>
+          <p v-if="statusErrors[selected.id]" role="alert" class="mt-3 text-sm text-rose-700 dark:text-rose-300">{{ statusErrors[selected.id] }}</p>
+          <p v-if="detailState(selected)" role="status" class="mt-3 text-sm text-amber-700 dark:text-amber-300">{{ detailState(selected) }}，完成后可修改。</p>
+          <p v-for="e in selected.errors" :key="e" role="alert" class="mt-3 text-sm text-rose-700 dark:text-rose-300">{{ e }}</p>
+
+          <section class="online-card my-5 grid grid-cols-1 divide-y divide-accent-200 dark:divide-dark-700 sm:grid-cols-2 sm:divide-x sm:divide-y-0" aria-label="价格与库存" data-testid="detail-sales-summary">
+            <div class="min-w-0 space-y-2 p-3">
+              <h3 class="muted text-xs">价格</h3>
+              <div v-for="p in selected.prices" :key="p.id">
+                <p class="truncate text-sm font-medium" :title="`${p.currency} ${p.amount ?? '未知'}`">{{ p.currency }} {{ p.amount ?? '未知' }}</p>
+                <p class="muted mt-0.5 truncate text-xs" :title="`${p.label} · ${priceKind(p.kind)}`">{{ p.label }} · {{ priceKind(p.kind) }}</p>
+              </div>
+              <p v-if="!selected.prices.length" class="muted truncate text-xs">尚未取得价格</p>
+            </div>
+            <div class="min-w-0 space-y-2 p-3">
+              <h3 class="muted text-xs">库存</h3>
+              <div v-for="s in selected.stocks" :key="s.id">
+                <p class="truncate text-sm font-medium" :title="s.quantity === null ? '未知' : `${s.quantity} 件`">{{ s.quantity ?? '未知' }}<span v-if="s.quantity !== null" class="ml-1 text-xs font-normal">件</span></p>
+                <p class="muted mt-0.5 truncate text-xs" :title="s.label">{{ s.label }}</p>
+              </div>
+              <p v-if="!selected.stocks.length" class="muted truncate text-xs">尚未取得库存</p>
+            </div>
+          </section>
+          <p class="muted text-xs">价格与库存更新于 {{ time(selected.synced_at) }}</p>
+          <p v-if="cardNotice" role="status" class="mt-3 text-sm text-amber-700 dark:text-amber-300">{{ cardNotice }}</p>
+          <OnlinePlatformFeedback :listing="selected" />
+
+          <div class="my-5 flex flex-wrap items-start gap-3" data-testid="detail-actions">
+            <button v-for="op in ['price','stock','content'] as const" :key="op" class="btn btn-outline" :disabled="checkingStatus.has(selected.id) || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities[op]?.enabled" :title="selected.capabilities[op]?.reason" @click="begin(op)">{{ label(op) }}</button>
+            <button class="btn ml-auto text-accent-500 dark:text-accent-300" :disabled="checkingStatus.has(selected.id) || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities.sale_state?.enabled" :title="selected.capabilities.sale_state?.reason" @click="begin('sale_state')">{{ saleState==='active'?'恢复销售':'停售商品' }}</button>
+          </div>
+          <template v-for="(cap,op) in selected.capabilities" :key="op">
+            <p v-if="!cap.enabled && cap.reason" class="muted mb-2 text-xs">{{ label(op) }}：{{ cap.reason }}</p>
+          </template>
+
+          <details v-if="selected.markets.length" class="my-6 border-t border-accent-200 pt-4 dark:border-dark-700">
+            <summary class="cursor-pointer text-sm font-semibold">销售市场 · {{ selected.markets.length }} 个</summary>
+            <div class="online-card mt-3 overflow-x-auto">
+              <table class="w-full text-left text-sm">
+                <thead><tr><th>销售市场</th><th>价格 / 币种</th><th>销售状态</th></tr></thead>
+                <tbody><tr v-for="m in selected.markets" :key="m.id"><td>{{ m.site_id }}<span v-if="m.logistic_type"> · {{ m.logistic_type }}</span></td><td>{{ m.currency }} {{ m.price ?? '未知' }}</td><td>{{ label(m.raw_status) }}</td></tr></tbody>
+              </table>
+            </div>
+          </details>
+          <OnlineProductDetails :listing="selected" />
+          <details class="mt-6 border-t border-accent-200 pt-4 dark:border-dark-700" data-testid="platform-details">
+            <summary class="cursor-pointer text-sm text-accent-500 dark:text-accent-300">平台与同步详情</summary>
+            <div class="muted mt-4 space-y-3 break-words">
+              <p>最近同步：{{ time(selected.synced_at) }}</p>
+              <p>状态查询：{{ selected.status_checked_at ? time(selected.status_checked_at) : '尚未查询' }}</p>
+              <p>刷新状态只更新销售状态及平台反馈；价格、库存和内容由店铺同步更新。</p>
+              <p>卡片状态：{{ selected.raw_sub_status.map(label).join('、') || '平台未提供' }}</p>
+              <p class="break-all">平台原始状态：{{ selected.raw_status }} {{ selected.raw_sub_status.join('、') }}</p>
+              <p class="break-all">平台商品 ID：{{ selected.remote_id }}</p>
+              <p class="break-all">商品模型：{{ selected.model }}</p>
+              <p class="break-all">店铺账号：{{ selected.account_id }}</p>
+              <p v-for="m in selected.markets" :key="m.id" class="break-all">市场 ID：{{ m.id }} · {{ m.site_id }}</p>
+              <template v-for="(issue,index) in selected.platform_issues" :key="index">
+                <p v-if="issue.code">平台代码：{{ issue.code }} · {{ issue.message }}</p>
+              </template>
+              <dl v-if="selected.content.attributes?.length" class="space-y-2">
+                <div v-for="attribute in selected.content.attributes" :key="String(attribute.id)">
+                  <dt>{{ onlineAttributeName(attribute) }}</dt>
+                  <dd class="text-xs">属性编号：{{ attribute.id }}</dd>
+                </div>
+              </dl>
+            </div>
+          </details>
+        </aside>
+      </div>
       <div v-if="modal" class="online-overlay online-modal-layer" @pointerdown="modalBackdrop.recordBackdropPointer" @pointerup="modalBackdrop.dismissFromBackdrop" @pointercancel="modalBackdrop.resetBackdropPointer">
         <section role="dialog" aria-modal="true" :aria-label="modal==='sync'?'同步商品':label(modal)" class="online-modal space-y-5" :class="modal==='content' && !preview ? 'online-content-form' : ''">
           <header class="flex justify-between"><h2 class="text-xl font-bold">{{ modal==='sync'?'同步商品':preview?'确认本次变更':label(modal) }}</h2><button :disabled="busy" @click="modal=''">关闭 ×</button></header><p v-if="error" role="alert" class="text-rose-700 dark:text-rose-300">{{ error }}</p>
@@ -336,6 +429,9 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
           </template>
           <template v-else-if="selected">
             <p class="font-medium">{{ selected.title }}</p><p class="muted">作用范围：{{ modal==='price' ? price?.label : modal==='stock' ? stock?.label : selected.capabilities[modal]?.scope }}</p>
+            <p v-if="selected.capabilities[modal]?.reason" class="muted">{{ selected.capabilities[modal].reason }}</p>
+            <p v-if="modal==='stock' && stock?.reason" class="muted">{{ stock.reason }}</p>
+            <p v-if="modal==='price' && price?.reason" class="muted">{{ price.reason }}</p>
             <div v-if="modal==='content'" v-show="!preview" key="content-editor"><OnlineContentEditor :key="selected.id" :listing="selected" @change="contentChanges=$event" @picture-previews="contentPicturePreviews=$event" /></div>
             <template v-if="!preview">
               <template v-if="modal==='price'"><label class="block">价格范围<select v-model="scope" class="input mt-2" @change="resetValue"><option v-for="p in selected.prices" :key="p.id" :value="p.id" :disabled="!p.writable">{{ p.label }} · {{ priceKind(p.kind) }} · {{ p.currency }}</option></select></label><p class="muted">当前：{{ price?.currency }} {{ price?.amount }} · {{ priceKind(price?.kind || '') }}</p><label class="block">新价格（{{ price?.currency }}）<input v-model="value" class="input mt-2" inputmode="decimal" /></label></template>
@@ -358,7 +454,7 @@ td { @apply border-t border-accent-200 px-5 py-4 align-middle dark:border-dark-7
 .online-group { @apply bg-primary-50/60 dark:bg-primary-900/10; }
 .online-child { @apply bg-accent-50/30 dark:bg-dark-950/30; }
 .online-overlay { @apply fixed inset-0 z-50 flex justify-end bg-black/30; }
-.online-drawer { @apply h-full w-full max-w-[760px] overflow-y-auto bg-white p-8 shadow-xl dark:bg-dark-900; }
+.online-drawer { @apply h-full w-full max-w-[760px] overflow-y-auto bg-white p-5 shadow-xl dark:bg-dark-900 sm:p-6; }
 .online-modal-layer { @apply z-[60] items-center justify-center p-4; }
 .online-modal { @apply max-h-[90vh] w-full max-w-[640px] overflow-y-auto rounded-xl bg-white p-8 shadow-xl dark:bg-dark-900; }
 .online-content-form { @apply max-w-[1000px]; }
