@@ -168,7 +168,8 @@ class _PaymentRequiredModel(TestModel):
         raise ModelHTTPError(
             402,
             "test-model",
-            {"error": {"code": "invalid_request_error", "message": "余额不足"}},
+            {"error": {"code": "invalid_request_error", "message": "Insufficient Balance"},
+             "request_id": "payment-request-1"},
         )
 
 
@@ -1138,6 +1139,18 @@ def test_provider_secret_does_not_leak_into_sse(
             if line.startswith("data: ") and line[len("data: ") :] != "[DONE]"
         )
     )
+    status, data = _get(
+        port, f"/api/v1/ai-work/conversations/{CONVERSATION}/ui-messages",
+    )
+    assert status == 200
+    restored = json.loads(data)["run_error"]
+    assert "upstream rejected" in restored["message"]
+    history = get_context().pydantic_messages.get(CONVERSATION)
+    assert history is not None
+    for value in (data.decode(), history.messages_json.decode()):
+        assert "SUPERSECRETKEY" not in value
+        assert "abcdef123456.xyz" not in value
+        assert "sk-live0123456789abcdef" not in value
 
 
 def test_provider_payment_required_has_stable_sse_and_claim_error(
@@ -1164,13 +1177,111 @@ def test_provider_payment_required_has_stable_sse_and_claim_error(
     assert errors == [
         {
             "type": "error",
-            "errorText": "AI Provider 拒绝请求（HTTP 402）：余额不足或计费配置不可用。",
+            "errorText": "AI Provider 余额不足或计费配置不可用。HTTP 402: Insufficient Balance "
+                         "(code=invalid_request_error) (request_id=payment-request-1)",
         }
     ]
     claim = get_context().chat_turn_claims.get(conversation, message_id)
     assert claim is not None
     assert claim.status == "failed"
     assert claim.error_code == "AI_PROVIDER_PAYMENT_REQUIRED"
+    expected = {"code": claim.error_code, "message": errors[0]["errorText"]}
+    status, data = _get(
+        chat_server["port"], f"/api/v1/ai-work/conversations/{conversation}/ui-messages",
+    )
+    assert status == 200
+    assert json.loads(data)["run_error"] == expected
+    history = get_context().pydantic_messages.get(conversation)
+    assert history is not None
+    diagnostic = history.model_messages()[-1].metadata["ai_run_error"]
+    assert diagnostic["details"] == {
+        "status_code": 402, "code": "invalid_request_error",
+        "message": "Insufficient Balance", "request_id": "payment-request-1",
+    }
+
+    # 新用户回合成功后不再显示旧错误，也不重放失败输入。
+    chat_server["model"]["model"] = TestModel(custom_output_text="查询成功", call_tools=[])
+    _post(chat_server["port"], CHAT_PATH, _submit_body(conversation, "payment-fixed", "重试查询"))
+    _, data = _get(
+        chat_server["port"], f"/api/v1/ai-work/conversations/{conversation}/ui-messages",
+    )
+    assert json.loads(data)["run_error"] is None
+
+
+def test_model_configuration_failure_preserves_input_and_safe_cause(chat_service):
+    from erp_web.services.ai_model_factory import AiModelFactoryError
+
+    service = chat_service["service"]
+    conversation = "conversation_global_chat_" + "d" * 32
+
+    def invalid_binding(*args, **kwargs):
+        raise AiModelFactoryError("所选模型缺少 API Key：api_key=CONFIGSECRET")
+
+    service.chat_service.factory.model_binding_factory = invalid_binding
+    run = service.prepare_run(json.dumps(
+        _submit_body(conversation, "config-failed", "查询商品"),
+    ).encode())
+    chunks = []
+    asyncio.run(run._run_and_finalize(chunks.append))
+    errors = [json.loads(line[6:]) for line in "".join(chunks).splitlines()
+              if line.startswith("data: ") and line[6:] != "[DONE]"
+              and json.loads(line[6:]).get("type") == "error"]
+    detail = service.dump_ui_messages(conversation)
+    assert detail["run_error"] == {
+        "code": "AI_MODEL_CONFIGURATION_INVALID",
+        "message": errors[0]["errorText"],
+    }
+    assert "所选模型缺少 API Key" in detail["run_error"]["message"]
+    assert detail["messages"][0]["parts"][0]["text"] == "查询商品"
+    assert "CONFIGSECRET" not in json.dumps(detail)
+    assert service.call_store.inbox(conversation) == []
+    assert service.claim_store.get(conversation, "config-failed").status == "failed"
+
+
+def test_old_payment_failure_displays_known_cause_without_provider_text(chat_service):
+    service = chat_service["service"]
+    claim = service.claim_store.claim_turn(
+        conversation_id=CONVERSATION, client_message_id="old-payment",
+        profile_id="global.chat",
+    )
+    service.claim_store.finish_turn(claim.claim_id, status="failed",
+                                    error_code="AI_PROVIDER_PAYMENT_REQUIRED")
+    error = service.dump_ui_messages(CONVERSATION)["run_error"]
+    assert "HTTP 402" in error["message"]
+    assert "余额不足" in error["message"]
+
+
+@pytest.mark.parametrize("status,code", [(401, "invalid_api_key"), (429, "rate_limit_exceeded")])
+def test_http_error_survives_service_recreation_without_leaking_credentials(chat_service, status, code):
+    from erp_web.services.vercel_ai_ui_service import VercelAiUiService
+
+    class HttpFailureModel(TestModel):
+        def _request(self, *args, **kwargs):
+            raise ModelHTTPError(status, "test-model", {"error": {
+                "code": code,
+                "message": "Provider rejected; api_key=HTTPSECRET; Bearer abcdef123456.xyz",
+            }, "request_id": "request-safe"})
+
+    service = chat_service["service"]
+    chat_service["model"]["model"] = HttpFailureModel(call_tools=[])
+    run = service.prepare_run(json.dumps(_submit_body(CONVERSATION, "http-failed", "查询")).encode())
+    chunks = []
+    asyncio.run(run._run_and_finalize(chunks.append))
+    errors = [json.loads(line[6:]) for line in "".join(chunks).splitlines()
+              if line.startswith("data: ") and line[6:] != "[DONE]"
+              and json.loads(line[6:]).get("type") == "error"]
+    recreated = VercelAiUiService(
+        chat_service=service.chat_service, claim_store=service.claim_store,
+        run_registry=service.run_registry, call_store=service.call_store,
+    )
+    detail = recreated.dump_ui_messages(CONVERSATION)
+    assert detail["run_error"] == {"code": code, "message": errors[0]["errorText"]}
+    assert f"HTTP {status}" in detail["run_error"]["message"]
+    assert "request-safe" in detail["run_error"]["message"]
+    history = service.chat_service.message_store.get(CONVERSATION)
+    for value in ("".join(chunks), json.dumps(detail), history.messages_json.decode()):
+        assert "HTTPSECRET" not in value
+        assert "abcdef123456.xyz" not in value
 
 
 @pytest.mark.parametrize(

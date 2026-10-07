@@ -317,4 +317,29 @@ describe('原生等待与批量入口', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
   })
+  it('同步和重新打开失败对话都保留具体原因，新回合成功后清除旧错误', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const store = useAiChatStore()
+    const id = store.startConversation()
+    const runError = {
+      code: 'AI_PROVIDER_PAYMENT_REQUIRED',
+      message: 'AI Provider 余额不足或计费配置不可用。HTTP 402: Insufficient Balance (code=invalid_request_error)',
+    }
+    const detail: AiWorkUiMessagesResponse = {
+      ok: true, conversation_id: id, created_at: '', updated_at: '',
+      history_version: 1, messages: [], run_status: 'failed', run_active: false,
+      run_error: runError,
+    }
+    const initial: AiWorkUiMessagesResponse = { ...detail, history_version: 0, run_status: 'claimed', run_error: null }
+    store.openConversation(initial)
+    mocks.fetchUiMessages.mockResolvedValue(detail)
+    FakeEventSource.instances.at(-1)!.emit({ type: 'resync_required', history_version: 1 })
+    await vi.waitFor(() => expect(store.error?.message).toBe(runError.message))
+    expect(store.error?.code).toBe(runError.code)
+    store.openConversation(detail)
+    expect(store.error?.message).toBe(runError.message)
+    mocks.fetchUiMessages.mockResolvedValue({ ...detail, history_version: 2, run_status: 'completed', run_error: null })
+    FakeEventSource.instances.at(-1)!.emit({ type: 'resync_required', history_version: 2 })
+    await vi.waitFor(() => expect(store.error).toBeUndefined())
+  })
 })

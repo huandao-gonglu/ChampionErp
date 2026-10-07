@@ -578,7 +578,7 @@ def test_provider_http_error_keeps_status_code_message_and_request_id() -> None:
 
     assert captured.value.code == "PERMISSION_DENIED"
     assert str(captured.value) == (
-        "HTTP 403: Free quota exhausted. (request_id=request-403)"
+        "HTTP 403: Free quota exhausted. (code=PERMISSION_DENIED) (request_id=request-403)"
     )
     assert captured.value.retryable is False
     history = get_context().pydantic_messages.get(captured.value.conversation_id)

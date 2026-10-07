@@ -459,6 +459,13 @@ transcript 或 Tool 输出。
 - `GET /api/v1/ai-work/conversations/{id}/events`：只通知 `history_version` 变更，前端重新读取 `/ui-messages`；不保存、重编码或重放自定义 Agent 事件。
 - `ai_chat_run_registry.py`：进程内同会话互斥和 Pydantic `CancellationToken` 关联；历史提交额外使用 SQLite CAS 防止旧写者覆盖。
 - `ai_chat_turn_claim_store.py`：用户输入幂等身份/归属/安全错误码，不含消息正文。
+- `agent_run_storage.py`：失败原因和安全 Provider 诊断随实际原生消息的 `metadata.ai_run_error`
+  经现有 CAS 保存，按真实用户消息 ID 关联；不合成模型回复、另存消息或改数据库结构。
+  `/ui-messages` 读取当前失败回合的同一原因，不用通用提示覆盖实时错误；旧历史只有计费错误码时
+  显示已知计费原因，不补造 Provider 原文。HTTP 错误保留脱敏后的原始消息、代码、状态与 request ID。
+  已核对 Pydantic AI 2.44.0 原生 `ModelMessage.metadata` 和
+  [消息历史持久化](https://pydantic.dev/docs/ai/core-concepts/message-history/)；框架保存应用 metadata，
+  UI Adapter 不负责恢复运行异常，因此仅在现有 UI 外层 `run_error` 投影展示诊断。
 - `pydantic_message_store.py`：完整原生消息的读取、校验；`agent_call_store.py` 组合提交同一消息表及 Deferred，二者不各存一份历史。
 
 实时流为 `AgentStreamEvent → VercelAIEventStream → SSE → @ai-sdk/vue Chat`。HTTP 断线不取消后台执行。

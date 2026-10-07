@@ -10,12 +10,52 @@ from typing import Any
 from collections.abc import Callable
 
 from pydantic_ai import ModelRequestNode, ModelRetry, RunContext, UserPromptNode
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, RetryPromptPart
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, RetryPromptPart
 
 from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_page_context import page_context_instructions
 from erp_web.schemas.ai_approval import AiToolApprovalMode
 from erp_web.services.ai_run_cancellation import check_cancellation
+
+
+def annotate_run_error(messages: list[ModelMessage], run_id: str, error: dict[str, Any]) -> None:
+    """诊断附在实际原生消息的 metadata，不合成模型回答或第二份历史。"""
+    current = [message for message in messages if message.run_id == run_id]
+    if not current:
+        return
+    message_ids = [
+        message.metadata["user_message_id"] for message in current
+        if (message.metadata or {}).get("user_message_id")
+    ]
+    if not message_ids:
+        # Deferred 恢复没有新用户输入，错误仍归属于最近的真实用户回合。
+        message_ids = next((
+            [message.metadata["user_message_id"]] for message in reversed(messages)
+            if (message.metadata or {}).get("user_message_id")
+        ), [])
+    current[-1].metadata = {
+        **(current[-1].metadata or {}),
+        "ai_run_error": {**error, "user_message_ids": message_ids},
+    }
+
+
+def stored_run_error(messages: list[ModelMessage], message_id: str, error_code: str) -> dict[str, str]:
+    """只读取当前失败回合的诊断，旧回合的错误不得覆盖新输入。"""
+    for message in reversed(messages):
+        error = (message.metadata or {}).get("ai_run_error")
+        if (
+            isinstance(error, dict) and error.get("code") == error_code
+            and message_id in error.get("user_message_ids", [])
+            and isinstance(error.get("message"), str) and error["message"]
+        ):
+            return {"code": error_code, "message": error["message"]}
+    # 历史数据只有错误码，给出已知原因，不伪造已经丢失的 Provider 原文。
+    message = (
+        "AI Provider 拒绝请求（HTTP 402）：余额不足或计费配置不可用。"
+        if error_code == "AI_PROVIDER_PAYMENT_REQUIRED"
+        else "本轮运行失败，请检查错误或模型配置后重新发送。"
+    )
+    return {"code": error_code, "message": message}
 
 
 class AgentRunStorage:
@@ -158,13 +198,30 @@ class AgentRunStorage:
                 consumed_sequences=tuple(self.consumed),
             )
 
-    def fail(self, messages: list, run_id: str) -> None:
+    def fail(self, messages: list, run_id: str, *, error: dict | None = None) -> None:
         """保存已发生的原生历史；失败的用户回合不由收件箱无限重新运行。"""
         with self.lock:
             current = [message for message in messages if message.run_id == run_id]
+            if error is not None and not current:
+                # 装配失败也保留已经接受的真实输入；不重新运行这批失败消息。
+                for row in self.store.inbox(self.conversation_id):
+                    if row["sequence"] in self.consumed:
+                        continue
+                    received = ModelMessagesTypeAdapter.validate_json(row["messages_json"])
+                    for message in received:
+                        message.run_id = run_id
+                        message.conversation_id = self.conversation_id
+                        message.metadata = {
+                            **(message.metadata or {}), "user_message_id": row["message_id"],
+                        }
+                    current.extend(received)
+                    self.consumed.add(row["sequence"])
+            canonical = [*self.history, *current]
+            if error is not None:
+                annotate_run_error(canonical, run_id, error)
             self.version = self.store.commit(
                 self.conversation_id,
-                [*self.history, *current],
+                canonical,
                 expected_version=self.version,
                 consumed_sequences=tuple(self.consumed),
             )

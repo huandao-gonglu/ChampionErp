@@ -21,7 +21,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.capabilities import HandleDeferredToolCalls, Hooks, PrepareTools
 from pydantic_ai.usage import RunUsage
-from .agent_run_storage import receive_user_updates
+from .agent_run_storage import annotate_run_error, receive_user_updates
 from .ai_approval_policy import handle_configured_tool_approvals
 from .ai_run_cancellation import current_cancellation_token, check_cancellation
 from pydantic_ai.exceptions import (
@@ -265,20 +265,17 @@ def _safe_agent_error(
     if isinstance(exc, ModelHTTPError):
         provider_error = model_http_error_payload(exc)
         status_code = int(provider_error["status_code"])
-        if status_code == 402:
-            return AiAgentExecutionError(
-                "AI_PROVIDER_PAYMENT_REQUIRED",
-                "AI Provider 拒绝请求（HTTP 402）：余额不足或计费配置不可用。",
-                retryable=False,
-                **correlation,
-            )
         message = f"HTTP {provider_error['status_code']}: {provider_error['message']}"
+        message += f" (code={provider_error['code']})"
         if provider_error["request_id"]:
             message += f" (request_id={provider_error['request_id']})"
+        if status_code == 402:
+            message = "AI Provider 余额不足或计费配置不可用。" + message
         return AiAgentExecutionError(
-            str(provider_error["code"]),
+            "AI_PROVIDER_PAYMENT_REQUIRED" if status_code == 402 else str(provider_error["code"]),
             message,
             retryable=(status_code in {408, 425, 429} or status_code >= 500),
+            details=provider_error,
             **correlation,
         )
     if isinstance(exc, ModelAPIError):
@@ -352,7 +349,7 @@ def _safe_agent_error(
     if isinstance(exc, AiModelFactoryError):
         return AiAgentExecutionError(
             exc.code,
-            "当前 AI 模型配置无效。",
+            safe_model_error_text(str(exc)) or "当前 AI 模型配置无效。",
             **correlation,
         )
     if isinstance(exc, PydanticMessageStoreError):
@@ -631,19 +628,6 @@ class AiAgentStreamSession(Generic[OutputT]):
             self._history_persisted = True
             raise
         except Exception as exc:
-            # 已发生的原生消息和已消费输入一起持久化，失败不自动重放副作用。
-            if self._run_support is not None and not self._history_persisted:
-                self._run_support.fail(self._captured_messages, self._run_id)
-                self._history_persisted = True
-            if self._captured_messages and not self._history_persisted:
-                try:
-                    self._factory.message_store.save(
-                        self._conversation_id,
-                        list(self._captured_messages),
-                    )
-                    self._history_persisted = True
-                except Exception as persistence_exc:
-                    exc = persistence_exc
             error = exc if isinstance(exc, AiAgentExecutionError) else _safe_agent_error(
                 exc,
                 validator=self._output_validator,
@@ -655,11 +639,30 @@ class AiAgentStreamSession(Generic[OutputT]):
                 tool_call_limit=self._profile.max_tool_calls,
                 tool_calls_used=self._dependencies.tool_runtime.unique_call_count,
             )
-            self._failure_error = error
             if self._run_support is not None:
                 summary = self._run_support.failure_summary()
                 if summary:
                     error.args = (str(error) + "\n" + summary,)
+            diagnostic = {"code": error.code, "message": str(error), "details": error.details}
+            # 已发生的原生消息和已消费输入一起持久化，失败不自动重放副作用。
+            if self._run_support is not None and not self._history_persisted:
+                self._run_support.fail(self._captured_messages, self._run_id, error=diagnostic)
+                self._history_persisted = True
+            if self._captured_messages and not self._history_persisted:
+                try:
+                    annotate_run_error(self._captured_messages, self._run_id, diagnostic)
+                    self._factory.message_store.save(
+                        self._conversation_id,
+                        list(self._captured_messages),
+                    )
+                    self._history_persisted = True
+                except Exception as persistence_exc:
+                    error = _safe_agent_error(
+                        persistence_exc, validator=None,
+                        conversation_id=self._conversation_id, task_run_id=self.task_run_id,
+                        run_id=self._run_id, trace_id=self.trace_id,
+                    )
+            self._failure_error = error
             self._notify_presentation_failed(error.code, str(error))
             raise error from None
 
@@ -1340,16 +1343,8 @@ class AiAgentFactory:
                         await session.aclose_events()
         except RunCancelled:
             raise
-        except AiAgentExecutionError as error:
-            self._notify_pre_stream_failure(
-                presentation,
-                session,
-                error,
-                use_case_id=profile.use_case_id,
-            )
-            raise
         except Exception as exc:
-            error = _safe_agent_error(
+            error = exc if isinstance(exc, AiAgentExecutionError) else _safe_agent_error(
                 exc,
                 validator=output_validator,
                 model_messages=captured_messages,
@@ -1358,6 +1353,10 @@ class AiAgentFactory:
                 run_id=run_id,
                 trace_id=trace_id,
             )
+            if session is None and run_support is not None:
+                run_support.fail([], run_id, error={
+                    "code": error.code, "message": str(error), "details": error.details,
+                })
             self._notify_pre_stream_failure(
                 presentation,
                 session,

@@ -21,7 +21,9 @@ from pydantic_ai.ui.vercel_ai.request_types import (
     UIMessage,
 )
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
+from erp_web.services.ai_agent_factory import AiAgentExecutionError
 from erp_web.services.ai_run_cancellation import bind_cancellation_token
+from erp_web.services.agent_run_storage import stored_run_error
 from erp_web.schemas.ai_page_context import AiPageContext
 from erp_web.services.global_agent_chat_service import (
     GLOBAL_CHAT_ACTOR_ID,
@@ -145,12 +147,12 @@ class VercelAiChatRun:
             _logger.exception("主 Agent 运行失败：%s", self.conversation_id)
             service.call_store.fail_unconsumed(self.conversation_id)
             if not started:
-                service.call_store.fail_unconsumed(self.conversation_id)
+                failure = exc if isinstance(exc, AiAgentExecutionError) else RuntimeError(
+                    "模型运行未能启动，请检查模型配置后重新发送消息。"
+                )
 
                 async def failed():
-                    raise RuntimeError(
-                        "模型运行未能启动，请检查模型配置后重新发送消息。"
-                    )
+                    raise failure
                     yield
 
                 stream = new_event_stream(self.conversation_id)
@@ -409,10 +411,10 @@ class VercelAiUiService:
             "latest_message_id": claim.client_message_id if claim else None,
             "created_at": history.created_at if history else claim.claimed_at,
             "updated_at": history.updated_at if history else claim.claimed_at,
-            "run_error": {
-                "code": claim.error_code,
-                "message": "本轮运行失败，请检查错误或模型配置后重新发送。",
-            }
+            "run_error": stored_run_error(
+                history.model_messages() if history else [],
+                claim.client_message_id, claim.error_code,
+            )
             if claim and claim.status == "failed"
             else None,
             "messages": [
