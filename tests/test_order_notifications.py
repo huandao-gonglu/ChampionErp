@@ -738,3 +738,57 @@ def test_ozon_dispatch_date_uses_shipment_field():
         OzonOrderAdapter(CONFIG).normalize(row, "fbs").shipment_deadline
         == row["shipment_date"]
     )
+
+
+def test_order_sync_health_uses_business_scope_and_ignores_old_credentials(store):
+    from erp_web.runtime_units.order_notifications import order_request_scopes
+    from erp_web.schemas.external_requests import RequestFailure
+    from erp_web.services.external_request_context import credential_fingerprint
+    from dataclasses import replace
+    external = get_context().external_requests.store
+    scopes = order_request_scopes(CONFIG)
+    svc = OrderNotificationService(store, lambda: deepcopy(CONFIG), adapters={}, parser=parse_notification,
+                                   start_worker=False, external_store=external, request_scopes=order_request_scopes)
+    yandex = scopes['yandex'][0]
+    assert yandex.account_id == '5'  # 订单以 campaign 归属，请求控制按 business 归属。
+    old = replace(yandex, credential_id=credential_fingerprint('old-key'))
+    external.block(old, RequestFailure('YANDEX_AUTH_FAILED', '旧凭据失效', 'credential'))
+    external.block(replace(yandex, interface='/unrelated'), RequestFailure('YANDEX_AUTH_FAILED', '其他接口', 'interface'))
+    assert next(r for r in svc.sync_status() if r['platform'] == 'yandex')['status'] == 'idle'
+    external.block(yandex, RequestFailure('EXTERNAL_TRANSIENT_FAILURE', '网络暂时不可用', 'interface', resume_at=time.time()+60, cooldown_seconds=60))
+    health = next(r for r in svc.sync_status() if r['platform'] == 'yandex')
+    assert health['status'] == 'cooldown'
+    external.request_probe('yandex', '5', {scope.interface for scope in order_request_scopes(CONFIG)['yandex']})
+    svc.sync('yandex')
+    job = store.claim({'yandex':'4'}, now=time.time())
+    assert job is not None
+    store.finish(job, now=time.time())
+    external.recover('yandex','5','interface',yandex.interface,reason='测试已恢复')
+    health = next(r for r in svc.sync_status() if r['platform'] == 'yandex')
+    assert health['status'] == 'done' and health['last_success_at']
+    assert len(external.blocks()) == 2
+
+
+def test_order_sync_cooling_does_not_exhaust_retry_and_manual_sync_wakes_job(store):
+    from erp_web.runtime_units.order_notifications import order_request_scopes
+    from erp_web.schemas.external_requests import ExternalRequestBlocked, RequestFailure
+    external = get_context().external_requests.store
+    scope = order_request_scopes(CONFIG)['yandex'][0]
+    resume = time.time()+120
+    failure = RequestFailure('EXTERNAL_TRANSIENT_FAILURE', '临时故障', 'interface', resume_at=resume, cooldown_seconds=120)
+    external.block(scope, failure)
+    class Adapter:
+        def sync(self):
+            raise ExternalRequestBlocked(failure)
+    svc = OrderNotificationService(store, lambda: deepcopy(CONFIG), adapters={'yandex':lambda c:Adapter()}, parser=parse_notification,
+                                   start_worker=False, external_store=external, request_scopes=order_request_scopes)
+    svc.sync('yandex')
+    with store.connect() as conn:
+        conn.execute("UPDATE inbox SET attempts=8")
+        conn.commit()
+    svc.process_one('yandex')
+    row = store.read({'yandex':'4'})['notifications'][0]
+    assert row['status'] == 'retry' and row['next_attempt'] == resume
+    external.request_probe('yandex', '5', {scope.interface for scope in order_request_scopes(CONFIG)['yandex']})
+    svc.sync('yandex')
+    assert store.claim({'yandex':'4'}, now=time.time()) is not None

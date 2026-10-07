@@ -117,7 +117,8 @@ class OrderNotificationStore:
 
     def schedule(
         self, accounts: dict[str, str], *, now: float, force: bool = False
-    ) -> None:
+    ) -> list[str]:
+        operation_ids = []
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             for platform, account in accounts.items():
@@ -126,12 +127,16 @@ class OrderNotificationStore:
                     (platform, account),
                 ).fetchone()
                 active = conn.execute(
-                    "SELECT 1 FROM inbox WHERE platform=? AND account_id=? AND topic='sync' AND status IN ('queued','running','retry')",
+                    "SELECT id FROM inbox WHERE platform=? AND account_id=? AND topic='sync' AND status IN ('queued','running','retry')",
                     (platform, account),
                 ).fetchone()
+                if active:
+                    operation_ids.append(f"orders:{active[0]}")
+                if active and force:
+                    conn.execute("UPDATE inbox SET next_attempt=? WHERE platform=? AND account_id=? AND topic='sync' AND status='retry'", (now, platform, account))
                 if active or (not force and row and row[0] > now):
                     continue
-                self._insert(
+                event_id = self._insert(
                     conn,
                     OrderEvent(
                         platform=platform,
@@ -141,11 +146,13 @@ class OrderNotificationStore:
                         payload={"run": uuid4().hex},
                     ),
                 )
+                operation_ids.append(f"orders:{event_id}")
                 conn.execute(
                     "INSERT OR REPLACE INTO sync_schedule VALUES (?,?,?)",
                     (platform, account, now + 300),
                 )
             conn.commit()
+        return operation_ids
 
     def claim(self, accounts: dict[str, str], *, now: float):
         with self.connect() as conn:
@@ -237,12 +244,12 @@ class OrderNotificationStore:
             conn.commit()
             return True
 
-    def finish(self, job, *, error: str = "", retryable: bool = False, now: float):
+    def finish(self, job, *, error: str = "", retryable: bool = False, now: float, next_attempt: float | None = None):
         status = (
             "done"
             if not error
             else "retry"
-            if retryable and job["attempts"] < 8
+            if retryable and (job["attempts"] < 8 or next_attempt is not None)
             else "failed"
         )
         with self.connect() as conn:
@@ -252,7 +259,7 @@ class OrderNotificationStore:
                 (
                     status,
                     error[:500],
-                    now + min(1800, 5 * 2 ** min(job["attempts"], 9)),
+                    next_attempt if next_attempt is not None else now + min(1800, 5 * 2 ** min(job["attempts"], 9)),
                     utc_iso(),
                     job["id"],
                     job["claim"],
@@ -350,6 +357,19 @@ class OrderNotificationStore:
                 "latest_alert_id": latest,
             }
         ).model_dump(mode="json")
+
+    def sync_status(self, accounts):
+        result = []
+        with self.connect() as conn:
+            for platform, account in accounts.items():
+                latest = conn.execute("SELECT id,status,error,next_attempt,completed_at FROM inbox WHERE platform=? AND account_id=? AND topic='sync' ORDER BY id DESC LIMIT 1", (platform,account)).fetchone()
+                success = conn.execute("SELECT completed_at FROM inbox WHERE platform=? AND account_id=? AND topic='sync' AND status='done' ORDER BY completed_at DESC LIMIT 1", (platform,account)).fetchone()
+                schedule = conn.execute("SELECT next_at FROM sync_schedule WHERE platform=? AND account_id=?", (platform, account)).fetchone()
+                result.append({"platform": platform, "status": latest["status"] if latest else "idle",
+                               "error": latest["error"] if latest else "",
+                               "last_success_at": success[0] if success else "",
+                               "next_attempt": latest["next_attempt"] if latest and latest["status"] == "retry" else schedule[0] if schedule else 0})
+        return result
 
     def summary(self, accounts):
         page = self.read(accounts, limit=5)

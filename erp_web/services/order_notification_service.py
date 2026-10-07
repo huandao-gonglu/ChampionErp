@@ -20,6 +20,7 @@ from erp_web.schemas.orders import (
     configured_accounts,
 )
 from erp_web.stores.order_notification_store import OrderNotificationStore
+from erp_web.services.external_request_context import request_operation
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +36,12 @@ class OrderNotificationService:
             [str, dict[str, Any], dict[str, Any]],
             tuple[OrderEvent | None, dict[str, Any]],
         ],
+        external_store=None,
+        request_scopes=None,
         start_worker: bool = True,
     ):
+        self.external_store = external_store
+        self.request_scopes = request_scopes
         self.store = store
         self.config_provider = config_provider
         self.adapters = adapters
@@ -111,8 +116,26 @@ class OrderNotificationService:
             }
         if not accounts:
             raise ValueError("没有已配置的平台账号，请先完成店铺授权")
-        self.store.schedule(accounts, now=time.time(), force=True)
-        return {"ok": True}
+        operation_ids = self.store.schedule(accounts, now=time.time(), force=True)
+        return {"ok": True, "operation_ids": operation_ids}
+
+    def _blocks(self, config, platform):
+        if self.external_store is None or self.request_scopes is None:
+            return []
+        return self.external_store.matching_blocks(self.request_scopes(config).get(platform, []))
+
+    def sync_status(self):
+        config = self.config_provider()
+        rows = self.store.sync_status(configured_accounts(config))
+        for row in rows:
+            blocks = self._blocks(config, row["platform"])
+            if not blocks:
+                continue
+            hard = [b for b in blocks if b["failure"].get("resume_at") is None]
+            chosen = (hard or sorted(blocks, key=lambda b: b["failure"].get("resume_at") or 0, reverse=True))[0]["failure"]
+            row.update(status="blocked" if hard else "cooldown", error=chosen["message"],
+                       next_attempt=0 if hard else max(row["next_attempt"], chosen.get("resume_at") or 0, chosen.get("probe_until") or 0))
+        return rows
 
     def process_one(self, platform: str = "", *, now: float | None = None) -> bool:
         now = time.time() if now is None else now
@@ -133,18 +156,19 @@ class OrderNotificationService:
                 if event.topic == "sync"
                 else adapter.read(event)
             )
-            for snapshot in snapshots:
-                if self.stop_event.is_set():
-                    raise InterruptedError("订单同步已停止，下次启动继续处理")
-                if self.accounts().get(event.platform) != event.account_id:
-                    raise ValueError("平台账号已切换，本次任务停止")
-                if (
-                    snapshot.platform != event.platform
-                    or snapshot.account_id != event.account_id
-                ):
-                    raise ValueError("订单快照越过账号范围")
-                if not self.store.save_snapshot(job, snapshot, now=time.time()):
-                    raise InterruptedError("订单处理租约已失效")
+            with request_operation("orders", operation_id=f"orders:{job['id']}", trigger="background"):
+                for snapshot in snapshots:
+                    if self.stop_event.is_set():
+                        raise InterruptedError("订单同步已停止，下次启动继续处理")
+                    if self.accounts().get(event.platform) != event.account_id:
+                        raise ValueError("平台账号已切换，本次任务停止")
+                    if (
+                        snapshot.platform != event.platform
+                        or snapshot.account_id != event.account_id
+                    ):
+                        raise ValueError("订单快照越过账号范围")
+                    if not self.store.save_snapshot(job, snapshot, now=time.time()):
+                        raise InterruptedError("订单处理租约已失效")
         except Exception as exc:  # noqa: BLE001 -- 领域任务须持久记录任何适配器故障，正文不进入日志。
             # 错误正文可能含平台凭据或买家信息，只保留类型与稳定错误码。
             raw_code = str(getattr(exc, "code", ""))
@@ -161,7 +185,15 @@ class OrderNotificationService:
                 if isinstance(exc, OrderDataError)
                 else f"订单读取失败（{code}），请检查平台授权、请求记录或网络后重试。"
             )
-            self.store.finish(job, error=message, retryable=retryable, now=time.time())
+            blocks = self._blocks(config, event.platform)
+            timed = [b["failure"] for b in blocks if b["failure"].get("resume_at") is not None]
+            hard = any(b["failure"].get("resume_at") is None for b in blocks)
+            next_attempt = None
+            if timed and not hard:
+                retryable = True
+                next_attempt = max(time.time()+1, *(max(b["resume_at"], b.get("probe_until") or 0) for b in timed))
+                message = "平台订单同步暂时暂停，将在冷却结束后自动重试。"
+            self.store.finish(job, error=message, retryable=retryable, now=time.time(), next_attempt=next_attempt)
         else:
             self.store.finish(job, now=time.time())
         return True

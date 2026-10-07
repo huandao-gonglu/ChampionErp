@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from erp_web.context import get_context
-from erp_web.runtime_units.order_notifications import parse_notification
+from erp_web.runtime_units.order_notifications import parse_notification, order_request_scopes
 from erp_web.runtime_units.orders_mercadolibre import MercadoLibreOrderAdapter
 from erp_web.runtime_units.orders_ozon import OzonOrderAdapter
 from erp_web.runtime_units.orders_yandex import YandexOrderAdapter
-from erp_web.schemas.orders import PLATFORMS, OrderView
+from erp_web.schemas.orders import PLATFORMS, OrderView, OrderSyncStatus
 from erp_web.services.order_notification_service import OrderNotificationService
 from erp_web.stores.order_notification_migration import import_historical_notifications
 from erp_web.stores.order_notification_store import OrderNotificationStore
@@ -27,6 +27,8 @@ def create_order_notification_service(context, *, start_worker=True):
             "yandex": YandexOrderAdapter,
         },
         parser=parse_notification,
+        external_store=context.external_requests.store,
+        request_scopes=order_request_scopes,
         start_worker=start_worker,
     )
 
@@ -65,6 +67,7 @@ def read_orders(*, platform="", state="", limit=50, offset=0, q=""):
         }
         for order in orders
     ]
+    result["sync_status"] = [row.model_dump(mode="json") for row in _sync_status(service)]
     result["pagination"] = {
         "limit": max(1, min(int(limit), 100)),
         "offset": max(0, int(offset)),
@@ -73,9 +76,16 @@ def read_orders(*, platform="", state="", limit=50, offset=0, q=""):
     return result
 
 
+def _sync_status(service):
+    return [OrderSyncStatus.model_validate(row) for row in service.sync_status()]
+
+
 def summary():
     service = get_context().order_notifications
-    return service.store.summary(service.accounts())
+    result = service.store.summary(service.accounts())
+    result["sync_status"] = [row.model_dump(mode="json") for row in _sync_status(service)]
+    result["attention_count"] = sum(row["status"] in {"failed", "retry", "blocked", "cooldown"} for row in result["sync_status"])
+    return result
 
 
 def receive_notification(platform, token, body):

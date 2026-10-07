@@ -26,6 +26,7 @@ from erp_web.http_route_units import (
     online_product_routes,
     order_routes,
     fulfillment_routes,
+    external_request_routes,
 )
 from erp_web.http_routes import POST_API_ROUTES
 
@@ -75,6 +76,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in online_product_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in order_routes.GET_API_ROUTES)
+    endpoints.update(("GET", path) for path in external_request_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in fulfillment_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in image_hosting_routes.GET_API_ROUTES)
     endpoints.update(("POST", path) for path in POST_API_ROUTES)
@@ -241,6 +243,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/cancel-purchase", business_domain="订单采购", disposition="internal_only", reason="订单处理界面专用；人工确认采购来源和实际采购记录，不开放模型代办采购。"),
     AiCapabilityCoverageEntry(method="GET", path="/api/orders/integrations", business_domain="授权基础设施", disposition="internal_only", reason="本机可信界面读取回调地址，含专用接入凭据，不向模型提供。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/configure", business_domain="授权基础设施", disposition="internal_only", reason="用户配置公网回调接入地址。"),
+    AiCapabilityCoverageEntry(method="GET", path="/api/external-requests/status", business_domain="平台授权", disposition="internal_only", reason="本机授权页读取外部请求中断及恢复状态。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/external-requests/recover", business_domain="平台授权", disposition="internal_only", reason="用户在授权页显式恢复指定中断。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/sync", business_domain="订单通知", disposition="internal_only", reason="用户显式请求后台订单对账。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/retry", business_domain="订单通知", disposition="internal_only", reason="用户检查故障后重试失败通知。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/acknowledge", business_domain="订单通知", disposition="internal_only", reason="用户标记订单提醒已读。"),

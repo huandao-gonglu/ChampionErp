@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import OrderSyncStatusPanel from './OrderSyncStatusPanel.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
 import { orderPlatformNames } from '@/types/orders'
@@ -37,7 +38,8 @@ const processingNames = {
         全部已读
       </button>
     </div>
-    <p v-if="store.error" class="order-error" role="alert">{{ store.error }}</p>
+    <p v-if="store.commandError || store.error" class="order-error" role="alert">{{ store.commandError || store.error }}</p>
+    <OrderSyncStatusPanel />
     <article v-for="event in store.page.notifications" :key="event.id" class="order-section">
       <div class="order-row">
         <h4 class="font-semibold">{{ orderPlatformNames[event.platform] }}</h4>

@@ -13,6 +13,7 @@ from erp_web.context import get_context
 from erp_web.schemas.external_requests import RequestContext
 
 _operation = ContextVar("external_operation", default=None)
+_rejections = ContextVar("external_request_rejections", default=None)
 
 
 @contextmanager
@@ -68,3 +69,23 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
         semantics=semantics or ("read" if method.upper() in {"GET","HEAD"} or read_post else "write"))
     operation = _operation.get()
     return replace(ctx,**{**operation,"source":operation["source"]+":"+source}) if operation else ctx
+
+
+@contextmanager
+def capture_request_rejections():
+    notices = []
+    token = _rejections.set(notices)
+    try:
+        yield notices
+    finally:
+        _rejections.reset(token)
+
+
+def note_request_rejection(failure):
+    notices = _rejections.get()
+    if notices is not None and failure.scope:
+        notices.append(failure.code)
+
+
+def current_operation_id():
+    return (_operation.get() or {}).get("operation_id", "")

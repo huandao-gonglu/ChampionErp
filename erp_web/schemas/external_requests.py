@@ -47,6 +47,17 @@ class RequestFailure:
     resume_at: float | None = None
     status: int = 0
     retryable: bool = False
+    cooldown_seconds: int = 0
+    probe_id: str = ""
+    probe_until: float = 0
+
+
+def is_definite_request_rejection(scope: str, code: str) -> bool:
+    """只允许明确拒绝的原请求人工恢复，不按范围推测写入结果。"""
+    return scope == "request" and (
+        code.endswith("_REQUEST_INVALID")
+        or code in {"IMAGE_HOSTING_PUBLIC_AUTH_REQUIRED", "IMAGE_HOSTING_PUBLIC_ACCESS_DENIED"}
+    )
 
 
 class ExternalRequestBlocked(PublishAdapterError):

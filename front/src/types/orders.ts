@@ -52,7 +52,15 @@ export interface OrderAlert {
   title: string
   created_at: string
 }
+export interface OrderSyncStatus {
+  platform: OrderPlatform
+  status: 'idle' | 'queued' | 'running' | 'retry' | 'failed' | 'done' | 'blocked' | 'cooldown'
+  error: string
+  last_success_at: string
+  next_attempt: number
+}
 export interface OrdersPage {
+  sync_status?: OrderSyncStatus[]
   ok: boolean
   items: OrderSnapshot[]
   total: number
@@ -87,6 +95,7 @@ export const orderStateNames: Record<OrderState, string> = {
 }
 
 export interface OrderSummary {
+  sync_status?: OrderSyncStatus[]
   ok: boolean
   counts: Partial<Record<OrderState, number>>
   unread: number

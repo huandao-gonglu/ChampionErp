@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from erp_web.services.external_request_context import request_operation
+
 import hashlib
 import json
 import logging
@@ -663,13 +665,14 @@ def _run_hot_product_worker(
         registry.update(run_id, status="running", description=description, progress_description=description)
 
     try:
-        items, source_status = build_hot_product_candidates(
-            request,
-            config,
-            app_dir,
-            app_config,
-            progress_callback=progress,
-        )
+        with request_operation("product_research", operation_id=run_id, trigger="background"):
+            items, source_status = build_hot_product_candidates(
+                request,
+                config,
+                app_dir,
+                app_config,
+                progress_callback=progress,
+            )
         description = _run_completion_description(items, source_status)
         run = registry.update(
             run_id,

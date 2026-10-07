@@ -12,7 +12,7 @@ import urllib.request
 from erp_web.context import get_context
 from erp_web.services.platform_request_policy import classify_response, platform_error_codes, response_quota_pause
 from erp_web.schemas.external_requests import ExternalRequestBlocked, ExternalRequestNotSent, ExternalRequestOutcomeUnknown, RequestFailure
-from erp_web.services.external_request_context import request_context
+from erp_web.services.external_request_context import request_context, note_request_rejection
 
 
 class BufferedResponse(io.BytesIO):
@@ -52,6 +52,7 @@ class ExternalRequestManager:
             raise ExternalRequestBlocked(failure)
         failure, delay = self.store.acquire(request_id,ctx,deadline)
         if failure:
+            note_request_rejection(failure)
             self.store.finish(request_id,decision="rejected",result=asdict(failure))
             raise ExternalRequestBlocked(failure)
         return delay

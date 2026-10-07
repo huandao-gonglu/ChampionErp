@@ -1,3 +1,4 @@
+import { observeExternalOperations } from '@/utils/externalRequestNotices'
 import axios, { AxiosError } from 'axios'
 import { uiLocaleOption } from '@/constants/locales'
 import { normalizeApiError } from '@/utils/apiError'
@@ -40,8 +41,12 @@ apiClient.interceptors.request.use((config) => {
 })
 
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    observeExternalOperations(response.headers, response.config.method)
+    return response
+  },
   (error: AxiosError) => {
+    if (error.response) observeExternalOperations(error.response.headers, error.config?.method)
     const data = error.response?.data as Record<string, unknown> | undefined
     const normalized = normalizeApiError(
       {

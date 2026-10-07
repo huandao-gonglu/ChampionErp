@@ -36,6 +36,7 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
   const state = ref('')
   const offset = ref(0)
   const error = ref('')
+  const commandError = ref('')
   const busy = ref(false)
   const lastCheckedAt = ref('')
   const desktopEnabled = ref(false)
@@ -141,12 +142,14 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
   ) {
     if (busy.value) return
     busy.value = true
+    commandError.value = ''
     try {
       await orderCommand(action, body)
       if (action === 'configure') await loadIntegrations()
       await Promise.all([refreshSummary(), ...(listActive.value ? [refresh()] : [])])
     } catch (exc) {
-      error.value = exc instanceof Error ? exc.message : '订单通知操作失败'
+      commandError.value = exc instanceof Error ? exc.message : '订单通知操作失败'
+      error.value = commandError.value
     } finally {
       busy.value = false
     }
@@ -175,6 +178,7 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
     state,
     offset,
     error,
+    commandError,
     busy,
     pendingCount,
     lastCheckedAt,

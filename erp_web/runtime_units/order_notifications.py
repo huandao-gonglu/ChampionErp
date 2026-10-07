@@ -122,3 +122,29 @@ def parse_notification(platform: str, body: dict[str, Any], config: dict[str, An
         occurred_at=occurred,
         payload=body,
     ), response
+
+
+def order_request_scopes(config):
+    """与平台读取适配器相同的账号、凭据和接口范围；不包含回调密钥。"""
+    from erp_web.schemas.external_requests import RequestContext
+    from erp_web.schemas.orders import configured_accounts
+    from erp_web.services.external_request_context import credential_fingerprint
+
+    paths = {
+        "yandex": ["/v1/businesses/:id/orders"],
+        "ozon": ["/v4/posting/fbs/list", "/v3/posting/fbo/list", "/v3/posting/fbs/get", "/v2/posting/fbo/get"],
+        "mercadolibre": ["/orders/search/recent", "/orders/:id", "/shipments/:id", "/shipments/:id/sla", "/marketplace/shipments/:id/sla"],
+    }
+    result = {}
+    for platform, account in configured_accounts(config).items():
+        store = config[platform]
+        secret = str(store.get({"yandex": "api_token", "ozon": "api_key", "mercadolibre": "access_token"}[platform]) or "")
+        if platform == "mercadolibre":
+            secret = "Bearer " + secret
+        external_account = str(store.get("business_id") or "") if platform == "yandex" else account
+        result[platform] = [RequestContext(
+            platform=platform, account_id=external_account, interface=path,
+            credential_id=credential_fingerprint(secret), semantics="read", source="orders",
+            quota_key="businesses:"+external_account if platform == "yandex" else "business:"+external_account,
+        ) for path in paths[platform]]
+    return result

@@ -4,12 +4,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from . import http_routes
 from .http_request import safe_json_body
+from .services.external_request_context import capture_request_rejections, current_operation_id
 
 access_logger = logging.getLogger("erp.access")
 response_logger = logging.getLogger("erp.http.response")
@@ -145,6 +147,23 @@ class Handler(BaseHTTPRequestHandler):
         raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if getattr(self, "external_rejections", None):
+            self.send_header("X-External-Request-Blocked", "1")
+        if getattr(self, "command", "") == "POST":
+            operation_ids = [current_operation_id()]
+            if isinstance(data, dict):
+                operation_ids.extend(data.get("operation_ids", []) if isinstance(data.get("operation_ids"), list) else [])
+                operation_ids.append(data.get("job_id", ""))
+                run = data.get("run")
+                if isinstance(run, dict):
+                    operation_ids.append(run.get("run_id", ""))
+                job = data.get("job")
+                if isinstance(job, dict):
+                    operation_ids.append(job.get("id", ""))
+            values = [v for v in operation_ids if isinstance(v, str) and re.fullmatch(r"[a-zA-Z0-9:_-]{1,128}", v)]
+            if values:
+                self.send_header("X-External-Operation-Since", str(getattr(self, "request_started", time.time())))
+                self.send_header("X-External-Operation-Ids", ",".join(dict.fromkeys(values[:20])))
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -183,7 +202,10 @@ class Handler(BaseHTTPRequestHandler):
         return safe_json_body(self)
 
     def do_GET(self) -> None:
-        http_routes.handle_get(self)
+        with capture_request_rejections() as self.external_rejections:
+            http_routes.handle_get(self)
 
     def do_POST(self) -> None:
-        http_routes.handle_post(self)
+        self.request_started = time.time()
+        with capture_request_rejections() as self.external_rejections:
+            http_routes.handle_post(self)

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
 import { orderPlatformNames, orderStateNames } from '@/types/orders'
 import OrderDetailPanel from './OrderDetailPanel.vue'
+import OrderSyncStatusPanel from './OrderSyncStatusPanel.vue'
 import OrderListTable from './OrderListTable.vue'
 import OrderNotificationsDrawer from './OrderNotificationsDrawer.vue'
 import './orderCenter.css'
@@ -86,6 +87,7 @@ onBeforeUnmount(() => {
           }}</span>
         <button class="order-button" @click="openNotifications">
           通知 {{ store.summary.unread || 0 }}
+          <span v-if="store.summary.attention_count"> · {{ store.summary.attention_count }} 个平台同步异常</span>
         </button>
         <button
           class="order-button order-primary"
@@ -114,7 +116,8 @@ onBeforeUnmount(() => {
         </details>
       </div>
     </header>
-    <p v-if="store.error" role="alert" class="order-error">{{ store.error }}</p>
+    <p v-if="store.commandError || store.error" role="alert" class="order-error">{{ store.commandError || store.error }}</p>
+    <OrderSyncStatusPanel />
     <nav class="order-tabs" aria-label="平台订单状态">
       <button
         v-for="tab in tabs"

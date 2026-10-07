@@ -256,6 +256,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/mercadolibre/notifications": _EMPTY,
     "/api/ozon/notifications": _EMPTY,
     "/api/yandex/notifications": _EMPTY,
+    "/api/external-requests/recover": RequestContract(fields={"block_id": STRING, "reason": STRING}, required=("block_id",)),
     "/api/orders/sync": RequestContract(fields={"platform": STRING}),
     "/api/orders/retry": RequestContract(fields={"event_id": FieldRule("integer", minimum=1)}, required=("event_id",)),
     "/api/orders/acknowledge": RequestContract(fields={"through_id": FieldRule("integer", minimum=0)}, required=("through_id",)),

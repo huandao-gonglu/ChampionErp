@@ -989,3 +989,15 @@ def test_platform_labels_reuse_marketplace_transport_and_pdf_hosting_boundary():
     source = service.read_text()
     assert 'box.get("fulfilmentId")' in source
     assert 'box.get("orderNum")' not in source
+
+
+def test_request_recovery_is_owned_by_authorization_and_never_replays_business():
+    route = ROOT / 'erp_web/http_route_units/external_request_routes.py'
+    assert not any(target.startswith(('erp_web.runtime_units', 'erp_web.services', 'erp_web.stores')) for _, target in imported_targets([route]))
+    service = ROOT / 'erp_web/services/external_request_control_service.py'
+    assert not any(target.startswith(('erp_web.runtime_units', 'erp_web.marketplaces', 'urllib', 'httpx', 'pydantic_ai')) for _, target in imported_targets([service]))
+    from erp_web.http_routes import POST_API_ROUTES
+    assert '/api/external-requests/recover' in POST_API_ROUTES
+    assert '/api/orders/recover-sync' not in POST_API_ROUTES
+    assert 'ExternalRequestControlPanel' in (ROOT / 'front/src/components/auth/AuthSettingsPanel.vue').read_text()
+    assert 'recover-sync' not in (ROOT / 'front/src/components/domain/OrderSyncStatusPanel.vue').read_text()

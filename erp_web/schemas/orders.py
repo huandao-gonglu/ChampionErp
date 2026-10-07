@@ -152,6 +152,14 @@ class OrderAlert(BaseModel):
     read_at: str
 
 
+class OrderSyncStatus(BaseModel):
+    platform: Platform
+    status: Literal["idle", "queued", "running", "retry", "failed", "done", "blocked", "cooldown"]
+    error: str = ""
+    last_success_at: str = ""
+    next_attempt: float = 0
+
+
 class OrdersPage(BaseModel):
     ok: bool = True
     items: list[OrderView]

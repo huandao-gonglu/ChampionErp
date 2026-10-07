@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ExternalRequestControlPanel from './ExternalRequestControlPanel.vue'
 import { computed, inject, reactive, ref, watch } from 'vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
@@ -69,11 +70,11 @@ const form = reactive({
 })
 
 const selectedStorePlatform = ref<Marketplace>('mercadolibre')
-type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting' | 'crossborderbus'
+type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting' | 'crossborderbus' | 'interruptions'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const authRoute = inject(routeLocationKey, undefined)
 watch(() => authRoute?.query.auth_section, section => {
-  if (section === 'crossborderbus') activeAuthSettingsTab.value = 'crossborderbus'
+  if (section === 'crossborderbus' || section === 'interruptions') activeAuthSettingsTab.value = section
 }, { immediate: true })
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
@@ -121,6 +122,7 @@ const storePlatforms = computed(() => props.platformOptions.map((platform) => ({
 })))
 
 const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: string }> = [
+  { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
   { key: 'ai_models', label: 'AI 模型', summary: '配置模型、能力和连接测试' },
   { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
   { key: 'stores', label: '店铺授权', summary: '按一级平台保存，子站点共用凭证' },
@@ -1779,6 +1781,7 @@ function copy(text: string) {
       </div>
 
       <div class="mt-5">
+        <ExternalRequestControlPanel v-if="activeAuthSettingsTab === 'interruptions'" />
         <section v-show="activeAuthSettingsTab === 'ai_models'" class="relative rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
           <div v-if="aiControlsLocked" class="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-slate-950/15 p-4 backdrop-blur-sm dark:bg-slate-950/45">
             <div class="flex min-w-64 flex-col items-center rounded-lg border border-accent-200 bg-white px-6 py-5 text-center shadow-lg dark:border-dark-700 dark:bg-dark-900">
