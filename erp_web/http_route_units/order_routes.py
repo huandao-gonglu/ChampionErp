@@ -1,11 +1,14 @@
 """订单通知薄路由；平台回调仅校验和落库，不执行远端读取。"""
 
 import sqlite3
+from pydantic import ValidationError
 from urllib.parse import parse_qs, urlsplit
 
 from erp_web.facades import order_notification_facade as facade
 from erp_web.facades import order_procurement_facade as procurement
 from erp_web.schemas.requests import validate_request_payload
+from erp_web.facades import order_address_note_facade as address_notes
+from erp_web.schemas.order_address_notes import AddressNoteConflict
 
 
 def _receive(handler, platform):
@@ -88,7 +91,21 @@ def handle_cancel_purchase(handler):
     _procurement_command(handler, "cancel-purchase")
 
 
+def handle_address_note(handler):
+    try:
+        body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+        handler.send_json(address_notes.save(body))
+    except AddressNoteConflict as exc:
+        handler.send_json({"ok": False, "error": str(exc), "code": "ADDRESS_NOTE_CONFLICT",
+                           "current": exc.current.model_dump(mode="json")}, 409)
+    except ValidationError:
+        handler.send_json({"ok": False, "error": "备注格式无效，最多可填写 4000 字"}, 400)
+    except (ValueError, TypeError) as exc:
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
+
+
 POST_HANDLERS = {
+    "/api/orders/address-note": handle_address_note,
     "/api/mercadolibre/notifications": handle_mercadolibre,
     "/api/ozon/notifications": handle_ozon,
     "/api/yandex/notifications": handle_yandex,
@@ -102,6 +119,7 @@ POST_HANDLERS = {
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {
+    "/api/orders/address-note": address_notes.read,
     "/api/orders": facade.read_orders,
     "/api/orders/integrations": facade.integrations,
     "/api/orders/summary": facade.summary,
@@ -132,6 +150,8 @@ def handle_get(handler, parsed):
         handler.send_json(
             callback(**allowed)
             if parsed.path == "/api/orders"
+            else callback(order_id=query.get("order_id", ""), shipment_id=query.get("shipment_id", ""), address=query.get("address", ""))
+            if parsed.path == "/api/orders/address-note"
             else callback(order_id=query.get("order_id", ""))
             if parsed.path == "/api/orders/detail"
             else callback()

@@ -54,6 +54,8 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
     read_post = platform == "ozon" and any(part in parsed.path for part in ("/info", "/list", "/tree", "/attribute", "/seller/info", "/posting/fbs/get", "/posting/fbo/get")) and not any(part in parsed.path for part in ("/update", "/import", "/delete"))
     if platform == "yandex":
         read_post = method.upper() == "POST" and not any(part in parsed.path for part in ("/update","/delete","/create")) and not parsed.path.endswith("/hidden-offers")
+    # Yandex 的发货批次搜索虽使用 PUT，但官方契约是只读；其他 PUT 保持写入语义。
+    read_put = platform == "yandex" and method.upper() == "PUT" and bool(re.fullmatch(r"/v2/campaigns/[1-9][0-9]*/first-mile/shipments", parsed.path))
     # 接口标识去掉 URL 参数与动态数字 ID，避免敏感查询进入日志。
     interface = re.sub(r"/[0-9]+(?=/|$)", "/:id", (parsed.path or "/"))[:240]
     known_ai_path = any(parsed.path.endswith(path) for path in ("/chat/completions", "/responses", "/embeddings", "/images/generations", "/images/edits"))
@@ -66,7 +68,7 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
     ctx = RequestContext(platform=platform, account_id=account_id[:128],credential_id=credential_id,
         interface=interface,source=source,timeout=timeout,quota_key=quota_key,
         fingerprint=hashlib.sha256(method.encode()+url.encode()+(data or b"")).hexdigest(),
-        semantics=semantics or ("read" if method.upper() in {"GET","HEAD"} or read_post else "write"))
+        semantics=semantics or ("read" if method.upper() in {"GET","HEAD"} or read_post or read_put else "write"))
     operation = _operation.get()
     return replace(ctx,**{**operation,"source":operation["source"]+":"+source}) if operation else ctx
 

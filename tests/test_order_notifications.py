@@ -684,7 +684,7 @@ def test_yandex_resync_fills_old_snapshot_shipment_date(store, monkeypatch):
     row = yandex_price_row(None)
     monkeypatch.setattr(
         "erp_web.runtime_units.orders_yandex.request_yandex_json",
-        lambda *args, **kwargs: {"orders": [row]},
+        lambda method, *args, **kwargs: {"result": {"shipments": []}} if method == "PUT" else {"orders": [row]},
     )
     svc = service(store, {"yandex": YandexOrderAdapter})
     for sequence in (1, 2):

@@ -19,6 +19,7 @@ export interface OrderLine extends OrderAmount {
 }
 export interface OrderSnapshot extends OrderAmount {
   delivery?: import('./fulfillment').DeliverySource
+  handover?: OrderHandoverSnapshot | null
   id: string
   platform: OrderPlatform
   account_id: string
@@ -154,4 +155,34 @@ export interface OrderDetail {
   ok: boolean
   order: OrderSnapshot
   lines: ProcurementLine[]
+}
+
+export interface HandoverWarehouse {
+  id: string
+  name: string
+  address: string
+}
+export interface OrderHandoverShipment {
+  shipment_id: string
+  shipment_type: string
+  status: string
+  planned_from: string
+  planned_to: string
+  origin: HandoverWarehouse | null
+  destination: HandoverWarehouse | null
+}
+export interface OrderHandoverSnapshot {
+  state: 'ready' | 'unavailable'
+  message: string
+  checked_at: string
+  shipments: OrderHandoverShipment[]
+}
+
+export interface OrderAddressNote {
+  ok: boolean
+  address_key: string
+  address: string
+  note: string
+  revision: number
+  updated_at: string
 }

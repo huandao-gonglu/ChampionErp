@@ -8,6 +8,7 @@ import OrderAmountDetails from './OrderAmountDetails.vue'
 import OrderProcurementLine from './OrderProcurementLine.vue'
 import OrderPurchaseDialog from './OrderPurchaseDialog.vue'
 import OrderFulfillmentPanel from './OrderFulfillmentPanel.vue'
+import OrderHandoverPanel from './OrderHandoverPanel.vue'
 import { amountLabel, deadline, money, platformStatusLabel, platformStatusNote, stateTone } from './orderPresentation'
 const props = defineProps<{ orderId: string }>()
 const activeTab = ref<'procurement' | 'fulfillment'>('procurement')
@@ -124,6 +125,12 @@ onMounted(load)
       <p v-if="activeTab === 'procurement' && !detail.lines.length" class="order-muted py-8">
         平台尚未提供商品明细，请同步订单后重试。
       </p>
+      <OrderHandoverPanel
+        v-if="detail.order.platform === 'yandex' && (detail.order.delivery?.fulfillment_model || detail.order.fulfillment).toUpperCase() === 'FBS'"
+        v-show="activeTab === 'procurement'"
+        :order="detail.order"
+        @lock="setLock('address-note', $event)"
+      />
     </template>
     <template #footer>
       <div class="order-actions justify-end">

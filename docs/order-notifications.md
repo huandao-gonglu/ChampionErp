@@ -56,6 +56,8 @@ Yandex 的订单和 SKU 行主金额 `amount` 为同币种 `payment + subsidy + 
 | `POST /api/yandex/notifications` | `PING` 与订单创建、更新、取消等通知 |
 | `GET /api/orders` | 本地快照，支持 `platform`、`state`、`q`、`offset`、`limit`（最多 100） |
 | `GET /api/orders/summary` | 仪表盘摘要，独立于订单列表筛选；异常计数覆盖完整收件箱 |
+| `GET /api/orders/address-note` | 根据本地订单、批次及原地址读取共享备注，不请求平台 |
+| `POST /api/orders/address-note` | 保存或清空该地址的备注，校验地址未变及备注版本 |
 | `GET /api/orders/detail` | `order_id` 为本地订单身份；返回 SKU 来源、候选与采购记录 |
 | `POST /api/orders/select-source` | 人工确认发布来源候选或录入采购来源，带来源版本 |
 | `POST /api/orders/record-purchase` | 记录采购单号及数量，携带幂等请求 ID |
@@ -137,6 +139,26 @@ location / { return 404; }
 缩略图与详情布局更新验证：前端全量 72 个文件、572 项测试通过；后端全量 2261 项测试及 47 个子测试通过；相关 ESLint、Ruff、Python 编译检查、Vue 类型检查和 Vite 构建通过。真实订单数据副本验证了两个 SKU 各自的图片文件存在，原采购确认不受补图影响。构建保留已有的大包提示；未使用浏览器界面自动化进行视觉验收。
 
 ## 发货日期与截止精度
+
+### 平台交货信息
+
+Yandex FBS 订单详情在“商品与采购”列表下方展示交货模块，与其他订单字段使用同一份本地订单快照。打开详情、切换页签或再次打开均不触发平台交货查询；在订单中心同步订单、后台周期对账或处理平台通知时更新。没有独立刷新入口。
+
+`runtime_units/orders_yandex.py` 在每页订单归一化后调用 `services/order_handover_service.py`，通过官方只读 `PUT /v2/campaigns/{campaignId}/first-mile/shipments` 批量查询。日期覆盖本页订单发货日期前后七天，`orderIds` 仅包含该页当前店铺的 FBS 订单；逐批次核对订单归属，完整读取分页后才随订单保存。查询失败走现有订单任务的失败、冷却及重试机制，保留已保存快照，不以空地址覆盖。旧快照缺少 `handover` 时仍可读取，并提示同步订单。官方接口定义见 [交货批次搜索](https://yandex.ru/dev/market/partner-api/doc/ru/reference/shipments/searchShipments)。
+
+自行送货（`IMPORT`）展示 `warehouseTo` 的交货地址；平台揽收（`WITHDRAW`）展示 `warehouse` 的揽收地址。地址缺失时明确提示，不以始发仓替代目的仓。计划开始、截止时间保留平台 ISO 时区并转换至浏览器本地时间，显示 UTC 偏移；不会把订单仅含日期的发货字段补成具体时刻。
+
+2026-10-07 使用当前店铺授权只读查询发货批次 `90457934` 及其订单关联，确认能取得 `UNI Jinhua Futian` 交货点及地址。平台计划截止 `2026-10-13T15:00:00+03:00` 对应北京时间 20:00。没有修改平台订单或发货状态。
+
+### 交货地址备注
+
+交货地址旁的“备注”打开气泡，常态只显示一个多行输入框。点击外部空白处或按 Esc 关闭时保存变化，无保存、确定按钮；选中文字时从内部拖出不关闭。未修改不写入，清空后关闭会清除备注内容。保存期间禁止重复提交及关闭外层订单；失败保留气泡和输入，下一次关闭重试。并发修改展示最新备注供核对，保留当前输入，核对后再次关闭才可覆盖。
+
+`order_address_note_store.py` 使用订单领域库的 `order_address_notes` 独立表。映射按平台、店铺和原始地址确定，只合并空白，不依赖订单号、发货单号、交货点名称或跨境巴士 ID。相同地址的新订单复用备注，修改会影响同地址后续查看；平台同步不覆盖备注。原地址变动不会静默沿用旧地址备注。旧数据库通过已有订单库初始化过程新增空表，不改写历史订单。这版没有统一管理页面，也不自动把备注替换为平台地址。
+
+HTTP 通过 `order_address_note_facade.py` 装配本地 Store，只接受当前店铺订单中的真实批次，提交前再次核对原地址与备注版本。备注正文最多 4000 字，按纯文本显示，不解析 HTML，不外发给平台。
+
+### 订单快照中的发货日期
 
 - Yandex 使用 `delivery.shipment.shipmentDate` 和可选 `shipmentTime`，不使用买家送达区间 `delivery.dates`。只有日期时保存 `YYYY-MM-DD`，没有时区的时分保留平台原值；前端分别显示“仅提供日期”或“平台时间（未提供时区）”，不擅自补零点或生成倒计时。字段定义见 [Yandex Business Orders](https://yandex.ru/dev/market/partner-api/doc/ru/reference/orders/getBusinessOrders)。
 - Mercado Libre 待发货且由卖家履约的订单读取 `/shipments/{id}/sla` 的 `expected_date`；已验证为 CBT 的跨境父账号使用 `/marketplace/shipments/{id}/sla`。取消订单和 Fulfillment 不请求 SLA，不使用买家预计送达时间冒充发货截止。依据：[本地账号 SLA](https://developers.mercadolibre.com.mx/es_mx/envios)、[Global Selling SLA](https://global-selling.mercadolibre.com/devsite/manage-shipments)。

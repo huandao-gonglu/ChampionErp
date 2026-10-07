@@ -105,6 +105,16 @@ export function dateTime(value: string) {
       })
     : '未提供'
 }
+export function handoverDateTime(value: string, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
+  const date = new Date(value)
+  return value && Number.isFinite(date.getTime())
+    ? date.toLocaleString('zh-CN', {
+        timeZone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset',
+      })
+    : '平台未提供'
+}
 export function deadline(value: string | undefined, now: number) {
   // 无时区的日期/时间是平台日历信息，不能按用户电脑时区生成截止倒计时。
   const calendar = value?.match(/^(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?)?$/)

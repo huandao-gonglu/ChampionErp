@@ -34,6 +34,10 @@ CREATE INDEX IF NOT EXISTS orders_scope ON orders(platform,account_id,state);
 CREATE TABLE IF NOT EXISTS alerts (
  id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL, platform TEXT NOT NULL,
  account_id TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS order_address_notes (
+ platform TEXT NOT NULL, account_id TEXT NOT NULL, address_key TEXT NOT NULL,
+ address TEXT NOT NULL, note TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY(platform,account_id,address_key));
 CREATE TABLE IF NOT EXISTS sync_schedule (
  platform TEXT NOT NULL, account_id TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(platform,account_id));
 """

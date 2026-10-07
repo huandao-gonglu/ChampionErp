@@ -131,7 +131,7 @@ def order_request_scopes(config):
     from erp_web.services.external_request_context import credential_fingerprint
 
     paths = {
-        "yandex": ["/v1/businesses/:id/orders"],
+        "yandex": ["/v1/businesses/:id/orders", "/v2/campaigns/:id/first-mile/shipments"],
         "ozon": ["/v4/posting/fbs/list", "/v3/posting/fbo/list", "/v3/posting/fbs/get", "/v2/posting/fbo/get"],
         "mercadolibre": ["/orders/search/recent", "/orders/:id", "/shipments/:id", "/shipments/:id/sla", "/marketplace/shipments/:id/sla"],
     }
@@ -145,6 +145,6 @@ def order_request_scopes(config):
         result[platform] = [RequestContext(
             platform=platform, account_id=external_account, interface=path,
             credential_id=credential_fingerprint(secret), semantics="read", source="orders",
-            quota_key="businesses:"+external_account if platform == "yandex" else "business:"+external_account,
+            quota_key=("campaigns:"+account if path == "/v2/campaigns/:id/first-mile/shipments" else "businesses:"+external_account) if platform == "yandex" else "business:"+external_account,
         ) for path in paths[platform]]
     return result

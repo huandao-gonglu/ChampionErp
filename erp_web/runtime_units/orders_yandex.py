@@ -6,6 +6,7 @@ from datetime import date, time
 from decimal import Decimal, InvalidOperation
 
 from erp_web.marketplaces.yandex_http import request_yandex_json
+from erp_web.services.order_handover_service import enrich_yandex_handover
 from erp_web.runtime_units.order_notifications import identifier
 from erp_web.schemas.orders import (
     OrderAmountBreakdown,
@@ -87,8 +88,10 @@ class YandexOrderAdapter:
             rows = data.get("orders")
             if not isinstance(rows, list):
                 raise OrderDataError("Yandex 订单响应缺少 orders")
-            for row in rows:
-                yield self.normalize(row)
+            yield from enrich_yandex_handover(
+                [self.normalize(row) for row in rows],
+                account=self.account, api_token=self.store["api_token"], request=request_yandex_json,
+            )
             cursor = str((data.get("paging") or {}).get("nextPageToken") or "")
             if not cursor:
                 return

@@ -11,6 +11,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from erp_web.schemas.fulfillment import DeliverySource, FulfillmentSummary
+from erp_web.schemas.order_handover import OrderHandoverSnapshot
 
 Platform = Literal["mercadolibre", "ozon", "yandex"]
 PLATFORMS = ("mercadolibre", "ozon", "yandex")
@@ -76,6 +77,7 @@ class OrderSnapshot(BaseModel):
     )
     items: list[OrderLine] = Field(default_factory=list)
     delivery: DeliverySource = Field(default_factory=DeliverySource)
+    handover: OrderHandoverSnapshot | None = None
 
     @property
     def identity(self) -> str:
