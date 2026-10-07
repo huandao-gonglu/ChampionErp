@@ -14,6 +14,7 @@ from erp_web.schemas.online_products import ChangeRequest, snapshot_version
 from erp_web.services.online_product_changes import confirmation, validate_changes
 from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields
 from erp_web.services.online_product_images import OnlineProductImages
+from erp_web.services.online_ozon_export import OnlineOzonExportService
 from erp_web.services.online_product_sync import run_sync
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
 
@@ -37,6 +38,7 @@ class OnlineProductService:
         self.adapter_factories = adapter_factories
         self.store = OnlineProductStore(context.db)
         self.images = OnlineProductImages(context)
+        self.ozon_export = OnlineOzonExportService(self.store, lambda: self._config("yandex")[1])
         self.owner = uuid4().hex
         self._stop = threading.Event()
         self._wake = threading.Event()

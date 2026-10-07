@@ -3,6 +3,7 @@ import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-uti
 import { createPinia, setActivePinia } from 'pinia'
 import { useAiPageContextStore } from '@/stores/aiPageContext'
 import OnlineProductsPanel from '../OnlineProductsPanel.vue'
+import OzonExportDialog from '../OzonExportDialog.vue'
 import { fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
 
 vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), refreshOnlineStatus: vi.fn() }))
@@ -20,10 +21,55 @@ function groupedResponse(): OnlinePage {
 let wrapper: VueWrapper | undefined
 beforeEach(() => {setActivePinia(createPinia());vi.useFakeTimers(); vi.clearAllMocks();vi.mocked(fetchOnlineProducts).mockResolvedValue(response());vi.mocked(fetchOnlineDetail).mockResolvedValue(item)})
 afterEach(() => {wrapper?.unmount();wrapper=undefined;document.body.innerHTML='';vi.useRealTimers()})
-function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,global:{stubs:{Teleport:true}}});return wrapper}
+function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,global:{stubs:{Teleport:true,OzonExportDialog:true}}});return wrapper}
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
 
 describe('在线商品页面',()=>{
+  it('仅在 Yandex 筛选栏提供操作菜单，单选后从统一入口导出', async () => {
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),items:[{...item,platform:'yandex'}]})
+    render(); await flushPromises()
+    expect(wrapper!.find('[data-testid="online-actions"]').exists()).toBe(false)
+    await click('Yandex Market')
+    const action = wrapper!.get('[data-testid="online-actions"]')
+    expect(action.element.closest('form')).not.toBeNull()
+    await action.trigger('click')
+    expect(wrapper!.get('#online-product-actions button').attributes('disabled')).toBeDefined()
+    await action.trigger('click')
+    await wrapper!.get('[data-testid="select-online-listing"]').setValue(true)
+    await action.trigger('click')
+    await wrapper!.get('#online-product-actions button').trigger('click')
+    expect(wrapper!.findComponent(OzonExportDialog).props('listingIds')).toEqual(['remote-1'])
+    expect(wrapper!.findComponent(OzonExportDialog).props('accountId')).toBe('shop-1')
+    expect(wrapper!.get('[data-testid="online-listing"]').text()).not.toContain('导出')
+    expect(onlineAction).not.toHaveBeenCalled()
+  })
+  it('组合勾选只选择当前筛选匹配成员，单件取消后显示半选', async () => {
+    const data = groupedResponse()
+    data.items = data.items.slice(0,2).map(row=>({...row,platform:'yandex'}))
+    data.groups[0].item_ids = data.items.map(row=>row.id)
+    vi.mocked(fetchOnlineProducts).mockResolvedValue(data)
+    render(); await flushPromises(); await click('Yandex Market')
+    await wrapper!.get('[data-testid="select-online-group"]').setValue(true)
+    await wrapper!.get('[data-testid="online-actions"]').trigger('click')
+    await wrapper!.get('#online-product-actions button').trigger('click')
+    expect(wrapper!.findComponent(OzonExportDialog).props('listingIds')).toEqual(['variant-0','variant-1'])
+    wrapper!.findComponent(OzonExportDialog).vm.$emit('close'); await flushPromises()
+    await wrapper!.get('[data-testid="toggle-group"]').trigger('click')
+    await wrapper!.findAll('[data-testid="select-online-listing"]')[0].setValue(false)
+    expect((wrapper!.get('[data-testid="select-online-group"]').element as HTMLInputElement).indeterminate).toBe(true)
+    await wrapper!.get('[data-testid="online-actions"]').trigger('click')
+    await wrapper!.get('#online-product-actions button').trigger('click')
+    expect(wrapper!.findComponent(OzonExportDialog).props('listingIds')).toEqual(['variant-1'])
+  })
+  it('筛选或平台切换清除选择，避免把旧列表的商品带入导出', async () => {
+    render(); await flushPromises(); await click('Yandex Market')
+    await wrapper!.get('[data-testid="select-online-listing"]').setValue(true)
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect((wrapper!.get('[data-testid="select-online-listing"]').element as HTMLInputElement).checked).toBe(false)
+    await wrapper!.get('[data-testid="select-online-listing"]').setValue(true)
+    await click('Ozon'); await click('Yandex Market')
+    expect((wrapper!.get('[data-testid="select-online-listing"]').element as HTMLInputElement).checked).toBe(false)
+  })
   it('直接展示属性名称和平台反馈，刷新后清除已消失的警告且保持在售', async () => {
     const row: OnlineListing = {...item, platform:'yandex', raw_status:'PUBLISHED', raw_sub_status:['HAS_CARD_CAN_UPDATE_PROCESSING'],
       content:{attributes:[{id:'57046341',parameterId:57046341,name:'Другие параметры',value:'Материал: Плюш\nТип: Игрушка'}]},

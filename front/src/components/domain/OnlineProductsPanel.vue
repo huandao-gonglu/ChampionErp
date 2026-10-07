@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onClickOutside } from '@vueuse/core'
+import OzonExportDialog from './OzonExportDialog.vue'
 import OnlineContentEditor from './OnlineContentEditor.vue'
 import OnlinePicturePreview from './OnlinePicturePreview.vue'
 import OnlineBuyerLinks from './OnlineBuyerLinks.vue'
@@ -14,6 +16,24 @@ const platform = ref<OnlinePlatform>('mercadolibre')
 const platforms: Record<OnlinePlatform, string> = {mercadolibre: 'Mercado Libre', ozon: 'Ozon', yandex: 'Yandex Market'}
 const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '已提交', waiting_confirmation: '等待平台确认', confirmed: '已生效', PUBLISHED: '在售', NO_STOCKS: '缺货', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
 const page = ref<OnlinePage | null>(null)
+const checkedListings = ref(new Set<string>())
+const actionMenuOpen = ref(false), actionMenu = ref<HTMLElement | null>(null)
+const showOzonExport = ref(false)
+const exportListingIds = ref<string[]>([])
+onClickOutside(actionMenu, () => { actionMenuOpen.value = false })
+function toggleListings(ids: string[], checked: boolean) {
+  for (const id of ids) {
+    if (checked) checkedListings.value.add(id)
+    else checkedListings.value.delete(id)
+  }
+}
+function groupChecked(ids: string[]) { return ids.length > 0 && ids.every(id => checkedListings.value.has(id)) }
+function groupPartial(ids: string[]) { return ids.some(id => checkedListings.value.has(id)) && !groupChecked(ids) }
+function clearSelection() { checkedListings.value.clear(); actionMenuOpen.value = false; showOzonExport.value = false }
+function beginOzonExport() {
+  if (!checkedListings.value.size) return
+  exportListingIds.value = [...checkedListings.value]; actionMenuOpen.value = false; showOzonExport.value = true
+}
 const expandedGroups = ref(new Set<string>())
 // 转到聊天输入框后仍保留最近操作的商品，避免发送时丢失指代。
 const focusedProduct = ref<{group_id: string; listing_id?: string} | null>(null)
@@ -123,11 +143,14 @@ async function refresh(quiet = false) {
     const result = await fetchOnlineProducts({platform:platform.value, q:query.value, status:status.value, market:market.value, page:currentPage.value})
     if (ticket !== sequence) return
     if (page.value?.account_id !== result.account_id) {
+      clearSelection()
       expandedGroups.value.clear()
       focusedProduct.value = null
       selected.value = null
     }
     page.value = result
+    const visibleIds = new Set(result.items.map(row => row.id))
+    checkedListings.value = new Set([...checkedListings.value].filter(id => visibleIds.has(id)))
     const focus = focusedProduct.value
     if (focus && !result.groups.some(group => group.id === focus.group_id
       && (!focus.listing_id || group.item_ids.includes(focus.listing_id)))) focusedProduct.value = null
@@ -248,7 +271,8 @@ async function jobAction(action: 'reconcile' | 'retry', job: OnlineJob) {
   try { selectedJob.value = await onlineAction(action, {job_id: job.id, ...(action==='retry' ? {idempotency_key:crypto.randomUUID()} : {})}); await refresh(true) }
   catch(e) {error.value = e instanceof Error ? e.message : '操作失败'} finally {busy.value=false}
 }
-function filter() {focusedProduct.value=null; currentPage.value=1; void refresh()}
+function filter() {clearSelection(); focusedProduct.value=null; currentPage.value=1; void refresh()}
+watch([currentPage, showRecords], clearSelection, {flush:'sync'})
 watch([currentPage, showRecords], () => { focusedProduct.value = null }, {flush:'sync'})
 watch(platform, () => { viewEpoch++; focusedProduct.value=null; statusErrors.value={}; modal.value=''; notice.value=''; page.value=null; selected.value=null; selectedJob.value=null; expandedGroups.value.clear(); status.value=market.value=''; filter() })
 function visibilityChanged() {
@@ -275,12 +299,20 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
     <template v-if="!showRecords">
       <div class="grid grid-cols-2 gap-4 lg:grid-cols-4"><article v-for="(count,key) in page?.summary || {total:0,active:0,paused:0,attention:0}" :key="key" class="online-card p-4"><p class="muted">{{ {total:'全部刊登 / SKU',active:'在售',paused:'已停售',attention:'需关注'}[key] }}</p><strong class="mt-2 block text-2xl" :class="key==='active'?'text-primary-700':key==='attention'?'text-amber-700':''">{{ count }}</strong></article></div>
       <div v-if="page?.latest_sync" class="online-card flex flex-wrap items-center justify-between gap-3 p-4"><div><b>最近同步 · {{ jobTarget(page.latest_sync) }} · {{ page.latest_sync.status==='confirmed'?'同步完成':label(page.latest_sync.status) }}</b><p class="mt-1" role="status">{{ syncProgress(page.latest_sync) }}</p><p class="muted mt-1">成功 {{ page.latest_sync.result.completed || 0 }} · 新增 {{ page.latest_sync.result.created || 0 }} · 更新 {{ page.latest_sync.result.updated || 0 }} · 失败 {{ page.latest_sync.result.failed || 0 }}</p><p v-if="page.latest_sync.result.error" class="text-sm text-rose-600">{{ page.latest_sync.result.error }}</p></div><button class="text-primary-700" @click="selectedJob=page.latest_sync; showRecords=true">查看结果 →</button></div>
-      <form class="flex flex-wrap items-center gap-3" @submit.prevent="filter"><input v-model="query" class="input w-full md:max-w-sm" placeholder="搜索标题、卖家 SKU 或平台商品 ID" aria-label="搜索商品" /><select v-model="status" class="input w-auto" aria-label="销售状态" @change="filter"><option value="">全部状态</option><option v-for="s in page?.statuses" :key="s" :value="s">{{ label(s) }}</option></select><select v-model="market" class="input w-auto" aria-label="销售市场" @change="filter"><option value="">全部市场</option><option v-for="s in page?.markets" :key="s">{{ s }}</option></select><button class="btn btn-outline" type="submit">搜索</button><span class="muted ml-auto">最近同步：{{ time(page?.latest_sync?.updated_at || '') }}</span></form>
+      <form class="flex flex-wrap items-center gap-3" @submit.prevent="filter">
+        <input v-model="query" class="input w-full md:max-w-sm" placeholder="搜索标题、卖家 SKU 或平台商品 ID" aria-label="搜索商品" /><select v-model="status" class="input w-auto" aria-label="销售状态" @change="filter"><option value="">全部状态</option><option v-for="s in page?.statuses" :key="s" :value="s">{{ label(s) }}</option></select><select v-model="market" class="input w-auto" aria-label="销售市场" @change="filter"><option value="">全部市场</option><option v-for="s in page?.markets" :key="s">{{ s }}</option></select><button class="btn btn-outline" type="submit">搜索</button>
+        <div v-if="platform==='yandex'" ref="actionMenu" class="relative" @keydown.esc.stop="actionMenuOpen=false">
+          <button type="button" class="btn btn-outline" aria-haspopup="true" :aria-expanded="actionMenuOpen" aria-controls="online-product-actions" data-testid="online-actions" @click="actionMenuOpen=!actionMenuOpen">操作 <span aria-hidden="true">⌄</span></button>
+          <div v-if="actionMenuOpen" id="online-product-actions" class="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-slate-200 bg-white p-2 shadow-lg dark:border-dark-700 dark:bg-dark-800"><button type="button" class="w-full rounded-lg px-4 py-3 text-left text-primary-700 hover:bg-primary-50 disabled:cursor-not-allowed disabled:text-slate-400 dark:hover:bg-primary-900/30" :disabled="!checkedListings.size || loading" @click="beginOzonExport">导出到 Ozon<span v-if="checkedListings.size" class="muted mt-1 block text-xs">已选 {{ checkedListings.size }} 个 SKU</span></button></div>
+        </div>
+        <span class="muted ml-auto">最近同步：{{ time(page?.latest_sync?.updated_at || '') }}</span>
+      </form>
       <div class="online-card overflow-x-auto" :aria-busy="loading">
         <table class="w-full min-w-[950px] text-left text-sm">
-          <thead><tr><th>商品</th><th>市场 / 价格</th><th>库存</th><th>销售状态</th><th>最近同步</th><th>操作</th></tr></thead>
+          <thead><tr><th v-if="platform==='yandex'" class="w-10" aria-label="选择 SKU"></th><th>商品</th><th>市场 / 价格</th><th>库存</th><th>销售状态</th><th>最近同步</th><th>操作</th></tr></thead>
           <tbody v-for="group in listingGroups" :key="group.id">
             <tr v-if="group.kind === 'group'" class="online-group" data-testid="online-group" @click="focusedProduct={group_id:group.id}" @focusin="focusedProduct={group_id:group.id}">
+              <td v-if="platform==='yandex'"><input type="checkbox" class="size-4 accent-primary-600" :checked="groupChecked(group.item_ids)" :indeterminate.prop="groupPartial(group.item_ids)" :disabled="loading" :aria-label="`选择当前筛选下的 ${group.item_ids.length} 个 SKU：${group.title}`" data-testid="select-online-group" @click.stop @change="toggleListings(group.item_ids, ($event.target as HTMLInputElement).checked)" /></td>
               <td>
                 <button type="button" class="group flex max-w-sm items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-4" data-testid="toggle-group" :aria-expanded="expandedGroups.has(group.id)" :aria-label="`${expandedGroups.has(group.id) ? '收起' : '展开'}组合商品：${group.title}`" @click="toggleGroup(group.id)">
                   <span aria-hidden="true" class="flex size-11 shrink-0 items-center justify-center rounded-lg border border-primary-200 bg-white text-primary-700 transition-colors group-hover:border-primary-400 group-hover:bg-primary-100 dark:border-primary-700 dark:bg-dark-800 dark:text-primary-300 dark:group-hover:bg-primary-900/40">
@@ -304,6 +336,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             </tr>
             <template v-if="group.kind === 'single' || expandedGroups.has(group.id)">
               <tr v-for="row in group.rows" :key="row.id" data-testid="online-listing" :class="{'online-child': group.kind === 'group'}" @click="focusedProduct={group_id:group.id,listing_id:row.id}" @focusin="focusedProduct={group_id:group.id,listing_id:row.id}">
+                <td v-if="platform==='yandex'"><input type="checkbox" class="size-4 accent-primary-600" :checked="checkedListings.has(row.id)" :disabled="loading" :aria-label="`选择 SKU：${row.seller_sku || row.remote_id}`" data-testid="select-online-listing" @click.stop @change="toggleListings([row.id], ($event.target as HTMLInputElement).checked)" /></td>
                 <td><div class="flex max-w-sm items-center gap-3" :class="{'ml-7 border-l-2 border-primary-200 pl-4': group.kind === 'group'}"><img v-if="row.thumbnail" referrerpolicy="no-referrer" :src="row.thumbnail" alt="" class="size-12 shrink-0 rounded-lg object-cover" /><div v-else class="size-12 shrink-0 rounded-lg bg-accent-100" /><div><p class="line-clamp-2 font-medium">{{ row.title || row.remote_id }}</p><p class="muted mt-1 break-all">{{ row.seller_sku || row.remote_id }}</p></div></div></td>
                 <td><p v-if="row.prices[0]">{{ row.prices[0].currency }} {{ row.prices[0].amount ?? '未知' }}<span v-if="row.prices.length>1"> · {{ row.prices.length }} 个价格范围</span></p><p v-else>尚未取得价格</p><p class="muted mt-1">{{ row.prices[0] ? priceKind(row.prices[0].kind) : '' }} · {{ [...new Set(row.markets.map(m=>m.site_id))].join(' · ') }}</p></td>
                 <td><p>{{ row.stocks[0]?.quantity ?? '未知' }}<span v-if="row.stocks.length>1"> 等 {{ row.stocks.length }} 个范围</span></p><p class="muted mt-1">{{ row.stocks[0]?.label || '未取得库存范围' }}</p></td>
@@ -444,6 +477,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
         </section>
       </div>
     </Teleport>
+    <OzonExportDialog v-if="showOzonExport" :open="showOzonExport" :listing-ids="exportListingIds" :account-id="page?.account_id || ''" @close="showOzonExport=false" />
   </section>
 </template>
 

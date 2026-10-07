@@ -30,7 +30,19 @@ def handle_retry(handler):
     handler.send_json(result, status)
 
 
+def handle_ozon_export_preview(handler):
+    result, status = online_product_facade.export_ozon(validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
+def handle_ozon_export_download(handler):
+    result, status = online_product_facade.export_ozon(validate_request_payload(handler.read_body(), endpoint=handler.path), download=True)
+    handler.send_json(result, status)
+
+
 POST_HANDLERS = {
+    "/api/online-products/ozon-export/preview": handle_ozon_export_preview,
+    "/api/online-products/ozon-export/download": handle_ozon_export_download,
     "/api/online-products/refresh-status": handle_refresh_status,
     "/api/online-products/sync": handle_sync,
     "/api/online-products/change": handle_change,

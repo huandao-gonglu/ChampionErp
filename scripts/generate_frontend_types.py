@@ -24,6 +24,7 @@ SCHEMA_MODULES = (
     "erp_web.schemas.mercadolibre",
     "erp_web.schemas.product",
     "erp_web.schemas.publish",
+    "erp_web.schemas.ozon_template_export",
 )
 SCHEMA_CONSTANTS = ("API_SCHEMA_VERSION", "PRODUCT_SCHEMA_VERSION")
 BLOCK_START = "// <schema-generated-types>"

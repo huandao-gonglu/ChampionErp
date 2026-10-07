@@ -109,6 +109,14 @@
 
 ## 在线商品管理
 
+- 离线模板导出：`POST /api/online-products/ozon-export/preview` / `download` →
+  `online_product_facade.export_ozon` → `OnlineOzonExportService`；只读取当前 Yandex 店铺快照，
+  不调用平台 API、不修改在线商品或草稿、不进入发布队列。
+  `ozon_category_template.py` 解析官方 XLSX 的隐藏元数据并替换商品数据区，保留字典、校验和样式；
+  当前仅支持已核对的中文圣诞装饰品 CNY 模板，其他类目或必填契约变化显式拒绝。
+  生成时重建预览并检查 `preview_fingerprint`，编辑只作用于本次请求的导出覆盖值。
+  前端 `OzonExportDialog.vue` 复用 `WorkspaceDialog`；列表仅增加选择列和筛选栏的“操作”菜单。
+  字段与输出契约见 `schemas/ozon_template_export.py`，操作与验证说明见 [Ozon 模板导出](ozon-template-export.md)。
 - `http_route_units/online_product_routes.py` 是列表/详情及同步、单件状态刷新、修改、回读、失败重试的唯一 HTTP 入口。
   `facades/online_product_facade.py` 负责请求转换；`facades/online_product_factory.py` 显式装配三个平台适配器。
 - `services/online_product_service.py` 编排 ERP 领域任务，通过注入访问适配器，不反向导入 runtime。

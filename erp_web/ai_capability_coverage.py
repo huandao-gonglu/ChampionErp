@@ -232,6 +232,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="capability", capability_names=("online_products_change",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/reconcile", business_domain="在线商品", disposition="capability", capability_names=("online_products_reconcile",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/retry", business_domain="在线商品", disposition="capability", capability_names=("online_products_retry",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/ozon-export/preview", business_domain="在线商品", disposition="internal_only", reason="界面上传类目模板并人工检查导出资料；当前文件上传与下载流程仅面向可信界面，不开放 AI 工具。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/ozon-export/download", business_domain="在线商品", disposition="internal_only", reason="界面确认预览后生成本次 XLSX 文件；当前文件上传与下载流程仅面向可信界面，不开放 AI 工具。"),
     AiCapabilityCoverageEntry(method="GET", path="/api/orders/summary", business_domain="订单采购", disposition="internal_only", reason="订单处理界面专用；人工确认采购来源和实际采购记录，不开放模型代办采购。"),
     AiCapabilityCoverageEntry(method="GET", path="/api/orders/detail", business_domain="订单采购", disposition="internal_only", reason="订单处理界面专用；人工确认采购来源和实际采购记录，不开放模型代办采购。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/select-source", business_domain="订单采购", disposition="internal_only", reason="订单处理界面专用；人工确认采购来源和实际采购记录，不开放模型代办采购。"),

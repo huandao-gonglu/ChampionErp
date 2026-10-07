@@ -186,6 +186,8 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/image-hosting/test": _contract(fields={"profile": OBJECT}, required=("profile",)),
     "/api/image-hosting/default": _contract(fields={"id": STRING}),
     "/api/image-hosting/delete": _contract(fields={"id": STRING}, required=("id",)),
+    "/api/online-products/ozon-export/preview": _contract(fields={"account_id": STRING, "listing_ids": STRING_ARRAY, "template_name": STRING, "template_base64": STRING, "overrides": OBJECT, "preview_fingerprint": STRING}, required=("account_id", "listing_ids", "template_name", "template_base64")),
+    "/api/online-products/ozon-export/download": _contract(fields={"account_id": STRING, "listing_ids": STRING_ARRAY, "template_name": STRING, "template_base64": STRING, "overrides": OBJECT, "preview_fingerprint": STRING}, required=("account_id", "listing_ids", "template_name", "template_base64", "preview_fingerprint")),
     "/api/online-products/sync": _contract(fields={"platform": FieldRule("enum", choices=frozenset({"mercadolibre", "ozon", "yandex"})), "idempotency_key": STRING}, required=("platform", "idempotency_key")),
     "/api/online-products/refresh-status": _contract(fields={"listing_id": STRING}, required=("listing_id",)),
     "/api/online-products/change": _contract(fields={"listing_id": STRING, "version": STRING, "operation": STRING, "scope_id": STRING, "changes": OBJECT, "idempotency_key": STRING}, required=("listing_id", "version", "operation", "changes", "idempotency_key")),

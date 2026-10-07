@@ -33,6 +33,11 @@ export {
   type BackendPublishJobMarketResultSummary,
   type BackendPublishJobPlatformSummary,
   type BackendPublishJobSummary,
+  type BackendOzonExportTemplate,
+  type BackendOzonExportRow,
+  type BackendOzonExportSummary,
+  type BackendOzonExportPreview,
+  type BackendOzonExportDownload,
 } from './workflow.generated'
 // </schema-generated-types>
 

@@ -451,3 +451,43 @@ export interface BackendPublishJobSummary {
   created_at: string
   updated_at: string
 }
+
+export interface BackendOzonExportTemplate {
+  category: string
+  category_id: string
+  currency: string
+  required_fields: Array<string>
+}
+
+export interface BackendOzonExportRow {
+  listing_id: string
+  seller_sku: string
+  version: string
+  title_before: string
+  title_changed: boolean
+  fields: Record<string, string>
+  errors: Array<string>
+  warnings: Array<string>
+}
+
+export interface BackendOzonExportSummary {
+  total: number
+  ready: number
+  missing: number
+  barcode_missing: number
+  title_changed: number
+}
+
+export interface BackendOzonExportPreview {
+  ok: boolean
+  template: BackendOzonExportTemplate
+  rows: Array<BackendOzonExportRow>
+  summary: BackendOzonExportSummary
+  preview_fingerprint: string
+}
+
+export interface BackendOzonExportDownload {
+  ok: boolean
+  filename: string
+  file_base64: string
+}

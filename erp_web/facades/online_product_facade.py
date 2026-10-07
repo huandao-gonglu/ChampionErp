@@ -27,6 +27,16 @@ def read_source_images(query: dict[str, str]) -> dict[str, Any]:
     return get_context().online_products.source_images(listing_id)
 
 
+def export_ozon(body: dict[str, Any], *, download: bool = False) -> tuple[dict[str, Any], int]:
+    try:
+        service = get_context().online_products.ozon_export
+        return (service.download(body) if download else service.preview(body)), 200
+    except OnlineConflict as exc:
+        return {"ok": False, "error": str(exc), "error_code": "ONLINE_CONFLICT"}, 409
+    except (ValueError, ValidationError) as exc:
+        return {"ok": False, "error": str(exc), "error_code": "OZON_EXPORT_INVALID"}, 400
+
+
 def mutate(action: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
     service = get_context().online_products
     try:
