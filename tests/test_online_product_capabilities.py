@@ -17,7 +17,7 @@ from erp_web.runtime_units.online_product_capabilities import (
 )
 from erp_web.runtime_units.online_product_job_reader import OnlineProductJobReader
 from erp_web.schemas.online_product_capabilities import OnlineReadRequest, OnlineJobRequest, OnlineSyncRequest
-from erp_web.schemas.online_products import OnlineChange
+from erp_web.schemas.online_products import BuyerLink, OnlineChange
 from erp_web.schemas.ai_tools import AiToolCommand, AiToolExecutionError
 from erp_web.services.ai_tool_runtime import AiToolRuntime
 from erp_web.services.agent_job_service import AgentJobService
@@ -60,6 +60,23 @@ def test_reads_share_page_order_and_detail_payload_and_enforce_current_account(o
     assert online_products_read(OnlineReadRequest(), scope).total == 0
     with pytest.raises(BusinessCapabilityError, match="店铺身份"):
         online_products_read(OnlineReadRequest(id="CBT1"), scope)
+
+
+def test_projected_detail_reuses_account_check_and_keeps_business_context(online):
+    _, domain, _, scope, config = online
+    result = online_products_read(OnlineReadRequest(id="CBT1", fields=["content.title", "stocks"]), scope)
+    assert result.item is None and result.items == [] and len(result.records) == 1
+    record = result.records[0]
+    assert record.id == "CBT1" and record.account_id == "seller"
+    assert record.values["content.title"] == "测试商品"
+    assert record.values["stocks"][0]["id"] == "shared"
+    assert record.version == domain.store.get("CBT1").version
+    assert record.missing_fields == []
+    assert "pictures" not in record.model_dump_json() and "snapshot" not in record.model_dump_json()
+    config["mercadolibre"]["user_id"] = "another-store"
+    assert online_products_read(OnlineReadRequest(fields=["stocks"]), scope).records == []
+    with pytest.raises(BusinessCapabilityError, match="店铺身份"):
+        online_products_read(OnlineReadRequest(id="CBT1", fields=["stocks"]), scope)
 
 
 @pytest.fixture
@@ -158,6 +175,76 @@ def test_code_mode_pages_all_group_members_under_normal_output_limit(large_onlin
     chunks = []
     asyncio.run(ui.prepare_run(body("统计第一个组合的库存")).stream(chunks.append))
     assert outputs == [{"count": 198, "unique": 198, "unknown": 1, "zero": 65}], b"".join(chunks).decode()
+
+
+def test_code_mode_locates_identifier_with_four_projected_pages_and_no_detail_reads(
+        large_online_group, tmp_path, monkeypatch):
+    """按字段取数后由原生 CodeMode 完成匹配，不为具体编号增加服务端搜索。"""
+    app, domain, remote, scope, _ = large_online_group
+    target = "229411801149030400"
+    matched_id = "YDX188"
+    for row in domain.store.listings("yandex", "business:campaign"):
+        number = int(row.id[3:])
+        row.seller_sku = f"SKU-{number}"
+        row.buyer_links = [BuyerLink(label="Yandex Market", site_id="B2C",
+                            url=f"https://market.yandex.ru/card/slug/{target if row.id == matched_id else str(number)}?businessId=business")]
+        row.content["attributes"] = [{"name": "款号", "value": "EE001" if row.id == matched_id else "其他款号"},
+                                     {"name": "尺寸", "value": "25", "unit": "cm"}]
+        domain.store.save(row)
+    group_id = online_products_read(OnlineReadRequest(platform="yandex", limit=1), scope).groups[0].id
+    calls, outputs, requests = [], [], []
+    read_page = domain.read_page
+
+    def track_pages(platform, **kwargs):
+        calls.append(kwargs)
+        return read_page(platform, **kwargs)
+
+    def forbid_details(*args, **kwargs):
+        pytest.fail("批量字段取数不能逐件读取详情或整组页面载荷")
+
+    monkeypatch.setattr(domain, "read_page", track_pages)
+    monkeypatch.setattr(domain, "detail", forbid_details)
+    monkeypatch.setattr(domain, "list", forbid_details)
+    script = (
+        f"group_id = {group_id!r}\n"
+        f"target = {target!r}\n"
+        "number = 1\ncount = 0\nmatches = []\nmissing = []\n"
+        "while number is not None:\n"
+        "    page = await online_products_read(platform='yandex', view='listings', group_id=group_id, "
+        "page=number, limit=50, fields=['buyer_links', 'content.attributes'])\n"
+        "    for record in page['records']:\n"
+        "        count += 1\n"
+        "        if record['missing_fields']:\n"
+        "            missing.append(record['id'])\n"
+        "        for link in record['values']['buyer_links']:\n"
+        "            card_id = link['url'].split('?')[0].rstrip('/').split('/')[-1]\n"
+        "            if card_id == target:\n"
+        "                matches.append({'id': record['id'], 'sku': record['seller_sku'], "
+        "'attributes': record['values']['content.attributes']})\n"
+        "    number = page['next_page']\n"
+        "{'count': count, 'matches': matches, 'missing': missing}"
+    )
+
+    async def model(messages, info):
+        requests.append(1)
+        assert not any(isinstance(p, RetryPromptPart) for m in messages for p in m.parts)
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        if returned:
+            outputs.append(returned[-1].content)
+            yield "编号唯一对应 EE001、25 cm 的 SKU。"
+        else:
+            yield {0: DeltaToolCall(name="run_code", tool_call_id="find-card", json_args=json.dumps({"code": script}))}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    chunks = []
+    asyncio.run(ui.prepare_run(body(f"当前组合哪个 SKU 对应编号 {target}")).stream(chunks.append))
+    assert outputs == [{"count": 198, "matches": [{"id": matched_id, "sku": "SKU-188", "attributes": [
+        {"name": "款号", "value": "EE001"}, {"name": "尺寸", "value": "25", "unit": "cm"}]}], "missing": []}], b"".join(chunks).decode()
+    assert len(requests) == 2 and len(calls) == 4
+    assert [call["page"] for call in calls] == [1, 2, 3, 4]
+    assert all(call["group_id"] == group_id and call["fields"] == ["buyer_links", "content.attributes"] for call in calls)
+    assert len(json.dumps(outputs, ensure_ascii=False)) < 500
+    assert not remote.writes and not ui.call_store.current_turn_receipts(CONVERSATION)
 
 
 @pytest.mark.parametrize("entry", ["direct", "python", "python_retry"])

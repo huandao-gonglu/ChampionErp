@@ -82,9 +82,12 @@ def load_prompt_json(app_dir: Path | str, prompt_path: str) -> dict[str, str]:
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))
             raw = data if isinstance(data, dict) else {}
+            system = raw.get("system")
+            if isinstance(system, list):
+                system = "".join(system)
             return {
                 "description": str(raw.get("description") or "").rstrip(),
-                "system": str(raw.get("system") or "").rstrip(),
+                "system": str(system or "").rstrip(),
                 "user": str(raw.get("user") or "").rstrip(),
             }
     return {"description": "", "system": "", "user": ""}

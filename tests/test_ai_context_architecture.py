@@ -377,10 +377,14 @@ def test_online_ai_lists_use_bounded_projection_instead_of_page_payload():
     from erp_web.schemas.online_product_capabilities import OnlineReadRequest, OnlineReadResult
     request = OnlineReadRequest.model_json_schema()["properties"]
     assert request["limit"]["minimum"] == 1 and request["limit"]["maximum"] == 50
+    assert request["fields"]["items"]["type"] == "string" and "enum" not in request["fields"]["items"]
     schema = OnlineReadResult.model_json_schema()
     assert "jobs" not in schema["properties"]
     summary = schema["$defs"]["OnlineListingSummary"]["properties"]
     assert not {"content", "snapshot", "capabilities"} & summary.keys()
+    projection = schema["$defs"]["OnlineProductFields"]["properties"]
+    assert {"id", "group_id", "version", "synced_at", "details_state", "errors", "values", "missing_fields"} <= projection.keys()
+    assert "snapshot" not in projection and "records" in schema["properties"]
     assert "item_ids" not in schema["$defs"]["OnlineGroupSummary"]["properties"]
     sync = schema["$defs"]["OnlineSyncSummary"]["properties"]
     assert not {"items", "request", "result"} & sync.keys()

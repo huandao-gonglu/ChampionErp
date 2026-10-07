@@ -1,7 +1,7 @@
 """在线商品工具的有界查询契约；详情与修改复用公开领域结构。"""
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from erp_web.schemas.online_products import (
     JobStatus, OnlineFeedbackSummary, OnlineProduct, Operation, Platform,
@@ -24,6 +24,32 @@ class OnlineReadRequest(OnlineRequest):
     view: Literal["groups", "listings"] = Field(default="groups", description="groups 按页面顺序读取父节点及代表刊登；listings 按同序逐 SKU 分页，组合可以跨页。")
     group_id: str = Field(default="", description="列表返回的真实组合或独立节点 ID；用于限定该节点的成员，读取全部成员时使用 view=listings。")
     include_source_images: bool = Field(default=False, description="提供 id 时同时读取关联源草稿的图片资产与内容版本，供在线图片修改选择；不提供 id 时无效。")
+    fields: list[str] = Field(default_factory=list, description=(
+        "按需读取公开业务字段，支持对象点路径，如 buyer_links、content.attributes、content.title、prices、stocks。"
+        "有 fields 时 records 返回身份、同步与详情状态，以及 values[字段路径]；缺失路径列入 missing_fields。"
+        "数组须选择完整数组以保留币种、仓库、属性名和单位，不支持数组下标、通配符或条件表达式。"
+        "不传时保留列表摘要/单件完整详情；批量取数用 view=listings 并按 next_page 分页。"
+    ))
+
+    @field_validator("fields")
+    @classmethod
+    def validate_fields(cls, fields: list[str]) -> list[str]:
+        return validate_online_fields(fields)
+
+
+def validate_online_fields(fields: list[str]) -> list[str]:
+    """字段投影只访问已有公开契约，不开放平台原始响应或查询表达式。"""
+    result = []
+    for path in fields:
+        parts = path.split(".")
+        if (not all(part and part == part.strip() for part in parts)
+                or any(char in path for char in "[]*")):
+            raise ValueError(f"在线商品字段路径无效：{path}；使用对象点路径，数组整体读取")
+        if parts[0] not in OnlineProduct.model_fields:
+            raise ValueError(f"不是在线商品公开字段：{parts[0]}")
+        if path not in result:
+            result.append(path)
+    return result
 
 
 class OnlineSyncRequest(OnlineRequest):
@@ -67,6 +93,24 @@ class OnlineListingSummary(BaseModel):
     details_state: Literal["pending", "ready", "failed"]
 
 
+class OnlineProductFields(BaseModel):
+    """按需字段载荷；身份和读取状态固定保留，值不做业务筛选或计算。"""
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    group_id: str
+    platform: Platform
+    account_id: str
+    remote_id: str
+    seller_sku: str
+    version: str
+    synced_at: str
+    status_checked_at: str
+    details_state: Literal["pending", "ready", "failed"]
+    errors: list[str]
+    values: dict[str, Any]
+    missing_fields: list[str] = Field(default_factory=list)
+
+
 class OnlineGroupSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
@@ -92,12 +136,13 @@ class OnlineSyncSummary(BaseModel):
 
 
 class OnlineReadResult(BaseModel):
-    """列表为分页摘要，详情使用 item；两种读取均不返回历史任务明细。"""
+    """默认列表/详情使用 items/item，按需字段使用 records；不返回历史任务明细。"""
     model_config = ConfigDict(extra="forbid")
     ok: bool
     item: OnlineProduct | None = None
     source_images: SourceImageSelection | None = None
     items: list[OnlineListingSummary] = Field(default_factory=list)
+    records: list[OnlineProductFields] = Field(default_factory=list, description="指定 fields 时的字段记录；item/items 不重复返回数据。")
     groups: list[OnlineGroupSummary] = Field(default_factory=list)
     view: Literal["groups", "listings", "detail"] = "detail"
     platform: Platform | None = None

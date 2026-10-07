@@ -130,7 +130,12 @@
   前端父行在折叠时也显示汇总，单件状态刷新按该 SKU 的变化调整父行计数，不影响其他 SKU 的反馈。
   AI 列表唯一入口为 `OnlineProductService.read_page` → `listing_summary_page`，复用页面的组合身份、顺序和筛选。
   默认 `view=groups` 仅返回父节点和代表刊登；`view=listings` 按 SKU 分页，可用 `group_id` 限定成员。
-  `limit` 为 1–50，按 `next_page` 遍历，组合可跨页；列表不携带内容详情、完整成员 ID 列表或历史任务。
+  `limit` 为 1–50，按 `next_page` 遍历，组合可跨页；默认摘要不携带内容详情、完整成员 ID 列表或历史任务。
+  `fields` 支持公开业务字段和对象点路径，批量与单件均通过 `records` 返回所选 `values`，
+  身份、版本、同步时间、详情状态和错误固定保留，缺失路径列入 `missing_fields`，不混同于真实 null 或零值。
+  价格、库存、属性等数组整体读取，保留币种、仓库、名称和单位；平台原始 `snapshot` 不开放。
+  编号匹配、条件组合、排序、关联和统计由主 Agent 在原生 `run_code` 中处理，分页取数只输出必要汇总；
+  不逐件读取已能按页取得的字段。既有 `q` 仅匹配标题、卖家 SKU 和远端编号，不作为链接或属性搜索。
   `OnlineProductStore.latest_sync_summary` 仅读取最新同步的固定状态与进度；AI 详情和写入仍复用原有领域服务。
 - `runtime_units/online_mercadolibre.py`、`online_yandex.py`、`online_ozon.py` 负责平台发现、读取和最小变更。
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
@@ -376,7 +381,7 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 
 - `erp_web/ai_capability_composition.py`：显式 Catalog 与场景权限；全局工具包含领域读写工具。
 - `erp_web/facades/agent_capability_facade.py`：应用能力 Scope、所选草稿范围、可信消息来源、Job Reader 装配。
-- `erp_web/services/global_agent_chat_service.py`：主对话服务；主模型依据完整对话选择实际提供的工具，并按原生执行回执回答先前操作结果。批量任务逐目标汇报覆盖及缺口，不再由额外模型推断授权或推断强制补做的目标。
+- `erp_web/services/global_agent_chat_service.py`：主对话服务；主模型依据完整对话选择实际提供的工具，并按原生执行回执回答先前操作结果。`GLOBAL_RESPONSE_INSTRUCTIONS` 统一约束所有全局回答，装配在业务提示词和长期记忆之后：结果优先，只保留必要依据与限制；批量汇报覆盖及异常范围，合并同类失败。取数先在当前目标所属业务域完成，只有目标需要或必要事实有可信跨域关联时才扩大范围；搜索未命中不能当作其他字段无数据。额度不足时仍围绕当前问题回答，不强制纯查询或解释汇报写入。不增加回答压缩模型或工具授权推断层。
 - `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：机械参数校验、原生并发、审批快照与 Deferred 转接；不选择下一步。
 - `erp_web/services/tool_approval.py`：业务审批内容 digest，绑定工具名/版本、operation key、原生 call ID 和审批版本；执行前重核。

@@ -18,7 +18,11 @@ def agent_budget_instructions(ctx: RunContext[AiAgentDependencies]) -> str:
     if support is not None:
         seconds = ctx.deps.execution_context.remaining_seconds()
         if seconds < 120:
-            return f"本轮剩余 {seconds:.0f} 秒，请立即汇总各目标已写入内容、失败和未完成项，不要再开始耗时业务工具。"
+            return (
+                f"本轮剩余 {seconds:.0f} 秒，请围绕当前用户问题给出已有依据支持的答案，"
+                "不要再开始耗时业务工具。执行任务须说明实际完成范围、失败和未完成项；"
+                "查询或解释不附加无关的写入汇报。"
+            )
     return (
         f"当前工具调用额度：已执行 {ctx.usage.tool_calls} 次，剩余 {remaining} 次；"
         "同一响应中的每次工具调用分别计数；run_code 及其中每次业务函数调用也分别计数。"

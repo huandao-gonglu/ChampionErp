@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from erp_web.schemas.online_product_capabilities import OnlineGroupSummary, OnlineListingSummary
+from erp_web.schemas.online_product_capabilities import (
+    OnlineGroupSummary, OnlineListingSummary, OnlineProductFields, validate_online_fields,
+)
 from erp_web.schemas.online_products import OnlineFeedbackSummary, OnlineListing, OnlineProductGroup, digest
 
 
@@ -66,10 +68,38 @@ def listing_page(records: list[OnlineListing], *, query: str, status: str, marke
     }
 
 
+def project_listing_fields(listing: OnlineListing, fields: list[str], *, group_id: str = "") -> dict[str, Any]:
+    """投影公开业务字段；数组完整返回，缺失值与真实 null 分开报告。"""
+    fields = validate_online_fields(fields)
+    data = listing.model_dump(include={path.split(".")[0] for path in fields})
+    values: dict[str, Any] = {}
+    missing = []
+    for path in fields:
+        current: Any = data
+        prefix = []
+        for part in path.split("."):
+            if isinstance(current, list):
+                raise ValueError(f"字段 {path} 穿过数组，请整体读取 {'.'.join(prefix)}，保留业务范围和单位")
+            if not isinstance(current, dict) or part not in current:
+                missing.append(path)
+                break
+            current = current[part]
+            prefix.append(part)
+        else:
+            values[path] = current
+    metadata = set(OnlineProductFields.model_fields) - {"group_id", "values", "missing_fields"}
+    return {
+        **listing.model_dump(include=metadata),
+        "group_id": group_id or _group_identity(listing) or "single-" + listing.id,
+        "values": values, "missing_fields": missing,
+    }
+
+
 def listing_summary_page(records: list[OnlineListing], *, query: str, status: str, market: str,
                          page: int, limit: int, view: Literal["groups", "listings"],
-                         group_id: str = "") -> dict[str, Any]:
-    """先按节点或刊登分页，再投影摘要；不序列化整组详情或完整成员 ID 列表。"""
+                         group_id: str = "", fields: list[str] | None = None) -> dict[str, Any]:
+    """先按节点或刊登分页，再投影摘要或字段；不序列化整组详情或完整成员 ID 列表。"""
+    requested_fields = validate_online_fields(fields or [])
     matched = _matching_groups(records, query=query, status=status, market=market, group_id=group_id)
     listing_total = sum(len(members) for _, members in matched)
     offset = (page - 1) * limit
@@ -86,11 +116,14 @@ def listing_summary_page(records: list[OnlineListing], *, query: str, status: st
                 selected.append((group, members, members[start:end]))
             position += len(members)
 
-    fields = set(OnlineListingSummary.model_fields) - {"group_id"}
+    summary_fields = set(OnlineListingSummary.model_fields) - {"group_id"}
     return {
         "view": view,
-        "items": [{**row.model_dump(include=fields), "group_id": group.id}
-                  for group, _, rows in selected for row in rows],
+        "items": ([] if requested_fields else
+                  [{**row.model_dump(include=summary_fields), "group_id": group.id}
+                   for group, _, rows in selected for row in rows]),
+        "records": ([project_listing_fields(row, requested_fields, group_id=group.id)
+                     for group, _, rows in selected for row in rows] if requested_fields else []),
         "groups": [OnlineGroupSummary(
             id=group.id, title=group.title, kind=group.kind, total_count=group.total_count,
             matched_count=len(members), representative_id=members[0].id,

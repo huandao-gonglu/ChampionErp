@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import pytest
 
 from erp_web.context import get_context
-from erp_web.schemas.online_product_capabilities import OnlineReadResult
+from erp_web.schemas.online_product_capabilities import OnlineReadRequest, OnlineReadResult
 from erp_web.schemas.online_products import MarketSnapshot, OnlineListing, PlatformIssue, snapshot_version
-from erp_web.services.online_product_listing import listing_page, listing_summary_page
+from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields
 from erp_web.services.online_product_service import OnlineProductService
 
 
@@ -159,3 +159,63 @@ def test_summary_group_filters_preserve_counts_and_do_not_expand_matches():
         assert result["next_page"] is None
         assert compact_page(rows, view=view, group_id="不存在")["items"] == []
         assert compact_page(rows, view=view, page=100)["next_page"] is None
+
+
+def test_field_pages_keep_scope_order_and_only_serialize_requested_business_values():
+    rows = [product(i, "组合", content={"description": "不需要的长说明" * 10000,
+                                       "attributes": [{"name": "尺寸", "value": str(i), "unit": "cm"}]})
+            for i in range(4)]
+    rows.append(product(5, "其他组合"))
+    group_id = compact_page(rows)["groups"][0]["id"]
+    before = [row.model_dump() for row in rows]
+    first = compact_page(rows, view="listings", group_id=group_id, limit=2,
+                         fields=["content.attributes", "buyer_links"])
+    second = compact_page(rows, view="listings", group_id=group_id, limit=2, page=2,
+                          fields=["content.attributes", "buyer_links"])
+    validated = OnlineReadResult.model_validate({"ok": True, **first})
+    assert validated.records[0].values == {"content.attributes": rows[0].content["attributes"], "buyer_links": []}
+    assert validated.items == []
+    assert first["next_page"] == 2 and second["next_page"] is None
+    assert first["listing_total"] == first["total"] == 4
+    assert [row["id"] for p in (first, second) for row in p["records"]] == ["id-0", "id-1", "id-2", "id-3"]
+    assert all(row["group_id"] == group_id for p in (first, second) for row in p["records"])
+    assert not {"snapshot", "content", "prices", "stocks", "capabilities"} & first["records"][0].keys()
+    assert "不需要的长说明" not in validated.model_dump_json()
+    assert [row.model_dump() for row in rows] == before
+
+
+def test_field_projection_preserves_arrays_null_zero_and_missing_paths():
+    row = product(1, "组合", content={"zero": 0, "unknown": None, "empty": "", "flag": False,
+                                   "attributes": [{"name": "尺寸", "value": "25", "unit": "cm"}]},
+                  prices=[{"id": "base", "label": "基础价", "amount": "0", "currency": "CNY"}],
+                  stocks=[{"id": "warehouse", "label": "仓库", "quantity": None, "warehouse_id": "W1"}],
+                  details_state="failed", errors=["详情读取失败，保留旧快照"])
+    result = project_listing_fields(row, ["prices", "stocks", "content.zero", "content.unknown",
+                                         "content.empty", "content.flag", "content.absent", "content.attributes"])
+    assert result["values"]["content.zero"] == 0
+    assert result["values"]["content.unknown"] is None
+    assert result["values"]["content.empty"] == "" and result["values"]["content.flag"] is False
+    assert "content.absent" not in result["values"] and result["missing_fields"] == ["content.absent"]
+    assert result["values"]["prices"][0]["currency"] == "CNY"
+    assert result["values"]["stocks"][0]["warehouse_id"] == "W1"
+    assert result["values"]["content.attributes"] == row.content["attributes"]
+    assert result["details_state"] == "failed" and result["errors"] == row.errors
+    with pytest.raises(ValueError, match="整体读取 content.attributes"):
+        project_listing_fields(row, ["content.attributes.value"])
+    with pytest.raises(ValueError, match="整体读取 prices"):
+        project_listing_fields(row, ["prices.amount"])
+
+
+@pytest.mark.parametrize("path", ["snapshot", "snapshot.offer", "credentials", "content..title",
+                                 "content.attributes[0]", "content.*", " content.title"])
+def test_field_selection_rejects_private_or_expression_paths_even_with_empty_results(path):
+    with pytest.raises(ValueError):
+        OnlineReadRequest(fields=[path])
+    with pytest.raises(ValueError):
+        compact_page([], fields=[path])
+
+
+def test_field_selection_accepts_public_fields_without_scenario_enumerations():
+    assert OnlineReadRequest(fields=["content.unanticipated_field", "title", "title"]).fields == [
+        "content.unanticipated_field", "title"]
+    assert compact_page([], fields=["content.unanticipated_field"])["records"] == []

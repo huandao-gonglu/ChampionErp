@@ -12,7 +12,7 @@ from uuid import uuid4
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.schemas.online_products import ChangeRequest, snapshot_version
 from erp_web.services.online_product_changes import confirmation, validate_changes
-from erp_web.services.online_product_listing import listing_page, listing_summary_page
+from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields
 from erp_web.services.online_product_images import OnlineProductImages
 from erp_web.services.online_product_sync import run_sync
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
@@ -99,17 +99,19 @@ class OnlineProductService:
 
     def read_page(self, platform: str, *, query: str = "", status: str = "", market: str = "",
                   page: int = 1, limit: int = 25, view: Literal["groups", "listings"] = "groups",
-                  group_id: str = "") -> dict[str, Any]:
-        """按页面同序提供有界摘要；组内 SKU 可跨页，完整内容通过 detail 读取。"""
+                  group_id: str = "", fields: list[str] | None = None) -> dict[str, Any]:
+        """按页面同序返回有界摘要或所选业务字段；组内 SKU 可跨页。"""
         if not 1 <= limit <= 50 or page < 1 or view not in ("groups", "listings"):
             raise ValueError("在线商品分页参数无效")
         records, context = self._list_context(platform)
         return {**context, **listing_summary_page(records, query=query, status=status, market=market,
-                page=page, limit=limit, view=view, group_id=group_id)}
+                page=page, limit=limit, view=view, group_id=group_id, fields=fields)}
 
-    def detail(self, listing_id: str) -> dict[str, Any]:
+    def detail(self, listing_id: str, *, fields: list[str] | None = None) -> dict[str, Any]:
         listing = self.store.get(listing_id)
         self._config(listing.platform, listing.account_id)
+        if fields:
+            return {"ok": True, "records": [project_listing_fields(listing, fields)]}
         return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
 
     def source_images(self, listing_id: str) -> dict[str, Any]:

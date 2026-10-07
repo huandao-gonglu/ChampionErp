@@ -7,7 +7,7 @@ import pytest
 
 from conftest import assert_no_old_path
 from erp_web import app_config
-from erp_web.services import ai_model_config, browser_ai_runtime, config_service
+from erp_web.services import ai_model_config, ai_prompt_templates, browser_ai_runtime, config_service
 
 
 def test_config_paths_are_project_local(
@@ -279,6 +279,23 @@ def test_merge_config_writes_ai_use_case_prompt_files(tmp_path: Path) -> None:
     assert research_written["description"] == "AI 选品搜索默认模板"
     assert research_written["system"] == "Research system"
     assert research_written["user"] == "Research user {$marketId}"
+
+
+def test_load_prompt_json_joins_system_segments(tmp_path: Path) -> None:
+    path = tmp_path / "config/prompts/global_chat.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"description": "说明", "system": ["第一句。", "第二句。"], "user": "{$input_text}"}),
+        encoding="utf-8",
+    )
+
+    prompt = ai_prompt_templates.load_prompt_json(tmp_path, "config/prompts/global_chat.json")
+
+    assert prompt == {
+        "description": "说明",
+        "system": "第一句。第二句。",
+        "user": "{$input_text}",
+    }
 
 
 def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
