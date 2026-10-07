@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, inject, ref, onMounted, onBeforeUnmount } from 'vue'
+import { routeLocationKey } from 'vue-router'
+import { requestPlatformName as platformName } from '@/utils/externalRequestNotices'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { fetchRequestControl, recoverRequestBlock } from '@/api/externalRequests'
 import type { RequestBlock, RequestControlStatus } from '@/api/externalRequests'
@@ -17,8 +19,14 @@ let poll: ReturnType<typeof setTimeout> | undefined
 let clock: ReturnType<typeof setInterval> | undefined
 let stopped = false
 let generation = 0
-const platformNames: Record<string, string> = { yandex: 'Yandex', ozon: 'Ozon', mercadolibre: 'Mercado Libre', 'image_hosting:s3': '图片存储', 'image_hosting:public': '图片公开访问', crossborderbus: '跨境巴士' }
-const platformName = (value: string) => platformNames[value] || value
+const route = inject(routeLocationKey, undefined)
+const targetPlatforms = computed(() => {
+  const value = route?.query.request_platform
+  return (Array.isArray(value) ? value : [value]).filter((item): item is string => typeof item === 'string' && !!item)
+})
+const isTarget = (platform: string) => targetPlatforms.value.includes(platform)
+const blocks = computed(() => [...(status.value?.blocks || [])].sort((a, b) => Number(isTarget(b.platform)) - Number(isTarget(a.platform))))
+const targetLabel = computed(() => targetPlatforms.value.map(platformName).join('、'))
 const scopeNames: Record<string, string> = { account: '该账号的全部请求', credential: '使用该凭据的请求', interface: '该接口', quota: '共享配额内的请求', operation: '仅原操作，不影响其他操作', request: '仅原操作中相同接口和参数的请求，不影响新操作' }
 const needsReason = (block: RequestBlock | null) => block?.recovery_mode === 'confirm' || block?.recovery_mode === 'confirm_request'
 function blockState(block: RequestBlock) {
@@ -80,7 +88,10 @@ onBeforeUnmount(() => { stopped = true; clearTimeout(poll); clearInterval(clock)
     </div>
     <p v-if="error" role="alert" class="text-red-600 dark:text-red-300">{{ error }}</p>
     <p v-if="message" role="status" class="text-green-700 dark:text-green-300">{{ message }}</p>
-    <article v-for="block in status?.blocks || []" :key="block.id" class="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/10">
+    <p v-if="targetLabel && status" role="status" class="muted">
+      {{ blocks.some(block => isTarget(block.platform)) ? `已将 ${targetLabel} 的中断记录置顶并突出显示。` : `${targetLabel} 当前没有活动阻断，可返回原功能重试。` }}
+    </p>
+    <article v-for="block in blocks" :key="block.id" :data-highlighted="isTarget(block.platform) || undefined" :class="{ 'ring-2 ring-amber-500': isTarget(block.platform) }" class="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/10">
       <h4 class="font-semibold">{{ platformName(block.platform) }} · {{ block.account }}</h4>
       <p class="mt-2">{{ block.message }}</p>
       <p v-if="block.http_status" class="muted mt-1">当时的响应：HTTP {{ block.http_status }}</p>

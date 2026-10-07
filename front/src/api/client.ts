@@ -42,11 +42,11 @@ apiClient.interceptors.request.use((config) => {
 
 apiClient.interceptors.response.use(
   (response) => {
-    observeExternalOperations(response.headers, response.config.method)
+    observeExternalOperations(response.headers, response.config.method, response.config.url)
     return response
   },
   (error: AxiosError) => {
-    if (error.response) observeExternalOperations(error.response.headers, error.config?.method)
+    if (error.response) observeExternalOperations(error.response.headers, error.config?.method, error.config?.url)
     const data = error.response?.data as Record<string, unknown> | undefined
     const normalized = normalizeApiError(
       {

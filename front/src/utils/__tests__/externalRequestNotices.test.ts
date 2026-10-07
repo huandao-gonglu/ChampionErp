@@ -1,42 +1,62 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { observeExternalOperations, observedExternalOperations, acceptExternalNotices, externalRequestNotice } from '../externalRequestNotices'
-beforeEach(() => { externalRequestNotice.value = '' })
+import { observeExternalOperations, observedExternalOperations, acceptExternalNotices, externalRequestNotices, dismissExternalNotice } from '../externalRequestNotices'
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 3600001)
+  observedExternalOperations()
+  vi.restoreAllMocks()
+  externalRequestNotices.value = []
+})
+const notice = (operation_id: string, platform = 'ozon', message = '账号 API 已停用', created_at = 101) => ({ operation_id, platform, message, created_at })
 describe('用户请求中断提示', () => {
-  it('即使领域响应改写错误也识别公共暂停响应头', () => {
-    observeExternalOperations({ 'x-external-request-blocked': '1' }, 'post')
-    expect(externalRequestNotice.value).toContain('未能完成')
-    expect(externalRequestNotice.value).toContain('平台授权')
+  it('同步请求被拦截后读取真实来源和平台，领域错误改写不影响关联', () => {
+    observeExternalOperations({ 'x-external-request-blocked': '1', 'x-external-operation-ids': 'http-request' }, 'post', '/api/test-store-auth')
+    expect(observedExternalOperations()).toContain('http-request')
+    acceptExternalNotices([notice('http-request')])
+    expect(externalRequestNotices.value[0]).toMatchObject({ source: '店铺授权测试', items: [{ platform: 'ozon' }] })
   })
-  it('成功提交后台任务不提示，实际被拦截才提示且不重复', () => {
-    observeExternalOperations({ 'x-external-operation-ids': 'http-request,job-1' }, 'post')
-    expect(externalRequestNotice.value).toBe('')
-    expect(observedExternalOperations()).toContain('job-1')
-    acceptExternalNotices([{ operation_id: 'system-job', message: '后台暂停' }])
-    expect(externalRequestNotice.value).toBe('')
-    acceptExternalNotices([{ operation_id: 'job-1', message: '冷却中' }])
-    expect(externalRequestNotice.value).toContain('冷却中')
-    externalRequestNotice.value = ''
-    acceptExternalNotices([{ operation_id: 'job-1', message: '冷却中' }])
-    expect(externalRequestNotice.value).toBe('')
+  it('成功提交不提示，后台定时任务不提示，同次操作多个平台合并且不被覆盖', () => {
+    observeExternalOperations({ 'x-external-operation-ids': 'http-request,job-1,job-2' }, 'post', '/api/orders/sync')
+    expect(externalRequestNotices.value).toEqual([])
+    acceptExternalNotices([notice('system-job')])
+    expect(externalRequestNotices.value).toEqual([])
+    acceptExternalNotices([notice('job-1')])
+    acceptExternalNotices([notice('job-2', 'mercadolibre', '凭据失效')])
+    expect(externalRequestNotices.value).toHaveLength(1)
+    expect(externalRequestNotices.value[0]).toMatchObject({ source: '订单同步', independentPlatforms: true })
+    expect(externalRequestNotices.value[0]!.items.map(item => item.platform)).toEqual(['ozon', 'mercadolibre'])
+    dismissExternalNotice()
+    acceptExternalNotices([notice('job-1'), notice('job-2', 'mercadolibre', '凭据失效')])
+    expect(externalRequestNotices.value).toEqual([])
+  })
+  it('同一任务内多个平台也保留，重复回执不重复提醒', () => {
+    observeExternalOperations({ 'x-external-operation-ids': 'http-request,job-1' }, 'post', '/api/orders/sync')
+    acceptExternalNotices([notice('job-1'), notice('job-1'), notice('job-1', 'yandex', '冷却中')])
+    expect(externalRequestNotices.value[0]!.items).toHaveLength(2)
+  })
+  it('不同用户操作排队显示，不互相覆盖', () => {
+    observeExternalOperations({ 'x-external-operation-ids': 'http-one,job-1' }, 'post', '/api/orders/sync')
+    observeExternalOperations({ 'x-external-operation-ids': 'http-two,job-2' }, 'post', '/api/orders/retry')
+    acceptExternalNotices([notice('job-1'), notice('job-2')])
+    expect(externalRequestNotices.value.map(group => group.source)).toEqual(['订单同步', '订单任务重试'])
+    dismissExternalNotice()
+    expect(externalRequestNotices.value[0]!.source).toBe('订单任务重试')
   })
   it('普通轮询不注册后台任务，过期关联自动移除', () => {
     observeExternalOperations({ 'x-external-operation-ids': 'poll,system-job' }, 'get')
     expect(observedExternalOperations()).not.toContain('system-job')
     observeExternalOperations({ 'x-external-operation-ids': 'http-request,job-expired' }, 'post')
-    const original = Date.now()
-    vi.spyOn(Date, 'now').mockReturnValue(original + 3600001)
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 3600001)
     expect(observedExternalOperations()).not.toContain('job-expired')
     vi.restoreAllMocks()
   })
   it('重试同一任务排除旧失败，但仍提示本次新的失败', () => {
-    observeExternalOperations({ 'x-external-operation-ids': 'http-request,same-job', 'x-external-operation-since': '100' }, 'post')
-    acceptExternalNotices([{ operation_id: 'same-job', message: '首次暂停', created_at: 101 }])
-    externalRequestNotice.value = ''
-    observeExternalOperations({ 'x-external-operation-ids': 'http-retry,same-job', 'x-external-operation-since': '200' }, 'post')
-    acceptExternalNotices([{ operation_id: 'same-job', message: '旧失败', created_at: 101 }])
-    expect(externalRequestNotice.value).toBe('')
-    acceptExternalNotices([{ operation_id: 'same-job', message: '新的暂停', created_at: 201 }])
-    expect(externalRequestNotice.value).toContain('新的暂停')
+    observeExternalOperations({ 'x-external-operation-ids': 'http-request,same-job', 'x-external-operation-since': '100' }, 'post', '/api/orders/sync')
+    acceptExternalNotices([notice('same-job')])
+    dismissExternalNotice()
+    observeExternalOperations({ 'x-external-operation-ids': 'http-retry,same-job', 'x-external-operation-since': '200' }, 'post', '/api/orders/sync')
+    acceptExternalNotices([notice('same-job')])
+    expect(externalRequestNotices.value).toEqual([])
+    acceptExternalNotices([notice('same-job', 'ozon', '新的暂停', 201)])
+    expect(externalRequestNotices.value[0]!.items[0]!.message).toBe('新的暂停')
   })
-
 })

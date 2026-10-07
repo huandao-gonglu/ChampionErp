@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { reactive } from 'vue'
+import { routeLocationKey } from 'vue-router'
 import ExternalRequestControlPanel from '../ExternalRequestControlPanel.vue'
 import { fetchRequestControl, recoverRequestBlock } from '@/api/externalRequests'
 import type { RequestControlStatus } from '@/api/externalRequests'
@@ -23,6 +25,22 @@ async function render() {
   return wrapper
 }
 describe('授权页统一中断恢复', () => {
+  it('提醒链接指定的平台置顶并高亮，路由改变后更新定位', async () => {
+    const value = status()
+    value.blocks.push({ ...value.blocks[0]!, id: 'ozon-block', platform: 'ozon' })
+    vi.mocked(fetchRequestControl).mockResolvedValue(value)
+    const route = reactive({ query: { request_platform: ['ozon'] } })
+    const wrapper = mount(ExternalRequestControlPanel, { global: {
+      stubs: { teleport: true }, provide: { [routeLocationKey as symbol]: route },
+    } })
+    await flushPromises()
+    expect(wrapper.findAll('article')[0]!.text()).toContain('Ozon')
+    expect(wrapper.get('[data-highlighted="true"]').text()).toContain('Ozon')
+    route.query.request_platform = ['yandex']
+    await flushPromises()
+    expect(wrapper.findAll('article')[0]!.text()).toContain('Yandex')
+    expect(wrapper.get('[data-highlighted="true"]').text()).toContain('Yandex')
+  })
   it('展示手动和后台中断，倒计时逐秒减少', async () => {
     vi.useFakeTimers()
     const wrapper = await render()
