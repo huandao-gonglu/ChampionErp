@@ -2412,7 +2412,7 @@ function copy(text: string) {
         </section>
 
         <section v-show="activeAuthSettingsTab === 'research'">
-          <ProductResearchSettingsPanel :ai-use-case-prompts="aiUseCasePrompts" embedded />
+          <ProductResearchSettingsPanel embedded />
         </section>
         <CrossborderBusSettingsPanel v-if="activeAuthSettingsTab === 'crossborderbus'" />
       </div>

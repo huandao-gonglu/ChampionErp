@@ -44,7 +44,7 @@ export function productResearchProviderName(provider: ProductResearchProviderLik
 
 export function productResearchStrategyLabel(value: string | undefined | null) {
   const labels: Record<string, string> = {
-    ai_web_search: 'AI 联网搜索',
+    sorftime: 'Sorftime API',
     configured_api: '已配置 API',
     manual_import: '人工导入',
     stored_list: '保存列表',
@@ -65,7 +65,7 @@ export function productResearchSourceTypeLabel(value: string | undefined | null)
 
 export function productResearchDataTypeLabel(value: string | undefined | null) {
   const labels: Record<string, string> = {
-    ai_web_search: 'AI 联网搜索',
+    sorftime: 'Sorftime API',
     marketplace_products: '商品数据',
     keyword_trend: '关键词趋势',
     content_trend: '内容趋势',

@@ -104,11 +104,6 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "label": "翻译",
         "required_capabilities": [CAP_CHAT, CAP_JSON],
     },
-    "research.web_search": {
-        "id": "research.web_search",
-        "label": "产品调研 AI 联网搜索",
-        "required_capabilities": [CAP_CHAT, CAP_JSON, CAP_WEB_SEARCH],
-    },
 }
 
 

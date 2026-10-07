@@ -26,6 +26,21 @@ export {
   type BackendDraftTargetSite,
   type BackendPlatformDraft,
   type BackendProduct,
+  type BackendProductResearchPrice,
+  type BackendSorftimeQuotaReceipt,
+  type BackendProductResearchSupplier,
+  type BackendProductResearchSourcingQuery,
+  type BackendProductResearchSourcing,
+  type BackendProductResearchSupplierSearchResponse,
+  type BackendProductResearchSupplierImportResponse,
+  type BackendHotProductCandidate,
+  type BackendProductResearchDataSource,
+  type BackendProductResearchMarketSearchMethodBinding,
+  type BackendProductResearchTargetMarket,
+  type BackendProductResearchConfig,
+  type BackendProductResearchSearchRequest,
+  type BackendProductResearchSourceStatus,
+  type BackendProductResearchRun,
   type BackendPublishConfirmation,
   type BackendPublishPlatformState,
   type BackendPublishJob,
@@ -846,8 +861,11 @@ export interface HotProductCandidate {
   site: string
   keyword: string
   price?: ProductResearchPrice
-  rating: number
-  reviewCount: number
+  rating: number | null
+  reviewCount: number | null
+  monthlySales?: number | null
+  asin?: string
+  importedProductId?: string
   hotScore: number
   sourceName: string
   collectedAt: string

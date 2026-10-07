@@ -23,6 +23,7 @@ SCHEMA_MODULES = (
     "erp_web.schemas.image",
     "erp_web.schemas.mercadolibre",
     "erp_web.schemas.product",
+    "erp_web.schemas.product_research",
     "erp_web.schemas.publish",
     "erp_web.schemas.ozon_template_export",
 )

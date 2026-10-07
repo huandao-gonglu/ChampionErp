@@ -423,6 +423,7 @@ def test_research_hot_products_search_builds_typed_body() -> None:
     scope = _research_scope(run_creator=creator)
     result = research_hot_products_search(
         ResearchHotProductsSearchRequest(
+            keyword="kitchen organizer",
             target_markets=("MLM",),
             limit=5,
         ),
@@ -430,6 +431,7 @@ def test_research_hot_products_search_builds_typed_body() -> None:
         execution=_execution(),
     )
     assert captured["body"] == {
+        "keywords": ["kitchen organizer"],
         "markets": {"target_markets": ["MLM"]},
         "result_options": {"limit": 5},
     }
@@ -441,7 +443,7 @@ def test_research_hot_products_search_builds_typed_body() -> None:
 
     empty_scope = _research_scope()
     empty_result = research_hot_products_search(
-        ResearchHotProductsSearchRequest(),
+        ResearchHotProductsSearchRequest(keyword="kitchen organizer"),
         scope=empty_scope,
         execution=_execution(),
     )
@@ -454,7 +456,7 @@ def test_research_hot_products_search_builds_typed_body() -> None:
     invalid_scope = _research_scope(run_creator=invalid_creator)
     with pytest.raises(BusinessCapabilityError) as invalid:
         research_hot_products_search(
-            ResearchHotProductsSearchRequest(),
+            ResearchHotProductsSearchRequest(keyword="kitchen organizer"),
             scope=invalid_scope,
             execution=_execution(),
         )
@@ -465,7 +467,7 @@ def test_research_hot_products_search_builds_typed_body() -> None:
     )
     with pytest.raises(BusinessCapabilityError) as failed:
         research_hot_products_search(
-            ResearchHotProductsSearchRequest(),
+            ResearchHotProductsSearchRequest(keyword="kitchen organizer"),
             scope=failing_scope,
             execution=_execution(),
         )
@@ -477,7 +479,7 @@ def test_research_hot_products_search_builds_typed_body() -> None:
     )
     with pytest.raises(BusinessCapabilityError) as missing_id:
         research_hot_products_search(
-            ResearchHotProductsSearchRequest(),
+            ResearchHotProductsSearchRequest(keyword="kitchen organizer"),
             scope=missing_id_scope,
             execution=_execution(),
         )

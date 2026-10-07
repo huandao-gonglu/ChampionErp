@@ -1,10 +1,4 @@
-"""Product research hot-product candidate helpers.
-
-Product-research runs return temporary hot-product candidates for selected
-target markets. Target markets own search-method bindings; each
-search method returns HotProductCandidate rows through a common runtime
-contract.
-"""
+"""商品调研编排与持久记录；市场绑定显式数据源适配器。"""
 
 from __future__ import annotations
 
@@ -14,30 +8,22 @@ import logging
 import os
 import threading
 import time
-import urllib.parse
-import urllib.request
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from erp_web import http_client
 from erp_web.context import get_context
 from erp_web.db import ErpDatabase
 from erp_web.product_research_config import normalize_product_research_config
 from erp_web.schemas.product_research import (
     HotProductCandidate,
     ProductResearchConfig,
-    ProductResearchDataSource,
     ProductResearchRun,
     ProductResearchSourceStatus,
 )
-from erp_web.services import (
-    ai_gateway,
-    ai_model_config,
-    ai_prompt_templates,
-    config_service,
-)
+from erp_web.services import config_service
 from erp_web.services.product_research_methods import search_method_for
 
 
@@ -111,46 +97,6 @@ def _mask_config_value(key: str, value: Any) -> Any:
     return config_service.mask_nested_config(value, key)
 
 
-class _TemplateContext(dict[str, Any]):
-    def __missing__(self, key: str) -> str:
-        return ""
-
-
-def _render_template_value(value: Any, context: dict[str, Any]) -> Any:
-    if isinstance(value, str):
-        try:
-            return value.format_map(_TemplateContext(context))
-        except Exception:
-            return value
-    if isinstance(value, dict):
-        return {key: _render_template_value(nested, context) for key, nested in value.items()}
-    if isinstance(value, list):
-        return [_render_template_value(item, context) for item in value]
-    return value
-
-
-def _path_value(value: Any, path: str, default: Any = None) -> Any:
-    if not path:
-        return value
-    current = value
-    for part in path.replace("[", ".").replace("]", "").split("."):
-        key = part.strip()
-        if not key:
-            continue
-        if isinstance(current, list):
-            try:
-                current = current[int(key)]
-            except (ValueError, IndexError):
-                return default
-        elif isinstance(current, dict):
-            if key not in current:
-                return default
-            current = current[key]
-        else:
-            return default
-    return current
-
-
 def public_product_research_config(config: dict[str, Any], app_dir: Path | str = ".") -> ProductResearchConfig:
     normalized = normalize_product_research_config(config)
     public_config = json.loads(json.dumps(normalized, ensure_ascii=False))
@@ -199,6 +145,11 @@ def normalize_search_request(body: dict[str, Any], config: dict[str, Any]) -> di
     target_markets = [_resolve_market_id(cfg, market) for market in target_markets]
     if not target_markets:
         raise ValueError("markets.target_markets is required")
+    keywords = _string_list(body.get("keywords"))
+    if len(keywords) != 1 or len(keywords[0]) > 200:
+        raise ValueError("请输入一个商品关键词（不超过 200 字）。")
+    if len(target_markets) != 1:
+        raise ValueError("每次仅查询一个目标市场。")
     max_limit = _int_value(defaults.get("max_limit"), 100, 1, 500)
     limit = _int_value(raw_options.get("limit"), _int_value(defaults.get("limit"), 12, 1, max_limit), 1, max_limit)
     return {
@@ -207,7 +158,7 @@ def normalize_search_request(body: dict[str, Any], config: dict[str, Any]) -> di
             "target_markets": target_markets,
             "reference_markets": [],
         },
-        "keywords": [],
+        "keywords": _string_list(body.get("keywords")),
         "result_options": {
             "limit": limit,
             "sort_by": "rank",
@@ -241,6 +192,7 @@ class ProductResearchRunRegistry:
         self._lock = threading.RLock()
         self._runs: dict[str, ProductResearchRun] = {}
         self._order: list[str] = []
+        self._candidate_operations: set[tuple[str, str]] = set()
         try:
             self._db.mark_interrupted_research_runs_failed(RESTART_INTERRUPTED_DESCRIPTION)
         except Exception:
@@ -252,19 +204,16 @@ class ProductResearchRunRegistry:
         params = {key: value for key, value in run.items() if key != "items"}
         items = [item for item in (run.get("items") or []) if isinstance(item, dict)]
         status = str(run.get("status") or "")
-        try:
-            self._db.save_research_run(
-                str(run.get("run_id") or ""),
-                status=status,
-                method=str(run.get("search_mode") or ""),
-                params=params,
-                error=str(run.get("description") or "") if status == "failed" else "",
-                created_at=str(run.get("created_at") or ""),
-                updated_at=_utc_now(),
-                items=items,
-            )
-        except Exception:
-            logger.exception("Failed to persist product research run: %s", run.get("run_id"))
+        self._db.save_research_run(
+            str(run.get("run_id") or ""),
+            status=status,
+            method=str(run.get("search_mode") or ""),
+            params=params,
+            error=str(run.get("description") or "") if status == "failed" else "",
+            created_at=str(run.get("created_at") or ""),
+            updated_at=_utc_now(),
+            items=items,
+        )
 
     def _load_from_db(self, run_id: str) -> ProductResearchRun | None:
         record = self._db.load_research_run(run_id)
@@ -306,6 +255,33 @@ class ProductResearchRunRegistry:
         return deepcopy(self._runs[run_id])
 
     # -- public API -----------------------------------------------------------------
+
+    @contextmanager
+    def candidate_operation(self, run_id: str, candidate_id: str):
+        """同一候选不并发扣费；网络等待期间不持有持久化锁。"""
+        key = (run_id, candidate_id)
+        with self._lock:
+            if key in self._candidate_operations:
+                raise ValueError("该候选正在处理，请等待当前操作结束。")
+            self._candidate_operations.add(key)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._candidate_operations.discard(key)
+
+    def update_candidate(self, run_id: str, candidate_id: str, **changes):
+        with self._lock:
+            run = self.get(run_id)
+            if not run:
+                raise ValueError("调研记录不存在。")
+            for item in run.get("items", []):
+                if item.get("id") == candidate_id:
+                    item.update(deepcopy(changes))
+                    self._persist(run)
+                    self._remember(run)
+                    return deepcopy(item)
+            raise ValueError("候选商品不存在。")
 
     def store(self, run: ProductResearchRun) -> ProductResearchRun:
         run_id = str(run.get("run_id") or "").strip()
@@ -366,7 +342,7 @@ class ProductResearchRunRegistry:
             if added:
                 updated["items"] = sorted(current_items, key=lambda item: int(item.get("rank") or 999999))
                 updated["status"] = "running"
-                updated["description"] = _trim_run_description(description or f"已接收 {len(current_items)} 个候选商品，AI 仍在继续搜索。")
+                updated["description"] = _trim_run_description(description or f"已接收 {len(current_items)} 个候选商品，查询仍在进行。")
                 updated["progress_description"] = updated["description"]
         if added:
             self._persist(updated)
@@ -398,6 +374,11 @@ class ProductResearchRunRegistry:
                 if str(run.get("status") or "") not in TERMINAL_RUN_STATUSES:
                     return deepcopy(run)
         return None
+
+
+    def get_latest(self) -> ProductResearchRun | None:
+        records = self._db.list_research_runs(limit=1)
+        return self.get(records[0]["run_id"]) if records else None
 
 
 def get_hot_product_run(run_id: str) -> ProductResearchRun | None:
@@ -447,6 +428,7 @@ def _source_status_diagnostics(diagnostics: dict[str, Any]) -> dict[str, Any]:
     for key in ("stream_enabled", "stream_fallback_used"):
         if key in diagnostics:
             status[key] = bool(diagnostics.get(key))
+    status["quota_receipts"] = diagnostics.get("quota_receipts", [])
     message = str(diagnostics.get("diagnostic_message") or "").strip()
     if message:
         status["diagnostic_message"] = message
@@ -512,10 +494,14 @@ def build_hot_product_candidates(
                 }
             )
             continue
+        queried_methods: set[str] = set()
         for binding in bindings:
             if len(items) >= limit:
                 break
             method_id = str(binding.get("method_id") or binding.get("methodId") or "").strip()
+            if method_id in queried_methods:
+                continue
+            queried_methods.add(method_id)
             method = methods_by_id.get(method_id)
             if not method:
                 statuses.append(
@@ -687,7 +673,7 @@ def _run_hot_product_worker(
         description = _run_completion_description(items, source_status)
         run = registry.update(
             run_id,
-            status="completed",
+            status="failed" if not items and any(row.get("status") in {"failed", "configuration_required"} for row in source_status) else "completed",
             completed_at=_utc_now(),
             items=items,
             source_status=source_status,
@@ -752,12 +738,7 @@ def create_hot_product_run(
     config: dict[str, Any],
     app_config: dict[str, Any] | None = None,
 ) -> ProductResearchRun:
-    """同步完成用户手动发起的 focused 调研运行。
-
-    运行保持在发起它的 HTTP presentation scope 内，Direct Model 原生事件因此
-    可以由既有 AI Work SSE 观察链实时消费；未绑定 presentation 的请求与
-    Global Task 继续使用独立的 ``create_hot_product_run_async``。
-    """
+    """同步执行同一调研服务，供离线验收与明确的同步调用使用。"""
 
     registry, stored, request, normalized_config = _store_hot_product_run(
         body,
@@ -818,232 +799,17 @@ def build_run_not_found_response(run_id: str) -> dict[str, Any]:
     return {"ok": False, "error": f"选品运行不存在：{run_id}"}
 
 
-def _source_has_auth(source: ProductResearchDataSource) -> bool:
-    if not source.get("auth_required"):
-        return True
-    config_json = source.get("config_json") if isinstance(source.get("config_json"), dict) else {}
-    request_config = config_json.get("request") if isinstance(config_json.get("request"), dict) else {}
-    return any(
-        str(config.get(key) or "").strip()
-        for config in (config_json, request_config)
-        for key in ("api_key", "access_token", "bearer_token", "client_id", "client_secret")
-    )
+def test_search_provider_connection(body, config, app_dir=".", app_config=None):
+    from erp_web.services.sorftime_client import SorftimeClient
 
-
-def _configured_api_request_json(
-    source: ProductResearchDataSource,
-    market: str,
-    language: str,
-    keyword: str,
-    data_type: str,
-    timeout_seconds: int,
-) -> Any:
-    config_json = source.get("config_json") if isinstance(source.get("config_json"), dict) else {}
-    request_config = config_json.get("request") if isinstance(config_json.get("request"), dict) else {}
-    url = str(request_config.get("url") or config_json.get("url") or "").strip()
-    if not url:
-        raise ValueError("Configured API source requires config_json.request.url.")
-    context = {
-        "market": market,
-        "language": language,
-        "keyword": keyword,
-        "data_type": data_type,
-        "source_id": source.get("id") or "",
-        "platform": source.get("platform") or "",
-    }
-    method = str(request_config.get("method") or "GET").strip().upper()
-    rendered_url = str(_render_template_value(url, context)).strip()
-    headers = _render_template_value(request_config.get("headers") if isinstance(request_config.get("headers"), dict) else {}, context)
-    headers = headers if isinstance(headers, dict) else {}
-    query = _render_template_value(request_config.get("query") if isinstance(request_config.get("query"), dict) else {}, context)
-    query = query if isinstance(query, dict) else {}
-    auth_type = str(request_config.get("auth_type") or "none").strip()
-    api_key = str(request_config.get("api_key") or config_json.get("api_key") or "").strip()
-    bearer_token = str(request_config.get("bearer_token") or config_json.get("bearer_token") or config_json.get("access_token") or "").strip()
-    if auth_type == "api_key_header" and api_key:
-        headers[str(request_config.get("api_key_header") or "x-api-key").strip() or "x-api-key"] = api_key
-    elif auth_type == "bearer" and bearer_token:
-        headers["Authorization"] = f"Bearer {bearer_token}"
-    data: bytes | None = None
-    if method != "GET":
-        body = _render_template_value(request_config.get("body") if request_config.get("body") is not None else {}, context)
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        headers.setdefault("Content-Type", "application/json")
-    if query:
-        separator = "&" if urllib.parse.urlparse(rendered_url).query else "?"
-        rendered_url = f"{rendered_url}{separator}{urllib.parse.urlencode(query, doseq=True)}"
-    return http_client.request_json(
-        rendered_url,
-        method=method,
-        data=data,
-        headers={str(key): str(value) for key, value in headers.items()},
-        timeout=timeout_seconds,
-    )
-
-
-def _configured_api_sample(
-    source: ProductResearchDataSource,
-    market: str,
-    language: str,
-    keyword: str,
-    data_type: str,
-    timeout_seconds: int,
-) -> dict[str, Any]:
-    config_json = source.get("config_json") if isinstance(source.get("config_json"), dict) else {}
-    response_config = config_json.get("response") if isinstance(config_json.get("response"), dict) else {}
-    payload = _configured_api_request_json(source, market, language, keyword, data_type, timeout_seconds)
-    items_path = str(response_config.get("items_path") or "data.items").strip()
-    items = _path_value(payload, items_path, [])
-    if isinstance(items, dict):
-        items = [items]
-    first = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
-    title = str(_path_value(first, str(response_config.get("title_path") or "title"), "") or keyword).strip()
-    url = str(_path_value(first, str(response_config.get("url_path") or "url"), "") or "").strip()
-    return {
-        "title": title,
-        "source_url": url,
-        "keyword": keyword,
-        "market": market,
-        "data_type": data_type,
-    }
-
-
-def _ai_web_search_sample(
-    source: ProductResearchDataSource,
-    config: dict[str, Any],
-    app_dir: Path | str,
-    app_config: dict[str, Any] | None,
-    market: str,
-    language: str,
-    keyword: str,
-    timeout_seconds: int,
-) -> dict[str, Any]:
-    model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "research.web_search")
-    capabilities = ai_model_config.normalize_capabilities(model.get("capabilities"))
-    if ai_model_config.CAP_WEB_SEARCH not in capabilities:
-        raise RuntimeError("AI 搜索需要选择一个支持 web_search 的 AI 模型。")
-    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "research.web_search")
-    user_prompt = ai_prompt_templates.render_prompt_template(
-        prompt_pair["user"],
-        {
-            "market": market,
-            "market_id": market,
-            "marketId": market,
-            "display_name": market,
-            "displayName": market,
-            "platform": str(source.get("platform") or ""),
-            "site": str(source.get("site") or ""),
-            "currency": "USD",
-            "language": language or "en",
-            "keyword": keyword,
-            "keywords": keyword,
-            "limit": 1,
-        },
-    )
-    parsed = ai_gateway.chat_json(
-        app_dir,
-        app_config,
-        "research.web_search",
-        [
-            {"role": "system", "content": prompt_pair["system"]},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
-        max_tokens=1200,
-        timeout_seconds=timeout_seconds,
-        stream=False,
-    )
-    items = parsed.get("items")
-    first = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
-    if not first:
-        return {}
-    return {
-        "title": str(first.get("title") or keyword).strip(),
-        "source_url": str(first.get("source_url") or first.get("url") or "").strip(),
-        "keyword": keyword,
-        "market": market,
-    }
-
-
-def _manual_import_sample(source: ProductResearchDataSource, keyword: str, market: str, data_type: str) -> dict[str, Any]:
-    config_json = source.get("config_json") if isinstance(source.get("config_json"), dict) else {}
-    items = config_json.get("items") if isinstance(config_json.get("items"), list) else []
-    first = next((item for item in items if isinstance(item, dict)), {})
-    if not first:
-        return {}
-    return {
-        "title": str(first.get("title") or keyword).strip(),
-        "source_url": str(first.get("source_url") or first.get("sourceUrl") or first.get("url") or "").strip(),
-        "keyword": str(first.get("keyword") or keyword).strip(),
-        "market": str(first.get("market") or first.get("market_id") or first.get("marketId") or market).strip(),
-        "data_type": data_type,
-    }
-
-
-def test_search_provider_connection(
-    body: dict[str, Any],
-    config: dict[str, Any],
-    app_dir: Path | str = ".",
-    app_config: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    provider = body.get("provider") if isinstance(body.get("provider"), dict) else {}
-    if not provider:
-        raise ValueError("provider is required")
-    current_config = normalize_product_research_config(config)
-    runtime = current_config["provider_runtime"]
-    options = body.get("options") if isinstance(body.get("options"), dict) else {}
-    market = str(options.get("market") or body.get("market") or "US").strip().upper()
-    language = str(options.get("language") or body.get("language") or "en").strip().lower()
-    keyword = str(options.get("keyword") or body.get("keyword") or "mahjong gift").strip()
-    data_type = str(options.get("data_type") or "marketplace_products").strip()
-    timeout_seconds = _int_value(options.get("timeout_seconds"), int(runtime.get("source_timeout_seconds") or 12), 1, 60)
-    source = provider
-    strategy = str((source.get("config_json") or {}).get("provider_strategy") or source.get("provider_strategy") or "configured_api").strip()
-    started = time.time()
-    if source.get("auth_required") and not _source_has_auth(source):
-        return {
-            "ok": False,
-            "status": "configuration_required",
-            "source_id": source.get("id"),
-            "provider_strategy": strategy,
-            "market": market,
-            "keyword": keyword,
-            "items_found": 0,
-            "duration_ms": int((time.time() - started) * 1000),
-            "error": "Source requires credentials in config_json.request or config_json.",
-        }
-    try:
-        if strategy == "configured_api":
-            sample = _configured_api_sample(source, market, language, keyword, data_type, timeout_seconds)
-        elif strategy == "ai_web_search":
-            sample = _ai_web_search_sample(source, current_config, app_dir, app_config, market, language, keyword, timeout_seconds)
-        elif strategy == "manual_import":
-            sample = _manual_import_sample(source, keyword, market, data_type)
-        else:
-            raise ValueError(f"Provider strategy '{strategy}' is not supported by test runtime.")
-        return {
-            "ok": True,
-            "status": "success" if sample else "empty",
-            "source_id": source.get("id"),
-            "provider_strategy": strategy,
-            "market": market,
-            "keyword": keyword,
-            "items_found": 1 if sample else 0,
-            "duration_ms": int((time.time() - started) * 1000),
-            "sample": sample,
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "status": "failed",
-            "source_id": source.get("id"),
-            "provider_strategy": strategy,
-            "market": market,
-            "keyword": keyword,
-            "items_found": 0,
-            "duration_ms": int((time.time() - started) * 1000),
-            "error": str(exc),
-        }
+    provider = body.get("provider") or {}
+    if provider.get("config_json", {}).get("provider_strategy") != "sorftime":
+        raise ValueError("请选择 Sorftime 数据源。")
+    client = SorftimeClient(provider.get("config_json", {}).get("api_key", ""))
+    data = client.call("CoinQuery", 1, {})
+    return {"ok": True, "status": "success", "source_id": provider.get("id"),
+            "provider_strategy": "sorftime", "items_found": 0,
+            "sample": {"balance": data, "quota_receipts": client.receipts}}
 
 
 __all__ = [

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   createProductResearchHotProductRun,
   fetchActiveProductResearchHotProductRun,
+  fetchLatestProductResearchHotProductRun,
   fetchProductResearchHotProductRun,
   fetchProductResearchSettings,
 } from '@/api/workflow/research'
@@ -10,7 +11,7 @@ import {
   productResearchMarketLabel,
   productResearchStrategyLabel,
 } from '@/utils/productResearchLabels'
-import { withAiForeground } from '@/services/withAiForeground'
+import ProductResearchSourcingPanel from './ProductResearchSourcingPanel.vue'
 import type {
   HotProductCandidate,
   ProductResearchConfig,
@@ -21,6 +22,7 @@ import type {
 const form = ref({
   targetMarket: 'amazon-us',
   limit: 12,
+  keyword: 'kitchen organizer',
 })
 
 const loading = ref(false)
@@ -35,7 +37,7 @@ const LAST_RUN_STORAGE_KEY = 'champion.erp.productResearch.lastRunId'
 
 const candidates = computed(() => result.value?.items || [])
 const targetMarketOptions = computed(() => {
-  const markets = researchConfig.value?.targetMarkets || []
+  const markets = (researchConfig.value?.targetMarkets || []).filter(item => item.platform === 'amazon' && item.site === 'amazon.com')
   return markets.length ? markets : [{ id: 'amazon-us', displayName: 'Amazon US', platform: 'amazon', site: 'amazon.com', searchMethods: [], raw: {} }]
 })
 const selectedTargetMarket = computed<ProductResearchTargetMarket>(() => {
@@ -44,34 +46,24 @@ const selectedTargetMarket = computed<ProductResearchTargetMarket>(() => {
 const selectedCandidate = computed(() => {
   return candidates.value.find((item) => item.id === selectedCandidateId.value) || candidates.value[0] || null
 })
-const canRunSearch = computed(() => Boolean(selectedTargetMarket.value?.id))
-const selectedMarketUsesAi = computed(() => {
-  const strategyByMethodId = new Map(
-    (researchConfig.value?.searchProviders || []).map((provider) => [provider.id, provider.providerStrategy]),
-  )
-  return (selectedTargetMarket.value?.searchMethods || []).some((binding) => (
-    binding.enabled !== false
-    && strategyByMethodId.get(binding.methodId) === 'ai_web_search'
-  ))
-})
+const canRunSearch = computed(() => Boolean(selectedTargetMarket.value?.id && form.value.keyword.trim()))
 const runDescription = computed(() => {
   const status = result.value?.run.status || ''
   const description = result.value?.run.description || result.value?.description || ''
   const progressDescription = result.value?.run.progressDescription || ''
   if (isTerminalRunStatus(status) && progressDescription && progressDescription !== description) {
-    return `${description}\n最近 AI 返回：${progressDescription.replace(/^AI 正在返回结果：/, '')}`
+    return `${description}\n最近进度：${progressDescription.replace(/^正在返回结果：/, '')}`
   }
   return progressDescription || description
 })
-const averageHotScore = computed(() => {
-  if (!candidates.value.length) return 0
-  return candidates.value.reduce((sum, item) => sum + item.hotScore, 0) / candidates.value.length
-})
+type QuotaReceipt = { request_consumed?: number; request_left?: number }
+function quotaReceipts(value: unknown): QuotaReceipt[] { return Array.isArray(value) ? value : [] }
 const successfulSources = computed(() => (result.value?.sourceStatus || []).filter((item) => item.status === 'success').length)
 
 function buildPayload() {
   return {
     search_mode: 'target_only',
+    keywords: [form.value.keyword.trim()],
     markets: {
       target_markets: [selectedTargetMarket.value.id],
       reference_markets: [],
@@ -173,20 +165,7 @@ async function runSearch() {
   error.value = ''
   try {
     const payload = buildPayload()
-    const next = selectedMarketUsesAi.value
-      ? await withAiForeground<ProductResearchResponse>(
-        {
-          displayTitle: '产品调研 AI 联网搜索',
-          initialUserMessage: `为 ${productResearchMarketLabel(selectedTargetMarket.value)} 生成 ${form.value.limit} 个热门商品候选。`,
-          successNotice: (response) => (
-            response.run.status === 'failed'
-              ? '产品调研运行结束，请查看错误'
-              : `产品调研完成，返回 ${response.items.length} 个候选`
-          ),
-        },
-        ({ presentationId }) => createProductResearchHotProductRun(payload, { presentationId }),
-      )
-      : await createProductResearchHotProductRun(payload)
+    const next = await createProductResearchHotProductRun(payload)
     applyRunResponse(next)
     if (next.run.runId && !isTerminalRunStatus(next.run.status)) {
       startPolling(next.run.runId)
@@ -196,6 +175,22 @@ async function runSearch() {
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : '选品搜索失败'
     loading.value = false
+  }
+}
+
+async function loadLatestRun() {
+  error.value = ''
+  try {
+    const latest = await fetchLatestProductResearchHotProductRun()
+    if (latest) {
+      applyRunResponse(latest)
+      if (!isTerminalRunStatus(latest.run.status)) {
+        loading.value = true
+        startPolling(latest.run.runId)
+      }
+    }
+  } catch (exc) {
+    error.value = exc instanceof Error ? exc.message : '读取最近调研失败'
   }
 }
 
@@ -215,7 +210,7 @@ async function restoreRunAfterRefresh() {
     }
   }
   try {
-    const activeRun = await fetchActiveProductResearchHotProductRun()
+    const activeRun = await fetchActiveProductResearchHotProductRun() || await fetchLatestProductResearchHotProductRun()
     if (!activeRun?.run.runId) return
     applyRunResponse(activeRun)
     if (!isTerminalRunStatus(activeRun.run.status)) {
@@ -225,12 +220,6 @@ async function restoreRunAfterRefresh() {
   } catch {
     // 恢复运行状态失败不阻断页面使用，用户仍可手动重新生成。
   }
-}
-
-function scoreTone(score: number) {
-  if (score >= 90) return 'text-success-700 dark:text-success-300'
-  if (score >= 75) return 'text-info-700 dark:text-info-300'
-  return 'text-warning-700 dark:text-warning-300'
 }
 
 function statusLabel(value: string) {
@@ -318,12 +307,12 @@ onBeforeUnmount(() => {
   <section class="space-y-6">
     <div class="grid gap-4 md:grid-cols-4">
       <div class="rounded-lg border border-accent-200 bg-white p-4 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-        <p class="text-xs font-semibold uppercase text-accent-500 dark:text-accent-400">热点商品</p>
+        <p class="text-xs font-semibold uppercase text-accent-500 dark:text-accent-400">商品候选</p>
         <p class="mt-2 text-2xl font-black text-accent-950 dark:text-white">{{ candidates.length }}</p>
       </div>
       <div class="rounded-lg border border-accent-200 bg-white p-4 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-        <p class="text-xs font-semibold uppercase text-accent-500 dark:text-accent-400">平均热度</p>
-        <p class="mt-2 text-2xl font-black" :class="scoreTone(averageHotScore)">{{ averageHotScore.toFixed(1) }}</p>
+        <p class="text-xs font-semibold uppercase text-accent-500 dark:text-accent-400">数据来源</p>
+        <p class="mt-2 text-2xl font-black">Sorftime</p>
       </div>
       <div class="rounded-lg border border-accent-200 bg-white p-4 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
         <p class="text-xs font-semibold uppercase text-accent-500 dark:text-accent-400">正常来源</p>
@@ -340,9 +329,9 @@ onBeforeUnmount(() => {
         <div class="flex items-start justify-between gap-3">
           <div>
             <h2 class="card-title">搜索条件</h2>
-            <p class="muted mt-1">选择平台站点，生成当前市场的热卖商品候选。</p>
+            <p class="muted mt-1">输入商品关键词，查询真实商品及市场指标。</p>
           </div>
-          <span class="badge-info">临时结果</span>
+          <span class="badge-info">调研记录</span>
         </div>
 
         <div class="mt-5 space-y-5">
@@ -355,6 +344,8 @@ onBeforeUnmount(() => {
             </select>
           </label>
 
+          <label class="block"><span class="mb-2 block text-sm font-semibold">商品关键词（美国站建议英文）</span><input v-model="form.keyword" class="input" maxlength="200" :disabled="loading" /></label>
+          <p class="muted">查询第一页预计消耗 2 个额度，不自动翻页或补足数量。</p>
           <label class="block">
             <span class="mb-2 block text-sm font-semibold text-accent-700 dark:text-accent-200">结果数量</span>
             <input v-model.number="form.limit" class="input" min="1" max="50" type="number" />
@@ -363,6 +354,7 @@ onBeforeUnmount(() => {
           <button class="btn btn-primary w-full" :disabled="loading || !canRunSearch" @click="runSearch">
             {{ loading ? '运行中' : '生成候选' }}
           </button>
+          <button class="btn btn-secondary w-full" :disabled="loading" @click="loadLatestRun">读取最近调研（不消耗额度）</button>
           <p
             v-if="runDescription"
             class="max-h-28 overflow-auto whitespace-pre-wrap rounded-lg border border-accent-200 bg-accent-50/70 px-3 py-2 text-xs leading-5 text-accent-500 dark:border-dark-700 dark:bg-dark-950/50 dark:text-accent-400"
@@ -377,10 +369,10 @@ onBeforeUnmount(() => {
         <div class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 class="card-title">热点商品候选</h2>
+              <h2 class="card-title">商品候选</h2>
               <p class="muted mt-1">{{ result?.run.runId || '等待运行' }}</p>
             </div>
-            <span class="badge-info">按 rank 排序</span>
+            <span class="badge-info">数据源返回顺序</span>
           </div>
 
           <div class="mt-4 space-y-3">
@@ -411,19 +403,19 @@ onBeforeUnmount(() => {
                   <h3 class="mt-2 line-clamp-2 text-base font-bold text-accent-950 dark:text-white">{{ item.title }}</h3>
                   <div class="mt-2 flex flex-wrap gap-2 text-xs text-accent-500 dark:text-accent-400">
                     <span>{{ priceLabel(item) }}</span>
-                    <span>评分 {{ item.rating.toFixed(1) }}</span>
-                    <span>评论 {{ item.reviewCount }}</span>
+                    <span>评分 {{ item.rating?.toFixed(1) ?? '暂无' }}</span>
+                    <span>评分数 {{ item.reviewCount ?? '暂无' }}</span>
                   </div>
                 </div>
                 <div class="w-16 flex-none text-right">
-                  <p class="text-xl font-black" :class="scoreTone(item.hotScore)">{{ item.hotScore.toFixed(1) }}</p>
-                  <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">热度</p>
+                  <p class="text-xl font-black">{{ item.monthlySales ?? '暂无' }}</p>
+                  <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">预估月销量</p>
                 </div>
               </div>
             </button>
 
             <div v-if="!candidates.length" class="rounded-lg border border-dashed border-accent-300 p-8 text-center text-sm text-accent-500 dark:border-dark-700 dark:text-accent-300">
-              选择目标市场后，生成一组临时热点商品。
+              选择市场并输入关键词后开始查询。
             </div>
           </div>
         </div>
@@ -431,7 +423,7 @@ onBeforeUnmount(() => {
         <div class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
           <div>
             <h2 class="card-title">来源状态</h2>
-            <p class="muted mt-1">本次运行只返回临时数据，不保存候选商品。</p>
+            <p class="muted mt-1">调研结果自动保存；确认货源后才写入商品库。</p>
           </div>
           <div class="mt-4 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
             <table class="w-full min-w-[560px] text-left text-sm">
@@ -455,10 +447,15 @@ onBeforeUnmount(() => {
               </tbody>
             </table>
           </div>
+          <p v-for="status in result?.sourceStatus || []" :key="status.sourceId" class="muted mt-2">
+            {{ status.errorMessage || status.diagnosticMessage }}
+            <span v-for="(receipt, index) in quotaReceipts(status.raw.quota_receipts)" :key="index">本次消耗 {{ receipt.request_consumed ?? '未知' }}，剩余 {{ receipt.request_left ?? '未知' }}。</span>
+          </p>
         </div>
       </section>
 
       <aside class="space-y-4">
+        <ProductResearchSourcingPanel v-if="selectedCandidate && result && selectedCandidate.sourceName === 'Sorftime'" :key="`${result.run.runId}:${selectedCandidate.id}`" :candidate="selectedCandidate" :run-id="result.run.runId" @imported="pollRun(result.run.runId)" />
         <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
           <div>
             <h2 class="card-title">商品详情</h2>
@@ -489,20 +486,21 @@ onBeforeUnmount(() => {
                 <p class="mt-1 text-sm font-semibold text-accent-800 dark:text-white">{{ priceLabel(selectedCandidate) }}</p>
               </div>
               <div class="rounded-lg border border-accent-200 p-3 dark:border-dark-700">
-                <p class="text-xs text-accent-500 dark:text-accent-400">热度</p>
-                <p class="mt-1 text-sm font-semibold text-accent-800 dark:text-white">{{ selectedCandidate.hotScore.toFixed(1) }}</p>
+                <p class="text-xs text-accent-500 dark:text-accent-400">预估月销量</p>
+                <p class="mt-1 text-sm font-semibold text-accent-800 dark:text-white">{{ selectedCandidate.monthlySales ?? '暂无' }}</p>
               </div>
               <div class="rounded-lg border border-accent-200 p-3 dark:border-dark-700">
                 <p class="text-xs text-accent-500 dark:text-accent-400">评分</p>
-                <p class="mt-1 text-sm font-semibold text-accent-800 dark:text-white">{{ selectedCandidate.rating.toFixed(1) }}</p>
+                <p class="mt-1 text-sm font-semibold text-accent-800 dark:text-white">{{ selectedCandidate.rating?.toFixed(1) ?? '暂无' }}</p>
               </div>
               <div class="rounded-lg border border-accent-200 p-3 dark:border-dark-700">
-                <p class="text-xs text-accent-500 dark:text-accent-400">评论数</p>
-                <p class="mt-1 text-sm font-semibold text-accent-800 dark:text-white">{{ selectedCandidate.reviewCount }}</p>
+                <p class="text-xs text-accent-500 dark:text-accent-400">评分数量</p>
+                <p class="mt-1 text-sm font-semibold text-accent-800 dark:text-white">{{ selectedCandidate.reviewCount ?? '暂无' }}</p>
               </div>
             </div>
 
             <a class="btn btn-outline mt-5 w-full" :href="selectedCandidate.sourceUrl" target="_blank" rel="noreferrer">查看来源</a>
+            <p class="muted mt-3">月销量为 Sorftime 的 Listing 级估算，可能包含多个变体。采集时间：{{ selectedCandidate.collectedAt }}；数据更新时间：{{ selectedCandidate.raw.data_updated_at || '未提供' }}。</p>
             <p class="mt-3 break-all text-xs text-accent-500 dark:text-accent-400">{{ selectedCandidate.sourceUrl }}</p>
           </template>
 

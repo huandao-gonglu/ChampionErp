@@ -370,6 +370,158 @@ export interface BackendProduct {
   updated_at?: string
 }
 
+export interface BackendProductResearchPrice {
+  amount?: number
+  currency?: string
+}
+
+export interface BackendSorftimeQuotaReceipt {
+  endpoint: string
+  domain: number
+  request_consumed: number | null
+  request_left: number | null
+}
+
+export interface BackendProductResearchSupplier {
+  product_id: string
+  title: string
+  source_url: string
+  image_url: string
+  price_cny: number | null
+  store_name: string
+  service_score: number | null
+  monthly_sales: number | null
+  min_order_quantity: number | null
+  repurchase_rate: number | null
+  collected_at: string
+}
+
+export interface BackendProductResearchSourcingQuery {
+  mode: "keyword" | "image"
+  keyword: string
+}
+
+export interface BackendProductResearchSourcing {
+  query?: BackendProductResearchSourcingQuery
+  status?: string
+  items?: Array<BackendProductResearchSupplier>
+  quota_receipts?: Array<BackendSorftimeQuotaReceipt>
+}
+
+export interface BackendProductResearchSupplierSearchResponse {
+  ok: boolean
+  sourcing: BackendProductResearchSourcing
+  cached: boolean
+}
+
+export interface BackendProductResearchSupplierImportResponse {
+  ok: boolean
+  product_id: string
+  already_imported: boolean
+  quota_receipts: Array<BackendSorftimeQuotaReceipt>
+}
+
+export interface BackendHotProductCandidate {
+  id?: string
+  title?: string
+  image_url?: string
+  rank?: number
+  source_url?: string
+  market_id?: string
+  platform?: string
+  site?: string
+  keyword?: string
+  price?: BackendProductResearchPrice
+  rating?: number | null
+  review_count?: number | null
+  hot_score?: number
+  source_name?: string
+  collected_at?: string
+  asin?: string
+  monthly_sales?: number | null
+  data_updated_at?: string
+  sourcing?: BackendProductResearchSourcing
+  imported_product_id?: string
+  import_quota_receipts?: Array<BackendSorftimeQuotaReceipt>
+}
+
+export interface BackendProductResearchDataSource {
+  id?: string
+  name?: string
+  source_type?: "api" | "ai_search" | "crawler" | "third_party_api" | "manual_import"
+  platform?: string
+  enabled?: boolean
+  priority?: number
+  supported_markets?: Array<string>
+  supported_languages?: Array<string>
+  supported_data_types?: Array<string>
+  auth_required?: boolean
+  rate_limit_per_minute?: number | null
+  compliance_note?: string
+  config_json?: Record<string, unknown>
+}
+
+export interface BackendProductResearchMarketSearchMethodBinding {
+  method_id?: string
+  enabled?: boolean
+  prompt?: string
+  config_json?: Record<string, unknown>
+}
+
+export interface BackendProductResearchTargetMarket {
+  id?: string
+  platform?: string
+  site?: string
+  display_name?: string
+  search_methods?: Array<BackendProductResearchMarketSearchMethodBinding>
+}
+
+export interface BackendProductResearchConfig {
+  search_defaults?: Record<string, unknown>
+  provider_runtime?: Record<string, unknown>
+  search_providers?: Array<BackendProductResearchDataSource>
+  target_markets?: Array<BackendProductResearchTargetMarket>
+  source_registry?: Array<BackendProductResearchDataSource>
+}
+
+export interface BackendProductResearchSearchRequest {
+  search_mode?: "target_only" | "target_plus_reference" | "global_scan"
+  markets?: Record<string, Array<string>>
+  keywords?: Array<string>
+  result_options?: Record<string, unknown>
+}
+
+export interface BackendProductResearchSourceStatus {
+  source?: string
+  source_id?: string
+  market?: string
+  status?: string
+  items_found?: number
+  error_message?: string
+  provider_strategy?: string
+  raw_items_found?: number
+  items_filtered?: number
+  diagnostic_message?: string
+  quota_receipts?: Array<BackendSorftimeQuotaReceipt>
+  ai_model_id?: string
+  api_style?: string
+  stream_enabled?: boolean
+  stream_fallback_used?: boolean
+}
+
+export interface BackendProductResearchRun {
+  run_id?: string
+  status?: string
+  search_mode?: string
+  created_at?: string
+  completed_at?: string
+  description?: string
+  progress_description?: string
+  request?: BackendProductResearchSearchRequest
+  items?: Array<BackendHotProductCandidate>
+  source_status?: Array<BackendProductResearchSourceStatus>
+}
+
 export interface BackendPublishConfirmation {
   submitted_at?: string
   next_check_at?: string

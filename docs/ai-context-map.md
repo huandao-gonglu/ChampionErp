@@ -1039,12 +1039,15 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 
 ## Product Research
 
-- `erp_web/http_route_units/product_research_routes.py`：调研 HTTP 入口。
-- `erp_web/product_research_config.py`：调研配置入口。
-- `erp_web/services/product_research_service.py`：调研编排与运行服务。手动 AI focused HTTP 调研在当前
-  presentation scope 内同步完成，以便 Direct Model 事件持续输出到同一 SSE；未绑定 presentation 的普通调研与
-  主 Agent 的原生 Deferred 工具调用独立的 `create_hot_product_run_async()`，不被前台 presentation 生命周期限制。
-- `erp_web/schemas/product_research.py`：调研数据形状。
+- `http_route_units/product_research_routes.py` → `facades/product_research_facade.py`：商品查询、货源查询、确认入库的 HTTP 入口。
+- `product_research_config.py`：保留市场和既有配置读取，旧独立 AI 选品方法迁移为 Sorftime；新凭据由 app_config 管理，公开配置递归脱敏。
+- `services/product_research_service.py`：调研 Job 与 SQLite 运行记录；HTTP 和主 Agent Deferred 调用均启动异步任务，状态轮询不调用供应商。历史候选继续可读。
+- `services/product_research_methods.py`：Amazon US 关键词查询一页，返回 ASIN、美元售价、评分数和 Listing 级预估月销量；不生成热度/利润评分，不把缺失指标改成零。
+- `services/sorftime_client.py`：固定开放 API 地址、BasicAuth 授权，经统一外发管理器单次发送；不自动重试、翻页或扩词。以 RequestConsumed/RequestLeft 保存实际额度回执，网络错误不泄漏授权或上游原文。
+- `services/product_research_sourcing.py`：图片/中文关键词查询 1688，结果与候选一起持久化；相同查询复用结果。确认接口只接受该候选已查到的货源编号，查详情和 SKU 后由 `ProductStore.import_research_product` 幂等入库。网络查询在商品锁外完成，重复入库不覆盖人工修改。
+- `schemas/product_research.py`：调研数据形状；`schemas/collect_capabilities.py`：主 Agent 的关键词参数。独立 `research.web_search` AI 模型绑定和提示词已退役。
+- Amazon Price 为分、1688 Price 为元；包装原始字段保留在选品证据中，单位未经核实不得写入核价字段。没有有效 SKU 时停止入库，找货结果不代表已确认同款。
+- `front/src/components/domain/ProductResearchPanel.vue` 和 `ProductResearchSourcingPanel.vue`：市场查询与人工核对入口；`ProductResearchSettingsPanel.vue`：Sorftime 授权与额度验证。
 
 ## 架构与回归入口
 

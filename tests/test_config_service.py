@@ -48,9 +48,8 @@ def test_default_env_template_and_public_config(
     )
     assert all("generation_capabilities" in model for model in public["ai_models"])
     assert "copy.generate" in public["ai_use_case_prompts"]
-    assert "research.web_search" in public["ai_use_case_prompts"]
+    assert "research.web_search" not in public["ai_use_case_prompts"]
     assert public["ai_use_case_prompts"]["copy.generate"]["user_prompt"]
-    assert public["ai_use_case_prompts"]["research.web_search"]["user_prompt"]
     assert public["storage"]["config_dir"].startswith(str(app_dir / "config"))
     assert_no_old_path(public, old_path_markers)
 
@@ -247,11 +246,11 @@ def test_merge_config_writes_ai_use_case_prompt_files(tmp_path: Path) -> None:
                     "system_prompt": "System from settings",
                     "user_prompt": "User prompt {$language}",
                 },
-                "research.web_search": {
-                    "path": "config/prompts/research_web_search.json",
-                    "description": "AI 选品搜索默认模板",
-                    "system_prompt": "Research system",
-                    "user_prompt": "Research user {$marketId}",
+                "text.translate": {
+                    "path": "config/prompts/text_translate.json",
+                    "description": "翻译默认模板",
+                    "system_prompt": "Translate system",
+                    "user_prompt": "Translate user {$language}",
                 },
             }
         },
@@ -262,8 +261,8 @@ def test_merge_config_writes_ai_use_case_prompt_files(tmp_path: Path) -> None:
         == "config/prompts/copy_generate.json"
     )
     assert (
-        merged["ai_use_case_prompts"]["research.web_search"]["path"]
-        == "config/prompts/research_web_search.json"
+        merged["ai_use_case_prompts"]["text.translate"]["path"]
+        == "config/prompts/text_translate.json"
     )
     written = json.loads(
         (tmp_path / "config/prompts/copy_generate.json").read_text(encoding="utf-8")
@@ -271,14 +270,14 @@ def test_merge_config_writes_ai_use_case_prompt_files(tmp_path: Path) -> None:
     assert written["description"] == "文案生成提示词"
     assert written["system"] == "System from settings"
     assert written["user"] == "User prompt {$language}"
-    research_written = json.loads(
-        (tmp_path / "config/prompts/research_web_search.json").read_text(
+    translate_written = json.loads(
+        (tmp_path / "config/prompts/text_translate.json").read_text(
             encoding="utf-8"
         )
     )
-    assert research_written["description"] == "AI 选品搜索默认模板"
-    assert research_written["system"] == "Research system"
-    assert research_written["user"] == "Research user {$marketId}"
+    assert translate_written["description"] == "翻译默认模板"
+    assert translate_written["system"] == "Translate system"
+    assert translate_written["user"] == "Translate user {$language}"
 
 
 def test_load_prompt_json_joins_system_segments(tmp_path: Path) -> None:

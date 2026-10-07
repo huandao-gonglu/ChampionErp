@@ -38,7 +38,7 @@ import { useAiDraftSync } from '@/composables/useAiDraftSync'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
-import type { DraftIndexItem, MarketplaceTargetSite, ProductIndexItem, UnknownRecord } from '@/types/workflow'
+import type { DraftIndexItem, MarketplaceTargetSite, ProductIndexItem } from '@/types/workflow'
 
 const store = useWorkflowStore()
 const activityStore = useWorkflowActivityStore()

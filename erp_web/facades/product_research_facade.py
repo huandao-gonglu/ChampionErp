@@ -3,8 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.context import get_context
-from erp_web.services import config_service, product_research_service
-from erp_web.services.ai_presentation_context import current_presentation_context
+from erp_web.services import config_service, product_research_service, product_research_sourcing
 
 from erp_web.product_research_config import normalize_product_research_config
 from erp_web.schemas.api import ApiResponse
@@ -65,12 +64,7 @@ def create_hot_product_run_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
         context = get_context()
         app_config = context.config.load_app_config()
-        create_run = (
-            product_research_service.create_hot_product_run
-            if current_presentation_context() is not None
-            else product_research_service.create_hot_product_run_async
-        )
-        run = create_run(
+        run = product_research_service.create_hot_product_run_async(
             context.paths.app_dir,
             body,
             app_config.get("product_research", {}),
@@ -87,6 +81,13 @@ def get_hot_product_run_payload(run_id: str) -> ResponseWithStatus:
     run = product_research_service.get_hot_product_run(run_id)
     if run is None:
         return product_research_service.build_run_not_found_response(run_id), 404
+    return product_research_service.build_run_response(run), 200
+
+
+def get_latest_hot_product_run_payload() -> ResponseWithStatus:
+    run = get_context().research.get_latest()
+    if run is None:
+        return {"ok": True, "run": None, "items": [], "source_status": [], "description": ""}, 200
     return product_research_service.build_run_response(run), 200
 
 
@@ -179,9 +180,26 @@ def test_search_provider_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return {"ok": False, "error": str(exc)}, 500
 
 
+def search_suppliers_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    try:
+        return product_research_sourcing.search_suppliers(body), 200
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}, 400
+
+
+def import_supplier_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    try:
+        return product_research_sourcing.import_supplier(body), 200
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}, 400
+
+
 __all__ = [
+    "search_suppliers_payload",
+    "import_supplier_payload",
     "create_hot_product_run_payload",
     "get_active_hot_product_run_payload",
+    "get_latest_hot_product_run_payload",
     "get_hot_product_run_payload",
     "get_source_registry_payload",
     "save_source_registry_payload",

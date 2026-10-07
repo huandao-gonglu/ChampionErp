@@ -779,6 +779,20 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     # -------------------------------------------------- 商品研究（POST）
     AiCapabilityCoverageEntry(
         method="POST",
+        path="/api/v1/product-research/suppliers/search",
+        business_domain="商品研究",
+        disposition="internal_only",
+        reason="首期货源核对工作台入口，需用户选择具体候选和找货方式；尚未开放 Agent 自动找货。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST",
+        path="/api/v1/product-research/suppliers/import",
+        business_domain="商品研究",
+        disposition="internal_only",
+        reason="人工核对货源后的确认入口；不得由 Agent 代替用户声明已经核对同款。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST",
         path="/api/v1/product-research/hot-products/search",
         business_domain="商品研究",
         disposition="capability",

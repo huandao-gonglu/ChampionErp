@@ -6,7 +6,7 @@ from typing import Any
 
 PRODUCT_RESEARCH_SOURCE_TYPES = {"api", "ai_search", "crawler", "third_party_api", "manual_import"}
 PRODUCT_RESEARCH_SEARCH_MODES = {"target_only", "target_plus_reference", "global_scan"}
-DEFAULT_AI_SEARCH_METHOD_ID = "ai_web_search"
+DEFAULT_SEARCH_METHOD_ID = "sorftime"
 _RETIRED_AI_SEARCH_METHOD_IDS = {"ai_market_search_seeded"}
 _RETIRED_SOURCE_FIELDS = {
     "source_id",
@@ -104,7 +104,7 @@ def _bool_value(value: Any, default: bool = False) -> bool:
 def _default_market_search_methods() -> list[dict[str, Any]]:
     return [
         {
-            "method_id": DEFAULT_AI_SEARCH_METHOD_ID,
+            "method_id": DEFAULT_SEARCH_METHOD_ID,
             "enabled": True,
             "config_json": {},
         }
@@ -123,32 +123,17 @@ def default_product_research_config() -> dict[str, Any]:
         },
         "provider_runtime": {
             "source_timeout_seconds": 120,
-            "retry_count": 1,
+            "retry_count": 0,
             "cache_ttl_seconds": 21600,
         },
-        "source_registry": [
-            {
-                "id": DEFAULT_AI_SEARCH_METHOD_ID,
-                "name": "AI 搜索",
-                "source_type": "ai_search",
-                "platform": "ai_model",
-                "enabled": True,
-                "priority": 1,
-                "supported_markets": [],
-                "supported_languages": [],
-                "supported_data_types": ["ai_web_search"],
-                "auth_required": False,
-                "rate_limit_per_minute": 20,
-                "compliance_note": "通过已配置的联网 AI 模型获取真实可追溯的热卖商品候选。",
-                "config_json": {
-                    "provider_strategy": "ai_web_search",
-                    "max_items": 12,
-                    "require_source_url": True,
-                    "require_image_url": True,
-                    "stream": True,
-                },
-            },
-        ],
+        "source_registry": [{
+            "id": DEFAULT_SEARCH_METHOD_ID, "name": "Sorftime", "source_type": "api",
+            "platform": "sorftime", "enabled": True, "priority": 1,
+            "supported_markets": ["amazon-us"], "supported_languages": ["en", "zh"],
+            "supported_data_types": ["marketplace_products"], "auth_required": True,
+            "rate_limit_per_minute": 20, "compliance_note": "",
+            "config_json": {"provider_strategy": "sorftime", "api_key": ""},
+        }],
     }
     defaults["search_providers"] = [deepcopy(item) for item in defaults["source_registry"]]
     defaults["target_markets"] = [
@@ -189,7 +174,7 @@ def _normalize_product_research_source(source: Any, fallback: dict[str, Any] | N
         source_type = "manual_import"
     source_id = str(raw.get("id") or defaults.get("id") or "").strip()
     if source_id in _RETIRED_AI_SEARCH_METHOD_IDS:
-        raise ValueError(f"选品搜索方法 {source_id} 已退役，请改用 {DEFAULT_AI_SEARCH_METHOD_ID}")
+        raise ValueError(f"选品搜索方法 {source_id} 已退役，请改用 {DEFAULT_SEARCH_METHOD_ID}")
     platform = str(raw.get("platform") or defaults.get("platform") or source_id or "manual_import").strip().lower()
     if not source_id:
         source_id = platform
@@ -202,15 +187,6 @@ def _normalize_product_research_source(source: Any, fallback: dict[str, Any] | N
     )
     if str(config_json.get("provider_strategy") or "").strip() == "seeded_mock":
         raise ValueError("provider_strategy=seeded_mock 已退役")
-    if source_type == "ai_search":
-        config_json.pop("prompt", None)
-        # 模型由 research.web_search 功能绑定统一决定，不能由数据源覆盖。
-        config_json = {
-            "provider_strategy": "ai_web_search",
-            "max_items": 12,
-            "require_image_url": True,
-            **config_json,
-        }
     rate_limit_raw = raw.get("rate_limit_per_minute", defaults.get("rate_limit_per_minute"))
     rate_limit_per_minute = None if rate_limit_raw is None or str(rate_limit_raw).strip() == "" else _int_value(rate_limit_raw, 0, 0)
     return {
@@ -278,7 +254,7 @@ def _normalize_target_market(market: Any, fallback: dict[str, Any] | None = None
     if not isinstance(search_methods_raw, list):
         search_methods_raw = defaults.get("search_methods")
     if not isinstance(search_methods_raw, list):
-        search_methods_raw = _default_market_search_methods()
+        search_methods_raw = _default_market_search_methods() if platform == "amazon" and site == "amazon.com" else []
     normalized["search_methods"] = [
         _normalize_market_search_method_binding(item, normalized)
         for item in search_methods_raw
@@ -296,7 +272,7 @@ def _normalize_market_search_method_binding(value: Any, market: dict[str, Any]) 
     )
     method_id = str(raw.get("method_id") or raw.get("id") or "").strip()
     if method_id in _RETIRED_AI_SEARCH_METHOD_IDS:
-        raise ValueError(f"选品搜索方法 {method_id} 已退役，请改用 {DEFAULT_AI_SEARCH_METHOD_ID}")
+        raise ValueError(f"选品搜索方法 {method_id} 已退役，请改用 {DEFAULT_SEARCH_METHOD_ID}")
     config_json = raw.get("config_json")
     if not isinstance(config_json, dict):
         config_json = {}
@@ -308,7 +284,7 @@ def _normalize_market_search_method_binding(value: Any, market: dict[str, Any]) 
     )
     prompt = str(raw.get("prompt") or config_json.get("prompt") or "").strip()
     config_json.pop("prompt", None)
-    # 搜索方法绑定仅保留市场级参数，模型仍由 research.web_search 功能绑定选择。
+    # 旧提示词仍可读取；新 API 查询不使用提示词。
     return {
         "method_id": method_id,
         "enabled": _bool_value(raw.get("enabled"), True),
@@ -365,6 +341,11 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
         )
     )
     search_providers = [item for item in search_providers if item.get("id") and _source_strategy(item) != "seeded_mock"]
+    retired_ids = {item["id"] for item in search_providers
+                   if item.get("source_type") == "ai_search" or _source_strategy(item) == "ai_web_search"}
+    search_providers = [item for item in search_providers if item["id"] not in retired_ids]
+    if not any(_source_strategy(item) == "sorftime" for item in search_providers):
+        search_providers.append(deepcopy(default_sources[0]))
     source_registry = [deepcopy(item) for item in search_providers]
     source_registry = [item for item in source_registry if item.get("id")]
 
@@ -389,6 +370,9 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
     method_ids = {str(item.get("id") or "").strip() for item in search_providers}
     for target in target_markets:
         search_methods = target.get("search_methods") if isinstance(target.get("search_methods"), list) else []
+        for binding in search_methods:
+            if binding.get("method_id") in retired_ids and target.get("site") == "amazon.com":
+                binding.update(method_id=DEFAULT_SEARCH_METHOD_ID, prompt="", config_json={})
         target["search_methods"] = [
             item for item in search_methods
             if str(item.get("method_id") or "").strip() in method_ids

@@ -305,7 +305,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/v1/ai-chat/cancel": _contract(
         fields={"id": STRING, "message_id": STRING}, required=("id", "message_id"),
     ),
-    "/api/v1/product-research/hot-products/search": _EMPTY,
+    "/api/v1/product-research/hot-products/search": _contract(required=("keywords",)),
+    "/api/v1/product-research/suppliers/search": _contract(required=("run_id", "candidate_id")),
+    "/api/v1/product-research/suppliers/import": _contract(required=("run_id", "candidate_id", "supplier_id", "confirmed")),
     "/api/v1/product-research/search-providers/test": _contract(required=("provider",)),
     "/api/v1/product-research/source-registry/save": _EMPTY,
 }

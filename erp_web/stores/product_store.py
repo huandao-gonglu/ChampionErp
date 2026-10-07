@@ -813,6 +813,20 @@ class ProductStore:
         return default_product_model()
 
     @product_mutation("product")
+    def import_research_product(self, data: dict[str, Any]) -> dict[str, Any]:
+        """确认入库只创建新商品；重复操作返回现有商品，不覆盖人工修改。"""
+        product_id = str(data.get("product_id") or "")
+        if not product_id:
+            raise ValueError("选品入库缺少稳定商品编号。")
+        existing = self._db.load_product_model(product_id)
+        if existing:
+            return normalize_persisted_product_fields(existing)
+        existing = self.collection_product(str((data.get("source") or {}).get("source_url") or ""))
+        if existing.get("product_id"):
+            return existing
+        return self.save_product(data)
+
+    @product_mutation("product")
     def save_product_profile(self, data: dict[str, Any]) -> dict[str, Any]:
         product_data = dict(data or {})
         product_data.pop("drafts", None)

@@ -89,9 +89,6 @@
     },
     "text.translate": {
       "path": "config/prompts/text_translate.json"
-    },
-    "research.web_search": {
-      "path": "config/prompts/ai_example.json"
     }
   },
   "pricing_defaults": {
@@ -105,5 +102,34 @@
     "exchange_rate_api_url": "https://open.er-api.com/v6/latest/USD",
     "exchange_rate_timeout_seconds": "10",
     "exchange_rate_cache_ttl_seconds": "3600"
+  },
+  "product_research": {
+    "search_providers": [
+      {
+        "id": "sorftime",
+        "name": "Sorftime",
+        "source_type": "api",
+        "platform": "sorftime",
+        "enabled": true,
+        "priority": 1,
+        "supported_markets": [
+          "amazon-us"
+        ],
+        "supported_languages": [
+          "en",
+          "zh"
+        ],
+        "supported_data_types": [
+          "marketplace_products"
+        ],
+        "auth_required": true,
+        "rate_limit_per_minute": 20,
+        "compliance_note": "",
+        "config_json": {
+          "provider_strategy": "sorftime",
+          "api_key": ""
+        }
+      }
+    ]
   }
 }

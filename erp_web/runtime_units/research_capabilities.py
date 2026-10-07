@@ -59,7 +59,7 @@ _ACTIVE_JOB_STATUSES = frozenset({"queued", "pending", "running", "retrying"})
 @ai_tool(
     name=RESEARCH_HOT_PRODUCTS_SEARCH_TOOL,
     description=(
-        "创建热销商品研究任务（后台异步执行多源检索）；返回通用 Job 引用，"
+        "使用 Sorftime 查询 Amazon US 商品（必填英文商品关键词，预计消耗 2 个额度）；返回通用 Job 引用，"
         "由任务系统跟踪运行终态，运行完成前步骤不会标记完成。"
     ),
     permission="research.write",
@@ -77,7 +77,7 @@ def research_hot_products_search(
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> JobReferenceResult:
     del execution
-    body: dict[str, Any] = {}
+    body: dict[str, Any] = {"keywords": [request.keyword]}
     if request.target_markets:
         body["markets"] = {"target_markets": list(request.target_markets)}
     if request.limit > 0:
@@ -116,7 +116,7 @@ def research_hot_products_search(
         status=status if status in _ACTIVE_JOB_STATUSES else "running",
         summary=(
             _text(result.get("description"))
-            or "选品研究运行已创建，后台正在执行多源检索。"
+            or "选品研究运行已创建，后台正在查询商品数据。"
         ),
     )
 

@@ -1,5 +1,7 @@
-import { apiClient, type AiPresentationTransport } from '@/api/client'
+import { apiClient } from '@/api/client'
 import type {
+  BackendProductResearchSupplierSearchResponse,
+  BackendProductResearchSupplierImportResponse,
   HotProductCandidate,
   ProductResearchConfig,
   ProductResearchMarketSearchMethodBinding,
@@ -40,11 +42,14 @@ function normalizeHotProductCandidate(value: unknown): HotProductCandidate {
           currency: getString(priceRecord, ['currency']),
         }
       : undefined,
-    rating: getNumber(record, ['rating']),
-    reviewCount: getNumber(record, ['review_count']),
+    rating: record.rating == null ? null : getNumber(record, ['rating']),
+    reviewCount: record.review_count == null ? null : getNumber(record, ['review_count']),
     hotScore: getNumber(record, ['hot_score']),
     sourceName: getString(record, ['source_name']),
     collectedAt: getString(record, ['collected_at']),
+    monthlySales: record.monthly_sales == null ? null : getNumber(record, ['monthly_sales']),
+    asin: getString(record, ['asin']),
+    importedProductId: getString(record, ['imported_product_id']),
     raw: record,
   }
 }
@@ -98,11 +103,8 @@ function normalizeProductResearchResponse(value: unknown): ProductResearchRespon
 
 export async function createProductResearchHotProductRun(
   payload: UnknownRecord,
-  presentation: AiPresentationTransport = {},
 ): Promise<ProductResearchResponse> {
-  const response = await apiClient.post('/api/v1/product-research/hot-products/search', payload, {
-    aiPresentationId: presentation.presentationId,
-  })
+  const response = await apiClient.post('/api/v1/product-research/hot-products/search', payload)
   return normalizeProductResearchResponse(response.data)
 }
 
@@ -300,16 +302,36 @@ function normalizeProductResearchProviderTestResult(value: unknown): ProductRese
 export async function testProductResearchSearchProvider(
   provider: ProductResearchSourceRegistryItem,
   options: UnknownRecord,
-  presentation: AiPresentationTransport = {},
 ): Promise<ProductResearchProviderTestResult> {
   const response = await apiClient.post('/api/v1/product-research/search-providers/test', {
     provider: toProductResearchProviderPayload(provider),
     options,
-  }, { aiPresentationId: presentation.presentationId })
+  })
   return normalizeProductResearchProviderTestResult(response.data)
 }
 
 export async function fetchProductResearchSourceRegistry(): Promise<ProductResearchSourceRegistryItem[]> {
   const config = await fetchProductResearchSettings()
   return config.sourceRegistry
+}
+
+export async function searchProductResearchSuppliers(payload: UnknownRecord): Promise<BackendProductResearchSupplierSearchResponse> {
+  const response = await apiClient.post('/api/v1/product-research/suppliers/search', payload)
+  const data = asRecord(response.data)
+  ensureOk(data, '查找货源失败')
+  return data as unknown as BackendProductResearchSupplierSearchResponse
+}
+
+export async function importProductResearchSupplier(payload: UnknownRecord): Promise<BackendProductResearchSupplierImportResponse> {
+  const response = await apiClient.post('/api/v1/product-research/suppliers/import', payload)
+  const data = asRecord(response.data)
+  ensureOk(data, '采集入库失败')
+  return data as unknown as BackendProductResearchSupplierImportResponse
+}
+
+export async function fetchLatestProductResearchHotProductRun(): Promise<ProductResearchResponse | null> {
+  const response = await apiClient.get('/api/v1/product-research/hot-products/runs?latest=1')
+  const data = asRecord(response.data)
+  ensureOk(data, '读取最近调研失败')
+  return data.run ? normalizeProductResearchResponse(data) : null
 }

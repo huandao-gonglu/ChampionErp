@@ -45,12 +45,28 @@ def handle_get_hot_product_run(handler: JsonRequestHandler, parsed: object) -> N
     run_id = (query.get("run_id") or query.get("runId") or [""])[0]
     if run_id:
         result, status = product_research_facade.get_hot_product_run_payload(run_id)
+    elif query.get("latest") == ["1"]:
+        result, status = product_research_facade.get_latest_hot_product_run_payload()
     else:
         result, status = product_research_facade.get_active_hot_product_run_payload()
     handler.send_json(result, status)
 
 
+def handle_search_suppliers(handler: JsonRequestHandler) -> None:
+    result, status = product_research_facade.search_suppliers_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
+def handle_import_supplier(handler: JsonRequestHandler) -> None:
+    result, status = product_research_facade.import_supplier_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
 POST_HANDLERS: dict[str, PostHandler] = {
+    "/api/v1/product-research/suppliers/search": handle_search_suppliers,
+    "/api/v1/product-research/suppliers/import": handle_import_supplier,
     "/api/v1/product-research/hot-products/search": handle_create_hot_product_run,
     "/api/v1/product-research/source-registry/save": handle_save_source_registry,
     "/api/v1/product-research/search-providers/test": handle_test_search_provider,

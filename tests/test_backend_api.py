@@ -294,6 +294,7 @@ def test_product_research_hot_product_api_returns_candidates(backend_server: str
         "/api/v1/product-research/hot-products/search",
         {
             "search_mode": "target_only",
+            "keywords": ["kitchen organizer"],
             "markets": {
                 "target_markets": ["amazon-us"],
                 "reference_markets": [],
@@ -332,45 +333,11 @@ def test_product_research_hot_product_api_returns_candidates(backend_server: str
         assert any(row["status"] in {"failed", "configuration_required", "empty"} for row in data["source_status"])
 
 
-def test_product_research_search_provider_test_api(backend_server: str) -> None:
+def test_product_research_search_provider_requires_authorization(backend_server: str) -> None:
     data = post_json(
-        backend_server,
-        "/api/v1/product-research/search-providers/test",
-        {
-            "provider": {
-                "id": "manual_test_import",
-                "name": "Manual Test Import",
-                "source_type": "manual_import",
-                "platform": "manual_import",
-                "enabled": True,
-                "priority": 1,
-                "supported_markets": ["US"],
-                "supported_languages": ["en"],
-                "supported_data_types": ["marketplace_products"],
-                "auth_required": False,
-                "config_json": {
-                    "provider_strategy": "manual_import",
-                    "items": [
-                        {
-                            "title": "Mahjong gift lamp",
-                            "source_url": "https://example.com/mahjong-lamp",
-                            "keyword": "mahjong gift",
-                            "market": "US",
-                        }
-                    ],
-                },
-            },
-            "options": {
-                "market": "US",
-                "language": "en",
-                "keyword": "mahjong gift",
-                "data_type": "marketplace_products",
-            },
-        },
+        backend_server, "/api/v1/product-research/search-providers/test",
+        {"provider": {"id": "sorftime", "config_json": {"provider_strategy": "sorftime", "api_key": ""}}},
+        expected_status=400,
     )
-
-    assert data["ok"] is True
-    assert data["status"] == "success"
-    assert data["items_found"] == 1
-    assert data["sample"]["keyword"] == "mahjong gift"
-    assert data["sample"]["source_url"] == "https://example.com/mahjong-lamp"
+    assert data["ok"] is False
+    assert "Account-SK" in data["error"]

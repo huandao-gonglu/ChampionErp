@@ -65,13 +65,11 @@ describe('选品 API 当前 wire schema', () => {
 
     const result = await createProductResearchHotProductRun(
       {},
-      { presentationId: 'presentation-research' },
     )
 
     expect(apiClient.post).toHaveBeenCalledWith(
       '/api/v1/product-research/hot-products/search',
       {},
-      { aiPresentationId: 'presentation-research' },
     )
 
     expect(result.run).toEqual(expect.objectContaining({
@@ -222,11 +220,11 @@ describe('选品 API 当前 wire schema', () => {
     expect(config.sourceRegistry).toEqual([])
   })
 
-  it('将 AI 搜索 Provider 测试关联到当前 presentation', async () => {
+  it('使用普通 API 验证 Sorftime 数据源', async () => {
     const provider: ProductResearchSourceRegistryItem = {
-      id: 'ai-web-search',
-      name: 'AI 联网搜索',
-      sourceType: 'ai',
+      id: 'sorftime',
+      name: 'Sorftime',
+      sourceType: 'api',
       platform: 'amazon',
       enabled: true,
       priority: 1,
@@ -236,7 +234,7 @@ describe('选品 API 当前 wire schema', () => {
       authRequired: false,
       rateLimitPerMinute: 10,
       complianceNote: '',
-      providerStrategy: 'ai_web_search',
+      providerStrategy: 'sorftime',
       configJson: {},
       raw: {},
     }
@@ -257,7 +255,6 @@ describe('选品 API 当前 wire schema', () => {
     const result = await testProductResearchSearchProvider(
       provider,
       { market: 'amazon-us', keyword: 'mahjong gift' },
-      { presentationId: 'presentation-provider-test' },
     )
 
     expect(result.ok).toBe(true)
@@ -267,7 +264,6 @@ describe('选品 API 当前 wire schema', () => {
         provider: expect.objectContaining({ id: provider.id }),
         options: { market: 'amazon-us', keyword: 'mahjong gift' },
       }),
-      { aiPresentationId: 'presentation-provider-test' },
     )
   })
 })

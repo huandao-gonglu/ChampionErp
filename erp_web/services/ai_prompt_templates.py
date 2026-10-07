@@ -34,9 +34,6 @@ DEFAULT_AI_USE_CASE_PROMPTS: dict[str, dict[str, str]] = {
     "text.translate": {
         "path": "config/prompts/text_translate.json",
     },
-    "research.web_search": {
-        "path": "config/prompts/ai_example.json",
-    },
 }
 
 

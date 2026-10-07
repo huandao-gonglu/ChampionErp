@@ -12,6 +12,52 @@ class ProductResearchPrice(TypedDict, total=False):
     currency: str
 
 
+class SorftimeQuotaReceipt(TypedDict):
+    endpoint: str
+    domain: int
+    request_consumed: float | None
+    request_left: float | None
+
+
+class ProductResearchSupplier(TypedDict):
+    product_id: str
+    title: str
+    source_url: str
+    image_url: str
+    price_cny: float | None
+    store_name: str
+    service_score: float | None
+    monthly_sales: float | None
+    min_order_quantity: float | None
+    repurchase_rate: float | None
+    collected_at: str
+
+
+class ProductResearchSourcingQuery(TypedDict):
+    mode: Literal["keyword", "image"]
+    keyword: str
+
+
+class ProductResearchSourcing(TypedDict, total=False):
+    query: ProductResearchSourcingQuery
+    status: str
+    items: list[ProductResearchSupplier]
+    quota_receipts: list[SorftimeQuotaReceipt]
+
+
+class ProductResearchSupplierSearchResponse(TypedDict):
+    ok: bool
+    sourcing: ProductResearchSourcing
+    cached: bool
+
+
+class ProductResearchSupplierImportResponse(TypedDict):
+    ok: bool
+    product_id: str
+    already_imported: bool
+    quota_receipts: list[SorftimeQuotaReceipt]
+
+
 class HotProductCandidate(TypedDict, total=False):
     id: str
     title: str
@@ -23,11 +69,17 @@ class HotProductCandidate(TypedDict, total=False):
     site: str
     keyword: str
     price: ProductResearchPrice
-    rating: float
-    review_count: int
+    rating: float | None
+    review_count: int | None
     hot_score: float
     source_name: str
     collected_at: str
+    asin: str
+    monthly_sales: float | None
+    data_updated_at: str
+    sourcing: ProductResearchSourcing
+    imported_product_id: str
+    import_quota_receipts: list[SorftimeQuotaReceipt]
 
 
 class ProductResearchDataSource(TypedDict, total=False):
@@ -87,6 +139,7 @@ class ProductResearchSourceStatus(TypedDict, total=False):
     raw_items_found: int
     items_filtered: int
     diagnostic_message: str
+    quota_receipts: list[SorftimeQuotaReceipt]
     ai_model_id: str
     api_style: str
     stream_enabled: bool
@@ -107,6 +160,12 @@ class ProductResearchRun(TypedDict, total=False):
 
 
 __all__ = [
+    "SorftimeQuotaReceipt",
+    "ProductResearchSupplier",
+    "ProductResearchSourcingQuery",
+    "ProductResearchSourcing",
+    "ProductResearchSupplierSearchResponse",
+    "ProductResearchSupplierImportResponse",
     "HotProductCandidate",
     "ProductResearchConfig",
     "ProductResearchDataSource",

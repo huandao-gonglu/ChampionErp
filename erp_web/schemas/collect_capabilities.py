@@ -169,6 +169,8 @@ class ClaimProductsResult(BaseModel):
 class ResearchHotProductsSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    keyword: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=200)]
+
     target_markets: tuple[str, ...] = ()
     limit: int = Field(default=0, ge=0, le=500)
 
