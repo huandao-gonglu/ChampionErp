@@ -182,7 +182,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/crossborderbus/delete-rule": _contract(fields={"id": STRING}, required=("id",)),
     "/api/orders/fulfillment/upload-label": _contract(fields={"order_id": STRING, "revision": FieldRule("integer", minimum=0), "content_base64": STRING}, required=("order_id", "revision", "content_base64")),
     "/api/orders/fulfillment/fetch-label": _contract(fields={"order_id": STRING, "revision": FieldRule("integer", minimum=0)}, required=("order_id", "revision")),
-    **{f"/api/orders/fulfillment/{action}": _contract(fields={"order_id": STRING, "revision": FieldRule("integer", minimum=0), "plan": OBJECT, "parcels": ARRAY, "label": OBJECT}, required=("order_id", "revision")) for action in ("label", "parcels", "plan", "pause", "resume", "submit", "sync", "retry", "cancel")},
+    **{f"/api/orders/fulfillment/{action}": _contract(fields={"order_id": STRING, "revision": FieldRule("integer", minimum=0), "plan": OBJECT, "handover_key": STRING, "warehouse_link_revision": FieldRule("integer", minimum=0), "confirm_warehouse": BOOLEAN, "parcels": ARRAY, "label": OBJECT}, required=("order_id", "revision")) for action in ("label", "parcels", "plan", "pause", "resume", "submit", "sync", "retry", "cancel")},
     "/api/image-hosting/save": _contract(fields={"profile": OBJECT}, required=("profile",)),
     "/api/image-hosting/test": _contract(fields={"profile": OBJECT}, required=("profile",)),
     "/api/image-hosting/default": _contract(fields={"id": STRING}),

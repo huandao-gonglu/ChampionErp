@@ -74,6 +74,9 @@ export interface FulfillmentSummary {
   label_error: string
 }
 export interface FulfillmentDetail extends FulfillmentSummary {
+  handover_target?: { key: string; warehouse_id: string; name: string; address: string; shipment_type: string; reason: string }
+  warehouse_link?: { section_id: number; warehouse_id: number; revision: number } | null
+  selected_services?: BusService[]
   erp_order_id: string
   revision: number
   editing: boolean

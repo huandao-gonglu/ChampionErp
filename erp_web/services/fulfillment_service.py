@@ -8,7 +8,8 @@ import time
 from collections import Counter
 
 from erp_web.schemas.fulfillment import FulfillmentCommand, FulfillmentError, FulfillmentRule, FulfillmentView, LabelInput
-from erp_web.schemas.orders import OrderView, utc_iso
+from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
+from erp_web.services.fulfillment_routing import handover_target, is_yandex_section, validate_services
 from erp_web.services.external_request_context import request_operation
 
 logger = logging.getLogger(__name__)
@@ -44,23 +45,34 @@ class FulfillmentService:
                      and r["platform_warehouse_id"] == d.warehouse_id and r["delivery_method_id"] == d.method_id
                      and r["country"] == country and r["confirmed"]), None)
 
-    def plan_for(self, value, rule):
-        return value["plan"] if value["override"] or value["crossborderbus_order_id"] else ({k: rule[k] for k in ("section_id", "warehouse_id", "service_ids")} if rule else None)
+    def plan_for(self, value, rule, order=None):
+        if value["override"] or value["crossborderbus_order_id"]:
+            return value["plan"]
+        if order is not None and order.platform == "yandex":
+            target = handover_target(order, self.client.identity())
+            link = self.store.warehouse_link(target["key"]) if target["key"] else None
+            return {"section_id": link["section_id"], "warehouse_id": link["warehouse_id"], "service_ids": []} if link else None
+        return {k: rule[k] for k in ("section_id", "warehouse_id", "service_ids")} if rule else None
 
-    def validate_plan(self, plan, rule, *, refresh=False):
-        if not rule or not plan or plan["section_id"] != rule["section_id"] or plan["warehouse_id"] not in rule["compatible_warehouse_ids"]:
+    def validate_plan(self, plan, rule, *, refresh=False, order=None, binding=False):
+        if not plan:
+            raise FulfillmentError("请选择本单报单仓库和服务")
+        if order is not None and order.platform == "yandex":
+            target = handover_target(order, self.client.identity())
+            if target["reason"]:
+                raise FulfillmentError(target["reason"])
+            link = self.store.warehouse_link(target["key"])
+            if not binding and (not link or any(plan[k] != link[k] for k in ("section_id", "warehouse_id"))):
+                raise FulfillmentError("请确认 Yandex 交货仓库与跨境巴士仓库的对应关系")
+        elif not rule or plan["section_id"] != rule["section_id"] or plan["warehouse_id"] not in rule["compatible_warehouse_ids"]:
             raise FulfillmentError("尚无可承接此订单配送方式的合作方案，请配置默认履约。")
         catalog = self.client.catalog() if refresh else self.store.setting("catalog", {})
-        section = next((s for s in catalog.get("sections", []) if s["section_id"] == plan["section_id"]), None)
+        section = next((item for item in catalog.get("sections", []) if item["section_id"] == plan["section_id"]), None)
         if catalog.get("identity") != self.client.identity() or not section or not any(w["id"] == plan["warehouse_id"] for w in section.get("storehouse_list", [])):
             raise FulfillmentError("所选渠道或仓库不在当前账号的合作范围内。")
-        if refresh:
-            services = self.client.services(plan["section_id"], plan["warehouse_id"])
-            required = {s["id"] for s in services["core_data"]}
-            available = required | {s["id"] for s in services["optional_data"]}
-            selected = set(plan["service_ids"])
-            if not required <= selected or not selected <= available:
-                raise FulfillmentError("增值服务已变化，请重新选择并保留所有必选服务。")
+        if order is not None and order.platform == "yandex" and not is_yandex_section(section):
+            raise FulfillmentError("请选择跨境巴士中已合作的 Yandex 仓库")
+        return validate_services(plan, self.client.services(plan["section_id"], plan["warehouse_id"])) if refresh else []
 
     def parcels_payload(self, parcels, detail, *, complete=False):
         counts, purchases, seen, result = Counter(), Counter(), set(), []
@@ -92,12 +104,12 @@ class FulfillmentService:
             return "平台仓履约订单不进入跨境巴士预报。"
         if not self.client.identity():
             return "请先在授权配置中完成跨境巴士账号授权。"
-        if not order.delivery.warehouse_id or not order.delivery.method_id:
+        if order.platform != "yandex" and (not order.delivery.warehouse_id or not order.delivery.method_id):
             return "平台尚未提供实际仓库或配送方式，请同步订单。"
-        if not value["country"] and not order.delivery.country:
-            return "平台未提供目的国，请核对后补充目的国。"
         try:
-            self.validate_plan(plan, rule)
+            self.validate_plan(plan, rule, order=order)
+            if order.platform == "yandex" and (not value["override"] or value.get("handover_key") != handover_target(order, self.client.identity())["key"]):
+                return "请按当前交货地址选择并保存本单仓库服务"
             if require_label and (not value["platform_label"] or not value["platform_tracking_number"]):
                 return value.get("label_error") or "等待平台面单，请获取平台面单或人工补充面单资料。"
             self.parcels_payload(value["parcels"], detail, complete=True)
@@ -110,13 +122,15 @@ class FulfillmentService:
         value = self.store.ensure(order)
         country = value["country"] or order.delivery.country
         rule = self.rule_for(order, country)
-        plan = self.plan_for(value, rule)
+        plan = self.plan_for(value, rule, order)
         catalog = self.store.setting("catalog", {})
         section = next((s for s in catalog.get("sections", []) if s["section_id"] == (plan or {}).get("section_id")), None)
         warehouse = next((w for w in (section or {}).get("storehouse_list", []) if w["id"] == (plan or {}).get("warehouse_id")), None)
+        target = handover_target(order, self.client.identity())
+        link = self.store.warehouse_link(target["key"]) if target["key"] else None
         label_reason = self.label_provider.unsupported_reason(order) if self.label_provider else "当前平台尚未接入面单获取。"
         response = {"ok": True, **value, "delivery": order.delivery.model_dump(), "country": country,
-                "plan": plan, "rule": rule, "section_name": (section or {}).get("section_name", ""), "warehouse_name": (warehouse or {}).get("name", ""),
+                "plan": plan, "rule": rule, "handover_target": target, "warehouse_link": link, "section_name": (section or {}).get("section_name", ""), "warehouse_name": (warehouse or {}).get("name", ""),
                 "blocked_reason": self.readiness(order, detail, value, rule, plan),
                 "label_fetch_supported": not label_reason, "label_fetch_reason": label_reason,
                 "editable": not value["busy"] and not value["create_unknown"] and value["fulfillment_status"] not in LOCKED_STATES and not value["cancel_requested"] and not value.get("warehouse_locked") and (not value["bus_identity"] or value["bus_identity"] == self.client.identity()),
@@ -194,6 +208,7 @@ class FulfillmentService:
             raise FulfillmentError("当前订单身份已变化，请重新同步并核对原履约单。")
         current = self.detail(request.order_id)
         changes = {}
+        guard = None
         if action == "cancel":
             changes = {"cancel_requested": True, "editing_until": 0, "next_attempt": 0, "error_message": ""}
         elif action in {"retry", "submit"}:
@@ -221,8 +236,25 @@ class FulfillmentService:
                 if not current["plan_editable"] or request.plan is None:
                     raise FulfillmentError("仅报单前可以修改本单方案。")
                 plan = request.plan.model_dump()
-                self.validate_plan(plan, current["rule"], refresh=True)
-                changes = {"plan": plan, "override": True, "editing_until": 0}
+                identity = self.client.identity()
+                target = handover_target(order, identity)
+                link = self.store.warehouse_link(target["key"]) if target["key"] else None
+                if order.platform == "yandex":
+                    if request.handover_key != target["key"] or not target["key"]:
+                        raise FulfillmentError(target["reason"] or "交货地址已变化，请重新打开报单方案")
+                    if (not link or any(plan[k] != link[k] for k in ("section_id", "warehouse_id"))) and not request.confirm_warehouse:
+                        raise FulfillmentError("请核对交货地址并确认仓库对应关系")
+                selected = self.validate_plan(plan, current["rule"], refresh=True, order=order, binding=request.confirm_warehouse)
+                changes = {"plan": plan, "override": True, "editing_until": 0, "manual_submit": False,
+                           "selected_services": selected, "handover_key": target["key"]}
+                if order.platform == "yandex":
+                    def guard(conn):
+                        row = conn.execute("SELECT snapshot FROM orders WHERE id=?", (request.order_id,)).fetchone()
+                        latest = OrderSnapshot.model_validate_json(row[0]) if row else None
+                        if (latest is None or self.accounts_provider().get(order.platform) != order.account_id
+                                or self.client.identity() != identity or handover_target(latest, identity)["key"] != request.handover_key):
+                            raise FulfillmentError("订单交货地址或账号已变化，请重新确认仓库")
+                        self.store.bind_warehouse(conn, target["key"], plan, request.warehouse_link_revision)
             elif action == "parcels":
                 if request.parcels is None:
                     raise FulfillmentError("请提供完整国内包裹列表。")
@@ -244,7 +276,6 @@ class FulfillmentService:
             changes.update(error_message="", next_attempt=0)
             if value["crossborderbus_order_id"]:
                 changes["update_pending"] = True
-        guard = None
         if action == "parcels" and self.purchase_progress is not None:
             guard = lambda conn: self.purchase_progress.resolve(conn, request.order_id, changes["parcels"], self.accounts_provider())
         self.store.change(request.order_id, request.revision, changes, allow_busy=action == "cancel", guard=guard)
@@ -337,15 +368,15 @@ class FulfillmentService:
                 label = LabelInput(url=order.delivery.label_url, tracking_number=order.delivery.tracking_number)
                 value = self.store.change(value["erp_order_id"], value["revision"], {"platform_label": label.url, "platform_tracking_number": label.tracking_number})
             rule = self.rule_for(order, value["country"] or order.delivery.country)
-            plan = self.plan_for(value, rule)
+            plan = self.plan_for(value, rule, order)
             if (self.label_provider and not self.label_provider.unsupported_reason(order)
                     and not value["platform_label"] and not value.get("label_error")
-                    and rule and rule["auto_submit"]
+                    and ((rule and rule["auto_submit"]) or value.get("manual_submit"))
                     and not self.readiness(order, detail, value, rule, plan, require_label=False)):
                 self.fetch_label(value["erp_order_id"], value["revision"])
                 # 下一轮读取已持久化的面单，再独立领取创建占位。
                 return True
-            if not rule or not (rule["auto_submit"] or value.get("manual_submit")) or self.readiness(order, detail, value, rule, plan):
+            if not ((rule and rule["auto_submit"]) or value.get("manual_submit")) or self.readiness(order, detail, value, rule, plan):
                 return False
             value = self.store.change(value["erp_order_id"], value["revision"], {"plan": plan, "country": value["country"] or order.delivery.country, "bus_identity": self.client.identity()})
             action = "create"
@@ -367,10 +398,14 @@ class FulfillmentService:
                 if self.accounts_provider().get(order.platform) != order.account_id:
                     raise FulfillmentError("店铺授权账号已切换，本次预报停止。")
                 rule = self.rule_for(order, value["country"])
-                self.validate_plan(value["plan"], rule, refresh=True)
-                if self.readiness(order, detail, value, rule, value["plan"]):
+                self.validate_plan(value["plan"], rule, refresh=True, order=order)
+                # 合作仓和服务读取期间可能同步了新地址或取消订单，发送前再次读取。
+                order, detail = self.order_detail(value["erp_order_id"])
+                fresh = self.store.get(value["erp_order_id"])
+                if (fresh["revision"] != value["revision"] or self.accounts_provider().get(order.platform) != order.account_id
+                        or self.readiness(order, detail, value, rule, value["plan"])):
                     raise FulfillmentError("提交前订单或资料已变化，预报已停止。")
-                data = self.client.request("/erpapi/order/createOrder", {"sid": value["plan"]["warehouse_id"], "section_id": value["plan"]["section_id"], "data_status": 1, "is_check_section_order": 1, "order_data": [{"order_number": value["order_number"], "country": value["country"], "sheet": value["platform_label"], "sheet_order_sn": value["platform_tracking_number"], "introduce": f'{order.platform} / {order.order_id}', "add_service": [{"id": i} for i in value["plan"]["service_ids"]], "package_list": self.parcels_payload(value["parcels"], detail, complete=True)}]}, expected_identity=value["bus_identity"]).get("data")
+                data = self.client.request("/erpapi/order/createOrder", {"sid": value["plan"]["warehouse_id"], "section_id": value["plan"]["section_id"], "data_status": 1, "is_check_section_order": 1, "order_data": [{"order_number": value["order_number"], **({"country": value["country"]} if value["country"] else {}), "sheet": value["platform_label"], "sheet_order_sn": value["platform_tracking_number"], "introduce": f'{order.platform} / {order.order_id}', "add_service": [{"id": i} for i in value["plan"]["service_ids"]], "package_list": self.parcels_payload(value["parcels"], detail, complete=True)}]}, expected_identity=value["bus_identity"]).get("data")
                 if not isinstance(data, list) or len(data) != 1 or data[0].get("order_number") != value["order_number"] or not isinstance(data[0].get("order_id"), int):
                     raise FulfillmentError("创建回执缺少唯一订单 ID，请核实远端结果。", unknown=True)
                 changes = {"crossborderbus_order_id": data[0]["order_id"], "create_unknown": False, "fulfillment_status": "FULFILLMENT_CREATED"}

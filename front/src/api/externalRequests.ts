@@ -9,6 +9,9 @@ export interface RequestBlock {
   message: string
   http_status: number
   created_at: number
+  last_created_at: number
+  count: number
+  occurrences: { id: string; created_at: number; blocked_count: number }[]
   blocked_count: number
   resume_at: number
   recovery_mode: 'probe' | 'confirm' | 'confirm_request' | 'waiting' | 'verify_result'

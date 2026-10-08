@@ -136,10 +136,28 @@ class LabelInput(FulfillmentInput):
         return value
 
 
+class HandoverTarget(BaseModel):
+    key: str = ""
+    warehouse_id: str = ""
+    name: str = ""
+    address: str = ""
+    shipment_type: str = ""
+    reason: str = ""
+
+
+class WarehouseLink(BaseModel):
+    section_id: int
+    warehouse_id: int
+    revision: int
+
+
 class FulfillmentCommand(FulfillmentInput):
     order_id: str = Field(min_length=1, max_length=500)
     revision: int = Field(ge=0)
     plan: FulfillmentPlan | None = None
+    handover_key: str = ""
+    warehouse_link_revision: int = Field(default=0, ge=0)
+    confirm_warehouse: bool = False
     parcels: list[DomesticParcel] | None = None
     label: LabelInput | None = None
     country: str = Field(default="", pattern=r"^$|^[A-Z]{2}$")
@@ -217,6 +235,9 @@ class FulfillmentView(BaseModel):
     section_name: str
     warehouse_name: str
     delivery: DeliverySource
+    handover_target: HandoverTarget = Field(default_factory=HandoverTarget)
+    warehouse_link: WarehouseLink | None = None
+    selected_services: list[BusService] = Field(default_factory=list)
     parcels: list[DomesticParcel]
     has_domestic_waybill: bool = False
     update_pending: bool = False

@@ -34,7 +34,7 @@ class Bus:
         return {}
 
     def catalog(self):
-        result = {"identity": self.account, "sections": [{"section_id": 1, "section_name": "合作渠道", "storehouse_list": [{"id": 10, "name": "A仓"}, {"id": 20, "name": "B仓"}]}]}
+        result = {"identity": self.account, "sections": [{"section_id": 1, "section_name": "Yandex", "storehouse_list": [{"id": 10, "name": "A仓"}, {"id": 20, "name": "B仓"}]}]}
         self.store.set_setting("catalog", result)
         return result
 
@@ -65,7 +65,7 @@ class Bus:
 def domain(tmp_path):
     orders = OrderNotificationStore(tmp_path / "orders.sqlite3")
     line = OrderLine(sku="SKU-1", remote_id="SKU-1", title="手机支架", quantity=2)
-    order = OrderSnapshot(platform="yandex", account_id="4", order_id="123", fulfillment="FBS", status="PROCESSING", state="pending_shipment", items=[line], delivery={"warehouse_id": "platform-warehouse", "method_id": "method-1", "method_name": "平台配送", "country": "RU"})
+    order = OrderSnapshot(platform="yandex", account_id="4", order_id="123", fulfillment="FBS", status="PROCESSING", state="pending_shipment", items=[line], delivery={"warehouse_id": "platform-warehouse", "method_id": "method-1", "method_name": "平台配送", "country": "RU"}, handover={"state": "ready", "shipments": [{"shipment_id": "batch-1", "shipment_type": "IMPORT", "destination": {"id": "handover-1", "name": "交货仓 A", "address": "义乌市示例路 1 号"}}]})
     def snapshot(value):
         event = OrderEvent(platform=value.platform, account_id=value.account_id, topic="fixture", resource=value.order_id, payload={"revision": time.time_ns()})
         orders.enqueue(event)
@@ -83,12 +83,19 @@ def domain(tmp_path):
     service = FulfillmentService(store, bus, lambda: accounts, procurement.detail, start_worker=False)
     rule = {"platform": "yandex", "account_id": "4", "fulfillment": "FBS", "platform_warehouse_id": "platform-warehouse", "delivery_method_id": "method-1", "delivery_method_name": "平台配送", "country": "RU", "section_id": 1, "warehouse_id": 10, "service_ids": [2, 3], "compatible_warehouse_ids": [10, 20], "confirmed": True}
     service.save_rule(rule)
+    view = service.detail(order.identity)
+    service.command("plan", {"order_id": order.identity, "revision": view["revision"],
+        "plan": {"section_id": 1, "warehouse_id": 10, "service_ids": [2, 3]},
+        "handover_key": view["handover_target"]["key"], "confirm_warehouse": True})
     purchase = procurement.detail(order.identity)["lines"][0]["records"][0]
     parcel = {"id": "parcel-1", "line_key": key, "purchase_record_id": purchase["id"], "carrier": "顺丰", "tracking_number": "SF123", "quantity": 2}
     return service, bus, order, parcel, snapshot, accounts
 
 
 def command(service, order, action, **body):
+    if action == "plan":
+        view = service.detail(order.identity)
+        body.update(handover_key=view["handover_target"]["key"], warehouse_link_revision=(view["warehouse_link"] or {}).get("revision", 0), confirm_warehouse=True)
     return service.command(action, {"order_id": order.identity, "revision": service.detail(order.identity)["revision"], **body})
 
 
@@ -310,10 +317,10 @@ def test_parcels_validate_purchase_allocation_and_account(domain):
         service.detail(order.identity)
 
 
-def test_missing_delivery_never_infers_route_from_country(domain):
+def test_missing_handover_never_infers_route_from_country(domain):
     service, bus, order = ready(domain)
-    domain[4](order.model_copy(update={"delivery": order.delivery.model_copy(update={"method_id": ""})}))
-    assert "配送方式" in service.detail(order.identity)["blocked_reason"]
+    domain[4](order.model_copy(update={"handover": None}))
+    assert "交货" in service.detail(order.identity)["blocked_reason"]
     service.process_one(order)
     assert not bus.calls
 
@@ -668,6 +675,9 @@ def test_invalid_catalog_id_is_not_silently_dropped(domain, monkeypatch):
 
 def test_list_summary_does_not_create_records_and_reads_operation_facts(domain):
     service, _, order, *_ = domain
+    with service.store.orders.connect() as conn:
+        conn.execute("DELETE FROM fulfillments WHERE id=?", (order.identity,))
+        conn.commit()
     view = service.order_detail(order.identity)[0]
     assert service.store.summaries([view]) == {}
     assert not service.store.tracked(order)

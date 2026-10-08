@@ -4,10 +4,10 @@ import { useAppStore } from '@/stores/app'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import OrderPurchaseTracking from './OrderPurchaseTracking.vue'
 import FulfillmentParcelDialog from './FulfillmentParcelDialog.vue'
-import FulfillmentPlanFields from './FulfillmentPlanFields.vue'
-import { fetchBusSettings, fetchFulfillment, fulfillmentCommand, uploadFulfillmentLabel } from '@/api/fulfillment'
+import FulfillmentPlanDialog from './FulfillmentPlanDialog.vue'
+import { fetchFulfillment, fulfillmentCommand, uploadFulfillmentLabel } from '@/api/fulfillment'
 import type { FulfillmentAction } from '@/api/fulfillment'
-import type { BusSettings, FulfillmentDetail, FulfillmentPlan } from '@/types/fulfillment'
+import type { FulfillmentDetail } from '@/types/fulfillment'
 import { fulfillmentStatusNames } from '@/types/fulfillment'
 import type { OrderDetail } from '@/types/orders'
 import { orderProcessingProgress, procurementProgress } from './orderPresentation'
@@ -34,9 +34,6 @@ watch(() => pending.value || !!modal.value || purchaseLocks.size > 0, busy => em
 const labelUrl = ref('')
 const trackingNumber = ref('')
 const country = ref('')
-const settings = ref<BusSettings | null>(null)
-const plan = ref<FulfillmentPlan>({ section_id: 0, warehouse_id: 0, service_ids: [] })
-const servicesReady = ref(false)
 let poll: ReturnType<typeof setTimeout> | undefined
 let loadGeneration = 0
 let keepEditing: ReturnType<typeof setInterval> | undefined
@@ -75,11 +72,7 @@ async function open(which: typeof modal.value) {
   error.value = ''
   if (which === 'plan') {
     if (!await command('pause')) return
-    try {
-      settings.value = await fetchBusSettings()
-      plan.value = { ...value.value!.plan!, service_ids: [...(value.value!.plan?.service_ids || [])] }
-      keepEditing = setInterval(() => { if (modal.value === 'plan' && !pending.value) void command('pause') }, 60_000)
-    } catch (exc) { error.value = exc instanceof Error ? exc.message : '合作仓库读取失败'; await command('resume'); return }
+    keepEditing = setInterval(() => { if (modal.value === 'plan' && !pending.value) void command('pause') }, 60_000)
   }
   if (which === 'label') { labelUrl.value = value.value.platform_label; trackingNumber.value = value.value.platform_tracking_number; country.value = value.value.country }
   modal.value = which
@@ -103,7 +96,7 @@ async function uploadLabel(event: Event) {
   finally { pending.value = false; input.value = '' }
 }
 async function saveLabel() { if (await command('label', { label: { url: labelUrl.value, tracking_number: trackingNumber.value }, country: country.value.trim().toUpperCase() })) void close() }
-async function savePlan() { if (await command('plan', { plan: plan.value })) { clearInterval(keepEditing); modal.value = '' } }
+function planSaved(result: FulfillmentDetail) { clearInterval(keepEditing); loadGeneration++; value.value = result; modal.value = ''; emit('updated') }
 function parcelsSaved(result: FulfillmentDetail) { loadGeneration++; value.value = result; modal.value = ''; emit('updated') }
 async function cancel() { if (await command('cancel')) void close() }
 function at(date: string) { return date ? new Date(date).toLocaleString('zh-CN') : '尚未同步' }
@@ -132,7 +125,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
     <p v-if="!value" class="order-muted py-8">正在读取履约资料…</p>
     <template v-if="value">
       <div class="order-row mb-5"><p class="order-muted">ERP 处理进度</p><span class="order-badge" :data-tone="tone">{{ status }}</span></div>
-      <section class="fulfillment-notice" :data-tone="tone" aria-live="polite"><div class="order-row"><h3>{{ title }}</h3><button v-if="value.error_message" class="order-button" @click="open('error')">查看详情</button></div><p>{{ notice }}</p><RouterLink v-if="!value.rule && !value.crossborderbus_order_id" class="order-link" :to="settingsRoute">配置默认履约方案</RouterLink></section>
+      <section class="fulfillment-notice" :data-tone="tone" aria-live="polite"><div class="order-row"><h3>{{ title }}</h3><button v-if="value.error_message" class="order-button" @click="open('error')">查看详情</button></div><p>{{ notice }}</p><RouterLink v-if="order.order.platform !== 'yandex' && !value.rule && !value.crossborderbus_order_id" class="order-link" :to="settingsRoute">配置默认履约方案</RouterLink></section>
       <section class="fulfillment-facts" aria-label="已记录资料与仓库回执">
         <div><span>采购登记</span><strong>{{ purchased }} / {{ ordered }} 件</strong></div>
         <div><span>国内快递单号</span><strong>{{ value.parcels.length ? `已录入 ${value.parcels.length} 条记录` : '未录入' }}</strong></div>
@@ -140,9 +133,12 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
         <div><span>跨境预报</span><strong>{{ value.crossborderbus_order_id ? `已创建 · ${value.crossborderbus_order_id}` : value.create_unknown ? '创建结果待确认' : '尚未创建' }}</strong></div>
       </section>
       <section class="plan-card">
-        <div class="order-row"><h3>平台配送：{{ value.delivery.method_name || value.delivery.carrier || '尚未提供' }}</h3><button v-if="value.plan_editable && value.rule && value.plan" class="order-button" :disabled="pending" @click="open('plan')">修改</button><span v-else class="order-muted">{{ value.plan_editable ? '待配置' : '已锁定' }}</span></div>
+        <div class="order-row"><h3>平台配送：{{ value.delivery.method_name || value.delivery.carrier || '尚未提供' }}</h3><button v-if="value.plan_editable && (order.order.platform === 'yandex' || value.rule)" class="order-button" :disabled="pending" @click="open('plan')">选择仓库与服务</button><span v-else class="order-muted">{{ value.plan_editable ? '待配置' : '已锁定' }}</span></div>
         <p>合作仓库：{{ value.warehouse_name || '尚未配置' }}<span v-if="value.section_name"> · {{ value.section_name }}</span></p>
-        <p class="order-muted">{{ value.plan ? value.override ? '本单履约方案' : '默认履约方案' : '尚未配置履约方案' }} · 目的国：{{ value.country || '待填写' }}<template v-if="value.plan"> · {{ value.plan.service_ids.length }} 项增值服务</template></p>
+        <p class="order-muted">{{ value.plan ? value.override ? '本单报单方案' : order.order.platform === 'yandex' ? '仓库已对应，待选服务' : '默认履约方案' : '尚未配置报单方案' }}<template v-if="value.plan"> · {{ value.plan.service_ids.length }} 项增值服务</template></p>
+        <p v-if="value.handover_target?.name" class="order-muted">{{ value.handover_target.shipment_type === 'WITHDRAW' ? '揽收仓库' : '交货仓库' }}：{{ value.handover_target.name }}</p>
+        <p v-if="value.handover_target?.reason" class="order-muted">{{ value.handover_target.reason }}</p>
+        <p v-if="value.selected_services?.length" class="order-muted">已选服务：{{ value.selected_services.map(service => service.name).join('、') }}</p>
       </section>
       <h3 class="mt-6 mb-4">履约资料</h3>
       <section class="order-section">
@@ -166,8 +162,8 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
       </div>
     </template>
     <FulfillmentParcelDialog v-if="modal === 'parcels' && value" :value="value" :order="order" @close="close" @saved="parcelsSaved" />
-    <WorkspaceDialog v-if="modal === 'label' && value" :open="true" title="更新国际面单" width="720px" class="order-ui" :close-disabled="pending" @close="close"><form id="fulfillment-label" @submit.prevent="saveLabel"><fieldset :disabled="pending" class="order-form"><p v-if="error" class="order-error" role="alert">{{ error }}</p><p class="order-muted">请使用平台生成的面单，上传 PDF 或填写仓库可下载的 HTTPS 地址。</p><label>上传平台面单 PDF<input type="file" accept=".pdf,application/pdf" class="order-input" @change="uploadLabel" /><span class="order-muted">上限 8 MB，使用授权配置中的默认 S3 托管。</span></label><label>国际面单地址<input v-model.trim="labelUrl" class="order-input" type="url" placeholder="https://…/label.pdf" required /></label><label>面单号 / 国际跟踪号<input v-model.trim="trackingNumber" class="order-input" required /></label><label>目的国代码<input v-model="country" class="order-input" pattern="[A-Za-z]{2}" maxlength="2" required :readonly="!!value.delivery.country" /></label></fieldset></form><template #footer><div class="order-footer"><button class="order-button" :disabled="pending" @click="close">取消</button><button form="fulfillment-label" class="order-button order-primary" :disabled="pending">{{ pending ? '处理中…' : '保存面单' }}</button></div></template></WorkspaceDialog>
-    <WorkspaceDialog v-if="modal === 'plan' && value && settings" :open="true" title="修改本单履约方案" width="720px" class="order-ui" :close-disabled="pending" @close="close"><form id="fulfillment-plan" class="order-form" @submit.prevent="savePlan"><p v-if="error" class="order-error" role="alert">{{ error }}</p><p class="edit-notice">编辑期间已暂停本单自动预报。</p><div class="plan-card"><h3>订单配送方式（来自平台）</h3><p>{{ value.delivery.method_name || value.delivery.carrier }}</p><p class="order-muted">仅选择已确认可承接此配送方式的合作仓库和服务。</p></div><FulfillmentPlanFields v-model="plan" :disabled="pending" :sections="settings.catalog.sections || []" section-locked :compatible-warehouse-ids="value.rule?.compatible_warehouse_ids" @ready="servicesReady = $event" /><p class="order-muted">保存后恢复自动预报；全局默认方案保持不变。</p></form><template #footer><div class="order-footer"><button class="order-button" :disabled="pending" @click="close">取消</button><button form="fulfillment-plan" class="order-button order-primary" :disabled="pending || !servicesReady">保存本单方案</button></div></template></WorkspaceDialog>
+    <WorkspaceDialog v-if="modal === 'label' && value" :open="true" title="更新国际面单" width="720px" class="order-ui" :close-disabled="pending" @close="close"><form id="fulfillment-label" @submit.prevent="saveLabel"><fieldset :disabled="pending" class="order-form"><p v-if="error" class="order-error" role="alert">{{ error }}</p><p class="order-muted">请使用平台生成的面单，上传 PDF 或填写仓库可下载的 HTTPS 地址。</p><label>上传平台面单 PDF<input type="file" accept=".pdf,application/pdf" class="order-input" @change="uploadLabel" /><span class="order-muted">上限 8 MB，使用授权配置中的默认 S3 托管。</span></label><label>国际面单地址<input v-model.trim="labelUrl" class="order-input" type="url" placeholder="https://…/label.pdf" required /></label><label>面单号 / 国际跟踪号<input v-model.trim="trackingNumber" class="order-input" required /></label><label>目的国代码（选填）<input v-model="country" class="order-input" pattern="[A-Za-z]{2}" maxlength="2" :readonly="!!value.delivery.country" /></label></fieldset></form><template #footer><div class="order-footer"><button class="order-button" :disabled="pending" @click="close">取消</button><button form="fulfillment-label" class="order-button order-primary" :disabled="pending">{{ pending ? '处理中…' : '保存面单' }}</button></div></template></WorkspaceDialog>
+    <FulfillmentPlanDialog v-if="modal === 'plan' && value" :value="value" :order="order.order" @close="close" @saved="planSaved" />
     <WorkspaceDialog v-if="modal === 'cancel'" :open="true" title="取消履约" width="600px" class="order-ui" :close-disabled="pending" @close="close"><p v-if="error" class="order-error" role="alert">{{ error }}</p><p>取消后停止本单预报，并请求跨境巴士停止履约。仓库确认前仍显示“取消待确认”。</p><p class="order-muted mt-4">已入库包裹需要联系仓库处理；已发货订单可能无法取消。此操作不会修改平台订单状态。</p><template #footer><div class="order-footer"><button class="order-button" :disabled="pending" @click="close">返回</button><button class="order-button order-danger" :disabled="pending" @click="cancel">确认取消履约</button></div></template></WorkspaceDialog>
     <WorkspaceDialog v-if="modal === 'error' && value" :open="true" title="履约异常详情" width="640px" class="order-ui" @close="close"><p class="order-error">{{ value.error_message }}</p><p>最近确认状态：{{ fulfillmentStatusNames[value.fulfillment_status] }}</p><p class="order-muted mt-4">最近成功同步：{{ at(value.last_synced_at) }}</p><p class="order-muted mt-3">本次尝试：{{ at(value.last_attempt_at) }}</p><p class="order-muted mt-3">{{ value.create_unknown ? '创建结果未确认期间禁止重复预报。' : '状态同步失败时保留最近确认的仓库进度。' }}</p></WorkspaceDialog>
   </div>

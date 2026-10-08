@@ -13,6 +13,7 @@ from erp_web.schemas.fulfillment import FulfillmentSummary, normalize_bus_catalo
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bus_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS fulfillment_warehouse_links (key TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS fulfillment_rules (id TEXT PRIMARY KEY, scope TEXT UNIQUE NOT NULL, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS fulfillments (
  id TEXT PRIMARY KEY, platform TEXT NOT NULL, account_id TEXT NOT NULL, platform_order_id TEXT NOT NULL,
@@ -64,6 +65,22 @@ class FulfillmentStore:
         with self.orders.connect() as conn:
             conn.execute("DELETE FROM fulfillment_rules WHERE id=?", (rule_id,))
             conn.commit()
+
+    def warehouse_link(self, key):
+        with self.orders.connect() as conn:
+            row = conn.execute("SELECT revision,value FROM fulfillment_warehouse_links WHERE key=?", (key,)).fetchone()
+        return {**json.loads(row["value"]), "revision": row["revision"]} if row else None
+
+    def bind_warehouse(self, conn, key, plan, expected_revision):
+        row = conn.execute("SELECT revision,value FROM fulfillment_warehouse_links WHERE key=?", (key,)).fetchone()
+        revision = row["revision"] if row else 0
+        if revision != expected_revision:
+            raise ValueError("仓库对应关系已变化，请重新打开报单方案")
+        value = {k: plan[k] for k in ("section_id", "warehouse_id")}
+        if row and json.loads(row["value"]) == value:
+            return
+        conn.execute("INSERT OR REPLACE INTO fulfillment_warehouse_links VALUES (?,?,?)",
+                     (key, revision + 1, json.dumps(value)))
 
     def snapshots(self, accounts):
         where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"

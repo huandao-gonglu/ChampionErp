@@ -10,7 +10,7 @@ enableAutoUnmount(afterEach)
 const now = 1800000000
 const status = (): RequestControlStatus => ({
   ok: true, server_time: now, total: 2,
-  blocks: [{ id: 'block-1', platform: 'yandex', account: 'shop', scope: 'interface', http_status: 0, interface: '/orders', code: 'EXTERNAL_TRANSIENT_FAILURE', message: '网络暂时中断', created_at: now - 60, blocked_count: 4, resume_at: now + 60, recovery_mode: 'probe' }],
+  blocks: [{ id: 'block-1', platform: 'yandex', account: 'shop', scope: 'interface', http_status: 0, interface: '/orders', code: 'EXTERNAL_TRANSIENT_FAILURE', message: '网络暂时中断', created_at: now - 60, last_created_at: now - 60, count: 1, occurrences: [], blocked_count: 4, resume_at: now + 60, recovery_mode: 'probe' }],
   history: ['manual', 'background'].map((trigger, i) => ({ id: String(i), platform: 'yandex', interface: '/orders', trigger, created_at: now - i, code: 'EXTERNAL_NETWORK_INTERRUPTED', message: '网络中断', local_rejection: false })),
 })
 beforeEach(() => {
@@ -25,6 +25,32 @@ async function render() {
   return wrapper
 }
 describe('授权页统一中断恢复', () => {
+  it('同类拒绝显示次数与时间范围，展开明细并按组确认恢复', async () => {
+    const value = status()
+    Object.assign(value.blocks[0]!, {
+      platform: 'gw.open.1688.com', scope: 'request', count: 2,
+      recovery_mode: 'confirm_request', http_status: 200, resume_at: 0,
+      last_created_at: now, occurrences: [
+        { id: 'one', created_at: now - 60, blocked_count: 3 },
+        { id: 'two', created_at: now, blocked_count: 1 },
+      ],
+    })
+    vi.mocked(fetchRequestControl).mockResolvedValue(value)
+    const wrapper = await render()
+    const card = wrapper.findAll('article')[0]!
+    expect(card.text()).toContain('同类拒绝 · 2 条请求记录')
+    expect(card.text()).toContain('首次')
+    expect(card.text()).toContain('最近')
+    expect(card.text()).toContain('响应已收到，业务未成功')
+    expect(card.get('summary').text()).toBe('查看 2 条明细')
+    expect(card.findAll('li')).toHaveLength(2)
+    await card.get('button').trigger('click')
+    expect(wrapper.get('form').text()).toContain('所选的 2 条请求限制')
+    await wrapper.get('input').setValue('已处理接口业务错误')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(recoverRequestBlock).toHaveBeenCalledWith('block-1', '已处理接口业务错误')
+  })
   it('提醒链接指定的平台置顶并高亮，路由改变后更新定位', async () => {
     const value = status()
     value.blocks.push({ ...value.blocks[0]!, id: 'ozon-block', platform: 'ozon' })

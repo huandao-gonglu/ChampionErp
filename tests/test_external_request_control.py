@@ -117,6 +117,87 @@ def test_recovery_rejects_recreated_block_with_identical_failure():
     assert len(store.blocks()) == 1
 
 
+def record_rejection(manager, ctx, status=200):
+    identity = manager.start(ctx, 'POST')
+    manager.check(identity, ctx, time.time() + 30)
+    manager.result(identity, ctx, status, {}, b'{"success":false}')
+
+
+def test_same_rejections_group_for_display_and_recover_with_individual_audit():
+    manager = get_context().external_requests
+    control = ExternalRequestControlService(manager.store)
+    first = context(operation_id='orders:1', fingerprint='first')
+    second = replace(first, operation_id='orders:2', fingerprint='second')
+    for ctx in (first, second):
+        record_rejection(manager, ctx)
+    with pytest.raises(ExternalRequestBlocked):
+        manager.check(manager.start(first, 'POST'), first, time.time() + 30)
+    status = control.status()
+    assert len(status['blocks']) == 1
+    group = status['blocks'][0]
+    assert group['count'] == 2 and group['interface'] == '/orders'
+    assert group['blocked_count'] == 1
+    assert group['created_at'] < group['last_created_at']
+    assert len(group['occurrences']) == 2
+    assert len(manager.store.blocks()) == 2  # 展示合并不改变真实放行范围。
+    attempts = manager.store.query()['stats']['network_attempts']
+    control.recover(group['id'], reason='已处理这两次请求的拒绝原因')
+    assert manager.store.blocks() == []
+    assert len(manager.store.recoveries()) == 2
+    assert control.status()['total'] == status['total']
+    assert manager.store.query()['stats']['network_attempts'] == attempts
+
+
+@pytest.mark.parametrize('patch', [
+    {'account_id': 'another-account'}, {'platform': 'ozon'}, {'interface': '/another'},
+])
+def test_rejection_groups_do_not_cross_account_platform_or_interface(patch):
+    manager = get_context().external_requests
+    ctx = context()
+    record_rejection(manager, ctx)
+    record_rejection(manager, replace(ctx, operation_id='different', **patch))
+    assert len(ExternalRequestControlService(manager.store).status()['blocks']) == 2
+
+
+def test_new_member_invalidates_group_confirmation():
+    manager = get_context().external_requests
+    control = ExternalRequestControlService(manager.store)
+    for operation in ('one', 'two'):
+        record_rejection(manager, context(operation_id=operation))
+    old_id = control.status()['blocks'][0]['id']
+    record_rejection(manager, context(operation_id='three'))
+    with pytest.raises(ValueError, match='状态已变化'):
+        control.recover(old_id, reason='旧确认框')
+    assert len(manager.store.blocks()) == 3
+    assert manager.store.recoveries() == []
+
+
+def test_group_recovery_rolls_back_if_one_member_changes(monkeypatch):
+    manager = get_context().external_requests
+    control = ExternalRequestControlService(manager.store)
+    contexts = [context(operation_id=operation) for operation in ('one', 'two')]
+    for ctx in contexts:
+        record_rejection(manager, ctx)
+    identity = control.status()['blocks'][0]['id']
+    original = manager.store.recover_confirmed
+    def concurrent_change(blocks, *, reason):
+        manager.store.block(contexts[-1], RequestFailure('YANDEX_REQUEST_INVALID', '新拒绝', 'request', status=400))
+        original(blocks, reason=reason)
+    monkeypatch.setattr(manager.store, 'recover_confirmed', concurrent_change)
+    with pytest.raises(ValueError, match='状态已变化'):
+        control.recover(identity, reason='仅确认旧状态')
+    assert len(manager.store.blocks()) == 2
+    assert manager.store.recoveries() == []
+
+
+def test_unknown_or_untraceable_requests_are_not_grouped():
+    store = get_context().external_requests.store
+    for operation in ('one', 'two'):
+        store.block(context(operation_id=operation), RequestFailure('YANDEX_REQUEST_INVALID', '明确拒绝', 'request'))
+        store.block(context(operation_id='unknown-' + operation), RequestFailure('EXTERNAL_WRITE_OUTCOME_UNKNOWN', '结果未知', 'request'))
+    assert len(ExternalRequestControlService(store).status()['blocks']) == 4
+
+
 def test_notices_are_limited_to_observed_user_jobs():
     manager = get_context().external_requests
     manager.store.block(context(), RequestFailure('EXTERNAL_TRANSIENT_FAILURE', '冷却中', 'interface', resume_at=time.time()+60, cooldown_seconds=60))

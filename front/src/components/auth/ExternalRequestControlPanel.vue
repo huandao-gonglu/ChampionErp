@@ -93,16 +93,24 @@ onBeforeUnmount(() => { stopped = true; clearTimeout(poll); clearInterval(clock)
     </p>
     <article v-for="block in blocks" :key="block.id" :data-highlighted="isTarget(block.platform) || undefined" :class="{ 'ring-2 ring-amber-500': isTarget(block.platform) }" class="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/10">
       <h4 class="font-semibold">{{ platformName(block.platform) }} · {{ block.account }}</h4>
+      <p v-if="block.count > 1" class="mt-2 font-medium">同类拒绝 · {{ block.count }} 条请求记录</p>
       <p class="mt-2">{{ block.message }}</p>
-      <p v-if="block.http_status" class="muted mt-1">当时的响应：HTTP {{ block.http_status }}</p>
+      <p v-if="block.http_status" class="muted mt-1">当时的响应：HTTP {{ block.http_status }}<span v-if="block.http_status >= 200 && block.http_status < 300 && block.recovery_mode === 'confirm_request'">（响应已收到，业务未成功）</span></p>
       <p class="mt-2 font-medium" aria-live="off">
         {{ blockState(block) }}
       </p>
-      <p class="muted mt-1">影响范围：{{ scopeNames[block.scope] || block.scope }}</p>
+      <p class="muted mt-1">影响范围：{{ block.count > 1 ? '本组各原操作中相同接口和参数的请求，不影响新操作' : scopeNames[block.scope] || block.scope }}</p>
       <p v-if="block.interface" class="muted mt-1 break-all">影响接口：{{ block.interface }}</p>
-      <p class="muted mt-1">开始于 {{ date(block.created_at) }} · 已拦截 {{ block.blocked_count }} 次请求</p>
+      <p v-if="block.count > 1" class="muted mt-1">首次 {{ date(block.created_at) }} · 最近 {{ date(block.last_created_at) }} · 合计拦截 {{ block.blocked_count }} 次请求</p>
+      <p v-else class="muted mt-1">开始于 {{ date(block.created_at) }} · 已拦截 {{ block.blocked_count }} 次请求</p>
+      <details v-if="block.count > 1" class="mt-2">
+        <summary class="cursor-pointer">查看 {{ block.count }} 条明细</summary>
+        <ul class="mt-2 space-y-1">
+          <li v-for="occurrence in block.occurrences" :key="occurrence.id" class="muted">{{ date(occurrence.created_at) }} · 已拦截 {{ occurrence.blocked_count }} 次请求</li>
+        </ul>
+      </details>
       <button v-if="['probe', 'confirm', 'confirm_request'].includes(block.recovery_mode)" class="btn btn-primary mt-3" :disabled="pending" @click="openRecovery(block)">
-        {{ block.recovery_mode === 'probe' ? '手动恢复' : block.recovery_mode === 'confirm_request' ? '已处理原因，恢复原请求' : '已处理原因，恢复请求' }}
+        {{ block.count > 1 ? `已处理原因，恢复本组 ${block.count} 条请求` : block.recovery_mode === 'probe' ? '手动恢复' : block.recovery_mode === 'confirm_request' ? '已处理原因，恢复原请求' : '已处理原因，恢复请求' }}
       </button>
       <p v-else-if="block.recovery_mode === 'verify_result'" class="mt-2">请先在原功能核对业务回执，不能直接重放结果未知的写入。</p>
       <p v-else class="muted mt-2">正在检查恢复情况或等待平台规定的冷却时间。</p>
@@ -122,6 +130,7 @@ onBeforeUnmount(() => { stopped = true; clearTimeout(poll); clearInterval(clock)
     </div>
     <WorkspaceDialog :open="selected !== null" title="恢复平台请求" :close-disabled="pending" @close="selected = null">
       <form class="space-y-4" @submit.prevent="recover">
+        <p v-if="selected && selected.count > 1">本次恢复所选的 {{ selected.count }} 条请求限制，逐条保留恢复记录；之后新增的拒绝不在本次范围内。</p>
         <p v-if="selected?.recovery_mode === 'probe'">手动恢复会提前允许下一次只读请求检查网络；成功后恢复，失败则延长冷却。</p>
         <p v-else-if="selected?.recovery_mode === 'confirm_request'">平台已明确拒绝原请求。请确认拒绝原因已处理；恢复只解除原请求的限制，保留失败记录，不会自动重新发送。</p>
         <p v-else>请先修复授权、开通接口权限，或取得平台恢复账号的确认。</p>

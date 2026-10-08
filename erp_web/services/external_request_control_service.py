@@ -27,6 +27,43 @@ def recovery_mode(block):
     return 'confirm'
 
 
+def block_groups(blocks):
+    """只归并有接口证据的同类明确拒绝；不合并实际放行范围。"""
+    groups = {}
+    for block in blocks:
+        key = block_id(block)
+        if recovery_mode(block) == 'confirm_request' and block.get('request_interface'):
+            key = json.dumps([block['platform'], block['account_id'], block['request_interface'], block['failure']], sort_keys=True)
+        groups.setdefault(key, []).append(block)
+    return list(groups.values())
+
+
+def group_id(blocks):
+    identities = sorted(block_id(block) for block in blocks)
+    if len(identities) == 1:
+        return identities[0]
+    # 组身份绑定成员快照；新记录出现后，旧确认框不能连带恢复它。
+    return hashlib.sha256(json.dumps(identities).encode()).hexdigest()
+
+
+def group_view(blocks):
+    members = sorted(blocks, key=lambda block: block['created'])
+    first = members[0]
+    return {
+        'id': group_id(members), 'platform': first['platform'],
+        'account': first['account_id'] if not first['account_id'].startswith('credential:') else '当前凭据',
+        'scope': first['scope'],
+        'interface': first['scope_key'] if first['scope'] == 'interface' else first.get('request_interface') or '',
+        'code': first['failure']['code'], 'message': first['failure']['message'],
+        'http_status': first['failure'].get('status', 0),
+        'created_at': first['created'], 'last_created_at': members[-1]['created'],
+        'count': len(members), 'blocked_count': sum(block['blocked_count'] for block in members),
+        'resume_at': max(first['failure'].get('resume_at') or 0, first['failure'].get('probe_until') or 0),
+        'recovery_mode': recovery_mode(first),
+        'occurrences': [{'id': block_id(block), 'created_at': block['created'], 'blocked_count': block['blocked_count']} for block in members],
+    }
+
+
 class ExternalRequestControlService:
     def __init__(self, store):
         self.store = store
@@ -38,31 +75,23 @@ class ExternalRequestControlService:
         history, total = self.store.interruptions(offset=offset)
         return {
             'ok': True, 'server_time': now,
-            'blocks': [{
-                'id': block_id(b), 'platform': b['platform'],
-                'account': b['account_id'] if not b['account_id'].startswith('credential:') else '当前凭据',
-                'scope': b['scope'], 'interface': b['scope_key'] if b['scope'] == 'interface' else '',
-                'code': b['failure']['code'], 'message': b['failure']['message'],
-                'http_status': b['failure'].get('status', 0),
-                'created_at': b['created'], 'blocked_count': b['blocked_count'],
-                'resume_at': max(b['failure'].get('resume_at') or 0, b['failure'].get('probe_until') or 0),
-                'recovery_mode': recovery_mode(b),
-            } for b in blocks],
+            'blocks': [group_view(group) for group in block_groups(blocks)],
             'history': history, 'total': total,
             'notices': self.store.rejection_notices(operation_ids),
         }
 
     def recover(self, identity, *, reason=''):
-        block = next((b for b in self.store.blocks() if block_id(b) == identity), None)
-        if not block:
+        group = next((group for group in block_groups(self.store.blocks()) if group_id(group) == identity), None)
+        if not group:
             raise ValueError('中断状态已变化，请刷新后重试')
+        block = group[0]
         mode = recovery_mode(block)
         if mode == 'probe':
             self.store.request_probe(block['platform'], block['account_id'], {block['scope_key']}, expected_failure=block['failure'])
             message = '已允许下一次只读请求检查恢复情况；可返回原功能重试，后台任务也会按计划继续。'
         elif mode in {'confirm', 'confirm_request'}:
-            self.store.recover_confirmed([block], reason=reason)
-            message = '已解除所选请求的限制并记录恢复原因。历史失败记录保留；请返回原功能重试。' if mode == 'confirm_request' else '已记录恢复原因。请返回原功能重试。'
+            self.store.recover_confirmed(group, reason=reason)
+            message = f'已解除所选 {len(group)} 条请求的限制并逐条记录恢复原因。历史失败记录保留；请返回原功能重试。' if mode == 'confirm_request' else '已记录恢复原因。请返回原功能重试。'
         else:
             raise ValueError('请等待当前恢复检查或平台冷却结束；写入结果未知时请先核对业务回执')
         return {'ok': True, 'message': message}

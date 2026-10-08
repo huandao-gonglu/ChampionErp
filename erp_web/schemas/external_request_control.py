@@ -4,6 +4,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class RequestBlockOccurrence(BaseModel):
+    id: str
+    created_at: float
+    blocked_count: int
+
+
 class RequestBlockView(BaseModel):
     id: str
     platform: str
@@ -14,6 +20,9 @@ class RequestBlockView(BaseModel):
     message: str
     http_status: int = 0
     created_at: float
+    last_created_at: float
+    count: int
+    occurrences: list[RequestBlockOccurrence]
     blocked_count: int
     resume_at: float
     recovery_mode: Literal['probe', 'confirm', 'confirm_request', 'waiting', 'verify_result']

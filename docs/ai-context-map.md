@@ -1131,13 +1131,17 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 
 `services/fulfillment_label_service.py` 使用现有 `S3ImageStorage` SDK 边界交付 PDF 面单并核验公开内容。
 原有平台订单身份及状态不变；列表另行读取履约摘要，详情承载履约操作及异常处理。
-授权和默认方案在已有授权模块中配置，不提供首次接入页、独立日志页或模型代报工具。
+授权和默认方案在已有授权模块中配置；Yandex 本单可直接选择报单仓库与服务，不依赖全局默认方案。
+`services/fulfillment_routing.py` 从交货批次提取目标：IMPORT 使用 destination，WITHDRAW 使用 origin，取消或歧义批次不能报单。平台交货点 ID 与跨境巴士仓库 ID 分属不同体系；`fulfillment_warehouse_links` 保存人工确认的对应，作用域包含店铺、跨境巴士账号及交货点身份和地址指纹。同一交货点跨批次复用，账号/地址变化后重新确认；无平台 ID 时仅用明确地址标识，不模糊猜仓。
+`FulfillmentPlanDialog.vue` 打开时读取最新合作仓库，Yandex 只显示对应平台下的合作仓；已对应的仓库默认固定，重新对应须明确确认。`FulfillmentPlanFields.vue` 实时读取所选仓服务，基础服务单选，附加服务多选并显示费用。保存本单方案与仓库对应处于同一短事务，以履约版本、对应版本、当前订单地址和账号校验；网络读取不持有事务。
+目的国按官方创建接口为可选字段：没有时不发送、不阻止报单。Yandex 不再把商品库存仓 ID 当作交货仓必填条件。提交前仍重读合作仓和服务并核对交货点，确保旧方案不能发往变更后的仓库；无自动预报规则时须点击“立即提交”。
 协议、产品闭环、核实限制和验收见 [跨境履约说明](crossborder-fulfillment.md)。
 
 ### 平台请求中断与恢复
 
 - `http_route_units/external_request_routes.py` → `facades/external_request_facade.py` → `services/external_request_control_service.py` 为授权页统一中断查询与恢复入口；契约在 `schemas/external_request_control.py`。恢复只改变外部请求 Store 的放行条件，不执行业务请求。
   请求级明确拒绝与未知写入分开展示：前者只限制原操作中的原请求，填写处理原因可解除；后者须核对业务回执。服务与 Store 共用 `schemas/external_requests.py` 的明确拒绝判定，存储事务校验故障及创建时间，旧快照不能解除重新产生的同类故障。
+  授权页同类明确拒绝按平台、真实账号、审计关联接口与完整拒绝状态分组；组身份绑定所有成员快照。聚合只影响展示与明确恢复选择，不扩大实际阻断范围，恢复在同一事务内逐条留审计。
 - `stores/external_request_store.py` 在短事务中持久化冷却、唯一探测租约、退避及恢复记录；只读临时故障可自愈，明确平台限制与未知写入不得隐式解除。旧永久阻断仅凭完整只读临时失败审计迁入冷却。
 - `http_handler.py` 与 `external_request_context.py` 仅收集真实请求拒绝和领域操作关联；前端 `ExternalRequestNotice.vue` 提示用户发起的操作受阻并直达授权页，`ExternalRequestControlPanel.vue` 负责统一倒计时、记录及人工恢复。提示不替代业务结果，不创建第二套任务协议。
 - 订单同步状态从完整历史和当前账号的真实外发范围汇总，不受最近 50 条通知限制。Yandex 订单归属 campaign，外部请求阻断归属 business；不得混用。详情见 [外部请求管理](external-request-management.md)。

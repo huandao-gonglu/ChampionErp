@@ -350,7 +350,16 @@ class ExternalRequestStore:
 
     def blocks(self):
         with self._connect() as conn:
-            return [{**dict(r),"failure":json.loads(r["failure"])} for r in conn.execute("SELECT * FROM external_blocks")]
+            return [{**dict(r),"failure":json.loads(r["failure"])} for r in conn.execute("""
+                SELECT b.*, (
+                    SELECT a.interface FROM external_attempts a
+                    WHERE b.scope='request' AND a.platform=b.platform AND a.account_id=b.account_id
+                      AND substr(b.scope_key,1,length(a.operation_id || ':' || a.interface || ':'))
+                          = a.operation_id || ':' || a.interface || ':'
+                    ORDER BY a.created DESC LIMIT 1
+                ) AS request_interface
+                FROM external_blocks b
+            """)]
 
     def recoveries(self, *, limit=100):
         with self._connect() as conn:

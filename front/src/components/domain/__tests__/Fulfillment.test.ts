@@ -243,7 +243,7 @@ describe('跨境履约操作', () => {
     await flushPromises()
     expect(wrapper.findAll('select')).toHaveLength(1)
     expect(wrapper.text()).not.toContain('非兼容仓')
-    expect(wrapper.get('input[disabled]').element).toHaveProperty('checked', true)
+    expect(wrapper.get('input[type="radio"]').element).toHaveProperty('checked', true)
     await wrapper.get('select').setValue('20')
     await flushPromises()
     expect(fetchBusServices).toHaveBeenLastCalledWith(1, 20)
