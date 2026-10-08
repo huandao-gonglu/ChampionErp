@@ -263,7 +263,8 @@ def collect_skus(raw: Any) -> list[dict[str, str]]:
         name = first_text(item.get("skuName"), item.get("name"), item.get("specId"), attrs.get("name"), f"SKU {index + 1}")
         skus.append(
             {
-                "id": first_text(item.get("skuId"), item.get("id"), item.get("specId")),
+                "id": first_text(item.get("skuId"), item.get("id")),
+                "spec_id": first_text(item.get("specId")),
                 "name": name,
                 "options": {str(key): str(value) for key, value in attrs.items() if value is not None},
                 "price": first_text(price),
@@ -283,6 +284,9 @@ def parse_1688_api_product(raw: dict[str, Any], source_url: str, offer_id: str) 
     attrs = collect_attributes(raw)
     images = collect_image_urls(raw)
     skus = collect_skus(raw)
+    collected_offer = first_text(find_first_key(raw, {"productID", "productId", "offerId"}), offer_id)
+    for sku in skus:
+        sku["offer_id"] = collected_offer
     dimensions = parse_dimensions_text(
         first_text(
             find_first_key(raw, {"dimensions", "size", "specification", "规格"}),

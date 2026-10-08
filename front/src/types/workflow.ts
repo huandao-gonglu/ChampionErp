@@ -2,6 +2,10 @@
 export {
   API_SCHEMA_VERSION,
   PRODUCT_SCHEMA_VERSION,
+  type BackendAlibabaSelfPurchaseCandidate,
+  type BackendAlibabaSelfPurchasePreview,
+  type BackendAlibabaSelfPurchaseRecord,
+  type BackendAlibabaSelfPurchaseOptions,
   type BackendAlibabaOrderStatus,
   type BackendAlibabaLogisticsStep,
   type BackendAlibabaParcel,
@@ -285,6 +289,8 @@ export interface ProductSource {
 export interface ProductSku extends UnknownRecord {
   id: string
   source_sku_id: string
+  source_offer_id?: string
+  source_spec_id?: string
   name: string
   options: Record<string, string>
   cost_cny: string

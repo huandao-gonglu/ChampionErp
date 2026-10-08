@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from erp_web.facades import order_notification_facade as facade
 from erp_web.facades import order_procurement_facade as procurement
+from erp_web.facades import alibaba_self_purchase_facade
 from erp_web.schemas.requests import validate_request_payload
 from erp_web.facades import order_address_note_facade as address_notes
 from erp_web.schemas.order_address_notes import AddressNoteConflict
@@ -123,7 +124,40 @@ def handle_address_note(handler):
         handler.send_json({"ok": False, "error": str(exc)}, 400)
 
 
+def _self_purchase(handler, action):
+    try:
+        body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+        handler.send_json(alibaba_self_purchase_facade.command(action, body))
+    except ExternalRequestBlocked:
+        handler.send_json({"ok": False, "error": "1688 请求已中断，请到授权配置的中断与恢复查看"}, 409)
+    except ValidationError:
+        handler.send_json({"ok": False, "error": "采购参数无效，请核对数量和订单号"}, 400)
+    except (ValueError, TypeError) as exc:
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
+
+
+def handle_self_purchase_preview(handler):
+    _self_purchase(handler, "preview")
+
+
+def handle_self_purchase_create(handler):
+    _self_purchase(handler, "create")
+
+
+def handle_self_purchase_reconcile(handler):
+    _self_purchase(handler, "reconcile")
+
+
+def handle_self_purchase_cashier(handler):
+    _self_purchase(handler, "cashier")
+
+
 POST_HANDLERS = {
+    "/api/orders/alibaba-purchase/preview": handle_self_purchase_preview,
+    "/api/orders/alibaba-purchase/create": handle_self_purchase_create,
+    "/api/orders/alibaba-purchase/reconcile": handle_self_purchase_reconcile,
+    "/api/orders/alibaba-purchase/cashier": handle_self_purchase_cashier,
+
     "/api/orders/purchase-sync": handle_purchase_sync,
     "/api/orders/purchase-query": handle_purchase_query,
     "/api/orders/address-note": handle_address_note,
@@ -140,6 +174,7 @@ POST_HANDLERS = {
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {
+    "/api/orders/alibaba-purchase": alibaba_self_purchase_facade.options,
     "/api/orders/address-note": address_notes.read,
     "/api/orders": facade.read_orders,
     "/api/orders/integrations": facade.integrations,
@@ -175,6 +210,8 @@ def handle_get(handler, parsed):
             if parsed.path == "/api/orders/address-note"
             else callback(order_id=query.get("order_id", ""))
             if parsed.path == "/api/orders/detail"
+            else callback(query)
+            if parsed.path == "/api/orders/alibaba-purchase"
             else callback()
         )
     except (ValueError, TypeError) as exc:

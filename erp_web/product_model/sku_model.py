@@ -44,6 +44,8 @@ def normalize_product_skus(value: Any) -> list[dict[str, Any]]:
         result.append({
             "id": sku_id,
             "source_sku_id": text(raw.get("source_sku_id")),
+            "source_offer_id": text(raw.get("source_offer_id")),
+            "source_spec_id": text(raw.get("source_spec_id")),
             "name": text(raw.get("name")),
             "options": options,
             "cost_cny": text(raw.get("cost_cny")),
@@ -75,6 +77,8 @@ def collected_skus(source: dict[str, Any]) -> list[dict[str, Any]]:
             raise ValueError("来源 SKU 缺少稳定编号，无法建立规格关联")
         options = deepcopy(record(raw.get("options")))
         facts = {
+            "source_offer_id": text(raw.get("offer_id")),
+            "source_spec_id": text(raw.get("spec_id")),
             "name": text(raw.get("name")), "options": options,
             "cost_cny": text(raw.get("price")) if text(source.get("currency")).upper() == "CNY" else "",
             "supplier_stock": text(raw.get("stock")),

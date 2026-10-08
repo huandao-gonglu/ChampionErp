@@ -28,6 +28,9 @@ class ProcurementSource(BaseModel):
     source_platform: str = Field(default="", max_length=100)
     product_url: str = Field(max_length=2000)
     source_sku_id: str = Field(default="", max_length=200)
+    source_offer_id: str = Field(default="", max_length=200)
+    source_spec_id: str = Field(default="", max_length=200)
+    purchase_block_reason: str = Field(default="", max_length=1000)
     specification: str = Field(min_length=1, max_length=1000)
     sku_url: str = Field(default="", max_length=2000)
     sku_url_verified: bool = False
@@ -66,6 +69,12 @@ class SalesSkuBinding(BaseModel):
     def identity(self) -> str:
         # 发布记录号不参与身份；重复发布同一关联不会增加候选。
         data = self.model_dump(exclude={"publication_id", "id", "image_url"})
+        # 空的新字段不改变历史关联 ID，避免升级后出现重复候选。
+        if not data["source"].get("source_spec_id") or not data["source"].get("purchase_block_reason"):
+            data["source"].pop("purchase_block_reason", None)
+        for field in ("source_offer_id", "source_spec_id"):
+            if not data["source"].get(field):
+                data["source"].pop(field, None)
         return hashlib.sha256(
             json.dumps(data, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import OrderProcurementLine from '../OrderProcurementLine.vue'
+import AlibabaSelfPurchaseDialog from '../AlibabaSelfPurchaseDialog.vue'
 import OrderPurchaseDialog from '../OrderPurchaseDialog.vue'
 import OrderSourceDialog from '../OrderSourceDialog.vue'
 import OrderDetailPanel from '../OrderDetailPanel.vue'
@@ -89,6 +90,33 @@ beforeEach(() => {
   vi.mocked(fetchOrderDetail).mockResolvedValue(detail())
 })
 describe('订单采购交互', () => {
+  it('1688 采购入口绑定当前订单商品，创建回执后刷新详情', async () => {
+    const wrapper = mount(OrderProcurementLine, {
+      props: { order, item: item() },
+      global: { stubs: { AlibabaSelfPurchaseDialog: true } },
+    })
+    await wrapper.findAll('button').find(b => b.text() === '1688 采购')!.trigger('click')
+    const dialog = wrapper.getComponent(AlibabaSelfPurchaseDialog)
+    expect(dialog.props()).toMatchObject({ orderId: order.id, lineKey: 'line-1', title: '商品' })
+    expect(wrapper.emitted('lock')?.at(-1)).toEqual([true])
+    dialog.vm.$emit('updated')
+    await flushPromises()
+    expect(fetchOrderDetail).toHaveBeenCalledWith(order.id)
+    expect(wrapper.emitted('updated')?.at(-1)).toEqual([detail()])
+    dialog.vm.$emit('close')
+    await flushPromises()
+    expect(wrapper.findComponent(AlibabaSelfPurchaseDialog).exists()).toBe(false)
+    expect(wrapper.emitted('lock')?.at(-1)).toEqual([false])
+  })
+  it('未确认来源时仍可打开采购提示，保留来源确认入口', async () => {
+    const wrapper = mount(OrderProcurementLine, {
+      props: { order, item: item(false) }, global: { stubs: { AlibabaSelfPurchaseDialog: true } },
+    })
+    await wrapper.findAll('button').find(b => b.text() === '1688 采购')!.trigger('click')
+    expect(wrapper.getComponent(AlibabaSelfPurchaseDialog).props('orderId')).toBe(order.id)
+    expect(wrapper.text()).toContain('确认来源')
+    expect(wrapper.findAll('button').some(b => b.text() === '记录采购')).toBe(false)
+  })
   it('商品链接不会冒充规格直达，打开链接不记录采购', async () => {
     const wrapper = mount(OrderProcurementLine, {
       props: { order, item: item() },

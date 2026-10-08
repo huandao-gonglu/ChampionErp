@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from pydantic import ValidationError
 
+from erp_web.product_model.alibaba_purchase_model import frozen_purchase_identity
 from erp_web.product_model.draft_image_model import normalize_draft_image_refs
 from erp_web.schemas.order_procurement import ProcurementSource, SalesSkuBinding
 
@@ -86,6 +87,7 @@ def bindings_from_publish_job(job: dict) -> list[SalesSkuBinding]:
                     product_url=str(source.get("source_url") or ""),
                     source_sku_id=str(fact.get("source_sku_id") or ""),
                     specification=specification,
+                    **frozen_purchase_identity(product, fact, platform),
                 )
             except (ValidationError, ValueError):
                 # 发布不因采购来源缺失而失败，但不能生成猜测的采购映射。

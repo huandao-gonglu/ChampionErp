@@ -114,6 +114,9 @@ export interface ProcurementSource {
   source_platform: string
   product_url: string
   source_sku_id: string
+  source_offer_id?: string
+  source_spec_id?: string
+  purchase_block_reason?: string
   specification: string
   sku_url: string
   sku_url_verified: boolean

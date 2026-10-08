@@ -6,6 +6,49 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 4 as const
 
+export interface BackendAlibabaSelfPurchaseCandidate {
+  id: string
+  offer_id: string
+  sku_id: string
+  specification: string
+  product_url: string
+}
+
+export interface BackendAlibabaSelfPurchasePreview {
+  candidate: BackendAlibabaSelfPurchaseCandidate
+  quantity: number
+  recipient: string
+  address: string
+  phone: string
+  goods_fen: number
+  shipping_fen: number
+  total_fen: number
+  flow: string
+  pay_channels: Array<string>
+  expires_at: number
+}
+
+export interface BackendAlibabaSelfPurchaseRecord {
+  id: string
+  state: string
+  preview: BackendAlibabaSelfPurchasePreview
+  order_numbers: Array<string>
+  order_status: string
+  message: string
+  pay_channel: string
+  created_at: string
+  purchase_record_id: string
+}
+
+export interface BackendAlibabaSelfPurchaseOptions {
+  ok: boolean
+  remaining_quantity: number
+  can_purchase: boolean
+  blocked_reason: string
+  candidates: Array<BackendAlibabaSelfPurchaseCandidate>
+  records: Array<BackendAlibabaSelfPurchaseRecord>
+}
+
 export interface BackendAlibabaOrderStatus {
   order_number: string
   status: string
@@ -264,6 +307,8 @@ export interface BackendMercadoLibrePublication {
 export interface BackendProductSku {
   id?: string
   source_sku_id?: string
+  source_offer_id?: string
+  source_spec_id?: string
   name?: string
   options?: Record<string, string>
   cost_cny?: string

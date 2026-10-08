@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { procurementCommand } from '@/api/orders'
+import { fetchOrderDetail, procurementCommand } from '@/api/orders'
 import type { OrderDetail, OrderSnapshot, ProcurementLine, PurchaseRecord } from '@/types/orders'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import OrderSourceDialog from './OrderSourceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
 import OrderThumbnail from './OrderThumbnail.vue'
 import OrderPurchaseRecords from './OrderPurchaseRecords.vue'
+import AlibabaSelfPurchaseDialog from './AlibabaSelfPurchaseDialog.vue'
 const props = defineProps<{
   item: ProcurementLine
   order: OrderSnapshot
@@ -21,6 +22,7 @@ const notice = ref('')
 const busy = ref(false)
 const trackingBusy = ref(false)
 const sourceEditor = ref(false)
+const alibabaPurchaseOpen = ref(false)
 const cancelledRecord = ref<PurchaseRecord | null>(null)
 const selection = computed(() => props.item.selection)
 const editable = computed(
@@ -30,7 +32,7 @@ const editable = computed(
     !selection.value.reason.includes('缺少唯一身份')
 )
 watch(
-  () => busy.value || trackingBusy.value || sourceEditor.value || !!cancelledRecord.value,
+  () => busy.value || trackingBusy.value || alibabaPurchaseOpen.value || sourceEditor.value || !!cancelledRecord.value,
   (value) => emit('lock', value)
 )
 onBeforeUnmount(() => emit('lock', false))
@@ -54,6 +56,10 @@ function select(candidateId: string) {
     revision: selection.value.revision,
     candidate_id: candidateId,
   })
+}
+async function refreshPurchase() {
+  try { emit('updated', await fetchOrderDetail(props.order.id)) }
+  catch (exc) { error.value = exc instanceof Error ? exc.message : '采购记录刷新失败，请重新打开订单' }
 }
 async function copySpecification() {
   try {
@@ -123,10 +129,11 @@ async function copySpecification() {
           <button class="order-button order-primary" :disabled="busy" @click="select(candidate.id)">{{ selection.candidates.length > 1 ? '确认此采购来源' : '确认来源' }}</button>
         </div>
       </div>
-      <div v-if="selection.status === 'confirmed'" class="order-line-purchase">
+      <div v-if="selection.line_key" class="order-line-purchase">
         <p class="order-muted">{{ item.remaining_quantity > 0 ? `还需采购 ${item.remaining_quantity} 件` : '所需数量已登记齐全' }}</p>
+        <button v-if="order.state === 'pending_shipment' || item.records.length" class="order-button order-primary" :disabled="busy" @click="alibabaPurchaseOpen = true">1688 采购</button>
         <button
-          v-if="order.state === 'pending_shipment' && item.remaining_quantity > 0"
+          v-if="selection.status === 'confirmed' && order.state === 'pending_shipment' && item.remaining_quantity > 0"
           class="order-button order-primary" :disabled="busy"
           @click="$emit('purchase', selection.line_key)"
         >
@@ -137,6 +144,7 @@ async function copySpecification() {
       <p v-if="notice" class="order-success" role="status">{{ notice }}</p>
     </section>
     <OrderPurchaseRecords v-if="item.records.length" :order-id="order.id" :records="item.records" :busy="busy" @cancel="cancelledRecord = $event" @updated="emit('updated', $event)" @lock="trackingBusy = $event" />
+    <AlibabaSelfPurchaseDialog v-if="alibabaPurchaseOpen" :order-id="order.id" :line-key="selection.line_key" :title="item.line.title" @close="alibabaPurchaseOpen = false" @updated="refreshPurchase" />
     <OrderSourceDialog
       v-if="sourceEditor"
       :item="item"

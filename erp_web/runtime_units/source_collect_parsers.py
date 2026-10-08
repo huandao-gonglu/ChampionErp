@@ -244,6 +244,8 @@ def extract_1688_context_data(html: str) -> dict[str, Any]:
         skus.append(
             {
                 "id": _clean_attribute_value(item.get("skuId") or item.get("id"), 80),
+                "spec_id": _clean_attribute_value(item.get("specId"), 200),
+                "offer_id": str((data_json.get("offerBaseInfo") or {}).get("offerId") or temp_model.get("offerId") or ""),
                 "name": " / ".join(parts) or _clean_attribute_value(spec_key, 180) or f"SKU {index + 1}",
                 "options": {name: value for name, value in zip(prop_names, parts) if name},
                 "price": _clean_attribute_value(item.get("discountPrice") or item.get("price"), 80),

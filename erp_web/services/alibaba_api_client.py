@@ -1,4 +1,4 @@
-"""1688 买家只读 API；固定 AOP 网关、原生签名，凭据不进入结果或错误。"""
+"""1688 买家 API；固定网关、显式读写语义，凭据不进入结果或错误。"""
 
 from __future__ import annotations
 
@@ -31,6 +31,21 @@ class AlibabaApiError(ValueError):
     """可向用户展示的固定错误，不包含上游原文或请求凭据。"""
 
 
+class AlibabaApiRejected(AlibabaApiError):
+    """平台明确拒绝执行请求，不能与网络结果未知混为一谈。"""
+
+
+def _known_rejection(payload):
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("errorCode") or payload.get("error_code")
+    messages = {
+        "gw.APIACLDecline": "当前应用未获该 1688 接口权限（gw.APIACLDecline），请在开发者中心开通对应接口",
+        "500_005": "购买数量不满足该交易流程的起批限制（500_005），请调整数量后重新预览",
+    }
+    return messages.get(code) if isinstance(code, str) else None
+
+
 def validate_order_number(value: str) -> str:
     value = str(value or "").strip()
     if not re.fullmatch(r"[0-9]{1,30}", value):
@@ -56,14 +71,16 @@ class AlibabaApiClient:
         if api not in _NAMESPACES:
             raise AlibabaApiError("不支持的 1688 查询接口")
         order_number = validate_order_number(order_number)
-        path = f"param2/1/{_NAMESPACES[api]}/{api}/{self.app_key}"
-        params = {
-            "orderId": order_number, "webSite": "1688",
-            "access_token": self.access_token,
-            "_aop_timestamp": str(int(time.time() * 1000)),
-        }
+        params = {"orderId": order_number, "webSite": "1688"}
         if logistics_id:
             params["logisticsId"] = logistics_id
+        return self._request(api, params, namespace=_NAMESPACES[api], semantics="read")
+
+    def _request(self, api, values, *, namespace, semantics):
+        path = f"param2/1/{namespace}/{api}/{self.app_key}"
+        params = {key: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                  if isinstance(value, (dict, list, bool)) else str(value) for key, value in values.items()}
+        params.update(access_token=self.access_token, _aop_timestamp=str(int(time.time() * 1000)))
         signing = path + "".join(key + params[key] for key in sorted(params))
         params["_aop_signature"] = hmac.new(
             self.app_secret.encode(), signing.encode(), hashlib.sha1,
@@ -75,7 +92,7 @@ class AlibabaApiClient:
         )
         context = request_context(
             url, data=request.data, method="POST", timeout=self.timeout,
-            source="1688采购查询", account_id="app:" + self.app_key, semantics="read",
+            source="1688采购" + ("查询" if semantics == "read" else "下单"), account_id="app:" + self.app_key, semantics=semantics,
         )
         context = replace(context, interface=api, credential_id=credential_fingerprint(self.access_token))
         try:
@@ -85,7 +102,14 @@ class AlibabaApiClient:
             ) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
-            exc.close()
+            try:
+                rejected = _known_rejection(json.loads(exc.read()))
+            except (ValueError, UnicodeDecodeError):
+                rejected = None
+            finally:
+                exc.close()
+            if rejected:
+                raise AlibabaApiRejected(rejected) from None
             if exc.code == 401:
                 raise AlibabaApiError("1688 用户授权无效或已过期，请更新 Access Token 后重试") from None
             if exc.code == 403:
@@ -102,5 +126,8 @@ class AlibabaApiClient:
         # 订单详情实测返回字符串 "true"，物流接口返回 JSON 布尔值。
         success = payload.get("success") if isinstance(payload, dict) else None
         if not (success is True or success == "true"):
-            raise AlibabaApiError("1688 未返回成功结果，请检查订单号、账号归属及接口权限")
+            rejected = _known_rejection(payload)
+            if rejected:
+                raise AlibabaApiRejected(rejected)
+            raise AlibabaApiError("1688 未返回成功结果，请检查请求参数、账号归属及接口权限")
         return payload

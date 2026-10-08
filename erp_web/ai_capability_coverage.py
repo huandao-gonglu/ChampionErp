@@ -85,6 +85,13 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="订单采购", disposition="internal_only", reason="用户在销售订单详情核对采购预览、确认真实订单并查询原回执；支付通过官方收银台，不开放模型代下单。") for method, path in (
+        ("GET", "/api/orders/alibaba-purchase"),
+        ("POST", "/api/orders/alibaba-purchase/preview"),
+        ("POST", "/api/orders/alibaba-purchase/create"),
+        ("POST", "/api/orders/alibaba-purchase/reconcile"),
+        ("POST", "/api/orders/alibaba-purchase/cashier"),
+    )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="跨境履约", disposition="internal_only", reason="V1 由可信订单界面确认合作范围、面单、采购包裹及取消；后台执行确定性履约，不开放模型代报或代取消。") for method, path in (
         ("GET", "/api/crossborderbus/settings"),
         ("GET", "/api/crossborderbus/services"),

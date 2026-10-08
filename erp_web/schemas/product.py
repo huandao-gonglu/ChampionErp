@@ -14,6 +14,8 @@ class ProductSku(TypedDict, total=False):
 
     id: str
     source_sku_id: str
+    source_offer_id: str
+    source_spec_id: str
     name: str
     options: dict[str, str]
     cost_cny: str

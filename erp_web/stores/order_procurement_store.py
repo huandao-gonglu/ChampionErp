@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS order_purchases (
  request_id TEXT NOT NULL, request_hash TEXT NOT NULL, line_signature TEXT NOT NULL,
  quantity INTEGER NOT NULL, status TEXT NOT NULL, record_json TEXT NOT NULL,
  UNIQUE(order_id,request_id));
+CREATE TABLE IF NOT EXISTS order_purchase_reservations (
+ id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_key TEXT NOT NULL,
+ quantity INTEGER NOT NULL, binding_json TEXT NOT NULL, state TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS purchases_order ON order_purchases(order_id,status);
 """
 
@@ -190,6 +193,8 @@ class OrderProcurementStore:
             line = self._line(order, request.line_key)
             if order.state in {"cancelled", "delivered"}:
                 raise ValueError("已取消或已送达订单不能更改采购来源")
+            if self._reserved(conn, request.order_id, request.line_key):
+                raise ValueError("1688 采购正在提交或等待核验，暂不能修改来源")
             row = conn.execute(
                 "SELECT revision FROM order_sources WHERE order_id=? AND line_key=?",
                 (request.order_id, request.line_key),
@@ -239,7 +244,7 @@ class OrderProcurementStore:
                 "SELECT COALESCE(SUM(quantity),0) FROM order_purchases WHERE order_id=? AND line_key=? AND line_signature=? AND status='purchased'",
                 (request.order_id, request.line_key, line_signature(line)),
             ).fetchone()[0]
-            if purchased + request.quantity > line.quantity:
+            if purchased + self._reserved(conn, request.order_id, request.line_key) + request.quantity > line.quantity:
                 raise ValueError("采购数量超过订单剩余数量；请先检查已有采购记录")
             number = request.purchase_order_number.strip()
             if not number:
@@ -281,6 +286,9 @@ class OrderProcurementStore:
             if not row:
                 raise ValueError("采购记录不存在")
             record = PurchaseRecord.model_validate_json(row[0])
+            automatic = conn.execute("SELECT state FROM order_purchase_reservations WHERE id=?", (record.request_id,)).fetchone()
+            if automatic and automatic["state"] == "recorded":
+                raise ValueError("请先在 1688 取消订单，再从 1688 采购入口查询原订单以同步撤销")
             if record.status != "cancelled":
                 record.status, record.cancelled_at = "cancelled", utc_iso()
                 conn.execute(
@@ -288,3 +296,72 @@ class OrderProcurementStore:
                     (record.model_dump_json(), record.id),
                 )
             conn.commit()
+
+    @staticmethod
+    def _reserved(conn, order_id, line_key):
+        return conn.execute("SELECT COALESCE(SUM(quantity),0) FROM order_purchase_reservations WHERE order_id=? AND line_key=? AND state='reserved'", (order_id, line_key)).fetchone()[0]
+
+    def reserve_purchase(self, ident, binding, quantity, accounts):
+        """短事务占用待采购数量；远端请求期间不持有数据库锁。"""
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            order = self._order(conn, binding["order_id"], accounts)
+            line = self._line(order, binding["line_key"])
+            source = conn.execute("SELECT * FROM order_sources WHERE order_id=? AND line_key=?", (order.id, binding["line_key"])).fetchone()
+            if order.state != "pending_shipment" or not source or source["revision"] != binding["revision"] or source["line_signature"] != line_signature(line):
+                raise ValueError("订单状态或采购来源已变化，请重新预览")
+            if json.loads(source["source_json"]) != binding["source"]:
+                raise ValueError("采购来源已变化，请重新预览")
+            purchased = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM order_purchases WHERE order_id=? AND line_key=? AND line_signature=? AND status='purchased'", (order.id, binding["line_key"], line_signature(line))).fetchone()[0]
+            if purchased + self._reserved(conn, order.id, binding["line_key"]) + quantity > line.quantity:
+                raise ValueError("采购数量超过订单剩余数量；请先检查已有采购记录及待核验请求")
+            frozen = {**binding, "line_signature": line_signature(line)}
+            conn.execute("INSERT INTO order_purchase_reservations VALUES (?,?,?,?,?,'reserved')", (ident, order.id, binding["line_key"], quantity, json.dumps(frozen, ensure_ascii=False)))
+            conn.commit()
+
+    def validate_reserved_purchase(self, ident, accounts):
+        """预览网络请求结束后，发出写入前再次确认订单仍可采购。"""
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN")
+            reservation = conn.execute("SELECT * FROM order_purchase_reservations WHERE id=? AND state='reserved'", (ident,)).fetchone()
+            if not reservation:
+                raise ValueError("采购数量预留不存在，请重新预览")
+            binding = json.loads(reservation["binding_json"])
+            order = self._order(conn, reservation["order_id"], accounts)
+            line = self._line(order, reservation["line_key"])
+            if order.state != "pending_shipment" or binding["line_signature"] != line_signature(line):
+                raise ValueError("销售订单状态或商品已变化，不能继续采购")
+            purchased = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM order_purchases WHERE order_id=? AND line_key=? AND line_signature=? AND status='purchased'", (order.id, reservation["line_key"], line_signature(line))).fetchone()[0]
+            if purchased + self._reserved(conn, order.id, reservation["line_key"]) > line.quantity:
+                raise ValueError("销售订单数量已减少，请重新预览")
+
+    def release_purchase(self, ident):
+        with self.orders.connect() as conn:
+            conn.execute("UPDATE order_purchase_reservations SET state='released' WHERE id=? AND state='reserved'", (ident,))
+            conn.commit()
+
+    def complete_purchase(self, ident, number, accounts, *, cancelled=False):
+        """回填已创建的远端采购事实；重复回执不会重复记数量。"""
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            reservation = conn.execute("SELECT * FROM order_purchase_reservations WHERE id=?", (ident,)).fetchone()
+            if not reservation or reservation["state"] == "released":
+                raise ValueError("采购数量预留不存在，请核对原请求")
+            self._order(conn, reservation["order_id"], accounts)
+            binding = json.loads(reservation["binding_json"])
+            old = conn.execute("SELECT * FROM order_purchases WHERE order_id=? AND request_id=?", (reservation["order_id"], ident)).fetchone()
+            value = PurchaseRecord.model_validate_json(old["record_json"]) if old else PurchaseRecord(
+                id=uuid4().hex, line_key=reservation["line_key"], request_id=ident,
+                quantity=reservation["quantity"], purchase_order_number=number,
+                source=ProcurementSource.model_validate(binding["source"]), created_at=utc_iso())
+            if value.purchase_order_number != number:
+                raise ValueError("远端采购单号与已关联记录不一致")
+            if cancelled:
+                value.status, value.cancelled_at = "cancelled", utc_iso()
+            if not old:
+                conn.execute("INSERT INTO order_purchases VALUES (?,?,?,?,?,?,?,?,?)", (value.id, reservation["order_id"], value.line_key, ident, ident, binding["line_signature"], value.quantity, value.status, value.model_dump_json()))
+            elif cancelled:
+                conn.execute("UPDATE order_purchases SET status=?,record_json=? WHERE id=?", (value.status, value.model_dump_json(), value.id))
+            conn.execute("UPDATE order_purchase_reservations SET state=? WHERE id=?", ("cancelled" if value.status == "cancelled" else "recorded", ident))
+            conn.commit()
+            return value.id
