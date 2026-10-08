@@ -1,4 +1,7 @@
 import type { OrderPlatform } from './orders'
+import type { BackendAlibabaPurchaseQueryResult } from './workflow.generated'
+
+export type PurchaseLogisticsResults = Record<string, BackendAlibabaPurchaseQueryResult>
 
 export interface DeliverySource {
   fulfillment_model: string

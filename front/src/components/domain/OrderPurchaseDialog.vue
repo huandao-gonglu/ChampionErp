@@ -74,7 +74,7 @@ async function save() {
         required
       /></label>
       <label>采购单号<input v-model="purchaseNumber" class="order-input" required maxlength="200" /></label>
-      <p class="order-muted">仅保存采购记录，不会下单或修改平台状态。</p>
+      <p class="order-muted">保存采购记录后自动刷新一次 1688 采购进度；能够确认归属的运单会自动保存到国内包裹。</p>
       <p v-if="error" class="order-error" role="alert">{{ error }}</p>
     </form>
     <template #footer>

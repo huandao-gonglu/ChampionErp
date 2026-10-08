@@ -47,6 +47,19 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
 }
 
 describe('AuthSettingsPanel credential lifecycle', () => {
+  it('1688 独立授权只保存自身配置，采购查询测试保留长订单号并沿用保存的凭据', async () => {
+    const wrapper = mountPanel()
+    await wrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
+    expect(wrapper.get('[data-testid="test-1688-order"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="1688-test-order-number"]').setValue('3317081160226242182')
+    await wrapper.get('[data-testid="test-1688-order"]').trigger('click')
+    expect(wrapper.emitted('testApi')?.[0]).toEqual(['1688_order', expect.objectContaining({ app_key: '', app_secret: '', access_token: '' }), '3317081160226242182'])
+    await wrapper.get('[data-testid="transient-1688-access-token"]').setValue('replacement-token')
+    await wrapper.get('[data-testid="save-1688-settings"]').trigger('click')
+    expect(wrapper.emitted('saveAi')?.[0]?.[0]).toEqual({ '1688_api': expect.objectContaining({ access_token: 'replacement-token' }) })
+    expect((wrapper.get('[data-testid="transient-1688-access-token"]').element as HTMLInputElement).value).toBe('')
+  })
+
   it('API 设置仅提供汇率与 1688，不再显示或提交云途配置', async () => {
     const wrapper = mountPanel()
 

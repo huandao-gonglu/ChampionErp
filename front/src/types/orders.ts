@@ -1,3 +1,4 @@
+import type { BackendPurchaseProgressView } from './workflow.generated'
 export const ORDER_PAGE_SIZE = 9
 export type OrderPlatform = 'mercadolibre' | 'ozon' | 'yandex'
 export type OrderState =
@@ -127,6 +128,7 @@ export interface SalesSkuBinding {
   source: ProcurementSource
 }
 export interface PurchaseRecord {
+  progress?: BackendPurchaseProgressView | null
   id: string
   line_key: string
   request_id: string

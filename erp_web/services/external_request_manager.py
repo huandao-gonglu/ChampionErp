@@ -28,6 +28,13 @@ class BufferedResponse(io.BytesIO):
         return self.url
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """固定网关调用可在受控传输边界禁用 HTTP 重定向。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class ExternalRequestManager:
     def __init__(self, store):
         self.store = store
@@ -86,7 +93,11 @@ class ExternalRequestManager:
         if ctx.semantics == "write":
             self.store.block(ctx, RequestFailure("EXTERNAL_WRITE_OUTCOME_UNKNOWN", "同一操作的写入结果未知，请先查询业务回执", "request"))
 
-    def open(self, request, *, timeout=30, request_context_value=None, transport=None, source="external", **kwargs):
+    def open(self, request, *, timeout=30, request_context_value=None, transport=None, source="external", follow_redirects=True, **kwargs):
+        if not follow_redirects:
+            if transport is not None:
+                raise ValueError("禁用重定向时不能覆盖受控传输")
+            transport = urllib.request.build_opener(_NoRedirect()).open
         if isinstance(request,str):
             request = urllib.request.Request(request)
         ctx = request_context_value or request_context(request.full_url,dict(request.header_items()),data=request.data,

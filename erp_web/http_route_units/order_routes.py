@@ -9,6 +9,7 @@ from erp_web.facades import order_procurement_facade as procurement
 from erp_web.schemas.requests import validate_request_payload
 from erp_web.facades import order_address_note_facade as address_notes
 from erp_web.schemas.order_address_notes import AddressNoteConflict
+from erp_web.schemas.external_requests import ExternalRequestBlocked
 
 
 def _receive(handler, platform):
@@ -91,6 +92,24 @@ def handle_cancel_purchase(handler):
     _procurement_command(handler, "cancel-purchase")
 
 
+def handle_purchase_query(handler):
+    try:
+        body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+        handler.send_json(procurement.query_purchase(body))
+    except ExternalRequestBlocked:
+        handler.send_json({"ok": False, "error": "1688 请求已中断，请到授权配置的「中断与恢复」查看原因并处理"}, 409)
+    except (ValueError, TypeError) as exc:
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
+
+
+def handle_purchase_sync(handler):
+    try:
+        body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+        handler.send_json(procurement.sync_purchase(body))
+    except (ValueError, TypeError) as exc:
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
+
+
 def handle_address_note(handler):
     try:
         body = validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -105,6 +124,8 @@ def handle_address_note(handler):
 
 
 POST_HANDLERS = {
+    "/api/orders/purchase-sync": handle_purchase_sync,
+    "/api/orders/purchase-query": handle_purchase_query,
     "/api/orders/address-note": handle_address_note,
     "/api/mercadolibre/notifications": handle_mercadolibre,
     "/api/ozon/notifications": handle_ozon,

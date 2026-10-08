@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from erp_web.schemas.orders import OrderLine, OrderView, Platform
+from erp_web.schemas.alibaba_orders import PurchaseProgressView
 
 
 def safe_purchase_url(value: str) -> str:
@@ -89,6 +90,7 @@ class PurchaseRecord(BaseModel):
     created_at: str
     status: Literal["purchased", "cancelled"] = "purchased"
     cancelled_at: str = ""
+    progress: PurchaseProgressView | None = None
 
 
 class ProcurementLine(BaseModel):

@@ -1,10 +1,16 @@
 """订单采购装配；复用已授权店铺身份和唯一订单领域库。"""
 
+import logging
+
 from erp_web.context import get_context
+from erp_web.services.alibaba_purchase_sync_service import sync_purchase as sync_alibaba_purchase
+from erp_web.services.alibaba_purchase_assignment import supported
+from erp_web.schemas.order_procurement import PurchaseRecord
 from erp_web.runtime_units.order_source_bindings import bindings_from_publish_job
 from erp_web.runtime_units.publish_confirmation import resolve_publish_store_binding
 from erp_web.services.order_procurement_service import OrderProcurementService
 from erp_web.stores.order_procurement_store import OrderProcurementStore
+from erp_web.services.alibaba_purchase_query_service import query_purchase as query_alibaba_purchase
 
 
 def create_service(context):
@@ -34,10 +40,32 @@ def detail(order_id=""):
     return get_context().order_procurement.detail(order_id)
 
 
+def query_purchase(body):
+    context = get_context()
+    return query_alibaba_purchase(
+        context.order_procurement, context.config.load_app_config().get("1688_api", {}), body,
+    )
+
+
+def sync_purchase(body, *, once=False):
+    context = get_context()
+    return sync_alibaba_purchase(context.order_procurement, context.fulfillment,
+                                lambda: context.config.load_app_config().get("1688_api", {}), body, once=once)
+
+
 def command(action, body):
     service = get_context().order_procurement
-    return {
+    result = {
         "select-source": service.select_source,
         "record-purchase": service.record_purchase,
         "cancel-purchase": service.cancel_purchase,
     }[action](body)
+    if action == "record-purchase":
+        record = next((r for line in result["lines"] for r in line["records"] if r["request_id"] == body["request_id"]), None)
+        if record and supported(PurchaseRecord.model_validate(record)):
+            try:
+                return sync_purchase({"order_id": body["order_id"], "record_id": record["id"]}, once=True)
+            except Exception:
+                logging.getLogger(__name__).error("采购登记已保存，自动同步未完成")
+                return service.detail(body["order_id"])
+    return result

@@ -33,7 +33,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   saveAi: [config: UnknownRecord]
   testAi: [model: UnknownRecord]
-  testApi: [kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue?: string]
+  testApi: [kind: 'exchange_rate' | '1688' | '1688_order', config: UnknownRecord, testValue?: string]
   saveStore: [config: UnknownRecord]
   saveCurrency: [platform: Marketplace, currency: string]
   testAuth: [platform: Marketplace, scope?: string, config?: UnknownRecord]
@@ -58,6 +58,7 @@ const form = reactive({
   alibabaApiVersion: '1.0',
   alibabaApiTimeoutSeconds: '20',
   alibabaTestOfferId: '',
+  alibabaTestOrderNumber: '',
   mlAppId: '',
   mlClientSecret: '',
   mlRedirectUri: DEFAULT_ML_REDIRECT_URI,
@@ -70,11 +71,11 @@ const form = reactive({
 })
 
 const selectedStorePlatform = ref<Marketplace>('mercadolibre')
-type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting' | 'crossborderbus' | 'interruptions'
+type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting' | 'crossborderbus' | 'interruptions' | 'alibaba'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const authRoute = inject(routeLocationKey, undefined)
 watch(() => authRoute?.query.auth_section, section => {
-  if (section === 'crossborderbus' || section === 'interruptions') activeAuthSettingsTab.value = section
+  if (section === 'crossborderbus' || section === 'interruptions' || section === 'alibaba') activeAuthSettingsTab.value = section
 }, { immediate: true })
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
@@ -126,7 +127,8 @@ const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: st
   { key: 'ai_models', label: 'AI 模型', summary: '配置模型、能力和连接测试' },
   { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
   { key: 'stores', label: '店铺授权', summary: '按一级平台保存，子站点共用凭证' },
-  { key: 'apis', label: '采集与核价', summary: '汇率与 1688 采集 API' },
+  { key: 'alibaba', label: '1688 授权', summary: '采购订单、物流查询与商品采集' },
+  { key: 'apis', label: '核价汇率', summary: '汇率 API 与缓存设置' },
   { key: 'image_hosting', label: '图片托管', summary: 'S3 存储、默认目标与公开读取测试' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
   { key: 'crossborderbus', label: '跨境巴士', summary: '账号授权与默认履约方案' },
@@ -582,10 +584,17 @@ const alibabaAppSecretPlaceholder = computed(() => {
 })
 const alibabaAccessTokenPlaceholder = computed(() => {
   const masked = firstText(savedAlibabaApi.value.masked_access_token)
-  return masked ? `已配置 ${masked}；留空沿用` : 'Access Token / Session，可选'
+  return masked ? `已配置 ${masked}；留空沿用` : 'Access Token（采购订单与物流查询必填）'
 })
 const lastConfigResultChannel = computed(() => String(props.lastResult?.raw?.channel || ''))
-const showApiConfigResult = computed(() => ['exchange_rate', '1688'].includes(lastConfigResultChannel.value))
+const showApiConfigResult = computed(() => lastConfigResultChannel.value === 'exchange_rate')
+const showAlibabaConfigResult = computed(() => ['1688', '1688_order'].includes(lastConfigResultChannel.value))
+const alibabaOrderReady = computed(() => Boolean(
+  (form.alibabaAppKey.trim() || firstText(savedAlibabaApi.value.masked_app_key))
+  && (form.alibabaAppSecret.trim() || firstText(savedAlibabaApi.value.masked_app_secret))
+  && (form.alibabaAccessToken.trim() || firstText(savedAlibabaApi.value.masked_access_token))
+  && /^[0-9]{1,30}$/.test(form.alibabaTestOrderNumber.trim())
+))
 
 function useCaseBindingGenerationPayload(binding: UnknownRecord): UnknownRecord | null {
   const generation = asRecord(binding.generation)
@@ -807,6 +816,18 @@ function saveAiSettings() {
 function saveApiSettings() {
   if (props.loading) return
   emitAiSettingsAndClearTransientCredentials()
+}
+
+function saveAlibabaSettings() {
+  if (props.loading) return
+  emit('saveAi', { '1688_api': asRecord(aiPayload()['1688_api']) })
+  clearTransientPlatformApiCredentials()
+}
+
+function testAlibabaOrder() {
+  if (props.loading || !alibabaOrderReady.value) return
+  emit('testApi', '1688_order', asRecord(aiPayload()['1688_api']), form.alibabaTestOrderNumber.trim())
+  clearTransientPlatformApiCredentials()
 }
 
 function testAlibabaApi() {
@@ -2363,8 +2384,8 @@ function copy(text: string) {
         <section v-show="activeAuthSettingsTab === 'apis'" class="space-y-4">
           <div class="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
             <div>
-              <h3 class="font-semibold text-accent-950 dark:text-white">采集与核价 API</h3>
-              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">维护汇率服务与 1688 采集 API。</p>
+              <h3 class="font-semibold text-accent-950 dark:text-white">核价汇率 API</h3>
+              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">维护核价使用的汇率服务。</p>
             </div>
             <button data-testid="save-platform-api-settings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="props.loading" @click="saveApiSettings">保存 API 设置</button>
           </div>
@@ -2383,26 +2404,61 @@ function copy(text: string) {
                 </div>
               </div>
             </div>
+          </div>
 
+          <div v-if="showApiConfigResult && props.lastResult" class="rounded-lg p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-100 dark:ring-emerald-500/30' : 'bg-rose-50 text-rose-950 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-100 dark:ring-rose-500/30'">
+            <div class="font-semibold">最近 API 测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
+            <div class="mt-1 break-words">{{ props.lastResult.message || props.lastResult.error }}</div>
+            <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700 dark:text-blue-200">下一步：{{ props.lastResult.nextAction }}</div>
+            <pre class="mt-3 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(props.lastResult.raw, null, 2) }}</pre>
+          </div>
+        </section>
+
+        <section v-show="activeAuthSettingsTab === 'alibaba'" class="space-y-4">
+          <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 class="font-semibold text-accent-950 dark:text-white">1688 授权</h3>
+                <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">使用采购账号的授权查询订单和物流。凭据留空沿用已保存值。</p>
+              </div>
+              <button data-testid="save-1688-settings" class="btn btn-primary py-1.5 text-sm" :disabled="props.loading" @click="saveAlibabaSettings">保存 1688 授权</button>
+            </div>
+            <div class="mt-3 grid gap-3 md:grid-cols-2">
+              <label class="space-y-1 text-sm">AppKey
+                <input v-model="form.alibabaAppKey" aria-label="1688 AppKey" data-testid="transient-1688-app-key" class="input" :placeholder="alibabaAppKeyPlaceholder" autocomplete="off" spellcheck="false" />
+              </label>
+              <label class="space-y-1 text-sm">AppSecret
+                <input v-model="form.alibabaAppSecret" aria-label="1688 AppSecret" data-testid="transient-1688-app-secret" type="password" class="input" :placeholder="alibabaAppSecretPlaceholder" autocomplete="off" spellcheck="false" />
+              </label>
+              <label class="space-y-1 text-sm md:col-span-2">Access Token
+                <input v-model="form.alibabaAccessToken" aria-label="1688 Access Token" data-testid="transient-1688-access-token" type="password" class="input" :placeholder="alibabaAccessTokenPlaceholder" autocomplete="off" spellcheck="false" />
+              </label>
+              <label class="space-y-1 text-sm">请求超时（秒）
+                <input v-model="form.alibabaApiTimeoutSeconds" class="input" type="number" min="3" max="30" placeholder="20" />
+              </label>
+            </div>
+            <p class="mt-3 text-sm text-accent-500">AppKey、AppSecret 和 Access Token 均为采购查询必填项；Access Token 过期后需更新。采购账号须有对应订单及物流接口权限。</p>
+            <div class="mt-4 flex flex-wrap items-center gap-3">
+              <input v-model="form.alibabaTestOrderNumber" data-testid="1688-test-order-number" aria-label="测试采购订单号" class="input flex-1" placeholder="填写该采购账号的 1688 订单号" inputmode="numeric" />
+              <button data-testid="test-1688-order" class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !alibabaOrderReady" @click="testAlibabaOrder">测试订单查询</button>
+            </div>
+          </div>
+          <details>
+            <summary class="cursor-pointer text-sm">商品采集 API 设置</summary>
             <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <h4 class="font-semibold text-accent-950 dark:text-white">1688 采集 API</h4>
                 <button data-testid="test-1688-api" class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !alibabaApiReady" :title="alibabaApiReady ? '' : alibabaApiHint" @click="testAlibabaApi">测试</button>
               </div>
               <div class="mt-3 grid gap-3 md:grid-cols-2">
-                <input v-model="form.alibabaAppKey" data-testid="transient-1688-app-key" class="input" :placeholder="alibabaAppKeyPlaceholder" autocomplete="off" spellcheck="false" />
-                <input v-model="form.alibabaAppSecret" data-testid="transient-1688-app-secret" type="password" class="input" :placeholder="alibabaAppSecretPlaceholder" autocomplete="off" spellcheck="false" />
-                <input v-model="form.alibabaAccessToken" data-testid="transient-1688-access-token" type="password" class="input md:col-span-2" :placeholder="alibabaAccessTokenPlaceholder" autocomplete="off" spellcheck="false" />
                 <input v-model="form.alibabaApiMethod" class="input" placeholder="alibaba.product.get" />
                 <input v-model="form.alibabaApiVersion" class="input" placeholder="API 版本" />
                 <input v-model="form.alibabaApiBaseUrl" class="input md:col-span-2 font-mono text-xs" placeholder="API 请求地址" />
-                <input v-model="form.alibabaApiTimeoutSeconds" class="input" placeholder="超时秒数" />
                 <input v-model="form.alibabaTestOfferId" class="input md:col-span-2" placeholder="测试商品 ID / 详情链接，可选" />
               </div>
             </div>
-          </div>
-
-          <div v-if="showApiConfigResult && props.lastResult" class="rounded-lg p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-100 dark:ring-emerald-500/30' : 'bg-rose-50 text-rose-950 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-100 dark:ring-rose-500/30'">
+          </details>
+          <div v-if="showAlibabaConfigResult && props.lastResult" class="rounded-lg p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-100 dark:ring-emerald-500/30' : 'bg-rose-50 text-rose-950 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-100 dark:ring-rose-500/30'">
             <div class="font-semibold">最近 API 测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
             <div class="mt-1 break-words">{{ props.lastResult.message || props.lastResult.error }}</div>
             <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700 dark:text-blue-200">下一步：{{ props.lastResult.nextAction }}</div>

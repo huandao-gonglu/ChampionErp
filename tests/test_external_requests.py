@@ -41,6 +41,39 @@ def rejected(status, body, headers=None):
     return send
 
 
+def test_fixed_gateway_can_disable_redirects_at_managed_boundary():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    paths = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            paths.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "/must-not-follow")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as error:
+            get_context().external_requests.open(
+                f"http://127.0.0.1:{server.server_port}/gateway", timeout=2,
+                request_context_value=context(), follow_redirects=False,
+            )
+        assert error.value.code == 302
+        error.value.close()
+        assert paths == ["/gateway"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(3)
+
+
 def test_disabled_account_blocks_queued_cross_module_and_survives_restart():
     store = ExternalRequestStore(get_context().paths.data_dir / "external-requests.sqlite3")
     manager = ExternalRequestManager(store)

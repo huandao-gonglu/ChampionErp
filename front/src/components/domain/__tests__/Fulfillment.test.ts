@@ -1,16 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { DOMWrapper, enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAppStore } from '@/stores/app'
 import FulfillmentParcelDialog from '../FulfillmentParcelDialog.vue'
 import FulfillmentPlanFields from '../FulfillmentPlanFields.vue'
 import OrderFulfillmentPanel from '../OrderFulfillmentPanel.vue'
+import OrderDetailPanel from '../OrderDetailPanel.vue'
+import OrderPurchaseTracking from '../OrderPurchaseTracking.vue'
+import { fetchOrderDetail, syncPurchase } from '@/api/orders'
+import type { PurchaseLogisticsResults } from '@/types/fulfillment'
 import { fetchBusServices, fetchFulfillment, fulfillmentCommand } from '@/api/fulfillment'
 import type { FulfillmentDetail, FulfillmentPlan } from '@/types/fulfillment'
 import type { OrderDetail } from '@/types/orders'
 
 vi.mock('@/api/fulfillment', () => ({ fetchBusServices: vi.fn(), fetchBusSettings: vi.fn(), fetchFulfillment: vi.fn(), fulfillmentCommand: vi.fn(), uploadFulfillmentLabel: vi.fn() }))
+vi.mock('@/api/orders', () => ({ fetchOrderDetail: vi.fn(), syncPurchase: vi.fn(), procurementCommand: vi.fn() }))
 enableAutoUnmount(afterEach)
 afterEach(() => vi.useRealTimers())
 const source = { supplier: '供应商', source_platform: '1688', product_url: 'https://detail.1688.com/offer/1.html', source_sku_id: 'S1', specification: '银色', sku_url: '', sku_url_verified: false }
@@ -21,6 +26,17 @@ const order: OrderDetail = {
 }
 function detail(): FulfillmentDetail {
   return { erp_order_id: order.order.id, revision: 1, busy: false, editing: false, editable: true, plan_editable: true, create_unknown: false, cancel_requested: false, cancel_rejected: false, crossborderbus_order_id: null, fulfillment_status: 'NEW', operation: '', error_message: '', blocked_reason: '请补齐全部商品的国内包裹及数量。', last_attempt_at: '', last_synced_at: '', next_attempt: 0, platform_label: '', platform_tracking_number: '', label_fetch_supported: true, label_fetch_reason: '', label_error: '', label_attempt_at: '', country: 'RU', plan: { section_id: 1, warehouse_id: 10, service_ids: [2] }, override: false, rule: null, section_name: '合作渠道', warehouse_name: 'A仓', delivery: { fulfillment_model: 'FBS', warehouse_id: 'W1', warehouse_name: '平台仓', method_id: 'M1', method_name: '平台配送', carrier: '', country: 'RU', shipment_id: '', tracking_number: '', label_url: '' }, parcels: [] }
+}
+function logistics(multiple = false): PurchaseLogisticsResults {
+  return { purchase1: { ok: true, record_id: 'purchase1', order_number: 'PO1', checked_at: '2026-10-08T04:00:00Z', order: null, logistics_warning: '', logistics: [
+    { logistics_id: 'LP1', company: '圆通速递(YTO)', tracking_number: 'YT123', status: 'SIGN', status_label: '已签收', steps: [] },
+    ...(multiple ? [{ logistics_id: 'LP2', company: '顺丰', tracking_number: 'SF456', status: 'TRANSPORT', status_label: '运输中', steps: [] }] : []),
+  ] } }
+}
+function withProgress(results: PurchaseLogisticsResults): OrderDetail {
+  const value = structuredClone(order)
+  value.lines[0]!.records[0]!.progress = { state: 'pending_assignment', attempted_at: '', message: '请确认包裹分配', error: '', data: results.purchase1! }
+  return value
 }
 const global = { stubs: { teleport: true, RouterLink: { template: '<a><slot /></a>' } } }
 beforeEach(() => {
@@ -38,6 +54,78 @@ async function fillParcel(wrapper: ReturnType<typeof mount>) {
 }
 
 describe('跨境履约操作', () => {
+  it('刷新采购进度后切换页签仍显示保存的物流，重新打开也保留', async () => {
+    vi.mocked(fetchOrderDetail).mockResolvedValue(order)
+    vi.mocked(syncPurchase).mockResolvedValue(withProgress(logistics()))
+    const wrapper = mount(OrderDetailPanel, { props: { orderId: order.order.id }, attachTo: document.body, global: { stubs: { RouterLink: global.stubs.RouterLink } } })
+    await flushPromises()
+    const body = new DOMWrapper(document.body)
+    await body.findAll('button').find(button => button.text() === '刷新采购进度')!.trigger('click')
+    await flushPromises()
+    expect(body.text()).toContain('YT123')
+    await body.findAll('button').find(button => button.text() === '跨境履约')!.trigger('click')
+    await flushPromises()
+    expect(body.text()).toContain('YT123')
+    expect(body.text()).toContain('确认包裹分配')
+    expect(wrapper.findComponent(FulfillmentParcelDialog).exists()).toBe(false)
+    wrapper.unmount()
+    vi.mocked(fetchOrderDetail).mockResolvedValue(withProgress(logistics()))
+    mount(OrderDetailPanel, { props: { orderId: order.order.id }, attachTo: document.body, global: { stubs: { RouterLink: global.stubs.RouterLink } } })
+    await flushPromises()
+    expect(body.text()).toContain('YT123')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+  })
+
+  it('多个运单需选择，不能自动套用第一个；重复打开不重复添加已有包裹', async () => {
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: withProgress(logistics(true)), value: detail() }, global })
+    expect((wrapper.get('input[maxlength="100"]').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('select[aria-label="选择已查询运单"]').setValue('1')
+    expect((wrapper.get('input[maxlength="100"]').element as HTMLInputElement).value).toBe('SF456')
+    const saved = { ...detail(), parcels: [{ id: 'existing', line_key: 'line1', purchase_record_id: 'purchase1', carrier: '申通', tracking_number: 'MANUAL123', quantity: 2 }] }
+    const reopened = mount(FulfillmentParcelDialog, { props: { order: withProgress(logistics()), value: saved }, global })
+    expect(reopened.findAll('input[maxlength="100"]')).toHaveLength(1)
+    expect((reopened.get('input[maxlength="100"]').element as HTMLInputElement).value).toBe('MANUAL123')
+    expect(saved.parcels[0]!.tracking_number).toBe('MANUAL123')
+  })
+
+  it('失效采购记录和订单号不匹配的查询结果不带入；锁定资料不自动打开编辑', async () => {
+    const stale = logistics()
+    stale.purchase1!.order_number = 'another-order'
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: withProgress(stale), value: detail() }, global })
+    expect((wrapper.get('input[maxlength="100"]').element as HTMLInputElement).value).toBe('')
+    const cancelledOrder = structuredClone(order)
+    cancelledOrder.lines[0]!.records[0]!.status = 'cancelled'
+    const cancelled = mount(FulfillmentParcelDialog, { props: { order: cancelledOrder, value: detail() }, global })
+    expect(cancelled.find('input[maxlength="100"]').exists()).toBe(false)
+    expect(cancelled.text()).toContain('尚无有效采购记录')
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), editable: false, busy: true })
+    const panel = mount(OrderFulfillmentPanel, { props: { order: withProgress(logistics()) }, global })
+    await flushPromises()
+    expect(panel.findComponent(FulfillmentParcelDialog).exists()).toBe(false)
+    expect(panel.findAll('button').some(button => button.text() === '确认包裹分配')).toBe(false)
+  })
+
+  it('多个采购刷新与包裹弹窗共用关闭锁，单个刷新结束不会提前解锁', async () => {
+    const value = withProgress(logistics())
+    value.lines[0]!.records.push({ ...value.lines[0]!.records[0]!, id: 'purchase2' })
+    const panel = mount(OrderFulfillmentPanel, { props: { order: value }, global })
+    await flushPromises()
+    const queries = panel.findAllComponents(OrderPurchaseTracking)
+    queries[0]!.vm.$emit('lock', true)
+    queries[1]!.vm.$emit('lock', true)
+    await flushPromises()
+    queries[0]!.vm.$emit('lock', false)
+    await flushPromises()
+    expect(panel.emitted('lock')?.at(-1)).toEqual([true])
+    await panel.findAll('button').find(button => button.text() === '确认包裹分配')!.trigger('click')
+    queries[1]!.vm.$emit('lock', false)
+    await flushPromises()
+    expect(panel.emitted('lock')?.at(-1)).toEqual([true])
+    panel.findComponent(FulfillmentParcelDialog).vm.$emit('close')
+    await flushPromises()
+    expect(panel.emitted('lock')?.at(-1)).toEqual([false])
+  })
+
   it('没有国内单号不能推断供应商未发货；面单与包裹分别展示记录事实', async () => {
     const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
     await flushPromises()

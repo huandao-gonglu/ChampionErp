@@ -207,6 +207,8 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
     load_env(app_dir)
     cfg = app_config if isinstance(app_config, dict) else {}
     public = ai_model_config.public_ai_config(cfg)
+    # 授权页沿用此读写入口；保存后立即回传已确认的掩码，避免必须刷新页面才能测试。
+    public["1688_api"] = mask_nested_config(cfg.get("1688_api", {}))
     public["ai_use_case_prompts"] = ai_prompt_templates.public_ai_use_case_prompts(app_dir, cfg)
     public["storage"] = {
         "config_dir": str(config_dir(app_dir)),

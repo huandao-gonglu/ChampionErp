@@ -14,6 +14,7 @@ from erp_web.schemas.order_procurement import (
 )
 from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
 from erp_web.stores.order_notification_store import OrderNotificationStore
+from erp_web.stores.purchase_progress_store import PurchaseProgressStore
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sales_sku_bindings (
@@ -43,6 +44,7 @@ class OrderProcurementStore:
         with orders.connect() as conn:
             conn.executescript(SCHEMA)
             conn.commit()
+        self.purchase_progress = PurchaseProgressStore(self)
 
     @staticmethod
     def _order(conn, order_id, accounts):
@@ -68,6 +70,22 @@ class OrderProcurementStore:
     def order(self, order_id, accounts):
         with self.orders.connect() as conn:
             return self._order(conn, order_id, accounts)
+
+    def checked_purchase(self, conn, order_id, record_id, accounts):
+        order = self._order(conn, order_id, accounts)
+        row = conn.execute("SELECT * FROM order_purchases WHERE order_id=? AND id=?", (order_id, record_id)).fetchone()
+        if not row:
+            raise ValueError("采购记录不存在或不属于该订单")
+        if row["status"] != "purchased":
+            raise ValueError("采购记录已作废，不能查询")
+        if row["line_signature"] != line_signature(self._line(order, row["line_key"])):
+            raise ValueError("订单商品身份已变化，请核对采购记录")
+        return json.loads(row["record_json"])
+
+    def purchase_record(self, order_id, record_id, accounts):
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN")
+            return PurchaseRecord.model_validate(self.checked_purchase(conn, order_id, record_id, accounts))
 
     def add_bindings(self, bindings: list[SalesSkuBinding]):
         with self.orders.connect() as conn:
@@ -121,7 +139,7 @@ class OrderProcurementStore:
                 (order_id, key),
             ).fetchone()
             records = conn.execute(
-                "SELECT * FROM order_purchases WHERE order_id=? AND line_key=? ORDER BY rowid",
+                "SELECT p.*, s.value AS progress_json FROM order_purchases p LEFT JOIN purchase_progress s ON s.record_id=p.id WHERE p.order_id=? AND p.line_key=? ORDER BY p.rowid",
                 (order_id, key),
             ).fetchall()
             selected = dict(row) if row else None
@@ -133,7 +151,7 @@ class OrderProcurementStore:
             )
             return (
                 selected,
-                [PurchaseRecord.model_validate_json(r["record_json"]) for r in records],
+                [PurchaseRecord.model_validate({**json.loads(r["record_json"]), "progress": json.loads(r["progress_json"]) if r["progress_json"] else None}) for r in records],
                 purchased,
             )
 

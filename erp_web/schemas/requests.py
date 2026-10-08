@@ -264,6 +264,8 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/orders/select-source": RequestContract(fields={"order_id": STRING, "line_key": STRING, "revision": FieldRule("integer", minimum=0), "candidate_id": STRING, "source": OBJECT}, required=("order_id", "line_key", "revision")),
     "/api/orders/record-purchase": RequestContract(fields={"order_id": STRING, "line_key": STRING, "revision": FieldRule("integer", minimum=1), "request_id": STRING, "quantity": FieldRule("integer", minimum=1), "purchase_order_number": STRING}, required=("order_id", "line_key", "revision", "request_id", "quantity", "purchase_order_number")),
     "/api/orders/cancel-purchase": RequestContract(fields={"order_id": STRING, "record_id": STRING}, required=("order_id", "record_id")),
+    "/api/orders/purchase-sync": RequestContract(fields={"order_id": STRING, "record_id": STRING}, required=("order_id", "record_id")),
+    "/api/orders/purchase-query": RequestContract(fields={"order_id": STRING, "record_id": STRING, "kind": FieldRule("enum", choices=frozenset({"order", "logistics"}))}, required=("order_id", "record_id")),
     "/api/orders/configure": RequestContract(fields={"public_url": STRING}, required=("public_url",)),
     "/api/mercadolibre/real-auth-test": _PRODUCT,
     "/api/mercadolibre/refresh-token": _EMPTY,

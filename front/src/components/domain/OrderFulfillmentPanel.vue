@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import OrderPurchaseTracking from './OrderPurchaseTracking.vue'
 import FulfillmentParcelDialog from './FulfillmentParcelDialog.vue'
 import FulfillmentPlanFields from './FulfillmentPlanFields.vue'
 import { fetchBusSettings, fetchFulfillment, fulfillmentCommand, uploadFulfillmentLabel } from '@/api/fulfillment'
@@ -11,7 +12,10 @@ import { fulfillmentStatusNames } from '@/types/fulfillment'
 import type { OrderDetail } from '@/types/orders'
 import { orderProcessingProgress, procurementProgress } from './orderPresentation'
 const props = defineProps<{ order: OrderDetail }>()
-const emit = defineEmits<{ updated: []; lock: [boolean] }>()
+const emit = defineEmits<{ updated: []; lock: [boolean]; purchaseUpdated: [OrderDetail] }>()
+const purchaseRecords = computed(() => props.order.lines.flatMap(line => line.records).filter(record => record.status === 'purchased'))
+const needsAssignment = computed(() => purchaseRecords.value.some(record => ['pending_assignment', 'conflict'].includes(record.progress?.state || '')))
+function purchaseUpdated(detail: OrderDetail) { emit('purchaseUpdated', detail); void load() }
 const value = ref<FulfillmentDetail | null>(null)
 const app = useAppStore()
 watch(() => value.value?.label_error, (message, previous) => {
@@ -21,6 +25,12 @@ const error = ref('')
 const pending = ref(false)
 const refreshing = ref(false)
 const modal = ref<'' | 'label' | 'parcels' | 'plan' | 'cancel' | 'error'>('')
+const purchaseLocks = reactive(new Set<string>())
+function purchaseLock(id: string, busy: boolean) {
+  if (busy) purchaseLocks.add(id)
+  else purchaseLocks.delete(id)
+}
+watch(() => pending.value || !!modal.value || purchaseLocks.size > 0, busy => emit('lock', busy), { flush: 'sync' })
 const labelUrl = ref('')
 const trackingNumber = ref('')
 const country = ref('')
@@ -52,13 +62,13 @@ async function load(quiet = false) {
 async function command(action: FulfillmentAction, body: Record<string, unknown> = {}) {
   if (!value.value || pending.value) return false
   loadGeneration++
-  pending.value = true; emit('lock', true); error.value = ''
+  pending.value = true; error.value = ''
   try {
     const result = await fulfillmentCommand(action, value.value.erp_order_id, value.value.revision, body)
     if (!disposed) { value.value = result; emit('updated') }
     return true
   } catch (exc) { const message = exc instanceof Error ? exc.message : '履约操作失败'; await load(); error.value = message; return false }
-  finally { pending.value = false; emit('lock', !!modal.value) }
+  finally { pending.value = false }
 }
 async function open(which: typeof modal.value) {
   if (!value.value) return
@@ -72,13 +82,13 @@ async function open(which: typeof modal.value) {
     } catch (exc) { error.value = exc instanceof Error ? exc.message : '合作仓库读取失败'; await command('resume'); return }
   }
   if (which === 'label') { labelUrl.value = value.value.platform_label; trackingNumber.value = value.value.platform_tracking_number; country.value = value.value.country }
-  modal.value = which; emit('lock', true)
+  modal.value = which
 }
 async function close() {
   if (pending.value) return
   clearInterval(keepEditing)
   if (modal.value === 'plan' && !await command('resume')) return
-  modal.value = ''; emit('lock', false)
+  modal.value = ''
 }
 async function uploadLabel(event: Event) {
   const input = event.target as HTMLInputElement
@@ -93,8 +103,8 @@ async function uploadLabel(event: Event) {
   finally { pending.value = false; input.value = '' }
 }
 async function saveLabel() { if (await command('label', { label: { url: labelUrl.value, tracking_number: trackingNumber.value }, country: country.value.trim().toUpperCase() })) void close() }
-async function savePlan() { if (await command('plan', { plan: plan.value })) { clearInterval(keepEditing); modal.value = ''; emit('lock', false) } }
-function parcelsSaved(result: FulfillmentDetail) { loadGeneration++; value.value = result; modal.value = ''; emit('lock', false); emit('updated') }
+async function savePlan() { if (await command('plan', { plan: plan.value })) { clearInterval(keepEditing); modal.value = '' } }
+function parcelsSaved(result: FulfillmentDetail) { loadGeneration++; value.value = result; modal.value = ''; emit('updated') }
 async function cancel() { if (await command('cancel')) void close() }
 function at(date: string) { return date ? new Date(date).toLocaleString('zh-CN') : '尚未同步' }
 async function syncLatest() {
@@ -102,7 +112,7 @@ async function syncLatest() {
   refreshing.value = true
   try {
     await load()
-    if (!disposed && !error.value && value.value && !value.value.busy && (value.value.crossborderbus_order_id || value.value.create_unknown)) await command('sync')
+    if (!disposed && !error.value && !modal.value && value.value && !value.value.busy && (value.value.crossborderbus_order_id || value.value.create_unknown)) await command('sync')
   } finally { refreshing.value = false }
 }
 async function refreshLocal() {
@@ -143,8 +153,9 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
         <p v-else-if="!value.platform_label" class="order-muted mt-3">{{ value.label_fetch_supported ? '默认自动预报开启时，方案和国内包裹齐备后会自动获取面单；也可点击上方按钮立即获取。' : value.label_fetch_reason }}</p>
       </section>
       <section class="order-section">
-        <div class="order-row"><h4>国内包裹</h4><button v-if="value.editable" class="order-button" :disabled="pending" @click="open('parcels')">{{ value.parcels.length ? '管理包裹' : '录入包裹' }}</button></div>
+        <div class="order-row"><h4>国内包裹</h4><button v-if="value.editable" class="order-button" :disabled="pending" @click="open('parcels')">{{ needsAssignment ? '确认包裹分配' : value.parcels.length ? '管理包裹' : '录入包裹' }}</button></div>
         <p v-if="!value.parcels.length" class="order-muted mt-3">尚未录入国内快递单号。供应商提供单号后，关联采购记录并填写数量。</p>
+        <OrderPurchaseTracking v-for="record in purchaseRecords" :key="record.id" :order-id="order.order.id" :record="record" @updated="purchaseUpdated" @lock="purchaseLock(record.id, $event)" />
         <p v-for="parcel in value.parcels" :key="parcel.id" class="mt-3">{{ parcel.carrier }} {{ parcel.tracking_number }} · {{ parcel.quantity }} 件</p>
       </section>
       <div class="order-row mt-6"><p class="order-muted">最近成功同步仓库状态：{{ at(value.last_synced_at) }}</p><button class="order-button" :disabled="pending || refreshing" @click="syncLatest">{{ pending ? '处理中…' : value.create_unknown ? '核实创建结果' : value.cancel_requested && value.fulfillment_status !== 'CANCELLED' ? '核实取消结果' : '同步' }}</button></div>

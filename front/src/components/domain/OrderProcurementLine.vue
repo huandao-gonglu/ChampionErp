@@ -19,6 +19,7 @@ const emit = defineEmits<{
 const error = ref('')
 const notice = ref('')
 const busy = ref(false)
+const trackingBusy = ref(false)
 const sourceEditor = ref(false)
 const cancelledRecord = ref<PurchaseRecord | null>(null)
 const selection = computed(() => props.item.selection)
@@ -29,7 +30,7 @@ const editable = computed(
     !selection.value.reason.includes('缺少唯一身份')
 )
 watch(
-  () => busy.value || sourceEditor.value || !!cancelledRecord.value,
+  () => busy.value || trackingBusy.value || sourceEditor.value || !!cancelledRecord.value,
   (value) => emit('lock', value)
 )
 onBeforeUnmount(() => emit('lock', false))
@@ -135,7 +136,7 @@ async function copySpecification() {
       <p v-if="error" class="order-error" role="alert">{{ error }}</p>
       <p v-if="notice" class="order-success" role="status">{{ notice }}</p>
     </section>
-    <OrderPurchaseRecords v-if="item.records.length" :records="item.records" :busy="busy" @cancel="cancelledRecord = $event" />
+    <OrderPurchaseRecords v-if="item.records.length" :order-id="order.id" :records="item.records" :busy="busy" @cancel="cancelledRecord = $event" @updated="emit('updated', $event)" @lock="trackingBusy = $event" />
     <OrderSourceDialog
       v-if="sourceEditor"
       :item="item"

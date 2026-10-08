@@ -122,7 +122,7 @@ class FulfillmentStore:
             for row in rows
         }
 
-    def change(self, order_id, revision, changes, *, allow_busy=False):
+    def change(self, order_id, revision, changes, *, allow_busy=False, guard=None):
         with self.orders.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM fulfillments WHERE id=?", (order_id,)).fetchone()
@@ -130,6 +130,8 @@ class FulfillmentStore:
                 raise ValueError("履约资料已更新，请刷新后再操作")
             if not allow_busy and row["claim"] and row["lease_until"] > time.time():
                 raise ValueError("履约操作正在执行，请稍后重试")
+            if guard is not None:
+                guard(conn)
             value = json.loads(row["value"])
             value.update(changes)
             conn.execute("UPDATE fulfillments SET value=?,revision=revision+1 WHERE id=?", (json.dumps(value, ensure_ascii=False), order_id))

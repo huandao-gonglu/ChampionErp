@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "front/src/types/workflow.generated.ts"
 WORKFLOW_TYPES = ROOT / "front/src/types/workflow.ts"
 SCHEMA_MODULES = (
+    "erp_web.schemas.alibaba_orders",
     "erp_web.schemas.api",
     "erp_web.schemas.collection",
     "erp_web.schemas.config",

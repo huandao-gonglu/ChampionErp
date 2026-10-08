@@ -6,6 +6,44 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 4 as const
 
+export interface BackendAlibabaOrderStatus {
+  order_number: string
+  status: string
+  status_label: string
+}
+
+export interface BackendAlibabaLogisticsStep {
+  time: string
+  description: string
+}
+
+export interface BackendAlibabaParcel {
+  logistics_id: string
+  company: string
+  tracking_number: string
+  status: string
+  status_label: string
+  steps: Array<BackendAlibabaLogisticsStep>
+}
+
+export interface BackendAlibabaPurchaseQueryResult {
+  ok: boolean
+  record_id: string
+  order_number: string
+  checked_at: string
+  order: BackendAlibabaOrderStatus | null
+  logistics: Array<BackendAlibabaParcel> | null
+  logistics_warning: string
+}
+
+export interface BackendPurchaseProgressView {
+  state: "syncing" | "synced" | "pending_assignment" | "conflict" | "locked" | "manual" | "error"
+  attempted_at: string
+  message: string
+  error: string
+  data: BackendAlibabaPurchaseQueryResult | null
+}
+
 export interface BackendApiResponse {
   schemaVersion?: number
   ok?: boolean

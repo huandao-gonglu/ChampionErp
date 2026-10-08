@@ -1,8 +1,17 @@
 <script setup lang="ts">
-import type { PurchaseRecord } from '@/types/orders'
+import { onBeforeUnmount, reactive } from 'vue'
+import type { OrderDetail, PurchaseRecord } from '@/types/orders'
 import { dateTime } from './orderPresentation'
-defineProps<{ records: PurchaseRecord[]; busy: boolean }>()
-defineEmits<{ cancel: [record: PurchaseRecord] }>()
+import OrderPurchaseTracking from './OrderPurchaseTracking.vue'
+defineProps<{ orderId: string; records: PurchaseRecord[]; busy: boolean }>()
+const emit = defineEmits<{ cancel: [record: PurchaseRecord]; updated: [detail: OrderDetail]; lock: [boolean] }>()
+const queries = reactive(new Set<string>())
+function queryLock(id: string, busy: boolean) {
+  if (busy) queries.add(id)
+  else queries.delete(id)
+  emit('lock', queries.size > 0)
+}
+onBeforeUnmount(() => emit('lock', false))
 </script>
 <template>
   <details class="order-purchase-history">
@@ -22,6 +31,7 @@ defineEmits<{ cancel: [record: PurchaseRecord] }>()
             <button v-if="record.status !== 'cancelled'" class="order-link" :disabled="busy" @click="$emit('cancel', record)">作废</button>
           </div>
         </div>
+        <OrderPurchaseTracking :order-id="orderId" :record="record" @updated="$emit('updated', $event)" @lock="queryLock(record.id, $event)" />
       </article>
     </section>
   </details>

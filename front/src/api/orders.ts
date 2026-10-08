@@ -1,6 +1,11 @@
 import { ORDER_PAGE_SIZE } from '@/types/orders'
 import { apiClient } from '@/api/client'
 import type { OrderIntegrations, OrdersPage, OrderSummary, OrderDetail, OrderAddressNote } from '@/types/orders'
+export async function syncPurchase(orderId: string, recordId: string, signal?: AbortSignal): Promise<OrderDetail> {
+  return (await apiClient.post<OrderDetail>('/api/orders/purchase-sync', {
+    order_id: orderId, record_id: recordId,
+  }, { timeout: 110000, signal })).data
+}
 
 export async function fetchOrders(query: {
   platform: string

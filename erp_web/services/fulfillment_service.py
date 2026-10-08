@@ -20,10 +20,11 @@ def order_model(order):
 
 
 class FulfillmentService:
-    def __init__(self, store, client, accounts_provider, detail_provider, *, label_provider=None, start_worker=True):
+    def __init__(self, store, client, accounts_provider, detail_provider, *, label_provider=None, purchase_progress=None, start_worker=True):
         self.store, self.client = store, client
         self.accounts_provider, self.detail_provider = accounts_provider, detail_provider
         self.label_provider = label_provider
+        self.purchase_progress = purchase_progress
         self.stop_event = threading.Event()
         self.client.cancel = self.stop_event
         self.worker = None
@@ -155,6 +156,32 @@ class FulfillmentService:
         self.store.save_rule(rule)
         return self.settings()
 
+    def merge_purchase_parcels(self, order_id, record_id, proposals, guard):
+        """只新增明确归属的包裹；同运单幂等，人工差异和锁定资料留待处理。"""
+        current = self.detail(order_id)
+        existing = [p for p in current["parcels"] if p["purchase_record_id"] == record_id]
+        def identity(parcel):
+            return (parcel["carrier"], parcel["tracking_number"], parcel["quantity"])
+        known = {identity(p) for p in existing}
+        incoming = {identity(p) for p in proposals}
+        if known == incoming:
+            return "synced", "国内快递单号已同步"
+        if not current["editable"] or current["editing"]:
+            return "locked", "履约资料已锁定或正在编辑，已保留最新物流信息"
+        if not known <= incoming:
+            return "conflict", "运单与已保存的包裹不同，请确认包裹分配"
+        merged = current["parcels"] + [p for p in proposals if identity(p) not in known]
+        _, detail = self.order_detail(order_id)
+        try:
+            self.parcels_payload(merged, detail, complete=bool(current["crossborderbus_order_id"]))
+            changes = {"parcels": merged, "error_message": "", "next_attempt": 0}
+            if current["crossborderbus_order_id"]:
+                changes["update_pending"] = True
+            self.store.change(order_id, current["revision"], changes, guard=guard)
+        except ValueError as exc:
+            return "conflict", str(exc)
+        return "synced", "国内快递单号已自动保存"
+
     def command(self, action, body):
         request = FulfillmentCommand.model_validate(body)
         if action == "fetch-label":
@@ -217,7 +244,10 @@ class FulfillmentService:
             changes.update(error_message="", next_attempt=0)
             if value["crossborderbus_order_id"]:
                 changes["update_pending"] = True
-        self.store.change(request.order_id, request.revision, changes, allow_busy=action == "cancel")
+        guard = None
+        if action == "parcels" and self.purchase_progress is not None:
+            guard = lambda conn: self.purchase_progress.resolve(conn, request.order_id, changes["parcels"], self.accounts_provider())
+        self.store.change(request.order_id, request.revision, changes, allow_busy=action == "cancel", guard=guard)
         return self.detail(request.order_id)
 
     def sync(self, order_id, revision):

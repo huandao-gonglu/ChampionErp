@@ -2,6 +2,11 @@
 export {
   API_SCHEMA_VERSION,
   PRODUCT_SCHEMA_VERSION,
+  type BackendAlibabaOrderStatus,
+  type BackendAlibabaLogisticsStep,
+  type BackendAlibabaParcel,
+  type BackendAlibabaPurchaseQueryResult,
+  type BackendPurchaseProgressView,
   type BackendApiResponse,
   type BackendAppStateResponse,
   type BackendDraftClaimTarget,

@@ -106,7 +106,7 @@ onMounted(load)
         <button class="order-button" :class="{ 'order-primary': activeTab === 'procurement' }" :disabled="locked" @click="activeTab = 'procurement'">商品与采购</button>
         <button class="order-button" :class="{ 'order-primary': activeTab === 'fulfillment' }" :disabled="locked" @click="activeTab = 'fulfillment'">跨境履约</button>
       </nav>
-      <OrderFulfillmentPanel v-if="activeTab === 'fulfillment'" :order="detail" @updated="emit('updated')" @lock="fulfillmentLocked = $event" />
+      <OrderFulfillmentPanel v-if="activeTab === 'fulfillment'" :order="detail" @purchase-updated="update" @updated="load(); emit('updated')" @lock="fulfillmentLocked = $event" />
       <div v-if="activeTab === 'procurement'" class="order-section-heading">
         <h3>商品与采购</h3>
         <span class="order-muted">逐项核对规格并登记采购</span>
