@@ -789,10 +789,6 @@ class PublishingBus:
                 ):
                     recovered.append(job_id)
                 continue
-            for platform, item in state.get("platforms", {}).items():
-                due = (item.get("confirmation") or {}).get("next_check_at", "")
-                if item.get("status") == "pending_confirmation" and due:
-                    self.confirmation.schedule(job_id, platform, due)
             if self._resume_state(job_id, state):
                 recovered.append(job_id)
         return recovered
@@ -836,7 +832,6 @@ class PublishingBus:
         return state
 
     def close(self) -> None:
-        self.confirmation.close()
         self.executor.shutdown(wait=True)
 
     def check_publish_result(self, job_id: str, platform: str, *, trigger: str = "manual") -> dict[str, Any]:

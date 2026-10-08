@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useAppStore } from '@/stores/app'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import FulfillmentParcelDialog from './FulfillmentParcelDialog.vue'
 import FulfillmentPlanFields from './FulfillmentPlanFields.vue'
@@ -12,8 +13,13 @@ import { orderProcessingProgress, procurementProgress } from './orderPresentatio
 const props = defineProps<{ order: OrderDetail }>()
 const emit = defineEmits<{ updated: []; lock: [boolean] }>()
 const value = ref<FulfillmentDetail | null>(null)
+const app = useAppStore()
+watch(() => value.value?.label_error, (message, previous) => {
+  if (message && message !== previous) app.pushToast(`${message} 请点击“重新获取面单”重试。`, 'error')
+})
 const error = ref('')
 const pending = ref(false)
+const refreshing = ref(false)
 const modal = ref<'' | 'label' | 'parcels' | 'plan' | 'cancel' | 'error'>('')
 const labelUrl = ref('')
 const trackingNumber = ref('')
@@ -21,7 +27,8 @@ const country = ref('')
 const settings = ref<BusSettings | null>(null)
 const plan = ref<FulfillmentPlan>({ section_id: 0, warehouse_id: 0, service_ids: [] })
 const servicesReady = ref(false)
-let poll: ReturnType<typeof setInterval> | undefined
+let poll: ReturnType<typeof setTimeout> | undefined
+let loadGeneration = 0
 let keepEditing: ReturnType<typeof setInterval> | undefined
 let disposed = false
 const settingsRoute = { path: '/', query: { tab: 'auth', auth_section: 'crossborderbus' } }
@@ -33,20 +40,22 @@ const status = computed(() => value.value ? progress.value.label : '')
 const tone = computed(() => progress.value.tone)
 const purchased = computed(() => props.order.lines.reduce((sum, line) => sum + line.purchased_quantity, 0))
 const ordered = computed(() => props.order.lines.reduce((sum, line) => sum + line.line.quantity, 0))
-const title = computed(() => value.value?.busy && value.value.operation === 'create' ? '正在提交预报' : value.value?.busy && value.value.operation === 'fetch-label' ? '正在获取平台面单' : value.value?.create_unknown ? '正在核实创建结果，暂停重复提交' : value.value?.cancel_requested && value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，取消未成功' : value.value?.cancel_rejected && value.value.fulfillment_status !== 'CANCELLED' ? '仓库拒绝取消，请处理后重试' : value.value?.cancel_requested && value.value.fulfillment_status !== 'CANCELLED' ? '已请求取消，等待仓库确认' : value.value?.error_message ? '履约操作需要处理' : status.value)
-const notice = computed(() => value.value?.error_message || (value.value?.crossborderbus_order_id ? value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，ERP 履约状态已同步为已发货。' : '仓库处理进度会自动同步。' : value.value?.blocked_reason || (value.value?.editing ? '修改本单方案期间已暂停自动预报。' : progress.value.note)))
-async function load() {
+const title = computed(() => value.value?.busy && value.value.operation === 'create' ? '正在提交预报' : value.value?.busy && value.value.operation === 'fetch-label' ? '正在获取平台面单' : value.value?.create_unknown ? '创建结果待核实，暂停重复提交' : value.value?.cancel_requested && value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，取消未成功' : value.value?.cancel_rejected && value.value.fulfillment_status !== 'CANCELLED' ? '仓库拒绝取消，请处理后重试' : value.value?.cancel_requested && value.value.fulfillment_status !== 'CANCELLED' ? '已请求取消，等待仓库确认' : value.value?.error_message ? '履约操作需要处理' : status.value)
+const notice = computed(() => value.value?.error_message || (value.value?.crossborderbus_order_id ? value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，ERP 履约状态已同步为已发货。' : '进入本页时同步一次仓库进度，后续可点击同步按钮更新。' : value.value?.blocked_reason || (value.value?.editing ? '修改本单方案期间已暂停自动预报。' : progress.value.note)))
+async function load(quiet = false) {
+  const generation = ++loadGeneration
   try {
     const result = await fetchFulfillment(props.order.order.id)
-    if (!disposed) { value.value = result; error.value = '' }
-  } catch (exc) { if (!disposed) error.value = exc instanceof Error ? exc.message : '履约详情读取失败' }
+    if (!disposed && generation === loadGeneration) { value.value = result; if (!quiet) error.value = '' }
+  } catch (exc) { if (!disposed && generation === loadGeneration && (!quiet || !error.value)) error.value = exc instanceof Error ? exc.message : '履约详情读取失败' }
 }
 async function command(action: FulfillmentAction, body: Record<string, unknown> = {}) {
   if (!value.value || pending.value) return false
+  loadGeneration++
   pending.value = true; emit('lock', true); error.value = ''
   try {
-    value.value = await fulfillmentCommand(action, value.value.erp_order_id, value.value.revision, body)
-    emit('updated')
+    const result = await fulfillmentCommand(action, value.value.erp_order_id, value.value.revision, body)
+    if (!disposed) { value.value = result; emit('updated') }
     return true
   } catch (exc) { const message = exc instanceof Error ? exc.message : '履约操作失败'; await load(); error.value = message; return false }
   finally { pending.value = false; emit('lock', !!modal.value) }
@@ -85,15 +94,31 @@ async function uploadLabel(event: Event) {
 }
 async function saveLabel() { if (await command('label', { label: { url: labelUrl.value, tracking_number: trackingNumber.value }, country: country.value.trim().toUpperCase() })) void close() }
 async function savePlan() { if (await command('plan', { plan: plan.value })) { clearInterval(keepEditing); modal.value = ''; emit('lock', false) } }
-function parcelsSaved(result: FulfillmentDetail) { value.value = result; modal.value = ''; emit('lock', false); emit('updated') }
+function parcelsSaved(result: FulfillmentDetail) { loadGeneration++; value.value = result; modal.value = ''; emit('lock', false); emit('updated') }
 async function cancel() { if (await command('cancel')) void close() }
 function at(date: string) { return date ? new Date(date).toLocaleString('zh-CN') : '尚未同步' }
-onMounted(() => { void load(); poll = setInterval(() => { if (!modal.value && !pending.value) void load() }, 5000) })
-onBeforeUnmount(() => { disposed = true; clearInterval(poll); clearInterval(keepEditing); emit('lock', false) })
+async function syncLatest() {
+  if (pending.value || refreshing.value) return
+  refreshing.value = true
+  try {
+    await load()
+    if (!disposed && !error.value && value.value && !value.value.busy && (value.value.crossborderbus_order_id || value.value.create_unknown)) await command('sync')
+  } finally { refreshing.value = false }
+}
+async function refreshLocal() {
+  if (disposed) return
+  if (!pending.value && !refreshing.value && !modal.value) await load(true)
+  if (!disposed) poll = setTimeout(refreshLocal, 5000)
+}
+onMounted(() => {
+  void syncLatest()
+  poll = setTimeout(refreshLocal, 5000)
+})
+onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepEditing); emit('lock', false) })
 </script>
 <template>
   <div class="fulfillment-panel">
-    <p v-if="error" class="order-error" role="alert">{{ error }} <button class="order-link" :disabled="pending" @click="load">刷新</button></p>
+    <p v-if="error" class="order-error" role="alert">{{ error }} <button class="order-link" :disabled="pending" @click="load()">刷新</button></p>
     <p v-if="!value" class="order-muted py-8">正在读取履约资料…</p>
     <template v-if="value">
       <div class="order-row mb-5"><p class="order-muted">ERP 处理进度</p><span class="order-badge" :data-tone="tone">{{ status }}</span></div>
@@ -111,7 +136,7 @@ onBeforeUnmount(() => { disposed = true; clearInterval(poll); clearInterval(keep
       </section>
       <h3 class="mt-6 mb-4">履约资料</h3>
       <section class="order-section">
-        <div class="order-row"><h4>国际面单</h4><div class="flex flex-wrap gap-2"><button v-if="value.editable && value.label_fetch_supported" class="order-button order-primary" :disabled="pending" @click="command('fetch-label')">{{ pending ? '处理中…' : value.platform_label ? '重新获取面单' : '获取平台面单' }}</button><button v-if="value.editable" class="order-button" :disabled="pending" @click="open('label')">{{ value.platform_label ? '人工更新' : '人工补充' }}</button></div></div>
+        <div class="order-row"><h4>国际面单</h4><div class="flex flex-wrap gap-2"><button v-if="value.editable && value.label_fetch_supported" class="order-button order-primary" :disabled="pending" @click="command('fetch-label')">{{ pending ? '处理中…' : value.platform_label || value.label_error ? '重新获取面单' : '获取平台面单' }}</button><button v-if="value.editable" class="order-button" :disabled="pending" @click="open('label')">{{ value.platform_label ? '人工更新' : '人工补充' }}</button></div></div>
         <p class="mt-3"><a v-if="value.platform_label" :href="value.platform_label" target="_blank" rel="noopener noreferrer" class="order-link">查看平台面单</a><span v-else class="order-muted">尚未获取平台面单</span><span v-if="value.platform_tracking_number" class="order-muted"> · {{ value.platform_tracking_number }}</span></p>
         <p v-if="value.label_error" class="order-error mt-3" role="alert">{{ value.label_error }}<span v-if="value.platform_label"> 当前保留上次保存的面单。</span></p>
         <p v-else-if="value.busy && value.operation === 'fetch-label'" class="order-muted mt-3" role="status">正在从平台下载面单并保存，请稍候…</p>
@@ -122,13 +147,11 @@ onBeforeUnmount(() => { disposed = true; clearInterval(poll); clearInterval(keep
         <p v-if="!value.parcels.length" class="order-muted mt-3">尚未录入国内快递单号。供应商提供单号后，关联采购记录并填写数量。</p>
         <p v-for="parcel in value.parcels" :key="parcel.id" class="mt-3">{{ parcel.carrier }} {{ parcel.tracking_number }} · {{ parcel.quantity }} 件</p>
       </section>
-      <p class="order-muted mt-6">最近成功同步仓库状态：{{ at(value.last_synced_at) }}</p>
+      <div class="order-row mt-6"><p class="order-muted">最近成功同步仓库状态：{{ at(value.last_synced_at) }}</p><button class="order-button" :disabled="pending || refreshing" @click="syncLatest">{{ pending ? '处理中…' : value.create_unknown ? '核实创建结果' : value.cancel_requested && value.fulfillment_status !== 'CANCELLED' ? '核实取消结果' : '同步' }}</button></div>
       <div class="order-row mt-8 fulfillment-actions">
         <button v-if="!['CANCELLED', 'COMPLETED'].includes(value.fulfillment_status) && !value.cancel_requested" class="order-button order-danger" :disabled="pending || value.busy" @click="open('cancel')">取消履约</button>
-        <button v-if="value.create_unknown" class="order-button order-primary" :disabled="pending || value.busy" @click="command('sync')">核实创建结果</button>
-        <button v-else-if="value.cancel_requested && value.fulfillment_status !== 'CANCELLED'" class="order-button order-primary" :disabled="pending || value.busy" @click="command(value.cancel_rejected && value.fulfillment_status !== 'SHIPPED' ? 'retry' : 'sync')">{{ value.cancel_rejected && value.fulfillment_status !== 'SHIPPED' ? '重新请求取消' : '核实取消结果' }}</button>
-        <button v-else-if="value.crossborderbus_order_id && !['CANCELLED', 'COMPLETED'].includes(value.fulfillment_status)" class="order-button order-primary" :disabled="pending || value.busy" @click="command('sync')">{{ value.busy ? '同步中…' : '同步仓库状态' }}</button>
-        <button v-else-if="!value.crossborderbus_order_id && value.fulfillment_status !== 'CANCELLED'" class="order-button order-primary" :disabled="pending || value.busy || !!value.blocked_reason || value.editing" @click="command(value.error_message ? 'retry' : 'submit')">{{ value.busy ? '正在提交…' : value.error_message ? '重新提交' : '立即提交' }}</button>
+        <button v-if="value.cancel_rejected && value.fulfillment_status !== 'SHIPPED' && value.fulfillment_status !== 'CANCELLED'" class="order-button order-primary" :disabled="pending || value.busy" @click="command('retry')">重新请求取消</button>
+        <button v-else-if="!value.crossborderbus_order_id && !value.create_unknown && !value.cancel_requested && value.fulfillment_status !== 'CANCELLED'" class="order-button order-primary" :disabled="pending || value.busy || !!value.blocked_reason || value.editing" @click="command(value.error_message ? 'retry' : 'submit')">{{ value.busy ? '正在提交…' : value.error_message ? '重新提交' : '立即提交' }}</button>
       </div>
     </template>
     <FulfillmentParcelDialog v-if="modal === 'parcels' && value" :value="value" :order="order" @close="close" @saved="parcelsSaved" />

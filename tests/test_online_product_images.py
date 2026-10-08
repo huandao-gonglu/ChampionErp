@@ -135,11 +135,8 @@ def test_local_preview_uses_file_route_and_changes_only_online_images(online_ima
     assert remote.writes[0]["pictures"][1] == {"id": "uploaded-asset-1"}
     saved = service.store.job(job["id"])
     assert saved["result"]["prepared_changes"] == remote.writes[0]
-    # 回读比较平台 ID，不比较本地引用；等待到期后确认不再次上传。
-    with service.context.db._connect() as connection:
-        connection.execute("UPDATE online_jobs SET lease_until=0,result_json=json_set(result_json,'$.next_confirmation_at',0) WHERE id=?", (job["id"],))
-        connection.commit()
-    assert service.run_once()
+    # 回读比较平台 ID，不比较本地引用；手动确认不再次上传。
+    service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"] == "confirmed"
     assert len(remote.preparations) == 1 and len(remote.writes) == 1
     assert get_context().db.load_product_model(product["product_id"]) == original

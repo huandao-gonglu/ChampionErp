@@ -13,7 +13,7 @@
 - `erp_web/schemas/orders.py`：事件、订单、状态、提醒及页面返回结构。
 - `erp_web/runtime_units/order_notifications.py`：平台回调解析、资源白名单、账号匹配和握手。
 - `erp_web/runtime_units/orders_{mercadolibre,ozon,yandex}.py`：平台协议及状态归一化。复用项目已有 HTTP 和外部请求管理器，Ozon 查询 POST 明确归类为只读。
-- `erp_web/services/order_notification_service.py`：后台领取、重试和周期对账，各平台独立 worker，避免某个平台故障阻塞其他平台。
+- `erp_web/services/order_notification_service.py`：后台领取、回调重试和页面发起的同步，各平台独立 worker，避免某个平台故障阻塞其他平台。
 - `erp_web/stores/order_notification_store.py`：独立领域库 `data/order-notifications.sqlite3` 的唯一写入入口；SQLite 事务不跨网络等待。
 - `front/src/stores/orderNotifications.ts`：订单前端状态；发布 store 不再持有订单数据。
 
@@ -25,10 +25,10 @@
 2. 事件去重和持久化完成后才返回 HTTP 200。回调写锁等待最多 200 毫秒，保存失败返回 503，允许平台重投；请求体上限 256 KiB。
 3. 后台领取任务，按平台与账号串行执行。租约过期后可重领，旧 claim 不得提交订单状态。一个平台的失败不阻止另一平台领取任务。
 4. 平台详情成功读取后更新唯一订单快照。带平台更新时间的数据拒绝旧版本覆盖；Ozon 没有状态更新时间时依赖串行实时回读，不把创建时间当作状态版本。
-5. 可重试故障使用指数退避，最多 8 次；授权、权限、确定性协议错误进入失败记录。用户修复原因后可重新处理；不会绕过外部请求管理器的限流或账号阻断。
+5. 可重试故障使用指数退避，普通退避最多 8 次（接口冷却恢复按请求管理器给出的时间重试）；授权、权限、确定性协议错误进入失败记录。用户修复原因后可重新处理；不会绕过外部请求管理器的限流或账号阻断。
 6. 新进入“待发货”的订单生成一条持久提醒，同状态重复通知不重复提醒。离开待发货状态后自动清除对应未读提醒。已读操作只确认用户已读取的提醒游标。
 
-每 5 分钟对账平台订单。Ozon 使用 `/v4/posting/fbs/list` 和 `/v3/posting/fbo/list`，按不透明 `cursor` 翻页，要求根级 `postings` 和 `has_next`；不使用已退役的 offset 列表端点。Ozon/Yandex 初次列表为最近 30 天，Mercado Libre 使用平台 recent 查询；本地已知的窗口外未完成订单继续逐单核对。没有声称导入平台全部历史订单。分页失败保留已核实订单，同时将任务标为失败或等待重试；列表中缺席不等于取消。
+进入订单中心时主动同步一次，之后通过“同步订单”按钮发起；后台不再每 5 分钟主动对账。Ozon 使用 `/v4/posting/fbs/list` 和 `/v3/posting/fbo/list`，按不透明 `cursor` 翻页，要求根级 `postings` 和 `has_next`；不使用已退役的 offset 列表端点。Ozon/Yandex 初次列表为最近 30 天，Mercado Libre 使用平台 recent 查询；本地已知的窗口外未完成订单继续逐单核对。没有声称导入平台全部历史订单。分页失败保留已核实订单，同时将主动同步任务标为失败，等待再次进页或点击同步；回调任务保留原有重试；列表中缺席不等于取消。
 
 待发货依据明确状态：
 
@@ -37,7 +37,7 @@
 - Yandex：FBS/DBS/EXPRESS 的 `PROCESSING` 且阶段为 `STARTED`、`READY_TO_SHIP` 或 `PACKAGING`。FBY 不计作卖家待发货。
 - 未知或缺失状态显示“状态待确认”，不计入待发货。
 
-订单中心列表和详情将 Yandex `PROCESSING` 的具体阶段展示为 `STARTED`「备货中」、`PACKAGING`「打包中」、`READY_TO_SHIP`「已备妥」。统一的「待发货」筛选与计数仍包含这些阶段；备妥不表示已交接或已发货，采购记录也不会修改平台状态。状态以平台同步结果为准，在 Yandex 后台操作后可等待回调/周期对账，或点击「同步订单」。未知阶段保留统一状态文案，原始状态可通过状态标签提示查看。[Yandex FBS 状态流程](https://yandex.ru/dev/market/partner-api/doc/ru/step-by-step/fbs)。
+订单中心列表和详情将 Yandex `PROCESSING` 的具体阶段展示为 `STARTED`「备货中」、`PACKAGING`「打包中」、`READY_TO_SHIP`「已备妥」。统一的「待发货」筛选与计数仍包含这些阶段；备妥不表示已交接或已发货，采购记录也不会修改平台状态。状态以平台同步结果为准，在 Yandex 后台操作后可等待回调，或点击「同步订单」。未知阶段保留统一状态文案，原始状态可通过状态标签提示查看。[Yandex FBS 状态流程](https://yandex.ru/dev/market/partner-api/doc/ru/step-by-step/fbs)。
 
 页面每 5 秒读取本地数据，无需等待平台授权或远端查询。保留上次成功结果并显示读取错误。桌面通知须用户点击开启并由浏览器授权；首次加载不重复弹出历史提醒。页面未读提醒可跨重启保留。
 
@@ -142,7 +142,7 @@ location / { return 404; }
 
 ### 平台交货信息
 
-Yandex FBS 订单详情在“商品与采购”列表下方展示交货模块，与其他订单字段使用同一份本地订单快照。打开详情、切换页签或再次打开均不触发平台交货查询；在订单中心同步订单、后台周期对账或处理平台通知时更新。没有独立刷新入口。
+Yandex FBS 订单详情在“商品与采购”列表下方展示交货模块，与其他订单字段使用同一份本地订单快照。打开详情、切换页签或再次打开均不触发平台交货查询；在进入订单中心、点击同步订单或处理平台通知时更新。没有独立刷新入口。
 
 `runtime_units/orders_yandex.py` 在每页订单归一化后调用 `services/order_handover_service.py`，通过官方只读 `PUT /v2/campaigns/{campaignId}/first-mile/shipments` 批量查询。日期覆盖本页订单发货日期前后七天，`orderIds` 仅包含该页当前店铺的 FBS 订单；逐批次核对订单归属，完整读取分页后才随订单保存。查询失败走现有订单任务的失败、冷却及重试机制，保留已保存快照，不以空地址覆盖。旧快照缺少 `handover` 时仍可读取，并提示同步订单。官方接口定义见 [交货批次搜索](https://yandex.ru/dev/market/partner-api/doc/ru/reference/shipments/searchShipments)。
 

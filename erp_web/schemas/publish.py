@@ -6,7 +6,7 @@ from .product import Product
 
 
 class PublishConfirmation(TypedDict, total=False):
-    """一次发布的确认计划与最近检查；空 next_check_at 表示没有自动检查计划。"""
+    """发布的最近手动检查；next_check_at 保留历史读取，新记录始终为空。"""
 
     submitted_at: str
     next_check_at: str

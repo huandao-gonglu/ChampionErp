@@ -201,14 +201,14 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
-    """按手动或查看触发规则检查一次发布结果，不重放发布写请求。"""
+    """手动检查一次发布结果，不重放发布写请求。"""
 
     job_id = str(body.get("job_id") or "").strip()
     platform = _requested_platform(body)
     try:
         trigger = str(body.get("trigger") or "manual")
-        if trigger not in {"manual", "view"}:
-            raise ValueError("页面查询只支持手动或查看触发。")
+        if trigger != "manual":
+            raise ValueError("发布结果仅支持手动查询。")
         result = get_publishing_bus().check_publish_result(
             job_id,
             platform,

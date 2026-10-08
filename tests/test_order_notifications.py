@@ -171,16 +171,14 @@ def test_expired_lease_is_reclaimed_and_late_result_is_fenced(store):
     assert store.save_snapshot(fresh, snapshot(state="shipped"), now=now + 182)
 
 
-def test_schedule_coalesces_manual_and_periodic_requests(store):
+def test_schedule_coalesces_active_manual_requests(store):
     now = time.time()
     store.schedule({"ozon": "3"}, now=now)
-    store.schedule({"ozon": "3"}, now=now, force=True)
+    store.schedule({"ozon": "3"}, now=now)
     assert len(store.read({"ozon": "3"})["notifications"]) == 1
     job = store.claim({"ozon": "3"}, now=now)
     store.finish(job, now=now)
     store.schedule({"ozon": "3"}, now=now + 100)
-    assert len(store.read({"ozon": "3"})["notifications"]) == 1
-    store.schedule({"ozon": "3"}, now=now + 301)
     assert len(store.read({"ozon": "3"})["notifications"]) == 2
 
 
@@ -788,7 +786,56 @@ def test_order_sync_cooling_does_not_exhaust_retry_and_manual_sync_wakes_job(sto
         conn.commit()
     svc.process_one('yandex')
     row = store.read({'yandex':'4'})['notifications'][0]
-    assert row['status'] == 'retry' and row['next_attempt'] == resume
+    assert row['status'] == 'failed'
+    assert not svc.process_one('yandex', now=resume+1)
     external.request_probe('yandex', '5', {scope.interface for scope in order_request_scopes(CONFIG)['yandex']})
     svc.sync('yandex')
     assert store.claim({'yandex':'4'}, now=time.time()) is not None
+
+
+def test_idle_worker_does_not_schedule_platform_queries(store, monkeypatch):
+    svc = service(store, {})
+    monkeypatch.setattr(svc.stop_event, "wait", lambda _: svc.stop_event.set())
+    svc._run("ozon")
+    assert store.read({"ozon": "3"})["notifications"] == []
+
+
+def test_explicit_sync_failure_waits_for_next_user_request(store):
+    calls = []
+    class Adapter:
+        def sync(self):
+            calls.append("sync")
+            raise TimeoutError("平台不可用")
+    svc = service(store, {"ozon": lambda _: Adapter()})
+    svc.sync("ozon")
+    assert svc.process_one("ozon")
+    assert store.read({"ozon": "3"})["notifications"][0]["status"] == "failed"
+    assert not svc.process_one("ozon", now=time.time() + 86400)
+    assert calls == ["sync"]
+    svc.sync("ozon")
+    assert svc.process_one("ozon")
+    assert calls == ["sync", "sync"]
+
+
+@pytest.mark.parametrize("status", ["retry", "running"])
+def test_legacy_sync_retry_and_expired_lease_require_manual_restart(store, status):
+    now = time.time()
+    store.schedule({"ozon": "3"}, now=now)
+    with store.connect() as conn:
+        conn.execute("UPDATE inbox SET status=?,next_attempt=0,lease_until=0", (status,))
+        conn.commit()
+    assert store.claim({"ozon": "3"}, now=now) is None
+    assert store.read({"ozon": "3"})["notifications"][0]["status"] == "failed"
+    assert store.sync_status({"ozon": "3"})[0]["next_attempt"] == 0
+    store.schedule({"ozon": "3"}, now=now)
+    assert store.claim({"ozon": "3"}, now=now) is not None
+
+
+def test_manual_sync_reclaims_expired_task_before_background_scan(store):
+    now = time.time()
+    first = store.schedule({"ozon": "3"}, now=now)
+    stale = store.claim({"ozon": "3"}, now=now)
+    assert store.schedule({"ozon": "3"}, now=now+181) == first
+    fresh = store.claim({"ozon": "3"}, now=now+181)
+    assert fresh is not None and fresh["claim"] != stale["claim"]
+    assert not store.save_snapshot(stale, snapshot(state="pending_shipment"), now=now+182)

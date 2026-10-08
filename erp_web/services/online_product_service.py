@@ -165,7 +165,7 @@ class OnlineProductService:
         job = self.store.claim(self.owner)
         if not job:
             return False
-        with request_operation("online_products", operation_id=job["id"], trigger="auto_confirmation" if job["dispatched"] else "background", cancel=self._stop):
+        with request_operation("online_products", operation_id=job["id"], trigger="background", cancel=self._stop):
             return self._run_job(job)
 
     def _run_job(self, job):
@@ -173,14 +173,7 @@ class OnlineProductService:
         write_returned = False
         result: dict[str, Any] = job["result"] if dispatched else {"items": [], "completed": 0, "failed": 0, "created": 0, "updated": 0}
         try:
-            if dispatched and job["operation"] != "sync":
-                self._prepare_confirmation(job, result)
             adapter = self._adapter(job["platform"], job["account_id"])
-            if job["dispatched"] and job["operation"] != "sync":
-                dispatched = True
-                result = job["result"]
-                self._confirm(job, adapter, result)
-                return True
             if job["operation"] == "sync":
                 run_sync(self, job, adapter, result)
                 return True
@@ -214,8 +207,6 @@ class OnlineProductService:
             receipt = adapter.write(fresh, request.operation, request.scope_id, prepared_changes)
             write_returned = True
             result["receipt"] = receipt
-            result["next_confirmation_at"] = time.time() + 120
-            result["automatic_confirmation_pending"] = True
             self._update(job, "submitted", result, dispatched=True)
         except Exception as exc:
             code = int(exc.details.get("http_status") or 0) if isinstance(exc, PublishAdapterError) else 0
@@ -239,7 +230,7 @@ class OnlineProductService:
     def _prepare_confirmation(self, job, result):
         # 发起前持久化冷却时间，认证失败或网络异常也不能绕过查询间隔。
         result["polls"] = int(result.get("polls", 0)) + 1
-        result["automatic_confirmation_pending"] = False
+        result.pop("automatic_confirmation_pending", None)
         result["last_confirmation_at"] = time.time()
         result.pop("next_confirmation_at", None)
         self._update(job, "running", result, dispatched=True)

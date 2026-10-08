@@ -159,6 +159,8 @@ class FulfillmentService:
         request = FulfillmentCommand.model_validate(body)
         if action == "fetch-label":
             return self.fetch_label(request.order_id, request.revision)
+        if action == "sync":
+            return self.sync(request.order_id, request.revision)
         order, detail = self.order_detail(request.order_id)
         value = self.store.ensure(order)
         if value["erp_order_id"] != request.order_id:
@@ -166,13 +168,13 @@ class FulfillmentService:
         current = self.detail(request.order_id)
         changes = {}
         if action == "cancel":
-            changes = {"cancel_requested": True, "editing_until": 0, "next_attempt": 0}
-        elif action in {"sync", "retry", "submit"}:
+            changes = {"cancel_requested": True, "editing_until": 0, "next_attempt": 0, "error_message": ""}
+        elif action in {"retry", "submit"}:
+            if action == "retry" and value["create_unknown"]:
+                return self.sync(request.order_id, request.revision)
             if action == "submit" and (current["blocked_reason"] or value["crossborderbus_order_id"] or value["create_unknown"] or current["editing"]):
                 raise FulfillmentError(current["blocked_reason"] or "当前已有预报、正在编辑或创建结果待确认，不能再次提交。")
             changes = {"next_attempt": 0, "error_message": ""}
-            if value["crossborderbus_order_id"]:
-                changes["force_sync"] = True
             if action == "submit":
                 changes["manual_submit"] = True
             if action == "retry" and value.get("cancel_rejected"):
@@ -203,7 +205,7 @@ class FulfillmentService:
             elif action == "label":
                 if request.label is None:
                     raise FulfillmentError("请填写面单地址与面单号。")
-                changes = {"platform_label": request.label.url, "platform_tracking_number": request.label.tracking_number, "label_error": "", "label_next_attempt": 0}
+                changes = {"platform_label": request.label.url, "platform_tracking_number": request.label.tracking_number, "label_error": ""}
                 if request.country:
                     if order.delivery.country and request.country != order.delivery.country:
                         raise FulfillmentError("目的国必须与平台订单一致。")
@@ -217,6 +219,22 @@ class FulfillmentService:
                 changes["update_pending"] = True
         self.store.change(request.order_id, request.revision, changes, allow_busy=action == "cancel")
         return self.detail(request.order_id)
+
+    def sync(self, order_id, revision):
+        """页面进入或人工同步只执行一轮只读核实，不排队、不重试或代报单。"""
+        order, _ = self.order_detail(order_id)
+        value = self.store.ensure(order)
+        if value["erp_order_id"] != order_id or value["revision"] != revision or value["busy"]:
+            raise FulfillmentError("履约资料已变化或正在处理，请刷新后再同步。")
+        if value["create_unknown"] or value["operation"] == "create":
+            action = "reconcile"
+        elif value["crossborderbus_order_id"]:
+            action = "sync"
+        else:
+            return self.detail(order_id)
+        if not self._execute(order, value, action):
+            raise FulfillmentError("履约资料已变化或正在处理，请刷新后再同步。")
+        return self.detail(order_id)
 
     def fetch_label(self, order_id, revision):
         """在履约占位下获取、托管面单；期间取消、账号变化或资料变化则丢弃结果。"""
@@ -245,14 +263,14 @@ class FulfillmentService:
             if fresh["bus_identity"] and fresh["bus_identity"] != self.client.identity():
                 raise FulfillmentError("跨境巴士授权已变化，已停止保存面单。")
             changes.update(platform_label=label.url, platform_tracking_number=label.tracking_number,
-                           label_error="", label_next_attempt=0, next_attempt=0)
+                           label_error="", next_attempt=0)
             if fresh["crossborderbus_order_id"]:
                 changes["update_pending"] = True
         except FulfillmentError as exc:
-            changes.update(label_error=str(exc), label_next_attempt=time.time() + 300)
+            changes.update(label_error=str(exc))
         except Exception:
             # 不把第三方正文、PDF 内容或凭据写入履约错误。
-            changes.update(label_error="平台面单获取失败，请检查授权、分箱及默认 S3 托管后重试。", label_next_attempt=time.time() + 300)
+            changes.update(label_error="平台面单获取失败，请检查授权、分箱及默认 S3 托管后重试。")
         finally:
             self.store.finish(order_id, token, changes, expected_revision=value["revision"])
         return self.detail(order_id)
@@ -262,15 +280,25 @@ class FulfillmentService:
         if value["busy"] or value["next_attempt"] > time.time():
             return False
         cancelled = value["cancel_requested"] or order.state == "cancelled"
-        if value["fulfillment_status"] in {"CANCELLED", "COMPLETED"} or (value["fulfillment_status"] == "SHIPPED" and not cancelled and not value.get("force_sync")):
+        if cancelled and not value["cancel_requested"]:
+            value = self.store.change(value["erp_order_id"], value["revision"], {"cancel_requested": True, "error_message": ""})
+        if value["fulfillment_status"] in {"CANCELLED", "COMPLETED"} or (value["fulfillment_status"] == "SHIPPED" and not cancelled):
             return False
         if not value["crossborderbus_order_id"] and cancelled and not value["create_unknown"]:
             self.store.change(value["erp_order_id"], value["revision"], {"fulfillment_status": "CANCELLED", "cancel_requested": True})
             return True
-        if value["create_unknown"]:
-            action = "reconcile"
+        if value["create_unknown"] or value["operation"] == "create":
+            return False
         elif value["crossborderbus_order_id"]:
-            action = "cancel" if cancelled and not value.get("cancel_sent") and not value.get("cancel_rejected") else "update" if not cancelled and value.get("update_pending") else "sync"
+            # 后台只执行已请求的业务写入；状态查询和未知结果核实必须由页面触发。
+            if value["error_message"]:
+                return False
+            if cancelled and not value.get("cancel_sent") and not value.get("cancel_rejected"):
+                action = "cancel"
+            elif not cancelled and value.get("update_pending"):
+                action = "update"
+            else:
+                return False
         else:
             if value["editing_until"] > time.time() or value["fulfillment_status"] == "EXCEPTION":
                 return False
@@ -281,7 +309,7 @@ class FulfillmentService:
             rule = self.rule_for(order, value["country"] or order.delivery.country)
             plan = self.plan_for(value, rule)
             if (self.label_provider and not self.label_provider.unsupported_reason(order)
-                    and not value["platform_label"] and value.get("label_next_attempt", 0) <= time.time()
+                    and not value["platform_label"] and not value.get("label_error")
                     and rule and rule["auto_submit"]
                     and not self.readiness(order, detail, value, rule, plan, require_label=False)):
                 self.fetch_label(value["erp_order_id"], value["revision"])
@@ -291,6 +319,10 @@ class FulfillmentService:
                 return False
             value = self.store.change(value["erp_order_id"], value["revision"], {"plan": plan, "country": value["country"] or order.delivery.country, "bus_identity": self.client.identity()})
             action = "create"
+        return self._execute(order, value, action)
+
+    def _execute(self, order, value, action):
+        cancelled = value["cancel_requested"] or order.state == "cancelled"
         claimed = self.store.claim(value["erp_order_id"], action, value["revision"])
         if not claimed:
             return False
@@ -315,7 +347,7 @@ class FulfillmentService:
             elif action == "reconcile":
                 remote = self.client.search(value["order_number"], expected_identity=value["bus_identity"])
                 if not remote:
-                    raise FulfillmentError("尚未查到已创建订单，继续核实；禁止重复创建。", unknown=True)
+                    raise FulfillmentError("尚未查到已创建订单，请人工核实；禁止重复创建。", unknown=True)
                 if (remote.get("sid") != value["plan"]["warehouse_id"]
                         or (remote.get("sheet_info") or {}).get("section") != value["plan"]["section_id"]
                         or not isinstance(remote.get("id"), int) or remote["id"] <= 0):
@@ -345,18 +377,17 @@ class FulfillmentService:
                     self.client.request("/erpapi/order/updateOrderSheet", {"order_number": value["order_number"], "sheet": value["platform_label"], "sheet_order_sn": value["platform_tracking_number"]}, expected_identity=value["bus_identity"])
                     self.client.request("/erpapi/order/updateOrderPackage", {"order_number": value["order_number"], "package_list": self.parcels_payload(value["parcels"], detail, complete=True)}, expected_identity=value["bus_identity"])
                     changes["update_pending"] = False
-            changes.update(error_message=changes.get("error_message", ""), next_attempt=time.time() + (2 if action in {"create", "reconcile", "cancel", "update"} else 60))
+            changes.update(error_message=changes.get("error_message", ""), next_attempt=0)
         except FulfillmentError as exc:
-            changes.update(error_message=str(exc), next_attempt=time.time() + 120)
+            changes.update(error_message=str(exc), next_attempt=0)
             if action == "create":
                 changes.update(create_unknown=exc.unknown or not exc.definitive, fulfillment_status="EXCEPTION")
             if action == "cancel" and exc.definitive and not exc.unknown:
                 changes.update(cancel_sent=False, cancel_rejected=True)
         except Exception:
-            changes.update(error_message="履约操作失败，请核对授权和资料后重试。", next_attempt=time.time() + 120)
+            changes.update(error_message="履约操作失败，请核对授权和资料后重试。", next_attempt=0)
             if action == "create":
                 changes.update(create_unknown=True, fulfillment_status="EXCEPTION")
-        changes["force_sync"] = False
         self.store.finish(value["erp_order_id"], token, changes)
         return True
 

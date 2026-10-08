@@ -1,4 +1,4 @@
-"""发布确认的时间门槛、只读边界、持久化恢复和并发行为。"""
+"""发布确认的手动冷却、只读边界、持久化恢复和并发行为。"""
 
 from copy import deepcopy
 from threading import Event
@@ -49,14 +49,12 @@ def setup(tmp_path, monkeypatch):
     adapter = Adapter()
     db = ErpDatabase(tmp_path / "publish.sqlite3")
     bus = PublishingBus(db, {"ozon": adapter}, auto_resume_pending=False)
-    schedules = []
-    monkeypatch.setattr(bus.confirmation, "schedule", lambda *args: schedules.append(args))
     queued = bus.enqueue({"product_id": "p"}, ["ozon"], targets={"ozon": {
         "draft_id": "d", "site": "global", "product_id": "p",
     }}, idempotency_key="first")
     job_id = queued["job_id"]
     bus.wait(job_id, timeout=2)
-    yield bus, adapter, clock, job_id, schedules
+    yield bus, adapter, clock, job_id
     bus.close()
 
 
@@ -64,54 +62,39 @@ def platform_state(bus, job_id):
     return bus.get_status(job_id)["platforms"]["ozon"]
 
 
-def test_submission_releases_worker_and_only_schedules_one_delayed_check(setup):
-    bus, adapter, clock, job_id, schedules = setup
+def test_submission_waits_for_manual_check_and_local_reads_do_not_query(setup):
+    bus, adapter, clock, job_id = setup
     item = platform_state(bus, job_id)
     assert adapter.writes == 1 and adapter.reads == 0
     assert item["status"] == bus.get_status(job_id)["status"] == "pending_confirmation"
-    assert confirmation.timestamp(item["confirmation"]["next_check_at"]) == clock[0] + 120
-    assert len(schedules) == 1
+    assert item["confirmation"]["next_check_at"] == ""
+    clock[0] += 10000
     bus.get_public_status(job_id)
     bus.list_jobs()
+    bus.recover_pending_jobs()
     assert adapter.reads == 0
 
 
-def test_first_check_is_delayed_once_and_never_rearmed(setup):
-    bus, adapter, clock, job_id, schedules = setup
-    assert bus.check_publish_result(job_id, "ozon", trigger="scheduled")["checked"] is False
-    clock[0] += 120
-    assert bus.check_publish_result(job_id, "ozon", trigger="scheduled")["resolution"] == "pending"
+@pytest.mark.parametrize("trigger", ["scheduled", "view"])
+def test_automatic_triggers_are_rejected_without_remote_reads(setup, trigger):
+    bus, adapter, clock, job_id = setup
     clock[0] += 10000
-    assert bus.check_publish_result(job_id, "ozon", trigger="scheduled")["checked"] is False
-    assert adapter.reads == 1 and adapter.writes == 1 and len(schedules) == 1
-    assert platform_state(bus, job_id)["confirmation"]["next_check_at"] == ""
+    with pytest.raises(ValueError, match="仅支持手动"):
+        bus.check_publish_result(job_id, "ozon", trigger=trigger)
+    assert adapter.reads == 0
 
 
-def test_view_checks_require_first_delay_and_five_minutes_after_last_check(setup):
-    bus, adapter, clock, job_id, _ = setup
-    assert bus.check_publish_result(job_id, "ozon", trigger="view")["resolution"] == "cooldown"
-    clock[0] += 120
-    assert bus.check_publish_result(job_id, "ozon", trigger="view")["checked"]
-    clock[0] += 299
-    assert not bus.check_publish_result(job_id, "ozon", trigger="view")["checked"]
-    clock[0] += 1
-    assert bus.check_publish_result(job_id, "ozon", trigger="view")["checked"]
-    assert adapter.reads == 2
-
-
-def test_manual_check_can_run_early_but_has_cooldown_and_consumes_first_plan(setup):
-    bus, adapter, clock, job_id, _ = setup
+def test_manual_check_has_no_initial_delay_but_keeps_cooldown(setup):
+    bus, adapter, clock, job_id = setup
     assert bus.check_publish_result(job_id, "ozon")["checked"]
     assert not bus.check_publish_result(job_id, "ozon")["checked"]
     clock[0] += 30
     assert bus.check_publish_result(job_id, "ozon")["checked"]
-    clock[0] += 120
-    assert not bus.check_publish_result(job_id, "ozon", trigger="scheduled")["checked"]
-    assert adapter.reads == 2
+    assert adapter.reads == 2 and adapter.writes == 1
 
 
 def test_read_failure_keeps_receipt_pending_state_and_no_write_retry(setup):
-    bus, adapter, clock, job_id, _ = setup
+    bus, adapter, clock, job_id = setup
     adapter.error = TimeoutError("平台暂时无法连接")
     result = bus.check_publish_result(job_id, "ozon")
     assert result["resolution"] == "query_failed"
@@ -124,14 +107,14 @@ def test_read_failure_keeps_receipt_pending_state_and_no_write_retry(setup):
     assert adapter.reads == adapter.writes == 1
 
 
-def test_concurrent_manual_and_view_checks_share_one_remote_request(setup):
-    bus, adapter, clock, job_id, _ = setup
+def test_concurrent_manual_checks_share_one_remote_request(setup):
+    bus, adapter, clock, job_id = setup
     clock[0] += 120
     adapter.entered, adapter.release = Event(), Event()
     running = bus.executor.submit(bus.check_publish_result, job_id, "ozon")
     try:
         assert adapter.entered.wait(2)
-        second = bus.check_publish_result(job_id, "ozon", trigger="view")
+        second = bus.check_publish_result(job_id, "ozon")
         assert second["resolution"] == "checking" and second["checked"] is False
     finally:
         adapter.release.set()
@@ -141,7 +124,7 @@ def test_concurrent_manual_and_view_checks_share_one_remote_request(setup):
 
 @pytest.mark.parametrize("status, expected", [("published", "success"), ("real_publish_failed", "failed"), ("partial", "partial")])
 def test_explicit_terminal_result_persists_and_stops_further_checks(setup, status, expected):
-    bus, adapter, clock, job_id, _ = setup
+    bus, adapter, clock, job_id = setup
     adapter.result = {"ok": status == "published", "status": status, "task_id": "remote-1"}
     callbacks = []
     bus.terminal_callback = lambda state: callbacks.append(state)
@@ -154,7 +137,7 @@ def test_explicit_terminal_result_persists_and_stops_further_checks(setup, statu
 
 
 def test_pending_publish_lock_survives_different_idempotency_key(setup):
-    bus, adapter, _, job_id, _ = setup
+    bus, adapter, _, job_id = setup
     queued = bus.enqueue({"product_id": "p"}, ["ozon"], targets={"ozon": {
         "draft_id": "d", "site": "global", "product_id": "p",
     }}, idempotency_key="second")
@@ -162,49 +145,25 @@ def test_pending_publish_lock_survives_different_idempotency_key(setup):
     assert adapter.writes == 1
 
 
-def test_restart_restores_only_unconsumed_first_plan(setup, monkeypatch):
-    bus, adapter, clock, job_id, _ = setup
+def test_restart_ignores_legacy_schedule_but_preserves_manual_confirmation(setup):
+    bus, adapter, clock, job_id = setup
+    state = bus.get_status(job_id)
+    state["platforms"]["ozon"]["confirmation"]["next_check_at"] = confirmation.iso_time(clock[0] - 1)
+    bus.store.save_publish_job(state)
     restored = PublishingBus(bus.store, {"ozon": adapter}, auto_resume_pending=False)
-    scheduled = []
-    monkeypatch.setattr(restored.confirmation, "schedule", lambda *args: scheduled.append(args))
     try:
         restored.recover_pending_jobs()
-        assert len(scheduled) == 1 and scheduled[0][0] == job_id
         assert adapter.writes == 1 and adapter.reads == 0
-        clock[0] += 120
-        restored.check_publish_result(job_id, "ozon", trigger="scheduled")
-        scheduled.clear()
+        assert restored.check_publish_result(job_id, "ozon")["checked"]
         restored.recover_pending_jobs()
-        assert not scheduled
         assert adapter.reads == adapter.writes == 1
+        assert platform_state(restored, job_id)["confirmation"]["next_check_at"] == ""
     finally:
         restored.close()
 
 
-def test_scheduler_dispatches_due_record_without_waiting_in_publish_worker(tmp_path):
-    adapter = Adapter()
-    adapter.entered = Event()
-    bus = PublishingBus(ErpDatabase(tmp_path / "scheduler.sqlite3"), {"ozon": adapter}, auto_resume_pending=False)
-    try:
-        queued = bus.enqueue({"product_id": "p"}, ["ozon"], targets={"ozon": {
-            "draft_id": "d", "site": "global", "product_id": "p",
-        }}, idempotency_key="scheduler")
-        job_id = queued["job_id"]
-        bus.wait(job_id, timeout=2)
-        state = bus.get_status(job_id)
-        due = confirmation.iso_time(confirmation.time.time() - 1)
-        state["platforms"]["ozon"]["confirmation"]["next_check_at"] = due
-        bus.store.save_publish_job(state)
-        bus.confirmation.schedule(job_id, "ozon", due)
-        assert adapter.entered.wait(2)
-    finally:
-        bus.close()
-    assert adapter.reads == adapter.writes == 1
-    assert platform_state(bus, job_id)["confirmation"]["next_check_at"] == ""
-
-
 def test_invalid_confirmation_response_does_not_erase_acceptance(setup):
-    bus, adapter, _, job_id, _ = setup
+    bus, adapter, _, job_id = setup
     adapter.result = {"ok": False, "status": "outcome_unknown", "task_id": "remote-1", "error": "响应身份无法验证"}
     assert bus.check_publish_result(job_id, "ozon")["resolution"] == "query_failed"
     item = platform_state(bus, job_id)
@@ -214,7 +173,7 @@ def test_invalid_confirmation_response_does_not_erase_acceptance(setup):
 
 
 def test_confirmation_rejects_changed_store_before_reading_remote(setup):
-    bus, adapter, _, job_id, _ = setup
+    bus, adapter, _, job_id = setup
     state = bus.get_status(job_id)
     state["approved_publications"] = {"ozon": {"store_identity": "original-store"}}
     bus.store.save_publish_job(state)
@@ -225,7 +184,7 @@ def test_confirmation_rejects_changed_store_before_reading_remote(setup):
 
 
 def test_non_object_response_keeps_persisted_receipt(setup):
-    bus, adapter, _, job_id, _ = setup
+    bus, adapter, _, job_id = setup
     adapter.result = []
     assert bus.check_publish_result(job_id, "ozon")["resolution"] == "query_failed"
     assert platform_state(bus, job_id)["result"]["task_id"] == "remote-1"

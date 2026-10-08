@@ -45,6 +45,8 @@
 
 ## 统一外部请求管理
 
+自动查询、延迟确认、失败重试及仅本地轮询的逐项审核清单见 [外部 API 查询审核](external-api-query-audit.md)。
+
 - `schemas/external_requests.py` 定义 RequestContext、阻断与写入未知契约；
   `ExternalRequestNotSent` 表示传输层确认尚未发送 HTTP 请求。管理器将它记录为
   `not_sent` 本地拒绝，释放租约且不触发写入结果未知阻断；平台错误由 `schemas/platform_errors.py` 持有。
@@ -130,7 +132,7 @@
   `online_products_read` 的 `include_source_images=true` 在读取单件详情时复用相同选图查询，不新增工具。
   HTTPS 图集复用 `ImageDeliveryService`，Mercado 图集经 `online_mercadolibre_images.py`
   复用现有上传客户端取得图片 ID；传统 Item 先关联新图片，User Products 提交完整图片 ID 列表。
-  准备后的实际目标图集写入领域任务回执，自动及人工回读比较该图集，不比较本地资产引用。
+  准备后的实际目标图集写入领域任务回执，人工回读比较该图集，不比较本地资产引用。
   图片准备不修改源草稿、SKU 默认图或源图片池，临时上传文件随准备作用域清理。
   `services/online_product_listing.py` 从快照中的平台组合标识生成父节点，筛选 SKU 后按节点分页，组合不跨页；
   `total` 统计节点，`listing_total` 统计匹配刊登，公开 `groups.item_ids` 引用本页 `items`，父节点不接受修改。
@@ -169,14 +171,14 @@
 - 任务以提交键防重，同目标互斥；全店同步与该账号修改互斥。写前核对当前店铺及平台业务版本，
   写前日志区分已发送与未发送；未知结果只回读、不自动重放。每次领取生成独立租约，过期执行者不可提交结果。
   工作线程在应用启动时恢复队列，前端轮询仅负责展示；部分同步失败保留旧快照，不推断删除。
-  在线修改提交后至少 120 秒首次自动确认一次，此后只接受人工确认且间隔 30 秒；失败也保留冷却时间。
+  在线修改提交后仅接受人工确认，连续查询间隔 30 秒；失败也保留冷却时间。历史自动确认标记不再参与任务领取。
   局部确认更新版本与对应字段，保留完整同步时间。
 - `runtime_units/online_product_capabilities.py` 将现有读取、单件状态刷新、统一修改、同步、回读、重试接口直接装配进主 Agent。
   `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。
   商品数量、SKU 分析等由读取返回值与已有 Code Mode 组合完成，不新增场景工具、查询 DSL 或平台写入旁路。
 - 审批和持久调用直接使用现有 Tool Bridge 的 Pydantic Deferred 机制；修改和重试返回 `OnlineSubmissionResult`，任务入队即完成 AI 工具调用，批量提交继续处理剩余目标，不等待远端终态。
   平台写入与回读由后台独立处理，在操作记录查看；`online_product_job_reader.py` 继续为同步及已持久化引用读取领域回执。
-  `confirmed` 才确认成功；部分完成、未知结果和自动回读耗尽保留原状态并结束本次工具等待，不自动重放。
+  `confirmed` 才确认成功；部分完成、未知结果和等待人工确认保留原状态并结束本次工具等待，不自动重放。
   改库存、调价、内容与停售共用一个 `online_products_change`，所需权限、审批和提交身份由原有 Runtime 处理。
 - 前端复用工作台的 `/online-products` 导航及 `OnlineProductsPanel.vue` / `OnlineContentEditor.vue`。
   在线图片编辑使用内嵌源草稿多选区，图集第一张为主图；排序和移除按钮提供禁用原因及操作提示。
@@ -860,14 +862,12 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `erp_web/facades/publish_facade.py`：HTTP 层唯一发布 facade；业务编排进入
   `erp_web/runtime_units/publish_workflows.py`。
 - `erp_web/runtime_units/publish_result_confirmation.py`：发布结果确认的唯一 owner。
-  提交回执持久化后进入 `pending_confirmation`，释放发布 worker；默认 120 秒后检查一次。
-  首次检查计划保存在平台状态的 `confirmation.next_check_at`，重启只恢复未消费计划；
-  首次检查仍在处理也不再安排下一次。`confirmation.last_checked_at/check_error` 保存最近
+  提交回执持久化后进入 `pending_confirmation`，释放发布 worker，等待用户点击查询最新结果。
+  不保留后台延迟查询调度器，重启不恢复历史 `confirmation.next_check_at` 计划；
+  该字段保留历史读取，新写入为空。`confirmation.last_checked_at/check_error` 保存最近
   检查时间与查询错误；读失败不改变发布结果，不重放写请求，不释放活动发布锁。
-  `POST /api/publish-bus/reconcile` 的 `trigger=manual/view` 统一调用单次确认；手动冷却
-  30 秒，查看触发首次需满 120 秒，此后距上次查询满 300 秒。普通 GET 只读本地记录。
-  查看触发仅限进入发布列表（当前页）和打开/切换任务详情；筛选、排序、搜索、翻页、
-  焦点变化、普通刷新都不触发远端查询。没有 next_check_at 时页面不能承诺持续自动检查。
+  `POST /api/publish-bus/reconcile` 仅接受 `trigger=manual`，连续手动查询冷却 30 秒。
+  进入发布列表、打开/切换详情及其他本地刷新都不触发远端查询。
   同一任务/平台在进程内合并并发查询；平台回执及店铺身份校验仍保留。
   Yandex 的已批准写步骤由 `advance_yandex_submission` 推进，未完成时是
   `pending_submission`；`poll_yandex_publish_status` 只能只读确认，不能推进写入。
@@ -1082,7 +1082,7 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 
 - HTTP 唯一入口：`erp_web/http_route_units/order_routes.py`，覆盖 Mercado Libre/Ozon/Yandex 回调和 `/api/orders` 本地查询及明确用户命令。
 - 领域装配：`erp_web/facades/order_notification_facade.py`。平台差异集中在 `runtime_units/order_notifications.py` 与 `runtime_units/orders_{mercadolibre,ozon,yandex}.py`。
-- 后台处理：`erp_web/services/order_notification_service.py`，领域任务领取、平台隔离、重试和定期对账；不参与 Agent 生命周期。
+- 后台处理：`erp_web/services/order_notification_service.py`，领域任务领取、平台隔离和回调重试；不参与 Agent 生命周期。订单中心每次挂载发起一次同步，之后仅按钮同步。主动同步失败不自动重试，历史重试和过期执行记录转为失败；后台不再创建定期对账任务，旧 `sync_schedule` 表不再读取。
 - 持久化：`erp_web/stores/order_notification_store.py`，独立订单库中的收件箱、快照、租约和未读提醒；`order_notification_migration.py` 仅执行主库历史通知的幂等导入。
 - 共享契约：`erp_web/schemas/orders.py`。AI `platform_orders_query` 与界面读取同一份本地快照，不触发同步远端查询，不获取回调凭据。
 - 金额：`orders_yandex.py::normalize_yandex_amount` 负责订单及 SKU 行的十进制金额归一化，`OrderAmountBreakdown` 保留付款、补贴和积分抵扣。`OrderAmountDetails.vue` 明确商品金额与旧付款快照的口径，不将其标成净到账；明细按平台行小计展示，不再乘数量。
@@ -1108,10 +1108,13 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 `http_route_units/fulfillment_routes.py` → `facades/fulfillment_facade.py` →
 `services/fulfillment_service.py` 是唯一履约入口。`AppContext.fulfillment` 装配并持有后台任务，
 服务只接收当前平台账号和采购详情提供函数，不反向导入 runtime unit。
+仓库状态及创建/取消结果核实仅由“跨境履约”页签进入一次或同步按钮触发；
+`POST /api/orders/fulfillment/sync` 在请求内完成单轮只读核实并返回最新快照，不排队或失败重试。
+后台只执行自动预报、已请求的资料更新和取消传播，不轮询已关联订单的状态。
 `schemas/fulfillment.py` 定义内部配送及公开履约契约；`stores/fulfillment_store.py` 共用订单 SQLite，
-负责唯一订单、版本 CAS、创建/取消占位、编辑租约和重启核实。
+负责唯一订单、版本 CAS、创建/取消占位、编辑租约和重启后的未知状态保留。
 `services/crossborderbus_client.py` 适配官方协议和企业 Token 刷新，全部请求经过统一外部请求管理。
-`services/platform_label_service.py` 负责 Yandex 单箱平台 PDF 与箱条码读取，复用现有店铺授权，不自动分箱或推进平台发货状态。`POST /api/orders/fulfillment/fetch-label` 为带版本校验的人工获取入口；默认自动预报在资料齐备后通过同一占位流程获取面单，失败独立记录并退避重试。
+`services/platform_label_service.py` 负责 Yandex 单箱平台 PDF 与箱条码读取，复用现有店铺授权，不自动分箱或推进平台发货状态。`POST /api/orders/fulfillment/fetch-label` 为带版本校验的人工获取入口；默认自动预报在资料齐备后通过同一占位流程获取面单，失败独立记录，页面提示用户手动重新获取，不自动重试。
 
 `services/fulfillment_label_service.py` 使用现有 `S3ImageStorage` SDK 边界交付 PDF 面单并核验公开内容。
 原有平台订单身份及状态不变；列表另行读取履约摘要，详情承载履约操作及异常处理。

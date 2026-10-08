@@ -196,16 +196,16 @@ describe('在线商品页面',()=>{
       expect(fetchOnlineProducts).toHaveBeenCalledTimes(2)
     } finally { hidden.mockRestore() }
   })
-  it('首次自动确认到期后只读取一次本地结果，不推进平台任务', async () => {
+  it('历史延迟确认标记不再启动自动查询', async () => {
     const job: OnlineJob = {id:'submitted',operation:'price',platform:'mercadolibre',status:'submitted',target_id:item.id,created_at:'',updated_at:'',request:{},result:{automatic_confirmation_pending:true,next_confirmation_at:Date.now()/1000+120}}
     vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[job]})
     render(); await flushPromises()
     await vi.advanceTimersByTimeAsync(120000)
     expect(fetchOnlineProducts).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(5000)
-    expect(fetchOnlineProducts).toHaveBeenCalledTimes(2)
+    expect(fetchOnlineProducts).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(60000)
-    expect(fetchOnlineProducts).toHaveBeenCalledTimes(2)
+    expect(fetchOnlineProducts).toHaveBeenCalledTimes(1)
     expect(onlineAction).not.toHaveBeenCalled()
   })
   it('单件刷新只查询目标状态，同时更新列表和详情并保留完整同步时间',async()=>{

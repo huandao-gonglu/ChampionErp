@@ -431,14 +431,14 @@ export async function fetchPublishJob(jobId: string): Promise<UnknownRecord> {
   return asRecord(data.job)
 }
 
-export async function reconcilePublishJob(jobId: string, platform: Marketplace, trigger: 'manual' | 'view' = 'manual'): Promise<UnknownRecord> {
+export async function reconcilePublishJob(jobId: string, platform: Marketplace): Promise<UnknownRecord> {
   const normalizedJobId = String(jobId || '').trim()
   const normalizedPlatform = String(platform || '').trim().toLowerCase()
   if (!normalizedJobId || !normalizedPlatform) throw new Error('发布结果对账需要 Job ID 与平台。')
   const response = await apiClient.post('/api/publish-bus/reconcile', {
     job_id: normalizedJobId,
     platform: normalizedPlatform,
-    trigger,
+    trigger: 'manual',
   })
   const data = asRecord(response.data)
   ensureOk(data, '发布结果对账失败')

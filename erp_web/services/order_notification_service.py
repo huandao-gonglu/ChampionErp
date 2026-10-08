@@ -116,7 +116,7 @@ class OrderNotificationService:
             }
         if not accounts:
             raise ValueError("没有已配置的平台账号，请先完成店铺授权")
-        operation_ids = self.store.schedule(accounts, now=time.time(), force=True)
+        operation_ids = self.store.schedule(accounts, now=time.time())
         return {"ok": True, "operation_ids": operation_ids}
 
     def _blocks(self, config, platform):
@@ -193,6 +193,10 @@ class OrderNotificationService:
                 retryable = True
                 next_attempt = max(time.time()+1, *(max(b["resume_at"], b.get("probe_until") or 0) for b in timed))
                 message = "平台订单同步暂时暂停，将在冷却结束后自动重试。"
+            if event.topic == "sync":
+                retryable, next_attempt = False, None
+                if timed and not hard:
+                    message = "平台订单同步暂时暂停，请在冷却结束后点击同步订单。"
             self.store.finish(job, error=message, retryable=retryable, now=time.time(), next_attempt=next_attempt)
         else:
             self.store.finish(job, now=time.time())
@@ -233,12 +237,6 @@ class OrderNotificationService:
     def _run(self, platform: str) -> None:
         while not self.stop_event.is_set():
             try:
-                accounts = {
-                    key: value
-                    for key, value in self.accounts().items()
-                    if key == platform
-                }
-                self.store.schedule(accounts, now=time.time())
                 worked = self.process_one(platform)
             except Exception:
                 logger.exception("订单后台任务失败：平台=%s", platform)

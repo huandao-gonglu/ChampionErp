@@ -5,7 +5,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import OrderCenterPanel from '../OrderCenterPanel.vue'
 import OrderDetailPanel from '../OrderDetailPanel.vue'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
-import { fetchOrderDetail, fetchOrders } from '@/api/orders'
+import { fetchOrderDetail, fetchOrders, fetchOrderSummary, orderCommand } from '@/api/orders'
 import type { OrderSnapshot } from '@/types/orders'
 vi.mock('@/api/orders', () => ({
   fetchOrderDetail: vi.fn(),
@@ -44,6 +44,8 @@ const orders: OrderSnapshot[] = Array.from({ length: 9 }, (_, index) => ({
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
+  vi.mocked(orderCommand).mockResolvedValue({ ok: true })
+  vi.mocked(fetchOrderSummary).mockResolvedValue({ ok: true, counts: {}, unread: 0, alerts: [], latest_alert_id: 0, attention_count: 0, recent: [] })
   vi.mocked(fetchOrders).mockResolvedValue({
     ok: true,
     items: orders,
@@ -74,6 +76,25 @@ async function render() {
   return { wrapper, router }
 }
 describe('紧凑订单列表', () => {
+  it('进页同步一次，本地刷新和计时不重复外发，按钮与重新进页可再次同步', async () => {
+    vi.useFakeTimers()
+    const store = useOrderNotificationsStore()
+    try {
+      store.start()
+      const { wrapper } = await render()
+      expect(orderCommand).toHaveBeenCalledTimes(1)
+      expect(orderCommand).toHaveBeenCalledWith('sync', { platform: '' })
+      await vi.advanceTimersByTimeAsync(600_000)
+      expect(vi.mocked(fetchOrders).mock.calls.length).toBeGreaterThan(1)
+      expect(orderCommand).toHaveBeenCalledTimes(1)
+      await wrapper.findAll('button').find(button => button.text() === '同步订单')!.trigger('click')
+      await flushPromises()
+      expect(orderCommand).toHaveBeenCalledTimes(2)
+      wrapper.unmount()
+      await render()
+      expect(orderCommand).toHaveBeenCalledTimes(3)
+    } finally { store.stop(); vi.useRealTimers() }
+  })
   it.each([
     ['PROCESSING', 'STARTED', 'pending_shipment', '待发货', '平台备货中'],
     ['PROCESSING', 'PACKAGING', 'pending_shipment', '待发货', '平台打包中'],

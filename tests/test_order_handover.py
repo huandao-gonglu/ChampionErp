@@ -208,7 +208,7 @@ def test_sync_and_notifications_persist_handover_and_detail_reads_stay_local(tmp
     assert service.process_one("yandex")
     assert procurement.order(saved.id, {"yandex": "4"}).handover == updated.handover
     notification = store.read({"yandex": "4"})["notifications"][0]
-    assert notification["status"] == "retry"
+    assert notification["status"] == "failed"
     assert "不可向用户暴露" not in notification["error"]
 
 

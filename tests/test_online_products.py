@@ -115,7 +115,7 @@ def test_price_is_confirmed_only_after_readback_and_repeated_key_returns_origina
     assert service.store.job(job["id"])["status"] == "submitted"
     assert not service.run_once()
     expire(service,job["id"])
-    service.run_once()
+    service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"] == "confirmed"
     assert service.change(body)["job"]["id"] == job["id"]
     assert len(remote.writes)==1
@@ -138,10 +138,10 @@ def test_confirmation_failure_keeps_cooldown_and_never_replays_write(setup_onlin
     service.run_once()
     expire(service, job["id"])
     remote.read_error = TimeoutError("平台暂未响应")
-    service.run_once()
+    service.reconcile(job["id"])
     result = service.store.job(job["id"])
     assert result["status"] == "outcome_unknown"
-    assert result["result"]["automatic_confirmation_pending"] is False
+    assert "automatic_confirmation_pending" not in result["result"]
     with pytest.raises(OnlineConflict, match="等待窗口"):
         service.reconcile(job["id"])
     assert not service.run_once()
@@ -154,7 +154,7 @@ def test_partial_confirmation_preserves_full_sync_timestamp(setup_online):
     job = service.change(price_request(service))["job"]
     service.run_once()
     expire(service, job["id"])
-    service.run_once()
+    service.reconcile(job["id"])
     current = service.store.get("CBT1")
     assert current.synced_at == before.synced_at
     assert current.status_checked_at == before.status_checked_at
@@ -200,7 +200,7 @@ def test_readback_authorization_failure_does_not_authorize_replay(setup_online):
     service.run_once()
     assert service.store.job(job["id"])["status"]=="submitted"
     expire(service,job["id"])
-    service.run_once()
+    service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"]=="waiting_confirmation"
     remote.read_error=PublishAdapterError("AUTH","授权失效",details={"http_status":403})
     expire(service,job["id"])
@@ -217,7 +217,7 @@ def test_async_receipt_does_not_confirm_before_task_finishes(setup_online):
     service.run_once()
     assert service.store.job(job["id"])["status"]=="submitted"
     expire(service,job["id"])
-    service.run_once()
+    service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"]=="waiting_confirmation"
     remote.pending=False
     expire(service,job["id"])
@@ -230,7 +230,7 @@ def test_partial_receipt_does_not_retry_whole_mutation(setup_online):
     job=service.change(price_request(service))["job"]
     service.run_once()
     expire(service,job["id"])
-    service.run_once()
+    service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"]=="partial"
     with pytest.raises(OnlineConflict): service.retry(job["id"],uuid4().hex)
 
@@ -390,3 +390,23 @@ def test_yandex_price_quarantine_keeps_confirmation_pending(monkeypatch):
     result=adapter.confirmation_details(listing(),"price",{},"campaign")
     assert result["pending"] is True
     assert captured[0]["business_id"]=="" and captured[0]["campaign_id"]=="2"
+
+
+def test_legacy_confirmation_timer_never_dispatches_and_manual_check_ignores_due_time(setup_online):
+    import time
+    service, remote = setup_online
+    job = service.change(price_request(service))["job"]
+    assert service.run_once()
+    with service.store.db._connect() as conn:
+        conn.execute("""UPDATE online_jobs SET lease_until=0,
+            result_json=json_set(result_json,'$.automatic_confirmation_pending',1,'$.next_confirmation_at',0)
+            WHERE id=?""", (job["id"],))
+        conn.commit()
+    for _ in range(3):
+        assert not service.run_once()
+    assert service.store.job(job["id"])["status"] == "submitted"
+    with service.store.db._connect() as conn:
+        conn.execute("UPDATE online_jobs SET result_json=json_set(result_json,'$.next_confirmation_at',?) WHERE id=?", (time.time()+86400, job["id"]))
+        conn.commit()
+    assert service.reconcile(job["id"])["job"]["status"] == "confirmed"
+    assert len(remote.writes) == 1

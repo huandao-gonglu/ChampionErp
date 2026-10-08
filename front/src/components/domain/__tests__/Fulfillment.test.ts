@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, ref } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAppStore } from '@/stores/app'
 import FulfillmentParcelDialog from '../FulfillmentParcelDialog.vue'
 import FulfillmentPlanFields from '../FulfillmentPlanFields.vue'
 import OrderFulfillmentPanel from '../OrderFulfillmentPanel.vue'
@@ -10,6 +12,7 @@ import type { OrderDetail } from '@/types/orders'
 
 vi.mock('@/api/fulfillment', () => ({ fetchBusServices: vi.fn(), fetchBusSettings: vi.fn(), fetchFulfillment: vi.fn(), fulfillmentCommand: vi.fn(), uploadFulfillmentLabel: vi.fn() }))
 enableAutoUnmount(afterEach)
+afterEach(() => vi.useRealTimers())
 const source = { supplier: '供应商', source_platform: '1688', product_url: 'https://detail.1688.com/offer/1.html', source_sku_id: 'S1', specification: '银色', sku_url: '', sku_url_verified: false }
 const order: OrderDetail = {
   ok: true,
@@ -21,6 +24,7 @@ function detail(): FulfillmentDetail {
 }
 const global = { stubs: { teleport: true, RouterLink: { template: '<a><slot /></a>' } } }
 beforeEach(() => {
+  setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.mocked(fetchFulfillment).mockResolvedValue(detail())
   vi.mocked(fulfillmentCommand).mockResolvedValue(detail())
@@ -67,7 +71,8 @@ describe('跨境履约操作', () => {
     finish({ ...detail(), label_error: 'Yandex 面单授权不足，请检查订单处理权限' })
     await flushPromises()
     expect(wrapper.get('[role="alert"]').text()).toContain('订单处理权限')
-    expect(wrapper.text()).toContain('获取平台面单')
+    expect(wrapper.text()).toContain('重新获取面单')
+    expect(useAppStore().toasts.at(-1)?.message).toContain('订单处理权限')
     expect(wrapper.findAll('button').find(b => b.text() === '立即提交')!.attributes('disabled')).toBeDefined()
   })
 
@@ -87,7 +92,9 @@ describe('跨境履约操作', () => {
   })
 
   it('取消被拒绝后显示原因并允许人工重新请求取消', async () => {
-    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), crossborderbus_order_id: 99, fulfillment_status: 'WAITING_DOMESTIC_SHIPMENT', cancel_requested: true, cancel_rejected: true, editable: false, error_message: '合作仓库拒绝取消' })
+    const rejected = { ...detail(), crossborderbus_order_id: 99, fulfillment_status: 'WAITING_DOMESTIC_SHIPMENT' as const, cancel_requested: true, cancel_rejected: true, editable: false, error_message: '合作仓库拒绝取消' }
+    vi.mocked(fetchFulfillment).mockResolvedValue(rejected)
+    vi.mocked(fulfillmentCommand).mockResolvedValue(rejected)
     const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
     await flushPromises()
     expect(wrapper.text()).toContain('合作仓库拒绝取消')
@@ -162,7 +169,9 @@ describe('跨境履约操作', () => {
     await wrapper.findAll('button').find(b => b.text() === '录入包裹')!.trigger('click')
     expect(wrapper.get('dialog').text()).toContain('关联采购记录')
     wrapper.unmount()
-    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), create_unknown: true, editable: false, plan_editable: false, fulfillment_status: 'EXCEPTION', error_message: '创建结果待确认' })
+    const unresolved = { ...detail(), create_unknown: true, editable: false, plan_editable: false, fulfillment_status: 'EXCEPTION' as const, error_message: '创建结果待确认' }
+    vi.mocked(fetchFulfillment).mockResolvedValue(unresolved)
+    vi.mocked(fulfillmentCommand).mockResolvedValue(unresolved)
     const unknown = mount(OrderFulfillmentPanel, { props: { order }, global })
     await flushPromises()
     expect(unknown.text()).toContain('核实创建结果')
@@ -170,5 +179,73 @@ describe('跨境履约操作', () => {
     await unknown.findAll('button').find(b => b.text() === '核实创建结果')!.trigger('click')
     await flushPromises()
     expect(fulfillmentCommand).toHaveBeenCalledWith('sync', order.order.id, 1, {})
+  })
+})
+
+
+describe('跨境履约按页面同步', () => {
+  it('进入时同步一次，停留只刷新本地，按钮和重新进入可再次同步', async () => {
+    vi.useFakeTimers()
+    const saved = { ...detail(), crossborderbus_order_id: 99, fulfillment_status: 'PACKING' as const }
+    vi.mocked(fetchFulfillment).mockResolvedValue(saved)
+    vi.mocked(fulfillmentCommand).mockResolvedValue(saved)
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(180_000)
+    expect(vi.mocked(fetchFulfillment).mock.calls.length).toBeGreaterThan(1)
+    expect(fulfillmentCommand).toHaveBeenCalledTimes(1)
+    await wrapper.findAll('button').find(b => b.text() === '同步')!.trigger('click')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+    mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenCalledTimes(3)
+  })
+
+  it('查询失败保留状态且不自动重试，手动同步可以恢复', async () => {
+    vi.useFakeTimers()
+    const saved = { ...detail(), crossborderbus_order_id: 99, fulfillment_status: 'PACKING' as const }
+    vi.mocked(fetchFulfillment).mockResolvedValue(saved)
+    vi.mocked(fulfillmentCommand).mockRejectedValueOnce(new Error('查询失败')).mockResolvedValue(saved)
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    expect(wrapper.text()).toContain('查询失败')
+    expect(wrapper.text()).toContain('已打包')
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(fulfillmentCommand).toHaveBeenCalledTimes(1)
+    await wrapper.findAll('button').find(b => b.text() === '同步')!.trigger('click')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).not.toContain('查询失败')
+  })
+
+  it('后台面单失败通过本地刷新弹出提示，不自动重新获取', async () => {
+    vi.useFakeTimers()
+    vi.mocked(fetchFulfillment).mockResolvedValueOnce({ ...detail(), busy: true, editable: false, operation: 'fetch-label' })
+      .mockResolvedValue({ ...detail(), label_error: '面单获取失败' })
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(useAppStore().toasts.at(-1)?.message).toContain('重新获取面单')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(button => button.text() === '重新获取面单')!.trigger('click')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenCalledWith('fetch-label', order.order.id, 1, {})
+  })
+
+  it('未关联订单只读本地；离开页面后迟到的读取不能触发外部同步', async () => {
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    wrapper.unmount()
+    let resolve!: (value: FulfillmentDetail) => void
+    vi.mocked(fetchFulfillment).mockReturnValue(new Promise(done => { resolve = done }))
+    const exited = mount(OrderFulfillmentPanel, { props: { order }, global })
+    exited.unmount()
+    resolve({ ...detail(), crossborderbus_order_id: 99 })
+    await flushPromises()
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
   })
 })

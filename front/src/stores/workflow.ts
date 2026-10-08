@@ -36,7 +36,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       return
     }
     if (key === 'publish') {
-      await combined.refreshPublishJobs({ checkOnView: true })
+      await combined.refreshPublishJobs()
       return
     }
     if (key === 'logs') {

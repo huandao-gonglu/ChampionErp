@@ -72,9 +72,9 @@ Yandex 按官方 [限额规则](https://yandex.ru/dev/market/partner-api/doc/ru/
 | 05 Mercado Token getter | 普通读取只使用保存凭据；5 次读取产生 0 次身份请求、0 次配置回写。真实业务 401 后仍走互斥与 CAS 刷新 |
 | 06 Yandex 构造 | 使用已授权保存的 business/campaign；5 次适配器构造产生 0 次归属查询，保留本地账号检查 |
 | 07 Ozon 名称 | 删除仓库/商品/库存探测函数及调用；名称来自本地别名或 seller/info 已有字段 |
-| 08 修改确认 | 提交后至少 120 秒首次自动确认一次，此后人工触发且间隔 30 秒；失败也保留冷却。仅读本次字段，保留未读字段与完整同步时间 |
+| 08 修改确认 | 提交后仅人工触发，连续查询间隔 30 秒；失败也保留冷却。仅读本次字段，保留未读字段与完整同步时间 |
 | 10 属性候选 | Mercado 定义与候选共享有界 15 分钟原始响应缓存；Ozon 保留已使用的 2000 条平台分页契约，并复用后续值，前端前两页只请求平台一次 |
-| 11 本地轮询 | 在线任务 queued/running 时 5 秒读取，页面隐藏暂停，等待人工/终态无周期读取；首次自动确认到期后一次本地读取。研究状态 2 秒、隐藏暂停；AI SSE 可用时不并行短轮询 |
+| 11 本地轮询 | 在线任务 queued/running 时 5 秒读取，页面隐藏暂停，等待人工/终态无周期读取。研究状态 2 秒、隐藏暂停；AI SSE 可用时不并行短轮询 |
 
 Mercado 字段确认使用官方 [商品字段过滤](https://global-selling.mercadolibre.com/devsite/manage-sales-global-selling/variations-global-selling/) 能力；User Product 无可用字段投影时只读取对应资源，不重新聚合关联市场、价格、库存和内容。Yandex 价格隔离与内容异步回执检查继续保留。
 

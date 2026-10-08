@@ -196,11 +196,8 @@ class OnlineProductStore:
             # 未发出的任务可安全恢复；已发出的修改永不自动重放。
             conn.execute("""UPDATE online_jobs SET status=CASE WHEN dispatched=1 THEN 'outcome_unknown' ELSE 'queued' END,
                 owner='', lease_until=0,updated_at=? WHERE status='running' AND lease_until<?""", (utc_now(), time.time()))
-            row = conn.execute("""SELECT * FROM online_jobs WHERE status='queued' OR
-                (status='submitted' AND lease_until<?
-                 AND COALESCE(json_extract(result_json,'$.automatic_confirmation_pending'),0)=1
-                 AND json_extract(result_json,'$.next_confirmation_at')<?)
-                ORDER BY created_at LIMIT 1""", (time.time(),time.time())).fetchone()
+            row = conn.execute("""SELECT * FROM online_jobs WHERE status='queued'
+                ORDER BY created_at LIMIT 1""").fetchone()
             if row is None:
                 conn.commit()
                 return None
@@ -217,7 +214,7 @@ class OnlineProductStore:
     def update_job(self, job_id: str, status: str, result: dict[str, Any], *, owner: str, dispatched: bool = False) -> None:
         with self.db._connect() as conn:
             cursor = conn.execute("UPDATE online_jobs SET status=?,result_json=?,dispatched=MAX(dispatched,?),lease_until=?,updated_at=? WHERE id=? AND owner=? AND lease_until>?",
-                         (status, json.dumps(result, ensure_ascii=False), int(dispatched), time.time()+(120 if status == "submitted" else 0 if status == "waiting_confirmation" else 900), utc_now(), job_id, owner, time.time()))
+                         (status, json.dumps(result, ensure_ascii=False), int(dispatched), time.time()+(0 if status in {"submitted", "waiting_confirmation"} else 900), utc_now(), job_id, owner, time.time()))
             if cursor.rowcount != 1:
                 raise OnlineConflict("任务执行租约已失效，禁止过期执行者提交结果")
             conn.commit()
@@ -230,8 +227,7 @@ class OnlineProductStore:
             if row is None or row["status"] not in ("submitted", "waiting_confirmation", "outcome_unknown"):
                 raise OnlineConflict("只有待确认或结果未知的修改可以查询平台结果")
             result = json.loads(row["result_json"])
-            earliest = float(result.get("next_confirmation_at") or 0)
-            earliest = max(earliest, float(result.get("last_confirmation_at") or 0)+30)
+            earliest = float(result.get("last_confirmation_at") or 0) + 30
             if earliest > time.time():
                 raise OnlineConflict(f"平台结果尚在等待窗口，请 {max(1, int(earliest-time.time()))} 秒后查询")
             conn.execute("UPDATE online_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=?", (token, time.time()+900, utc_now(), job_id))

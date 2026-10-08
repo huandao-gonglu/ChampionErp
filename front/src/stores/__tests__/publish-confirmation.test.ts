@@ -41,32 +41,30 @@ describe('查看发布结果时的查询边界', () => {
     expect(reconcilePublishJob).not.toHaveBeenCalled()
   })
 
-  it('进入列表只检查本页未确认任务，不检查已结束任务', async () => {
+  it('进入列表只读本地任务，待确认结果也不外发查询', async () => {
     const store = useWorkflowPublishingStore()
     vi.mocked(fetchPublishJobs).mockResolvedValue({ items: [job('one'), job('done', 'success')], nextCursor: '' })
-    await store.refreshPublishJobs({ checkOnView: true })
-    expect(reconcilePublishJob).toHaveBeenCalledTimes(1)
-    expect(reconcilePublishJob).toHaveBeenCalledWith('one', 'ozon', 'view')
+    await store.refreshPublishJobs()
+    expect(reconcilePublishJob).not.toHaveBeenCalled()
     expect(fetchPublishJob).toHaveBeenCalledWith('one')
   })
 
-  it('打开或再次打开详情只检查选中任务，服务端负责时间门槛', async () => {
+  it('打开或再次打开详情不自动查询平台', async () => {
     const store = useWorkflowPublishingStore()
     store.publishJobs = [job('one'), job('two')]
     await store.selectPublishJob('two')
-    expect(reconcilePublishJob).toHaveBeenCalledTimes(1)
-    expect(reconcilePublishJob).toHaveBeenCalledWith('two', 'ozon', 'view')
+    expect(reconcilePublishJob).not.toHaveBeenCalled()
     await store.selectPublishJob('two')
-    expect(reconcilePublishJob).toHaveBeenCalledTimes(2)
-    expect(reconcilePublishJob).not.toHaveBeenCalledWith('one', 'ozon', 'view')
+    expect(reconcilePublishJob).not.toHaveBeenCalled()
   })
 
-  it('查看查询异常不会清空已有发布状态', async () => {
+  it('手动查询异常不会清空已有发布状态', async () => {
     const store = useWorkflowPublishingStore()
     const original = job('one')
     store.publishJobs = [original]
     vi.mocked(reconcilePublishJob).mockRejectedValue(new Error('网络断开'))
-    await store.selectPublishJob('one')
+    await store.reconcileSelectedPublishJob('one', 'ozon')
+    expect(reconcilePublishJob).toHaveBeenCalledWith('one', 'ozon')
     expect(store.publishJobs[0]).toEqual(original)
     expect(store.publishJobsLoading).toBe(false)
   })

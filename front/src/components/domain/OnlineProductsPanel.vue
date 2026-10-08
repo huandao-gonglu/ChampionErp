@@ -73,7 +73,6 @@ const contentChanges = ref<Record<string,unknown>>({})
 const contentPicturePreviews = ref<string[]>([])
 const preview = ref(false), submitKey = ref('')
 let timer: ReturnType<typeof setTimeout> | undefined
-const observedConfirmations = new Set<string>()
 let sequence = 0
 let disposed = false
 const jobFilter = ref('')
@@ -163,15 +162,6 @@ async function refresh(quiet = false) {
     if (!disposed && ticket === sequence) {
       clearTimeout(timer)
       if (!document.hidden && hasActive.value) timer = setTimeout(() => void refresh(true), 5000)
-      else if (!document.hidden) {
-        const pending = page.value?.jobs
-          .filter(job => job.status === 'submitted' && job.result.automatic_confirmation_pending && !observedConfirmations.has(job.id))
-          .sort((a, b) => Number(a.result.next_confirmation_at) - Number(b.result.next_confirmation_at))[0]
-        if (pending) timer = setTimeout(() => {
-          observedConfirmations.add(pending.id)
-          void refresh(true)
-        }, Math.max(5000, Number(pending.result.next_confirmation_at || 0) * 1000 - Date.now() + 5000))
-      }
     }
   }
 }

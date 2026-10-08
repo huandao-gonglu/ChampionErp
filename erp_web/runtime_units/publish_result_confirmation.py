@@ -1,10 +1,8 @@
-"""发布结果的单次只读确认与首次延迟检查；不运行模型或推进 Agent。"""
+"""发布结果的手动单次只读确认；不运行模型或推进 Agent。"""
 
 from __future__ import annotations
 
 import copy
-import logging
-import threading
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -14,11 +12,8 @@ from .publish_confirmation import resolve_publish_store_binding
 if TYPE_CHECKING:
     from .publishing_bus_core import PublishingBus
 
-FIRST_CHECK_DELAY = 120
-VIEW_CHECK_INTERVAL = 300
 MANUAL_CHECK_INTERVAL = 30
 CONFIRMABLE_STATUSES = frozenset({"pending_confirmation", "outcome_unknown"})
-logger = logging.getLogger(__name__)
 
 
 def timestamp(value: Any) -> float:
@@ -50,62 +45,11 @@ def has_query_identity(result: dict[str, Any]) -> bool:
 
 
 class PublishResultConfirmation:
-    """所有确认触发共用同一入口；首次计划持久化，内存队列只负责唤醒。"""
+    """手动确认共用并发占位与冷却限制；后台不调度结果查询。"""
 
     def __init__(self, bus: PublishingBus) -> None:
         self.bus = bus
-        self._condition = threading.Condition()
-        self._scheduled: dict[tuple[str, str], float] = {}
-        self._thread: threading.Thread | None = None
-        self._closed = False
         self._checking: set[tuple[str, str]] = set()
-
-    def schedule(self, job_id: str, platform: str, due: str) -> None:
-        if not due:
-            return
-        with self._condition:
-            if self._closed:
-                return
-            self._scheduled[(job_id, platform)] = timestamp(due)
-            if self._thread is None:
-                self._thread = threading.Thread(
-                    target=self._run, name="PublishFirstCheck", daemon=True
-                )
-                self._thread.start()
-            self._condition.notify()
-
-    def _run(self) -> None:
-        while True:
-            with self._condition:
-                if self._closed:
-                    return
-                if not self._scheduled:
-                    self._condition.wait()
-                    continue
-                key, due = min(self._scheduled.items(), key=lambda item: item[1])
-                delay = due - time.time()
-                if delay > 0:
-                    self._condition.wait(delay)
-                    continue
-                self._scheduled.pop(key)
-            try:
-                self.bus.executor.submit(self._scheduled_check, *key)
-            except RuntimeError:
-                # 关闭过程不丢失计划；下一次启动从持久化记录恢复。
-                return
-
-    def _scheduled_check(self, job_id: str, platform: str) -> None:
-        try:
-            self.check(job_id, platform, trigger="scheduled")
-        except Exception:
-            logger.exception("首次发布结果检查未完成：%s/%s", job_id, platform)
-
-    def close(self) -> None:
-        with self._condition:
-            self._closed = True
-            self._condition.notify_all()
-        if self._thread is not None:
-            self._thread.join()
 
     def accept(self, job_id: str, platform: str, result: dict[str, Any]) -> None:
         now = time.time()
@@ -113,20 +57,20 @@ class PublishResultConfirmation:
         item = state["platforms"][platform]
         confirmation = item.get("confirmation") or {
             "submitted_at": iso_time(now),
-            "next_check_at": iso_time(now + FIRST_CHECK_DELAY),
+            "next_check_at": "",
             "last_checked_at": "",
             "check_error": "",
         }
+        confirmation["next_check_at"] = ""
         self.bus._set_platform(
             job_id, platform, status="pending_confirmation",
             stage="waiting_platform_confirmation", error="",
             result=self.bus._persisted_platform_result(result), confirmation=confirmation,
         )
-        self.schedule(job_id, platform, confirmation.get("next_check_at", ""))
 
     def check(self, job_id: str, platform: str, *, trigger: str = "manual") -> dict[str, Any]:
-        if trigger not in {"manual", "view", "scheduled"}:
-            raise ValueError("发布结果查询触发来源无效。")
+        if trigger != "manual":
+            raise ValueError("发布结果仅支持手动查询。")
         key = (job_id, platform)
         now = time.time()
         with self.bus._lock:
@@ -142,13 +86,7 @@ class PublishResultConfirmation:
             confirmation = dict(item.get("confirmation") or {})
             last_checked = timestamp(confirmation.get("last_checked_at"))
             submitted = timestamp(confirmation.get("submitted_at") or item.get("created_at"))
-            due = timestamp(confirmation.get("next_check_at"))
-            if trigger == "scheduled" and (not due or due > now or last_checked):
-                return self._response(job_id, platform, False, "not_due")
-            interval = MANUAL_CHECK_INTERVAL if trigger == "manual" else VIEW_CHECK_INTERVAL
-            if (last_checked and now - last_checked < interval) or (
-                trigger == "view" and not last_checked and now - submitted < FIRST_CHECK_DELAY
-            ):
+            if last_checked and now - last_checked < MANUAL_CHECK_INTERVAL:
                 return self._response(job_id, platform, False, "cooldown")
             result = copy.deepcopy(item.get("result"))
             if not isinstance(result, dict):

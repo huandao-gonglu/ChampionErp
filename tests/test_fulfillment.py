@@ -104,7 +104,7 @@ def due(service, order):
     service.store.change(order.identity, value["revision"], {"next_attempt": 0})
 
 
-def test_automatic_chain_reaches_erp_shipped(domain):
+def test_explicit_sync_reaches_erp_shipped(domain):
     service, bus, order = ready(domain)
     assert service.detail(order.identity)["blocked_reason"] == ""
     service.process_one(order)
@@ -113,13 +113,13 @@ def test_automatic_chain_reaches_erp_shipped(domain):
     assert create["is_check_section_order"] == 1
     assert create["order_data"][0]["package_list"][0]["from_order"] == "PO-123"
     bus.lookup["package_list"][0]["status"] = 1
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "WAREHOUSE_RECEIVED"
     bus.remote["order_status"] = 1
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "PACKING"
     bus.remote["order_status"] = 3
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "SHIPPED"
     assert service.order_detail(order.identity)[0].state == "pending_shipment"
 
@@ -155,7 +155,7 @@ def test_automatic_label_download_precedes_creation_once(domain):
     assert bus.calls[0][1]["order_data"][0]["sheet_order_sn"] == "123-1"
 
 
-def test_label_failure_is_visible_backed_off_and_does_not_create(domain):
+def test_label_failure_requires_manual_retry_even_after_legacy_due_time(domain, monkeypatch):
     service, bus, order, parcel, *_ = domain
     def denied():
         raise FulfillmentError("Yandex 面单授权不足")
@@ -167,7 +167,11 @@ def test_label_failure_is_visible_backed_off_and_does_not_create(domain):
     assert "授权不足" in value["blocked_reason"]
     assert not value["busy"]
     assert value["fulfillment_status"] == "NEW"
-    service.process_one(order)
+    import time
+    now = time.time()
+    with monkeypatch.context() as patch:
+        patch.setattr(time, "time", lambda: now + 86400)
+        assert not service.process_one(order)
     assert provider.calls == 1
     assert not bus.calls
     command(service, order, "fetch-label")
@@ -249,7 +253,7 @@ def test_creation_timeout_never_replays(domain):
     assert len([c for c in bus.calls if c[0].endswith("createOrder")]) == 1
     assert service.detail(order.identity)["create_unknown"]
     bus.lookup = {"id": 99, "sid": 10, "sheet_info": {"section": 1}}
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     assert service.detail(order.identity)["crossborderbus_order_id"] == 99
 
 
@@ -322,10 +326,10 @@ def test_platform_cancel_propagates_and_requires_remote_confirmation(domain):
     due(service, order); service.process_one(cancelled)
     assert service.detail(order.identity)["fulfillment_status"] != "CANCELLED"
     assert any(c[0].endswith("cancelOrder") for c in bus.calls)
-    due(service, order); service.process_one(cancelled)
+    command(service, order, "sync")
     assert sum(c[0].endswith("cancelOrder") for c in bus.calls) == 1
     bus.remote["is_delete"] = 1
-    due(service, order); service.process_one(cancelled)
+    command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "CANCELLED"
 
 
@@ -359,9 +363,9 @@ def test_status_failure_keeps_last_known_progress(domain):
     service, bus, order = ready(domain)
     service.process_one(order)
     bus.remote["order_status"] = 1
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     bus.remote = {"id": 1}
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "PACKING"
     assert service.detail(order.identity)["error_message"]
 
@@ -371,7 +375,7 @@ def test_account_switch_blocks_existing_remote_operations(domain):
     service.process_one(order)
     before = len(bus.calls)
     bus.account = "bus-b"
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     assert len(bus.calls) == before
     assert "授权账号已变化" in service.detail(order.identity)["error_message"]
 
@@ -423,7 +427,7 @@ def test_packed_problem_parcel_stays_locked(domain):
     service, bus, order = ready(domain)
     service.process_one(order)
     bus.remote.update(order_status=1, is_question=1)
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "EXCEPTION"
     assert not service.detail(order.identity)["editable"]
 
@@ -432,9 +436,9 @@ def test_late_pending_response_does_not_erase_received_progress(domain):
     service, bus, order = ready(domain)
     service.process_one(order)
     bus.lookup["package_list"][0]["status"] = 1
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     bus.lookup["package_list"] = []
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "WAREHOUSE_RECEIVED"
 
 
@@ -556,7 +560,7 @@ def test_list_summary_keeps_platform_status_independent(domain):
     service, bus, order = ready(domain)
     service.process_one(order)
     bus.remote["order_status"] = 3
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     view = service.order_detail(order.identity)[0]
     summary = service.store.summaries([view])[view.id]
     assert summary["fulfillment_status"] == "SHIPPED"
@@ -569,10 +573,12 @@ def test_manual_sync_can_refresh_shipped_order(domain):
     service, bus, order = ready(domain)
     service.process_one(order)
     bus.remote["order_status"] = 3
-    due(service, order); service.process_one(order)
-    assert not service.process_one(order)
     command(service, order, "sync")
-    assert service.process_one(order)
+    assert not service.process_one(order)
+    before = len(bus.calls)
+    command(service, order, "sync")
+    assert len(bus.calls) == before + 1
+    assert not service.process_one(order)
 
 
 def test_failed_authorization_preserves_previous_credentials(domain, monkeypatch):
@@ -612,7 +618,7 @@ def test_cancel_rejection_remains_visible_until_explicit_retry(domain):
     bus.cancel_error = FulfillmentError("合作仓库拒绝取消")
     command(service, order, "cancel")
     service.process_one(order)
-    due(service, order); service.process_one(order)
+    command(service, order, "sync")
     value = service.detail(order.identity)
     assert value["cancel_rejected"] and "拒绝取消" in value["error_message"]
     assert sum(path.endswith("cancelOrder") for path, _ in bus.calls) == 1
@@ -674,3 +680,98 @@ def test_list_summary_does_not_create_records_and_reads_operation_facts(domain):
     assert summary["label_error"] == "面单获取失败"
     assert "revision" not in summary and "platform_label" not in summary
     assert claimed["create_unknown"] is True
+
+
+def test_worker_never_polls_linked_order_even_with_legacy_schedule(domain):
+    service, bus, order = ready(domain)
+    service.process_one(order)
+    before = len(bus.calls)
+    value = service.store.get(order.identity)
+    service.store.change(order.identity, value["revision"], {"next_attempt": 0, "force_sync": True})
+    for _ in range(5):
+        assert not service.process_one(order)
+    assert len(bus.calls) == before
+    result = command(service, order, "sync")
+    assert result["fulfillment_status"] == "WAITING_DOMESTIC_SHIPMENT"
+    assert len(bus.calls) == before + 1
+    assert not service.process_one(order)
+
+
+def test_unknown_creation_waits_for_page_query_without_background_reconciliation(domain, monkeypatch):
+    service, bus, order = ready(domain)
+    bus.create_error = FulfillmentError("创建超时", unknown=True)
+    service.process_one(order)
+    lookups = []
+    monkeypatch.setattr(bus, "search", lambda *args, **kwargs: lookups.append(args))
+    for _ in range(5):
+        assert not service.process_one(order)
+    assert lookups == []
+    result = command(service, order, "sync")
+    assert result["create_unknown"] and result["error_message"]
+    assert len(lookups) == 1
+    assert not service.process_one(order)
+    assert len(lookups) == 1
+
+
+def test_sync_is_read_only_and_stale_or_concurrent_requests_do_not_send(domain):
+    service, bus, order = ready(domain)
+    command(service, order, "sync")
+    assert bus.calls == []
+    service.process_one(order)
+    value = service.store.get(order.identity)
+    before = len(bus.calls)
+    with pytest.raises(FulfillmentError, match="变化或正在处理"):
+        service.sync(order.identity, value["revision"] - 1)
+    claimed, token = service.store.claim(order.identity, "sync", value["revision"])
+    with pytest.raises(FulfillmentError, match="变化或正在处理"):
+        service.sync(order.identity, claimed["revision"])
+    assert len(bus.calls) == before
+    service.store.finish(order.identity, token, {"update_pending": True, "cancel_requested": True})
+    command(service, order, "sync")
+    assert all(path.endswith("status") for path, _ in bus.calls[before:])
+
+
+def test_failed_sync_never_retries_in_background_and_preserves_progress(domain):
+    service, bus, order = ready(domain)
+    service.process_one(order)
+    bus.remote["order_status"] = 1
+    command(service, order, "sync")
+    bus.remote = {"id": 12345}
+    result = command(service, order, "sync")
+    assert result["fulfillment_status"] == "PACKING" and result["error_message"]
+    before = len(bus.calls)
+    for _ in range(5):
+        assert not service.process_one(order)
+    assert len(bus.calls) == before
+
+
+@pytest.mark.parametrize('platform_cancel', [False, True])
+def test_new_cancel_request_can_proceed_after_previous_sync_failure(domain, platform_cancel):
+    service, bus, order = ready(domain)
+    service.process_one(order)
+    value = service.store.get(order.identity)
+    service.store.change(order.identity, value['revision'], {'error_message': '上次状态查询失败'})
+    if platform_cancel:
+        order = order.model_copy(update={'state': 'cancelled', 'status': 'CANCELLED'})
+        domain[4](order)
+    else:
+        command(service, order, 'cancel')
+    assert service.process_one(order)
+    assert sum(path.endswith('cancelOrder') for path, _ in bus.calls) == 1
+    before = len(bus.calls)
+    for _ in range(3):
+        assert not service.process_one(order)
+    assert len(bus.calls) == before
+
+
+def test_update_preflight_failure_does_not_turn_into_background_polling(domain):
+    service, bus, order = ready(domain)
+    service.process_one(order)
+    command(service, order, 'parcels', parcels=[{**domain[3], 'tracking_number': 'SF456'}])
+    bus.remote = {'id': 12345}
+    assert service.process_one(order)
+    before = len(bus.calls)
+    for _ in range(3):
+        assert not service.process_one(order)
+    assert len(bus.calls) == before
+    assert not any(path.endswith('updateOrderPackage') for path, _ in bus.calls)

@@ -460,8 +460,7 @@ function selectJob(jobId: string) {
                 <p class="text-xs text-amber-800 dark:text-amber-200">{{ item.status === 'pending_confirmation' ? '平台已受理，尚未确认最终结果。' : '提交结果不明，请查询或到平台后台核实。' }}</p>
                 <p v-if="item.confirmation?.submittedAt" class="mt-1 text-xs">提交于 {{ formatTime(item.confirmation.submittedAt) }}</p>
                 <p v-if="item.confirmation?.lastCheckedAt" class="mt-1 text-xs">上次检查：{{ formatTime(item.confirmation.lastCheckedAt) }}</p>
-                <p v-if="item.confirmation?.nextCheckAt" class="mt-1 text-xs">预计 {{ formatTime(item.confirmation.nextCheckAt) }} 自动检查一次</p>
-                <p v-else class="mt-1 text-xs">没有后续自动检查计划，可稍后查询。</p>
+                <p class="mt-1 text-xs">可点击“查询最新结果”获取最新进度。</p>
                 <p v-if="item.confirmation?.checkError" class="mt-1 text-xs text-amber-800 dark:text-amber-200">本次查询未完成：{{ item.confirmation.checkError }}</p>
                 <button
                   data-testid="publish-job-reconcile"

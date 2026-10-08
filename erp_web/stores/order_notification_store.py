@@ -38,8 +38,6 @@ CREATE TABLE IF NOT EXISTS order_address_notes (
  platform TEXT NOT NULL, account_id TEXT NOT NULL, address_key TEXT NOT NULL,
  address TEXT NOT NULL, note TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL,
  PRIMARY KEY(platform,account_id,address_key));
-CREATE TABLE IF NOT EXISTS sync_schedule (
- platform TEXT NOT NULL, account_id TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(platform,account_id));
 """
 
 
@@ -120,25 +118,21 @@ class OrderNotificationStore:
             conn.commit()
 
     def schedule(
-        self, accounts: dict[str, str], *, now: float, force: bool = False
+        self, accounts: dict[str, str], *, now: float
     ) -> list[str]:
         operation_ids = []
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             for platform, account in accounts.items():
-                row = conn.execute(
-                    "SELECT next_at FROM sync_schedule WHERE platform=? AND account_id=?",
-                    (platform, account),
-                ).fetchone()
                 active = conn.execute(
-                    "SELECT id FROM inbox WHERE platform=? AND account_id=? AND topic='sync' AND status IN ('queued','running','retry')",
+                    "SELECT id,status,lease_until FROM inbox WHERE platform=? AND account_id=? AND topic='sync' AND status IN ('queued','running','retry')",
                     (platform, account),
                 ).fetchone()
                 if active:
-                    operation_ids.append(f"orders:{active[0]}")
-                if active and force:
-                    conn.execute("UPDATE inbox SET next_attempt=? WHERE platform=? AND account_id=? AND topic='sync' AND status='retry'", (now, platform, account))
-                if active or (not force and row and row[0] > now):
+                    operation_ids.append(f"orders:{active['id']}")
+                    if active["status"] == "retry" or (active["status"] == "running" and active["lease_until"] <= now):
+                        conn.execute("""UPDATE inbox SET status='queued',attempts=0,next_attempt=0,
+                            error='',lease_until=0,claim='' WHERE id=?""", (active["id"],))
                     continue
                 event_id = self._insert(
                     conn,
@@ -151,17 +145,17 @@ class OrderNotificationStore:
                     ),
                 )
                 operation_ids.append(f"orders:{event_id}")
-                conn.execute(
-                    "INSERT OR REPLACE INTO sync_schedule VALUES (?,?,?)",
-                    (platform, account, now + 300),
-                )
             conn.commit()
         return operation_ids
 
     def claim(self, accounts: dict[str, str], *, now: float):
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            # 每个账号同一时刻只处理一个任务；失效租约可重领，claim fencing 拒绝迟到提交。
+            # 历史主动同步重试和中断的查询不再自动恢复，等待页面或按钮重新发起。
+            conn.execute("""UPDATE inbox SET status='failed',next_attempt=0,lease_until=0,
+                error='上次同步未完成，请点击同步订单重新获取。'
+                WHERE topic='sync' AND (status='retry' OR (status='running' AND lease_until<=?))""", (now,))
+            # 每个账号同一时刻只处理一个任务；回调失效租约可重领，claim fencing 拒绝迟到提交。
             scope = (
                 " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
             )
@@ -368,11 +362,10 @@ class OrderNotificationStore:
             for platform, account in accounts.items():
                 latest = conn.execute("SELECT id,status,error,next_attempt,completed_at FROM inbox WHERE platform=? AND account_id=? AND topic='sync' ORDER BY id DESC LIMIT 1", (platform,account)).fetchone()
                 success = conn.execute("SELECT completed_at FROM inbox WHERE platform=? AND account_id=? AND topic='sync' AND status='done' ORDER BY completed_at DESC LIMIT 1", (platform,account)).fetchone()
-                schedule = conn.execute("SELECT next_at FROM sync_schedule WHERE platform=? AND account_id=?", (platform, account)).fetchone()
                 result.append({"platform": platform, "status": latest["status"] if latest else "idle",
                                "error": latest["error"] if latest else "",
                                "last_success_at": success[0] if success else "",
-                               "next_attempt": latest["next_attempt"] if latest and latest["status"] == "retry" else schedule[0] if schedule else 0})
+                               "next_attempt": 0})
         return result
 
     def summary(self, accounts):

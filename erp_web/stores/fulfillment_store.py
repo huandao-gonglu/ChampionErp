@@ -1,4 +1,4 @@
-"""履约配置及出站操作持久化；创建前原子占位，重启后只核实未知结果。"""
+"""履约配置及出站操作持久化；创建前原子占位，未知结果等待页面核实。"""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ class FulfillmentStore:
             "order_number": "ERP-" + hashlib.sha256(json.dumps(key).encode()).hexdigest()[:32],
             "crossborderbus_order_id": None, "bus_identity": "", "plan": None, "override": False,
             "parcels": [], "platform_label": "", "platform_tracking_number": "",
-            "label_error": "", "label_attempt_at": "", "label_next_attempt": 0,
+            "label_error": "", "label_attempt_at": "",
             "country": "", "fulfillment_status": "NEW", "operation": "", "error_message": "",
             "last_attempt_at": "", "last_synced_at": "", "next_attempt": 0,
             "cancel_requested": False, "editing_until": 0, "create_unknown": False,
