@@ -180,6 +180,7 @@ class FulfillmentSummary(BaseModel):
     cancel_rejected: bool = False
     error_message: str = ""
     label_error: str = ""
+    has_domestic_waybill: bool = False
 
 
 class FulfillmentView(BaseModel):
@@ -217,6 +218,7 @@ class FulfillmentView(BaseModel):
     warehouse_name: str
     delivery: DeliverySource
     parcels: list[DomesticParcel]
+    has_domestic_waybill: bool = False
     update_pending: bool = False
 
 

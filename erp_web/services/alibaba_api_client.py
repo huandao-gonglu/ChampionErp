@@ -35,12 +35,12 @@ class AlibabaApiRejected(AlibabaApiError):
     """平台明确拒绝执行请求，不能与网络结果未知混为一谈。"""
 
 
-def _known_rejection(payload):
+def _known_rejection(payload, api=""):
     if not isinstance(payload, dict):
         return None
     code = payload.get("errorCode") or payload.get("error_code")
     messages = {
-        "gw.APIACLDecline": "当前应用未获该 1688 接口权限（gw.APIACLDecline），请在开发者中心开通对应接口",
+        "gw.APIACLDecline": f"当前应用未获 1688 接口 {api or '（未识别）'} 的权限（gw.APIACLDecline），请核对应用解决方案与接口授权",
         "500_005": "购买数量不满足该交易流程的起批限制（500_005），请调整数量后重新预览",
     }
     return messages.get(code) if isinstance(code, str) else None
@@ -103,7 +103,7 @@ class AlibabaApiClient:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             try:
-                rejected = _known_rejection(json.loads(exc.read()))
+                rejected = _known_rejection(json.loads(exc.read()), api)
             except (ValueError, UnicodeDecodeError):
                 rejected = None
             finally:
@@ -126,7 +126,10 @@ class AlibabaApiClient:
         # 订单详情实测返回字符串 "true"，物流接口返回 JSON 布尔值。
         success = payload.get("success") if isinstance(payload, dict) else None
         if not (success is True or success == "true"):
-            rejected = _known_rejection(payload)
+            # 官方物流接口用 500_2 表达尚未发货；保留原始业务码，并归一为空物流列表。
+            if api == LOGISTICS_INFO and isinstance(payload, dict) and payload.get("errorCode") == "500_2":
+                return {**payload, "result": []}
+            rejected = _known_rejection(payload, api)
             if rejected:
                 raise AlibabaApiRejected(rejected)
             raise AlibabaApiError("1688 未返回成功结果，请检查请求参数、账号归属及接口权限")

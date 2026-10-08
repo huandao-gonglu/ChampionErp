@@ -49,6 +49,17 @@ def load_app_config() -> dict[str, Any]:
     return get_context().config.load_app_config()
 
 
+def system_settings_payload() -> dict:
+    return get_context().config.system_settings()
+
+
+def save_system_settings_payload(body: dict) -> ResponseWithStatus:
+    try:
+        return get_context().config.save_system_settings(body), 200
+    except ValueError:
+        return {"ok": False, "error": "自动同步间隔必须是至少 5 小时的整数"}, 400
+
+
 def save_app_config(config: dict[str, Any]) -> None:
     get_context().config.save_app_config(config)
 
@@ -388,6 +399,8 @@ __all__ = [
     "refresh_mercadolibre_token_from_body",
     "run_mercadolibre_07d_test",
     "save_app_config",
+    "system_settings_payload",
+    "save_system_settings_payload",
     "save_store_config",
     "summarize_store_auth_states",
     "test_api_config",

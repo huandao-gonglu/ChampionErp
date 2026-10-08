@@ -8,10 +8,11 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from erp_web.product_model.alibaba_purchase_model import alibaba_offer_id
-from erp_web.schemas.alibaba_self_purchase import SelfPurchasePreviewRequest, SelfPurchaseCreateRequest, SelfPurchaseRecordRequest
+from erp_web.schemas.alibaba_self_purchase import SelfPurchasePreviewRequest, SelfPurchaseCreateRequest, SelfPurchaseRecordRequest, ParsePurchaseAddressRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.services.alibaba_api_client import AlibabaApiError, AlibabaApiRejected, ORDER_DETAIL, validate_order_number
 from erp_web.services.alibaba_purchase_query_service import normalize_order
+from erp_web.services.alibaba_purchase_address import saved_addresses, order_addresses, parse_address
 from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_URL
 
 
@@ -32,24 +33,6 @@ def public_record(row):
     return {"id": row["id"], "state": row["state"], "preview": row["payload"]["view"],
             "order_numbers": result.get("order_numbers", []), "order_status": result.get("order_status", ""),
             "message": result.get("message", ""), "pay_channel": result.get("pay_channel", ""), "created_at": row["created_at"], "purchase_record_id": result.get("purchase_record_id", "")}
-
-
-def default_address(payload):
-    # 地址接口将保存地址放在 result.receiveAddressItems。
-    result = payload.get("result")
-    rows = result.get("receiveAddressItems") if isinstance(result, dict) else None
-    if not isinstance(rows, list):
-        raise AlibabaApiError("1688 收货地址格式无效")
-    defaults = [a for a in rows if isinstance(a, dict) and (a.get("isDefault") is True or a.get("isDefault") == "true")]
-    if len(defaults) != 1:
-        raise ValueError("请在 1688 设置唯一的默认收货地址，再重新预览")
-    a = defaults[0]
-    regions = str(a.get("addressCodeText") or "").split()
-    if len(regions) != 3 or not all(a.get(k) for k in ("fullName", "address")) or not (a.get("mobilePhone") or a.get("phone")):
-        raise ValueError("默认收货地址缺少省市区、联系人或电话，请先在 1688 补全")
-    return {"fullName": a["fullName"], "mobile": a.get("mobilePhone", ""), "phone": a.get("phone", ""),
-            "provinceText": regions[0], "cityText": regions[1], "areaText": regions[2],
-            "townText": a.get("townName", ""), "address": a["address"], "postCode": a.get("post", "")}
 
 
 def spec_from_order(payload, candidate):
@@ -105,9 +88,10 @@ def created_numbers(payload):
 
 
 class AlibabaSelfPurchaseService:
-    def __init__(self, store, config_provider, procurement, *, client_factory=AlibabaSelfPurchaseClient):
+    def __init__(self, store, config_provider, procurement, *, address_notes, client_factory=AlibabaSelfPurchaseClient):
         self.store, self.config_provider, self.procurement = store, config_provider, procurement
         self.client_factory = client_factory
+        self.address_notes = address_notes
 
     @staticmethod
     def _target(order_id, line_key):
@@ -176,6 +160,27 @@ class AlibabaSelfPurchaseService:
                 "blocked_reason": reason,
                 "records": [public_record(r) for r in self.store.records(self._target(order_id, line_key), scope)]}
 
+    def addresses(self, order_id, line_key):
+        self._binding(order_id, line_key)
+        accounts = self.procurement.accounts_provider()
+        order = self.procurement.store.order(order_id, accounts)
+        items = order_addresses(order, self.address_notes, accounts)
+        config = self.config_provider()
+        notice = ""
+        try:
+            saved = saved_addresses(self.client_factory(config).call(ADDRESSES, {}))
+            if account_scope(config) != account_scope(self.config_provider()):
+                raise ValueError("授权已变化，请刷新地址列表")
+            items = [candidate for candidate, _ in saved] + items
+        except (AlibabaApiError, ExternalRequestBlocked):
+            notice = "1688 地址读取失败，可重试或填写本次收货地址"
+        return {"ok": True, "items": items, "notice": notice}
+
+    def parse_address(self, body):
+        req = ParsePurchaseAddressRequest.model_validate(body)
+        self._binding(req.order_id, req.line_key)
+        return parse_address(req.text)
+
     def _candidate(self, order_id, line_key, candidate_id, quantity):
         options = self.options(order_id, line_key)
         if options["blocked_reason"]:
@@ -203,7 +208,16 @@ class AlibabaSelfPurchaseService:
         config = self.config_provider()
         client = self.client_factory(config)
         spec = binding["source"]["source_spec_id"]
-        address = default_address(client.call(ADDRESSES, {}))
+        if req.address is not None:
+            address = req.address.model_dump()
+        else:
+            matches = [(candidate, fields) for candidate, fields in saved_addresses(client.call(ADDRESSES, {}))
+                       if candidate["id"] == req.address_id]
+            if len(matches) != 1:
+                raise ValueError("收货地址已变化，请刷新地址列表并重新选择")
+            selected, address = matches[0]
+            if selected["blocked_reason"]:
+                raise ValueError(selected["blocked_reason"])
         params = {"addressParam": address, "cargoParamList": [{"offerId": int(candidate["offer_id"]), "specId": spec, "quantity": req.quantity}]}
         view = normalized_preview(client.call(PREVIEW, params), candidate, address, req.quantity, spec)
         if self._candidate(req.order_id, req.line_key, req.candidate_id, req.quantity) != candidate or account_scope(config) != account_scope(self.config_provider()):
@@ -251,7 +265,7 @@ class AlibabaSelfPurchaseService:
             self.procurement.store.validate_reserved_purchase(row["id"], self.procurement.accounts_provider())
             sent = True
             response = client.call(CREATE, {**params, "flow": view["flow"], "tradeType": "assureTrade",
-                "preSelectPayChannel": req.pay_channel, "outOrderId": row["id"], "bestOption": False, "isSplitJxhy": False})
+                "preSelectPayChannel": req.pay_channel, "outOrderId": row["id"]})
             result.update(order_numbers=created_numbers(response), message="订单已创建，尚未发起支付。请在 1688 收银台确认支付方式及账期。")
             row = self.store.finish(row["id"], scope, "created", result)
         except Exception as exc:

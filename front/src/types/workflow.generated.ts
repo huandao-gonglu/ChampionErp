@@ -6,6 +6,39 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 4 as const
 
+export interface BackendAlibabaPurchaseAddressFields {
+  fullName: string
+  mobile: string
+  phone: string
+  provinceText: string
+  cityText: string
+  areaText: string
+  townText: string
+  address: string
+  postCode: string
+}
+
+export interface BackendAlibabaPurchaseAddressCandidate {
+  id: string
+  kind: string
+  label: string
+  text: string
+  is_default: boolean
+  blocked_reason: string
+}
+
+export interface BackendAlibabaPurchaseAddresses {
+  ok: boolean
+  items: Array<BackendAlibabaPurchaseAddressCandidate>
+  notice: string
+}
+
+export interface BackendAlibabaParsedPurchaseAddress {
+  ok: boolean
+  address: BackendAlibabaPurchaseAddressFields
+  warnings: Array<string>
+}
+
 export interface BackendAlibabaSelfPurchaseCandidate {
   id: string
   offer_id: string
@@ -77,6 +110,14 @@ export interface BackendAlibabaPurchaseQueryResult {
   order: BackendAlibabaOrderStatus | null
   logistics: Array<BackendAlibabaParcel> | null
   logistics_warning: string
+  logistics_checked_at?: string
+}
+
+export interface BackendPurchaseTrackingSummary {
+  orders: Array<BackendAlibabaOrderStatus>
+  unknown_count: number
+  has_waybill: boolean
+  stale: boolean
 }
 
 export interface BackendPurchaseProgressView {
@@ -188,7 +229,12 @@ export interface BackendAiUseCaseBinding {
   generation?: BackendAiGenerationSettings
 }
 
+export interface BackendSystemSettings {
+  orders_auto_sync_interval_hours: number
+}
+
 export interface BackendAppConfig {
+  system_settings?: BackendSystemSettings
   image_hosting?: Record<string, unknown>
   ai_tool_approval_mode?: "ask" | "full"
   ai_models?: Array<BackendAiModelConfig>

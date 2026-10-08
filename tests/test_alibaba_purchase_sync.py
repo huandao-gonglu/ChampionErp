@@ -193,3 +193,83 @@ def test_company_from_same_order_requires_unique_waybill_and_company_id(setup):
         {'logisticsBillNo': 'YT1', 'logisticsCompanyId': '1', 'logisticsCompanyName': '圆通速递(YTO)'}]}
     assert progress(run())['state'] == 'synced'
     assert fulfillment.detail(body['order_id'])['parcels'][0]['carrier'] == '圆通'
+
+
+@pytest.mark.parametrize('previous', [False, True])
+def test_logistics_failure_updates_order_without_merging_or_losing_waybills(setup, monkeypatch, previous):
+    procurement, fulfillment, body, client, run = setup
+    saved = progress(run())['data'] if previous else None
+    parcels = fulfillment.detail(body['order_id'])['parcels']
+    client.order['result']['baseInfo']['status'] = 'waitsellersend'
+    original = client.query
+    def query(self, api, number):
+        if api == LOGISTICS_INFO:
+            raise AlibabaApiError('物流接口无权限')
+        return original(self, api, number)
+    monkeypatch.setattr(client, 'query', query)
+    result = run()
+    value = progress(result)
+    assert value['error'] == ''
+    assert value['data']['order']['status'] == 'waitsellersend'
+    assert value['data']['logistics_warning'] == '物流查询失败：物流接口无权限'
+    assert value['data']['logistics'] == (saved['logistics'] if saved else None)
+    assert value['data']['logistics_checked_at'] == (saved['logistics_checked_at'] if saved else '')
+    assert fulfillment.detail(body['order_id'])['parcels'] == parcels
+    assert progress(procurement.detail(body['order_id'])) == value
+    assert result['order']['purchase_tracking']['orders'][0]['status'] == 'waitsellersend'
+    assert result['order']['purchase_tracking']['has_waybill'] is previous
+
+
+def test_unshipped_order_persists_status_without_creating_parcels(setup):
+    _, fulfillment, body, client, run = setup
+    client.order['result']['baseInfo']['status'] = 'waitbuyerpay'
+    client.logistics = {'success': False, 'errorCode': '500_2', 'result': []}
+    value = progress(run())
+    assert value['data']['order']['status'] == 'waitbuyerpay'
+    assert value['data']['logistics'] == []
+    assert not value['error'] and not value['data']['logistics_warning']
+    assert client.calls == [ORDER_DETAIL, LOGISTICS_INFO]
+    assert not fulfillment.detail(body['order_id'])['parcels']
+
+
+def test_authorization_changed_during_partial_refresh_keeps_previous_snapshot(setup, monkeypatch):
+    procurement, fulfillment, body, client, run = setup
+    saved = progress(run())['data']
+    config = dict(CONFIG)
+    original = client.query
+    def query(self, api, number):
+        if api == LOGISTICS_INFO:
+            config['access_token'] = 'changed'
+            raise AlibabaApiError('物流失败')
+        return original(self, api, number)
+    monkeypatch.setattr(client, 'query', query)
+    result = sync_purchase(procurement, fulfillment, lambda: dict(config), body, client_factory=client)
+    assert progress(result)['data'] == saved
+    assert '授权已变化' in progress(result)['error']
+
+
+def test_tracking_summary_ignores_cancelled_records_and_does_not_fetch_remote(setup):
+    procurement, _, body, _, run = setup
+    order = procurement.store.order(body['order_id'], procurement.accounts_provider())
+    unknown = procurement.present_orders([order])[0].purchase_tracking
+    assert unknown['unknown_count'] == 1 and not unknown['has_waybill']
+    run()
+    summary = procurement.present_orders([order])[0].purchase_tracking
+    assert summary['orders'][0]['status'] == 'waitbuyerreceive'
+    assert summary['has_waybill'] and summary['unknown_count'] == 0
+    procurement.cancel_purchase(body)
+    assert procurement.present_orders([order])[0].purchase_tracking is None
+
+
+def test_partial_refresh_keeps_unresolved_assignment_conflict(setup, monkeypatch):
+    _, _, _, client, run = setup
+    run()
+    client.logistics['result'][0]['logisticsBillNo'] = 'NEW'
+    assert progress(run())['state'] == 'conflict'
+    original = client.query
+    def query(self, api, number):
+        if api == LOGISTICS_INFO:
+            raise AlibabaApiError('物流网络失败')
+        return original(self, api, number)
+    monkeypatch.setattr(client, 'query', query)
+    assert progress(run())['state'] == 'conflict'

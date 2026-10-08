@@ -76,23 +76,25 @@ async function render() {
   return { wrapper, router }
 }
 describe('紧凑订单列表', () => {
-  it('进页同步一次，本地刷新和计时不重复外发，按钮与重新进页可再次同步', async () => {
+  it('挂载、焦点恢复和本地刷新不外发同步，手动按钮仍可同步', async () => {
     vi.useFakeTimers()
     const store = useOrderNotificationsStore()
     try {
       store.start()
       const { wrapper } = await render()
-      expect(orderCommand).toHaveBeenCalledTimes(1)
-      expect(orderCommand).toHaveBeenCalledWith('sync', { platform: '' })
+      expect(orderCommand).not.toHaveBeenCalled()
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
       await vi.advanceTimersByTimeAsync(600_000)
       expect(vi.mocked(fetchOrders).mock.calls.length).toBeGreaterThan(1)
-      expect(orderCommand).toHaveBeenCalledTimes(1)
+      expect(orderCommand).not.toHaveBeenCalled()
       await wrapper.findAll('button').find(button => button.text() === '同步订单')!.trigger('click')
       await flushPromises()
-      expect(orderCommand).toHaveBeenCalledTimes(2)
+      expect(orderCommand).toHaveBeenCalledTimes(1)
+      expect(orderCommand).toHaveBeenCalledWith('sync', { platform: '' })
       wrapper.unmount()
       await render()
-      expect(orderCommand).toHaveBeenCalledTimes(3)
+      expect(orderCommand).toHaveBeenCalledTimes(1)
     } finally { store.stop(); vi.useRealTimers() }
   })
   it.each([
@@ -119,7 +121,8 @@ describe('紧凑订单列表', () => {
     await flushPromises()
     expect(wrapper.get('dialog header .order-badge').text()).toBe(label)
     if (note) {
-      expect(wrapper.get('tbody tr td:nth-child(4)').text()).toContain(note)
+      expect(wrapper.get('tbody tr td:nth-child(4) .order-muted').text()).toBe('来自平台同步')
+      expect(wrapper.get('tbody tr td:nth-child(4)').text()).not.toContain(note)
       expect(wrapper.get('dialog').text()).toContain(note)
     }
     expect(wrapper.get('dialog').text().includes('等待交接发货')).toBe(shipping_status === 'READY_TO_SHIP' && status === 'PROCESSING')

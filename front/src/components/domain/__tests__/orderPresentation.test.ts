@@ -30,7 +30,7 @@ const facts: FulfillmentSummary = {
 }
 describe('V1 处理进度按已确认事实展示', () => {
   it.each([
-    ['unpurchased', '待采购登记'], ['partial', '采购登记中'], ['purchased', '待预报'], ['unknown', '采购待核对'],
+    ['unpurchased', '待采购登记'], ['partial', '采购登记中'], ['purchased', '采购状态待查询'], ['unknown', '采购待核对'],
   ])('采购 %s 不能被平台备妥状态覆盖', (procurement_status, label) => {
     expect(orderProcessingProgress({ ...order, procurement_status }, facts).label).toBe(label)
   })
@@ -63,5 +63,35 @@ describe('V1 处理进度按已确认事实展示', () => {
     expect(orderProcessingProgress(order, { ...facts, cancel_requested: true, cancel_rejected: true, crossborderbus_order_id: 99 }).label).toBe('取消失败')
     expect(orderProcessingProgress({ ...order, state: 'cancelled' }, facts).label).toBe('已停止预报')
     expect(orderProcessingProgress(order, { ...facts, label_error: '面单托管失败' }).label).toBe('面单获取异常')
+  })
+})
+
+const purchaseOrder: OrderSnapshot = {
+  ...order, procurement_status: 'purchased', purchase_tracking: {
+    orders: [{ order_number: '123', status: 'waitbuyerpay', status_label: '等待买家付款' }],
+    unknown_count: 0, has_waybill: false, stale: false,
+  },
+}
+describe('采购到报单的状态衔接', () => {
+  it('没有运单时显示采购订单状态，不被面单错误遮挡', () => {
+    expect(orderProcessingProgress(purchaseOrder, { ...facts, label_error: '面单失败' }).label).toBe('等待买家付款')
+    const updated = { ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, orders: [{ order_number: '123', status: 'waitsellersend', status_label: '等待卖家发货' }] } }
+    expect(orderProcessingProgress(updated, facts).label).toBe('等待卖家发货')
+  })
+  it('有远端运单或人工登记运单后进入待预报，尚未等同已报单', () => {
+    expect(orderProcessingProgress(purchaseOrder, { ...facts, has_domestic_waybill: true }).label).toBe('待预报')
+    expect(orderProcessingProgress({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, has_waybill: true } }, facts).label).toBe('待预报')
+  })
+  it('已有预报后始终展示仓库状态，不因采购查询失败倒退', () => {
+    expect(orderProcessingProgress(purchaseOrder, { ...facts, crossborderbus_order_id: 123, fulfillment_status: 'WAREHOUSE_RECEIVED' }).label).toBe('包裹已入库')
+  })
+  it('多笔采购不使用其中一笔冒充全部进度，失败保留结果但标记过期', () => {
+    const mixed = { ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, orders: [...purchaseOrder.purchase_tracking!.orders, { order_number: '456', status: 'waitsellersend', status_label: '等待卖家发货' }] } }
+    expect(orderProcessingProgress(mixed, facts)).toMatchObject({ label: '采购进度不一致', note: '1688：等待买家付款、等待卖家发货' })
+    expect(orderProcessingProgress({ ...mixed, purchase_tracking: { ...mixed.purchase_tracking, unknown_count: 1 } }, facts).label).toBe('部分采购状态待查询')
+    expect(orderProcessingProgress({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, stale: true } }, facts).note).toContain('保留最近查询结果')
+  })
+  it('采购取消显示异常，不提前显示待预报', () => {
+    expect(orderProcessingProgress({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, orders: [{ order_number: '123', status: 'cancel', status_label: '交易取消' }] } }, facts)).toMatchObject({ label: '交易取消', tone: 'red' })
   })
 })

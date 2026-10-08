@@ -62,7 +62,6 @@ function closeDetail() {
 onMounted(() => {
   store.listActive = true
   void store.refresh()
-  void store.command('sync', { platform: store.platform })
   clock = setInterval(() => {
     now.value = Date.now()
   }, 60_000)

@@ -80,11 +80,11 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
                 :data-tone="stateTone(order.state)"
                 :title="`${order.status} ${order.shipping_status}`"
               >{{ platformStatusLabel(order) }}</span>
-              <p class="order-muted" :title="platformStatusNote(order)">{{ platformStatusNote(order) || '来自平台同步' }}</p>
+              <p class="order-muted" :title="platformStatusNote(order)">来自平台同步</p>
             </td>
             <td>
-              <span class="order-badge" :data-tone="progress.tone">{{ progress.label }}</span>
-              <p class="order-muted" :title="progress.note">{{ progress.note }}</p>
+              <span class="order-badge" :data-tone="progress.tone" :title="progress.note">{{ progress.label }}</span>
+              <p class="order-muted" :title="progress.source">{{ progress.source }}</p>
             </td>
             <td>
               <template v-if="order.state === 'pending_shipment'">

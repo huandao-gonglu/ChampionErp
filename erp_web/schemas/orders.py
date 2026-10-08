@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from erp_web.schemas.fulfillment import DeliverySource, FulfillmentSummary
 from erp_web.schemas.order_handover import OrderHandoverSnapshot
+from erp_web.schemas.alibaba_orders import PurchaseTrackingSummary
 
 Platform = Literal["mercadolibre", "ozon", "yandex"]
 PLATFORMS = ("mercadolibre", "ozon", "yandex")
@@ -131,6 +132,7 @@ class OrderView(OrderSnapshot):
     id: str
     checked_at: str
     fulfillment_summary: FulfillmentSummary | None = None
+    purchase_tracking: PurchaseTrackingSummary | None = None
 
 
 class NotificationView(BaseModel):

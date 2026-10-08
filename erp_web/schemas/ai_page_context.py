@@ -14,6 +14,7 @@ PAGE_LABELS = {
     "library": "商品库", "drafts": "草稿箱", "publish": "发布队列",
     "onlineProducts": "在线商品", "pending": "待处理",
     "auth": "平台授权与设置", "logs": "发布日志", "ai_work": "主对话",
+    "systemSettings": "系统设置",
     "product_editor": "商品编辑", "draft_editor": "草稿编辑",
 }
 SECTION_LABELS = {
@@ -28,7 +29,7 @@ class AiPageContext(BaseModel):
     page: Literal[
         "orders", "dashboard", "research", "collect", "library", "drafts", "publish",
         "onlineProducts", "pending", "auth", "logs", "ai_work",
-        "product_editor", "draft_editor",
+        "product_editor", "draft_editor", "systemSettings",
     ]
     section: Literal["text", "images", "category", "skus", "pricing", "precheck"] | None = None
     product_id: ContextId | None = None

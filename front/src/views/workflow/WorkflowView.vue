@@ -14,6 +14,7 @@ import DraftSkuAttributesEditor from '@/components/domain/DraftSkuAttributesEdit
 import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
 import DraftWorkspacePanel, { type DraftWorkspaceTab } from '@/components/domain/DraftWorkspacePanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
+import SystemSettingsPanel from '@/components/domain/SystemSettingsPanel.vue'
 import OrderCenterPanel from '@/components/domain/OrderCenterPanel.vue'
 import OrderIntegrationSettings from '@/components/domain/OrderIntegrationSettings.vue'
 import OnlineProductsPanel from '@/components/domain/OnlineProductsPanel.vue'
@@ -30,6 +31,7 @@ import { useAiPageContext } from '@/composables/useAiPageContext'
 import { aiPageLabels } from '@/types/aiPageContext'
 import { useClipboard } from '@/composables/useClipboard'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
+import { useOrderCenterEntrySync } from '@/composables/useOrderCenterEntrySync'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
@@ -41,6 +43,7 @@ import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
 import type { DraftIndexItem, MarketplaceTargetSite, ProductIndexItem } from '@/types/workflow'
 
 const store = useWorkflowStore()
+useOrderCenterEntrySync()
 const activityStore = useWorkflowActivityStore()
 const catalogStore = useWorkflowCatalogStore()
 const collectionStore = useWorkflowCollectionStore()
@@ -506,6 +509,7 @@ watch(
             <pre v-if="publishResult" class="max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishResult, null, 2) }}</pre>
           </div>
 
+          <SystemSettingsPanel v-else-if="activeNav === 'systemSettings'" />
           <OrderCenterPanel v-else-if="activeNav === 'orders'" />
           <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" />
 

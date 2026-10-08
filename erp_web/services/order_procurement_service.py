@@ -27,7 +27,8 @@ class OrderProcurementService:
         self.identity_provider = identity_provider
 
     def present_orders(self, orders: list[OrderView]) -> list[OrderView]:
-        """为列表和详情补充图片，不修改平台快照或采购事实，不查询远端商品。"""
+        """为列表和详情补充图片及本地采购进度，不修改平台快照，不发起远端请求。"""
+        tracking = self.store.tracking_summaries(orders)
         identities = {
             platform: self.identity_provider(platform)
             for platform in {order.platform for order in orders}
@@ -51,7 +52,7 @@ class OrderProcurementService:
                     }
                     images[key] = next(iter(matches))[2] if len(matches) == 1 else ""
                 lines.append(line.model_copy(update={"image_url": images[key]}))
-            result.append(order.model_copy(update={"items": lines}))
+            result.append(order.model_copy(update={"items": lines, "purchase_tracking": tracking.get(order.id)}))
         return result
 
     def detail(self, order_id: str) -> dict:

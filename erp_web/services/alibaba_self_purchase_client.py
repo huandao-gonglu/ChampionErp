@@ -3,7 +3,7 @@ from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiErro
 
 ADDRESSES = "alibaba.trade.receiveAddress.get"
 PREVIEW = "alibaba.createOrder.preview"
-CREATE = "alibaba.trade.fenxiaoOrder.create"
+CREATE = "alibaba.trade.fastCreateOrder"
 ORDER_LIST = "alibaba.trade.getBuyerOrderList"
 PAY_URL = "alibaba.trade.grouppay.url.get"
 

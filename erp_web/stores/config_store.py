@@ -504,6 +504,18 @@ class ConfigStore:
         with self._save_lock:
             return normalize_ai_tool_approval_mode(self.load_app_config()["ai_tool_approval_mode"])
 
+    def system_settings(self) -> dict:
+        return self.load_app_config()["system_settings"]
+
+    def save_system_settings(self, settings: dict) -> dict:
+        from erp_web.schemas.config import SystemSettingsRequest
+
+        validated = SystemSettingsRequest.model_validate(settings).model_dump()
+        with self._save_lock:
+            config = self.load_app_config()
+            self.save_app_config({**config, "system_settings": validated})
+            return validated
+
     def save_ai_tool_approval_mode(self, mode: AiToolApprovalMode) -> AiToolApprovalMode:
         """在同一配置锁内更新单项，保留模型与店铺等其他配置。"""
         with self._save_lock:
@@ -527,6 +539,9 @@ class ConfigStore:
         incoming = incoming if isinstance(incoming, dict) else {}
         allowed_keys = set(self.default_app_config()) | set(app_config_runtime.PRESERVED_APP_CONFIG_KEYS)
         for key, value in incoming.items():
+            if key == "system_settings":
+                # 系统偏好使用单独入口，避免授权页的旧快照覆盖最新设置。
+                continue
             if key not in allowed_keys:
                 logger.warning("merge_app_config_fields 忽略未知 appConfig 顶层键: %s", key)
                 continue

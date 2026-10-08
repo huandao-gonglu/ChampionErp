@@ -1082,7 +1082,7 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 
 - HTTP 唯一入口：`erp_web/http_route_units/order_routes.py`，覆盖 Mercado Libre/Ozon/Yandex 回调和 `/api/orders` 本地查询及明确用户命令。
 - 领域装配：`erp_web/facades/order_notification_facade.py`。平台差异集中在 `runtime_units/order_notifications.py` 与 `runtime_units/orders_{mercadolibre,ozon,yandex}.py`。
-- 后台处理：`erp_web/services/order_notification_service.py`，领域任务领取、平台隔离和回调重试；不参与 Agent 生命周期。订单中心每次挂载发起一次同步，之后仅按钮同步。主动同步失败不自动重试，历史重试和过期执行记录转为失败；后台不再创建定期对账任务，旧 `sync_schedule` 表不再读取。
+- 后台处理：`erp_web/services/order_notification_service.py`，领域任务领取、平台隔离和回调重试；不参与 Agent 生命周期。导航进入订单中心时检查自动同步；`useOrderCenterEntrySync` 只监听实际导航进入，初次挂载、焦点恢复、详情参数变化和本地轮询不触发。后端订单库 `settings` 按平台账号原子保存自动同步尝试时间，间隔由系统设置指定（默认及最低 5 小时），失败也计入且跨窗口/重启生效；手动同步不受该间隔限制。主动同步失败不自动重试，历史重试和过期执行记录转为失败；后台不再创建定期对账任务，旧 `sync_schedule` 表不再读取。
 - 持久化：`erp_web/stores/order_notification_store.py`，独立订单库中的收件箱、快照、租约和未读提醒；`order_notification_migration.py` 仅执行主库历史通知的幂等导入。
 - 共享契约：`erp_web/schemas/orders.py`。AI `platform_orders_query` 与界面读取同一份本地快照，不触发同步远端查询，不获取回调凭据。
 - 金额：`orders_yandex.py::normalize_yandex_amount` 负责订单及 SKU 行的十进制金额归一化，`OrderAmountBreakdown` 保留付款、补贴和积分抵扣。`OrderAmountDetails.vue` 明确商品金额与旧付款快照的口径，不将其标成净到账；明细按平台行小计展示，不再乘数量。
@@ -1107,8 +1107,12 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 
 - `AuthSettingsPanel.vue` 的「1688 授权」沿用 `1688_api` 配置与 `ConfigStore` 的运行时秘密存储；空值或掩码沿用已保存凭据。采购查询需要 AppKey、AppSecret、Access Token，测试类型 `1688_order` 用输入订单号真实读取；商品采集的原有设置继续保留。
 - POST `/api/orders/purchase-query` → `order_procurement_facade.query_purchase` → `services/alibaba_purchase_query_service.py`。请求只接受销售订单 ID、采购记录 ID 和查询种类；服务端读取冻结采购单号，网络前后校验店铺归属和记录未作废，不跨网络持有事务。请求与返回形状见 `schemas/alibaba_orders.py`。
+- `order_notification_facade.py` 向 `OrderNotificationService` 显式注入 `services/order_progress_sync_service.py`：导航进入订单中心且满足 5 小时自动同步间隔、点击同步订单及平台通知保存快照后，同轮刷新有效采购的 1688 状态/物流，以及已关联或创建待核实的仓库单。单轮同订单去重，每笔网络请求前续租并验证账号与停止状态；查询期间不持数据库锁。单笔失败继续其他查询，各领域保留旧快照和错误，订单任务汇总部分失败且不自动重试附属查询。
+- 列表、详情及履约页签定时刷新只读取数据库；详情编辑和提交期间暂停替换内容，旧响应不得覆盖较新的手动结果。采购与仓库单笔刷新入口保留。
 - `services/alibaba_api_client.py` 固定 1688 HTTPS AOP 网关及三个买家只读接口，以 HMAC-SHA1 签名，通过 `managed_urlopen` 发送，显式声明 read 语义和 token 指纹，禁止重定向，不自动刷新 Token。物流先查运单，再按订单一次查询轨迹并按物流 ID 匹配；轨迹失败保留运单并返回警告。
 - POST `/api/orders/purchase-sync` → `order_procurement_facade.sync_purchase` → `alibaba_purchase_sync_service.py`。登记成功后自动同步一次，幂等登记不重复查询；失败保留采购登记和最近成功快照。`purchase_progress_store.py` 持久化同步快照、代次与短期占位，网络不持锁，写入前重新核对有效采购、账号与代次。
+- 订单状态与物流分别记录更新时间。物流接口的 `500_2` 按官方定义表示未发货，归一为空物流；其他物流失败只返回警告，仍保存成功读取的订单状态，保留旧运单及其原始更新时间，不触发包裹合并。授权变化与采购作废仍拒绝写入。
+- `OrderProcurementStore.tracking_summaries` 为当前列表与详情批量读取有效采购的本地状态摘要，排除作废记录和变更规格；不额外查询远端。`orderPresentation.ts` 在无国内运单时展示采购订单状态，有远端或人工登记运单后切换到预报准备状态，已有预报优先显示仓库进度；多笔采购保留状态差异，物流签收不等同仓库发货。
 - `alibaba_purchase_assignment.py` 用冻结商品 ID、SKU、订单子项、包裹商品数量证明归属；远端采购数量须与登记数量一致。缺失证据或同一远端 SKU 被多条采购使用时待人工分配；已证明的分批发货可逐批追加。`FulfillmentService.merge_purchase_parcels` 复用数量校验、版本和锁定边界，同运单幂等，差异不覆盖人工包裹。人工保存与确认快照在同一事务，使旧查询失效。
 - `OrderPurchaseTracking.vue` 在采购和履约页签提供统一「刷新采购进度」，从采购记录的持久快照展示订单、物流及分配状态；关闭重开仍保留，不自动轮询远端。待分配/冲突通过 `FulfillmentParcelDialog.vue` 确认，`purchaseLogistics.ts` 仅提供人工分配时的运单候选。自动预报继续遵守既有开关和完整资料校验。响应不包含联系人、地址或授权原文。
 
@@ -1117,7 +1121,7 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 `http_route_units/fulfillment_routes.py` → `facades/fulfillment_facade.py` →
 `services/fulfillment_service.py` 是唯一履约入口。`AppContext.fulfillment` 装配并持有后台任务，
 服务只接收当前平台账号和采购详情提供函数，不反向导入 runtime unit。
-仓库状态及创建/取消结果核实仅由“跨境履约”页签进入一次或同步按钮触发；
+仓库状态及创建/取消结果核实随订单同步或单笔同步按钮触发，打开“跨境履约”页签仅读取本地快照；
 `POST /api/orders/fulfillment/sync` 在请求内完成单轮只读核实并返回最新快照，不排队或失败重试。
 后台只执行自动预报、已请求的资料更新和取消传播，不轮询已关联订单的状态。
 `schemas/fulfillment.py` 定义内部配送及公开履约契约；`stores/fulfillment_store.py` 共用订单 SQLite，
@@ -1142,11 +1146,20 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 ### 1688 订单采购
 
 - 入口：订单详情的商品采购区域 →「1688 采购」。`order_routes.py` 的 `/api/orders/alibaba-purchase` 及 `/preview`、`/create`、`/reconcile`、`/cashier` 经 `facades/alibaba_self_purchase_facade.py` 装配，不再从在线商品发起独立采购。
-- `services/alibaba_self_purchase_service.py` 读取销售订单已确认来源和剩余数量；只有待发货订单可新增采购。预览绑定订单行、来源版本、数量、地址、人民币分金额和凭据摘要，有效期十分钟。下单参数仅取采集并冻结到上架记录的商品编号、SKU 和 specId，再读取默认地址与实时预览；缺失、歧义或不一致时返回 blocked_reason 并禁止预览/创建，不借用历史订单或临时商品查询补猜。起订限制以 1688 返回为准。
-- `stores/alibaba_self_purchase_store.py` 使用独立的 `data/alibaba-self-purchases.sqlite3`。版本 2 将旧 listing_id 列迁移为 target_key，保留旧回执；无销售订单绑定的旧预览禁止提交。未知请求阻止同订单行重复采购，换授权不能绕过防重。
+- `services/alibaba_self_purchase_service.py` 读取销售订单已确认来源和剩余数量；只有待发货订单可新增采购。预览绑定订单行、来源版本、数量、地址、人民币分金额和凭据摘要，有效期十分钟。下单参数仅取采集并冻结到上架记录的商品编号、SKU 和 specId，再使用已选且核对后的地址进行实时预览；缺失、歧义或不一致时返回 blocked_reason 并禁止预览/创建，不借用历史订单或临时商品查询补猜。起订限制以 1688 返回为准。
+- `services/alibaba_purchase_address.py` 归一化全部 1688 保存地址，并从订单交货快照和 `OrderAddressNoteStore` 读取揽收／交货地址及本地备注。GET `/api/orders/alibaba-purchase/addresses` 提供候选，POST `/parse-address` 只在本地提取完整地址中的明确字段；缺失和歧义不猜测，用户修改并确认后才能预览，不改写原始地址或备注。保存地址使用内容指纹选择，选择后到预览前发生变更须重选；预览之后按已确认快照提交，不静默改为账号最新默认地址。
+- `AlibabaPurchaseAddressPicker.vue` 提供地址选择、粘贴解析和字段核对，`AlibabaSelfPurchaseDialog.vue` 单独展示订单预览与支付方式。地址或数量变化使旧预览失效；支付渠道只使用本次预览返回的可用值。
+- `stores/alibaba_self_purchase_store.py` 由 AppContext 持有，未提交预览仅在内存中短期保留（十分钟、最多 256 条），不写数据库、不出现在采购历史中；关闭弹窗或刷新页面后重新预览，服务重启后预览失效。用户提交时才在独立的 `data/alibaba-self-purchases.sqlite3` 原子保存请求，随后允许调用创建接口。版本 2 将旧 listing_id 列迁移为 target_key，历史数据保留读取能力，旧持久化预览不展示也不能提交。未知请求阻止同订单行重复采购，换授权不能绕过防重。
+- 创建接口使用采购解决方案（买家自用版）对应的 `alibaba.trade.fastCreateOrder`，不调用分销方案的 `alibaba.trade.fenxiaoOrder.create`。只发送该接口声明的参数，预选支付渠道不是付款操作。预览、网关参数校验或替身测试成功，都不能表述为真实下单已成功；验收须以实际创建回执和订单查询为准。
 - `OrderProcurementStore` 在订单库短事务预留采购数量；人工登记和来源修改共同遵守该预留，锁不跨网络。创建前再次核对价格和渠道，使用持久化请求号作为 outOrderId；回执不明只查原请求，不重发。确定未创建才释放数量。
-- 1688 创建回执先持久化，再幂等回填销售订单的采购记录和数量。关联失败保留远端订单号，可通过查询原订单重试。关联后沿用采购记录的状态、物流查询。远端取消经查询确认后作废关联记录并释放数量；未确认取消的自动采购不能只在本地作废。
+- 1688 创建回执先持久化，再幂等回填销售订单原有采购登记和数量；采购弹窗只展示当前结果或待处理回执，不再列出第二份采购历史。关联失败保留远端订单号，可通过查询原订单重试。关联后沿用采购记录的状态、物流查询。远端取消经查询确认后作废关联记录并释放数量；未确认取消的自动采购不能只在本地作废。
 - 支付渠道支持预选 alipay / shegou（先采后付），创建后通过官方收银台确认支付与账期；此入口不调用自动扣款接口。
 
 - 1688 API 与网页采集均保留原始 `skus[].offer_id/spec_id`，`product_model/sku_model.py` 将其保留为 `source_offer_id/source_spec_id` 及来源快照。重新采集更新这些只读来源标识，销售内容覆盖不能覆盖它们。
 - `product_model/alibaba_purchase_model.py` 在冻结发布关联时核对原始采集 SKU、规格标识和实际销售规格；不一致记入 `purchase_block_reason`。自动采购还须命中当前店铺销售 SKU 的已上架关联，人工填写的来源不能作为自动采购依据。旧资料仍可读取和人工采购，缺少完整证据的旧预览不能再提交。
+
+### 系统设置
+
+- 左侧栏底部 `AppSidebar.vue` → `/?tab=systemSettings` → `SystemSettingsPanel.vue` 在主区域提供订单自动同步间隔设置；复用工作台导航，支持刷新及浏览器前进、后退。
+- GET/POST `/api/system-settings` → `auth_config_facade` → `ConfigStore.system_settings/save_system_settings`；单项更新保存在 `app_config.system_settings`，通用授权配置合并忽略该区段，避免旧页面覆盖。字段契约由 `schemas/config.py` 定义，前端类型自动生成。旧配置缺少区段时默认 5 小时。
+- `OrderNotificationService` 通过显式 provider 在每次导航自动同步时读取最新间隔；修改设置不发起外部同步，也不重置既有同步尝试时间。

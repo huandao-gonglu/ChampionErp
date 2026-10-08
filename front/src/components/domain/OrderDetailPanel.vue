@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { fetchOrderDetail } from '@/api/orders'
 import type { OrderDetail } from '@/types/orders'
 import { orderPlatformNames } from '@/types/orders'
@@ -28,19 +28,29 @@ const totals = computed(() => ({
 }))
 const locked = computed(() => locks.size > 0 || !!purchaseKey.value || fulfillmentLocked.value)
 const shipment = computed(() => deadline(detail.value?.order.shipment_deadline, Date.now()))
-async function load() {
-  if (loading.value) return
-  loading.value = true
+let poll: ReturnType<typeof setTimeout> | undefined
+let disposed = false
+let reading = false
+let generation = 0
+async function load(quiet = false) {
+  if (reading || disposed) return
+  const current = ++generation
+  reading = true
+  loading.value = !quiet
   try {
-    detail.value = await fetchOrderDetail(props.orderId)
+    const result = await fetchOrderDetail(props.orderId)
+    if (disposed || current !== generation || (quiet && locked.value)) return
+    detail.value = result
     error.value = ''
   } catch (exc) {
-    error.value = exc instanceof Error ? exc.message : '订单详情读取失败'
+    if (!disposed && current === generation && !quiet) error.value = exc instanceof Error ? exc.message : '订单详情读取失败'
   } finally {
+    reading = false
     loading.value = false
   }
 }
 function update(value: OrderDetail) {
+  generation++
   detail.value = value
   emit('updated')
 }
@@ -48,7 +58,13 @@ function setLock(key: string, value: boolean) {
   if (value) locks.add(key)
   else locks.delete(key)
 }
-onMounted(load)
+async function refreshLocal() {
+  if (disposed) return
+  if (!locked.value) await load(true)
+  if (!disposed) poll = setTimeout(refreshLocal, 5000)
+}
+onMounted(() => { void load(); poll = setTimeout(refreshLocal, 5000) })
+onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
 </script>
 <template>
   <WorkspaceDialog
@@ -62,7 +78,7 @@ onMounted(load)
   >
     <p v-if="error" role="alert" class="order-error">
       {{ error }}
-      <button class="order-link" :disabled="loading" @click="load">重试</button>
+      <button class="order-link" :disabled="loading" @click="load()">重试</button>
     </p>
     <p v-if="loading" role="status" class="order-muted">正在读取订单…</p>
     <template v-if="detail">

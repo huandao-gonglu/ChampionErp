@@ -58,9 +58,11 @@ async function query() {
       <p class="order-muted">更新时间：{{ dateTime(result.checked_at) }}</p>
     </div>
     <div v-if="result" class="query-result" aria-live="polite">
-      <p class="order-muted">物流查询时间：{{ dateTime(result.checked_at) }}</p>
+      <p v-if="result.logistics !== null" class="order-muted">物流更新时间：{{ dateTime(result.logistics_checked_at ?? result.checked_at) }}</p>
       <p v-if="result.logistics_warning" role="status" class="query-error">{{ result.logistics_warning }}</p>
-      <p v-if="!result.logistics?.length">1688 暂未提供物流信息。</p>
+      <p v-if="result.logistics === null">本次未获取到物流信息，可稍后刷新。</p>
+      <p v-else-if="!result.logistics.length">1688 暂未提供物流信息。</p>
+      <p v-if="result.logistics_warning && result.logistics !== null" class="order-muted">以下为最近获取的物流结果，请留意更新时间。</p>
       <article v-for="(parcel, index) in result.logistics" :key="`${parcel.logistics_id}-${index}`" class="parcel">
         <p><strong>{{ parcel.company || '承运商未提供' }}</strong> · {{ parcel.status_label }}</p>
         <p>运单号：<span class="tracking-number">{{ parcel.tracking_number || '未提供' }}</span></p>

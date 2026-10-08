@@ -87,6 +87,8 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="订单采购", disposition="internal_only", reason="用户在销售订单详情核对采购预览、确认真实订单并查询原回执；支付通过官方收银台，不开放模型代下单。") for method, path in (
         ("GET", "/api/orders/alibaba-purchase"),
+        ("GET", "/api/orders/alibaba-purchase/addresses"),
+        ("POST", "/api/orders/alibaba-purchase/parse-address"),
         ("POST", "/api/orders/alibaba-purchase/preview"),
         ("POST", "/api/orders/alibaba-purchase/create"),
         ("POST", "/api/orders/alibaba-purchase/reconcile"),
@@ -113,6 +115,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         ("POST", "/api/orders/fulfillment/cancel"),
     )),
     AiCapabilityCoverageEntry(method="GET", path="/api/image-hosting", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
+    AiCapabilityCoverageEntry(method="GET", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面读取同步间隔，不作为模型业务工具。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面保存同步间隔，不作为模型业务工具。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/save", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/default", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/delete", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),

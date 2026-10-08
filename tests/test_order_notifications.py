@@ -839,3 +839,118 @@ def test_manual_sync_reclaims_expired_task_before_background_scan(store):
     fresh = store.claim({"ozon": "3"}, now=now+181)
     assert fresh is not None and fresh["claim"] != stale["claim"]
     assert not store.save_snapshot(stale, snapshot(state="pending_shipment"), now=now+182)
+
+
+def test_order_sync_refreshes_persisted_progress_once_per_order_and_not_on_local_reads(store):
+    class Adapter:
+        def __init__(self, _): pass
+        def sync(self):
+            yield snapshot(state='pending_shipment')
+            yield snapshot(state='pending_shipment')
+    calls = []
+    def progress(order_id, checkpoint):
+        assert store.read({'ozon': '3'})['items'][0]['id'] == order_id
+        checkpoint()
+        calls.append(order_id)
+        return True
+    svc = service(store, {'ozon': Adapter})
+    svc.progress_sync = progress
+    svc.sync('ozon')
+    svc.process_one('ozon')
+    assert calls == [snapshot().identity]
+    assert svc.sync_status()[1]['status'] == 'done'
+    store.read({'ozon': '3'}); store.summary({'ozon': '3'})
+    assert len(calls) == 1
+    svc.sync('ozon'); svc.process_one('ozon')
+    assert len(calls) == 2
+
+
+def test_domain_refresh_failure_does_not_rollback_orders_or_skip_other_orders(store):
+    class Adapter:
+        def __init__(self, _): pass
+        def sync(self):
+            yield snapshot(state='pending_shipment')
+            yield snapshot(state='pending_shipment').model_copy(update={'order_id': 'other'})
+    calls = []
+    def progress(order_id, checkpoint):
+        calls.append(order_id)
+        return len(calls) != 1
+    svc = service(store, {'ozon': Adapter}); svc.progress_sync = progress
+    svc.sync('ozon'); svc.process_one('ozon')
+    page = store.read({'ozon': '3'})
+    assert page['total'] == 2 and len(calls) == 2
+    assert page['notifications'][0]['status'] == 'failed'
+    assert '部分采购或仓库状态未更新' in page['notifications'][0]['error']
+    assert not svc.process_one('ozon')
+
+
+def test_progress_checkpoint_stops_after_account_switch(store):
+    class Adapter:
+        def __init__(self, _): pass
+        def sync(self): yield snapshot(state='pending_shipment')
+    svc = service(store, {'ozon': Adapter})
+    def progress(order_id, checkpoint):
+        svc.config_provider = lambda: {}
+        checkpoint()
+        pytest.fail('切换账号后不得继续查询')
+    svc.progress_sync = progress
+    svc.sync('ozon'); svc.process_one('ozon')
+    assert store.read({'ozon': '3'})['notifications'][0]['status'] == 'failed'
+
+
+def test_progress_cannot_revive_expired_order_lease(store):
+    store.enqueue(event())
+    job = store.claim({'ozon': '3'}, now=time.time())
+    now = time.time()
+    assert store.renew_claim(job, now=now+100)
+    assert not store.renew_claim(job, now=now+281)
+
+
+def test_notification_also_refreshes_progress_after_snapshot(store):
+    class Adapter:
+        def __init__(self, _): pass
+        def read(self, _): yield snapshot(state='pending_shipment')
+    calls = []
+    svc = service(store, {'ozon': Adapter})
+    svc.progress_sync = lambda order_id, checkpoint: calls.append(order_id) or True
+    store.enqueue(event()); svc.process_one('ozon')
+    assert calls == [snapshot().identity]
+
+
+def test_automatic_sync_cooldown_survives_restart_and_failure_but_manual_bypasses(store):
+    now = time.time()
+    first = store.schedule({'ozon': '3'}, now=now, automatic=True)
+    job = store.claim({'ozon': '3'}, now=now)
+    store.finish(job, error='模拟失败', now=now+1)
+    reopened = OrderNotificationStore(store.path)
+    assert reopened.schedule({'ozon': '3'}, now=now+5*3600-1, automatic=True) == []
+    manual = reopened.schedule({'ozon': '3'}, now=now+2)
+    assert manual and manual != first
+    job = reopened.claim({'ozon': '3'}, now=now+2)
+    reopened.finish(job, now=now+3)
+    assert reopened.schedule({'ozon': '3'}, now=now+5*3600, automatic=True)
+
+
+def test_automatic_sync_cooldown_is_atomic_and_scoped_to_platform_account(store):
+    now = time.time()
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        results = list(pool.map(lambda _: store.schedule({'ozon': '3'}, now=now, automatic=True), range(5)))
+    assert sum(bool(result) for result in results) == 1
+    assert store.schedule({'ozon': 'other'}, now=now+1, automatic=True)
+    assert store.schedule({'yandex': '3'}, now=now+1, automatic=True)
+    assert store.schedule({'ozon': '3', 'yandex': '3'}, now=now+2, automatic=True) == []
+
+
+def test_automatic_sync_request_contract_and_service_forwarding(store):
+    from erp_web.schemas.requests import validate_request_payload
+    from erp_web.facades import order_notification_facade as facade
+    from types import SimpleNamespace
+    body = validate_request_payload({'platform': 'ozon', 'automatic': True}, endpoint='/api/orders/sync')
+    svc = service(store, {})
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(facade, 'get_context', lambda: SimpleNamespace(order_notifications=svc))
+        assert facade.command('sync', body)['operation_ids']
+        assert facade.command('sync', body)['operation_ids'] == []
+    assert validate_request_payload({'automatic': 'false'}, endpoint='/api/orders/sync')['automatic'] is False
+    with pytest.raises(ValueError):
+        validate_request_payload({'automatic': 'invalid'}, endpoint='/api/orders/sync')

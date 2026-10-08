@@ -51,7 +51,7 @@ const tone = computed(() => progress.value.tone)
 const purchased = computed(() => props.order.lines.reduce((sum, line) => sum + line.purchased_quantity, 0))
 const ordered = computed(() => props.order.lines.reduce((sum, line) => sum + line.line.quantity, 0))
 const title = computed(() => value.value?.busy && value.value.operation === 'create' ? '正在提交预报' : value.value?.busy && value.value.operation === 'fetch-label' ? '正在获取平台面单' : value.value?.create_unknown ? '创建结果待核实，暂停重复提交' : value.value?.cancel_requested && value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，取消未成功' : value.value?.cancel_rejected && value.value.fulfillment_status !== 'CANCELLED' ? '仓库拒绝取消，请处理后重试' : value.value?.cancel_requested && value.value.fulfillment_status !== 'CANCELLED' ? '已请求取消，等待仓库确认' : value.value?.error_message ? '履约操作需要处理' : status.value)
-const notice = computed(() => value.value?.error_message || (value.value?.crossborderbus_order_id ? value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，ERP 履约状态已同步为已发货。' : '进入本页时同步一次仓库进度，后续可点击同步按钮更新。' : value.value?.blocked_reason || (value.value?.editing ? '修改本单方案期间已暂停自动预报。' : progress.value.note)))
+const notice = computed(() => value.value?.error_message || (value.value?.crossborderbus_order_id ? value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，ERP 履约状态已同步为已发货。' : '仓库进度随同步订单更新，也可点击同步按钮单独刷新。' : value.value?.blocked_reason || (value.value?.editing ? '修改本单方案期间已暂停自动预报。' : progress.value.note)))
 async function load(quiet = false) {
   const generation = ++loadGeneration
   try {
@@ -121,7 +121,7 @@ async function refreshLocal() {
   if (!disposed) poll = setTimeout(refreshLocal, 5000)
 }
 onMounted(() => {
-  void syncLatest()
+  void load()
   poll = setTimeout(refreshLocal, 5000)
 })
 onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepEditing); emit('lock', false) })

@@ -565,7 +565,8 @@ def test_list_summary_keeps_platform_status_independent(domain):
     summary = service.store.summaries([view])[view.id]
     assert summary["fulfillment_status"] == "SHIPPED"
     assert summary["crossborderbus_order_id"]
-    assert set(summary) == {"fulfillment_status", "crossborderbus_order_id", "busy", "operation", "create_unknown", "cancel_requested", "cancel_rejected", "error_message", "label_error"}
+    assert summary["has_domestic_waybill"] is True
+    assert set(summary) == {"fulfillment_status", "crossborderbus_order_id", "busy", "operation", "create_unknown", "cancel_requested", "cancel_rejected", "error_message", "label_error", "has_domestic_waybill"}
     assert view.state == "pending_shipment"
 
 

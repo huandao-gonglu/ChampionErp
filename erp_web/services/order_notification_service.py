@@ -38,10 +38,14 @@ class OrderNotificationService:
         ],
         external_store=None,
         request_scopes=None,
+        progress_sync: Callable[[str, Callable[[], None]], bool] | None = None,
+        auto_sync_interval_provider: Callable[[], int] = lambda: 5 * 3600,
         start_worker: bool = True,
     ):
         self.external_store = external_store
         self.request_scopes = request_scopes
+        self.progress_sync = progress_sync
+        self.auto_sync_interval_provider = auto_sync_interval_provider
         self.store = store
         self.config_provider = config_provider
         self.adapters = adapters
@@ -108,7 +112,7 @@ class OrderNotificationService:
         self.store.set_setting("public_url", value)
         return self.integrations()
 
-    def sync(self, platform: str = "") -> dict[str, Any]:
+    def sync(self, platform: str = "", *, automatic: bool = False) -> dict[str, Any]:
         accounts = self.accounts()
         if platform:
             accounts = {
@@ -116,7 +120,8 @@ class OrderNotificationService:
             }
         if not accounts:
             raise ValueError("没有已配置的平台账号，请先完成店铺授权")
-        operation_ids = self.store.schedule(accounts, now=time.time())
+        operation_ids = self.store.schedule(accounts, now=time.time(), automatic=automatic,
+                                            automatic_interval_seconds=self.auto_sync_interval_provider() if automatic else 0)
         return {"ok": True, "operation_ids": operation_ids}
 
     def _blocks(self, config, platform):
@@ -149,6 +154,15 @@ class OrderNotificationService:
         if job is None:
             return False
         event = OrderEvent.model_validate_json(job["event_json"])
+        progress_failed = False
+        refreshed = set()
+
+        def checkpoint():
+            if self.stop_event.is_set() or self.accounts().get(event.platform) != event.account_id:
+                raise InterruptedError("订单同步已停止或平台账号已切换")
+            if not self.store.renew_claim(job, now=time.time()):
+                raise InterruptedError("订单处理租约已失效")
+
         try:
             adapter = self.adapters[event.platform](config)
             snapshots = (
@@ -169,6 +183,12 @@ class OrderNotificationService:
                         raise ValueError("订单快照越过账号范围")
                     if not self.store.save_snapshot(job, snapshot, now=time.time()):
                         raise InterruptedError("订单处理租约已失效")
+                    if self.progress_sync and snapshot.identity not in refreshed:
+                        checkpoint()
+                        if not self.progress_sync(snapshot.identity, checkpoint):
+                            progress_failed = True
+                        checkpoint()
+                        refreshed.add(snapshot.identity)
         except Exception as exc:  # noqa: BLE001 -- 领域任务须持久记录任何适配器故障，正文不进入日志。
             # 错误正文可能含平台凭据或买家信息，只保留类型与稳定错误码。
             raw_code = str(getattr(exc, "code", ""))
@@ -199,7 +219,7 @@ class OrderNotificationService:
                     message = "平台订单同步暂时暂停，请在冷却结束后点击同步订单。"
             self.store.finish(job, error=message, retryable=retryable, now=time.time(), next_attempt=next_attempt)
         else:
-            self.store.finish(job, now=time.time())
+            self.store.finish(job, now=time.time(), error="平台订单已更新，部分采购或仓库状态未更新，请到订单详情查看后手动刷新。" if progress_failed else "")
         return True
 
     def _sync_snapshots(

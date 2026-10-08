@@ -135,7 +135,7 @@ describe('跨境履约操作', () => {
     expect(facts).toContain('待补充')
     expect(facts).toContain('尚未创建')
     expect(wrapper.text()).not.toContain('等待供应商发货')
-    expect(wrapper.get('.order-row .order-badge').text()).toBe('待预报')
+    expect(wrapper.get('.order-row .order-badge').text()).toBe('采购状态待查询')
   })
   it('获取面单携带当前版本，成功后显示托管地址和箱号', async () => {
     vi.mocked(fulfillmentCommand).mockResolvedValue({ ...detail(), revision: 3, platform_label: 'https://cdn.example/label.pdf', platform_tracking_number: '123-1' })
@@ -271,25 +271,25 @@ describe('跨境履约操作', () => {
 })
 
 
-describe('跨境履约按页面同步', () => {
-  it('进入时同步一次，停留只刷新本地，按钮和重新进入可再次同步', async () => {
+describe('跨境履约读取已保存状态与单笔手动同步', () => {
+  it('进入和停留只读本地状态，单笔同步按钮才外发请求', async () => {
     vi.useFakeTimers()
     const saved = { ...detail(), crossborderbus_order_id: 99, fulfillment_status: 'PACKING' as const }
     vi.mocked(fetchFulfillment).mockResolvedValue(saved)
     vi.mocked(fulfillmentCommand).mockResolvedValue(saved)
     const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
     await flushPromises()
-    expect(fulfillmentCommand).toHaveBeenCalledTimes(1)
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(180_000)
     expect(vi.mocked(fetchFulfillment).mock.calls.length).toBeGreaterThan(1)
-    expect(fulfillmentCommand).toHaveBeenCalledTimes(1)
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
     await wrapper.findAll('button').find(b => b.text() === '同步')!.trigger('click')
     await flushPromises()
-    expect(fulfillmentCommand).toHaveBeenCalledTimes(2)
+    expect(fulfillmentCommand).toHaveBeenCalledTimes(1)
     wrapper.unmount()
     mount(OrderFulfillmentPanel, { props: { order }, global })
     await flushPromises()
-    expect(fulfillmentCommand).toHaveBeenCalledTimes(3)
+    expect(fulfillmentCommand).toHaveBeenCalledTimes(1)
   })
 
   it('查询失败保留状态且不自动重试，手动同步可以恢复', async () => {
@@ -298,6 +298,9 @@ describe('跨境履约按页面同步', () => {
     vi.mocked(fetchFulfillment).mockResolvedValue(saved)
     vi.mocked(fulfillmentCommand).mockRejectedValueOnce(new Error('查询失败')).mockResolvedValue(saved)
     const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(b => b.text() === '同步')!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('查询失败')
     expect(wrapper.text()).toContain('已打包')
@@ -336,4 +339,25 @@ describe('跨境履约按页面同步', () => {
     await flushPromises()
     expect(fulfillmentCommand).not.toHaveBeenCalled()
   })
+})
+
+it('详情跟随本地同步结果更新，编辑时暂停，不额外查询采购或仓库接口', async () => {
+  vi.useFakeTimers()
+  vi.mocked(fetchOrderDetail).mockResolvedValueOnce(order).mockResolvedValue(withProgress(logistics()))
+  const wrapper = mount(OrderDetailPanel, { props: { orderId: order.order.id }, attachTo: document.body, global: { stubs: { RouterLink: global.stubs.RouterLink } } })
+  await flushPromises()
+  wrapper.findComponent(OrderPurchaseTracking).vm.$emit('lock', true)
+  await flushPromises()
+  await vi.advanceTimersByTimeAsync(10_000)
+  expect(fetchOrderDetail).toHaveBeenCalledTimes(1)
+  wrapper.findComponent(OrderPurchaseTracking).vm.$emit('lock', false)
+  await flushPromises()
+  await vi.advanceTimersByTimeAsync(5000)
+  expect(new DOMWrapper(document.body).text()).toContain('YT123')
+  expect(syncPurchase).not.toHaveBeenCalled()
+  expect(fulfillmentCommand).not.toHaveBeenCalled()
+  wrapper.unmount()
+  const reads = vi.mocked(fetchOrderDetail).mock.calls.length
+  await vi.advanceTimersByTimeAsync(10_000)
+  expect(fetchOrderDetail).toHaveBeenCalledTimes(reads)
 })

@@ -251,7 +251,7 @@ class FulfillmentService:
         return self.detail(request.order_id)
 
     def sync(self, order_id, revision):
-        """页面进入或人工同步只执行一轮只读核实，不排队、不重试或代报单。"""
+        """订单同步或人工刷新只执行一轮只读核实，不排队、不重试或代报单。"""
         order, _ = self.order_detail(order_id)
         value = self.store.ensure(order)
         if value["erp_order_id"] != order_id or value["revision"] != revision or value["busy"]:

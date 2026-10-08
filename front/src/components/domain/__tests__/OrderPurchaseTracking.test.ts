@@ -74,3 +74,21 @@ describe('1688 采购进度', () => {
     expect(render(other).find('button').exists()).toBe(false)
   })
 })
+
+it('物流失败不隐藏订单状态，也不冒充成功但没有物流', () => {
+  const data = response()
+  data.logistics_warning = '物流查询失败：接口无权限'
+  const wrapper = render({ ...record, progress: { state: 'synced', attempted_at: '', message: '采购订单状态已更新，物流本次未更新', error: '', data } })
+  expect(wrapper.text()).toContain('等待买家收货')
+  expect(wrapper.text()).toContain('物流查询失败：接口无权限')
+  expect(wrapper.text()).not.toContain('本次刷新失败')
+  expect(wrapper.text()).not.toContain('1688 暂未提供物流信息')
+  expect(wrapper.text()).not.toContain('物流更新时间')
+})
+
+it('未发货的空物流显示无运单，保留查询成功的时间', () => {
+  const data = { ...response(), logistics: [] }
+  const wrapper = render({ ...record, progress: { state: 'synced', attempted_at: '', message: '', error: '', data } })
+  expect(wrapper.text()).toContain('1688 暂未提供物流信息')
+  expect(wrapper.text()).toContain('物流更新时间')
+})

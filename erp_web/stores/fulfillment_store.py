@@ -94,7 +94,9 @@ class FulfillmentStore:
 
     @staticmethod
     def _value(row):
-        return {**json.loads(row["value"]), "revision": row["revision"], "busy": bool(row["claim"] and row["lease_until"] > time.time())}
+        value = json.loads(row["value"])
+        return {**value, "revision": row["revision"], "busy": bool(row["claim"] and row["lease_until"] > time.time()),
+                "has_domestic_waybill": any(str(p.get("tracking_number") or "").strip() for p in value.get("parcels", []))}
 
     def get(self, order_id):
         with self.orders.connect() as conn:

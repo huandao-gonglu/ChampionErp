@@ -47,7 +47,7 @@ function stepStatus(key: string) {
 
     <nav class="flex-1 space-y-1.5 overflow-y-auto px-3 py-4">
       <button
-        v-for="item in props.items"
+        v-for="item in props.items.filter(item => item.key !== 'systemSettings')"
         :key="item.key"
         type="button"
         class="group flex h-12 w-full items-center rounded-2xl px-4 text-left text-[15px] font-semibold transition duration-200"
@@ -101,6 +101,23 @@ function stepStatus(key: string) {
       >
         <span class="flex size-7 items-center justify-center text-lg text-warning-400">{{ appStore.darkMode ? '☀' : '☾' }}</span>
         <span v-if="!props.collapsed">{{ appStore.darkMode ? '浅色模式' : '深色模式' }}</span>
+      </button>
+      <button
+        type="button"
+        class="mt-2 flex h-11 w-full items-center rounded-2xl px-4 text-left text-sm font-semibold"
+        :class="[
+          props.collapsed ? 'justify-center px-0' : 'gap-3',
+          props.activeKey === 'systemSettings'
+            ? 'bg-primary-50 text-primary-700 dark:bg-primary-950/70 dark:text-primary-300'
+            : 'text-accent-700 hover:bg-accent-50 hover:text-accent-950 dark:text-accent-200 dark:hover:bg-white/5 dark:hover:text-white',
+        ]"
+        :aria-current="props.activeKey === 'systemSettings' ? 'page' : undefined"
+        aria-label="系统设置"
+        title="系统设置"
+        @click="emit('navigate', 'systemSettings')"
+      >
+        <span class="flex size-7 items-center justify-center text-lg" aria-hidden="true">⚙</span>
+        <span v-if="!props.collapsed">系统设置</span>
       </button>
       <button
         type="button"

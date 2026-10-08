@@ -1,4 +1,4 @@
-import type { BackendPurchaseProgressView } from './workflow.generated'
+import type { BackendPurchaseProgressView, BackendPurchaseTrackingSummary } from './workflow.generated'
 export const ORDER_PAGE_SIZE = 9
 export type OrderPlatform = 'mercadolibre' | 'ozon' | 'yandex'
 export type OrderState =
@@ -34,6 +34,7 @@ export interface OrderSnapshot extends OrderAmount {
   checked_at: string
   shipment_deadline?: string
   procurement_status?: string
+  purchase_tracking?: BackendPurchaseTrackingSummary | null
   fulfillment_summary?: import('./fulfillment').FulfillmentSummary | null
   items: OrderLine[]
 }

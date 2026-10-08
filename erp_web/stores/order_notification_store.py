@@ -118,12 +118,19 @@ class OrderNotificationStore:
             conn.commit()
 
     def schedule(
-        self, accounts: dict[str, str], *, now: float
+        self, accounts: dict[str, str], *, now: float, automatic: bool = False, automatic_interval_seconds: int = 5 * 3600
     ) -> list[str]:
         operation_ids = []
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             for platform, account in accounts.items():
+                if automatic:
+                    key = f"auto_sync_at:{platform}:{account}"
+                    previous = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+                    if previous and now - float(previous[0]) < automatic_interval_seconds:
+                        continue
+                    # 与任务入队同事务记录尝试时间，失败也计入冷却，跨窗口不重复提交。
+                    conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, str(now)))
                 active = conn.execute(
                     "SELECT id,status,lease_until FROM inbox WHERE platform=? AND account_id=? AND topic='sync' AND status IN ('queued','running','retry')",
                     (platform, account),
@@ -184,6 +191,15 @@ class OrderNotificationStore:
                 return {**dict(row), "claim": claim, "attempts": row["attempts"] + 1}
             conn.commit()
         return None
+
+    def renew_claim(self, job, *, now: float) -> bool:
+        """在逐笔采购和仓库查询之间续租，不恢复已失效或被替换的任务。"""
+        with self.connect() as conn:
+            changed = conn.execute("""UPDATE inbox SET lease_until=?
+                WHERE id=? AND claim=? AND status='running' AND lease_until>?""",
+                (now + 180, job["id"], job["claim"], now)).rowcount
+            conn.commit()
+        return changed == 1
 
     def save_snapshot(self, job, snapshot: OrderSnapshot, *, now: float) -> bool:
         remote_time = timestamp(snapshot.updated_at)

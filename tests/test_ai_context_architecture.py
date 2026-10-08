@@ -1001,3 +1001,16 @@ def test_request_recovery_is_owned_by_authorization_and_never_replays_business()
     assert '/api/orders/recover-sync' not in POST_API_ROUTES
     assert 'ExternalRequestControlPanel' in (ROOT / 'front/src/components/auth/AuthSettingsPanel.vue').read_text()
     assert 'recover-sync' not in (ROOT / 'front/src/components/domain/OrderSyncStatusPanel.vue').read_text()
+
+
+def test_order_progress_sync_is_explicitly_composed_and_not_a_read_side_effect():
+    root = ROOT / 'erp_web'
+    service = root / 'services/order_notification_service.py'
+    targets = imported_targets([service])
+    assert not any('alibaba' in target or 'fulfillment' in target for _, target in targets)
+    facade = (root / 'facades/order_notification_facade.py').read_text()
+    assert 'progress_sync=refresh_progress' in facade
+    reads = facade.split('def read_orders(', 1)[1].split('def _sync_status(', 1)[0]
+    assert 'sync_order_progress(' not in reads
+    source = service.read_text()
+    assert source.index('self.store.save_snapshot(') < source.index('self.progress_sync(snapshot.identity, checkpoint)')

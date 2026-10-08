@@ -37,38 +37,48 @@ export function procurementProgress(lines: ProcurementLine[]) {
 }
 
 export function orderProcessingProgress(order: OrderSnapshot, facts: FulfillmentSummary | null | undefined = order.fulfillment_summary) {
-  const progress = (label: string, note: string, tone = 'amber') => ({ label, note, tone })
+  const progress = (label: string, note: string, tone = 'amber', source = '来自ERP') => ({ label, note, tone, source })
   const status = facts?.fulfillment_status
   const remote = !!facts?.crossborderbus_order_id
   const cancelled = facts?.cancel_requested || order.state === 'cancelled'
   // 仓库确认发货后，取消冲突或网络错误不能把进度倒退为待提交。
   if (status === 'SHIPPED')
-    return progress('仓库已发货', cancelled ? '取消未成功，请联系仓库' : facts?.error_message ? '最近确认已发货；同步异常' : '已同步仓库发货状态', cancelled || facts?.error_message ? 'red' : 'green')
-  if (status === 'CANCELLED') return progress('履约已取消', remote ? '仓库已确认取消' : '已停止预报', 'neutral')
+    return progress('仓库已发货', cancelled ? '取消未成功，请联系仓库' : facts?.error_message ? '最近确认已发货；同步异常' : '已同步仓库发货状态', cancelled || facts?.error_message ? 'red' : 'green', '来自跨境巴士')
+  if (status === 'CANCELLED') return progress('履约已取消', remote ? '仓库已确认取消' : '已停止预报', 'neutral', remote ? '来自跨境巴士' : '来自ERP')
   if (cancelled) {
-    if (facts?.cancel_rejected) return progress('取消失败', '仓库拒绝取消，请处理', 'red')
+    if (facts?.cancel_rejected) return progress('取消失败', '仓库拒绝取消，请处理', 'red', '来自跨境巴士')
     return remote || facts?.create_unknown
       ? progress('取消待确认', facts?.create_unknown ? '先核实创建结果，再取消' : '等待仓库确认')
-      : progress('已停止预报', '平台或 ERP 已取消', 'neutral')
+      : progress('已停止预报', '平台或 ERP 已取消', 'neutral', facts?.cancel_requested ? '来自ERP' : '来自平台同步')
   }
   if (facts?.busy && facts.operation === 'create') return progress('正在提交预报', '等待跨境巴士回执')
   if (facts?.create_unknown) return progress('创建待确认', '核实结果期间禁止重复提交', 'red')
   if (facts && remote) {
     if (status === 'EXCEPTION') return progress('履约异常', '查看详情处理仓库异常', 'red')
     if (status === 'COMPLETED' || status === 'NEW') return progress('履约状态待核对', '已有预报单，请同步仓库状态', 'red')
-    return progress(fulfillmentStatusNames[facts.fulfillment_status], facts?.error_message ? '保留最近确认进度；同步异常' : '以仓库回传为准', facts?.error_message ? 'red' : 'blue')
+    return progress(fulfillmentStatusNames[facts.fulfillment_status], facts?.error_message ? '保留最近确认进度；同步异常' : '以仓库回传为准', facts?.error_message ? 'red' : 'blue', '来自跨境巴士')
   }
   if (['FBO', 'FBY', 'FULFILLMENT'].includes((order.delivery?.fulfillment_model || order.fulfillment).toUpperCase()))
-    return progress('平台仓履约', '不进入跨境巴士预报流程', 'neutral')
-  if (['shipped', 'delivered'].includes(order.state)) return progress('无跨境预报', '仅有平台状态，未确认仓库履约', 'neutral')
-  if (order.state !== 'pending_shipment') return progress('待核对平台状态', '平台待发货后才能预报', 'neutral')
+    return progress('平台仓履约', '不进入跨境巴士预报流程', 'neutral', '来自平台同步')
+  if (['shipped', 'delivered'].includes(order.state)) return progress('无跨境预报', '仅有平台状态，未确认仓库履约', 'neutral', '来自ERP')
+  if (order.state !== 'pending_shipment') return progress('待核对平台状态', '平台待发货后才能预报', 'neutral', '来自平台同步')
+  const purchase = order.purchase_tracking
+  const hasWaybill = facts?.has_domestic_waybill || purchase?.has_waybill
+  if (!hasWaybill && order.procurement_status === 'purchased') {
+    const states = [...new Set(purchase?.orders.map(row => row.status_label) || [])]
+    const stale = purchase?.stale ? '；保留最近查询结果，请刷新采购进度' : ''
+    if (!states.length) return progress('采购状态待查询', '请在详情中刷新采购进度，获取采购订单状态', 'amber', '来自ERP')
+    if (purchase?.unknown_count) return progress('部分采购状态待查询', `${states.join('、')}；其余采购记录尚未查询${stale}`, 'amber', '来自1688 / ERP')
+    const stopped = purchase?.orders.some(row => ['cancel', 'terminated'].includes(row.status))
+    return progress(states.length === 1 ? states[0]! : '采购进度不一致', `1688：${states.join('、')}${stale}`, stopped ? 'red' : 'amber', '来自1688')
+  }
   if (facts?.busy && facts.operation === 'fetch-label') return progress('正在获取面单', '获取成功后继续准备预报')
   if (facts?.error_message || status === 'EXCEPTION') return progress('预报异常', '进入详情处理后重试', 'red')
   if (facts?.label_error) return progress('面单获取异常', '进入详情处理或人工补充', 'red')
-  if (order.procurement_status === 'unpurchased') return progress('待采购登记', '在详情中登记实际采购')
-  if (order.procurement_status === 'partial') return progress('采购登记中', '尚未覆盖全部商品数量')
-  if (order.procurement_status === 'purchased') return progress('待预报', '采购已登记，核对面单与国内包裹')
-  return progress('采购待核对', '核对商品明细与采购数量')
+  if (order.procurement_status === 'unpurchased') return progress('待采购登记', '在详情中登记实际采购', 'amber', '来自ERP')
+  if (order.procurement_status === 'partial') return progress('采购登记中', '尚未覆盖全部商品数量', 'amber', '来自ERP')
+  if (order.procurement_status === 'purchased') return progress('待预报', '已有国内运单，核对包裹分配、数量与面单后报单')
+  return progress('采购待核对', '核对商品明细与采购数量', 'amber', '来自ERP')
 }
 export function stateTone(state: OrderState) {
   return state === 'pending_shipment'

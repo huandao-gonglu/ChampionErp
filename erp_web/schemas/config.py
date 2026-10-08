@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, TypedDict
+from pydantic import BaseModel, ConfigDict, Field
 from .ai_approval import AiToolApprovalMode
 
 
@@ -55,7 +56,17 @@ class AiUseCaseBinding(TypedDict, total=False):
     generation: AiGenerationSettings
 
 
+class SystemSettings(TypedDict):
+    orders_auto_sync_interval_hours: int
+
+
+class SystemSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orders_auto_sync_interval_hours: int = Field(default=5, ge=5, strict=True)
+
+
 class AppConfig(TypedDict, total=False):
+    system_settings: SystemSettings
     image_hosting: dict[str, Any]
     ai_tool_approval_mode: AiToolApprovalMode
     ai_models: list[AiModelConfig]
@@ -81,4 +92,6 @@ __all__ = [
     "AiUseCaseBinding",
     "AppConfig",
     "StoreConfig",
+    "SystemSettings",
+    "SystemSettingsRequest",
 ]

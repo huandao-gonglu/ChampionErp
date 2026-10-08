@@ -256,3 +256,14 @@ def test_http_purchase_query_contract_and_blocked_response(registered, monkeypat
         server.shutdown()
         server.server_close()
         thread.join(3)
+
+
+@pytest.mark.parametrize('name', [api.LOGISTICS_INFO, api.ORDER_DETAIL, api.LOGISTICS_TRACE])
+def test_unshipped_code_is_empty_only_for_logistics_info(monkeypatch, name):
+    payload = {'success': False, 'errorCode': '500_2', 'errorMessage': '订单尚未发货，暂无物流详情，请稍候再试。'}
+    monkeypatch.setattr(api, 'managed_urlopen', lambda *a, **k: io.BytesIO(json.dumps(payload).encode()))
+    if name == api.LOGISTICS_INFO:
+        result = api.AlibabaApiClient(CONFIG).query(name, NUMBER)
+        assert result['result'] == [] and result['errorCode'] == '500_2'
+    else:
+        with pytest.raises(api.AlibabaApiError): api.AlibabaApiClient(CONFIG).query(name, NUMBER)

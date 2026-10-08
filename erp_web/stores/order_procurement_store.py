@@ -88,7 +88,9 @@ class OrderProcurementStore:
     def purchase_record(self, order_id, record_id, accounts):
         with self.orders.connect() as conn:
             conn.execute("BEGIN")
-            return PurchaseRecord.model_validate(self.checked_purchase(conn, order_id, record_id, accounts))
+            record = self.checked_purchase(conn, order_id, record_id, accounts)
+            progress = conn.execute("SELECT value FROM purchase_progress WHERE record_id=?", (record_id,)).fetchone()
+            return PurchaseRecord.model_validate({**record, "progress": json.loads(progress[0]) if progress else None})
 
     def add_bindings(self, bindings: list[SalesSkuBinding]):
         with self.orders.connect() as conn:
@@ -185,6 +187,32 @@ class OrderProcurementStore:
         if all(done >= line.quantity for done, line in zip(quantities, order.items)):
             return "purchased"
         return "partial" if any(quantities) else "unpurchased"
+
+    def tracking_summaries(self, orders):
+        """批量读取当前订单有效采购的状态；不把作废或已变更规格的旧采购用于展示。"""
+        if not orders:
+            return {}
+        signatures = {order.id: {order_line_key(line): line_signature(line) for line in order.items} for order in orders}
+        placeholders = ",".join("?" for _ in signatures)
+        with self.orders.connect() as conn:
+            rows = conn.execute(f"""SELECT p.order_id,p.line_key,p.line_signature,s.value FROM order_purchases p
+                LEFT JOIN purchase_progress s ON s.record_id=p.id
+                WHERE p.order_id IN ({placeholders}) AND p.status='purchased'""", tuple(signatures)).fetchall()
+        result = {}
+        for row in rows:
+            if signatures[row["order_id"]].get(row["line_key"]) != row["line_signature"]:
+                continue
+            summary = result.setdefault(row["order_id"], {"orders": [], "unknown_count": 0, "has_waybill": False, "stale": False})
+            progress = json.loads(row["value"]) if row["value"] else {}
+            data = progress.get("data") or {}
+            status = data.get("order")
+            if status and status.get("status"):
+                summary["orders"].append(status)
+            else:
+                summary["unknown_count"] += 1
+            summary["has_waybill"] |= any(str(p.get("tracking_number") or "").strip() for p in data.get("logistics") or [])
+            summary["stale"] |= bool(progress.get("error")) or progress.get("state") == "syncing"
+        return result
 
     def select(self, request, source: ProcurementSource, accounts):
         with self.orders.connect() as conn:

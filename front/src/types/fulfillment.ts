@@ -62,6 +62,7 @@ export interface BusSettings {
 }
 export type FulfillmentStatus = 'NEW' | 'FULFILLMENT_CREATED' | 'WAITING_DOMESTIC_SHIPMENT' | 'WAREHOUSE_RECEIVED' | 'PACKING' | 'SHIPPED' | 'COMPLETED' | 'EXCEPTION' | 'CANCELLED'
 export interface FulfillmentSummary {
+  has_domestic_waybill?: boolean
   busy: boolean
   operation: string
   create_unknown: boolean

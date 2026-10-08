@@ -165,6 +165,7 @@ class AppContext:
         self._external_requests = None
         self._order_notifications = None
         self._order_procurement = None
+        self._alibaba_self_purchases = None
         self._fulfillment = None
 
     @property
@@ -189,6 +190,16 @@ class AppContext:
 
                     self._order_procurement = create_service(self)
         return self._order_procurement
+
+    @property
+    def alibaba_self_purchases(self):
+        if self._alibaba_self_purchases is None:
+            with self._lazy_lock:
+                if self._alibaba_self_purchases is None:
+                    from erp_web.stores.alibaba_self_purchase_store import AlibabaSelfPurchaseStore
+
+                    self._alibaba_self_purchases = AlibabaSelfPurchaseStore(self.paths.data_dir / "alibaba-self-purchases.sqlite3")
+        return self._alibaba_self_purchases
 
     @property
     def order_notifications(self):
@@ -402,6 +413,9 @@ class AppContext:
             online_products = self._online_products
             order_notifications = self._order_notifications
             fulfillment = self._fulfillment
+            alibaba_self_purchases = self._alibaba_self_purchases
+        if alibaba_self_purchases is not None:
+            alibaba_self_purchases.close()
         if fulfillment is not None:
             fulfillment.close()
         if order_notifications is not None:

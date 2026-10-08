@@ -131,13 +131,17 @@ def _self_purchase(handler, action):
     except ExternalRequestBlocked:
         handler.send_json({"ok": False, "error": "1688 请求已中断，请到授权配置的中断与恢复查看"}, 409)
     except ValidationError:
-        handler.send_json({"ok": False, "error": "采购参数无效，请核对数量和订单号"}, 400)
+        handler.send_json({"ok": False, "error": "采购参数无效，请核对数量、地址及确认状态"}, 400)
     except (ValueError, TypeError) as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 400)
 
 
 def handle_self_purchase_preview(handler):
     _self_purchase(handler, "preview")
+
+
+def handle_self_purchase_parse_address(handler):
+    _self_purchase(handler, "parse-address")
 
 
 def handle_self_purchase_create(handler):
@@ -153,6 +157,7 @@ def handle_self_purchase_cashier(handler):
 
 
 POST_HANDLERS = {
+    "/api/orders/alibaba-purchase/parse-address": handle_self_purchase_parse_address,
     "/api/orders/alibaba-purchase/preview": handle_self_purchase_preview,
     "/api/orders/alibaba-purchase/create": handle_self_purchase_create,
     "/api/orders/alibaba-purchase/reconcile": handle_self_purchase_reconcile,
@@ -174,6 +179,7 @@ POST_HANDLERS = {
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {
+    "/api/orders/alibaba-purchase/addresses": alibaba_self_purchase_facade.addresses,
     "/api/orders/alibaba-purchase": alibaba_self_purchase_facade.options,
     "/api/orders/address-note": address_notes.read,
     "/api/orders": facade.read_orders,
@@ -211,7 +217,7 @@ def handle_get(handler, parsed):
             else callback(order_id=query.get("order_id", ""))
             if parsed.path == "/api/orders/detail"
             else callback(query)
-            if parsed.path == "/api/orders/alibaba-purchase"
+            if parsed.path in {"/api/orders/alibaba-purchase", "/api/orders/alibaba-purchase/addresses"}
             else callback()
         )
     except (ValueError, TypeError) as exc:
