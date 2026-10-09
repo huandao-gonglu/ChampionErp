@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { fetchOrderDetail } from '@/api/orders'
 import type { OrderDetail } from '@/types/orders'
 import { orderPlatformNames } from '@/types/orders'
@@ -10,10 +10,11 @@ import OrderPurchaseDialog from './OrderPurchaseDialog.vue'
 import OrderFulfillmentPanel from './OrderFulfillmentPanel.vue'
 import OrderHandoverPanel from './OrderHandoverPanel.vue'
 import { amountLabel, deadline, money, platformStatusLabel, platformStatusNote, stateTone } from './orderPresentation'
-const props = defineProps<{ orderId: string }>()
-const activeTab = ref<'procurement' | 'fulfillment'>('procurement')
+import type { OrderDetailTab } from './orderPresentation'
+const props = withDefaults(defineProps<{ orderId: string; tab?: OrderDetailTab }>(), { tab: 'procurement' })
+const activeTab = ref<OrderDetailTab>(props.tab)
 const fulfillmentLocked = ref(false)
-const emit = defineEmits<{ back: []; updated: [] }>()
+const emit = defineEmits<{ back: []; updated: []; tabChange: [tab: OrderDetailTab] }>()
 const detail = ref<OrderDetail | null>(null)
 const error = ref('')
 const loading = ref(false)
@@ -27,6 +28,12 @@ const totals = computed(() => ({
   purchased: detail.value?.lines.reduce((sum, line) => sum + line.purchased_quantity, 0) || 0,
 }))
 const locked = computed(() => locks.size > 0 || !!purchaseKey.value || fulfillmentLocked.value)
+watch(() => props.tab, tab => { if (!locked.value) activeTab.value = tab })
+function selectTab(tab: OrderDetailTab) {
+  if (locked.value) return
+  activeTab.value = tab
+  emit('tabChange', tab)
+}
 const shipment = computed(() => deadline(detail.value?.order.shipment_deadline, Date.now()))
 let poll: ReturnType<typeof setTimeout> | undefined
 let disposed = false
@@ -119,8 +126,8 @@ onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
         </details>
       </header>
       <nav class="order-actions my-6" aria-label="订单详情内容">
-        <button class="order-button" :class="{ 'order-primary': activeTab === 'procurement' }" :disabled="locked" @click="activeTab = 'procurement'">商品与采购</button>
-        <button class="order-button" :class="{ 'order-primary': activeTab === 'fulfillment' }" :disabled="locked" @click="activeTab = 'fulfillment'">跨境履约</button>
+        <button class="order-button" :class="{ 'order-primary': activeTab === 'procurement' }" :disabled="locked" @click="selectTab('procurement')">商品与采购</button>
+        <button class="order-button" :class="{ 'order-primary': activeTab === 'fulfillment' }" :disabled="locked" @click="selectTab('fulfillment')">跨境履约</button>
       </nav>
       <OrderFulfillmentPanel v-if="activeTab === 'fulfillment'" :order="detail" @purchase-updated="update" @updated="load(); emit('updated')" @lock="fulfillmentLocked = $event" />
       <div v-if="activeTab === 'procurement'" class="order-section-heading">

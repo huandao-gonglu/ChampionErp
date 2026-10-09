@@ -45,7 +45,11 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
           </tr>
         </thead>
         <tbody>
-          <tr v-for="{ order, progress } in rows" :key="order.id">
+          <tr
+            v-for="{ order, progress } in rows"
+            :key="order.id"
+            :class="{ 'order-row-active': route.query.order === order.id }"
+          >
             <td>
               <div class="order-product-cell">
                 <OrderThumbnail :src="order.items[0]?.image_url" :title="order.items[0]?.title || order.title || '商品'" />
@@ -83,7 +87,15 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
               <p class="order-muted" :title="platformStatusNote(order)">来自平台同步</p>
             </td>
             <td>
-              <span class="order-badge" :data-tone="progress.tone" :title="progress.note">{{ progress.label }}</span>
+              <RouterLink
+                class="order-badge order-progress-link"
+                :data-tone="progress.tone"
+                :title="`进入${progress.target === 'fulfillment' ? '跨境履约' : '商品与采购'}：${progress.note}`"
+                :aria-label="`订单 ${order.order_id}：${progress.label}，进入${progress.target === 'fulfillment' ? '跨境履约' : '商品与采购'}`"
+                :to="{ path: '/', query: { ...route.query, tab: 'orders', order: order.id, orderTab: progress.target } }"
+              >
+                {{ progress.label }}
+              </RouterLink>
               <p class="order-muted" :title="progress.source">{{ progress.source }}</p>
             </td>
             <td>
@@ -107,7 +119,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
                 :aria-label="`查看订单 ${order.order_id}`"
                 :to="{
                   path: '/',
-                  query: { ...route.query, tab: 'orders', order: order.id },
+                  query: { ...route.query, tab: 'orders', order: order.id, orderTab: undefined },
                 }"
               >
                 详情
@@ -142,6 +154,8 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
   </div>
 </template>
 <style scoped>
+.order-progress-link { cursor: pointer; }
+.order-progress-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .order-table-card {
   min-width: 0;
   border-radius: 7px;
@@ -168,6 +182,14 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
 }
 .order-table tbody tr {
   border-bottom: 1px solid var(--order-border);
+}
+.order-table tbody tr.order-row-active {
+  background: color-mix(in srgb, var(--order-text) 7%, var(--order-surface));
+}
+@media (hover: hover) {
+  .order-table tbody tr:hover {
+    background: color-mix(in srgb, var(--order-text) 7%, var(--order-surface));
+  }
 }
 .order-table td {
   padding: 14px 16px;

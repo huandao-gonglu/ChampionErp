@@ -70,7 +70,7 @@ async function render() {
   await router.push('/?tab=orders')
   await router.isReady()
   const wrapper = mount(OrderCenterPanel, {
-    global: { plugins: [router], stubs: { teleport: true } },
+    global: { plugins: [router], stubs: { teleport: true, OrderFulfillmentPanel: true } },
   })
   await flushPromises()
   return { wrapper, router }
@@ -136,7 +136,7 @@ describe('紧凑订单列表', () => {
     store.offset = 9
     const { wrapper, router } = await render()
     expect(wrapper.findAll('tbody tr')).toHaveLength(9)
-    expect(wrapper.findAll('tbody a')).toHaveLength(9)
+    expect(wrapper.findAll('tbody a.order-link')).toHaveLength(9)
     expect(wrapper.find('a[aria-label*="跨境履约"]').exists()).toBe(false)
     expect(wrapper.get('thead').text()).toContain('ERP 处理进度')
     expect(wrapper.get('thead').text()).not.toContain('采购进度')
@@ -156,6 +156,41 @@ describe('紧凑订单列表', () => {
       'SKU',
       9,
     ])
+  })
+  it.each([
+    ['unpurchased', false, '待采购登记', 'procurement', '商品与采购'],
+    ['partial', false, '采购登记中', 'procurement', '商品与采购'],
+    ['purchased', false, '等待买家收货', 'procurement', '商品与采购'],
+    ['purchased', true, '待预报', 'fulfillment', '跨境履约'],
+  ] as const)('%s / 运单=%s：点击 %s 直达对应详情', async (procurement_status, has_waybill, label, target, targetLabel) => {
+    const order: OrderSnapshot = {
+      ...orders[0]!, procurement_status,
+      purchase_tracking: {
+        orders: [{ order_number: '123', status: 'waitbuyerreceive', status_label: '等待买家收货' }],
+        unknown_count: 0, has_waybill, stale: false,
+      },
+    }
+    vi.mocked(fetchOrders).mockResolvedValue({ ok: true, items: [order], total: 1, counts: {}, notifications: [], alerts: [], unread: 0, latest_alert_id: 0 })
+    vi.mocked(fetchOrderDetail).mockResolvedValue({ ok: true, order, lines: [] })
+    const { wrapper, router } = await render()
+    const link = wrapper.get('a.order-progress-link')
+    expect(link.text()).toBe(label)
+    expect(link.attributes('aria-label')).toContain(targetLabel)
+    await link.trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({ order: order.id, orderTab: target })
+    expect(wrapper.get('nav[aria-label="订单详情内容"] .order-primary').text()).toBe(targetLabel)
+    expect(wrapper.find('order-fulfillment-panel-stub').exists()).toBe(target === 'fulfillment')
+    const otherTab = target === 'fulfillment' ? '商品与采购' : '跨境履约'
+    await wrapper.findAll('nav[aria-label="订单详情内容"] button').find(button => button.text() === otherTab)!.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.orderTab).toBe(target === 'fulfillment' ? 'procurement' : 'fulfillment')
+    await wrapper.get('button[aria-label="关闭订单详情"]').trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ tab: 'orders' })
+    await link.trigger('click'); await flushPromises()
+    expect(wrapper.get('nav[aria-label="订单详情内容"] .order-primary').text()).toBe(targetLabel)
+    await wrapper.get('button[aria-label="关闭订单详情"]').trigger('click'); await flushPromises()
+    await wrapper.get('a[aria-label="查看订单 0"]').trigger('click'); await flushPromises()
+    expect(wrapper.get('nav[aria-label="订单详情内容"] .order-primary').text()).toBe('商品与采购')
   })
   it('输入未提交的搜索词不影响轮询，提交后回到第一页', async () => {
     const store = useOrderNotificationsStore()

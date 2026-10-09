@@ -6,6 +6,7 @@ import { orderPlatformNames, orderStateNames } from '@/types/orders'
 import OrderDetailPanel from './OrderDetailPanel.vue'
 import OrderListTable from './OrderListTable.vue'
 import OrderNotificationsDrawer from './OrderNotificationsDrawer.vue'
+import type { OrderDetailTab } from './orderPresentation'
 import './orderCenter.css'
 const store = useOrderNotificationsStore()
 const route = useRoute()
@@ -57,7 +58,11 @@ function openNotifications() {
 function closeDetail() {
   const query = { ...route.query }
   delete query.order
+  delete query.orderTab
   void router.push({ query })
+}
+function changeDetailTab(tab: OrderDetailTab) {
+  void router.replace({ query: { ...route.query, orderTab: tab } })
 }
 onMounted(() => {
   store.listActive = true
@@ -159,6 +164,8 @@ onBeforeUnmount(() => {
       v-if="route.query.order"
       :key="String(route.query.order)"
       :order-id="String(route.query.order)"
+      :tab="route.query.orderTab === 'fulfillment' ? 'fulfillment' : 'procurement'"
+      @tab-change="changeDetailTab"
       @back="closeDetail"
       @updated="store.refresh"
     />

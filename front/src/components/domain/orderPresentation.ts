@@ -36,8 +36,10 @@ export function procurementProgress(lines: ProcurementLine[]) {
   return lines.some(line => line.purchased_quantity > 0) ? 'partial' : 'unpurchased'
 }
 
+export type OrderDetailTab = 'procurement' | 'fulfillment'
+
 export function orderProcessingProgress(order: OrderSnapshot, facts: FulfillmentSummary | null | undefined = order.fulfillment_summary) {
-  const progress = (label: string, note: string, tone = 'amber', source = '来自ERP') => ({ label, note, tone, source })
+  const progress = (label: string, note: string, tone = 'amber', source = '来自ERP', target: OrderDetailTab = 'fulfillment') => ({ label, note, tone, source, target })
   const status = facts?.fulfillment_status
   const remote = !!facts?.crossborderbus_order_id
   const cancelled = facts?.cancel_requested || order.state === 'cancelled'
@@ -67,18 +69,18 @@ export function orderProcessingProgress(order: OrderSnapshot, facts: Fulfillment
   if (!hasWaybill && order.procurement_status === 'purchased') {
     const states = [...new Set(purchase?.orders.map(row => row.status_label) || [])]
     const stale = purchase?.stale ? '；保留最近查询结果，请刷新采购进度' : ''
-    if (!states.length) return progress('采购状态待查询', '请在详情中刷新采购进度，获取采购订单状态', 'amber', '来自ERP')
-    if (purchase?.unknown_count) return progress('部分采购状态待查询', `${states.join('、')}；其余采购记录尚未查询${stale}`, 'amber', '来自1688 / ERP')
+    if (!states.length) return progress('采购状态待查询', '请在详情中刷新采购进度，获取采购订单状态', 'amber', '来自ERP', 'procurement')
+    if (purchase?.unknown_count) return progress('部分采购状态待查询', `${states.join('、')}；其余采购记录尚未查询${stale}`, 'amber', '来自1688 / ERP', 'procurement')
     const stopped = purchase?.orders.some(row => ['cancel', 'terminated'].includes(row.status))
-    return progress(states.length === 1 ? states[0]! : '采购进度不一致', `1688：${states.join('、')}${stale}`, stopped ? 'red' : 'amber', '来自1688')
+    return progress(states.length === 1 ? states[0]! : '采购进度不一致', `1688：${states.join('、')}${stale}`, stopped ? 'red' : 'amber', '来自1688', 'procurement')
   }
   if (facts?.busy && facts.operation === 'fetch-label') return progress('正在获取面单', '获取成功后继续准备预报')
   if (facts?.error_message || status === 'EXCEPTION') return progress('预报异常', '进入详情处理后重试', 'red')
   if (facts?.label_error) return progress('面单获取异常', '进入详情处理或人工补充', 'red')
-  if (order.procurement_status === 'unpurchased') return progress('待采购登记', '在详情中登记实际采购', 'amber', '来自ERP')
-  if (order.procurement_status === 'partial') return progress('采购登记中', '尚未覆盖全部商品数量', 'amber', '来自ERP')
+  if (order.procurement_status === 'unpurchased') return progress('待采购登记', '在详情中登记实际采购', 'amber', '来自ERP', 'procurement')
+  if (order.procurement_status === 'partial') return progress('采购登记中', '尚未覆盖全部商品数量', 'amber', '来自ERP', 'procurement')
   if (order.procurement_status === 'purchased') return progress('待预报', '已有国内运单，核对包裹分配、数量与面单后报单')
-  return progress('采购待核对', '核对商品明细与采购数量', 'amber', '来自ERP')
+  return progress('采购待核对', '核对商品明细与采购数量', 'amber', '来自ERP', 'procurement')
 }
 export function stateTone(state: OrderState) {
   return state === 'pending_shipment'
