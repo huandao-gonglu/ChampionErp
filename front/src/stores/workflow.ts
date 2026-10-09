@@ -27,7 +27,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       ])
       return
     }
-    if (key === 'pending' || key === 'library') {
+    if (key === 'library') {
       await combined.refreshProductsIndex()
       return
     }

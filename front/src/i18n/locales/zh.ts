@@ -20,7 +20,6 @@ export default {
     drafts: { title: '草稿箱', subtitle: '平台草稿、继续编辑' },
     publish: { title: '发布队列', subtitle: '任务状态、日志' },
     onlineProducts: { title: '在线商品', subtitle: '店铺商品、价格与库存' },
-    pending: { title: '待处理', subtitle: '未完成 / 失败商品' },
     auth: { title: '平台授权', subtitle: '授权、AI、汇率' },
     logs: { title: '发布日志', subtitle: '请求、响应、错误' },
   },
@@ -36,10 +35,6 @@ export default {
     onlineProducts: {
       title: '在线商品',
       description: '同步店铺已有商品，管理销售状态、价格、库存与内容。',
-    },
-    pending: {
-      title: '待处理',
-      description: '汇总采集、文案、图片、类目、预检或发布仍处于 pending / failed / not_ready / partial 的商品。',
     },
     logs: {
       title: '发布日志',

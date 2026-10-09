@@ -20,7 +20,6 @@ export default {
     drafts: { title: 'Drafts', subtitle: 'Platform drafts, continue editing' },
     publish: { title: 'Publish Queue', subtitle: 'Jobs and logs' },
     onlineProducts: { title: 'Online products', subtitle: 'Store products, prices and stock' },
-    pending: { title: 'Pending', subtitle: 'Incomplete or failed items' },
     auth: { title: 'Platform Auth', subtitle: 'Auth, AI, exchange rates' },
     logs: { title: 'Publish Logs', subtitle: 'Requests, responses, errors' },
   },
@@ -36,10 +35,6 @@ export default {
     onlineProducts: {
       title: 'Online products',
       description: 'Sync and manage existing store products, prices, stock and content.',
-    },
-    pending: {
-      title: 'Pending',
-      description: 'Items still pending, failed, not ready, or partially complete across collect, copy, images, category, precheck, or publish.',
     },
     logs: {
       title: 'Publish Logs',

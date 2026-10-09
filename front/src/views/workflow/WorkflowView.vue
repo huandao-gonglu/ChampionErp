@@ -168,21 +168,6 @@ function syncPricingPackageDimension(field: PackageDimensionField, value: string
   pricingInput.value[field] = normalizedValue && Number.isFinite(parsedValue) ? parsedValue : 0
 }
 
-const pendingItems = computed(() => productsIndex.value.filter((item) => {
-  const values = [
-    item.collectStatus,
-    item.workflowStatus,
-    item.aiCopyStatus,
-    item.imageStatus,
-    item.categoryStatus,
-    item.attributesStatus,
-    item.pricingStatus,
-    item.precheckStatus,
-    item.publishStatus,
-  ].map((value) => String(value || '').toLowerCase())
-  return values.some((value) => ['failed', 'not_ready', 'pending', 'partial'].includes(value))
-}))
-
 async function openProductEditor(item?: ProductIndexItem) {
   if (item) await store.loadProduct(item)
   editorMode.value = 'text'
@@ -404,7 +389,6 @@ watch(
             v-if="activeNav === 'dashboard'"
             :product="product"
             :products-index="productsIndex"
-            :pending-items="pendingItems"
             :selected-ids="selectedProductIds"
             :progress-percent="progressPercent"
             :publish-logs="publishLogs"
@@ -512,46 +496,6 @@ watch(
           <SystemSettingsPanel v-else-if="activeNav === 'systemSettings'" />
           <OrderCenterPanel v-else-if="activeNav === 'orders'" />
           <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" />
-
-          <div v-else-if="activeNav === 'pending'" class="space-y-6">
-            <PageHeader title="待处理" description="汇总采集、文案、图片、类目、预检或发布仍处于 pending / failed / not_ready / partial 的商品。" />
-            <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div><h2 class="card-title">待处理商品</h2><p class="muted mt-1">来自商品库状态字段，便于继续补齐流程。</p></div>
-                <button class="btn btn-outline" :disabled="loading" @click="store.refreshProductsIndex">刷新</button>
-              </div>
-              <div class="mt-4 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
-                <table class="w-full table-fixed text-left text-sm">
-                  <colgroup>
-                    <col class="w-[30%]" />
-                    <col class="w-[7%]" />
-                    <col class="w-[7%]" />
-                    <col class="w-[7%]" />
-                    <col class="w-[7%]" />
-                    <col class="w-[7%]" />
-                    <col class="w-[7%]" />
-                    <col class="w-[7%]" />
-                    <col class="w-[21%]" />
-                  </colgroup>
-                  <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400"><tr><th class="p-3">商品</th><th class="px-1.5 py-3"><span class="block truncate" title="采集">采集</span></th><th class="px-1.5 py-3"><span class="block truncate" title="流程">流程</span></th><th class="px-1.5 py-3"><span class="block truncate" title="文案">文案</span></th><th class="px-1.5 py-3"><span class="block truncate" title="图片">图片</span></th><th class="px-1.5 py-3"><span class="block truncate" title="类目">类目</span></th><th class="px-1.5 py-3"><span class="block truncate" title="预检">预检</span></th><th class="px-1.5 py-3"><span class="block truncate" title="发布">发布</span></th><th class="p-3">操作</th></tr></thead>
-                  <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
-                    <tr v-for="item in pendingItems" :key="item.productId" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
-                      <td class="min-w-0 p-3"><div class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || item.productId || '-'">{{ item.title || item.productId || '-' }}</div><div class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400" :title="item.sourceUrl">{{ item.sourceUrl }}</div></td>
-                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
-                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.workflowStatus || '-'">{{ item.workflowStatus || '-' }}</span></td>
-                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.aiCopyStatus || '-'">{{ item.aiCopyStatus || '-' }}</span></td>
-                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.imageStatus || '-'">{{ item.imageStatus || '-' }}</span></td>
-                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.categoryStatus || '-'">{{ item.categoryStatus || '-' }}</span></td>
-                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.precheckStatus || '-'">{{ item.precheckStatus || '-' }}</span></td>
-                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.publishStatus || '-'">{{ item.publishStatus || '-' }}</span></td>
-                      <td class="p-3"><button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" @click="openProductEditor(item)">继续处理</button></td>
-                    </tr>
-                    <tr v-if="!pendingItems.length"><td colspan="9" class="p-6 text-center text-accent-500 dark:text-accent-300">暂无待处理商品。</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </div>
 
           <div v-else-if="activeNav === 'auth'" class="space-y-6">
           <OrderIntegrationSettings />

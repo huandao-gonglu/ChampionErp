@@ -1167,3 +1167,8 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 - 左侧栏底部 `AppSidebar.vue` → `/?tab=systemSettings` → `SystemSettingsPanel.vue` 在主区域提供订单自动同步间隔设置；复用工作台导航，支持刷新及浏览器前进、后退。
 - GET/POST `/api/system-settings` → `auth_config_facade` → `ConfigStore.system_settings/save_system_settings`；单项更新保存在 `app_config.system_settings`，通用授权配置合并忽略该区段，避免旧页面覆盖。字段契约由 `schemas/config.py` 定义，前端类型自动生成。旧配置缺少区段时默认 5 小时。
 - `OrderNotificationService` 通过显式 provider 在每次导航自动同步时读取最新间隔；修改设置不发起外部同步，也不重置既有同步尝试时间。
+
+### 工作台导航
+
+- 待处理 Tab 及仪表盘的待处理统计、待办队列已退役，不再按商品索引状态生成待办。商品库、草稿箱及各领域任务继续使用原有索引和业务状态。
+- 前端页面背景只包含现有页面；`schemas/ai_page_context.py` 保留历史 `pending` 页面快照的读取与校验，不作为当前导航入口。

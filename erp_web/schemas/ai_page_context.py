@@ -9,6 +9,7 @@ ContextId = Annotated[
     str, StringConstraints(strict=True, min_length=1, max_length=160, pattern=r"^[A-Za-z0-9_.:/-]+$")
 ]
 
+# pending 页面已退役；保留历史对话中页面定位快照的读取与校验。
 PAGE_LABELS = {
     "orders": "订单中心", "dashboard": "仪表盘", "research": "选品调研", "collect": "采集",
     "library": "商品库", "drafts": "草稿箱", "publish": "发布队列",

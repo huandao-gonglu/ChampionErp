@@ -13,7 +13,6 @@ import type {
 const props = defineProps<{
   product: Product
   productsIndex: ProductIndexItem[]
-  pendingItems: ProductIndexItem[]
   selectedIds: string[]
   progressPercent: number
   publishLogs: PublishLogItem[]
@@ -59,24 +58,10 @@ const recentProducts = computed(() => [...props.productsIndex]
   .sort((left, right) => Date.parse(right.updatedAt || right.createdAt || '') - Date.parse(left.updatedAt || left.createdAt || ''))
   .slice(0, 5))
 
-const attentionItems = computed(() => props.pendingItems.slice(0, 5))
-
 const readyToPublishCount = computed(() => props.productsIndex.filter((item) => {
   if (item.publishQueueReady) return true
   return Object.values(item.draftStatuses || {}).some((status) => readyStatuses.has(String(status || '').toLowerCase()))
 }).length)
-
-const failedCount = computed(() => props.productsIndex.filter((item) => [
-  item.collectStatus,
-  item.workflowStatus,
-  item.aiCopyStatus,
-  item.imageStatus,
-  item.categoryStatus,
-  item.attributesStatus,
-  item.pricingStatus,
-  item.precheckStatus,
-  item.publishStatus,
-].some((status) => String(status || '').toLowerCase() === 'failed')).length)
 
 const aiReadyCount = computed(() => props.productsIndex.filter((item) => doneStatuses.has(String(item.aiCopyStatus || '').toLowerCase())).length)
 const imageReadyCount = computed(() => props.productsIndex.filter((item) => doneStatuses.has(String(item.imageStatus || '').toLowerCase())).length)
@@ -89,14 +74,6 @@ const dashboardMetrics = computed(() => [
     value: props.productsIndex.length,
     detail: `${recentProducts.value.length ? '最近有更新' : '等待采集'}`,
     tone: 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200',
-  },
-  {
-    label: '待处理',
-    value: props.pendingItems.length,
-    detail: failedCount.value ? `${failedCount.value} 个失败项` : '无失败项',
-    tone: props.pendingItems.length
-      ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200'
-      : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200',
   },
   {
     label: '可发布',
@@ -186,7 +163,7 @@ function scrollToOrders() { emit('navigate', 'orders') }
             </div>
           </div>
 
-          <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <article
               v-for="metric in dashboardMetrics"
               :key="metric.label"
@@ -311,7 +288,6 @@ function scrollToOrders() { emit('navigate', 'orders') }
               <h2 class="card-title">流程产能</h2>
               <p class="muted mt-1">商品从文案到预检的准备情况。</p>
             </div>
-            <button type="button" class="btn btn-outline" @click="emit('navigate', 'pending')">查看待处理</button>
           </div>
 
           <div class="mt-5 grid gap-4 md:grid-cols-4">
@@ -332,39 +308,6 @@ function scrollToOrders() { emit('navigate', 'orders') }
       </div>
 
       <aside class="space-y-5">
-        <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <h2 class="card-title">待办队列</h2>
-              <p class="muted mt-1">{{ pendingItems.length }} 个商品需要补齐。</p>
-            </div>
-            <button type="button" class="btn btn-outline py-2" @click="emit('navigate', 'pending')">全部</button>
-          </div>
-
-          <div class="mt-4 divide-y divide-accent-200 dark:divide-dark-700">
-            <article v-for="item in attentionItems" :key="item.productId" class="py-3">
-              <div class="flex items-start gap-3">
-                <img v-if="item.mainImage" :src="item.mainImage" alt="" class="size-12 rounded-lg object-cover" />
-                <div v-else class="flex size-12 items-center justify-center rounded-lg bg-accent-100 text-xs font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">ERP</div>
-                <div class="min-w-0 flex-1">
-                  <p class="truncate text-sm font-semibold text-accent-950 dark:text-white">{{ item.title || item.productId || '-' }}</p>
-                  <div class="mt-2 flex flex-wrap gap-1.5">
-                    <span :class="statusClass(item.aiCopyStatus)">{{ item.aiCopyStatus || '文案' }}</span>
-                    <span :class="statusClass(item.imageStatus)">{{ item.imageStatus || '图片' }}</span>
-                    <span :class="statusClass(item.precheckStatus)">{{ item.precheckStatus || '预检' }}</span>
-                  </div>
-                </div>
-              </div>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <button type="button" class="btn btn-outline py-1.5" @click="emit('openProduct', item)">继续</button>
-                <button type="button" class="btn btn-outline py-1.5" @click="emit('editImages', item)">图片</button>
-                <button type="button" class="btn btn-primary py-1.5" @click="emit('navigate', 'drafts')">处理草稿</button>
-              </div>
-            </article>
-            <p v-if="!attentionItems.length" class="py-6 text-center text-sm text-accent-500 dark:text-accent-300">暂无待办商品。</p>
-          </div>
-        </section>
-
         <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
           <div class="flex items-center justify-between gap-3">
             <div>
