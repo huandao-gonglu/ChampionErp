@@ -1,4 +1,4 @@
-"""1688 采购查询的公开形状；只返回交易状态和物流信息。"""
+"""1688 采购查询的公开形状；返回交易状态、采购商品和物流信息。"""
 
 from typing import Literal, NotRequired, TypedDict
 
@@ -38,6 +38,15 @@ class AlibabaParcel(TypedDict):
     steps: list[AlibabaLogisticsStep]
 
 
+class AlibabaPurchaseProduct(TypedDict):
+    offer_id: str
+    sku_id: str
+    spec_id: str
+    name: str
+    specification: str
+    image_url: str
+
+
 class AlibabaPurchaseQueryResult(TypedDict):
     ok: bool
     record_id: str
@@ -47,6 +56,8 @@ class AlibabaPurchaseQueryResult(TypedDict):
     logistics: list[AlibabaParcel] | None
     logistics_warning: str
     logistics_checked_at: NotRequired[str]
+    product: NotRequired[AlibabaPurchaseProduct | None]
+    product_warning: NotRequired[str]
 
 
 class PurchaseTrackingSummary(TypedDict):

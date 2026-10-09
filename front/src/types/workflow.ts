@@ -13,6 +13,7 @@ export {
   type BackendAlibabaOrderStatus,
   type BackendAlibabaLogisticsStep,
   type BackendAlibabaParcel,
+  type BackendAlibabaPurchaseProduct,
   type BackendAlibabaPurchaseQueryResult,
   type BackendPurchaseTrackingSummary,
   type BackendPurchaseProgressView,

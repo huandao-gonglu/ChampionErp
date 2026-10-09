@@ -7,7 +7,7 @@ from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.schemas.orders import utc_iso
 from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, validate_order_number
 from erp_web.services.alibaba_purchase_assignment import propose_parcels, supported
-from erp_web.services.alibaba_purchase_query_service import normalize_order, normalize_parcels, attach_traces
+from erp_web.services.alibaba_purchase_query_service import normalize_order, normalize_product, normalize_parcels, attach_traces
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False
         number = validate_order_number(record.purchase_order_number)
         order = client.query(ORDER_DETAIL, number)
         status = normalize_order(order, number)
+        product, product_warning = normalize_product(order, record.source)
         checked_at = utc_iso()
         previous_data = value.get("data") or {}
         parcels = previous_data.get("logistics")
@@ -52,7 +53,7 @@ def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False
         if config_provider() != config:
             raise AlibabaApiError("1688 授权已变化，请重新刷新采购进度")
         value["data"] = {"ok": True, "record_id": record_id, "order_number": number, "checked_at": checked_at,
-                         "order": status, "logistics": parcels, "logistics_warning": warning,
+                         "order": status, "product": product, "product_warning": product_warning, "logistics": parcels, "logistics_warning": warning,
                          "logistics_checked_at": logistics_checked_at}
         if logistics is None:
             previous_state = (record.progress or {}).get("state")

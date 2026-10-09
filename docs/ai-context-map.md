@@ -1092,6 +1092,8 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 
 ### 订单采购
 
+- 1688 采购刷新从订单详情按采购记录的商品 ID 与 SKU/specId 唯一匹配图片，图片 URL 和规格随采购进度快照持久化，由 `OrderPurchaseTracking.vue` 展示。图片缺失或匹配不唯一时显示原因；旧快照缺少图片字段仍可读取，下次同步补齐。物流查询失败不丢弃本次成功读取的图片。
+
 - `facades/order_procurement_facade.py` 负责装配；`services/order_procurement_service.py` 负责唯一来源匹配、人工确认和详情契约。
 - `schemas/order_procurement.py` 定义采购来源、发布 SKU 关联、订单行及采购记录；`stores/order_procurement_store.py` 在订单领域库中管理绑定、来源版本、采购幂等与数量约束。
 - `runtime_units/order_source_bindings.py` 从冻结发布任务提取关联；`publish_bus.py` 在发布终态持久保存，采购服务装配时幂等回填历史任务。禁止按 SKU 编码反解、按标题猜配或以当前草稿替代发布时事实。

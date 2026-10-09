@@ -273,3 +273,22 @@ def test_partial_refresh_keeps_unresolved_assignment_conflict(setup, monkeypatch
         return original(self, api, number)
     monkeypatch.setattr(client, 'query', query)
     assert progress(run())['state'] == 'conflict'
+
+
+def test_product_image_persists_even_when_logistics_fails(setup, monkeypatch):
+    procurement, _, body, client, run = setup
+    item = client.order['result']['productItems'][0]
+    item.update(productImgUrl=['https://cbu01.alicdn.com/sku.jpg'], skuInfos=[{'name': '款式', 'value': '蓝色'}])
+    original = client.query
+    def query(self, api, number):
+        if api == LOGISTICS_INFO:
+            raise AlibabaApiError('物流无权限')
+        return original(self, api, number)
+    monkeypatch.setattr(client, 'query', query)
+    result = progress(run())['data']
+    assert result['product']['image_url'] == 'https://cbu01.alicdn.com/sku.jpg'
+    assert result['product']['specification'] == '款式：蓝色'
+    assert result['logistics_warning']
+    assert progress(procurement.detail(body['order_id']))['data']['product'] == result['product']
+    monkeypatch.setattr(client, 'query', lambda *args: (_ for _ in ()).throw(AlibabaApiError('请求失败')))
+    assert progress(run())['data']['product'] == result['product']

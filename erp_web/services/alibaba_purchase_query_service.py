@@ -1,8 +1,11 @@
 """按已登记的采购记录查询 1688；远端读取不持有数据库事务。"""
 
+import re
 from urllib.parse import urlsplit
 
-from erp_web.schemas.alibaba_orders import AlibabaOrderStatus, AlibabaParcel, AlibabaPurchaseQueryResult, PurchaseQueryRequest
+from erp_web.schemas.order_procurement import ProcurementSource
+
+from erp_web.schemas.alibaba_orders import AlibabaPurchaseProduct, AlibabaOrderStatus, AlibabaParcel, AlibabaPurchaseQueryResult, PurchaseQueryRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.schemas.orders import utc_iso
 from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, validate_order_number
@@ -31,6 +34,59 @@ def normalize_order(payload: dict, order_number: str) -> AlibabaOrderStatus:
     status = str(base.get("status") or "")
     return {"order_number": returned_id, "status": status,
             "status_label": _ORDER_STATUSES.get(status, status or "状态未提供")}
+
+
+def normalize_product(payload: dict, source: ProcurementSource) -> tuple[AlibabaPurchaseProduct | None, str]:
+    """按采购时的商品和规格身份取订单图片，禁止按标题或条目顺序猜配。"""
+    url_offer = re.fullmatch(r"/offer/(\d+)\.html", urlsplit(source.product_url).path)
+    offer_id = source.source_offer_id or (url_offer[1] if url_offer else "")
+    if (not offer_id or not (source.source_sku_id or source.source_spec_id)
+            or (url_offer and url_offer[1] != offer_id)):
+        return None, "缺少或存在冲突的商品、SKU 信息，无法匹配采购图片"
+    items = payload.get("result", {}).get("productItems")
+    if not isinstance(items, list):
+        return None, "1688 未返回订单商品明细，暂无法获取采购图片"
+    matches = []
+    for item in items:
+        if not isinstance(item, dict) or str(item.get("productID") or "") != offer_id:
+            continue
+        sku, spec = str(item.get("skuID") or ""), str(item.get("specId") or "")
+        # 至少一个标识命中；其他双方均有值的标识不能冲突。
+        if not ((source.source_sku_id and source.source_sku_id == sku)
+                or (source.source_spec_id and source.source_spec_id == spec)):
+            continue
+        if ((source.source_sku_id and sku and source.source_sku_id != sku)
+                or (source.source_spec_id and spec and source.source_spec_id != spec)):
+            continue
+        matches.append(item)
+    if len(matches) != 1:
+        return None, "订单商品无法与采购 SKU 唯一匹配，暂不展示采购图片"
+    item = matches[0]
+    images = item.get("productImgUrl")
+    images = images if isinstance(images, list) else []
+    image_url = ""
+    # 接口依次返回缩略图与原图，优先保留原图；不拼造图片地址。
+    for value in reversed(images):
+        if not isinstance(value, str):
+            continue
+        try:
+            parsed = urlsplit(value.strip())
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+                continue
+            if parsed.scheme == "http" and parsed.hostname.endswith(".alicdn.com"):
+                parsed = parsed._replace(scheme="https")
+            image_url = parsed.geturl()
+            break
+        except ValueError:
+            continue
+    sku_infos = item.get("skuInfos")
+    specification = "；".join(f"{row.get('name') or ''}：{row.get('value') or ''}" for row in
+                              (sku_infos if isinstance(sku_infos, list) else []) if isinstance(row, dict))
+    return {
+        "offer_id": offer_id, "sku_id": str(item.get("skuID") or ""),
+        "spec_id": str(item.get("specId") or ""), "name": str(item.get("name") or ""),
+        "specification": specification, "image_url": image_url,
+    }, "" if image_url else "1688 未提供该采购商品的有效图片"
 
 
 def normalize_parcels(payload: dict, order_payload: dict | None = None) -> list[AlibabaParcel]:
@@ -98,7 +154,9 @@ def query_purchase(procurement, config: dict, body: dict, *, client_factory=Alib
         "order": None, "logistics": None, "logistics_warning": "",
     }
     if request.kind == "order":
-        result["order"] = normalize_order(client.query(ORDER_DETAIL, number), number)
+        payload = client.query(ORDER_DETAIL, number)
+        result["order"] = normalize_order(payload, number)
+        result["product"], result["product_warning"] = normalize_product(payload, record.source)
     else:
         parcels = normalize_parcels(client.query(LOGISTICS_INFO, number))
         if parcels:

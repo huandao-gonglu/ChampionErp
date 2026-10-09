@@ -102,6 +102,15 @@ export interface BackendAlibabaParcel {
   steps: Array<BackendAlibabaLogisticsStep>
 }
 
+export interface BackendAlibabaPurchaseProduct {
+  offer_id: string
+  sku_id: string
+  spec_id: string
+  name: string
+  specification: string
+  image_url: string
+}
+
 export interface BackendAlibabaPurchaseQueryResult {
   ok: boolean
   record_id: string
@@ -111,6 +120,8 @@ export interface BackendAlibabaPurchaseQueryResult {
   logistics: Array<BackendAlibabaParcel> | null
   logistics_warning: string
   logistics_checked_at?: string
+  product?: BackendAlibabaPurchaseProduct | null
+  product_warning?: string
 }
 
 export interface BackendPurchaseTrackingSummary {

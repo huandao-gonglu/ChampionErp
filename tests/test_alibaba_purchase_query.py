@@ -267,3 +267,36 @@ def test_unshipped_code_is_empty_only_for_logistics_info(monkeypatch, name):
         assert result['result'] == [] and result['errorCode'] == '500_2'
     else:
         with pytest.raises(api.AlibabaApiError): api.AlibabaApiClient(CONFIG).query(name, NUMBER)
+
+
+def test_product_image_matches_exact_sku_and_prefers_original():
+    from erp_web.schemas.order_procurement import ProcurementSource
+    from erp_web.services.alibaba_purchase_query_service import normalize_product
+    source = ProcurementSource(product_url="https://detail.1688.com/offer/123.html", source_sku_id="22", specification="蓝色")
+    other = {"productID": 123, "skuID": 11, "productImgUrl": ["https://cbu01.alicdn.com/other.jpg"]}
+    selected = {"productID": 123, "skuID": 22, "specId": "spec22", "name": "商品",
+                "skuInfos": [{"name": "颜色", "value": "蓝色"}],
+                "productImgUrl": ["http://cbu01.alicdn.com/thumb.jpg", "http://cbu01.alicdn.com/original.jpg"]}
+    payload = {"result": {"productItems": [other, selected]}}
+    product, warning = normalize_product(payload, source)
+    assert warning == ""
+    assert product == {"offer_id": "123", "sku_id": "22", "spec_id": "spec22", "name": "商品",
+                       "specification": "颜色：蓝色", "image_url": "https://cbu01.alicdn.com/original.jpg"}
+    for patch in ({"source_sku_id": "99"}, {"source_offer_id": "999"},
+                  {"source_spec_id": "conflicting"}, {"source_sku_id": ""}):
+        product, warning = normalize_product(payload, source.model_copy(update=patch))
+        assert product is None and warning
+    product, warning = normalize_product(payload, source.model_copy(update={"source_sku_id": "", "source_spec_id": "spec22"}))
+    assert product["sku_id"] == "22" and not warning
+    payload["result"]["productItems"].append(selected)
+    product, warning = normalize_product(payload, source)
+    assert product is None and warning
+
+
+@pytest.mark.parametrize("images", [None, [], ["javascript:alert(1)"], ["https://secret:password@example.com/p.jpg"], ["http://[invalid"], [123]])
+def test_missing_or_invalid_product_image_is_not_a_query_failure(images):
+    from erp_web.schemas.order_procurement import ProcurementSource
+    from erp_web.services.alibaba_purchase_query_service import normalize_product
+    source = ProcurementSource(product_url="https://detail.1688.com/offer/123.html", source_sku_id="22", specification="蓝色")
+    product, warning = normalize_product({"result": {"productItems": [{"productID": 123, "skuID": 22, "productImgUrl": images}]}}, source)
+    assert product["image_url"] == "" and warning

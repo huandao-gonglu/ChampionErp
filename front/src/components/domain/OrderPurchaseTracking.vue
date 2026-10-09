@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { syncPurchase } from '@/api/orders'
 import type { OrderDetail, PurchaseRecord } from '@/types/orders'
+import OrderThumbnail from './OrderThumbnail.vue'
 import { dateTime } from './orderPresentation'
 
 const props = defineProps<{ orderId: string; record: PurchaseRecord }>()
@@ -47,15 +48,24 @@ async function query() {
 </script>
 
 <template>
-  <section v-if="supported" class="purchase-tracking" aria-label="1688 采购查询" :aria-busy="Boolean(pending)">
-    <div class="order-actions">
+  <section v-if="supported || result?.product" class="purchase-tracking" aria-label="1688 采购查询" :aria-busy="Boolean(pending)">
+    <div v-if="supported" class="order-actions">
       <button class="order-link" :disabled="Boolean(pending)" @click="query">{{ pending ? '正在刷新采购进度…' : '刷新采购进度' }}</button>
     </div>
     <p v-if="error || record.progress?.error" class="query-error" role="alert">本次刷新失败：{{ error || record.progress?.error }}<span v-if="result">；下方保留最近获取的结果。</span></p>
     <p v-if="record.progress?.message" class="order-muted mt-2" role="status">{{ record.progress.message }}</p>
     <div v-if="result?.order" class="query-result" aria-live="polite">
-      <p>1688 订单：<strong>{{ result.order.status_label }}</strong></p>
-      <p class="order-muted">更新时间：{{ dateTime(result.checked_at) }}</p>
+      <div class="purchase-product">
+        <a v-if="result.product?.image_url" :href="result.product.image_url" target="_blank" rel="noopener noreferrer" aria-label="查看1688采购商品原图">
+          <OrderThumbnail :src="result.product.image_url" :title="result.product.name || '1688采购商品'" large />
+        </a>
+        <div>
+          <p>1688 订单：<strong>{{ result.order.status_label }}</strong></p>
+          <p v-if="result.product?.specification" class="order-muted">{{ result.product.specification }}</p>
+          <p class="order-muted">更新时间：{{ dateTime(result.checked_at) }}</p>
+        </div>
+      </div>
+      <p v-if="result.product_warning" class="order-muted mt-2">{{ result.product_warning }}</p>
     </div>
     <div v-if="result" class="query-result" aria-live="polite">
       <p v-if="result.logistics !== null" class="order-muted">物流更新时间：{{ dateTime(result.logistics_checked_at ?? result.checked_at) }}</p>
@@ -80,6 +90,9 @@ async function query() {
 
 <style scoped>
 .purchase-tracking { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--order-border); font-size: 12px; }
+.purchase-product { display: flex; align-items: center; gap: 12px; }
+.purchase-product > div { min-width: 0; overflow-wrap: anywhere; }
+.purchase-product > a { flex-shrink: 0; }
 .query-result, .query-error { margin-top: 8px; }
 .query-error { color: var(--color-danger, #dc2626); overflow-wrap: anywhere; }
 .parcel { margin-top: 10px; padding: 10px; border: 1px solid var(--order-border); border-radius: 6px; overflow-wrap: anywhere; }

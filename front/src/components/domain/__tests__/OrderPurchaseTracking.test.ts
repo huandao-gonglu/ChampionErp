@@ -92,3 +92,30 @@ it('未发货的空物流显示无运单，保留查询成功的时间', () => {
   expect(wrapper.text()).toContain('1688 暂未提供物流信息')
   expect(wrapper.text()).toContain('物流更新时间')
 })
+
+
+it('读取采购图片快照并可打开原图，刷新失败仍保留；作废记录只读展示', async () => {
+  const value = persisted()
+  value.progress!.data!.product = { offer_id: '1', sku_id: '22', spec_id: 'spec', name: '蓝色款', specification: '颜色：蓝色', image_url: 'https://cbu01.alicdn.com/sku.jpg' }
+  const wrapper = render(value)
+  expect(wrapper.get('img').attributes('src')).toBe('https://cbu01.alicdn.com/sku.jpg')
+  expect(wrapper.get('a[aria-label="查看1688采购商品原图"]').attributes('href')).toBe('https://cbu01.alicdn.com/sku.jpg')
+  expect(wrapper.text()).toContain('颜色：蓝色')
+  expect(syncPurchase).not.toHaveBeenCalled()
+  vi.mocked(syncPurchase).mockRejectedValue(new Error('请求失败'))
+  await wrapper.get('button').trigger('click'); await flushPromises()
+  expect(wrapper.find('img').exists()).toBe(true)
+  await wrapper.setProps({ record: { ...value, status: 'cancelled' } })
+  expect(wrapper.find('img').exists()).toBe(true)
+  expect(wrapper.find('button').exists()).toBe(false)
+})
+
+it('图片匹配失败给出原因，旧快照无图片仍正常展示状态', () => {
+  const value = persisted()
+  value.progress!.data!.product = null
+  value.progress!.data!.product_warning = '订单商品无法与采购 SKU 唯一匹配，暂不展示采购图片'
+  const wrapper = render(value)
+  expect(wrapper.find('img').exists()).toBe(false)
+  expect(wrapper.text()).toContain('无法与采购 SKU 唯一匹配')
+  expect(render(persisted()).text()).toContain('等待买家收货')
+})
