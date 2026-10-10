@@ -17,6 +17,7 @@ Yandex 订单直接在本单选择仓库与服务。订单交货快照中的 IMP
 - 平台状态按统一状态显示；Yandex 备货、打包、已备妥作为平台附注，不与采购登记、跨境仓进度混用。
 - ERP 处理进度使用实际采购数量及本地仓库回执：待采购登记 / 采购登记中 → 待预报 → 已创建预报 → 待到仓 / 包裹已入库 / 已打包 → 仓库已发货。取消、未知创建结果和错误单独提示；错误不覆盖最近确认的仓库进度。
 - 国内单号和国际面单可分别补齐，没有单号只显示“未录入”，不推测供应商未发货；已录入单号不等于已到仓，已保存面单不等于已发货。
+- Yandex 包裹商品图与订单列表、详情共用已同步的 Yandex 在线商品图片，按 business、campaign 和远端 SKU 精确关联。图片只接受 HTTPS 地址；未同步或缺图时不混用本地发布图或采购图，也不把 ERP `/file` 地址交给仓库。该读取不触发平台同步或已创建报单的远端更新。创建或更新包裹时，平台原图经默认 S3 托管原样交付，核验内容哈希和带跨站 Referer 的公开读取，避免源站防盗链造成仓库破图；托管失败阻止该次写入。源图下载复用安全传输，代理 Fake-IP 或私网解析必须先修正网络配置，不能绕过校验。
 - 仓库已发货是 V1 的终点。页面不展示尚未接通的国际运输、妥投、签收或履约“已完成”。平台已发货但没有跨境预报时明确显示“无跨境预报”，不能认定这条 ERP 履约链路已经完成。
 - 列表批量读取脱敏履约摘要，不创建履约记录，也不发起远端请求；详情与列表共用进度展示规则。
 
@@ -32,6 +33,11 @@ Yandex 订单直接在本单选择仓库与服务。订单交货快照中的 IMP
 8. 进入订单详情的“跨境履约”页签时，对已关联或创建待确认的本单自动查询一次；停留期间不轮询，后续点击“同步”或“核实创建/取消结果”查询。同步直接返回本次结果；失败保留最近确认进度，不后台重试。已确认跨境巴士发货后，ERP **履约状态**更新为已发货；平台订单状态仍由平台订单同步负责。
 
 本版先补齐资料再创建正式单，避免将缺少面单或商品数量的正式单送入仓库。创建后仍可更新面单和完整国内包裹列表，打包后锁定资料。
+报单备注在本单「设置报单方案」中选填，默认空白，随方案保存并在履约页回显。只有用户填写的内容才作为创建接口 `introduce` 发送；留空时省略，不自动填入平台、订单号或地址备注。备注只属于本单，不随仓库对应关系复用；编辑复用现有租约和版本校验，预报开始或结果未知后锁定，不通过本地修改假装已更新远端备注。历史记录没有该字段时按空值读取，不改写已创建远端订单。
+
+Yandex 新报单使用真实平台订单号作为 `order_number`，面单箱条码仍独立保存在 `sheet_order_sn`。创建成功后执行一次官方[关联平台订单](https://kuajing84.apifox.cn/480099010e0.md)，由跨境巴士匹配其已同步的店铺订单；创建接口不接受店铺、账号、平台状态及订单时间字段，不通过备注拼接这些信息，也不推算超时取消时间。关联前核实远端 ID、待打包状态、仓库、渠道及本地账号和版本。历史已创建报单保留原预报号，避免破坏原单的查询、更新和取消；未发送的旧记录在首次创建前采用真实平台订单号。
+
+关联状态与仓库履约进度分别保存。明确失败后可在履约页点击「关联平台订单」重试；结果未知或进程中断时禁止重放，需在跨境巴士核实。关联失败不重复创建报单、不自动重试，也不覆盖已确认的仓库进度。关联成功回执仅确认接口受理成功；官方查询接口未提供该栏全部字段，店铺、物流、平台状态、下单及截止时间的最终显示需在跨境巴士查看。未查询到关联订单时应核对平台订单号和跨境巴士的店铺订单同步，不能认定整栏已补齐。
 面单读取不自动修改平台分箱、不改变平台发货状态。Yandex 需具备订单处理权限，且已在平台生成单箱面单；多箱订单不能把多张面单压成一个箱号，暂停自动获取并要求人工处理。Market Yandex Go 不支持箱号数据接口时使用人工补充。当前 Ozon、Mercado Libre 尚未接入自动获取，页面明确显示人工补充提示。
 
 Yandex 官方接口：[订单面单 PDF](https://yandex.ru/dev/market/partner-api/doc/ru/reference/order-labels/generateOrderLabels)、[箱号数据](https://yandex.ru/dev/market/partner-api/doc/ru/reference/order-labels/getOrderLabelsData)。直接调用固定面单路径，不依赖即将退役的回执 `url` 字段；采用平台返回的 `fulfilmentId` 箱条码，不把 `orderNum` 当面单号。
@@ -57,6 +63,7 @@ S3 上传前 `HeadObject` 返回 404 表示对象尚不存在；SDK 保留原始
 | 用户授权/核验 | `/erpapi/user/authorization`、`/erpapi/user/queryauthorization` |
 | 合作仓库与服务 | `/erpapi/storehouse/cooperationStorehouse`、`/erpapi/storehouse/searchStorehouseSection` |
 | 正式预报 | `/erpapi/order/createOrder` |
+| 关联 Yandex 店铺订单 | `/erpapi/orderassociation/association_order_account` |
 | 国际面单 | `/erpapi/order/updateOrderSheet` |
 | 完整包裹替换 | `/erpapi/order/updateOrderPackage` |
 | 取消 | `/erpapi/order/cancelOrder` |
@@ -77,7 +84,7 @@ S3 上传前 `HeadObject` 返回 404 表示对象尚不存在；SDK 保留原始
 
 ## 并发、核实和取消
 
-- `(platform, account_id, platform_order_id)` 在 SQLite 中唯一，使用稳定的 ERP 预报号；原有平台订单身份保持不变。
+- `(platform, account_id, platform_order_id)` 在 SQLite 中唯一；Yandex 新预报使用真实平台订单号，其他平台及历史已创建报单保留原稳定预报号，原有平台订单身份保持不变。
 - 写请求不隐式重试。创建前原子占位，写前标记结果未知；超时或进程退出后保留待核实状态，进入履约页或点击核实才查询，不能再创建一张单。
 - 查询接口按预报号前缀检索，必须读完分页并精确匹配 `sheet_info.section_order`；还要核对渠道和仓库，不能拿第一条结果当本单。
 - 查询不到不等于未创建，仍保留“创建待确认”；需要人工联系跨境巴士核实，不能点击普通重新提交绕过。
@@ -97,11 +104,12 @@ S3 上传前 `HeadObject` 返回 404 表示对象尚不存在；SDK 保留原始
 - `services/fulfillment_service.py`：确定性履约编排、校验、后台业务写入，以及页面请求内的单轮只读状态核实。后台不执行周期状态查询或未知结果核实；业务写入的前置状态检查失败后停下，等待用户处理。
 - `services/platform_label_service.py`：复用现有店铺授权读取平台 PDF 与箱条码，核对订单及单箱约束。
 - `services/fulfillment_label_service.py`：PDF 交付和公开内容核验，复用唯一 S3 SDK 边界。
+- `services/fulfillment_image_service.py`：下载平台原图、复用 S3 内容寻址托管并核验跨站读取；仅在报单写入前运行，图片准备期间取消或版本变化会停止报单。
 - `facades/fulfillment_facade.py`：按当前平台账号范围装配；`AppContext` 持有服务并负责关闭。
 - `http_route_units/fulfillment_routes.py`：薄 HTTP 适配；全部写请求经过公开请求契约校验。
 
 GET：`/api/crossborderbus/settings`、`/api/crossborderbus/services`、`/api/orders/fulfillment`。
-POST：`/api/crossborderbus/{authorize,catalog,save-rule,delete-rule}`；`/api/orders/fulfillment/{fetch-label,upload-label,label,parcels,plan,pause,resume,submit,sync,retry,cancel}`。
+POST：`/api/crossborderbus/{authorize,catalog,save-rule,delete-rule}`；`/api/orders/fulfillment/{fetch-label,upload-label,label,parcels,plan,pause,resume,submit,sync,retry,cancel,associate}`。
 这些接口在能力治理清单中登记为可信界面入口，不向模型开放代报、代采购或代取消，不新增 Agent 生命周期。
 
 单次同步是一次业务查询过程：状态接口加待打包时的包裹列表查询（列表可能分页）；Token 过期时还需刷新。因此“一次同步”不保证只有一个 HTTP 请求。未关联且没有创建待确认事实的订单只读本地，不搜索认领远端单、不创建预报、不发送取消或资料更新。页面每 5 秒读取本地快照，展示已提交业务的进度与面单错误；该读取不触发外部查询。方案编辑租约仍每 60 秒续期，仅操作本地数据。

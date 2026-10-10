@@ -1101,7 +1101,8 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知读取时调用 `services/order_handover_service.py`，按订单页批量查询并严格验证批次归属；`schemas/order_handover.py` 的结果随 `OrderSnapshot.handover` 一起持久化，由普通订单详情返回。`OrderHandoverPanel.vue` 只展示本地快照，不独立外发或刷新。批次分页失败走订单任务的失败与重试，保留旧快照；旧数据缺少该字段仍可读取。外部管理器仅把确切的批次搜索 PUT 归为只读，订单请求范围包含其 campaign 配额。
 地址备注由 `facades/order_address_note_facade.py` → `stores/order_address_note_store.py` 在订单领域库独立持久化；契约见 `schemas/order_address_notes.py`，GET/POST `/api/orders/address-note` 只读写本地。按平台、店铺和原地址匹配，平台同步不覆盖；保存校验订单地址与备注版本。`OrderAddressNote.vue` 提供点击展开、关闭自动保存的气泡，复用完整遮罩指针手势并向外层订单传播锁定状态。
 
-- `order_source_bindings.py::published_sku_image` 从冻结 SKU 图片覆盖/事实引用或公共主图解析缩略图；`OrderProcurementService.present_orders` 按受信店铺与远端 SKU 身份为列表、详情补充相同图片，不读取当前草稿或远端商品。图片不参与绑定身份，历史绑定在装配时仅补齐缺失图片。
+- Yandex 订单列表、详情和跨境报单统一使用已同步在线商品的图片。`order_procurement_facade` 按当前授权的 business + campaign 装配图片读取，`OnlineProductStore.thumbnails` 批量读取对应远端 SKU 的 HTTPS 缩略图；`OrderProcurementService.present_orders` 校验订单账号与 SKU 身份后补充图片，不发起远端请求、不改写原始订单快照。未同步、身份不符或图片缺失时显示占位，不回退到本地发布图片或 1688 采购图片。履约 `package_list.img` 复用同一订单详情字段，已创建远端报单不因页面读取而自动更新。
+- 其他平台仍由 `order_source_bindings.py::published_sku_image` 从冻结 SKU 图片覆盖/事实引用或公共主图解析缩略图。历史采购绑定继续保留读取与补齐能力，图片不参与绑定身份，也不影响已确认采购来源。
 - `OrderThumbnail.vue` 统一商品缩略图及加载失败占位；`OrderProcurementLine.vue` 按 SKU 卡片承载来源确认与采购操作，`OrderPurchaseRecords.vue` 展示可展开的采购历史，`OrderSourceDialog.vue` 和 `OrderPurchaseDialog.vue` 分别负责来源编辑、采购登记。所有弹窗、抽屉共用 `WorkspaceDialog.vue` 与完整遮罩手势校验。
 - `OrderIntegrationSettings.vue` 承载设置页回调接入。未验证的平台规格链接只能作为商品链接展示，修改来源规格或链接后必须重新核验直达能力。
 
@@ -1125,18 +1126,21 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 服务只接收当前平台账号和采购详情提供函数，不反向导入 runtime unit。
 仓库状态及创建/取消结果核实随订单同步或单笔同步按钮触发，打开“跨境履约”页签仅读取本地快照；
 `POST /api/orders/fulfillment/sync` 在请求内完成单轮只读核实并返回最新快照，不排队或失败重试。
-后台只执行自动预报、已请求的资料更新和取消传播，不轮询已关联订单的状态。
+后台只执行自动预报、创建后的单次 Yandex 平台关联、已请求的资料更新和取消传播，不轮询已关联订单的状态。
 `schemas/fulfillment.py` 定义内部配送及公开履约契约；`stores/fulfillment_store.py` 共用订单 SQLite，
 负责唯一订单、版本 CAS、创建/取消占位、编辑租约和重启后的未知状态保留。
 `services/crossborderbus_client.py` 适配官方协议和企业 Token 刷新，全部请求经过统一外部请求管理。
 `services/platform_label_service.py` 负责 Yandex 单箱平台 PDF 与箱条码读取，复用现有店铺授权，不自动分箱或推进平台发货状态。`POST /api/orders/fulfillment/fetch-label` 为带版本校验的人工获取入口；默认自动预报在资料齐备后通过同一占位流程获取面单，失败独立记录，页面提示用户手动重新获取，不自动重试。
 
 `services/fulfillment_label_service.py` 使用现有 `S3ImageStorage` SDK 边界交付 PDF 面单并核验公开内容。
+`services/fulfillment_image_service.py` 在 Yandex 报单创建和包裹更新前，将已同步的平台图片字节原样托管并核验跨站公开读取，防止源站 Referer 防盗链。通过 facade 注入 `FulfillmentService.image_delivery`，不在订单 GET 中上传，不替换平台图片来源；复用安全下载、图片内容校验及唯一 S3 SDK 边界，临时源文件在仓库外自动清理。下载或托管失败不会发送报单写入；准备后复核版本及取消状态。
 原有平台订单身份及状态不变；列表另行读取履约摘要，详情承载履约操作及异常处理。
 授权和默认方案在已有授权模块中配置；Yandex 本单可直接选择报单仓库与服务，不依赖全局默认方案。
 `services/fulfillment_routing.py` 从交货批次提取目标：IMPORT 使用 destination，WITHDRAW 使用 origin，取消或歧义批次不能报单。平台交货点 ID 与跨境巴士仓库 ID 分属不同体系；`fulfillment_warehouse_links` 保存人工确认的对应，作用域包含店铺、跨境巴士账号及交货点身份和地址指纹。同一交货点跨批次复用，账号/地址变化后重新确认；无平台 ID 时仅用明确地址标识，不模糊猜仓。
 `FulfillmentPlanDialog.vue` 打开时读取最新合作仓库，Yandex 只显示对应平台下的合作仓；已对应的仓库默认固定，重新对应须明确确认。`FulfillmentPlanFields.vue` 实时读取所选仓服务，基础服务单选，附加服务多选并显示费用。保存本单方案与仓库对应处于同一短事务，以履约版本、对应版本、当前订单地址和账号校验；网络读取不持有事务。
 目的国按官方创建接口为可选字段：没有时不发送、不阻止报单。Yandex 不再把商品库存仓 ID 当作交货仓必填条件。提交前仍重读合作仓和服务并核对交货点，确保旧方案不能发往变更后的仓库；无自动预报规则时须点击“立即提交”。
+本单可选报单备注由 `FulfillmentPlanDialog.vue` 手工录入，随 `plan` 命令持久化 `remark`，沿用编辑租约、CAS 及报单前锁定边界。`createOrder.order_data[].introduce` 仅在备注非空时发送，不再生成平台订单标识；地址备注和默认履约规则不提供默认值。历史记录缺少备注字段仍可读取，页面读取不更新已创建远端订单。
+Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创建及创建待确认的预报号不变。`POST /api/orders/fulfillment/associate` 通过官方关联接口读取跨境巴士已同步的店铺订单；`FulfillmentService.associate` 复用占位和版本校验，预先核实远端 ID、仓库、渠道和待打包状态。`platform_link_state/error` 独立于仓库状态；失败不重建报单，未知结果不重放，GET 与只读同步不触发关联。官方查询不返回店铺订单栏全部明细，成功回执不等于该栏逐项验收。
 协议、产品闭环、核实限制和验收见 [跨境履约说明](crossborder-fulfillment.md)。
 
 ### 平台请求中断与恢复

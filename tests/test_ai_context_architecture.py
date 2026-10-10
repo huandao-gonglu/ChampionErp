@@ -991,6 +991,17 @@ def test_platform_labels_reuse_marketplace_transport_and_pdf_hosting_boundary():
     assert 'box.get("orderNum")' not in source
 
 
+def test_order_platform_images_keep_online_reads_in_store_and_assembly_in_facade():
+    """订单展示仅读取已同步图片，平台账号与持久化依赖由 facade 显式装配。"""
+    service = ROOT / "erp_web/services/order_procurement_service.py"
+    targets = {target for _, target in imported_targets([service])}
+    assert not any(target.startswith(("erp_web.runtime_units", "erp_web.marketplaces", "sqlite3", "urllib", "httpx")) for target in targets)
+    facade = ROOT / "erp_web/facades/order_procurement_facade.py"
+    targets = {target for _, target in imported_targets([facade])}
+    assert "erp_web.stores.online_product_store.OnlineProductStore" in targets
+    assert "erp_web.runtime_units.online_yandex.YandexOnlineAdapter" not in targets
+
+
 def test_request_recovery_is_owned_by_authorization_and_never_replays_business():
     route = ROOT / 'erp_web/http_route_units/external_request_routes.py'
     assert not any(target.startswith(('erp_web.runtime_units', 'erp_web.services', 'erp_web.stores')) for _, target in imported_targets([route]))

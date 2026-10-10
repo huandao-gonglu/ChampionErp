@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -118,6 +119,31 @@ class OnlineProductStore:
         with self.db._connect() as conn:
             rows = conn.execute("SELECT snapshot_json,desired_sale_state FROM online_listings WHERE platform=? AND account_id=? ORDER BY synced_at DESC,id", (platform, account)).fetchall()
         return [OnlineListing.model_validate({**json.loads(row["snapshot_json"]), "desired_sale_state": row["desired_sale_state"]}) for row in rows]
+
+    def thumbnails(self, platform: str, account: str, remote_ids: set[str]) -> dict[str, str]:
+        """按完整账号和远端商品身份批量读取平台缩略图；不使用本地资产或采购图片。"""
+        ids = sorted(remote_id for remote_id in remote_ids if remote_id)
+        result = {}
+        if not ids or not account:
+            return result
+        with self.db._connect() as conn:
+            for start in range(0, len(ids), 500):
+                batch = ids[start:start + 500]
+                marks = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"""SELECT remote_id,json_extract(snapshot_json,'$.thumbnail') AS thumbnail
+                        FROM online_listings WHERE platform=? AND account_id=?
+                        AND remote_id IN ({marks})""", (platform, account, *batch),
+                ).fetchall()
+                for row in rows:
+                    url = str(row["thumbnail"] or "").strip()
+                    try:
+                        parsed = urlsplit(url)
+                        if parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password:
+                            result[row["remote_id"]] = url
+                    except ValueError:
+                        continue
+        return result
 
     def sale_intent(self, listing_id: str, state: str, *, lease: dict[str, Any]) -> None:
         with self.db._connect() as conn:

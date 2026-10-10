@@ -23,6 +23,7 @@ const noteOpen = ref(false)
 const initialKey = props.value.handover_target?.key || ''
 const initialLinkRevision = props.value.warehouse_link?.revision || 0
 const plan = ref<FulfillmentPlan>({ section_id: props.value.plan?.section_id || 0, warehouse_id: props.value.plan?.warehouse_id || 0, service_ids: [...(props.value.plan?.service_ids || [])] })
+const remark = ref(props.value.remark || '')
 const sections = ref<BusSection[]>([])
 const loading = ref(true)
 const busy = ref(false)
@@ -53,6 +54,7 @@ async function save() {
   try {
     emit('saved', await fulfillmentCommand('plan', props.value.erp_order_id, props.value.revision, {
       plan: plan.value,
+      remark: remark.value,
       ...(yandex.value ? { handover_key: initialKey, warehouse_link_revision: initialLinkRevision, confirm_warehouse: needsConfirmation.value && confirmed.value } : {}),
     }))
   } catch (exc) { error.value = exc instanceof Error ? exc.message : '报单方案保存失败' }
@@ -62,7 +64,7 @@ onMounted(load)
 onBeforeUnmount(() => { disposed = true })
 </script>
 <template>
-  <WorkspaceDialog :open="true" title="选择报单仓库与服务" width="740px" class="order-ui" :close-disabled="busy || noteOpen" @close="emit('close')">
+  <WorkspaceDialog :open="true" title="设置报单方案" width="740px" class="order-ui" :close-disabled="busy || noteOpen" @close="emit('close')">
     <form id="fulfillment-plan" class="order-form" @submit.prevent="save">
       <p v-if="error" class="order-error" role="alert">{{ error }} <button type="button" class="order-link" :disabled="busy || loading" @click="load">重新读取仓库</button></p>
       <section v-if="yandex" class="handover-card">
@@ -83,6 +85,9 @@ onBeforeUnmount(() => { disposed = true })
           <label v-if="needsConfirmation" class="order-check"><input v-model="confirmed" type="checkbox" :disabled="busy || !plan.warehouse_id" />我已核对地址，所选合作仓库就是上述交货仓库；保存后用于相同交货地址的订单。</label>
         </template>
       </template>
+      <label for="fulfillment-remark">报单备注（选填）</label>
+      <textarea id="fulfillment-remark" v-model="remark" class="order-input" rows="3" maxlength="1000" :disabled="busy || noteOpen || addressChanged" placeholder="填写需要告知仓库的要求" />
+      <p class="order-muted">留空则不发送备注。</p>
       <p class="order-muted">基础服务选一项，附加服务按需选择。编辑期间暂停本单自动预报。</p>
     </form>
     <template #footer><div class="order-footer"><button type="button" class="order-button" :disabled="busy || noteOpen" @click="emit('close')">取消</button><button form="fulfillment-plan" class="order-button order-primary" :disabled="busy || noteOpen || loading || !ready || addressChanged || (needsConfirmation && !confirmed)">{{ busy ? '正在保存…' : '保存报单方案' }}</button></div></template>

@@ -94,6 +94,9 @@ export interface FulfillmentDetail extends FulfillmentSummary {
   label_attempt_at: string
   country: string
   plan: FulfillmentPlan | null
+  remark: string
+  platform_link_state?: '' | 'pending' | 'linked' | 'failed' | 'unknown'
+  platform_link_error?: string
   override: boolean
   rule: FulfillmentRule | null
   section_name: string

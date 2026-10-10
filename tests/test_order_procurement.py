@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from threading import Thread
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -75,7 +76,8 @@ def domain(tmp_path):
     orders.save_snapshot(claim, value, now=now)
     orders.finish(claim, now=now)
     service = OrderProcurementService(
-        store, lambda: {"yandex": "4"}, lambda platform: "shop-a"
+        store, lambda: {"yandex": "4"}, lambda platform: "shop-a",
+        yandex_images_provider=lambda account, ids: {},
     )
     return service, value, order_line_key(line)
 
@@ -166,7 +168,8 @@ def test_other_shop_and_ambiguous_sources_never_auto_match(domain):
             }
         )
     other = OrderProcurementService(
-        service.store, lambda: {"yandex": "another"}, lambda p: "shop-a"
+        service.store, lambda: {"yandex": "another"}, lambda p: "shop-a",
+        yandex_images_provider=lambda account, ids: {},
     )
     with pytest.raises(ValueError):
         other.detail(order.identity)
@@ -284,6 +287,7 @@ def test_source_binding_survives_restart(domain):
         OrderProcurementStore(OrderNotificationStore(service.store.orders.path)),
         lambda: {"yandex": "4"},
         lambda p: "shop-a",
+        yandex_images_provider=lambda account, ids: {},
     )
     result = other.detail(order.identity)
     assert result["lines"][0]["purchased_quantity"] == 1
@@ -455,30 +459,105 @@ def test_historical_thumbnail_backfill_preserves_binding_and_purchase(domain):
     assert (
         line["line"]["image_url"]
         == detail["order"]["items"][0]["image_url"]
-        == new.image_url
+        == ""
     )
     listed = service.present_orders([result_order(service, order)])
-    assert listed[0].items[0].image_url == new.image_url
+    assert listed[0].items[0].image_url == ""
     assert result_order(service, order).items[0].image_url == ""
     # 已保存的冻结图片不会被后续资料改写。
     changed = new.model_copy(update={"image_url": "https://images.example/changed.jpg"})
     service.store.add_bindings([changed])
     assert (
-        service.detail(order.identity)["lines"][0]["line"]["image_url"] == new.image_url
+        service.store.candidates("yandex", "shop-a", order.items[0])[0].image_url == new.image_url
     )
 
 
-def test_thumbnail_never_uses_another_shop_or_ambiguous_sku(domain):
+def test_yandex_without_platform_image_never_uses_frozen_thumbnail(domain):
     service, order, _ = domain
     value = image_job()
     value["approved_publications"]["yandex"]["store_identity"] = "shop-b"
     service.store.add_bindings(bindings_from_publish_job(value))
     assert service.detail(order.identity)["lines"][0]["line"]["image_url"] == ""
     service.store.add_bindings(bindings_from_publish_job(image_job()))
-    assert service.detail(order.identity)["lines"][0]["line"]["image_url"].endswith(
-        "/red.jpg"
-    )
+    assert service.detail(order.identity)["lines"][0]["line"]["image_url"] == ""
     ambiguous = image_job()
     ambiguous["product"]["product_id"] = "another-product"
     service.store.add_bindings(bindings_from_publish_job(ambiguous))
     assert service.detail(order.identity)["lines"][0]["line"]["image_url"] == ""
+
+
+@pytest.fixture
+def platform_images(domain, tmp_path):
+    from erp_web.db import ErpDatabase
+    from erp_web.facades.order_procurement_facade import create_service
+    from erp_web.schemas.online_products import OnlineListing, listing_identity
+    from erp_web.stores.online_product_store import OnlineProductStore
+
+    original, order, key = domain
+    db = ErpDatabase(tmp_path / "platform.sqlite3")
+    config = {"yandex": {"business_id": "10", "campaign_id": "4", "api_token": "fixture"}}
+    context = SimpleNamespace(db=db, config=SimpleNamespace(load_store_config=lambda: config),
+        order_notifications=SimpleNamespace(store=original.store.orders, accounts=original.accounts_provider))
+    service = create_service(context)
+    online = OnlineProductStore(db)
+
+    def save(url, *, account="10:4", remote="SALE-1", platform="yandex"):
+        return online.save(OnlineListing(id=listing_identity(platform, account, remote),
+            platform=platform, account_id=account, remote_id=remote, seller_sku=remote,
+            model="business_offer", thumbnail=url, content={"pictures": [url]}))
+
+    return service, order, key, config, save
+
+
+def test_yandex_list_detail_and_parcel_use_same_platform_image(platform_images):
+    from erp_web.services.fulfillment_service import FulfillmentService
+
+    service, order, key, _, save = platform_images
+    url = "https://platform.example/yandex-sku.jpg"
+    save(url)
+    # 图片不依赖本地发布来源；人工采购来源也不能改变平台销售图片。
+    confirm(service, order, key)
+    service.record_purchase(purchase_body(order, key))
+    detail = service.detail(order.identity)
+    line = detail["lines"][0]
+    assert line["line"]["image_url"] == detail["order"]["items"][0]["image_url"] == url
+    assert service.present_orders([result_order(service, order)])[0].items[0].image_url == url
+    parcels = [{"id": "parcel", "line_key": key, "purchase_record_id": line["records"][0]["id"],
+                "tracking_number": "YT123", "quantity": 1}]
+    assert FulfillmentService.parcels_payload(None, parcels, detail)[0]["img"] == url
+    assert result_order(service, order).items[0].image_url == ""
+    save("https://platform.example/updated.jpg")
+    assert service.detail(order.identity)["lines"][0]["line"]["image_url"].endswith("/updated.jpg")
+
+
+def test_yandex_images_isolate_business_campaign_platform_and_sku(platform_images):
+    service, order, _, config, save = platform_images
+    for kwargs in ({"account": "other:4"}, {"account": "10:other"},
+                   {"remote": "another-sku"}, {"platform": "ozon"}):
+        save("https://platform.example/wrong.jpg", **kwargs)
+    assert service.detail(order.identity)["lines"][0]["line"]["image_url"] == ""
+    save("https://platform.example/right.jpg")
+    assert service.detail(order.identity)["lines"][0]["line"]["image_url"].endswith("/right.jpg")
+    for updated in ({"business_id": "new-business"}, {"campaign_id": "new-shop"}, {"business_id": ""}):
+        config["yandex"] = {"business_id": "10", "campaign_id": "4", **updated}
+        assert service.detail(order.identity)["lines"][0]["line"]["image_url"] == ""
+
+
+@pytest.mark.parametrize("url", ["", "/file?path=local.jpg", "//example.com/img.jpg",
+                                 "javascript:alert(1)", "https://user:secret@example.com/img.jpg"])
+def test_yandex_missing_or_local_platform_image_has_no_fallback(platform_images, url):
+    service, order, _, _, save = platform_images
+    save(url)
+    binding = bindings_from_publish_job(image_job())[0]
+    service.store.add_bindings([binding.model_copy(update={"store_identity": service.identity_provider("yandex")})])
+    assert service.detail(order.identity)["lines"][0]["line"]["image_url"] == ""
+
+
+def test_yandex_batch_images_do_not_cross_accounts_or_mismatched_sku(platform_images):
+    service, order, _, _, save = platform_images
+    save("https://platform.example/right.jpg")
+    current = result_order(service, order)
+    other = current.model_copy(update={"account_id": "other"})
+    mismatch = current.model_copy(update={"items": [current.items[0].model_copy(update={"sku": "different"})]})
+    rows = service.present_orders([current, other, mismatch])
+    assert [r.items[0].image_url for r in rows] == ["https://platform.example/right.jpg", "", ""]

@@ -20,24 +20,39 @@ from erp_web.stores.order_procurement_store import OrderProcurementStore, line_s
 
 class OrderProcurementService:
     def __init__(
-        self, store: OrderProcurementStore, accounts_provider, identity_provider
+        self, store: OrderProcurementStore, accounts_provider, identity_provider, *, yandex_images_provider
     ):
         self.store = store
         self.accounts_provider = accounts_provider
         self.identity_provider = identity_provider
+        self.yandex_images_provider = yandex_images_provider
 
     def present_orders(self, orders: list[OrderView]) -> list[OrderView]:
         """为列表和详情补充图片及本地采购进度，不修改平台快照，不发起远端请求。"""
         tracking = self.store.tracking_summaries(orders)
         identities = {
             platform: self.identity_provider(platform)
-            for platform in {order.platform for order in orders}
+            for platform in {order.platform for order in orders if order.platform != "yandex"}
+        }
+        yandex_ids = {}
+        for order in orders:
+            if order.platform == "yandex":
+                yandex_ids.setdefault(order.account_id, set()).update(
+                    line.remote_id for line in order.items if line.remote_id and line.remote_id == line.sku
+                )
+        yandex_images = {
+            account: self.yandex_images_provider(account, ids)
+            for account, ids in yandex_ids.items()
         }
         images = {}
         result = []
         for order in orders:
             lines = []
             for line in order.items:
+                if order.platform == "yandex":
+                    image = yandex_images[order.account_id].get(line.remote_id, "") if line.remote_id == line.sku else ""
+                    lines.append(line.model_copy(update={"image_url": image}))
+                    continue
                 key = (order.platform, line.sku, line.remote_id, line.variant_id)
                 if key not in images:
                     identity = identities[order.platform]

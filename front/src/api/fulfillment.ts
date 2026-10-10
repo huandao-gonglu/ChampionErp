@@ -17,7 +17,7 @@ export async function fetchBusServices(sectionId: number, warehouseId: number): 
 export async function fetchFulfillment(orderId: string): Promise<FulfillmentDetail> {
   return (await apiClient.get<FulfillmentDetail>('/api/orders/fulfillment', { params: { order_id: orderId } })).data
 }
-export type FulfillmentAction = 'fetch-label' | 'label' | 'parcels' | 'plan' | 'pause' | 'resume' | 'submit' | 'sync' | 'retry' | 'cancel'
+export type FulfillmentAction = 'fetch-label' | 'label' | 'parcels' | 'plan' | 'pause' | 'resume' | 'submit' | 'sync' | 'associate' | 'retry' | 'cancel'
 export async function fulfillmentCommand(action: FulfillmentAction, orderId: string, revision: number, body: Record<string, unknown> = {}): Promise<FulfillmentDetail> {
   return (await apiClient.post<FulfillmentDetail>(`/api/orders/fulfillment/${action}`, { ...body, order_id: orderId, revision })).data
 }

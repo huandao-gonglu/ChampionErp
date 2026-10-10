@@ -58,7 +58,7 @@ describe('本单报单仓库与服务', () => {
     expect(fetchOrderAddressNote).toHaveBeenCalledWith('order-1', 'shipment-789', '义乌市示例路 1 号', expect.any(AbortSignal))
     expect((dom().get('textarea').element as HTMLTextAreaElement).value).toBe('订单中心备注：实际交给义乌合作仓')
     expect(dom().get('button[form="fulfillment-plan"]').attributes('disabled')).toBeDefined()
-    expect(dom().get('button[aria-label="关闭选择报单仓库与服务"]').attributes('disabled')).toBeDefined()
+    expect(dom().get('button[aria-label="关闭设置报单方案"]').attributes('disabled')).toBeDefined()
     await dom().trigger('cancel')
     await dom().get('form').trigger('submit')
     expect(wrapper.emitted('close')).toBeUndefined()
@@ -74,7 +74,8 @@ describe('本单报单仓库与服务', () => {
     expect(saveOrderAddressNote).toHaveBeenCalledWith({ order_id: 'order-1', shipment_id: 'shipment-789', address_key: 'shared-address', revision: 2, note: '核对后的收件人和地址' })
     finish()
     await flushPromises()
-    expect(dom().find('textarea').exists()).toBe(false)
+    expect(dom().findAll('textarea')).toHaveLength(1)
+    expect((dom().get('#fulfillment-remark').element as HTMLTextAreaElement).value).toBe('')
     expect(dom().get('button[form="fulfillment-plan"]').attributes('disabled')).toBeUndefined()
     await dom().trigger('cancel')
     expect(wrapper.emitted('close')).toHaveLength(1)
@@ -110,9 +111,38 @@ describe('本单报单仓库与服务', () => {
     await dom().get('form').trigger('submit'); await flushPromises()
     expect(fulfillmentCommand).toHaveBeenCalledWith('plan', 'order-1', 3, {
       plan: { section_id: 143, warehouse_id: 54, service_ids: [341, 339] },
+      remark: '',
       handover_key: 'address-v1', warehouse_link_revision: 0, confirm_warehouse: true,
     })
     expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
+  it('报单备注默认空白，手工内容保存失败后保留且不会被续租刷新覆盖', async () => {
+    const wrapper = mount(FulfillmentPlanDialog, { props: { value: detail(), order: order() }, global, attachTo: document.body })
+    await choose()
+    const field = dom().get('#fulfillment-remark')
+    expect((field.element as HTMLTextAreaElement).value).toBe('')
+    await field.setValue('请保留商品包装\n勿遮挡标签')
+    await dom().findAll('input[type="checkbox"]').at(-1)!.setValue(true)
+    await wrapper.setProps({ value: { ...detail(), revision: 4, remark: '' } })
+    vi.mocked(fulfillmentCommand).mockRejectedValueOnce(new Error('版本已变化'))
+    await dom().get('form').trigger('submit'); await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('plan', 'order-1', 4,
+      expect.objectContaining({ remark: '请保留商品包装\n勿遮挡标签' }))
+    expect((field.element as HTMLTextAreaElement).value).toBe('请保留商品包装\n勿遮挡标签')
+    expect(wrapper.emitted('saved')).toBeUndefined()
+    expect(dom().text()).toContain('版本已变化')
+  })
+
+  it('再次打开回显已保存备注，可以明确清空', async () => {
+    const value = { ...detail(), remark: '已填写的打包要求', plan: { section_id: 143, warehouse_id: 54, service_ids: [338] }, warehouse_link: { section_id: 143, warehouse_id: 54, revision: 2 } }
+    mount(FulfillmentPlanDialog, { props: { value, order: order() }, global, attachTo: document.body })
+    await flushPromises()
+    const field = dom().get('#fulfillment-remark')
+    expect((field.element as HTMLTextAreaElement).value).toBe(value.remark)
+    await field.setValue('')
+    await dom().get('form').trigger('submit'); await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenCalledWith('plan', 'order-1', 3, expect.objectContaining({ remark: '' }))
   })
 
   it('已确认的仓库固定，选择另一基础服务会替换原选择', async () => {

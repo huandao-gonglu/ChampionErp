@@ -25,7 +25,7 @@ const order: OrderDetail = {
   lines: [{ line: { sku: 'SKU1', title: '支架', quantity: 2, amount: '', currency: '' }, selection: { line_key: 'line1', revision: 1, status: 'confirmed', source, candidates: [], reason: '' }, records: [{ id: 'purchase1', line_key: 'line1', request_id: 'r1', quantity: 2, purchase_order_number: 'PO1', source, created_at: '', status: 'purchased', cancelled_at: '' }], purchased_quantity: 2, remaining_quantity: 0 }],
 }
 function detail(): FulfillmentDetail {
-  return { erp_order_id: order.order.id, revision: 1, busy: false, editing: false, editable: true, plan_editable: true, create_unknown: false, cancel_requested: false, cancel_rejected: false, crossborderbus_order_id: null, fulfillment_status: 'NEW', operation: '', error_message: '', blocked_reason: '请补齐全部商品的国内包裹及数量。', last_attempt_at: '', last_synced_at: '', next_attempt: 0, platform_label: '', platform_tracking_number: '', label_fetch_supported: true, label_fetch_reason: '', label_error: '', label_attempt_at: '', country: 'RU', plan: { section_id: 1, warehouse_id: 10, service_ids: [2] }, override: false, rule: null, section_name: '合作渠道', warehouse_name: 'A仓', delivery: { fulfillment_model: 'FBS', warehouse_id: 'W1', warehouse_name: '平台仓', method_id: 'M1', method_name: '平台配送', carrier: '', country: 'RU', shipment_id: '', tracking_number: '', label_url: '' }, parcels: [] }
+  return { erp_order_id: order.order.id, revision: 1, busy: false, editing: false, editable: true, plan_editable: true, create_unknown: false, cancel_requested: false, cancel_rejected: false, crossborderbus_order_id: null, fulfillment_status: 'NEW', operation: '', error_message: '', blocked_reason: '请补齐全部商品的国内包裹及数量。', last_attempt_at: '', last_synced_at: '', next_attempt: 0, platform_label: '', platform_tracking_number: '', label_fetch_supported: true, label_fetch_reason: '', label_error: '', label_attempt_at: '', country: 'RU', remark: '', plan: { section_id: 1, warehouse_id: 10, service_ids: [2] }, override: false, rule: null, section_name: '合作渠道', warehouse_name: 'A仓', delivery: { fulfillment_model: 'FBS', warehouse_id: 'W1', warehouse_name: '平台仓', method_id: 'M1', method_name: '平台配送', carrier: '', country: 'RU', shipment_id: '', tracking_number: '', label_url: '' }, parcels: [] }
 }
 function logistics(multiple = false): PurchaseLogisticsResults {
   return { purchase1: { ok: true, record_id: 'purchase1', order_number: 'PO1', checked_at: '2026-10-08T04:00:00Z', order: null, logistics_warning: '', logistics: [
@@ -54,6 +54,31 @@ async function fillParcel(wrapper: ReturnType<typeof mount>) {
 }
 
 describe('跨境履约操作', () => {
+  it('已创建报单可关联平台订单，使用当前版本且关联成功后不重复提供按钮', async () => {
+    const created = { ...detail(), crossborderbus_order_id: 99, plan_editable: false, platform_link_state: '' as const }
+    vi.mocked(fetchFulfillment).mockResolvedValue(created)
+    vi.mocked(fulfillmentCommand).mockResolvedValue({ ...created, platform_link_state: 'linked' })
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(button => button.text() === '关联平台订单')!.trigger('click')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenCalledWith('associate', order.order.id, 1, {})
+    expect(wrapper.text()).toContain('跨境巴士已返回关联成功')
+    expect(wrapper.findAll('button').some(button => button.text() === '关联平台订单')).toBe(false)
+  })
+
+  it('关联结果未知时显示核实说明，不允许重复关联', async () => {
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), crossborderbus_order_id: 99,
+      platform_link_state: 'unknown', platform_link_error: '请求结果尚未确认' })
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    expect(wrapper.text()).toContain('关联结果待确认')
+    expect(wrapper.text()).toContain('请求结果尚未确认')
+    expect(wrapper.findAll('button').some(button => button.text() === '关联平台订单')).toBe(false)
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+  })
+
   it('刷新采购进度后切换页签仍显示保存的物流，重新打开也保留', async () => {
     vi.mocked(fetchOrderDetail).mockResolvedValue(order)
     vi.mocked(syncPurchase).mockResolvedValue(withProgress(logistics()))

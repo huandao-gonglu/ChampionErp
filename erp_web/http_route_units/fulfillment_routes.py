@@ -23,7 +23,7 @@ def _command(action):
 POST_HANDLERS = {
     "/api/orders/fulfillment/upload-label": _command("upload-label"),
     **{f"/api/crossborderbus/{action}": _command(action) for action in ("authorize", "catalog", "save-rule", "delete-rule")},
-    **{f"/api/orders/fulfillment/{action}": _command(action) for action in ("fetch-label", "label", "parcels", "plan", "pause", "resume", "submit", "sync", "retry", "cancel")},
+    **{f"/api/orders/fulfillment/{action}": _command(action) for action in ("fetch-label", "label", "parcels", "plan", "pause", "resume", "submit", "sync", "associate", "retry", "cancel")},
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {"/api/crossborderbus/settings": facade.settings, "/api/crossborderbus/services": facade.services, "/api/orders/fulfillment": facade.detail}

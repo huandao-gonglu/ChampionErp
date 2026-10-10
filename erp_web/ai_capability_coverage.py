@@ -111,6 +111,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         ("POST", "/api/orders/fulfillment/resume"),
         ("POST", "/api/orders/fulfillment/submit"),
         ("POST", "/api/orders/fulfillment/sync"),
+        ("POST", "/api/orders/fulfillment/associate"),
         ("POST", "/api/orders/fulfillment/retry"),
         ("POST", "/api/orders/fulfillment/cancel"),
     )),

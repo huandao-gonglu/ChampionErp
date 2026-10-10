@@ -94,9 +94,9 @@ class FulfillmentStore:
         value = {
             "erp_order_id": order.identity, "platform": order.platform,
             "account_id": order.account_id, "platform_order_id": order.order_id,
-            "order_number": "ERP-" + hashlib.sha256(json.dumps(key).encode()).hexdigest()[:32],
+            "order_number": order.order_id if order.platform == "yandex" else "ERP-" + hashlib.sha256(json.dumps(key).encode()).hexdigest()[:32],
             "crossborderbus_order_id": None, "bus_identity": "", "plan": None, "override": False,
-            "parcels": [], "platform_label": "", "platform_tracking_number": "",
+            "parcels": [], "platform_label": "", "platform_tracking_number": "", "remark": "",
             "label_error": "", "label_attempt_at": "",
             "country": "", "fulfillment_status": "NEW", "operation": "", "error_message": "",
             "last_attempt_at": "", "last_synced_at": "", "next_attempt": 0,
@@ -175,6 +175,9 @@ class FulfillmentStore:
                 action = "reconcile"
             if action == "create":
                 value["create_unknown"] = True
+            if action == "associate":
+                # 进程中断后不能自动再次发送关联写请求。
+                value["platform_link_state"] = "unknown"
             value.update(operation=action, last_attempt_at=utc_iso(), cancel_at_claim=value["cancel_requested"])
             token = uuid4().hex
             conn.execute("UPDATE fulfillments SET value=?,claim=?,lease_until=?,revision=revision+1 WHERE id=?", (json.dumps(value, ensure_ascii=False), token, now + 180, order_id))

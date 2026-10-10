@@ -158,6 +158,7 @@ class FulfillmentCommand(FulfillmentInput):
     handover_key: str = ""
     warehouse_link_revision: int = Field(default=0, ge=0)
     confirm_warehouse: bool = False
+    remark: str | None = Field(default=None, max_length=1000)
     parcels: list[DomesticParcel] | None = None
     label: LabelInput | None = None
     country: str = Field(default="", pattern=r"^$|^[A-Z]{2}$")
@@ -229,6 +230,9 @@ class FulfillmentView(BaseModel):
     label_error: str = ""
     label_attempt_at: str = ""
     country: str
+    remark: str = ""
+    platform_link_state: Literal["", "pending", "linked", "failed", "unknown"] = ""
+    platform_link_error: str = ""
     plan: FulfillmentPlan | None
     override: bool
     rule: FulfillmentRuleView | None

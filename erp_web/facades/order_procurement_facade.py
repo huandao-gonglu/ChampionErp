@@ -10,6 +10,7 @@ from erp_web.runtime_units.order_source_bindings import bindings_from_publish_jo
 from erp_web.runtime_units.publish_confirmation import resolve_publish_store_binding
 from erp_web.services.order_procurement_service import OrderProcurementService
 from erp_web.stores.order_procurement_store import OrderProcurementStore
+from erp_web.stores.online_product_store import OnlineProductStore
 from erp_web.services.alibaba_purchase_query_service import query_purchase as query_alibaba_purchase
 
 
@@ -33,7 +34,17 @@ def create_service(context):
         except ValueError:
             return ""
 
-    return OrderProcurementService(store, orders.accounts, identity)
+    online = OnlineProductStore(context.db)
+
+    def yandex_images(account_id, offer_ids):
+        config = context.config.load_store_config().get("yandex") or {}
+        business = str(config.get("business_id") or "")
+        campaign = str(config.get("campaign_id") or "")
+        if not business or campaign != account_id:
+            return {}
+        return online.thumbnails("yandex", f"{business}:{campaign}", offer_ids)
+
+    return OrderProcurementService(store, orders.accounts, identity, yandex_images_provider=yandex_images)
 
 
 def detail(order_id=""):

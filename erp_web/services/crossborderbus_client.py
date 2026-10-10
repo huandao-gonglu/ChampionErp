@@ -64,7 +64,17 @@ class CrossborderBusClient:
         if not isinstance(result, dict) or result.get("code") != 1:
             message = str(result.get("message") or "") if isinstance(result, dict) else ""
             # 远端正文可能包含凭据，只将明确的业务原因映射为固定文案。
-            error = next((text for word, text in (("余额", "余额不足，请在跨境巴士补足余额后重试。"), ("仓库", "合作仓库不可用，请重新核对履约方案。"), ("重复", "订单号已存在，请核实创建结果。"), ("授权", "跨境巴士授权失效，请重新授权。"), ("打包", "仓库已打包，当前操作不可执行。"), ("发货", "仓库已发货，当前操作不可执行。")) if word in message), "跨境巴士拒绝当前请求，请核对资料及合作配置。")
+            error = next((text for word, text in (
+                ("订单非草稿状态", "跨境巴士接口不允许修改此正式报单，请在跨境巴士网页编辑订单。"),
+                ("已提交过不拆包订单", "同一国内快递单号已用于不拆包订单，不能再分成另一个国际包裹。请核对快递单号；若确需拆包，先将原报单改为拆包验货服务。"),
+                ("未查询到关联订单", "跨境巴士未找到可关联的平台订单，请核对平台订单号及跨境巴士中的店铺订单同步。"),
+                ("余额", "余额不足，请在跨境巴士补足余额后重试。"),
+                ("仓库", "合作仓库不可用，请重新核对履约方案。"),
+                ("重复", "订单号已存在，请核实创建结果。"),
+                ("授权", "跨境巴士授权失效，请重新授权。"),
+                ("打包", "仓库已打包，当前操作不可执行。"),
+                ("发货", "仓库已发货，当前操作不可执行。"),
+            ) if word in message), "跨境巴士拒绝当前请求，请核对资料及合作配置。")
             raise FulfillmentError(error, unknown="重复" in message, definitive=isinstance(result, dict) and result.get("code") in (0, 2))
         return result
 

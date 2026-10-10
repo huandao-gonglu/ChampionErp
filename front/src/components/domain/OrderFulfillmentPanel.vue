@@ -133,14 +133,20 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
         <div><span>跨境预报</span><strong>{{ value.crossborderbus_order_id ? `已创建 · ${value.crossborderbus_order_id}` : value.create_unknown ? '创建结果待确认' : '尚未创建' }}</strong></div>
       </section>
       <section class="plan-card">
-        <div class="order-row"><h3>平台配送：{{ value.delivery.method_name || value.delivery.carrier || '尚未提供' }}</h3><button v-if="value.plan_editable && (order.order.platform === 'yandex' || value.rule)" class="order-button" :disabled="pending" @click="open('plan')">选择仓库与服务</button><span v-else class="order-muted">{{ value.plan_editable ? '待配置' : '已锁定' }}</span></div>
+        <div class="order-row"><h3>平台配送：{{ value.delivery.method_name || value.delivery.carrier || '尚未提供' }}</h3><button v-if="value.plan_editable && (order.order.platform === 'yandex' || value.rule)" class="order-button" :disabled="pending" @click="open('plan')">设置报单方案</button><span v-else class="order-muted">{{ value.plan_editable ? '待配置' : '已锁定' }}</span></div>
         <p>合作仓库：{{ value.warehouse_name || '尚未配置' }}<span v-if="value.section_name"> · {{ value.section_name }}</span></p>
         <p class="order-muted">{{ value.plan ? value.override ? '本单报单方案' : order.order.platform === 'yandex' ? '仓库已对应，待选服务' : '默认履约方案' : '尚未配置报单方案' }}<template v-if="value.plan"> · {{ value.plan.service_ids.length }} 项增值服务</template></p>
         <p v-if="value.handover_target?.name" class="order-muted">{{ value.handover_target.shipment_type === 'WITHDRAW' ? '揽收仓库' : '交货仓库' }}：{{ value.handover_target.name }}</p>
         <p v-if="value.handover_target?.reason" class="order-muted">{{ value.handover_target.reason }}</p>
         <p v-if="value.selected_services?.length" class="order-muted">已选服务：{{ value.selected_services.map(service => service.name).join('、') }}</p>
+        <p v-if="value.remark || value.plan_editable" class="order-muted whitespace-pre-wrap break-words">报单备注：{{ value.remark || '未填写' }}</p>
       </section>
       <h3 class="mt-6 mb-4">履约资料</h3>
+      <section v-if="order.order.platform === 'yandex' && value.crossborderbus_order_id" class="order-section">
+        <div class="order-row"><h4>Yandex 店铺订单关联</h4><button v-if="value.editable && !value.cancel_requested && !['linked', 'unknown'].includes(value.platform_link_state || '')" class="order-button" :disabled="pending || value.busy" @click="command('associate')">关联平台订单</button></div>
+        <p class="order-muted mt-3">{{ value.platform_link_state === 'linked' ? '跨境巴士已返回关联成功，店铺和订单明细请在跨境巴士查看。' : value.platform_link_state === 'unknown' ? '关联结果待确认，请到跨境巴士核实，暂不能重复发送。' : value.platform_link_state === 'pending' ? '已创建报单，等待关联 Yandex 店铺订单。' : '关联后由跨境巴士读取店铺、物流、平台状态和订单时间。' }}</p>
+        <p v-if="value.platform_link_error" class="order-error mt-3" role="alert">{{ value.platform_link_error }}</p>
+      </section>
       <section class="order-section">
         <div class="order-row"><h4>国际面单</h4><div class="flex flex-wrap gap-2"><button v-if="value.editable && value.label_fetch_supported" class="order-button order-primary" :disabled="pending" @click="command('fetch-label')">{{ pending ? '处理中…' : value.platform_label || value.label_error ? '重新获取面单' : '获取平台面单' }}</button><button v-if="value.editable" class="order-button" :disabled="pending" @click="open('label')">{{ value.platform_label ? '人工更新' : '人工补充' }}</button></div></div>
         <p class="mt-3"><a v-if="value.platform_label" :href="value.platform_label" target="_blank" rel="noopener noreferrer" class="order-link">查看平台面单</a><span v-else class="order-muted">尚未获取平台面单</span><span v-if="value.platform_tracking_number" class="order-muted"> · {{ value.platform_tracking_number }}</span></p>

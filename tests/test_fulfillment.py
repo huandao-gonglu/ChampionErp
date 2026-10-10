@@ -74,7 +74,8 @@ def domain(tmp_path):
         orders.finish(job, now=time.time())
     snapshot(order)
     accounts = {"yandex": "4"}
-    procurement = OrderProcurementService(OrderProcurementStore(orders), lambda: accounts, lambda p: "shop-a")
+    procurement = OrderProcurementService(OrderProcurementStore(orders), lambda: accounts, lambda p: "shop-a",
+        yandex_images_provider=lambda account, ids: {"SKU-1": "https://platform.example/yandex-sku.jpg"})
     key = order_line_key(line)
     procurement.select_source({"order_id": order.identity, "line_key": key, "revision": 0, "source": {"supplier": "供应商", "source_platform": "1688", "product_url": "https://detail.1688.com/offer/123.html", "source_sku_id": "source-1", "specification": "银色"}})
     procurement.record_purchase({"order_id": order.identity, "line_key": key, "revision": 1, "request_id": "purchase", "quantity": 2, "purchase_order_number": "PO-123"})
@@ -119,6 +120,8 @@ def test_explicit_sync_reaches_erp_shipped(domain):
     create = bus.calls[0][1]
     assert create["is_check_section_order"] == 1
     assert create["order_data"][0]["package_list"][0]["from_order"] == "PO-123"
+    assert create["order_data"][0]["package_list"][0]["img"] == "https://platform.example/yandex-sku.jpg"
+    assert "introduce" not in create["order_data"][0]
     bus.lookup["package_list"][0]["status"] = 1
     command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "WAREHOUSE_RECEIVED"
@@ -129,6 +132,64 @@ def test_explicit_sync_reaches_erp_shipped(domain):
     command(service, order, "sync")
     assert service.detail(order.identity)["fulfillment_status"] == "SHIPPED"
     assert service.order_detail(order.identity)[0].state == "pending_shipment"
+
+
+@pytest.mark.parametrize("remark", ["", "  \n ", "  请保留商品包装\n贴单时勿遮挡商品标签  "])
+def test_optional_manual_remark_is_saved_and_sent_only_when_filled(domain, remark):
+    service, bus, order = ready(domain)
+    view = service.detail(order.identity)
+    assert view["remark"] == ""
+    command(service, order, "plan", plan=view["plan"], remark=remark)
+    assert FulfillmentStore(service.store.orders).get(order.identity)["remark"] == remark.strip()
+    assert service.detail(order.identity)["remark"] == remark.strip()
+    service.process_one(order)
+    created = next(body["order_data"][0] for path, body in bus.calls if path.endswith("createOrder"))
+    if remark.strip():
+        assert created["introduce"] == remark.strip()
+    else:
+        assert "introduce" not in created
+    with pytest.raises(FulfillmentError):
+        command(service, order, "plan", plan=view["plan"], remark="报单后不能修改")
+    assert service.store.get(order.identity)["remark"] == remark.strip()
+
+
+def test_remark_can_be_cleared_and_stale_plan_cannot_overwrite_it(domain):
+    service, _, order = ready(domain)
+    old = service.detail(order.identity)
+    command(service, order, "plan", plan=old["plan"], remark="手工备注")
+    with pytest.raises(ValueError):
+        service.command("plan", {"order_id": order.identity, "revision": old["revision"],
+            "plan": old["plan"], "remark": "旧窗口备注", "handover_key": old["handover_target"]["key"],
+            "warehouse_link_revision": (old["warehouse_link"] or {}).get("revision", 0)})
+    assert service.detail(order.identity)["remark"] == "手工备注"
+    # 历史客户端未提供备注时保留原值；明确提交空字符串时清空。
+    command(service, order, "plan", plan=old["plan"])
+    assert service.detail(order.identity)["remark"] == "手工备注"
+    command(service, order, "plan", plan=old["plan"], remark="")
+    assert service.detail(order.identity)["remark"] == ""
+
+
+def test_old_fulfillment_without_remark_does_not_generate_default_text(domain):
+    import json
+
+    service, bus, order = ready(domain)
+    with service.store.orders.connect() as conn:
+        raw = json.loads(conn.execute("SELECT value FROM fulfillments WHERE id=?", (order.identity,)).fetchone()[0])
+        raw.pop("remark", None)
+        conn.execute("UPDATE fulfillments SET value=? WHERE id=?", (json.dumps(raw), order.identity))
+        conn.commit()
+    assert service.detail(order.identity)["remark"] == ""
+    service.process_one(order)
+    assert "introduce" not in bus.calls[0][1]["order_data"][0]
+
+
+def test_plan_request_contract_keeps_manual_remark():
+    from erp_web.schemas.requests import validate_request_payload
+    from erp_web.schemas.fulfillment import FulfillmentCommand
+
+    body = validate_request_payload({"order_id": "order-1", "revision": 1, "remark": "  手工要求  "},
+        endpoint="/api/orders/fulfillment/plan")
+    assert FulfillmentCommand.model_validate(body).remark == "手工要求"
 
 
 class PlatformLabels:
@@ -547,6 +608,21 @@ def test_remote_search_checks_authorization_identity(domain):
         client.search("order", expected_identity="previous-account")
 
 
+def test_no_unpack_parcel_conflict_explains_rejection_without_exposing_response(domain, monkeypatch):
+    import io
+    import json
+    from erp_web.services import crossborderbus_client as module
+
+    response = {"code": 2, "message": "快递单号YT123已提交过不拆包订单(合单号515167),只能作为一个国际包裹发出。请先将订单修改为拆包验货订单。private-secret"}
+    monkeypatch.setattr(module, "managed_urlopen", lambda *args, **kwargs: io.BytesIO(json.dumps(response).encode()))
+    client = module.CrossborderBusClient(domain[0].store)
+    with pytest.raises(FulfillmentError, match="同一国内快递单号已用于不拆包订单") as error:
+        client._request("/erpapi/order/createOrder", {"order_data": []})
+    assert error.value.definitive and not error.value.unknown
+    assert "拆包验货" in str(error.value)
+    assert "private-secret" not in str(error.value) and "YT123" not in str(error.value)
+
+
 def test_fulfillment_http_contract_rejects_before_dispatch(monkeypatch):
     from urllib.parse import urlsplit
     from erp_web.http_route_units import fulfillment_routes as routes
@@ -696,6 +772,8 @@ def test_list_summary_does_not_create_records_and_reads_operation_facts(domain):
 def test_worker_never_polls_linked_order_even_with_legacy_schedule(domain):
     service, bus, order = ready(domain)
     service.process_one(order)
+    service.process_one(order)
+    assert service.detail(order.identity)["platform_link_state"] == "linked"
     before = len(bus.calls)
     value = service.store.get(order.identity)
     service.store.change(order.identity, value["revision"], {"next_attempt": 0, "force_sync": True})

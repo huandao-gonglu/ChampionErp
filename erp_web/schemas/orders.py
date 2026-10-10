@@ -51,7 +51,7 @@ class OrderLine(BaseModel):
     quantity: int = 0
     image_url: str = Field(
         default="",
-        description="由店铺及销售 SKU 唯一匹配的发布快照图片；无可靠匹配时为空",
+        description="Yandex 使用同账号及 SKU 的在线商品平台图片；其他平台使用发布快照图片，无可靠匹配时为空",
     )
     amount: str = ""
     currency: str = ""
