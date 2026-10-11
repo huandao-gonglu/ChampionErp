@@ -7,7 +7,6 @@ import type {
   Product,
   ProductIndexItem,
   PublishJob,
-  PublishLogItem,
 } from '@/types/workflow'
 
 const props = defineProps<{
@@ -15,7 +14,6 @@ const props = defineProps<{
   productsIndex: ProductIndexItem[]
   selectedIds: string[]
   progressPercent: number
-  publishLogs: PublishLogItem[]
   authChecklist: MercadoLibreAuthChecklist | null
   publishJob: PublishJob | null
   logs: string[]
@@ -26,7 +24,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   navigate: [key: string]
   refreshProducts: []
-  refreshLogs: []
   openProduct: [item: ProductIndexItem]
   editImages: [item: ProductIndexItem]
   collect: []
@@ -217,122 +214,93 @@ function scrollToOrders() { emit('navigate', 'orders') }
 
     <OrderSummaryCard id="order-center" />
 
-    <section class="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_400px]">
-      <div class="space-y-5">
-        <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 class="card-title">最近商品</h2>
-              <p class="muted mt-1">最近更新的本地商品记录。</p>
-            </div>
-            <button type="button" class="btn btn-outline" @click="emit('navigate', 'library')">进入商品库</button>
+    <section class="space-y-5">
+      <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="card-title">最近商品</h2>
+            <p class="muted mt-1">最近更新的本地商品记录。</p>
           </div>
+          <button type="button" class="btn btn-outline" @click="emit('navigate', 'library')">进入商品库</button>
+        </div>
 
-          <div class="mt-4 overflow-hidden">
-            <table class="w-full table-fixed text-left text-sm">
-              <colgroup>
-                <col class="w-[34%]" />
-                <col class="w-[11%]" />
-                <col class="w-[9%]" />
-                <col class="w-[9%]" />
-                <col class="w-[9%]" />
-                <col class="w-[13%]" />
-                <col class="w-[15%]" />
-              </colgroup>
-              <thead class="border-b border-accent-200 text-xs text-accent-500 dark:border-dark-700 dark:text-accent-400">
-                <tr>
-                  <th class="py-3 pr-3">商品</th>
-                  <th class="px-3 py-3">平台</th>
-                  <th class="px-3 py-3">文案</th>
-                  <th class="px-3 py-3">图片</th>
-                  <th class="px-3 py-3">预检</th>
-                  <th class="px-3 py-3">更新</th>
-                  <th class="py-3 pl-3 text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
-                <tr v-for="item in recentProducts" :key="item.productId">
-                  <td class="min-w-0 py-3 pr-3">
-                    <div class="flex items-center gap-3">
-                      <img v-if="item.mainImage" :src="item.mainImage" alt="" class="size-11 rounded-lg object-cover" />
-                      <div v-else class="flex size-11 items-center justify-center rounded-lg bg-accent-100 text-xs font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">ERP</div>
-                      <div class="min-w-0">
-                        <p class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || item.productId || '-'">{{ item.title || item.productId || '-' }}</p>
-                        <p class="truncate text-xs text-accent-500 dark:text-accent-400" :title="item.sourceUrl || item.productId">{{ item.sourceUrl || item.productId }}</p>
-                      </div>
+        <div class="mt-4 overflow-hidden">
+          <table class="w-full table-fixed text-left text-sm">
+            <colgroup>
+              <col class="w-[34%]" />
+              <col class="w-[11%]" />
+              <col class="w-[9%]" />
+              <col class="w-[9%]" />
+              <col class="w-[9%]" />
+              <col class="w-[13%]" />
+              <col class="w-[15%]" />
+            </colgroup>
+            <thead class="border-b border-accent-200 text-xs text-accent-500 dark:border-dark-700 dark:text-accent-400">
+              <tr>
+                <th class="py-3 pr-3">商品</th>
+                <th class="px-3 py-3">平台</th>
+                <th class="px-3 py-3">文案</th>
+                <th class="px-3 py-3">图片</th>
+                <th class="px-3 py-3">预检</th>
+                <th class="px-3 py-3">更新</th>
+                <th class="py-3 pl-3 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
+              <tr v-for="item in recentProducts" :key="item.productId">
+                <td class="min-w-0 py-3 pr-3">
+                  <div class="flex items-center gap-3">
+                    <img v-if="item.mainImage" :src="item.mainImage" alt="" class="size-11 rounded-lg object-cover" />
+                    <div v-else class="flex size-11 items-center justify-center rounded-lg bg-accent-100 text-xs font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">ERP</div>
+                    <div class="min-w-0">
+                      <p class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || item.productId || '-'">{{ item.title || item.productId || '-' }}</p>
+                      <p class="truncate text-xs text-accent-500 dark:text-accent-400" :title="item.sourceUrl || item.productId">{{ item.sourceUrl || item.productId }}</p>
                     </div>
-                  </td>
-                  <td class="px-2 py-3"><span class="block truncate" :title="item.sourcePlatform || '-'">{{ item.sourcePlatform || '-' }}</span></td>
-                  <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.aiCopyStatus)" :title="item.aiCopyStatus || '-'">{{ item.aiCopyStatus || '-' }}</span></td>
-                  <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.imageStatus)" :title="item.imageStatus || '-'">{{ item.imageStatus || '-' }}</span></td>
-                  <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.precheckStatus)" :title="item.precheckStatus || '-'">{{ item.precheckStatus || '-' }}</span></td>
-                  <td class="px-2 py-3 text-accent-500 dark:text-accent-400"><span class="block truncate" :title="formatDate(item.updatedAt || item.createdAt)">{{ formatDate(item.updatedAt || item.createdAt) }}</span></td>
-                  <td class="py-3 pl-3">
-                    <div class="flex flex-wrap justify-end gap-2">
-                      <button type="button" class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('openProduct', item)">编辑</button>
-                      <button type="button" class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('navigate', 'drafts')">查看草稿</button>
-                    </div>
-                  </td>
-                </tr>
-                <tr v-if="!recentProducts.length">
-                  <td colspan="7" class="py-8 text-center text-accent-500 dark:text-accent-300">还没有商品记录。</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
+                  </div>
+                </td>
+                <td class="px-2 py-3"><span class="block truncate" :title="item.sourcePlatform || '-'">{{ item.sourcePlatform || '-' }}</span></td>
+                <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.aiCopyStatus)" :title="item.aiCopyStatus || '-'">{{ item.aiCopyStatus || '-' }}</span></td>
+                <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.imageStatus)" :title="item.imageStatus || '-'">{{ item.imageStatus || '-' }}</span></td>
+                <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.precheckStatus)" :title="item.precheckStatus || '-'">{{ item.precheckStatus || '-' }}</span></td>
+                <td class="px-2 py-3 text-accent-500 dark:text-accent-400"><span class="block truncate" :title="formatDate(item.updatedAt || item.createdAt)">{{ formatDate(item.updatedAt || item.createdAt) }}</span></td>
+                <td class="py-3 pl-3">
+                  <div class="flex flex-wrap justify-end gap-2">
+                    <button type="button" class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('openProduct', item)">编辑</button>
+                    <button type="button" class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('navigate', 'drafts')">查看草稿</button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="!recentProducts.length">
+                <td colspan="7" class="py-8 text-center text-accent-500 dark:text-accent-300">还没有商品记录。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-        <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 class="card-title">流程产能</h2>
-              <p class="muted mt-1">商品从文案到预检的准备情况。</p>
+      <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="card-title">流程产能</h2>
+            <p class="muted mt-1">商品从文案到预检的准备情况。</p>
+          </div>
+        </div>
+
+        <div class="mt-5 grid gap-4 md:grid-cols-4">
+          <div v-for="item in pipelineStats" :key="item.label">
+            <div class="flex items-center justify-between text-sm">
+              <span class="font-semibold text-accent-700 dark:text-accent-200">{{ item.label }}</span>
+              <span class="text-accent-500 dark:text-accent-400">{{ item.done }}/{{ item.total }}</span>
+            </div>
+            <div class="mt-2 h-2 rounded-full bg-accent-100 dark:bg-dark-800">
+              <div
+                class="h-2 rounded-full bg-primary-500"
+                :style="{ width: item.total ? `${Math.round((item.done / item.total) * 100)}%` : '0%' }"
+              />
             </div>
           </div>
-
-          <div class="mt-5 grid gap-4 md:grid-cols-4">
-            <div v-for="item in pipelineStats" :key="item.label">
-              <div class="flex items-center justify-between text-sm">
-                <span class="font-semibold text-accent-700 dark:text-accent-200">{{ item.label }}</span>
-                <span class="text-accent-500 dark:text-accent-400">{{ item.done }}/{{ item.total }}</span>
-              </div>
-              <div class="mt-2 h-2 rounded-full bg-accent-100 dark:bg-dark-800">
-                <div
-                  class="h-2 rounded-full bg-primary-500"
-                  :style="{ width: item.total ? `${Math.round((item.done / item.total) * 100)}%` : '0%' }"
-                />
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      <aside class="space-y-5">
-        <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <h2 class="card-title">发布状态</h2>
-              <p class="muted mt-1">最近发布记录和 Mercado Libre User Products。</p>
-            </div>
-            <div class="flex gap-2">
-              <button type="button" class="btn btn-outline py-2" @click="emit('refreshLogs')">日志</button>
-              <button type="button" class="btn btn-outline py-2" @click="emit('navigate', 'onlineProducts')">在线商品</button>
-            </div>
-          </div>
-
-          <div class="mt-4 space-y-3">
-            <article v-for="log in publishLogs.slice(0, 3)" :key="`${log.jobId}-${log.startedAt}-${log.platform}`" class="rounded-lg border border-accent-200 p-3 dark:border-dark-700">
-              <div class="flex items-center justify-between gap-3">
-                <span class="truncate text-sm font-semibold text-accent-950 dark:text-white">{{ log.productId || log.platform || '发布记录' }}</span>
-                <span :class="statusClass(log.status)">{{ log.status || '-' }}</span>
-              </div>
-              <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ formatDate(log.finishedAt || log.startedAt) }}</p>
-              <p v-if="log.errorMessage" class="mt-2 line-clamp-2 text-xs text-rose-600 dark:text-rose-200">{{ log.errorMessage }}</p>
-            </article>
-            <p v-if="!publishLogs.length" class="rounded-lg border border-dashed border-accent-300 p-4 text-center text-sm text-accent-500 dark:border-dark-600 dark:text-accent-300">暂无发布日志。</p>
-          </div>
-        </section>
-      </aside>
+        </div>
+      </section>
     </section>
   </div>
 </template>

@@ -29,7 +29,6 @@ const legacyWorkflowEntries = [
   { path: '/publish', tab: 'publish', title: '发布队列' },
   { path: '/settings', tab: 'systemSettings', title: '设置' },
   { path: '/auth', tab: 'auth', title: '授权' },
-  { path: '/logs', tab: 'logs', title: '日志' },
 ] as const
 
 const legacyEntryRoutes: RouteRecordRaw[] = legacyWorkflowEntries.map((entry) => ({

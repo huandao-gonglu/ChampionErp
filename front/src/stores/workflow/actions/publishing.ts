@@ -42,7 +42,6 @@ type WorkflowPublishingActionsPort = Pick<
   | 'publishJob'
   | 'publishJobStatus'
   | 'selectedPublishJobId'
-  | 'publishLogs'
   | 'activeMarketplace'
   | 'platformOptions'
   | 'publishResult'

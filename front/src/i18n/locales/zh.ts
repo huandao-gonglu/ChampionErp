@@ -21,7 +21,6 @@ export default {
     publish: { title: '发布队列', subtitle: '任务状态、日志' },
     onlineProducts: { title: '在线商品', subtitle: '店铺商品、价格与库存' },
     auth: { title: '平台授权', subtitle: '授权、AI、汇率' },
-    logs: { title: '发布日志', subtitle: '请求、响应、错误' },
   },
   pages: {
     drafts: {
@@ -35,10 +34,6 @@ export default {
     onlineProducts: {
       title: '在线商品',
       description: '同步店铺已有商品，管理销售状态、价格、库存与内容。',
-    },
-    logs: {
-      title: '发布日志',
-      description: '展示发布请求、响应、错误码和下一步处理建议。',
     },
   },
   settings: {

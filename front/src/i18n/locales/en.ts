@@ -21,7 +21,6 @@ export default {
     publish: { title: 'Publish Queue', subtitle: 'Jobs and logs' },
     onlineProducts: { title: 'Online products', subtitle: 'Store products, prices and stock' },
     auth: { title: 'Platform Auth', subtitle: 'Auth, AI, exchange rates' },
-    logs: { title: 'Publish Logs', subtitle: 'Requests, responses, errors' },
   },
   pages: {
     drafts: {
@@ -35,10 +34,6 @@ export default {
     onlineProducts: {
       title: 'Online products',
       description: 'Sync and manage existing store products, prices, stock and content.',
-    },
-    logs: {
-      title: 'Publish Logs',
-      description: 'Publishing requests, responses, error codes, and next actions.',
     },
   },
   settings: {

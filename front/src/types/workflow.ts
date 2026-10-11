@@ -852,20 +852,6 @@ export interface DraftIndexItem {
   raw: UnknownRecord
 }
 
-export interface PublishLogItem {
-  jobId: string
-  productId: string
-  platform: string
-  status: string
-  startedAt: string
-  finishedAt: string
-  errorCode: string
-  errorMessage: string
-  requestPayloadPath: string
-  responseBodyPath: string
-  raw: UnknownRecord
-}
-
 export type ProductResearchSearchMode = 'target_only' | 'target_plus_reference' | 'global_scan'
 
 export interface ProductResearchPrice {

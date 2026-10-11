@@ -5,7 +5,6 @@ import {
   normalizeDraftsIndex,
   normalizeMarketplaceOptions,
   normalizeProductsIndex,
-  normalizePublishLogs,
   normalizeTargetSites,
   toBackendDraft,
   toBackendTargetSite,
@@ -79,30 +78,6 @@ describe('workflow 当前 wire schema', () => {
       mainImage: '/draft-current.jpg',
     }))
     expect(draft?.targetSites[0]?.categoryId).toBe('MLM-CURRENT')
-  })
-
-  it('发布日志保留当前日志变体，但不再读取 camelCase 别名', () => {
-    const [log] = normalizePublishLogs([{
-      job_id: 'job-current',
-      jobId: 'job-legacy',
-      product_id: 'product-current',
-      productId: 'product-legacy',
-      platform: 'mercadolibre',
-      started_at: '',
-      time: '2026-07-30 10:00:00',
-      error_message: '',
-      error: '当前日志错误详情',
-      request_payload_path: '/current/request.json',
-      requestPayloadPath: '/legacy/request.json',
-    }])
-
-    expect(log).toEqual(expect.objectContaining({
-      jobId: 'job-current',
-      productId: 'product-current',
-      startedAt: '2026-07-30 10:00:00',
-      errorMessage: '当前日志错误详情',
-      requestPayloadPath: '/current/request.json',
-    }))
   })
 
   it('CBT 销售子市场使用 sites_to_sell 双向转换且不会保留 CBT 目的地', () => {

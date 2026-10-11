@@ -19,7 +19,6 @@ import type {
   PublishJob,
   PublishJobListItem,
   PublishJobsPage,
-  PublishLogItem,
   PublishPrecheck,
   UnknownRecord,
 } from '@/types/workflow'
@@ -38,7 +37,6 @@ import {
   normalizeDraftDetail,
   normalizeDraftsIndex,
   normalizeProductsIndex,
-  normalizePublishLogs,
   normalizePublishPrecheck,
   normalizeSitesToSell,
   platformList,
@@ -49,13 +47,6 @@ import {
   toBackendSitesToSell,
 } from './normalizers'
 import { requiredDraftTarget } from './shared'
-
-export async function fetchPublishLogs(): Promise<PublishLogItem[]> {
-  const response = await apiClient.get('/api/publish-logs')
-  const data = asRecord(response.data)
-  ensureOk(data, '读取发布日志失败')
-  return normalizePublishLogs(data.items)
-}
 
 function normalizePublishJobListItem(value: unknown): PublishJobListItem {
   const record = asRecord(value)

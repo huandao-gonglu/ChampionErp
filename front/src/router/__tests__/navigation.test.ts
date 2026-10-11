@@ -12,6 +12,8 @@ describe('工作流顶级导航', () => {
 
     expect(navKeys).not.toContain('pricing')
     expect(navKeys).not.toContain('category')
+    expect(navKeys).not.toContain('logs')
+    expect(routePaths).not.toContain('/logs')
     expect(routePaths).toContain('/pricing')
     expect(routePaths).toContain('/publish')
     expect(navKeys).toContain('orders')

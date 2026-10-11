@@ -79,7 +79,6 @@ const {
   publishJobsNextCursor,
   publishJobsLoading,
   publishJobsLastUpdated,
-  publishLogs,
   publishResult,
   activeMarketplace,
   platformOptions,
@@ -386,7 +385,6 @@ watch(
             :products-index="productsIndex"
             :selected-ids="selectedProductIds"
             :progress-percent="progressPercent"
-            :publish-logs="publishLogs"
             :auth-checklist="mercadolibreAuthChecklist"
             :publish-job="publishJob"
             :logs="logs"
@@ -394,7 +392,6 @@ watch(
             :error="error"
             @navigate="navigate"
             @refresh-products="store.refreshProductsIndex"
-            @refresh-logs="store.refreshPublishLogs"
             @open-product="openProductEditor"
             @edit-images="openProductImageEditor"
             @collect="navigate('collect')"
@@ -518,28 +515,6 @@ watch(
             @exchange-ml-code="store.exchangeMlCode"
             @clear-auth="store.clearPlatformAuth"
           />
-          </div>
-
-          <div v-else class="space-y-6">
-            <PageHeader title="发布日志" description="展示发布请求、响应、错误码和下一步处理建议。" />
-            <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-              <div class="flex flex-wrap items-center justify-between gap-3"><div><h2 class="card-title">发布日志</h2><p class="muted mt-1">来自 `/api/publish-logs`。</p></div><button class="btn btn-outline" :disabled="loading" @click="store.refreshPublishLogs">刷新日志</button></div>
-              <div class="mt-4 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
-                <table class="w-full table-fixed text-left text-sm">
-                  <colgroup>
-                    <col class="w-[16%]" />
-                    <col class="w-[16%]" />
-                    <col class="w-[10%]" />
-                    <col class="w-[10%]" />
-                    <col class="w-[10%]" />
-                    <col class="w-[24%]" />
-                    <col class="w-[14%]" />
-                  </colgroup>
-                  <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400"><tr><th class="p-3">时间</th><th class="p-3">商品</th><th class="p-3">平台</th><th class="p-3">状态</th><th class="p-3">错误码</th><th class="p-3">错误</th><th class="p-3">Payload</th></tr></thead>
-                  <tbody class="divide-y divide-accent-100 dark:divide-dark-800"><tr v-for="item in publishLogs" :key="`${item.jobId}-${item.startedAt}-${item.platform}`" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60"><td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.finishedAt || item.startedAt">{{ item.finishedAt || item.startedAt }}</span></td><td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.productId || '-'">{{ item.productId || '-' }}</span></td><td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.platform || '-'">{{ item.platform || '-' }}</span></td><td class="p-3"><span class="badge-muted max-w-full truncate" :title="item.status || '-'">{{ item.status || '-' }}</span></td><td class="p-3 font-mono text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.errorCode || '-'">{{ item.errorCode || '-' }}</span></td><td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.errorMessage || '-'">{{ item.errorMessage || '-' }}</span></td><td class="p-3 text-accent-500 dark:text-accent-400"><span class="block truncate" :title="item.requestPayloadPath || '-'">{{ item.requestPayloadPath || '-' }}</span></td></tr><tr v-if="!publishLogs.length"><td colspan="7" class="p-6 text-center text-accent-500 dark:text-accent-300">暂无发布日志。</td></tr></tbody>
-                </table>
-              </div>
-            </section>
           </div>
         </div>
       </main>

@@ -6,7 +6,6 @@ import type { PublishJobListItem } from '@/types/workflow'
 
 vi.mock('@/api/workflow/publishing', () => ({
   fetchPublishJob: vi.fn(), fetchPublishJobs: vi.fn(), reconcilePublishJob: vi.fn(),
-  fetchPublishLogs: vi.fn(),
 }))
 
 function job(id: string, status = 'pending_confirmation'): PublishJobListItem {

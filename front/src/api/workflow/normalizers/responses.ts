@@ -6,7 +6,6 @@ import type {
   Product,
   ProductIndexItem,
   PrecheckIssue,
-  PublishLogItem,
   PublishPrecheck,
   PublishPrecheckMarketCheck,
   PublishPrecheckScope,
@@ -119,27 +118,6 @@ export function normalizeProductIndexItem(value: unknown): ProductIndexItem {
     optimized: getBoolean(record, ['optimized']),
     raw: record,
   }
-}
-
-export function normalizePublishLogs(value: unknown): PublishLogItem[] {
-  return Array.isArray(value)
-    ? value.map((item) => {
-      const record = asRecord(item)
-      return {
-        jobId: getString(record, ['job_id']),
-        productId: getString(record, ['product_id']),
-        platform: getString(record, ['platform']),
-        status: getString(record, ['status']),
-        startedAt: getString(record, ['started_at', 'time']),
-        finishedAt: getString(record, ['finished_at']),
-        errorCode: getString(record, ['error_code']),
-        errorMessage: getString(record, ['error_message', 'error']),
-        requestPayloadPath: getString(record, ['request_payload_path']),
-        responseBodyPath: getString(record, ['response_body_path']),
-        raw: record,
-      }
-    })
-    : []
 }
 
 function normalizePublishPrecheckScope(value: unknown): PublishPrecheckScope | null {

@@ -190,7 +190,6 @@ export function createWorkflowRuntime() {
     publishJobsNextCursor,
     publishJobsLoading,
     publishJobsLastUpdated,
-    publishLogs,
     activeMarketplace,
     platformOptions,
     publishResult,
@@ -201,8 +200,7 @@ export function createWorkflowRuntime() {
     refreshPublishJobs,
     loadMorePublishJobs,
     selectPublishJob,
-    refreshPublishLogs,
-    } = publishingStore
+  } = publishingStore
   const {
     appConfig,
     aiConfig,
@@ -1054,7 +1052,7 @@ export function createWorkflowRuntime() {
       ['pricing', '核价', '成本、运费、汇率、佣金'],
       ['category', '类目属性', '搜索类目并补齐必填属性'],
       ['precheck', '发布预检', '生成 payload 并检查缺项'],
-      ['publish', '发布队列', '入队、状态、发布日志'],
+      ['publish', '发布队列', '入队、状态、结果'],
     ].map(([key, title, description], index) => ({
       key,
       title,
@@ -1172,8 +1170,8 @@ export function createWorkflowRuntime() {
     categoryAttributeTranslations, categoryAttributeTranslationsSource, categoryAttributeTranslating, categoryAttributeLoading, categoryAttributeError, categoryResultTranslations,
     categoryResultTranslationsSource, categoryResultTranslating, categoryPrecheck, precheck, precheckResults, payloadPreview,
     copyGenerating, publishJob, publishJobStatus, publishJobs, selectedPublishJobId, publishJobsNextCursor, publishJobsLoading,
-    publishJobsLastUpdated, publishLogs, activeMarketplace, platformOptions, publishResult, activePublishTargetKey,
-    refreshPublishJob, refreshPublishJobs, loadMorePublishJobs, selectPublishJob, refreshPublishLogs,
+    publishJobsLastUpdated, activeMarketplace, platformOptions, publishResult, activePublishTargetKey,
+    refreshPublishJob, refreshPublishJobs, loadMorePublishJobs, selectPublishJob,
     appConfig,
     aiConfig, storeConfig, storeAuthSummary, mercadolibreAuthChecklist, lastAuthResult, authLink,
     loadAiConfig, saveAiSettings, testAiSettings, testPlatformApiConfig, saveStoreConfig, saveStoreCurrency, testAuth,

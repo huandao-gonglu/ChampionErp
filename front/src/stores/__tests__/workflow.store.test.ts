@@ -58,7 +58,6 @@ vi.mock('@/api/workflow/publishing', async (importOriginal) => ({
   matchCategory: vi.fn(),
   searchCategories: vi.fn(),
   previewPublishPayload: vi.fn(),
-  fetchPublishLogs: vi.fn(),
   fetchPublishJob: vi.fn(),
   fetchPublishJobs: vi.fn(),
   reconcilePublishJob: vi.fn(),
@@ -1062,11 +1061,8 @@ describe('workflow store live API flow', () => {
     expect(store.storeConfig).toEqual({})
   })
 
-  it('hydrates dashboard domain data after the bootstrap state is split', async () => {
+  it('仪表盘加载商品数据', async () => {
     vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
-    vi.mocked(workflowApi.fetchPublishLogs).mockResolvedValue([])
-
-
     const store = useWorkflowStore()
     store.mercadolibreAuthChecklist = {
       platform: 'mercadolibre',
@@ -1081,7 +1077,6 @@ describe('workflow store live API flow', () => {
     await store.hydrateTab('dashboard')
 
     expect(workflowApi.fetchProductsIndex).toHaveBeenCalledOnce()
-    expect(workflowApi.fetchPublishLogs).toHaveBeenCalledOnce()
   })
 
   it('restores the latest persisted publish job when the queue opens', async () => {

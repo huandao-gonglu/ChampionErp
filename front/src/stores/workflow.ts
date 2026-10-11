@@ -21,10 +21,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   async function hydrateTab(key: string) {
     if (key === 'dashboard') {
-      await Promise.all([
-        combined.refreshProductsIndex(),
-        combined.refreshPublishLogs(),
-      ])
+      await combined.refreshProductsIndex()
       return
     }
     if (key === 'library') {
@@ -37,10 +34,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
     if (key === 'publish') {
       await combined.refreshPublishJobs()
-      return
-    }
-    if (key === 'logs') {
-      await combined.refreshPublishLogs()
       return
     }
     if (key === 'auth') await combined.loadAiConfig()
@@ -90,7 +83,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     publishJobsNextCursor: combined.publishJobsNextCursor,
     publishJobsLoading: combined.publishJobsLoading,
     publishJobsLastUpdated: combined.publishJobsLastUpdated,
-    publishLogs: combined.publishLogs,
     activeMarketplace: combined.activeMarketplace,
     platformOptions: combined.platformOptions,
     logs: combined.logs,
@@ -181,7 +173,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     refreshPublishJobs: combined.refreshPublishJobs,
     loadMorePublishJobs: combined.loadMorePublishJobs,
     selectPublishJob: combined.selectPublishJob,
-    refreshPublishLogs: combined.refreshPublishLogs,
     loadAiConfig: combined.loadAiConfig,
     saveAiSettings: combined.saveAiSettings,
     testAiSettings: combined.testAiSettings,

@@ -3,7 +3,6 @@ import { defineStore } from 'pinia'
 import {
   fetchPublishJob,
   fetchPublishJobs,
-  fetchPublishLogs,
   reconcilePublishJob,
 } from '@/api/workflow/publishing'
 import { createDefaultPricingInput } from '@/constants/initialState'
@@ -21,7 +20,6 @@ import type {
   PricingResult,
   PublishJob,
   PublishJobListItem,
-  PublishLogItem,
   PublishPrecheck,
   UnknownRecord,
 } from '@/types/workflow'
@@ -58,7 +56,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
   const publishJobsNextCursor = ref('')
   const publishJobsLoading = ref(false)
   const publishJobsLastUpdated = ref('')
-  const publishLogs = ref<PublishLogItem[]>([])
   const activeMarketplace = ref<Marketplace>('mercadolibre')
   const platformOptions = ref<MarketplaceOption[]>([])
   const publishResult = ref<UnknownRecord | null>(null)
@@ -174,19 +171,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     if (shouldRefresh) await refreshPublishJobs({ quiet: true })
   }
 
-  async function refreshPublishLogs() {
-    activity.loading = true
-    activity.setError('')
-    try {
-      publishLogs.value = await fetchPublishLogs()
-      activity.addLog(`发布日志已刷新：${publishLogs.value.length} 条。`)
-    } catch (exc) {
-      activity.setError(exc instanceof Error ? exc.message : '刷新发布日志失败')
-    } finally {
-      activity.loading = false
-    }
-  }
-
   return {
     pricingInput,
     pricingResult,
@@ -219,7 +203,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     publishJobsNextCursor,
     publishJobsLoading,
     publishJobsLastUpdated,
-    publishLogs,
     activeMarketplace,
     platformOptions,
     publishResult,
@@ -229,6 +212,5 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     loadMorePublishJobs,
     selectPublishJob,
     reconcileSelectedPublishJob,
-    refreshPublishLogs,
   }
 })

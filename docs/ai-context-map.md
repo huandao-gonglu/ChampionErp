@@ -1192,5 +1192,7 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 ### 工作台导航
 
+- 发布日志 Tab、仪表盘日志摘要及其前端加载链路已退役。后端 `publish_logs` 表、发布产物、日志写入、`GET /api/publish-logs` 和 AI `publish_logs_query` 继续保留；`schemas/ai_page_context.py` 继续读取历史 `logs` 页面快照。
+
 - 待处理 Tab 及仪表盘的待处理统计、待办队列已退役，不再按商品索引状态生成待办。商品库、草稿箱及各领域任务继续使用原有索引和业务状态。
 - 前端页面背景只包含现有页面；`schemas/ai_page_context.py` 保留历史 `pending` 页面快照的读取与校验，不作为当前导航入口。
