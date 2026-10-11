@@ -56,7 +56,7 @@ describe('按物流设置选择采购地址', () => {
     expect(dom().text()).toContain('平台物流商：UNI')
     expect(dom().text()).toContain('暂无符合本单物流方案')
     await dom().get('form').trigger('submit'); expect(saveReceivingWarehouse).not.toHaveBeenCalled()
-    expect(dom().get('a').attributes('href')).toBe('/settings?settings_section=logistics')
+    expect(dom().get('a').attributes('href')).toBe('/auth?auth_section=crossborderbus&bus_section=rules')
   })
   it('已有采购补录要求核对包裹实际地址', async () => {
     open({ ...value(), has_purchases: true }); await flushPromises()

@@ -87,7 +87,7 @@
 | L2 | 在线商品页面 | 有 queued/running 任务且页面可见时每 5 秒读本地；隐藏/卸载停止定时读取 | 否；运行中任务的本地刷新保留，已删除依赖旧 A4 计划的无效定时器 |
 | L3 | 选品页面 | 运行中每 2 秒读任务状态；隐藏时跳过，终态/错误/卸载停止 | 否 |
 | L4 | 全局外部请求异常提醒 | 有被观察操作 ID 时每轮约 5 秒查询 `/api/external-requests/status`；卸载停止 | 否，只读审计 |
-| L5 | 授权页请求管理面板 | 页面打开每轮约 5 秒读取请求状态；另每 1 秒更新倒计时；卸载停止 | 否，只读审计；倒计时不发请求 |
+| L5 | 系统设置请求管理面板 | 页面打开每轮约 5 秒读取请求状态；另每 1 秒更新倒计时；卸载停止 | 否，只读审计；倒计时不发请求 |
 | L6 | AI 聊天恢复 | 优先 SSE；无 EventSource、停止中或回执同步时约 0.2–2 秒读本地；读取失败最多额外 3 次指数退避；轮询随任务结束停止，但选中聊天的 SSE 会继续重连，切换/释放聊天时清理 | 状态读取不执行模型；既有后台 Agent run 可能继续外发 |
 | L7 | 商品采集人工验证等待 | 遇到登录/验证码后每 2 秒调用本地检查接口，经 CDP 读取原商品页；验证完成、取消或不可用时停止，无固定次数上限 | 检查不刷新远端页面；验证通过后自动继续原采集流程，可能产生采集请求 |
 | L8 | Agent Job 扫描 | 后端每 1 秒读持久工具/领域 Job、投递已授权任务和回执；服务停止结束 | 本地对账不查询第三方；有待执行工具或原生续跑时会产生业务/模型请求 |
@@ -96,7 +96,7 @@
 | L11 | AI SSE 心跳与重连 | 每条 SSE 连接每秒检查本地历史版本，最多约 60 秒后关闭；前端约 1 秒后回读并重连，选中的聊天即使没有活跃运行也可持续连接 | 否，只读本地；本次不调整 |
 | L12 | 订单截止时间、Toast、复制提示、下载 URL 释放 | 订单时钟每 60 秒；其余是一次性 UI 定时器 | 不产生 API 请求 |
 
-源码：[订单前端 Store](../front/src/stores/orderNotifications.ts)、[在线商品页](../front/src/components/domain/OnlineProductsPanel.vue)、[选品页](../front/src/components/domain/ProductResearchPanel.vue)、[全局请求提醒](../front/src/components/common/ExternalRequestNotice.vue)、[请求管理页](../front/src/components/auth/ExternalRequestControlPanel.vue)、[AI Store](../front/src/stores/aiChat.ts)、[采集等待](../front/src/stores/workflow/actions/collection.ts)、[Job 扫描](../erp_web/services/agent_job_service.py)、[服务启动](../erp_web/server.py)。
+源码：[订单前端 Store](../front/src/stores/orderNotifications.ts)、[在线商品页](../front/src/components/domain/OnlineProductsPanel.vue)、[选品页](../front/src/components/domain/ProductResearchPanel.vue)、[全局请求提醒](../front/src/components/common/ExternalRequestNotice.vue)、[请求管理页](../front/src/components/settings/ExternalRequestControlPanel.vue)、[AI Store](../front/src/stores/aiChat.ts)、[采集等待](../front/src/stores/workflow/actions/collection.ts)、[Job 扫描](../erp_web/services/agent_job_service.py)、[服务启动](../erp_web/server.py)。
 
 ## 5. 实际审计样本
 

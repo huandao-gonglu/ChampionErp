@@ -1141,7 +1141,7 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 授权和默认方案在已有授权模块中配置；Yandex FBS 在采购前确定收货仓，报单仅沿用该仓选择服务，不依赖全局默认方案。
 `GET/POST /api/orders/receiving-warehouse` 经 `fulfillment_routes.py` 和 `fulfillment_facade.py` 委托给 `ReceivingWarehouseService`。`schemas/receiving_warehouse.py::delivery_carrier` 仅从归属已校验且可用的 Yandex IMPORT 交货点名称前缀识别承运商，保留 GUOO(GTA) 与 GBS(GUOO) 的区分；缺失、未知或冲突时返回待确认，不使用 `deliveryPartnerType`、`Самовывоз`、卖家仓或地址备注猜测。名称及识别依据返回收货仓界面；物流来源指纹包含识别结果，不包含官方交货点 ID 或地址。`stores/receiving_warehouse_store.py` 与采购共用订单数据库，保存本单地址及规则快照；采购前验证配置版本、启用状态及承接范围，采购后配置编辑不会改写冻结地址。
 
-`GET /api/logistics/settings`、`POST /api/logistics/refresh`、`POST /api/logistics/address` 经同一薄路由和 facade 委托 `services/logistics_settings_service.py`。`schemas/logistics.py` 定义 Yandex 平台物流商枚举，地址规则只按平台和物流商匹配，默认地址仅影响排序。Express/Economy 及交货节点范围已退役；持久化旧规则可读，只保留已确认的平台和物流商用于地址匹配，原采购快照不重写。`stores/logistics_store.py` 按跨境巴士授权身份及合作仓保存多地址，用版本校验阻止覆盖；旧 `receiving_warehouse_profiles` 只迁移地址、不迁移自由文本承接能力，迁移标记防止重复导入。前端入口为独立 `SystemSettingsPanel.vue` 内的 `components/settings/LogisticsSettingsPanel.vue`，不挂在平台授权中。`/settings?settings_section=logistics` 直达；旧授权深链仍兼容。采购弹窗只提交地址 ID 和配置版本，平台物流商由服务端从订单解析，不接受物流商、运输方式或自由地址覆盖；识别不到物流商时阻止选仓并提示同步平台交货信息。
+`GET /api/logistics/settings`、`POST /api/logistics/refresh`、`POST /api/logistics/address` 经同一薄路由和 facade 委托 `services/logistics_settings_service.py`。`schemas/logistics.py` 定义 Yandex 平台物流商枚举，地址规则只按平台和物流商匹配，默认地址仅影响排序。Express/Economy 及交货节点范围已退役；持久化旧规则可读，只保留已确认的平台和物流商用于地址匹配，原采购快照不重写。`stores/logistics_store.py` 按跨境巴士授权身份及合作仓保存多地址，用版本校验阻止覆盖；旧 `receiving_warehouse_profiles` 只迁移地址、不迁移自由文本承接能力，迁移标记防止重复导入。前端入口为「平台授权 → 跨境巴士 → 默认履约」内的 `components/settings/LogisticsSettingsPanel.vue`，由 `CrossborderBusSettingsPanel.vue` 展示；默认方案卡片及专属编辑弹窗已移除，既有持久化规则和后端匹配、自动预报行为保留。`/auth?auth_section=crossborderbus&bus_section=rules` 直达；旧物流设置深链跳转到此处。采购弹窗只提交地址 ID 和配置版本，平台物流商由服务端从订单解析，不接受物流商、运输方式或自由地址覆盖；识别不到物流商时阻止选仓并提示同步平台交货信息。
 `POST /api/logistics/parse-address` 只接收地址文本，经同一 facade 复用 `services/alibaba_purchase_address.py::parse_address`；不依赖订单、商品行、1688 授权或数据库。物流地址编辑器填充同一地址形状并展示缺失字段提示，解析不自动保存地址或改变支持的物流商。
 `OrderReceivingWarehouse.vue` / `ReceivingWarehouseDialog.vue` 位于商品采购前，从物流设置筛选已合作 Yandex 仓的具体收货地址，只选择匹配本单平台物流商的地址。`order_purchases` 中的有效记录、`order_purchase_reservations` 中的 reserved 占位以及已创建/结果未知的履约单阻止换仓；这与采购占位在同一数据库事务内校验。历史采购缺少仓库快照时必须补录并确认实际寄往地址；未知采购期间不能补录。原 `fulfillment_warehouse_links` 历史数据保留，但新流程不读取或写入。
 `services/fulfillment_routing.py` 提取官方交货地址供展示和备注；地址本身不参与仓库匹配，物流商由可用的 IMPORT 交货信息识别。`FulfillmentPlanDialog.vue` 固定采购收货仓，`FulfillmentPlanFields.vue` 实时读取基础单选、附加多选及费用；保存及提交复核收货仓版本和物流方案，官方地址变化不使方案失效，平台物流商缺失或变化则须重新核对。
@@ -1152,13 +1152,13 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 ### 平台请求中断与恢复
 
-- `http_route_units/external_request_routes.py` → `facades/external_request_facade.py` → `services/external_request_control_service.py` 为授权页统一中断查询与恢复入口；契约在 `schemas/external_request_control.py`。恢复只改变外部请求 Store 的放行条件，不执行业务请求。
+- `http_route_units/external_request_routes.py` → `facades/external_request_facade.py` → `services/external_request_control_service.py` 为系统设置统一中断查询与恢复入口；契约在 `schemas/external_request_control.py`。恢复只改变外部请求 Store 的放行条件，不执行业务请求。
   `POST /api/external-requests/history/clear` 在用户确认后清理历史中断；使用页面快照的时间上界，Store 在短事务内重查当前保护范围。
   保留当前阻断的已发送依据、最近十分钟控制窗口、未完成请求、尚未确认恢复的未知写入、重试父记录、成功审计及恢复记录；旧的重复本地拦截可清理，阻断计数不变。人工恢复按范围和时间关联历史，已确认恢复的未知写入也可清理；后续新阻断不得重新保护在其创建前已确认处理的旧记录，本轮故障依据仍保留。系统检查记录不视为人工确认。审计库 v2 保留 v1 迁移能力。
   请求级明确拒绝与未知写入分开展示：前者只限制原操作中的原请求，填写处理原因可解除；后者须核对业务回执。服务与 Store 共用 `schemas/external_requests.py` 的明确拒绝判定，存储事务校验故障及创建时间，旧快照不能解除重新产生的同类故障。
-  授权页同类明确拒绝按平台、真实账号、审计关联接口与完整拒绝状态分组；组身份绑定所有成员快照。聚合只影响展示与明确恢复选择，不扩大实际阻断范围，恢复在同一事务内逐条留审计。
+  系统设置内同类明确拒绝按平台、真实账号、审计关联接口与完整拒绝状态分组；组身份绑定所有成员快照。聚合只影响展示与明确恢复选择，不扩大实际阻断范围，恢复在同一事务内逐条留审计。
 - `stores/external_request_store.py` 在短事务中持久化冷却、唯一探测租约、退避及恢复记录；只读临时故障可自愈，明确平台限制与未知写入不得隐式解除。旧永久阻断仅凭完整只读临时失败审计迁入冷却。
-- `http_handler.py` 与 `external_request_context.py` 仅收集真实请求拒绝和领域操作关联；前端 `ExternalRequestNotice.vue` 提示用户发起的操作受阻并直达授权页，`ExternalRequestControlPanel.vue` 负责统一倒计时、记录及人工恢复。提示不替代业务结果，不创建第二套任务协议。
+- `http_handler.py` 与 `external_request_context.py` 仅收集真实请求拒绝和领域操作关联；前端 `ExternalRequestNotice.vue` 提示用户发起的操作受阻并直达「系统设置 → 中断与恢复」，`components/settings/ExternalRequestControlPanel.vue` 负责统一倒计时、记录及人工恢复。提示不替代业务结果，不创建第二套任务协议。
 - 订单同步状态从完整历史和当前账号的真实外发范围汇总，不受最近 50 条通知限制。Yandex 订单归属 campaign，外部请求阻断归属 business；不得混用。详情见 [外部请求管理](external-request-management.md)。
 
 

@@ -49,6 +49,7 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
 describe('AuthSettingsPanel credential lifecycle', () => {
   it('1688 独立授权只保存自身配置，采购查询测试保留长订单号并沿用保存的凭据', async () => {
     const wrapper = mountPanel()
+    expect(wrapper.find('[data-testid="auth-settings-tab-interruptions"]').exists()).toBe(false)
     await wrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
     expect(wrapper.get('[data-testid="test-1688-order"]').attributes('disabled')).toBeDefined()
     await wrapper.get('[data-testid="1688-test-order-number"]').setValue('3317081160226242182')

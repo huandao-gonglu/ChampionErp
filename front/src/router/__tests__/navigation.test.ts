@@ -19,14 +19,10 @@ describe('工作流顶级导航', () => {
     expect(navKeys).toContain('publish')
     expect(router.resolve({ name: 'WorkflowHome' }).meta.keepAlive).toBe(true)
 
-    await router.push('/settings?settings_section=logistics')
+    await router.push('/settings')
     expect(router.currentRoute.value.query.tab).toBe('systemSettings')
-    expect(router.currentRoute.value.query.settings_section).toBe('logistics')
     await router.push('/settings?auth_section=crossborderbus')
     expect(router.currentRoute.value.query.tab).toBe('auth')
-    await router.push('/settings?auth_section=logistics')
-    expect(router.currentRoute.value.query.tab).toBe('systemSettings')
-    expect(router.currentRoute.value.query.settings_section).toBe('logistics')
     await router.push('/pricing')
     expect(router.currentRoute.value.path).toBe('/')
     expect(router.currentRoute.value.query.tab).toBe('drafts')
@@ -43,5 +39,26 @@ describe('工作流顶级导航', () => {
     })
     expect(workspace.text()).toContain('核价')
     expect(workspace.text()).toContain('发布预检')
+  })
+  it.each([
+    '/settings?settings_section=interruptions',
+    '/auth?auth_section=interruptions',
+    '/settings?auth_section=interruptions',
+    '/?tab=auth&auth_section=interruptions',
+  ])('中断入口 %s 打开系统设置并保留平台定位', async entry => {
+    await router.push(`${entry}&request_platform=ozon&request_platform=yandex`)
+    expect(router.currentRoute.value.path).toBe('/')
+    expect(router.currentRoute.value.query).toEqual({ tab: 'systemSettings', settings_section: 'interruptions', request_platform: ['ozon', 'yandex'] })
+  })
+  it.each([
+    '/auth?auth_section=crossborderbus&bus_section=rules',
+    '/settings?settings_section=logistics',
+    '/settings?auth_section=logistics',
+    '/?tab=systemSettings&settings_section=logistics',
+    '/?tab=auth&auth_section=logistics',
+  ])('物流入口 %s 打开跨境巴士默认履约', async entry => {
+    await router.push(entry)
+    expect(router.currentRoute.value.path).toBe('/')
+    expect(router.currentRoute.value.query).toEqual({ tab: 'auth', auth_section: 'crossborderbus', bus_section: 'rules' })
   })
 })

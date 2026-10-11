@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { routeLocationKey } from 'vue-router'
-import LogisticsSettingsPanel from '@/components/settings/LogisticsSettingsPanel.vue'
-import PageHeader from '@/components/layout/PageHeader.vue'
+import ExternalRequestControlPanel from '@/components/settings/ExternalRequestControlPanel.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
-const section = ref<'general' | 'logistics'>('general')
+const tabs = [
+  { key: 'general', label: '通用设置', summary: '订单自动同步间隔' },
+  { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
+] as const
+const section = ref<'general' | 'interruptions'>('general')
 const route = inject(routeLocationKey, undefined)
-watch(() => route?.query.settings_section, value => { section.value = value === 'logistics' ? 'logistics' : 'general' }, { immediate: true })
+watch(() => route?.query.settings_section, value => {
+  section.value = value === 'interruptions' ? 'interruptions' : 'general'
+}, { immediate: true })
+const activeTab = computed(() => tabs.find(tab => tab.key === section.value) || tabs[0])
+
 const hours = ref(5)
 const savedHours = ref<number | null>(null)
 const loading = ref(true)
@@ -41,29 +48,49 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="space-y-6">
-    <PageHeader title="系统设置" />
-    <nav class="flex gap-3" aria-label="设置分类">
-      <button class="btn" :class="section === 'general' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="section === 'general'" @click="section = 'general'">通用设置</button>
-      <button class="btn" :class="section === 'logistics' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="section === 'logistics'" @click="section = 'logistics'">物流设置</button>
-    </nav>
-    <LogisticsSettingsPanel v-if="section === 'logistics'" class="rounded-3xl border border-accent-200 bg-white p-6 dark:border-white/10 dark:bg-dark-900/80" />
-    <form v-else id="system-settings-form" class="space-y-5 rounded-3xl border border-accent-200 bg-white p-6 text-accent-950 shadow-card dark:border-white/10 dark:bg-dark-900/80 dark:text-accent-100" @submit.prevent="save">
-      <p v-if="loading" role="status" class="text-sm text-accent-500">正在读取设置…</p>
-      <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }} <button v-if="savedHours === null" type="button" class="underline" :disabled="loading" @click="load">重试</button></p>
-      <fieldset :disabled="loading || saving || savedHours === null" class="space-y-3">
-        <legend class="mb-3 font-semibold">订单同步</legend>
-        <label for="orders-auto-sync-hours" class="block text-sm font-medium">自动同步间隔</label>
-        <div class="flex items-center gap-3">
-          <input id="orders-auto-sync-hours" v-model.number="hours" type="number" min="5" step="1" required class="input w-32" aria-describedby="orders-auto-sync-help" @input="message = ''" />
-          <span class="text-sm">小时</span>
+  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+    <h2 class="card-title">系统设置</h2>
+    <p class="muted mt-1">{{ activeTab.summary }}</p>
+    <div class="mt-5 overflow-x-auto rounded-lg border border-accent-200 bg-accent-50 p-1 dark:border-dark-700 dark:bg-dark-950/70">
+      <nav class="flex min-w-max gap-1" role="tablist" aria-label="系统设置分类">
+        <button
+          v-for="tab in tabs"
+          :id="`system-settings-tab-${tab.key}`"
+          :key="tab.key"
+          type="button"
+          class="min-w-32 rounded-lg px-4 py-3 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-primary-300"
+          :class="section === tab.key ? 'border border-primary-200 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100' : 'border border-transparent text-accent-600 hover:bg-white/80 hover:text-accent-950 dark:text-accent-300 dark:hover:bg-dark-900 dark:hover:text-white'"
+          role="tab"
+          :aria-selected="section === tab.key"
+          :aria-controls="`system-settings-panel-${tab.key}`"
+          @click="section = tab.key"
+        >
+          <span class="block whitespace-nowrap font-semibold">{{ tab.label }}</span>
+          <span class="mt-1 hidden whitespace-nowrap text-xs text-accent-500 dark:text-accent-400 md:block">{{ tab.summary }}</span>
+        </button>
+      </nav>
+    </div>
+    <section v-if="section === 'interruptions'" id="system-settings-panel-interruptions" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-interruptions">
+      <ExternalRequestControlPanel />
+    </section>
+    <section v-show="section === 'general'" id="system-settings-panel-general" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-general">
+      <form id="system-settings-form" class="space-y-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" @submit.prevent="save">
+        <p v-if="loading" role="status" class="text-sm text-accent-500">正在读取设置…</p>
+        <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }} <button v-if="savedHours === null" type="button" class="underline" :disabled="loading" @click="load">重试</button></p>
+        <fieldset :disabled="loading || saving || savedHours === null" class="space-y-3">
+          <legend class="mb-3 font-semibold">订单同步</legend>
+          <label for="orders-auto-sync-hours" class="block text-sm font-medium">自动同步间隔</label>
+          <div class="flex items-center gap-3">
+            <input id="orders-auto-sync-hours" v-model.number="hours" type="number" min="5" step="1" required class="input w-32" aria-describedby="orders-auto-sync-help" @input="message = ''" />
+            <span class="text-sm">小时</span>
+          </div>
+          <p id="orders-auto-sync-help" class="max-w-3xl text-sm leading-6 text-accent-500 dark:text-accent-300">至少 5 小时。进入订单中心时，距离上次自动同步达到此间隔才会同步订单、采购和仓库状态。手动同步不受限制。</p>
+        </fieldset>
+        <p v-if="message" role="status" class="text-sm text-green-700 dark:text-green-400">{{ message }}</p>
+        <div class="flex justify-end border-t border-accent-200 pt-5 dark:border-white/10">
+          <button type="submit" form="system-settings-form" class="btn btn-primary" :disabled="loading || saving || savedHours === null || !valid || hours === savedHours">{{ saving ? '保存中…' : '保存设置' }}</button>
         </div>
-        <p id="orders-auto-sync-help" class="max-w-3xl text-sm leading-6 text-accent-500 dark:text-accent-300">至少 5 小时。进入订单中心时，距离上次自动同步达到此间隔才会同步订单、采购和仓库状态。手动同步不受限制。</p>
-      </fieldset>
-      <p v-if="message" role="status" class="text-sm text-green-700 dark:text-green-400">{{ message }}</p>
-      <div class="flex justify-end border-t border-accent-200 pt-5 dark:border-white/10">
-        <button type="submit" form="system-settings-form" class="btn btn-primary" :disabled="loading || saving || savedHours === null || !valid || hours === savedHours">{{ saving ? '保存中…' : '保存设置' }}</button>
-      </div>
-    </form>
+      </form>
+    </section>
   </section>
 </template>

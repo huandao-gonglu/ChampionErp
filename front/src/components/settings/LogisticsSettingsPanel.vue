@@ -35,6 +35,7 @@ onBeforeUnmount(() => { disposed = true })
     <p v-if="busy" role="status">正在处理物流资料…</p><p v-if="error" role="alert" class="text-red-600">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <template v-if="settings">
       <p v-if="!settings.authorized">请先在跨境巴士设置中完成授权。</p>
+      <p v-else-if="!settings.warehouses.length" class="text-sm text-accent-500">当前账号暂无已合作仓库，请在跨境巴士确认合作关系后同步。</p>
       <label>合作仓库<select v-model.number="warehouseId" aria-label="合作仓库" class="input ml-3" :disabled="busy || !!editing"><option :value="0" disabled>请选择合作仓库</option><option v-for="w in warehouses" :key="w.id" :value="w.id">{{ w.name }} · ID {{ w.id }}{{ w.available ? '' : '（合作已失效）' }}</option></select></label>
       <div v-if="warehouseId && !editing" class="space-y-3">
         <button class="btn btn-primary" :disabled="busy || !warehouses.find(w => w.id === warehouseId)?.available" @click="editing = emptyLogisticsAddress(warehouseId)">新增收货地址</button>

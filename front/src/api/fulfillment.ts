@@ -1,15 +1,11 @@
 import { apiClient } from './client'
-import type { BusServices, BusSettings, FulfillmentDetail, FulfillmentRule } from '@/types/fulfillment'
+import type { BusServices, BusSettings, FulfillmentDetail } from '@/types/fulfillment'
 
 export async function fetchBusSettings(): Promise<BusSettings> {
   return (await apiClient.get<BusSettings>('/api/crossborderbus/settings')).data
 }
-export async function busCommand(action: 'authorize' | 'catalog' | 'delete-rule', body: Record<string, unknown> = {}): Promise<BusSettings> {
+export async function busCommand(action: 'authorize' | 'catalog', body: Record<string, unknown> = {}): Promise<BusSettings> {
   return (await apiClient.post<BusSettings>(`/api/crossborderbus/${action}`, body)).data
-}
-export async function saveFulfillmentRule(rule: FulfillmentRule): Promise<BusSettings> {
-  const body = Object.fromEntries(['id', 'platform', 'account_id', 'fulfillment', 'platform_warehouse_id', 'delivery_method_id', 'delivery_method_name', 'country', 'section_id', 'warehouse_id', 'service_ids', 'compatible_warehouse_ids', 'confirmed', 'auto_submit'].map(key => [key, rule[key as keyof FulfillmentRule]]))
-  return (await apiClient.post<BusSettings>('/api/crossborderbus/save-rule', body)).data
 }
 export async function fetchBusServices(sectionId: number, warehouseId: number): Promise<BusServices> {
   return (await apiClient.get<BusServices>('/api/crossborderbus/services', { params: { section_id: sectionId, warehouse_id: warehouseId } })).data

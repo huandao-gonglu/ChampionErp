@@ -1036,7 +1036,7 @@ def test_order_platform_images_keep_online_reads_in_store_and_assembly_in_facade
     assert "erp_web.runtime_units.online_yandex.YandexOnlineAdapter" not in targets
 
 
-def test_request_recovery_is_owned_by_authorization_and_never_replays_business():
+def test_request_recovery_is_owned_by_system_settings_and_never_replays_business():
     route = ROOT / 'erp_web/http_route_units/external_request_routes.py'
     assert not any(target.startswith(('erp_web.runtime_units', 'erp_web.services', 'erp_web.stores')) for _, target in imported_targets([route]))
     service = ROOT / 'erp_web/services/external_request_control_service.py'
@@ -1045,7 +1045,8 @@ def test_request_recovery_is_owned_by_authorization_and_never_replays_business()
     assert '/api/external-requests/recover' in POST_API_ROUTES
     assert '/api/external-requests/history/clear' in POST_API_ROUTES
     assert '/api/orders/recover-sync' not in POST_API_ROUTES
-    assert 'ExternalRequestControlPanel' in (ROOT / 'front/src/components/auth/AuthSettingsPanel.vue').read_text()
+    assert 'ExternalRequestControlPanel' in (ROOT / 'front/src/components/domain/SystemSettingsPanel.vue').read_text()
+    assert 'ExternalRequestControlPanel' not in (ROOT / 'front/src/components/auth/AuthSettingsPanel.vue').read_text()
     assert 'recover-sync' not in (ROOT / 'front/src/components/domain/OrderSyncStatusPanel.vue').read_text()
 
 

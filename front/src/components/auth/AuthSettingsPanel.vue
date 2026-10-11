@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import ExternalRequestControlPanel from './ExternalRequestControlPanel.vue'
 import { computed, inject, reactive, ref, watch } from 'vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
@@ -71,11 +70,11 @@ const form = reactive({
 })
 
 const selectedStorePlatform = ref<Marketplace>('mercadolibre')
-type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting' | 'crossborderbus' | 'interruptions' | 'alibaba'
+type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting' | 'crossborderbus' | 'alibaba'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const authRoute = inject(routeLocationKey, undefined)
 watch(() => authRoute?.query.auth_section, section => {
-  if (section === 'crossborderbus' || section === 'interruptions' || section === 'alibaba') activeAuthSettingsTab.value = section
+  if (section === 'crossborderbus' || section === 'alibaba') activeAuthSettingsTab.value = section
 }, { immediate: true })
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
@@ -123,7 +122,6 @@ const storePlatforms = computed(() => props.platformOptions.map((platform) => ({
 })))
 
 const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: string }> = [
-  { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
   { key: 'ai_models', label: 'AI 模型', summary: '配置模型、能力和连接测试' },
   { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
   { key: 'stores', label: '店铺授权', summary: '按一级平台保存，子站点共用凭证' },
@@ -131,7 +129,7 @@ const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: st
   { key: 'apis', label: '核价汇率', summary: '汇率 API 与缓存设置' },
   { key: 'image_hosting', label: '图片托管', summary: 'S3 存储、默认目标与公开读取测试' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
-  { key: 'crossborderbus', label: '跨境巴士', summary: '账号授权与默认履约方案' },
+  { key: 'crossborderbus', label: '跨境巴士', summary: '账号授权与物流收货地址' },
 ]
 
 const capabilityOptions = [
@@ -1802,7 +1800,6 @@ function copy(text: string) {
       </div>
 
       <div class="mt-5">
-        <ExternalRequestControlPanel v-if="activeAuthSettingsTab === 'interruptions'" />
         <section v-show="activeAuthSettingsTab === 'ai_models'" class="relative rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
           <div v-if="aiControlsLocked" class="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-slate-950/15 p-4 backdrop-blur-sm dark:bg-slate-950/45">
             <div class="flex min-w-64 flex-col items-center rounded-lg border border-accent-200 bg-white px-6 py-5 text-center shadow-lg dark:border-dark-700 dark:bg-dark-900">

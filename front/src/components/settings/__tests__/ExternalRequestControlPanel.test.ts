@@ -26,7 +26,7 @@ async function render() {
   await flushPromises()
   return wrapper
 }
-describe('授权页统一中断恢复', () => {
+describe('系统设置统一中断恢复', () => {
   it('清理全部分页中的旧记录需确认，完成后回到第一页并保留当前阻断', async () => {
     vi.mocked(fetchRequestControl).mockResolvedValue({ ...status(), total: 150, clearable_count: 120 })
     const wrapper = await render()

@@ -44,7 +44,7 @@ onBeforeUnmount(() => { version++ })
     <form id="receiving-warehouse" class="order-form" @submit.prevent="save">
       <p v-if="error" role="alert" class="order-error">{{ error }}</p>
       <p v-if="loading" role="status">正在读取可用收货地址…</p>
-      <div class="flex items-center gap-3"><a class="order-link" href="/settings?settings_section=logistics" target="_blank" rel="noopener noreferrer">管理物流设置</a><button type="button" class="order-button" :disabled="loading || saving" @click="load(true)">刷新地址</button></div>
+      <div class="flex items-center gap-3"><a class="order-link" href="/auth?auth_section=crossborderbus&bus_section=rules" target="_blank" rel="noopener noreferrer">管理物流设置</a><button type="button" class="order-button" :disabled="loading || saving" @click="load(true)">刷新地址</button></div>
       <fieldset :disabled="loading || saving" class="order-form">
         <p>平台物流商：{{ view.delivery_name || '待同步' }}</p>
         <p v-if="view.delivery_evidence.length" class="order-muted">平台交货信息：{{ view.delivery_evidence.join('；') }}</p>

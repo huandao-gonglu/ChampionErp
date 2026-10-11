@@ -5,7 +5,7 @@ import { externalRequestNotices, externalObservationRevision, observedExternalOp
 const current = computed(() => externalRequestNotices.value[0])
 const platforms = computed(() => [...new Set(current.value?.items.map(item => item.platform) || [])])
 const title = computed(() => `${current.value?.source}：${platforms.value.map(requestPlatformName).join('、')} 请求受阻`)
-const destination = computed(() => ({ path: '/', query: { tab: 'auth', auth_section: 'interruptions', request_platform: platforms.value } }))
+const destination = computed(() => ({ path: '/', query: { tab: 'systemSettings', settings_section: 'interruptions', request_platform: platforms.value } }))
 let timer: ReturnType<typeof setTimeout> | undefined
 let stopped = false
 let checking = false
@@ -22,7 +22,7 @@ async function check() {
       const { data } = await apiClient.get('/api/external-requests/status', { params, timeout: 10000 })
       if (!stopped) acceptExternalNotices(data.notices || [])
     }
-  } catch { /* 原功能和授权页保留错误；提醒读取失败不冒充业务失败。 */ }
+  } catch { /* 原功能和系统设置保留错误；提醒读取失败不冒充业务失败。 */ }
   finally {
     checking = false
     if (!stopped) timer = setTimeout(check, checkAgain ? 0 : 5000)
@@ -48,7 +48,7 @@ onBeforeUnmount(() => { stopped = true; clearTimeout(timer) })
     <p v-else class="mt-3 text-sm">本提醒仅说明上述平台的请求受阻，不代表整个操作的最终结果。</p>
     <div class="mt-3 flex gap-3">
       <RouterLink class="btn btn-primary" :to="destination" @click="dismissExternalNotice">
-        前往平台授权处理
+        前往中断与恢复
       </RouterLink>
       <button class="btn btn-outline" @click="dismissExternalNotice">关闭</button>
     </div>
