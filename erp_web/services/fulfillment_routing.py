@@ -1,4 +1,4 @@
-"""平台交货点身份与跨境仓对应；不同系统的 ID 不直接比较。"""
+"""官方交货信息的展示及仓库服务校验；交货点不决定采购收货仓。"""
 
 import hashlib
 import json
@@ -24,7 +24,7 @@ def handover_target(order, bus_identity):
         point = shipment.destination if shipment.shipment_type == "IMPORT" else shipment.origin if shipment.shipment_type == "WITHDRAW" else None
         if not point or not point.address.strip():
             return {**result, "reason": "订单交货地址不完整，请先同步并核对"}
-        # 不使用批次号，允许后续订单复用；同 ID 地址变更时重新确认。
+        # 展示身份用于核对地址备注；不再用于选择或绑定合作仓。
         identity = [order.platform, order.account_id, bus_identity, shipment.shipment_type,
                     point.id, _normalized(point.name), _normalized(point.address)]
         key = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()

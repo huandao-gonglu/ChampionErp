@@ -7,7 +7,9 @@ import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
 import OrderProcurementLine from './OrderProcurementLine.vue'
 import OrderPurchaseDialog from './OrderPurchaseDialog.vue'
+import AlibabaBatchPurchaseDialog from './AlibabaBatchPurchaseDialog.vue'
 import OrderFulfillmentPanel from './OrderFulfillmentPanel.vue'
+import OrderReceivingWarehouse from './OrderReceivingWarehouse.vue'
 import OrderHandoverPanel from './OrderHandoverPanel.vue'
 import { amountLabel, deadline, money, platformStatusLabel, platformStatusNote, stateTone } from './orderPresentation'
 import type { OrderDetailTab } from './orderPresentation'
@@ -20,6 +22,7 @@ const error = ref('')
 const loading = ref(false)
 const locks = reactive(new Set<string>())
 const purchaseKey = ref('')
+const batchPurchaseOpen = ref(false)
 const purchaseItem = computed(() =>
   detail.value?.lines.find((line) => line.selection.line_key === purchaseKey.value)
 )
@@ -27,7 +30,7 @@ const totals = computed(() => ({
   ordered: detail.value?.lines.reduce((sum, line) => sum + line.line.quantity, 0) || 0,
   purchased: detail.value?.lines.reduce((sum, line) => sum + line.purchased_quantity, 0) || 0,
 }))
-const locked = computed(() => locks.size > 0 || !!purchaseKey.value || fulfillmentLocked.value)
+const locked = computed(() => batchPurchaseOpen.value || locks.size > 0 || !!purchaseKey.value || fulfillmentLocked.value)
 watch(() => props.tab, tab => { if (!locked.value) activeTab.value = tab })
 function selectTab(tab: OrderDetailTab) {
   if (locked.value) return
@@ -130,9 +133,17 @@ onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
         <button class="order-button" :class="{ 'order-primary': activeTab === 'fulfillment' }" :disabled="locked" @click="selectTab('fulfillment')">跨境履约</button>
       </nav>
       <OrderFulfillmentPanel v-if="activeTab === 'fulfillment'" :order="detail" @purchase-updated="update" @updated="load(); emit('updated')" @lock="fulfillmentLocked = $event" />
+      <OrderHandoverPanel
+        v-if="detail.order.platform === 'yandex' && (detail.order.delivery?.fulfillment_model || detail.order.fulfillment).toUpperCase() === 'FBS'"
+        v-show="activeTab === 'procurement'"
+        :order="detail.order"
+        @lock="setLock('address-note', $event)"
+      />
+      <OrderReceivingWarehouse v-if="activeTab === 'procurement' && detail.order.platform === 'yandex' && (detail.order.delivery?.fulfillment_model || detail.order.fulfillment).toUpperCase() === 'FBS'" :order-id="detail.order.id" :line-key="detail.lines[0]?.selection.line_key || ''" :purchase-state="JSON.stringify(detail.lines.map(line => [line.remaining_quantity, line.records.map(record => [record.id, record.status])]))" @lock="setLock('receiving-warehouse', $event)" @updated="load(); emit('updated')" />
       <div v-if="activeTab === 'procurement'" class="order-section-heading">
         <h3>商品与采购</h3>
-        <span class="order-muted">逐项核对规格并登记采购</span>
+        <button v-if="detail.order.platform === 'yandex' && (detail.order.delivery?.fulfillment_model || detail.order.fulfillment).toUpperCase() === 'FBS'" class="order-button order-primary" :disabled="locked" @click="batchPurchaseOpen = true">1688 批量采购</button>
+        <span v-else class="order-muted">逐项核对规格并登记采购</span>
       </div>
       <div v-if="activeTab === 'procurement'" class="order-product-list">
         <OrderProcurementLine
@@ -148,12 +159,6 @@ onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
       <p v-if="activeTab === 'procurement' && !detail.lines.length" class="order-muted py-8">
         平台尚未提供商品明细，请同步订单后重试。
       </p>
-      <OrderHandoverPanel
-        v-if="detail.order.platform === 'yandex' && (detail.order.delivery?.fulfillment_model || detail.order.fulfillment).toUpperCase() === 'FBS'"
-        v-show="activeTab === 'procurement'"
-        :order="detail.order"
-        @lock="setLock('address-note', $event)"
-      />
     </template>
     <template #footer>
       <div class="order-actions justify-end">
@@ -161,6 +166,7 @@ onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
       </div>
     </template>
   </WorkspaceDialog>
+  <AlibabaBatchPurchaseDialog v-if="batchPurchaseOpen" :order-id="orderId" @close="batchPurchaseOpen = false" @updated="load(); emit('updated')" />
   <OrderPurchaseDialog
     v-if="purchaseItem"
     :item="purchaseItem"

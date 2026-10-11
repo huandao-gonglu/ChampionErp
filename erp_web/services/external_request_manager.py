@@ -65,7 +65,7 @@ class ExternalRequestManager:
         return delay
 
     def result(self, request_id, ctx, status, headers, raw, *, method=""):
-        failure = classify_response(ctx.platform,status,headers,raw,method=method)
+        failure = classify_response(ctx.platform,status,headers,raw,method=method,interface=ctx.interface)
         pause = failure or response_quota_pause(ctx.platform,headers)
         if pause:
             if self.store.block(ctx,pause):
@@ -73,7 +73,7 @@ class ExternalRequestManager:
         # 不保存错误原文、URL 参数、请求体或任意响应字段。
         request_id_header = str(headers.get("X-Request-Id") or headers.get("Request-Id") or "")
         request_id_header = request_id_header if re.fullmatch(r"[a-zA-Z0-9_-]{1,100}",request_id_header) else ""
-        self.store.finish(request_id,result={"http_status":status,"platform_request_id":request_id_header,"platform_error_codes":platform_error_codes(raw) if failure else [],
+        self.store.finish(request_id,result={"http_status":status,"platform_request_id":request_id_header,"platform_error_codes":platform_error_codes(raw,platform=ctx.platform) if failure else [],
             "outcome":"failed" if failure else "success", "failure":asdict(failure) if failure else None,"next_request_pause":asdict(pause) if pause and not failure else None})
         if failure:
             self.store.record_failure_streak(ctx)

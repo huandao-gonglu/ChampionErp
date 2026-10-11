@@ -12,7 +12,17 @@ def handle_recover(handler):
         handler.send_json({'ok': False, 'error': str(exc)}, 400)
 
 
-POST_HANDLERS = {'/api/external-requests/recover': handle_recover}
+def handle_clear_history(handler):
+    try:
+        handler.send_json(facade.clear_history(validate_request_payload(handler.read_body(), endpoint=handler.path)))
+    except ValueError as exc:
+        handler.send_json({'ok': False, 'error': str(exc)}, 400)
+
+
+POST_HANDLERS = {
+    '/api/external-requests/recover': handle_recover,
+    '/api/external-requests/history/clear': handle_clear_history,
+}
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_API_ROUTES = frozenset({'/api/external-requests/status'})
 

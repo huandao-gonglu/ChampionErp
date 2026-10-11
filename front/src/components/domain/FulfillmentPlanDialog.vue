@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { busCommand, fulfillmentCommand } from '@/api/fulfillment'
 import type { BusSection, FulfillmentDetail, FulfillmentPlan } from '@/types/fulfillment'
@@ -20,22 +20,17 @@ const noteShipment = computed(() => {
   })
 })
 const noteOpen = ref(false)
-const initialKey = props.value.handover_target?.key || ''
-const initialLinkRevision = props.value.warehouse_link?.revision || 0
+const initialReceivingRevision = props.value.receiving_warehouse?.revision || 0
 const plan = ref<FulfillmentPlan>({ section_id: props.value.plan?.section_id || 0, warehouse_id: props.value.plan?.warehouse_id || 0, service_ids: [...(props.value.plan?.service_ids || [])] })
 const remark = ref(props.value.remark || '')
 const sections = ref<BusSection[]>([])
 const loading = ref(true)
 const busy = ref(false)
 const ready = ref(false)
-const confirmed = ref(false)
-const remap = ref(false)
 const error = ref('')
-const needsConfirmation = computed(() => yandex.value && (!props.value.warehouse_link || remap.value))
-const warehouseLocked = computed(() => yandex.value && !!props.value.warehouse_link && !remap.value)
-const addressChanged = computed(() => initialKey !== (target.value?.key || '') || initialLinkRevision !== (props.value.warehouse_link?.revision || 0))
+const warehouseLocked = computed(() => yandex.value)
+const receivingChanged = computed(() => yandex.value && (!initialReceivingRevision || initialReceivingRevision !== (props.value.receiving_warehouse?.revision || 0)))
 let disposed = false
-watch(() => [plan.value.section_id, plan.value.warehouse_id], () => { confirmed.value = false })
 async function load() {
   loading.value = true
   error.value = ''
@@ -48,14 +43,14 @@ async function load() {
   finally { if (!disposed) loading.value = false }
 }
 async function save() {
-  if (busy.value || noteOpen.value || loading.value || !ready.value || addressChanged.value || (needsConfirmation.value && !confirmed.value)) return
+  if (busy.value || noteOpen.value || loading.value || !ready.value || receivingChanged.value) return
   busy.value = true
   error.value = ''
   try {
     emit('saved', await fulfillmentCommand('plan', props.value.erp_order_id, props.value.revision, {
       plan: plan.value,
       remark: remark.value,
-      ...(yandex.value ? { handover_key: initialKey, warehouse_link_revision: initialLinkRevision, confirm_warehouse: needsConfirmation.value && confirmed.value } : {}),
+      ...(yandex.value ? { receiving_revision: initialReceivingRevision } : {}),
     }))
   } catch (exc) { error.value = exc instanceof Error ? exc.message : '报单方案保存失败' }
   finally { busy.value = false }
@@ -67,6 +62,13 @@ onBeforeUnmount(() => { disposed = true })
   <WorkspaceDialog :open="true" title="设置报单方案" width="740px" class="order-ui" :close-disabled="busy || noteOpen" @close="emit('close')">
     <form id="fulfillment-plan" class="order-form" @submit.prevent="save">
       <p v-if="error" class="order-error" role="alert">{{ error }} <button type="button" class="order-link" :disabled="busy || loading" @click="load">重新读取仓库</button></p>
+      <section v-if="yandex && value.receiving_warehouse" class="handover-card">
+        <h3>采购收货仓：{{ value.receiving_warehouse.warehouse_name }}</h3>
+        <p>{{ value.receiving_warehouse.transport_service }}</p>
+        <p>{{ value.receiving_warehouse.address.fullName }} · {{ value.receiving_warehouse.address.mobile || value.receiving_warehouse.address.phone }}</p>
+        <p class="address">{{ [value.receiving_warehouse.address.provinceText, value.receiving_warehouse.address.cityText, value.receiving_warehouse.address.areaText, value.receiving_warehouse.address.townText, value.receiving_warehouse.address.address].filter(Boolean).join(' ') }}</p>
+      </section>
+      <p v-if="receivingChanged" role="alert" class="order-error">采购收货仓尚未确定或已变化，请在商品与采购中核对后重新打开。</p>
       <section v-if="yandex" class="handover-card">
         <div class="order-row">
           <h3>{{ target?.shipment_type === 'WITHDRAW' ? 'Yandex 揽收仓库' : 'Yandex 交货仓库' }}</h3>
@@ -74,23 +76,22 @@ onBeforeUnmount(() => { disposed = true })
         </div>
         <p>{{ target?.name || '尚未提供' }}<span v-if="target?.warehouse_id" class="order-muted"> · ID {{ target.warehouse_id }}</span></p>
         <p class="address">{{ target?.address || target?.reason }}</p>
-        <p v-if="addressChanged" role="alert" class="order-error">交货信息或仓库对应关系已变化，请关闭后重新选择。</p>
+        <p class="order-muted">平台交货信息，仅供核对。</p>
       </section>
       <p v-if="loading" role="status" class="order-muted">正在读取最新合作仓库…</p>
-      <template v-else-if="!yandex || target?.key">
+      <template v-else-if="!yandex || value.receiving_warehouse">
         <p v-if="!sections.length" class="order-muted">当前账号尚未返回可用的合作仓库。</p>
         <template v-else>
-          <p v-if="warehouseLocked" class="order-muted">已按确认过的交货地址对应到仓库。<button type="button" class="order-link" :disabled="busy" @click="remap = true">重新对应</button></p>
-          <FulfillmentPlanFields v-model="plan" :sections="sections" :disabled="busy || addressChanged" :section-locked="warehouseLocked || (!yandex && !!value.rule)" :warehouse-locked="warehouseLocked" :compatible-warehouse-ids="yandex ? undefined : value.rule?.compatible_warehouse_ids" @ready="ready = $event" />
-          <label v-if="needsConfirmation" class="order-check"><input v-model="confirmed" type="checkbox" :disabled="busy || !plan.warehouse_id" />我已核对地址，所选合作仓库就是上述交货仓库；保存后用于相同交货地址的订单。</label>
+          <p v-if="warehouseLocked" class="order-muted">报单沿用采购收货仓，请选择本次仓库服务。</p>
+          <FulfillmentPlanFields v-model="plan" :sections="sections" :disabled="busy || receivingChanged" :section-locked="warehouseLocked || (!yandex && !!value.rule)" :warehouse-locked="warehouseLocked" :compatible-warehouse-ids="yandex ? undefined : value.rule?.compatible_warehouse_ids" @ready="ready = $event" />
         </template>
       </template>
       <label for="fulfillment-remark">报单备注（选填）</label>
-      <textarea id="fulfillment-remark" v-model="remark" class="order-input" rows="3" maxlength="1000" :disabled="busy || noteOpen || addressChanged" placeholder="填写需要告知仓库的要求" />
+      <textarea id="fulfillment-remark" v-model="remark" class="order-input" rows="3" maxlength="1000" :disabled="busy || noteOpen || receivingChanged" placeholder="填写需要告知仓库的要求" />
       <p class="order-muted">留空则不发送备注。</p>
       <p class="order-muted">基础服务选一项，附加服务按需选择。编辑期间暂停本单自动预报。</p>
     </form>
-    <template #footer><div class="order-footer"><button type="button" class="order-button" :disabled="busy || noteOpen" @click="emit('close')">取消</button><button form="fulfillment-plan" class="order-button order-primary" :disabled="busy || noteOpen || loading || !ready || addressChanged || (needsConfirmation && !confirmed)">{{ busy ? '正在保存…' : '保存报单方案' }}</button></div></template>
+    <template #footer><div class="order-footer"><button type="button" class="order-button" :disabled="busy || noteOpen" @click="emit('close')">取消</button><button form="fulfillment-plan" class="order-button order-primary" :disabled="busy || noteOpen || loading || !ready || receivingChanged">{{ busy ? '正在保存…' : '保存报单方案' }}</button></div></template>
   </WorkspaceDialog>
 </template>
 <style scoped>

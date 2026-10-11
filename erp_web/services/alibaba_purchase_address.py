@@ -1,7 +1,8 @@
-"""采购地址的只读候选和本地文字提取；不猜缺失地区，不自动确认解析结果。"""
+"""采购地址的只读候选和本地文字提取；提取收货字段、忽略冗余资料。"""
 import hashlib
 import json
 import re
+import unicodedata
 
 from pydantic import ValidationError
 
@@ -59,48 +60,73 @@ def order_addresses(order, notes, accounts):
     return result
 
 
+_PHONE = re.compile(r"(?<!\d)(?:\+?86[- \t]?)?(?:(?P<mobile>1[3-9]\d[- \t]?\d{4}[- \t]?\d{4})|(?P<phone>0\d{2,3}[- \t]?\d{7,8}(?:[-转]\d{1,6})?))(?!\d)")
+_NAME_LABELS = {'收货人': 0, '收件人': 0, '联系人': 1, '姓名': 1}
+_ADDRESS_LABELS = {'收货地址': 0, '实际地址': 0, '地址': 1, '详细地址': 1}
+_PHONE_LABELS = {'收货电话': 0, '收件电话': 0, '收货手机号': 0, '收件手机号': 0,
+                 '联系电话': 1, '手机号': 1, '手机号码': 1, '手机': 1, '电话': 1, '固定电话': 1, '座机': 1,
+                 '备用电话': 3, '备用手机': 3}
+_IGNORED_LABELS = {'客服电话', '客服手机', '客服', '备用联系人', '备注', '收货时间', '工作时间', '营业时间',
+                   '业务范围', '支持物流', '微信', '微信号', 'QQ', '网址', '温馨提示', '注意事项'}
+_LABELS = re.compile('(?:' + '|'.join(sorted(set(_NAME_LABELS) | set(_ADDRESS_LABELS) | set(_PHONE_LABELS) | _IGNORED_LABELS | {'邮编'}, key=len, reverse=True)) + r')\s*[:：]')
+_PROVINCE = re.compile(r"北京市|上海市|天津市|重庆市|内蒙古自治区|广西壮族自治区|西藏自治区|宁夏回族自治区|新疆维吾尔自治区|(?:河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾)省")
+
+
 def parse_address(text):
-    """只提取明确文字。解析结果始终需要用户检查，缺失或歧义保留为空。"""
+    """优先提取收货字段，备用资料和备注不阻止填充；缺失信息仍需人工补全。"""
     fields = {key: "" for key in PurchaseAddress.model_fields}
     warnings = []
-    text = text.strip().replace("\r", "\n")
-    # 显式标签优先；多条联系人或电话不任选其一。
-    labels = r"(?:收货人|收件人|联系人|姓名|收货地址|详细地址|实际地址|地址|手机号|手机|电话|邮编)\s*[:：]"
-    pairs = list(re.finditer(labels, text))
+    text = unicodedata.normalize('NFKC', text).strip().replace("\r", "\n")
+    pairs = list(_LABELS.finditer(text))
     rest = text
-    names = []
+    names, addresses, phones = [], [], []
     for index, match in enumerate(pairs):
         end = pairs[index + 1].start() if index + 1 < len(pairs) else len(text)
         value = text[match.end():end].strip(" \n,，;；")
         label = match.group().rstrip(" :：")
-        if label in {"收货人", "收件人", "联系人", "姓名"}:
-            value = re.split(r"[\n,，;；]|(?=\s+(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d))", value, maxsplit=1)[0].strip()
-            names.append(value)
-            rest = rest.replace(text[match.start():match.end()] + value, " ", 1)
-        elif label == "邮编":
-            fields["postCode"] = value
-            rest = rest.replace(text[match.start():end], " ", 1)
-    if len(set(names)) == 1:
-        fields["fullName"] = names[0]
-    elif names:
-        warnings.append("存在多个联系人，请填写本次收货人")
-    phones = list(re.finditer(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)|(?<!\d)0\d{2,3}[- ]?\d{7,8}(?:[-转]\d{1,6})?(?!\d)", rest))
-    unique = {match.group() for match in phones}
-    if len(unique) == 1:
-        value = next(iter(unique))
-        fields["phone" if value.startswith("0") else "mobile"] = value
-    elif unique:
-        warnings.append("存在多个电话号码，请填写本次收货电话")
-    rest = re.sub(labels, " ", rest)
-    for value in unique:
-        rest = rest.replace(value, " ")
+        if label in _IGNORED_LABELS:
+            rest = rest.replace(text[match.start():end], ' ', 1)
+        elif label in _NAME_LABELS:
+            name = _PHONE.split(value, maxsplit=1)[0]
+            name = re.split(r"[\n,，;；]", name, maxsplit=1)[0].strip()
+            if name:
+                names.append((_NAME_LABELS[label], index, name))
+                name_end = text.index(name, match.end(), end) + len(name)
+                rest = rest.replace(text[match.start():name_end], ' ', 1)
+        elif label in _ADDRESS_LABELS and value:
+            addresses.append((_ADDRESS_LABELS[label], index, value))
+        elif label == '邮编':
+            postal = re.search(r'(?<!\d)\d{6}(?!\d)', value)
+            if postal and not fields['postCode']:
+                fields['postCode'] = postal.group()
+            rest = rest.replace(text[match.start():end], ' ', 1)
+    if names:
+        fields['fullName'] = min(names)[2]
+    for match in _PHONE.finditer(text):
+        preceding = next((p for p in reversed(pairs) if p.end() <= match.start()), None)
+        label = preceding.group().rstrip(' :：') if preceding else ''
+        if label in _IGNORED_LABELS or label == '邮编':
+            continue
+        key = 'mobile' if match.group('mobile') else 'phone'
+        value = re.sub(r'[- \t]' if key == 'mobile' else r'[ \t]', '', match.group(key)).replace('转', '-')
+        phones.append((_PHONE_LABELS.get(label, 2), match.start(), key, value))
+    # 同类多个号码按明确收货标签、普通电话、未标注、备用的顺序取首个。
+    for _, _, key, value in sorted(phones):
+        if not fields[key]:
+            fields[key] = value
+    rest = _PHONE.sub(' ', _LABELS.sub(' ', rest))
+    province = _PROVINCE.search(rest)
+    if province and not fields['fullName']:
+        before = rest[:province.start()].strip(" \n,，;；/、|")
+        if before and len(before) <= 30 and not re.search(r"[:：\n\d]", before):
+            fields['fullName'] = before
+    if addresses:
+        rest = _PHONE.sub(' ', min(addresses)[2])
     # 从明确的省级行政区起解析，避免把联系人或备注识别为地区。
-    province = re.search(r"北京市|上海市|天津市|重庆市|内蒙古自治区|广西壮族自治区|西藏自治区|宁夏回族自治区|新疆维吾尔自治区|(?:河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾)省", rest)
+    province = _PROVINCE.search(rest)
     if province:
         fields["provinceText"] = province.group()
-        before, tail = rest[:province.start()].strip(" \n,，;；"), rest[province.end():].strip()
-        if not names and not fields["fullName"] and before and len(before) <= 30 and not re.search(r"[:：\n\d]", before):
-            fields["fullName"] = before
+        tail = rest[province.end():].strip()
         if fields["provinceText"] in {"北京市", "上海市", "天津市", "重庆市"}:
             fields["cityText"] = fields["provinceText"]
             tail = tail.removeprefix(fields["cityText"]).strip()

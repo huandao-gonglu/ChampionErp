@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { createRouter, createWebHistory, type LocationQueryRaw, type RouteRecordRaw } from 'vue-router'
 import { updateDocumentTitle } from './title'
 
 const workflowComponent = () => import('@/views/workflow/WorkflowView.vue')
@@ -27,20 +27,24 @@ const legacyWorkflowEntries = [
   { path: '/media', tab: 'library', title: '商品库' },
   { path: '/pricing', tab: 'drafts', title: '草稿箱' },
   { path: '/publish', tab: 'publish', title: '发布队列' },
-  { path: '/settings', tab: 'auth', title: '设置' },
+  { path: '/settings', tab: 'systemSettings', title: '设置' },
   { path: '/auth', tab: 'auth', title: '授权' },
   { path: '/logs', tab: 'logs', title: '日志' },
 ] as const
 
 const legacyEntryRoutes: RouteRecordRaw[] = legacyWorkflowEntries.map((entry) => ({
   path: entry.path,
-  redirect: (to) => ({
-    name: 'WorkflowHome',
-    query: {
-      ...to.query,
-      tab: String(to.query.tab || entry.tab),
-    },
-  }),
+  redirect: (to) => {
+    const query: LocationQueryRaw = { ...to.query, tab: String(to.query.tab || entry.tab) }
+    if (entry.path === '/settings' && to.query.auth_section) {
+      if (to.query.auth_section === 'logistics') {
+        query.tab = 'systemSettings'
+        query.settings_section = 'logistics'
+        delete query.auth_section
+      } else query.tab = 'auth'
+    }
+    return { name: 'WorkflowHome', query }
+  },
   meta: { title: entry.title, hideInMenu: true },
 }))
 

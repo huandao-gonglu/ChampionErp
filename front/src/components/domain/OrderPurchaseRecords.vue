@@ -24,6 +24,12 @@ onBeforeUnmount(() => emit('lock', false))
         </div>
         <p class="order-muted">{{ record.source.supplier || record.source.source_platform }} · {{ record.source.specification }}</p>
         <p class="order-muted">来源 SKU：{{ record.source.source_sku_id || '未提供' }}</p>
+        <details v-if="record.receiving_warehouse" class="mt-2">
+          <summary class="order-link">当时收货仓：{{ record.receiving_warehouse.warehouse_name }}</summary>
+          <p class="order-muted mt-2">{{ record.receiving_warehouse.transport_service }}</p>
+          <p class="order-muted">{{ record.receiving_warehouse.address.fullName }} · {{ record.receiving_warehouse.address.mobile || record.receiving_warehouse.address.phone }}</p>
+          <p class="order-muted">{{ [record.receiving_warehouse.address.provinceText, record.receiving_warehouse.address.cityText, record.receiving_warehouse.address.areaText, record.receiving_warehouse.address.townText, record.receiving_warehouse.address.address].filter(Boolean).join(' ') }}</p>
+        </details>
         <div class="order-row mt-2">
           <span class="order-muted">{{ dateTime(record.created_at) }}</span>
           <div class="order-actions">

@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { DOMWrapper, enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { routeLocationKey } from 'vue-router'
 import ExternalRequestControlPanel from '../ExternalRequestControlPanel.vue'
-import { fetchRequestControl, recoverRequestBlock } from '@/api/externalRequests'
+import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import { clearRequestHistory, fetchRequestControl, recoverRequestBlock } from '@/api/externalRequests'
 import type { RequestControlStatus } from '@/api/externalRequests'
-vi.mock('@/api/externalRequests', () => ({ fetchRequestControl: vi.fn(), recoverRequestBlock: vi.fn() }))
+vi.mock('@/api/externalRequests', () => ({ fetchRequestControl: vi.fn(), recoverRequestBlock: vi.fn(), clearRequestHistory: vi.fn() }))
 enableAutoUnmount(afterEach)
 const now = 1800000000
 const status = (): RequestControlStatus => ({
-  ok: true, server_time: now, total: 2,
+  ok: true, server_time: now, total: 2, cleanup_before: now, clearable_count: 1,
   blocks: [{ id: 'block-1', platform: 'yandex', account: 'shop', scope: 'interface', http_status: 0, interface: '/orders', code: 'EXTERNAL_TRANSIENT_FAILURE', message: '网络暂时中断', created_at: now - 60, last_created_at: now - 60, count: 1, occurrences: [], blocked_count: 4, resume_at: now + 60, recovery_mode: 'probe' }],
   history: ['manual', 'background'].map((trigger, i) => ({ id: String(i), platform: 'yandex', interface: '/orders', trigger, created_at: now - i, code: 'EXTERNAL_NETWORK_INTERRUPTED', message: '网络中断', local_rejection: false })),
 })
@@ -17,6 +18,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(fetchRequestControl).mockResolvedValue(status())
   vi.mocked(recoverRequestBlock).mockResolvedValue({ ok: true, message: '已允许下一次只读请求检查恢复情况' })
+  vi.mocked(clearRequestHistory).mockResolvedValue({ ok: true, cleared_count: 1, message: '已清除 1 条历史中断记录' })
 })
 afterEach(() => vi.useRealTimers())
 async function render() {
@@ -25,6 +27,74 @@ async function render() {
   return wrapper
 }
 describe('授权页统一中断恢复', () => {
+  it('清理全部分页中的旧记录需确认，完成后回到第一页并保留当前阻断', async () => {
+    vi.mocked(fetchRequestControl).mockResolvedValue({ ...status(), total: 150, clearable_count: 120 })
+    const wrapper = await render()
+    await wrapper.findAll('button').find(b => b.text() === '下一页')!.trigger('click')
+    await flushPromises()
+    expect(fetchRequestControl).toHaveBeenLastCalledWith(50)
+    await wrapper.findAll('button').find(b => b.text() === '清除已处理记录')!.trigger('click')
+    expect(clearRequestHistory).not.toHaveBeenCalled()
+    expect(wrapper.get('form').text()).toContain('全部历史分页中可清理的 120 条')
+    expect(wrapper.get('form').text()).toContain('不会解除限制或重试请求')
+    vi.mocked(fetchRequestControl).mockResolvedValue({ ...status(), total: 30, clearable_count: 0 })
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(clearRequestHistory).toHaveBeenCalledWith(now)
+    expect(fetchRequestControl).toHaveBeenLastCalledWith(0)
+    expect(recoverRequestBlock).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('网络暂时中断')
+    expect(wrapper.text()).toContain('共 30 条中断记录')
+  })
+  it('清理确认框支持取消及完整遮罩手势，取消不删除记录', async () => {
+    const wrapper = await render()
+    const open = () => wrapper.findAll('button').find(b => b.text() === '清除已处理记录')!.trigger('click')
+    await open()
+    const pointer = { pointerId: 1, button: 0, isPrimary: true }
+    await wrapper.get('form').trigger('pointerdown', pointer)
+    await wrapper.get('dialog').trigger('pointerup', pointer)
+    expect(wrapper.get('dialog').element.open).toBe(true)
+    await wrapper.get('dialog').trigger('pointerdown', pointer)
+    await wrapper.get('dialog').trigger('pointerup', pointer)
+    await flushPromises()
+    expect(wrapper.get('dialog').element.open).toBe(false)
+    await open()
+    await wrapper.findAll('button').find(b => b.text() === '取消')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('dialog').element.open).toBe(false)
+    expect(clearRequestHistory).not.toHaveBeenCalled()
+  })
+  it('没有可清理记录时禁用清理按钮', async () => {
+    vi.mocked(fetchRequestControl).mockResolvedValue({ ...status(), clearable_count: 0 })
+    const wrapper = await render()
+    expect(wrapper.findAll('button').find(b => b.text() === '清除已处理记录')!.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('可清理 0 条')
+  })
+  it('清理失败保留列表和确认框，执行期间不重复提交或关闭', async () => {
+    let reject!: (error: Error) => void
+    vi.mocked(clearRequestHistory).mockImplementation(() => new Promise((_, fail) => { reject = fail }))
+    // 使用真实 Teleport，避免替身在 pending 更新时重建原生 dialog 节点。
+    const wrapper = mount(ExternalRequestControlPanel, { attachTo: document.body })
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '清除已处理记录')!.trigger('click')
+    await flushPromises()
+    const dialog = new DOMWrapper(document.body.querySelector('dialog')!)
+    expect(dialog.element.open).toBe(true)
+    await dialog.get('form').trigger('submit')
+    expect(dialog.get('form').text()).toContain('清理中…')
+    await dialog.get('form').trigger('submit')
+    expect(wrapper.findComponent(WorkspaceDialog).props('closeDisabled')).toBe(true)
+    await dialog.trigger('cancel')
+    const pointer = { pointerId: 1, button: 0, isPrimary: true }
+    await dialog.trigger('pointerdown', pointer)
+    await dialog.trigger('pointerup', pointer)
+    expect(dialog.element.open).toBe(true)
+    expect(clearRequestHistory).toHaveBeenCalledTimes(1)
+    reject(new Error('清理失败，请重试'))
+    await flushPromises()
+    expect(dialog.get('form').text()).toContain('清理失败，请重试')
+    expect(wrapper.text()).toContain('共 2 条中断记录')
+  })
   it('同类拒绝显示次数与时间范围，展开明细并按组确认恢复', async () => {
     const value = status()
     Object.assign(value.blocks[0]!, {

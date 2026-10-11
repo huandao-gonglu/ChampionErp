@@ -140,6 +140,10 @@ def handle_self_purchase_preview(handler):
     _self_purchase(handler, "preview")
 
 
+def handle_self_purchase_batch_preview(handler):
+    _self_purchase(handler, "batch-preview")
+
+
 def handle_self_purchase_parse_address(handler):
     _self_purchase(handler, "parse-address")
 
@@ -156,12 +160,23 @@ def handle_self_purchase_cashier(handler):
     _self_purchase(handler, "cashier")
 
 
+def handle_self_purchase_payment_status(handler):
+    _self_purchase(handler, "payment-status")
+
+
+def handle_self_purchase_pay(handler):
+    _self_purchase(handler, "pay")
+
+
 POST_HANDLERS = {
     "/api/orders/alibaba-purchase/parse-address": handle_self_purchase_parse_address,
     "/api/orders/alibaba-purchase/preview": handle_self_purchase_preview,
+    "/api/orders/alibaba-purchase/batch-preview": handle_self_purchase_batch_preview,
     "/api/orders/alibaba-purchase/create": handle_self_purchase_create,
     "/api/orders/alibaba-purchase/reconcile": handle_self_purchase_reconcile,
     "/api/orders/alibaba-purchase/cashier": handle_self_purchase_cashier,
+    "/api/orders/alibaba-purchase/payment-status": handle_self_purchase_payment_status,
+    "/api/orders/alibaba-purchase/pay": handle_self_purchase_pay,
 
     "/api/orders/purchase-sync": handle_purchase_sync,
     "/api/orders/purchase-query": handle_purchase_query,
@@ -181,6 +196,7 @@ HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {
     "/api/orders/alibaba-purchase/addresses": alibaba_self_purchase_facade.addresses,
     "/api/orders/alibaba-purchase": alibaba_self_purchase_facade.options,
+    "/api/orders/alibaba-purchase/batch": alibaba_self_purchase_facade.batch_options,
     "/api/orders/address-note": address_notes.read,
     "/api/orders": facade.read_orders,
     "/api/orders/integrations": facade.integrations,
@@ -217,7 +233,7 @@ def handle_get(handler, parsed):
             else callback(order_id=query.get("order_id", ""))
             if parsed.path == "/api/orders/detail"
             else callback(query)
-            if parsed.path in {"/api/orders/alibaba-purchase", "/api/orders/alibaba-purchase/addresses"}
+            if parsed.path in {"/api/orders/alibaba-purchase", "/api/orders/alibaba-purchase/addresses", "/api/orders/alibaba-purchase/batch"}
             else callback()
         )
     except (ValueError, TypeError) as exc:

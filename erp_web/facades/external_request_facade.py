@@ -1,5 +1,5 @@
 """外部请求中断的本机界面入口；只返回脱敏投影。"""
-from erp_web.schemas.external_request_control import RequestControlStatus
+from erp_web.schemas.external_request_control import RequestControlStatus, RequestHistoryClearResult
 from erp_web.context import get_context
 from erp_web.services.external_request_control_service import ExternalRequestControlService
 
@@ -10,3 +10,8 @@ def status(*, offset=0, operation_ids=()):
 
 def recover(body):
     return ExternalRequestControlService(get_context().external_requests.store).recover(body['block_id'], reason=body.get('reason', ''))
+
+
+def clear_history(body):
+    result = ExternalRequestControlService(get_context().external_requests.store).clear_history(before=body['before'])
+    return RequestHistoryClearResult.model_validate(result).model_dump(mode='json')

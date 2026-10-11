@@ -1,6 +1,7 @@
 """采购登记后的单次同步与手动刷新；快照持久化，安全合并国内包裹。"""
 
 import logging
+from copy import deepcopy
 
 from erp_web.schemas.alibaba_orders import PurchaseSyncRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
@@ -10,6 +11,38 @@ from erp_web.services.alibaba_purchase_assignment import propose_parcels, suppor
 from erp_web.services.alibaba_purchase_query_service import normalize_order, normalize_product, normalize_parcels, attach_traces
 
 logger = logging.getLogger(__name__)
+
+
+def sync_purchases(procurement, fulfillment, config_provider, order_id, record_ids, *, once=False, client_factory=AlibabaApiClient):
+    """一组采购共用本次远端读回执，再逐行校验和分配包裹；不跨请求缓存。"""
+    config = config_provider()
+    client = client_factory(config)
+    results = {}
+
+    class GroupQuery:
+        def query(self, api, number):
+            key = (api, number)
+            if key not in results:
+                try:
+                    results[key] = client.query(api, number)
+                except Exception as exc:
+                    results[key] = exc
+            result = results[key]
+            if isinstance(result, Exception):
+                raise result
+            return deepcopy(result)
+
+    def query_client(current):
+        if current != config:
+            raise ValueError('1688 授权已变化，请重新刷新采购进度')
+        return GroupQuery()
+
+    for record_id in record_ids:
+        try:
+            sync_purchase(procurement, fulfillment, config_provider,
+                          {'order_id': order_id, 'record_id': record_id}, once=once, client_factory=query_client)
+        except Exception:
+            logger.error('批量采购已回填，采购进度同步未完成')
 
 
 def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False, client_factory=AlibabaApiClient):

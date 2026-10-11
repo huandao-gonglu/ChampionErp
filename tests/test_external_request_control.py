@@ -117,10 +117,10 @@ def test_recovery_rejects_recreated_block_with_identical_failure():
     assert len(store.blocks()) == 1
 
 
-def record_rejection(manager, ctx, status=200):
+def record_rejection(manager, ctx, status=400):
     identity = manager.start(ctx, 'POST')
     manager.check(identity, ctx, time.time() + 30)
-    manager.result(identity, ctx, status, {}, b'{"success":false}')
+    manager.result(identity, ctx, status, {}, b'{"message":"invalid request"}')
 
 
 def test_same_rejections_group_for_display_and_recover_with_individual_audit():

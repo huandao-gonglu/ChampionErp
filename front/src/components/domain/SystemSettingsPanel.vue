@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
+import { routeLocationKey } from 'vue-router'
+import LogisticsSettingsPanel from '@/components/settings/LogisticsSettingsPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
+const section = ref<'general' | 'logistics'>('general')
+const route = inject(routeLocationKey, undefined)
+watch(() => route?.query.settings_section, value => { section.value = value === 'logistics' ? 'logistics' : 'general' }, { immediate: true })
 const hours = ref(5)
 const savedHours = ref<number | null>(null)
 const loading = ref(true)
@@ -38,7 +43,12 @@ onMounted(load)
 <template>
   <section class="space-y-6">
     <PageHeader title="系统设置" />
-    <form id="system-settings-form" class="space-y-5 rounded-3xl border border-accent-200 bg-white p-6 text-accent-950 shadow-card dark:border-white/10 dark:bg-dark-900/80 dark:text-accent-100" @submit.prevent="save">
+    <nav class="flex gap-3" aria-label="设置分类">
+      <button class="btn" :class="section === 'general' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="section === 'general'" @click="section = 'general'">通用设置</button>
+      <button class="btn" :class="section === 'logistics' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="section === 'logistics'" @click="section = 'logistics'">物流设置</button>
+    </nav>
+    <LogisticsSettingsPanel v-if="section === 'logistics'" class="rounded-3xl border border-accent-200 bg-white p-6 dark:border-white/10 dark:bg-dark-900/80" />
+    <form v-else id="system-settings-form" class="space-y-5 rounded-3xl border border-accent-200 bg-white p-6 text-accent-950 shadow-card dark:border-white/10 dark:bg-dark-900/80 dark:text-accent-100" @submit.prevent="save">
       <p v-if="loading" role="status" class="text-sm text-accent-500">正在读取设置…</p>
       <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }} <button v-if="savedHours === null" type="button" class="underline" :disabled="loading" @click="load">重试</button></p>
       <fieldset :disabled="loading || saving || savedHours === null" class="space-y-3">

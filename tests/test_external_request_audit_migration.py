@@ -7,7 +7,7 @@ import pytest
 from erp_web.context import AppContext, AppPaths
 from erp_web.db import ErpDatabase, _current_schema_signature, _schema_signature
 from erp_web.schemas.external_requests import RequestContext
-from erp_web.stores.external_request_store import ExternalRequestStore
+from erp_web.stores.external_request_store import ExternalRequestStore, EXTERNAL_REQUEST_SCHEMA_SQL
 from scripts.migrate_external_request_audit import SOURCE_AUDIT_SCHEMA_SQL, migrate
 
 
@@ -61,9 +61,16 @@ def test_unknown_schema_is_rejected_before_backups_or_destination(legacy_databas
 
 
 @pytest.mark.parametrize("conflict", [False, True])
-def test_existing_destination_is_resumable_but_conflicting_rows_are_not_overwritten(legacy_database, conflict):
+@pytest.mark.parametrize("version", [1, 2])
+def test_existing_destination_is_resumable_but_conflicting_rows_are_not_overwritten(legacy_database, conflict, version):
     target = legacy_database.parent / "data/external-requests.sqlite3"
-    ExternalRequestStore(target)
+    if version == 1:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(target)) as conn:
+            conn.executescript(EXTERNAL_REQUEST_SCHEMA_SQL.replace(", kind TEXT NOT NULL DEFAULT 'manual'", ''))
+            conn.execute('PRAGMA user_version=1')
+    else:
+        ExternalRequestStore(target)
     count = 99 if conflict else 7
     with closing(sqlite3.connect(target)) as conn:
         conn.execute("INSERT INTO external_blocks VALUES('ozon','shop','account','','{}',1,?)", (count,))
@@ -81,6 +88,8 @@ def test_existing_destination_is_resumable_but_conflicting_rows_are_not_overwrit
         ErpDatabase(legacy_database)
         with closing(sqlite3.connect(target)) as conn:
             assert conn.execute("SELECT COUNT(*) FROM external_blocks").fetchone()[0] == 1
+            assert conn.execute('PRAGMA user_version').fetchone()[0] == 2
+            assert conn.execute('SELECT kind FROM external_recoveries').fetchone()[0] == 'manual'
 
 
 def test_request_manager_never_changes_main_database_schema(tmp_path):

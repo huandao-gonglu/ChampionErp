@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, useId } from 'vue'
+import { onMounted, ref, useId } from 'vue'
+import { fetchReceivingWarehouse } from '@/api/receivingWarehouse'
+import type { ReceivingWarehouseView } from '@/api/receivingWarehouse'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { procurementCommand } from '@/api/orders'
 import type { OrderDetail, ProcurementLine } from '@/types/orders'
@@ -10,15 +12,25 @@ const quantity = ref(Math.max(1, props.item.remaining_quantity))
 const purchaseNumber = ref('')
 const busy = ref(false)
 const error = ref('')
+const receiving = ref<ReceivingWarehouseView | null>(null)
+const receivingConfirmed = ref(false)
+const loading = ref(true)
+onMounted(async () => {
+  try { receiving.value = await fetchReceivingWarehouse(props.orderId) }
+  catch (exc) { error.value = exc instanceof Error ? exc.message : '收货仓读取失败' }
+  finally { loading.value = false }
+})
 let lastPurchase = { fingerprint: '', id: '' }
 async function save() {
-  if (busy.value) return
+  if (busy.value || loading.value || (receiving.value?.warehouse && !receivingConfirmed.value)) return
   const body = {
     order_id: props.orderId,
     line_key: props.item.selection.line_key,
     revision: props.item.selection.revision,
     quantity: quantity.value,
     purchase_order_number: purchaseNumber.value.trim(),
+    receiving_revision: receiving.value?.revision || 0,
+    receiving_confirmed: receivingConfirmed.value,
   }
   if (
     !body.purchase_order_number ||
@@ -64,6 +76,13 @@ async function save() {
       {{ item.selection.source?.specification }} · 还需采购 {{ item.remaining_quantity }} 件
     </p>
     <form :id="formId" class="order-form" @submit.prevent="save">
+      <template v-if="receiving?.warehouse">
+        <p>收货仓：{{ receiving.warehouse.warehouse_name }}</p>
+        <p>{{ receiving.warehouse.address.fullName }} · {{ receiving.warehouse.address.mobile || receiving.warehouse.address.phone }}</p>
+        <p>{{ [receiving.warehouse.address.provinceText, receiving.warehouse.address.cityText, receiving.warehouse.address.areaText, receiving.warehouse.address.address].join(' ') }}</p>
+        <label class="order-check"><input v-model="receivingConfirmed" type="checkbox" />本次采购使用了上述收货仓和地址</label>
+      </template>
+      <p v-else class="order-muted">登记实际采购后，请补录并核对实际收货仓，再进行跨境报单。</p>
       <label>已采购数量<input
         v-model.number="quantity"
         class="order-input"
@@ -79,7 +98,7 @@ async function save() {
     </form>
     <template #footer>
       <div class="order-footer">
-        <button class="order-button" :disabled="busy" @click="$emit('close')">取消</button><button class="order-button order-primary" :form="formId" type="submit" :disabled="busy">
+        <button class="order-button" :disabled="busy" @click="$emit('close')">取消</button><button class="order-button order-primary" :form="formId" type="submit" :disabled="busy || loading || (!!receiving?.warehouse && !receivingConfirmed)">
           {{ busy ? '保存中…' : '保存记录' }}
         </button>
       </div>

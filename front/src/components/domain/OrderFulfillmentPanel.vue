@@ -135,7 +135,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
       <section class="plan-card">
         <div class="order-row"><h3>平台配送：{{ value.delivery.method_name || value.delivery.carrier || '尚未提供' }}</h3><button v-if="value.plan_editable && (order.order.platform === 'yandex' || value.rule)" class="order-button" :disabled="pending" @click="open('plan')">设置报单方案</button><span v-else class="order-muted">{{ value.plan_editable ? '待配置' : '已锁定' }}</span></div>
         <p>合作仓库：{{ value.warehouse_name || '尚未配置' }}<span v-if="value.section_name"> · {{ value.section_name }}</span></p>
-        <p class="order-muted">{{ value.plan ? value.override ? '本单报单方案' : order.order.platform === 'yandex' ? '仓库已对应，待选服务' : '默认履约方案' : '尚未配置报单方案' }}<template v-if="value.plan"> · {{ value.plan.service_ids.length }} 项增值服务</template></p>
+        <p class="order-muted">{{ value.plan ? value.override ? '本单报单方案' : order.order.platform === 'yandex' ? '沿用采购收货仓，待选服务' : '默认履约方案' : '尚未配置报单方案' }}<template v-if="value.plan"> · {{ value.plan.service_ids.length }} 项增值服务</template></p>
         <p v-if="value.handover_target?.name" class="order-muted">{{ value.handover_target.shipment_type === 'WITHDRAW' ? '揽收仓库' : '交货仓库' }}：{{ value.handover_target.name }}</p>
         <p v-if="value.handover_target?.reason" class="order-muted">{{ value.handover_target.reason }}</p>
         <p v-if="value.selected_services?.length" class="order-muted">已选服务：{{ value.selected_services.map(service => service.name).join('、') }}</p>

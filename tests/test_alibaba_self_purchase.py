@@ -14,6 +14,7 @@ from erp_web.stores.alibaba_self_purchase_store import AlibabaSelfPurchaseStore
 
 from erp_web.services.alibaba_purchase_address import saved_addresses, parse_address
 from erp_web.stores.order_address_note_store import OrderAddressNoteStore
+from tests.receiving_warehouse_support import receiving_service, assign_receiving
 
 CONFIG = {"app_key": "123", "app_secret": "test-secret", "access_token": "test-token"}
 CANDIDATE = {"id": "1", "offer_id": "12345", "sku_id": "67890", "specification": "蓝色", "product_url": "https://detail.1688.com/offer/12345.html"}
@@ -83,7 +84,9 @@ def setup_purchase(domain):
     procurement.store.add_bindings(bindings)
     procurement.select_source({"order_id": order.identity, "line_key": key, "revision": 0,
                                "candidate_id": bindings[0].identity})
-    service = AlibabaSelfPurchaseService(AlibabaSelfPurchaseStore(get_context().paths.data_dir / "alibaba-self-purchases.sqlite3"), lambda: config, procurement, client_factory=lambda _: client, address_notes=OrderAddressNoteStore(procurement.store.orders))
+    receiving = receiving_service(procurement)
+    assign_receiving(receiving, order, address=ADDRESS_FIELDS)
+    service = AlibabaSelfPurchaseService(AlibabaSelfPurchaseStore(get_context().paths.data_dir / "alibaba-self-purchases.sqlite3"), lambda: config, procurement, client_factory=lambda _: client, address_notes=OrderAddressNoteStore(procurement.store.orders), receiving=receiving)
     return service, client, config, (order, key)
 
 
@@ -94,7 +97,7 @@ def target(service):
 
 
 def preview(service, quantity=1):
-    return service.preview({**target(service), "candidate_id": "1", "quantity": quantity, "address_id": SAVED_CANDIDATE["id"]})["record"]
+    return service.preview({**target(service), "candidate_id": "1", "quantity": quantity, "receiving_revision": service.receiving.checked(target(service)["order_id"])["revision"]})["record"]
 
 
 def create(service, record):
@@ -248,7 +251,7 @@ def test_write_transport_is_signed_non_retrying_and_not_available_via_query(monk
     assert kwargs["request_context"].max_attempts == 1 and kwargs["follow_redirects"] is False
     assert parse_qs(req.data.decode())["outOrderId"] == ["fixed-key"]
     with pytest.raises(api.AlibabaApiError): client.query(CREATE, NUMBER)
-    with pytest.raises(api.AlibabaApiError): client.call("alibaba.trade.pay.protocolPay.preparePay", {})
+    with pytest.raises(api.AlibabaApiError): client.call("unapproved.payment.api", {})
 
 
 
@@ -347,7 +350,7 @@ def test_automatic_order_attaches_once_and_supports_existing_logistics_lookup(se
 def test_manual_purchase_after_preview_prevents_overbuy(setup_purchase):
     service, client, _, (order, key) = setup_purchase
     record = preview(service, quantity=2)
-    service.procurement.record_purchase(purchase_body(order, key))
+    service.procurement.record_purchase({**purchase_body(order, key), "receiving_revision": 1, "receiving_confirmed": True})
     assert create(service, record)["state"] == "failed"
     assert not any(n == CREATE for n, _ in client.calls)
 
@@ -358,7 +361,7 @@ def test_unknown_purchase_reserves_quantity_and_source_until_reconciled(setup_pu
     record = create(service, preview(service, quantity=2))
     assert record["state"] == "unknown"
     with pytest.raises(ValueError, match="剩余"):
-        service.procurement.record_purchase(purchase_body(order, key))
+        service.procurement.record_purchase({**purchase_body(order, key), "receiving_revision": 1, "receiving_confirmed": True})
     with pytest.raises(ValueError, match="等待核验"):
         service.procurement.select_source({**target(service), "revision": 1, "source": {"product_url": CANDIDATE["product_url"], "specification": "新来源"}})
     client.orders = [{**order_payload()["result"], "exAttributes": {"outOrderId": record["id"]}}]
@@ -366,7 +369,7 @@ def test_unknown_purchase_reserves_quantity_and_source_until_reconciled(setup_pu
     service.reconcile({"preview_id": record["id"]})
     item = service.procurement.detail(order.identity)["lines"][0]
     assert item["purchased_quantity"] == 0 and item["records"][0]["status"] == "cancelled"
-    service.procurement.record_purchase(purchase_body(order, key))
+    service.procurement.record_purchase({**purchase_body(order, key), "receiving_revision": 1, "receiving_confirmed": True})
 
 
 def test_definite_preflight_failure_releases_quantity(setup_purchase):
@@ -374,7 +377,7 @@ def test_definite_preflight_failure_releases_quantity(setup_purchase):
     record = preview(service, quantity=2)
     client.pre["orderPreviewResuslt"][0]["flowFlag"] = "general"
     assert create(service, record)["state"] == "failed"
-    service.procurement.record_purchase(purchase_body(order, key, quantity=2))
+    service.procurement.record_purchase({**purchase_body(order, key, quantity=2), "receiving_revision": 1, "receiving_confirmed": True})
 
 
 def test_remote_receipt_survives_local_attachment_failure(setup_purchase, monkeypatch):
@@ -387,7 +390,7 @@ def test_remote_receipt_survives_local_attachment_failure(setup_purchase, monkey
     assert result["state"] == "created" and result["order_numbers"] == [NUMBER]
     assert not result["purchase_record_id"] and "关联" in result["message"]
     with pytest.raises(ValueError, match="剩余"):
-        service.procurement.record_purchase(purchase_body(order, key))
+        service.procurement.record_purchase({**purchase_body(order, key), "receiving_revision": 1, "receiving_confirmed": True})
     monkeypatch.setattr(service.procurement.store, "complete_purchase", complete)
     result = service.reconcile({"preview_id": record["id"]})["record"]
     assert result["purchase_record_id"]
@@ -418,7 +421,7 @@ def test_legacy_receipt_database_migrates_without_losing_data(tmp_path):
     with pytest.raises(ValueError, match="旧预览已失效"):
         store.claim("old", "account", "shegou")
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_order_cancelled_during_preflight_does_not_create(setup_purchase):
@@ -450,7 +453,8 @@ def test_different_sales_orders_do_not_share_purchase_guard(setup_purchase):
         conn.execute("INSERT INTO orders (" + ",".join(columns) + ") VALUES (" + ",".join("?" for _ in columns) + ")", [old[c] for c in columns])
         conn.commit()
     service.procurement.select_source({"order_id": other.identity, "line_key": key, "revision": 0, "source": service.procurement.detail(order.identity)["lines"][0]["selection"]["source"]})
-    assert service.preview({"order_id": other.identity, "line_key": key, "candidate_id": "1", "quantity": 1, "address_id": SAVED_CANDIDATE["id"]})["record"]["state"] == "preview"
+    assign_receiving(service.receiving, other)
+    assert service.preview({"order_id": other.identity, "line_key": key, "candidate_id": "1", "quantity": 1, "receiving_revision": 1})["record"]["state"] == "preview"
 
 
 @pytest.mark.parametrize("change,reason", [
@@ -536,42 +540,56 @@ def test_facade_shares_transient_previews_until_context_closes(setup_purchase):
         second.store.get(row["id"], account_scope(CONFIG))
 
 
-def test_choose_nondefault_address_and_freeze_it_for_creation(setup_purchase):
+def test_receiving_address_is_frozen_and_does_not_follow_1688_default(setup_purchase):
     service, client, _, _ = setup_purchase
-    client.addresses.append({**ADDRESS, "id": 2, "fullName": "另一收货人", "address": "另一条路2号", "isDefault": False})
-    choices = service.addresses(**target(service))["items"]
-    assert len(choices) == 2 and choices[0]["is_default"] and not choices[1]["is_default"]
-    record = service.preview({**target(service), "candidate_id": "1", "quantity": 1, "address_id": choices[1]["id"]})["record"]
-    assert record["preview"]["recipient"] == "另一收货人"
-    client.addresses[1]["address"] = "后来修改的地址"
-    assert create(service, record)["state"] == "created"
+    record = preview(service)
+    client.addresses[0]['address'] = '后来改动的默认地址'
+    assert create(service, record)['state'] == 'created'
     params = next(p for n, p in client.calls if n == CREATE)
-    assert params["addressParam"]["address"] == "另一条路2号"
-
-
-def test_missing_default_is_allowed_and_changed_saved_address_requires_reselection(setup_purchase):
-    service, client, _, _ = setup_purchase
-    client.addresses[0]["isDefault"] = False
-    candidate = service.addresses(**target(service))["items"][0]
-    client.addresses[0]["mobilePhone"] = "13900139000"
-    with pytest.raises(ValueError, match="地址已变化"):
-        service.preview({**target(service), "candidate_id": "1", "quantity": 1, "address_id": candidate["id"]})
-    assert not any(n in (PREVIEW, CREATE) for n, _ in client.calls)
-
-
-def test_manual_address_requires_complete_fields_and_confirmation(setup_purchase):
-    service, client, _, _ = setup_purchase
-    body = {**target(service), "candidate_id": "1", "quantity": 1, "address": ADDRESS_FIELDS}
-    with pytest.raises(ValueError, match="核对并确认"):
-        service.preview(body)
-    with pytest.raises(ValueError):
-        service.preview({**body, "address_confirmed": True, "address": {**ADDRESS_FIELDS, "areaText": ""}})
-    assert client.calls == []
-    record = service.preview({**body, "address_confirmed": True})["record"]
-    assert record["preview"]["recipient"] == ADDRESS_FIELDS["fullName"]
+    assert params['addressParam'] == ADDRESS_FIELDS
     assert not any(n == ADDRESSES for n, _ in client.calls)
-    assert create(service, record)["state"] == "created"
-    assert next(p for n, p in client.calls if n == CREATE)["addressParam"] == ADDRESS_FIELDS
+
+
+def test_warehouse_change_invalidates_preview_and_never_sends_create(setup_purchase):
+    service, client, _, (order, _) = setup_purchase
+    record = preview(service)
+    assign_receiving(service.receiving, order, warehouse_id=20, address={**ADDRESS_FIELDS, 'address': 'B仓地址'})
+    assert create(service, record)['state'] == 'failed'
+    assert not any(n == CREATE for n, _ in client.calls)
+
+
+def test_yandex_cannot_override_receiving_address_in_preview(setup_purchase):
+    service, client, _, _ = setup_purchase
+    for extra in [{'address_id': SAVED_CANDIDATE['id']}, {'address': ADDRESS_FIELDS, 'address_confirmed': True}, {'receiving_revision': 999}]:
+        with pytest.raises(ValueError):
+            service.preview({**target(service), 'candidate_id': '1', 'quantity': 1, **extra})
+    assert not client.calls
+
+
+def test_receiving_is_locked_during_create_and_unknown_receipt(setup_purchase):
+    service, client, _, (order, _) = setup_purchase
+    record = preview(service)
+    original = client.call
+    def call(name, params):
+        if name == CREATE:
+            with pytest.raises(ValueError, match='正在提交'):
+                assign_receiving(service.receiving, order, warehouse_id=20)
+        return original(name, params)
+    client.call = call
+    client.fail_create = True
+    assert create(service, record)['state'] == 'unknown'
+    with pytest.raises(ValueError, match='正在提交'):
+        assign_receiving(service.receiving, order, warehouse_id=20)
+
+
+def test_purchase_record_keeps_receiving_snapshot(setup_purchase):
+    service, _, _, (order, key) = setup_purchase
+    result = create(service, preview(service))
+    record = service.procurement.store.purchase_record(order.identity, result['purchase_record_id'], {'yandex': '4'})
+    assert record.receiving_warehouse.warehouse_id == 10
+    assert record.receiving_warehouse.address.model_dump() == ADDRESS_FIELDS
+    with pytest.raises(ValueError, match='不能更换'):
+        assign_receiving(service.receiving, order, warehouse_id=20)
 
 
 def test_order_pickup_and_address_note_are_candidates_without_modifying_them(setup_purchase):
@@ -612,9 +630,41 @@ def test_address_parser_extracts_explicit_regions_and_contacts(text, expected):
     assert not result["warnings"]
 
 
-def test_address_parser_does_not_guess_missing_regions_or_ambiguous_contacts():
+def test_address_parser_does_not_guess_missing_regions():
     result = parse_address("深圳市南山区科技路1号")
     assert not result["address"]["provinceText"] and result["warnings"]
+
+
+def test_address_parser_uses_first_receiving_contact_when_multiple_are_present():
     result = parse_address("收货人：张三 手机：13800138000 收货人：李四 手机：13900139000 地址：四川省成都市武侯区1号")
-    assert not result["address"]["fullName"] and not result["address"]["mobile"]
-    assert any("多个" in warning for warning in result["warnings"])
+    assert result["address"]["fullName"] == "张三"
+    assert result["address"]["mobile"] == "13800138000"
+    assert not result["warnings"]
+
+
+@pytest.mark.parametrize('text', [
+    '张三 13800138000 / 13900139000 地址：广东省深圳市南山区科技路1号',
+    '收货人： 张三 手机：+86 138 0013 8000 / 13800138000 地址：广东省深圳市南山区科技路1号',
+    '收货人：张三 手机：１３８００１３８０００ 地址：广东省深圳市南山区科技路1号',
+    '联系人：李四 备用电话：13900139000 收货人：张三 收货电话：13800138000 地址：广东省深圳市南山区科技路1号',
+    '客服电话：13900139000 收货人：张三 电话：13800138000 地址：广东省深圳市南山区科技路1号\n备注：到仓前联系\n工作时间：9:00-18:00\n微信：13700137000',
+])
+def test_address_parser_extracts_useful_fields_and_ignores_extra_information(text):
+    result = parse_address(text)
+    address = result['address']
+    assert address['fullName'] == '张三'
+    assert address['mobile'] == '13800138000'
+    assert (address['provinceText'], address['cityText'], address['areaText']) == ('广东省', '深圳市', '南山区')
+    assert address['address'] == '科技路1号'
+    assert not result['warnings']
+
+
+@pytest.mark.parametrize('phone,expected', [
+    ('0755-12345678', '0755-12345678'),
+    ('0755-12345678转123', '0755-12345678-123'),
+])
+def test_address_parser_keeps_mobile_and_landline_independently(phone, expected):
+    result = parse_address(f'收货人：张三 手机：13800138000 座机：{phone} 地址：广东省深圳市南山区科技路1号')
+    assert result['address']['mobile'] == '13800138000'
+    assert result['address']['phone'] == expected
+    assert not result['warnings']

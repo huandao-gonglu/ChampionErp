@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from erp_web.schemas.orders import OrderLine, OrderView, Platform
 from erp_web.schemas.alibaba_orders import PurchaseProgressView
+from erp_web.schemas.receiving_warehouse import ReceivingWarehouse
 
 
 def safe_purchase_url(value: str) -> str:
@@ -90,6 +91,7 @@ class SourceSelection(BaseModel):
 
 
 class PurchaseRecord(BaseModel):
+    receiving_warehouse: ReceivingWarehouse | None = None
     id: str
     line_key: str
     request_id: str
@@ -132,6 +134,8 @@ class SelectSourceRequest(BaseModel):
 
 
 class RecordPurchaseRequest(BaseModel):
+    receiving_revision: int = Field(default=0, ge=0)
+    receiving_confirmed: bool = False
     model_config = ConfigDict(extra="forbid")
     order_id: str = Field(min_length=1)
     line_key: str = Field(min_length=1)

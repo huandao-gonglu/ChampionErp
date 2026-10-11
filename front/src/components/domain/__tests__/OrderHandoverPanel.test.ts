@@ -97,7 +97,7 @@ describe('平台交货信息', () => {
     expect(handoverDateTime('')).toBe('平台未提供')
   })
 
-  it('模块位于采购列表下方，切换和重开详情只读取普通订单详情', async () => {
+  it('模块位于采购收货仓和采购列表前，切换和重开详情只读取普通订单详情', async () => {
     function open() {
       return mount(OrderDetailPanel, {
         attachTo: document.body,
@@ -107,7 +107,8 @@ describe('平台交货信息', () => {
     }
     const wrapper = open()
     await flushPromises()
-    expect(wrapper.find('.order-product-list ~ [data-testid="order-handover"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="order-handover"] ~ [aria-label="采购收货仓"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="采购收货仓"] ~ .order-product-list').exists()).toBe(true)
     await wrapper.findAll('button').find(button => button.text() === '跨境履约')!.trigger('click')
     expect(wrapper.get('[data-testid="order-handover"]').isVisible()).toBe(false)
     await wrapper.findAll('button').find(button => button.text() === '商品与采购')!.trigger('click')

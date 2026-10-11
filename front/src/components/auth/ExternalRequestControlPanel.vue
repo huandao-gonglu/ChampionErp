@@ -3,7 +3,7 @@ import { computed, inject, ref, onMounted, onBeforeUnmount } from 'vue'
 import { routeLocationKey } from 'vue-router'
 import { requestPlatformName as platformName } from '@/utils/externalRequestNotices'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import { fetchRequestControl, recoverRequestBlock } from '@/api/externalRequests'
+import { clearRequestHistory, fetchRequestControl, recoverRequestBlock } from '@/api/externalRequests'
 import type { RequestBlock, RequestControlStatus } from '@/api/externalRequests'
 const status = ref<RequestControlStatus | null>(null)
 const error = ref('')
@@ -11,6 +11,7 @@ const operationError = ref('')
 const message = ref('')
 const pending = ref(false)
 const selected = ref<RequestBlock | null>(null)
+const cleanup = ref<{ before: number; count: number } | null>(null)
 const reason = ref('')
 const offset = ref(0)
 const now = ref(Date.now() / 1000)
@@ -76,6 +77,32 @@ async function recover() {
     operationError.value = exc instanceof Error ? exc.message : '恢复操作失败'
   } finally { pending.value = false }
 }
+function openCleanup() {
+  if (!status.value?.clearable_count || pending.value) return
+  cleanup.value = { before: status.value.cleanup_before, count: status.value.clearable_count }
+  operationError.value = ''
+  message.value = ''
+}
+function closeDialog() {
+  if (pending.value) return
+  selected.value = null
+  cleanup.value = null
+}
+async function clearHistory() {
+  if (!cleanup.value || pending.value) return
+  pending.value = true
+  operationError.value = ''
+  ++generation
+  try {
+    const result = await clearRequestHistory(cleanup.value.before)
+    message.value = result.message
+    cleanup.value = null
+    offset.value = 0
+    await refresh()
+  } catch (exc) {
+    operationError.value = exc instanceof Error ? exc.message : '历史记录清理失败'
+  } finally { pending.value = false }
+}
 async function page(delta: number) { offset.value = Math.max(0, offset.value + delta); await refresh() }
 onMounted(() => { void tick(); clock = setInterval(() => { now.value = Date.now() / 1000 + serverOffset }, 1000) })
 onBeforeUnmount(() => { stopped = true; clearTimeout(poll); clearInterval(clock) })
@@ -116,20 +143,36 @@ onBeforeUnmount(() => { stopped = true; clearTimeout(poll); clearInterval(clock)
       <p v-else class="muted mt-2">正在检查恢复情况或等待平台规定的冷却时间。</p>
     </article>
     <p v-if="status && !status.blocks.length" class="muted">当前没有阻断中的请求。</p>
-    <div class="flex items-center justify-between"><h4 class="font-semibold">中断记录</h4><button class="btn btn-outline" @click="refresh">刷新</button></div>
-    <p class="muted">历史记录保留当时的失败，不表示当前仍被阻断。</p>
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h4 class="font-semibold">中断记录</h4>
+      <div class="flex gap-2">
+        <button class="btn btn-outline" :disabled="pending || !status?.clearable_count" @click="openCleanup">清除已处理记录</button>
+        <button class="btn btn-outline" :disabled="pending" @click="refresh">刷新</button>
+      </div>
+    </div>
+    <p class="muted">历史中断包含待处理和已恢复的记录；已经手动确认恢复的旧记录可以清理。</p>
+    <p v-if="status" class="muted">可清理 {{ status.clearable_count }} 条。当前阻断依据、尚未确认恢复的未知写入和最近十分钟记录会保留。</p>
     <article v-for="item in status?.history || []" :key="item.id" class="rounded-lg border border-accent-200 p-3 dark:border-dark-700">
       <div class="flex flex-wrap justify-between gap-2"><strong>{{ platformName(item.platform) }}</strong><span>{{ date(item.created_at) }}</span></div>
       <p class="mt-1">{{ item.message }}</p>
       <p class="muted mt-1 break-all">{{ item.local_rejection ? '请求被本地暂停' : '请求执行中断' }} · {{ item.interface }}</p>
     </article>
     <div v-if="status" class="flex items-center gap-3">
-      <button class="btn btn-outline" :disabled="offset === 0" @click="page(-50)">上一页</button>
+      <button class="btn btn-outline" :disabled="pending || offset === 0" @click="page(-50)">上一页</button>
       <span>共 {{ status.total }} 条中断记录</span>
-      <button class="btn btn-outline" :disabled="offset + 50 >= status.total" @click="page(50)">下一页</button>
+      <button class="btn btn-outline" :disabled="pending || offset + 50 >= status.total" @click="page(50)">下一页</button>
     </div>
-    <WorkspaceDialog :open="selected !== null" title="恢复平台请求" :close-disabled="pending" @close="selected = null">
-      <form class="space-y-4" @submit.prevent="recover">
+    <WorkspaceDialog :open="selected !== null || cleanup !== null" :title="cleanup ? '清除已处理记录' : '恢复平台请求'" :close-disabled="pending" @close="closeDialog">
+      <form v-if="cleanup" class="space-y-4" @submit.prevent="clearHistory">
+        <p>预计清除全部历史分页中可清理的 {{ cleanup.count }} 条中断记录，清除后无法撤销。</p>
+        <p>已确认恢复的旧记录可清除，包括原来标记为“结果未知”的记录。当前阻断及其依据、尚未确认恢复的未知写入、最近十分钟记录和恢复记录会保留。清理不会解除限制或重试请求。</p>
+        <p v-if="operationError" role="alert" class="text-red-600 dark:text-red-300">{{ operationError }}</p>
+        <div class="flex justify-end gap-2">
+          <button class="btn btn-outline" type="button" :disabled="pending" @click="closeDialog">取消</button>
+          <button class="btn btn-primary" type="submit" :disabled="pending">{{ pending ? '清理中…' : '确认清除' }}</button>
+        </div>
+      </form>
+      <form v-else class="space-y-4" @submit.prevent="recover">
         <p v-if="selected && selected.count > 1">本次恢复所选的 {{ selected.count }} 条请求限制，逐条保留恢复记录；之后新增的拒绝不在本次范围内。</p>
         <p v-if="selected?.recovery_mode === 'probe'">手动恢复会提前允许下一次只读请求检查网络；成功后恢复，失败则延长冷却。</p>
         <p v-else-if="selected?.recovery_mode === 'confirm_request'">平台已明确拒绝原请求。请确认拒绝原因已处理；恢复只解除原请求的限制，保留失败记录，不会自动重新发送。</p>

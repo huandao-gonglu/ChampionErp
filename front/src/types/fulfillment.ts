@@ -1,3 +1,4 @@
+import type { ReceivingWarehouse } from '@/api/receivingWarehouse'
 import type { OrderPlatform } from './orders'
 import type { BackendAlibabaPurchaseQueryResult } from './workflow.generated'
 
@@ -75,7 +76,7 @@ export interface FulfillmentSummary {
 }
 export interface FulfillmentDetail extends FulfillmentSummary {
   handover_target?: { key: string; warehouse_id: string; name: string; address: string; shipment_type: string; reason: string }
-  warehouse_link?: { section_id: number; warehouse_id: number; revision: number } | null
+  receiving_warehouse?: ReceivingWarehouse | null
   selected_services?: BusService[]
   erp_order_id: string
   revision: number

@@ -25,17 +25,79 @@ CREATE TABLE IF NOT EXISTS external_attempts (
     decision TEXT NOT NULL, result TEXT NOT NULL DEFAULT '{}', lease_until REAL NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS external_attempt_filter ON external_attempts(platform,account_id,created);
 CREATE INDEX IF NOT EXISTS external_attempt_operation ON external_attempts(operation_id);
+CREATE INDEX IF NOT EXISTS external_attempt_parent ON external_attempts(parent_id);
 CREATE TABLE IF NOT EXISTS external_blocks (
     platform TEXT NOT NULL, account_id TEXT NOT NULL, scope TEXT NOT NULL, scope_key TEXT NOT NULL,
     failure TEXT NOT NULL, created REAL NOT NULL, blocked_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(platform,account_id,scope,scope_key));
 CREATE TABLE IF NOT EXISTS external_recoveries (
     id TEXT PRIMARY KEY, platform TEXT, account_id TEXT, scope TEXT, scope_key TEXT,
-    created REAL, reason TEXT);
+    created REAL, reason TEXT, kind TEXT NOT NULL DEFAULT 'manual');
 CREATE TABLE IF NOT EXISTS external_policies (
     platform TEXT NOT NULL, interface TEXT NOT NULL, concurrency INTEGER,
     requests_per_minute INTEGER, consecutive_failure_limit INTEGER, PRIMARY KEY(platform,interface));
 '''
+
+
+# 仅迁移旧库时识别历史系统文案；新记录显式写入恢复类型。
+_LEGACY_SYSTEM_RECOVERY_REASONS = (
+    "冷却后的只读请求成功，自动恢复",
+    "冷却后的接口已返回明确业务拒绝，解除临时故障冷却；原请求保护保留",
+    "用户请求提前进行一次只读恢复检查",
+    "依据原始只读临时失败审计，将旧阻断转为冷却检查；尚未确认恢复",
+)
+
+
+def upgrade_recovery_schema(conn):
+    """保留 v1 恢复记录，补齐人工确认与系统检查的类型。"""
+    if 'kind' not in {row[1] for row in conn.execute('PRAGMA table_info(external_recoveries)')}:
+        conn.execute("ALTER TABLE external_recoveries ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'")
+        conn.executemany("UPDATE external_recoveries SET kind='system' WHERE reason=?",
+                         [(reason,) for reason in _LEGACY_SYSTEM_RECOVERY_REASONS])
+    conn.execute('PRAGMA user_version=2')
+
+
+_INTERRUPTION_WHERE = "(decision IN ('rejected','cancelled') OR json_extract(result,'$.outcome') IN ('failed','network_error','outcome_unknown','interrupted'))"
+
+_MANUAL_RECOVERY_WHERE = """
+     r.kind='manual' AND r.platform=a.platform AND r.account_id=a.account_id
+     AND r.created>=a.completed AND r.created<=:before
+     AND (r.scope='account'
+          OR (r.scope='credential' AND r.scope_key=a.credential_id)
+          OR (r.scope='interface' AND r.scope_key=a.interface)
+          OR (r.scope='quota' AND r.scope_key=a.quota_key)
+          OR (r.scope='operation' AND r.scope_key=a.operation_id)
+          OR (r.scope='request' AND substr(r.scope_key,1,length(a.operation_id || ':' || a.interface || ':'))
+              =a.operation_id || ':' || a.interface || ':'))
+"""
+
+# 人工确认只覆盖此前完成且范围匹配的请求，后续故障不能重新保护已处理的历史。
+# 预览和事务内删除共用条件；仍未解除的同一次阻断继续保留依据。
+_CLEARABLE_HISTORY_WHERE = _INTERRUPTION_WHERE + """
+ AND a.created<=:before AND a.completed<=:before AND a.completed<:recent
+ AND a.created<:recent AND COALESCE(a.released,0)<:recent
+ AND ((COALESCE(json_extract(a.result,'$.outcome'),'')!='outcome_unknown'
+ AND COALESCE(json_extract(a.result,'$.code'),'')!='EXTERNAL_WRITE_OUTCOME_UNKNOWN'
+ AND NOT (a.sent=1 AND a.semantics='write' AND
+          COALESCE(json_extract(a.result,'$.outcome'),'') IN ('interrupted','network_error')))
+ OR EXISTS (SELECT 1 FROM external_recoveries r WHERE """ + _MANUAL_RECOVERY_WHERE + """))
+ AND NOT EXISTS (SELECT 1 FROM external_attempts child WHERE child.parent_id=a.id)
+ AND NOT EXISTS (
+   SELECT 1 FROM external_blocks b
+   WHERE a.sent=1 AND b.platform=a.platform AND b.account_id=a.account_id
+     AND (json_extract(b.failure,'$.code')='EXTERNAL_TRANSIENT_FAILURE'
+          OR json_extract(b.failure,'$.resume_at') IS NULL OR json_extract(b.failure,'$.resume_at')>:now)
+     AND (b.scope='account'
+          OR (b.scope='credential' AND b.scope_key=a.credential_id)
+          OR (b.scope='interface' AND b.scope_key=a.interface)
+          OR (b.scope='quota' AND b.scope_key=a.quota_key)
+          OR (b.scope='operation' AND b.scope_key=a.operation_id)
+          OR (b.scope='request' AND substr(b.scope_key,1,length(a.operation_id || ':' || a.interface || ':'))
+              =a.operation_id || ':' || a.interface || ':'))
+     AND NOT EXISTS (SELECT 1 FROM external_recoveries r WHERE
+       """ + _MANUAL_RECOVERY_WHERE + """ AND r.created<b.created)
+ )
+"""
 
 
 class ExternalRequestStore:
@@ -46,7 +108,7 @@ class ExternalRequestStore:
         self.max_records = max_records
         with self._connect() as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError("外部请求审计库版本不受支持，禁止覆盖")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA journal_size_limit=8388608")
@@ -54,7 +116,9 @@ class ExternalRequestStore:
 
         self.path.chmod(0o600)
         with self._connect() as conn:
-            conn.execute("PRAGMA user_version=1")
+            conn.execute('BEGIN IMMEDIATE')
+            upgrade_recovery_schema(conn)
+            conn.commit()
         self._migrate_transient_blocks()
 
     @contextmanager
@@ -186,7 +250,7 @@ class ExternalRequestStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM external_blocks WHERE platform=? AND account_id=? AND scope=? AND scope_key=?", (platform,account_id,scope,scope_key))
-            conn.execute("INSERT INTO external_recoveries VALUES(?,?,?,?,?,?,?)", (uuid4().hex,platform,account_id,scope,scope_key,time.time(),reason[:500]))
+            conn.execute("INSERT INTO external_recoveries(id,platform,account_id,scope,scope_key,created,reason) VALUES(?,?,?,?,?,?,?)", (uuid4().hex,platform,account_id,scope,scope_key,time.time(),reason[:500]))
             conn.commit()
 
     def configure(self, platform, interface="*", *, concurrency=None, requests_per_minute=None, consecutive_failure_limit=None):
@@ -214,11 +278,15 @@ class ExternalRequestStore:
         if not block:
             return
         failure = RequestFailure(**json.loads(block["failure"]))
-        if result.get("outcome") in {"success", "stream_closed"} and failure.probe_until > time.time():
+        rejection = result.get("failure") or {}
+        request_rejected = result.get("outcome") == "failed" and is_definite_request_rejection(
+            rejection.get("scope", ""), rejection.get("code", ""))
+        if (result.get("outcome") in {"success", "stream_closed"} or request_rejected) and failure.probe_until > time.time():
             conn.execute("DELETE FROM external_blocks WHERE platform=? AND account_id=? AND scope=? AND scope_key=?",
                          (block["platform"], block["account_id"], block["scope"], block["scope_key"]))
-            conn.execute("INSERT INTO external_recoveries VALUES(?,?,?,?,?,?,?)",
-                         (uuid4().hex, block["platform"], block["account_id"], block["scope"], block["scope_key"], time.time(), "冷却后的只读请求成功，自动恢复"))
+            conn.execute("INSERT INTO external_recoveries(id,platform,account_id,scope,scope_key,created,reason,kind) VALUES(?,?,?,?,?,?,?,'system')",
+                         (uuid4().hex, block["platform"], block["account_id"], block["scope"], block["scope_key"], time.time(),
+                          "冷却后的接口已返回明确业务拒绝，解除临时故障冷却；原请求保护保留" if request_rejected else "冷却后的只读请求成功，自动恢复"))
         else:
             delay = min(1800, max(60, failure.cooldown_seconds * 2))
             self._write_circuit(conn, block, replace(failure, probe_id="", probe_until=0,
@@ -237,12 +305,12 @@ class ExternalRequestStore:
                 if failure.code != "EXTERNAL_TRANSIENT_FAILURE" or (failure.probe_id and failure.probe_until > time.time()):
                     continue
                 self._write_circuit(conn, block, replace(failure, resume_at=time.time(), probe_id="", probe_until=0))
-                conn.execute("INSERT INTO external_recoveries VALUES(?,?,?,?,?,?,?)",
+                conn.execute("INSERT INTO external_recoveries(id,platform,account_id,scope,scope_key,created,reason,kind) VALUES(?,?,?,?,?,?,?,'system')",
                              (uuid4().hex, platform, account_id, "interface", block["scope_key"], time.time(), "用户请求提前进行一次只读恢复检查"))
             conn.commit()
 
     def record_failure_streak(self, ctx):
-        """只读临时故障进入冷却；确定性拒绝和写入未知仍要求明确恢复。"""
+        """仅累计传输或服务故障；请求级业务拒绝不得升级为接口熔断。"""
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM external_blocks WHERE platform=? AND account_id=? AND scope='interface' AND scope_key=?", (ctx.platform, ctx.account_id, ctx.interface)).fetchone():
@@ -251,7 +319,10 @@ class ExternalRequestStore:
             limit = min((r[0] for r in policies),default=5)
             rows = conn.execute("SELECT result,semantics FROM external_attempts WHERE platform=? AND account_id=? AND interface=? AND sent=1 AND completed IS NOT NULL AND created>? ORDER BY created DESC LIMIT ?",(ctx.platform,ctx.account_id,ctx.interface,time.time()-600,limit)).fetchall()
             outcomes = [json.loads(row["result"]) for row in rows]
-            if len(rows) != limit or not all(row.get("outcome") in {"failed","network_error","outcome_unknown"} and not row.get("cancelled") for row in outcomes):
+            if len(rows) != limit or not all(
+                self._transient(row) or (row.get("outcome") == "outcome_unknown" and not row.get("cancelled"))
+                for row in outcomes
+            ):
                 return
             transient = all(row["semantics"] == "read" and self._transient(value) for row, value in zip(rows, outcomes))
             failure = RequestFailure(
@@ -277,7 +348,7 @@ class ExternalRequestStore:
                 if len(rows) != limit or not all(row["semantics"] == "read" and self._transient(json.loads(row["result"])) for row in rows):
                     continue
                 self._write_circuit(conn, block, RequestFailure("EXTERNAL_TRANSIENT_FAILURE", "接口连续失败，暂时暂停；冷却后自动进行一次只读恢复检查", "interface", resume_at=block["created"]+60, retryable=True, cooldown_seconds=60))
-                conn.execute("INSERT INTO external_recoveries VALUES(?,?,?,?,?,?,?)", (uuid4().hex, block["platform"], block["account_id"], "interface", block["scope_key"], time.time(), "依据原始只读临时失败审计，将旧阻断转为冷却检查；尚未确认恢复"))
+                conn.execute("INSERT INTO external_recoveries(id,platform,account_id,scope,scope_key,created,reason,kind) VALUES(?,?,?,?,?,?,?,'system')", (uuid4().hex, block["platform"], block["account_id"], "interface", block["scope_key"], time.time(), "依据原始只读临时失败审计，将旧阻断转为冷却检查；尚未确认恢复"))
             conn.commit()
 
     def recover_confirmed(self, blocks, *, reason):
@@ -296,11 +367,11 @@ class ExternalRequestStore:
                 if not current or json.loads(current[0]) != failure or current[1] != block["created"]:
                     raise ValueError("同步状态已变化，请刷新后重试")
                 conn.execute("DELETE FROM external_blocks WHERE platform=? AND account_id=? AND scope=? AND scope_key=?", keys)
-                conn.execute("INSERT INTO external_recoveries VALUES(?,?,?,?,?,?,?)", (uuid4().hex, *keys, time.time(), reason.strip()[:500]))
+                conn.execute("INSERT INTO external_recoveries(id,platform,account_id,scope,scope_key,created,reason) VALUES(?,?,?,?,?,?,?)", (uuid4().hex, *keys, time.time(), reason.strip()[:500]))
             conn.commit()
 
     def interruptions(self, *, offset=0, limit=50):
-        where = "(decision IN ('rejected','cancelled') OR json_extract(result,'$.outcome') IN ('failed','network_error','outcome_unknown','interrupted'))"
+        where = _INTERRUPTION_WHERE
         with self._connect() as conn:
             total = conn.execute("SELECT COUNT(*) FROM external_attempts WHERE " + where).fetchone()[0]
             rows = conn.execute("SELECT id,platform,interface,source,trigger,created,result,decision,semantics FROM external_attempts WHERE " + where + " ORDER BY created DESC LIMIT ? OFFSET ?", (limit,max(0,offset))).fetchall()
@@ -315,6 +386,29 @@ class ExternalRequestStore:
                            "message": failure.get("message") or {"network_error": "网络中断，未取得完整响应", "outcome_unknown": "写入结果未知，请先核对业务回执", "interrupted": "请求中断，未确认结果", "failed": "平台请求失败", "cancelled": "请求已取消"}.get(outcome, "请求已取消" if row["decision"] == "cancelled" else "请求被暂停"),
                            "local_rejection": row["decision"] == "rejected"})
         return result, total
+
+    @staticmethod
+    def _cleanup_parameters(before):
+        now = time.time()
+        if isinstance(before, bool) or not isinstance(before, int) or before <= 0:
+            raise ValueError('请刷新中断记录后重新清理')
+        cutoff = min(before, now)
+        return {'before': cutoff, 'recent': cutoff - 600, 'now': now}
+
+    def clearable_interruptions(self, *, before):
+        with self._connect() as conn:
+            return conn.execute('SELECT COUNT(*) FROM external_attempts a WHERE ' + _CLEARABLE_HISTORY_WHERE,
+                                self._cleanup_parameters(before)).fetchone()[0]
+
+    def clear_interruptions(self, *, before):
+        """短事务内重查阻断与时间边界；不更改策略、阻断、恢复或成功审计。"""
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            result = conn.execute('DELETE FROM external_attempts WHERE id IN (SELECT a.id FROM external_attempts a WHERE '
+                                  + _CLEARABLE_HISTORY_WHERE + ')', self._cleanup_parameters(before))
+            count = result.rowcount
+            conn.commit()
+        return count
 
     def rejection_notices(self, operation_ids):
         if not operation_ids:

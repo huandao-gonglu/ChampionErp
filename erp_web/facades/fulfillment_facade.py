@@ -2,6 +2,8 @@
 
 from erp_web.context import get_context
 from erp_web.schemas.fulfillment import BusCredentials, FulfillmentError, LabelUpload
+from erp_web.schemas.logistics import ParseLogisticsAddressRequest
+from erp_web.services.alibaba_purchase_address import parse_address
 from erp_web.services.fulfillment_label_service import deliver_label
 from erp_web.services.fulfillment_image_service import deliver_platform_image
 from erp_web.services.crossborderbus_client import CrossborderBusClient
@@ -36,8 +38,24 @@ def services(section_id, warehouse_id):
     return get_context().fulfillment.client.services(section, warehouse)
 
 
+def receiving_warehouse(order_id):
+    return get_context().fulfillment.receiving.detail(order_id)
+
+
+def logistics_settings():
+    return get_context().fulfillment.receiving.logistics.detail()
+
+
 def command(action, body):
+    if action == 'logistics-parse-address':
+        return parse_address(ParseLogisticsAddressRequest.model_validate(body).text)
     service = get_context().fulfillment
+    if action == 'logistics-refresh':
+        return service.receiving.logistics.detail(refresh=True)
+    if action == 'logistics-address':
+        return service.receiving.logistics.save(body)
+    if action == "receiving-warehouse":
+        return service.receiving.save(body)
     if action == "upload-label":
         request = LabelUpload.model_validate(body)
         current = service.detail(request.order_id)

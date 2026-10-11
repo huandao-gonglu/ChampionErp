@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from erp_web.db import _current_schema_signature, _schema_signature
-from erp_web.stores.external_request_store import EXTERNAL_REQUEST_SCHEMA_SQL
+from erp_web.stores.external_request_store import EXTERNAL_REQUEST_SCHEMA_SQL, upgrade_recovery_schema
 
 # 这是 2026-09-28 开发中间版本真实写入主库的格式，仅用于显式数据迁移。
 SOURCE_AUDIT_SCHEMA_SQL = '''
@@ -65,7 +65,7 @@ def _copy_audit(source, destination):
     for table, keys in TABLE_KEYS.items():
         source_columns = [row[1] for row in source.execute(f'PRAGMA table_info("{table}")')]
         columns = [row[1] for row in destination.execute(f'PRAGMA table_info("{table}")')]
-        defaults = {"quota_key": "", "consecutive_failure_limit": None}
+        defaults = {"quota_key": "", "consecutive_failure_limit": None, "kind": "manual"}
         if set(columns) - set(source_columns) - defaults.keys():
             raise ValueError(f"审计表存在未识别的目标字段：{table}")
         for row in source.execute(f'SELECT * FROM "{table}"'):
@@ -107,10 +107,13 @@ def migrate(database: Path, destination: Path | None = None) -> Path:
             with closing(sqlite3.connect(destination, timeout=10)) as target:
                 if new_destination:
                     target.executescript(EXTERNAL_REQUEST_SCHEMA_SQL)
-                    target.execute("PRAGMA user_version=1")
-                if target.execute("PRAGMA user_version").fetchone()[0] != 1 or _schema_signature(target) != _signature(EXTERNAL_REQUEST_SCHEMA_SQL):
-                    raise ValueError("目标审计库不是结构完整的 v1，未覆盖")
+                    target.execute("PRAGMA user_version=2")
+                version = target.execute("PRAGMA user_version").fetchone()[0]
+                expected_sql = EXTERNAL_REQUEST_SCHEMA_SQL if version == 2 else EXTERNAL_REQUEST_SCHEMA_SQL.replace(", kind TEXT NOT NULL DEFAULT 'manual'", "")
+                if version not in (1, 2) or _schema_signature(target) != _signature(expected_sql):
+                    raise ValueError("目标审计库不是结构完整的 v1/v2，未覆盖")
                 target.execute("BEGIN IMMEDIATE")
+                upgrade_recovery_schema(target)
                 _copy_audit(source, target)
                 target.commit()
             # 目标已独立提交，再删除源表。中断后可重跑：相同记录跳过，冲突则停止。

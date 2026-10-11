@@ -21,7 +21,7 @@ class AlibabaSelfPurchaseStore:
         os.close(descriptor)
         self.path.chmod(0o600)
         with self.connect() as conn:
-            if conn.execute("PRAGMA user_version").fetchone()[0] not in (0, 1, 2):
+            if conn.execute("PRAGMA user_version").fetchone()[0] not in (0, 1, 2, 3):
                 raise ValueError("采购记录库版本不受支持")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute('''CREATE TABLE IF NOT EXISTS alibaba_self_purchases (
@@ -32,8 +32,10 @@ class AlibabaSelfPurchaseStore:
             if "listing_id" in columns:
                 conn.execute("ALTER TABLE alibaba_self_purchases RENAME COLUMN listing_id TO target_key")
                 conn.execute("DROP INDEX IF EXISTS alibaba_self_purchase_listing")
+            if "payment" not in columns:
+                conn.execute("ALTER TABLE alibaba_self_purchases ADD COLUMN payment TEXT NOT NULL DEFAULT '{}'")
             conn.execute("CREATE INDEX IF NOT EXISTS alibaba_self_purchase_target ON alibaba_self_purchases(target_key,account,state)")
-            conn.execute("PRAGMA user_version=2")
+            conn.execute("PRAGMA user_version=3")
             conn.commit()
 
     @contextmanager
@@ -49,7 +51,8 @@ class AlibabaSelfPurchaseStore:
     def decode(row):
         if row is None:
             raise ValueError("采购记录不存在或授权账号已切换")
-        return {**dict(row), "payload": json.loads(row["payload"]), "result": json.loads(row["result"])}
+        return {**dict(row), "payload": json.loads(row["payload"]), "result": json.loads(row["result"]),
+                "payment": json.loads(row["payment"])}
 
     def get(self, ident, account):
         with self._preview_lock, self.connect() as conn:
@@ -79,14 +82,23 @@ class AlibabaSelfPurchaseStore:
             rows = conn.execute("SELECT * FROM alibaba_self_purchases WHERE target_key=? AND account=? AND state NOT IN ('preview','expired') ORDER BY created_at DESC LIMIT 30", (target_key, account)).fetchall()
         return [self.decode(row) for row in rows]
 
+    def batch_records(self, order_id, account):
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT * FROM alibaba_self_purchases
+                WHERE account=? AND json_extract(payload,'$.binding.order_id')=?
+                AND json_type(payload,'$.items')='array' AND state NOT IN ('preview','expired')
+                ORDER BY created_at DESC""", (account, order_id)).fetchall()
+        return [self.decode(row) for row in rows]
+
     def preview(self, target_key, account, payload):
         ident, now = uuid4().hex, utc_iso()
         with self._preview_lock, self.connect() as conn:
-            self._check_pending(conn, target_key, account)
+            self._check_pending(conn, target_key, account, targets=payload.get('targets'))
             self._prune_previews()
-            # 预览只供本次确认；同一订单行的新预览替换旧预览，不写数据库。
+            # 新预览使所有交叠订单行的旧预览失效，防止单条与批量入口交叉提交。
+            targets = set(payload.get('targets') or [target_key])
             self._previews = {key: row for key, row in self._previews.items()
-                              if (row["target_key"], row["account"]) != (target_key, account)}
+                              if row['account'] != account or not targets.intersection(row['payload'].get('targets') or [row['target_key']])}
             if len(self._previews) >= 256:
                 del self._previews[next(iter(self._previews))]
             row = dict(id=ident, account=account, target_key=target_key, state="preview",
@@ -95,9 +107,13 @@ class AlibabaSelfPurchaseStore:
             return deepcopy(row)
 
     @staticmethod
-    def _check_pending(conn, target_key, account, exclude=""):
+    def _check_pending(conn, target_key, account, exclude="", targets=None):
         # 更换令牌可能仍是同一买家；旧授权的未知订单也不能靠换凭据绕过防重。
-        row = conn.execute("SELECT id FROM alibaba_self_purchases WHERE target_key=? AND id!=? AND (state IN ('submitting','unknown') OR (state='created' AND COALESCE(json_extract(result,'$.purchase_record_id'),'')=''))", (target_key, exclude)).fetchone()
+        row = conn.execute("""SELECT id FROM alibaba_self_purchases WHERE id!=?
+            AND (target_key IN (SELECT value FROM json_each(?)) OR EXISTS (
+                SELECT 1 FROM json_each(payload,'$.targets') WHERE value IN (SELECT value FROM json_each(?))))
+            AND (state IN ('submitting','unknown') OR (state='created' AND COALESCE(json_extract(result,'$.purchase_record_id'),'')=''))""",
+            (exclude, json.dumps(targets or [target_key]), json.dumps(targets or [target_key]))).fetchone()
         if row:
             raise ValueError("该订单商品已有待处理采购请求，请先核验原订单")
 
@@ -115,10 +131,10 @@ class AlibabaSelfPurchaseStore:
             row = self._preview(ident, account)
             if channel not in row["payload"]["view"]["pay_channels"]:
                 raise ValueError("该订单预览不支持所选支付渠道")
-            self._check_pending(conn, row["target_key"], account, ident)
+            self._check_pending(conn, row["target_key"], account, ident, row['payload'].get('targets'))
             now = utc_iso()
             # 用户提交时才落库；持久化成功后服务才允许发出创建订单请求。
-            conn.execute("INSERT INTO alibaba_self_purchases VALUES (?,?,?,'submitting',?,?,?,?)",
+            conn.execute("INSERT INTO alibaba_self_purchases (id,account,target_key,state,payload,result,created_at,updated_at) VALUES (?,?,?,'submitting',?,?,?,?)",
                          (ident, account, row["target_key"], json.dumps(row["payload"], ensure_ascii=False),
                           json.dumps({"pay_channel": channel}), now, now))
             conn.commit()
@@ -128,5 +144,34 @@ class AlibabaSelfPurchaseStore:
     def finish(self, ident, account, state, result):
         with self.connect() as conn:
             conn.execute("UPDATE alibaba_self_purchases SET state=?,result=?,updated_at=? WHERE id=? AND account=?", (state, json.dumps(result, ensure_ascii=False), utc_iso(), ident, account))
+            conn.commit()
+        return self.get(ident, account)
+
+    def claim_payment(self, ident, account, amount_fen, channel):
+        """支付意图先落库；创建回执与支付回执独立更新，查询不得覆盖支付占位。"""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self.decode(conn.execute("SELECT * FROM alibaba_self_purchases WHERE id=? AND account=?", (ident, account)).fetchone())
+            if row['payment']:
+                return row, False
+            if (row['state'] != 'created' or not row['result'].get('purchase_record_id')
+                    or channel not in {'alipay', 'shegou'} or row['result'].get('pay_channel') != channel
+                    or len(row['result'].get('order_numbers', [])) != 1
+                    or row['payload']['view']['total_fen'] != amount_fen):
+                raise ValueError('采购订单或确认金额已变化，不能支付')
+            payment = dict(state='submitting', channel=channel, amount_fen=amount_fen,
+                           request_id=uuid4().hex, message='支付正在提交；请查询原订单，勿重复支付')
+            conn.execute("UPDATE alibaba_self_purchases SET payment=? WHERE id=?", (json.dumps(payment, ensure_ascii=False), ident))
+            conn.commit()
+        return self.get(ident, account), True
+
+    def finish_payment(self, ident, account, request_id, state, message):
+        with self.connect() as conn:
+            # 只更新仍待确认的支付；晚到的异常不能覆盖查询已确认的结果。
+            conn.execute("""UPDATE alibaba_self_purchases
+                SET payment=json_set(payment,'$.state',?,'$.message',?)
+                WHERE id=? AND account=? AND json_extract(payment,'$.request_id')=?
+                AND json_extract(payment,'$.state') IN ('submitting','unknown')""",
+                (state, message, ident, account, request_id))
             conn.commit()
         return self.get(ident, account)

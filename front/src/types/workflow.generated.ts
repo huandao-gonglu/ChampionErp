@@ -39,6 +39,23 @@ export interface BackendAlibabaParsedPurchaseAddress {
   warnings: Array<string>
 }
 
+export interface BackendAlibabaPaymentAgreement {
+  channel: "alipay" | "shegou"
+  ready: boolean
+  signed: boolean
+  bound: boolean
+  sign_url: string
+  message: string
+}
+
+export interface BackendAlibabaPurchasePayment {
+  state: string
+  channel: string
+  amount_fen: number
+  request_id: string
+  message: string
+}
+
 export interface BackendAlibabaSelfPurchaseCandidate {
   id: string
   offer_id: string
@@ -47,7 +64,17 @@ export interface BackendAlibabaSelfPurchaseCandidate {
   product_url: string
 }
 
+export interface BackendAlibabaBatchPurchaseItem {
+  line_key: string
+  title: string
+  supplier: string
+  candidate: BackendAlibabaSelfPurchaseCandidate
+  quantity: number
+}
+
 export interface BackendAlibabaSelfPurchasePreview {
+  items?: Array<BackendAlibabaBatchPurchaseItem>
+  supplier?: string
   candidate: BackendAlibabaSelfPurchaseCandidate
   quantity: number
   recipient: string
@@ -62,6 +89,8 @@ export interface BackendAlibabaSelfPurchasePreview {
 }
 
 export interface BackendAlibabaSelfPurchaseRecord {
+  payment?: BackendAlibabaPurchasePayment | null
+  purchase_record_ids?: Array<string>
   id: string
   state: string
   preview: BackendAlibabaSelfPurchasePreview
@@ -74,11 +103,29 @@ export interface BackendAlibabaSelfPurchaseRecord {
 }
 
 export interface BackendAlibabaSelfPurchaseOptions {
+  warehouse_required: boolean
+  receiving_revision: number
+  warehouse_name: string
+  receiving_address: BackendAlibabaPurchaseAddressFields | null
   ok: boolean
   remaining_quantity: number
   can_purchase: boolean
   blocked_reason: string
   candidates: Array<BackendAlibabaSelfPurchaseCandidate>
+  records: Array<BackendAlibabaSelfPurchaseRecord>
+}
+
+export interface BackendAlibabaBatchPurchaseLine {
+  line_key: string
+  title: string
+  sku: string
+  supplier: string
+  options: BackendAlibabaSelfPurchaseOptions
+}
+
+export interface BackendAlibabaBatchPurchaseOptions {
+  ok: boolean
+  lines: Array<BackendAlibabaBatchPurchaseLine>
   records: Array<BackendAlibabaSelfPurchaseRecord>
 }
 

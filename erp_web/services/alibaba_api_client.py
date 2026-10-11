@@ -92,7 +92,7 @@ class AlibabaApiClient:
         )
         context = request_context(
             url, data=request.data, method="POST", timeout=self.timeout,
-            source="1688采购" + ("查询" if semantics == "read" else "下单"), account_id="app:" + self.app_key, semantics=semantics,
+            source="1688采购" + ("查询" if semantics == "read" else "支付" if api == "alibaba.trade.pay.protocolPay.preparePay" else "下单"), account_id="app:" + self.app_key, semantics=semantics,
         )
         context = replace(context, interface=api, credential_id=credential_fingerprint(self.access_token))
         try:

@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from erp_web.schemas.fulfillment import FulfillmentError
+from tests.receiving_warehouse_support import receiving_service, assign_receiving
 from erp_web.schemas.orders import OrderEvent, OrderLine, OrderSnapshot
 from erp_web.schemas.order_procurement import order_line_key
 from erp_web.services.crossborderbus_client import CrossborderBusClient
@@ -65,7 +66,7 @@ class Bus:
 def domain(tmp_path):
     orders = OrderNotificationStore(tmp_path / "orders.sqlite3")
     line = OrderLine(sku="SKU-1", remote_id="SKU-1", title="手机支架", quantity=2)
-    order = OrderSnapshot(platform="yandex", account_id="4", order_id="123", fulfillment="FBS", status="PROCESSING", state="pending_shipment", items=[line], delivery={"warehouse_id": "platform-warehouse", "method_id": "method-1", "method_name": "平台配送", "country": "RU"}, handover={"state": "ready", "shipments": [{"shipment_id": "batch-1", "shipment_type": "IMPORT", "destination": {"id": "handover-1", "name": "交货仓 A", "address": "义乌市示例路 1 号"}}]})
+    order = OrderSnapshot(platform="yandex", account_id="4", order_id="123", fulfillment="FBS", status="PROCESSING", state="pending_shipment", items=[line], delivery={"warehouse_id": "platform-warehouse", "method_id": "method-1", "method_name": "平台配送", "country": "RU"}, handover={"state": "ready", "shipments": [{"shipment_id": "batch-1", "shipment_type": "IMPORT", "destination": {"id": "handover-1", "name": "CEL 交货仓 A", "address": "义乌市示例路 1 号"}}]})
     def snapshot(value):
         event = OrderEvent(platform=value.platform, account_id=value.account_id, topic="fixture", resource=value.order_id, payload={"revision": time.time_ns()})
         orders.enqueue(event)
@@ -78,7 +79,8 @@ def domain(tmp_path):
         yandex_images_provider=lambda account, ids: {"SKU-1": "https://platform.example/yandex-sku.jpg"})
     key = order_line_key(line)
     procurement.select_source({"order_id": order.identity, "line_key": key, "revision": 0, "source": {"supplier": "供应商", "source_platform": "1688", "product_url": "https://detail.1688.com/offer/123.html", "source_sku_id": "source-1", "specification": "银色"}})
-    procurement.record_purchase({"order_id": order.identity, "line_key": key, "revision": 1, "request_id": "purchase", "quantity": 2, "purchase_order_number": "PO-123"})
+    assign_receiving(receiving_service(procurement), order)
+    procurement.record_purchase({"order_id": order.identity, "line_key": key, "revision": 1, "request_id": "purchase", "quantity": 2, "purchase_order_number": "PO-123", "receiving_revision": 1, "receiving_confirmed": True})
     store = FulfillmentStore(orders)
     bus = Bus(store)
     service = FulfillmentService(store, bus, lambda: accounts, procurement.detail, start_worker=False)
@@ -87,7 +89,7 @@ def domain(tmp_path):
     view = service.detail(order.identity)
     service.command("plan", {"order_id": order.identity, "revision": view["revision"],
         "plan": {"section_id": 1, "warehouse_id": 10, "service_ids": [2, 3]},
-        "handover_key": view["handover_target"]["key"], "confirm_warehouse": True})
+        "receiving_revision": view["receiving_warehouse"]["revision"]})
     purchase = procurement.detail(order.identity)["lines"][0]["records"][0]
     parcel = {"id": "parcel-1", "line_key": key, "purchase_record_id": purchase["id"], "carrier": "顺丰", "tracking_number": "SF123", "quantity": 2}
     return service, bus, order, parcel, snapshot, accounts
@@ -96,7 +98,7 @@ def domain(tmp_path):
 def command(service, order, action, **body):
     if action == "plan":
         view = service.detail(order.identity)
-        body.update(handover_key=view["handover_target"]["key"], warehouse_link_revision=(view["warehouse_link"] or {}).get("revision", 0), confirm_warehouse=True)
+        body.update(receiving_revision=view["receiving_warehouse"]["revision"])
     return service.command(action, {"order_id": order.identity, "revision": service.detail(order.identity)["revision"], **body})
 
 
@@ -159,8 +161,7 @@ def test_remark_can_be_cleared_and_stale_plan_cannot_overwrite_it(domain):
     command(service, order, "plan", plan=old["plan"], remark="手工备注")
     with pytest.raises(ValueError):
         service.command("plan", {"order_id": order.identity, "revision": old["revision"],
-            "plan": old["plan"], "remark": "旧窗口备注", "handover_key": old["handover_target"]["key"],
-            "warehouse_link_revision": (old["warehouse_link"] or {}).get("revision", 0)})
+            "plan": old["plan"], "remark": "旧窗口备注", "receiving_revision": old["receiving_warehouse"]["revision"]})
     assert service.detail(order.identity)["remark"] == "手工备注"
     # 历史客户端未提供备注时保留原值；明确提交空字符串时清空。
     command(service, order, "plan", plan=old["plan"])
@@ -350,19 +351,11 @@ def test_atomic_claim_and_unique_platform_order(domain):
     assert service.store.ensure(other_model)["erp_order_id"] == order.identity
 
 
-def test_override_stays_in_compatible_warehouses_and_preserves_default(domain):
-    service, _, order = ready(domain)
-    command(service, order, "pause")
-    assert not service.process_one(order)
-    command(service, order, "plan", plan={"section_id": 1, "warehouse_id": 20, "service_ids": [2]})
-    assert service.detail(order.identity)["plan"]["warehouse_id"] == 20
-    assert service.store.rules()[0]["warehouse_id"] == 10
-    with pytest.raises(FulfillmentError):
-        command(service, order, "plan", plan={"section_id": 2, "warehouse_id": 20, "service_ids": [2]})
-    with pytest.raises(FulfillmentError):
-        command(service, order, "plan", plan={"section_id": 1, "warehouse_id": 999, "service_ids": [2]})
-    with pytest.raises(FulfillmentError):
-        command(service, order, "plan", plan={"section_id": 1, "warehouse_id": 20, "service_ids": []})
+def test_report_cannot_override_purchase_receiving_warehouse(domain):
+    service, _, order, *_ = domain
+    with pytest.raises(FulfillmentError, match='采购收货仓一致'):
+        command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 20, 'service_ids': [2]})
+    assert service.detail(order.identity)['plan']['warehouse_id'] == 10
 
 
 def test_parcels_validate_purchase_allocation_and_account(domain):
@@ -378,12 +371,15 @@ def test_parcels_validate_purchase_allocation_and_account(domain):
         service.detail(order.identity)
 
 
-def test_missing_handover_never_infers_route_from_country(domain):
+def test_missing_platform_carrier_blocks_new_report_without_changing_address(domain):
     service, bus, order = ready(domain)
-    domain[4](order.model_copy(update={"handover": None}))
-    assert "交货" in service.detail(order.identity)["blocked_reason"]
+    before = service.detail(order.identity)['receiving_warehouse']
+    domain[4](order.model_copy(update={'handover': None}))
+    current = service.detail(order.identity)
+    assert current['blocked_reason']
+    assert current['receiving_warehouse']['address'] == before['address']
     service.process_one(order)
-    assert not bus.calls
+    assert not any(path.endswith('createOrder') for path, _ in bus.calls)
 
 
 def test_platform_cancel_propagates_and_requires_remote_confirmation(domain):

@@ -1,70 +1,46 @@
-"""Yandex 交货点对应与本单服务：不混用 ID，不依赖目的国和默认方案。"""
-
+"""采购收货仓决定报单仓；官方交货地址仅作为参考信息。"""
 import pytest
 
 from erp_web.schemas.fulfillment import FulfillmentError
-from erp_web.services.fulfillment_routing import handover_target
 from tests.test_fulfillment import domain, ready, command
 
 
 def request(service, order, **overrides):
     value = service.detail(order.identity)
-    return {"order_id": order.identity, "revision": value["revision"], "plan": value["plan"],
-            "handover_key": value["handover_target"]["key"],
-            "warehouse_link_revision": (value["warehouse_link"] or {}).get("revision", 0), **overrides}
+    return {'order_id': order.identity, 'revision': value['revision'], 'plan': value['plan'],
+            'receiving_revision': value['receiving_warehouse']['revision'], **overrides}
 
 
-def changed_address(order, address="义乌市其他路 2 号"):
+def changed_address(order):
     result = order.model_copy(deep=True)
-    result.handover.shipments[0].destination.address = address
+    result.handover.shipments[0].destination.address = '完全不同的官方交货点'
     return result
 
 
-def test_target_has_own_id_and_reuses_across_shipments_but_not_accounts(domain):
-    _, bus, order, *_ = domain
-    target = handover_target(order, bus.identity())
-    assert target['warehouse_id'] == 'handover-1'
-    other = order.model_copy(deep=True)
-    other.handover.shipments[0].shipment_id = 'another-batch'
-    other.order_id = 'another-order'
-    assert handover_target(other, bus.identity())['key'] == target['key']
-    assert handover_target(order.model_copy(update={'account_id': 'other'}), bus.identity())['key'] != target['key']
-    assert handover_target(order, 'another-bus')['key'] != target['key']
-    assert handover_target(changed_address(order), bus.identity())['key'] != target['key']
+def test_official_address_changes_do_not_change_receiving_warehouse(domain):
+    service, bus, order = ready(domain)
+    domain[4](changed_address(order))
+    assert service.detail(order.identity)['receiving_warehouse']['warehouse_id'] == 10
+    assert not service.detail(order.identity)['blocked_reason']
+    assert service.process_one(order)
+    assert any(path.endswith('createOrder') for path, _ in bus.calls)
 
 
-def test_missing_id_uses_exact_address_and_multiple_destinations_block(domain):
-    _, bus, order, *_ = domain
-    order = order.model_copy(deep=True)
-    order.handover.shipments[0].destination.id = ''
-    assert handover_target(order, bus.identity())['key']
-    second = order.handover.shipments[0].model_copy(deep=True)
-    second.destination.address = '另一个地址'
-    order.handover.shipments.append(second)
-    assert '不唯一' in handover_target(order, bus.identity())['reason']
+def test_missing_platform_carrier_blocks_new_report_without_changing_address(domain):
+    service, bus, order = ready(domain)
+    before = service.detail(order.identity)['receiving_warehouse']
+    domain[4](order.model_copy(update={'handover': None}))
+    current = service.detail(order.identity)
+    assert current['blocked_reason']
+    assert current['receiving_warehouse']['address'] == before['address']
+    service.process_one(order)
+    assert not any(path.endswith('createOrder') for path, _ in bus.calls)
 
 
-def test_withdraw_uses_origin_and_ignores_cancelled_batch(domain):
-    _, bus, order, *_ = domain
-    order = order.model_copy(deep=True)
-    shipment = order.handover.shipments[0]
-    shipment.origin = shipment.destination.model_copy(update={'id': 'pickup'})
-    shipment.shipment_type = 'WITHDRAW'
-    assert handover_target(order, bus.identity())['warehouse_id'] == 'pickup'
-    shipment.status = 'ERROR'
-    assert not handover_target(order, bus.identity())['key']
-
-
-def test_binding_needs_explicit_confirmation_and_atomic_version(domain):
-    service, _, order, _, snapshot, _ = domain
-    changed = changed_address(order)
-    snapshot(changed)
-    body = request(service, changed)
-    with pytest.raises(FulfillmentError, match='确认'): service.command('plan', body)
-    result = service.command('plan', {**body, 'confirm_warehouse': True})
-    assert result['warehouse_link'] == {'section_id': 1, 'warehouse_id': 10, 'revision': 1}
-    body = request(service, changed, warehouse_link_revision=0)
-    with pytest.raises(ValueError, match='对应关系已变化'): service.command('plan', body)
+def test_report_cannot_change_purchase_warehouse(domain):
+    service, _, order, *_ = domain
+    with pytest.raises(ValueError, match='采购收货仓一致'):
+        service.command('plan', request(service, order, plan={'section_id': 1, 'warehouse_id': 20, 'service_ids': [2]}))
 
 
 def test_services_choose_one_core_and_available_options_only(domain, monkeypatch):
@@ -76,56 +52,64 @@ def test_services_choose_one_core_and_available_options_only(domain, monkeypatch
     assert [s['name'] for s in result['selected_services']] == ['合包', '拍照']
 
 
-def test_non_cooperating_warehouse_rejected_even_when_confirmed(domain):
-    service, _, order, *_ = domain
-    with pytest.raises(FulfillmentError, match='合作范围'):
-        service.command('plan', request(service, order, confirm_warehouse=True, plan={'section_id': 1, 'warehouse_id': 999, 'service_ids': [2]}))
-
-
-def test_snapshot_change_during_service_query_rolls_back_binding(domain, monkeypatch):
+def test_delivery_change_during_services_rejects_plan(domain, monkeypatch):
     service, bus, order, _, snapshot, _ = domain
-    body = request(service, order)
     def services(*args):
-        snapshot(changed_address(order))
+        changed = order.model_copy(deep=True)
+        changed.delivery.method_id = 'new-service'
+        snapshot(changed)
         return {'core_data': [{'id': 2, 'name': '贴单'}], 'optional_data': [{'id': 3, 'name': '拍照'}]}
     monkeypatch.setattr(bus, 'services', services)
     before = service.store.get(order.identity)
-    with pytest.raises(FulfillmentError, match='地址或账号已变化'): service.command('plan', body)
+    with pytest.raises(ValueError, match='物流方案已变化'):
+        service.command('plan', request(service, order))
     assert service.store.get(order.identity)['revision'] == before['revision']
-    assert not service.detail(order.identity)['warehouse_link']
 
 
-def test_order_plan_without_default_country_or_inventory_warehouse_can_submit(domain):
-    service, bus, order, parcel, snapshot, _ = domain
-    order = order.model_copy(update={'delivery': order.delivery.model_copy(update={'country': '', 'warehouse_id': '', 'method_id': ''})})
-    snapshot(order)
-    for rule in service.store.rules(): service.store.delete_rule(rule['id'])
-    command(service, order, 'label', label={'url': 'https://example.com/label.pdf', 'tracking_number': 'BOX1'})
-    command(service, order, 'parcels', parcels=[parcel])
-    assert not service.detail(order.identity)['blocked_reason']
-    assert not service.process_one(order)
-    command(service, order, 'submit')
-    assert service.process_one(order)
-    payload = next(body for path, body in bus.calls if path.endswith('createOrder'))
-    assert payload['sid'] == 10 and payload['section_id'] == 1
-    assert 'country' not in payload['order_data'][0]
-    assert payload['order_data'][0]['add_service'] == [{'id': 2}, {'id': 3}]
-
-
-def test_address_changed_after_submit_never_creates_in_old_warehouse(domain):
-    service, bus, order = ready(domain)
-    command(service, order, 'submit')
-    domain[4](changed_address(order))
-    service.process_one(order)
-    assert not bus.calls
-
-
-def test_address_changed_while_refreshing_services_never_sends_create(domain, monkeypatch):
+def test_delivery_change_before_create_never_sends(domain, monkeypatch):
     service, bus, order = ready(domain)
     def services(*args):
-        domain[4](changed_address(order))
+        changed = order.model_copy(deep=True)
+        changed.delivery.carrier = 'GUOO'
+        domain[4](changed)
         return {'core_data': [{'id': 2, 'name': '贴单'}], 'optional_data': [{'id': 3, 'name': '拍照'}]}
     monkeypatch.setattr(bus, 'services', services)
     service.process_one(order)
     assert not bus.calls
     assert '资料已变化' in service.detail(order.identity)['error_message']
+
+
+def test_legacy_address_links_never_authorize_new_report(domain):
+    import json
+    service, _, order = ready(domain)
+    with service.store.orders.connect() as conn:
+        conn.execute('DELETE FROM order_receiving_warehouses WHERE order_id=?', (order.identity,))
+        conn.execute('INSERT OR REPLACE INTO fulfillment_warehouse_links VALUES (?,?,?)', ('old-address', 1, json.dumps({'section_id': 1, 'warehouse_id': 10})))
+        conn.commit()
+    assert service.detail(order.identity)['plan'] is None
+    assert service.detail(order.identity)['blocked_reason']
+    assert not service.process_one(order)
+
+
+def test_local_receiving_validation_failure_is_not_unknown_remote_result(domain):
+    service, bus, order = ready(domain)
+    value = service.store.get(order.identity)
+    changed = order.model_copy(deep=True)
+    changed.delivery.carrier = 'GUOO'
+    domain[4](changed)
+    assert service._execute(order, value, 'create')
+    result = service.store.get(order.identity)
+    assert not bus.calls
+    assert not result['create_unknown']
+    assert '物流方案已变化' in result['error_message']
+
+
+def test_existing_remote_report_remains_readable_without_receiving(domain):
+    service, _, order = ready(domain)
+    service.process_one(order)
+    with service.store.orders.connect() as conn:
+        conn.execute('DELETE FROM order_receiving_warehouses')
+        conn.commit()
+    value = service.detail(order.identity)
+    assert value['crossborderbus_order_id'] == 99 and value['plan']['warehouse_id'] == 10
+    assert not value['plan_editable']

@@ -13,9 +13,14 @@ enableAutoUnmount(afterEach)
 const global = {}
 function dom() { return new DOMWrapper(document.body).get('dialog:last-of-type') }
 function detail(): FulfillmentDetail {
-  return { erp_order_id: 'order-1', revision: 3, plan: null, rule: null, warehouse_link: null,
+  return { erp_order_id: 'order-1', revision: 3,
+    busy: false, editing: false, editable: true, plan_editable: true, create_unknown: false, cancel_requested: false, cancel_rejected: false,
+    crossborderbus_order_id: null, fulfillment_status: 'NEW', operation: '', error_message: '', blocked_reason: '', last_attempt_at: '', last_synced_at: '', next_attempt: 0,
+    platform_label: '', platform_tracking_number: '', label_fetch_supported: true, label_fetch_reason: '', label_error: '', label_attempt_at: '', country: '', remark: '', override: false,
+    section_name: 'Yandex', warehouse_name: '义乌合作仓', delivery: { fulfillment_model: 'FBS', warehouse_id: '', warehouse_name: '', method_id: 'CEL', method_name: '普货', carrier: 'CEL', country: '', shipment_id: '', tracking_number: '', label_url: '' }, parcels: [],
+     plan: { section_id: 143, warehouse_id: 54, service_ids: [] }, rule: null, receiving_warehouse: { revision: 1, section_id: 143, warehouse_id: 54, section_name: 'Yandex', warehouse_name: '义乌合作仓', address: { fullName: '仓库收件人', mobile: '13800000000', phone: '', provinceText: '浙江省', cityText: '金华市', areaText: '义乌市', townText: '', address: '货代收货路 2 号', postCode: '' }, transport_service: 'Yandex CEL 普货', delivery_key: 'delivery-1', confirmed_at: '' },
     handover_target: { key: 'address-v1', warehouse_id: 'yandex-100', name: 'CEL 交货仓', address: '义乌市示例路 1 号', shipment_type: 'IMPORT', reason: '' },
-  } as FulfillmentDetail
+  }
 }
 function order(): OrderSnapshot {
   return {
@@ -42,7 +47,6 @@ beforeEach(() => {
 })
 async function choose() {
   await flushPromises()
-  await dom().findAll('select').at(-1)!.setValue('54')
   await flushPromises()
   await dom().findAll('input[type="radio"]')[1]!.setValue(true)
 }
@@ -98,21 +102,22 @@ describe('本单报单仓库与服务', () => {
     expect(dom().find('button[aria-haspopup="dialog"]').exists()).toBe(false)
   })
 
-  it('实时读取合作仓，首次确认对应关系；基础单选和附加多选按真实 ID 保存', async () => {
+  it('实时读取合作仓，沿用采购收货仓；基础单选和附加多选按真实 ID 保存', async () => {
     const wrapper = mount(FulfillmentPlanDialog, { props: { value: detail(), order: order() }, global, attachTo: document.body })
     await choose()
     expect(busCommand).toHaveBeenCalledWith('catalog')
     expect(fetchBusServices).toHaveBeenCalledWith(143, 54)
     expect(dom().text()).toContain('义乌市示例路 1 号')
     expect(dom().text()).not.toContain('其他平台仓')
-    expect(dom().get('button[form="fulfillment-plan"]').attributes('disabled')).toBeDefined()
+    expect(dom().get('select').attributes('disabled')).toBeDefined()
+    expect(dom().text()).not.toContain('重新对应')
     await dom().findAll('input[type="checkbox"]')[0]!.setValue(true)
     await dom().findAll('input[type="checkbox"]').at(-1)!.setValue(true)
     await dom().get('form').trigger('submit'); await flushPromises()
     expect(fulfillmentCommand).toHaveBeenCalledWith('plan', 'order-1', 3, {
       plan: { section_id: 143, warehouse_id: 54, service_ids: [341, 339] },
       remark: '',
-      handover_key: 'address-v1', warehouse_link_revision: 0, confirm_warehouse: true,
+      receiving_revision: 1,
     })
     expect(wrapper.emitted('saved')).toHaveLength(1)
   })
@@ -135,7 +140,7 @@ describe('本单报单仓库与服务', () => {
   })
 
   it('再次打开回显已保存备注，可以明确清空', async () => {
-    const value = { ...detail(), remark: '已填写的打包要求', plan: { section_id: 143, warehouse_id: 54, service_ids: [338] }, warehouse_link: { section_id: 143, warehouse_id: 54, revision: 2 } }
+    const value = { ...detail(), remark: '已填写的打包要求', plan: { section_id: 143, warehouse_id: 54, service_ids: [338] }, receiving_warehouse: { ...detail().receiving_warehouse!, revision: 2 } }
     mount(FulfillmentPlanDialog, { props: { value, order: order() }, global, attachTo: document.body })
     await flushPromises()
     const field = dom().get('#fulfillment-remark')
@@ -146,30 +151,30 @@ describe('本单报单仓库与服务', () => {
   })
 
   it('已确认的仓库固定，选择另一基础服务会替换原选择', async () => {
-    const value = { ...detail(), plan: { section_id: 143, warehouse_id: 54, service_ids: [338] }, warehouse_link: { section_id: 143, warehouse_id: 54, revision: 2 } }
+    const value = { ...detail(), plan: { section_id: 143, warehouse_id: 54, service_ids: [338] }, receiving_warehouse: { ...detail().receiving_warehouse!, revision: 2 } }
     mount(FulfillmentPlanDialog, { props: { value, order: order() }, global, attachTo: document.body })
     await flushPromises()
     expect(dom().get('select').attributes('disabled')).toBeDefined()
     await dom().findAll('input[type="radio"]')[1]!.setValue(true)
     await dom().get('form').trigger('submit'); await flushPromises()
     expect(fulfillmentCommand).toHaveBeenCalledWith('plan', 'order-1', 3, expect.objectContaining({
-      plan: { section_id: 143, warehouse_id: 54, service_ids: [341] }, warehouse_link_revision: 2, confirm_warehouse: false,
+      plan: { section_id: 143, warehouse_id: 54, service_ids: [341] }, receiving_revision: 2,
     }))
   })
 
-  it('地址变化或服务请求失败时不能保存', async () => {
+  it('收货仓变化或服务请求失败时不能保存', async () => {
     const wrapper = mount(FulfillmentPlanDialog, { props: { value: detail(), order: order() }, global, attachTo: document.body })
     await choose()
     await dom().findAll('input[type="checkbox"]').at(-1)!.setValue(true)
-    await wrapper.setProps({ value: { ...detail(), handover_target: { ...detail().handover_target!, key: 'changed' } } })
+    await wrapper.setProps({ value: { ...detail(), receiving_warehouse: { ...detail().receiving_warehouse!, revision: 2 } } })
     await dom().get('form').trigger('submit')
     expect(fulfillmentCommand).not.toHaveBeenCalled()
-    expect(dom().text()).toContain('交货信息或仓库对应关系已变化')
+    expect(dom().text()).toContain('采购收货仓尚未确定或已变化')
     wrapper.unmount()
     vi.mocked(fetchBusServices).mockRejectedValue(new Error('仓库服务读取失败'))
     mount(FulfillmentPlanDialog, { props: { value: detail(), order: order() }, global, attachTo: document.body })
     await flushPromises()
-    await dom().findAll('select').at(-1)!.setValue('54'); await flushPromises()
+    await flushPromises()
     expect(dom().text()).toContain('仓库服务读取失败')
     expect(dom().get('button[form="fulfillment-plan"]').attributes('disabled')).toBeDefined()
   })

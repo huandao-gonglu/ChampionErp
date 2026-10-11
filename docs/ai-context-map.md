@@ -56,7 +56,10 @@
   流式审计只结算一次：HTTP EOF 记成功，SDK 主动关闭记 `stream_closed`，实际读取异常才记网络中断。
   `GeneratorExit` 不累计网络失败；传输层不解析模型终止事件，也不推断 Agent 是否完成。
   Pydantic AI 仍独占模型/Agent 生命周期，不新增模型请求旁路。
-- `services/platform_request_policy.py` 纯解析 HTTP 与业务拒绝；`stores/external_request_store.py` 用独立
+- `services/platform_request_policy.py` 按平台响应信封与具体接口纯解析 HTTP 和业务拒绝，不通用推断任意 JSON 的 `success` / `status`。
+  1688 物流查询 HTTP 200 的 `500_2` 为正常空物流；请求级业务拒绝只保护原请求，不累计接口故障熔断。
+  未声明的业务协议由原适配器解释，传输审计成功不代表业务成功；HTTP 限流、权限与服务故障仍统一处理。
+  `stores/external_request_store.py` 用独立
   `external-requests.sqlite3` 保存尝试、限额、阻断与恢复，不改变 ERP 主库版本。
   放行与租约分配在短事务内完成；账号停用跨模块、重启及换 Key 保留，接口拒绝只影响该接口。
   `image_hosting:public` 的匿名 401/403 仅拒绝本次请求，不认定 S3 凭据失效；
@@ -1135,10 +1138,14 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 `services/fulfillment_label_service.py` 使用现有 `S3ImageStorage` SDK 边界交付 PDF 面单并核验公开内容。
 `services/fulfillment_image_service.py` 在 Yandex 报单创建和包裹更新前，将已同步的平台图片字节原样托管并核验跨站公开读取，防止源站 Referer 防盗链。通过 facade 注入 `FulfillmentService.image_delivery`，不在订单 GET 中上传，不替换平台图片来源；复用安全下载、图片内容校验及唯一 S3 SDK 边界，临时源文件在仓库外自动清理。下载或托管失败不会发送报单写入；准备后复核版本及取消状态。
 原有平台订单身份及状态不变；列表另行读取履约摘要，详情承载履约操作及异常处理。
-授权和默认方案在已有授权模块中配置；Yandex 本单可直接选择报单仓库与服务，不依赖全局默认方案。
-`services/fulfillment_routing.py` 从交货批次提取目标：IMPORT 使用 destination，WITHDRAW 使用 origin，取消或歧义批次不能报单。平台交货点 ID 与跨境巴士仓库 ID 分属不同体系；`fulfillment_warehouse_links` 保存人工确认的对应，作用域包含店铺、跨境巴士账号及交货点身份和地址指纹。同一交货点跨批次复用，账号/地址变化后重新确认；无平台 ID 时仅用明确地址标识，不模糊猜仓。
-`FulfillmentPlanDialog.vue` 打开时读取最新合作仓库，Yandex 只显示对应平台下的合作仓；已对应的仓库默认固定，重新对应须明确确认。`FulfillmentPlanFields.vue` 实时读取所选仓服务，基础服务单选，附加服务多选并显示费用。保存本单方案与仓库对应处于同一短事务，以履约版本、对应版本、当前订单地址和账号校验；网络读取不持有事务。
-目的国按官方创建接口为可选字段：没有时不发送、不阻止报单。Yandex 不再把商品库存仓 ID 当作交货仓必填条件。提交前仍重读合作仓和服务并核对交货点，确保旧方案不能发往变更后的仓库；无自动预报规则时须点击“立即提交”。
+授权和默认方案在已有授权模块中配置；Yandex FBS 在采购前确定收货仓，报单仅沿用该仓选择服务，不依赖全局默认方案。
+`GET/POST /api/orders/receiving-warehouse` 经 `fulfillment_routes.py` 和 `fulfillment_facade.py` 委托给 `ReceivingWarehouseService`。`schemas/receiving_warehouse.py::delivery_carrier` 仅从归属已校验且可用的 Yandex IMPORT 交货点名称前缀识别承运商，保留 GUOO(GTA) 与 GBS(GUOO) 的区分；缺失、未知或冲突时返回待确认，不使用 `deliveryPartnerType`、`Самовывоз`、卖家仓或地址备注猜测。名称及识别依据返回收货仓界面；物流来源指纹包含识别结果，不包含官方交货点 ID 或地址。`stores/receiving_warehouse_store.py` 与采购共用订单数据库，保存本单地址及规则快照；采购前验证配置版本、启用状态及承接范围，采购后配置编辑不会改写冻结地址。
+
+`GET /api/logistics/settings`、`POST /api/logistics/refresh`、`POST /api/logistics/address` 经同一薄路由和 facade 委托 `services/logistics_settings_service.py`。`schemas/logistics.py` 定义 Yandex 平台物流商枚举，地址规则只按平台和物流商匹配，默认地址仅影响排序。Express/Economy 及交货节点范围已退役；持久化旧规则可读，只保留已确认的平台和物流商用于地址匹配，原采购快照不重写。`stores/logistics_store.py` 按跨境巴士授权身份及合作仓保存多地址，用版本校验阻止覆盖；旧 `receiving_warehouse_profiles` 只迁移地址、不迁移自由文本承接能力，迁移标记防止重复导入。前端入口为独立 `SystemSettingsPanel.vue` 内的 `components/settings/LogisticsSettingsPanel.vue`，不挂在平台授权中。`/settings?settings_section=logistics` 直达；旧授权深链仍兼容。采购弹窗只提交地址 ID 和配置版本，平台物流商由服务端从订单解析，不接受物流商、运输方式或自由地址覆盖；识别不到物流商时阻止选仓并提示同步平台交货信息。
+`POST /api/logistics/parse-address` 只接收地址文本，经同一 facade 复用 `services/alibaba_purchase_address.py::parse_address`；不依赖订单、商品行、1688 授权或数据库。物流地址编辑器填充同一地址形状并展示缺失字段提示，解析不自动保存地址或改变支持的物流商。
+`OrderReceivingWarehouse.vue` / `ReceivingWarehouseDialog.vue` 位于商品采购前，从物流设置筛选已合作 Yandex 仓的具体收货地址，只选择匹配本单平台物流商的地址。`order_purchases` 中的有效记录、`order_purchase_reservations` 中的 reserved 占位以及已创建/结果未知的履约单阻止换仓；这与采购占位在同一数据库事务内校验。历史采购缺少仓库快照时必须补录并确认实际寄往地址；未知采购期间不能补录。原 `fulfillment_warehouse_links` 历史数据保留，但新流程不读取或写入。
+`services/fulfillment_routing.py` 提取官方交货地址供展示和备注；地址本身不参与仓库匹配，物流商由可用的 IMPORT 交货信息识别。`FulfillmentPlanDialog.vue` 固定采购收货仓，`FulfillmentPlanFields.vue` 实时读取基础单选、附加多选及费用；保存及提交复核收货仓版本和物流方案，官方地址变化不使方案失效，平台物流商缺失或变化则须重新核对。
+目的国按官方创建接口为可选字段，没有时不发送、不阻止报单。创建后原报单仓及服务保持锁定；没有自动规则时须点击“立即提交”。
 本单可选报单备注由 `FulfillmentPlanDialog.vue` 手工录入，随 `plan` 命令持久化 `remark`，沿用编辑租约、CAS 及报单前锁定边界。`createOrder.order_data[].introduce` 仅在备注非空时发送，不再生成平台订单标识；地址备注和默认履约规则不提供默认值。历史记录缺少备注字段仍可读取，页面读取不更新已创建远端订单。
 Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创建及创建待确认的预报号不变。`POST /api/orders/fulfillment/associate` 通过官方关联接口读取跨境巴士已同步的店铺订单；`FulfillmentService.associate` 复用占位和版本校验，预先核实远端 ID、仓库、渠道和待打包状态。`platform_link_state/error` 独立于仓库状态；失败不重建报单，未知结果不重放，GET 与只读同步不触发关联。官方查询不返回店铺订单栏全部明细，成功回执不等于该栏逐项验收。
 协议、产品闭环、核实限制和验收见 [跨境履约说明](crossborder-fulfillment.md)。
@@ -1146,6 +1153,8 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 ### 平台请求中断与恢复
 
 - `http_route_units/external_request_routes.py` → `facades/external_request_facade.py` → `services/external_request_control_service.py` 为授权页统一中断查询与恢复入口；契约在 `schemas/external_request_control.py`。恢复只改变外部请求 Store 的放行条件，不执行业务请求。
+  `POST /api/external-requests/history/clear` 在用户确认后清理历史中断；使用页面快照的时间上界，Store 在短事务内重查当前保护范围。
+  保留当前阻断的已发送依据、最近十分钟控制窗口、未完成请求、尚未确认恢复的未知写入、重试父记录、成功审计及恢复记录；旧的重复本地拦截可清理，阻断计数不变。人工恢复按范围和时间关联历史，已确认恢复的未知写入也可清理；后续新阻断不得重新保护在其创建前已确认处理的旧记录，本轮故障依据仍保留。系统检查记录不视为人工确认。审计库 v2 保留 v1 迁移能力。
   请求级明确拒绝与未知写入分开展示：前者只限制原操作中的原请求，填写处理原因可解除；后者须核对业务回执。服务与 Store 共用 `schemas/external_requests.py` 的明确拒绝判定，存储事务校验故障及创建时间，旧快照不能解除重新产生的同类故障。
   授权页同类明确拒绝按平台、真实账号、审计关联接口与完整拒绝状态分组；组身份绑定所有成员快照。聚合只影响展示与明确恢复选择，不扩大实际阻断范围，恢复在同一事务内逐条留审计。
 - `stores/external_request_store.py` 在短事务中持久化冷却、唯一探测租约、退避及恢复记录；只读临时故障可自愈，明确平台限制与未知写入不得隐式解除。旧永久阻断仅凭完整只读临时失败审计迁入冷却。
@@ -1155,15 +1164,22 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 ### 1688 订单采购
 
+- Yandex FBS 的订单级「1688 批量采购」使用 `GET /api/orders/alibaba-purchase/batch` 和 `POST /api/orders/alibaba-purchase/batch-preview`，与单条采购共用 create/pay/reconcile/cashier 生命周期。`AlibabaBatchPurchaseDialog.vue` 支持勾选最多 50 个商品行、修改数量、逐组确认支付渠道与一次确认后顺序提交；分组独立持久化，部分成功不回滚已创建订单，前端请求中断暂停后续组。
+- `services/alibaba_purchase_preview.py` 按 1688 `orderPreviewResuslt` 的真实分组匹配完整 offer/SKU/spec 集合；供应商展示名不作为合单身份，同组同一采购规格汇总数量。所有组使用本单冻结收货仓地址，创建前复核分组、金额、渠道、店铺和仓库。商品缺失、重复或不一致时拒绝创建；未知回执按外部请求号查询，再校验整组商品和数量。
+- 每个批量组在现有采购请求 payload 保存 items/targets，旧单 SKU 请求仍可读取和核验，不变更 SQLite 表结构。新预览使交叠行的旧单条/批量预览失效；持久化待核验请求跨授权阻止所有涉及行再次提交。`OrderProcurementStore.reserve_purchases/complete_purchases` 在订单库同一短事务内占位、回填或取消全部行，每行保留自己的采购记录、数量和仓库快照，共用组采购单号；一组回填失败保留远端回执供幂等恢复。
+- 批量创建后通过 `alibaba_purchase_sync_service.sync_purchases` 按各采购记录触发一次同步，同组复用本次订单和物流回执，失败查询不因 SKU 数量重复执行；查询原订单时可再次同步；发货后的「刷新采购进度」沿用同一 owner。运单依据交易子项和包裹内数量回填到各 SKU 及跨境履约国内包裹，同运单多 SKU 可共存；缺少证据、重复采购同一源 SKU 或人工修改冲突时保留待确认，不盲目复制运单。
+
 - 入口：订单详情的商品采购区域 →「1688 采购」。`order_routes.py` 的 `/api/orders/alibaba-purchase` 及 `/preview`、`/create`、`/reconcile`、`/cashier` 经 `facades/alibaba_self_purchase_facade.py` 装配，不再从在线商品发起独立采购。
-- `services/alibaba_self_purchase_service.py` 读取销售订单已确认来源和剩余数量；只有待发货订单可新增采购。预览绑定订单行、来源版本、数量、地址、人民币分金额和凭据摘要，有效期十分钟。下单参数仅取采集并冻结到上架记录的商品编号、SKU 和 specId，再使用已选且核对后的地址进行实时预览；缺失、歧义或不一致时返回 blocked_reason 并禁止预览/创建，不借用历史订单或临时商品查询补猜。起订限制以 1688 返回为准。
-- `services/alibaba_purchase_address.py` 归一化全部 1688 保存地址，并从订单交货快照和 `OrderAddressNoteStore` 读取揽收／交货地址及本地备注。GET `/api/orders/alibaba-purchase/addresses` 提供候选，POST `/parse-address` 只在本地提取完整地址中的明确字段；缺失和歧义不猜测，用户修改并确认后才能预览，不改写原始地址或备注。保存地址使用内容指纹选择，选择后到预览前发生变更须重选；预览之后按已确认快照提交，不静默改为账号最新默认地址。
-- `AlibabaPurchaseAddressPicker.vue` 提供地址选择、粘贴解析和字段核对，`AlibabaSelfPurchaseDialog.vue` 单独展示订单预览与支付方式。地址或数量变化使旧预览失效；支付渠道只使用本次预览返回的可用值。
+- `services/alibaba_self_purchase_service.py` 读取销售订单已确认来源和剩余数量；只有待发货订单可新增采购。预览绑定订单行、来源版本、数量、地址、采购收货仓版本、人民币分金额和凭据摘要，有效期十分钟。下单参数仅取采集并冻结到上架记录的商品编号、SKU 和 specId，再使用已选且核对后的地址进行实时预览；缺失、歧义或不一致时返回 blocked_reason 并禁止预览/创建，不借用历史订单或临时商品查询补猜。起订限制以 1688 返回为准。
+- `services/alibaba_purchase_address.py` 归一化全部 1688 保存地址，并从订单交货快照和 `OrderAddressNoteStore` 读取揽收／交货地址及本地备注。GET `/api/orders/alibaba-purchase/addresses` 提供候选，POST `/parse-address` 只在本地提取地址文本中的有用字段；优先明确标注的收货联系人和电话，同类多个号码取优先级最高的首个，手机和座机分别填入，忽略备用资料及备注，缺失字段提示补全，用户修改并确认后才能预览，不改写原始地址或备注。保存地址使用内容指纹选择，选择后到预览前发生变更须重选；预览之后按已确认快照提交，不静默改为账号最新默认地址。
+- Yandex 的收货地址统一由物流设置维护，`AlibabaSelfPurchaseDialog.vue` 直接展示已确定仓库的地址，预览请求只传收货仓版本，不能传其他地址覆盖。其他平台的 `AlibabaPurchaseAddressPicker.vue` 保留地址选择、粘贴解析和字段核对。`AlibabaSelfPurchaseDialog.vue` 单独展示订单预览与支付方式。地址或数量变化使旧预览失效；支付渠道只使用本次预览返回的可用值。
 - `stores/alibaba_self_purchase_store.py` 由 AppContext 持有，未提交预览仅在内存中短期保留（十分钟、最多 256 条），不写数据库、不出现在采购历史中；关闭弹窗或刷新页面后重新预览，服务重启后预览失效。用户提交时才在独立的 `data/alibaba-self-purchases.sqlite3` 原子保存请求，随后允许调用创建接口。版本 2 将旧 listing_id 列迁移为 target_key，历史数据保留读取能力，旧持久化预览不展示也不能提交。未知请求阻止同订单行重复采购，换授权不能绕过防重。
 - 创建接口使用采购解决方案（买家自用版）对应的 `alibaba.trade.fastCreateOrder`，不调用分销方案的 `alibaba.trade.fenxiaoOrder.create`。只发送该接口声明的参数，预选支付渠道不是付款操作。预览、网关参数校验或替身测试成功，都不能表述为真实下单已成功；验收须以实际创建回执和订单查询为准。
-- `OrderProcurementStore` 在订单库短事务预留采购数量；人工登记和来源修改共同遵守该预留，锁不跨网络。创建前再次核对价格和渠道，使用持久化请求号作为 outOrderId；回执不明只查原请求，不重发。确定未创建才释放数量。
+- `OrderProcurementStore` 在订单库短事务预留采购数量；人工登记和来源修改共同遵守该预留，锁不跨网络。采购占位事务复核收货仓版本及地址，并将快照保存到 binding；回填采购记录时原样冻结，历史记录允许无快照但不猜填。创建前再次核对价格和渠道，使用持久化请求号作为 outOrderId；回执不明只查原请求，不重发。确定未创建才释放数量。
 - 1688 创建回执先持久化，再幂等回填销售订单原有采购登记和数量；采购弹窗只展示当前结果或待处理回执，不再列出第二份采购历史。关联失败保留远端订单号，可通过查询原订单重试。关联后沿用采购记录的状态、物流查询。远端取消经查询确认后作废关联记录并释放数量；未确认取消的自动采购不能只在本地作废。
-- 支付渠道支持预选 alipay / shegou（先采后付），创建后通过官方收银台确认支付与账期；此入口不调用自动扣款接口。
+- 支付渠道支持 alipay / shegou（先采后付）。两种渠道均由用户确认创建并支付后，前端依次调用 create 和 POST `/api/orders/alibaba-purchase/pay`，不在 GET、后台同步或查询恢复中发起支付。POST `/payment-status` 必填 pay_channel，只读查询当前授权的对应渠道免密签约，必须同时 signedStatus、bindingStatus 为 true。支付宝明确提示直接扣款；批量混合渠道逐项检查签约。`AlibabaPaymentAgreement.vue` 展示官方签约链接与主动刷新，`AlibabaPurchasePayment.vue` 为已创建且未发起支付的订单提供单独确认入口。
+- `alibaba_purchase_payment.py` 解析官方签约与支付回执。pay 在网络前核对销售订单归属、冻结金额、完整商品与数量、1688 待付款状态及应付金额（元转分）；显式发送创建记录保存的 payChannel（alipay / shegou）、payAmount 和持久化 opRequestId，不省略或自动切换渠道；/pay 不接受客户端覆盖渠道。采购库 v3 新增独立 payment JSON 列，保留 v1/v2 数据迁移；短事务占位后才调用官方 preparePay，创建结果更新不会覆盖支付回执。
+- 支付超时、异常、paySuccess=false 或渠道不符均保留待核验，重启和重复提交不重发；明确接口拒绝单独展示。reconcile 只读查询，订单进入发货／收货阶段后标记 settled，不据此猜测实际支付渠道，也不因仍待付款而认定原支付失败。批量采购逐组创建和支付，支付待核验暂停后续组。接口依据及验收范围见 [采购免密支付接入](alibaba-purchase-payment.md)。
 
 - 1688 API 与网页采集均保留原始 `skus[].offer_id/spec_id`，`product_model/sku_model.py` 将其保留为 `source_offer_id/source_spec_id` 及来源快照。重新采集更新这些只读来源标识，销售内容覆盖不能覆盖它们。
 - `product_model/alibaba_purchase_model.py` 在冻结发布关联时核对原始采集 SKU、规格标识和实际销售规格；不一致记入 `purchase_block_reason`。自动采购还须命中当前店铺销售 SKU 的已上架关联，人工填写的来源不能作为自动采购依据。旧资料仍可读取和人工采购，缺少完整证据的旧预览不能再提交。

@@ -2,7 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import AlibabaPurchaseAddressPicker from './AlibabaPurchaseAddressPicker.vue'
-import { selfPurchaseOptions, previewSelfPurchase, createSelfPurchase, reconcileSelfPurchase, selfPurchaseCashier } from '@/api/alibabaSelfPurchase'
+import AlibabaPaymentAgreement from './AlibabaPaymentAgreement.vue'
+import AlibabaPurchasePayment from './AlibabaPurchasePayment.vue'
+import { selfPurchaseOptions, previewSelfPurchase, createSelfPurchase, reconcileSelfPurchase, selfPurchaseCashier, paySelfPurchase } from '@/api/alibabaSelfPurchase'
 import type { SelfPurchaseOptions, SelfPurchaseRecord, PurchaseAddressSelection } from '@/api/alibabaSelfPurchase'
 
 const props = defineProps<{ orderId: string; lineKey: string; title: string }>()
@@ -14,16 +16,17 @@ const addressSelection = ref<PurchaseAddressSelection | null>(null)
 const payChannel = ref(''), cashierUrl = ref(''), error = ref('')
 const busy = ref(false), confirmed = ref(false), submissionUncertain = ref(false)
 const labels: Record<string, string> = { preview: '待确认', expired: '预览已失效', submitting: '提交中／待核验', unknown: '创建结果待核验', created: '已创建', failed: '创建失败', closed: '已结束' }
-const paymentLabels: Record<string, string> = { alipay: '支付宝', shegou: '先采后付（预选）' }
+const paymentLabels: Record<string, string> = { alipay: '支付宝（免密直接扣款）', shegou: '先采后付（免密支付）' }
+const paymentReady = ref(false)
 const pending = computed(() => options.value?.records.some(r => (['submitting', 'unknown'].includes(r.state) || (r.state === 'created' && !r.purchase_record_id))))
-const canSubmit = computed(() => record.value?.state === 'preview' && !!options.value?.can_purchase && !submissionUncertain.value && confirmed.value && !!payChannel.value && !busy.value)
+const canSubmit = computed(() => record.value?.state === 'preview' && !!options.value?.can_purchase && !submissionUncertain.value && confirmed.value && !!payChannel.value && paymentReady.value && !busy.value)
 const money = (fen: number) => `¥${(fen / 100).toFixed(2)}`
 
 watch([candidateId, quantity, addressSelection], () => {
   if (record.value?.state === 'preview' && !!options.value?.can_purchase && !submissionUncertain.value) record.value = null
   confirmed.value = false
 })
-watch(payChannel, () => { confirmed.value = false })
+watch(payChannel, () => { confirmed.value = false; paymentReady.value = false })
 
 async function run(action: () => Promise<void>) {
   if (busy.value) return
@@ -44,8 +47,8 @@ async function load() {
   }
 }
 async function preview() {
-  if (!addressSelection.value) return
-  const address = addressSelection.value
+  const address = options.value?.warehouse_required ? { receiving_revision: options.value.receiving_revision } : addressSelection.value
+  if (!address) return
   await run(async () => {
     record.value = await previewSelfPurchase({ order_id: props.orderId, line_key: props.lineKey, candidate_id: candidateId.value, quantity: quantity.value, ...address })
     payChannel.value = ''; confirmed.value = false; submissionUncertain.value = false
@@ -80,6 +83,15 @@ async function reconcile() {
 async function cashier() {
   if (record.value) await run(async () => { cashierUrl.value = await selfPurchaseCashier(record.value!.id) })
 }
+async function pay() {
+  if (!record.value) return
+  await run(async () => {
+    submissionUncertain.value = true
+    record.value = await paySelfPurchase(record.value!.id, record.value!.preview.total_fen)
+    submissionUncertain.value = false
+    emit('updated')
+  })
+}
 onMounted(() => { void run(load) })
 </script>
 
@@ -104,8 +116,13 @@ onMounted(() => { void run(load) })
           <label class="block text-sm">采购数量（还需 {{ options.remaining_quantity }} 件）
             <input v-model.number="quantity" type="number" min="1" :max="options.remaining_quantity" step="1" class="input mt-1" aria-label="采购数量" />
           </label>
-          <AlibabaPurchaseAddressPicker v-if="options.can_purchase" :order-id="orderId" :line-key="lineKey" :disabled="busy || !!pending || submissionUncertain" @change="addressSelection = $event" />
-          <button class="btn btn-outline" :disabled="!addressSelection || !candidateId || !Number.isInteger(quantity) || quantity < 1 || quantity > options.remaining_quantity" @click="preview">预览订单</button>
+          <section v-if="options.warehouse_required && options.receiving_address" aria-label="采购收货仓" class="text-sm space-y-2">
+            <p>收货仓：{{ options.warehouse_name }}</p>
+            <p>{{ options.receiving_address.fullName }} · {{ options.receiving_address.mobile || options.receiving_address.phone }}</p>
+            <p>{{ [options.receiving_address.provinceText, options.receiving_address.cityText, options.receiving_address.areaText, options.receiving_address.townText, options.receiving_address.address].filter(Boolean).join(' ') }}</p>
+          </section>
+          <AlibabaPurchaseAddressPicker v-if="options.can_purchase && !options.warehouse_required" :order-id="orderId" :line-key="lineKey" :disabled="busy || !!pending || submissionUncertain" @change="addressSelection = $event" />
+          <button class="btn btn-outline" :disabled="(options.warehouse_required ? !options.receiving_revision : !addressSelection) || !candidateId || !Number.isInteger(quantity) || quantity < 1 || quantity > options.remaining_quantity" @click="preview">预览订单</button>
         </fieldset>
         <section v-if="record" class="space-y-3 rounded-xl border border-accent-200 p-4 dark:border-dark-600" aria-label="采购结果">
           <h3 class="font-semibold">{{ record.state === 'preview' ? '订单预览' : '采购结果' }}</h3>
@@ -119,15 +136,16 @@ onMounted(() => { void run(load) })
             <dt class="font-semibold">预览合计</dt><dd class="text-right font-semibold">{{ money(record.preview.total_fen) }}</dd>
           </dl>
 
-          <p v-if="record.message" role="status" class="text-sm">{{ record.message }}</p>
+          <p v-if="record.message && !record.payment" role="status" class="text-sm">{{ record.message }}</p>
           <p v-if="submissionUncertain && record.state === 'preview'" role="status" class="text-sm">提交回执未确认，请查询原请求，勿重复下单。</p>
           <p v-for="number in record.order_numbers" :key="number" class="break-all text-sm">1688 订单号：<strong>{{ number }}</strong></p>
           <p v-if="record.purchase_record_id" class="text-sm text-green-700">已关联当前销售订单，可在订单详情查询采购状态和物流。</p>
           <p v-if="record.order_status" class="text-sm">订单状态：{{ record.order_status }}</p>
-          <p v-if="record.pay_channel" class="text-sm">预选渠道：{{ paymentLabels[record.pay_channel] || record.pay_channel }}</p>
+          <p v-if="record.pay_channel" class="text-sm">支付渠道：{{ paymentLabels[record.pay_channel] || record.pay_channel }}</p>
+          <AlibabaPurchasePayment :record="record" :disabled="busy || submissionUncertain" @pay="pay" />
           <div class="flex flex-wrap gap-3">
             <button v-if="['created','unknown','submitting','closed'].includes(record.state) || submissionUncertain" class="btn btn-outline" :disabled="busy" @click="reconcile">查询原订单</button>
-            <button v-if="record.state === 'created'" class="btn btn-outline" :disabled="busy" @click="cashier">获取 1688 收银台链接</button>
+            <button v-if="record.state === 'created' && !['submitting','unknown','succeeded','settled'].includes(record.payment?.state || '')" class="btn btn-outline" :disabled="busy || submissionUncertain" @click="cashier">获取 1688 收银台链接</button>
             <a v-if="cashierUrl" :href="cashierUrl" class="btn btn-primary" target="_blank" rel="noopener noreferrer">打开 1688 收银台</a>
             <a v-if="['created', 'unknown', 'submitting', 'closed'].includes(record.state)" href="https://trade.1688.com/order/buyer_order_list.htm" class="btn btn-outline" target="_blank" rel="noopener noreferrer">在 1688 查看或取消</a>
           </div>
@@ -135,15 +153,16 @@ onMounted(() => { void run(load) })
         </section>
         <section v-if="record && record.state === 'preview' && !submissionUncertain" aria-label="支付方式" class="space-y-3 rounded-xl border border-accent-200 p-4 dark:border-dark-600">
           <h3 class="font-semibold">支付方式</h3>
-          <label class="block text-sm">预选支付渠道
+          <label class="block text-sm">支付渠道
             <select v-model="payChannel" class="input mt-1" aria-label="预选支付渠道" :disabled="busy">
               <option value="" disabled>请选择</option>
               <option v-for="channel in record.preview.pay_channels" :key="channel" :value="channel">{{ paymentLabels[channel] || channel }}</option>
             </select>
           </label>
-          <p class="text-sm text-accent-600 dark:text-accent-300">创建后需在 1688 收银台确认支付。选择先采后付不会在这里发起扣款，可用额度及还款日期以收银台为准。</p>
-          <label class="flex gap-2 text-sm"><input v-model="confirmed" type="checkbox" :disabled="busy" class="mt-1" aria-label="确认真实采购" />已核对规格、数量、地址和金额，确认创建真实采购订单。</label>
-          <button class="btn btn-primary" :disabled="!canSubmit" @click="create">确认创建订单</button>
+          <AlibabaPaymentAgreement v-if="payChannel" :channel="payChannel" :disabled="busy" @ready="paymentReady = $event" />
+          <p class="text-sm text-accent-600 dark:text-accent-300">订单创建后按所选渠道发起免密支付：支付宝直接扣款；先采后付使用额度，账期以 1688 为准。</p>
+          <label class="flex gap-2 text-sm"><input v-model="confirmed" type="checkbox" :disabled="busy" class="mt-1" aria-label="确认真实采购" />已核对规格、数量、地址和金额，确认创建真实采购订单{{ payChannel === 'shegou' ? '并使用先采后付支付' : payChannel === 'alipay' ? '并通过支付宝免密直接扣款' : '' }}。</label>
+          <button class="btn btn-primary" :disabled="!canSubmit" @click="create">{{ payChannel === 'shegou' ? '确认创建并先采后付' : payChannel === 'alipay' ? '确认创建并支付宝付款' : '确认创建订单' }}</button>
         </section>
       </template>
       <button v-if="!busy" class="text-sm text-primary-700 dark:text-primary-300" @click="run(load)">刷新采购状态</button>

@@ -8,6 +8,7 @@ import time
 from uuid import uuid4
 
 from erp_web.schemas.orders import OrderSnapshot, utc_iso
+from erp_web.stores.receiving_warehouse_store import ReceivingWarehouseStore
 from erp_web.schemas.fulfillment import FulfillmentSummary, normalize_bus_catalog
 
 
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS fulfillments (
 class FulfillmentStore:
     def __init__(self, orders):
         self.orders = orders
+        self.receiving = ReceivingWarehouseStore(orders)
         with orders.connect() as conn:
             conn.executescript(SCHEMA)
             conn.commit()
@@ -65,22 +67,6 @@ class FulfillmentStore:
         with self.orders.connect() as conn:
             conn.execute("DELETE FROM fulfillment_rules WHERE id=?", (rule_id,))
             conn.commit()
-
-    def warehouse_link(self, key):
-        with self.orders.connect() as conn:
-            row = conn.execute("SELECT revision,value FROM fulfillment_warehouse_links WHERE key=?", (key,)).fetchone()
-        return {**json.loads(row["value"]), "revision": row["revision"]} if row else None
-
-    def bind_warehouse(self, conn, key, plan, expected_revision):
-        row = conn.execute("SELECT revision,value FROM fulfillment_warehouse_links WHERE key=?", (key,)).fetchone()
-        revision = row["revision"] if row else 0
-        if revision != expected_revision:
-            raise ValueError("仓库对应关系已变化，请重新打开报单方案")
-        value = {k: plan[k] for k in ("section_id", "warehouse_id")}
-        if row and json.loads(row["value"]) == value:
-            return
-        conn.execute("INSERT OR REPLACE INTO fulfillment_warehouse_links VALUES (?,?,?)",
-                     (key, revision + 1, json.dumps(value)))
 
     def snapshots(self, accounts):
         where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"

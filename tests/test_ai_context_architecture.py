@@ -51,6 +51,26 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
 )
 
 
+def test_purchase_payment_requires_explicit_ui_command_and_has_no_agent_entry():
+    """签约只读检查与真实支付均为用户界面入口，不授予模型支付能力。"""
+    from erp_web.ai_capability_coverage import AI_CAPABILITY_COVERAGE_MANIFEST
+    from erp_web.http_route_units.order_routes import POST_HANDLERS, GET_HANDLERS
+    from erp_web.schemas.requests import REQUEST_CONTRACTS
+
+    for suffix in ('pay', 'payment-status'):
+        path = '/api/orders/alibaba-purchase/' + suffix
+        assert path in POST_HANDLERS and path not in GET_HANDLERS
+        assert path in REQUEST_CONTRACTS
+        entries = [entry for entry in AI_CAPABILITY_COVERAGE_MANIFEST if entry.path == path]
+        assert len(entries) == 1 and entries[0].disposition == 'internal_only'
+    contract = REQUEST_CONTRACTS['/api/orders/alibaba-purchase/pay']
+    assert set(contract.fields) == {'preview_id', 'confirmed_total_fen'}
+    assert set(contract.required) == {'preview_id', 'confirmed_total_fen'}
+    status = REQUEST_CONTRACTS['/api/orders/alibaba-purchase/payment-status']
+    assert status.required == ('pay_channel',)
+    assert status.fields['pay_channel'].choices == frozenset({'alipay', 'shegou'})
+
+
 def test_retired_yunexpress_has_no_config_routes_or_agent_tools():
     """云途入口已退役，配置、HTTP 与主 Agent 不得继续暴露相关功能。"""
     from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
@@ -839,6 +859,20 @@ def test_online_feedback_is_public_and_yandex_names_use_the_category_catalog():
     assert 'request(' not in source
 
 
+def test_external_response_policy_is_pure_and_receives_interface_context():
+    """响应规则不依赖业务运行时；接口身份从统一入口显式传入。"""
+    policy = parse_python(ROOT / "erp_web/services/platform_request_policy.py")
+    project_imports = [node.module for node in ast.walk(policy)
+                       if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("erp_web")]
+    assert project_imports == ["erp_web.schemas.external_requests"]
+    manager = parse_python(ROOT / "erp_web/services/external_request_manager.py")
+    calls = [node for node in ast.walk(manager) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "classify_response"]
+    assert len(calls) == 1
+    assert any(keyword.arg == "interface" and ast.unparse(keyword.value) == "ctx.interface"
+               for keyword in calls[0].keywords)
+
+
 def test_external_api_sends_have_one_managed_boundary():
     """所有 urllib 与 SDK 传输发送都在受控边界，防止新业务绕过共享阻断。"""
     allowed = {"erp_web/services/external_request_manager.py", "erp_web/services/external_httpx_transport.py"}
@@ -1009,6 +1043,7 @@ def test_request_recovery_is_owned_by_authorization_and_never_replays_business()
     assert not any(target.startswith(('erp_web.runtime_units', 'erp_web.marketplaces', 'urllib', 'httpx', 'pydantic_ai')) for _, target in imported_targets([service]))
     from erp_web.http_routes import POST_API_ROUTES
     assert '/api/external-requests/recover' in POST_API_ROUTES
+    assert '/api/external-requests/history/clear' in POST_API_ROUTES
     assert '/api/orders/recover-sync' not in POST_API_ROUTES
     assert 'ExternalRequestControlPanel' in (ROOT / 'front/src/components/auth/AuthSettingsPanel.vue').read_text()
     assert 'recover-sync' not in (ROOT / 'front/src/components/domain/OrderSyncStatusPanel.vue').read_text()

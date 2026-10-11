@@ -68,6 +68,7 @@ async function query() {
       <p v-if="result.product_warning" class="order-muted mt-2">{{ result.product_warning }}</p>
     </div>
     <div v-if="result" class="query-result" aria-live="polite">
+      <p class="font-semibold">采购订单物流（整单包裹）</p>
       <p v-if="result.logistics !== null" class="order-muted">物流更新时间：{{ dateTime(result.logistics_checked_at ?? result.checked_at) }}</p>
       <p v-if="result.logistics_warning" role="status" class="query-error">{{ result.logistics_warning }}</p>
       <p v-if="result.logistics === null">本次未获取到物流信息，可稍后刷新。</p>

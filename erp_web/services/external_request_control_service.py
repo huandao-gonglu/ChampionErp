@@ -73,12 +73,20 @@ class ExternalRequestControlService:
         blocks = [b for b in self.store.blocks() if b['failure']['code'] == 'EXTERNAL_TRANSIENT_FAILURE'
                   or b['failure'].get('resume_at') is None or b['failure']['resume_at'] > now]
         history, total = self.store.interruptions(offset=offset)
+        cleanup_before = int(now)
         return {
             'ok': True, 'server_time': now,
             'blocks': [group_view(group) for group in block_groups(blocks)],
             'history': history, 'total': total,
+            'cleanup_before': cleanup_before,
+            'clearable_count': self.store.clearable_interruptions(before=cleanup_before),
             'notices': self.store.rejection_notices(operation_ids),
         }
+
+    def clear_history(self, *, before):
+        count = self.store.clear_interruptions(before=before)
+        return {'ok': True, 'cleared_count': count,
+                'message': f'已清除 {count} 条历史中断记录；当前阻断和必要记录已保留。' if count else '没有可清理的记录；当前阻断及必要记录已保留。'}
 
     def recover(self, identity, *, reason=''):
         group = next((group for group in block_groups(self.store.blocks()) if group_id(group) == identity), None)

@@ -32,10 +32,15 @@ export interface RequestControlStatus {
   blocks: RequestBlock[]
   history: RequestInterruption[]
   total: number
+  cleanup_before: number
+  clearable_count: number
 }
 export async function fetchRequestControl(offset = 0): Promise<RequestControlStatus> {
   return (await apiClient.get('/api/external-requests/status', { params: { offset }, timeout: 10000 })).data
 }
 export async function recoverRequestBlock(blockId: string, reason = ''): Promise<{ ok: boolean; message: string }> {
   return (await apiClient.post('/api/external-requests/recover', { block_id: blockId, reason })).data
+}
+export async function clearRequestHistory(before: number): Promise<{ ok: boolean; cleared_count: number; message: string }> {
+  return (await apiClient.post('/api/external-requests/history/clear', { before })).data
 }

@@ -7,6 +7,8 @@ import OrderPurchaseDialog from '../OrderPurchaseDialog.vue'
 import OrderSourceDialog from '../OrderSourceDialog.vue'
 import OrderDetailPanel from '../OrderDetailPanel.vue'
 import OrderSummaryCard from '../OrderSummaryCard.vue'
+import { fetchReceivingWarehouse } from '@/api/receivingWarehouse'
+import type { ReceivingWarehouseView } from '@/api/receivingWarehouse'
 import { procurementCommand, fetchOrderDetail } from '@/api/orders'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
 import type { OrderDetail, OrderSnapshot, ProcurementLine, ProcurementSource } from '@/types/orders'
@@ -18,6 +20,7 @@ vi.mock('@/api/orders', () => ({
   fetchOrderIntegrations: vi.fn(),
   orderCommand: vi.fn(),
 }))
+vi.mock('@/api/receivingWarehouse', () => ({ fetchReceivingWarehouse: vi.fn() }))
 enableAutoUnmount(afterEach)
 const source: ProcurementSource = {
   supplier: '供应商',
@@ -84,6 +87,7 @@ const stubs = {
   },
 }
 beforeEach(() => {
+  vi.mocked(fetchReceivingWarehouse).mockResolvedValue({ warehouse: null, revision: 0, profiles: [], can_confirm: true, blocked_reason: '', locked: false } as unknown as ReceivingWarehouseView)
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.mocked(procurementCommand).mockResolvedValue(detail())
@@ -323,6 +327,7 @@ describe('订单采购弹窗', () => {
       props: { orderId: order.id, item: item() },
       global,
     })
+    await flushPromises()
     await wrapper.get('input[maxlength="200"]').setValue('PO-1')
     await wrapper.get('form').trigger('submit')
     await wrapper.get('form').trigger('submit')

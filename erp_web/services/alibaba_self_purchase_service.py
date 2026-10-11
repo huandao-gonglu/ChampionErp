@@ -8,12 +8,14 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from erp_web.product_model.alibaba_purchase_model import alibaba_offer_id
-from erp_web.schemas.alibaba_self_purchase import SelfPurchasePreviewRequest, SelfPurchaseCreateRequest, SelfPurchaseRecordRequest, ParsePurchaseAddressRequest
+from erp_web.schemas.alibaba_self_purchase import SelfPurchasePreviewRequest, SelfPurchaseCreateRequest, SelfPurchaseRecordRequest, SelfPurchasePayRequest, SelfPurchasePaymentStatusRequest, ParsePurchaseAddressRequest, BatchPurchasePreviewRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.services.alibaba_api_client import AlibabaApiError, AlibabaApiRejected, ORDER_DETAIL, validate_order_number
 from erp_web.services.alibaba_purchase_query_service import normalize_order
+from erp_web.services.alibaba_purchase_preview import cargo_params, preview_groups, verify_group_order
 from erp_web.services.alibaba_purchase_address import saved_addresses, order_addresses, parse_address
-from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_URL
+from erp_web.services.alibaba_purchase_payment import payment_agreement, payment_label, check_payment_amount, payment_receipt
+from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_URL, PAY_STATUS, PAY
 
 
 def offer_id(url):
@@ -31,8 +33,10 @@ def account_scope(config):
 def public_record(row):
     result = row["result"]
     return {"id": row["id"], "state": row["state"], "preview": row["payload"]["view"],
+            "payment": row.get('payment') or None,
             "order_numbers": result.get("order_numbers", []), "order_status": result.get("order_status", ""),
-            "message": result.get("message", ""), "pay_channel": result.get("pay_channel", ""), "created_at": row["created_at"], "purchase_record_id": result.get("purchase_record_id", "")}
+            "message": (row.get('payment') or {}).get('message') or result.get("message", ""), "pay_channel": result.get("pay_channel", ""), "created_at": row["created_at"], "purchase_record_id": result.get("purchase_record_id", ""),
+            **({"purchase_record_ids": result.get("purchase_record_ids", [])} if row["payload"].get("items") else {})}
 
 
 def spec_from_order(payload, candidate):
@@ -88,10 +92,11 @@ def created_numbers(payload):
 
 
 class AlibabaSelfPurchaseService:
-    def __init__(self, store, config_provider, procurement, *, address_notes, client_factory=AlibabaSelfPurchaseClient):
+    def __init__(self, store, config_provider, procurement, *, address_notes, receiving, client_factory=AlibabaSelfPurchaseClient):
         self.store, self.config_provider, self.procurement = store, config_provider, procurement
         self.client_factory = client_factory
         self.address_notes = address_notes
+        self.receiving = receiving
 
     @staticmethod
     def _target(order_id, line_key):
@@ -154,11 +159,79 @@ class AlibabaSelfPurchaseService:
             reason = "只有待发货的销售订单可以自动采购"
         if not reason and item["remaining_quantity"] <= 0:
             reason = "该订单商品已采购齐全，无需重复采购"
+        warehouse = None
+        required = detail['order']['platform'] == 'yandex'
+        if required:
+            try:
+                warehouse = self.receiving.checked(order_id)
+            except ValueError as exc:
+                reason = reason or str(exc)
         scope = account_scope(self.config_provider())
-        return {"ok": True, "candidates": [resolved["candidate"]] if resolved else [],
+        return {"warehouse_required": required, "receiving_revision": warehouse['revision'] if warehouse else 0,
+                "warehouse_name": warehouse['warehouse_name'] if warehouse else '', "receiving_address": warehouse['address'] if warehouse else None,
+                "ok": True, "candidates": [resolved["candidate"]] if resolved else [],
                 "remaining_quantity": item["remaining_quantity"], "can_purchase": not reason,
                 "blocked_reason": reason,
                 "records": [public_record(r) for r in self.store.records(self._target(order_id, line_key), scope)]}
+
+    @staticmethod
+    def _reservation_ids(row):
+        if row['payload'].get('items'):
+            return [row['id'] + ':' + str(index) for index in range(len(row['payload']['items']))]
+        return [row['id']]
+
+    def batch_options(self, order_id):
+        detail = self.procurement.detail(order_id)
+        if detail['order']['platform'] != 'yandex':
+            raise ValueError('批量采购目前仅支持 Yandex 订单')
+        lines = []
+        for item in detail['lines']:
+            key = item['selection']['line_key']
+            lines.append({'line_key': key, 'title': item['line']['title'], 'sku': item['line']['sku'],
+                          'supplier': (item['selection']['source'] or {}).get('supplier', ''),
+                          'options': self.options(order_id, key)})
+        return {'ok': True, 'lines': lines, 'records': [public_record(row) for row in
+                self.store.batch_records(order_id, account_scope(self.config_provider()))]}
+
+    def _check_batch_items(self, items):
+        for item in items:
+            binding = item['binding']
+            candidate = self._candidate(binding['order_id'], binding['line_key'], item['candidate']['id'], item['quantity'])
+            current = self._binding(binding['order_id'], binding['line_key'])[2]
+            if candidate != item['candidate'] or any(current[k] != binding[k] for k in current):
+                raise ValueError('采购来源已变化，请重新预览')
+
+    def batch_preview(self, body):
+        req = BatchPurchasePreviewRequest.model_validate(body)
+        detail = self.procurement.detail(req.order_id)
+        if detail['order']['platform'] != 'yandex':
+            raise ValueError('批量采购目前仅支持 Yandex 订单')
+        receiving = self.receiving.checked(req.order_id)
+        if receiving['revision'] != req.receiving_revision:
+            raise ValueError('收货仓已变化，请刷新后重新预览')
+        config = self.config_provider()
+        items = []
+        for entry in req.items:
+            candidate = self._candidate(req.order_id, entry.line_key, entry.candidate_id, entry.quantity)
+            _, line, binding = self._binding(req.order_id, entry.line_key)
+            binding['receiving_warehouse'] = receiving
+            items.append({'candidate': candidate, 'binding': binding, 'quantity': entry.quantity,
+                          'spec_id': binding['source']['source_spec_id'], 'title': line['line']['title'],
+                          'supplier': binding['source']['supplier']})
+        params = {'addressParam': receiving['address'], 'cargoParamList': cargo_params(items)}
+        # 供应商展示名不是身份，按 1688 预览的实际分单结果构造提交组。
+        groups = preview_groups(self.client_factory(config).call(PREVIEW, params), items, receiving['address'])
+        self._check_batch_items(items)
+        if account_scope(config) != account_scope(self.config_provider()) or self.receiving.checked(req.order_id) != receiving:
+            raise ValueError('授权或收货仓已变化，请重新预览')
+        records = []
+        for group, view in groups:
+            targets = [self._target(req.order_id, item['binding']['line_key']) for item in group]
+            target = 'batch:' + hashlib.sha256(json.dumps(targets).encode()).hexdigest()
+            payload = {'binding': {'order_id': req.order_id, 'receiving_warehouse': receiving}, 'items': group,
+                       'targets': targets, 'params': {**params, 'cargoParamList': cargo_params(group)}, 'view': view}
+            records.append(public_record(self.store.preview(target, account_scope(config), payload)))
+        return {'ok': True, 'records': records}
 
     def addresses(self, order_id, line_key):
         self._binding(order_id, line_key)
@@ -195,8 +268,13 @@ class AlibabaSelfPurchaseService:
             return row
         result = dict(row["result"])
         try:
-            result["purchase_record_id"] = self.procurement.store.complete_purchase(
-                row["id"], result["order_numbers"][0], self.procurement.accounts_provider(), cancelled=cancelled)
+            if row['payload'].get('items'):
+                result['purchase_record_ids'] = self.procurement.store.complete_purchases(
+                    self._reservation_ids(row), result['order_numbers'][0], self.procurement.accounts_provider(), cancelled=cancelled)
+                result['purchase_record_id'] = result['purchase_record_ids'][0]
+            else:
+                result["purchase_record_id"] = self.procurement.store.complete_purchase(
+                    row["id"], result["order_numbers"][0], self.procurement.accounts_provider(), cancelled=cancelled)
         except Exception:
             result["message"] = "1688 订单已存在，关联销售订单尚未完成，请查询原订单重试关联，勿重复下单"
         return self.store.finish(row["id"], scope, row["state"], result)
@@ -204,11 +282,16 @@ class AlibabaSelfPurchaseService:
     def preview(self, body):
         req = SelfPurchasePreviewRequest.model_validate(body)
         candidate = self._candidate(req.order_id, req.line_key, req.candidate_id, req.quantity)
-        _, _, binding = self._binding(req.order_id, req.line_key)
+        detail, _, binding = self._binding(req.order_id, req.line_key)
         config = self.config_provider()
         client = self.client_factory(config)
         spec = binding["source"]["source_spec_id"]
-        if req.address is not None:
+        receiving = self.receiving.checked(req.order_id) if detail['order']['platform'] == 'yandex' else None
+        if receiving:
+            if req.address is not None or req.address_id or req.receiving_revision != receiving['revision']:
+                raise ValueError('请使用已确定采购收货仓的当前地址重新预览')
+            address = receiving['address']
+        elif req.address is not None:
             address = req.address.model_dump()
         else:
             matches = [(candidate, fields) for candidate, fields in saved_addresses(client.call(ADDRESSES, {}))
@@ -224,6 +307,10 @@ class AlibabaSelfPurchaseService:
             raise ValueError("查询期间授权或采购来源已变化，请重新预览")
         if self._binding(req.order_id, req.line_key)[2] != binding:
             raise ValueError("采购来源已变化，请重新预览")
+        if receiving:
+            if self.receiving.checked(req.order_id) != receiving:
+                raise ValueError('收货仓库已变化，请重新预览')
+            binding['receiving_warehouse'] = receiving
         row = self.store.preview(self._target(req.order_id, req.line_key), account_scope(config), {"params": params, "view": view, "binding": binding})
         return {"ok": True, "record": public_record(row)}
 
@@ -250,19 +337,35 @@ class AlibabaSelfPurchaseService:
         try:
             view = row["payload"]["view"]
             binding = row["payload"]["binding"]
-            candidate = self._candidate(binding["order_id"], binding["line_key"], view["candidate"]["id"], view["quantity"])
-            self.procurement.store.reserve_purchase(row["id"], binding, view["quantity"], self.procurement.accounts_provider())
-            if candidate != view["candidate"]:
-                raise ValueError("采购来源已变化，请重新预览")
-            params = row["payload"]["params"]
-            if binding["source"].get("source_spec_id") != params["cargoParamList"][0].get("specId"):
-                raise ValueError("旧预览缺少上架规格依据，请重新预览")
-            current = normalized_preview(client.call(PREVIEW, params), candidate, params["addressParam"], view["quantity"], params["cargoParamList"][0]["specId"])
+            params = row['payload']['params']
+            if row['payload'].get('items'):
+                items = row['payload']['items']
+                self._check_batch_items(items)
+                self.procurement.store.reserve_purchases(
+                    [(ident, item['binding'], item['quantity']) for ident, item in zip(self._reservation_ids(row), items, strict=True)],
+                    self.procurement.accounts_provider())
+                groups = preview_groups(client.call(PREVIEW, params), items, params['addressParam'])
+                if len(groups) != 1:
+                    raise ValueError('1688 分单方案已变化，请重新预览')
+                current = groups[0][1]
+            else:
+                candidate = self._candidate(binding['order_id'], binding['line_key'], view['candidate']['id'], view['quantity'])
+                self.procurement.store.reserve_purchase(row['id'], binding, view['quantity'], self.procurement.accounts_provider())
+                if candidate != view['candidate']:
+                    raise ValueError('采购来源已变化，请重新预览')
+                if binding['source'].get('source_spec_id') != params['cargoParamList'][0].get('specId'):
+                    raise ValueError('旧预览缺少上架规格依据，请重新预览')
+                current = normalized_preview(client.call(PREVIEW, params), candidate, params['addressParam'], view['quantity'], params['cargoParamList'][0]['specId'])
             if any(current[k] != view[k] for k in ("goods_fen", "shipping_fen", "total_fen", "flow", "pay_channels")):
                 raise ValueError("价格、运费或可用交易方式已变化，请重新预览后确认")
             if scope != account_scope(self.config_provider()):
                 raise ValueError("授权已变化，请重新预览")
-            self.procurement.store.validate_reserved_purchase(row["id"], self.procurement.accounts_provider())
+            if binding.get('receiving_warehouse') and self.receiving.checked(binding['order_id']) != binding['receiving_warehouse']:
+                raise ValueError('收货仓或物流方案已变化，请重新预览')
+            if row['payload'].get('items'):
+                self.procurement.store.validate_reserved_purchases(self._reservation_ids(row), self.procurement.accounts_provider())
+            else:
+                self.procurement.store.validate_reserved_purchase(row["id"], self.procurement.accounts_provider())
             sent = True
             response = client.call(CREATE, {**params, "flow": view["flow"], "tradeType": "assureTrade",
                 "preSelectPayChannel": req.pay_channel, "outOrderId": row["id"]})
@@ -274,7 +377,7 @@ class AlibabaSelfPurchaseService:
             message = ("创建结果待核验，请查询原请求，勿重复下单" if unknown else
                        str(exc) if isinstance(exc, (ValueError, AlibabaApiError)) else "提交前检查失败，请检查授权配置或中断与恢复")
             if not unknown:
-                self.procurement.store.release_purchase(row["id"])
+                self.procurement.store.release_purchases(self._reservation_ids(row))
             result["message"] = message
             row = self.store.finish(row["id"], scope, "unknown" if unknown else "failed", result)
         if row["state"] == "created":
@@ -305,7 +408,9 @@ class AlibabaSelfPurchaseService:
         payload = client.query(ORDER_DETAIL, numbers[0])
         order = normalize_order(payload, numbers[0])
         view = row["payload"]["view"]
-        if spec_from_order(payload, view["candidate"]) != row["payload"]["params"]["cargoParamList"][0]["specId"]:
+        if row['payload'].get('items'):
+            verify_group_order(payload, row['payload']['items'])
+        elif spec_from_order(payload, view["candidate"]) != row["payload"]["params"]["cargoParamList"][0]["specId"]:
             raise AlibabaApiError("返回订单规格与采购记录不一致")
         if account_scope(config) != account_scope(self.config_provider()):
             raise ValueError("授权已切换，请重新查询")
@@ -313,7 +418,67 @@ class AlibabaSelfPurchaseService:
         state = "closed" if order["status"] in {"cancel", "terminated", "success"} else "created"
         row = self.store.finish(row["id"], account_scope(config), state, result)
         row = self._attach(row, account_scope(config), cancelled=order["status"] in {"cancel", "terminated"})
+        payment = row.get('payment') or {}
+        if payment.get('state') in {'submitting', 'unknown'} and order['status'] in {'waitsellersend', 'waitbuyerreceive', 'waitbuyerreceives', 'confirm_goods', 'success'}:
+            row = self.store.finish_payment(row['id'], account_scope(config), payment['request_id'], 'settled',
+                                            '订单已进入发货或收货阶段，停止再次支付；实际渠道和账期以 1688 为准')
         return {"ok": True, "record": public_record(row)}
+
+    def payment_status(self, body):
+        req = SelfPurchasePaymentStatusRequest.model_validate(body)
+        config = self.config_provider()
+        agreement = payment_agreement(self.client_factory(config).call(PAY_STATUS, {}), req.pay_channel)
+        if account_scope(config) != account_scope(self.config_provider()):
+            raise ValueError('授权已切换，请重新查询免密签约状态')
+        return {'ok': True, 'agreement': agreement}
+
+    def pay(self, body):
+        req = SelfPurchasePayRequest.model_validate(body)
+        config = self.config_provider()
+        scope = account_scope(config)
+        row = self._record(req.preview_id, config)
+        if row.get('payment'):
+            return {'ok': True, 'record': public_record(row)}
+        channel = row['result'].get('pay_channel')
+        if (row['state'] != 'created' or not row['result'].get('purchase_record_id')
+                or channel not in {'alipay', 'shegou'}
+                or len(row['result'].get('order_numbers', [])) != 1):
+            raise ValueError('请先创建、核验并关联已选择支付渠道的采购订单')
+        if req.confirmed_total_fen != row['payload']['view']['total_fen']:
+            raise ValueError('确认金额与采购预览不同，请重新核对')
+        client = self.client_factory(config)
+        agreement = payment_agreement(client.call(PAY_STATUS, {}), channel)
+        if not agreement['ready']:
+            raise ValueError(agreement['message'])
+        number = row['result']['order_numbers'][0]
+        payload = client.query(ORDER_DETAIL, number)
+        order = normalize_order(payload, number)
+        if order['status'] != 'waitbuyerpay':
+            raise ValueError('1688 订单已不是待付款状态，请查询原订单；不会再次支付')
+        check_payment_amount(payload, req.confirmed_total_fen)
+        items = row['payload'].get('items') or [{'candidate': row['payload']['view']['candidate'],
+            'spec_id': row['payload']['params']['cargoParamList'][0]['specId'], 'quantity': row['payload']['view']['quantity']}]
+        verify_group_order(payload, items)
+        if account_scope(config) != account_scope(self.config_provider()):
+            raise ValueError('授权已切换，请重新核对支付')
+        self._record(req.preview_id, config)
+        row, claimed = self.store.claim_payment(row['id'], scope, req.confirmed_total_fen, channel)
+        if not claimed:
+            return {'ok': True, 'record': public_record(row)}
+        payment = row['payment']
+        try:
+            response = client.call(PAY, {'tradeWithholdPreparePayParam': {
+                'orderId': int(number), 'payChannel': payment['channel'], 'payAmount': payment['amount_fen'],
+                'opRequestId': payment['request_id']}})
+            state, message = payment_receipt(response, payment['channel'])
+        except Exception as exc:
+            rejected = isinstance(exc, AlibabaApiRejected) or (isinstance(exc, ExternalRequestBlocked) and exc.details.get('definitively_rejected'))
+            state = 'rejected' if rejected else 'unknown'
+            message = str(exc) if isinstance(exc, AlibabaApiRejected) else (
+                '1688 已拒绝本次支付，请检查授权配置的中断与恢复' if rejected else
+                f'{payment_label(channel)}未取得确认回执，请查询原订单，勿重复支付')
+        row = self.store.finish_payment(row['id'], scope, payment['request_id'], state, message)
+        return {'ok': True, 'record': public_record(row)}
 
     def cashier(self, body):
         req = SelfPurchaseRecordRequest.model_validate(body)

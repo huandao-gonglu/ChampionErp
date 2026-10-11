@@ -55,4 +55,12 @@ class RequestControlStatus(BaseModel):
     blocks: list[RequestBlockView]
     history: list[RequestInterruptionView]
     total: int
+    cleanup_before: int
+    clearable_count: int
     notices: list[RequestRejectionNotice] = Field(default_factory=list)
+
+
+class RequestHistoryClearResult(BaseModel):
+    ok: bool = True
+    cleared_count: int
+    message: str

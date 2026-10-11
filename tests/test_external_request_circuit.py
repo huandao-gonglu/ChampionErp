@@ -100,6 +100,18 @@ def test_probe_permission_failure_remains_blocked_after_time(circuit):
     assert error.value.code == "YANDEX_AUTH_FAILED"
 
 
+def test_probe_business_rejection_recovers_interface_but_keeps_request_protection(circuit):
+    manager, ctx, clock = circuit
+    clock[0] += 61
+    manager.result(probe(manager, ctx, clock), ctx, 400, {}, b'{"message":"invalid order"}')
+    blocks = manager.store.blocks()
+    assert len(blocks) == 1 and blocks[0]["scope"] == "request"
+    with pytest.raises(ExternalRequestBlocked):
+        probe(manager, ctx, clock)
+    probe(manager, replace(ctx, fingerprint="corrected"), clock)
+    assert "原请求保护保留" in manager.store.recoveries()[0]["reason"]
+
+
 def test_old_block_migrates_only_with_complete_read_failure_evidence(circuit):
     manager, ctx, clock = circuit
     manager.store.block(ctx, RequestFailure("EXTERNAL_REPEATED_FAILURE", "旧阻断", "interface"))

@@ -85,19 +85,31 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
-    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="订单采购", disposition="internal_only", reason="用户在销售订单详情核对采购预览、确认真实订单并查询原回执；支付通过官方收银台，不开放模型代下单。") for method, path in (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="物流设置", disposition="internal_only", reason="用户维护合作仓收货地址并确认承接规则；承接能力不能由模型猜测或自动确认。") for method, path in (
+        ("GET", "/api/logistics/settings"),
+        ("POST", "/api/logistics/refresh"),
+        ("POST", "/api/logistics/address"),
+        ("POST", "/api/logistics/parse-address"),
+    )),
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="订单采购", disposition="internal_only", reason="用户在销售订单详情核对采购预览、确认真实订单及所选渠道免密支付，或使用官方收银台；不开放模型代下单及代支付。") for method, path in (
         ("GET", "/api/orders/alibaba-purchase"),
+        ("GET", "/api/orders/alibaba-purchase/batch"),
+        ("POST", "/api/orders/alibaba-purchase/batch-preview"),
         ("GET", "/api/orders/alibaba-purchase/addresses"),
         ("POST", "/api/orders/alibaba-purchase/parse-address"),
         ("POST", "/api/orders/alibaba-purchase/preview"),
         ("POST", "/api/orders/alibaba-purchase/create"),
         ("POST", "/api/orders/alibaba-purchase/reconcile"),
         ("POST", "/api/orders/alibaba-purchase/cashier"),
+        ("POST", "/api/orders/alibaba-purchase/payment-status"),
+        ("POST", "/api/orders/alibaba-purchase/pay"),
     )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="跨境履约", disposition="internal_only", reason="V1 由可信订单界面确认合作范围、面单、采购包裹及取消；后台执行确定性履约，不开放模型代报或代取消。") for method, path in (
         ("GET", "/api/crossborderbus/settings"),
         ("GET", "/api/crossborderbus/services"),
         ("GET", "/api/orders/fulfillment"),
+        ("GET", "/api/orders/receiving-warehouse"),
+        ("POST", "/api/orders/receiving-warehouse"),
         ("POST", "/api/crossborderbus/authorize"),
         ("POST", "/api/crossborderbus/catalog"),
         ("POST", "/api/crossborderbus/save-rule"),
@@ -261,6 +273,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/configure", business_domain="授权基础设施", disposition="internal_only", reason="用户配置公网回调接入地址。"),
     AiCapabilityCoverageEntry(method="GET", path="/api/external-requests/status", business_domain="平台授权", disposition="internal_only", reason="本机授权页读取外部请求中断及恢复状态。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/external-requests/recover", business_domain="平台授权", disposition="internal_only", reason="用户在授权页显式恢复指定中断。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/external-requests/history/clear", business_domain="平台授权", disposition="internal_only", reason="用户在授权页确认清理已处理的历史中断，不改变请求保护。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/sync", business_domain="订单通知", disposition="internal_only", reason="用户显式请求后台订单对账。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/retry", business_domain="订单通知", disposition="internal_only", reason="用户检查故障后重试失败通知。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/acknowledge", business_domain="订单通知", disposition="internal_only", reason="用户标记订单提醒已读。"),
