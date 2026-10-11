@@ -43,5 +43,10 @@ export default {
   },
   settings: {
     uiLanguage: 'UI language',
+    appearanceAndLanguage: 'Appearance and language',
+    colorMode: 'Color mode',
+    lightMode: 'Light mode',
+    darkMode: 'Dark mode',
+    preferencesAutoSaved: 'Changes apply immediately and are saved in this browser.',
   },
 }

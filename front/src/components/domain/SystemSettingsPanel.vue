@@ -1,11 +1,22 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { routeLocationKey } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import { useAppStore } from '@/stores/app'
+import { UI_LOCALE_OPTIONS, type SupportedUiLocale } from '@/constants/locales'
 import ExternalRequestControlPanel from '@/components/settings/ExternalRequestControlPanel.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
+const { t } = useI18n()
+const appStore = useAppStore()
+const colorMode = computed({
+  get: () => appStore.theme,
+  set: (value: 'light' | 'dark') => {
+    if (value !== appStore.theme) appStore.toggleTheme()
+  },
+})
 const tabs = [
-  { key: 'general', label: '通用设置', summary: '订单自动同步间隔' },
+  { key: 'general', label: '通用设置', summary: '颜色、界面语言与订单自动同步' },
   { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
 ] as const
 const section = ref<'general' | 'interruptions'>('general')
@@ -73,7 +84,26 @@ onMounted(load)
     <section v-if="section === 'interruptions'" id="system-settings-panel-interruptions" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-interruptions">
       <ExternalRequestControlPanel />
     </section>
-    <section v-show="section === 'general'" id="system-settings-panel-general" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-general">
+    <section v-show="section === 'general'" id="system-settings-panel-general" class="mt-5 space-y-5" role="tabpanel" aria-labelledby="system-settings-tab-general">
+      <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" aria-labelledby="appearance-settings-title">
+        <h3 id="appearance-settings-title" class="font-semibold">{{ t('settings.appearanceAndLanguage') }}</h3>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <label for="settings-color-mode" class="block text-sm font-medium">
+            <span class="mb-2 block">{{ t('settings.colorMode') }}</span>
+            <select id="settings-color-mode" v-model="colorMode" class="input">
+              <option value="light">{{ t('settings.lightMode') }}</option>
+              <option value="dark">{{ t('settings.darkMode') }}</option>
+            </select>
+          </label>
+          <label for="settings-ui-language" class="block text-sm font-medium">
+            <span class="mb-2 block">{{ t('settings.uiLanguage') }}</span>
+            <select id="settings-ui-language" :value="appStore.uiLocale" class="input" @change="appStore.setUiLocale(($event.target as HTMLSelectElement).value as SupportedUiLocale)">
+              <option v-for="locale in UI_LOCALE_OPTIONS" :key="locale.value" :value="locale.value">{{ locale.label }}</option>
+            </select>
+          </label>
+        </div>
+        <p class="muted text-sm">{{ t('settings.preferencesAutoSaved') }}</p>
+      </section>
       <form id="system-settings-form" class="space-y-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" @submit.prevent="save">
         <p v-if="loading" role="status" class="text-sm text-accent-500">正在读取设置…</p>
         <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }} <button v-if="savedHours === null" type="button" class="underline" :disabled="loading" @click="load">重试</button></p>

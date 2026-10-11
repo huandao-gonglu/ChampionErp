@@ -3,11 +3,9 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { APP_SHORT_NAME } from '@/constants/branding'
-import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
 const { t } = useI18n()
-const app = useAppStore()
 
 const title = computed(() => (typeof route.meta.titleKey === 'string' ? t(route.meta.titleKey) : route.meta.title || APP_SHORT_NAME))
 const description = computed(() => (typeof route.meta.descriptionKey === 'string' ? t(route.meta.descriptionKey) : ''))
@@ -21,9 +19,6 @@ const description = computed(() => (typeof route.meta.descriptionKey === 'string
         <h1 class="text-xl font-black text-accent-950 dark:text-white">{{ title }}</h1>
         <p v-if="description" class="text-sm text-accent-500 dark:text-accent-300">{{ description }}</p>
       </div>
-      <button type="button" class="btn btn-outline" @click="app.toggleTheme()">
-        {{ app.darkMode ? '浅色' : '深色' }}模式
-      </button>
     </div>
   </header>
 </template>

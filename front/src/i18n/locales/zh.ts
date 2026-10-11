@@ -43,5 +43,10 @@ export default {
   },
   settings: {
     uiLanguage: '界面语言',
+    appearanceAndLanguage: '颜色与语言',
+    colorMode: '颜色模式',
+    lightMode: '浅色模式',
+    darkMode: '深色模式',
+    preferencesAutoSaved: '切换后立即生效，并自动保存到当前浏览器。',
   },
 }

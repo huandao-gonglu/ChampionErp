@@ -321,10 +321,6 @@ async function claimAndOpenDrafts(productIds: string[], targets: MarketplaceTarg
   if (ok) navigate('drafts')
 }
 
-function toggleTheme() {
-  appStore.toggleTheme()
-}
-
 function warnUnsavedImages(event: BeforeUnloadEvent) {
   if (!draftWorkspaceOpen.value || !imageSaveState.dirty.value) return
   event.preventDefault()
@@ -374,7 +370,6 @@ watch(
         :collapsed="appStore.sidebarCollapsed"
         @navigate="navigate"
         @toggle-collapse="appStore.setSidebarCollapsed(!appStore.sidebarCollapsed)"
-        @toggle-theme="toggleTheme"
       />
 
       <main class="min-w-0">

@@ -1,12 +1,8 @@
 <script setup lang="ts">
 import logoCartUrl from '@/assets/logo-cart.svg'
 import { APP_VERSION } from '@/constants/branding'
-import { UI_LOCALE_OPTIONS, type SupportedUiLocale } from '@/constants/locales'
-import { useAppStore } from '@/stores/app'
 import type { WorkflowStep } from '@/types/workflow'
 import type { WorkflowNavItem } from '@/constants/navigation'
-
-const appStore = useAppStore()
 
 const props = defineProps<{
   items: WorkflowNavItem[]
@@ -19,7 +15,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   navigate: [key: string]
   toggleCollapse: []
-  toggleTheme: []
 }>()
 
 function stepStatus(key: string) {
@@ -83,28 +78,9 @@ function stepStatus(key: string) {
     </nav>
 
     <div class="border-t border-accent-200 px-3 py-3 dark:border-white/10">
-      <select
-        :value="appStore.uiLocale"
-        class="mb-2 h-10 w-full rounded-2xl border border-accent-200 bg-white px-3 text-sm font-semibold text-accent-950 outline-none transition focus:border-primary-500 disabled:opacity-60 dark:border-white/10 dark:bg-white/5 dark:text-accent-100 dark:focus:border-primary-400"
-        :class="props.collapsed ? 'hidden' : ''"
-        @change="appStore.setUiLocale(($event.target as HTMLSelectElement).value as SupportedUiLocale)"
-      >
-        <option v-for="locale in UI_LOCALE_OPTIONS" :key="locale.value" :value="locale.value" class="bg-white text-accent-950 dark:bg-dark-900 dark:text-accent-100">
-          {{ locale.label }}
-        </option>
-      </select>
       <button
         type="button"
-        class="flex h-11 w-full items-center rounded-2xl px-4 text-left text-sm font-semibold text-accent-700 hover:bg-accent-50 hover:text-accent-950 dark:text-accent-200 dark:hover:bg-white/5 dark:hover:text-white"
-        :class="props.collapsed ? 'justify-center px-0' : 'gap-3'"
-        @click="emit('toggleTheme')"
-      >
-        <span class="flex size-7 items-center justify-center text-lg text-warning-400">{{ appStore.darkMode ? '☀' : '☾' }}</span>
-        <span v-if="!props.collapsed">{{ appStore.darkMode ? '浅色模式' : '深色模式' }}</span>
-      </button>
-      <button
-        type="button"
-        class="mt-2 flex h-11 w-full items-center rounded-2xl px-4 text-left text-sm font-semibold"
+        class="flex h-11 w-full items-center rounded-2xl px-4 text-left text-sm font-semibold"
         :class="[
           props.collapsed ? 'justify-center px-0' : 'gap-3',
           props.activeKey === 'systemSettings'
