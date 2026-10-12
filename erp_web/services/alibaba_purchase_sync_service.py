@@ -14,9 +14,36 @@ logger = logging.getLogger(__name__)
 
 
 def sync_purchases(procurement, fulfillment, config_provider, order_id, record_ids, *, once=False, client_factory=AlibabaApiClient):
-    """一组采购共用本次远端读回执，再逐行校验和分配包裹；不跨请求缓存。"""
-    config = config_provider()
-    client = client_factory(config)
+    """采购回填后的整组同步失败不撤销已完成的采购。"""
+    try:
+        _sync_records(procurement, fulfillment, config_provider, order_id, record_ids,
+                      once=once, client_factory=client_factory)
+    except Exception:
+        logger.error('批量采购已回填，采购进度同步未完成')
+
+
+def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False, client_factory=AlibabaApiClient):
+    """刷新所选采购单在当前销售订单内的全部有效 1688 商品记录。"""
+    request = PurchaseSyncRequest.model_validate(body)
+    records = procurement.store.related_purchase_records(request.order_id, request.record_id, procurement.accounts_provider())
+    selected = next(record for record in records if record.id == request.record_id)
+    if not supported(selected):
+        raise ValueError("仅支持同步 1688 采购记录")
+    _sync_records(procurement, fulfillment, config_provider, request.order_id,
+                  [record.id for record in records if supported(record)], once=once, client_factory=client_factory)
+    return procurement.detail(request.order_id)
+
+
+def _sync_records(procurement, fulfillment, config_provider, order_id, record_ids, *, once, client_factory):
+    """整组先占位，再共用本次查询回执；每个商品独立校验物流归属。"""
+    accounts = procurement.accounts_provider()
+    records = {record_id: procurement.store.purchase_record(order_id, record_id, accounts)
+               for record_id in dict.fromkeys(record_ids)}
+    if any(not supported(record) for record in records.values()):
+        raise ValueError("仅支持同步 1688 采购记录")
+    started = procurement.store.purchase_progress.begin_many(order_id, records, accounts, once=once)
+    config = None
+    client = None
     results = {}
 
     class GroupQuery:
@@ -33,30 +60,31 @@ def sync_purchases(procurement, fulfillment, config_provider, order_id, record_i
             return deepcopy(result)
 
     def query_client(current):
+        nonlocal config, client
+        if config is None:
+            config = deepcopy(current)
         if current != config:
             raise ValueError('1688 授权已变化，请重新刷新采购进度')
+        if client is None:
+            client = client_factory(config)
         return GroupQuery()
 
-    for record_id in record_ids:
+    errors = []
+    for record_id, (generation, value) in started.items():
         try:
-            sync_purchase(procurement, fulfillment, config_provider,
-                          {'order_id': order_id, 'record_id': record_id}, once=once, client_factory=query_client)
-        except Exception:
-            logger.error('批量采购已回填，采购进度同步未完成')
+            _sync_record(procurement, fulfillment, config_provider, order_id, records[record_id],
+                         generation, value, client_factory=query_client)
+        except Exception as exc:
+            # 一条记录失效后仍结算其他已占位记录，最后向显式刷新调用方报告失败。
+            errors.append(exc)
+    if errors:
+        raise errors[0]
 
 
-def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False, client_factory=AlibabaApiClient):
-    request = PurchaseSyncRequest.model_validate(body)
-    order_id, record_id = request.order_id, request.record_id
+def _sync_record(procurement, fulfillment, config_provider, order_id, record, generation, value, *, client_factory):
+    record_id = record.id
     accounts = procurement.accounts_provider
-    record = procurement.store.purchase_record(order_id, record_id, accounts())
-    if not supported(record):
-        raise ValueError("仅支持同步 1688 采购记录")
     progress = procurement.store.purchase_progress
-    started = progress.begin(order_id, record_id, accounts(), once=once)
-    if started is None:
-        return procurement.detail(order_id)
-    generation, value = started
     try:
         config = config_provider()
         client = client_factory(config)
@@ -104,7 +132,6 @@ def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False
         logger.error("采购进度同步发生异常，采购登记已保留")
         value.update(state="error", error="采购同步失败，请稍后刷新", message="本次同步未完成")
     progress.finish(order_id, record_id, generation, accounts(), value)
-    return procurement.detail(order_id)
 
 
 def _merge_parcels(procurement, fulfillment, order_id, record_id, generation, record, order, logistics, parcels, value):

@@ -94,6 +94,18 @@ class OrderProcurementStore:
             progress = conn.execute("SELECT value FROM purchase_progress WHERE record_id=?", (record_id,)).fetchone()
             return PurchaseRecord.model_validate({**record, "progress": json.loads(progress[0]) if progress else None})
 
+    def related_purchase_records(self, order_id, record_id, accounts):
+        """只读取当前销售订单内、同一采购单的有效记录；逐项核对商品归属。"""
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN")
+            selected = self.checked_purchase(conn, order_id, record_id, accounts)
+            rows = conn.execute("""SELECT id FROM order_purchases
+                WHERE order_id=? AND status='purchased'
+                AND json_extract(record_json,'$.purchase_order_number')=? ORDER BY rowid""",
+                (order_id, selected['purchase_order_number'])).fetchall()
+            return [PurchaseRecord.model_validate(self.checked_purchase(conn, order_id, row['id'], accounts))
+                    for row in rows]
+
     def add_bindings(self, bindings: list[SalesSkuBinding]):
         with self.orders.connect() as conn:
             for binding in bindings:

@@ -213,8 +213,9 @@ def test_duplicate_lines_rejected_before_remote_preview(batch):
 
 
 @pytest.mark.parametrize('shared_waybill', [True, False])
-def test_multi_sku_waybills_backfill_only_corresponding_lines(batch, shared_waybill):
-    from erp_web.services.alibaba_purchase_sync_service import sync_purchases
+@pytest.mark.parametrize('manual_refresh', [True, False])
+def test_multi_sku_waybills_backfill_only_corresponding_lines(batch, shared_waybill, manual_refresh):
+    from erp_web.services.alibaba_purchase_sync_service import sync_purchase, sync_purchases
     from erp_web.services.fulfillment_service import FulfillmentService
     from erp_web.stores.fulfillment_store import FulfillmentStore
     from tests.test_fulfillment import Bus
@@ -238,7 +239,11 @@ def test_multi_sku_waybills_backfill_only_corresponding_lines(batch, shared_wayb
                     'orderEntryIds': '0,1', 'logisticsOrderGoods': [{'logisticsId': 'LP1', 'tradeOrderId': number,
                     'tradeOrderItemId': str(i), 'quantity': 2} for i in range(2)]}]}
             return {'logisticsTrace': []}
-    sync_purchases(service.procurement, fulfillment, lambda: config, order.identity, created['purchase_record_ids'], client_factory=LogisticsClient)
+    if manual_refresh:
+        sync_purchase(service.procurement, fulfillment, lambda: config,
+                      {'order_id': order.identity, 'record_id': created['purchase_record_ids'][0]}, client_factory=LogisticsClient)
+    else:
+        sync_purchases(service.procurement, fulfillment, lambda: config, order.identity, created['purchase_record_ids'], client_factory=LogisticsClient)
     assert len(LogisticsClient.calls) == 3
     parcels = fulfillment.detail(order.identity)['parcels']
     assert len(parcels) == 2
@@ -347,3 +352,119 @@ def test_batch_http_and_facade_use_validated_contract_and_sync_all_records(batch
     handler.read_body = lambda: {**body, 'items': 'invalid'}
     routes.handle_self_purchase_batch_preview(handler)
     assert sent[-1][1] == 400
+
+
+@pytest.fixture
+def grouped_sync(batch):
+    from erp_web.services.alibaba_purchase_sync_service import sync_purchase, sync_purchases
+    from erp_web.services.fulfillment_service import FulfillmentService
+    from erp_web.stores.fulfillment_store import FulfillmentStore
+    from tests.test_fulfillment import Bus
+
+    service, client, config, order, _ = batch
+    created = [create(service, record) for record in groups(batch)]
+    same = next(row['purchase_record_ids'] for row in created if len(row['purchase_record_ids']) == 2)
+    other = next(row['purchase_record_ids'][0] for row in created if len(row['purchase_record_ids']) == 1)
+    store = FulfillmentStore(service.procurement.store.orders)
+    fulfillment = FulfillmentService(store, Bus(store), service.procurement.accounts_provider,
+                                     service.procurement.detail, start_worker=False)
+
+    class Query:
+        calls = []
+        status = 'waitbuyerpay'
+        callback = None
+        fail = False
+
+        def __init__(self, config):
+            pass
+
+        def query(self, api, number):
+            self.calls.append((api, number))
+            if self.callback:
+                self.callback()
+            if self.fail:
+                raise ValueError('采购查询失败')
+            if api == ORDER_DETAIL:
+                value = client.query(api, number)
+                value['result']['baseInfo']['status'] = self.status
+                return value
+            return {'result': []}
+
+    ids = same + [other]
+    sync_purchases(service.procurement, fulfillment, lambda: config, order.identity, ids, client_factory=Query)
+    Query.calls.clear()
+
+    def run(record_id=None):
+        return sync_purchase(service.procurement, fulfillment, lambda: config,
+                             {'order_id': order.identity, 'record_id': record_id or same[0]}, client_factory=Query)
+
+    def snapshots():
+        detail = service.procurement.detail(order.identity)
+        return {row['id']: row['progress'] for line in detail['lines'] for row in line['records']}
+
+    return service.procurement, order.identity, same, other, Query, run, snapshots
+
+
+def test_refresh_one_sku_updates_same_purchase_but_not_other_purchase(grouped_sync):
+    _, _, same, other, query, run, snapshots = grouped_sync
+    before = snapshots()
+    query.status = 'waitsellersend'
+    detail = run(same[1])
+    after = snapshots()
+    assert all(after[key]['data']['order']['status'] == 'waitsellersend' for key in same)
+    assert after[other] == before[other]
+    assert query.calls == [(ORDER_DETAIL, NUMBER), (LOGISTICS_INFO, NUMBER)]
+    assert {row['status'] for row in detail['order']['purchase_tracking']['orders'] if row['order_number'] == NUMBER} == {'waitsellersend'}
+    assert {after[key]['data']['product']['sku_id'] for key in same} == {'67890', '67891'}
+
+
+def test_group_refresh_skips_cancelled_sibling(grouped_sync):
+    procurement, order_id, same, _, query, run, snapshots = grouped_sync
+    before = snapshots()
+    record = procurement.store.purchase_record(order_id, same[1], procurement.accounts_provider())
+    procurement.store.complete_purchase(record.request_id, NUMBER, procurement.accounts_provider(), cancelled=True)
+    query.status = 'waitsellersend'
+    run()
+    after = snapshots()
+    assert after[same[0]]['data']['order']['status'] == 'waitsellersend'
+    assert after[same[1]] == before[same[1]]
+
+
+def test_group_query_failure_retains_all_previous_snapshots_without_retry(grouped_sync):
+    _, _, same, other, query, run, snapshots = grouped_sync
+    before = snapshots()
+    query.fail = True
+    run()
+    after = snapshots()
+    assert query.calls == [(ORDER_DETAIL, NUMBER)]
+    for key in same:
+        assert after[key]['state'] == 'error'
+        assert after[key]['data'] == before[key]['data']
+        assert after[key]['error'] == '采购查询失败'
+    assert after[other] == before[other]
+
+
+def test_group_refresh_claims_all_siblings_before_network(grouped_sync):
+    _, _, same, _, query, run, snapshots = grouped_sync
+    def concurrent_refresh():
+        assert all(snapshots()[key]['state'] == 'syncing' for key in same)
+        with pytest.raises(ValueError, match='正在同步'):
+            run(same[1])
+    query.callback = staticmethod(concurrent_refresh)
+    query.status = 'waitsellersend'
+    run()
+    assert query.calls == [(ORDER_DETAIL, NUMBER), (LOGISTICS_INFO, NUMBER)]
+    assert all(snapshots()[key]['state'] == 'synced' for key in same)
+
+
+def test_busy_sibling_rolls_back_entire_group_claim(grouped_sync):
+    procurement, order_id, same, _, query, run, snapshots = grouped_sync
+    progress = procurement.store.purchase_progress
+    accounts = procurement.accounts_provider()
+    generation, value = progress.begin(order_id, same[1], accounts)
+    before = snapshots()
+    with pytest.raises(ValueError, match='正在同步'):
+        run()
+    assert snapshots() == before
+    assert not query.calls
+    progress.finish(order_id, same[1], generation, accounts, value)

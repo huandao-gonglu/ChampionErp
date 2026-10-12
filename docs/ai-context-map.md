@@ -1117,6 +1117,7 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 - 列表、详情及履约页签定时刷新只读取数据库；详情编辑和提交期间暂停替换内容，旧响应不得覆盖较新的手动结果。采购与仓库单笔刷新入口保留。
 - `services/alibaba_api_client.py` 固定 1688 HTTPS AOP 网关及三个买家只读接口，以 HMAC-SHA1 签名，通过 `managed_urlopen` 发送，显式声明 read 语义和 token 指纹，禁止重定向，不自动刷新 Token。物流先查运单，再按订单一次查询轨迹并按物流 ID 匹配；轨迹失败保留运单并返回警告。
 - POST `/api/orders/purchase-sync` → `order_procurement_facade.sync_purchase` → `alibaba_purchase_sync_service.py`。登记成功后自动同步一次，幂等登记不重复查询；失败保留采购登记和最近成功快照。`purchase_progress_store.py` 持久化同步快照、代次与短期占位，网络不持锁，写入前重新核对有效采购、账号与代次。
+- 手动刷新任一商品时，通过 `OrderProcurementStore.related_purchase_records` 读取当前销售订单内同一采购单的有效 1688 记录，整组复用本次订单、物流及轨迹回执；不同采购单、其他销售订单和已作废记录不参与。`PurchaseProgressStore.begin_many` 在短事务内完成整组占位，任一记录忙碌或失效则整体拒绝启动；逐商品保留归属、数量、人工分配与代次校验，失败保留各自旧快照，不把运单直接复制给其他 SKU。
 - 订单状态与物流分别记录更新时间。物流接口的 `500_2` 按官方定义表示未发货，归一为空物流；其他物流失败只返回警告，仍保存成功读取的订单状态，保留旧运单及其原始更新时间，不触发包裹合并。授权变化与采购作废仍拒绝写入。
 - `OrderProcurementStore.tracking_summaries` 为当前列表与详情批量读取有效采购的本地状态摘要，排除作废记录和变更规格；不额外查询远端。`orderPresentation.ts` 在无国内运单时展示采购订单状态，有远端或人工登记运单后切换到预报准备状态，已有预报优先显示仓库进度；多笔采购保留状态差异，物流签收不等同仓库发货。
 - `alibaba_purchase_assignment.py` 用冻结商品 ID、SKU、订单子项、包裹商品数量证明归属；远端采购数量须与登记数量一致。缺失证据或同一远端 SKU 被多条采购使用时待人工分配；已证明的分批发货可逐批追加。`FulfillmentService.merge_purchase_parcels` 复用数量校验、版本和锁定边界，同运单幂等，差异不覆盖人工包裹。人工保存与确认快照在同一事务，使旧查询失效。

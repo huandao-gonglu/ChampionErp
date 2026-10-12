@@ -1,4 +1,5 @@
 """订单同轮刷新采购和仓库快照；不创建采购单或预报单。"""
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +30,8 @@ def test_failed_purchase_still_allows_warehouse_and_other_purchases(setup, monke
     procurement, fulfillment, body, _, _ = setup
     detail = procurement.detail(body['order_id'])
     record = detail['lines'][0]['records'][0]
-    detail['lines'][0]['records'] += [{**record, 'id': 'second'}, {**record, 'id': 'cancelled', 'status': 'cancelled'}]
+    detail['lines'][0]['records'] += [{**record, 'id': 'second', 'purchase_order_number': '123456'},
+                                     {**record, 'id': 'cancelled', 'status': 'cancelled'}]
     calls = []
     def sync(*args):
         ident = args[3]['record_id']; calls.append(ident)
@@ -51,3 +53,24 @@ def test_no_warehouse_order_never_submits_one(setup, monkeypatch):
     monkeypatch.setattr(fulfillment, 'sync', lambda *a: pytest.fail('没有报单不能同步或创建仓库单'))
     assert service.sync_order_progress(procurement, fulfillment, lambda: {}, body['order_id'], lambda: None)
     assert fulfillment.detail(body['order_id'])['crossborderbus_order_id'] is None
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_same_purchase_is_queried_once_and_sibling_warning_is_reported(setup, monkeypatch, failure):
+    _, fulfillment, body, _, run = setup
+    detail = run()
+    record = detail['lines'][0]['records'][0]
+    sibling = deepcopy(record)
+    sibling['id'] = 'sibling'
+    sibling['progress']['data']['logistics_warning'] = '物流本次未更新'
+    detail['lines'][0]['records'].append(sibling)
+    calls = []
+    def sync(*args):
+        calls.append(args[3]['record_id'])
+        if failure:
+            raise ValueError('查询失败')
+        return detail
+    monkeypatch.setattr(service, 'sync_purchase', sync)
+    fake = SimpleNamespace(detail=lambda _: detail)
+    assert not service.sync_order_progress(fake, fulfillment, lambda: {}, body['order_id'], lambda: None)
+    assert calls == [body['record_id']]
