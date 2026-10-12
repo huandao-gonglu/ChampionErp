@@ -15,9 +15,7 @@ from erp_web.schemas.ai_tools import AiToolDefinition, AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category_search_language import category_search_language
 from erp_web.schemas.category import (
-    CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
     CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
-    CATEGORY_SEARCH_MAX_CANDIDATES,
     CATEGORY_SEARCH_PERMISSION,
     CATEGORY_SEARCH_TOOLSET_ID,
     CategoryBrowseResult,
@@ -82,14 +80,15 @@ _MAX_NAVIGATION_CALLS = 4
 CATEGORY_SEARCH_TOOL_DEFINITIONS = (
     AiToolDefinition(
         name="search_categories",
-        version="4",
+        version="5",
         description=(
             "先填写 product_type 确认实物通用名，再在 keywords 一次提交同一实物的当地别称及规范品名。"
             "程序自动合并 product_type、alternative_names 与 keywords；一个词的功能改写不算新别称，不能扩大为另一种商品。"
             "candidates 只包含此前未返回的候选全文，repeated_candidate_ids 引用此前已返回的类目。"
             "已有合适候选就提交最终结果；只有具体缺口才补查。"
-            "truncated=true 表示缓存中仍有新候选，可用相同 keywords 继续读取，不必新增同义词。"
-            "query_candidate_counts 是各词当前返回数量，最多 8 条；这些是排序候选，不是全类目枚举。"
+            "按完整命中集合去重，超过回执字节预算才分页。has_more=true 时保持全部搜索参数不变，以 next_offset 作为 offset 继续读取。"
+            "total_candidate_count 是本组去重命中数，returned_candidate_count 是本页候选与历史引用总数，remaining_candidate_count 是后续页数量。"
+            "query_candidate_counts 是各词完整取回的候选数；Yandex/Ozon 为本地树全部命中，美客多为远端预测接口返回量，不代表全平台类目总数。"
         ),
         input_schema={
             "type": "object",
@@ -108,6 +107,7 @@ CATEGORY_SEARCH_TOOL_DEFINITIONS = (
                     "type": "string", "minLength": 1, "maxLength": 100,
                     "description": "固定搜索语言的实物通用名，去掉人群、营销功能和型号。实际卖的是什么物件？程序一定查询此词。",
                 },
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "首轮为 0；续页保持全部搜索参数不变，填写上次 next_offset。"},
                 "keywords": {
                     "type": "array",
                     "items": {"type": "string", "minLength": 1, "maxLength": 300},
@@ -119,7 +119,7 @@ CATEGORY_SEARCH_TOOL_DEFINITIONS = (
         },
         output_schema={
             "type": "object",
-            "required": ["keywords", "candidates", "repeated_candidate_ids", "errors", "truncated", "search_language", "remaining_candidate_count", "query_candidate_counts"],
+            "required": ["keywords", "candidates", "repeated_candidate_ids", "errors", "truncated", "search_language", "remaining_candidate_count", "query_candidate_counts", "total_candidate_count", "returned_candidate_count", "has_more", "next_offset"],
             "properties": {
                 "keywords": {
                     "type": "array",
@@ -129,12 +129,10 @@ CATEGORY_SEARCH_TOOL_DEFINITIONS = (
                 "candidates": {
                     "type": "array",
                     "items": _AI_CANDIDATE_SCHEMA,
-                    "maxItems": CATEGORY_SEARCH_MAX_CANDIDATES,
                 },
                 "repeated_candidate_ids": {
                     "type": "array",
                     "items": {"type": "string", "minLength": 1, "maxLength": 160},
-                    "maxItems": CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL * CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
                 },
                 "errors": {
                     "type": "array",
@@ -151,6 +149,10 @@ CATEGORY_SEARCH_TOOL_DEFINITIONS = (
                     },
                     "maxItems": CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
                 },
+                "has_more": {"type": "boolean"},
+                "next_offset": {"type": ["integer", "null"], "minimum": 0},
+                "total_candidate_count": {"type": "integer", "minimum": 0},
+                "returned_candidate_count": {"type": "integer", "minimum": 0},
                 "truncated": {"type": "boolean"},
                 "search_language": {"type": "string"},
                 "remaining_candidate_count": {"type": "integer", "minimum": 0},
@@ -370,7 +372,7 @@ def build_category_match_toolset(
 
     def execute_match_search(arguments: dict[str, Any], context: AiExecutionContext) -> dict[str, Any]:
         validate_match_search(arguments)
-        return batch_search.execute({"keywords": [arguments["product_type"], *arguments["alternative_names"], *arguments["keywords"]]}, context)
+        return batch_search.execute({"keywords": [arguments["product_type"], *arguments["alternative_names"], *arguments["keywords"]], "offset": arguments.get("offset", 0)}, context)
 
     toolset = AiToolSet.bind(
         CATEGORY_SEARCH_TOOLSET_ID,

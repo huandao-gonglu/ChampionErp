@@ -12,8 +12,8 @@ CATEGORY_SEARCH_PERMISSION = "category.read"
 CATEGORY_SEARCH_TOOLSET_ID = "category.search"
 # 仅用于拒绝异常输入；检索成本由并发、截止时间和候选返回量控制。
 CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL = 64
-CATEGORY_SEARCH_MAX_CANDIDATES = 24
-CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD = 8
+# 搜索分页按工具回执大小控制，不按候选条数裁剪。
+CATEGORY_SEARCH_MAX_OUTPUT_BYTES = 128 * 1024
 CategoryAttributeValueMode = Literal["strict_enum", "open_enum", "free_text"]
 
 
@@ -511,6 +511,10 @@ class CategoryKeywordSearchResult(TypedDict):
     search_language: str
     remaining_candidate_count: int
     query_candidate_counts: dict[str, int]
+    total_candidate_count: int
+    returned_candidate_count: int
+    has_more: bool
+    next_offset: int | None
 
 
 CategoryTreeNodeLevel = Literal["branch", "product_type"]
@@ -660,10 +664,10 @@ class CategoryCandidateLedger:
         candidate = self._candidates.get(str(category_id or "").strip())
         return dict(candidate) if candidate is not None else None
 
-    def candidates(self, *, limit: int = CATEGORY_SEARCH_MAX_CANDIDATES) -> list[CategoryCandidate]:
+    def candidates(self, *, limit: int | None = None) -> list[CategoryCandidate]:
         return [
             dict(candidate)
-            for candidate in list(self._candidates.values())[: max(1, int(limit))]
+            for candidate in list(self._candidates.values())[: None if limit is None else max(1, int(limit))]
         ]
 
 
@@ -710,8 +714,7 @@ __all__ = [
     "CATEGORY_SEARCH_PERMISSION",
     "CATEGORY_SEARCH_TOOLSET_ID",
     "CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL",
-    "CATEGORY_SEARCH_MAX_CANDIDATES",
-    "CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD",
+    "CATEGORY_SEARCH_MAX_OUTPUT_BYTES",
     "CategoryKeywordSearchError",
     "CategoryKeywordSearchResult",
     "category_attribute_dictionary_id",

@@ -84,7 +84,7 @@ class CategorySearchProvider(Protocol):
         query: str,
         *,
         site: str = "",
-        limit: int = 8,
+        limit: int | None = 8,
         timeout_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
         ...

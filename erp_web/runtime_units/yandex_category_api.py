@@ -635,7 +635,7 @@ def _search_score(record: dict[str, Any], terms: list[str]) -> tuple[int, list[s
 
 def search_yandex_categories(
     query: str,
-    limit: int = 20,
+    limit: int | None = 20,
     *,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
@@ -669,7 +669,7 @@ def search_yandex_categories(
     matches.sort(
         key=lambda item: (-int(item.get("score") or 0), str(item.get("category_path") or ""))
     )
-    return matches[: max(1, min(50, int(limit or 20)))]
+    return matches if limit is None else matches[: max(1, min(50, int(limit or 20)))]
 
 
 def fetch_yandex_leaf_record(

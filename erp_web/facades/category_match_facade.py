@@ -510,7 +510,7 @@ def setup_category_match_search(
     scoped_searcher = searcher or searcher_factory(
         str(normalized_target.get("platform") or ""),
         site=str(normalized_target.get("site") or ""),
-        limit=8,
+        limit=None,
         timeout_seconds=min(8, remaining_deadline_seconds(deadline_at)),
         deadline_at=deadline_at,
     )

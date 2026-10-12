@@ -72,3 +72,46 @@ def test_queries_without_search_terms_do_not_load_corpus(monkeypatch, query):
         raise AssertionError("无有效搜索词时不应加载类目树")
     monkeypatch.setattr(yandex_category_api, "load_yandex_category_corpus", unexpected_load)
     assert yandex_category_api.search_yandex_categories(query) == []
+
+
+def test_match_tool_sees_kitchen_organizer_beyond_old_eight_and_fifty_limits(monkeypatch):
+    """保鲜膜盒事故回归：低排名的合理候选必须穿过整条匹配链路。"""
+    from erp_web.runtime_units.category_searchers import create_category_searcher
+    from erp_web.runtime_units.category_tools import build_category_match_toolset
+    from erp_web.schemas.category import CategoryCandidateLedger, CATEGORY_SEARCH_MAX_OUTPUT_BYTES
+    from erp_web.schemas.ai_tools import AiToolCommand
+    from erp_web.schemas.ai_trace import AiExecutionContext
+    from erp_web.services.ai_tool_runtime import AiToolRuntime
+
+    records = yandex_category_api._flatten_leaf_categories([
+        {"id": 1, "name": "Другие товары", "children": [
+            {"id": 1000 + index, "name": "Органайзеры настенные"}
+            for index in range(60)
+        ]},
+        {"id": 2, "name": "Кухонные аксессуары", "children": [
+            {"id": 62619392, "name": "Органайзеры кухонные"},
+        ]},
+    ])
+    monkeypatch.setattr(yandex_category_api, "load_yandex_category_corpus",
+                        lambda **kwargs: (records, {"cache_source": "persistent_cache"}))
+    query = "настенный органайзер для кухни"
+    # 人工查询仍尊重显式 limit；自动匹配取得全部命中。
+    assert len(yandex_category_api.search_yandex_categories(query, limit=8)) == 8
+    assert "62619392" not in {row["category_id"] for row in yandex_category_api.search_yandex_categories(query, limit=50)}
+    searcher = create_category_searcher("yandex", site="global")
+    ledger = CategoryCandidateLedger()
+    runtime = AiToolRuntime(
+        toolset=build_category_match_toolset(searcher=searcher, ledger=ledger, platform="yandex", site="global").toolset,
+        execution_context=AiExecutionContext.create(timeout_seconds=10, budget_profile="category.match.default", permissions={"category.read"}),
+        max_output_bytes=CATEGORY_SEARCH_MAX_OUTPUT_BYTES,
+    )
+    result = runtime.execute(AiToolCommand(
+        call_id="kitchen-organizer", tool_name="search_categories", tool_version="5", round=1,
+        arguments={"product_identity": "竹制卷材收纳切割盒", "product_type": query, "alternative_names": [], "keywords": [query]},
+    ))
+    assert result.ok, result.error
+    assert result.output["query_candidate_counts"] == {query: 61}
+    assert result.output["total_candidate_count"] == result.output["returned_candidate_count"] == 61
+    assert not result.output["has_more"]
+    assert ledger.get("62619392") is not None
+    assert result.output["candidates"][-1]["category_id"] == "62619392"

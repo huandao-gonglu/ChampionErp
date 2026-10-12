@@ -12,6 +12,7 @@ import {
   productResearchStrategyLabel,
 } from '@/utils/productResearchLabels'
 import ProductResearchSourcingPanel from './ProductResearchSourcingPanel.vue'
+import ProductResearchKeywords from './ProductResearchKeywords.vue'
 import type {
   HotProductCandidate,
   ProductResearchConfig,
@@ -345,6 +346,10 @@ onBeforeUnmount(() => {
           </label>
 
           <label class="block"><span class="mb-2 block text-sm font-semibold">商品关键词（美国站建议英文）</span><input v-model="form.keyword" class="input" maxlength="200" :disabled="loading" /></label>
+          <ProductResearchKeywords
+            :keyword="form.keyword" :market-id="form.targetMarket" :disabled="loading"
+            @select="form.keyword = $event"
+          />
           <p class="muted">查询第一页预计消耗 2 个额度，不自动翻页或补足数量。</p>
           <label class="block">
             <span class="mb-2 block text-sm font-semibold text-accent-700 dark:text-accent-200">结果数量</span>

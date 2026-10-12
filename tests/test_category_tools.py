@@ -145,7 +145,7 @@ def batch_command(keywords, call_id="batch", *, ledger=None):
     return AiToolCommand(
         call_id=call_id,
         tool_name="search_categories",
-        tool_version="4",
+        tool_version="5",
         arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": keywords[0], "keywords": keywords},
         round=1,
     )
@@ -173,7 +173,7 @@ def test_product_name_and_complementary_names_execute_as_one_batch() -> None:
     ledger = CategoryCandidateLedger()
     runtime = batch_runtime(searcher, ledger)
     result = runtime.execute(AiToolCommand(
-        call_id="four-names", tool_name="search_categories", tool_version="4", round=1,
+        call_id="four-names", tool_name="search_categories", tool_version="5", round=1,
         arguments={
             "product_identity": "挂耳式纺织面罩，用于遮阳和防尘",
             "product_type": "mascarilla",
@@ -193,7 +193,7 @@ def test_wrong_language_in_any_merged_name_rejects_entire_batch() -> None:
     searcher = BoundSearcher()
     runtime = batch_runtime(searcher, CategoryCandidateLedger())
     result = runtime.execute(AiToolCommand(
-        call_id="wrong-alias", tool_name="search_categories", tool_version="4", round=1,
+        call_id="wrong-alias", tool_name="search_categories", tool_version="5", round=1,
         arguments={"product_identity": "风扇", "product_type": "ventilador",
                    "alternative_names": ["风扇"], "keywords": ["ventilador USB"]},
     ))
@@ -255,30 +255,70 @@ def test_batch_bounds_concurrency_and_preserves_request_context() -> None:
     assert maximum == 3
 
 
-def test_truncated_candidates_are_not_selectable_until_returned_by_narrower_query() -> None:
+def test_batch_returns_hundreds_of_candidates_without_count_truncation() -> None:
     class Searcher(BoundSearcher):
         def search_categories(self, keyword):
             result = super().search_categories(keyword)
             result["candidates"] = [
                 {**result["candidates"][0], "category_id": f"{keyword}-{rank}"}
-                for rank in range(8)
+                for rank in range(100)
             ]
             return result
 
     searcher = Searcher()
     ledger = CategoryCandidateLedger()
-    runtime = batch_runtime(searcher, ledger)
-    result = runtime.execute(batch_command(["a", "b", "c", "d"], ledger=ledger))
-    assert result.ok and result.output["truncated"]
-    ids = [row["category_id"] for row in result.output["candidates"]]
-    assert len(ids) == 24
-    assert ids[:4] == ["a-0", "b-0", "c-0", "d-0"]
-    assert ledger.get("d-7") is None
-    narrowed = runtime.execute(batch_command(["d"], "narrow", ledger=ledger))
-    assert narrowed.ok and not narrowed.output["truncated"]
-    assert "d-7" in [row["category_id"] for row in narrowed.output["candidates"]]
-    assert ledger.get("d-7") is not None
-    assert len(searcher.keywords) == ledger.search_count == 4
+    result = batch_runtime(searcher, ledger).execute(batch_command(["a", "b", "c"], ledger=ledger))
+    assert result.ok, result.error
+    assert len(result.output["candidates"]) == 300
+    assert result.output["total_candidate_count"] == result.output["returned_candidate_count"] == 300
+    assert result.output["query_candidate_counts"] == {"a": 100, "b": 100, "c": 100}
+    assert result.output["next_offset"] is None
+    assert not result.output["has_more"] and not result.output["truncated"]
+    assert ledger.get("c-99") is not None
+    assert len(ledger.candidates()) == 300
+
+
+def test_byte_pages_preserve_all_candidates_and_only_register_delivered_ids() -> None:
+    import json
+    from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
+
+    class Searcher(BoundSearcher):
+        def search_categories(self, keyword):
+            result = super().search_categories(keyword)
+            result["candidates"] = [
+                {**result["candidates"][0], "category_id": str(rank),
+                 "name": "完整俄文候选名称" * 10, "path_segments": ["厨房", "完整路径" * 30]}
+                for rank in range(40)
+            ]
+            return result
+
+    searcher = Searcher()
+    ledger = CategoryCandidateLedger()
+    batch = CategoryKeywordBatchSearch(searcher=searcher, ledger=ledger, search_language="es", max_output_bytes=4096)
+    delivered = []
+    offset = 0
+    while True:
+        result = batch.execute({"keywords": ["fan", "ventilador"], "offset": offset}, context())
+        assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()) <= 4096
+        page_ids = [row["category_id"] for row in result["candidates"]]
+        delivered.extend(page_ids)
+        assert result["total_candidate_count"] == 40
+        assert result["returned_candidate_count"] == len(page_ids) > 0
+        assert result["remaining_candidate_count"] == 40 - len(delivered)
+        if not result["has_more"]:
+            assert result["next_offset"] is None
+            break
+        assert result["next_offset"] > offset
+        assert ledger.get("39") is None
+        offset = result["next_offset"]
+    assert delivered == [str(index) for index in range(40)]
+    assert searcher.keywords == ["fan", "ventilador"]
+    assert ledger.get("39") is not None
+    repeated = batch.execute({"keywords": ["fan", "ventilador"]}, context())
+    assert repeated["candidates"] == []
+    assert repeated["repeated_candidate_ids"] == delivered
+    assert not repeated["has_more"]
+
 
 
 def test_followup_omits_repeated_details_and_reserves_slots_for_new_candidates() -> None:
@@ -313,7 +353,7 @@ def test_followup_omits_repeated_details_and_reserves_slots_for_new_candidates()
 def test_batch_rejects_invalid_input_before_search(arguments) -> None:
     searcher = BoundSearcher()
     result = batch_runtime(searcher, CategoryCandidateLedger()).execute(AiToolCommand(
-        call_id="invalid", tool_name="search_categories", tool_version="4",
+        call_id="invalid", tool_name="search_categories", tool_version="5",
         arguments=arguments, round=1,
     ))
     assert not result.ok
@@ -334,7 +374,7 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
     command = AiToolCommand(
         call_id="call-search",
         tool_name="search_categories",
-        tool_version="4",
+        tool_version="5",
         arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": "ventilador", "keywords": ["ventilador"]},
         round=1,
     )
@@ -356,7 +396,7 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
         "search_categories"
     ]
     definition = CATEGORY_SEARCH_TOOL_DEFINITIONS[0].to_dict()
-    assert set(definition["input_schema"]["properties"]) == {"product_type", "alternative_names", "keywords", "product_identity"}
+    assert set(definition["input_schema"]["properties"]) == {"product_type", "alternative_names", "keywords", "product_identity", "offset"}
     assert "platform" not in str(definition)
     assert "site" not in str(definition)
 
@@ -373,7 +413,7 @@ def test_tool_output_hides_bound_scope_and_provider_metadata() -> None:
         AiToolCommand(
             call_id="call-search",
             tool_name="search_categories",
-            tool_version="4",
+            tool_version="5",
             arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": "ventilador", "keywords": ["ventilador"]},
             round=1,
         )
@@ -397,6 +437,10 @@ def test_tool_output_hides_bound_scope_and_provider_metadata() -> None:
         "search_language": "es",
         "remaining_candidate_count": 0,
         "query_candidate_counts": {"ventilador": 1},
+        "total_candidate_count": 1,
+        "returned_candidate_count": 1,
+        "has_more": False,
+        "next_offset": None,
     }
 
 
@@ -412,7 +456,7 @@ def test_tool_rejects_platform_or_site_arguments() -> None:
         AiToolCommand(
             call_id="call-search",
             tool_name="search_categories",
-            tool_version="4",
+            tool_version="5",
             arguments={
                 "keywords": ["ventilador"],
                 "platform": "ozon",
@@ -512,3 +556,67 @@ def test_navigation_rejects_nodes_not_returned_by_the_current_run() -> None:
         assert "分支已经展开" in str(exc)
     else:
         raise AssertionError("未拒绝重复展开的树分支")
+
+def test_focused_pagination_fits_runtime_budget_and_freezes_failed_queries() -> None:
+    from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
+
+    class Searcher(BoundSearcher):
+        def search_categories(self, keyword):
+            self.keywords.append(keyword)
+            if keyword == "failed":
+                if self.keywords.count(keyword) > 1:
+                    raise AssertionError("续页不得重新查询失败词而改变候选排序")
+                raise AiToolExecutionError("CATEGORY_SEARCH_TIMEOUT", "该词查询超时", retryable=True)
+            return {"keyword": keyword, "source": "test", "candidates": [
+                {"category_id": str(index), "name": "完整类目", "path_segments": ["厨房", "收纳"]}
+                for index in range(30)
+            ]}
+
+    searcher = Searcher()
+    ledger = CategoryCandidateLedger()
+    batch = CategoryKeywordBatchSearch(searcher=searcher, ledger=ledger, search_language="es", max_output_bytes=2000)
+    first = batch.execute({"keywords": ["fan", "failed"]}, context())
+    assert first["has_more"]
+    second = batch.execute({"keywords": ["fan", "failed"], "offset": first["next_offset"]}, context())
+    assert second["total_candidate_count"] == first["total_candidate_count"] == 30
+    assert second["errors"] == first["errors"]
+    assert searcher.keywords.count("failed") == 1
+    assert not ({row["category_id"] for row in first["candidates"]} & {row["category_id"] for row in second["candidates"]})
+
+
+def test_large_search_output_pages_before_runtime_rejects_it() -> None:
+    import json
+    from erp_web.schemas.category import CATEGORY_SEARCH_MAX_OUTPUT_BYTES
+
+    class Searcher(BoundSearcher):
+        def search_categories(self, keyword):
+            result = super().search_categories(keyword)
+            result["candidates"] = [
+                {**result["candidates"][0], "category_id": str(index), "name": "类目" * 200,
+                 "path_segments": ["完整路径" * 100]}
+                for index in range(300)
+            ]
+            return result
+
+    ledger = CategoryCandidateLedger()
+    runtime = AiToolRuntime(
+        toolset=build_category_match_toolset(searcher=Searcher(), ledger=ledger, platform="mercadolibre", site="MLM").toolset,
+        execution_context=context(), max_tool_calls=8, max_output_bytes=CATEGORY_SEARCH_MAX_OUTPUT_BYTES,
+    )
+    ids = []
+    offset = 0
+    while True:
+        command = batch_command(["fan"], call_id=f"page-{offset}")
+        result = runtime.execute(AiToolCommand(
+            call_id=command.call_id, tool_name=command.tool_name, tool_version=command.tool_version,
+            arguments={**command.arguments, "offset": offset}, round=1,
+        ))
+        assert result.ok, result.error
+        output = result.to_dict()["output"]
+        assert len(json.dumps(output, ensure_ascii=False, separators=(",", ":")).encode()) <= CATEGORY_SEARCH_MAX_OUTPUT_BYTES
+        ids.extend(row["category_id"] for row in output["candidates"])
+        if not output["has_more"]:
+            break
+        offset = output["next_offset"]
+        assert ledger.get("299") is None
+    assert ids == [str(index) for index in range(300)]

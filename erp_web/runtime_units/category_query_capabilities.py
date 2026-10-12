@@ -12,7 +12,7 @@ from erp_web.runtime_units.category_attribute_access import attribute_write_scop
 from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category_search_language import category_search_language
 from erp_web.schemas.ai_trace import AiExecutionContext
-from erp_web.schemas.category import CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD, CategoryCandidateLedger
+from erp_web.schemas.category import CategoryCandidateLedger
 from erp_web.schemas.category_query_capabilities import (
     CategoryAttributeValuesQueryRequest,
     CategoryAttributeValuesQueryResult,
@@ -86,7 +86,7 @@ class _CategoryQuerySearcher:
         try:
             rows = self.loader(
                 self.platform, query=keyword, site=self.site,
-                limit=CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
+                limit=None,
                 timeout_seconds=self.execution.bounded_timeout_seconds(8),
             )
         except BusinessCapabilityError as exc:
@@ -121,13 +121,13 @@ class _CategoryQuerySearcher:
         "关键词使用目标市场固定语言：Yandex/Ozon 俄语、美客多巴西葡语、其他本地站西语、CBT 英语。禁止中文或换语言试搜。"
         "先根据商品实物规划主要相关搜索方向，首轮通过 keywords 列表一次批量查询；"
         "已有合适候选直接选择，只有具体缺口才补查。结果按类目 ID 去重，"
-        "matched_keywords 标明命中词，errors 按词报告失败；limit 是合并后的候选总量。"
-        "truncated=true 时可缩小词组继续查询。"
+        "matched_keywords 标明命中词，errors 按词报告失败；默认按回执字节预算分页，limit 可主动缩小本页。"
+        "has_more=true 时保持关键词不变，以 next_offset 作为 offset 继续查询；total_candidate_count 是去重命中总量，query_candidate_counts 为每词取回数量（远端预测不代表全库）。"
     ),
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="3",
+    version="4",
 )
 def category_search(
     request: CategorySearchRequest,
@@ -142,21 +142,23 @@ def category_search(
         ledger=ledger,
         search_language=category_search_language(platform, site),
         limit=request.limit,
-    ).execute({"keywords": [request.product_type, *request.keywords]}, execution)
-    results = []
-    for candidate in batch["candidates"]:
-        # 保留通用查询所需的 Ozon ID 配对等实时字段。
-        row = ledger.get(candidate["category_id"])
-        if row is not None:
-            results.append(row)
+        # 主对话沿用同一类目回执预算，ID 配对也计入分页大小。
+        include_binding_ids=True,
+    ).execute({"keywords": [request.product_type, *request.keywords], "offset": request.offset}, execution)
     return CategorySearchResult(
         platform=platform,
         site=site,
         keywords=tuple(batch["keywords"]),
         source=f"{platform}_live",
-        results=_dict_rows(results),
+        results=_dict_rows(batch["candidates"]),
         errors=tuple(batch["errors"]),
         truncated=batch["truncated"],
+        has_more=batch["has_more"],
+        next_offset=batch["next_offset"],
+        total_candidate_count=batch["total_candidate_count"],
+        returned_candidate_count=batch["returned_candidate_count"],
+        remaining_candidate_count=batch["remaining_candidate_count"],
+        query_candidate_counts=batch["query_candidate_counts"],
     )
 
 

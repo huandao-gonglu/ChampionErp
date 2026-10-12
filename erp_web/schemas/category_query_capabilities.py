@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, model_validator
 
-from erp_web.schemas.category import CATEGORY_SEARCH_MAX_CANDIDATES, CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL
+from erp_web.schemas.category import CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
 
@@ -22,7 +22,8 @@ class CategorySearchRequest(BaseModel):
     keywords: tuple[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=300)], ...] = Field(
         min_length=1, max_length=CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
     )
-    limit: int = Field(default=20, ge=1, le=CATEGORY_SEARCH_MAX_CANDIDATES)
+    limit: int | None = Field(default=None, ge=1, description="可选的本页条数限制；省略时仅按输出字节预算分页。")
+    offset: int = Field(default=0, ge=0, description="续页保持搜索参数不变，使用上次 next_offset。")
 
 
 class CategorySearchResult(BaseModel):
@@ -35,6 +36,12 @@ class CategorySearchResult(BaseModel):
     results: tuple[dict[str, JsonValue], ...] = ()
     errors: tuple[dict[str, JsonValue], ...] = ()
     truncated: bool = False
+    has_more: bool = False
+    next_offset: int | None = None
+    total_candidate_count: int = 0
+    returned_candidate_count: int = 0
+    remaining_candidate_count: int = 0
+    query_candidate_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class CategoryAttributesQueryRequest(BaseModel):

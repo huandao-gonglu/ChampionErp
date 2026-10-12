@@ -28,6 +28,7 @@ from pydantic_ai.models import Model
 
 from erp_web.context import get_context
 from erp_web.schemas.category import (
+    CATEGORY_SEARCH_MAX_OUTPUT_BYTES,
     CATEGORY_SEARCH_PERMISSION,
     CATEGORY_SEARCH_TOOLSET_ID,
     CategoryCandidateLedger,
@@ -81,8 +82,9 @@ CATEGORY_KEYWORD_SEARCH_INSTRUCTIONS = (
     "只有能指出已有候选的具体实物冲突或缺失的品名时，才进行一次针对该缺口的补查；"
     "不要把更多搜索次数当成更高可信度。后续 candidates 只展示新增类目，"
     "repeated_candidate_ids 引用之前候选，仍可选择它们。"
-    "truncated=true 仅表示本批缓存还有未展示的新候选；必要时原 keywords 可继续取后续候选。"
-    "query_candidate_counts 是每词排序返回量（上限 8），不表示完整类目库覆盖率。"
+    "结果不按条数裁剪；超过回执字节预算时 has_more=true，保持全部搜索参数不变并以 next_offset 续页。"
+    "total_candidate_count/returned_candidate_count/remaining_candidate_count 分别是去重命中总量、本页交付量、后续页数量。"
+    "query_candidate_counts 是每词完整取回数量；本地树搜索覆盖该词全部命中，远端预测仅代表接口给出的候选。"
     "无可靠匹配时 abstain，不需要搜满关键词或调用次数。"
 )
 
@@ -147,7 +149,7 @@ CATEGORY_MATCH_AGENT_PROFILE = AiAgentExecutionProfile(
     # 总 deadline 仍约束整个检索过程。
     max_model_requests=12,
     max_tool_calls=8,
-    max_tool_output_bytes=128 * 1024,
+    max_tool_output_bytes=CATEGORY_SEARCH_MAX_OUTPUT_BYTES,
     # 格式纠正与更换候选后的完整路径复核共享原生输出重试额度。
     retries=4,
     result_version=CATEGORY_MATCH_RESULT_VERSION,

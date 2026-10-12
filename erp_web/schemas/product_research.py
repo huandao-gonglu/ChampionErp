@@ -19,6 +19,33 @@ class SorftimeQuotaReceipt(TypedDict):
     request_left: float | None
 
 
+class ProductResearchKeywordRequest(TypedDict):
+    market_id: str
+    keyword: str
+    refresh: bool
+
+
+class ProductResearchKeyword(TypedDict):
+    keyword: str
+    chinese_name: str
+    search_volume: float | None
+    rank: float | None
+    rank_change: float | None
+    data_updated_at: str
+
+
+class ProductResearchKeywordResponse(TypedDict):
+    ok: bool
+    error: str
+    market_id: str
+    keyword: str
+    items: list[ProductResearchKeyword]
+    cached: bool
+    fetched_at: str
+    expires_at: str
+    quota_receipts: list[SorftimeQuotaReceipt]
+
+
 class ProductResearchSupplier(TypedDict):
     product_id: str
     title: str
@@ -160,6 +187,9 @@ class ProductResearchRun(TypedDict, total=False):
 
 
 __all__ = [
+    "ProductResearchKeywordRequest",
+    "ProductResearchKeyword",
+    "ProductResearchKeywordResponse",
     "SorftimeQuotaReceipt",
     "ProductResearchSupplier",
     "ProductResearchSourcingQuery",

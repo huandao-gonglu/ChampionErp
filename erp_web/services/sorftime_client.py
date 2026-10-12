@@ -15,6 +15,7 @@ from erp_web.services.external_request_manager import managed_urlopen
 
 
 ENDPOINT_COSTS = {
+    "KeywordQuery": 5,
     "CoinQuery": 1,
     "ProductSearchFromName": 2,
     "ProductSearchFromImage": 2,

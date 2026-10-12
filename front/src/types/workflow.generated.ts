@@ -569,6 +569,33 @@ export interface BackendSorftimeQuotaReceipt {
   request_left: number | null
 }
 
+export interface BackendProductResearchKeywordRequest {
+  market_id: string
+  keyword: string
+  refresh: boolean
+}
+
+export interface BackendProductResearchKeyword {
+  keyword: string
+  chinese_name: string
+  search_volume: number | null
+  rank: number | null
+  rank_change: number | null
+  data_updated_at: string
+}
+
+export interface BackendProductResearchKeywordResponse {
+  ok: boolean
+  error: string
+  market_id: string
+  keyword: string
+  items: Array<BackendProductResearchKeyword>
+  cached: boolean
+  fetched_at: string
+  expires_at: string
+  quota_receipts: Array<BackendSorftimeQuotaReceipt>
+}
+
 export interface BackendProductResearchSupplier {
   product_id: string
   title: string

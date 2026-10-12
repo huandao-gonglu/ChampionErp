@@ -153,7 +153,7 @@ def _candidates(
     *,
     platform: str,
     site: str,
-    limit: int,
+    limit: int | None,
 ) -> list[CategoryCandidate]:
     normalized: list[CategoryCandidate] = []
     for index, row in enumerate(rows if isinstance(rows, list) else []):
@@ -167,7 +167,7 @@ def _candidates(
         )
         if candidate is not None:
             normalized.append(candidate)
-        if len(normalized) >= limit:
+        if limit is not None and len(normalized) >= limit:
             break
     return normalized
 
@@ -177,7 +177,7 @@ class OzonCategorySearcher:
     shares_corpus = True
     provider: Any
     site: str
-    limit: int = 8
+    limit: int | None = None
     timeout_seconds: float | None = 8
     deadline_at: float | None = None
 
@@ -328,7 +328,7 @@ class YandexCategorySearcher:
 
     provider: Any
     site: str
-    limit: int = 8
+    limit: int | None = None
     timeout_seconds: float | None = 8
     deadline_at: float | None = None
 
@@ -387,7 +387,7 @@ class YandexCategorySearcher:
 class MercadoLibreCategorySearcher:
     provider: Any
     site: str
-    limit: int = 8
+    limit: int | None = None
     timeout_seconds: float | None = 8
     deadline_at: float | None = None
 
@@ -438,7 +438,7 @@ class MercadoLibreCategorySearcher:
 
 
 CategorySearcherFactory = Callable[
-    [CategoryProvider, str, int, float | None, float | None],
+    [CategoryProvider, str, int | None, float | None, float | None],
     CategorySearcher,
 ]
 
@@ -446,7 +446,7 @@ CategorySearcherFactory = Callable[
 def _ozon_searcher(
     provider: CategoryProvider,
     site: str,
-    limit: int,
+    limit: int | None,
     timeout_seconds: float | None,
     deadline_at: float | None,
 ) -> CategorySearcher:
@@ -456,7 +456,7 @@ def _ozon_searcher(
 def _mercadolibre_searcher(
     provider: CategoryProvider,
     site: str,
-    limit: int,
+    limit: int | None,
     timeout_seconds: float | None,
     deadline_at: float | None,
 ) -> CategorySearcher:
@@ -472,7 +472,7 @@ def _mercadolibre_searcher(
 def _yandex_searcher(
     provider: CategoryProvider,
     site: str,
-    limit: int,
+    limit: int | None,
     timeout_seconds: float | None,
     deadline_at: float | None,
 ) -> CategorySearcher:
@@ -490,7 +490,7 @@ def create_category_searcher(
     platform: str,
     *,
     site: str = "",
-    limit: int = 8,
+    limit: int | None = None,
     timeout_seconds: float | None = 8,
     deadline_at: float | None = None,
     provider_resolver: Callable[[str], CategoryProvider] = require_category_provider,
@@ -506,7 +506,7 @@ def create_category_searcher(
         )
     provider = provider_resolver(key)
     resolved_site = provider.resolve_site(site)
-    safe_limit = max(1, min(8, int(limit)))
+    safe_limit = None if limit is None else max(1, int(limit))
     safe_timeout = (
         None
         if timeout_seconds is None

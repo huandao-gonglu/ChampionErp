@@ -695,3 +695,13 @@ def test_ozon_category_cache_clear_only_removes_managed_cache_files(
     assert removed == 1
     assert unrelated.read_text(encoding="utf-8") == "保留"
     assert not list(cache_directory.glob("*.json.gz"))
+
+def test_unlimited_local_search_retains_all_ozon_candidates_and_binding_ids(monkeypatch):
+    records = [{"category_id": str(index), "type_id": str(index), "description_category_id": "10000",
+                "name_original": "Органайзер", "category_path": "Кухня / Органайзер"} for index in range(100)]
+    monkeypatch.setattr(ozon_category_api, "load_ozon_category_corpus",
+                        lambda **kwargs: (records, {"cache_source": "persistent_cache"}))
+    results = category_store.search_categories_live("ozon", "органайзер", limit=None)
+    assert len(results) == 100
+    assert all(row["type_id"] == row["category_id"] and row["description_category_id"] == "10000" for row in results)
+    assert len(category_store.search_categories_live("ozon", "органайзер", limit=5)) == 5

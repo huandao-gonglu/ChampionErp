@@ -121,10 +121,10 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         digest = hashlib.sha256(scope_identity.encode("utf-8")).hexdigest()
         return token, f"sha256:{digest}"
 
-    def _discovery_url(self, site: str, query: str, limit: int) -> str:
+    def _discovery_url(self, site: str, query: str, limit: int | None) -> str:
         site = str(site or "MLM").strip().upper()
         quoted_query = urllib.parse.quote(query)
-        safe_limit = max(1, min(8, int(limit or 5)))
+        safe_limit = max(1, min(8, int(limit or 8)))
         if site == "CBT":
             return f"https://api.mercadolibre.com/marketplace/domain_discovery/search?q={quoted_query}&limit={safe_limit}"
         return f"https://api.mercadolibre.com/sites/{urllib.parse.quote(site)}/domain_discovery/search?q={quoted_query}&limit={safe_limit}"
@@ -408,7 +408,7 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         query: str,
         *,
         site: str = "",
-        limit: int = 8,
+        limit: int | None = 8,
         timeout_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
         query = str(query or "").strip()
@@ -603,7 +603,7 @@ class OzonCategoryProvider(CategoryProvider):
         query: str,
         *,
         site: str = "",
-        limit: int = 5,
+        limit: int | None = 5,
         timeout_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
         del site
@@ -851,7 +851,7 @@ class YandexCategoryProvider(CategoryProvider):
         query: str,
         *,
         site: str = "",
-        limit: int = 5,
+        limit: int | None = 5,
         timeout_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
         del site

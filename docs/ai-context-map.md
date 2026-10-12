@@ -633,7 +633,7 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
 
 - `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。绑定对象实现
   `CategoryNavigator` 时只暴露 `browse_categories(parent_ids)`；否则只暴露
-  `search_categories`（v4）。先在 `product_identity` 摘出原始规格中的实物结构，再填写固定语言的
+  `search_categories`（v5）。先在 `product_identity` 摘出原始规格中的实物结构，再填写固定语言的
   `product_type / alternative_names / keywords`，三组词在一次工具调用中合并查询。
   不额外启动规划 Agent；工具 schema 与执行器均没有 platform/site 参数。
 - `erp_web/schemas/category_search_language.py`：根据注册平台/站点确定唯一检索语言，独立于商品
@@ -643,11 +643,16 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   检查宣称为完整语言识别。
 - `erp_web/runtime_units/category_keyword_search.py`：关键词批量 I/O owner；每个匹配任务内
   去重并复用成功查询，最多 3 个并发查询，沿用入口绑定的 provider 超时和任务 deadline。
-  每词最多 8 个候选，交错合并后最多返回 24 个新增候选，保留 `matched_keywords`、逐词错误和
-  `truncated`。后续查询不重复展开已见类目的全文，改用 `repeated_candidate_ids` 引用历史；
-  已见类目仍可最终选择，新增候选优先使用返回名额。`truncated` 与 `remaining_candidate_count`
-  只表示缓存中尚有未展示的新候选；`query_candidate_counts` 是每词排序返回量，不是全库覆盖率。
-  仅将实际返回模型的候选登记到账本；缩小关键词组可从缓存取回被裁剪的候选。
+  Yandex/Ozon 本地树搜索取回每词全部命中，交错合并并按类目 ID 去重，不再按 8/24/50 条裁剪自动检索。
+  人工查询显式传入的 `limit` 继续有效；美客多远端预测仍遵守平台接口限制，数量不代表全库覆盖。
+  focused 工具仅返回 ID、名称、完整路径和命中词；已见类目用 `repeated_candidate_ids` 引用，仍可最终选择。
+  单次回执沿用 Execution Profile 的 128 KiB 预算，仅超过字节预算时分页；这是工具输出边界，不是对模型剩余上下文的估算。
+  `total_candidate_count / returned_candidate_count / remaining_candidate_count` 分别为本组去重命中总量、
+  本页交付量（含历史引用）与后续页数量；`query_candidate_counts` 统计每词完整取回数。
+  `has_more / next_offset` 明确续页，保持全部搜索参数不变并传入 `offset`；`truncated` 与 `has_more` 同义。
+  focused 续页复用本次查询缓存；只有实际交付的候选登记到账本，缓存中的未交付类目不可选择。
+  主对话 `category_search` 同样默认完整检索并按字节分页，支持显式 `limit / offset`，保留 Ozon ID 配对且计入预算；
+  该通用只读工具每次重新查询，跨调用分页依赖平台目录和查询结果保持稳定。
   64 个词仅作为异常入参保护，不设置总关键词配额；工具调用次数仍由 Pydantic AI 原生预算管理。
 - `erp_web/facades/category_match_facade.py`：`category_match` 共享业务阶段；
   首轮发送裁剪后的双语商品事实；绑定导航器时发送真实顶层节点并允许最多四次树导航，
@@ -1047,6 +1052,7 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 - `services/product_research_service.py`：调研 Job 与 SQLite 运行记录；HTTP 和主 Agent Deferred 调用均启动异步任务，状态轮询不调用供应商。历史候选继续可读。
 - `services/product_research_methods.py`：Amazon US 关键词查询一页，返回 ASIN、美元售价、评分数和 Listing 级预估月销量；不生成热度/利润评分，不把缺失指标改成零。
 - `services/sorftime_client.py`：固定开放 API 地址、BasicAuth 授权，经统一外发管理器单次发送；不自动重试、翻页或扩词。以 RequestConsumed/RequestLeft 保存实际额度回执，网络错误不泄漏授权或上游原文。
+- `POST /api/v1/product-research/keywords/search` 经上述 route/facade 调用 `services/product_research_keywords.py`，只在用户点击时查询 Amazon US 相关热搜词第一页（最多 100 条）。`stores/research_keyword_store.py` 在独立 `data/research-keywords.sqlite3` 保存按凭据及查询条件隔离的 24 小时缓存，并通过短事务占位阻止并发重复扣费；网络请求不持有事务。显式重新获取绕过缓存，失败不自动重试，缓存命中不复述旧回执为本次扣量。`ProductResearchKeywords.vue` 只在本地筛选、排序、翻批和回填关键词，不自动查询商品。该入口为界面专用，不新增 Agent 工具。
 - `services/product_research_sourcing.py`：图片/中文关键词查询 1688，结果与候选一起持久化；相同查询复用结果。确认接口只接受该候选已查到的货源编号，查详情和 SKU 后由 `ProductStore.import_research_product` 幂等入库。网络查询在商品锁外完成，重复入库不覆盖人工修改。
 - `schemas/product_research.py`：调研数据形状；`schemas/collect_capabilities.py`：主 Agent 的关键词参数。独立 `research.web_search` AI 模型绑定和提示词已退役。
 - Amazon Price 为分、1688 Price 为元；包装原始字段保留在选品证据中，单位未经核实不得写入核价字段。没有有效 SKU 时停止入库，找货结果不代表已确认同款。

@@ -64,7 +64,14 @@ def handle_import_supplier(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_search_keywords(handler: JsonRequestHandler) -> None:
+    result, status = product_research_facade.search_keywords_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
 POST_HANDLERS: dict[str, PostHandler] = {
+    "/api/v1/product-research/keywords/search": handle_search_keywords,
     "/api/v1/product-research/suppliers/search": handle_search_suppliers,
     "/api/v1/product-research/suppliers/import": handle_import_supplier,
     "/api/v1/product-research/hot-products/search": handle_create_hot_product_run,

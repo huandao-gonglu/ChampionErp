@@ -261,7 +261,7 @@ def search_categories_live(
     platform: str,
     query: str,
     site: str = "",
-    limit: int = 5,
+    limit: int | None = 5,
     *,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:

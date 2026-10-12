@@ -3,7 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.context import get_context
-from erp_web.services import config_service, product_research_service, product_research_sourcing
+from erp_web.services import (
+    config_service,
+    product_research_keywords,
+    product_research_service,
+    product_research_sourcing,
+)
+from erp_web.stores.research_keyword_store import ResearchKeywordStore
 
 from erp_web.product_research_config import normalize_product_research_config
 from erp_web.schemas.api import ApiResponse
@@ -187,6 +193,16 @@ def search_suppliers_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return {"ok": False, "error": str(exc)}, 400
 
 
+def search_keywords_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    try:
+        context = get_context()
+        config = context.config.load_app_config().get("product_research", {})
+        store = ResearchKeywordStore(context.paths.data_dir / "research-keywords.sqlite3")
+        return product_research_keywords.search_keywords(body, config, store), 200
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}, 400
+
+
 def import_supplier_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
         return product_research_sourcing.import_supplier(body), 200
@@ -195,6 +211,7 @@ def import_supplier_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 __all__ = [
+    "search_keywords_payload",
     "search_suppliers_payload",
     "import_supplier_payload",
     "create_hot_product_run_payload",

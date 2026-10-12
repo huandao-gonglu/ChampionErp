@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+import json
 from threading import Lock
 from typing import Any
 
@@ -12,9 +13,8 @@ from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category_search_language import validate_category_keywords
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category import (
-    CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
     CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
-    CATEGORY_SEARCH_MAX_CANDIDATES,
+    CATEGORY_SEARCH_MAX_OUTPUT_BYTES,
     CategoryCandidate,
     CategoryCandidateLedger,
     CategoryKeywordSearchError,
@@ -32,13 +32,18 @@ class CategoryKeywordBatchSearch:
         searcher: CategorySearcher,
         ledger: CategoryCandidateLedger,
         search_language: str,
-        limit: int = CATEGORY_SEARCH_MAX_CANDIDATES,
+        limit: int | None = None,
+        max_output_bytes: int = CATEGORY_SEARCH_MAX_OUTPUT_BYTES,
+        include_binding_ids: bool = False,
     ) -> None:
         self.search_language = search_language
         self.searcher = searcher
         self.ledger = ledger
-        self.limit = max(1, min(CATEGORY_SEARCH_MAX_CANDIDATES, limit))
+        self.limit = None if limit is None else max(1, limit)
+        self.max_output_bytes = max_output_bytes
+        self.include_binding_ids = include_binding_ids
         self._cache: dict[str, CategorySearchResult] = {}
+        self._page_results: dict[tuple[str, ...], dict[str, CategorySearchResult | Exception]] = {}
         self._lock = Lock()
 
     def validate_arguments(self, arguments: dict[str, Any]) -> None:
@@ -56,16 +61,19 @@ class CategoryKeywordBatchSearch:
             raise TimeoutError("类目批量查询等待超时")
         try:
             context.bounded_timeout_seconds()
-            return dict(self._search(arguments["keywords"], context))
+            return dict(self._search(arguments["keywords"], context, offset=arguments.get("offset", 0)))
         finally:
             self._lock.release()
 
-    def _search(self, raw_keywords: list[str], context: AiExecutionContext) -> CategoryKeywordSearchResult:
+    def _search(self, raw_keywords: list[str], context: AiExecutionContext, *, offset: int = 0) -> CategoryKeywordSearchResult:
         keywords = list(dict.fromkeys(" ".join(word.split()).casefold() for word in raw_keywords))
         keywords = [word for word in keywords if word]
         if not keywords:
             raise AiToolExecutionError("CATEGORY_SEARCH_KEYWORDS_EMPTY", "请提供非空的商品关键词列表")
-        pending = [word for word in keywords if word not in self._cache]
+        # 续页固定首轮的成功和失败集合，避免某个失败词恢复后改变排序、跳过候选。
+        snapshot = self._page_results.get(tuple(keywords)) if offset else None
+        results: dict[str, CategorySearchResult | Exception] = dict(snapshot if snapshot is not None else self._cache)
+        pending = [word for word in keywords if word not in results]
 
         def search(keyword: str) -> CategorySearchResult | Exception:
             try:
@@ -74,7 +82,6 @@ class CategoryKeywordBatchSearch:
             except Exception as exc:
                 return exc
 
-        results: dict[str, CategorySearchResult | Exception] = dict(self._cache)
         if pending:
             # 共享语料的平台先执行一次准备，后续关键词复用本次成功或失败。
             blocked = None
@@ -95,6 +102,8 @@ class CategoryKeywordBatchSearch:
                         else:
                             self._cache[keyword] = outcome
 
+        self._page_results[tuple(keywords)] = {word: results[word] for word in keywords}
+
         errors: list[CategoryKeywordSearchError] = []
         successes: list[CategorySearchResult] = []
         for keyword in keywords:
@@ -111,12 +120,12 @@ class CategoryKeywordBatchSearch:
                 successes.append({
                     "keyword": keyword,
                     "source": outcome["source"],
-                    "candidates": outcome["candidates"][:CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD],
+                    "candidates": outcome["candidates"],
                 })
 
         merged: dict[str, CategoryCandidate] = {}
-        # 轮流取各词的同一排名，避免第一个词占满全部返回名额。
-        for rank in range(CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD):
+        # 交错合并完整命中集合；只有序列化大小超过预算时才分页。
+        for rank in range(max((len(result["candidates"]) for result in successes), default=0)):
             for result in successes:
                 rows = result["candidates"]
                 if rank >= len(rows):
@@ -129,40 +138,72 @@ class CategoryKeywordBatchSearch:
                 if result["keyword"] not in candidate["matched_keywords"]:
                     candidate["matched_keywords"].append(result["keyword"])
 
-        new_candidates: list[CategoryCandidate] = []
-        repeated_ids: list[str] = []
-        for category_id, candidate in merged.items():
-            if self.ledger.get(category_id) is None:
-                new_candidates.append(candidate)
+        if offset < 0 or offset > len(merged):
+            raise AiToolExecutionError("CATEGORY_SEARCH_OFFSET_INVALID", "分页位置超出本组关键词的候选范围，请使用相同关键词与返回的 next_offset。")
+        output: CategoryKeywordSearchResult = {
+            "keywords": keywords,
+            "candidates": [],
+            "errors": errors,
+            "repeated_candidate_ids": [],
+            "truncated": False,
+            "has_more": False,
+            "next_offset": None,
+            "total_candidate_count": len(merged),
+            "returned_candidate_count": 0,
+            "remaining_candidate_count": len(merged) - offset,
+            "query_candidate_counts": {
+                result["keyword"]: len({row["category_id"] for row in result["candidates"] if row.get("category_id")})
+                for result in successes
+            },
+            "search_language": self.search_language,
+        }
+        # 为分页计数预留足够空间；大小计算与 Tool Runtime 的 UTF-8 JSON 编码一致。
+        used_bytes = self._json_size(output) + 128
+        page_count = 0
+        for category_id, row in list(merged.items())[offset:]:
+            context.bounded_timeout_seconds()
+            repeated = self.ledger.get(category_id) is not None
+            candidate = {
+                "category_id": category_id,
+                "name": str(row.get("name") or ""),
+                "path_segments": list(row.get("path_segments") or []),
+                "matched_keywords": row["matched_keywords"],
+            }
+            if self.include_binding_ids:
+                candidate.update({key: row[key] for key in ("description_category_id", "type_id") if key in row})
+            item = category_id if repeated else candidate
+            item_bytes = self._json_size(item) + 1
+            if used_bytes + item_bytes > self.max_output_bytes or (self.limit is not None and page_count >= self.limit):
+                break
+            used_bytes += item_bytes
+            if repeated:
+                output["repeated_candidate_ids"].append(category_id)
             else:
-                repeated_ids.append(category_id)
-        visible = new_candidates[:self.limit]
-        visible_ids = {row["category_id"] for row in visible}
-        known_ids = visible_ids | set(repeated_ids)
+                output["candidates"].append(candidate)
+            page_count += 1
+        if used_bytes > self.max_output_bytes or (page_count == 0 and offset < len(merged)):
+            raise AiToolExecutionError("CATEGORY_SEARCH_PAGE_TOO_LARGE", "单个类目或关键词统计超过工具输出预算，请缩小关键词组。")
+        end = offset + page_count
+        has_more = end < len(merged)
+        output.update(
+            returned_candidate_count=page_count,
+            remaining_candidate_count=len(merged) - end,
+            has_more=has_more,
+            truncated=has_more,
+            next_offset=end if has_more else None,
+        )
+        known_ids = {row["category_id"] for row in output["candidates"]} | set(output["repeated_candidate_ids"])
         for result in successes:
-            # 只有模型实际看到的 ID 才允许被最终选择；缓存保留全量，方便缩小词组后查询。
+            # 只有实际交付的候选可选择；缓存保留完整结果，续页不重发平台查询。
             self.ledger.add_result({
                 **result,
                 "candidates": [row for row in result["candidates"] if row["category_id"] in known_ids],
             })
-        return {
-            "keywords": keywords,
-            "candidates": [
-                {
-                    "category_id": str(row["category_id"])[:160],
-                    "name": str(row.get("name") or "")[:500],
-                    "path_segments": [str(segment)[:500] for segment in (row.get("path_segments") or [])[:20]],
-                    "matched_keywords": row["matched_keywords"],
-                }
-                for row in visible
-            ],
-            "errors": errors,
-            "repeated_candidate_ids": repeated_ids,
-            "truncated": len(new_candidates) > len(visible),
-            "remaining_candidate_count": len(new_candidates) - len(visible),
-            "query_candidate_counts": {result["keyword"]: len(result["candidates"]) for result in successes},
-            "search_language": self.search_language,
-        }
+        return output
+
+    @staticmethod
+    def _json_size(value: Any) -> int:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
 
 
 __all__ = ["CategoryKeywordBatchSearch"]

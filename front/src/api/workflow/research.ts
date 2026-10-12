@@ -1,5 +1,7 @@
 import { apiClient } from '@/api/client'
 import type {
+  BackendProductResearchKeywordRequest,
+  BackendProductResearchKeywordResponse,
   BackendProductResearchSupplierSearchResponse,
   BackendProductResearchSupplierImportResponse,
   HotProductCandidate,
@@ -21,6 +23,16 @@ import {
   getString,
   wireStringList,
 } from './normalizers'
+
+export async function searchProductResearchKeywords(
+  payload: BackendProductResearchKeywordRequest,
+): Promise<BackendProductResearchKeywordResponse> {
+  const response = await apiClient.post<BackendProductResearchKeywordResponse>(
+    '/api/v1/product-research/keywords/search', payload,
+  )
+  // 业务失败仍携带额度回执，交给组件同时展示错误和实际扣量。
+  return response.data
+}
 
 function normalizeHotProductCandidate(value: unknown): HotProductCandidate {
   const record = asRecord(value)

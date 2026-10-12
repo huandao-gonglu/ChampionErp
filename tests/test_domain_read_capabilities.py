@@ -502,3 +502,19 @@ def test_store_auth_checklist_and_check() -> None:
     )
     assert failed.ok is False
     assert "token 已过期" in failed.message
+
+def test_category_query_returns_full_results_by_default_and_supports_explicit_pages() -> None:
+    def searcher(platform, *, query, limit, **kwargs):
+        assert limit is None
+        return [{"category_id": str(index), "name": "类目", "category_path": "厨房 / 收纳"} for index in range(100)]
+
+    scope = _category_scope(searcher=searcher)
+    whole = category_search(CategorySearchRequest(product_type="fan", keywords=("fan",)), scope=scope, execution=_execution())
+    assert len(whole.results) == whole.total_candidate_count == 100
+    assert not whole.has_more
+    assert whole.query_candidate_counts == {"fan": 100}
+    first = category_search(CategorySearchRequest(product_type="fan", keywords=("fan",), limit=60), scope=scope, execution=_execution())
+    second = category_search(CategorySearchRequest(product_type="fan", keywords=("fan",), limit=60, offset=first.next_offset), scope=scope, execution=_execution())
+    assert first.has_more and first.next_offset == 60 and first.remaining_candidate_count == 40
+    assert len(second.results) == 40 and not second.has_more and second.next_offset is None
+    assert [row["category_id"] for row in (*first.results, *second.results)] == [str(index) for index in range(100)]
