@@ -191,3 +191,29 @@ describe('本单报单仓库与服务', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
   })
 })
+
+it('多个实际运单必须确认合单服务，取消所选服务会阻止提交', async () => {
+  const value = detail()
+  value.parcels = ['SF1', 'YT2'].map((tracking_number, index) => ({ id: String(index), line_key: 'line', purchase_record_id: 'record', carrier: '快递', tracking_number, quantity: 1 }))
+  mount(FulfillmentPlanDialog, { props: { value, order: order() }, attachTo: document.body })
+  await choose()
+  expect(dom().text()).toContain('2 个国内包裹')
+  const save = dom().get('button[form="fulfillment-plan"]')
+  expect(save.attributes('disabled')).toBeDefined()
+  const select = dom().findAll('select').at(-1)!
+  await select.setValue('341')
+  expect(save.attributes('disabled')).toBeUndefined()
+  await dom().get('form').trigger('submit'); await flushPromises()
+  expect(fulfillmentCommand).toHaveBeenCalledWith('plan', 'order-1', 3, expect.objectContaining({ plan: expect.objectContaining({ consolidation_service_id: 341, service_ids: [341] }) }))
+  await dom().findAll('input[type="radio"]')[0]!.setValue(true)
+  expect(save.attributes('disabled')).toBeDefined()
+})
+
+it('同一运单多个商品不提示合单', async () => {
+  const value = detail()
+  value.parcels = [1, 2].map(index => ({ id: String(index), line_key: String(index), purchase_record_id: String(index), carrier: '圆通', tracking_number: 'YT1', quantity: 1 }))
+  mount(FulfillmentPlanDialog, { props: { value, order: order() }, attachTo: document.body })
+  await choose()
+  expect(dom().text()).not.toContain('确认合单服务')
+  expect(dom().get('button[form="fulfillment-plan"]').attributes('disabled')).toBeUndefined()
+})

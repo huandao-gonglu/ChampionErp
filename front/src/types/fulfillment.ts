@@ -17,6 +17,7 @@ export interface DeliverySource {
   label_url: string
 }
 export interface FulfillmentPlan {
+  consolidation_service_id?: number | null
   section_id: number
   warehouse_id: number
   service_ids: number[]
@@ -63,6 +64,12 @@ export interface BusSettings {
 }
 export type FulfillmentStatus = 'NEW' | 'FULFILLMENT_CREATED' | 'WAITING_DOMESTIC_SHIPMENT' | 'WAREHOUSE_RECEIVED' | 'PACKING' | 'SHIPPED' | 'COMPLETED' | 'EXCEPTION' | 'CANCELLED'
 export interface FulfillmentSummary {
+  last_synced_at?: string
+  section_name?: string
+  warehouse_name?: string
+  registered_packages?: { carrier: string; tracking_number: string }[]
+  selected_services?: BusService[]
+  consolidation_service_id?: number | null
   has_domestic_waybill?: boolean
   busy: boolean
   operation: string

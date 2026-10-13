@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchOrderDetail, procurementCommand } from '@/api/orders'
 import type { OrderDetail, OrderSnapshot, ProcurementLine, PurchaseRecord } from '@/types/orders'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import OrderSupplementDialog from './OrderSupplementDialog.vue'
 import OrderSourceDialog from './OrderSourceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
 import OrderThumbnail from './OrderThumbnail.vue'
@@ -21,6 +22,7 @@ const error = ref('')
 const notice = ref('')
 const busy = ref(false)
 const trackingBusy = ref(false)
+const supplementOpen = ref(false)
 const sourceEditor = ref(false)
 const alibabaPurchaseOpen = ref(false)
 const cancelledRecord = ref<PurchaseRecord | null>(null)
@@ -32,7 +34,7 @@ const editable = computed(
     !selection.value.reason.includes('缺少唯一身份')
 )
 watch(
-  () => busy.value || trackingBusy.value || alibabaPurchaseOpen.value || sourceEditor.value || !!cancelledRecord.value,
+  () => supplementOpen.value || busy.value || trackingBusy.value || alibabaPurchaseOpen.value || sourceEditor.value || !!cancelledRecord.value,
   (value) => emit('lock', value)
 )
 onBeforeUnmount(() => emit('lock', false))
@@ -140,11 +142,13 @@ async function copySpecification() {
           记录采购
         </button>
       </div>
+      <button v-if="order.state === 'pending_shipment' && selection.status === 'confirmed' && item.records.some(r => r.status === 'purchased')" class="order-button mt-3" :disabled="busy" @click="supplementOpen = true">登记补单</button>
       <p v-if="error" class="order-error" role="alert">{{ error }}</p>
       <p v-if="notice" class="order-success" role="status">{{ notice }}</p>
     </section>
     <OrderPurchaseRecords v-if="item.records.length" :order-id="order.id" :records="item.records" :busy="busy" @cancel="cancelledRecord = $event" @updated="emit('updated', $event)" @lock="trackingBusy = $event" />
     <AlibabaSelfPurchaseDialog v-if="alibabaPurchaseOpen" :order-id="order.id" :line-key="selection.line_key" :title="item.line.title" @close="alibabaPurchaseOpen = false" @updated="refreshPurchase" />
+    <OrderSupplementDialog v-if="supplementOpen" :item="item" :order="order" @close="supplementOpen = false" @updated="emit('updated', $event)" />
     <OrderSourceDialog
       v-if="sourceEditor"
       :item="item"

@@ -121,11 +121,25 @@ class FulfillmentStore:
         args = tuple(value for key in keys for value in key)
         with self.orders.connect() as conn:
             rows = conn.execute(f"SELECT * FROM fulfillments WHERE {where}", args).fetchall()
-        return {
-            keys[(row["platform"], row["account_id"], row["platform_order_id"])]:
-            FulfillmentSummary.model_validate(self._value(row)).model_dump(mode="json")
-            for row in rows
-        }
+        catalog = self.setting("catalog", {})
+        summaries = {}
+        for row in rows:
+            value = self._value(row)
+            plan = value.get("plan") or {}
+            # 账号切换后不能把新账号目录中的同号仓库套用到旧履约单。
+            sections = catalog.get("sections", []) if catalog.get("identity") == value.get("bus_identity") else []
+            section = next((s for s in sections if s["section_id"] == plan.get("section_id")), {})
+            warehouse = next((w for w in section.get("storehouse_list", []) if w["id"] == plan.get("warehouse_id")), {})
+            packages = {}
+            for parcel in value.get("parcels", []):
+                number = str(parcel.get("tracking_number") or "").strip()
+                if number:
+                    packages.setdefault(number.upper(), {"carrier": parcel.get("carrier", ""), "tracking_number": number})
+            summary = {**value, "section_name": section.get("section_name", ""), "warehouse_name": warehouse.get("name", ""),
+                       "registered_packages": list(packages.values()), "consolidation_service_id": plan.get("consolidation_service_id"),
+                       "selected_services": [s for s in value.get("selected_services", []) if s["id"] in plan.get("service_ids", [])]}
+            summaries[keys[(row["platform"], row["account_id"], row["platform_order_id"])]] = FulfillmentSummary.model_validate(summary).model_dump(mode="json")
+        return summaries
 
     def change(self, order_id, revision, changes, *, allow_busy=False, guard=None):
         with self.orders.connect() as conn:

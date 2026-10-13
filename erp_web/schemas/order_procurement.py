@@ -91,6 +91,7 @@ class SourceSelection(BaseModel):
 
 
 class PurchaseRecord(BaseModel):
+    supplemental: bool = False
     receiving_warehouse: ReceivingWarehouse | None = None
     id: str
     line_key: str

@@ -1168,6 +1168,10 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 
 ### 订单采购
 
+- SKU 的「登记补单」经 `POST /api/orders/supplement-lookup`、`/supplement-record` → `order_procurement_facade` → `services/order_supplement_service.py` 读取用户已付款的 1688 采购单。只读查询使用现有买家 API；商品和数量指纹在确认保存时重新核验，不从标题猜规格。新来源只冻结在补单记录，不修改原来源或原采购；补单允许超过累计已采购数量，但单笔不得超过销售 SKU 数量，同采购单/SKU 不重复登记。订单归属、来源版本、采购占位、收货仓版本及报单占位在写入事务内复核。
+- 补单入口在能力覆盖清单中归为 `internal_only`，由用户在界面核对跨供应商的销售规格与收货仓；不新增 Agent 工具。补单不处理退款、不取消远端订单。保存后立即沿用采购同步，后续随订单同步读取状态和运单；无独立后台轮询。旧记录缺少 `supplemental` 时按普通采购读取。报单须包含有效补单对应的全部包裹，旧采购是否分配包裹由实际发货决定；数量冲突暂停报单，人工确认包裹后解除。
+- 报单按去重后的国内运单识别多包裹。`FulfillmentPlan.consolidation_service_id` 由用户从已选择的真实仓库服务中明确指定；不猜服务 ID、名称或费用。多包裹缺少确认时手动和自动报单均暂停；提交前继续实时验证服务可用性。已提交的无合单服务报单不自动追加第二个运单。
+
 - 1688 采购刷新从订单详情按采购记录的商品 ID 与 SKU/specId 唯一匹配图片，图片 URL 和规格随采购进度快照持久化，由 `OrderPurchaseTracking.vue` 展示。图片缺失或匹配不唯一时显示原因；旧快照缺少图片字段仍可读取，下次同步补齐。物流查询失败不丢弃本次成功读取的图片。
 
 - `facades/order_procurement_facade.py` 负责装配；`services/order_procurement_service.py` 负责唯一来源匹配、人工确认和详情契约。
@@ -1192,7 +1196,7 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 - POST `/api/orders/purchase-sync` → `order_procurement_facade.sync_purchase` → `alibaba_purchase_sync_service.py`。登记成功后自动同步一次，幂等登记不重复查询；失败保留采购登记和最近成功快照。`purchase_progress_store.py` 持久化同步快照、代次与短期占位，网络不持锁，写入前重新核对有效采购、账号与代次。
 - 手动刷新任一商品时，通过 `OrderProcurementStore.related_purchase_records` 读取当前销售订单内同一采购单的有效 1688 记录，整组复用本次订单、物流及轨迹回执；不同采购单、其他销售订单和已作废记录不参与。`PurchaseProgressStore.begin_many` 在短事务内完成整组占位，任一记录忙碌或失效则整体拒绝启动；逐商品保留归属、数量、人工分配与代次校验，失败保留各自旧快照，不把运单直接复制给其他 SKU。
 - 订单状态与物流分别记录更新时间。物流接口的 `500_2` 按官方定义表示未发货，归一为空物流；其他物流失败只返回警告，仍保存成功读取的订单状态，保留旧运单及其原始更新时间，不触发包裹合并。授权变化与采购作废仍拒绝写入。
-- `OrderProcurementStore.tracking_summaries` 为当前列表与详情批量读取有效采购的本地状态摘要，排除作废记录和变更规格；不额外查询远端。`orderPresentation.ts` 在无国内运单时展示采购订单状态，有远端或人工登记运单后切换到预报准备状态，已有预报优先显示仓库进度；多笔采购保留状态差异，物流签收不等同仓库发货。
+- `OrderProcurementStore.tracking_summaries` 为当前列表与详情批量读取有效采购的本地状态摘要，排除作废记录和变更规格；不额外查询远端。摘要 `packages` 按国内运单去重，无运单的采购单保留待发货/待查询条目；使用各自最近成功的订单或物流查询时间，失败尝试不推进时间。多包裹进度不一致时，`orderPresentation.latestPackageProgress` 按最后更新时间选择状态并加“部分”修饰，不按进度远近选取。列表 `OrderProgressHint.vue` 悬浮或键盘聚焦时由 `orderProgressHint.ts` 按主状态的显式来源生成提示：1688 展示采购包裹明细，跨境巴士展示仓库状态与最后成功同步时间，平台展示平台快照，ERP 展示当前步骤与已知异常，不发起网络请求。`FulfillmentStore.summaries` 批量补充本地目录的分区/仓库名称、去重运单、所选服务和指定合单服务；目录按履约账号匹配，运单和服务在提示中标为 ERP 登记资料，不推断仓库签收或服务完成，同步时间也不当作作业发生时间。单包裹维持原有展示：无国内运单时展示采购订单状态，有远端或人工登记运单后展示预报准备状态；多包裹使用上述更新时间汇总。已有预报始终优先显示仓库进度，物流签收不等同仓库发货。
 - `alibaba_purchase_assignment.py` 用冻结商品 ID、SKU、订单子项、包裹商品数量证明归属；远端采购数量须与登记数量一致。缺失证据或同一远端 SKU 被多条采购使用时待人工分配；已证明的分批发货可逐批追加。`FulfillmentService.merge_purchase_parcels` 复用数量校验、版本和锁定边界，同运单幂等，差异不覆盖人工包裹。人工保存与确认快照在同一事务，使旧查询失效。
 - `OrderPurchaseTracking.vue` 在采购和履约页签提供统一「刷新采购进度」，从采购记录的持久快照展示订单、物流及分配状态；关闭重开仍保留，不自动轮询远端。待分配/冲突通过 `FulfillmentParcelDialog.vue` 确认，`purchaseLogistics.ts` 仅提供人工分配时的运单候选。自动预报继续遵守既有开关和完整资料校验。响应不包含联系人、地址或授权原文。
 

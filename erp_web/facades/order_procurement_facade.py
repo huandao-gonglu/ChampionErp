@@ -9,6 +9,7 @@ from erp_web.schemas.order_procurement import PurchaseRecord
 from erp_web.runtime_units.order_source_bindings import bindings_from_publish_job
 from erp_web.runtime_units.publish_confirmation import resolve_publish_store_binding
 from erp_web.services.order_procurement_service import OrderProcurementService
+from erp_web.services.order_supplement_service import OrderSupplementService
 from erp_web.stores.order_procurement_store import OrderProcurementStore
 from erp_web.stores.online_product_store import OnlineProductStore
 from erp_web.services.alibaba_purchase_query_service import query_purchase as query_alibaba_purchase
@@ -67,12 +68,16 @@ def sync_purchase(body, *, once=False, context=None):
 def command(action, body, *, context=None):
     context = context or get_context()
     service = context.order_procurement
+    supplement = OrderSupplementService(service, lambda: context.config.load_app_config().get("1688_api", {}))
+    if action == "supplement-lookup":
+        return supplement.lookup(body)
     result = {
+        "supplement-record": supplement.record,
         "select-source": service.select_source,
         "record-purchase": service.record_purchase,
         "cancel-purchase": service.cancel_purchase,
     }[action](body)
-    if action == "record-purchase":
+    if action in {"record-purchase", "supplement-record"}:
         record = next((r for line in result["lines"] for r in line["records"] if r["request_id"] == body["request_id"]), None)
         if record and supported(PurchaseRecord.model_validate(record)):
             try:

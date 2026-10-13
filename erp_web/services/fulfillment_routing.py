@@ -45,6 +45,17 @@ def validate_services(plan, services):
     selected = set(plan["service_ids"])
     if len(selected) != len(plan["service_ids"]) or not selected <= available:
         raise FulfillmentError("服务已变化或存在重复，请重新选择该仓库的服务")
+    if plan.get("consolidation_service_id") is not None and plan["consolidation_service_id"] not in selected:
+        raise FulfillmentError("请将确认的合单服务加入本单服务")
     if core and len(core & selected) != 1:
         raise FulfillmentError("请从该仓库的基础服务中选择一项")
     return [s for s in services["core_data"] + services["optional_data"] if s["id"] in selected]
+
+
+def consolidation_reason(parcels, plan):
+    """同运单承载多个 SKU 仍只算一个国内包裹；合单服务须由用户明确指定。"""
+    bills = {p['tracking_number'].strip().upper() for p in parcels if p.get('tracking_number', '').strip()}
+    if len(bills) > 1 and (not plan or not plan.get('consolidation_service_id')
+                           or plan['consolidation_service_id'] not in plan['service_ids']):
+        return f'本订单有 {len(bills)} 个国内包裹，请在报单方案中选择并确认仓库合单服务'
+    return ''

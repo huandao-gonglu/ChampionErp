@@ -2,7 +2,7 @@
 import { computed, ref, useId, watch } from 'vue'
 import { fetchBusServices } from '@/api/fulfillment'
 import type { BusSection, BusServices, FulfillmentPlan } from '@/types/fulfillment'
-const props = defineProps<{ modelValue: FulfillmentPlan; sections: BusSection[]; disabled?: boolean; sectionLocked?: boolean; compatibleWarehouseIds?: number[]; warehouseLocked?: boolean }>()
+const props = defineProps<{ modelValue: FulfillmentPlan; sections: BusSection[]; disabled?: boolean; sectionLocked?: boolean; compatibleWarehouseIds?: number[]; warehouseLocked?: boolean; parcelCount?: number }>()
 const emit = defineEmits<{ 'update:modelValue': [FulfillmentPlan]; ready: [boolean] }>()
 const serviceGroup = useId()
 const services = ref<BusServices>({ core_data: [], optional_data: [] })
@@ -15,17 +15,22 @@ function change(sectionId: number, warehouseId: number) {
   emit('update:modelValue', { section_id: sectionId, warehouse_id: warehouseId, service_ids: [] })
 }
 function toggle(id: number, checked: boolean) {
-  emit('update:modelValue', { ...props.modelValue, service_ids: checked ? [...new Set([...props.modelValue.service_ids, id])] : props.modelValue.service_ids.filter(s => s !== id) })
+  emit('update:modelValue', { ...props.modelValue, consolidation_service_id: !checked && props.modelValue.consolidation_service_id === id ? null : props.modelValue.consolidation_service_id, service_ids: checked ? [...new Set([...props.modelValue.service_ids, id])] : props.modelValue.service_ids.filter(s => s !== id) })
+}
+const selectedServices = computed(() => [...services.value.core_data, ...services.value.optional_data].filter(s => props.modelValue.service_ids.includes(s.id)))
+const consolidationValid = computed(() => (props.parcelCount || 0) < 2 || selectedServices.value.some(s => s.id === props.modelValue.consolidation_service_id))
+function chooseConsolidation(event: Event) {
+  emit('update:modelValue', { ...props.modelValue, consolidation_service_id: Number((event.target as HTMLSelectElement).value) || null })
 }
 const selectionValid = computed(() => {
   if (loading.value || error.value || !warehouses.value.some(w => w.id === props.modelValue.warehouse_id)) return false
   const core = services.value.core_data.filter(s => props.modelValue.service_ids.includes(s.id))
-  return !services.value.core_data.length || core.length === 1
+  return consolidationValid.value && (!services.value.core_data.length || core.length === 1)
 })
 watch(selectionValid, value => emit('ready', value))
 function chooseCore(id: number) {
   const core = new Set(services.value.core_data.map(s => s.id))
-  emit('update:modelValue', { ...props.modelValue, service_ids: [...props.modelValue.service_ids.filter(item => !core.has(item)), id] })
+  emit('update:modelValue', { ...props.modelValue, consolidation_service_id: core.has(props.modelValue.consolidation_service_id || 0) && props.modelValue.consolidation_service_id !== id ? null : props.modelValue.consolidation_service_id, service_ids: [...props.modelValue.service_ids.filter(item => !core.has(item)), id] })
 }
 watch([() => props.modelValue.section_id, () => props.modelValue.warehouse_id], async ([sectionId, warehouseId]) => {
   const current = ++version
@@ -63,6 +68,7 @@ watch([() => props.modelValue.section_id, () => props.modelValue.warehouse_id], 
       <option v-for="w in warehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
     </select>
   </label>
+  <p v-if="(parcelCount || 0) > 1" class="order-error" role="status">本订单有 {{ parcelCount }} 个国内包裹，请选择仓库提供的合单服务，并在下方确认。</p>
   <fieldset>
     <legend class="mb-3">增值服务</legend>
     <p v-if="loading" class="order-muted" role="status">正在读取该仓可用服务…</p>
@@ -73,4 +79,11 @@ watch([() => props.modelValue.section_id, () => props.modelValue.warehouse_id], 
     <label v-for="s in services.optional_data" :key="s.id" class="order-check mb-2"><input type="checkbox" :disabled="disabled || loading" :checked="modelValue.service_ids.includes(s.id)" @change="toggle(s.id, ($event.target as HTMLInputElement).checked)" />{{ s.name }} <span class="order-muted">¥{{ s.gold }}</span></label>
     <p v-if="!loading && !error && modelValue.warehouse_id && !services.core_data.length && !services.optional_data.length" class="order-muted">该仓未提供增值服务。</p>
   </fieldset>
+  <label v-if="(parcelCount || 0) > 1 || modelValue.consolidation_service_id">确认合单服务
+    <select class="order-input" :value="modelValue.consolidation_service_id || 0" :disabled="disabled || loading" @change="chooseConsolidation">
+      <option :value="0">从已选服务中指定合单服务</option>
+      <option v-for="s in selectedServices" :key="s.id" :value="s.id">{{ s.name }} · ¥{{ s.gold }}</option>
+    </select>
+    <span class="order-muted">请按仓库服务说明选择；没有合单服务时请先联系仓库确认。</span>
+  </label>
 </template>

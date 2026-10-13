@@ -60,7 +60,20 @@ class AlibabaPurchaseQueryResult(TypedDict):
     product_warning: NotRequired[str]
 
 
+class PurchasePackageStatus(TypedDict):
+    id: str
+    order_numbers: list[str]
+    company: str
+    tracking_number: str
+    source: Literal["order", "logistics"]
+    status: str
+    status_label: str
+    updated_at: str
+    stale: bool
+
+
 class PurchaseTrackingSummary(TypedDict):
+    packages: NotRequired[list[PurchasePackageStatus]]
     orders: list[AlibabaOrderStatus]
     unknown_count: int
     has_waybill: bool
@@ -73,3 +86,36 @@ class PurchaseProgressView(TypedDict):
     message: str
     error: str
     data: AlibabaPurchaseQueryResult | None
+
+
+class SupplementLookupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    order_id: str = Field(min_length=1, max_length=200)
+    line_key: str = Field(min_length=1, max_length=200)
+    revision: int = Field(ge=1)
+    purchase_order_number: str = Field(min_length=1, max_length=30)
+
+
+class SupplementRecordRequest(SupplementLookupRequest):
+    candidate_key: str = Field(min_length=1, max_length=64)
+    request_id: str = Field(min_length=1, max_length=100)
+    receiving_revision: int = Field(default=0, ge=0)
+    confirmed: Literal[True]
+
+
+class SupplementCandidate(TypedDict):
+    key: str
+    title: str
+    specification: str
+    offer_id: str
+    sku_id: str
+    spec_id: str
+    quantity: int
+    matched: bool
+
+
+class SupplementLookupResult(TypedDict):
+    ok: bool
+    order_number: str
+    order_status: str
+    candidates: list[SupplementCandidate]

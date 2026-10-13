@@ -4,6 +4,8 @@ import { useRoute } from 'vue-router'
 import { orderPlatformNames, ORDER_PAGE_SIZE } from '@/types/orders'
 import type { OrdersPage } from '@/types/orders'
 import OrderThumbnail from './OrderThumbnail.vue'
+import OrderProgressHint from './OrderProgressHint.vue'
+import { orderProgressHint } from './orderProgressHint'
 import {
   amountLabel,
   deadline,
@@ -17,7 +19,10 @@ const props = defineProps<{ page: OrdersPage; offset: number; now: number; error
 defineEmits<{ page: [offset: number] }>()
 const route = useRoute()
 const currentPage = computed(() => Math.floor(props.offset / ORDER_PAGE_SIZE) + 1)
-const rows = computed(() => props.page.items.map(order => ({ order, progress: orderProcessingProgress(order) })))
+const rows = computed(() => props.page.items.map(order => {
+  const progress = orderProcessingProgress(order)
+  return { order, progress, hint: orderProgressHint(order, progress) }
+}))
 const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_PAGE_SIZE)))
 </script>
 <template>
@@ -46,7 +51,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
         </thead>
         <tbody>
           <tr
-            v-for="{ order, progress } in rows"
+            v-for="{ order, progress, hint } in rows"
             :key="order.id"
             :class="{ 'order-row-active': route.query.order === order.id }"
           >
@@ -87,15 +92,17 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
               <p class="order-muted" :title="platformStatusNote(order)">来自平台同步</p>
             </td>
             <td>
-              <RouterLink
-                class="order-badge order-progress-link"
-                :data-tone="progress.tone"
-                :title="`进入${progress.target === 'fulfillment' ? '跨境履约' : '商品与采购'}：${progress.note}`"
-                :aria-label="`订单 ${order.order_id}：${progress.label}，进入${progress.target === 'fulfillment' ? '跨境履约' : '商品与采购'}`"
-                :to="{ path: '/', query: { ...route.query, tab: 'orders', order: order.id, orderTab: progress.target } }"
-              >
-                {{ progress.label }}
-              </RouterLink>
+              <OrderProgressHint v-slot="{ describedBy }" :content="hint">
+                <RouterLink
+                  class="order-badge order-progress-link"
+                  :aria-describedby="describedBy"
+                  :data-tone="progress.tone"
+                  :aria-label="`订单 ${order.order_id}：${progress.label}，进入${progress.target === 'fulfillment' ? '跨境履约' : '商品与采购'}`"
+                  :to="{ path: '/', query: { ...route.query, tab: 'orders', order: order.id, orderTab: progress.target } }"
+                >
+                  {{ progress.label }}
+                </RouterLink>
+              </OrderProgressHint>
               <p class="order-muted" :title="progress.source">{{ progress.source }}</p>
             </td>
             <td>

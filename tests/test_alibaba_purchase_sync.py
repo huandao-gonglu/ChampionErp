@@ -292,3 +292,43 @@ def test_product_image_persists_even_when_logistics_fails(setup, monkeypatch):
     assert progress(procurement.detail(body['order_id']))['data']['product'] == result['product']
     monkeypatch.setattr(client, 'query', lambda *args: (_ for _ in ()).throw(AlibabaApiError('请求失败')))
     assert progress(run())['data']['product'] == result['product']
+
+
+def test_package_summary_deduplicates_shared_waybill_and_uses_latest_snapshot(setup):
+    import json
+    procurement, _, body, _, run = setup
+    run()
+    with procurement.store.orders.connect() as conn:
+        row = conn.execute('SELECT * FROM order_purchases WHERE id=?', (body['record_id'],)).fetchone()
+        record = json.loads(row['record_json'])
+        value = json.loads(conn.execute('SELECT value FROM purchase_progress WHERE record_id=?', (record['id'],)).fetchone()[0])
+        value['data']['logistics_checked_at'] = '2026-10-13T08:00:00+00:00'
+        value['data']['logistics'][0].update(status='SIGN', status_label='已签收')
+        conn.execute('UPDATE purchase_progress SET value=? WHERE record_id=?', (json.dumps(value), record['id']))
+        record.update(id='another-record', request_id='another-request')
+        conn.execute('INSERT INTO order_purchases VALUES (?,?,?,?,?,?,?,?,?)',
+                     (record['id'], row['order_id'], row['line_key'], record['request_id'], 'fixture', row['line_signature'], row['quantity'], row['status'], json.dumps(record)))
+        value['data']['logistics_checked_at'] = '2026-10-13T09:00:00+00:00'
+        value['data']['logistics'][0].update(status='TRANSPORT', status_label='运输中')
+        conn.execute('INSERT INTO purchase_progress VALUES (?,?,?,?)', (record['id'], 1, 0, json.dumps(value)))
+        conn.commit()
+    packages = procurement.detail(body['order_id'])['order']['purchase_tracking']['packages']
+    assert len(packages) == 1
+    assert packages[0]['status_label'] == '运输中'
+    assert packages[0]['updated_at'] == '2026-10-13T09:00:00+00:00'
+    assert packages[0]['order_numbers'] == [NUMBER]
+
+
+def test_package_summary_preserves_logistics_time_after_failed_refresh(setup):
+    import json
+    procurement, _, body, _, run = setup
+    run()
+    with procurement.store.orders.connect() as conn:
+        value = json.loads(conn.execute('SELECT value FROM purchase_progress WHERE record_id=?', (body['record_id'],)).fetchone()[0])
+        value['data'].update(checked_at='2026-10-13T09:00:00Z', logistics_checked_at='2026-10-13T08:00:00Z', logistics_warning='本次物流查询失败')
+        value.update(attempted_at='2026-10-13T10:00:00Z', error='刷新失败')
+        conn.execute('UPDATE purchase_progress SET value=? WHERE record_id=?', (json.dumps(value), body['record_id']))
+        conn.commit()
+    item = procurement.detail(body['order_id'])['order']['purchase_tracking']['packages'][0]
+    assert item['updated_at'] == '2026-10-13T08:00:00Z'
+    assert item['stale']

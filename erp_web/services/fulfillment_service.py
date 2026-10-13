@@ -9,7 +9,7 @@ from collections import Counter
 
 from erp_web.schemas.fulfillment import FulfillmentCommand, FulfillmentError, FulfillmentRule, FulfillmentView, LabelInput
 from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
-from erp_web.services.fulfillment_routing import handover_target, is_yandex_section, validate_services
+from erp_web.services.fulfillment_routing import consolidation_reason, handover_target, is_yandex_section, validate_services
 from erp_web.services.external_request_context import request_operation
 from erp_web.services.receiving_warehouse_service import ReceivingWarehouseService
 
@@ -100,6 +100,11 @@ class FulfillmentService:
             if not source:
                 raise FulfillmentError("当前只支持 1688、淘宝或拼多多采购包裹。")
             result.append({"package_of": 1, "num": parcel["quantity"], "describe": f'{line["line"]["sku"]} · {line["line"]["title"]} · {record["source"]["specification"]}', "img": line["line"].get("image_url", ""), "logistics_order": parcel["tracking_number"], "from_platform": source, "from_order": record["purchase_order_number"]})
+        if complete:
+            for line in lines.values():
+                for record in line['records']:
+                    if record['status'] == 'purchased' and record.get('supplemental') and purchases[record['id']] != record['quantity']:
+                        raise FulfillmentError("补单包裹尚未齐全，请等待发货或核对包裹分配")
         if complete and (not lines or any(counts[k] != line["line"]["quantity"] for k, line in lines.items())):
             raise FulfillmentError("请补齐全部商品的国内包裹及数量。")
         return result
@@ -131,9 +136,15 @@ class FulfillmentService:
             self.validate_plan(plan, rule, order=order)
             if order.platform == "yandex" and (not value["override"] or value.get("receiving_revision") != self.receiving.checked(order.identity)["revision"]):
                 return "请按采购收货仓选择并保存本单服务"
+            reason = consolidation_reason(value['parcels'], plan)
+            if reason:
+                return reason
             if require_label and (not value["platform_label"] or not value["platform_tracking_number"]):
                 return value.get("label_error") or "等待平台面单，请获取平台面单或人工补充面单资料。"
             self.parcels_payload(value["parcels"], detail, complete=True)
+            if any(record['status'] == 'purchased' and (record.get('progress') or {}).get('state') == 'conflict'
+                   for line in detail['lines'] for record in line['records']):
+                return "采购运单存在冲突，请先确认国内包裹分配"
         except ValueError as exc:
             return str(exc)
         return ""
@@ -206,6 +217,8 @@ class FulfillmentService:
         if not known <= incoming:
             return "conflict", "运单与已保存的包裹不同，请确认包裹分配"
         merged = current["parcels"] + [p for p in proposals if identity(p) not in known]
+        if current['crossborderbus_order_id'] and consolidation_reason(merged, current['plan']):
+            return "conflict", "新增包裹需要合单服务，请先与仓库核对已提交报单"
         _, detail = self.order_detail(order_id)
         try:
             self.parcels_payload(merged, detail, complete=bool(current["crossborderbus_order_id"]))
@@ -283,6 +296,8 @@ class FulfillmentService:
                     raise FulfillmentError("请提供完整国内包裹列表。")
                 parcels = [p.model_dump() for p in request.parcels]
                 self.parcels_payload(parcels, detail, complete=bool(value["crossborderbus_order_id"]))
+                if value['crossborderbus_order_id'] and consolidation_reason(parcels, current['plan']):
+                    raise FulfillmentError("新增包裹需要合单服务，请先与仓库核对已提交报单")
                 changes = {"parcels": parcels}
             elif action == "label":
                 if request.label is None:

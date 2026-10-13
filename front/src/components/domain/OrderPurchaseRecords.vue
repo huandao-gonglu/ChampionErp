@@ -20,7 +20,7 @@ onBeforeUnmount(() => emit('lock', false))
       <article v-for="record in records" :key="record.id" class="order-record">
         <div class="order-row">
           <strong>{{ record.purchase_order_number }} · {{ record.quantity }} 件</strong>
-          <span class="order-badge" :data-tone="record.status === 'cancelled' ? 'neutral' : 'green'">{{ record.status === 'cancelled' ? '已作废' : '已采购' }}</span>
+          <span class="order-badge" :data-tone="record.status === 'cancelled' ? 'neutral' : 'green'">{{ record.status === 'cancelled' ? '已作废' : record.supplemental ? '补单' : '已采购' }}</span>
         </div>
         <p class="order-muted">{{ record.source.supplier || record.source.source_platform }} · {{ record.source.specification }}</p>
         <p class="order-muted">来源 SKU：{{ record.source.source_sku_id || '未提供' }}</p>

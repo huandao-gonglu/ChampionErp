@@ -645,8 +645,40 @@ def test_list_summary_keeps_platform_status_independent(domain):
     assert summary["fulfillment_status"] == "SHIPPED"
     assert summary["crossborderbus_order_id"]
     assert summary["has_domestic_waybill"] is True
-    assert set(summary) == {"fulfillment_status", "crossborderbus_order_id", "busy", "operation", "create_unknown", "cancel_requested", "cancel_rejected", "error_message", "label_error", "has_domestic_waybill"}
+    assert set(summary) == {"fulfillment_status", "crossborderbus_order_id", "busy", "operation", "create_unknown", "cancel_requested", "cancel_rejected", "error_message", "label_error", "has_domestic_waybill",
+                            "last_synced_at", "section_name", "warehouse_name", "registered_packages", "selected_services", "consolidation_service_id"}
+    assert summary["last_synced_at"]
+    assert summary["section_name"] == "Yandex"
+    assert summary["warehouse_name"] == "A仓"
+    assert summary["registered_packages"] == [{"carrier": "顺丰", "tracking_number": "SF123"}]
+    assert [s["name"] for s in summary["selected_services"]] == ["拆包验货", "代贴标"]
     assert view.state == "pending_shipment"
+
+
+def test_list_hint_deduplicates_registered_packages_and_preserves_sync_time(domain):
+    service, bus, order = ready(domain)
+    service.process_one(order)
+    value = service.store.get(order.identity)
+    service.store.change(order.identity, value["revision"], {
+        "parcels": [*value["parcels"], {**value["parcels"][0], "tracking_number": " sf123 "}],
+        "plan": {**value["plan"], "consolidation_service_id": 3},
+        "last_synced_at": "2026-10-13T12:00:00Z", "last_attempt_at": "2026-10-14T12:00:00Z",
+        "error_message": "仓库查询失败，保留最近结果", "fulfillment_status": "PACKING",
+    })
+    view = service.order_detail(order.identity)[0]
+    calls = list(bus.calls)
+    summary = service.store.summaries([view])[view.id]
+    assert summary["last_synced_at"] == "2026-10-13T12:00:00Z"
+    assert summary["error_message"] == "仓库查询失败，保留最近结果"
+    assert summary["fulfillment_status"] == "PACKING"
+    assert len(summary["registered_packages"]) == 1
+    assert summary["consolidation_service_id"] == 3
+    assert bus.calls == calls
+    bus.account = "bus-b"
+    bus.catalog()
+    summary = service.store.summaries([view])[view.id]
+    assert summary["warehouse_name"] == summary["section_name"] == ""
+    assert summary["last_synced_at"] == "2026-10-13T12:00:00Z"
 
 
 def test_manual_sync_can_refresh_shipped_order(domain):
@@ -860,3 +892,35 @@ def test_update_preflight_failure_does_not_turn_into_background_polling(domain):
         assert not service.process_one(order)
     assert len(bus.calls) == before
     assert not any(path.endswith('updateOrderPackage') for path, _ in bus.calls)
+
+
+def test_multiple_actual_parcels_require_explicit_consolidation(domain):
+    service, bus, order, parcel, *_ = domain
+    command(service, order, 'label', label={'url': 'https://example.com/label.pdf', 'tracking_number': 'RU123'})
+    parcels = [{**parcel, 'quantity': 1}, {**parcel, 'id': 'parcel-2', 'quantity': 1, 'tracking_number': 'YT456'}]
+    view = command(service, order, 'parcels', parcels=parcels)
+    assert '2 个国内包裹' in view['blocked_reason']
+    service.process_one(order)
+    assert not any(path.endswith('createOrder') for path, _ in bus.calls)
+    with pytest.raises(ValueError, match='合单服务'):
+        command(service, order, 'submit')
+    bus.services = lambda *_: {'core_data': [{'id': 2, 'name': '拆包验货'}], 'optional_data': [{'id': 3, 'name': '合单打包'}]}
+    view = command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 10, 'service_ids': [2, 3], 'consolidation_service_id': 3})
+    assert not view['blocked_reason']
+    service.process_one(order)
+    assert any(path.endswith('createOrder') for path, _ in bus.calls)
+
+
+def test_same_waybill_multiple_lines_does_not_require_consolidation(domain):
+    service, _, order, parcel, *_ = domain
+    command(service, order, 'label', label={'url': 'https://example.com/label.pdf', 'tracking_number': 'RU123'})
+    view = command(service, order, 'parcels', parcels=[{**parcel, 'quantity': 1}, {**parcel, 'id': 'parcel-2', 'quantity': 1}])
+    assert not view['blocked_reason']
+
+
+def test_consolidation_service_must_be_selected_and_available(domain):
+    service, _, order, *_ = domain
+    with pytest.raises(ValueError, match='合单服务'):
+        command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 10, 'service_ids': [2], 'consolidation_service_id': 3})
+    with pytest.raises(ValueError, match='服务已变化'):
+        command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 10, 'service_ids': [2, 999], 'consolidation_service_id': 999})

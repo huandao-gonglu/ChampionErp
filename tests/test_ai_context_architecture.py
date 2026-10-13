@@ -1085,3 +1085,13 @@ def test_order_progress_sync_is_explicitly_composed_and_not_a_read_side_effect()
     assert 'sync_order_progress(' not in reads
     source = service.read_text()
     assert source.index('self.store.save_snapshot(') < source.index('self.progress_sync(snapshot.identity, checkpoint)')
+
+
+def test_supplement_reuses_procurement_and_readonly_alibaba_transport():
+    """补单不引入远端下单、支付或独立后台跟踪 owner。"""
+    path = ROOT / "erp_web/services/order_supplement_service.py"
+    targets = {target for _, target in imported_targets([path])}
+    assert "erp_web.services.alibaba_api_client.AlibabaApiClient" in targets
+    assert not any("self_purchase" in target or "threading" in target or "runtime_units" in target for target in targets)
+    route_targets = {target for _, target in imported_targets([ROOT / "erp_web/http_route_units/order_routes.py"])}
+    assert not any(target.startswith("erp_web.services") for target in route_targets)

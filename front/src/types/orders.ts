@@ -132,6 +132,7 @@ export interface SalesSkuBinding {
   source: ProcurementSource
 }
 export interface PurchaseRecord {
+  supplemental?: boolean
   receiving_warehouse?: import('@/api/receivingWarehouse').ReceivingWarehouse | null
   progress?: BackendPurchaseProgressView | null
   id: string

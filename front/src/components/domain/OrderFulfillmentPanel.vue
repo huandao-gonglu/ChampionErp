@@ -48,6 +48,7 @@ const tone = computed(() => progress.value.tone)
 const purchased = computed(() => props.order.lines.reduce((sum, line) => sum + line.purchased_quantity, 0))
 const ordered = computed(() => props.order.lines.reduce((sum, line) => sum + line.line.quantity, 0))
 const title = computed(() => value.value?.busy && value.value.operation === 'create' ? '正在提交预报' : value.value?.busy && value.value.operation === 'fetch-label' ? '正在获取平台面单' : value.value?.create_unknown ? '创建结果待核实，暂停重复提交' : value.value?.cancel_requested && value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，取消未成功' : value.value?.cancel_rejected && value.value.fulfillment_status !== 'CANCELLED' ? '仓库拒绝取消，请处理后重试' : value.value?.cancel_requested && value.value.fulfillment_status !== 'CANCELLED' ? '已请求取消，等待仓库确认' : value.value?.error_message ? '履约操作需要处理' : status.value)
+const parcelCount = computed(() => new Set((value.value?.parcels || []).map(p => p.tracking_number.trim().toUpperCase())).size)
 const notice = computed(() => value.value?.error_message || (value.value?.crossborderbus_order_id ? value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，ERP 履约状态已同步为已发货。' : '仓库进度随同步订单更新，也可点击同步按钮单独刷新。' : value.value?.blocked_reason || (value.value?.editing ? '修改本单方案期间已暂停自动预报。' : progress.value.note)))
 async function load(quiet = false) {
   const generation = ++loadGeneration
@@ -134,6 +135,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
       </section>
       <section class="plan-card">
         <div class="order-row"><h3>平台配送：{{ value.delivery.method_name || value.delivery.carrier || '尚未提供' }}</h3><button v-if="value.plan_editable && (order.order.platform === 'yandex' || value.rule)" class="order-button" :disabled="pending" @click="open('plan')">设置报单方案</button><span v-else class="order-muted">{{ value.plan_editable ? '待配置' : '已锁定' }}</span></div>
+        <p v-if="parcelCount > 1" class="order-muted">本订单有 {{ parcelCount }} 个国内包裹，{{ value.plan?.consolidation_service_id ? '已确认合单服务。' : '请设置报单方案并确认合单服务。' }}</p>
         <p>合作仓库：{{ value.warehouse_name || '尚未配置' }}<span v-if="value.section_name"> · {{ value.section_name }}</span></p>
         <p class="order-muted">{{ value.plan ? value.override ? '本单报单方案' : order.order.platform === 'yandex' ? '沿用采购收货仓，待选服务' : '默认履约方案' : '尚未配置报单方案' }}<template v-if="value.plan"> · {{ value.plan.service_ids.length }} 项增值服务</template></p>
         <p v-if="value.handover_target?.name" class="order-muted">{{ value.handover_target.shipment_type === 'WITHDRAW' ? '揽收仓库' : '交货仓库' }}：{{ value.handover_target.name }}</p>

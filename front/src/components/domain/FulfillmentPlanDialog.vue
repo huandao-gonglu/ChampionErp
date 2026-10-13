@@ -21,7 +21,8 @@ const noteShipment = computed(() => {
 })
 const noteOpen = ref(false)
 const initialReceivingRevision = props.value.receiving_warehouse?.revision || 0
-const plan = ref<FulfillmentPlan>({ section_id: props.value.plan?.section_id || 0, warehouse_id: props.value.plan?.warehouse_id || 0, service_ids: [...(props.value.plan?.service_ids || [])] })
+const plan = ref<FulfillmentPlan>({ section_id: props.value.plan?.section_id || 0, warehouse_id: props.value.plan?.warehouse_id || 0, consolidation_service_id: props.value.plan?.consolidation_service_id, service_ids: [...(props.value.plan?.service_ids || [])] })
+const parcelCount = computed(() => new Set(props.value.parcels.map(p => p.tracking_number.trim().toUpperCase())).size)
 const remark = ref(props.value.remark || '')
 const sections = ref<BusSection[]>([])
 const loading = ref(true)
@@ -83,7 +84,7 @@ onBeforeUnmount(() => { disposed = true })
         <p v-if="!sections.length" class="order-muted">当前账号尚未返回可用的合作仓库。</p>
         <template v-else>
           <p v-if="warehouseLocked" class="order-muted">报单沿用采购收货仓，请选择本次仓库服务。</p>
-          <FulfillmentPlanFields v-model="plan" :sections="sections" :disabled="busy || receivingChanged" :section-locked="warehouseLocked || (!yandex && !!value.rule)" :warehouse-locked="warehouseLocked" :compatible-warehouse-ids="yandex ? undefined : value.rule?.compatible_warehouse_ids" @ready="ready = $event" />
+          <FulfillmentPlanFields v-model="plan" :sections="sections" :parcel-count="parcelCount" :disabled="busy || receivingChanged" :section-locked="warehouseLocked || (!yandex && !!value.rule)" :warehouse-locked="warehouseLocked" :compatible-warehouse-ids="yandex ? undefined : value.rule?.compatible_warehouse_ids" @ready="ready = $event" />
         </template>
       </template>
       <label for="fulfillment-remark">报单备注（选填）</label>

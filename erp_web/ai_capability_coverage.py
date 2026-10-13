@@ -96,6 +96,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/retry", business_domain="订单采购", disposition="capability", capability_names=("order_notification_update",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/acknowledge", business_domain="订单采购", disposition="capability", capability_names=("order_notification_update",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/select-source", business_domain="订单采购", disposition="capability", capability_names=("order_source_select",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/orders/supplement-lookup", business_domain="订单采购", disposition="internal_only", reason="人工补单弹窗读取尚未登记的外部采购单并核对销售规格；登记后的状态与物流沿用现有采购工具。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/orders/supplement-record", business_domain="订单采购", disposition="internal_only", reason="人工补单弹窗确认新采购商品及收货仓后登记；当前不向模型开放超出原采购数量的补单操作。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/record-purchase", business_domain="订单采购", disposition="capability", capability_names=("order_purchase_record",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/cancel-purchase", business_domain="订单采购", disposition="capability", capability_names=("order_purchase_cancel",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/purchase-sync", business_domain="订单采购", disposition="capability", capability_names=("order_purchase_sync",)),

@@ -86,6 +86,7 @@ def normalize_bus_services(value):
 
 
 class FulfillmentPlan(FulfillmentInput):
+    consolidation_service_id: PositiveId | None = None
     section_id: int = Field(gt=0, strict=True)
     warehouse_id: int = Field(gt=0, strict=True)
     service_ids: list[PositiveId] = Field(default_factory=list, max_length=100)
@@ -179,8 +180,15 @@ class FulfillmentRuleView(FulfillmentRule):
     model_config = ConfigDict(extra="ignore")
 
 
+class RegisteredDomesticPackage(BaseModel):
+    """ERP 已登记的国内运单，不代表仓库已确认收货。"""
+
+    carrier: str = ""
+    tracking_number: str
+
+
 class FulfillmentSummary(BaseModel):
-    """列表只读事实；不传输面单地址、包裹明细、凭据或内部占位。"""
+    """列表只读事实；运单去重，不传输面单地址、商品分配、凭据或内部占位。"""
 
     model_config = ConfigDict(extra="ignore")
     fulfillment_status: FulfillmentStatus
@@ -193,6 +201,12 @@ class FulfillmentSummary(BaseModel):
     error_message: str = ""
     label_error: str = ""
     has_domestic_waybill: bool = False
+    last_synced_at: str = ""
+    section_name: str = ""
+    warehouse_name: str = ""
+    registered_packages: list[RegisteredDomesticPackage] = Field(default_factory=list)
+    selected_services: list[BusService] = Field(default_factory=list)
+    consolidation_service_id: PositiveId | None = None
 
 
 class FulfillmentView(BaseModel):

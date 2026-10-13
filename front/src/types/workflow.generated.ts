@@ -195,7 +195,20 @@ export interface BackendAlibabaPurchaseQueryResult {
   product_warning?: string
 }
 
+export interface BackendPurchasePackageStatus {
+  id: string
+  order_numbers: Array<string>
+  company: string
+  tracking_number: string
+  source: "order" | "logistics"
+  status: string
+  status_label: string
+  updated_at: string
+  stale: boolean
+}
+
 export interface BackendPurchaseTrackingSummary {
+  packages?: Array<BackendPurchasePackageStatus>
   orders: Array<BackendAlibabaOrderStatus>
   unknown_count: number
   has_waybill: boolean
@@ -208,6 +221,24 @@ export interface BackendPurchaseProgressView {
   message: string
   error: string
   data: BackendAlibabaPurchaseQueryResult | null
+}
+
+export interface BackendSupplementCandidate {
+  key: string
+  title: string
+  specification: string
+  offer_id: string
+  sku_id: string
+  spec_id: string
+  quantity: number
+  matched: boolean
+}
+
+export interface BackendSupplementLookupResult {
+  ok: boolean
+  order_number: string
+  order_status: string
+  candidates: Array<BackendSupplementCandidate>
 }
 
 export interface BackendApiResponse {

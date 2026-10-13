@@ -95,3 +95,31 @@ describe('采购到报单的状态衔接', () => {
     expect(orderProcessingProgress({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, orders: [{ order_number: '123', status: 'cancel', status_label: '交易取消' }] } }, facts)).toMatchObject({ label: '交易取消', tone: 'red' })
   })
 })
+
+// 多包裹展示按最近更新时间，不按履约阶段排序。
+describe('多包裹按更新时间汇总', () => {
+  const packages = [
+    { id: 'first', order_numbers: ['123'], company: '圆通', tracking_number: 'YT1', source: 'logistics' as const, status: 'SIGN', status_label: '已签收', updated_at: '2026-10-13T08:00:00Z', stale: false },
+    { id: 'second', order_numbers: ['456'], company: '顺丰', tracking_number: 'SF2', source: 'logistics' as const, status: 'TRANSPORT', status_label: '运输中', updated_at: '2026-10-13T09:00:00Z', stale: false },
+  ]
+  const withPackages = (value = packages) => ({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, has_waybill: true, packages: value } })
+  it('刚更新的运输中优先于较早的已签收，并展示部分修饰', () => {
+    expect(orderProcessingProgress(withPackages(), facts)).toMatchObject({ label: '部分运输中', target: 'fulfillment' })
+    expect(orderProcessingProgress(withPackages([...packages].reverse()), facts).label).toBe('部分运输中')
+  })
+  it('全部状态相同直接展示，单包裹继续沿用原有报单进度', () => {
+    expect(orderProcessingProgress(withPackages(packages.map(p => ({ ...p, status: 'SIGN', status_label: '已签收' }))), facts).label).toBe('已签收')
+    expect(orderProcessingProgress(withPackages([packages[0]!]), facts).label).toBe('待预报')
+  })
+  it('查询失败不替换已有状态，悬浮明细保留过期标记', () => {
+    const state = orderProcessingProgress(withPackages(packages.map(p => ({ ...p, stale: true }))), facts)
+    expect(state.label).toBe('部分运输中')
+    expect(state.note).toContain('保留最近成功结果')
+  })
+  it('更晚更新的待发货也按用户规则成为主状态', () => {
+    const pending = { id: 'pending', order_numbers: ['789'], company: '', tracking_number: '', source: 'order' as const, status: 'waitsellersend', status_label: '等待卖家发货', updated_at: '2026-10-13T10:00:00Z', stale: false }
+    const snapshot = { ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, packages: [...packages, pending] } }
+    expect(orderProcessingProgress(snapshot, facts).label).toBe('部分待发货')
+    expect(orderProcessingProgress(snapshot, { ...facts, crossborderbus_order_id: 99, fulfillment_status: 'SHIPPED' }).label).toBe('仓库已发货')
+  })
+})

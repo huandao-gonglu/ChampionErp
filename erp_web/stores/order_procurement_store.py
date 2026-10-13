@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from uuid import uuid4
+from datetime import datetime
 
 from erp_web.schemas.order_procurement import (
     ProcurementSource,
@@ -36,6 +37,15 @@ CREATE TABLE IF NOT EXISTS order_purchase_reservations (
  quantity INTEGER NOT NULL, binding_json TEXT NOT NULL, state TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS purchases_order ON order_purchases(order_id,status);
 """
+
+
+def _tracking_time(value):
+    """仅比较成功快照的更新时间，失败尝试时间不推进包裹状态。"""
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return parsed.timestamp() if parsed.tzinfo else 0
+    except (ValueError, TypeError, AttributeError):
+        return 0
 
 
 def line_signature(line):
@@ -246,10 +256,11 @@ class OrderProcurementStore:
         signatures = {order.id: {order_line_key(line): line_signature(line) for line in order.items} for order in orders}
         placeholders = ",".join("?" for _ in signatures)
         with self.orders.connect() as conn:
-            rows = conn.execute(f"""SELECT p.order_id,p.line_key,p.line_signature,s.value FROM order_purchases p
+            rows = conn.execute(f"""SELECT p.order_id,p.line_key,p.line_signature,p.record_json,s.value FROM order_purchases p
                 LEFT JOIN purchase_progress s ON s.record_id=p.id
                 WHERE p.order_id IN ({placeholders}) AND p.status='purchased'""", tuple(signatures)).fetchall()
         result = {}
+        packages = {}
         for row in rows:
             if signatures[row["order_id"]].get(row["line_key"]) != row["line_signature"]:
                 continue
@@ -262,7 +273,38 @@ class OrderProcurementStore:
             else:
                 summary["unknown_count"] += 1
             summary["has_waybill"] |= any(str(p.get("tracking_number") or "").strip() for p in data.get("logistics") or [])
-            summary["stale"] |= bool(progress.get("error")) or progress.get("state") == "syncing"
+            stale = bool(progress.get("error")) or progress.get("state") == "syncing"
+            summary["stale"] |= stale
+            record = json.loads(row['record_json'])
+            number = record['purchase_order_number']
+            # 同一采购单的多个 SKU 共用整单物流快照，按真实运单去重，不能按采购行数统计包裹。
+            logistics = [p for p in data.get('logistics') or [] if str(p.get('tracking_number') or '').strip()]
+            entries = logistics or [None]
+            grouped = packages.setdefault(row['order_id'], {})
+            for parcel in entries:
+                tracking = str(parcel.get('tracking_number') or '').strip() if parcel else ''
+                ident = 'waybill:' + tracking.upper() if tracking else 'order:' + number
+                item = {
+                    'id': ident, 'order_numbers': [number], 'company': (parcel.get('company') or '') if parcel else '',
+                    'tracking_number': tracking, 'source': 'logistics' if parcel else 'order',
+                    'status': (parcel or status or {}).get('status') or '',
+                    'status_label': (parcel or status or {}).get('status_label') or '状态待查询',
+                    'updated_at': (data.get('logistics_checked_at', data.get('checked_at', '')) if parcel else data.get('checked_at', '')),
+                    'stale': stale or bool(parcel and data.get('logistics_warning')),
+                }
+                previous = grouped.get(ident)
+                if previous:
+                    numbers = sorted(set(previous['order_numbers'] + [number]))
+                    if _tracking_time(previous['updated_at']) > _tracking_time(item['updated_at']):
+                        previous['order_numbers'] = numbers
+                        continue
+                    item['order_numbers'] = numbers
+                grouped[ident] = item
+        for order_id, summary in result.items():
+            values = list(packages[order_id].values())
+            with_waybill = {number for item in values if item['tracking_number'] for number in item['order_numbers']}
+            values = [item for item in values if item['tracking_number'] or not set(item['order_numbers']) <= with_waybill]
+            summary['packages'] = sorted(values, key=lambda p: (-_tracking_time(p['updated_at']), p['id']))
         return result
 
     def select(self, request, source: ProcurementSource, accounts):
@@ -293,8 +335,8 @@ class OrderProcurementStore:
             )
             conn.commit()
 
-    def purchase(self, request, accounts):
-        digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+    def purchase(self, request, accounts, *, supplemental_source=None):
+        digest = hashlib.sha256((request.model_dump_json() + (supplemental_source.model_dump_json() if supplemental_source else "")).encode()).hexdigest()
         with self.orders.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             order = self._order(conn, request.order_id, accounts)
@@ -323,7 +365,26 @@ class OrderProcurementStore:
                 "SELECT COALESCE(SUM(quantity),0) FROM order_purchases WHERE order_id=? AND line_key=? AND line_signature=? AND status='purchased'",
                 (request.order_id, request.line_key, line_signature(line)),
             ).fetchone()[0]
-            if purchased + self._reserved(conn, request.order_id, request.line_key) + request.quantity > line.quantity:
+            if supplemental_source:
+                if self._reserved(conn, request.order_id, request.line_key):
+                    raise ValueError("原采购正在提交或待核验，请先核对原采购")
+                if request.quantity > line.quantity:
+                    raise ValueError("补单数量超过销售订单该 SKU 的数量")
+                if not purchased:
+                    raise ValueError("尚无有效采购，请先登记首次采购")
+                existing = conn.execute("SELECT record_json FROM order_purchases WHERE order_id=? AND status='purchased'",
+                                        (request.order_id,)).fetchall()
+                for row in existing:
+                    saved = PurchaseRecord.model_validate_json(row[0])
+                    if (saved.purchase_order_number == request.purchase_order_number.strip()
+                            and saved.source.source_sku_id == supplemental_source.source_sku_id):
+                        raise ValueError("这笔采购商品已登记，请勿重复补单")
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE name='fulfillments'").fetchone():
+                    row = conn.execute("SELECT value,claim FROM fulfillments WHERE id=?", (request.order_id,)).fetchone()
+                    fulfillment = json.loads(row[0]) if row else {}
+                    if (row and row["claim"]) or fulfillment.get("crossborderbus_order_id") or fulfillment.get("create_unknown"):
+                        raise ValueError("报单已开始，请先处理原报单后再补单")
+            elif purchased + self._reserved(conn, request.order_id, request.line_key) + request.quantity > line.quantity:
                 raise ValueError("采购数量超过订单剩余数量；请先检查已有采购记录")
             number = request.purchase_order_number.strip()
             if not number:
@@ -331,6 +392,8 @@ class OrderProcurementStore:
             receiving = None
             if order.platform == "yandex":
                 stored = self.receiving.read(conn, request.order_id)
+                if supplemental_source and not stored:
+                    raise ValueError("请先确定本单收货仓，再登记补单")
                 if stored:
                     receiving = self.receiving.public(self.receiving.validate(conn, order))
                     if request.receiving_revision != receiving['revision'] or not request.receiving_confirmed:
@@ -342,7 +405,8 @@ class OrderProcurementStore:
                 request_id=request.request_id,
                 quantity=request.quantity,
                 purchase_order_number=number,
-                source=ProcurementSource.model_validate_json(source["source_json"]),
+                source=supplemental_source or ProcurementSource.model_validate_json(source["source_json"]),
+                supplemental=bool(supplemental_source),
                 created_at=utc_iso(),
             )
             conn.execute(
