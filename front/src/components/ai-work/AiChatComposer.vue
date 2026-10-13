@@ -254,7 +254,7 @@ function onKeydown(event: KeyboardEvent) {
       {{ sendDisabledReason }}
     </p>
     <p class="mt-2 text-xs text-slate-400">
-      Enter 发送，Shift + Enter 换行，连续按两次 Esc 停止，输入 / 查看可用命令。运行期间也可以发送补充资料或纠正要求。
+      ai也会犯错，重要内容请仔细核对
     </p>
   </form>
 </template>

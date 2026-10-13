@@ -9,6 +9,7 @@ const encoder = new TextEncoder()
 const mocks = vi.hoisted(() => ({
   fetchUiMessages: vi.fn(),
   cancelChatRun: vi.fn(),
+  forkChatConversation: vi.fn(),
 }))
 
 vi.mock('@/api/aiWork', () => ({
@@ -19,6 +20,7 @@ vi.mock('@/api/aiWork', () => ({
   ),
   fetchUiMessages: mocks.fetchUiMessages,
   cancelChatRun: mocks.cancelChatRun,
+  forkChatConversation: mocks.forkChatConversation,
 }))
 
 
@@ -51,6 +53,55 @@ class FakeEventSource {
     this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent)
   }
 }
+
+describe('对话分支', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.stubGlobal('EventSource', FakeEventSource)
+    mocks.forkChatConversation.mockReset()
+  })
+  afterEach(() => { useAiChatStore().disconnectEvents(); vi.unstubAllGlobals() })
+
+  it('打开分支不发送模型请求，重复点击只提交一次并保留未发送的输入', async () => {
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    const store = useAiChatStore()
+    const source = store.startConversation()
+    store.input = '待发送的问题'
+    let resolve!: (detail: AiWorkUiMessagesResponse) => void
+    mocks.forkChatConversation.mockImplementation(() => new Promise<AiWorkUiMessagesResponse>(done => { resolve = done }))
+    const pending = store.forkConversation('reply')
+    await store.forkConversation('reply')
+    store.sendMessage()
+    expect(mocks.forkChatConversation).toHaveBeenCalledTimes(1)
+    expect(mocks.forkChatConversation).toHaveBeenCalledWith(source, 'reply')
+    expect(fetch).not.toHaveBeenCalled()
+    resolve({ ok: true, conversation_id: 'branch', messages: [{ id: 'reply', role: 'assistant', parts: [{ type: 'text', text: '已有回答' }] }],
+      history_version: 1, created_at: '', updated_at: '' })
+    await pending
+    expect(store.activeConversationId).toBe('branch')
+    expect(store.messages[0]?.parts).toEqual([{ type: 'text', text: '已有回答' }])
+    expect(store.input).toBe('待发送的问题')
+    expect(fetch).not.toHaveBeenCalled()
+    expect(store.forking).toBe(false)
+  })
+
+  it('分支失败保留原对话，迟到的分支响应不抢占新对话', async () => {
+    const store = useAiChatStore()
+    const source = store.startConversation()
+    mocks.forkChatConversation.mockRejectedValueOnce(new Error('分支创建失败'))
+    await store.forkConversation('reply')
+    expect(store.activeConversationId).toBe(source)
+    expect(store.error?.message).toBe('分支创建失败')
+    let resolve!: (detail: AiWorkUiMessagesResponse) => void
+    mocks.forkChatConversation.mockImplementation(() => new Promise<AiWorkUiMessagesResponse>(done => { resolve = done }))
+    const pending = store.forkConversation('reply')
+    const newId = store.startConversation()
+    resolve({ ok: true, conversation_id: 'branch', messages: [], history_version: 1, created_at: '', updated_at: '' })
+    await pending
+    expect(store.activeConversationId).toBe(newId)
+  })
+})
 
 describe('停止操作', () => {
   beforeEach(() => {

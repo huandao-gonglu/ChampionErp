@@ -32,6 +32,7 @@ const contentRef = ref<HTMLElement | null>(null)
 const followingLatest = ref(true)
 const showJumpToLatest = ref(false)
 const chatStore = useAiChatStore()
+const approvalBusy = ref(false)
 let lastScrollTop = 0
 let lastTouchY: number | undefined
 let resizeObserver: ResizeObserver | undefined
@@ -143,16 +144,14 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
           </div>
 
           <!-- 消息气泡 -->
-          <AiMessageList v-else :messages="messages" :pending-tool-calls="chatStore.pendingToolCalls" />
-
-          <!-- 流式状态提示 -->
-          <p
-            v-if="busy"
-            class="text-xs text-slate-400"
-            data-testid="ai-chat-streaming"
+          <AiMessageList
+            v-else :messages="messages" :pending-tool-calls="chatStore.pendingToolCalls" :active="busy || chatStore.isRunning"
+            :allow-branch="!chatStore.canStop && !chatStore.forking" @branch="chatStore.forkConversation"
           >
-            正在回复…
-          </p>
+            <template #approval="{ toolCallId }">
+              <NativeToolApprovals :tool-call-id="toolCallId" :busy="approvalBusy" @submitting="approvalBusy = $event" />
+            </template>
+          </AiMessageList>
 
           <!-- 错误提示 -->
           <p
@@ -178,8 +177,6 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
       </button>
     </div>
 
-    <NativeToolApprovals />
-    <p v-if="chatStore.pendingToolCalls.some(call => call.kind === 'external')" class="mb-2 text-sm text-slate-500">正在处理，你可以继续补充信息或调整要求。</p>
     <div v-if="chatStore.receivedNotice" role="status" class="mb-2 rounded-lg bg-sky-50 p-3 text-sm text-sky-800">
       {{ chatStore.receivedNotice }}
       <p v-for="message in chatStore.receivedMessages" :key="message.message_id">{{ message.text }}</p>

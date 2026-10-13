@@ -12,12 +12,12 @@ from erp_web.context import get_context
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset, build_job_status_readers
 from erp_web.runtime_units.online_product_capabilities import (
     OnlineProductCapabilityScope,
-    _change_snapshot, _retry_snapshot, online_products_change, online_products_read,
+    _change_snapshot, _retry_snapshot, _close_snapshot, online_products_change, online_products_read, online_products_close,
     online_products_sync, online_products_retry, online_products_reconcile,
 )
 from erp_web.runtime_units.online_product_job_reader import OnlineProductJobReader
 from erp_web.schemas.online_product_capabilities import OnlineReadRequest, OnlineJobRequest, OnlineSyncRequest
-from erp_web.schemas.online_products import BuyerLink, OnlineChange
+from erp_web.schemas.online_products import BuyerLink, CloseOnlineOperationRequest, OnlineChange
 from erp_web.schemas.ai_tools import AiToolCommand, AiToolExecutionError
 from erp_web.services.ai_tool_runtime import AiToolRuntime
 from erp_web.services.agent_job_service import AgentJobService
@@ -44,6 +44,39 @@ def online(monkeypatch):
 def change(domain, **kwargs):
     return OnlineChange(listing_id="CBT1", version=domain.store.get("CBT1").version,
                         operation="price", scope_id="global", changes={"amount": "15.25", "currency": "USD"}, **kwargs)
+
+
+def test_close_requires_native_approval_and_preserves_unconfirmed_outcome(online):
+    from tests.test_online_operation_recovery import unconfirmed, close_body
+    _, domain, remote, scope, _ = online
+    job, _ = unconfirmed(domain, remote)
+    job = domain.reconcile(job["id"])["job"]
+    request = CloseOnlineOperationRequest(**close_body(job))
+    snapshot = _close_snapshot(request, scope)
+    assert "可能延迟生效" in snapshot.summary
+    with pytest.raises(AiToolExecutionError):
+        online_products_close(request, scope, _execution())
+    result = online_products_close(request, scope, _approved_execution(snapshot, "online_products_close"))
+    assert result.job.status == "closed_unconfirmed"
+    state = OnlineProductJobReader(domain.store.job).read_job_state(job["id"])
+    assert state.status == "failed"
+    assert "原结果未确认" in state.summary
+    assert len(remote.writes) == 1
+
+
+def test_close_approval_cannot_authorize_changed_snapshot(online):
+    from tests.test_online_operation_recovery import unconfirmed, close_body
+    _, domain, remote, scope, _ = online
+    job, _ = unconfirmed(domain, remote)
+    job = domain.reconcile(job["id"])["job"]
+    request = CloseOnlineOperationRequest(**close_body(job))
+    approved = _approved_execution(_close_snapshot(request, scope), "online_products_close")
+    item = domain.store.get("CBT1")
+    item.prices[0].amount = "16"
+    domain.store.save(item)
+    with pytest.raises(AiToolExecutionError):
+        online_products_close(request, scope, approved)
+    assert domain.store.job(job["id"])["status"] == "outcome_unknown"
 
 
 def test_reads_share_page_order_and_detail_payload_and_enforce_current_account(online):

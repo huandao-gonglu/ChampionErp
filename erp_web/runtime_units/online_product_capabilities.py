@@ -11,7 +11,7 @@ from erp_web.schemas.online_product_capabilities import (
     OnlineJobRequest, OnlineJobResult, OnlineReadRequest, OnlineReadResult, OnlineSyncRequest,
     OnlineSubmissionResult,
 )
-from erp_web.schemas.online_products import ChangeRequest, OnlineChange, OnlineListing, RefreshStatusRequest, digest
+from erp_web.schemas.online_products import ChangeRequest, CloseOnlineOperationRequest, OnlineChange, OnlineListing, RefreshStatusRequest, digest
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.online_product_changes import validate_changes
@@ -97,6 +97,21 @@ def _retry_snapshot(request: OnlineJobRequest, scope: OnlineProductCapabilitySco
                            "request": job["request"], "status": job["status"],
                            "result_digest": digest(job["result"]),
                            "target_version": target["version"] if target else ""},
+    )
+
+
+def _close_snapshot(request: CloseOnlineOperationRequest, scope: OnlineProductCapabilityScope) -> ToolApprovalSnapshot:
+    job = _call(scope.job, request.job_id)
+    if job["status"] not in ("outcome_unknown", "waiting_confirmation") or job["updated_at"] != request.expected_updated_at:
+        raise BusinessCapabilityError("ONLINE_CONFLICT", "操作状态已变化，请重新查询平台结果后确认。")
+    target = _call(scope.service().detail, job["target_id"])["item"]
+    return ToolApprovalSnapshot(
+        summary=(f"结束本地操作：{job['platform']} · {target['seller_sku'] or target['remote_id']} · {job['operation']}；"
+                 f"原目标 {json.dumps(job['request'].get('changes'), ensure_ascii=False)}；"
+                 f"平台回读 {json.dumps(job['result'].get('evidence', {}).get('observed'), ensure_ascii=False)}。"
+                 "原请求结果仍未确认且可能延迟生效；仅解除该商品的新修改阻塞，不撤销或重放原请求。")[:2000],
+        canonical_payload={"request": request.model_dump(mode="json"), "account_id": job["account_id"],
+                           "result_digest": digest(job["result"]), "target_version": target["version"]},
     )
 
 
@@ -187,6 +202,23 @@ def online_products_reconcile(request: OnlineJobRequest, scope: Annotated[Online
 
 
 @ai_tool(
+    name="online_products_close",
+    description=("按用户明确要求，在成功查询平台结果后人工结束仍未确认的本地商品修改操作，解除对新修改的阻塞。"
+                 "使用 reconcile 返回的 job.id 和 job.updated_at；证据须在五分钟内且平台不再处理中。"
+                 "必须说明原结果仍未确认、原请求可能延迟生效，取得用户确认。不会撤销或重放旧请求，不能宣称原修改成功或失败。"
+                 "后续修改须重新读取商品并通过 online_products_change 提交新操作。"),
+    permission="online_product.write", side_effect="write", approval_required=True,
+    approval_snapshot=_close_snapshot, idempotency="required", idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+)
+def online_products_close(request: CloseOnlineOperationRequest, scope: Annotated[OnlineProductCapabilityScope, Injected()],
+                          execution: Annotated[AiExecutionContext, Injected()]) -> OnlineJobResult:
+    verify_execution_approval(execution, snapshot=_close_snapshot(request, scope),
+                              capability_name="online_products_close", capability_version="1", stale_code="ONLINE_APPROVAL_STALE")
+    return OnlineJobResult.model_validate(_call(scope.service().close_operation, request.model_dump()))
+
+
+@ai_tool(
     name="online_products_retry", description="按用户要求重试在线商品失败任务：同步仅重试失败项，修改仅重试后端确认可重试的失败；混合或未知结果不能强制重放。accepted=true 表示重试已提交，AI 无需等待远端结果；在操作记录查看后续状态。",
     permission="online_product.write", side_effect="write", approval_required=True,
     approval_snapshot=_retry_snapshot, idempotency="required", idempotency_keys=("operation_key",),
@@ -200,7 +232,7 @@ def online_products_retry(request: OnlineJobRequest, scope: Annotated[OnlineProd
 
 
 ONLINE_PRODUCT_AI_CAPABILITIES = (
-    online_products_read, online_products_refresh_status, online_products_change, online_products_sync, online_products_reconcile, online_products_retry,
+    online_products_read, online_products_refresh_status, online_products_change, online_products_sync, online_products_reconcile, online_products_close, online_products_retry,
 )
 
 __all__ = ["ONLINE_PRODUCT_JOB_TYPE", "ONLINE_PRODUCT_AI_CAPABILITIES", "OnlineProductCapabilityScope"]

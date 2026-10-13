@@ -175,6 +175,76 @@ def test_unknown_never_replayed_and_readonly_reconcile_can_confirm(setup_online)
     assert len(remote.writes)==1
 
 
+@pytest.mark.parametrize("state", ["submitted", "waiting_confirmation", "outcome_unknown"])
+def test_unconfirmed_change_allows_sync_without_replaying_or_resolving_write(setup_online, state):
+    service, remote = setup_online
+    remote.apply = False
+    if state == "outcome_unknown":
+        remote.write_error = TimeoutError("写请求超时")
+    job = service.change(price_request(service))["job"]
+    service.run_once()
+    if state == "waiting_confirmation":
+        service.reconcile(job["id"])
+    original = service.store.job(job["id"])
+    assert original["status"] == state
+    remote.rows["CBT1"].prices[0].amount = "15.25"
+    remote.rows["CBT2"] = listing("CBT2")
+
+    sync = service.sync("mercadolibre", uuid4().hex)["job"]
+    assert service.run_once()
+    assert service.store.job(sync["id"])["status"] == "confirmed"
+    assert service.store.get("CBT1").prices[0].amount == "15.25"
+    assert service.store.get("CBT2").remote_id == "CBT2"
+    # 即使同步值与原修改相同，也不代替原任务的结果核对。
+    assert service.store.job(job["id"]) == original
+    with pytest.raises(OnlineConflict):
+        service.change(price_request(service))
+    with pytest.raises(OnlineConflict):
+        service.retry(job["id"], uuid4().hex)
+    assert len(remote.writes) == 1
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_sync_still_excludes_active_modifications_and_duplicate_sync(setup_online, running):
+    service, _ = setup_online
+    service.change(price_request(service))
+    if running:
+        service.store.claim("writer")
+    with pytest.raises(OnlineConflict, match="排队或执行中的商品修改"):
+        service.sync("mercadolibre", uuid4().hex)
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_sync_and_result_query_are_mutually_exclusive(setup_online, running):
+    service, remote = setup_online
+    job = service.change(price_request(service))["job"]
+    service.run_once()
+    sync = service.sync("mercadolibre", uuid4().hex)["job"]
+    original = service.store.job(job["id"])
+    if running:
+        service.store.claim("sync-worker")
+    with pytest.raises(OnlineConflict, match="正在同步"):
+        service.reconcile(job["id"])
+    assert service.store.job(job["id"]) == original
+    with pytest.raises(OnlineConflict, match="正在同步"):
+        service.sync("mercadolibre", uuid4().hex)
+    with pytest.raises(OnlineConflict):
+        service.change(price_request(service))
+    assert service.store.job(sync["id"])["status"] == ("running" if running else "queued")
+    assert len(remote.writes) == 1
+
+
+def test_result_query_in_progress_blocks_sync_until_query_finishes(setup_online):
+    service, _ = setup_online
+    job = service.change(price_request(service))["job"]
+    service.run_once()
+    claim = service.store.claim_reconcile(job["id"])
+    with pytest.raises(OnlineConflict, match="排队或执行中的商品修改"):
+        service.sync("mercadolibre", uuid4().hex)
+    service.store.update_job(job["id"], "waiting_confirmation", {}, owner=claim["lease_token"], dispatched=True)
+    assert service.sync("mercadolibre", uuid4().hex)["job"]["status"] == "queued"
+
+
 @pytest.mark.parametrize("dispatched",[False,True])
 def test_restart_recovery_respects_durable_dispatch_boundary(setup_online,dispatched):
     service,remote=setup_online

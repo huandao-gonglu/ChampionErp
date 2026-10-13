@@ -1,0 +1,257 @@
+import { mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
+import type { UIMessage } from 'ai'
+import type { AiUiPart, PendingToolCall } from '@/types/aiWork'
+import AiMessageList from '../AiMessageList.vue'
+
+const text = (value: string): AiUiPart => ({ type: 'text', text: value })
+const user = (id = 'user', value = '查看采购情况'): UIMessage => ({ id, role: 'user', parts: [text(value)] })
+const reply = (id: string, parts: AiUiPart[]): UIMessage => ({ id, role: 'assistant', parts })
+const tool = (id: string, state = 'output-available', output: unknown = { ok: true }): AiUiPart => ({
+  type: 'tool-order_purchase_query', toolCallId: id, state, input: { order_id: 'order-1' },
+  ...(state === 'output-available' ? { output } : {}),
+} as AiUiPart)
+
+describe('AI 对话按轮次展示', () => {
+  it('普通回答不增加空过程，推理正文不进入聊天展示', async () => {
+    const wrapper = mount(AiMessageList, { props: { messages: [user(), reply('a', [text('共有两笔订单。')])] } })
+    expect(wrapper.find('[data-testid="ai-turn-process"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toBe('共有两笔订单。')
+    await wrapper.setProps({ messages: [user(), reply('a', [{ type: 'reasoning', text: '核对订单数量', state: 'done' }, text('共有两笔订单。')])] })
+    expect(wrapper.find('[data-testid="ai-turn-process"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('核对订单数量')
+    expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toBe('共有两笔订单。')
+  })
+
+  it('实时多步骤和历史多个响应呈现同一轮，正文与附件可见、处理过程默认收起', async () => {
+    const first = [text('先查询采购记录'), tool('read')]
+    const last: AiUiPart[] = [text('采购单已付款。'), { type: 'file', mediaType: 'application/pdf', url: 'https://example.com/receipt.pdf', filename: '采购凭证.pdf' }]
+    const live = [user(), reply('live', [{ type: 'step-start' }, ...first, { type: 'step-start' }, ...last])]
+    const saved = JSON.stringify(live)
+    const wrapper = mount(AiMessageList, { props: { messages: live } })
+    const process = wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]')
+    expect(process.element.open).toBe(false)
+    expect(process.text()).toContain('先查询采购记录')
+    expect(process.text()).toContain('查询采购记录')
+    expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toContain('采购单已付款。')
+    expect(wrapper.get('[data-testid="ai-turn-response"] a').text()).toBe('采购凭证.pdf')
+    expect(wrapper.findAll('[data-testid="ai-message-assistant"]')).toHaveLength(1)
+    expect(JSON.stringify(live)).toBe(saved)
+
+    // 历史恢复改变底层消息数量，不改变对话结构，也不重置用户已展开的过程。
+    process.element.open = true
+    await wrapper.setProps({ messages: [user(), reply('saved-1', first), reply('saved-2', last)] })
+    expect(wrapper.findAll('[data-testid="ai-message-assistant"]')).toHaveLength(1)
+    expect(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]').element.open).toBe(true)
+    expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toContain('采购单已付款。')
+    expect(wrapper.findAll('[data-testid="ai-part-tool"]')).toHaveLength(1)
+  })
+
+  it('审批暂停和继续属于同一轮，未决定的审批始终在过程折叠区外', async () => {
+    const pending: PendingToolCall[] = [{ tool_call_id: 'send', tool_name: 'order_buyer_chat_send', kind: 'approval', summary: '发送消息给买家' }]
+    const wrapper = mount(AiMessageList, { props: {
+      messages: [user(), reply('pending', [tool('send', 'approval-requested')])], pendingToolCalls: pending,
+    } })
+    expect(wrapper.get('[data-testid="ai-turn-timeline"]').text()).toContain('等待确认')
+    expect(wrapper.get('[data-testid="ai-turn-timeline"]').element.closest('details')).toBeNull()
+
+    await wrapper.setProps({ pendingToolCalls: [], messages: [user(), reply('pending', [tool('send')]), reply('resumed', [text('消息已发送。')])] })
+    expect(wrapper.findAll('[data-testid="ai-message-assistant"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="ai-turn-attention"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toBe('消息已发送。')
+  })
+
+  it('用户中途补充不被合并隐藏，只有当前轮显示实时进度', () => {
+    const wrapper = mount(AiMessageList, { props: { active: true, messages: [
+      user(), reply('first', [tool('first'), text('已找到采购单。')]),
+      user('correction', '先不要付款'), reply('second', [text('收到，先核对状态'), tool('second', 'input-available')]),
+    ] } })
+    expect(wrapper.findAll('[data-testid="ai-message-user"]')).toHaveLength(2)
+    const turns = wrapper.findAll('[data-testid="ai-message-assistant"]')
+    expect(turns).toHaveLength(2)
+    expect(turns[0].find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
+    expect(turns[1].get('[data-testid="ai-turn-timeline"]').text()).toContain('查询采购记录')
+    expect(turns[1].get('[role="status"]').text()).toBe('等待结果')
+    expect(wrapper.find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('先不要付款')
+  })
+
+  it.each([
+    [{ ok: false, error: { message: '平台拒绝请求' } }, '操作失败', '平台拒绝请求'],
+    [{ ok: false, error: { message: '请核对实际支付状态', details: { outcome_unknown: true } } }, '结果未确认', '请核对实际支付状态'],
+    [{ status: 'partial' }, '部分完成', ''],
+  ])('业务异常不藏入已折叠的过程：%j', (output, label, message) => {
+    const wrapper = mount(AiMessageList, { props: { messages: [user(), reply('a', [tool('ok'), tool('problem', 'output-available', output), text('请处理异常。')])] } })
+    const attention = wrapper.get('[data-testid="ai-turn-attention"]')
+    expect(attention.element.closest('details')).toBeNull()
+    expect(attention.text()).toContain(label)
+    expect(attention.text()).toContain(message)
+    expect(attention.text()).not.toContain('已完成')
+    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('已完成')
+  })
+
+  it('后台等待即使没有活动流仍显示进度；历史未返回、拒绝、错误均保持可见', async () => {
+    const wrapper = mount(AiMessageList, { props: {
+      messages: [user(), reply('a', [tool('job', 'approval-requested')])],
+      pendingToolCalls: [{ tool_call_id: 'job', tool_name: 'order_purchase_query', kind: 'external', summary: '' }],
+    } })
+    expect(wrapper.get('[data-testid="ai-turn-timeline"] [role="status"]').text()).toBe('处理中')
+    expect(wrapper.find('[data-testid="ai-turn-process"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('等待确认')
+    await wrapper.setProps({ pendingToolCalls: [] })
+    expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).toContain('结果未确认')
+    expect(wrapper.find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
+    for (const [state, label] of [['output-denied', '未获批准'], ['output-error', '操作失败']]) {
+      await wrapper.setProps({ messages: [user(), reply('a', [tool('job', state)])] })
+      expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).toContain(label)
+    }
+  })
+
+  it('脚本检查重试收进过程，后续真实业务异常保留提示，历史刷新不改写原始错误', async () => {
+    const check: AiUiPart = {
+      type: 'tool-run_code', toolCallId: 'check', state: 'output-error', input: {},
+      errorText: 'Type error in code:\nerror[unresolved-reference]: Name `online_products_change` used when not defined\nFix the errors and try again.',
+    }
+    const rejected: AiUiPart = {
+      type: 'tool-online_products_change', toolCallId: 'write', state: 'output-available',
+      input: {}, output: { ok: false, error: { message: '当前商品有待核对的修改' } },
+    }
+    const parts = [check, tool('read'), rejected, text('仍需核对原操作结果。')]
+    const saved = JSON.stringify(parts)
+    const wrapper = mount(AiMessageList, { props: { active: true, messages: [user(), reply('live', parts)] } })
+    const timeline = wrapper.get('[data-testid="ai-turn-timeline"]')
+    const checkDetails = timeline.get<HTMLDetailsElement>('[data-testid="ai-tool-details"]')
+    expect(checkDetails.element.open).toBe(false)
+    expect(checkDetails.get('summary').text()).toContain('脚本检查未通过')
+    expect(timeline.findAll('[role="alert"]').map(alert => alert.text())).toEqual(['当前商品有待核对的修改'])
+
+    await wrapper.setProps({ active: false })
+    expect(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]').element.open).toBe(false)
+    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('unresolved-reference')
+    expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).not.toContain('脚本检查未通过')
+    expect(wrapper.get('[data-testid="ai-turn-attention"] [role="alert"]').text()).toBe('当前商品有待核对的修改')
+
+    await wrapper.setProps({ messages: [user(), reply('saved-check', [check]), reply('saved-result', parts.slice(1))] })
+    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('脚本检查未通过')
+    expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).toContain('当前商品有待核对的修改')
+    expect(JSON.stringify(parts)).toBe(saved)
+  })
+
+  it('脚本检查失败后正常完成的回复不残留业务失败提示', () => {
+    const wrapper = mount(AiMessageList, { props: { messages: [user(), reply('a', [
+      { type: 'tool-run_code', toolCallId: 'check', state: 'output-error', input: {}, errorText: 'Syntax error in code:\ninvalid syntax' },
+      tool('corrected'), text('查询完成。'),
+    ])] } })
+    expect(wrapper.find('[data-testid="ai-turn-attention"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toBe('查询完成。')
+    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('脚本检查未通过')
+  })
+
+  it('执行中的文字和并行工具按顺序原地更新，完成后才收起过程', async () => {
+    const wrapper = mount(AiMessageList, { props: { active: true, messages: [user(), reply('a', [text('先查询')])] } })
+    const prose = wrapper.get('[data-testid="ai-part-text"]').element
+    await wrapper.setProps({ messages: [user(), reply('a', [text('先查询'), tool('read', 'input-streaming'), tool('second', 'input-available')])] })
+    expect(wrapper.get('[data-testid="ai-part-text"]').element).toBe(prose)
+    expect(prose.closest('details')).toBeNull()
+    expect(wrapper.find('[data-testid="ai-turn-process"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
+    const rows = wrapper.findAll('[data-testid="ai-part-tool"]')
+    expect(rows[0].get('summary').text()).toContain('正在准备')
+    expect(rows[1].get('summary').text()).toContain('等待结果')
+    const detail = rows[0].get<HTMLDetailsElement>('details').element
+    expect(detail.open).toBe(false)
+    detail.open = true
+
+    // step 边界和历史消息数量改变，不重建已展开的活动行。
+    await wrapper.setProps({ messages: [user(), reply('saved-1', [{ type: 'step-start' }, text('先查询'), tool('read')]), reply('saved-2', [{ type: 'step-start' }, tool('second', 'input-available'), text('已找到第一笔')])] })
+    expect(wrapper.get('[data-testid="ai-part-text"]').element).toBe(prose)
+    expect(wrapper.get('[data-testid="ai-part-tool"]').element).toBe(rows[0].element)
+    expect(detail.open).toBe(true)
+    expect(rows[0].get('summary').text()).toContain('已完成')
+    expect(wrapper.get('[data-testid="ai-turn-timeline"]').findAll('[data-testid="ai-part-text"], [data-testid="ai-part-tool"]').map(row => row.attributes('data-testid'))).toEqual(['ai-part-text', 'ai-part-tool', 'ai-part-tool', 'ai-part-text'])
+
+    await wrapper.setProps({ active: false, messages: [user(), reply('a', [text('先查询'), tool('read'), tool('second'), text('找到了两笔订单。')])] })
+    expect(wrapper.find('[data-testid="ai-turn-timeline"]').exists()).toBe(false)
+    expect(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]').element.open).toBe(false)
+    expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toBe('找到了两笔订单。')
+    expect(wrapper.find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
+  })
+
+  it('流式正文不叠加通用进度，隐藏推理正文时仍显示处理状态', async () => {
+    const wrapper = mount(AiMessageList, { props: { active: true, messages: [user(), reply('a', [{ type: 'text', text: '正在核对', state: 'streaming' }])] } })
+    expect(wrapper.find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
+    await wrapper.setProps({ messages: [user(), reply('a', [{ type: 'reasoning', text: '核对', state: 'streaming' }])] })
+    expect(wrapper.find('[data-testid="ai-turn-progress"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('核对')
+    await wrapper.setProps({ messages: [user(), reply('a', [tool('read')])] })
+    expect(wrapper.get('[data-testid="ai-turn-progress"]').text()).toBe('正在处理…')
+  })
+
+  it('运行时计时、结束时冻结用时并显示结束时间，重新打开不重新计时', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-13T08:00:55Z'))
+    const timing = { started_at: '2026-10-13T08:00:00Z', finished_at: '', status: 'claimed' }
+    const messages = [user(), { ...reply('a', [tool('read'), text('结果')]), metadata: { ai_turn: timing } }]
+    const snapshot = JSON.stringify(messages)
+    const wrapper = mount(AiMessageList, { props: { messages, active: true } })
+    try {
+      expect(wrapper.get('[data-testid="ai-turn-timing"]').text()).toBe('已处理 55秒')
+      await vi.advanceTimersByTimeAsync(23000)
+      expect(wrapper.get('[data-testid="ai-turn-timing"]').text()).toBe('已处理 1分钟 18秒')
+      const completed = [user(), { ...reply('a', [tool('read'), text('结果')]), metadata: { ai_turn: {
+        ...timing, finished_at: '2026-10-13T08:01:55Z', status: 'completed',
+      } } }]
+      await wrapper.setProps({ active: false, messages: completed })
+      expect(wrapper.get('[data-testid="ai-turn-process"] summary').text()).toBe('用时 1分钟 55秒')
+      expect(wrapper.get('time').attributes('datetime')).toBe('2026-10-13T08:01:55Z')
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(wrapper.get('[data-testid="ai-turn-process"] summary').text()).toBe('用时 1分钟 55秒')
+      const reopened = mount(AiMessageList, { props: { messages: completed } })
+      expect(reopened.get('[data-testid="ai-turn-process"] summary').text()).toBe('用时 1分钟 55秒')
+      reopened.unmount()
+      expect(JSON.stringify(messages)).toBe(snapshot)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('复制只包含回答，分支定位到合并轮次的最后一条回复', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const wrapper = mount(AiMessageList, { props: { allowBranch: true, messages: [
+      user(), reply('first', [text('先查询'), tool('read')]),
+      { ...reply('last', [text('结果正文')]), metadata: { ai_turn: {
+        started_at: '2026-10-13T08:00:00Z', finished_at: '2026-10-13T08:00:05Z', status: 'completed',
+      } } },
+    ] } })
+    try {
+      await wrapper.get('button[aria-label="复制这个回复"]').trigger('click')
+      expect(writeText).toHaveBeenCalledWith('结果正文')
+      expect(wrapper.find('button[aria-label="已复制"]').exists()).toBe(true)
+      await wrapper.get('button[aria-label="分支到新的聊天"]').trigger('click')
+      expect(wrapper.emitted('branch')).toEqual([['last']])
+      await wrapper.setProps({ active: true })
+      expect(wrapper.find('[data-testid="ai-turn-actions"]').exists()).toBe(false)
+    } finally { wrapper.unmount(); vi.unstubAllGlobals() }
+  })
+
+  it('旧记录不补造用时或结束时间，剪贴板不可用时明确提示失败', async () => {
+    vi.stubGlobal('navigator', {})
+    const wrapper = mount(AiMessageList, { props: { messages: [user(), reply('a', [text('结果')])] } })
+    try {
+      expect(wrapper.find('time').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="ai-turn-timing"]').exists()).toBe(false)
+      await wrapper.get('button[aria-label="复制这个回复"]').trigger('click')
+      expect(wrapper.get('[role="alert"]').text()).toContain('复制失败')
+      expect(wrapper.find('button[aria-label="已复制"]').exists()).toBe(false)
+    } finally { wrapper.unmount(); vi.unstubAllGlobals() }
+  })
+
+  it('中断后未返回的调用转为结果未确认，提交后台任务不显示完成', async () => {
+    const wrapper = mount(AiMessageList, { props: { active: true, messages: [user(), reply('a', [tool('pay', 'input-available')])] } })
+    expect(wrapper.find('[data-testid="ai-turn-attention"]').exists()).toBe(false)
+    await wrapper.setProps({ active: false })
+    expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).toContain('结果未确认')
+    await wrapper.setProps({ messages: [user(), reply('a', [tool('publish', 'output-available', { status: 'queued' })])] })
+    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('已提交')
+    expect(wrapper.text()).not.toContain('已完成')
+  })
+})

@@ -269,6 +269,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/refresh-status", business_domain="在线商品", disposition="capability", capability_names=("online_products_refresh_status",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="capability", capability_names=("online_products_change",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/reconcile", business_domain="在线商品", disposition="capability", capability_names=("online_products_reconcile",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/close", business_domain="在线商品", disposition="capability", capability_names=("online_products_close",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/retry", business_domain="在线商品", disposition="capability", capability_names=("online_products_retry",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/ozon-export/preview", business_domain="在线商品", disposition="internal_only", reason="界面上传类目模板并人工检查导出资料；当前文件上传与下载流程仅面向可信界面，不开放 AI 工具。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/ozon-export/download", business_domain="在线商品", disposition="internal_only", reason="界面确认预览后生成本次 XLSX 文件；当前文件上传与下载流程仅面向可信界面，不开放 AI 工具。"),
@@ -408,6 +409,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         business_domain="AI 会话运输",
         disposition="excluded",
         reason="用户停止入口，向 Pydantic 原生取消令牌传递信号，不作为模型工具。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST",
+        path="/api/v1/ai-chat/fork",
+        business_domain="AI 会话运输",
+        disposition="excluded",
+        reason="用户从已完成回复创建会话分支，仅复制原生历史，不作为模型业务工具。",
     ),
     AiCapabilityCoverageEntry(
         method="POST",

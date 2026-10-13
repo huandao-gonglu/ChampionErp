@@ -10,8 +10,9 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from erp_web.marketplaces.publisher import PublishAdapterError
-from erp_web.schemas.online_products import ChangeRequest, snapshot_version
-from erp_web.services.online_product_changes import confirmation, validate_changes
+from erp_web.db import utc_now
+from erp_web.schemas.online_products import ChangeRequest, CloseOnlineOperationRequest, snapshot_version
+from erp_web.services.online_product_changes import confirmation, observed_changes, validate_changes
 from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields
 from erp_web.services.online_product_images import OnlineProductImages
 from erp_web.services.online_ozon_export import OnlineOzonExportService
@@ -108,6 +109,11 @@ class OnlineProductService:
         records, context = self._list_context(platform)
         return {**context, **listing_summary_page(records, query=query, status=status, market=market,
                 page=page, limit=limit, view=view, group_id=group_id, fields=fields)}
+
+    def job_detail(self, job_id: str) -> dict[str, Any]:
+        job = self.store.job(job_id)
+        self._config(job["platform"], job["account_id"])
+        return {"ok": True, "job": job}
 
     def detail(self, listing_id: str, *, fields: list[str] | None = None) -> dict[str, Any]:
         listing = self.store.get(listing_id)
@@ -233,6 +239,8 @@ class OnlineProductService:
         result.pop("automatic_confirmation_pending", None)
         result["last_confirmation_at"] = time.time()
         result.pop("next_confirmation_at", None)
+        # 新查询失败或进程中断时，不允许拿上次成功证据解除阻塞。
+        result.pop("evidence", None)
         self._update(job, "running", result, dispatched=True)
 
     def _confirm(self, job: dict[str, Any], adapter, result: dict[str, Any]):
@@ -264,7 +272,8 @@ class OnlineProductService:
                 status = "failed" if fully_rejected and not any(checked.values()) else "partial"
         if status == "confirmed" and request.operation == "sale_state":
             self.store.sale_intent(fresh.id, request.changes["state"], lease=job)
-        result["evidence"] = {"version": fresh.version, "synced_at": fresh.synced_at} if not fresh.errors else {}
+        result["evidence"] = {"version": fresh.version, "synced_at": fresh.synced_at,
+                              "checked_at": utc_now(), "observed": observed_changes(fresh, request)} if not fresh.errors else {}
         self._update(job, status, result, dispatched=True)
 
     def reconcile(self, job_id: str) -> dict[str, Any]:
@@ -280,6 +289,12 @@ class OnlineProductService:
             result["error"] = str(exc)
             self._update(job, "outcome_unknown", result, dispatched=True)
         return {"ok": True, "job": self.store.job(job_id)}
+
+    def close_operation(self, body: dict[str, Any]) -> dict[str, Any]:
+        request = CloseOnlineOperationRequest.model_validate(body)
+        job = self.store.job(request.job_id)
+        self._config(job["platform"], job["account_id"])
+        return {"ok": True, "job": self.store.close_operation(request.job_id, request.expected_updated_at)}
 
     def retry(self, job_id: str, key: str) -> dict[str, Any]:
         job = self.store.job(job_id)

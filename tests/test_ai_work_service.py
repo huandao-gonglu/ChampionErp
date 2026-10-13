@@ -12,6 +12,9 @@ from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from erp_web.context import get_context
 from erp_web.http_route_units import ai_work_routes
 from erp_web.services.vercel_ai_ui_service import VERCEL_SDK_VERSION
+from erp_web.facades.ai_chat_facade import build_ui_service
+from erp_web.services.vercel_ai_ui_service import VercelUiProtocolError
+from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_PROFILE_ID
 
 
 class _Handler:
@@ -156,3 +159,52 @@ def test_list_rejects_unknown_query_parameters() -> None:
     assert handler.status == 400
     assert handler.payload is not None
     assert handler.payload["error_code"] == ("PYDANTIC_MESSAGE_HISTORY_QUERY_INVALID")
+
+
+@pytest.mark.parametrize("state", ["claimed", "failed", "cancelled", "completed"])
+def test_branch_rejects_unfinished_tool_history_even_with_completed_claim(state):
+    context = get_context()
+    source = "conversation_global_chat_" + "c" * 32
+    claim = context.chat_turn_claims.claim_turn(
+        conversation_id=source, client_message_id="user", profile_id=GLOBAL_CHAT_PROFILE_ID,
+    )
+    if state != "claimed":
+        context.chat_turn_claims.finish_turn(claim.claim_id, status=state)
+    context.pydantic_messages.save(source, [
+        ModelRequest(parts=[UserPromptPart("开始")], metadata={"user_message_id": "user"}),
+        ModelResponse(parts=[ToolCallPart("run_code", {}, tool_call_id="pending"), TextPart("仍在等待")]),
+    ])
+    service = build_ui_service()
+    target = service.dump_ui_messages(source)["messages"][-1]["id"]
+    before = context.pydantic_messages.list()
+    with pytest.raises(VercelUiProtocolError, match="完成|未结束"):
+        service.fork_conversation(source, target)
+    assert context.pydantic_messages.list() == before
+
+
+def test_branch_uses_selected_turn_boundary_and_retains_closed_tools():
+    context = get_context()
+    source = "conversation_global_chat_" + "d" * 32
+    for message_id in ("one", "two"):
+        claim = context.chat_turn_claims.claim_turn(
+            conversation_id=source, client_message_id=message_id, profile_id=GLOBAL_CHAT_PROFILE_ID,
+        )
+        context.chat_turn_claims.finish_turn(claim.claim_id, status="completed")
+    context.pydantic_messages.save(source, [
+        ModelRequest(parts=[UserPromptPart("第一轮")], metadata={"user_message_id": "one"}),
+        ModelResponse(parts=[ToolCallPart("run_code", {}, tool_call_id="closed")]),
+        ModelRequest(parts=[ToolReturnPart("run_code", {"ok": True}, tool_call_id="closed")]),
+        ModelResponse(parts=[TextPart("第一轮完成")]),
+        ModelRequest(parts=[UserPromptPart("第二轮")], metadata={"user_message_id": "two"}),
+        ModelResponse(parts=[TextPart("第二轮完成")]),
+    ])
+    service = build_ui_service()
+    ui = service.dump_ui_messages(source)["messages"]
+    with pytest.raises(VercelUiProtocolError):
+        service.fork_conversation(source, ui[1]["id"])
+    branch = service.fork_conversation(source, ui[2]["id"])
+    messages = context.pydantic_messages.get(branch["conversation_id"]).model_messages()
+    assert len(messages) == 4
+    assert isinstance(messages[2].parts[0], ToolReturnPart)
+    assert messages[-1].parts[0].content == "第一轮完成"
+    assert context.agent_calls.receipt(branch["conversation_id"], "closed") is None

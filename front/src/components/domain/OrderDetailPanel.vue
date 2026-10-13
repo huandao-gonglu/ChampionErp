@@ -84,6 +84,7 @@ onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
   <WorkspaceDialog
     :open="true"
     title="订单详情"
+    :modal="false"
     variant="drawer"
     width="720px"
     class="order-ui order-detail"

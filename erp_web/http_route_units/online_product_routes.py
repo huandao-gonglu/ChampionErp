@@ -30,6 +30,11 @@ def handle_retry(handler):
     handler.send_json(result, status)
 
 
+def handle_close(handler):
+    result, status = online_product_facade.mutate("close", validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
 def handle_ozon_export_preview(handler):
     result, status = online_product_facade.export_ozon(validate_request_payload(handler.read_body(), endpoint=handler.path))
     handler.send_json(result, status)
@@ -48,6 +53,7 @@ POST_HANDLERS = {
     "/api/online-products/change": handle_change,
     "/api/online-products/reconcile": handle_reconcile,
     "/api/online-products/retry": handle_retry,
+    "/api/online-products/close": handle_close,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {

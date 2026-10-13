@@ -170,6 +170,7 @@ _WRITE_CAPABILITIES = frozenset(
         "online_products_sync",
         "online_products_refresh_status",
         "online_products_reconcile",
+        "online_products_close",
         "online_products_retry",
         "drafts_query",
         "product_read",

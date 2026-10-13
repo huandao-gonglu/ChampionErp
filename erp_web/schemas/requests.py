@@ -197,6 +197,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/online-products/refresh-status": _contract(fields={"listing_id": STRING}, required=("listing_id",)),
     "/api/online-products/change": _contract(fields={"listing_id": STRING, "version": STRING, "operation": STRING, "scope_id": STRING, "changes": OBJECT, "idempotency_key": STRING}, required=("listing_id", "version", "operation", "changes", "idempotency_key")),
     "/api/online-products/reconcile": _contract(fields={"job_id": STRING}, required=("job_id",)),
+    "/api/online-products/close": _contract(fields={"job_id": STRING, "expected_updated_at": STRING, "acknowledge": BOOLEAN}, required=("job_id", "expected_updated_at", "acknowledge")),
     "/api/online-products/retry": _contract(fields={"job_id": STRING, "idempotency_key": STRING}, required=("job_id", "idempotency_key")),
     "/api/ai/approval-mode": _contract(
         fields={"mode": FieldRule("enum", choices=frozenset({"ask", "full"}))},
@@ -323,6 +324,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required=("id", "messages"),
     ),
     "/api/v1/ai-chat/cancel": _contract(
+        fields={"id": STRING, "message_id": STRING}, required=("id", "message_id"),
+    ),
+    "/api/v1/ai-chat/fork": _contract(
         fields={"id": STRING, "message_id": STRING}, required=("id", "message_id"),
     ),
     "/api/v1/product-research/keywords/search": _contract(

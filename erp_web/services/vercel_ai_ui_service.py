@@ -10,9 +10,10 @@ import re
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Sequence
+from uuid import uuid4
 
 from pydantic import ValidationError
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart, RetryPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import (
     RegenerateMessage,
@@ -25,6 +26,7 @@ from erp_web.services.ai_agent_factory import AiAgentExecutionError
 from erp_web.services.ai_run_cancellation import bind_cancellation_token
 from erp_web.services.agent_run_storage import stored_run_error
 from erp_web.schemas.ai_page_context import AiPageContext
+from erp_web.schemas.ai_work import AiTurnTiming
 from erp_web.services.global_agent_chat_service import (
     GLOBAL_CHAT_ACTOR_ID,
     GLOBAL_CHAT_TENANT_ID,
@@ -382,8 +384,14 @@ class VercelAiUiService:
         )
         script_receipts = self.call_store.script_write_receipts(conversation_id)
         visible = []
+        turn = None
         for message in ui:
             metadata = message.metadata or {}
+            if message.role == "user":
+                turn = self._turn_display(conversation_id, metadata)
+            if message.role in ("user", "assistant") and turn:
+                metadata = {**metadata, "ai_turn": turn}
+                message = message.model_copy(update={"metadata": metadata})
             if message.role == "user" and "presentation_user_message" in metadata:
                 text = metadata["presentation_user_message"]
                 if not text:
@@ -446,6 +454,64 @@ class VercelAiUiService:
                 for r in self.call_store.inbox(conversation_id)
             ],
         }
+
+    def _turn_display(self, conversation_id: str, metadata: dict) -> AiTurnTiming | None:
+        message_id = metadata.get("user_message_id")
+        claim = self.claim_store.get(conversation_id, message_id) if message_id else None
+        if claim:
+            return {"started_at": claim.claimed_at, "finished_at": claim.finished_at,
+                    "status": claim.status}
+        # 分支保留原轮次时间；旧记录缺少时间时不使用页面打开时间补造。
+        return metadata.get("ai_turn")
+
+    def fork_conversation(self, conversation_id: str, message_id: str) -> dict:
+        """复制已闭合的原生历史前缀；不复制运行、审批、任务或业务写权限。"""
+        conversation_id = self._validate_conversation_id(conversation_id)
+        self._verify_history_ownership(conversation_id)
+        history = self.chat_service.message_store.get(conversation_id)
+        if history is None:
+            raise VercelUiProtocolError(404, "AI_CHAT_BRANCH_SOURCE_MISSING", "原对话不存在。")
+        messages = history.model_messages()
+        ui = VercelAIAdapter.dump_messages(messages, sdk_version=VERCEL_SDK_VERSION)
+        matches = [i for i, item in enumerate(ui) if item.id == message_id and item.role == "assistant"]
+        if len(matches) != 1:
+            raise VercelUiProtocolError(409, "AI_CHAT_BRANCH_MESSAGE_INVALID", "回复尚未保存或已变化，请刷新后重试。")
+        target = matches[0]
+        if target + 1 < len(ui) and ui[target + 1].role == "assistant":
+            raise VercelUiProtocolError(409, "AI_CHAT_BRANCH_INCOMPLETE", "请从一轮已完成的回复创建分支。")
+        user = next((item for item in reversed(ui[:target]) if item.role == "user"), None)
+        turn = self._turn_display(conversation_id, user.metadata or {}) if user else None
+        if not turn or turn.get("status") != "completed":
+            raise VercelUiProtocolError(409, "AI_CHAT_BRANCH_INCOMPLETE", "请等待本轮完成后创建分支。")
+        # 官方 ID 回调提供 UI 消息与原生消息的对应关系，不反向重建工具历史。
+        positions = {id(message): index for index, message in enumerate(messages)}
+        indexed = VercelAIAdapter.dump_messages(
+            messages, sdk_version=VERCEL_SDK_VERSION,
+            generate_message_id=lambda message, role, index: str(positions[id(message)]),
+        )
+        prefix = messages[:int(indexed[target].id) + 1]
+        outstanding: set[str] = set()
+        for message in prefix:
+            for part in message.parts:
+                if isinstance(part, ToolCallPart):
+                    outstanding.add(part.tool_call_id)
+                elif isinstance(part, (ToolReturnPart, RetryPromptPart)) and part.tool_call_id:
+                    outstanding.discard(part.tool_call_id)
+        if outstanding or not isinstance(prefix[-1], ModelResponse):
+            raise VercelUiProtocolError(409, "AI_CHAT_BRANCH_INCOMPLETE", "该回复仍有未结束的操作，不能创建分支。")
+        for message in prefix:
+            metadata = message.metadata or {}
+            timing = self._turn_display(conversation_id, metadata)
+            if metadata.get("user_message_id") and timing:
+                message.metadata = {**metadata, "ai_turn": timing}
+        branch_id = f"conversation_global_chat_{uuid4().hex}"
+        prefix[-1].metadata = {**(prefix[-1].metadata or {}), "ai_chat_branch": {
+            "source_conversation_id": conversation_id, "source_message_id": message_id,
+            "profile_id": GLOBAL_CHAT_PROFILE_ID, "actor_id": GLOBAL_CHAT_ACTOR_ID,
+            "tenant_id": GLOBAL_CHAT_TENANT_ID,
+        }}
+        self.chat_service.message_store.save(branch_id, prefix)
+        return self.dump_ui_messages(branch_id)
 
     # -- 预流校验 ----------------------------------------------------------
 
@@ -538,6 +604,16 @@ class VercelAiUiService:
         claim = self.claim_store.find_for_conversation(conversation_id)
         if history is None and claim is None:
             return
+        if history is not None and claim is None:
+            messages = history.model_messages()
+            branch = (messages[-1].metadata or {}).get("ai_chat_branch", {}) if messages else {}
+            if (
+                isinstance(branch, dict)
+                and branch.get("profile_id") == GLOBAL_CHAT_PROFILE_ID
+                and branch.get("actor_id") == GLOBAL_CHAT_ACTOR_ID
+                and branch.get("tenant_id") == GLOBAL_CHAT_TENANT_ID
+            ):
+                return
         if (
             claim is None
             or claim.profile_id != GLOBAL_CHAT_PROFILE_ID

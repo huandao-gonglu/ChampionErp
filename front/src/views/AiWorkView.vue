@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import type { UIMessage } from 'ai'
 import {
   fetchPydanticConversation,
@@ -9,7 +9,6 @@ import {
 } from '@/api/aiWork'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiMessageList from '@/components/ai-work/AiMessageList.vue'
-import JsonTreeNode from '@/components/ai-work/JsonTreeNode.vue'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { workflowNavItems } from '@/constants/navigation'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
@@ -19,15 +18,13 @@ import {
   type PydanticConversationSummary,
 } from '@/types/aiWork'
 
-type ViewMode = 'chat' | 'raw'
-type InspectorMode = 'tree' | 'raw'
-
 /** 左侧历史条目；活动会话尚未持久化时允许前端临时条目。 */
 interface ConversationListEntry extends PydanticConversationSummary {
   temporary?: boolean
 }
 
 const route = useRoute()
+const router = useRouter()
 useAiPageContext(() => ({ page: 'ai_work' }))
 const chatStore = useAiChatStore()
 const displayStore = useAiWorkDisplayStore()
@@ -37,11 +34,6 @@ const selectedDetail = ref<PydanticConversationDetailResponse | null>(null)
 const loadingList = ref(false)
 const loadingDetail = ref(false)
 const listError = ref('')
-const detailError = ref('')
-const jsonError = ref('')
-const downloadError = ref('')
-const viewMode = ref<ViewMode>('chat')
-const inspectorMode = ref<InspectorMode>('tree')
 const historyMessages = ref<UIMessage[] | null>(null)
 const loadingUiMessages = ref(false)
 const uiMessagesError = ref('')
@@ -113,11 +105,6 @@ const selectedCreatedAt = computed(() => (
 const selectedUpdatedAt = computed(() => (
   selectedDetail.value?.updated_at || selectedSummary.value?.updated_at || ''
 ))
-
-const rawJson = computed(() => {
-  if (!selectedDetail.value) return ''
-  return JSON.stringify(selectedDetail.value.messages, null, 2)
-})
 
 const refreshBusy = computed(() => loadingList.value || loadingDetail.value)
 
@@ -209,43 +196,17 @@ function validateConversationList(value: unknown): PydanticConversationSummary[]
   return value as PydanticConversationSummary[]
 }
 
-function validateMessagesJson(messages: unknown): string {
-  if (!Array.isArray(messages)) return '消息记录格式异常。'
-  try {
-    JSON.stringify(messages)
-    return ''
-  } catch (cause) {
-    return formatError(cause, '消息记录无法读取')
-  }
-}
-
 async function loadConversation(conversationId: string): Promise<void> {
   const generation = ++detailRequestGeneration
   selectedDetail.value = null
   loadingDetail.value = true
-  detailError.value = ''
-  jsonError.value = ''
-  downloadError.value = ''
   try {
     const response = await fetchPydanticConversation(conversationId)
     if (generation !== detailRequestGeneration || selectedId.value !== conversationId) return
-    if (!response?.ok) {
-      detailError.value = '读取对话失败，请稍后重试。'
-      return
-    }
-    if (response.conversation_id !== conversationId) {
-      detailError.value = '返回的对话与所选对话不一致，请刷新后重试。'
-      return
-    }
-    const validationError = validateMessagesJson(response.messages)
-    if (validationError) {
-      jsonError.value = validationError
-      return
-    }
+    if (!response?.ok || response.conversation_id !== conversationId || !Array.isArray(response.messages)) return
     selectedDetail.value = response
-  } catch (cause) {
-    if (generation !== detailRequestGeneration || selectedId.value !== conversationId) return
-    detailError.value = formatError(cause, '读取对话失败')
+  } catch {
+    // 头部元数据读取失败时沿用列表摘要，不影响独立加载的对话内容。
   } finally {
     if (generation === detailRequestGeneration) loadingDetail.value = false
   }
@@ -290,7 +251,7 @@ async function loadUiMessages(conversationId: string): Promise<void> {
 }
 
 /**
- * 活动会话的规范 detail：列表已有服务端条目时读取，供原始消息标签检查；
+ * 活动会话的规范 detail：列表已有服务端条目时读取，用于头部时间与消息数量；
  * 尚未持久化时跳过请求，避免产生必然 404 并误报“对话不存在”。
  */
 async function loadActiveConversationDetail(conversationId: string): Promise<void> {
@@ -304,9 +265,6 @@ async function loadActiveConversationDetail(conversationId: string): Promise<voi
   detailRequestGeneration += 1
   selectedDetail.value = null
   loadingDetail.value = false
-  detailError.value = ''
-  jsonError.value = ''
-  downloadError.value = ''
 }
 
 /**
@@ -314,9 +272,10 @@ async function loadActiveConversationDetail(conversationId: string): Promise<voi
  * 活动会话直接绑定共享 Chat 的内存实时消息，不请求 /ui-messages；
  * 避免用同一个 Promise.all() 混合实时内存态与可能尚不存在的服务端历史。
  */
-async function loadSelection(conversationId: string, resetView = false): Promise<void> {
+async function loadSelection(conversationId: string): Promise<void> {
+  // 切到内存中的新对话也要作废旧历史请求，避免迟到响应重新打开旧 Chat。
+  uiMessagesRequestGeneration += 1
   selectedId.value = conversationId
-  if (resetView) viewMode.value = 'chat'
   if (chatStore.chat?.id === conversationId) {
     historyMessages.value = null
     uiMessagesError.value = ''
@@ -333,9 +292,6 @@ async function loadSelection(conversationId: string, resetView = false): Promise
     detailRequestGeneration += 1
     selectedDetail.value = null
     loadingDetail.value = false
-    detailError.value = ''
-    jsonError.value = ''
-    downloadError.value = ''
     return
   }
   await Promise.all([
@@ -346,7 +302,11 @@ async function loadSelection(conversationId: string, resetView = false): Promise
 
 async function selectConversation(conversationId: string): Promise<void> {
   if (!conversationId) return
-  await loadSelection(conversationId, true)
+  const selection = loadSelection(conversationId)
+  const query: LocationQueryRaw = { ...route.query, conversation_id: conversationId }
+  if (foregroundPresentation.value?.conversationId !== conversationId) delete query.presentation_id
+  await router.replace({ query })
+  await selection
 }
 
 async function refreshConversations(): Promise<void> {
@@ -364,17 +324,13 @@ async function refreshConversations(): Promise<void> {
       .sort(byUpdatedDesc)
     conversations.value = nextConversations
 
-    const currentStillExists = nextConversations.some(
-      (conversation) => conversation.conversation_id === selectedId.value,
-    )
     const requestedId = requestedSelectionId.value
     const activeId = chatStore.activeConversationId || ''
     let nextId = ''
-    if (currentStillExists) nextId = selectedId.value
-    else if (requestedId) nextId = requestedId
     // 选中项尚未/不再出现在服务端列表（活动会话或刚 terminal 的业务 conversation）
-    // 时保持选中，不因刷新自动跳回 global.chat。
-    else if (selectedId.value) nextId = selectedId.value
+    // 时保持选中；旧 URL 和未完成的导航不得覆盖用户刚创建的新对话。
+    if (selectedId.value) nextId = selectedId.value
+    else if (requestedId) nextId = requestedId
     else if (activeId && chatStore.chat) nextId = activeId
     else nextId = nextConversations[0]?.conversation_id || ''
 
@@ -384,8 +340,6 @@ async function refreshConversations(): Promise<void> {
       selectedId.value = ''
       selectedDetail.value = null
       historyMessages.value = null
-      detailError.value = ''
-      jsonError.value = ''
       uiMessagesError.value = ''
       return
     }
@@ -398,29 +352,18 @@ async function refreshConversations(): Promise<void> {
   }
 }
 
-function downloadRawJson(): void {
-  if (!selectedDetail.value || !rawJson.value) return
-  downloadError.value = ''
-  try {
-    const blob = new Blob([rawJson.value], { type: 'application/json;charset=utf-8' })
-    const objectUrl = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    const safeId = selectedDetail.value.conversation_id.replace(/[^a-zA-Z0-9._-]/g, '_')
-    anchor.href = objectUrl
-    anchor.download = `${safeId || 'conversation'}.json`
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
-    URL.revokeObjectURL(objectUrl)
-  } catch (cause) {
-    downloadError.value = formatError(cause, '下载原始 JSON 失败')
-  }
-}
-
 // 活动运行完成（store historyVersion 变化）时只刷新一次历史列表。
 watch(() => chatStore.historyVersion, () => {
   void refreshConversations()
 })
+
+// /new 先替换共享 Chat，再同步页面选择；同步执行使旧请求来不及重新激活旧会话。
+// 普通历史读取会先选中再打开 Chat，因此不会重复加载或抢占业务任务展示。
+watch(() => chatStore.chat?.id, (conversationId) => {
+  if (conversationId && conversationId !== selectedId.value) {
+    void selectConversation(conversationId)
+  }
+}, { flush: 'sync' })
 
 // 前台 presentation terminal（display store 版本变化）：刷新列表与规范 detail；
 // 选中该 presentation conversation 时随后由 loadSelection 用服务端 /ui-messages
@@ -565,68 +508,11 @@ onMounted(() => {
                   <span v-if="selectedDetail">消息：{{ selectedDetail.messages.length }}</span>
                 </div>
               </div>
-
-              <div class="flex flex-wrap items-center gap-2">
-                <div class="inline-flex rounded-lg border border-slate-200 p-1 dark:border-dark-700" role="tablist" aria-label="视图切换">
-                  <button
-                    type="button"
-                    role="tab"
-                    class="rounded-md px-3 py-1.5 text-xs font-bold"
-                    :class="viewMode === 'chat' ? 'bg-slate-900 text-white dark:bg-white dark:text-dark-950' : 'text-slate-500 dark:text-accent-300'"
-                    :aria-selected="viewMode === 'chat'"
-                    data-testid="ai-work-view-chat-tab"
-                    @click="viewMode = 'chat'"
-                  >
-                    对话
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    class="rounded-md px-3 py-1.5 text-xs font-bold"
-                    :class="viewMode === 'raw' ? 'bg-slate-900 text-white dark:bg-white dark:text-dark-950' : 'text-slate-500 dark:text-accent-300'"
-                    :aria-selected="viewMode === 'raw'"
-                    data-testid="ai-work-view-raw-tab"
-                    @click="viewMode = 'raw'"
-                  >
-                    原始消息
-                  </button>
-                </div>
-
-                <template v-if="viewMode === 'raw' && selectedDetail">
-                  <div class="inline-flex rounded-lg border border-slate-200 p-1 dark:border-dark-700" role="tablist" aria-label="JSON 查看方式">
-                    <button
-                      type="button"
-                      role="tab"
-                      class="rounded-md px-3 py-1.5 text-xs font-bold"
-                      :class="inspectorMode === 'tree' ? 'bg-slate-900 text-white dark:bg-white dark:text-dark-950' : 'text-slate-500 dark:text-accent-300'"
-                      :aria-selected="inspectorMode === 'tree'"
-                      data-testid="ai-work-tree-tab"
-                      @click="inspectorMode = 'tree'"
-                    >
-                      树状查看
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      class="rounded-md px-3 py-1.5 text-xs font-bold"
-                      :class="inspectorMode === 'raw' ? 'bg-slate-900 text-white dark:bg-white dark:text-dark-950' : 'text-slate-500 dark:text-accent-300'"
-                      :aria-selected="inspectorMode === 'raw'"
-                      data-testid="ai-work-raw-tab"
-                      @click="inspectorMode = 'raw'"
-                    >
-                      原始 JSON
-                    </button>
-                  </div>
-                  <button type="button" class="btn btn-outline px-3 py-2 text-xs" data-testid="ai-work-download" @click="downloadRawJson">
-                    下载 JSON
-                  </button>
-                </template>
-              </div>
             </div>
           </header>
 
           <!-- 对话视图：活动前台 presentation 绑定 observe Chat；活动会话绑定共享 Chat；其他历史只读展示 -->
-          <div v-if="viewMode === 'chat'" role="tabpanel" data-testid="ai-work-chat-view" class="p-5">
+          <div data-testid="ai-work-chat-view" class="p-5">
             <div
               v-if="selectedIsForegroundPresentation && foregroundPresentation"
               class="h-[calc(100vh-320px)] min-h-[480px] overflow-y-auto"
@@ -640,6 +526,7 @@ onMounted(() => {
               <AiMessageList
                 v-if="displayStore.presentationMessages.length"
                 :messages="displayStore.presentationMessages"
+                :active="!displayStore.foregroundIsTerminal"
               />
               <div
                 v-else
@@ -650,7 +537,7 @@ onMounted(() => {
               </div>
 
               <p
-                v-if="displayStore.presentationBusy"
+                v-if="displayStore.presentationBusy && displayStore.presentationMessages.at(-1)?.role !== 'assistant'"
                 class="mt-3 text-xs text-slate-400"
                 data-testid="ai-work-presentation-live-streaming"
               >
@@ -725,71 +612,6 @@ onMounted(() => {
                 </p>
               </template>
             </template>
-          </div>
-
-          <!-- 原始消息视图：规范 Pydantic JSON 检查与下载 -->
-          <div v-else role="tabpanel" data-testid="ai-work-raw-view" class="p-5">
-            <div v-if="loadingDetail" class="flex min-h-[480px] items-center justify-center text-sm text-slate-500 dark:text-accent-300">
-              正在读取对话记录…
-            </div>
-
-            <p
-              v-else-if="detailError"
-              role="alert"
-              data-testid="ai-work-detail-error"
-              class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
-            >
-              {{ detailError }}
-            </p>
-
-            <p
-              v-else-if="jsonError"
-              role="alert"
-              data-testid="ai-work-json-error"
-              class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100"
-            >
-              {{ jsonError }}
-            </p>
-
-            <template v-else-if="selectedDetail">
-              <p
-                v-if="selectedIsActive && chatStore.isBusy"
-                data-testid="ai-work-raw-streaming-note"
-                class="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100"
-              >
-                本轮回复尚未完成，当前显示此前保存的记录，完成后会自动更新。
-              </p>
-
-              <div
-                v-if="inspectorMode === 'tree'"
-                data-testid="ai-work-json-tree"
-                class="max-h-[calc(100vh-300px)] min-h-[480px] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-dark-700 dark:bg-dark-950"
-              >
-                <JsonTreeNode :value="selectedDetail.messages" label="messages" />
-              </div>
-
-              <pre
-                v-else
-                data-testid="ai-work-raw-json"
-                class="max-h-[calc(100vh-300px)] min-h-[480px] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950 p-4 font-mono text-xs leading-6 text-slate-100"
-              >{{ rawJson }}</pre>
-            </template>
-
-            <div
-              v-else-if="selectedIsActive"
-              data-testid="ai-work-raw-pending"
-              class="flex min-h-[480px] items-center justify-center rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-500 dark:border-dark-600 dark:text-accent-300"
-            >
-              回复完成后可查看记录。
-            </div>
-
-            <p
-              v-if="downloadError"
-              role="alert"
-              class="mt-3 text-sm text-rose-600 dark:text-rose-300"
-            >
-              {{ downloadError }}
-            </p>
           </div>
         </template>
       </section>

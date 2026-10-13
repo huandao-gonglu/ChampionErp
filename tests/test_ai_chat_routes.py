@@ -49,6 +49,47 @@ from erp_web.services.vercel_ai_ui_service import VERCEL_SDK_VERSION
 CHAT_PATH = "/api/v1/ai-chat/runs"
 
 
+def test_branch_copies_saved_prefix_without_running_and_can_continue(chat_server):
+    calls = []
+
+    async def model(messages, info):
+        calls.append(messages)
+        yield "第一轮结果" if len(calls) == 1 else "继续后的结果"
+
+    chat_server["model"]["model"] = FunctionModel(stream_function=model)
+    source_id = "conversation_global_chat_" + "b" * 32
+    port = chat_server["port"]
+    assert _post(port, CHAT_PATH, _submit_body(source_id, "branch-user", "记住订单说明"))[0] == 200
+    _, raw = _get(port, f"/api/v1/ai-work/conversations/{source_id}/ui-messages")
+    detail = json.loads(raw)
+    reply = detail["messages"][-1]
+    claim = get_context().chat_turn_claims.get(source_id, "branch-user")
+    assert reply["metadata"]["ai_turn"] == {
+        "started_at": claim.claimed_at, "finished_at": claim.finished_at, "status": "completed",
+    }
+    before = get_context().pydantic_messages.get(source_id)
+    status, _, raw = _post(port, "/api/v1/ai-chat/fork", {"id": source_id, "message_id": reply["id"]})
+    assert status == 200
+    branch = json.loads(raw)
+    branch_id = branch["conversation_id"]
+    assert branch_id != source_id
+    assert len(calls) == 1
+    assert branch["messages"][-1]["parts"] == reply["parts"]
+    assert branch["messages"][-1]["metadata"]["ai_turn"] == reply["metadata"]["ai_turn"]
+    assert get_context().pydantic_messages.get(source_id) == before
+    assert get_context().agent_calls.pending(branch_id) is None
+    assert get_context().agent_calls.selected_drafts(branch_id) == ()
+    assert _post(port, CHAT_PATH, _submit_body(branch_id, "branch-followup", "继续解释"))[0] == 200
+    assert len(calls) == 2
+    assert any(isinstance(p, TextPart) and p.content == "第一轮结果" for m in calls[-1] for p in m.parts)
+    assert get_context().pydantic_messages.get(source_id) == before
+
+
+@pytest.mark.parametrize("payload", [{}, {"id": "bad", "message_id": "reply"}])
+def test_branch_endpoint_validates_request(chat_server, payload):
+    assert _post(chat_server["port"], "/api/v1/ai-chat/fork", payload)[0] in {400, 422}
+
+
 def test_stop_endpoint_interrupts_http_stream(chat_server):
     entered, interrupted = threading.Event(), threading.Event()
 

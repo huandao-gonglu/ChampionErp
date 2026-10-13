@@ -25,6 +25,12 @@ export const GLOBAL_CHAT_CONVERSATION_PREFIX = 'conversation_global_chat_'
 /** Vercel `UIMessagePart`（默认泛型），供纯展示组件渲染单个 part。 */
 export type AiUiPart = UIMessage['parts'][number]
 
+export interface AiTurnTiming {
+  started_at: string
+  finished_at?: string
+  status?: string
+}
+
 /** 服务端在 UIMessage.metadata 中附加的脚本写回执，不改变原生工具状态。 */
 export interface BusinessWriteReceipt {
   tool_call_id: string

@@ -16,7 +16,9 @@ ACTIVE = ("queued", "running", "submitted", "waiting_confirmation", "outcome_unk
 
 
 class OnlineConflict(ValueError):
-    pass
+    def __init__(self, message: str, *, job_id: str | None = None):
+        super().__init__(message)
+        self.job_id = job_id
 
 
 class OnlineProductStore:
@@ -201,15 +203,20 @@ class OnlineProductStore:
                 if (old["platform"], old["account_id"], old["operation"], old["target_id"], old["request_json"]) != (platform, account, operation, target, facts):
                     raise OnlineConflict("重复提交键对应不同操作，请重新确认")
                 return self._job(old)
-            # 全量同步与任何修改互斥；两个不同商品的修改允许分别排队。
-            rows = conn.execute("SELECT target_id,operation,status,result_json FROM online_jobs WHERE platform=? AND account_id=? AND status IN ('queued','running','submitted','waiting_confirmation','outcome_unknown')", (platform, account)).fetchall()
-            conflict = next((row for row in rows if target == "*" or row["target_id"] in ("*", target)), None)
+            # 同步只与正在排队或执行的任务互斥；等待回执不应冻结整店只读同步。
+            # 新修改仍受同目标的全部未完成任务保护，不能借同步绕过未知写入。
+            rows = conn.execute("SELECT id,target_id,operation,status,result_json FROM online_jobs WHERE platform=? AND account_id=? AND status IN ('queued','running','submitted','waiting_confirmation','outcome_unknown')", (platform, account)).fetchall()
+            conflict = next((row for row in rows
+                             if (operation != "sync" or row["status"] in ("queued", "running"))
+                             and (target == "*" or row["target_id"] in ("*", target))), None)
             if conflict:
                 if conflict["operation"] == "sync":
                     progress = json.loads(conflict["result_json"])
                     count = int(progress.get("completed", 0)) + int(progress.get("failed", 0))
-                    raise OnlineConflict(f"当前店铺正在同步，已处理 {count} 件；请查看同步进度，无需重复启动")
-                raise OnlineConflict("当前店铺已有未完成的商品修改，请到操作记录查看；待确认或结果未知的修改可查询平台结果")
+                    raise OnlineConflict(f"当前店铺正在同步，已处理 {count} 件；请查看同步进度，无需重复启动", job_id=conflict["id"])
+                if operation == "sync":
+                    raise OnlineConflict("当前店铺有排队或执行中的商品修改，请完成后再同步", job_id=conflict["id"])
+                raise OnlineConflict("该商品已有未完成的修改，请到操作记录查询平台结果；核对后仍未确认的操作可由人工结束", job_id=conflict["id"])
             conn.execute("INSERT INTO online_jobs(id,platform,account_id,operation,target_id,status,idempotency_key,request_json,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?,?,?)",
                          (job_id, platform, account, operation, target, key, facts, now, now))
             conn.commit()
@@ -252,6 +259,11 @@ class OnlineProductStore:
             row = conn.execute("SELECT * FROM online_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None or row["status"] not in ("submitted", "waiting_confirmation", "outcome_unknown"):
                 raise OnlineConflict("只有待确认或结果未知的修改可以查询平台结果")
+            syncing = conn.execute("""SELECT 1 FROM online_jobs WHERE platform=? AND account_id=?
+                AND operation='sync' AND status IN ('queued', 'running') LIMIT 1""",
+                (row["platform"], row["account_id"])).fetchone()
+            if syncing:
+                raise OnlineConflict("当前店铺正在同步，请完成后再查询平台结果")
             result = json.loads(row["result_json"])
             earliest = float(result.get("last_confirmation_at") or 0) + 30
             if earliest > time.time():
@@ -259,3 +271,46 @@ class OnlineProductStore:
             conn.execute("UPDATE online_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=?", (token, time.time()+900, utc_now(), job_id))
             conn.commit()
         return {**self._job(row), "lease_token": token}
+
+    def close_operation(self, job_id: str, expected_updated_at: str) -> dict[str, Any]:
+        """短事务内核验证据并解除目标互斥；旧提交键和外部请求阻断始终保留。"""
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM online_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise ValueError("操作记录不存在")
+            result = json.loads(row["result_json"])
+            if row["status"] == "closed_unconfirmed" and result.get("resolution", {}).get("based_on_updated_at") == expected_updated_at:
+                return self._job(row)
+            if row["updated_at"] != expected_updated_at:
+                raise OnlineConflict("操作记录已变化，请重新查询平台结果并确认")
+            if row["operation"] == "sync" or row["status"] not in ("outcome_unknown", "waiting_confirmation"):
+                raise OnlineConflict("只有查询后仍未确认的商品修改可以人工结束")
+            evidence = result.get("evidence") or {}
+            try:
+                checked_at = datetime.fromisoformat(evidence.get("checked_at", "")).timestamp()
+            except (TypeError, ValueError):
+                checked_at = 0
+            observed = evidence.get("observed") or {}
+            checks = result.get("confirmation") or {}
+            if (not 0 <= time.time() - checked_at <= 300 or checked_at < float(result.get("last_confirmation_at") or 0)
+                    or result.get("read_errors") or not checks or all(checks.values())
+                    or not observed or any(value is None for value in observed.values())):
+                raise OnlineConflict("请先成功查询平台当前值，并在五分钟内核对后结束操作")
+            if result.get("platform_confirmation", {}).get("pending"):
+                raise OnlineConflict("平台仍在处理原请求，请等待处理结束后重新查询")
+            active = conn.execute("""SELECT 1 FROM online_jobs WHERE platform=? AND account_id=?
+                AND target_id IN (?, '*') AND status IN ('queued','running') LIMIT 1""",
+                (row["platform"], row["account_id"], row["target_id"])).fetchone()
+            listing = conn.execute("SELECT version FROM online_listings WHERE id=? AND platform=? AND account_id=?",
+                                   (row["target_id"], row["platform"], row["account_id"])).fetchone()
+            if active or not listing or listing["version"] != evidence.get("version"):
+                raise OnlineConflict("商品正在处理或核对后已变化，请重新查询平台结果")
+            now = utc_now()
+            result["resolution"] = {"decision": "accept_current_state", "previous_status": row["status"],
+                "closed_at": now, "based_on_updated_at": expected_updated_at,
+                "acknowledged_unconfirmed": True, "evidence": evidence}
+            conn.execute("""UPDATE online_jobs SET status='closed_unconfirmed',result_json=?,
+                owner='',lease_until=0,updated_at=? WHERE id=?""", (json.dumps(result, ensure_ascii=False), now, job_id))
+            conn.commit()
+        return self.job(job_id)

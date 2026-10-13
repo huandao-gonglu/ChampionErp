@@ -10,7 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 Platform = Literal["mercadolibre", "ozon", "yandex"]
 Operation = Literal["sync", "price", "stock", "content", "sale_state"]
-JobStatus = Literal["queued", "running", "submitted", "waiting_confirmation", "confirmed", "partial", "failed", "outcome_unknown"]
+JobStatus = Literal["queued", "running", "submitted", "waiting_confirmation", "confirmed", "partial", "failed", "outcome_unknown", "closed_unconfirmed"]
+
+
+class OnlineConflictResponse(BaseModel):
+    ok: Literal[False] = False
+    error: str
+    error_code: Literal["ONLINE_CONFLICT"] = "ONLINE_CONFLICT"
+    conflict_job_id: str | None = None
 
 
 class PriceScope(BaseModel):
@@ -153,6 +160,21 @@ class OnlineStatus(BaseModel):
 class RefreshStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     listing_id: str = Field(min_length=1)
+
+
+class CloseOnlineOperationRequest(BaseModel):
+    """人工接受当前平台状态，仅结束本地待核对操作，不撤销或重放远端请求。"""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    job_id: str = Field(min_length=1)
+    expected_updated_at: str = Field(min_length=1, description="最近一次查询平台结果返回的 job.updated_at。")
+    acknowledge: bool = Field(description="明确确认：原请求结果仍未确认且可能延迟生效；结束本地操作后允许新的修改。")
+
+    @field_validator("acknowledge")
+    @classmethod
+    def require_acknowledgement(cls, value: bool) -> bool:
+        if not value:
+            raise ValueError("请确认原请求结果仍未确认，结束本地操作后允许新的修改")
+        return value
 
 
 @dataclass

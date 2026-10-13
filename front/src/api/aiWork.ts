@@ -50,6 +50,13 @@ export function conversationEventsUrl(
 /** 聊天流接口不走 Axios；此路径常量供共享 Chat transport 使用。 */
 export const AI_CHAT_RUNS_PATH = '/api/v1/ai-chat/runs'
 
+export async function forkChatConversation(conversationId: string, messageId: string): Promise<AiWorkUiMessagesResponse> {
+  const response = await apiClient.post<AiWorkUiMessagesResponse>('/api/v1/ai-chat/fork', {
+    id: conversationId, message_id: messageId,
+  })
+  return response.data
+}
+
 export async function cancelChatRun(conversationId: string, messageId: string): Promise<AiChatCancelResponse> {
   const response = await apiClient.post<AiChatCancelResponse>('/api/v1/ai-chat/cancel', {
     id: conversationId, message_id: messageId,

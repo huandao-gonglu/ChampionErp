@@ -10,8 +10,9 @@ const props = withDefaults(
     variant?: 'dialog' | 'drawer'
     width?: string
     closeDisabled?: boolean
+    modal?: boolean
   }>(),
-  { variant: 'dialog', width: undefined, closeDisabled: false }
+  { variant: 'dialog', width: undefined, closeDisabled: false, modal: true }
 )
 const emit = defineEmits<{ close: [] }>()
 const titleId = useId()
@@ -19,6 +20,12 @@ const dialog = ref<HTMLDialogElement | null>(null)
 let restoreScroll = () => {}
 function requestClose() {
   if (!props.closeDisabled) emit('close')
+}
+function handleEscape(event: KeyboardEvent) {
+  if (props.modal) return
+  event.preventDefault()
+  event.stopPropagation()
+  requestClose()
 }
 const { recordBackdropPointer, dismissFromBackdrop, resetBackdropPointer } =
   useBackdropDismiss(requestClose)
@@ -50,7 +57,8 @@ watch(
         })
         if (active?.isConnected) active.focus({ preventScroll: true })
       }
-      dialog.value.showModal()
+      if (props.modal) dialog.value.showModal()
+      else dialog.value.show()
     } else if (!open) {
       dialog.value.close()
       resetBackdropPointer()
@@ -67,17 +75,27 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
+    <div
+      v-if="open && !modal"
+      data-testid="workspace-dialog-backdrop"
+      class="fixed inset-0 z-50 bg-slate-950/70"
+      @pointerdown="recordBackdropPointer"
+      @pointerup="dismissFromBackdrop"
+      @pointercancel="resetBackdropPointer"
+    />
     <dialog
       v-bind="$attrs"
       ref="dialog"
       :aria-labelledby="titleId"
-      aria-modal="true"
+      :aria-modal="modal"
+      :class="{ 'z-50': !modal }"
       :data-variant="variant"
       :style="width ? { '--workspace-dialog-width': width } : undefined"
       class="fixed inset-0 m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-4xl rounded-2xl border border-slate-200 bg-white p-0 text-slate-900 shadow-2xl backdrop:bg-slate-950/70 open:flex open:flex-col dark:border-dark-700 dark:bg-dark-900 dark:text-white"
       @cancel.prevent="requestClose"
-      @pointerdown="recordBackdropPointer"
-      @pointerup="dismissFromBackdrop"
+      @keydown.esc="handleEscape"
+      @pointerdown="modal ? recordBackdropPointer($event) : resetBackdropPointer()"
+      @pointerup="modal ? dismissFromBackdrop($event) : resetBackdropPointer()"
       @pointercancel="resetBackdropPointer"
     >
       <header

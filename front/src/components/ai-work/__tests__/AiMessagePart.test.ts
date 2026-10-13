@@ -80,9 +80,38 @@ describe('AiMessagePart', () => {
     expect(partial.text()).toContain('部分完成')
   })
 
+  it.each(['Type', 'Syntax'])('执行前 %s 诊断保留在默认折叠的详情中', kind => {
+    const errorText = `${kind} error in code:\nmain.py:20:21\nFix the errors and try again.`
+    const wrapper = mountPart({
+      type: 'dynamic-tool', toolName: 'run_code', state: 'output-error', errorText,
+    })
+    const details = wrapper.get<HTMLDetailsElement>('[data-testid="ai-tool-details"]')
+    expect(details.element.open).toBe(false)
+    expect(details.get('summary').text()).toContain('脚本检查未通过')
+    expect(details.get('[data-testid="ai-script-diagnostic"]').text()).toBe(errorText)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('操作失败')
+    expect(wrapper.text()).not.toContain('已修复')
+  })
+
+  it.each([
+    ['run_code', 'Runtime error:\nType error in code:\n写入中断', undefined, '操作失败'],
+    ['run_code', '未知执行错误', undefined, '操作失败'],
+    ['online_products_change', 'Type error in code:\n接口失败', undefined, '操作失败'],
+    ['run_code', 'Type error in code:\n诊断', { ok: false, error: { message: '平台拒绝' } }, '操作失败'],
+    ['run_code', 'Type error in code:\n诊断', { outcome_unknown: true }, '结果未确认'],
+  ])('仅折叠已识别的执行前检查，不隐藏 %s 的其他错误：%s', (toolName, errorText, output, label) => {
+    const wrapper = mountPart({ type: `tool-${toolName}`, state: 'output-error', errorText, output })
+    const alert = wrapper.get('[role="alert"]')
+    expect(alert.text()).toBe(errorText)
+    expect(alert.element.closest('details')).toBeNull()
+    expect(wrapper.get('summary').text()).toContain(label)
+    expect(wrapper.find('[data-testid="ai-script-diagnostic"]').exists()).toBe(false)
+  })
+
   it('历史导出的未返回工具不能被断言为等待审批', () => {
     const pending = mountPart({ type: 'tool-category_match', state: 'approval-requested' })
-    expect(pending.text()).toContain('等待结果')
+    expect(pending.text()).toContain('结果未确认')
     expect(pending.text()).not.toContain('审批')
   })
 

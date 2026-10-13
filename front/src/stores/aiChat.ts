@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { Chat } from '@ai-sdk/vue'
 import { DefaultChatTransport } from 'ai'
 import type { UIMessage } from 'ai'
-import { AI_CHAT_RUNS_PATH, cancelChatRun, conversationEventsUrl, fetchUiMessages } from '@/api/aiWork'
+import { AI_CHAT_RUNS_PATH, cancelChatRun, conversationEventsUrl, fetchUiMessages, forkChatConversation } from '@/api/aiWork'
 import { apiClient } from '@/api/client'
 import { matchChatCommand } from '@/services/chatCommands'
 import type { ChatCommandContext } from '@/services/chatCommands'
@@ -25,6 +25,8 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const floatingOpen = ref(false)
   const historyVersion = ref(0)
   const stopping = ref(false)
+  const forking = ref(false)
+  const localTurnStartedAt = ref('')
   const runActive = ref(false)
   const latestMessageId = ref<string | null>(null)
   const pendingToolCalls = ref<PendingToolCall[]>([])
@@ -39,9 +41,18 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const pendingInputIds = new Set<string>()
   const status = computed(() => chat.value?.status ?? 'ready')
   const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
-  const messages = computed<UIMessage[]>(() => JSON.parse(JSON.stringify(chat.value?.messages ?? [])))
+  const isRunning = computed(() => isBusy.value || runActive.value)
+  const messages = computed<UIMessage[]>(() => {
+    const result: UIMessage[] = JSON.parse(JSON.stringify(chat.value?.messages ?? []))
+    const latestUser = result.slice().reverse().find(message => message.role === 'user')
+    if (latestUser && localTurnStartedAt.value) {
+      const metadata = (latestUser.metadata ?? {}) as Record<string, unknown>
+      if (!metadata.ai_turn) latestUser.metadata = { ...metadata, ai_turn: { started_at: localTurnStartedAt.value } }
+    }
+    return result
+  })
   const error = computed(() => localError.value ?? chat.value?.error as AiChatError | undefined)
-  const canSend = computed(() => Boolean(input.value.trim()) && !stopping.value)
+  const canSend = computed(() => Boolean(input.value.trim()) && !stopping.value && !forking.value)
   const canStop = computed(() => isBusy.value || runActive.value || pendingToolCalls.value.length > 0 || stopping.value)
 
   function disconnectEvents(): void {
@@ -155,6 +166,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     return instance
   }
   function startConversation(): string {
+    localTurnStartedAt.value = ''
     disconnectEvents()
     generation++
     stopRequestVersion++
@@ -174,6 +186,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     return id
   }
   function newConversation(): void {
+    localTurnStartedAt.value = ''
     disconnectEvents()
     generation++
     stopRequestVersion++
@@ -219,7 +232,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     return { isBusy: canStop.value, startConversation, stopStreaming, refreshHistory }
   }
   function sendMessage(): void {
-    if (stopping.value) return
+    if (stopping.value || forking.value) return
     const text = input.value.trim()
     if (!text) return
     const command = matchChatCommand(text)
@@ -232,10 +245,13 @@ export const useAiChatStore = defineStore('aiChat', () => {
     localError.value = undefined
     if (isBusy.value || runActive.value || pendingToolCalls.value.length) {
       void queueText(text).catch(cause => { localError.value = cause; input.value = text })
-    } else void chat.value?.sendMessage({ text }, { body: {
-      target_draft_ids: [...targetDraftIds.value],
-      page_context: pageContext.snapshot(),
-    } })
+    } else {
+      localTurnStartedAt.value = new Date().toISOString()
+      void chat.value?.sendMessage({ text }, { body: {
+        target_draft_ids: [...targetDraftIds.value],
+        page_context: pageContext.snapshot(),
+      } })
+    }
   }
   function stopStreaming(): void {
     const id = activeConversationId.value
@@ -266,6 +282,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     await chat.value?.sendMessage()
   }
   function openConversation(detail: AiWorkUiMessagesResponse): void {
+    localTurnStartedAt.value = ''
     const id = detail.conversation_id
     // 页面已校验响应并确认仍选中该会话；打开只绑定历史，不提交模型请求。
     generation++
@@ -292,12 +309,27 @@ export const useAiChatStore = defineStore('aiChat', () => {
     floatingOpen.value = true
     sendMessage()
   }
+  async function forkConversation(messageId: string): Promise<void> {
+    const id = activeConversationId.value
+    const instance = chat.value
+    if (!id || canStop.value || forking.value) return
+    forking.value = true
+    localError.value = undefined
+    try {
+      const detail = await forkChatConversation(id, messageId)
+      if (chat.value === instance) {
+        openConversation(detail)
+      }
+    } catch (cause) {
+      if (chat.value === instance) localError.value = cause as AiChatError
+    } finally { forking.value = false }
+  }
   function refreshHistory(): void {
     if (activeConversationId.value) void resyncFromServer(activeConversationId.value)
   }
   function clearError(): void { localError.value = undefined; chat.value?.clearError() }
   return { activeConversationId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
-    error, isBusy, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation, newConversation,
+    error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation, newConversation,
     sendMessage, stopStreaming, respondToApproval, clearError, openConversation, connectEvents, disconnectEvents,
-    prepareDrafts, refreshHistory, openFloating: () => { floatingOpen.value = true }, closeFloating: () => { floatingOpen.value = false } }
+    prepareDrafts, refreshHistory, forking, forkConversation, openFloating: () => { floatingOpen.value = true }, closeFloating: () => { floatingOpen.value = false } }
 })

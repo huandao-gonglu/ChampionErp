@@ -26,6 +26,7 @@ _logger = logging.getLogger(__name__)
 
 CHAT_RUNS_PATH = "/api/v1/ai-chat/runs"
 CHAT_CANCEL_PATH = "/api/v1/ai-chat/cancel"
+CHAT_FORK_PATH = "/api/v1/ai-chat/fork"
 
 
 def handle_chat_run(handler: JsonRequestHandler) -> None:
@@ -89,9 +90,21 @@ def handle_chat_cancel(handler: JsonRequestHandler) -> None:
     handler.send_json(result, 200)
 
 
+def handle_chat_fork(handler: JsonRequestHandler) -> None:
+    payload, _ = safe_json_body_with_raw(handler)
+    payload = validate_request_payload(payload, endpoint=handler.path)
+    try:
+        result = ai_chat_facade.fork_chat_conversation(payload["id"], payload["message_id"])
+    except VercelUiProtocolError as exc:
+        handler.send_json({"ok": False, "error": str(exc), "error_code": exc.code}, exc.status_code)
+        return
+    handler.send_json(result, 200)
+
+
 POST_HANDLERS = {
     CHAT_RUNS_PATH: handle_chat_run,
     CHAT_CANCEL_PATH: handle_chat_cancel,
+    CHAT_FORK_PATH: handle_chat_fork,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 
@@ -107,6 +120,7 @@ def handle_post(handler: JsonRequestHandler, parsed: urllib.parse.ParseResult) -
 __all__ = [
     "CHAT_RUNS_PATH",
     "CHAT_CANCEL_PATH",
+    "CHAT_FORK_PATH",
     "HANDLED_PATHS",
     "POST_HANDLERS",
     "handle_post",

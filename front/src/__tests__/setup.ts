@@ -37,4 +37,5 @@ Object.defineProperty(window, 'matchMedia', {
 
 // jsdom 未实现原生 dialog；焦点圈定和 top layer 由真实浏览器回归验证。
 HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', '') }
+HTMLDialogElement.prototype.show = function () { this.setAttribute('open', '') }
 HTMLDialogElement.prototype.close = function () { this.removeAttribute('open') }

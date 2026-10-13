@@ -6,15 +6,17 @@ import OnlineContentEditor from './OnlineContentEditor.vue'
 import OnlinePicturePreview from './OnlinePicturePreview.vue'
 import OnlineBuyerLinks from './OnlineBuyerLinks.vue'
 import OnlineProductDetails from './OnlineProductDetails.vue'
+import OnlineOperationRecovery from './OnlineOperationRecovery.vue'
+import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import OnlinePlatformFeedback from './OnlinePlatformFeedback.vue'
 import { onlineAttributeName } from './onlineAttributeDisplay'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
-import { fetchOnlineDetail, fetchOnlineProducts, onlineAction, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
+import { fetchOnlineDetail, fetchOnlineJob, fetchOnlineProducts, onlineAction, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
 
 const platform = ref<OnlinePlatform>('mercadolibre')
 const platforms: Record<OnlinePlatform, string> = {mercadolibre: 'Mercado Libre', ozon: 'Ozon', yandex: 'Yandex Market'}
-const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '已提交', waiting_confirmation: '等待平台确认', confirmed: '已生效', PUBLISHED: '在售', NO_STOCKS: '缺货', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
+const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '已提交', waiting_confirmation: '等待平台确认', confirmed: '已生效', PUBLISHED: '在售', NO_STOCKS: '缺货', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', closed_unconfirmed: '已结束，结果未确认', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
 const page = ref<OnlinePage | null>(null)
 const checkedListings = ref(new Set<string>())
 const actionMenuOpen = ref(false), actionMenu = ref<HTMLElement | null>(null)
@@ -51,6 +53,8 @@ function toggleGroup(id: string) {
 }
 const query = ref(''), status = ref(''), market = ref(''), currentPage = ref(1)
 const loading = ref(false), busy = ref(false), error = ref(''), notice = ref('')
+const conflictJobId = ref('')
+watch(error, message => { if (!message) conflictJobId.value = '' }, {flush:'sync'})
 const checkingStatus = ref(new Set<string>())
 const statusErrors = ref<Record<string, string>>({})
 let viewEpoch = 0
@@ -67,7 +71,9 @@ useAiPageContext(() => ({
     : focusedProduct.value?.group_id,
   listing_id: selected.value?.id || focusedProduct.value?.listing_id,
 }), 10)
-const scope = ref(''), value = ref('')
+const scope = ref('')
+// 数字输入框的 v-model 会产生 number，清空输入后仍会产生空字符串。
+const value = ref<string | number>('')
 const saleTarget = ref('paused')
 const contentChanges = ref<Record<string,unknown>>({})
 const contentPicturePreviews = ref<string[]>([])
@@ -77,6 +83,12 @@ let sequence = 0
 let disposed = false
 const jobFilter = ref('')
 const jobs = computed(() => page.value?.jobs.filter(j => !jobFilter.value || j.status === jobFilter.value) || [])
+const newerJob = computed(() => {
+  const current = selectedJob.value
+  if (!current || current.operation === 'sync') return null
+  return page.value?.jobs.find(job => job.target_id === current.target_id
+    && job.operation !== 'sync' && job.created_at > current.created_at) || null
+})
 const price = computed(() => selected.value?.prices.find(p => p.id === scope.value))
 const stock = computed(() => selected.value?.stocks.find(s => s.id === scope.value))
 const hasActive = computed(() => page.value?.jobs.some(j => ['queued','running'].includes(j.status)))
@@ -88,7 +100,7 @@ const cardNotice = computed(() => selected.value?.raw_sub_status
   .map(label).join('、') || '')
 const fieldNames: Record<string,string> = {preserved_pause:'保持主动停售',amount:'价格', currency:'币种', quantity:'绝对库存', title:'标题', description:'描述', pictures:'完整图片列表', attributes:'属性', state:'销售状态'}
 const changes = computed<Record<string, unknown>>(() => {
-  if (modal.value === 'price') return {amount: value.value, currency: price.value?.currency || ''}
+  if (modal.value === 'price') return {amount: String(value.value), currency: price.value?.currency || ''}
   if (modal.value === 'stock') return {quantity: Number(value.value)}
   if (modal.value === 'sale_state') return {state: saleTarget.value}
   if (modal.value === 'content') return contentChanges.value
@@ -98,8 +110,27 @@ function jobTarget(job: OnlineJob) {
   if (job.operation === 'sync') return Array.isArray(job.request.ids) ? `失败商品（${job.request.ids.length} 件）` : '全店商品'
   return job.result.before?.title || job.target_id
 }
+function openJob(job: OnlineJob) {
+  selected.value = null
+  modal.value = ''
+  error.value = ''
+  selectedJob.value = job
+  jobFilter.value = ''
+  showRecords.value = true
+}
+async function openConflictingJob() {
+  if (busy.value || !conflictJobId.value) return
+  const epoch = viewEpoch
+  busy.value = true
+  try {
+    const job = await fetchOnlineJob(conflictJobId.value)
+    if (!disposed && epoch === viewEpoch) openJob(job)
+  } catch (cause) {
+    if (!disposed && epoch === viewEpoch) error.value = cause instanceof Error ? cause.message : '读取操作记录失败，请重试'
+  } finally { busy.value = false }
+}
 function showSync() {
-  if (activeSync.value) { selectedJob.value = activeSync.value; showRecords.value = true }
+  if (activeSync.value) openJob(activeSync.value)
   else begin('sync')
 }
 function syncProgress(job: OnlineJob) {
@@ -222,7 +253,7 @@ function resetValue() { value.value = modal.value === 'price' ? price.value?.amo
 function makePreview() {
   try {
     if(!Object.keys(changes.value).length) throw new Error('请至少选择一个变更字段')
-    if (modal.value === 'stock' && (!value.value.trim() || !Number.isInteger(Number(value.value)) || Number(value.value)<0)) throw new Error('库存必须是非负整数')
+    if (modal.value === 'stock' && (!String(value.value).trim() || !Number.isInteger(Number(value.value)) || Number(value.value)<0)) throw new Error('库存必须是非负整数')
     if (modal.value === 'price' && !(Number(value.value)>0)) throw new Error('请输入有效价格')
     preview.value = true; error.value = ''
   } catch(e) { error.value = e instanceof Error ? e.message : String(e) }
@@ -254,14 +285,45 @@ async function submit() {
     modal.value = ''; selected.value = null; selectedJob.value = job; showRecords.value = true
     notice.value = job.operation === 'sync' ? '同步已排队，可离开页面。商品目录与详情进度会持续更新。' : '任务已排队，可离开页面。修改是否生效以平台回读结果为准。'
     await refresh(true)
-  } catch(e) {error.value = e instanceof Error ? e.message : '提交失败'} finally {busy.value=false}
+  } catch(e) {
+    error.value = e instanceof Error ? e.message : '提交失败'
+    const raw = e && typeof e === 'object' && 'raw' in e ? e.raw : null
+    if (raw && typeof raw === 'object' && 'error_code' in raw && raw.error_code === 'ONLINE_CONFLICT'
+      && 'conflict_job_id' in raw && typeof raw.conflict_job_id === 'string') conflictJobId.value = raw.conflict_job_id
+  } finally {busy.value=false}
 }
 async function jobAction(action: 'reconcile' | 'retry', job: OnlineJob) {
+  const epoch = viewEpoch
   busy.value = true; error.value = ''
-  try { selectedJob.value = await onlineAction(action, {job_id: job.id, ...(action==='retry' ? {idempotency_key:crypto.randomUUID()} : {})}); await refresh(true) }
-  catch(e) {error.value = e instanceof Error ? e.message : '操作失败'} finally {busy.value=false}
+  try {
+    const updated = await onlineAction(action, {job_id: job.id, ...(action==='retry' ? {idempotency_key:crypto.randomUUID()} : {})})
+    if (!disposed && epoch === viewEpoch) await jobUpdated(updated)
+  }
+  catch(e) {if (!disposed && epoch === viewEpoch) error.value = e instanceof Error ? e.message : '操作失败'} finally {busy.value=false}
+}
+async function jobUpdated(job: OnlineJob) {
+  const epoch = viewEpoch
+  selectedJob.value = job
+  if (job.status === 'closed_unconfirmed') notice.value = '原操作已结束，可重新查看商品并提交新的修改。'
+  if (job.operation === 'stock' && job.status === 'confirmed') {
+    busy.value = true
+    delete statusErrors.value[job.target_id]
+    try {
+      // 库存回读不会查询销售状态；确认成功后单独刷新一次平台状态。
+      const listing = await refreshOnlineStatus(job.target_id)
+      if (disposed || epoch !== viewEpoch || page.value?.account_id !== listing.account_id) return
+      sequence++
+      page.value.items = page.value.items.map(item => item.id === listing.id ? listing : item)
+      if (selected.value?.id === listing.id && !modal.value) selected.value = listing
+    } catch (cause) {
+      if (!disposed && epoch === viewEpoch) statusErrors.value[job.target_id] = `库存已生效，但销售状态刷新失败：${cause instanceof Error ? cause.message : '请重新刷新状态'}`
+    } finally { busy.value = false }
+  }
+  if (disposed || epoch !== viewEpoch) return
+  await refresh(true)
 }
 function filter() {clearSelection(); focusedProduct.value=null; currentPage.value=1; void refresh()}
+watch(showRecords, visible => { if (!visible) selectedJob.value = null })
 watch([currentPage, showRecords], clearSelection, {flush:'sync'})
 watch([currentPage, showRecords], () => { focusedProduct.value = null }, {flush:'sync'})
 watch(platform, () => { viewEpoch++; focusedProduct.value=null; statusErrors.value={}; modal.value=''; notice.value=''; page.value=null; selected.value=null; selectedJob.value=null; expandedGroups.value.clear(); status.value=market.value=''; filter() })
@@ -288,7 +350,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
     <p v-if="stale" class="rounded-lg bg-amber-50 p-3 text-amber-800">价格、库存和内容快照已超过一小时，可同步更新；商品状态可单独刷新。</p>
     <template v-if="!showRecords">
       <div class="grid grid-cols-2 gap-4 lg:grid-cols-4"><article v-for="(count,key) in page?.summary || {total:0,active:0,paused:0,attention:0}" :key="key" class="online-card p-4"><p class="muted">{{ {total:'全部刊登 / SKU',active:'在售',paused:'已停售',attention:'需关注'}[key] }}</p><strong class="mt-2 block text-2xl" :class="key==='active'?'text-primary-700':key==='attention'?'text-amber-700':''">{{ count }}</strong></article></div>
-      <div v-if="page?.latest_sync" class="online-card flex flex-wrap items-center justify-between gap-3 p-4"><div><b>最近同步 · {{ jobTarget(page.latest_sync) }} · {{ page.latest_sync.status==='confirmed'?'同步完成':label(page.latest_sync.status) }}</b><p class="mt-1" role="status">{{ syncProgress(page.latest_sync) }}</p><p class="muted mt-1">成功 {{ page.latest_sync.result.completed || 0 }} · 新增 {{ page.latest_sync.result.created || 0 }} · 更新 {{ page.latest_sync.result.updated || 0 }} · 失败 {{ page.latest_sync.result.failed || 0 }}</p><p v-if="page.latest_sync.result.error" class="text-sm text-rose-600">{{ page.latest_sync.result.error }}</p></div><button class="text-primary-700" @click="selectedJob=page.latest_sync; showRecords=true">查看结果 →</button></div>
+      <div v-if="page?.latest_sync" class="online-card flex flex-wrap items-center justify-between gap-3 p-4"><div><b>最近同步 · {{ jobTarget(page.latest_sync) }} · {{ page.latest_sync.status==='confirmed'?'同步完成':label(page.latest_sync.status) }}</b><p class="mt-1" role="status">{{ syncProgress(page.latest_sync) }}</p><p class="muted mt-1">成功 {{ page.latest_sync.result.completed || 0 }} · 新增 {{ page.latest_sync.result.created || 0 }} · 更新 {{ page.latest_sync.result.updated || 0 }} · 失败 {{ page.latest_sync.result.failed || 0 }}</p><p v-if="page.latest_sync.result.error" class="text-sm text-rose-600">{{ page.latest_sync.result.error }}</p></div><button class="text-primary-700" @click="openJob(page.latest_sync)">查看结果 →</button></div>
       <form class="flex flex-wrap items-center gap-3" @submit.prevent="filter">
         <input v-model="query" class="input w-full md:max-w-sm" placeholder="搜索标题、卖家 SKU 或平台商品 ID" aria-label="搜索商品" /><select v-model="status" class="input w-auto" aria-label="销售状态" @change="filter"><option value="">全部状态</option><option v-for="s in page?.statuses" :key="s" :value="s">{{ label(s) }}</option></select><select v-model="market" class="input w-auto" aria-label="销售市场" @change="filter"><option value="">全部市场</option><option v-for="s in page?.markets" :key="s">{{ s }}</option></select><button class="btn btn-outline" type="submit">搜索</button>
         <div v-if="platform==='yandex'" ref="actionMenu" class="relative" @keydown.esc.stop="actionMenuOpen=false">
@@ -342,11 +404,47 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
       </div><p class="muted">数据来自最近一次平台同步；修改提交后，以平台回读结果确认生效。</p>
     </template>
     <template v-else>
-      <select v-model="jobFilter" class="input w-auto" aria-label="操作状态"><option value="">全部状态</option><option v-for="s in ['queued','running','waiting_confirmation','confirmed','partial','failed','outcome_unknown']" :key="s" :value="s">{{ label(s) }}</option></select>
-      <div class="online-card overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr><th>操作 / 商品</th><th>平台</th><th>状态</th><th>提交时间</th><th>处理</th></tr></thead><tbody><tr v-for="job in jobs" :key="job.id"><td><b>{{ label(job.operation) }}</b><p class="muted mt-1">{{ jobTarget(job) }}</p></td><td>{{ platforms[job.platform] }}</td><td><span :class="badge(job.status)">{{ label(job.status) }}</span></td><td>{{ time(job.created_at) }}</td><td><button class="text-primary-700" @click="selectedJob=job">查看详情</button></td></tr></tbody></table><p v-if="!jobs.length" class="muted p-10 text-center">暂无操作记录</p></div>
-      <p v-if="selectedJob?.operation!=='sync'" class="rounded-lg bg-amber-50 p-5 text-amber-800">结果未确认时，不重复提交。网络超时后平台可能已完成修改，先查询处理结果。</p>
-      <article v-if="selectedJob" class="online-card space-y-4 p-6"><h2 class="text-lg font-semibold">{{ label(selectedJob.operation) }} · {{ selectedJob.operation==='sync' && selectedJob.status==='confirmed'?'同步完成':label(selectedJob.status) }}</h2><p v-if="selectedJob.operation==='sync'" role="status">{{ syncProgress(selectedJob) }} · 成功 {{ selectedJob.result.completed || 0 }} · 失败 {{ selectedJob.result.failed || 0 }}</p><p v-if="selectedJob.result.error" role="alert" class="text-rose-600">{{ selectedJob.result.error }}</p><p v-if="selectedJob.result.evidence?.synced_at" class="text-primary-700">平台回读：{{ time(selectedJob.result.evidence.synced_at) }}</p><p v-for="(issue,index) in selectedJob.result.platform_errors || []" :key="index" class="text-rose-600">{{ issue }}</p><p v-if="selectedJob.result.platform_confirmation?.note" class="text-amber-700">{{ selectedJob.result.platform_confirmation.note }}</p><dl v-if="selectedJob.result.confirmation" class="space-y-2"><div v-for="(ok,field) in selectedJob.result.confirmation" :key="field">{{ fieldNames[field] || field }}：{{ ok?'回读一致':'尚未确认一致' }}</div></dl><ul class="max-h-80 space-y-2 overflow-auto"><li v-for="item in selectedJob.result.items?.filter(i=>i.status==='failed')" :key="item.remote_id" class="text-sm">{{ item.remote_id }}：{{ item.error }}</li></ul><div class="flex gap-3"><button v-if="['submitted','waiting_confirmation','outcome_unknown'].includes(selectedJob.status)" class="btn btn-primary" :disabled="busy" @click="jobAction('reconcile',selectedJob)">查询平台结果</button><button v-if="canRetry(selectedJob)" class="btn btn-outline" :disabled="busy" @click="jobAction('retry',selectedJob)">仅重试失败项</button></div></article>
+      <select v-model="jobFilter" class="input w-auto" aria-label="操作状态"><option value="">全部状态</option><option v-for="s in ['queued','running','waiting_confirmation','confirmed','partial','failed','outcome_unknown','closed_unconfirmed']" :key="s" :value="s">{{ label(s) }}</option></select>
+      <div class="online-card overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr><th>操作 / 商品</th><th>平台</th><th>状态</th><th>提交时间</th><th>处理</th></tr></thead><tbody><tr v-for="job in jobs" :key="job.id"><td><b>{{ label(job.operation) }}</b><p class="muted mt-1">{{ jobTarget(job) }}</p></td><td>{{ platforms[job.platform] }}</td><td><span :class="badge(job.status)">{{ label(job.status) }}</span></td><td>{{ time(job.created_at) }}</td><td><button class="text-primary-700" @click="openJob(job)">查看详情</button></td></tr></tbody></table><p v-if="!jobs.length" class="muted p-10 text-center">暂无操作记录</p></div>
     </template>
+
+    <WorkspaceDialog
+      :open="showRecords && !!selectedJob"
+      title="操作详情"
+      variant="drawer"
+      width="720px"
+      :modal="false"
+      :close-disabled="busy"
+      data-testid="online-job-dialog"
+      @close="selectedJob=null"
+    >
+      <article v-if="selectedJob" class="space-y-4" data-testid="online-job-detail">
+        <h2 class="text-lg font-semibold">{{ label(selectedJob.operation) }} · {{ selectedJob.operation==='sync' && selectedJob.status==='confirmed'?'同步完成':label(selectedJob.status) }}</h2>
+        <p class="break-words font-medium">{{ jobTarget(selectedJob) }}</p>
+        <p v-if="selectedJob.result.before?.seller_sku" class="muted break-all">SKU {{ selectedJob.result.before.seller_sku }}</p>
+        <p v-if="error" role="alert" class="text-rose-600">{{ error }}</p>
+        <p v-if="statusErrors[selectedJob.target_id]" role="alert" class="text-amber-700 dark:text-amber-300">{{ statusErrors[selectedJob.target_id] }}</p>
+        <div v-if="newerJob" class="rounded-lg bg-primary-50 p-4 text-primary-800 dark:bg-primary-500/10 dark:text-primary-200" data-testid="online-job-newer">
+          <p>该商品已有更新的修改记录：{{ label(newerJob.operation) }} · {{ label(newerJob.status) }}。当前记录保留为历史结果。</p>
+          <button class="mt-2 underline" :disabled="busy" @click="openJob(newerJob)">查看最新操作</button>
+        </div>
+        <p v-if="['submitted','waiting_confirmation','outcome_unknown'].includes(selectedJob.status)" class="rounded-lg bg-amber-50 p-4 text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">结果未确认时，不重复提交。网络超时后平台可能已完成修改，先查询处理结果。</p>
+        <div class="flex flex-wrap gap-3">
+          <button v-if="['submitted','waiting_confirmation','outcome_unknown'].includes(selectedJob.status)" class="btn btn-primary" :disabled="busy" @click="jobAction('reconcile',selectedJob)">查询平台结果</button>
+          <OnlineOperationRecovery :key="selectedJob.id" :job="selectedJob" :disabled="busy" @updated="jobUpdated" />
+          <button v-if="!newerJob && canRetry(selectedJob)" class="btn btn-outline" :disabled="busy" @click="jobAction('retry',selectedJob)">仅重试失败项</button>
+        </div>
+        <p v-if="selectedJob.operation==='sync'" role="status">{{ syncProgress(selectedJob) }} · 成功 {{ selectedJob.result.completed || 0 }} · 失败 {{ selectedJob.result.failed || 0 }}</p>
+        <p v-if="selectedJob.result.resolution" role="status" class="text-sm text-primary-700 dark:text-primary-300">已于 {{ time(selectedJob.result.resolution.closed_at) }} 人工结束本地操作。原请求结果仍未确认；可重新查看商品并提交新的修改。</p>
+        <p v-if="selectedJob.result.error && selectedJob.status !== 'closed_unconfirmed'" role="alert" class="text-rose-600">{{ selectedJob.result.error }}</p>
+        <details v-if="selectedJob.status === 'closed_unconfirmed' && selectedJob.result.error"><summary class="cursor-pointer text-sm">原始错误记录</summary><p class="mt-2 text-sm">{{ selectedJob.result.error }}</p></details>
+        <p v-if="selectedJob.result.evidence?.checked_at" class="text-primary-700 dark:text-primary-300">平台回读：{{ time(selectedJob.result.evidence.checked_at) }}</p>
+        <p v-for="(issue,index) in selectedJob.result.platform_errors || []" :key="index" class="text-rose-600">{{ issue }}</p>
+        <p v-if="selectedJob.result.platform_confirmation?.note" class="text-amber-700 dark:text-amber-300">{{ selectedJob.result.platform_confirmation.note }}</p>
+        <dl v-if="selectedJob.result.confirmation" class="space-y-2"><div v-for="(ok,field) in selectedJob.result.confirmation" :key="field">{{ fieldNames[field] || field }}：{{ ok?'回读一致':'尚未确认一致' }}</div></dl>
+        <ul class="max-h-80 space-y-2 overflow-auto"><li v-for="item in selectedJob.result.items?.filter(i=>i.status==='failed')" :key="item.remote_id" class="text-sm">{{ item.remote_id }}：{{ item.error }}</li></ul>
+      </article>
+    </WorkspaceDialog>
 
     <Teleport to="body">
       <div v-if="selected" class="online-overlay" @pointerdown="detailBackdrop.recordBackdropPointer" @pointerup="detailBackdrop.dismissFromBackdrop" @pointercancel="detailBackdrop.resetBackdropPointer">
@@ -440,7 +538,11 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
       </div>
       <div v-if="modal" class="online-overlay online-modal-layer" @pointerdown="modalBackdrop.recordBackdropPointer" @pointerup="modalBackdrop.dismissFromBackdrop" @pointercancel="modalBackdrop.resetBackdropPointer">
         <section role="dialog" aria-modal="true" :aria-label="modal==='sync'?'同步商品':label(modal)" class="online-modal space-y-5" :class="modal==='content' && !preview ? 'online-content-form' : ''">
-          <header class="flex justify-between"><h2 class="text-xl font-bold">{{ modal==='sync'?'同步商品':preview?'确认本次变更':label(modal) }}</h2><button :disabled="busy" @click="modal=''">关闭 ×</button></header><p v-if="error" role="alert" class="text-rose-700 dark:text-rose-300">{{ error }}</p>
+          <header class="flex justify-between"><h2 class="text-xl font-bold">{{ modal==='sync'?'同步商品':preview?'确认本次变更':label(modal) }}</h2><button :disabled="busy" @click="modal=''">关闭 ×</button></header>
+          <div v-if="error" role="alert" class="space-y-2 text-rose-700 dark:text-rose-300">
+            <p>{{ error }}</p>
+            <button v-if="conflictJobId" type="button" class="btn btn-outline" :disabled="busy" data-testid="online-conflict-operation" @click="openConflictingJob">{{ busy ? '正在打开…' : '查看对应操作' }}</button>
+          </div>
           <template v-if="modal==='sync'">
             <p class="break-words">同步 {{ platforms[platform] }} 店铺：{{ page?.store_name }}</p>
             <div class="rounded-lg border border-accent-200 bg-accent-50 p-5 text-accent-800 dark:border-dark-700 dark:bg-dark-800 dark:text-accent-100">

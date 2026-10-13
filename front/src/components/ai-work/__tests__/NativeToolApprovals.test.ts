@@ -1,13 +1,15 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
 import NativeToolApprovals from '../NativeToolApprovals.vue'
+import AiChatPanel from '../AiChatPanel.vue'
 import { useAiChatStore } from '@/stores/aiChat'
 
 describe('原生工具审批卡', () => {
   beforeEach(() => setActivePinia(createPinia()))
+  afterEach(() => vi.unstubAllGlobals())
   it('只展示服务端当前未决定的审批，使用原生 approval ID 提交', async () => {
     const store = useAiChatStore()
     store.chat = new Chat<UIMessage>({ id: 'approval-test', messages: [{ id: 'assistant', role: 'assistant', parts: [
@@ -26,4 +28,44 @@ describe('原生工具审批卡', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="native-tool-approvals"]').exists()).toBe(false)
   })
+  it('确认按钮就地显示且不重复，多个审批共享提交状态并使用对应原生 ID', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+    const store = useAiChatStore()
+    store.chat = new Chat<UIMessage>({ id: 'inline-approval-test', messages: [{ id: 'assistant', role: 'assistant', parts: [
+      { type: 'text', text: '请确认这两条消息。' },
+      { type: 'tool-order_buyer_chat_send', toolCallId: 'send-1', state: 'approval-requested', input: { text: '第一条完整消息' }, approval: { id: 'approval-1' } },
+      { type: 'tool-order_buyer_chat_send', toolCallId: 'send-2', state: 'approval-requested', input: { text: '第二条完整消息' }, approval: { id: 'approval-2' } },
+    ] }] })
+    store.pendingToolCalls = ['send-1', 'send-2'].map(id => ({ tool_call_id: id, tool_name: 'order_buyer_chat_send', kind: 'approval', summary: `确认 ${id}` }))
+    let rejectSubmission!: (error: Error) => void
+    const respond = vi.spyOn(store, 'respondToApproval').mockImplementation(() => new Promise((_, reject) => { rejectSubmission = reject }))
+    const wrapper = mount(AiChatPanel, {
+      props: { messages: store.messages, busy: false, input: '' },
+      global: { stubs: { AiChatComposer: true } },
+    })
+    try {
+      const rows = wrapper.findAll('[data-testid="ai-part-tool"]')
+      expect(rows).toHaveLength(2)
+      expect(wrapper.findAll('[data-testid="native-tool-approvals"]')).toHaveLength(2)
+      for (const [index, row] of rows.entries()) {
+        const approval = row.get('[data-testid="native-tool-approvals"]')
+        expect(approval.text()).toContain(`确认 send-${index + 1}`)
+        expect(approval.element.closest('details')).toBeNull()
+        expect(approval.get('summary').text()).toBe('查看操作参数')
+      }
+      expect(rows[1].get('pre').text()).toContain('第二条完整消息')
+      await rows[1].findAll('button')[0].trigger('click')
+      expect(respond).toHaveBeenCalledTimes(1)
+      expect(respond).toHaveBeenCalledWith('approval-2', true, undefined)
+      expect(wrapper.findAll('button.btn').every(button => button.attributes('disabled') !== undefined)).toBe(true)
+      rejectSubmission(new Error('提交失败，请重试'))
+      await flushPromises()
+      expect(rows[1].get('[role="alert"]').text()).toBe('提交失败，请重试')
+      expect(rows[0].find('[role="alert"]').exists()).toBe(false)
+      expect(wrapper.findAll('button.btn').every(button => button.attributes('disabled') === undefined)).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
 })

@@ -137,6 +137,54 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     expect(router.currentRoute.value.query).toEqual({})
   })
 
+  it('连续 /new 同步最新会话地址，离开再进入及发送消息都使用最新 Chat', async () => {
+    const { wrapper, router, store } = await setupApp('/?tab=drafts')
+    const oldId = store.startConversation()
+    mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [{
+      conversation_id: oldId, created_at: '2026-10-13T08:00:00Z', updated_at: '2026-10-13T08:00:00Z',
+    }] })
+    await router.push({ name: 'AiWork', query: { conversation_id: oldId, presentation_id: 'old-presentation', workspace_tab: 'drafts' } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="ai-chat-input"]').setValue('/new')
+    await wrapper.get('[data-testid="ai-chat-composer"]').trigger('submit')
+    const firstNewId = store.activeConversationId
+    // 上一次路由替换尚未完成时再次创建，新选择必须获胜。
+    store.input = '/new'
+    store.sendMessage()
+    const newestId = store.activeConversationId
+    const newestChat = store.chat
+    await flushPromises()
+    expect(newestId).not.toBe(firstNewId)
+    expect(newestId).not.toBe(oldId)
+    expect(router.currentRoute.value.query).toEqual({ conversation_id: newestId, workspace_tab: 'drafts' })
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newestId)
+    expect(store.chat).toBe(newestChat)
+    expect(runFetchCount).toBe(0)
+    expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
+
+    const latestRoute = router.currentRoute.value.fullPath
+    await router.push('/')
+    await router.push(latestRoute)
+    await flushPromises()
+    expect(store.chat).toBe(newestChat)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newestId)
+    await wrapper.get('[data-testid="ai-chat-input"]').setValue('查询最新订单')
+    await wrapper.get('[data-testid="ai-chat-composer"]').trigger('submit')
+    await vi.waitFor(() => expect(runFetchCount).toBe(1))
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string).id).toBe(newestId)
+    controller!.enqueue(sseChunk('[DONE]'))
+    controller!.close()
+    await flushPromises()
+
+    // 用户主动选择旧历史仍然有效，并同步地址；不强制锁定新对话。
+    await wrapper.get(`[data-testid="ai-work-conversation-${oldId}"]`).trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.conversation_id).toBe(oldId)
+    expect(store.activeConversationId).toBe(oldId)
+    wrapper.unmount()
+  })
+
   it('流式过程中点击进入 AiWork：同一 Chat、一次 POST，导航后继续合并增量', async () => {
     const { wrapper, router, store } = await setupApp()
 

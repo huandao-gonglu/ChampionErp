@@ -53,10 +53,9 @@ apiClient.interceptors.response.use(
         message: data?.error || data?.message || error.message,
         code: data?.code || data?.error_code,
         status: error.response?.status,
-        raw: data || error,
       },
       '网络请求失败',
     )
-    return Promise.reject(Object.assign(new Error(normalized.message), normalized))
+    return Promise.reject(Object.assign(new Error(normalized.message), normalized, { raw: data || error }))
   },
 )

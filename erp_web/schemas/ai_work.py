@@ -38,8 +38,17 @@ class BusinessWriteReceipt(TypedDict):
     output: dict[str, Any]
 
 
+class AiTurnTiming(TypedDict):
+    """UIMessage.metadata.ai_turn 的服务端轮次时间；不推断缺失的历史时间。"""
+
+    started_at: str
+    finished_at: str
+    status: str
+
+
 __all__ = [
     "BusinessWriteReceipt",
+    "AiTurnTiming",
     "AiWorkUiMessagesDetail",
     "PydanticMessageHistoryDetail",
     "PydanticMessageHistorySummary",

@@ -1,13 +1,21 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent } from 'vue'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiWorkFloatingButton from '../AiWorkFloatingButton.vue'
+
+enableAutoUnmount(afterEach)
+
+function dispatchPointer(type: string, clientX: number, clientY: number, pointerId = 1) {
+  window.dispatchEvent(Object.assign(new MouseEvent(type, { clientX, clientY, cancelable: true }), {
+    pointerId, isPrimary: true,
+  }))
+}
 
 const mocks = vi.hoisted(() => ({
   fetchUiMessages: vi.fn(),
@@ -41,6 +49,7 @@ async function mountFloatingButton() {
   await router.push('/')
   await router.isReady()
   const wrapper = mount(AiWorkFloatingButton, {
+    attachTo: document.body,
     global: { plugins: [pinia, router] },
   })
   return { wrapper, store: useAiChatStore(), display: useAiWorkDisplayStore(), router }
@@ -68,6 +77,76 @@ function attachPresentation(
 describe('AiWorkFloatingButton', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('拖拽气泡移动位置并阻止本次跳转，下一次普通点击仍能进入 AIWork', async () => {
+    const { wrapper, router } = await mountFloatingButton()
+    const link = wrapper.get('[data-testid="ai-work-floating-toggle"]')
+    const floating = wrapper.get('[data-testid="ai-work-floating"]')
+    await link.trigger('pointerdown', { isPrimary: true, button: 0, pointerId: 1, clientX: 200, clientY: 200 })
+    dispatchPointer('pointermove', 100, 150)
+    dispatchPointer('pointerup', 100, 150)
+    link.element.dispatchEvent(new MouseEvent('click', { detail: 1, bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect((floating.element as HTMLElement).style.right).toBe('120px')
+    expect((floating.element as HTMLElement).style.bottom).toBe('70px')
+    expect(router.currentRoute.value.name).toBe('WorkflowHome')
+
+    await link.trigger('pointerdown', { isPrimary: true, button: 0, pointerId: 2, clientX: 100, clientY: 150 })
+    dispatchPointer('pointermove', 102, 151, 2)
+    dispatchPointer('pointerup', 102, 151, 2)
+    link.element.dispatchEvent(new MouseEvent('click', { detail: 1, bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(router.currentRoute.value.name).toBe('AiWork')
+  })
+
+  it('展开的面板不限制气泡拖拽，拖动时隐藏面板，取消后停止移动并恢复展示', async () => {
+    const { wrapper } = await mountFloatingButton()
+    const link = wrapper.get('[data-testid="ai-work-floating-toggle"]')
+    const floating = wrapper.get('[data-testid="ai-work-floating"]')
+    await floating.trigger('mouseenter')
+    const rect = vi.spyOn(floating.element, 'getBoundingClientRect').mockReturnValue({ width: 56, height: 56 } as DOMRect)
+    const placement = wrapper.get('[data-testid="ai-work-floating-placement"]')
+    const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
+    vi.spyOn(panel.element, 'getBoundingClientRect').mockReturnValue({ width: 400, height: 560 } as DOMRect)
+    try {
+      await link.trigger('pointerdown', { isPrimary: true, button: 0, pointerId: 1, clientX: 200, clientY: 200 })
+      dispatchPointer('pointermove', -5000, -5000)
+      await wrapper.vm.$nextTick()
+      const style = (floating.element as HTMLElement).style
+      expect(style.right).toBe(`${window.innerWidth - 76}px`)
+      expect(style.bottom).toBe(`${window.innerHeight - 76}px`)
+      expect(placement.isVisible()).toBe(false)
+      expect(link.attributes('aria-expanded')).toBe('false')
+      dispatchPointer('pointermove', 5000, 5000)
+      await wrapper.vm.$nextTick()
+      expect(style.right).toBe('20px')
+      expect(style.bottom).toBe('20px')
+      dispatchPointer('pointercancel', 5000, 5000)
+      dispatchPointer('pointermove', 100, 100)
+      await wrapper.vm.$nextTick()
+      expect(style.right).toBe('20px')
+      expect(style.bottom).toBe('20px')
+      expect(placement.isVisible()).toBe(true)
+      expect(link.attributes('aria-expanded')).toBe('true')
+    } finally { rect.mockRestore() }
+  })
+
+  it('气泡拖到左上方后向下展开，重复悬停不改变气泡位置', async () => {
+    const { wrapper } = await mountFloatingButton()
+    const floating = wrapper.get('[data-testid="ai-work-floating"]')
+    const link = wrapper.get('[data-testid="ai-work-floating-toggle"]')
+    await link.trigger('pointerdown', { isPrimary: true, button: 0, pointerId: 1, clientX: 200, clientY: 200 })
+    dispatchPointer('pointermove', -5000, -5000)
+    dispatchPointer('pointerup', -5000, -5000)
+    await wrapper.vm.$nextTick()
+    const position = floating.attributes('style')
+    await floating.trigger('mouseenter')
+    expect(wrapper.get('[data-testid="ai-work-floating-placement"]').attributes('data-side')).toBe('bottom')
+    expect(floating.attributes('style')).toBe(position)
+    await floating.trigger('mouseleave')
+    await floating.trigger('mouseenter')
+    expect(floating.attributes('style')).toBe(position)
   })
 
   it('默认渲染 SPA 链接，指向 /aiWork 且不携带 target/rel', async () => {

@@ -143,3 +143,16 @@ def confirmation(listing: OnlineListing, request: ChangeRequest) -> dict[str, bo
         else:
             result[field] = contains(listing.content.get(field), expected)
     return result
+
+
+def observed_changes(listing: OnlineListing, request: ChangeRequest) -> dict[str, Any]:
+    """保存本次回读的实际值，人工结束操作时与原目标一起核对。"""
+    if request.operation == "stock":
+        row = next((s for s in listing.stocks if s.id == request.scope_id), None)
+        return {"quantity": row.quantity if row else None}
+    if request.operation == "price":
+        row = next((p for p in listing.prices if p.id == request.scope_id), None)
+        return {"amount": row.amount if row else None, "currency": row.currency if row else None}
+    if request.operation == "sale_state":
+        return {"state": listing.sale_state if listing.sale_state != "unknown" else None}
+    return {key: listing.content.get(key) for key in request.changes}

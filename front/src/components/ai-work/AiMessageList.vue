@@ -1,35 +1,48 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { UIMessage } from 'ai'
 import AiMessagePart from './AiMessagePart.vue'
+import AiAssistantTurn from './AiAssistantTurn.vue'
 import type { PendingToolCall } from '@/types/aiWork'
+import { groupAiMessages } from '@/utils/aiMessagePresentation'
 
-defineProps<{
+const props = defineProps<{
   messages: UIMessage[]
   pendingToolCalls?: PendingToolCall[]
+  active?: boolean
+  allowBranch?: boolean
 }>()
+const emit = defineEmits<{ branch: [messageId: string] }>()
+const groups = computed(() => groupAiMessages(props.messages))
 </script>
 
 <template>
   <div class="space-y-4" data-testid="ai-message-list">
     <article
-      v-for="message in messages"
+      v-for="(message, groupIndex) in groups"
       :key="message.id"
       class="flex"
       :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
       :data-testid="`ai-message-${message.role}`"
     >
       <div
-        class="max-w-[82%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm"
+        class="min-w-0 text-sm leading-6"
         :class="message.role === 'user'
-          ? 'rounded-br-md bg-primary-600 text-white'
-          : 'rounded-bl-md border border-slate-200 bg-white text-slate-800 dark:border-dark-700 dark:bg-dark-800 dark:text-accent-100'"
+          ? 'max-w-[82%] rounded-2xl rounded-br-md bg-primary-600 px-4 py-3 text-white shadow-sm'
+          : 'w-full py-2 text-slate-800 dark:text-accent-100'"
       >
-        <p
-          class="mb-1 text-[10px] font-black uppercase tracking-wider opacity-70"
+        <AiAssistantTurn
+          v-if="message.role === 'assistant'"
+          :parts="message.parts"
+          :pending-tool-calls="pendingToolCalls"
+          :active="active && groupIndex === groups.length - 1"
+          :timing="message.timing"
+          :allow-branch="allowBranch && message.timing?.status === 'completed'"
+          @branch="emit('branch', message.messageId)"
         >
-          {{ message.role === 'user' ? '你' : 'AI 助手' }}
-        </p>
-        <div class="space-y-2">
+          <template #approval="scope"><slot name="approval" v-bind="scope" /></template>
+        </AiAssistantTurn>
+        <div v-else class="space-y-2">
           <AiMessagePart
             v-for="(part, index) in message.parts"
             :key="`${message.id}-${index}`"
@@ -39,5 +52,11 @@ defineProps<{
         </div>
       </div>
     </article>
+    <AiAssistantTurn
+      v-if="active && groups.at(-1)?.role !== 'assistant'"
+      :parts="[]"
+      :active="true"
+      :timing="groups.at(-1)?.timing"
+    />
   </div>
 </template>

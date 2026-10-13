@@ -9,6 +9,7 @@
 | `POST /api/online-products/sync` | `online_products_sync` | 沿用领域同步任务，仅读取平台并刷新本地快照 |
 | `POST /api/online-products/refresh-status` | `online_products_refresh_status` | 按 listing_id 直接查询单件状态并更新本地记录，不扫描店铺、不创建 Job |
 | `POST /api/online-products/reconcile` | `online_products_reconcile` | 只向平台回读已提交修改的结果，不重发修改 |
+| `POST /api/online-products/close` | `online_products_close` | 核对后通过原生审批结束未确认的本地操作，保留原结果未知记录，不撤销或重放平台请求 |
 | `POST /api/online-products/retry` | `online_products_retry` | 原生审批后交由既有失败重试规则判断，入队即返回 |
 
 `online_products_read` 的查询参数为 `id,platform,q,status,market,page,limit,view,group_id`，图片来源仍由 `include_source_images` 控制。有 `id` 时读取完整公开详情，包含内容、买家链接、修改能力、版本、库存和同步时间；无 `id` 时通过 `OnlineProductService.read_page` 读取摘要。摘要保留身份、标题、状态、价格、库存及同步时间，不携带长描述、属性、图片、原始快照或完整历史任务。需要规格和修改能力时按真实刊登 ID 读取详情。
@@ -36,6 +37,8 @@ Mercado 新图片的上传与关联依据官方[图片文档](https://global-sel
 修改和失败重试返回 `OnlineSubmissionResult`：`accepted=true` 只表示任务已持久化入队，附任务 ID、目标刊登 ID、平台、操作和当前任务状态，不表示平台已接收或生效。现有 Agent Job Service 把此回执作为原生 Deferred 结果返回，AI 继续提交剩余目标，汇总提交成功/失败后结束；不主动回读或等待远端结果。后台仍独立执行平台写入和回读，用户在在线商品操作记录查看结果，明确要求查询时仍可使用回读工具。同步用于取得后续读取的数据，继续等待领域同步完成。
 
 `OnlineProductJobReader` 把同步及已持久化的待对账引用投影成现有 `JobStateSnapshot`。只有 `confirmed` 为成功；`partial`、`outcome_unknown`、失败及自动回读耗尽以未完成成功的工具结果返回，`last_external_status` 保留领域原始状态。通用状态 `failed` 不代表平台明确拒绝写入；模型须看原状态和操作记录，不得重放未知结果。Reader 不触发模型、平台请求或新任务。
+
+人工结束使用 `CloseOnlineOperationRequest`：`job_id`、最近查询返回的 `expected_updated_at`、明确确认 `acknowledge=true`。必须先成功回读平台当前值，证据五分钟内有效，且平台无正在处理标记；查询失败、数据缺失、任务或商品变化、同目标任务执行中均拒绝结束。状态保存为 `closed_unconfirmed`，原请求、错误、回读值和人工决定留在原任务中。此终态仍不代表平台成功或明确失败，原请求可能延迟生效；旧提交键和外部请求保护保持有效。用户确认结束后可重新读取商品，通过原修改入口创建新操作，不能调用 retry 重放旧任务。AI 使用现有原生审批，快照绑定当前商品版本、任务版本和回读证据；不增加审批协议。
 
 为什么直接使用 Pydantic AI 原生能力：项目当前安装 `pydantic-ai-slim==2.44.0`、Harness `0.34.0`，已有 Tool Bridge、Code Mode、审批及持久工具回执，足以覆盖本次接入、有界分页及提交即完成的工具结果。采用原生 `CallDeferred` / `DeferredToolResults` 完成可靠投递，只调整领域返回值，不改 Tool Bridge 或 Agent 生命周期。摘要、组合成员分页和同步进度是 ERP 领域查询职责；直接复用原生工具调用、Code Mode 和重试，不新增 AI 基础设施。没有新增 Agent loop、审批协议、等待/恢复状态机或事件编码。已核对 [Deferred Tools](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/) 和 [Code Mode](https://pydantic.dev/docs/ai/harness/code-mode/) 官方文档。
 

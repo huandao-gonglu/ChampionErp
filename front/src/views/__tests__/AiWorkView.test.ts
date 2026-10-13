@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   fetchConversations: vi.fn(),
   fetchConversation: vi.fn(),
   fetchUiMessages: vi.fn(),
+  replaceRoute: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('vue-router', async (importOriginal) => {
@@ -20,6 +21,7 @@ vi.mock('vue-router', async (importOriginal) => {
   return {
     ...actual,
     useRoute: () => mocks.route,
+    useRouter: () => ({ replace: mocks.replaceRoute }),
   }
 })
 
@@ -157,7 +159,7 @@ describe('AiWorkView 对话与历史', () => {
     expect(wrapper.find('[data-testid="ai-work-raw-view"]').exists()).toBe(false)
   })
 
-  it('切换 conversation 与原始消息标签后仍可查看规范 JSON', async () => {
+  it('切换对话后始终显示对话内容，不提供原始消息入口', async () => {
     const { mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
@@ -168,16 +170,11 @@ describe('AiWorkView 对话与历史', () => {
     expect(mocks.fetchUiMessages).toHaveBeenLastCalledWith('conversation-1')
     expect(wrapper.get('[data-testid="ai-work-chat-view"]').text()).toContain('派生回答-conversation-1')
 
-    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
-    const tree = wrapper.get('[data-testid="ai-work-json-tree"]')
-    expect(tree.text()).toContain('messages')
-    expect(tree.text()).toContain('part_kind')
-    expect(tree.text()).toContain('原始内容-conversation-1')
+    expect(wrapper.find('[aria-label="视图切换"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-work-view-raw-tab"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-work-raw-view"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-work-download"]').exists()).toBe(false)
 
-    await wrapper.get('[data-testid="ai-work-raw-tab"]').trigger('click')
-    const raw = wrapper.get('[data-testid="ai-work-raw-json"]').text()
-    expect(raw).toContain('"kind": "request"')
-    expect(raw).toContain('原始内容-conversation-1')
   })
 
   it('手动刷新列表和当前详情，不启动自动轮询', async () => {
@@ -232,6 +229,61 @@ describe('AiWorkView 对话与历史', () => {
     expect(live.text()).toContain('共有 3 条草稿。')
   })
 
+  it('/new 从持久化旧对话立即切换，列表刷新不能把旧会话重新载入', async () => {
+    mocks.route.query = { conversation_id: GLOBAL_CHAT_ID, workspace_tab: 'orders' }
+    const { store, mountNow } = setupView()
+    const wrapper = mountNow()
+    await flushPromises()
+    expect(store.activeConversationId).toBe(GLOBAL_CHAT_ID)
+
+    store.input = '/new'
+    store.sendMessage()
+    const newId = store.activeConversationId
+    const newChat = store.chat
+    expect(newId).not.toBe(GLOBAL_CHAT_ID)
+    await flushPromises()
+    expect(store.activeConversationId).toBe(newId)
+    expect(store.chat).toBe(newChat)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newId)
+    expect(wrapper.find('[data-testid="ai-chat-empty"]').exists()).toBe(true)
+    expect(mocks.replaceRoute).toHaveBeenLastCalledWith(expect.objectContaining({ query: {
+      conversation_id: newId, workspace_tab: 'orders',
+    } }))
+
+    await wrapper.get('[data-testid="ai-work-refresh"]').trigger('click')
+    await flushPromises()
+    expect(store.chat).toBe(newChat)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newId)
+    wrapper.unmount()
+  })
+
+  it('/new 后迟到的旧历史消息和列表响应不能抢回新对话', async () => {
+    mocks.route.query = { conversation_id: GLOBAL_CHAT_ID }
+    let resolveHistory!: (value: ReturnType<typeof uiMessages>) => void
+    mocks.fetchUiMessages.mockImplementationOnce(() => new Promise(resolve => { resolveHistory = resolve }))
+    const { store, mountNow } = setupView()
+    const wrapper = mountNow()
+    await flushPromises()
+
+    let resolveList!: (value: { ok: boolean; conversations: typeof conversations }) => void
+    mocks.fetchConversations.mockImplementationOnce(() => new Promise(resolve => { resolveList = resolve }))
+    store.historyVersion++
+    await flushPromises()
+    store.input = '/new'
+    store.sendMessage()
+    const newId = store.activeConversationId
+    await flushPromises()
+    resolveList({ ok: true, conversations })
+    resolveHistory(uiMessages(GLOBAL_CHAT_ID))
+    await flushPromises()
+
+    expect(store.activeConversationId).toBe(newId)
+    expect(store.messages).toEqual([])
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newId)
+    expect(wrapper.find('[data-testid="ai-work-ui-loading"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('活动运行完成后刷新一次列表，服务端结果替换临时条目', async () => {
     const { store, mountNow } = setupView()
     const conversationId = store.startConversation()
@@ -263,17 +315,14 @@ describe('AiWorkView 对话与历史', () => {
     expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(conversationId)
     expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
 
-    // 持久化完成后读取一次规范 detail，原始消息标签可正常检查。
+    // 持久化完成后读取一次规范 detail，更新头部元数据。
     expect(mocks.fetchConversation).toHaveBeenCalledTimes(1)
     expect(mocks.fetchConversation).toHaveBeenCalledWith(conversationId)
-    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
-    expect(wrapper.get('[data-testid="ai-work-json-tree"]').text()).toContain(
-      `原始内容-${conversationId}`,
-    )
-    expect(wrapper.find('[data-testid="ai-work-raw-pending"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
+
   })
 
-  it('未持久化活动 conversation 无 404 错误，原始标签显示待完成状态', async () => {
+  it('未持久化活动 conversation 不请求不存在的详情，仍可正常对话', async () => {
     const { store, mountNow } = setupView()
     const conversationId = store.startConversation()
     mocks.route.query = { conversation_id: conversationId }
@@ -285,14 +334,11 @@ describe('AiWorkView 对话与历史', () => {
     expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="ai-work-detail-error"]').exists()).toBe(false)
 
-    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
-    expect(wrapper.find('[data-testid="ai-work-detail-error"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="ai-work-raw-pending"]').text()).toContain(
-      '回复完成后可查看记录',
-    )
+    expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
+
   })
 
-  it('活动会话已有持久化历史且新一轮流式中时，原始标签提示上一终态历史', async () => {
+  it('活动会话已有持久化历史且新一轮流式中时，继续显示实时对话', async () => {
     const { store, mountNow } = setupView()
     const conversationId = store.startConversation()
     mocks.fetchConversations.mockResolvedValue({
@@ -330,13 +376,8 @@ describe('AiWorkView 对话与历史', () => {
     const wrapper = mountNow()
     await flushPromises()
 
-    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
-    expect(wrapper.get('[data-testid="ai-work-raw-streaming-note"]').text()).toContain(
-      '当前显示此前保存的记录',
-    )
-    expect(wrapper.get('[data-testid="ai-work-json-tree"]').text()).toContain(
-      `原始内容-${conversationId}`,
-    )
+    expect(wrapper.get('[data-testid="ai-work-live-chat"]').text()).toContain('继续上一轮')
+    expect(wrapper.find('[data-testid="ai-work-raw-view"]').exists()).toBe(false)
 
     // 收尾流，避免残留未完成的异步任务。
     const encoder = new TextEncoder()
@@ -459,7 +500,7 @@ describe('AiWorkView 对话与历史', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('读取对话列表失败：索引不可用')
   })
 
-  it('派生消息读取失败单独展示在对话标签，不影响原始消息标签', async () => {
+  it('派生消息读取失败时在对话区域展示错误', async () => {
     mocks.fetchUiMessages.mockRejectedValueOnce(new Error('派生不可用'))
 
     const { mountNow } = setupView()
@@ -470,11 +511,10 @@ describe('AiWorkView 对话与历史', () => {
       '读取历史消息失败：派生不可用',
     )
 
-    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
-    expect(wrapper.get('[data-testid="ai-work-json-tree"]').text()).toContain('原始内容-conversation-2')
+
   })
 
-  it('规范 detail 失败只影响原始消息标签，气泡标签正常', async () => {
+  it('头部元数据读取失败不影响对话展示', async () => {
     mocks.fetchConversation.mockRejectedValueOnce(new Error('详情不可用'))
 
     const { mountNow } = setupView()
@@ -483,13 +523,10 @@ describe('AiWorkView 对话与历史', () => {
 
     expect(wrapper.get('[data-testid="ai-work-chat-view"]').text()).toContain('派生回答-conversation-2')
 
-    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
-    expect(wrapper.get('[data-testid="ai-work-detail-error"]').text()).toContain(
-      '读取对话失败：详情不可用',
-    )
+
   })
 
-  it('messages 不是数组时在原始消息标签显示 JSON 验证错误', async () => {
+  it('头部详情消息格式异常时仍可展示对话', async () => {
     mocks.fetchConversation.mockResolvedValue({
       ...detail('conversation-2'),
       messages: { invalid: true },
@@ -499,33 +536,8 @@ describe('AiWorkView 对话与历史', () => {
     const wrapper = mountNow()
     await flushPromises()
 
-    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
-    expect(wrapper.get('[data-testid="ai-work-json-error"]').text()).toContain(
-      '消息记录格式异常。',
-    )
-    expect(wrapper.find('[data-testid="ai-work-json-tree"]').exists()).toBe(false)
-  })
+    expect(wrapper.get('[data-testid="ai-work-chat-view"]').text()).toContain('派生回答-conversation-2')
 
-  it('从已加载的 messages 生成下载文件，不请求 raw 端点', async () => {
-    const createObjectURL = vi.fn(() => 'blob:ai-work')
-    const revokeObjectURL = vi.fn()
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL })
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-
-    const { mountNow } = setupView()
-    const wrapper = mountNow()
-    await flushPromises()
-
-    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
-    await wrapper.get('[data-testid="ai-work-download"]').trigger('click')
-
-    expect(createObjectURL).toHaveBeenCalledOnce()
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:ai-work')
-    expect(click).toHaveBeenCalledOnce()
-    click.mockRestore()
-    Reflect.deleteProperty(URL, 'createObjectURL')
-    Reflect.deleteProperty(URL, 'revokeObjectURL')
   })
 
   describe('前台 presentation 展示', () => {

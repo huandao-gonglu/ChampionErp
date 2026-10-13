@@ -61,6 +61,10 @@ def cancel_chat_run(conversation_id, message_id):
     return build_ui_service().cancel_run(conversation_id, message_id)
 
 
+def fork_chat_conversation(conversation_id, message_id):
+    return build_ui_service().fork_conversation(conversation_id, message_id)
+
+
 def ui_messages_payload(conversation_id):
     try:
         return build_ui_service().dump_ui_messages(conversation_id), 200

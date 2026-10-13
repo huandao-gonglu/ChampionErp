@@ -122,7 +122,7 @@
   生成时重建预览并检查 `preview_fingerprint`，编辑只作用于本次请求的导出覆盖值。
   前端 `OzonExportDialog.vue` 复用 `WorkspaceDialog`；列表仅增加选择列和筛选栏的“操作”菜单。
   字段与输出契约见 `schemas/ozon_template_export.py`，操作与验证说明见 [Ozon 模板导出](ozon-template-export.md)。
-- `http_route_units/online_product_routes.py` 是列表/详情及同步、单件状态刷新、修改、回读、失败重试的唯一 HTTP 入口。
+- `http_route_units/online_product_routes.py` 是列表/详情及同步、单件状态刷新、修改、回读、人工结束、失败重试的唯一 HTTP 入口。
   `facades/online_product_facade.py` 负责请求转换；`facades/online_product_factory.py` 显式装配三个平台适配器。
 - `services/online_product_service.py` 编排 ERP 领域任务，通过注入访问适配器，不反向导入 runtime。
   `refresh_status` 直接查询单件状态；`POST /api/online-products/refresh-status` 不入同步队列，返回更新后的公开商品。
@@ -171,11 +171,19 @@
 - `marketplaces/online_buyer_links.py` 纯函数提取平台买家链接，规范化为 `BuyerLink`，随列表/详情返回。
   Yandex 使用 B2C `showcaseUrls`，Mercado 使用站点子刊登 `permalink`；不猜测缺失地址。
   `scripts/backfill_online_buyer_links.py` 补齐当前账号存量链接，只更新导航元数据，保留业务版本及同步时间。
-- 任务以提交键防重，同目标互斥；全店同步与该账号修改互斥。写前核对当前店铺及平台业务版本，
+- 任务以提交键防重，同目标修改互斥；全店同步只与该账号排队或执行中的任务互斥，待确认与结果未知的修改不阻断只读同步。同步仅更新商品快照，不确认旧修改或解除其防重发保护；同步期间不能并发查询修改结果，避免快照互相覆盖。写前核对当前店铺及平台业务版本，
   写前日志区分已发送与未发送；未知结果只回读、不自动重放。每次领取生成独立租约，过期执行者不可提交结果。
   工作线程在应用启动时恢复队列，前端轮询仅负责展示；部分同步失败保留旧快照，不推断删除。
   在线修改提交后仅接受人工确认，连续查询间隔 30 秒；失败也保留冷却时间。历史自动确认标记不再参与任务领取。
   局部确认更新版本与对应字段，保留完整同步时间。
+- 修改或同步被已有任务拦截时，`OnlineConflictResponse.conflict_job_id` 返回实际阻塞任务编号；前端错误提示可直接打开对应操作。
+  `GET /api/online-products?job_id=...` 经 facade → `OnlineProductService.job_detail` 校验当前店铺归属后读取任务，不受最近 100 条列表限制，不执行平台查询或重放修改。
+- `POST /api/online-products/close` → `OnlineProductService.close_operation` → `OnlineProductStore.close_operation`
+  允许人工核对后结束仍未确认的本地修改，终态为 `closed_unconfirmed`，不判定原写入成功或失败、不撤销平台请求、不自动重放。
+  `CloseOnlineOperationRequest` 要求明确确认及所见 `job.updated_at`；短事务校验五分钟内成功回读的 `evidence.checked_at/observed`、商品版本和同目标执行互斥；平台仍处理中、查询失败、缺失当前值或证据过期均拒绝。
+  每次开始回读先使旧证据失效，`checked_at` 与保留的完整同步时间 `synced_at` 分开；旧历史必须重新查询才能获得结束资格。
+  人工决定与证据保存于原任务 `result.resolution`，清除租约防止旧执行者覆盖；旧幂等键和外部请求阻断保持有效，只允许重新读取商品后提交新的操作。
+  `OnlineOperationRecovery.vue` 在操作记录提供核对当前值、原目标值及明确结束的共享弹窗；AI 的 `online_products_close` 复用原生审批快照和同一领域入口，绑定任务与商品版本。
 - `runtime_units/online_product_capabilities.py` 将现有读取、单件状态刷新、统一修改、同步、回读、重试接口直接装配进主 Agent。
   `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。
   商品数量、SKU 分析等由读取返回值与已有 Code Mode 组合完成，不新增场景工具、查询 DSL 或平台写入旁路。
@@ -463,6 +471,8 @@ focused 类目执行返回自己的 AI Work `conversation_id`；高层市场
 transcript 或 Tool 输出。
 
 ### 原生对话 HTTP 与消息历史
+
+- `POST /api/v1/ai-chat/fork` → `ai_chat_facade.fork_chat_conversation` → `VercelAiUiService.fork_conversation`：验证普通对话归属及已闭合的回复边界，复制原生历史前缀到新会话；不启动 Agent 或复制待办、Job、写权限。分支归属和来源保存在原生应用 metadata，首次发送后的归属仍由 claim 校验。`/ui-messages` 从既有 claim 投影每轮时间到 `metadata.ai_turn`；聊天隐藏推理正文，原始消息不变。展示及适配边界见 [AI Work](aiworkpage.md)。
 
 - `POST /api/v1/ai-chat/runs`：新用户消息或官方 approval-responded 消息。用户消息 ID 幂等领取与输入同事务保存；仅服务端历史参与模型调用。
 - `POST /api/v1/ai-chat/cancel`：接收 `{id, message_id}`，直接取消本轮原生令牌；不排队发送取消 prompt。相同消息的停止幂等，已知旧消息不能取消新回合；取消先于发送到达时，现有 claim 幂等记录阻止迟到消息启动。
