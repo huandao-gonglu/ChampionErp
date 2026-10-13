@@ -18,6 +18,19 @@ _rejections = ContextVar("external_request_rejections", default=None)
 
 @contextmanager
 def request_operation(source, *, operation_id="", trigger="manual", cancel=None, deadline_at=None, cancellation_check=None):
+    parent = _operation.get()
+    if parent:
+        # 领域子操作可以收紧期限，不能覆盖上层 AI/HTTP 的期限或停止检查。
+        deadlines = [value for value in (deadline_at, parent["deadline_at"]) if value is not None]
+        deadline_at = min(deadlines) if deadlines else None
+        checks = tuple(check for check in (parent["cancellation_check"], cancellation_check) if check is not None)
+        if checks:
+            def check_cancellation():
+                for check in checks:
+                    check()
+            cancellation_check = check_cancellation
+        if cancel is None:
+            cancel = parent["cancel"]
     value = {"source": source, "operation_id": operation_id or uuid4().hex, "trigger": trigger, "cancel": cancel, "deadline_at":deadline_at,"cancellation_check":cancellation_check}
     token = _operation.set(value)
     try:
@@ -54,6 +67,9 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
     read_post = platform == "ozon" and any(part in parsed.path for part in ("/info", "/list", "/tree", "/attribute", "/seller/info", "/posting/fbs/get", "/posting/fbo/get")) and not any(part in parsed.path for part in ("/update", "/import", "/delete"))
     if platform == "yandex":
         read_post = method.upper() == "POST" and not any(part in parsed.path for part in ("/update","/delete","/create")) and not parsed.path.endswith("/hidden-offers")
+        # 聊天 POST 同时包含查询与写入，按确切路径区分，防止发送未知时被当作只读重放。
+        if re.fullmatch(r"/v2/businesses/[1-9][0-9]*/chats(?:/.*)?", parsed.path):
+            read_post = method.upper() == "POST" and bool(re.fullmatch(r"/v2/businesses/[1-9][0-9]*/chats(?:/history)?", parsed.path))
     # Yandex 的发货批次搜索虽使用 PUT，但官方契约是只读；其他 PUT 保持写入语义。
     read_put = platform == "yandex" and method.upper() == "PUT" and bool(re.fullmatch(r"/v2/campaigns/[1-9][0-9]*/first-mile/shipments", parsed.path))
     # 接口标识去掉 URL 参数与动态数字 ID，避免敏感查询进入日志。

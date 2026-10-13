@@ -2,6 +2,10 @@
 export {
   API_SCHEMA_VERSION,
   PRODUCT_SCHEMA_VERSION,
+  type BackendOrderChatAttachment,
+  type BackendOrderChatMessage,
+  type BackendOrderChatHistory,
+  type BackendOrderChatSent,
   type BackendAlibabaPurchaseAddressFields,
   type BackendAlibabaPurchaseAddressCandidate,
   type BackendAlibabaPurchaseAddresses,

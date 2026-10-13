@@ -11,7 +11,7 @@ const open = ref(false)
 const label = computed(() => store.mode === 'full' ? '完全授权' : store.mode === 'ask' ? '询问审批' : '权限设置')
 const options: { mode: AiToolApprovalMode; label: string; hint: string }[] = [
   { mode: 'ask', label: '询问审批', hint: '发布、删除等操作执行前等待你确认。' },
-  { mode: 'full', label: '完全授权', hint: '自动批准所请求的发布、删除等操作，仍检查业务资料和工具权限。' },
+  { mode: 'full', label: '完全授权', hint: '发布、删除等操作无需逐次确认。' },
 ]
 
 onClickOutside(root, () => { open.value = false })
@@ -34,7 +34,7 @@ async function choose(mode: AiToolApprovalMode): Promise<void> {
       type="button"
       class="flex h-9 items-center gap-1.5 rounded-xl px-2 text-xs font-bold hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-primary-400 dark:hover:bg-dark-700"
       :class="store.mode === 'full' ? 'text-orange-600 dark:text-orange-400' : 'text-slate-600 dark:text-accent-200'"
-      aria-label="工具审批权限"
+      aria-label="操作确认设置"
       aria-haspopup="menu"
       :aria-expanded="open"
       data-testid="ai-approval-mode-trigger"

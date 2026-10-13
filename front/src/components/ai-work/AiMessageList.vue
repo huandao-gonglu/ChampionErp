@@ -27,7 +27,7 @@ defineProps<{
         <p
           class="mb-1 text-[10px] font-black uppercase tracking-wider opacity-70"
         >
-          {{ message.role === 'user' ? '你' : '全局 Agent' }}
+          {{ message.role === 'user' ? '你' : 'AI 助手' }}
         </p>
         <div class="space-y-2">
           <AiMessagePart

@@ -33,8 +33,8 @@ describe('AiMessagePart', () => {
     })
 
     const card = wrapper.get('[data-testid="ai-part-tool"]')
-    expect(card.text()).toContain('drafts_query')
-    expect(card.text()).toContain('工具完成')
+    expect(card.text()).toContain('查询草稿')
+    expect(card.text()).toContain('已完成')
     expect(card.text()).toContain('"total": 2')
   })
 
@@ -74,7 +74,7 @@ describe('AiMessagePart', () => {
   it('原生已返回状态仍展示业务失败和部分完成', () => {
     const failed = mountPart({ type: 'tool-category_match', state: 'output-available',
       output: { ok: false, error: { message: '类目匹配超时' } } })
-    expect(failed.text()).toContain('业务执行失败')
+    expect(failed.text()).toContain('操作失败')
     const partial = mountPart({ type: 'tool-example_partial_result', state: 'output-available',
       output: { status: 'partial' } })
     expect(partial.text()).toContain('部分完成')
@@ -82,7 +82,7 @@ describe('AiMessagePart', () => {
 
   it('历史导出的未返回工具不能被断言为等待审批', () => {
     const pending = mountPart({ type: 'tool-category_match', state: 'approval-requested' })
-    expect(pending.text()).toContain('等待工具结果')
+    expect(pending.text()).toContain('等待结果')
     expect(pending.text()).not.toContain('审批')
   })
 

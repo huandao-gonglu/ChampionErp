@@ -25,8 +25,8 @@ def batch_options(query):
     return create_service(get_context()).batch_options(str(query.get('order_id') or ''))
 
 
-def command(action, body):
-    context = get_context()
+def command(action, body, *, context=None):
+    context = context or get_context()
     service = create_service(context)
     result = {"batch-preview": service.batch_preview, "preview": service.preview, "parse-address": service.parse_address, "create": service.create,
             "reconcile": service.reconcile, "cashier": service.cashier,

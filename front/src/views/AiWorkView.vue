@@ -195,7 +195,7 @@ function formatError(cause: unknown, fallback: string): string {
 
 function validateConversationList(value: unknown): PydanticConversationSummary[] {
   if (!Array.isArray(value)) {
-    throw new Error('接口返回的 conversations 不是数组')
+    throw new Error('对话列表格式异常')
   }
   for (const conversation of value) {
     if (
@@ -203,19 +203,19 @@ function validateConversationList(value: unknown): PydanticConversationSummary[]
       || typeof conversation !== 'object'
       || typeof (conversation as Record<string, unknown>).conversation_id !== 'string'
     ) {
-      throw new Error('conversation 列表包含无效条目')
+      throw new Error('对话列表包含无效记录')
     }
   }
   return value as PydanticConversationSummary[]
 }
 
 function validateMessagesJson(messages: unknown): string {
-  if (!Array.isArray(messages)) return 'messages 必须是 JSON 数组。'
+  if (!Array.isArray(messages)) return '消息记录格式异常。'
   try {
     JSON.stringify(messages)
     return ''
   } catch (cause) {
-    return formatError(cause, 'messages 无法序列化为 JSON')
+    return formatError(cause, '消息记录无法读取')
   }
 }
 
@@ -230,22 +230,22 @@ async function loadConversation(conversationId: string): Promise<void> {
     const response = await fetchPydanticConversation(conversationId)
     if (generation !== detailRequestGeneration || selectedId.value !== conversationId) return
     if (!response?.ok) {
-      detailError.value = '读取 conversation 失败：接口返回 ok=false。'
+      detailError.value = '读取对话失败，请稍后重试。'
       return
     }
     if (response.conversation_id !== conversationId) {
-      detailError.value = '读取 conversation 失败：响应 ID 与请求 ID 不一致。'
+      detailError.value = '返回的对话与所选对话不一致，请刷新后重试。'
       return
     }
     const validationError = validateMessagesJson(response.messages)
     if (validationError) {
-      jsonError.value = `消息 JSON 格式无效：${validationError}`
+      jsonError.value = validationError
       return
     }
     selectedDetail.value = response
   } catch (cause) {
     if (generation !== detailRequestGeneration || selectedId.value !== conversationId) return
-    detailError.value = formatError(cause, '读取 conversation 失败')
+    detailError.value = formatError(cause, '读取对话失败')
   } finally {
     if (generation === detailRequestGeneration) loadingDetail.value = false
   }
@@ -265,15 +265,15 @@ async function loadUiMessages(conversationId: string): Promise<void> {
     const response = await fetchUiMessages(conversationId)
     if (generation !== uiMessagesRequestGeneration || selectedId.value !== conversationId) return
     if (!response?.ok) {
-      uiMessagesError.value = '读取历史消息失败：接口返回 ok=false。'
+      uiMessagesError.value = '读取历史消息失败，请稍后重试。'
       return
     }
     if (response.conversation_id !== conversationId) {
-      uiMessagesError.value = '读取历史消息失败：响应 ID 与请求 ID 不一致。'
+      uiMessagesError.value = '返回的记录与所选对话不一致，请刷新后重试。'
       return
     }
     if (!Array.isArray(response.messages)) {
-      uiMessagesError.value = '读取历史消息失败：messages 不是数组。'
+      uiMessagesError.value = '历史消息格式异常，请稍后重试。'
       return
     }
     if (conversationId.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)) {
@@ -357,7 +357,7 @@ async function refreshConversations(): Promise<void> {
     const response = await fetchPydanticConversations()
     if (generation !== listRequestGeneration) return
     if (!response?.ok) {
-      listError.value = '读取 conversation 列表失败：接口返回 ok=false。'
+      listError.value = '读取对话列表失败，请稍后重试。'
       return
     }
     const nextConversations = validateConversationList(response.conversations)
@@ -392,7 +392,7 @@ async function refreshConversations(): Promise<void> {
     await loadSelection(nextId)
   } catch (cause) {
     if (generation !== listRequestGeneration) return
-    listError.value = formatError(cause, '读取 conversation 列表失败')
+    listError.value = formatError(cause, '读取对话列表失败')
   } finally {
     if (generation === listRequestGeneration) loadingList.value = false
   }
@@ -456,16 +456,10 @@ onMounted(() => {
             </RouterLink>
             <span class="text-slate-300 dark:text-dark-600">/</span>
             <span class="rounded-full bg-primary-100 px-2.5 py-1 text-[11px] font-black text-primary-700 dark:bg-primary-500/15 dark:text-primary-200">
-              全局对话
-            </span>
-            <span class="rounded-full bg-violet-100 px-2.5 py-1 text-[11px] font-black text-violet-700 dark:bg-violet-500/15 dark:text-violet-200">
-              原始消息可检查
+              AI 对话
             </span>
           </div>
-          <h1 class="mt-2 text-2xl font-black tracking-tight">AI Work 对话</h1>
-          <p class="mt-1 text-sm text-slate-500 dark:text-accent-300">
-            活动对话实时流式展示；历史由官方 dump_messages() 派生，原始 Pydantic JSON 在辅助标签检查。
-          </p>
+          <h1 class="mt-2 text-2xl font-black tracking-tight">AI 对话</h1>
         </div>
         <button
           type="button"
@@ -548,9 +542,9 @@ onMounted(() => {
       <section class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-900">
         <div v-if="!selectedId" class="flex min-h-[560px] items-center justify-center p-8 text-center">
           <div>
-            <p class="text-base font-black">请选择一条 conversation</p>
+            <p class="text-base font-black">请选择一段对话</p>
             <p class="mt-2 text-sm text-slate-500 dark:text-accent-300">
-              或在浮动对话中发送消息，开始新的全局对话。
+              或在浮动对话中发送消息，开始新的对话。
             </p>
           </div>
         </div>
@@ -560,7 +554,7 @@ onMounted(() => {
             <div class="flex flex-wrap items-start justify-between gap-4">
               <div class="min-w-0">
                 <p class="text-xs font-black uppercase tracking-[0.14em] text-primary-600 dark:text-primary-300">
-                  Conversation
+                  对话
                 </p>
                 <code class="mt-1 block break-all text-sm font-bold" data-testid="ai-work-selected-id">
                   {{ selectedId }}
@@ -609,7 +603,7 @@ onMounted(() => {
                       data-testid="ai-work-tree-tab"
                       @click="inspectorMode = 'tree'"
                     >
-                      JSON tree
+                      树状查看
                     </button>
                     <button
                       type="button"
@@ -639,7 +633,7 @@ onMounted(() => {
               data-testid="ai-work-presentation-live"
             >
               <p class="mb-3 text-xs text-slate-400" data-testid="ai-work-presentation-live-note">
-                AI 任务只读实时展示：{{ foregroundPresentation.displayTitle || '前台 AI 任务' }}
+                任务进度：{{ foregroundPresentation.displayTitle || 'AI 任务' }}
                 · {{ displayStore.presentationStatusText }}
               </p>
 
@@ -652,7 +646,7 @@ onMounted(() => {
                 class="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-500 dark:border-dark-600 dark:text-accent-300"
                 data-testid="ai-work-presentation-live-empty"
               >
-                AI Agent 已启动，等待首个事件…
+                正在准备…
               </div>
 
               <p
@@ -660,7 +654,7 @@ onMounted(() => {
                 class="mt-3 text-xs text-slate-400"
                 data-testid="ai-work-presentation-live-streaming"
               >
-                AI Agent 正在运行（只读展示）…
+                正在处理…
               </p>
               <p
                 v-if="foregroundPresentation.error"
@@ -710,7 +704,7 @@ onMounted(() => {
 
               <template v-else-if="historyMessages">
                 <p class="mb-3 text-xs text-slate-400" data-testid="ai-work-history-readonly">
-                  只读历史：由服务端官方 dump_messages() 派生，不参与实时流。
+                  以下为已保存的对话。
                 </p>
 
                 <AiMessageList
@@ -723,11 +717,11 @@ onMounted(() => {
                   class="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-500 dark:border-dark-600 dark:text-accent-300"
                   data-testid="ai-work-history-empty"
                 >
-                  该 conversation 暂无消息。
+                  这段对话暂无消息。
                 </div>
 
                 <p v-if="!isGlobalChatSelected" class="mt-4 text-xs text-slate-400">
-                  该会话属于其他业务 Agent，仅提供只读展示。
+                  这是任务记录，无法在此继续对话。
                 </p>
               </template>
             </template>
@@ -736,7 +730,7 @@ onMounted(() => {
           <!-- 原始消息视图：规范 Pydantic JSON 检查与下载 -->
           <div v-else role="tabpanel" data-testid="ai-work-raw-view" class="p-5">
             <div v-if="loadingDetail" class="flex min-h-[480px] items-center justify-center text-sm text-slate-500 dark:text-accent-300">
-              正在读取 Pydantic message history…
+              正在读取对话记录…
             </div>
 
             <p
@@ -763,7 +757,7 @@ onMounted(() => {
                 data-testid="ai-work-raw-streaming-note"
                 class="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100"
               >
-                活动会话仍在流式运行：以下为服务端已保存的上一终态历史，不包含本轮尚未完成的消息，完成后自动刷新。
+                本轮回复尚未完成，当前显示此前保存的记录，完成后会自动更新。
               </p>
 
               <div
@@ -779,10 +773,6 @@ onMounted(() => {
                 data-testid="ai-work-raw-json"
                 class="max-h-[calc(100vh-300px)] min-h-[480px] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950 p-4 font-mono text-xs leading-6 text-slate-100"
               >{{ rawJson }}</pre>
-
-              <p class="mt-3 text-xs text-slate-500 dark:text-accent-300">
-                此标签只遍历 JSON 的数组、对象和标量，不解释消息类型、part 或工具调用。
-              </p>
             </template>
 
             <div
@@ -790,7 +780,7 @@ onMounted(() => {
               data-testid="ai-work-raw-pending"
               class="flex min-h-[480px] items-center justify-center rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-500 dark:border-dark-600 dark:text-accent-300"
             >
-              运行完成后可检查规范历史。
+              回复完成后可查看记录。
             </div>
 
             <p

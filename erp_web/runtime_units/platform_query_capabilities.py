@@ -156,19 +156,19 @@ def products_index_query(
 
 @ai_tool(
     name=PLATFORM_ORDERS_QUERY_TOOL,
-    description="查询 Mercado Libre、Ozon、Yandex 的本地订单最新快照及通知处理情况。",
+    description="按订单号、SKU 或货号查询本地订单。platform 留空一次查所有已配置平台；多个货号用 article_numbers（如 [EE052,EE010]），按编号边界匹配任一货号，或用 q 搜索订单号/标题/来源规格关键词，两者互斥。直接关联冻结发布来源、已确认来源和有效采购记录，无需遍历商品或草稿；商品行 matches 返回命中依据，certainty=ambiguous 仅是待核实候选。limit/offset 分页，pagination.total 是匹配订单数；coverage 返回本地覆盖与缺失，sync_status.last_success_at 和 items.checked_at 是数据时间，查询时间不代表已同步，不能声称覆盖平台实时状态或全部历史。items.id 是详情工具的 ERP order_id。默认不读通知，仅排查通知时设 include_notifications=true。",
     permission="platform.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="1",
+    version="3",
 )
 def platform_orders_query(
     request: PlatformOrdersQueryRequest,
     scope: Annotated[PlatformQueryCapabilityScope, Injected()],
 ) -> PlatformOrdersQueryResult:
-    platform = _require_platform(request.platform)
+    platform = _require_platform(request.platform) if request.platform else ""
     result = _require_ok(
-        scope.orders_loader(platform=platform, limit=request.limit, offset=request.offset),
+        scope.orders_loader(**{**request.model_dump(mode="json"), "platform": platform}),
         default_code="PLATFORM_ORDERS_QUERY_FAILED",
         default_message="平台订单查询失败。",
     )
@@ -180,9 +180,10 @@ def platform_orders_query(
     return PlatformOrdersQueryResult(
         platform=platform,
         items=_dict_rows(result.get("items")),
-        notifications=_dict_rows(result.get("notifications")),
+        notifications=_dict_rows(result.get("notifications")) if request.include_notifications else (),
         pagination=dict(pagination),
-        checked_at=_text(result.get("checked_at")),
+        sync_status=_dict_rows(result.get("sync_status")),
+        coverage=result.get("coverage") or {},
     )
 
 

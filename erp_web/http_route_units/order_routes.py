@@ -9,6 +9,8 @@ from erp_web.facades import order_procurement_facade as procurement
 from erp_web.facades import alibaba_self_purchase_facade
 from erp_web.schemas.requests import validate_request_payload
 from erp_web.facades import order_address_note_facade as address_notes
+from erp_web.facades import order_chat_facade as chat
+from erp_web.schemas.platform_errors import PublishAdapterError
 from erp_web.schemas.order_address_notes import AddressNoteConflict
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 
@@ -168,7 +170,27 @@ def handle_self_purchase_pay(handler):
     _self_purchase(handler, "pay")
 
 
+def _chat_command(handler, action):
+    try:
+        body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+        handler.send_json(chat.command(action, body))
+    except PublishAdapterError as exc:
+        handler.send_json({"ok": False, "error": str(exc), "code": exc.code}, 409 if isinstance(exc, ExternalRequestBlocked) else 502)
+    except (ValueError, TypeError) as exc:
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
+
+
+def handle_chat_history(handler):
+    _chat_command(handler, "history")
+
+
+def handle_chat_send(handler):
+    _chat_command(handler, "send")
+
+
 POST_HANDLERS = {
+    "/api/orders/chat/history": handle_chat_history,
+    "/api/orders/chat/send": handle_chat_send,
     "/api/orders/alibaba-purchase/parse-address": handle_self_purchase_parse_address,
     "/api/orders/alibaba-purchase/preview": handle_self_purchase_preview,
     "/api/orders/alibaba-purchase/batch-preview": handle_self_purchase_batch_preview,

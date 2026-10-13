@@ -46,6 +46,10 @@ from erp_web.runtime_units.store_auth_capabilities import (
     STORE_AUTH_AI_CAPABILITIES,
 )
 from erp_web.runtime_units.online_product_capabilities import ONLINE_PRODUCT_AI_CAPABILITIES
+from erp_web.runtime_units.order_capabilities import ORDER_AI_CAPABILITIES
+from erp_web.runtime_units.order_chat_capabilities import ORDER_CHAT_AI_CAPABILITIES
+from erp_web.runtime_units.order_purchase_capabilities import ORDER_PURCHASE_AI_CAPABILITIES
+from erp_web.runtime_units.order_fulfillment_capabilities import ORDER_FULFILLMENT_AI_CAPABILITIES
 from erp_web.services.ai_tool_catalog import AiToolBindingScope, AiToolCatalog
 from erp_web.services.ai_tool_registry import AiToolSet
 
@@ -68,6 +72,10 @@ RESEARCH_CAPABILITIES = RESEARCH_AI_CAPABILITIES
 SOURCE_INSPECT_CAPABILITIES = SOURCE_INSPECT_AI_CAPABILITIES
 
 ALL_AI_CAPABILITIES = (
+    *ORDER_AI_CAPABILITIES,
+    *ORDER_CHAT_AI_CAPABILITIES,
+    *ORDER_PURCHASE_AI_CAPABILITIES,
+    *ORDER_FULFILLMENT_AI_CAPABILITIES,
     *ONLINE_PRODUCT_AI_CAPABILITIES,
     *CONVERSATION_FACT_CAPABILITIES,
     *PRODUCT_CAPABILITIES,
@@ -96,6 +104,20 @@ APPLICATION_CAPABILITY_CATALOG = AiToolCatalog.compile(ALL_AI_CAPABILITIES)
 #: 主 Agent 的查询和纯计算能力。
 GLOBAL_CHAT_CAPABILITIES = frozenset(
     {
+        "order_detail_read",
+        "order_buyer_chat_read",
+        "orders_summary_read",
+        "order_purchase_query",
+        "order_address_note_read",
+        "order_alibaba_options",
+        "order_alibaba_batch_options",
+        "order_alibaba_addresses",
+        "order_alibaba_parse_address",
+        "order_alibaba_payment_status",
+        "order_alibaba_cashier",
+        "order_receiving_warehouse_read",
+        "order_fulfillment_read",
+        "order_fulfillment_services",
         "online_products_read",
         "conversation_facts_query",
         "drafts_query",
@@ -129,6 +151,21 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
 #: owner 并膨胀上下文，已从常用 allowlist 移除，只保留为 internal。
 _WRITE_CAPABILITIES = frozenset(
     {
+        "orders_sync",
+        "order_buyer_chat_send",
+        "order_notification_update",
+        "order_source_select",
+        "order_purchase_record",
+        "order_purchase_cancel",
+        "order_purchase_sync",
+        "order_address_note_update",
+        "order_alibaba_preview",
+        "order_alibaba_batch_preview",
+        "order_alibaba_create",
+        "order_alibaba_pay",
+        "order_alibaba_reconcile",
+        "order_receiving_warehouse_update",
+        "order_fulfillment_update",
         "online_products_change",
         "online_products_sync",
         "online_products_refresh_status",

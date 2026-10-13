@@ -323,6 +323,17 @@ class AlibabaSelfPurchaseService:
         self.procurement.store.order(binding["order_id"], self.procurement.accounts_provider())
         return row
 
+    def approval_facts(self, preview_id):
+        """审批只读取已冻结采购事实；不预览、不创建，也不发起支付。"""
+        config = self.config_provider()
+        row = self._record(preview_id, config)
+        return {
+            "account_scope": account_scope(config),
+            "binding": row["payload"]["binding"],
+            "items": row["payload"].get("items", []),
+            "record": public_record(row),
+        }
+
     def create(self, body):
         req = SelfPurchaseCreateRequest.model_validate(body)
         config = self.config_provider()

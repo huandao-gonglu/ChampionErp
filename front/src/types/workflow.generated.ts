@@ -6,6 +6,30 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 4 as const
 
+export interface BackendOrderChatAttachment {
+  name: string
+  url: string
+}
+
+export interface BackendOrderChatMessage {
+  id: string
+  sender: string
+  created_at: string
+  text: string
+  attachments: Array<BackendOrderChatAttachment>
+}
+
+export interface BackendOrderChatHistory {
+  ok: boolean
+  chat_id: string
+  messages: Array<BackendOrderChatMessage>
+}
+
+export interface BackendOrderChatSent {
+  ok: boolean
+  chat_id: string
+}
+
 export interface BackendAlibabaPurchaseAddressFields {
   fullName: string
   mobile: string

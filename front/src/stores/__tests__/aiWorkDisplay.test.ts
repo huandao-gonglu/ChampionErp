@@ -37,7 +37,7 @@ describe('aiWorkDisplay store', () => {
     expect(store.displayMode).toBe('presentation')
     expect(store.foregroundPresentation?.presentationId).toBe('presentation_x')
     expect(store.foregroundPresentation?.displayTitle).toBe('AI 匹配类目')
-    expect(store.presentationStatusText).toBe('已预留')
+    expect(store.presentationStatusText).toBe('准备中')
   })
 
   it('同一时间只允许一个前台 presentation：第二次 attach 被明确拒绝', () => {
@@ -45,7 +45,7 @@ describe('aiWorkDisplay store', () => {
     store.attachForegroundPresentation(descriptor(), fakeChat())
 
     expect(() => store.attachForegroundPresentation(descriptor('presentation_y'), fakeChat()))
-      .toThrow('已有前台 AI 任务运行')
+      .toThrow('已有 AI 任务正在处理')
     expect(store.foregroundPresentation?.presentationId).toBe('presentation_x')
   })
 
@@ -56,21 +56,21 @@ describe('aiWorkDisplay store', () => {
     expect(store.foregroundStartPending).toBe(true)
     expect(store.foregroundOccupied).toBe(true)
     // 尚未 attach（reserve POST 进行中）：第二次同步触发即被拒绝。
-    expect(() => store.beginForegroundStart()).toThrow('已有前台 AI 任务运行')
+    expect(() => store.beginForegroundStart()).toThrow('已有 AI 任务正在处理')
     expect(store.hasForegroundPresentation).toBe(false)
 
     // attach 后 pending 转为真实 presentation 占用。
     store.attachForegroundPresentation(descriptor(), fakeChat())
     expect(store.foregroundStartPending).toBe(false)
     expect(store.foregroundOccupied).toBe(true)
-    expect(() => store.beginForegroundStart()).toThrow('已有前台 AI 任务运行')
+    expect(() => store.beginForegroundStart()).toThrow('已有 AI 任务正在处理')
   })
 
   it('活动 presentation 存在时 beginForegroundStart 被拒绝', () => {
     const store = useAiWorkDisplayStore()
     store.attachForegroundPresentation(descriptor(), fakeChat())
 
-    expect(() => store.beginForegroundStart()).toThrow('已有前台 AI 任务运行')
+    expect(() => store.beginForegroundStart()).toThrow('已有 AI 任务正在处理')
     expect(store.foregroundStartPending).toBe(false)
   })
 
@@ -93,7 +93,7 @@ describe('aiWorkDisplay store', () => {
 
     store.updateForegroundStatus('running')
     expect(store.foregroundPresentation?.chat).toBe(chat)
-    expect(store.presentationStatusText).toBe('运行中')
+    expect(store.presentationStatusText).toBe('处理中')
 
     store.setForegroundError(new Error('AI_AGENT_RUN_FAILED'))
     expect(store.foregroundPresentation?.chat).toBe(chat)

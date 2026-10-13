@@ -46,9 +46,9 @@ describe('aiPresentations 通用展示边界', () => {
       status: 'weird',
     }).status).toBe('running')
     expect(() => normalizePresentationDescriptor({ conversation_id: 'c' }))
-      .toThrow('presentation_id')
+      .toThrow('暂时无法显示处理进度')
     expect(() => normalizePresentationDescriptor({ presentation_id: 'p' }))
-      .toThrow('conversation_id')
+      .toThrow('暂时无法显示处理进度')
   })
 
   it('reserveAiPresentation POST 通用 reserve endpoint，只携带 display_title', async () => {
@@ -178,10 +178,10 @@ describe('aiPresentations 通用展示边界', () => {
   })
 
   it('describePresentationStatus 覆盖全部展示状态', () => {
-    expect(describePresentationStatus('reserved')).toBe('已预留')
-    expect(describePresentationStatus('bound')).toBe('已绑定')
-    expect(describePresentationStatus('running')).toBe('运行中')
-    expect(describePresentationStatus('finalizing')).toBe('收尾中')
+    expect(describePresentationStatus('reserved')).toBe('准备中')
+    expect(describePresentationStatus('bound')).toBe('准备中')
+    expect(describePresentationStatus('running')).toBe('处理中')
+    expect(describePresentationStatus('finalizing')).toBe('正在整理结果')
     expect(describePresentationStatus('completed')).toBe('已完成')
     expect(describePresentationStatus('failed')).toBe('失败')
     expect(describePresentationStatus('expired')).toBe('已过期')

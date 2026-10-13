@@ -256,7 +256,7 @@ describe('category.product_match 同步 focused response + 通用 presentation �
       { id: 'presentation_existing', messages: [] } as never,
     )
 
-    await expect(matchCategory(draft(), target())).rejects.toThrow('已有前台 AI 任务运行')
+    await expect(matchCategory(draft(), target())).rejects.toThrow('已有 AI 任务正在处理')
     expect(apiClient.post).not.toHaveBeenCalled()
   })
 
@@ -271,7 +271,7 @@ describe('category.product_match 同步 focused response + 通用 presentation �
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: TYPED_RESULT, status: 200 })
 
     const first = matchCategory(draft(), target())
-    await expect(matchCategory(draft(), target())).rejects.toThrow('已有前台 AI 任务运行')
+    await expect(matchCategory(draft(), target())).rejects.toThrow('已有 AI 任务正在处理')
 
     resolveReserve({ data: DESCRIPTOR, status: 200 })
     const result = await first
@@ -343,7 +343,7 @@ describe('展示连接中断不改变业务语义（展示链与业务链分离�
         await matchCategory(draft(), target())
       } catch (error) {
         secondTriggerRejected = String((error as Error).message).includes(
-          '已有前台 AI 任务运行',
+          '已有 AI 任务正在处理',
         )
       }
       return { data: TYPED_RESULT, status: 200 }

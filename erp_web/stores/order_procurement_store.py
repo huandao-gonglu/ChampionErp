@@ -76,6 +76,43 @@ class OrderProcurementStore:
         with self.orders.connect() as conn:
             return self._order(conn, order_id, accounts)
 
+    def iter_query_facts(self, accounts, identities, *, state=""):
+        """同一读事务分批读取订单及可信来源；按账号、发布店铺双重隔离。"""
+        where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
+        args = tuple(value for pair in accounts.items() for value in pair)
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN")
+            cursor = conn.execute(
+                f"SELECT id,snapshot,checked_at FROM orders WHERE ({where})"
+                + (" AND state=?" if state else "") + " ORDER BY checked_at DESC,id",
+                args + ((state,) if state else ()),
+            )
+            while rows := cursor.fetchmany(100):
+                orders = [OrderView(**json.loads(row["snapshot"]), id=row["id"], checked_at=row["checked_at"])
+                          for row in rows]
+                ids = json.dumps([order.id for order in orders])
+                sources = {}
+                for row in conn.execute("SELECT * FROM order_sources WHERE order_id IN (SELECT value FROM json_each(?))", (ids,)):
+                    sources[(row["order_id"], row["line_key"])] = dict(row)
+                purchases = {}
+                for row in conn.execute("SELECT * FROM order_purchases WHERE status='purchased' AND order_id IN (SELECT value FROM json_each(?))", (ids,)):
+                    purchases.setdefault((row["order_id"], row["line_key"]), []).append(dict(row))
+                bindings = {}
+                for platform in {order.platform for order in orders}:
+                    identity = identities.get(platform)
+                    if not identity:
+                        continue
+                    skus = json.dumps(list({line.sku for order in orders if order.platform == platform for line in order.items if line.sku}))
+                    for row in conn.execute(
+                        "SELECT id,binding_json FROM sales_sku_bindings WHERE platform=? AND store_identity=? "
+                        "AND seller_sku IN (SELECT value FROM json_each(?))", (platform, identity, skus),
+                    ):
+                        binding = SalesSkuBinding.model_validate_json(row["binding_json"]).model_copy(update={"id": row["id"]})
+                        bindings.setdefault((platform, binding.seller_sku), []).append(binding)
+                for order in orders:
+                    if accounts.get(order.platform) == order.account_id:
+                        yield order, sources, purchases, bindings
+
     def checked_purchase(self, conn, order_id, record_id, accounts):
         order = self._order(conn, order_id, accounts)
         row = conn.execute("SELECT * FROM order_purchases WHERE order_id=? AND id=?", (order_id, record_id)).fetchone()

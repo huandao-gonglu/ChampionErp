@@ -161,7 +161,7 @@ describe('withAiForeground 通用前台 wrapper', () => {
     const operation = vi.fn(() => Promise.resolve('never'))
 
     await expect(withAiForeground({ displayTitle: 'AI 测试任务' }, operation))
-      .rejects.toThrow('已有前台 AI 任务运行')
+      .rejects.toThrow('已有 AI 任务正在处理')
 
     expect(operation).not.toHaveBeenCalled()
     expect(apiClient.post).not.toHaveBeenCalled()

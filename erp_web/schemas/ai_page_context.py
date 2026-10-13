@@ -33,6 +33,7 @@ class AiPageContext(BaseModel):
         "product_editor", "draft_editor", "systemSettings",
     ]
     section: Literal["text", "images", "category", "skus", "pricing", "precheck"] | None = None
+    order_id: ContextId | None = None
     product_id: ContextId | None = None
     draft_id: ContextId | None = None
     listing_id: ContextId | None = None
@@ -56,6 +57,7 @@ def page_context_instructions(context: dict | None) -> str:
     if page.section:
         lines.append(f"当前区域：{SECTION_LABELS[page.section]}")
     for field, label in (
+        ("order_id", "当前 ERP 订单 ID"),
         ("product_id", "当前商品 ID"), ("draft_id", "当前草稿 ID"),
         ("listing_id", "当前在线商品 ID"),
         ("group_id", "当前在线商品节点 ID"),
@@ -64,6 +66,8 @@ def page_context_instructions(context: dict | None) -> str:
     ):
         if value := getattr(page, field):
             lines.append(f"{label}：{value}")
+    if page.page == "orders":
+        lines.append("order_id 为当前详情中的 ERP 订单 ID；先读取订单工具核对，不将平台单号或列表第一笔推断为当前订单。")
     if page.page == "onlineProducts":
         lines.append(
             "listing_id 指向当前焦点刊登/SKU；group_id 指向当前焦点组合或独立节点，"

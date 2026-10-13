@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { fetchOrderDetail } from '@/api/orders'
 import type { OrderHandoverSnapshot, OrderSnapshot } from '@/types/orders'
 import OrderHandoverPanel from '../OrderHandoverPanel.vue'
@@ -102,7 +103,7 @@ describe('平台交货信息', () => {
       return mount(OrderDetailPanel, {
         attachTo: document.body,
         props: { orderId: order.id },
-        global: { stubs: { WorkspaceDialog: { template: '<div><slot /><slot name="footer" /></div>' }, OrderFulfillmentPanel: true } },
+        global: { plugins: [createPinia()], stubs: { WorkspaceDialog: { template: '<div><slot /><slot name="footer" /></div>' }, OrderFulfillmentPanel: true } },
       })
     }
     const wrapper = open()

@@ -445,14 +445,18 @@ def test_runtime_rejects_missing_trusted_idempotency_before_write_executor() -> 
 def test_compiler_rejects_unsupported_signatures_and_schema_constraints() -> None:
     @ai_tool(
         name="test_catalog_pattern",
-        description="不支持的 pattern",
+        description="保留领域字符串格式约束",
         permission="test.read",
     )
     def pattern_tool(request: PatternRequest) -> LookupResult:
         return LookupResult(value=request.value, tenant_id="test")
 
-    with pytest.raises(AiToolCompilerError, match="pattern"):
-        AiToolCompiler.compile(pattern_tool)
+    compiled_pattern = AiToolCompiler.compile(pattern_tool)
+    pattern_schema = compiled_pattern.definition.input_schema["properties"]["value"]
+    assert pattern_schema["pattern"] == r"^[a-z]+$"
+    validate_json_schema("abc", pattern_schema)
+    with pytest.raises(AiToolSchemaError, match="pattern"):
+        validate_json_schema("ABC", pattern_schema)
 
     @ai_tool(
         name="test_catalog_union",

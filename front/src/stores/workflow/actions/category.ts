@@ -257,7 +257,7 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
 
   async function autoSuggestCategoriesForDraft() {
     if (useAiWorkDisplayStore().foregroundOccupied) {
-      setError('已有前台 AI 任务运行，请等待完成后再试。')
+      setError('已有 AI 任务正在处理，请等待完成后再试。')
       return false
     }
     if (!currentDraft.value.draftId) {

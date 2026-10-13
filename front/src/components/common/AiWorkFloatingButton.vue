@@ -124,7 +124,7 @@ onBeforeUnmount(() => {
       v-if="chatStore.floatingOpen"
       id="ai-work-floating-panel"
       role="region"
-      :aria-label="displayMode === 'presentation' ? '前台 AI 任务只读展示' : '全局 AI 浮动对话'"
+      :aria-label="displayMode === 'presentation' ? 'AI 任务进度' : 'AI 助手'"
       data-testid="ai-work-floating-panel"
       class="flex w-[400px] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl shadow-slate-950/20 dark:border-dark-700 dark:bg-dark-900 dark:text-white"
     >
@@ -133,7 +133,7 @@ onBeforeUnmount(() => {
         <header class="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-dark-700">
           <div class="min-w-0">
             <p class="text-xs font-black uppercase tracking-[0.14em] text-primary-600 dark:text-primary-300">
-              {{ foregroundPresentation.displayTitle || '前台 AI 任务' }}
+              {{ foregroundPresentation.displayTitle || 'AI 任务' }}
             </p>
             <p class="mt-0.5 truncate text-[11px] text-slate-500 dark:text-accent-300">
               {{ foregroundPresentation.conversationId }} · {{ displayStore.presentationStatusText }}
@@ -180,14 +180,14 @@ onBeforeUnmount(() => {
             class="rounded-2xl border border-dashed border-primary-300 bg-primary-50/60 px-6 py-10 text-center text-sm font-bold text-slate-500 dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-accent-300"
             data-testid="ai-work-presentation-empty"
           >
-            AI Agent 已启动，等待首个事件…
+            正在准备…
           </p>
           <p
             v-if="displayStore.presentationBusy"
             class="text-xs text-slate-400"
             data-testid="ai-work-presentation-streaming"
           >
-            AI Agent 正在运行（只读展示）…
+            正在处理…
           </p>
           <p
             v-if="presentationError"
@@ -205,7 +205,7 @@ onBeforeUnmount(() => {
         <header class="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-dark-700">
           <div class="min-w-0">
             <p class="text-xs font-black uppercase tracking-[0.14em] text-primary-600 dark:text-primary-300">
-              全局 AI 对话
+              AI 助手
             </p>
             <p class="mt-0.5 truncate text-[11px] text-slate-500 dark:text-accent-300">
               {{ chatStore.activeConversationId || '发送第一条消息后自动创建会话' }}
@@ -268,10 +268,10 @@ onBeforeUnmount(() => {
 
     <RouterLink
       :to="aiWorkRoute"
-      aria-label="打开 AI Work"
+      aria-label="打开 AI 助手"
       :aria-expanded="chatStore.floatingOpen"
       aria-controls="ai-work-floating-panel"
-      title="打开 AI Work"
+      title="打开 AI 助手"
       data-testid="ai-work-floating-toggle"
       class="flex size-14 items-center justify-center rounded-full border border-white/60 bg-primary-600 text-white shadow-xl shadow-primary-950/25 transition duration-200 hover:-translate-y-1 hover:bg-primary-500 hover:shadow-2xl hover:shadow-primary-950/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-primary-300 dark:border-primary-300/20 dark:bg-primary-500 dark:hover:bg-primary-400"
     >

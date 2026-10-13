@@ -1089,6 +1089,45 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 
 ## 订单通知与订单快照
 
+- 订单中心 AI 接入复用主 Agent 的 `@ai_tool` → 显式 Catalog/allowlist → Binding Scope →
+  `AiToolRuntime` → 原生 Pydantic Tool 链路，不新增订单 Agent、模型循环或审批协议。
+  `runtime_units/order_capabilities.py` 提供详情、摘要、显式同步、通知处理、来源确认、采购登记/作废、
+  采购查询/同步和本地地址备注；`platform_orders_query` 读取同一份快照，支持状态、关键词和批量货号检索。
+  返回的 `items.id` 是其他订单工具的 `order_id`，不是平台订单号。
+- 订单检索由 `order_notification_facade.query_orders` → `services/order_query_service.py` 编排，
+  `OrderProcurementStore.iter_query_facts` 在同一读事务按批次读取当前账号订单、发布店铺绑定、已确认来源和有效采购记录。
+  `services/order_source_resolution.py` 与订单详情共用纯来源解析；远端身份、订单行签名、重复行及歧义检查不省略。
+  不读取当前草稿、不解析 SKU 编码、不调用远端；来源字段匹配在分页前完成，避免只过滤第一页。
+  `article_numbers` 按编号边界匹配任一货号，`q` 为关键词模式，两者互斥；平台留空覆盖所有已配置账号。
+  `items[].items[].matches` 保留来源类型和引用；已确认来源、冻结发布来源、采购记录各自独立，歧义候选不能当作确定命中。
+  `coverage` 记录本地扫描范围、缺失/歧义、未配置平台、分页和快照时间，不承诺平台实时或全历史覆盖。
+  `queried_at` 仅为查询时间，数据时效看各订单 `checked_at` 与平台 `sync_status.last_success_at`。
+  工具只返回订单及行摘要，完整采购、物流、金额明细按需读取详情；通知仅在 `include_notifications=true` 时读取，且按所查平台账号隔离。
+  HTTP 订单中心列表继续使用 `read_orders` 的页面契约。回归：`tests/test_order_query_service.py`，覆盖批量货号、跨批次分页、来源变更/作废、账号隔离和原生直接工具/CodeMode。
+- `runtime_units/order_purchase_capabilities.py` 提供 1688 单条/批量候选、地址、预览、创建、
+  签约状态、支付、原请求核验和官方收银台链接；预览不会下单，创建不会付款，支付单独审批。
+  `AlibabaSelfPurchaseService.approval_facts` 只读冻结业务事实并检查账号归属；创建/支付审批绑定
+  完整商品规格与数量、金额、渠道、地址、账号及原请求，执行时重核。过长审批拒绝截断，要求缩小采购范围。
+  原有请求号、采购数量占位、实时价格复核及未知回执防重继续由采购领域维护。
+- `runtime_units/order_fulfillment_capabilities.py` 提供收货仓读取/确认、履约详情、合作服务查询，
+  以及面单、包裹、方案、提交、核验、关联、重试和取消等既有命令。履约修改与收货仓确认统一审批，
+  绑定当前版本、账号和业务事实；保存资料可能推进既有自动履约，不得把本地提交回执当作远端完成。
+  物流凭据、全局承接规则配置及本地面单文件上传继续走可信界面；AI 可以获取平台面单或填写已知公开面单 URL。
+- `runtime_units/order_capability_support.py` 持有订单领域 Scope、错误转换和审批支撑；
+  `agent_capability_facade.py` 以当前 AppContext 显式绑定。HTTP 与 AI 共用原服务及采购后的同步逻辑，
+  facade 的可选 `context` 只用于可信装配，不向模型开放。工具网络仍继承 Runtime 的 deadline 和取消上下文；嵌套领域请求只能收紧期限，面单子操作不得覆盖上层停止检查。
+  `schemas/order_capabilities.py` 仅补充调用形状，业务数据复用现有 Schema；`OrderDataResult.data`
+  包装复用的领域结果，采购预览/提交保留具名 `record` / `records` 回执。
+- `OrderDetailPanel.vue` 将当前 ERP `order_id` 纳入已有页面背景；切换、关闭和停用沿用背景生命周期，
+  不发送表单内容或产生额外写权限。新增能力和明确保留的界面入口均登记在 Endpoint Coverage Manifest。
+- 约束适配核对：本次使用已安装 Pydantic 2.13.4 / Pydantic AI 2.44.0；原生字段已支持
+  [数值及字符串约束](https://docs.pydantic.dev/latest/concepts/fields/)，项目旧编译白名单缺少
+  `exclusiveMinimum` / `exclusiveMaximum` / `pattern`，现无损传递并在既有轻量校验器补齐对应断言。
+  适配范围只限现有工具 Schema 边界，Pydantic TypeAdapter 仍执行精确参数及业务模型校验；
+  若项目移除轻量 Schema 校验边界，这些断言随该边界一同移除，不引入新的校验或执行协议。
+  回归入口：`tests/test_order_ai_capabilities.py`，覆盖真实领域服务、原生审批允许/拒绝/完全授权、
+  直接工具/CodeMode、身份与审批篡改、未知创建、支付防重及履约版本冲突；网络全部使用替身。
+
 - HTTP 唯一入口：`erp_web/http_route_units/order_routes.py`，覆盖 Mercado Libre/Ozon/Yandex 回调和 `/api/orders` 本地查询及明确用户命令。
 - 领域装配：`erp_web/facades/order_notification_facade.py`。平台差异集中在 `runtime_units/order_notifications.py` 与 `runtime_units/orders_{mercadolibre,ozon,yandex}.py`。
 - 后台处理：`erp_web/services/order_notification_service.py`，领域任务领取、平台隔离和回调重试；不参与 Agent 生命周期。导航进入订单中心时检查自动同步；`useOrderCenterEntrySync` 只监听实际导航进入，初次挂载、焦点恢复、详情参数变化和本地轮询不触发。后端订单库 `settings` 按平台账号原子保存自动同步尝试时间，间隔由系统设置指定（默认及最低 5 小时），失败也计入且跨窗口/重启生效；手动同步不受该间隔限制。主动同步失败不自动重试，历史重试和过期执行记录转为失败；后台不再创建定期对账任务，旧 `sync_schedule` 表不再读取。
@@ -1098,6 +1137,23 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 - 发货日期：Yandex 保留 `delivery.shipment` 的日期/时间精度，Mercado Libre 读取卖家发货 SLA，Ozon 使用 `shipment_date`；`orderPresentation.ts::deadline` 仅对带时区时间计算倒计时。
 - 前端：`front/src/stores/orderNotifications.ts`、`OrderSummaryCard.vue`、`OrderCenterPanel.vue`、`OrderDetailPanel.vue` 和 `OrderAlertBanner.vue`；原发布 store 中的单平台订单状态已移除。
 - 原 `/api/mercadolibre/orders` 和 `mercadolibre_orders.py` 已退役；接入、状态映射、持久化与验证范围见 [订单通知说明](order-notifications.md)。
+
+### 订单买家聊天
+
+- Yandex 订单详情的「联系买家」打开 `OrderChatDialog.vue`；仅点击「获取最新消息」调用
+  `POST /api/orders/chat/history`，按平台分页读取完整历史。打开、发送成功、订单同步及本地轮询均不拉取消息。
+- `POST /api/orders/chat/send` 创建或获取订单会话后发送文字，使用官方 `context` 参数；
+  路由 → `facades/order_chat_facade.py` → `services/order_chat_service.py`，复用 Yandex HTTP 和外部请求管理器。
+  聊天查询为只读，创建和发送为写入，无自动重试；账号与返回会话归属必须匹配本地订单。
+- `runtime_units/order_chat_capabilities.py` 将 `order_buyer_chat_read` / `order_buyer_chat_send` 显式接入主 Agent，
+  通过 `OrderChatCapabilityScope` 绑定 `order_chat_facade.create_service`，共用 HTTP 的账号与会话归属校验。
+  读取只按需执行，不创建会话；发送使用原生审批，冻结当前 business/campaign、销售订单、订单状态与完整正文，执行时重核。
+  正文不改写、不截断；超过摘要长度时在原生审批的完整 `message` 参数中展示，不扩展审批协议。
+  发送未知回执携带 `outcome_unknown`，复用原生 Agent 已有写调用回执防重；不自动重发，不把成功回执解释为已读。
+  拟稿/翻译由主 Agent 完成，不为其新增发送旁路；买家内容不是操作授权，附件不自动下载。
+- `schemas/order_chat.py` 定义生成到前端的响应契约。页面仍只在请求及弹窗内存中保存消息、附件链接和 chat ID；
+  AI 工具参数、回执与审批按既有原生会话历史持久化。不另建消息表、缓存、浏览器存储或后台聊天通知；外部请求管理继续保留脱敏请求审计。
+- 回归入口：`tests/test_order_chat.py`、`tests/test_order_chat_ai_capabilities.py`、`OrderChatDialog.test.ts`；覆盖分页完整性、归属校验、手动获取边界、原生审批与未知回执防重、发送不回读及遮罩手势。
 
 ### 订单采购
 

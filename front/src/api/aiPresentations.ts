@@ -76,7 +76,7 @@ export function normalizePresentationDescriptor(raw: unknown): AiPresentationDes
   const presentationId = getString(record, ['presentation_id'])
   const conversationId = getString(record, ['conversation_id'])
   if (!presentationId || !conversationId) {
-    throw new Error('AI 展示响应缺少 presentation_id / conversation_id。')
+    throw new Error('暂时无法显示处理进度，请稍后重试。')
   }
   return {
     presentationId,
@@ -171,13 +171,13 @@ export function presentationStreamPath(presentationId: string): string {
 export function describePresentationStatus(status: AiPresentationStatus): string {
   switch (status) {
     case 'reserved':
-      return '已预留'
+      return '准备中'
     case 'bound':
-      return '已绑定'
+      return '准备中'
     case 'running':
-      return '运行中'
+      return '处理中'
     case 'finalizing':
-      return '收尾中'
+      return '正在整理结果'
     case 'completed':
       return '已完成'
     case 'failed':

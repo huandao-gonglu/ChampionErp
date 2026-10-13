@@ -55,7 +55,7 @@ const routes: RouteRecordRaw[] = [
     name: 'AiWork',
     component: () => import('@/views/AiWorkView.vue'),
     meta: {
-      title: 'AI Work',
+      title: 'AI 对话',
       hideInMenu: true,
     },
   },

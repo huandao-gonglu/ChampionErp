@@ -78,7 +78,7 @@ export const useAiWorkDisplayStore = defineStore('aiWorkDisplay', () => {
    */
   function beginForegroundStart(): void {
     if (foregroundOccupied.value) {
-      const error = new Error('已有前台 AI 任务运行，请等待其完成后再试。') as AiPresentationError
+      const error = new Error('已有 AI 任务正在处理，请等待完成后再试。') as AiPresentationError
       error.name = 'AiForegroundRunActiveError'
       error.code = AI_FOREGROUND_RUN_ACTIVE
       throw error
@@ -97,7 +97,7 @@ export const useAiWorkDisplayStore = defineStore('aiWorkDisplay', () => {
     chat: Chat<UIMessage>,
   ): ForegroundPresentation {
     if (foregroundPresentation.value) {
-      const error = new Error('已有前台 AI 任务运行，请等待其完成后再试。')
+      const error = new Error('已有 AI 任务正在处理，请等待完成后再试。')
       error.name = 'AiForegroundRunActiveError'
       throw error
     }

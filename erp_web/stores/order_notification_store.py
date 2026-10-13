@@ -297,6 +297,15 @@ class OrderNotificationStore:
             )
             conn.commit()
 
+    def read_notifications(self, accounts):
+        """仅在明确请求通知时读取当前平台账号的最近事件。"""
+        where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
+        args = tuple(value for pair in accounts.items() for value in pair)
+        with self.connect() as conn:
+            return [dict(row) for row in conn.execute(
+                f"SELECT id,platform,topic,status,attempts,error,received_at,next_attempt FROM inbox WHERE ({where}) ORDER BY id DESC LIMIT 50", args,
+            )]
+
     def read(
         self,
         accounts: dict[str, str],

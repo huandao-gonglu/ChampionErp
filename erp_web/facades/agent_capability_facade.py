@@ -10,6 +10,10 @@ from typing import Any
 
 
 from erp_web.context import AppContext, get_context
+from erp_web.facades import alibaba_self_purchase_facade, order_procurement_facade, order_notification_facade
+from erp_web.runtime_units.order_capability_support import OrderCapabilityScope
+from erp_web.runtime_units.order_chat_capabilities import OrderChatCapabilityScope
+from erp_web.facades import order_chat_facade
 from erp_web.facades.agent_draft_scope import authorized_draft_ids
 from erp_web.runtime_units.conversation_fact_capabilities import ConversationFactScope
 from erp_web.runtime_units.online_product_capabilities import ONLINE_PRODUCT_JOB_TYPE, OnlineProductCapabilityScope
@@ -39,7 +43,7 @@ from erp_web.runtime_units.image_capabilities import ImageCapabilityScope
 from erp_web.runtime_units.market_prepare_capabilities import (
     MarketPrepareCapabilityScope,
 )
-from erp_web.facades.order_notification_facade import read_orders
+from erp_web.facades.order_notification_facade import query_orders
 from erp_web.runtime_units.platform_query_capabilities import (
     PlatformQueryCapabilityScope,
 )
@@ -138,6 +142,18 @@ def build_capability_binding_scope(
 
     return AiToolBindingScope(
         {
+            OrderChatCapabilityScope: OrderChatCapabilityScope(service=lambda: order_chat_facade.create_service(context)),
+            OrderCapabilityScope: OrderCapabilityScope(
+                orders=lambda: context.order_notifications,
+                procurement=lambda: context.order_procurement,
+                fulfillment=lambda: context.fulfillment,
+                purchase=lambda: alibaba_self_purchase_facade.create_service(context),
+                summary=lambda: order_notification_facade.summary(context=context),
+                procurement_command=lambda action, body: order_procurement_facade.command(action, body, context=context),
+                purchase_command=lambda action, body: alibaba_self_purchase_facade.command(action, body, context=context),
+                purchase_query=lambda body: order_procurement_facade.query_purchase(body, context=context),
+                purchase_sync=lambda body: order_procurement_facade.sync_purchase(body, context=context),
+            ),
             OnlineProductCapabilityScope: OnlineProductCapabilityScope(lambda: context.online_products),
             ConversationFactScope: ConversationFactScope(
                 context.agent_calls, context.chat_turn_claims
@@ -184,7 +200,7 @@ def build_capability_binding_scope(
             ),
             PlatformQueryCapabilityScope: PlatformQueryCapabilityScope(
                 products=context.products,
-                orders_loader=read_orders,
+                orders_loader=lambda **query: query_orders(context=context, **query),
                 publish_logs_loader=load_publish_logs,
                 publishing_bus=context.publishing_bus,
             ),

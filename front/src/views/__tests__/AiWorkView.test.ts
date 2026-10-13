@@ -153,7 +153,7 @@ describe('AiWorkView 对话与历史', () => {
     const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
     expect(chatView.text()).toContain('用户问题-conversation-2')
     expect(chatView.text()).toContain('派生回答-conversation-2')
-    expect(chatView.text()).toContain('只读历史')
+    expect(chatView.text()).toContain('以下为已保存的对话')
     expect(wrapper.find('[data-testid="ai-work-raw-view"]').exists()).toBe(false)
   })
 
@@ -288,7 +288,7 @@ describe('AiWorkView 对话与历史', () => {
     await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
     expect(wrapper.find('[data-testid="ai-work-detail-error"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="ai-work-raw-pending"]').text()).toContain(
-      '运行完成后可检查规范历史',
+      '回复完成后可查看记录',
     )
   })
 
@@ -332,7 +332,7 @@ describe('AiWorkView 对话与历史', () => {
 
     await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
     expect(wrapper.get('[data-testid="ai-work-raw-streaming-note"]').text()).toContain(
-      '服务端已保存的上一终态历史',
+      '当前显示此前保存的记录',
     )
     expect(wrapper.get('[data-testid="ai-work-json-tree"]').text()).toContain(
       `原始内容-${conversationId}`,
@@ -445,7 +445,7 @@ describe('AiWorkView 对话与历史', () => {
     expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-2')
     expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="ai-work-chat-view"]').text()).toContain(
-      '该会话属于其他业务 Agent，仅提供只读展示',
+      '这是任务记录，无法在此继续对话',
     )
   })
 
@@ -456,7 +456,7 @@ describe('AiWorkView 对话与历史', () => {
     const wrapper = mountNow()
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('读取 conversation 列表失败：索引不可用')
+    expect(wrapper.get('[role="alert"]').text()).toContain('读取对话列表失败：索引不可用')
   })
 
   it('派生消息读取失败单独展示在对话标签，不影响原始消息标签', async () => {
@@ -485,7 +485,7 @@ describe('AiWorkView 对话与历史', () => {
 
     await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
     expect(wrapper.get('[data-testid="ai-work-detail-error"]').text()).toContain(
-      '读取 conversation 失败：详情不可用',
+      '读取对话失败：详情不可用',
     )
   })
 
@@ -501,7 +501,7 @@ describe('AiWorkView 对话与历史', () => {
 
     await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
     expect(wrapper.get('[data-testid="ai-work-json-error"]').text()).toContain(
-      '消息 JSON 格式无效：messages 必须是 JSON 数组。',
+      '消息记录格式异常。',
     )
     expect(wrapper.find('[data-testid="ai-work-json-tree"]').exists()).toBe(false)
   })
@@ -547,7 +547,7 @@ describe('AiWorkView 对话与历史', () => {
       // 首帧即绑定 presentation observe Chat，不等待列表请求。
       const live = wrapper.get('[data-testid="ai-work-presentation-live"]')
       expect(live.text()).toContain('AI 匹配类目')
-      expect(live.text()).toContain('运行中')
+      expect(live.text()).toContain('处理中')
       expect(live.text()).toContain('正在检索类目：ventilador')
       expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(false)
 
@@ -658,7 +658,7 @@ describe('AiWorkView 对话与历史', () => {
         .toBe(PRESENTATION_CONVERSATION_ID)
       const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
       expect(chatView.text()).toContain(`派生回答-${PRESENTATION_CONVERSATION_ID}`)
-      expect(chatView.text()).toContain('只读历史')
+      expect(chatView.text()).toContain('以下为已保存的对话')
       // 页面不自动跳回 global.chat，也不提供继续此对话入口。
       expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(false)
       expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)

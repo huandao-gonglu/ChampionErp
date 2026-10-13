@@ -136,9 +136,9 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
             <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-500 text-xl text-white shadow-lg shadow-primary-500/20">
               ✦
             </div>
-            <h3 class="mt-4 text-base font-black">告诉全局 Agent 你想了解什么</h3>
+            <h3 class="mt-4 text-base font-black">告诉我你想处理什么</h3>
             <p class="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500 dark:text-accent-300">
-              可以查询业务事实，也可以让全局 Agent 准备草稿或执行商品操作；审批方式由输入框中的权限选择决定。
+              查询商品和订单、准备草稿，或处理日常业务。
             </p>
           </div>
 
@@ -151,7 +151,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
             class="text-xs text-slate-400"
             data-testid="ai-chat-streaming"
           >
-            全局 Agent 正在回复…
+            正在回复…
           </p>
 
           <!-- 错误提示 -->
@@ -179,7 +179,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
     </div>
 
     <NativeToolApprovals />
-    <p v-if="chatStore.pendingToolCalls.some(call => call.kind === 'external')" class="mb-2 text-sm text-slate-500">后台操作执行中，Agent 等待工具结果。可以继续补充资料或纠正要求。</p>
+    <p v-if="chatStore.pendingToolCalls.some(call => call.kind === 'external')" class="mb-2 text-sm text-slate-500">正在处理，你可以继续补充信息或调整要求。</p>
     <div v-if="chatStore.receivedNotice" role="status" class="mb-2 rounded-lg bg-sky-50 p-3 text-sm text-sky-800">
       {{ chatStore.receivedNotice }}
       <p v-for="message in chatStore.receivedMessages" :key="message.message_id">{{ message.text }}</p>

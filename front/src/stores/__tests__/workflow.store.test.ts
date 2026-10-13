@@ -2104,7 +2104,7 @@ describe('workflow store live API flow', () => {
     const ok = await store.autoSuggestCategoriesForDraft()
 
     expect(ok).toBe(false)
-    expect(store.error).toContain('已有前台 AI 任务运行')
+    expect(store.error).toContain('已有 AI 任务正在处理')
     expect(workflowApi.matchCategory).not.toHaveBeenCalled()
   })
 
@@ -2127,7 +2127,7 @@ describe('workflow store live API flow', () => {
     const ok = await store.autoSuggestCategoriesForDraft()
 
     expect(ok).toBe(false)
-    expect(store.error).toContain('已有前台 AI 任务运行')
+    expect(store.error).toContain('已有 AI 任务正在处理')
     expect(workflowApi.matchCategory).not.toHaveBeenCalled()
   })
 

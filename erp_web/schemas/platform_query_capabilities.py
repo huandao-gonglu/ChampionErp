@@ -2,9 +2,9 @@ from __future__ import annotations
 
 """平台商品/订单与发布队列的只读查询 Capability 契约。"""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, model_validator
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
@@ -33,11 +33,37 @@ class ProductsIndexQueryResult(BaseModel):
 class PlatformOrdersQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = (
-        "mercadolibre"
-    )
+    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     limit: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
+    state: Literal["", "pending_shipment", "processing", "shipped", "delivered", "cancelled", "unknown"] = ""
+    q: Annotated[TrimmedText, StringConstraints(max_length=200)] = ""
+    article_numbers: tuple[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=100)], ...] = Field(default=(), max_length=20)
+    include_notifications: bool = False
+
+    @model_validator(mode="after")
+    def one_search_mode(self):
+        if self.q and self.article_numbers:
+            raise ValueError("关键词 q 与批量货号 article_numbers 请选择一种查询方式")
+        return self
+
+
+class OrderQueryCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scope: Literal["local_snapshot"] = "local_snapshot"
+    queried_at: str = ""
+    realtime_verified: Literal[False] = False
+    platform_history_complete: Literal[False] = False
+    platforms: tuple[str, ...] = ()
+    unavailable_platforms: tuple[str, ...] = ()
+    scanned_orders: int = 0
+    scanned_lines: int = 0
+    unresolved_source_lines: int = 0
+    ambiguous_source_lines: int = 0
+    oldest_snapshot_at: str = ""
+    newest_snapshot_at: str = ""
+    has_more: bool = False
 
 
 class PlatformOrdersQueryResult(BaseModel):
@@ -47,7 +73,8 @@ class PlatformOrdersQueryResult(BaseModel):
     items: tuple[dict[str, JsonValue], ...] = ()
     notifications: tuple[dict[str, JsonValue], ...] = ()
     pagination: dict[str, JsonValue] = Field(default_factory=dict)
-    checked_at: TrimmedText = ""
+    sync_status: tuple[dict[str, JsonValue], ...] = ()
+    coverage: OrderQueryCoverage = Field(default_factory=OrderQueryCoverage)
 
 
 class PublishLogsQueryRequest(BaseModel):
@@ -94,6 +121,7 @@ class PublishJobStatusQueryResult(BaseModel):
 
 
 __all__ = [
+    "OrderQueryCoverage",
     "PlatformOrdersQueryRequest",
     "PlatformOrdersQueryResult",
     "ProductsIndexQueryRequest",

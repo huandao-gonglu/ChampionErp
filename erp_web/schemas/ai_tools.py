@@ -336,7 +336,15 @@ def validate_json_schema_definition(
                 code="TOOL_SCHEMA_INVALID",
             )
 
-    for keyword in ("minimum", "maximum"):
+    if "pattern" in schema:
+        try:
+            if not isinstance(schema["pattern"], str):
+                raise TypeError("pattern 必须是字符串")
+            re.compile(schema["pattern"])
+        except (TypeError, re.error) as exc:
+            raise AiToolSchemaError(f"{path}.pattern 无效", code="TOOL_SCHEMA_INVALID") from exc
+
+    for keyword in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
         value = schema.get(keyword)
         if value is not None and (
             not isinstance(value, (int, float)) or isinstance(value, bool)
@@ -551,6 +559,8 @@ def validate_json_schema(
             raise AiToolSchemaError(f"{path} 元素数超过 maxItems")
 
     if isinstance(value, str):
+        if "pattern" in schema and re.search(schema["pattern"], value) is None:
+            raise AiToolSchemaError(f"{path} 不满足 pattern")
         if "minLength" in schema and len(value) < int(schema["minLength"]):
             raise AiToolSchemaError(f"{path} 长度少于 minLength")
         if "maxLength" in schema and len(value) > int(schema["maxLength"]):
@@ -561,6 +571,10 @@ def validate_json_schema(
             raise AiToolSchemaError(f"{path} 小于 minimum")
         if "maximum" in schema and value > schema["maximum"]:
             raise AiToolSchemaError(f"{path} 大于 maximum")
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+            raise AiToolSchemaError(f"{path} 不大于 exclusiveMinimum")
+        if "exclusiveMaximum" in schema and value >= schema["exclusiveMaximum"]:
+            raise AiToolSchemaError(f"{path} 不小于 exclusiveMaximum")
 
 
 @dataclass(frozen=True)

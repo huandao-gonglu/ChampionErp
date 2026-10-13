@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useAiChatStore } from '@/stores/aiChat'
+import { describeAiTool } from '@/utils/aiToolLabels'
 const chat = useAiChatStore()
 const error = ref('')
 const submitting = ref<string | null>(null)
@@ -8,7 +9,7 @@ const approvals = computed(() => chat.messages.flatMap(message => message.parts.
   if (!('state' in part) || part.state !== 'approval-requested' || !('approval' in part)) return []
   const callId = 'toolCallId' in part ? String(part.toolCallId) : ''
   const pending = chat.pendingToolCalls.find(call => call.tool_call_id === callId && call.kind === 'approval')
-  return pending ? [{ id: part.approval.id, callId, name: pending.tool_name, summary: pending.summary, input: 'input' in part ? part.input : {} }] : []
+  return pending ? [{ id: part.approval.id, callId, name: describeAiTool(pending.tool_name), summary: pending.summary, input: 'input' in part ? part.input : {} }] : []
 })))
 async function respond(id: string, approved: boolean) {
   submitting.value = id

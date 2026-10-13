@@ -78,7 +78,7 @@ describe('AiWorkFloatingButton', () => {
     expect(link.attributes('href')).toBe('/aiWork')
     expect(link.attributes('target')).toBeUndefined()
     expect(link.attributes('rel')).toBeUndefined()
-    expect(link.attributes('aria-label')).toBe('打开 AI Work')
+    expect(link.attributes('aria-label')).toBe('打开 AI 助手')
     expect(wrapper.find('[target="_blank"]').exists()).toBe(false)
     expect(wrapper.find('[role="region"]').exists()).toBe(false)
     expect(link.find('path').attributes('d')).toBe(
@@ -94,7 +94,7 @@ describe('AiWorkFloatingButton', () => {
 
     expect(store.floatingOpen).toBe(true)
     const panel = wrapper.get('[role="region"]')
-    expect(panel.attributes('aria-label')).toBe('全局 AI 浮动对话')
+    expect(panel.attributes('aria-label')).toBe('AI 助手')
     expect(panel.find('[data-testid="ai-chat-panel"]').exists()).toBe(true)
     expect(panel.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
 
@@ -253,10 +253,10 @@ describe('AiWorkFloatingButton', () => {
       await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
 
       const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-      expect(panel.attributes('aria-label')).toBe('前台 AI 任务只读展示')
+      expect(panel.attributes('aria-label')).toBe('AI 任务进度')
       expect(panel.text()).toContain('AI 匹配类目')
       expect(panel.text()).toContain('conversation_presentation_x')
-      expect(panel.text()).toContain('运行中')
+      expect(panel.text()).toContain('处理中')
       expect(panel.text()).toContain('正在检索类目：ventilador')
       // presentation 模式不渲染全局聊天面板与输入框。
       expect(panel.find('[data-testid="ai-chat-panel"]').exists()).toBe(false)
@@ -293,7 +293,7 @@ describe('AiWorkFloatingButton', () => {
 
       // 恢复后 global.chat 面板与输入原样出现。
       const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-      expect(panel.attributes('aria-label')).toBe('全局 AI 浮动对话')
+      expect(panel.attributes('aria-label')).toBe('AI 助手')
       expect(panel.find('[data-testid="ai-chat-panel"]').exists()).toBe(true)
       expect(panel.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
       expect(store.input).toBe('帮我看看草稿')
@@ -358,7 +358,7 @@ describe('AiWorkFloatingButton', () => {
       await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
 
       const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-      expect(panel.attributes('aria-label')).toBe('前台 AI 任务只读展示')
+      expect(panel.attributes('aria-label')).toBe('AI 任务进度')
       expect(wrapper.get('[data-testid="ai-work-presentation-error"]').text())
         .toContain('实时展示连接中断，正在等待业务结果…')
       // 已接收的消息继续展示；global-chat 与终态提示都不提前出现。
@@ -399,7 +399,7 @@ describe('AiWorkFloatingButton', () => {
         await wrapper.vm.$nextTick()
 
         const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-        expect(panel.attributes('aria-label')).toBe('全局 AI 浮动对话')
+        expect(panel.attributes('aria-label')).toBe('AI 助手')
         expect(panel.find('[data-testid="ai-chat-panel"]').exists()).toBe(true)
         expect(wrapper.get('[data-testid="ai-work-terminal-notice"]').text())
           .toBe('类目匹配完成')

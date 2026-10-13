@@ -92,8 +92,8 @@ const PROVIDER_ID_OMLX = 'omlx'
 const fallbackProviders = [
   { id: PROVIDER_ID_OPENAI, label: 'OpenAI', description: 'OpenAI 服务预设；代理可修改 Base URL，API 协议可选 Chat Completions 或 Responses', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
   { id: PROVIDER_ID_OMLX, label: 'oMLX（本地模型）', description: '通过 OpenAI 兼容接口连接 oMLX，默认使用 Chat Completions，支持模型 Thinking 开关', provider_family: 'omlx', default_base_url: 'http://127.0.0.1:8000/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
-  { id: PROVIDER_ID_DEEPSEEK, label: 'DeepSeek', description: '使用 Pydantic AI 的 DeepSeekProvider', provider_family: 'generic_openai', default_base_url: 'https://api.deepseek.com', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible'], base_url_editable: false },
-  { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '使用 Pydantic AI 的 AlibabaProvider', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
+  { id: PROVIDER_ID_DEEPSEEK, label: 'DeepSeek', description: '连接 DeepSeek 模型', provider_family: 'generic_openai', default_base_url: 'https://api.deepseek.com', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible'], base_url_editable: false },
+  { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '连接通义千问模型', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
 ]
 const modelListDependencyFields = new Set(['provider_id', 'api_style', 'base_url', 'base_url_env', 'api_key', 'api_key_env'])
 const capabilityProbeDependencyFields = new Set([...modelListDependencyFields, 'model', 'connection_type', 'cli_tool', 'command', 'profile', 'sandbox', 'browser_provider', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url'])
@@ -780,7 +780,7 @@ function commitCustomRequestBody(): boolean {
     ])
     const forbidden = Object.keys(parsed).filter((key) => forbiddenProtocolFields.has(key)).sort()
     if (forbidden.length) {
-      throw new Error(`不得覆盖 Pydantic 请求协议字段：${forbidden.join(', ')}`)
+      throw new Error(`不能在此修改以下请求字段：${forbidden.join(', ')}`)
     }
     if (Object.keys(parsed).length) extra.request_body = parsed
     else delete extra.request_body
@@ -1493,7 +1493,7 @@ watch(() => props.loading, (loading) => {
     if (capabilityProbeDialog.open && capabilityProbeDialog.pending) {
       restoreCapabilityProbeSelection()
       capabilityProbeDialog.pending = false
-      capabilityProbeDialog.error = capabilityProbeDialog.error || '测试已结束，但没有收到完整的能力测试结果。请重新测试或打开 AI Work 查看最新会话。'
+      capabilityProbeDialog.error = capabilityProbeDialog.error || '测试已结束，但没有收到完整的能力测试结果。请重新测试或打开 AI 对话查看最新记录。'
     }
   }
 })
@@ -1868,7 +1868,6 @@ function copy(text: string) {
                     <option v-for="apiStyle in selectedProviderApiStyleOptions" :key="apiStyle" :value="apiStyle">{{ apiStyle === 'openai_responses' ? 'Responses' : 'Chat Completions' }}</option>
                   </select>
                 </label>
-                <span v-if="selectedAiModelIsApi" class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400"><template v-if="selectedProviderSpec?.description">{{ selectedProviderSpec.description }}。</template>服务商决定端点预设和厂商参数映射；API 协议独立选择，底层统一通过 Pydantic AI 调用。</span>
                 <label v-else-if="selectedAiModelIsCli" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI 工具</span>
                   <select class="input" :value="modelField('cli_tool', 'codex')" :disabled="aiControlsLocked" @change="setSelectedModelField('cli_tool', eventText($event))">
@@ -1876,7 +1875,7 @@ function copy(text: string) {
                   </select>
                 </label>
                 <label v-else class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页 Provider</span>
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页服务商</span>
                   <input class="input" :value="modelField('browser_provider')" :disabled="aiControlsLocked" placeholder="例如 chatgpt / claude / gemini" @input="setSelectedModelField('browser_provider', eventText($event))" />
                 </label>
                 <template v-if="selectedAiModelIsApi">
@@ -1918,7 +1917,7 @@ function copy(text: string) {
                     <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('model', eventText($event))" />
                   </label>
                   <div class="md:col-span-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-600 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
-                    将打开独立的浏览器 Profile；首次使用请在浏览器窗口手动登录，之后复用本机登录态。
+                    首次使用请在打开的浏览器窗口中登录，之后会保留登录状态。
                   </div>
                 </template>
                 <label v-if="selectedAiModelImageCapable" class="block">
@@ -1927,7 +1926,7 @@ function copy(text: string) {
                     class="input"
                     :value="modelField('quality', 'auto')"
                     :disabled="aiControlsLocked"
-                    title="OpenAI 图片接口常用质量选项；模型列表 API 不返回该枚举"
+                    title="选择生成图片的质量"
                     @change="setSelectedModelField('quality', eventText($event))"
                   >
                     <option v-for="option in imageQualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -1984,7 +1983,7 @@ function copy(text: string) {
                         @input="updateCustomRequestBodyText(eventText($event))"
                         @blur="commitCustomRequestBody"
                       ></textarea>
-                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅支持 JSON 对象。后端会把厂商扩展字段转换为 Pydantic ModelSettings.extra_body；messages、model、tools、stream 等 Pydantic 协议字段不能在这里覆盖。功能绑定中的 temperature、最大输出和推理配置拥有更高优先级。</span>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">填写服务商支持的额外参数，格式为 JSON 对象。messages、model、tools、stream 等字段由系统管理，不能在这里修改。各功能单独设置的参数优先。</span>
                       <span v-if="customRequestBodyEditor.error" class="mt-1 block text-xs text-rose-600 dark:text-rose-300">{{ customRequestBodyEditor.error }}</span>
                     </label>
                     <label v-if="modelField('api_style', 'openai_compatible') === 'openai_compatible'" class="block md:col-span-2">
@@ -1993,9 +1992,9 @@ function copy(text: string) {
                         <option value="enable_search">enable_search + 强制搜索（通义或兼容网关）</option>
                         <option value="web_search_options">web_search_options（兼容网关）</option>
                       </select>
-                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅在功能需要“联网搜索”时生效。后端按这里选择的稳定策略生成受控 ModelSettings；测试与正式请求使用同一个 Pydantic Model。通义兼容接口使用 enable_search 与 search_options.forced_search。</span>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅在使用联网搜索时生效，请按服务商要求选择请求格式。</span>
                     </label>
-                    <span v-else class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400">Responses 协议由 Pydantic WebSearchTool 转译。测试只记录能力和 Pydantic 策略，不保存或复用厂商请求体。</span>
+                    <span v-else class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400">联网搜索是否可用，取决于所选模型和服务商。</span>
                   </div>
                   <div v-else-if="selectedAiModelIsCli" class="mt-3 grid gap-3 md:grid-cols-2">
                     <label class="block">

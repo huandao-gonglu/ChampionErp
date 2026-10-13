@@ -100,6 +100,7 @@ def test_business_endpoints_are_capability_or_internal_only() -> None:
 
     规划 §7 明确的协议级例外：webhook/notification 接收与扩展原始
     payload 接收属于外部协议入口，允许 excluded，但必须显式登记。
+    订单买家聊天通过显式能力接入 Agent，后台不自动读取或发送。
     """
 
     infrastructure_domains = {

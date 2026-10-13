@@ -51,8 +51,8 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
 )
 
 
-def test_purchase_payment_requires_explicit_ui_command_and_has_no_agent_entry():
-    """签约只读检查与真实支付均为用户界面入口，不授予模型支付能力。"""
+def test_purchase_payment_has_explicit_command_and_approved_agent_entry():
+    """签约只读检查，真实支付必须经过显式 HTTP 命令或原生审批工具。"""
     from erp_web.ai_capability_coverage import AI_CAPABILITY_COVERAGE_MANIFEST
     from erp_web.http_route_units.order_routes import POST_HANDLERS, GET_HANDLERS
     from erp_web.schemas.requests import REQUEST_CONTRACTS
@@ -62,7 +62,7 @@ def test_purchase_payment_requires_explicit_ui_command_and_has_no_agent_entry():
         assert path in POST_HANDLERS and path not in GET_HANDLERS
         assert path in REQUEST_CONTRACTS
         entries = [entry for entry in AI_CAPABILITY_COVERAGE_MANIFEST if entry.path == path]
-        assert len(entries) == 1 and entries[0].disposition == 'internal_only'
+        assert len(entries) == 1 and entries[0].disposition == 'capability'
     contract = REQUEST_CONTRACTS['/api/orders/alibaba-purchase/pay']
     assert set(contract.fields) == {'preview_id', 'confirmed_total_fen'}
     assert set(contract.required) == {'preview_id', 'confirmed_total_fen'}
@@ -1034,6 +1034,30 @@ def test_order_platform_images_keep_online_reads_in_store_and_assembly_in_facade
     targets = {target for _, target in imported_targets([facade])}
     assert "erp_web.stores.online_product_store.OnlineProductStore" in targets
     assert "erp_web.runtime_units.online_yandex.YandexOnlineAdapter" not in targets
+
+
+def test_order_query_uses_domain_facts_without_drafts_or_remote_adapters():
+    service = ROOT / "erp_web/services/order_query_service.py"
+    targets = {target for _, target in imported_targets([service])}
+    assert not any(target.startswith(("erp_web.runtime_units", "erp_web.marketplaces", "sqlite3", "httpx", "pydantic_ai")) for target in targets)
+    assert "load_draft" not in service.read_text()
+    resolver = ROOT / "erp_web/services/order_source_resolution.py"
+    targets = {target for _, target in imported_targets([resolver])}
+    assert not any(target.startswith(("erp_web.stores", "erp_web.context", "erp_web.marketplaces")) for target in targets)
+    procurement = (ROOT / "erp_web/services/order_procurement_service.py").read_text()
+    assert "resolve_source_selection(" in procurement and "resolve_source_selection(" in service.read_text()
+
+
+def test_buyer_chat_capabilities_reuse_domain_service_and_native_approval():
+    unit = ROOT / "erp_web/runtime_units/order_chat_capabilities.py"
+    targets = {target for _, target in imported_targets([unit])}
+    assert "erp_web.services.order_chat_service.OrderChatService" in targets
+    assert not any(target.startswith(("erp_web.marketplaces", "erp_web.context", "pydantic_ai", "sqlite3")) for target in targets)
+    service = ROOT / "erp_web/services/order_chat_service.py"
+    targets = {target for _, target in imported_targets([service])}
+    assert not any(target.startswith(("erp_web.stores", "erp_web.context", "pydantic_ai")) for target in targets)
+    source = (ROOT / "erp_web/facades/agent_capability_facade.py").read_text()
+    assert "OrderChatCapabilityScope(service=lambda: order_chat_facade.create_service(context))" in source
 
 
 def test_request_recovery_is_owned_by_system_settings_and_never_replays_business():

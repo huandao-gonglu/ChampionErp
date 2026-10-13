@@ -15,6 +15,7 @@ export const aiSectionLabels = {
 export interface AiPageContext {
   page: keyof typeof aiPageLabels
   section?: keyof typeof aiSectionLabels
+  order_id?: string
   product_id?: string
   draft_id?: string
   listing_id?: string
@@ -30,6 +31,7 @@ export function describeAiPageContext(context: AiPageContext | null): string {
   return [
     `当前页面：${aiPageLabels[context.page]}`,
     context.section && `当前区域：${aiSectionLabels[context.section]}`,
+    context.order_id && `当前 ERP 订单 ID：${context.order_id}`,
     context.product_id && `当前商品 ID：${context.product_id}`,
     context.draft_id && `当前草稿 ID：${context.draft_id}`,
     context.listing_id && `当前在线商品 ID：${context.listing_id}`,

@@ -51,21 +51,22 @@ def detail(order_id=""):
     return get_context().order_procurement.detail(order_id)
 
 
-def query_purchase(body):
-    context = get_context()
+def query_purchase(body, *, context=None):
+    context = context or get_context()
     return query_alibaba_purchase(
         context.order_procurement, context.config.load_app_config().get("1688_api", {}), body,
     )
 
 
-def sync_purchase(body, *, once=False):
-    context = get_context()
+def sync_purchase(body, *, once=False, context=None):
+    context = context or get_context()
     return sync_alibaba_purchase(context.order_procurement, context.fulfillment,
                                 lambda: context.config.load_app_config().get("1688_api", {}), body, once=once)
 
 
-def command(action, body):
-    service = get_context().order_procurement
+def command(action, body, *, context=None):
+    context = context or get_context()
+    service = context.order_procurement
     result = {
         "select-source": service.select_source,
         "record-purchase": service.record_purchase,
@@ -75,7 +76,7 @@ def command(action, body):
         record = next((r for line in result["lines"] for r in line["records"] if r["request_id"] == body["request_id"]), None)
         if record and supported(PurchaseRecord.model_validate(record)):
             try:
-                return sync_purchase({"order_id": body["order_id"], "record_id": record["id"]}, once=True)
+                return sync_purchase({"order_id": body["order_id"], "record_id": record["id"]}, once=True, context=context)
             except Exception:
                 logging.getLogger(__name__).error("采购登记已保存，自动同步未完成")
                 return service.detail(body["order_id"])

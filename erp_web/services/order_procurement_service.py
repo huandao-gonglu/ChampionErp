@@ -16,6 +16,7 @@ from erp_web.schemas.order_procurement import (
 )
 from erp_web.schemas.orders import OrderView
 from erp_web.stores.order_procurement_store import OrderProcurementStore, line_signature
+from erp_web.services.order_source_resolution import resolve_source_selection
 
 
 class OrderProcurementService:
@@ -91,32 +92,7 @@ class OrderProcurementService:
                     if identity
                     else []
                 )
-                # 同一来源在多个站点有刊登时，不应凭重复证据制造歧义。
-                unique = {}
-                for candidate in candidates:
-                    token = (
-                        candidate.product_id,
-                        candidate.sku_id,
-                        candidate.source.model_dump_json(),
-                    )
-                    unique[token] = candidate
-                selection.candidates = list(unique.values())
-                if saved:
-                    selection.revision = saved["revision"]
-                if saved and saved["line_signature"] == line_signature(line):
-                    selection.status = "confirmed"
-                    selection.source = ProcurementSource.model_validate_json(
-                        saved["source_json"]
-                    )
-                elif len(unique) == 1:
-                    selection.status = "matched"
-                    selection.source = selection.candidates[0].source
-                    selection.reason = "已匹配发布时的来源规格，请核对后确认采购来源"
-                elif len(unique) > 1:
-                    selection.status = "ambiguous"
-                    selection.reason = "找到多个发布来源，请人工选择本次采购规格"
-                else:
-                    selection.reason = "没有可验证的发布来源，请人工关联采购商品及规格"
+                selection = resolve_source_selection(line, key, line_signature(line), saved, candidates)
             lines.append(
                 ProcurementLine(
                     line=line,

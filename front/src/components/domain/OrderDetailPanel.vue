@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useAiPageContext } from '@/composables/useAiPageContext'
 import { fetchOrderDetail } from '@/api/orders'
 import type { OrderDetail } from '@/types/orders'
 import { orderPlatformNames } from '@/types/orders'
@@ -11,6 +12,7 @@ import AlibabaBatchPurchaseDialog from './AlibabaBatchPurchaseDialog.vue'
 import OrderFulfillmentPanel from './OrderFulfillmentPanel.vue'
 import OrderReceivingWarehouse from './OrderReceivingWarehouse.vue'
 import OrderHandoverPanel from './OrderHandoverPanel.vue'
+import OrderChatDialog from './OrderChatDialog.vue'
 import { amountLabel, deadline, money, platformStatusLabel, platformStatusNote, stateTone } from './orderPresentation'
 import type { OrderDetailTab } from './orderPresentation'
 const props = withDefaults(defineProps<{ orderId: string; tab?: OrderDetailTab }>(), { tab: 'procurement' })
@@ -18,11 +20,13 @@ const activeTab = ref<OrderDetailTab>(props.tab)
 const fulfillmentLocked = ref(false)
 const emit = defineEmits<{ back: []; updated: []; tabChange: [tab: OrderDetailTab] }>()
 const detail = ref<OrderDetail | null>(null)
+useAiPageContext(() => ({ page: 'orders', order_id: props.orderId }), 10)
 const error = ref('')
 const loading = ref(false)
 const locks = reactive(new Set<string>())
 const purchaseKey = ref('')
 const batchPurchaseOpen = ref(false)
+const chatOpen = ref(false)
 const purchaseItem = computed(() =>
   detail.value?.lines.find((line) => line.selection.line_key === purchaseKey.value)
 )
@@ -30,7 +34,7 @@ const totals = computed(() => ({
   ordered: detail.value?.lines.reduce((sum, line) => sum + line.line.quantity, 0) || 0,
   purchased: detail.value?.lines.reduce((sum, line) => sum + line.purchased_quantity, 0) || 0,
 }))
-const locked = computed(() => batchPurchaseOpen.value || locks.size > 0 || !!purchaseKey.value || fulfillmentLocked.value)
+const locked = computed(() => chatOpen.value || batchPurchaseOpen.value || locks.size > 0 || !!purchaseKey.value || fulfillmentLocked.value)
 watch(() => props.tab, tab => { if (!locked.value) activeTab.value = tab })
 function selectTab(tab: OrderDetailTab) {
   if (locked.value) return
@@ -129,6 +133,7 @@ onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
         </details>
       </header>
       <nav class="order-actions my-6" aria-label="订单详情内容">
+        <button v-if="detail.order.platform === 'yandex'" class="order-button" :disabled="locked" @click="chatOpen = true">联系买家</button>
         <button class="order-button" :class="{ 'order-primary': activeTab === 'procurement' }" :disabled="locked" @click="selectTab('procurement')">商品与采购</button>
         <button class="order-button" :class="{ 'order-primary': activeTab === 'fulfillment' }" :disabled="locked" @click="selectTab('fulfillment')">跨境履约</button>
       </nav>
@@ -166,6 +171,7 @@ onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
       </div>
     </template>
   </WorkspaceDialog>
+  <OrderChatDialog v-if="chatOpen && detail" :key="orderId" :order-id="orderId" :order-number="detail.order.order_id" @close="chatOpen = false" />
   <AlibabaBatchPurchaseDialog v-if="batchPurchaseOpen" :order-id="orderId" @close="batchPurchaseOpen = false" @updated="load(); emit('updated')" />
   <OrderPurchaseDialog
     v-if="purchaseItem"

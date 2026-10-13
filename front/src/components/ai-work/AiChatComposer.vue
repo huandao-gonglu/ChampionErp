@@ -181,12 +181,12 @@ function onKeydown(event: KeyboardEvent) {
         @hover="hoverCommand"
       />
       <div class="rounded-2xl border border-slate-200 bg-white px-3 pb-2.5 pt-2 shadow-sm transition focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-200/60 dark:border-dark-600 dark:bg-dark-800 dark:focus-within:border-primary-500/60 dark:focus-within:ring-primary-500/15">
-        <label class="sr-only" for="ai-chat-input">给全局 Agent 的消息</label>
+        <label class="sr-only" for="ai-chat-input">发送消息</label>
         <textarea
           id="ai-chat-input"
           :value="modelValue"
           class="min-h-20 w-full resize-y bg-transparent px-1 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:text-white dark:placeholder:text-accent-400"
-          placeholder="输入消息，向全局 Agent 提问"
+          placeholder="输入问题或描述要处理的事情"
           data-testid="ai-chat-input"
           @input="onInput"
           @keydown="onKeydown"

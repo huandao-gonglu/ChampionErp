@@ -9,6 +9,8 @@ from erp_web.runtime_units.orders_ozon import OzonOrderAdapter
 from erp_web.runtime_units.orders_yandex import YandexOrderAdapter
 from erp_web.schemas.orders import PLATFORMS, OrderView, OrderSyncStatus
 from erp_web.services.order_notification_service import OrderNotificationService
+from erp_web.services.order_query_service import OrderQueryService
+from erp_web.schemas.platform_query_capabilities import PlatformOrdersQueryRequest
 from erp_web.services.order_progress_sync_service import sync_order_progress
 from erp_web.stores.order_notification_migration import import_historical_notifications
 from erp_web.stores.order_notification_store import OrderNotificationStore
@@ -40,6 +42,14 @@ def create_order_notification_service(context, *, start_worker=True):
         start_worker=start_worker,
     )
     return service
+
+
+def query_orders(*, context=None, **query):
+    context = context or get_context()
+    request = PlatformOrdersQueryRequest.model_validate(query)
+    if request.platform and request.platform not in PLATFORMS:
+        raise ValueError("不支持的平台")
+    return OrderQueryService(context.order_procurement, context.order_notifications).query(request)
 
 
 def read_orders(*, platform="", state="", limit=50, offset=0, q=""):
@@ -89,8 +99,8 @@ def _sync_status(service):
     return [OrderSyncStatus.model_validate(row) for row in service.sync_status()]
 
 
-def summary():
-    service = get_context().order_notifications
+def summary(*, context=None):
+    service = (context or get_context()).order_notifications
     result = service.store.summary(service.accounts())
     result["sync_status"] = [row.model_dump(mode="json") for row in _sync_status(service)]
     result["attention_count"] = sum(row["status"] in {"failed", "retry", "blocked", "cooldown"} for row in result["sync_status"])

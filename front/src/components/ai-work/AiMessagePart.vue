@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AiUiPart } from '@/types/aiWork'
+import { describeAiTool } from '@/utils/aiToolLabels'
 
 interface ToolPartLike {
   type: string
@@ -27,9 +28,7 @@ const tool = computed<ToolPartLike>(() => props.part as unknown as ToolPartLike)
 
 const toolName = computed(() => {
   const name = tool.value.toolName || partType.value.replace(/^tool-/, '')
-  if (name === 'run_code') return '执行 Python'
-  if (name === 'draft_changes_apply') return '保存草稿修改'
-  return name || 'tool'
+  return describeAiTool(name)
 })
 
 const businessResult = computed(() => (
@@ -42,24 +41,24 @@ const businessFailed = computed(() => businessResult.value?.ok === false)
 const toolStatusLabel = computed(() => {
   switch (tool.value.state) {
     case 'input-streaming':
-      return '正在调用工具…'
+      return '正在准备…'
     case 'input-available':
-      return '工具已就绪'
+      return '准备就绪'
     case 'approval-requested':
       // 历史导出的状态还包含普通未返回调用；审批以服务端待办为准。
-      return props.pendingKind === 'approval' ? '等待审批'
-        : props.pendingKind === 'external' ? '等待后台任务结果' : '等待工具结果'
+      return props.pendingKind === 'approval' ? '等待确认'
+        : props.pendingKind === 'external' ? '处理中' : '等待结果'
     case 'approval-responded':
-      return '已响应审批'
+      return '已提交确认'
     case 'output-available':
-      return businessFailed.value ? '业务执行失败'
-        : businessResult.value?.status === 'partial' ? '部分完成' : '工具完成'
+      return businessFailed.value ? '操作失败'
+        : businessResult.value?.status === 'partial' ? '部分完成' : '已完成'
     case 'output-error':
-      return '工具失败'
+      return '操作失败'
     case 'output-denied':
-      return '工具被拒绝'
+      return '未获批准'
     default:
-      return '工具'
+      return '处理进度'
   }
 })
 
@@ -166,11 +165,11 @@ const reasoningStreaming = computed(() => (
       {{ tool.errorText }}
     </p>
     <details v-if="toolInputJson" class="mt-2">
-      <summary class="cursor-pointer select-none text-[11px] font-bold text-slate-500 dark:text-accent-300">输入</summary>
+      <summary class="cursor-pointer select-none text-[11px] font-bold text-slate-500 dark:text-accent-300">操作详情</summary>
       <pre class="mt-1 overflow-auto whitespace-pre-wrap break-words rounded bg-white p-2 font-mono text-[11px] leading-5 text-slate-700 dark:bg-dark-950 dark:text-accent-200">{{ toolInputJson }}</pre>
     </details>
     <details v-if="toolOutputJson && tool.state !== 'output-error'" class="mt-2">
-      <summary class="cursor-pointer select-none text-[11px] font-bold text-slate-500 dark:text-accent-300">输出</summary>
+      <summary class="cursor-pointer select-none text-[11px] font-bold text-slate-500 dark:text-accent-300">处理结果</summary>
       <pre class="mt-1 overflow-auto whitespace-pre-wrap break-words rounded bg-white p-2 font-mono text-[11px] leading-5 text-slate-700 dark:bg-dark-950 dark:text-accent-200">{{ toolOutputJson }}</pre>
     </details>
   </div>
@@ -217,7 +216,7 @@ const reasoningStreaming = computed(() => (
     data-testid="ai-part-debug"
   >
     <summary class="cursor-pointer select-none text-[11px] font-bold text-slate-400">
-      调试片段（{{ partType }}）
+      详细信息
     </summary>
     <pre class="mt-1 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-slate-500 dark:text-accent-300">{{ debugJson }}</pre>
   </details>
