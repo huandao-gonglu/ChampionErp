@@ -28,6 +28,8 @@ const fields: Array<[keyof PurchaseAddressFields, string]> = [['fullName', '收�
   <form class="mt-4 space-y-4 rounded-lg border border-accent-200 p-4 dark:border-accent-700" aria-label="物流收货地址" @submit.prevent="save">
     <fieldset :disabled="busy || parsing" class="space-y-4">
       <h3 class="font-semibold">{{ form.id ? '编辑收货地址' : '新增收货地址' }}</h3>
+      <label class="block">所属合作仓库<select v-model.number="form.warehouse_id" aria-label="所属合作仓库" class="input mt-1 w-full" required><option v-if="!settings.warehouses.some(w => w.id === form.warehouse_id)" :value="form.warehouse_id">{{ initial.warehouse_id }}（合作已失效）</option><option v-for="warehouse in settings.warehouses" :key="warehouse.id" :value="warehouse.id">{{ warehouse.name }} · ID {{ warehouse.id }}</option></select></label>
+      <p v-if="form.id" class="text-sm text-accent-500">保存修改后，引用此配置的订单须重新确认收货仓及报单绑定，才能继续报单；原采购记录保留。</p>
       <label class="block">地址名称<input v-model.trim="form.name" aria-label="地址名称" class="input mt-1 w-full" maxlength="100" required placeholder="例如：义乌收货点" /></label>
       <div class="space-y-2 rounded-lg border border-accent-200 p-3 dark:border-accent-700">
         <label class="block">粘贴完整地址<textarea v-model="rawAddress" aria-label="粘贴完整地址" class="input mt-1 w-full" rows="3" maxlength="4000" placeholder="例如：张三 13800138000 广东省深圳市南山区科技路1号" @input="parsed = false; warnings = []; parseError = ''" /></label>

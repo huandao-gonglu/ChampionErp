@@ -26,6 +26,7 @@ class Bus:
         self.cancel_error = None
         self.lookup = None
         self.account = "bus-a"
+        self.next_order_id = 99
         self.catalog()
 
     def identity(self):
@@ -47,9 +48,9 @@ class Bus:
         if path.endswith("createOrder"):
             if self.create_error:
                 raise self.create_error
-            self.remote = {"id": 99, "order_status": 0, "data_status": 1, "is_delete": 0}
-            self.lookup = {"id": 99, "sid": 10, "sheet_info": {"section": 1, "section_order": body["order_data"][0]["order_number"]}, "package_list": [{"status": 0}]}
-            return {"data": [{"order_number": body["order_data"][0]["order_number"], "order_id": 99}]}
+            self.remote = {"id": self.next_order_id, "order_status": 0, "data_status": 1, "is_delete": 0}
+            self.lookup = {"id": self.next_order_id, "sid": body['sid'], "sheet_info": {"section": body['section_id'], "section_order": body["order_data"][0]["order_number"]}, "package_list": [{"status": 0}]}
+            return {"data": [{"order_number": body["order_data"][0]["order_number"], "order_id": self.next_order_id}]}
         if path.endswith("status"):
             return {"data": self.remote}
         if path.endswith("cancelOrder"):
@@ -356,6 +357,119 @@ def test_report_cannot_override_purchase_receiving_warehouse(domain):
     with pytest.raises(FulfillmentError, match='采购收货仓一致'):
         command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 20, 'service_ids': [2]})
     assert service.detail(order.identity)['plan']['warehouse_id'] == 10
+
+
+@pytest.mark.parametrize('change_warehouse', [False, True])
+def test_configuration_change_blocks_report_until_binding_and_services_are_reconfirmed(domain, change_warehouse):
+    from tests.test_logistics_settings import edit, select
+
+    service, bus, order = ready(domain)
+    original = service.detail(order.identity)
+    configured = service.receiving.logistics.detail()['addresses'][0]
+    changes = {'address': {**configured['address'], 'address': '新的收货地址'}}
+    if change_warehouse:
+        changes['warehouse_id'] = 20
+    changed = edit(service.receiving, configured, **changes)
+    stale = service.detail(order.identity)
+    assert stale['receiving_binding_stale'] and '原绑定已失效' in stale['blocked_reason']
+    for action in ('submit', 'retry'):
+        with pytest.raises(ValueError, match='原绑定已失效'):
+            command(service, order, action)
+    with pytest.raises(ValueError, match='原绑定已失效'):
+        command(service, order, 'plan', plan=original['plan'])
+    assert not service.process_one(order)
+    assert not bus.calls
+    select(service.receiving, order, changed, existing_purchase_confirmed=True)
+    rebound = service.detail(order.identity)
+    assert not rebound['receiving_binding_stale']
+    assert rebound['plan']['warehouse_id'] == changed['warehouse_id']
+    assert rebound['plan']['service_ids'] == [] and rebound['selected_services'] == []
+    assert '选择并保存本单服务' in rebound['blocked_reason']
+    assert not service.process_one(order)
+    with pytest.raises(ValueError, match='收货仓资料已变化'):
+        service.command('plan', {'order_id': order.identity, 'revision': rebound['revision'],
+                                'plan': original['plan'], 'receiving_revision': original['receiving_warehouse']['revision']})
+    command(service, order, 'plan', plan={**rebound['plan'], 'service_ids': [2]})
+    assert not service.detail(order.identity)['blocked_reason']
+    assert service.process_one(order)
+    sent = [body for path, body in bus.calls if path.endswith('createOrder')]
+    assert len(sent) == 1 and sent[0]['sid'] == changed['warehouse_id']
+
+
+def test_config_change_between_readiness_and_create_claim_prevents_sending(domain, monkeypatch):
+    from tests.test_logistics_settings import edit
+
+    service, bus, order = ready(domain)
+    configured = service.receiving.logistics.detail()['addresses'][0]
+    claim = service.store.claim
+    def change_then_claim(order_id, action, revision):
+        if action == 'create':
+            edit(service.receiving, configured, warehouse_id=20)
+        return claim(order_id, action, revision)
+    monkeypatch.setattr(service.store, 'claim', change_then_claim)
+    assert not service.process_one(order)
+    assert not bus.calls
+    assert service.detail(order.identity)['receiving_binding_stale']
+    assert not service.store.get(order.identity)['create_unknown']
+
+
+def test_shared_configuration_invalidates_every_bound_order_and_keeps_other_addresses_valid(domain):
+    from tests.test_logistics_settings import configure, edit, select
+
+    service, _, order, _, snapshot, _ = domain
+    shared = service.receiving.logistics.detail()['addresses'][0]
+    second = order.model_copy(update={'order_id': 'another-order'})
+    third = order.model_copy(update={'order_id': 'separate-address-order'})
+    snapshot(second)
+    snapshot(third)
+    select(service.receiving, second, shared)
+    separate = configure(service.receiving, name='独立地址', warehouse_id=20)
+    select(service.receiving, third, separate)
+    edit(service.receiving, shared, warehouse_id=20, address={**shared['address'], 'address': '修改后的地址'})
+    for bound in (order, second):
+        assert service.receiving.detail(bound.identity)['binding_stale']
+        with pytest.raises(ValueError, match='原绑定已失效'):
+            service.receiving.checked(bound.identity)
+    assert not service.receiving.detail(third.identity)['binding_stale']
+    assert service.receiving.checked(third.identity)['address_id'] == separate['id']
+
+
+def test_create_claim_protects_configuration_until_result_is_known(domain):
+    from tests.test_logistics_settings import edit
+
+    service, _, order = ready(domain)
+    configured = service.receiving.logistics.detail()['addresses'][0]
+    value = service.store.get(order.identity)
+    claimed, token = service.store.claim(order.identity, 'create', value['revision'])
+    with pytest.raises(ValueError, match='创建结果待核验'):
+        edit(service.receiving, configured, warehouse_id=20)
+    # 过期占位也不能把未知发送当成未发送。
+    service.store.finish(order.identity, token, {'create_unknown': True})
+    with pytest.raises(ValueError, match='创建结果待核验'):
+        edit(service.receiving, configured, warehouse_id=20)
+    value = service.store.get(order.identity)
+    service.store.change(order.identity, value['revision'], {'create_unknown': False})
+    assert edit(service.receiving, configured, warehouse_id=20)['warehouse_id'] == 20
+
+
+def test_remote_report_keeps_original_plan_and_blocks_rebinding_after_config_edit(domain):
+    from tests.test_logistics_settings import edit, select
+
+    service, bus, order = ready(domain)
+    service.process_one(order)
+    original = service.detail(order.identity)
+    configured = service.receiving.logistics.detail()['addresses'][0]
+    changed = edit(service.receiving, configured, warehouse_id=20)
+    view = service.receiving.detail(order.identity)
+    assert view['binding_stale'] and view['locked'] and not view['can_confirm']
+    assert view['needs_rebind']  # 需要重绑不等于允许绕过已有报单。
+    with pytest.raises(ValueError, match='预报已开始'):
+        select(service.receiving, order, changed, existing_purchase_confirmed=True)
+    command(service, order, 'sync')
+    current = service.detail(order.identity)
+    assert current['crossborderbus_order_id'] == original['crossborderbus_order_id']
+    assert current['plan'] == original['plan']
+    assert sum(path.endswith('createOrder') for path, _ in bus.calls) == 1
 
 
 def test_parcels_validate_purchase_allocation_and_account(domain):
@@ -787,6 +901,7 @@ def test_list_summary_does_not_create_records_and_reads_operation_facts(domain):
     assert not service.store.tracked(order)
     value = service.store.ensure(view)
     value = service.store.change(view.id, value["revision"], {"label_error": "面单获取失败"})
+    value = command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 10, 'service_ids': [2]})
     claimed, _ = service.store.claim(view.id, "create", value["revision"])
     summary = service.store.summaries([view])[view.id]
     assert summary["busy"] is True
@@ -924,3 +1039,261 @@ def test_consolidation_service_must_be_selected_and_available(domain):
         command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 10, 'service_ids': [2], 'consolidation_service_id': 3})
     with pytest.raises(ValueError, match='服务已变化'):
         command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 10, 'service_ids': [2, 999], 'consolidation_service_id': 999})
+
+
+def cancelled_fulfillment(domain):
+    service, bus, order = ready(domain)
+    service.process_one(order)
+    bus.remote['is_delete'] = 1
+    command(service, order, 'sync')
+    return service, bus, order
+
+
+@pytest.mark.parametrize('state, bound, cancelled, stale, needs_rebind, can_confirm', [
+    ('cancelled', False, True, False, False, False),
+    ('cancelled', True, True, True, False, False),
+    ('shipped', False, False, False, False, False),
+    ('delivered', True, True, True, False, False),
+    ('pending_shipment', False, True, False, False, True),
+    ('pending_shipment', False, False, False, False, True),
+    ('pending_shipment', True, True, True, True, True),
+    ('pending_shipment', True, False, False, False, True),
+])
+def test_receiving_rebind_todo_distinguishes_platform_state_and_existing_binding(
+    domain, state, bound, cancelled, stale, needs_rebind, can_confirm,
+):
+    service, bus, order, _, snapshot, _ = domain
+    if not bound:
+        with service.store.orders.connect() as conn:
+            conn.execute('DELETE FROM order_receiving_warehouses WHERE order_id=?', (order.identity,))
+            conn.execute('DELETE FROM order_purchases WHERE order_id=?', (order.identity,))
+            conn.commit()
+    snapshot(order.model_copy(update={'state': state}))
+    if cancelled:
+        current = service.store.get(order.identity)
+        service.store.change(order.identity, current['revision'], {'fulfillment_status': 'CANCELLED'})
+    view = service.receiving.detail(order.identity)
+    assert view['binding_stale'] is stale
+    assert view['needs_rebind'] is needs_rebind
+    assert view['can_confirm'] is can_confirm
+    assert service.detail(order.identity)['receiving_binding_stale'] is stale
+    if state == 'cancelled':
+        assert '平台订单已取消' in view['blocked_reason']
+    if state in {'shipped', 'delivered'}:
+        assert '不列入报单重绑待办' in view['blocked_reason']
+    assert bus.calls == []
+
+
+def test_rebinding_cancelled_attempt_archives_and_requires_services_and_explicit_submit(domain):
+    service, bus, order = cancelled_fulfillment(domain)
+    purchases = service.detail_provider(order.identity)['lines']
+    old = service.detail(order.identity)
+    receiving = service.receiving.detail(order.identity)
+    assert receiving['can_confirm'] and not receiving['locked'] and receiving['binding_stale']
+    assert receiving['needs_rebind']
+    assert receiving['cancelled_fulfillment'] and old['receiving_binding_stale']
+    assert not old['attempt_history'] and not service.process_one(order)
+    with pytest.raises(ValueError, match='采购包裹'):
+        assign_receiving(service.receiving, order, warehouse_id=20, existing_purchase_confirmed=False)
+    assert service.store.get(order.identity)['crossborderbus_order_id'] == 99
+    assert service.store.receiving.get(order.identity)['warehouse_id'] == 10
+    before_calls = len(bus.calls)
+    assign_receiving(service.receiving, order, warehouse_id=20)
+    rebound = service.detail(order.identity)
+    assert [path for path, _ in bus.calls[before_calls:]] == ['/erpapi/orderlist/status']
+    assert rebound['crossborderbus_order_id'] is None and rebound['fulfillment_status'] == 'NEW'
+    assert rebound['awaiting_resubmission'] and not rebound['receiving_binding_stale']
+    assert rebound['parcels'] == old['parcels'] and rebound['platform_label'] == old['platform_label']
+    assert rebound['attempt_history'][0]['crossborderbus_order_id'] == 99
+    assert rebound['attempt_history'][0]['receiving_warehouse'] == old['receiving_warehouse']
+    assert 'bus_identity' not in rebound['attempt_history'][0]
+    assert rebound['receiving_warehouse']['revision'] == old['receiving_warehouse']['revision'] + 1
+    with pytest.raises(ValueError, match='服务'):
+        command(service, order, 'submit')
+    command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 20, 'service_ids': [2]})
+    assert not service.process_one(order)
+    command(service, order, 'submit')
+    bus.next_order_id = 100
+    assert service.process_one(order)
+    current = service.detail(order.identity)
+    assert current['crossborderbus_order_id'] == 100
+    assert current['attempt_history'][0]['crossborderbus_order_id'] == 99
+    assert service.detail_provider(order.identity)['lines'] == purchases
+    create = [body for path, body in bus.calls if path.endswith('createOrder')][-1]
+    assert create['sid'] == 20 and create['order_data'][0]['order_number'] == order.order_id
+    assert create['is_check_section_order'] == 1
+    assert create['order_data'][0]['add_service'] == [{'id': 2}]
+    bus.remote['is_delete'] = 1
+    command(service, order, 'sync')
+    assign_receiving(service.receiving, order, warehouse_id=20)
+    assert [item['crossborderbus_order_id'] for item in service.detail(order.identity)['attempt_history']] == [99, 100]
+    raw = FulfillmentStore(service.store.orders).get(order.identity)
+    assert all('attempt_history' not in item for item in raw['attempt_history'])
+
+
+@pytest.mark.parametrize('remote', [None, {'id': 99, 'is_delete': 0, 'order_status': 0, 'data_status': 1}, {'id': 100, 'is_delete': 1}])
+def test_rebinding_requires_fresh_matching_cancelled_receipt(domain, remote):
+    service, bus, order = cancelled_fulfillment(domain)
+    old_binding = service.receiving.detail(order.identity)
+    bus.remote = remote
+    with pytest.raises(ValueError, match='尚未确认'):
+        assign_receiving(service.receiving, order)
+    value = service.detail(order.identity)
+    assert value['crossborderbus_order_id'] == 99 and not value['busy'] and not value['attempt_history']
+    assert service.receiving.detail(order.identity) == old_binding
+    assert not service.process_one(order)
+
+
+@pytest.mark.parametrize('change', ['order', 'account', 'bus', 'revision'])
+def test_rebinding_rechecks_changes_during_remote_query(domain, monkeypatch, change):
+    service, bus, order = cancelled_fulfillment(domain)
+    request = bus.request
+    def changed(path, body, **kwargs):
+        result = request(path, body, **kwargs)
+        if path.endswith('status'):
+            if change == 'order':
+                domain[4](order.model_copy(update={'state': 'cancelled'}))
+            elif change == 'account':
+                domain[5]['yandex'] = 'other'
+            elif change == 'bus':
+                bus.account = 'other'
+            else:
+                value = service.store.get(order.identity)
+                service.store.change(order.identity, value['revision'], {'cancel_requested': True}, allow_busy=True)
+        return result
+    monkeypatch.setattr(bus, 'request', changed)
+    with pytest.raises(ValueError):
+        assign_receiving(service.receiving, order)
+    value = service.store.get(order.identity)
+    assert value['crossborderbus_order_id'] == 99 and not value['busy']
+    assert not value.get('attempt_history')
+    assert not service.store.receiving.get(order.identity).get('confirmation_required')
+
+
+def test_local_cancel_rebinds_directly_and_rejects_stale_fulfillment_revision(domain):
+    service, _, order = ready(domain)
+    command(service, order, 'cancel')
+    service.process_one(order)
+    with pytest.raises(ValueError, match='重新设置报单绑定'):
+        command(service, order, 'retry')
+    current = service.detail(order.identity)
+    with pytest.raises(ValueError, match='版本已变化'):
+        assign_receiving(service.receiving, order, fulfillment_revision=current['revision'] - 1)
+    assert not service.detail(order.identity)['attempt_history']
+    assign_receiving(service.receiving, order)
+    assert len(service.detail(order.identity)['attempt_history']) == 1
+    assert not service.process_one(order)
+
+
+def test_reconciliation_never_reattaches_archived_cancelled_order(domain):
+    service, bus, order = cancelled_fulfillment(domain)
+    assign_receiving(service.receiving, order)
+    command(service, order, 'plan', plan={'section_id': 1, 'warehouse_id': 10, 'service_ids': [2]})
+    command(service, order, 'submit')
+    bus.create_error = FulfillmentError('请求超时', unknown=True)
+    service.process_one(order)
+    command(service, order, 'sync')
+    current = service.detail(order.identity)
+    assert current['create_unknown'] and current['crossborderbus_order_id'] is None
+    assert not service.process_one(order)
+    bus.lookup = {**bus.lookup, 'id': 100}
+    current = command(service, order, 'sync')
+    assert current['crossborderbus_order_id'] == 100 and not current['create_unknown']
+
+
+def test_bus_search_filters_history_but_still_rejects_multiple_new_attempts(domain, monkeypatch):
+    client = CrossborderBusClient(domain[0].store)
+    rows = [{'id': n, 'sheet_info': {'section_order': '123'}} for n in [99, 100]]
+    monkeypatch.setattr(client, 'request', lambda *a, **kw: {'data': {'count': len(rows), 'list': rows}})
+    assert client.search('123', exclude_order_ids={99})['id'] == 100
+    assert client.search('123', expected_order_id=99)['id'] == 99
+    rows.append({'id': 101, 'sheet_info': {'section_order': '123'}})
+    with pytest.raises(FulfillmentError, match='重复'):
+        client.search('123', exclude_order_ids={99})
+    assert client.search('123', expected_order_id=100)['id'] == 100
+    assert client.search('123', exclude_order_ids={99, 100, 101}) is None
+
+
+@pytest.mark.parametrize('blocked', ['active', 'unknown', 'busy', 'reserved'])
+def test_rebinding_does_not_bypass_remote_or_purchase_locks(domain, blocked):
+    service, bus, order = cancelled_fulfillment(domain)
+    value = service.store.get(order.identity)
+    if blocked == 'reserved':
+        with service.store.orders.connect() as conn:
+            conn.execute("INSERT INTO order_purchase_reservations VALUES (?,?,?,?,?,'reserved')",
+                         ('reservation', order.identity, domain[3]['line_key'], 1, '{}'))
+            conn.commit()
+    elif blocked == 'busy':
+        service.store.claim(order.identity, 'sync', value['revision'])
+    else:
+        changes = {'fulfillment_status': 'WAITING_DOMESTIC_SHIPMENT'} if blocked == 'active' else {'create_unknown': True}
+        service.store.change(order.identity, value['revision'], changes)
+    before = len(bus.calls)
+    assert not service.receiving.detail(order.identity)['can_confirm']
+    with pytest.raises(ValueError):
+        assign_receiving(service.receiving, order)
+    assert len(bus.calls) == before
+    assert service.store.get(order.identity)['crossborderbus_order_id'] == 99
+
+
+def test_rebinding_rolls_back_when_purchase_reservation_appears_during_verification(domain, monkeypatch):
+    service, bus, order = cancelled_fulfillment(domain)
+    request = bus.request
+    def reserve(path, body, **kwargs):
+        result = request(path, body, **kwargs)
+        with service.store.orders.connect() as conn:
+            conn.execute("INSERT INTO order_purchase_reservations VALUES (?,?,?,?,?,'reserved')",
+                         ('reservation', order.identity, domain[3]['line_key'], 1, '{}'))
+            conn.commit()
+        return result
+    monkeypatch.setattr(bus, 'request', reserve)
+    with pytest.raises(ValueError, match='采购正在提交'):
+        assign_receiving(service.receiving, order)
+    current = service.store.get(order.identity)
+    assert not current.get('attempt_history') and current['crossborderbus_order_id'] == 99 and not current['busy']
+    assert not service.store.receiving.get(order.identity).get('confirmation_required')
+
+
+def test_failed_binding_write_rolls_back_cancelled_archive(domain):
+    import sqlite3
+
+    service, _, order = cancelled_fulfillment(domain)
+    old = service.store.receiving.get(order.identity)
+    with service.store.orders.connect() as conn:
+        conn.execute("CREATE TRIGGER reject_binding BEFORE INSERT ON order_receiving_warehouses BEGIN SELECT RAISE(ABORT, '模拟新绑定写入失败'); END")
+        conn.commit()
+    with pytest.raises(sqlite3.IntegrityError, match='模拟新绑定写入失败'):
+        assign_receiving(service.receiving, order)
+    current = service.detail(order.identity)
+    assert current['crossborderbus_order_id'] == 99 and current['fulfillment_status'] == 'CANCELLED'
+    assert not current['attempt_history']
+    assert service.store.receiving.get(order.identity) == old
+
+
+def test_simultaneous_cancelled_rebindings_archive_only_once(domain, monkeypatch):
+    from threading import Barrier
+
+    service, bus, order = cancelled_fulfillment(domain)
+    view = service.receiving.detail(order.identity)
+    candidate = view['candidates'][0]
+    body = {'order_id': order.identity, 'revision': view['revision'], 'fulfillment_revision': view['fulfillment_revision'],
+            'address_id': candidate['id'], 'address_revision': candidate['revision'], 'section_id': candidate['section_id'],
+            'delivery_key': view['delivery_key'], 'confirmed': True, 'existing_purchase_confirmed': True}
+    barrier = Barrier(2)
+    request = bus.request
+    def query(path, data, **kwargs):
+        response = request(path, data, **kwargs)
+        barrier.wait(timeout=10)
+        return response
+    monkeypatch.setattr(bus, 'request', query)
+    def save():
+        try:
+            service.receiving.save(body)
+            return True
+        except ValueError:
+            return False
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: save(), range(2)))
+    assert sorted(results) == [False, True]
+    assert len(service.detail(order.identity)['attempt_history']) == 1
+    assert service.store.receiving.get(order.identity)['revision'] == view['revision'] + 1

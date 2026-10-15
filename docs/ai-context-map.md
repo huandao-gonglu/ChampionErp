@@ -54,6 +54,9 @@
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传与采集请求均接入。
   `services/external_httpx_transport.py` 经原生 Provider 的 http_client 注入 SDK，同样检查共享状态，原生 SDK 自动重试关闭。
   流式审计只结算一次：HTTP EOF 记成功，SDK 主动关闭记 `stream_closed`，实际读取异常才记网络中断。
+  非流式响应使用 HTTPX `aread()` 缓存后直接返回原响应，不将已解压正文配原压缩头重建；
+  响应审计与资源清理不进入网络故障分支，避免明确 HTTP 拒绝被覆盖成结果未知。
+  AI HTTP 402 按 `*_PAYMENT_REQUIRED` 记录余额或计费问题，仍属于可人工确认恢复的原请求拒绝，不自动重放。
   `GeneratorExit` 不累计网络失败；传输层不解析模型终止事件，也不推断 Agent 是否完成。
   Pydantic AI 仍独占模型/Agent 生命周期，不新增模型请求旁路。
 - `services/platform_request_policy.py` 按平台响应信封与具体接口纯解析 HTTP 和业务拒绝，不通用推断任意 JSON 的 `success` / `status`。
@@ -311,6 +314,25 @@ CLI / Browser use case
 就继续维护 Pydantic 之外的通用 API Provider 请求栈。
 
 ### Focused 例外登记：专用 Images API
+
+- 图片工作台的 `POST /api/image-edit`、`/api/image-translate` 经 `image_facade` →
+  `image_batch_service` 按原图建立批次，进程内所有批次共享三路执行上限；每张仍经
+  `image_translate_service` → `ai_gateway` → `ai_direct_request_service` → Pydantic Direct Model。
+  `image_batch_store.py` 在独立 `data/image-batches.sqlite3` 保存排队、执行、成功、失败及结果文件引用；
+  不复制模型消息，不改 ERP 主库结构。每张结果在商品短锁内重读最新内容并写回，保存成功才结算成功；
+  `replace_all` 仅首张成功时清空目标图集，后续追加，避免并发完成时互相覆盖。
+- `ai_direct_history.capture_direct_history` 只收集真实原生请求和响应；批次内单写者经
+  `PydanticMessageStore` 保存全部原生消息及逐项关联 metadata。图片批次的 UI 投影只展示初始用户说明，
+  逐张进度读取 `GET /api/v1/ai-work/conversations/{id}/image-batch`，不把并发响应混入单个 SSE 流。
+  `AiImageBatchProgress.vue` 在浮窗与 AI Work 共用，按原图编号显示，未结束时轮询只读快照；
+  切换和卸载作废旧读取，重新打开继续读取，终态停止轮询。普通对话的 `run_active` 仍只表示 Agent run。
+- 批次执行仍随原业务请求收尾，浏览器重新读取不执行模型；进程重启后保留成功项，将正在执行项标为结果待核对、
+  尚未执行项标为中断，不自动重发。旧对话没有批次记录时沿用原生历史展示，不推测缺失的处理结果。
+- 核对依据：安装版本 Pydantic AI 2.44.0 的 `direct.model_request` 和 `ModelMessage.metadata`，
+  官方 [Direct Model Requests](https://pydantic.dev/docs/ai/core-concepts/direct/) 与
+  [消息历史](https://pydantic.dev/docs/ai/core-concepts/message-history/)。框架负责单次模型请求和消息，
+  商品素材落库、原图编号及批次排队属于 ERP 领域适配；不引入 Agent loop 或自定义事件编码。
+  如果原生图片批次能力未来覆盖这些业务关联，可替换执行调度，保留领域保存及持久记录读取能力。
 
 - 引入时的能力缺口：当时核对的 `pydantic-ai-slim[openai]==2.43.0` 支持 Responses 原生图片工具，但没有
   能绑定 `gpt-image-*` 专用模型并表达 `images.generate` / `images.edit` 的公开 Model。
@@ -1120,7 +1142,9 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
   完整商品规格与数量、金额、渠道、地址、账号及原请求，执行时重核。过长审批拒绝截断，要求缩小采购范围。
   原有请求号、采购数量占位、实时价格复核及未知回执防重继续由采购领域维护。
 - `runtime_units/order_fulfillment_capabilities.py` 提供收货仓读取/确认、履约详情、合作服务查询，
-  以及面单、包裹、方案、提交、核验、关联、重试和取消等既有命令。履约修改与收货仓确认统一审批，
+  以及面单、包裹、方案、提交、核验、关联、重试、取消等命令。履约修改与收货仓确认统一审批，
+  已取消履约直接使用 `order_receiving_warehouse_update`，携带收货及 `fulfillment_revision`；保存前只读核实原单已作废，`ReceivingWarehouseService.save` 在同一个短事务内调用 `FulfillmentStore.archive_cancelled` 归档旧资料并保存新绑定，不提供单独重新安排命令。网络查询不持有事务锁。
+  重新确认收货绑定、保存服务并显式 submit 后才允许重报，`attempt_history` 保留原报单，`awaiting_resubmission` 阻止已有自动规则越过人工确认。
   绑定当前版本、账号和业务事实；保存资料可能推进既有自动履约，不得把本地提交回执当作远端完成。
   物流凭据、全局承接规则配置及本地面单文件上传继续走可信界面；AI 可以获取平台面单或填写已知公开面单 URL。
 - `runtime_units/order_capability_support.py` 持有订单领域 Scope、错误转换和审批支撑；
@@ -1217,11 +1241,15 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 `services/fulfillment_image_service.py` 在 Yandex 报单创建和包裹更新前，将已同步的平台图片字节原样托管并核验跨站公开读取，防止源站 Referer 防盗链。通过 facade 注入 `FulfillmentService.image_delivery`，不在订单 GET 中上传，不替换平台图片来源；复用安全下载、图片内容校验及唯一 S3 SDK 边界，临时源文件在仓库外自动清理。下载或托管失败不会发送报单写入；准备后复核版本及取消状态。
 原有平台订单身份及状态不变；列表另行读取履约摘要，详情承载履约操作及异常处理。
 授权和默认方案在已有授权模块中配置；Yandex FBS 在采购前确定收货仓，报单仅沿用该仓选择服务，不依赖全局默认方案。
-`GET/POST /api/orders/receiving-warehouse` 经 `fulfillment_routes.py` 和 `fulfillment_facade.py` 委托给 `ReceivingWarehouseService`。`schemas/receiving_warehouse.py::delivery_carrier` 仅从归属已校验且可用的 Yandex IMPORT 交货点名称前缀识别承运商，保留 GUOO(GTA) 与 GBS(GUOO) 的区分；缺失、未知或冲突时返回待确认，不使用 `deliveryPartnerType`、`Самовывоз`、卖家仓或地址备注猜测。名称及识别依据返回收货仓界面；物流来源指纹包含识别结果，不包含官方交货点 ID 或地址。`stores/receiving_warehouse_store.py` 与采购共用订单数据库，保存本单地址及规则快照；采购前验证配置版本、启用状态及承接范围，采购后配置编辑不会改写冻结地址。
+`GET/POST /api/orders/receiving-warehouse` 经 `fulfillment_routes.py` 和 `fulfillment_facade.py` 委托给 `ReceivingWarehouseService`。`schemas/receiving_warehouse.py::delivery_carrier` 仅从归属已校验且可用的 Yandex IMPORT 交货点名称前缀识别承运商，保留 GUOO(GTA) 与 GBS(GUOO) 的区分；缺失、未知或冲突时返回待确认，不使用 `deliveryPartnerType`、`Самовывоз`、卖家仓或地址备注猜测。名称及识别依据返回收货仓界面；物流来源指纹包含识别结果，不包含官方交货点 ID 或地址。`stores/receiving_warehouse_store.py` 与采购共用订单数据库，保存本单地址及规则快照；统一验证配置版本、启用状态及承接范围，已有采购不再豁免。配置变化使旧绑定失效，但不改写采购记录中的历史地址。
 
 `GET /api/logistics/settings`、`POST /api/logistics/refresh`、`POST /api/logistics/address` 经同一薄路由和 facade 委托 `services/logistics_settings_service.py`。`schemas/logistics.py` 定义 Yandex 平台物流商枚举，地址规则只按平台和物流商匹配，默认地址仅影响排序。Express/Economy 及交货节点范围已退役；持久化旧规则可读，只保留已确认的平台和物流商用于地址匹配，原采购快照不重写。`stores/logistics_store.py` 按跨境巴士授权身份及合作仓保存多地址，用版本校验阻止覆盖；旧 `receiving_warehouse_profiles` 只迁移地址、不迁移自由文本承接能力，迁移标记防止重复导入。前端入口为「平台授权 → 跨境巴士 → 默认履约」内的 `components/settings/LogisticsSettingsPanel.vue`，由 `CrossborderBusSettingsPanel.vue` 展示；默认方案卡片及专属编辑弹窗已移除，既有持久化规则和后端匹配、自动预报行为保留。`/auth?auth_section=crossborderbus&bus_section=rules` 直达；旧物流设置深链跳转到此处。采购弹窗只提交地址 ID 和配置版本，平台物流商由服务端从订单解析，不接受物流商、运输方式或自由地址覆盖；识别不到物流商时阻止选仓并提示同步平台交货信息。
+收货仓读取的 `binding_stale` 仅表示已有绑定失效，无绑定不标失效；收货仓与履约详情复用 `ReceivingWarehouseStore.binding_stale`。`needs_rebind` 才是待发货订单的重绑待办，平台取消、已发货和已送达不计入；需要重绑不等于允许立即操作，仍检查 `can_confirm`、锁和阻断原因。AI 查询沿用该领域结果，不从履约取消或采购记录推断待办和锁定。
+
 `POST /api/logistics/parse-address` 只接收地址文本，经同一 facade 复用 `services/alibaba_purchase_address.py::parse_address`；不依赖订单、商品行、1688 授权或数据库。物流地址编辑器填充同一地址形状并展示缺失字段提示，解析不自动保存地址或改变支持的物流商。
-`OrderReceivingWarehouse.vue` / `ReceivingWarehouseDialog.vue` 位于商品采购前，从物流设置筛选已合作 Yandex 仓的具体收货地址，只选择匹配本单平台物流商的地址。`order_purchases` 中的有效记录、`order_purchase_reservations` 中的 reserved 占位以及已创建/结果未知的履约单阻止换仓；这与采购占位在同一数据库事务内校验。历史采购缺少仓库快照时必须补录并确认实际寄往地址；未知采购期间不能补录。原 `fulfillment_warehouse_links` 历史数据保留，但新流程不读取或写入。
+`OrderReceivingWarehouse.vue` / `ReceivingWarehouseDialog.vue` 从物流设置筛选已合作 Yandex 仓的具体收货地址，只选择匹配本单平台物流商的地址。设置允许修改已有地址的所属仓及收件资料；`ReceivingWarehouseStore.configuration_changed` 统一判断配置版本、启用状态、仓库及地址，`binding_stale` 向界面和 AI 暴露旧绑定失效。配置未变化的有效采购继续锁定；配置变化后即使已有采购也可重新选择仓库及地址，须核对包裹收货安排并确认，保存新绑定不改写采购快照。reserved 采购占位及已创建/结果未知的履约单仍禁止重绑，均在同一短事务校验。历史采购缺少仓库快照时必须补录并确认实际寄往地址；未知采购期间不能补录。原 `fulfillment_warehouse_links` 历史数据保留，但新流程不读取或写入。
+
+绑定失效统一阻止保存服务、手动提交、重试及自动报单；「跨境履约」通过 `receiving_binding_stale` 展示重新绑定入口。重绑递增收货仓版本，使原服务方案失效，须重新保存；旧服务不作为新方案回显。`FulfillmentStore.claim` 在创建占位事务内复核绑定，`LogisticsStore.save` 同事务检查引用该配置的创建占位／未知结果，防止配置修改与发送竞态。已创建远端报单继续保留原方案和单号，不因配置编辑覆盖。AI 收货仓工具复用同一服务及审批快照。
 `services/fulfillment_routing.py` 提取官方交货地址供展示和备注；地址本身不参与仓库匹配，物流商由可用的 IMPORT 交货信息识别。`FulfillmentPlanDialog.vue` 固定采购收货仓，`FulfillmentPlanFields.vue` 实时读取基础单选、附加多选及费用；保存及提交复核收货仓版本和物流方案，官方地址变化不使方案失效，平台物流商缺失或变化则须重新核对。
 目的国按官方创建接口为可选字段，没有时不发送、不阻止报单。创建后原报单仓及服务保持锁定；没有自动规则时须点击“立即提交”。
 本单可选报单备注由 `FulfillmentPlanDialog.vue` 手工录入，随 `plan` 命令持久化 `remark`，沿用编辑租约、CAS 及报单前锁定边界。`createOrder.order_data[].introduce` 仅在备注非空时发送，不再生成平台订单标识；地址备注和默认履约规则不提供默认值。历史记录缺少备注字段仍可读取，页面读取不更新已创建远端订单。
@@ -1263,6 +1291,8 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 - `product_model/alibaba_purchase_model.py` 在冻结发布关联时核对原始采集 SKU、规格标识和实际销售规格；不一致记入 `purchase_block_reason`。自动采购还须命中当前店铺销售 SKU 的已上架关联，人工填写的来源不能作为自动采购依据。旧资料仍可读取和人工采购，缺少完整证据的旧预览不能再提交。
 
 ### 系统设置
+
+- “关于”页提供应用版本、英文第三方声明，以及独立的中文《软件许可与服务协议》和《隐私政策》。版本与 `front/package.json` 同源，声明由安装依赖生成并在构建时校验指纹；法律文本分别维护于 `front/src/legal/user-agreement.ts` 与 `privacy-policy.ts`，硬件信息期限不适用于自行部署的业务数据库。查看不代表同意，不启用设备上报或自动升级。入口、参考来源及发行边界见 [关于与法律说明](about-and-legal.md)。
 
 - 左侧栏底部 `AppSidebar.vue` → `/?tab=systemSettings` → `SystemSettingsPanel.vue` 在主区域提供订单自动同步间隔设置；复用工作台导航，支持刷新及浏览器前进、后退。
 - GET/POST `/api/system-settings` → `auth_config_facade` → `ConfigStore.system_settings/save_system_settings`；单项更新保存在 `app_config.system_settings`，通用授权配置合并忽略该区段，避免旧页面覆盖。字段契约由 `schemas/config.py` 定义，前端类型自动生成。旧配置缺少区段时默认 5 小时。

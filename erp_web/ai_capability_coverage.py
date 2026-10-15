@@ -406,6 +406,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     # -------------------------------------------------- 主 Agent 运输（POST）
     AiCapabilityCoverageEntry(
+        method="GET",
+        path="/api/v1/ai-work/conversations/<conversation_id>/image-batch",
+        business_domain="AI 会话运输",
+        disposition="excluded",
+        reason="图片批次只读进度投影，不启动或重试模型请求。",
+    ),
+    AiCapabilityCoverageEntry(
         method="POST",
         path="/api/v1/ai-chat/cancel",
         business_domain="AI 会话运输",

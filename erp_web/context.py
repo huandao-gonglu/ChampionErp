@@ -167,6 +167,17 @@ class AppContext:
         self._order_procurement = None
         self._alibaba_self_purchases = None
         self._fulfillment = None
+        self._image_batches = None
+
+    @property
+    def image_batches(self):
+        if self._image_batches is None:
+            with self._lazy_lock:
+                if self._image_batches is None:
+                    from erp_web.stores.image_batch_store import ImageBatchStore
+
+                    self._image_batches = ImageBatchStore(self.paths.app_dir / "data" / "image-batches.sqlite3")
+        return self._image_batches
 
     @property
     def fulfillment(self):

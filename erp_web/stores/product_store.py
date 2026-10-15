@@ -1886,6 +1886,7 @@ class ProductStore:
             200,
         )
 
+    @product_mutation("draft")
     def apply_image_assets_to_draft(
         self,
         draft_id: str,

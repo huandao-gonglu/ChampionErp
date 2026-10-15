@@ -167,12 +167,25 @@ class FulfillmentStore:
             if row["claim"] and row["lease_until"] > now:
                 return None
             value = json.loads(row["value"])
-            if action == "create" and (value["editing_until"] > now or value["cancel_requested"]):
+            if action == "create" and (value["editing_until"] > now or value["cancel_requested"] or value.get('awaiting_resubmission')):
                 return None
             # 失效的创建占位不能回到待创建，即使进程在写回回执前崩溃。
             if value["operation"] == "create" or value["create_unknown"]:
                 value["create_unknown"] = True
                 action = "reconcile"
+            if action == "create" and value['platform'] == 'yandex':
+                snapshot = conn.execute('SELECT snapshot FROM orders WHERE id=?', (order_id,)).fetchone()
+                if not snapshot:
+                    return None
+                order = OrderSnapshot.model_validate_json(snapshot[0])
+                try:
+                    receiving = self.receiving.validate(conn, order)
+                except ValueError:
+                    return None
+                plan = value.get('plan') or {}
+                if (order.state != 'pending_shipment' or value.get('receiving_revision') != receiving['revision']
+                        or any(plan.get(k) != receiving[k] for k in ('section_id', 'warehouse_id'))):
+                    return None
             if action == "create":
                 value["create_unknown"] = True
             if action == "associate":
@@ -183,6 +196,39 @@ class FulfillmentStore:
             conn.execute("UPDATE fulfillments SET value=?,claim=?,lease_until=?,revision=revision+1 WHERE id=?", (json.dumps(value, ensure_ascii=False), token, now + 180, order_id))
             conn.commit()
         return self.get(order_id), token
+
+    @staticmethod
+    def read(conn, order_id):
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fulfillments'").fetchone():
+            return None
+        row = conn.execute('SELECT * FROM fulfillments WHERE id=?', (order_id,)).fetchone()
+        return FulfillmentStore._value(row) if row else None
+
+    @staticmethod
+    def can_rebind_cancelled(value, identity):
+        return bool(value and value['fulfillment_status'] == 'CANCELLED'
+                    and not value['busy'] and not value['create_unknown'] and value['operation'] != 'create'
+                    and identity and (not value['bus_identity'] or value['bus_identity'] == identity))
+
+    @staticmethod
+    def archive_cancelled(conn, order_id, revision, identity):
+        """与新收货绑定共用调用方事务；任一校验失败均保留旧单和旧绑定。"""
+        value = FulfillmentStore.read(conn, order_id)
+        if not FulfillmentStore.can_rebind_cancelled(value, identity) or value['revision'] != revision:
+            raise ValueError('原履约状态或版本已变化，请刷新后重新确认报单绑定')
+        value = {k: v for k, v in value.items() if k not in {'revision', 'busy', 'has_domestic_waybill'}}
+        history = value.get('attempt_history', [])
+        history.append({**{k: v for k, v in value.items() if k != 'attempt_history'},
+                        'archived_at': utc_iso(), 'receiving_warehouse': ReceivingWarehouseStore.read(conn, order_id)})
+        value.update(attempt_history=history, crossborderbus_order_id=None, plan=None, override=False,
+                     receiving_revision=0, selected_services=[], fulfillment_status='NEW',
+                     operation='', error_message='', last_synced_at='', last_attempt_at='', next_attempt=0,
+                     cancel_requested=False, cancel_sent=False, cancel_rejected=False, cancel_at_claim=False,
+                     create_unknown=False, warehouse_locked=False, update_pending=False,
+                     platform_link_state='', platform_link_error='', editing_until=0,
+                     manual_submit=False, awaiting_resubmission=True)
+        conn.execute("UPDATE fulfillments SET value=?,revision=revision+1,claim='',lease_until=0 WHERE id=?",
+                     (json.dumps(value, ensure_ascii=False), order_id))
 
     def finish(self, order_id, token, changes, *, expected_revision=None):
         with self.orders.connect() as conn:

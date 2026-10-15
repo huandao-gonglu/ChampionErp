@@ -413,6 +413,34 @@ export interface BackendDraftImageRef {
   source_asset_id?: string
 }
 
+export interface BackendImageBatchItemPayload {
+  index: number
+  source_id: string
+  source_url: string
+  status: "queued" | "running" | "success" | "failed"
+  result_urls: Array<string>
+  error: string
+  outcome_unknown: boolean
+  started_at: string
+  finished_at: string
+}
+
+export interface BackendImageBatchSnapshot {
+  conversation_id: string
+  product_id: string
+  prompt: string
+  items: Array<BackendImageBatchItemPayload>
+  created_at: string
+  updated_at: string
+  queued: number
+  running: number
+  success: number
+  failed: number
+  total: number
+  completed: number
+  terminal: boolean
+}
+
 export interface BackendMercadoLibreMarketplaceBinding {
   seller_id: string
   site_id: string

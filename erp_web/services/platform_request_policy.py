@@ -98,6 +98,8 @@ def classify_response(platform, status, headers, raw, *, method="", interface=""
         code = "IMAGE_HOSTING_PUBLIC_AUTH_REQUIRED" if status == 401 else "IMAGE_HOSTING_PUBLIC_ACCESS_DENIED"
         return RequestFailure(code, "图片地址拒绝匿名读取，请检查桶公开权限和公开地址", "request", status=status)
     prefix = re.sub(r"[^A-Z0-9_]", "_", platform.upper())
+    if platform.startswith("ai:") and status == 402:
+        return RequestFailure(prefix+"_PAYMENT_REQUIRED", "AI Provider 余额不足或计费配置不可用，请检查额度与计费状态", "request", status=status)
     if (platform == "gw.open.1688.com" and status < 500
             and status not in (401, 420, 429)
             and (body.get("errorCode") or body.get("error_code")) == "gw.APIACLDecline"):

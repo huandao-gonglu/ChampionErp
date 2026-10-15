@@ -1,4 +1,4 @@
-"""采购收货仓及其冻结地址；平台交货点不参与仓库身份。"""
+"""订单收货绑定及采购历史地址；平台交货点不参与仓库身份。"""
 import hashlib
 import json
 import re
@@ -67,6 +67,7 @@ class ReceivingWarehouseRequest(BaseModel):
     delivery_key: str = Field(min_length=1)
     confirmed: bool = Field(strict=True)
     existing_purchase_confirmed: bool = False
+    fulfillment_revision: int | None = Field(default=None, ge=0, strict=True)
 
 
 class ReceivingCandidate(LogisticsAddress):
@@ -83,10 +84,14 @@ class ReceivingWarehouseView(BaseModel):
     delivery_name: str
     delivery_evidence: list[str] = Field(default_factory=list)
     blocked_reason: str
-    locked: bool
+    locked: bool = Field(description='当前收货安排已锁定；不能仅根据有采购记录推断锁定或锁定原因。')
     reserved: bool
-    can_confirm: bool
+    can_confirm: bool = Field(description='当前平台状态、账号及操作锁是否允许确认；false 时不能建议直接重绑。仍须选择有效候选并通过保存校验。')
     has_purchases: bool
+    binding_stale: bool = Field(default=False, description='已有收货绑定失效；无绑定时为 false，不表示该订单需要继续履约。')
+    needs_rebind: bool = Field(default=False, description='待发货订单的已有绑定失效，需要重新绑定；统计重绑待办使用本字段。为 true 仍须检查 can_confirm 和阻断原因，不能绕过原报单或采购锁定。')
+    cancelled_fulfillment: bool = Field(default=False, description='本地履约已取消；不代表平台订单仍有效，也不代表需要重新报单。')
+    fulfillment_revision: int | None = None
     candidates: list[ReceivingCandidate]
     carrier_detected: Carrier | None = None
     carrier: Carrier | None = None

@@ -50,4 +50,4 @@ def assign_receiving(service, order, **overrides):
         configured = next(a for a in settings['addresses'] if a['warehouse_id'] == warehouse_id and a['address'] == address)
     return service.save({'order_id': order.identity, 'revision': current['revision'], 'section_id': 1,
                          'address_id': configured['id'], 'address_revision': configured['revision'],
-                         'delivery_key': delivery_key(order), 'confirmed': True, 'existing_purchase_confirmed': True, **overrides})
+                         'delivery_key': delivery_key(order), 'confirmed': True, 'existing_purchase_confirmed': True, 'fulfillment_revision': current.get('fulfillment_revision'), **overrides})

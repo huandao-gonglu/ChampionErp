@@ -84,12 +84,23 @@ export interface FulfillmentSummary {
 export interface FulfillmentDetail extends FulfillmentSummary {
   handover_target?: { key: string; warehouse_id: string; name: string; address: string; shipment_type: string; reason: string }
   receiving_warehouse?: ReceivingWarehouse | null
+  receiving_binding_stale?: boolean
   selected_services?: BusService[]
   erp_order_id: string
   revision: number
   editing: boolean
   editable: boolean
   plan_editable: boolean
+  awaiting_resubmission?: boolean
+  attempt_history?: {
+    crossborderbus_order_id: number | null
+    order_number: string
+    archived_at: string
+    last_synced_at: string
+    plan: FulfillmentPlan | null
+    receiving_warehouse: ReceivingWarehouse | null
+    selected_services: BusService[]
+  }[]
   update_pending?: boolean
   blocked_reason: string
   last_attempt_at: string

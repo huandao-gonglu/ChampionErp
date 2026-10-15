@@ -1,4 +1,4 @@
-"""采购与履约共用收货仓；使用订单数据库事务阻止采购期间换仓。"""
+"""订单收货绑定及配置有效性；采购记录保留各自的历史快照。"""
 import json
 
 from erp_web.schemas.receiving_warehouse import ReceivingWarehouse, delivery_key, platform_carrier
@@ -32,25 +32,44 @@ class ReceivingWarehouseStore:
         return ReceivingWarehouse.model_validate(value).model_dump() if value else None
 
     @staticmethod
+    def binding_stale(conn, value, fulfillment):
+        """旧绑定的有效性事实；未绑定不算失效，是否需要处理另按平台状态判断。"""
+        return bool(value and (
+            (fulfillment and fulfillment['fulfillment_status'] == 'CANCELLED')
+            or ReceivingWarehouseStore.configuration_changed(conn, value)
+        ))
+
+    @staticmethod
+    def configuration_changed(conn, value):
+        """配置版本改变或履约重新安排即须确认，已有采购不能豁免。"""
+        if value.get('confirmation_required') or not value.get('address_id'):
+            return True
+        row = conn.execute('SELECT value FROM logistics_addresses WHERE id=? AND bus_identity=?',
+                           (value['address_id'], value['bus_identity'])).fetchone()
+        configured = json.loads(row['value']) if row else None
+        return bool(not configured or not configured['enabled']
+                    or configured['revision'] != value.get('address_revision')
+                    or configured['warehouse_id'] != value['warehouse_id']
+                    or configured['address'] != value['address'])
+
+    @staticmethod
     def validate(conn, order, expected=None):
         value = ReceivingWarehouseStore.read(conn, order.identity)
         if not value:
             raise ValueError("请先在商品与采购中确定收货仓库和地址")
+        if value.get('confirmation_required'):
+            raise ValueError('原履约已取消，请重新选择并确认收货仓、地址及报单绑定')
         if value['delivery_key'] != delivery_key(order):
             raise ValueError("订单物流方案已变化，请重新核对收货仓的承接范围")
-        active = ReceivingWarehouseStore.purchase_state(conn, order.identity)[0]
-        if not value.get('address_id') and not active:
+        if not value.get('address_id'):
             raise ValueError('请在物流设置中确认承接范围，并重新选择采购收货地址')
         carrier = platform_carrier(order)
         if not carrier:
             raise ValueError('尚未识别平台物流商，请先同步平台交货信息')
         if value.get('support_rule') and not matching_rule({'rules': [value['support_rule']]}, order, carrier):
             raise ValueError('订单平台物流商已变化，请重新核对收货仓')
-        if value.get('address_id') and not active:
-            row = conn.execute('SELECT value FROM logistics_addresses WHERE id=? AND bus_identity=?', (value['address_id'], value['bus_identity'])).fetchone()
-            configured = json.loads(row['value']) if row else None
-            if not configured or not configured['enabled'] or configured['revision'] != value['address_revision']:
-                raise ValueError('收货地址或承接规则已更新，请在采购前重新选择地址')
+        if ReceivingWarehouseStore.configuration_changed(conn, value):
+            raise ValueError('物流设置中的仓库、地址或承接配置已更新，原绑定已失效；请重新选择并确认收货仓及报单绑定')
         if expected is not None and ReceivingWarehouseStore.public(value) != expected:
             raise ValueError("收货仓库或地址已变化，请重新预览或刷新后确认")
         return value

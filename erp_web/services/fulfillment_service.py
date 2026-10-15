@@ -134,6 +134,8 @@ class FulfillmentService:
             return "平台尚未提供实际仓库或配送方式，请同步订单。"
         try:
             self.validate_plan(plan, rule, order=order)
+            if value.get('attempt_history') and not value['override']:
+                return '请重新选择并保存本单报单服务'
             if order.platform == "yandex" and (not value["override"] or value.get("receiving_revision") != self.receiving.checked(order.identity)["revision"]):
                 return "请按采购收货仓选择并保存本单服务"
             reason = consolidation_reason(value['parcels'], plan)
@@ -159,9 +161,14 @@ class FulfillmentService:
         section = next((s for s in catalog.get("sections", []) if s["section_id"] == (plan or {}).get("section_id")), None)
         warehouse = next((w for w in (section or {}).get("storehouse_list", []) if w["id"] == (plan or {}).get("warehouse_id")), None)
         target = handover_target(order, self.client.identity())
-        receiving = self.store.receiving.public(self.store.receiving.get(order.identity))
+        receiving_value = self.store.receiving.get(order.identity)
+        receiving = self.store.receiving.public(receiving_value)
+        with self.store.orders.connect() as conn:
+            receiving_binding_stale = self.store.receiving.binding_stale(conn, receiving_value, value)
         label_reason = self.label_provider.unsupported_reason(order) if self.label_provider else "当前平台尚未接入面单获取。"
         response = {"ok": True, **value, "delivery": order.delivery.model_dump(), "country": country,
+                "receiving_binding_stale": receiving_binding_stale,
+                "selected_services": [s for s in value.get('selected_services', []) if s['id'] in (plan or {}).get('service_ids', [])],
                 "plan": plan, "rule": rule, "handover_target": target, "receiving_warehouse": receiving, "section_name": (section or {}).get("section_name", ""), "warehouse_name": (warehouse or {}).get("name", ""),
                 "blocked_reason": self.readiness(order, detail, value, rule, plan),
                 "label_fetch_supported": not label_reason, "label_fetch_reason": label_reason,
@@ -250,17 +257,30 @@ class FulfillmentService:
         if action == "cancel":
             changes = {"cancel_requested": True, "editing_until": 0, "next_attempt": 0, "error_message": ""}
         elif action in {"retry", "submit"}:
+            if value['fulfillment_status'] == 'CANCELLED':
+                raise FulfillmentError('履约已取消，请先重新设置报单绑定')
             if action == "retry" and value["create_unknown"]:
                 return self.sync(request.order_id, request.revision)
             if action == "submit" and (current["blocked_reason"] or value["crossborderbus_order_id"] or value["create_unknown"] or current["editing"]):
                 raise FulfillmentError(current["blocked_reason"] or "当前已有预报、正在编辑或创建结果待确认，不能再次提交。")
             changes = {"next_attempt": 0, "error_message": ""}
+            if value.get('awaiting_resubmission'):
+                if current['blocked_reason'] or current['editing']:
+                    raise FulfillmentError(current['blocked_reason'] or '请先保存报单方案')
+                changes.update(awaiting_resubmission=False, manual_submit=True)
             if action == "submit":
                 changes["manual_submit"] = True
             if action == "retry" and value.get("cancel_rejected"):
                 changes["cancel_rejected"] = False
             if not value["crossborderbus_order_id"] and not value["create_unknown"]:
                 changes["fulfillment_status"] = "NEW"
+                if order.platform == 'yandex':
+                    receiving = self.receiving.checked(order.identity)
+                    def guard(conn):
+                        row = conn.execute('SELECT snapshot FROM orders WHERE id=?', (order.identity,)).fetchone()
+                        if not row:
+                            raise FulfillmentError('订单已变化，请刷新后重新确认报单绑定')
+                        self.store.receiving.validate(conn, OrderSnapshot.model_validate_json(row[0]), receiving)
         elif action == "pause":
             if not current["plan_editable"]:
                 raise FulfillmentError("预报已经开始，不能再修改本单方案。")
@@ -319,6 +339,17 @@ class FulfillmentService:
         self.store.change(request.order_id, request.revision, changes, allow_busy=action == "cancel", guard=guard)
         return self.detail(request.order_id)
 
+    def search_current(self, value):
+        """同平台订单可以有已作废历史；核实必须排除归档单并校验当前 ID。"""
+        archived_ids = {item['crossborderbus_order_id'] for item in value.get('attempt_history', [])
+                        if item.get('crossborderbus_order_id')}
+        remote = self.client.search(value['order_number'], expected_identity=value['bus_identity'],
+                                    exclude_order_ids=archived_ids, expected_order_id=value['crossborderbus_order_id'])
+        if remote and (remote.get('id') in archived_ids or (value['crossborderbus_order_id']
+                      and remote.get('id') != value['crossborderbus_order_id'])):
+            raise FulfillmentError('查询结果不是本次报单，请核实远端结果', unknown=True)
+        return remote
+
     def associate(self, order_id, revision):
         """通过官方接口回填平台订单信息；不手填店铺资料，不重放未知关联。"""
         order, _ = self.order_detail(order_id)
@@ -349,7 +380,7 @@ class FulfillmentService:
                     or remote.get("order_status") != 0 or remote.get("data_status") != 1
                     or remote.get("is_delete") != 0):
                 raise FulfillmentError("仓库未确认本单处于待打包状态，不能关联。")
-            info = self.client.search(value["order_number"], expected_identity=value["bus_identity"])
+            info = self.search_current(value)
             if (not info or info.get("id") != value["crossborderbus_order_id"]
                     or info.get("sid") != value["plan"]["warehouse_id"]
                     or (info.get("sheet_info") or {}).get("section") != value["plan"]["section_id"]):
@@ -463,7 +494,7 @@ class FulfillmentService:
             else:
                 return False
         else:
-            if value["editing_until"] > time.time() or value["fulfillment_status"] == "EXCEPTION":
+            if value["editing_until"] > time.time() or value["fulfillment_status"] == "EXCEPTION" or value.get('awaiting_resubmission'):
                 return False
             order, detail = self.order_detail(value["erp_order_id"])
             if not value["platform_label"] and order.delivery.label_url and order.delivery.tracking_number:
@@ -526,11 +557,13 @@ class FulfillmentService:
                 }, expected_identity=value["bus_identity"]).get("data")
                 if not isinstance(data, list) or len(data) != 1 or data[0].get("order_number") != value["order_number"] or not isinstance(data[0].get("order_id"), int):
                     raise FulfillmentError("创建回执缺少唯一订单 ID，请核实远端结果。", unknown=True)
+                if any(item.get('crossborderbus_order_id') == data[0]['order_id'] for item in value.get('attempt_history', [])):
+                    raise FulfillmentError('创建回执指向原作废单，请人工核实本次报单结果', unknown=True)
                 changes = {"crossborderbus_order_id": data[0]["order_id"], "create_unknown": False, "fulfillment_status": "FULFILLMENT_CREATED"}
                 if order.platform == "yandex":
                     changes["platform_link_state"] = "pending"
             elif action == "reconcile":
-                remote = self.client.search(value["order_number"], expected_identity=value["bus_identity"])
+                remote = self.search_current(value)
                 if not remote:
                     raise FulfillmentError("尚未查到已创建订单，请人工核实；禁止重复创建。", unknown=True)
                 if (remote.get("sid") != value["plan"]["warehouse_id"]
@@ -544,7 +577,7 @@ class FulfillmentService:
                     raise FulfillmentError("仓库状态回执不完整，保留最近确认的进度。")
                 changes = self.remote_status(remote, value)
                 if changes["fulfillment_status"] == "WAITING_DOMESTIC_SHIPMENT":
-                    info = self.client.search(value["order_number"], expected_identity=value["bus_identity"])
+                    info = self.search_current(value)
                     packages = (info or {}).get("package_list") or []
                     if packages and all(p.get("status") == 1 for p in packages):
                         changes["fulfillment_status"] = "WAREHOUSE_RECEIVED"
@@ -565,7 +598,7 @@ class FulfillmentService:
                             or self.stop_event.is_set() or self.accounts_provider().get(order.platform) != order.account_id):
                         raise FulfillmentError("图片准备期间订单状态或资料已变化，已停止更新。")
                     self.client.request("/erpapi/order/updateOrderSheet", {"order_number": value["order_number"], "sheet": value["platform_label"], "sheet_order_sn": value["platform_tracking_number"]}, expected_identity=value["bus_identity"])
-                    self.client.request("/erpapi/order/updateOrderPackage", {"order_number": value["order_number"], "package_list": packages}, expected_identity=value["bus_identity"])
+                    self.client.request("/erpapi/order/updateOrderPackage", {"order_id": value["crossborderbus_order_id"], "package_list": packages}, expected_identity=value["bus_identity"])
                     changes["update_pending"] = False
             changes.update(error_message=changes.get("error_message", ""), next_attempt=0)
         except FulfillmentError as exc:

@@ -56,6 +56,7 @@ def is_definite_request_rejection(scope: str, code: str) -> bool:
     """只允许明确拒绝的原请求人工恢复，不按范围推测写入结果。"""
     return scope == "request" and (
         code.endswith("_REQUEST_INVALID")
+        or (code.startswith("AI_") and code.endswith("_PAYMENT_REQUIRED"))
         or code in {"IMAGE_HOSTING_PUBLIC_AUTH_REQUIRED", "IMAGE_HOSTING_PUBLIC_ACCESS_DENIED"}
     )
 

@@ -32,6 +32,10 @@ export interface ReceivingWarehouseView {
   reserved: boolean
   can_confirm: boolean
   has_purchases: boolean
+  binding_stale: boolean
+  needs_rebind: boolean
+  cancelled_fulfillment?: boolean
+  fulfillment_revision?: number | null
   candidates: Array<LogisticsAddress & { section_id: number; frozen: boolean }>
   carrier_detected: Carrier | null
   carrier: Carrier | null
@@ -43,6 +47,7 @@ export async function saveReceivingWarehouse(body: {
   order_id: string; revision: number; section_id: number; address_id: string; address_revision: number
   delivery_key: string
   confirmed: boolean; existing_purchase_confirmed: boolean
+  fulfillment_revision?: number
 }): Promise<ReceivingWarehouseView> {
   return (await apiClient.post<ReceivingWarehouseView>('/api/orders/receiving-warehouse', body, { timeout: 35000 })).data
 }

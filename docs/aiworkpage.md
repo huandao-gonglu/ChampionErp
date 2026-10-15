@@ -180,6 +180,11 @@ HTTP 公共边界记录最终响应状态：正常返回的 4xx/5xx 将 presenta
 - 默认浮窗可以继续 global.chat，流式过程中导航到 AiWork 不重建或中断 `Chat`。
 - 类目匹配、文案、翻译、图片和产品调研的手动 AI 操作使用同一个 presentation 协议，并显示首次 user 输入。
 - 专用 Images API 无供应商实时增量时，先完成非流式图片请求，再通过 Pydantic `CompletedStreamedResponse` 向 presentation 重放官方响应事件。
+- 图片工作台的批量编辑/翻译使用三路领域调度；每张仍通过 Pydantic Direct Model 调用。
+  一次批次对应一条 AI Work 记录，`AiImageBatchProgress` 通过只读 `/conversations/{id}/image-batch`
+  展示逐张排队、处理、成功、失败、原图和结果图；不以单个模型结束或 `run_active` 判定整批结束。
+  批次状态及图片引用保存在独立图片任务库，真实模型请求/响应仍只保存在原生消息库，实时页与重新打开共用同一份领域快照。
+  该读取入口不发起生成、重试或恢复模型；完成后停止轮询。原有只读 presentation transport 保留给普通单次模型/Agent 展示。
 - AI 模型能力测试沿用同一 presentation 协议；Pydantic Direct Model 的真实文本增量可在浮窗查看，业务判定仍来自 `/api/test-ai-model` 响应。
 - presentation 接管期间 global.chat 的消息、输入和连接保持不变，业务收尾后恢复。
 - 业务 response 是唯一结果事实，展示连接故障不改变业务结果。

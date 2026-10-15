@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { UI_LOCALE_OPTIONS, type SupportedUiLocale } from '@/constants/locales'
 import ExternalRequestControlPanel from '@/components/settings/ExternalRequestControlPanel.vue'
+import AboutSettingsPanel from '@/components/settings/AboutSettingsPanel.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
 const { t } = useI18n()
@@ -15,16 +16,17 @@ const colorMode = computed({
     if (value !== appStore.theme) appStore.toggleTheme()
   },
 })
-const tabs = [
+const tabs = computed(() => [
   { key: 'general', label: '通用设置', summary: '颜色、界面语言与订单自动同步' },
   { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
-] as const
-const section = ref<'general' | 'interruptions'>('general')
+  { key: 'about', label: t('settings.about'), summary: t('settings.aboutSummary') },
+] as const)
+const section = ref<'general' | 'interruptions' | 'about'>('general')
 const route = inject(routeLocationKey, undefined)
 watch(() => route?.query.settings_section, value => {
-  section.value = value === 'interruptions' ? 'interruptions' : 'general'
+  section.value = value === 'interruptions' || value === 'about' ? value : 'general'
 }, { immediate: true })
-const activeTab = computed(() => tabs.find(tab => tab.key === section.value) || tabs[0])
+const activeTab = computed(() => tabs.value.find(tab => tab.key === section.value) || tabs.value[0])
 
 const hours = ref(5)
 const savedHours = ref<number | null>(null)
@@ -83,6 +85,9 @@ onMounted(load)
     </div>
     <section v-if="section === 'interruptions'" id="system-settings-panel-interruptions" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-interruptions">
       <ExternalRequestControlPanel />
+    </section>
+    <section v-if="section === 'about'" id="system-settings-panel-about" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-about">
+      <AboutSettingsPanel />
     </section>
     <section v-show="section === 'general'" id="system-settings-panel-general" class="mt-5 space-y-5" role="tabpanel" aria-labelledby="system-settings-tab-general">
       <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" aria-labelledby="appearance-settings-title">

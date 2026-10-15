@@ -209,6 +209,18 @@ class FulfillmentSummary(BaseModel):
     consolidation_service_id: PositiveId | None = None
 
 
+class FulfillmentAttempt(BaseModel):
+    """已取消报单的公开历史；原始资料另存于领域记录，不暴露账号指纹。"""
+
+    crossborderbus_order_id: int | None = None
+    order_number: str
+    archived_at: str
+    last_synced_at: str = ''
+    plan: FulfillmentPlan | None = None
+    receiving_warehouse: ReceivingWarehouse | None = None
+    selected_services: list[BusService] = Field(default_factory=list)
+
+
 class FulfillmentView(BaseModel):
     """订单详情公开形状；内部租约、账号指纹与占位字段不向前端传输。"""
 
@@ -219,6 +231,8 @@ class FulfillmentView(BaseModel):
     editing: bool
     editable: bool
     plan_editable: bool
+    awaiting_resubmission: bool = False
+    attempt_history: list[FulfillmentAttempt] = Field(default_factory=list)
     create_unknown: bool
     cancel_requested: bool
     cancel_rejected: bool = False
@@ -248,6 +262,7 @@ class FulfillmentView(BaseModel):
     delivery: DeliverySource
     handover_target: HandoverTarget = Field(default_factory=HandoverTarget)
     receiving_warehouse: ReceivingWarehouse | None = None
+    receiving_binding_stale: bool = False
     selected_services: list[BusService] = Field(default_factory=list)
     parcels: list[DomesticParcel]
     has_domestic_waybill: bool = False

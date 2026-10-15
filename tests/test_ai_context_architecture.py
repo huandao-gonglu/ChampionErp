@@ -51,6 +51,21 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
 )
 
 
+def test_image_batch_keeps_native_model_boundary_and_domain_only_progress():
+    """图片领域调度不能引入 SDK 旁路、第二份消息表或自编 SSE。"""
+    batch = ROOT / "erp_web/services/image_batch_service.py"
+    store = ROOT / "erp_web/stores/image_batch_store.py"
+    targets = {target for _, target in imported_targets([batch, store])}
+    assert not any(target.split(".")[0] in {"openai", "httpx", "httpx2", "requests"} for target in targets)
+    assert "messages_json" not in store.read_text()
+    assert "publish_chunk" not in batch.read_text()
+    direct = (ROOT / "erp_web/services/ai_direct_request_service.py").read_text()
+    assert "direct.model_request(" in direct
+    assert "current_history_sink" in direct
+    from erp_web.http_route_units.ai_work_routes import DYNAMIC_GET_HANDLERS
+    assert "/api/v1/ai-work/conversations/<conversation_id>/image-batch" in DYNAMIC_GET_HANDLERS
+
+
 def test_purchase_payment_has_explicit_command_and_approved_agent_entry():
     """签约只读检查，真实支付必须经过显式 HTTP 命令或原生审批工具。"""
     from erp_web.ai_capability_coverage import AI_CAPABILITY_COVERAGE_MANIFEST

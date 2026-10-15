@@ -8,6 +8,7 @@ import FulfillmentPlanFields from '../FulfillmentPlanFields.vue'
 import OrderFulfillmentPanel from '../OrderFulfillmentPanel.vue'
 import OrderDetailPanel from '../OrderDetailPanel.vue'
 import OrderPurchaseTracking from '../OrderPurchaseTracking.vue'
+import OrderReceivingWarehouse from '../OrderReceivingWarehouse.vue'
 import { fetchOrderDetail, syncPurchase } from '@/api/orders'
 import type { PurchaseLogisticsResults } from '@/types/fulfillment'
 import { fetchBusServices, fetchFulfillment, fulfillmentCommand } from '@/api/fulfillment'
@@ -54,6 +55,55 @@ async function fillParcel(wrapper: ReturnType<typeof mount>) {
 }
 
 describe('跨境履约操作', () => {
+  it('作废后直接展示重绑入口，保存后刷新服务方案和旧报单历史', async () => {
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), crossborderbus_order_id: 99,
+      fulfillment_status: 'CANCELLED', receiving_binding_stale: true, plan_editable: false, editable: false })
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global: { stubs: { ...global.stubs, OrderReceivingWarehouse: true } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('已作废 · 99')
+    expect(wrapper.text()).toContain('直接重新设置报单绑定')
+    expect(wrapper.findAll('button').some(button => ['立即提交', '重新安排履约'].includes(button.text()))).toBe(false)
+    const receiving = wrapper.getComponent(OrderReceivingWarehouse)
+    expect(receiving.props('orderId')).toBe(order.order.id)
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), revision: 3, awaiting_resubmission: true,
+      receiving_binding_stale: false, blocked_reason: '请重新选择报单服务', attempt_history: [{
+        crossborderbus_order_id: 99, order_number: '123', archived_at: '2026-10-14T15:00:00Z',
+        last_synced_at: '', plan: detail().plan, receiving_warehouse: null, selected_services: [],
+      }] })
+    receiving.vm.$emit('updated')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已作废报单 · 99')
+    expect(wrapper.findComponent(OrderReceivingWarehouse).exists()).toBe(false)
+    expect(wrapper.findAll('button').find(button => button.text() === '设置报单方案')!.attributes('disabled')).toBeUndefined()
+    expect(wrapper.findAll('button').find(button => button.text() === '立即提交')!.attributes('disabled')).toBeDefined()
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+  })
+
+  it('配置失效时直接提供重绑入口并禁止选服务、提交；重绑完成后刷新履约资料', async () => {
+    vi.useFakeTimers()
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), receiving_binding_stale: true, blocked_reason: '原绑定已失效' })
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global: { stubs: { ...global.stubs, OrderReceivingWarehouse: true } } })
+    await flushPromises()
+    const receiving = wrapper.getComponent(OrderReceivingWarehouse)
+    expect(receiving.props('orderId')).toBe(order.order.id)
+    for (const label of ['设置报单方案', '立即提交']) {
+      expect(wrapper.findAll('button').find(button => button.text() === label)!.attributes('disabled')).toBeDefined()
+    }
+    receiving.vm.$emit('lock', true)
+    await flushPromises()
+    const reads = vi.mocked(fetchFulfillment).mock.calls.length
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(fetchFulfillment).toHaveBeenCalledTimes(reads)
+    expect(wrapper.emitted('lock')?.at(-1)).toEqual([true])
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), receiving_binding_stale: false })
+    receiving.vm.$emit('lock', false)
+    receiving.vm.$emit('updated')
+    await flushPromises()
+    expect(wrapper.findComponent(OrderReceivingWarehouse).exists()).toBe(false)
+    expect(wrapper.emitted('updated')).toHaveLength(1)
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+  })
   it('已创建报单可关联平台订单，使用当前版本且关联成功后不重复提供按钮', async () => {
     const created = { ...detail(), crossborderbus_order_id: 99, plan_editable: false, platform_link_state: '' as const }
     vi.mocked(fetchFulfillment).mockResolvedValue(created)

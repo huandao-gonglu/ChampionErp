@@ -8,6 +8,7 @@ from typing import Any, Callable
 from erp_web.context import get_context
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.services import image_service, image_translate_service
+from erp_web.services.image_batch_service import run_image_batch
 from erp_web.runtime_units.image_pool import (
     append_images_to_product_pool,
     apply_service_image_pool,
@@ -219,45 +220,84 @@ def _generated_image_response(
     }
 
 
-def translate_images_payload(body: dict[str, Any]) -> ResponseWithStatus:
+def _run_images_payload(body: dict[str, Any], *, translate: bool) -> ResponseWithStatus:
     product, error = _load_request_product(body)
     if error:
         return error
-    result = image_translate_service.translate_images(
-        _app_dir(),
-        product,
-        load_app_config(),
-        target_language=str(
-            body.get("language") or body.get("target_language") or "es"
-        ),
-        platform=str(body.get("platform") or "mercadolibre"),
-        image_ids=(
-            body.get("source_image_ids")
-            if isinstance(body.get("source_image_ids"), list)
-            else []
-        ),
-        mode=str(body.get("mode") or "translate"),
+    context = get_context()
+    platform = str(body.get("platform") or "mercadolibre")
+    ids = body.get("source_image_ids") or []
+    if not ids:
+        raise RequestValidationError("请先勾选要处理的图片。")
+    sources = image_translate_service.select_source_images(product, ids, platform)
+    if len({str(item["id"]) for item in sources}) != len(set(ids)):
+        raise RequestValidationError("部分源图片不存在或未被选中，请重新选择。")
+    config = load_app_config()
+    language = str(body.get("language") or body.get("target_language") or "es")
+    prompt = (image_translate_service.build_translate_prompt(product, language, app_dir=_app_dir(), app_config=config)
+              if translate else str(body.get("prompt") or "").strip())
+    if not prompt:
+        raise RequestValidationError("图生图提示词不能为空。")
+    product_id = str(product["product_id"])
+    applied_items: list[dict[str, Any]] = []
+    if _truthy(body.get("apply_to_draft")):
+        draft = context.products.draft_record(str(body.get("draft_id") or ""))
+        if not draft or draft.get("product_id") != product_id:
+            raise RequestValidationError("目标草稿不存在或不属于当前商品。")
+
+    def process(source):
+        options = {"platform": platform, "image_ids": [source["id"]]}
+        if translate:
+            result = image_translate_service.translate_images(_app_dir(), product, config,
+                target_language=language, mode=str(body.get("mode") or "translate"), **options)
+            # 单张调用内部编号从 0 开始；主图身份仍按原批次确定，不能每张都变主图。
+            for index, item in enumerate(result.get("imagePoolItems") or []):
+                item["is_main"] = source["id"] == sources[0]["id"] and index == 0
+            return result
+        return image_translate_service.edit_images(_app_dir(), product, config, prompt=prompt, **options)
+
+    def persist(result):
+        with context.products.mutation_scope({"product_id": product_id}):
+            latest = context.products.load_product_from_index(product_id, "")
+            if latest.get("product_id") != product_id:
+                raise ValueError("商品已不存在，结果未写入素材池。")
+            apply_body = dict(body)
+            if body.get("draft_image_strategy") == "replace_all" and applied_items:
+                apply_body["draft_image_strategy"] = "append"
+            payload, status = _apply_result_to_product(latest, apply_body, result)
+            if status >= 400 or not payload.get("ok"):
+                raise RuntimeError(payload.get("error") or "图片保存失败。")
+            applied_items.extend(result["imagePoolItems"])
+
+    result = run_image_batch(
+        store=context.image_batches, messages=context.pydantic_messages,
+        app_dir=_app_dir(), product_id=product_id, prompt=prompt,
+        sources=sources, process=process, persist=persist,
     )
-    return _apply_result_to_product(product, body, result)
+    result.update(prompt=prompt, platform=platform, mode=str(body.get("mode") or "translate") if translate else "edit",
+                  source_image_ids=[item["id"] for item in sources])
+    if translate:
+        result.update(language=language, target_language=language)
+    saved = context.products.load_product_from_index(product_id, "")
+    draft = context.products.draft_record(str(body.get("draft_id") or "")) if _truthy(body.get("apply_to_draft")) else None
+    response = _generated_image_response(saved, result, {
+        "draft": draft, "productContext": context.products.draft_product_context(saved) if draft else None,
+    })
+    # HTTP 200 保留已落库成功项；业务 ok 和计数准确表达全部失败/部分成功。
+    return {**response, "ok": result["ok"], "error": "" if result["ok"] else result["message"]}, 200
+
+
+def translate_images_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    return _run_images_payload(body, translate=True)
 
 
 def edit_images_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    product, error = _load_request_product(body)
-    if error:
-        return error
-    result = image_translate_service.edit_images(
-        _app_dir(),
-        product,
-        load_app_config(),
-        prompt=str(body.get("prompt") or ""),
-        platform=str(body.get("platform") or "mercadolibre"),
-        image_ids=(
-            body.get("source_image_ids")
-            if isinstance(body.get("source_image_ids"), list)
-            else []
-        ),
-    )
-    return _apply_result_to_product(product, body, result)
+    return _run_images_payload(body, translate=False)
+
+
+def image_batch_payload(conversation_id: str) -> dict:
+    batch = get_context().image_batches.get(conversation_id)
+    return {"ok": True, "image_batch": batch.snapshot() if batch else None}
 
 
 ImagePayloadHandler = Callable[[dict[str, Any]], ResponseWithStatus]
@@ -296,6 +336,7 @@ __all__ = [
     "IMAGE_PAYLOAD_HANDLERS",
     "apply_image_action_payload",
     "edit_images_payload",
+    "image_batch_payload",
     "handle_image_payload",
     "save_image_pool_payload",
     "sync_generated_images_payload",

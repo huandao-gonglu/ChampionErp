@@ -21,7 +21,7 @@ async function run(action: () => Promise<LogisticsSettings>) {
 }
 async function save(value: LogisticsAddressInput) {
   await run(() => saveLogisticsAddress(value))
-  if (!error.value && !disposed) { editing.value = null; notice.value = '收货地址已保存，已采购订单仍使用原地址快照。' }
+  if (!error.value && !disposed) { warehouseId.value = value.warehouse_id; editing.value = null; notice.value = '收货地址已保存。引用旧配置的订单须重新确认绑定后才能报单，原采购记录保留。' }
 }
 function edit(value: LogisticsAddress) {
   editing.value = JSON.parse(JSON.stringify(Object.fromEntries(Object.keys(emptyLogisticsAddress(value.warehouse_id)).map(k => [k, value[k as keyof LogisticsAddress]])))) as LogisticsAddressInput

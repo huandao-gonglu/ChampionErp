@@ -35,7 +35,7 @@ class LogisticsSettingsService:
         detail = self.detail(refresh=True)
         warehouse = next((w for w in detail['warehouses'] if w['id'] == request.warehouse_id), None)
         old = next((a for a in detail['addresses'] if a['id'] == request.id), None)
-        if not warehouse and (request.enabled or not old):
+        if not warehouse and (request.enabled or not old or request.warehouse_id != old['warehouse_id']):
             raise ValueError('仓库不在当前账号的合作范围内')
         if request.rules and warehouse and not any(s['platform'] == 'yandex' for s in warehouse['sections']):
             raise ValueError('此合作仓未开通 Yandex 平台')

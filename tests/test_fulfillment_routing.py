@@ -97,11 +97,13 @@ def test_local_receiving_validation_failure_is_not_unknown_remote_result(domain)
     changed = order.model_copy(deep=True)
     changed.delivery.carrier = 'GUOO'
     domain[4](changed)
-    assert service._execute(order, value, 'create')
+    # 创建占位现在先校验绑定，本地失败不会进入发送阶段或产生未知回执。
+    assert not service._execute(order, value, 'create')
     result = service.store.get(order.identity)
     assert not bus.calls
     assert not result['create_unknown']
-    assert '物流方案已变化' in result['error_message']
+    assert result['revision'] == value['revision'] and not result['operation']
+    assert '物流方案已变化' in service.detail(order.identity)['blocked_reason']
 
 
 def test_existing_remote_report_remains_readable_without_receiving(domain):

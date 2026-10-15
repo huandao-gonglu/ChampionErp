@@ -47,6 +47,18 @@ it('保存冲突保留编辑内容并显示错误，不关闭编辑器', async (
   expect((wrapper.get('[aria-label="地址名称"]').element as HTMLInputElement).value).toBe('尚未保存')
 })
 
+it('已有地址可修改所属仓和实际地址，保存后切到目标仓并提示订单重绑', async () => {
+  const wrapper = mount(LogisticsSettingsPanel); await flushPromises()
+  await wrapper.findAll('button').find(b => b.text() === '编辑地址')!.trigger('click')
+  await wrapper.get('[aria-label="所属合作仓库"]').setValue('20')
+  await wrapper.get('[aria-label="详细地址"]').setValue('目标仓新地址')
+  expect(wrapper.text()).toContain('引用此配置的订单须重新确认')
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(saveLogisticsAddress).toHaveBeenCalledWith(expect.objectContaining({ id: first.id, warehouse_id: 20, address: expect.objectContaining({ address: '目标仓新地址' }) }))
+  expect((wrapper.get('[aria-label="合作仓库"]').element as HTMLSelectElement).value).toBe('20')
+  expect(wrapper.text()).toContain('引用旧配置的订单须重新确认绑定后才能报单')
+})
+
 it('解析填入地址且可手动核对，不改变名称或物流商，不自动保存', async () => {
   const parsed = { ...first.address, fullName: '张三', mobile: '13800138000', address: '科技路1号' }
   vi.mocked(parseLogisticsAddress).mockResolvedValue({ ok: true, address: parsed, warnings: [] })

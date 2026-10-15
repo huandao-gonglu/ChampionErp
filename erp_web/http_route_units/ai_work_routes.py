@@ -9,6 +9,7 @@ import urllib.parse
 
 from erp_web.context import get_context
 from erp_web.facades import ai_chat_facade
+from erp_web.facades import image_facade
 from erp_web.stores.pydantic_message_store import PydanticMessageStoreError
 
 from .common import JsonRequestHandler
@@ -19,6 +20,7 @@ _logger = logging.getLogger(__name__)
 CONVERSATIONS_PATH = "/api/v1/ai-work/conversations"
 UI_MESSAGES_SUFFIX = "/ui-messages"
 EVENTS_SUFFIX = "/events"
+IMAGE_BATCH_SUFFIX = "/image-batch"
 GET_API_ROUTES = frozenset({CONVERSATIONS_PATH})
 
 
@@ -197,12 +199,22 @@ def handle_conversation_events(
             loop.close()
 
 
+def handle_image_batch(handler: JsonRequestHandler, parsed: object) -> None:
+    conversation_id = _conversation_id(parsed.path[:-len(IMAGE_BATCH_SUFFIX)])
+    if conversation_id is None or parsed.query:
+        handler.send_json({"ok": False, "error": "未知的图片批次。"}, 404)
+        return
+    handler.send_json(image_facade.image_batch_payload(conversation_id))
+
+
 def handle_get(handler: JsonRequestHandler, parsed: object) -> bool:
     if parsed.path == CONVERSATIONS_PATH:
         handle_conversation_list(handler, parsed)
         return True
     if parsed.path.startswith(f"{CONVERSATIONS_PATH}/"):
-        if parsed.path.endswith(UI_MESSAGES_SUFFIX):
+        if parsed.path.endswith(IMAGE_BATCH_SUFFIX):
+            handle_image_batch(handler, parsed)
+        elif parsed.path.endswith(UI_MESSAGES_SUFFIX):
             handle_conversation_ui_messages(handler, parsed)
         elif parsed.path.endswith(EVENTS_SUFFIX):
             handle_conversation_events(handler, parsed)
@@ -214,6 +226,7 @@ def handle_get(handler: JsonRequestHandler, parsed: object) -> bool:
 
 GET_HANDLERS = {CONVERSATIONS_PATH: handle_conversation_list}
 DYNAMIC_GET_HANDLERS = {
+    f"{CONVERSATIONS_PATH}/<conversation_id>{IMAGE_BATCH_SUFFIX}": handle_image_batch,
     f"{CONVERSATIONS_PATH}/": handle_conversation,
     f"{CONVERSATIONS_PATH}/<conversation_id>{UI_MESSAGES_SUFFIX}": (
         handle_conversation_ui_messages

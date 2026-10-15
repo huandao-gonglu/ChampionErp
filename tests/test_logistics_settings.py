@@ -81,15 +81,17 @@ def test_default_is_per_warehouse_and_stale_edits_are_rejected(domain):
     assert {a['id'] for a in current if a['is_default']} == {second['id'], third['id']}
     with pytest.raises(ValueError, match='已更新'):
         edit(service, first, name='过期修改')
-    with pytest.raises(ValueError, match='不能转移'):
-        edit(service, second, warehouse_id=20)
+    moved = edit(service, second, warehouse_id=20)
+    assert moved['warehouse_id'] == 20 and moved['id'] == second['id']
+    assert moved['warehouse_name'] == 'B仓'
+    assert {a['id'] for a in service.logistics.detail()['addresses'] if a['is_default']} == {second['id']}
     service.client.account = 'bus-other'
     assert service.logistics.detail()['addresses'] == []
     with pytest.raises(ValueError, match='当前账号'):
         edit(service, second, name='越权修改')
 
 
-def test_config_change_blocks_unpurchased_selection_but_freezes_purchased_address(domain):
+def test_config_change_invalidates_both_unpurchased_and_purchased_binding(domain):
     procurement, order, key = domain
     order = with_handover(order, 'CEL Yiwu')
     replace_order(procurement, order)
@@ -104,10 +106,67 @@ def test_config_change_blocks_unpurchased_selection_but_freezes_purchased_addres
     select(service, order, changed)
     confirm(procurement, order, key)
     purchase = procurement.record_purchase({**purchase_body(order, key), 'receiving_revision': 2, 'receiving_confirmed': True})
-    frozen = service.checked(order.identity)
+    frozen = service.store.get(order.identity)
     edit(service, changed, enabled=False, address={**ADDRESS, 'address': '再次修改'}, rules=[])
-    assert service.checked(order.identity) == frozen
+    with pytest.raises(ValueError, match='原绑定已失效'):
+        service.checked(order.identity)
+    assert service.store.get(order.identity) == frozen
+    view = service.detail(order.identity)
+    assert view['binding_stale'] and not view['locked'] and view['can_confirm']
+    assert view['candidates'] == []
     assert purchase['lines'][0]['records'][0]['receiving_warehouse']['address']['address'] == '新地址'
+
+
+@pytest.mark.parametrize('changes', [
+    {'warehouse_id': 20},
+    {'address': {**ADDRESS, 'address': '福州新收货地址', 'cityText': '福州市'}},
+    {'warehouse_id': 20, 'address': {**ADDRESS, 'address': '福州新收货地址', 'cityText': '福州市'}},
+])
+def test_purchased_order_can_rebind_changed_configuration_without_rewriting_purchase(domain, changes):
+    procurement, order, key = domain
+    replace_order(procurement, with_handover(order, 'CEL Yiwu'))
+    service = receiving_service(procurement)
+    address = configure(service)
+    original = select(service, order, address)['warehouse']
+    confirm(procurement, order, key)
+    purchase = procurement.record_purchase({**purchase_body(order, key), 'receiving_revision': 1, 'receiving_confirmed': True})
+    record = purchase['lines'][0]['records'][0]
+    changed = edit(service, address, **changes)
+    view = service.detail(order.identity)
+    assert view['binding_stale'] and not view['locked']
+    assert view['warehouse'] == original
+    candidate = view['candidates'][0]
+    assert not candidate['frozen'] and candidate['address'] == changed['address']
+    assert candidate['warehouse_id'] == changed['warehouse_id']
+    with pytest.raises(ValueError, match='收货安排'):
+        select(service, order, changed)
+    with pytest.raises(ValueError, match='资料已更新'):
+        select(service, order, address, existing_purchase_confirmed=True)
+    result = select(service, order, changed, existing_purchase_confirmed=True)
+    assert not result['binding_stale'] and not result['blocked_reason'] and result['locked']
+    assert result['revision'] == original['revision'] + 1
+    assert service.checked(order.identity)['address'] == changed['address']
+    assert service.checked(order.identity)['warehouse_id'] == changed['warehouse_id']
+    assert procurement.detail(order.identity)['lines'][0]['records'][0] == record
+
+
+def test_disabled_configuration_can_be_replaced_but_unrelated_edit_does_not_unlock(domain):
+    procurement, order, key = domain
+    replace_order(procurement, with_handover(order, 'CEL Yiwu'))
+    service = receiving_service(procurement)
+    address = configure(service)
+    replacement = configure(service, name='新收货点', warehouse_id=20)
+    select(service, order, address)
+    confirm(procurement, order, key)
+    procurement.record_purchase({**purchase_body(order, key), 'receiving_revision': 1, 'receiving_confirmed': True})
+    replacement = edit(service, replacement, address={**ADDRESS, 'address': '新收货点地址'})
+    assert not service.detail(order.identity)['binding_stale']
+    with pytest.raises(ValueError, match='不能更换'):
+        select(service, order, replacement, existing_purchase_confirmed=True)
+    edit(service, address, enabled=False)
+    result = select(service, order, replacement, existing_purchase_confirmed=True)
+    assert result['warehouse']['address_id'] == replacement['id']
+    assert not result['binding_stale']
 
 
 def test_catalog_change_before_selection_rejects_uncooperative_warehouse(domain, monkeypatch):

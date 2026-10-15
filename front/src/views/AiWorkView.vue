@@ -9,6 +9,8 @@ import {
 } from '@/api/aiWork'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiMessageList from '@/components/ai-work/AiMessageList.vue'
+import AiImageBatchProgress from '@/components/ai-work/AiImageBatchProgress.vue'
+import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { workflowNavItems } from '@/constants/navigation'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
@@ -37,6 +39,7 @@ const listError = ref('')
 const historyMessages = ref<UIMessage[] | null>(null)
 const loadingUiMessages = ref(false)
 const uiMessagesError = ref('')
+const imageBatch = ref<ImageBatchSnapshot | null>(null)
 
 let listRequestGeneration = 0
 let detailRequestGeneration = 0
@@ -513,8 +516,14 @@ onMounted(() => {
 
           <!-- 对话视图：活动前台 presentation 绑定 observe Chat；活动会话绑定共享 Chat；其他历史只读展示 -->
           <div data-testid="ai-work-chat-view" class="p-5">
+            <AiImageBatchProgress
+              v-if="!isGlobalChatSelected"
+              :conversation-id="selectedId"
+              :active="selectedIsForegroundPresentation"
+              @change="imageBatch = $event"
+            />
             <div
-              v-if="selectedIsForegroundPresentation && foregroundPresentation"
+              v-if="!imageBatch && selectedIsForegroundPresentation && foregroundPresentation"
               class="h-[calc(100vh-320px)] min-h-[480px] overflow-y-auto"
               data-testid="ai-work-presentation-live"
             >
@@ -571,7 +580,7 @@ onMounted(() => {
               />
             </div>
 
-            <template v-else>
+            <template v-else-if="!imageBatch">
               <div
                 v-if="loadingUiMessages"
                 class="flex min-h-[480px] items-center justify-center text-sm text-slate-500 dark:text-accent-300"

@@ -19,7 +19,11 @@ from erp_web.runtime_units.order_purchase_capabilities import (
     order_alibaba_create, order_alibaba_pay, order_alibaba_preview,
     _create_snapshot, _pay_snapshot,
 )
-from erp_web.runtime_units.order_fulfillment_capabilities import order_fulfillment_update, _fulfillment_snapshot
+from erp_web.runtime_units.order_fulfillment_capabilities import (
+    order_fulfillment_update, _fulfillment_snapshot, order_receiving_warehouse_read,
+    order_receiving_warehouse_update, _receiving_snapshot,
+)
+from erp_web.schemas.receiving_warehouse import ReceivingWarehouseRequest
 from erp_web.schemas.ai_tools import AiToolExecutionError, AiToolSchemaError, validate_json_schema
 from erp_web.schemas.alibaba_self_purchase import SelfPurchaseCreateRequest, SelfPurchasePayRequest, SelfPurchasePreviewRequest
 from erp_web.schemas.order_capabilities import OrderRequest, OrderFulfillmentRequest, OrderPurchaseRecordRequest, OrderNotificationRequest
@@ -202,6 +206,61 @@ def test_fulfillment_approval_binds_revision_and_actual_packages(fulfillment_dom
     assert bus.calls == []  # 工具只提交既有领域后台，不把入队回执当作远端完成。
 
 
+def test_ai_can_rebind_stale_purchased_order_only_after_current_approval(fulfillment_domain):
+    from tests.test_logistics_settings import edit
+
+    fulfillment, bus, order = ready(fulfillment_domain)
+    scope = scope_for(procurement=SimpleNamespace(detail=fulfillment.detail_provider), fulfillment=fulfillment)
+    configured = fulfillment.receiving.logistics.detail()['addresses'][0]
+    changed = edit(fulfillment.receiving, configured, warehouse_id=20,
+                   address={**configured['address'], 'address': '新收货地址'})
+    view = order_receiving_warehouse_read(OrderRequest(order_id=order.identity), scope).data
+    assert view.binding_stale and not view.locked and view.has_purchases
+    assert view.needs_rebind
+    request = ReceivingWarehouseRequest(order_id=order.identity, revision=view.revision,
+        address_id=changed['id'], address_revision=changed['revision'], section_id=1,
+        delivery_key=view.delivery_key, confirmed=True, existing_purchase_confirmed=True)
+    approved = _approved_execution(_receiving_snapshot(request, scope), 'order_receiving_warehouse_update')
+    with pytest.raises(AiToolExecutionError, match='审批'):
+        order_receiving_warehouse_update(request, scope, _execution())
+    changed = edit(fulfillment.receiving, changed, address={**configured['address'], 'address': '再次核对的地址'})
+    with pytest.raises(BusinessCapabilityError, match='版本已变化'):
+        order_receiving_warehouse_update(request, scope, approved)
+    request = request.model_copy(update={'address_revision': changed['revision']})
+    approved = _approved_execution(_receiving_snapshot(request, scope), 'order_receiving_warehouse_update')
+    result = order_receiving_warehouse_update(request, scope, approved).data
+    assert not result.binding_stale and result.warehouse.warehouse_id == 20
+    assert result.warehouse.address.address == '再次核对的地址'
+    assert bus.calls == []
+
+
+def test_ai_receiving_query_counts_only_two_active_rebinding_orders(fulfillment_domain):
+    from tests.receiving_warehouse_support import assign_receiving
+    from tests.test_logistics_settings import edit
+
+    fulfillment, bus, original, _, snapshot, _ = fulfillment_domain
+    scope = scope_for(procurement=SimpleNamespace(detail=fulfillment.detail_provider), fulfillment=fulfillment)
+    targets = []
+    for number, state in [('62980209539', 'pending_shipment'), ('63000379456', 'pending_shipment'),
+                          ('62666978435', 'cancelled'), ('62998783232', 'cancelled')]:
+        order = original.model_copy(update={'order_id': number, 'state': state})
+        snapshot(order)
+        current = fulfillment.store.ensure(order)
+        if state == 'pending_shipment':
+            assign_receiving(fulfillment.receiving, order)
+        else:
+            fulfillment.store.change(order.identity, current['revision'], {'fulfillment_status': 'CANCELLED'})
+        targets.append(order)
+    configured = fulfillment.receiving.logistics.detail()['addresses'][0]
+    edit(fulfillment.receiving, configured, warehouse_id=20)
+    views = [order_receiving_warehouse_read(OrderRequest(order_id=o.identity), scope).data for o in targets]
+    assert [o.order_id for o, v in zip(targets, views) if v.needs_rebind] == ['62980209539', '63000379456']
+    for view in views[2:]:
+        assert view.warehouse is None and not view.binding_stale and not view.can_confirm
+        assert view.cancelled_fulfillment and '平台订单已取消' in view.blocked_reason
+    assert bus.calls == []
+
+
 @pytest.mark.parametrize('entry', ['direct', 'python'])
 def test_native_main_agent_reads_current_order_through_real_toolset(setup_purchase, tmp_path, entry):
     purchase, _, _, (order, _) = setup_purchase
@@ -295,3 +354,28 @@ def test_nested_label_request_keeps_agent_deadline_and_cancellation():
             assert calls == ['agent', 'label']
         assert request_context('https://example.com/label.pdf').deadline_at == 100
     assert request_context('https://example.com/label.pdf').deadline_at is None
+
+
+def test_ai_rebinding_cancelled_order_archives_with_one_approval_and_does_not_resubmit(fulfillment_domain):
+    from tests.test_fulfillment import cancelled_fulfillment
+
+    fulfillment, bus, order = cancelled_fulfillment(fulfillment_domain)
+    scope = scope_for(procurement=SimpleNamespace(detail=fulfillment.detail_provider), fulfillment=fulfillment)
+    current = fulfillment.receiving.detail(order.identity)
+    candidate = current['candidates'][0]
+    request = ReceivingWarehouseRequest(order_id=order.identity, revision=current['revision'],
+        fulfillment_revision=current['fulfillment_revision'], address_id=candidate['id'], address_revision=candidate['revision'],
+        section_id=candidate['section_id'], delivery_key=current['delivery_key'], confirmed=True, existing_purchase_confirmed=True)
+    frozen = _receiving_snapshot(request, scope)
+    assert '归档原作废报单' in frozen.summary
+    before = len(bus.calls)
+    with pytest.raises(AiToolExecutionError, match='审批'):
+        order_receiving_warehouse_update(request, scope, _execution())
+    assert len(bus.calls) == before
+    result = order_receiving_warehouse_update(request, scope, _approved_execution(frozen, 'order_receiving_warehouse_update'))
+    assert not result.data.binding_stale
+    current = fulfillment.detail(order.identity)
+    assert current['awaiting_resubmission'] and current['attempt_history'][0]['crossborderbus_order_id'] == 99
+    assert current['crossborderbus_order_id'] is None
+    assert [path for path, _ in bus.calls[before:]] == ['/erpapi/orderlist/status']
+    assert not fulfillment.process_one(order)

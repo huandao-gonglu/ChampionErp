@@ -4,6 +4,8 @@ import { RouterLink, useRoute } from 'vue-router'
 import { PhPushPin } from '@phosphor-icons/vue'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiMessageList from '@/components/ai-work/AiMessageList.vue'
+import AiImageBatchProgress from '@/components/ai-work/AiImageBatchProgress.vue'
+import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import { workflowNavItems } from '@/constants/navigation'
 import { useFloatingDrag } from '@/composables/useFloatingDrag'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
@@ -23,6 +25,7 @@ const shouldRender = computed(() => route.name !== 'AiWork')
 
 const displayMode = computed(() => displayStore.displayMode)
 const foregroundPresentation = computed(() => displayStore.foregroundPresentation)
+const imageBatch = ref<ImageBatchSnapshot | null>(null)
 const presentationError = computed(() => foregroundPresentation.value?.error?.message || '')
 
 const panelError = computed(() => chatStore.error?.message || '')
@@ -181,21 +184,26 @@ onBeforeUnmount(() => {
             class="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3"
             data-testid="ai-work-presentation-run"
           >
+            <AiImageBatchProgress
+              :conversation-id="foregroundPresentation.conversationId"
+              :active="!displayStore.foregroundIsTerminal"
+              @change="imageBatch = $event"
+            />
             <AiMessageList
-              v-if="displayStore.presentationMessages.length"
+              v-if="!imageBatch && displayStore.presentationMessages.length"
               :messages="displayStore.presentationMessages"
               :active="!displayStore.foregroundIsTerminal"
             />
             <!-- 已有错误（如展示连接中断的降级等待）时不显示“等待首个事件”空状态，避免语义矛盾 -->
             <p
-              v-else-if="!presentationError"
+              v-else-if="!imageBatch && !presentationError"
               class="rounded-2xl border border-dashed border-primary-300 bg-primary-50/60 px-6 py-10 text-center text-sm font-bold text-slate-500 dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-accent-300"
               data-testid="ai-work-presentation-empty"
             >
               正在准备…
             </p>
             <p
-              v-if="displayStore.presentationBusy && displayStore.presentationMessages.at(-1)?.role !== 'assistant'"
+              v-if="!imageBatch && displayStore.presentationBusy && displayStore.presentationMessages.at(-1)?.role !== 'assistant'"
               class="text-xs text-slate-400"
               data-testid="ai-work-presentation-streaming"
             >

@@ -52,6 +52,14 @@ async function choose() {
 }
 
 describe('本单报单仓库与服务', () => {
+  it('物流配置已变化时，即使订单绑定版本尚未更新也不能保存报单方案', async () => {
+    mount(FulfillmentPlanDialog, { props: { value: { ...detail(), receiving_binding_stale: true }, order: order() }, global, attachTo: document.body })
+    await flushPromises()
+    expect(dom().text()).toContain('采购收货仓尚未确定或已变化')
+    expect(dom().get('button[form="fulfillment-plan"]').attributes('disabled')).toBeDefined()
+    await dom().get('form').trigger('submit')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+  })
   it('查看订单中心的同一份地址备注，编辑保存期间禁止关闭或提交报单', async () => {
     const wrapper = mount(FulfillmentPlanDialog, { props: { value: detail(), order: order() }, global, attachTo: document.body })
     await choose()

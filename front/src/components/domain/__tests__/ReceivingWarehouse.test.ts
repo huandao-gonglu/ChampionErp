@@ -10,7 +10,7 @@ vi.mock('@/api/receivingWarehouse', () => ({ fetchReceivingWarehouse: vi.fn(), s
 enableAutoUnmount(afterEach)
 const address = { fullName: '仓库收件人', mobile: '13800000000', phone: '', provinceText: '浙江省', cityText: '金华市', areaText: '义乌市', townText: '', address: '货代路 1 号', postCode: '' }
 const warehouse = { revision: 1, warehouse_id: 54, warehouse_name: '义乌合作仓', section_id: 143, section_name: 'Yandex', address, address_id: 'addr', address_revision: 2, transport_service: 'Yandex / CEL', delivery_key: 'route', confirmed_at: '' }
-function value(): ReceivingWarehouseView { return { ok: true, order_id: 'order-1', revision: 0, warehouse: null, delivery_key: 'route', delivery_name: 'CEL', delivery_evidence: ['CEL Yiwu Extra Small'], blocked_reason: '', locked: false, reserved: false, can_confirm: true, has_purchases: false,
+function value(): ReceivingWarehouseView { return { ok: true, order_id: 'order-1', revision: 0, warehouse: null, delivery_key: 'route', delivery_name: 'CEL', delivery_evidence: ['CEL Yiwu Extra Small'], blocked_reason: '', locked: false, reserved: false, can_confirm: true, has_purchases: false, binding_stale: false, needs_rebind: false,
   carrier_detected: 'CEL', carrier: 'CEL',
   candidates: [{ id: 'addr', revision: 2, warehouse_id: 54, warehouse_name: '义乌合作仓', name: '义乌收货点', address, section_id: 143, enabled: true, is_default: true, remark: '收货备注', rules: [], updated_at: '', migrated: false, frozen: false }] } }
 function dom() { return new DOMWrapper(document.body).get('dialog:last-of-type') }
@@ -24,6 +24,20 @@ beforeEach(() => {
   vi.mocked(saveReceivingWarehouse).mockResolvedValue({ ...value(), revision: 1, warehouse })
 })
 describe('按物流设置选择采购地址', () => {
+  it('作废后一次确认新绑定并携带原履约版本；核实失败保留选择和弹窗', async () => {
+    const wrapper = open({ ...value(), warehouse, revision: 1, has_purchases: true, binding_stale: true,
+      cancelled_fulfillment: true, fulfillment_revision: 21 })
+    await flushPromises()
+    expect(dom().text()).toContain('核实并归档原作废报单')
+    for (const check of dom().findAll('input[type="checkbox"]')) await check.setValue(true)
+    vi.mocked(saveReceivingWarehouse).mockRejectedValueOnce(new Error('跨境巴士尚未确认原报单已作废'))
+    await dom().get('form').trigger('submit'); await flushPromises()
+    expect(saveReceivingWarehouse).toHaveBeenCalledWith(expect.objectContaining({ fulfillment_revision: 21,
+      revision: 1, existing_purchase_confirmed: true, address_id: 'addr' }))
+    expect(dom().text()).toContain('尚未确认原报单已作废')
+    expect(wrapper.emitted('saved')).toBeUndefined()
+    expect((dom().get('[aria-label="采购收货地址"]').element as HTMLSelectElement).value).toBe('addr:143')
+  })
   it('默认地址不自动选中，选择并确认后提交地址版本而非自由文本', async () => {
     const wrapper = open(); await flushPromises()
     expect((dom().get('[aria-label="采购收货地址"]').element as HTMLSelectElement).value).toBe('')
@@ -71,7 +85,28 @@ describe('按物流设置选择采购地址', () => {
     const v = value(); v.candidates.push({ ...v.candidates[0]!, id: 'other' }); v.candidates[0]!.frozen = true
     open({ ...v, warehouse, revision: 1, locked: true, has_purchases: true }); await flushPromises()
     expect(dom().get('option[value="other:143"]').attributes('disabled')).toBeDefined()
-    expect(dom().text()).toContain('采购时保存的收货地址')
+    expect(dom().text()).toContain('本单已确认的收货地址')
+  })
+  it('配置中的仓库及地址变更后展示新旧资料，核对已有包裹后才能重新绑定', async () => {
+    const v = value()
+    v.candidates[0] = { ...v.candidates[0]!, warehouse_id: 95, warehouse_name: '福州合作仓', address: { ...address, address: '福州新地址' } }
+    open({ ...v, warehouse, revision: 1, has_purchases: true, binding_stale: true, blocked_reason: '原绑定已失效' }); await flushPromises()
+    expect(dom().text()).toContain('原绑定（已失效）：义乌合作仓')
+    expect(dom().text()).toContain('福州新地址')
+    expect(dom().text()).toContain('重新选择报单服务')
+    expect(dom().get('option[value="addr:143"]').attributes('disabled')).toBeUndefined()
+    const checks = dom().findAll('input[type="checkbox"]')
+    await checks[1]!.setValue(true)
+    await dom().get('form').trigger('submit'); expect(saveReceivingWarehouse).not.toHaveBeenCalled()
+    await checks[0]!.setValue(true)
+    await dom().get('form').trigger('submit'); await flushPromises()
+    expect(saveReceivingWarehouse).toHaveBeenCalledWith(expect.objectContaining({ revision: 1, address_id: 'addr', address_revision: 2, existing_purchase_confirmed: true }))
+  })
+  it('配置失效但原操作待核验时仍然禁止重新绑定', async () => {
+    open({ ...value(), warehouse, revision: 1, has_purchases: true, binding_stale: true, locked: true, reserved: true, can_confirm: false }); await flushPromises()
+    for (const check of dom().findAll('input[type="checkbox"]')) await check.setValue(true)
+    await dom().get('form').trigger('submit')
+    expect(saveReceivingWarehouse).not.toHaveBeenCalled()
   })
   it('内容区按下拖到遮罩不关闭，正常遮罩点击关闭', async () => {
     const wrapper = open(); await flushPromises()

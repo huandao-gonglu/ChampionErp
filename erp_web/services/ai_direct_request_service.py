@@ -37,6 +37,7 @@ from .ai_gateway_parsing import parse_json_text
 from .ai_model_errors import map_pydantic_model_error
 from .ai_model_factory import PydanticModelBinding, create_pydantic_model_binding
 from .ai_presentation_context import current_presentation_context
+from .ai_direct_history import current_history_sink
 from .ai_run_cancellation import check_cancellation
 from .ai_structured_output import (
     object_json_schema,
@@ -350,10 +351,12 @@ def _request(
     check_cancellation()
     instrumentation = _instrumentation(app_dir)
     request_messages = list(messages)
+    history_sink = current_history_sink()
     presentation = current_presentation_context()
     publish_to_presentation = False
     if (
         publish_native_events
+        and history_sink is None
         and presentation is not None
         and presentation.is_root_scope
     ):
@@ -463,8 +466,12 @@ def _request(
                 return recovered_response or response_stream.get()
 
     try:
+        if history_sink is not None:
+            history_sink(request_messages)
         with instrumentation.start_run_span(use_case_id=use_case_id):
             response = asyncio.run(run())
+        if history_sink is not None:
+            history_sink([*request_messages, response])
         if publish_to_presentation and presentation is not None:
             _save_presentation_history(
                 presentation.conversation_id,

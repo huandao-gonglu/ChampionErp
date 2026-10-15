@@ -30,7 +30,7 @@ const busy = ref(false)
 const ready = ref(false)
 const error = ref('')
 const warehouseLocked = computed(() => yandex.value)
-const receivingChanged = computed(() => yandex.value && (!initialReceivingRevision || initialReceivingRevision !== (props.value.receiving_warehouse?.revision || 0)))
+const receivingChanged = computed(() => yandex.value && (props.value.receiving_binding_stale || !initialReceivingRevision || initialReceivingRevision !== (props.value.receiving_warehouse?.revision || 0)))
 let disposed = false
 async function load() {
   loading.value = true

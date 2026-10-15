@@ -1,11 +1,14 @@
 """通过原生 SDK 和真实流迭代验证审计终态，不访问外网。"""
 import asyncio
 from collections import Counter
+import gzip
 import json
+import zlib
 
 import httpx2 as httpx
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 import pytest
@@ -13,6 +16,7 @@ import pytest
 from erp_web.context import get_context
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.services.external_httpx_transport import ManagedAsyncTransport
+from erp_web.services.ai_agent_factory import _safe_agent_error
 
 
 class CompletionStream(httpx.AsyncByteStream):
@@ -42,6 +46,123 @@ def client_for(stream_factory):
         platform="ai:test", account_id="offline",
         transport_factory=lambda: httpx.MockTransport(respond),
     ))
+
+
+def buffered_client(status, body, encoding, *, close_error=False):
+    raw = json.dumps(body).encode()
+    encoded = gzip.compress(raw) if encoding == 'gzip' else zlib.compress(raw) if encoding == 'deflate' else raw
+
+    class BodyStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield encoded[:7]
+            yield encoded[7:]
+
+    def respond(request):
+        headers = {'content-type': 'application/json', 'x-request-id': 'offline-request',
+                   'content-length': str(len(encoded))}
+        if encoding:
+            headers['content-encoding'] = encoding
+        return httpx.Response(status, headers=headers, stream=BodyStream())
+
+    class Transport(httpx.MockTransport):
+        async def aclose(self):
+            if close_error:
+                raise RuntimeError('离线模拟关闭失败')
+            await super().aclose()
+
+    return httpx.AsyncClient(transport=ManagedAsyncTransport(
+        platform='ai:deepseek', account_id='offline', transport_factory=lambda: Transport(respond),
+    ))
+
+
+@pytest.mark.parametrize('consumer', ['sdk', 'pydantic'])
+@pytest.mark.parametrize('encoding,close_error', [('gzip', False), ('deflate', False), ('', False), ('gzip', True)])
+def test_payment_rejection_reaches_native_sdk_and_agent_without_becoming_connection_error(
+    consumer, encoding, close_error, monkeypatch,
+):
+    body = {'error': {'message': 'Insufficient Balance', 'code': 'invalid_request_error'}}
+    store = get_context().external_requests.store
+    finished = []
+    original_finish = store.finish
+
+    def finish(request_id, **kwargs):
+        finished.append(request_id)
+        return original_finish(request_id, **kwargs)
+
+    monkeypatch.setattr(store, 'finish', finish)
+
+    async def invoke():
+        async with buffered_client(402, body, encoding, close_error=close_error) as client:
+            sdk = AsyncOpenAI(api_key='offline-placeholder', base_url='https://offline.invalid/v1',
+                              http_client=client, max_retries=0)
+            if consumer == 'sdk':
+                with pytest.raises(APIStatusError) as error:
+                    await sdk.chat.completions.create(model='offline', messages=[{'role': 'user', 'content': '测试'}], stream=True)
+                assert error.value.status_code == 402
+                assert error.value.response.json() == body
+                assert error.value.request_id == 'offline-request'
+            else:
+                model = OpenAIChatModel('offline', provider=OpenAIProvider(openai_client=sdk))
+                with pytest.raises(ModelHTTPError) as error:
+                    async with Agent(model).run_stream('测试') as result:
+                        await result.get_output()
+                displayed = _safe_agent_error(error.value, validator=None,
+                                              conversation_id='offline', task_run_id='offline')
+                assert displayed.code == 'AI_PROVIDER_PAYMENT_REQUIRED'
+                assert '余额不足' in str(displayed) and 'HTTP 402' in str(displayed)
+                assert not displayed.retryable
+
+    asyncio.run(invoke())
+    rows = store.query()['items']
+    assert len(rows) == 1 and finished == [rows[0]['id']]
+    result = rows[0]['result']
+    assert result['http_status'] == 402 and result['outcome'] == 'failed'
+    assert result['failure']['code'] == 'AI_DEEPSEEK_PAYMENT_REQUIRED'
+    assert result['failure']['retryable'] is False
+    assert 'code' not in result  # 不得混入 EXTERNAL_NETWORK_INTERRUPTED。
+    assert all(block['failure']['code'] == 'AI_DEEPSEEK_PAYMENT_REQUIRED' for block in store.blocks())
+
+
+@pytest.mark.parametrize('status', [200, 400, 401, 429, 500])
+@pytest.mark.parametrize('encoding', ['gzip', 'deflate'])
+def test_buffered_response_preserves_status_headers_and_decoded_body(status, encoding):
+    body = {'result': '成功'} if status == 200 else {'error': {'message': '离线拒绝'}}
+
+    async def invoke():
+        async with buffered_client(status, body, encoding) as client:
+            response = await client.post('https://offline.invalid/v1/chat/completions', json={})
+            assert response.status_code == status and response.json() == body
+            assert await response.aread() == response.content
+            assert response.headers['x-request-id'] == 'offline-request'
+            assert response.headers['content-encoding'] == encoding
+
+    asyncio.run(invoke())
+    result = get_context().external_requests.store.query()['items'][0]['result']
+    assert result['http_status'] == status
+    assert result['outcome'] == ('success' if status == 200 else 'failed')
+    assert 'code' not in result
+
+
+def test_post_response_audit_failure_does_not_overwrite_http_rejection(monkeypatch):
+    manager = get_context().external_requests
+    original = manager.result
+
+    def result(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError('离线模拟审计后处理失败')
+
+    monkeypatch.setattr(manager, 'result', result)
+
+    async def invoke():
+        async with buffered_client(402, {'error': {'message': 'Insufficient Balance'}}, 'gzip') as client:
+            with pytest.raises(RuntimeError, match='审计后处理失败'):
+                await client.post('https://offline.invalid/v1/chat/completions', json={})
+
+    asyncio.run(invoke())
+    audit = manager.store.query()['items'][0]['result']
+    assert audit['http_status'] == 402 and audit['outcome'] == 'failed'
+    assert 'code' not in audit
+    assert all(block['failure']['code'] == 'AI_DEEPSEEK_PAYMENT_REQUIRED' for block in manager.store.blocks())
 
 
 @pytest.mark.parametrize("consumer", ["sdk", "pydantic"])

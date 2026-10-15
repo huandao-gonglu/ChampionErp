@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import OrderPurchaseTracking from './OrderPurchaseTracking.vue'
+import OrderReceivingWarehouse from './OrderReceivingWarehouse.vue'
 import FulfillmentParcelDialog from './FulfillmentParcelDialog.vue'
 import FulfillmentPlanDialog from './FulfillmentPlanDialog.vue'
 import { fetchFulfillment, fulfillmentCommand, uploadFulfillmentLabel } from '@/api/fulfillment'
@@ -49,7 +50,13 @@ const purchased = computed(() => props.order.lines.reduce((sum, line) => sum + l
 const ordered = computed(() => props.order.lines.reduce((sum, line) => sum + line.line.quantity, 0))
 const title = computed(() => value.value?.busy && value.value.operation === 'create' ? '正在提交预报' : value.value?.busy && value.value.operation === 'fetch-label' ? '正在获取平台面单' : value.value?.create_unknown ? '创建结果待核实，暂停重复提交' : value.value?.cancel_requested && value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，取消未成功' : value.value?.cancel_rejected && value.value.fulfillment_status !== 'CANCELLED' ? '仓库拒绝取消，请处理后重试' : value.value?.cancel_requested && value.value.fulfillment_status !== 'CANCELLED' ? '已请求取消，等待仓库确认' : value.value?.error_message ? '履约操作需要处理' : status.value)
 const parcelCount = computed(() => new Set((value.value?.parcels || []).map(p => p.tracking_number.trim().toUpperCase())).size)
-const notice = computed(() => value.value?.error_message || (value.value?.crossborderbus_order_id ? value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，ERP 履约状态已同步为已发货。' : '仓库进度随同步订单更新，也可点击同步按钮单独刷新。' : value.value?.blocked_reason || (value.value?.editing ? '修改本单方案期间已暂停自动预报。' : progress.value.note)))
+const notice = computed(() => {
+  const current = value.value
+  if (current?.error_message) return current.error_message
+  if (current?.fulfillment_status === 'CANCELLED') return '原履约已取消。请直接重新设置报单绑定，确认收货仓和地址，再选择服务并提交。'
+  if (current?.awaiting_resubmission) return current.blocked_reason || '收货仓和报单服务已重新确认，请核对保留的面单、国内包裹后点击“立即提交”。'
+  return current?.crossborderbus_order_id ? current.fulfillment_status === 'SHIPPED' ? '仓库已发货，ERP 履约状态已同步为已发货。' : '仓库进度随同步订单更新，也可点击同步按钮单独刷新。' : current?.blocked_reason || (current?.editing ? '修改本单方案期间已暂停自动预报。' : progress.value.note)
+})
 async function load(quiet = false) {
   const generation = ++loadGeneration
   try {
@@ -111,7 +118,7 @@ async function syncLatest() {
 }
 async function refreshLocal() {
   if (disposed) return
-  if (!pending.value && !refreshing.value && !modal.value) await load(true)
+  if (!pending.value && !refreshing.value && !modal.value && !purchaseLocks.size) await load(true)
   if (!disposed) poll = setTimeout(refreshLocal, 5000)
 }
 onMounted(() => {
@@ -131,18 +138,26 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
         <div><span>采购登记</span><strong>{{ purchased }} / {{ ordered }} 件</strong></div>
         <div><span>国内快递单号</span><strong>{{ value.parcels.length ? `已录入 ${value.parcels.length} 条记录` : '未录入' }}</strong></div>
         <div><span>国际面单</span><strong>{{ value.platform_label ? '已保存面单' : '待补充' }}</strong></div>
-        <div><span>跨境预报</span><strong>{{ value.crossborderbus_order_id ? `已创建 · ${value.crossborderbus_order_id}` : value.create_unknown ? '创建结果待确认' : '尚未创建' }}</strong></div>
+        <div><span>跨境预报</span><strong>{{ value.crossborderbus_order_id ? `${value.fulfillment_status === 'CANCELLED' ? '已作废' : '已创建'} · ${value.crossborderbus_order_id}` : value.create_unknown ? '创建结果待确认' : '尚未创建' }}</strong></div>
       </section>
       <section class="plan-card">
-        <div class="order-row"><h3>平台配送：{{ value.delivery.method_name || value.delivery.carrier || '尚未提供' }}</h3><button v-if="value.plan_editable && (order.order.platform === 'yandex' || value.rule)" class="order-button" :disabled="pending" @click="open('plan')">设置报单方案</button><span v-else class="order-muted">{{ value.plan_editable ? '待配置' : '已锁定' }}</span></div>
+        <div class="order-row"><h3>平台配送：{{ value.delivery.method_name || value.delivery.carrier || '尚未提供' }}</h3><button v-if="value.plan_editable && (order.order.platform === 'yandex' || value.rule)" class="order-button" :disabled="pending || value.receiving_binding_stale" @click="open('plan')">设置报单方案</button><span v-else class="order-muted">{{ value.plan_editable ? '待配置' : '已锁定' }}</span></div>
         <p v-if="parcelCount > 1" class="order-muted">本订单有 {{ parcelCount }} 个国内包裹，{{ value.plan?.consolidation_service_id ? '已确认合单服务。' : '请设置报单方案并确认合单服务。' }}</p>
-        <p>合作仓库：{{ value.warehouse_name || '尚未配置' }}<span v-if="value.section_name"> · {{ value.section_name }}</span></p>
+        <p>{{ value.receiving_binding_stale ? '原合作仓库（待重新确认）' : '合作仓库' }}：{{ value.warehouse_name || '尚未配置' }}<span v-if="value.section_name"> · {{ value.section_name }}</span></p>
         <p class="order-muted">{{ value.plan ? value.override ? '本单报单方案' : order.order.platform === 'yandex' ? '沿用采购收货仓，待选服务' : '默认履约方案' : '尚未配置报单方案' }}<template v-if="value.plan"> · {{ value.plan.service_ids.length }} 项增值服务</template></p>
         <p v-if="value.handover_target?.name" class="order-muted">{{ value.handover_target.shipment_type === 'WITHDRAW' ? '揽收仓库' : '交货仓库' }}：{{ value.handover_target.name }}</p>
         <p v-if="value.handover_target?.reason" class="order-muted">{{ value.handover_target.reason }}</p>
         <p v-if="value.selected_services?.length" class="order-muted">已选服务：{{ value.selected_services.map(service => service.name).join('、') }}</p>
         <p v-if="value.remark || value.plan_editable" class="order-muted whitespace-pre-wrap break-words">报单备注：{{ value.remark || '未填写' }}</p>
       </section>
+      <details v-if="value.attempt_history?.length" class="order-section mt-5">
+        <summary>已取消履约记录（{{ value.attempt_history.length }}）</summary>
+        <div v-for="(attempt, index) in value.attempt_history" :key="index" class="mt-3">
+          <p>{{ attempt.crossborderbus_order_id ? `已作废报单 · ${attempt.crossborderbus_order_id}` : '报单前取消' }} · {{ at(attempt.archived_at) }}</p>
+          <p class="order-muted">原收货仓：{{ attempt.receiving_warehouse?.warehouse_name || '未记录' }} · 原服务：{{ attempt.selected_services.map(service => service.name).join('、') || '未记录' }}</p>
+        </div>
+      </details>
+      <OrderReceivingWarehouse v-if="order.order.platform === 'yandex' && value.receiving_binding_stale && order.order.state === 'pending_shipment'" :order-id="order.order.id" line-key="" :purchase-state="String(value.revision)" @lock="purchaseLock('receiving', $event)" @updated="load(); emit('updated')" />
       <h3 class="mt-6 mb-4">履约资料</h3>
       <section v-if="order.order.platform === 'yandex' && value.crossborderbus_order_id" class="order-section">
         <div class="order-row"><h4>Yandex 店铺订单关联</h4><button v-if="value.editable && !value.cancel_requested && !['linked', 'unknown'].includes(value.platform_link_state || '')" class="order-button" :disabled="pending || value.busy" @click="command('associate')">关联平台订单</button></div>

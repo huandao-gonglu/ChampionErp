@@ -44,6 +44,8 @@ export {
   type BackendStoreConfig,
   type BackendImageItem,
   type BackendDraftImageRef,
+  type BackendImageBatchItemPayload,
+  type BackendImageBatchSnapshot,
   type BackendMercadoLibreMarketplaceBinding,
   type BackendMercadoLibreMarketplaceUser,
   type BackendMercadoLibreMarketPublication,

@@ -380,7 +380,9 @@ class VercelAiUiService:
                 404, "PYDANTIC_MESSAGE_HISTORY_NOT_FOUND", "Pydantic 对话不存在。"
             )
         ui = VercelAIAdapter.dump_messages(
-            history.model_messages() if history else [], sdk_version=VERCEL_SDK_VERSION
+            [message for message in history.model_messages()
+             if "image_batch_item" not in (message.metadata or {})] if history else [],
+            sdk_version=VERCEL_SDK_VERSION
         )
         script_receipts = self.call_store.script_write_receipts(conversation_id)
         visible = []

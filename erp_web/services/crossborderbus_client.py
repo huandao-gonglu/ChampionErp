@@ -148,14 +148,16 @@ class CrossborderBusClient:
             raise FulfillmentError("合作增值服务回执不完整。")
         return normalize_bus_services(result)
 
-    def search(self, order_number, *, expected_identity=None):
+    def search(self, order_number, *, expected_identity=None, exclude_order_ids=(), expected_order_id=None):
         page, matches = 1, []
         while True:
             data = self.request("/erpapi/orderlist/search", {"order_number": order_number, "order_type": "all", "limit": 100, "page": page}, expected_identity=expected_identity).get("data")
             if not isinstance(data, dict) or not isinstance(data.get("list"), list) or not isinstance(data.get("count"), int):
                 raise FulfillmentError("远端订单查询回执不完整，不能判断创建结果。", unknown=True)
             rows = data["list"]
-            matches.extend(row for row in rows if (row.get("sheet_info") or {}).get("section_order") == order_number)
+            matches.extend(row for row in rows if (row.get("sheet_info") or {}).get("section_order") == order_number
+                           and row.get('id') not in exclude_order_ids
+                           and (expected_order_id is None or row.get('id') == expected_order_id))
             if page * 100 >= data["count"]:
                 break
             if not rows or page >= 100:

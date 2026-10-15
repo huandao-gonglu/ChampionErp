@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 
 import httpx2 as httpx
 
 from erp_web.context import get_context
 from erp_web.services.external_request_context import request_context
+
+_logger = logging.getLogger(__name__)
 
 
 class AuditedStream(httpx.AsyncByteStream):
@@ -83,6 +86,8 @@ class ManagedAsyncTransport(httpx.AsyncBaseTransport):
         deadline = min(time.time()+timeout,ctx.deadline_at or float("inf"))
         request_id = manager.start(ctx,request.method)
         transport = None
+        response = None
+        stream_owned = False
         allowed = False
         try:
             while delay := manager.check(request_id,ctx,deadline):
@@ -93,18 +98,29 @@ class ManagedAsyncTransport(httpx.AsyncBaseTransport):
             transport = self.transport_factory()
             response = await transport.handle_async_request(request)
             if "text/event-stream" in response.headers.get("content-type", "") and response.status_code < 400:
-                return httpx.Response(response.status_code,headers=response.headers,extensions=response.extensions,
+                wrapped = httpx.Response(response.status_code,headers=response.headers,extensions=response.extensions,
                     stream=AuditedStream(response,transport,manager,request_id,ctx))
+                stream_owned = True
+                return wrapped
             raw = await response.aread()
-            manager.result(request_id,ctx,response.status_code,response.headers,raw)
-            await response.aclose()
-            await transport.aclose()
-            return httpx.Response(response.status_code,headers=response.headers,content=raw,extensions=response.extensions)
         except BaseException as exc:
             if allowed:
                 manager.network_error(request_id,ctx,cancelled=isinstance(exc,asyncio.CancelledError))
             elif isinstance(exc, asyncio.CancelledError):
                 manager.store.finish(request_id, decision="cancelled", result={"code":"EXTERNAL_REQUEST_CANCELLED"})
-            if transport is not None:
-                await transport.aclose()
             raise
+        else:
+            # HTTPX 已缓存解码后的正文。直接交还原响应，保留状态、头和请求关联；
+            # 用解码正文配原 Content-Encoding 重建响应会再次解压并掩盖 HTTP 错误。
+            # 响应审计不在网络异常捕获范围内，不能被重复结算成写入结果未知。
+            manager.result(request_id,ctx,response.status_code,response.headers,raw)
+            return response
+        finally:
+            if not stream_owned:
+                for resource in (response, transport):
+                    if resource is not None:
+                        try:
+                            await resource.aclose()
+                        except Exception as exc:
+                            # 清理失败不能覆盖已收到的响应或原始网络异常；不记录敏感原文。
+                            _logger.warning("外部请求资源关闭失败：%s", type(exc).__name__)

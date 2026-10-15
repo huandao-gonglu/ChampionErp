@@ -591,7 +591,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
         {
           displayTitle: 'AI 图生图',
           initialUserMessage: `${userPrompt}\n处理范围：${selectedCount} 张已选图片。`,
-          successNotice: () => 'AI 图生图完成',
+          successNotice: (result: Awaited<ReturnType<typeof imageEditApi>>) => result.message || 'AI 图生图完成',
         },
         ({ presentationId }) => imageEditApi(
           product.value,
@@ -761,7 +761,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
         {
           displayTitle: 'AI 翻译/重绘图片',
           initialUserMessage: `将所选 ${selectedCount} 张图片翻译并重绘为 ${language}。`,
-          successNotice: () => '图片翻译/重绘完成',
+          successNotice: (result: Awaited<ReturnType<typeof imageTranslateApi>>) => result.message || '图片翻译/重绘完成',
         },
         ({ presentationId }) => imageTranslateApi(
           product.value,
