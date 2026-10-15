@@ -67,6 +67,9 @@ class OrderAddressRequest(OrderRequest):
 
 
 class OrderFulfillmentRequest(FulfillmentCommand):
+    # 保留已有持久化工具调用的读取能力，新调用不依赖模型提供这个版本。
+    receiving_revision: int = Field(default=0, ge=0,
+        description="无需填写。收货仓版本由服务端从核验通过的审批快照传入；本字段仅保留旧调用兼容，不作为执行依据。")
     action: Literal[
         "fetch-label", "label", "parcels", "plan", "pause", "resume",
         "submit", "sync", "associate", "retry", "cancel",

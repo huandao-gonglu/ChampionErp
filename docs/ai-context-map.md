@@ -1143,7 +1143,7 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
   原有请求号、采购数量占位、实时价格复核及未知回执防重继续由采购领域维护。
 - `runtime_units/order_fulfillment_capabilities.py` 提供收货仓读取/确认、履约详情、合作服务查询，
   以及面单、包裹、方案、提交、核验、关联、重试、取消等命令。履约修改与收货仓确认统一审批，
-  已取消履约直接使用 `order_receiving_warehouse_update`，携带收货及 `fulfillment_revision`；保存前只读核实原单已作废，`ReceivingWarehouseService.save` 在同一个短事务内调用 `FulfillmentStore.archive_cancelled` 归档旧资料并保存新绑定，不提供单独重新安排命令。网络查询不持有事务锁。
+  取消履约不影响有效收货绑定。已取消订单通过 `order_fulfillment_update` 的 `plan` 设置本次方案，`FulfillmentService.command` 先只读核实原单已作废，再由 `FulfillmentStore.change` 在同一短事务中复核版本、订单状态、账号、收货绑定和采购占位，调用 `archive_cancelled` 归档旧单并保存新方案；保存后须显式 `submit`，自动规则不能直接重报。`ReceivingWarehouseService.save` 只保存绑定，不归档或重启履约；旧请求的 `fulfillment_revision` 保留读取但不再用于绑定校验。网络查询不持有事务锁，不提供单独重新安排命令。
   重新确认收货绑定、保存服务并显式 submit 后才允许重报，`attempt_history` 保留原报单，`awaiting_resubmission` 阻止已有自动规则越过人工确认。
   绑定当前版本、账号和业务事实；保存资料可能推进既有自动履约，不得把本地提交回执当作远端完成。
   物流凭据、全局承接规则配置及本地面单文件上传继续走可信界面；AI 可以获取平台面单或填写已知公开面单 URL。
@@ -1192,9 +1192,13 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 
 ### 订单采购
 
-- SKU 的「登记补单」经 `POST /api/orders/supplement-lookup`、`/supplement-record` → `order_procurement_facade` → `services/order_supplement_service.py` 读取用户已付款的 1688 采购单。只读查询使用现有买家 API；商品和数量指纹在确认保存时重新核验，不从标题猜规格。新来源只冻结在补单记录，不修改原来源或原采购；补单允许超过累计已采购数量，但单笔不得超过销售 SKU 数量，同采购单/SKU 不重复登记。订单归属、来源版本、采购占位、收货仓版本及报单占位在写入事务内复核。
-- 补单入口在能力覆盖清单中归为 `internal_only`，由用户在界面核对跨供应商的销售规格与收货仓；不新增 Agent 工具。补单不处理退款、不取消远端订单。保存后立即沿用采购同步，后续随订单同步读取状态和运单；无独立后台轮询。旧记录缺少 `supplemental` 时按普通采购读取。报单须包含有效补单对应的全部包裹，旧采购是否分配包裹由实际发货决定；数量冲突暂停报单，人工确认包裹后解除。
+- 按 SKU 更换采购使用现有 `POST /api/orders/cancel-purchase` → `order_procurement_facade` → `OrderProcurementStore.cancel` 作废所选采购记录，再按需修改来源并通过 `record-purchase` 或 1688 采购登记新记录。手工和自动采购均可在报单前本地作废，不取消远端采购订单、不影响同采购单其他 SKU。累计有效采购和预留数量不得超过销售数量，已退役允许超量的补单入口。
+- 作废采购与 `FulfillmentStore.remove_purchase_parcels` 共用同一短事务：按采购记录 ID 移除包裹分配，保留同一运单的其他商品，递增履约版本使旧提交失效，清除旧手动提交意图。已有报单、未知创建结果、未释放占位或仓库锁定时禁止作废。旧采购同步回写重核有效记录，自动采购回执重放不能复活已作废记录。
+- 采购历史及旧 `supplemental` 标记保留读取；不再创建超量补单。所有有效采购的包裹都须分配齐全，报单仍逐 SKU 校验销售数量。历史超量记录须先明确作废不再履约的采购，再确认有效包裹分配；不能静默忽略历史补单。采购登记后沿用既有状态和物流同步，无独立补单后台。
+- 订单详情 → 跨境履约 → 录入/管理包裹支持直接按销售商品登记，无需采购单号或已确认采购来源；整单无采购、有其他有效采购、某 SKU 采购作废后均可使用。`DomesticParcel.purchase_record_id` 为空表示直接包裹，非空仍须关联本订单同 SKU 的有效采购，旧包裹保持可读。`FulfillmentService.parcels_payload` 共用数量校验：逐 SKU 的直接包裹数量加有效采购数量不得超过销售数量，报单前须覆盖全部销售数量及有效采购分配。直接录入不生成采购记录、不改写采购状态；已录入国内运单的 ERP 进度进入待报单，仍须核对完整性。沿用现有 parcels HTTP / AI 工具、版本及锁定边界，采购作废与物流同步只处理对应采购包裹，不删除直接包裹。回归见 `tests/test_direct_fulfillment_parcels.py`、`Fulfillment.test.ts`。
+- 漏发补寄通过 `FulfillmentParcelDialog.vue` 的补发入口，将原运单中指定商品的数量移动到补发单号；保留其他商品及原采购关联，既不新增采购也不重复增加销售数量。全部商品已分配不阻止补发；确认前保留草稿，保存仍走完整 parcels 命令与人工分配快照，采购同步不能覆盖已确认分配。回归覆盖部分/整个 SKU 补发、取消、同号与超量拒绝及两包裹合单报单。
 - 报单按去重后的国内运单识别多包裹。`FulfillmentPlan.consolidation_service_id` 由用户从已选择的真实仓库服务中明确指定；不猜服务 ID、名称或费用。多包裹缺少确认时手动和自动报单均暂停；提交前继续实时验证服务可用性。已提交的无合单服务报单不自动追加第二个运单。
+- `FulfillmentService.parcels_payload` 逐 SKU、采购记录校验数量，`delivery_packages` 完成所有原图交付后，经纯函数 `services/fulfillment_packages.py::group_domestic_packages` 按实际国内运单生成远端 `package_list`；与合单校验共用运单归一化规则。同运单只发送一条包裹、`num` 累计商品件数，逐项验货说明保留 SKU、数量、真实采购来源及原图链接。直接包裹使用官方 `package_of=1`，省略可选的 `from_platform/from_order`；混合来源或与直接包裹共用运单时同样省略不一致的单值来源字段，不能拼造采购单号。持久化分配仍按 SKU 保存，不迁移或自动更新已有报单。
 
 - 1688 采购刷新从订单详情按采购记录的商品 ID 与 SKU/specId 唯一匹配图片，图片 URL 和规格随采购进度快照持久化，由 `OrderPurchaseTracking.vue` 展示。图片缺失或匹配不唯一时显示原因；旧快照缺少图片字段仍可读取，下次同步补齐。物流查询失败不丢弃本次成功读取的图片。
 
@@ -1220,7 +1224,7 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 - POST `/api/orders/purchase-sync` → `order_procurement_facade.sync_purchase` → `alibaba_purchase_sync_service.py`。登记成功后自动同步一次，幂等登记不重复查询；失败保留采购登记和最近成功快照。`purchase_progress_store.py` 持久化同步快照、代次与短期占位，网络不持锁，写入前重新核对有效采购、账号与代次。
 - 手动刷新任一商品时，通过 `OrderProcurementStore.related_purchase_records` 读取当前销售订单内同一采购单的有效 1688 记录，整组复用本次订单、物流及轨迹回执；不同采购单、其他销售订单和已作废记录不参与。`PurchaseProgressStore.begin_many` 在短事务内完成整组占位，任一记录忙碌或失效则整体拒绝启动；逐商品保留归属、数量、人工分配与代次校验，失败保留各自旧快照，不把运单直接复制给其他 SKU。
 - 订单状态与物流分别记录更新时间。物流接口的 `500_2` 按官方定义表示未发货，归一为空物流；其他物流失败只返回警告，仍保存成功读取的订单状态，保留旧运单及其原始更新时间，不触发包裹合并。授权变化与采购作废仍拒绝写入。
-- `OrderProcurementStore.tracking_summaries` 为当前列表与详情批量读取有效采购的本地状态摘要，排除作废记录和变更规格；不额外查询远端。摘要 `packages` 按国内运单去重，无运单的采购单保留待发货/待查询条目；使用各自最近成功的订单或物流查询时间，失败尝试不推进时间。多包裹进度不一致时，`orderPresentation.latestPackageProgress` 按最后更新时间选择状态并加“部分”修饰，不按进度远近选取。列表 `OrderProgressHint.vue` 悬浮或键盘聚焦时由 `orderProgressHint.ts` 按主状态的显式来源生成提示：1688 展示采购包裹明细，跨境巴士展示仓库状态与最后成功同步时间，平台展示平台快照，ERP 展示当前步骤与已知异常，不发起网络请求。`FulfillmentStore.summaries` 批量补充本地目录的分区/仓库名称、去重运单、所选服务和指定合单服务；目录按履约账号匹配，运单和服务在提示中标为 ERP 登记资料，不推断仓库签收或服务完成，同步时间也不当作作业发生时间。单包裹维持原有展示：无国内运单时展示采购订单状态，有远端或人工登记运单后展示预报准备状态；多包裹使用上述更新时间汇总。已有预报始终优先显示仓库进度，物流签收不等同仓库发货。
+- `OrderProcurementStore.tracking_summaries` 为当前列表与详情批量读取有效采购的本地状态摘要，排除作废记录和变更规格；不额外查询远端。摘要 `packages` 按国内运单去重，无运单的采购单保留待发货/待查询条目；使用各自最近成功的订单或物流查询时间，失败尝试不推进时间。国内包裹状态不覆盖 ERP 处理进度，逐包裹状态与最近成功查询时间保留在提示和详情中。列表 `OrderProgressHint.vue` 悬浮或键盘聚焦时由 `orderProgressHint.ts` 按主状态的显式来源生成提示：1688 展示采购包裹明细，跨境巴士展示仓库状态与最后成功同步时间，平台展示平台快照，ERP 优先展示当前步骤与已知异常，并附带明确标注来源的国内包裹明细，不发起网络请求。`FulfillmentStore.summaries` 批量补充本地目录的分区/仓库名称、去重运单、所选服务和指定合单服务；目录按履约账号匹配，运单和服务在提示中标为 ERP 登记资料，不推断仓库签收或服务完成，同步时间也不当作作业发生时间。单包裹和多包裹使用同一规则：采购完成但无国内运单时展示采购订单状态，有远端或人工登记运单后展示“待报单”；提交中、结果待核实及报单异常优先显示。“待报单”不代表资料齐全，提交仍须通过原有校验。已有预报始终优先显示仓库进度，物流签收不等同仓库发货。
 - `alibaba_purchase_assignment.py` 用冻结商品 ID、SKU、订单子项、包裹商品数量证明归属；远端采购数量须与登记数量一致。缺失证据或同一远端 SKU 被多条采购使用时待人工分配；已证明的分批发货可逐批追加。`FulfillmentService.merge_purchase_parcels` 复用数量校验、版本和锁定边界，同运单幂等，差异不覆盖人工包裹。人工保存与确认快照在同一事务，使旧查询失效。
 - `OrderPurchaseTracking.vue` 在采购和履约页签提供统一「刷新采购进度」，从采购记录的持久快照展示订单、物流及分配状态；关闭重开仍保留，不自动轮询远端。待分配/冲突通过 `FulfillmentParcelDialog.vue` 确认，`purchaseLogistics.ts` 仅提供人工分配时的运单候选。自动预报继续遵守既有开关和完整资料校验。响应不包含联系人、地址或授权原文。
 
@@ -1244,7 +1248,9 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 `GET/POST /api/orders/receiving-warehouse` 经 `fulfillment_routes.py` 和 `fulfillment_facade.py` 委托给 `ReceivingWarehouseService`。`schemas/receiving_warehouse.py::delivery_carrier` 仅从归属已校验且可用的 Yandex IMPORT 交货点名称前缀识别承运商，保留 GUOO(GTA) 与 GBS(GUOO) 的区分；缺失、未知或冲突时返回待确认，不使用 `deliveryPartnerType`、`Самовывоз`、卖家仓或地址备注猜测。名称及识别依据返回收货仓界面；物流来源指纹包含识别结果，不包含官方交货点 ID 或地址。`stores/receiving_warehouse_store.py` 与采购共用订单数据库，保存本单地址及规则快照；统一验证配置版本、启用状态及承接范围，已有采购不再豁免。配置变化使旧绑定失效，但不改写采购记录中的历史地址。
 
 `GET /api/logistics/settings`、`POST /api/logistics/refresh`、`POST /api/logistics/address` 经同一薄路由和 facade 委托 `services/logistics_settings_service.py`。`schemas/logistics.py` 定义 Yandex 平台物流商枚举，地址规则只按平台和物流商匹配，默认地址仅影响排序。Express/Economy 及交货节点范围已退役；持久化旧规则可读，只保留已确认的平台和物流商用于地址匹配，原采购快照不重写。`stores/logistics_store.py` 按跨境巴士授权身份及合作仓保存多地址，用版本校验阻止覆盖；旧 `receiving_warehouse_profiles` 只迁移地址、不迁移自由文本承接能力，迁移标记防止重复导入。前端入口为「平台授权 → 跨境巴士 → 默认履约」内的 `components/settings/LogisticsSettingsPanel.vue`，由 `CrossborderBusSettingsPanel.vue` 展示；默认方案卡片及专属编辑弹窗已移除，既有持久化规则和后端匹配、自动预报行为保留。`/auth?auth_section=crossborderbus&bus_section=rules` 直达；旧物流设置深链跳转到此处。采购弹窗只提交地址 ID 和配置版本，平台物流商由服务端从订单解析，不接受物流商、运输方式或自由地址覆盖；识别不到物流商时阻止选仓并提示同步平台交货信息。
-收货仓读取的 `binding_stale` 仅表示已有绑定失效，无绑定不标失效；收货仓与履约详情复用 `ReceivingWarehouseStore.binding_stale`。`needs_rebind` 才是待发货订单的重绑待办，平台取消、已发货和已送达不计入；需要重绑不等于允许立即操作，仍检查 `can_confirm`、锁和阻断原因。AI 查询沿用该领域结果，不从履约取消或采购记录推断待办和锁定。
+收货仓读取的 `binding_stale` 仅按所引用的物流配置判断已有绑定失效，无绑定不标失效，取消履约及历史 `confirmation_required` 标记均不使有效绑定失效；收货仓与履约详情复用 `ReceivingWarehouseStore.binding_stale`。`needs_rebind` 才是待发货订单的重绑待办，平台取消、已发货和已送达不计入；需要重绑不等于允许立即操作，仍检查 `can_confirm`、锁和阻断原因。AI 查询沿用该领域结果，不从履约取消或采购记录推断待办和锁定。
+
+AI 保存报单方案时，`order_fulfillment_update` 先复核审批快照，再从同一快照中的收货绑定注入 `receiving_revision`，调用与页面相同的 `FulfillmentService.command`。模型无需填写收货仓版本；旧工具参数保留读取，但不作为版本依据。审批后的绑定或配置变化由快照校验拒绝，核验到写入之间的变化继续由业务版本和事务校验拒绝，不在执行时重读最新版本补齐。
 
 `POST /api/logistics/parse-address` 只接收地址文本，经同一 facade 复用 `services/alibaba_purchase_address.py::parse_address`；不依赖订单、商品行、1688 授权或数据库。物流地址编辑器填充同一地址形状并展示缺失字段提示，解析不自动保存地址或改变支持的物流商。
 `OrderReceivingWarehouse.vue` / `ReceivingWarehouseDialog.vue` 从物流设置筛选已合作 Yandex 仓的具体收货地址，只选择匹配本单平台物流商的地址。设置允许修改已有地址的所属仓及收件资料；`ReceivingWarehouseStore.configuration_changed` 统一判断配置版本、启用状态、仓库及地址，`binding_stale` 向界面和 AI 暴露旧绑定失效。配置未变化的有效采购继续锁定；配置变化后即使已有采购也可重新选择仓库及地址，须核对包裹收货安排并确认，保存新绑定不改写采购快照。reserved 采购占位及已创建/结果未知的履约单仍禁止重绑，均在同一短事务校验。历史采购缺少仓库快照时必须补录并确认实际寄往地址；未知采购期间不能补录。原 `fulfillment_warehouse_links` 历史数据保留，但新流程不读取或写入。

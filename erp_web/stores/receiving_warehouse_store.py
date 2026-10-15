@@ -32,17 +32,14 @@ class ReceivingWarehouseStore:
         return ReceivingWarehouse.model_validate(value).model_dump() if value else None
 
     @staticmethod
-    def binding_stale(conn, value, fulfillment):
+    def binding_stale(conn, value):
         """旧绑定的有效性事实；未绑定不算失效，是否需要处理另按平台状态判断。"""
-        return bool(value and (
-            (fulfillment and fulfillment['fulfillment_status'] == 'CANCELLED')
-            or ReceivingWarehouseStore.configuration_changed(conn, value)
-        ))
+        return bool(value and ReceivingWarehouseStore.configuration_changed(conn, value))
 
     @staticmethod
     def configuration_changed(conn, value):
-        """配置版本改变或履约重新安排即须确认，已有采购不能豁免。"""
-        if value.get('confirmation_required') or not value.get('address_id'):
+        """只核对引用配置；旧版取消履约留下的 confirmation_required 不代表配置失效。"""
+        if not value.get('address_id'):
             return True
         row = conn.execute('SELECT value FROM logistics_addresses WHERE id=? AND bus_identity=?',
                            (value['address_id'], value['bus_identity'])).fetchone()
@@ -57,8 +54,6 @@ class ReceivingWarehouseStore:
         value = ReceivingWarehouseStore.read(conn, order.identity)
         if not value:
             raise ValueError("请先在商品与采购中确定收货仓库和地址")
-        if value.get('confirmation_required'):
-            raise ValueError('原履约已取消，请重新选择并确认收货仓、地址及报单绑定')
         if value['delivery_key'] != delivery_key(order):
             raise ValueError("订单物流方案已变化，请重新核对收货仓的承接范围")
         if not value.get('address_id'):

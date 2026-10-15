@@ -4,7 +4,7 @@ import OrderListTable from '../OrderListTable.vue'
 import type { OrdersPage } from '@/types/orders'
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: { tab: 'orders' } }) }))
 enableAutoUnmount(afterEach)
-it('列表显示最新的部分状态，悬浮保留全部包裹和可访问关联', async () => {
+it('列表显示待报单进度，悬浮保留全部包裹和可访问关联', async () => {
   const packages = [
     { id: 'old', order_numbers: ['123'], tracking_number: 'YT1', company: '圆通', source: 'logistics', status: 'SIGN', status_label: '已签收', updated_at: '2026-10-13T08:00:00Z', stale: false },
     { id: 'new', order_numbers: ['456'], tracking_number: 'SF2', company: '顺丰', source: 'logistics', status: 'TRANSPORT', status_label: '运输中', updated_at: '2026-10-13T09:00:00Z', stale: false },
@@ -13,9 +13,11 @@ it('列表显示最新的部分状态，悬浮保留全部包裹和可访问关�
   const wrapper = mount(OrderListTable, { props: { page, offset: 0, now: Date.now(), error: '' }, attachTo: document.body,
     global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
   const badge = wrapper.get('.order-progress-link')
-  expect(badge.text()).toBe('部分运输中')
+  expect(badge.text()).toBe('待报单')
   await wrapper.get('.progress-hint-anchor').trigger('mouseenter'); await flushPromises()
   const hint = new DOMWrapper(document.body).get('[role="tooltip"]')
+  expect(hint.text()).toContain('ERP 处理进度')
+  expect(hint.text()).toContain('待报单')
   expect(hint.text()).toContain('已签收')
   expect(hint.text()).toContain('运输中')
   expect(badge.attributes('aria-describedby')).toBe(hint.attributes('id'))

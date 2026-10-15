@@ -12,7 +12,7 @@ import OrderReceivingWarehouse from '../OrderReceivingWarehouse.vue'
 import { fetchOrderDetail, syncPurchase } from '@/api/orders'
 import type { PurchaseLogisticsResults } from '@/types/fulfillment'
 import { fetchBusServices, fetchFulfillment, fulfillmentCommand } from '@/api/fulfillment'
-import type { FulfillmentDetail, FulfillmentPlan } from '@/types/fulfillment'
+import type { DomesticParcel, FulfillmentDetail, FulfillmentPlan } from '@/types/fulfillment'
 import type { OrderDetail } from '@/types/orders'
 
 vi.mock('@/api/fulfillment', () => ({ fetchBusServices: vi.fn(), fetchBusSettings: vi.fn(), fetchFulfillment: vi.fn(), fulfillmentCommand: vi.fn(), uploadFulfillmentLabel: vi.fn() }))
@@ -49,34 +49,301 @@ beforeEach(() => {
 })
 
 async function fillParcel(wrapper: ReturnType<typeof mount>) {
-  await wrapper.findAll('select')[1]!.setValue('顺丰')
+  await wrapper.get('select[aria-label="国内快递"]').setValue('顺丰')
   await wrapper.get('input[type="number"]').setValue('2')
   await wrapper.get('input[maxlength="100"]').setValue('SF123')
 }
 
+function sharedParcels(): DomesticParcel[] {
+  return [
+    { id: 'linked', line_key: 'line1', purchase_record_id: 'purchase1', carrier: '顺丰', tracking_number: ' sf123 ', quantity: 2 },
+    { id: 'direct', line_key: 'line2', purchase_record_id: '', carrier: '顺丰', tracking_number: 'SF123', quantity: 3 },
+  ]
+}
+
+function sharedOrder(): OrderDetail {
+  const value = structuredClone(order)
+  const directLine = structuredClone(value.lines[0]!)
+  Object.assign(directLine.line, { sku: 'SKU2', title: '另一件商品', quantity: 6 })
+  Object.assign(directLine.selection, { line_key: 'line2', source: null, status: 'unmatched' })
+  Object.assign(directLine, { records: [], purchased_quantity: 0, remaining_quantity: 6 })
+  value.lines.push(directLine)
+  return value
+}
+
+describe('国内包裹按运单去重展示', () => {
+  it('同运单多商品只显示一张包裹卡片，保存保留每条数量和采购关联', async () => {
+    const parcels = sharedParcels()
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels } }, global })
+    expect(wrapper.findAll('fieldset')).toHaveLength(1)
+    expect(wrapper.findAll('input[maxlength="100"]')).toHaveLength(1)
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(2)
+    expect(wrapper.text()).toContain('共 1 个包裹')
+    expect(wrapper.text()).toContain('2 条商品明细 · 共 5 件')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, {
+      parcels: parcels.map(parcel => ({ ...parcel, tracking_number: 'SF123' })),
+    })
+    expect(parcels[0]!.tracking_number).toBe(' sf123 ')
+  })
+
+  it('改成相同单号后合并卡片，编辑包裹快递和单号同时更新全部商品', async () => {
+    const parcels = [...sharedParcels(), { ...sharedParcels()[1]!, id: 'third', tracking_number: 'SF456', quantity: 1 }]
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels } }, global })
+    expect(wrapper.findAll('fieldset')).toHaveLength(2)
+    await wrapper.findAll('input[maxlength="100"]')[1]!.setValue(' sf123 ')
+    expect(wrapper.findAll('fieldset')).toHaveLength(1)
+    expect(wrapper.text()).toContain('共 6 件')
+    await wrapper.get('select[aria-label="国内快递"]').setValue('圆通')
+    await wrapper.get('input[maxlength="100"]').setValue('yt789')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, {
+      parcels: parcels.map(parcel => ({ ...parcel, carrier: '圆通', tracking_number: 'YT789' })),
+    })
+  })
+
+  it('不同单号和未填单号的新包裹不合并；同包裹添加商品沿用已有运单', async () => {
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels: sharedParcels() } }, global })
+    await wrapper.findAll('button').find(button => button.text() === '添加同包裹商品')!.trigger('click')
+    expect(wrapper.findAll('fieldset')).toHaveLength(1)
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(3)
+    for (let i = 0; i < 2; i++)
+      await wrapper.findAll('button').find(button => button.text() === '直接录入包裹')!.trigger('click')
+    expect(wrapper.findAll('fieldset')).toHaveLength(3)
+    await wrapper.findAll('input[maxlength="100"]')[1]!.setValue('YT456')
+    expect(wrapper.findAll('fieldset')).toHaveLength(3)
+    await wrapper.findAll('input[maxlength="100"]')[2]!.setValue('yt456')
+    expect(wrapper.findAll('fieldset')).toHaveLength(2)
+  })
+
+  it('移除商品只影响该明细，删除包裹移除其全部明细且保留其他包裹', async () => {
+    const retained = { ...sharedParcels()[1]!, id: 'other', tracking_number: 'SF456' }
+    const parcels = [...sharedParcels(), retained]
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels } }, global })
+    await wrapper.findAll('button').find(button => button.text() === '移除商品')!.trigger('click')
+    expect(wrapper.findAll('fieldset')).toHaveLength(2)
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(2)
+    await wrapper.findAll('button').find(button => button.text() === '删除包裹')!.trigger('click')
+    expect(wrapper.findAll('fieldset')).toHaveLength(1)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, { parcels: [retained] })
+    expect(parcels).toHaveLength(3)
+  })
+
+  it.each(['顺丰', ''])('同一运单的快递公司冲突可人工选择或清空为“%s”', async carrier => {
+    const parcels = sharedParcels()
+    parcels[1]!.carrier = '圆通'
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels } }, global })
+    expect(wrapper.findAll('fieldset')).toHaveLength(1)
+    await wrapper.get('form').trigger('submit')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toContain('快递公司不一致')
+    await wrapper.get('select[aria-label="国内快递"]').setValue(carrier)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, {
+      parcels: parcels.map(parcel => ({ ...parcel, carrier, tracking_number: 'SF123' })),
+    })
+  })
+
+  it('物流公司选填，清空后同运单商品仍合并并可保存', async () => {
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels: sharedParcels() } }, global })
+    const carrier = wrapper.get('select[aria-label="国内快递"]')
+    expect(carrier.attributes('required')).toBeUndefined()
+    expect(wrapper.get('input[maxlength="100"]').attributes('required')).toBeDefined()
+    await carrier.setValue('')
+    expect(wrapper.findAll('fieldset')).toHaveLength(1)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, {
+      parcels: sharedParcels().map(parcel => ({ ...parcel, carrier: '', tracking_number: 'SF123' })),
+    })
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
+  it('首次直接录入只填单号和数量即可保存，详情显示物流公司未填写', async () => {
+    const directOrder = sharedOrder()
+    directOrder.lines = [directOrder.lines[1]!]
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: directOrder, value: detail() }, global })
+    await wrapper.get('input[maxlength="100"]').setValue('SF123')
+    await wrapper.get('input[type="number"]').setValue(2)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, { parcels: [expect.objectContaining({
+      line_key: 'line2', purchase_record_id: '', carrier: '', tracking_number: 'SF123', quantity: 2,
+    })] })
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), parcels: sharedParcels().map(parcel => ({ ...parcel, carrier: '' })) })
+    const panel = mount(OrderFulfillmentPanel, { props: { order: sharedOrder() }, global })
+    await flushPromises()
+    expect(panel.text()).toContain('物流公司未填写 SF123 · 5 件')
+  })
+
+  it('采购物流自动带入同运单多个 SKU 时只展示一个包裹', () => {
+    const value = withProgress(logistics())
+    const line = structuredClone(value.lines[0]!)
+    line.line.sku = 'SKU2'
+    line.selection.line_key = 'line2'
+    const record = line.records[0]!
+    Object.assign(record, { id: 'purchase2', line_key: 'line2' })
+    record.progress!.data!.record_id = 'purchase2'
+    value.lines.push(line)
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: value, value: detail() }, global })
+    expect(wrapper.findAll('fieldset')).toHaveLength(1)
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(2)
+    expect(wrapper.get('input[maxlength="100"]').element).toHaveProperty('value', 'YT123')
+  })
+
+  it('履约详情的包裹数量与运单摘要使用相同的去重规则', async () => {
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), parcels: sharedParcels() })
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
+    await flushPromises()
+    expect(wrapper.text()).toContain('已录入 1 个包裹')
+    expect(wrapper.text()).toContain('SF123 · 5 件')
+    expect(wrapper.text().match(/SF123/g)).toHaveLength(1)
+  })
+})
+
 describe('跨境履约操作', () => {
-  it('作废后直接展示重绑入口，保存后刷新服务方案和旧报单历史', async () => {
+  it.each([1, 2])('已分配齐全仍能录入补发 %s 件，无需新采购，原包裹其他商品保留', async quantity => {
+    const fullOrder = sharedOrder()
+    fullOrder.lines[1]!.line.quantity = 3
+    const original = sharedParcels().map(parcel => ({ ...parcel, tracking_number: 'SF123' }))
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: fullOrder, value: { ...detail(), parcels: original } }, global })
+    const add = wrapper.findAll('button').find(button => button.text() === '直接录入包裹')!
+    expect(add.attributes('disabled')).toBeUndefined()
+    await add.trigger('click')
+    expect(wrapper.get('select[aria-label="漏发商品及原包裹"]').element).toHaveProperty('value', '')
+    await wrapper.get('select[aria-label="漏发商品及原包裹"]').setValue('linked')
+    await wrapper.get('input[aria-label="补发快递单号"]').setValue(' yt456 ')
+    await wrapper.get('input[aria-label="补发数量"]').setValue(quantity)
+    expect(wrapper.get('select[aria-label="补发快递"]').attributes('required')).toBeUndefined()
+    await wrapper.findAll('button').find(button => button.text() === '确认补发包裹')!.trigger('click')
+    expect(wrapper.text()).toContain('共 2 个包裹')
+    expect(wrapper.find('optgroup').exists()).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const expected = [
+      ...(quantity < 2 ? [{ ...original[0]!, quantity: 2 - quantity }] : []),
+      original[1],
+      expect.objectContaining({ line_key: 'line1', purchase_record_id: 'purchase1', quantity, carrier: '', tracking_number: 'YT456' }),
+    ]
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, { parcels: expected })
+    expect(original[0]!.quantity).toBe(2)
+    expect(fullOrder.lines[0]!.records[0]!.status).toBe('purchased')
+    const saved = vi.mocked(fulfillmentCommand).mock.calls.at(-1)![3] as { parcels: DomesticParcel[] }
+    const reopened = mount(FulfillmentParcelDialog, { props: { order: fullOrder, value: { ...detail(), parcels: saved.parcels } }, global })
+    expect(reopened.text()).toContain('共 2 个包裹')
+    expect(reopened.findAll('input[type="number"]')).toHaveLength(quantity === 1 ? 3 : 2)
+  })
+
+  it('补发可取消；同号、超量和小数拒绝确认，未确认不能保存，原分配不变', async () => {
+    const original = sharedParcels()
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels: original } }, global })
+    await wrapper.findAll('button').find(button => button.text() === '补发此商品')!.trigger('click')
+    expect(wrapper.get('select[aria-label="漏发商品及原包裹"]').element).toHaveProperty('value', 'linked')
+    const confirm = () => wrapper.findAll('button').find(button => button.text() === '确认补发包裹')!.trigger('click')
+    await confirm()
+    expect(wrapper.get('[role="alert"]').text()).toContain('请填写补发快递单号')
+    await wrapper.get('input[aria-label="补发快递单号"]').setValue(' sf123 ')
+    await confirm()
+    expect(wrapper.get('[role="alert"]').text()).toContain('不能与原包裹相同')
+    await wrapper.get('input[aria-label="补发快递单号"]').setValue('YT456')
+    for (const quantity of [0, 3, 1.5]) {
+      await wrapper.get('input[aria-label="补发数量"]').setValue(quantity)
+      await confirm()
+      expect(wrapper.get('[role="alert"]').text()).toContain('1 至 2 之间的整数')
+    }
+    await wrapper.get('form').trigger('submit')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(button => button.text() === '取消补发')!.trigger('click')
+    await wrapper.get('form').trigger('submit')
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, {
+      parcels: original.map(parcel => ({ ...parcel, tracking_number: 'SF123' })),
+    })
+  })
+
+  it('无采购商品也可补发，同一补发单号的多个商品合并为一个包裹', async () => {
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels: sharedParcels() } }, global })
+    for (const id of ['linked', 'direct']) {
+      await wrapper.findAll('button').find(button => button.text() === '录入补发包裹')!.trigger('click')
+      await wrapper.get('select[aria-label="漏发商品及原包裹"]').setValue(id)
+      await wrapper.get('input[aria-label="补发快递单号"]').setValue('YT456')
+      await wrapper.findAll('button').find(button => button.text() === '确认补发包裹')!.trigger('click')
+    }
+    expect(wrapper.text()).toContain('共 2 个包裹')
+    await wrapper.get('form').trigger('submit')
+    const saved = vi.mocked(fulfillmentCommand).mock.calls.at(-1)![3] as { parcels: DomesticParcel[] }
+    expect(saved.parcels.filter(parcel => parcel.tracking_number === 'YT456')).toEqual([
+      expect.objectContaining({ purchase_record_id: 'purchase1', line_key: 'line1', quantity: 1 }),
+      expect.objectContaining({ purchase_record_id: '', line_key: 'line2', quantity: 1 }),
+    ])
+    expect(saved.parcels.reduce((sum, parcel) => sum + parcel.quantity, 0)).toBe(5)
+  })
+
+  it('新增包裹选择尚未分配的商品，不再使用已分配齐全的首个 SKU', async () => {
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: sharedOrder(), value: { ...detail(), parcels: [sharedParcels()[0]!] } }, global })
+    await wrapper.findAll('button').find(button => button.text() === '直接录入包裹')!.trigger('click')
+    const newItem = wrapper.findAll('select[aria-label="包裹商品"]')[1]!
+    expect(newItem.element).toHaveProperty('value', 'line2')
+    expect(newItem.get('option[value="line1"]').attributes('disabled')).toBeDefined()
+  })
+
+  it.each([1, 2])('已保存直接包裹 %s 件时，重新打开不额外带入采购明细', quantity => {
+    const existing = { ...sharedParcels()[0]!, purchase_record_id: '', quantity }
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order: withProgress(logistics()), value: { ...detail(), parcels: [existing] } }, global })
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(1)
+    expect(wrapper.get('input[type="number"]').element).toHaveProperty('value', String(quantity))
+    expect(wrapper.get('select[aria-label="包裹商品"]').element).toHaveProperty('value', 'line1')
+  })
+
+  it('2 加 1 的超量明细在本地指出单号与数量，不提交也不刷新版本', async () => {
+    const duplicate = [sharedParcels()[0]!, { ...sharedParcels()[0]!, id: 'extra', purchase_record_id: '', tracking_number: 'EXTRA123', quantity: 1 }]
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order, value: { ...detail(), parcels: duplicate } }, global })
+    await wrapper.get('form').trigger('submit')
+    const message = wrapper.get('[role="alert"]').text()
+    expect(message).toContain('销售需要 2 件，包裹已分配 3 件')
+    expect(message).toContain('SF123：2 件')
+    expect(message).toContain('EXTRA123：1 件')
+    expect(message).not.toContain('已刷新')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    expect(fetchFulfillment).not.toHaveBeenCalled()
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(2)
+  })
+
+  it('后端业务校验保留原提示，不追加版本刷新或重复句号', async () => {
+    const message = 'SKU SKU1 的包裹数量超过销售数量：销售需要 2 件，已分配 3 件。请核对包裹分配。'
+    vi.mocked(fulfillmentCommand).mockRejectedValueOnce(new Error(message))
+    const wrapper = mount(FulfillmentParcelDialog, { props: { order, value: detail() }, global })
+    await fillParcel(wrapper)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe(message)
+    expect(fetchFulfillment).not.toHaveBeenCalled()
+    expect(wrapper.get('input[type="number"]').element).toHaveProperty('value', '2')
+  })
+
+  it('作废后配置确实失效才展示重绑入口，重绑不重启旧单', async () => {
     vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), crossborderbus_order_id: 99,
-      fulfillment_status: 'CANCELLED', receiving_binding_stale: true, plan_editable: false, editable: false })
+      fulfillment_status: 'CANCELLED', receiving_binding_stale: true, plan_editable: true, editable: false })
     const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global: { stubs: { ...global.stubs, OrderReceivingWarehouse: true } } })
     await flushPromises()
     expect(wrapper.text()).toContain('已作废 · 99')
-    expect(wrapper.text()).toContain('直接重新设置报单绑定')
+    expect(wrapper.text()).toContain('引用的仓库配置也已变化')
     expect(wrapper.findAll('button').some(button => ['立即提交', '重新安排履约'].includes(button.text()))).toBe(false)
     const receiving = wrapper.getComponent(OrderReceivingWarehouse)
     expect(receiving.props('orderId')).toBe(order.order.id)
     expect(fulfillmentCommand).not.toHaveBeenCalled()
-    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), revision: 3, awaiting_resubmission: true,
-      receiving_binding_stale: false, blocked_reason: '请重新选择报单服务', attempt_history: [{
-        crossborderbus_order_id: 99, order_number: '123', archived_at: '2026-10-14T15:00:00Z',
-        last_synced_at: '', plan: detail().plan, receiving_warehouse: null, selected_services: [],
-      }] })
+    vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), revision: 3, crossborderbus_order_id: 99,
+      fulfillment_status: 'CANCELLED', editable: false, plan_editable: true, receiving_binding_stale: false })
     receiving.vm.$emit('updated')
     await flushPromises()
-    expect(wrapper.text()).toContain('已作废报单 · 99')
+    expect(wrapper.text()).toContain('已作废 · 99')
     expect(wrapper.findComponent(OrderReceivingWarehouse).exists()).toBe(false)
     expect(wrapper.findAll('button').find(button => button.text() === '设置报单方案')!.attributes('disabled')).toBeUndefined()
-    expect(wrapper.findAll('button').find(button => button.text() === '立即提交')!.attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').some(button => button.text() === '立即提交')).toBe(false)
     expect(fulfillmentCommand).not.toHaveBeenCalled()
   })
 
@@ -171,8 +438,9 @@ describe('跨境履约操作', () => {
     const cancelledOrder = structuredClone(order)
     cancelledOrder.lines[0]!.records[0]!.status = 'cancelled'
     const cancelled = mount(FulfillmentParcelDialog, { props: { order: cancelledOrder, value: detail() }, global })
-    expect(cancelled.find('input[maxlength="100"]').exists()).toBe(false)
-    expect(cancelled.text()).toContain('尚无有效采购记录')
+    expect((cancelled.get('input[maxlength="100"]').element as HTMLInputElement).value).toBe('')
+    expect(cancelled.find('optgroup[label="关联采购记录"]').exists()).toBe(false)
+    expect(cancelled.text()).toContain('无需采购单号')
     vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), editable: false, busy: true })
     const panel = mount(OrderFulfillmentPanel, { props: { order: withProgress(logistics()) }, global })
     await flushPromises()
@@ -283,6 +551,64 @@ describe('跨境履约操作', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
+  it('没有采购记录和来源时直接按销售商品录入包裹', async () => {
+    const directOrder = structuredClone(order)
+    Object.assign(directOrder.lines[0]!, { records: [], purchased_quantity: 0, remaining_quantity: 2 })
+    Object.assign(directOrder.lines[0]!.selection, { source: null, status: 'unmatched' })
+    const wrapper = mount(FulfillmentParcelDialog, { props: { value: detail(), order: directOrder }, global })
+    expect(wrapper.get('select[aria-label="包裹商品"]').element).toHaveProperty('value', 'line1')
+    await fillParcel(wrapper)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenCalledWith('parcels', order.order.id, 1, { parcels: [expect.objectContaining({
+      line_key: 'line1', purchase_record_id: '', quantity: 2, carrier: '顺丰', tracking_number: 'SF123',
+    })] })
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
+  it('商品只列一次，切换商品保留手填运单，并自动保留已有采购来源', async () => {
+    const wrapper = mount(FulfillmentParcelDialog, { props: { value: detail(), order: sharedOrder() }, global })
+    await fillParcel(wrapper)
+    expect(wrapper.get('select[aria-label="包裹商品"]').findAll('option')).toHaveLength(2)
+    expect(wrapper.find('optgroup').exists()).toBe(false)
+    await wrapper.get('select[aria-label="包裹商品"]').setValue('line2')
+    expect(wrapper.get('input[maxlength="100"]').element).toHaveProperty('value', 'SF123')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, { parcels: [expect.objectContaining({ purchase_record_id: '', line_key: 'line2', tracking_number: 'SF123' })] })
+    await wrapper.get('select[aria-label="包裹商品"]').setValue('line1')
+    expect(wrapper.get('input[maxlength="100"]').element).toHaveProperty('value', 'SF123')
+    await wrapper.get('form').trigger('submit')
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, { parcels: [expect.objectContaining({ purchase_record_id: 'purchase1', line_key: 'line1', tracking_number: 'SF123' })] })
+  })
+
+  it('某 SKU 采购作废后可直接补包裹，同时保留其他 SKU 的采购包裹', async () => {
+    const mixedOrder = structuredClone(order)
+    const second = structuredClone(mixedOrder.lines[0]!)
+    second.line.sku = 'SKU2'
+    second.selection.line_key = 'line2'
+    Object.assign(second.records[0]!, { id: 'purchase2', line_key: 'line2' })
+    mixedOrder.lines.push(second)
+    mixedOrder.lines[0]!.records[0]!.status = 'cancelled'
+    mixedOrder.lines[0]!.purchased_quantity = 0
+    mixedOrder.lines[0]!.remaining_quantity = 2
+    const retained = { id: 'old', line_key: 'line2', purchase_record_id: 'purchase2', carrier: '顺丰', tracking_number: 'SF123', quantity: 2 }
+    const value = { ...detail(), parcels: [retained] }
+    const wrapper = mount(FulfillmentParcelDialog, { props: { value, order: mixedOrder }, global })
+    await wrapper.findAll('button').find(button => button.text() === '直接录入包裹')!.trigger('click')
+    const added = wrapper.findAll('fieldset')[1]!
+    expect(added.get('select[aria-label="包裹商品"]').element).toHaveProperty('value', 'line1')
+    await added.get('select[aria-label="国内快递"]').setValue('圆通')
+    await added.get('input[type="number"]').setValue(2)
+    await added.get('input[maxlength="100"]').setValue('YT456')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fulfillmentCommand).toHaveBeenLastCalledWith('parcels', order.order.id, 1, { parcels: [retained, expect.objectContaining({
+      line_key: 'line1', purchase_record_id: '', quantity: 2, carrier: '圆通', tracking_number: 'YT456',
+    })] })
+    expect(value.parcels).toEqual([retained])
+  })
+
   it('版本冲突刷新版本并保留包裹输入，复核后可再次保存', async () => {
     vi.mocked(fulfillmentCommand).mockRejectedValueOnce(new Error('履约资料已更新'))
     vi.mocked(fetchFulfillment).mockResolvedValue({ ...detail(), revision: 5 })
@@ -330,7 +656,8 @@ describe('跨境履约操作', () => {
     const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global })
     await flushPromises()
     await wrapper.findAll('button').find(b => b.text() === '录入包裹')!.trigger('click')
-    expect(wrapper.get('dialog').text()).toContain('关联采购记录')
+    expect(wrapper.get('dialog').text()).toContain('无需采购单号')
+    expect(wrapper.get('dialog').find('optgroup').exists()).toBe(false)
     wrapper.unmount()
     const unresolved = { ...detail(), create_unknown: true, editable: false, plan_editable: false, fulfillment_status: 'EXCEPTION' as const, error_message: '创建结果待确认' }
     vi.mocked(fetchFulfillment).mockResolvedValue(unresolved)
@@ -435,4 +762,34 @@ it('详情跟随本地同步结果更新，编辑时暂停，不额外查询采�
   const reads = vi.mocked(fetchOrderDetail).mock.calls.length
   await vi.advanceTimersByTimeAsync(10_000)
   expect(fetchOrderDetail).toHaveBeenCalledTimes(reads)
+})
+
+
+describe('取消履约与收货绑定独立', () => {
+  it('取消后直接设置方案，打开和关闭不重绑、不重启，保存后才能提交', async () => {
+    const cancelled = { ...detail(), crossborderbus_order_id: 99, fulfillment_status: 'CANCELLED' as const,
+      cancel_requested: true, editable: false, receiving_binding_stale: false, blocked_reason: '',
+      plan: { section_id: 1, warehouse_id: 10, service_ids: [] } }
+    const next = { ...detail(), revision: 2, awaiting_resubmission: true, blocked_reason: '' }
+    vi.mocked(fetchFulfillment).mockResolvedValue(cancelled)
+    const wrapper = mount(OrderFulfillmentPanel, { props: { order }, global: { ...global, stubs: {
+      ...global.stubs,
+      FulfillmentPlanDialog: defineComponent({ emits: ['close', 'saved'], setup: () => ({ next }),
+        template: `<div><button @click="$emit('close')">关闭方案</button><button @click="$emit('saved', next)">保存新方案</button></div>` }),
+    } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('收货仓绑定保留')
+    expect(wrapper.findComponent(OrderReceivingWarehouse).exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('立即提交')
+    await wrapper.findAll('button').find(b => b.text() === '设置报单方案')!.trigger('click')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(b => b.text() === '关闭方案')!.trigger('click')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(b => b.text() === '设置报单方案')!.trigger('click')
+    await wrapper.findAll('button').find(b => b.text() === '保存新方案')!.trigger('click')
+    expect(wrapper.text()).toContain('立即提交')
+    expect(fulfillmentCommand).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(b => b.text() === '立即提交')!.trigger('click')
+    expect(fulfillmentCommand).toHaveBeenCalledWith('submit', order.order.id, 2, {})
+  })
 })

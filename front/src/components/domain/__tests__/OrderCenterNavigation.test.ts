@@ -161,7 +161,7 @@ describe('紧凑订单列表', () => {
     ['unpurchased', false, '待采购登记', 'procurement', '商品与采购'],
     ['partial', false, '采购登记中', 'procurement', '商品与采购'],
     ['purchased', false, '等待买家收货', 'procurement', '商品与采购'],
-    ['purchased', true, '待预报', 'fulfillment', '跨境履约'],
+    ['purchased', true, '待报单', 'fulfillment', '跨境履约'],
   ] as const)('%s / 运单=%s：点击 %s 直达对应详情', async (procurement_status, has_waybill, label, target, targetLabel) => {
     const order: OrderSnapshot = {
       ...orders[0]!, procurement_status,

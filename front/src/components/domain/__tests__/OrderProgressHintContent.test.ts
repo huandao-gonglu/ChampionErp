@@ -39,13 +39,23 @@ describe('hint 跟随主状态来源', () => {
     for (const value of ['平台已备妥', 'PROCESSING / READY_TO_SHIP', '配送方式：平台配送', '平台运单号：PL123', '平台更新时间', '本地同步时间']) expect(text).toContain(value)
     expect(text).not.toContain('YT123')
   })
-  it('ERP 待预报和面单异常显示当前步骤与原因，不展示采购签收', () => {
+  it('ERP 待报单和面单异常优先展示步骤与原因，包裹状态单独标明来源', () => {
     const hint = orderProgressHint(order)
     expect(hint.title).toBe('ERP 处理进度')
-    expect(hint.sections[0]!.heading).toBe('待预报')
-    expect(JSON.stringify(hint)).not.toContain('已签收')
+    expect(hint.sections[0]!.heading).toBe('待报单')
+    expect(hint.sections[1]!.heading).toBe('1688 国内包裹 · 已签收')
+    expect(hint.sections[1]!.lines).toContain('圆通 · YT123')
     const failed = orderProgressHint({ ...order, fulfillment_summary: { ...facts, crossborderbus_order_id: null, fulfillment_status: 'NEW', label_error: '面单下载失败' } })
     expect(failed.sections[0]!.warning).toBe('面单下载失败')
+  })
+  it('多包裹待报单提示保留各自状态、运单、查询时间和过期警告', () => {
+    const hint = orderProgressHint({ ...order, purchase_tracking: { ...order.purchase_tracking!, packages: [
+      ...order.purchase_tracking!.packages!,
+      { id: '2', order_numbers: ['second-order'], company: '顺丰', tracking_number: 'SF456', source: 'logistics', status: 'TRANSPORT', status_label: '运输中', updated_at: '', stale: true },
+    ] } })
+    expect(hint.sections.map(section => section.heading)).toEqual(['待报单', '1688 国内包裹 · 已签收', '1688 国内包裹 · 运输中'])
+    expect(hint.sections[2]).toMatchObject({ lines: ['顺丰 · SF456', '采购单：second-order', '最后成功查询：未提供'], warning: '查询未更新，保留上次结果' })
+    expect(hint.sections[1]!.lines.some(line => line.startsWith('最后成功查询：') && !line.endsWith('未提供'))).toBe(true)
   })
   it('1688 混合查询保留尚未查询和过期提示', () => {
     const hint = orderProgressHint({ ...order, purchase_tracking: { ...order.purchase_tracking!, has_waybill: false, unknown_count: 1, stale: true, packages: [] } })

@@ -223,24 +223,6 @@ export interface BackendPurchaseProgressView {
   data: BackendAlibabaPurchaseQueryResult | null
 }
 
-export interface BackendSupplementCandidate {
-  key: string
-  title: string
-  specification: string
-  offer_id: string
-  sku_id: string
-  spec_id: string
-  quantity: number
-  matched: boolean
-}
-
-export interface BackendSupplementLookupResult {
-  ok: boolean
-  order_number: string
-  order_status: string
-  candidates: Array<BackendSupplementCandidate>
-}
-
 export interface BackendApiResponse {
   schemaVersion?: number
   ok?: boolean

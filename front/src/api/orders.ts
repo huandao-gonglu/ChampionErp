@@ -58,11 +58,3 @@ export async function saveOrderAddressNote(body: {
 }): Promise<OrderAddressNote> {
   return (await apiClient.post<OrderAddressNote>('/api/orders/address-note', body, { timeout: 10000 })).data
 }
-
-
-export async function lookupSupplement(body: Record<string, unknown>): Promise<import('@/types/workflow.generated').BackendSupplementLookupResult> {
-  return (await apiClient.post('/api/orders/supplement-lookup', body, { timeout: 35000 })).data
-}
-export async function recordSupplement(body: Record<string, unknown>): Promise<OrderDetail> {
-  return (await apiClient.post<OrderDetail>('/api/orders/supplement-record', body, { timeout: 150000 })).data
-}

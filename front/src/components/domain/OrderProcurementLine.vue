@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchOrderDetail, procurementCommand } from '@/api/orders'
 import type { OrderDetail, OrderSnapshot, ProcurementLine, PurchaseRecord } from '@/types/orders'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import OrderSupplementDialog from './OrderSupplementDialog.vue'
 import OrderSourceDialog from './OrderSourceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
 import OrderThumbnail from './OrderThumbnail.vue'
@@ -22,7 +21,6 @@ const error = ref('')
 const notice = ref('')
 const busy = ref(false)
 const trackingBusy = ref(false)
-const supplementOpen = ref(false)
 const sourceEditor = ref(false)
 const alibabaPurchaseOpen = ref(false)
 const cancelledRecord = ref<PurchaseRecord | null>(null)
@@ -34,7 +32,7 @@ const editable = computed(
     !selection.value.reason.includes('缺少唯一身份')
 )
 watch(
-  () => supplementOpen.value || busy.value || trackingBusy.value || alibabaPurchaseOpen.value || sourceEditor.value || !!cancelledRecord.value,
+  () => busy.value || trackingBusy.value || alibabaPurchaseOpen.value || sourceEditor.value || !!cancelledRecord.value,
   (value) => emit('lock', value)
 )
 onBeforeUnmount(() => emit('lock', false))
@@ -45,7 +43,7 @@ async function execute(action: 'select-source' | 'cancel-purchase', body: Record
   try {
     emit('updated', await procurementCommand(action, { order_id: props.order.id, ...body }))
     cancelledRecord.value = null
-    notice.value = action === 'select-source' ? '采购来源已确认' : '采购记录已作废'
+    notice.value = action === 'select-source' ? '采购来源已确认' : '本 SKU 采购已作废，可在跨境履约中直接录入包裹，也可重新记录采购'
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : '采购操作失败，请刷新后重试'
   } finally {
@@ -132,7 +130,7 @@ async function copySpecification() {
         </div>
       </div>
       <div v-if="selection.line_key" class="order-line-purchase">
-        <p class="order-muted">{{ item.remaining_quantity > 0 ? `还需采购 ${item.remaining_quantity} 件` : '所需数量已登记齐全' }}</p>
+        <p class="order-muted">{{ item.remaining_quantity > 0 ? `未登记采购 ${item.remaining_quantity} 件` : '采购数量已登记齐全' }}</p>
         <button v-if="order.state === 'pending_shipment' || item.records.length" class="order-button order-primary" :disabled="busy" @click="alibabaPurchaseOpen = true">1688 采购</button>
         <button
           v-if="selection.status === 'confirmed' && order.state === 'pending_shipment' && item.remaining_quantity > 0"
@@ -142,13 +140,11 @@ async function copySpecification() {
           记录采购
         </button>
       </div>
-      <button v-if="order.state === 'pending_shipment' && selection.status === 'confirmed' && item.records.some(r => r.status === 'purchased')" class="order-button mt-3" :disabled="busy" @click="supplementOpen = true">登记补单</button>
       <p v-if="error" class="order-error" role="alert">{{ error }}</p>
       <p v-if="notice" class="order-success" role="status">{{ notice }}</p>
     </section>
     <OrderPurchaseRecords v-if="item.records.length" :order-id="order.id" :records="item.records" :busy="busy" @cancel="cancelledRecord = $event" @updated="emit('updated', $event)" @lock="trackingBusy = $event" />
     <AlibabaSelfPurchaseDialog v-if="alibabaPurchaseOpen" :order-id="order.id" :line-key="selection.line_key" :title="item.line.title" @close="alibabaPurchaseOpen = false" @updated="refreshPurchase" />
-    <OrderSupplementDialog v-if="supplementOpen" :item="item" :order="order" @close="supplementOpen = false" @updated="emit('updated', $event)" />
     <OrderSourceDialog
       v-if="sourceEditor"
       :item="item"
@@ -159,17 +155,17 @@ async function copySpecification() {
     <WorkspaceDialog
       v-if="cancelledRecord"
       :open="true"
-      title="作废采购记录"
+      title="作废本 SKU 采购"
       width="496px"
       class="order-ui"
       :close-disabled="busy"
       @close="cancelledRecord = null"
     >
       <p class="font-semibold">
-        {{ cancelledRecord?.purchase_order_number }} · {{ cancelledRecord?.quantity }} 件
+        {{ item.line.sku }} · {{ cancelledRecord?.purchase_order_number }} · {{ cancelledRecord?.quantity }} 件
       </p>
       <p class="order-muted mt-3">
-        仅撤销 ERP 采购记录，不会取消采购平台订单。原记录及采购规格将保留，作废后可重新记录采购。
+        仅作废本 SKU 的这条采购记录，并移除它的国内包裹分配。同一采购单、同一包裹中的其他 SKU 不受影响，也不会取消采购平台订单。历史记录保留，作废后可在“跨境履约”中直接录入新包裹，也可重新记录采购。
       </p>
       <p v-if="error" class="order-error" role="alert">{{ error }}</p>
       <template #footer>

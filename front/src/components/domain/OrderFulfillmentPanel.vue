@@ -12,6 +12,7 @@ import type { FulfillmentDetail } from '@/types/fulfillment'
 import { fulfillmentStatusNames } from '@/types/fulfillment'
 import type { OrderDetail } from '@/types/orders'
 import { orderProcessingProgress, procurementProgress } from './orderPresentation'
+import { groupDomesticParcels } from './purchaseLogistics'
 const props = defineProps<{ order: OrderDetail }>()
 const emit = defineEmits<{ updated: []; lock: [boolean]; purchaseUpdated: [OrderDetail] }>()
 const purchaseRecords = computed(() => props.order.lines.flatMap(line => line.records).filter(record => record.status === 'purchased'))
@@ -47,13 +48,20 @@ const progress = computed(() => orderProcessingProgress({
 const status = computed(() => value.value ? progress.value.label : '')
 const tone = computed(() => progress.value.tone)
 const purchased = computed(() => props.order.lines.reduce((sum, line) => sum + line.purchased_quantity, 0))
+const directQuantity = computed(() => (value.value?.parcels || []).filter(parcel => !parcel.purchase_record_id).reduce((sum, parcel) => sum + parcel.quantity, 0))
 const ordered = computed(() => props.order.lines.reduce((sum, line) => sum + line.line.quantity, 0))
 const title = computed(() => value.value?.busy && value.value.operation === 'create' ? '正在提交预报' : value.value?.busy && value.value.operation === 'fetch-label' ? '正在获取平台面单' : value.value?.create_unknown ? '创建结果待核实，暂停重复提交' : value.value?.cancel_requested && value.value.fulfillment_status === 'SHIPPED' ? '仓库已发货，取消未成功' : value.value?.cancel_rejected && value.value.fulfillment_status !== 'CANCELLED' ? '仓库拒绝取消，请处理后重试' : value.value?.cancel_requested && value.value.fulfillment_status !== 'CANCELLED' ? '已请求取消，等待仓库确认' : value.value?.error_message ? '履约操作需要处理' : status.value)
-const parcelCount = computed(() => new Set((value.value?.parcels || []).map(p => p.tracking_number.trim().toUpperCase())).size)
+const parcelGroups = computed(() => groupDomesticParcels(value.value?.parcels || []))
+const parcelCount = computed(() => parcelGroups.value.length)
 const notice = computed(() => {
   const current = value.value
   if (current?.error_message) return current.error_message
-  if (current?.fulfillment_status === 'CANCELLED') return '原履约已取消。请直接重新设置报单绑定，确认收货仓和地址，再选择服务并提交。'
+  if (current?.fulfillment_status === 'CANCELLED') {
+    if (props.order.order.state !== 'pending_shipment') return '原履约已取消，当前平台订单不支持重新报单。'
+    return current.receiving_binding_stale
+      ? '原履约已取消，引用的仓库配置也已变化。请重新确认收货绑定，再设置报单方案并提交。'
+      : '原履约已取消，收货仓绑定保留。需要重报时，请设置本次报单方案，再核对面单、国内包裹并提交。'
+  }
   if (current?.awaiting_resubmission) return current.blocked_reason || '收货仓和报单服务已重新确认，请核对保留的面单、国内包裹后点击“立即提交”。'
   return current?.crossborderbus_order_id ? current.fulfillment_status === 'SHIPPED' ? '仓库已发货，ERP 履约状态已同步为已发货。' : '仓库进度随同步订单更新，也可点击同步按钮单独刷新。' : current?.blocked_reason || (current?.editing ? '修改本单方案期间已暂停自动预报。' : progress.value.note)
 })
@@ -78,7 +86,7 @@ async function command(action: FulfillmentAction, body: Record<string, unknown> 
 async function open(which: typeof modal.value) {
   if (!value.value) return
   error.value = ''
-  if (which === 'plan') {
+  if (which === 'plan' && value.value.fulfillment_status !== 'CANCELLED') {
     if (!await command('pause')) return
     keepEditing = setInterval(() => { if (modal.value === 'plan' && !pending.value) void command('pause') }, 60_000)
   }
@@ -88,7 +96,7 @@ async function open(which: typeof modal.value) {
 async function close() {
   if (pending.value) return
   clearInterval(keepEditing)
-  if (modal.value === 'plan' && !await command('resume')) return
+  if (modal.value === 'plan' && value.value?.fulfillment_status !== 'CANCELLED' && !await command('resume')) return
   modal.value = ''
 }
 async function uploadLabel(event: Event) {
@@ -136,7 +144,8 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
       <section class="fulfillment-notice" :data-tone="tone" aria-live="polite"><div class="order-row"><h3>{{ title }}</h3><button v-if="value.error_message" class="order-button" @click="open('error')">查看详情</button></div><p>{{ notice }}</p><RouterLink v-if="order.order.platform !== 'yandex' && !value.rule && !value.crossborderbus_order_id" class="order-link" :to="settingsRoute">配置默认履约方案</RouterLink></section>
       <section class="fulfillment-facts" aria-label="已记录资料与仓库回执">
         <div><span>采购登记</span><strong>{{ purchased }} / {{ ordered }} 件</strong></div>
-        <div><span>国内快递单号</span><strong>{{ value.parcels.length ? `已录入 ${value.parcels.length} 条记录` : '未录入' }}</strong></div>
+        <div v-if="directQuantity"><span>直接录入包裹商品</span><strong>{{ directQuantity }} 件</strong></div>
+        <div><span>国内快递单号</span><strong>{{ parcelCount ? `已录入 ${parcelCount} 个包裹` : '未录入' }}</strong></div>
         <div><span>国际面单</span><strong>{{ value.platform_label ? '已保存面单' : '待补充' }}</strong></div>
         <div><span>跨境预报</span><strong>{{ value.crossborderbus_order_id ? `${value.fulfillment_status === 'CANCELLED' ? '已作废' : '已创建'} · ${value.crossborderbus_order_id}` : value.create_unknown ? '创建结果待确认' : '尚未创建' }}</strong></div>
       </section>
@@ -173,9 +182,9 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll); clearInterval(keepE
       </section>
       <section class="order-section">
         <div class="order-row"><h4>国内包裹</h4><button v-if="value.editable" class="order-button" :disabled="pending" @click="open('parcels')">{{ needsAssignment ? '确认包裹分配' : value.parcels.length ? '管理包裹' : '录入包裹' }}</button></div>
-        <p v-if="!value.parcels.length" class="order-muted mt-3">尚未录入国内快递单号。供应商提供单号后，关联采购记录并填写数量。</p>
+        <p v-if="!value.parcels.length" class="order-muted mt-3">尚未录入国内快递单号。选择商品、填写数量和单号即可录入，无需采购单号。</p>
         <OrderPurchaseTracking v-for="record in purchaseRecords" :key="record.id" :order-id="order.order.id" :record="record" @updated="purchaseUpdated" @lock="purchaseLock(record.id, $event)" />
-        <p v-for="parcel in value.parcels" :key="parcel.id" class="mt-3">{{ parcel.carrier }} {{ parcel.tracking_number }} · {{ parcel.quantity }} 件</p>
+        <p v-for="group in parcelGroups" :key="group.id" class="mt-3">{{ group.carrierConflict ? '快递公司待核对' : group.carrier || '物流公司未填写' }} {{ group.tracking_number }} · {{ group.quantity }} 件</p>
       </section>
       <div class="order-row mt-6"><p class="order-muted">最近成功同步仓库状态：{{ at(value.last_synced_at) }}</p><button class="order-button" :disabled="pending || refreshing" @click="syncLatest">{{ pending ? '处理中…' : value.create_unknown ? '核实创建结果' : value.cancel_requested && value.fulfillment_status !== 'CANCELLED' ? '核实取消结果' : '同步' }}</button></div>
       <div class="order-row mt-8 fulfillment-actions">

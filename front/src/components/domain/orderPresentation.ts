@@ -3,7 +3,6 @@ import type { OrderAmount, OrderPlatform, OrderSnapshot, OrderState } from '@/ty
 import type { ProcurementLine } from '@/types/orders'
 import type { FulfillmentSummary } from '@/types/fulfillment'
 import { fulfillmentStatusNames } from '@/types/fulfillment'
-import type { BackendPurchasePackageStatus } from '@/types/workflow.generated'
 
 const yandexProcessingNames: Record<string, string> = {
   STARTED: '备货中',
@@ -39,26 +38,6 @@ export function procurementProgress(lines: ProcurementLine[]) {
 
 export type OrderDetailTab = 'procurement' | 'fulfillment'
 
-const partialPackageLabels: Record<string, string> = {
-  waitbuyerpay: '部分待付款', waitsellersend: '部分待发货', waitbuyerreceive: '部分发货', waitbuyerreceives: '部分发货',
-  confirm_goods: '部分已收货', success: '部分交易成功', cancel: '部分交易取消', terminated: '部分交易终止',
-  WAITACCEPT: '部分待揽收', ACCEPT: '部分已揽收', TRANSPORT: '部分运输中', DELIVERING: '部分派送中', SIGN: '部分已签收', UNSIGN: '部分未签收',
-}
-export function latestPackageProgress(packages: BackendPurchasePackageStatus[]) {
-  if (!packages.length) return null
-  // 按最近成功快照的更新时间选择，不能按履约阶段排序；无有效时间时保留稳定次序。
-  const timestamp = (value: string) => Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0
-  const latest = packages.reduce((chosen, item) => timestamp(item.updated_at) > timestamp(chosen.updated_at) ? item : chosen)
-  const different = packages.some(item => item.source !== latest.source || item.status !== latest.status)
-  const label = different ? partialPackageLabels[latest.status] || `部分${latest.status_label}` : latest.status_label
-  const stale = packages.some(item => item.stale)
-  return {
-    label,
-    note: `按最后更新时间展示：${dateTime(latest.updated_at)}${stale ? '；部分查询未更新，保留最近成功结果' : ''}`,
-    tone: packages.some(item => ['cancel', 'terminated', 'UNSIGN'].includes(item.status)) || stale ? 'red' : different ? 'amber' : 'blue',
-  }
-}
-
 const progressSources = { erp: '来自ERP', alibaba: '来自1688', alibaba_erp: '来自1688 / ERP', crossborderbus: '来自跨境巴士', platform: '来自平台同步' } as const
 export type OrderProgressSource = keyof typeof progressSources
 
@@ -90,11 +69,6 @@ export function orderProcessingProgress(order: OrderSnapshot, facts: Fulfillment
   if (order.state !== 'pending_shipment') return progress('待核对平台状态', '平台待发货后才能预报', 'neutral', 'platform')
   const purchase = order.purchase_tracking
   const hasWaybill = facts?.has_domestic_waybill || purchase?.has_waybill
-  const packages = purchase?.packages || []
-  if (packages.length > 1 && order.procurement_status === 'purchased') {
-    const latest = latestPackageProgress(packages)!
-    return progress(latest.label, latest.note, latest.tone, 'alibaba', hasWaybill ? 'fulfillment' : 'procurement')
-  }
   if (!hasWaybill && order.procurement_status === 'purchased') {
     const states = [...new Set(purchase?.orders.map(row => row.status_label) || [])]
     const stale = purchase?.stale ? '；保留最近查询结果，请刷新采购进度' : ''
@@ -106,9 +80,10 @@ export function orderProcessingProgress(order: OrderSnapshot, facts: Fulfillment
   if (facts?.busy && facts.operation === 'fetch-label') return progress('正在获取面单', '获取成功后继续准备预报')
   if (facts?.error_message || status === 'EXCEPTION') return progress('预报异常', '进入详情处理后重试', 'red')
   if (facts?.label_error) return progress('面单获取异常', '进入详情处理或人工补充', 'red')
+  if (facts?.has_domestic_waybill) return progress('待报单', '已有国内运单，请核对包裹分配、数量、面单与服务方案后报单')
   if (order.procurement_status === 'unpurchased') return progress('待采购登记', '在详情中登记实际采购', 'amber', 'erp', 'procurement')
   if (order.procurement_status === 'partial') return progress('采购登记中', '尚未覆盖全部商品数量', 'amber', 'erp', 'procurement')
-  if (order.procurement_status === 'purchased') return progress('待预报', '已有国内运单，核对包裹分配、数量与面单后报单')
+  if (order.procurement_status === 'purchased') return progress('待报单', '已有国内运单，请核对包裹分配、数量、面单与服务方案后报单')
   return progress('采购待核对', '核对商品明细与采购数量', 'amber', 'erp', 'procurement')
 }
 export function stateTone(state: OrderState) {

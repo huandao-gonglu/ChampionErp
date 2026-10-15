@@ -24,17 +24,17 @@ beforeEach(() => {
   vi.mocked(saveReceivingWarehouse).mockResolvedValue({ ...value(), revision: 1, warehouse })
 })
 describe('按物流设置选择采购地址', () => {
-  it('作废后一次确认新绑定并携带原履约版本；核实失败保留选择和弹窗', async () => {
+  it('配置失效后确认新绑定不再关联旧履约归档，保存失败保留选择和弹窗', async () => {
     const wrapper = open({ ...value(), warehouse, revision: 1, has_purchases: true, binding_stale: true,
       cancelled_fulfillment: true, fulfillment_revision: 21 })
     await flushPromises()
-    expect(dom().text()).toContain('核实并归档原作废报单')
+    expect(dom().text()).not.toContain('归档原作废报单')
     for (const check of dom().findAll('input[type="checkbox"]')) await check.setValue(true)
-    vi.mocked(saveReceivingWarehouse).mockRejectedValueOnce(new Error('跨境巴士尚未确认原报单已作废'))
+    vi.mocked(saveReceivingWarehouse).mockRejectedValueOnce(new Error('收货地址资料已更新'))
     await dom().get('form').trigger('submit'); await flushPromises()
-    expect(saveReceivingWarehouse).toHaveBeenCalledWith(expect.objectContaining({ fulfillment_revision: 21,
-      revision: 1, existing_purchase_confirmed: true, address_id: 'addr' }))
-    expect(dom().text()).toContain('尚未确认原报单已作废')
+    expect(saveReceivingWarehouse).toHaveBeenCalledWith(expect.objectContaining({ revision: 1, existing_purchase_confirmed: true, address_id: 'addr' }))
+    expect(vi.mocked(saveReceivingWarehouse).mock.calls[0]![0]).not.toHaveProperty('fulfillment_revision')
+    expect(dom().text()).toContain('收货地址资料已更新')
     expect(wrapper.emitted('saved')).toBeUndefined()
     expect((dom().get('[aria-label="采购收货地址"]').element as HTMLSelectElement).value).toBe('addr:143')
   })

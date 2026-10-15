@@ -67,7 +67,7 @@ class ReceivingWarehouseRequest(BaseModel):
     delivery_key: str = Field(min_length=1)
     confirmed: bool = Field(strict=True)
     existing_purchase_confirmed: bool = False
-    fulfillment_revision: int | None = Field(default=None, ge=0, strict=True)
+    fulfillment_revision: int | None = Field(default=None, ge=0, strict=True, description="兼容已保存请求；收货绑定不再依赖履约版本，无需填写。")
 
 
 class ReceivingCandidate(LogisticsAddress):

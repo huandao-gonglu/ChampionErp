@@ -9,6 +9,7 @@ from collections import Counter
 
 from erp_web.schemas.fulfillment import FulfillmentCommand, FulfillmentError, FulfillmentRule, FulfillmentView, LabelInput
 from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
+from erp_web.services.fulfillment_packages import group_domestic_packages
 from erp_web.services.fulfillment_routing import consolidation_reason, handover_target, is_yandex_section, validate_services
 from erp_web.services.external_request_context import request_operation
 from erp_web.services.receiving_warehouse_service import ReceivingWarehouseService
@@ -49,14 +50,14 @@ class FulfillmentService:
                      and r["country"] == country and r["confirmed"]), None)
 
     def plan_for(self, value, rule, order=None):
-        if value["crossborderbus_order_id"] or value["create_unknown"]:
+        if value["create_unknown"] or (value["crossborderbus_order_id"] and value['fulfillment_status'] != 'CANCELLED'):
             return value["plan"]
         if order is not None and order.platform == "yandex":
             receiving = self.store.receiving.get(order.identity)
             if not receiving:
                 return None
             plan = value.get('plan')
-            if plan and value.get('receiving_revision') == receiving['revision']:
+            if plan and value.get('receiving_revision') == receiving['revision'] and value['fulfillment_status'] != 'CANCELLED':
                 return plan
             return {"section_id": receiving["section_id"], "warehouse_id": receiving["warehouse_id"], "service_ids": []}
         if value["override"]:
@@ -83,30 +84,89 @@ class FulfillmentService:
             raise FulfillmentError("请选择跨境巴士中已合作的 Yandex 仓库")
         return validate_services(plan, self.client.services(plan["section_id"], plan["warehouse_id"])) if refresh else []
 
+    @staticmethod
+    def validate_purchase_quantities(detail):
+        """先指出有效采购超量，避免将历史补单冲突误报为等待发货。"""
+        for line in detail['lines']:
+            purchased = sum(r['quantity'] for r in line['records'] if r['status'] == 'purchased')
+            required = line['line']['quantity']
+            if purchased > required:
+                sku = line['line']['sku'] or line['selection']['line_key']
+                raise FulfillmentError(
+                    f"SKU {sku} 销售需要 {required} 件，当前有效采购共 {purchased} 件，超出 {purchased - required} 件。"
+                    "请先作废不再用于履约的原采购记录，再确认包裹分配。")
+
     def parcels_payload(self, parcels, detail, *, complete=False):
-        counts, purchases, seen, result = Counter(), Counter(), set(), []
+        """按销售商品校验直接包裹及采购分配，返回尚未按运单合并的明细。"""
+        if complete:
+            self.validate_purchase_quantities(detail)
+        counts, purchases, direct, seen, result = Counter(), Counter(), Counter(), set(), []
         lines = {line["selection"]["line_key"]: line for line in detail["lines"]}
+        if len(lines) != len(detail['lines']) or '' in lines:
+            raise FulfillmentError("订单商品身份不明确，请同步订单后核对。")
         for parcel in parcels:
             line = lines.get(parcel["line_key"])
-            record = next((r for r in (line or {}).get("records", []) if r["id"] == parcel["purchase_record_id"] and r["status"] == "purchased"), None)
-            if parcel["id"] in seen or not line or not record:
+            record_id = parcel.get('purchase_record_id', '')
+            record = next((r for r in (line or {}).get("records", []) if r["id"] == record_id and r["status"] == "purchased"), None)
+            if parcel["id"] in seen or not line:
+                raise FulfillmentError("包裹必须关联当前销售订单的商品，且不能重复。")
+            if record_id and not record:
                 raise FulfillmentError("包裹必须关联当前订单的有效采购记录，且不能重复。")
             seen.add(parcel["id"])
             counts[parcel["line_key"]] += parcel["quantity"]
-            purchases[record["id"]] += parcel["quantity"]
-            if purchases[record["id"]] > record["quantity"] or counts[parcel["line_key"]] > line["line"]["quantity"]:
-                raise FulfillmentError("包裹数量超过订单或采购数量，请核对。")
-            source = {"1688": 1, "taobao": 2, "pinduoduo": 3}.get(record["source"]["source_platform"])
-            if not source:
-                raise FulfillmentError("当前只支持 1688、淘宝或拼多多采购包裹。")
-            result.append({"package_of": 1, "num": parcel["quantity"], "describe": f'{line["line"]["sku"]} · {line["line"]["title"]} · {record["source"]["specification"]}', "img": line["line"].get("image_url", ""), "logistics_order": parcel["tracking_number"], "from_platform": source, "from_order": record["purchase_order_number"]})
+            if record:
+                purchases[record["id"]] += parcel["quantity"]
+            else:
+                direct[parcel['line_key']] += parcel['quantity']
+            sku = line['line']['sku'] or parcel['line_key']
+            if record and purchases[record['id']] > record['quantity']:
+                raise FulfillmentError(
+                    f"SKU {sku} 的采购单 {record['purchase_order_number']} 包裹数量超过采购数量："
+                    f"采购 {record['quantity']} 件，已分配 {purchases[record['id']]} 件。请核对包裹分配。")
+            if counts[parcel['line_key']] > line['line']['quantity']:
+                raise FulfillmentError(
+                    f"SKU {sku} 的包裹数量超过销售数量：销售需要 {line['line']['quantity']} 件，"
+                    f"已分配 {counts[parcel['line_key']]} 件。请核对包裹分配。")
+            package = {"package_of": 1, "num": parcel["quantity"],
+                       "describe": f'{line["line"]["sku"]} · {line["line"]["title"]}',
+                       "img": line["line"].get("image_url", ""), "logistics_order": parcel["tracking_number"]}
+            if record:
+                source = {"1688": 1, "taobao": 2, "pinduoduo": 3}.get(record["source"]["source_platform"])
+                if not source:
+                    raise FulfillmentError("当前只支持 1688、淘宝或拼多多采购包裹。")
+                package.update(from_platform=source, from_order=record['purchase_order_number'])
+                package['describe'] += f" · {record['source']['specification']}"
+            result.append(package)
+        for key, quantity in direct.items():
+            line = lines[key]
+            purchased = sum(r['quantity'] for r in line['records'] if r['status'] == 'purchased')
+            if purchased + quantity > line['line']['quantity']:
+                raise FulfillmentError(
+                    f"SKU {line['line']['sku'] or key} 的有效采购 {purchased} 件与直接录入包裹 {quantity} 件"
+                    f"超过销售数量 {line['line']['quantity']} 件。请先作废不再履约的采购记录，或核对包裹关联与数量。")
         if complete:
-            for line in lines.values():
-                for record in line['records']:
-                    if record['status'] == 'purchased' and record.get('supplemental') and purchases[record['id']] != record['quantity']:
-                        raise FulfillmentError("补单包裹尚未齐全，请等待发货或核对包裹分配")
-        if complete and (not lines or any(counts[k] != line["line"]["quantity"] for k, line in lines.items())):
-            raise FulfillmentError("请补齐全部商品的国内包裹及数量。")
+            if not lines:
+                raise FulfillmentError("订单缺少商品明细，请同步订单后核对。")
+            for key, line in lines.items():
+                sku = line['line']['sku'] or key
+                records = [r for r in line['records'] if r['status'] == 'purchased']
+                purchased = sum(r['quantity'] for r in records)
+                required = line['line']['quantity']
+                if purchased + direct[key] < required:
+                    raise FulfillmentError(
+                        f"SKU {sku} 销售需要 {required} 件，有效采购 {purchased} 件、直接录入包裹 {direct[key]} 件，"
+                        f"还缺 {required - purchased - direct[key]} 件。请直接录入包裹，或登记实际采购并关联运单。")
+                for record in records:
+                    assigned = purchases[record['id']]
+                    if assigned == record['quantity']:
+                        continue
+                    context = (f"SKU {sku} 的采购单 {record['purchase_order_number']}：采购 {record['quantity']} 件，"
+                               f"已分配 {assigned} 件，还缺 {record['quantity'] - assigned} 件。")
+                    progress = record.get('progress') or {}
+                    logistics = (progress.get('data') or {}).get('logistics') or []
+                    if assigned or any(str(p.get('tracking_number') or '').strip() for p in logistics):
+                        raise FulfillmentError(context + "已有国内运单，但包裹分配未齐全。请在国内包裹中核对采购记录、运单和数量。")
+                    raise FulfillmentError(context + "尚未取得国内运单，请刷新采购物流；如已发货，可录入并关联实际运单。")
         return result
 
     def delivery_packages(self, value, detail):
@@ -119,7 +179,7 @@ class FulfillmentService:
                     if source not in delivered:
                         delivered[source] = self.image_delivery(source)
                     package["img"] = delivered[source]
-        return packages
+        return group_domestic_packages(packages)
 
     def readiness(self, order, detail, value, rule, plan, *, require_label=True):
         if order.state not in {"pending_shipment", "processing"}:
@@ -133,6 +193,15 @@ class FulfillmentService:
         if order.platform != "yandex" and (not order.delivery.warehouse_id or not order.delivery.method_id):
             return "平台尚未提供实际仓库或配送方式，请同步订单。"
         try:
+            self.validate_purchase_quantities(detail)
+            for line in detail['lines']:
+                for record in line['records']:
+                    progress = record.get('progress') or {}
+                    if record['status'] == 'purchased' and progress.get('state') == 'conflict':
+                        sku = line['line']['sku'] or line['selection']['line_key']
+                        reason = progress.get('message') or '采购运单与已保存的包裹分配不一致'
+                        return (f"SKU {sku} 的采购单 {record['purchase_order_number']} 存在包裹分配冲突："
+                                f"{reason.rstrip('。')}。请先在国内包裹中核对并确认分配。")
             self.validate_plan(plan, rule, order=order)
             if value.get('attempt_history') and not value['override']:
                 return '请重新选择并保存本单报单服务'
@@ -144,9 +213,6 @@ class FulfillmentService:
             if require_label and (not value["platform_label"] or not value["platform_tracking_number"]):
                 return value.get("label_error") or "等待平台面单，请获取平台面单或人工补充面单资料。"
             self.parcels_payload(value["parcels"], detail, complete=True)
-            if any(record['status'] == 'purchased' and (record.get('progress') or {}).get('state') == 'conflict'
-                   for line in detail['lines'] for record in line['records']):
-                return "采购运单存在冲突，请先确认国内包裹分配"
         except ValueError as exc:
             return str(exc)
         return ""
@@ -164,7 +230,11 @@ class FulfillmentService:
         receiving_value = self.store.receiving.get(order.identity)
         receiving = self.store.receiving.public(receiving_value)
         with self.store.orders.connect() as conn:
-            receiving_binding_stale = self.store.receiving.binding_stale(conn, receiving_value, value)
+            receiving_binding_stale = self.store.receiving.binding_stale(conn, receiving_value)
+            _, reserved = self.store.receiving.purchase_state(conn, order_id)
+        restartable = (self.store.can_restart_cancelled(value, self.client.identity())
+                       and order.state == 'pending_shipment' and not reserved
+                       and self.accounts_provider().get(order.platform) == order.account_id)
         label_reason = self.label_provider.unsupported_reason(order) if self.label_provider else "当前平台尚未接入面单获取。"
         response = {"ok": True, **value, "delivery": order.delivery.model_dump(), "country": country,
                 "receiving_binding_stale": receiving_binding_stale,
@@ -173,7 +243,7 @@ class FulfillmentService:
                 "blocked_reason": self.readiness(order, detail, value, rule, plan),
                 "label_fetch_supported": not label_reason, "label_fetch_reason": label_reason,
                 "editable": not value["busy"] and not value["create_unknown"] and value["fulfillment_status"] not in LOCKED_STATES and not value["cancel_requested"] and not value.get("warehouse_locked") and (not value["bus_identity"] or value["bus_identity"] == self.client.identity()),
-                "plan_editable": not value["crossborderbus_order_id"] and not value["create_unknown"] and not value["busy"] and not value["cancel_requested"],
+                "plan_editable": restartable or (value['fulfillment_status'] != 'CANCELLED' and not value["crossborderbus_order_id"] and not value["create_unknown"] and not value["busy"] and not value["cancel_requested"]),
                 "editing": value["editing_until"] > time.time()}
         return FulfillmentView.model_validate(response).model_dump(mode="json")
 
@@ -254,11 +324,13 @@ class FulfillmentService:
         current = self.detail(request.order_id)
         changes = {}
         guard = None
+        restarting = action == 'plan' and value['fulfillment_status'] == 'CANCELLED'
+        restart_identity = None
         if action == "cancel":
             changes = {"cancel_requested": True, "editing_until": 0, "next_attempt": 0, "error_message": ""}
         elif action in {"retry", "submit"}:
             if value['fulfillment_status'] == 'CANCELLED':
-                raise FulfillmentError('履约已取消，请先重新设置报单绑定')
+                raise FulfillmentError('履约已取消，请先设置本次报单方案，再明确提交')
             if action == "retry" and value["create_unknown"]:
                 return self.sync(request.order_id, request.revision)
             if action == "submit" and (current["blocked_reason"] or value["crossborderbus_order_id"] or value["create_unknown"] or current["editing"]):
@@ -288,7 +360,7 @@ class FulfillmentService:
         elif action == "resume":
             changes = {"editing_until": 0}
         else:
-            if not current["editable"]:
+            if not current["editable"] and not (restarting and current['plan_editable']):
                 raise FulfillmentError("资料已锁定或创建结果尚未确认，暂不能修改。")
             if action == "plan":
                 if not current["plan_editable"] or request.plan is None:
@@ -298,19 +370,33 @@ class FulfillmentService:
                 receiving = self.receiving.checked(order.identity) if order.platform == 'yandex' else None
                 if receiving and request.receiving_revision != receiving['revision']:
                     raise FulfillmentError('收货仓资料已变化，请重新打开服务选择')
+                if restarting:
+                    if value['revision'] != request.revision:
+                        raise FulfillmentError('履约资料已更新，请刷新后再操作')
+                    if value['crossborderbus_order_id']:
+                        remote = self.client.request('/erpapi/orderlist/status',
+                            {'order_id': value['crossborderbus_order_id']}, expected_identity=identity).get('data')
+                        if (not isinstance(remote, dict) or remote.get('id') != value['crossborderbus_order_id']
+                                or not (remote.get('is_delete') in {1, 2} or remote.get('status_type') == 'deleted')):
+                            raise FulfillmentError('跨境巴士尚未确认原报单已作废，不能开始本次报单')
+                    restart_identity = identity
                 selected = self.validate_plan(plan, current["rule"], refresh=True, order=order)
                 changes = {"plan": plan, "override": True, "editing_until": 0, "manual_submit": False,
                            "selected_services": selected, "receiving_revision": receiving['revision'] if receiving else 0}
                 if request.remark is not None:
                     changes["remark"] = request.remark
-                if receiving:
+                if receiving or restarting:
                     def guard(conn):
                         row = conn.execute("SELECT snapshot FROM orders WHERE id=?", (request.order_id,)).fetchone()
                         latest = OrderSnapshot.model_validate_json(row[0]) if row else None
-                        if (latest is None or self.accounts_provider().get(order.platform) != order.account_id
+                        if (latest is None or latest.identity != order.identity or latest.state != 'pending_shipment'
+                                or self.accounts_provider().get(order.platform) != order.account_id
                                 or self.client.identity() != identity):
                             raise FulfillmentError("订单或账号已变化，请重新确认收货仓")
-                        self.store.receiving.validate(conn, latest, receiving)
+                        if receiving:
+                            self.store.receiving.validate(conn, latest, receiving)
+                        if restarting and self.store.receiving.purchase_state(conn, request.order_id)[1]:
+                            raise FulfillmentError('采购正在提交或结果待核验，不能开始本次报单')
             elif action == "parcels":
                 if request.parcels is None:
                     raise FulfillmentError("请提供完整国内包裹列表。")
@@ -332,11 +418,12 @@ class FulfillmentService:
             else:
                 raise FulfillmentError("不支持的履约操作。")
             changes.update(error_message="", next_attempt=0)
-            if value["crossborderbus_order_id"]:
+            if value["crossborderbus_order_id"] and not restarting:
                 changes["update_pending"] = True
         if action == "parcels" and self.purchase_progress is not None:
             guard = lambda conn: self.purchase_progress.resolve(conn, request.order_id, changes["parcels"], self.accounts_provider())
-        self.store.change(request.order_id, request.revision, changes, allow_busy=action == "cancel", guard=guard)
+        self.store.change(request.order_id, request.revision, changes, allow_busy=action == "cancel", guard=guard,
+                          restart_identity=restart_identity)
         return self.detail(request.order_id)
 
     def search_current(self, value):

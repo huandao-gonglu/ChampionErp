@@ -124,7 +124,7 @@ export interface FulfillmentDetail extends FulfillmentSummary {
   parcels: DomesticParcel[]
 }
 export const fulfillmentStatusNames: Record<FulfillmentStatus, string> = {
-  NEW: '待预报', FULFILLMENT_CREATED: '已创建预报', WAITING_DOMESTIC_SHIPMENT: '待到仓',
+  NEW: '待报单', FULFILLMENT_CREATED: '已创建预报', WAITING_DOMESTIC_SHIPMENT: '待到仓',
   WAREHOUSE_RECEIVED: '包裹已入库', PACKING: '已打包', SHIPPED: '仓库已发货',
   COMPLETED: '履约状态待核对', EXCEPTION: '履约异常', CANCELLED: '履约已取消',
 }

@@ -80,6 +80,22 @@ def test_conflict_and_manual_resolution_preserved(setup):
     assert fulfillment.detail(body['order_id'])['parcels'] == manual
 
 
+def test_reship_split_survives_refresh_of_original_purchase_logistics(setup):
+    procurement, fulfillment, body, _, run = setup
+    run()
+    current = fulfillment.detail(body['order_id'])
+    original = current['parcels'][0]
+    parcels = [{**original, 'quantity': 1},
+               {**original, 'id': 'reship', 'tracking_number': 'RESEND123', 'quantity': 1, 'carrier': ''}]
+    fulfillment.command('parcels', {'order_id': body['order_id'], 'revision': current['revision'], 'parcels': parcels})
+    # 商家原采购物流仍只有旧单号，刷新不能把人工确认的补发包裹覆盖或累加。
+    for _ in range(2):
+        assert progress(run())['state'] == 'manual'
+        assert fulfillment.detail(body['order_id'])['parcels'] == parcels
+    records = procurement.detail(body['order_id'])['lines'][0]['records']
+    assert len(records) == 1 and records[0]['status'] == 'purchased'
+
+
 def test_new_remote_waybill_reports_conflict(setup):
     _, fulfillment, body, client, run = setup
     run()

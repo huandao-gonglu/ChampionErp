@@ -27,8 +27,6 @@ export {
   type BackendPurchasePackageStatus,
   type BackendPurchaseTrackingSummary,
   type BackendPurchaseProgressView,
-  type BackendSupplementCandidate,
-  type BackendSupplementLookupResult,
   type BackendApiResponse,
   type BackendAppStateResponse,
   type BackendDraftClaimTarget,

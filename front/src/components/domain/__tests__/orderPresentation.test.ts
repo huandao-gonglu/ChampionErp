@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { deadline, orderProcessingProgress } from '../orderPresentation'
 import type { OrderSnapshot } from '@/types/orders'
 import type { FulfillmentSummary } from '@/types/fulfillment'
+import type { BackendPurchasePackageStatus } from '@/types/workflow.generated'
 const now = Date.parse('2026-10-13T08:00:00Z')
 describe('发货日期精度', () => {
   it('只有日期时不补造零点，也不显示超时或小时倒计时', () => {
@@ -73,14 +74,19 @@ const purchaseOrder: OrderSnapshot = {
   },
 }
 describe('采购到报单的状态衔接', () => {
+  it.each(['unpurchased', 'partial'])('直接录入运单后不受采购状态 %s 阻挡', procurement_status => {
+    expect(orderProcessingProgress({ ...order, procurement_status }, { ...facts, has_domestic_waybill: true })).toMatchObject({
+      label: '待报单', target: 'fulfillment', note: expect.stringContaining('核对包裹分配'),
+    })
+  })
   it('没有运单时显示采购订单状态，不被面单错误遮挡', () => {
     expect(orderProcessingProgress(purchaseOrder, { ...facts, label_error: '面单失败' }).label).toBe('等待买家付款')
     const updated = { ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, orders: [{ order_number: '123', status: 'waitsellersend', status_label: '等待卖家发货' }] } }
     expect(orderProcessingProgress(updated, facts).label).toBe('等待卖家发货')
   })
-  it('有远端运单或人工登记运单后进入待预报，尚未等同已报单', () => {
-    expect(orderProcessingProgress(purchaseOrder, { ...facts, has_domestic_waybill: true }).label).toBe('待预报')
-    expect(orderProcessingProgress({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, has_waybill: true } }, facts).label).toBe('待预报')
+  it('有远端运单或人工登记运单后进入待报单，尚未等同已报单', () => {
+    expect(orderProcessingProgress(purchaseOrder, { ...facts, has_domestic_waybill: true }).label).toBe('待报单')
+    expect(orderProcessingProgress({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, has_waybill: true } }, facts).label).toBe('待报单')
   })
   it('已有预报后始终展示仓库状态，不因采购查询失败倒退', () => {
     expect(orderProcessingProgress(purchaseOrder, { ...facts, crossborderbus_order_id: 123, fulfillment_status: 'WAREHOUSE_RECEIVED' }).label).toBe('包裹已入库')
@@ -91,35 +97,51 @@ describe('采购到报单的状态衔接', () => {
     expect(orderProcessingProgress({ ...mixed, purchase_tracking: { ...mixed.purchase_tracking, unknown_count: 1 } }, facts).label).toBe('部分采购状态待查询')
     expect(orderProcessingProgress({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, stale: true } }, facts).note).toContain('保留最近查询结果')
   })
-  it('采购取消显示异常，不提前显示待预报', () => {
+  it('采购取消显示异常，不提前显示待报单', () => {
     expect(orderProcessingProgress({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, orders: [{ order_number: '123', status: 'cancel', status_label: '交易取消' }] } }, facts)).toMatchObject({ label: '交易取消', tone: 'red' })
   })
 })
 
-// 多包裹展示按最近更新时间，不按履约阶段排序。
-describe('多包裹按更新时间汇总', () => {
-  const packages = [
+describe('多包裹不覆盖 ERP 报单进度', () => {
+  const packages: BackendPurchasePackageStatus[] = [
     { id: 'first', order_numbers: ['123'], company: '圆通', tracking_number: 'YT1', source: 'logistics' as const, status: 'SIGN', status_label: '已签收', updated_at: '2026-10-13T08:00:00Z', stale: false },
     { id: 'second', order_numbers: ['456'], company: '顺丰', tracking_number: 'SF2', source: 'logistics' as const, status: 'TRANSPORT', status_label: '运输中', updated_at: '2026-10-13T09:00:00Z', stale: false },
   ]
   const withPackages = (value = packages) => ({ ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, has_waybill: true, packages: value } })
-  it('刚更新的运输中优先于较早的已签收，并展示部分修饰', () => {
-    expect(orderProcessingProgress(withPackages(), facts)).toMatchObject({ label: '部分运输中', target: 'fulfillment' })
-    expect(orderProcessingProgress(withPackages([...packages].reverse()), facts).label).toBe('部分运输中')
+  it.each([
+    ['部分运输中', packages],
+    ['全部已签收', packages.map(p => ({ ...p, status: 'SIGN', status_label: '已签收' }))],
+    ['查询过期', packages.map(p => ({ ...p, stale: true }))],
+    ['顺序变化', [...packages].reverse()],
+    ['单包裹', [packages[0]!]],
+  ])('%s 时未报单仍显示待报单', (_, value) => {
+    expect(orderProcessingProgress(withPackages(value), facts)).toMatchObject({ label: '待报单', sourceKind: 'erp', target: 'fulfillment' })
   })
-  it('全部状态相同直接展示，单包裹继续沿用原有报单进度', () => {
-    expect(orderProcessingProgress(withPackages(packages.map(p => ({ ...p, status: 'SIGN', status_label: '已签收' }))), facts).label).toBe('已签收')
-    expect(orderProcessingProgress(withPackages([packages[0]!]), facts).label).toBe('待预报')
+  it.each([
+    [{ busy: true, operation: 'create' }, '正在提交预报'],
+    [{ create_unknown: true }, '创建待确认'],
+    [{ busy: true, operation: 'fetch-label' }, '正在获取面单'],
+    [{ error_message: '报单失败' }, '预报异常'],
+    [{ fulfillment_status: 'EXCEPTION' }, '预报异常'],
+    [{ label_error: '面单下载失败' }, '面单获取异常'],
+    [{ cancel_requested: true }, '已停止预报'],
+  ] as const)('包裹状态不遮挡 %j 对应的 %s', (overrides, label) => {
+    expect(orderProcessingProgress(withPackages(), { ...facts, ...overrides }).label).toBe(label)
   })
-  it('查询失败不替换已有状态，悬浮明细保留过期标记', () => {
-    const state = orderProcessingProgress(withPackages(packages.map(p => ({ ...p, stale: true }))), facts)
-    expect(state.label).toBe('部分运输中')
-    expect(state.note).toContain('保留最近成功结果')
+  it('已有报单时优先展示仓库进度', () => {
+    expect(orderProcessingProgress(withPackages(), { ...facts, crossborderbus_order_id: 99, fulfillment_status: 'WAREHOUSE_RECEIVED' })).toMatchObject({ label: '包裹已入库', sourceKind: 'crossborderbus' })
   })
-  it('更晚更新的待发货也按用户规则成为主状态', () => {
+  it('部分采购尚无运单时仍提示待报单，不推断资料齐全', () => {
     const pending = { id: 'pending', order_numbers: ['789'], company: '', tracking_number: '', source: 'order' as const, status: 'waitsellersend', status_label: '等待卖家发货', updated_at: '2026-10-13T10:00:00Z', stale: false }
-    const snapshot = { ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, packages: [...packages, pending] } }
-    expect(orderProcessingProgress(snapshot, facts).label).toBe('部分待发货')
-    expect(orderProcessingProgress(snapshot, { ...facts, crossborderbus_order_id: 99, fulfillment_status: 'SHIPPED' }).label).toBe('仓库已发货')
+    expect(orderProcessingProgress(withPackages([...packages, pending]), facts)).toMatchObject({ label: '待报单', note: expect.stringContaining('核对包裹分配') })
+  })
+  it('采购未完成或全部尚无运单时不提前显示待报单', () => {
+    expect(orderProcessingProgress({ ...withPackages(), procurement_status: 'partial' }, facts).label).toBe('采购登记中')
+    const pending = packages.map(p => ({ ...p, tracking_number: '', source: 'order' as const, status: 'waitsellersend', status_label: '等待卖家发货' }))
+    const snapshot = { ...purchaseOrder, purchase_tracking: { ...purchaseOrder.purchase_tracking!, packages: pending, orders: [
+      { order_number: '123', status: 'waitsellersend', status_label: '等待卖家发货' },
+      { order_number: '456', status: 'waitsellersend', status_label: '等待卖家发货' },
+    ] } }
+    expect(orderProcessingProgress(snapshot, facts).label).toBe('等待卖家发货')
   })
 })

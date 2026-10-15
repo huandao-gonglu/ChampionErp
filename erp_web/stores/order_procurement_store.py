@@ -16,6 +16,7 @@ from erp_web.schemas.order_procurement import (
 from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
 from erp_web.stores.order_notification_store import OrderNotificationStore
 from erp_web.stores.purchase_progress_store import PurchaseProgressStore
+from erp_web.stores.fulfillment_store import FulfillmentStore
 from erp_web.stores.receiving_warehouse_store import ReceivingWarehouseStore
 
 SCHEMA = """
@@ -335,8 +336,8 @@ class OrderProcurementStore:
             )
             conn.commit()
 
-    def purchase(self, request, accounts, *, supplemental_source=None):
-        digest = hashlib.sha256((request.model_dump_json() + (supplemental_source.model_dump_json() if supplemental_source else "")).encode()).hexdigest()
+    def purchase(self, request, accounts):
+        digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
         with self.orders.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             order = self._order(conn, request.order_id, accounts)
@@ -365,35 +366,14 @@ class OrderProcurementStore:
                 "SELECT COALESCE(SUM(quantity),0) FROM order_purchases WHERE order_id=? AND line_key=? AND line_signature=? AND status='purchased'",
                 (request.order_id, request.line_key, line_signature(line)),
             ).fetchone()[0]
-            if supplemental_source:
-                if self._reserved(conn, request.order_id, request.line_key):
-                    raise ValueError("原采购正在提交或待核验，请先核对原采购")
-                if request.quantity > line.quantity:
-                    raise ValueError("补单数量超过销售订单该 SKU 的数量")
-                if not purchased:
-                    raise ValueError("尚无有效采购，请先登记首次采购")
-                existing = conn.execute("SELECT record_json FROM order_purchases WHERE order_id=? AND status='purchased'",
-                                        (request.order_id,)).fetchall()
-                for row in existing:
-                    saved = PurchaseRecord.model_validate_json(row[0])
-                    if (saved.purchase_order_number == request.purchase_order_number.strip()
-                            and saved.source.source_sku_id == supplemental_source.source_sku_id):
-                        raise ValueError("这笔采购商品已登记，请勿重复补单")
-                if conn.execute("SELECT 1 FROM sqlite_master WHERE name='fulfillments'").fetchone():
-                    row = conn.execute("SELECT value,claim FROM fulfillments WHERE id=?", (request.order_id,)).fetchone()
-                    fulfillment = json.loads(row[0]) if row else {}
-                    if (row and row["claim"]) or fulfillment.get("crossborderbus_order_id") or fulfillment.get("create_unknown"):
-                        raise ValueError("报单已开始，请先处理原报单后再补单")
-            elif purchased + self._reserved(conn, request.order_id, request.line_key) + request.quantity > line.quantity:
-                raise ValueError("采购数量超过订单剩余数量；请先检查已有采购记录")
+            if purchased + self._reserved(conn, request.order_id, request.line_key) + request.quantity > line.quantity:
+                raise ValueError("采购数量超过订单剩余数量；请先作废本 SKU 不再用于履约的原采购记录")
             number = request.purchase_order_number.strip()
             if not number:
                 raise ValueError("请填写采购单号")
             receiving = None
             if order.platform == "yandex":
                 stored = self.receiving.read(conn, request.order_id)
-                if supplemental_source and not stored:
-                    raise ValueError("请先确定本单收货仓，再登记补单")
                 if stored:
                     receiving = self.receiving.public(self.receiving.validate(conn, order))
                     if request.receiving_revision != receiving['revision'] or not request.receiving_confirmed:
@@ -405,8 +385,7 @@ class OrderProcurementStore:
                 request_id=request.request_id,
                 quantity=request.quantity,
                 purchase_order_number=number,
-                source=supplemental_source or ProcurementSource.model_validate_json(source["source_json"]),
-                supplemental=bool(supplemental_source),
+                source=ProcurementSource.model_validate_json(source["source_json"]),
                 created_at=utc_iso(),
             )
             conn.execute(
@@ -437,15 +416,17 @@ class OrderProcurementStore:
             if not row:
                 raise ValueError("采购记录不存在")
             record = PurchaseRecord.model_validate_json(row[0])
-            automatic = conn.execute("SELECT state FROM order_purchase_reservations WHERE id=?", (record.request_id,)).fetchone()
-            if automatic and automatic["state"] == "recorded":
-                raise ValueError("请先在 1688 取消订单，再从 1688 采购入口查询原订单以同步撤销")
-            if record.status != "cancelled":
-                record.status, record.cancelled_at = "cancelled", utc_iso()
-                conn.execute(
-                    "UPDATE order_purchases SET status='cancelled',record_json=? WHERE id=?",
-                    (record.model_dump_json(), record.id),
-                )
+            if record.status == "cancelled":
+                return
+            # 作废的是当前 SKU 的本地履约采购，不取消共享的远端采购订单。
+            if self._reserved(conn, request.order_id, record.line_key):
+                raise ValueError("本 SKU 采购正在提交或待核验，请先核对采购结果")
+            FulfillmentStore.remove_purchase_parcels(conn, request.order_id, record.id)
+            record.status, record.cancelled_at = "cancelled", utc_iso()
+            conn.execute(
+                "UPDATE order_purchases SET status='cancelled',record_json=? WHERE id=?",
+                (record.model_dump_json(), record.id),
+            )
             conn.commit()
 
     @staticmethod

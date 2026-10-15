@@ -273,6 +273,8 @@ describe('订单采购弹窗', () => {
       .trigger('click')
     expect(procurementCommand).not.toHaveBeenCalled()
     expect(wrapper.get('dialog').text()).toContain('不会取消采购平台订单')
+    expect(wrapper.get('dialog').text()).toContain('同一采购单、同一包裹中的其他 SKU 不受影响')
+    expect(wrapper.text()).not.toContain('登记补单')
     await wrapper
       .get('dialog')
       .findAll('button')

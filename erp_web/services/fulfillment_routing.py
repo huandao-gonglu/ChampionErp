@@ -5,6 +5,7 @@ import json
 import unicodedata
 
 from erp_web.schemas.fulfillment import FulfillmentError
+from erp_web.services.fulfillment_packages import domestic_waybill_key
 
 
 def _normalized(value):
@@ -54,7 +55,7 @@ def validate_services(plan, services):
 
 def consolidation_reason(parcels, plan):
     """同运单承载多个 SKU 仍只算一个国内包裹；合单服务须由用户明确指定。"""
-    bills = {p['tracking_number'].strip().upper() for p in parcels if p.get('tracking_number', '').strip()}
+    bills = {domestic_waybill_key(p['tracking_number']) for p in parcels if p.get('tracking_number', '').strip()}
     if len(bills) > 1 and (not plan or not plan.get('consolidation_service_id')
                            or plan['consolidation_service_id'] not in plan['service_ids']):
         return f'本订单有 {len(bills)} 个国内包裹，请在报单方案中选择并确认仓库合单服务'

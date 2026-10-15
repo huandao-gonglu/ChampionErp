@@ -33,8 +33,7 @@ async function save() {
   try {
     emit('saved', await saveReceivingWarehouse({ order_id: view.value.order_id, revision: view.value.revision,
       address_id: selected.value.id, address_revision: selected.value.revision, section_id: selected.value.section_id,
-      delivery_key: view.value.delivery_key, confirmed: confirmed.value, existing_purchase_confirmed: existingConfirmed.value,
-      ...(view.value.fulfillment_revision != null ? { fulfillment_revision: view.value.fulfillment_revision } : {}) }))
+      delivery_key: view.value.delivery_key, confirmed: confirmed.value, existing_purchase_confirmed: existingConfirmed.value }))
   } catch (exc) { error.value = exc instanceof Error ? exc.message : '保存收货地址失败' }
   finally { saving.value = false }
 }
@@ -67,7 +66,6 @@ onBeforeUnmount(() => { version++ })
         </div>
         <p v-if="view.locked" class="order-muted">收货安排已锁定，请先处理正在提交、待核验或已创建的原操作。配置未变化的已采购订单不能换仓。</p>
         <p v-if="view.binding_stale" class="order-muted">重新绑定后须重新选择报单服务。原采购地址记录保留，已发出的包裹不会自动改寄。</p>
-        <p v-if="view.cancelled_fulfillment" class="order-muted">保存时将核实并归档原作废报单，保留国内运单和面单；重选服务后须点击提交才会报单。</p>
         <label v-if="requiresPurchaseConfirmation" class="order-check"><input v-model="existingConfirmed" type="checkbox" />{{ view.binding_stale ? '已核对已有采购包裹的收货安排，并确认使用所选仓库及地址报单' : '已核对已有采购包裹实际寄往此仓库和地址' }}</label>
         <label class="order-check"><input v-model="confirmed" type="checkbox" />已核对本单物流方案、收件人、电话及地址</label>
       </fieldset>

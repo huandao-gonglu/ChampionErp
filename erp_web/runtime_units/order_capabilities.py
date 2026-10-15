@@ -87,7 +87,7 @@ def order_purchase_record(request: OrderPurchaseRecordRequest, scope: Annotated[
         {**request.model_dump(mode="json"), "request_id": operation_key(execution)})))
 
 
-@ai_tool(name="order_purchase_cancel", description="作废本地采购登记并释放数量，不代表取消 1688 订单；自动采购须先核实远端取消，服务会拒绝不满足条件的作废。",
+@ai_tool(name="order_purchase_cancel", description="按采购 record_id 作废当前 SKU 的本地采购并释放数量，同时移除该记录的国内包裹分配；同单其他 SKU 不受影响，不取消远端采购订单。手工及自动采购均可在报单前作废；报单已开始或结果待核实时禁止作废。",
          permission="order.procurement", side_effect="write", approval_required=True, approval_snapshot=_cancel_snapshot,
          idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual")
 def order_purchase_cancel(request: CancelPurchaseRequest, scope: Annotated[OrderCapabilityScope, Injected()], execution: Annotated[AiExecutionContext, Injected()]) -> OrderDataResult[OrderDetail]:

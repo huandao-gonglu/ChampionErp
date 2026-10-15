@@ -1102,11 +1102,15 @@ def test_order_progress_sync_is_explicitly_composed_and_not_a_read_side_effect()
     assert source.index('self.store.save_snapshot(') < source.index('self.progress_sync(snapshot.identity, checkpoint)')
 
 
-def test_supplement_reuses_procurement_and_readonly_alibaba_transport():
-    """补单不引入远端下单、支付或独立后台跟踪 owner。"""
-    path = ROOT / "erp_web/services/order_supplement_service.py"
-    targets = {target for _, target in imported_targets([path])}
-    assert "erp_web.services.alibaba_api_client.AlibabaApiClient" in targets
-    assert not any("self_purchase" in target or "threading" in target or "runtime_units" in target for target in targets)
-    route_targets = {target for _, target in imported_targets([ROOT / "erp_web/http_route_units/order_routes.py"])}
-    assert not any(target.startswith("erp_web.services") for target in route_targets)
+def test_purchase_cancellation_uses_fulfillment_owner_in_same_transaction():
+    """采购作废委托履约 owner 清理分配，退役的超量补单不再提供写入口。"""
+    from erp_web.http_route_units.order_routes import POST_HANDLERS
+    from erp_web.schemas.requests import REQUEST_CONTRACTS
+    for path in ('/api/orders/supplement-lookup', '/api/orders/supplement-record'):
+        assert path not in POST_HANDLERS
+        assert path not in REQUEST_CONTRACTS
+    source = (ROOT / 'erp_web/stores/order_procurement_store.py').read_text()
+    assert 'FulfillmentStore.remove_purchase_parcels(conn, request.order_id, record.id)' in source
+    assert 'UPDATE fulfillments' not in source
+    route_targets = {target for _, target in imported_targets([ROOT / 'erp_web/http_route_units/order_routes.py'])}
+    assert not any(target.startswith('erp_web.services') for target in route_targets)

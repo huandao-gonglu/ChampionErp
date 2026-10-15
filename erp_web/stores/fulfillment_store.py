@@ -141,7 +141,7 @@ class FulfillmentStore:
             summaries[keys[(row["platform"], row["account_id"], row["platform_order_id"])]] = FulfillmentSummary.model_validate(summary).model_dump(mode="json")
         return summaries
 
-    def change(self, order_id, revision, changes, *, allow_busy=False, guard=None):
+    def change(self, order_id, revision, changes, *, allow_busy=False, guard=None, restart_identity=None):
         with self.orders.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM fulfillments WHERE id=?", (order_id,)).fetchone()
@@ -151,11 +151,32 @@ class FulfillmentStore:
                 raise ValueError("履约操作正在执行，请稍后重试")
             if guard is not None:
                 guard(conn)
-            value = json.loads(row["value"])
+            value = (self.archive_cancelled(conn, self._value(row), restart_identity)
+                     if restart_identity is not None else json.loads(row["value"]))
             value.update(changes)
-            conn.execute("UPDATE fulfillments SET value=?,revision=revision+1 WHERE id=?", (json.dumps(value, ensure_ascii=False), order_id))
+            conn.execute("UPDATE fulfillments SET value=?,revision=revision+1,claim=?,lease_until=? WHERE id=?",
+                         (json.dumps(value, ensure_ascii=False),
+                          '' if restart_identity is not None else row['claim'],
+                          0 if restart_identity is not None else row['lease_until'], order_id))
             conn.commit()
         return self.get(order_id)
+
+    @staticmethod
+    def remove_purchase_parcels(conn, order_id, record_id):
+        """与采购作废共用短事务，只移除该记录的分配并使旧履约版本失效。"""
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='fulfillments'").fetchone():
+            return
+        row = conn.execute("SELECT * FROM fulfillments WHERE id=?", (order_id,)).fetchone()
+        if row is None:
+            return
+        value = json.loads(row["value"])
+        if (row["claim"] or value.get("operation") == "create" or value.get("create_unknown")
+                or value.get("crossborderbus_order_id") or value.get("warehouse_locked")):
+            raise ValueError("报单已开始、结果待核实或资料已锁定，不能作废采购；请先处理原报单")
+        value["parcels"] = [p for p in value.get("parcels", []) if p["purchase_record_id"] != record_id]
+        value["manual_submit"] = False
+        conn.execute("UPDATE fulfillments SET value=?,revision=revision+1 WHERE id=?",
+                     (json.dumps(value, ensure_ascii=False), order_id))
 
     def claim(self, order_id, action, revision):
         now = time.time()
@@ -186,6 +207,7 @@ class FulfillmentStore:
                 if (order.state != 'pending_shipment' or value.get('receiving_revision') != receiving['revision']
                         or any(plan.get(k) != receiving[k] for k in ('section_id', 'warehouse_id'))):
                     return None
+                value['receiving_warehouse_snapshot'] = self.receiving.public(receiving)
             if action == "create":
                 value["create_unknown"] = True
             if action == "associate":
@@ -205,30 +227,35 @@ class FulfillmentStore:
         return FulfillmentStore._value(row) if row else None
 
     @staticmethod
-    def can_rebind_cancelled(value, identity):
+    def can_restart_cancelled(value, identity):
         return bool(value and value['fulfillment_status'] == 'CANCELLED'
                     and not value['busy'] and not value['create_unknown'] and value['operation'] != 'create'
                     and identity and (not value['bus_identity'] or value['bus_identity'] == identity))
 
     @staticmethod
-    def archive_cancelled(conn, order_id, revision, identity):
-        """与新收货绑定共用调用方事务；任一校验失败均保留旧单和旧绑定。"""
-        value = FulfillmentStore.read(conn, order_id)
-        if not FulfillmentStore.can_rebind_cancelled(value, identity) or value['revision'] != revision:
-            raise ValueError('原履约状态或版本已变化，请刷新后重新确认报单绑定')
+    def archive_cancelled(conn, value, identity):
+        """在保存新方案的事务内生成归档与新尝试；仓库绑定保持不变。"""
+        if not FulfillmentStore.can_restart_cancelled(value, identity):
+            raise ValueError('原履约状态已变化，请刷新后重新设置报单方案')
+        receiving = value.get('receiving_warehouse_snapshot')
+        if not receiving:
+            previous = ReceivingWarehouseStore.read(conn, value['erp_order_id'])
+            # 旧数据没有报单快照时，只使用仍与旧方案一致的绑定，不能把新仓库记到旧单。
+            if (previous and previous['revision'] == value.get('receiving_revision')
+                    and all(previous[k] == (value.get('plan') or {}).get(k) for k in ('section_id', 'warehouse_id'))):
+                receiving = ReceivingWarehouseStore.public(previous)
         value = {k: v for k, v in value.items() if k not in {'revision', 'busy', 'has_domestic_waybill'}}
         history = value.get('attempt_history', [])
         history.append({**{k: v for k, v in value.items() if k != 'attempt_history'},
-                        'archived_at': utc_iso(), 'receiving_warehouse': ReceivingWarehouseStore.read(conn, order_id)})
+                        'archived_at': utc_iso(), 'receiving_warehouse': receiving})
         value.update(attempt_history=history, crossborderbus_order_id=None, plan=None, override=False,
                      receiving_revision=0, selected_services=[], fulfillment_status='NEW',
                      operation='', error_message='', last_synced_at='', last_attempt_at='', next_attempt=0,
                      cancel_requested=False, cancel_sent=False, cancel_rejected=False, cancel_at_claim=False,
                      create_unknown=False, warehouse_locked=False, update_pending=False,
                      platform_link_state='', platform_link_error='', editing_until=0,
-                     manual_submit=False, awaiting_resubmission=True)
-        conn.execute("UPDATE fulfillments SET value=?,revision=revision+1,claim='',lease_until=0 WHERE id=?",
-                     (json.dumps(value, ensure_ascii=False), order_id))
+                     receiving_warehouse_snapshot=None, manual_submit=False, awaiting_resubmission=True)
+        return value
 
     def finish(self, order_id, token, changes, *, expected_revision=None):
         with self.orders.connect() as conn:

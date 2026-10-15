@@ -63,6 +63,7 @@ onBeforeUnmount(() => { disposed = true })
   <WorkspaceDialog :open="true" title="设置报单方案" width="740px" class="order-ui" :close-disabled="busy || noteOpen" @close="emit('close')">
     <form id="fulfillment-plan" class="order-form" @submit.prevent="save">
       <p v-if="error" class="order-error" role="alert">{{ error }} <button type="button" class="order-link" :disabled="busy || loading" @click="load">重新读取仓库</button></p>
+      <p v-if="value.fulfillment_status === 'CANCELLED'" class="order-muted">保存时将核实并归档原作废报单，保留收货仓绑定、面单和国内包裹。保存后仍须点击“立即提交”才会重新报单。</p>
       <section v-if="yandex && value.receiving_warehouse" class="handover-card">
         <h3>采购收货仓：{{ value.receiving_warehouse.warehouse_name }}</h3>
         <p>{{ value.receiving_warehouse.transport_service }}</p>

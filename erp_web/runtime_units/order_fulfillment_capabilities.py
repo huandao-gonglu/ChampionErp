@@ -22,8 +22,7 @@ def _receiving_snapshot(request: ReceivingWarehouseRequest, scope: OrderCapabili
         raise BusinessCapabilityError("ORDER_RECEIVING_STALE", "收货仓候选或版本已变化，请重新读取。")
     facts = {**order_facts(request.order_id, scope), "receiving": current,
              "bus_identity": scope.fulfillment().client.identity()}
-    suffix = '；同时核实并归档原作废报单，重选服务并明确提交后才报单' if current.get('cancelled_fulfillment') else ''
-    return snapshot(f"确认收货仓及本单承接能力：{candidate['warehouse_name']}，{json.dumps(candidate['address'], ensure_ascii=False)}{suffix}", request, facts)
+    return snapshot(f"确认收货仓及本单承接能力：{candidate['warehouse_name']}，{json.dumps(candidate['address'], ensure_ascii=False)}", request, facts)
 
 
 def _fulfillment_snapshot(request: OrderFulfillmentRequest, scope: OrderCapabilityScope) -> ToolApprovalSnapshot:
@@ -41,6 +40,10 @@ def _fulfillment_snapshot(request: OrderFulfillmentRequest, scope: OrderCapabili
              f"服务：{json.dumps(current['selected_services'], ensure_ascii=False)}；"
              f"包裹数：{len(current['parcels'])}，商品数量：{sum(p['quantity'] for p in current['parcels'])}；"
              "保存资料可能推进已启用的自动预报或更新已创建仓库单；提交/取消回执不代表远端完成")
+    if request.action == 'plan' and current['fulfillment_status'] == 'CANCELLED':
+        label = (f"保存本次报单方案：{request.plan.model_dump() if request.plan else None}；"
+                 f"核实并归档原作废报单 {current['crossborderbus_order_id']}，保留收货仓绑定、面单和国内包裹；"
+                 "保存后仍须明确提交才会重新报单")
     return snapshot(label, request, facts)
 
 
@@ -49,7 +52,7 @@ def order_receiving_warehouse_read(request: OrderRequest, scope: Annotated[Order
     return OrderDataResult(data=ReceivingWarehouseView.model_validate(call(scope.fulfillment().receiving.detail, request.order_id)))
 
 
-@ai_tool(name="order_receiving_warehouse_update", description="审批后从真实候选确定收货仓及报单绑定。使用最新 revision、address_revision、delivery_key。物流配置变更或原履约取消导致 binding_stale 时，已有采购也可重新选择仓库和地址，但须核对包裹收货安排并设置 existing_purchase_confirmed；该确认不能绕过采购处理中、已有预报或未知结果的锁定。保存取消履约的新绑定时自动核实并归档原作废报单，必须携带当前 fulfillment_revision；未取消且配置未变化的已采购订单不能任意换仓。重绑后须重新保存报单服务，原采购快照不改写。confirmed 仅是业务参数，不能替代审批。",
+@ai_tool(name="order_receiving_warehouse_update", description="审批后从真实候选确定收货仓及报单绑定。使用最新 revision、address_revision、delivery_key。引用的物流配置变更导致 binding_stale 时，已有采购也可重新选择仓库和地址，但须核对包裹收货安排并设置 existing_purchase_confirmed；该确认不能绕过采购处理中、已有预报或未知结果的锁定。取消履约不使仓库绑定失效，保存绑定不归档或重启履约，无需填写 fulfillment_revision；配置未变化的已采购订单不能任意换仓。重绑后须重新保存报单服务，原采购快照不改写。confirmed 仅是业务参数，不能替代审批。",
          permission="order.fulfillment", side_effect="write", approval_required=True, approval_snapshot=_receiving_snapshot,
          idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual")
 def order_receiving_warehouse_update(request: ReceivingWarehouseRequest, scope: Annotated[OrderCapabilityScope, Injected()], execution: Annotated[AiExecutionContext, Injected()]) -> OrderDataResult[ReceivingWarehouseView]:
@@ -67,12 +70,19 @@ def order_fulfillment_services(request: OrderServicesRequest, scope: Annotated[O
     return OrderDataResult(data=BusServices.model_validate(call(scope.fulfillment().client.services, request.section_id, request.warehouse_id)))
 
 
-@ai_tool(name="order_fulfillment_update", description="审批后执行订单履约操作。先读取当前 revision；plan 保存真实服务方案/备注，parcels 保存完整国内包裹列表，label 保存公开面单，fetch-label 获取平台面单，pause/resume 控制编辑，submit 报单，sync 查询原单，associate 关联平台，retry 重试明确失败，cancel 请求取消；已取消后须通过 order_receiving_warehouse_update 重新设置报单绑定，再选择服务并显式 submit。包裹须对应实际采购记录，不伪造单号、承接能力或数量。保存资料可能推进已有自动履约。提交、更新和取消由领域后台执行，返回本地状态不代表远端成功；不要主动循环轮询或重报。",
+@ai_tool(name="order_fulfillment_update", description="审批后执行订单履约操作。先读取当前 revision；plan 保存真实服务方案/备注，收货仓版本由程序从已核验的审批快照传入，无需填写 receiving_revision；parcels 保存完整国内包裹列表，label 保存公开面单，fetch-label 获取平台面单，pause/resume 控制编辑，submit 报单，sync 查询原单，associate 关联平台，retry 重试明确失败，cancel 请求取消；已取消后保留有效收货绑定，直接用 plan 保存本次服务方案；程序核实原报单已作废后归档旧单，仍须显式 submit 才会重报。只有引用配置失效时才先重新确认收货绑定。包裹必须关联销售订单的 line_key；可将 purchase_record_id 留空直接录入，也可关联有效采购记录。不要求整单无采购；某 SKU 原采购作废后可直接补录包裹。有效采购及直接包裹合计不得超过销售数量，不伪造采购单号、承接能力或数量。保存资料可能推进已有自动履约。提交、更新和取消由领域后台执行，返回本地状态不代表远端成功；不要主动循环轮询或重报。",
          permission="order.fulfillment", side_effect="write", approval_required=True, approval_snapshot=_fulfillment_snapshot,
          idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual")
 def order_fulfillment_update(request: OrderFulfillmentRequest, scope: Annotated[OrderCapabilityScope, Injected()], execution: Annotated[AiExecutionContext, Injected()]) -> OrderDataResult[FulfillmentView]:
-    verify(execution, "order_fulfillment_update", _fulfillment_snapshot(request, scope))
-    return OrderDataResult(data=FulfillmentView.model_validate(call(scope.fulfillment().command, request.action, request.model_dump(mode="json", exclude={"action"}))))
+    current = _fulfillment_snapshot(request, scope)
+    verify(execution, "order_fulfillment_update", current)
+    body = request.model_dump(mode="json", exclude={"action", "receiving_revision"})
+    if request.action == "plan":
+        # 摘要校验保证这是批准时的同一份资料；不能在校验后重新取最新版本补入。
+        receiving = current.canonical_payload["facts"]["fulfillment"]["receiving_warehouse"]
+        if receiving:
+            body["receiving_revision"] = receiving["revision"]
+    return OrderDataResult(data=FulfillmentView.model_validate(call(scope.fulfillment().command, request.action, body)))
 
 
 ORDER_FULFILLMENT_AI_CAPABILITIES = (

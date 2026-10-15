@@ -12,13 +12,13 @@ const packages = [
 it('悬浮与聚焦展示快照，Escape 关闭，不调用接口', async () => {
   const fetchSpy = vi.spyOn(window, 'fetch')
   try {
-    const content = orderProgressHint({ platform: 'yandex', state: 'pending_shipment', fulfillment: 'FBS', procurement_status: 'purchased', purchase_tracking: { packages, orders: [], unknown_count: 0 } } as unknown as OrderSnapshot)
-    const wrapper = mount(OrderProgressHint, { props: { content }, slots: { default: '<a href="#">部分待发货</a>' }, attachTo: document.body })
+    const content = orderProgressHint({ platform: 'yandex', state: 'pending_shipment', fulfillment: 'FBS', procurement_status: 'purchased', purchase_tracking: { packages, orders: [], unknown_count: 0, has_waybill: true } } as unknown as OrderSnapshot)
+    const wrapper = mount(OrderProgressHint, { props: { content }, slots: { default: '<a href="#">待报单</a>' }, attachTo: document.body })
     expect(document.querySelector('[role="tooltip"]')).toBeNull()
     await wrapper.get('.progress-hint-anchor').trigger('mouseenter'); await flushPromises()
     const hint = new DOMWrapper(document.body).get('[role="tooltip"]')
-    for (const text of ['1688 采购与包裹状态', '已签收', '等待卖家发货', 'YT123', '尚无运单', '保留上次结果', '最后成功查询']) expect(hint.text()).toContain(text)
-    expect(hint.findAll('article')).toHaveLength(2)
+    for (const text of ['ERP 处理进度', '待报单', '1688 国内包裹 · 已签收', '1688 国内包裹 · 等待卖家发货', 'YT123', '尚无运单', '保留上次结果', '最后成功查询']) expect(hint.text()).toContain(text)
+    expect(hint.findAll('article')).toHaveLength(3)
     expect(fetchSpy).not.toHaveBeenCalled()
     await wrapper.get('a').trigger('keydown', { key: 'Escape' })
     expect(document.querySelector('[role="tooltip"]')).toBeNull()

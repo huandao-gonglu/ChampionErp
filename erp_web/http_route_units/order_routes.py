@@ -93,14 +93,6 @@ def handle_purchase(handler):
     _procurement_command(handler, "record-purchase")
 
 
-def handle_supplement_lookup(handler):
-    _procurement_command(handler, "supplement-lookup")
-
-
-def handle_supplement_record(handler):
-    _procurement_command(handler, "supplement-record")
-
-
 def handle_cancel_purchase(handler):
     _procurement_command(handler, "cancel-purchase")
 
@@ -199,8 +191,6 @@ def handle_chat_send(handler):
 
 
 POST_HANDLERS = {
-    "/api/orders/supplement-lookup": handle_supplement_lookup,
-    "/api/orders/supplement-record": handle_supplement_record,
     "/api/orders/chat/history": handle_chat_history,
     "/api/orders/chat/send": handle_chat_send,
     "/api/orders/alibaba-purchase/parse-address": handle_self_purchase_parse_address,

@@ -109,8 +109,8 @@ class FulfillmentRule(FulfillmentPlan):
 class DomesticParcel(FulfillmentInput):
     id: str = Field(min_length=1, max_length=80)
     line_key: str = Field(min_length=1, max_length=500)
-    purchase_record_id: str = Field(min_length=1, max_length=80)
-    carrier: str = Field(min_length=1, max_length=80)
+    purchase_record_id: str = Field(default="", max_length=80, description="关联采购记录；空值表示直接按销售订单商品录入包裹，不要求采购单号。")
+    carrier: str = Field(default="", max_length=80, description="物流公司，选填；未提供时保留为空，不根据单号猜测。")
     tracking_number: str = Field(min_length=1, max_length=100)
     quantity: int = Field(gt=0, strict=True)
 

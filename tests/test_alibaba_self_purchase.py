@@ -343,8 +343,14 @@ def test_automatic_order_attaches_once_and_supports_existing_logistics_lookup(se
     assert linked.purchase_order_number == NUMBER and linked.source.source_sku_id == "67890"
     with pytest.raises(ValueError, match="已采购齐全"):
         preview(service)
-    with pytest.raises(ValueError, match="1688 取消"):
-        service.procurement.cancel_purchase({"order_id": order.identity, "record_id": linked.id})
+    service.procurement.cancel_purchase({"order_id": order.identity, "record_id": linked.id})
+    item = service.procurement.detail(order.identity)["lines"][0]
+    assert item["purchased_quantity"] == 0 and item["remaining_quantity"] == 2
+    assert item["records"][0]["status"] == "cancelled"
+    # 重复回填远端仍有效的采购回执，不能复活已人工作废的 SKU。
+    service.procurement.store.complete_purchase(linked.request_id, NUMBER, {"yandex": "4"})
+    assert service.procurement.detail(order.identity)["lines"][0]["records"][0]["status"] == "cancelled"
+    assert preview(service)["id"]
 
 
 def test_manual_purchase_after_preview_prevents_overbuy(setup_purchase):

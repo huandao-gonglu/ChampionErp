@@ -91,7 +91,7 @@ class SourceSelection(BaseModel):
 
 
 class PurchaseRecord(BaseModel):
-    supplemental: bool = False
+    supplemental: bool = False  # 保留旧补单记录的历史标记，新采购统一受剩余数量约束。
     receiving_warehouse: ReceivingWarehouse | None = None
     id: str
     line_key: str

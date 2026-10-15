@@ -12,17 +12,21 @@ export interface OrderProgressHintContent {
   sections: OrderProgressHintSection[]
 }
 
-/** 只解释主状态所属来源；所有明细均来自当前列表的本地快照。 */
+function purchasePackageSections(order: OrderSnapshot): OrderProgressHintSection[] {
+  return (order.purchase_tracking?.packages || []).map(item => ({
+    heading: `1688 国内包裹 · ${item.status_label}`,
+    lines: [item.tracking_number ? `${item.company || '国内包裹'} · ${item.tracking_number}` : '尚无运单',
+      `采购单：${item.order_numbers.join('、')}`, `最后成功查询：${dateTime(item.updated_at)}`],
+    warning: item.stale ? '查询未更新，保留上次结果' : '',
+  }))
+}
+
+/** 先解释主状态；ERP 步骤附带国内包裹明细，所有信息均来自当前列表的本地快照。 */
 export function orderProgressHint(order: OrderSnapshot, progress = orderProcessingProgress(order)): OrderProgressHintContent {
   const facts = order.fulfillment_summary
   if (progress.sourceKind === 'alibaba' || progress.sourceKind === 'alibaba_erp') {
     const purchase = order.purchase_tracking
-    const sections: OrderProgressHintSection[] = (purchase?.packages || []).map(item => ({
-      heading: item.status_label,
-      lines: [item.tracking_number ? `${item.company || '国内包裹'} · ${item.tracking_number}` : '尚无运单',
-        `采购单：${item.order_numbers.join('、')}`, `最后成功查询：${dateTime(item.updated_at)}`],
-      warning: item.stale ? '查询未更新，保留上次结果' : '',
-    }))
+    const sections = purchasePackageSections(order)
     if (!sections.length) {
       for (const item of purchase?.orders || []) sections.push({ heading: item.status_label, lines: [`采购单：${item.order_number}`], warning: purchase?.stale ? '查询未更新，保留上次结果' : '' })
     }
@@ -58,5 +62,5 @@ export function orderProgressHint(order: OrderSnapshot, progress = orderProcessi
     return { title: `${orderPlatformNames[order.platform]} 平台状态`, sections: [{ heading: progress.label, lines }] }
   }
   return { title: 'ERP 处理进度', sections: [{ heading: progress.label, lines: [progress.note],
-    warning: [facts?.error_message, facts?.label_error].filter(Boolean).join('；') }] }
+    warning: [facts?.error_message, facts?.label_error].filter(Boolean).join('；') }, ...purchasePackageSections(order)] }
 }

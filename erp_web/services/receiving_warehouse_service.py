@@ -29,7 +29,7 @@ class ReceivingWarehouseService:
             remote = self._remote_locked(conn, order_id)
             fulfillment = FulfillmentStore.read(conn, order_id)
             cancelled = bool(fulfillment and fulfillment['fulfillment_status'] == 'CANCELLED')
-            binding_stale = self.store.binding_stale(conn, value, fulfillment)
+            binding_stale = self.store.binding_stale(conn, value)
         needs_rebind = binding_stale and order.state == 'pending_shipment'
         reason = ''
         if not value:
@@ -38,8 +38,6 @@ class ReceivingWarehouseService:
             reason = '跨境巴士账号已变化，请核对原收货仓'
         elif value['delivery_key'] != delivery_key(order):
             reason = '订单物流方案已变化，请重新确认原收货仓能否承接'
-        if cancelled and not reason:
-            reason = '原履约已取消，请重新设置报单绑定；保存后归档旧报单，重新选择服务后再提交'
         locked = bool(reserved or remote or (active and value and not binding_stale))
         carrier_name, evidence = delivery_carrier(order)
         carrier = platform_carrier(order)
@@ -82,7 +80,7 @@ class ReceivingWarehouseService:
 
     def _remote_locked(self, conn, order_id):
         value = FulfillmentStore.read(conn, order_id)
-        if not value or FulfillmentStore.can_rebind_cancelled(value, self.client.identity()):
+        if not value or FulfillmentStore.can_restart_cancelled(value, self.client.identity()):
             return False
         return bool(value.get('crossborderbus_order_id') or value.get('create_unknown')
                     or value.get('cancel_requested') or value['busy'] or value['operation'] == 'create'
@@ -111,21 +109,9 @@ class ReceivingWarehouseService:
         if not section or catalog.get('identity') != identity:
             raise ValueError('所选仓库不在当前账号的 Yandex 合作范围内')
         with self.store.orders.connect() as conn:
-            fulfillment = FulfillmentStore.read(conn, req.order_id)
             _, reserved = self.store.purchase_state(conn, req.order_id)
         if reserved:
             raise ValueError('采购正在提交或结果待核验，不能修改收货仓')
-        cancelled = bool(fulfillment and fulfillment['fulfillment_status'] == 'CANCELLED')
-        if cancelled:
-            if (not FulfillmentStore.can_rebind_cancelled(fulfillment, identity)
-                    or req.fulfillment_revision != fulfillment['revision']):
-                raise ValueError('原履约正在处理或版本已变化，请刷新后重新确认报单绑定')
-            if fulfillment['crossborderbus_order_id']:
-                remote = self.client.request('/erpapi/orderlist/status',
-                    {'order_id': fulfillment['crossborderbus_order_id']}, expected_identity=identity).get('data')
-                if (not isinstance(remote, dict) or remote.get('id') != fulfillment['crossborderbus_order_id']
-                        or not (remote.get('is_delete') in {1, 2} or remote.get('status_type') == 'deleted')):
-                    raise ValueError('跨境巴士尚未确认原报单已作废，不能重新绑定')
         with self.store.orders.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             row = conn.execute('SELECT snapshot FROM orders WHERE id=?', (req.order_id,)).fetchone()
@@ -142,11 +128,7 @@ class ReceivingWarehouseService:
                 raise ValueError('采购正在提交、结果待核验或预报已开始，不能修改收货仓')
             if old and old['bus_identity'] != identity:
                 raise ValueError('跨境巴士账号已变化，不能改写原收货仓')
-            current_fulfillment = FulfillmentStore.read(conn, req.order_id)
-            if cancelled or (current_fulfillment and current_fulfillment['fulfillment_status'] == 'CANCELLED'):
-                if not cancelled or not current_fulfillment or current_fulfillment['revision'] != req.fulfillment_revision:
-                    raise ValueError('原履约状态或版本已变化，请刷新后重新确认报单绑定')
-            binding_stale = self.store.binding_stale(conn, old, current_fulfillment)
+            binding_stale = self.store.binding_stale(conn, old)
             address_config = self.logistics.store.read(conn, req.address_id, identity)
             if not address_config or address_config['revision'] != req.address_revision:
                 raise ValueError('收货地址资料已更新，请刷新后重新选择')
@@ -176,8 +158,6 @@ class ReceivingWarehouseService:
                      'address_id': address_config['id'], 'address_revision': address_config['revision'], 'address_name': address_config['name'],
                      'carrier': carrier, 'support_rule': rule,
                      'bus_identity': identity, 'confirmed_at': utc_iso()}
-            if cancelled:
-                FulfillmentStore.archive_cancelled(conn, req.order_id, req.fulfillment_revision, identity)
             conn.execute('INSERT OR REPLACE INTO order_receiving_warehouses VALUES (?,?)', (req.order_id, json.dumps(value, ensure_ascii=False)))
             conn.commit()
         return self.detail(req.order_id)
