@@ -1,30 +1,42 @@
-/* 订单管理原型：局部视觉变量不影响其他工作台页面。 */
+/* 订单组件保留语义别名，颜色统一引用工作台主题。 */
 .order-ui {
-  --order-bg: #f4f4f5;
-  --order-surface: #fff;
-  --order-soft: #fafafa;
-  --order-text: #18181b;
-  --order-muted: #71717a;
-  --order-border: #e4e4e7;
-  --order-positive: #15803d;
-  --order-warning: #a16207;
-  --order-negative: #be123c;
-  --order-link-color: #2563eb;
+  --order-bg: rgb(var(--color-accent-100));
+  --order-surface: white;
+  --order-soft: rgb(var(--color-accent-50));
+  --order-text: rgb(var(--color-accent-950));
+  --order-muted: rgb(var(--color-accent-500));
+  --order-border: rgb(var(--color-accent-200));
+  --order-positive: rgb(var(--color-success-700));
+  --order-positive-bg: rgb(var(--color-success-50));
+  --order-warning: rgb(var(--color-warning-700));
+  --order-warning-bg: rgb(var(--color-warning-50));
+  --order-negative: rgb(var(--color-danger-700));
+  --order-negative-bg: rgb(var(--color-danger-50));
+  --order-negative-border: rgb(var(--color-danger-200));
+  --order-info: rgb(var(--color-info-700));
+  --order-info-bg: rgb(var(--color-info-50));
+  --order-link-color: rgb(var(--color-info-600));
   color: var(--order-text);
   font-size: 13px;
   line-height: 1.55;
 }
 .dark .order-ui {
-  --order-bg: #18181b;
-  --order-surface: #202024;
-  --order-soft: #27272a;
-  --order-text: #f4f4f5;
-  --order-muted: #a1a1aa;
-  --order-border: #3f3f46;
-  --order-positive: #68cc79;
-  --order-warning: #f5c15c;
-  --order-negative: #fda4af;
-  --order-link-color: #93c5fd;
+  --order-bg: rgb(var(--color-dark-950));
+  --order-surface: rgb(var(--color-dark-900));
+  --order-soft: rgb(var(--color-dark-800));
+  --order-text: rgb(var(--color-accent-100));
+  --order-muted: rgb(var(--color-accent-300));
+  --order-border: rgb(var(--color-dark-700));
+  --order-positive: rgb(var(--color-success-200));
+  --order-positive-bg: rgb(var(--color-success-500) / 0.1);
+  --order-warning: rgb(var(--color-warning-200));
+  --order-warning-bg: rgb(var(--color-warning-500) / 0.1);
+  --order-negative: rgb(var(--color-danger-200));
+  --order-negative-bg: rgb(var(--color-danger-500) / 0.1);
+  --order-negative-border: rgb(var(--color-danger-500) / 0.3);
+  --order-info: rgb(var(--color-info-200));
+  --order-info-bg: rgb(var(--color-info-500) / 0.1);
+  --order-link-color: rgb(var(--color-info-300));
 }
 .order-ui .order-muted {
   color: var(--order-muted);
@@ -62,17 +74,17 @@
   background: var(--order-soft);
 }
 .order-ui .order-primary {
-  background: #16a34a;
-  border-color: #16a34a;
+  background: rgb(var(--color-primary-600));
+  border-color: rgb(var(--color-primary-600));
   color: white;
   font-weight: 600;
 }
 .order-ui .order-primary:hover {
-  background: #15803d;
+  background: rgb(var(--color-primary-700));
 }
 .order-ui .order-danger {
-  color: #be123c;
-  border-color: #fecdd3;
+  color: var(--order-negative);
+  border-color: var(--order-negative-border);
 }
 .order-ui button:disabled {
   opacity: 0.45;
@@ -84,7 +96,7 @@ dialog.order-ui .order-primary:disabled {
   color: var(--order-muted);
 }
 .order-ui :is(button, a, input, select):focus-visible {
-  outline: 2px solid #16a34a;
+  outline: 2px solid rgb(var(--color-primary-500));
   outline-offset: 2px;
 }
 .order-ui .order-link {
@@ -96,7 +108,7 @@ dialog.order-ui .order-primary:disabled {
   color: var(--order-link-color);
 }
 .order-ui .order-link:hover {
-  color: #15803d;
+  color: var(--order-positive);
 }
 .order-ui .order-input {
   width: 100%;
@@ -120,52 +132,33 @@ dialog.order-ui .order-primary:disabled {
   text-align: center;
   font-size: 12px;
   white-space: nowrap;
-  background: var(--order-bg);
+  background: var(--order-soft);
 }
 .order-ui .order-badge[data-tone='blue'] {
-  color: #1d4ed8;
-  background: #eff6ff;
+  color: var(--order-info);
+  background: var(--order-info-bg);
 }
 .order-ui .order-badge[data-tone='green'] {
-  color: #15803d;
-  background: #f0fdf4;
+  color: var(--order-positive);
+  background: var(--order-positive-bg);
 }
 .order-ui .order-badge[data-tone='amber'] {
-  color: #b45309;
-  background: #fffbeb;
+  color: var(--order-warning);
+  background: var(--order-warning-bg);
 }
 .order-ui .order-badge[data-tone='red'] {
-  color: #be123c;
-  background: #fff1f2;
+  color: var(--order-negative);
+  background: var(--order-negative-bg);
 }
-.dark .order-ui .order-badge {
-  filter: brightness(0.85);
-}
-.dark dialog.order-ui {
-  --order-bg: #171b1d;
-  --order-surface: #202527;
-  --order-soft: #252b2e;
-  --order-border: #343c40;
-  --order-muted: #aeb7bf;
-}
-.dark dialog.order-ui .order-badge { filter: none; }
-.dark dialog.order-ui .order-badge[data-tone='blue'] { color: #93c5fd; background: #233341; }
-.dark dialog.order-ui .order-badge[data-tone='green'] { color: #68cc79; background: #243d2c; }
-.dark dialog.order-ui .order-badge[data-tone='amber'] { color: #f5c15c; background: #423720; }
-.dark dialog.order-ui .order-badge[data-tone='red'] { color: #fda4af; background: #472a33; }
 .order-ui .order-error {
-  color: #be123c;
-  background: #fff1f2;
+  color: var(--order-negative);
+  background: var(--order-negative-bg);
   border-radius: 6px;
   padding: 10px 12px;
   margin: 12px 0;
 }
-.dark dialog.order-ui .order-error {
-  color: var(--order-negative);
-  background: #472a33;
-}
 .order-ui .order-success {
-  color: #15803d;
+  color: var(--order-positive);
   padding: 8px 0;
 }
 .order-ui .order-section {
@@ -213,7 +206,7 @@ dialog.order-ui {
   box-shadow: none;
 }
 dialog.order-ui::backdrop {
-  background: rgb(0 0 0 / 18%);
+  background: rgb(var(--shadow-color) / 18%);
 }
 dialog.order-ui > header {
   padding: 20px 24px;
@@ -261,7 +254,7 @@ dialog.order-ui[data-variant='drawer'] {
   border: 1px solid var(--order-border);
   border-radius: 6px;
   background: var(--order-surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 16%);
+  box-shadow: 0 8px 24px rgb(var(--shadow-color) / 16%);
 }
 .order-ui .order-menu .order-link { padding: 8px 12px; text-align: left; }
 dialog.order-ui.order-detail { font-size: 14px; background: var(--order-bg); }

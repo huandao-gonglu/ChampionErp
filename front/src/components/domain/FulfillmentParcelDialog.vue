@@ -227,7 +227,7 @@ th:nth-child(2) { width: 28%; }
 th:nth-child(3) { width: 17%; }
 th:nth-child(4) { width: 100px; }
 th:last-child { width: 48px; }
-input[type='checkbox'] { width: 18px; height: 18px; accent-color: #16a34a; }
+input[type='checkbox'] { width: 18px; height: 18px; accent-color: rgb(var(--color-primary-600)); }
 textarea.order-input { resize: vertical; min-height: 40px; }
 .parcel-extra-row td { background: var(--order-soft); padding: 16px; }
 .parcel-extra-toggle { padding: 4px 0; }

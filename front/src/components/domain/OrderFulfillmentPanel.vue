@@ -697,7 +697,7 @@ th { background: var(--order-soft); font-weight: 500; color: var(--order-muted);
 th, td { padding: 6px 10px; border-bottom: 1px solid var(--order-border); vertical-align: middle; }
 tr:last-child td { border-bottom: 0; }
 th:first-child { width: 64px; }
-.parcel-table input[type='checkbox'] { width: 18px; height: 18px; accent-color: #16a34a; vertical-align: middle; }
+.parcel-table input[type='checkbox'] { width: 18px; height: 18px; accent-color: rgb(var(--color-primary-600)); vertical-align: middle; }
 .parcel-check { display: flex; align-items: center; gap: 6px; }
 .parcel-waybill { display: flex; align-items: center; gap: 4px; }
 .parcel-waybill strong { font-weight: 500; overflow-wrap: anywhere; }
