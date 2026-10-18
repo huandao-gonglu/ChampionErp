@@ -114,7 +114,7 @@ onMounted(() => { void run(load) })
             </select>
           </label>
           <label class="block text-sm">采购数量（还需 {{ options.remaining_quantity }} 件）
-            <input v-model.number="quantity" type="number" min="1" :max="options.remaining_quantity" step="1" class="input mt-1" aria-label="采购数量" />
+            <input v-model.number="quantity" type="number" min="1" step="1" class="input mt-1" aria-label="采购数量" />
           </label>
           <section v-if="options.warehouse_required && options.receiving_address" aria-label="采购收货仓" class="text-sm space-y-2">
             <p>收货仓：{{ options.warehouse_name }}</p>
@@ -122,7 +122,7 @@ onMounted(() => { void run(load) })
             <p>{{ [options.receiving_address.provinceText, options.receiving_address.cityText, options.receiving_address.areaText, options.receiving_address.townText, options.receiving_address.address].filter(Boolean).join(' ') }}</p>
           </section>
           <AlibabaPurchaseAddressPicker v-if="options.can_purchase && !options.warehouse_required" :order-id="orderId" :line-key="lineKey" :disabled="busy || !!pending || submissionUncertain" @change="addressSelection = $event" />
-          <button class="btn btn-outline" :disabled="(options.warehouse_required ? !options.receiving_revision : !addressSelection) || !candidateId || !Number.isInteger(quantity) || quantity < 1 || quantity > options.remaining_quantity" @click="preview">预览订单</button>
+          <button class="btn btn-outline" :disabled="(options.warehouse_required ? !options.receiving_revision : !addressSelection) || !candidateId || !Number.isInteger(quantity) || quantity < 1" @click="preview">预览订单</button>
         </fieldset>
         <section v-if="record" class="space-y-3 rounded-xl border border-accent-200 p-4 dark:border-dark-600" aria-label="采购结果">
           <h3 class="font-semibold">{{ record.state === 'preview' ? '订单预览' : '采购结果' }}</h3>

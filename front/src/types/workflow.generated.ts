@@ -174,6 +174,8 @@ export interface BackendAlibabaParcel {
 }
 
 export interface BackendAlibabaPurchaseProduct {
+  item_id: string
+  quantity: number | null
   offer_id: string
   sku_id: string
   spec_id: string
@@ -191,8 +193,7 @@ export interface BackendAlibabaPurchaseQueryResult {
   logistics: Array<BackendAlibabaParcel> | null
   logistics_warning: string
   logistics_checked_at?: string
-  product?: BackendAlibabaPurchaseProduct | null
-  product_warning?: string
+  products: Array<BackendAlibabaPurchaseProduct>
 }
 
 export interface BackendPurchasePackageStatus {
@@ -216,7 +217,7 @@ export interface BackendPurchaseTrackingSummary {
 }
 
 export interface BackendPurchaseProgressView {
-  state: "syncing" | "synced" | "pending_assignment" | "conflict" | "locked" | "manual" | "error"
+  state: "syncing" | "synced" | "pending_review" | "locked" | "error"
   attempted_at: string
   message: string
   error: string

@@ -1192,24 +1192,23 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 
 ### 订单采购
 
-- 按 SKU 更换采购使用现有 `POST /api/orders/cancel-purchase` → `order_procurement_facade` → `OrderProcurementStore.cancel` 作废所选采购记录，再按需修改来源并通过 `record-purchase` 或 1688 采购登记新记录。手工和自动采购均可在报单前本地作废，不取消远端采购订单、不影响同采购单其他 SKU。累计有效采购和预留数量不得超过销售数量，已退役允许超量的补单入口。
-- 作废采购与 `FulfillmentStore.remove_purchase_parcels` 共用同一短事务：按采购记录 ID 移除包裹分配，保留同一运单的其他商品，递增履约版本使旧提交失效，清除旧手动提交意图。已有报单、未知创建结果、未释放占位或仓库锁定时禁止作废。旧采购同步回写重核有效记录，自动采购回执重放不能复活已作废记录。
-- 采购历史及旧 `supplemental` 标记保留读取；不再创建超量补单。所有有效采购的包裹都须分配齐全，报单仍逐 SKU 校验销售数量。历史超量记录须先明确作废不再履约的采购，再确认有效包裹分配；不能静默忽略历史补单。采购登记后沿用既有状态和物流同步，无独立补单后台。
-- 订单详情 → 跨境履约 → 录入/管理包裹支持直接按销售商品登记，无需采购单号或已确认采购来源；整单无采购、有其他有效采购、某 SKU 采购作废后均可使用。`DomesticParcel.purchase_record_id` 为空表示直接包裹，非空仍须关联本订单同 SKU 的有效采购，旧包裹保持可读。`FulfillmentService.parcels_payload` 共用数量校验：逐 SKU 的直接包裹数量加有效采购数量不得超过销售数量，报单前须覆盖全部销售数量及有效采购分配。直接录入不生成采购记录、不改写采购状态；已录入国内运单的 ERP 进度进入待报单，仍须核对完整性。沿用现有 parcels HTTP / AI 工具、版本及锁定边界，采购作废与物流同步只处理对应采购包裹，不删除直接包裹。回归见 `tests/test_direct_fulfillment_parcels.py`、`Fulfillment.test.ts`。
-- 漏发补寄通过 `FulfillmentParcelDialog.vue` 的补发入口，将原运单中指定商品的数量移动到补发单号；保留其他商品及原采购关联，既不新增采购也不重复增加销售数量。全部商品已分配不阻止补发；确认前保留草稿，保存仍走完整 parcels 命令与人工分配快照，采购同步不能覆盖已确认分配。回归覆盖部分/整个 SKU 补发、取消、同号与超量拒绝及两包裹合单报单。
-- 报单按去重后的国内运单识别多包裹。`FulfillmentPlan.consolidation_service_id` 由用户从已选择的真实仓库服务中明确指定；不猜服务 ID、名称或费用。多包裹缺少确认时手动和自动报单均暂停；提交前继续实时验证服务可用性。已提交的无合单服务报单不自动追加第二个运单。
-- `FulfillmentService.parcels_payload` 逐 SKU、采购记录校验数量，`delivery_packages` 完成所有原图交付后，经纯函数 `services/fulfillment_packages.py::group_domestic_packages` 按实际国内运单生成远端 `package_list`；与合单校验共用运单归一化规则。同运单只发送一条包裹、`num` 累计商品件数，逐项验货说明保留 SKU、数量、真实采购来源及原图链接。直接包裹使用官方 `package_of=1`，省略可选的 `from_platform/from_order`；混合来源或与直接包裹共用运单时同样省略不一致的单值来源字段，不能拼造采购单号。持久化分配仍按 SKU 保存，不迁移或自动更新已有报单。
+- 销售订单支持多个商品及其 SKU 明细；`OrderDetail.lines` 只负责来源确认与采购建议数量，`OrderDetail.purchases` 保存订单级采购单及其多商品明细。商品分组仅使用可信发布关联的商品 ID，不能按标题猜测。
+- `record-purchase` 仅要求销售订单、采购平台、采购单号与幂等请求号；商品关联和实际收货地址快照均选填。不校验采购总数与销售数的相等关系，追加采购无需作废已有采购。同一销售订单内的平台与采购单号唯一；`order_purchase_requests` 独立保存请求到采购单的映射。
+- `cancel-purchase` 只作废整笔本地采购登记，保留历史，不取消远端采购、不删除包裹、不修改仓库报单。采购同步写回须重核账号、有效采购与代次；自动采购回执重放不能复活已作废登记。
+- `DomesticParcel` 直接归属于销售订单，一条记录代表一个规范化国内运单。履约不读取采购数量或 SKU 分配；件数、货物说明、图片、采购平台/单号是包裹自己的资料，来源仅作说明。补寄直接新增包裹，原包裹不减量。
+- `FulfillmentParcelDialog.vue` 分为保存待完善与保存并确认清单。件数未知可保存草稿；确认须有参与报单的包裹且件数为正整数。移出报单保存 `included=false`；请求省略已有包裹时也保留为移出记录。版本冲突保留输入并停止提交，重新打开核对最新清单后再保存。
+- `FulfillmentService.merge_purchase_parcels` 只加入首次观察到的运单，手工编辑、排除及已移除运单由 `observed_waybills` 保护；新增运单清除 `parcels_confirmed`，不会自动更新远端。手工及自动报单统一要求确认当前清单。
+- `services/fulfillment_packages.py::parcel_payloads` 只验证包裹自身完整性和运单唯一性，并生成 `package_of=1` 的 `package_list`；`num` 是包裹实际商品件数。`delivery_packages` 处理主图托管。采购来源选填，多来源可写入说明，不拼造单值采购单号。
+- 多个参与报单的运单仍须在所选真实仓库服务中指定 `consolidation_service_id`；仓库打包锁定、账号归属、创建未知结果与远端防重边界保留。
+- `facades/order_procurement_facade.py` 负责装配；`services/order_procurement_service.py` 负责唯一来源匹配、人工确认和详情契约；`schemas/order_procurement.py` 与 `stores/order_procurement_store.py` 管理订单级采购单、来源版本和请求幂等。自动采购仍精确校验供应商 SKU、冻结金额与地址，并阻止未决请求重复下单。
+- 运行时只读写新结构。`scripts/import_order_center_data.py` 为一次性离线导入：按销售订单、平台与采购单号合并旧记录，按运单合并旧包裹，重映射自动采购回执；保留源库和核对报告。参见 [履约说明](crossborder-fulfillment.md) 的导入步骤。回归入口：`test_order_center_import.py`、`test_fulfillment_packages.py`、`OrderParcelModel.test.ts`。
 
-- 1688 采购刷新从订单详情按采购记录的商品 ID 与 SKU/specId 唯一匹配图片，图片 URL 和规格随采购进度快照持久化，由 `OrderPurchaseTracking.vue` 展示。图片缺失或匹配不唯一时显示原因；旧快照缺少图片字段仍可读取，下次同步补齐。物流查询失败不丢弃本次成功读取的图片。
-
-- `facades/order_procurement_facade.py` 负责装配；`services/order_procurement_service.py` 负责唯一来源匹配、人工确认和详情契约。
-- `schemas/order_procurement.py` 定义采购来源、发布 SKU 关联、订单行及采购记录；`stores/order_procurement_store.py` 在订单领域库中管理绑定、来源版本、采购幂等与数量约束。
 - `runtime_units/order_source_bindings.py` 从冻结发布任务提取关联；`publish_bus.py` 在发布终态持久保存，采购服务装配时幂等回填历史任务。禁止按 SKU 编码反解、按标题猜配或以当前草稿替代发布时事实。
 - `OrderCenterPanel.vue` 负责订单页面编排与筛选，`OrderListTable.vue` 承载紧凑列表与分页；`OrderDetailPanel.vue` 为可直达的订单详情抽屉，`OrderNotificationsDrawer.vue` 承载通知、同步异常与重试。
 Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知读取时调用 `services/order_handover_service.py`，按订单页批量查询并严格验证批次归属；`schemas/order_handover.py` 的结果随 `OrderSnapshot.handover` 一起持久化，由普通订单详情返回。`OrderHandoverPanel.vue` 只展示本地快照，不独立外发或刷新。批次分页失败走订单任务的失败与重试，保留旧快照；旧数据缺少该字段仍可读取。外部管理器仅把确切的批次搜索 PUT 归为只读，订单请求范围包含其 campaign 配额。
 地址备注由 `facades/order_address_note_facade.py` → `stores/order_address_note_store.py` 在订单领域库独立持久化；契约见 `schemas/order_address_notes.py`，GET/POST `/api/orders/address-note` 只读写本地。按平台、店铺和原地址匹配，平台同步不覆盖；保存校验订单地址与备注版本。`OrderAddressNote.vue` 提供点击展开、关闭自动保存的气泡，复用完整遮罩指针手势并向外层订单传播锁定状态。
 
-- Yandex 订单列表、详情和跨境报单统一使用已同步在线商品的图片。`order_procurement_facade` 按当前授权的 business + campaign 装配图片读取，`OnlineProductStore.thumbnails` 批量读取对应远端 SKU 的 HTTPS 缩略图；`OrderProcurementService.present_orders` 校验订单账号与 SKU 身份后补充图片，不发起远端请求、不改写原始订单快照。未同步、身份不符或图片缺失时显示占位，不回退到本地发布图片或 1688 采购图片。履约 `package_list.img` 复用同一订单详情字段，已创建远端报单不因页面读取而自动更新。
+- Yandex 订单列表、详情和跨境报单统一使用已同步在线商品的图片。`order_procurement_facade` 按当前授权的 business + campaign 装配图片读取，`OnlineProductStore.thumbnails` 批量读取对应远端 SKU 的 HTTPS 缩略图；`OrderProcurementService.present_orders` 校验订单账号与 SKU 身份后补充图片，不发起远端请求、不改写原始订单快照。未同步、身份不符或图片缺失时显示占位，不回退到本地发布图片或 1688 采购图片。包裹编辑可从这些商品带入说明及图片，保存后为独立资料；已创建远端报单不因页面读取而自动更新。
 - 其他平台仍由 `order_source_bindings.py::published_sku_image` 从冻结 SKU 图片覆盖/事实引用或公共主图解析缩略图。历史采购绑定继续保留读取与补齐能力，图片不参与绑定身份，也不影响已确认采购来源。
 - `OrderThumbnail.vue` 统一商品缩略图及加载失败占位；`OrderProcurementLine.vue` 按 SKU 卡片承载来源确认与采购操作，`OrderPurchaseRecords.vue` 展示可展开的采购历史，`OrderSourceDialog.vue` 和 `OrderPurchaseDialog.vue` 分别负责来源编辑、采购登记。所有弹窗、抽屉共用 `WorkspaceDialog.vue` 与完整遮罩手势校验。
 - `OrderIntegrationSettings.vue` 承载设置页回调接入。未验证的平台规格链接只能作为商品链接展示，修改来源规格或链接后必须重新核验直达能力。
@@ -1222,11 +1221,11 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 - 列表、详情及履约页签定时刷新只读取数据库；详情编辑和提交期间暂停替换内容，旧响应不得覆盖较新的手动结果。采购与仓库单笔刷新入口保留。
 - `services/alibaba_api_client.py` 固定 1688 HTTPS AOP 网关及三个买家只读接口，以 HMAC-SHA1 签名，通过 `managed_urlopen` 发送，显式声明 read 语义和 token 指纹，禁止重定向，不自动刷新 Token。物流先查运单，再按订单一次查询轨迹并按物流 ID 匹配；轨迹失败保留运单并返回警告。
 - POST `/api/orders/purchase-sync` → `order_procurement_facade.sync_purchase` → `alibaba_purchase_sync_service.py`。登记成功后自动同步一次，幂等登记不重复查询；失败保留采购登记和最近成功快照。`purchase_progress_store.py` 持久化同步快照、代次与短期占位，网络不持锁，写入前重新核对有效采购、账号与代次。
-- 手动刷新任一商品时，通过 `OrderProcurementStore.related_purchase_records` 读取当前销售订单内同一采购单的有效 1688 记录，整组复用本次订单、物流及轨迹回执；不同采购单、其他销售订单和已作废记录不参与。`PurchaseProgressStore.begin_many` 在短事务内完成整组占位，任一记录忙碌或失效则整体拒绝启动；逐商品保留归属、数量、人工分配与代次校验，失败保留各自旧快照，不把运单直接复制给其他 SKU。
+- 手动刷新按整笔采购单执行一次订单、物流及轨迹查询；多商品结果以 `products` 保存。批量采购产生多个采购单时通过 `PurchaseProgressStore.begin_many` 在短事务中统一占位，查询不持锁，失败保留原快照。成功查询可补齐采购单实际商品，已有可信销售关联按供应商商品及 SKU 精确保留。
 - 订单状态与物流分别记录更新时间。物流接口的 `500_2` 按官方定义表示未发货，归一为空物流；其他物流失败只返回警告，仍保存成功读取的订单状态，保留旧运单及其原始更新时间，不触发包裹合并。授权变化与采购作废仍拒绝写入。
-- `OrderProcurementStore.tracking_summaries` 为当前列表与详情批量读取有效采购的本地状态摘要，排除作废记录和变更规格；不额外查询远端。摘要 `packages` 按国内运单去重，无运单的采购单保留待发货/待查询条目；使用各自最近成功的订单或物流查询时间，失败尝试不推进时间。国内包裹状态不覆盖 ERP 处理进度，逐包裹状态与最近成功查询时间保留在提示和详情中。列表 `OrderProgressHint.vue` 悬浮或键盘聚焦时由 `orderProgressHint.ts` 按主状态的显式来源生成提示：1688 展示采购包裹明细，跨境巴士展示仓库状态与最后成功同步时间，平台展示平台快照，ERP 优先展示当前步骤与已知异常，并附带明确标注来源的国内包裹明细，不发起网络请求。`FulfillmentStore.summaries` 批量补充本地目录的分区/仓库名称、去重运单、所选服务和指定合单服务；目录按履约账号匹配，运单和服务在提示中标为 ERP 登记资料，不推断仓库签收或服务完成，同步时间也不当作作业发生时间。单包裹和多包裹使用同一规则：采购完成但无国内运单时展示采购订单状态，有远端或人工登记运单后展示“待报单”；提交中、结果待核实及报单异常优先显示。“待报单”不代表资料齐全，提交仍须通过原有校验。已有预报始终优先显示仓库进度，物流签收不等同仓库发货。
-- `alibaba_purchase_assignment.py` 用冻结商品 ID、SKU、订单子项、包裹商品数量证明归属；远端采购数量须与登记数量一致。缺失证据或同一远端 SKU 被多条采购使用时待人工分配；已证明的分批发货可逐批追加。`FulfillmentService.merge_purchase_parcels` 复用数量校验、版本和锁定边界，同运单幂等，差异不覆盖人工包裹。人工保存与确认快照在同一事务，使旧查询失效。
-- `OrderPurchaseTracking.vue` 在采购和履约页签提供统一「刷新采购进度」，从采购记录的持久快照展示订单、物流及分配状态；关闭重开仍保留，不自动轮询远端。待分配/冲突通过 `FulfillmentParcelDialog.vue` 确认，`purchaseLogistics.ts` 仅提供人工分配时的运单候选。自动预报继续遵守既有开关和完整资料校验。响应不包含联系人、地址或授权原文。
+- `OrderProcurementStore.tracking_summaries` 为当前列表与详情批量读取有效采购的本地状态摘要，排除作废采购单；不额外查询远端。摘要 `packages` 按国内运单去重，无运单的采购单保留待发货/待查询条目；使用各自最近成功的订单或物流查询时间，失败尝试不推进时间。国内包裹状态不覆盖 ERP 处理进度，逐包裹状态与最近成功查询时间保留在提示和详情中。列表 `OrderProgressHint.vue` 悬浮或键盘聚焦时由 `orderProgressHint.ts` 按主状态的显式来源生成提示：1688 展示采购包裹明细，跨境巴士展示仓库状态与最后成功同步时间，平台展示平台快照，ERP 优先展示当前步骤与已知异常，并附带明确标注来源的国内包裹明细，不发起网络请求。`FulfillmentStore.summaries` 批量补充本地目录的分区/仓库名称、去重运单、所选服务和指定合单服务；目录按履约账号匹配，运单和服务在提示中标为 ERP 登记资料，不推断仓库签收或服务完成，同步时间也不当作作业发生时间。单包裹和多包裹使用同一规则：采购完成但无国内运单时展示采购订单状态，有远端或人工登记运单后展示“待报单”；提交中、结果待核实及报单异常优先显示。“待报单”不代表资料齐全，提交仍须通过原有校验。已有预报始终优先显示仓库进度，物流签收不等同仓库发货。
+- `alibaba_purchase_assignment.py` 按实际运单生成独立包裹；已知物流商品件数可相加，数量或归属证据缺失时件数留空，不从销售数量推算。采购单跨销售订单共用时只保存采购快照，包裹由用户按实际归属登记。
+- `OrderPurchaseTracking.vue` 在订单级采购历史中展示整笔采购商品、物流和同步结果；打开页面只读本地快照。包裹资料由独立的 `FulfillmentParcelDialog.vue` 管理，`purchaseLogistics.ts` 只校验运单和件数，不分配 SKU。
 
 ## 跨境巴士履约 V1
 
@@ -1278,8 +1277,8 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 - Yandex FBS 的订单级「1688 批量采购」使用 `GET /api/orders/alibaba-purchase/batch` 和 `POST /api/orders/alibaba-purchase/batch-preview`，与单条采购共用 create/pay/reconcile/cashier 生命周期。`AlibabaBatchPurchaseDialog.vue` 支持勾选最多 50 个商品行、修改数量、逐组确认支付渠道与一次确认后顺序提交；分组独立持久化，部分成功不回滚已创建订单，前端请求中断暂停后续组。
 - `services/alibaba_purchase_preview.py` 按 1688 `orderPreviewResuslt` 的真实分组匹配完整 offer/SKU/spec 集合；供应商展示名不作为合单身份，同组同一采购规格汇总数量。所有组使用本单冻结收货仓地址，创建前复核分组、金额、渠道、店铺和仓库。商品缺失、重复或不一致时拒绝创建；未知回执按外部请求号查询，再校验整组商品和数量。
-- 每个批量组在现有采购请求 payload 保存 items/targets，旧单 SKU 请求仍可读取和核验，不变更 SQLite 表结构。新预览使交叠行的旧单条/批量预览失效；持久化待核验请求跨授权阻止所有涉及行再次提交。`OrderProcurementStore.reserve_purchases/complete_purchases` 在订单库同一短事务内占位、回填或取消全部行，每行保留自己的采购记录、数量和仓库快照，共用组采购单号；一组回填失败保留远端回执供幂等恢复。
-- 批量创建后通过 `alibaba_purchase_sync_service.sync_purchases` 按各采购记录触发一次同步，同组复用本次订单和物流回执，失败查询不因 SKU 数量重复执行；查询原订单时可再次同步；发货后的「刷新采购进度」沿用同一 owner。运单依据交易子项和包裹内数量回填到各 SKU 及跨境履约国内包裹，同运单多 SKU 可共存；缺少证据、重复采购同一源 SKU 或人工修改冲突时保留待确认，不盲目复制运单。
+- 每个批量组在采购请求 payload 保存 items/targets。新预览使交叠行的旧预览失效；未决请求跨授权阻止涉及行再次提交。`OrderProcurementStore.reserve_purchases/complete_purchases` 在同一短事务占位和回填，整组只生成一笔采购单，多个 SKU 是该单的 items；回填失败保留远端回执供幂等恢复。
+- 批量创建后通过 `alibaba_purchase_sync_service.sync_purchases` 对每笔采购单同步一次，失败查询不因 SKU 数量重复执行；刷新只增补新运单，不覆盖人工包裹，不执行仓库写入。
 
 - 入口：订单详情的商品采购区域 →「1688 采购」。`order_routes.py` 的 `/api/orders/alibaba-purchase` 及 `/preview`、`/create`、`/reconcile`、`/cashier` 经 `facades/alibaba_self_purchase_facade.py` 装配，不再从在线商品发起独立采购。
 - `services/alibaba_self_purchase_service.py` 读取销售订单已确认来源和剩余数量；只有待发货订单可新增采购。预览绑定订单行、来源版本、数量、地址、采购收货仓版本、人民币分金额和凭据摘要，有效期十分钟。下单参数仅取采集并冻结到上架记录的商品编号、SKU 和 specId，再使用已选且核对后的地址进行实时预览；缺失、歧义或不一致时返回 blocked_reason 并禁止预览/创建，不借用历史订单或临时商品查询补猜。起订限制以 1688 返回为准。
@@ -1287,8 +1286,8 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 - Yandex 的收货地址统一由物流设置维护，`AlibabaSelfPurchaseDialog.vue` 直接展示已确定仓库的地址，预览请求只传收货仓版本，不能传其他地址覆盖。其他平台的 `AlibabaPurchaseAddressPicker.vue` 保留地址选择、粘贴解析和字段核对。`AlibabaSelfPurchaseDialog.vue` 单独展示订单预览与支付方式。地址或数量变化使旧预览失效；支付渠道只使用本次预览返回的可用值。
 - `stores/alibaba_self_purchase_store.py` 由 AppContext 持有，未提交预览仅在内存中短期保留（十分钟、最多 256 条），不写数据库、不出现在采购历史中；关闭弹窗或刷新页面后重新预览，服务重启后预览失效。用户提交时才在独立的 `data/alibaba-self-purchases.sqlite3` 原子保存请求，随后允许调用创建接口。版本 2 将旧 listing_id 列迁移为 target_key，历史数据保留读取能力，旧持久化预览不展示也不能提交。未知请求阻止同订单行重复采购，换授权不能绕过防重。
 - 创建接口使用采购解决方案（买家自用版）对应的 `alibaba.trade.fastCreateOrder`，不调用分销方案的 `alibaba.trade.fenxiaoOrder.create`。只发送该接口声明的参数，预选支付渠道不是付款操作。预览、网关参数校验或替身测试成功，都不能表述为真实下单已成功；验收须以实际创建回执和订单查询为准。
-- `OrderProcurementStore` 在订单库短事务预留采购数量；人工登记和来源修改共同遵守该预留，锁不跨网络。采购占位事务复核收货仓版本及地址，并将快照保存到 binding；回填采购记录时原样冻结，历史记录允许无快照但不猜填。创建前再次核对价格和渠道，使用持久化请求号作为 outOrderId；回执不明只查原请求，不重发。确定未创建才释放数量。
-- 1688 创建回执先持久化，再幂等回填销售订单原有采购登记和数量；采购弹窗只展示当前结果或待处理回执，不再列出第二份采购历史。关联失败保留远端订单号，可通过查询原订单重试。关联后沿用采购记录的状态、物流查询。远端取消经查询确认后作废关联记录并释放数量；未确认取消的自动采购不能只在本地作废。
+- `OrderProcurementStore` 在订单库以短事务为自动采购占位，阻止同一商品存在未决请求时再下单或修改来源；人工登记已发生的采购不受数量占位限制。占位冻结收货仓、来源及数量，创建前再次核对价格与渠道；不限制采购量小于销售量，建议剩余量仅用于默认填写。回执不明只查原请求，不重发。
+- 1688 创建回执先持久化，再幂等回填订单级采购单和明细；独立请求保存采购单 ID，批量多 SKU 指向同一个 ID。关联失败可查询原订单重试。远端取消经查询确认后作废整笔登记；本地作废不会取消远端订单或退款。
 - 支付渠道支持 alipay / shegou（先采后付）。两种渠道均由用户确认创建并支付后，前端依次调用 create 和 POST `/api/orders/alibaba-purchase/pay`，不在 GET、后台同步或查询恢复中发起支付。POST `/payment-status` 必填 pay_channel，只读查询当前授权的对应渠道免密签约，必须同时 signedStatus、bindingStatus 为 true。支付宝明确提示直接扣款；批量混合渠道逐项检查签约。`AlibabaPaymentAgreement.vue` 展示官方签约链接与主动刷新，`AlibabaPurchasePayment.vue` 为已创建且未发起支付的订单提供单独确认入口。
 - `alibaba_purchase_payment.py` 解析官方签约与支付回执。pay 在网络前核对销售订单归属、冻结金额、完整商品与数量、1688 待付款状态及应付金额（元转分）；显式发送创建记录保存的 payChannel（alipay / shegou）、payAmount 和持久化 opRequestId，不省略或自动切换渠道；/pay 不接受客户端覆盖渠道。采购库 v3 新增独立 payment JSON 列，保留 v1/v2 数据迁移；短事务占位后才调用官方 preparePay，创建结果更新不会覆盖支付回执。
 - 支付超时、异常、paySuccess=false 或渠道不符均保留待核验，重启和重复提交不重发；明确接口拒绝单独展示。reconcile 只读查询，订单进入发货／收货阶段后标记 settled，不据此猜测实际支付渠道，也不因仍待付款而认定原支付失败。批量采购逐组创建和支付，支付待核验暂停后续组。接口依据及验收范围见 [采购免密支付接入](alibaba-purchase-payment.md)。

@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchOrderDetail, procurementCommand } from '@/api/orders'
-import type { OrderDetail, OrderSnapshot, ProcurementLine, PurchaseRecord } from '@/types/orders'
-import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import type { OrderDetail, OrderSnapshot, ProcurementLine } from '@/types/orders'
 import OrderSourceDialog from './OrderSourceDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
-import OrderThumbnail from './OrderThumbnail.vue'
-import OrderPurchaseRecords from './OrderPurchaseRecords.vue'
+import { PhDotsThree, PhCaretDown } from '@phosphor-icons/vue'
 import AlibabaSelfPurchaseDialog from './AlibabaSelfPurchaseDialog.vue'
 const props = defineProps<{
   item: ProcurementLine
@@ -14,16 +12,14 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   updated: [detail: OrderDetail]
-  purchase: [key: string]
   lock: [locked: boolean]
 }>()
 const error = ref('')
 const notice = ref('')
 const busy = ref(false)
-const trackingBusy = ref(false)
 const sourceEditor = ref(false)
 const alibabaPurchaseOpen = ref(false)
-const cancelledRecord = ref<PurchaseRecord | null>(null)
+const expanded = ref(false)
 const selection = computed(() => props.item.selection)
 const editable = computed(
   () =>
@@ -32,18 +28,17 @@ const editable = computed(
     !selection.value.reason.includes('缺少唯一身份')
 )
 watch(
-  () => busy.value || trackingBusy.value || alibabaPurchaseOpen.value || sourceEditor.value || !!cancelledRecord.value,
+  () => busy.value || alibabaPurchaseOpen.value || sourceEditor.value,
   (value) => emit('lock', value)
 )
 onBeforeUnmount(() => emit('lock', false))
-async function execute(action: 'select-source' | 'cancel-purchase', body: Record<string, unknown>) {
+async function execute(action: 'select-source', body: Record<string, unknown>) {
   if (busy.value) return
   busy.value = true
   error.value = ''
   try {
     emit('updated', await procurementCommand(action, { order_id: props.order.id, ...body }))
-    cancelledRecord.value = null
-    notice.value = action === 'select-source' ? '采购来源已确认' : '本 SKU 采购已作废，可在跨境履约中直接录入包裹，也可重新记录采购'
+    notice.value = '采购来源已确认'
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : '采购操作失败，请刷新后重试'
   } finally {
@@ -71,80 +66,163 @@ async function copySpecification() {
     error.value = '复制失败，请手动复制规格文字'
   }
 }
+defineExpose({ showSource: () => { expanded.value = true } })
 </script>
 <template>
   <article class="order-procurement-line">
-    <header class="order-line-product">
-      <OrderThumbnail :src="item.line.image_url" :title="item.line.title || '商品'" large />
-      <div class="order-line-identity">
-        <h4 :title="item.line.title">{{ item.line.title || '暂无商品标题' }}</h4>
-        <p class="order-muted">销售 SKU：{{ item.line.sku || '未提供' }}</p>
-        <div class="order-line-quantities">
-          <span>订购 <strong>{{ item.line.quantity }}</strong> 件</span>
-          <span class="order-badge" :data-tone="item.remaining_quantity ? 'amber' : 'green'">已登记 {{ item.purchased_quantity }} / {{ item.line.quantity }}</span>
-        </div>
+    <div class="procurement-sku-row" role="row">
+      <div role="cell" class="sku-specification" data-label="规格">
+        <strong :title="item.line.sku">{{ selection.source?.specification || item.line.sku || '规格未提供' }}</strong>
+        <span class="order-muted" :title="item.line.sku">
+          {{ item.line.sku || '销售 SKU 未提供' }}
+        </span>
       </div>
-    </header>
-    <details class="order-line-amount">
-      <summary>SKU 金额明细 <span class="order-muted">该 SKU 全部数量的小计</span></summary>
-      <OrderAmountDetails :value="item.line" :platform="order.platform" />
-    </details>
-    <section class="order-line-source" aria-label="采购来源">
+      <div role="cell" class="sku-number" data-label="需求">
+        {{ item.line.quantity }}
+      </div>
+      <div
+        role="cell"
+        class="sku-number"
+        data-label="已登记"
+        :data-complete="item.remaining_quantity === 0"
+      >
+        {{ item.purchased_quantity }} / {{ item.line.quantity }}
+      </div>
+      <div role="cell" data-label="采购来源">
+        <button
+          class="order-link sku-source"
+          :data-confirmed="selection.status === 'confirmed'"
+          :aria-expanded="expanded"
+          @click="expanded = !expanded"
+        >
+          {{ selection.source?.source_platform || '来源' }} · {{ { unmatched: '待关联', matched: '待确认', ambiguous: '待选择', confirmed: '已确认' }[selection.status] }}
+        </button>
+      </div>
+      <div role="cell" class="sku-actions" data-label="操作">
+        <button
+          v-if="order.state === 'pending_shipment' && item.remaining_quantity > 0 && selection.line_key"
+          class="order-link"
+          :disabled="busy"
+          @click="alibabaPurchaseOpen = true"
+        >
+          1688 采购
+        </button>
+        <button
+          v-else
+          class="order-link"
+          :aria-expanded="expanded"
+          @click="expanded = !expanded"
+        >
+          来源详情<PhCaretDown :size="14" aria-hidden="true" />
+        </button>
+        <details class="order-more sku-more">
+          <summary class="order-link" :aria-label="`${item.line.sku || item.line.title} 更多操作`">
+            <PhDotsThree :size="22" aria-hidden="true" />
+          </summary>
+          <div class="order-menu">
+            <button
+              v-if="order.state === 'pending_shipment' && selection.line_key"
+              class="order-link"
+              :disabled="busy"
+              @click="alibabaPurchaseOpen = true"
+            >
+              1688 采购
+            </button>
+            <button
+              v-if="editable"
+              class="order-link"
+              :disabled="busy"
+              @click="sourceEditor = true"
+            >
+              {{ selection.source ? '修改来源' : '关联采购来源' }}
+            </button>
+            <button class="order-link" @click="expanded = !expanded">
+              {{ expanded ? '收起详情' : '来源与金额详情' }}
+            </button>
+          </div>
+        </details>
+      </div>
+    </div>
+    <section v-if="expanded" class="order-line-source" aria-label="采购来源">
       <div class="order-row">
-        <h5>采购来源</h5>
-        <div class="order-actions">
-          <span class="order-source-state" :data-confirmed="selection.status === 'confirmed'">{{
-            { unmatched: '待关联', matched: '待确认', ambiguous: '待选择', confirmed: '已确认' }[selection.status]
-          }}</span>
-          <button v-if="selection.source && editable" class="order-link" :disabled="busy" @click="sourceEditor = true">修改来源</button>
-        </div>
+        <h5>采购来源详情</h5><button class="order-link" @click="expanded = false">
+          收起
+        </button>
       </div>
       <template v-if="selection.source">
         <dl class="order-source-facts">
+          <div><dt>销售 SKU</dt><dd>{{ item.line.sku || '未提供' }}</dd></div>
           <div><dt>采购平台</dt><dd>{{ [selection.source.source_platform, selection.source.supplier].filter(Boolean).join(' · ') || '未提供' }}</dd></div>
-          <div><dt>采购规格</dt><dd class="order-specification">{{ selection.source.specification }}</dd></div>
-          <div><dt>来源 SKU：</dt><dd>{{ selection.source.source_sku_id || '未提供，请核对规格' }}</dd></div>
+          <div><dt>采购规格</dt><dd>{{ selection.source.specification }}</dd></div>
+          <div><dt>来源 SKU</dt><dd>{{ selection.source.source_sku_id || '未提供，请核对规格' }}</dd></div>
         </dl>
-        <div class="order-actions order-source-tools">
+        <div class="order-actions">
           <a
             class="order-button"
             :href="selection.source.sku_url_verified ? selection.source.sku_url : selection.source.product_url"
-            target="_blank" rel="noopener noreferrer"
+            target="_blank"
+            rel="noopener noreferrer"
             :title="selection.source.sku_url_verified ? '人工确认的 SKU 直达链接' : '打开商品页后，请核对上述规格'"
-          >{{ selection.source.sku_url_verified ? '直达采购规格（人工确认）' : '打开采购商品' }}</a>
-          <button class="order-link" @click="copySpecification">复制规格</button>
+          >
+            {{ selection.source.sku_url_verified ? '直达采购规格（人工确认）' : '打开采购商品' }}
+          </a>
+          <button class="order-link" @click="copySpecification">
+            复制规格
+          </button>
+          <button
+            v-if="editable"
+            class="order-link"
+            :disabled="busy"
+            @click="sourceEditor = true"
+          >
+            修改来源
+          </button>
         </div>
+        <p v-if="selection.source.purchase_block_reason" class="order-error">
+          {{ selection.source.purchase_block_reason }}
+        </p>
       </template>
       <template v-else>
-        <p class="order-muted mt-2">{{ selection.reason }}</p>
-        <button v-if="editable" class="order-button mt-3" @click="sourceEditor = true">关联采购来源</button>
+        <p class="order-muted mt-2">
+          {{ selection.reason }}
+        </p>
+        <button v-if="editable" class="order-button mt-3" @click="sourceEditor = true">
+          关联采购来源
+        </button>
       </template>
       <div v-if="selection.status !== 'confirmed' && editable" class="order-source-confirmation">
-        <p v-if="selection.source" class="order-muted">核对上方规格后确认来源，即可登记采购。</p>
+        <p v-if="selection.source" class="order-muted">
+          核对规格并确认来源后，可以发起采购。
+        </p>
         <div v-for="candidate in selection.candidates" :key="candidate.id" class="order-source-candidate">
           <div v-if="selection.candidates.length > 1" class="order-muted">
-            <p>{{ candidate.source.specification }} · 来源 SKU {{ candidate.source.source_sku_id }}</p>
-            <a :href="candidate.source.product_url" target="_blank" rel="noopener noreferrer">{{ candidate.source.supplier || candidate.source.source_platform }} · 查看候选商品</a>
+            <p>{{ candidate.source.specification }} · 来源 SKU {{ candidate.source.source_sku_id }}</p><a :href="candidate.source.product_url" target="_blank" rel="noopener noreferrer">
+              {{ candidate.source.supplier || candidate.source.source_platform }} · 查看候选商品
+            </a>
           </div>
-          <button class="order-button order-primary" :disabled="busy" @click="select(candidate.id)">{{ selection.candidates.length > 1 ? '确认此采购来源' : '确认来源' }}</button>
+          <button class="order-button order-primary" :disabled="busy" @click="select(candidate.id)">
+            {{ selection.candidates.length > 1 ? '确认此采购来源' : '确认来源' }}
+          </button>
         </div>
       </div>
-      <div v-if="selection.line_key" class="order-line-purchase">
-        <p class="order-muted">{{ item.remaining_quantity > 0 ? `未登记采购 ${item.remaining_quantity} 件` : '采购数量已登记齐全' }}</p>
-        <button v-if="order.state === 'pending_shipment' || item.records.length" class="order-button order-primary" :disabled="busy" @click="alibabaPurchaseOpen = true">1688 采购</button>
-        <button
-          v-if="selection.status === 'confirmed' && order.state === 'pending_shipment' && item.remaining_quantity > 0"
-          class="order-button order-primary" :disabled="busy"
-          @click="$emit('purchase', selection.line_key)"
-        >
-          记录采购
-        </button>
-      </div>
-      <p v-if="error" class="order-error" role="alert">{{ error }}</p>
-      <p v-if="notice" class="order-success" role="status">{{ notice }}</p>
+      <details class="order-line-amount">
+        <summary>SKU 金额明细</summary><OrderAmountDetails :value="item.line" :platform="order.platform" />
+      </details>
     </section>
-    <OrderPurchaseRecords v-if="item.records.length" :order-id="order.id" :records="item.records" :busy="busy" @cancel="cancelledRecord = $event" @updated="emit('updated', $event)" @lock="trackingBusy = $event" />
-    <AlibabaSelfPurchaseDialog v-if="alibabaPurchaseOpen" :order-id="order.id" :line-key="selection.line_key" :title="item.line.title" @close="alibabaPurchaseOpen = false" @updated="refreshPurchase" />
+    <p v-if="error" class="order-error" role="alert">
+      {{ error }}
+    </p>
+    <p v-if="notice" class="order-success" role="status">
+      {{ notice }}
+    </p>
+    <AlibabaSelfPurchaseDialog
+      v-if="alibabaPurchaseOpen"
+      :order-id="order.id"
+      :line-key="selection.line_key"
+      :title="item.line.title"
+      @close="alibabaPurchaseOpen = false"
+      @updated="refreshPurchase"
+    />
     <OrderSourceDialog
       v-if="sourceEditor"
       :item="item"
@@ -152,64 +230,37 @@ async function copySpecification() {
       @close="sourceEditor = false"
       @updated="$emit('updated', $event)"
     />
-    <WorkspaceDialog
-      v-if="cancelledRecord"
-      :open="true"
-      title="作废本 SKU 采购"
-      width="496px"
-      class="order-ui"
-      :close-disabled="busy"
-      @close="cancelledRecord = null"
-    >
-      <p class="font-semibold">
-        {{ item.line.sku }} · {{ cancelledRecord?.purchase_order_number }} · {{ cancelledRecord?.quantity }} 件
-      </p>
-      <p class="order-muted mt-3">
-        仅作废本 SKU 的这条采购记录，并移除它的国内包裹分配。同一采购单、同一包裹中的其他 SKU 不受影响，也不会取消采购平台订单。历史记录保留，作废后可在“跨境履约”中直接录入新包裹，也可重新记录采购。
-      </p>
-      <p v-if="error" class="order-error" role="alert">{{ error }}</p>
-      <template #footer>
-        <div class="order-footer">
-          <button class="order-button" :disabled="busy" @click="cancelledRecord = null">取消</button><button
-            class="order-button order-danger"
-            :disabled="busy"
-            @click="execute('cancel-purchase', { record_id: cancelledRecord?.id })"
-          >
-            确认作废
-          </button>
-        </div>
-      </template>
-    </WorkspaceDialog>
   </article>
 </template>
-
 <style scoped>
-.order-procurement-line { border: 1px solid var(--order-border); border-radius: 8px; overflow: hidden; background: var(--order-surface); }
-.order-line-product { display: flex; align-items: flex-start; gap: 14px; padding: 16px; }
-.order-line-identity { min-width: 0; flex: 1; }
-h4 { font-weight: 600; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-.order-line-identity > p { margin-top: 5px; overflow-wrap: anywhere; }
-.order-line-quantities { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 12px; }
-.order-line-amount { padding: 0 16px 12px; font-size: 12px; }
-.order-line-amount summary { cursor: pointer; color: var(--order-muted); }
-.order-line-amount summary span { margin-left: 6px; font-size: 11px; }
-.order-line-source { padding: 12px 16px 16px; background: var(--order-soft); border-top: 1px solid var(--order-border); }
-h5 { font-size: 12px; font-weight: 600; }
-.order-source-state { font-size: 11px; color: #b45309; }
-.order-source-state[data-confirmed='true'] { color: #15803d; }
+.order-procurement-line { min-width: 0; border-top: 1px solid var(--order-border); }
+.procurement-sku-row { display: grid; grid-template-columns: minmax(0, 1fr) 40px 64px 104px 120px; align-items: center; gap: 8px; min-height: 32px; padding: 2px 0; }
+.sku-specification { min-width: 0; display: grid; gap: 2px; }
+.sku-specification strong { font-weight: 500; overflow-wrap: anywhere; }
+.sku-specification .order-muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sku-number { text-align: center; font-variant-numeric: tabular-nums; }
+.sku-number[data-complete='true'], .sku-source[data-confirmed='true'] { color: var(--order-positive); }
+.order-link.sku-source { padding: 2px 0; white-space: normal; text-align: left; }
+.sku-actions { display: flex; justify-content: flex-end; align-items: center; gap: 0; }
+.sku-actions > .order-link { padding: 2px 0; display: flex; align-items: center; gap: 4px; }
+.sku-more summary { padding: 2px 6px; }
+.order-line-source { padding: 16px; margin: 0 0 12px; border: 1px solid var(--order-border); border-radius: 6px; background: var(--order-soft); }
+h5 { font-weight: 600; }
 .order-source-facts { display: grid; gap: 8px; margin: 12px 0; }
-.order-source-facts > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
-.order-source-facts dt { font-size: 12px; color: var(--order-muted); }
-.order-source-facts dd { font-size: 12px; overflow-wrap: anywhere; }
-.order-source-facts .order-specification { font-size: 13px; font-weight: 500; }
-.order-source-tools .order-button { padding: 5px 12px; font-size: 12px; }
+.order-source-facts > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px; }
+.order-source-facts dt { color: var(--order-muted); }
+.order-source-facts dd { overflow-wrap: anywhere; }
 .order-source-confirmation { display: grid; gap: 10px; margin-top: 12px; }
-.order-source-confirmation:empty { display: none; }
 .order-source-candidate { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: center; }
-.order-line-purchase { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid var(--order-border); margin-top: 14px; padding-top: 12px; }
-@media (max-width: 480px) {
-  .order-line-product { gap: 10px; padding: 12px; }
-  .order-line-source { padding: 12px; }
-  .order-source-facts > div { grid-template-columns: 64px minmax(0, 1fr); }
+.order-line-amount { margin-top: 12px; }
+.order-line-amount summary { cursor: pointer; color: var(--order-link-color); }
+@media (min-width: 601px) {
+  .sku-specification > .order-muted { display: none; }
+}
+@media (max-width: 600px) {
+  .procurement-sku-row { grid-template-columns: 1fr 1fr; gap: 12px; padding: 16px 0; }
+  .sku-specification { grid-column: 1 / -1; }
+  .sku-number { display: flex; gap: 10px; text-align: left; }
+  .sku-number::before { content: attr(data-label); color: var(--order-muted); font-size: 14px; }
 }
 </style>

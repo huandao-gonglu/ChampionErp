@@ -28,8 +28,7 @@ def _source_snapshot(request: SelectSourceRequest, scope: OrderCapabilityScope) 
 
 def _record_snapshot(request: OrderPurchaseRecordRequest, scope: OrderCapabilityScope) -> ToolApprovalSnapshot:
     facts = order_facts(request.order_id, scope)
-    facts["receiving"] = call(scope.fulfillment().receiving.detail, request.order_id)
-    return snapshot("登记已实际采购的单号与数量（不会下单）", request, facts)
+    return snapshot("登记已实际发生的采购单（不会下单）", request, facts)
 
 
 def _cancel_snapshot(request: CancelPurchaseRequest, scope: OrderCapabilityScope) -> ToolApprovalSnapshot:
@@ -37,7 +36,7 @@ def _cancel_snapshot(request: CancelPurchaseRequest, scope: OrderCapabilityScope
 
 
 def _sync_snapshot(request: PurchaseSyncRequest, scope: OrderCapabilityScope) -> ToolApprovalSnapshot:
-    return snapshot("刷新采购进度并按实际归属合入国内包裹；已启用自动预报时可能推进履约", request,
+    return snapshot("刷新整笔采购及物流；新运单带入后等待确认包裹清单", request,
                     order_facts(request.order_id, scope))
 
 
@@ -70,7 +69,7 @@ def order_notification_update(request: OrderNotificationRequest, scope: Annotate
     return OrderDataResult(data={"ok": True})
 
 
-@ai_tool(name="order_source_select", description="依据订单详情的候选 ID 或用户明确提供的真实来源确认采购来源。使用 selection.revision；不能伪造规格直达验证、发布关联或凭空补齐采购事实。审批后复用来源版本和已采购数量保护。",
+@ai_tool(name="order_source_select", description="依据订单详情的候选 ID 或用户明确提供的真实来源确认采购来源。使用 selection.revision；不能伪造规格直达验证、发布关联或凭空补齐采购事实。审批后复用来源版本和未决采购请求保护。",
          permission="order.procurement", side_effect="write", approval_required=True, approval_snapshot=_source_snapshot,
          idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual")
 def order_source_select(request: SelectSourceRequest, scope: Annotated[OrderCapabilityScope, Injected()], execution: Annotated[AiExecutionContext, Injected()]) -> OrderDataResult[OrderDetail]:
@@ -78,7 +77,7 @@ def order_source_select(request: SelectSourceRequest, scope: Annotated[OrderCapa
     return OrderDataResult(data=OrderDetail.model_validate(call(scope.procurement_command, "select-source", request.model_dump(mode="json"))))
 
 
-@ai_tool(name="order_purchase_record", description="登记已实际采购的订单号及数量，不创建远端采购。必须有真实采购依据，使用当前来源 revision 及已确认收货仓；request_id 由服务端生成。登记后沿用采购状态同步。",
+@ai_tool(name="order_purchase_record", description="登记已实际采购的订单号及数量，不创建远端采购。必须有真实采购依据，提供 source_platform 和 purchase_order_number；items 可选，可包含多个商品与 SKU，不要求确认销售采购来源。request_id 由服务端生成。登记后沿用采购状态同步。",
          permission="order.procurement", side_effect="write", approval_required=True, approval_snapshot=_record_snapshot,
          idempotency="required", idempotency_keys=("operation_key",), recovery_policy="idempotent")
 def order_purchase_record(request: OrderPurchaseRecordRequest, scope: Annotated[OrderCapabilityScope, Injected()], execution: Annotated[AiExecutionContext, Injected()]) -> OrderDataResult[OrderDetail]:
@@ -87,7 +86,7 @@ def order_purchase_record(request: OrderPurchaseRecordRequest, scope: Annotated[
         {**request.model_dump(mode="json"), "request_id": operation_key(execution)})))
 
 
-@ai_tool(name="order_purchase_cancel", description="按采购 record_id 作废当前 SKU 的本地采购并释放数量，同时移除该记录的国内包裹分配；同单其他 SKU 不受影响，不取消远端采购订单。手工及自动采购均可在报单前作废；报单已开始或结果待核实时禁止作废。",
+@ai_tool(name="order_purchase_cancel", description="按采购 record_id 作废整张采购单的本地登记，保留历史、包裹与报单；不取消远端订单，不退款。",
          permission="order.procurement", side_effect="write", approval_required=True, approval_snapshot=_cancel_snapshot,
          idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual")
 def order_purchase_cancel(request: CancelPurchaseRequest, scope: Annotated[OrderCapabilityScope, Injected()], execution: Annotated[AiExecutionContext, Injected()]) -> OrderDataResult[OrderDetail]:
@@ -100,7 +99,7 @@ def order_purchase_query(request: PurchaseQueryRequest, scope: Annotated[OrderCa
     return OrderDataResult(data=call(scope.purchase_query, request.model_dump(mode="json")))
 
 
-@ai_tool(name="order_purchase_sync", description="刷新采购状态和物流，按真实商品与数量归属保存国内包裹。同一采购单复用查询；冲突不覆盖人工分配。可能推进已开启的自动履约，先审批。",
+@ai_tool(name="order_purchase_sync", description="刷新整张采购单的商品、状态和物流，按运单带入新包裹；不覆盖人工资料。新增运单后等待确认包裹清单，不直接报单，先审批。",
          permission="order.procurement", side_effect="write", approval_required=True, approval_snapshot=_sync_snapshot,
          idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual")
 def order_purchase_sync(request: PurchaseSyncRequest, scope: Annotated[OrderCapabilityScope, Injected()], execution: Annotated[AiExecutionContext, Injected()]) -> OrderDataResult[OrderDetail]:

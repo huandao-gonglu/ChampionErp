@@ -64,9 +64,8 @@ def order_facts(order_id: str, scope: OrderCapabilityScope) -> dict:
         "lines": [{
             "selection": line["selection"],
             "remaining_quantity": line["remaining_quantity"],
-            "records": [{key: value for key, value in record.items() if key != "progress"}
-                        for record in line["records"]],
         } for line in detail["lines"]],
+        "purchases": [{key: value for key, value in record.items() if key != "progress"} for record in detail["purchases"]],
     }
 
 

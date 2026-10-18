@@ -4,6 +4,8 @@ import json
 import time
 
 from erp_web.schemas.orders import utc_iso
+from erp_web.schemas.order_procurement import PurchaseRecord, PurchaseItem
+from uuid import uuid4
 
 
 class PurchaseProgressStore:
@@ -51,33 +53,23 @@ class PurchaseProgressStore:
             raise ValueError("采购同步结果已过期，请重新刷新")
         return record
 
-    def competing(self, conn, record):
-        return conn.execute("""SELECT COUNT(*) FROM order_purchases
-            WHERE status='purchased' AND id<>?
-            AND json_extract(record_json,'$.purchase_order_number')=?
-            AND json_extract(record_json,'$.source.source_sku_id')=?""",
-            (record["id"], record["purchase_order_number"], record["source"]["source_sku_id"])).fetchone()[0] > 0
-
     def finish(self, order_id, record_id, generation, accounts, value):
         with self.orders.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            self.guard(conn, order_id, record_id, generation, accounts)
+            record = PurchaseRecord.model_validate(self.guard(conn, order_id, record_id, generation, accounts))
+            products = (value.get("data") or {}).get("products") or []
+            if products and all(p["quantity"] for p in products):
+                items = []
+                for product in products:
+                    matches = [item for item in record.items if item.product_id == product["offer_id"] and item.sku == product["sku_id"]]
+                    previous = matches[0] if len(matches) == 1 else None
+                    items.append(PurchaseItem(
+                        id=previous.id if previous else product["item_id"] or uuid4().hex,
+                        line_key=previous.line_key if previous else "", line_signature=previous.line_signature if previous else "",
+                        product_id=product["offer_id"], sku=product["sku_id"], title=product["name"],
+                        quantity=product["quantity"], image_url=product["image_url"], source=previous.source if previous else None))
+                record.items = items
+                self.procurement._save_record(conn, order_id, record)
             conn.execute("UPDATE purchase_progress SET lease_until=0,value=? WHERE record_id=? AND generation=?",
                          (json.dumps(value, ensure_ascii=False), record_id, generation))
             conn.commit()
-
-    def resolve(self, conn, order_id, parcels, accounts):
-        """人工分配与包裹保存处于同一事务，并使正在执行的旧查询失效。"""
-        self.procurement._order(conn, order_id, accounts)
-        rows = conn.execute("""SELECT s.* FROM purchase_progress s JOIN order_purchases p
-            ON p.id=s.record_id WHERE p.order_id=? AND p.status='purchased'""", (order_id,)).fetchall()
-        for row in rows:
-            value = json.loads(row["value"])
-            if not value.get("data"):
-                continue
-            value.update(state="manual", message="国内包裹已人工确认", error="", resolution={
-                "logistics": value["data"]["logistics"],
-                "parcels": [p for p in parcels if p["purchase_record_id"] == row["record_id"]],
-            })
-            conn.execute("UPDATE purchase_progress SET generation=generation+1,lease_until=0,value=? WHERE record_id=?",
-                         (json.dumps(value, ensure_ascii=False), row["record_id"]))

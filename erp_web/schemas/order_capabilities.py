@@ -8,6 +8,7 @@ from erp_web.schemas.alibaba_self_purchase import (
     AlibabaPaymentAgreement, AlibabaSelfPurchaseRecord,
 )
 from erp_web.schemas.fulfillment import FulfillmentCommand
+from erp_web.schemas.order_procurement import PurchaseRegistration
 from erp_web.schemas.orders import Platform
 from erp_web.schemas.order_chat import OrderChatHistory, OrderChatSent
 
@@ -53,12 +54,8 @@ class OrderNotificationRequest(OrderInput):
         return self
 
 
-class OrderPurchaseRecordRequest(OrderLineRequest):
-    revision: int = Field(ge=1)
-    quantity: int = Field(gt=0, strict=True)
-    purchase_order_number: str = Field(min_length=1, max_length=200)
-    receiving_revision: int = Field(default=0, ge=0)
-    receiving_confirmed: bool = False
+class OrderPurchaseRecordRequest(PurchaseRegistration):
+    pass
 
 
 class OrderAddressRequest(OrderRequest):

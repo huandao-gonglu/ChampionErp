@@ -105,7 +105,7 @@ def test_config_change_invalidates_both_unpurchased_and_purchased_binding(domain
         select(service, order, address)
     select(service, order, changed)
     confirm(procurement, order, key)
-    purchase = procurement.record_purchase({**purchase_body(order, key), 'receiving_revision': 2, 'receiving_confirmed': True})
+    purchase = procurement.record_purchase({**purchase_body(order, key), 'receiving_warehouse': service.store.public(service.store.get(order.identity))})
     frozen = service.store.get(order.identity)
     edit(service, changed, enabled=False, address={**ADDRESS, 'address': '再次修改'}, rules=[])
     with pytest.raises(ValueError, match='原绑定已失效'):
@@ -114,7 +114,7 @@ def test_config_change_invalidates_both_unpurchased_and_purchased_binding(domain
     view = service.detail(order.identity)
     assert view['binding_stale'] and not view['locked'] and view['can_confirm']
     assert view['candidates'] == []
-    assert purchase['lines'][0]['records'][0]['receiving_warehouse']['address']['address'] == '新地址'
+    assert purchase["purchases"][0]['receiving_warehouse']['address']['address'] == '新地址'
 
 
 @pytest.mark.parametrize('changes', [
@@ -129,8 +129,8 @@ def test_purchased_order_can_rebind_changed_configuration_without_rewriting_purc
     address = configure(service)
     original = select(service, order, address)['warehouse']
     confirm(procurement, order, key)
-    purchase = procurement.record_purchase({**purchase_body(order, key), 'receiving_revision': 1, 'receiving_confirmed': True})
-    record = purchase['lines'][0]['records'][0]
+    purchase = procurement.record_purchase({**purchase_body(order, key), 'receiving_warehouse': service.store.public(service.store.get(order.identity))})
+    record = purchase["purchases"][0]
     changed = edit(service, address, **changes)
     view = service.detail(order.identity)
     assert view['binding_stale'] and not view['locked']
@@ -147,7 +147,7 @@ def test_purchased_order_can_rebind_changed_configuration_without_rewriting_purc
     assert result['revision'] == original['revision'] + 1
     assert service.checked(order.identity)['address'] == changed['address']
     assert service.checked(order.identity)['warehouse_id'] == changed['warehouse_id']
-    assert procurement.detail(order.identity)['lines'][0]['records'][0] == record
+    assert procurement.detail(order.identity)["purchases"][0] == record
 
 
 def test_disabled_configuration_can_be_replaced_but_unrelated_edit_does_not_unlock(domain):
@@ -158,7 +158,7 @@ def test_disabled_configuration_can_be_replaced_but_unrelated_edit_does_not_unlo
     replacement = configure(service, name='新收货点', warehouse_id=20)
     select(service, order, address)
     confirm(procurement, order, key)
-    procurement.record_purchase({**purchase_body(order, key), 'receiving_revision': 1, 'receiving_confirmed': True})
+    procurement.record_purchase({**purchase_body(order, key), 'receiving_warehouse': service.store.public(service.store.get(order.identity))})
     replacement = edit(service, replacement, address={**ADDRESS, 'address': '新收货点地址'})
     assert not service.detail(order.identity)['binding_stale']
     with pytest.raises(ValueError, match='不能更换'):

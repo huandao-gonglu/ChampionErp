@@ -177,12 +177,11 @@ def test_payment_rejects_changed_frozen_facts_before_network(payment, change):
 def test_manual_purchase_uses_trusted_request_identity(setup_purchase):
     purchase, _, _, (order, key) = setup_purchase
     scope = scope_for(purchase)
-    request = OrderPurchaseRecordRequest(order_id=order.identity, line_key=key, revision=1,
-        quantity=1, purchase_order_number='manual-1', receiving_revision=1, receiving_confirmed=True)
+    request = OrderPurchaseRecordRequest(order_id=order.identity, source_platform='1688', purchase_order_number='manual-1')
     result = order_purchase_record(request, scope, _approved_execution(_record_snapshot(request, scope), 'order_purchase_record'))
-    record = result.data.lines[0].records[0]
-    assert record.request_id.startswith('ai-order-') and record.quantity == 1
-    assert result.data.lines[0].remaining_quantity == 1
+    record = result.data.purchases[0]
+    assert record.request_id.startswith('ai-order-') and record.items == []
+    assert result.data.lines[0].remaining_quantity == 2
 
 
 def test_fulfillment_approval_binds_revision_and_actual_packages(fulfillment_domain):
@@ -435,3 +434,15 @@ def test_ai_cancelled_plan_preserves_binding_archives_once_and_requires_explicit
     assert fulfillment.store.receiving.get(order.identity) == binding
     assert [path for path, _ in bus.calls[before:]] == ['/erpapi/orderlist/status']
     assert not fulfillment.process_one(order)
+
+
+def test_fulfillment_approval_does_not_depend_on_purchase_records(fulfillment_domain):
+    fulfillment, _, order = ready(fulfillment_domain)
+    procurement = fulfillment.detail_provider.__self__
+    scope = scope_for(procurement=procurement, fulfillment=fulfillment)
+    request = OrderFulfillmentRequest(order_id=order.identity, revision=fulfillment.detail(order.identity)['revision'], action='submit')
+    approved = _approved_execution(_fulfillment_snapshot(request, scope), 'order_fulfillment_update')
+    procurement.record_purchase({'order_id': order.identity, 'source_platform': 'other', 'purchase_order_number': 'EXTRA', 'request_id': 'extra'})
+    result = order_fulfillment_update(request, scope, approved)
+    assert result.data.crossborderbus_order_id is None
+    assert fulfillment.store.get(order.identity)['manual_submit']

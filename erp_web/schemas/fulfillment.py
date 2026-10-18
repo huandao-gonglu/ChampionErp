@@ -108,11 +108,19 @@ class FulfillmentRule(FulfillmentPlan):
 
 class DomesticParcel(FulfillmentInput):
     id: str = Field(min_length=1, max_length=80)
-    line_key: str = Field(min_length=1, max_length=500)
-    purchase_record_id: str = Field(default="", max_length=80, description="关联采购记录；空值表示直接按销售订单商品录入包裹，不要求采购单号。")
     carrier: str = Field(default="", max_length=80, description="物流公司，选填；未提供时保留为空，不根据单号猜测。")
     tracking_number: str = Field(min_length=1, max_length=100)
-    quantity: int = Field(gt=0, strict=True)
+    quantity: int | None = Field(default=None, gt=0, strict=True, description="包裹内实际商品件数；未知可先保存，确认报单前补齐。")
+    description: str = Field(default="", max_length=10000)
+    image_url: str = Field(default="", max_length=4096)
+    source_platform: str = Field(default="", max_length=100)
+    purchase_order_number: str = Field(default="", max_length=200)
+    included: bool = Field(default=True, description="是否参与本次报单；移出不删除包裹事实。")
+
+    @field_validator("tracking_number")
+    @classmethod
+    def normalize_waybill(cls, value):
+        return value.upper()
 
 
 class LabelInput(FulfillmentInput):
@@ -154,6 +162,7 @@ class FulfillmentCommand(FulfillmentInput):
     receiving_revision: int = Field(default=0, ge=0)
     remark: str | None = Field(default=None, max_length=1000)
     parcels: list[DomesticParcel] | None = None
+    confirm_parcels: bool = False
     label: LabelInput | None = None
     country: str = Field(default="", pattern=r"^$|^[A-Z]{2}$")
 
@@ -265,6 +274,7 @@ class FulfillmentView(BaseModel):
     receiving_binding_stale: bool = False
     selected_services: list[BusService] = Field(default_factory=list)
     parcels: list[DomesticParcel]
+    parcels_confirmed: bool
     has_domestic_waybill: bool = False
     update_pending: bool = False
 

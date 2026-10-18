@@ -16,7 +16,7 @@ def create_service(context):
     orders = context.order_notifications
     store = FulfillmentStore(orders.store)
     labels = PlatformLabelService(context.config.load_store_config, context.config.load_app_config)
-    return FulfillmentService(store, CrossborderBusClient(store), orders.accounts, lambda order_id: context.order_procurement.detail(order_id), label_provider=labels, purchase_progress=context.order_procurement.store.purchase_progress,
+    return FulfillmentService(store, CrossborderBusClient(store), orders.accounts, lambda order_id: context.order_procurement.detail(order_id), label_provider=labels,
         image_delivery=lambda url: deliver_platform_image(context.config.load_app_config(), url))
 
 

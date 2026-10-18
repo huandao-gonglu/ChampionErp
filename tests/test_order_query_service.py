@@ -113,7 +113,9 @@ def test_confirmed_and_purchase_sources_retain_separate_evidence(query_domain):
     procurement = service.procurement
     procurement.select_source({"order_id": order.identity, "line_key": key, "revision": 0,
         "source": {**manual_source(), "specification": "EE010 20X20CM"}})
-    record = procurement.record_purchase(purchase_body(order, key))["lines"][0]["records"][0]
+    request = purchase_body(order, key)
+    request['items'][0]['source']['specification'] = 'EE010 20X20CM'
+    record = procurement.record_purchase(request)["purchases"][0]
     procurement.select_source({"order_id": order.identity, "line_key": key, "revision": 1,
         "source": {**manual_source(), "specification": "EE052 20X20CM"}})
     result = query(service, article_numbers=["EE010", "EE052"])

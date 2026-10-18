@@ -17,7 +17,7 @@ function detail(): FulfillmentDetail {
     busy: false, editing: false, editable: true, plan_editable: true, create_unknown: false, cancel_requested: false, cancel_rejected: false,
     crossborderbus_order_id: null, fulfillment_status: 'NEW', operation: '', error_message: '', blocked_reason: '', last_attempt_at: '', last_synced_at: '', next_attempt: 0,
     platform_label: '', platform_tracking_number: '', label_fetch_supported: true, label_fetch_reason: '', label_error: '', label_attempt_at: '', country: '', remark: '', override: false,
-    section_name: 'Yandex', warehouse_name: '义乌合作仓', delivery: { fulfillment_model: 'FBS', warehouse_id: '', warehouse_name: '', method_id: 'CEL', method_name: '普货', carrier: 'CEL', country: '', shipment_id: '', tracking_number: '', label_url: '' }, parcels: [],
+    section_name: 'Yandex', warehouse_name: '义乌合作仓', delivery: { fulfillment_model: 'FBS', warehouse_id: '', warehouse_name: '', method_id: 'CEL', method_name: '普货', carrier: 'CEL', country: '', shipment_id: '', tracking_number: '', label_url: '' }, parcels: [], parcels_confirmed: false,
      plan: { section_id: 143, warehouse_id: 54, service_ids: [] }, rule: null, receiving_warehouse: { revision: 1, section_id: 143, warehouse_id: 54, section_name: 'Yandex', warehouse_name: '义乌合作仓', address: { fullName: '仓库收件人', mobile: '13800000000', phone: '', provinceText: '浙江省', cityText: '金华市', areaText: '义乌市', townText: '', address: '货代收货路 2 号', postCode: '' }, transport_service: 'Yandex CEL 普货', delivery_key: 'delivery-1', confirmed_at: '' },
     handover_target: { key: 'address-v1', warehouse_id: 'yandex-100', name: 'CEL 交货仓', address: '义乌市示例路 1 号', shipment_type: 'IMPORT', reason: '' },
   }
@@ -202,7 +202,7 @@ describe('本单报单仓库与服务', () => {
 
 it('多个实际运单必须确认合单服务，取消所选服务会阻止提交', async () => {
   const value = detail()
-  value.parcels = ['SF1', 'YT2'].map((tracking_number, index) => ({ id: String(index), line_key: 'line', purchase_record_id: 'record', carrier: '快递', tracking_number, quantity: 1 }))
+  value.parcels = ['SF1', 'YT2'].map((tracking_number, index) => ({ id: String(index), description: '', image_url: '', source_platform: '', purchase_order_number: '', included: true, carrier: '快递', tracking_number, quantity: 1 }))
   mount(FulfillmentPlanDialog, { props: { value, order: order() }, attachTo: document.body })
   await choose()
   expect(dom().text()).toContain('2 个国内包裹')
@@ -219,7 +219,7 @@ it('多个实际运单必须确认合单服务，取消所选服务会阻止提�
 
 it('同一运单多个商品不提示合单', async () => {
   const value = detail()
-  value.parcels = [1, 2].map(index => ({ id: String(index), line_key: String(index), purchase_record_id: String(index), carrier: '圆通', tracking_number: 'YT1', quantity: 1 }))
+  value.parcels = [{ id: 'one', carrier: '圆通', tracking_number: 'YT1', quantity: 2, description: '商品A、商品B', image_url: '', source_platform: '', purchase_order_number: '', included: true }]
   mount(FulfillmentPlanDialog, { props: { value, order: order() }, attachTo: document.body })
   await choose()
   expect(dom().text()).not.toContain('确认合单服务')

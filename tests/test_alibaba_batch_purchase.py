@@ -88,12 +88,13 @@ def test_native_grouping_and_atomic_backfill(batch):
     for record in records:
         result = create(service, record)
         assert result['state'] == 'created'
-        assert len(result['purchase_record_ids']) == len(record['preview']['items'])
+        assert len(result['purchase_record_ids']) == 1
         assert create(service, record) == result
     detail = service.procurement.detail(order.identity)
     assert all(line['purchased_quantity'] == 2 for line in detail['lines'])
-    assert [line['records'][0]['purchase_order_number'] for line in detail['lines']] == [NUMBER, NUMBER, str(int(NUMBER)+1)]
-    assert all(line['records'][0]['receiving_warehouse']['revision'] == 1 for line in detail['lines'])
+    assert [row['purchase_order_number'] for row in detail['purchases']] == [NUMBER, str(int(NUMBER)+1)]
+    assert [len(row['items']) for row in detail['purchases']] == [2, 1]
+    assert all(row['receiving_warehouse']['revision'] == 1 for row in detail['purchases'])
     calls = [params for api, params in client.calls if api == CREATE]
     assert len(calls) == 2 and all(params['addressParam'] == service.receiving.checked(order.identity)['address'] for params in calls)
 
@@ -125,16 +126,16 @@ def test_unknown_locks_all_group_lines_across_restart_and_credentials(batch):
         preview(service)
     config['access_token'] = 'test-token'
     recovered = service.reconcile({'preview_id': group['id']})['record']
-    assert recovered['state'] == 'created' and len(recovered['purchase_record_ids']) == 2
+    assert recovered['state'] == 'created' and len(recovered['purchase_record_ids']) == 1
     assert len([api for api, _ in client.calls if api == CREATE]) == 1
 
 
-def test_group_reservation_rolls_back_all_lines_on_late_quantity_change(batch):
+def test_group_reservation_rolls_back_all_lines_on_late_sku_change(batch):
     service, client, _, order, _ = batch
     group = next(record for record in groups(batch) if len(record['preview']['items']) == 2)
     with service.procurement.store.orders.connect() as conn:
         changed = order.model_copy(deep=True)
-        changed.items[1].quantity = 1
+        changed.items[1].sku = "CHANGED"
         conn.execute('UPDATE orders SET snapshot=? WHERE id=?', (changed.model_dump_json(), order.identity))
         conn.commit()
     assert create(service, group)['state'] == 'failed'
@@ -170,7 +171,7 @@ def test_mismatched_recovery_never_backfills(batch):
     client.orders[record['id']][1]['cargoParamList'].pop()
     with pytest.raises(ValueError, match='不一致'):
         service.reconcile({'preview_id': record['id']})
-    assert not any(line['records'] for line in service.procurement.detail(order.identity)['lines'])
+    assert not service.procurement.detail(order.identity)['purchases']
 
 
 def test_group_cancel_closes_every_corresponding_record(batch, monkeypatch):
@@ -186,7 +187,7 @@ def test_group_cancel_closes_every_corresponding_record(batch, monkeypatch):
     assert service.reconcile({'preview_id': record['id']})['record']['state'] == 'closed'
     detail = service.procurement.detail(order.identity)
     assert all(line['remaining_quantity'] == 2 for line in detail['lines'])
-    assert all(r['status'] == 'cancelled' for line in detail['lines'] for r in line['records'])
+    assert all(r['status'] == 'cancelled' for r in detail['purchases'])
 
 
 @pytest.mark.parametrize('kind', ['missing', 'duplicate', 'spec', 'quantity'])
@@ -246,16 +247,12 @@ def test_multi_sku_waybills_backfill_only_corresponding_lines(batch, shared_wayb
         sync_purchases(service.procurement, fulfillment, lambda: config, order.identity, created['purchase_record_ids'], client_factory=LogisticsClient)
     assert len(LogisticsClient.calls) == 3
     parcels = fulfillment.detail(order.identity)['parcels']
-    assert len(parcels) == 2
-    assert {p['purchase_record_id'] for p in parcels} == set(created['purchase_record_ids'])
-    assert all(p['quantity'] == 2 for p in parcels)
-    if shared_waybill:
-        assert all(p['tracking_number'] == 'YT1' for p in parcels)
-    else:
-        for parcel in parcels:
-            purchase = service.procurement.store.purchase_record(order.identity, parcel['purchase_record_id'], service.procurement.accounts_provider())
-            expected = 'YT0' if purchase.source.source_spec_id == 'spec-one' else 'YT1'
-            assert parcel['tracking_number'] == expected
+    assert len(parcels) == (1 if shared_waybill else 2)
+    assert all('line_key' not in p and 'purchase_record_id' not in p for p in parcels)
+    assert all(p['purchase_order_number'] == NUMBER for p in parcels)
+    assert sum(p['quantity'] for p in parcels) == 4
+    assert {p['tracking_number'] for p in parcels} == ({'YT1'} if shared_waybill else {'YT0', 'YT1'})
+    assert not fulfillment.detail(order.identity)['parcels_confirmed']
 
 
 def test_new_preview_invalidates_overlapping_single_and_batch_previews(batch):
@@ -283,7 +280,7 @@ def test_native_preview_can_merge_different_offers_without_using_supplier_names(
     records = service.batch_preview(body)['records']
     assert len(records) == 1 and len(records[0]['preview']['items']) == 3
     created = create(service, records[0])
-    assert created['state'] == 'created' and len(created['purchase_record_ids']) == 3
+    assert created['state'] == 'created' and len(created['purchase_record_ids']) == 1
 
 
 def test_batch_atomic_backfill_failure_preserves_remote_and_recovers_without_create(batch, monkeypatch):
@@ -298,10 +295,10 @@ def test_batch_atomic_backfill_failure_preserves_remote_and_recovers_without_cre
     result = create(service, record)
     assert result['state'] == 'created' and result['order_numbers'] == [NUMBER]
     assert not result['purchase_record_id']
-    assert not any(line['records'] for line in service.procurement.detail(order.identity)['lines'])
+    assert not service.procurement.detail(order.identity)['purchases']
     monkeypatch.setattr(store, '_complete_purchase', complete)
     result = service.reconcile({'preview_id': record['id']})['record']
-    assert len(result['purchase_record_ids']) == 2
+    assert len(result['purchase_record_ids']) == 1
     assert len([api for api, _ in client.calls if api == CREATE]) == 1
 
 
@@ -363,8 +360,8 @@ def grouped_sync(batch):
 
     service, client, config, order, _ = batch
     created = [create(service, record) for record in groups(batch)]
-    same = next(row['purchase_record_ids'] for row in created if len(row['purchase_record_ids']) == 2)
-    other = next(row['purchase_record_ids'][0] for row in created if len(row['purchase_record_ids']) == 1)
+    same = created[0]['purchase_record_ids']
+    other = created[1]['purchase_record_ids'][0]
     store = FulfillmentStore(service.procurement.store.orders)
     fulfillment = FulfillmentService(store, Bus(store), service.procurement.accounts_provider,
                                      service.procurement.detail, start_worker=False)
@@ -400,34 +397,32 @@ def grouped_sync(batch):
 
     def snapshots():
         detail = service.procurement.detail(order.identity)
-        return {row['id']: row['progress'] for line in detail['lines'] for row in line['records']}
+        return {row['id']: row['progress'] for row in detail['purchases']}
 
     return service.procurement, order.identity, same, other, Query, run, snapshots
 
 
-def test_refresh_one_sku_updates_same_purchase_but_not_other_purchase(grouped_sync):
+def test_refresh_header_updates_all_products_but_not_other_purchase(grouped_sync):
     _, _, same, other, query, run, snapshots = grouped_sync
     before = snapshots()
     query.status = 'waitsellersend'
-    detail = run(same[1])
+    detail = run(same[0])
     after = snapshots()
     assert all(after[key]['data']['order']['status'] == 'waitsellersend' for key in same)
     assert after[other] == before[other]
     assert query.calls == [(ORDER_DETAIL, NUMBER), (LOGISTICS_INFO, NUMBER)]
     assert {row['status'] for row in detail['order']['purchase_tracking']['orders'] if row['order_number'] == NUMBER} == {'waitsellersend'}
-    assert {after[key]['data']['product']['sku_id'] for key in same} == {'67890', '67891'}
+    assert {p['sku_id'] for p in after[same[0]]['data']['products']} == {'67890', '67891'}
 
 
-def test_group_refresh_skips_cancelled_sibling(grouped_sync):
-    procurement, order_id, same, _, query, run, snapshots = grouped_sync
+def test_cancelled_header_cannot_refresh_or_modify_other_purchase(grouped_sync):
+    procurement, order_id, same, other, query, run, snapshots = grouped_sync
     before = snapshots()
-    record = procurement.store.purchase_record(order_id, same[1], procurement.accounts_provider())
-    procurement.store.complete_purchase(record.request_id, NUMBER, procurement.accounts_provider(), cancelled=True)
-    query.status = 'waitsellersend'
-    run()
-    after = snapshots()
-    assert after[same[0]]['data']['order']['status'] == 'waitsellersend'
-    assert after[same[1]] == before[same[1]]
+    procurement.cancel_purchase({'order_id': order_id, 'record_id': same[0]})
+    with pytest.raises(ValueError, match='作废'):
+        run()
+    assert snapshots()[other] == before[other]
+    assert not query.calls
 
 
 def test_group_query_failure_retains_all_previous_snapshots_without_retry(grouped_sync):
@@ -444,12 +439,12 @@ def test_group_query_failure_retains_all_previous_snapshots_without_retry(groupe
     assert after[other] == before[other]
 
 
-def test_group_refresh_claims_all_siblings_before_network(grouped_sync):
+def test_header_refresh_claims_before_network(grouped_sync):
     _, _, same, _, query, run, snapshots = grouped_sync
     def concurrent_refresh():
         assert all(snapshots()[key]['state'] == 'syncing' for key in same)
         with pytest.raises(ValueError, match='正在同步'):
-            run(same[1])
+            run(same[0])
     query.callback = staticmethod(concurrent_refresh)
     query.status = 'waitsellersend'
     run()
@@ -457,14 +452,14 @@ def test_group_refresh_claims_all_siblings_before_network(grouped_sync):
     assert all(snapshots()[key]['state'] == 'synced' for key in same)
 
 
-def test_busy_sibling_rolls_back_entire_group_claim(grouped_sync):
+def test_busy_header_cannot_refresh_twice(grouped_sync):
     procurement, order_id, same, _, query, run, snapshots = grouped_sync
     progress = procurement.store.purchase_progress
     accounts = procurement.accounts_provider()
-    generation, value = progress.begin(order_id, same[1], accounts)
+    generation, value = progress.begin(order_id, same[0], accounts)
     before = snapshots()
     with pytest.raises(ValueError, match='正在同步'):
         run()
     assert snapshots() == before
     assert not query.calls
-    progress.finish(order_id, same[1], generation, accounts, value)
+    progress.finish(order_id, same[0], generation, accounts, value)

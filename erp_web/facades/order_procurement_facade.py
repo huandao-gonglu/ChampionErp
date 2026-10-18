@@ -73,7 +73,7 @@ def command(action, body, *, context=None):
         "cancel-purchase": service.cancel_purchase,
     }[action](body)
     if action == "record-purchase":
-        record = next((r for line in result["lines"] for r in line["records"] if r["request_id"] == body["request_id"]), None)
+        record = next((r for r in result["purchases"] if r["request_id"] == body["request_id"]), None)
         if record and supported(PurchaseRecord.model_validate(record)):
             try:
                 return sync_purchase({"order_id": body["order_id"], "record_id": record["id"]}, once=True, context=context)

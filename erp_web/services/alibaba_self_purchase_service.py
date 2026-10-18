@@ -157,8 +157,6 @@ class AlibabaSelfPurchaseService:
         resolved, reason = self._purchase_source(item)
         if not reason and detail["order"]["state"] != "pending_shipment":
             reason = "只有待发货的销售订单可以自动采购"
-        if not reason and item["remaining_quantity"] <= 0:
-            reason = "该订单商品已采购齐全，无需重复采购"
         warehouse = None
         required = detail['order']['platform'] == 'yandex'
         if required:
@@ -259,8 +257,8 @@ class AlibabaSelfPurchaseService:
         if options["blocked_reason"]:
             raise ValueError("不能自动采购：" + options["blocked_reason"])
         matches = [c for c in options["candidates"] if c["id"] == candidate_id]
-        if len(matches) != 1 or quantity > options["remaining_quantity"]:
-            raise ValueError("采购来源已变化或数量超过订单剩余数量，请重新预览")
+        if len(matches) != 1:
+            raise ValueError("采购来源已变化，请重新预览")
         return matches[0]
 
     def _attach(self, row, scope, *, cancelled=False):

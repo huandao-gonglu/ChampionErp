@@ -211,7 +211,7 @@ def test_transport_signs_payment_as_non_retrying_write(monkeypatch, channel):
 
 @pytest.mark.parametrize('channel', ['shegou', 'alipay'])
 def test_multi_sku_group_pays_once_for_the_whole_order(batch, channel):
-    service, client, _, _, _ = batch
+    service, client, _, order, _ = batch
     record = next(row for row in groups(batch) if len(row['preview']['items']) == 2)
     service.create({'preview_id': record['id'], 'pay_channel': channel})
     original_call, original_query = client.call, client.query
@@ -230,6 +230,8 @@ def test_multi_sku_group_pays_once_for_the_whole_order(batch, channel):
     body = {'preview_id': record['id'], 'confirmed_total_fen': 1580}
     result = service.pay(body)['record']
     assert result['payment']['state'] == 'succeeded'
-    assert len(result['purchase_record_ids']) == 2
+    assert len(result['purchase_record_ids']) == 1
+    purchase = service.procurement.store.purchase_record(order.identity, result['purchase_record_ids'][0], service.procurement.accounts_provider())
+    assert len(purchase.items) == 2
     service.pay(body)
     assert len([n for n, _ in client.calls if n == PAY]) == 1

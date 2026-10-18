@@ -81,7 +81,7 @@ def domain(tmp_path):
     key = order_line_key(line)
     procurement.select_source({"order_id": order.identity, "line_key": key, "revision": 0, "source": {"supplier": "供应商", "source_platform": "1688", "product_url": "https://detail.1688.com/offer/123.html", "source_sku_id": "source-1", "specification": "银色"}})
     assign_receiving(receiving_service(procurement), order)
-    procurement.record_purchase({"order_id": order.identity, "line_key": key, "revision": 1, "request_id": "purchase", "quantity": 2, "purchase_order_number": "PO-123", "receiving_revision": 1, "receiving_confirmed": True})
+    procurement.record_purchase({'order_id': order.identity, 'request_id': 'purchase', 'purchase_order_number': 'PO-123', 'source_platform': '1688', 'items': [{'line_key': key, 'quantity': 2}]})
     store = FulfillmentStore(orders)
     bus = Bus(store)
     service = FulfillmentService(store, bus, lambda: accounts, procurement.detail, start_worker=False)
@@ -91,12 +91,16 @@ def domain(tmp_path):
     service.command("plan", {"order_id": order.identity, "revision": view["revision"],
         "plan": {"section_id": 1, "warehouse_id": 10, "service_ids": [2, 3]},
         "receiving_revision": view["receiving_warehouse"]["revision"]})
-    purchase = procurement.detail(order.identity)["lines"][0]["records"][0]
-    parcel = {"id": "parcel-1", "line_key": key, "purchase_record_id": purchase["id"], "carrier": "顺丰", "tracking_number": "SF123", "quantity": 2}
+    purchase = procurement.detail(order.identity)["purchases"][0]
+    parcel = {"id": "parcel-1", "carrier": "顺丰", "tracking_number": "SF123", "quantity": 2,
+              "description": "手机支架 · 银色", "image_url": "https://platform.example/yandex-sku.jpg",
+              "source_platform": "1688", "purchase_order_number": "PO-123", "included": True}
     return service, bus, order, parcel, snapshot, accounts
 
 
 def command(service, order, action, **body):
+    if action == "parcels":
+        body.setdefault("confirm_parcels", True)
     if action == "plan":
         view = service.detail(order.identity)
         body.update(receiving_revision=view["receiving_warehouse"]["revision"])
@@ -472,11 +476,10 @@ def test_remote_report_keeps_original_plan_and_blocks_rebinding_after_config_edi
     assert sum(path.endswith('createOrder') for path, _ in bus.calls) == 1
 
 
-def test_parcels_validate_purchase_allocation_and_account(domain):
+def test_parcels_are_independent_but_validate_identity_and_account(domain):
     service, _, order, parcel, _, accounts = domain
-    with pytest.raises(FulfillmentError):
-        command(service, order, "parcels", parcels=[{**parcel, "quantity": 3}])
-    with pytest.raises(FulfillmentError):
+    assert command(service, order, "parcels", parcels=[{**parcel, "quantity": 3}])["parcels"][0]["quantity"] == 3
+    with pytest.raises(ValueError):
         command(service, order, "parcels", parcels=[{**parcel, "purchase_record_id": "foreign"}])
     with pytest.raises(FulfillmentError):
         command(service, order, "parcels", parcels=[parcel, parcel])
@@ -1033,7 +1036,7 @@ def test_multiple_actual_parcels_require_explicit_consolidation(domain):
 def test_same_waybill_multiple_lines_does_not_require_consolidation(domain):
     service, bus, order, parcel, *_ = domain
     command(service, order, 'label', label={'url': 'https://example.com/label.pdf', 'tracking_number': 'RU123'})
-    view = command(service, order, 'parcels', parcels=[{**parcel, 'quantity': 1}, {**parcel, 'id': 'parcel-2', 'quantity': 1}])
+    view = command(service, order, 'parcels', parcels=[{**parcel, 'description': '商品A、商品B', 'quantity': 2}])
     assert not view['blocked_reason']
     service.process_one(order)
     created = next(body['order_data'][0] for path, body in bus.calls if path.endswith('createOrder'))
@@ -1238,7 +1241,7 @@ def test_rebinding_does_not_bypass_remote_or_purchase_locks(domain, blocked):
     if blocked == 'reserved':
         with service.store.orders.connect() as conn:
             conn.execute("INSERT INTO order_purchase_reservations VALUES (?,?,?,?,?,'reserved')",
-                         ('reservation', order.identity, domain[3]['line_key'], 1, '{}'))
+                         ('reservation', order.identity, order_line_key(order.items[0]), 1, '{}'))
             conn.commit()
     elif blocked == 'busy':
         service.store.claim(order.identity, 'sync', value['revision'])
@@ -1260,7 +1263,7 @@ def test_new_plan_rolls_back_when_purchase_reservation_appears_during_verificati
         result = request(path, body, **kwargs)
         with service.store.orders.connect() as conn:
             conn.execute("INSERT INTO order_purchase_reservations VALUES (?,?,?,?,?,'reserved')",
-                         ('reservation', order.identity, domain[3]['line_key'], 1, '{}'))
+                         ('reservation', order.identity, order_line_key(order.items[0]), 1, '{}'))
             conn.commit()
         return result
     monkeypatch.setattr(bus, 'request', reserve)

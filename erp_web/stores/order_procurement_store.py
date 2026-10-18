@@ -1,4 +1,4 @@
-"""订单采购持久化：事务校验当前订单、乐观版本及采购数量，历史来源不随关联变更。"""
+"""订单级采购单、来源确认及自动采购请求占位；包裹由履约独立管理。"""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from datetime import datetime
 from erp_web.schemas.order_procurement import (
     ProcurementSource,
     PurchaseRecord,
+    PurchaseItem,
     SalesSkuBinding,
     order_line_key,
 )
 from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
 from erp_web.stores.order_notification_store import OrderNotificationStore
 from erp_web.stores.purchase_progress_store import PurchaseProgressStore
-from erp_web.stores.fulfillment_store import FulfillmentStore
 from erp_web.stores.receiving_warehouse_store import ReceivingWarehouseStore
 
 SCHEMA = """
@@ -29,10 +29,12 @@ CREATE TABLE IF NOT EXISTS order_sources (
  line_signature TEXT NOT NULL, source_json TEXT NOT NULL, updated_at TEXT NOT NULL,
  PRIMARY KEY(order_id,line_key));
 CREATE TABLE IF NOT EXISTS order_purchases (
- id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_key TEXT NOT NULL,
- request_id TEXT NOT NULL, request_hash TEXT NOT NULL, line_signature TEXT NOT NULL,
- quantity INTEGER NOT NULL, status TEXT NOT NULL, record_json TEXT NOT NULL,
- UNIQUE(order_id,request_id));
+ id TEXT PRIMARY KEY, order_id TEXT NOT NULL, source_platform TEXT NOT NULL,
+ purchase_order_number TEXT NOT NULL, status TEXT NOT NULL, record_json TEXT NOT NULL,
+ UNIQUE(order_id,source_platform,purchase_order_number));
+CREATE TABLE IF NOT EXISTS order_purchase_requests (
+ order_id TEXT NOT NULL, request_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+ record_id TEXT NOT NULL REFERENCES order_purchases(id), PRIMARY KEY(order_id,request_id));
 CREATE TABLE IF NOT EXISTS order_purchase_reservations (
  id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_key TEXT NOT NULL,
  quantity INTEGER NOT NULL, binding_json TEXT NOT NULL, state TEXT NOT NULL);
@@ -107,7 +109,11 @@ class OrderProcurementStore:
                     sources[(row["order_id"], row["line_key"])] = dict(row)
                 purchases = {}
                 for row in conn.execute("SELECT * FROM order_purchases WHERE status='purchased' AND order_id IN (SELECT value FROM json_each(?))", (ids,)):
-                    purchases.setdefault((row["order_id"], row["line_key"]), []).append(dict(row))
+                    record = json.loads(row["record_json"])
+                    for item in record["items"]:
+                        if item["line_key"] and item["source"]:
+                            purchases.setdefault((row["order_id"], item["line_key"]), []).append({
+                                **item, "record_id": row["id"], "purchase_order_number": record["purchase_order_number"]})
                 bindings = {}
                 for platform in {order.platform for order in orders}:
                     identity = identities.get(platform)
@@ -125,14 +131,12 @@ class OrderProcurementStore:
                         yield order, sources, purchases, bindings
 
     def checked_purchase(self, conn, order_id, record_id, accounts):
-        order = self._order(conn, order_id, accounts)
+        self._order(conn, order_id, accounts)
         row = conn.execute("SELECT * FROM order_purchases WHERE order_id=? AND id=?", (order_id, record_id)).fetchone()
         if not row:
             raise ValueError("采购记录不存在或不属于该订单")
         if row["status"] != "purchased":
             raise ValueError("采购记录已作废，不能查询")
-        if row["line_signature"] != line_signature(self._line(order, row["line_key"])):
-            raise ValueError("订单商品身份已变化，请核对采购记录")
         return json.loads(row["record_json"])
 
     def purchase_record(self, order_id, record_id, accounts):
@@ -142,17 +146,20 @@ class OrderProcurementStore:
             progress = conn.execute("SELECT value FROM purchase_progress WHERE record_id=?", (record_id,)).fetchone()
             return PurchaseRecord.model_validate({**record, "progress": json.loads(progress[0]) if progress else None})
 
-    def related_purchase_records(self, order_id, record_id, accounts):
-        """只读取当前销售订单内、同一采购单的有效记录；逐项核对商品归属。"""
+    def records(self, order_id, accounts):
         with self.orders.connect() as conn:
-            conn.execute("BEGIN")
-            selected = self.checked_purchase(conn, order_id, record_id, accounts)
-            rows = conn.execute("""SELECT id FROM order_purchases
-                WHERE order_id=? AND status='purchased'
-                AND json_extract(record_json,'$.purchase_order_number')=? ORDER BY rowid""",
-                (order_id, selected['purchase_order_number'])).fetchall()
-            return [PurchaseRecord.model_validate(self.checked_purchase(conn, order_id, row['id'], accounts))
-                    for row in rows]
+            self._order(conn, order_id, accounts)
+            rows = conn.execute("""SELECT p.record_json, s.value FROM order_purchases p
+                LEFT JOIN purchase_progress s ON s.record_id=p.id WHERE p.order_id=? ORDER BY p.rowid""", (order_id,)).fetchall()
+            return [PurchaseRecord.model_validate({**json.loads(r[0]), "progress": json.loads(r[1]) if r[1] else None}) for r in rows]
+
+    @staticmethod
+    def _purchased(conn, order_id, key, signature):
+        return conn.execute("""SELECT COALESCE(SUM(json_extract(i.value,'$.quantity')),0)
+            FROM order_purchases p, json_each(p.record_json,'$.items') i
+            WHERE p.order_id=? AND p.status='purchased'
+            AND json_extract(i.value,'$.line_key')=? AND json_extract(i.value,'$.line_signature')=?""",
+            (order_id, key, signature)).fetchone()[0]
 
     def add_bindings(self, bindings: list[SalesSkuBinding]):
         with self.orders.connect() as conn:
@@ -205,22 +212,7 @@ class OrderProcurementStore:
                 "SELECT * FROM order_sources WHERE order_id=? AND line_key=?",
                 (order_id, key),
             ).fetchone()
-            records = conn.execute(
-                "SELECT p.*, s.value AS progress_json FROM order_purchases p LEFT JOIN purchase_progress s ON s.record_id=p.id WHERE p.order_id=? AND p.line_key=? ORDER BY p.rowid",
-                (order_id, key),
-            ).fetchall()
-            selected = dict(row) if row else None
-            purchased = sum(
-                r["quantity"]
-                for r in records
-                if r["status"] == "purchased"
-                and r["line_signature"] == line_signature(line)
-            )
-            return (
-                selected,
-                [PurchaseRecord.model_validate({**json.loads(r["record_json"]), "progress": json.loads(r["progress_json"]) if r["progress_json"] else None}) for r in records],
-                purchased,
-            )
+            return dict(row) if row else None, self._purchased(conn, order_id, key, line_signature(line))
 
     def progress(self, order):
         keys = [order_line_key(line) for line in order.items]
@@ -232,39 +224,25 @@ class OrderProcurementStore:
         ):
             return "unknown"
         with self.orders.connect() as conn:
-            rows = conn.execute(
-                "SELECT line_key,line_signature,quantity FROM order_purchases WHERE order_id=? AND status='purchased'",
-                (order.id,),
-            ).fetchall()
-        quantities = []
-        for line in order.items:
-            quantities.append(
-                sum(
-                    row["quantity"]
-                    for row in rows
-                    if row["line_key"] == order_line_key(line)
-                    and row["line_signature"] == line_signature(line)
-                )
-            )
+            quantities = [self._purchased(conn, order.id, order_line_key(line), line_signature(line)) for line in order.items]
+            has_records = conn.execute("SELECT 1 FROM order_purchases WHERE order_id=? AND status='purchased'", (order.id,)).fetchone()
         if all(done >= line.quantity for done, line in zip(quantities, order.items)):
             return "purchased"
-        return "partial" if any(quantities) else "unpurchased"
+        return "partial" if has_records else "unpurchased"
 
     def tracking_summaries(self, orders):
-        """批量读取当前订单有效采购的状态；不把作废或已变更规格的旧采购用于展示。"""
+        """批量读取当前订单有效采购单的状态；商品变更不删除已发生的采购事实。"""
         if not orders:
             return {}
-        signatures = {order.id: {order_line_key(line): line_signature(line) for line in order.items} for order in orders}
-        placeholders = ",".join("?" for _ in signatures)
+        order_ids = [order.id for order in orders]
+        placeholders = ",".join("?" for _ in order_ids)
         with self.orders.connect() as conn:
-            rows = conn.execute(f"""SELECT p.order_id,p.line_key,p.line_signature,p.record_json,s.value FROM order_purchases p
+            rows = conn.execute(f"""SELECT p.order_id,p.record_json,s.value FROM order_purchases p
                 LEFT JOIN purchase_progress s ON s.record_id=p.id
-                WHERE p.order_id IN ({placeholders}) AND p.status='purchased'""", tuple(signatures)).fetchall()
+                WHERE p.order_id IN ({placeholders}) AND p.status='purchased'""", tuple(order_ids)).fetchall()
         result = {}
         packages = {}
         for row in rows:
-            if signatures[row["order_id"]].get(row["line_key"]) != row["line_signature"]:
-                continue
             summary = result.setdefault(row["order_id"], {"orders": [], "unknown_count": 0, "has_waybill": False, "stale": False})
             progress = json.loads(row["value"]) if row["value"] else {}
             data = progress.get("data") or {}
@@ -278,7 +256,7 @@ class OrderProcurementStore:
             summary["stale"] |= stale
             record = json.loads(row['record_json'])
             number = record['purchase_order_number']
-            # 同一采购单的多个 SKU 共用整单物流快照，按真实运单去重，不能按采购行数统计包裹。
+            # 不同采购单可能共同装在一个运单中；列表按真实运单去重。
             logistics = [p for p in data.get('logistics') or [] if str(p.get('tracking_number') or '').strip()]
             entries = logistics or [None]
             grouped = packages.setdefault(row['order_id'], {})
@@ -336,97 +314,58 @@ class OrderProcurementStore:
             )
             conn.commit()
 
+    @staticmethod
+    def _save_record(conn, order_id, record):
+        conn.execute("""INSERT INTO order_purchases VALUES (?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,record_json=excluded.record_json""",
+            (record.id, order_id, record.source_platform, record.purchase_order_number, record.status,
+             record.model_dump_json(exclude={"progress"})))
+
     def purchase(self, request, accounts):
         digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
         with self.orders.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             order = self._order(conn, request.order_id, accounts)
-            old = conn.execute(
-                "SELECT * FROM order_purchases WHERE order_id=? AND request_id=?",
-                (request.order_id, request.request_id),
-            ).fetchone()
-            if old:
-                if old["request_hash"] != digest:
+            previous = conn.execute("SELECT * FROM order_purchase_requests WHERE order_id=? AND request_id=?",
+                                    (order.id, request.request_id)).fetchone()
+            if previous:
+                if previous["request_hash"] != digest:
                     raise ValueError("重复请求标识对应不同采购内容")
-                return PurchaseRecord.model_validate_json(old["record_json"])
+                row = conn.execute("SELECT record_json FROM order_purchases WHERE id=?", (previous["record_id"],)).fetchone()
+                return PurchaseRecord.model_validate_json(row[0])
             if order.state != "pending_shipment":
                 raise ValueError("只有待发货订单可新增采购记录")
-            line = self._line(order, request.line_key)
-            source = conn.execute(
-                "SELECT * FROM order_sources WHERE order_id=? AND line_key=?",
-                (request.order_id, request.line_key),
-            ).fetchone()
-            if (
-                not source
-                or source["revision"] != request.revision
-                or source["line_signature"] != line_signature(line)
-            ):
-                raise ValueError("请先确认当前订单规格的采购来源")
-            purchased = conn.execute(
-                "SELECT COALESCE(SUM(quantity),0) FROM order_purchases WHERE order_id=? AND line_key=? AND line_signature=? AND status='purchased'",
-                (request.order_id, request.line_key, line_signature(line)),
-            ).fetchone()[0]
-            if purchased + self._reserved(conn, request.order_id, request.line_key) + request.quantity > line.quantity:
-                raise ValueError("采购数量超过订单剩余数量；请先作废本 SKU 不再用于履约的原采购记录")
-            number = request.purchase_order_number.strip()
-            if not number:
-                raise ValueError("请填写采购单号")
-            receiving = None
-            if order.platform == "yandex":
-                stored = self.receiving.read(conn, request.order_id)
-                if stored:
-                    receiving = self.receiving.public(self.receiving.validate(conn, order))
-                    if request.receiving_revision != receiving['revision'] or not request.receiving_confirmed:
-                        raise ValueError("请核对本次采购的收货仓库和地址后登记")
-            value = PurchaseRecord(
-                receiving_warehouse=receiving,
-                id=uuid4().hex,
-                line_key=request.line_key,
-                request_id=request.request_id,
-                quantity=request.quantity,
-                purchase_order_number=number,
-                source=ProcurementSource.model_validate_json(source["source_json"]),
-                created_at=utc_iso(),
-            )
-            conn.execute(
-                "INSERT INTO order_purchases VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    value.id,
-                    request.order_id,
-                    request.line_key,
-                    request.request_id,
-                    digest,
-                    line_signature(line),
-                    request.quantity,
-                    "purchased",
-                    value.model_dump_json(),
-                ),
-            )
+            platform = request.source_platform.lower()
+            existing = conn.execute("SELECT id FROM order_purchases WHERE order_id=? AND source_platform=? AND purchase_order_number=?",
+                                    (order.id, platform, request.purchase_order_number)).fetchone()
+            if existing:
+                raise ValueError("本订单已登记该采购单，请查看已有记录")
+            items = []
+            for item in request.items:
+                line = self._line(order, item.line_key) if item.line_key else None
+                items.append(PurchaseItem(**item.model_dump(), id=uuid4().hex,
+                                          line_signature=line_signature(line) if line else ""))
+            record = PurchaseRecord(id=uuid4().hex, request_id=request.request_id,
+                source_platform=platform, purchase_order_number=request.purchase_order_number,
+                items=items, note=request.note, created_at=utc_iso(), receiving_warehouse=request.receiving_warehouse)
+            self._save_record(conn, order.id, record)
+            conn.execute("INSERT INTO order_purchase_requests VALUES (?,?,?,?)", (order.id, request.request_id, digest, record.id))
             conn.commit()
-            return value
+            return record
 
     def cancel(self, request, accounts):
         with self.orders.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._order(conn, request.order_id, accounts)
-            row = conn.execute(
-                "SELECT record_json FROM order_purchases WHERE id=? AND order_id=?",
-                (request.record_id, request.order_id),
-            ).fetchone()
+            row = conn.execute("SELECT record_json FROM order_purchases WHERE id=? AND order_id=?",
+                               (request.record_id, request.order_id)).fetchone()
             if not row:
                 raise ValueError("采购记录不存在")
             record = PurchaseRecord.model_validate_json(row[0])
             if record.status == "cancelled":
                 return
-            # 作废的是当前 SKU 的本地履约采购，不取消共享的远端采购订单。
-            if self._reserved(conn, request.order_id, record.line_key):
-                raise ValueError("本 SKU 采购正在提交或待核验，请先核对采购结果")
-            FulfillmentStore.remove_purchase_parcels(conn, request.order_id, record.id)
             record.status, record.cancelled_at = "cancelled", utc_iso()
-            conn.execute(
-                "UPDATE order_purchases SET status='cancelled',record_json=? WHERE id=?",
-                (record.model_dump_json(), record.id),
-            )
+            self._save_record(conn, request.order_id, record)
             conn.commit()
 
     @staticmethod
@@ -448,9 +387,8 @@ class OrderProcurementStore:
             raise ValueError("订单状态或采购来源已变化，请重新预览")
         if json.loads(source["source_json"]) != binding["source"]:
             raise ValueError("采购来源已变化，请重新预览")
-        purchased = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM order_purchases WHERE order_id=? AND line_key=? AND line_signature=? AND status='purchased'", (order.id, binding["line_key"], line_signature(line))).fetchone()[0]
-        if purchased + self._reserved(conn, order.id, binding["line_key"]) + quantity > line.quantity:
-            raise ValueError("采购数量超过订单剩余数量；请先检查已有采购记录及待核验请求")
+        if self._reserved(conn, order.id, binding["line_key"]):
+            raise ValueError("本商品存在正在提交或待核验的采购，请先处理原请求")
         if order.platform == "yandex":
             if not binding.get('receiving_warehouse'):
                 raise ValueError('请先确定采购收货仓库并重新预览')
@@ -476,10 +414,6 @@ class OrderProcurementStore:
             raise ValueError("销售订单状态或商品已变化，不能继续采购")
         if order.platform == "yandex":
             self.receiving.validate(conn, order, binding.get('receiving_warehouse'))
-        purchased = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM order_purchases WHERE order_id=? AND line_key=? AND line_signature=? AND status='purchased'", (order.id, reservation["line_key"], line_signature(line))).fetchone()[0]
-        if purchased + self._reserved(conn, order.id, reservation["line_key"]) > line.quantity:
-            raise ValueError("销售订单数量已减少，请重新预览")
-
     def complete_purchase(self, ident, number, accounts, *, cancelled=False):
         with self.orders.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -493,19 +427,30 @@ class OrderProcurementStore:
             raise ValueError("采购数量预留不存在，请核对原请求")
         self._order(conn, reservation["order_id"], accounts)
         binding = json.loads(reservation["binding_json"])
-        old = conn.execute("SELECT * FROM order_purchases WHERE order_id=? AND request_id=?", (reservation["order_id"], ident)).fetchone()
-        value = PurchaseRecord.model_validate_json(old["record_json"]) if old else PurchaseRecord(
-            id=uuid4().hex, line_key=reservation["line_key"], request_id=ident,
-            quantity=reservation["quantity"], purchase_order_number=number,
-            source=ProcurementSource.model_validate(binding["source"]), created_at=utc_iso(), receiving_warehouse=binding.get("receiving_warehouse"))
-        if value.purchase_order_number != number:
-            raise ValueError("远端采购单号与已关联记录不一致")
+        old = conn.execute("SELECT record_id FROM order_purchase_requests WHERE order_id=? AND request_id=?",
+                           (reservation["order_id"], ident)).fetchone()
+        if old:
+            row = conn.execute("SELECT record_json FROM order_purchases WHERE id=?", (old[0],)).fetchone()
+            value = PurchaseRecord.model_validate_json(row[0])
+            if value.purchase_order_number != number:
+                raise ValueError("远端采购单号与已关联记录不一致")
+        else:
+            row = conn.execute("SELECT record_json FROM order_purchases WHERE order_id=? AND source_platform='1688' AND purchase_order_number=?",
+                               (reservation["order_id"], number)).fetchone()
+            value = PurchaseRecord.model_validate_json(row[0]) if row else PurchaseRecord(
+                id=uuid4().hex, request_id=ident, source_platform="1688", purchase_order_number=number,
+                created_at=utc_iso(), receiving_warehouse=binding.get("receiving_warehouse"))
+            if value.status == "cancelled" and not cancelled:
+                raise ValueError("原采购登记已作废，请核对采购结果")
+            source = ProcurementSource.model_validate(binding["source"])
+            value.items.append(PurchaseItem(id=ident, line_key=reservation["line_key"],
+                line_signature=binding["line_signature"], quantity=reservation["quantity"], source=source,
+                product_id=source.source_offer_id, sku=source.source_sku_id, title=source.specification))
         if cancelled:
             value.status, value.cancelled_at = "cancelled", utc_iso()
+        self._save_record(conn, reservation["order_id"], value)
         if not old:
-            conn.execute("INSERT INTO order_purchases VALUES (?,?,?,?,?,?,?,?,?)", (value.id, reservation["order_id"], value.line_key, ident, ident, binding["line_signature"], value.quantity, value.status, value.model_dump_json()))
-        elif cancelled:
-            conn.execute("UPDATE order_purchases SET status=?,record_json=? WHERE id=?", (value.status, value.model_dump_json(), value.id))
+            conn.execute("INSERT INTO order_purchase_requests VALUES (?,?,?,?)", (reservation["order_id"], ident, ident, value.id))
         conn.execute("UPDATE order_purchase_reservations SET state=? WHERE id=?", ("cancelled" if value.status == "cancelled" else "recorded", ident))
         return value.id
 
@@ -534,4 +479,4 @@ class OrderProcurementStore:
             conn.execute("BEGIN IMMEDIATE")
             result = [self._complete_purchase(conn, ident, number, accounts, cancelled=cancelled) for ident in idents]
             conn.commit()
-            return result
+            return list(dict.fromkeys(result))

@@ -40,11 +40,14 @@ export interface FulfillmentRule extends FulfillmentPlan, DeliveryChoice {
 }
 export interface DomesticParcel {
   id: string
-  line_key: string
-  purchase_record_id: string
   carrier: string
   tracking_number: string
-  quantity: number
+  quantity: number | null
+  description: string
+  image_url: string
+  source_platform: string
+  purchase_order_number: string
+  included: boolean
 }
 export interface BusSection {
   section_id: number
@@ -122,6 +125,7 @@ export interface FulfillmentDetail extends FulfillmentSummary {
   warehouse_name: string
   delivery: DeliverySource
   parcels: DomesticParcel[]
+  parcels_confirmed: boolean
 }
 export const fulfillmentStatusNames: Record<FulfillmentStatus, string> = {
   NEW: '待报单', FULFILLMENT_CREATED: '已创建预报', WAITING_DOMESTIC_SHIPMENT: '待到仓',

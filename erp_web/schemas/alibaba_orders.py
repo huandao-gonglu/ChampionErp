@@ -39,6 +39,8 @@ class AlibabaParcel(TypedDict):
 
 
 class AlibabaPurchaseProduct(TypedDict):
+    item_id: str
+    quantity: int | None
     offer_id: str
     sku_id: str
     spec_id: str
@@ -56,8 +58,7 @@ class AlibabaPurchaseQueryResult(TypedDict):
     logistics: list[AlibabaParcel] | None
     logistics_warning: str
     logistics_checked_at: NotRequired[str]
-    product: NotRequired[AlibabaPurchaseProduct | None]
-    product_warning: NotRequired[str]
+    products: list[AlibabaPurchaseProduct]
 
 
 class PurchasePackageStatus(TypedDict):
@@ -81,7 +82,7 @@ class PurchaseTrackingSummary(TypedDict):
 
 
 class PurchaseProgressView(TypedDict):
-    state: Literal["syncing", "synced", "pending_assignment", "conflict", "locked", "manual", "error"]
+    state: Literal["syncing", "synced", "pending_review", "locked", "error"]
     attempted_at: str
     message: str
     error: str

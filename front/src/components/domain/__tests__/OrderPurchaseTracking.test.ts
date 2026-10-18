@@ -8,13 +8,13 @@ import OrderPurchaseTracking from '../OrderPurchaseTracking.vue'
 vi.mock('@/api/orders', () => ({ syncPurchase: vi.fn() }))
 enableAutoUnmount(afterEach)
 const record: PurchaseRecord = {
-  id: 'purchase-1', line_key: 'line-1', request_id: 'request-1', quantity: 1,
+  id: 'purchase-1', request_id: 'request-1', items: [], note: '', source_platform: '1688',
   purchase_order_number: '3317081160226242182', created_at: '', cancelled_at: '', status: 'purchased',
-  source: { source_platform: '1688', supplier: '', product_url: 'https://detail.1688.com/offer/1.html', source_sku_id: '', specification: '蓝色', sku_url: '', sku_url_verified: false },
+
 }
 function response(): BackendAlibabaPurchaseQueryResult {
   return { ok: true, record_id: record.id, order_number: record.purchase_order_number,
-    checked_at: '2026-10-08T04:00:00Z', order: { order_number: record.purchase_order_number, status: 'waitbuyerreceive', status_label: '等待买家收货' }, logistics: null, logistics_warning: '' }
+    checked_at: '2026-10-08T04:00:00Z', order: { order_number: record.purchase_order_number, status: 'waitbuyerreceive', status_label: '等待买家收货' }, logistics: null, logistics_warning: '', products: [] }
 }
 function render(value = record) {
   return mount(OrderPurchaseTracking, { props: { orderId: 'sales-order-1', record: value } })
@@ -27,7 +27,7 @@ function persisted(): PurchaseRecord {
     { logistics_id: 'LP1', company: '圆通', tracking_number: 'YT001', status: 'SIGN', status_label: '已签收', steps: [{ time: '2026-10-08', description: '包裹已签收' }] },
     { logistics_id: 'LP2', company: '顺丰', tracking_number: 'SF002', status: 'TRANSPORT', status_label: '运输中', steps: [] },
   ]
-  return { ...record, progress: { state: 'pending_assignment', attempted_at: '', message: '请确认包裹分配', error: '', data } }
+  return { ...record, progress: { state: 'pending_review', attempted_at: '', message: '请确认包裹分配', error: '', data } }
 }
 describe('1688 采购进度', () => {
   it('读取持久快照，进入页面不重复请求；同一次刷新更新订单和物流', async () => {
@@ -70,7 +70,7 @@ describe('1688 采购进度', () => {
 
   it('隐藏作废和非 1688 采购入口', () => {
     expect(render({ ...record, status: 'cancelled' }).find('button').exists()).toBe(false)
-    const other = { ...record, source: { ...record.source, source_platform: '其他', product_url: 'https://1688.com.example.test/p' } }
+    const other = { ...record, source_platform: 'other' }
     expect(render(other).find('button').exists()).toBe(false)
   })
 })
@@ -96,7 +96,7 @@ it('未发货的空物流显示无运单，保留查询成功的时间', () => {
 
 it('读取采购图片快照并可打开原图，刷新失败仍保留；作废记录只读展示', async () => {
   const value = persisted()
-  value.progress!.data!.product = { offer_id: '1', sku_id: '22', spec_id: 'spec', name: '蓝色款', specification: '颜色：蓝色', image_url: 'https://cbu01.alicdn.com/sku.jpg' }
+  value.progress!.data!.products = [{ item_id: 'item1', quantity: 1, offer_id: '1', sku_id: '22', spec_id: 'spec', name: '蓝色款', specification: '颜色：蓝色', image_url: 'https://cbu01.alicdn.com/sku.jpg' }]
   const wrapper = render(value)
   expect(wrapper.get('img').attributes('src')).toBe('https://cbu01.alicdn.com/sku.jpg')
   expect(wrapper.get('a[aria-label="查看1688采购商品原图"]').attributes('href')).toBe('https://cbu01.alicdn.com/sku.jpg')
@@ -112,10 +112,19 @@ it('读取采购图片快照并可打开原图，刷新失败仍保留；作废�
 
 it('图片匹配失败给出原因，旧快照无图片仍正常展示状态', () => {
   const value = persisted()
-  value.progress!.data!.product = null
-  value.progress!.data!.product_warning = '订单商品无法与采购 SKU 唯一匹配，暂不展示采购图片'
+  value.progress!.data!.products = []
   const wrapper = render(value)
   expect(wrapper.find('img').exists()).toBe(false)
-  expect(wrapper.text()).toContain('无法与采购 SKU 唯一匹配')
   expect(render(persisted()).text()).toContain('等待买家收货')
+})
+
+it('作废采购单缺少商品图片时，仍可只读查看历史物流和轨迹', () => {
+  const value = persisted()
+  value.status = 'cancelled'
+  value.progress!.data!.products = []
+  const wrapper = render(value)
+  expect(wrapper.text()).toContain('YT001')
+  expect(wrapper.text()).toContain('包裹已签收')
+  expect(wrapper.find('button').exists()).toBe(false)
+  expect(syncPurchase).not.toHaveBeenCalled()
 })

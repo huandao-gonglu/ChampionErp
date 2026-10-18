@@ -338,27 +338,27 @@ def test_automatic_order_attaches_once_and_supports_existing_logistics_lookup(se
     create(service, record)
     item = service.procurement.detail(order.identity)["lines"][0]
     assert item["purchased_quantity"] == 2 and item["remaining_quantity"] == 0
-    assert len(item["records"]) == 1
+    assert len(service.procurement.detail(order.identity)["purchases"]) == 1
     linked = service.procurement.store.purchase_record(order.identity, result["purchase_record_id"], {"yandex": "4"})
-    assert linked.purchase_order_number == NUMBER and linked.source.source_sku_id == "67890"
-    with pytest.raises(ValueError, match="已采购齐全"):
-        preview(service)
+    assert linked.purchase_order_number == NUMBER and linked.items[0].source.source_sku_id == "67890"
+    assert preview(service)["id"] != record["id"]
     service.procurement.cancel_purchase({"order_id": order.identity, "record_id": linked.id})
     item = service.procurement.detail(order.identity)["lines"][0]
     assert item["purchased_quantity"] == 0 and item["remaining_quantity"] == 2
-    assert item["records"][0]["status"] == "cancelled"
+    assert service.procurement.detail(order.identity)["purchases"][0]["status"] == "cancelled"
     # 重复回填远端仍有效的采购回执，不能复活已人工作废的 SKU。
     service.procurement.store.complete_purchase(linked.request_id, NUMBER, {"yandex": "4"})
-    assert service.procurement.detail(order.identity)["lines"][0]["records"][0]["status"] == "cancelled"
+    assert service.procurement.detail(order.identity)["purchases"][0]["status"] == "cancelled"
     assert preview(service)["id"]
 
 
-def test_manual_purchase_after_preview_prevents_overbuy(setup_purchase):
+def test_explicit_additional_purchase_does_not_require_cancelling_existing_purchase(setup_purchase):
     service, client, _, (order, key) = setup_purchase
     record = preview(service, quantity=2)
-    service.procurement.record_purchase({**purchase_body(order, key), "receiving_revision": 1, "receiving_confirmed": True})
-    assert create(service, record)["state"] == "failed"
-    assert not any(n == CREATE for n, _ in client.calls)
+    service.procurement.record_purchase(purchase_body(order, key))
+    assert create(service, record)['state'] == 'created'
+    assert len(service.procurement.detail(order.identity)['purchases']) == 2
+    assert len([n for n, _ in client.calls if n == CREATE]) == 1
 
 
 def test_unknown_purchase_reserves_quantity_and_source_until_reconciled(setup_purchase):
@@ -366,16 +366,16 @@ def test_unknown_purchase_reserves_quantity_and_source_until_reconciled(setup_pu
     client.fail_create = True
     record = create(service, preview(service, quantity=2))
     assert record["state"] == "unknown"
-    with pytest.raises(ValueError, match="剩余"):
-        service.procurement.record_purchase({**purchase_body(order, key), "receiving_revision": 1, "receiving_confirmed": True})
+    with pytest.raises(ValueError, match="待处理采购"):
+        preview(service)
     with pytest.raises(ValueError, match="等待核验"):
         service.procurement.select_source({**target(service), "revision": 1, "source": {"product_url": CANDIDATE["product_url"], "specification": "新来源"}})
     client.orders = [{**order_payload()["result"], "exAttributes": {"outOrderId": record["id"]}}]
     client.order["result"]["baseInfo"]["status"] = "cancel"
     service.reconcile({"preview_id": record["id"]})
     item = service.procurement.detail(order.identity)["lines"][0]
-    assert item["purchased_quantity"] == 0 and item["records"][0]["status"] == "cancelled"
-    service.procurement.record_purchase({**purchase_body(order, key), "receiving_revision": 1, "receiving_confirmed": True})
+    assert item["purchased_quantity"] == 0 and service.procurement.detail(order.identity)["purchases"][0]["status"] == "cancelled"
+    service.procurement.record_purchase({**purchase_body(order, key)})
 
 
 def test_definite_preflight_failure_releases_quantity(setup_purchase):
@@ -383,7 +383,7 @@ def test_definite_preflight_failure_releases_quantity(setup_purchase):
     record = preview(service, quantity=2)
     client.pre["orderPreviewResuslt"][0]["flowFlag"] = "general"
     assert create(service, record)["state"] == "failed"
-    service.procurement.record_purchase({**purchase_body(order, key, quantity=2), "receiving_revision": 1, "receiving_confirmed": True})
+    service.procurement.record_purchase({**purchase_body(order, key, quantity=2)})
 
 
 def test_remote_receipt_survives_local_attachment_failure(setup_purchase, monkeypatch):
@@ -395,8 +395,8 @@ def test_remote_receipt_survives_local_attachment_failure(setup_purchase, monkey
     result = create(service, record)
     assert result["state"] == "created" and result["order_numbers"] == [NUMBER]
     assert not result["purchase_record_id"] and "关联" in result["message"]
-    with pytest.raises(ValueError, match="剩余"):
-        service.procurement.record_purchase({**purchase_body(order, key), "receiving_revision": 1, "receiving_confirmed": True})
+    with pytest.raises(ValueError, match="待处理采购"):
+        preview(service)
     monkeypatch.setattr(service.procurement.store, "complete_purchase", complete)
     result = service.reconcile({"preview_id": record["id"]})["record"]
     assert result["purchase_record_id"]

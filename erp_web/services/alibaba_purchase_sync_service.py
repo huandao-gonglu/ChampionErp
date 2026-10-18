@@ -8,7 +8,7 @@ from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.schemas.orders import utc_iso
 from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, validate_order_number
 from erp_web.services.alibaba_purchase_assignment import propose_parcels, supported
-from erp_web.services.alibaba_purchase_query_service import normalize_order, normalize_product, normalize_parcels, attach_traces
+from erp_web.services.alibaba_purchase_query_service import normalize_order, normalize_products, normalize_parcels, attach_traces
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +23,15 @@ def sync_purchases(procurement, fulfillment, config_provider, order_id, record_i
 
 
 def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False, client_factory=AlibabaApiClient):
-    """刷新所选采购单在当前销售订单内的全部有效 1688 商品记录。"""
+    """刷新所选 1688 采购单的完整商品及物流快照。"""
     request = PurchaseSyncRequest.model_validate(body)
-    records = procurement.store.related_purchase_records(request.order_id, request.record_id, procurement.accounts_provider())
-    selected = next(record for record in records if record.id == request.record_id)
-    if not supported(selected):
-        raise ValueError("仅支持同步 1688 采购记录")
     _sync_records(procurement, fulfillment, config_provider, request.order_id,
-                  [record.id for record in records if supported(record)], once=once, client_factory=client_factory)
+                  [request.record_id], once=once, client_factory=client_factory)
     return procurement.detail(request.order_id)
 
 
 def _sync_records(procurement, fulfillment, config_provider, order_id, record_ids, *, once, client_factory):
-    """整组先占位，再共用本次查询回执；每个商品独立校验物流归属。"""
+    """采购单先占位，再共用本次查询回执；写入时核对记录有效性。"""
     accounts = procurement.accounts_provider()
     records = {record_id: procurement.store.purchase_record(order_id, record_id, accounts)
                for record_id in dict.fromkeys(record_ids)}
@@ -91,7 +87,7 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
         number = validate_order_number(record.purchase_order_number)
         order = client.query(ORDER_DETAIL, number)
         status = normalize_order(order, number)
-        product, product_warning = normalize_product(order, record.source)
+        products = normalize_products(order)
         checked_at = utc_iso()
         previous_data = value.get("data") or {}
         parcels = previous_data.get("logistics")
@@ -114,14 +110,12 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
         if config_provider() != config:
             raise AlibabaApiError("1688 授权已变化，请重新刷新采购进度")
         value["data"] = {"ok": True, "record_id": record_id, "order_number": number, "checked_at": checked_at,
-                         "order": status, "product": product, "product_warning": product_warning, "logistics": parcels, "logistics_warning": warning,
+                         "order": status, "products": products, "logistics": parcels, "logistics_warning": warning,
                          "logistics_checked_at": logistics_checked_at}
         if logistics is None:
-            previous_state = (record.progress or {}).get("state")
-            state = previous_state if previous_state in {"pending_assignment", "conflict", "manual", "locked"} else "synced"
-            value.update(state=state, message="采购订单状态已更新，物流本次未更新", error="")
+            value.update(state="synced", message="采购订单状态已更新，物流本次未更新", error="")
         else:
-            _merge_parcels(procurement, fulfillment, order_id, record_id, generation, record, order, logistics, parcels, value)
+            _merge_parcels(procurement, fulfillment, order_id, record_id, generation, record, logistics, parcels, value)
         value["error"] = ""
     except ExternalRequestBlocked:
         value.update(state="error", error="1688 请求已中断，请到授权配置的「中断与恢复」查看原因", message="本次同步未完成")
@@ -134,23 +128,21 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
     progress.finish(order_id, record_id, generation, accounts(), value)
 
 
-def _merge_parcels(procurement, fulfillment, order_id, record_id, generation, record, order, logistics, parcels, value):
+def _merge_parcels(procurement, fulfillment, order_id, record_id, generation, record, logistics, parcels, value):
     progress = procurement.store.purchase_progress
-    proposals, reason = propose_parcels(record, order, logistics, parcels)
+    proposals, reason = propose_parcels(record, logistics, parcels)
 
     def guard(conn):
-        current = progress.guard(conn, order_id, record_id, generation, procurement.accounts_provider())
-        if progress.competing(conn, current):
-            raise ValueError("同一采购订单和 SKU 已用于多条采购记录，请确认包裹分配")
+        progress.guard(conn, order_id, record_id, generation, procurement.accounts_provider())
+        shared = conn.execute("SELECT 1 FROM order_purchases WHERE order_id<>? AND source_platform=? AND purchase_order_number=? AND status='purchased'",
+                              (order_id, record.source_platform, record.purchase_order_number)).fetchone()
+        if shared:
+            raise ValueError("该采购单关联多个销售订单，请按实际归属登记包裹")
 
-    previous = value.get("resolution")
-    current_parcels = fulfillment.detail(order_id)["parcels"]
-    assigned = [p for p in current_parcels if p["purchase_record_id"] == record_id]
-    def bills(rows):
-        return sorted((p["company"], p["tracking_number"]) for p in rows or [])
-    if previous and previous["parcels"] == assigned and bills(previous["logistics"]) == bills(parcels):
-        value.update(state="manual", message="国内包裹已人工确认")
-    elif proposals:
-        value["state"], value["message"] = fulfillment.merge_purchase_parcels(order_id, record_id, proposals, guard)
+    if proposals:
+        try:
+            value["state"], value["message"] = fulfillment.merge_purchase_parcels(order_id, record_id, proposals, guard)
+        except ValueError as exc:
+            value.update(state="pending_review", message=str(exc))
     else:
-        value.update(state="pending_assignment" if parcels else "synced", message=reason if parcels else "采购进度已更新，1688 暂未提供物流信息")
+        value.update(state="synced", message=reason)

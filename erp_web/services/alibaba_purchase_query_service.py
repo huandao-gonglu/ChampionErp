@@ -83,10 +83,37 @@ def normalize_product(payload: dict, source: ProcurementSource) -> tuple[Alibaba
     specification = "；".join(f"{row.get('name') or ''}：{row.get('value') or ''}" for row in
                               (sku_infos if isinstance(sku_infos, list) else []) if isinstance(row, dict))
     return {
+        "item_id": str(item.get("subItemIDString") or item.get("subItemID") or ""),
+        "quantity": _quantity(item.get("quantity")),
         "offer_id": offer_id, "sku_id": str(item.get("skuID") or ""),
         "spec_id": str(item.get("specId") or ""), "name": str(item.get("name") or ""),
         "specification": specification, "image_url": image_url,
     }, "" if image_url else "1688 未提供该采购商品的有效图片"
+
+
+def _quantity(value):
+    from erp_web.services.alibaba_purchase_assignment import quantity
+    return quantity(value)
+
+
+def normalize_products(payload):
+    """整单商品快照，不依赖销售 SKU；每个远端商品子项单独保留。"""
+    result = []
+    for item in payload.get("result", {}).get("productItems") or []:
+        if not isinstance(item, dict):
+            continue
+        offer = str(item.get("productID") or "")
+        source = ProcurementSource(product_url=f"https://detail.1688.com/offer/{offer}.html",
+            specification=str(item.get("name") or "未提供规格"), source_offer_id=offer,
+            source_sku_id=str(item.get("skuID") or ""), source_spec_id=str(item.get("specId") or ""))
+        product, _ = normalize_product({"result": {"productItems": [item]}}, source)
+        result.append(product or {
+            "item_id": str(item.get("subItemIDString") or item.get("subItemID") or ""),
+            "quantity": _quantity(item.get("quantity")), "offer_id": offer,
+            "sku_id": source.source_sku_id, "spec_id": source.source_spec_id,
+            "name": str(item.get("name") or ""), "specification": "", "image_url": "",
+        })
+    return result
 
 
 def normalize_parcels(payload: dict, order_payload: dict | None = None) -> list[AlibabaParcel]:
@@ -144,19 +171,18 @@ def attach_traces(parcels: list[AlibabaParcel], payload: dict, order_number: str
 def query_purchase(procurement, config: dict, body: dict, *, client_factory=AlibabaApiClient) -> AlibabaPurchaseQueryResult:
     request = PurchaseQueryRequest.model_validate(body)
     record = procurement.store.purchase_record(request.order_id, request.record_id, procurement.accounts_provider())
-    host = (urlsplit(record.source.product_url).hostname or "").lower()
-    if record.source.source_platform.strip().lower() != "1688" and not (host == "1688.com" or host.endswith(".1688.com")):
+    if record.source_platform != "1688":
         raise ValueError("仅支持查询 1688 采购记录")
     number = validate_order_number(record.purchase_order_number)
     client = client_factory(config)
     result: AlibabaPurchaseQueryResult = {
         "ok": True, "record_id": record.id, "order_number": number, "checked_at": "",
-        "order": None, "logistics": None, "logistics_warning": "",
+        "order": None, "logistics": None, "logistics_warning": "", "products": [],
     }
     if request.kind == "order":
         payload = client.query(ORDER_DETAIL, number)
         result["order"] = normalize_order(payload, number)
-        result["product"], result["product_warning"] = normalize_product(payload, record.source)
+        result["products"] = normalize_products(payload)
     else:
         parcels = normalize_parcels(client.query(LOGISTICS_INFO, number))
         if parcels:

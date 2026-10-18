@@ -76,7 +76,7 @@ const purchaseOrder: OrderSnapshot = {
 describe('采购到报单的状态衔接', () => {
   it.each(['unpurchased', 'partial'])('直接录入运单后不受采购状态 %s 阻挡', procurement_status => {
     expect(orderProcessingProgress({ ...order, procurement_status }, { ...facts, has_domestic_waybill: true })).toMatchObject({
-      label: '待报单', target: 'fulfillment', note: expect.stringContaining('核对包裹分配'),
+      label: '待报单', target: 'fulfillment', note: expect.stringContaining('核对包裹清单'),
     })
   })
   it('没有运单时显示采购订单状态，不被面单错误遮挡', () => {
@@ -133,7 +133,7 @@ describe('多包裹不覆盖 ERP 报单进度', () => {
   })
   it('部分采购尚无运单时仍提示待报单，不推断资料齐全', () => {
     const pending = { id: 'pending', order_numbers: ['789'], company: '', tracking_number: '', source: 'order' as const, status: 'waitsellersend', status_label: '等待卖家发货', updated_at: '2026-10-13T10:00:00Z', stale: false }
-    expect(orderProcessingProgress(withPackages([...packages, pending]), facts)).toMatchObject({ label: '待报单', note: expect.stringContaining('核对包裹分配') })
+    expect(orderProcessingProgress(withPackages([...packages, pending]), facts)).toMatchObject({ label: '待报单', note: expect.stringContaining('核对包裹清单') })
   })
   it('采购未完成或全部尚无运单时不提前显示待报单', () => {
     expect(orderProcessingProgress({ ...withPackages(), procurement_status: 'partial' }, facts).label).toBe('采购登记中')

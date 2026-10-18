@@ -37,10 +37,8 @@ def test_manual_purchase_freezes_warehouse_and_allows_change_after_cancellation(
     service = receiving_service(procurement)
     confirm(procurement, order, key)
     assign_receiving(service, order)
-    with pytest.raises(ValueError, match='收货仓库'):
-        procurement.record_purchase(purchase_body(order, key))
-    result = procurement.record_purchase({**purchase_body(order, key), 'receiving_revision': 1, 'receiving_confirmed': True})
-    record = result['lines'][0]['records'][0]
+    result = procurement.record_purchase({**purchase_body(order, key), 'receiving_warehouse': service.store.public(service.store.get(order.identity))})
+    record = result["purchases"][0]
     assert record['receiving_warehouse']['warehouse_id'] == 10
     assert service.detail(order.identity)['locked']
     with pytest.raises(ValueError, match='不能更换'):
@@ -49,7 +47,7 @@ def test_manual_purchase_freezes_warehouse_and_allows_change_after_cancellation(
         assign_receiving(service, order, address={**ADDRESS, 'address': '其他路'})
     procurement.cancel_purchase({'order_id': order.identity, 'record_id': record['id']})
     assert assign_receiving(service, order, warehouse_id=20)['warehouse']['warehouse_id'] == 20
-    assert procurement.detail(order.identity)['lines'][0]['records'][0]['receiving_warehouse']['warehouse_id'] == 10
+    assert procurement.detail(order.identity)["purchases"][0]['receiving_warehouse']['warehouse_id'] == 10
 
 
 def test_existing_purchase_requires_confirmation_of_actual_destination(domain):
@@ -97,7 +95,7 @@ def test_shipping_change_can_be_reconfirmed_without_changing_purchased_address(d
     service = receiving_service(procurement)
     confirm(procurement, order, key)
     assign_receiving(service, order)
-    procurement.record_purchase({**purchase_body(order, key), 'receiving_revision': 1, 'receiving_confirmed': True})
+    procurement.record_purchase({**purchase_body(order, key), 'receiving_warehouse': service.store.public(service.store.get(order.identity))})
     changed = order.model_copy(deep=True)
     changed.delivery.method_id = 'new-method'
     with procurement.store.orders.connect() as conn:

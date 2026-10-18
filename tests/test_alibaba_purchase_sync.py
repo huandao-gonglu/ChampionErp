@@ -19,18 +19,18 @@ def setup(domain):
     confirm(procurement, order, key)
     request = {**purchase_body(order, key, quantity=2), "purchase_order_number": NUMBER}
     result = procurement.record_purchase(request)
-    body = {"order_id": order.identity, "record_id": result["lines"][0]["records"][0]["id"]}
+    body = {"order_id": order.identity, "record_id": result["purchases"][0]["id"]}
     store = FulfillmentStore(procurement.store.orders)
     fulfillment = FulfillmentService(store, Bus(store), procurement.accounts_provider, procurement.detail,
-                                    purchase_progress=procurement.store.purchase_progress, start_worker=False)
+                                    start_worker=False)
     record = procurement.store.purchase_record(body['order_id'], body['record_id'], procurement.accounts_provider())
     class Client:
         calls = []
         order = {'result': {'baseInfo': {'idOfStr': NUMBER, 'status': 'waitbuyerreceive'}, 'productItems': [
-            {'productID': '456', 'skuID': record.source.source_sku_id, 'subItemIDString': 'entry', 'quantity': record.quantity}]}}
+            {'productID': '456', 'skuID': record.items[0].source.source_sku_id, 'subItemIDString': 'entry', 'quantity': record.items[0].quantity}]}}
         logistics = {'result': [{'logisticsId': 'LP1', 'logisticsBillNo': 'YT1', 'logisticsCompanyName': '圆通',
             'orderEntryIds': 'entry', 'logisticsOrderGoods': [{'logisticsId': 'LP1', 'tradeOrderId': NUMBER,
-            'tradeOrderItemId': 'entry', 'quantity': record.quantity}]}]}
+            'tradeOrderItemId': 'entry', 'quantity': record.items[0].quantity}]}]}
         def __init__(self, config): pass
         def query(self, api, number):
             self.calls.append(api)
@@ -41,7 +41,7 @@ def setup(domain):
 
 
 def progress(detail):
-    return detail['lines'][0]['records'][0]['progress']
+    return detail["purchases"][0]['progress']
 
 
 def test_persist_auto_fill_and_idempotent_refresh(setup):
@@ -59,14 +59,17 @@ def test_persist_auto_fill_and_idempotent_refresh(setup):
 
 
 @pytest.mark.parametrize('missing', ['sku', 'quantity', 'carrier', 'ambiguous'])
-def test_missing_evidence_never_fills(setup, missing):
+def test_waybill_does_not_require_sku_allocation(setup, missing):
     _, fulfillment, body, client, run = setup
     if missing == 'sku': client.order['result']['productItems'][0]['skuID'] = 'other'
     if missing == 'quantity': client.logistics['result'][0].pop('logisticsOrderGoods')
     if missing == 'carrier': client.logistics['result'][0].pop('logisticsCompanyName')
     if missing == 'ambiguous': client.order['result']['productItems'] *= 2
-    assert progress(run())['state'] == 'pending_assignment'
-    assert not fulfillment.detail(body['order_id'])['parcels']
+    assert progress(run())['state'] == 'synced'
+    parcel = fulfillment.detail(body['order_id'])['parcels'][0]
+    assert parcel['tracking_number'] == 'YT1'
+    assert parcel['quantity'] == (None if missing == 'quantity' else 2)
+    assert not fulfillment.detail(body['order_id'])['parcels_confirmed']
 
 
 def test_conflict_and_manual_resolution_preserved(setup):
@@ -76,7 +79,7 @@ def test_conflict_and_manual_resolution_preserved(setup):
     manual = deepcopy(current['parcels'])
     manual[0]['tracking_number'] = 'MANUAL'
     fulfillment.command('parcels', {'order_id': body['order_id'], 'revision': current['revision'], 'parcels': manual})
-    assert progress(run())['state'] == 'manual'
+    assert progress(run())['state'] == 'synced'
     assert fulfillment.detail(body['order_id'])['parcels'] == manual
 
 
@@ -90,19 +93,23 @@ def test_reship_split_survives_refresh_of_original_purchase_logistics(setup):
     fulfillment.command('parcels', {'order_id': body['order_id'], 'revision': current['revision'], 'parcels': parcels})
     # 商家原采购物流仍只有旧单号，刷新不能把人工确认的补发包裹覆盖或累加。
     for _ in range(2):
-        assert progress(run())['state'] == 'manual'
+        assert progress(run())['state'] == 'synced'
         assert fulfillment.detail(body['order_id'])['parcels'] == parcels
-    records = procurement.detail(body['order_id'])['lines'][0]['records']
+    records = procurement.detail(body['order_id'])["purchases"]
     assert len(records) == 1 and records[0]['status'] == 'purchased'
 
 
-def test_new_remote_waybill_reports_conflict(setup):
+def test_new_remote_waybill_appends_and_requires_confirmation(setup):
     _, fulfillment, body, client, run = setup
     run()
-    saved = fulfillment.detail(body['order_id'])['parcels']
+    saved = fulfillment.detail(body['order_id'])
+    fulfillment.command('parcels', {'order_id': body['order_id'], 'revision': saved['revision'], 'parcels': saved['parcels'], 'confirm_parcels': True})
     client.logistics['result'][0]['logisticsBillNo'] = 'NEW'
-    assert progress(run())['state'] == 'conflict'
-    assert fulfillment.detail(body['order_id'])['parcels'] == saved
+    assert progress(run())['state'] == 'synced'
+    current = fulfillment.detail(body['order_id'])
+    assert current['parcels'][:1] == saved['parcels']
+    assert current['parcels'][1]['tracking_number'] == 'NEW'
+    assert not current['parcels_confirmed'] and not current['update_pending']
 
 
 def test_locked_fulfillment_only_saves_snapshot(setup):
@@ -162,20 +169,15 @@ def test_proven_split_shipments_add_incrementally(setup):
     assert len(parcels) == 2 and sum(p['quantity'] for p in parcels) == 2
 
 
-def test_competing_purchase_records_require_assignment(setup):
-    procurement, fulfillment, body, client, run = setup
-    procurement.cancel_purchase(body)
-    record = procurement.detail(body['order_id'])['lines'][0]['records'][0]
-    request = {'order_id': body['order_id'], 'line_key': record['line_key'], 'revision': 1,
-               'quantity': 1, 'purchase_order_number': NUMBER}
-    first = procurement.record_purchase({**request, 'request_id': 'split-first'})
-    body['record_id'] = first['lines'][0]['records'][-1]['id']
-    procurement.record_purchase({**request, 'request_id': 'split-second'})
-    client.order['result']['productItems'][0]['quantity'] = 1
-    client.logistics['result'][0]['logisticsOrderGoods'][0]['quantity'] = 1
-    result = run()
-    current = next(r for r in result['lines'][0]['records'] if r['id'] == body['record_id'])
-    assert current['progress']['state'] == 'conflict'
+def test_shared_purchase_across_orders_keeps_snapshot_without_guessing_parcels(setup):
+    procurement, fulfillment, body, _, run = setup
+    order = procurement.store.order(body['order_id'], procurement.accounts_provider())
+    from erp_web.schemas.orders import OrderSnapshot
+    other = OrderSnapshot.model_validate({k: v for k, v in order.model_dump().items() if k in OrderSnapshot.model_fields}).model_copy(update={'order_id': 'other-order'})
+    from tests.test_order_query_service import save_order
+    save_order(procurement, other)
+    procurement.record_purchase({'order_id': other.identity, 'source_platform': '1688', 'purchase_order_number': NUMBER, 'request_id': 'shared'})
+    assert progress(run())['state'] == 'pending_review'
     assert not fulfillment.detail(body['order_id'])['parcels']
 
 
@@ -192,10 +194,10 @@ def test_facade_registration_queries_once_and_keeps_purchase_on_failure(setup, m
         calls.append(True)
         raise AlibabaApiError('授权已过期')
     monkeypatch.setattr(AlibabaApiClient, 'query', fail)
-    request = {'order_id': body['order_id'], 'line_key': record.line_key, 'revision': 1,
-               'request_id': record.request_id, 'quantity': record.quantity, 'purchase_order_number': NUMBER}
+    order = procurement.store.order(body['order_id'], procurement.accounts_provider())
+    request = {**purchase_body(order, record.items[0].line_key, quantity=2), 'purchase_order_number': NUMBER}
     result = facade.command('record-purchase', request)
-    assert result['lines'][0]['records'][0]['status'] == 'purchased'
+    assert result["purchases"][0]['status'] == 'purchased'
     assert progress(result)['state'] == 'error'
     facade.command('record-purchase', request)
     assert len(calls) == 1
@@ -208,7 +210,7 @@ def test_company_from_same_order_requires_unique_waybill_and_company_id(setup):
     client.order['result']['nativeLogistics'] = {'logisticsItems': [
         {'logisticsBillNo': 'YT1', 'logisticsCompanyId': '1', 'logisticsCompanyName': '圆通速递(YTO)'}]}
     assert progress(run())['state'] == 'synced'
-    assert fulfillment.detail(body['order_id'])['parcels'][0]['carrier'] == '圆通'
+    assert fulfillment.detail(body['order_id'])['parcels'][0]['carrier'] == '圆通速递(YTO)'
 
 
 @pytest.mark.parametrize('previous', [False, True])
@@ -277,18 +279,21 @@ def test_tracking_summary_ignores_cancelled_records_and_does_not_fetch_remote(se
     assert procurement.present_orders([order])[0].purchase_tracking is None
 
 
-def test_partial_refresh_keeps_unresolved_assignment_conflict(setup, monkeypatch):
-    _, _, _, client, run = setup
+def test_logistics_failure_cannot_confirm_an_unreviewed_manifest(setup, monkeypatch):
+    _, fulfillment, body, client, run = setup
     run()
     client.logistics['result'][0]['logisticsBillNo'] = 'NEW'
-    assert progress(run())['state'] == 'conflict'
+    assert progress(run())['state'] == 'synced'
+    saved = fulfillment.detail(body['order_id'])
     original = client.query
     def query(self, api, number):
         if api == LOGISTICS_INFO:
             raise AlibabaApiError('物流网络失败')
         return original(self, api, number)
     monkeypatch.setattr(client, 'query', query)
-    assert progress(run())['state'] == 'conflict'
+    run()
+    assert fulfillment.detail(body['order_id'])['parcels'] == saved['parcels']
+    assert not fulfillment.detail(body['order_id'])['parcels_confirmed']
 
 
 def test_product_image_persists_even_when_logistics_fails(setup, monkeypatch):
@@ -302,12 +307,12 @@ def test_product_image_persists_even_when_logistics_fails(setup, monkeypatch):
         return original(self, api, number)
     monkeypatch.setattr(client, 'query', query)
     result = progress(run())['data']
-    assert result['product']['image_url'] == 'https://cbu01.alicdn.com/sku.jpg'
-    assert result['product']['specification'] == '款式：蓝色'
+    assert result['products'][0]['image_url'] == 'https://cbu01.alicdn.com/sku.jpg'
+    assert result['products'][0]['specification'] == '款式：蓝色'
     assert result['logistics_warning']
-    assert progress(procurement.detail(body['order_id']))['data']['product'] == result['product']
+    assert progress(procurement.detail(body['order_id']))['data']['products'][0] == result['products'][0]
     monkeypatch.setattr(client, 'query', lambda *args: (_ for _ in ()).throw(AlibabaApiError('请求失败')))
-    assert progress(run())['data']['product'] == result['product']
+    assert progress(run())['data']['products'][0] == result['products'][0]
 
 
 def test_package_summary_deduplicates_shared_waybill_and_uses_latest_snapshot(setup):
@@ -321,9 +326,11 @@ def test_package_summary_deduplicates_shared_waybill_and_uses_latest_snapshot(se
         value['data']['logistics_checked_at'] = '2026-10-13T08:00:00+00:00'
         value['data']['logistics'][0].update(status='SIGN', status_label='已签收')
         conn.execute('UPDATE purchase_progress SET value=? WHERE record_id=?', (json.dumps(value), record['id']))
-        record.update(id='another-record', request_id='another-request')
-        conn.execute('INSERT INTO order_purchases VALUES (?,?,?,?,?,?,?,?,?)',
-                     (record['id'], row['order_id'], row['line_key'], record['request_id'], 'fixture', row['line_signature'], row['quantity'], row['status'], json.dumps(record)))
+        record.update(id='another-record', request_id='another-request', purchase_order_number='123456')
+        conn.execute('INSERT INTO order_purchases VALUES (?,?,?,?,?,?)',
+                     (record['id'], row['order_id'], record['source_platform'], record['purchase_order_number'], row['status'], json.dumps(record)))
+        value['data']['order_number'] = '123456'
+        value['data']['order']['order_number'] = '123456'
         value['data']['logistics_checked_at'] = '2026-10-13T09:00:00+00:00'
         value['data']['logistics'][0].update(status='TRANSPORT', status_label='运输中')
         conn.execute('INSERT INTO purchase_progress VALUES (?,?,?,?)', (record['id'], 1, 0, json.dumps(value)))
@@ -332,7 +339,7 @@ def test_package_summary_deduplicates_shared_waybill_and_uses_latest_snapshot(se
     assert len(packages) == 1
     assert packages[0]['status_label'] == '运输中'
     assert packages[0]['updated_at'] == '2026-10-13T09:00:00+00:00'
-    assert packages[0]['order_numbers'] == [NUMBER]
+    assert set(packages[0]['order_numbers']) == {NUMBER, '123456'}
 
 
 def test_package_summary_preserves_logistics_time_after_failed_refresh(setup):
@@ -348,3 +355,31 @@ def test_package_summary_preserves_logistics_time_after_failed_refresh(setup):
     item = procurement.detail(body['order_id'])['order']['purchase_tracking']['packages'][0]
     assert item['updated_at'] == '2026-10-13T08:00:00Z'
     assert item['stale']
+
+
+def test_exclusion_and_omission_keep_fact_and_refresh_cannot_restore_it(setup):
+    _, fulfillment, body, _, run = setup
+    run()
+    saved = fulfillment.detail(body['order_id'])
+    fulfillment.command('parcels', {'order_id': body['order_id'], 'revision': saved['revision'], 'parcels': []})
+    assert progress(run())['state'] == 'synced'
+    current = fulfillment.detail(body['order_id'])
+    assert len(current['parcels']) == 1 and not current['parcels'][0]['included']
+    assert not current['parcels_confirmed']
+
+
+@pytest.mark.parametrize('change', ['duplicate', 'foreign_order', 'conflicting_quantity'])
+def test_duplicate_or_uncertain_logistics_quantity_is_not_guessed(setup, change):
+    _, fulfillment, body, client, run = setup
+    first = client.logistics['result'][0]
+    if change == 'duplicate':
+        client.logistics['result'].append(deepcopy(first))
+    elif change == 'foreign_order':
+        first['logisticsOrderGoods'][0]['tradeOrderId'] = 'another-order'
+    else:
+        other = deepcopy(first)
+        other['logisticsOrderGoods'][0]['quantity'] = 3
+        client.logistics['result'].append(other)
+    assert progress(run())['state'] == 'synced'
+    parcels = fulfillment.detail(body['order_id'])['parcels']
+    assert len(parcels) == 1 and parcels[0]['quantity'] == (2 if change == 'duplicate' else None)

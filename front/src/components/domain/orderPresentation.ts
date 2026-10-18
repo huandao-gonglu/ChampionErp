@@ -80,10 +80,10 @@ export function orderProcessingProgress(order: OrderSnapshot, facts: Fulfillment
   if (facts?.busy && facts.operation === 'fetch-label') return progress('正在获取面单', '获取成功后继续准备预报')
   if (facts?.error_message || status === 'EXCEPTION') return progress('预报异常', '进入详情处理后重试', 'red')
   if (facts?.label_error) return progress('面单获取异常', '进入详情处理或人工补充', 'red')
-  if (facts?.has_domestic_waybill) return progress('待报单', '已有国内运单，请核对包裹分配、数量、面单与服务方案后报单')
+  if (facts?.has_domestic_waybill) return progress('待报单', '已有国内运单，请核对包裹清单、件数、面单与服务方案后报单')
   if (order.procurement_status === 'unpurchased') return progress('待采购登记', '在详情中登记实际采购', 'amber', 'erp', 'procurement')
   if (order.procurement_status === 'partial') return progress('采购登记中', '尚未覆盖全部商品数量', 'amber', 'erp', 'procurement')
-  if (order.procurement_status === 'purchased') return progress('待报单', '已有国内运单，请核对包裹分配、数量、面单与服务方案后报单')
+  if (order.procurement_status === 'purchased') return progress('待报单', '已有国内运单，请核对包裹清单、件数、面单与服务方案后报单')
   return progress('采购待核对', '核对商品明细与采购数量', 'amber', 'erp', 'procurement')
 }
 export function stateTone(state: OrderState) {

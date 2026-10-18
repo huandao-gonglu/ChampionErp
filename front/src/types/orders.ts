@@ -131,16 +131,26 @@ export interface SalesSkuBinding {
   publication_id: string
   source: ProcurementSource
 }
+export interface PurchaseItem {
+  id: string
+  line_key: string
+  line_signature: string
+  product_id: string
+  sku: string
+  title: string
+  quantity: number
+  source: ProcurementSource | null
+  image_url: string
+}
 export interface PurchaseRecord {
-  supplemental?: boolean
   receiving_warehouse?: import('@/api/receivingWarehouse').ReceivingWarehouse | null
   progress?: BackendPurchaseProgressView | null
   id: string
-  line_key: string
   request_id: string
-  quantity: number
+  source_platform: string
   purchase_order_number: string
-  source: ProcurementSource
+  items: PurchaseItem[]
+  note: string
   created_at: string
   status: 'purchased' | 'cancelled'
   cancelled_at: string
@@ -155,7 +165,7 @@ export interface ProcurementLine {
     candidates: SalesSkuBinding[]
     reason: string
   }
-  records: PurchaseRecord[]
+  product_id: string
   purchased_quantity: number
   remaining_quantity: number
 }
@@ -163,6 +173,7 @@ export interface OrderDetail {
   ok: boolean
   order: OrderSnapshot
   lines: ProcurementLine[]
+  purchases: PurchaseRecord[]
 }
 
 export interface HandoverWarehouse {

@@ -80,11 +80,12 @@ class OrderProcurementService:
         for line in order.items:
             key = order_line_key(line)
             selection = SourceSelection(line_key=key)
-            records, purchased = [], 0
+            purchased = 0
+            candidates = []
             if not key or counts[key] != 1:
                 selection.reason = "平台订单行缺少唯一身份，暂不能关联或记录采购"
             else:
-                saved, records, purchased = self.store.line_state(
+                saved, purchased = self.store.line_state(
                     order_id, key, accounts
                 )
                 candidates = (
@@ -97,12 +98,12 @@ class OrderProcurementService:
                 ProcurementLine(
                     line=line,
                     selection=selection,
-                    records=records,
+                    product_id=next(iter({c.product_id for c in candidates})) if len({c.product_id for c in candidates}) == 1 else "",
                     purchased_quantity=purchased,
                     remaining_quantity=max(0, line.quantity - purchased),
                 )
             )
-        return OrderDetail(order=order, lines=lines).model_dump(mode="json")
+        return OrderDetail(order=order, lines=lines, purchases=self.store.records(order_id, accounts)).model_dump(mode="json")
 
     def select_source(self, body):
         request = SelectSourceRequest.model_validate(body)

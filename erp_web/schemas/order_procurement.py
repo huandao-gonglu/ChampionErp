@@ -90,15 +90,31 @@ class SourceSelection(BaseModel):
     reason: str = ""
 
 
+class PurchaseItemInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    line_key: str = ""
+    product_id: str = ""
+    sku: str = ""
+    title: str = ""
+    quantity: int = Field(gt=0, strict=True)
+    source: ProcurementSource | None = None
+    image_url: str = ""
+
+
+class PurchaseItem(PurchaseItemInput):
+    id: str
+    line_signature: str = ""
+
+
 class PurchaseRecord(BaseModel):
-    supplemental: bool = False  # 保留旧补单记录的历史标记，新采购统一受剩余数量约束。
+    model_config = ConfigDict(extra="forbid")
     receiving_warehouse: ReceivingWarehouse | None = None
     id: str
-    line_key: str
     request_id: str
-    quantity: int = Field(gt=0)
+    source_platform: str
     purchase_order_number: str
-    source: ProcurementSource
+    items: list[PurchaseItem] = Field(default_factory=list)
+    note: str = ""
     created_at: str
     status: Literal["purchased", "cancelled"] = "purchased"
     cancelled_at: str = ""
@@ -108,7 +124,7 @@ class PurchaseRecord(BaseModel):
 class ProcurementLine(BaseModel):
     line: OrderLine
     selection: SourceSelection
-    records: list[PurchaseRecord] = Field(default_factory=list)
+    product_id: str = ""
     purchased_quantity: int = 0
     remaining_quantity: int = 0
 
@@ -117,6 +133,7 @@ class OrderDetail(BaseModel):
     ok: bool = True
     order: OrderView
     lines: list[ProcurementLine]
+    purchases: list[PurchaseRecord] = Field(default_factory=list)
 
 
 class SelectSourceRequest(BaseModel):
@@ -134,16 +151,18 @@ class SelectSourceRequest(BaseModel):
         return self
 
 
-class RecordPurchaseRequest(BaseModel):
-    receiving_revision: int = Field(default=0, ge=0)
-    receiving_confirmed: bool = False
-    model_config = ConfigDict(extra="forbid")
+class PurchaseRegistration(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     order_id: str = Field(min_length=1)
-    line_key: str = Field(min_length=1)
-    revision: int = Field(ge=1)
-    request_id: str = Field(min_length=1, max_length=100)
-    quantity: int = Field(gt=0, strict=True)
+    source_platform: str = Field(min_length=1, max_length=100)
     purchase_order_number: str = Field(min_length=1, max_length=200)
+    items: list[PurchaseItemInput] = Field(default_factory=list, max_length=500)
+    note: str = Field(default="", max_length=2000)
+    receiving_warehouse: ReceivingWarehouse | None = None
+
+
+class RecordPurchaseRequest(PurchaseRegistration):
+    request_id: str = Field(min_length=1, max_length=100)
 
 
 class CancelPurchaseRequest(BaseModel):

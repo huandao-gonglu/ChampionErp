@@ -101,7 +101,9 @@ onBeforeUnmount(() => {
       <header
         class="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-dark-700"
       >
-        <h3 :id="titleId" class="text-lg font-bold">{{ title }}</h3>
+        <slot name="header" :title-id="titleId">
+          <h3 :id="titleId" class="text-lg font-bold">{{ title }}</h3>
+        </slot>
         <button
           type="button"
           class="btn btn-outline"
@@ -110,10 +112,11 @@ onBeforeUnmount(() => {
           autofocus
           @click="requestClose"
         >
-          关闭
+          <slot name="close">关闭</slot>
         </button>
       </header>
-      <div class="min-h-0 overflow-y-auto overscroll-contain p-5"><slot /></div>
+      <section v-if="$slots.toolbar" class="workspace-dialog-toolbar shrink-0"><slot name="toolbar" /></section>
+      <div data-workspace-dialog-body class="min-h-0 overflow-y-auto overscroll-contain p-5"><slot /></div>
       <footer
         v-if="$slots.footer"
         class="shrink-0 border-t border-slate-200 px-5 py-4 dark:border-dark-700"

@@ -82,7 +82,7 @@ class FulfillmentStore:
             "account_id": order.account_id, "platform_order_id": order.order_id,
             "order_number": order.order_id if order.platform == "yandex" else "ERP-" + hashlib.sha256(json.dumps(key).encode()).hexdigest()[:32],
             "crossborderbus_order_id": None, "bus_identity": "", "plan": None, "override": False,
-            "parcels": [], "platform_label": "", "platform_tracking_number": "", "remark": "",
+            "parcels": [], "parcels_confirmed": False, "observed_waybills": [], "platform_label": "", "platform_tracking_number": "", "remark": "",
             "label_error": "", "label_attempt_at": "",
             "country": "", "fulfillment_status": "NEW", "operation": "", "error_message": "",
             "last_attempt_at": "", "last_synced_at": "", "next_attempt": 0,
@@ -99,7 +99,7 @@ class FulfillmentStore:
     def _value(row):
         value = json.loads(row["value"])
         return {**value, "revision": row["revision"], "busy": bool(row["claim"] and row["lease_until"] > time.time()),
-                "has_domestic_waybill": any(str(p.get("tracking_number") or "").strip() for p in value.get("parcels", []))}
+                "has_domestic_waybill": any(str(p.get("tracking_number") or "").strip() for p in value.get("parcels", []) if p["included"])}
 
     def get(self, order_id):
         with self.orders.connect() as conn:
@@ -133,7 +133,7 @@ class FulfillmentStore:
             packages = {}
             for parcel in value.get("parcels", []):
                 number = str(parcel.get("tracking_number") or "").strip()
-                if number:
+                if number and parcel["included"]:
                     packages.setdefault(number.upper(), {"carrier": parcel.get("carrier", ""), "tracking_number": number})
             summary = {**value, "section_name": section.get("section_name", ""), "warehouse_name": warehouse.get("name", ""),
                        "registered_packages": list(packages.values()), "consolidation_service_id": plan.get("consolidation_service_id"),
@@ -160,23 +160,6 @@ class FulfillmentStore:
                           0 if restart_identity is not None else row['lease_until'], order_id))
             conn.commit()
         return self.get(order_id)
-
-    @staticmethod
-    def remove_purchase_parcels(conn, order_id, record_id):
-        """与采购作废共用短事务，只移除该记录的分配并使旧履约版本失效。"""
-        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='fulfillments'").fetchone():
-            return
-        row = conn.execute("SELECT * FROM fulfillments WHERE id=?", (order_id,)).fetchone()
-        if row is None:
-            return
-        value = json.loads(row["value"])
-        if (row["claim"] or value.get("operation") == "create" or value.get("create_unknown")
-                or value.get("crossborderbus_order_id") or value.get("warehouse_locked")):
-            raise ValueError("报单已开始、结果待核实或资料已锁定，不能作废采购；请先处理原报单")
-        value["parcels"] = [p for p in value.get("parcels", []) if p["purchase_record_id"] != record_id]
-        value["manual_submit"] = False
-        conn.execute("UPDATE fulfillments SET value=?,revision=revision+1 WHERE id=?",
-                     (json.dumps(value, ensure_ascii=False), order_id))
 
     def claim(self, order_id, action, revision):
         now = time.time()

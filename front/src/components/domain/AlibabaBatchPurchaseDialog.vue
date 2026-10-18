@@ -28,7 +28,7 @@ const total = computed(() => drafts.value.reduce((sum, record) => sum + record.p
 const validSelection = computed(() => selected.value.length > 0 && selected.value.length <= 50 && selected.value.every(key => {
   const line = eligible.value.find(row => row.line_key === key)
   const quantity = quantities[key] || 0
-  return line && Number.isInteger(quantity) && quantity > 0 && quantity <= line.options.remaining_quantity
+  return line && Number.isInteger(quantity) && quantity > 0
 }))
 const usedChannels = computed(() => [...new Set(drafts.value.map(record => channels[record.id]).filter((channel): channel is string => !!channel))].sort())
 const alipayTotal = computed(() => drafts.value.filter(record => channels[record.id] === 'alipay').reduce((sum, record) => sum + record.preview.total_fen, 0))
@@ -139,7 +139,7 @@ onMounted(() => run(load))
             <p v-else-if="!eligible.includes(line)" class="text-amber-700">有待核验采购，请先查询原订单。</p>
           </div>
           <label class="text-sm">数量
-            <input v-model.number="quantities[line.line_key]" type="number" min="1" :max="line.options.remaining_quantity" step="1" class="input w-20" :aria-label="`${line.sku} 采购数量`" :disabled="!eligible.includes(line)" />
+            <input v-model.number="quantities[line.line_key]" type="number" min="1" step="1" class="input w-20" :aria-label="`${line.sku} 采购数量`" :disabled="!eligible.includes(line)" />
             <span class="block text-xs">还需 {{ line.options.remaining_quantity }} 件</span>
           </label>
         </div>

@@ -104,14 +104,9 @@ def confirm(service, order, key):
 
 
 def purchase_body(order, key, request_id="req-1", quantity=1, revision=1):
-    return {
-        "order_id": order.identity,
-        "line_key": key,
-        "revision": revision,
-        "request_id": request_id,
-        "quantity": quantity,
-        "purchase_order_number": "PO-1",
-    }
+    return {"order_id": order.identity, "request_id": request_id, "source_platform": "1688",
+            "purchase_order_number": "PO-1", "items": [{"line_key": key, "quantity": quantity,
+            "source": manual_source(), "product_id": "456", "sku": "blue", "title": "蓝色 L"}]}
 
 
 def test_frozen_publication_maps_order_to_actual_source(domain):
@@ -181,7 +176,7 @@ def test_purchase_retains_original_source_when_future_source_changes(domain):
     service, order, key = domain
     confirm(service, order, key)
     result = service.record_purchase(purchase_body(order, key))
-    original = result["lines"][0]["records"][0]
+    original = result["purchases"][0]
     service.select_source(
         {
             "order_id": order.identity,
@@ -192,16 +187,16 @@ def test_purchase_retains_original_source_when_future_source_changes(domain):
     )
     result = service.detail(order.identity)
     assert result["lines"][0]["selection"]["source"]["source_sku_id"] == "green"
-    assert result["lines"][0]["records"][0]["source"]["source_sku_id"] == "blue"
+    assert result["purchases"][0]["items"][0]["source"]["source_sku_id"] == "blue"
     assert service.store.progress(result_order(service, order)) == "partial"
     result = service.cancel_purchase(
         {"order_id": order.identity, "record_id": original["id"]}
     )
     assert result["lines"][0]["purchased_quantity"] == 0
-    assert result["lines"][0]["records"][0]["status"] == "cancelled"
+    assert result["purchases"][0]["status"] == "cancelled"
     # 作废幂等，记录及当时来源仍保留。
     service.cancel_purchase({"order_id": order.identity, "record_id": original["id"]})
-    assert len(service.detail(order.identity)["lines"][0]["records"]) == 1
+    assert len(service.detail(order.identity)["purchases"]) == 1
 
 
 def result_order(service, order):
@@ -214,7 +209,7 @@ def test_duplicate_purchase_and_concurrent_quantity_are_transactional(domain):
     body = purchase_body(order, key, quantity=2)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: service.record_purchase(body), range(2)))
-    assert len(results[-1]["lines"][0]["records"]) == 1
+    assert len(results[-1]["purchases"]) == 1
     with pytest.raises(ValueError):
         service.record_purchase(purchase_body(order, key, quantity=1))
     with pytest.raises(ValueError):
@@ -227,14 +222,13 @@ def test_changed_source_revision_and_cancelled_order_block_purchase(domain):
     confirm(service, order, key)
     with pytest.raises(ValueError):
         confirm(service, order, key)
-    with pytest.raises(ValueError):
-        service.record_purchase(purchase_body(order, key, revision=2))
+    service.record_purchase(purchase_body(order, key, revision=2))
     with service.store.orders.connect() as conn:
         raw = order.model_copy(update={"state": "cancelled"}).model_dump_json()
         conn.execute("UPDATE orders SET snapshot=? WHERE id=?", (raw, order.identity))
         conn.commit()
     with pytest.raises(ValueError):
-        service.record_purchase(purchase_body(order, key))
+        service.record_purchase({**purchase_body(order, key, request_id="new"), "purchase_order_number": "PO-NEW"})
 
 
 def test_repeated_or_missing_order_line_identity_cannot_create_records(domain):
@@ -522,9 +516,8 @@ def test_yandex_list_detail_and_parcel_use_same_platform_image(platform_images):
     line = detail["lines"][0]
     assert line["line"]["image_url"] == detail["order"]["items"][0]["image_url"] == url
     assert service.present_orders([result_order(service, order)])[0].items[0].image_url == url
-    parcels = [{"id": "parcel", "line_key": key, "purchase_record_id": line["records"][0]["id"],
-                "tracking_number": "YT123", "quantity": 1}]
-    assert FulfillmentService.parcels_payload(None, parcels, detail)[0]["img"] == url
+    parcels = [{"id": "parcel", "tracking_number": "YT123", "quantity": 1, "image_url": line["line"]["image_url"]}]
+    assert FulfillmentService.parcels_payload(parcels)[0]["img"] == url
     assert result_order(service, order).items[0].image_url == ""
     save("https://platform.example/updated.jpg")
     assert service.detail(order.identity)["lines"][0]["line"]["image_url"].endswith("/updated.jpg")

@@ -59,7 +59,7 @@ beforeEach(() => {
   vi.mocked(fetchOrderDetail).mockResolvedValue({
     ok: true,
     order: orders[0]!,
-    lines: [],
+    lines: [], purchases: [],
   })
 })
 async function render() {
@@ -70,7 +70,7 @@ async function render() {
   await router.push('/?tab=orders')
   await router.isReady()
   const wrapper = mount(OrderCenterPanel, {
-    global: { plugins: [router], stubs: { teleport: true, OrderFulfillmentPanel: true } },
+    global: { plugins: [router], stubs: { teleport: true, OrderFulfillmentPanel: true, OrderReceivingWarehouse: true } },
   })
   await flushPromises()
   return { wrapper, router }
@@ -111,7 +111,7 @@ describe('紧凑订单列表', () => {
       ok: true, items: [remoteOrder], total: 1, counts: { [state]: 1 },
       notifications: [], alerts: [], unread: 0, latest_alert_id: 0,
     })
-    vi.mocked(fetchOrderDetail).mockResolvedValue({ ok: true, order: remoteOrder, lines: [] })
+    vi.mocked(fetchOrderDetail).mockResolvedValue({ ok: true, order: remoteOrder, lines: [], purchases: [] })
     const store = useOrderNotificationsStore()
     store.state = state
     const { wrapper } = await render()
@@ -123,9 +123,11 @@ describe('紧凑订单列表', () => {
     if (note) {
       expect(wrapper.get('tbody tr td:nth-child(4) .order-muted').text()).toBe('来自平台同步')
       expect(wrapper.get('tbody tr td:nth-child(4)').text()).not.toContain(note)
-      expect(wrapper.get('dialog').text()).toContain(note)
+      await wrapper.findAll('button').find(button => button.text() === '订单资料')!.trigger('click')
+      expect(wrapper.get('button[aria-label="关闭订单资料"]').element.closest('dialog')!.textContent).toContain(note)
+      await wrapper.get('button[aria-label="关闭订单资料"]').trigger('click')
     }
-    expect(wrapper.get('dialog').text().includes('等待交接发货')).toBe(shipping_status === 'READY_TO_SHIP' && status === 'PROCESSING')
+    expect(wrapper.get('dialog header .order-badge').text()).toBe(label)
     expect(store.state).toBe(state)
   })
   it('详情在列表上打开，关闭后保持平台、状态、搜索和页码', async () => {
@@ -171,7 +173,7 @@ describe('紧凑订单列表', () => {
       },
     }
     vi.mocked(fetchOrders).mockResolvedValue({ ok: true, items: [order], total: 1, counts: {}, notifications: [], alerts: [], unread: 0, latest_alert_id: 0 })
-    vi.mocked(fetchOrderDetail).mockResolvedValue({ ok: true, order, lines: [] })
+    vi.mocked(fetchOrderDetail).mockResolvedValue({ ok: true, order, lines: [], purchases: [] })
     const { wrapper, router } = await render()
     const link = wrapper.get('a.order-progress-link')
     expect(link.text()).toBe(label)

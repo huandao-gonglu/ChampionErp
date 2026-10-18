@@ -62,10 +62,10 @@ class OrderQueryService:
                     for record in purchases.get((order.id, key), []):
                         if record["line_signature"] != signature:
                             continue
-                        frozen = json.loads(record["record_json"])
+                        frozen = record
                         has_source = True
                         evidence.extend(_source_evidence("purchase_record", ProcurementSource.model_validate(frozen["source"]),
-                            record_id=record["id"], purchase_order_number=frozen["purchase_order_number"], purchase_quantity=record["quantity"]))
+                            record_id=record["record_id"], purchase_order_number=frozen["purchase_order_number"], purchase_quantity=record["quantity"]))
                 if not has_source:
                     unresolved += 1
                 hits = [{"term": term, **entry} for term in terms for entry in evidence if matches(term, entry["value"])]

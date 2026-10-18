@@ -28,7 +28,7 @@ function result(): OrderHandoverSnapshot {
 }
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(fetchOrderDetail).mockResolvedValue({ ok: true, order: { ...order, handover: result() }, lines: [] })
+  vi.mocked(fetchOrderDetail).mockResolvedValue({ ok: true, order: { ...order, handover: result() }, lines: [], purchases: [] })
 })
 
 describe('平台交货信息', () => {
@@ -98,20 +98,21 @@ describe('平台交货信息', () => {
     expect(handoverDateTime('')).toBe('平台未提供')
   })
 
-  it('模块位于采购收货仓和采购列表前，切换和重开详情只读取普通订单详情', async () => {
+  it('采购商品优先，交货资料在侧栏按需展开；切换和重开只读取本地详情', async () => {
     function open() {
       return mount(OrderDetailPanel, {
         attachTo: document.body,
         props: { orderId: order.id },
-        global: { plugins: [createPinia()], stubs: { WorkspaceDialog: { template: '<div><slot /><slot name="footer" /></div>' }, OrderFulfillmentPanel: true } },
+        global: { plugins: [createPinia()], stubs: { WorkspaceDialog: { template: '<div><slot name="header" title-id="order-heading" /><slot name="toolbar" /><slot /><slot name="footer" /></div>' }, OrderFulfillmentPanel: true, OrderReceivingWarehouse: true } },
       })
     }
     const wrapper = open()
     await flushPromises()
-    expect(wrapper.find('[data-testid="order-handover"] ~ [aria-label="采购收货仓"]').exists()).toBe(true)
-    expect(wrapper.find('[aria-label="采购收货仓"] ~ .order-product-list').exists()).toBe(true)
+    expect(wrapper.get('.procurement-main').find('.order-product-list').exists()).toBe(true)
+    expect(wrapper.get('.procurement-sidebar').find('[data-testid="order-handover"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="order-handover"] details').attributes('open')).toBeUndefined()
     await wrapper.findAll('button').find(button => button.text() === '跨境履约')!.trigger('click')
-    expect(wrapper.get('[data-testid="order-handover"]').isVisible()).toBe(false)
+    expect(wrapper.find('[data-testid="order-handover"]').exists()).toBe(false)
     await wrapper.findAll('button').find(button => button.text() === '商品与采购')!.trigger('click')
     expect(wrapper.get('[data-testid="order-handover"]').isVisible()).toBe(true)
     expect(fetchOrderDetail).toHaveBeenCalledTimes(1)

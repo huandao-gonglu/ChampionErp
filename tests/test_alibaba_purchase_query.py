@@ -26,7 +26,7 @@ def registered(domain):
     body = purchase_body(order, key)
     body["purchase_order_number"] = NUMBER
     detail = service.record_purchase(body)
-    record = detail["lines"][0]["records"][0]
+    record = detail["purchases"][0]
     return service, {"order_id": order.identity, "record_id": record["id"]}
 
 
@@ -139,8 +139,8 @@ def test_other_procurement_platform_cannot_query_1688(domain):
     service, order, key = domain
     service.select_source({"order_id": order.identity, "line_key": key, "revision": 0,
                            "source": {"source_platform": "其他", "product_url": "https://1688.com.example.test/offer/1", "specification": "蓝色"}})
-    result = service.record_purchase({**purchase_body(order, key), "purchase_order_number": NUMBER})
-    record_id = result["lines"][0]["records"][0]["id"]
+    result = service.record_purchase({**purchase_body(order, key), "purchase_order_number": NUMBER, "source_platform": "other"})
+    record_id = result["purchases"][0]["id"]
     def unexpected(_):
         pytest.fail("其他平台不得发起 1688 查询")
     with pytest.raises(ValueError, match="仅支持"):
@@ -280,7 +280,7 @@ def test_product_image_matches_exact_sku_and_prefers_original():
     payload = {"result": {"productItems": [other, selected]}}
     product, warning = normalize_product(payload, source)
     assert warning == ""
-    assert product == {"offer_id": "123", "sku_id": "22", "spec_id": "spec22", "name": "商品",
+    assert product == {"item_id": "", "quantity": None, "offer_id": "123", "sku_id": "22", "spec_id": "spec22", "name": "商品",
                        "specification": "颜色：蓝色", "image_url": "https://cbu01.alicdn.com/original.jpg"}
     for patch in ({"source_sku_id": "99"}, {"source_offer_id": "999"},
                   {"source_spec_id": "conflicting"}, {"source_sku_id": ""}):

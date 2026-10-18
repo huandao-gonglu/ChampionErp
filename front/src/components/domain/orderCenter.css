@@ -6,6 +6,10 @@
   --order-text: #18181b;
   --order-muted: #71717a;
   --order-border: #e4e4e7;
+  --order-positive: #15803d;
+  --order-warning: #a16207;
+  --order-negative: #be123c;
+  --order-link-color: #2563eb;
   color: var(--order-text);
   font-size: 13px;
   line-height: 1.55;
@@ -17,6 +21,10 @@
   --order-text: #f4f4f5;
   --order-muted: #a1a1aa;
   --order-border: #3f3f46;
+  --order-positive: #68cc79;
+  --order-warning: #f5c15c;
+  --order-negative: #fda4af;
+  --order-link-color: #93c5fd;
 }
 .order-ui .order-muted {
   color: var(--order-muted);
@@ -70,6 +78,11 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+dialog.order-ui .order-primary:disabled {
+  background: var(--order-soft);
+  border-color: var(--order-border);
+  color: var(--order-muted);
+}
 .order-ui :is(button, a, input, select):focus-visible {
   outline: 2px solid #16a34a;
   outline-offset: 2px;
@@ -80,6 +93,7 @@
   padding: 6px 10px;
   cursor: pointer;
   white-space: nowrap;
+  color: var(--order-link-color);
 }
 .order-ui .order-link:hover {
   color: #15803d;
@@ -127,12 +141,28 @@
 .dark .order-ui .order-badge {
   filter: brightness(0.85);
 }
+.dark dialog.order-ui {
+  --order-bg: #171b1d;
+  --order-surface: #202527;
+  --order-soft: #252b2e;
+  --order-border: #343c40;
+  --order-muted: #aeb7bf;
+}
+.dark dialog.order-ui .order-badge { filter: none; }
+.dark dialog.order-ui .order-badge[data-tone='blue'] { color: #93c5fd; background: #233341; }
+.dark dialog.order-ui .order-badge[data-tone='green'] { color: #68cc79; background: #243d2c; }
+.dark dialog.order-ui .order-badge[data-tone='amber'] { color: #f5c15c; background: #423720; }
+.dark dialog.order-ui .order-badge[data-tone='red'] { color: #fda4af; background: #472a33; }
 .order-ui .order-error {
   color: #be123c;
   background: #fff1f2;
   border-radius: 6px;
   padding: 10px 12px;
   margin: 12px 0;
+}
+.dark dialog.order-ui .order-error {
+  color: var(--order-negative);
+  background: #472a33;
 }
 .order-ui .order-success {
   color: #15803d;
@@ -209,6 +239,47 @@ dialog.order-ui > footer {
 }
 dialog.order-ui[data-variant='drawer'] {
   border-radius: 0;
+}
+.order-ui .detail-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--order-border);
+  border-radius: 8px;
+  background: var(--order-surface);
+}
+.order-ui .order-more { position: relative; }
+.order-ui .order-more > summary { list-style: none; cursor: pointer; }
+.order-ui .order-more > summary::-webkit-details-marker { display: none; }
+.order-ui .order-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 10;
+  display: grid;
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--order-border);
+  border-radius: 6px;
+  background: var(--order-surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 16%);
+}
+.order-ui .order-menu .order-link { padding: 8px 12px; text-align: left; }
+dialog.order-ui.order-detail { font-size: 14px; background: var(--order-bg); }
+dialog.order-detail :is(.order-button, .order-badge) { font-size: 14px; }
+dialog.order-detail .order-muted { font-size: 13px; }
+dialog.order-detail .order-badge { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+dialog.order-detail .order-button { min-height: 30px; padding: 4px 14px; }
+dialog.order-detail .detail-card { padding: 14px; border-radius: 6px; }
+dialog.order-detail > header { min-height: 56px; padding: 10px 20px; background: var(--order-surface); }
+dialog.order-detail > header button.order-link { color: var(--order-link-color); }
+dialog.order-detail > .workspace-dialog-toolbar { background: var(--order-surface); }
+dialog.order-detail > [data-workspace-dialog-body] { padding: 14px 20px; }
+dialog.order-detail > footer { padding: 12px 24px; background: var(--order-surface); }
+body:has(dialog.order-detail[open]) [data-testid='ai-work-floating'] { visibility: hidden; pointer-events: none; }
+@media (max-width: 600px) {
+  dialog.order-detail > header { padding: 16px; align-items: flex-start; }
+  dialog.order-detail > [data-workspace-dialog-body] { padding: 16px; }
+  dialog.order-detail > footer { padding: 12px 16px; }
 }
 @media (max-width: 600px) {
   .order-ui .order-form-columns {
