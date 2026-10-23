@@ -97,7 +97,7 @@ export default {
       draft_attributes_read: 'View draft attributes',
       draft_sku_attributes_update: 'Update variant attributes',
       draft_sku_selection_update: 'Select product variants',
-      draft_sku_package_update: 'Update package details',
+      product_sku_facts_update: 'Update product SKU facts',
       draft_changes_apply: 'Save draft changes',
       copy_generate: 'Generate product copy',
       copy_generate_batch: 'Generate copy in bulk',

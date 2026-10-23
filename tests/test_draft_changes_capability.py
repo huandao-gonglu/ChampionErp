@@ -41,9 +41,9 @@ def test_mixed_changes_save_once_and_preserve_unrelated_fields(subject, monkeypa
     monkeypatch.setattr(app.products, "save_draft_content", save)
     monkeypatch.setattr(validation, "fetch_category_record", definitions)
     changes = [
-        {"sku_id": "s0", "attributes": {"color": "甲"}, "stock": 0, "package_dimensions": {"length_cm": 12}},
+        {"sku_id": "s0", "attributes": {"color": "甲"}, "stock": 0},
         {"attributes": {"7199": "材料"}},
-        {"sku_id": "s1", "attributes": {"color": "乙"}, "stock": 13, "package_dimensions": {"width_cm": 7}},
+        {"sku_id": "s1", "attributes": {"color": "乙"}, "stock": 13},
     ]
     result = run(app, request(app, draft_id, changes))
     assert result.changed_count == 3 and result.previous_updated_at == before["updated_at"]
@@ -56,8 +56,8 @@ def test_mixed_changes_save_once_and_preserve_unrelated_fields(subject, monkeypa
         assert row["attributes_by_target"]["yandex:global"] == {"old": "保留"}
         assert row["stock"] == stock
         assert row["pricing"] == before["sku_items"][index]["pricing"]
-        assert "weight_kg" not in row["overrides"]["package_dimensions"]
-    assert result.changes[0].stock == "0" and result.changes[0].package_dimensions == {"length_cm": "12.0"}
+        assert "package_dimensions" not in row["overrides"]
+    assert result.changes[0].stock == "0"
     assert saved["attributes"]["7199"] == "材料"
     assert saved["title"] == before["title"]
     assert app.db.load_product_model(before["product_id"])["sku_items"] == product["sku_items"]

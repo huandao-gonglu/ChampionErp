@@ -6,7 +6,7 @@ from .image import DraftImageRef, ImageItem
 from .mercadolibre import MercadoLibrePublication
 
 
-PRODUCT_SCHEMA_VERSION = 4
+PRODUCT_SCHEMA_VERSION = 5
 
 
 class ProductSku(TypedDict, total=False):
@@ -23,6 +23,8 @@ class ProductSku(TypedDict, total=False):
     image_asset_id: str
     barcode: str
     package_dimensions: dict[str, str]
+    battery: bool
+    liquid: bool
     active: bool
     source_snapshot: dict[str, Any]
 
@@ -32,6 +34,7 @@ class ProductSource(TypedDict, total=False):
     source_url: str
     title: str
     price: str
+    legacy_product_cost_cny: str
     currency: str
     material: str
     package_contents: list[str]
@@ -102,8 +105,6 @@ class PlatformDraft(TypedDict, total=False):
     global_title: str
     title: str
     description: str
-    brand: str
-    model: str
     category_id: str
     description_category_id: str
     category_path: str
@@ -140,7 +141,6 @@ class Product(TypedDict, total=False):
     sku: str
     stock: str
     upc: str
-    cost: str
     materials: list[str]
     package_includes: list[str]
     colors: list[str]

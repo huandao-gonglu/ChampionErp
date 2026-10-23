@@ -35,7 +35,7 @@ from erp_web.product_model import (
     normalize_mercadolibre_sites_to_sell,
     validate_category_precheck,
 )
-from erp_web.services.pricing_service import pricing_calculation_fingerprint
+from erp_web.services.pricing_service import pricing_calculation_fingerprint_matches
 from erp_web.services.listing_currency_service import (
     PRICING_STALE,
     STORE_CURRENCY_CHANGED,
@@ -57,6 +57,7 @@ from erp_web.services.mercadolibre_attribute_contract import (
     compile_mercadolibre_attributes,
 )
 
+from .publish_validation_session import PublishValidationSession
 from .collect_helpers import collect_time_iso
 from .publish_helpers import (
     _draft_for_platform,
@@ -74,12 +75,8 @@ from .publish_ozon import (
 )
 from .pricing_results import _pricing_target_is_usable
 from .publish_yandex import (
-    yandex_invalid_dictionary_attributes,
-    yandex_invalid_text_attributes,
-    yandex_invalid_unit_attributes,
-    yandex_mapped_parameter_count,
+    yandex_attribute_checks,
     yandex_offer_identity_conflict,
-    yandex_required_attributes_missing,
 )
 
 
@@ -149,11 +146,11 @@ _STORE_CURRENCY_PRECHECK_ERRORS: dict[str, tuple[str, str, str]] = {
 }
 
 
-def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> list[dict[str, str]]:
+def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any], *, session: PublishValidationSession | None = None) -> list[dict[str, str]]:
     draft = single_sku_publish_draft(product, draft)
     platform = str(draft.get("platform") or "").strip().lower()
     # 发布前必须重新加载当前店铺配置：店铺授权配置是发布币种唯一事实源。
-    store_config = get_context().config.load_store_config()
+    store_config = session.store_config if session is not None else get_context().config.load_store_config()
     store = (
         store_config.get(platform)
         if isinstance(store_config.get(platform), dict)
@@ -231,7 +228,7 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> li
         return [precheck_item(PRICING_STALE, "pricing", f"{listing_currency} 发布目标没有有效核价结果", "error", "前往核价页重新计算并应用该目标售价")]
     if (
         not basis
-        or fingerprint != pricing_calculation_fingerprint(basis)
+        or not pricing_calculation_fingerprint_matches(basis, fingerprint)
         or str(basis.get("listing_currency") or "").upper() != listing_currency
     ):
         return [precheck_item(PRICING_STALE, "pricing", "核价依据缺失或已变化", "error", "前往核价页重新计算并应用售价")]
@@ -283,6 +280,8 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> li
                 "前往核价页重新计算并应用售价",
             )
         ]
+    if session is not None and session.sku_inputs_checked:
+        return []
     product_cost = product.get("cost")
     if product_cost not in (None, "") and _normalized_number(product_cost) != _normalized_number(basis.get("cost_cny")):
         return [precheck_item("PRICING_STALE", "pricing", "商品成本已变化，旧核价结果已失效", "error", "前往核价页重新计算并应用售价")]
@@ -469,6 +468,12 @@ def validate_mercadolibre_draft(
             category_definition,
             listing_model=listing_model,
         )
+        if any(item.get("id") == "EMPTY_GTIN_REASON" for item in compilation.attributes):
+            warnings.append(precheck_item(
+                "UPC_MISSING", "attributes.EMPTY_GTIN_REASON",
+                "UPC / GTIN 为空，将提交所填的条码缺失原因", "warning",
+                "确认缺失原因符合商品实际情况",
+            ))
         for issue in compilation.issues:
             errors.append(
                 precheck_item(
@@ -606,12 +611,6 @@ def validate_mercadolibre_draft(
             need_review.append(raw_field)
     if need_review:
         errors.extend(_review_precheck_items(need_review, "error"))
-    if not str(draft.get("upc") or "").strip():
-        allow_gtin_exemption = bool(draft.get("allow_gtin_exemption"))
-        if allow_gtin_exemption:
-            warnings.append(precheck_item("UPC_MISSING", "upc", "UPC / GTIN 为空，已按配置允许豁免", "warning", "确认 Mercado Libre 类目允许 EMPTY_GTIN_REASON"))
-        else:
-            errors.append(precheck_item("UPC_MISSING", "upc", "UPC / GTIN 为空，且未确认允许豁免", "error", "前往商品编辑页分配 UPC 或显式确认豁免"))
     # Mercado 发布条款的唯一事实源是当前草稿；配置或商品级旧值不能在用户
     # 清空保修条款后悄悄回流到预检与 payload。
     sale_terms: Any = (
@@ -654,16 +653,30 @@ def validate_mercadolibre_draft(
 
 
 def validate_yandex_draft(
-    product: dict[str, Any],
-    config: dict[str, Any],
-    category_record: dict[str, Any] | None = None,
-    *, image_stage: str = "final",
+    product: dict[str, Any], config: dict[str, Any], category_record: dict[str, Any] | None = None,
+    *, image_stage: str = "final", session: PublishValidationSession | None = None,
 ) -> dict[str, Any]:
-    product = normalize_product_fields(product)
+    """原始商品入口；规范化一次后交给无重复规范化的校验主体。"""
+    return validate_prepared_yandex_draft(
+        normalize_product_fields(product), config, category_record,
+        image_stage=image_stage, session=session,
+    )
+
+
+def validate_prepared_yandex_draft(
+    product: dict[str, Any], config: dict[str, Any], category_record: dict[str, Any] | None = None,
+    *, image_stage: str = "final", session: PublishValidationSession | None = None,
+) -> dict[str, Any]:
+    """检查规范化后的单 SKU 投影；组入口只需规范化一次整组商品。"""
+    session = session if session is not None else PublishValidationSession()
     draft = _draft_for_selected_target(product, "yandex")
     store = config.get("yandex", {}) if isinstance(config.get("yandex"), dict) else {}
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
+    if str(store.get('placement_type') or '').upper() == 'FBS':
+        from erp_web.services.yandex_logistics_service import draft_fulfillment_plan
+        if error := session.yandex_logistics_error(draft_fulfillment_plan(draft)):
+            errors.append(precheck_item('YANDEX_LOGISTICS_INVALID', 'pricing', error, 'error', '在系统设置中指定 Yandex 发布仓库运输模式后重新核价'))
     auth_status, auth_next = _masked_auth_status("yandex", config)
     # “已保存，未测试”同样阻断发布：凭证或 Campaign ID 切换后必须重新
     # 通过在线授权校验，才能派生 business_id 与价格/库存能力。
@@ -689,7 +702,8 @@ def validate_yandex_draft(
     conflict = yandex_offer_identity_conflict(draft)
     if conflict:
         errors.append(precheck_item("OFFER_IDENTITY_CHANGED", "sku", conflict, "error", "确认要创建新的远端商品，或恢复原 SKU 后再发布"))
-    invalid_dictionary_ids = set(yandex_invalid_dictionary_attributes(product, category_record))
+    attribute_checks = yandex_attribute_checks(product, draft, category_record)
+    invalid_dictionary_ids = set(attribute_checks["dictionary"])
     for attr_id in sorted(invalid_dictionary_ids):
         errors.append(
             precheck_item(
@@ -700,7 +714,7 @@ def validate_yandex_draft(
                 "前往类目属性页搜索并选择平台允许的值",
             )
         )
-    for attr_id in yandex_invalid_unit_attributes(product, category_record):
+    for attr_id in attribute_checks["units"]:
         errors.append(
             precheck_item(
                 "ATTRIBUTE_UNIT_INVALID",
@@ -710,44 +724,30 @@ def validate_yandex_draft(
                 "前往类目属性页选择类目允许的单位",
             )
         )
-    for attr_id, message in yandex_invalid_text_attributes(product, category_record).items():
+    for attr_id, message in attribute_checks["text"].items():
         errors.append(precheck_item(
             "ATTRIBUTE_TEXT_FORMAT_INVALID", f"attributes.{attr_id}",
-            f"Yandex 属性 {attr_id}：{message}", "error",
+            message if message.startswith("Yandex ") else f"Yandex 属性 {attr_id}：{message}", "error",
             "前往类目属性页按每行一个“属性名:属性值”修正，选填且无额外信息时可清空",
         ))
     # 必填属性是否解决由共享 owner 唯一裁定，这里不复制规则。
-    for field in yandex_required_attributes_missing(product, category_record):
+    for field in attribute_checks["missing"]:
         attr_id = str(field).split(".", 1)[-1]
         if attr_id in invalid_dictionary_ids:
             continue
         errors.append(precheck_item("REQUIRED_ATTRIBUTE_MISSING", field, f"缺少 Yandex 必填属性：{attr_id}", "error", "前往类目属性页补齐必填属性"))
-    # Yandex 发布接口要求 parameterValues 至少 1 个，即使类目没有任何
-    # 必填参数；零必填类目的草稿也必须先填至少一个平台参数。
-    if yandex_mapped_parameter_count(product, category_record) == 0:
-        errors.append(
-            precheck_item(
-                "YANDEX_PARAMETER_VALUES_MISSING",
-                "attributes",
-                "Yandex 要求至少提交 1 个类目参数值，当前草稿没有任何已填写的平台参数",
-                "error",
-                "运行属性自动补全，或前往类目属性页填写类目参数",
-            )
-        )
     if not str(draft.get("brand") or "").strip():
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
-    if not str(draft.get("model") or "").strip():
-        errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
     if not sku:
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
-    errors.extend(_selected_price_errors(product, draft))
-    if not str(draft.get("stock") or "").strip():
+    errors.extend(_selected_price_errors(product, draft, session=session))
+    if not session.sku_inputs_checked and not str(draft.get("stock") or "").strip():
         errors.append(precheck_item("STOCK_MISSING", "stock", "库存缺失", "error", "前往商品编辑页填写库存"))
     images = _draft_images(product, "yandex", draft)
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
     else:
-        problems = get_context().image_delivery.inspect_product(product, "yandex", stage=image_stage)
+        problems = get_context().image_delivery.inspect_product(product, "yandex", stage=image_stage, cache=session.images)
         errors.extend(
             precheck_item(problem.code, f"images.{problem.asset_id}", problem.message, "error", problem.next_action)
             for problem in problems
@@ -779,7 +779,9 @@ def validate_ozon_draft(
     config: dict[str, Any],
     category_record: dict[str, Any] | None = None,
     *, image_stage: str = "final",
+    session: PublishValidationSession | None = None,
 ) -> dict[str, Any]:
+    session = session if session is not None else PublishValidationSession()
     product = normalize_product_fields(product)
     draft = _draft_for_selected_target(product, "ozon")
     store = config.get("ozon", {}) if isinstance(config.get("ozon"), dict) else {}
@@ -819,14 +821,14 @@ def validate_ozon_draft(
         errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
     if not str(draft.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
-    errors.extend(_selected_price_errors(product, draft))
-    if not str(draft.get("stock") or "").strip():
+    errors.extend(_selected_price_errors(product, draft, session=session))
+    if not session.sku_inputs_checked and not str(draft.get("stock") or "").strip():
         errors.append(precheck_item("STOCK_MISSING", "stock", "库存缺失", "error", "前往商品编辑页填写库存"))
     images = _draft_images(product, "ozon", draft)
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
     else:
-        problems = get_context().image_delivery.inspect_product(product, "ozon", stage=image_stage)
+        problems = get_context().image_delivery.inspect_product(product, "ozon", stage=image_stage, cache=session.images)
         errors.extend(
             precheck_item(problem.code, f"images.{problem.asset_id}", problem.message, "error", problem.next_action)
             for problem in problems

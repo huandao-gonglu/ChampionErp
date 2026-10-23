@@ -24,10 +24,10 @@ def calculate_sku_prices(body: dict[str, Any]) -> PricingBatchResult:
     target_count = sum(len(item["input"]["targets"]) for item in items)
     logger.info("核价批次 %s 开始：%d 个 SKU，%d 项市场报价", batch_id, len(items), target_count)
     session = PricingSession()
+    calculated = session.calculate_many([item["input"] for item in items])
     results: list[SkuPricingResult] = []
     failed = 0
-    for index, item in enumerate(items, 1):
-        result = session.calculate(item["input"])
+    for index, (item, result) in enumerate(zip(items, calculated, strict=True), 1):
         if not result.get("ok"):
             failed += 1
             messages = [str(error.get("message") or "") for error in result.get("errors", []) if isinstance(error, dict)]

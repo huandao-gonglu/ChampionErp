@@ -31,7 +31,7 @@ onBeforeUnmount(() => { disposed = true })
 </script>
 <template>
   <section class="space-y-4" aria-label="物流设置">
-    <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="text-lg font-semibold">物流设置</h3><p class="text-sm text-accent-500">按合作仓维护收货地址及承接范围，采购时筛选具体地址。</p></div><button class="btn btn-secondary" :disabled="busy || !!editing" @click="run(() => fetchLogisticsSettings(true))">同步合作仓库</button></div>
+    <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="text-lg font-semibold">报单收货仓</h3><p class="text-sm text-accent-500">按合作仓维护收货地址及承接范围，采购时筛选具体地址。</p></div><button class="btn btn-secondary" :disabled="busy || !!editing" @click="run(() => fetchLogisticsSettings(true))">同步合作仓库</button></div>
     <p v-if="busy" role="status">正在处理物流资料…</p><p v-if="error" role="alert" class="text-red-600">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <template v-if="settings">
       <p v-if="!settings.authorized">请先在跨境巴士设置中完成授权。</p>

@@ -12,7 +12,7 @@ from .sku_image_model import ensure_source_image_asset
 from .image_pool_model import normalize_image_pool
 
 PACKAGE_FIELDS = ("length_cm", "width_cm", "height_cm", "weight_kg")
-SKU_FACT_FIELDS = ("name", "options", "cost_cny", "supplier_stock", "image_asset_id", "barcode", "package_dimensions")
+SKU_FACT_FIELDS = ("name", "options", "cost_cny", "supplier_stock", "image_asset_id", "barcode", "package_dimensions", "battery", "liquid")
 
 
 def text(value: Any) -> str:
@@ -53,6 +53,8 @@ def normalize_product_skus(value: Any) -> list[dict[str, Any]]:
             "image_asset_id": text(raw.get("image_asset_id")),
             "barcode": text(raw.get("barcode")),
             "package_dimensions": {k: text(record(raw.get("package_dimensions")).get(k)) for k in PACKAGE_FIELDS},
+            "battery": raw.get("battery") is True,
+            "liquid": raw.get("liquid") is True,
             "active": raw.get("active") is not False,
             "source_snapshot": deepcopy(record(raw.get("source_snapshot"))),
         })
@@ -77,6 +79,8 @@ def collected_skus(source: dict[str, Any]) -> list[dict[str, Any]]:
             raise ValueError("来源 SKU 缺少稳定编号，无法建立规格关联")
         options = deepcopy(record(raw.get("options")))
         facts = {
+            "battery": raw.get("battery") is True,
+            "liquid": raw.get("liquid") is True,
             "source_offer_id": text(raw.get("offer_id")),
             "source_spec_id": text(raw.get("spec_id")),
             "name": text(raw.get("name")), "options": options,
@@ -103,7 +107,7 @@ def merge_collected_skus(existing: Any, source: dict[str, Any]) -> list[dict[str
         snapshot = record(old.get("source_snapshot"))
         for field in SKU_FACT_FIELDS:
             # 用户编辑过的事实保留；新来源事实仍完整写入 source_snapshot 供核对。
-            if field in snapshot and old.get(field) != snapshot.get(field):
+            if (field in snapshot and old.get(field) != snapshot.get(field)) or (field in {"battery", "liquid"} and field not in snapshot):
                 row[field] = deepcopy(old[field])
         row["active"] = old["active"]
     # 来源消失的 SKU 保留身份并停用，已发布关联仍可追溯。
@@ -131,7 +135,7 @@ def normalize_draft_skus(value: Any, product_skus: Any, draft_id: str) -> list[d
             "sku_id": sku_id, "selected": raw.get("selected") is True,
             "sku": text(raw.get("sku")) or "SKU-" + sku_fingerprint([draft_id, sku_id])[:20].upper(),
             "stock": text(raw.get("stock")) or text(facts.get(sku_id, {}).get("supplier_stock")),
-            "overrides": deepcopy(record(raw.get("overrides"))),
+            "overrides": {key: deepcopy(value) for key, value in record(raw.get("overrides")).items() if key == "image_asset_id"},
             "attributes_by_target": deepcopy(record(raw.get("attributes_by_target"))),
             "source_option_translations": deepcopy(record(raw.get("source_option_translations"))),
             "custom_attributes_by_target": deepcopy(record(raw.get("custom_attributes_by_target"))),
@@ -144,13 +148,12 @@ def normalize_draft_skus(value: Any, product_skus: Any, draft_id: str) -> list[d
 
 def effective_sku(product_sku: dict[str, Any], draft_sku: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(product_sku)
-    for key, value in record(draft_sku.get("overrides")).items():
-        if key not in SKU_FACT_FIELDS:
-            raise ValueError("不支持覆盖的 SKU 字段：" + key)
-        if isinstance(value, dict):
-            result[key] = {**record(result.get(key)), **deepcopy(value)}
-        else:
-            result[key] = deepcopy(value)
+    # 草稿只选择销售图片；采购、包装、条码和运输属性均从商品读取。
+    overrides = record(draft_sku.get("overrides"))
+    if any(key.startswith("source_") for key in overrides):
+        raise ValueError("不支持覆盖来源身份，请重新采集商品。")
+    if "image_asset_id" in overrides:
+        result["image_asset_id"] = overrides["image_asset_id"]
     return result
 
 
@@ -181,6 +184,8 @@ def single_sku_publish_draft(product: dict[str, Any], draft: dict[str, Any]) -> 
     applied = record(quote.get("applied_price"))
     return {
         **deepcopy(draft),
+        "brand": text(product.get("brand") or record(product.get("source")).get("brand")),
+        "model": text(product.get("model") or record(product.get("source")).get("model")),
         "sku": text(row.get("sku")),
         "stock": text(row.get("stock")),
         "upc": text(fact.get("barcode")),

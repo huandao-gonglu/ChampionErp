@@ -74,6 +74,43 @@ def test_fixed_gateway_can_disable_redirects_at_managed_boundary():
         thread.join(3)
 
 
+def test_managed_public_document_redirect_keeps_region_cookie():
+    from http.cookiejar import CookieJar
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    cookies = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            cookies.append(self.headers.get("Cookie", ""))
+            if "region=ready" not in cookies[-1]:
+                self.send_response(307)
+                self.send_header("Set-Cookie", "region=ready; Path=/")
+                self.send_header("Location", "/document")
+            else:
+                self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{}')
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with get_context().external_requests.open(
+            f"http://127.0.0.1:{server.server_port}/document", timeout=2,
+            request_context_value=context(), cookie_jar=CookieJar(),
+        ) as result:
+            assert result.read() == b'{}'
+        assert cookies == ["", "region=ready"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(3)
+
+
 def test_disabled_account_blocks_queued_cross_module_and_survives_restart():
     store = ExternalRequestStore(get_context().paths.data_dir / "external-requests.sqlite3")
     manager = ExternalRequestManager(store)
@@ -194,6 +231,30 @@ def test_write_timeout_is_unknown_and_never_replayed():
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("max_attempts", [1, 3])
+def test_read_network_retry_requires_explicit_budget(max_attempts):
+    import http.client
+
+    manager = get_context().external_requests
+    calls = []
+    def send(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise http.client.RemoteDisconnected("敏感网络错误")
+        return Response()
+    ctx = context(max_attempts=max_attempts, retry_delay=.01)
+    if max_attempts == 1:
+        with pytest.raises(http.client.RemoteDisconnected):
+            request(manager, ctx, send)
+    else:
+        request(manager, ctx, send).close()
+    rows = manager.store.query()["items"]
+    assert len(calls) == (1 if max_attempts == 1 else 2)
+    assert len({row["operation_id"] for row in rows}) == 1
+    assert "敏感网络错误" not in json.dumps(rows)
+    assert {row["attempt"] for row in rows} == set(range(1, len(calls)+1))
+
+
 @pytest.mark.parametrize("semantics", ["read", "write"])
 def test_transport_rejection_before_http_is_not_an_unknown_write(semantics):
     manager = get_context().external_requests
@@ -275,6 +336,32 @@ def test_repeated_bad_parameters_and_configured_failure_streak_stop_locally():
             request(manager,context(interface="/unstable"),rejected(503,b'{}'))
     with pytest.raises(ExternalRequestBlocked,match="连续失败"):
         request(manager,context(interface="/unstable"),lambda *a,**k: Response())
+
+
+@pytest.mark.parametrize("status", [400, 200])
+def test_yandex_forbidden_parameter_message_does_not_block_corrected_tariff_request(status):
+    manager = get_context().external_requests
+    ctx = context(platform="yandex", interface="/v2/tariffs/calculate", fingerprint="campaign-and-currency")
+    body = json.dumps({"status": "ERROR", "errors": [{"code": "BAD_REQUEST", "message":
+        'Forbidden to use "campaignId" parameter with "sellingProgram" or "currency".'}]}).encode()
+    if status == 400:
+        with pytest.raises(urllib.error.HTTPError) as error:
+            request(manager, ctx, rejected(status, body))
+        assert error.value.read() == body
+        error.value.close()
+    else:
+        with request(manager, ctx, lambda *a, **k: Response(body)) as response:
+            assert response.read() == body
+    result = manager.store.query(platform="yandex")["items"][0]["result"]
+    assert result["http_status"] == status
+    assert result["platform_error_codes"] == ["BAD_REQUEST"]
+    assert result["failure"]["code"] == "YANDEX_REQUEST_INVALID"
+    assert result["failure"]["scope"] == "request"
+    assert result["failure"]["status"] == status
+    with pytest.raises(ExternalRequestBlocked):
+        request(manager, ctx, lambda *a, **k: pytest.fail("相同错误参数不得再次发送"))
+    request(manager, replace(ctx, fingerprint="campaign-only"), lambda *a, **k: Response()).close()
+    assert manager.store.query(platform="yandex")["stats"]["network_attempts"] == 2
 
 
 def test_s3_head_not_found_does_not_block_same_operation_post_upload_check():

@@ -2098,12 +2098,10 @@ def test_mercadolibre_adapter_uses_root_owned_required_attributes() -> None:
     from tests.publish_category_support import definition_from_record
 
     adapter = MercadoLibrePublishingAdapter()
-    product = {
+    product = {"brand": "Generic", "model": "M1",
         "drafts": {
             "mercadolibre": {
                 "category_id": "MLM-1",
-                "brand": "Generic",
-                "model": "M1",
                 "package_dimensions": {
                     "length_cm": "1",
                     "width_cm": "1",
@@ -2160,6 +2158,8 @@ def test_mercadolibre_adapter_refreshes_auth_before_preparing_product(
     def fake_upload(
         target_product: dict[str, Any],
         token: str,
+        *,
+        on_progress=None,
     ) -> dict[str, Any]:
         upload_tokens.append(token)
         return {"ok": True, "product": target_product, "errors": []}

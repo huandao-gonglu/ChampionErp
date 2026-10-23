@@ -88,7 +88,9 @@ def test_inherited_quote_still_rejects_changed_cost_and_store_currency():
     result, _, _ = app.products.duplicate_draft_from_index(original["draft_id"])
     copied = result["draft"]
     row = deepcopy(copied["sku_items"][0])
-    row["overrides"]["cost_cny"] = "999"
+    product = app.db.load_product_model(copied["product_id"])
+    product["sku_items"][0]["cost_cny"] = "999"
+    app.products.save_product_profile(product)
     sku_errors, _ = price_errors(app, copied, row)
     assert "cost_cny" in sku_errors[0]
     seed_store_currency("ozon", "CNY")

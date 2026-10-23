@@ -888,7 +888,7 @@ def test_pricing_fields_do_not_backfill_other_canonical_fields() -> None:
     )
     pricing = normalized["pricing_defaults"]
 
-    assert pricing["commission_percent"] == "13"
+    assert "commission_percent" not in pricing
     assert pricing["target_margin_percent"] == "41"
     assert pricing["currency_rate"] == "7"
     assert pricing["packaging_cost"] == "8"
@@ -898,7 +898,7 @@ def test_pricing_fields_do_not_backfill_other_canonical_fields() -> None:
     assert pricing["default_currency_rate"] == "1"
     assert pricing["default_packaging_cost"] == "0"
     assert pricing["default_domestic_freight"] == "0"
-    assert pricing["mercadolibre_commission_percent"] == "20"
-    assert pricing["wildberries_commission_percent"] == "20"
-    assert pricing["ozon_commission_percent"] == "20"
+    assert "mercadolibre_commission_percent" not in pricing
+    assert "wildberries_commission_percent" not in pricing
+    assert "ozon_commission_percent" not in pricing
     assert pricing["mercadolibre_payment_fee_percent"] == "0"

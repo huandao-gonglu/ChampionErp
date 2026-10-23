@@ -10,6 +10,7 @@ from erp_web.runtime_units.orders_yandex import YandexOrderAdapter
 from erp_web.schemas.orders import PLATFORMS, OrderView, OrderSyncStatus
 from erp_web.services.order_notification_service import OrderNotificationService
 from erp_web.services.order_query_service import OrderQueryService
+from erp_web.services.order_center_query_service import OrderCenterQueryService
 from erp_web.schemas.platform_query_capabilities import PlatformOrdersQueryRequest
 from erp_web.services.order_progress_sync_service import sync_order_progress
 from erp_web.stores.order_notification_migration import import_historical_notifications
@@ -52,7 +53,7 @@ def query_orders(*, context=None, **query):
     return OrderQueryService(context.order_procurement, context.order_notifications).query(request)
 
 
-def read_orders(*, platform="", state="", limit=50, offset=0, q=""):
+def read_orders(*, platform="", state="", limit=50, offset=0, q="", **filters):
     if platform and platform not in PLATFORMS:
         raise ValueError("不支持的平台")
     if state and state not in {
@@ -65,23 +66,24 @@ def read_orders(*, platform="", state="", limit=50, offset=0, q=""):
     }:
         raise ValueError("订单状态无效")
     service = get_context().order_notifications
-    result = service.store.read(
-        service.accounts(),
+    procurement = get_context().order_procurement
+    result = OrderCenterQueryService(procurement, service, get_context().fulfillment.store).read(
         platform=platform,
         state=state,
         limit=max(1, min(int(limit), 100)),
         offset=max(0, int(offset)),
-        query=str(q).strip()[:200],
+        q=str(q).strip()[:200],
+        **filters,
     )
-    procurement = get_context().order_procurement
     orders = procurement.present_orders(
         [OrderView.model_validate(row) for row in result["items"]]
     )
     fulfillment_summaries = get_context().fulfillment.store.summaries(orders)
+    records = procurement.store.records_many(orders)
     result["items"] = [
         {
             **order.model_dump(mode="json"),
-            "procurement_status": procurement.store.progress(order),
+            "procurement_status": procurement.store.progress_for_records(order, records[order.id]),
             "fulfillment_summary": fulfillment_summaries.get(order.id),
         }
         for order in orders

@@ -46,7 +46,8 @@ class ProductFacts(BaseModel):
     model: Annotated[TrimmedText, StringConstraints(max_length=255)] = ""
     sku: Annotated[TrimmedText, StringConstraints(max_length=255)] = ""
     stock: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    cost: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    updated_at: str = ""
+    sku_items: list[dict[str, JsonValue]] = Field(default_factory=list)
     materials: list[str] = Field(default_factory=list, max_length=100)
     package_includes: list[str] = Field(default_factory=list, max_length=100)
     dimensions: Annotated[TrimmedText, StringConstraints(max_length=255)] = ""

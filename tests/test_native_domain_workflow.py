@@ -27,6 +27,7 @@ from tests.native_domain_fixture import (
     _PlatformNetworkBoundary,
 )
 from tests.runtime_test_utils import seed_store_currency
+from tests.pricing_test_utils import official_commission
 from tests.ai_code_mode_helpers import python_call, business_returns
 from tests.test_native_agent_integration import service, body, CONVERSATION
 
@@ -34,6 +35,7 @@ from tests.test_native_agent_integration import service, body, CONVERSATION
 
 
 def setup_domain(monkeypatch, count=1):
+    monkeypatch.setattr("erp_web.runtime_units.pricing_runtime.PricingCommissions", lambda _config, **_kwargs: official_commission)
     context = get_context()
     seed_store_currency(
         "ozon",
@@ -43,9 +45,12 @@ def setup_domain(monkeypatch, count=1):
     ids = []
     for i in range(count):
         product = _source_product()
+        product.pop("cost", None)
         product["product_id"] = f"product-native-{i}"
         product["source"].setdefault("attributes", {})["测试缺资料"] = i == 14
         draft = product["drafts"]["ozon"]
+        draft.pop("brand", None)
+        draft.pop("model", None)
         # 复合准备现在重新核价全部已选 SKU；测试显式提供本地固定费用与手动汇率。
         draft["pricing"].setdefault("common", {}).update(
             exchange_rate_mode="manual", usd_cny_rate=7, mxn_usd_rate=20, rub_cny_rate=12,
@@ -72,6 +77,10 @@ def setup_domain(monkeypatch, count=1):
                 "other_cost_cny": "0",
             }
         )
+        quote["calculation_basis"]["commission_percent"] = "20"
+        quote["calculation_basis"]["commission_evidence"] = official_commission({}, {
+            "platform": "ozon", "category_id": draft.get("category_id", ""), "commission_percent": 20,
+        }, quote["applied_price"])["evidence"]
         quote["calculation_fingerprint"] = pricing_calculation_fingerprint(
             quote["calculation_basis"]
         )

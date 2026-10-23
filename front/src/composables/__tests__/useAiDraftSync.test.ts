@@ -10,6 +10,11 @@ import PricingPanel from '@/components/domain/PricingPanel.vue'
 const state = vi.hoisted(() => ({ chat: null as unknown }))
 vi.mock('@/stores/aiChat', () => ({ useAiChatStore: () => state.chat }))
 vi.mock('@/api/workflow/catalog', () => ({ loadDraft: vi.fn() }))
+vi.mock('@/api/pricingWorkspace', () => ({
+  fetchPricingExchangeRates: vi.fn().mockResolvedValue({ rates: { usd_cny_rate: 7, rub_cny_rate: 12, mxn_usd_rate: 18 }, fetched_at: '', source: 'test', cached: false }),
+  fetchPricingTemplates: vi.fn().mockResolvedValue({ items: [], default_template_id: '' }),
+  savePricingTemplate: vi.fn(), setDefaultPricingTemplate: vi.fn(), deletePricingTemplate: vi.fn(),
+}))
 const scopes: ReturnType<typeof effectScope>[] = []
 
 async function setup() {
@@ -44,6 +49,23 @@ async function setup() {
 describe('AI 修改后的草稿同步', () => {
   beforeEach(() => vi.clearAllMocks())
   afterEach(() => { scopes.splice(0).forEach(scope => scope.stop()) })
+
+  it('来源更新只推进版本和校验状态，保留未保存的文字和费用', async () => {
+    const { draft, input, sync, response, accept } = await setup()
+    response.draft = JSON.parse(JSON.stringify(draft.value))
+    response.draft.updatedAt = 'v2'
+    response.draft.validationErrors = [{ code: 'NEED_REVIEW_ATTRIBUTES', field: 'attributes.BRAND' }]
+    draft.value.title = '尚未保存的标题'
+    input.value.otherCostCny = 99
+    await sync.refresh()
+    expect(draft.value.updatedAt).toBe('v2')
+    expect(draft.value.title).toBe('尚未保存的标题')
+    expect(input.value.otherCostCny).toBe(99)
+    expect(draft.value.validationErrors).toEqual(response.draft.validationErrors)
+    expect(sync.dirty.value).toBe(true)
+    expect(sync.pending.value).toBe(false)
+    expect(accept).not.toHaveBeenCalled()
+  })
 
   it('历史提交后读取最新草稿，同时同步内容、核价参数和版本', async () => {
     const { chat, sync, draft, input, accept } = await setup()

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
+import DraftBarcodeFields from './DraftBarcodeFields.vue'
 import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
 import { fetchCategoryAttributeValues } from '@/api/workflow/publishing'
 import { isCategoryDictionaryAttribute } from '@/api/workflow/normalizers'
 import { isMercadoLibreCbtTarget } from '@/utils/mercadolibreGlobalSelling'
+import { isBarcodeIdentifier } from '@/utils/barcodePolicy'
 import type { CategoryAttributeDefinition, CategoryAttributeOption, CategoryAttributeTranslations, CategoryDictionaryValue, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = withDefaults(defineProps<{
@@ -79,19 +81,12 @@ const sharedMercadoLibreMarketSummary = computed(() => (
 const showRequiredAttributes = ref(props.skuScope)
 const showOptionalAttributes = ref(props.skuScope)
 const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null>>({})
-type RootDraftAttributeField = 'brand' | 'model'
-
-const MERCADO_ROOT_DRAFT_ATTRIBUTES: Record<string, RootDraftAttributeField> = {
-  BRAND: 'brand',
-  MODEL: 'model',
-}
 const MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS = new Set([
   'PACKAGE_LENGTH', 'PACKAGE_WIDTH', 'PACKAGE_HEIGHT', 'PACKAGE_WEIGHT',
   'SELLER_SKU',
   'GTIN',
   'UPC',
   'UNIVERSAL_PRODUCT_CODE',
-  'EMPTY_GTIN_REASON',
   'ITEM_CONDITION',
   'SELLER_PACKAGE_LENGTH',
   'SELLER_PACKAGE_WIDTH',
@@ -184,10 +179,11 @@ const systemGroupingDisplay = computed(() => {
 const skuVariantCount = computed(() => props.skuScope || props.draft.skuItems.filter(row => row.selected).length < 2 ? 0 : attributeFields.value.filter(attr => attr.variationRole === 'variant').length)
 const belongsToSku = (attr: CategoryAttributeDefinition) => skuVariantCount.value > 0 && attr.variationRole === 'variant'
 const requiredAttributeFields = computed(() => attributeFields.value.filter(
-  (attr) => attr.required && !belongsToSku(attr) && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
+  (attr) => !(props.target.platform === 'mercadolibre' && attr.id === 'EMPTY_GTIN_REASON') && attr.required && !belongsToSku(attr) && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
 ))
 const optionalAttributeFields = computed(() => attributeFields.value.filter(
-  (attr) => !attr.required && !belongsToSku(attr) && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
+  (attr) => !(props.target.platform === 'mercadolibre' && attr.id === 'EMPTY_GTIN_REASON')
+    && !isBarcodeIdentifier(attr.id) && !attr.required && !belongsToSku(attr) && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
 ))
 const attributeFieldById = computed(() => new Map(attributeFields.value.map((attr) => [attr.id, attr])))
 const translationCount = computed(() => Object.values(props.categoryAttributeTranslations || {}).filter((item) => item.label).length)
@@ -258,31 +254,6 @@ function usesRemoteAttributeOptions(attr: CategoryAttributeDefinition) {
     || Boolean(attr.hasMoreValues)
 }
 
-function rootDraftAttribute(attrId: string): RootDraftAttributeField | null {
-  if (props.target.platform !== 'mercadolibre') return null
-  return MERCADO_ROOT_DRAFT_ATTRIBUTES[attrId] || null
-}
-
-function usesRootDraftAttributePicker(attr: CategoryAttributeDefinition) {
-  return rootDraftAttribute(attr.id) === 'brand'
-    && isStrictEnumAttribute(attr)
-    && Boolean(attr.options?.length || attr.hasMoreValues)
-}
-
-function rootDraftAttributeValue(attrId: string) {
-  const field = rootDraftAttribute(attrId)
-  return field ? String(activeDraft.value[field] || '') : ''
-}
-
-function setRootDraftAttributeValue(attrId: string, value: string) {
-  const field = rootDraftAttribute(attrId)
-  if (!field) return
-  activeDraft.value[field] = value.trim()
-  // BRAND/MODEL 的唯一事实源是草稿根字段，attributes 不保留重复值。
-  delete activeDraft.value.attributes[attrId]
-  invalidateEditedAttribute(attrId)
-}
-
 function selectedDictionaryValues(attrId: string): CategoryDictionaryValue[] {
   const raw = activeDraft.value.attributes[attrId]
   if (!raw || typeof raw === 'string' || !('values' in raw) || !Array.isArray(raw.values)) return []
@@ -290,7 +261,6 @@ function selectedDictionaryValues(attrId: string): CategoryDictionaryValue[] {
 }
 
 function selectedDictionarySummary(attr: CategoryAttributeDefinition) {
-  if (usesRootDraftAttributePicker(attr)) return rootDraftAttributeValue(attr.id)
   const values = selectedDictionaryValues(attr.id)
   if (!values.length) return legacyDictionaryValue(attr.id)
   return attr.isCollection
@@ -298,25 +268,11 @@ function selectedDictionarySummary(attr: CategoryAttributeDefinition) {
     : values[0]?.value || ''
 }
 
-function boundRootDraftBrandSelection(attr: CategoryAttributeDefinition) {
-  if (!usesRootDraftAttributePicker(attr)) return null
-  const brand = rootDraftAttributeValue(attr.id).trim()
-  const selected = selectedDictionaryValues(attr.id)[0]
-  const valueId = String(selected?.dictionaryValueId ?? '').trim()
-  if (!brand || !valueId || selected?.value.trim() !== brand) return null
-  return selected
-}
-
 function pickerLegacyValue(attr: CategoryAttributeDefinition) {
-  if (!usesRootDraftAttributePicker(attr)) return legacyDictionaryValue(attr.id)
-  const brand = rootDraftAttributeValue(attr.id).trim()
-  if (!brand) return ''
-  const isLocalOption = (attr.options || []).some((option) => option.trim() === brand)
-  return isLocalOption || boundRootDraftBrandSelection(attr) ? '' : brand
+  return legacyDictionaryValue(attr.id)
 }
 
 function pickerHasValue(attr: CategoryAttributeDefinition) {
-  if (usesRootDraftAttributePicker(attr)) return Boolean(rootDraftAttributeValue(attr.id).trim())
   return Boolean(selectedDictionaryValues(attr.id).length || legacyDictionaryValue(attr.id))
 }
 
@@ -513,14 +469,7 @@ function selectDictionaryOption(attr: CategoryAttributeDefinition, option: Categ
     ...(persistedValueId ? { dictionaryValueId: persistedValueId } : {}),
     value: option.value,
   }
-  if (usesRootDraftAttributePicker(attr)) {
-    activeDraft.value.brand = option.value.trim()
-    if (persistedValueId) {
-      activeDraft.value.attributes[attr.id] = { values: [selectedValue] }
-    } else {
-      delete activeDraft.value.attributes[attr.id]
-    }
-  } else if (attr.isCollection) {
+  if (attr.isCollection) {
     const existing = selectedDictionaryValues(attr.id)
     const selected = [
       ...existing.filter((item) => {
@@ -596,7 +545,6 @@ function removeDictionaryOption(attr: CategoryAttributeDefinition, index: number
 }
 
 function clearDictionaryValue(attr: CategoryAttributeDefinition) {
-  if (usesRootDraftAttributePicker(attr)) activeDraft.value.brand = ''
   delete activeDraft.value.attributes[attr.id]
   const state = dictionaryState(attr)
   state.query = ''
@@ -728,18 +676,6 @@ watch(
   },
 )
 
-watch(
-  () => activeDraft.value.brand,
-  (brand) => {
-    const raw = activeDraft.value.attributes.BRAND
-    if (!raw) return
-    const selected = selectedDictionaryValues('BRAND')[0]
-    if (!selected?.dictionaryValueId || selected.value.trim() !== brand.trim()) {
-      delete activeDraft.value.attributes.BRAND
-    }
-  },
-)
-
 onBeforeUnmount(() => {
   for (const timer of dictionarySearchTimers.values()) clearTimeout(timer)
   dictionarySearchTimers.clear()
@@ -853,6 +789,7 @@ function targetLabel(target: MarketplaceTargetSite) {
         </div>
 
         <p v-if="skuVariantCount" class="mt-3 text-sm text-brand-700">此类目还有 {{ skuVariantCount }} 个 SKU 差异字段，请在 SKU 页的“属性 / 详情”中按规格填写。</p>
+        <DraftBarcodeFields v-if="!skuScope && categoryAttributeState === 'ready'" :draft="activeDraft" :target="target" :category="category" :skus="productContext.skuItems" :loading="loading" @change="invalidateEditedAttribute('EMPTY_GTIN_REASON')" />
         <div v-if="categoryAttributeState === 'ready' && systemGroupingAttributes.length" data-testid="system-grouping-attributes" class="mt-3 rounded-lg bg-accent-50 p-3 text-sm dark:bg-dark-800">
           <p class="font-medium">刊登分组（系统填写）</p>
           <p class="mt-1">{{ systemGroupingDisplay }}</p>
@@ -886,19 +823,7 @@ function targetLabel(target: MarketplaceTargetSite) {
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
               <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">该属性需要核对，请确认商品资料。</span>
-              <div v-if="rootDraftAttribute(attr.id) && !usesRootDraftAttributePicker(attr)" class="mt-1">
-                <input
-                  :ref="(el) => setAttributeInputRef(attr.id, el)"
-                  :value="rootDraftAttributeValue(attr.id)"
-                  class="input"
-                  :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
-                  :data-attribute-id="attr.id"
-                  placeholder="请输入草稿基础信息"
-                  @input="setRootDraftAttributeValue(attr.id, ($event.target as HTMLInputElement).value)"
-                />
-                <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">来自草稿基础信息，修改后同步用于发布预检和 Mercado Payload。</p>
-              </div>
-              <div v-else-if="usesRootDraftAttributePicker(attr) || usesAttributeOptionPicker(attr)" class="relative mt-1">
+              <div v-if="usesAttributeOptionPicker(attr)" class="relative mt-1">
                 <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
                   <span v-for="(item, index) in selectedDictionaryValues(attr.id)" :key="`${item.dictionaryValueId || 'custom'}:${item.value}:${index}`" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
                     {{ item.value }}
@@ -1036,18 +961,7 @@ function targetLabel(target: MarketplaceTargetSite) {
               <span class="text-xs font-semibold text-slate-500">{{ attributeLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
-              <div v-if="rootDraftAttribute(attr.id) && !usesRootDraftAttributePicker(attr)" class="mt-1">
-                <input
-                  :ref="(el) => setAttributeInputRef(attr.id, el)"
-                  :value="rootDraftAttributeValue(attr.id)"
-                  class="input"
-                  :data-attribute-id="attr.id"
-                  placeholder="请输入草稿基础信息"
-                  @input="setRootDraftAttributeValue(attr.id, ($event.target as HTMLInputElement).value)"
-                />
-                <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">来自草稿基础信息，修改后同步用于发布预检和 Mercado Payload。</p>
-              </div>
-              <div v-else-if="usesRootDraftAttributePicker(attr) || usesAttributeOptionPicker(attr)" class="relative mt-1">
+              <div v-if="usesAttributeOptionPicker(attr)" class="relative mt-1">
                 <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
                   <span v-for="(item, index) in selectedDictionaryValues(attr.id)" :key="`${item.dictionaryValueId || 'custom'}:${item.value}:${index}`" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
                     {{ item.value }}

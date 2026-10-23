@@ -53,7 +53,7 @@ const titleLimit = computed(() => (
 </script>
 
 <template>
-  <section class="space-y-5">
+  <section class="flex min-h-full flex-col gap-5">
     <div v-if="!props.embedded" class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <h2 class="text-xl font-black text-slate-950 dark:text-white">草稿编辑</h2>
@@ -65,7 +65,7 @@ const titleLimit = computed(() => (
       </div>
     </div>
 
-    <section class="space-y-4">
+    <section class="flex flex-1 flex-col gap-4">
       <div class="grid gap-4 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
         <label class="block">
           <span data-testid="draft-language-label" class="text-xs font-semibold text-slate-500 dark:text-accent-300">发布语言</span>
@@ -107,9 +107,9 @@ const titleLimit = computed(() => (
         <span data-testid="draft-title-label" class="text-xs font-semibold text-slate-500">{{ localizedTitleLabel }}</span>
         <input v-model="props.draft.title" data-testid="draft-title-input" class="input mt-1" :maxlength="titleLimit" />
       </label>
-      <label class="block">
+      <label class="flex flex-1 flex-col">
         <span class="text-xs font-semibold text-slate-500">商品描述</span>
-        <textarea v-model="props.draft.description" class="input mt-1 min-h-36" placeholder="描述商品特点、用途、规格与包装清单；自然使用相关搜索词，避免重复堆砌。" />
+        <textarea v-model="props.draft.description" class="input mt-1 min-h-64 flex-auto resize-y" placeholder="描述商品特点、用途、规格与包装清单；自然使用相关搜索词，避免重复堆砌。" />
       </label>
     </section>
   </section>

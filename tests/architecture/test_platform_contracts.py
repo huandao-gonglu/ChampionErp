@@ -149,6 +149,25 @@ def test_pricing_runtime_has_no_platform_currency_side_effects() -> None:
         assert "store_credentials" not in target or target.endswith("store_credentials.get_mercadolibre_access_token"), target
 
 
+def test_fee_rule_solver_stays_pure_and_local_estimates_are_not_publish_evidence() -> None:
+    from erp_web.services.pricing_service import has_official_commission
+
+    for _, target in imported_targets([
+        ROOT / "erp_web/services/pricing_fee_rules.py",
+        ROOT / "erp_web/services/pricing_service.py",
+    ]):
+        assert not any(part in target for part in ("yandex_commission_batch", "external_request", "urllib", "httpx", "requests"))
+        assert not target.startswith(("erp_web.context", "erp_web.stores", "erp_web.runtime_units"))
+    assert not has_official_commission({
+        "listing_currency": "CNY", "commission_percent": "27",
+        "commission_evidence": {
+            "source": "local_calculation", "purpose": "prelisting", "endpoint": "/v2/tariffs/calculate",
+            "price": {"amount": "100", "currency": "CNY"}, "amount": "27", "currency": "CNY",
+            "quoted_at": "2026-10-20T00:00:00Z",
+        },
+    })
+
+
 def test_retired_currency_source_strings_are_gone() -> None:
     # 退役的静态币种来源字符串不得再出现在后端代码中；唯一例外是一次性
     # 迁移模块（它必须识别旧键才能物理删除它们）。

@@ -11,6 +11,7 @@ import * as settingsApi from '@/api/workflow/settings'
 import * as stateApi from '@/api/workflow/state'
 import * as translationApi from '@/api/workflow/translation'
 import { jsonProbeMessages, JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabilityProbe'
+import { applyPricingTemplate, pricingTemplateParameters } from '@/types/pricing'
 import { withAiForeground } from '@/services/withAiForeground'
 import type { AuthResult, DraftDetail, DraftIndexItem, Product } from '@/types/workflow'
 
@@ -196,16 +197,19 @@ describe('workflow store live API flow', () => {
     expect(panels).toHaveLength(3)
     expect(panels.map((panel) => panel.attributes('aria-label'))).toEqual(['yandex 发布预检', 'ozon 发布预检', 'mercadolibre 发布预检'])
     expect(panels.every((panel) => panel.text().includes('预检结果'))).toBe(true)
-    expect(wrapper.findAll('[data-testid="publish-shared-fields"]')).toHaveLength(1)
+    expect(panels[0].find('[data-testid="draft-warranty-fields"]').exists()).toBe(false)
+    expect(panels[1].find('[data-testid="draft-warranty-fields"]').exists()).toBe(false)
+    expect(panels[2].find('[data-testid="draft-warranty-fields"]').exists()).toBe(true)
+    expect(store.currentDraft.saleTerms).toEqual([{ id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' }])
     expect(panels.every((panel) => panel.findAll('button').length === 0)).toBe(true)
     expect(panels[0].element.parentElement?.classList.contains('xl:grid-cols-2')).toBe(true)
 
-    await wrapper.get('[data-testid="publish-batch-actions"]').findAll('button').find((button) => button.text() === '全部预检')!.trigger('click')
+    await wrapper.get('[data-testid="publish-batch-actions"]').findAll('button').find((button) => button.text() === '基础资料预检')!.trigger('click')
     await flushPromises()
     expect(workflowApi.saveDraft).toHaveBeenCalledOnce()
     expect(workflowApi.publishPrecheck).toHaveBeenCalledTimes(2)
     expect(store.selectedPublishTarget.platform).toBe('yandex')
-    expect(panels[1].text()).toContain('预检通过，可以发布。')
+    expect(panels[1].text()).toContain('基础资料预检通过，待准备素材。')
     expect(panels[0].text()).toContain('缺少 Yandex 类目')
     expect(panels[2].findAll('button')).toHaveLength(1)
     expect(store.publishBatch.passed.map((editor) => editor.key)).toEqual(['ozon:global'])
@@ -215,6 +219,41 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.publishPrecheck).toHaveBeenCalledTimes(3)
     expect(workflowApi.publishPrecheck).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ platform: 'yandex' }))
     expect(panels[1].findAll('button')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('准备进度实时展示，失败保留计数，重试清零，切换草稿隔离旧回执', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const [yandex, ozon] = store.targetEditors
+    let report: NonNullable<Parameters<typeof workflowApi.previewPublishPayload>[2]>
+    let rejectRequest: (error: Error) => void
+    vi.mocked(workflowApi.previewPublishPayload).mockImplementation((_draft, _target, onProgress) => {
+      report = onProgress!
+      return new Promise((_resolve, reject) => { rejectRequest = reject })
+    })
+    const wrapper = mount(DraftPublishPrecheckWorkspace)
+    const run = yandex.execute(() => yandex.actions.previewPayload({ saveDraft: false }))
+    report!({ stage: 'uploading', completed: 3, total: 10 })
+    await flushPromises()
+    expect(wrapper.text()).toContain('图片已准备 3 / 10 张（30%）')
+    expect(ozon.state.preparationProgress).toBeNull()
+    expect(yandex.state.payloadPreview).toBeNull()
+    report!({ stage: 'validating_final' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('正在执行最终发布校验')
+    expect(wrapper.text()).toContain('3 / 10')
+    rejectRequest!(new Error('上传失败'))
+    await run
+    expect(yandex.state.preparationProgress).toMatchObject({ stage: 'failed', completed: 3, total: 10 })
+    const retry = yandex.execute(() => yandex.actions.previewPayload({ saveDraft: false }))
+    expect(yandex.state.preparationProgress).toEqual({ stage: 'validating_source' })
+    store.currentDraft = { ...multiMarketCategoryDraft(), draftId: 'another-draft' }
+    report!({ stage: 'uploading', completed: 10, total: 10 })
+    expect(store.targetEditors[0].state.preparationProgress).toBeNull()
+    expect(yandex.state.preparationProgress).toEqual({ stage: 'validating_source' })
+    rejectRequest!(new Error('旧请求结束'))
+    await retry
     wrapper.unmount()
   })
 
@@ -270,14 +309,15 @@ describe('workflow store live API flow', () => {
     wrapper.unmount()
   })
 
-  it('本地图片尚未准备时允许显式准备预览，最终通过前不能入队', async () => {
+  it('基础预检通过才允许准备素材，最终校验通过前不能入队', async () => {
     const store = useWorkflowStore()
     store.currentDraft = multiMarketCategoryDraft()
     const [yandex, ozon] = store.targetEditors
+    expect(store.publishBatch.preparable).toHaveLength(0)
+    await store.publishBatch.previewAll()
+    expect(workflowApi.previewPublishPayload).not.toHaveBeenCalled()
     yandex.state.precheck = {
-      ok: false, errors: ['图片尚未准备'], warnings: [],
-      errorItems: [{ code: 'IMAGE_NOT_PREPARED', field: 'images', message: '图片尚未准备', severity: 'error', nextAction: '准备素材' }],
-      warningItems: [], checkedAt: '',
+      ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '',
     }
     ozon.state.precheck = {
       ok: false, errors: ['缺少类目'], warnings: [],
@@ -295,7 +335,7 @@ describe('workflow store live API flow', () => {
     })
     await store.publishBatch.previewAll()
     expect(workflowApi.previewPublishPayload).toHaveBeenCalledOnce()
-    expect(workflowApi.previewPublishPayload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ platform: 'yandex' }))
+    expect(workflowApi.previewPublishPayload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ platform: 'yandex' }), expect.any(Function))
     expect(store.publishBatch.ready.map((editor) => editor.key)).toEqual(['yandex:global'])
     expect(workflowApi.enqueuePublish).not.toHaveBeenCalled()
   })
@@ -311,7 +351,7 @@ describe('workflow store live API flow', () => {
     vi.mocked(workflowApi.previewPublishPayload).mockResolvedValue({ platform: 'ozon', site: 'global', target: {}, status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'ozon-ready', summary: {}, warnings: [] })
     await store.publishBatch.previewAll()
     expect(workflowApi.previewPublishPayload).toHaveBeenCalledOnce()
-    expect(workflowApi.previewPublishPayload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ platform: 'ozon' }))
+    expect(workflowApi.previewPublishPayload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ platform: 'ozon' }), expect.any(Function))
     yandex.state.payloadPreview = { ...ozon.state.payloadPreview!, targetKey: 'yandex:global' }
     ozon.state.payloadPreview = { ...ozon.state.payloadPreview!, targetKey: 'yandex:global' }
     expect(store.publishBatch.ready).toHaveLength(0)
@@ -396,8 +436,49 @@ describe('workflow store live API flow', () => {
     expect(yandex.state.precheck?.ok).toBe(true)
     ozon.state.precheck = { ...passed }
     ozon.draft.allowGtinExemption = true
+    expect(ozon.state.precheck?.ok).toBe(true)
+    expect(yandex.state.precheck?.ok).toBe(true)
+    ozon.draft.title = '修改共享标题'
     expect(ozon.state.precheck).toBeNull()
     expect(yandex.state.precheck).toBeNull()
+  })
+
+  it('Mercado 条码缺失原因编辑只撤销本市场结果与预览', () => {
+    const store = useWorkflowStore()
+    const draft = multiMarketCategoryDraft()
+    draft.targetSites[1] = { ...draft.targetSites[1], platform: 'mercadolibre', site: 'CBT' }
+    store.currentDraft = draft
+    const [yandex, mercado] = store.targetEditors
+    const passed = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-10-23' }
+    yandex.state.precheck = { ...passed }
+    mercado.state.precheck = { ...passed }
+    const preview = { platform: 'yandex' as const, site: 'global', targetKey: yandex.key, status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'keep-confirmation', summary: null, warnings: [] }
+    yandex.state.payloadPreview = preview
+    mercado.state.payloadPreview = { ...preview, platform: 'mercadolibre', targetKey: mercado.key }
+    mercado.draft.attributes.EMPTY_GTIN_REASON = 'The product is handmade'
+    expect(mercado.state.precheck).toBeNull()
+    expect(mercado.state.payloadPreview).toBeNull()
+    expect(yandex.state.precheck?.ok).toBe(true)
+    expect(yandex.state.payloadPreview?.validationDigest).toBe('keep-confirmation')
+  })
+
+  it('修改 Mercado 保修只撤销 Mercado 的预检与发布预览', () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    store.currentDraft.targetSites.push({ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' })
+    const [yandex, ozon, mercado] = store.targetEditors
+    const passed = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-10-23' }
+    for (const editor of store.targetEditors) {
+      editor.state.precheck = { ...passed }
+      editor.state.payloadPreview = { platform: editor.target.platform, site: editor.target.site, targetKey: editor.key, status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'confirmed', summary: null, warnings: [] }
+    }
+    mercado.draft.saleTerms = [{ id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' }]
+    expect(mercado.state.precheck).toBeNull()
+    expect(mercado.state.payloadPreview).toBeNull()
+    for (const editor of [yandex, ozon]) {
+      expect(editor.state.precheck?.ok).toBe(true)
+      expect(editor.state.payloadPreview?.validationDigest).toBe('confirmed')
+    }
   })
 
   it('各目标分别恢复已保存的预检结果', () => {
@@ -1724,7 +1805,6 @@ describe('workflow store live API flow', () => {
       site: 'CBT',
       sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
       listingCurrency: 'USD',
-      commissionPercent: 16,
       paymentFeePercent: 0,
       otherFeePercent: 0,
       pricingMode: 'margin',
@@ -1887,7 +1967,6 @@ describe('workflow store live API flow', () => {
       site: 'CBT',
       sitesToSell: [],
       listingCurrency: 'USD',
-      commissionPercent: 16,
       paymentFeePercent: 0,
       otherFeePercent: 0,
       pricingMode: 'margin',
@@ -1957,7 +2036,6 @@ describe('workflow store live API flow', () => {
       site: 'CBT',
       sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
       listingCurrency: 'USD',
-      commissionPercent: 16,
       paymentFeePercent: 0,
       otherFeePercent: 0,
       pricingMode: 'margin',
@@ -3057,6 +3135,41 @@ describe('workflow store live API flow', () => {
     expect(store.pricingInput.targets[0].manualPrice).toBeNull()
   })
 
+  it('选择模板后普通保存草稿，重新打开恢复模板名称和当前费用，无需先应用售价', async () => {
+    const store = useWorkflowStore()
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'template-draft'
+    draft.site = 'global'
+    draft.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'CNY' }]
+    store.acceptLoadedDraft(draftMutation(draft))
+    applyPricingTemplate(store.pricingInput, {
+      id: 'chosen', name: '日常费用', updated_at: '',
+      parameters: pricingTemplateParameters(store.pricingInput),
+    })
+    store.pricingInput.domesticFreightCny = 9
+    store.pricingInput.exchangeRateOverrides = { usd_cny_rate: 7.2 }
+    store.pricingInput.targets[0]!.targetMarginPercent = 35
+    // 本次核价范围不应导致其他市场的表单参数漏存。
+    store.pricingInput.selectedTargetKeys = []
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async saved => draftMutation(JSON.parse(JSON.stringify(saved))))
+
+    expect(await store.saveCurrentDraft()).toBe(true)
+    const saved = vi.mocked(workflowApi.saveDraft).mock.calls[0]![0]
+    expect(saved.pricing).toMatchObject({
+      template_source: { id: 'chosen', name: '日常费用' },
+      common: { domestic_freight_cny: 9, exchange_rate_overrides: { usd_cny_rate: 7.2 } },
+      targets: { 'yandex:global': { target_margin_percent: 35 } },
+    })
+    expect(workflowApi.priceDraft).not.toHaveBeenCalled()
+    store.acceptLoadedDraft(draftMutation(createEmptyDraftDetail('yandex')))
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(saved))
+    await store.loadDraftForPricing('template-draft')
+    expect(store.pricingInput.templateSource).toEqual({ id: 'chosen', name: '日常费用' })
+    expect(store.pricingInput.domesticFreightCny).toBe(9)
+    expect(store.pricingInput.targets[0]!.targetMarginPercent).toBe(35)
+    expect(store.pricingInput.exchangeRateOverrides).toEqual({ usd_cny_rate: 7.2 })
+  })
+
   it('重新加载 AI 修改的利润后，用最新参数和版本继续核价', async () => {
     const store = useWorkflowStore()
     store.platformOptions = [{ key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] }]
@@ -3066,8 +3179,9 @@ describe('workflow store live API flow', () => {
     saved.site = 'global'
     saved.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'CNY' }]
     saved.pricing = {
+      template_source: { id: 'used', name: '原核价模板' },
       common: { domestic_freight_cny: 20, other_cost_cny: 30 },
-      targets: { 'yandex:global': { target_margin_percent: 20, commission_percent: 20 } },
+      targets: { 'yandex:global': { target_margin_percent: 20, commission_percent: 20, shipping_selection: { warehouse_id: 31, route_id: 'chosen-route' } } },
     }
     saved.skuItems = [{ sku_id: 'sku-1', sku: 'SKU-1', stock: '5', selected: true, overrides: {}, attributes_by_target: {}, publications: {},
       pricing: { applied: true, targets: { 'yandex:global': { listing_currency: 'CNY', applied_price: { amount: '198.28', currency: 'CNY' } } } },
@@ -3078,15 +3192,20 @@ describe('workflow store live API flow', () => {
 
     expect(store.currentDraft.updatedAt).toBe('version-after-ai')
     expect(store.pricingInput.otherCostCny).toBe(30)
+    expect(store.pricingInput.templateSource).toEqual({ id: 'used', name: '原核价模板' })
     expect(store.pricingInput.targets[0]?.targetMarginPercent).toBe(20)
+    expect(store.pricingInput.targets[0]?.shippingSelection).toEqual({ warehouse_id: 31, route_id: 'chosen-route' })
     expect(store.pricingResult?.results[0]?.appliedPrice).toEqual({ amount: '198.28', currency: 'CNY' })
     vi.mocked(workflowApi.priceDraft).mockResolvedValue({ items: [], applied: false, pricingBySku: {}, errors: [], metrics: { batchId: 'batch', durationMs: 0, ozonDiscoveryMs: 0 } })
     await store.calculatePrice()
     const [draft, input] = vi.mocked(workflowApi.priceDraft).mock.calls[0]!
     expect(publishingApi.draftPricingPayload(draft, input)).toMatchObject({
       expected_updated_at: 'version-after-ai',
-      targets: { 'yandex:global': { target_margin_percent: 20 } },
+      template_source: { id: 'used', name: '原核价模板' },
+      targets: { 'yandex:global': { target_margin_percent: 20, shipping_selection: { warehouse_id: 31, route_id: 'chosen-route' } } },
     })
+    store.acceptLoadedDraft(draftMutation({ ...saved, draftId: 'other-draft', pricing: {} }))
+    expect(store.pricingInput.templateSource).toBeNull()
   })
 
   it('类目预检不会把公共核价表单尺寸写入草稿', async () => {

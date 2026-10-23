@@ -179,8 +179,6 @@ def sample_product() -> dict:
                 "site": "CBT",
                 "title": "Stage 3A backend test product",
                 "description": "Manual imported product for backend tests. Reusable. Easy to clean.",
-                "brand": "Generic",
-                "model": "T-3A",
                 "category_id": "CBT100",
                 "target_sites": [
                     {

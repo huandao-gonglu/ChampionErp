@@ -17,8 +17,10 @@ import logging
 import threading
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from erp_web import app_config as app_config_runtime
 from erp_web import marketplaces as publisher
@@ -28,6 +30,8 @@ from erp_web.marketplace_registry import MARKETPLACE_SPECS, marketplace_spec
 from erp_web.runtime_units.json_store import write_json
 from erp_web.schemas.ai_approval import AiToolApprovalMode, normalize_ai_tool_approval_mode
 from erp_web.schemas.image_hosting import ImageHostingError
+from erp_web.schemas.pricing_templates import SavePricingTemplate
+from erp_web.schemas.yandex_warehouses import SaveYandexWarehouses, YandexWarehouseCatalog, account_key
 from erp_web.services.image_hosting_config import config_version, require_ready
 from erp_web.services.image_hosting_credentials import merge_profile
 from erp_web.services.config_service import (
@@ -539,8 +543,8 @@ class ConfigStore:
         incoming = incoming if isinstance(incoming, dict) else {}
         allowed_keys = set(self.default_app_config()) | set(app_config_runtime.PRESERVED_APP_CONFIG_KEYS)
         for key, value in incoming.items():
-            if key == "system_settings":
-                # 系统偏好使用单独入口，避免授权页的旧快照覆盖最新设置。
+            if key in {"system_settings", "pricing_templates", "yandex_warehouses"}:
+                # 专用入口维护这些配置，避免授权页的旧快照覆盖最新设置。
                 continue
             if key not in allowed_keys:
                 logger.warning("merge_app_config_fields 忽略未知 appConfig 顶层键: %s", key)
@@ -585,6 +589,68 @@ class ConfigStore:
                     raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "托管配置 id 必须由后端生成")
                 profiles.append(merge_profile(saved.get(identity), item))
         return {"profiles": profiles, "default_profile_id": incoming.get("default_profile_id", current.get("default_profile_id", ""))}
+
+    def save_yandex_warehouse_catalog(self, value: dict) -> None:
+        catalog = YandexWarehouseCatalog.model_validate(value).model_dump()
+        with self._save_lock:
+            config = self.load_app_config()
+            config['yandex_warehouses']['catalog'] = catalog
+            self.save_app_config(config)
+
+    def save_yandex_warehouse_bindings(self, incoming: dict) -> None:
+        request = SaveYandexWarehouses.model_validate(incoming)
+        with self._save_lock:
+            store = self.load_store_config().get('yandex', {})
+            if any(str(store.get(key) or '') != getattr(request, key) for key in ('business_id', 'campaign_id')):
+                raise ValueError('Yandex 店铺已变化，请刷新后重新配置')
+            config = self.load_app_config()
+            accounts = config['yandex_warehouses']['accounts']
+            key = account_key(request.model_dump())
+            current = accounts.get(key, {'revision': 0})
+            if current['revision'] != request.revision:
+                raise ValueError('发布仓库物流配置已更新，请刷新后重试')
+            accounts[key] = {'revision': request.revision + 1, 'bindings': [item.model_dump() for item in request.bindings]}
+            self.save_app_config(config)
+
+    def mutate_pricing_template(self, operation: str, incoming: dict) -> dict:
+        """在同一配置短锁内修改模板，避免覆盖其他模板或应用设置。"""
+        with self._save_lock:
+            config = self.load_app_config()
+            settings = config["pricing_templates"]
+            identity = str(incoming.get("id") or "")
+            saved = next((item for item in settings["items"] if item["id"] == identity), None)
+            if operation == "save":
+                request = SavePricingTemplate.model_validate(incoming)
+                if identity and saved is None:
+                    raise ValueError("核价模板不存在，请刷新列表")
+                identity = identity or uuid4().hex
+                template = {"id": identity, "name": request.name,
+                            "parameters": request.parameters.model_dump(exclude_none=True),
+                            "updated_at": datetime.now(timezone.utc).isoformat()}
+                for target in template["parameters"]["targets"].values():
+                    if target["shipping_quote_mode"] == "auto":
+                        target["shipping_amount"] = 0
+                    if target["pricing_mode"] != "manual":
+                        target.pop("manual_price", None)
+                settings["items"] = [template if item["id"] == identity else item for item in settings["items"]] if saved else [*settings["items"], template]
+                if request.set_default:
+                    settings["default_template_id"] = identity
+                elif settings["default_template_id"] == identity:
+                    settings["default_template_id"] = ""
+            elif operation == "default":
+                if identity and saved is None:
+                    raise ValueError("核价模板不存在，请刷新列表")
+                settings["default_template_id"] = identity
+            elif operation == "delete":
+                if saved is None:
+                    raise ValueError("核价模板不存在，请刷新列表")
+                settings["items"] = [item for item in settings["items"] if item["id"] != identity]
+                if settings["default_template_id"] == identity:
+                    settings["default_template_id"] = ""
+            else:
+                raise ValueError("不支持的核价模板操作")
+            self.save_app_config(config)
+            return {**deepcopy(settings), "saved_id": identity}
 
     def save_image_hosting_profile(self, incoming: dict) -> str:
         with self._save_lock:

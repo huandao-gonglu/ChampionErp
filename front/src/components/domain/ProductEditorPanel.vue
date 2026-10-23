@@ -7,6 +7,7 @@ import type { Product } from '@/types/workflow'
 const props = defineProps<{
   product: Product
   loading: boolean
+  focusSkuId?: string
 }>()
 
 const emit = defineEmits<{
@@ -21,6 +22,7 @@ function listModel(getter: () => string[], setter: (value: string[]) => void) {
   })
 }
 
+const legacyCost = computed(() => String((props.product.raw.source as { legacy_product_cost_cny?: string } | undefined)?.legacy_product_cost_cny ?? ''))
 const packageIncludesText = listModel(() => props.product.packageIncludes, (value) => { props.product.packageIncludes = value })
 const materialsText = listModel(() => props.product.materials, (value) => { props.product.materials = value })
 const sourceAttributesValid = ref(true)
@@ -51,14 +53,15 @@ watch(() => props.product.productId, () => {
       <label class="block"><span class="text-xs font-semibold text-slate-500">品牌</span><input v-model="props.product.brand" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">来源平台</span><input v-model="props.product.source.sourcePlatform" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">品类</span><input v-model="props.product.category" class="input mt-1" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">长 cm</span><input v-model="props.product.source.dimensions.lengthCm" class="input mt-1" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">宽 cm</span><input v-model="props.product.source.dimensions.widthCm" class="input mt-1" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">高 cm</span><input v-model="props.product.source.dimensions.heightCm" class="input mt-1" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">重量 kg</span><input v-model="props.product.source.weightKg" class="input mt-1" /></label>
+      <label class="block"><span class="text-xs font-semibold text-slate-500">来源尺寸长 cm（参考）</span><input v-model="props.product.source.dimensions.lengthCm" class="input mt-1" /></label>
+      <label class="block"><span class="text-xs font-semibold text-slate-500">来源尺寸宽 cm（参考）</span><input v-model="props.product.source.dimensions.widthCm" class="input mt-1" /></label>
+      <label class="block"><span class="text-xs font-semibold text-slate-500">来源尺寸高 cm（参考）</span><input v-model="props.product.source.dimensions.heightCm" class="input mt-1" /></label>
+      <label class="block"><span class="text-xs font-semibold text-slate-500">来源重量 kg（参考）</span><input v-model="props.product.source.weightKg" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">Model</span><input v-model="props.product.model" class="input mt-1" /></label>
     </div>
 
-    <ProductSkuEditor v-model="props.product.skuItems" :images="props.product.source.imagePool" :disabled="props.loading" />
+    <p v-if="legacyCost" class="muted mt-4">旧记录中的商品级采购成本为 {{ legacyCost }} 元，仅供核对。确认适用规格后，可用下方批量设置填写 SKU 成本。</p>
+    <ProductSkuEditor v-model="props.product.skuItems" :focus-sku-id="props.focusSkuId" :images="props.product.source.imagePool" :disabled="props.loading" />
 
     <ProductAttributesEditor
       :key="`${props.product.productId}:profile`"

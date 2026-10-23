@@ -3,7 +3,7 @@ import { createWorkflowCategoryActions, type WorkflowCategoryActionsPort } from 
 import { createWorkflowPublishPrecheckActions, type WorkflowPublishPrecheckActionsPort } from '../actions/publishPrecheck'
 import { normalizePublishPrecheck } from '@/api/workflow/normalizers'
 import type { WorkflowRuntime } from './runtime'
-import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftPublishOperation, MarketplaceTargetSite, PayloadPreviewState, PublishPrecheck, UnknownRecord } from '@/types/workflow'
+import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftPublishOperation, MarketplaceTargetSite, PayloadPreviewState, PublishPreparationState, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const listingDefaults = {
   categoryId: '', descriptionCategoryId: '', categoryPath: '', attributes: {},
@@ -32,6 +32,7 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
       categoryPrecheck: null as CategoryPrecheckResult | null,
       precheck: null as PublishPrecheck | null, precheckResults: {} as UnknownRecord,
       payloadPreview: null as PayloadPreviewState | null,
+      preparationProgress: null as PublishPreparationState | null,
       publishFailure: null as { operation: DraftPublishOperation; message: string } | null,
       queuedPublishJobId: '',
       loading: false, error: '', busy: false,
@@ -98,6 +99,10 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
       ...runtime,
       ...toRefs(state),
       isCurrent: attached,
+      onPreparationProgress: (progress) => {
+        if (!attached()) return
+        state.preparationProgress = progress ? { ...state.preparationProgress, ...progress } : null
+      },
       currentDraft: draft,
       currentDraftProductContext: computed({
         get: () => runtime.currentDraftProductContext.value,
@@ -151,9 +156,10 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
       const value = draft.value
       return JSON.stringify({
         title: value.title, globalTitle: value.globalTitle, description: value.description,
-        brand: value.brand, model: value.model, language: value.language,
+        language: value.language,
         skuItems: value.skuItems, grouping: value.grouping, images: value.images, pricing: value.pricing,
-        saleTerms: value.saleTerms, allowGtinExemption: value.allowGtinExemption,
+        saleTerms: identity.platform === 'mercadolibre' ? value.saleTerms : undefined,
+        allowGtinExemption: identity.platform === 'mercadolibre' ? value.allowGtinExemption : undefined,
         categoryId: value.categoryId, descriptionCategoryId: value.descriptionCategoryId,
         categoryPath: value.categoryPath, attributes: value.attributes,
         listingCurrency: target.value.listingCurrency, currencyFingerprint: target.value.currencyFingerprint,
@@ -162,6 +168,7 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
     }, () => {
       state.precheck = null
       state.payloadPreview = null
+      if (!state.busy) state.preparationProgress = null
     }, { flush: 'sync' })
     async function execute<T>(operation: () => T | Promise<T>) {
       if (!attached()) return

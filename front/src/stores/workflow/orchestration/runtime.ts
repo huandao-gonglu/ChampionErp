@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
+import { draftWithPricingInput } from '@/api/workflow/publishing'
 import {
   diagnosticsToCollectDiagnostics,
   normalizePublishPrecheck,
@@ -647,10 +648,8 @@ export function createWorkflowRuntime() {
     return option?.sites.find((item) => item.code.toLowerCase() === String(site || '').toLowerCase()) || option?.sites[0]
   }
 
-  function pricingTargetDefaults(platform: Marketplace) {
-    return platform === 'yandex' || platform === 'ozon'
-      ? { commissionPercent: 20, paymentFeePercent: 0, targetMarginPercent: 30 }
-      : { commissionPercent: 16, paymentFeePercent: 0, targetMarginPercent: 30 }
+  function pricingTargetDefaults() {
+    return { paymentFeePercent: 0, targetMarginPercent: 30 }
   }
 
   function pricingTargetsFromDraft(draftDetail: DraftDetail): MarketplaceTargetSite[] {
@@ -848,7 +847,7 @@ export function createWorkflowRuntime() {
     const site = platformSite(target.platform, target.site)
     const key = pricingTargetKey(target.platform, target.site)
     const saved = pricingTargetRecord(pricing, key)
-    const defaults = pricingTargetDefaults(target.platform)
+    const defaults = pricingTargetDefaults()
     const legacyShippingUsd = recordNumber(saved, ['shippingCostUsd', 'shipping_cost_usd'], 0)
     const legacyShippingCny = recordNumber(saved, ['shippingCostCny', 'shipping_cost_cny'], 0)
     const savedShippingCurrency = recordString(saved, ['shippingCurrency', 'shipping_currency']).toUpperCase()
@@ -856,6 +855,7 @@ export function createWorkflowRuntime() {
       ? savedShippingCurrency
       : legacyShippingUsd > 0 || target.platform === 'mercadolibre' ? 'USD' : 'CNY'
     const savedShippingMode = recordString(saved, ['shippingQuoteMode', 'shipping_quote_mode'])
+    const shippingSelection = isRecord(saved.shipping_selection) ? saved.shipping_selection : null
     // 发布币种只来自店铺配置快照；站点 option 不再提供 fallback。
     const listingCurrency = target.listingCurrency || ''
     const savedListingCurrency = recordString(saved, ['listing_currency']).toUpperCase()
@@ -875,14 +875,17 @@ export function createWorkflowRuntime() {
       sitesToSell: (target.sitesToSell || []).map((item) => ({ ...item })),
       categoryId: target.categoryId,
       currencyFingerprint: target.currencyFingerprint,
-      commissionPercent: recordNumber(saved, ['commissionPercent', 'commission_percent'], defaults.commissionPercent),
       paymentFeePercent: recordNumber(saved, ['paymentFeePercent', 'payment_fee_percent'], defaults.paymentFeePercent),
       otherFeePercent: recordNumber(saved, ['otherFeePercent', 'other_fee_percent'], 0),
+      returnRatePercent: recordNumber(saved, ['return_rate_percent'], 0),
+      returnDisposition: saved.return_disposition === 'resell' ? 'resell' : 'discard',
+      returnHandlingCostCny: recordNumber(saved, ['return_handling_cost_cny'], 0),
       pricingMode,
       targetMarginPercent: recordNumber(saved, ['targetMarginPercent', 'target_margin_percent'], defaults.targetMarginPercent),
       markupPercent: recordNumber(saved, ['markupPercent', 'markup_percent'], 30),
       shippingQuoteMode: (savedShippingMode || (legacyShippingUsd > 0 || legacyShippingCny > 0 ? 'manual' : 'auto')) as PricingTargetInput['shippingQuoteMode'],
       shippingCurrency: shippingCurrency as PricingTargetInput['shippingCurrency'],
+      shippingSelection: shippingSelection ? { warehouse_id: recordNumber(shippingSelection, ['warehouse_id']), route_id: recordString(shippingSelection, ['route_id']) } : null,
       shippingAmount: recordNumber(saved, ['shippingAmount', 'shipping_amount'], shippingCurrency === 'USD' ? legacyShippingUsd : legacyShippingCny),
       manualPrice: reusableManualPrice,
     }
@@ -935,7 +938,7 @@ export function createWorkflowRuntime() {
         netRevenueCny: recordNumber(saved, ['net_revenue_cny'], 0),
         profitCny: recordNumber(saved, ['profit_cny'], 0),
         marginPercent: recordNumber(saved, ['margin_percent'], 0),
-        commissionPercent: recordNumber(saved, ['commission_percent'], target.commissionPercent),
+        commissionPercent: recordNumber(saved, ['commission_percent'], 0),
         paymentFeePercent: recordNumber(saved, ['payment_fee_percent'], target.paymentFeePercent),
         otherFeePercent: recordNumber(saved, ['other_fee_percent'], target.otherFeePercent),
         pricingMode: recordString(saved, ['pricing_mode'], target.pricingMode) as PricingTargetResult['pricingMode'],
@@ -1120,22 +1123,25 @@ export function createWorkflowRuntime() {
     const draftDetail = currentDraft.value
     const hasDraft = Boolean(draftDetail.draftId)
     const pricing = hasDraft && isRecord(draftDetail.pricing) ? draftDetail.pricing : {}
+    const source = isRecord(pricing.template_source) ? pricing.template_source : {}
+    pricingInput.value.templateSource = typeof source.id === 'string' && source.id && typeof source.name === 'string' && source.name
+      ? { id: source.id, name: source.name } : null
     const defaults = createDefaultPricingInput()
     const common = isRecord(pricing.common) ? pricing.common as UnknownRecord : {}
-    const context = currentDraftProductContext.value
-    pricingInput.value.purchaseCostCny = recordNumber(common, ['purchaseCostCny', 'purchase_cost_cny', 'purchase_cost'], parseNumber(context.cost || context.sourcePrice || product.value.cost || product.value.source.price || pricingInput.value.purchaseCostCny))
     pricingInput.value.domesticFreightCny = recordNumber(common, ['domesticFreightCny', 'domestic_freight_cny', 'domestic_freight'], defaults.domesticFreightCny)
     pricingInput.value.packagingCostCny = recordNumber(common, ['packagingCostCny', 'packaging_cost_cny', 'packaging_cost'], defaults.packagingCostCny)
     pricingInput.value.otherCostCny = recordNumber(common, ['otherCostCny', 'other_cost_cny', 'other_cost'], defaults.otherCostCny)
-    pricingInput.value.battery = common.battery === true
-    pricingInput.value.liquid = common.liquid === true
     pricingInput.value.usdCnyRate = recordNumber(common, ['usdCnyRate', 'usd_cny_rate'], defaults.usdCnyRate)
     pricingInput.value.mxnUsdRate = recordNumber(common, ['mxnUsdRate', 'mxn_usd_rate'], defaults.mxnUsdRate)
     pricingInput.value.rubCnyRate = recordNumber(common, ['rubCnyRate', 'rub_cny_rate'], defaults.rubCnyRate)
     pricingInput.value.exchangeRateMode = recordString(common, ['exchange_rate_mode'], 'live') === 'manual' ? 'manual' : 'live'
+    pricingInput.value.exchangeRateOverrides = Object.fromEntries(Object.entries(isRecord(common.exchange_rate_overrides) ? common.exchange_rate_overrides : {})
+      .filter(([key, value]) => ['usd_cny_rate', 'mxn_usd_rate', 'rub_cny_rate'].includes(key) && Number(value) > 0)
+      .map(([key, value]) => [key, Number(value)]))
     pricingInput.value.platform = hasDraft ? draftDetail.platform : activeMarketplace.value
     pricingInput.value.site = hasDraft ? draftDetail.site : activeMarketplaceSite()
     pricingInput.value.targets = hasDraft ? pricingTargetsFromDraft(draftDetail).map((target) => pricingTargetInput(target, pricing)) : []
+    pricingInput.value.selectedTargetKeys = undefined
     pricingResult.value = hasDraft ? pricingResultFromDraft(draftDetail.skuItems.find(row => row.selected)?.pricing || {}, pricingInput.value.targets) : null
   }
 
@@ -1150,7 +1156,7 @@ export function createWorkflowRuntime() {
     syncActivePublishTarget()
     const target = selectedPublishTarget.value
     const draftId = currentDraft.value.draftId
-    const result = await saveDraftApi(currentDraft.value)
+    const result = await saveDraftApi(draftWithPricingInput(currentDraft.value, pricingInput.value))
     if (currentDraft.value.draftId !== draftId) {
       throw new Error('草稿已改变，已忽略上一份草稿的保存响应。')
     }

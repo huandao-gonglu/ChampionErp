@@ -95,16 +95,16 @@ describe('草稿 SKU 选品', () => {
     expect(wrapper.text()).toContain('已停用')
   })
 
-  it('草稿修改成本不改商品事实，并立即使已应用售价失效', async () => {
+  it('草稿只读显示成本并定位商品 SKU 编辑', async () => {
     const draft = reactive(createEmptyDraftDetail('ozon'))
     draft.draftId = 'draft-two'
     draft.skuItems = [{ sku_id: 'red-s', sku: 'SELL-RED', selected: true, stock: '1', overrides: {}, attributes_by_target: {}, pricing: { applied: true }, publications: {} }]
     const wrapper = mount(DraftSkuPanel, { props: { draft, skus: facts.slice(0, 1), loading: false } })
     await wrapper.findAll('button').find(button => button.text() === '属性 / 详情')!.trigger('click')
-    const cost = wrapper.findAll('label').find(label => label.text().startsWith('采购成本 CNY'))!.get('input')
-    await cost.setValue('18')
-    expect(draft.skuItems[0]?.overrides.cost_cny).toBe('18')
-    expect(draft.skuItems[0]?.pricing.applied).toBe(false)
+    await wrapper.findAll('button').find(button => button.text().includes('去商品修改'))!.trigger('click')
+    expect(wrapper.emitted('editProduct')).toEqual([['red-s']])
+    expect(draft.skuItems[0]?.overrides).toEqual({})
+    expect(draft.skuItems[0]?.pricing.applied).toBe(true)
     expect(facts[0]?.cost_cny).toBe('20')
   })
 

@@ -36,6 +36,7 @@ import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
+import { loadProduct as loadProductForEditor } from '@/api/workflow/catalog'
 import { useAiDraftSync } from '@/composables/useAiDraftSync'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
@@ -110,15 +111,30 @@ const { copied: productIdCopied, copy: copyToClipboard } = useClipboard()
 const activeNav = ref('dashboard')
 let initialStateLoaded = false
 const editorOpen = ref(false)
+const focusProductSku = ref('')
 const draftWorkspaceOpen = ref(false)
+watch(draftWorkspaceOpen, (open, _previous, onCleanup) => {
+  if (!open) return
+  const previousOverflow = document.body.style.overflow
+  document.body.style.overflow = 'hidden'
+  onCleanup(() => { document.body.style.overflow = previousOverflow })
+})
 const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
 const draftWorkspaceItem = ref<DraftIndexItem | null>(null)
 const draftSync = useAiDraftSync({
   draft: currentDraft, input: pricingInput, loading,
   accept: result => store.acceptLoadedDraft(result),
+  acceptProductContext: result => {
+    if (JSON.stringify(currentDraftProductContext.value.skuItems) !== JSON.stringify(result.productContext.skuItems)
+      || currentDraftProductContext.value.brand !== result.productContext.brand || currentDraftProductContext.value.model !== result.productContext.model) {
+      currentDraftProductContext.value = result.productContext
+      pricingResult.value = null
+      for (const row of currentDraft.value.skuItems) row.pricing.applied = false
+    }
+  },
   clearError: () => activityStore.setError(''),
 })
-const draftSyncMessage = computed(() => draftSync.message.value || error.value)
+const draftSyncMessage = draftSync.message
 const draftRefreshing = draftSync.refreshing
 
 async function reloadDraft() {
@@ -168,10 +184,34 @@ function syncPricingPackageDimension(field: PackageDimensionField, value: string
 }
 
 async function openProductEditor(item?: ProductIndexItem) {
+  focusProductSku.value = ''
   if (item) await store.loadProduct(item)
   editorMode.value = 'text'
   imageEditorTitle.value = '商品库图片编辑'
   editorOpen.value = true
+}
+
+async function editDraftProduct(skuId: string) {
+  if (loading.value || !currentDraft.value.productId) return
+  const draftId = currentDraft.value.draftId
+  loading.value = true
+  try {
+    const result = await loadProductForEditor(currentDraft.value.productId)
+    if (currentDraft.value.draftId !== draftId) return
+    product.value = result.product
+    focusProductSku.value = skuId
+    editorMode.value = 'text'
+    editorOpen.value = true
+  } catch (cause) { activityStore.setError(cause instanceof Error ? cause.message : '读取商品资料失败') }
+  finally { loading.value = false }
+}
+async function saveProductFacts() {
+  const input = structuredClone(JSON.parse(JSON.stringify(pricingInput.value)))
+  const saved = await store.saveCurrentProduct()
+  if (draftWorkspaceOpen.value) {
+    pricingInput.value = input
+    if (saved) await draftSync.refresh()
+  }
 }
 
 async function openProductImageEditor(item?: ProductIndexItem) {
@@ -521,7 +561,7 @@ watch(
     </div>
     <div
       v-if="editorOpen"
-      class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm"
+      class="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm"
       @pointerdown="recordProductEditorBackdropPointer"
       @pointerup="closeProductEditorFromBackdrop"
       @pointercancel="resetProductEditorBackdropPointer"
@@ -567,7 +607,8 @@ watch(
           v-if="editorMode === 'text'"
           :product="product"
           :loading="loading"
-          @save="store.saveCurrentProduct"
+          :focus-sku-id="focusProductSku"
+          @save="saveProductFacts"
           @assign-upc="store.assignUpc"
         />
         <ProductImageEditorPanel
@@ -590,17 +631,18 @@ watch(
     </div>
     <div
       v-if="draftWorkspaceOpen"
-      class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm"
+      class="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-slate-950/50 p-2 backdrop-blur-sm sm:p-4"
       @pointerdown="recordDraftWorkspaceBackdropPointer"
       @pointerup="closeDraftWorkspaceFromBackdrop"
       @pointercancel="resetDraftWorkspaceBackdropPointer"
     >
-      <div class="w-full max-w-[96rem] rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
+      <div role="dialog" aria-modal="true" :aria-label="draftWorkspaceTitle" class="h-full min-h-0 w-full max-w-[96rem] overflow-hidden rounded-2xl bg-white p-3 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-5">
         <DraftWorkspacePanel
           :active-tab="draftWorkspaceTab"
           :draft-title="draftWorkspaceTitle"
           :draft-id="currentDraft.draftId"
           :sync-message="draftSyncMessage"
+          :error-message="['pricing', 'images'].includes(draftWorkspaceTab) ? '' : error"
           :refreshing="draftRefreshing"
           :reload-disabled="loading"
           @reload="reloadDraft"
@@ -628,7 +670,7 @@ watch(
           </template>
 
           <template #skus>
-            <DraftSkuPanel :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="loading">
+            <DraftSkuPanel :categories="Object.fromEntries(store.targetEditors.map(editor => [editor.key, editor.state.category]))" :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="loading" @edit-product="editDraftProduct">
               <template #attributes="{ row, sku, targetKey }">
                 <DraftSkuAttributesEditor :sku-id="row.sku_id" :sku="sku" :target-key="targetKey" />
               </template>
@@ -658,6 +700,7 @@ watch(
           <template #pricing>
             <div class="grid min-w-0 gap-6">
               <PricingPanel
+                :key="currentDraft.draftId"
                 :sku-items="currentDraft.skuItems"
                 selection-locked
                 :input="pricingInput"
@@ -668,6 +711,10 @@ watch(
                 :product-context="currentDraftProductContext"
                 :platform-options="platformOptions"
                 :loading="loading"
+                :store-config="storeConfig"
+                :error="error"
+                :refresh-product="() => draftSync.refresh()"
+                @edit-product="editDraftProduct"
                 @calculate="store.calculatePrice"
                 @apply="store.applyPrice"
               />

@@ -4,7 +4,7 @@ from typing import Annotated, Any
 
 from erp_web.runtime_units.category_attribute_updates import AttributeUpdateValidation
 from erp_web.runtime_units.draft_publish_context import draft_for_publish_target, merge_target_listing_into_draft
-from erp_web.runtime_units.product_attribute_patch import apply_attribute_patch, shared_attribute_fields
+from erp_web.runtime_units.product_attribute_patch import apply_attribute_patch
 from erp_web.runtime_units.product_capabilities import (
     ProductCapabilityScope, ProductCapabilityStore, _assert_shared_draft_mutable,
     _assert_target_mutable, _load_draft, _raise_store_error, _select_target, _text,
@@ -28,7 +28,7 @@ def _check_context(request: DraftChangesApplyRequest, draft: dict[str, Any], pro
     for change in request.changes:
         if change.sku_id and (change.sku_id not in rows or change.sku_id not in active):
             raise BusinessCapabilityError("SKU_OUTSIDE_DRAFT", "本组包含不属于当前草稿的已选启用 SKU，未保存。")
-        if change.package_dimensions is not None or change.stock is not None:
+        if change.stock is not None:
             _assert_shared_draft_mutable(draft)
             if rows[change.sku_id].get("publications"):
                 raise BusinessCapabilityError("DRAFT_ALREADY_PUBLISHED", "SKU 已有发布记录，不能修改共享包装或库存。")
@@ -64,13 +64,6 @@ def apply_draft_changes(request: DraftChangesApplyRequest, *, product_store: Pro
             if change.attributes:
                 existing = row.get("attributes_by_target", {}).get(key, {}) if row is not None else projection.get("attributes") or {}
                 attributes, changed_keys = apply_attribute_patch(existing, change.attributes)
-                fields = shared_attribute_fields(platform, change.attributes, sku_id=change.sku_id)
-                if any(_text(draft.get(field)) != value for field, value in fields.items()):
-                    _assert_shared_draft_mutable(draft)
-                    for attr_id, field in (("BRAND", "brand"), ("MODEL", "model")):
-                        if field in fields and _text(draft.get(field)) != fields[field] and attr_id not in changed_keys:
-                            changed_keys.append(attr_id)
-                    draft.update(fields)
                 if changed_keys:
                     if row is not None:
                         row.setdefault("attributes_by_target", {})[key] = attributes
@@ -78,19 +71,11 @@ def apply_draft_changes(request: DraftChangesApplyRequest, *, product_store: Pro
                         # merge 会返回新对象；后续 SKU 修改必须使用新对象中的行。
                         draft = merge_target_listing_into_draft(draft, target, {"attributes": attributes})
                         rows = {item["sku_id"]: item for item in draft.get("sku_items", []) if item.get("selected")}
-            package_patch = change.package_dimensions.model_dump(exclude_unset=True) if change.package_dimensions else {}
-            package_changed = False
-            if package_patch:
-                dimensions = row.setdefault("overrides", {}).setdefault("package_dimensions", {})
-                for field, value in package_patch.items():
-                    text = str(value)
-                    if dimensions.get(field) != text:
-                        dimensions[field], package_changed = text, True
             stock_changed = change.stock is not None and row.get("stock") != str(change.stock)
             if stock_changed:
                 row["stock"] = str(change.stock)
             receipts.append(DraftChangeResult(sku_id=change.sku_id,
-                changed=bool(changed_keys or package_changed or stock_changed), changed_keys=changed_keys,
+                changed=bool(changed_keys or stock_changed), changed_keys=changed_keys,
                 draft_fields=fields))
         changed_count = sum(item.changed for item in receipts)
         saved = draft
@@ -105,11 +90,9 @@ def apply_draft_changes(request: DraftChangesApplyRequest, *, product_store: Pro
         for change, receipt in zip(request.changes, receipts, strict=True):
             row = saved_rows.get(change.sku_id, {})
             attributes = row.get("attributes_by_target", {}).get(key, {}) if change.sku_id else saved_common
-            dimensions = row.get("overrides", {}).get("package_dimensions", {})
             # 只返回本次字段的实际值，避免把整份草稿再次搬进模型或覆盖表单其他编辑。
             actual.append(receipt.model_copy(update={
                 "attributes": {field: attributes[field] for field in change.attributes if field in attributes},
-                "package_dimensions": {field: _text(dimensions.get(field)) for field in change.package_dimensions.model_fields_set} if change.package_dimensions else {},
                 "stock": _text(row.get("stock")) if change.stock is not None else None,
                 "draft_fields": {field: _text(saved.get(field)) for field in receipt.draft_fields},
             }))
@@ -120,7 +103,7 @@ def apply_draft_changes(request: DraftChangesApplyRequest, *, product_store: Pro
 
 @ai_tool(
     name="draft_changes_apply",
-    description="一次提交同一草稿的多项局部修改：公共/SKU 类目属性、各 SKU 包装尺寸或库存，可混合。先用 draft_attributes_read(scope=sku) 取得事实和 updated_at；涉及属性再查询相应平台定义。用 Python 根据用户规则逐条计算期望值，比较全部已填/未填行，仅收集差异到 changes，使用读取时的 expected_updated_at 一次提交。不得逐 SKU 循环调用单项保存或先试写。全部校验通过后只保存草稿一次；任一错误或版本冲突则整组未保存。结果含每项实际已存字段与新版本，可直接按原规则核对，通常不需重复读取。包装 cm/kg，库存非负整数；不推断值，不修改其他字段。",
+    description="一次提交同一草稿的多项局部修改：公共/SKU 类目属性、各 SKU 可售库存，可混合。先用 draft_attributes_read(scope=sku) 取得事实和 updated_at；涉及属性再查询相应平台定义。用 Python 根据用户规则逐条计算期望值，比较全部已填/未填行，仅收集差异到 changes，使用读取时的 expected_updated_at 一次提交。不得逐 SKU 循环调用单项保存或先试写。全部校验通过后只保存草稿一次；任一错误或版本冲突则整组未保存。结果含每项实际已存字段与新版本，可直接按原规则核对，通常不需重复读取。来源成本、包装、条码和运输属性请用 product_sku_facts_update 修改商品；库存非负整数；不推断值，不修改其他字段。",
     permission="draft.write", side_effect="write", approval_required=False,
     idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual", version="1",
 )

@@ -20,6 +20,7 @@ export function useAiDraftSync(options: {
   draft: Ref<DraftDetail>
   input: Ref<PricingInput>
   loading: Ref<boolean>
+  acceptProductContext?: (result: DraftMutationResponse) => void
   accept: (result: DraftMutationResponse) => void
   clearError: () => void
 }) {
@@ -67,7 +68,36 @@ export function useAiDraftSync(options: {
       // 换了草稿、保存了新版本或销毁页面后，旧读取响应不得覆盖当前状态。
       if (disposed || token !== generation || draft.value !== current || draft.value.updatedAt !== version) return false
       if (loading.value) { queued = true; return false }
+      options.acceptProductContext?.(result)
       if (!discardEdits && result.draft.updatedAt === version) { pending.value = false; return true }
+      // 商品资料变化只更新版本、校验和报价状态，保留未保存的草稿文字与费用。
+      if (!discardEdits && dirty.value && signature(toBackendDraftDetail(result.draft)) === baseline.value
+        && JSON.stringify(result.draft.pricing) === JSON.stringify(current.pricing)) {
+        current.updatedAt = result.draft.updatedAt
+        current.lastPrecheck = result.draft.lastPrecheck
+        current.lastPrecheckTarget = result.draft.lastPrecheckTarget
+        current.validationErrors = result.draft.validationErrors
+        current.publishStatus = result.draft.publishStatus
+        current.status = result.draft.status
+        for (const target of current.targetSites) {
+          const latest = result.draft.targetSites.find(item => item.platform === target.platform && item.site === target.site)
+          if (latest) {
+            target.lastPrecheck = latest.lastPrecheck
+            target.lastPrecheckTarget = latest.lastPrecheckTarget
+            target.categoryPrecheck = latest.categoryPrecheck
+            target.validationErrors = latest.validationErrors
+            target.publishStatus = latest.publishStatus
+            target.status = latest.status
+            target.lastPublishTask = latest.lastPublishTask
+          }
+        }
+        for (const row of current.skuItems) {
+          const latest = result.draft.skuItems.find(item => item.sku_id === row.sku_id)
+          if (latest) { row.pricing = latest.pricing; row.publications = latest.publications }
+        }
+        pending.value = false
+        return true
+      }
       if ((!discardEdits && dirty.value) || (discardEdits && [draftSignature(), pricingSignature()].join('\n') !== requestedEdits)) {
         pending.value = true
         return false

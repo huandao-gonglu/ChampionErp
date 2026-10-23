@@ -114,6 +114,11 @@ class FulfillmentStore:
 
     def summaries(self, orders):
         """仅批量读取当前列表内的履约摘要，不创建履约记录。"""
+        return {key: FulfillmentSummary.model_validate(value).model_dump(mode="json")
+                for key, value in self.query_records(orders).items()}
+
+    def query_records(self, orders):
+        """领域内的批量只读事实，包含本地备注和历史报单；不对外返回内部字段。"""
         if not orders:
             return {}
         keys = {(o.platform, o.account_id, o.order_id): o.id for o in orders}
@@ -138,7 +143,7 @@ class FulfillmentStore:
             summary = {**value, "section_name": section.get("section_name", ""), "warehouse_name": warehouse.get("name", ""),
                        "registered_packages": list(packages.values()), "consolidation_service_id": plan.get("consolidation_service_id"),
                        "selected_services": [s for s in value.get("selected_services", []) if s["id"] in plan.get("service_ids", [])]}
-            summaries[keys[(row["platform"], row["account_id"], row["platform_order_id"])]] = FulfillmentSummary.model_validate(summary).model_dump(mode="json")
+            summaries[keys[(row["platform"], row["account_id"], row["platform_order_id"])]] = summary
         return summaries
 
     def change(self, order_id, revision, changes, *, allow_busy=False, guard=None, restart_identity=None):

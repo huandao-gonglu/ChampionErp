@@ -20,7 +20,7 @@ from erp_web.product_model.sku_model import editable_selected_skus, effective_sk
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category import category_attribute_value_is_valid
 from erp_web.runtime_units.category_attribute_updates import validate_attribute_updates
-from erp_web.runtime_units.product_attribute_patch import apply_attribute_patch, shared_attribute_fields
+from erp_web.runtime_units.product_attribute_patch import apply_attribute_patch
 from erp_web.schemas.product_capabilities import (
     DraftSkuAttributesUpdateRequest,
     DraftAttributesReadRequest,
@@ -336,7 +336,7 @@ def _draft_facts(
     )
 
 
-def _product_facts(product: dict[str, Any]) -> ProductFacts:
+def _product_facts(product: dict[str, Any], *, include_skus: bool = False) -> ProductFacts:
     product_id = _text(product.get("product_id"))
     if not product_id:
         raise BusinessCapabilityError(
@@ -358,7 +358,8 @@ def _product_facts(product: dict[str, Any]) -> ProductFacts:
         model=_text(product.get("model") or source.get("model")),
         sku=_text(product.get("sku")),
         stock=_text(product.get("stock")),
-        cost=_text(product.get("cost") or product.get("source_price_cny_for_cost")),
+        updated_at=_text(product.get("updated_at")),
+        sku_items=[{key: deepcopy(value) for key, value in row.items() if key != "source_snapshot"} for row in product.get("sku_items", [])] if include_skus else [],
         materials=_text_list(
             product.get("materials") or source.get("material") or []
         ),
@@ -414,7 +415,7 @@ def read_product(
             candidate = drafts.get(request.platform.lower())
             draft = candidate if isinstance(candidate, dict) else None
     return ProductReadResult(
-        product=_product_facts(product),
+        product=_product_facts(product, include_skus=True),
         draft=(
             _draft_facts(
                 draft,
@@ -442,7 +443,6 @@ def update_product_attributes(
         raise BusinessCapabilityError("CATEGORY_CHANGED", "草稿类目已变化，请读取当前类目后重新查询属性。")
     platform, site = _text(target.get("platform")), _text(target.get("site"))
     sku_id = request.sku_id if isinstance(request, DraftSkuAttributesUpdateRequest) else ""
-    before_root_fields = {field: _text(draft.get(field)) for field in ("brand", "model")}
     before_attributes = (
         next((row for row in draft.get("sku_items", []) if row.get("sku_id") == sku_id), {})
         .get("attributes_by_target", {}).get(f"{platform}:{site}".lower(), {})
@@ -474,17 +474,7 @@ def update_product_attributes(
         if any(before_attributes.get(key) != existing.get(key) for key in request.updates):
             raise BusinessCapabilityError("DRAFT_ATTRIBUTES_CHANGED", "校验期间待填写属性已被其他操作修改，请重新读取后决定；本次未写入。")
         attributes, changed_keys = apply_attribute_patch(existing, request.updates)
-        draft_fields = shared_attribute_fields(platform, request.updates, sku_id=sku_id)
-        for attr_id, field in (("BRAND", "brand"), ("MODEL", "model")):
-            if field not in draft_fields:
-                continue
-            if before_root_fields[field] != _text(draft.get(field)):
-                raise BusinessCapabilityError("DRAFT_ATTRIBUTES_CHANGED", f"校验期间草稿 {field} 已变化，本次未写入。")
-            if _text(draft.get(field)) != draft_fields[field] and attr_id not in changed_keys:
-                changed_keys.append(attr_id)
-        if any(_text(draft.get(field)) != value for field, value in draft_fields.items()):
-            _assert_shared_draft_mutable(draft)
-            draft.update(draft_fields)
+        draft_fields = {}
         saved = draft
         if changed_keys:
             if sku_id:
@@ -709,7 +699,7 @@ def draft_attributes_read(
                           "options": deepcopy(fact.get("options") or {}),
                           "package_dimensions": deepcopy(fact.get("package_dimensions") or {}),
                           "cost_cny": _text(fact.get("cost_cny")),
-                          "cost_source": "draft_override" if "cost_cny" in (row.get("overrides") or {}) else "product_sku",
+                          "cost_source": "product_sku",
                           "stock": _text(row.get("stock")),
                           "attributes": deepcopy(row.get("attributes_by_target", {}).get(key, {}))})
     end = request.offset + len(items)
@@ -741,7 +731,7 @@ def product_attributes_update(
 
 @ai_tool(
     name="draft_sku_attributes_update",
-    description="保存草稿指定目标、指定 SKU 的平台类目差异属性；包装长宽高和重量使用 draft_sku_package_update，不得作为此工具的 updates 属性。先用 draft_attributes_read(scope=sku) 读取该 SKU 事实和已填值，再查询 scope=sku 的平台定义与枚举并由主对话决定填写值。不修改公共属性或其他 SKU，不调用模型。单个 SKU 修改用本工具；多 SKU 修改应使用 draft_changes_apply 一次提交全部差异，避免逐项保存整份草稿。",
+    description="保存草稿指定目标、指定 SKU 的平台类目差异属性；包装长宽高和重量使用 product_sku_facts_update 修改商品，不得作为此工具的 updates 属性。先用 draft_attributes_read(scope=sku) 读取该 SKU 事实和已填值，再查询 scope=sku 的平台定义与枚举并由主对话决定填写值。不修改公共属性或其他 SKU，不调用模型。单个 SKU 修改用本工具；多 SKU 修改应使用 draft_changes_apply 一次提交全部差异，避免逐项保存整份草稿。",
     permission="product.write", side_effect="write", approval_required=False,
     idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual", version="1",
 )

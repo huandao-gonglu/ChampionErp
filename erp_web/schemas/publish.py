@@ -1,8 +1,22 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Callable, Literal, TypedDict
 
 from .product import Product
+
+
+class PublishPreparationCounts(TypedDict, total=False):
+    completed: int
+    total: int
+
+
+class PublishPreparationProgress(PublishPreparationCounts):
+    """一次素材准备请求的实时进度；数量按唯一图片计，包含已上传素材的复用。"""
+
+    stage: Literal["validating_source", "uploading", "saving_images", "validating_final", "building_preview", "saving_preview"]
+
+
+PublishPreparationObserver = Callable[[PublishPreparationProgress], None]
 
 
 class PublishConfirmation(TypedDict, total=False):
@@ -99,6 +113,9 @@ class PublishJobSummary(TypedDict):
 
 __all__ = [
     "PublishConfirmation",
+    "PublishPreparationCounts",
+    "PublishPreparationProgress",
+    "PublishPreparationObserver",
     "PublishJob",
     "PublishJobMarketResultSummary",
     "PublishJobPlatformSummary",

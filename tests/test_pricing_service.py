@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 import math
+import pytest
 
 from erp_web.services import pricing_service
+from tests.pricing_test_utils import official_commission
+
+
+@pytest.fixture(autouse=True)
+def official_rates(monkeypatch):
+    calculate = pricing_service.calculate_target_pricing
+    def with_commission(*args, **kwargs):
+        kwargs.setdefault("commission_resolver", official_commission)
+        if kwargs["commission_resolver"] is None:
+            kwargs["commission_resolver"] = official_commission
+        return calculate(*args, **kwargs)
+    monkeypatch.setattr(pricing_service, "calculate_target_pricing", with_commission)
 
 
 def _shipping_quote(_common: dict, _target: dict) -> dict:
@@ -131,7 +144,7 @@ def test_invalid_percentage_budget_does_not_generate_extreme_price() -> None:
     assert target["applied_price"] == {"amount": "0.00", "currency": "RUB"}
     assert target["profit_cny"] == 0
     assert target["errors"] == [
-        {"field": "target_margin_percent", "message": "平台费用合计 + 目标销售利润率必须小于 100%"},
+        {"field": "commission_percent", "code": "OFFICIAL_COMMISSION_UNAVAILABLE", "message": "平台费用合计 + 定价利润目标必须小于 100%"},
     ]
 
 
@@ -180,8 +193,9 @@ def test_cost_markup_can_be_one_hundred_percent_with_single_shipping_quote() -> 
     assert target["shipping_amount"] == 10
     assert target["shipping_cost_cny"] == 70
     assert target["total_cost_cny"] == 190
-    assert target["suggested_price"] == {"amount": "72.38", "currency": "USD"}
-    assert target["profit_cny"] == 190
+    # 72.38 美元按实际售价计算只有 189.995 元利润，不能满足 100% 成本加价。
+    assert target["suggested_price"] == {"amount": "72.39", "currency": "USD"}
+    assert target["profit_cny"] == 190.05
     assert target["margin_percent"] == 37.5
 
 

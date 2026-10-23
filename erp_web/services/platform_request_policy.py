@@ -98,6 +98,11 @@ def classify_response(platform, status, headers, raw, *, method="", interface=""
         code = "IMAGE_HOSTING_PUBLIC_AUTH_REQUIRED" if status == 401 else "IMAGE_HOSTING_PUBLIC_ACCESS_DENIED"
         return RequestFailure(code, "图片地址拒绝匿名读取，请检查桶公开权限和公开地址", "request", status=status)
     prefix = re.sub(r"[^A-Z0-9_]", "_", platform.upper())
+    codes = platform_error_codes(raw, platform=platform)
+    detail = "（错误码：" + "、".join(codes) + "）" if codes else ""
+    if platform == "yandex" and (status == 400 or (status == 200 and "BAD_REQUEST" in codes)):
+        # 参数互斥错误也会写 Forbidden，不能据此阻断整个费用接口。
+        return RequestFailure(prefix+"_REQUEST_INVALID", f"平台明确拒绝请求{detail}，请检查参数与业务回执", "request", status=status)
     if platform.startswith("ai:") and status == 402:
         return RequestFailure(prefix+"_PAYMENT_REQUIRED", "AI Provider 余额不足或计费配置不可用，请检查额度与计费状态", "request", status=status)
     if (platform == "gw.open.1688.com" and status < 500
@@ -124,8 +129,6 @@ def classify_response(platform, status, headers, raw, *, method="", interface=""
         return RequestFailure(prefix+"_AUTH_FAILED", "接口访问被拒绝；请核对该接口权限后明确恢复", "interface", status=403)
     if status >= 500 or status == 408:
         return RequestFailure(prefix+"_SERVER_ERROR", "平台服务暂时不可用", status=status,retryable=True)
-    codes = platform_error_codes(raw, platform=platform)
-    detail = "（错误码：" + "、".join(codes) + "）" if codes else ""
     return RequestFailure(prefix+"_REQUEST_INVALID", f"平台明确拒绝请求{detail}，请检查参数与业务回执", "request", status=status)
 
 

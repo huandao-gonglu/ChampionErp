@@ -1,7 +1,7 @@
 import { enqueuePublish as enqueuePublishApi, previewPublishPayload, publishPrecheck } from '@/api/workflow/publishing'
 import { normalizePublishPrecheck } from '@/api/workflow/normalizers'
 import { fetchDraftsIndex } from '@/api/workflow/catalog'
-import type { PublishPayloadSummary, UnknownRecord } from '@/types/workflow'
+import type { PublishPayloadSummary, PublishPreparationState, UnknownRecord } from '@/types/workflow'
 import {
   isMercadoLibreCbtTarget, MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
   mercadoLibreHasFullyManagedBinding, mercadoLibreListingModel, mercadoLibreListingModelError,
@@ -14,7 +14,7 @@ export type WorkflowPublishPrecheckActionsPort = Pick<WorkflowRuntime,
   | 'selectedPublishJobId' | 'draftsIndex' | 'storeConfig' | 'loading' | 'setError' | 'addLog'
   | 'persistCurrentDraftForPublish' | 'syncActivePublishTarget' | 'applyMutationIndexes'
   | 'pricingTargetKey' | 'currentStage' | 'refreshPublishJobs'
-> & { isCurrent?: () => boolean }
+> & { isCurrent?: () => boolean; onPreparationProgress?: (progress: PublishPreparationState | null) => void }
 
 function normalizePayloadPreviewSummary(value: UnknownRecord): PublishPayloadSummary | null {
   if (!Object.keys(value).length) return null
@@ -76,6 +76,7 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
     loading.value = true
     setError('')
     precheck.value = null
+    runtime.onPreparationProgress?.(null)
     // 新一轮预检会重新保存和归一化草稿，之前的 Payload 指纹不再代表本轮数据。
     payloadPreview.value = null
     try {
@@ -110,11 +111,15 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
     setError('')
     // 先撤销旧确认；如果本次准备或预览失败，不能继续提交上一次的指纹。
     payloadPreview.value = null
+    runtime.onPreparationProgress?.(null)
+    runtime.onPreparationProgress?.({ stage: options.saveDraft === false ? 'validating_source' : 'saving_draft' })
     try {
       if (options.saveDraft !== false) await persistCurrentDraftForPublish()
       if (!isCurrent()) return
       const target = selectedPublishTarget.value
-      const result = await previewPublishPayload(currentDraft.value, target)
+      const result = await previewPublishPayload(currentDraft.value, target, (progress) => {
+        if (isCurrent()) runtime.onPreparationProgress?.(progress)
+      })
       if (!isCurrent()) return
       if (result.draft) {
         currentDraft.value = result.draft
@@ -145,9 +150,11 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
         summary: normalizePayloadPreviewSummary(result.summary),
         warnings: result.warnings,
       }
+      runtime.onPreparationProgress?.({ stage: 'completed' })
       addLog(`Payload 已生成：${result.path || result.status}`)
       return payloadPreview.value
     } catch (exc) {
+      if (isCurrent()) runtime.onPreparationProgress?.({ stage: 'failed' })
       if (isCurrent()) setError(exc instanceof Error ? exc.message : '生成 Payload 失败')
     } finally {
       loading.value = false
@@ -166,6 +173,7 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
       setError('请先生成当前目标站点的 Payload 预览并确认摘要后，再加入发布队列。')
       return
     }
+    runtime.onPreparationProgress?.(null)
     loading.value = true
     setError('')
     try {

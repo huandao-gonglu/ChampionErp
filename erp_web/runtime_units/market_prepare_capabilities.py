@@ -420,11 +420,12 @@ def prepare_draft_for_market(
         selections[key] = _sales_targets_with_existing_conditions(
             _sales_targets_from_selectors(request.sales_target), target.get("sites_to_sell"),
         )
-    priced = price_draft(
-        DraftPricingHttpRequest(draft_id=target_draft_id, target_keys=[key],
-            **request.pricing.model_dump(exclude_unset=True), target_selections=selections),
-        product_store=product_store, apply=True, calculator=pricing_calculator,
-    )
+    pricing_request = DraftPricingHttpRequest(draft_id=target_draft_id, target_keys=[key],
+        **request.pricing.model_dump(exclude_unset=True), target_selections=selections)
+    priced = price_draft(pricing_request, product_store=product_store, calculator=pricing_calculator)
+    if not priced["errors"]:
+        priced = price_draft(pricing_request.model_copy(update={"preview_id": priced["preview_id"]}),
+                            product_store=product_store, apply=True)
     if not priced["applied"]:
         raise BusinessCapabilityError("PRICING_INPUT_INVALID", "核价未能应用，请处理返回的具体问题。", details={"errors": priced["errors"]})
     completed_parts.append("pricing")

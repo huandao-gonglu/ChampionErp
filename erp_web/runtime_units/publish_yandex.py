@@ -22,6 +22,8 @@ from copy import deepcopy
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import time
 from typing import Any
+from erp_web.context import get_context
+from erp_web.services.yandex_logistics_service import draft_fulfillment_plan
 
 from erp_web.marketplaces.yandex_currency import yandex_wire_currency
 from erp_web.marketplaces.yandex_http import (
@@ -39,6 +41,7 @@ from erp_web.schemas.category import (
     category_attribute_unit_is_valid,
     category_attribute_value_mode,
 )
+from erp_web.product_model.category_model import unresolved_required_attributes_in_draft
 from erp_web.schemas.yandex import YandexPublishCheckpoint
 from erp_web.stores.product_store import normalize_product_fields
 
@@ -46,7 +49,6 @@ from .collect_helpers import collect_time_iso
 from .publish_helpers import (
     _draft_for_selected_target,
     _draft_images,
-    _required_attribute_summary,
     _selected_price_and_currency,
 )
 
@@ -196,134 +198,61 @@ def yandex_offer_identity_conflict(draft: dict[str, Any]) -> str:
     return ""
 
 
-def yandex_required_attributes_missing(
-    product: dict[str, Any],
-    category_record: dict[str, Any] | None = None,
-) -> list[str]:
+def _yandex_product_attribute_checks(product: dict[str, Any], category_record: dict[str, Any] | None) -> dict[str, Any]:
     product = normalize_product_fields(product)
-    return list(
-        _required_attribute_summary(product, "yandex", category_record).get("missing")
-        or []
-    )
+    return yandex_attribute_checks(product, _draft_for_selected_target(product, "yandex"), category_record)
 
 
-def yandex_invalid_dictionary_attributes(
-    product: dict[str, Any],
-    category_record: dict[str, Any] | None = None,
-) -> list[str]:
-    """返回草稿中缺少平台枚举选择的 strict_enum 属性 ID。"""
+def yandex_required_attributes_missing(product: dict[str, Any], category_record: dict[str, Any] | None = None) -> list[str]:
+    return _yandex_product_attribute_checks(product, category_record)["missing"]
 
-    product = normalize_product_fields(product)
-    draft = _draft_for_selected_target(product, "yandex")
+
+def yandex_invalid_dictionary_attributes(product: dict[str, Any], category_record: dict[str, Any] | None = None) -> list[str]:
+    return _yandex_product_attribute_checks(product, category_record)["dictionary"]
+
+
+def yandex_invalid_text_attributes(product: dict[str, Any], category_record: dict[str, Any] | None = None) -> dict[str, str]:
+    return _yandex_product_attribute_checks(product, category_record)["text"]
+
+
+def yandex_invalid_unit_attributes(product: dict[str, Any], category_record: dict[str, Any] | None = None) -> list[str]:
+    return _yandex_product_attribute_checks(product, category_record)["units"]
+
+
+def yandex_attribute_checks(
+    product: dict[str, Any], draft: dict[str, Any], category_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """在同一规范化视图上检查类目属性；不整理报价、图片或其它平台草稿。"""
     definitions = _record_schema_definitions(category_record)
-    attributes = (
-        draft.get("attributes")
-        if isinstance(draft.get("attributes"), dict)
-        else {}
-    )
-    invalid: list[str] = []
-    for attr_id, definition in definitions.items():
-        if category_attribute_value_mode(definition) != "strict_enum":
-            continue
-        if attr_id not in attributes:
-            continue
-        raw_value = attributes.get(attr_id)
-        values = (
-            raw_value.get("values")
-            if isinstance(raw_value, dict)
-            and isinstance(raw_value.get("values"), list)
-            else []
-        )
-        if not values or any(
-            not isinstance(item, dict)
-            or not str(item.get("dictionary_value_id") or "").strip()
-            or not str(item.get("value") or "").strip()
-            for item in values
-        ):
-            invalid.append(attr_id)
-    return sorted(invalid)
-
-
-def yandex_invalid_text_attributes(
-    product: dict[str, Any],
-    category_record: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    """返回已填文本属性的格式错误，供草稿预检定位具体行。"""
-    draft = _draft_for_selected_target(normalize_product_fields(product), "yandex")
     attributes = draft.get("attributes") or {}
-    return {
-        attr_id: error
-        for attr_id, definition in _record_schema_definitions(category_record).items()
-        if (error := category_attribute_text_format_error(definition, attributes.get(attr_id)))
-    }
-
-
-def yandex_invalid_unit_attributes(
-    product: dict[str, Any],
-    category_record: dict[str, Any] | None = None,
-) -> list[str]:
-    """返回草稿值单位不在类目允许范围内的属性 ID。"""
-
-    product = normalize_product_fields(product)
-    draft = _draft_for_selected_target(product, "yandex")
-    definitions = _record_schema_definitions(category_record)
-    attributes = (
-        draft.get("attributes")
-        if isinstance(draft.get("attributes"), dict)
-        else {}
-    )
-    invalid: list[str] = []
+    invalid_dictionary, invalid_units, invalid_text = [], [], {}
     for attr_id, definition in definitions.items():
-        raw_value = attributes.get(attr_id)
-        if not isinstance(raw_value, dict):
-            continue
-        unit = str(raw_value.get("unit") or "").strip()
-        if not unit:
-            continue
-        if not category_attribute_unit_is_valid(definition, unit):
-            invalid.append(attr_id)
-    return sorted(invalid)
-
-
-def _yandex_attribute_value_empty(raw_value: Any) -> bool:
-    if isinstance(raw_value, dict):
-        values = raw_value.get("values")
-        if isinstance(values, list) and values:
-            return False
-        return not str(raw_value.get("value") or "").strip()
-    if isinstance(raw_value, (list, tuple, set)):
-        return not bool(raw_value)
-    return not str(raw_value or "").strip()
-
-
-def yandex_mapped_parameter_count(
-    product: dict[str, Any],
-    category_record: dict[str, Any] | None = None,
-) -> int:
-    """草稿中可映射为 Yandex ``parameterValues`` 的已填参数数量。
-
-    与 ``_compile_parameter_values`` 同源的映射规则：属性 ID 必须是当前
-    类目参数定义中的正整数且值非空。Yandex 发布要求至少 1 个参数值
-    （即使类目没有任何必填参数），预检与发布边界共用该计数。
-    """
-
-    product = normalize_product_fields(product)
-    draft = _draft_for_selected_target(product, "yandex")
-    definitions = _record_schema_definitions(category_record)
-    attributes = (
-        draft.get("attributes")
-        if isinstance(draft.get("attributes"), dict)
-        else {}
-    )
-    count = 0
-    for raw_id, raw_value in attributes.items():
-        attr_id = str(raw_id or "").strip()
-        if not attr_id.isdigit() or int(attr_id) <= 0 or attr_id not in definitions:
-            continue
-        if _yandex_attribute_value_empty(raw_value):
-            continue
-        count += 1
-    return count
+        raw = attributes.get(attr_id)
+        if category_attribute_value_mode(definition) == "strict_enum" and attr_id in attributes:
+            values = raw.get("values") if isinstance(raw, dict) else None
+            if not isinstance(values, list) or not values or any(
+                not isinstance(value, dict)
+                or not str(value.get("dictionary_value_id") or "").strip()
+                or not str(value.get("value") or "").strip()
+                for value in values
+            ):
+                invalid_dictionary.append(attr_id)
+        unit = str(raw.get("unit") or "").strip() if isinstance(raw, dict) else ""
+        if unit and not category_attribute_unit_is_valid(definition, unit):
+            invalid_units.append(attr_id)
+        if error := category_attribute_text_format_error(definition, raw):
+            invalid_text[attr_id] = error
+        if attr_id in attributes and attr_id not in invalid_dictionary and attr_id not in invalid_units and attr_id not in invalid_text:
+            try:
+                # 复用真实编译规则，把数值范围等错误提前到上传之前。
+                _compile_parameter_values({"attributes": {attr_id: raw}}, {attr_id: definition})
+            except ValueError as exc:
+                invalid_text[attr_id] = str(exc)
+    missing = unresolved_required_attributes_in_draft(product, draft, "yandex", list(definitions.values()))
+    return {
+        "dictionary": sorted(invalid_dictionary), "units": sorted(invalid_units),
+        "text": invalid_text, "missing": [f"attributes.{item['id']}" for item in missing],
+    }
 
 
 def _resolve_unit_id(definition: dict[str, Any], unit: Any) -> int | None:
@@ -370,12 +299,20 @@ def _validate_text_constraints(
             number = Decimal(text.replace(",", "."))
         except (InvalidOperation, ValueError) as exc:
             raise ValueError(f"Yandex 数值属性 {attr_id} 必须是有效数字") from exc
-        min_value = constraints.get("min_value")
-        max_value = constraints.get("max_value")
-        if min_value is not None and number < Decimal(str(min_value)):
-            raise ValueError(f"Yandex 数值属性 {attr_id} 不能小于 {min_value}")
-        if max_value is not None and number > Decimal(str(max_value)):
-            raise ValueError(f"Yandex 数值属性 {attr_id} 不能大于 {max_value}")
+        if not number.is_finite():
+            raise ValueError(f"Yandex 数值属性 {attr_id} 必须是有限数字")
+        for field, label in (("min_value", "小于"), ("max_value", "大于")):
+            raw = constraints.get(field)
+            if raw is None or not str(raw).strip():
+                continue
+            try:
+                bound = Decimal(str(raw))
+                if not bound.is_finite():
+                    raise ValueError
+            except (InvalidOperation, ValueError):
+                raise ValueError(f"Yandex 属性 {attr_id} 的数值范围定义无效，请刷新类目规则") from None
+            if (field == "min_value" and number < bound) or (field == "max_value" and number > bound):
+                raise ValueError(f"Yandex 数值属性 {attr_id} 不能{label} {raw}")
     max_length = constraints.get("max_length")
     if max_length is not None:
         try:
@@ -592,6 +529,12 @@ def _stock_plan(
             if str(item or "").strip()
         }
     )
+    fulfillment_plan = None
+    if placement_type == 'FBS':
+        fulfillment_plan = get_context().yandex_logistics.validate(draft_fulfillment_plan(draft))
+        if any(str(fulfillment_plan[k]) != str(store.get(k) or '') for k in ('business_id', 'campaign_id', 'stock_update_mode')):
+            raise ValueError('核价仓库方案与当前 Yandex 店铺绑定不一致，请重新核价')
+        warehouse_ids = [str(fulfillment_plan['publish_warehouse_id'])]
     if placement_type == "FBY":
         mode = "none"
     elif stock_update_mode in {"campaign_warehouses", "business", "none"}:
@@ -618,7 +561,8 @@ def _stock_plan(
         raise ValueError("库存必须是有效整数") from exc
     if count < 0:
         raise ValueError("库存不能为负数")
-    return {"mode": mode, "warehouse_ids": warehouse_ids, "count": count}
+    return {"mode": mode, "warehouse_ids": warehouse_ids, "count": count,
+            **({'fulfillment_plan': fulfillment_plan} if fulfillment_plan else {})}
 
 
 def build_yandex_publish_payload(
@@ -651,10 +595,6 @@ def build_yandex_publish_payload(
 
     definitions = _record_schema_definitions(category_record)
     parameter_values = _compile_parameter_values(draft, definitions)
-    if not parameter_values:
-        raise ValueError(
-            "Yandex 发布至少需要 1 个类目参数值，请先填写类目属性再发布"
-        )
     price_value_text, currency = _resolved_price(draft)
     wire_currency = yandex_wire_currency(currency)
     price_value = _price_number(price_value_text)
@@ -667,7 +607,7 @@ def build_yandex_publish_payload(
         "pictures": list(images),
         "vendor": vendor,
         "description": description,
-        "parameterValues": parameter_values,
+        **({"parameterValues": parameter_values} if parameter_values else {}),
         "weightDimensions": _weight_dimensions(draft),
         # 首次写入可携带 basicPrice；价格同步仍是独立、可观测步骤。
         # 官方 basicPrice.value 为 number，currencyId 为平台枚举（RUR）。
@@ -761,6 +701,8 @@ def validate_yandex_publish_payload(
         if isinstance(offer.get("parameterValues"), list)
         else []
     )
+    if "parameterValues" in offer and not parameter_values:
+        errors.append("parameterValues 提供时必须为非空数组；无属性时省略该字段")
     for row in parameter_values:
         if not isinstance(row, dict):
             errors.append("parameterValues 必须是对象")
@@ -826,6 +768,15 @@ def validate_yandex_publish_payload(
         if not str(price_item.get("currencyId") or "").strip():
             errors.append("价格币种")
     stock = payload.get("stock") if isinstance(payload.get("stock"), dict) else {}
+    if str(store.get('placement_type') or '').upper() == 'FBS':
+        try:
+            plan = get_context().yandex_logistics.validate(stock.get('fulfillment_plan'))
+            if any(str(plan[k]) != str(store.get(k) or '') for k in ('business_id', 'campaign_id', 'stock_update_mode')):
+                errors.append('核价仓库方案与当前 Yandex 店铺绑定不一致')
+            if stock.get('mode') != 'business' or [str(v) for v in stock.get('warehouse_ids', [])] != [str(plan['publish_warehouse_id'])]:
+                errors.append('发布库存仓库与核价选中的物流方案不一致')
+        except ValueError as exc:
+            errors.append(str(exc))
     if str(stock.get("mode") or "") not in {"campaign_warehouses", "business", "none"}:
         errors.append("库存写入方式无效")
     elif str(stock.get("mode")) == "campaign_warehouses" and not (
@@ -999,6 +950,16 @@ def _execute_mutation(
     """
 
     timeout = _timeout_seconds(config)
+    if str(_yandex_store(config).get('placement_type') or '').upper() == 'FBS':
+        try:
+            bound = get_context().yandex_logistics.validate(plan.get('stock', {}).get('fulfillment_plan'))
+            store = _yandex_store(config)
+            if any(str(bound[k]) != str(store.get(k) or '') for k in ('business_id', 'campaign_id', 'stock_update_mode')):
+                raise ValueError('核价仓库方案与当前 Yandex 店铺绑定不一致')
+            if plan.get('stock', {}).get('mode') != 'business' or [str(v) for v in plan.get('stock', {}).get('warehouse_ids', [])] != [str(bound['publish_warehouse_id'])]:
+                raise ValueError('发布仓库与核价物流方案不一致')
+        except ValueError as exc:
+            return _terminal_failure(plan, checkpoint, {'error_code': 'YANDEX_LOGISTICS_CHANGED', 'summary': str(exc), 'retryable': False})
     try:
         if step == "offer_mapping":
             body = update_yandex_offer_mapping(
@@ -1076,6 +1037,8 @@ def _execute_mutation(
             return _pending_result(plan, checkpoint)
         return _terminal_failure(plan, checkpoint, map_yandex_publish_error(exc))
     _record_response(checkpoint, step, body)
+    if step == 'stock':
+        checkpoint.evidence['stock'].update(deepcopy(plan['stock']))
     checkpoint.retries = 0
     checkpoint.next_poll_at = time.time() + _step_interval_seconds(config)
     checkpoint.completed_steps.append(step)

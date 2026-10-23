@@ -75,6 +75,7 @@ def default_pricing(platform: str = "") -> dict[str, Any]:
     platform_key = str(platform or "").strip().lower()
     return {
         "platform": platform_key,
+        "template_source": None,
         "common": {},
         "targets": {},
         "exchange_rates": {},
@@ -110,8 +111,6 @@ def default_draft(platform: str) -> dict[str, Any]:
         "description_category_id": "",
         "category_path": "",
         "attributes": {},
-        "brand": "",
-        "model": "",
         "images": [],
         "pricing": default_pricing(platform),
         "validation_errors": [],

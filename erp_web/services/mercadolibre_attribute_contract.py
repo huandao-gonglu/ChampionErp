@@ -26,21 +26,19 @@ _PACKAGE_FIELDS: dict[str, tuple[str, str]] = {
     "SELLER_PACKAGE_HEIGHT": ("height_cm", "cm"),
     "SELLER_PACKAGE_WEIGHT": ("weight_kg", "g"),
 }
-_ROOT_DRAFT_FIELDS = {
+_PRODUCT_VIEW_FIELDS = {
     "BRAND": "brand",
     "MODEL": "model",
 }
 _SYSTEM_OWNED_ATTRIBUTE_IDS = {
     *_PACKAGE_FIELDS,
-    *_ROOT_DRAFT_FIELDS,
     "SELLER_SKU",
     "GTIN",
     "UPC",
     "UNIVERSAL_PRODUCT_CODE",
-    "EMPTY_GTIN_REASON",
     "ITEM_CONDITION",
 }
-MERCADOLIBRE_DERIVED_ATTRIBUTE_IDS = frozenset(_SYSTEM_OWNED_ATTRIBUTE_IDS - _ROOT_DRAFT_FIELDS.keys())
+MERCADOLIBRE_DERIVED_ATTRIBUTE_IDS = frozenset(_SYSTEM_OWNED_ATTRIBUTE_IDS)
 _EMPTY_GTIN_REASON_ID = "17055160"
 _EMPTY_GTIN_REASON_NAME = "The product does not have registered code"
 
@@ -68,15 +66,6 @@ def _value_present(value: Any) -> bool:
             return bool(value["values"])
         return bool(_text(value.get("value")))
     return bool(_text(value))
-
-
-def _single_selected_value_name(value: Any) -> str:
-    if not isinstance(value, dict) or not isinstance(value.get("values"), list):
-        return ""
-    selected = [item for item in value["values"] if isinstance(item, dict)]
-    if len(selected) != 1:
-        return ""
-    return _text(selected[0].get("value") or selected[0].get("name"))
 
 
 def _decimal_text(value: Any) -> str:
@@ -445,6 +434,8 @@ def compile_mercadolibre_attributes(
         # 都不能作为用户类目属性提交，也不应被当成未知业务属性阻断。
         if attribute_id in _SYSTEM_OWNED_ATTRIBUTE_IDS:
             continue
+        if attribute_id == "EMPTY_GTIN_REASON" and _text(draft.get("upc")):
+            continue
         attribute = definitions.get(attribute_id)
         if attribute is None:
             issues.append(
@@ -461,21 +452,10 @@ def compile_mercadolibre_attributes(
             continue
         candidates[attribute_id] = value
 
-    for attribute_id, draft_field in _ROOT_DRAFT_FIELDS.items():
+    for attribute_id, draft_field in _PRODUCT_VIEW_FIELDS.items():
         if attribute_id in definitions and not _value_present(candidates.get(attribute_id)):
-            root_value = draft.get(draft_field)
-            structured_value = draft_attributes.get(attribute_id)
-            # BRAND/MODEL 的业务文案仍由草稿根字段所有；平台选择 ID 只作为
-            # 同名结构化元数据使用。文案不一致说明元数据已经陈旧，必须忽略，
-            # 再按当前根文案执行候选校验。
-            if (
-                _text(root_value)
-                and _single_selected_value_name(structured_value)
-                == _text(root_value)
-            ):
-                candidates[attribute_id] = structured_value
-            else:
-                candidates[attribute_id] = root_value
+            # 未设置平台映射时，使用单规格发布视图从商品派生的品牌/型号。
+            candidates[attribute_id] = draft.get(draft_field)
 
     if "SELLER_SKU" in definitions:
         candidates["SELLER_SKU"] = draft.get("sku")
@@ -491,7 +471,8 @@ def compile_mercadolibre_attributes(
     )
     if gtin and gtin_attribute_id:
         candidates[gtin_attribute_id] = gtin
-    elif not gtin and bool(draft.get("allow_gtin_exemption")):
+    elif not gtin and bool(draft.get("allow_gtin_exemption")) and "EMPTY_GTIN_REASON" not in draft_attributes:
+        # 旧草稿的豁免标记保留读取；显式原因（包括清空）始终以用户编辑为准。
         empty_definition = definitions.get("EMPTY_GTIN_REASON")
         if empty_definition is not None:
             empty_option = next(
@@ -572,6 +553,20 @@ def compile_mercadolibre_attributes(
                     }
                 ]
             }
+
+    identifier_definitions = [
+        definitions[key]
+        for key in ("GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE", "EMPTY_GTIN_REASON")
+        if key in definitions and not definitions[key].read_only
+    ]
+    if not gtin and identifier_definitions and not _value_present(candidates.get("EMPTY_GTIN_REASON")):
+        has_reason = "EMPTY_GTIN_REASON" in definitions
+        issues.append(MercadoLibreAttributeIssue(
+            "UPC_MISSING",
+            "attributes.EMPTY_GTIN_REASON" if has_reason else "upc",
+            "所选 SKU 缺少 UPC / GTIN，请填写平台允许的条码缺失原因"
+            if has_reason else "所选 SKU 缺少 UPC / GTIN，当前类目未提供条码缺失原因",
+        ))
 
     for required in definition.required:
         if required.read_only:

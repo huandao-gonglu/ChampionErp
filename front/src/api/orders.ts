@@ -1,6 +1,6 @@
 import { ORDER_PAGE_SIZE } from '@/types/orders'
 import { apiClient } from '@/api/client'
-import type { OrderIntegrations, OrdersPage, OrderSummary, OrderDetail, OrderAddressNote } from '@/types/orders'
+import type { OrderIntegrations, OrdersPage, OrderSummary, OrderDetail, OrderAddressNote, OrderCenterFilters } from '@/types/orders'
 export async function syncPurchase(orderId: string, recordId: string, signal?: AbortSignal): Promise<OrderDetail> {
   return (await apiClient.post<OrderDetail>('/api/orders/purchase-sync', {
     order_id: orderId, record_id: recordId,
@@ -12,12 +12,14 @@ export async function fetchOrders(query: {
   state: string
   offset: number
   q?: string
-}): Promise<OrdersPage> {
-  const params = new URLSearchParams({
-    ...query,
-    offset: String(query.offset),
-    limit: String(ORDER_PAGE_SIZE),
-  })
+} & OrderCenterFilters): Promise<OrdersPage> {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries({ ...query, limit: ORDER_PAGE_SIZE })) {
+    if (value !== undefined && value !== '') params.set(key, String(value))
+  }
+  if (query.deadline_from || query.deadline_to || query.deadline_status) {
+    params.set('time_zone', query.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+  }
   return (await apiClient.get<OrdersPage>(`/api/orders?${params}`, { timeout: 10000 })).data
 }
 export async function fetchOrderIntegrations(): Promise<OrderIntegrations> {

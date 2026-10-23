@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from erp_web import marketplaces as publisher
+from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import get_context
 from erp_web.stores.config_store import auth_next_action
 from erp_web.stores.product_store import normalize_product_fields
@@ -325,7 +326,7 @@ def _mercadolibre_image_candidates(product: dict[str, Any]) -> list[dict[str, An
     return sorted(candidates, key=lambda item: (0 if item.get("is_main") else 1, int(item.get("order") or 0)))
 
 
-def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -> dict[str, Any]:
+def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
     pool = _source_pool_items(normalized)
@@ -335,6 +336,8 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -
     if not selected_ids:
         errors.append(precheck_item("IMAGE_NOT_FOUND", "images", "Mercado Libre 没有可用图片", "error", "前往图片池选择主图或勾选 Mercado Libre 图片"))
         return {"ok": False, "product": normalized, "picture_refs": [], "errors": errors}
+    if on_progress:
+        on_progress({"stage": "uploading", "completed": 0, "total": len(selected_ids)})
     updated_pool: list[dict[str, Any]] = []
     for item in pool:
         item = dict(item)
@@ -351,6 +354,8 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -
             item.setdefault("uploaded_at", collect_time_iso())
             item["platform_uploads"] = {**(item.get("platform_uploads") if isinstance(item.get("platform_uploads"), dict) else {}), "mercadolibre": {"picture_id": picture_id, "upload_status": "uploaded", "uploaded_at": item.get("uploaded_at")}}
             picture_refs.append(f"ml-id:{picture_id}")
+            if on_progress:
+                on_progress({"stage": "uploading", "completed": len(picture_refs), "total": len(selected_ids)})
             updated_pool.append(item)
             continue
         local_path = _local_path_from_image_item(item)
@@ -371,6 +376,8 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -
             item["uploaded_at"] = collect_time_iso()
             item["platform_uploads"] = {**(item.get("platform_uploads") if isinstance(item.get("platform_uploads"), dict) else {}), "mercadolibre": {"picture_id": picture_id, "upload_status": "uploaded", "uploaded_at": item["uploaded_at"]}}
             picture_refs.append(f"ml-id:{picture_id}")
+            if on_progress:
+                on_progress({"stage": "uploading", "completed": len(picture_refs), "total": len(selected_ids)})
         except Exception as exc:
             item["upload_status"] = "failed"
             item["upload_error"] = str(exc)
@@ -380,6 +387,8 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -
     normalized["source"] = source
     # 此处是 Mercado 上传服务写入 picture ID 的唯一可信路径；通用保存入口
     # 会保护已有平台事实，故明确允许本次服务端结果替换上传状态。
+    if on_progress:
+        on_progress({"stage": "saving_images"})
     saved = get_context().products.save_product(
         {**normalized, "drafts": {}},
         preserve_platform_facts=False,

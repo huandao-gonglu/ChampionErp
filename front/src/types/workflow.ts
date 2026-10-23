@@ -1,7 +1,10 @@
+import type { BackendPublishPreparationProgress } from './workflow.generated'
+
 // <schema-generated-types>
 export {
   API_SCHEMA_VERSION,
   PRODUCT_SCHEMA_VERSION,
+  type BackendOrderCenterFilters,
   type BackendOrderChatAttachment,
   type BackendOrderChatMessage,
   type BackendOrderChatHistory,
@@ -72,6 +75,8 @@ export {
   type BackendProductResearchSearchRequest,
   type BackendProductResearchSourceStatus,
   type BackendProductResearchRun,
+  type BackendPublishPreparationCounts,
+  type BackendPublishPreparationProgress,
   type BackendPublishConfirmation,
   type BackendPublishPlatformState,
   type BackendPublishJob,
@@ -197,6 +202,10 @@ export interface MarketplaceSiteToSell {
 }
 
 /** 发布预览确认态：payload、digest 与摘要同生命周期，预览被清空即失效。 */
+export type PublishPreparationState = Omit<BackendPublishPreparationProgress, 'stage'> & {
+  stage: BackendPublishPreparationProgress['stage'] | 'saving_draft' | 'completed' | 'failed'
+}
+
 export interface PayloadPreviewState {
   platform: Marketplace
   site: string
@@ -320,6 +329,8 @@ export interface ProductSku extends UnknownRecord {
   image_asset_id: string
   barcode: string
   package_dimensions: Record<string, string>
+  battery?: boolean
+  liquid?: boolean
   active: boolean
   source_snapshot: UnknownRecord
 }
@@ -350,8 +361,6 @@ export interface MarketplaceDraft {
   globalTitle: string
   title: string
   description: string
-  brand: string
-  model: string
   categoryId: string
   descriptionCategoryId: string
   categoryPath: string
@@ -378,7 +387,6 @@ export interface Product {
   sku: string
   stock: string
   upc: string
-  cost: string
   materials: string[]
   packageIncludes: string[]
   attributes: UnknownRecord
@@ -409,7 +417,6 @@ export interface DraftProductContext {
   model: string
   sku: string
   stock: string
-  cost: string
   sourcePrice: string
   currency: string
   weightKg: string
@@ -423,6 +430,7 @@ export interface DraftProductContext {
 }
 
 export interface PricingInput {
+  templateSource?: { id: string; name: string } | null
   battery?: boolean
   liquid?: boolean
   platform: Marketplace
@@ -439,6 +447,8 @@ export interface PricingInput {
   mxnUsdRate: number
   rubCnyRate: number
   exchangeRateMode: 'live' | 'manual'
+  exchangeRateOverrides?: Partial<Record<'usd_cny_rate' | 'mxn_usd_rate' | 'rub_cny_rate', number>>
+  selectedTargetKeys?: string[]
   targets: PricingTargetInput[]
 }
 
@@ -446,7 +456,15 @@ export type PricingMode = 'margin' | 'markup' | 'manual'
 export type ShippingQuoteMode = 'auto' | 'manual'
 export type ShippingCurrency = 'USD' | 'CNY'
 
+export interface PricingShippingSelection {
+  warehouse_id: number
+  route_id: string
+}
+
 export interface PricingTargetInput {
+  returnRatePercent?: number | ''
+  returnDisposition?: 'discard' | 'resell'
+  returnHandlingCostCny?: number | ''
   categoryId?: string
   targetKey: string
   platform: Marketplace
@@ -455,7 +473,6 @@ export interface PricingTargetInput {
   sitesToSell: MarketplaceSiteToSell[]
   listingCurrency: string
   currencyFingerprint?: string
-  commissionPercent: number
   paymentFeePercent: number
   otherFeePercent: number
   pricingMode: PricingMode
@@ -464,6 +481,7 @@ export interface PricingTargetInput {
   shippingQuoteMode: ShippingQuoteMode
   shippingCurrency: ShippingCurrency
   shippingAmount: number
+  shippingSelection?: PricingShippingSelection | null
   manualPrice: Money | null
 }
 
@@ -528,6 +546,7 @@ export interface PricingTargetResult {
 }
 
 export interface PricingResult {
+  previewId?: string
   results: PricingTargetResult[]
   shippingCostUsd: number
   shippingCostCny: number

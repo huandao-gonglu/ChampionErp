@@ -102,6 +102,40 @@ def test_prepare_diagnostics_use_persisted_actual_image_urls(boundary, monkeypat
     assert "/assets/" in calls[0]
 
 
+def test_basic_precheck_then_prepare_final_validation_and_confirmation(boundary, monkeypatch):
+    from erp_web.runtime_units import publish_workflows
+    context, request, _ = boundary
+    monkeypatch.setattr(publish_workflows, "publishing_adapter_for", lambda platform: _ImageAdapter())
+    body = request.model_dump(exclude={"check_public_access"})
+    response, status = publish_workflows.precheck_publish_payload(body)
+    assert status == 200
+    assert response["platforms"]["yandex"]["ok"]
+    assert not context.test_remote.uploads
+
+    # 基础预检成功不等于可以发布：最终校验仍拒绝尚未交付的图片。
+    validate_request = ProductPublishValidateRequest(**body)
+    validation = publish_capabilities.validate_product_publish(validate_request)
+    assert not validation.passed
+    assert [issue.code for issue in validation.errors] == ["IMAGE_NOT_PREPARED"]
+    assert not validation.validation_digest
+    bus = _CaptureBus()
+    monkeypatch.setattr(publish_workflows, "get_publishing_bus", lambda: bus)
+    _, status = publish_workflows.enqueue_publish_job({**body, "confirm": True})
+    assert status == 400
+    assert not bus.calls
+
+    response, status = publish_workflows.preview_publish_payload(body)
+    assert status == 200
+    assert response["validation_digest"]
+    assert len(context.test_remote.uploads) == 1
+    assert not bus.calls
+    validation = publish_capabilities.validate_product_publish(validate_request)
+    assert validation.passed
+    assert validation.validation_digest == response["validation_digest"]
+    publish_capabilities.request_product_publish(_confirmed_request(request, validation), publishing_bus=bus)
+    assert len(bus.calls) == 1
+
+
 def test_prepare_does_not_claim_persistence_if_save_failed(boundary, monkeypatch):
     from erp_web.runtime_units import image_delivery_persistence as image_pool
     _, request, _ = boundary
@@ -112,7 +146,7 @@ def test_prepare_does_not_claim_persistence_if_save_failed(boundary, monkeypatch
 
 def test_prepare_result_uses_readback_even_if_adapter_did_not_persist(boundary, monkeypatch):
     context, request, _ = boundary
-    monkeypatch.setattr(_ImageAdapter, "prepare_product", lambda self, product, config: context.image_delivery.prepare_product(product, "yandex"))
+    monkeypatch.setattr(_ImageAdapter, "prepare_product", lambda self, product, config, **kwargs: context.image_delivery.prepare_product(product, "yandex", **kwargs))
     result = publish_capabilities.prepare_product_publish(request)
     assert not result.validation.passed
     assert [issue.code for issue in result.validation.errors] == ["IMAGE_NOT_PREPARED"]
@@ -278,3 +312,144 @@ def test_queue_precheck_does_not_overwrite_edit_after_evaluation(boundary, monke
     assert error.value.code == "PUBLISH_CONFIRMATION_STALE"
     assert not bus.calls
     assert context.db.load_draft_model(request.draft_id)["title"] == "用户在校验后修改的标题"
+
+
+def test_preview_stream_reports_upload_then_final_validation(boundary):
+    import json
+    from erp_web.http_route_units.publish_routes import handle_publish_payload_preview
+
+    context, request, product_id = boundary
+    chunks = []
+
+    class Handler:
+        path = "/api/publish-payload-preview"
+        headers = {"Accept": "application/x-ndjson"}
+
+        def read_body(self):
+            return {"draft_id": request.draft_id, "platform": "yandex", "site": "global"}
+
+        def send_sse_headers(self, headers):
+            assert headers["X-Accel-Buffering"] == "no"
+
+        def write_sse_chunk(self, chunk):
+            event = json.loads(chunk)
+            if event.get("stage") == "uploading":
+                assert event["completed"] == len(context.test_remote.uploads)
+            chunks.append(event)
+
+    handle_publish_payload_preview(Handler())
+    assert [item["stage"] for item in chunks[:-1]] == [
+        "validating_source", "uploading", "uploading", "saving_images",
+        "validating_final", "building_preview", "saving_preview",
+    ]
+    assert chunks[1] == {"type": "progress", "stage": "uploading", "completed": 0, "total": 1}
+    assert chunks[2]["completed"] == 1
+    assert chunks[-1]["status"] == 200
+    assert chunks[-1]["data"]["validation_digest"]
+    assert context.db.load_product_model(product_id)["source"]["image_pool"][0]["storage_key"]
+
+
+def test_preview_stream_disconnect_still_persists_upload(boundary):
+    from erp_web.http_route_units.publish_routes import handle_publish_payload_preview
+    context, request, product_id = boundary
+
+    class Handler:
+        path = "/api/publish-payload-preview"
+        headers = {"Accept": "application/x-ndjson"}
+        writes = 0
+
+        def read_body(self):
+            return {"draft_id": request.draft_id, "platform": "yandex", "site": "global"}
+
+        def send_sse_headers(self, headers):
+            pass
+
+        def write_sse_chunk(self, chunk):
+            self.writes += 1
+            raise BrokenPipeError("测试客户端离开")
+
+    handler = Handler()
+    handle_publish_payload_preview(handler)
+    assert handler.writes == 1
+    assert len(context.test_remote.uploads) == 1
+    assert context.db.load_product_model(product_id)["source"]["image_pool"][0]["storage_key"]
+
+
+def test_preview_stream_upload_failure_returns_error_without_completion(boundary):
+    import json
+    from erp_web.http_route_units.publish_routes import handle_publish_payload_preview
+    context, request, _ = boundary
+    chunks = []
+
+    def fail():
+        raise RuntimeError("测试上传失败")
+
+    context.test_remote.on_put = fail
+
+    class Handler:
+        path = "/api/publish-payload-preview"
+        headers = {"Accept": "application/x-ndjson"}
+
+        def read_body(self):
+            return {"draft_id": request.draft_id, "platform": "yandex", "site": "global"}
+
+        def send_sse_headers(self, headers):
+            pass
+
+        def write_sse_chunk(self, chunk):
+            chunks.append(json.loads(chunk))
+
+    handle_publish_payload_preview(Handler())
+    assert [item.get("completed") for item in chunks if item.get("stage") == "uploading"] == [0]
+    assert chunks[-1]["status"] == 400
+    assert chunks[-1]["data"]["ok"] is False
+    assert not chunks[-1]["data"].get("validation_digest")
+
+
+def test_preview_http_delivers_progress_before_request_finishes(monkeypatch):
+    """通过真实 HTTP 连接验证 flush，防止进度被缓存到操作结束才一次显示。"""
+    import json
+    from http.client import HTTPConnection
+    from http.server import HTTPServer
+    from threading import Event, Thread
+    from erp_web.facades import publish_facade
+    from erp_web.http_handler import Handler
+    from erp_web.http_route_units.publish_routes import handle_publish_payload_preview
+
+    finish = Event()
+
+    def preview(body, *, on_progress):
+        on_progress({"stage": "uploading", "completed": 1, "total": 2})
+        assert finish.wait(timeout=5), "客户端应在完成前收到图片进度"
+        return {"ok": True, "validation_digest": "test-confirmation"}, 200
+
+    monkeypatch.setattr(publish_facade, "preview_publish_payload", preview)
+
+    class StreamHandler(Handler):
+        def do_POST(self):
+            handle_publish_payload_preview(self)
+
+    with HTTPServer(("127.0.0.1", 0), StreamHandler) as server:
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+        try:
+            connection.request("POST", "/api/publish-payload-preview", json.dumps({
+                "draft_id": "test-draft", "platform": "yandex", "site": "global",
+            }), {"Accept": "application/x-ndjson", "Content-Type": "application/json"})
+            response = connection.getresponse()
+            assert response.status == 200
+            assert json.loads(response.readline()) == {
+                "type": "progress", "stage": "uploading", "completed": 1, "total": 2,
+            }
+            assert not finish.is_set()
+            finish.set()
+            result = json.loads(response.readline())
+            assert result["type"] == "result"
+            assert result["data"]["validation_digest"] == "test-confirmation"
+            assert response.read() == b""
+        finally:
+            finish.set()
+            connection.close()
+            thread.join(timeout=5)
+        assert not thread.is_alive()

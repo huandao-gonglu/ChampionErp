@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.runtime_units import publish_workflows
 from erp_web.schemas.api import ApiResponse
 
@@ -18,8 +19,8 @@ def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return publish_workflows.precheck_publish_payload(body)
 
 
-def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    return publish_workflows.preview_publish_payload(body)
+def preview_publish_payload(body: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> ResponseWithStatus:
+    return publish_workflows.preview_publish_payload(body, on_progress=on_progress)
 
 
 def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:

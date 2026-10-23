@@ -30,6 +30,7 @@ class ShippingModule:
         binding: dict | None = None, category_id: str = '',
         listing_type_id: str = 'gold_pro', free_shipping: bool = True,
         tariff_version: str | None = None,
+        route_ids: set[str] | None = None,
     ) -> QuoteResult:
         if platform == 'mercadolibre':
             return quote_mercadolibre(
@@ -61,4 +62,4 @@ class ShippingModule:
             finally:
                 self.ozon_discovery_ms = (perf_counter() - started) * 1000
                 logger.info("Ozon 公共渠道查询%s，耗时 %.2f 秒，可用渠道 %d", "失败" if platform in self.errors else "完成", self.ozon_discovery_ms / 1000, len(self.methods or []))
-        return quote_table(self.snapshots[platform], package, price_for_shipping, cny_per_rub=cny_per_rub, methods=self.methods)
+        return quote_table(self.snapshots[platform], package, price_for_shipping, cny_per_rub=cny_per_rub, methods=self.methods, route_ids=route_ids)

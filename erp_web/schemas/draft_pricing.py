@@ -7,22 +7,29 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 Amount = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 Rate = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 Percent = Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)]
+PositiveRate = Annotated[float, Field(gt=0, allow_inf_nan=False)]
+ReturnRate = Annotated[float, Field(ge=0, lt=100, allow_inf_nan=False)]
 
 
 class PricingModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ExchangeRateOverrides(PricingModel):
+    usd_cny_rate: PositiveRate | None = None
+    mxn_usd_rate: PositiveRate | None = None
+    rub_cny_rate: PositiveRate | None = None
+
+
 class PricingCommonPatch(PricingModel):
     domestic_freight_cny: Amount | None = Field(default=None, description="国内物流费用，人民币；与国际运费独立。")
     packaging_cost_cny: Amount | None = None
     other_cost_cny: Amount | None = None
-    battery: bool | None = None
-    liquid: bool | None = None
     exchange_rate_mode: Literal["live", "manual"] | None = None
     usd_cny_rate: Rate | None = None
     mxn_usd_rate: Rate | None = None
     rub_cny_rate: Rate | None = None
+    exchange_rate_overrides: ExchangeRateOverrides | None = None
 
 
 class PricingMoney(PricingModel):
@@ -30,8 +37,24 @@ class PricingMoney(PricingModel):
     currency: str = Field(max_length=3, description="按页面已显示的发布币种录入；币种尚未解析时可留空，由确定性引擎校验。")
 
 
-class PricingTargetPatch(PricingModel):
-    commission_percent: Percent | None = None
+class PricingShippingSelection(PricingModel):
+    warehouse_id: int = Field(gt=0, strict=True)
+    route_id: str = Field(min_length=1, max_length=200)
+
+
+class ReturnLossPatch(PricingModel):
+    return_rate_percent: ReturnRate | None = Field(default=None, description="预计退货件数占发出件数的比例；0 表示不计提货损。")
+    return_disposition: Literal["discard", "resell"] | None = Field(default=None, description="弃货或退回再售；再售默认完整回收采购成本。")
+    return_handling_cost_cny: Amount | None = Field(default=None, description="每件退货额外损失，人民币；含退回、处理及其他不退费用，不重复填写原发货物流和包装。")
+
+
+class ReturnLossSettings(PricingModel):
+    return_rate_percent: ReturnRate = 0
+    return_disposition: Literal["discard", "resell"] = "discard"
+    return_handling_cost_cny: Amount = 0
+
+
+class PricingTargetPatch(ReturnLossPatch):
     payment_fee_percent: Percent | None = None
     other_fee_percent: Percent | None = None
     pricing_mode: Literal["margin", "markup", "manual"] | None = None
@@ -40,6 +63,7 @@ class PricingTargetPatch(PricingModel):
     shipping_quote_mode: Literal["auto", "manual"] | None = None
     shipping_currency: Literal["CNY", "USD"] | None = None
     shipping_amount: Amount | None = Field(default=None, description="目标市场的国际运费；国内物流请填写 common.domestic_freight_cny。")
+    shipping_selection: PricingShippingSelection | None = Field(default=None, description="指定 Yandex 可用发布仓库和物流渠道；显式 null 恢复全部可用方案比价。")
     manual_price: PricingMoney | None = None
 
 
@@ -48,22 +72,17 @@ class PricingParameters(PricingModel):
     targets: dict[str, PricingTargetPatch] = Field(default_factory=dict, description="以 platform:site 为键，仅填写用户要求修改的费用或利润率；省略则使用已保存配置。")
 
 
+class PricingTemplateSource(PricingModel):
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=80)
+
+
 class DraftPricingRequest(PricingParameters):
     draft_id: str = Field(min_length=1, max_length=160)
+    preview_id: str = Field(default="", max_length=80, description="应用售价时传入最近成功预览返回的标识，并保持相同核价参数；有效期十分钟。")
     expected_updated_at: str = ""
+    template_source: PricingTemplateSource | None = Field(default=None, description="本次人工费用模板的来源快照，仅记录来源，不据此重新套用模板；省略保留原来源，null 清除。")
     target_keys: list[str] = Field(default_factory=list, description="留空核价全部已选市场；系统自动读取全部已勾选 SKU 的成本、尺寸与覆盖配置。")
-
-
-class SkuPackagePatch(PricingModel):
-    length_cm: str | float | None = None
-    width_cm: str | float | None = None
-    height_cm: str | float | None = None
-    weight_kg: str | float | None = None
-
-
-class SkuFactsPatch(PricingModel):
-    cost_cny: str | float | None = None
-    package_dimensions: SkuPackagePatch | None = None
 
 
 class SkuFixedFeesPatch(PricingModel):
@@ -72,7 +91,7 @@ class SkuFixedFeesPatch(PricingModel):
     other_cost_cny: Amount | None = None
 
 
-class SkuTargetPricingPatch(PricingModel):
+class SkuTargetPricingPatch(ReturnLossPatch):
     shipping_amount: Amount | None = None
     manual_price: PricingMoney | None = None
 
@@ -85,7 +104,6 @@ class SkuPricingOverrides(PricingModel):
 class SkuPricingUpdate(PricingModel):
     sku_id: str = Field(min_length=1)
     selected: bool
-    overrides: SkuFactsPatch = Field(default_factory=SkuFactsPatch)
     pricing_overrides: SkuPricingOverrides = Field(default_factory=SkuPricingOverrides)
 
 
@@ -113,6 +131,7 @@ class PricingIssue(PricingModel):
 
 class DraftPricingResult(PricingModel):
     draft_id: str
+    preview_id: str = ""
     applied: bool
     sku_count: int
     target_count: int

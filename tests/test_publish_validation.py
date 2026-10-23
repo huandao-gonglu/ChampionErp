@@ -349,7 +349,7 @@ def test_mercadolibre_precheck_does_not_restore_product_upc_for_exempt_draft() -
     draft["allow_gtin_exemption"] = True
     draft["target_sites"][0]["attributes"].pop("GTIN", None)
 
-    result = _validate(product, _ml_ready_config())
+    result = _validate(product, _ml_ready_config(), category_definition=_ml_category_definition())
 
     assert not any(item["code"] == "UPC_MISSING" for item in result["errors"])
     assert any(item["code"] == "UPC_MISSING" for item in result["warnings"])
@@ -357,7 +357,7 @@ def test_mercadolibre_precheck_does_not_restore_product_upc_for_exempt_draft() -
 
 def test_mercadolibre_precheck_rejects_brand_outside_restricted_candidates() -> None:
     product = _ml_cbt_product()
-    product["drafts"]["mercadolibre"]["brand"] = "蔚小电"
+    product["brand"] = "蔚小电"
     definition = _ml_category_definition()
     brand = definition.attribute_by_id("BRAND")
     assert brand is not None

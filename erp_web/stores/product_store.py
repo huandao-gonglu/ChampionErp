@@ -18,7 +18,7 @@ from typing import Any, Iterator
 from pydantic import ValidationError
 
 from erp_web.db import ErpDatabase, product_identity
-from erp_web.schemas.draft_package import DraftSkuPackageUpdateRequest
+from erp_web.schemas.product_facts import ProductSkuFactsUpdateRequest
 from erp_web.stores.product_mutation import product_mutation, product_resource_locks
 from erp_web.marketplace_registry import marketplace_site
 from erp_web.product_model import (
@@ -36,6 +36,7 @@ from erp_web.product_model import (
 )
 from erp_web.product_model.common import normalize_list
 from erp_web.product_model.sku_image_model import replace_draft_sku_images
+from erp_web.product_model.source_facts import validate_draft_facts
 from erp_web.runtime_units.image_pool_core import (
     _display_image_ref,
     _source_pool_items,
@@ -207,7 +208,7 @@ def normalize_persisted_product_fields(
         raise ValueError(
             "持久化产品缺少有效 schema_version；请清空开发数据并按当前 schema 重建"
         ) from exc
-    if schema_version != PRODUCT_SCHEMA_VERSION:
+    if schema_version not in (4, PRODUCT_SCHEMA_VERSION):
         raise ValueError(
             "持久化产品 schema_version "
             f"{schema_version} 不是当前版本 {PRODUCT_SCHEMA_VERSION}；"
@@ -369,8 +370,6 @@ _DRAFT_PUBLISH_CONTENT_FIELDS = (
     "search_terms",
     "language",
     "images",
-    "sale_terms",
-    "allow_gtin_exemption",
     "shipping",
 )
 _TARGET_PUBLISH_CONTENT_FIELDS = (
@@ -578,7 +577,12 @@ def _changed_publish_content_targets(
             previous.get(field) != target.get(field)
             for field in _TARGET_PUBLISH_CONTENT_FIELDS
         )
-        if root_changed or target_changed:
+        mercado_terms_changed = (
+            _draft_target_identity(target)[0] == "mercadolibre"
+            and any(existing.get(field) != incoming.get(field)
+                    for field in ("allow_gtin_exemption", "sale_terms"))
+        )
+        if root_changed or target_changed or mercado_terms_changed:
             changed[index] = previous if isinstance(previous, dict) else {}
     return changed
 
@@ -777,6 +781,9 @@ class ProductStore:
             )
         reject_retired_product_category_fields(data)
         validate_product_root_fields(data)
+        if int(data.get("schema_version") or 5) >= 5:
+            for draft in (data.get("drafts") or {}).values():
+                validate_draft_facts(draft)
         product = self.sync_product_workflow_statuses(
             enrich_product_image_dimensions(normalize_product_fields(data))
         )
@@ -833,6 +840,8 @@ class ProductStore:
         product_id = str(product_data.get("product_id") or "").strip()
         existing = self.load_product_from_index(product_id, "") if product_id else {}
         if str(existing.get("product_id") or "").strip() == product_id:
+            if product_data.get("updated_at") and product_data["updated_at"] != existing.get("updated_at"):
+                raise ValueError("商品资料已更新，请重新加载后保存。")
             existing.pop("drafts", None)
             existing_source = (
                 existing.get("source")
@@ -1073,12 +1082,6 @@ class ProductStore:
             "model": str(normalized.get("model") or source.get("model") or ""),
             "sku": str(normalized.get("sku") or ""),
             "stock": str(normalized.get("stock") or ""),
-            "cost": str(
-                normalized.get("cost")
-                or normalized.get("source_price_cny_for_cost")
-                or source.get("price")
-                or ""
-            ),
             "source_price": str(source.get("price") or ""),
             "currency": str(source.get("currency") or ""),
             "weight_kg": str(
@@ -1320,49 +1323,31 @@ class ProductStore:
         )
         return {"changed": error is None}, error, status
 
-    @product_mutation("draft")
-    def update_draft_sku_package(
-        self, draft_id: str, sku_ids: list[str], package_dimensions: dict[str, float],
-    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
-        """在商品锁内局部更新 SKU 包装，保留来源事实、其他规格和全部目标市场。"""
-        try:
-            request = DraftSkuPackageUpdateRequest(
-                draft_id=draft_id, sku_ids=sku_ids, package_dimensions=package_dimensions,
-            )
-        except ValidationError:
-            return {}, {"error": "SKU ID 或包装字段无效，包装值必须是有限正数。", "error_code": "DRAFT_SKU_PACKAGE_INVALID"}, 400
-        existing = self._db.load_draft_model(request.draft_id)
-        if not existing:
-            return {}, {"error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND"}, 404
-        product = self._db.load_product_model(existing["product_id"])
-        facts = {row["id"]: row for row in product.get("sku_items", [])}
-        rows = deepcopy(existing.get("sku_items", []))
-        by_id = {row["sku_id"]: row for row in rows}
-        if any(sku_id not in by_id or not by_id[sku_id].get("selected")
-               or not facts.get(sku_id, {}).get("active", False) for sku_id in request.sku_ids):
-            return {}, {"error": "只能修改当前草稿中已选且启用的 SKU。", "error_code": "SKU_OUTSIDE_DRAFT"}, 400
-        published = {"published", "real_publish_success", "success"}
-        if any(subject.get("publish_status") in published or subject.get("status") in published
-               for subject in [existing, *existing.get("target_sites", [])]) or any(
-            by_id[sku_id].get("publications") for sku_id in request.sku_ids
-        ):
-            return {}, {"error": "SKU 或草稿已发布，不能修改包装资料。", "error_code": "DRAFT_ALREADY_PUBLISHED"}, 409
-        patch = {key: str(value) for key, value in request.package_dimensions.model_dump(exclude_unset=True).items()}
-        changed_count = 0
-        for sku_id in request.sku_ids:
-            row = by_id[sku_id]
-            overrides = row.setdefault("overrides", {})
-            current = overrides.get("package_dimensions", {})
-            if any(current.get(key) != value for key, value in patch.items()):
-                overrides["package_dimensions"] = {**current, **patch}
-                changed_count += 1
-        if not changed_count:
-            return {"changed_count": 0, "updated_at": existing["updated_at"]}, None, 200
-        # 携带锁内读取的全部目标，避免局部 SKU 修改缩减多平台草稿；复用保存的预检失效规则。
-        result, error, status = self.save_draft_content({**existing, "sku_items": rows})
-        if error is not None:
-            return {}, error, status
-        return {"changed_count": changed_count, "updated_at": result["draft"]["updated_at"]}, None, 200
+    @product_mutation("product")
+    def update_product_sku_facts(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = ProductSkuFactsUpdateRequest.model_validate(payload)
+        product = self.load_product_from_index(request.product_id)
+        if product.get("product_id") != request.product_id:
+            raise ValueError("商品不存在。")
+        if product.get("updated_at") != request.expected_updated_at:
+            raise ValueError("商品资料已更新，请重新读取后修改。")
+        rows = {row["id"]: row for row in product.get("sku_items", [])}
+        if any(change.sku_id not in rows for change in request.changes):
+            raise ValueError("指定 SKU 不属于当前商品。")
+        changed = 0
+        for change in request.changes:
+            row = rows[change.sku_id]
+            before = deepcopy(row)
+            patch = change.model_dump(exclude_unset=True, exclude={"sku_id"})
+            for key, value in patch.items():
+                if key == "package_dimensions":
+                    row[key] = {**row.get(key, {}), **{field: str(v) for field, v in value.items()}}
+                else:
+                    row[key] = value if key in {"battery", "liquid", "options"} else str(value)
+            changed += row != before
+        saved = self.save_product_profile(product) if changed else product
+        return {"product_id": request.product_id, "changed_count": changed,
+                "updated_at": saved["updated_at"], "sku_ids": [item.sku_id for item in request.changes]}
 
     def save_draft_detail(
         self, draft_payload: dict[str, Any]
@@ -1400,6 +1385,10 @@ class ProductStore:
         if retired_fields:
             return {}, {"ok": False, "error_code": "RETIRED_DRAFT_SALES_FIELDS",
                         "error": "销售资料已由 SKU 接管，请在 SKU 中修改：" + "、".join(sorted(retired_fields))}, 400
+        try:
+            validate_draft_facts(draft_payload)
+        except ValueError as exc:
+            return {}, {"ok": False, "error_code": "PRODUCT_FACTS_READ_ONLY", "error": str(exc)}, 400
         existing = self._db.load_draft_model(draft_id)
         if not existing:
             return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404

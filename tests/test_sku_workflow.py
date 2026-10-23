@@ -19,6 +19,11 @@ def product_fixture():
         dimensions = {"length_cm": "30", "width_cm": "20", "height_cm": "10", "weight_kg": str(weight)}
         skus.append({"id": f"fact-{index}", "name": f"规格 {index}", "cost_cny": str(cost), "package_dimensions": dimensions, "active": True})
         basis = {"cost_cny": str(cost), **dimensions, "domestic_freight_cny": "0", "packaging_cost_cny": "0", "other_cost_cny": "0"}
+        basis.update(listing_currency="RUB", commission_percent="20", commission_evidence={
+            "source": "platform_api", "purpose": "prelisting", "endpoint": "/mock/ozon/prelisting", "category_id": "",
+            "price": {"amount": str(cost * 30), "currency": "RUB"},
+            "amount": str(cost * 6), "currency": "RUB", "quoted_at": "2026-10-18T00:00:00Z",
+        })
         selected.append({"sku_id": f"fact-{index}", "selected": True, "sku": f"SELL-{index}", "stock": "3",
                          "pricing": {"applied": True, "targets": {"ozon:global": {"calculation_basis": basis, "listing_currency": "RUB", "applied_price": {"amount": str(cost * 30), "currency": "RUB"}}}}})
     return {"product_id": "sku-product", "name": "多规格商品", "sku_items": skus,
@@ -34,7 +39,7 @@ class ItemBoundary:
         self.calls = []
         self.fail_once = True
 
-    def prepare_product(self, product, config):
+    def prepare_product(self, product, config, *, on_progress=None):
         return product
 
     def validate_draft(self, context, config):
@@ -64,6 +69,20 @@ class ItemBoundary:
 def context_for(product):
     draft = product["drafts"]["ozon"]
     return PreparedPublishContext(product=product, draft=draft, target=draft["target_sites"][0], platform="ozon")
+
+
+def test_brand_change_invalidates_ozon_official_commission():
+    product = product_fixture()
+    fact = product["sku_items"][0]
+    draft = product["drafts"]["ozon"]
+    row = draft["sku_items"][0]
+    brand = {"values": [{"dictionary_value_id": "1", "value": "Apple"}]}
+    draft["attributes"] = {"85": brand}
+    evidence = row["pricing"]["targets"]["ozon:global"]["calculation_basis"]["commission_evidence"]
+    evidence["brand_attribute"] = deepcopy(brand)
+    assert not sku_quote_errors(fact, row, draft, "ozon:global")
+    row["attributes_by_target"] = {"ozon:global": {"85": {"values": [{"dictionary_value_id": "2", "value": "Generic"}]}}}
+    assert "品牌属性" in sku_quote_errors(fact, row, draft, "ozon:global")[0]
 
 
 def test_source_sku_identity_and_manual_fact_survive_recollection():
@@ -156,7 +175,7 @@ def test_draft_stock_defaults_to_supplier_and_survives_save(tmp_path, stock, sup
         assert app.db.load_draft_model("sku-draft")["sku_items"][0]["stock"] == "0"
 
 
-def test_each_sku_projects_own_cost_package_and_draft_overrides(tmp_path):
+def test_each_sku_projects_product_facts_and_ignores_retired_draft_overrides(tmp_path):
     with temp_app_context(tmp_path) as app:
         product = app.products.save_product(product_fixture())
         context = context_for(product)
@@ -165,12 +184,12 @@ def test_each_sku_projects_own_cost_package_and_draft_overrides(tmp_path):
         from erp_web.product_model.sku_model import selected_skus
         fact, row = selected_skus(product, draft)[1]
         projected = sku_context(context, fact, row, grouping_contract(context))
-        assert projected.product["cost"] == "65"
-        assert projected.product["sku_items"][0]["package_dimensions"]["weight_kg"] == "2.5"
+        assert projected.product["cost"] == "70"
+        assert projected.product["sku_items"][0]["package_dimensions"] == product["sku_items"][1]["package_dimensions"]
         assert product["sku_items"][1]["cost_cny"] == "70"
-        assert sku_quote_errors(fact, row, draft, "ozon:global")
+        assert sku_quote_errors(fact, row, draft, "ozon:global") == []
         payload = SkuGroupPublishingAdapter(ItemBoundary()).build_payload(context, {})
-        assert [item["payload"]["cost"] for item in payload["items"]] == ["20", "65"]
+        assert [item["payload"]["cost"] for item in payload["items"]] == ["20", "70"]
 
 
 def test_partial_publish_retries_only_failed_sku_and_preserves_remote_state(tmp_path):

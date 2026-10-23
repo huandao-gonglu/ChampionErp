@@ -27,6 +27,16 @@ class ReceivingWarehouseStore:
         with self.orders.connect() as conn:
             return self.read(conn, order_id)
 
+    def get_many(self, orders):
+        """只读当前订单的收货绑定，不校验配置或创建绑定。"""
+        if not orders:
+            return {}
+        with self.orders.connect() as conn:
+            rows = conn.execute("SELECT order_id,value FROM order_receiving_warehouses "
+                                "WHERE order_id IN (SELECT value FROM json_each(?))",
+                                (json.dumps([order.id for order in orders]),)).fetchall()
+        return {row['order_id']: json.loads(row['value']) for row in rows}
+
     @staticmethod
     def public(value):
         return ReceivingWarehouse.model_validate(value).model_dump() if value else None

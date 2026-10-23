@@ -1,15 +1,19 @@
 """SKU 组发布入口：编译冻结清单，逐 SKU 留存结果，重试复用远端身份。"""
 
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
+from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import get_context
+from erp_web.stores.product_store import normalize_product_fields
 from erp_web.marketplaces.publisher import PlatformPublisher, PublishAdapterError
 from erp_web.product_model.sku_model import record, selected_skus, sku_fingerprint, text
 from erp_web.product_model.sku_image_model import sku_image_asset
 from erp_web.schemas.publish_capabilities import PublishIssueSku
 from .collect_helpers import collect_time_iso
 from .publish_context import PreparedPublishContext
+from .publish_validation_session import PublishValidationSession
 from .sku_precheck import summarize_sku_precheck
 from .sku_publish_projection import SkuGroupingMember, grouping_contract, sku_context, sku_quote_errors, target_key, validate_grouping
 
@@ -58,9 +62,9 @@ class SkuGroupPublishingAdapter:
         self.item_adapter = item_adapter
         self.platform = item_adapter.platform
 
-    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
         if self.platform in {"yandex", "ozon"}:
-            return self.item_adapter.prepare_product(product, config)
+            return self.item_adapter.prepare_product(product, config, on_progress=on_progress)
         prepared = deepcopy(product)
         draft = record(record(prepared.get("drafts")).get(self.platform))
         images = deepcopy(draft.get("images", []))
@@ -70,7 +74,7 @@ class SkuGroupPublishingAdapter:
             if asset and asset["id"] not in refs:
                 draft.setdefault("images", []).append({"asset_id": asset["id"], "role": "gallery", "order": len(refs)})
                 refs.add(asset["id"])
-        prepared = self.item_adapter.prepare_product(prepared, config)
+        prepared = self.item_adapter.prepare_product(prepared, config, on_progress=on_progress)
         prepared["drafts"][self.platform]["images"] = images
         return prepared
 
@@ -83,6 +87,10 @@ class SkuGroupPublishingAdapter:
             for field in self.item_adapter.required_attributes_missing(sku_context(context, fact, row, grouping), config)))
 
     def validate_draft(self, context: PreparedPublishContext, config: dict[str, Any], *, image_stage: str = "final") -> dict[str, Any]:
+        # 每次校验新建作用域；最终校验不能沿用基础预检的文件或配置结果。
+        context = replace(context, validation_session=PublishValidationSession(sku_inputs_checked=True))
+        if self.platform == "yandex":
+            context = context.with_product(normalize_product_fields(context.product))
         errors, warnings, rows = [], [], []
         members: list[SkuGroupingMember] = []
         grouping_issues = []

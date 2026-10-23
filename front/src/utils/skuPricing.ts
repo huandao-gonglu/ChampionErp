@@ -4,6 +4,18 @@ export function pricingRecord(value: unknown): UnknownRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
 }
 
+export function shippingCostCny(quote: UnknownRecord): unknown {
+  // 展示本次核价快照，不使用后来刷新或修改的参考汇率。
+  if (quote.shipping_cost_cny != null) return quote.shipping_cost_cny
+  if (quote.shipping_currency === 'CNY') return quote.shipping_amount
+  const rate = Number(quote.usd_cny_rate ?? pricingRecord(quote.calculation_basis).usd_cny_rate)
+  if (quote.shipping_currency === 'USD' && Number.isFinite(rate) && rate > 0
+    && quote.shipping_amount != null && quote.shipping_amount !== '' && Number.isFinite(Number(quote.shipping_amount))) {
+    return Number(quote.shipping_amount) * rate
+  }
+  return undefined
+}
+
 export interface SkuPricingEntry {
   key: string
   row: DraftSku
@@ -24,15 +36,24 @@ export function buildSkuPricingEntries(rows: DraftSku[], skus: ProductSku[], tar
     return targets.map(target => {
       const saved = pricingRecord(quotes[target.targetKey.toLowerCase()])
       const quote = Object.keys(saved).length ? saved : null
-      const errors = (Array.isArray(quote?.errors) ? quote.errors : []).map(error => (
+      const errors = [...new Set((Array.isArray(quote?.errors) ? quote.errors : []).map(error => (
         typeof error === 'string' ? error : String(pricingRecord(error).message || pricingRecord(error).field || '')
-      )).filter(Boolean)
+      )).filter(Boolean))]
+      const commission = pricingRecord(pricingRecord(quote?.calculation_basis).commission_evidence)
+      if (quote && !errors.length && (commission.purpose !== 'prelisting'
+        || ['/v5/product/info/prices', '/v3/product/info/list'].includes(String(commission.endpoint)))) {
+        errors.push('历史报价缺少上架前官方佣金依据，请重新核价')
+      }
+      if (quote && !errors.length && target.platform === 'yandex'
+        && !pricingRecord(pricingRecord(pricingRecord(quote.calculation_basis).shipping_evidence).fulfillment_plan).fingerprint) {
+        errors.push('此报价缺少仓库物流方案，请配置后重新核价')
+      }
       return {
         key: `${row.sku_id}:${target.targetKey}`,
         row, target,
         name: sku?.name || row.sku || row.sku_id,
-        cost: row.overrides.cost_cny ?? sku?.cost_cny,
-        dimensions: { ...sku?.package_dimensions, ...pricingRecord(row.overrides.package_dimensions) },
+        cost: sku?.cost_cny,
+        dimensions: { ...sku?.package_dimensions },
         quote, errors,
         status: !quote ? 'pending' : errors.length ? 'error' : quote.is_loss ? 'loss' : row.pricing.applied ? 'applied' : 'preview',
       }

@@ -42,6 +42,7 @@ def quote_table(
     *,
     cny_per_rub: Decimal | None = None,
     methods: list[dict] | None = None,
+    route_ids: set[str] | None = None,
 ) -> QuoteResult:
     content = snapshot['content']
     platform = content['platform']
@@ -54,6 +55,8 @@ def quote_table(
     result = QuoteResult()
     actual_g = package.weight_g.to_integral_value(rounding=ROUND_CEILING)
     for route in content['rules']:
+        if route_ids is not None and route['id'] not in route_ids:
+            result.reject('未配置可用合作仓与发布仓库'); continue
         matches = []
         minimum = Decimal(0)
         if platform == 'ozon':
@@ -83,11 +86,16 @@ def quote_table(
             currency = 'RUB'
         if package.battery and not route['battery']:
             result.reject('渠道不允许电池'); continue
-        price = price_for_shipping(amount, currency, minimum)
-        if platform == 'ozon' and not minimum <= price <= Decimal(route['price_max_cny']):
-            result.reject('售价不在渠道货值档内'); continue
-        if platform == 'yandex' and route['group'] == 'Extra Small' and price / cny_per_rub > Decimal(policy['price_max_rub']):
-            result.reject('售价超过轻小件货值上限'); continue
+        # 仅货值准入需要售价；普通 Yandex 渠道的运费只取决于包装。
+        # 在此逐渠道核价会放大官方佣金请求，最终选中渠道仍由核价引擎校验。
+        if platform == 'ozon':
+            price = price_for_shipping(amount, currency, minimum)
+            if not minimum <= price <= Decimal(route['price_max_cny']):
+                result.reject('售价不在渠道货值档内'); continue
+        elif route['group'] == 'Extra Small':
+            price = price_for_shipping(amount, currency, minimum)
+            if price / cny_per_rub > Decimal(policy['price_max_rub']):
+                result.reject('售价超过轻小件货值上限'); continue
         evidence = {
             'source': 'tariff_template', 'tariff_version': snapshot['version'],
             'source_cell': route['source_cell'], 'group': route['group'],

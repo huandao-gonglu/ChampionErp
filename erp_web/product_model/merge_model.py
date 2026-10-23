@@ -19,6 +19,7 @@ from .draft_image_model import normalize_draft_image_refs
 from .image_pool_model import image_pool_refs, normalize_image_pool
 from .sku_model import normalize_product_skus, normalize_draft_skus, merge_collected_skus
 from .sku_image_model import migrate_sku_image_addresses
+from .source_facts import clean_draft_facts, migrate_source_facts, validate_draft_facts
 
 
 _REMOVED_PRODUCT_FIELDS = {
@@ -104,7 +105,9 @@ def validate_product_root_fields(
     """Reject retired or unknown root keys at persistence boundaries."""
 
     _reject_removed_product_fields(product)
-    unknown = sorted(set(product).difference(_CANONICAL_PRODUCT_FIELDS))
+    if "cost" in product and int(product.get("schema_version") or PRODUCT_SCHEMA_VERSION) >= 5:
+        raise ValueError("采购成本请在商品 SKU 中设置，不再保存商品级采购成本。")
+    unknown = sorted(set(product).difference(_CANONICAL_PRODUCT_FIELDS | ({"cost"} if product.get("schema_version") == 4 else set())))
     if unknown:
         raise ValueError(
             "产品包含非 canonical 根字段："
@@ -122,6 +125,7 @@ def validate_platform_draft_root_fields(
 ) -> None:
     """Reject retired or unknown draft root keys at persistence boundaries."""
 
+    validate_draft_facts(draft)
     removed = sorted(_REMOVED_DRAFT_FIELDS.intersection(draft))
     if removed:
         raise ValueError(
@@ -583,8 +587,7 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
         current["language"] = str(current.get("language") or product.get("marketplace_terms", {}).get(platform, {}).get("language") or site_config["language"]).strip()
         current["country"] = str(current.get("country") or site_config["label"]).strip()
 
-    current["brand"] = str(current.get("brand") or product.get("brand") or source.get("brand") or "Generic").strip() or "Generic"
-    current["model"] = str(current.get("model") or product.get("model") or source.get("model") or "General").strip() or "General"
+    current = clean_draft_facts(current)
     # 平台属性只属于当前平台草稿。来源站属性保留在 source.attributes，
     # 不得因为草稿为空而复制进 Mercado/Ozon/Yandex 的发布字段。
     current["attributes"] = deepcopy(current.get("attributes") or {})
@@ -955,6 +958,10 @@ def merge_source_partial_result(
 
 def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
     incoming = deepcopy(product or {})
+    if incoming.get("schema_version") == 4:
+        keys = list((incoming.get("drafts") or {}).keys())
+        incoming, migrated, _ = migrate_source_facts(incoming, list((incoming.get("drafts") or {}).values()))
+        incoming["drafts"] = dict(zip(keys, migrated))
     migrate_sku_image_addresses(incoming)
     _reject_removed_product_fields(incoming)
     raw_schema_version = incoming.get("schema_version")

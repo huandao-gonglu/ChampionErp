@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import http.client
 import io
 import logging
 import re
@@ -93,11 +94,16 @@ class ExternalRequestManager:
         if ctx.semantics == "write":
             self.store.block(ctx, RequestFailure("EXTERNAL_WRITE_OUTCOME_UNKNOWN", "同一操作的写入结果未知，请先查询业务回执", "request"))
 
-    def open(self, request, *, timeout=30, request_context_value=None, transport=None, source="external", follow_redirects=True, **kwargs):
-        if not follow_redirects:
+    def open(self, request, *, timeout=30, request_context_value=None, transport=None, source="external", follow_redirects=True, cookie_jar=None, **kwargs):
+        if not follow_redirects or cookie_jar is not None:
             if transport is not None:
-                raise ValueError("禁用重定向时不能覆盖受控传输")
-            transport = urllib.request.build_opener(_NoRedirect()).open
+                raise ValueError("配置重定向或 Cookie 时不能覆盖受控传输")
+            handlers = []
+            if not follow_redirects:
+                handlers.append(_NoRedirect())
+            if cookie_jar is not None:
+                handlers.append(urllib.request.HTTPCookieProcessor(cookie_jar))
+            transport = urllib.request.build_opener(*handlers).open
         if isinstance(request,str):
             request = urllib.request.Request(request)
         ctx = request_context_value or request_context(request.full_url,dict(request.header_items()),data=request.data,
@@ -146,7 +152,9 @@ class ExternalRequestManager:
                 self.network_error(request_id,ctx)
                 if ctx.semantics == "write" and isinstance(exc, Exception):
                     raise ExternalRequestOutcomeUnknown() from exc
-                raise
+                if not (isinstance(exc, (OSError, http.client.HTTPException)) and ctx.semantics == "read"
+                        and attempt < ctx.max_attempts and time.time()+ctx.retry_delay < deadline):
+                    raise
             # 默认不重试；显式只读预算内的服务端失败才会进入此分支。
             until = time.time()+ctx.retry_delay
             while time.time() < until:

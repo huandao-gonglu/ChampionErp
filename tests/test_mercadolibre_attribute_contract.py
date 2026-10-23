@@ -446,9 +446,9 @@ def test_compile_open_collection_accepts_custom_and_known_values() -> None:
     }
 
 
-def test_compile_brand_and_model_only_use_root_draft_fields() -> None:
+def test_compile_brand_and_model_prefer_platform_mapping_over_product_view() -> None:
     draft = _draft()
-    draft["attributes"].update({"BRAND": "旧重复品牌", "MODEL": "旧重复型号"})
+    draft["attributes"].update({"BRAND": "平台品牌", "MODEL": "平台型号"})
 
     result = compile_mercadolibre_attributes(
         draft,
@@ -457,8 +457,8 @@ def test_compile_brand_and_model_only_use_root_draft_fields() -> None:
     )
 
     rows = {item["id"]: item for item in result.attributes}
-    assert rows["BRAND"]["value_name"] == "Wei Xiao Dian"
-    assert rows["MODEL"]["value_name"] == "X05"
+    assert rows["BRAND"]["value_name"] == "平台品牌"
+    assert rows["MODEL"]["value_name"] == "平台型号"
 
 
 def _restricted_brand_definition(*, has_more_values: bool = False):
@@ -592,7 +592,7 @@ def test_compile_restricted_brand_accepts_selected_id_beyond_preview() -> None:
     }
 
 
-def test_compile_ignores_stale_brand_selection_metadata() -> None:
+def test_compile_keeps_platform_brand_selection_when_product_brand_differs() -> None:
     draft = _draft()
     draft["brand"] = "Generic"
     draft["attributes"]["BRAND"] = {
@@ -613,8 +613,8 @@ def test_compile_ignores_stale_brand_selection_metadata() -> None:
     brand_wire = next(item for item in result.attributes if item["id"] == "BRAND")
     assert brand_wire == {
         "id": "BRAND",
-        "value_id": "35977846",
-        "value_name": "Generic",
+        "value_id": "remote-99",
+        "value_name": "Old selected brand",
     }
 
 
@@ -816,3 +816,56 @@ def test_custom_attributes_survive_remote_confirmation_and_update_projection():
     assert publication["confirmed_payload"]["attributes"] == entries
     assert _confirmed_value_equal("attributes", entries, entries)
     assert not _confirmed_value_equal("attributes", entries, [{"name": "Design", "values": [{"name": "3D"}]}])
+
+
+def _reason_definition():
+    definition = _definition()
+    def editable(attribute):
+        if attribute.id != "EMPTY_GTIN_REASON":
+            return attribute
+        return attribute.model_copy(update={"options": (*attribute.options, CategoryAttributeOptionPreview(dictionary_value_id="other-reason", value="The product is handmade"))})
+    return definition.model_copy(update={"required": tuple(map(editable, definition.required)), "optional": tuple(map(editable, definition.optional))})
+
+
+def test_explicit_empty_gtin_reason_overrides_legacy_default_and_can_be_cleared():
+    draft = _draft()
+    draft.update(upc="", allow_gtin_exemption=True, attributes={"VOLTAGE": "110/220V", "EMPTY_GTIN_REASON": "The product is handmade"})
+    result = compile_mercadolibre_attributes(draft, _reason_definition(), listing_model="traditional_global_items")
+    assert not result.issues
+    assert next(item for item in result.attributes if item["id"] == "EMPTY_GTIN_REASON")["value_id"] == "other-reason"
+    draft["attributes"]["EMPTY_GTIN_REASON"] = ""
+    result = compile_mercadolibre_attributes(draft, _reason_definition(), listing_model="traditional_global_items")
+    assert any(issue.code == "UPC_MISSING" for issue in result.issues)
+    assert not any(item["id"] == "EMPTY_GTIN_REASON" for item in result.attributes)
+
+
+def test_explicit_reason_requires_no_exemption_flag_and_is_not_sent_with_barcode():
+    draft = _draft()
+    draft.update(upc="", allow_gtin_exemption=False, attributes={"VOLTAGE": "110/220V", "EMPTY_GTIN_REASON": "The product is handmade"})
+    result = compile_mercadolibre_attributes(draft, _reason_definition(), listing_model="user_products")
+    assert not result.issues
+    assert any(item["id"] == "EMPTY_GTIN_REASON" for item in result.attributes)
+    draft["upc"] = "123456789012"
+    result = compile_mercadolibre_attributes(draft, _reason_definition(), listing_model="user_products")
+    assert not result.issues
+    assert not any(item["id"] == "EMPTY_GTIN_REASON" for item in result.attributes)
+    assert any(item["id"] == "GTIN" for item in result.attributes)
+
+
+def test_reason_enum_is_validated_and_category_without_identifier_has_no_upc_requirement():
+    draft = _draft()
+    draft.update(upc="", attributes={"VOLTAGE": "110/220V", "EMPTY_GTIN_REASON": "不在平台枚举中的原因"})
+    result = compile_mercadolibre_attributes(draft, _reason_definition(), listing_model="user_products")
+    assert any(issue.field == "attributes.EMPTY_GTIN_REASON" for issue in result.issues)
+    definition = _reason_definition()
+    identifiers = {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE", "EMPTY_GTIN_REASON"}
+    definition = definition.model_copy(update={"required": tuple(item for item in definition.required if item.id not in identifiers), "optional": tuple(item for item in definition.optional if item.id not in identifiers)})
+    draft["attributes"].pop("EMPTY_GTIN_REASON")
+    result = compile_mercadolibre_attributes(draft, definition, listing_model="user_products")
+    assert not result.issues
+
+
+def test_empty_gtin_reason_is_editable_attribute_for_agent_and_ui():
+    from erp_web.runtime_units.category_attribute_access import attribute_write_scope
+    assert attribute_write_scope("mercadolibre", {"id": "EMPTY_GTIN_REASON"}) == "common"
+    assert attribute_write_scope("mercadolibre", {"id": "EMPTY_GTIN_REASON", "read_only": True}) == "read_only"

@@ -28,7 +28,7 @@ def seed_draft():
     ]
     product["drafts"]["mercadolibre"]["sku_items"] = [
         {"sku_id": f"sku-{i}", "selected": True, "stock": "9",
-         "overrides": {"cost_cny": str(i + 2)},
+         "overrides": {"image_asset_id": f"image-{i}"},
          "pricing": {"applied": True, "targets": {"mercadolibre:cbt": {
              "listing_currency": "USD", "applied_price": {"amount": str(20 + i), "currency": "USD"},
          }}}}
@@ -201,7 +201,7 @@ def test_selection_schema_and_read_preserve_boolean_and_structured_overrides():
     toolset = build_global_chat_toolset(app)
     result = toolset.bindings["draft_read"].executor({"draft_id": source_id}, execution(source_id))
     assert result["draft"]["sku_items"][0]["selected"] is True
-    assert result["draft"]["sku_items"][0]["overrides"] == {"cost_cny": "2"}
+    assert result["draft"]["sku_items"][0]["overrides"] == {"image_asset_id": "image-0"}
     assert result["product_context"]["sku_items"][0]["active"] is True
     app.products.update_draft_sku_selection(source_id, [])
     result = toolset.bindings["draft_read"].executor({"draft_id": source_id}, execution(source_id))

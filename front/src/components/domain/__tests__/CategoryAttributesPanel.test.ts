@@ -59,6 +59,19 @@ afterEach(() => {
 })
 
 describe('CategoryAttributesPanel', () => {
+  it('不要求条码的市场不会在可选属性中重新显示 UPC', () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.categoryId = 'category'
+    const category: CategorySelection = {
+      platform: 'yandex', categoryId: 'category', categoryPath: '商品', fetchedAt: '2026-10-23', raw: {},
+      requiredAttributes: [], optionalAttributes: [{ id: 'UPC', name: 'UPC', required: false }],
+    }
+    const wrapper = mount(CategoryAttributesPanel, { props: { ...panelProps(draft, category), target: yandexTarget } })
+    expect(wrapper.find('[data-attribute-id="UPC"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="draft-barcode-fields"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('UPC')
+  })
+
   it.each([true, false])('平台格式文本支持多行编辑和逐行纠错（必填：%s）', async (required) => {
     const draft = createEmptyDraftDetail('yandex')
     draft.draftId = 'formatted-draft'
@@ -314,16 +327,14 @@ describe('CategoryAttributesPanel', () => {
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
   })
 
-  it('Mercado 品牌和型号映射到草稿根字段而不保留重复属性值', async () => {
+  it('Mercado 品牌和型号只编辑平台映射', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-mercado-brand-model'
     draft.site = 'CBT'
     draft.categoryId = 'CBT455865'
-    draft.brand = 'Root Brand'
-    draft.model = 'Root Model'
     draft.attributes = {
-      BRAND: { values: [{ dictionaryValueId: 'stale-brand-id', value: 'Root Brand' }] },
-      MODEL: 'Stale Model',
+      BRAND: 'Root Brand',
+      MODEL: 'Root Model',
     }
     const category: CategorySelection = {
       platform: 'mercadolibre',
@@ -353,21 +364,19 @@ describe('CategoryAttributesPanel', () => {
     await brandInput.setValue('New Brand')
     await modelInput.setValue('New Model')
 
-    expect(draft.brand).toBe('New Brand')
-    expect(draft.model).toBe('New Model')
-    expect(draft.attributes.BRAND).toBeUndefined()
-    expect(draft.attributes.MODEL).toBeUndefined()
+    expect(draft.attributes.BRAND).toBe('New Brand')
+    expect(draft.attributes.MODEL).toBe('New Model')
+    expect(draft).not.toHaveProperty('brand')
+    expect(draft).not.toHaveProperty('model')
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(2)
   })
 
-  it('Mercado 严格品牌复用本地候选 picker，MODEL 仍使用普通输入', async () => {
+  it('Mercado 品牌和型号均遵守平台候选约束', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-mercado-local-brand'
     draft.site = 'CBT'
     draft.categoryId = 'CBT455865'
-    draft.brand = 'Old Brand'
-    draft.model = 'Root Model'
-    draft.attributes = { MODEL: 'Stale Model' }
+    draft.attributes = { BRAND: 'Old Brand', MODEL: 'Root Model' }
     const category: CategorySelection = {
       platform: 'mercadolibre',
       categoryId: 'CBT455865',
@@ -413,8 +422,8 @@ describe('CategoryAttributesPanel', () => {
     expect(baseus).toBeDefined()
     await baseus!.trigger('click')
 
-    expect(draft.brand).toBe('Baseus')
-    expect(draft.attributes.BRAND).toBeUndefined()
+    expect(draft.attributes.BRAND).toBe('Baseus')
+    expect(draft).not.toHaveProperty('brand')
     expect(fetchCategoryAttributeValues).not.toHaveBeenCalled()
   })
 
@@ -515,7 +524,7 @@ describe('CategoryAttributesPanel', () => {
 
     await wrapper.findAll('button').find((button) => button.text().includes('Remote Brand 51'))!.trigger('click')
 
-    expect(draft.brand).toBe('Remote Brand 51')
+    expect(draft).not.toHaveProperty('brand')
     expect(draft.attributes.BRAND).toEqual({
       values: [{ dictionaryValueId: 'brand-51', value: 'Remote Brand 51' }],
     })
@@ -523,21 +532,18 @@ describe('CategoryAttributesPanel', () => {
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
 
     await wrapper.findAll('button').find((button) => button.text() === '清除已选')!.trigger('click')
-    expect(draft.brand).toBe('')
+    expect(draft).not.toHaveProperty('brand')
     expect(draft.attributes.BRAND).toBeUndefined()
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(2)
     wrapper.unmount()
   })
 
-  it('Mercado 严格品牌显示旧非法根值并要求重新选择', async () => {
+  it('Mercado 严格品牌显示旧非法平台值并要求重新选择', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-mercado-invalid-brand'
     draft.site = 'CBT'
     draft.categoryId = 'CBT455865'
-    draft.brand = '蔚小电'
-    draft.attributes.BRAND = {
-      values: [{ dictionaryValueId: 'other-brand-id', value: 'Other Brand' }],
-    }
+    draft.attributes.BRAND = '蔚小电'
     const category: CategorySelection = {
       platform: 'mercadolibre',
       categoryId: 'CBT455865',
@@ -568,12 +574,11 @@ describe('CategoryAttributesPanel', () => {
     expect(wrapper.text()).toContain('旧值“蔚小电”不是平台选项，请重新选择。')
   })
 
-  it('Mercado 品牌无平台候选时手工编辑根值会清理旧选择元数据', async () => {
+  it('Mercado 严格品牌无候选时仍禁止自由填写', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-mercado-manual-brand'
     draft.site = 'CBT'
     draft.categoryId = 'CBT455865'
-    draft.brand = 'Old Brand'
     draft.attributes.BRAND = {
       values: [{ dictionaryValueId: 'old-brand-id', value: 'Old Brand' }],
     }
@@ -603,10 +608,8 @@ describe('CategoryAttributesPanel', () => {
 
     await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     const brandInput = wrapper.get<HTMLInputElement>('input[data-attribute-id="BRAND"]')
-    expect(brandInput.attributes()).not.toHaveProperty('readonly')
-    await brandInput.setValue('Edited Brand')
-    expect(draft.brand).toBe('Edited Brand')
-    expect(draft.attributes.BRAND).toBeUndefined()
+    expect(brandInput.attributes()).toHaveProperty('readonly')
+    expect(draft.attributes.BRAND).toEqual({ values: [{ dictionaryValueId: 'old-brand-id', value: 'Old Brand' }] })
   })
 
   it('包装属性由 SKU 派生，公共属性页不提供第二份包装编辑入口', () => {

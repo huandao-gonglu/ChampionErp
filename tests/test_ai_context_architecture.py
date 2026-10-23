@@ -581,7 +581,7 @@ def test_generic_object_saves_not_in_global_task_allowlist() -> None:
         "product_profile_patch",
         "draft_duplicate",
         "draft_sku_selection_update",
-        "draft_sku_package_update",
+        "product_sku_facts_update",
         "draft_pricing_apply",
         "product_attributes_update",
     ):
@@ -1100,6 +1100,17 @@ def test_order_progress_sync_is_explicitly_composed_and_not_a_read_side_effect()
     assert 'sync_order_progress(' not in reads
     source = service.read_text()
     assert source.index('self.store.save_snapshot(') < source.index('self.progress_sync(snapshot.identity, checkpoint)')
+
+
+def test_order_center_query_reads_domain_owners_without_network_dependencies():
+    source = ROOT / 'erp_web/services/order_center_query_service.py'
+    targets = imported_targets([source])
+    assert not any('runtime_units' in target or 'external_request' in target or '_client' in target
+                   for _, target in targets)
+    facade = (ROOT / 'erp_web/facades/order_notification_facade.py').read_text()
+    assert 'OrderCenterQueryService(' in facade
+    routes = (ROOT / 'erp_web/http_route_units/order_routes.py').read_text()
+    assert 'ORDER_CENTER_FILTER_KEYS' in routes
 
 
 def test_procurement_does_not_own_parcel_lifecycle():

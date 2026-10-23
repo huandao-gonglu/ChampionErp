@@ -746,16 +746,50 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 发布币种与核价
 
+- `services/pricing_return_loss.py` 按退货率将单次净损失分摊到最终成交件数，使用精确分数参与
+  求解器、取整后的利润校验及手动售价利润计算，不额外查询平台。`schemas/draft_pricing.py`
+  定义选填参数，市场共用、SKU 覆盖、费用模板、预览绑定和发布失效校验均沿用同一字段。
+  佣金按全退、发货物流与包装按不退估算；退回再售完整回收采购成本，弃货计入采购成本。
+  其他固定成本及支付/其他平台费用不自动追加到退货损失，额外不退费用由用户填写；
+  结果标为本地预估，不属于官方费用核验。旧数据缺省退货率为 0，不改变其原成本口径。
+
+- `PricingPanel.vue` 按 Penpot「核价」原型组合范围/汇率栏、费用模板侧栏及连续 SKU 结果。
+  `PricingExchangeRates` 保留每个汇率的手动覆盖与 API 参考；`PricingTemplates` 管理费用模板；
+  `PricingSkuResults` 对完整结果执行搜索和市场/异常筛选，按 SKU 合并成本包装，无分页。
+  进入页面、切换页签、修改输入或刷新汇率均不触发核价；只有手动计算/重试才请求预览。
+  运费不提供币种切换，共用和 SKU 手动运费均按人民币录入，结果表使用核价快照中的人民币成本，原币报价保留在明细。
+  已有外币手动运费按当前有效汇率展示；首次编辑时将该市场共用运费和所有 SKU 运费覆盖一起转换为人民币，未编辑不改写旧数据。
+  Yandex 运费下拉项复用仓库配置接口的 `pricing_options`（只读本地同步快照），默认全部比价，也可指定发布仓库与渠道。
+  `shipping_selection` 随草稿参数和费用模板保存、进入核价依据；显式 null 恢复比价。计算时重新核验可用方案，严格过滤仓库和渠道，不可用或 SKU 不符合条件则报错，不自动改选。
+  发布预检同时比较草稿当前物流选择、SKU 已应用的核价选择与实际仓库方案，修改选择后不能继续使用旧报价发布。
+  进行中、失败或参数不匹配时停用旧结果，应用仍由后端重新校验。
+  草稿弹窗固定标题与页签，由页签内容区统一纵向滚动；费用区和 SKU 结果不再限制高度，表格仅保留横向溢出。
+  `PricingScopeDialog` 的市场选择仅限定本次核价，不删除草稿市场及未选市场的费用规则。
+  物流继续使用各平台现有真实仓库/渠道配置，没有独立的统一上架仓库目录。
+- `http_route_units/pricing_workspace_routes.py` → `facades/pricing_workspace_facade.py`
+  提供人工费用模板和独立汇率查询。模板由 `schemas/pricing_templates.py` 限定形状，
+  `ConfigStore.mutate_pricing_template` 在配置短锁内保存到 `app_config.pricing_templates`。
+  只保存手动固定费用、市场费率、定价和运费偏好；手动汇率必须显式选中，
+  商品事实、单 SKU 覆盖、官方佣金和自动运费回执不进入模板。
+  `PricingCommonPatch.exchange_rate_overrides` 按汇率对覆盖同次 API 快照，空对象恢复实时，
+  三对全部覆盖时不依赖 API。已有 `exchange_rate_mode=manual` 仍可读取和计算。
 - 页面入口为 `/api/draft-pricing/preview` 与 `/api/draft-pricing/apply`，经
   `facades/draft_pricing_facade.py` 调用 `runtime_units/draft_pricing.py::price_draft`。
   AI 的 `draft_pricing_preview` / `draft_pricing_apply` 及市场准备也使用此业务入口。
   请求为草稿 ID、目标范围与本次费用修改；省略参数复用草稿保存配置。系统读取已勾选且启用
   SKU 的采购成本、包装资料和逐 SKU 费用覆盖，绝不以商品主档成本替代缺失规格成本。
   `common.domestic_freight_cny` 仅表示国内物流，目标的 `shipping_amount` 仅表示国际运费。
-  页面通过类型化 `sku_updates` 携带未保存的成本/尺寸覆盖和选择，通过 `target_selections`
+  页面通过类型化 `sku_updates` 携带未保存的费用覆盖和 SKU 选择，通过 `target_selections`
   携带当前 Mercado 销售条件；后端验证成员范围。其他页面编辑保留在前端。
-- 预览不保存草稿或已应用售价；应用重新执行同样计算并验证全部 SKU × 市场结果，
+- 预览不保存草稿或已应用售价；成功预览返回 `preview_id`，服务端缓存十分钟（最多 32 份）。
+  应用必须携带此标识和相同核价参数，比较商品/草稿快照、费用输入、店铺配置、物流配置及费率版本；
+  仅保存服务端已核验结果，不再运行计算器或请求物流/佣金/汇率。缓存失效或参数改变明确要求重新预览，
+  不自动重算。页面、AI 和市场准备统一遵循先预览后应用；成功应用后消费标识。
+  预览与规则缓存由 `AppContext.pricing_cache` 持有，不持久化，重启后重新计算。
+  验证全部 SKU × 市场结果，
   成功后通过 Store 一次保存公共参数模板和 `sku_items[].pricing`。发布只使用逐 SKU 结果。
+  页面保存草稿（含预检前保存）或应用售价时同时保存 `pricing.template_source`（模板 ID 与名称）及当前费用参数；普通保存不应用预览售价，重新打开只恢复来源显示，
+  费用仍读取草稿参数快照，模板变更或删除不自动覆盖。旧草稿没有来源时不猜测匹配模板。
   计算前后比较商品、草稿和店铺配置，网络报价在商品锁外进行，保存时在商品锁内重读，
   冲突返回 `DRAFT_CHANGED`。公共模板不保存首个 SKU 的结果冒充所有 SKU 的售价。
   缺失信息返回 SKU、市场和字段；AI 只补问实际缺失项，正常核价无需先读取成本。
@@ -763,7 +797,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - 内部批量引擎 `pricing_batch.calculate_sku_prices` 使用 `pricing_runtime.PricingSession`
   和 `services/pricing_shipping.py` → `international_shipping/ShippingModule.quote()`。
   `items: [{sku_id, input}]` 仅是内部引擎契约；HTTP 和 Agent 不再自行拼装。
-  一批共享店铺、汇率、Mercado token、Ozon 仓库/配送渠道；每个 SKU 独立计算成本与运费。
+  一批共享店铺、汇率、Mercado token、Ozon 仓库/配送渠道、Yandex 可用物流方案；每个 SKU 独立计算成本与运费。
   批次返回逐 SKU 结果和 `metrics`；`erp.pricing` 记录每 25 个 SKU 的进度与耗时。
   模块负责 Ozon/Yandex 费率版本和三平台物流计算，返回全部候选；ERP 使用既有汇率
   换成物流字段 CNY/USD 后选最低价。模块通过回调使用当前售价算法校验货值，
@@ -771,9 +805,73 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   凭据由项目装配，Mercado token 仍通过 `get_mercadolibre_access_token()` 取得。
   证据进入既有核价依据和指纹；逐 SKU 核价固定模板版本。无新增 tariff HTTP 端点，
   模板导入/预览/启用由模块 CLI 维护，详见 `erp_web/international_shipping/README.md`。
+- Yandex 自动运费仅使用远端发布仓指定物流商与运输模式对应的运费标准。`AppContext.yandex_logistics`
+  装配 `services/yandex_logistics_service.py`；`schemas/yandex_warehouses.py` 定义独立契约，
+  `ConfigStore` 在 `app_config.yandex_warehouses` 中按 Business/Campaign 保存仓库 ID、物流商、
+  运输模式和配置版本。本地报单仓、收货地址与跨境巴士授权不参与核价候选或失效判断。
+  系统设置的「Yandex 发布仓库」提供同步、单选运输模式、停用及解除关联入口。模式从当前
+  运费表按物流商和服务生成，Extra Small 等独立服务单独选择；同一仓库不跨 Economy/Express 比价。
+  同一模式的适用运价由包装与货值筛选，价格直接读取当前运费表，不另存一份。
+  已持久化的旧 `route_ids` 保留读取：全部有效且仅属于一种模式时解析为该模式；跨模式或失效
+  则提示重新选择并禁止参与核价。用户保存后写入 `shipping_mode`，不再写运价行列表。
+  `pricing_workspace_routes.py` / `pricing_workspace_facade.py` 提供 GET `/api/yandex/warehouses`、
+  POST `/api/yandex/warehouses/refresh` 与 POST `/api/yandex/warehouses/logistics`。
+  保存检查店铺归属、仓库可用性、物流商与运输模式的一致性，并在配置短锁内校验版本；
+  通用应用配置保存不能覆盖此独立配置，远端请求不持有配置锁或商品锁。
+  平台仓库列表来自官方 v3 warehouses（FBS 且 API 可用），不按名称猜测物流商；
+  当前仅支持 `stock_update_mode=business`，仓库组不能指定组内单仓，故阻止参与此流程。
+  无有效映射时停止核价；手填 Yandex 运费无法确定发布仓，须改为自动核价。
+  每批先刷新平台仓，再按包装/货值筛选各仓指定模式的运价；同步失败不沿用旧快照。
+  选中方案保存在逐 SKU `calculation_basis.shipping_evidence.fulfillment_plan`，纳入报价指纹。
+  应用时复核配置及方案；发布准备刷新仓库，每次发布写入前复核方案版本，库存仅写该
+  `publish_warehouse_id`，不再使用授权探测时选出的最小仓库。旧报价可读取，但须重新核价。
+  系统设置与核价明细展示关联；关联是用户提供的运输配置声明，不声称已通过官方接口核实
+  陆运/陆空联运服务，不按仓库名称推测，也不修改平台侧物流配置。
 - 店铺授权配置（`store_auth.auth_detail_json`）中的 `listing_currency` 是核价与发布
   的唯一币种事实源。注册表、国家、站点、草稿历史值和前端 option 都不是发布币种
   来源，也不得作为 fallback。
+- 上架前佣金由 `services/pricing_commissions.py::PricingCommissions` 查询，`PricingSession`
+  与自动运费的售价回调共用同一实例。纯核价引擎按最终舍入售价校准官方费用，回执进入
+  `calculation_basis.commission_evidence` 和指纹；手动运费、手动售价也必须取得有效回执。
+  物流预检只校验本地输入；Yandex 普通渠道没有货值门槛，不调用售价回调。
+  轻小件与 Ozon 仍按最终舍入售价校验货值门槛，同一 SKU 的相同运费条件共用回调结果；
+  选中渠道后的最终售价继续查询官方佣金，不以其他 SKU 的费率或零佣金替代。
+  官方费用按分舍入时，已查询售价满足定价及物流下限且舍入余量不超过原币一分即可采用，
+  避免费率反推造成价位振荡；依据仍绑定该售价的真实佣金回执。
+  已删除手填佣金请求字段与 16%／20% 默认值；旧配置和报价继续可读，缺少上架前官方依据的
+  历史报价不能用于发布。Mercado 多国家即使使用手动运费，也分别查询和计算。
+  Yandex 使用当前 Campaign 的 `/v2/tariffs/calculate`，只取 `FEE`；按店铺发布币种
+  传售价并核对回执币种（`RUR` 与 `RUB` 等价），不把 CNY 售价预先换成卢布。
+  `PricingSession.calculate_many` 汇集同轮缺少的费用，由 `services/yandex_commission_batch.py`
+  按当前账号、币种和完整商品参数去重，每次最多 200 项；已经完成的 SKU 不再执行。
+  `CommissionBatchPending` 仅在这次同步核价的内存调用栈中收集待查价格，不落库、不创建后台任务。
+  完整且能复现实际收费的 `value/valueType`、价格区间、保底/封顶规则进入
+  `schemas/commissions.py::CommissionRule`；`pricing_fee_rules.py` 负责规则求值和缓存命中验证，
+  `pricing_solver.py::PricingGoal` 把利润率与成本加价统一为售价、佣金和目标成本的不等式，
+  分别解析固定、比例、保底、封顶区间，仅在半分费用舍入误差限定的区间校正分价。
+  求价与利润目标检查使用精确分数，避免浮点和汇率除法误差；不再循环 64 次反推有效费率。
+  最终利润按实际发布的分价和该价格的官方费用计算；自动定价必须真实达标，不能用
+  已显示为 30.00% 的舍入值代替校验。手动售价不为满足利润目标而自动改写。
+  本地估算明确标记 `local_calculation`，不能作为官方佣金依据；候选售价始终再次批量获取
+  真实费用回执后才能返回成功。缺失规则、跨档或边界项按实际候选价补查，最多 16 轮，
+  失败停止受影响项，不能把未核验结果留作可应用售价。回执条数和顺序必须与请求完全对应。
+  日志逐批记录费用请求次数、报价项数与耗时。官方回执只在本轮复用；已解析规则缓存一小时
+  （最多 4096 项），按店铺/授权、币种、类目和除售价外的完整报价参数隔离，键中仅保留摘要。
+  新一轮命中规则后本地求价，最后仍批量核验；规则失效或费用变化时修正规则并重新核验。
+  `campaignId` 不能与 `currency` 同传；参数错误正文中的 `Forbidden` 不代表授权失败。
+  核价保留脱敏后的平台错误说明，HTTP 400 只阻止相同错误请求，不阻断整个费用接口。
+  此只读费用查询显式设置最多 3 次的共享重试预算，临时 HTTP 故障与连接中断共用预算；
+  参数与权限拒绝不重试，其他接口保持各自原有预算，外部写入仍不得重放。
+  Mercado 区域类目使用 `/sites/{site}/listing_prices` 的销售费用总额，不重复加固定收费；
+  CBT 由 `services/mercado_commission_tariffs.py` 按官方类目 API 的 Domain 读取官方类目费率页
+  自用数据，并从当前 Pricing 页读取低价固定收费；这是官方网页数据源，不是公开 Seller API。
+  缺少完整国家规则（如阿根廷）及哥伦比亚低价商品豁免未确认时阻断，不套用其他国家费率。
+  Ozon 由 `services/ozon_commission_tariffs.py` 从当前官方说明发现 ChinaHK 费率表，按已有
+  类目 owner 的真实类型 ID→俄文类型与所属类目精确匹配，再按实际品牌及卢布价格档计算
+  rFBS 基础佣金。保存表格哈希、生效日与命中单元格；品牌变化使报价失效。该表不覆盖
+  其他卖家地区／履约模式、地区及推广系数，不使用 `/v5/product/info/prices` 等已有商品查询。
+  公开资料统一通过 `services/commission_sources.py` 的受管 HTTP 读取；结构变化或查询失败
+  返回明确错误，不使用旧表或默认比例。当前覆盖范围外的费率仍需另行核实。
 - `erp_web/marketplace_registry.py`：只维护站点身份、标签、语言、平台能力与店铺绑定
   字段；不再携带 `market_currency`/`listing_currency`。Yandex 声明
   `store_binding_fields=("business_id", "campaign_id")`：发布确认的店铺身份要求两个字段
@@ -885,10 +983,25 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 商品发布
 
+- 页面流程为基础资料预检 → 准备素材与预览 → 最终发布校验 → 确认发布。`precheck_publish_payload` 对 Yandex/Ozon 使用 `image_stage="source"`，检查图片来源与选择，不要求已上传；预览准备后、AI `product_publish_validate` 和入队准入仍执行最终校验并验证 digest。基础预检通过不能直接入队。
+- 核价指纹由 `pricing_service.pricing_calculation_fingerprint` 生成，v2 对 JSON 数字统一整数表示，避免页面往返将 `18.0` 写成 `18` 导致失效。`pricing_calculation_fingerprint_matches` 保留旧摘要读取，并仅为历史 Yandex 费用请求恢复明确的 float 字段类型；金额、尺寸或其他事实变化仍须重新核价。
+- 条码资料按目标市场和类目定义显示，共享资料不再提供 UPC 豁免开关。Mercado 的 `EMPTY_GTIN_REASON` 是目标 `attributes` 中的可编辑类目字段，`DraftBarcodeFields.vue` 在类目与发布预检区域展示平台候选原因；预填仅使用平台返回的默认候选，已有值和明确清空均不覆盖。`mercadolibre_attribute_contract.py` 在逐 SKU 编译时只为缺条码的 SKU 提交原因，有实际条码时提交 GTIN。历史 `allow_gtin_exemption` 仅在 Mercado 且尚无显式原因字段时保留读取支持，变更不会撤销其他市场预检；新编辑使用目标属性。
+- `DraftWarrantyFields.vue` 仅在 Mercado 发布区域展示保修。未配置时界面将“无保修”写入草稿 `sale_terms`，随预检前保存提交；已有保修类型、时长和其他销售条款保留。该字段继续使用既有持久化格式，但前后端均只使 Mercado 的预检失效。后端仍校验实际提交的条款，不在 payload 构造阶段静默补值。
+
 - `erp_web/product_model/sku_model.py`：商品实际 SKU、来源快照、草稿选品与每行卖家编码的唯一契约。商品保存全部实际规格；草稿通过 `sku_id` 引用，卖家编码绑定 `draft_id + sku_id`。已发送的编码和远端关联不能由普通保存覆盖。
 - `erp_web/runtime_units/publish_context.py`：一次发布评估共享类目定义及类目币种查询结果。币种结果仅在当前上下文及其 SKU 投影间复用（包括空结果），按类目与授权隔离，不跨请求缓存或持久化。
 - `erp_web/runtime_units/sku_publish_projection.py`：逐 SKU 合并草稿覆盖值、目标属性和独立核价结果，并校验平台组合条件。先缩小输入再复制：临时单品视图只带当前 SKU、当前平台草稿和图片池，不带整组选品、来源规格或历史预检结果，也不写回主档。组内校验只保留 `SkuGroupingMember` 的身份与属性，不保留所有商品投影；重复组合逐组返回有界说明，完整规格列表保存在 `PublishValidationIssue.affected_skus`。
 - `erp_web/runtime_units/sku_precheck.py`：平台无关的纯预检问题汇总。以错误码、类目差异字段和受影响 SKU 集合关联必填缺失与整组空值检查；其它组合约束独立阻断。以 `erp_web/schemas/publish_capabilities.py` 中的 `PublishIssueSku`、`PublishRelatedIssue` 保留规格身份与关联校验，并按类目定义定位填写入口。
+- `runtime_units/publish_validation_session.py` 只承载单次校验的共享读取：店铺配置、相同仓库方案的验证结果和图片检查缓存。`SkuGroupPublishingAdapter.validate_draft` 每次创建新作用域，经 `PreparedPublishContext.with_product` 传给叶子；基础与最终校验不共用缓存，不持久化、不跨请求保留。
+  Yandex 在组入口规范化一次，叶子检查已准备的 SKU 投影；直接调用 `validate_yandex_draft` 仍在入口规范化。`yandex_attribute_checks` 合并属性检查，必填判断复用 `product_model/category_model.py::unresolved_required_attributes_in_draft`。
+  组入口检查成本、尺寸及库存，叶子继续检查核价指纹与店铺币种身份，避免重复报告同一变化。
+- 图片基础预检只检查引用、可读取性及大小，完整解码在素材准备时执行；最终校验继续检查文件内容摘要与交付记录一致。同一次校验内相同资产只检查一次，资产资料不同不得复用；下一次校验重新读取文件和托管配置。
+  素材准备通过 `ImageDeliveryService.prepare_product` 最多四路并发传输，全进程共享上限；每个线程独立创建存储客户端并继承请求审计上下文，失败后停止派发新图片，等待在途请求结束。保留按内容对象先检查再上传、源文件及配置变化校验，网络完成后仍经原短锁持久化交付记录。
+  `schemas/publish.py::PublishPreparationProgress` 是实时进度契约，observer 从 HTTP facade 经预览用例、SKU/平台适配器显式传入图片交付服务；图片按唯一资产计数，完成包含直链确认、已上传素材复用和本次上传，不能解释为已发送字节或新增上传数。
+  `/api/publish-payload-preview` 在请求 `Accept: application/x-ndjson` 时逐条推送进度，最后返回带业务状态的 `result` 回执；普通 JSON 调用不变。HTTP 路由只编码与刷新响应，不编排上传；客户端断开后停止推送，服务继续完成原持久化边界。前端 `publishPreparationStream.ts` 使用公共 Axios 客户端读取增量回执，各目标编辑器独立保存进度，上传 100% 之后仍显示最终校验/预览阶段，仅最终成功回执可产生确认指纹。
+  前端 `previewPublishPayload` 仅对该长请求设置 `timeout: 0`，等待真实结果；普通 API 超时不变，S3 单次请求仍受后端 30 秒超时控制。浏览器关闭或断网不表示后台操作已撤销。
+  Yandex 数值约束在定义转换时保留零值，兼容读取空上下限；预检复用属性编译规则，在上传前报告越界、非有限数字或无效规则，不能等到预览构造时才暴露 `Decimal` 异常。
+- Yandex 型号按具体类目要求判断，不设通用“型号必填”阻断。无类目参数时省略 `parameterValues`，显式提供时必须为非空数组；类目必填、枚举、单位、文本格式校验仍保留。依据：[官方商品写入接口](https://www.yandex.ru/dev/market/partner-api/doc/en/reference/business-offer-mappings/updateOfferMappings)、[官方类目参数规则](https://yandex.ru/dev/market/partner-api/doc/en/reference/content/getCategoryContentParameters)。
 - `erp_web/runtime_units/sku_publish_adapter.py`：注册表唯一发布入口，委托 `sku_precheck.py` 汇总 SKU 预检错误和提醒；编译带每项身份的冻结 SKU 清单；平台叶子适配器保留原生单品 I/O。每项写前落盘、写后保存响应，成功项按内容指纹跳过，未知结果禁止再次创建，异步确认仅推进原任务。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
 - `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。
@@ -1110,14 +1223,16 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 - 主对话工具由 `ai_capability_composition.py` 的显式 Catalog/allowlist、Execution Profile 权限与 `AiToolRuntime` 的代码校验决定。用户文本、页面背景和历史消息 metadata 均不产生工具授权表；不再调用额外授权模型，也不持久化按回合推断的写权限。所选草稿及其合法副本范围、字段校验、发布/删除审批继续在既有执行边界生效。
 - 主模型结合完整对话理解“是、继续”等指代，工具可用不等于应当调用。问“刚才写没写”时先依据真实回执回答；计划、工具名、发送调用或当前字段存在均不能证明写入成功。只有结果未知或需核实当前状态时才查询。
 - 已核对安装的 Pydantic AI 2.43.0 与[原生工具准备](https://ai.pydantic.dev/tools-advanced/#agent-wide-dynamic-tools)、[Deferred Tools](https://ai.pydantic.dev/deferred-tools/) 文档。直接使用原生 `PrepareTools` 管理额度/收尾时间、`RunContext.enqueue` 注入用户消息，以及原生 Deferred 审批/恢复；无需另建授权 Agent、消息历史协议或状态机。
-- `draft_sku_package_update` 是 SKU 包装资料写入口，声明在 `runtime_units/draft_edit_capabilities.py`，契约在 `schemas/draft_package.py`，写入由 `ProductStore.update_draft_sku_package` 持锁执行。请求明确 `draft_id`、`sku_ids` 和 `package_dimensions` 局部字段；仅更新指定已选启用 SKU 的 `overrides.package_dimensions`，保留其他字段、逐 SKU 重量和全部目标市场，返回实际应用字段、SKU 范围及变更数量。零值、非有限数、未知/停用/未选 SKU 和已发布对象在写入前拒绝。
+- `product_sku_facts_update` 是 SKU 来源资料写入口，声明在 `runtime_units/product_write_capabilities.py`，契约在 `schemas/product_facts.py`，写入由 `ProductStore.update_product_sku_facts` 持锁执行。请求明确商品 ID、商品版本及逐 SKU 差异；`product_read` 返回对应版本和 SKU 事实。整批校验后更新商品，所有引用草稿读取同一事实。未知 SKU、重复 SKU、过期版本及非法数值均在保存前拒绝。旧 `draft_sku_package_update` 已删除。
+- `product_model/source_facts.py` 定义来源归属、Schema 4 → 5 迁移与受影响草稿失效；`db.py` 在商品保存事务内更新全部引用草稿（包括非最新副本）。`scripts/migrate_product_source_facts.py` 提供只读预览和带完整备份的事务清理。商品非空值优先，空值只接受一致草稿值，冲突副本删除；旧商品级采购成本保留为待确认参考，不分配到 SKU。历史报价依据、发布及订单快照不重写。
+- `ProductSkuEditor.vue` 承担来源资料及批量编辑；草稿 SKU 和核价缺资料入口定位商品编辑器。刷新同步商品上下文，来源变化使旧报价失效；只发生来源与校验元数据变化时保留未保存的草稿内容和费用。回归见 `tests/test_product_source_facts.py`、`tests/test_product_facts_native.py` 及前端相关组件测试。
 - `draft_sku_attributes_update` 仅写平台类目属性，不能写包装字段。通用 `draft_save` 仍为 internal，不为包装编辑重新开放整对象保存。
 
 ### 属性事实边界
 
 主对话不能将混合 SKU 的汇总描述套给每个规格，不能从图片比例猜测尺寸、重量、品牌或认证。当前读工具提供来源文字与结构化 SKU 事实；资料不足时在主对话询问用户，不启动额外的属性图片填写或复核 Agent。
 
-草稿根级 `stock`、`sku`、`upc`、`package_dimensions` 和 `publication` 已退役，`draft_stock_update` 已删除。`draft_read` 按所选 SKU 返回库存、编码和逐目标售价摘要；`draft_attributes_read(scope=sku)` 返回 SKU 的有效条码、成本、包装和差异属性。公共费用/定价规则、图片、属性和整组发布状态继续保留。单 SKU 平台请求使用 `sku_model.single_sku_publish_draft` 临时派生销售资料，不持久化第二份草稿销售字段。UPC 的 `ProductStore.assign_upcs_to_product` 在商品锁内重读后，通过数据库事务为缺条码的启用 SKU 各分配唯一号码；HTTP `/api/assign-upc` 与 AI `upc_assign` 均要求明确商品，允许限定 SKU，保留已有条码，号码不足整批回滚。
+草稿根级 `brand`、`model`、`stock`、`sku`、`upc`、`package_dimensions` 和 `publication` 已退役，`draft_stock_update` 已删除。`draft_read` 按所选 SKU 返回库存、编码和逐目标售价摘要；`draft_attributes_read(scope=sku)` 返回 SKU 的有效条码、成本、包装和差异属性。公共费用/定价规则、图片、属性和整组发布状态继续保留。单 SKU 平台请求使用 `sku_model.single_sku_publish_draft` 临时派生销售资料，不持久化第二份草稿销售字段。UPC 的 `ProductStore.assign_upcs_to_product` 在商品锁内重读后，通过数据库事务为缺条码的启用 SKU 各分配唯一号码；HTTP `/api/assign-upc` 与 AI `upc_assign` 均要求明确商品，允许限定 SKU，保留已有条码，号码不足整批回滚。
 
 ## 订单通知与订单快照
 
@@ -1170,6 +1285,7 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 - 金额：`orders_yandex.py::normalize_yandex_amount` 负责订单及 SKU 行的十进制金额归一化，`OrderAmountBreakdown` 保留付款、补贴和积分抵扣。`OrderAmountDetails.vue` 明确商品金额与旧付款快照的口径，不将其标成净到账；明细按平台行小计展示，不再乘数量。
 - 发货日期：Yandex 保留 `delivery.shipment` 的日期/时间精度，Mercado Libre 读取卖家发货 SLA，Ozon 使用 `shipment_date`；`orderPresentation.ts::deadline` 仅对带时区时间计算倒计时。
 - 前端：`front/src/stores/orderNotifications.ts`、`OrderSummaryCard.vue`、`OrderCenterPanel.vue`、`OrderDetailPanel.vue` 和 `OrderAlertBanner.vue`；原发布 store 中的单平台订单状态已移除。
+- 订单中心页面查询由 `read_orders` → `services/order_center_query_service.py` 编排；筛选契约见 `schemas/order_center.py`，前端控件为 `OrderCenterFilters.vue`。通过采购、履约和收货绑定 Store 批量读取当前账号的本地事实，在分页前完成单号／来源／备注检索及阶段、物流、仓库、异常和截止日期的组合筛选；状态页签数量沿用同一筛选范围。仅日期或无时区的截止信息不计算小时级超时，明确时区的时间按请求时区换算。查询不创建履约记录、不调用远端、不触发同步；已归档单号可检索，当前阶段不使用历史报单推断。AI 货号证据查询继续使用原有 `OrderQueryService`。
 - 原 `/api/mercadolibre/orders` 和 `mercadolibre_orders.py` 已退役；接入、状态映射、持久化与验证范围见 [订单通知说明](order-notifications.md)。
 
 ### 订单买家聊天
@@ -1217,7 +1333,7 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 
 - `AuthSettingsPanel.vue` 的「1688 授权」沿用 `1688_api` 配置与 `ConfigStore` 的运行时秘密存储；空值或掩码沿用已保存凭据。采购查询需要 AppKey、AppSecret、Access Token，测试类型 `1688_order` 用输入订单号真实读取；商品采集的原有设置继续保留。
 - POST `/api/orders/purchase-query` → `order_procurement_facade.query_purchase` → `services/alibaba_purchase_query_service.py`。请求只接受销售订单 ID、采购记录 ID 和查询种类；服务端读取冻结采购单号，网络前后校验店铺归属和记录未作废，不跨网络持有事务。请求与返回形状见 `schemas/alibaba_orders.py`。
-- `order_notification_facade.py` 向 `OrderNotificationService` 显式注入 `services/order_progress_sync_service.py`：导航进入订单中心且满足 5 小时自动同步间隔、点击同步订单及平台通知保存快照后，同轮刷新有效采购的 1688 状态/物流，以及已关联或创建待核实的仓库单。单轮同订单去重，每笔网络请求前续租并验证账号与停止状态；查询期间不持数据库锁。单笔失败继续其他查询，各领域保留旧快照和错误，订单任务汇总部分失败且不自动重试附属查询。
+- `order_notification_facade.py` 向 `OrderNotificationService` 显式注入 `services/order_progress_sync_service.py`：导航进入订单中心且满足 5 小时自动同步间隔、点击同步订单及平台通知保存快照后，按最新平台状态和当前报单阶段查询。平台已发货或已送达时，不再查询 1688 采购状态/国内物流和仓库报单；平台尚未发货且当前报单已有远端编号时，只刷新仓库状态；当前报单尚未确认成功时，刷新有效采购及创建待核实的仓库单。仅配置方案、提交中、失败、结果待核实和已归档的旧报单不算当前报单成功。单轮同订单去重，每笔网络请求前续租并验证账号与停止状态；查询期间不持数据库锁。单笔失败继续其他查询，各领域保留旧快照和错误，订单任务汇总部分失败且不自动重试附属查询。单笔人工查询入口仍可按需刷新。
 - 列表、详情及履约页签定时刷新只读取数据库；详情编辑和提交期间暂停替换内容，旧响应不得覆盖较新的手动结果。采购与仓库单笔刷新入口保留。
 - `services/alibaba_api_client.py` 固定 1688 HTTPS AOP 网关及三个买家只读接口，以 HMAC-SHA1 签名，通过 `managed_urlopen` 发送，显式声明 read 语义和 token 指纹，禁止重定向，不自动刷新 Token。物流先查运单，再按订单一次查询轨迹并按物流 ID 匹配；轨迹失败保留运单并返回警告。
 - POST `/api/orders/purchase-sync` → `order_procurement_facade.sync_purchase` → `alibaba_purchase_sync_service.py`。登记成功后自动同步一次，幂等登记不重复查询；失败保留采购登记和最近成功快照。`purchase_progress_store.py` 持久化同步快照、代次与短期占位，网络不持锁，写入前重新核对有效采购、账号与代次。

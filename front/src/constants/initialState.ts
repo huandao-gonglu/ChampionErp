@@ -15,8 +15,6 @@ export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
     globalTitle: '',
     title: '',
     description: '',
-    brand: '',
-    model: '',
     categoryId: '',
     descriptionCategoryId: '',
     categoryPath: '',
@@ -46,7 +44,6 @@ export function createEmptyProduct(): Product {
     sku: '',
     stock: '',
     upc: '',
-    cost: '',
     materials: [],
     packageIncludes: [],
     source: {
@@ -103,7 +100,6 @@ export function createEmptyDraftProductContext(): DraftProductContext {
     model: '',
     sku: '',
     stock: '',
-    cost: '',
     sourcePrice: '',
     currency: '',
     weightKg: '',
@@ -171,6 +167,7 @@ export function createDefaultPricingInput(): PricingInput {
     mxnUsdRate: 0,
     rubCnyRate: 0,
     exchangeRateMode: 'live',
+    exchangeRateOverrides: {},
     targets: [],
   }
 }

@@ -1,4 +1,12 @@
-import type { BackendPurchaseProgressView, BackendPurchaseTrackingSummary } from './workflow.generated'
+import type { BackendOrderCenterFilters, BackendPurchaseProgressView, BackendPurchaseTrackingSummary } from './workflow.generated'
+export type OrderCenterFilters = BackendOrderCenterFilters
+export function emptyOrderCenterFilters(): Required<Omit<OrderCenterFilters, 'time_zone'>> {
+  return {
+    procurement_status: '', declaration_status: '', warehouse_status: '', has_waybill: '',
+    domestic_status: '', domestic_carrier: '', receiving_warehouse: '', platform_carrier: '',
+    exception_type: '', deadline_from: '', deadline_to: '', deadline_status: '',
+  }
+}
 export const ORDER_PAGE_SIZE = 9
 export type OrderPlatform = 'mercadolibre' | 'ozon' | 'yandex'
 export type OrderState =

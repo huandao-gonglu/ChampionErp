@@ -13,6 +13,7 @@ from erp_web.schemas.category_grouping import (
 )
 from erp_web.product_model.sku_model import PACKAGE_FIELDS, record, selected_skus, sku_fingerprint, text
 from erp_web.product_model.sku_image_model import sku_image_asset
+from erp_web.services.pricing_service import has_official_commission
 from .publish_context import PreparedPublishContext
 
 
@@ -34,11 +35,23 @@ def sku_quote_errors(fact: dict[str, Any], row: dict[str, Any], draft: dict[str,
     basis = record(quote.get("calculation_basis"))
     if pricing.get("applied") is not True or not basis or quote.get("errors") or quote.get("is_loss"):
         return ["请重新核价并应用此 SKU 的售价"]
+    if not has_official_commission(basis):
+        return ["此 SKU 缺少官方佣金依据，请重新核价并应用售价"]
+    if key.startswith('yandex:') and not record(record(basis.get('shipping_evidence')).get('fulfillment_plan')).get('fingerprint'):
+        return ['此 SKU 缺少仓库物流方案，请配置后重新核价并应用售价']
+    target = next((item for item in draft.get("target_sites", []) if f"{item.get('platform')}:{item.get('site')}".lower() == key), {})
+    evidence = record(basis.get("commission_evidence"))
+    if text(target.get("category_id")) != text(evidence.get("category_id")):
+        return ["核价类目已变化，请重新查询官方佣金并应用售价"]
+    if key.startswith("ozon:") and "brand_attribute" in evidence:
+        attributes = {**record(draft.get("attributes")), **record(record(row.get("attributes_by_target")).get(key))}
+        if attributes.get("85") != evidence["brand_attribute"]:
+            return ["品牌属性已变化，请重新查询官方佣金并应用售价"]
     expected = {"cost_cny": fact.get("cost_cny"), **record(fact.get("package_dimensions"))}
     shared = record(record(draft.get("pricing")).get("common"))
     own = record(record(row.get("pricing_overrides")).get("common"))
     for field in ("battery", "liquid"):
-        if bool(shared.get(field, False)) != bool(basis.get(field, False)):
+        if bool(fact.get(field, False)) != bool(basis.get(field, False)):
             return ["带电或液体条件已变化，请重新核价"]
     for field in ("domestic_freight_cny", "packaging_cost_cny", "other_cost_cny"):
         expected[field] = own.get(field, shared.get(field, 0))
@@ -47,9 +60,23 @@ def sku_quote_errors(fact: dict[str, Any], row: dict[str, Any], draft: dict[str,
             if field in shared:
                 expected[field] = shared[field]
     target_template = record(record(record(draft.get("pricing")).get("targets")).get(key))
+    if key.startswith("yandex:"):
+        selection = record(target_template.get("shipping_selection"))
+        if selection != record(basis.get("shipping_selection")):
+            return ["物流选择已变化，请重新核价并应用此 SKU 的售价"]
+        plan = record(record(basis.get("shipping_evidence")).get("fulfillment_plan"))
+        if selection and (selection.get("warehouse_id") != plan.get("publish_warehouse_id")
+                          or selection.get("route_id") != plan.get("route_id")):
+            return ["核价仓库物流方案与指定选择不一致，请重新核价并应用售价"]
     own_target = record(record(record(row.get("pricing_overrides")).get("targets")).get(key))
+    for field, default in (("return_rate_percent", 0), ("return_handling_cost_cny", 0), ("return_disposition", "discard")):
+        desired = own_target.get(field, target_template.get(field, default))
+        actual = basis.get(field, default)
+        matches = text(desired) == text(actual) if field == "return_disposition" else same_number(desired, actual)
+        if not matches:
+            return ["货损预估已变化，请重新核价并应用此 SKU 的售价"]
     shipping_mode = "manual" if "shipping_amount" in own_target else target_template.get("shipping_quote_mode")
-    for field in ("commission_percent", "payment_fee_percent", "other_fee_percent", "target_margin_percent", "markup_percent", "shipping_amount"):
+    for field in ("payment_fee_percent", "other_fee_percent", "target_margin_percent", "markup_percent", "shipping_amount"):
         # 自动运费是逐 SKU 报价结果，共用模板中的金额不参与它的有效性比较。
         if field == "shipping_amount" and shipping_mode == "auto":
             continue

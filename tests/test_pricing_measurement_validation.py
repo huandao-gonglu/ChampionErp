@@ -24,6 +24,12 @@ def _sku_product_with_basis(basis: dict[str, Any]) -> dict:
     ]
     normalized_basis = {
         **basis,
+        "commission_percent": "20",
+        "commission_evidence": {
+            "source": "platform_api", "purpose": "prelisting", "endpoint": "/sites/MLM/listing_prices",
+            "price": {"amount": "18.00", "currency": "USD"}, "amount": "3.60", "currency": "USD",
+            "quoted_at": "2026-10-18T00:00:00Z",
+        },
         "sites_to_sell": [
             {"site_id": "MLM", "logistic_type": "remote"}
         ],

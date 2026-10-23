@@ -257,7 +257,7 @@ def legacy_attribute_to_definition(
         max_value_count = None
 
     constraints = {
-        _text(key): _text(value)
+        _text(key): str(value).strip()
         for key, value in (
             legacy.get("constraints")
             if isinstance(legacy.get("constraints"), dict)

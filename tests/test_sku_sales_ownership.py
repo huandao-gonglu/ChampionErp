@@ -43,7 +43,7 @@ def test_retired_fields_are_removed_without_altering_sku_sales_facts():
     view = single_sku_publish_draft(product, draft)
     assert view["stock"] == "9709839" and view["sku"] == "SELL-FIRST"
     assert view["upc"] == "123456789012" and view["price"] == "500"
-    assert view["package_dimensions"]["length_cm"] == "26"
+    assert view["package_dimensions"]["length_cm"] == "13"
     assert view["publication"] == {"item_id": "SKU-ID"}
     assert product == before
 

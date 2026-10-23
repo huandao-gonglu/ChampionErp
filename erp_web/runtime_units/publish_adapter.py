@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from erp_web import marketplaces as marketplace_api
+from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import AppContext, get_context
 from erp_web.marketplace_registry import CAP_PUBLISH, platform_has_capability, platform_label
 from erp_web.marketplaces.publisher import PlatformPublisher, PublishAdapterError
@@ -40,7 +41,7 @@ from .publish_ozon import (
 )
 from .publish_validation import validate_mercadolibre_draft
 from .publish_validation import validate_ozon_draft
-from .publish_validation import validate_yandex_draft
+from .publish_validation import validate_yandex_draft, validate_prepared_yandex_draft
 from .publish_yandex import (
     build_yandex_publish_payload,
     map_yandex_publish_error,
@@ -53,7 +54,6 @@ from .publish_yandex import (
 )
 
 logger = logging.getLogger(__name__)
-
 
 
 def _flag_definition_unavailable(
@@ -123,11 +123,11 @@ class MercadoLibrePublishingAdapter:
             and error.details.get("outcome_unknown") is not True
         )
 
-    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
         # User Products 只接受 Mercado picture ID。统一发布队列必须在编译
         # payload 前完成上传，不能依赖已删除的特殊“真实发布”入口。
         token = self._require_auth_token(config)
-        uploaded = ensure_mercadolibre_pictures_uploaded(product, token)
+        uploaded = ensure_mercadolibre_pictures_uploaded(product, token, on_progress=on_progress)
         if not uploaded.get("ok"):
             errors = [
                 str(item.get("message") or "")
@@ -257,8 +257,10 @@ class OzonPublishingAdapter:
 
     platform = "ozon"
 
-    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        prepared = get_context().image_delivery.prepare_product(product, self.platform)
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
+        prepared = get_context().image_delivery.prepare_product(product, self.platform, on_progress=on_progress)
+        if on_progress:
+            on_progress({"stage": "saving_images"})
         return persist_delivered_image_pool(prepared, product, self.platform)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -286,7 +288,8 @@ class OzonPublishingAdapter:
         *, image_stage: str = "final",
     ) -> dict[str, Any]:
         result = validate_ozon_draft(
-            context.product, config, context.category_record, image_stage=image_stage
+            context.product, config, context.category_record, image_stage=image_stage,
+            session=context.validation_session
         )
         return _flag_definition_unavailable(context, result)
 
@@ -373,8 +376,12 @@ class YandexPublishingAdapter:
 
     platform = "yandex"
 
-    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        prepared = get_context().image_delivery.prepare_product(product, self.platform)
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
+        if str(config.get('yandex', {}).get('placement_type') or '').upper() == 'FBS':
+            get_context().yandex_logistics.pricing_plans()
+        prepared = get_context().image_delivery.prepare_product(product, self.platform, on_progress=on_progress)
+        if on_progress:
+            on_progress({"stage": "saving_images"})
         return persist_delivered_image_pool(prepared, product, self.platform)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -407,8 +414,10 @@ class YandexPublishingAdapter:
         config: dict[str, Any],
         *, image_stage: str = "final",
     ) -> dict[str, Any]:
-        result = validate_yandex_draft(
-            context.product, config, context.category_record, image_stage=image_stage
+        validate = validate_prepared_yandex_draft if context.validation_session is not None else validate_yandex_draft
+        result = validate(
+            context.product, config, context.category_record, image_stage=image_stage,
+            session=context.validation_session
         )
         return _flag_definition_unavailable(context, result)
 

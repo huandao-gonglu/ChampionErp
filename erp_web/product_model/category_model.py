@@ -104,13 +104,8 @@ def apply_category_selection(product: dict[str, Any], platform: str, category_re
         "GTIN",
         "UPC",
         "UNIVERSAL_PRODUCT_CODE",
-        "EMPTY_GTIN_REASON",
         "ITEM_CONDITION",
     }
-    if platform == "mercadolibre":
-        # Mercado 的 BRAND/MODEL 在草稿根字段编辑并由发布编译器映射；
-        # attributes 中不保留第二份可能互相冲突的值。
-        derived_attribute_ids.update({"BRAND", "MODEL"})
     current_attributes = (
         draft.get("attributes")
         if isinstance(draft.get("attributes"), dict)
@@ -122,8 +117,6 @@ def apply_category_selection(product: dict[str, Any], platform: str, category_re
         if str(attr_id) in allowed_attribute_ids
         and str(attr_id).upper() not in derived_attribute_ids
     }
-    draft["brand"] = str(draft.get("brand") or normalized.get("brand") or normalized.get("source", {}).get("brand") or "Generic").strip() or "Generic"
-    draft["model"] = str(draft.get("model") or normalized.get("model") or normalized.get("source", {}).get("model") or "General").strip() or "General"
     draft = apply_category_target_updates(
         draft,
         platform,
@@ -176,22 +169,25 @@ def _required_attribute_is_satisfied(
     )
     selected = selected_skus(normalized, draft)
     gtin_value = bool(selected) and all(str(fact.get("barcode") or "").strip() for fact, _ in selected)
-    if attr_id_upper == "EMPTY_GTIN_REASON" and gtin_value:
-        return True
-    if attr_id_upper == "EMPTY_GTIN_REASON" and draft.get("allow_gtin_exemption"):
-        return True
-    if attr_id_upper in _GTIN_ATTRIBUTE_IDS and str(
-        attributes.get("EMPTY_GTIN_REASON") or ""
-    ).strip():
+    reason = attributes.get("EMPTY_GTIN_REASON")
+    reason_present = (
+        bool(reason.get("values")) if isinstance(reason, dict) and "values" in reason
+        else bool(str(reason or "").strip())
+    )
+    legacy_exemption = (
+        platform == "mercadolibre" and bool(draft.get("allow_gtin_exemption"))
+        and "EMPTY_GTIN_REASON" not in attributes
+    )
+    if platform == "mercadolibre" and attr_id_upper == "EMPTY_GTIN_REASON" and (gtin_value or legacy_exemption):
         return True
     if attr_id_upper in _GTIN_ATTRIBUTE_IDS and (
-        gtin_value or draft.get("allow_gtin_exemption")
+        gtin_value or (platform == "mercadolibre" and (reason_present or legacy_exemption))
     ):
         return True
     if attr_id_upper == "BRAND":
-        return bool(str(attributes.get(attr_id) or draft.get("brand") or "").strip())
+        return bool(str(attributes.get(attr_id) or normalized.get("brand") or "").strip())
     if attr_id_upper == "MODEL":
-        return bool(str(attributes.get(attr_id) or draft.get("model") or "").strip())
+        return bool(str(attributes.get(attr_id) or normalized.get("model") or "").strip())
     if attr_id_upper == "SELLER_SKU":
         return bool(selected) and all(str(row.get("sku") or "").strip() for _, row in selected)
     if attr_id_upper == "ITEM_CONDITION":
@@ -221,16 +217,22 @@ def unresolved_required_category_attributes(
         else {}
     )
     draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
+    return unresolved_required_attributes_in_draft(
+        normalized, draft, platform, category_attribute_schema(category_record),
+    )
+
+
+def unresolved_required_attributes_in_draft(
+    product: dict[str, Any],
+    draft: dict[str, Any],
+    platform: str,
+    definitions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """检查已规范化的当前草稿视图，复用必填规则而不再次复制整个商品。"""
     return [
-        definition
-        for definition in category_attribute_schema(category_record)
+        definition for definition in definitions
         if definition.get("required")
-        and not _required_attribute_is_satisfied(
-            normalized,
-            draft,
-            definition,
-            platform,
-        )
+        and not _required_attribute_is_satisfied(product, draft, definition, platform)
     ]
 
 
@@ -247,10 +249,8 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
         missing_fields.append("category_id")
     missing_fields.extend(
         f"attributes.{definition['id']}"
-        for definition in unresolved_required_category_attributes(
-            normalized,
-            platform,
-            category_record,
+        for definition in unresolved_required_attributes_in_draft(
+            normalized, draft, platform, category_attribute_schema(category_record),
         )
     )
     return list(dict.fromkeys(missing_fields))

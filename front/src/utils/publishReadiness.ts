@@ -7,12 +7,7 @@ export function publishPrecheckPassed(precheck: PublishPrecheck | null): boolean
   return scopes.every((scope) => scope.ok && scope.status !== 'blocked' && !scope.errors.length)
 }
 
-/** 尚未准备或目标已切换可进入显式准备；最终提交仍要求全部通过。 */
+/** 基础资料预检通过后才能准备素材；最终发布还要求预览确认指纹。 */
 export function publishPreparationAllowed(precheck: PublishPrecheck | null): boolean {
-  if (!precheck || publishPrecheckPassed(precheck)) return true
-  const pendingCodes = new Set(['IMAGE_NOT_PREPARED', 'IMAGE_DELIVERY_STALE'])
-  const scopes = [...(precheck.parent ? [precheck.parent] : []), ...(precheck.marketChecks || [])]
-  if (scopes.some((scope) => (!scope.ok || scope.status === 'blocked') && !scope.errors.length)) return false
-  const issues = [...precheck.errorItems, ...scopes.flatMap((scope) => scope.errors)]
-  return issues.length > 0 && issues.every((issue) => pendingCodes.has(issue.code))
+  return publishPrecheckPassed(precheck)
 }

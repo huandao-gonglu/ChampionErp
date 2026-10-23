@@ -46,8 +46,6 @@ def _yandex_product(image_path: Path) -> dict:
                 "category_id": "",
                 "sku": "SKU-Y1",
                 "stock": "10",
-                "brand": "BrandX",
-                "model": "ModelY",
                 "images": [{"asset_id": "image-1", "role": "main", "order": 0}],
                 "site": "global",
                 "target_sites": [
@@ -84,8 +82,20 @@ def test_precheck_does_not_upload_local_images(tmp_path, monkeypatch):
         before = context.db.load_product_model(saved["product_id"])
         response, status = publish_workflows.precheck_publish_payload({"draft_id": saved["drafts"]["yandex"]["draft_id"], "platform": "yandex", "site": "global"})
         assert status == 200
-        assert "IMAGE_NOT_PREPARED" in [item["code"] for item in response["platforms"]["yandex"]["errors"]]
+        assert not any(item["code"].startswith("IMAGE_") for item in response["platforms"]["yandex"]["errors"])
         assert context.db.load_product_model(saved["product_id"])["source"]["image_pool"] == before["source"]["image_pool"]
+        assert not remote.calls
+
+
+def test_source_precheck_still_rejects_missing_image(tmp_path, monkeypatch):
+    from tests.image_hosting_test_utils import configure, FakeS3
+    remote = FakeS3(monkeypatch)
+    with temp_app_context(tmp_path / "app") as context:
+        configure(context)
+        saved = context.products.save_product(_yandex_product(tmp_path / "missing.png"))
+        response, status = publish_workflows.precheck_publish_payload({"draft_id": saved["drafts"]["yandex"]["draft_id"], "platform": "yandex", "site": "global"})
+        assert status == 200
+        assert "IMAGE_SOURCE_MISSING" in [item["code"] for item in response["platforms"]["yandex"]["errors"]]
         assert not remote.calls
 
 

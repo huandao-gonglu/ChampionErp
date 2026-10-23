@@ -24,6 +24,9 @@ def test_repeated_precheck_issues_group_with_all_selected_skus(platform, monkeyp
     draft["target_sites"][0]["platform"] = platform
     fact_template, row_template = deepcopy(product["sku_items"][0]), deepcopy(draft["sku_items"][0])
     quote = row_template["pricing"]["targets"].pop("ozon:global")
+    if platform == 'yandex':
+        from tests.yandex_logistics_support import PLAN
+        quote['calculation_basis']['shipping_evidence'] = {'fulfillment_plan': deepcopy(PLAN)}
     row_template["pricing"]["targets"][f"{platform}:global"] = quote
     product["sku_items"], draft["sku_items"] = [], []
     for index in range(30):

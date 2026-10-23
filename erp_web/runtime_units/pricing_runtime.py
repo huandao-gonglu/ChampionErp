@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import calendar
 import json
+import math
 import threading
 import time
 import urllib.request
@@ -23,6 +24,8 @@ from erp_web.services.mercadolibre_target_contract import (
 )
 from erp_web.services import pricing_service
 from erp_web.services.pricing_shipping import PricingShipping
+from erp_web.services.pricing_commissions import PricingCommissions, create_yandex_commission_batch
+from erp_web.services.yandex_commission_batch import CommissionBatchPending
 from erp_web.services.listing_currency_service import (
     StoreCurrencyNotReadyError,
     require_store_listing_currency,
@@ -33,6 +36,7 @@ from erp_web.product_model import (
 )
 from erp_web.marketplaces.publisher import PublishAdapterError
 from .store_credentials import get_mercadolibre_access_token
+from .ozon_category_api import load_ozon_category_corpus
 
 
 def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -212,14 +216,24 @@ def fetch_pricing_exchange_rates(force_refresh: bool = False, config: dict[str, 
 
 
 class PricingSession:
-    """一次核价操作的公共资料；不跨请求缓存店铺凭据、渠道或费率。"""
+    """本轮共享官方回执与渠道快照；佣金规则通过独立缓存复用后仍须核验。"""
 
     def __init__(self) -> None:
         self.store_config = get_context().config.load_store_config()
-        self.shipping = PricingShipping(get_context().paths.data_dir / "tariffs", self.store_config)
+        self.shipping = PricingShipping(get_context().paths.data_dir / "tariffs", self.store_config,
+                                        yandex_plans_loader=lambda: get_context().yandex_logistics.pricing_plans())
+        self.yandex_commissions = create_yandex_commission_batch(self.store_config)
+        self.commissions = PricingCommissions(self.store_config, ozon_category_loader=self.ozon_categories,
+                                              yandex_quote=self.yandex_commissions.quote)
+        self.shipping.commission_resolver = self.commissions
         self.exchange_rates: dict[str, Any] | None = None
         self.token_loaded = False
         self.token_error: str | None = None
+
+    def ozon_categories(self) -> list[dict[str, Any]]:
+        store = self.store_config.get("ozon") or {}
+        records, _ = load_ozon_category_corpus(credentials=(str(store.get("client_id") or ""), str(store.get("api_key") or "")))
+        return records
 
     def rates(self, force_refresh: bool) -> dict[str, Any]:
         if self.exchange_rates is None:
@@ -238,7 +252,28 @@ class PricingSession:
             raise ValueError(self.token_error)
 
     def calculate(self, input_data: dict[str, Any]) -> dict[str, Any]:
-        return _calculate_price(input_data, self)
+        return self.calculate_many([input_data])[0]
+
+    def calculate_many(self, inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """先收集整批缺少的费用，再按轮读取；已确认的 SKU 不重新执行。"""
+        results: dict[int, dict[str, Any]] = {}
+        pending = dict(enumerate(inputs))
+        for round_index in range(17):
+            for index, source in list(pending.items()):
+                try:
+                    results[index] = _calculate_price(source, self)
+                    del pending[index]
+                except CommissionBatchPending:
+                    pass
+            if not pending:
+                break
+            if round_index == 16:
+                self.yandex_commissions.fail_pending("官方费用与售价在 16 轮批量核验内未收敛，请调整定价条件")
+                for index, source in pending.items():
+                    results[index] = _calculate_price(source, self)
+                break
+            self.yandex_commissions.flush()
+        return [results[index] for index in range(len(inputs))]
 
 
 def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
@@ -274,6 +309,8 @@ def _calculate_price(input_data: dict[str, Any], session: PricingSession) -> dic
             }
         target["listing_currency"] = state["listing_currency"]
         target["currency_fingerprint"] = state["currency_fingerprint"]
+        if platform == 'yandex' and (target.get('shipping_quote_mode') or 'auto') != 'auto':
+            return {'ok': False, 'error': 'Yandex 核价需要自动选择已配置的仓库物流方案，不能仅用手填运费确定发布仓库', 'results': []}
         if (
             platform == "mercadolibre"
             and str(target.get("site") or target.get("site_id") or "")
@@ -358,7 +395,6 @@ def _calculate_price(input_data: dict[str, Any], session: PricingSession) -> dic
 
     if any(
         isinstance(target, dict) and target.get("platform") == "mercadolibre"
-        and target.get("shipping_quote_mode", "auto") == "auto"
         for target in raw_targets
     ):
         try:
@@ -368,8 +404,14 @@ def _calculate_price(input_data: dict[str, Any], session: PricingSession) -> dic
 
     has_manual_rates = source.get("usd_cny_rate") not in (None, "") and source.get("mxn_usd_rate") not in (None, "")
     exchange_mode = str(source.get("exchange_rate_mode") or ("manual" if has_manual_rates else "live")).strip().lower()
+    overrides = source.get("exchange_rate_overrides") or {}
+    rate_keys = ("usd_cny_rate", "mxn_usd_rate", "rub_cny_rate")
+    if not isinstance(overrides, dict):
+        return {"ok": False, "error": "手动汇率覆盖必须是对象。"}
+    if any(key not in rate_keys or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0 for key, value in overrides.items()):
+        return {"ok": False, "error": "手动汇率必须是大于 0 的有效数值。"}
     exchange_rates: dict[str, Any] | None = None
-    if exchange_mode != "manual":
+    if exchange_mode != "manual" and not all(key in overrides for key in rate_keys):
         exchange_rates = session.rates(bool(source.get("force_exchange_rate_refresh")))
         if not exchange_rates.get("ok"):
             return {"ok": False, "error": exchange_rates.get("error") or "实时汇率获取失败", "exchange_rates": exchange_rates}
@@ -386,12 +428,23 @@ def _calculate_price(input_data: dict[str, Any], session: PricingSession) -> dic
             common["rub_usd_rate"] = source["rub_usd_rate"]
             common["rub_cny_rate"] = source["rub_cny_rate"]
             common["currency_usd_rates"] = source["currency_usd_rates"]
+    if overrides:
+        source.update(overrides)
+        source["rub_usd_rate"] = float(source.get("rub_cny_rate") or 0) * float(source.get("usd_cny_rate") or 0)
+        # 已有的其他币种仍沿用同一次 API 快照；三个可编辑币种按有效覆盖重建。
+        source["currency_usd_rates"] = {**(source.get("currency_usd_rates") or {}),
+            "CNY": source.get("usd_cny_rate"), "MXN": source.get("mxn_usd_rate"), "RUB": source["rub_usd_rate"]}
+        if isinstance(source.get("common"), dict):
+            source["common"].update({key: source[key] for key in (*rate_keys, "rub_usd_rate", "currency_usd_rates") if key in source})
     result = pricing_service.pricing_result(
         source,
         shipping_resolver=session.shipping,
+        commission_resolver=session.commissions,
     )
     if exchange_rates:
-        result["exchange_rates"] = exchange_rates
+        result["exchange_rates"] = deepcopy(exchange_rates)
+        if overrides:
+            result["exchange_rates"]["manual_overrides"] = overrides
         result["exchange_rate_mode"] = "live"
     else:
         result["exchange_rates"] = {

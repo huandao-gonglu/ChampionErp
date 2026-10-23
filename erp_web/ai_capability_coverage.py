@@ -23,6 +23,7 @@ from erp_web.http_route_units import (
     get_routes,
     image_routes,
     image_hosting_routes,
+    pricing_workspace_routes,
     online_product_routes,
     order_routes,
     fulfillment_routes,
@@ -79,12 +80,22 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     endpoints.update(("GET", path) for path in external_request_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in fulfillment_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in image_hosting_routes.GET_API_ROUTES)
+    endpoints.update(("GET", path) for path in pricing_workspace_routes.GET_API_ROUTES)
     endpoints.update(("POST", path) for path in POST_API_ROUTES)
     endpoints.update(("POST", path) for path in image_routes.IMAGE_POST_PATHS)
     return frozenset(endpoints)
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="发布仓库设置", disposition="internal_only", reason="用户在系统设置中同步远端发布仓库并指定物流商和运输模式；核价和发布能力使用已确认的配置，模型不推断仓库运输服务。") for method, path in (
+        ("GET", "/api/yandex/warehouses"),
+        ("POST", "/api/yandex/warehouses/refresh"),
+        ("POST", "/api/yandex/warehouses/logistics"),
+    )),
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="核价设置", disposition="internal_only", reason="核价页面维护人工费用模板及实时汇率参考；业务核价仍通过 draft_pricing 能力完成。") for method, path in (
+        ("GET", "/api/pricing/templates"), ("GET", "/api/pricing/exchange-rates"),
+        ("POST", "/api/pricing/templates/save"), ("POST", "/api/pricing/templates/default"), ("POST", "/api/pricing/templates/delete"),
+    )),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/chat/history", business_domain="订单聊天", disposition="capability", capability_names=("order_buyer_chat_read",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/chat/send", business_domain="订单聊天", disposition="capability", capability_names=("order_buyer_chat_send",)),
     AiCapabilityCoverageEntry(method="GET", path="/api/orders/summary", business_domain="订单采购", disposition="capability", capability_names=("orders_summary_read",)),

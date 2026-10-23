@@ -349,8 +349,6 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
         draft["sku_items"] = new_draft_sku_rows(normalized.get("sku_items", []))
         draft["title"] = draft.get("title") if use_existing(draft.get("title")) else source.get("title") or normalized.get("name") or ""
         draft["images"] = normalize_draft_image_refs(draft.get("images")) or image_refs
-        draft["brand"] = draft.get("brand") or source.get("brand") or "Generic"
-        draft["model"] = draft.get("model") or normalized.get("model") or "General"
         draft["status"] = "claimed"
 
     return get_context().products.sync_product_workflow_statuses(normalized)
@@ -370,8 +368,6 @@ def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str,
             "sku_items": new_draft_sku_rows(normalized.get("sku_items", [])),
             "title": str(source.get("title") or normalized.get("name") or ""),
             "images": draft_image_refs_from_pool(normalized, platform),
-            "brand": str(normalized.get("brand") or source.get("brand") or "Generic"),
-            "model": str(normalized.get("model") or source.get("model") or "General"),
             "status": "claimed",
         }
     )

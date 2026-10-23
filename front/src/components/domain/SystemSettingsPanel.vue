@@ -6,6 +6,7 @@ import { useAppStore } from '@/stores/app'
 import { UI_LOCALE_OPTIONS, type SupportedUiLocale } from '@/constants/locales'
 import ExternalRequestControlPanel from '@/components/settings/ExternalRequestControlPanel.vue'
 import AboutSettingsPanel from '@/components/settings/AboutSettingsPanel.vue'
+import YandexWarehouseSettings from '@/components/settings/YandexWarehouseSettings.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
 const { t } = useI18n()
@@ -18,13 +19,14 @@ const colorMode = computed({
 })
 const tabs = computed(() => [
   { key: 'general', label: '通用设置', summary: '颜色、界面语言与订单自动同步' },
+  { key: 'yandex_warehouses', label: 'Yandex 发布仓库', summary: '同步远端仓库并指定运输模式' },
   { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
   { key: 'about', label: t('settings.about'), summary: t('settings.aboutSummary') },
 ] as const)
-const section = ref<'general' | 'interruptions' | 'about'>('general')
+const section = ref<'general' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
 const route = inject(routeLocationKey, undefined)
 watch(() => route?.query.settings_section, value => {
-  section.value = value === 'interruptions' || value === 'about' ? value : 'general'
+  section.value = value === 'interruptions' || value === 'about' || value === 'yandex_warehouses' ? value : 'general'
 }, { immediate: true })
 const activeTab = computed(() => tabs.value.find(tab => tab.key === section.value) || tabs.value[0])
 
@@ -88,6 +90,9 @@ onMounted(load)
     </section>
     <section v-if="section === 'about'" id="system-settings-panel-about" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-about">
       <AboutSettingsPanel />
+    </section>
+    <section v-if="section === 'yandex_warehouses'" id="system-settings-panel-yandex_warehouses" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-yandex_warehouses">
+      <YandexWarehouseSettings />
     </section>
     <section v-show="section === 'general'" id="system-settings-panel-general" class="mt-5 space-y-5" role="tabpanel" aria-labelledby="system-settings-tab-general">
       <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" aria-labelledby="appearance-settings-title">

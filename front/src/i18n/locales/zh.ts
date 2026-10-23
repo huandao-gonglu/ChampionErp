@@ -97,7 +97,7 @@ export default {
       draft_attributes_read: '查看草稿属性',
       draft_sku_attributes_update: '更新规格属性',
       draft_sku_selection_update: '选择商品规格',
-      draft_sku_package_update: '更新包装信息',
+      product_sku_facts_update: '更新商品 SKU 资料',
       draft_changes_apply: '保存草稿修改',
       copy_generate: '生成商品文案',
       copy_generate_batch: '批量生成文案',

@@ -5,6 +5,7 @@ from typing import Any
 from erp_web.product_model import mercadolibre_sales_condition_basis, mercadolibre_sales_operation_keys, normalize_mercadolibre_sites_to_sell
 from erp_web.product_model.sku_model import text
 from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.pricing_service import has_official_commission
 
 def _sales_targets_from_selectors(selectors: Any) -> list[dict[str, str]]:
     """把受信多选值转为草稿持久化使用的规范销售目标列表。"""
@@ -74,6 +75,7 @@ def _pricing_target_is_usable(
         and text(applied.get("currency")).upper()
         == text(target_draft.get("listing_currency")).upper()
         and basis
+        and has_official_commission(basis)
         and text(selected.get("calculation_fingerprint"))
     )
     if not usable:

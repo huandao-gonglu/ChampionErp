@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+from time import perf_counter
+from uuid import uuid4
 from typing import Any, Protocol
 
 from erp_web.context import get_context
@@ -52,6 +54,16 @@ def _configuration_basis(config: dict[str, Any]) -> dict[str, Any]:
     return clean(config)
 
 
+def _pricing_environment() -> str:
+    """应用沿用预览的汇率快照，但配置或物流费率版本改变必须重算。"""
+    context = get_context()
+    current = context.paths.data_dir / "tariffs" / "current.json"
+    return _fingerprint([
+        context.config.load_app_config().get("pricing_defaults"),
+        current.read_text() if current.exists() else None,
+    ])
+
+
 def _patch_fields(model: Any) -> dict[str, Any]:
     return model.model_dump(exclude_unset=True, exclude_none=True)
 
@@ -69,11 +81,6 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
         seen.add(update.sku_id)
         row = rows[update.sku_id]
         row["selected"] = update.selected
-        # 页面发的是这些可编辑字段的完整当前值；移除覆盖后应重新读取商品 SKU。
-        overrides = row.setdefault("overrides", {})
-        for field in ("cost_cny", "package_dimensions"):
-            overrides.pop(field, None)
-        overrides.update(_patch_fields(update.overrides))
         row["pricing_overrides"] = _patch_fields(update.pricing_overrides)
     targets = {target_key(target): target for target in draft.get("target_sites", [])}
     requested = [key.lower() for key in request.target_keys] or list(targets)
@@ -93,15 +100,14 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
     projections = {key: draft_for_publish_target(draft, targets[key]) for key in requested}
     stored = draft.get("pricing") or {}
     common = {"domestic_freight_cny": 0, "packaging_cost_cny": 0, "other_cost_cny": 0,
-              "battery": False, "liquid": False, "exchange_rate_mode": "live"}
+              "exchange_rate_mode": "live"}
     common.update(_saved_fields(stored.get("common") or {}, PricingCommonPatch))
     common.update(_patch_fields(request.common))
     templates: dict[str, Any] = {}
     for key in requested:
         target = targets[key]
         saved = (stored.get("targets") or {}).get(key) or {}
-        template = {"commission_percent": 20 if target["platform"] in {"yandex", "ozon"} else 16,
-                    "payment_fee_percent": 0, "other_fee_percent": 0, "pricing_mode": "margin",
+        template = {"payment_fee_percent": 0, "other_fee_percent": 0, "pricing_mode": "margin",
                     "target_margin_percent": 30, "markup_percent": 30, "shipping_quote_mode": "auto",
                     "shipping_currency": "USD" if target["platform"] == "mercadolibre" else "CNY", "shipping_amount": 0}
         template.update(_saved_fields(saved, PricingTargetPatch))
@@ -109,6 +115,9 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
             template.setdefault("manual_price", deepcopy(saved["applied_price"]))
         if key in patches:
             template.update(_patch_fields(patches[key]))
+            if "shipping_selection" in patches[key].model_fields_set:
+                selection = patches[key].shipping_selection
+                template["shipping_selection"] = selection.model_dump() if selection is not None else None
             if "manual_price" in patches[key].model_fields_set:
                 manual = patches[key].manual_price
                 template["manual_price"] = manual.model_dump() if manual is not None else None
@@ -123,7 +132,7 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
     for fact, row in selected:
         own = row.get("pricing_overrides") or {}
         sku_common = {**common, **(own.get("common") or {})}
-        facts = {"cost_cny": fact.get("cost_cny"), **(fact.get("package_dimensions") or {})}
+        facts = {"cost_cny": fact.get("cost_cny"), "battery": fact.get("battery", False), "liquid": fact.get("liquid", False), **(fact.get("package_dimensions") or {})}
         for field in ("cost_cny", "length_cm", "width_cm", "height_cm", "weight_kg"):
             value = facts.get(field)
             try:
@@ -146,12 +155,19 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
             if own_target.get("manual_price"):
                 own_target["pricing_mode"] = "manual"
             target = projections[key]
-            sku_targets.append({**template, **own_target, **{field: deepcopy(target.get(field, "")) for field in (
-                "platform", "site", "language", "category_id", "listing_currency", "currency_fingerprint", "sites_to_sell")}, "target_key": key})
+            calculated_target = {**template, **own_target, **{field: deepcopy(target.get(field, "")) for field in (
+                "platform", "site", "language", "category_id", "listing_currency", "currency_fingerprint", "sites_to_sell")}, "target_key": key}
+            if target["platform"] == "ozon":
+                attributes = {**(target.get("attributes") or {}), **((row.get("attributes_by_target") or {}).get(key) or {})}
+                calculated_target["brand_attribute"] = deepcopy(attributes.get("85"))
+            sku_targets.append(calculated_target)
         items.append({"sku_id": row["sku_id"], "input": {**sku_common, "common": sku_common, "targets": sku_targets}})
     if errors:
         raise BusinessCapabilityError("PRICING_INPUT_INVALID", "部分 SKU 的采购成本或包装资料缺失，请只补充列出的字段。", details={"errors": errors})
-    return items, {"common": common, "targets": templates}, selected_targets
+    source = deepcopy(stored.get("template_source"))
+    if "template_source" in request.model_fields_set:
+        source = request.template_source.model_dump() if request.template_source is not None else None
+    return items, {"common": common, "targets": templates, "template_source": source}, selected_targets
 
 
 def _validate_results(batch: dict[str, Any], inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -193,7 +209,8 @@ def _validate_results(batch: dict[str, Any], inputs: list[dict[str, Any]]) -> li
 def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStore, apply: bool = False,
                 calculator: BatchCalculator = calculate_sku_prices,
                 store_config_loader: Callable[[], dict[str, Any]] = _store_config) -> dict[str, Any]:
-    """读取快照→锁外计算→锁内比较并保存；预览不会保存草稿或已应用价格。"""
+    """预览在锁外计算并暂存；应用仅校验并保存相同输入对应的服务端预览。"""
+    started = perf_counter()
     with product_store.mutation_scope({"draft_id": request.draft_id}):
         original, product = load_draft(product_store, request.draft_id)
         if request.expected_updated_at and request.expected_updated_at != original.get("updated_at"):
@@ -202,7 +219,19 @@ def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStor
         draft = deepcopy(original)
         inputs, template, targets = _prepare(request, draft, product)
     config = _configuration_basis(store_config_loader())
-    batch = calculator({"items": inputs})
+    routing = get_context().yandex_logistics.configuration_fingerprint() if any(t.get('platform') == 'yandex' for t in targets) else None
+    environment = _pricing_environment()
+    binding = _fingerprint([request.draft_id, snapshot, inputs, template, config, routing, environment])
+    cache = get_context().pricing_cache.previews
+    if apply:
+        cached = cache.get(request.preview_id) if request.preview_id else None
+        if cached is None:
+            raise BusinessCapabilityError("PRICING_PREVIEW_REQUIRED", "请先计算核价；预览有效期为十分钟，过期后需重新计算。")
+        if cached["binding"] != binding:
+            raise BusinessCapabilityError("PRICING_PREVIEW_CHANGED", "SKU、核价参数或配置已改变，请重新计算后应用售价。")
+        batch = cached["batch"]
+    else:
+        batch = calculator({"items": inputs})
     errors = _validate_results(batch, inputs)
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     by_input = {item["sku_id"]: item["input"] for item in inputs}
@@ -226,14 +255,31 @@ def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStor
                 "sku_count": len(inputs), "target_count": len(targets), "sku_pricing": pricing_rows,
                 "updated_at": original.get("updated_at", "")}
     with product_store.mutation_scope({"draft_id": request.draft_id}):
+        if routing is not None:
+            logistics = get_context().yandex_logistics
+            if routing != logistics.configuration_fingerprint():
+                raise BusinessCapabilityError('DRAFT_CHANGED', '核价期间仓库物流配置已改变，请重新核价。')
+            if not errors:
+                current_plans = logistics.plans()
+                for row in pricing_rows.values():
+                    for quote in row['targets'].values():
+                        if quote.get('platform') == 'yandex':
+                            plan = quote.get('calculation_basis', {}).get('shipping_evidence', {}).get('fulfillment_plan', {})
+                            if not plan or plan not in current_plans:
+                                raise BusinessCapabilityError('PRICING_LOGISTICS_INVALID', '核价使用的仓库物流方案已失效，请重新核价。')
         latest, latest_product = load_draft(product_store, request.draft_id)
-        if snapshot != _fingerprint([latest, latest_product]) or config != _configuration_basis(store_config_loader()):
+        if (snapshot != _fingerprint([latest, latest_product]) or config != _configuration_basis(store_config_loader())
+                or environment != _pricing_environment()):
             raise BusinessCapabilityError("DRAFT_CHANGED", "核价期间 SKU、草稿或店铺配置已改变，请重新核价。")
         if not apply or errors:
+            if not errors:
+                response["preview_id"] = uuid4().hex
+                cache.put(response["preview_id"], {"binding": binding, "batch": batch})
             return response
         # 保留未参与本次核价的市场；发布时仍逐市场校验输入依据是否过期。
         shared = deepcopy(draft.get("pricing") or {})
         shared.update(common=template["common"], updated_at=now)
+        shared["template_source"] = template["template_source"]
         shared.setdefault("targets", {}).update(template["targets"])
         for row in draft.get("sku_items", []):
             if row["sku_id"] in pricing_rows:
@@ -260,6 +306,9 @@ def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStor
         saved, error, _status = product_store.save_draft_content(draft, calculated_pricing={"pricing": shared, "skus": pricing_rows})
         raise_store_error(error, default_code="DRAFT_PRICING_SAVE_FAILED", default_message="核价保存失败。")
         response.update(applied=True, updated_at=saved["draft"].get("updated_at", ""), draft=saved["draft"])
+        cache.discard(request.preview_id)
+        response["metrics"] = {**batch.get("metrics", {}), "duration_ms": round((perf_counter() - started) * 1000, 2),
+                               "ozon_discovery_ms": 0, "preview_reused": True}
     return response
 
 

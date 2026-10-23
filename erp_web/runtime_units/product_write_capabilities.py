@@ -16,6 +16,7 @@ from erp_web.runtime_units.draft_category_resolution import (
     resolve_draft_category_pairs,
 )
 from erp_web.schemas.ai_tools import ToolApprovalSnapshot
+from erp_web.schemas.product_facts import ProductSkuFactsUpdateRequest, ProductSkuFactsUpdateResult
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.product_write_capabilities import (
     DraftDeleteRequest,
@@ -71,9 +72,7 @@ class ProductDraftWriteStore(Protocol):
         self, draft_id: str, selected_sku_ids: list[str],
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
 
-    def update_draft_sku_package(
-        self, draft_id: str, sku_ids: list[str], package_dimensions: dict[str, float],
-    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
+    def update_product_sku_facts(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     def draft_workflow_status(
         self,
@@ -306,8 +305,6 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         publish_status=_bounded_text(draft.get("publish_status"), max_length=80),
         title=_bounded_text(draft.get("title")),
         description=_bounded_text(draft.get("description"), max_length=8_000),
-        brand=_bounded_text(draft.get("brand"), max_length=200),
-        model=_bounded_text(draft.get("model"), max_length=200),
         language=_bounded_text(draft.get("language"), max_length=40),
         category_id=_bounded_text(draft.get("category_id"), max_length=160),
         description_category_id=_bounded_text(
@@ -676,10 +673,27 @@ def product_profile_patch(
     )
 
 
+@ai_tool(
+    name="product_sku_facts_update",
+    description="批量修改指定商品 SKU 的采购成本、包装 cm/kg、条码、规格、供应商库存和电池/液体属性。先用 product_read 读取商品版本和 SKU ID，传 expected_updated_at；只提供明确要修改的字段。商品资料由所有引用草稿共享，修改后须重新核价和复核相关平台属性；不得猜测缺失事实。",
+    permission="product.write", side_effect="write", approval_required=False,
+    idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual", version="1",
+)
+def product_sku_facts_update(request: ProductSkuFactsUpdateRequest,
+        scope: Annotated[ProductWriteCapabilityScope, Injected()],
+        execution: Annotated[AiExecutionContext, Injected()]) -> ProductSkuFactsUpdateResult:
+    execution.bounded_timeout_seconds()
+    try:
+        return ProductSkuFactsUpdateResult.model_validate(scope.products.update_product_sku_facts(request.model_dump(exclude_unset=True)))
+    except ValueError as exc:
+        raise BusinessCapabilityError("PRODUCT_FACTS_UPDATE_FAILED", str(exc)) from exc
+
+
 PRODUCT_WRITE_AI_CAPABILITIES = (
     product_save,
     product_delete,
     product_profile_patch,
+    product_sku_facts_update,
 )
 
 DRAFT_WRITE_AI_CAPABILITIES = (
@@ -705,5 +719,6 @@ __all__ = [
     "draft_save",
     "product_delete",
     "product_profile_patch",
+    "product_sku_facts_update",
     "product_save",
 ]

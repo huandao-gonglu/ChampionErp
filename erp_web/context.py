@@ -167,7 +167,19 @@ class AppContext:
         self._order_procurement = None
         self._alibaba_self_purchases = None
         self._fulfillment = None
+        self._yandex_logistics = None
+        self._pricing_cache = None
         self._image_batches = None
+
+    @property
+    def pricing_cache(self):
+        if self._pricing_cache is None:
+            with self._lazy_lock:
+                if self._pricing_cache is None:
+                    from erp_web.services.pricing_cache import PricingCache
+
+                    self._pricing_cache = PricingCache()
+        return self._pricing_cache
 
     @property
     def image_batches(self):
@@ -178,6 +190,17 @@ class AppContext:
 
                     self._image_batches = ImageBatchStore(self.paths.app_dir / "data" / "image-batches.sqlite3")
         return self._image_batches
+
+    @property
+    def yandex_logistics(self):
+        if self._yandex_logistics is None:
+            config = self.config
+            with self._lazy_lock:
+                if self._yandex_logistics is None:
+                    from erp_web.services.yandex_logistics_service import YandexLogisticsService
+
+                    self._yandex_logistics = YandexLogisticsService(config, self.paths.data_dir / 'tariffs')
+        return self._yandex_logistics
 
     @property
     def fulfillment(self):

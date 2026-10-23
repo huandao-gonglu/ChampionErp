@@ -10,16 +10,20 @@ from erp_web.international_shipping.platform_api import PlatformClient
 from erp_web.runtime_units import pricing_runtime
 from erp_web.runtime_units.pricing_batch import calculate_sku_prices
 from erp_web.schemas.requests import RequestValidationError
-from erp_web.services.pricing_shipping import PricingShipping
+from test_international_shipping import PricingShipping
 from tests.runtime_test_utils import seed_store_currency
+from tests.pricing_test_utils import official_commission
 from test_international_shipping import COMMON, rules, target  # noqa: F401
 
 
 @pytest.fixture
 def batch_setup(rules, monkeypatch):
+    monkeypatch.setattr(pricing_runtime, "PricingCommissions", lambda _config, **_kwargs: official_commission)
     seed_store_currency("ozon", "CNY", identity={"client_id": "1", "api_key": "test"})
     seed_store_currency("yandex", "RUB", mode="manual")
-    monkeypatch.setattr(pricing_runtime, "PricingShipping", lambda _path, config: PricingShipping(rules, config))
+    from tests.yandex_logistics_support import install_logistics
+    install_logistics(monkeypatch, PricingShipping(rules, {}).yandex_plans_loader())
+    monkeypatch.setattr(pricing_runtime, "PricingShipping", lambda _path, config, **_kwargs: PricingShipping(rules, config))
 
 
 def batch(count=198, *, mode="manual"):

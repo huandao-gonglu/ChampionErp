@@ -1,6 +1,7 @@
 import { ref, watch, nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createWorkflowPricingActions } from '@/stores/workflow/actions/pricing'
+import type { PricingResult } from '@/types/workflow'
 import { priceDraft, type DraftPricingBatch } from '@/api/workflow/publishing'
 import { createDefaultPricingInput, createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
 
@@ -19,14 +20,14 @@ function setup() {
   const input = createDefaultPricingInput()
   input.domesticFreightCny = 20
   input.targets = [{ targetKey: 'ozon:global', platform: 'ozon', site: 'global', listingCurrency: 'CNY', sitesToSell: [],
-    commissionPercent: 20, paymentFeePercent: 0, otherFeePercent: 0, pricingMode: 'margin', targetMarginPercent: 30,
+    paymentFeePercent: 0, otherFeePercent: 0, pricingMode: 'margin', targetMarginPercent: 30,
     markupPercent: 30, shippingQuoteMode: 'auto', shippingCurrency: 'CNY', shippingAmount: 0, manualPrice: null }]
   const runtime = {
     product: ref(createEmptyProduct()), currentDraft: ref(draft), pricingInput: ref(input), pricingResult: ref(null),
     storeConfig: ref({}), loading: ref(false), currentStage: ref(0), addLog: vi.fn(), setError: vi.fn(), applyMutationIndexes: vi.fn(),
   }
   const actions = createWorkflowPricingActions(runtime as unknown as Parameters<typeof createWorkflowPricingActions>[0])
-  const response: DraftPricingBatch = { items: [], applied: false, errors: [], pricingBySku: { 'sku-1': { applied: false, targets: {} } },
+  const response: DraftPricingBatch = { previewId: 'preview-1', items: [], applied: false, errors: [], pricingBySku: { 'sku-1': { applied: false, targets: {} } },
     metrics: { batchId: 'batch', durationMs: 12, ozonDiscoveryMs: 0 } }
   return { runtime, actions, response }
 }
@@ -51,6 +52,8 @@ describe('页面核价使用后端业务入口', () => {
     saved.title = '后端原有标题'
     saved.updatedAt = 'version-2'
     saved.pricing = { common: { domestic_freight_cny: 20 } }
+    vi.mocked(priceDraft).mockResolvedValueOnce(response)
+    await actions.calculatePrice()
     vi.mocked(priceDraft).mockResolvedValue({ ...response, applied: true, draft: saved,
       pricingBySku: { 'sku-1': { applied: true, targets: { 'ozon:global': { applied_price: { amount: '100', currency: 'CNY' } } } } } })
     await actions.applyPrice()
@@ -72,18 +75,28 @@ describe('页面核价使用后端业务入口', () => {
     expect(runtime.pricingInput.value.domesticFreightCny).toBe(25)
   })
 
-  it('只显示系统实际返回的问题，并保留 SKU 归属', async () => {
+  it('核价摘要显示受影响数量，明细保留在 SKU 结果中', async () => {
     const { runtime, actions, response } = setup()
     vi.mocked(priceDraft).mockResolvedValue({ ...response, errors: [{ sku_id: 'sku-1', message: '缺少包装重量' }] })
-    await actions.applyPrice()
-    expect(runtime.setError).toHaveBeenLastCalledWith('核价需要处理：sku-1：缺少包装重量')
+    await actions.calculatePrice()
+    expect(runtime.setError).toHaveBeenLastCalledWith('1 个 SKU 核价未完成：缺少包装重量。')
     expect(runtime.currentDraft.value.updatedAt).toBe('version-1')
+  })
+
+  it('重复的网络错误不拼接 SKU ID 或重复原因', async () => {
+    const { runtime, actions, response } = setup()
+    const errors = Array.from({ length: 9 }, (_, i) => ({ sku_id: `opaque-${i}`, message: 'yandex 官方佣金查询失败（YANDEX_NETWORK_TIMEOUT）：Yandex 接口请求超时' }))
+    vi.mocked(priceDraft).mockResolvedValue({ ...response, errors: [...errors, ...errors] })
+    await actions.calculatePrice()
+    expect(runtime.setError).toHaveBeenLastCalledWith('9 个 SKU 核价未完成：Yandex 费用查询超时，请稍后重试。')
   })
 
   it('应用期间新增编辑保留，并使用服务端新版本继续核价', async () => {
     const { runtime, actions, response } = setup()
     const saved = JSON.parse(JSON.stringify(runtime.currentDraft.value))
     saved.updatedAt = 'version-2'
+    vi.mocked(priceDraft).mockResolvedValueOnce(response)
+    await actions.calculatePrice()
     vi.mocked(priceDraft).mockImplementationOnce(async () => {
       runtime.pricingInput.value.domesticFreightCny = 25
       return { ...response, applied: true, draft: saved }
@@ -102,6 +115,8 @@ describe('页面核价使用后端业务入口', () => {
     })
     const saved = JSON.parse(JSON.stringify(runtime.currentDraft.value))
     saved.skuItems[0].pricing_overrides = { targets: { 'ozon:global': { shipping_amount: 12 } } }
+    vi.mocked(priceDraft).mockResolvedValueOnce(response)
+    await actions.calculatePrice()
     vi.mocked(priceDraft).mockResolvedValue({ ...response, applied: true, draft: saved,
       pricingBySku: { 'sku-1': { applied: true, targets: {} } } })
     await actions.applyPrice()
@@ -109,4 +124,46 @@ describe('页面核价使用后端业务入口', () => {
     expect(runtime.currentDraft.value.skuItems[0]?.pricing.applied).toBe(true)
     stop()
   })
+  it('未计算或参数改变后不提交应用请求，也不自动计算', async () => {
+    const { runtime, actions, response } = setup()
+    await actions.applyPrice()
+    expect(priceDraft).not.toHaveBeenCalled()
+    vi.mocked(priceDraft).mockResolvedValue(response)
+    await actions.calculatePrice()
+    runtime.pricingInput.value.domesticFreightCny = 30
+    await actions.applyPrice()
+    expect(priceDraft).toHaveBeenCalledTimes(1)
+    expect(runtime.setError).toHaveBeenLastCalledWith(expect.stringContaining('请先计算核价'))
+  })
+
+  it('应用携带预览标识，重复点击不会再次计算或应用', async () => {
+    const { actions, response, runtime } = setup()
+    vi.mocked(priceDraft).mockResolvedValueOnce(response)
+    await actions.calculatePrice()
+    vi.mocked(priceDraft).mockResolvedValueOnce({ ...response, applied: true, draft: runtime.currentDraft.value })
+    await actions.applyPrice()
+    expect(priceDraft).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), true, 'preview-1')
+    await actions.applyPrice()
+    expect(priceDraft).toHaveBeenCalledTimes(2)
+  })
+
+  it('预览回填发布币种不改写待应用的手动售价和汇率参数', async () => {
+    const { runtime, actions, response } = setup()
+    runtime.pricingInput.value.exchangeRateMode = 'manual'
+    runtime.pricingInput.value.usdCnyRate = 7.123456789
+    runtime.pricingInput.value.targets[0]!.manualPrice = { amount: '150', currency: '' }
+    response.items = [{ skuId: 'sku-1', result: {
+      results: [{ targetKey: 'ozon:global', listingCurrency: 'CNY', currencyFingerprint: 'ready' }],
+      usdCnyRate: 7.123457, mxnUsdRate: 18, rubCnyRate: 12,
+    } as PricingResult }]
+    vi.mocked(priceDraft).mockResolvedValueOnce(response)
+    await actions.calculatePrice()
+    expect(runtime.pricingInput.value.targets[0]?.listingCurrency).toBe('CNY')
+    expect(runtime.pricingInput.value.targets[0]?.manualPrice?.currency).toBe('')
+    expect(runtime.pricingInput.value.usdCnyRate).toBe(7.123456789)
+    vi.mocked(priceDraft).mockResolvedValueOnce({ ...response, applied: true, draft: runtime.currentDraft.value })
+    await actions.applyPrice()
+    expect(priceDraft).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), true, 'preview-1')
+  })
+
 })

@@ -144,6 +144,40 @@ def test_request_requires_token_without_network(harness) -> None:
     assert harness.requests == []
 
 
+def test_tariff_read_recovers_from_server_error_and_disconnect_with_one_budget(harness) -> None:
+    import http.client
+    from erp_web.context import get_context
+
+    def handler(request):
+        if len(harness.requests) == 1:
+            return _http_error(503, '{}')
+        if len(harness.requests) == 2:
+            return http.client.RemoteDisconnected("连接被关闭")
+        return {"status": "OK", "result": {"offers": []}}
+    harness.route("POST /v2/tariffs/calculate", handler)
+    result = request_yandex_json("POST", "/v2/tariffs/calculate", API_TOKEN, {"parameters": {"campaignId": 111}, "offers": []})
+    assert result["status"] == "OK"
+    assert len(harness.requests) == 3
+    rows = get_context().external_requests.store.query()["items"]
+    assert len({row["operation_id"] for row in rows}) == 1
+    assert {row["attempt"] for row in rows} == {1, 2, 3}
+    assert {row["result"]["outcome"] for row in rows} == {"failed", "network_error", "success"}
+
+
+def test_tariff_bad_request_is_not_retried_or_mistaken_for_permission_failure(harness) -> None:
+    from erp_web.context import get_context
+
+    body = json.dumps({"status": "ERROR", "errors": [{"code": "BAD_REQUEST", "message":
+        'Forbidden to use "campaignId" parameter with "currency".'}]})
+    harness.route("POST /v2/tariffs/calculate", lambda _: _http_error(400, body))
+    with pytest.raises(YandexApiError) as error:
+        request_yandex_json("POST", "/v2/tariffs/calculate", API_TOKEN, {"parameters": {"campaignId": 111, "currency": "RUR"}, "offers": []})
+    assert error.value.http_status == 400
+    assert 'Forbidden to use "campaignId"' in str(error.value)
+    assert len(harness.requests) == 1
+    assert [block["scope"] for block in get_context().external_requests.store.blocks()] == ["request"]
+
+
 @pytest.mark.parametrize(
     ("status", "code", "retryable"),
     [

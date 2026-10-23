@@ -180,7 +180,7 @@ _WRITE_CAPABILITIES = frozenset(
         "product_delete",
         "draft_duplicate",
         "draft_sku_selection_update",
-        "draft_sku_package_update",
+        "product_sku_facts_update",
         "draft_changes_apply",
         "draft_pricing_apply",
         "draft_delete",

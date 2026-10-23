@@ -128,6 +128,9 @@ def sku_publish_fixture(product: dict[str, Any], platform: str) -> dict[str, Any
     """将平台协议测试的单品参数装配到实际 SKU 契约，不给生产代码提供旧字段回退。"""
     from copy import deepcopy
     draft = product["drafts"][platform]
+    for field in ("brand", "model"):
+        if field in draft:
+            product.setdefault(field, draft.pop(field))
     pricing = deepcopy(draft.get("pricing") or {})
     pricing["applied"] = True
     quotes = pricing.get("targets") or {}

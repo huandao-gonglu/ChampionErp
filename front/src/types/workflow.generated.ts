@@ -4,7 +4,23 @@
  */
 
 export const API_SCHEMA_VERSION = 1 as const
-export const PRODUCT_SCHEMA_VERSION = 4 as const
+export const PRODUCT_SCHEMA_VERSION = 5 as const
+
+export interface BackendOrderCenterFilters {
+  procurement_status?: "" | "unpurchased" | "partial" | "purchased" | "unknown"
+  declaration_status?: "" | "unsubmitted" | "submitting" | "unknown" | "created" | "error" | "cancelled"
+  warehouse_status?: "" | "NEW" | "FULFILLMENT_CREATED" | "WAITING_DOMESTIC_SHIPMENT" | "WAREHOUSE_RECEIVED" | "PACKING" | "SHIPPED" | "COMPLETED" | "EXCEPTION" | "CANCELLED"
+  has_waybill?: "" | "yes" | "no"
+  domestic_status?: "" | "waiting" | "in_transit" | "signed" | "unsigned" | "unknown"
+  domestic_carrier?: string
+  receiving_warehouse?: string
+  platform_carrier?: string
+  exception_type?: "" | "any" | "purchase" | "label" | "declaration" | "warehouse"
+  deadline_from?: string
+  deadline_to?: string
+  deadline_status?: "" | "today" | "tomorrow" | "overdue"
+  time_zone?: string
+}
 
 export interface BackendOrderChatAttachment {
   name: string
@@ -338,6 +354,8 @@ export interface BackendAppConfig {
   ai_use_case_prompts?: Record<string, Record<string, string>>
   pricing?: Record<string, unknown>
   pricing_defaults?: Record<string, unknown>
+  yandex_warehouses?: Record<string, unknown>
+  pricing_templates?: Record<string, unknown>
   product_research?: Record<string, unknown>
   browser?: Record<string, unknown>
 }
@@ -486,6 +504,8 @@ export interface BackendProductSku {
   image_asset_id?: string
   barcode?: string
   package_dimensions?: Record<string, string>
+  battery?: boolean
+  liquid?: boolean
   active?: boolean
   source_snapshot?: Record<string, unknown>
 }
@@ -495,6 +515,7 @@ export interface BackendProductSource {
   source_url?: string
   title?: string
   price?: string
+  legacy_product_cost_cny?: string
   currency?: string
   material?: string
   package_contents?: Array<string>
@@ -562,8 +583,6 @@ export interface BackendPlatformDraft {
   global_title?: string
   title?: string
   description?: string
-  brand?: string
-  model?: string
   category_id?: string
   description_category_id?: string
   category_path?: string
@@ -600,7 +619,6 @@ export interface BackendProduct {
   sku?: string
   stock?: string
   upc?: string
-  cost?: string
   materials?: Array<string>
   package_includes?: Array<string>
   colors?: Array<string>
@@ -800,6 +818,17 @@ export interface BackendProductResearchRun {
   request?: BackendProductResearchSearchRequest
   items?: Array<BackendHotProductCandidate>
   source_status?: Array<BackendProductResearchSourceStatus>
+}
+
+export interface BackendPublishPreparationCounts {
+  completed?: number
+  total?: number
+}
+
+export interface BackendPublishPreparationProgress {
+  completed?: number
+  total?: number
+  stage: "validating_source" | "uploading" | "saving_images" | "validating_final" | "building_preview" | "saving_preview"
 }
 
 export interface BackendPublishConfirmation {

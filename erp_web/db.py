@@ -23,6 +23,7 @@ from typing import Any, Iterator
 
 from erp_web.stores.product_description_migration import migrate_draft_description, migrate_product_description
 from erp_web.product_model.sku_model import retain_sku_publications
+from erp_web.product_model.source_facts import migrate_source_facts, invalidate_source_changes
 from erp_web.marketplace_registry import PLATFORMS, marketplace_site
 from erp_web.product_model.merge_model import (
     normalize_platform_draft,
@@ -785,6 +786,8 @@ class ErpDatabase:
         source = _source(product)
         stored_product = _product_storage_payload(product)
         product_id = product_identity(product)
+        previous_row = conn.execute("SELECT product_json FROM products WHERE product_id = ?", (product_id,)).fetchone()
+        previous = json_loads(previous_row[0], {}) if previous_row else None
         product["product_id"] = product_id
         stored_product["product_id"] = product_id
         conn.execute(
@@ -832,6 +835,13 @@ class ErpDatabase:
         )
         self._upsert_drafts(conn, product_id, product, now)
         self._upsert_media(conn, product_id, product, now)
+        if previous is not None:
+            for record in conn.execute("SELECT draft_id, draft_json FROM platform_drafts WHERE product_id = ?", (product_id,)).fetchall():
+                before = json_loads(record["draft_json"], {})
+                after = invalidate_source_changes(previous, stored_product, before)
+                if after != before:
+                    conn.execute("UPDATE platform_drafts SET draft_json = ?, updated_at = ? WHERE draft_id = ?",
+                                 (json_dumps(after), now, record["draft_id"]))
         return product_id
 
     def upsert_product_model(self, product: dict[str, Any]) -> str:
@@ -1007,7 +1017,13 @@ class ErpDatabase:
             if not isinstance(product, dict):
                 product = {}
             product = migrate_product_description(product)
+            if product.get("schema_version") == 4:
+                all_drafts = [json_loads(item[0], {}) for item in conn.execute(
+                    "SELECT draft_json FROM platform_drafts WHERE product_id = ?", (product_id,))]
+                product, _, _ = migrate_source_facts(product, all_drafts)
             product["product_id"] = row["product_id"]
+            product["updated_at"] = row["updated_at"]
+            product["created_at"] = row["created_at"]
             product["drafts"] = self._load_drafts(conn, row["product_id"])
             product.setdefault("source", {})
             if isinstance(product["source"], dict):

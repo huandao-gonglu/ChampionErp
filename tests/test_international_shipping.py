@@ -10,7 +10,9 @@ from erp_web.international_shipping.platform_api import PlatformClient, discover
 from erp_web.international_shipping.tables import ozon_shipping, quote_table, yandex_shipping
 from erp_web.international_shipping.tariff_store import import_template, load_active
 from erp_web.services.pricing_service import pricing_result
-from erp_web.services.pricing_shipping import PricingShipping
+from erp_web.services import pricing_service
+from tests.pricing_test_utils import official_commission
+from erp_web.services.pricing_shipping import PricingShipping as ShippingResolver
 from test_tariff_store import NOTE, OZ, YA, xlsx
 
 
@@ -23,6 +25,14 @@ CONFIG = {'ozon': {'client_id': '1', 'api_key': 'test'},
           ]}}
 
 
+def PricingShipping(root, config):
+    # 此文件验证运价计算；仓库可用性由专门的物流配置测试覆盖。
+    return ShippingResolver(root, config, yandex_plans_loader=lambda: [
+        {'route_id': row['id'], 'publish_warehouse_id': 31, 'fingerprint': row['id']}
+        for row in load_active(root, 'yandex')['content']['rules']
+    ])
+
+
 def target(platform='ozon', **updates):
     return {'platform': platform, 'site': 'global', 'listing_currency': 'CNY',
             'shipping_quote_mode': 'auto', 'shipping_currency': 'CNY', **updates}
@@ -30,11 +40,17 @@ def target(platform='ozon', **updates):
 
 def calculate(root, common=None, selected=None, resolver=None):
     return pricing_result({'common': {**COMMON, **(common or {})}, 'targets': [selected or target()]},
-                          shipping_resolver=resolver or PricingShipping(root, CONFIG))['results'][0]
+                          shipping_resolver=resolver or PricingShipping(root, CONFIG), commission_resolver=official_commission)['results'][0]
 
 
 @pytest.fixture
 def rules(monkeypatch):
+    calculate_target = pricing_service.calculate_target_pricing
+    def with_commission(*args, **kwargs):
+        if kwargs.get("commission_resolver") is None:
+            kwargs["commission_resolver"] = official_commission
+        return calculate_target(*args, **kwargs)
+    monkeypatch.setattr(pricing_service, 'calculate_target_pricing', with_commission)
     with TemporaryDirectory(prefix='erp-shipping-tests-') as folder:
         root = Path(folder)
         for platform in ('ozon', 'yandex'):
@@ -134,6 +150,54 @@ def test_all_candidates_are_returned_and_erp_selects_cheapest(rules):
     result = calculate(rules, selected=target('yandex'))
     assert result['ok'] and len(result['shipping_candidates']) == 15
     assert result['calculation_basis']['shipping_evidence']['carrier'] == 'Carrier 14'
+
+
+def test_yandex_normal_routes_only_query_commission_for_final_price(rules):
+    source = rules.parent / 'yandex.xlsx'
+    xlsx(source, 'yandex', rows=[{**YA, 'group': 'Other', 'carrier': f'Carrier {i}', 'fixed': 100 - i} for i in range(30)])
+    import_template(source, 'yandex', rules)
+    calls = []
+    def commission(common, selected, price):
+        calls.append(price)
+        return official_commission(common, selected, price)
+    shipping = PricingShipping(rules, CONFIG)
+    shipping.commission_resolver = commission
+    result = pricing_result({'common': COMMON, 'targets': [target('yandex')]},
+                            shipping_resolver=shipping, commission_resolver=commission)['results'][0]
+    assert result['ok'] and len(result['shipping_candidates']) == 30
+    assert result['calculation_basis']['shipping_evidence']['carrier'] == 'Carrier 29'
+    assert 1 <= len(calls) <= 3
+    assert calls[-1] == result['applied_price']
+    assert pricing_service.has_official_commission(result['calculation_basis'])
+
+
+def test_yandex_small_route_price_limit_still_rejects_and_normal_route_needs_no_price(rules):
+    snapshot = load_active(rules, 'yandex')
+    small = snapshot['content']['rules'][0]
+    snapshot['content']['rules'] = [small, {**small, 'id': 'normal', 'group': 'Other'}]
+    calls = []
+    def expensive(*args):
+        calls.append(args)
+        return Decimal('125.01')
+    result = quote_table(snapshot, Package(367, 20, 10, 5), expensive, cny_per_rub=Decimal(1) / 12)
+    assert len(calls) == 1
+    assert [item.route_id for item in result.candidates] == ['normal']
+    assert result.rejected['售价超过轻小件货值上限'] == 1
+
+
+def test_identical_small_route_costs_share_commission_queries(rules):
+    source = rules.parent / 'yandex.xlsx'
+    xlsx(source, 'yandex', rows=[{**YA, 'carrier': f'Carrier {i}'} for i in range(20)])
+    import_template(source, 'yandex', rules)
+    calls = []
+    shipping = PricingShipping(rules, CONFIG)
+    def commission(common, selected, price):
+        calls.append(price)
+        return official_commission(common, selected, price)
+    shipping.commission_resolver = commission
+    quote = shipping(COMMON, target('yandex'))
+    assert 'error' not in quote and len(quote['candidates']) == 20
+    assert 1 <= len(calls) <= 3
 
 
 def test_policy_update_reaches_channel_selection_and_weight_step(rules):

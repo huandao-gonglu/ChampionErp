@@ -74,6 +74,8 @@ class AppConfig(TypedDict, total=False):
     ai_use_case_prompts: dict[str, dict[str, str]]
     pricing: dict[str, Any]
     pricing_defaults: dict[str, Any]
+    yandex_warehouses: dict[str, Any]
+    pricing_templates: dict[str, Any]
     product_research: dict[str, Any]
     browser: dict[str, Any]
 

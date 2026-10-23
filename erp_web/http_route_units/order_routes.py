@@ -8,6 +8,7 @@ from erp_web.facades import order_notification_facade as facade
 from erp_web.facades import order_procurement_facade as procurement
 from erp_web.facades import alibaba_self_purchase_facade
 from erp_web.schemas.requests import validate_request_payload
+from erp_web.schemas.order_center import ORDER_CENTER_FILTER_KEYS
 from erp_web.facades import order_address_note_facade as address_notes
 from erp_web.facades import order_chat_facade as chat
 from erp_web.schemas.platform_errors import PublishAdapterError
@@ -247,7 +248,7 @@ def handle_get(handler, parsed):
         allowed = {
             key: value
             for key, value in query.items()
-            if key in {"platform", "state", "limit", "offset", "q"}
+            if key in {"platform", "state", "limit", "offset", "q"} | ORDER_CENTER_FILTER_KEYS
         }
         handler.send_json(
             callback(**allowed)

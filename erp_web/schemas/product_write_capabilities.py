@@ -37,7 +37,6 @@ class ProductProfilePatch(BaseModel):
     sku: str = ""
     stock: str = ""
     upc: str = ""
-    cost: str = ""
     materials: list[str] = Field(default_factory=list)
     package_includes: list[str] = Field(default_factory=list)
     colors: list[str] = Field(default_factory=list)
@@ -140,8 +139,6 @@ class DraftReadView(BaseModel):
     publish_status: TrimmedText = ""
     title: TrimmedText = ""
     description: TrimmedText = ""
-    brand: TrimmedText = ""
-    model: TrimmedText = ""
     language: TrimmedText = ""
     category_id: TrimmedText = ""
     description_category_id: TrimmedText = ""

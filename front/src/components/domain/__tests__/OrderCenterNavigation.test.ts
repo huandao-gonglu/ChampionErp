@@ -205,4 +205,30 @@ describe('紧凑订单列表', () => {
     await flushPromises()
     expect(fetchOrders).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'SKU-2', offset: 0 }))
   })
+  it('提交组合筛选后分页和轮询沿用条件，清空后恢复全部订单且不触发同步', async () => {
+    const store = useOrderNotificationsStore()
+    store.offset = 9
+    const { wrapper } = await render()
+    await wrapper.get('select[aria-label="采购进度筛选"]').setValue('purchased')
+    await wrapper.get('select[aria-label="报单进度筛选"]').setValue('unsubmitted')
+    await wrapper.get('select[aria-label="国内运单筛选"]').setValue('yes')
+    await wrapper.get('input[aria-label="国内快递公司筛选"]').setValue(' 圆通 ')
+    await wrapper.get('select[aria-label="发货截止日期筛选"]').setValue('tomorrow')
+    await store.refresh()
+    expect(fetchOrders).toHaveBeenLastCalledWith(expect.not.objectContaining({ procurement_status: 'purchased' }))
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(fetchOrders).toHaveBeenLastCalledWith(expect.objectContaining({
+      offset: 0, procurement_status: 'purchased', declaration_status: 'unsubmitted', has_waybill: 'yes',
+      domestic_carrier: '圆通', deadline_status: 'tomorrow',
+    }))
+    await store.filter(store.platform, store.state, 9)
+    expect(fetchOrders).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 9, has_waybill: 'yes', deadline_status: 'tomorrow' }))
+    await store.refresh()
+    expect(store.filters.domestic_carrier).toBe('圆通')
+    expect(wrapper.text()).toContain('已筛选 5 项')
+    await wrapper.findAll('button').find(button => button.text() === '清空筛选')!.trigger('click'); await flushPromises()
+    expect(store.filters).toEqual({})
+    expect(fetchOrders).toHaveBeenLastCalledWith({ platform: '', state: '', offset: 0, q: '' })
+    expect(orderCommand).not.toHaveBeenCalled()
+  })
 })

@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from erp_web.schemas.category_definition import CategoryDefinition
 
+from .publish_validation_session import PublishValidationSession
 from .category_definition_support import definition_to_legacy_record
 
 
@@ -45,6 +46,8 @@ class PreparedPublishContext:
     category_currency_cache: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=dict, repr=False, compare=False,
     )
+
+    validation_session: PublishValidationSession | None = field(default=None, repr=False, compare=False)
 
     @property
     def category_id(self) -> str:
@@ -70,6 +73,7 @@ class PreparedPublishContext:
             platform=self.platform,
             definition_error=self.definition_error,
             category_currency_cache=self.category_currency_cache,
+            validation_session=self.validation_session,
         )
 
     @property

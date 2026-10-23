@@ -57,7 +57,7 @@ def test_canonical_models_have_no_rule_copy_fields() -> None:
         (DraftTargetSite, {"category_attribute_schema"}),
     ):
         fields = set(getattr(model, "__annotations__", {}))
-        leaked = fields & banned
+        leaked = fields & (banned | {"validation_session", "image_inspection_cache"})
         assert not leaked, f"{model.__name__} 不得保留规则副本字段：{leaked}"
 
 
@@ -81,6 +81,7 @@ BUSINESS_CONSUMER_FILES = (
     "erp_web/runtime_units/market_prepare_capabilities.py",
     "erp_web/runtime_units/publish_helpers.py",
     "erp_web/runtime_units/publish_validation.py",
+    "erp_web/runtime_units/publish_validation_session.py",
     "erp_web/runtime_units/publish_ozon.py",
     "erp_web/runtime_units/publish_yandex.py",
     "erp_web/runtime_units/publish_mercadolibre.py",

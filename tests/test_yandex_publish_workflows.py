@@ -18,7 +18,7 @@ class _Adapter:
     def __init__(self) -> None:
         self.prepare_calls = 0
 
-    def prepare_product(self, product: dict, config: dict) -> dict:
+    def prepare_product(self, product: dict, config: dict, *, on_progress=None) -> dict:
         self.prepare_calls += 1
         prepared = deepcopy(product)
         # 模拟显式上传的交付结果。

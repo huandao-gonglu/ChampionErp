@@ -103,7 +103,7 @@ def evaluate(args):
             toolset = build_global_chat_toolset(app)
         allowed = {"draft_attributes_read", "draft_read", "product_read", "inspect_source_facts",
                    "category_attributes_query", "category_attribute_values_query", "draft_sku_attributes_update",
-                   "product_attributes_update", "draft_changes_apply", "draft_sku_package_update"}
+                   "product_attributes_update", "draft_changes_apply", "product_sku_facts_update"}
         calls, write_seconds = Counter(), []
         def guarded(name, original):
             @deadline_aware_tool_executor
@@ -113,7 +113,7 @@ def evaluate(args):
                     raise ValueError("隔离验收禁止外部业务操作。")
                 started = time.monotonic()
                 result = original(arguments, execution)
-                if name in {"draft_sku_attributes_update", "product_attributes_update", "draft_changes_apply", "draft_sku_package_update"}:
+                if name in {"draft_sku_attributes_update", "product_attributes_update", "draft_changes_apply", "product_sku_facts_update"}:
                     write_seconds.append(time.monotonic() - started)
                 return result
             return execute

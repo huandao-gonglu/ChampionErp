@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from uuid import uuid4
 from datetime import datetime
 
@@ -153,6 +154,22 @@ class OrderProcurementStore:
                 LEFT JOIN purchase_progress s ON s.record_id=p.id WHERE p.order_id=? ORDER BY p.rowid""", (order_id,)).fetchall()
             return [PurchaseRecord.model_validate({**json.loads(r[0]), "progress": json.loads(r[1]) if r[1] else None}) for r in rows]
 
+    def records_many(self, orders):
+        """批量读取已按当前账号限定的订单采购历史，供本地列表检索。"""
+        result = {order.id: [] for order in orders}
+        if not result:
+            return result
+        with self.orders.connect() as conn:
+            rows = conn.execute("""SELECT p.order_id,p.record_json,s.value FROM order_purchases p
+                LEFT JOIN purchase_progress s ON s.record_id=p.id
+                WHERE p.order_id IN (SELECT value FROM json_each(?)) ORDER BY p.rowid""",
+                (json.dumps(list(result)),)).fetchall()
+        for row in rows:
+            result[row['order_id']].append(PurchaseRecord.model_validate({
+                **json.loads(row['record_json']), 'progress': json.loads(row['value']) if row['value'] else None,
+            }))
+        return result
+
     @staticmethod
     def _purchased(conn, order_id, key, signature):
         return conn.execute("""SELECT COALESCE(SUM(json_extract(i.value,'$.quantity')),0)
@@ -215,6 +232,10 @@ class OrderProcurementStore:
             return dict(row) if row else None, self._purchased(conn, order_id, key, line_signature(line))
 
     def progress(self, order):
+        return self.progress_for_records(order, self.records_many([order])[order.id])
+
+    @staticmethod
+    def progress_for_records(order, records):
         keys = [order_line_key(line) for line in order.items]
         if (
             not keys
@@ -223,12 +244,14 @@ class OrderProcurementStore:
             or any(line.quantity <= 0 for line in order.items)
         ):
             return "unknown"
-        with self.orders.connect() as conn:
-            quantities = [self._purchased(conn, order.id, order_line_key(line), line_signature(line)) for line in order.items]
-            has_records = conn.execute("SELECT 1 FROM order_purchases WHERE order_id=? AND status='purchased'", (order.id,)).fetchone()
-        if all(done >= line.quantity for done, line in zip(quantities, order.items)):
+        active = [record for record in records if record.status == 'purchased']
+        quantities = Counter()
+        for record in active:
+            for item in record.items:
+                quantities[item.line_key, item.line_signature] += item.quantity
+        if all(quantities[key, line_signature(line)] >= line.quantity for key, line in zip(keys, order.items)):
             return "purchased"
-        return "partial" if has_records else "unpurchased"
+        return "partial" if active else "unpurchased"
 
     def tracking_summaries(self, orders):
         """批量读取当前订单有效采购单的状态；商品变更不删除已发生的采购事实。"""

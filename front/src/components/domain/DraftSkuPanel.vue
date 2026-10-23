@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { PhArrowCounterClockwise } from '@phosphor-icons/vue'
 import SkuImagePicker from './SkuImagePicker.vue'
 import SkuCollapsibleSection from './SkuCollapsibleSection.vue'
+import { barcodeAttributes } from '@/utils/barcodePolicy'
+import type { CategorySelection } from '@/types/workflow'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import type { DraftDetail, DraftSku, ImageAsset, ProductSku, UnknownRecord } from '@/types/workflow'
 
-const props = defineProps<{ draft: DraftDetail; skus: ProductSku[]; images?: ImageAsset[]; loading: boolean }>()
+const props = defineProps<{ draft: DraftDetail; skus: ProductSku[]; images?: ImageAsset[]; loading: boolean; categories?: Record<string, CategorySelection | null> }>()
+const emit = defineEmits<{ editProduct: [skuId: string] }>()
 const expanded = ref('')
 const targetKey = ref('')
+const showBarcode = computed(() => {
+  const target = props.draft.targetSites.find(item => `${item.platform}:${item.site}`.toLowerCase() === targetKey.value)
+  return Boolean(target && barcodeAttributes(target.platform, props.categories?.[targetKey.value]).length)
+})
 useAiPageContext(() => {
   const target = props.draft.targetSites.find(item => `${item.platform}:${item.site}`.toLowerCase() === targetKey.value)
   return {
@@ -32,7 +38,7 @@ watch(() => [props.draft.draftId, props.draft.skuItems, props.skus.map(row => [r
     targetKey.value = `${props.draft.targetSites[0]?.platform}:${props.draft.targetSites[0]?.site}`.toLowerCase()
   }
 }, { immediate: true })
-watch(() => JSON.stringify(props.draft.skuItems.map(row => [row.sku_id, row.overrides.cost_cny, row.overrides.package_dimensions, row.pricing_overrides])), (next, previous) => {
+watch(() => JSON.stringify(props.draft.skuItems.map(row => [row.sku_id, row.pricing_overrides])), (next, previous) => {
   if (previous && next !== previous && !props.loading) for (const row of props.draft.skuItems) row.pricing.applied = false
 }, { flush: 'sync' })
 const pairs = computed(() => props.draft.skuItems.map(row => ({ row, sku: props.skus.find(sku => sku.id === row.sku_id) })).filter((pair): pair is { row: DraftSku; sku: ProductSku } => Boolean(pair.sku)))
@@ -46,7 +52,7 @@ function setAllSelected(selected: boolean) {
 function toggleAllSelected(event: Event) {
   setAllSelected((event.target as HTMLInputElement).checked)
 }
-function dimensions(sku: ProductSku, row: DraftSku) { return { ...sku.package_dimensions, ...(row.overrides.package_dimensions as UnknownRecord || {}) } }
+function dimensions(sku: ProductSku) { return sku.package_dimensions }
 function fee(row: DraftSku, key: string) { return (row.pricing_overrides?.common as UnknownRecord || {})[key] }
 function setFee(row: DraftSku, key: string, value: string) {
   const common = { ...(row.pricing_overrides?.common as UnknownRecord || {}) }
@@ -70,7 +76,7 @@ const groupingResults = computed(() => ((props.draft.raw.target_sites as Unknown
 <template>
   <SkuCollapsibleSection title="发布 SKU" :summary="`已选择 ${selectedCount} / ${enabledPairs.length}`">
     <div class="space-y-4">
-      <div class="flex flex-wrap items-center justify-between gap-3"><p class="muted">启用规格默认全选，可取消不刊登的规格。修改只影响当前草稿。可售库存默认填写供应商库存，可手动调整。成本和包装资料默认跟随商品，展开一行可单独调整。</p><div class="flex gap-2"><button class="btn btn-outline" :disabled="loading" @click="setAllSelected(true)">全选启用规格</button><button class="btn btn-outline" :disabled="loading" @click="setAllSelected(false)">取消全选</button></div></div>
+      <div class="flex flex-wrap items-center justify-between gap-3"><p class="muted">启用规格默认全选，可取消不刊登的规格。修改只影响当前草稿。可售库存默认填写供应商库存，可手动调整。采购成本、包装及运输属性统一在商品中维护。</p><div class="flex gap-2"><button class="btn btn-outline" :disabled="loading" @click="setAllSelected(true)">全选启用规格</button><button class="btn btn-outline" :disabled="loading" @click="setAllSelected(false)">取消全选</button></div></div>
       <div class="flex flex-wrap gap-4"><label class="text-sm">发布组织方式<select v-model="draft.grouping.mode" :disabled="loading" class="input mt-1"><option value="combined">组合展示</option><option value="separate">独立刊登</option></select></label><label class="grow text-sm">平台组名<input v-model="draft.grouping.name" class="input mt-1" :placeholder="draft.title" :disabled="loading || draft.grouping.mode === 'separate'" /></label></div>
       <p v-for="item in groupingResults" :key="item.target" class="text-sm">{{ item.target }}：{{ statusLabel(item.grouping.status) }}</p>
       <p v-if="!pairs.length" class="rounded-lg bg-slate-50 p-5 text-sm dark:bg-dark-900">商品暂无 SKU，请先在商品的“规格与 SKU”中添加。</p>
@@ -82,11 +88,12 @@ const groupingResults = computed(() => ((props.draft.raw.target_sites as Unknown
             :disabled="loading || !enabledPairs.length" @change="toggleAllSelected"
           /><span>发布</span></label></th><th>商品规格</th><th>平台卖家编码</th><th>可售库存</th><th>采购成本 CNY</th><th>包装 cm / kg</th><th>远端状态</th><th /></tr></thead><tbody>
             <template v-for="{row, sku} in pairs" :key="row.sku_id">
-              <tr class="border-t border-accent-100 dark:border-dark-700"><td class="p-2"><input v-model="row.selected" type="checkbox" :disabled="loading || !sku.active" :aria-label="`发布 ${sku.name}`" /></td><td class="p-2"><span>{{ sku.name || '无规格信息' }}</span><p class="text-xs text-slate-500">{{ Object.values(sku.options).join(' / ') }}{{ !sku.active ? ' · 已停用' : '' }}</p></td><td class="max-w-40 p-1"><input v-model="row.sku" :disabled="Object.keys(row.publications).length > 0" class="input !py-1.5" placeholder="保存后生成" aria-label="平台卖家编码" /></td><td class="w-24 p-1"><input v-model="row.stock" class="input !py-1.5" min="0" type="number" aria-label="可售库存" /></td><td class="p-2">{{ row.overrides.cost_cny ?? sku.cost_cny }}</td><td class="p-2 text-xs">{{ ['length_cm','width_cm','height_cm'].map(k => dimensions(sku, row)[k] || '—').join(' × ') }} / {{ dimensions(sku,row).weight_kg || '—' }}</td><td class="p-2 text-xs"><div v-for="(publication, key) in row.publications" :key="key">{{ key }}：{{ statusLabel(publication.status) }}<p class="font-mono">{{ publication.external_id || publication.item_id || publication.offer_id }}</p><p class="text-red-500">{{ publication.error }}</p></div><span v-if="!Object.keys(row.publications).length">未发布</span></td><td><button class="btn btn-outline !px-2 !py-1" @click="expanded = expanded === row.sku_id ? '' : row.sku_id">{{ expanded === row.sku_id ? '收起' : '属性 / 详情' }}</button></td></tr>
+              <tr class="border-t border-accent-100 dark:border-dark-700"><td class="p-2"><input v-model="row.selected" type="checkbox" :disabled="loading || !sku.active" :aria-label="`发布 ${sku.name}`" /></td><td class="p-2"><span>{{ sku.name || '无规格信息' }}</span><p class="text-xs text-slate-500">{{ Object.values(sku.options).join(' / ') }}{{ !sku.active ? ' · 已停用' : '' }}</p></td><td class="max-w-40 p-1"><input v-model="row.sku" :disabled="Object.keys(row.publications).length > 0" class="input !py-1.5" placeholder="保存后生成" aria-label="平台卖家编码" /></td><td class="w-24 p-1"><input v-model="row.stock" class="input !py-1.5" min="0" type="number" aria-label="可售库存" /></td><td class="p-2">{{ sku.cost_cny }}</td><td class="p-2 text-xs">{{ ['length_cm','width_cm','height_cm'].map(k => dimensions(sku)[k] || '—').join(' × ') }} / {{ dimensions(sku).weight_kg || '—' }}</td><td class="p-2 text-xs"><div v-for="(publication, key) in row.publications" :key="key">{{ key }}：{{ statusLabel(publication.status) }}<p class="font-mono">{{ publication.external_id || publication.item_id || publication.offer_id }}</p><p class="text-red-500">{{ publication.error }}</p></div><span v-if="!Object.keys(row.publications).length">未发布</span></td><td><button class="btn btn-outline !px-2 !py-1" @click="expanded = expanded === row.sku_id ? '' : row.sku_id">{{ expanded === row.sku_id ? '收起' : '属性 / 详情' }}</button></td></tr>
               <tr v-if="expanded === row.sku_id">
                 <td colspan="8" class="bg-slate-50 p-4 dark:bg-dark-950">
-                  <div class="mb-3 flex items-center justify-between"><span class="text-sm font-semibold">此草稿的规格资料</span><button class="flex items-center gap-1 text-xs" @click="row.overrides = {}"><PhArrowCounterClockwise />恢复使用商品资料</button></div>
-                  <div class="grid gap-3 md:grid-cols-3"><label class="text-xs">采购成本 CNY<input :value="row.overrides.cost_cny ?? sku.cost_cny" type="number" class="input mt-1" @input="row.overrides.cost_cny = ($event.target as HTMLInputElement).value" /></label><label v-for="[key,label] in [['length_cm','包装长 cm'],['width_cm','包装宽 cm'],['height_cm','包装高 cm'],['weight_kg','包装重量 kg']]" :key="key" class="text-xs">{{ label }}<input :value="dimensions(sku,row)[key]" type="number" step="any" class="input mt-1" @input="row.overrides.package_dimensions = {...(row.overrides.package_dimensions as UnknownRecord || {}), [key]: ($event.target as HTMLInputElement).value}" /></label><label class="text-xs">条码<input :value="row.overrides.barcode ?? sku.barcode" class="input mt-1" @input="row.overrides.barcode = ($event.target as HTMLInputElement).value" /></label><SkuImagePicker class="md:col-span-3" :model-value="String(row.overrides.image_asset_id ?? sku.image_asset_id)" :images="images" :disabled="loading" :label="`${sku.name} 的图片`" allow-inherit :inherited="row.overrides.image_asset_id === undefined" @update:model-value="row.overrides.image_asset_id = $event" @inherit="delete row.overrides.image_asset_id" /></div>
+                  <div class="mb-3 flex items-center justify-between"><span class="text-sm font-semibold">商品资料</span><button type="button" class="btn btn-outline" :disabled="loading" @click="emit('editProduct', row.sku_id)">去商品修改</button></div>
+                  <p class="mb-3 text-sm"><span v-if="showBarcode">条码：{{ sku.barcode || '未填写' }} · </span>{{ sku.battery ? '含电池' : '不含电池' }} · {{ sku.liquid ? '含液体' : '不含液体' }}</p>
+                  <SkuImagePicker :model-value="String(row.overrides.image_asset_id ?? sku.image_asset_id)" :images="images" :disabled="loading" :label="`${sku.name} 的销售图片`" allow-inherit :inherited="row.overrides.image_asset_id === undefined" @update:model-value="row.overrides.image_asset_id = $event" @inherit="delete row.overrides.image_asset_id" />
                   <div class="my-3 grid gap-3 md:grid-cols-3"><label v-for="[key, label] in [['domestic_freight_cny', '国内运费 CNY'], ['packaging_cost_cny', '包装耗材 CNY'], ['other_cost_cny', '其他固定费用 CNY']]" :key="key" class="text-xs">{{ label }}<input :value="fee(row, key)" class="input mt-1" type="number" min="0" step="any" placeholder="沿用核价共用模板" @input="setFee(row, key, ($event.target as HTMLInputElement).value)" /></label></div>
                   <div class="my-3 grid gap-3 md:grid-cols-2"><label class="text-xs">此目标的国际运费（使用核价页物流币种）<input :value="targetFee(row).shipping_amount" class="input mt-1" type="number" min="0" step="any" placeholder="沿用共用物流报价" @input="setTargetFee(row, 'shipping_amount', ($event.target as HTMLInputElement).value)" /></label><label class="text-xs">此目标的手动售价 {{ quoteCurrency(row) }}<input :value="(targetFee(row).manual_price as UnknownRecord)?.amount" class="input mt-1" type="number" min="0" step="any" :disabled="!quoteCurrency(row)" placeholder="先核价以确认币种；留空使用共用规则" @input="setTargetFee(row, 'manual_price', ($event.target as HTMLInputElement).value ? {amount: ($event.target as HTMLInputElement).value, currency: quoteCurrency(row)} : null)" /></label></div>
                   <slot name="attributes" :row="row" :sku="sku" :target-key="targetKey" />

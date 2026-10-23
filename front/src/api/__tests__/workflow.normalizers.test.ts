@@ -248,7 +248,7 @@ describe('workflow 当前 wire schema', () => {
     for (const key of ['stock', 'sku', 'upc', 'package_dimensions', 'publication']) expect(toBackendDraft(draft)).not.toHaveProperty(key)
   })
 
-  it('草稿品牌和型号作为根字段双向转换', () => {
+  it('草稿不持有实物品牌型号，保留平台映射', () => {
     const draft = normalizeDraft({
       draft_id: 'draft-brand-model',
       brand: 'Root Brand',
@@ -259,12 +259,10 @@ describe('workflow 当前 wire schema', () => {
       },
     }, 'en-US')
 
-    expect(draft.brand).toBe('Root Brand')
-    expect(draft.model).toBe('Root Model')
-    expect(toBackendDraft(draft)).toMatchObject({
-      brand: 'Root Brand',
-      model: 'Root Model',
-    })
+    expect(draft).not.toHaveProperty('brand')
+    expect(draft).not.toHaveProperty('model')
+    expect(toBackendDraft(draft)).not.toHaveProperty('brand')
+    expect(toBackendDraft(draft)).not.toHaveProperty('model')
   })
 
   it('CBT 仅作为内部父目标，语言和市场选项来自 Mercado 销售子市场', () => {

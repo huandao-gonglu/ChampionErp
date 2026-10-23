@@ -2,7 +2,8 @@
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
-import { orderPlatformNames, orderStateNames } from '@/types/orders'
+import { orderStateNames } from '@/types/orders'
+import OrderCenterFilters from './OrderCenterFilters.vue'
 import OrderDetailPanel from './OrderDetailPanel.vue'
 import OrderListTable from './OrderListTable.vue'
 import OrderNotificationsDrawer from './OrderNotificationsDrawer.vue'
@@ -13,7 +14,6 @@ const route = useRoute()
 const router = useRouter()
 const notificationsOpen = ref(false)
 const more = ref<HTMLDetailsElement | null>(null)
-const searchText = ref(store.query)
 const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | undefined
 const tabs = computed(() => [
@@ -36,10 +36,6 @@ const syncing = computed(() =>
       (!store.platform || event.platform === store.platform)
   )
 )
-function search() {
-  store.query = searchText.value.trim()
-  void store.filter(store.platform, store.state)
-}
 function closeMore() {
   if (more.value) more.value.open = false
 }
@@ -131,28 +127,7 @@ onBeforeUnmount(() => {
         {{ tab.label }} <span>{{ tab.count }}</span>
       </button>
     </nav>
-    <form class="order-filters" @submit.prevent="search">
-      <input
-        v-model="searchText"
-        class="order-input"
-        type="search"
-        aria-label="搜索订单号、SKU 或商品"
-        placeholder="搜索订单号、SKU 或商品"
-      />
-      <button class="order-button">搜索</button>
-      <select
-        class="order-input order-platform-filter"
-        aria-label="平台筛选"
-        :value="store.platform"
-        @change="store.filter(($event.target as HTMLSelectElement).value, store.state)"
-      >
-        <option value="">全部平台</option>
-        <option v-for="(label, key) in orderPlatformNames" :key="key" :value="key">
-          {{ label }}
-        </option>
-      </select>
-      <span class="order-muted order-filter-count">{{ store.page.total }} 个订单</span>
-    </form>
+    <OrderCenterFilters />
     <OrderListTable
       :page="store.page"
       :offset="store.offset"
@@ -201,30 +176,6 @@ h2 {
   background: #f0fdf4;
   color: #15803d;
   border-bottom-color: #16a34a;
-}
-.order-filters {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 11px 12px;
-  margin-bottom: 12px;
-  border-radius: 7px;
-  background: var(--order-surface);
-}
-.order-filters > input {
-  max-width: 394px;
-}
-.order-filters .order-input,
-.order-filters .order-button {
-  height: 32px;
-  min-height: 32px;
-}
-.order-platform-filter {
-  width: 150px;
-}
-.order-filter-count {
-  margin-left: auto;
-  white-space: nowrap;
 }
 .order-more {
   position: relative;

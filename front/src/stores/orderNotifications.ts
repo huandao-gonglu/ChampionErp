@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { fetchOrders, fetchOrderIntegrations, fetchOrderSummary, orderCommand } from '@/api/orders'
 import { ORDER_PAGE_SIZE } from '@/types/orders'
-import type { OrderIntegrations, OrdersPage, OrderSummary } from '@/types/orders'
+import type { OrderIntegrations, OrdersPage, OrderSummary, OrderCenterFilters } from '@/types/orders'
 
 export const useOrderNotificationsStore = defineStore('order-notifications', () => {
   const page = ref<OrdersPage>({
@@ -30,6 +30,7 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
   })
   const summaryError = ref('')
   const query = ref('')
+  const filters = ref<OrderCenterFilters>({})
   const listActive = ref(false)
   let summaryGeneration = 0
   const platform = ref('')
@@ -55,6 +56,7 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
         state: state.value,
         offset: offset.value,
         q: query.value,
+        ...filters.value,
       })
       if (current !== generation) return
       const lastOffset =
@@ -172,6 +174,7 @@ export const useOrderNotificationsStore = defineStore('order-notifications', () 
     summaryError,
     refreshSummary,
     query,
+    filters,
     listActive,
     integrations,
     platform,

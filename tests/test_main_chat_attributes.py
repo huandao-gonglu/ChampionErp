@@ -160,8 +160,7 @@ def test_read_tools_expose_sku_dimensions_without_shared_fallback(
         sku["package_dimensions"].update({
             key: missing_dimension for key in ("length_cm", "width_cm", "height_cm")
         })
-    draft = product["drafts"]["ozon"]
-    draft["sku_items"][1]["overrides"] = {"package_dimensions": {"length_cm": "26"}}
+    product["sku_items"][1]["package_dimensions"]["length_cm"] = "26"
     app.products.save_product(product)
     before = app.products.load_product_from_index("product-native-0")
     scope = ProductCapabilityScope(app.products)
@@ -238,18 +237,18 @@ def test_concurrent_edit_to_same_attribute_is_not_overwritten(subject, monkeypat
     assert app.products.draft_record(draft_id)["attributes"]["85"] == enum("manual", "人工品牌")
 
 
-def test_mercado_brand_updates_canonical_draft_field_and_keeps_platform_identity(monkeypatch):
+def test_mercado_brand_updates_platform_mapping_and_keeps_product_fact(monkeypatch):
     from tests.test_product_capability_service import _Products
     from erp_web.services.mercadolibre_attribute_contract import compile_mercadolibre_attributes
     from erp_web.runtime_units.category_definition_support import definition_from_legacy_attributes
     products = _Products()
-    products.draft["brand"] = "来源品牌"
+    products.draft.pop("brand", None)
     attr = {"id": "BRAND", "name": "Brand", "required": True, "value_type": "string", "value_mode": "strict_enum", "has_more_values": True}
     monkeypatch.setattr(validation, "fetch_category_record", lambda *args, **kwargs: {"category_id": "CAT-1", "attributes": {"required": [attr]}})
     monkeypatch.setattr(validation, "fetch_category_attribute_values", lambda *args, **kwargs: {"values": [{"id": "123", "value": "Generic"}]})
     result = update_product_attributes(ProductAttributesUpdateRequest(draft_id="draft-1", platform="mercadolibre", site="MLM", category_id="CAT-1", updates={"BRAND": enum("123", "Generic")}), product_store=products)
-    assert products.draft["brand"] == "Generic"
-    assert result.draft_fields == {"brand": "Generic"}
+    assert "brand" not in products.draft
+    assert result.draft_fields == {}
     definition = definition_from_legacy_attributes(platform="mercadolibre", site="MLM", category_id="CAT-1", category_path="Fans", required=[attr], optional=[])
     compiled = compile_mercadolibre_attributes(products.draft, definition, listing_model="traditional")
     assert not compiled.issues

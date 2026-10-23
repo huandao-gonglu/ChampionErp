@@ -20,6 +20,7 @@ import {
 } from '@/api/workflow/catalog'
 import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow/catalog'
 import type { DraftMutationResponse } from '@/api/workflow/normalizers'
+import { draftWithPricingInput } from '@/api/workflow/publishing'
 import { assignUpc as assignUpcApi } from '@/api/workflow/settings'
 import { listingLanguageValue } from '@/constants/locales'
 import { withAiForeground } from '@/services/withAiForeground'
@@ -54,6 +55,7 @@ type WorkflowCatalogActionsPort = Pick<
   | 'imagePrompt'
   | 'fillFormFromState'
   | 'pricingResult'
+  | 'pricingInput'
   | 'categoryResults'
   | 'categoryRecommendations'
   | 'categoryAutoMatchProductName'
@@ -90,7 +92,7 @@ type DraftTargetSelectionSource = Pick<DraftDetail, 'draftId' | 'language' | 'ta
 export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort) {
   const {
     product, productsIndex, draftsIndex, selectedProductIds, currentDraft,
-    currentDraftProductContext, imagePrompt, fillFormFromState, pricingResult,
+    currentDraftProductContext, imagePrompt, fillFormFromState, pricingResult, pricingInput,
     categoryResults, categoryRecommendations, categoryAutoMatchProductName, categoryPrecheck, precheck, precheckResults,
     payloadPreview, copyGenerating, activeMarketplace, appConfig, storeConfig, loading,
     addLog, setError, currentStage, mergeTargetDetails, persistActiveTargetListingFields,
@@ -623,9 +625,11 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       product.value = result.product
       applyMutationIndexes(result)
       syncPricingInputFromProduct()
-      addLog('商品草稿已保存。')
+      addLog('商品资料已保存。')
+      return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '保存商品失败')
+      return false
     } finally {
       loading.value = false
     }
@@ -636,7 +640,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     setError('')
     try {
       persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
-      const result = await saveDraftApi(currentDraft.value)
+      const result = await saveDraftApi(draftWithPricingInput(currentDraft.value, pricingInput.value))
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       activeMarketplace.value = result.draft.platform

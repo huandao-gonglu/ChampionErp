@@ -231,3 +231,31 @@ def test_ozon_category_change_drops_previous_description_category_id() -> None:
     assert target["category_id"] == "NEW-TYPE"
     assert target["description_category_id"] == ""
     assert target["category_path"] == "New category"
+
+
+@pytest.mark.parametrize("reason", ["The product is handmade", ""])
+def test_category_refresh_preserves_explicit_gtin_reason(reason: str) -> None:
+    product = default_product_model()
+    product["drafts"]["mercadolibre"]["target_sites"][0]["attributes"] = {
+        "EMPTY_GTIN_REASON": reason,
+    }
+    selected = apply_category_selection(product, "mercadolibre", {
+        "category_id": "CBT123", "site": "CBT",
+        "attributes": {"required": [], "optional": [{"id": "EMPTY_GTIN_REASON"}]},
+    })
+    target = selected["drafts"]["mercadolibre"]["target_sites"][0]
+    assert target["attributes"]["EMPTY_GTIN_REASON"] == reason
+
+
+@pytest.mark.parametrize("platform", ["yandex", "ozon"])
+def test_legacy_exemption_does_not_bypass_other_market_gtin_requirement(platform: str) -> None:
+    from erp_web.product_model.category_model import unresolved_required_attributes_in_draft
+
+    required = {"id": "GTIN", "required": True}
+    missing = unresolved_required_attributes_in_draft(
+        {"sku_items": []},
+        {"sku_items": [], "allow_gtin_exemption": True,
+         "attributes": {"EMPTY_GTIN_REASON": "The product is handmade"}},
+        platform, [required],
+    )
+    assert missing == [required]

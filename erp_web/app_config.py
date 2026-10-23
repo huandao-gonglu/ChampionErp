@@ -7,6 +7,8 @@ from erp_web.services import ai_model_config, ai_prompt_templates
 from erp_web.services.image_hosting_config import normalize_image_hosting
 from erp_web.schemas.ai_approval import normalize_ai_tool_approval_mode
 from erp_web.schemas.config import SystemSettingsRequest
+from erp_web.schemas.pricing_templates import PricingTemplateSettings
+from erp_web.schemas.yandex_warehouses import YandexWarehouseConfiguration
 
 from .product_research_config import (
     default_product_research_config,
@@ -71,7 +73,6 @@ def default_app_config() -> dict[str, Any]:
         "ai_use_case_bindings": {},
         "ai_use_case_prompts": ai_prompt_templates.default_ai_use_case_prompts(),
         "pricing_defaults": {
-            "commission_percent": "20",
             "target_margin_percent": "30",
             "domestic_freight": "0",
             "international_freight": "0",
@@ -82,9 +83,6 @@ def default_app_config() -> dict[str, Any]:
             "default_currency_rate": "1",
             "default_packaging_cost": "0",
             "default_domestic_freight": "0",
-            "mercadolibre_commission_percent": "20",
-            "wildberries_commission_percent": "20",
-            "ozon_commission_percent": "20",
             "mercadolibre_payment_fee_percent": "0",
             "wildberries_payment_fee_percent": "0",
             "ozon_payment_fee_percent": "0",
@@ -92,6 +90,8 @@ def default_app_config() -> dict[str, Any]:
             "exchange_rate_timeout_seconds": "10",
             "exchange_rate_cache_ttl_seconds": "3600",
         },
+        "pricing_templates": PricingTemplateSettings().model_dump(),
+        "yandex_warehouses": YandexWarehouseConfiguration().model_dump(),
         "product_research": default_product_research_config(),
     }
 
@@ -132,6 +132,9 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
         if isinstance(incoming.get("pricing_defaults"), dict)
         else {}
     )
+    # 旧配置继续可读；这些历史手填佣金不再进入新配置或核价。
+    retired_commissions = {"commission_percent", "mercadolibre_commission_percent", "wildberries_commission_percent", "ozon_commission_percent"}
+    raw_pricing = {key: value for key, value in raw_pricing.items() if key not in retired_commissions}
     unknown_pricing_keys = sorted(set(raw_pricing) - set(defaults["pricing_defaults"]))
     if unknown_pricing_keys:
         raise ValueError(
@@ -196,6 +199,8 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     canonical["ai_use_case_bindings"] = ai_use_case_bindings
     canonical["ai_use_case_prompts"] = ai_use_case_prompts
     canonical["pricing_defaults"] = pricing_defaults
+    canonical["pricing_templates"] = PricingTemplateSettings.model_validate(incoming.get("pricing_templates", {})).model_dump(exclude_none=True)
+    canonical["yandex_warehouses"] = YandexWarehouseConfiguration.model_validate(incoming.get("yandex_warehouses", {})).model_dump()
     canonical["product_research"] = normalize_product_research_config(
         incoming.get("product_research")
     )

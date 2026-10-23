@@ -176,6 +176,8 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/orders/address-note": RequestContract(fields={"order_id": STRING, "shipment_id": STRING, "address_key": STRING, "revision": FieldRule("integer", minimum=0), "note": STRING}, required=("order_id", "shipment_id", "address_key", "revision", "note")),
+    '/api/yandex/warehouses/refresh': _EMPTY,
+    '/api/yandex/warehouses/logistics': _contract(fields={'business_id': STRING, 'campaign_id': STRING, 'revision': FieldRule('integer', minimum=0), 'bindings': ARRAY}, required=('business_id', 'campaign_id', 'revision', 'bindings')),
     '/api/logistics/refresh': _EMPTY,
     '/api/logistics/parse-address': RequestContract(fields={'text': STRING}, required=('text',)),
     '/api/logistics/address': _contract(fields={'id': STRING, 'revision': FieldRule('integer', minimum=0), 'warehouse_id': FieldRule('integer', minimum=1), 'name': STRING, 'address': OBJECT, 'enabled': BOOLEAN, 'is_default': BOOLEAN, 'remark': STRING, 'rules': ARRAY}, required=('revision', 'warehouse_id', 'name', 'address', 'rules')),
@@ -208,6 +210,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/assign-upc": RequestContract(fields={"product_id": STRING, "sku_ids": STRING_ARRAY}, required=("product_id",)),
     "/api/browser-debug/open-profile": _EMPTY,
     "/api/draft-pricing/preview": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
+    "/api/pricing/templates/save": RequestContract(fields={"id": STRING, "name": STRING, "parameters": OBJECT, "set_default": BOOLEAN}, required=("name", "parameters")),
+    "/api/pricing/templates/default": RequestContract(fields={"id": STRING}, required=("id",)),
+    "/api/pricing/templates/delete": RequestContract(fields={"id": STRING}, required=("id",)),
     "/api/draft-pricing/apply": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
     "/api/v1/category-match": _contract(
         required=("platform",),

@@ -1,4 +1,4 @@
-"""同一轮订单同步中的采购与仓库状态读取；复用各领域快照和失败记录。"""
+"""按订单阶段读取仍需跟进的采购与仓库状态；复用各领域快照和失败记录。"""
 
 import logging
 import time
@@ -14,9 +14,17 @@ logger = logging.getLogger(__name__)
 
 def sync_order_progress(procurement, fulfillment, config_provider, order_id, checkpoint, *, cancel=None):
     detail = procurement.detail(order_id)
+    order = OrderView.model_validate(detail["order"])
+    # 平台已发货后只跟进平台状态，不再查询前序采购物流和仓库报单。
+    if order.state in {"shipped", "delivered"}:
+        return True
+
+    value = fulfillment.store.get(order_id) if fulfillment.store.tracked(order) else None
+    # 当前报单已有远端编号才算确认成功；待核实或已归档报单不结束国内物流查询。
+    purchases = [] if value and value["crossborderbus_order_id"] else detail["purchases"]
     complete = True
     queried = set()
-    for record in detail["purchases"]:
+    for record in purchases:
         if record["status"] != "purchased" or not supported(PurchaseRecord.model_validate(record)):
             continue
         number = record['purchase_order_number']
@@ -42,8 +50,8 @@ def sync_order_progress(procurement, fulfillment, config_provider, order_id, che
             logger.warning("本轮采购状态未完成刷新，保留已保存结果")
             complete = False
     checkpoint()
-    order = OrderView.model_validate(detail["order"])
     if fulfillment.store.tracked(order):
+        # 采购同步可能增补包裹并更新版本，仓库查询须使用最新记录。
         value = fulfillment.store.get(order_id)
         if not value["busy"] and (value["crossborderbus_order_id"] or value["create_unknown"]):
             try:

@@ -1,4 +1,7 @@
+import { preparePublishWithProgress } from './publishPreparationStream'
+import type { BackendPublishPreparationProgress } from '@/types/workflow'
 import { apiClient } from '@/api/client'
+import { selectedPricingTargets } from '@/types/pricing'
 import { withAiForeground } from '@/services/withAiForeground'
 import type {
   CategoryAttributeDefinition,
@@ -199,7 +202,7 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
     netRevenueCny: getNumber(record, ['net_revenue_cny', 'netRevenueCny'], fallback.netRevenueCny || 0),
     profitCny: getNumber(record, ['profit_cny', 'profitCny'], fallback.profitCny || 0),
     marginPercent: getNumber(record, ['margin_percent', 'profit_percent', 'marginPercent'], fallback.marginPercent || 0),
-    commissionPercent: getNumber(record, ['commission_percent', 'commissionPercent'], fallback.commissionPercent || 0),
+    commissionPercent: getNumber(record, ['commission_percent', 'commissionPercent']),
     paymentFeePercent: getNumber(record, ['payment_fee_percent', 'paymentFeePercent'], fallback.paymentFeePercent || 0),
     otherFeePercent: getNumber(record, ['other_fee_percent', 'otherFeePercent'], fallback.otherFeePercent || 0),
     pricingMode: getString(record, ['pricing_mode', 'pricingMode'], fallback.pricingMode || 'margin') as PricingTargetResult['pricingMode'],
@@ -226,36 +229,60 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
 
 /** 只传页面当前的费用和覆盖配置，SKU 采购成本与包装事实由后端装配。 */
 export function draftPricingPayload(draft: DraftDetail, input: PricingInput): UnknownRecord {
+  const targets = selectedPricingTargets(input)
   return {
     draft_id: draft.draftId,
     expected_updated_at: draft.updatedAt,
-    target_keys: input.targets.map(target => target.targetKey.toLowerCase()),
+    template_source: input.templateSource || null,
+    target_keys: targets.map(target => target.targetKey.toLowerCase()),
     common: {
-      battery: input.battery ?? false, liquid: input.liquid ?? false,
       domestic_freight_cny: input.domesticFreightCny,
       packaging_cost_cny: input.packagingCostCny, other_cost_cny: input.otherCostCny,
       exchange_rate_mode: input.exchangeRateMode,
+      exchange_rate_overrides: input.exchangeRateOverrides || {},
       ...(input.exchangeRateMode === 'manual' ? {
         usd_cny_rate: input.usdCnyRate, mxn_usd_rate: input.mxnUsdRate, rub_cny_rate: input.rubCnyRate,
       } : {}),
     },
-    targets: Object.fromEntries(input.targets.map(target => [target.targetKey.toLowerCase(), {
-      commission_percent: target.commissionPercent, payment_fee_percent: target.paymentFeePercent,
+    targets: Object.fromEntries(targets.map(target => [target.targetKey.toLowerCase(), {
+      return_rate_percent: target.returnRatePercent === '' ? 0 : target.returnRatePercent ?? 0,
+      return_disposition: target.returnDisposition || 'discard',
+      return_handling_cost_cny: target.returnHandlingCostCny === '' ? 0 : target.returnHandlingCostCny ?? 0,
+      payment_fee_percent: target.paymentFeePercent,
       other_fee_percent: target.otherFeePercent, pricing_mode: target.pricingMode,
       target_margin_percent: target.targetMarginPercent, markup_percent: target.markupPercent,
       shipping_quote_mode: target.shippingQuoteMode, shipping_currency: target.shippingCurrency,
       shipping_amount: target.shippingAmount, manual_price: target.manualPrice,
+      shipping_selection: target.shippingSelection || null,
     }])),
     target_selections: Object.fromEntries(draft.targetSites.filter(target =>
-      target.platform === 'mercadolibre' && target.site.toLowerCase() === 'cbt',
+      target.platform === 'mercadolibre' && target.site.toLowerCase() === 'cbt'
+      && targets.some(item => item.targetKey.toLowerCase() === `${target.platform}:${target.site}`.toLowerCase()),
     ).map(target => [`${target.platform}:${target.site}`.toLowerCase(), toBackendSitesToSell(target.sitesToSell)])),
     sku_updates: draft.skuItems.map(row => ({
       sku_id: row.sku_id, selected: row.selected,
-      overrides: Object.fromEntries(Object.entries(row.overrides || {}).filter(([key]) =>
-        key === 'cost_cny' || key === 'package_dimensions',
-      )),
       pricing_overrides: row.pricing_overrides || {},
     })),
+  }
+}
+
+/** 保存草稿时记录完整参数与模板来源；预览结果仍须通过应用售价确认。 */
+export function draftWithPricingInput(draft: DraftDetail, input: PricingInput): DraftDetail {
+  const parameters = draftPricingPayload(draft, { ...input, selectedTargetKeys: undefined })
+  const storedTargets = asRecord(draft.pricing.targets)
+  return {
+    ...draft,
+    pricing: {
+      ...draft.pricing,
+      template_source: parameters.template_source,
+      common: { ...asRecord(draft.pricing.common), ...asRecord(parameters.common) },
+      targets: {
+        ...storedTargets,
+        ...Object.fromEntries(Object.entries(asRecord(parameters.targets)).map(([key, target]) => [
+          key, { ...asRecord(storedTargets[key]), ...asRecord(target) },
+        ])),
+      },
+    },
   }
 }
 
@@ -266,7 +293,7 @@ function normalizePricingResult(data: UnknownRecord, input: PricingInput): Prici
   const exchangeRates = asRecord(data.exchange_rates)
   const rates = asRecord(exchangeRates.rates)
   const rawResults = Array.isArray(data.results) ? data.results : [data]
-  const fallbackTargets = input.targets.length ? input.targets : []
+  const fallbackTargets = selectedPricingTargets(input)
   const results = rawResults.map((item, index) => normalizePricingTargetResult(item, fallbackTargets[index]))
   const primary = results[0] || normalizePricingTargetResult(data, {
     targetKey: `${input.platform}:${input.site}`,
@@ -294,6 +321,7 @@ function normalizePricingResult(data: UnknownRecord, input: PricingInput): Prici
 }
 
 export interface DraftPricingBatch {
+  previewId?: string
   items: { skuId: string; result: PricingResult }[]
   pricingBySku: Record<string, UnknownRecord>
   applied: boolean
@@ -304,9 +332,9 @@ export interface DraftPricingBatch {
   metrics: { batchId: string; durationMs: number; ozonDiscoveryMs: number }
 }
 
-export async function priceDraft(draft: DraftDetail, input: PricingInput, apply = false): Promise<DraftPricingBatch> {
+export async function priceDraft(draft: DraftDetail, input: PricingInput, apply = false, previewId = ''): Promise<DraftPricingBatch> {
   const response = await apiClient.post(`/api/draft-pricing/${apply ? 'apply' : 'preview'}`,
-    draftPricingPayload(draft, input), { timeout: 0 })
+    { ...draftPricingPayload(draft, input), ...(apply ? { preview_id: previewId } : {}) }, { timeout: 0 })
   const data = asRecord(response.data)
   ensureOk(data, '草稿核价失败')
   const items = Array.isArray(data.items) ? data.items.map(asRecord) : []
@@ -317,8 +345,11 @@ export async function priceDraft(draft: DraftDetail, input: PricingInput, apply 
   }
   const metrics = asRecord(data.metrics)
   return {
+    previewId: getString(data, ['preview_id']),
     items: items.filter(item => Array.isArray(asRecord(item.result).results)).map(item => ({
-      skuId: getString(item, ['sku_id']), result: normalizePricingResult(asRecord(item.result), input),
+      skuId: getString(item, ['sku_id']), result: {
+        ...normalizePricingResult(asRecord(item.result), input), previewId: getString(data, ['preview_id']),
+      },
     })),
     pricingBySku: asRecord(data.sku_pricing) as Record<string, UnknownRecord>,
     applied: data.applied === true,
@@ -371,9 +402,12 @@ export async function runCategoryPrecheck(draft: DraftDetail, target: Marketplac
   }
 }
 
-export async function previewPublishPayload(draft: DraftDetail, target: MarketplaceTargetSite): Promise<PayloadPreviewResult & { draft?: DraftDetail; productContext?: DraftMutationResponse['productContext']; productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[] }> {
-  const response = await apiClient.post('/api/publish-payload-preview', requiredDraftTarget(draft, target, '预览发布 payload'))
-  const data = asRecord(response.data)
+export async function previewPublishPayload(draft: DraftDetail, target: MarketplaceTargetSite, onProgress?: (progress: BackendPublishPreparationProgress) => void): Promise<PayloadPreviewResult & { draft?: DraftDetail; productContext?: DraftMutationResponse['productContext']; productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[] }> {
+  // 素材数量决定总耗时；传输逐项超时由后端控制，页面等待实际准备结果。
+  const body = requiredDraftTarget(draft, target, '预览发布 payload')
+  const data = onProgress
+    ? await preparePublishWithProgress(body, onProgress)
+    : asRecord((await apiClient.post('/api/publish-payload-preview', body, { timeout: 0 })).data)
   ensureOk(data, '生成 payload 失败')
   const mutation = isRecord(data.draft) ? normalizeDraftMutation(data) : null
   return {

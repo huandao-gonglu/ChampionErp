@@ -131,7 +131,7 @@ def test_extract_usd_rates_supports_conversion_rates_payload() -> None:
 def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monkeypatch) -> None:
     # 此测试验证汇率流转；物流结果通过当前受信入口注入，不依赖已删除的内置表。
     monkeypatch.setattr(pricing_runtime, "get_mercadolibre_access_token", lambda config: "test")
-    monkeypatch.setattr(pricing_runtime, "PricingShipping", lambda *_args: lambda common, target: {
+    monkeypatch.setattr(pricing_runtime, "PricingShipping", lambda *_args, **_kwargs: lambda common, target: {
         "amount": "4", "currency": "USD", "billable_g": "300",
         "minimum_price_cny": "0", "evidence": {}, "candidates": [],
     })
@@ -157,12 +157,14 @@ def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monke
         }
 
     monkeypatch.setattr(pricing_runtime, "fetch_pricing_exchange_rates", fake_fetch_pricing_exchange_rates)
+    from tests.pricing_test_utils import official_commission
+    monkeypatch.setattr(pricing_runtime, "PricingCommissions", lambda _config, **_kwargs: official_commission)
 
     # 发布币种唯一事实源是店铺授权配置：显式创建 ready 店铺配置后，
     # 各站点目标共用同一店铺币种（MXN）。
     from tests.runtime_test_utils import seed_store_currency
 
-    seed_store_currency("mercadolibre", "MXN", identity={"user_id": "99"})
+    seed_store_currency("mercadolibre", "MXN", identity={"user_id": "99", "access_token": "test-token"})
 
     result = pricing_runtime.calculate_price(
         {

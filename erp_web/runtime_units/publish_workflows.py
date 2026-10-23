@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import get_context
 from erp_web.schemas.api import ApiResponse
 from erp_web.schemas.publish_capabilities import (
@@ -84,7 +85,9 @@ def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     if adapter is None:
         return unsupported_publish_response(platform), 501
     prepared_context = prepare_publish_context(context["product"], platform)
-    result = adapter.validate_draft(prepared_context, config)
+    # 基础预检只检查源素材；交付状态由显式准备后的最终校验负责。
+    result = (adapter.validate_draft(prepared_context, config, image_stage="source")
+              if platform in {"yandex", "ozon"} else adapter.validate_draft(prepared_context, config))
     saved = save_draft_precheck_result(context, result)
     return {
         "ok": True,
@@ -100,7 +103,7 @@ def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     }, 200
 
 
-def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
+def preview_publish_payload(body: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> ResponseWithStatus:
     """人工 payload 预览：与发布确认共用同一次评估/digest 算法。"""
 
     unsupported = _unsupported_if_explicit(body)
@@ -118,11 +121,14 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
                 draft_id=str(body.get("draft_id") or body.get("draftId") or ""),
                 platform=str(context["platform"]),
                 site=str(context["site"]),
-            )
+            ),
+            on_progress=on_progress,
         )
     except BusinessCapabilityError as exc:
         return {"ok": False, "error": str(exc), "error_code": exc.code}, 400
     result = evaluation.result
+    if on_progress:
+        on_progress({"stage": "saving_preview"})
     # 该受信写入口显式准备平台素材，再把最终 payload 对应的预检结果落盘。
     try:
         saved = save_draft_precheck_result(

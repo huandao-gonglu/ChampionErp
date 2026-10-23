@@ -1,0 +1,31 @@
+"""单次发布校验的共享读取；不跨请求复用、不持久化。"""
+from dataclasses import dataclass, field
+from functools import cached_property
+import json
+from typing import Any
+
+from erp_web.context import get_context
+from erp_web.services.image_delivery_service import ImageInspectionCache
+
+
+@dataclass
+class PublishValidationSession:
+    # 组入口已检查逐 SKU 的成本、尺寸和库存，叶子只检查报价身份与平台规则。
+    sku_inputs_checked: bool = False
+    images: ImageInspectionCache = field(default_factory=ImageInspectionCache)
+    logistics_errors: dict[str, str] = field(default_factory=dict)
+
+    @cached_property
+    def store_config(self) -> dict[str, Any]:
+        return get_context().config.load_store_config()
+
+    def yandex_logistics_error(self, plan: dict[str, Any]) -> str:
+        key = json.dumps(plan, sort_keys=True, ensure_ascii=False)
+        if key not in self.logistics_errors:
+            try:
+                get_context().yandex_logistics.validate(plan)
+            except ValueError as exc:
+                self.logistics_errors[key] = str(exc)
+            else:
+                self.logistics_errors[key] = ""
+        return self.logistics_errors[key]

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol
 
+from erp_web.schemas.publish import PublishPreparationObserver
+
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycle
     from erp_web.runtime_units.publish_context import PreparedPublishContext
 
@@ -20,7 +22,7 @@ class PlatformPublisher(Protocol):
 
     platform: str
 
-    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
         ...
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:

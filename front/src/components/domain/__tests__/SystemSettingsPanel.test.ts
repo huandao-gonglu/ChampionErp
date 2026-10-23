@@ -9,6 +9,8 @@ import SystemSettingsPanel from '../SystemSettingsPanel.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 import { fetchRequestControl } from '@/api/externalRequests'
+import { fetchYandexWarehouses } from '@/api/yandexWarehouses'
+vi.mock('@/api/yandexWarehouses', () => ({ fetchYandexWarehouses: vi.fn(), saveYandexWarehouses: vi.fn() }))
 vi.mock('@/api/systemSettings', () => ({ fetchSystemSettings: vi.fn(), saveSystemSettings: vi.fn() }))
 vi.mock('@/api/externalRequests', () => ({ fetchRequestControl: vi.fn(), recoverRequestBlock: vi.fn(), clearRequestHistory: vi.fn() }))
 enableAutoUnmount(afterEach)
@@ -22,6 +24,7 @@ beforeEach(() => {
   vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5 })
   vi.mocked(saveSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12 })
   vi.mocked(fetchRequestControl).mockResolvedValue({ ok: true, server_time: 1800000000, total: 0, cleanup_before: 1800000000, clearable_count: 0, blocks: [], history: [] })
+  vi.mocked(fetchYandexWarehouses).mockResolvedValue({ ok: true, account: { business_id: '', campaign_id: '', placement_type: '', stock_update_mode: '' }, revision: 0, bindings: [], binding_warnings: [], modes: [], warehouses: [], routes: [], carriers: [], checked_at: '', error: '' })
 })
 afterEach(() => {
   const app = useAppStore()
@@ -32,6 +35,17 @@ afterEach(() => {
 })
 const global = { plugins: [i18n], stubs: { teleport: true } }
 describe('系统设置入口与同步间隔', () => {
+  it('Yandex 发布仓库有独立深链入口，进入后才读取关联配置', async () => {
+    const route = reactive({ query: { settings_section: 'general' } })
+    const wrapper = mount(SystemSettingsPanel, { global: { ...global, provide: { [routeLocationKey as symbol]: route } } })
+    await flushPromises()
+    expect(fetchYandexWarehouses).not.toHaveBeenCalled()
+    route.query.settings_section = 'yandex_warehouses'
+    await flushPromises()
+    expect(wrapper.get('#system-settings-tab-yandex_warehouses').attributes('aria-selected')).toBe('true')
+    expect(wrapper.get('#system-settings-panel-yandex_warehouses').text()).toContain('设置仓库运输模式')
+    expect(fetchYandexWarehouses).toHaveBeenCalledWith(false)
+  })
   it.each([false, true])('侧栏收起=%s 时底部入口仍可导航', async collapsed => {
     const wrapper = mount(AppSidebar, { props: { items: [], activeKey: 'orders', steps: [], progress: 0, collapsed }, global })
     expect(fetchSystemSettings).not.toHaveBeenCalled()

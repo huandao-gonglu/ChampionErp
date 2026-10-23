@@ -236,7 +236,7 @@ describe('PublishPrecheckPanel', () => {
     expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).not.toContain('remote')
     expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('通过')
     expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('请复核智利市场运费报价')
-    expect(wrapper.text()).toContain('预检通过，可统一准备发布预览')
+    expect(wrapper.text()).toContain('基础资料预检通过，请准备素材与发布预览')
   })
 
   it('主界面隐藏技术field与错误码，并按市场分别统计相同问题', () => {
@@ -400,7 +400,7 @@ describe('PublishPrecheckPanel', () => {
     })
 
     expect(wrapper.find('[data-testid="publish-precheck-scopes"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('预检通过，可以发布。')
+    expect(wrapper.text()).toContain('基础资料预检通过，待准备素材。')
   })
 
   it('预览就绪后展示摘要与指纹，发布统一确认', async () => {

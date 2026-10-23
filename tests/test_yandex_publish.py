@@ -29,6 +29,8 @@ from erp_web.runtime_units.publish_yandex import (
     yandex_required_attributes_missing,
 )
 
+from tests.yandex_logistics_support import PLAN, install_logistics
+
 from tests.publish_category_support import record_from_schema
 from tests.runtime_test_utils import seed_store_currency, sku_publish_fixture
 
@@ -42,7 +44,8 @@ _STORE_CURRENCY_FINGERPRINT = compute_currency_fingerprint(
 
 
 @pytest.fixture(autouse=True)
-def _ready_store_currency() -> None:
+def _ready_store_currency(monkeypatch) -> None:
+    install_logistics(monkeypatch)
     seed_store_currency(
         "yandex",
         "RUB",
@@ -86,7 +89,7 @@ def _config(**store_overrides: Any) -> dict[str, Any]:
         "business_id": "222",
         "shop_name": "示例店铺",
         "placement_type": "FBS",
-        "stock_update_mode": "campaign_warehouses",
+        "stock_update_mode": "business",
         "warehouse_ids": ["9", "7"],
         "only_default_price": False,
         "auth_status": "测试成功",
@@ -99,6 +102,7 @@ def _draft(**overrides: Any) -> dict[str, Any]:
     basis = {
         "listing_currency": "RUB",
         "currency_fingerprint": _STORE_CURRENCY_FINGERPRINT,
+        "shipping_evidence": {"fulfillment_plan": deepcopy(PLAN)},
         "cost_cny": "35",
         "weight_kg": "0.5",
         "length_cm": "20",
@@ -316,10 +320,11 @@ def test_build_payload_is_deterministic_and_grouped() -> None:
             "price": {"value": 1299, "currencyId": "RUR"},
         }
     ]
-    # 仓库 ID 必须排序去重
+    # 只写入报价绑定仓库，不使用授权时的默认仓库
     assert first["stock"] == {
-        "mode": "campaign_warehouses",
-        "warehouse_ids": ["7", "9"],
+        "mode": "business",
+        "warehouse_ids": ["31"],
+        "fulfillment_plan": PLAN,
         "count": 5,
     }
 
@@ -532,17 +537,14 @@ def test_build_payload_rejects_invalid_inputs() -> None:
     with pytest.raises(ValueError, match="图片"):
         build_yandex_publish_payload(no_images, _config(), _record())
     # 库存写入方式不受支持
-    with pytest.raises(ValueError, match="库存写入方式"):
+    with pytest.raises(ValueError, match="绑定不一致"):
         build_yandex_publish_payload(
             _product(),
             _config(stock_update_mode="warehouse_direct"),
         _record(),)
-    # campaign_warehouses 但缺少仓库
-    with pytest.raises(ValueError, match="warehouse_ids"):
-        build_yandex_publish_payload(
-            _product(),
-            _config(warehouse_ids=[]),
-        _record(),)
+    # 仓库组不能落实报价中的单仓选择。
+    with pytest.raises(ValueError, match="绑定不一致"):
+        build_yandex_publish_payload(_product(), _config(stock_update_mode="campaign_warehouses"), _record())
 
 
 def test_build_payload_requires_credentials() -> None:
@@ -617,6 +619,8 @@ def test_full_flow_success_without_repeating_steps(remote) -> None:
     assert remote.count("update_yandex_campaign_offer") == 1
     assert remote.count("update_yandex_price") == 1
     assert remote.count("update_yandex_stock") == 1
+    assert terminal['checkpoint']['evidence']['stock']['fulfillment_plan'] == PLAN
+    assert terminal['checkpoint']['evidence']['stock']['warehouse_ids'] == ['31']
     # confirmation 是只读回读
     assert remote.count("fetch_yandex_offer_mapping") >= 1
     assert remote.count("fetch_yandex_campaign_offer") >= 1
@@ -856,18 +860,16 @@ def test_build_payload_business_stock_requires_single_warehouse() -> None:
     multiple = _config(
         stock_update_mode="business", warehouse_ids=["31", "32"]
     )
-    with pytest.raises(ValueError, match="唯一发布仓库"):
-        build_yandex_publish_payload(_product(), multiple, _record())
-
+    assert build_yandex_publish_payload(_product(), multiple, _record())["stock"]["warehouse_ids"] == ["31"]
     empty = _config(stock_update_mode="business", warehouse_ids=[])
-    with pytest.raises(ValueError, match="发布仓库"):
-        build_yandex_publish_payload(_product(), empty, _record())
+    assert build_yandex_publish_payload(_product(), empty, _record())["stock"]["warehouse_ids"] == ["31"]
 
     single = _config(stock_update_mode="business", warehouse_ids=["31"])
     payload = build_yandex_publish_payload(_product(), single, _record())
     assert payload["stock"] == {
         "mode": "business",
         "warehouse_ids": ["31"],
+        "fulfillment_plan": PLAN,
         "count": 5,
     }
     assert validate_yandex_publish_payload(payload, single) == []
@@ -1098,7 +1100,7 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
             "status": "OK",
             "result": {"status": "OK"},
         },
-        "PUT /v2/campaigns/111/offers/stocks": {"status": "OK"},
+        "POST /v3/businesses/222/offers/stocks/update": {"status": "OK"},
         # 官方嵌套响应：cardStatus 位于 offerMappings[].offer.cardStatus，
         # 且使用官方枚举值（不存在 "PUBLISHED"）。
         "POST /v2/businesses/222/offer-mappings": {
@@ -1214,9 +1216,9 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
         "currencyId": "RUR",
     }
 
-    stocks = _request("PUT /v2/campaigns/111/offers/stocks")
+    stocks = _request("POST /v3/businesses/222/offers/stocks/update")
     assert _body(stocks) == {
-        "skus": [{"sku": "SKU-001", "items": [{"count": 5}]}]
+        "skuItems": [{"sku": "SKU-001", "partnerWarehouseId": 31, "count": 5}]
     }
 
     readback = _request("POST /v2/campaigns/111/offers")
@@ -1377,39 +1379,37 @@ def test_validate_yandex_draft_requires_package_dimensions_and_price() -> None:
     assert "PRICING_STALE" in _error_codes(pricing_result)
 
 
-def test_validate_yandex_draft_requires_at_least_one_parameter_value() -> None:
-    """Yandex 发布要求 parameterValues ≥1：零必填类目也必须填参数。"""
-
+def test_yandex_optional_parameters_can_be_omitted_but_required_attributes_still_block() -> None:
     from erp_web.runtime_units.publish_validation import validate_yandex_draft
 
-    # 属性全空（如零必填类目从未跑过属性填充）
-    empty = validate_yandex_draft(
-        _validatable_product(attributes={}),
-        _config(),
-    _record(),)
-    assert "YANDEX_PARAMETER_VALUES_MISSING" in _error_codes(empty)
+    optional_record = _record({"required": [], "optional": [{"id": "85", "name": "类型", "required": False}]})
+    for attrs in ({}, {"主营": "宠物用品"}):
+        product = _validatable_product(attributes=attrs)
+        check = validate_yandex_draft(product, _config(), optional_record)
+        assert check["ok"] is True, check["errors"]
+        payload = build_yandex_publish_payload(product, _config(), optional_record)
+        assert "parameterValues" not in payload["catalog"]["offer"]
+        assert validate_yandex_publish_payload(payload, _config()) == []
+        payload["catalog"]["offer"]["parameterValues"] = []
+        assert any("parameterValues" in message for message in validate_yandex_publish_payload(payload, _config()))
 
-    # 只有采集来源的中文属性：无法映射为平台参数，同样拦截
-    source_only = validate_yandex_draft(
-        _validatable_product(attributes={"主营": "宠物用品", "产地": "浙江"}),
-        _config(),
-    _record(),)
-    assert "YANDEX_PARAMETER_VALUES_MISSING" in _error_codes(source_only)
-
-    # 已填 1 个平台参数 → 不再拦截
-    filled = validate_yandex_draft(_validatable_product(), _config(), _record())
-    assert "YANDEX_PARAMETER_VALUES_MISSING" not in _error_codes(filled)
-
-
-def test_build_payload_requires_at_least_one_parameter_value() -> None:
-    with pytest.raises(ValueError, match="至少需要 1 个类目参数值"):
-        build_yandex_publish_payload(
-            _product(attributes={"主营": "宠物用品"}),
-            _config(),
-        _record(),)
+        required = validate_yandex_draft(product, _config(), _record())
+        assert "REQUIRED_ATTRIBUTE_MISSING" in _error_codes(required)
 
     payload = build_yandex_publish_payload(_product(), _config(), _record())
-    assert len(payload["catalog"]["offer"]["parameterValues"]) >= 1
+    assert payload["catalog"]["offer"]["parameterValues"]
+
+
+def test_yandex_model_is_required_only_by_category() -> None:
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+
+    product = _product()
+    product["model"] = ""
+    assert validate_yandex_draft(product, _config(), _record())["ok"] is True
+    record = _record({"required": [{"id": "123", "name": "Модель", "required": True}], "optional": []})
+    check = validate_yandex_draft(product, _config(), record)
+    assert any(item["field"] == "attributes.123" for item in check["errors"])
+    assert "MODEL_MISSING" not in _error_codes(check)
 
 
 def test_other_characteristics_format_blocks_precheck_and_payload_and_allows_omission():
@@ -1476,3 +1476,192 @@ def test_yandex_restores_old_pending_checkpoint_as_unfinished_submission(remote)
     terminal = _drive_to_terminal(restored, config)
     assert terminal["status"] == "real_publish_success"
     assert remote.count("update_yandex_offer_mapping") == 1
+
+
+def test_payload_cannot_change_quoted_warehouse(remote):
+    payload = build_yandex_publish_payload(_product(), _config(), _record())
+    payload['stock']['warehouse_ids'] = ['9']
+    result = publish_yandex_payload(payload, _config())
+    assert not result['ok']
+    assert result['error_code'] == 'YANDEX_LOGISTICS_CHANGED'
+    assert not remote.calls
+
+
+@pytest.mark.parametrize("warehouse_id", [31, 32])
+def test_quoted_warehouse_reaches_stock_write(remote, monkeypatch, warehouse_id):
+    from erp_web.services.yandex_logistics_service import fingerprint
+    plan = {**PLAN, "publish_warehouse_id": warehouse_id, "publish_warehouse_name": f"发布仓 {warehouse_id}"}
+    plan.pop("fingerprint")
+    plan["fingerprint"] = fingerprint(plan)
+    install_logistics(monkeypatch, [plan])
+    pricing = deepcopy(_draft()["pricing"])
+    quote = pricing["targets"]["yandex:global"]
+    quote["calculation_basis"]["shipping_evidence"]["fulfillment_plan"] = plan
+    quote["calculation_fingerprint"] = pricing_calculation_fingerprint(quote["calculation_basis"])
+    calls = []
+    def stock(*args, **kwargs):
+        calls.append(kwargs)
+        return remote.update_stock(*args, **kwargs)
+    monkeypatch.setattr(publish_yandex, "update_yandex_stock", stock)
+    config = _config(warehouse_ids=["9", "7"])
+    payload = build_yandex_publish_payload(_product(pricing=pricing), config, _record())
+    terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
+    assert terminal["ok"]
+    assert len(calls) == 1
+    assert calls[0]["warehouse_ids"] == [str(warehouse_id)]
+    assert calls[0]["count"] == 5
+
+
+def test_changed_logistics_blocks_next_mutation(remote):
+    from erp_web.context import get_context
+    payload = build_yandex_publish_payload(_product(), _config(), _record())
+    result = publish_yandex_payload(payload, _config())
+    assert remote.count('update_yandex_offer_mapping') == 1
+    get_context().yandex_logistics.current.clear()
+    result = advance_yandex_submission(_allow_poll(result), _config())
+    assert not result['ok']
+    assert result['error_code'] == 'YANDEX_LOGISTICS_CHANGED'
+    assert remote.count('update_yandex_campaign_offer') == 0
+    assert remote.count('update_yandex_stock') == 0
+
+
+def test_legacy_quote_without_plan_must_be_recalculated():
+    draft = _draft()
+    draft['pricing']['targets']['yandex:global']['calculation_basis'].pop('shipping_evidence')
+    with pytest.raises(ValueError, match='物流方案'):
+        build_yandex_publish_payload(_product(**draft), _config(), _record())
+
+
+def _group_validation_fixture():
+    from erp_web.runtime_units.publish_context import PreparedPublishContext
+    from tests.publish_category_support import definition_from_record
+
+    product = _validatable_product()
+    draft = product["drafts"]["yandex"]
+    draft["grouping"] = {"mode": "separate", "name": "风扇"}
+    fact, row = product["sku_items"][0], draft["sku_items"][0]
+    quote = row["pricing"]["targets"]["yandex:global"]
+    basis = quote["calculation_basis"]
+    basis.update(domestic_freight_cny=0, packaging_cost_cny=0, other_cost_cny=0,
+                 commission_percent=10, commission_evidence={
+                     "source": "platform_api", "purpose": "prelisting", "endpoint": "/v2/tariffs/calculate",
+                     "category_id": "91596", "price": {"amount": "1299", "currency": "RUB"},
+                     "amount": "129.9", "currency": "RUB", "quoted_at": "2026-10-22T00:00:00Z",
+                 })
+    quote["calculation_fingerprint"] = pricing_calculation_fingerprint(basis)
+    product["sku_items"] = [{**deepcopy(fact), "id": f"fact-{index}"} for index in range(10)]
+    draft["sku_items"] = [{**deepcopy(row), "sku_id": f"fact-{index}", "sku": f"SELL-{index}"} for index in range(10)]
+    return PreparedPublishContext(product=product, draft=draft, target=draft["target_sites"][0],
+                                  platform="yandex", category_definition=definition_from_record(_record()))
+
+
+def test_group_validation_shares_reads_and_refreshes_on_next_call(monkeypatch):
+    from unittest.mock import Mock
+    from erp_web.context import get_context
+    from erp_web.runtime_units import publish_validation, sku_publish_adapter
+    from erp_web.runtime_units.publish_adapter import YandexPublishingAdapter
+
+    context = _group_validation_fixture()
+    original = deepcopy(context.product)
+    app = get_context()
+    normalize = Mock(wraps=sku_publish_adapter.normalize_product_fields)
+    monkeypatch.setattr(sku_publish_adapter, "normalize_product_fields", normalize)
+    monkeypatch.setattr(publish_validation, "normalize_product_fields", lambda *_: pytest.fail("单 SKU 不应重复规范化整份商品"))
+    config_read = Mock(wraps=app.config.load_store_config)
+    monkeypatch.setattr(app.config, "load_store_config", config_read)
+    logistics = Mock(wraps=app.yandex_logistics.validate)
+    monkeypatch.setattr(app.yandex_logistics, "validate", logistics)
+    inspect = Mock(wraps=app.image_delivery._inspect_image)
+    monkeypatch.setattr(app.image_delivery, "_inspect_image", inspect)
+    adapter = sku_publish_adapter.SkuGroupPublishingAdapter(YandexPublishingAdapter())
+    result = adapter.validate_draft(context, _config(), image_stage="source")
+    assert result["ok"] is True, result["errors"]
+    assert len(result["sku_results"]) == 10
+    assert normalize.call_count == config_read.call_count == logistics.call_count == inspect.call_count == 1
+    assert context.product == original
+
+    app.yandex_logistics.current = []
+    result = adapter.validate_draft(context, _config(), image_stage="source")
+    assert "YANDEX_LOGISTICS_INVALID" in _error_codes(result)
+    assert normalize.call_count == config_read.call_count == logistics.call_count == inspect.call_count == 2
+    assert len(next(item for item in result["errors"] if item["code"] == "YANDEX_LOGISTICS_INVALID")["affected_skus"]) == 10
+
+
+@pytest.mark.parametrize("change", ["cost", "dimensions", "fingerprint", "stock", "attribute"])
+def test_group_validation_retains_per_sku_blockers(change):
+    from erp_web.runtime_units.publish_adapter import YandexPublishingAdapter
+    from erp_web.runtime_units.sku_publish_adapter import SkuGroupPublishingAdapter
+
+    context = _group_validation_fixture()
+    row = context.draft["sku_items"][1]
+    if change == "cost":
+        context.product["sku_items"][1]["cost_cny"] = "36"
+    elif change == "dimensions":
+        context.product["sku_items"][1]["package_dimensions"]["weight_kg"] = "0.6"
+    elif change == "fingerprint":
+        row["pricing"]["targets"]["yandex:global"]["calculation_fingerprint"] = "bad"
+    elif change == "stock":
+        row["stock"] = "-1"
+    else:
+        row["attributes_by_target"] = {"yandex:global": {"85": {"values": []}}}
+    result = SkuGroupPublishingAdapter(YandexPublishingAdapter()).validate_draft(context, _config(), image_stage="source")
+    assert result["ok"] is False
+    assert {sku["sku"] for issue in result["errors"] for sku in issue["affected_skus"]} == {"SELL-1"}
+    if change in {"cost", "dimensions", "stock"}:
+        assert len(result["errors"]) == 1
+
+
+@pytest.mark.parametrize("constraints,accepted", [
+    ({"min_value": 0, "max_value": 100}, True),
+    ({"min_value": "", "max_value": ""}, True),
+    ({"min_value": None, "max_value": None}, True),
+    ({"min_value": 1, "max_value": 100}, False),
+    ({"min_value": "invalid"}, False),
+    ({"min_value": "NaN"}, False),
+])
+def test_numeric_constraints_keep_zero_and_match_precheck(constraints, accepted):
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+    from erp_web.runtime_units.category_definition_support import definition_to_legacy_record
+    from tests.publish_category_support import definition_from_record
+
+    record = _record({"required": [], "optional": [{
+        "id": "9048", "name": "数值", "value_type": "numeric", "constraints": constraints,
+    }]})
+    record = definition_to_legacy_record(definition_from_record(record))
+    if constraints.get("min_value") == 0:
+        assert record["attributes"]["optional"][0]["constraints"]["min_value"] == "0"
+    product = _validatable_product(attributes={"9048": {"value": "0"}})
+    check = validate_yandex_draft(product, _config(), record)
+    assert check["ok"] is accepted, check["errors"]
+    if accepted:
+        payload = build_yandex_publish_payload(product, _config(), record)
+        assert payload["catalog"]["offer"]["parameterValues"] == [{"parameterId": 9048, "value": "0"}]
+    else:
+        assert any(error["field"] == "attributes.9048" for error in check["errors"])
+        with pytest.raises(ValueError):
+            build_yandex_publish_payload(product, _config(), record)
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "-1", "101"])
+def test_numeric_constraints_reject_nonfinite_and_out_of_range_before_upload(value):
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+    record = _record({"required": [], "optional": [{
+        "id": "9048", "name": "数值", "value_type": "numeric", "constraints": {"min_value": 0, "max_value": 100},
+    }]})
+    product = _validatable_product(attributes={"9048": {"value": value}})
+    check = validate_yandex_draft(product, _config(), record)
+    assert not check["ok"]
+    assert any(error["field"] == "attributes.9048" for error in check["errors"])
+    with pytest.raises(ValueError):
+        build_yandex_publish_payload(product, _config(), record)
+
+
+
+def test_unfilled_optional_enum_does_not_become_a_precheck_requirement():
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+    record = _record({"required": [], "optional": [{
+        "id": "85", "name": "选填类型", "required": False, "dictionary_id": "1234",
+    }]})
+    product = _validatable_product(attributes={})
+    assert validate_yandex_draft(product, _config(), record)["ok"] is True
+    assert "parameterValues" not in build_yandex_publish_payload(product, _config(), record)["catalog"]["offer"]

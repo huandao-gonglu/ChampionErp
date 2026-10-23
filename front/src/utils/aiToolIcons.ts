@@ -30,7 +30,7 @@ const groups: [Component, string[]][] = [
     'order_address_note_update', 'order_receiving_warehouse_update', 'order_fulfillment_update',
     'online_products_change', 'product_attributes_update', 'product_save', 'product_profile_patch',
     'draft_save', 'draft_sku_attributes_update', 'draft_sku_selection_update',
-    'draft_sku_package_update', 'draft_changes_apply', 'draft_pricing_apply',
+    'product_sku_facts_update', 'draft_changes_apply', 'draft_pricing_apply',
     'copy_generate', 'copy_generate_batch',
   ]],
   [PhArrowsClockwise, [

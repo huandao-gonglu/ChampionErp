@@ -240,10 +240,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 }
             )
             product_model = get_context().db.load_product_model(saved["product_id"])
-            product_model["sku_items"] = [{"id": "single", "name": "默认规格", "active": True}]
+            product_model["sku_items"] = [{"id": "single", "name": "默认规格", "active": True, "barcode": "012345678905"}]
             get_context().products.save_product(product_model)
             original["sku_items"] = [{"sku_id": "single", "selected": True, "sku": "ML-ORIGINAL-SKU",
-                                      "overrides": {"barcode": "012345678905"},
+                                      "overrides": {},
                                       "publications": {"mercadolibre:cbt": {"result": {"publication": {
                                           "model": "user_products", "siteless_user_product_id": "UP-ORIGINAL"}}}}}]
             get_context().db.upsert_draft_model(
@@ -330,7 +330,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertNotEqual(duplicated["sku_items"][0]["sku"], original_before["sku_items"][0]["sku"])
             self.assertTrue(duplicated["sku_items"][0]["sku"].startswith("SKU-"))
             self.assertNotIn("upc", duplicated)
-            self.assertEqual(duplicated["sku_items"][0]["overrides"]["barcode"], "012345678905")
+            self.assertNotIn("barcode", duplicated["sku_items"][0]["overrides"])
+            self.assertEqual(get_context().db.load_product_model(saved["product_id"])["sku_items"][0]["barcode"], "012345678905")
             self.assertEqual(duplicated["copy_operation_key"], "")
             self.assertEqual(duplicated["created_at"], "2026-08-30T09:00:00Z")
             self.assertEqual(duplicated["updated_at"], "2026-08-30T09:00:00Z")
@@ -1019,7 +1020,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                         {"asset_id": "img-2", "role": "gallery", "order": 1},
                     ],
                     "sale_terms": {"warranty": "90 days"},
-                    "sku_items": [{**saved_draft["sku_items"][0], "overrides": {"package_dimensions": {"length_cm": "11"}}}],
+                    "sku_items": [{**saved_draft["sku_items"][0], "overrides": {"image_asset_id": "img-2"}}],
                     # 模拟前端把旧成功状态一并回传；保存边界不能信任它们。
                     "validation_errors": [{"code": "OLD_WARNING"}],
                     "category_precheck": stale_precheck,
@@ -1806,8 +1807,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(attrs["required"][0]["id"], "BRAND")
             self.assertEqual(attrs["source"], "mercadolibre_live")
             self.assertEqual(summary["required_count"], 1)
-            # Mercado BRAND 的唯一事实源是草稿根字段；sample_product 已有品牌，
-            # 即使 attributes 不保存重复 BRAND，也应视为已填写。
+            # 实物品牌由商品提供；平台未单独映射时可使用商品品牌。
             self.assertEqual(summary["filled_count"], 1)
             self.assertTrue(
                 all(

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import hmac
 from typing import Annotated, Any, Protocol
 
+from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import AppContext, get_context
 from erp_web.product_model import (
     normalize_draft_image_refs,
@@ -433,9 +434,12 @@ def prepare_and_evaluate_publish_validation(
     request: ProductPublishValidateRequest,
     *,
     context: AppContext | None = None,
+    on_progress: PublishPreparationObserver | None = None,
 ) -> _ValidationEvaluation:
     """先校验源素材，再显式上传，回读并执行最终校验与 digest。"""
 
+    if on_progress:
+        on_progress({"stage": "validating_source"})
     active_context = context or get_context()
     publish_context = _load_context(request, context=active_context)
     platform = _text(publish_context.get("platform")).lower()
@@ -487,7 +491,7 @@ def prepare_and_evaluate_publish_validation(
         )
 
     try:
-        prepared_product = adapter.prepare_product(source_product, config)
+        prepared_product = adapter.prepare_product(source_product, config, on_progress=on_progress)
         if not isinstance(prepared_product, dict):
             raise TypeError("平台 adapter 返回的商品不是对象")
     except Exception as exc:
@@ -498,6 +502,8 @@ def prepare_and_evaluate_publish_validation(
         ) from exc
 
     # 以短锁写回后的当前草稿生成确认内容，保留上传期间其他用户编辑。
+    if on_progress:
+        on_progress({"stage": "validating_final"})
     refreshed = _load_context(request, context=active_context)
     current_product = refreshed["product"]
     current_draft = current_product.get("drafts", {}).get(platform, {})
@@ -506,6 +512,8 @@ def prepare_and_evaluate_publish_validation(
         raise BusinessCapabilityError("IMAGE_DELIVERY_STALE", "素材准备期间草稿类目或图片选择已变化，请重新准备")
     final_context = prepared_context.with_product(current_product)
     final_precheck = adapter.validate_draft(final_context, config)
+    if on_progress:
+        on_progress({"stage": "building_preview"})
     return _evaluate_prepared_publish_context(
         refreshed, platform=platform, adapter=adapter, config=config,
         prepared_context=final_context, precheck=final_precheck,

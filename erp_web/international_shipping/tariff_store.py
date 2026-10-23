@@ -60,11 +60,13 @@ def col_name(index):
 
 class Workbook:
     """只读 XLSX 表格单元格。不运行宏、外部链接或任意 Excel 公式。"""
-    def __init__(self, path):
-        self.path = Path(path)
-        if self.path.suffix.lower() != '.xlsx':
+    def __init__(self, path=None, *, content=None):
+        self.path = Path(path) if path is not None else None
+        if self.path is not None and self.path.suffix.lower() != '.xlsx':
             raise ValueError('目前导入只支持 .xlsx 文件')
-        self.bytes = self.path.read_bytes()
+        if content is None and self.path is None:
+            raise ValueError('缺少 XLSX 文件内容')
+        self.bytes = content if content is not None else self.path.read_bytes()
         self.sha = hashlib.sha256(self.bytes).hexdigest()
         self.sheets = []
         self.strings = []

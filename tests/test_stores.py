@@ -722,7 +722,7 @@ def test_app_runtime_secrets_route_nested_naming_styles_to_sqlite() -> None:
 
 
 def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> None:
-    assert PRODUCT_SCHEMA_VERSION == 4
+    assert PRODUCT_SCHEMA_VERSION == 5
     with pytest.raises(ValueError, match="拒绝降级写入"):
         normalize_product_model(
             {
@@ -1480,3 +1480,58 @@ def test_store_config_failed_rollback_cannot_overwrite_concurrent_success(
     restored = store.load_store_config()["mercadolibre"]
     assert restored["access_token"] == "successful-store-token"
     assert restored["site_id"] == "SUCCESS"
+
+
+def test_empty_gtin_reason_edit_and_clear_survive_save_with_legacy_exemption():
+    products = get_context().products
+    saved, _ = _save_ready_draft_with_server_state()
+    draft = deepcopy(saved["drafts"]["mercadolibre"])
+    draft["allow_gtin_exemption"] = True
+    for reason in ("The product is handmade", ""):
+        draft["target_sites"][0]["attributes"]["EMPTY_GTIN_REASON"] = reason
+        result, error, status = products.save_draft_detail(draft)
+        assert error is None and status == 200
+        loaded, error, status = products.load_draft_detail_from_index(draft["draft_id"])
+        assert error is None and status == 200
+        assert loaded["draft"]["target_sites"][0]["attributes"]["EMPTY_GTIN_REASON"] == reason
+        draft = loaded["draft"]
+
+
+def test_legacy_exemption_change_only_invalidates_mercado_target():
+    from erp_web.stores.product_store import _changed_publish_content_targets
+    previous = {"allow_gtin_exemption": False, "target_sites": [
+        {"platform": "yandex", "site": "global", "attributes": {}},
+        {"platform": "mercadolibre", "site": "CBT", "attributes": {}},
+    ]}
+    edited = deepcopy(previous)
+    edited["allow_gtin_exemption"] = True
+    assert set(_changed_publish_content_targets(previous, edited)) == {1}
+    edited = deepcopy(previous)
+    edited["target_sites"][1]["attributes"]["EMPTY_GTIN_REASON"] = "The product is handmade"
+    assert set(_changed_publish_content_targets(previous, edited)) == {1}
+
+
+def test_warranty_change_only_invalidates_mercado_target():
+    from erp_web.stores.product_store import _changed_publish_content_targets
+
+    previous = {"sale_terms": [], "target_sites": [
+        {"platform": "yandex", "site": "global", "attributes": {}},
+        {"platform": "ozon", "site": "global", "attributes": {}},
+        {"platform": "mercadolibre", "site": "CBT", "attributes": {}},
+    ]}
+    edited = deepcopy(previous)
+    edited["sale_terms"] = [{"id": "WARRANTY_TYPE", "value_id": "6150835"}]
+    assert set(_changed_publish_content_targets(previous, edited)) == {2}
+
+
+def test_default_no_warranty_survives_save_and_reload():
+    products = get_context().products
+    saved, _ = _save_ready_draft_with_server_state()
+    draft = deepcopy(saved["drafts"]["mercadolibre"])
+    terms = [{"id": "WARRANTY_TYPE", "value_id": "6150835", "value_name": "Sin garantía"}]
+    draft["sale_terms"] = terms
+    result, error, status = products.save_draft_detail(draft)
+    assert error is None and status == 200
+    loaded, error, status = products.load_draft_detail_from_index(draft["draft_id"])
+    assert error is None and status == 200
+    assert loaded["draft"]["sale_terms"] == terms

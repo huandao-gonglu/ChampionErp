@@ -60,7 +60,10 @@ export function createDraftPublishBatch(runtime: WorkflowRuntime, editors: Targe
       if (operation !== 'publish') {
         // 每轮只保存一次；确认入队阶段不保存、不重新生成已确认的 Payload。
         if (operation === 'precheck') for (const { editor } of targets) editor.actions.invalidatePublishValidation()
-        if (operation === 'preview') for (const { editor } of targets) editor.state.payloadPreview = null
+        if (operation === 'preview') for (const { editor } of targets) {
+          editor.state.payloadPreview = null
+          editor.state.preparationProgress = null
+        }
         await runtime.persistCurrentDraftForPublish()
       }
       for (const { editor, digest } of targets) {

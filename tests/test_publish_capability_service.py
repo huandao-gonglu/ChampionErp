@@ -34,7 +34,7 @@ class _Adapter:
         self.errors = errors or []
         self.prepare_calls = 0
 
-    def prepare_product(self, product: dict, config: dict) -> dict:
+    def prepare_product(self, product: dict, config: dict, *, on_progress=None) -> dict:
         self.prepare_calls += 1
         return deepcopy(product)
 
@@ -296,7 +296,7 @@ def test_prepared_preview_and_enqueue_revalidation_keep_empty_draft_upc(
     monkeypatch.setattr(
         adapter,
         "prepare_product",
-        lambda product, _config: normalize_product_fields(product),
+        lambda product, _config, **_kwargs: normalize_product_fields(product),
     )
 
     def build_identifier_payload(context, _config):

@@ -12,13 +12,16 @@ Yandex 当前只推荐 API-Key 授权；不实现 OAuth / Bearer 兼容分支。
 from __future__ import annotations
 
 import json
+import http.client
 import re
 import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 
 from erp_web.services.external_request_manager import managed_urlopen
+from erp_web.services.external_request_context import request_context
 from typing import Any
 
 from .publisher import PublishAdapterError
@@ -255,6 +258,13 @@ def _network_error_classification(exc: Exception) -> tuple[str, str, bool, str]:
             True,
             "检查本机网络、代理或防火墙后重试",
         )
+    if isinstance(exc, (OSError, http.client.HTTPException)):
+        return (
+            "YANDEX_NETWORK_FAILED",
+            "Yandex 接口网络连接中断",
+            True,
+            "检查本机网络、代理或防火墙后重试",
+        )
     return (
         "YANDEX_REQUEST_FAILED",
         f"Yandex 请求失败：{exc}",
@@ -294,7 +304,12 @@ def _business_error_from_body(
 def _read_yandex_response(request, token, path, timeout):
     """JSON 和 PDF 共用传输、错误分类与凭据脱敏，不写业务状态。"""
     try:
-        with managed_urlopen(request, timeout=timeout, source=__name__) as response:
+        context = None
+        if path == "/v2/tariffs/calculate":
+            # 费用试算是只读 POST；临时服务故障在同一操作的有限预算内恢复。
+            context = replace(request_context(request.full_url, dict(request.header_items()), data=request.data,
+                method=request.get_method(), timeout=timeout, source=__name__), max_attempts=3)
+        with managed_urlopen(request, timeout=timeout, source=__name__, request_context=context) as response:
             return response.read()
     except urllib.error.HTTPError as exc:
         detail = ""

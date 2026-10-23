@@ -27,6 +27,7 @@ def frozen_purchase_identity(product: dict, fact: dict, platform: str) -> dict:
     snapshot = fact.get("source_snapshot") or {}
     drafts = (product.get("drafts") or {}).get(platform) or {}
     draft_rows = [r for r in drafts.get("sku_items", []) if r.get("sku_id") == fact.get("id")]
+    # 已发布的旧快照仍须校验当时的覆盖值，防止错误采购身份被重新解释。
     overrides = (draft_rows[0].get("overrides") or {}) if len(draft_rows) == 1 else {}
     effective_options = {**(fact.get("options") or {}), **(overrides.get("options") or {})}
     if not offer:
