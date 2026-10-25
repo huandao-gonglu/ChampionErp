@@ -15,7 +15,7 @@ from erp_web.schemas.product_capabilities import DraftAttributesReadRequest
 from erp_web.schemas.product_write_capabilities import DraftReadRequest
 from erp_web.services.capability_errors import BusinessCapabilityError
 from tests.test_main_chat_attributes import subject, enum, request
-from tests.ai_code_mode_helpers import python_call, business_returns
+from tests.ai_code_mode_helpers import discovering_tools, python_call, business_returns
 from tests.test_native_agent_integration import service, body
 
 
@@ -119,8 +119,8 @@ def test_query_scope_excludes_managed_fields_without_losing_pagination(subject):
     assert not second.has_more
 
 
-def test_native_two_target_common_attributes_finish_in_five_model_requests(subject, tmp_path):
-    """验证生产工具可在五轮内完成；可控模型的轮数不等同于真实模型测速。"""
+def test_native_two_target_attributes_finish_after_discovery_and_five_business_requests(subject, tmp_path):
+    """一次发现加五轮业务请求完成；可控模型轮数不等同于真实模型测速。"""
     app, draft_id, _ = subject
     draft = app.db.load_draft_model(draft_id)
     draft["target_sites"].append({"platform": "yandex", "site": "global", "category_id": "94765", "attributes": {}})
@@ -134,6 +134,7 @@ def test_native_two_target_common_attributes_finish_in_five_model_requests(subje
     ]
     calls = []
 
+    @discovering_tools('draft_attributes_read', 'category_attributes_query', 'category_attribute_values_query', 'product_attributes_update')
     async def model(messages, info):
         returns = business_returns(messages)
         assert all(part.content.get("ok") is not False for part in returns)

@@ -35,6 +35,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.tools import RunContext
 
+from .ai_tool_result_projection import share_repeated_json_values
+
 
 __all__ = ["project_model_context_for_model", "strip_stale_thinking", "project_model_request"]
 
@@ -151,7 +153,7 @@ def _prior_tool_result_previews(messages: list[ModelMessage]) -> list[ModelMessa
             continue
         parts = []
         for part in message.parts:
-            if not isinstance(part, ToolReturnPart) or len(text := part.model_response_str()) <= 4000:
+            if type(part) is not ToolReturnPart or part.tool_kind is not None or len(text := part.model_response_str()) <= 4000:
                 parts.append(part)
                 continue
             content = part.content
@@ -182,7 +184,21 @@ async def project_model_request(
     Hook 允许只替换本次发送内容，不创建历史合并、消息恢复或模型调用旁路。
     """
     messages = _prior_tool_result_previews(project_model_context_for_model(ctx, request_context.messages))
+    # 只处理普通业务结果，不改写 Tool Search / Deferred 等原生协议消息。
+    shared_messages = []
+    for message in messages:
+        if not isinstance(message, ModelRequest):
+            shared_messages.append(message)
+            continue
+        parts = []
+        for part in message.parts:
+            if type(part) is ToolReturnPart and part.tool_kind is None:
+                content = share_repeated_json_values(part.content)
+                if content is not part.content:
+                    part = dataclasses.replace(part, content=content)
+            parts.append(part)
+        shared_messages.append(dataclasses.replace(message, parts=parts))
     # model_id/streaming 是原生 init=False 字段，dataclasses.replace 会重置它们。
     projected = copy(request_context)
-    projected.messages = messages
+    projected.messages = shared_messages
     return await handler(projected)

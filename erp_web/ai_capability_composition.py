@@ -119,6 +119,7 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
         "order_fulfillment_read",
         "order_fulfillment_services",
         "online_products_read",
+        "online_products_attributes",
         "conversation_facts_query",
         "drafts_query",
         "product_read",

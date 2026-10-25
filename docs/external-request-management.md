@@ -88,6 +88,22 @@ Mercado 字段确认使用官方 [商品字段过滤](https://global-selling.mer
 
 ## 验证与边界
 
+### 2026-10-25 连接错误诊断
+
+`Connection error.` 由原生 SDK 包装底层错误；仅记录这个字符串无法区分 DNS、TLS、上传、等待响应或响应读取失败。
+受控 HTTPX 入口现在通过原生 `trace` 扩展记录最后一个连接/收发阶段、耗时、请求与已接收响应字节数及已知 HTTP 状态。
+失败诊断保留最多 8 层异常类型、系统错误码、TLS 验证码及每层最后 12 个栈位置，使用固定原因标识识别常见协议和事件循环错误。
+不记录任意异常原文、trace 参数、源码行、局部变量、请求或响应正文，避免凭据和业务内容进入日志。
+
+后端日志搜索 `外部请求传输失败`；其中 `request_id` 对应外部请求审计 ID，`operation_id` 对应所属操作。
+Agent 持久化错误详情及 Direct Model 错误保留相同关联字段和 SDK 包装后的异常链。
+例如 `trace_event=start_tls.failed` 配合证书验证码可定位 TLS，`receive_response_headers.failed` 配合 `ReadTimeout` 可定位等待响应超时。
+未收到响应时不记录 HTTP 状态；历史记录不能补出当时已丢失的异常。
+
+核对安装的 Pydantic AI 2.44.0、OpenAI SDK 3.16.2、HTTPX2/HTTPCore2 2.9.1 的原生异常链及 trace 行为，
+沿用 [HTTPX trace 扩展](https://www.python-httpx.org/advanced/extensions/)；项目适配仅做脱敏、审计与关联，
+不增加 Agent 执行协议，不改变请求重试、失败阻断或流终态。未来统一遥测能提供相同的持久化安全关联时可移除此适配。
+
 ### 2026-10-01 流式响应误阻断修复
 
 OpenAI SDK 3.13.0 收到 `[DONE]` 后会主动关闭响应，此时 HTTP 字节迭代器未必到达 EOF。

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import http.client
 import io
+import json
 import logging
 import re
 import time
@@ -14,6 +15,7 @@ from erp_web.context import get_context
 from erp_web.services.platform_request_policy import classify_response, platform_error_codes, response_quota_pause
 from erp_web.schemas.external_requests import ExternalRequestBlocked, ExternalRequestNotSent, ExternalRequestOutcomeUnknown, RequestFailure
 from erp_web.services.external_request_context import request_context, note_request_rejection
+from erp_web.services.external_request_diagnostics import exception_diagnostics
 
 
 class BufferedResponse(io.BytesIO):
@@ -86,9 +88,19 @@ class ExternalRequestManager:
             "http_status": status, "outcome": "stream_closed",
         })
 
-    def network_error(self, request_id, ctx, *, cancelled=False):
-        self.store.finish(request_id,result={"outcome":"outcome_unknown" if ctx.semantics == "write" else "cancelled" if cancelled else "network_error", "cancelled":cancelled,
-            "code":"EXTERNAL_NETWORK_INTERRUPTED"})
+    def network_error(self, request_id, ctx, *, cancelled=False, error=None, diagnostics=None):
+        result = {"outcome":"outcome_unknown" if ctx.semantics == "write" else "cancelled" if cancelled else "network_error", "cancelled":cancelled,
+                  "code":"EXTERNAL_NETWORK_INTERRUPTED"}
+        if error is not None:
+            request_details = {"request_id": request_id, "operation_id": ctx.operation_id,
+                               **(diagnostics or {})}
+            error._erp_external_request_diagnostic = request_details
+            result["diagnostics"] = exception_diagnostics(error)
+            logging.getLogger(__name__).log(
+                logging.INFO if cancelled else logging.WARNING,
+                "外部请求传输失败：%s", json.dumps(result["diagnostics"], ensure_ascii=False),
+            )
+        self.store.finish(request_id, result=result)
         if not cancelled:
             self.store.record_failure_streak(ctx)
         if ctx.semantics == "write":
@@ -149,7 +161,7 @@ class ExternalRequestManager:
             except ExternalRequestBlocked:
                 raise
             except BaseException as exc:
-                self.network_error(request_id,ctx)
+                self.network_error(request_id,ctx,error=exc)
                 if ctx.semantics == "write" and isinstance(exc, Exception):
                     raise ExternalRequestOutcomeUnknown() from exc
                 if not (isinstance(exc, (OSError, http.client.HTTPException)) and ctx.semantics == "read"

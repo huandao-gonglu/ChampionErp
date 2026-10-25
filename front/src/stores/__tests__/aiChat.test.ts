@@ -1,8 +1,11 @@
+import { AI_CHAT_SELECTION_KEY } from '@/stores/aiChat'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AiWorkUiMessagesResponse } from '@/types/aiWork'
 import { useAiChatStore } from '../aiChat'
 import { useAiPageContextStore } from '../aiPageContext'
+
+beforeEach(() => localStorage.removeItem(AI_CHAT_SELECTION_KEY))
 
 const encoder = new TextEncoder()
 

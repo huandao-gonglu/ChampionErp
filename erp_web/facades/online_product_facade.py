@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import ValidationError
 from erp_web.context import get_context
 from erp_web.marketplaces.publisher import PublishAdapterError
-from erp_web.schemas.online_products import OnlineConflictResponse, RefreshStatusRequest
+from erp_web.schemas.online_products import OnlineConflictResponse, OnlineAttributeQuery, RefreshStatusRequest
 from erp_web.stores.online_product_store import OnlineConflict
 
 
@@ -27,6 +27,10 @@ def read_source_images(query: dict[str, str]) -> dict[str, Any]:
     if not listing_id:
         raise ValueError("listing_id 不能为空")
     return get_context().online_products.source_images(listing_id)
+
+
+def read_attributes(query: dict[str, str]) -> dict[str, Any]:
+    return get_context().online_products.attribute_options(OnlineAttributeQuery.model_validate(query))
 
 
 def export_ozon(body: dict[str, Any], *, download: bool = False) -> tuple[dict[str, Any], int]:

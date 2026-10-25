@@ -280,6 +280,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(method="GET", path="/api/online-products", business_domain="在线商品", disposition="capability", capability_names=("online_products_read",)),
     AiCapabilityCoverageEntry(method="GET", path="/api/online-products/source-images", business_domain="在线商品", disposition="capability", capability_names=("online_products_read",)),
+    AiCapabilityCoverageEntry(method="GET", path="/api/online-products/attributes", business_domain="在线商品", disposition="capability", capability_names=("online_products_attributes",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/sync", business_domain="在线商品", disposition="capability", capability_names=("online_products_sync",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/refresh-status", business_domain="在线商品", disposition="capability", capability_names=("online_products_refresh_status",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="capability", capability_names=("online_products_change",)),

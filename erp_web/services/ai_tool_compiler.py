@@ -16,7 +16,7 @@ from typing import (
     get_type_hints,
 )
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from erp_web.schemas.ai_tools import (
     AiToolDefinition,
@@ -319,6 +319,25 @@ class CompiledAiTool:
             MappingProxyType(dict(self.injected_parameters)),
         )
 
+    def validate_request(self, arguments: dict[str, Any]) -> BaseModel:
+        """执行与原生参数校验共用纯类型规则，不调用领域服务。"""
+        try:
+            return self.request_adapter.validate_python(arguments)
+        except ValidationError as exc:
+            # 仅反馈字段位置与校验原因，不序列化完整输入、异常上下文或堆栈。
+            reasons = [
+                f"{'.'.join(map(str, error['loc'])) or '参数'}：{error['msg']}"
+                for error in exc.errors(include_input=False, include_context=False, include_url=False)[:8]
+            ]
+            raise AiToolSchemaError(
+                "工具参数不符合定义：" + "；".join(reasons),
+                code="TOOL_INPUT_SCHEMA_INVALID",
+            ) from None
+
+    def validate_arguments(self, arguments: dict[str, Any]) -> None:
+        """交给 Pydantic AI args_validator，在执行或审批前反馈可纠正输入。"""
+        self.validate_request(arguments)
+
     @property
     def scope_parameter(self) -> str:
         """审批快照绑定的唯一非 execution 注入参数名。"""
@@ -350,13 +369,7 @@ class CompiledAiTool:
         scope_provider = providers[scope_type]
 
         def prepare(arguments: dict[str, Any]) -> ToolApprovalSnapshot:
-            try:
-                request = self.request_adapter.validate_python(arguments)
-            except Exception:
-                raise AiToolSchemaError(
-                    "审批准备输入未通过精确类型校验。",
-                    code="TOOL_INPUT_SCHEMA_INVALID",
-                ) from None
+            request = self.validate_request(arguments)
             snapshot = snapshot_function(request, scope_provider)
             if not isinstance(snapshot, ToolApprovalSnapshot):
                 raise AiToolSchemaError(
@@ -374,13 +387,7 @@ class CompiledAiTool:
             arguments: dict[str, Any],
             execution: AiExecutionContext,
         ) -> Any:
-            try:
-                request = self.request_adapter.validate_python(arguments)
-            except Exception:
-                raise AiToolSchemaError(
-                    "工具输入未通过精确类型校验。",
-                    code="TOOL_INPUT_SCHEMA_INVALID",
-                ) from None
+            request = self.validate_request(arguments)
             keyword_arguments: dict[str, Any] = {self.request_parameter: request}
             for parameter_name, injected_type in self.injected_parameters.items():
                 keyword_arguments[parameter_name] = (

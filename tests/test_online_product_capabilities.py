@@ -1,5 +1,6 @@
 """在线接口复用、Code Mode 聚合、原生审批和任务回执的隔离验收。"""
 import asyncio
+from tests.ai_code_mode_helpers import discovering_tools
 from dataclasses import replace
 import json
 import time
@@ -26,6 +27,97 @@ from erp_web.services.online_product_service import OnlineProductService
 from tests.test_online_products import RemoteFixture, listing
 from tests.approval_support import _approved_execution, _execution
 from tests.test_native_agent_integration import CONVERSATION, body, service
+
+
+@pytest.mark.parametrize("entry", ["direct", "python"])
+def test_unknown_online_field_returns_to_model_for_correction(online, tmp_path, monkeypatch, entry):
+    """重现真实对话的字段探测；错误须在领域调用前返回模型，不结束整轮。"""
+    from tests.ai_code_mode_helpers import business_returns, python_call
+
+    app, domain, _, _, _ = online
+    calls = []
+    original = domain.detail
+
+    def read(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(domain, "detail", read)
+    turns = []
+
+    @discovering_tools("online_products_read")
+    async def model(messages, info):
+        turns.append(1)
+        if len(turns) == 1:
+            fields = ["content.category_id", "category_id", "market_category_id"]
+        elif len(turns) == 2:
+            assert not calls
+            assert "不是在线商品公开字段：category_id" in str(messages)
+            fields = ["content.title"]
+        else:
+            assert business_returns(messages)[-1].content["records"][0]["values"]["content.title"] == "测试商品"
+            yield "已纠正参数并读取商品。"
+            return
+        call = dict(name="online_products_read", tool_call_id=f"read-{len(turns)}",
+                    json_args=json.dumps({"id": "CBT1", "fields": fields}))
+        yield {0: python_call(**call) if entry == "python" else DeltaToolCall(**call)}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    chunks = []
+    asyncio.run(ui.prepare_run(body("读取真实类目")).stream(chunks.append))
+    stream = b"".join(chunks).decode()
+    assert len(turns) == 3 and len(calls) == 1, stream
+    assert '"type":"error"' not in stream
+    assert "已纠正参数并读取商品" in stream
+    assert ui.chat_service.trusted_history(CONVERSATION)[-1].state == "complete"
+
+
+@pytest.mark.parametrize("entry", ["direct", "python"])
+def test_repeated_invalid_online_fields_stop_at_native_retry_limit(online, tmp_path, monkeypatch, entry):
+    from tests.ai_code_mode_helpers import python_call
+
+    app, domain, _, _, _ = online
+    monkeypatch.setattr(domain, "detail", lambda *a, **kw: pytest.fail("无效参数不得进入领域服务"))
+    calls = []
+
+    @discovering_tools("online_products_read")
+    async def model(messages, info):
+        calls.append(1)
+        call = dict(name="online_products_read", tool_call_id=f"invalid-{len(calls)}",
+                    json_args=json.dumps({"id": "CBT1", "fields": ["category_id"]}))
+        yield {0: python_call(**call) if entry == "python" else DeltaToolCall(**call)}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    chunks = []
+    asyncio.run(ui.prepare_run(body("读取类目")).stream(chunks.append))
+    assert len(calls) == 3  # 主对话原生 retries=2，第三次错误终止。
+    assert '"type":"error"' in b"".join(chunks).decode()
+    assert ui.chat_service.trusted_history(CONVERSATION)[-1].state == "interrupted"
+
+
+def test_custom_write_input_validation_runs_before_approval_or_business_io(online, tmp_path, monkeypatch):
+    app, domain, _, _, _ = online
+    monkeypatch.setattr(domain.store, "job", lambda *a: pytest.fail("参数未通过校验不得读取审批快照"))
+    turns = []
+
+    @discovering_tools("online_products_close")
+    async def model(messages, info):
+        turns.append(1)
+        if len(turns) == 1:
+            yield {0: DeltaToolCall(name="online_products_close", tool_call_id="invalid-close",
+                json_args=json.dumps({'job_id': 'unconfirmed', 'expected_updated_at': 'now', 'acknowledge': False}))}
+        else:
+            assert any(isinstance(p, RetryPromptPart) for m in messages for p in m.parts)
+            assert "请确认原请求结果仍未确认" in str(messages)
+            yield "尚未确认结束条件，未提交操作。"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    chunks = []
+    asyncio.run(ui.prepare_run(body("查看未确认任务")).stream(chunks.append))
+    stream = b"".join(chunks).decode()
+    assert len(turns) == 2 and '"type":"error"' not in stream, stream
+    assert 'approval-request' not in stream
+    assert not ui.call_store.current_turn_receipts(CONVERSATION)
 
 
 @pytest.fixture
@@ -155,10 +247,11 @@ def test_first_online_product_needs_one_bounded_read(large_online_group, tmp_pat
     assert len(empty.model_dump_json().encode()) < 2000
     requests, outputs = [], []
 
+    @discovering_tools('online_products_read')
     async def model(messages, info):
         requests.append(1)
         assert not any(isinstance(p, RetryPromptPart) for m in messages for p in m.parts)
-        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name != "search_tools"]
         if returned:
             outputs.append(returned[-1].content)
             yield "第一个在线商品是测试商品，组合包含 198 个 SKU。"
@@ -184,9 +277,10 @@ def test_code_mode_pages_all_group_members_under_normal_output_limit(large_onlin
     app, _, _, _, _ = large_online_group
     outputs = []
 
+    @discovering_tools('online_products_read')
     async def model(messages, info):
         assert not any(isinstance(p, RetryPromptPart) for m in messages for p in m.parts)
-        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name != "search_tools"]
         if returned:
             outputs.append(returned[-1].content)
             yield "已读取组合全部 198 个 SKU。"
@@ -258,10 +352,11 @@ def test_code_mode_locates_identifier_with_four_projected_pages_and_no_detail_re
         "{'count': count, 'matches': matches, 'missing': missing}"
     )
 
+    @discovering_tools('online_products_read')
     async def model(messages, info):
         requests.append(1)
         assert not any(isinstance(p, RetryPromptPart) for m in messages for p in m.parts)
-        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name != "search_tools"]
         if returned:
             outputs.append(returned[-1].content)
             yield "编号唯一对应 EE001、25 cm 的 SKU。"
@@ -306,9 +401,10 @@ def test_yandex_details_pass_native_tool_output_validation(online, tmp_path, ent
     outputs = []
     attempts = 0
 
+    @discovering_tools('online_products_read')
     async def model(messages, info):
         nonlocal attempts
-        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
+        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if returned:
             if entry == "direct":
                 outputs.extend({"platform": p.content["platform"], "id": p.content["item"]["id"],
@@ -349,8 +445,9 @@ def test_code_mode_can_compute_over_all_pages_without_new_query_functions(online
         domain.store.save(row)
     outputs = []
 
+    @discovering_tools('online_products_read')
     async def model(messages, info):
-        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
+        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if returned:
             outputs.append(returned[-1].content)
             yield "统计完成，未知库存单独列出。"
@@ -482,8 +579,9 @@ def test_native_approval_finishes_batch_after_enqueue_without_platform_wait(onli
                         "version": domain.store.get(row.id).version}).model_dump())
     results = []
 
+    @discovering_tools('online_products_change')
     async def model(messages, info):
-        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
+        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if returned:
             results.extend(part.content for part in returned)
             yield "修改请求已提交，远端处理结果请在操作记录查看。"

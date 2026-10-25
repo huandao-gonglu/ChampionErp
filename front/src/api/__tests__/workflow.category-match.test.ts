@@ -166,21 +166,20 @@ describe('category.product_match 同步 focused response + 通用 presentation �
     expect(String(selected?.raw.description_category_id || '').trim()).toBe('17039878')
   })
 
-  it('运行期间临时接管浮窗，业务终态后恢复 global-chat', async () => {
+  it('运行期间保留独立任务进度，业务终态后释放任务占用', async () => {
     const display = useAiWorkDisplayStore()
-    let modeDuringBusiness = ''
+    let occupiedDuringBusiness = false
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: DESCRIPTOR, status: 200 })
     vi.mocked(apiClient.post).mockImplementationOnce(async () => {
-      modeDuringBusiness = display.displayMode
+      occupiedDuringBusiness = display.foregroundOccupied
       return { data: TYPED_RESULT, status: 200 }
     })
 
     await matchCategory(draft(), target())
 
-    // 业务请求期间前台 presentation 仍在展示（不得提前恢复）。
-    expect(modeDuringBusiness).toBe('presentation')
+    // 业务请求期间保留任务占用，不能提前释放。
+    expect(occupiedDuringBusiness).toBe(true)
     expect(display.foregroundPresentation).toBeNull()
-    expect(display.displayMode).toBe('global-chat')
     expect(display.terminalNotice?.kind).toBe('success')
     expect(display.terminalNotice?.text).toBe('类目匹配完成')
     expect(display.presentationVersion).toBe(1)
@@ -237,7 +236,7 @@ describe('category.product_match 同步 focused response + 通用 presentation �
     expect(result.ok).toBe(false)
     expect(result.status).toBe('failed')
     expect(result.failure?.code).toBe('MODEL_RESPONSE_SCHEMA_INVALID')
-    expect(display.displayMode).toBe('global-chat')
+    expect(display.foregroundPresentation).toBeNull()
     // 未抛错的合法业务 response 走成功收尾：提示由 successNotice 解释结果。
     expect(display.terminalNotice?.kind).toBe('success')
     expect(display.terminalNotice?.text).toBe('类目匹配结束，仍需人工确认候选')
@@ -301,7 +300,7 @@ describe('category.product_match 同步 focused response + 通用 presentation �
     expect(display.foregroundOccupied).toBe(false)
   })
 
-  it('业务请求失败：抛出业务错误并恢复 global-chat（SSE 正常也不改写为成功）', async () => {
+  it('业务请求失败：抛出业务错误并释放任务占用（SSE 正常也不改写为成功）', async () => {
     const display = useAiWorkDisplayStore()
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: DESCRIPTOR, status: 200 })
     const businessError = Object.assign(new Error('业务 Agent 运行失败。'), {
@@ -312,7 +311,7 @@ describe('category.product_match 同步 focused response + 通用 presentation �
 
     await expect(matchCategory(draft(), target())).rejects.toThrow('业务 Agent 运行失败。')
 
-    expect(display.displayMode).toBe('global-chat')
+    expect(display.foregroundPresentation).toBeNull()
     expect(display.foregroundOccupied).toBe(false)
     expect(display.terminalNotice?.kind).toBe('failure')
     expect(display.terminalNotice?.text).toBe('业务 Agent 运行失败。')
@@ -327,7 +326,7 @@ describe('展示连接中断不改变业务语义（展示链与业务链分离�
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
   })
 
-  it('SSE 断连但业务成功：返回成功结果并恢复 global-chat', async () => {
+  it('SSE 断连但业务成功：返回成功结果并释放任务占用', async () => {
     const display = useAiWorkDisplayStore()
     let displayErrorDuringBusiness = ''
     let secondTriggerRejected = false
@@ -358,7 +357,7 @@ describe('展示连接中断不改变业务语义（展示链与业务链分离�
     // 业务结果由同步 response 交付：SSE 断连不改写为失败。
     expect(result.ok).toBe(true)
     expect(result.selectedCategoryId).toBe('MLM-FAN')
-    expect(display.displayMode).toBe('global-chat')
+    expect(display.foregroundPresentation).toBeNull()
     expect(display.terminalNotice?.kind).toBe('success')
     expect(display.presentationVersion).toBe(1)
   })

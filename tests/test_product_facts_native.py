@@ -5,7 +5,7 @@ from pydantic_ai.messages import TextPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from tests.test_draft_edit_capabilities import seed_draft
-from tests.ai_code_mode_helpers import python_call, business_returns, available_python_functions
+from tests.ai_code_mode_helpers import python_call, business_returns, available_python_functions, discovering_tools
 from tests.test_native_agent_integration import CONVERSATION, body, service
 
 def test_confirmation_keeps_tools_and_write_receipt_reaches_followup_model(tmp_path):
@@ -17,8 +17,11 @@ def test_confirmation_keeps_tools_and_write_receipt_reaches_followup_model(tmp_p
         {'sku_id': f'sku-{i}', 'package_dimensions': {'length_cm': 13, 'width_cm': 10, 'height_cm': 5}} for i in range(2)]}
     requests = []
 
+    @discovering_tools("product_sku_facts_update", "draft_sku_attributes_update")
     async def model(messages, info):
-        latest = [p.content for m in messages for p in m.parts if isinstance(p, UserPromptPart)][-1]
+        # 可控模型只响应本用例的三条用户输入，不把原生工具发现通知当成用户追问。
+        latest = [p.content for m in messages for p in m.parts
+                  if isinstance(p, UserPromptPart) and p.content in {"重新读取草稿", "是", "你没有把尺寸写入草稿吗"}][-1]
         requests.append(latest)
         assert "async def product_sku_facts_update" in available_python_functions(info)
         assert "async def draft_sku_attributes_update" in available_python_functions(info)

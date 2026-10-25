@@ -5,6 +5,7 @@
 | 现有接口 | 主 Agent 工具 | 执行方式 |
 | --- | --- | --- |
 | `OnlineProductService.read_page` / `detail` | `online_products_read` | 列表为有界摘要，详情复用公开字段；直接读取或在 Code Mode 中逐页计算 |
+| `GET /api/online-products/attributes` | `online_products_attributes` | 按真实刊登及版本读取实际类目、属性定义、当前值及分页候选，复用页面领域服务 |
 | `POST /api/online-products/change` | `online_products_change` | 一个入口处理既有 price / stock / content / sale_state / archive，原生审批后入队即返回提交回执 |
 | `POST /api/online-products/sync` | `online_products_sync` | 沿用领域同步任务，仅读取平台并刷新本地快照 |
 | `POST /api/online-products/refresh-status` | `online_products_refresh_status` | 按 listing_id 直接查询单件状态并更新本地记录，不扫描店铺、不创建 Job |
@@ -15,6 +16,15 @@
 `online_products_read` 的查询参数为 `id,platform,catalog,q,status,market,page,limit,view,group_id`，图片来源仍由 `include_source_images` 控制。有 `id` 时读取完整公开详情，包含内容、买家链接、修改能力、版本、库存和同步时间；无 `id` 时通过 `OnlineProductService.read_page` 读取摘要。摘要保留身份、标题、状态、价格、库存及同步时间，不携带长描述、属性、图片、原始快照或完整历史任务。需要规格和修改能力时按真实刊登 ID 读取详情。
 
 `catalog=current` 默认排除归档商品，`archived` 仅读取归档商品，`all` 包含两者。分组、汇总和分页均使用所选目录；页面背景包含当前目录，AI 查询当前列表时传递同一 `catalog`。归档状态与库存、停售各自独立。
+
+在线属性查询先取得真实 `listing_id` 和 `version`，再调用 `online_products_attributes`。
+不传 `attribute_id` 读取定义，传入定义中的属性 ID 查询候选；分页沿用 `page.next_cursor`。
+类目由刊登快照决定，不用标题搜索结果代替实际类目，不开放原始平台快照。
+平台错误提示和必填定义须结合商品事实核实，鞋码、尺码表等资料不足时不能猜填。
+`DISABLED_AUTOMATICALLY` 是平台自动下架；解除主动停售不等于平台审核通过，修改入队或内容回读成功也不能当作重新上架成功。
+
+字段投影的自定义输入校验与其他编译工具统一接入原生 `args_validator`，返回具体字段原因供模型纠正。
+直接调用和 Code Mode 均遵循原生重试上限；领域权限、审批和写入结果未知的处理不因此放宽。
 
 `online_products_sync` 与 HTTP 同步入口接受 `catalog=current/archived`，默认仅普通商品；归档页明确提交 `archived`，两类不再合并同步。目录范围持久化到领域任务，失败重试和最新同步进度按原目录隔离；AI 同步当前页面时传递相同目录。其他平台暂不接受归档目录同步。旧任务仍可读取，缺少目录的历史记录保留原全店范围显示，旧任务重试按普通商品执行。
 
@@ -31,6 +41,8 @@
 不增加“查询 SKU 数量”“查零库存”“改红色库存”等工具，也不开放 SQL、任意网络或数据库写入。AI 可直接理解商品字段；需要循环和统计时，使用现有 `run_code` 调用相同读取函数，完整分页后返回必要摘要。未知库存、未授权、同步失败与零库存/零商品不同；统计结果只能表述为实际读取的同步快照。平台没有提供足够规格信息时须澄清，不能猜测变体。
 
 统一修改输入复用 `OnlineChange`，字段为 `listing_id,version,operation,scope_id,changes`；HTTP 的 `ChangeRequest` 继承它并保留 `idempotency_key`。AI 提交键由现有可信执行身份机械生成，不由模型挑选或覆盖。库存使用绝对数量；价格保留范围和币种；内容仅修改后端允许字段，图片仍使用完整目标列表。业务校验、账号隔离、冲突检查、任务互斥和平台回读继续由原服务执行。
+
+Yandex 在线属性支持补充缺失字段和修改枚举：`changes.attributes` 使用 `{id:字符串,parameterId:整数,value:平台原文,valueId:枚举编号字符串,unitId:单位整数}`，枚举及单位按类目要求提供；同一属性的多行代表完整目标值集合。页面经 `GET /api/online-products/attributes` 按刊登身份与版本读取类目字段及分页候选，AI 可复用类目查询能力获取真实候选，不能猜测枚举编号。审批、入队及发送前使用相同领域校验，保留未编辑属性，禁止改写分组或只读字段。其他平台仍沿用各自已有属性编辑契约。协议依据：[类目参数](https://yandex.ru/dev/market/partner-api/doc/en/reference/content/getCategoryContentParameters)、[商品更新](https://yandex.ru/dev/market/partner-api/doc/ru/reference/business-offer-mappings/updateOfferMappings)。
 
 Yandex 保留 `operation=sale_state` 的店铺停售，并增加 `operation=archive,scope_id=business,changes={archived:true|false}`。归档及恢复作用于商家全部店铺，保留库存和隐藏设置；恢复归档不保证立即可售。单件官方回执无失败项时确认归档成功并移入相应目录，逐项失败留在原目录，未知结果仅按需读取目标归档状态核实。AI 使用现有逐 SKU 修改工具及原生审批范围。
 

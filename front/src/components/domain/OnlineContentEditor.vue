@@ -2,9 +2,12 @@
 import { computed, onBeforeUnmount, ref, watch, toRaw } from 'vue'
 import { fetchOnlineSourceImages, type OnlineListing, type SourceImageOption, type SourceImageSelection } from '@/api/onlineProducts'
 import OnlinePicturePreview from './OnlinePicturePreview.vue'
+import OnlineYandexAttributes from './OnlineYandexAttributes.vue'
+import type { OnlineAttributeRow } from '@/api/onlineProducts'
 import { onlineAttributeName, onlineAttributeText } from './onlineAttributeDisplay'
 const props = defineProps<{listing: OnlineListing}>()
-const emit = defineEmits<{change:[value:Record<string,unknown>]; picturePreviews:[urls:string[]]}>()
+const emit = defineEmits<{change:[value:Record<string,unknown>]; picturePreviews:[urls:string[]]; validity:[valid:boolean]; attributeNames:[names:Record<string,string>]}>()
+const yandexAttributes = ref<OnlineAttributeRow[]>([])
 type Picture = string | {id: string; url: string} | {asset_id: string; fingerprint: string; preview_url: string}
 const selectedFields = ref<string[]>([])
 const title = ref(props.listing.content.title || '')
@@ -91,9 +94,9 @@ const changes = computed(() => {
     ? {asset_id: p.asset_id, fingerprint: p.fingerprint} : typeof p === 'string' ? p : {id: p.id, url: p.url})
   if(selectedAttributes.value.length) result.attributes=attributes.value.filter(a=>selectedAttributes.value.includes(String(a.id)) && editable(a)).map(a=>{
     const value=values.value[String(a.id)] || ''
-    if(props.listing.platform==='yandex') return {id:String(a.id),parameterId:a.parameterId,value,...(a.unitId?{unitId:a.unitId}:{})}
     return a.values ? {id:a.id,values:[{name:value}]} : {id:a.id,value_name:value}
   })
+  if (props.listing.platform === 'yandex' && yandexAttributes.value.length) result.attributes = yandexAttributes.value
   return result
 })
 watch(changes, value => {
@@ -137,7 +140,8 @@ watch(changes, value => {
         </template>
       </div>
     </section>
-    <section v-if="listing.capabilities.content.fields.includes('attributes')"><h3 class="font-medium">商品属性</h3><div class="mt-4 grid gap-4 sm:grid-cols-2"><label v-for="a in attributes" :key="String(a.id)" class="block"><span class="flex items-center gap-2"><input v-model="selectedAttributes" type="checkbox" :value="String(a.id)" :disabled="!editable(a)" />{{ onlineAttributeName(a) }}</span><span class="muted mt-1 block text-xs">属性编号：{{ a.id }}</span><input v-model="values[String(a.id)]" :disabled="!editable(a) || !selectedAttributes.includes(String(a.id))" class="input mt-2" /><span v-if="!editable(a)" class="muted">身份字段、枚举或复杂属性在此仅供查看</span></label></div></section>
+    <OnlineYandexAttributes v-if="listing.platform === 'yandex' && listing.capabilities.content.fields.includes('attributes')" :listing="listing" @change="yandexAttributes=$event" @validity="emit('validity', $event)" @names="emit('attributeNames', $event)" />
+    <section v-else-if="listing.capabilities.content.fields.includes('attributes')"><h3 class="font-medium">商品属性</h3><div class="mt-4 grid gap-4 sm:grid-cols-2"><label v-for="a in attributes" :key="String(a.id)" class="block"><span class="flex items-center gap-2"><input v-model="selectedAttributes" type="checkbox" :value="String(a.id)" :disabled="!editable(a)" />{{ onlineAttributeName(a) }}</span><span class="muted mt-1 block text-xs">属性编号：{{ a.id }}</span><input v-model="values[String(a.id)]" :disabled="!editable(a) || !selectedAttributes.includes(String(a.id))" class="input mt-2" /><span v-if="!editable(a)" class="muted">身份字段、枚举或复杂属性在此仅供查看</span></label></div></section>
     <label v-if="listing.capabilities.content.fields.includes('description')" class="block"><span class="flex items-center gap-2"><input v-model="selectedFields" type="checkbox" value="description" />商品描述</span><textarea v-model="description" :disabled="!selectedFields.includes('description')" class="input mt-3" rows="7" /></label><p v-else class="muted">当前商品暂不支持在此更新描述。</p>
   </div>
 </template>

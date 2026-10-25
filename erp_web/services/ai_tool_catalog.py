@@ -141,6 +141,7 @@ class AiToolCatalog:
                 definition=definition,
                 executor=tool.bind_executor(bound_providers),
                 approval_preparer=approval_preparer,
+                arguments_validator=tool.validate_arguments,
             )
         return AiToolSet(toolset_id=toolset_id, bindings=bindings)
 

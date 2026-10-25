@@ -425,6 +425,7 @@ def build_global_chat_toolset(context: AppContext | None = None) -> AiToolSet:
 
     return AiToolSet(
         toolset_id=toolset.toolset_id,
+        defer_loading=True,
         bindings={
             name: guarded(binding)
             if binding.definition.side_effect == "write"

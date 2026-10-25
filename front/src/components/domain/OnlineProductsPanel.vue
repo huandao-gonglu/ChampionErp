@@ -116,6 +116,8 @@ const value = ref<string | number>('')
 const saleTarget = ref('paused')
 const archiveTarget = ref(true)
 const contentChanges = ref<Record<string,unknown>>({})
+const contentValid = ref(true)
+const contentAttributeNames = ref<Record<string,string>>({})
 const contentPicturePreviews = ref<string[]>([])
 const preview = ref(false), submitKey = ref('')
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -191,7 +193,7 @@ function syncProgress(job: OnlineJob) {
   return `已处理 ${processed} 件${result.discovery_complete === false ? '，目录尚未读取完整' : ''}`
 }
 function detailState(row: OnlineListing) {
-  return row.details_state === 'pending' ? '详情同步中' : row.details_state === 'failed' ? '详情同步失败，已有快照保留' : ''
+  return row.details_state === 'pending' ? '详情同步中' : row.details_state === 'failed' ? '详情同步失败，请到操作记录重试失败项' : ''
 }
 function canRetry(job: OnlineJob) {
   return ['failed', 'partial'].includes(job.status) && (job.operation === 'sync'
@@ -299,6 +301,8 @@ function begin(operation: OnlineOperation | 'sync') {
   if (operation === 'sync') syncCatalog.value = catalog.value
   modal.value = operation; preview.value = false; submitKey.value = crypto.randomUUID(); error.value = ''
   contentChanges.value = {}
+  contentValid.value = true
+  contentAttributeNames.value = {}
   contentPicturePreviews.value = []
   saleTarget.value = saleState.value
   archiveTarget.value = !selected.value?.archived
@@ -308,6 +312,7 @@ function begin(operation: OnlineOperation | 'sync') {
 function resetValue() { value.value = modal.value === 'price' ? price.value?.amount || '' : String(stock.value?.quantity ?? '') }
 function makePreview() {
   try {
+    if (modal.value === 'content' && !contentValid.value) throw new Error('请先完整填写已勾选的属性')
     if(!Object.keys(changes.value).length) throw new Error('请至少选择一个变更字段')
     if (modal.value === 'stock' && (!String(value.value).trim() || !Number.isInteger(Number(value.value)) || Number(value.value)<0)) throw new Error('库存必须是非负整数')
     if (modal.value === 'price' && !(Number(value.value)>0)) throw new Error('请输入有效价格')
@@ -329,9 +334,9 @@ function displayValue(field: string, data: unknown): string {
   if(field==='attributes' && Array.isArray(data)) {
     const ids = new Set((changes.value.attributes as Array<{id:unknown}> || []).map(a=>String(a.id)))
     return data.filter(a=>ids.has(String(a.id))).map(a=>{
-      const name=selected.value?.content.attributes?.find(row=>String(row.id)===String(a.id))?.name || a.parameterName || a.id
+      const name=contentAttributeNames.value[String(a.id)] || selected.value?.content.attributes?.find(row=>String(row.id)===String(a.id))?.name || a.parameterName || a.id
       return `${name}：${a.value_name ?? a.value ?? a.values?.map((v:{name?:string})=>v.name).join('、') ?? '未知'}`
-    }).join('；')
+    }).join('；') || '未填写'
   }
   return data == null ? '未提供' : String(data)
 }
@@ -585,7 +590,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             <div class="muted mt-4 space-y-3 break-words">
               <p>最近同步：{{ time(selected.synced_at) }}</p>
               <p>状态查询：{{ selected.status_checked_at ? time(selected.status_checked_at) : '尚未查询' }}</p>
-              <p>刷新状态只更新销售状态及平台反馈；价格、库存和内容由店铺同步更新。</p>
+              <p>刷新状态只更新销售状态及平台反馈，不会重试详情同步；详情同步失败时，请到操作记录选择“仅重试失败项”。</p>
               <p>卡片状态：{{ selected.raw_sub_status.map(label).join('、') || '平台未提供' }}</p>
               <p class="break-all">平台原始状态：{{ selected.raw_status }} {{ selected.raw_sub_status.join('、') }}</p>
               <p class="break-all">平台商品 ID：{{ selected.remote_id }}</p>
@@ -627,7 +632,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             <p v-if="modal==='archive'" class="rounded-lg bg-amber-50 p-5 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ archiveTarget ? '归档后移入归档列表，并停止在此商家账号的所有店铺展示。原库存与停售设置保留，可以恢复归档。' : '恢复后移回普通商品列表，原停售设置与库存保留；满足平台库存、价格及审核条件后才可销售。' }}</p>
             <p v-if="modal==='stock' && stock?.reason" class="muted">{{ stock.reason }}</p>
             <p v-if="modal==='price' && price?.reason" class="muted">{{ price.reason }}</p>
-            <div v-if="modal==='content'" v-show="!preview" key="content-editor"><OnlineContentEditor :key="selected.id" :listing="selected" @change="contentChanges=$event" @picture-previews="contentPicturePreviews=$event" /></div>
+            <div v-if="modal==='content'" v-show="!preview" key="content-editor"><OnlineContentEditor :key="selected.id" :listing="selected" @change="contentChanges=$event" @picture-previews="contentPicturePreviews=$event" @validity="contentValid=$event" @attribute-names="contentAttributeNames=$event" /></div>
             <template v-if="!preview">
               <template v-if="modal==='price'"><label class="block">价格范围<select v-model="scope" class="input mt-2" @change="resetValue"><option v-for="p in selected.prices" :key="p.id" :value="p.id" :disabled="!p.writable">{{ p.label }} · {{ priceKind(p.kind) }} · {{ p.currency }}</option></select></label><p class="muted">当前：{{ price?.currency }} {{ price?.amount }} · {{ priceKind(price?.kind || '') }}</p><label class="block">新价格（{{ price?.currency }}）<input v-model="value" class="input mt-2" inputmode="decimal" /></label></template>
               <template v-if="modal==='stock'"><label class="block">库存范围<select v-model="scope" class="input mt-2" @change="resetValue"><option v-for="s in selected.stocks" :key="s.id" :value="s.id" :disabled="!s.writable">{{ s.label }}</option></select></label><p class="muted">当前库存：{{ stock?.quantity }}。设置绝对数量，不是增减量。</p><label class="block">目标可售数量<input v-model="value" type="number" min="0" step="1" class="input mt-2" /></label></template>

@@ -3,9 +3,6 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { PhPushPin } from '@phosphor-icons/vue'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
-import AiMessageList from '@/components/ai-work/AiMessageList.vue'
-import AiImageBatchProgress from '@/components/ai-work/AiImageBatchProgress.vue'
-import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import { workflowNavItems } from '@/constants/navigation'
 import { useFloatingDrag } from '@/composables/useFloatingDrag'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
@@ -23,9 +20,7 @@ let noticeTimer: ReturnType<typeof setTimeout> | null = null
 // AiWork 页面内置完整对话区域，浮动入口只在其他页面显示。
 const shouldRender = computed(() => route.name !== 'AiWork')
 
-const displayMode = computed(() => displayStore.displayMode)
 const foregroundPresentation = computed(() => displayStore.foregroundPresentation)
-const imageBatch = ref<ImageBatchSnapshot | null>(null)
 const presentationError = computed(() => foregroundPresentation.value?.error?.message || '')
 
 const panelError = computed(() => chatStore.error?.message || '')
@@ -39,26 +34,14 @@ const workspaceReturnQuery = computed(() => {
     : {}
 })
 
-// 前台 presentation 期间进入 AiWork 时携带 presentation conversation 与
-// presentation_id，页面按同一 observe Chat 继续展示；无 presentation 时恢复
-// global.chat 目标。
+// 普通入口始终指向聊天；任务详情通过独立卡片进入。
 const aiWorkRoute = computed(() => {
-  if (foregroundPresentation.value) {
-    return {
-      name: 'AiWork',
-      query: {
-        ...workspaceReturnQuery.value,
-        conversation_id: foregroundPresentation.value.conversationId,
-        presentation_id: foregroundPresentation.value.presentationId,
-      },
-    }
-  }
   return {
     name: 'AiWork',
     query: {
       ...workspaceReturnQuery.value,
-      ...(chatStore.activeConversationId
-        ? { conversation_id: chatStore.activeConversationId }
+      ...(chatStore.conversationLinkId
+        ? { conversation_id: chatStore.conversationLinkId }
         : {}),
     },
   }
@@ -91,7 +74,7 @@ function togglePinned(): void {
   isPinned.value = !isPinned.value
 }
 
-// terminal 提示只短暂展示，不能永久停留在业务模式或遮挡 global.chat。
+// 任务结果短暂提示，普通聊天始终保持显示。
 watch(terminalNotice, (notice) => {
   if (noticeTimer) {
     clearTimeout(noticeTimer)
@@ -138,152 +121,100 @@ onBeforeUnmount(() => {
       <section
         id="ai-work-floating-panel"
         role="region"
-        :aria-label="displayMode === 'presentation' ? 'AI 任务进度' : 'AI 助手'"
+        aria-label="AI 助手"
         data-testid="ai-work-floating-panel"
         class="ai-floating-panel flex h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/[0.3333] text-slate-900 dark:border-dark-700 dark:bg-dark-900/[0.3333] dark:text-white"
       >
-        <!-- 前台 presentation：只读展示，隐藏 composer；不覆盖 global.chat -->
-        <template v-if="displayMode === 'presentation' && foregroundPresentation">
-          <header class="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-dark-700">
-            <div class="min-w-0">
-              <p class="text-xs font-black uppercase tracking-[0.14em] text-primary-600 dark:text-primary-300">
-                {{ foregroundPresentation.displayTitle || 'AI 任务' }}
-              </p>
-              <p class="mt-0.5 truncate text-[11px] text-slate-500 dark:text-accent-300">
-                {{ foregroundPresentation.conversationId }} · {{ displayStore.presentationStatusText }}
-              </p>
-            </div>
-            <div class="flex shrink-0 items-center">
-              <button
-                type="button"
-                class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
-                :class="isPinned
-                  ? 'bg-primary-50/[var(--ai-chat-surface-opacity,1)] text-primary-600 dark:bg-primary-500/[min(0.15,var(--ai-chat-surface-opacity,1))] dark:text-primary-300'
-                  : 'text-slate-400 hover:text-slate-700 dark:hover:text-white'"
-                :aria-label="isPinned ? '取消钉住浮动对话' : '钉住浮动对话'"
-                :aria-pressed="isPinned"
-                :title="isPinned ? '取消钉住' : '钉住'"
-                data-testid="ai-work-floating-pin"
-                @click="togglePinned"
-              >
-                <PhPushPin :size="17" :weight="isPinned ? 'fill' : 'regular'" />
-              </button>
-              <button
-                type="button"
-                class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] hover:text-slate-700 dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:hover:text-white"
-                aria-label="收起浮动对话"
-                data-testid="ai-work-floating-close"
-                @click="chatStore.closeFloating()"
-              >
-                ×
-              </button>
-            </div>
-          </header>
-
-          <div
-            class="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3"
-            data-testid="ai-work-presentation-run"
-          >
-            <AiImageBatchProgress
-              :conversation-id="foregroundPresentation.conversationId"
-              :active="!displayStore.foregroundIsTerminal"
-              @change="imageBatch = $event"
-            />
-            <AiMessageList
-              v-if="!imageBatch && displayStore.presentationMessages.length"
-              :messages="displayStore.presentationMessages"
-              :active="!displayStore.foregroundIsTerminal"
-            />
-            <!-- 已有错误（如展示连接中断的降级等待）时不显示“等待首个事件”空状态，避免语义矛盾 -->
-            <p
-              v-else-if="!imageBatch && !presentationError"
-              class="rounded-2xl border border-dashed border-primary-300 bg-primary-50/[min(0.6,var(--ai-chat-surface-opacity,1))] px-6 py-10 text-center text-sm font-bold text-slate-500 dark:border-primary-500/40 dark:bg-primary-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-accent-300"
-              data-testid="ai-work-presentation-empty"
-            >
-              正在准备…
+        <header class="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-dark-700">
+          <div class="min-w-0">
+            <p class="text-xs font-black uppercase tracking-[0.14em] text-primary-600 dark:text-primary-300">
+              AI 助手
             </p>
-            <p
-              v-if="!imageBatch && displayStore.presentationBusy && displayStore.presentationMessages.at(-1)?.role !== 'assistant'"
-              class="text-xs text-slate-400"
-              data-testid="ai-work-presentation-streaming"
-            >
-              正在处理…
-            </p>
-            <p
-              v-if="presentationError"
-              role="alert"
-              class="rounded-xl bg-rose-50/[var(--ai-chat-surface-opacity,1)] p-3 text-sm text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200 dark:ring-rose-500/30"
-              data-testid="ai-work-presentation-error"
-            >
-              {{ presentationError }}
+            <p class="mt-0.5 truncate text-[11px] text-slate-500 dark:text-accent-300">
+              {{ chatStore.restoring ? '正在恢复上次对话…' : chatStore.restoreError ? '上次对话暂时无法读取' : chatStore.activeConversationId || '发送第一条消息后自动创建会话' }}
             </p>
           </div>
-        </template>
+          <div class="flex shrink-0 items-center">
+            <button
+              type="button" class="mr-2 text-xs font-bold text-primary-600 dark:text-primary-300"
+              data-testid="ai-work-new-chat" @click="chatStore.startConversation(); chatStore.input = ''"
+            >
+              新对话
+            </button>
+            <button
+              type="button"
+              class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
+              :class="isPinned
+                ? 'bg-primary-50/[var(--ai-chat-surface-opacity,1)] text-primary-600 dark:bg-primary-500/[min(0.15,var(--ai-chat-surface-opacity,1))] dark:text-primary-300'
+                : 'text-slate-400 hover:text-slate-700 dark:hover:text-white'"
+              :aria-label="isPinned ? '取消钉住浮动对话' : '钉住浮动对话'"
+              :aria-pressed="isPinned"
+              :title="isPinned ? '取消钉住' : '钉住'"
+              data-testid="ai-work-floating-pin"
+              @click="togglePinned"
+            >
+              <PhPushPin :size="17" :weight="isPinned ? 'fill' : 'regular'" />
+            </button>
+            <button
+              type="button"
+              class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] hover:text-slate-700 dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:hover:text-white"
+              aria-label="收起浮动对话"
+              data-testid="ai-work-floating-close"
+              @click="chatStore.closeFloating()"
+            >
+              ×
+            </button>
+          </div>
+        </header>
 
-        <!-- global.chat：现有可输入面板 + 短暂 terminal 提示 -->
-        <template v-else>
-          <header class="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-dark-700">
-            <div class="min-w-0">
-              <p class="text-xs font-black uppercase tracking-[0.14em] text-primary-600 dark:text-primary-300">
-                AI 助手
-              </p>
-              <p class="mt-0.5 truncate text-[11px] text-slate-500 dark:text-accent-300">
-                {{ chatStore.activeConversationId || '发送第一条消息后自动创建会话' }}
-              </p>
-            </div>
-            <div class="flex shrink-0 items-center">
-              <button
-                type="button"
-                class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
-                :class="isPinned
-                  ? 'bg-primary-50/[var(--ai-chat-surface-opacity,1)] text-primary-600 dark:bg-primary-500/[min(0.15,var(--ai-chat-surface-opacity,1))] dark:text-primary-300'
-                  : 'text-slate-400 hover:text-slate-700 dark:hover:text-white'"
-                :aria-label="isPinned ? '取消钉住浮动对话' : '钉住浮动对话'"
-                :aria-pressed="isPinned"
-                :title="isPinned ? '取消钉住' : '钉住'"
-                data-testid="ai-work-floating-pin"
-                @click="togglePinned"
-              >
-                <PhPushPin :size="17" :weight="isPinned ? 'fill' : 'regular'" />
-              </button>
-              <button
-                type="button"
-                class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] hover:text-slate-700 dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:hover:text-white"
-                aria-label="收起浮动对话"
-                data-testid="ai-work-floating-close"
-                @click="chatStore.closeFloating()"
-              >
-                ×
-              </button>
-            </div>
-          </header>
-
+        <aside
+          v-if="foregroundPresentation" aria-label="AI 任务进度"
+          class="shrink-0 border-b border-slate-200 px-4 py-3 text-xs dark:border-dark-700"
+          data-testid="ai-work-task-progress"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <span>{{ foregroundPresentation.displayTitle || 'AI 任务' }} · {{ displayStore.presentationStatusText }}</span>
+            <RouterLink
+              class="shrink-0 font-bold text-primary-600 dark:text-primary-300"
+              data-testid="ai-work-task-details"
+              :to="{ name: 'AiWork', query: { ...workspaceReturnQuery, conversation_id: foregroundPresentation.conversationId, presentation_id: foregroundPresentation.presentationId } }"
+            >
+              查看进度
+            </RouterLink>
+          </div>
           <p
-            v-if="terminalNotice"
-            role="status"
-            class="border-b border-slate-200 px-4 py-2 text-xs font-bold dark:border-dark-700"
-            :class="terminalNotice.kind === 'failure'
-              ? 'bg-rose-50/[var(--ai-chat-surface-opacity,1)] text-rose-700 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200'
-              : 'bg-emerald-50/[var(--ai-chat-surface-opacity,1)] text-emerald-700 dark:bg-emerald-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-emerald-200'"
-            data-testid="ai-work-terminal-notice"
+            v-if="presentationError" role="alert" class="mt-2 text-rose-600 dark:text-rose-300"
+            data-testid="ai-work-presentation-error"
           >
-            {{ terminalNotice.text }}
+            {{ presentationError }}
           </p>
+        </aside>
 
-          <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-            <AiChatPanel
-              :messages="chatStore.messages"
-              :busy="chatStore.isBusy"
-              :error="panelError"
-              :input="chatStore.input"
-              :conversation-id="chatStore.chat?.id ?? ''"
-              :history-version="chatStore.historyVersion"
-              @update:input="chatStore.input = $event"
-              @send="chatStore.sendMessage()"
-              @stop="chatStore.stopStreaming()"
-            />
-          </div>
-        </template>
+        <p
+          v-if="terminalNotice"
+          role="status"
+          class="border-b border-slate-200 px-4 py-2 text-xs font-bold dark:border-dark-700"
+          :class="terminalNotice.kind === 'failure'
+            ? 'bg-rose-50/[var(--ai-chat-surface-opacity,1)] text-rose-700 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200'
+            : 'bg-emerald-50/[var(--ai-chat-surface-opacity,1)] text-emerald-700 dark:bg-emerald-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-emerald-200'"
+          data-testid="ai-work-terminal-notice"
+        >
+          {{ terminalNotice.text }}
+        </p>
+
+        <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          <AiChatPanel
+            :messages="chatStore.messages"
+            :busy="chatStore.isBusy"
+            :error="panelError"
+            :input="chatStore.input"
+            :conversation-id="chatStore.chat?.id ?? ''"
+            :history-version="chatStore.historyVersion"
+            @update:input="chatStore.input = $event"
+            @send="chatStore.sendMessage()"
+            @stop="chatStore.stopStreaming()"
+          />
+        </div>
       </section>
     </div>
 

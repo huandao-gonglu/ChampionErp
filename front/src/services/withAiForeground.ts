@@ -1,5 +1,5 @@
 /**
- * 通用前台 presentation wrapper（docs/aiworkpage.md §4、§6）。
+ * 通用前台任务展示 wrapper。
  *
  * 业务 action 仍 `await` 原业务接口的类型化 Promise；presentation 层只负责
  * 浮窗/AiWork 的只读实时展示：
@@ -10,8 +10,8 @@
  * 4. 展示流（`resumeStream()`）与业务请求**并发**启动，不等待一个完成才开始另一个；
  * 5. 业务 response 是唯一结果事实：SSE 失败不得把成功改写为失败，SSE 正常
  *    也不得把失败改写为成功；
- * 6. 业务终态后有界等待展示流收尾，再 `finishForegroundPresentation()` 恢复
- *    global-chat（其 Chat、messages、input、status、SSE 全程不变）。
+ * 6. 业务终态后有界等待展示流收尾，再 `finishForegroundPresentation()` 释放任务占用；
+ *    普通聊天的 Chat、messages、input、status、SSE 全程不变。
  *
  * 无 Agent 路径（rules-only、提前返回）同样成立：后端 request boundary 在
  * handler 结束时关闭未产生 Agent 的展示流，wrapper 用业务 response 收尾。

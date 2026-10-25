@@ -104,7 +104,7 @@ describe('withAiForeground 通用前台 wrapper', () => {
     expect(result.presentationId).toBe('presentation_w')
   })
 
-  it('业务成功但 SSE 失败：仍返回成功结果并恢复 global-chat', async () => {
+  it('业务成功但 SSE 失败：仍返回成功结果并释放任务占用', async () => {
     const display = useAiWorkDisplayStore()
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: DESCRIPTOR, status: 200 })
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
@@ -117,13 +117,13 @@ describe('withAiForeground 通用前台 wrapper', () => {
     )
 
     expect(result).toEqual({ ok: true })
-    expect(display.displayMode).toBe('global-chat')
+    expect(display.foregroundPresentation).toBeNull()
     expect(display.foregroundOccupied).toBe(false)
     expect(display.terminalNotice?.kind).toBe('success')
     expect(display.terminalNotice?.text).toBe('AI 测试任务完成')
   })
 
-  it('业务失败但 SSE 正常：抛业务错误并恢复 global-chat（不改写为成功）', async () => {
+  it('业务失败但 SSE 正常：抛业务错误并释放任务占用（不改写为成功）', async () => {
     const display = useAiWorkDisplayStore()
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: DESCRIPTOR, status: 200 })
 
@@ -135,7 +135,7 @@ describe('withAiForeground 通用前台 wrapper', () => {
       () => Promise.reject(new Error('业务校验失败')),
     )).rejects.toThrow('业务校验失败')
 
-    expect(display.displayMode).toBe('global-chat')
+    expect(display.foregroundPresentation).toBeNull()
     expect(display.foregroundOccupied).toBe(false)
     expect(display.terminalNotice?.kind).toBe('failure')
     expect(display.terminalNotice?.text).toBe('自定义提示：业务校验失败')
@@ -152,7 +152,7 @@ describe('withAiForeground 通用前台 wrapper', () => {
     expect(operation).not.toHaveBeenCalled()
     expect(display.foregroundOccupied).toBe(false)
     expect(display.foregroundStartPending).toBe(false)
-    expect(display.displayMode).toBe('global-chat')
+    expect(display.foregroundPresentation).toBeNull()
   })
 
   it('已有前台 presentation 时同步拒绝：reserve 与业务请求都不发出', async () => {
@@ -169,24 +169,24 @@ describe('withAiForeground 通用前台 wrapper', () => {
     expect(display.foregroundOccupied).toBe(true)
   })
 
-  it('运行期间前台被接管：业务操作中可观察到 observe Chat，成功后恢复', async () => {
+  it('运行期间保留 observe Chat，成功后释放任务占用', async () => {
     const display = useAiWorkDisplayStore()
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: DESCRIPTOR, status: 200 })
-    let modeDuringOperation = ''
+    let occupiedDuringOperation = false
     let chatIdDuringOperation = ''
 
     await withAiForeground(
       { displayTitle: 'AI 测试任务', successNotice: () => '自定义成功提示' },
       async () => {
-        modeDuringOperation = display.displayMode
+        occupiedDuringOperation = display.foregroundOccupied
         chatIdDuringOperation = display.foregroundPresentation?.chat.id ?? ''
         return null
       },
     )
 
-    expect(modeDuringOperation).toBe('presentation')
+    expect(occupiedDuringOperation).toBe(true)
     expect(chatIdDuringOperation).toBe('presentation_w')
-    expect(display.displayMode).toBe('global-chat')
+    expect(display.foregroundPresentation).toBeNull()
     expect(display.terminalNotice?.kind).toBe('success')
     expect(display.terminalNotice?.text).toBe('自定义成功提示')
     expect(display.presentationVersion).toBe(1)
@@ -202,7 +202,7 @@ describe('withAiForeground 通用前台 wrapper', () => {
     )
 
     expect(result).toEqual({ source: 'rules', warning: '无可填属性' })
-    expect(display.displayMode).toBe('global-chat')
+    expect(display.foregroundPresentation).toBeNull()
     expect(display.foregroundOccupied).toBe(false)
     expect(display.terminalNotice?.kind).toBe('success')
   })

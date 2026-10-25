@@ -137,7 +137,7 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     expect(router.currentRoute.value.query).toEqual({})
   })
 
-  it('连续 /new 同步最新会话地址，离开再进入及发送消息都使用最新 Chat', async () => {
+  it('连续 /new 清除旧历史地址，离开再进入及发送消息都使用最新 Chat', async () => {
     const { wrapper, router, store } = await setupApp('/?tab=drafts')
     const oldId = store.startConversation()
     mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [{
@@ -157,7 +157,7 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     await flushPromises()
     expect(newestId).not.toBe(firstNewId)
     expect(newestId).not.toBe(oldId)
-    expect(router.currentRoute.value.query).toEqual({ conversation_id: newestId, workspace_tab: 'drafts' })
+    expect(router.currentRoute.value.query).toEqual({ workspace_tab: 'drafts' })
     expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newestId)
     expect(store.chat).toBe(newestChat)
     expect(runFetchCount).toBe(0)

@@ -418,7 +418,7 @@ def test_online_batch_reuses_domain_queue_and_platform_batch_adapter():
 
 def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools():
     from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
-    expected = {"online_products_read", "online_products_refresh_status", "online_products_change", "online_products_sync", "online_products_reconcile", "online_products_close", "online_products_retry"}
+    expected = {"online_products_read", "online_products_attributes", "online_products_refresh_status", "online_products_change", "online_products_sync", "online_products_reconcile", "online_products_close", "online_products_retry"}
     assert {name for name in APPLICATION_CAPABILITY_CATALOG.tools if name.startswith("online_")} == expected
     source = (ROOT / "erp_web/runtime_units/online_product_capabilities.py").read_text()
     assert "online_product_service import OnlineProductService" in source
@@ -677,6 +677,16 @@ def test_history_projection_uses_official_model_request_hook() -> None:
     assert "new_message_index" not in source
 
 
+def test_tool_discovery_and_result_projection_keep_generic_boundaries() -> None:
+    factory = (ROOT / "erp_web/services/ai_agent_factory.py").read_text(encoding="utf-8")
+    assert "ToolSearch(strategy=match_tool_queries)" in factory
+    bridge = (ROOT / "erp_web/services/ai_tool_bridge.py").read_text(encoding="utf-8")
+    assert "tool.defer_loading = self.toolset.defer_loading" in bridge
+    for name in ("ai_tool_discovery.py", "ai_tool_result_projection.py"):
+        source = (ROOT / "erp_web/services" / name).read_text(encoding="utf-8")
+        assert not any(value in source for value in ("runtime_units", "facades", "sqlite3", "yandex", "ozon", "exec(", "eval("))
+
+
 def test_internal_draft_operations_do_not_build_page_responses() -> None:
     """内部属性、图片、文案和核价复用 Store 内容入口，页面另行组装。"""
     for relative in (
@@ -916,6 +926,13 @@ def test_external_response_policy_is_pure_and_receives_interface_context():
     assert len(calls) == 1
     assert any(keyword.arg == "interface" and ast.unparse(keyword.value) == "ctx.interface"
                for keyword in calls[0].keywords)
+
+
+def test_external_request_diagnostics_remains_independent_of_runtime_and_sdk():
+    """诊断提取是纯函数，不能成为新的请求、Agent 执行或持久化边界。"""
+    path = ROOT / "erp_web/services/external_request_diagnostics.py"
+    targets = {target.split(".")[0] for _, target in imported_targets([path])}
+    assert targets <= {"__future__", "errno", "re", "socket", "ssl", "pathlib"}
 
 
 def test_external_api_sends_have_one_managed_boundary():

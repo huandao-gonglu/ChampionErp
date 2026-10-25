@@ -6,6 +6,7 @@ import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
+import { AI_CHAT_SELECTION_KEY } from '@/stores/aiChat'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiWorkFloatingButton from '../AiWorkFloatingButton.vue'
 
@@ -77,6 +78,37 @@ function attachPresentation(
 describe('AiWorkFloatingButton', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.fetchUiMessages.mockReset()
+    localStorage.removeItem(AI_CHAT_SELECTION_KEY)
+  })
+
+  it('恢复失败显示重试，成功后继续原会话；只有新对话按钮清空选择', async () => {
+    const id = `conversation_global_chat_${'ab'.repeat(16)}`
+    const saved = new Map([[AI_CHAT_SELECTION_KEY, id]])
+    const get = vi.spyOn(localStorage, 'getItem').mockImplementation(key => saved.get(key) ?? null)
+    const set = vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => { saved.set(key, value) })
+    const remove = vi.spyOn(localStorage, 'removeItem').mockImplementation(key => { saved.delete(key) })
+    mocks.fetchUiMessages.mockRejectedValueOnce(new Error('网络中断')).mockResolvedValue({
+      ok: true, conversation_id: id, history_version: 1,
+      messages: [{ id: 'old', role: 'user', parts: [{ type: 'text', text: '之前的问题' }] }],
+    })
+    try {
+      const { wrapper, store } = await mountFloatingButton()
+      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+      await flushPromises()
+      expect(wrapper.get('[data-testid="ai-chat-restore-error"]').text()).toContain('网络中断')
+      expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="ai-chat-empty"]').exists()).toBe(false)
+      await wrapper.get('[data-testid="ai-chat-restore-error"] button').trigger('click')
+      await flushPromises()
+      expect(store.activeConversationId).toBe(id)
+      expect(wrapper.get('[data-testid="ai-chat-panel"]').text()).toContain('之前的问题')
+      await wrapper.get('[data-testid="ai-work-new-chat"]').trigger('click')
+      expect(store.activeConversationId).not.toBe(id)
+      expect(saved.has(AI_CHAT_SELECTION_KEY)).toBe(false)
+      expect(wrapper.find('[data-testid="ai-chat-empty"]').exists()).toBe(true)
+      store.disconnectEvents()
+    } finally { get.mockRestore(); set.mockRestore(); remove.mockRestore() }
   })
 
   it('拖拽气泡移动位置并阻止本次跳转，下一次普通点击仍能进入 AIWork', async () => {
@@ -190,6 +222,7 @@ describe('AiWorkFloatingButton', () => {
     const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
     const headerButtons = panel.get('header').findAll('button')
     expect(headerButtons.map((button) => button.attributes('data-testid'))).toEqual([
+      'ai-work-new-chat',
       'ai-work-floating-pin',
       'ai-work-floating-close',
     ])
@@ -248,9 +281,10 @@ describe('AiWorkFloatingButton', () => {
     expect(wrapper.find('[role="region"]').exists()).toBe(false)
   })
 
-  it('活动气泡链接携带 conversation query，且不再是新标签页链接', async () => {
+  it('已有消息的气泡链接携带 conversation query，且不再是新标签页链接', async () => {
     const { wrapper, store } = await mountFloatingButton()
     const conversationId = store.startConversation()
+    store.chat!.messages = [{ id: 'user', role: 'user', parts: [{ type: 'text', text: '原问题' }] }]
 
     await wrapper.vm.$nextTick()
     const link = wrapper.get('[data-testid="ai-work-floating-toggle"]')
@@ -263,9 +297,10 @@ describe('AiWorkFloatingButton', () => {
   it('普通点击在当前标签页 SPA 导航，不清空 store 也不停止流', async () => {
     const { wrapper, store, router } = await mountFloatingButton()
     const conversationId = store.startConversation()
+    store.chat!.messages = [{ id: 'user', role: 'user', parts: [{ type: 'text', text: '原问题' }] }]
     store.input = '帮我看看草稿'
     const stopSpy = vi.spyOn(store, 'stopStreaming')
-    const newConversationSpy = vi.spyOn(store, 'newConversation')
+    const newConversationSpy = vi.spyOn(store, 'startConversation')
 
     await wrapper.vm.$nextTick()
     await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
@@ -318,177 +353,54 @@ describe('AiWorkFloatingButton', () => {
     expect(wrapper.find('[data-testid="ai-work-floating"]').exists()).toBe(false)
   })
 
-  describe('前台 presentation 临时接管', () => {
-    it('presentation 期间展示只读运行界面：标题、状态与消息，隐藏 composer', async () => {
-      const { wrapper, display } = await mountFloatingButton()
-      attachPresentation(display, [
-        {
-          id: 'm1',
-          role: 'assistant',
-          parts: [{ type: 'text', text: '正在检索类目：ventilador' }],
-        },
-      ])
-
-      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-
-      const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-      expect(panel.attributes('aria-label')).toBe('AI 任务进度')
-      expect(panel.text()).toContain('AI 匹配类目')
-      expect(panel.text()).toContain('conversation_presentation_x')
-      expect(panel.text()).toContain('处理中')
-      expect(panel.text()).toContain('正在检索类目：ventilador')
-      // presentation 模式不渲染全局聊天面板与输入框。
-      expect(panel.find('[data-testid="ai-chat-panel"]').exists()).toBe(false)
-      expect(panel.find('[data-testid="ai-chat-input"]').exists()).toBe(false)
-    })
-
-    it('presentation 期间气泡 SPA 目标携带 presentation conversation 与 presentation_id', async () => {
-      const { wrapper, display } = await mountFloatingButton()
-      attachPresentation(display)
-
-      await wrapper.vm.$nextTick()
-      const link = wrapper.get('[data-testid="ai-work-floating-toggle"]')
-
-      expect(link.attributes('href')).toBe(
-        '/aiWork?conversation_id=conversation_presentation_x&presentation_id=presentation_x',
-      )
-    })
-
-    it('presentation 接管不覆盖全局聊天：消息、输入与活动 Chat 保持不变', async () => {
+  describe('任务进度与普通聊天独立', () => {
+    it('任务开始、结束均保留同一个聊天面板和输入，任务详情有独立入口', async () => {
       const { wrapper, store, display } = await mountFloatingButton()
-      const conversationId = store.startConversation()
-      store.input = '帮我看看草稿'
-
-      attachPresentation(display)
+      const id = store.startConversation()
+      store.chat!.messages = [{ id: 'user', role: 'user', parts: [{ type: 'text', text: '原问题' }] }]
+      store.input = '继续原来的问题'
       await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+      const panel = wrapper.findComponent(AiChatPanel).element
+      attachPresentation(display)
       await wrapper.vm.$nextTick()
-
-      expect(store.input).toBe('帮我看看草稿')
-      expect(store.activeConversationId).toBe(conversationId)
-      expect(store.chat?.id).toBe(conversationId)
-
+      expect(wrapper.findComponent(AiChatPanel).element === panel).toBe(true)
+      expect(wrapper.get('[data-testid="ai-chat-input"]').element).toHaveProperty('value', '继续原来的问题')
+      expect(wrapper.get('[data-testid="ai-work-task-progress"]').text()).toContain('AI 匹配类目')
+      expect(wrapper.get('[data-testid="ai-work-floating-toggle"]').attributes('href')).toBe(`/aiWork?conversation_id=${id}`)
+      expect(wrapper.get('[data-testid="ai-work-task-details"]').attributes('href'))
+        .toBe('/aiWork?conversation_id=conversation_presentation_x&presentation_id=presentation_x')
       display.finishForegroundPresentation({ kind: 'success', text: '类目匹配完成' })
       await wrapper.vm.$nextTick()
-
-      // 恢复后 global.chat 面板与输入原样出现。
-      const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-      expect(panel.attributes('aria-label')).toBe('AI 助手')
-      expect(panel.find('[data-testid="ai-chat-panel"]').exists()).toBe(true)
-      expect(panel.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
-      expect(store.input).toBe('帮我看看草稿')
+      expect(wrapper.findComponent(AiChatPanel).element === panel).toBe(true)
+      expect(wrapper.find('[data-testid="ai-work-task-progress"]').exists()).toBe(false)
+      expect(wrapper.get('[data-testid="ai-work-terminal-notice"]').text()).toBe('类目匹配完成')
+      expect(store.activeConversationId).toBe(id)
+      expect(store.input).toBe('继续原来的问题')
     })
 
-    it('terminal 后浮窗恢复 global-chat 并短暂展示结果提示', async () => {
+    it('任务流中断只在进度卡提示，不隐藏聊天输入框', async () => {
       const { wrapper, display } = await mountFloatingButton()
       attachPresentation(display)
+      display.setForegroundError(new Error('实时展示连接中断，正在等待业务结果…'))
+      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+      expect(wrapper.get('[data-testid="ai-work-presentation-error"]').text()).toContain('实时展示连接中断')
+      expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
+      expect(wrapper.get('[data-testid="ai-work-floating-toggle"]').attributes('href')).toBe('/aiWork')
+    })
 
+    it.each(['success', 'failure'] as const)('任务 %s 结果提示自动清除', async (kind) => {
+      const { wrapper, display } = await mountFloatingButton()
+      attachPresentation(display)
       await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
       vi.useFakeTimers()
       try {
-        display.finishForegroundPresentation({ kind: 'success', text: '类目匹配完成' })
+        display.finishForegroundPresentation({ kind, text: '任务结果' })
         await wrapper.vm.$nextTick()
-
-        const notice = wrapper.get('[data-testid="ai-work-terminal-notice"]')
-        expect(notice.text()).toBe('类目匹配完成')
-        expect(display.displayMode).toBe('global-chat')
-
-        // 提示会自动清除，不永久遮挡 global.chat。
+        expect(wrapper.get('[data-testid="ai-work-terminal-notice"]').text()).toBe('任务结果')
         vi.advanceTimersByTime(4500)
         await wrapper.vm.$nextTick()
         expect(display.terminalNotice).toBeNull()
-      } finally {
-        vi.useRealTimers()
-      }
-    })
-
-    it('失败提示同样短暂展示后恢复 global-chat', async () => {
-      const { wrapper, display } = await mountFloatingButton()
-      attachPresentation(display)
-
-      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-      display.setForegroundError(new Error('AI Agent 运行失败。'))
-      display.finishForegroundPresentation({ kind: 'failure', text: 'AI Agent 运行失败。' })
-      await wrapper.vm.$nextTick()
-
-      const notice = wrapper.get('[data-testid="ai-work-terminal-notice"]')
-      expect(notice.text()).toBe('AI Agent 运行失败。')
-      expect(display.foregroundPresentation).toBeNull()
-    })
-  })
-
-  describe('展示连接中断的降级等待', () => {
-    const DISPLAY_FAILURE_MESSAGE = '实时展示连接中断，正在等待业务结果…（Failed to fetch）'
-
-    it('流中断后气泡保持 presentation 接管：显示中断提示、不提前恢复 global-chat', async () => {
-      const { wrapper, store, display } = await mountFloatingButton()
-      const conversationId = store.startConversation()
-      store.input = '帮我看看草稿'
-      attachPresentation(display, [
-        {
-          id: 'm1',
-          role: 'assistant',
-          parts: [{ type: 'text', text: '正在检索类目：ventilador' }],
-        },
-      ])
-
-      // wrapper 在展示失败时写入降级错误并保持前台占用（业务结果仍在等待）。
-      display.setForegroundError(new Error(DISPLAY_FAILURE_MESSAGE))
-
-      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-
-      const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-      expect(panel.attributes('aria-label')).toBe('AI 任务进度')
-      expect(wrapper.get('[data-testid="ai-work-presentation-error"]').text())
-        .toContain('实时展示连接中断，正在等待业务结果…')
-      // 已接收的消息继续展示；global-chat 与终态提示都不提前出现。
-      expect(panel.text()).toContain('正在检索类目：ventilador')
-      expect(panel.find('[data-testid="ai-chat-panel"]').exists()).toBe(false)
-      expect(wrapper.find('[data-testid="ai-work-terminal-notice"]').exists()).toBe(false)
-      expect(display.displayMode).toBe('presentation')
-      // 全局聊天状态原样保留。
-      expect(store.input).toBe('帮我看看草稿')
-      expect(store.activeConversationId).toBe(conversationId)
-      // 气泡入口仍指向当前 presentation。
-      expect(wrapper.get('[data-testid="ai-work-floating-toggle"]').attributes('href'))
-        .toBe('/aiWork?conversation_id=conversation_presentation_x&presentation_id=presentation_x')
-    })
-
-    it('首个事件前流中断：只显示中断提示，不显示误导性的“等待首个事件”空状态', async () => {
-      const { wrapper, display } = await mountFloatingButton()
-      attachPresentation(display)
-      display.setForegroundError(new Error(DISPLAY_FAILURE_MESSAGE))
-
-      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-
-      expect(wrapper.find('[data-testid="ai-work-presentation-empty"]').exists()).toBe(false)
-      expect(wrapper.get('[data-testid="ai-work-presentation-error"]').text())
-        .toContain('实时展示连接中断')
-    })
-
-    it('降级等待拿到业务结果后恢复 global-chat 并短暂展示成功提示', async () => {
-      const { wrapper, display } = await mountFloatingButton()
-      attachPresentation(display)
-      display.setForegroundError(new Error(DISPLAY_FAILURE_MESSAGE))
-
-      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-      vi.useFakeTimers()
-      try {
-        // 业务 response 返回成功：wrapper 收尾并恢复全局聊天。
-        display.finishForegroundPresentation({ kind: 'success', text: '类目匹配完成' })
-        await wrapper.vm.$nextTick()
-
-        const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-        expect(panel.attributes('aria-label')).toBe('AI 助手')
-        expect(panel.find('[data-testid="ai-chat-panel"]').exists()).toBe(true)
-        expect(wrapper.get('[data-testid="ai-work-terminal-notice"]').text())
-          .toBe('类目匹配完成')
-
-        vi.advanceTimersByTime(4500)
-        await wrapper.vm.$nextTick()
-        expect(display.terminalNotice).toBeNull()
-      } finally {
-        vi.useRealTimers()
-      }
+      } finally { vi.useRealTimers() }
     })
   })
 })

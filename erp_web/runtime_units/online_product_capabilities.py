@@ -11,10 +11,9 @@ from erp_web.schemas.online_product_capabilities import (
     OnlineJobRequest, OnlineJobResult, OnlineReadRequest, OnlineReadResult, OnlineSyncRequest,
     OnlineSubmissionResult,
 )
-from erp_web.schemas.online_products import ChangeRequest, CloseOnlineOperationRequest, OnlineChange, OnlineListing, RefreshStatusRequest, digest
+from erp_web.schemas.online_products import ChangeRequest, CloseOnlineOperationRequest, OnlineAttributeQuery, OnlineAttributeResponse, OnlineChange, RefreshStatusRequest, digest
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.online_product_changes import validate_changes
 from erp_web.services.online_product_service import OnlineProductService
 from erp_web.services.tool_approval import verify_execution_approval
 from erp_web.stores.online_product_store import OnlineConflict
@@ -69,10 +68,7 @@ def _submission(response: dict[str, Any]) -> OnlineSubmissionResult:
 
 
 def _change_snapshot(request: OnlineChange, scope: OnlineProductCapabilityScope) -> ToolApprovalSnapshot:
-    listing = OnlineListing.model_validate(_call(scope.service().detail, request.listing_id)["item"])
-    if request.version != listing.version:
-        raise BusinessCapabilityError("ONLINE_CONFLICT", "商品快照已更新，请重新读取目标。")
-    _call(validate_changes, listing, ChangeRequest(**request.model_dump(), idempotency_key="approval-preview"))
+    listing = _call(scope.service().validate_change, ChangeRequest(**request.model_dump(), idempotency_key="approval-preview"))
     ranges = listing.prices if request.operation == "price" else listing.stocks if request.operation == "stock" else []
     scope_label = next((row.label for row in ranges if row.id == request.scope_id), "")
     summary = (f"修改线上商品：{listing.platform} · {listing.title}（{listing.remote_id}）；"
@@ -128,6 +124,7 @@ def _close_snapshot(request: CloseOnlineOperationRequest, scope: OnlineProductCa
                  "fields 可按页读取任意公开业务字段或对象点路径，如 ['buyer_links', 'content.attributes']、['prices', 'stocks']。"
                  "指定 fields 后从 records 读取字段记录，item/items 不重复返回数据；身份、版本、同步与详情状态固定保留，所选值在 values[字段路径]，缺失路径在 missing_fields。"
                  "不传 fields 的列表仍为摘要，单件仍为完整详情；平台原始 snapshot 和历史任务不开放。"
+                 "读取当前刊登实际类目、可编辑属性及候选值使用 online_products_attributes，不按标题搜索或猜测类目。"
                  "数组整体读取，保留币种、仓库、属性名和单位；不支持数组下标、通配符或过滤表达式。"
                  "按编号查 SKU 时，用当前 group_id、view=listings、fields=['buyer_links', 'content.attributes'] 分页取数，在 Python 中匹配并只返回命中与覆盖摘要，无需逐件详情。"
                  "批量查找、条件筛选、排序、关联和统计都在 run_code 中完成，按 next_page 完整读取；不要把整页数据打印回模型。"
@@ -146,6 +143,21 @@ def online_products_read(request: OnlineReadRequest, scope: Annotated[OnlineProd
     if request.id and request.include_source_images:
         result["source_images"] = _call(service.source_images, request.id)
     return OnlineReadResult.model_validate(result)
+
+
+@ai_tool(
+    name="online_products_attributes",
+    description=("读取 Yandex 线上商品实际类目的可编辑属性、缺失必填定义、当前值和候选值。"
+                 "先用 online_products_read 取得 listing_id 和 version；类目由服务端从该刊登快照解析，不接受猜测的 category_id。"
+                 "不传 attribute_id 时 page 返回属性定义；传入返回的属性 ID 时查询候选值，可用 query 搜索。"
+                 "按 page.has_more 和 page.next_cursor 分页，保持 listing_id、version、attribute_id、query 不变。"
+                 "page.category_id 是实际类目；不要根据商品标题另选类目，也不要把平台缺失字段提示当作可直接写入的属性 ID。"
+                 "current_values 是当前页属性的已填值；缺失值须依据商品事实和平台候选核实，不能猜造鞋码或尺码表。"
+                 "修改仍通过 online_products_change 的 content.attributes 提交，同一属性提交完整目标值集合。"),
+    permission="online_product.read", side_effect="none", recovery_policy="retry_safe",
+)
+def online_products_attributes(request: OnlineAttributeQuery, scope: Annotated[OnlineProductCapabilityScope, Injected()]) -> OnlineAttributeResponse:
+    return OnlineAttributeResponse.model_validate(_call(scope.service().attribute_options, request))
 
 
 @ai_tool(
@@ -169,6 +181,7 @@ def online_products_refresh_status(request: RefreshStatusRequest, scope: Annotat
                  "同一入口支持库存、价格、内容、停售/恢复及 Yandex 归档/恢复归档。"
                  "停售使用 sale_state；归档使用 operation=archive、scope_id=business、changes={archived:true}，恢复为 false。"
                  "归档影响商家账号全部店铺，保留原库存与停售设置；恢复归档不保证立即可售。用户明确要求归档时不要用库存清零或停售代替。"
+                 "Yandex DISABLED_AUTOMATICALLY 表示平台自动下架；先核实并修正 platform_issues，sale_state=active 只解除商家主动停售，不能绕过平台审核或保证重新上架。"
                  "accepted=true 表示请求已持久化入队，AI 对该项的提交职责已完成，不代表平台已接收或生效。"
                  "批量修改应继续提交剩余目标，最后汇总已提交与提交失败数量即可结束，不等待或主动回读远端结果。"
                  "远端结果由后台和操作记录跟踪；除非用户另行要求查询，否则不要调用 reconcile 或轮询库存。"
@@ -236,7 +249,7 @@ def online_products_retry(request: OnlineJobRequest, scope: Annotated[OnlineProd
 
 
 ONLINE_PRODUCT_AI_CAPABILITIES = (
-    online_products_read, online_products_refresh_status, online_products_change, online_products_sync, online_products_reconcile, online_products_close, online_products_retry,
+    online_products_read, online_products_attributes, online_products_refresh_status, online_products_change, online_products_sync, online_products_reconcile, online_products_close, online_products_retry,
 )
 
 __all__ = ["ONLINE_PRODUCT_JOB_TYPE", "ONLINE_PRODUCT_AI_CAPABILITIES", "OnlineProductCapabilityScope"]

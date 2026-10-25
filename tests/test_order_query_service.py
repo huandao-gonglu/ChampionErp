@@ -1,6 +1,7 @@
 """按业务货号检索订单：冻结证据、覆盖范围、账号隔离与原生工具入口。"""
 
 import asyncio
+from tests.ai_code_mode_helpers import discovering_tools
 from contextlib import contextmanager
 import json
 from types import SimpleNamespace
@@ -206,8 +207,9 @@ def test_main_agent_queries_articles_through_native_toolset(query_domain, tmp_pa
     app._order_procurement = service.procurement
     app._order_notifications = service.notifications
     outputs = []
+    @discovering_tools('platform_orders_query')
     async def model(messages, info):
-        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
+        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if returned:
             outputs.extend(part.content for part in returned)
             yield "本地快照匹配完成"

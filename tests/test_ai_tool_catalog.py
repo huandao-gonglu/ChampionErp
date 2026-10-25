@@ -322,6 +322,9 @@ def test_catalog_binds_scope_and_exact_type_adapters() -> None:
     )
     binding = toolset.get("test_catalog_lookup")
     assert binding is not None
+    assert binding.arguments_validator is not None
+    with pytest.raises(AiToolSchemaError, match="optional_note.*blocked"):
+        binding.arguments_validator({"nested": {"keyword": "fan"}, "optional_note": "blocked"})
     output = binding.executor(
         {"nested": {"keyword": "fan"}, "optional_note": None},
         execution_context(),

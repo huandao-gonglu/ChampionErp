@@ -1,6 +1,7 @@
 """订单工具复用真实领域服务，以替身验证审批、账号隔离和采购防重。"""
 
 import asyncio
+from tests.ai_code_mode_helpers import discovering_tools
 from copy import deepcopy
 import json
 from types import SimpleNamespace
@@ -323,9 +324,10 @@ def test_native_main_agent_reads_current_order_through_real_toolset(setup_purcha
     app._order_procurement = purchase.procurement
     instructions = []
     outputs = []
+    @discovering_tools('order_detail_read')
     async def model(messages, info):
         instructions.append(info.instructions)
-        outputs.extend(part.content for message in messages for part in message.parts if isinstance(part, ToolReturnPart))
+        outputs.extend(part.content for message in messages for part in message.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools")
         if len(instructions) == 1:
             if entry == 'direct':
                 yield {0: DeltaToolCall(name='order_detail_read', tool_call_id='read-order', json_args=json.dumps({'order_id': order.identity}))}
@@ -354,9 +356,10 @@ def test_native_approval_creates_only_after_decision(setup_purchase, tmp_path, m
     monkeypatch.setattr(alibaba_self_purchase_facade, 'create_service', lambda context: purchase)
     monkeypatch.setattr(alibaba_self_purchase_facade, 'sync_purchases', lambda *args, **kwargs: None)
     requests, outputs = [], []
+    @discovering_tools('order_alibaba_create')
     async def model(messages, info):
         requests.append(1)
-        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
+        returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if returned:
             outputs.extend(part.content for part in returned)
             yield '采购处理结果已返回'

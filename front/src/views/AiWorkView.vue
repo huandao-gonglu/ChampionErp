@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import type { UIMessage } from 'ai'
 import {
@@ -44,6 +44,7 @@ const imageBatch = ref<ImageBatchSnapshot | null>(null)
 let listRequestGeneration = 0
 let detailRequestGeneration = 0
 let uiMessagesRequestGeneration = 0
+let disposed = false
 
 const requestedConversationId = computed(() => {
   const value = route.query.conversation_id
@@ -307,6 +308,8 @@ async function selectConversation(conversationId: string): Promise<void> {
   if (!conversationId) return
   const selection = loadSelection(conversationId)
   const query: LocationQueryRaw = { ...route.query, conversation_id: conversationId }
+  // 空白对话尚无服务端历史，不生成刷新后必然 404 的链接。
+  if (chatStore.chat?.id === conversationId && !chatStore.conversationLinkId) delete query.conversation_id
   if (foregroundPresentation.value?.conversationId !== conversationId) delete query.presentation_id
   await router.replace({ query })
   await selection
@@ -335,7 +338,6 @@ async function refreshConversations(): Promise<void> {
     if (selectedId.value) nextId = selectedId.value
     else if (requestedId) nextId = requestedId
     else if (activeId && chatStore.chat) nextId = activeId
-    else nextId = nextConversations[0]?.conversation_id || ''
 
     if (!nextId) {
       detailRequestGeneration += 1
@@ -363,6 +365,7 @@ watch(() => chatStore.historyVersion, () => {
 // /new 先替换共享 Chat，再同步页面选择；同步执行使旧请求来不及重新激活旧会话。
 // 普通历史读取会先选中再打开 Chat，因此不会重复加载或抢占业务任务展示。
 watch(() => chatStore.chat?.id, (conversationId) => {
+  if (chatStore.restoring) return
   if (conversationId && conversationId !== selectedId.value) {
     void selectConversation(conversationId)
   }
@@ -382,8 +385,16 @@ watch(requestedSelectionId, (nextValue) => {
   }
 })
 
-onMounted(() => {
-  void refreshConversations()
+onMounted(async () => {
+  // 明确选择的历史由页面读取；默认入口与气泡共用同一恢复流程。
+  if (!requestedSelectionId.value) await chatStore.restoreConversation()
+  if (!disposed) void refreshConversations()
+})
+onBeforeUnmount(() => {
+  disposed = true
+  listRequestGeneration++
+  detailRequestGeneration++
+  uiMessagesRequestGeneration++
 })
 </script>
 
@@ -407,6 +418,12 @@ onMounted(() => {
           </div>
           <h1 class="mt-2 text-2xl font-black tracking-tight">AI 对话</h1>
         </div>
+        <button
+          type="button" class="btn btn-outline ml-auto" data-testid="ai-work-new-chat"
+          @click="chatStore.startConversation(); chatStore.input = ''"
+        >
+          新对话
+        </button>
         <button
           type="button"
           class="btn btn-outline min-w-24"
@@ -486,13 +503,12 @@ onMounted(() => {
       </aside>
 
       <section class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-900">
-        <div v-if="!selectedId" class="flex min-h-[560px] items-center justify-center p-8 text-center">
-          <div>
-            <p class="text-base font-black">请选择一段对话</p>
-            <p class="mt-2 text-sm text-slate-500 dark:text-accent-300">
-              或在浮动对话中发送消息，开始新的对话。
-            </p>
-          </div>
+        <div v-if="!selectedId" class="h-[calc(100vh-240px)] min-h-[560px] p-5">
+          <AiChatPanel
+            :messages="chatStore.messages" :busy="chatStore.isBusy" :error="liveErrorText" :input="chatStore.input"
+            :conversation-id="chatStore.chat?.id ?? ''" :history-version="chatStore.historyVersion"
+            @update:input="chatStore.input = $event" @send="chatStore.sendMessage()" @stop="chatStore.stopStreaming()"
+          />
         </div>
 
         <template v-else>

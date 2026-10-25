@@ -1,6 +1,7 @@
 """买家聊天 AI 接入：真实领域服务配合网络替身，不向真实买家发送。"""
 
 import asyncio
+from tests.ai_code_mode_helpers import discovering_tools
 import json
 
 import pytest
@@ -149,8 +150,9 @@ def test_native_agent_reads_buyer_messages_with_real_binding(domain, monkeypatch
     monkeypatch.setattr(order_chat_facade, "create_service", lambda context: domain.service)
     domain.request.side_effect = [result(chats=[chat()]), result(context=CONTEXT, messages=[message(1)])]
     outputs = []
+    @discovering_tools('order_buyer_chat_read')
     async def model(messages, info):
-        returned = [part for msg in messages for part in msg.parts if isinstance(part, ToolReturnPart)]
+        returned = [part for msg in messages for part in msg.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if returned:
             outputs.extend(part.content for part in returned)
             yield "买家消息已读取"
@@ -171,8 +173,9 @@ def test_native_approval_sends_only_after_decision(domain, monkeypatch, tmp_path
     monkeypatch.setattr(order_chat_facade, "create_service", lambda context: domain.service)
     domain.request.side_effect = [result(chatId=17), {"status": "OK"}]
     request, outputs = payload(domain, "请确认 EE010 规格。"), []
+    @discovering_tools('order_buyer_chat_send')
     async def model(messages, info):
-        returned = [part for msg in messages for part in msg.parts if isinstance(part, ToolReturnPart)]
+        returned = [part for msg in messages for part in msg.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if returned:
             outputs.extend(part.content for part in returned)
             yield "已处理本次沟通请求"
@@ -199,9 +202,10 @@ def test_native_unknown_receipt_blocks_new_call_id_replay(domain, monkeypatch, t
     monkeypatch.setattr(order_chat_facade, "create_service", lambda context: domain.service)
     domain.request.side_effect = [result(chatId=17), TimeoutError("响应超时")]
     request, outputs, runs = payload(domain), [], []
+    @discovering_tools('order_buyer_chat_send')
     async def model(messages, info):
         runs.append(1)
-        returned = [part for msg in messages for part in msg.parts if isinstance(part, ToolReturnPart)]
+        returned = [part for msg in messages for part in msg.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if len(runs) <= 2:
             yield {0: DeltaToolCall(name="order_buyer_chat_send", tool_call_id=f"send-{len(runs)}", json_args=request.model_dump_json())}
         else:

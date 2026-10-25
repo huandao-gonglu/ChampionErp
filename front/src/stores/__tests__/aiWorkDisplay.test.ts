@@ -23,18 +23,17 @@ describe('aiWorkDisplay store', () => {
     setActivePinia(createPinia())
   })
 
-  it('默认展示 global-chat，没有前台 presentation', () => {
+  it('默认没有前台任务', () => {
     const store = useAiWorkDisplayStore()
-    expect(store.displayMode).toBe('global-chat')
-    expect(store.hasForegroundPresentation).toBe(false)
+    expect(store.foregroundPresentation).toBeNull()
     expect(store.presentationMessages).toEqual([])
   })
 
-  it('attach 后进入 presentation 展示模式并携带展示描述', () => {
+  it('attach 后保存任务展示描述', () => {
     const store = useAiWorkDisplayStore()
     store.attachForegroundPresentation(descriptor(), fakeChat())
 
-    expect(store.displayMode).toBe('presentation')
+    expect(store.foregroundPresentation).not.toBeNull()
     expect(store.foregroundPresentation?.presentationId).toBe('presentation_x')
     expect(store.foregroundPresentation?.displayTitle).toBe('AI 匹配类目')
     expect(store.presentationStatusText).toBe('准备中')
@@ -57,7 +56,7 @@ describe('aiWorkDisplay store', () => {
     expect(store.foregroundOccupied).toBe(true)
     // 尚未 attach（reserve POST 进行中）：第二次同步触发即被拒绝。
     expect(() => store.beginForegroundStart()).toThrow('已有 AI 任务正在处理')
-    expect(store.hasForegroundPresentation).toBe(false)
+    expect(store.foregroundPresentation).toBeNull()
 
     // attach 后 pending 转为真实 presentation 占用。
     store.attachForegroundPresentation(descriptor(), fakeChat())
@@ -100,13 +99,12 @@ describe('aiWorkDisplay store', () => {
     expect(store.foregroundPresentation?.error?.message).toBe('AI_AGENT_RUN_FAILED')
   })
 
-  it('finish 恢复 global-chat，保留短暂提示并递增版本', () => {
+  it('finish 释放任务占用，保留短暂提示并递增版本', () => {
     const store = useAiWorkDisplayStore()
     store.attachForegroundPresentation(descriptor(), fakeChat())
 
     store.finishForegroundPresentation({ kind: 'success', text: '类目匹配完成' })
 
-    expect(store.displayMode).toBe('global-chat')
     expect(store.foregroundPresentation).toBeNull()
     expect(store.terminalNotice?.text).toBe('类目匹配完成')
     expect(store.presentationVersion).toBe(1)

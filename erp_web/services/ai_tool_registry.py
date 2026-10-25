@@ -72,6 +72,8 @@ class AiToolSet:
 
     toolset_id: str
     bindings: Mapping[str, AiToolBinding]
+    # 大型能力目录交由 Pydantic AI 原生 Tool Search 按需发现；小型 focused 集合直接提供。
+    defer_loading: bool = False
 
     def __post_init__(self) -> None:
         if not self.toolset_id:

@@ -15,7 +15,7 @@ from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.product_write_capabilities import DraftSkuSelectionUpdateRequest
 from tests.test_erp_db import sample_product
-from tests.ai_code_mode_helpers import python_call, business_returns, available_python_functions
+from tests.ai_code_mode_helpers import python_call, business_returns, available_python_functions, discovering_tools
 from tests.test_native_agent_integration import service, body, CONVERSATION
 
 
@@ -57,6 +57,7 @@ def test_native_agent_copies_five_drafts_then_selects_one_sku_each(tmp_path):
     toolset = build_global_chat_toolset(app)
     copied_ids = []
 
+    @discovering_tools("draft_duplicate", "draft_sku_selection_update")
     async def model(messages, info):
         returns = business_returns(messages)
         copies = [p for p in returns if p.tool_name == "draft_duplicate"]

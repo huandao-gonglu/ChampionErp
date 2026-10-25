@@ -34,6 +34,7 @@ class DirectAndPythonCodeMode(CodeMode[AiAgentDependencies]):
         return DirectAndPythonToolset(
             wrapped=toolset, tool_selector=self.tools, max_retries=self.max_retries,
             max_tool_calls=self.max_tool_calls, resource_limits=self.resource_limits, capability=self,
+            dynamic_catalog=self.dynamic_catalog,
         )
 
 
@@ -74,6 +75,7 @@ def build_python_capabilities(
 ) -> list[AbstractCapability[AiAgentDependencies]]:
     """保留所有直接工具；同步且无需审批的工具另外可在 Python 中调用。"""
     code_mode = DirectAndPythonCodeMode(
+        dynamic_catalog=toolset.defer_loading,
         tools=[
             definition.name
             for definition in toolset.definitions

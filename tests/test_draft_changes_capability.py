@@ -16,7 +16,7 @@ from erp_web.runtime_units.draft_changes_capability import apply_draft_changes
 from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.draft_changes import DraftChangesApplyRequest
 from erp_web.services.capability_errors import BusinessCapabilityError
-from tests.ai_code_mode_helpers import business_returns
+from tests.ai_code_mode_helpers import discovering_tools, business_returns
 from tests.test_draft_edit_capabilities import execution
 from tests.test_main_chat_attributes import subject, enum
 from tests.test_native_agent_integration import service, body, CONVERSATION
@@ -159,6 +159,7 @@ def test_invalid_shapes_are_rejected_before_executor(subject, changes):
 
 def test_native_python_group_returns_actual_receipt(subject, tmp_path):
     app, draft_id, _ = subject
+    @discovering_tools('draft_attributes_read', 'draft_changes_apply')
     async def model(messages, info):
         if not business_returns(messages):
             code = f'''data = await draft_attributes_read(draft_id={draft_id!r}, platform="ozon", site="global", scope="sku")

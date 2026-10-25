@@ -12,6 +12,7 @@ import type { AiWorkUiMessagesResponse, PendingToolCall } from '@/types/aiWork'
 import { useAiPageContextStore } from './aiPageContext'
 
 export const AI_CHAT_TURN_ALREADY_ACCEPTED = 'AI_CHAT_TURN_ALREADY_ACCEPTED'
+export const AI_CHAT_SELECTION_KEY = 'ai-chat-selected-conversation'
 export interface AiChatError extends Error { code?: string; status?: number }
 export function createChatConversationId(): string {
   return GLOBAL_CHAT_CONVERSATION_PREFIX + crypto.randomUUID().replace(/-/g, '')
@@ -23,6 +24,10 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const chat = shallowRef<Chat<UIMessage> | null>(null)
   const input = ref('')
   const floatingOpen = ref(false)
+  const restoring = ref(false)
+  const restoreError = ref('')
+  let restored = false
+  let restorePromise: Promise<void> | undefined
   const historyVersion = ref(0)
   const stopping = ref(false)
   const forking = ref(false)
@@ -40,6 +45,9 @@ export const useAiChatStore = defineStore('aiChat', () => {
   let stopRequestVersion = 0
   const pendingInputIds = new Set<string>()
   const status = computed(() => chat.value?.status ?? 'ready')
+  const conversationLinkId = computed(() => (
+    historyVersion.value > 0 || chat.value?.messages.length ? activeConversationId.value : null
+  ))
   const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
   const isRunning = computed(() => isBusy.value || runActive.value)
   const messages = computed<UIMessage[]>(() => {
@@ -52,8 +60,50 @@ export const useAiChatStore = defineStore('aiChat', () => {
     return result
   })
   const error = computed(() => localError.value ?? chat.value?.error as AiChatError | undefined)
-  const canSend = computed(() => Boolean(input.value.trim()) && !stopping.value && !forking.value)
+  const canSend = computed(() => Boolean(input.value.trim()) && !stopping.value && !forking.value && !restoring.value && !restoreError.value)
   const canStop = computed(() => isBusy.value || runActive.value || pendingToolCalls.value.length > 0 || stopping.value)
+
+  // 只记住选择，不复制消息；消息与活动运行始终从服务端恢复。
+  function rememberConversation(id: string | null): void {
+    try {
+      if (id) localStorage.setItem(AI_CHAT_SELECTION_KEY, id)
+      else localStorage.removeItem(AI_CHAT_SELECTION_KEY)
+    } catch { /* 存储不可用时仍允许当前标签页继续对话。 */ }
+  }
+  function finishRestore(): void {
+    restored = true
+    restoring.value = false
+    restoreError.value = ''
+  }
+  function restoreConversation(): Promise<void> {
+    if (restored || chat.value) return Promise.resolve()
+    if (restoring.value && restorePromise) return restorePromise
+    let id: string | null = null
+    try { id = localStorage.getItem(AI_CHAT_SELECTION_KEY) } catch { /* 无可恢复选择。 */ }
+    if (!id?.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)) {
+      finishRestore()
+      return Promise.resolve()
+    }
+    const requestGeneration = ++generation
+    restoring.value = true
+    restoreError.value = ''
+    restorePromise = (async () => {
+      try {
+        const detail = await fetchUiMessages(id)
+        if (requestGeneration !== generation) return
+        if (!detail?.ok || detail.conversation_id !== id || !Array.isArray(detail.messages)) {
+          throw new Error('返回的对话记录不完整或与上次选择不一致')
+        }
+        openConversation(detail)
+      } catch (cause) {
+        if (requestGeneration !== generation) return
+        restoreError.value = `恢复上次对话失败：${cause instanceof Error ? cause.message : String(cause)}`
+      } finally {
+        if (requestGeneration === generation) restoring.value = false
+      }
+    })()
+    return restorePromise
+  }
 
   function disconnectEvents(): void {
     eventSource?.close()
@@ -166,13 +216,15 @@ export const useAiChatStore = defineStore('aiChat', () => {
     return instance
   }
   function startConversation(): string {
+    finishRestore()
+    // 未发送的空白对话不在服务端存在；刷新后继续保持空白，不恢复上一段。
+    rememberConversation(null)
     localTurnStartedAt.value = ''
     disconnectEvents()
     generation++
     stopRequestVersion++
     const id = createChatConversationId()
     activeConversationId.value = id
-    chat.value = createChat(id, [])
     historyVersion.value = 0
     pendingToolCalls.value = []
     receivedMessages.value = []
@@ -182,23 +234,9 @@ export const useAiChatStore = defineStore('aiChat', () => {
     stopping.value = false
     runActive.value = false
     latestMessageId.value = null
+    chat.value = createChat(id, [])
     connectEvents(id)
     return id
-  }
-  function newConversation(): void {
-    localTurnStartedAt.value = ''
-    disconnectEvents()
-    generation++
-    stopRequestVersion++
-    activeConversationId.value = null
-    chat.value = null
-    input.value = ''
-    pendingToolCalls.value = []
-    receivedMessages.value = []
-    receivedNotice.value = ''
-    stopping.value = false
-    runActive.value = false
-    latestMessageId.value = null
   }
   async function queueText(text: string): Promise<void> {
     const id = activeConversationId.value
@@ -233,6 +271,8 @@ export const useAiChatStore = defineStore('aiChat', () => {
   }
   function sendMessage(): void {
     if (stopping.value || forking.value) return
+    if (!restored && !chat.value) void restoreConversation()
+    if (restoring.value || restoreError.value) return
     const text = input.value.trim()
     if (!text) return
     const command = matchChatCommand(text)
@@ -241,6 +281,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
       return
     }
     if (!chat.value) startConversation()
+    rememberConversation(activeConversationId.value)
     input.value = ''
     localError.value = undefined
     if (isBusy.value || runActive.value || pendingToolCalls.value.length) {
@@ -282,6 +323,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     await chat.value?.sendMessage()
   }
   function openConversation(detail: AiWorkUiMessagesResponse): void {
+    rememberConversation(detail.conversation_id)
     localTurnStartedAt.value = ''
     const id = detail.conversation_id
     // 页面已校验响应并确认仍选中该会话；打开只绑定历史，不提交模型请求。
@@ -299,6 +341,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     targetDraftIds.value = []
     receivedMessages.value = []
     receivedNotice.value = detail.received_messages?.length ? '已收到，等待当前操作结束后应用' : ''
+    finishRestore()
     connectEvents(id)
     if (runActive.value) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
   }
@@ -328,8 +371,10 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (activeConversationId.value) void resyncFromServer(activeConversationId.value)
   }
   function clearError(): void { localError.value = undefined; chat.value?.clearError() }
-  return { activeConversationId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
-    error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation, newConversation,
+  return { activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
+    error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
+    restoring, restoreError, restoreConversation,
     sendMessage, stopStreaming, respondToApproval, clearError, openConversation, connectEvents, disconnectEvents,
-    prepareDrafts, refreshHistory, forking, forkConversation, openFloating: () => { floatingOpen.value = true }, closeFloating: () => { floatingOpen.value = false } }
+    prepareDrafts, refreshHistory, forking, forkConversation,
+    openFloating: () => { floatingOpen.value = true; void restoreConversation() }, closeFloating: () => { floatingOpen.value = false } }
 })

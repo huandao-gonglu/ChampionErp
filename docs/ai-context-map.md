@@ -53,6 +53,8 @@
 - `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传与采集请求均接入。
   `services/external_httpx_transport.py` 经原生 Provider 的 http_client 注入 SDK，同样检查共享状态，原生 SDK 自动重试关闭。
+  `services/external_request_diagnostics.py` 只提取有界异常链、系统错误码与栈位置；HTTPX 原生 trace 提供失败阶段。
+  诊断同时进入后端日志、外部请求审计及 Agent/Direct Model 错误详情，以请求 ID 关联；不记录异常原文、局部变量、凭据或业务正文。
   流式审计只结算一次：HTTP EOF 记成功，SDK 主动关闭记 `stream_closed`，实际读取异常才记网络中断。
   非流式响应使用 HTTPX `aread()` 缓存后直接返回原响应，不将已解压正文配原压缩头重建；
   响应审计与资源清理不进入网络故障分支，避免明确 HTTP 拒绝被覆盖成结果未知。
@@ -119,6 +121,15 @@
 
 ## 在线商品管理
 
+- Yandex 在线属性编辑通过 `GET /api/online-products/attributes` 按刊登身份和版本读取类目字段、当前值与分页候选；
+  AI 的 `online_products_attributes` 复用同一服务，从真实刊登解析类目，不接受模型指定或猜测类目。
+  `OnlineProductService.attribute_options` 从真实快照解析类目，复用注入的 `CategoryCatalog`，不接受客户端指定类目。
+  `OnlineYandexAttributes.vue` / `OnlineAttributeField.vue` 展示缺失必填项，支持枚举搜索、单/多值、自由文本及单位。
+  `services/online_product_attributes.py` 在入队、AI 审批与实际发送前核对字段、候选 ID/原文、类型、数量、单位和约束；
+  只读及分组字段不开放。枚举编号在页面及新提交中使用字符串，平台发送时转换为整数，历史数字编号继续读取。
+  `product_model/online_attribute_model.py` 持有纯形状校验与属性合并，网络查询由服务负责。
+  修改按属性替换完整值集合，保留未编辑属性；多值回读逐组核对。定义和候选不写回商品或草稿。
+  现阶段只扩展 Yandex，其他平台继续按其已实现的编辑契约执行。
 - 离线模板导出：`POST /api/online-products/ozon-export/preview` / `download` →
   `online_product_facade.export_ozon` → `OnlineOzonExportService`；只读取当前 Yandex 店铺快照，
   不调用平台 API、不修改在线商品或草稿、不进入发布队列。
@@ -319,7 +330,7 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   事实摘要保留重量的 kg 单位，不复制主 Agent 的全部消息。已核对安装的 Pydantic AI 2.43.0
   与[原生结构化输出文档](https://ai.pydantic.dev/output/#prompted-output)：直接复用原生格式
   校验及重试，不增加业务 Agent loop。文案生成使用集中 Agent 工厂支持的 API 模型连接。
-- `erp_web/services/ai_model_context_projection.py`：原生模型请求 Hook 的纯输入投影；旧大工具结果只在发送副本中形成摘要，完整原生 run 历史与持久化不裁剪。保留工具配对、本轮结果及 Provider 需要的思考信息，不维护第二套历史或恢复协议。
+- `erp_web/services/ai_model_context_projection.py`：原生模型请求 Hook 的纯输入投影；旧大工具结果只在发送副本中形成摘要，完整原生 run 历史与持久化不裁剪。`ai_tool_result_projection.py` 在普通业务结果的模型输入副本中将重复 JSON 集合转换为共享引用，可完整展开；脚本读取、执行回执及审计仍保留原值。Tool Search 等原生协议结果不摘要、不重编码，确保后续回合与审批恢复能重建工具可见性。保留工具配对及 Provider 需要的思考信息，不维护第二套历史或恢复协议。
 - `erp_web/services/ai_tool_bridge.py`：`Tool.from_schema` 的输入校验通过原生
   `args_validator` 在执行前复用现有 JSON Schema 与可选的纯领域参数校验器；参数错误抛出 `ModelRetry`
   让模型纠正，授权、执行及输出错误仍由 Runtime 处理，不重试已产生副作用的操作。
@@ -431,6 +442,8 @@ CLI / Browser use case
 - `erp_web/services/ai_tool_bridge.py`：把显式 ERP ToolSet 转换为 Pydantic
   `FunctionToolset`；Pydantic tool 只调用 `AiToolRuntime.execute(...)`，不直接调用
   领域 executor；原生 Pydantic 调度独立同步工具的并发，Runtime 仅按 call ID 去重。
+  主对话的大型目录在组合根设置 `AiToolSet.defer_loading`，Bridge 映射为原生 `Tool.defer_loading`；小型 focused 工具集直接提供。工具发现不改变 Runtime allowlist、目标范围或审批权限。
+- `erp_web/services/ai_tool_discovery.py`：原生 `ToolSearch` 的匹配策略，完整工具名精确匹配，关键词支持中文；发现、Provider 适配及历史恢复均由 Pydantic AI 管理。已核对安装的 Pydantic AI 2.44.0 / Harness 0.34.0 和[官方工具搜索文档](https://github.com/pydantic/pydantic-ai/blob/main/docs/capabilities/tool-search.md)。原生关键词算法只识别 ASCII，且完整工具名也召回引用该名称的其他工具，因此仅适配目录匹配；原生算法支持这两点时可移除该策略。CodeMode 对按需目录使用原生 `dynamic_catalog`，仅为已发现的同步非审批能力生成 Python 类型与签名，不再预注入全部函数；保留直接调用入口，执行仍归官方 CodeMode。
 - `erp_web/services/ai_agent_factory.py`：由 Pydantic Agent 独占 model → tool → model
   循环、类型化 output、重试和 usage limit；`run_sync(...)` 与 `open_stream_run(...)`
   是统一同步/流式入口，保留完整 canonical history，仅追加原生 `new_messages()`；不能把模型上下文裁剪结果写回历史。
@@ -574,6 +587,13 @@ AI Work 选中普通对话后，直接使用本次 `/ui-messages` 响应绑定�
 无需额外点击继续，也不重复读取历史。打开对话只读取历史并订阅更新，发送消息才提交新的 run。
 历史响应必须仍匹配当前选择，旧会话回调不得断开当前订阅；业务 Agent 执行记录仍只读展示。
 
+气泡与 AI Work 默认入口统一由 `AiChatStore.restoreConversation` 恢复上次选中的普通对话。
+浏览器只记住会话 ID，首次发送或选中历史时更新；消息、运行状态和审批仍读取服务端历史并重新订阅。
+恢复中禁止发送，失败展示重试，不自动创建新会话或选择最近的任务记录；明确历史链接优先于默认恢复。
+新对话按钮与 `/new` 清除旧选择，未发送的空白对话不生成历史深链；迟到的恢复响应不能覆盖新的选择。
+`AiWorkFloatingButton` 始终显示普通聊天，业务 presentation 通过独立进度卡和详情入口展示，
+开始、失败及结束均不替换聊天面板或聊天入口目标。`aiWorkDisplay` 仅维护任务展示与占用，不再持有聊天/任务切换模式。
+
 ### 对话停止与框架边界
 
 取消机制引入时核对了 Pydantic AI 2.43.0、[官方取消文档](https://pydantic.dev/docs/ai/core-concepts/agent/#cancelling-a-run)及安装源码。
@@ -694,7 +714,7 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   带单位的平台属性（Yandex）通过共享的 `unit_options/default_unit` 暴露可选单位，
   属性值以 `{value, unit}` 提交；`dictionary_value_id` 按字符串传输与校验，
   不做数值化（Yandex 字典 ID 超出安全整数范围）。
-- `POST /api/category-attribute-values` 是平台枚举值的唯一公开读取入口；
+- `POST /api/category-attribute-values` 是草稿类目枚举值的公开读取入口；在线商品通过上述刊登绑定接口复用相同 Catalog；
   `erp_web/runtime_units/category_store.py` 通过 `CategoryProvider.attribute_values` 分派，
   Ozon 由 `erp_web/runtime_units/ozon_category_api.py` 调用独立的
   `description-category/attribute/values` 接口分页，并把非空检索交给平台的

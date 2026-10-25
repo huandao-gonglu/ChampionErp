@@ -1,10 +1,15 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { AI_CHAT_SELECTION_KEY } from '@/stores/aiChat'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
 import AiWorkView from '../AiWorkView.vue'
+
+beforeEach(() => localStorage.removeItem(AI_CHAT_SELECTION_KEY))
+
+enableAutoUnmount(afterEach)
 
 const GLOBAL_CHAT_ID = `conversation_global_chat_${'ab'.repeat(16)}`
 
@@ -132,7 +137,12 @@ function attachPresentation(
 
 describe('AiWorkView 对话与历史', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
+    mocks.replaceRoute.mockResolvedValue(undefined)
+    const saved = new Map<string, string>()
+    vi.spyOn(localStorage, 'getItem').mockImplementation(key => saved.get(key) ?? null)
+    vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => { saved.set(key, value) })
+    vi.spyOn(localStorage, 'removeItem').mockImplementation(key => { saved.delete(key) })
     mocks.route.query = {}
     mocks.fetchConversations.mockResolvedValue({ ok: true, conversations })
     mocks.fetchConversation.mockImplementation(async (conversationId: string) => detail(conversationId))
@@ -143,20 +153,26 @@ describe('AiWorkView 对话与历史', () => {
     vi.unstubAllGlobals()
   })
 
-  it('加载列表、按 updated_at 倒序默认选中首项，并以派生气泡展示', async () => {
+  it('没有上次选择时保持空白聊天，不自动打开最近任务或历史', async () => {
     const { mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
-
     expect(mocks.fetchConversations).toHaveBeenCalledWith()
-    expect(mocks.fetchUiMessages).toHaveBeenCalledWith('conversation-2')
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-2')
+    expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="ai-work-selected-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ai-chat-empty"]').exists()).toBe(true)
+  })
 
-    const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
-    expect(chatView.text()).toContain('用户问题-conversation-2')
-    expect(chatView.text()).toContain('派生回答-conversation-2')
-    expect(chatView.text()).toContain('以下为已保存的对话')
-    expect(wrapper.find('[data-testid="ai-work-raw-view"]').exists()).toBe(false)
+  it('默认入口恢复上次普通对话，列表中更新的任务不能抢占', async () => {
+    localStorage.setItem(AI_CHAT_SELECTION_KEY, GLOBAL_CHAT_ID)
+    const { store, mountNow } = setupView()
+    const wrapper = mountNow()
+    await flushPromises()
+    expect(store.activeConversationId).toBe(GLOBAL_CHAT_ID)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(GLOBAL_CHAT_ID)
+    expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
   })
 
   it('切换对话后始终显示对话内容，不提供原始消息入口', async () => {
@@ -178,6 +194,7 @@ describe('AiWorkView 对话与历史', () => {
   })
 
   it('手动刷新列表和当前详情，不启动自动轮询', async () => {
+    mocks.route.query = { conversation_id: 'conversation-2' }
     const { mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
@@ -191,6 +208,7 @@ describe('AiWorkView 对话与历史', () => {
   })
 
   it('可通过 query 直接打开指定 conversation', async () => {
+    localStorage.setItem(AI_CHAT_SELECTION_KEY, GLOBAL_CHAT_ID)
     mocks.route.query = { conversation_id: 'conversation-1' }
 
     const { mountNow } = setupView()
@@ -198,6 +216,8 @@ describe('AiWorkView 对话与历史', () => {
     await flushPromises()
 
     expect(mocks.fetchUiMessages).toHaveBeenCalledWith('conversation-1')
+    expect(mocks.fetchUiMessages).not.toHaveBeenCalledWith(GLOBAL_CHAT_ID)
+    expect(localStorage.getItem(AI_CHAT_SELECTION_KEY)).toBe(GLOBAL_CHAT_ID)
     expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-1')
   })
 
@@ -247,7 +267,7 @@ describe('AiWorkView 对话与历史', () => {
     expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newId)
     expect(wrapper.find('[data-testid="ai-chat-empty"]').exists()).toBe(true)
     expect(mocks.replaceRoute).toHaveBeenLastCalledWith(expect.objectContaining({ query: {
-      conversation_id: newId, workspace_tab: 'orders',
+      workspace_tab: 'orders',
     } }))
 
     await wrapper.get('[data-testid="ai-work-refresh"]').trigger('click')
@@ -479,6 +499,7 @@ describe('AiWorkView 对话与历史', () => {
   })
 
   it('非 global.chat 历史只读且不显示继续入口', async () => {
+    mocks.route.query = { conversation_id: 'conversation-2' }
     const { mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
@@ -501,6 +522,7 @@ describe('AiWorkView 对话与历史', () => {
   })
 
   it('派生消息读取失败时在对话区域展示错误', async () => {
+    mocks.route.query = { conversation_id: 'conversation-2' }
     mocks.fetchUiMessages.mockRejectedValueOnce(new Error('派生不可用'))
 
     const { mountNow } = setupView()
@@ -515,6 +537,7 @@ describe('AiWorkView 对话与历史', () => {
   })
 
   it('头部元数据读取失败不影响对话展示', async () => {
+    mocks.route.query = { conversation_id: 'conversation-2' }
     mocks.fetchConversation.mockRejectedValueOnce(new Error('详情不可用'))
 
     const { mountNow } = setupView()
@@ -527,6 +550,7 @@ describe('AiWorkView 对话与历史', () => {
   })
 
   it('头部详情消息格式异常时仍可展示对话', async () => {
+    mocks.route.query = { conversation_id: 'conversation-2' }
     mocks.fetchConversation.mockResolvedValue({
       ...detail('conversation-2'),
       messages: { invalid: true },

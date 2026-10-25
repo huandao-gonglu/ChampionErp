@@ -13,6 +13,7 @@ from erp_web.schemas.online_products import OnlineListing
 from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, read_batch, sync_yandex
 from erp_web.runtime_units.online_product_status import yandex_status
 from erp_web.runtime_units.category_catalog import get_category_catalog
+from erp_web.product_model.online_attribute_model import merge_yandex_attributes, yandex_category_id
 
 
 class YandexOnlineAdapter:
@@ -141,8 +142,8 @@ class YandexOnlineAdapter:
         if "title" in payload:
             payload["name"] = payload.pop("title")
         if "attributes" in payload:
-            payload["parameterValues"] = [{k:v for k,v in r.items() if k != "id"} for r in payload.pop("attributes")]
-            payload["marketCategoryId"] = listing.snapshot["mapping"]["marketCategoryId"]
+            payload["parameterValues"] = merge_yandex_attributes(listing.content.get("attributes", []), payload.pop("attributes"))
+            payload["marketCategoryId"] = int(yandex_category_id(listing))
         return api.update_yandex_offer_mapping(self.token, self.business, {"offerId":listing.remote_id, **payload})
 
 

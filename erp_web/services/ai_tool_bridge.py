@@ -302,6 +302,7 @@ class PydanticToolBridge:
             args_validator=validate_arguments,
         )
         tool.prepare = prepare_contract
+        tool.defer_loading = self.toolset.defer_loading
         return tool
 
     def as_toolset(self) -> FunctionToolset[AiAgentDependencies]:

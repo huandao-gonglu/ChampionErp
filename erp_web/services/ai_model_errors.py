@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from .external_request_diagnostics import exception_diagnostics
 
 
 class AIHTTPError(RuntimeError):
@@ -41,6 +42,10 @@ class AIHTTPError(RuntimeError):
 
 class AIModelRequestError(RuntimeError):
     """Pydantic Model 请求失败，但 Provider 没有返回可识别的 HTTP 状态。"""
+
+    def __init__(self, message: str, *, details: dict | None = None):
+        super().__init__(message)
+        self.details = details or {}
 
 
 def _detail_text(value: Any) -> str:
@@ -88,7 +93,7 @@ def direct_model_error_payload(exc: Exception) -> dict[str, Any] | None:
     message = safe_model_error_text(str(exc)) or "AI 模型请求失败。"
     if isinstance(exc, AIModelRequestError):
         return {"code": "AIModelRequestError", "message": message,
-                "retryable": True, "details": {}}
+                "retryable": True, "details": exc.details}
     status_code = int(exc.status_code)
     if status_code == 402:
         message = "AI Provider 余额不足或计费配置不可用。" + message
@@ -206,7 +211,8 @@ def map_pydantic_model_error(
     if isinstance(exc, ModelAPIError):
         return AIModelRequestError(
             safe_model_error_text(exc.message)
-            or f"{exc.__class__.__name__}: {model_id or model_name or 'unknown'}"
+            or f"{exc.__class__.__name__}: {model_id or model_name or 'unknown'}",
+            details=exception_diagnostics(exc),
         )
     return exc
 

@@ -28,7 +28,7 @@ from tests.native_domain_fixture import (
 )
 from tests.runtime_test_utils import seed_store_currency
 from tests.pricing_test_utils import official_commission
-from tests.ai_code_mode_helpers import python_call, business_returns
+from tests.ai_code_mode_helpers import discovering_tools, python_call, business_returns
 from tests.test_native_agent_integration import service, body, CONVERSATION
 
 
@@ -151,8 +151,10 @@ def test_fifteen_selected_drafts_prepare_concurrently_and_report_real_remaining_
             **toolset.bindings,
             "draft_prepare_for_market": replace(original, executor=timed),
         },
+        defer_loading=toolset.defer_loading,
     )
 
+    @discovering_tools('draft_prepare_for_market')
     async def model(messages, info):
         results = business_returns(messages)
         if not results:
@@ -229,6 +231,7 @@ def test_publish_submission_finishes_chat_before_remote_result(
 
         monkeypatch.setattr(bus, "enqueue", reject_enqueue)
 
+    @discovering_tools('draft_prepare_for_market', 'product_attributes_update', 'product_publish_request')
     async def model(messages, info):
         results = business_returns(messages)
         if not results:

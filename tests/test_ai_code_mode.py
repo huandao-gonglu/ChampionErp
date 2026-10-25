@@ -17,7 +17,7 @@ from tests.test_native_agent_integration import (
 from tests.test_main_chat_attributes import subject
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.services import global_agent_chat_service
-from tests.ai_code_mode_helpers import business_returns
+from tests.ai_code_mode_helpers import business_returns, discover_tools
 from tests.native_domain_fixture import _source_product
 
 
@@ -74,6 +74,9 @@ def test_direct_read_and_single_save_use_business_tools_without_python(subject, 
     monkeypatch.setattr(app.products, "save_draft_content", counted_save)
 
     async def model(messages, info):
+        if discovery := discover_tools(info, "draft_attributes_read", "draft_sku_attributes_update"):
+            yield {0: discovery}
+            return
         requests.append(1)
         names = {tool.name for tool in info.function_tools}
         assert {"draft_attributes_read", "draft_sku_attributes_update", "run_code"} <= names
@@ -82,7 +85,7 @@ def test_direct_read_and_single_save_use_business_tools_without_python(subject, 
                 "draft_id": draft_id, "platform": "ozon", "site": "global", "scope": "sku",
             }), tool_call_id="read")}
         elif len(requests) == 2:
-            returned = next(p for m in messages for p in m.parts if isinstance(p, ToolReturnPart))
+            returned = next(p for p in business_returns(messages) if p.tool_name == "draft_attributes_read")
             assert returned.tool_name == "draft_attributes_read" and returned.content["sku_count"] == 2
             yield {0: DeltaToolCall(name="draft_sku_attributes_update", json_args=json.dumps({
                 "draft_id": draft_id, "platform": "ozon", "site": "global", "category_id": "94765",
@@ -97,7 +100,7 @@ def test_direct_read_and_single_save_use_business_tools_without_python(subject, 
     assert saved_calls == [1], b"".join(chunks).decode()
     assert len(requests) == 3
     assert app.products.draft_record(draft_id)["sku_items"][0]["attributes_by_target"]["ozon:global"]["color"] == "黑色"
-    returned = [p for m in ui.chat_service.trusted_history(CONVERSATION) for p in m.parts if isinstance(p, ToolReturnPart)]
+    returned = business_returns(ui.chat_service.trusted_history(CONVERSATION))
     assert [p.tool_name for p in returned] == ["draft_attributes_read", "draft_sku_attributes_update"]
     receipts = ui.call_store.current_turn_receipts(CONVERSATION)
     assert len(receipts) == 1 and receipts[0]["tool_call_id"] == "save" and receipts[0]["status"] == "completed"
@@ -274,8 +277,11 @@ for sku_id, value in updates:
 """
 
     async def model(messages, info):
+        if discovery := discover_tools(info, "draft_attributes_read", "draft_sku_attributes_update"):
+            yield {0: discovery}
+            return
         requests.append(1)
-        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name != "search_tools"]
         if not returns:
             yield {0: code_delta(code)}
         else:
@@ -367,7 +373,10 @@ def test_both_entries_preserve_business_validation_and_selected_draft_scope(subj
     results = []
 
     async def model(messages, info):
-        returns = [p for m in messages for p in m.parts if isinstance(p, (ToolReturnPart, RetryPromptPart))]
+        if discovery := discover_tools(info, "draft_sku_attributes_update"):
+            yield {0: discovery}
+            return
+        returns = [p for m in messages for p in m.parts if isinstance(p, (ToolReturnPart, RetryPromptPart)) and p.tool_name != "search_tools"]
         if not returns:
             field = "color" if outside_selection else "readonly"
             arguments = {"draft_id": draft_id, "platform": "ozon", "site": "global", "category_id": "94765",

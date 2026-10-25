@@ -24,7 +24,7 @@ from erp_web.app_config import normalize_app_config
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.services.ai_agent_factory import AiAgentFactory
 from erp_web.services.ai_model_factory import create_pydantic_model_binding_for_use_case
-from erp_web.services.ai_tool_registry import AiToolSet, deadline_aware_tool_executor
+from erp_web.services.ai_tool_registry import deadline_aware_tool_executor
 from erp_web.stores.config_store import _apply_app_runtime_secrets
 from tests.runtime_test_utils import temp_app_context
 from tests.test_native_agent_integration import service, body, CONVERSATION
@@ -117,7 +117,7 @@ def evaluate(args):
                     write_seconds.append(time.monotonic() - started)
                 return result
             return execute
-        toolset = AiToolSet(toolset.toolset_id, {name: replace(item, executor=guarded(name, item.executor)) for name, item in toolset.bindings.items()})
+        toolset = replace(toolset, bindings={name: replace(item, executor=guarded(name, item.executor)) for name, item in toolset.bindings.items()})
         ui = service(Path(directory), binding.model, toolset)
         ui.chat_service.factory = AiAgentFactory(
             app_dir=directory, app_config={}, message_store=app.pydantic_messages,

@@ -37,7 +37,7 @@ from erp_web.ai_capability_composition import (
     _WRITE_CAPABILITIES,
     APPLICATION_CAPABILITY_CATALOG,
 )
-from tests.ai_code_mode_helpers import python_call
+from tests.ai_code_mode_helpers import discovering_tools, python_call
 from erp_web.context import get_context
 from erp_web.http_handler import Handler
 
@@ -345,6 +345,7 @@ def test_sse_run_streams_official_tool_chunks(
 ) -> None:
     turns = 0
 
+    @discovering_tools('drafts_query')
     async def model(
         messages: list[ModelRequest | ModelResponse],
         agent_info: AgentInfo,
@@ -352,10 +353,10 @@ def test_sse_run_streams_official_tool_chunks(
         nonlocal turns
         turns += 1
         if turns == 1:
-            # 主对话同时提供直接业务工具和可选 Python 入口。
+            # 按需发现后只提供本次需要的业务工具和控制工具。
             assert {
                 tool.name for tool in agent_info.function_tools
-            } == EXPECTED_GLOBAL_CHAT_TOOLS
+            } - {"search_tools", "run_code"} == {"drafts_query"}
             yield {
                 0: DeltaThinkingPart(content="先查询当前草稿。"),
                 1: python_call(
@@ -909,6 +910,7 @@ def test_disconnect_during_multi_tool_turn_persists_complete_tool_pairs(
     conversation = "conversation_global_chat_" + "9" * 32
     turns = 0
 
+    @discovering_tools('drafts_query', 'products_index_query')
     async def two_tool_model(
         _messages: list[ModelRequest | ModelResponse],
         _agent_info: AgentInfo,
@@ -962,7 +964,7 @@ def test_disconnect_during_multi_tool_turn_persists_complete_tool_pairs(
         if isinstance(part, ToolReturnPart)
     ]
 
-    assert sorted(call_ids) == ["disconnect-drafts", "disconnect-products"]
+    assert sorted(call for call in call_ids if not call.startswith("discover-")) == ["disconnect-drafts", "disconnect-products"]
     assert sorted(return_ids) == sorted(call_ids)
     claim = get_context().chat_turn_claims.find_for_conversation(conversation)
     assert claim is not None
@@ -978,6 +980,7 @@ def test_business_failure_in_multi_tool_turn_persists_complete_tool_pairs(
     conversation = "conversation_global_chat_" + "a" * 32
     turns = 0
 
+    @discovering_tools('drafts_query', 'product_read')
     async def partially_failing_model(
         _messages: list[ModelRequest | ModelResponse],
         _agent_info: AgentInfo,
@@ -1029,7 +1032,7 @@ def test_business_failure_in_multi_tool_turn_persists_complete_tool_pairs(
         if isinstance(part, ToolReturnPart)
     ]
 
-    assert sorted(call_ids) == ["missing-product", "success-before-failure"]
+    assert sorted(call for call in call_ids if not call.startswith("discover-")) == ["missing-product", "success-before-failure"]
     assert sorted(return_ids) == sorted(call_ids)
 
 

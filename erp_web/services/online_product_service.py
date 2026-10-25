@@ -12,7 +12,9 @@ from uuid import uuid4
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.product_model.online_operation_model import receipt_errors, submission_status
 from erp_web.db import utc_now
-from erp_web.schemas.online_products import ChangeRequest, CloseOnlineOperationRequest, snapshot_version
+from erp_web.schemas.online_products import ChangeRequest, CloseOnlineOperationRequest, OnlineAttributeQuery, OnlineAttributeResponse, snapshot_version
+from erp_web.services.online_product_attributes import validate_yandex_attributes
+from erp_web.product_model.online_attribute_model import yandex_category_id
 from erp_web.services.online_product_changes import confirmation, observed_changes, validate_changes
 from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields
 from erp_web.services.online_product_images import OnlineProductImages
@@ -136,6 +138,53 @@ class OnlineProductService:
             raise ValueError("该商品不支持修改图片")
         return self.images.selection(listing).model_dump()
 
+    def attribute_options(self, query: OnlineAttributeQuery) -> dict[str, Any]:
+        listing = self.store.get(query.listing_id)
+        self._config(listing.platform, listing.account_id)
+        if listing.version != query.version:
+            raise OnlineConflict("商品快照已更新，请重新打开编辑器")
+        capability = listing.capabilities.get("content")
+        if listing.details_state != "ready" or listing.errors or not capability or not capability.enabled or "attributes" not in capability.fields:
+            raise ValueError("商品详情未完整同步或不支持编辑属性")
+        category = yandex_category_id(listing)
+        catalog = self.context.category_catalog
+        if query.attribute_id:
+            definition = catalog.attribute_definitions("yandex", category, site="global")
+            attribute = definition.attribute_by_id(query.attribute_id)
+            if attribute is None or attribute.read_only or attribute.id == "200":
+                raise ValueError("该属性不属于当前商品的可编辑类目字段")
+            page = catalog.attribute_values("yandex", category, query.attribute_id, site="global",
+                                            query=query.query, cursor=query.cursor, limit=query.limit)
+        else:
+            page = catalog.public_attribute_page("yandex", category, site="global", cursor=query.cursor, limit=query.limit)
+        self._config(listing.platform, listing.account_id)
+        if self.store.get(listing.id).version != query.version:
+            raise OnlineConflict("读取期间商品已变化，请重新打开编辑器")
+        ids = {query.attribute_id} if query.attribute_id else {attribute.id for attribute in page.attributes}
+        # 枚举 ID 可能超出 JavaScript 安全整数；旧持久快照仍按原格式读取。
+        current = [{key: str(value) if key == "valueId" else value for key, value in row.items()
+                    if key in {"id", "parameterId", "value", "valueId", "unitId"}}
+                   for row in listing.content.get("attributes", []) if str(row.get("id")) in ids]
+        return OnlineAttributeResponse(listing_id=listing.id, version=listing.version, page=page,
+                                       current_values=current).model_dump(exclude_none=True)
+
+    def validate_change(self, request: ChangeRequest):
+        """页面提交和 AI 审批使用同一份本地版本及平台类目校验。"""
+        listing = self.store.get(request.listing_id)
+        self._config(listing.platform, listing.account_id)
+        if listing.version != request.version:
+            raise OnlineConflict("商品快照已更新，请重新查看并确认变更")
+        self._validate_changes(listing, request)
+        self._config(listing.platform, listing.account_id)
+        if self.store.get(listing.id).version != request.version:
+            raise OnlineConflict("属性校验期间商品已更新，请重新查看并确认")
+        return listing
+
+    def _validate_changes(self, listing, request):
+        validate_changes(listing, request)
+        if listing.platform == "yandex" and "attributes" in request.changes:
+            validate_yandex_attributes(listing, request.changes["attributes"], self.context.category_catalog)
+
     def refresh_status(self, listing_id: str) -> dict[str, Any]:
         before = self.store.get(listing_id)
         self._config(before.platform, before.account_id)
@@ -168,9 +217,7 @@ class OnlineProductService:
             if previous["request"] != request.model_dump() or previous["account_id"] != listing.account_id:
                 raise OnlineConflict("重复提交键对应不同操作，请重新确认")
             return {"ok": True, "job": previous}
-        if listing.version != request.version:
-            raise OnlineConflict("商品快照已更新，请重新查看并确认变更")
-        validate_changes(listing, request)
+        listing = self.validate_change(request)
         if "pictures" in request.changes:
             self.images.validate(listing, request.changes["pictures"])
         job = self.store.enqueue(listing.platform, listing.account_id, request.operation, listing.id, request.model_dump(), request.idempotency_key)
@@ -209,7 +256,7 @@ class OnlineProductService:
                 if not fresh.errors:
                     self.store.save(fresh, lease=job)
                 raise OnlineConflict("平台商品已变化或读取不完整，未提交修改；请重新同步并确认")
-            validate_changes(fresh, request)
+            self._validate_changes(fresh, request)
             result = {"before": before.model_dump(exclude={"snapshot"}), "changes": request.changes, "scope_id": request.scope_id}
             prepared_changes = dict(request.changes)
             if "pictures" in prepared_changes:

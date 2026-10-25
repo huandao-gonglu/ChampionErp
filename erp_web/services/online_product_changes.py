@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from erp_web.schemas.online_products import ChangeRequest, OnlineListing
+from erp_web.product_model.online_attribute_model import validate_yandex_attribute_rows
 
 
 def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
@@ -82,6 +83,9 @@ def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
             rows = changes["attributes"]
             if not isinstance(rows, list) or not rows or any(not isinstance(row, dict) or not row.get("id") for row in rows):
                 raise ValueError("属性必须包含有效的属性 ID 和值")
+            if listing.platform == "yandex":
+                validate_yandex_attribute_rows(rows)
+                return
             old = {str(row.get("id")): row for row in listing.content.get("attributes", [])}
             if len({str(r["id"]) for r in rows}) != len(rows):
                 raise ValueError("属性 ID 不得重复")
@@ -92,11 +96,7 @@ def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
                 original = old[key]
                 if original.get("value_id") or original.get("valueId"):
                     raise ValueError("枚举属性需要平台字典，当前表单仅修改已有自由文本属性")
-                if listing.platform == "yandex":
-                    if set(row) - {"id", "parameterId", "unitId", "value"} or row.get("parameterId") != original.get("parameterId") or row.get("unitId") != original.get("unitId"):
-                        raise ValueError("属性身份和单位不得改变")
-                    value = row.get("value")
-                elif original.get("values"):
+                if original.get("values"):
                     original_values, values = original["values"], row.get("values")
                     if len(original_values) != 1 or original_values[0].get("id") or set(row) != {"id", "values"} or not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict) or set(values[0]) != {"name"}:
                         raise ValueError("仅支持单个自由文本属性值，不接受复杂属性结构")
@@ -147,8 +147,17 @@ def confirmation(listing: OnlineListing, request: ChangeRequest) -> dict[str, bo
     result = {}
     for field, expected in changes.items():
         if field == "attributes":
-            actual = {str(r.get("id")): r for r in listing.content.get(field, [])}
-            result[field] = all(contains(actual.get(str(row["id"])), row) for row in expected)
+            actual = listing.content.get(field, [])
+            if listing.platform == "yandex":
+                actual = [{**row, **({"valueId": str(row["valueId"])} if "valueId" in row else {})} for row in actual]
+                expected = [{**row, **({"valueId": str(row["valueId"])} if "valueId" in row else {})} for row in expected]
+            keys = {str(row["id"]) for row in expected}
+            result[field] = all(
+                len([row for row in actual if str(row.get("id")) == key])
+                == len([row for row in expected if str(row["id"]) == key])
+                and all(any(contains(row, target) for row in actual if str(row.get("id")) == key)
+                        for target in expected if str(target["id"]) == key)
+                for key in keys)
         else:
             result[field] = contains(listing.content.get(field), expected)
     return result

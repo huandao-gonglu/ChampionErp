@@ -13,12 +13,44 @@ from erp_web.services.external_request_context import request_context
 _logger = logging.getLogger(__name__)
 
 
+class RequestDiagnostics:
+    """复用 HTTPX 原生 trace 扩展，仅保留阶段名称，不保存 trace 的敏感参数。"""
+
+    def __init__(self, request, data):
+        self.started = time.monotonic()
+        self.phase = "transport_setup"
+        self.request_bytes = len(data) if data is not None else None
+        self.response_bytes = 0
+        self.http_status = None
+        self.trace_event = ""
+        self.previous_trace = request.extensions.get("trace")
+        request.extensions["trace"] = self.trace
+
+    async def trace(self, name, info):
+        parts = name.split(".")
+        if len(parts) == 3 and parts[1] in {
+            "connect_tcp", "connect_unix_socket", "start_tls", "send_request_headers",
+            "send_request_body", "receive_response_headers", "receive_response_body",
+        } and parts[2] in {"started", "complete", "failed"}:
+            self.trace_event = ".".join(parts[1:])
+        if self.previous_trace is not None:
+            await self.previous_trace(name, info)
+
+    def snapshot(self):
+        values = {"phase": self.phase, "trace_event": self.trace_event,
+                  "elapsed_ms": round((time.monotonic() - self.started) * 1000),
+                  "request_bytes": self.request_bytes, "response_bytes": self.response_bytes,
+                  "http_status": self.http_status}
+        return {key: value for key, value in values.items() if value is not None}
+
+
 class AuditedStream(httpx.AsyncByteStream):
-    def __init__(self, response, transport, manager, request_id, ctx):
+    def __init__(self, response, transport, manager, request_id, ctx, diagnostics):
         self.response, self.transport = response, transport
         self.manager, self.request_id, self.ctx = manager, request_id, ctx
         self.finished = False
         self.closed = False
+        self.diagnostics = diagnostics
 
     def _finish(self, *, closed=False, error=None):
         if self.finished:
@@ -29,6 +61,7 @@ class AuditedStream(httpx.AsyncByteStream):
             self.manager.network_error(
                 self.request_id, self.ctx,
                 cancelled=isinstance(error, asyncio.CancelledError),
+                error=error, diagnostics=self.diagnostics.snapshot(),
             )
         elif closed:
             self.manager.stream_closed(
@@ -43,6 +76,7 @@ class AuditedStream(httpx.AsyncByteStream):
     async def __aiter__(self):
         try:
             async for chunk in self.response.aiter_raw():
+                self.diagnostics.response_bytes += len(chunk)
                 yield chunk
             self._finish()
         except GeneratorExit:
@@ -61,6 +95,7 @@ class AuditedStream(httpx.AsyncByteStream):
             try:
                 await self.response.aclose()
             except BaseException as exc:
+                self.diagnostics.phase = "response_close"
                 self._finish(error=exc)
                 raise
             else:
@@ -85,6 +120,7 @@ class ManagedAsyncTransport(httpx.AsyncBaseTransport):
                               platform=self.platform,account_id=self.account_id,source="ai_provider",semantics="write")
         deadline = min(time.time()+timeout,ctx.deadline_at or float("inf"))
         request_id = manager.start(ctx,request.method)
+        diagnostics = RequestDiagnostics(request, data)
         transport = None
         response = None
         stream_owned = False
@@ -96,16 +132,22 @@ class ManagedAsyncTransport(httpx.AsyncBaseTransport):
             remaining = max(.001,deadline-time.time())
             request.extensions["timeout"] = {key:min(value,remaining) if value is not None else remaining for key,value in request.extensions.get("timeout",{}).items()}
             transport = self.transport_factory()
+            diagnostics.phase = "await_response_headers"
             response = await transport.handle_async_request(request)
+            diagnostics.http_status = response.status_code
+            diagnostics.phase = "read_response_body"
             if "text/event-stream" in response.headers.get("content-type", "") and response.status_code < 400:
                 wrapped = httpx.Response(response.status_code,headers=response.headers,extensions=response.extensions,
-                    stream=AuditedStream(response,transport,manager,request_id,ctx))
+                    stream=AuditedStream(response,transport,manager,request_id,ctx,diagnostics))
                 stream_owned = True
                 return wrapped
             raw = await response.aread()
         except BaseException as exc:
             if allowed:
-                manager.network_error(request_id,ctx,cancelled=isinstance(exc,asyncio.CancelledError))
+                if response is not None:
+                    diagnostics.response_bytes = response.num_bytes_downloaded
+                manager.network_error(request_id,ctx,cancelled=isinstance(exc,asyncio.CancelledError),
+                                      error=exc,diagnostics=diagnostics.snapshot())
             elif isinstance(exc, asyncio.CancelledError):
                 manager.store.finish(request_id, decision="cancelled", result={"code":"EXTERNAL_REQUEST_CANCELLED"})
             raise

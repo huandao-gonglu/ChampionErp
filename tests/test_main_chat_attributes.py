@@ -22,7 +22,7 @@ from erp_web.schemas.product_capabilities import (
 from erp_web.schemas.product_write_capabilities import DraftReadRequest
 from erp_web.services.capability_errors import BusinessCapabilityError
 from tests.test_native_domain_workflow import setup_domain
-from tests.ai_code_mode_helpers import python_call, business_returns
+from tests.ai_code_mode_helpers import python_call, business_returns, discover_tools
 from tests.test_native_agent_integration import service, body
 
 
@@ -203,6 +203,9 @@ def test_native_main_chat_reads_queries_and_writes_without_a_focused_agent(subje
         ("draft_attributes_read", {"draft_id": draft_id, "scope": "sku"}),
     ]
     async def model(messages, info):
+        if discovery := discover_tools(info, *(name for name, _ in steps)):
+            yield {0: discovery}
+            return
         returns = business_returns(messages)
         if returns:
             assert returns[-1].content.get("ok") is not False, returns[-1].content

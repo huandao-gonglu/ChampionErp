@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from erp_web.schemas.category_definition import CategoryAttributePage, CategoryAttributeValuePage
 
 Platform = Literal["mercadolibre", "ozon", "yandex"]
 Operation = Literal["sync", "price", "stock", "content", "sale_state", "archive"]
@@ -18,6 +19,43 @@ class OnlineConflictResponse(BaseModel):
     error: str
     error_code: Literal["ONLINE_CONFLICT"] = "ONLINE_CONFLICT"
     conflict_job_id: str | None = None
+
+
+class OnlineAttributeQuery(BaseModel):
+    """从真实刊登解析类目，不接受调用方指定其他类目。"""
+    model_config = ConfigDict(extra="forbid")
+    listing_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    attribute_id: str = ""
+    query: str = Field(default="", max_length=200)
+    cursor: str = ""
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class OnlineAttributeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ok: bool = True
+    listing_id: str
+    version: str
+    page: CategoryAttributePage | CategoryAttributeValuePage
+    current_values: list["OnlineYandexAttributeValue"] = Field(default_factory=list)
+
+
+class OnlineYandexAttributeValue(BaseModel):
+    """同一 parameterId 的多行表示该属性的完整目标多值集合。"""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(min_length=1)
+    parameterId: int = Field(gt=0)
+    value: str = ""
+    valueId: str | int | None = None
+    unitId: int | None = Field(default=None, gt=0)
+
+    @field_validator("valueId")
+    @classmethod
+    def positive_dictionary_id(cls, value):
+        if value is not None and (not str(value).isascii() or not str(value).isdigit() or int(value) <= 0):
+            raise ValueError("枚举编号必须是正整数")
+        return value
 
 
 class PriceScope(BaseModel):
@@ -133,6 +171,13 @@ class OnlineListing(OnlineProduct):
             "scope": "商家账号全部店铺", "fields": ["archived"],
             "reason": "归档 / 恢复归档影响该商家账号全部店铺，不修改库存或停售设置",
         }}
+        content = value["capabilities"].get("content")
+        category = (value.get("snapshot", {}).get("mapping", {}).get("marketCategoryId")
+                    or value.get("snapshot", {}).get("offer", {}).get("marketCategoryId"))
+        if content and category:
+            content = content.model_dump() if isinstance(content, Capability) else dict(content)
+            content["fields"] = list(dict.fromkeys([*content.get("fields", []), "attributes"]))
+            value["capabilities"]["content"] = content
         return value
 
 
@@ -229,7 +274,7 @@ class OnlineChange(BaseModel):
     version: str = Field(min_length=1)
     operation: Literal["price", "stock", "content", "sale_state", "archive"]
     scope_id: str = ""
-    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；archive={archived:true|false}，仅支持 Yandex，scope_id=business，影响账号全部店铺，独立于停售与库存；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表；保留的图片使用当前平台 ID/地址，新增图片只允许关联源草稿的 {asset_id,fingerprint} 引用。")
+    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；archive={archived:true|false}，仅支持 Yandex，scope_id=business，影响账号全部店铺，独立于停售与库存；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表；保留的图片使用当前平台 ID/地址，新增图片只允许关联源草稿的 {asset_id,fingerprint} 引用。Yandex attributes 支持新增缺失属性和修改枚举，行结构为 {id:字符串,parameterId:整数,value:平台原文,valueId:枚举编号字符串,unitId:单位整数}；可选编号按类目提供，同一属性多行替换该属性的完整值集合，未编辑属性保留。")
 
 
 class ChangeRequest(OnlineChange):

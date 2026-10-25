@@ -59,6 +59,27 @@ export async function fetchOnlineJob(jobId: string): Promise<OnlineJob> {
 export async function fetchOnlineSourceImages(listingId: string): Promise<SourceImageSelection> {
   return checked((await apiClient.get('/api/online-products/source-images', {params: {listing_id: listingId}})).data)
 }
+
+export interface OnlineAttributeOption { value: string; dictionary_value_id: string }
+export interface OnlineAttributeDefinition {
+  id: string; name: string; required: boolean; read_only: boolean; managed_by: string
+  value_type: string; value_mode: string; allow_custom_values: boolean; is_dictionary: boolean
+  is_collection: boolean; max_value_count: number | null; default_unit_id: string
+  unit_options: Array<{id: string; name: string}>; options: OnlineAttributeOption[]
+  has_more_values: boolean; format_hint: string
+}
+export interface OnlineAttributeRow { id: string; parameterId: number; value: string; valueId?: string; unitId?: number }
+interface AttributePage { category_id: string; attributes: OnlineAttributeDefinition[]; has_more: boolean; next_cursor: string }
+interface AttributeValuePage { attribute_id: string; values: OnlineAttributeOption[]; has_more: boolean; next_cursor: string }
+interface AttributeResponse<T> { ok: boolean; listing_id: string; version: string; page: T; current_values: OnlineAttributeRow[] }
+export async function fetchOnlineAttributes(listingId: string, version: string, cursor = '') {
+  return checked((await apiClient.get<AttributeResponse<AttributePage>>('/api/online-products/attributes',
+    {params: {listing_id: listingId, version, cursor, limit: 100}})).data)
+}
+export async function fetchOnlineAttributeValues(listingId: string, version: string, attributeId: string, query = '', cursor = '') {
+  return checked((await apiClient.get<AttributeResponse<AttributeValuePage>>('/api/online-products/attributes',
+    {params: {listing_id: listingId, version, attribute_id: attributeId, query, cursor, limit: 50}})).data)
+}
 export async function refreshOnlineStatus(listingId: string): Promise<OnlineListing> {
   return checked<{item: OnlineListing}>((await apiClient.post('/api/online-products/refresh-status', {listing_id: listingId})).data).item
 }

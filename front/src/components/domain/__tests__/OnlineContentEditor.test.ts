@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { fetchOnlineSourceImages, type OnlineListing, type SourceImageSelection } from '@/api/onlineProducts'
+import { fetchOnlineSourceImages, fetchOnlineAttributes, type OnlineListing, type SourceImageSelection } from '@/api/onlineProducts'
 import OnlineContentEditor from '../OnlineContentEditor.vue'
 
-vi.mock('@/api/onlineProducts', () => ({fetchOnlineSourceImages: vi.fn()}))
+vi.mock('@/api/onlineProducts', () => ({fetchOnlineSourceImages: vi.fn(), fetchOnlineAttributes: vi.fn(), fetchOnlineAttributeValues: vi.fn()}))
 const listing = {
-  id: 'listing-1', platform: 'mercadolibre', content: {pictures: [
+  id: 'listing-1', version: 'v1', platform: 'mercadolibre', content: {pictures: [
     {id: 'remote-1', url: 'https://images.example.com/1.jpg'},
     {id: 'remote-2', url: 'https://images.example.com/2.jpg'},
   ]}, capabilities: {content: {fields: ['pictures']}},
@@ -27,12 +27,14 @@ function pictures() {return wrapper.emitted('change')!.at(-1)![0] as {pictures: 
 
 describe('在线商品图片编辑', () => {
   it('Yandex 属性展示名称，提交保持参数身份且不夹带展示名称', async () => {
+    vi.mocked(fetchOnlineAttributes).mockResolvedValue({ok:true,listing_id:listing.id,version:listing.version,current_values:[{id:'1',parameterId:1,value:'Плюш',unitId:2}],page:{category_id:'100',has_more:false,next_cursor:'',attributes:[{id:'1',name:'Материал',required:false,read_only:false,managed_by:'',value_type:'text',value_mode:'free_text',allow_custom_values:false,is_dictionary:false,is_collection:false,max_value_count:null,default_unit_id:'2',unit_options:[{id:'2',name:'单位'}],options:[],has_more_values:false,format_hint:''}]}})
     render({...listing,platform:'yandex',content:{attributes:[{id:'1',parameterId:1,name:'Материал',value:'Плюш',unitId:2}]},
       capabilities:{...listing.capabilities,content:{enabled:true,fields:['attributes'],scope:'商品',reason:''}}})
+    await flushPromises()
     expect(wrapper.text()).toContain('Материал')
     expect(wrapper.text()).toContain('属性编号：1')
     await wrapper.get('input[type="checkbox"]').setValue(true)
-    await wrapper.get('input:not([type="checkbox"])').setValue('Хлопок')
+    await wrapper.get('textarea').setValue('Хлопок')
     expect(wrapper.emitted('change')!.at(-1)![0]).toEqual({attributes:[{id:'1',parameterId:1,value:'Хлопок',unitId:2}]})
   })
   it('按钮提供 hint，边界禁止移动，删除不清空图集', async () => {

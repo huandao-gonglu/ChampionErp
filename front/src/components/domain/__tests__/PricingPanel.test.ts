@@ -158,6 +158,102 @@ function mountPricing(rows: DraftSku[], localInput = reactive(structuredClone(in
 }
 
 describe('PricingPanel 对齐 Penpot 核价原型', () => {
+  it('定价方式往返切换保留原报价及已应用状态，不重新计算', async () => {
+    const rows = reactive([skuRow()])
+    const localInput = reactive(structuredClone(input))
+    const wrapper = mountPricing(rows, localInput)
+    await flushPromises()
+    const before = JSON.stringify(rows)
+    const mode = (label: string) => wrapper.get('[aria-label="定价方式"]').findAll('button').find(button => button.text() === label)!
+
+    for (const label of ['成本加价', '手动']) {
+      await mode(label).trigger('click')
+      expect(wrapper.getComponent(PricingSkuResults).props('stale')).toBe(true)
+      expect(wrapper.get('[data-testid="pricing-apply"]').attributes('disabled')).toBeDefined()
+      await mode('目标利润率').trigger('click')
+      expect(wrapper.get('[data-sku-id="sku-small"]').text()).toContain('$167.67')
+      expect(wrapper.get('[data-testid="pricing-apply"]').text()).toBe('已应用至草稿')
+      expect(JSON.stringify(rows)).toBe(before)
+    }
+    expect(wrapper.emitted('calculate')).toBeUndefined()
+    expect(wrapper.emitted('restore')).toBeUndefined()
+    expect(wrapper.emitted('apply')).toBeUndefined()
+  })
+
+  it('切回原定价方式时其他参数仍有改动，继续停用原报价', async () => {
+    const localInput = reactive(structuredClone(input))
+    const wrapper = mountPricing(reactive([skuRow()]), localInput)
+    await flushPromises()
+    localInput.targets[0].pricingMode = 'markup'
+    localInput.domesticFreightCny = 2
+    localInput.targets[0].pricingMode = 'margin'
+    await flushPromises()
+    expect(wrapper.getComponent(PricingSkuResults).props('stale')).toBe(true)
+    expect(wrapper.get('[data-testid="pricing-apply"]').attributes('disabled')).toBeDefined()
+    localInput.domesticFreightCny = 0
+    await flushPromises()
+    expect(wrapper.get('[data-sku-id="sku-small"]').text()).toContain('$167.67')
+    expect(wrapper.get('[data-testid="pricing-apply"]').text()).toBe('已应用至草稿')
+  })
+
+  it('主动刷新汇率后不能靠切回原定价方式恢复失效报价', async () => {
+    const localInput = reactive(structuredClone(input))
+    const wrapper = mountPricing(reactive([skuRow()]), localInput)
+    await flushPromises()
+    await wrapper.get('.pricing-rate-refresh').trigger('click')
+    await flushPromises()
+    localInput.targets[0].pricingMode = 'markup'
+    localInput.targets[0].pricingMode = 'margin'
+    await flushPromises()
+    expect(wrapper.getComponent(PricingSkuResults).props('stale')).toBe(true)
+    expect(wrapper.get('[data-testid="pricing-apply"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.emitted('calculate')).toBeUndefined()
+  })
+
+  it('重新核价后以新报价的参数为准，切换回来仍可应用新预览', async () => {
+    const rows = reactive([skuRow()])
+    const localInput = reactive(structuredClone(input))
+    const wrapper = mountPricing(rows, localInput)
+    await flushPromises()
+    await wrapper.setProps({ onCalculate: async () => {
+      await wrapper.setProps({ loading: true })
+      rows[0].pricing = { ...skuRow().pricing, applied: false }
+      await wrapper.setProps({ result: { ...result, previewId: 'new-preview' }, loading: false })
+    } })
+    localInput.targets[0].pricingMode = 'markup'
+    await wrapper.get('[data-testid="pricing-calculate"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="pricing-apply"]').attributes('disabled')).toBeUndefined()
+    localInput.targets[0].pricingMode = 'margin'
+    await flushPromises()
+    expect(wrapper.getComponent(PricingSkuResults).props('stale')).toBe(true)
+    localInput.targets[0].pricingMode = 'markup'
+    await flushPromises()
+    expect(wrapper.get('[data-sku-id="sku-small"]').text()).toContain('$167.67')
+    expect(wrapper.get('[data-testid="pricing-apply"]').attributes('disabled')).toBeUndefined()
+    expect(rows[0].pricing.applied).toBe(false)
+    expect(wrapper.props('result')?.previewId).toBe('new-preview')
+    expect(wrapper.emitted('calculate')).toHaveLength(1)
+  })
+
+  it('重新核价失败后，切回原模式也不能恢复已失效的报价', async () => {
+    const localInput = reactive(structuredClone(input))
+    const wrapper = mountPricing(reactive([skuRow()]), localInput)
+    await flushPromises()
+    await wrapper.setProps({ onCalculate: async () => {
+      await wrapper.setProps({ loading: true })
+      await wrapper.setProps({ error: '核价失败', loading: false })
+    } })
+    localInput.targets[0].pricingMode = 'markup'
+    await wrapper.get('[data-testid="pricing-calculate"]').trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ error: '' })
+    localInput.targets[0].pricingMode = 'margin'
+    await flushPromises()
+    expect(wrapper.getComponent(PricingSkuResults).props('stale')).toBe(true)
+    expect(wrapper.get('[data-testid="pricing-apply"]').attributes('disabled')).toBeDefined()
+  })
+
   it('返回核价页只恢复有效预览，恢复后允许直接应用售价', async () => {
     const rows = reactive([skuRow()])
     rows[0]!.pricing.applied = false
@@ -174,6 +270,14 @@ describe('PricingPanel 对齐 Penpot 核价原型', () => {
     expect(wrapper.emitted('restore')).toHaveLength(1)
     expect(wrapper.emitted('calculate')).toBeUndefined()
     expect(wrapper.text()).toContain('待应用售价')
+    wrapper.props('input').targets[0].pricingMode = 'markup'
+    await flushPromises()
+    expect(wrapper.getComponent(PricingSkuResults).props('stale')).toBe(true)
+    wrapper.props('input').targets[0].pricingMode = 'margin'
+    await flushPromises()
+    expect(wrapper.get('[data-sku-id="sku-small"]').text()).toContain('$167.67')
+    expect(wrapper.text()).toContain('待应用售价')
+    expect(wrapper.props('result')?.previewId).toBe('restored-preview')
     const apply = wrapper.get('[data-testid="pricing-apply"]')
     expect(apply.attributes('disabled')).toBeUndefined()
     await apply.trigger('click')

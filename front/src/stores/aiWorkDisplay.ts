@@ -1,11 +1,11 @@
 /**
- * AiWork 展示协调层：前台 presentation 与全局聊天的显示切换。
+ * AiWork 任务展示：维护独立的前台任务进度。
  *
- * 约束（docs/aiworkpage.md §1、§3、§4）：
+ * 约束：
  * - `AiChatStore` 仍是全局聊天唯一 owner；本 store 不复制其消息、不拥有其输入框；
  * - 同一标签页同一时间最多一个用户直接触发的前台 presentation；第二个触发被明确拒绝；
- * - 业务终态后才恢复 global-chat，不得永久卡在 presentation 模式；
- * - 全局聊天的消息、输入与 SSE 状态在接管期间完全不变。
+ * - 业务终态后释放任务占用，并通知历史列表刷新；
+ * - 全局聊天的消息、输入与 SSE 状态在任务期间完全不变。
  */
 
 import { computed, ref, shallowRef } from 'vue'
@@ -40,10 +40,6 @@ export const useAiWorkDisplayStore = defineStore('aiWorkDisplay', () => {
   // 每次前台 presentation terminal 后递增，供 AiWork 页面刷新列表/历史。
   const presentationVersion = ref(0)
 
-  const displayMode = computed<'presentation' | 'global-chat'>(() => (
-    foregroundPresentation.value ? 'presentation' : 'global-chat'
-  ))
-  const hasForegroundPresentation = computed(() => foregroundPresentation.value !== null)
   /** 前台占用 = 已有活动 presentation，或一个启动中的 presentation（reserve POST 进行中）。 */
   const foregroundOccupied = computed(() => (
     foregroundPresentation.value !== null || foregroundStartPending.value
@@ -124,7 +120,7 @@ export const useAiWorkDisplayStore = defineStore('aiWorkDisplay', () => {
     patchForeground({ error })
   }
 
-  /** terminal 收尾：记录短暂提示、递增版本并恢复 global-chat 展示。 */
+  /** terminal 收尾：记录短暂提示、递增版本并释放任务占用。 */
   function finishForegroundPresentation(notice: ForegroundTerminalNotice | null): void {
     foregroundStartPending.value = false
     if (!foregroundPresentation.value) return
@@ -142,8 +138,6 @@ export const useAiWorkDisplayStore = defineStore('aiWorkDisplay', () => {
     foregroundStartPending,
     terminalNotice,
     presentationVersion,
-    displayMode,
-    hasForegroundPresentation,
     foregroundOccupied,
     foregroundIsTerminal,
     presentationStatusText,

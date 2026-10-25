@@ -19,7 +19,7 @@ from pydantic_ai import (
     UsageLimits,
     capture_run_messages,
 )
-from pydantic_ai.capabilities import HandleDeferredToolCalls, Hooks, PrepareTools
+from pydantic_ai.capabilities import HandleDeferredToolCalls, Hooks, PrepareTools, ToolSearch
 from pydantic_ai.usage import RunUsage
 from .agent_run_storage import annotate_run_error, receive_user_updates
 from .ai_approval_policy import handle_configured_tool_approvals
@@ -52,6 +52,7 @@ from erp_web.stores.pydantic_message_store import (
 from .ai_agent_budget import agent_budget_error, agent_budget_instructions
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_code_mode import build_python_capabilities
+from .ai_tool_discovery import match_tool_queries
 from .ai_agent_instrumentation import AiAgentInstrumentation, AiAgentTrace
 from .ai_model_factory import (
     AiModelFactoryError,
@@ -64,6 +65,7 @@ from .ai_model_errors import (
     model_http_error_payload,
     safe_model_error_text,
 )
+from .external_request_diagnostics import exception_diagnostics
 from .ai_presentation_context import (
     AiPresentationContext,
     bind_presentation_context,
@@ -283,6 +285,7 @@ def _safe_agent_error(
             exc.__class__.__name__,
             safe_model_error_text(exc.message) or exc.__class__.__name__,
             retryable=True,
+            details=exception_diagnostics(exc),
             **correlation,
         )
     if isinstance(exc, UnexpectedModelBehavior):
@@ -918,6 +921,7 @@ class AiAgentFactory:
             toolsets=[build_pydantic_toolset(toolset)],
             name=profile.use_case_id.replace(".", "_"),
             capabilities=[
+                ToolSearch(strategy=match_tool_queries),
                 Hooks(before_node_run=receive_user_updates, model_request=project_model_request),
                 HandleDeferredToolCalls(handler=handle_configured_tool_approvals),
                 PrepareTools(_prepare_tools_within_usage_limit),

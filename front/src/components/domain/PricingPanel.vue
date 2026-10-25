@@ -61,6 +61,19 @@ const startedAt = ref(Date.now())
 const elapsedSeconds = computed(() => Math.max(0, Math.floor((now.value.getTime() - startedAt.value) / 1000)))
 const fingerprint = computed(() => pricingWorkspaceFingerprint(props.input, props.skuItems)
   + JSON.stringify(props.productContext.skuItems.map(sku => [sku.id, sku.cost_cny, sku.package_dimensions, sku.battery, sku.liquid])))
+function quoteSnapshot() {
+  return {
+    draftId: props.draftId,
+    fingerprint: fingerprint.value,
+    applied: new Map(props.skuItems.map(row => [row.pricing, row.pricing.applied])),
+  }
+}
+// 参数暂时偏离只停用报价；恢复原输入时可恢复同一份报价的应用状态。
+let reusableQuote: ReturnType<typeof quoteSnapshot> | null = quoteSnapshot()
+function invalidateQuote() {
+  reusableQuote = null
+  stale.value = true
+}
 const canCalculate = computed(() => !!props.draftId && !!selectedSkus.value.length && !!targets.value.length && !allInputErrors.value.length)
 const canApply = computed(() => prepared.value && !stale.value && !props.loading && !requestActive.value && !refreshing.value && !props.error && !!props.result && !allInputErrors.value.length && !issues.value.length && skuPricingCanApply(entries.value)
   && (!!props.result.previewId || entries.value.every(entry => entry.status === 'applied')))
@@ -80,6 +93,7 @@ watch([prepared, () => props.draftId, () => props.draftVersion, () => props.load
   requestedFingerprint = fingerprint.value
   requestActive.value = true
   restoring.value = true
+  reusableQuote = null
   emit('restore')
   await nextTick()
   if (!props.loading) { requestActive.value = false; restoring.value = false }
@@ -88,7 +102,7 @@ async function requestPreview() {
   if (!prepared.value || !canCalculate.value || disposed || props.loading || refreshing.value || requestActive.value) return
   requestedFingerprint = fingerprint.value
   requestActive.value = true
-  stale.value = true
+  invalidateQuote()
   applying.value = false
   for (const row of props.skuItems) if (row.pricing.applied) row.pricing.applied = false
   emit('calculate')
@@ -98,12 +112,14 @@ async function requestPreview() {
 }
 watch(fingerprint, () => {
   if (props.loading && !requestActive.value) return
-  stale.value = true
+  stale.value = !reusableQuote || reusableQuote.draftId !== props.draftId || reusableQuote.fingerprint !== fingerprint.value
   notice.value = ''
-  if (!props.loading) for (const row of props.skuItems) row.pricing.applied = false
+  if (!props.loading) for (const row of props.skuItems) {
+    row.pricing.applied = stale.value ? false : reusableQuote?.applied.get(row.pricing) ?? false
+  }
 }, { flush: 'sync' })
 watch(() => props.error, error => {
-  if (error && !props.loading) { requestActive.value = false; applying.value = false }
+  if (error && !props.loading) { invalidateQuote(); requestActive.value = false; applying.value = false }
 })
 watch(() => props.loading, async loading => {
   if (loading) { startedAt.value = Date.now(); return }
@@ -115,6 +131,7 @@ watch(() => props.loading, async loading => {
       stale.value = true
       notice.value = '上一轮报价已过期或与当前资料不一致，请重新计算核价。'
     }
+    reusableQuote = stale.value ? null : quoteSnapshot()
     if (!stale.value && applying.value && entries.value.every(entry => entry.status === 'applied')) notice.value = `${entries.value.length} 项售价已保存到当前草稿，可继续发布预检。`
   }
   applying.value = false
@@ -123,7 +140,7 @@ watch(() => props.loading, async loading => {
 }, { flush: 'post' })
 async function refreshData() {
   if (props.loading || refreshing.value || requestActive.value) return
-  stale.value = true
+  invalidateQuote()
   refreshing.value = true
   try { await props.refreshProduct?.(); await rates.value?.refresh(true) }
   finally { refreshing.value = false }
@@ -163,7 +180,7 @@ onBeforeUnmount(() => { disposed = true })
     </header>
     <div v-if="!selectionLocked" class="pricing-card mb-4 flex flex-wrap items-center gap-3 p-4"><label class="min-w-48 flex-1"><span class="sr-only">草稿</span><select class="pricing-input w-full" :disabled="loading || !draftItems.length" :value="draftId" @change="emit('selectDraft', ($event.target as HTMLSelectElement).value)"><option value="">选择草稿</option><option v-for="item in draftItems" :key="item.draftId" :value="item.draftId">{{ item.title || item.productTitle || item.draftId }}</option></select></label><button type="button" class="pricing-button" :disabled="loading" @click="emit('refreshDrafts')">刷新草稿</button><button type="button" class="pricing-button" :disabled="loading || !draftId" @click="emit('editDraft')">编辑草稿</button></div>
     <section class="pricing-scope-bar pricing-card" aria-label="当前核价范围"><div class="pricing-scope-count"><PhPackage :size="22" class="shrink-0 text-primary-600" /><div><p class="font-semibold">{{ selectedSkus.length }} 个 SKU</p><p class="pricing-subtle mt-1 text-[11px]">{{ issues.some(entry => pricingFactsIssues(entry.cost, entry.dimensions).length) ? '部分采购或包装资料待补充' : '采购成本与包装按规格读取' }}</p></div></div><div class="min-w-0 flex-1"><div class="flex flex-wrap gap-2"><span v-for="target in targets" :key="target.targetKey" class="pricing-tag">{{ marketName(target) }} · {{ marketSite(target) }}</span><span v-if="!targets.length" class="pricing-subtle text-xs">未选择核价市场</span></div><p class="pricing-subtle mt-2 text-[11px]">按当前店铺物流配置与运输属性匹配可用渠道</p></div><button type="button" class="pricing-button" :disabled="applying || !draftId" @click="scopeOpen = true"><PhSlidersHorizontal :size="16" />修改核价范围</button></section>
-    <PricingExchangeRates ref="rates" :input="input" :disabled="loading || requestActive" @ready="ratesReady = true" @rates="referenceUsdCnyRate = $event.usd_cny_rate" @refresh-start="stale = true" />
+    <PricingExchangeRates ref="rates" :input="input" :disabled="loading || requestActive" @ready="ratesReady = true" @rates="referenceUsdCnyRate = $event.usd_cny_rate" @refresh-start="invalidateQuote" />
     <p v-if="loading" role="status" class="pricing-progress"><span class="h-2 w-2 animate-pulse rounded-full bg-primary-600" />{{ restoring ? '正在恢复上一轮报价' : applying ? '正在校验并保存售价' : `正在核价 ${selectedSkus.length} 个 SKU × ${targets.length} 个市场` }}，已等待 {{ elapsedSeconds }} 秒。</p>
     <div class="pricing-main-grid">
       <aside class="pricing-fees pricing-card" aria-label="费用与定价"><div class="pricing-fees-scroll"><div class="pricing-section-heading"><h3 class="inline-flex items-center gap-1">费用与定价<WorkspaceHint label="费用与定价说明" content="共用费用和定价参数，单个 SKU 可单独调整。" /></h3></div><PricingTemplates :input="input" :disabled="applying" :use-default="!hasSavedPricing" @ready="templatesReady = true" @notice="notice = $event" /><PricingFeesEditor :input="input" :disabled="applying" :usd-cny-rate="usdCnyRate" @shipping-amount="updateShipping" /></div></aside>
