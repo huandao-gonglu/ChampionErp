@@ -1,7 +1,7 @@
 import { apiClient } from '@/api/client'
 
 export type OnlinePlatform = 'mercadolibre' | 'ozon' | 'yandex'
-export type OnlineOperation = 'price' | 'stock' | 'content' | 'sale_state'
+export type OnlineOperation = 'price' | 'stock' | 'content' | 'sale_state' | 'archive'
 export interface PriceScope { id: string; label: string; amount: string | null; currency: string; kind: string; writable: boolean; reason: string }
 export interface StockScope { id: string; label: string; quantity: number | null; writable: boolean; reason: string }
 export interface BuyerLink { label: string; url: string; site_id: string }
@@ -18,9 +18,10 @@ export interface OnlineListing {
   details_state: 'pending' | 'ready' | 'failed'
   raw_status: string; sale_state: string; raw_sub_status: string[]; prices: PriceScope[]; stocks: StockScope[]; version: string; synced_at: string; status_checked_at: string; errors: string[]; desired_sale_state: string
   platform_issues: PlatformIssue[]
+  archived?: boolean
   markets: Array<{ id: string; site_id: string; logistic_type: string; raw_status: string; price: string | null; currency: string }>
   content: { title?: string; description?: string; pictures?: Array<string | {id: string; url: string}>; attributes?: Array<Record<string, unknown>>; attribute_names_error?: string }
-  capabilities: Record<OnlineOperation, {enabled: boolean; reason: string; scope: string; fields: string[]}>
+  capabilities: Record<Exclude<OnlineOperation, 'archive'>, {enabled: boolean; reason: string; scope: string; fields: string[]}> & {archive?: {enabled: boolean; reason: string; scope: string; fields: string[]}}
 }
 export interface OnlineJob {
   id: string; operation: string; platform: OnlinePlatform; status: string; created_at: string; updated_at: string; target_id: string
@@ -28,6 +29,12 @@ export interface OnlineJob {
   result: { automatic_confirmation_pending?: boolean; next_confirmation_at?: number; last_confirmation_at?: number; before?: {title?:string; seller_sku?:string}; platform_confirmation?: {note?:string; pending?:boolean}; platform_errors?: unknown[]; read_errors?: string[]; error?: string; completed?: number; failed?: number; created?: number; updated?: number; discovery_complete?: boolean; phase?: 'catalog' | 'details' | 'complete'; discovered?: number; changes?: Record<string, unknown>; confirmation?: Record<string, boolean>; evidence?: {synced_at: string; checked_at?: string; version?: string; observed?: Record<string, unknown>}; resolution?: {closed_at: string; acknowledged_unconfirmed: boolean}; items?: Array<{remote_id: string; status: string; error?: string}> }
 }
 export interface OnlineFeedbackSummary { affected_sku_count: number; error_count: number; warning_count: number }
+export interface OnlineBatchPreview {
+  items: Array<{listing_id:string; version:string; seller_sku:string; title:string; group_id:string}>
+  errors: Array<{listing_id:string; seller_sku:string; error:string}>
+  product_count: number
+  scope: string
+}
 export interface OnlineProductGroup {
   id: string; title: string; kind: 'group' | 'single'; item_ids: string[]; total_count: number
   feedback_summary: OnlineFeedbackSummary
@@ -57,4 +64,10 @@ export async function refreshOnlineStatus(listingId: string): Promise<OnlineList
 }
 export async function onlineAction(action: string, body: Record<string, unknown>): Promise<OnlineJob> {
   return checked<{job: OnlineJob}>((await apiClient.post(`/api/online-products/${action}`, body)).data).job
+}
+export async function previewOnlineBatch(body: Record<string, unknown>): Promise<OnlineBatchPreview> {
+  return checked((await apiClient.post('/api/online-products/change-batch/preview', body)).data)
+}
+export async function submitOnlineBatch(body: Record<string, unknown>): Promise<OnlineJob[]> {
+  return checked<{jobs:OnlineJob[]}>((await apiClient.post('/api/online-products/change-batch', body)).data).jobs
 }

@@ -4,7 +4,24 @@ from pathlib import Path
 
 from erp_web.context import get_context
 from erp_web.product_model import merge_source_partial_result
-from erp_web.runtime_units.image_pool_core import _pool_display_item
+from erp_web.runtime_units.image_pool_core import _pool_display_item, current_image_pool
+
+
+def test_display_pool_preserves_image_lineage_and_language_for_draft_versions():
+    product = {"source": {"image_pool": [
+        {"id": "source", "url": "https://example.test/source.png"},
+        {"id": "translated", "url": "https://example.test/translated.png", "origin": "ai_translated",
+         "derived_from_id": "source", "target_language": "ru", "provider": "test-provider"},
+        {"id": "edited", "url": "https://example.test/edited.png", "origin": "ai_generated",
+         "derived_from_id": "translated", "source_asset_id": "source", "target_language": "ru"},
+    ]}}
+    pool = {item["id"]: item for item in current_image_pool(product)}
+    assert pool["translated"]["derived_from_id"] == "source"
+    assert pool["translated"]["target_language"] == "ru"
+    assert pool["translated"]["provider"] == "test-provider"
+    assert pool["edited"]["derived_from_id"] == "translated"
+    assert pool["edited"]["source_asset_id"] == "source"
+    assert pool["edited"]["target_language"] == "ru"
 
 
 def test_pool_display_item_converts_existing_local_preview_to_file_url(app_dir: Path) -> None:

@@ -19,7 +19,7 @@ def read(query: dict[str, str]) -> dict[str, Any]:
         page = max(1, int(query.get("page") or 1))
     except ValueError:
         page = 1
-    return service.list(query.get("platform") or "mercadolibre", query=query.get("q", ""), status=query.get("status", ""), market=query.get("market", ""), page=page)
+    return service.list(query.get("platform") or "mercadolibre", query=query.get("q", ""), status=query.get("status", ""), market=query.get("market", ""), page=page, catalog=query.get("catalog", "current"))
 
 
 def read_source_images(query: dict[str, str]) -> dict[str, Any]:
@@ -43,9 +43,13 @@ def mutate(action: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
     service = get_context().online_products
     try:
         if action == "sync":
-            result = service.sync(body["platform"], body["idempotency_key"])
+            result = service.sync(body["platform"], body["idempotency_key"], catalog=body.get("catalog", "current"))
         elif action == "change":
             result = service.change(body)
+        elif action == "change-batch/preview":
+            result = service.preview_batch(body)
+        elif action == "change-batch":
+            result = service.change_batch(body)
         elif action == "reconcile":
             result = service.reconcile(body["job_id"])
         elif action == "close":

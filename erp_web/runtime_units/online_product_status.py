@@ -6,7 +6,7 @@ from urllib.parse import quote
 from erp_web.marketplaces.mercadolibre_mapping import validate_user_product_mapping
 from erp_web.product_model import canonicalize_mercadolibre_siteless_user_product_id
 from erp_web.runtime_units.online_ozon_read import index_rows as ozon_rows
-from erp_web.runtime_units.online_yandex_read import hidden_ids, index_rows, pages
+from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, index_rows, pages
 from erp_web.schemas.online_products import MarketStatus, OnlineStatus
 from erp_web.runtime_units.online_yandex_snapshot import card_issues
 
@@ -22,13 +22,20 @@ def yandex_status(adapter, listing):
         offer_future = pool.submit(copy_context().run, fetch, f"/v2/campaigns/{adapter.campaign}/offers", "offers")
         card_future = pool.submit(copy_context().run, fetch, f"/v2/businesses/{adapter.business}/offer-cards", "offerCards")
         hidden_future = pool.submit(copy_context().run, hidden_ids, adapter, remote_id)
+        mapping_future = pool.submit(copy_context().run, lambda: [row for page in catalog_pages(adapter, [remote_id]) for row in page])
         offers, cards, hidden = offer_future.result(), card_future.result(), hidden_future.result()
+        mappings = mapping_future.result()
+    if len(mappings) != 1 or mappings[0]["offer"]["offerId"] != remote_id:
+        raise ValueError("Yandex 未返回该商品的归档状态，已保留原记录")
+    archived = mappings[0]["offer"].get("archived", False)
+    if type(archived) is not bool:
+        raise ValueError("Yandex 商品归档状态无效，已保留原记录")
     if remote_id not in offers or remote_id not in cards:
         raise ValueError("Yandex 未返回该商品的店铺状态，已保留原记录")
     status = str(offers[remote_id].get("status") or "")
     card_status = str(cards.get(remote_id, {}).get("cardStatus") or "")
     return OnlineStatus(remote_id=remote_id, raw_status=status,
-        sale_state="paused" if remote_id in hidden else "active" if status == "PUBLISHED" else "unknown",
+        sale_state="paused" if remote_id in hidden else "active" if status == "PUBLISHED" and not archived else "unknown", archived=archived,
         raw_sub_status=[card_status] if card_status else [],
         platform_issues=card_issues(cards[remote_id]),
         markets=[MarketStatus(id=adapter.campaign, raw_status=status)])

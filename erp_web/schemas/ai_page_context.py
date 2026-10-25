@@ -38,6 +38,7 @@ class AiPageContext(BaseModel):
     draft_id: ContextId | None = None
     listing_id: ContextId | None = None
     group_id: ContextId | None = None
+    catalog: Literal["current", "archived"] | None = None
     platform: ContextId | None = None
     site: ContextId | None = None
     sku_id: ContextId | None = None
@@ -69,6 +70,8 @@ def page_context_instructions(context: dict | None) -> str:
     if page.page == "orders":
         lines.append("order_id 为当前详情中的 ERP 订单 ID；先读取订单工具核对，不将平台单号或列表第一笔推断为当前订单。")
     if page.page == "onlineProducts":
+        if page.catalog:
+            lines.append(f"当前商品目录：{'归档商品' if page.catalog == 'archived' else '普通商品'}；读取当前目录时传 catalog={page.catalog}。")
         lines.append(
             "listing_id 指向当前焦点刊登/SKU；group_id 指向当前焦点组合或独立节点，"
             "只提供 group_id 时不能把代表 SKU 当作整组。读取组合成员使用 group_id 和 view=listings。"

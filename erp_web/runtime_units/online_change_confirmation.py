@@ -79,7 +79,18 @@ def yandex_change(adapter, listing, request):
             raise ValueError("平台未返回待确认商品，已保留原快照")
         return values[remote_id]
 
-    if request.operation == "sale_state":
+    if request.operation == "archive":
+        mappings = [row for page in catalog_pages(adapter, [remote_id]) for row in page]
+        if len(mappings) != 1 or mappings[0]["offer"]["offerId"] != remote_id:
+            raise ValueError("归档查询返回的商品身份不一致")
+        archived = mappings[0]["offer"].get("archived", False)
+        if type(archived) is not bool:
+            raise ValueError("归档查询未返回有效状态")
+        fresh.archived = archived
+        fresh.snapshot.setdefault("offer", {})["archived"] = archived
+        if archived and fresh.sale_state == "active":
+            fresh.sale_state = "unknown"
+    elif request.operation == "sale_state":
         hidden = remote_id in hidden_ids(adapter,remote_id)
         fresh.snapshot["hidden"] = hidden
         # 隐藏解除只证明请求生效，不推断商品已通过平台审核。

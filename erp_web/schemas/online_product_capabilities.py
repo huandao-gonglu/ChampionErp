@@ -19,6 +19,7 @@ class OnlineReadRequest(OnlineRequest):
     q: str = ""
     status: str = ""
     market: str = ""
+    catalog: Literal["current", "archived", "all"] = Field(default="current", description="current 为普通商品（默认排除归档），archived 仅归档商品，all 包含全部；归档与停售、库存无关。")
     page: int = Field(default=1, ge=1)
     limit: int = Field(default=25, ge=1, le=50, description="每页最多返回的摘要条数；查看第一项用 page=1、limit=1。")
     view: Literal["groups", "listings"] = Field(default="groups", description="groups 按页面顺序读取父节点及代表刊登；listings 按同序逐 SKU 分页，组合可以跨页。")
@@ -54,6 +55,7 @@ def validate_online_fields(fields: list[str]) -> list[str]:
 
 class OnlineSyncRequest(OnlineRequest):
     platform: Platform
+    catalog: Literal["current", "archived"] = Field(default="current", description="只同步所选目录：current 普通商品，archived 归档商品（目前仅 Yandex）；跟随用户当前页面目录，不同时同步两类。")
 
 
 class OnlineJobRequest(OnlineRequest):
@@ -87,6 +89,7 @@ class OnlineListingSummary(BaseModel):
     title: str
     raw_status: str
     sale_state: str
+    archived: bool = False
     prices: list[PriceScope]
     stocks: list[StockScope]
     synced_at: str
@@ -146,6 +149,7 @@ class OnlineReadResult(BaseModel):
     groups: list[OnlineGroupSummary] = Field(default_factory=list)
     view: Literal["groups", "listings", "detail"] = "detail"
     platform: Platform | None = None
+    catalog: Literal["current", "archived", "all"] = "current"
     account_id: str = ""
     total: int = 0
     listing_total: int = 0

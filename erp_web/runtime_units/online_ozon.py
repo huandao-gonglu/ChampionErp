@@ -24,7 +24,9 @@ class OzonOnlineAdapter:
     def request(self, path: str, body: dict[str, Any]):
         return request_ozon_json("POST", API+path, self.account_id, self.key, body)
 
-    def sync(self, ids=None):
+    def sync(self, ids=None, *, catalog="current"):
+        if catalog != "current":
+            raise ValueError("该平台暂不支持单独同步归档目录")
         return sync_ozon(self, ids)
 
     def read_status(self, listing):

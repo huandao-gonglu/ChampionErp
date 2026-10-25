@@ -283,7 +283,7 @@ class AppContext:
                 if self._products is None:
                     from erp_web.stores.product_store import ProductStore
 
-                    self._products = ProductStore(self.db)
+                    self._products = ProductStore(self.db, image_draft_guard=lambda draft_id: self.image_batches.assert_draft_idle(draft_id))
         return self._products
 
     @property

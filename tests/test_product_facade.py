@@ -21,6 +21,7 @@ def test_save_draft_refreshes_ozon_description_category_id_on_target(
     monkeypatch,
 ) -> None:
     products = _Products()
+    image_batches = product_facade.get_context().image_batches
     fetch_calls: list[dict[str, Any]] = []
 
     def fetch_category_record(
@@ -49,7 +50,7 @@ def test_save_draft_refreshes_ozon_description_category_id_on_target(
     monkeypatch.setattr(
         product_facade,
         "get_context",
-        lambda: SimpleNamespace(products=products),
+        lambda: SimpleNamespace(products=products, image_batches=image_batches),
     )
     monkeypatch.setattr(
         "erp_web.runtime_units.draft_category_resolution.fetch_category_record",
@@ -92,10 +93,11 @@ def test_save_draft_refreshes_ozon_description_category_id_on_target(
 
 def test_save_draft_rejects_unresolvable_ozon_type_id(monkeypatch) -> None:
     products = _Products()
+    image_batches = product_facade.get_context().image_batches
     monkeypatch.setattr(
         product_facade,
         "get_context",
-        lambda: SimpleNamespace(products=products),
+        lambda: SimpleNamespace(products=products, image_batches=image_batches),
     )
     monkeypatch.setattr(
         "erp_web.runtime_units.draft_category_resolution.fetch_category_record",

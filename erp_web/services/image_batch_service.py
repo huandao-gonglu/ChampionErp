@@ -4,7 +4,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import replace
-from threading import BoundedSemaphore, RLock
+from threading import BoundedSemaphore, RLock, Thread
 from uuid import uuid4
 
 from pydantic_ai.messages import ModelRequest, UserPromptPart
@@ -24,24 +24,35 @@ _image_slots = BoundedSemaphore(3)
 
 def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                     sources: list[dict], process: Callable[[dict], dict],
-                    persist: Callable[[dict], None]) -> dict:
+                    persist: Callable[[dict], None], draft_id: str = "",
+                    request_id: str = "", background: bool = False) -> dict:
     presentation = current_presentation_context()
-    conversation_id = (presentation.conversation_id if presentation and presentation.is_root_scope
+    conversation_id = request_id or (presentation.conversation_id if presentation and presentation.is_root_scope
                        else f"conversation_{uuid4().hex}")
     display_prompt = (presentation.initial_user_message if presentation and presentation.initial_user_message else prompt)
     initial = ModelRequest(parts=[UserPromptPart(display_prompt)], metadata={"image_batch": True})
     histories: dict[int, list] = {}
     history_lock = RLock()
-    messages.save(conversation_id, [initial])
     batch = ImageBatch(
-        conversation_id=conversation_id, product_id=product_id, prompt=display_prompt,
+        conversation_id=conversation_id, product_id=product_id, draft_id=draft_id, prompt=display_prompt,
         created_at=utc_now(), updated_at=utc_now(),
         items=[ImageBatchItem(index=index, source_id=str(item["id"]),
                              source_url=image_service.preview_for_path(str(item.get("path") or item.get("local_path") or ""), app_dir)
                              or str(item.get("preview_url") or item.get("url") or ""))
                for index, item in enumerate(sources)],
     )
-    store.create(batch)
+    # 注册与幂等检查必须先完成；异步执行仍使用同一领域批次与三路执行上限。
+    with store.lock:
+        existing = store.get(conversation_id)
+        if existing:
+            if (existing.product_id != product_id or existing.draft_id != draft_id
+                    or [item.source_id for item in existing.items] != [item.source_id for item in batch.items]
+                    or existing.prompt != display_prompt):
+                raise ValueError("图片请求标识已用于其他操作。")
+            return {"ok": True, "imagePoolItems": [], "image_batch": existing.snapshot(),
+                    "conversation_id": conversation_id, "message": "已恢复原图片任务。"}
+        store.create(batch)
+        messages.save(conversation_id, [initial])
 
     def record(index, native):
         # 每张保留完整原生消息；排队状态不伪装成模型回复或工具事件。
@@ -72,15 +83,22 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                 store.update_item(conversation_id, index, status="failed", finished_at=utc_now(), error=error or "图片处理失败。")
                 return []
 
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="image-batch") as pool:
-        futures = [pool.submit(copy_context().run, work, index, source) for index, source in enumerate(sources)]
-        # 保存发生在每个 worker 内；这里只按原图顺序汇总，不阻挡其他结果落库。
-        results = [item for future in futures for item in future.result()]
-    snapshot = store.get(conversation_id).snapshot()
-    message = f"处理结束：成功 {snapshot['success']} 张，失败 {snapshot['failed']} 张。"
-    if not results and snapshot["items"]:
-        message += " " + snapshot["items"][0]["error"]
-    return {"ok": bool(results), "imagePoolItems": results, "generated_count": len(results),
-            "provider": next((str(item["provider"]) for item in results if item.get("provider")), ""),
-            "image_batch": snapshot, "conversation_id": conversation_id,
-            "message": message}
+    def execute():
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="image-batch") as pool:
+            futures = [pool.submit(copy_context().run, work, index, source) for index, source in enumerate(sources)]
+            # 保存发生在每个 worker 内；这里只按原图顺序汇总，不阻挡其他结果落库。
+            results = [item for future in futures for item in future.result()]
+        snapshot = store.get(conversation_id).snapshot()
+        message = f"处理结束：成功 {snapshot['success']} 张，失败 {snapshot['failed']} 张。"
+        if not results and snapshot["items"]:
+            message += " " + snapshot["items"][0]["error"]
+        return {"ok": bool(results), "imagePoolItems": results, "generated_count": len(results),
+                "provider": next((str(item["provider"]) for item in results if item.get("provider")), ""),
+                "image_batch": snapshot, "conversation_id": conversation_id,
+                "message": message}
+
+    if background:
+        Thread(target=copy_context().run, args=(execute,), daemon=True, name="draft-image-batch").start()
+        return {"ok": True, "imagePoolItems": [], "image_batch": batch.snapshot(),
+                "conversation_id": conversation_id, "message": "图片处理已开始。"}
+    return execute()

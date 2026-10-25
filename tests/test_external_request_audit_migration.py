@@ -9,13 +9,15 @@ from erp_web.db import ErpDatabase, _current_schema_signature, _schema_signature
 from erp_web.schemas.external_requests import RequestContext
 from erp_web.stores.external_request_store import ExternalRequestStore, EXTERNAL_REQUEST_SCHEMA_SQL
 from scripts.migrate_external_request_audit import SOURCE_AUDIT_SCHEMA_SQL, migrate
+from scripts.migrate_online_operations import V16_SCHEMA_SQL
 
 
 @pytest.fixture
 def legacy_database(tmp_path):
     path = tmp_path / "erp.sqlite3"
-    ErpDatabase(path)
     with closing(sqlite3.connect(path)) as conn:
+        conn.executescript(V16_SCHEMA_SQL)
+        conn.execute("PRAGMA user_version=16")
         conn.executescript(SOURCE_AUDIT_SCHEMA_SQL)
         conn.execute("INSERT INTO store_auth(platform,credentials_json) VALUES(?,?)", ("ozon", '{"client_id":"保留账号","api_key":"隔离测试凭据"}'))
         conn.execute("""INSERT INTO external_attempts
@@ -38,7 +40,7 @@ def test_migration_preserves_business_audit_blocks_and_private_backup(legacy_dat
     ErpDatabase(legacy_database)
     with closing(sqlite3.connect(legacy_database)) as conn:
         assert _schema_signature(conn) == _current_schema_signature()
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 17
         assert conn.execute("SELECT credentials_json FROM store_auth WHERE platform='ozon'").fetchone()[0] == '{"client_id":"保留账号","api_key":"隔离测试凭据"}'
     target = legacy_database.parent / "data/external-requests.sqlite3"
     assert target.stat().st_mode & 0o777 == 0o600

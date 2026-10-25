@@ -83,7 +83,9 @@ def save_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
             "error": str(exc),
             "error_code": "OZON_CATEGORY_PAIR_RESOLVE_FAILED",
         }, 400
-    result, error, status = products.save_draft_detail(resolved_draft)
+    with get_context().image_batches.lock:
+        get_context().image_batches.assert_draft_idle(str(draft.get("draft_id") or draft.get("draftId") or ""))
+        result, error, status = products.save_draft_detail(resolved_draft)
     return (error or result), status
 
 

@@ -1,4 +1,4 @@
-"""Yandex 在线目录、店铺价格、库存及隐藏状态适配。"""
+"""Yandex 在线目录、店铺价格、库存、停售及账号归档适配。"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -17,6 +17,7 @@ from erp_web.runtime_units.category_catalog import get_category_catalog
 
 class YandexOnlineAdapter:
     platform = "yandex"
+    batch_limits = {"sale_state": 500, "archive": 200}
 
     def __init__(self, config: dict[str, Any]):
         self.config = config[self.platform]
@@ -52,8 +53,8 @@ class YandexOnlineAdapter:
                 self._attribute_names[category_id] = ({}, f"读取属性名称失败：{exc}")
         return self._attribute_names[category_id]
 
-    def sync(self, ids=None):
-        return sync_yandex(self, ids)
+    def sync(self, ids=None, *, catalog="current"):
+        return sync_yandex(self, ids, catalog=catalog)
 
     def read_status(self, listing):
         return yandex_status(self, listing)
@@ -71,6 +72,51 @@ class YandexOnlineAdapter:
     def read_confirmation(self, listing, request):
         return yandex_change(self, listing, request)
 
+    def read_many(self, remote_ids):
+        """目标目录和详情按平台批量接口校验，不逐个 SKU 重复下载。"""
+        from erp_web.schemas.online_products import OnlineSyncBatch
+        result = OnlineSyncBatch("details")
+        for batch in sync_yandex(self, remote_ids, catalog=None):
+            if batch.phase == "details":
+                result.listings.extend(batch.listings)
+                result.errors.update(batch.errors)
+        return result
+
+    def write_batch(self, listings, operation, scope, changes):
+        ids = [row.remote_id for row in listings]
+        if operation not in self.batch_limits or not 1 <= len(ids) <= self.batch_limits[operation] or len(set(ids)) != len(ids):
+            raise ValueError("Yandex 批量操作或数量无效")
+        try:
+            if operation == "sale_state":
+                suffix = "" if changes["state"] == "paused" else "/delete"
+                receipt = self.request(f"/v2/campaigns/{self.campaign}/hidden-offers{suffix}", {"hiddenOffers": [{"offerId": sku} for sku in ids]})
+                return {sku: deepcopy(receipt) for sku in ids}
+            action = "archive" if changes["archived"] else "unarchive"
+            receipt = self.request(f"/v2/businesses/{self.business}/offer-mappings/{action}", {"offerIds": ids})
+            if receipt.get("status") != "OK":
+                return {sku: deepcopy(receipt) for sku in ids}
+            result = receipt.get("result", {})
+            if not isinstance(result, dict):
+                raise ValueError("Yandex 归档回执结果格式无效，结果需核对")
+            key = "notArchivedOffers" if changes["archived"] else "notUnarchivedOfferIds"
+            rejected = result.get(key)
+            # 官方允许失败清单为 null；其他非列表值不能当作全部成功。
+            if rejected is None:
+                rejected = []
+            if not isinstance(rejected, list):
+                raise ValueError("Yandex 归档失败清单格式无效，结果需核对")
+            failures = {}
+            for row in rejected:
+                sku = row.get("offerId") if changes["archived"] and isinstance(row, dict) else row if not changes["archived"] else None
+                if not isinstance(sku, str) or sku not in ids or sku in failures:
+                    raise ValueError("Yandex 归档回执商品身份不一致，结果需核对")
+                failures[sku] = row
+            return {sku: {**receipt, "result": {key: [failures[sku]] if sku in failures else []}} for sku in ids}
+        except api.YandexApiError as exc:
+            if exc.http_status == 200:
+                exc.details["definitively_rejected"] = True
+            raise
+
     def write(self, listing: OnlineListing, operation: str, scope: str, changes: dict[str, Any]) -> dict[str, Any]:
         try:
             return self._write(listing, operation, scope, changes)
@@ -81,6 +127,8 @@ class YandexOnlineAdapter:
             raise
 
     def _write(self, listing: OnlineListing, operation: str, scope: str, changes: dict[str, Any]) -> dict[str, Any]:
+        if operation in self.batch_limits:
+            return self.write_batch([listing], operation, scope, changes)[listing.remote_id]
         if operation == "price":
             raw = listing.snapshot["default_price"] if scope == "business" else listing.snapshot["campaign"].get("campaignPrice", {})
             price = {k: raw[k] for k in ("discountBase", "vat", "minimumForBestseller") if k in raw and (scope == "campaign" or k != "vat")}
@@ -89,9 +137,6 @@ class YandexOnlineAdapter:
         if operation == "stock":
             return api.update_yandex_stock(self.token, mode=self.mode, business_id=self.business, campaign_id=self.campaign,
                 warehouse_ids=[scope] if self.mode=="business" else None, offer_id=listing.remote_id, count=changes["quantity"])
-        if operation == "sale_state":
-            suffix = "" if changes["state"]=="paused" else "/delete"
-            return self.request(f"/v2/campaigns/{self.campaign}/hidden-offers{suffix}", {"hiddenOffers":[{"offerId":listing.remote_id}]})
         payload = deepcopy(changes)
         if "title" in payload:
             payload["name"] = payload.pop("title")

@@ -13,7 +13,7 @@ constructed by ``AppContext`` and handed its database.
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from pydantic import ValidationError
 
@@ -590,8 +590,9 @@ def _changed_publish_content_targets(
 class ProductStore:
     """Product/draft CRUD + index + workflow status over ``ErpDatabase``."""
 
-    def __init__(self, db: ErpDatabase) -> None:
+    def __init__(self, db: ErpDatabase, *, image_draft_guard: Callable[[str], None] | None = None) -> None:
         self._db = db
+        self._image_draft_guard = image_draft_guard
 
     def mutation_scope(self, arguments):
         keys = set()
@@ -1392,6 +1393,16 @@ class ProductStore:
         existing = self._db.load_draft_model(draft_id)
         if not existing:
             return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
+        if self._image_draft_guard:
+            image_changes = ("images" in draft_payload and normalize_draft_image_refs(draft_payload["images"])
+                             != normalize_draft_image_refs(existing.get("images")))
+            if "sku_items" in draft_payload:
+                def image_overrides(value):
+                    return {row["sku_id"]: row.get("overrides", {}).get("image_asset_id")
+                            for row in value.get("sku_items", [])}
+                image_changes = image_changes or image_overrides(draft_payload) != image_overrides(existing)
+            if image_changes:
+                self._image_draft_guard(draft_id)
         if draft_payload.get("updated_at") and draft_payload[
             "updated_at"
         ] != existing.get("updated_at"):

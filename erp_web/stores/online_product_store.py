@@ -10,9 +10,8 @@ from typing import Any
 from uuid import uuid4
 
 from erp_web.db import ErpDatabase, utc_now
+from erp_web.product_model.online_operation_model import blocks_modification, effective_job_status, submission_status
 from erp_web.schemas.online_products import BuyerLink, OnlineListing, OnlineStatus, snapshot_version
-
-ACTIVE = ("queued", "running", "submitted", "waiting_confirmation", "outcome_unknown")
 
 
 class OnlineConflict(ValueError):
@@ -65,10 +64,8 @@ class OnlineProductStore:
 
     @staticmethod
     def _assert_status_refreshable(conn, listing: OnlineListing):
-        running = conn.execute("""SELECT 1 FROM online_jobs WHERE platform=? AND account_id=?
-            AND target_id IN (?, '*') AND status IN ('queued', 'running') LIMIT 1""",
-            (listing.platform, listing.account_id, listing.id)).fetchone()
-        if running:
+        rows = OnlineProductStore._resource_jobs(conn, listing.platform, listing.account_id, listing.id, "status")
+        if any(row["status"] in ("queued", "running") for row in rows):
             raise OnlineConflict("该商品正在同步或执行修改，请完成后再刷新状态")
 
     def assert_status_refreshable(self, listing: OnlineListing) -> None:
@@ -95,6 +92,10 @@ class OnlineProductStore:
             current.raw_sub_status = status.raw_sub_status
             current.platform_issues = status.platform_issues
             current.sale_state = status.sale_state
+            if status.archived is not None:
+                current.archived = status.archived
+                if current.platform == "yandex":
+                    current.snapshot.setdefault("offer", {})["archived"] = status.archived
             for market in current.markets:
                 if market.id in markets:
                     market.raw_status = markets[market.id].raw_status
@@ -151,7 +152,35 @@ class OnlineProductStore:
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_lease(conn, lease)
+            newer = conn.execute("""SELECT 1 FROM online_jobs WHERE target_id=? AND operation='sale_state'
+                AND dispatched=1 AND created_at>(SELECT created_at FROM online_jobs WHERE id=?) LIMIT 1""",
+                (listing_id, lease["id"])).fetchone()
+            if newer:
+                return
             conn.execute("UPDATE online_listings SET desired_sale_state=? WHERE id=?", (state, listing_id))
+            conn.commit()
+
+    def archive_state(self, listing_id: str, archived: bool, *, lease: dict[str, Any]) -> None:
+        """平台逐项回执已确认归档结果，更新该账号各店铺的目录归属，不修改库存或隐藏意图。"""
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_lease(conn, lease)
+            target = conn.execute("SELECT * FROM online_listings WHERE id=? AND platform='yandex'", (listing_id,)).fetchone()
+            if target is None:
+                raise ValueError("归档目标不存在或平台不支持")
+            prefix = target["account_id"].split(":", 1)[0] + ":"
+            rows = conn.execute("SELECT * FROM online_listings WHERE platform='yandex' AND substr(account_id,1,?)=? AND remote_id=?",
+                                (len(prefix), prefix, target["remote_id"])).fetchall()
+            for row in rows:
+                listing = OnlineListing.model_validate_json(row["snapshot_json"])
+                listing.archived = archived
+                listing.snapshot.setdefault("offer", {})["archived"] = archived
+                # 恢复归档不保证已恢复销售；原隐藏设置与真实库存保持不变。
+                if listing.sale_state == "active":
+                    listing.sale_state = "unknown"
+                listing.version = snapshot_version(listing)
+                conn.execute("UPDATE online_listings SET snapshot_json=?,version=? WHERE id=?",
+                             (listing.model_dump_json(), listing.version, listing.id))
             conn.commit()
 
     @staticmethod
@@ -159,6 +188,7 @@ class OnlineProductStore:
         result = dict(row)
         result["request"] = json.loads(result.pop("request_json"))
         result["result"] = json.loads(result.pop("result_json"))
+        result["status"] = effective_job_status(result)
         result.pop("owner", None)
         result.pop("lease_until", None)
         return result
@@ -175,7 +205,7 @@ class OnlineProductStore:
             rows = conn.execute("SELECT * FROM online_jobs WHERE platform=? AND account_id=? ORDER BY created_at DESC LIMIT 100", (platform, account)).fetchall()
         return [self._job(row) for row in rows]
 
-    def latest_sync_summary(self, platform: str, account: str) -> dict[str, Any] | None:
+    def latest_sync_summary(self, platform: str, account: str, *, catalog: str = "current") -> dict[str, Any] | None:
         """查询最新同步的固定进度字段，避免为商品读取加载历史任务及逐项回执。"""
         with self.db._connect() as conn:
             row = conn.execute("""SELECT id,status,updated_at,
@@ -185,7 +215,8 @@ class OnlineProductStore:
                 json_extract(result_json,'$.discovery_complete') AS discovery_complete,
                 COALESCE(json_extract(result_json,'$.error_code'),'') AS error_code
                 FROM online_jobs WHERE platform=? AND account_id=? AND operation='sync'
-                ORDER BY created_at DESC,id DESC LIMIT 1""", (platform, account)).fetchone()
+                AND (?='all' OR COALESCE(json_extract(request_json,'$.catalog'),'all') IN (?, 'all'))
+                ORDER BY created_at DESC,id DESC LIMIT 1""", (platform, account, catalog, catalog)).fetchone()
         return dict(row) if row is not None else None
 
     def idempotent_job(self, key: str) -> dict[str, Any] | None:
@@ -193,50 +224,123 @@ class OnlineProductStore:
             row = conn.execute("SELECT * FROM online_jobs WHERE idempotency_key=?", (key,)).fetchone()
         return self._job(row) if row else None
 
+    @staticmethod
+    def _resource_jobs(conn, platform: str, account: str, target: str, operation: str):
+        """归档为 business 级操作，同一 SKU 在其他店铺的执行也属于同一资源。"""
+        prefix = account.split(":", 1)[0] + ":"
+        return conn.execute("""SELECT j.* FROM online_jobs j LEFT JOIN online_listings l ON l.id=j.target_id
+            WHERE j.platform=? AND j.status IN ('queued','running','submitted','waiting_confirmation','outcome_unknown')
+            AND ((j.account_id=? AND (?='*' OR j.target_id IN (?, '*')))
+                OR (?='yandex' AND substr(j.account_id,1,?)=? AND (j.operation='archive' OR ?='archive')
+                    AND (?='*' OR j.target_id='*' OR l.remote_id=(SELECT remote_id FROM online_listings WHERE id=?))))
+            ORDER BY j.created_at""", (platform, account, target, target, platform, len(prefix), prefix, operation, target, target)).fetchall()
+
     def enqueue(self, platform: str, account: str, operation: str, target: str, request: dict[str, Any], key: str) -> dict[str, Any]:
-        facts = json.dumps(request, ensure_ascii=False, sort_keys=True)
-        now, job_id = utc_now(), uuid4().hex
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            old = conn.execute("SELECT * FROM online_jobs WHERE idempotency_key=?", (key,)).fetchone()
-            if old:
-                if (old["platform"], old["account_id"], old["operation"], old["target_id"], old["request_json"]) != (platform, account, operation, target, facts):
-                    raise OnlineConflict("重复提交键对应不同操作，请重新确认")
-                return self._job(old)
-            # 同步只与正在排队或执行的任务互斥；等待回执不应冻结整店只读同步。
-            # 新修改仍受同目标的全部未完成任务保护，不能借同步绕过未知写入。
-            rows = conn.execute("SELECT id,target_id,operation,status,result_json FROM online_jobs WHERE platform=? AND account_id=? AND status IN ('queued','running','submitted','waiting_confirmation','outcome_unknown')", (platform, account)).fetchall()
-            conflict = next((row for row in rows
-                             if (operation != "sync" or row["status"] in ("queued", "running"))
-                             and (target == "*" or row["target_id"] in ("*", target))), None)
-            if conflict:
-                if conflict["operation"] == "sync":
-                    progress = json.loads(conflict["result_json"])
-                    count = int(progress.get("completed", 0)) + int(progress.get("failed", 0))
-                    raise OnlineConflict(f"当前店铺正在同步，已处理 {count} 件；请查看同步进度，无需重复启动", job_id=conflict["id"])
-                if operation == "sync":
-                    raise OnlineConflict("当前店铺有排队或执行中的商品修改，请完成后再同步", job_id=conflict["id"])
-                raise OnlineConflict("该商品已有未完成的修改，请到操作记录查询平台结果；核对后仍未确认的操作可由人工结束", job_id=conflict["id"])
-            conn.execute("INSERT INTO online_jobs(id,platform,account_id,operation,target_id,status,idempotency_key,request_json,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?,?,?)",
-                         (job_id, platform, account, operation, target, key, facts, now, now))
+            job = self._enqueue(conn, platform, account, operation, target, request, key)
             conn.commit()
-        return self.job(job_id)
+        return job
+
+    def _enqueue(self, conn, platform, account, operation, target, request, key, result=None):
+        facts = json.dumps(request, ensure_ascii=False, sort_keys=True)
+        now, job_id = utc_now(), uuid4().hex
+        old = conn.execute("SELECT * FROM online_jobs WHERE idempotency_key=?", (key,)).fetchone()
+        if old:
+            if (old["platform"], old["account_id"], old["operation"], old["target_id"], old["request_json"]) != (platform, account, operation, target, facts):
+                raise OnlineConflict("重复提交键对应不同操作，请重新确认")
+            return self._job(old)
+        if operation != "sync":
+            current = conn.execute("SELECT version FROM online_listings WHERE id=?", (target,)).fetchone()
+            if request.get("version") and (not current or current["version"] != request["version"]):
+                raise OnlineConflict("商品快照已更新，请重新查看并确认变更")
+        # 明确受理的修改不占用商品；异步处理中/未知结果只保护相关变更。
+        rows = self._resource_jobs(conn, platform, account, target, operation)
+        jobs = [self._job(row) for row in rows]
+        conflict = next((job for job in jobs
+                         if (job["status"] in ("queued", "running") if operation == "sync"
+                              else blocks_modification(job, request))), None)
+        if conflict:
+            if conflict["operation"] == "sync":
+                progress = conflict["result"]
+                count = int(progress.get("completed", 0)) + int(progress.get("failed", 0))
+                raise OnlineConflict(f"当前店铺正在同步，已处理 {count} 件；请查看同步进度，无需重复启动", job_id=conflict["id"])
+            if operation == "sync":
+                raise OnlineConflict("当前店铺有排队或执行中的商品修改，请完成后再同步", job_id=conflict["id"])
+            raise OnlineConflict("该商品正在执行修改，或相关变更仍在平台处理/结果未知，请查看对应操作记录", job_id=conflict["id"])
+        conn.execute("INSERT INTO online_jobs(id,platform,account_id,operation,target_id,status,idempotency_key,request_json,result_json,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?,?,?,?)",
+                     (job_id, platform, account, operation, target, key, facts, json.dumps(result or {}, ensure_ascii=False), now, now))
+        return self._job(conn.execute("SELECT * FROM online_jobs WHERE id=?", (job_id,)).fetchone())
+
+    def batch_jobs(self, batch_id: str) -> list[dict[str, Any]]:
+        prefix = "batch:" + batch_id + ":"
+        with self.db._connect() as conn:
+            rows = conn.execute("SELECT * FROM online_jobs WHERE idempotency_key>=? AND idempotency_key<? ORDER BY idempotency_key",
+                                (prefix, prefix + "~")).fetchall()
+        return [self._job(row) for row in rows]
+
+    def enqueue_batch(self, platform, account, requests, *, batch_id, fingerprint, limit):
+        jobs = []
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            prefix = "batch:" + batch_id + ":"
+            existing = conn.execute("SELECT * FROM online_jobs WHERE idempotency_key>=? AND idempotency_key<? ORDER BY idempotency_key",
+                                    (prefix, prefix + "~")).fetchall()
+            if existing:
+                if len(existing) != len(requests) or any(json.loads(row["result_json"]).get("batch_fingerprint") != fingerprint for row in existing):
+                    raise OnlineConflict("批量提交键对应不同的商品或修改，请重新确认")
+                return [self._job(row) for row in existing]
+            for index, request in enumerate(requests):
+                jobs.append(self._enqueue(conn, platform, account, request["operation"], request["listing_id"], request,
+                    f"batch:{batch_id}:{index:05d}", {"batch_id": batch_id, "batch_fingerprint": fingerprint, "batch_limit": limit}))
+            conn.commit()
+        return jobs
+
+    def dispatch_batch(self, entries):
+        """一次远端请求前原子保存全部写前日志；不让部分 SKU 在崩溃后被重放。"""
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for job, listing, result in entries:
+                self._assert_lease(conn, job)
+                row = conn.execute("SELECT version FROM online_listings WHERE id=?", (listing.id,)).fetchone()
+                if not row or row["version"] != job["request"]["version"]:
+                    raise OnlineConflict("批量执行前商品版本已变化，请重新确认")
+                conn.execute("UPDATE online_jobs SET dispatched=1,result_json=?,lease_until=?,updated_at=? WHERE id=?",
+                             (json.dumps(result, ensure_ascii=False), time.time()+900, utc_now(), job["id"]))
+                if job["operation"] == "sale_state" and job["request"]["changes"]["state"] == "paused":
+                    conn.execute("UPDATE online_listings SET desired_sale_state='paused' WHERE id=?", (listing.id,))
+            conn.commit()
 
     def claim(self, owner: str) -> dict[str, Any] | None:
         token = owner + ":" + uuid4().hex
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            # 未发出的任务可安全恢复；已发出的修改永不自动重放。
-            conn.execute("""UPDATE online_jobs SET status=CASE WHEN dispatched=1 THEN 'outcome_unknown' ELSE 'queued' END,
-                owner='', lease_until=0,updated_at=? WHERE status='running' AND lease_until<?""", (utc_now(), time.time()))
+            # 未发出的任务可恢复；查询中断不撤销已保存的受理回执，已发出的修改永不重放。
+            expired = conn.execute("SELECT * FROM online_jobs WHERE status='running' AND lease_until<?", (time.time(),)).fetchall()
+            for stale in expired:
+                receipt = json.loads(stale["result_json"]).get("receipt")
+                status = submission_status(stale["platform"], stale["operation"], receipt) if stale["dispatched"] else "queued"
+                if stale["operation"] == "archive" and status == "confirmed":
+                    # 批量回执与本地各店铺目录更新可能在不同事务，中断时仍需回读补齐投影。
+                    status = "outcome_unknown"
+                conn.execute("UPDATE online_jobs SET status=?,owner='',lease_until=0,updated_at=? WHERE id=?",
+                             (status, utc_now(), stale["id"]))
             row = conn.execute("""SELECT * FROM online_jobs WHERE status='queued'
                 ORDER BY created_at LIMIT 1""").fetchone()
             if row is None:
                 conn.commit()
                 return None
-            conn.execute("UPDATE online_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=?", (token, time.time()+900, utc_now(), row["id"]))
+            metadata = json.loads(row["result_json"])
+            rows = [row]
+            if metadata.get("batch_id"):
+                rows = conn.execute("""SELECT * FROM online_jobs WHERE status='queued' AND platform=? AND account_id=?
+                    AND operation=? AND json_extract(result_json,'$.batch_id')=? ORDER BY idempotency_key LIMIT ?""",
+                    (row["platform"], row["account_id"], row["operation"], metadata["batch_id"], metadata["batch_limit"])).fetchall()
+            for claimed in rows:
+                conn.execute("UPDATE online_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=?", (token, time.time()+900, utc_now(), claimed["id"]))
             conn.commit()
-        return {**self._job(row), "lease_token": token}
+        jobs = [{**self._job(claimed), "lease_token": token} for claimed in rows]
+        return {**jobs[0], "batch_jobs": jobs} if metadata.get("batch_id") else jobs[0]
 
     @staticmethod
     def _assert_lease(conn, job):
@@ -257,13 +361,13 @@ class OnlineProductStore:
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM online_jobs WHERE id=?", (job_id,)).fetchone()
-            if row is None or row["status"] not in ("submitted", "waiting_confirmation", "outcome_unknown"):
+            if row is None or self._job(row)["status"] not in ("submitted", "waiting_confirmation", "outcome_unknown"):
                 raise OnlineConflict("只有待确认或结果未知的修改可以查询平台结果")
-            syncing = conn.execute("""SELECT 1 FROM online_jobs WHERE platform=? AND account_id=?
-                AND operation='sync' AND status IN ('queued', 'running') LIMIT 1""",
-                (row["platform"], row["account_id"])).fetchone()
-            if syncing:
-                raise OnlineConflict("当前店铺正在同步，请完成后再查询平台结果")
+            active = next((other for other in self._resource_jobs(conn, row["platform"], row["account_id"], row["target_id"], row["operation"])
+                           if other["status"] in ("queued", "running")), None)
+            if active:
+                message = "当前店铺正在同步" if active["operation"] == "sync" else "该商品正在执行修改"
+                raise OnlineConflict(message + "，请完成后再查询平台结果", job_id=active["id"])
             result = json.loads(row["result_json"])
             earliest = float(result.get("last_confirmation_at") or 0) + 30
             if earliest > time.time():
@@ -299,9 +403,8 @@ class OnlineProductStore:
                 raise OnlineConflict("请先成功查询平台当前值，并在五分钟内核对后结束操作")
             if result.get("platform_confirmation", {}).get("pending"):
                 raise OnlineConflict("平台仍在处理原请求，请等待处理结束后重新查询")
-            active = conn.execute("""SELECT 1 FROM online_jobs WHERE platform=? AND account_id=?
-                AND target_id IN (?, '*') AND status IN ('queued','running') LIMIT 1""",
-                (row["platform"], row["account_id"], row["target_id"])).fetchone()
+            active = any(other["status"] in ("queued", "running") for other in
+                         self._resource_jobs(conn, row["platform"], row["account_id"], row["target_id"], row["operation"]))
             listing = conn.execute("SELECT version FROM online_listings WHERE id=? AND platform=? AND account_id=?",
                                    (row["target_id"], row["platform"], row["account_id"])).fetchone()
             if active or not listing or listing["version"] != evidence.get("version"):

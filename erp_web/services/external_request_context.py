@@ -66,7 +66,7 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
     # POST 查询由平台契约列举；未声明的请求保守按写入处理。
     read_post = platform == "ozon" and any(part in parsed.path for part in ("/info", "/list", "/tree", "/attribute", "/seller/info", "/posting/fbs/get", "/posting/fbo/get")) and not any(part in parsed.path for part in ("/update", "/import", "/delete"))
     if platform == "yandex":
-        read_post = method.upper() == "POST" and not any(part in parsed.path for part in ("/update","/delete","/create")) and not parsed.path.endswith("/hidden-offers")
+        read_post = method.upper() == "POST" and not any(part in parsed.path for part in ("/update","/delete","/create")) and not parsed.path.endswith(("/hidden-offers", "/archive", "/unarchive"))
         # 聊天 POST 同时包含查询与写入，按确切路径区分，防止发送未知时被当作只读重放。
         if re.fullmatch(r"/v2/businesses/[1-9][0-9]*/chats(?:/.*)?", parsed.path):
             read_post = method.upper() == "POST" and bool(re.fullmatch(r"/v2/businesses/[1-9][0-9]*/chats(?:/history)?", parsed.path))

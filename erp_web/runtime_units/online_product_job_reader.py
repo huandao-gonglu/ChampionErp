@@ -5,7 +5,7 @@ from typing import Any
 from erp_web.schemas.domain_jobs import JobStateSnapshot
 
 
-_LABELS = {"queued": "排队中", "running": "执行中", "submitted": "已提交",
+_LABELS = {"queued": "排队中", "running": "执行中", "submitted": "平台已受理",
            "waiting_confirmation": "等待平台确认", "confirmed": "已生效",
            "partial": "部分完成", "failed": "失败", "outcome_unknown": "结果未知，需回读",
            "closed_unconfirmed": "已人工结束，原结果未确认"}
@@ -21,11 +21,11 @@ class OnlineProductJobReader:
         except ValueError as exc:
             return JobStateSnapshot(status="failed", available=False, error=str(exc)[:2000])
         status, result = job["status"], job["result"]
-        # 到达现有 worker 的自动回读上限后也必须回传，不能让 Agent 永久等待。
-        waiting = status in ("queued", "running", "submitted", "waiting_confirmation")
-        exhausted = status in ("submitted", "waiting_confirmation") and int(result.get("polls", 0)) >= 20
-        lifecycle = "success" if status == "confirmed" else "running" if waiting and not exhausted else "failed"
+        # 受理后本次提交已完成；需人工查询的异步结果不让 Agent 永久等待。
+        lifecycle = "success" if status in ("confirmed", "submitted") else "running" if status in ("queued", "running") else "failed"
         summary = f"{job['platform']} · {job['operation']}：{_LABELS.get(status, status)}"
+        if status == "submitted":
+            summary += "；尚未核验展示是否生效，可按需查询平台结果。"
         if job["operation"] == "sync":
             summary += f"；成功 {result.get('completed', 0)}，失败 {result.get('failed', 0)}"
         if lifecycle == "failed":

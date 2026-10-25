@@ -36,7 +36,7 @@ class RemoteFixture:
         self.receipt = {"success":True}
         self.apply = True
         self.pending = False
-    def sync(self, ids=None):
+    def sync(self, ids=None, *, catalog="current"):
         for remote_id in ids if ids is not None else self.rows:
             try:
                 yield OnlineSyncBatch("details", listings=[self.read(remote_id)])
@@ -140,7 +140,8 @@ def test_confirmation_failure_keeps_cooldown_and_never_replays_write(setup_onlin
     remote.read_error = TimeoutError("平台暂未响应")
     service.reconcile(job["id"])
     result = service.store.job(job["id"])
-    assert result["status"] == "outcome_unknown"
+    assert result["status"] == "submitted"
+    assert result["result"]["receipt"] == {"success": True}
     assert "automatic_confirmation_pending" not in result["result"]
     with pytest.raises(OnlineConflict, match="等待窗口"):
         service.reconcile(job["id"])
@@ -181,6 +182,8 @@ def test_unconfirmed_change_allows_sync_without_replaying_or_resolving_write(set
     remote.apply = False
     if state == "outcome_unknown":
         remote.write_error = TimeoutError("写请求超时")
+    elif state == "waiting_confirmation":
+        remote.receipt = {"task_id": "pending-price"}
     job = service.change(price_request(service))["job"]
     service.run_once()
     if state == "waiting_confirmation":
@@ -197,8 +200,11 @@ def test_unconfirmed_change_allows_sync_without_replaying_or_resolving_write(set
     assert service.store.get("CBT2").remote_id == "CBT2"
     # 即使同步值与原修改相同，也不代替原任务的结果核对。
     assert service.store.job(job["id"]) == original
-    with pytest.raises(OnlineConflict):
-        service.change(price_request(service))
+    if state == "submitted":
+        assert service.change(price_request(service))["job"]["status"] == "queued"
+    else:
+        with pytest.raises(OnlineConflict):
+            service.change(price_request(service))
     with pytest.raises(OnlineConflict):
         service.retry(job["id"], uuid4().hex)
     assert len(remote.writes) == 1
@@ -266,9 +272,10 @@ def test_restart_recovery_respects_durable_dispatch_boundary(setup_online,dispat
 def test_readback_authorization_failure_does_not_authorize_replay(setup_online):
     service,remote=setup_online
     remote.apply=False
+    remote.receipt={"task_id":"pending-price"}
     job=service.change(price_request(service))["job"]
     service.run_once()
-    assert service.store.job(job["id"])["status"]=="submitted"
+    assert service.store.job(job["id"])["status"]=="waiting_confirmation"
     expire(service,job["id"])
     service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"]=="waiting_confirmation"
@@ -276,16 +283,17 @@ def test_readback_authorization_failure_does_not_authorize_replay(setup_online):
     expire(service,job["id"])
     assert not service.run_once()
     service.reconcile(job["id"])
-    assert service.store.job(job["id"])["status"]=="outcome_unknown"
+    assert service.store.job(job["id"])["status"]=="waiting_confirmation"
     assert len(remote.writes)==1
 
 
 def test_async_receipt_does_not_confirm_before_task_finishes(setup_online):
     service,remote=setup_online
     remote.pending=True
+    remote.receipt={"task_id":"pending-price"}
     job=service.change(price_request(service))["job"]
     service.run_once()
-    assert service.store.job(job["id"])["status"]=="submitted"
+    assert service.store.job(job["id"])["status"]=="waiting_confirmation"
     expire(service,job["id"])
     service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"]=="waiting_confirmation"
@@ -299,8 +307,6 @@ def test_partial_receipt_does_not_retry_whole_mutation(setup_online):
     remote.receipt={"success":True,"listing_sites":[{"id":"MLM1","success":False,"errors":[{"message":"价格无效"}]}]}
     job=service.change(price_request(service))["job"]
     service.run_once()
-    expire(service,job["id"])
-    service.reconcile(job["id"])
     assert service.store.job(job["id"])["status"]=="partial"
     with pytest.raises(OnlineConflict): service.retry(job["id"],uuid4().hex)
 
@@ -387,7 +393,7 @@ def test_explicit_v15_migration_preserves_data_and_backup(tmp_path):
     assert backup.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(backup) as c: assert c.execute("PRAGMA user_version").fetchone()[0]==15
     with sqlite3.connect(path) as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0]==16
+        assert c.execute("PRAGMA user_version").fetchone()[0]==17
         assert c.execute("SELECT COUNT(*) FROM online_listings").fetchone()[0]==0
         assert c.execute("SELECT credentials_json FROM store_auth WHERE platform=?",("mercadolibre",)).fetchone()[0]=='{"user_id":"preserved"}'
     ErpDatabase(path)

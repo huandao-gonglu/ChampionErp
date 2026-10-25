@@ -37,7 +37,7 @@ class ImageRemote:
     def write(self, listing, operation, scope, changes):
         self.writes.append(deepcopy(changes))
         self.row.content.update(deepcopy(changes))
-        return {"success": True}
+        return {"status": "OK"} if listing.platform == "yandex" else {"success": True}
 
     def read_confirmation(self, listing, request):
         return self.row.model_copy(deep=True)
@@ -187,7 +187,7 @@ def test_yandex_reuses_image_delivery_for_selected_assets_only(online_images):
     job = service.change(body)["job"]
     assert service.run_once()
     assert remote.writes == [{"pictures": ["https://images.example.com/new.jpg", "https://images.example.com/old.jpg"]}]
-    assert service.store.job(job["id"])["status"] == "submitted"
+    assert service.store.job(job["id"])["status"] == "waiting_confirmation"
     assert get_context().db.load_product_model(original["product_id"])["source"]["image_pool"] == original["source"]["image_pool"]
 
 

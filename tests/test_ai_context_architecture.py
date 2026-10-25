@@ -64,6 +64,13 @@ def test_image_batch_keeps_native_model_boundary_and_domain_only_progress():
     assert "current_history_sink" in direct
     from erp_web.http_route_units.ai_work_routes import DYNAMIC_GET_HANDLERS
     assert "/api/v1/ai-work/conversations/<conversation_id>/image-batch" in DYNAMIC_GET_HANDLERS
+    from erp_web.http_route_units.image_routes import IMAGE_POST_PATHS
+    from erp_web.schemas.requests import REQUEST_CONTRACTS
+    for path in ("/api/draft-images/state", "/api/draft-images/process"):
+        assert path in IMAGE_POST_PATHS and path in REQUEST_CONTRACTS
+    facade = (ROOT / "erp_web/facades/image_facade.py").read_text()
+    assert "run_image_batch(" in facade
+    assert "image_draft_guard" in (ROOT / "erp_web/stores/product_store.py").read_text()
 
 
 def test_purchase_payment_has_explicit_command_and_approved_agent_entry():
@@ -386,6 +393,8 @@ def test_online_management_has_one_entry_and_retires_local_publication_routes() 
     )
     assert "/api/online-products" in routes
     assert "/api/online-products/change" in routes
+    assert "/api/online-products/change-batch" in routes
+    assert "/api/online-products/change-batch/preview" in routes
     assert "/api/mercadolibre/user-products" not in routes
     assert "/api/mercadolibre/pause-user-product" not in routes
     for retired in (
@@ -394,6 +403,17 @@ def test_online_management_has_one_entry_and_retires_local_publication_routes() 
         "/api/mercadolibre/confirm-real-publish",
     ):
         assert retired not in routes
+
+
+def test_online_batch_reuses_domain_queue_and_platform_batch_adapter():
+    """批量写入不另建执行线程或在 HTTP 中发送平台修改。"""
+    source = (ROOT / "erp_web/services/online_product_batch.py").read_text()
+    for required in ("enqueue_batch", "dispatch_batch", "validate_changes", "write_batch", "submission_status"):
+        assert required in source
+    for forbidden in ("runtime_units", "Thread(", "requests.", "sqlite3", "Agent("):
+        assert forbidden not in source
+    store = (ROOT / "erp_web/stores/online_product_store.py").read_text()
+    assert "def dispatch_batch" in store and "self._assert_lease(conn, job)" in store
 
 
 def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools():
@@ -438,6 +458,16 @@ def test_online_changes_complete_on_submission_without_remote_job_wait():
     fields = OnlineSubmissionResult.model_fields
     assert "accepted" in fields and "job_id" in fields
     assert "job_type" not in fields and "evidence" not in fields
+
+
+def test_online_operation_policy_is_pure_and_shared_by_execution_and_store():
+    """回执与冲突语义不能由 HTTP、AI 或后台各自复制，也不能发起额外平台请求。"""
+    model = ROOT / "erp_web/product_model/online_operation_model.py"
+    targets = {name for _, name in imported_targets([model])}
+    assert {name.split(".")[0] for name in targets} <= {"__future__", "typing"}
+    for path in ("services/online_product_service.py", "stores/online_product_store.py"):
+        targets = {name for _, name in imported_targets([ROOT / "erp_web" / path])}
+        assert any(name.startswith("erp_web.product_model.online_operation_model.") for name in targets)
 
 
 def test_online_source_images_use_existing_delivery_and_upload_boundaries():

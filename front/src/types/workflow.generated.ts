@@ -429,6 +429,7 @@ export interface BackendImageBatchItemPayload {
 export interface BackendImageBatchSnapshot {
   conversation_id: string
   product_id: string
+  draft_id: string
   prompt: string
   items: Array<BackendImageBatchItemPayload>
   created_at: string

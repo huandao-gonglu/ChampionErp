@@ -7,10 +7,12 @@ export const imageRoles = [
   { value: 'material', label: '材质' }, { value: 'other', label: '其他' },
 ] as const
 export function imageSourceLabel(image: ImageAsset) {
-  if (image.origin === 'ai_generated') return 'AI 处理'
+  if (image.origin === 'ai_translated') return 'AI 翻译'
+  if (['ai_generated', 'chatgpt_import'].includes(image.origin)) return 'AI 处理'
   if (['upload', 'local_upload'].includes(image.origin)) return '上传图片'
   return '采集图片'
 }
+
 export function imageUsageLabel(image: ImageAsset) { return imageRoles.find(role => role.value === image.usage)?.label || '其他' }
 export function imageUrl(image: ImageAsset) { return image.previewUrl || image.url || image.path }
 export interface SkuImageAssignment {

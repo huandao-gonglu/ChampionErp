@@ -45,14 +45,16 @@ def index_rows(rows, *, allowed=None, nested=False):
     return indexed
 
 
-def catalog_pages(adapter, ids: list[str] | None = None) -> Iterator[list[dict[str, Any]]]:
+def catalog_pages(adapter, ids: list[str] | None = None, *, catalog: str | None = None) -> Iterator[list[dict[str, Any]]]:
     path = f"/v2/businesses/{adapter.business}/offer-mappings"
     seen = set()
-    bodies = [{"offerIds": ids[i:i + BATCH_SIZE]} for i in range(0, len(ids), BATCH_SIZE)] if ids is not None else [{"archived": False}, {"archived": True}]
+    bodies = [{"offerIds": ids[i:i + BATCH_SIZE]} for i in range(0, len(ids), BATCH_SIZE)] if ids is not None else [{"archived": catalog == "archived"}]
     for body in bodies:
         for rows in pages(adapter, path, "offerMappings", body, query=None if ids is not None else {"limit": BATCH_SIZE}):
             indexed = index_rows(rows, allowed=set(ids) if ids is not None else None, nested=True)
-            fresh = [row for key, row in indexed.items() if key not in seen]
+            # 指定 SKU 时官方禁止同时传 archived；仅在本地核对原同步目录，再读取详情。
+            fresh = [row for key, row in indexed.items() if key not in seen
+                     and (catalog is None or (row["offer"].get("archived") is True) == (catalog == "archived"))]
             seen.update(indexed)
             yield fresh
 
@@ -164,9 +166,11 @@ def read_batch(adapter, mappings, hidden: set[str]) -> OnlineSyncBatch:
     return result
 
 
-def sync_yandex(adapter, ids=None) -> Iterator[OnlineSyncBatch]:
+def sync_yandex(adapter, ids=None, *, catalog="current") -> Iterator[OnlineSyncBatch]:
+    if catalog not in ("current", "archived") and not (catalog is None and ids is not None):
+        raise ValueError("同步目录只能为 current 或 archived")
     mappings = []
-    for page in catalog_pages(adapter, ids):
+    for page in catalog_pages(adapter, ids, catalog=catalog):
         mappings.extend(page)
         yield OnlineSyncBatch("catalog", [catalog_listing(row, account_id=adapter.account_id,
             campaign_id=adapter.campaign, settings=adapter.settings) for row in page])
@@ -175,7 +179,7 @@ def sync_yandex(adapter, ids=None) -> Iterator[OnlineSyncBatch]:
     if ids is not None:
         missing = set(ids) - {row["offer"]["offerId"] for row in mappings}
         if missing:
-            yield OnlineSyncBatch("details", errors={sku: "Yandex 未返回该 SKU 的目录记录" for sku in sorted(missing)})
+            yield OnlineSyncBatch("details", errors={sku: "Yandex 未返回该 SKU 的所选目录记录，商品可能已移出该目录" for sku in sorted(missing)})
     if not mappings:
         return
     try:

@@ -7,6 +7,7 @@ import sqlite3
 from threading import RLock
 
 from erp_web.schemas.image_batches import ImageBatch
+from erp_web.schemas.requests import RequestValidationError
 
 
 def utc_now() -> str:
@@ -51,6 +52,13 @@ class ImageBatchStore:
 
     def create(self, batch: ImageBatch) -> None:
         with self.lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if batch.draft_id:
+                rows = conn.execute("SELECT payload FROM image_batches").fetchall()
+                for row in rows:
+                    existing = ImageBatch.model_validate_json(row[0])
+                    if existing.draft_id == batch.draft_id and self.blocks_changes(existing):
+                        raise RequestValidationError("当前草稿有图片正在处理或结果待确认，请等待原任务。", status_code=409, error_code="DRAFT_IMAGES_BUSY")
             conn.execute("INSERT INTO image_batches VALUES (?, ?)", (batch.conversation_id, batch.model_dump_json()))
 
     def get(self, conversation_id: str) -> ImageBatch | None:
@@ -68,3 +76,19 @@ class ImageBatchStore:
             batch.items[index] = type(batch.items[index]).model_validate({**batch.items[index].model_dump(), **changes})
             batch.updated_at = utc_now()
             conn.execute("UPDATE image_batches SET payload=? WHERE conversation_id=?", (batch.model_dump_json(), conversation_id))
+
+    @staticmethod
+    def blocks_changes(batch: ImageBatch) -> bool:
+        return any(item.status in ("queued", "running") or item.outcome_unknown for item in batch.items)
+
+    def latest_for_draft(self, draft_id: str) -> ImageBatch | None:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT payload FROM image_batches").fetchall()
+        batches = [ImageBatch.model_validate_json(row[0]) for row in rows]
+        return max((batch for batch in batches if batch.draft_id == draft_id),
+                   key=lambda batch: batch.created_at, default=None)
+
+    def assert_draft_idle(self, draft_id: str) -> None:
+        batch = self.latest_for_draft(draft_id)
+        if batch and self.blocks_changes(batch):
+            raise RequestValidationError("当前草稿有图片正在处理或结果待确认，请等待原任务。", status_code=409, error_code="DRAFT_IMAGES_BUSY")

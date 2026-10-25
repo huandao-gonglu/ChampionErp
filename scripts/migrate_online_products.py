@@ -1,4 +1,4 @@
-"""显式、无损地将完整 v15 数据库升级到 v16；先保存 SQLite 一致性备份。"""
+"""显式、无损地将完整 v15 数据库升级到当前版本；先保存 SQLite 一致性备份。"""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from erp_web.db import ONLINE_SCHEMA_SQL, _SCHEMA_SQL, _schema_signature
+from erp_web.db import ONLINE_SCHEMA_SQL, SCHEMA_VERSION, _SCHEMA_SQL, _schema_signature
 
 
 def migrate(path: Path) -> Path:
@@ -34,7 +34,7 @@ def migrate(path: Path) -> Path:
         for statement in ONLINE_SCHEMA_SQL.split(";"):
             if statement.strip():
                 conn.execute(statement)
-        conn.execute("PRAGMA user_version=16")
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
         return backup
     finally:
@@ -45,4 +45,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database", type=Path)
     args = parser.parse_args()
-    print(f"已升级到 v16，原数据备份：{migrate(args.database)}")
+    print(f"已升级到 v{SCHEMA_VERSION}，原数据备份：{migrate(args.database)}")

@@ -5,20 +5,24 @@
 | 现有接口 | 主 Agent 工具 | 执行方式 |
 | --- | --- | --- |
 | `OnlineProductService.read_page` / `detail` | `online_products_read` | 列表为有界摘要，详情复用公开字段；直接读取或在 Code Mode 中逐页计算 |
-| `POST /api/online-products/change` | `online_products_change` | 一个入口处理既有 price / stock / content / sale_state，原生审批后入队即返回提交回执 |
+| `POST /api/online-products/change` | `online_products_change` | 一个入口处理既有 price / stock / content / sale_state / archive，原生审批后入队即返回提交回执 |
 | `POST /api/online-products/sync` | `online_products_sync` | 沿用领域同步任务，仅读取平台并刷新本地快照 |
 | `POST /api/online-products/refresh-status` | `online_products_refresh_status` | 按 listing_id 直接查询单件状态并更新本地记录，不扫描店铺、不创建 Job |
 | `POST /api/online-products/reconcile` | `online_products_reconcile` | 只向平台回读已提交修改的结果，不重发修改 |
 | `POST /api/online-products/close` | `online_products_close` | 核对后通过原生审批结束未确认的本地操作，保留原结果未知记录，不撤销或重放平台请求 |
 | `POST /api/online-products/retry` | `online_products_retry` | 原生审批后交由既有失败重试规则判断，入队即返回 |
 
-`online_products_read` 的查询参数为 `id,platform,q,status,market,page,limit,view,group_id`，图片来源仍由 `include_source_images` 控制。有 `id` 时读取完整公开详情，包含内容、买家链接、修改能力、版本、库存和同步时间；无 `id` 时通过 `OnlineProductService.read_page` 读取摘要。摘要保留身份、标题、状态、价格、库存及同步时间，不携带长描述、属性、图片、原始快照或完整历史任务。需要规格和修改能力时按真实刊登 ID 读取详情。
+`online_products_read` 的查询参数为 `id,platform,catalog,q,status,market,page,limit,view,group_id`，图片来源仍由 `include_source_images` 控制。有 `id` 时读取完整公开详情，包含内容、买家链接、修改能力、版本、库存和同步时间；无 `id` 时通过 `OnlineProductService.read_page` 读取摘要。摘要保留身份、标题、状态、价格、库存及同步时间，不携带长描述、属性、图片、原始快照或完整历史任务。需要规格和修改能力时按真实刊登 ID 读取详情。
 
-列表默认 `view=groups`：按在线页面的相同顺序返回组合父节点或独立商品，每个节点只返回一个匹配刊登摘要。`groups.representative_id` 对应 `items.id`，`total_count` 为整组 SKU 数，`matched_count` 为符合筛选的成员数；不能把代表刊登列表当作全部 SKU。查询“第一个商品”可直接使用 `page=1,limit=1`，无需关键词试探或发布日志。
+`catalog=current` 默认排除归档商品，`archived` 仅读取归档商品，`all` 包含两者。分组、汇总和分页均使用所选目录；页面背景包含当前目录，AI 查询当前列表时传递同一 `catalog`。归档状态与库存、停售各自独立。
 
-`view=listings` 按相同分组顺序逐 SKU 分页，组合允许跨页；传递返回的 `group_id` 可读取指定组合的成员。两种视图都限制每页 `limit=1–50`（默认 25），`total` 是当前视图的匹配数，`listing_total` 是匹配刊登数，`summary.total` 是全店刊登数，`next_page=null` 表示结束。完整 SKU 统计必须使用 `view=listings` 并遍历 `next_page`，不能把父节点数当作 SKU 数，也不能用组 ID 提交修改。
+`online_products_sync` 与 HTTP 同步入口接受 `catalog=current/archived`，默认仅普通商品；归档页明确提交 `archived`，两类不再合并同步。目录范围持久化到领域任务，失败重试和最新同步进度按原目录隔离；AI 同步当前页面时传递相同目录。其他平台暂不接受归档目录同步。旧任务仍可读取，缺少目录的历史记录保留原全店范围显示，旧任务重试按普通商品执行。
 
-最新同步只返回 `OnlineSyncSummary` 的状态、进度和错误码，Store 直接查询固定字段，不加载历史任务的逐项回执。空筛选结果仍保留店铺总数和同步可信度。HTTP 页面继续使用自身的组合展开载荷；它与 AI 的摘要视图具有独立用途，共享底层身份、顺序和筛选，没有旧 AI 读取 fallback。
+列表默认 `view=groups`：按在线页面的相同顺序返回组合父节点或独立商品，每个节点只返回一个匹配刊登摘要。`groups.representative_id` 对应 `items.id`，`total_count` 为当前目录内整组 SKU 数，`matched_count` 为符合筛选的成员数；不能把代表刊登列表当作全部 SKU。查询“第一个商品”可直接使用 `page=1,limit=1`，无需关键词试探或发布日志。
+
+`view=listings` 按相同分组顺序逐 SKU 分页，组合允许跨页；传递返回的 `group_id` 可读取指定组合的成员。两种视图都限制每页 `limit=1–50`（默认 25），`total` 是当前视图的匹配数，`listing_total` 是匹配刊登数，`summary.total` 是当前目录的刊登数，`next_page=null` 表示结束。完整 SKU 统计必须使用 `view=listings` 并遍历 `next_page`，不能把父节点数当作 SKU 数，也不能用组 ID 提交修改。
+
+最新同步只返回 `OnlineSyncSummary` 的状态、进度和错误码，Store 直接查询固定字段，不加载历史任务的逐项回执。空筛选结果仍保留当前目录总数和同步可信度。HTTP 页面继续使用自身的组合展开载荷；它与 AI 的摘要视图具有独立用途，共享底层身份、顺序和筛选，没有旧 AI 读取 fallback。
 
 运行时的 256 KiB 工具输出上限同时约束直接调用与脚本内调用，原始结果必须先通过校验才能进入 Python。Code Mode 负责逐页编排和最终汇总，不能绕过这个上限。若列表仍超限，应减小 `limit`；不得反复原样重试或枚举无关 SKU 前缀猜测页面顺序。
 
@@ -27,6 +31,10 @@
 不增加“查询 SKU 数量”“查零库存”“改红色库存”等工具，也不开放 SQL、任意网络或数据库写入。AI 可直接理解商品字段；需要循环和统计时，使用现有 `run_code` 调用相同读取函数，完整分页后返回必要摘要。未知库存、未授权、同步失败与零库存/零商品不同；统计结果只能表述为实际读取的同步快照。平台没有提供足够规格信息时须澄清，不能猜测变体。
 
 统一修改输入复用 `OnlineChange`，字段为 `listing_id,version,operation,scope_id,changes`；HTTP 的 `ChangeRequest` 继承它并保留 `idempotency_key`。AI 提交键由现有可信执行身份机械生成，不由模型挑选或覆盖。库存使用绝对数量；价格保留范围和币种；内容仅修改后端允许字段，图片仍使用完整目标列表。业务校验、账号隔离、冲突检查、任务互斥和平台回读继续由原服务执行。
+
+Yandex 保留 `operation=sale_state` 的店铺停售，并增加 `operation=archive,scope_id=business,changes={archived:true|false}`。归档及恢复作用于商家全部店铺，保留库存和隐藏设置；恢复归档不保证立即可售。单件官方回执无失败项时确认归档成功并移入相应目录，逐项失败留在原目录，未知结果仅按需读取目标归档状态核实。AI 使用现有逐 SKU 修改工具及原生审批范围。
+
+页面操作菜单通过 `change-batch/preview` 和 `change-batch` 支持跨商品批量停售/恢复、归档/恢复。勾选父节点时预览包含当前目录内该商品全部规格，单独勾选只处理相应 SKU；预览只读本地，提交按预览版本及同账号范围原子入队。后台复用逐 SKU 的领域记录和原有 worker，平台写入按停售 500、归档 200 SKU 的上限合批；部分失败分别落回各 SKU，未知批次不自动重放。此页面入口未改变 AI 的工具协议或审批方式。
 
 图片新增从 `GET /api/online-products/source-images?listing_id=...` 读取关联源草稿的资产选项；AI 使用现有 `online_products_read` 的 `id` 和 `include_source_images=true` 读取同一结果。提交 `{asset_id,fingerprint}`，不能手填新 URL 或任意平台图片 ID。关联同时核验发布账号和远端商品身份；没有唯一来源时仍可调整现有图集。后台只准备本次选择，保留源草稿和图片池；Mercado 复用上传接口取得图片 ID，Yandex 复用 HTTPS 交付服务。任务回执保存准备后的完整目标图集，回读据此确认顺序与图片身份，不再次上传。
 

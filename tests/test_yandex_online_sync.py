@@ -64,6 +64,7 @@ def adapter(platform):
 
 def test_201_goods_use_16_requests_and_catalog_is_emitted_before_details():
     platform = Platform()
+    platform.rows[-1]["offer"]["archived"] = False
     batches = list(adapter(platform).sync())
     catalog = [row for batch in batches if batch.phase == "catalog" for row in batch.listings]
     details = [row for batch in batches if batch.phase == "details" for row in batch.listings]
@@ -163,7 +164,7 @@ def test_catalog_visible_before_network_details_and_failed_batch_preserves_old_s
     platform.fail_prices = True
     def visible():
         rows = service.store.listings('yandex', '1:2')
-        assert len(rows) == 3
+        assert len(rows) == 2
         assert all(row.details_state == 'pending' for row in rows)
         assert service.store.get(old.id).title == old.title
     platform.before_detail = visible
@@ -174,7 +175,7 @@ def test_catalog_visible_before_network_details_and_failed_batch_preserves_old_s
     assert (stored.version, stored.synced_at, stored.title, stored.prices, stored.stocks) == (old.version, old.synced_at, old.title, old.prices, old.stocks)
     result = service.store.job(job['id'])
     assert result['status'] == 'partial'
-    assert result['result']['discovered'] == result['result']['failed'] == 3
+    assert result['result']['discovered'] == result['result']['failed'] == 2
     with pytest.raises(ValueError, match='详情尚未完整同步'):
         validate_changes(stored, ChangeRequest(listing_id=old.id, version=old.version, operation='price', scope_id='business', changes={'amount': '13', 'currency': 'CNY'}, idempotency_key='test-key'))
     platform.before_detail = lambda: None
@@ -185,7 +186,7 @@ def test_catalog_visible_before_network_details_and_failed_batch_preserves_old_s
     assert service.store.job(retry['id'])['status'] == 'confirmed'
     assert service.store.get(old.id).details_state == 'ready'
     mapping_calls = [body for name, body, _, _ in platform.calls if name == 'offer-mappings']
-    assert len(mapping_calls) == 1 and set(mapping_calls[0]['offerIds']) == {'sku-0', 'sku-1', 'sku-2'}
+    assert len(mapping_calls) == 1 and set(mapping_calls[0]['offerIds']) == {'sku-0', 'sku-1'}
     service.close()
 
 
@@ -255,3 +256,101 @@ def test_incomplete_or_wrong_stock_identity_cannot_be_reported_as_success(stock_
     a.request = lambda path, body=None, **kwargs: {'result': stock_response} if path.endswith('/stocks') else original(path, body, **kwargs)
     result = read_batch(a, platform.rows, set())
     assert not result.listings and set(result.errors) == {'sku-0', 'sku-1'}
+
+
+@pytest.mark.parametrize("catalog", ["current", "archived"])
+def test_sync_catalog_is_persisted_and_only_selected_directory_is_read(catalog):
+    remote = Platform(4)
+    client = adapter(remote)
+    service = service_for(client)
+    # 两类均已有本地快照，另一类必须逐字段保持不变。
+    snapshots = [service.store.save(client.read(f"sku-{i}")) for i in range(4)]
+    opposite = [row for row in snapshots if row.archived != (catalog == "archived")]
+    remote.calls.clear()
+    key = uuid4().hex
+    job = service.sync("yandex", key, catalog=catalog)["job"]
+    assert job["request"]["catalog"] == catalog
+    assert service.sync("yandex", key, catalog=catalog)["job"]["id"] == job["id"]
+    with pytest.raises(OnlineConflict, match="重复提交键"):
+        service.sync("yandex", key, catalog="current" if catalog == "archived" else "archived")
+    service.run_once()
+    assert service.store.job(job["id"])["status"] == "confirmed"
+    expected = {"sku-3"} if catalog == "archived" else {"sku-0", "sku-1", "sku-2"}
+    assert [body for name, body, _, _ in remote.calls if name == "offer-mappings"] == [{"archived": catalog == "archived"}]
+    assert {sku for _, body, _, _ in remote.calls for sku in body.get("offerIds", [])} == expected
+    assert all(service.store.get(row.id).model_dump() == row.model_dump() for row in opposite)
+    other = "current" if catalog == "archived" else "archived"
+    for read in (service.list, service.read_page):
+        assert read("yandex", catalog=catalog)["latest_sync"]["id"] == job["id"]
+        assert read("yandex", catalog=other)["latest_sync"] is None
+        assert read("yandex", catalog=other)["state"] == "never_synced"
+    second = service.sync("yandex", uuid4().hex, catalog=other)["job"]
+    service.run_once()
+    for read in (service.list, service.read_page):
+        assert read("yandex", catalog=catalog)["latest_sync"]["id"] == job["id"]
+        assert read("yandex", catalog=other)["latest_sync"]["id"] == second["id"]
+    service.close()
+
+
+def test_archived_retry_preserves_scope_and_rejects_items_restored_in_the_meantime():
+    remote = Platform(3)
+    client = adapter(remote)
+    service = service_for(client)
+    remote.fail_prices = True
+    job = service.sync("yandex", uuid4().hex, catalog="archived")["job"]
+    service.run_once()
+    assert service.store.job(job["id"])["status"] == "partial"
+    remote.fail_prices = False
+    remote.rows[-1]["offer"]["archived"] = False
+    restored = service.store.save(client.read("sku-2"))
+    remote.calls.clear()
+    retry = service.retry(job["id"], uuid4().hex)["job"]
+    assert retry["request"] == {"ids": ["sku-2"], "catalog": "archived"}
+    service.run_once()
+    result = service.store.job(retry["id"])
+    assert result["status"] == "partial" and result["result"]["completed"] == 0
+    assert "目录" in result["result"]["items"][0]["error"]
+    assert remote.calls == [("offer-mappings", {"offerIds": ["sku-2"]}, {}, "POST")]
+    assert service.store.get(restored.id).model_dump() == restored.model_dump()
+    service.close()
+
+
+@pytest.mark.parametrize("catalog", ["current", "archived"])
+def test_http_and_ai_sync_forward_catalog_to_the_same_domain_queue(monkeypatch, catalog):
+    from erp_web.facades import online_product_facade
+    from erp_web.http_route_units.online_product_routes import handle_sync
+    from erp_web.runtime_units.online_product_capabilities import OnlineProductCapabilityScope, online_products_sync
+    from erp_web.schemas.online_product_capabilities import OnlineSyncRequest
+    from tests.approval_support import _execution
+
+    service = service_for(adapter(Platform(2)))
+    monkeypatch.setattr(online_product_facade, "get_context", lambda: SimpleNamespace(online_products=service))
+    output = []
+    body = {"platform": "yandex", "catalog": catalog, "idempotency_key": uuid4().hex}
+    handler = SimpleNamespace(path="/api/online-products/sync", read_body=lambda: body,
+                              send_json=lambda result, status: output.append((result, status)))
+    handle_sync(handler)
+    response, status = output.pop()
+    assert status == 200 and response["job"]["request"]["catalog"] == catalog
+    service.run_once()
+    reference = online_products_sync(OnlineSyncRequest(platform="yandex", catalog=catalog),
+                                    OnlineProductCapabilityScope(lambda: service), _execution())
+    assert service.store.job(reference.job_id)["request"]["catalog"] == catalog
+    service.close()
+
+
+@pytest.mark.parametrize("catalog", ["all", "", None, True])
+def test_sync_rejects_invalid_catalog_before_enqueue(catalog):
+    from erp_web.schemas.requests import validate_request_payload
+    from erp_web.schemas.online_product_capabilities import OnlineSyncRequest
+    service = service_for(adapter(Platform(2)))
+    # 通用 HTTP 校验保留可选字段的 null，由领域校验拒绝。
+    if catalog is not None:
+        with pytest.raises(ValueError):
+            validate_request_payload({"platform": "yandex", "catalog": catalog, "idempotency_key": uuid4().hex}, endpoint="/api/online-products/sync")
+    with pytest.raises(ValueError):
+        OnlineSyncRequest(platform="yandex", catalog=catalog)
+    with pytest.raises(ValueError):
+        service.sync("yandex", uuid4().hex, catalog=catalog)
+    assert not service.store.jobs("yandex", "1:2")
+    service.close()

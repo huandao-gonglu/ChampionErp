@@ -8,6 +8,7 @@ const fetchBatch = vi.mocked(fetchImageBatch)
 
 function snapshot(id = 'conversation_batch'): ImageBatchSnapshot {
   return {
+    draft_id: '',
     conversation_id: id, product_id: 'p', prompt: '翻译成俄语', created_at: '', updated_at: '',
     total: 4, completed: 2, success: 1, failed: 1, running: 1, queued: 1, terminal: false,
     items: ['success', 'failed', 'running', 'queued'].map((state, index) => ({

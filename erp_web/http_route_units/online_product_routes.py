@@ -20,6 +20,16 @@ def handle_change(handler):
     handler.send_json(result, status)
 
 
+def handle_change_batch_preview(handler):
+    result, status = online_product_facade.mutate("change-batch/preview", validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
+def handle_change_batch(handler):
+    result, status = online_product_facade.mutate("change-batch", validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
 def handle_reconcile(handler):
     result, status = online_product_facade.mutate("reconcile", validate_request_payload(handler.read_body(), endpoint=handler.path))
     handler.send_json(result, status)
@@ -51,6 +61,8 @@ POST_HANDLERS = {
     "/api/online-products/refresh-status": handle_refresh_status,
     "/api/online-products/sync": handle_sync,
     "/api/online-products/change": handle_change,
+    "/api/online-products/change-batch/preview": handle_change_batch_preview,
+    "/api/online-products/change-batch": handle_change_batch,
     "/api/online-products/reconcile": handle_reconcile,
     "/api/online-products/retry": handle_retry,
     "/api/online-products/close": handle_close,

@@ -19,6 +19,7 @@ class ImageBatchItemPayload(TypedDict):
 class ImageBatchSnapshot(TypedDict):
     conversation_id: str
     product_id: str
+    draft_id: str
     prompt: str
     items: list[ImageBatchItemPayload]
     created_at: str
@@ -49,6 +50,7 @@ class ImageBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     conversation_id: str
     product_id: str
+    draft_id: str = ""
     prompt: str
     items: list[ImageBatchItem]
     created_at: str

@@ -17,7 +17,12 @@ def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
     changes = request.changes
     if not changes:
         raise ValueError("未选择任何变更")
-    if request.operation == "price":
+    if request.operation == "archive":
+        if listing.platform != "yandex" or request.scope_id != "business" or set(changes) != {"archived"} or type(changes["archived"]) is not bool:
+            raise ValueError("归档仅支持 Yandex 商家账号范围：scope_id=business，archived 为布尔值")
+        if listing.archived == changes["archived"]:
+            raise ValueError("商品已经归档" if listing.archived else "商品当前不在归档中")
+    elif request.operation == "price":
         scope = next((p for p in listing.prices if p.id == request.scope_id and p.writable), None)
         if scope is None or set(changes) != {"amount", "currency"} or changes["currency"] != scope.currency:
             raise ValueError("价格范围或币种与平台快照不一致")
@@ -35,6 +40,8 @@ def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
             if listing.model != "traditional_global_items" or "paused_by_seller" not in listing.raw_sub_status:
                 raise ValueError("尚未确认平台主动停售状态，请先重新提交停售并完成回读，再设置库存")
     elif request.operation == "sale_state":
+        if listing.archived:
+            raise ValueError("商品已归档，请先恢复归档，再调整停售或销售状态")
         if request.scope_id not in ("", "global") or set(changes) != {"state"} or changes["state"] not in ("paused", "active"):
             raise ValueError("销售状态仅支持在声明范围内停售或恢复")
         if changes["state"] == "active" and listing.stocks and all(s.quantity == 0 for s in listing.stocks):
@@ -119,6 +126,8 @@ def contains(actual: Any, expected: Any) -> bool:
 
 def confirmation(listing: OnlineListing, request: ChangeRequest) -> dict[str, bool]:
     changes = request.changes
+    if request.operation == "archive":
+        return {"archived": listing.archived is changes["archived"]}
     if request.operation == "price":
         row = next((p for p in listing.prices if p.id == request.scope_id), None)
         return {"amount": bool(row and row.currency == changes["currency"] and same_number(row.amount, changes["amount"]))}
@@ -147,6 +156,8 @@ def confirmation(listing: OnlineListing, request: ChangeRequest) -> dict[str, bo
 
 def observed_changes(listing: OnlineListing, request: ChangeRequest) -> dict[str, Any]:
     """保存本次回读的实际值，人工结束操作时与原目标一起核对。"""
+    if request.operation == "archive":
+        return {"archived": listing.archived}
     if request.operation == "stock":
         row = next((s for s in listing.stocks if s.id == request.scope_id), None)
         return {"quantity": row.quantity if row else None}

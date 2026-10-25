@@ -104,15 +104,17 @@
 
 ## SQLite 数据库版本边界
 
-- `erp_web/db.py` 是 schema 与版本门禁的唯一 owner，当前 `SCHEMA_VERSION=16`。
+- `erp_web/db.py` 是 schema 与版本门禁的唯一 owner，当前 `SCHEMA_VERSION=17`。
   真正空库才自动建表；已有库只接受完整当前结构，运行时不修补、不升级。
-- 完整 v15 库使用 `scripts/migrate_online_products.py <数据库>` 显式升级到 v16。
+- 完整 v15 库使用 `scripts/migrate_online_products.py <数据库>` 显式升级到当前版本。
   脚本先创建权限 0600 的 SQLite 一致性备份，再在事务内校验原结构、添加在线商品两表及索引。
   商品、草稿、授权、发布及 Agent 持久数据全部保留。其他版本或残缺结构在写入前拒绝。
+- 完整 v16 库使用 `scripts/migrate_online_operations.py <数据库>` 升级到 v17：锁定写入并创建权限
+  0600 的一致性备份后，仅将在线商品唯一占用索引缩小到 `queued/running`。不修改商品、历史任务、回执或幂等键。
 - `upc_pool.json` 是已购买 UPC 的显式资产导入，不属于 schema 迁移。
 - 2026-09-28 请求管理开发中间版本曾将 `external_*` 审计表写入 v16 主库。
   `scripts/migrate_external_request_audit.py <主库>` 仅识别这套完整遗留结构：先保存权限 0600 的
-  一致性备份，再迁到独立审计库；目标提交成功后才移除主库审计表，业务数据及主库版本不变。
+  一致性备份，再迁到独立审计库；目标提交成功后才移除主库审计表，并升级在线占用索引到 v17；业务数据不变。
   运行时不会自动迁移；结构拒绝信息列出多余、缺失或定义不一致的对象，不再把同版本结构差异误报为版本过旧。
 
 ## 在线商品管理
@@ -123,14 +125,28 @@
   `ozon_category_template.py` 解析官方 XLSX 的隐藏元数据并替换商品数据区，保留字典、校验和样式；
   当前仅支持已核对的中文圣诞装饰品 CNY 模板，其他类目或必填契约变化显式拒绝。
   生成时重建预览并检查 `preview_fingerprint`，编辑只作用于本次请求的导出覆盖值。
+  无品牌值取自模板元数据；中文型号只在整个已同步分组的俄文标题一致且无跨组重名时自动复用标题，
+  不以选中子集决定型号。中文型号、完整字典中的无效品牌阻止导出；品牌字典不完整时提示到平台核对。
   前端 `OzonExportDialog.vue` 复用 `WorkspaceDialog`；列表仅增加选择列和筛选栏的“操作”菜单。
   字段与输出契约见 `schemas/ozon_template_export.py`，操作与验证说明见 [Ozon 模板导出](ozon-template-export.md)。
 - `http_route_units/online_product_routes.py` 是列表/详情及同步、单件状态刷新、修改、回读、人工结束、失败重试的唯一 HTTP 入口。
   `facades/online_product_facade.py` 负责请求转换；`facades/online_product_factory.py` 显式装配三个平台适配器。
+- `POST /api/online-products/change-batch/preview` / `change-batch` 经 facade → `OnlineProductService` →
+  `services/online_product_batch.py` 处理 Yandex 所选商品的停售、恢复销售、归档和恢复归档。
+  预览只读本地：父节点展开当前目录全部 SKU，不受关键词和销售状态筛选影响；单件选择只包含该 SKU，重叠去重。
+  预览返回实际商品数、SKU、版本及不可执行原因；提交固定这份目标清单，不在执行时扩大范围。
+  同账号批量校验与 `OnlineProductStore.enqueue_batch` 短事务原子入队，仍使用逐 SKU 的 `online_jobs`、版本、冲突及幂等约束。
+  批次标识保存在任务 JSON，不新增数据库结构；批量重试键绑定完整目标、版本与变更，HTTP 回执只返回精简任务引用。
+  原有 worker 按批次领取，Yandex 停售/恢复最多 500 SKU、归档/恢复归档最多 200 SKU，可跨商品合并，超量拆批。
+  `YandexOnlineAdapter.read_many` 复用按目标目录及批量详情读取；写前再次逐项校验，单件冲突不发送该项，其他有效成员继续合批。
+  `dispatch_batch` 在一个短事务中保存全批写前日志和停售意图，网络等待在事务外；逐项平台回执保存回原任务。
+  逐项拒绝、超时和中断保持对应失败/未知语义，已经发出的整批不自动拆成单件重发；回读与明确失败重试继续使用原入口。
 - `services/online_product_service.py` 编排 ERP 领域任务，通过注入访问适配器，不反向导入 runtime。
   `refresh_status` 直接查询单件状态；`POST /api/online-products/refresh-status` 不入同步队列，返回更新后的公开商品。
   `stores/online_product_store.py::update_status` 校验并发版本后合并状态、平台反馈及 `status_checked_at`，保留价格、库存、内容和完整同步时间。
   `services/online_product_sync.py` 消费 `OnlineSyncBatch`、保存目录记录与详情进度，详情失败保留旧业务快照。
+  同步请求与持久任务保存 `catalog=current/archived`，默认普通商品；Yandex 每次只发现该目录，页面确认、最新进度和失败重试保持同一范围。
+  指定 SKU 重试不混传平台禁止的归档过滤条件，读取目标目录身份后排除已移出原目录的商品；单件修改前读取与批量写入校验仍按明确 SKU 读取，不受页面目录限制。
   `services/online_product_changes.py` 负责确定性变更校验与字段回读比较；详情未完整同步时禁止修改。
   `services/online_product_images.py` 按发布记录中的远端身份和账号精确关联源草稿，
   `GET /api/online-products/source-images?listing_id=...` 返回可选图片资产与内容版本；
@@ -142,7 +158,8 @@
   图片准备不修改源草稿、SKU 默认图或源图片池，临时上传文件随准备作用域清理。
   `services/online_product_listing.py` 从快照中的平台组合标识生成父节点，筛选 SKU 后按节点分页，组合不跨页；
   `total` 统计节点，`listing_total` 统计匹配刊登，公开 `groups.item_ids` 引用本页 `items`，父节点不接受修改。
-  `groups.feedback_summary` 汇总整个组合的受影响 SKU 数、平台错误和警告条数，覆盖当前筛选隐藏的 SKU；
+  `catalog=current/archived/all` 在分组和统计前限定普通商品、归档商品或全目录，默认普通商品；
+  `groups.feedback_summary` 汇总当前目录内整个组合的受影响 SKU 数、平台错误和警告条数，覆盖其他筛选隐藏的 SKU；
   前端父行在折叠时也显示汇总，单件状态刷新按该 SKU 的变化调整父行计数，不影响其他 SKU 的反馈。
   AI 列表唯一入口为 `OnlineProductService.read_page` → `listing_summary_page`，复用页面的组合身份、顺序和筛选。
   默认 `view=groups` 仅返回父节点和代表刊登；`view=listings` 按 SKU 分页，可用 `group_id` 限定成员。
@@ -166,6 +183,17 @@
   `online_mercadolibre_read.py` 先完整扫描目录，再用最多 3 件的并发窗口读取父商品及关联站点，保留 User Products mapping 校验；
   `online_ozon_read.py` 先扫描 ALL 与 ARCHIVED 目录，再每批最多 100 件读取详情与价格，`online_ozon_snapshot.py` 只做投影。
   三个平台统一产出同步批次，`marketplaces/online_sync.py` 仅提供目录占位和授权/限流中断规则，旧通用串行读取器已移除。
+- Yandex 停售仍使用 campaign 级 `hidden-offers`；独立 `archive` 操作通过 business 级
+  `offer-mappings/archive` / `unarchive` 归档或恢复，影响该商家全部店铺，保留库存与隐藏设置。
+  `changes.archived` 必须为布尔值、`scope_id=business`；归档商品须先恢复归档才能调整销售状态。
+  平台成功回执只列失败 SKU，单件无失败时直接 `confirmed` 并更新各店铺同 SKU 的本地目录归属；
+  HTTP 200 中的逐项失败记为失败，未知回执/超时保留未知结果，手动核验只读取目标 `offer-mappings`，不重发写入。
+  `OnlineProductStore.archive_state` 在短事务内校验租约、更新归档字段和版本，不改库存或完整同步时间；
+  归档与同 business 同 SKU 的其他店铺执行互斥，未知归档只保护归档、库存及销售状态等相关修改。
+  `OnlineListing` 从旧快照 `offer.archived` 读取归档事实并派生当前归档能力，无需数据库迁移或强制全店同步；
+  单件状态刷新也读取目标归档状态，恢复归档不推断立即在售。协议见
+  [归档](https://yandex.ru/dev/market/partner-api/doc/ru/reference/business-offer-mappings/addOffersToArchive)和
+  [恢复归档](https://yandex.ru/dev/market/partner-api/doc/ru/reference/business-offer-mappings/deleteOffersFromArchive)。
 - `schemas/online_products.py` 定义平台刊登、市场、具名价格/库存范围、平台错误/警告及变更契约；
   `platform_issues` 与 ERP 同步错误 `errors` 分开，旧快照缺字段时默认空列表；平台反馈不改变销售状态。
   属性展示名称、名称读取提示及平台反馈不参与业务内容版本；编号、值和单位仍参与并发校验。
@@ -174,12 +202,22 @@
 - `marketplaces/online_buyer_links.py` 纯函数提取平台买家链接，规范化为 `BuyerLink`，随列表/详情返回。
   Yandex 使用 B2C `showcaseUrls`，Mercado 使用站点子刊登 `permalink`；不猜测缺失地址。
   `scripts/backfill_online_buyer_links.py` 补齐当前账号存量链接，只更新导航元数据，保留业务版本及同步时间。
-- 任务以提交键防重，同目标修改互斥；全店同步只与该账号排队或执行中的任务互斥，待确认与结果未知的修改不阻断只读同步。同步仅更新商品快照，不确认旧修改或解除其防重发保护；同步期间不能并发查询修改结果，避免快照互相覆盖。写前核对当前店铺及平台业务版本，
+- `product_model/online_operation_model.py` 是回执语义与冲突范围的纯逻辑 owner，Service 和 Store 共用。
+  Yandex 库存/隐藏接口的 `OK`、Mercado 不带异步任务的成功回执记为 `submitted`（平台已受理），
+  不等同于 `confirmed`（已核验生效），也不占用商品。Yandex 价格隔离/内容审核及 Mercado `task_id`
+  记为 `waiting_confirmation`；不可识别的回执和写入超时保留 `outcome_unknown`。
+  历史 `submitted` 按保存的回执投影，缺少回执不能视为受理；读取不改写原任务或发起平台请求。
+- 任务以提交键防重，`queued/running` 执行阶段保留同目标互斥；真实异步或未知结果只阻止相关修改。
+  同类修改仍互斥；Mercado 库存与销售状态相互关联；Yandex 隐藏不受旧库存任务阻塞，但恢复销售需排除未知库存修改。
+  全店同步只与该账号排队或执行中的任务互斥。同步仅更新商品快照，不确认旧修改或解除其防重发保护；
+  同步和同商品执行期间不能并发查询修改结果，避免快照互相覆盖。写前核对当前店铺及平台业务版本，
   写前日志区分已发送与未发送；未知结果只回读、不自动重放。每次领取生成独立租约，过期执行者不可提交结果。
   工作线程在应用启动时恢复队列，前端轮询仅负责展示；部分同步失败保留旧快照，不推断删除。
-  在线修改提交后仅接受人工确认，连续查询间隔 30 秒；失败也保留冷却时间。历史自动确认标记不再参与任务领取。
-  局部确认更新版本与对应字段，保留完整同步时间。
+  结果查询由用户主动发起，连续查询间隔 30 秒；失败也保留冷却时间。已明确受理的操作不要求查询后才能继续修改，
+  后续查询失败、查询进程中断或展示尚未更新不撤销已持久化的受理事实。历史自动确认标记不参与任务领取。
+  局部确认更新版本与对应字段，保留完整同步时间；旧任务核验不能覆盖更新的销售意图。
 - 修改或同步被已有任务拦截时，`OnlineConflictResponse.conflict_job_id` 返回实际阻塞任务编号；前端错误提示可直接打开对应操作。
+  AI 工具错误的 `details.conflict_job_id` 同样保留该编号。
   `GET /api/online-products?job_id=...` 经 facade → `OnlineProductService.job_detail` 校验当前店铺归属后读取任务，不受最近 100 条列表限制，不执行平台查询或重放修改。
 - `POST /api/online-products/close` → `OnlineProductService.close_operation` → `OnlineProductStore.close_operation`
   允许人工核对后结束仍未确认的本地修改，终态为 `closed_unconfirmed`，不判定原写入成功或失败、不撤销平台请求、不自动重放。
@@ -191,9 +229,13 @@
   `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。
   商品数量、SKU 分析等由读取返回值与已有 Code Mode 组合完成，不新增场景工具、查询 DSL 或平台写入旁路。
 - 审批和持久调用直接使用现有 Tool Bridge 的 Pydantic Deferred 机制；修改和重试返回 `OnlineSubmissionResult`，任务入队即完成 AI 工具调用，批量提交继续处理剩余目标，不等待远端终态。
-  平台写入与回读由后台独立处理，在操作记录查看；`online_product_job_reader.py` 继续为同步及已持久化引用读取领域回执。
-  `confirmed` 才确认成功；部分完成、未知结果和等待人工确认保留原状态并结束本次工具等待，不自动重放。
-  改库存、调价、内容与停售共用一个 `online_products_change`，所需权限、审批和提交身份由原有 Runtime 处理。
+  平台写入由后台处理，回读按需发起；`online_product_job_reader.py` 为同步及已持久化引用读取领域回执。
+  `submitted` 只完成提交职责，`confirmed` 才确认实际生效；部分完成、未知结果和等待人工确认保留原状态并结束本次工具等待，不自动重放。
+  协议依据：[Yandex 隐藏](https://yandex.ru/dev/market/partner-api/doc/ru/reference/hidden-offers/addHiddenOffers)、
+  [Yandex 库存](https://yandex.ru/dev/market/partner-api/doc/ru/reference/stocks/updateStocksOnPartnerWarehouses)、
+  [Mercado 普通修改](https://global-selling.mercadolibre.com/devsite/sync-and-modify-listings-gs)、
+  [Mercado 异步任务](https://global-selling.mercadolibre.com/devsite/en_us/price-per-variation-cbt)。
+  改库存、调价、内容、停售与归档共用一个 `online_products_change`，所需权限、审批和提交身份由原有 Runtime 处理。
 - 前端复用工作台的 `/online-products` 导航及 `OnlineProductsPanel.vue` / `OnlineContentEditor.vue`。
   在线图片编辑使用内嵌源草稿多选区，图集第一张为主图；排序和移除按钮提供禁用原因及操作提示。
   `OnlinePicturePreview.vue` 提供失败占位与重试；进入预览时保留编辑组件，返回继续编辑。
@@ -201,7 +243,10 @@
   `OnlineProductDetails.vue` 在详情直接展示属性名称、编号、值和平台错误/警告，保留换行及原文；
   `onlineAttributeDisplay.ts` 统一详情及编辑表单的展示。列表显示反馈数量，需关注统计包含平台反馈，
   Yandex 卡片处理中、修改未被接受与销售状态分别展示；刷新状态会更新反馈，属性名称由完整同步补齐。
-  页面背景传递当前平台、最近点击或键盘聚焦的 `group_id` / `listing_id`，区分组合与单件；转入聊天保留定位，切换平台、筛选、页码和操作记录或目标消失时清理。无焦点不能推断首项，不混用本地商品或草稿 ID，也不作为授权。
+  Yandex 提供普通/归档目录；操作菜单统一提供所选商品的停售/恢复销售、归档/恢复归档，确认弹窗复用 `WorkspaceDialog`。
+  勾选父行在这些修改操作中选择整件商品，单独取消成员后退回明确选中的 SKU；导出仍使用当前筛选选中的成员。
+  前端一次调用批量入口，连接失败保留完整原请求及幂等键，受理后逐 SKU 结果在操作记录查看。
+  页面背景传递当前平台、目录 `catalog`、最近点击或键盘聚焦的 `group_id` / `listing_id`，区分组合与单件；转入聊天保留定位，切换平台、目录、筛选、页码和操作记录或目标消失时清理。无焦点不能推断首项，不混用本地商品或草稿 ID，也不作为授权。
   旧本地 publication 列表、旧独立暂停 HTTP/AI 工具及其前端已删除；持久化 publication 的读取迁移保留。
 - AI 接入边界、平台限制及验收方式见 [在线商品 AI](online-product-ai.md)。
 
@@ -315,6 +360,14 @@ CLI / Browser use case
 
 ### Focused 例外登记：专用 Images API
 
+- 草稿图片 V2 由 `DraftImageWorkbench.vue` 展示共用主图与去重后的当前 SKU 图片；`ProductImageEditorPanel.vue` 保留商品素材池入口。页面不做版本分组或 SKU 配图，历史错误加入的共用引用照实展示，不自动清理。
+  `useDraftImageWorkbench.ts` 固定提交目标、清空提交选择；移出、添加、排序和撤销/重做经既有草稿保存入口立即持久化，只改图片引用，保留 SKU 独立引用、价格和源文件。上传在短锁内合入最新素材池，回执 `uploaded_image_ids` 只标识本次上传，不能按素材池增量猜测范围而混入另一草稿的结果。
+  撤销栈限定本次打开的草稿工作台，切换工作台内标签保留，关闭或刷新后建立新边界；重新加载或外部更新改变图片引用时旧历史失效。一次批次只记录成功项形成的前后引用差异，重做不再生成或计费。保存回执丢失先重读真实状态，不假报撤销成功。
+  `POST /api/draft-images/process` 经 `image_facade` 注册既有 `ImageBatchStore` 批次后异步执行；`POST /api/draft-images/state` 只读查询当前草稿与原批次。批次携带草稿 ID，同草稿只准一批；进度快照必须在草稿读取前固定，避免终态配旧引用。前端断线保留请求 ID，重新打开按草稿恢复查询，不重发模型请求；结果未知保持只读，服务重启仍沿用已有的人工核对边界。
+  `ProductStore.save_draft_content` 通过上下文显式注入的图片任务 guard 阻止冲突图片写入，页面保存入口另在短锁内检查任务；网络与模型调用不占商品锁。处理期间引用被其他路径改动时保留生成资产并拒绝套用到变化后的范围。
+  `image_pool_core._pool_display_item` 保留 `derived_from_id`、`source_asset_id`、语言和供应商字段；历史仅有 `source_asset_id` 的前端读取映射继续保留。
+  `replace_selected` 只替换当前草稿原有共用位置与 SKU 引用；SKU 专属结果不能追加到共用图集。显式输入 ID 不再受素材池旧勾选或平台标签二次过滤。
+  `image_translate_service.py` 每次生成独立资产 ID 与文件路径，直接来源为实际输入图；旧资产和文件继续读取，曾被历史实现覆盖的文件不能凭关联恢复。发布仍由 `skuPublishImages` / `sku_publish_projection` 按 SKU 专属图在前、共用顺序跟随并去重，不新增平台图片限制。
 - 图片工作台的 `POST /api/image-edit`、`/api/image-translate` 经 `image_facade` →
   `image_batch_service` 按原图建立批次，进程内所有批次共享三路执行上限；每张仍经
   `image_translate_service` → `ai_gateway` → `ai_direct_request_service` → Pydantic Direct Model。
@@ -326,7 +379,7 @@ CLI / Browser use case
   逐张进度读取 `GET /api/v1/ai-work/conversations/{id}/image-batch`，不把并发响应混入单个 SSE 流。
   `AiImageBatchProgress.vue` 在浮窗与 AI Work 共用，按原图编号显示，未结束时轮询只读快照；
   切换和卸载作废旧读取，重新打开继续读取，终态停止轮询。普通对话的 `run_active` 仍只表示 Agent run。
-- 批次执行仍随原业务请求收尾，浏览器重新读取不执行模型；进程重启后保留成功项，将正在执行项标为结果待核对、
+- 旧同步图片端点随原业务请求收尾；草稿 V2 在同一领域批次登记后后台执行，浏览器重新读取不执行模型。进程重启后保留成功项，将正在执行项标为结果待核对、
   尚未执行项标为中断，不自动重发。旧对话没有批次记录时沿用原生历史展示，不推测缺失的处理结果。
 - 核对依据：安装版本 Pydantic AI 2.44.0 的 `direct.model_request` 和 `ModelMessage.metadata`，
   官方 [Direct Model Requests](https://pydantic.dev/docs/ai/core-concepts/direct/) 与
@@ -1005,7 +1058,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `erp_web/runtime_units/sku_publish_adapter.py`：注册表唯一发布入口，委托 `sku_precheck.py` 汇总 SKU 预检错误和提醒；编译带每项身份的冻结 SKU 清单；平台叶子适配器保留原生单品 I/O。每项写前落盘、写后保存响应，成功项按内容指纹跳过，未知结果禁止再次创建，异步确认仅推进原任务。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
 - `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。
-- 前端 `SkuImagePicker.vue` 从素材池选图；图片页“关联 SKU”复用商品/草稿保存入口。`replace_selected` 处理结果只替换当前草稿的相应 SKU 引用，换图不使核价失效。无调用方的 `set_sku` 素材标记 action 已删除。
+- 前端 `SkuImagePicker.vue` 从素材池选图；商品素材池“关联 SKU”复用商品保存入口；草稿 V2 不提供配图入口。`replace_selected` 处理结果只替换当前草稿的相应 SKU 引用，换图不使核价失效。无调用方的 `set_sku` 素材标记 action 已删除。
 - 商品 schema 当前为 4；保留本地商品及草稿的 SKU 图片地址迁移能力，不恢复旧的按下标选品格式。详见 `docs/sku-workflow.md`。
 - `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、非 Mercado 平台同步发布、
   发布队列及 `POST /api/publish-bus/reconcile`。reconcile 只查询已持久化任务，不重放发布修改。

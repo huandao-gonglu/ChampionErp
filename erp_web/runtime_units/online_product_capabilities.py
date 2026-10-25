@@ -38,7 +38,8 @@ def _call(function, *args, **kwargs):
     try:
         return function(*args, **kwargs)
     except OnlineConflict as exc:
-        raise BusinessCapabilityError("ONLINE_CONFLICT", str(exc)) from None
+        raise BusinessCapabilityError("ONLINE_CONFLICT", str(exc),
+            details={"conflict_job_id": exc.job_id} if exc.job_id else None) from None
     except (PublishAdapterError, TimeoutError, OSError) as exc:
         raise BusinessCapabilityError("ONLINE_PLATFORM_ERROR", f"平台查询失败，原数据已保留：{exc}") from None
     except ValueError as exc:
@@ -63,7 +64,7 @@ def _submission(response: dict[str, Any]) -> OnlineSubmissionResult:
     return OnlineSubmissionResult(
         job_id=job["id"], listing_id=job["target_id"], platform=job["platform"],
         operation=job["operation"], status=job["status"],
-        summary="修改请求已提交后台任务。AI 提交职责已完成；远端处理结果由后台跟踪，请在在线商品操作记录查看。",
+        summary="修改请求已进入后台队列。平台受理与实际生效以操作记录为准；需要核验时可查询平台结果。",
     )
 
 
@@ -118,6 +119,7 @@ def _close_snapshot(request: CloseOnlineOperationRequest, scope: OnlineProductCa
 @ai_tool(
     name="online_products_read",
     description=("读取线上商品同步快照，返回线上刊登而非本地草稿。无 id 返回摘要，有 id 返回完整详情。"
+                 "catalog=current 默认排除归档；查归档商品用 archived，跨目录统计用 all。停售与缺货仍在普通目录。"
                  "默认 view=groups 按在线页面同序返回父节点或独立商品，items 仅含各节点的首个匹配刊登，不能当作全部 SKU。"
                  "查看第一个商品用 page=1、limit=1，直接依据 groups[0] 和 items[0] 回答，无需探测关键词或发布日志。"
                  "view=listings 按相同顺序逐 SKU 分页，组合可以跨页；用返回的 group_id 限定组合成员。"
@@ -140,7 +142,7 @@ def online_products_read(request: OnlineReadRequest, scope: Annotated[OnlineProd
     result = (_call(service.detail, request.id, fields=request.fields) if request.id else
               _call(service.read_page, request.platform, query=request.q, status=request.status,
                     market=request.market, page=request.page, limit=request.limit, view=request.view,
-                    group_id=request.group_id, fields=request.fields))
+                    group_id=request.group_id, fields=request.fields, catalog=request.catalog))
     if request.id and request.include_source_images:
         result["source_images"] = _call(service.source_images, request.id)
     return OnlineReadResult.model_validate(result)
@@ -164,7 +166,9 @@ def online_products_refresh_status(request: RefreshStatusRequest, scope: Annotat
     name="online_products_change",
     description=("复用在线商品统一修改接口：按 listing_id、version、operation、scope_id、changes 提交局部变更。"
                  "先读取线上商品，使用其真实范围 ID 与 capabilities；不能用本地草稿 ID 或猜测 SKU/仓库。"
-                 "同一入口支持现有库存、价格、内容与停售/恢复，平台校验和写后回读由现有服务执行。"
+                 "同一入口支持库存、价格、内容、停售/恢复及 Yandex 归档/恢复归档。"
+                 "停售使用 sale_state；归档使用 operation=archive、scope_id=business、changes={archived:true}，恢复为 false。"
+                 "归档影响商家账号全部店铺，保留原库存与停售设置；恢复归档不保证立即可售。用户明确要求归档时不要用库存清零或停售代替。"
                  "accepted=true 表示请求已持久化入队，AI 对该项的提交职责已完成，不代表平台已接收或生效。"
                  "批量修改应继续提交剩余目标，最后汇总已提交与提交失败数量即可结束，不等待或主动回读远端结果。"
                  "远端结果由后台和操作记录跟踪；除非用户另行要求查询，否则不要调用 reconcile 或轮询库存。"
@@ -187,7 +191,7 @@ def online_products_change(request: OnlineChange, scope: Annotated[OnlineProduct
 )
 def online_products_sync(request: OnlineSyncRequest, scope: Annotated[OnlineProductCapabilityScope, Injected()],
                          execution: Annotated[AiExecutionContext, Injected()]) -> JobReferenceResult:
-    return _reference(_call(scope.service().sync, request.platform, _key(execution)))
+    return _reference(_call(scope.service().sync, request.platform, _key(execution), catalog=request.catalog))
 
 
 @ai_tool(

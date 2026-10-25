@@ -15,6 +15,37 @@ from erp_web.stores.online_product_store import OnlineConflict, OnlineProductSto
 
 NUMBERS = {"price": "价格", "weight_g": "毛重", "width_mm": "包装宽度", "height_mm": "包装高度", "length_mm": "包装长度"}
 LABELS = {**NUMBERS, "offer_id": "货号", "main_image": "主图", "brand": "品牌", "model": "型号名称", "type": "类型"}
+CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
+
+
+def _model_identity(listing: OnlineListing) -> tuple[str, str]:
+    group = str(listing.snapshot.get("offer", {}).get("groupId") or "").strip()
+    return ("group", group) if group else ("listing", listing.id)
+
+
+def _model_source(listing: OnlineListing) -> str:
+    return str(listing.snapshot.get("offer", {}).get("groupId") or listing.seller_sku or listing.remote_id).strip()
+
+
+def _model_defaults(listings: list[OnlineListing]) -> dict[tuple[str, str], str]:
+    """只复用整组一致的俄文标题；不能因本次只选部分 SKU 改变合卡关系。"""
+    titles: dict[tuple[str, str], set[str]] = {}
+    sources = {}
+    for listing in listings:
+        identity = _model_identity(listing)
+        titles.setdefault(identity, set()).add(listing.title.strip() if listing.details_state == "ready" else "")
+        sources[identity] = _model_source(listing)
+    candidates = {}
+    for identity, values in titles.items():
+        if CJK.search(sources[identity]) and len(values) == 1:
+            title = next(iter(values))
+            if re.search(r"[А-Яа-яЁё]", title) and not CJK.search(title) and len(title) <= 255:
+                candidates[identity] = title
+    owners: dict[str, set[tuple[str, str]]] = {}
+    for identity, source in sources.items():
+        owners.setdefault(candidates.get(identity, source), set()).add(identity)
+    # 不同源组碰巧同名时不能自动合成一张卡，交给导出编辑明确区分。
+    return {identity: title for identity, title in candidates.items() if len(owners[title]) == 1}
 
 
 def _number(value: object, factor: int = 1, *, whole: bool = False) -> str:
@@ -61,7 +92,7 @@ def _variant_facts(listing: OnlineListing) -> tuple[str, str, str]:
     return variant, width, height
 
 
-def _row(listing: OnlineListing, template: OzonCategoryTemplate, changes: dict[str, str]) -> OzonExportRow:
+def _row(listing: OnlineListing, template: OzonCategoryTemplate, changes: dict[str, str], *, model: str) -> OzonExportRow:
     offer = listing.snapshot.get("offer", {})
     package = offer.get("weightDimensions", {})
     base = next((p for p in listing.prices if p.id == "business" and p.kind == "base_price"), None)
@@ -75,7 +106,7 @@ def _row(listing: OnlineListing, template: OzonCategoryTemplate, changes: dict[s
     barcodes = offer.get("barcodes") or []
     fields = {"offer_id": listing.seller_sku or listing.remote_id, "title": title,
               "price": _number(base.amount) if base else "", "brand": str(offer.get("vendor") or ""),
-              "model": str(offer.get("groupId") or listing.seller_sku or listing.remote_id),
+              "model": model,
               "barcode": str(barcodes[0]) if barcodes else "", "weight_g": _number(package.get("weight"), 1000, whole=True),
               "width_mm": _number(package.get("width"), 10, whole=True), "height_mm": _number(package.get("height"), 10, whole=True),
               "length_mm": _number(package.get("length"), 10, whole=True),
@@ -84,6 +115,22 @@ def _row(listing: OnlineListing, template: OzonCategoryTemplate, changes: dict[s
     fields.update(changes)
     fields = {key: value.strip() for key, value in fields.items()}
     errors, warnings = [], []
+    brand = fields["brand"]
+    if brand and brand not in template.brand_values and brand.casefold() in {"其他", "无品牌", "без бренда", "нет бренда"}:
+        fields["brand"] = template.no_brand
+        if brand != template.no_brand:
+            warnings.append(f"品牌“{brand}”已转换为模板选项“{template.no_brand}”，请确认商品确实无品牌")
+    if fields["brand"] and fields["brand"] != template.no_brand and fields["brand"] not in template.brand_values:
+        if template.brand_dictionary_complete:
+            errors.append("品牌不在模板选项中，请填写 Ozon 品牌名称；无品牌商品请选择“" + template.no_brand + "”")
+        else:
+            warnings.append("模板未包含完整品牌字典，请在 Ozon 确认该品牌可选；无品牌商品请填写“" + template.no_brand + "”")
+    if CJK.search(fields["model"]):
+        errors.append("型号名称含中文，请填写同组一致的俄文型号名称；不能直接使用中文分组名称")
+    if len(fields["model"]) > 255:
+        errors.append("型号名称不能超过 255 个字符")
+    if "model" not in changes and model != _model_source(listing):
+        warnings.append("中文型号名称已使用同组一致的俄文商品名称，请核对合卡分组")
     if listing.details_state != "ready":
         errors.append("商品详情尚未同步完整，请先完成同步")
     if listing.sale_state != "active":
@@ -129,13 +176,22 @@ class OnlineOzonExportService:
             raise ValueError("导出资料只能属于本次选中的商品")
         data = decode_template(request.template_base64)
         template = OzonCategoryTemplate(data)
-        rows = []
+        listings = []
         for listing_id in request.listing_ids:
             listing = self.store.get(listing_id)
             if listing.platform != "yandex" or listing.account_id != request.account_id:
                 raise ValueError("只能导出当前 Yandex 店铺的商品")
-            changes = request.overrides.get(listing_id)
-            rows.append(_row(listing, template, changes.model_dump(exclude_none=True) if changes else {}))
+            listings.append(listing)
+        defaults = {}
+        if any(CJK.search(_model_source(listing)) for listing in listings):
+            related = {listing.id: listing for listing in self.store.listings("yandex", request.account_id)}
+            related.update({listing.id: listing for listing in listings})
+            defaults = _model_defaults(list(related.values()))
+        rows = []
+        for listing in listings:
+            changes = request.overrides.get(listing.id)
+            rows.append(_row(listing, template, changes.model_dump(exclude_none=True) if changes else {},
+                             model=defaults.get(_model_identity(listing), _model_source(listing))))
         if len({row["seller_sku"] for row in rows}) != len(rows):
             raise ValueError("所选商品货号重复，请核对商品身份")
         if request.account_id != self.current_account():

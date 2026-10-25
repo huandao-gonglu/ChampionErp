@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+import pytest
 
 from PIL import Image
 
@@ -12,6 +13,31 @@ from erp_web.services import image_service, image_translate_service
 def _make_png(path: Path, color: tuple[int, int, int]) -> None:
     image = Image.new("RGB", (8, 6), color)
     image.save(path, format="PNG")
+
+
+@pytest.mark.parametrize("mode", ["translate", "edit"])
+def test_repeated_image_processing_keeps_distinct_files_and_immediate_source(app_dir, tmp_path, mode):
+    output = tmp_path / "result.png"
+    source = {"id": "translated-source", "target_language": "ru"}
+
+    def store():
+        # 供应商重复文件名和错误 source_id 不能覆盖历史或改变真实输入关联。
+        result = {"path": str(output), "filename": "same.png", "source_id": "wrong-source"}
+        if mode == "translate":
+            return image_translate_service._store_translated_item(app_dir, result, "version-product", 0, "ru", ["yandex"], source)
+        return image_translate_service._store_edited_item(app_dir, result, "version-product", 0, ["yandex"], "修正文字", source)
+
+    _make_png(output, (255, 0, 0))
+    first = store()
+    before = (app_dir / first["path"]).read_bytes()
+    _make_png(output, (0, 0, 255))
+    second = store()
+    assert first["id"] != second["id"]
+    assert first["path"] != second["path"]
+    assert (app_dir / first["path"]).read_bytes() == before
+    assert (app_dir / second["path"]).read_bytes() != before
+    assert first["derived_from_id"] == second["derived_from_id"] == source["id"]
+    assert second["target_language"] == "ru"
 
 
 def test_image_root_is_created_under_data_images(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:

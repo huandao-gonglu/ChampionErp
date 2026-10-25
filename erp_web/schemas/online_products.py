@@ -6,10 +6,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 Platform = Literal["mercadolibre", "ozon", "yandex"]
-Operation = Literal["sync", "price", "stock", "content", "sale_state"]
+Operation = Literal["sync", "price", "stock", "content", "sale_state", "archive"]
 JobStatus = Literal["queued", "running", "submitted", "waiting_confirmation", "confirmed", "partial", "failed", "outcome_unknown", "closed_unconfirmed"]
 
 
@@ -112,12 +112,28 @@ class OnlineProduct(BaseModel):
     details_state: Literal["pending", "ready", "failed"] = "ready"
     desired_sale_state: str = ""
     sale_state: str = "unknown"
+    archived: bool = False
     local_product_id: str = ""
     local_draft_id: str = ""
 
 
 class OnlineListing(OnlineProduct):
     snapshot: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_archive_state(cls, value):
+        """旧持久快照保留平台归档事实，并开放当前版本的独立归档能力。"""
+        if not isinstance(value, dict) or value.get("platform") != "yandex":
+            return value
+        value = dict(value)
+        value.setdefault("archived", value.get("snapshot", {}).get("offer", {}).get("archived") is True)
+        value["capabilities"] = {**value.get("capabilities", {}), "archive": {
+            "enabled": value.get("details_state", "ready") == "ready" and not value.get("errors"),
+            "scope": "商家账号全部店铺", "fields": ["archived"],
+            "reason": "归档 / 恢复归档影响该商家账号全部店铺，不修改库存或停售设置",
+        }}
+        return value
 
 
 class SourceImageOption(BaseModel):
@@ -152,6 +168,7 @@ class OnlineStatus(BaseModel):
     remote_id: str
     raw_status: str = Field(min_length=1)
     sale_state: str
+    archived: bool | None = None
     raw_sub_status: list[str] = Field(default_factory=list)
     platform_issues: list[PlatformIssue] = Field(default_factory=list)
     markets: list[MarketStatus] = Field(default_factory=list)
@@ -210,13 +227,43 @@ class OnlineChange(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     listing_id: str = Field(min_length=1)
     version: str = Field(min_length=1)
-    operation: Literal["price", "stock", "content", "sale_state"]
+    operation: Literal["price", "stock", "content", "sale_state", "archive"]
     scope_id: str = ""
-    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表；保留的图片使用当前平台 ID/地址，新增图片只允许关联源草稿的 {asset_id,fingerprint} 引用。")
+    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；archive={archived:true|false}，仅支持 Yandex，scope_id=business，影响账号全部店铺，独立于停售与库存；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表；保留的图片使用当前平台 ID/地址，新增图片只允许关联源草稿的 {asset_id,fingerprint} 引用。")
 
 
 class ChangeRequest(OnlineChange):
     idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class BatchChangeTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    listing_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+
+
+class BatchChangePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    platform: Literal["yandex"]
+    catalog: Literal["current", "archived"] = "current"
+    group_ids: list[str] = Field(default_factory=list, max_length=1000)
+    listing_ids: list[str] = Field(default_factory=list, max_length=1000)
+    operation: Literal["sale_state", "archive"]
+    changes: dict[str, Any]
+
+
+class BatchChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[BatchChangeTarget] = Field(min_length=1, max_length=5000)
+    operation: Literal["sale_state", "archive"]
+    changes: dict[str, Any]
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+    @model_validator(mode="after")
+    def unique_targets(self):
+        if len({item.listing_id for item in self.items}) != len(self.items):
+            raise ValueError("批量操作不能包含重复 SKU")
+        return self
 
 
 def digest(value: Any) -> str:
@@ -236,6 +283,10 @@ def snapshot_version(listing: OnlineListing) -> str:
     if listing.platform == "yandex" and isinstance(content.get("attributes"), list):
         content["attributes"] = [{key: value for key, value in row.items() if key != "name"}
                                  for row in content["attributes"]]
-    return digest({key: data[key] for key in (
+    facts = {key: data[key] for key in (
         "remote_id", "model", "title", "sale_state", "raw_status", "raw_sub_status", "markets", "prices", "stocks", "content",
-    )})
+    )}
+    # 未归档的旧快照保持版本稳定；归档变化进入业务并发校验。
+    if listing.archived:
+        facts["archived"] = True
+    return digest(facts)

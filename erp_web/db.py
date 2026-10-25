@@ -33,7 +33,7 @@ from erp_web.product_model.merge_model import (
 )
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 REQUIRED_TABLES = (
     "online_listings",
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS online_jobs (
     updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS online_jobs_active_target ON online_jobs(platform, account_id, target_id)
-    WHERE status IN ('queued','running','submitted','waiting_confirmation','outcome_unknown');
+    WHERE status IN ('queued','running');
 """
 
 _SCHEMA_SQL = """
@@ -714,6 +714,7 @@ class ErpDatabase:
                 f"{detail}；仅接受真正空库或结构完整的当前 schema。"
                 "请先备份并核对结构，不要删除含业务数据的数据库。"
                 "完整 v15 数据库使用 scripts/migrate_online_products.py；"
+                "完整 v16 数据库使用 scripts/migrate_online_operations.py；"
                 "v16 主库遗留 external_* 审计表使用 scripts/migrate_external_request_audit.py；"
                 "运行时不会迁移、修复或删除数据库。"
             )

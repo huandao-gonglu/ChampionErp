@@ -26,6 +26,7 @@ import ProductResearchPanel from '@/components/domain/ProductResearchPanel.vue'
 import PublishJobsPanel from '@/components/domain/PublishJobsPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
+import { useDraftImageWorkbench } from '@/composables/useDraftImageWorkbench'
 import { useDraftImageSaveState } from '@/composables/useDraftImageSaveState'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { aiPageLabels } from '@/types/aiPageContext'
@@ -60,7 +61,6 @@ const {
   currentDraftProductContext,
 } = storeToRefs(catalogStore)
 const imageSaveState = useDraftImageSaveState(currentDraft, () => store.saveCurrentDraft())
-const imageSaveStatus = imageSaveState.status
 const {
   collectForm,
   collectDiagnostics,
@@ -247,6 +247,20 @@ function productIndexFromDraft(item: DraftIndexItem): ProductIndexItem {
   }
 }
 
+const imageWorkbench = useDraftImageWorkbench({
+  draft: currentDraft, product, active: draftWorkspaceOpen,
+  save: () => imageSaveState.save(),
+  accept: result => {
+    if ('product' in result) product.value = result.product
+    if (result.draft) currentDraft.value = result.draft
+    if (result.productContext) currentDraftProductContext.value = result.productContext
+    if (result.productsIndex.length) productsIndex.value = result.productsIndex
+    if (result.draftsIndex?.length) draftsIndex.value = result.draftsIndex
+  },
+})
+const imageWorkbenchBusy = imageWorkbench.busy
+const draftWorkspaceLoading = computed(() => loading.value || imageWorkbenchBusy.value)
+
 async function openDraftWorkspace(item: DraftIndexItem, tab: DraftWorkspaceTab = 'text') {
   store.setMarketplace(item.platform)
   await store.loadDraft(item)
@@ -276,26 +290,6 @@ async function translateEditorImages(imageIds: string[]) {
 
 async function editEditorImages(request: { prompt: string; imageIds: string[] }) {
   await store.editImagesWithPrompt(request.prompt, { sourceImageIds: request.imageIds })
-}
-
-async function translateDraftWorkspaceImages(imageIds: string[]) {
-  if (imageSaveState.dirty.value && !await imageSaveState.save()) return
-  await store.translateImages(currentDraft.value.language, {
-    draftId: currentDraft.value.draftId,
-    applyToDraft: true,
-    draftImageStrategy: 'replace_selected',
-    sourceImageIds: imageIds,
-  })
-}
-
-async function editDraftWorkspaceImages(request: { prompt: string; imageIds: string[] }) {
-  if (imageSaveState.dirty.value && !await imageSaveState.save()) return
-  await store.editImagesWithPrompt(request.prompt, {
-    draftId: currentDraft.value.draftId,
-    applyToDraft: true,
-    draftImageStrategy: 'append',
-    sourceImageIds: request.imageIds,
-  })
 }
 
 async function deleteDraft(item: DraftIndexItem) {
@@ -644,16 +638,17 @@ watch(
           :sync-message="draftSyncMessage"
           :error-message="['pricing', 'images'].includes(draftWorkspaceTab) ? '' : error"
           :refreshing="draftRefreshing"
-          :reload-disabled="loading"
+          :reload-disabled="loading || imageWorkbenchBusy"
+          :editing-disabled="imageWorkbenchBusy"
           @reload="reloadDraft"
           @update-active-tab="switchDraftWorkspaceTab"
           @close="closeDraftWorkspace"
         >
           <template #actions>
-            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="loading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
+            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="draftWorkspaceLoading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
               {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
             </button>
-            <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="imageSaveState.save">{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}</button>
+            <button class="btn btn-primary" :disabled="loading || imageWorkbenchBusy || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="imageSaveState.save">{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}</button>
           </template>
 
           <template #text>
@@ -663,14 +658,14 @@ watch(
               :product-context="currentDraftProductContext"
               :platform-options="platformOptions"
               :store-config="storeConfig"
-              :loading="loading"
+              :loading="draftWorkspaceLoading"
               @update-language="store.updateDraftLanguage"
               @update-targets="store.updateDraftTargets"
             />
           </template>
 
           <template #skus>
-            <DraftSkuPanel :categories="Object.fromEntries(store.targetEditors.map(editor => [editor.key, editor.state.category]))" :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="loading" @edit-product="editDraftProduct">
+            <DraftSkuPanel :categories="Object.fromEntries(store.targetEditors.map(editor => [editor.key, editor.state.category]))" :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="draftWorkspaceLoading" @edit-product="editDraftProduct">
               <template #attributes="{ row, sku, targetKey }">
                 <DraftSkuAttributesEditor :sku-id="row.sku_id" :sku="sku" :target-key="targetKey" />
               </template>
@@ -682,14 +677,11 @@ watch(
               title="草稿图片编辑"
               :product="product"
               :images="imagePool"
-              :loading="loading"
+              :loading="draftWorkspaceLoading"
               :error="error"
               show-translate-action
               :draft="currentDraft"
-              :save-status="imageSaveStatus"
-              @translate="translateDraftWorkspaceImages"
-              @image-edit="editDraftWorkspaceImages"
-              @upload="store.uploadReferenceImages"
+              :workbench="imageWorkbench"
             />
           </template>
 
@@ -710,7 +702,7 @@ watch(
                 :draft-title="pricingDraftTitle"
                 :product-context="currentDraftProductContext"
                 :platform-options="platformOptions"
-                :loading="loading"
+                :loading="draftWorkspaceLoading"
                 :store-config="storeConfig"
                 :error="error"
                 :refresh-product="() => draftSync.refresh()"

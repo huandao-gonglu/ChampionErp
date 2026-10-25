@@ -106,6 +106,12 @@ class OzonCategoryTemplate:
         if metadata_required != {"85", "9048", "8229"}:
             raise ValueError("模板必填属性已变化，需先更新字段映射")
         names = self.info["additional_column_by_name"]
+        self.no_brand = names["no_brand"].strip()
+        if not self.no_brand:
+            raise ValueError("模板缺少无品牌选项，请重新下载官方模板")
+        brand = self.info["attributes"]["85"]
+        self.brand_values = {str(value["Value"]) for value in brand.get("LookupData", {}).get("Values", {}).values()}
+        self.brand_dictionary_complete = bool(self.brand_values) and not brand.get("IsOversized", False)
         self.field_columns = {}
         for key, name in {"offer_id": names["offer_id"], "title": names["name"], "price": names["price"],
                           "barcode": names["barcode"], "weight_g": names["weight"], "width_mm": names["width"],

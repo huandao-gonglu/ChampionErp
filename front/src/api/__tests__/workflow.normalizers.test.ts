@@ -17,6 +17,10 @@ describe('workflow 当前 wire schema', () => {
       expect(normalizeImageAsset({ id: 'sku-red', ...dimensions })).toMatchObject({ id: 'sku-red', width: 800, height: 600 })
     }
   })
+  it('历史来源字段可用于版本归组，直接父图优先', () => {
+    expect(normalizeImageAsset({ id: 'edit', source_asset_id: 'original' }).derivedFromId).toBe('original')
+    expect(normalizeImageAsset({ id: 'edit', source_asset_id: 'original', derived_from_id: 'translated' }).derivedFromId).toBe('translated')
+  })
 
   it('索引只读取当前 snake_case 字段', () => {
     const [product] = normalizeProductsIndex([{

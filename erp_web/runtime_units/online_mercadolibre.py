@@ -39,7 +39,9 @@ class MercadoOnlineAdapter:
     def get(self, path: str, *, version: bool = False) -> Any:
         return request_json("GET", API+path, self.token, extra_headers={"X-API-Version": "2"} if version else None)
 
-    def sync(self, ids=None):
+    def sync(self, ids=None, *, catalog="current"):
+        if catalog != "current":
+            raise ValueError("该平台暂不支持单独同步归档目录")
         return sync_mercado(self, ids)
 
     def read_status(self, listing):

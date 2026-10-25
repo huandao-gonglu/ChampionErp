@@ -147,7 +147,7 @@ def apply_created_image_refs_to_draft(
     created = draft_image_refs_from_assets(created_items, start_order=0 if strategy == "replace_all" else len(existing))
     if not created:
         return existing
-    if strategy == "replace_all" or not existing:
+    if strategy == "replace_all":
         return normalize_draft_image_refs(created)
     if strategy == "replace_selected":
         created_by_source = {
@@ -155,19 +155,15 @@ def apply_created_image_refs_to_draft(
             for ref in created
             if text_or_empty(ref.get("source_asset_id"))
         }
-        used_created_ids: set[str] = set()
         replaced: list[dict[str, Any]] = []
         for index, ref in enumerate(existing):
             replacement = created_by_source.get(text_or_empty(ref.get("asset_id")))
             if replacement:
                 next_ref = {**replacement, "role": ref.get("role") or replacement.get("role"), "order": index}
                 replaced.append(next_ref)
-                used_created_ids.add(text_or_empty(replacement.get("asset_id")))
             else:
                 replaced.append(ref)
-        for ref in created:
-            if text_or_empty(ref.get("asset_id")) not in used_created_ids:
-                replaced.append({**ref, "order": len(replaced)})
+        # 仅替换已有公共引用；SKU 专属图和未使用素材不能自动混入公共图集。
         return normalize_draft_image_refs(replaced)
     appended = existing + [{**ref, "order": len(existing) + index} for index, ref in enumerate(created)]
     return normalize_draft_image_refs(appended)

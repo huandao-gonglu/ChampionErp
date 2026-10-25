@@ -20,6 +20,7 @@ export interface AiPageContext {
   draft_id?: string
   listing_id?: string
   group_id?: string
+  catalog?: 'current' | 'archived'
   platform?: string
   site?: string
   sku_id?: string
@@ -36,6 +37,7 @@ export function describeAiPageContext(context: AiPageContext | null): string {
     context.draft_id && `当前草稿 ID：${context.draft_id}`,
     context.listing_id && `当前在线商品 ID：${context.listing_id}`,
     context.group_id && `当前在线商品节点 ID：${context.group_id}`,
+    context.catalog && `当前商品目录：${context.catalog === 'archived' ? '归档商品' : '普通商品'}`,
     context.platform && `当前平台：${context.platform}`,
     context.site && `当前站点：${context.site}`,
     context.sku_id && `当前 SKU ID：${context.sku_id}`,

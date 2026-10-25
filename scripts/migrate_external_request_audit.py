@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from erp_web.db import _current_schema_signature, _schema_signature
 from erp_web.stores.external_request_store import EXTERNAL_REQUEST_SCHEMA_SQL, upgrade_recovery_schema
+from scripts.migrate_online_operations import upgrade_online_index, v16_schema_signature
 
 # 这是 2026-09-28 开发中间版本真实写入主库的格式，仅用于显式数据迁移。
 SOURCE_AUDIT_SCHEMA_SQL = '''
@@ -51,7 +52,7 @@ def _signature(sql):
 
 
 def _check_source(conn):
-    expected = tuple(sorted(_current_schema_signature() + _signature(SOURCE_AUDIT_SCHEMA_SQL)))
+    expected = tuple(sorted(v16_schema_signature() + _signature(SOURCE_AUDIT_SCHEMA_SQL)))
     if conn.execute("PRAGMA user_version").fetchone()[0] != 16 or _schema_signature(conn) != expected:
         raise ValueError("只允许迁出完整 v16 主库中已识别的早期请求审计表；其他结构差异须单独核对")
 
@@ -119,6 +120,7 @@ def migrate(database: Path, destination: Path | None = None) -> Path:
             # 目标已独立提交，再删除源表。中断后可重跑：相同记录跳过，冲突则停止。
             for table in TABLE_KEYS:
                 source.execute(f'DROP TABLE "{table}"')
+            upgrade_online_index(source)
             if _schema_signature(source) != _current_schema_signature():
                 raise ValueError("迁出后的主库结构仍不匹配，已取消主库修改")
             source.commit()

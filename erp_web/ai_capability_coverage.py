@@ -87,6 +87,10 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method="POST", path=path, business_domain="在线商品", disposition="internal_only",
+        reason="在线商品页面的多选范围预览与批量投递门面；AI 保留逐 SKU 的 online_products_change 原生审批，两者共用领域队列、版本和冲突校验。") for path in (
+        "/api/online-products/change-batch/preview", "/api/online-products/change-batch",
+    )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="发布仓库设置", disposition="internal_only", reason="用户在系统设置中同步远端发布仓库并指定物流商和运输模式；核价和发布能力使用已确认的配置，模型不推断仓库运输服务。") for method, path in (
         ("GET", "/api/yandex/warehouses"),
         ("POST", "/api/yandex/warehouses/refresh"),
@@ -662,6 +666,14 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         capability_names=("text_translate",),
     ),
     # -------------------------------------------------- 图片（POST）
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/draft-images/state", business_domain="图片",
+        disposition="internal_only", reason="草稿工作台按草稿恢复既有图片领域批次的只读展示。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/draft-images/process", business_domain="图片",
+        disposition="internal_only", reason="草稿工作台异步受理与幂等边界；模型继续使用 image_translate / image_edit 原生能力入口。",
+    ),
     AiCapabilityCoverageEntry(
         method="POST",
         path="/api/image-pool/upload",

@@ -445,7 +445,7 @@ def test_yandex_sync_stops_remaining_batches_after_access_rejection(monkeypatch)
     from erp_web.runtime_units import online_yandex_read as read
     from erp_web.schemas.platform_errors import PublishAdapterError
     mappings = [{"offer":{"offerId":str(i)}} for i in range(201)]
-    monkeypatch.setattr(read,"catalog_pages",lambda *a:[mappings])
+    monkeypatch.setattr(read,"catalog_pages",lambda *a,**k:[mappings])
     monkeypatch.setattr(read,"catalog_listing",lambda row,**k:row)
     monkeypatch.setattr(read,"hidden_ids",lambda *a:set())
     calls = []

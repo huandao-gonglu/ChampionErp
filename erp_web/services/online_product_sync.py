@@ -3,8 +3,11 @@ from erp_web.schemas.online_products import OnlineSyncBatch
 
 
 def run_sync(service, job, adapter, result):
-    known = {row.remote_id: row.id for row in service.store.listings(job["platform"], job["account_id"])}
-    identities = dict(known)
+    catalog = job["request"].get("catalog", "current")
+    records = service.store.listings(job["platform"], job["account_id"])
+    known = {row.remote_id: row.id for row in records}
+    # 失败重试中的商品可能已移入另一目录；不得把另一目录快照标记为同步失败。
+    identities = {row.remote_id: row.id for row in records if row.archived is (catalog == "archived")}
     discovered, pending = set(), set()
     result.update(phase="catalog", discovered=0, discovery_complete=False)
     service._update(job, "running", result)
@@ -17,7 +20,7 @@ def run_sync(service, job, adapter, result):
         result["items"].append({"remote_id": remote_id, "status": "failed", "error": error})
 
     try:
-        batches = iter(adapter.sync(job["request"].get("ids")))
+        batches = iter(adapter.sync(job["request"].get("ids"), catalog=catalog))
         while not service._stop.is_set():
             try:
                 batch: OnlineSyncBatch = next(batches)

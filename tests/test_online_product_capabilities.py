@@ -458,8 +458,8 @@ def test_unknown_is_reported_and_reconcile_never_resends_the_change(online):
 
 
 @pytest.mark.parametrize("status,polls,expected", [
-    ("queued", 0, "running"), ("running", 0, "running"), ("waiting_confirmation", 19, "running"),
-    ("waiting_confirmation", 20, "failed"), ("submitted", 20, "failed"), ("confirmed", 1, "success"),
+    ("queued", 0, "running"), ("running", 0, "running"), ("waiting_confirmation", 19, "failed"),
+    ("waiting_confirmation", 20, "failed"), ("submitted", 0, "success"), ("submitted", 20, "success"), ("confirmed", 1, "success"),
     ("outcome_unknown", 1, "failed"), ("partial", 1, "failed"), ("failed", 1, "failed"),
 ])
 def test_job_reader_preserves_platform_state_without_infinite_wait(status, polls, expected):

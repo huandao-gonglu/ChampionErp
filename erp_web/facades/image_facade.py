@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """图片路由所需的产品与图片领域入口。"""
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
@@ -110,14 +111,14 @@ def upload_images_payload(body: dict[str, Any]) -> ResponseWithStatus:
     )
     if not uploaded:
         raise RequestValidationError("上传图片失败，未解码成功")
-    source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    pool = image_service.add_images(
-        source.get("image_pool") if isinstance(source.get("image_pool"), list) else [],
-        uploaded,
-        app_dir,
-    )
-    saved = save_product(apply_service_image_pool(product, pool))
-    return _saved_product_response(saved), 200
+    # 文件准备在锁外完成；合入最新素材池，不能覆盖另一草稿刚生成的资产。
+    product_id = str(product["product_id"])
+    with get_context().products.mutation_scope({"product_id": product_id}):
+        latest = load_product_from_index(product_id, "")
+        if latest.get("product_id") != product_id:
+            raise RequestValidationError("商品已不存在。", status_code=404)
+        saved = save_product(append_images_to_product_pool(latest, uploaded))
+    return {**_saved_product_response(saved), "uploaded_image_ids": [item["id"] for item in uploaded]}, 200
 
 
 def save_image_pool_payload(body: dict[str, Any]) -> ResponseWithStatus:
@@ -220,7 +221,7 @@ def _generated_image_response(
     }
 
 
-def _run_images_payload(body: dict[str, Any], *, translate: bool) -> ResponseWithStatus:
+def _run_images_payload(body: dict[str, Any], *, translate: bool, background: bool = False) -> ResponseWithStatus:
     product, error = _load_request_product(body)
     if error:
         return error
@@ -240,10 +241,19 @@ def _run_images_payload(body: dict[str, Any], *, translate: bool) -> ResponseWit
         raise RequestValidationError("图生图提示词不能为空。")
     product_id = str(product["product_id"])
     applied_items: list[dict[str, Any]] = []
+    draft_id = str(body.get("draft_id") or "") if _truthy(body.get("apply_to_draft")) else ""
     if _truthy(body.get("apply_to_draft")):
         draft = context.products.draft_record(str(body.get("draft_id") or ""))
         if not draft or draft.get("product_id") != product_id:
             raise RequestValidationError("目标草稿不存在或不属于当前商品。")
+
+    def bindings(value, current_product):
+        defaults = {sku["id"]: sku.get("image_asset_id", "") for sku in current_product.get("sku_items", [])}
+        return deepcopy([value.get("images", []),
+                         [(row["sku_id"], row.get("overrides", {}).get("image_asset_id", defaults.get(row["sku_id"], "")))
+                          for row in value.get("sku_items", [])]])
+
+    expected_bindings = bindings(draft, product) if draft_id else None
 
     def process(source):
         options = {"platform": platform, "image_ids": [source["id"]]}
@@ -257,10 +267,15 @@ def _run_images_payload(body: dict[str, Any], *, translate: bool) -> ResponseWit
         return image_translate_service.edit_images(_app_dir(), product, config, prompt=prompt, **options)
 
     def persist(result):
+        nonlocal expected_bindings
         with context.products.mutation_scope({"product_id": product_id}):
             latest = context.products.load_product_from_index(product_id, "")
             if latest.get("product_id") != product_id:
                 raise ValueError("商品已不存在，结果未写入素材池。")
+            if draft_id and bindings(context.products.draft_record(draft_id) or {}, latest) != expected_bindings:
+                # 外部编辑不能扩大已提交任务的引用范围，生成文件继续保留。
+                save_product(append_images_to_product_pool(latest, result["imagePoolItems"]))
+                raise RuntimeError("草稿图片已被其他操作修改，未替换当前图片。")
             apply_body = dict(body)
             if body.get("draft_image_strategy") == "replace_all" and applied_items:
                 apply_body["draft_image_strategy"] = "append"
@@ -268,11 +283,14 @@ def _run_images_payload(body: dict[str, Any], *, translate: bool) -> ResponseWit
             if status >= 400 or not payload.get("ok"):
                 raise RuntimeError(payload.get("error") or "图片保存失败。")
             applied_items.extend(result["imagePoolItems"])
+            if draft_id:
+                expected_bindings = bindings(context.products.draft_record(draft_id), latest)
 
     result = run_image_batch(
         store=context.image_batches, messages=context.pydantic_messages,
         app_dir=_app_dir(), product_id=product_id, prompt=prompt,
-        sources=sources, process=process, persist=persist,
+        sources=sources, process=process, persist=persist, draft_id=draft_id,
+        request_id=str(body.get("request_id") or ""), background=background,
     )
     result.update(prompt=prompt, platform=platform, mode=str(body.get("mode") or "translate") if translate else "edit",
                   source_image_ids=[item["id"] for item in sources])
@@ -300,8 +318,64 @@ def image_batch_payload(conversation_id: str) -> dict:
     return {"ok": True, "image_batch": batch.snapshot() if batch else None}
 
 
+def draft_image_state_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    draft_id = str(body.get("draft_id") or "")
+    draft = context.products.draft_record(draft_id)
+    if not draft:
+        return {"ok": False, "error": "草稿不存在。"}, 404
+    batch = context.image_batches.latest_for_draft(draft_id)
+    request_id = str(body.get("request_id") or "")
+    if request_id:
+        requested = context.image_batches.get(request_id)
+        if requested and requested.draft_id != draft_id:
+            return {"ok": False, "error": "图片任务不属于当前草稿。"}, 404
+        # 若另一窗口先提交，返回仍在执行的批次，使当前窗口也进入只读状态。
+        if requested or not (batch and context.image_batches.blocks_changes(batch)):
+            batch = requested
+    # 先固定进度，再读取草稿；终态回执不能搭配最后一次写入前的旧草稿。
+    snapshot = batch.snapshot() if batch else None
+    draft = context.products.draft_record(draft_id)
+    if not draft:
+        return {"ok": False, "error": "草稿不存在。"}, 404
+    product = context.products.load_product_from_index(draft["product_id"], "")
+    return {**_saved_product_response(product), "draft": draft,
+            "productContext": context.products.draft_product_context(product),
+            "image_batch": snapshot}, 200
+
+
+def process_draft_images_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    if body.get("operation") not in ("translate", "edit"):
+        raise RequestValidationError("请选择翻译图片或 AI 修改。")
+    context = get_context()
+    # 同一草稿的查询、保存和注册使用短锁；不在锁中等待模型。
+    with context.image_batches.lock, context.products.mutation_scope({"draft_id": body.get("draft_id")}):
+        draft = context.products.draft_record(str(body.get("draft_id") or ""))
+        if not draft or draft.get("product_id") != body.get("product_id"):
+            raise RequestValidationError("目标草稿不存在或不属于当前商品。")
+        existing = context.image_batches.get(str(body.get("request_id") or ""))
+        if existing:
+            if existing.draft_id != draft["draft_id"]:
+                raise RequestValidationError("图片请求标识已用于其他草稿。", status_code=409)
+            return draft_image_state_payload(body)
+        if body.get("updated_at") != draft.get("updated_at"):
+            raise RequestValidationError("草稿已更新，请重新读取后处理。", status_code=409)
+        product = context.products.load_product_from_index(draft["product_id"], "")
+        defaults = {sku["id"]: sku.get("image_asset_id", "") for sku in product.get("sku_items", [])}
+        current_ids = {ref["asset_id"] for ref in draft.get("images", [])}
+        current_ids.update(row.get("overrides", {}).get("image_asset_id", defaults.get(row["sku_id"], ""))
+                           for row in draft.get("sku_items", []))
+        if not set(body.get("source_image_ids") or []).issubset(current_ids):
+            raise RequestValidationError("所选图片已不是当前使用的图片，请重新选择。", status_code=409)
+        return _run_images_payload({**body, "apply_to_draft": True, "draft_image_strategy": "replace_selected",
+                                    "platform": draft["platform"], "language": draft.get("language")},
+                                   translate=body["operation"] == "translate", background=True)
+
+
 ImagePayloadHandler = Callable[[dict[str, Any]], ResponseWithStatus]
 IMAGE_PAYLOAD_HANDLERS: dict[str, ImagePayloadHandler] = {
+    "/api/draft-images/state": draft_image_state_payload,
+    "/api/draft-images/process": process_draft_images_payload,
     "/api/image-pool/upload": upload_images_payload,
     "/api/image-pool/save": save_image_pool_payload,
     "/api/image-pool/action": apply_image_action_payload,

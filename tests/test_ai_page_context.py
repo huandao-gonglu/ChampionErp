@@ -35,9 +35,10 @@ def test_online_group_focus_reaches_native_instructions(tmp_path):
 
     ui = service(tmp_path, FunctionModel(stream_function=model))
     asyncio.run(ui.prepare_run(body("查看当前商品", page_context={
-        "page": "onlineProducts", "platform": "yandex", "group_id": "group-current",
+        "page": "onlineProducts", "platform": "yandex", "group_id": "group-current", "catalog": "archived",
     })).stream(lambda _: None))
     assert "当前在线商品节点 ID：group-current" in observed[0]
+    assert "当前商品目录：归档商品" in observed[0] and "catalog=archived" in observed[0]
     assert "当前在线商品 ID：" not in observed[0]
     assert "不能把列表第一项推断成当前展开或选中的商品" in observed[0]
 

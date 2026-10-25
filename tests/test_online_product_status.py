@@ -211,6 +211,8 @@ def test_yandex_status_requests_only_the_target_and_skips_price_stock_and_settin
             assert method == "GET" and query == {"offer_id": "sku-1"}
             return {"result": {"hiddenOffers": [{"offerId": "sku-1"}]}}
         assert body == {"offerIds": ["sku-1"]} and query is None
+        if path.endswith("/offer-mappings"):
+            return {"result": {"offerMappings": [{"offer": {"offerId": "sku-1", "archived": False}}]}}
         if path.endswith("/offer-cards"):
             return {"result": {"offerCards": [{"offerId": "sku-1", "cardStatus": "HAS_CARD_CAN_UPDATE",
                 "errors": [{"message": "Ошибка формата", "comment": "Название: значение"}],
@@ -220,7 +222,7 @@ def test_yandex_status_requests_only_the_target_and_skips_price_stock_and_settin
     adapter.request = request
     result = adapter.read_status(listing("sku-1"))
     assert result.raw_status == "PUBLISHED" and result.sale_state == "paused"
-    assert result.raw_sub_status == ["HAS_CARD_CAN_UPDATE"] and len(calls) == 3
+    assert result.raw_sub_status == ["HAS_CARD_CAN_UPDATE"] and len(calls) == 4 and result.archived is False
     assert [(issue.severity, issue.message) for issue in result.platform_issues] == [('error', 'Ошибка формата'), ('warning', 'Размер упаковки')]
 
 
@@ -242,6 +244,8 @@ def test_yandex_missing_target_card_does_not_turn_unknown_feedback_into_empty_fe
     def request(path, *args, **kwargs):
         if path.endswith('/offers'):
             return {'result': {'offers': [{'offerId': 'sku-1', 'status': 'PUBLISHED'}]}}
+        if path.endswith('/offer-mappings'):
+            return {'result': {'offerMappings': [{'offer': {'offerId': 'sku-1', 'archived': False}}]}}
         key = 'hiddenOffers' if path.endswith('hidden-offers') else 'offerCards'
         return {'result': {key: []}}
     adapter.request = request

@@ -19,6 +19,7 @@ import urllib.request
 from erp_web.services.external_request_manager import managed_urlopen
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 from . import ai_gateway, ai_model_config, ai_prompt_templates, image_service
 
@@ -76,7 +77,8 @@ def select_source_images(
     items = image_service.normalize_pool(pool)
     selected_ids = {str(item).strip() for item in (image_ids or []) if str(item).strip()}
     if selected_ids:
-        items = [item for item in items if str(item.get("id") or "") in selected_ids]
+        # 显式选择就是完整范围，不再按素材池旧勾选或平台标签缩小批次。
+        return [item for item in items if str(item.get("id") or "") in selected_ids]
     platform_key = str(platform or "").strip().lower()
     if platform_key:
         platform_items = [
@@ -166,10 +168,8 @@ def _store_translated_item(
     target_dir = image_service.images_root(app_dir) / image_service.safe_segment(product_id, "translated") / "translated"
     target_dir.mkdir(parents=True, exist_ok=True)
     source_id = str((source_item or {}).get("id") or result.get("source_id") or index + 1).strip()
-    filename = image_service.safe_filename(
-        str(result.get("filename") or f"translated_{index + 1}_{source_id}{suffix}"),
-        suffix,
-    )
+    # 每次处理都是独立版本，不能因原图或供应商文件名相同覆盖历史文件。
+    filename = f"translated_{uuid4().hex}{suffix}"
     dest = target_dir / filename
     dest.write_bytes(raw)
     width, height = image_service.image_dimensions(dest)
@@ -218,11 +218,8 @@ def _store_edited_item(
     suffix = _safe_suffix(suffix, str(result.get("mime") or result.get("content_type") or ""))
     target_dir = image_service.images_root(app_dir) / image_service.safe_segment(product_id, "edited") / "edited"
     target_dir.mkdir(parents=True, exist_ok=True)
-    source_id = str(result.get("source_id") or (source_item or {}).get("id") or index + 1).strip()
-    filename = image_service.safe_filename(
-        str(result.get("filename") or f"edited_{index + 1}_{source_id}{suffix}"),
-        suffix,
-    )
+    source_id = str((source_item or {}).get("id") or result.get("source_id") or index + 1).strip()
+    filename = f"edited_{uuid4().hex}{suffix}"
     dest = target_dir / filename
     dest.write_bytes(raw)
     width, height = image_service.image_dimensions(dest)
@@ -244,6 +241,7 @@ def _store_edited_item(
             "note": "AI image edit",
             "derived_from_id": source_id,
             "provider": result.get("provider", ""),
+            "target_language": str((source_item or {}).get("target_language") or ""),
             "raw": {"image_edit": {"created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "mode": result.get("mode", "edit"), "prompt": prompt}},
         },
         index,

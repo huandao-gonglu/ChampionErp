@@ -462,7 +462,7 @@ export function normalizeImageAsset(value: unknown): ImageAsset {
     width,
     height,
     targetLanguage: getString(record, ['target_language']) || undefined,
-    derivedFromId: getString(record, ['derived_from_id']) || undefined,
+    derivedFromId: getString(record, ['derived_from_id', 'source_asset_id']) || undefined,
     provider: getString(record, ['provider']) || undefined,
     storageKey: getString(record, ['storage_key']) || undefined,
     contentSha256: getString(record, ['content_sha256']) || undefined,

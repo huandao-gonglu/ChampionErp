@@ -10,6 +10,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from erp_web.marketplaces.publisher import PublishAdapterError
+from erp_web.product_model.online_operation_model import receipt_errors, submission_status
 from erp_web.db import utc_now
 from erp_web.schemas.online_products import ChangeRequest, CloseOnlineOperationRequest, snapshot_version
 from erp_web.services.online_product_changes import confirmation, observed_changes, validate_changes
@@ -17,6 +18,7 @@ from erp_web.services.online_product_listing import listing_page, listing_summar
 from erp_web.services.online_product_images import OnlineProductImages
 from erp_web.services.online_ozon_export import OnlineOzonExportService
 from erp_web.services.online_product_sync import run_sync
+from erp_web.services.online_product_batch import preview_batch, submit_batch, run_batch
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
 
 logger = logging.getLogger(__name__)
@@ -80,12 +82,16 @@ class OnlineProductService:
             raise OnlineConflict("授权刷新后店铺身份变化，操作已停止")
         return adapter
 
-    def _list_context(self, platform: str):
+    def _list_context(self, platform: str, catalog: str = "current"):
+        if catalog not in ("current", "archived", "all"):
+            raise ValueError("商品目录范围只能为 current、archived 或 all")
         config = self.context.config.load_store_config()
         account = account_identity(platform, config)
         records = self.store.listings(platform, account) if account else []
-        latest_sync = self.store.latest_sync_summary(platform, account) if account else None
-        return records, {"ok": True, "platform": platform, "account_id": account,
+        if catalog != "all":
+            records = [row for row in records if row.archived is (catalog == "archived")]
+        latest_sync = self.store.latest_sync_summary(platform, account, catalog=catalog) if account else None
+        return records, {"ok": True, "platform": platform, "account_id": account, "catalog": catalog,
             "summary": {"total": len(records), "active": sum(r.sale_state == "active" for r in records),
                         "paused": sum(r.sale_state == "paused" for r in records), "attention": sum(r.sale_state not in ("active", "paused") or bool(r.errors) or bool(r.platform_issues) for r in records)},
             "markets": sorted({m.site_id for r in records for m in r.markets}),
@@ -94,19 +100,19 @@ class OnlineProductService:
             "store_name": str(config.get(platform, {}).get("shop_name") or account),
         }
 
-    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1) -> dict[str, Any]:
-        records, context = self._list_context(platform)
+    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1, catalog: str = "current") -> dict[str, Any]:
+        records, context = self._list_context(platform, catalog)
         jobs = self.store.jobs(platform, context["account_id"]) if context["account_id"] else []
         return {**context, **listing_page(records, query=query, status=status, market=market, page=page),
-                "jobs": jobs, "latest_sync": next((job for job in jobs if job["operation"] == "sync"), None)}
+                "jobs": jobs, "latest_sync": next((job for job in jobs if job["operation"] == "sync" and (catalog == "all" or job["request"].get("catalog", "all") in (catalog, "all"))), None)}
 
     def read_page(self, platform: str, *, query: str = "", status: str = "", market: str = "",
                   page: int = 1, limit: int = 25, view: Literal["groups", "listings"] = "groups",
-                  group_id: str = "", fields: list[str] | None = None) -> dict[str, Any]:
+                  group_id: str = "", fields: list[str] | None = None, catalog: str = "current") -> dict[str, Any]:
         """按页面同序返回有界摘要或所选业务字段；组内 SKU 可跨页。"""
         if not 1 <= limit <= 50 or page < 1 or view not in ("groups", "listings"):
             raise ValueError("在线商品分页参数无效")
-        records, context = self._list_context(platform)
+        records, context = self._list_context(platform, catalog)
         return {**context, **listing_summary_page(records, query=query, status=status, market=market,
                 page=page, limit=limit, view=view, group_id=group_id, fields=fields)}
 
@@ -141,11 +147,15 @@ class OnlineProductService:
         listing = self.store.update_status(before, status)
         return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
 
-    def sync(self, platform: str, key: str, *, ids: list[str] | None = None) -> dict[str, Any]:
+    def sync(self, platform: str, key: str, *, ids: list[str] | None = None, catalog: str = "current") -> dict[str, Any]:
         if not 8 <= len(key.strip()) <= 128:
             raise ValueError("同步提交键长度必须为 8–128 字符")
+        if catalog not in ("current", "archived"):
+            raise ValueError("同步目录只能为 current 或 archived")
+        if catalog == "archived" and platform != "yandex":
+            raise ValueError("该平台暂不支持单独同步归档目录")
         _, account = self._config(platform)
-        job = self.store.enqueue(platform, account, "sync", "*", {"ids": ids}, key)
+        job = self.store.enqueue(platform, account, "sync", "*", {"ids": ids, "catalog": catalog}, key)
         self._wake.set()
         return {"ok": True, "job": job}
 
@@ -172,7 +182,15 @@ class OnlineProductService:
         if not job:
             return False
         with request_operation("online_products", operation_id=job["id"], trigger="background", cancel=self._stop):
+            if job.get("batch_jobs"):
+                return run_batch(self, job["batch_jobs"])
             return self._run_job(job)
+
+    def preview_batch(self, body):
+        return preview_batch(self, body)
+
+    def change_batch(self, body):
+        return submit_batch(self, body)
 
     def _run_job(self, job):
         dispatched = bool(job["dispatched"])
@@ -213,7 +231,17 @@ class OnlineProductService:
             receipt = adapter.write(fresh, request.operation, request.scope_id, prepared_changes)
             write_returned = True
             result["receipt"] = receipt
-            self._update(job, "submitted", result, dispatched=True)
+            status = submission_status(job["platform"], job["operation"], receipt)
+            if status in ("failed", "partial"):
+                result["platform_errors"] = receipt_errors(receipt)
+            if status == "confirmed" and request.operation == "archive":
+                self.store.archive_state(before.id, request.changes["archived"], lease=job)
+                result["platform_confirmation"] = {"note": "平台已确认归档操作成功；买家端展示更新可能稍有延迟"}
+            if status == "failed" and request.operation == "sale_state":
+                self.store.sale_intent(before.id, before.desired_sale_state, lease=job)
+            elif status == "submitted" and request.operation == "sale_state":
+                self.store.sale_intent(before.id, request.changes["state"], lease=job)
+            self._update(job, status, result, dispatched=True)
         except Exception as exc:
             code = int(exc.details.get("http_status") or 0) if isinstance(exc, PublishAdapterError) else 0
             # 回读阶段的 4xx 不能证明之前的修改未执行。
@@ -231,6 +259,7 @@ class OnlineProductService:
         return True
 
     def _update(self, job, status, result, **kwargs):
+        result = {**{key: value for key, value in job["result"].items() if key.startswith("batch_")}, **result}
         self.store.update_job(job["id"], status, result, owner=job["lease_token"], **kwargs)
 
     def _prepare_confirmation(self, job, result):
@@ -259,7 +288,11 @@ class OnlineProductService:
         result["read_errors"] = fresh.errors
         if not fresh.errors:
             fresh = self.store.save(fresh, lease=job, full_snapshot=False)
-        status = "confirmed" if checked and all(checked.values()) else ("outcome_unknown" if job["status"] == "outcome_unknown" else "waiting_confirmation")
+        # 展示尚未更新不撤销明确受理；只有真实异步处理或写入未知才保留等待。
+        status = "confirmed" if checked and all(checked.values()) else (
+            "outcome_unknown" if job["status"] == "outcome_unknown"
+            else submission_status(job["platform"], job["operation"], result.get("receipt"))
+        )
         errors = receipt_errors(result.get("receipt", {})) + platform_result.get("errors", [])
         if platform_result.get("pending"):
             status = "waiting_confirmation"
@@ -270,6 +303,8 @@ class OnlineProductService:
                 receipt = result.get("receipt", {})
                 fully_rejected = receipt.get("status") == "ERROR" or receipt.get("success") is False and not receipt.get("listing_sites")
                 status = "failed" if fully_rejected and not any(checked.values()) else "partial"
+        if status == "confirmed" and request.operation == "archive":
+            self.store.archive_state(fresh.id, request.changes["archived"], lease=job)
         if status == "confirmed" and request.operation == "sale_state":
             self.store.sale_intent(fresh.id, request.changes["state"], lease=job)
         result["evidence"] = {"version": fresh.version, "synced_at": fresh.synced_at,
@@ -287,7 +322,8 @@ class OnlineProductService:
                 self._confirm(job, self._adapter(job["platform"], job["account_id"]), result)
         except Exception as exc:
             result["error"] = str(exc)
-            self._update(job, "outcome_unknown", result, dispatched=True)
+            # 后续只读查询失败不能把已有明确受理改成写入结果未知。
+            self._update(job, job["status"], result, dispatched=True)
         return {"ok": True, "job": self.store.job(job_id)}
 
     def close_operation(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -305,7 +341,7 @@ class OnlineProductService:
             ids = [row["remote_id"] for row in job["result"].get("items", []) if row["status"] == "failed"]
             if not ids:
                 raise ValueError("没有已识别的失败商品；发现阶段失败请重新同步店铺")
-            return self.sync(job["platform"], key, ids=ids)
+            return self.sync(job["platform"], key, ids=ids, catalog=job["request"].get("catalog", "current"))
         changes = dict(job["request"]["changes"])
         checks = job["result"].get("confirmation", {})
         if job["status"] == "partial":
@@ -318,20 +354,3 @@ class OnlineProductService:
         if current.version != confirmed_version:
             raise OnlineConflict("失败后商品已变化，请重新查看并确认")
         return self.change({**job["request"], "version": current.version, "changes": changes, "idempotency_key": key})
-
-
-def receipt_errors(value: Any) -> list[Any]:
-    """检查成功 HTTP 响应中的逐项错误，不能只读顶层 success。"""
-    errors = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if key in ("error", "errors") and item:
-                errors.extend(item if isinstance(item, list) else [item])
-            elif isinstance(item, (dict, list)):
-                errors.extend(receipt_errors(item))
-        if value.get("success") is False and not errors:
-            errors.append({"message": "平台返回明确失败，但未提供错误详情"})
-    elif isinstance(value, list):
-        for item in value:
-            errors.extend(receipt_errors(item))
-    return errors

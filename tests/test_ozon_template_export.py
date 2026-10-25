@@ -15,13 +15,15 @@ from erp_web.services.ozon_category_template import MAIN, OzonCategoryTemplate
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
 
 
-def template_bytes(*, category="43429543", currency="CNY", populated=False, changed_required=False):
+def template_bytes(*, category="43429543", currency="CNY", populated=False, changed_required=False, brand_values=None, oversized=False, no_brand="无品牌"):
     names = {"list_name": "模板", "offer_id": "货号", "name": "商品名称", "price": "非促销最高价格，CNY",
              "barcode": "条形码（序列号/EAN）", "weight": "毛重，克", "width": "包装宽度，毫米",
              "height": "包装高度，毫米", "depth": "包装长度，毫米", "picture": "主图链接",
-             "pictures": "附加图片链接", "desc_type": "类型", "review_promo": "加速评价收集", "promotion_no": "否"}
+             "pictures": "附加图片链接", "desc_type": "类型", "review_promo": "加速评价收集", "promotion_no": "否", "no_brand": no_brand}
     info = {"name": "圣诞装饰品", "additional_column_by_name": names,
-            "attributes": {"85": {"Name": "品牌", "IsRequired": True}, "9048": {"Name": "型号名称（针对合并为一张商品卡片）", "IsRequired": True},
+            "attributes": {"85": {"Name": "品牌", "IsRequired": True, "IsOversized": oversized,
+                                   "LookupData": {"Values": {str(i): {"Value": value} for i, value in enumerate(brand_values or [])}}},
+                           "9048": {"Name": "型号名称（针对合并为一张商品卡片）", "IsRequired": True},
                            "8229": {"IsRequired": True, "LookupData": {"Values": {"95421": {"ID": 95421, "Value": "圣诞装饰品"}}}}}}
     encoded = base64.b64encode(json.dumps(info, ensure_ascii=False).encode()).decode()
     def sheet(rows, *, main=False):
@@ -100,6 +102,7 @@ def test_selected_single_and_multiple_export_preserve_official_contract_and_sour
     assert cells["C5"] == "Новогодняя подвеска DIY 25×25 см"
     assert cells["D5"] == "37" and cells["J5"] == "181" and cells["K5"] == "260"
     assert cells["F5"] == cells["F6"] == "否"
+    assert cells["R5"] == cells["R6"] == originals[0]["title"]
     assert "G5" not in cells and "H5" not in cells and cells["H6"] == "0012345678905"
     assert cells["N5"] == "https://images.yandex.example/image.jpg" and "O5" not in cells
     assert "$AU$6".encode() in workbook
@@ -116,6 +119,7 @@ def test_selected_single_and_multiple_export_preserve_official_contract_and_sour
     one = service.download({**single, "preview_fingerprint": p["preview_fingerprint"]})
     one_cells, _ = read_cells(base64.b64decode(one["file_base64"]))
     assert one_cells["B5"] == "SELL-1" and "B6" not in one_cells
+    assert one_cells["R5"] == cells["R5"]
     assert [service.store.get(i).model_dump() for i in body["listing_ids"]] == originals
 
 
@@ -202,3 +206,106 @@ def test_route_validates_body_and_returns_download_or_conflict(exporter, monkeyp
 @pytest.mark.parametrize("data", [b"not a zip", b"PK", b"", b"{\"not\":\"a workbook\"}"])
 def test_invalid_upload_is_a_validation_error(data):
     with pytest.raises(ValueError): OzonCategoryTemplate(data)
+
+
+@pytest.mark.parametrize("brand", ["其他", "无品牌", "Без бренда", " Нет бренда "])
+def test_no_brand_uses_template_value_without_changing_yandex(exporter, brand):
+    service, body = exporter
+    row = service.store.get("listing-0")
+    row.snapshot["offer"]["vendor"] = brand
+    service.store.save(row)
+    body["template_base64"] = base64.b64encode(template_bytes(no_brand="Нет бренда")).decode()
+    preview = service.preview(body)
+    assert preview["rows"][0]["fields"]["brand"] == "Нет бренда"
+    data = service.download({**body, "preview_fingerprint": preview["preview_fingerprint"]})
+    cells, _ = read_cells(base64.b64decode(data["file_base64"]))
+    assert cells["Q5"] == "Нет бренда"
+    assert service.store.get("listing-0").snapshot["offer"]["vendor"] == brand
+
+
+def test_unknown_brand_is_blocked_only_with_complete_dictionary(exporter):
+    service, body = exporter
+    body["overrides"] = {"listing-0": {"brand": "Acme"}, "listing-1": {"brand": "其他"}}
+    for values, oversized, blocked in [(["Acme"], False, False), (["Another"], False, True),
+                                       ([], False, False), (["Another"], True, False)]:
+        body["template_base64"] = base64.b64encode(template_bytes(brand_values=values, oversized=oversized)).decode()
+        p = service.preview(body)
+        assert p["rows"][0]["fields"]["brand"] == "Acme"
+        assert bool(p["rows"][0]["errors"]) is blocked
+        assert p["rows"][1]["fields"]["brand"] == "无品牌"
+        if blocked:
+            with pytest.raises(ValueError, match="必填资料"):
+                service.download({**body, "preview_fingerprint": p["preview_fingerprint"]})
+        elif "Acme" not in values:
+            assert any("未包含完整品牌字典" in message for message in p["rows"][0]["warnings"])
+
+
+def test_registered_brand_is_not_replaced_by_no_brand(exporter):
+    service, body = exporter
+    body["template_base64"] = base64.b64encode(template_bytes(brand_values=["其他"])).decode()
+    body["overrides"] = {"listing-0": {"brand": "其他"}}
+    assert service.preview(body)["rows"][0]["fields"]["brand"] == "其他"
+
+
+def test_chinese_model_override_and_long_model_cannot_be_downloaded(exporter):
+    service, body = exporter
+    for model in ("圣诞组合", "模型\U00020000", "Я" * 256):
+        # 超长覆盖值由请求 Schema 拒绝；中文在预览中逐行报告。
+        edited = {**body, "overrides": {"listing-0": {"model": model}}}
+        if len(model) > 255:
+            with pytest.raises(ValueError): service.preview(edited)
+            continue
+        p = service.preview(edited)
+        assert any("型号名称含中文" in message for message in p["rows"][0]["errors"])
+        with pytest.raises(ValueError, match="必填资料"):
+            service.download({**edited, "preview_fingerprint": p["preview_fingerprint"]})
+    edited = {**body, "overrides": {key: {"model": "Сова"} for key in body["listing_ids"]}}
+    p = service.preview(edited)
+    cells, _ = read_cells(base64.b64decode(service.download({**edited, "preview_fingerprint": p["preview_fingerprint"]})["file_base64"]))
+    assert cells["R5"] == cells["R6"] == "Сова"
+
+
+@pytest.mark.parametrize("title,state", [("Другая новогодняя подвеска", "ready"), ("圣诞装饰", "ready"),
+                                        ("", "ready"), ("Новогодняя подвеска DIY 20×20 см", "pending")])
+def test_unselected_group_members_prevent_unsafe_title_fallback(exporter, title, state):
+    service, body = exporter
+    row = service.store.get("listing-1")
+    row.title, row.details_state = title, state
+    service.store.save(row)
+    body["listing_ids"] = ["listing-0"]
+    p = service.preview(body)
+    assert p["summary"]["missing"] == 1
+    assert any("型号名称含中文" in message for message in p["rows"][0]["errors"])
+
+
+def test_different_groups_with_same_title_are_not_merged(exporter):
+    service, body = exporter
+    row = service.store.get("listing-1")
+    row.snapshot["offer"]["groupId"] = "另一圣诞组合"
+    service.store.save(row)
+    p = service.preview(body)
+    assert p["summary"]["missing"] == 2
+    assert p["rows"][0]["fields"]["model"] != p["rows"][1]["fields"]["model"]
+
+
+@pytest.mark.parametrize("group", ["Новогодняя сова", "MODEL-001", ""])
+def test_valid_source_models_and_ungrouped_skus_are_preserved(exporter, group):
+    service, body = exporter
+    for listing_id in body["listing_ids"]:
+        row = service.store.get(listing_id)
+        row.snapshot["offer"]["groupId"] = group
+        service.store.save(row)
+    p = service.preview(body)
+    assert p["summary"]["missing"] == 0
+    assert [row["fields"]["model"] for row in p["rows"]] == [group or f"SELL-{i}" for i in range(2)]
+
+
+def test_unselected_group_title_change_invalidates_preview(exporter):
+    service, body = exporter
+    body["listing_ids"] = ["listing-0"]
+    p = service.preview(body)
+    row = service.store.get("listing-1")
+    row.title = "Другая новогодняя подвеска"
+    service.store.save(row)
+    with pytest.raises(OnlineConflict, match="已变化"):
+        service.download({**body, "preview_fingerprint": p["preview_fingerprint"]})

@@ -140,3 +140,25 @@ def test_saved_sku_image_override_survives_reload_without_changing_product(tmp_p
         loaded = app.products.load_product_from_index(saved["product_id"], "")
         assert loaded["sku_items"][0]["image_asset_id"] == "original"
         assert app.db.load_draft_model("sku-draft")["sku_items"][0]["overrides"]["image_asset_id"] == "edit"
+
+
+def test_translation_then_edit_replaces_sku_without_adding_to_public_gallery(tmp_path):
+    with temp_app_context(tmp_path) as app:
+        product = product_fixture()
+        product["source"]["image_pool"] = [{"id": asset_id, "url": f"https://example.test/{asset_id}.jpg"} for asset_id in ("original", "translated", "edited", "retry", "common")]
+        product["sku_items"][0]["image_asset_id"] = "original"
+        product["drafts"]["ozon"]["images"] = [{"asset_id": "common", "role": "main", "order": 0}]
+        saved = app.products.save_product(product)
+        draft_id = saved["drafts"]["ozon"]["draft_id"]
+        for source, result in [("original", "translated"), ("translated", "edited"), ("original", "retry")]:
+            payload, error, status = app.products.apply_image_assets_to_draft(draft_id, [{"id": result, "derived_from_id": source}], "replace_selected")
+            assert error is None and status == 200
+            expected = "edited" if result == "retry" else result
+            assert payload["draft"]["sku_items"][0]["overrides"]["image_asset_id"] == expected
+            assert payload["draft"]["images"] == [{"asset_id": "common", "role": "main", "order": 0}]
+        assert app.products.load_product_from_index(saved["product_id"], "")["sku_items"][0]["image_asset_id"] == "original"
+
+
+def test_replacing_unused_images_does_not_populate_empty_public_gallery():
+    from erp_web.product_model.draft_image_model import apply_created_image_refs_to_draft
+    assert apply_created_image_refs_to_draft([], [{"id": "translated", "derived_from_id": "sku-only"}], "replace_selected") == []

@@ -162,6 +162,7 @@ def test_stock_recovery_compares_the_requested_warehouse_and_keeps_remote_quanti
 def test_waiting_confirmation_can_be_closed_when_platform_not_pending(setup_online):
     service, remote = setup_online
     remote.apply = False
+    remote.receipt = {"task_id": "finished-without-change"}
     job = service.change(price_request(service))["job"]
     service.run_once()
     job = service.reconcile(job["id"])["job"]

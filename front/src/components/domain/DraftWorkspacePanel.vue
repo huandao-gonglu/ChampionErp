@@ -9,6 +9,7 @@ const props = defineProps<{
   errorMessage?: string
   refreshing?: boolean
   reloadDisabled?: boolean
+  editingDisabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -66,7 +67,9 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
     </div>
 
     <div :key="props.activeTab" role="tabpanel" class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
-      <slot :name="props.activeTab" />
+      <div :inert="props.editingDisabled && props.activeTab !== 'images' ? true : undefined">
+        <slot :name="props.activeTab" />
+      </div>
     </div>
   </section>
 </template>
