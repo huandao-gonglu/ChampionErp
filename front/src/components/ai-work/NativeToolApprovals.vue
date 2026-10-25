@@ -26,7 +26,7 @@ async function respond(id: string, approved: boolean) {
 </script>
 <template>
   <div v-if="approvals.length" class="mt-2 space-y-3" data-testid="native-tool-approvals">
-    <section v-for="approval in approvals" :key="approval.callId" class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950">
+    <section v-for="approval in approvals" :key="approval.callId" class="rounded-xl border border-amber-200 bg-amber-50/[var(--ai-chat-surface-opacity,1)] p-4 dark:border-amber-700 dark:bg-amber-950/[var(--ai-chat-surface-opacity,1)]">
       <p v-if="!toolCallId" class="font-semibold">等待确认：{{ approval.name }}</p>
       <p class="mt-2 text-sm">{{ approval.summary }}</p>
       <details class="mt-2 text-xs"><summary>查看操作参数</summary><pre class="overflow-auto whitespace-pre-wrap">{{ JSON.stringify(approval.input, null, 2) }}</pre></details>

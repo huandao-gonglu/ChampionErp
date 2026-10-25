@@ -20,3 +20,21 @@ def test_cache_is_bounded_expires_and_does_not_extend_on_reads():
     assert cache.get('a') is None
     cache.discard('c')
     assert cache.get('c') is None
+
+
+def test_latest_uses_creation_time_and_does_not_extend_expiry():
+    now = [0]
+    cache = ExpiringCache(ttl=10, capacity=3, clock=lambda: now[0])
+    cache.put('old', {'draft_id': 'draft', 'prices': [1]})
+    now[0] = 1
+    cache.put('new', {'draft_id': 'draft', 'prices': [2]})
+    cache.get('old')
+    match = lambda entry: entry['draft_id'] == 'draft'
+    key, value = cache.latest(match)
+    assert key == 'new'
+    value['prices'].append(3)
+    assert cache.latest(match)[1]['prices'] == [2]
+    now[0] = 10
+    assert cache.latest(match)[0] == 'new'
+    now[0] = 11
+    assert cache.latest(match) is None

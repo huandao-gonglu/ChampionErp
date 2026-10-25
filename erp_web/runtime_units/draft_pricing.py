@@ -19,6 +19,7 @@ from erp_web.runtime_units.pricing_batch import calculate_sku_prices
 from erp_web.runtime_units.pricing_results import _apply_mercadolibre_destination_results
 from erp_web.schemas.draft_pricing import DraftPricingRequest, PricingCommonPatch, PricingTargetPatch
 from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
 BatchCalculator = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -206,7 +207,7 @@ def _validate_results(batch: dict[str, Any], inputs: list[dict[str, Any]]) -> li
     return errors
 
 
-def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStore, apply: bool = False,
+def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStore, apply: bool = False, restore: bool = False,
                 calculator: BatchCalculator = calculate_sku_prices,
                 store_config_loader: Callable[[], dict[str, Any]] = _store_config) -> dict[str, Any]:
     """预览在锁外计算并暂存；应用仅校验并保存相同输入对应的服务端预览。"""
@@ -221,9 +222,18 @@ def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStor
     config = _configuration_basis(store_config_loader())
     routing = get_context().yandex_logistics.configuration_fingerprint() if any(t.get('platform') == 'yandex' for t in targets) else None
     environment = _pricing_environment()
-    binding = _fingerprint([request.draft_id, snapshot, inputs, template, config, routing, environment])
+    # 普通保存、文案和预检不改变报价；版本快照仍保护本次操作的并发读写。
+    binding = pricing_calculation_fingerprint({"draft_id": request.draft_id, "inputs": inputs,
+        "template": template, "config": config, "routing": routing, "environment": environment})
     cache = get_context().pricing_cache.previews
-    if apply:
+    restored_id = ""
+    if restore:
+        latest = cache.latest(lambda entry: entry.get("draft_id") == request.draft_id)
+        if latest is None or latest[1]["binding"] != binding:
+            return {"applied": False, "preview_id": ""}
+        restored_id, cached = latest
+        batch = cached["batch"]
+    elif apply:
         cached = cache.get(request.preview_id) if request.preview_id else None
         if cached is None:
             raise BusinessCapabilityError("PRICING_PREVIEW_REQUIRED", "请先计算核价；预览有效期为十分钟，过期后需重新计算。")
@@ -273,8 +283,9 @@ def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStor
             raise BusinessCapabilityError("DRAFT_CHANGED", "核价期间 SKU、草稿或店铺配置已改变，请重新核价。")
         if not apply or errors:
             if not errors:
-                response["preview_id"] = uuid4().hex
-                cache.put(response["preview_id"], {"binding": binding, "batch": batch})
+                response["preview_id"] = restored_id or uuid4().hex
+                if not restore:
+                    cache.put(response["preview_id"], {"draft_id": request.draft_id, "binding": binding, "batch": batch})
             return response
         # 保留未参与本次核价的市场；发布时仍逐市场校验输入依据是否过期。
         shared = deepcopy(draft.get("pricing") or {})

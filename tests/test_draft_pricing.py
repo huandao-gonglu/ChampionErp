@@ -566,3 +566,84 @@ def test_return_loss_settings_persist_override_and_apply_without_recalculation(p
     assert sku_quote_errors(fact, row, saved, "ozon:global") == []
     row["pricing_overrides"]["targets"]["ozon:global"]["return_handling_cost_cny"] = 41
     assert sku_quote_errors(fact, row, saved, "ozon:global") == ["货损预估已变化，请重新核价并应用此 SKU 的售价"]
+
+
+def test_saved_draft_can_restore_and_apply_preview_without_recalculating(pricing_draft):
+    store, draft, _ = pricing_draft
+    body = DraftPricingHttpRequest(draft_id=draft['draft_id'], expected_updated_at=draft['updated_at'],
+        target_keys=['ozon:global'], common={'domestic_freight_cny': 9},
+        sku_updates=[{'sku_id': row['sku_id'], 'selected': index == 0, 'pricing_overrides': {}}
+                     for index, row in enumerate(draft['sku_items'])])
+    preview = price_draft(body, product_store=store)
+    draft['title'] = '保存文案并继续预检'
+    draft['pricing']['common']['domestic_freight_cny'] = 9
+    draft['last_precheck'] = {'ok': False, 'errors': ['售价尚未应用']}
+    for index, row in enumerate(draft['sku_items']):
+        row['selected'] = index == 0
+        if row['sku_id'] in preview['sku_pricing']:
+            row['pricing'] = deepcopy(preview['sku_pricing'][row['sku_id']])
+    saved, error, _ = store.save_draft_content(draft)
+    assert error is None
+    before = get_context().db.load_draft_model(draft['draft_id'])
+    current = body.model_copy(update={'expected_updated_at': saved['draft']['updated_at']})
+    def no_calculation(_):
+        pytest.fail('恢复或应用不得再次计算或访问报价接口')
+    restored = price_draft(current, product_store=store, restore=True, calculator=no_calculation)
+    assert restored['preview_id'] == preview['preview_id']
+    assert restored['items'] == preview['items']
+    assert not restored['applied']
+    assert get_context().db.load_draft_model(draft['draft_id']) == before
+    # 旧页面版本仍需重新读取；不能为复用报价绕过并发保护。
+    with pytest.raises(BusinessCapabilityError, match='草稿已更新'):
+        price_draft(body.model_copy(update={'preview_id': restored['preview_id']}), product_store=store, apply=True)
+    applied = price_draft(current.model_copy(update={'preview_id': restored['preview_id']}),
+                          product_store=store, apply=True, calculator=no_calculation)
+    assert applied['applied'] and applied['items'] == preview['items']
+    assert applied['draft']['title'] == '保存文案并继续预检'
+    assert applied['draft']['sku_items'][0]['pricing']['applied']
+    assert not price_draft(current.model_copy(update={'expected_updated_at': applied['updated_at']}),
+                           product_store=store, restore=True, calculator=no_calculation)['preview_id']
+
+
+@pytest.mark.parametrize('change', ['expired', 'parameters', 'product', 'category', 'selection', 'config', 'logistics', 'tariff'])
+def test_restore_only_returns_preview_for_current_pricing_inputs(pricing_draft, change):
+    store, draft, _ = pricing_draft
+    body = request(target_keys=['ozon:global'])
+    price_draft(body, product_store=store)
+    if change == 'expired':
+        cache = get_context().pricing_cache.previews
+        now = cache.clock()
+        cache.clock = lambda: now + 601
+    elif change == 'parameters':
+        body = request(target_keys=['ozon:global'], common={'domestic_freight_cny': 50})
+    elif change == 'product':
+        product = get_context().db.load_product_model('pricing-product')
+        product['sku_items'][0]['package_dimensions']['weight_kg'] = '0.9'
+        get_context().db.upsert_product_model(product)
+    elif change in ('category', 'selection'):
+        if change == 'category':
+            draft['target_sites'][0]['category_id'] = 'new-category'
+        else:
+            draft['sku_items'][0]['selected'] = False
+        assert store.save_draft_content(draft)[1] is None
+    elif change == 'config':
+        seed_store_currency('ozon', 'USD', identity={'client_id': 'other', 'api_key': 'test'})
+    elif change == 'logistics':
+        # Yandex 才绑定仓库配置。
+        body = request(target_keys=['yandex:global'])
+        price_draft(body, product_store=store)
+        get_context().yandex_logistics.current[0]['configuration_revision'] += 1
+    else:
+        path = get_context().paths.data_dir / 'tariffs' / 'current.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"platforms": {"yandex": "new-version"}}')
+    before = get_context().db.load_draft_model('pricing-draft')
+    restored = price_draft(body, product_store=store, restore=True,
+                           calculator=lambda _: pytest.fail('失效预览不得自动重算'))
+    assert not restored['preview_id']
+    assert get_context().db.load_draft_model('pricing-draft') == before
+
+
+def test_restore_http_returns_empty_when_no_preview_exists(pricing_draft):
+    result, status = price_draft_payload({'draft_id': 'pricing-draft'}, apply=False, restore=True)
+    assert status == 200 and result == {'applied': False, 'preview_id': ''}

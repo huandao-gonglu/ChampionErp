@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+from erp_web.schemas.external_requests import ExternalRequestBlocked
+
 from . import ai_provider_catalog
 
 
@@ -69,6 +71,19 @@ def list_remote_models(
     except ValueError as exc:
         raise AiModelDiscoveryError(str(exc)) from None
     except Exception as exc:
+        # SDK 会把传输层的本地阻断包装为连接错误；保留原始控制原因。
+        cause: BaseException | None = exc
+        seen: set[int] = set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause, ExternalRequestBlocked):
+                status = cause.details.get("http_status")
+                status_text = f"（HTTP {status}）" if status else ""
+                raise AiModelDiscoveryError(
+                    f"模型目录请求已被阻断{status_text}：{cause}。"
+                    "请处理后在系统设置 → 中断与恢复中查看并恢复请求。"
+                ) from None
+            cause = cause.__cause__
         status_code = getattr(exc, "status_code", None)
         if isinstance(status_code, int):
             raise AiModelDiscoveryError(

@@ -140,7 +140,7 @@ onBeforeUnmount(() => {
         role="region"
         :aria-label="displayMode === 'presentation' ? 'AI 任务进度' : 'AI 助手'"
         data-testid="ai-work-floating-panel"
-        class="flex h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl shadow-slate-950/20 dark:border-dark-700 dark:bg-dark-900 dark:text-white"
+        class="ai-floating-panel flex h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/[0.3333] text-slate-900 dark:border-dark-700 dark:bg-dark-900/[0.3333] dark:text-white"
       >
         <!-- 前台 presentation：只读展示，隐藏 composer；不覆盖 global.chat -->
         <template v-if="displayMode === 'presentation' && foregroundPresentation">
@@ -156,9 +156,9 @@ onBeforeUnmount(() => {
             <div class="flex shrink-0 items-center">
               <button
                 type="button"
-                class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100 dark:hover:bg-dark-800"
+                class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
                 :class="isPinned
-                  ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/15 dark:text-primary-300'
+                  ? 'bg-primary-50/[var(--ai-chat-surface-opacity,1)] text-primary-600 dark:bg-primary-500/[min(0.15,var(--ai-chat-surface-opacity,1))] dark:text-primary-300'
                   : 'text-slate-400 hover:text-slate-700 dark:hover:text-white'"
                 :aria-label="isPinned ? '取消钉住浮动对话' : '钉住浮动对话'"
                 :aria-pressed="isPinned"
@@ -170,7 +170,7 @@ onBeforeUnmount(() => {
               </button>
               <button
                 type="button"
-                class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-dark-800 dark:hover:text-white"
+                class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] hover:text-slate-700 dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:hover:text-white"
                 aria-label="收起浮动对话"
                 data-testid="ai-work-floating-close"
                 @click="chatStore.closeFloating()"
@@ -197,7 +197,7 @@ onBeforeUnmount(() => {
             <!-- 已有错误（如展示连接中断的降级等待）时不显示“等待首个事件”空状态，避免语义矛盾 -->
             <p
               v-else-if="!imageBatch && !presentationError"
-              class="rounded-2xl border border-dashed border-primary-300 bg-primary-50/60 px-6 py-10 text-center text-sm font-bold text-slate-500 dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-accent-300"
+              class="rounded-2xl border border-dashed border-primary-300 bg-primary-50/[min(0.6,var(--ai-chat-surface-opacity,1))] px-6 py-10 text-center text-sm font-bold text-slate-500 dark:border-primary-500/40 dark:bg-primary-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-accent-300"
               data-testid="ai-work-presentation-empty"
             >
               正在准备…
@@ -212,7 +212,7 @@ onBeforeUnmount(() => {
             <p
               v-if="presentationError"
               role="alert"
-              class="rounded-xl bg-rose-50 p-3 text-sm text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30"
+              class="rounded-xl bg-rose-50/[var(--ai-chat-surface-opacity,1)] p-3 text-sm text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200 dark:ring-rose-500/30"
               data-testid="ai-work-presentation-error"
             >
               {{ presentationError }}
@@ -234,9 +234,9 @@ onBeforeUnmount(() => {
             <div class="flex shrink-0 items-center">
               <button
                 type="button"
-                class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100 dark:hover:bg-dark-800"
+                class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
                 :class="isPinned
-                  ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/15 dark:text-primary-300'
+                  ? 'bg-primary-50/[var(--ai-chat-surface-opacity,1)] text-primary-600 dark:bg-primary-500/[min(0.15,var(--ai-chat-surface-opacity,1))] dark:text-primary-300'
                   : 'text-slate-400 hover:text-slate-700 dark:hover:text-white'"
                 :aria-label="isPinned ? '取消钉住浮动对话' : '钉住浮动对话'"
                 :aria-pressed="isPinned"
@@ -248,7 +248,7 @@ onBeforeUnmount(() => {
               </button>
               <button
                 type="button"
-                class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-dark-800 dark:hover:text-white"
+                class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] hover:text-slate-700 dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:hover:text-white"
                 aria-label="收起浮动对话"
                 data-testid="ai-work-floating-close"
                 @click="chatStore.closeFloating()"
@@ -263,8 +263,8 @@ onBeforeUnmount(() => {
             role="status"
             class="border-b border-slate-200 px-4 py-2 text-xs font-bold dark:border-dark-700"
             :class="terminalNotice.kind === 'failure'
-              ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200'
-              : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200'"
+              ? 'bg-rose-50/[var(--ai-chat-surface-opacity,1)] text-rose-700 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200'
+              : 'bg-emerald-50/[var(--ai-chat-surface-opacity,1)] text-emerald-700 dark:bg-emerald-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-emerald-200'"
             data-testid="ai-work-terminal-notice"
           >
             {{ terminalNotice.text }}
@@ -320,3 +320,37 @@ onBeforeUnmount(() => {
     </RouterLink>
   </div>
 </template>
+
+<style scoped>
+.ai-floating-panel {
+  /* 外框保留约 1/3 底色，内部底色更淡，避免嵌套叠加后遮住页面。 */
+  --ai-chat-surface-opacity: 0.12;
+  --ai-chat-user-color: theme('colors.slate.900');
+}
+
+.dark .ai-floating-panel {
+  --ai-chat-user-color: white;
+}
+
+.ai-floating-panel :deep(.ai-chat-composer),
+.ai-floating-panel :deep(.ai-chat-composer-surface) {
+  background-color: transparent;
+}
+
+.ai-floating-panel :deep(.btn) {
+  background-image: none;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.ai-floating-panel :deep(.btn-primary) {
+  background-color: rgb(var(--color-primary-600) / 0.12);
+  color: var(--ai-chat-user-color);
+}
+
+.ai-floating-panel :deep(.shadow-sm),
+.ai-floating-panel :deep(.shadow-lg),
+.ai-floating-panel :deep(.shadow-xl) {
+  box-shadow: none;
+}
+</style>

@@ -18,7 +18,7 @@ const emit = defineEmits<{
   <div
     role="listbox"
     aria-label="聊天命令"
-    class="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800"
+    class="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-white/[var(--ai-chat-surface-opacity,1)] py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
     data-testid="ai-chat-command-panel"
   >
     <p class="px-3 pb-1 pt-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400 dark:text-accent-400">
@@ -35,15 +35,15 @@ const emit = defineEmits<{
       :class="[
         entry.enabled
           ? index === activeIndex
-            ? 'bg-primary-50 dark:bg-primary-500/10'
-            : 'hover:bg-slate-50 dark:hover:bg-dark-700'
+            ? 'bg-primary-50/[var(--ai-chat-surface-opacity,1)] dark:bg-primary-500/[min(0.1,var(--ai-chat-surface-opacity,1))]'
+            : 'hover:bg-slate-50/[var(--ai-chat-surface-opacity,1)] dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)]'
           : 'cursor-not-allowed opacity-45',
       ]"
       :data-testid="`ai-chat-command-${entry.command.name}`"
       @click="entry.enabled && emit('select', index)"
       @mouseenter="emit('hover', index)"
     >
-      <span class="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-xs font-bold text-primary-600 dark:bg-dark-700 dark:text-primary-300">
+      <span class="shrink-0 rounded-md bg-slate-100/[var(--ai-chat-surface-opacity,1)] px-1.5 py-0.5 font-mono text-xs font-bold text-primary-600 dark:bg-dark-700/[var(--ai-chat-surface-opacity,1)] dark:text-primary-300">
         /{{ entry.command.name }}
       </span>
       <span class="min-w-0">

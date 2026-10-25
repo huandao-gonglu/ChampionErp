@@ -38,6 +38,17 @@ class ExpiringCache:
         with self._lock:
             self._entries.pop(key, None)
 
+    def latest(self, predicate):
+        """查找最近写入且未过期的匹配项；读取不延长有效期。"""
+        with self._lock:
+            now = self.clock()
+            entries = [(expires, key, value) for key, (expires, value) in self._entries.items()
+                       if expires > now and predicate(value)]
+            if not entries:
+                return None
+            _, key, value = max(entries, key=lambda entry: entry[0])
+            return key, deepcopy(value)
+
 
 class PricingCache:
     def __init__(self):

@@ -529,6 +529,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         method="POST", path="/api/draft-pricing/apply", business_domain="定价与 UPC",
         disposition="capability", capability_names=("draft_pricing_apply",),
     ),
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/draft-pricing/restore", business_domain="定价与 UPC",
+        disposition="internal_only", reason="核价页面返回时只读恢复有效预览；AI 沿用预览回执中的标识应用售价。",
+    ),
     # -------------------------------------------------- 类目与属性（POST）
     AiCapabilityCoverageEntry(
         method="POST",

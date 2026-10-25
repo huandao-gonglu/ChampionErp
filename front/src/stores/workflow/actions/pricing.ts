@@ -1,6 +1,6 @@
 import { nextTick } from 'vue'
 import { pricingErrorReason } from '@/utils/pricingWorkspace'
-import { draftPricingPayload, priceDraft } from '@/api/workflow/publishing'
+import { draftPricingPayload, priceDraft, restoreDraftPricing } from '@/api/workflow/publishing'
 import { selectedPricingTargets } from '@/types/pricing'
 import type {
   DraftDetail,
@@ -37,6 +37,33 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     loading, addLog, setError, currentStage, applyMutationIndexes,
   } = runtime
   let preview: { id: string; fingerprint: string } | null = null
+
+  async function restorePricingPreview() {
+    if (loading.value || !currentDraft.value.draftId) return
+    const draft = JSON.parse(JSON.stringify(currentDraft.value)) as DraftDetail
+    const input = JSON.parse(JSON.stringify(pricingInput.value)) as PricingInput
+    const fingerprint = JSON.stringify(draftPricingPayload(draft, input))
+    preview = null
+    if (pricingResult.value) pricingResult.value = { ...pricingResult.value, previewId: undefined }
+    loading.value = true
+    setError('')
+    try {
+      const batch = await restoreDraftPricing(draft, input)
+      if (JSON.stringify(draftPricingPayload(currentDraft.value, pricingInput.value)) !== fingerprint || !batch) return
+      if (batch.items[0]) acceptPreview(batch.items[0].result)
+      await nextTick()
+      if (JSON.stringify(draftPricingPayload(currentDraft.value, pricingInput.value)) !== fingerprint) return
+      for (const row of currentDraft.value.skuItems) {
+        const pricing = batch.pricingBySku[row.sku_id]
+        if (pricing) row.pricing = pricing
+      }
+      if (batch.previewId) preview = { id: batch.previewId, fingerprint }
+    } catch (exc) {
+      if (currentDraft.value.draftId === draft.draftId) setError(exc instanceof Error ? exc.message : '恢复核价预览失败')
+    } finally {
+      loading.value = false
+    }
+  }
 
   function validatePricingContext() {
     if (!currentDraft.value.draftId) {
@@ -178,6 +205,7 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
 
 
   return {
+    restorePricingPreview,
     calculatePrice,
     applyPrice,
   }

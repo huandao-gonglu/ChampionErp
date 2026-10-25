@@ -826,7 +826,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   商品事实、单 SKU 覆盖、官方佣金和自动运费回执不进入模板。
   `PricingCommonPatch.exchange_rate_overrides` 按汇率对覆盖同次 API 快照，空对象恢复实时，
   三对全部覆盖时不依赖 API。已有 `exchange_rate_mode=manual` 仍可读取和计算。
-- 页面入口为 `/api/draft-pricing/preview` 与 `/api/draft-pricing/apply`，经
+- 页面入口为 `/api/draft-pricing/preview`、`/api/draft-pricing/restore` 与 `/api/draft-pricing/apply`，经
   `facades/draft_pricing_facade.py` 调用 `runtime_units/draft_pricing.py::price_draft`。
   AI 的 `draft_pricing_preview` / `draft_pricing_apply` 及市场准备也使用此业务入口。
   请求为草稿 ID、目标范围与本次费用修改；省略参数复用草稿保存配置。系统读取已勾选且启用
@@ -835,7 +835,9 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   页面通过类型化 `sku_updates` 携带未保存的费用覆盖和 SKU 选择，通过 `target_selections`
   携带当前 Mercado 销售条件；后端验证成员范围。其他页面编辑保留在前端。
 - 预览不保存草稿或已应用售价；成功预览返回 `preview_id`，服务端缓存十分钟（最多 32 份）。
-  应用必须携带此标识和相同核价参数，比较商品/草稿快照、费用输入、店铺配置、物流配置及费率版本；
+  返回核价页时，`restore` 按草稿查找最近一轮仍有效的服务端预览，仅恢复匹配当前输入的报价，不计算、不保存、不延长有效期。
+  应用必须携带此标识和相同核价参数，比较逐 SKU 事实及费用输入、类目、销售目标、店铺配置、物流配置及费率版本；
+  普通保存、文案或预检状态变化不使报价失效；请求仍携带当前草稿版本，本次操作内继续使用完整商品/草稿快照检查并发变化。
   仅保存服务端已核验结果，不再运行计算器或请求物流/佣金/汇率。缓存失效或参数改变明确要求重新预览，
   不自动重算。页面、AI 和市场准备统一遵循先预览后应用；成功应用后消费标识。
   预览与规则缓存由 `AppContext.pricing_cache` 持有，不持久化，重启后重新计算。

@@ -337,6 +337,18 @@ export async function priceDraft(draft: DraftDetail, input: PricingInput, apply 
     { ...draftPricingPayload(draft, input), ...(apply ? { preview_id: previewId } : {}) }, { timeout: 0 })
   const data = asRecord(response.data)
   ensureOk(data, '草稿核价失败')
+  return normalizeDraftPricingBatch(data, draft, input)
+}
+
+/** 只恢复服务端仍有效的预览，不重新查询费用或计算售价。 */
+export async function restoreDraftPricing(draft: DraftDetail, input: PricingInput): Promise<DraftPricingBatch | null> {
+  const response = await apiClient.post('/api/draft-pricing/restore', draftPricingPayload(draft, input))
+  const data = asRecord(response.data)
+  ensureOk(data, '恢复核价预览失败')
+  return data.preview_id ? normalizeDraftPricingBatch(data, draft, input) : null
+}
+
+function normalizeDraftPricingBatch(data: UnknownRecord, draft: DraftDetail, input: PricingInput): DraftPricingBatch {
   const items = Array.isArray(data.items) ? data.items.map(asRecord) : []
   const expected = new Set(draft.skuItems.filter(row => row.selected).map(row => row.sku_id))
   const ids = new Set(items.map(item => getString(item, ['sku_id'])))

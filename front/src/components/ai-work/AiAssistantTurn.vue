@@ -84,7 +84,7 @@ const showProgress = computed(() => {
         <template #approval="scope"><slot name="approval" v-bind="scope" /></template>
       </AiMessagePart>
       <p v-if="showProgress" role="status" class="flex items-center gap-2 py-1 text-xs text-slate-500 dark:text-accent-300" data-testid="ai-turn-progress">
-        <span class="size-1.5 shrink-0 rounded-full bg-primary-500 motion-safe:animate-pulse" aria-hidden="true" />
+        <span class="size-1.5 shrink-0 rounded-full bg-primary-500/[var(--ai-chat-surface-opacity,1)] motion-safe:animate-pulse" aria-hidden="true" />
         {{ t('ai.turn.processing') }}
       </p>
     </div>
@@ -129,7 +129,7 @@ const showProgress = computed(() => {
           :aria-label="t(copied ? 'ai.turn.copied' : 'ai.turn.copy')" @click="copyResponse"
         >
           <component :is="copied ? PhCheck : PhCopy" :size="16" aria-hidden="true" />
-          <span aria-hidden="true" class="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-xs text-white shadow-sm group-hover/copy:block group-focus-visible/copy:block dark:bg-dark-600">
+          <span aria-hidden="true" class="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden whitespace-nowrap rounded-md bg-slate-800/[var(--ai-chat-surface-opacity,1)] px-2.5 py-1.5 text-xs text-[color:var(--ai-chat-user-color,white)] shadow-sm group-hover/copy:block group-focus-visible/copy:block dark:bg-dark-600/[var(--ai-chat-surface-opacity,1)]">
             {{ t(copied ? 'ai.turn.copied' : 'ai.turn.copy') }}
           </span>
         </button>
@@ -138,7 +138,7 @@ const showProgress = computed(() => {
           :aria-label="t('ai.turn.branch')" @click="emit('branch')"
         >
           <PhGitBranch :size="16" aria-hidden="true" />
-          <span aria-hidden="true" class="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-xs text-white shadow-sm group-hover/branch:block group-focus-visible/branch:block dark:bg-dark-600">
+          <span aria-hidden="true" class="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden whitespace-nowrap rounded-md bg-slate-800/[var(--ai-chat-surface-opacity,1)] px-2.5 py-1.5 text-xs text-[color:var(--ai-chat-user-color,white)] shadow-sm group-hover/branch:block group-focus-visible/branch:block dark:bg-dark-600/[var(--ai-chat-surface-opacity,1)]">
             {{ t('ai.turn.branch') }}
           </span>
         </button>

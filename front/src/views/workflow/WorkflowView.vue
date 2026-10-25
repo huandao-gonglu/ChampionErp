@@ -699,6 +699,7 @@ watch(
                 :result="pricingResult"
                 :draft-items="pricingDraftItems"
                 :draft-id="currentDraft.draftId"
+                :draft-version="currentDraft.updatedAt"
                 :draft-title="pricingDraftTitle"
                 :product-context="currentDraftProductContext"
                 :platform-options="platformOptions"
@@ -708,6 +709,7 @@ watch(
                 :refresh-product="() => draftSync.refresh()"
                 @edit-product="editDraftProduct"
                 @calculate="store.calculatePrice"
+                @restore="store.restorePricingPreview"
                 @apply="store.applyPrice"
               />
             </div>

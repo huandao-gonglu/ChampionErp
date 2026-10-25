@@ -166,7 +166,7 @@ function onKeydown(event: KeyboardEvent) {
 
 <template>
   <form
-    class="shrink-0 border-t border-slate-200 bg-white pt-4 dark:border-dark-700 dark:bg-dark-900"
+    class="ai-chat-composer shrink-0 border-t border-slate-200 bg-white/[var(--ai-chat-surface-opacity,1)] pt-4 dark:border-dark-700 dark:bg-dark-900/[var(--ai-chat-surface-opacity,1)]"
     data-testid="ai-chat-composer"
     @submit.prevent="canSend && emit('send')"
     @keydown="onComposerKeydown"
@@ -180,7 +180,7 @@ function onKeydown(event: KeyboardEvent) {
         @select="selectCommandByIndex"
         @hover="hoverCommand"
       />
-      <div class="rounded-2xl border border-slate-200 bg-white px-3 pb-2.5 pt-2 shadow-sm transition focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-200/60 dark:border-dark-600 dark:bg-dark-800 dark:focus-within:border-primary-500/60 dark:focus-within:ring-primary-500/15">
+      <div class="ai-chat-composer-surface rounded-2xl border border-slate-200 bg-white/[var(--ai-chat-surface-opacity,1)] px-3 pb-2.5 pt-2 shadow-sm transition focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-200/60 dark:border-dark-600 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:focus-within:border-primary-500/60 dark:focus-within:ring-primary-500/15">
         <label class="sr-only" for="ai-chat-input">发送消息</label>
         <textarea
           id="ai-chat-input"
@@ -198,7 +198,7 @@ function onKeydown(event: KeyboardEvent) {
             <AiApprovalModeSelect />
             <button
               type="button"
-              class="flex size-9 shrink-0 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 disabled:cursor-not-allowed disabled:opacity-50 dark:text-accent-300 dark:hover:bg-dark-700 dark:hover:text-white"
+              class="flex size-9 shrink-0 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 disabled:cursor-not-allowed disabled:opacity-50 dark:text-accent-300 dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)] dark:hover:text-white"
               aria-label="添加文件（暂未开放）"
               title="添加文件（暂未开放）"
               data-testid="ai-chat-add-file"
@@ -208,7 +208,7 @@ function onKeydown(event: KeyboardEvent) {
             </button>
             <button
               type="button"
-              class="flex size-9 shrink-0 items-center justify-center rounded-xl transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 dark:hover:bg-dark-700"
+              class="flex size-9 shrink-0 items-center justify-center rounded-xl transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)]"
               :class="pageContext.enabled ? 'text-primary-600 dark:text-primary-300' : 'text-slate-400 dark:text-accent-400'"
               aria-label="读取背景"
               :aria-pressed="pageContext.enabled"
@@ -248,7 +248,7 @@ function onKeydown(event: KeyboardEvent) {
     <p
       v-if="sendDisabledReason"
       role="status"
-      class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30"
+      class="mt-2 rounded-lg bg-amber-50/[var(--ai-chat-surface-opacity,1)] px-3 py-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-amber-200 dark:ring-amber-500/30"
       data-testid="ai-chat-send-blocked"
     >
       {{ sendDisabledReason }}

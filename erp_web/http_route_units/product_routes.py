@@ -25,6 +25,13 @@ def handle_draft_pricing_apply(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_draft_pricing_restore(handler: JsonRequestHandler) -> None:
+    result, status = draft_pricing_facade.price_draft_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path), apply=False, restore=True,
+    )
+    handler.send_json(result, status)
+
+
 def handle_assign_upc(handler: JsonRequestHandler) -> None:
     result, status = product_facade.assign_upc(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -93,6 +100,7 @@ def handle_delete_draft(handler: JsonRequestHandler) -> None:
 POST_HANDLERS: dict[str, PostHandler] = {
     "/api/draft-pricing/preview": handle_draft_pricing_preview,
     "/api/draft-pricing/apply": handle_draft_pricing_apply,
+    "/api/draft-pricing/restore": handle_draft_pricing_restore,
     "/api/assign-upc": handle_assign_upc,
     "/api/upc-pool/import": handle_import_upcs,
     "/api/save-product": handle_save_product,

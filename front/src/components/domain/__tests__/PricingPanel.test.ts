@@ -158,6 +158,29 @@ function mountPricing(rows: DraftSku[], localInput = reactive(structuredClone(in
 }
 
 describe('PricingPanel 对齐 Penpot 核价原型', () => {
+  it('返回核价页只恢复有效预览，恢复后允许直接应用售价', async () => {
+    const rows = reactive([skuRow()])
+    rows[0]!.pricing.applied = false
+    const wrapper = mount(PricingPanel, { props: {
+      skuItems: rows, input: reactive(structuredClone(input)), result, draftItems: [],
+      draftId: 'draft', draftVersion: '保存后的版本', draftTitle: '商品',
+      productContext: productContext(rows), platformOptions: [], loading: false,
+      onRestore: async () => {
+        await wrapper.setProps({ loading: true })
+        await wrapper.setProps({ result: { ...result, previewId: 'restored-preview' }, loading: false })
+      },
+    }, global: { stubs: { teleport: true } } })
+    await flushPromises()
+    expect(wrapper.emitted('restore')).toHaveLength(1)
+    expect(wrapper.emitted('calculate')).toBeUndefined()
+    expect(wrapper.text()).toContain('待应用售价')
+    const apply = wrapper.get('[data-testid="pricing-apply"]')
+    expect(apply.attributes('disabled')).toBeUndefined()
+    await apply.trigger('click')
+    expect(wrapper.emitted('apply')).toHaveLength(1)
+    expect(wrapper.emitted('calculate')).toBeUndefined()
+  })
+
   it('切换来源模板即使费用相同也需重新确认核价，不自动计算或应用', async () => {
     const localInput = reactive(structuredClone(input))
     localInput.templateSource = { id: 'first', name: '原模板' }

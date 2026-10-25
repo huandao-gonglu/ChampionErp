@@ -212,6 +212,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/assign-upc": RequestContract(fields={"product_id": STRING, "sku_ids": STRING_ARRAY}, required=("product_id",)),
     "/api/browser-debug/open-profile": _EMPTY,
     "/api/draft-pricing/preview": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
+    "/api/draft-pricing/restore": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
     "/api/pricing/templates/save": RequestContract(fields={"id": STRING, "name": STRING, "parameters": OBJECT, "set_default": BOOLEAN}, required=("name", "parameters")),
     "/api/pricing/templates/default": RequestContract(fields={"id": STRING}, required=("id",)),
     "/api/pricing/templates/delete": RequestContract(fields={"id": STRING}, required=("id",)),

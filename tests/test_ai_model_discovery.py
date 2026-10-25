@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from erp_web.services import ai_model_discovery, ai_provider_catalog
+from erp_web.schemas.external_requests import ExternalRequestBlocked, RequestFailure
 
 
 class _FakeProvider:
@@ -94,4 +95,32 @@ def test_model_discovery_sanitizes_sdk_status_error(
         )
 
     assert "secret response body" not in str(caught.value)
+    assert provider.closed is True
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_model_discovery_preserves_local_auth_block(monkeypatch, wrapped):
+    """认证阻断即使被 SDK 包装，也不能误报成普通网络故障。"""
+    error = ExternalRequestBlocked(RequestFailure(
+        code="AI_OPENAI_AUTH_FAILED", message="当前凭据失效", scope="credential", status=401,
+    ))
+    if wrapped:
+        from openai import APIConnectionError
+        import httpx2
+
+        wrapper = APIConnectionError(request=httpx2.Request("GET", "https://models.example.invalid/v1/models"))
+        wrapper.__cause__ = error
+        error = wrapper
+    provider = _FakeProvider(error=error)
+    monkeypatch.setattr(ai_provider_catalog, "create_pydantic_provider", lambda *args, **kwargs: provider)
+
+    with pytest.raises(ai_model_discovery.AiModelDiscoveryError) as caught:
+        ai_model_discovery.list_remote_models("openai", "https://models.example.invalid/v1", "secret", 12)
+
+    message = str(caught.value)
+    assert "HTTP 401" in message
+    assert "当前凭据失效" in message
+    assert "中断与恢复" in message
+    assert "连接失败" not in message
+    assert "secret" not in message
     assert provider.closed is True

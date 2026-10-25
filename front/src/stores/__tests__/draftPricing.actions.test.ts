@@ -2,11 +2,11 @@ import { ref, watch, nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createWorkflowPricingActions } from '@/stores/workflow/actions/pricing'
 import type { PricingResult } from '@/types/workflow'
-import { priceDraft, type DraftPricingBatch } from '@/api/workflow/publishing'
+import { priceDraft, restoreDraftPricing, type DraftPricingBatch } from '@/api/workflow/publishing'
 import { createDefaultPricingInput, createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
 
 vi.mock('@/api/workflow/publishing', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/api/workflow/publishing')>()), priceDraft: vi.fn(),
+  ...(await importOriginal<typeof import('@/api/workflow/publishing')>()), priceDraft: vi.fn(), restoreDraftPricing: vi.fn(),
 }))
 
 function setup() {
@@ -34,6 +34,53 @@ function setup() {
 
 describe('页面核价使用后端业务入口', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  it('保存并返回后恢复上一轮预览，按当前版本直接应用，不重新计算', async () => {
+    const { runtime, actions, response } = setup()
+    runtime.currentDraft.value.updatedAt = '保存后的版本'
+    response.items = [{ skuId: 'sku-1', result: {
+      results: [], previewId: 'preview-1', usdCnyRate: 7, mxnUsdRate: 18, rubCnyRate: 12,
+      shippingCostUsd: 0, shippingCostCny: 0, totalCostCny: 0, netRevenueCny: 0,
+      profitCny: 0, marginPercent: 0, rubUsdRate: 84, exchangeRateMode: 'live',
+      exchangeRateSource: 'test', exchangeRateFetchedAt: '', exchangeRateCached: true,
+    } }]
+    vi.mocked(restoreDraftPricing).mockResolvedValueOnce(response)
+    await actions.restorePricingPreview()
+    expect(priceDraft).not.toHaveBeenCalled()
+    expect(runtime.pricingResult.value).toMatchObject({ previewId: 'preview-1' })
+    expect(runtime.currentDraft.value.skuItems[0]?.pricing.applied).toBe(false)
+    vi.mocked(priceDraft).mockResolvedValueOnce({ ...response, applied: true, draft: runtime.currentDraft.value,
+      pricingBySku: { 'sku-1': { applied: true, targets: {} } } })
+    await actions.applyPrice()
+    expect(priceDraft).toHaveBeenCalledTimes(1)
+    expect(priceDraft).toHaveBeenLastCalledWith(expect.objectContaining({ updatedAt: '保存后的版本' }),
+      expect.anything(), true, 'preview-1')
+    expect(runtime.currentDraft.value.skuItems[0]?.pricing.applied).toBe(true)
+  })
+
+  it('过期或参数不匹配时不保留可应用凭据，也不自动重算', async () => {
+    const { runtime, actions, response } = setup()
+    vi.mocked(priceDraft).mockResolvedValueOnce(response)
+    await actions.calculatePrice()
+    vi.mocked(restoreDraftPricing).mockResolvedValueOnce(null)
+    await actions.restorePricingPreview()
+    await actions.applyPrice()
+    expect(priceDraft).toHaveBeenCalledTimes(1)
+    expect(runtime.setError).toHaveBeenLastCalledWith(expect.stringContaining('请先计算核价'))
+  })
+
+  it('恢复请求期间切换草稿，不回填旧报价', async () => {
+    const { runtime, actions, response } = setup()
+    vi.mocked(restoreDraftPricing).mockImplementationOnce(async () => {
+      runtime.currentDraft.value.draftId = '另一草稿'
+      return response
+    })
+    await actions.restorePricingPreview()
+    expect(runtime.currentDraft.value.skuItems[0]?.pricing).toEqual({})
+    expect(runtime.pricingResult.value).toBeNull()
+    await actions.applyPrice()
+    expect(priceDraft).not.toHaveBeenCalled()
+  })
 
   it('没有在页面读取过 SKU 采购成本也能预览，预览不应用', async () => {
     const { runtime, actions, response } = setup()

@@ -155,6 +155,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     generateImagePromptPack: combined.generateImagePromptPack,
     translateImages: combined.translateImages,
     calculatePrice: combined.calculatePrice,
+    restorePricingPreview: combined.restorePricingPreview,
     applyPrice: combined.applyPrice,
     searchCategory: combined.searchCategory,
     suggestCategoryByAi: combined.suggestCategoryByAi,

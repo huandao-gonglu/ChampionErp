@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api/client'
-import { draftPricingPayload, draftWithPricingInput, priceDraft } from '@/api/workflow/publishing'
+import { draftPricingPayload, draftWithPricingInput, priceDraft, restoreDraftPricing } from '@/api/workflow/publishing'
 import { createDefaultPricingInput, createEmptyDraftDetail } from '@/constants/initialState'
 
 vi.mock('@/api/client', () => ({ API_REQUEST_TIMEOUT_MS: 30000, apiClient: { post: vi.fn() } }))
@@ -21,6 +21,30 @@ function fixture(count = 198) {
 
 describe('统一草稿核价 API', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  it('返回时只查询已有预览并恢复应用标识，不调用计算接口', async () => {
+    const { draft, input } = fixture(1)
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: {
+      preview_id: 'previous-preview', applied: false, errors: [],
+      items: [{ sku_id: 'sku-0', result: { results: [{
+        target_key: 'ozon:global', platform: 'ozon', site: 'global', listing_currency: 'CNY',
+        applied_price: { amount: '120', currency: 'CNY' },
+      }] } }], sku_pricing: { 'sku-0': { applied: false, targets: {} } },
+    } })
+    const restored = await restoreDraftPricing(draft, input)
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
+    expect(apiClient.post).toHaveBeenCalledWith('/api/draft-pricing/restore', draftPricingPayload(draft, input))
+    expect(restored?.items[0]?.result.previewId).toBe('previous-preview')
+    expect(restored?.items[0]?.result.results[0]?.appliedPrice.amount).toBe('120')
+    expect(restored?.pricingBySku['sku-0']?.applied).toBe(false)
+  })
+
+  it('没有有效预览时返回空，不将缺少 SKU 误判为核价响应错误', async () => {
+    const { draft, input } = fixture(1)
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { preview_id: '', applied: false } })
+    expect(await restoreDraftPricing(draft, input)).toBeNull()
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
+  })
 
   it('模板来源随核价参数提交，未选择时显式为空', () => {
     const { draft, input } = fixture(1)
