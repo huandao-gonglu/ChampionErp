@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.product_model.precheck_model import PrecheckIssues
 from erp_web.context import get_context
 from erp_web.marketplace_registry import platform_title_limit
 from erp_web.marketplaces import mercadolibre_category_allowed_currencies
@@ -748,10 +749,11 @@ def validate_prepared_yandex_draft(
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
     else:
         problems = get_context().image_delivery.inspect_product(product, "yandex", stage=image_stage, cache=session.images)
-        errors.extend(
-            precheck_item(problem.code, f"images.{problem.asset_id}", problem.message, "error", problem.next_action)
-            for problem in problems
-        )
+        image_issues = PrecheckIssues()
+        for problem in problems:
+            image_issues.add({**precheck_item(problem.code, "images", problem.message, "error", problem.next_action),
+                              "affected_asset_ids": [problem.asset_id]})
+        errors.extend(image_issues.values())
         if image_stage == "final" and not problems and any(not str(image).startswith(("https://", "http://")) for image in images):
             errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", "发布图片需要 HTTP(S) 公网地址", "error", "调用 product_publish_prepare 准备发布图片后重新校验"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
@@ -829,10 +831,11 @@ def validate_ozon_draft(
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
     else:
         problems = get_context().image_delivery.inspect_product(product, "ozon", stage=image_stage, cache=session.images)
-        errors.extend(
-            precheck_item(problem.code, f"images.{problem.asset_id}", problem.message, "error", problem.next_action)
-            for problem in problems
-        )
+        image_issues = PrecheckIssues()
+        for problem in problems:
+            image_issues.add({**precheck_item(problem.code, "images", problem.message, "error", problem.next_action),
+                              "affected_asset_ids": [problem.asset_id]})
+        errors.extend(image_issues.values())
         if image_stage == "final" and not problems and any(not str(image).startswith(("https://", "http://")) for image in images):
             errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", "发布图片需要 HTTP(S) 公网地址", "error", "调用 product_publish_prepare 准备发布图片后重新校验"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}

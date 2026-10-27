@@ -152,7 +152,10 @@ const navItems = workflowNavItems
 
 useAiPageContext(() => {
   if (route.path !== '/') return null
-  if (draftWorkspaceOpen.value) {
+  return { page: activeNav.value in aiPageLabels ? activeNav.value as keyof typeof aiPageLabels : 'dashboard' }
+})
+useAiPageContext(() => {
+  if (route.path === '/' && draftWorkspaceOpen.value) {
     const draft = currentDraft.value
     const target = draft.targetSites.length === 1 ? draft.targetSites[0] : undefined
     return {
@@ -162,8 +165,8 @@ useAiPageContext(() => {
       platform: target?.platform, site: target?.site || undefined,
     }
   }
-  return { page: activeNav.value in aiPageLabels ? activeNav.value as keyof typeof aiPageLabels : 'dashboard' }
-})
+  return null
+}, 5)
 useAiPageContext(() => editorOpen.value && route.path === '/' ? {
   page: 'product_editor', section: editorMode.value,
   product_id: product.value.productId || undefined,

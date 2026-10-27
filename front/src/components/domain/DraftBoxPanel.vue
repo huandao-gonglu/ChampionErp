@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useAiChatStore } from '@/stores/aiChat'
+import { useAiPageContext } from '@/composables/useAiPageContext'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
 import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
 import { formatDateTime } from '@/utils/format'
@@ -45,6 +46,9 @@ const activeDraftCount = computed(() => allDraftRows.value.filter((row) => !isPu
 const publishedDraftCount = computed(() => allDraftRows.value.filter(isPublishedDraft).length)
 const selectedDrafts = computed(() => props.drafts.filter((item) => selectedDraftIds.value.includes(draftIdOf(item))))
 const selectedCount = computed(() => selectedDrafts.value.length)
+useAiPageContext(() => ({
+  page: 'drafts', selected_draft_ids: selectedDrafts.value.map(draftIdOf).filter(Boolean),
+}), 1)
 const visibleDraftIds = computed(() => draftRows.value.map(draftIdOf).filter(Boolean))
 const allChecked = computed(() => visibleDraftIds.value.length > 0 && visibleDraftIds.value.every((id) => selectedDraftIds.value.includes(id)))
 

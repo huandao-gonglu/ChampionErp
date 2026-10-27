@@ -51,16 +51,16 @@ def test_repeated_precheck_issues_group_with_all_selected_skus(platform, monkeyp
     assert result["ok"] is False
     assert len(result["errors"]) == 1
     assert len(result["warnings"]) == 1
-    assert len(result["sku_results"]) == 29
-    expected = [{"sku_id": f"fact-{index}", "sku": f"SELL-{index}", "name": "同名规格"} for index in range(29)]
-    assert result["errors"][0]["affected_skus"] == expected
+    assert "sku_results" not in result
+    expected = [f"fact-{index}" for index in range(29)]
+    assert result["errors"][0]["affected_sku_ids"] == expected
     assert result["errors"][0]["field"] == "attributes.10096"
     assert "颜色" in result["errors"][0]["message"]
     related = result["errors"][0]["related_issues"]
     assert len(related) == 1
     assert related[0]["code"] == "SKU_VARIATION_ATTRIBUTES_EMPTY"
     assert "无需填满所有可选字段" in related[0]["message"]
-    assert result["warnings"][0]["affected_skus"] == expected
+    assert result["warnings"][0]["affected_sku_ids"] == expected
     assert check == original
 
 
@@ -184,10 +184,10 @@ def test_different_fields_reasons_and_actions_remain_separate(monkeypatch):
     result = sku_publish_adapter.SkuGroupPublishingAdapter(leaf).validate_draft(context_for(product), {})
 
     assert len(result["errors"]) == 4
-    assert [len(item["affected_skus"]) for item in result["errors"]] == [2, 1, 1, 1]
+    assert [len(item["affected_sku_ids"]) for item in result["errors"]] == [2, 1, 1, 1]
 
 
-def test_compacted_failure_keeps_affected_sku_details():
+def test_compacted_failure_reads_legacy_details_as_identities():
     first = {"sku_id": "first", "sku": "SELL-1", "name": "红色"}
     second = {"sku_id": "second", "sku": "SELL-2", "name": "蓝色"}
     related = {**issue(field="sku_items", message="组合属性为空"), "code": "SKU_VARIATION_ATTRIBUTES_EMPTY"}
@@ -196,6 +196,6 @@ def test_compacted_failure_keeps_affected_sku_details():
 
     result = compact_precheck(raw)
 
-    assert result["errors"][0]["affected_skus"] == [first, second]
+    assert result["errors"][0]["affected_sku_ids"] == ["first", "second"]
     assert result["errors"][0]["related_issues"] == [related]
     assert raw == original

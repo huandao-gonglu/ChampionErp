@@ -29,12 +29,12 @@ class DraftChangesApplyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     draft_id: Identity
-    expected_updated_at: Identity = Field(description="本次 draft_attributes_read 返回的 updated_at；版本不符时整组不写入，先重新读取再计算。")
+    expected_updated_at: Identity = Field(description="读取时或本轮最近成功保存回执中的 updated_at；使用保存回执前须将实际值同步到脚本数据。版本不符时整组不写入，按本次任务范围重新读取并计算。")
     platform: Identity
     site: Identity
     category_id: str = Field(default="", max_length=160, description="修改类目属性时必须提供读取时的类目 ID。仅改库存可省略。")
     changes: list[DraftChange] = Field(min_length=1, max_length=1000,
-        description="由脚本计算的全部差异，每个 SKU 至多一项；同项可以合并属性和库存。全部校验通过后只保存草稿一次。")
+        description="合并本轮已确定的全部属性差异，每个 SKU 至多一项；同项 attributes 同时包含颜色、规格等本次所需字段，可合并库存。不得按属性分轮提交整批 SKU。全部校验通过后只保存草稿一次。")
 
     @model_validator(mode="after")
     def require_unique_targets(self) -> "DraftChangesApplyRequest":
@@ -65,7 +65,7 @@ class DraftChangesApplyResult(BaseModel):
     site: str
     category_id: str
     changed: bool
-    changed_count: int
+    changed_count: int = Field(description="实际发生变化的修改项数量，不是属性数；0 表示提交值已一致，不代表保存失败。")
     previous_updated_at: str
     updated_at: str
-    changes: list[DraftChangeResult]
+    changes: list[DraftChangeResult] = Field(description="对应全部提交项的实际保存回执，包含未变化项；attributes 只含本次提交字段的实际值，清空字段不再出现。直接逐项核对，不为确认成功而重读整批 SKU。")

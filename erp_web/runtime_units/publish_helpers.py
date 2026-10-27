@@ -32,6 +32,7 @@ from erp_web.services.mercadolibre_attribute_contract import (
 from erp_web.stores.config_store import summarize_store_auth_states
 from erp_web.stores.product_store import normalize_product_fields
 
+from erp_web.product_model.precheck_model import merge_precheck_issues, normalize_precheck
 from erp_web.product_model.sku_model import single_sku_publish_draft
 
 from .copy_generation import apply_product_drafts_to_plan, build_plan_for_platform
@@ -560,57 +561,13 @@ def precheck_item(code: str, field: str, message: str, severity: str = "error", 
 
 
 def compact_precheck_items(items: list[Any]) -> list[dict[str, Any]]:
-    compacted: list[dict[str, Any]] = []
-    index_by_key: dict[tuple[Any, ...], int] = {}
-    counts: list[int] = []
-    for raw in items:
-        if not isinstance(raw, dict):
-            raw = precheck_item("", "", str(raw or ""))
-        item = precheck_item(
-            str(raw.get("code") or ""),
-            str(raw.get("field") or ""),
-            str(raw.get("message") or ""),
-            str(raw.get("severity") or "error"),
-            str(raw.get("next_action") or ""),
-        )
-        affected = deepcopy(raw.get("affected_skus") or [])
-        if affected:
-            item["affected_skus"] = affected
-        related = deepcopy(raw.get("related_issues") or [])
-        if related:
-            item["related_issues"] = related
-        key = (item["code"], item["field"], item["message"], item["severity"], item["next_action"], bool(affected))
-        if key in index_by_key:
-            idx = index_by_key[key]
-            counts[idx] += 1
-            compacted[idx]["message"] = f"{key[2]}（共 {counts[idx]} 次）"
-            compacted[idx]["count"] = counts[idx]
-            if related:
-                existing_related = compacted[idx].setdefault("related_issues", [])
-                existing_related.extend(issue for issue in related if issue not in existing_related)
-            if affected:
-                skus = compacted[idx]["affected_skus"]
-                seen = {sku["sku_id"] for sku in skus}
-                for sku in affected:
-                    if sku["sku_id"] not in seen:
-                        skus.append(sku)
-                        seen.add(sku["sku_id"])
-            continue
-        index_by_key[key] = len(compacted)
-        counts.append(1)
-        item["count"] = 1
-        compacted.append(item)
-    return compacted
+    return merge_precheck_issues(items)
 
 
 def compact_precheck(precheck: dict[str, Any]) -> dict[str, Any]:
-    errors = list(precheck.get("errors") or [])
-    warnings = list(precheck.get("warnings") or [])
-    compacted = dict(precheck)
-    compacted["errors"] = compact_precheck_items(errors)
-    compacted["warnings"] = compact_precheck_items(warnings)
-    compacted["error_count"] = sum(int(item.get("count") or 1) for item in compacted["errors"])
-    compacted["warning_count"] = sum(int(item.get("count") or 1) for item in compacted["warnings"])
+    compacted = normalize_precheck(precheck)
+    compacted["error_count"] = len(compacted.get("errors") or [])
+    compacted["warning_count"] = len(compacted.get("warnings") or [])
     return compacted
 
 

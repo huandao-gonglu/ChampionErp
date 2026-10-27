@@ -314,7 +314,11 @@ def _apply_generated_result(
 
 @ai_tool(
     name=IMAGE_TRANSLATE_TOOL,
-    description="翻译/重绘商品图片文案并写回图片池（AI 生成）。",
+    description=(
+        "翻译/重绘商品图片文案并写回图片池（AI 生成）。"
+        "仅用于用户明确要求的图片内容处理；必须明确图片范围和目标语言，"
+        "不能因准备发布或图片资源未就绪而自行翻译全部图片。"
+    ),
     permission="image.write",
     side_effect="write",
     approval_required=False,
@@ -346,6 +350,8 @@ def image_translate(
     name=IMAGE_EDIT_TOOL,
     description=(
         "按提示词编辑商品图片并写回图片池（AI 生成）；"
+        "仅用于用户明确要求且范围、目标明确的修图任务，"
+        "准备发布不授权换背景、重绘或换主图；"
         "source_image_ids 省略时自动使用商品主图；用户要求替换或设为主图时"
         "必须传 set_as_main=true。"
     ),

@@ -5,6 +5,7 @@ import json
 from copy import deepcopy
 
 import pytest
+from pydantic import ValidationError
 from pydantic_ai.models.function import FunctionModel
 
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
@@ -145,6 +146,51 @@ def test_paginated_read_preserves_each_sku_facts_and_all_saved_attributes(subjec
     assert first.skus[0]["options"] == {"颜色": "黑色"}
     assert second.skus[0]["options"] == {"颜色": "白色"}
     assert first.skus[0]["package_dimensions"] != second.skus[0]["package_dimensions"]
+
+
+def test_scoped_sku_read_filters_before_paging_and_keeps_all_attributes(subject):
+    app, draft_id, _ = subject
+    product = app.products.load_product_from_index("product-native-0")
+    product["sku_items"].append({"id": "s2", "active": True, "options": {"规格": "套装"}})
+    product["drafts"]["ozon"]["sku_items"].append({
+        "sku_id": "s2", "selected": True,
+        "attributes_by_target": {"ozon:global": {"color": "黑色", "version": "套装"}},
+    })
+    app.products.save_product(product)
+    scope = ProductCapabilityScope(app.products)
+    args = dict(draft_id=draft_id, platform="ozon", site="global", scope="sku", sku_ids=["s2", "s0"], limit=1)
+    first = draft_attributes_read(DraftAttributesReadRequest(**args), scope)
+    second = draft_attributes_read(DraftAttributesReadRequest(**args, offset=first.next_offset), scope)
+    assert first.sku_count == second.sku_count == 2
+    assert [row["sku_id"] for page in [first, second] for row in page.skus] == ["s0", "s2"]
+    assert first.next_offset == 1 and second.next_offset is None
+    assert second.skus[0]["attributes"] == {"color": "黑色", "version": "套装"}
+    assert second.skus[0]["options"] == {"规格": "套装"}
+
+
+@pytest.mark.parametrize("case", ["unknown", "unselected", "inactive"])
+def test_scoped_sku_read_rejects_unavailable_ids_without_partial_result(subject, case):
+    app, draft_id, _ = subject
+    product = app.products.load_product_from_index("product-native-0")
+    missing = "s1"
+    if case == "unknown":
+        missing = "foreign"
+    elif case == "unselected":
+        product["drafts"]["ozon"]["sku_items"][1]["selected"] = False
+    else:
+        product["sku_items"][1]["active"] = False
+    app.products.save_product(product)
+    with pytest.raises(BusinessCapabilityError) as error:
+        draft_attributes_read(DraftAttributesReadRequest(
+            draft_id=draft_id, scope="sku", sku_ids=["s0", missing],
+        ), ProductCapabilityScope(app.products))
+    assert error.value.code == "SKU_OUTSIDE_DRAFT"
+
+
+@pytest.mark.parametrize("scope,sku_ids", [("common", ["s0"]), ("sku", []), ("sku", ["s0", "s0"]), ("sku", [" "])])
+def test_scoped_sku_read_rejects_ambiguous_selection(scope, sku_ids):
+    with pytest.raises(ValidationError):
+        DraftAttributesReadRequest(draft_id="test", scope=scope, sku_ids=sku_ids)
 
 
 @pytest.mark.parametrize("missing_dimension", ["", "0.0"])

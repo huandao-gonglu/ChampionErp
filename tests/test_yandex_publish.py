@@ -1576,7 +1576,7 @@ def test_group_validation_shares_reads_and_refreshes_on_next_call(monkeypatch):
     adapter = sku_publish_adapter.SkuGroupPublishingAdapter(YandexPublishingAdapter())
     result = adapter.validate_draft(context, _config(), image_stage="source")
     assert result["ok"] is True, result["errors"]
-    assert len(result["sku_results"]) == 10
+    assert "sku_results" not in result
     assert normalize.call_count == config_read.call_count == logistics.call_count == inspect.call_count == 1
     assert context.product == original
 
@@ -1584,7 +1584,7 @@ def test_group_validation_shares_reads_and_refreshes_on_next_call(monkeypatch):
     result = adapter.validate_draft(context, _config(), image_stage="source")
     assert "YANDEX_LOGISTICS_INVALID" in _error_codes(result)
     assert normalize.call_count == config_read.call_count == logistics.call_count == inspect.call_count == 2
-    assert len(next(item for item in result["errors"] if item["code"] == "YANDEX_LOGISTICS_INVALID")["affected_skus"]) == 10
+    assert len(next(item for item in result["errors"] if item["code"] == "YANDEX_LOGISTICS_INVALID")["affected_sku_ids"]) == 10
 
 
 @pytest.mark.parametrize("change", ["cost", "dimensions", "fingerprint", "stock", "attribute"])
@@ -1606,7 +1606,7 @@ def test_group_validation_retains_per_sku_blockers(change):
         row["attributes_by_target"] = {"yandex:global": {"85": {"values": []}}}
     result = SkuGroupPublishingAdapter(YandexPublishingAdapter()).validate_draft(context, _config(), image_stage="source")
     assert result["ok"] is False
-    assert {sku["sku"] for issue in result["errors"] for sku in issue["affected_skus"]} == {"SELL-1"}
+    assert {sku_id for issue in result["errors"] for sku_id in issue["affected_sku_ids"]} == {"fact-1"}
     if change in {"cost", "dimensions", "stock"}:
         assert len(result["errors"]) == 1
 

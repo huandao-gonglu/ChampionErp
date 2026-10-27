@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.product_model.precheck_model import normalize_precheck
 from erp_web.context import AppContext, get_context
 from erp_web.marketplace_registry import marketplace_site, marketplace_spec
 from erp_web.product_model import (
@@ -533,6 +534,7 @@ def save_draft_precheck_result(
     active_context = context or get_context()
     draft = deepcopy(publish_context.get("draft") if isinstance(publish_context.get("draft"), dict) else {})
     target = publish_context.get("target") if isinstance(publish_context.get("target"), dict) else {}
+    precheck = normalize_precheck(precheck)
     errors = list(precheck.get("errors") or [])
     warnings = list(precheck.get("warnings") or [])
     requested_status = "ready" if precheck.get("ok") else "not_ready"

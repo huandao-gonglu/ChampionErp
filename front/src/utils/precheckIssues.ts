@@ -3,11 +3,11 @@ import type { PrecheckIssue } from '@/types/workflow'
 export function precheckIssueIdentity(issue: PrecheckIssue): string {
   return JSON.stringify([
     issue.code, issue.field, issue.message, issue.severity, issue.nextAction,
-    Boolean(issue.affectedSkus?.length),
+    Boolean(issue.affectedSkuIds?.length),
   ])
 }
 
-/** 每个展示范围内汇总相同问题，保留全部受影响规格，计数直接取展示列表。 */
+/** 每个展示范围内汇总相同问题，保留去重身份范围，计数直接取展示列表。 */
 export function groupPrecheckIssues(issues: PrecheckIssue[]): PrecheckIssue[] {
   const groups = new Map<string, PrecheckIssue>()
   for (const issue of issues) {
@@ -16,19 +16,21 @@ export function groupPrecheckIssues(issues: PrecheckIssue[]): PrecheckIssue[] {
     if (!existing) {
       groups.set(key, {
         ...issue,
-        affectedSkus: [...(issue.affectedSkus || [])],
+        affectedSkuIds: [...(issue.affectedSkuIds || [])],
+        affectedAssetIds: [...(issue.affectedAssetIds || [])],
         ...(issue.relatedIssues ? { relatedIssues: [...issue.relatedIssues] } : {}),
       })
       continue
     }
-    const skus = existing.affectedSkus!
-    const seen = new Set(skus.map((sku) => sku.skuId))
-    for (const sku of issue.affectedSkus || []) {
-      if (!seen.has(sku.skuId)) {
+    const skus = existing.affectedSkuIds!
+    const seen = new Set(skus)
+    for (const sku of issue.affectedSkuIds || []) {
+      if (!seen.has(sku)) {
         skus.push(sku)
-        seen.add(sku.skuId)
+        seen.add(sku)
       }
     }
+    existing.affectedAssetIds = [...new Set([...(existing.affectedAssetIds || []), ...(issue.affectedAssetIds || [])])]
     if (issue.relatedIssues?.length) {
       const related = existing.relatedIssues ||= []
       const relatedKeys = new Set(related.map(precheckIssueIdentity))

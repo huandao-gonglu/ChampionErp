@@ -255,7 +255,7 @@ def test_combination_uses_platform_variant_dimensions_not_source_names():
     projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
     issue = validate_grouping(context, grouping, [SkuGroupingMember.from_projection(item) for item in projections])[0]
     assert "属性组合相同" in issue.message
-    assert [sku.name for sku in issue.affected_skus] == ["规格 0", "规格 1"]
+    assert issue.affected_sku_ids == ["fact-0", "fact-1"]
     draft["sku_items"][0]["attributes_by_target"]["ozon:global"]["color"] = "红"
     draft["sku_items"][1]["attributes_by_target"]["ozon:global"]["color"] = {"values": [{"value": "红"}]}
     projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]

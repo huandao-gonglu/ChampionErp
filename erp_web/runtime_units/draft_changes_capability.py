@@ -103,7 +103,7 @@ def apply_draft_changes(request: DraftChangesApplyRequest, *, product_store: Pro
 
 @ai_tool(
     name="draft_changes_apply",
-    description="一次提交同一草稿的多项局部修改：公共/SKU 类目属性、各 SKU 可售库存，可混合。先用 draft_attributes_read(scope=sku) 取得事实和 updated_at；涉及属性再查询相应平台定义。用 Python 根据用户规则逐条计算期望值，比较全部已填/未填行，仅收集差异到 changes，使用读取时的 expected_updated_at 一次提交。不得逐 SKU 循环调用单项保存或先试写。全部校验通过后只保存草稿一次；任一错误或版本冲突则整组未保存。结果含每项实际已存字段与新版本，可直接按原规则核对，通常不需重复读取。来源成本、包装、条码和运输属性请用 product_sku_facts_update 修改商品；库存非负整数；不推断值，不修改其他字段。",
+    description="一次提交同一草稿和平台/站点的多项公共/SKU 类目属性及可售库存。明确全部所需定义，用 draft_attributes_read(scope=sku) 一次取得并保留事实与 updated_at，据此补齐候选；在同一脚本中计算本轮全部相关属性，每个 SKU 的颜色、规格等差异合入同一个 attributes，可同时设置 stock。不逐属性重读或提交整批，不逐 SKU 调用单项保存，不先试写。全部校验通过后只保存一次；任一错误或版本冲突则整组未保存。changes 回执含全部提交项的实际保存值及 updated_at，直接核对并更新脚本数据，无需重读确认；changed_count=0 表示值已一致。确需核实局部结果时按 sku_ids 补读。完整准备应在相关属性与事实保存完后统一核价和预检，窄范围修改不扩展核价。成本、包装、条码及运输事实用 product_sku_facts_update；不猜值或修改无关字段。",
     permission="draft.write", side_effect="write", approval_required=False,
     idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual", version="1",
 )

@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 ContextId = Annotated[
@@ -36,6 +36,7 @@ class AiPageContext(BaseModel):
     order_id: ContextId | None = None
     product_id: ContextId | None = None
     draft_id: ContextId | None = None
+    selected_draft_ids: list[ContextId] | None = Field(default=None, max_length=1000)
     listing_id: ContextId | None = None
     group_id: ContextId | None = None
     catalog: Literal["current", "archived"] | None = None
@@ -57,6 +58,16 @@ def page_context_instructions(context: dict | None) -> str:
     ]
     if page.section:
         lines.append(f"当前区域：{SECTION_LABELS[page.section]}")
+    if page.selected_draft_ids is not None:
+        ids = list(dict.fromkeys(page.selected_draft_ids))
+        lines.append(f"当前勾选草稿（{len(ids)} 个）：{'、'.join(ids) or '无'}")
+        lines.append(
+            "用户提到‘当前勾选/所选草稿’时以上述 ID 定位；这是发送时的勾选快照，"
+            "不是执行授权。drafts_query 的 selected_items 是查询结果的位置选择，不是界面勾选状态。"
+            "不要重新搜索读取界面勾选的工具，也不能用活动草稿列表代替勾选范围。"
+        )
+    if page.page == "draft_editor":
+        lines.append("当前草稿 ID 指向正在打开的草稿；用户说‘这个/当前草稿’时据此读取，未保存的表单修改不在背景中。")
     for field, label in (
         ("order_id", "当前 ERP 订单 ID"),
         ("product_id", "当前商品 ID"), ("draft_id", "当前草稿 ID"),

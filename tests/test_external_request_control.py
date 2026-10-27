@@ -2,7 +2,7 @@
 import json
 import threading
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -68,22 +68,21 @@ def test_unknown_write_and_platform_retry_after_cannot_be_replayed():
     assert manager.store.query()['stats']['network_attempts'] == 0
 
 
-def test_ai_definite_rejection_only_blocks_original_request_and_can_be_recovered():
+def test_historical_ai_rejection_and_closed_stream_remain_readable_and_recoverable():
+    """旧审计和阻断仍可管理；新推理不再生成这些业务请求记录。"""
     manager = get_context().external_requests
     control = ExternalRequestControlService(manager.store)
     ctx = RequestContext(platform='ai:deepseek', account_id='ai-account', interface='/chat/completions', source='ai', semantics='write', fingerprint='same-body')
-    identity = manager.start(ctx, 'POST')
-    manager.check(identity, ctx, time.time() + 30)
-    manager.result(identity, ctx, 402, {}, b'{}')
+    failure = RequestFailure('AI_DEEPSEEK_PAYMENT_REQUIRED', '余额不足', 'request', status=402)
+    identity = manager.store.begin(ctx, 'POST')
+    manager.store.finish(identity, result={'outcome': 'failed', 'http_status': 402, 'failure': asdict(failure)})
+    manager.store.block(ctx, failure)
     original = control.status()['blocks'][0]
     assert original['recovery_mode'] == 'confirm_request'
     assert original['scope'] == 'request' and original['http_status'] == 402
-    with pytest.raises(ExternalRequestBlocked):
-        manager.check(manager.start(ctx, 'POST'), ctx, time.time() + 30)
     other = replace(ctx, operation_id='new-operation')
-    other_id = manager.start(other, 'POST')
-    assert manager.check(other_id, other, time.time() + 30) == 0
-    manager.stream_closed(other_id, 200)
+    other_id = manager.store.begin(other, 'POST')
+    manager.store.finish(other_id, result={'outcome': 'stream_closed', 'http_status': 200})
     before = manager.store.query()['stats']['network_attempts']
     history_before = control.status()['total']
     with pytest.raises(ValueError, match='原因'):

@@ -65,7 +65,6 @@ from .ai_model_errors import (
     model_http_error_payload,
     safe_model_error_text,
 )
-from .external_request_diagnostics import exception_diagnostics
 from .ai_presentation_context import (
     AiPresentationContext,
     bind_presentation_context,
@@ -285,7 +284,6 @@ def _safe_agent_error(
             exc.__class__.__name__,
             safe_model_error_text(exc.message) or exc.__class__.__name__,
             retryable=True,
-            details=exception_diagnostics(exc),
             **correlation,
         )
     if isinstance(exc, UnexpectedModelBehavior):

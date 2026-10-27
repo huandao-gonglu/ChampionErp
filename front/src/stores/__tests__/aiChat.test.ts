@@ -200,7 +200,10 @@ describe('AiChatStore 实时流', () => {
     vi.unstubAllGlobals()
   })
 
-  it('只提交本轮用户消息并把多次 delta 合并到同一 assistant 气泡', async () => {
+  it.each([
+    { page: 'draft_editor' as const, draft_id: 'draft-a', section: 'category' as const },
+    { page: 'drafts' as const, selected_draft_ids: ['draft-a', 'draft-b'] },
+  ])('发送时保留页面快照并把多次 delta 合并到同一 assistant 气泡：%j', async (context) => {
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined
     let requestBody: Record<string, unknown> | undefined
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -223,7 +226,7 @@ describe('AiChatStore 实时流', () => {
     const store = useAiChatStore()
     const background = useAiPageContextStore()
     const owner = Symbol()
-    background.setSource(owner, { page: 'draft_editor', draft_id: 'draft-a', section: 'category' })
+    background.setSource(owner, context)
     store.input = '查询草稿'
     store.sendMessage()
     background.setSource(owner, { page: 'product_editor', product_id: 'product-b' })
@@ -237,7 +240,7 @@ describe('AiChatStore 实时流', () => {
     expect(requestBody?.trigger).toBe('submit-message')
     expect(requestBody?.id).toBe(store.activeConversationId)
     expect(requestBody?.messages).toHaveLength(1)
-    expect(requestBody?.page_context).toEqual({ page: 'draft_editor', draft_id: 'draft-a', section: 'category' })
+    expect(requestBody?.page_context).toEqual(context)
     expect((requestBody?.messages as Array<{ role: string }>)[0]?.role).toBe('user')
 
     controller!.enqueue(encodedChunk({ type: 'start', messageId: 'assistant-1' }))

@@ -212,3 +212,82 @@ def test_group_can_clear_attributes_without_losing_other_targets(subject):
     assert result.changes[0].attributes == {} and result.changes[0].changed_keys == ["color"]
     assert result.changes[1].attributes == {} and result.changes[1].changed_keys == ["7199"]
     assert app.products.draft_record(draft_id)["sku_items"][0]["attributes_by_target"]["yandex:global"] == {"old": "保留"}
+
+
+@pytest.mark.parametrize("split_for_model_decision", [False, True])
+def test_74_skus_multiple_attributes_read_once_save_once_and_verify_receipts(
+    subject, tmp_path, monkeypatch, split_for_model_decision,
+):
+    """受控模型验证单脚本合并和跨脚本复用，不用模型理解能力替代执行断言。"""
+    app, draft_id, record = subject
+    record["attributes"]["required"].append({
+        "id": "version", "name": "规格", "required": True, "variation_role": "variant",
+    })
+    product = app.products.load_product_from_index("product-native-0")
+    product["sku_items"] = [
+        {"id": f"s{i}", "active": True, "options": {"颜色": "黑色" if i % 2 else "白色", "规格": f"套装{i // 2}"}}
+        for i in range(74)
+    ]
+    product["drafts"]["ozon"]["sku_items"] = [
+        {"sku_id": f"s{i}", "selected": True, "stock": "5", "attributes_by_target": {
+            "ozon:global": {"other": "保留", "color": row["options"]["颜色"] if i % 2 == 0 or i % 5 == 0 else "待修正",
+                            **({"version": row["options"]["规格"]} if i % 5 == 0 else {})},
+            "yandex:global": {"old": "保留"},
+        }} for i, row in enumerate(product["sku_items"])
+    ]
+    app.products.save_product(product)
+    save = Mock(wraps=app.products.save_draft_content)
+    monkeypatch.setattr(app.products, "save_draft_content", save)
+    read_code = f'''draft_data = await draft_attributes_read(draft_id={draft_id!r}, platform="ozon", site="global", scope="sku")
+assert draft_data.get("ok") is not False
+assert len(draft_data["skus"]) == draft_data["sku_count"] and draft_data["next_offset"] is None
+'''
+    update_code = f'''changes: list[DraftChange] = []
+for row in draft_data["skus"]:
+    attributes = {{}}
+    for field, source in [("color", "颜色"), ("version", "规格")]:
+        if row["attributes"].get(field) != row["options"][source]:
+            attributes[field] = row["options"][source]
+    if attributes:
+        changes.append({{"sku_id": row["sku_id"], "attributes": attributes}})
+saved = await draft_changes_apply(draft_id={draft_id!r}, platform="ozon", site="global", category_id="94765", expected_updated_at=draft_data["updated_at"], changes=changes)
+assert saved.get("ok") is not False
+assert len(saved["changes"]) == len(changes)
+rows_by_id = {{row["sku_id"]: row for row in draft_data["skus"]}}
+for receipt in saved["changes"]:
+    rows_by_id[receipt["sku_id"]]["attributes"].update(receipt["attributes"])
+draft_data["updated_at"] = saved["updated_at"]
+verified = 0
+for row in draft_data["skus"]:
+    assert row["attributes"]["color"] == row["options"]["颜色"]
+    assert row["attributes"]["version"] == row["options"]["规格"]
+    verified += 1
+{{"verified": verified, "changed": saved["changed_count"]}}
+'''
+    steps = [read_code + '{"sku_count": draft_data["sku_count"]}', update_code] if split_for_model_decision else [read_code + update_code]
+    model_steps = iter(steps)
+    outputs = []
+    @discovering_tools("draft_attributes_read", "draft_changes_apply")
+    async def model(messages, info):
+        code = next(model_steps, None)
+        if code is not None:
+            yield {0: DeltaToolCall(name="run_code", json_args=json.dumps({"code": code}))}
+        else:
+            from pydantic_ai.messages import ToolReturnPart
+            outputs.extend(p.content for m in messages for p in m.parts
+                           if isinstance(p, ToolReturnPart) and p.tool_name == "run_code")
+            yield "74 个 SKU 的颜色和规格已核对，59 个 SKU 已更新。"
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    app._agent_calls = ui.call_store
+    asyncio.run(ui.prepare_run(body("按商品规格为全部 SKU 同时填写颜色和规格，保留其他字段", target_draft_ids=[draft_id])).stream(lambda _: None))
+    assert outputs[-1] == {"verified": 74, "changed": 59}
+    returns = business_returns(ui.chat_service.trusted_history(CONVERSATION))
+    assert [p.tool_name for p in returns] == ["draft_attributes_read", "draft_changes_apply"]
+    assert save.call_count == 1
+    saved = app.products.draft_record(draft_id)
+    for i, row in enumerate(saved["sku_items"]):
+        assert row["attributes_by_target"]["ozon:global"] == {
+            "other": "保留", "color": "黑色" if i % 2 else "白色", "version": f"套装{i // 2}",
+        }
+        assert row["attributes_by_target"]["yandex:global"] == {"old": "保留"}
+        assert row["stock"] == "5"

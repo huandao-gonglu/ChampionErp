@@ -110,7 +110,7 @@ function payloadPreview(): PayloadPreviewState {
 }
 
 describe('PublishPrecheckPanel', () => {
-  it('关联的整组问题随必填缺失展示一次，保留全部 SKU 明细', async () => {
+  it('旧预检合并为身份与数量，不再展示逐 SKU 明细', async () => {
     const affected = Array.from({ length: 29 }, (_, index) => ({ sku_id: `sku-${index}`, sku: `SELL-${index}`, name: `规格 ${index}` }))
     const result = normalizePublishPrecheck({
       ok: false,
@@ -125,7 +125,7 @@ describe('PublishPrecheckPanel', () => {
     })
     const wrapper = mount(PublishPrecheckPanel, { props: { ...panelProps(), precheck: result } })
 
-    expect(result.errorItems[0].affectedSkus?.[28]).toEqual({ skuId: 'sku-28', sku: 'SELL-28', name: '规格 28' })
+    expect(result.errorItems[0].affectedSkuIds?.[28]).toBe('sku-28')
     expect(wrapper.text()).toContain('1 项不通过 / 1 项提醒')
     expect(wrapper.text().match(/缺少 Ozon 必填属性：10096/g)).toHaveLength(1)
     expect(wrapper.text().match(/属性待复核：10096/g)).toHaveLength(1)
@@ -135,13 +135,27 @@ describe('PublishPrecheckPanel', () => {
     expect(errors.text()).toContain('SKU → 属性 / 详情（当前目标市场）')
     expect(errors.text()).not.toContain('类目属性页')
     expect(result.errorItems[0].relatedIssues?.[0].code).toBe('SKU_VARIATION_ATTRIBUTES_EMPTY')
-    const details = errors.get('details')
-    expect(details.get('summary').text()).toBe('受影响的 29 个 SKU')
-    expect(details.attributes('open')).toBeUndefined()
-    await details.get('summary').trigger('click')
-    expect(details.element.open).toBe(true)
-    expect(details.findAll('li')).toHaveLength(29)
-    expect(details.text()).toContain('规格 28SELL-28')
+    expect(errors.get('[data-testid="precheck-affected-count"]').text()).toBe('受影响的 29 个 SKU')
+    expect(errors.find('details').exists()).toBe(false)
+    expect(errors.text()).not.toContain('SELL-28')
+    expect(errors.text()).not.toContain('规格 28')
+  })
+
+  it('合并图片错误只显示一次原因及影响数量，不展开逐项详情', () => {
+    const precheck = normalizePublishPrecheck({
+      ok: false,
+      errors: [{ code: 'IMAGE_NOT_PREPARED', field: 'images', message: '图片尚未准备', severity: 'error',
+        affected_sku_ids: Array.from({ length: 74 }, (_, index) => `sku-${index}`),
+        affected_asset_ids: Array.from({ length: 115 }, (_, index) => `asset-${index}`) }],
+      warnings: [],
+    })
+    const wrapper = mount(PublishPrecheckPanel, { props: { ...panelProps(), precheck } })
+    const errors = wrapper.get('[data-testid="publish-precheck-top-level-errors"]')
+    expect(errors.text().match(/图片尚未准备/g)).toHaveLength(1)
+    expect(errors.text()).toContain('受影响的 74 个 SKU')
+    expect(errors.text()).toContain('涉及 115 张图片')
+    expect(errors.find('details').exists()).toBe(false)
+    expect(errors.text()).not.toContain('asset-')
   })
 
   it('同一缺失问题在预览中仍保留关联校验说明', () => {

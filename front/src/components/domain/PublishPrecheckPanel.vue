@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { publishPrecheckPassed } from '@/utils/publishReadiness'
 import { groupPrecheckIssues, precheckIssueIdentity as issueIdentity } from '@/utils/precheckIssues'
-import PublishPrecheckSkuDetails from './PublishPrecheckSkuDetails.vue'
+import PublishPrecheckAffectedCount from './PublishPrecheckAffectedCount.vue'
 import PublishPrecheckRelatedIssues from './PublishPrecheckRelatedIssues.vue'
 import type { MarketplaceOption, MarketplaceTargetSite, PayloadPreviewState, PrecheckIssue, PublishPrecheck, PublishPrecheckScope, UnknownRecord } from '@/types/workflow'
 
@@ -232,7 +232,7 @@ function targetLabel(target: MarketplaceTargetSite) {
                   <p><span class="font-semibold">原因：</span>{{ issueMessage(issue) }}</p>
                   <p v-if="issueNextAction(issue)" class="text-rose-600 dark:text-rose-300"><span class="font-semibold">处理建议：</span>{{ issueNextAction(issue) }}</p>
                   <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
-                  <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
+                  <PublishPrecheckAffectedCount :sku-ids="issue.affectedSkuIds" :asset-ids="issue.affectedAssetIds" />
                 </li>
               </ul>
               <ul v-if="scope.warnings.length" class="mt-3 space-y-1.5 text-xs text-amber-700 dark:text-amber-200">
@@ -240,7 +240,7 @@ function targetLabel(target: MarketplaceTargetSite) {
                   <p><span class="font-semibold">提醒：</span>{{ issueMessage(issue) }}</p>
                   <p v-if="issueNextAction(issue)" class="text-amber-600 dark:text-amber-300"><span class="font-semibold">处理建议：</span>{{ issueNextAction(issue) }}</p>
                   <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
-                  <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
+                  <PublishPrecheckAffectedCount :sku-ids="issue.affectedSkuIds" :asset-ids="issue.affectedAssetIds" />
                 </li>
               </ul>
               <p v-if="!scope.errors.length && !scope.warnings.length" class="mt-3 text-xs text-accent-500 dark:text-accent-400">
@@ -260,7 +260,7 @@ function targetLabel(target: MarketplaceTargetSite) {
               <div class="font-semibold">原因：{{ issueMessage(issue) }}</div>
               <div v-if="issueNextAction(issue)" class="mt-1 text-rose-600 dark:text-rose-300">处理建议：{{ issueNextAction(issue) }}</div>
               <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
-              <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
+              <PublishPrecheckAffectedCount :sku-ids="issue.affectedSkuIds" :asset-ids="issue.affectedAssetIds" />
             </li>
           </ul>
         </section>
@@ -275,7 +275,7 @@ function targetLabel(target: MarketplaceTargetSite) {
               <div class="font-semibold">提醒：{{ issueMessage(issue) }}</div>
               <div v-if="issueNextAction(issue)" class="mt-1 text-amber-600 dark:text-amber-300">处理建议：{{ issueNextAction(issue) }}</div>
               <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
-              <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
+              <PublishPrecheckAffectedCount :sku-ids="issue.affectedSkuIds" :asset-ids="issue.affectedAssetIds" />
             </li>
           </ul>
         </section>
@@ -324,7 +324,7 @@ function targetLabel(target: MarketplaceTargetSite) {
             <p>提醒：{{ issueMessage(issue) }}</p>
             <p v-if="issueNextAction(issue)">处理建议：{{ issueNextAction(issue) }}</p>
             <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
-            <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
+            <PublishPrecheckAffectedCount :sku-ids="issue.affectedSkuIds" :asset-ids="issue.affectedAssetIds" />
           </li>
         </ul>
         <pre class="mt-3 max-h-80 w-full max-w-full overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">{{ props.payloadPreview ? JSON.stringify(props.payloadPreview.payload, null, 2) : '尚未生成 payload。' }}</pre>

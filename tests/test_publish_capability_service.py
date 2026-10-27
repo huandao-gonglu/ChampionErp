@@ -242,8 +242,8 @@ def test_validation_preserves_grouped_sku_issue_details(publish_boundary):
     )
 
     assert evaluation.result.passed is False
-    assert evaluation.result.errors[0].model_dump()["affected_skus"] == affected
-    assert evaluation.precheck["errors"][0]["affected_skus"] == affected
+    assert evaluation.result.errors[0].model_dump()["affected_sku_ids"] == ["first", "second"]
+    assert evaluation.precheck["errors"][0]["affected_sku_ids"] == ["first", "second"]
     assert evaluation.precheck["errors"][0]["related_issues"] == related
     assert evaluation.result.errors[0].model_dump()["related_issues"] == related
     assert evaluation.approved_payload is None

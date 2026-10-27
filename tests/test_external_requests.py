@@ -9,7 +9,6 @@ import time
 import urllib.error
 import urllib.request
 
-import httpx2 as httpx
 import pytest
 
 from erp_web.context import get_context
@@ -294,25 +293,6 @@ def test_anonymous_image_auth_failure_does_not_disable_future_checks(status):
     assert manager.store.query()["stats"]["network_attempts"] == 2
 
 
-def test_sdk_transport_uses_the_same_account_pause():
-    import asyncio
-    from erp_web.services.external_httpx_transport import ManagedAsyncTransport
-    calls = []
-    def handler(req):
-        calls.append(req)
-        return httpx.Response(429,json={"error":{"message":"Too many requests"}})
-    async def run():
-        transport = ManagedAsyncTransport(platform="ai:test",account_id="model-1",transport_factory=lambda:httpx.MockTransport(handler))
-        async with httpx.AsyncClient(transport=transport) as client:
-            response = await client.post("https://ai.invalid/responses",json={"input":"敏感正文"})
-            assert response.status_code == 429
-            with pytest.raises(ExternalRequestBlocked):
-                await client.post("https://ai.invalid/responses")
-    asyncio.run(run())
-    assert len(calls) == 1
-    assert "敏感正文" not in json.dumps(get_context().external_requests.store.query())
-
-
 def test_token_expiry_only_blocks_old_credential():
     manager = get_context().external_requests
     with pytest.raises(urllib.error.HTTPError):
@@ -488,61 +468,6 @@ def test_ozon_dictionary_next_cursor_reuses_downloaded_values(monkeypatch):
     second,more = api._attribute_value_page(last_value_id=50,**options)
     assert len(calls) == 1 and len(first) == 2000 and len(second) == 1950
     assert second[0]["id"] == "51" and more
-
-
-def test_sdk_queue_cancellation_is_audited_without_sending():
-    import asyncio
-    from erp_web.services.external_httpx_transport import ManagedAsyncTransport
-
-    manager = get_context().external_requests
-    manager.store.configure("ai:test", concurrency=1)
-    occupied = context(platform="ai:test", account_id="model-1", interface="/responses", timeout=20)
-    request_id = manager.start(occupied, "POST")
-    assert manager.check(request_id, occupied, time.time()+20) == 0
-
-    async def run():
-        transport = ManagedAsyncTransport(platform="ai:test", account_id="model-1", transport_factory=lambda: pytest.fail("排队取消不得联网"))
-        async with httpx.AsyncClient(transport=transport) as client:
-            task = asyncio.create_task(client.post("https://ai.invalid/responses"))
-            for _ in range(100):
-                if manager.store.query()["stats"]["attempts"] == 2:
-                    break
-                await asyncio.sleep(.001)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-    asyncio.run(run())
-    latest = manager.store.query(limit=1)["items"][0]
-    assert latest["decision"] == "cancelled"
-    assert latest["sent"] == 0 and latest["completed"] is not None
-
-
-def test_http_stream_eof_and_caller_close_have_distinct_results():
-    import asyncio
-    from erp_web.services.external_httpx_transport import ManagedAsyncTransport
-
-    class Stream(httpx.AsyncByteStream):
-        async def __aiter__(self):
-            yield b"data: first\n\n"
-            yield b"data: second\n\n"
-
-    def handler(req):
-        return httpx.Response(200, headers={"content-type":"text/event-stream"}, stream=Stream())
-
-    async def run():
-        transport = ManagedAsyncTransport(platform="ai:test", account_id="model-1", transport_factory=lambda: httpx.MockTransport(handler))
-        async with httpx.AsyncClient(transport=transport) as client:
-            async with client.stream("POST", "https://ai.invalid/responses") as response:
-                assert b"second" in await response.aread()
-            async with client.stream("POST", "https://ai.invalid/responses"):
-                pass
-
-    asyncio.run(run())
-    rows = get_context().external_requests.store.query()["items"]
-    assert [row["result"]["outcome"] for row in rows] == ["stream_closed", "success"]
-    assert all(row["completed"] is not None for row in rows)
-    assert get_context().external_requests.store.blocks() == []
 
 
 def test_category_definition_and_candidates_share_raw_response():

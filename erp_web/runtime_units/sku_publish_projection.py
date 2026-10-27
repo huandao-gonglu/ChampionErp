@@ -228,7 +228,7 @@ def _grouping_issue(
         message=message,
         severity="error",
         next_action="前往 SKU → 属性 / 详情，填写真实规格差异；若类目无法表达这些差异，请调整类目或刊登方式。",
-        affected_skus=affected_skus or [],
+        affected_sku_ids=[sku.sku_id for sku in affected_skus or []],
     )
 
 

@@ -928,16 +928,9 @@ def test_external_response_policy_is_pure_and_receives_interface_context():
                for keyword in calls[0].keywords)
 
 
-def test_external_request_diagnostics_remains_independent_of_runtime_and_sdk():
-    """诊断提取是纯函数，不能成为新的请求、Agent 执行或持久化边界。"""
-    path = ROOT / "erp_web/services/external_request_diagnostics.py"
-    targets = {target.split(".")[0] for _, target in imported_targets([path])}
-    assert targets <= {"__future__", "errno", "re", "socket", "ssl", "pathlib"}
-
-
 def test_external_api_sends_have_one_managed_boundary():
-    """所有 urllib 与 SDK 传输发送都在受控边界，防止新业务绕过共享阻断。"""
-    allowed = {"erp_web/services/external_request_manager.py", "erp_web/services/external_httpx_transport.py"}
+    """业务 HTTP 发送保持受控；AI Provider 使用原生客户端，不经过业务请求阻断。"""
+    allowed = {"erp_web/services/external_request_manager.py"}
     violations = []
     for path in python_files(ROOT / "erp_web"):
         relative = _relative_posix(path)
@@ -964,7 +957,10 @@ def test_external_api_sends_have_one_managed_boundary():
                         violations.append(f"{relative}:{node.lineno}:{target}")
     assert not violations, "外部发送必须经过统一管理："+"\n".join(violations)
     factory = (ROOT / "erp_web/services/ai_provider_catalog.py").read_text()
-    assert "ManagedAsyncTransport" in factory and "provider.client.max_retries = 0" in factory
+    assert "external_request" not in factory and "max_retries" not in factory
+    assert "http_client=" not in factory
+    assert not (ROOT / "erp_web/services/external_httpx_transport.py").exists()
+    assert not (ROOT / "erp_web/services/external_request_diagnostics.py").exists()
     bus = (ROOT / "erp_web/runtime_units/publishing_bus_core.py").read_text()
     assert "max_retries" not in bus and "retry_delay_seconds" not in bus
     assert "fetch_ozon_shop_name" not in (ROOT / "erp_web/marketplaces/category_services.py").read_text()

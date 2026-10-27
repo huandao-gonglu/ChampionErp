@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from erp_web import marketplaces as publisher
+from erp_web.product_model.precheck_model import PrecheckIssues
 from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import get_context
 from erp_web.stores.config_store import auth_next_action
@@ -25,7 +26,6 @@ from .publish_helpers import (
     _draft_for_platform,
     _draft_for_selected_target,
     build_mercadolibre_publish_payload,
-    compact_precheck_items,
     mercadolibre_picture_upload_error_message,
     precheck_item,
     validate_mercadolibre_publish_payload,
@@ -331,11 +331,11 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
     pool = _source_pool_items(normalized)
     selected_ids = {str(item.get("id") or "") for item in _mercadolibre_image_candidates(normalized)}
-    errors: list[dict[str, str]] = []
+    errors = PrecheckIssues()
     picture_refs: list[str] = []
     if not selected_ids:
-        errors.append(precheck_item("IMAGE_NOT_FOUND", "images", "Mercado Libre 没有可用图片", "error", "前往图片池选择主图或勾选 Mercado Libre 图片"))
-        return {"ok": False, "product": normalized, "picture_refs": [], "errors": errors}
+        errors.add(precheck_item("IMAGE_NOT_FOUND", "images", "Mercado Libre 没有可用图片", "error", "前往图片池选择主图或勾选 Mercado Libre 图片"))
+        return {"ok": False, "product": normalized, "picture_refs": [], "errors": errors.values()}
     if on_progress:
         on_progress({"stage": "uploading", "completed": 0, "total": len(selected_ids)})
     updated_pool: list[dict[str, Any]] = []
@@ -362,7 +362,7 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *
         if not local_path:
             item["upload_status"] = "failed"
             item["upload_error"] = "图片不是本地文件，无法在真实发布前上传 Mercado Libre。"
-            errors.append(precheck_item("IMAGE_UNAVAILABLE", "images", f"图片不可上传或不可访问：{item.get('id') or item.get('url') or item.get('path')}", "error", "前往图片池替换为本地可上传图片"))
+            errors.add({**precheck_item("IMAGE_UNAVAILABLE", "images", "图片不可上传或不可访问", "error", "前往图片池替换为本地可上传图片"), "affected_asset_ids": [str(item.get("id") or "")]})
             updated_pool.append(item)
             continue
         try:
@@ -381,7 +381,7 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *
         except Exception as exc:
             item["upload_status"] = "failed"
             item["upload_error"] = str(exc)
-            errors.append(precheck_item("IMAGE_UPLOAD_FAILED", "images", mercadolibre_picture_upload_error_message(exc), "error", "检查图片文件格式/尺寸后重试"))
+            errors.add({**precheck_item("IMAGE_UPLOAD_FAILED", "images", mercadolibre_picture_upload_error_message(exc), "error", "检查图片文件格式/尺寸后重试"), "affected_asset_ids": [str(item.get("id") or "")]})
         updated_pool.append(item)
     source["image_pool"] = updated_pool
     normalized["source"] = source
@@ -393,9 +393,8 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *
         {**normalized, "drafts": {}},
         preserve_platform_facts=False,
     )
-    errors = compact_precheck_items(errors)
     normalized["source"] = saved["source"]
-    return {"ok": not errors, "product": normalized, "picture_refs": picture_refs, "errors": errors}
+    return {"ok": not errors.values(), "product": normalized, "picture_refs": picture_refs, "errors": errors.values()}
 
 
 def mercadolibre_product_for_payload(product: dict[str, Any]) -> dict[str, Any]:

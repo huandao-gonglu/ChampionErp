@@ -12,6 +12,7 @@ from erp_web.schemas.product import (
     Product,
 )
 
+from .precheck_model import normalize_validation_errors, normalize_precheck
 from .attribute_matching import infer_source_attribute_matches
 from .common import PLATFORMS, SOURCE_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
 from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
@@ -299,6 +300,9 @@ def normalize_draft_target_site(
             else {}
         ),
     }
+    canonical["validation_errors"] = normalize_validation_errors(canonical["validation_errors"])
+    for field in ("last_precheck", "category_precheck"):
+        canonical[field] = normalize_precheck(canonical[field])
     return {
         key: item
         for key, item in canonical.items()
@@ -652,7 +656,7 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         current.get("search_terms")
         or current.get("searchTerms")
     )
-    current["validation_errors"] = deepcopy(
+    current["validation_errors"] = normalize_validation_errors(
         current.get("validation_errors")
         if isinstance(current.get("validation_errors"), list)
         else current.get("validationErrors")
@@ -742,6 +746,8 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
             if isinstance(current.get(alias), dict)
             else {}
         )
+    for field in ("last_precheck", "category_precheck"):
+        current[field] = normalize_precheck(current[field])
     # target_sites[] 是平台类目内容的唯一事实来源。根类目字段只是首个
     # （primary）目标的派生投影，不能保留编辑器当前选中兄弟市场的值；
     # 否则会形成 platform=yandex、category_id=Ozon 的混合草稿。根状态与

@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
+import { useAiPageContextStore } from '@/stores/aiPageContext'
 import type { DraftIndexItem, MarketplaceOption } from '@/types/workflow'
 
 const platformOptions: MarketplaceOption[] = [{
@@ -57,6 +58,25 @@ function draft(draftId: string, status: string, title: string): DraftIndexItem {
 
 describe('DraftBoxPanel', () => {
   beforeEach(() => setActivePinia(createPinia()))
+  it('勾选、取消与删除同步到聊天背景，发送快照不受后续改选影响', async () => {
+    localStorage.removeItem('ai-chat-read-background')
+    const rows = [draft('draft-a', 'claimed', '草稿 A'), draft('draft-b', 'claimed', '草稿 B')]
+    const wrapper = mount(DraftBoxPanel, {
+      props: { drafts: rows, platformOptions: [], storeConfig: {}, loading: false },
+    })
+    const context = useAiPageContextStore()
+    expect(context.snapshot()).toEqual({ page: 'drafts', selected_draft_ids: [] })
+    await wrapper.get('[aria-label="全选当前草稿"]').setValue(true)
+    const sent = context.snapshot()
+    expect(sent?.selected_draft_ids).toEqual(['draft-a', 'draft-b'])
+    await wrapper.findAll('[aria-label="勾选草稿"]')[0].setValue(false)
+    expect(context.snapshot()?.selected_draft_ids).toEqual(['draft-b'])
+    expect(sent?.selected_draft_ids).toEqual(['draft-a', 'draft-b'])
+    await wrapper.setProps({ drafts: [rows[0]] })
+    expect(context.snapshot()?.selected_draft_ids).toEqual([])
+    wrapper.unmount()
+    expect(context.snapshot()).toBeUndefined()
+  })
   it('展示草稿创建时间', () => {
     const row = draft('created-time', 'claimed', '带创建时间的草稿')
     row.createdAt = '2026-09-01T12:34:56+08:00'

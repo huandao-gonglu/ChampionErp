@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import hmac
 from typing import Annotated, Any, Protocol
 
+from erp_web.product_model.precheck_model import normalize_precheck
 from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import AppContext, get_context
 from erp_web.product_model import (
@@ -110,7 +111,8 @@ def _issue(
         message=message,
         severity=normalized_severity,
         next_action=_text(item.get("next_action")),
-        affected_skus=item.get("affected_skus") or [],
+        affected_sku_ids=item.get("affected_sku_ids") or item.get("affected_skus") or [],
+        affected_asset_ids=item.get("affected_asset_ids") or [],
         related_issues=item.get("related_issues") or [],
     )
 
@@ -300,6 +302,7 @@ def _evaluate_prepared_publish_context(
 ) -> _ValidationEvaluation:
     """对已确定的商品/类目上下文做纯 payload 编译与 digest 计算。"""
 
+    precheck = normalize_precheck(precheck)
     prepared_product = prepared_context.product
     errors = [
         _issue(item, severity="error", default_code="PUBLISH_VALIDATION_FAILED")
@@ -540,8 +543,7 @@ def prepare_product_publish(
     target = ProductPublishValidateRequest(
         draft_id=request.draft_id, platform=request.platform, site=request.site,
     )
-    prepare_and_evaluate_publish_validation(target, context=active_context)
-    evaluation = evaluate_publish_validation(target, context=active_context)
+    evaluation = prepare_and_evaluate_publish_validation(target, context=active_context)
     try:
         saved = save_draft_precheck_result(evaluation.context, evaluation.precheck, context=active_context)
         if saved.get("ok") is not True:

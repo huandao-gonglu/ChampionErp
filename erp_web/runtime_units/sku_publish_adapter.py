@@ -10,7 +10,7 @@ from erp_web.stores.product_store import normalize_product_fields
 from erp_web.marketplaces.publisher import PlatformPublisher, PublishAdapterError
 from erp_web.product_model.sku_model import record, selected_skus, sku_fingerprint, text
 from erp_web.product_model.sku_image_model import sku_image_asset
-from erp_web.schemas.publish_capabilities import PublishIssueSku
+from erp_web.product_model.precheck_model import PrecheckIssues
 from .collect_helpers import collect_time_iso
 from .publish_context import PreparedPublishContext
 from .publish_validation_session import PublishValidationSession
@@ -19,11 +19,6 @@ from .sku_publish_projection import SkuGroupingMember, grouping_contract, sku_co
 
 PENDING = {"pending_confirmation", "publish_pending_confirmation"}
 SUCCESS = {"published", "imported", "real_publish_success", "success"}
-
-
-def _sku_issues(issues: list[dict[str, Any]], fact: dict[str, Any], row: dict[str, Any]) -> list[dict[str, Any]]:
-    affected = PublishIssueSku(sku_id=row["sku_id"], sku=row["sku"], name=text(fact.get("name"))).model_dump()
-    return [{**issue, "affected_skus": [affected]} for issue in issues]
 
 
 def remote_status(result: dict[str, Any]) -> str:
@@ -91,7 +86,7 @@ class SkuGroupPublishingAdapter:
         context = replace(context, validation_session=PublishValidationSession(sku_inputs_checked=True))
         if self.platform == "yandex":
             context = context.with_product(normalize_product_fields(context.product))
-        errors, warnings, rows = [], [], []
+        errors, warnings = PrecheckIssues(), PrecheckIssues()
         members: list[SkuGroupingMember] = []
         grouping_issues = []
         selected_sku_ids: set[str] = set()
@@ -112,26 +107,26 @@ class SkuGroupPublishingAdapter:
                     projected = sku_context(context, fact, row, grouping)
                 except ValueError as exc:
                     own_errors.append({**self._issue(str(exc), "image_asset_id"), "next_action": "在 SKU 页从图片池重新选择图片"})
-                    errors.extend(_sku_issues(own_errors, fact, row))
+                    errors.extend(own_errors, sku_id=row["sku_id"])
                     continue
                 members.append(SkuGroupingMember.from_projection(projected))
                 check = (self.item_adapter.validate_draft(projected, config) if image_stage == "final"
                          else self.item_adapter.validate_draft(projected, config, image_stage=image_stage))
-                errors.extend(_sku_issues([*check.get("errors", []), *own_errors], fact, row))
-                warnings.extend(_sku_issues(check.get("warnings", []), fact, row))
-                rows.append({"sku_id": row["sku_id"], "sku": row["sku"], "precheck": check})
+                errors.extend(check.get("errors", []), sku_id=row["sku_id"])
+                errors.extend(own_errors, sku_id=row["sku_id"])
+                warnings.extend(check.get("warnings", []), sku_id=row["sku_id"], severity="warning")
             grouping_issues = validate_grouping(context, grouping, members)
             if len(selected) > 1 and grouping["mode"] == "combined" and self.platform == "mercadolibre":
                 # User Products 每个变体可独立定价；传统模型要求同价，不能悄悄拆成多个商品。
                 if record(config.get("mercadolibre")).get("listing_model") != "user_products":
-                    errors.append(self._issue("当前 Mercado 店铺未启用 User Products，组合内独立定价不可用；请选择独立刊登"))
+                    errors.add(self._issue("当前 Mercado 店铺未启用 User Products，组合内独立定价不可用；请选择独立刊登"))
         except ValueError as exc:
-            errors.append(self._issue(str(exc)))
+            errors.add(self._issue(str(exc)))
         errors, warnings = summarize_sku_precheck(
-            errors, warnings, grouping_issues,
+            errors.values(), warnings.values(), grouping_issues,
             definition=context.category_definition, selected_sku_ids=selected_sku_ids,
         )
-        return {"ok": not errors, "platform": self.platform, "errors": errors, "warnings": warnings, "sku_results": rows, "grouping": grouping}
+        return {"ok": not errors, "platform": self.platform, "errors": errors, "warnings": warnings, "grouping": grouping}
 
     @staticmethod
     def _issue(message: str, field: str = "sku_items") -> dict[str, Any]:

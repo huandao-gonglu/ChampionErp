@@ -71,11 +71,11 @@
 | 汇率 | 核价需要汇率或人工强制刷新时调用配置的汇率 API，默认 `https://open.er-api.com/v6/latest/USD` | 默认缓存 3600 秒；缓存过期后由下一次业务调用刷新，不是每小时主动刷新 |
 | Sorftime 选品、1688 搜索/详情、HTML 采集 | 用户/工具启动的领域任务调用配置供应商；Sorftime 当前单次请求 `max_attempts=1`，关键词查询一页 | 选品页面的任务轮询只读本地，不能按页面刷新次数计算 Sorftime 调用次数 |
 | 图片下载、翻译/生成、S3 上传及公开验证 | 按图片操作、面单交付或发布素材准备执行，可能逐素材外发 | S3 `total_max_attempts=1`；Head 不存在时上传，再核验对象与公开内容，不是周期查询 |
-| AI API | 已发起的 Agent run、工具回执续跑或明确推理任务调用模型 | SDK HTTP 自动重试关闭，HTTPX retries=0；原生 Agent 的工具/输出验证重试独立存在（主 Agent 配置 retries=2，类目 Agent retries=4，文案结构验证 retries=2 且最多 3 次模型请求），可能增加模型回合，不是页面轮询 |
+| AI API | 已发起的 Agent run、工具回执续跑或明确推理任务调用模型 | 推理不接入业务请求拦截，SDK 使用原生有限重试（当前默认最多额外 2 次）；原生 Agent 的工具/输出验证重试独立存在（主 Agent 配置 retries=2，类目 Agent retries=4，文案结构验证 retries=2 且最多 3 次模型请求），可能增加模型回合，不是页面轮询 |
 | 通用外部请求管理 | 收到业务请求后检查限额/冷却/租约，再决定发送 | 默认 max_attempts=1，Schema 允许显式只读预算最多 3 次。冷却到期不会自行造请求，只允许下一次业务请求探测；写入未知不重放 |
 | Browser/CLI 连接 | 仅在已启动的采集或模型任务中等待结果 | 浏览器适配器的 0.4–1 秒检查主要读取 CDP/DOM，有任务超时；网页自身网络行为不由本清单覆盖 |
 
-源码补充：[汇率](../erp_web/runtime_units/pricing_runtime.py)、[类目字段搜索](../front/src/components/domain/CategoryAttributesPanel.vue)、[Sorftime](../erp_web/services/sorftime_client.py)、[供应商采集](../erp_web/runtime_units/source_collect_1688_api.py)、[S3](../erp_web/services/s3_image_storage.py)、[外部请求管理](../erp_web/services/external_request_manager.py)、[HTTPX](../erp_web/services/external_httpx_transport.py)、[请求 Schema](../erp_web/schemas/external_requests.py)、[AI Provider](../erp_web/services/ai_provider_catalog.py)、[主 Agent](../erp_web/services/global_agent_chat_service.py)。
+源码补充：[汇率](../erp_web/runtime_units/pricing_runtime.py)、[类目字段搜索](../front/src/components/domain/CategoryAttributesPanel.vue)、[Sorftime](../erp_web/services/sorftime_client.py)、[供应商采集](../erp_web/runtime_units/source_collect_1688_api.py)、[S3](../erp_web/services/s3_image_storage.py)、[外部请求管理](../erp_web/services/external_request_manager.py)、[请求 Schema](../erp_web/schemas/external_requests.py)、[AI Provider](../erp_web/services/ai_provider_catalog.py)、[主 Agent](../erp_web/services/global_agent_chat_service.py)。
 
 ## 4. 仅访问本地后端或状态的轮询（按用户决定保留）
 

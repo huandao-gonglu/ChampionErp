@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
@@ -49,8 +49,23 @@ class PublishRelatedIssue(BaseModel):
 
 
 class PublishValidationIssue(PublishRelatedIssue):
-    affected_skus: list[PublishIssueSku] = Field(default_factory=list)
+    affected_sku_ids: list[str] = Field(default_factory=list, validation_alias=AliasChoices("affected_sku_ids", "affected_skus"))
+    affected_asset_ids: list[str] = Field(default_factory=list)
     related_issues: list[PublishRelatedIssue] = Field(default_factory=list)
+
+    @field_validator("affected_sku_ids", mode="before")
+    @classmethod
+    def read_legacy_sku_identities(cls, value: Any) -> list[str]:
+        """旧持久化规格详情可读；新回执只携带去重身份，不重复商品资料。"""
+        identities = []
+        for item in value or []:
+            if isinstance(item, PublishIssueSku):
+                identities.append(item.sku_id)
+            elif isinstance(item, dict):
+                identities.append(item.get("sku_id", ""))
+            else:
+                identities.append(item)
+        return list(dict.fromkeys(identities))
 
 
 class ProductPublishDestination(BaseModel):

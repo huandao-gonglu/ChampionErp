@@ -2416,7 +2416,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertEqual(errors[0]["code"], "IMAGE_UPLOAD_FAILED")
             self.assertIn("不兼容 Mercado Libre 图片引擎", errors[0]["message"])
-            self.assertIn("共 2 次", errors[0]["message"])
+            self.assertEqual(set(errors[0]["affected_asset_ids"]), {"img_1", "img_2"})
+            self.assertNotIn("共 2 次", errors[0]["message"])
             self.assertNotIn('"cause"', errors[0]["message"])
 
         self.with_temp_app(run)

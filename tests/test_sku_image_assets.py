@@ -98,7 +98,7 @@ def test_precheck_reports_every_missing_image_with_sku_and_keeps_stock_errors():
     assert {issue["field"] for issue in errors} == {"image_asset_id", "stock"}
     assert sum("库存" in issue["message"] for issue in errors) == 1
     for issue in errors:
-        assert {sku["sku_id"] for sku in issue["affected_skus"]} == {"fact-0", "fact-1"}
+        assert set(issue["affected_sku_ids"]) == {"fact-0", "fact-1"}
 
 
 def test_recollection_preserves_manually_chosen_asset_and_updates_source_snapshot(tmp_path):

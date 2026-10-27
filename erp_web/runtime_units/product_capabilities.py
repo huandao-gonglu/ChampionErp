@@ -665,7 +665,7 @@ def product_read(
 
 @ai_tool(
     name="draft_attributes_read",
-    description="属性任务优先使用此工具：默认一次返回商品/来源事实、全部平台目标的类目和完整已填公共属性，不返回图片与 SKU 列表，无需先调用 draft_read/product_read。查看 SKU 成本、属性或包装时使用 scope=sku，明确平台/站点，默认读取全部已选启用 SKU；大量数据可传 limit 分段读取并按 next_offset 继续。返回逐 SKU 的 cost_cny 和 cost_source；核价直接调用 draft_pricing_preview/apply，由系统取数，无需先读成本。逐 SKU 包装只取商品规格和当前草稿 SKU 覆盖。平台定义另用 category_attributes_query 按相同 scope 查询。Python 中将完整返回值保留为 draft_data，后续计算直接复用，不再读一遍；给模型只返回目标、SKU 总数及少量规格样本，不直接输出整份 draft_data。",
+    description="属性任务优先使用此工具：默认返回商品/来源事实、全部平台目标的类目和已填公共属性，不含图片与 SKU 列表，无需先调用 draft_read/product_read。SKU 任务用 scope=sku 并明确平台/站点，一次返回范围内全部事实和属性；默认全部已选启用 SKU，局部核实用 sku_ids，分页用 limit 和 next_offset。先明确本轮全部 category_attributes_query 定义，保留一次读取的 draft_data 并据此批量补齐候选，再同时计算颜色、规格等本轮所需属性并合并提交，不按属性分轮重读整批 SKU。跨脚本复用本轮 REPL 变量；保存回执已有实际值，无需再次读取确认。返回 cost_cny、cost_source 和商品规格包装；核价直接用 draft_pricing_preview/apply，不为核价预读成本。只向模型汇总数量、缺口及少量必要样本，不输出整份数据。",
     permission="product.read", side_effect="none", recovery_policy="retry_safe", version="2",
 )
 def draft_attributes_read(
@@ -689,6 +689,12 @@ def draft_attributes_read(
             attributes=deepcopy(projection.get("attributes") or {}),
         ))
     selected = editable_selected_skus(product, draft)
+    if request.sku_ids is not None:
+        requested_ids = set(request.sku_ids)
+        selected_ids = {row["sku_id"] for _, row in selected}
+        if not requested_ids <= selected_ids:
+            raise BusinessCapabilityError("SKU_OUTSIDE_DRAFT", "指定 SKU 不全部属于当前草稿的已选启用范围，请核对读取范围。")
+        selected = [(source, row) for source, row in selected if row["sku_id"] in requested_ids]
     items = []
     if request.scope == "sku":
         key = f"{target_facts[0].platform}:{target_facts[0].site}".lower()

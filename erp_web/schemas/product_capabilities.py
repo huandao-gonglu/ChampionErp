@@ -121,9 +121,21 @@ class DraftAttributesReadRequest(BaseModel):
     draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
     platform: TrimmedText = ""
     site: TrimmedText = ""
-    scope: Literal["common", "sku"] = Field(default="common", description="common 读取商品事实和全部目标的公共属性，不返回 SKU 列表；sku 按指定平台/站点读取全部已选启用 SKU，也可用 limit 分段读取。")
+    scope: Literal["common", "sku"] = Field(default="common", description="common 读取商品事实和全部目标的公共属性，不返回 SKU 列表；sku 按指定平台/站点读取已选启用 SKU，可用 sku_ids 限定补读范围或用 limit 分页。")
+    sku_ids: list[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]] | None = Field(
+        default=None, min_length=1, max_length=1000,
+        description="仅 scope=sku 可用；省略读取全部已选启用 SKU，提供时只读取指定 SKU 的全部事实和属性。用于局部补读，不按属性重复读取；任一 ID 不在可编辑范围则报错，不静默遗漏。")
     offset: int = Field(default=0, ge=0)
     limit: int | None = Field(default=None, ge=1, description="省略或 null 时读取剩余全部 SKU；需要分段处理大量数据时传入每次读取条数，并按 next_offset 继续。")
+
+    @model_validator(mode="after")
+    def validate_sku_selection(self) -> "DraftAttributesReadRequest":
+        if self.sku_ids is not None:
+            if self.scope != "sku":
+                raise ValueError("sku_ids 仅适用于 scope=sku。")
+            if len(set(self.sku_ids)) != len(self.sku_ids):
+                raise ValueError("sku_ids 不能重复。")
+        return self
 
 
 class DraftAttributeTarget(BaseModel):
@@ -160,8 +172,8 @@ class DraftAttributesReadResult(BaseModel):
     product: ProductFacts
     targets: list[DraftAttributeTarget]
     skus: list[DraftAttributeSku] = Field(default_factory=list)
-    sku_count: int
-    next_offset: int | None = None
+    sku_count: int = Field(description="本次读取范围内的 SKU 总数，不受分页影响；提供 sku_ids 时为该指定范围数量，否则为全部已选启用 SKU 数量。")
+    next_offset: int | None = Field(default=None, description="在同一 sku_ids 范围内继续分页的位置；null 表示已读完。")
 
 
 class ProductAttributesUpdateResult(BaseModel):

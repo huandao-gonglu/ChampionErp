@@ -639,8 +639,9 @@ export interface PrecheckRelatedIssue {
 }
 
 export interface PrecheckIssue extends PrecheckRelatedIssue {
-  /** 同类问题影响的规格；问题原因不再拼接 SKU 名称。 */
-  affectedSkus?: Array<{ skuId: string; sku: string; name: string }>
+  /** 合并问题的影响范围，仅保留身份，不复制逐 SKU 错误或商品资料。 */
+  affectedSkuIds?: string[]
+  affectedAssetIds?: string[]
   /** 已执行的关联校验，随主问题展示，不重复计数。 */
   relatedIssues?: PrecheckRelatedIssue[]
 }

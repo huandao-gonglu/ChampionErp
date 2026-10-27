@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
@@ -18,6 +19,7 @@ from . import (
     config_service,
 )
 from .ai_pydantic_image_model import OpenAIImagesModel
+from .ai_tagged_thinking import PinccResponsesModel
 
 
 class AiModelFactoryError(RuntimeError):
@@ -215,7 +217,13 @@ def _build_pydantic_model_binding(
                 )
             )
             profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
-            pydantic_model: Model = OpenAIResponsesModel(
+            # 已确认的中转协议兼容，不改变显式 Provider 或其他模型的文本语义。
+            responses_model = (
+                PinccResponsesModel
+                if urlsplit(base_url).hostname == "v2.pincc.ai" and model_name.startswith("grok-")
+                else OpenAIResponsesModel
+            )
+            pydantic_model: Model = responses_model(
                 model_name,
                 provider=provider,
                 profile=profile,

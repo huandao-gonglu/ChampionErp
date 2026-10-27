@@ -92,6 +92,27 @@ def test_prepare_persists_then_readonly_validation_passes_and_refreshes_url(boun
     assert context.db.load_draft_model(request.draft_id)["images"] == before_draft["images"]
 
 
+def test_incomplete_materials_stop_before_final_image_validation(boundary, monkeypatch):
+    context, request, _ = boundary
+    stages = []
+
+    def validate(self, prepared, config, *, image_stage="final"):
+        stages.append(image_stage)
+        assert image_stage == "source", "资料未完成时不应追加最终图片错误"
+        return {"ok": False, "errors": [{"code": "CATEGORY_MISSING", "field": "category_id",
+                "message": "缺少类目", "severity": "error"}], "warnings": []}
+
+    monkeypatch.setattr(_ImageAdapter, "validate_draft", validate)
+    result = publish_capabilities.prepare_product_publish(request)
+
+    assert stages == ["source"]
+    assert not context.test_remote.uploads
+    assert result.validation.passed is False
+    assert [issue.code for issue in result.validation.errors] == ["CATEGORY_MISSING"]
+    stored = context.db.load_draft_model(request.draft_id)["last_precheck"]
+    assert [issue["code"] for issue in stored["errors"]] == ["CATEGORY_MISSING"]
+
+
 def test_prepare_diagnostics_use_persisted_actual_image_urls(boundary, monkeypatch):
     context, request, product_id = boundary
     calls = []

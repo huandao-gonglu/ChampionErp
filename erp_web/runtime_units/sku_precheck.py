@@ -3,26 +3,9 @@
 from copy import deepcopy
 from typing import Any
 
+from erp_web.product_model.precheck_model import merge_precheck_issues
 from erp_web.schemas.category_definition import CategoryDefinition
 from erp_web.schemas.publish_capabilities import PublishValidationIssue
-
-
-def _group_issues(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
-    for item in items:
-        affected = item.get("affected_skus") or []
-        key = tuple(item.get(field, "") for field in ("code", "field", "message", "severity", "next_action")) + (bool(affected),)
-        if key not in grouped:
-            grouped[key] = deepcopy(item)
-            continue
-        if affected:
-            existing = grouped[key]["affected_skus"]
-            seen = {sku["sku_id"] for sku in existing}
-            for sku in affected:
-                if sku["sku_id"] not in seen:
-                    existing.append(deepcopy(sku))
-                    seen.add(sku["sku_id"])
-    return list(grouped.values())
 
 
 def _describe_attribute_issue(issue: dict[str, Any], definition: CategoryDefinition | None) -> dict[str, Any]:
@@ -49,8 +32,8 @@ def summarize_sku_precheck(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """仅将覆盖同一批 SKU 的必填差异属性缺失与整组空值校验关联。"""
     # 先按原始原因和建议汇总，避免改写填写入口后合并本应独立的处理步骤。
-    grouped_errors = [_describe_attribute_issue(item, definition) for item in _group_issues(errors)]
-    grouped_warnings = [_describe_attribute_issue(item, definition) for item in _group_issues(warnings)]
+    grouped_errors = [_describe_attribute_issue(item, definition) for item in merge_precheck_issues(errors)]
+    grouped_warnings = [_describe_attribute_issue(item, definition) for item in merge_precheck_issues(warnings, severity="warning")]
     variant_fields = {
         f"attributes.{attribute.id}"
         for attribute in (*definition.required, *definition.optional)
@@ -62,12 +45,12 @@ def summarize_sku_precheck(
             primary = next((item for item in grouped_errors if (
                 item.get("code") == "REQUIRED_ATTRIBUTE_MISSING"
                 and item.get("field") in variant_fields
-                and {sku["sku_id"] for sku in item.get("affected_skus") or []} == selected_sku_ids
+                and set(item.get("affected_sku_ids") or []) == selected_sku_ids
             )), None)
         if primary is None:
             grouped_errors.append(issue.model_dump())
         else:
-            primary.setdefault("related_issues", []).append(issue.model_dump(exclude={"affected_skus", "related_issues"}))
+            primary.setdefault("related_issues", []).append(issue.model_dump(exclude={"affected_sku_ids", "affected_asset_ids", "related_issues"}))
     return grouped_errors, grouped_warnings
 
 

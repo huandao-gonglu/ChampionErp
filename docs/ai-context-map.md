@@ -20,13 +20,20 @@
 
 `ai_tool_bridge.py` 将已有输出 Schema 通过原生 `Tool.prepare` / `ToolDefinition.return_schema`
 交给 CodeMode 生成返回类型；`ai_tool_contract_description.py` 只补充 Python 签名不显示的参数约束说明。
-`draft_attributes_read(scope=sku)` 默认读取全部已选启用 SKU，可用 `limit` 和 `next_offset` 主动分段。
+`draft_attributes_read(scope=sku)` 默认读取全部已选启用 SKU；`sku_ids` 用于局部核实，
+任一 ID 超出已选启用范围即报错。分页在指定范围中过滤后进行，`sku_count` 为该范围总数，
+可用 `limit` 和 `next_offset` 主动分段。
 返回 `updated_at` 与具名 `DraftAttributeSku` 字段，脚本无需为了猜测结构反复读取。
 `schemas/draft_changes.py` 定义成组局部修改契约；`runtime_units/draft_changes_capability.py`
-提供 `draft_changes_apply`：同一草稿的公共/SKU 属性、包装和库存可混合，平台校验在商品锁外，
+提供 `draft_changes_apply`：同一草稿和平台/站点的公共/SKU 属性及库存可混合，平台校验在商品锁外，
 锁内重读版本、范围和状态，全部通过后只调用一次 `save_draft_content`。
 `category_attribute_updates.AttributeUpdateValidation` 在一次提交内复用类目定义及已核验候选；
 `product_attribute_patch.py` 由单项和成组工具共用纯属性合并规则，不包含脚本执行或模型循环。
+SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整批；原生 REPL 可保留读取结果，
+跨脚本使用保存回执中的实际值与新版本。相关修改完成后统一核价、预检，窄任务不扩展。
+回归见 `tests/test_draft_changes_capability.py`（多属性单次读写及跨脚本复用）和
+`tests/test_main_chat_attributes.py`（局部读取、分页与范围校验）。这些受控模型测试验证
+执行契约，不保证任意真实模型都遵循最少调用路径。
 
 
 内部业务通过 `ProductStore.load_draft_content` / `save_draft_content` 读取和保存规范化内容；
@@ -52,14 +59,10 @@
   `not_sent` 本地拒绝，释放租约且不触发写入结果未知阻断；平台错误由 `schemas/platform_errors.py` 持有。
 - `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传与采集请求均接入。
-  `services/external_httpx_transport.py` 经原生 Provider 的 http_client 注入 SDK，同样检查共享状态，原生 SDK 自动重试关闭。
-  `services/external_request_diagnostics.py` 只提取有界异常链、系统错误码与栈位置；HTTPX 原生 trace 提供失败阶段。
-  诊断同时进入后端日志、外部请求审计及 Agent/Direct Model 错误详情，以请求 ID 关联；不记录异常原文、局部变量、凭据或业务正文。
-  流式审计只结算一次：HTTP EOF 记成功，SDK 主动关闭记 `stream_closed`，实际读取异常才记网络中断。
-  非流式响应使用 HTTPX `aread()` 缓存后直接返回原响应，不将已解压正文配原压缩头重建；
-  响应审计与资源清理不进入网络故障分支，避免明确 HTTP 拒绝被覆盖成结果未知。
-  AI HTTP 402 按 `*_PAYMENT_REQUIRED` 记录余额或计费问题，仍属于可人工确认恢复的原请求拒绝，不自动重放。
-  `GeneratorExit` 不累计网络失败；传输层不解析模型终止事件，也不推断 Agent 是否完成。
+  AI 推理经 `ai_provider_catalog.py` 使用原生 Provider/SDK 客户端，不接入业务请求排队、限流、熔断或写入未知阻断。
+  SDK 使用原生有限重试，模型超时、Agent 总任务期限与取消仍有效；AI 调用的业务工具仍经过业务请求管理器。
+  专项传输诊断已退役，保留常规运行错误与原生消息历史；既有请求审计和诊断历史仍可读取。
+  AI HTTP 402 按 `*_PAYMENT_REQUIRED` 记录余额或计费问题，不自动重试。
   Pydantic AI 仍独占模型/Agent 生命周期，不新增模型请求旁路。
 - `services/platform_request_policy.py` 按平台响应信封与具体接口纯解析 HTTP 和业务拒绝，不通用推断任意 JSON 的 `success` / `status`。
   1688 物流查询 HTTP 200 的 `500_2` 为正常空物流；请求级业务拒绝只保护原请求，不累计接口故障熔断。
@@ -317,6 +320,14 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
   timeout、模型类型与密钥脱敏规则。显式 Thinking 设置若会被原生模型 profile 忽略，
   Factory 在请求前报配置错误，防止界面选择关闭后仍发送默认请求。
+- `erp_web/services/ai_tagged_thinking.py`：仅兼容已确认的 `v2.pincc.ai` Grok Responses
+  正文推理标签；Pydantic AI 2.44.0 的 Responses 文本路径没有标签解析扩展配置，
+  因此在 Model/StreamedResponse 子类中增量拆分开头的 `<think>`，输出原生 `ThinkingPart`，
+  并复用原生 PartsManager、用量、工具和事件编码，不接管 Agent 循环。
+  标签未闭合且无答案或工具的完整响应直接报格式错误，避免原生空答案重试；有工具则照常执行。
+  普通正文、其他端点和模型不受影响，不改写已保存历史。依赖内部 `_parts_manager`，
+  升级 Pydantic AI 时需运行 `tests/test_ai_tagged_thinking.py`；接口改为独立 reasoning
+  事件或上游支持相同增量解析能力后移除此适配。
 - `erp_web/services/ai_agent_factory.py`：唯一 Pydantic Agent 装配与运行入口。`ai_model_errors.py` 统一保留嵌套 Direct Model 错误的 HTTP 状态、可重试性和安全原因，供 Agent 与业务工具边界使用。
   原生 `UsageLimits` 限制模型请求和工具调用；`PrepareTools` 在预算耗尽后隐藏业务工具，
   不预留可执行的额外额度。`Hooks.before_node_run` 在 `UserPromptNode` 和
@@ -501,6 +512,7 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 - `config/agents.md`、`erp_web/services/agent_memory.py`：ERP 主 Agent 的长期业务记忆与唯一文件读取边界。`GlobalAgentChatService.instructions()` 在每次新运行或 Deferred 恢复时加载当前应用目录下的文件，沿现有 Factory 的原生 `instructions` 注入系统上下文；不增加 Agent loop 或消息协议。它不受页面背景眼睛开关影响，不加载仓库开发用 `AGENTS.md`，不回退到其他实例的记忆。文件为 UTF-8、上限 32 KiB；缺失或空文件表示没有附加记忆，读取失败、非法编码和超限明确报错，不静默截断规则。文件编辑在下次 run 生效；当前仅提供文件读取，未提供 Agent 自主写入记忆工具。属性填写现由主对话承担，确定性校验仍归领域工具。
 - `erp_web/schemas/ai_page_context.py`：主对话页面背景的有界契约与中文指令渲染，只接受页面枚举和资源 ID。`vercel_ai_ui_service.py` 校验请求的 `page_context` 后写入原生消息 metadata，缺省表示本条消息不携带背景；客户端消息 metadata 仍被丢弃。`AgentRunStorage` 随用户输入更新背景，Factory 使用 Pydantic AI 原生动态 `instructions` 注入模型系统上下文，不创建独立系统消息历史或新 Agent loop；Deferred 恢复复用已保存快照，后续关闭开关会清除当前背景。
 - `front/src/stores/aiPageContext.ts`、`useAiPageContext.ts`：可见页面及编辑区域提供定位信息，输入框眼睛开关默认开启并在本机记住选择；普通发送和运行中追加消息均在发送瞬间复制背景。关闭编辑器、切换页面或 KeepAlive 停用时撤销该区域背景，页面背景不作为写权限，也不携带表单未保存值。
+  草稿箱通过 `selected_draft_ids` 传递发送时的勾选 ID（最多 1000 个），空数组明确表示未勾选；不读取商品正文，也不改写显式任务范围 `target_draft_ids`。编辑中的 `draft_id` 优先于列表勾选背景，关闭后恢复列表快照。`drafts_query.selected_items` 是查询位置选择，不能用作界面勾选状态。
 - `erp_web/stores/agent_call_store.py`：原生 Deferred 请求/结果序列化、收件箱和领域执行回执；不存步骤计划、Agent 状态或事件副本。
 - `erp_web/runtime_units/publish_capabilities.py::product_publish_request`：原生审批通过后同步提交 PublishingBus，返回 `ProductPublishRequestResult` 即结束 AI 的发布操作；不使用 `CallDeferred`、`JobReferenceResult` 或发布 Job Reader 等待平台终态。平台发布及结果确认继续由发布领域负责，用户可在发布任务界面查看。
 - `erp_web/services/agent_job_service.py`：固定大小线程池领取和对账需要结果的领域 Job；scanner 不执行模型。选品研究、在线商品等后台工具通过 `DeferredToolResults` 返回结果后恢复原生 Agent。
@@ -1058,6 +1070,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 商品发布
 
+- 主 Agent 将“做好发布准备／准备发布／完成草稿”理解为资料完成目标：按目标站点补齐文案、销售图片、类目、公共及 SKU 属性、选品与库存，核对事实并计算应用有效售价，再准备发布素材与最终校验。`draft_prepare_for_market` 不包含属性填写，必须继续处理；单项任务保持原范围，准备不构成发布授权。说明同时由 `GlobalAgentChatService.NATIVE_INSTRUCTIONS` 和 `config/prompts/global_chat.json` 提供。
+- `prepare_product_publish` 使用 `prepare_and_evaluate_publish_validation` 的阶段结果：基础资料失败就返回并保存该失败，不再追加最终图片校验；准备成功仍使用该流程的持久化后回读与最终校验。
 - 页面流程为基础资料预检 → 准备素材与预览 → 最终发布校验 → 确认发布。`precheck_publish_payload` 对 Yandex/Ozon 使用 `image_stage="source"`，检查图片来源与选择，不要求已上传；预览准备后、AI `product_publish_validate` 和入队准入仍执行最终校验并验证 digest。基础预检通过不能直接入队。
 - 核价指纹由 `pricing_service.pricing_calculation_fingerprint` 生成，v2 对 JSON 数字统一整数表示，避免页面往返将 `18.0` 写成 `18` 导致失效。`pricing_calculation_fingerprint_matches` 保留旧摘要读取，并仅为历史 Yandex 费用请求恢复明确的 float 字段类型；金额、尺寸或其他事实变化仍须重新核价。
 - 条码资料按目标市场和类目定义显示，共享资料不再提供 UPC 豁免开关。Mercado 的 `EMPTY_GTIN_REASON` 是目标 `attributes` 中的可编辑类目字段，`DraftBarcodeFields.vue` 在类目与发布预检区域展示平台候选原因；预填仅使用平台返回的默认候选，已有值和明确清空均不覆盖。`mercadolibre_attribute_contract.py` 在逐 SKU 编译时只为缺条码的 SKU 提交原因，有实际条码时提交 GTIN。历史 `allow_gtin_exemption` 仅在 Mercado 且尚无显式原因字段时保留读取支持，变更不会撤销其他市场预检；新编辑使用目标属性。
@@ -1065,8 +1079,10 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 - `erp_web/product_model/sku_model.py`：商品实际 SKU、来源快照、草稿选品与每行卖家编码的唯一契约。商品保存全部实际规格；草稿通过 `sku_id` 引用，卖家编码绑定 `draft_id + sku_id`。已发送的编码和远端关联不能由普通保存覆盖。
 - `erp_web/runtime_units/publish_context.py`：一次发布评估共享类目定义及类目币种查询结果。币种结果仅在当前上下文及其 SKU 投影间复用（包括空结果），按类目与授权隔离，不跨请求缓存或持久化。
-- `erp_web/runtime_units/sku_publish_projection.py`：逐 SKU 合并草稿覆盖值、目标属性和独立核价结果，并校验平台组合条件。先缩小输入再复制：临时单品视图只带当前 SKU、当前平台草稿和图片池，不带整组选品、来源规格或历史预检结果，也不写回主档。组内校验只保留 `SkuGroupingMember` 的身份与属性，不保留所有商品投影；重复组合逐组返回有界说明，完整规格列表保存在 `PublishValidationIssue.affected_skus`。
-- `erp_web/runtime_units/sku_precheck.py`：平台无关的纯预检问题汇总。以错误码、类目差异字段和受影响 SKU 集合关联必填缺失与整组空值检查；其它组合约束独立阻断。以 `erp_web/schemas/publish_capabilities.py` 中的 `PublishIssueSku`、`PublishRelatedIssue` 保留规格身份与关联校验，并按类目定义定位填写入口。
+- `erp_web/runtime_units/sku_publish_projection.py`：逐 SKU 合并草稿覆盖值、目标属性和独立核价结果，并校验平台组合条件。先缩小输入再复制：临时单品视图只带当前 SKU、当前平台草稿和图片池，不带整组选品、来源规格或历史预检结果，也不写回主档。组内校验只保留 `SkuGroupingMember` 的身份与属性，不保留所有商品投影；重复组合逐组返回有界说明，受影响身份保存在 `PublishValidationIssue.affected_sku_ids`，不复制规格名称与逐 SKU 错误。
+- `erp_web/product_model/precheck_model.py` 是预检错误合并的纯领域 owner。按原因、字段、级别及修复建议合并，图片 ID 归入 `affected_asset_ids`，同类 SKU 问题只附去重 `affected_sku_ids`；不同属性或不同原因不能合并。SKU 组校验逐项汇入累加器，不再生成含完整预检的 `sku_results`。后者仅在发布执行回执中继续存在，不属于预检。
+  草稿根及各站点的预检在 `normalize_platform_draft` / `normalize_draft_target_site` 读取和保存边界归一化；历史逐 SKU 副本先合并独有错误再移除，下次写入仅保存新格式，不触及原生对话审计或远端发布回执。界面显示合并问题和影响数量，AI 与 HTTP 使用同一合并结构，不能只在模型输入阶段隐藏冗余。
+- `erp_web/runtime_units/sku_precheck.py`：平台无关的纯预检问题汇总。以错误码、类目差异字段和受影响 SKU 集合关联必填缺失与整组空值检查；其它组合约束独立阻断。以 `PublishValidationIssue.affected_sku_ids` 和 `PublishRelatedIssue` 保留规格身份与关联校验，并按类目定义定位填写入口。
 - `runtime_units/publish_validation_session.py` 只承载单次校验的共享读取：店铺配置、相同仓库方案的验证结果和图片检查缓存。`SkuGroupPublishingAdapter.validate_draft` 每次创建新作用域，经 `PreparedPublishContext.with_product` 传给叶子；基础与最终校验不共用缓存，不持久化、不跨请求保留。
   Yandex 在组入口规范化一次，叶子检查已准备的 SKU 投影；直接调用 `validate_yandex_draft` 仍在入口规范化。`yandex_attribute_checks` 合并属性检查，必填判断复用 `product_model/category_model.py::unresolved_required_attributes_in_draft`。
   组入口检查成本、尺寸及库存，叶子继续检查核价指纹与店铺币种身份，避免重复报告同一变化。
