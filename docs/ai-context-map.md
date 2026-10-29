@@ -912,14 +912,27 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - 内部批量引擎 `pricing_batch.calculate_sku_prices` 使用 `pricing_runtime.PricingSession`
   和 `services/pricing_shipping.py` → `international_shipping/ShippingModule.quote()`。
   `items: [{sku_id, input}]` 仅是内部引擎契约；HTTP 和 Agent 不再自行拼装。
-  一批共享店铺、汇率、Mercado token、Ozon 仓库/配送渠道、Yandex 可用物流方案；每个 SKU 独立计算成本与运费。
+  一批共享店铺、汇率、Mercado token、Ozon OGL 运价快照、Yandex 可用物流方案；每个 SKU 独立计算成本与运费。
   批次返回逐 SKU 结果和 `metrics`；`erp.pricing` 记录每 25 个 SKU 的进度与耗时。
   模块负责 Ozon/Yandex 费率版本和三平台物流计算，返回全部候选；ERP 使用既有汇率
-  换成物流字段 CNY/USD 后选最低价。模块通过回调使用当前售价算法校验货值，
+  换成物流字段 CNY/USD。Yandex 按最低运费选择；OGL 按完整费用反推后的最低达标售价选择。模块通过回调使用当前售价算法校验货值，
   不反向导入 ERP。Mercado 的内置运费表已删除，多销售国家分别请求报价并计算售价。
   凭据由项目装配，Mercado token 仍通过 `get_mercadolibre_access_token()` 取得。
   证据进入既有核价依据和指纹；逐 SKU 核价固定模板版本。无新增 tariff HTTP 端点，
   模板导入/预览/启用由模块 CLI 维护，详见 `erp_web/international_shipping/README.md`。
+- Ozon 统一使用 `international_shipping/ogl.py` 的单 SKU、数量 1、单独成包 OGL 预估。
+  随应用分发 `ogl_20260824.json`，由官方 2026-08-24 Excel 导入并校验内容哈希；后续仍用原 CLI
+  导入完整 OGL 表并显式指定生效日期。旧 `current.json` 指向第三方表时，新核价使用内置 OGL
+  版本，历史文件不删除；显式指定旧版报价则报错要求重新核价。没有双轨计费或失败回退。
+  `tariff_store` 负责版本和读取，`ogl.py` 只负责纯运费、准入及服务费分段，不调用网络或 Store。
+  自送与揽收共用国际运价，不再查询或按 XY/Ural 仓库名称匹配评分组。国内费用由原有固定成本承担。
+  物流货值档与电子服务费保底/比例/封顶区间分别求解；`pricing_service` 在每段复用原有利润求解，
+  `PricingCommissions` 从真实 Ozon 佣金表提供全部价格档，在最终发布币种的分价上取得回执并检查利润。
+  电子服务费单独展示，纳入总成本、加价基数和指纹，不混入销售佣金、支付费或国际运输费。
+  旧模板与 SKU 手填运费不参与 OGL；新模板保存自动模式。旧报价保留展示，但前端应用及发布校验
+  要求 OGL 与服务费依据，须重新核价。公共 `ozon_discovery_ms` 响应字段保留为 0 供既有读取方使用。
+  官方页面未能读取，运输费以官方 Excel 验证；电子服务费及结算汇率细则按任务参考规则暂行，
+  不声称已核实最新公告或实际结算。货值按 CNY 栏及本轮汇率预估，见 [OGL 核价说明](ozon-ogl-pricing.md)。
 - Yandex 自动运费仅使用远端发布仓指定物流商与运输模式对应的运费标准。`AppContext.yandex_logistics`
   装配 `services/yandex_logistics_service.py`；`schemas/yandex_warehouses.py` 定义独立契约，
   `ConfigStore` 在 `app_config.yandex_warehouses` 中按 Business/Campaign 保存仓库 ID、物流商、

@@ -14,7 +14,8 @@ from typing import Any
 
 from erp_web.schemas.shipping import ShippingResolution, ShippingResolver
 from erp_web.schemas.commissions import CommissionQuote, CommissionResolver
-from erp_web.services.pricing_solver import PricingGoal, fraction
+from erp_web.services.pricing_solver import PricingGoal, fraction, ceil_cent, money as fraction_money
+from erp_web.international_shipping.ogl import electronic_fee
 from erp_web.schemas.draft_pricing import ReturnLossSettings
 from erp_web.services.pricing_return_loss import return_loss
 from erp_web.marketplace_registry import marketplace_site
@@ -131,7 +132,7 @@ def normalize_pricing_input(data: dict[str, Any]) -> dict[str, Any]:
         "payment_fee_percent": number_value(first_value(source, "payment_fee_percent", "payment_fee_rate", default=0), 0),
         "usd_cny_rate": number_value(first_value(source, "usd_cny_rate", "usd_cny", "currency_rate", "rate")),
         "mxn_usd_rate": number_value(first_value(source, "mxn_usd_rate", "mxn_rate")),
-        "rub_cny_rate": number_value(first_value(source, "rub_cny_rate", "rub_rate", default=12), 12),
+        "rub_cny_rate": number_value(first_value(source, "rub_cny_rate", "rub_rate", default=0 if source.get("platform") == "ozon" else 12), 0 if source.get("platform") == "ozon" else 12),
         "russia_freight_rate": number_value(first_value(source, "russia_freight_rate", default=0)),
         "sale_price_mxn": number_value(first_value(source, "sale_price_mxn", "mx_price", "mercadolibre_price")),
         "sale_price_usd": number_value(first_value(source, "sale_price_usd", "price_usd")),
@@ -388,6 +389,13 @@ def _result_goal(result, common, target, shipping_quote):
     elif result["pricing_mode"] == "markup":
         cost *= 1 + fraction(basis["markup_percent"]) / 100
     floor = fraction(shipping_quote["minimum_price_cny"]) * rate if shipping_quote else Fraction(0)
+    if shipping_quote and shipping_quote.get('minimum_price_exclusive'):
+        floor = Fraction(floor * 100 // 1 + 1, 100)
+    if shipping_quote and shipping_quote.get('electronic_service'):
+        service = shipping_quote['electronic_service']
+        multiplier = 1 + fraction(basis['markup_percent']) / 100 if result['pricing_mode'] == 'markup' else Fraction(1)
+        retained -= fraction(service['rate']) * multiplier
+        cost += fraction(service['fixed_cny']) * rate * multiplier
     return PricingGoal(retained, cost, floor)
 
 
@@ -482,6 +490,8 @@ def _calculate_target_amounts(common: dict[str, Any], target: dict[str, Any], in
             errors.append({"field": field, "message": f"{label}不能小于 0"})
 
     shipping_mode = str(_target_value(target, source, "shipping_quote_mode", "shippingQuoteMode", default="") or "").strip().lower()
+    if platform == "ozon":
+        shipping_mode = "auto"
     if shipping_mode not in {"auto", "manual"}:
         shipping_mode = "auto" if platform == "mercadolibre" else "manual"
     if target.get("shipping_selection") and (platform != "yandex" or shipping_mode != "auto"):
@@ -609,6 +619,15 @@ def _calculate_target_amounts(common: dict[str, Any], target: dict[str, Any], in
         payment_fee_cny, other_fee_cny = float(payment), float(other)
         total_cost_cny = float(cost)
         profit_cny = float(revenue - fee - payment - other - cost)
+    electronic_service_fee_cny = Decimal(0)
+    if not errors and shipping_quote and shipping_quote.get('electronic_service'):
+        service = shipping_quote['electronic_service']
+        exact_rate = _pricing_currency_rate(currency, source, values)
+        exact_revenue = fraction(applied_price) / exact_rate
+        electronic_service_fee_cny = electronic_fee(
+            Decimal(exact_revenue.numerator) / Decimal(exact_revenue.denominator), service['rub_per_cny'])
+        total_cost_cny += float(electronic_service_fee_cny)
+        profit_cny -= float(electronic_service_fee_cny)
     net_revenue_cny = actual_revenue_cny - commission_cny - payment_fee_cny - other_fee_cny
     seller_net_proceeds_cny = (
         net_revenue_cny - shipping_cny if not errors else 0.0
@@ -672,6 +691,9 @@ def _calculate_target_amounts(common: dict[str, Any], target: dict[str, Any], in
             )
         )
         calculation_basis["destination_pricing_modes"] = destination_pricing_modes
+    if shipping_quote and shipping_quote.get('electronic_service'):
+        calculation_basis['electronic_service'] = shipping_quote['electronic_service']
+        calculation_basis['electronic_service_fee_cny'] = str(electronic_service_fee_cny)
     calculation_fingerprint = pricing_calculation_fingerprint(calculation_basis)
     exposes_net_proceeds = any(
         destination["pricing_model"] == "net_proceeds"
@@ -721,6 +743,7 @@ def _calculate_target_amounts(common: dict[str, Any], target: dict[str, Any], in
         },
         "calculation_basis": calculation_basis,
         "calculation_fingerprint": calculation_fingerprint,
+        "electronic_service_fee_cny": float(electronic_service_fee_cny.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
         "shipping_cost_usd": round(shipping_usd, 2),
         "shipping_cost_cny": round(shipping_cny, 2),
         "shipping_quote_mode": shipping_mode,
@@ -785,6 +808,10 @@ def _calculate_target_amounts(common: dict[str, Any], target: dict[str, Any], in
     }
 
 
+class PricingIntervalEmpty(ValueError):
+    """分段内无解；其他物流或服务费分段仍可继续求解。"""
+
+
 def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], index: int = 0, *, shipping_quote: ShippingResolution | None = None, commission_resolver: CommissionResolver | None = None) -> dict[str, Any]:
     """官方费用与最终舍入售价校准；手填佣金只作为历史数据读取，不参与计算。"""
     result = _calculate_target_amounts(common, target, index, shipping_quote=shipping_quote)
@@ -795,11 +822,17 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
             raise ValueError("尚未取得官方佣金，请通过核价入口重新计算")
         goal = _result_goal(result, common, target, shipping_quote)
         manual = result["pricing_mode"] == "manual"
+        if not manual and goal.retained <= 0 and shipping_quote and shipping_quote.get("electronic_service"):
+            raise PricingIntervalEmpty("此电子服务费区间内无法达到利润目标")
         price = dict(result["applied_price"])
         if not manual:
             price["amount"] = _amount_text(goal.proportional_price(Fraction(0)))
+        upper = (fraction(shipping_quote['maximum_price_cny']) * _pricing_currency_rate(price['currency'], {**common, **target}, result['input'])
+                 if shipping_quote and 'maximum_price_cny' in shipping_quote else None)
         seen = set()
         for _ in range(16):
+            if upper is not None and fraction(price['amount']) > upper:
+                raise PricingIntervalEmpty('当前 OGL 区间内没有满足目标的售价')
             quote = commission_resolver(common, target, price)
             if quote.get("evidence", {}).get("source") == "local_calculation" and "rule" in quote:
                 if not manual:
@@ -822,10 +855,22 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
             amount = Decimal(price["amount"])
             meets_goal = goal.meets(amount, evidence["amount"])
             remainder = goal.retained * fraction(amount) - fraction(evidence["amount"]) - goal.required
-            if manual or (meets_goal and remainder <= Fraction(1, 100)):
+            if manual or (not quote.get("price_bands") and meets_goal and remainder <= Fraction(1, 100)):
                 # 未给出完整规则的回执，也允许保留已达标且误差仅在原币一分内的分价。
                 # 这是取整后的真实利润校验，不再比较显示用的两位小数利润率。
                 candidate = amount
+            elif quote.get('price_bands'):
+                candidates = []
+                for band in quote['price_bands']:
+                    try:
+                        candidate_price = max(fraction(goal.proportional_price(fraction(band['rate']))), ceil_cent(fraction(band['lower'])))
+                    except ValueError:
+                        continue
+                    if (band['upper'] is None or candidate_price < fraction(band['upper'])) and (upper is None or candidate_price <= upper):
+                        candidates.append(candidate_price)
+                if not candidates:
+                    raise PricingIntervalEmpty('当前 OGL 与销售佣金档位内无有效售价')
+                candidate = fraction_money(min(candidates))
             elif "rule" in quote:
                 candidate = goal.solve_rule(quote["rule"])
             else:
@@ -842,7 +887,7 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         raise ValueError("官方佣金与售价在 16 轮内未收敛，请调整定价条件后重试")
     except (ValueError, ArithmeticError, KeyError, TypeError) as exc:
         # 丢弃尚未收敛的售价与费用，不能把初始零费率或上轮试算结果留作可应用报价。
-        error = {"field": "commission_percent", "code": "OFFICIAL_COMMISSION_UNAVAILABLE", "message": str(exc)}
+        error = {"field": "commission_percent", "code": "PRICING_INTERVAL_EMPTY" if isinstance(exc, PricingIntervalEmpty) else "OFFICIAL_COMMISSION_UNAVAILABLE", "message": str(exc)}
         failed = _calculate_target_amounts(common, target, index, shipping_quote=shipping_quote)
         failed.update(ok=False, errors=[error], precheck_errors=[error], destination_results=[])
         for field in ("applied_price", "suggested_price", "minimum_price", "applied_net_proceeds"):
@@ -855,6 +900,8 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
 
 def _calculate_with_shipping(common: dict, target: dict, index: int, resolver: ShippingResolver | None, commissions: CommissionResolver | None) -> dict:
     platform = str(target.get("platform") or "").lower()
+    if platform == "ozon":
+        target = {**target, "shipping_quote_mode": "auto"}
     mode = target.get("shipping_quote_mode") or ("auto" if platform == "mercadolibre" else "manual")
     destinations = _destination_pricing_modes(target.get("destination_pricing_modes"))
     def calculate(selected):

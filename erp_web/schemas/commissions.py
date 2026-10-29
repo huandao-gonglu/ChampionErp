@@ -17,6 +17,7 @@ class CommissionQuote(TypedDict):
     percent: str
     evidence: dict[str, Any]
     rule: NotRequired[CommissionRule]
+    price_bands: NotRequired[list[dict[str, str | None]]]
 
 
 class CommissionResolver(Protocol):

@@ -9,6 +9,9 @@ class ShippingResolution(TypedDict):
     billable_g: str
     evidence: dict
     candidates: list[dict]
+    minimum_price_exclusive: NotRequired[bool]
+    maximum_price_cny: NotRequired[str]
+    electronic_service: NotRequired[dict[str, str]]
     error: NotRequired[str]
 
 

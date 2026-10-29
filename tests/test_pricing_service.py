@@ -122,8 +122,8 @@ def test_invalid_percentage_budget_does_not_generate_extreme_price() -> None:
             },
             "targets": [
                 {
-                    "target_key": "ozon:global",
-                    "platform": "ozon",
+                    "target_key": "yandex:global",
+                    "platform": "yandex",
                     "site": "global",
                     "listing_currency": "RUB",
                     "commission_percent": 50,
@@ -397,8 +397,8 @@ def test_cny_shipping_quote_is_not_treated_as_a_second_editable_amount() -> None
             "common": {"purchase_cost": 50, "usd_cny_rate": 7, "rub_cny_rate": 12},
             "targets": [
                 {
-                    "target_key": "ozon:global",
-                    "platform": "ozon",
+                    "target_key": "yandex:global",
+                    "platform": "yandex",
                     "site": "global",
                     "listing_currency": "RUB",
                     "commission_percent": 20,
@@ -466,8 +466,8 @@ def test_calculation_basis_preserves_physical_measurement_precision() -> None:
 
 def _manual_price_target(manual_price: dict) -> dict:
     return {
-        "target_key": "ozon:global",
-        "platform": "ozon",
+        "target_key": "yandex:global",
+        "platform": "yandex",
         "site": "global",
         "listing_currency": "CNY",
         "commission_percent": 20,

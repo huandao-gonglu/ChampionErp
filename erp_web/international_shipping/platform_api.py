@@ -16,12 +16,7 @@ class PlatformClient:
     def __init__(self, platform: str, credentials: dict, *, opener):
         self.opener = opener
         self.platform = platform
-        if platform == 'ozon':
-            if not credentials.get('client_id') or not credentials.get('api_key'):
-                raise ValueError('Ozon 缺少店铺凭据，请先在店铺授权页配置')
-            self.base = 'https://api-seller.ozon.ru'
-            self.headers = {'Client-Id': str(credentials['client_id']), 'Api-Key': credentials['api_key']}
-        elif platform == 'mercadolibre':
+        if platform == 'mercadolibre':
             if not credentials.get('access_token'):
                 raise ValueError('Mercado 缺少访问令牌，请先在店铺授权页配置')
             self.base = 'https://api.mercadolibre.com'
@@ -31,8 +26,6 @@ class PlatformClient:
 
     def call(self, path: str, *, body: dict | None = None, params: dict | None = None) -> dict:
         allowed = (
-            self.platform == 'ozon' and path in ('/v2/warehouse/list', '/v2/delivery-method/list') and body is not None
-        ) or (
             self.platform == 'mercadolibre' and re.fullmatch(r'/users/\d+/shipping_options/free', path) and body is None
         )
         if not allowed:
@@ -51,35 +44,6 @@ class PlatformClient:
         if not isinstance(result, dict):
             raise ValueError(f'{self.platform} 物流接口返回了无效结构')
         return result
-
-
-def discover_ozon(client: PlatformClient) -> list[dict]:
-    warehouses, cursor = [], ''
-    for _ in range(100):
-        body = client.call('/v2/warehouse/list', body={'cursor': cursor, 'limit': 100})
-        warehouses.extend(body.get('warehouses', []))
-        if not body.get('has_next'):
-            break
-        next_cursor = body.get('cursor')
-        if not next_cursor or next_cursor == cursor:
-            raise ValueError('Ozon 仓库列表分页不完整')
-        cursor = next_cursor
-    else:
-        raise ValueError('Ozon 仓库列表超过分页上限')
-    ids = {str(item['warehouse_id']) for item in warehouses if item.get('is_rfbs') and item.get('status') == 'created'}
-    methods, offset = [], 0
-    for _ in range(100):
-        body = client.call('/v2/delivery-method/list', body={'limit': 50, 'offset': offset})
-        page = body.get('delivery_methods', [])
-        methods.extend(item for item in page if str(item.get('warehouse_id')) in ids and item.get('status') == 'ACTIVE')
-        if body.get('has_next') is False or ('has_next' not in body and len(page) < 50):
-            break
-        if not page:
-            raise ValueError('Ozon 配送方式分页不完整')
-        offset += len(page)
-    else:
-        raise ValueError('Ozon 配送方式超过分页上限')
-    return methods
 
 
 def quote_mercadolibre(

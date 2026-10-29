@@ -309,6 +309,8 @@ def _calculate_price(input_data: dict[str, Any], session: PricingSession) -> dic
             }
         target["listing_currency"] = state["listing_currency"]
         target["currency_fingerprint"] = state["currency_fingerprint"]
+        if platform == 'ozon':
+            target['shipping_quote_mode'] = 'auto'
         if platform == 'yandex' and (target.get('shipping_quote_mode') or 'auto') != 'auto':
             return {'ok': False, 'error': 'Yandex 核价需要自动选择已配置的仓库物流方案，不能仅用手填运费确定发布仓库', 'results': []}
         if (

@@ -99,9 +99,9 @@ export function applyPricingTemplate(input: PricingInput, template: PricingTempl
       pricingMode: saved.pricing_mode,
       targetMarginPercent: saved.target_margin_percent,
       markupPercent: saved.markup_percent,
-      shippingQuoteMode: saved.shipping_quote_mode,
+      shippingQuoteMode: target.platform === 'ozon' ? 'auto' : saved.shipping_quote_mode,
       shippingCurrency: saved.shipping_currency,
-      shippingAmount: saved.shipping_amount,
+      shippingAmount: target.platform === 'ozon' ? 0 : saved.shipping_amount,
       shippingSelection: saved.shipping_selection ? { ...saved.shipping_selection } : null,
       manualPrice: saved.manual_price ? { ...saved.manual_price } : null,
     })

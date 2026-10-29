@@ -11,6 +11,7 @@ from erp_web.runtime_units.sku_publish_adapter import SkuGroupPublishingAdapter
 from erp_web.runtime_units.sku_publish_projection import SkuGroupingMember, grouping_contract, sku_context, sku_quote_errors, validate_grouping
 from erp_web.schemas.category_definition import CategoryAttributeDefinition, CategoryDefinition
 from tests.runtime_test_utils import temp_app_context
+from tests.pricing_test_utils import ogl_basis
 
 
 def product_fixture():
@@ -19,6 +20,7 @@ def product_fixture():
         dimensions = {"length_cm": "30", "width_cm": "20", "height_cm": "10", "weight_kg": str(weight)}
         skus.append({"id": f"fact-{index}", "name": f"规格 {index}", "cost_cny": str(cost), "package_dimensions": dimensions, "active": True})
         basis = {"cost_cny": str(cost), **dimensions, "domestic_freight_cny": "0", "packaging_cost_cny": "0", "other_cost_cny": "0"}
+        basis.update(ogl_basis())
         basis.update(listing_currency="RUB", commission_percent="20", commission_evidence={
             "source": "platform_api", "purpose": "prelisting", "endpoint": "/mock/ozon/prelisting", "category_id": "",
             "price": {"amount": str(cost * 30), "currency": "RUB"},

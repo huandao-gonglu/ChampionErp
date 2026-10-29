@@ -141,3 +141,13 @@ def test_category_value_limits_have_one_pure_owner_for_yandex_writes() -> None:
         assert 'from erp_web.schemas.category_constraints import category_attribute_constraint_error' in source
         assert 'category_attribute_constraint_error(' in source
     assert 'constraints.get("maxLength")' not in (ROOT / 'erp_web/services/online_product_attributes.py').read_text()
+
+
+def test_ogl_calculation_has_no_network_store_or_runtime_dependency() -> None:
+    files = [ROOT / 'erp_web/international_shipping/ogl.py']
+    imports = {target for _, target in imported_targets(files)}
+    assert not any(target.startswith(('erp_web.context', 'erp_web.stores', 'erp_web.runtime_units', 'urllib', 'requests', 'httpx', 'sqlite3', 'pathlib')) for target in imports)
+    assert not forbidden_calls(files, {'open', 'read_text', 'write_text', 'urlopen'})
+    retired = (ROOT / 'erp_web/international_shipping/platform_api.py').read_text()
+    assert '/v2/delivery-method/list' not in retired
+    assert '/v2/warehouse/list' not in retired

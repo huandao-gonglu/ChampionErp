@@ -99,10 +99,15 @@ def test_future_or_untrusted_table_is_not_used(official_table):
         tariffs.OzonCommissionTariffs().quote(CATEGORY, brand("Generic"), Decimal("6000"))
 
 
-def test_next_batch_discovers_new_official_version_and_price_converges(official_table):
+def test_next_batch_discovers_new_official_version_and_price_converges(official_table, tmp_path):
     target = {**TARGET, "platform": "ozon", "brand_attribute": brand("Generic")}
     def quote():
-        return calculate_target_pricing(COMMON, target, commission_resolver=PricingCommissions(CONFIG, ozon_category_loader=lambda: [CATEGORY]))
+        from erp_web.services.pricing_shipping import PricingShipping
+        fees = PricingCommissions(CONFIG, ozon_category_loader=lambda: [CATEGORY])
+        shipping = PricingShipping(tmp_path, CONFIG)
+        shipping.commission_resolver = fees
+        selected = {**target, 'shipping_quote_mode': 'auto'}
+        return calculate_target_pricing(COMMON, selected, shipping_quote=shipping(COMMON, selected), commission_resolver=fees)
     first = quote()
     assert first["ok"] and has_official_commission(first["calculation_basis"])
     official_table["url"] = FILE_URL.replace("current", "new")

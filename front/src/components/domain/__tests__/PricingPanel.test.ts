@@ -112,7 +112,7 @@ function skuRow(id = 'sku-small', quote: UnknownRecord = {}): DraftSku {
       shipping_quote_mode: 'auto', listing_currency: 'USD',
       suggested_price: { amount: '167.67', currency: 'USD' },
       applied_price: { amount: '167.67', currency: 'USD' },
-      calculation_basis: { commission_evidence: { purpose: 'prelisting', source: 'platform_api' } },
+      calculation_basis: { commission_evidence: { purpose: 'prelisting', source: 'platform_api' }, shipping_evidence: { source: 'ogl_tariff' }, electronic_service: { rate: '.02', rub_per_cny: '12' } },
       profit_cny: 100, margin_percent: 30, is_loss: false, errors: [], ...quote,
     } } },
   }

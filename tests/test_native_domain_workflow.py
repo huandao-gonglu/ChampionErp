@@ -27,7 +27,7 @@ from tests.native_domain_fixture import (
     _PlatformNetworkBoundary,
 )
 from tests.runtime_test_utils import seed_store_currency
-from tests.pricing_test_utils import official_commission
+from tests.pricing_test_utils import official_commission, ogl_basis
 from tests.ai_code_mode_helpers import discovering_tools, python_call, business_returns
 from tests.test_native_agent_integration import service, body, CONVERSATION
 
@@ -56,7 +56,7 @@ def setup_domain(monkeypatch, count=1):
             exchange_rate_mode="manual", usd_cny_rate=7, mxn_usd_rate=20, rub_cny_rate=12,
         )
         draft["pricing"]["targets"]["ozon:global"].update(
-            shipping_quote_mode="manual", shipping_currency="CNY", shipping_amount=5,
+            shipping_quote_mode="auto", shipping_currency="CNY", shipping_amount=5,
         )
         product["sku_items"] = [
             {
@@ -77,6 +77,7 @@ def setup_domain(monkeypatch, count=1):
                 "other_cost_cny": "0",
             }
         )
+        quote["calculation_basis"].update(ogl_basis())
         quote["calculation_basis"]["commission_percent"] = "20"
         quote["calculation_basis"]["commission_evidence"] = official_commission({}, {
             "platform": "ozon", "category_id": draft.get("category_id", ""), "commission_percent": 20,

@@ -59,6 +59,16 @@ class PricingShipping:
         if currency not in ('CNY', 'USD'):
             raise ValueError('国际物流报价币种仅支持 CNY/USD')
         source = {**common, **target}
+        if target.get('platform') == 'ozon':
+            for key in ('cost_cny', 'freight_cny', 'prep_fee_cny', 'other_cost_cny', 'payment_fee_percent', 'other_fee_percent', 'target_margin_percent', 'markup_percent'):
+                if key in source:
+                    number(source[key], key, positive=key == 'cost_cny')
+        if target.get('platform') == 'ozon':
+            if source.get('pricing_mode') == 'manual':
+                number((source.get('manual_price') or {}).get('amount'), '手动售价', positive=True)
+            for key in ('rub_cny_rate', 'usd_cny_rate'):
+                if source.get(key) not in (None, ''):
+                    number(source[key], key, positive=True)
         values = pricing_service.normalize_pricing_input(source)
 
         def per_cny(unit: str) -> Decimal:
@@ -80,18 +90,26 @@ class PricingShipping:
         def converted(amount: Decimal, unit: str) -> Decimal:
             return amount / per_cny(unit) * target_rate
 
-        @lru_cache(maxsize=None)
-        def price_for_shipping(amount: Decimal, unit: str, minimum: Decimal) -> Decimal:
+        def price_for_shipping(amount: Decimal, unit: str, minimum: Decimal, conditions=None) -> Decimal | None:
             quote: ShippingResolution = {
                 'amount': str(converted(amount, unit)), 'currency': currency,
                 'minimum_price_cny': str(minimum), 'billable_g': str(package.weight_g),
-                'evidence': {}, 'candidates': [],
+                'evidence': {}, 'candidates': [], **(conditions or {}),
             }
             calculation = pricing_service.calculate_target_pricing(common, target, shipping_quote=quote, commission_resolver=self.commission_resolver)
             if not calculation['ok']:
+                if conditions and calculation['errors'][0].get('code') == 'PRICING_INTERVAL_EMPTY':
+                    return None
                 raise ValueError('；'.join(error['message'] for error in calculation['errors']))
             # 准入与 API 迭代必须使用最终会发布的舍入售价，不能拿未舍入中间值跨货值档。
             return Decimal(calculation['applied_price']['amount']) / per_cny(calculation['listing_currency'])
+
+        original_callback = price_for_shipping
+        @lru_cache(maxsize=None)
+        def cached_price(amount, unit, minimum):
+            return original_callback(amount, unit, minimum)
+        if target['platform'] != 'ozon':
+            price_for_shipping = cached_price
 
         # 预检仅校验本地输入；零运费不是候选报价，不应为它请求官方佣金。
         validation = pricing_service._calculate_target_amounts(common, target, shipping_quote={
@@ -118,7 +136,7 @@ class PricingShipping:
                 binding = {'site_id': target.get('site'), 'user_id': config.get('user_id'), 'logistic_type': 'local'}
         result = self.module.quote(
             platform, package, price_for_shipping,
-            cny_per_rub=Decimal(1) / per_cny('RUB') if platform == 'yandex' else None,
+            cny_per_rub=Decimal(1) / per_cny('RUB') if platform in ('yandex', 'ozon') else None,
             cny_per_usd=Decimal(1) / per_cny('USD') if platform == 'mercadolibre' else None,
             binding=binding, category_id=str(target.get('category_id') or ''),
             listing_type_id=str(conditions.get('listing_type_id') or 'gold_pro'),
@@ -130,7 +148,7 @@ class PricingShipping:
             reasons = '；'.join(f'{reason}（{count}）' for reason, count in result.rejected.items())
             raise ValueError('没有可用的国际物流报价' + (f'：{reasons}' if reasons else '，请检查店铺渠道与包装参数'))
         # 先按未舍入的换算金额排序，最后由既有核价金额输出统一保留两位。
-        candidates = sorted(result.candidates, key=lambda item: (converted(item.amount, item.currency), item.route_id))
+        candidates = sorted(result.candidates, key=lambda item: (Decimal(item.evidence['shipment_value_cny']) if platform == 'ozon' else converted(item.amount, item.currency), item.route_id))
         selected = candidates[0]
         factor = target_rate / per_cny(selected.currency)
         evidence = {
@@ -144,6 +162,6 @@ class PricingShipping:
         return {
             'amount': str(converted(selected.amount, selected.currency)), 'currency': currency,
             'minimum_price_cny': str(selected.minimum_price_cny), 'billable_g': str(selected.billable_g),
-            'evidence': evidence,
+            'evidence': evidence, **selected.evidence.get('conditions', {}),
             'candidates': [{**item.to_dict(), 'converted_amount': str(converted(item.amount, item.currency)), 'converted_currency': currency} for item in candidates],
         }

@@ -28,6 +28,7 @@ const fees = computed(() => [
   { label: '包装耗材', value: basis.value.packaging_cost_cny ?? basis.value.prep_fee_cny },
   { label: '其他固定成本', value: basis.value.other_cost_cny },
   { label: '国际运费', value: quote.value.shipping_cost_cny },
+  ...(props.entry.target.platform === 'ozon' ? [{ label: 'OGL 电子服务费', value: quote.value.electronic_service_fee_cny }] : []),
   { label: '预计货损分摊', value: quote.value.return_loss_cny ?? 0 },
   { label: `官方佣金 · ${quote.value.commission_percent ?? '—'}%`, value: quote.value.commission_cny },
   { label: `支付 / 结算费 · ${quote.value.payment_fee_percent ?? 0}%`, value: quote.value.payment_fee_cny },
@@ -91,7 +92,7 @@ function adjustPrice(multiplier: number) {
         <label class="mt-4 block"><span class="field-label">此 SKU 每次退货额外费用（元/件）</span><input :value="overrides.return_handling_cost_cny ?? ''" aria-label="此 SKU 每次退货额外费用（人民币）" type="number" min="0" step="0.01" class="pricing-input mt-2 w-full" :placeholder="`沿用共用 ${entry.target.returnHandlingCostCny || 0} 元`" @input="setOverride('return_handling_cost_cny', ($event.target as HTMLInputElement).value)" /></label>
         <p class="pricing-subtle mt-2 text-xs">退回再售按采购成本完整回收；额外费用包含退回、处理及其他不退费用，不重复填写原发货运费。</p>
       </details>
-      <template v-if="entry.target.platform !== 'yandex'">
+      <template v-if="!['yandex', 'ozon'].includes(entry.target.platform)">
         <label class="mt-4 block"><span class="field-label">此 SKU 手动运费（人民币）</span><input :value="shippingInputCny(overrides.shipping_amount, entry.target.shippingCurrency, usdCnyRate)" :disabled="entry.target.shippingCurrency !== 'CNY' && !(usdCnyRate > 0)" aria-label="此 SKU 手动运费（人民币）" type="number" min="0" step="0.01" class="pricing-input mt-2 w-full" placeholder="沿用自动或共用运费" @input="emit('shippingAmount', ($event.target as HTMLInputElement).value === '' ? '' : Number(($event.target as HTMLInputElement).value))" /></label>
         <p v-if="entry.target.shippingCurrency !== 'CNY' && !(usdCnyRate > 0)" class="pricing-subtle mt-2 text-xs">已有外币运费需要 USD/CNY 汇率，请等待加载或填写汇率。</p>
       </template>

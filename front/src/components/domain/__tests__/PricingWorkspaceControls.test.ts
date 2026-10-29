@@ -26,6 +26,29 @@ beforeEach(() => {
 })
 
 describe('核价汇率和模板控件', () => {
+  it('Ozon 旧手动运费改用 OGL，其他固定成本保留', async () => {
+    const input = fixture()
+    input.targets[0].shippingQuoteMode = 'manual'
+    const wrapper = mount(PricingFeesEditor, { props: { input } })
+    await flushPromises()
+    expect(input.targets[0].shippingQuoteMode).toBe('auto')
+    expect(wrapper.get('select[aria-label="国际运费报价方式"]').text()).toContain('OGL 官方物流')
+    expect(wrapper.find('option[value="manual"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('电子服务费单独计入')
+    expect(input.domesticFreightCny).toBe(2)
+    expect(input.packagingCostCny).toBe(0.8)
+  })
+
+  it('应用旧模板仍使用 OGL 自动核价', () => {
+    const input = fixture()
+    const parameters = pricingTemplateParameters(input)
+    parameters.targets['ozon:global'].shipping_quote_mode = 'manual'
+    parameters.targets['ozon:global'].shipping_amount = 999
+    applyPricingTemplate(input, { id: 'old', name: '原模板', parameters, updated_at: '' })
+    expect(input.targets[0].shippingQuoteMode).toBe('auto')
+    expect(input.targets[0].shippingAmount).toBe(0)
+  })
+
   it('重新打开恢复模板来源，最新模板和默认模板不覆盖草稿参数', async () => {
     const input = fixture()
     input.templateSource = { id: 'used', name: '原核价模板' }

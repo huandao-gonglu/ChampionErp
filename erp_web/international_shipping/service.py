@@ -2,16 +2,14 @@
 from __future__ import annotations
 
 from decimal import Decimal
-import logging
 from pathlib import Path
-from time import perf_counter
 
 from .models import Package, PriceForShipping, QuoteResult
-from .platform_api import PlatformClient, discover_ozon, quote_mercadolibre
+from .platform_api import PlatformClient, quote_mercadolibre
 from .tables import quote_table
+from .ogl import quote_ogl
 from .tariff_store import load_active
 
-logger = logging.getLogger("erp.pricing")
 
 
 class ShippingModule:
@@ -20,7 +18,6 @@ class ShippingModule:
         self.rules_dir = rules_dir
         self.credentials = credentials
         self.snapshots: dict[str, dict] = {}
-        self.methods: list[dict] | None = None
         self.errors: dict[str, str] = {}
         self.ozon_discovery_ms = 0.0
 
@@ -50,16 +47,6 @@ class ShippingModule:
                 raise
         elif tariff_version and self.snapshots[platform]['version'] != tariff_version:
             raise ValueError('同一次核价不能混用同一平台的不同费率版本')
-        if platform == 'ozon' and self.methods is None:
-            started = perf_counter()
-            logger.info("Ozon 公共渠道查询开始：读取 rFBS 仓库和配送渠道，本批 SKU 共用")
-            try:
-                self.methods = discover_ozon(PlatformClient(platform, self.credentials.get(platform, {}), opener=self.opener))
-            except ValueError as exc:
-                # 本轮公共查询失败后直接复用错误，下轮新建实例才重试。
-                self.errors[platform] = str(exc)
-                raise
-            finally:
-                self.ozon_discovery_ms = (perf_counter() - started) * 1000
-                logger.info("Ozon 公共渠道查询%s，耗时 %.2f 秒，可用渠道 %d", "失败" if platform in self.errors else "完成", self.ozon_discovery_ms / 1000, len(self.methods or []))
-        return quote_table(self.snapshots[platform], package, price_for_shipping, cny_per_rub=cny_per_rub, methods=self.methods, route_ids=route_ids)
+        if platform == 'ozon':
+            return quote_ogl(self.snapshots[platform], package, price_for_shipping, cny_per_rub=cny_per_rub)
+        return quote_table(self.snapshots[platform], package, price_for_shipping, cny_per_rub=cny_per_rub, route_ids=route_ids)

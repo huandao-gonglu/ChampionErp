@@ -29,6 +29,8 @@ def pricing_draft(monkeypatch):
     from erp_web.services.pricing_shipping import PricingShipping
     class Shipping(PricingShipping):
         def __call__(self, common, target):
+            if target['platform'] == 'ozon':
+                return super().__call__(common, target)
             return {'amount': '4', 'currency': 'CNY', 'minimum_price_cny': '0', 'billable_g': str(float(common['weight_kg']) * 1000),
                     'evidence': {'fulfillment_plan': deepcopy(PLAN)}, 'candidates': []}
     monkeypatch.setattr('erp_web.runtime_units.pricing_runtime.PricingShipping', Shipping)
@@ -170,8 +172,8 @@ def test_198_skus_http_ai_and_apply_share_costs_and_parameters(pricing_draft, mo
             assert float(basis["domestic_freight_cny"]) == 20
             assert float(basis["packaging_cost_cny"]) == 2
             assert float(basis["other_cost_cny"]) == 3
-            assert quote["shipping_quote_mode"] == ("auto" if quote["platform"] == "yandex" else "manual")
-            assert float(quote["shipping_amount"]) == 4
+            assert quote["shipping_quote_mode"] == "auto"
+            assert float(quote["shipping_amount"]) == (4 if quote["platform"] == "yandex" else 10.31)
     applied = draft_pricing_apply(DraftPricingRequest(**body, preview_id=ai.preview_id), DraftPricingCapabilityScope(store), AiExecutionContext.create(timeout_seconds=30, budget_profile="test"))
     assert applied.applied and applied.sku_count == 198
     saved = get_context().db.load_draft_model("pricing-draft")
@@ -196,7 +198,7 @@ def test_unsaved_selection_and_fee_overrides_preview_and_atomic_apply(pricing_dr
     assert float(first["calculation_basis"]["cost_cny"]) == 8.8
     assert float(first["calculation_basis"]["domestic_freight_cny"]) == 8
     assert float(first["calculation_basis"]["weight_kg"]) == 0.3
-    assert first["shipping_amount"] == 12
+    assert first["shipping_amount"] == 10.31  # 旧手填值保留读取，但不参与 OGL 核价
     assert get_context().db.load_draft_model("pricing-draft") == before
     applied = price_draft(body.model_copy(update={"preview_id": preview["preview_id"]}), product_store=store, apply=True)
     assert applied["applied"]
@@ -411,7 +413,7 @@ def test_auto_shipping_remains_per_sku_and_passes_publish_price_validation(prici
     for fact, row in zip(product["sku_items"], saved["sku_items"], strict=True):
         for key in ("ozon:global", "yandex:global"):
             assert saved["pricing"]["targets"][key]["shipping_quote_mode"] == "auto"
-            assert saved["pricing"]["targets"][key]["shipping_amount"] == 4
+            assert saved["pricing"]["targets"][key]["shipping_amount"] == (0 if key.startswith("ozon:") else 4)
             assert sku_quote_errors(fact, row, saved, key) == []
 
 
@@ -558,8 +560,8 @@ def test_return_loss_settings_persist_override_and_apply_without_recalculation(p
     assert saved["sku_items"][0]["pricing_overrides"]["targets"]["ozon:global"]["return_rate_percent"] == 20
     again = price_draft(request(), product_store=store)
     quotes = again["sku_pricing"][saved["sku_items"][0]["sku_id"]]["targets"]
-    assert quotes["ozon:global"]["return_loss"]["single_loss_cny"] == 47  # 国内 1 + 包装 2 + 国际 4 + 退回 40
-    assert quotes["ozon:global"]["return_loss_cny"] == 11.75
+    assert quotes["ozon:global"]["return_loss"]["single_loss_cny"] == 53.31  # 国内 1 + 包装 2 + OGL 运输 10.31 + 退回 40
+    assert quotes["ozon:global"]["return_loss_cny"] == 13.33
     assert quotes["yandex:global"]["return_loss"]["return_rate_percent"] == 5
     fact = get_context().db.load_product_model("pricing-product")["sku_items"][0]
     row = saved["sku_items"][0]

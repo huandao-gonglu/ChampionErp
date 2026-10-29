@@ -45,7 +45,7 @@ def calculate_sku_prices(body: dict[str, Any]) -> PricingBatchResult:
         "duration_ms": round((perf_counter() - started) * 1000, 1),
         "ozon_discovery_ms": round(session.shipping.module.ozon_discovery_ms, 1),
     }
-    logger.info("核价批次 %s 完成：%d 个 SKU，%d 项市场报价，失败 %d，总耗时 %.2f 秒，Ozon 公共渠道查询 %.2f 秒", batch_id, len(items), target_count, failed, metrics["duration_ms"] / 1000, metrics["ozon_discovery_ms"] / 1000)
+    logger.info("核价批次 %s 完成：%d 个 SKU，%d 项市场报价，失败 %d，总耗时 %.2f 秒", batch_id, len(items), target_count, failed, metrics["duration_ms"] / 1000)
     return {"ok": True, "items": results, "metrics": metrics}
 
 

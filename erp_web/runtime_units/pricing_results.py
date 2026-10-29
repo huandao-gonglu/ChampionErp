@@ -3,7 +3,7 @@ from copy import deepcopy
 import math
 from typing import Any
 from erp_web.product_model import mercadolibre_sales_condition_basis, mercadolibre_sales_operation_keys, normalize_mercadolibre_sites_to_sell
-from erp_web.product_model.sku_model import text
+from erp_web.product_model.sku_model import text, record
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.pricing_service import has_official_commission
 
@@ -78,6 +78,8 @@ def _pricing_target_is_usable(
         and has_official_commission(basis)
         and text(selected.get("calculation_fingerprint"))
     )
+    if text(target_draft.get('platform')).lower() == 'ozon':
+        usable = usable and record(basis.get('shipping_evidence')).get('source') == 'ogl_tariff' and bool(basis.get('electronic_service'))
     if not usable:
         return False
     if (

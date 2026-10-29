@@ -18,7 +18,7 @@ from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
 SCHEMA = 1
-PARSER = 'cn-fbs-1'
+PARSER = 'cn-fbs-2-ogl'
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 IGNORED_DIFF_FIELDS = {'source_cell', 'source_row', 'id'}
 GROUPS = {'Extra Small', 'Budget', 'Small', 'Big', 'Premium Small', 'Premium Big'}
@@ -106,13 +106,6 @@ class Workbook:
             raise ValueError(f'无法读取 XLSX：{type(exc).__name__}') from None
 
 
-OZ_HEADERS = {
-    'group': ['评分组'], 'service': ['服务等级'], 'carrier': ['第三方物流'], 'name': ['配送方式'],
-    'rate': ['费率（PUDO揽收点揽收/快递员上门揽收）'], 'battery': ['电池'], 'liquid': ['液体'],
-    'dimensions': ['尺寸限制，最大（厘米）'], 'min_g': ['货件重量限制 / 最小（克）'],
-    'max_g': ['货件重量限制 / 最大（克）'], 'price_cny': ['货值限制/最低-最高（人民币）'],
-    'weight_type': ['计费类型'], 'divisor': ['体积重量计算方式'],
-}
 YA_HEADERS = {
     'country': ['国家'], 'transport': ['配送方式'], 'service': ['配送时效'], 'group': ['包裹类别'],
     'carrier': ['物流商'], 'battery': ['是否允许带电池'],
@@ -138,7 +131,7 @@ def find_table(book, headers):
     if len(matches) != 1:
         raise ValueError('无法唯一识别完整费率表。' + closest[1] + '；表头或单位变化时需调整导入规则。')
     sheet, row_number, columns = matches[0]
-    ignored = ['Ozon评级', '时效限制（从PUDO揽收点到Ozon分拣中心），最长天数', '货值限制/最低-最高（卢布）', '货值限制/最低-最高（美元）', '货值限制/最低-最高（欧元）', '丢失赔偿上限，卢布', '在揽收点未被取走的已取消货件', '进口海关申报开始前取消的货件', '进口海关申报开始后取消的货件'] if headers is OZ_HEADERS else ['总运费，卢布', 'Merged']
+    ignored = ['总运费，卢布', 'Merged']
     allowed = set(aliases) | {norm(x) for x in ignored}
     to_index = lambda col: sum((ord(c) - 64) * 26 ** i for i, c in enumerate(reversed(col)))
     start = min(to_index(c) for c in columns.values())
@@ -148,17 +141,11 @@ def find_table(book, headers):
     return matches[0]
 
 
-def value(row, columns, key, carrier=False):
+def value(row, columns, key):
     cell = row.get(columns[key], {'value': '', 'formula': None, 'address': columns[key]})
     formula = cell['formula']
     if formula:
-        # 原版 Ozon 的 carrier 列只有这个明确的文本公式；依据配送名称重算，避免缓存陈旧。
-        f = re.fullmatch(r'LEFT\(([A-Z]+)(\d+),SEARCH\(" ",\1\2\)\)', formula, re.I)
-        if not carrier or not f or f[1] != columns.get('name') or cell['address'][len(columns[key]):] != f[2]:
-            raise ValueError(f'{cell["address"]} 使用了不支持的公式：请提供明确费率值或更新解析器')
-        name = str(row.get(f[1], {}).get('value', ''))
-        if ' ' not in name: raise ValueError('物流商公式缺少可识别的配送名称')
-        return name.split(' ', 1)[0].strip()
+        raise ValueError(f'{cell["address"]} 使用了不支持的公式：请提供明确费率值')
     if str(cell['value']).startswith('#'): raise ValueError(f'{cell["address"]} 含 Excel 错误')
     return str(cell['value']).strip()
 
@@ -170,43 +157,61 @@ def yes_no(text, label):
 
 
 def parse_ozon(book):
-    sheet, header, cols = find_table(book, OZ_HEADERS)
-    rules = []
-    for n, row in sheet['rows'].items():
-        if n <= header: continue
-        get = lambda key: value(row, cols, key, carrier=(key == 'carrier'))
-        group, rate_text = get('group'), get('rate')
-        if (not group and not rate_text) or (group == 'переход' and rate_text == 'переход'): continue
-        if group not in GROUPS: raise ValueError(f'{sheet["name"]} 第 {n} 行存在未知评分组：{group}')
-        service, carrier, name = get('service'), get('carrier'), get('name')
-        if service not in ('Express', 'Standard', 'Economy') or not carrier or not name:
-            raise ValueError(f'第 {n} 行缺少或使用未知的物流渠道/服务')
-        match = re.fullmatch(r'¥\s*([\d.]+)\s*\+\s*¥\s*([\d.]+)\s*/\s*([\d.]+)\s*(g|kg)', unicodedata.normalize('NFKC', rate_text))
-        if not match: raise ValueError(f'第 {n} 行费率公式或单位不受支持：{rate_text}')
-        fixed, unit_fee = dec(match[1], '固定费'), dec(match[2], '重量费')
-        unit_g = dec(match[3], '计价重量单位', True) * (1000 if match[4] == 'kg' else 1)
-        dimensions = re.fullmatch(r'边长总和\s*≤\s*([\d.]+)\s*cm\s*,\s*长边\s*≤\s*([\d.]+)\s*cm\s*,?', unicodedata.normalize('NFKC', get('dimensions')))
-        if not dimensions: raise ValueError(f'第 {n} 行尺寸限制格式或单位不受支持')
-        span = re.fullmatch(r'([\d.]+)-([\d.]+)', re.sub(r'\s+', '', get('price_cny')))
-        if not span: raise ValueError(f'第 {n} 行人民币货值区间无法识别')
-        low, high = dec(span[1], '最低货值'), dec(span[2], '最高货值', True)
-        min_g, max_g = dec(get('min_g'), '最小重量', True), dec(get('max_g'), '最大重量', True)
-        if low > high or min_g > max_g: raise ValueError(f'第 {n} 行区间上下限颠倒')
-        weight_type, divisor_text = get('weight_type'), get('divisor')
+    """只导入 OGL 官方英文页，核对自送与揽收的六档规则完全一致。"""
+    sheets = [sheet for sheet in book.sheets if sheet['name'] == 'CHINA OGL']
+    if len(sheets) != 1:
+        raise ValueError('请导入 OGL 官方费率表；旧第三方物流表不再用于核价')
+    sheet = sheets[0]
+    rows = sheet['rows']
+    expected = {'B': 'Handling Type', 'C': 'Scoring Group', 'E': 'Fix', 'F': 'Var',
+                'G': 'Unit of tariffication', 'H': 'Batteries', 'I': 'Liquids',
+                'J': 'Measurements, max cm', 'K': 'Shipment weight limits / min g',
+                'L': 'Shipment weight limits / max g', 'N': 'Shipment cost limit / min-max CNY',
+                'Q': 'Tarification type', 'R': 'Volume weight calculation'}
+    headers = [n for n, row in rows.items() if all(norm(row.get(c, {}).get('value')) == norm(v) for c, v in expected.items())]
+    if len(headers) != 1:
+        raise ValueError('OGL 费率表头或单位发生变化，请核实官方格式')
+    methods = {'Pick-up': {}, 'Self-Drop': {}}
+    for n, row in rows.items():
+        if n <= headers[0]: continue
+        def get(column):
+            cell = row.get(column, {})
+            if cell.get('formula'): raise ValueError('OGL 费率必须是明确数值，不执行公式')
+            return str(cell.get('value', '')).strip()
+        method, group = get('B'), get('C')
+        if not method and not group: continue
+        if method not in methods or group not in GROUPS or group in methods[method]:
+            raise ValueError('OGL 发运方法或评分组无效、重复')
+        if get('G') != '1 gramm': raise ValueError('OGL 重量计费单位必须是克')
+        dimensions = re.fullmatch(r'length\s*≤\s*([\d.]+)', get('J'))
+        span = re.fullmatch(r'([\d.]+)-([\d.]+)', re.sub(r'\s+', '', get('N')))
+        if not dimensions or not span: raise ValueError('OGL 尺寸或货值范围无法识别')
+        low, high = dec(span[1], '最低货值', True), dec(span[2], '最高货值', True)
+        min_g, max_g = dec(get('K'), '最小重量', True), dec(get('L'), '最大重量', True)
+        if low > high or min_g > max_g: raise ValueError('OGL 区间上下限颠倒')
         divisor = None
-        if weight_type == '最大实际重量与体积重量':
-            d = re.fullmatch(r'长×宽×高\(cm\)÷([\d.]+)', re.sub(r'\s+', '', unicodedata.normalize('NFKC', divisor_text)))
-            if not d: raise ValueError(f'第 {n} 行体积重量计算方式无法识别')
-            divisor = numeric(dec(d[1], '体积重除数', True))
-        elif weight_type != '实际重量' or divisor_text not in ('', '-'):
-            raise ValueError(f'第 {n} 行计费重量类型无法识别：{weight_type}')
-        rules.append({'name': name, 'carrier': carrier, 'group': group, 'service': service,
-            'fixed': numeric(fixed), 'per_g': numeric(unit_fee / unit_g), 'battery': yes_no(get('battery'), '电池'),
-            'liquid': yes_no(get('liquid'), '液体'), 'max_sum_cm': numeric(dec(dimensions[1], '三边和', True)),
-            'max_edge_cm': numeric(dec(dimensions[2], '最长边', True)), 'min_g': numeric(min_g), 'max_g': numeric(max_g),
-            'price_min_cny': numeric(low), 'price_max_cny': numeric(high), 'volumetric_divisor_kg': divisor,
-            'source_cell': f'{sheet["name"]}!{cols["rate"]}{n}', 'source_row': n})
-    return sheet['name'], rules, {}, []
+        if get('Q') == 'Max weight between the physical and volume ones':
+            found = re.fullmatch(r'L×W×H\(cm\)÷([\d.]+)', re.sub(r'\s+', '', get('R')))
+            if not found: raise ValueError('OGL 体积重公式无法识别')
+            divisor = numeric(dec(found[1], '体积重除数', True))
+        elif get('Q') != 'Physical weight' or get('R') != '-':
+            raise ValueError('OGL 计费重量类型无法识别')
+        if get('H') not in ('Allowed', 'Prohibited') or get('I') not in ('Allowed', 'Prohibited'):
+            raise ValueError('OGL 电池或液体规则无法识别')
+        methods[method][group] = {'name': 'OGL ' + group, 'carrier': 'OGL', 'service': 'OGL', 'group': group,
+            'fixed': numeric(dec(get('E'), '固定费')), 'per_g': numeric(dec(get('F'), '每克费')),
+            'battery': get('H') == 'Allowed', 'liquid': get('I') == 'Allowed',
+            'max_edge_cm': numeric(dec(dimensions[1], '最长边', True)),
+            'min_g': numeric(min_g), 'max_g': numeric(max_g),
+            'price_min_cny': numeric(low), 'price_max_cny': numeric(high), 'volume_divisor_g': divisor,
+            'source_cell': f'{sheet["name"]}!E{n}:R{n}', 'source_row': n}
+    if any(set(entries) != GROUPS for entries in methods.values()):
+        raise ValueError('OGL 费率表必须完整包含两种发运方法的六档规则')
+    for group in GROUPS:
+        a, b = methods['Pick-up'][group], methods['Self-Drop'][group]
+        if {k:v for k,v in a.items() if k not in IGNORED_DIFF_FIELDS} != {k:v for k,v in b.items() if k not in IGNORED_DIFF_FIELDS}:
+            raise ValueError('OGL 自送与揽收费率不同，需要按发运方法更新计费规则')
+    return sheet['name'], list(methods['Pick-up'].values()), {'scheme': 'OGL'}, []
 
 
 def parse_yandex(book):
@@ -247,6 +252,8 @@ def parse_yandex(book):
 
 def parse_template(path, platform, effective_date=None):
     if platform not in ('ozon', 'yandex'): raise ValueError('模板导入仅支持 ozon/yandex')
+    if platform == 'ozon' and not effective_date:
+        raise ValueError('导入 OGL 费率必须提供已核实的 --effective-date 生效日期')
     if effective_date: date.fromisoformat(effective_date)
     book = Workbook(path)
     sheet, rules, policy, warnings = (parse_ozon if platform == 'ozon' else parse_yandex)(book)
@@ -361,13 +368,34 @@ def load_active(root, platform, version=None):
     """按平台固定一份规则快照；不要求无关平台也已导入。"""
     if platform not in ('ozon', 'yandex'):
         raise ValueError('模板仅支持 ozon/yandex')
+    explicit = version is not None
     version = version or read_current(root)['platforms'].get(platform)
+    if platform == 'ozon' and not version:
+        return default_snapshot()
     if not version:
         raise ValueError(f'{platform} 尚未导入费率，请先使用模块的 --import-template 命令')
+    if platform == 'ozon':
+        bundled = default_snapshot()
+        if version == bundled['version']:
+            return bundled
     pack = read_version(root, version)
     content = pack['content']
     if content['platform'] != platform:
         raise ValueError('当前索引指向了错误平台')
     if content['effective_date'] and date.fromisoformat(content['effective_date']) > date.today():
         raise ValueError('当前规则尚未到官方生效日')
+    if platform == 'ozon' and content.get('policies', {}).get('scheme') != 'OGL':
+        if explicit:
+            raise ValueError('旧第三方物流报价已停用，请使用 OGL 重新核价')
+        return default_snapshot()
     return copy.deepcopy(pack)
+
+
+def default_snapshot():
+    """随应用分发的已核对 OGL 运价；已有版本仍保持独立、可读取。"""
+    pack = json.loads(Path(__file__).with_name('ogl_20260824.json').read_text(encoding='utf-8'))
+    if pack['version'] != 'ozon-' + digest(pack['content'])[:20]:
+        raise ValueError('应用内 OGL 运价校验失败，请重新安装完整费率文件')
+    if date.fromisoformat(pack['content']['effective_date']) > date.today():
+        raise ValueError('应用内 OGL 运价尚未到生效日期')
+    return pack

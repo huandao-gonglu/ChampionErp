@@ -49,25 +49,24 @@ def count_queries(monkeypatch):
     return counts
 
 
-def test_198_skus_share_channels_but_keep_distinct_quotes(batch_setup, monkeypatch, caplog):
+def test_198_skus_share_ogl_tariff_but_keep_distinct_quotes(batch_setup, monkeypatch, caplog):
     counts = count_queries(monkeypatch)
     with caplog.at_level(logging.INFO, logger="erp.pricing"):
         result = calculate_sku_prices(batch())
     assert len(result["items"]) == 198
     assert result["metrics"]["target_count"] == 396
     assert result["metrics"]["failed_sku_count"] == 0
-    assert counts == {"/v2/warehouse/list": 1, "/v2/delivery-method/list": 1}
+    assert not counts
     amounts = [row["result"]["results"][0]["shipping_amount"] for row in result["items"]]
     assert len(set(amounts)) == 198
     assert "198/198" in caplog.text
-    assert "Ozon 公共渠道查询" in caplog.text
     assert result["metrics"]["duration_ms"] >= result["metrics"]["ozon_discovery_ms"] >= 0
-    # 下批重新读取店铺渠道，不把旧授权/渠道缓存到其他请求。
+    # OGL 核价不需要查询旧 rFBS 仓库配送渠道。
     calculate_sku_prices(batch(1))
-    assert counts == {"/v2/warehouse/list": 2, "/v2/delivery-method/list": 2}
+    assert not counts
 
 
-def test_shared_query_failure_is_not_retried_for_every_sku(batch_setup, monkeypatch):
+def test_ogl_does_not_depend_on_retired_warehouse_endpoints(batch_setup, monkeypatch):
     calls = []
 
     def fail(client, path, **kwargs):
@@ -76,14 +75,12 @@ def test_shared_query_failure_is_not_retried_for_every_sku(batch_setup, monkeypa
 
     monkeypatch.setattr(PlatformClient, "call", fail)
     result = calculate_sku_prices(batch())
-    assert calls == ["/v2/warehouse/list"]
-    assert result["metrics"]["failed_sku_count"] == 198
-    for row in result["items"]:
-        ozon, yandex = row["result"]["results"]
-        assert not ozon["ok"] and "物流接口不可用" in str(ozon["errors"])
-        assert yandex["ok"]
-    calculate_sku_prices(batch(1))
-    assert len(calls) == 2
+    assert calls == []
+    assert result['metrics']['failed_sku_count'] == 0
+    for row in result['items']:
+        ozon, yandex = row['result']['results']
+        assert ozon['ok'] and yandex['ok']
+        assert ozon['calculation_basis']['shipping_evidence']['carrier'] == 'OGL'
 
 
 def test_rates_are_fetched_once_even_with_force_refresh(batch_setup, monkeypatch):

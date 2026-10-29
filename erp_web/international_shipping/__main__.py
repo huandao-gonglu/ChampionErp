@@ -2,7 +2,7 @@
 import argparse
 from pathlib import Path
 
-from .tariff_store import import_template, read_current, read_version
+from .tariff_store import import_template, read_current, load_active
 
 
 def main() -> None:
@@ -17,8 +17,9 @@ def main() -> None:
     if args.list_tariffs:
         if args.import_template or args.preview or args.effective_date:
             parser.error('查看版本和导入请分别执行')
-        for platform, version in read_current(args.rules_dir)['platforms'].items():
-            pack = read_version(args.rules_dir, version)
+        for platform in sorted(set(read_current(args.rules_dir)['platforms']) | {'ozon'}):
+            pack = load_active(args.rules_dir, platform)
+            version = pack['version']
             print(f'{platform}: {version}，{len(pack["content"]["rules"])} 条规则')
         return
     if not args.platform or not args.import_template:

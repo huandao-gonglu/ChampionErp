@@ -883,7 +883,7 @@ export function createWorkflowRuntime() {
       pricingMode,
       targetMarginPercent: recordNumber(saved, ['targetMarginPercent', 'target_margin_percent'], defaults.targetMarginPercent),
       markupPercent: recordNumber(saved, ['markupPercent', 'markup_percent'], 30),
-      shippingQuoteMode: (savedShippingMode || (legacyShippingUsd > 0 || legacyShippingCny > 0 ? 'manual' : 'auto')) as PricingTargetInput['shippingQuoteMode'],
+      shippingQuoteMode: (target.platform === 'ozon' ? 'auto' : savedShippingMode || (legacyShippingUsd > 0 || legacyShippingCny > 0 ? 'manual' : 'auto')) as PricingTargetInput['shippingQuoteMode'],
       shippingCurrency: shippingCurrency as PricingTargetInput['shippingCurrency'],
       shippingSelection: shippingSelection ? { warehouse_id: recordNumber(shippingSelection, ['warehouse_id']), route_id: recordString(shippingSelection, ['route_id']) } : null,
       shippingAmount: recordNumber(saved, ['shippingAmount', 'shipping_amount'], shippingCurrency === 'USD' ? legacyShippingUsd : legacyShippingCny),

@@ -9,7 +9,7 @@
 
 ERP 在 `services/pricing_shipping.py` 中调用该入口，复用本轮核价汇率，将原币报价
 换成现有物流字段的 CNY/USD，按未舍入金额选择最低价，再交给原核价流程计算与保存。
-手动物流报价仍是独立能力；自动失败不回退手动值或内置表。
+Mercado 手动物流报价仍是独立能力；Ozon 统一使用 OGL，Yandex 使用已配置的发布仓方案。自动失败不回退手动值。
 
 ## 模板维护
 
@@ -18,19 +18,22 @@ ERP 在 `services/pricing_shipping.py` 中调用该入口，复用本轮核价�
 
 ```bash
 .venv/bin/python -m erp_web.international_shipping --rules-dir data/tariffs --list-tariffs
-.venv/bin/python -m erp_web.international_shipping --rules-dir data/tariffs --platform ozon --import-template /绝对路径/费率.xlsx --preview
-.venv/bin/python -m erp_web.international_shipping --rules-dir data/tariffs --platform ozon --import-template /绝对路径/费率.xlsx
+.venv/bin/python -m erp_web.international_shipping --rules-dir data/tariffs --platform ozon --import-template /绝对路径/OGL费率.xlsx --effective-date 2026-08-24 --preview
+.venv/bin/python -m erp_web.international_shipping --rules-dir data/tariffs --platform ozon --import-template /绝对路径/OGL费率.xlsx --effective-date 2026-08-24
 ```
 
 检查预览报告后再正式导入。Yandex 使用 `--platform yandex`。
-可传 `--effective-date YYYY-MM-DD`；未来生效版本仅存档，到期重跑相同导入命令启用。
-原始 XLSX、版本 JSON 和导入报告均由模块维护。旧实验的 schema=1 快照可直接读取，
-不需要重新解释原表；删除下载目录中的原始模板不会影响已导入规则。
+OGL 必须传已核实的 `--effective-date YYYY-MM-DD`；Yandex 可选。未来生效版本仅存档，到期重跑相同导入命令启用。
+原始 XLSX、版本 JSON 和导入报告均由模块维护。旧 schema=1 快照仍可读取。Ozon 旧第三方表不再用于新核价，缺省或旧索引明确转用内置 OGL 表；显式指定旧版则要求重新核价。删除下载目录中的原始模板不会影响已导入规则。
 
 ## 计算与证据
 
-- Ozon：按模板各行决定使用实际重，或实际重与体积重取大，金额向上保留两位小数。仅保留真实 rFBS 仓库的
-  ACTIVE 配送方式；核验重量、尺寸、电池、液体和人民币货值档。
+- Ozon：`ogl.py` 按 CNY 货值与实重分组，Big/Premium Big 体积重为 cm³ ÷ 12 克。
+  使用包装后数据，实重上限 35kg、最长边 200cm、CNY 货值上限 22,525。重量向上进整克，
+  运输费沿用保守估算向上进到分。自送、揽收两组官方运价必须完全一致才能导入。
+  按 15–200 RUB 限额分别求电子服务费的三个区间，再与真实销售佣金档及目标利润共同求解，
+  选择最低达标售价。手动售价只回算、不自动抬价。按单件单包预估，不将单价冒充合包费用。
+  版本、来源核实范围与结算限制见 [OGL 核价说明](../../docs/ozon-ogl-pricing.md)。
 - Yandex：使用大陆模板的每克费率和进位步长。轻小件的重量/货值阈值从模板读取。
   60/90 cm 尺寸限制不是模板字段，延续原实验政策并记录来源；液体准入未知时报错。
   普通件缺少完整准入资料，返回结果中明确保留“仅运费试算”的限制。
@@ -42,17 +45,13 @@ ERP 在 `services/pricing_shipping.py` 中调用该入口，复用本轮核价�
   放在既有 `calculation_basis.shipping_evidence` 中；多国家证据在
   `calculation_basis.destination_shipping`。完整候选通过 `shipping_candidates` 返回，
   不要求把所有候选长期保存。
-- 一次 SKU 批次共用同一个 `ShippingModule`，首次加载的平台费率快照与 Ozon
-  仓库/配送渠道固定用于本批后续规格。公共查询失败也在本批复用错误，新一轮
-  创建实例后重新读取当前费率及渠道，不跨批次缓存店铺凭据。
+- 一次 SKU 批次共用同一个 `ShippingModule`，首次加载的平台费率快照固定用于本批后续规格。公共查询失败也在本批复用错误，新一轮
+  创建实例后重新读取当前费率，不跨批次缓存店铺凭据。
   修改包装、成本、报价输入时继续使用项目已有核价失效机制，不新增后台监控。
 
 ## 平台接口口径
 
-Ozon 使用 `/v2/warehouse/list`、`/v2/delivery-method/list`。
-保留原实验的 `XY/兴远 → Xingyuan` 名称匹配，证据标记为
-`active_method_name_mapping`，不能描述为平台已确认的 provider/template ID 绑定。
-官方入口：[Ozon Seller API](https://docs.ozon.ru/api/seller/)。
+OGL 运费预估不调用仓库/配送方式接口，不推测真实仓库是否可交货。本次未修改运单、订单或仓库履约流程。
 
 Mercado 使用 `/users/{user_id}/shipping_options/free`，高度×宽度×长度为 cm，
 重量为 g；报价币种使用响应值。请求沿用原实验的 `me2/drop_off` 口径，并记录在证据中；

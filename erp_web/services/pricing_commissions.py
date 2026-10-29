@@ -104,6 +104,8 @@ class PricingCommissions:
             rule = evidence.get("cached_rule") or parse_rule(evidence["tariff"], amount)
             if rule is not None:
                 quote["rule"] = rule
+        if platform == "ozon":
+            quote["price_bands"] = evidence["price_bands"]
         return quote
 
     def _ozon(self, store, category, target, amount, convert):
@@ -123,7 +125,13 @@ class PricingCommissions:
         # 表内价格档使用卢布，不把店铺的人民币价格直接与卢布档位比较。
         rub_price = amount / convert(Decimal(1), "RUB")
         rate, evidence = self.ozon_tariffs.quote(matches[0], target.get("brand_attribute"), rub_price)
-        return amount * rate, {**evidence, "account_id": str(store["client_id"])}
+        bands = []
+        for _, lower, upper in self.ozon_tariffs.bands:
+            band_rate, _ = self.ozon_tariffs.quote(matches[0], target.get('brand_attribute'), max(Decimal('.01'), lower))
+            bands.append({'rate': str(band_rate),
+                'lower': str(convert(max(Decimal(0), lower - Decimal('.005')), 'RUB')),
+                'upper': str(convert(upper + Decimal('.005'), 'RUB')) if upper is not None else None})
+        return amount * rate, {**evidence, "account_id": str(store["client_id"]), 'price_bands': bands}
 
     def _yandex(self, store, category, source, amount, currency, *, force_official=False):
         if not category.isdigit() or int(category) <= 0:

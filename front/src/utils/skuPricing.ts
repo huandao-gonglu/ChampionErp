@@ -44,6 +44,11 @@ export function buildSkuPricingEntries(rows: DraftSku[], skus: ProductSku[], tar
         || ['/v5/product/info/prices', '/v3/product/info/list'].includes(String(commission.endpoint)))) {
         errors.push('历史报价缺少上架前官方佣金依据，请重新核价')
       }
+      if (quote && !errors.length && target.platform === 'ozon'
+        && (pricingRecord(pricingRecord(quote.calculation_basis).shipping_evidence).source !== 'ogl_tariff'
+          || !pricingRecord(quote.calculation_basis).electronic_service)) {
+        errors.push('此报价尚未使用 OGL，请重新核价')
+      }
       if (quote && !errors.length && target.platform === 'yandex'
         && !pricingRecord(pricingRecord(pricingRecord(quote.calculation_basis).shipping_evidence).fulfillment_plan).fingerprint) {
         errors.push('此报价缺少仓库物流方案，请配置后重新核价')

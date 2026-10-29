@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
-from typing import Callable
+from typing import Protocol
 
 
 def number(value: object, label: str, *, positive: bool = False) -> Decimal:
@@ -42,7 +42,9 @@ class Package:
 
 
 # 返回当前核价模式下的售价 CNY。第三个参数是渠道最低货值；手动售价不得被抬高。
-PriceForShipping = Callable[[Decimal, str, Decimal], Decimal]
+class PriceForShipping(Protocol):
+    def __call__(self, amount: Decimal, currency: str, minimum: Decimal,
+                 conditions: dict | None = None) -> Decimal | None: ...
 
 
 @dataclass(frozen=True)

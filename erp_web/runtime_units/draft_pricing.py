@@ -11,6 +11,7 @@ from uuid import uuid4
 from typing import Any, Protocol
 
 from erp_web.context import get_context
+from erp_web.international_shipping.tariff_store import default_snapshot
 from erp_web.product_model import mercadolibre_sales_condition_basis
 from erp_web.product_model.sku_model import selected_skus
 from erp_web.runtime_units.draft_publish_context import draft_for_publish_target
@@ -62,6 +63,7 @@ def _pricing_environment() -> str:
     return _fingerprint([
         context.config.load_app_config().get("pricing_defaults"),
         current.read_text() if current.exists() else None,
+        default_snapshot()["version"],
     ])
 
 
@@ -122,6 +124,8 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
             if "manual_price" in patches[key].model_fields_set:
                 manual = patches[key].manual_price
                 template["manual_price"] = manual.model_dump() if manual is not None else None
+        if target["platform"] == "ozon":
+            template.update(shipping_quote_mode="auto", shipping_amount=0)
         templates[key] = template
     try:
         selected = selected_skus(product, draft)
@@ -159,6 +163,9 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
             calculated_target = {**template, **own_target, **{field: deepcopy(target.get(field, "")) for field in (
                 "platform", "site", "language", "category_id", "listing_currency", "currency_fingerprint", "sites_to_sell")}, "target_key": key}
             if target["platform"] == "ozon":
+                calculated_target["shipping_quote_mode"] = "auto"
+                calculated_target.pop("shipping_amount", None)
+                calculated_target.pop("shipping_tariff_version", None)
                 attributes = {**(target.get("attributes") or {}), **((row.get("attributes_by_target") or {}).get(key) or {})}
                 calculated_target["brand_attribute"] = deepcopy(attributes.get("85"))
             sku_targets.append(calculated_target)

@@ -37,6 +37,8 @@ def sku_quote_errors(fact: dict[str, Any], row: dict[str, Any], draft: dict[str,
         return ["请重新核价并应用此 SKU 的售价"]
     if not has_official_commission(basis):
         return ["此 SKU 缺少官方佣金依据，请重新核价并应用售价"]
+    if key.startswith('ozon:') and (record(basis.get('shipping_evidence')).get('source') != 'ogl_tariff' or not basis.get('electronic_service')):
+        return ['此 SKU 尚未使用 OGL 核价，请重新核价并应用售价']
     if key.startswith('yandex:') and not record(record(basis.get('shipping_evidence')).get('fulfillment_plan')).get('fingerprint'):
         return ['此 SKU 缺少仓库物流方案，请配置后重新核价并应用售价']
     target = next((item for item in draft.get("target_sites", []) if f"{item.get('platform')}:{item.get('site')}".lower() == key), {})
@@ -75,7 +77,7 @@ def sku_quote_errors(fact: dict[str, Any], row: dict[str, Any], draft: dict[str,
         matches = text(desired) == text(actual) if field == "return_disposition" else same_number(desired, actual)
         if not matches:
             return ["货损预估已变化，请重新核价并应用此 SKU 的售价"]
-    shipping_mode = "manual" if "shipping_amount" in own_target else target_template.get("shipping_quote_mode")
+    shipping_mode = "auto" if key.startswith("ozon:") else ("manual" if "shipping_amount" in own_target else target_template.get("shipping_quote_mode"))
     for field in ("payment_fee_percent", "other_fee_percent", "target_margin_percent", "markup_percent", "shipping_amount"):
         # 自动运费是逐 SKU 报价结果，共用模板中的金额不参与它的有效性比较。
         if field == "shipping_amount" and shipping_mode == "auto":
@@ -87,8 +89,8 @@ def sku_quote_errors(fact: dict[str, Any], row: dict[str, Any], draft: dict[str,
             continue
         if field in target_template:
             desired = "manual" if field == "pricing_mode" and own_target.get("manual_price") else target_template[field]
-            if field == "shipping_quote_mode" and "shipping_amount" in own_target:
-                desired = "manual"
+            if field == "shipping_quote_mode":
+                desired = shipping_mode
             if text(desired) != text(basis.get(field)):
                 return ["核价规则已变化，请重新计算并应用此 SKU 的售价"]
     manual = record(own_target.get("manual_price")) or (record(target_template.get("applied_price")) if target_template.get("pricing_mode") == "manual" else {})

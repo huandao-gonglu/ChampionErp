@@ -11,7 +11,7 @@ from erp_web.services.pricing_service import calculate_target_pricing
 from tests.pricing_test_utils import official_commission
 
 
-def calculate(platform="ozon", mode="margin", disposition="discard", rate=10, currency="CNY", **extra):
+def calculate(platform="yandex", mode="margin", disposition="discard", rate=10, currency="CNY", **extra):
     common = {"cost_cny": 100, "freight_cny": 5, "prep_fee_cny": 2, "other_cost_cny": 13,
               "usd_cny_rate": 7, "rub_cny_rate": 12}
     target = {"platform": platform, "site": "global", "listing_currency": currency,
@@ -25,7 +25,7 @@ def calculate(platform="ozon", mode="margin", disposition="discard", rate=10, cu
     return calculate_target_pricing(common, target, commission_resolver=official_commission)
 
 
-@pytest.mark.parametrize("platform", ["yandex", "ozon"])
+@pytest.mark.parametrize("platform", ["yandex"])
 @pytest.mark.parametrize("mode", ["margin", "markup", "manual"])
 @pytest.mark.parametrize("disposition", ["discard", "resell"])
 @pytest.mark.parametrize("currency,fx", [("CNY", 1), ("USD", Fraction(1, 7)), ("RUB", 12)])
@@ -86,7 +86,7 @@ def test_invalid_return_inputs_rejected_by_contract_and_engine(field, value):
 
 
 def test_fingerprint_covers_assumptions_and_inputs_are_unchanged():
-    target = {"platform": "ozon", "site": "global", "listing_currency": "CNY", "shipping_quote_mode": "manual",
+    target = {"platform": "yandex", "site": "global", "listing_currency": "CNY", "shipping_quote_mode": "manual",
               "shipping_currency": "CNY", "shipping_amount": 30, "return_rate_percent": 10}
     common = {"cost_cny": 100, "freight_cny": 5, "prep_fee_cny": 2}
     before = deepcopy(target)
