@@ -31,7 +31,7 @@ const canClose = computed(() => {
     && !result.read_errors?.length && checks.length > 0 && checks.some(value => !value)
     && observed.length > 0 && observed.every(value => value !== null)
 })
-const names: Record<string, string> = { quantity: '库存', amount: '价格', currency: '币种', state: '销售状态', title: '标题', description: '描述', pictures: '图片', attributes: '属性' }
+const names: Record<string, string> = { quantity: '库存', amount: '价格', currency: '币种', state: '销售状态', title: '标题', description: '描述', pictures: '图片', attributes: '属性', guarantee_period: '保修期限' }
 const targets = computed(() => reviewed.value.result.changes || reviewed.value.request.changes as Record<string, unknown> || {})
 function display(value: unknown): string {
   if (value == null) return '未取得'

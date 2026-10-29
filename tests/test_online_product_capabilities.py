@@ -30,7 +30,12 @@ from tests.test_native_agent_integration import CONVERSATION, body, service
 
 
 @pytest.mark.parametrize("entry", ["direct", "python"])
-def test_unknown_online_field_returns_to_model_for_correction(online, tmp_path, monkeypatch, entry):
+@pytest.mark.parametrize("invalid_fields,expected_error", [
+    (["content.category_id", "category_id", "market_category_id"], "不是在线商品公开字段：category_id"),
+    (["content.attributes", "stocks", "content", "capabilities"], "content 已包含 content.attributes"),
+])
+def test_invalid_online_fields_return_to_model_for_correction(
+        online, tmp_path, monkeypatch, entry, invalid_fields, expected_error):
     """重现真实对话的字段探测；错误须在领域调用前返回模型，不结束整轮。"""
     from tests.ai_code_mode_helpers import business_returns, python_call
 
@@ -49,10 +54,10 @@ def test_unknown_online_field_returns_to_model_for_correction(online, tmp_path, 
     async def model(messages, info):
         turns.append(1)
         if len(turns) == 1:
-            fields = ["content.category_id", "category_id", "market_category_id"]
+            fields = invalid_fields
         elif len(turns) == 2:
             assert not calls
-            assert "不是在线商品公开字段：category_id" in str(messages)
+            assert expected_error in str(messages)
             fields = ["content.title"]
         else:
             assert business_returns(messages)[-1].content["records"][0]["values"]["content.title"] == "测试商品"

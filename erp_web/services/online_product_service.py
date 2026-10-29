@@ -173,11 +173,11 @@ class OnlineProductService:
         listing = self.store.get(request.listing_id)
         self._config(listing.platform, listing.account_id)
         if listing.version != request.version:
-            raise OnlineConflict("商品快照已更新，请重新查看并确认变更")
+            raise OnlineConflict("商品快照已更新，请重新读取目标字段和版本后提交，原修改未入队", code="ONLINE_VERSION_STALE")
         self._validate_changes(listing, request)
         self._config(listing.platform, listing.account_id)
         if self.store.get(listing.id).version != request.version:
-            raise OnlineConflict("属性校验期间商品已更新，请重新查看并确认")
+            raise OnlineConflict("属性校验期间商品已更新，请重新读取目标字段和版本后提交，原修改未入队", code="ONLINE_VERSION_STALE")
         return listing
 
     def _validate_changes(self, listing, request):

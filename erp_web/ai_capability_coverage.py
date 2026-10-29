@@ -88,7 +88,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     *(AiCapabilityCoverageEntry(method="POST", path=path, business_domain="在线商品", disposition="internal_only",
-        reason="在线商品页面的多选范围预览与批量投递门面；AI 保留逐 SKU 的 online_products_change 原生审批，两者共用领域队列、版本和冲突校验。") for path in (
+        reason="在线商品页面的多选范围预览与平台批量投递门面；AI 的 online_products_change/online_products_changes_apply 通过原生审批复用逐项领域队列、版本和冲突校验，不调用此页面门面。") for path in (
         "/api/online-products/change-batch/preview", "/api/online-products/change-batch",
     )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="发布仓库设置", disposition="internal_only", reason="用户在系统设置中同步远端发布仓库并指定物流商和运输模式；核价和发布能力使用已确认的配置，模型不推断仓库运输服务。") for method, path in (
@@ -155,8 +155,9 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         ("POST", "/api/orders/fulfillment/upload-label"),
     )),
     AiCapabilityCoverageEntry(method="GET", path="/api/image-hosting", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
-    AiCapabilityCoverageEntry(method="GET", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面读取同步间隔，不作为模型业务工具。"),
-    AiCapabilityCoverageEntry(method="POST", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面保存同步间隔，不作为模型业务工具。"),
+    AiCapabilityCoverageEntry(method="GET", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面读取同步间隔与水印，不作为模型业务工具。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面保存同步间隔与水印，不作为模型业务工具。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/system-settings/watermark-preview", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面预览当前水印表单，不保存配置、不上传图片。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/save", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/default", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/delete", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),

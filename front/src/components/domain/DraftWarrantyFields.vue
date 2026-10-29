@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
+import YandexWarrantyFields from './YandexWarrantyFields.vue'
 import type { DraftDetail, PrecheckIssue, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{ draft: DraftDetail; issues: PrecheckIssue[]; loading?: boolean }>()
@@ -122,6 +123,7 @@ watch(() => [props.draft.draftId, props.draft.platform, props.draft.saleTerms, p
 </script>
 
 <template>
+  <YandexWarrantyFields v-if="draft.platform === 'yandex'" :draft="draft" :issues="issues" :loading="loading" @invalidate-publish-validation="emit('invalidatePublishValidation')" />
   <fieldset v-if="draft.platform === 'mercadolibre'" :disabled="loading" class="mb-3 min-w-0 rounded-lg border border-accent-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900/80" data-testid="draft-warranty-fields">
     <h3 class="text-sm font-semibold text-accent-950 dark:text-white">Mercado 保修条款</h3>
     <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ warrantySummary }}</div>

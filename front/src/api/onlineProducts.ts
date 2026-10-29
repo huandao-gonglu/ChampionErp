@@ -1,4 +1,5 @@
 import { apiClient } from '@/api/client'
+import type { YandexGuaranteePeriod } from '@/utils/yandexWarranty'
 
 export type OnlinePlatform = 'mercadolibre' | 'ozon' | 'yandex'
 export type OnlineOperation = 'price' | 'stock' | 'content' | 'sale_state' | 'archive'
@@ -20,7 +21,7 @@ export interface OnlineListing {
   platform_issues: PlatformIssue[]
   archived?: boolean
   markets: Array<{ id: string; site_id: string; logistic_type: string; raw_status: string; price: string | null; currency: string }>
-  content: { title?: string; description?: string; pictures?: Array<string | {id: string; url: string}>; attributes?: Array<Record<string, unknown>>; attribute_names_error?: string }
+  content: { guarantee_period?: YandexGuaranteePeriod; title?: string; description?: string; pictures?: Array<string | {id: string; url: string}>; attributes?: Array<Record<string, unknown>>; attribute_names_error?: string }
   capabilities: Record<Exclude<OnlineOperation, 'archive'>, {enabled: boolean; reason: string; scope: string; fields: string[]}> & {archive?: {enabled: boolean; reason: string; scope: string; fields: string[]}}
 }
 export interface OnlineJob {
@@ -67,6 +68,7 @@ export interface OnlineAttributeDefinition {
   is_collection: boolean; max_value_count: number | null; default_unit_id: string
   unit_options: Array<{id: string; name: string}>; options: OnlineAttributeOption[]
   has_more_values: boolean; format_hint: string
+  max_length?: number | null; min_value?: string | null; max_value?: string | null
 }
 export interface OnlineAttributeRow { id: string; parameterId: number; value: string; valueId?: string; unitId?: number }
 interface AttributePage { category_id: string; attributes: OnlineAttributeDefinition[]; has_more: boolean; next_cursor: string }

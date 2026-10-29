@@ -5,6 +5,8 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any
 
+from erp_web.product_model.yandex_warranty_model import compile_yandex_guarantee_period
+
 from erp_web.schemas.online_products import ChangeRequest, OnlineListing
 from erp_web.product_model.online_attribute_model import validate_yandex_attribute_rows
 
@@ -56,6 +58,11 @@ def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
             raise ValueError("标题不能为空且不得超过 500 字")
         if "description" in changes and not isinstance(changes["description"], str):
             raise ValueError("描述必须是文本")
+        if "guarantee_period" in changes:
+            if listing.platform != "yandex":
+                raise ValueError("保修期限字段仅支持 Yandex")
+            if compile_yandex_guarantee_period(changes["guarantee_period"]) is None:
+                raise ValueError("请填写要提交的 Yandex 保修期限")
         if "pictures" in changes:
             pictures = changes["pictures"]
             if not isinstance(pictures, list) or not 1 <= len(pictures) <= 30:
@@ -146,7 +153,13 @@ def confirmation(listing: OnlineListing, request: ChangeRequest) -> dict[str, bo
         return {"state": listing.raw_status == state, **{f"market:{m.id}": m.raw_status == state for m in listing.markets}}
     result = {}
     for field, expected in changes.items():
-        if field == "attributes":
+        if field == "guarantee_period" and listing.platform == "yandex":
+            try:
+                actual = compile_yandex_guarantee_period(listing.content.get(field))
+                result[field] = actual == compile_yandex_guarantee_period(expected)
+            except ValueError:
+                result[field] = False
+        elif field == "attributes":
             actual = listing.content.get(field, [])
             if listing.platform == "yandex":
                 actual = [{**row, **({"valueId": str(row["valueId"])} if "valueId" in row else {})} for row in actual]

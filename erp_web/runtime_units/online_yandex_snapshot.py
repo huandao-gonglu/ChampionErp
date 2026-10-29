@@ -44,7 +44,8 @@ def build_stocks(mode, warehouses, stock_results, remote_id):
             stock_offer = next((r for r in response["offers"] if r.get("offerId") == remote_id), {})
             quantity = available_stock(stock_offer.get("stocks", []))
             writable = any(m.get("apiAvailability") == "AVAILABLE" and m.get("placementType") != "FBY" for m in warehouse.get("models", []))
-            stocks.append(StockScope(id=wid, label=str(warehouse.get("name") or f"卖家仓 {wid}"), warehouse_id=wid, quantity=quantity, writable=writable and quantity is not None, reason="" if writable else "仓库当前不允许写入"))
+            # 设置绝对库存无需已有数量；平台未返回数量时保留未知值，不影响仓库写入权限。
+            stocks.append(StockScope(id=wid, label=str(warehouse.get("name") or f"卖家仓 {wid}"), warehouse_id=wid, quantity=quantity, writable=writable, reason="" if writable else "仓库当前不允许写入"))
     elif mode == "campaign_warehouses":
         response = stock_results["campaign"]
         warehouses = response.get("warehouses")
@@ -72,7 +73,7 @@ def build_listing(mapping, campaign, hidden, card, default_price, stocks, *, acc
     raw_status = str(campaign.get("status") or ("ARCHIVED" if offer.get("archived") else offer.get("cardStatus") or ""))
     attrs = card_attributes(card, attribute_names)
     content = {"title": str(offer.get("name") or ""), "description": str(offer.get("description") or ""), "pictures": offer.get("pictures") or [], "attributes": attrs,
-               "attribute_names_error": attribute_names_error}
+               "attribute_names_error": attribute_names_error, "guarantee_period": offer.get("guaranteePeriod") or {}}
     return OnlineListing(id=listing_identity("yandex", account_id, remote_id), platform="yandex", account_id=account_id,
         remote_id=remote_id, model="business_offer", title=content["title"], seller_sku=remote_id, thumbnail=next(iter(content["pictures"]), ""),
         buyer_links=yandex_buyer_links(mapping),
@@ -81,7 +82,7 @@ def build_listing(mapping, campaign, hidden, card, default_price, stocks, *, acc
         snapshot={"mapping": mapping.get("mapping", {}), "offer": offer, "default_price": default_price, "campaign": campaign, "card": card, "hidden": hidden},
         capabilities={"price": Capability(enabled=any(p.writable for p in prices), scope="所选账号 / 店铺"),
             "stock": Capability(enabled=any(s.writable for s in stocks), scope="所选卖家仓 / 仓库组"),
-            "content": Capability(enabled=True, scope="账号商品内容（全部店铺）", fields=["title","description","pictures"]+(["attributes"] if attrs else [])),
+            "content": Capability(enabled=True, scope="账号商品内容（全部店铺）", fields=["title","description","pictures","guarantee_period"]+(["attributes"] if attrs else [])),
             "sale_state": Capability(enabled=bool(campaign), scope="当前店铺", reason="隐藏 / 恢复仅影响当前店铺；归档商品需先恢复归档，恢复销售不绕过平台审核")})
 
 

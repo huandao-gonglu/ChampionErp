@@ -7,13 +7,19 @@
 | `OnlineProductService.read_page` / `detail` | `online_products_read` | 列表为有界摘要，详情复用公开字段；直接读取或在 Code Mode 中逐页计算 |
 | `GET /api/online-products/attributes` | `online_products_attributes` | 按真实刊登及版本读取实际类目、属性定义、当前值及分页候选，复用页面领域服务 |
 | `POST /api/online-products/change` | `online_products_change` | 一个入口处理既有 price / stock / content / sale_state / archive，原生审批后入队即返回提交回执 |
+| 同一 `OnlineProductService.change` | `online_products_changes_apply` | 按明确目标清单统一审批，固定操作和范围，逐项入队并计算真实成功/失败数；不调用平台批量写入旁路 |
+| `OnlineProductService.job_detail` 的同源只读任务 | `online_products_job_read` | 查询本地状态和精简回执，不访问平台 |
 | `POST /api/online-products/sync` | `online_products_sync` | 沿用领域同步任务，仅读取平台并刷新本地快照 |
 | `POST /api/online-products/refresh-status` | `online_products_refresh_status` | 按 listing_id 直接查询单件状态并更新本地记录，不扫描店铺、不创建 Job |
 | `POST /api/online-products/reconcile` | `online_products_reconcile` | 只向平台回读已提交修改的结果，不重发修改 |
 | `POST /api/online-products/close` | `online_products_close` | 核对后通过原生审批结束未确认的本地操作，保留原结果未知记录，不撤销或重放平台请求 |
 | `POST /api/online-products/retry` | `online_products_retry` | 原生审批后交由既有失败重试规则判断，入队即返回 |
 
-`online_products_read` 的查询参数为 `id,platform,catalog,q,status,market,page,limit,view,group_id`，图片来源仍由 `include_source_images` 控制。有 `id` 时读取完整公开详情，包含内容、买家链接、修改能力、版本、库存和同步时间；无 `id` 时通过 `OnlineProductService.read_page` 读取摘要。摘要保留身份、标题、状态、价格、库存及同步时间，不携带长描述、属性、图片、原始快照或完整历史任务。需要规格和修改能力时按真实刊登 ID 读取详情。
+`online_products_read` 通过 `id` 定位单件，或通过 `platform,catalog,q,status,market,page,limit,view,group_id` 读取列表，图片来源仍由 `include_source_images` 控制。两种入口均支持 `fields` 按需投影；不传 `fields` 时，单件返回完整公开详情，列表返回摘要。摘要保留身份、标题、状态、价格、库存及同步时间，不携带长描述、属性、图片、原始快照或完整历史任务。
+
+读取优先选择任务所需的对象点路径。`fields` 的参数说明列出内容、保修、库存、价格及各操作能力的常用路径，保留其他公开字段的读取能力，不维护场景枚举。`content` 含长描述、图片和全部属性，局部任务应读取子字段；`capabilities` 按操作选择，不能以首个 SKU 的权限代表其他成员。父子路径重叠（如同时选择 `content` 和 `content.attributes`）在参数校验阶段拒绝，错误指出应删除哪一层；不静默改变 `values` 的键。
+
+指定字段后的 `records` 固定包含真实刊登 ID、版本、同步与详情状态，所选值在 `values[字段路径]`。已取得相关字段、操作能力和版本就可以复用，不再为修改逐件读取完整详情。字段缺失、`null`、零值继续区分；宽字段读取应减小 `limit`，条数上限不保证响应字节数。
 
 `catalog=current` 默认排除归档商品，`archived` 仅读取归档商品，`all` 包含两者。分组、汇总和分页均使用所选目录；页面背景包含当前目录，AI 查询当前列表时传递同一 `catalog`。归档状态与库存、停售各自独立。
 
@@ -42,6 +48,14 @@
 
 统一修改输入复用 `OnlineChange`，字段为 `listing_id,version,operation,scope_id,changes`；HTTP 的 `ChangeRequest` 继承它并保留 `idempotency_key`。AI 提交键由现有可信执行身份机械生成，不由模型挑选或覆盖。库存使用绝对数量；价格保留范围和币种；内容仅修改后端允许字段，图片仍使用完整目标列表。业务校验、账号隔离、冲突检查、任务互斥和平台回读继续由原服务执行。
 
+`online_products_changes_apply` 接受至多 100 个 `OnlineChange`，同一批固定平台、账号、操作和范围，拒绝重复 SKU；不同 SKU 可有不同内容值。整组任务传入真实 `group_id`，审批与执行前按当前目录核对成员集合，漏项和组外目标在写入前拒绝。超过上限的目标须先完整读取，再按明确子集分批提交（子批不声明整组），最终按逐项回执核对完整覆盖。原生审批绑定全部参数和目标快照，执行时逐项复用 `change`；部分入队后取消或失败不会回滚已提交项。子项幂等键从可信调用身份和刊登 ID 生成，模型不能覆盖；失败子集恢复不重发成功项，不将批次等同于原子事务或远端原生批量接口。
+
+任务查询、回读和人工结束通过 `online_product_tool_results.py` 返回紧凑回执，移除重复的 `before` 全商品快照和原始平台响应；完整领域记录和历史消息继续保留。`recovery` 只描述该任务自身，不能证明没有其他阻塞或产生写权限。`partial/failed/confirmed/submitted/closed_unconfirmed` 无需再次结束；版本变化、结束状态不适用、回读状态不适用分别有稳定错误码。`can_close` 只是基本证据条件，执行仍在原事务边界重查时效、版本、账号及活动任务。
+
+`GlobalAgentChatService` 通过既有 Factory 的原生 `output_validator` 接入 `online_product_completion.py`。它仅从本轮 `ModelMessage` 的实际修改尝试和回执派生检查：版本过期，或旧阻塞任务已终结而新修改尚未提交时，用 `ModelRetry` 要求模型继续核实。不会把读过的商品当作修改目标，不从用户自然语言生成权限，不保存工具计划，也不调用工具或开启第二个 Agent loop。新用户输入、审批拒绝、真实新阻塞、已入队回执及目标值已满足的明确读取证据均会解除相应检查；未知结果、等待平台和资源不足不强制推进。模型忽略检查时由原生有限重试终止，不能无限发“继续”。尚未被模型声明/尝试的意图没有可靠机器契约，因此不承诺任意自然语言任务都能被强制完成；整组覆盖由批量工具的明确 `group_id` 契约保证。
+
+原生机制依据：已核对安装的 Pydantic AI Slim 2.44.0 / Harness 0.34.0 与官方 [Output validators](https://pydantic.dev/docs/ai/core-concepts/output/)；框架负责校验重试和流事件，ERP 只提供业务完成证据。适配缺口是框架不了解在线商品任务状态和目标覆盖；若领域入口以后直接完整处理这些恢复步骤，可移除相应输出检查，不保留双重恢复流程。
+
 Yandex 在线属性支持补充缺失字段和修改枚举：`changes.attributes` 使用 `{id:字符串,parameterId:整数,value:平台原文,valueId:枚举编号字符串,unitId:单位整数}`，枚举及单位按类目要求提供；同一属性的多行代表完整目标值集合。页面经 `GET /api/online-products/attributes` 按刊登身份与版本读取类目字段及分页候选，AI 可复用类目查询能力获取真实候选，不能猜测枚举编号。审批、入队及发送前使用相同领域校验，保留未编辑属性，禁止改写分组或只读字段。其他平台仍沿用各自已有属性编辑契约。协议依据：[类目参数](https://yandex.ru/dev/market/partner-api/doc/en/reference/content/getCategoryContentParameters)、[商品更新](https://yandex.ru/dev/market/partner-api/doc/ru/reference/business-offer-mappings/updateOfferMappings)。
 
 Yandex 保留 `operation=sale_state` 的店铺停售，并增加 `operation=archive,scope_id=business,changes={archived:true|false}`。归档及恢复作用于商家全部店铺，保留库存和隐藏设置；恢复归档不保证立即可售。单件官方回执无失败项时确认归档成功并移入相应目录，逐项失败留在原目录，未知结果仅按需读取目标归档状态核实。AI 使用现有逐 SKU 修改工具及原生审批范围。
@@ -67,6 +81,10 @@ Mercado 新图片的上传与关联依据官方[图片文档](https://global-sel
 2026-10-05 焦点与提交边界验收：后端 2202 项测试、47 项子测试，前端 535 项测试及类型检查通过。隔离验收覆盖 `ask/full` 下单件和批量入队后立即完成 AI 回合，以及远端随后超时不重新唤醒模型。该次验收时真实库存任务仍在旧进程中执行，当次未重启服务、重放业务修改或改写历史回执；该记录不代表当前服务进程的状态。
 
 ## 验证边界
+
+`tests/test_online_agent_completion.py` 覆盖 74 项批量提交中单项冲突、完整成员校验、仓库范围隔离、审批绑定、取消后保留已提交项、原生 ask/full Deferred 恢复、精简回执与 `partial` 无需解锁，以及原生输出校验阻止可恢复遗漏、有限重试和真实退出条件。均为隔离数据库与受控模型/平台替身，不代表真实平台已经执行商品修改。
+
+2026-10-28 窄字段读取验收：使用故障对话对应的 74 个 SKU 快照，生产库仅只读取样，领域服务和对话历史隔离到临时数据库；真实模型沿用当前 `global.chat` 配置与生产工具目录，只允许读取本地样本。任务要求先核对保修、库存和修改能力，不提交修改。`grok-4.7` 首次选择 `content.guarantee_period`、`stocks`、`capabilities.content`、`capabilities.stock`，并附标题和销售状态，未读取完整内容、图片或全部属性。两页分别覆盖 50、24 个 SKU，无重复遗漏；紧凑 JSON 响应为 67,798、33,068 字节，未触发输出超限。运行中有一次 `run_code` 重试，随后完成，共 4 次模型请求、约 101 秒。这验证了本次只读样本的字段选择和覆盖，不代表批量写入已验收，也不保证其他真实模型调用无需重试。
 
 `tests/test_online_product_capabilities.py` 通过真实服务与隔离数据库验证读取契约、跨页计算、统一修改、版本与审批绑定、失败重试、未知结果只回读，以及 `ask/full` 两种模式下的原生审批 → Deferred → 业务任务入队 → 模型完成链路（单件及批量）；验证无需执行远端写入即可完成 AI 回合，后续平台超时不会唤醒已完成回合。大组合回归覆盖 198 个 SKU、超过 256 KiB 的页面载荷、大同步回执，以及直接工具和 Python 一次读取首项、完整成员分页无重漏；断言 AI 读取不调用页面完整载荷或加载历史任务。详情读取覆盖直接工具与 Python 并发调用、显式/省略平台参数，以及脚本缺少导入后由原生重试恢复的完整工具结果校验。模型和平台 I/O 使用受控替身，不把这些结果当成真实店铺写入或任意模型理解能力的证明。
 

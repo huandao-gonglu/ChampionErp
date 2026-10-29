@@ -10,6 +10,7 @@ import type { ChatCommandContext } from '@/services/chatCommands'
 import { GLOBAL_CHAT_CONVERSATION_PREFIX } from '@/types/aiWork'
 import type { AiWorkUiMessagesResponse, PendingToolCall } from '@/types/aiWork'
 import { useAiPageContextStore } from './aiPageContext'
+import { projectChatMessages } from '@/utils/aiChatMessages'
 
 export const AI_CHAT_TURN_ALREADY_ACCEPTED = 'AI_CHAT_TURN_ALREADY_ACCEPTED'
 export const AI_CHAT_SELECTION_KEY = 'ai-chat-selected-conversation'
@@ -50,15 +51,9 @@ export const useAiChatStore = defineStore('aiChat', () => {
   ))
   const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
   const isRunning = computed(() => isBusy.value || runActive.value)
-  const messages = computed<UIMessage[]>(() => {
-    const result: UIMessage[] = JSON.parse(JSON.stringify(chat.value?.messages ?? []))
-    const latestUser = result.slice().reverse().find(message => message.role === 'user')
-    if (latestUser && localTurnStartedAt.value) {
-      const metadata = (latestUser.metadata ?? {}) as Record<string, unknown>
-      if (!metadata.ai_turn) latestUser.metadata = { ...metadata, ai_turn: { started_at: localTurnStartedAt.value } }
-    }
-    return result
-  })
+  const messages = computed<UIMessage[]>(previous => projectChatMessages(
+    chat.value?.messages ?? [], localTurnStartedAt.value, previous,
+  ))
   const error = computed(() => localError.value ?? chat.value?.error as AiChatError | undefined)
   const canSend = computed(() => Boolean(input.value.trim()) && !stopping.value && !forking.value && !restoring.value && !restoreError.value)
   const canStop = computed(() => isBusy.value || runActive.value || pendingToolCalls.value.length > 0 || stopping.value)

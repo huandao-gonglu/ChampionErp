@@ -36,6 +36,8 @@ const approvalBusy = ref(false)
 let lastScrollTop = 0
 let lastTouchY: number | undefined
 let resizeObserver: ResizeObserver | undefined
+let scrollScheduled = false
+let disposed = false
 
 function updateScrollPosition() {
   const element = scrollRef.value
@@ -81,7 +83,11 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 async function scrollToBottom() {
+  if (scrollScheduled || disposed) return
+  scrollScheduled = true
   await nextTick()
+  scrollScheduled = false
+  if (disposed) return
   const element = scrollRef.value
   // 等待渲染期间用户仍可能开始查看历史，执行前必须再次检查。
   if (element && followingLatest.value) {
@@ -95,9 +101,10 @@ function jumpToLatest() {
   void scrollToBottom()
 }
 
-watch(() => [props.messages, props.busy, props.error], () => {
+// 正文高度变化由 ResizeObserver 驱动，不在每个 token 上深遍历工具回执。
+watch([() => props.messages.length, () => props.messages.at(-1)?.id, () => props.busy, () => props.error], () => {
   void scrollToBottom()
-}, { deep: true })
+})
 
 watch(() => props.conversationId, jumpToLatest)
 
@@ -112,7 +119,7 @@ onMounted(() => {
   }, { immediate: true, flush: 'post' })
 })
 
-onBeforeUnmount(() => resizeObserver?.disconnect())
+onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
 </script>
 
 <template>

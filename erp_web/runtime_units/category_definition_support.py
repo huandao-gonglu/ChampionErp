@@ -17,6 +17,7 @@ import ssl
 import urllib.error
 from typing import Any
 
+from erp_web.schemas.category_constraints import attribute_value_limits
 from erp_web.schemas.category import (
     category_attribute_text_format,
     category_attribute_text_format_hint,
@@ -423,6 +424,7 @@ def public_attribute_summary(
     *, platform: str,
 ) -> CategoryAttributeSummary:
     return CategoryAttributeSummary(
+        **attribute_value_limits(definition.constraints),
         id=definition.id,
         name=definition.name,
         required=definition.required,

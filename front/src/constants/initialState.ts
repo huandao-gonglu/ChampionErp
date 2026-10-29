@@ -24,6 +24,7 @@ export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
     status: 'pending',
     language,
     saleTerms: [],
+    guaranteePeriod: {},
     allowGtinExemption: false,
     validationErrors: [],
     publishStatus: '',

@@ -11,6 +11,7 @@ from erp_web.schemas.category import (
 )
 from erp_web.runtime_units.category_attribute_access import attribute_write_scope
 from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.schemas.category_constraints import category_attribute_constraint_error
 
 
 class AttributeUpdateValidation:
@@ -42,6 +43,9 @@ class AttributeUpdateValidation:
                 raise BusinessCapabilityError("ATTRIBUTE_OUTSIDE_SCOPE", f"属性 {attr_id} 不属于当前类目的可写{'SKU 差异' if sku_scope else '公共'}属性。")
             if value is None:
                 continue
+            constraint_error = category_attribute_constraint_error(definition, value)
+            if constraint_error:
+                raise BusinessCapabilityError("ATTRIBUTE_VALUE_INVALID", f"{definition.get('name') or attr_id}（{attr_id}）：{constraint_error}")
             format_error = category_attribute_text_format_error(definition, value)
             if format_error:
                 raise BusinessCapabilityError("ATTRIBUTE_TEXT_FORMAT_INVALID", f"属性 {attr_id}：{format_error}")

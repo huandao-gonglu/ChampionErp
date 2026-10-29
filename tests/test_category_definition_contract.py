@@ -110,6 +110,7 @@ def test_public_summary_excludes_platform_binding_and_raw() -> None:
     assert "platform_binding" not in fields
     assert "raw" not in fields
     assert "constraints" not in fields
+    assert {"max_length", "min_value", "max_value"} <= fields
     page_fields = set(CategoryAttributePage.model_fields)
     assert {"limit", "cursor", "next_cursor", "has_more"} <= page_fields
     value_page_fields = set(CategoryAttributeValuePage.model_fields)

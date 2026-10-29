@@ -219,3 +219,55 @@ def test_field_selection_accepts_public_fields_without_scenario_enumerations():
     assert OnlineReadRequest(fields=["content.unanticipated_field", "title", "title"]).fields == [
         "content.unanticipated_field", "title"]
     assert compact_page([], fields=["content.unanticipated_field"])["records"] == []
+
+
+@pytest.mark.parametrize("fields,parent,child", [
+    (["content", "content.attributes"], "content", "content.attributes"),
+    (["content.attributes", "stocks", "content"], "content", "content.attributes"),
+    (["capabilities.stock.enabled", "capabilities.stock"], "capabilities.stock", "capabilities.stock.enabled"),
+    (["content.extra.nested", "content"], "content", "content.extra.nested"),
+])
+def test_overlapping_fields_rejected_before_read_even_for_empty_pages(fields, parent, child):
+    for read in (lambda: OnlineReadRequest(fields=fields), lambda: compact_page([], fields=fields)):
+        with pytest.raises(ValueError) as exc:
+            read()
+        assert f"{parent} 已包含 {child}" in str(exc.value)
+        assert f"删除 {parent} 并保留所需子路径" in str(exc.value)
+
+
+def test_sibling_paths_and_similar_prefixes_do_not_overlap():
+    fields = ["content.title", "content.title_extra", "content.titles.value",
+              "capabilities.stock", "capabilities.content", "stocks", "stocks"]
+    assert OnlineReadRequest(fields=fields).fields == fields[:-1]
+
+
+def test_warranty_and_stock_projection_pages_all_skus_without_unrelated_content():
+    """74 个 SKU 的读取保留版本和逐项权限，不受无关长描述、图片及属性影响。"""
+    from erp_web.schemas.online_products import Capability
+
+    fields = ["content.guarantee_period", "stocks", "capabilities.content", "capabilities.stock"]
+    rows = [product(i, "组合", version=f"version-{i}",
+        content={"description": "无关长描述" * 1000, "pictures": ["https://example.com/" + "x" * 200] * 30,
+                 "attributes": [{"name": "无关属性", "value": "x" * 1000}],
+                 "guarantee_period": None if i == 73 else {"timePeriod": 1, "timeUnit": "MONTH"}},
+        stocks=[{"id": "warehouse", "label": "仓库", "quantity": None if i == 73 else 0,
+                 "warehouse_id": "W1", "writable": i != 73}],
+        capabilities={"stock": Capability(enabled=i != 73, reason="库存不可写" if i == 73 else ""),
+                      "content": Capability(enabled=True, fields=["guarantee_period"]),
+                      "price": Capability(enabled=True, scope="无关价格能力")}) for i in range(74)]
+    group_id = compact_page(rows)["groups"][0]["id"]
+    pages = [OnlineReadResult.model_validate({"ok": True, **compact_page(
+        rows, view="listings", group_id=group_id, fields=fields, page=number, limit=50)}) for number in (1, 2)]
+    assert [p.next_page for p in pages] == [2, None]
+    records = [r for p in pages for r in p.records]
+    assert [(r.id, r.version) for r in records] == [(r.id, r.version) for r in rows]
+    assert all(set(r.values) == set(fields) and not r.missing_fields for r in records)
+    assert records[0].values["stocks"][0]["quantity"] == 0
+    assert records[-1].values["stocks"][0]["quantity"] is None
+    assert records[-1].values["content.guarantee_period"] is None
+    assert records[-1].values["capabilities.stock"]["enabled"] is False
+    assert records[-1].values["capabilities.stock"]["reason"] == "库存不可写"
+    for p in pages:
+        encoded = p.model_dump_json()
+        assert len(encoded.encode()) < 64 * 1024
+        assert "无关" not in encoded and "example.com" not in encoded

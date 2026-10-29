@@ -174,6 +174,12 @@ class OnlineListing(OnlineProduct):
         content = value["capabilities"].get("content")
         category = (value.get("snapshot", {}).get("mapping", {}).get("marketCategoryId")
                     or value.get("snapshot", {}).get("offer", {}).get("marketCategoryId"))
+        if content and value.get("details_state", "ready") == "ready":
+            content = content.model_dump() if isinstance(content, Capability) else dict(content)
+            content["fields"] = list(dict.fromkeys([*content.get("fields", []), "guarantee_period"]))
+            value["capabilities"]["content"] = content
+            value["content"] = dict(value.get("content", {}))
+            value["content"].setdefault("guarantee_period", value.get("snapshot", {}).get("offer", {}).get("guaranteePeriod") or {})
         if content and category:
             content = content.model_dump() if isinstance(content, Capability) else dict(content)
             content["fields"] = list(dict.fromkeys([*content.get("fields", []), "attributes"]))
@@ -274,7 +280,7 @@ class OnlineChange(BaseModel):
     version: str = Field(min_length=1)
     operation: Literal["price", "stock", "content", "sale_state", "archive"]
     scope_id: str = ""
-    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；archive={archived:true|false}，仅支持 Yandex，scope_id=business，影响账号全部店铺，独立于停售与库存；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表；保留的图片使用当前平台 ID/地址，新增图片只允许关联源草稿的 {asset_id,fingerprint} 引用。Yandex attributes 支持新增缺失属性和修改枚举，行结构为 {id:字符串,parameterId:整数,value:平台原文,valueId:枚举编号字符串,unitId:单位整数}；可选编号按类目提供，同一属性多行替换该属性的完整值集合，未编辑属性保留。")
+    changes: dict[str, Any] = Field(description="复用在线修改契约：price={amount,currency}；stock={quantity}（绝对数量）；sale_state={state:paused|active}；archive={archived:true|false}，仅支持 Yandex，scope_id=business，影响账号全部店铺，独立于停售与库存；content 为 capabilities 中允许字段的局部变更，图片须传完整目标列表；保留的图片使用当前平台 ID/地址，新增图片只允许关联源草稿的 {asset_id,fingerprint} 引用。Yandex guarantee_period={timePeriod:非负整数,timeUnit:HOUR|DAY|WEEK|MONTH|YEAR,comment:可选说明} 用于修改账号商品保修期限，不支持空值清除；Yandex attributes 支持新增缺失属性和修改枚举，行结构为 {id:字符串,parameterId:整数,value:平台原文,valueId:枚举编号字符串,unitId:单位整数}；可选编号按类目提供，同一属性多行替换该属性的完整值集合，未编辑属性保留。")
 
 
 class ChangeRequest(OnlineChange):
@@ -325,6 +331,9 @@ def snapshot_version(listing: OnlineListing) -> str:
     content = data["content"]
     if listing.platform == "yandex":
         content.pop("attribute_names_error", None)
+        # 历史快照未投影可选保修字段；空值与尚未设置保持同一业务版本。
+        if not content.get("guarantee_period"):
+            content.pop("guarantee_period", None)
     if listing.platform == "yandex" and isinstance(content.get("attributes"), list):
         content["attributes"] = [{key: value for key, value in row.items() if key != "name"}
                                  for row in content["attributes"]]

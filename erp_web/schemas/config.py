@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, TypedDict
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .ai_approval import AiToolApprovalMode
 
 
@@ -56,13 +56,49 @@ class AiUseCaseBinding(TypedDict, total=False):
     generation: AiGenerationSettings
 
 
+class WatermarkSettings(TypedDict):
+    text: str
+    image_data_url: str
+    opacity: int
+    size_percent: int
+    density: int
+    color: str
+
+
+class WatermarkPreview(TypedDict):
+    preview_url: str
+    sample_name: str
+    message: str
+
+
+class WatermarkSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    text: str = Field(default="", max_length=200)
+    image_data_url: str = Field(default="", max_length=2_800_000)
+    opacity: int = Field(default=25, ge=1, le=100, strict=True)
+    size_percent: int = Field(default=30, ge=5, le=80, strict=True)
+    density: int = Field(default=5, ge=1, le=10, strict=True)
+    color: str = Field(default="#737373", pattern=r"^#[0-9a-fA-F]{6}$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_previous_settings(cls, value: Any) -> Any:
+        """旧配置保留文字和图片，保存后只写平铺字段；有内容即生效。"""
+        if isinstance(value, dict):
+            return {key: item for key, item in value.items()
+                    if key not in {"enabled", "kind", "position", "margin_percent"}}
+        return value
+
+
 class SystemSettings(TypedDict):
     orders_auto_sync_interval_hours: int
+    watermark: WatermarkSettings
 
 
 class SystemSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     orders_auto_sync_interval_hours: int = Field(default=5, ge=5, strict=True)
+    watermark: WatermarkSettingsRequest = Field(default_factory=WatermarkSettingsRequest)
 
 
 class AppConfig(TypedDict, total=False):
@@ -96,4 +132,7 @@ __all__ = [
     "StoreConfig",
     "SystemSettings",
     "SystemSettingsRequest",
+    "WatermarkSettings",
+    "WatermarkSettingsRequest",
+    "WatermarkPreview",
 ]

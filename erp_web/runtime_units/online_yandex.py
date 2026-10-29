@@ -5,6 +5,8 @@ from copy import deepcopy
 from functools import cached_property
 from typing import Any
 
+from erp_web.product_model.yandex_warranty_model import compile_yandex_guarantee_period
+
 from erp_web.runtime_units.online_change_confirmation import yandex_change
 
 from erp_web.marketplaces import yandex_http as api
@@ -139,6 +141,10 @@ class YandexOnlineAdapter:
             return api.update_yandex_stock(self.token, mode=self.mode, business_id=self.business, campaign_id=self.campaign,
                 warehouse_ids=[scope] if self.mode=="business" else None, offer_id=listing.remote_id, count=changes["quantity"])
         payload = deepcopy(changes)
+        if "guarantee_period" in payload:
+            payload["guaranteePeriod"] = compile_yandex_guarantee_period(payload.pop("guarantee_period"))
+            if payload["guaranteePeriod"] is None:
+                raise ValueError("请填写要提交的 Yandex 保修期限")
         if "title" in payload:
             payload["name"] = payload.pop("title")
         if "attributes" in payload:

@@ -513,10 +513,14 @@ class ConfigStore:
 
     def save_system_settings(self, settings: dict) -> dict:
         from erp_web.schemas.config import SystemSettingsRequest
+        from erp_web.services.watermark_service import validate_watermark
 
-        validated = SystemSettingsRequest.model_validate(settings).model_dump()
+        changes = SystemSettingsRequest.model_validate(settings).model_dump(exclude_unset=True)
+        if "watermark" in changes:
+            changes["watermark"] = validate_watermark(changes["watermark"])
         with self._save_lock:
             config = self.load_app_config()
+            validated = {**config["system_settings"], **changes}
             self.save_app_config({**config, "system_settings": validated})
             return validated
 

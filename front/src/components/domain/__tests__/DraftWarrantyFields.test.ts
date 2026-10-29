@@ -11,7 +11,7 @@ function panelProps() {
 }
 
 describe('Mercado 保修条款', () => {
-  it.each(['yandex', 'ozon'] as const)('%s 不展示保修且不修改草稿', (platform) => {
+  it.each(['ozon'] as const)('%s 不展示保修且不修改草稿', (platform) => {
     const draft = createEmptyDraftDetail(platform)
     const wrapper = mount(DraftWarrantyFields, { props: { draft, issues: [] } })
     expect(wrapper.find('[data-testid="draft-warranty-fields"]').exists()).toBe(false)
@@ -67,5 +67,27 @@ describe('Mercado 保修条款', () => {
     next.draftId = 'new-draft'
     await wrapper.setProps({ draft: next })
     expect(next.saleTerms).toEqual([noWarranty])
+  })
+})
+
+
+describe('Yandex 保修期限', () => {
+  it('展示独立设置，不自动填写承诺，编辑后可保存和回显', async () => {
+    const draft = reactive(createEmptyDraftDetail('yandex'))
+    const wrapper = mount(DraftWarrantyFields, { props: { draft, issues: [] } })
+    expect(wrapper.find('[data-testid="yandex-warranty-fields"]').exists()).toBe(true)
+    expect(draft.guaranteePeriod).toEqual({})
+    expect(draft.saleTerms).toEqual([])
+    expect(wrapper.emitted('invalidatePublishValidation')).toBeUndefined()
+    await wrapper.get('[aria-label="Yandex 保修时长"]').setValue('12')
+    await wrapper.get('[aria-label="Yandex 保修单位"]').setValue('MONTH')
+    await wrapper.get('[aria-label="Yandex 保修说明"]').setValue('Гарантия продавца')
+    expect(draft.guaranteePeriod).toEqual({ timePeriod: '12', timeUnit: 'MONTH', comment: 'Гарантия продавца' })
+    expect(wrapper.emitted('invalidatePublishValidation')).toHaveLength(3)
+    const next = reactive(createEmptyDraftDetail('yandex'))
+    next.guaranteePeriod = { timePeriod: 2, timeUnit: 'YEAR' }
+    await wrapper.setProps({ draft: next, loading: true })
+    expect((wrapper.get('[aria-label="Yandex 保修时长"]').element as HTMLInputElement).value).toBe('2')
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
   })
 })

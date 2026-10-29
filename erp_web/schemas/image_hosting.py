@@ -34,6 +34,9 @@ class ImageDeliveryFields(TypedDict, total=False):
     delivery_provider: str
     storage_key: str
     content_sha256: str
+    watermark_fingerprint: str
+    delivery_source_sha256: str
+    watermark_source_url: str
     url: str
 
 

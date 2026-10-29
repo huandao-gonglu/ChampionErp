@@ -25,6 +25,14 @@ def test_services_do_not_reverse_depend_on_runtime_units() -> None:
     )
 
 
+def test_watermark_rendering_has_no_network_or_application_state_dependency() -> None:
+    files = [ROOT / "erp_web/services/watermark_service.py", ROOT / "erp_web/services/watermark_preview_service.py"]
+    targets = {target for _, target in imported_targets(files)}
+    assert not any(target.split('.')[0] in {'requests', 'urllib', 'httpx', 'botocore', 'sqlite3'} for target in targets)
+    assert not any(target.startswith(('erp_web.context', 'erp_web.stores', 'erp_web.runtime_units')) for target in targets)
+    assert not forbidden_calls(files, {'write_json', 'write_bytes', 'write_text', 'unlink', 'save_product', 'save_draft_content'})
+
+
 def test_facades_do_not_own_external_io() -> None:
     facades = python_files("erp_web/facades")
     import_offenders = [
@@ -122,3 +130,14 @@ def test_retired_agent_engine_and_endpoints_are_absent() -> None:
         source = path.read_text()
         assert "GlobalTaskController" not in source
         assert "global_task_start" not in source
+
+
+def test_category_value_limits_have_one_pure_owner_for_yandex_writes() -> None:
+    path = ROOT / 'erp_web/schemas/category_constraints.py'
+    targets = {target for _, target in imported_targets([path])}
+    assert not any(target.startswith(('erp_web.context', 'erp_web.stores', 'erp_web.runtime_units', 'erp_web.services')) for target in targets)
+    for consumer in ('runtime_units/publish_yandex.py', 'runtime_units/category_attribute_updates.py', 'services/online_product_attributes.py'):
+        source = (ROOT / 'erp_web' / consumer).read_text()
+        assert 'from erp_web.schemas.category_constraints import category_attribute_constraint_error' in source
+        assert 'category_attribute_constraint_error(' in source
+    assert 'constraints.get("maxLength")' not in (ROOT / 'erp_web/services/online_product_attributes.py').read_text()

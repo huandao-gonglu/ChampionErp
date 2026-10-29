@@ -87,7 +87,7 @@ def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     prepared_context = prepare_publish_context(context["product"], platform)
     # 基础预检只检查源素材；交付状态由显式准备后的最终校验负责。
     result = (adapter.validate_draft(prepared_context, config, image_stage="source")
-              if platform in {"yandex", "ozon"} else adapter.validate_draft(prepared_context, config))
+              if platform in {"yandex", "ozon", "mercadolibre"} else adapter.validate_draft(prepared_context, config))
     saved = save_draft_precheck_result(context, result)
     return {
         "ok": True,

@@ -116,6 +116,7 @@ class PlatformDraft(TypedDict, total=False):
     validation_errors: list[Any]
     images: list[DraftImageRef]
     sale_terms: list[dict[str, Any]]
+    guarantee_period: dict[str, Any]
     allow_gtin_exemption: bool
     shipping: dict[str, Any]
     category_precheck: dict[str, Any]

@@ -198,6 +198,7 @@ describe('workflow store live API flow', () => {
     expect(panels.map((panel) => panel.attributes('aria-label'))).toEqual(['yandex 发布预检', 'ozon 发布预检', 'mercadolibre 发布预检'])
     expect(panels.every((panel) => panel.text().includes('预检结果'))).toBe(true)
     expect(panels[0].find('[data-testid="draft-warranty-fields"]').exists()).toBe(false)
+    expect(panels[0].find('[data-testid="yandex-warranty-fields"]').exists()).toBe(true)
     expect(panels[1].find('[data-testid="draft-warranty-fields"]').exists()).toBe(false)
     expect(panels[2].find('[data-testid="draft-warranty-fields"]').exists()).toBe(true)
     expect(store.currentDraft.saleTerms).toEqual([{ id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' }])
@@ -476,6 +477,25 @@ describe('workflow store live API flow', () => {
     expect(mercado.state.precheck).toBeNull()
     expect(mercado.state.payloadPreview).toBeNull()
     for (const editor of [yandex, ozon]) {
+      expect(editor.state.precheck?.ok).toBe(true)
+      expect(editor.state.payloadPreview?.validationDigest).toBe('confirmed')
+    }
+  })
+
+  it('修改 Yandex 保修只撤销 Yandex 的预检与发布预览', () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    store.currentDraft.targetSites.push({ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' })
+    const [yandex, ozon, mercado] = store.targetEditors
+    const passed = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-10-23' }
+    for (const editor of store.targetEditors) {
+      editor.state.precheck = { ...passed }
+      editor.state.payloadPreview = { platform: editor.target.platform, site: editor.target.site, targetKey: editor.key, status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'confirmed', summary: null, warnings: [] }
+    }
+    yandex.draft.guaranteePeriod = { timePeriod: 12, timeUnit: 'MONTH' }
+    expect(yandex.state.precheck).toBeNull()
+    expect(yandex.state.payloadPreview).toBeNull()
+    for (const editor of [mercado, ozon]) {
       expect(editor.state.precheck?.ok).toBe(true)
       expect(editor.state.payloadPreview?.validationDigest).toBe('confirmed')
     }

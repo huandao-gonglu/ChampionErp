@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { attributeConstraintError, attributeConstraintHint } from '@/utils/categoryConstraints'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchOnlineAttributeValues, type OnlineAttributeDefinition, type OnlineAttributeOption, type OnlineAttributeRow } from '@/api/onlineProducts'
 
@@ -13,6 +14,8 @@ const error = ref('')
 let searchedQuery = ''
 let sequence = 0
 onBeforeUnmount(() => { sequence++ })
+const limits = computed(() => ({ maxLength: props.definition.max_length, minValue: props.definition.min_value,
+  maxValue: props.definition.max_value, valueType: props.definition.value_type }))
 const enumeration = computed(() => props.definition.is_dictionary || props.definition.value_type === 'enum')
 const allOptions = computed(() => {
   const result = new Map(options.value.map(option => [option.dictionary_value_id, option]))
@@ -76,6 +79,8 @@ watch(() => props.disabled, disabled => {
       <select v-if="definition.unit_options.length" class="input w-auto" :value="String(row.unitId || '')" :aria-label="`${definition.name} 单位 ${index + 1}`" @change="patch(index, {unitId: Number(($event.target as HTMLSelectElement).value) || undefined})">
         <option value="">请选择单位</option><option v-for="unit in definition.unit_options" :key="unit.id" :value="unit.id">{{ unit.name }}</option>
       </select>
+      <p v-if="attributeConstraintHint(limits, row.value)" class="basis-full text-xs text-slate-500">{{ attributeConstraintHint(limits, row.value) }}</p>
+      <p v-if="attributeConstraintError(limits, row.value)" role="alert" class="basis-full text-sm text-rose-600">{{ attributeConstraintError(limits, row.value) }}</p>
       <button v-if="modelValue.length > 1" type="button" class="btn btn-outline" :aria-label="`移除 ${definition.name} 值 ${index + 1}`" @click="emit('update:modelValue', modelValue.filter((_, i) => i !== index))">移除</button>
     </div>
     <button v-if="enumeration && more" type="button" class="text-sm underline" :disabled="loading" @click="search(!!nextCursor)">加载更多候选值</button>

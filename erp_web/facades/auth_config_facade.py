@@ -3,6 +3,7 @@ from __future__ import annotations
 """店铺凭据与应用设置暴露给 HTTP 层的显式入口。"""
 
 from typing import Any
+from pydantic import ValidationError
 
 from erp_web.context import get_context
 from erp_web.marketplace_registry import marketplace_spec
@@ -56,8 +57,27 @@ def system_settings_payload() -> dict:
 def save_system_settings_payload(body: dict) -> ResponseWithStatus:
     try:
         return get_context().config.save_system_settings(body), 200
-    except ValueError:
-        return {"ok": False, "error": "自动同步间隔必须是至少 5 小时的整数"}, 400
+    except ValidationError:
+        return {"ok": False, "error": "系统设置无效：同步间隔至少 5 小时；请检查水印疏密、大小、透明度和颜色"}, 400
+    except ValueError as exc:
+        return {"ok": False, "error": f"系统设置无效：{exc}"}, 400
+
+
+def watermark_preview_payload(body: dict) -> ResponseWithStatus:
+    from erp_web.services.watermark_preview_service import draft_watermark_preview
+
+    try:
+        context = get_context()
+        drafts = context.db.iter_draft_records()
+        try:
+            return draft_watermark_preview(body["watermark"], drafts=drafts,
+                load_product=context.db.load_product_model, source_path=context.image_delivery._source_path), 200
+        finally:
+            drafts.close()
+    except ValidationError:
+        return {"ok": False, "error": "水印参数无效，请检查水印内容、疏密、大小、透明度和颜色"}, 400
+    except (ValueError, OSError) as exc:
+        return {"ok": False, "error": f"水印预览失败：{exc}"}, 400
 
 
 def save_app_config(config: dict[str, Any]) -> None:
@@ -400,6 +420,7 @@ __all__ = [
     "run_mercadolibre_07d_test",
     "save_app_config",
     "system_settings_payload",
+    "watermark_preview_payload",
     "save_system_settings_payload",
     "save_store_config",
     "summarize_store_auth_states",

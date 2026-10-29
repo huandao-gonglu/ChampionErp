@@ -1,7 +1,7 @@
 """在线 Yandex 属性读取与校验；类目事实只由注入的 Catalog 提供。"""
 from collections import defaultdict
-from decimal import Decimal, InvalidOperation
 
+from erp_web.schemas.category_constraints import category_attribute_constraint_error
 from erp_web.schemas.category import category_attribute_text_format_error
 from erp_web.schemas.category_grouping import is_listing_grouping_attribute
 from erp_web.product_model.online_attribute_model import yandex_category_id
@@ -73,20 +73,8 @@ def validate_yandex_attributes(listing, rows, catalog):
             elif "unitId" in row:
                 raise ValueError(f"{attribute.name} 不接受单位")
             constraints = attribute.constraints
-            if len(value) > int(constraints.get("maxLength") or 2000):
-                raise ValueError(f"{attribute.name} 超过平台允许的长度")
-            if attribute.value_type.lower() in {"numeric", "number", "integer", "float"}:
-                try:
-                    number = Decimal(value)
-                    if not number.is_finite():
-                        raise InvalidOperation
-                    if attribute.value_type == "integer" and number != number.to_integral_value():
-                        raise InvalidOperation
-                    if ("minValue" in constraints and number < Decimal(constraints["minValue"])) or (
-                            "maxValue" in constraints and number > Decimal(constraints["maxValue"])):
-                        raise InvalidOperation
-                except InvalidOperation as exc:
-                    raise ValueError(f"{attribute.name} 必须是平台允许范围内的数值") from exc
+            if error := category_attribute_constraint_error({"constraints": constraints, "value_type": attribute.value_type}, value):
+                raise ValueError(f"{attribute.name}（{key}）：{error}")
             if attribute.value_type.lower() == "boolean" and value not in {"true", "false"}:
                 raise ValueError(f"{attribute.name} 必须选择 true 或 false")
             format_error = category_attribute_text_format_error({"constraints": constraints}, value)

@@ -200,6 +200,37 @@ describe('AiChatStore 实时流', () => {
     vi.unstubAllGlobals()
   })
 
+  it('SDK 连续追加空白时旧回执保持同一引用，活动文本仍完整更新', async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    vi.stubGlobal('EventSource', FakeEventSource)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(value) { controller = value },
+    }), { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } })))
+    const store = useAiChatStore()
+    store.openConversation({ ok: true, conversation_id: 'conversation_global_chat_test',
+      created_at: '', updated_at: '', history_version: 1, messages: [{ id: 'old', role: 'assistant', parts: [
+        { type: 'tool-read', toolCallId: 'old-call', state: 'output-available', input: {}, output: { payload: 'x'.repeat(70000) } },
+      ] }] })
+    const old = store.messages[0]!
+    store.input = '执行'
+    store.sendMessage()
+    await vi.waitFor(() => expect(controller).toBeDefined())
+    controller.enqueue(encodedChunk({ type: 'start', messageId: 'live' }))
+    controller.enqueue(encodedChunk({ type: 'text-start', id: 't' }))
+    controller.enqueue(encodedChunk({ type: 'text-delta', id: 't', delta: '我先处理。' }))
+    await vi.waitFor(() => expect(store.messages.at(-1)?.parts[0]).toMatchObject({ text: '我先处理。' }))
+    const initialText = store.messages.at(-1)!.parts[0]
+    for (let i = 0; i < 4090; i++) controller.enqueue(encodedChunk({ type: 'text-delta', id: 't', delta: ' \n' }))
+    await vi.waitFor(() => expect(store.messages.at(-1)?.parts[0]).toMatchObject({ text: '我先处理。' + ' \n'.repeat(4090) }))
+    expect(store.messages[0]).toBe(old)
+    expect(initialText).toMatchObject({ text: '我先处理。' })
+    controller.enqueue(encodedChunk({ type: 'error', errorText: '生成中断' }))
+    controller.close()
+    await vi.waitFor(() => expect(store.error?.message).toBe('生成中断'))
+    expect(store.messages[0]).toBe(old)
+    store.disconnectEvents()
+  })
+
   it.each([
     { page: 'draft_editor' as const, draft_id: 'draft-a', section: 'category' as const },
     { page: 'drafts' as const, selected_draft_ids: ['draft-a', 'draft-b'] },

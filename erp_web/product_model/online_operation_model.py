@@ -4,6 +4,10 @@ from __future__ import annotations
 from typing import Any
 
 
+UNRESOLVED_STATUSES = frozenset({"waiting_confirmation", "outcome_unknown"})
+NONBLOCKING_STATUSES = frozenset({"submitted", "confirmed", "partial", "failed", "closed_unconfirmed"})
+
+
 def receipt_errors(value: Any) -> list[Any]:
     """成功 HTTP 响应仍须检查逐项拒绝；警告不作为失败。"""
     errors = []
@@ -92,6 +96,6 @@ def blocks_modification(job: dict[str, Any], request: dict[str, Any]) -> bool:
     status = effective_job_status(job)
     if status in ("queued", "running"):
         return True
-    if status in ("waiting_confirmation", "outcome_unknown"):
+    if status in UNRESOLVED_STATUSES:
         return modifications_overlap(job["platform"], job["request"], request)
     return False

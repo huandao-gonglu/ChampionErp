@@ -1535,3 +1535,31 @@ def test_default_no_warranty_survives_save_and_reload():
     loaded, error, status = products.load_draft_detail_from_index(draft["draft_id"])
     assert error is None and status == 200
     assert loaded["draft"]["sale_terms"] == terms
+
+
+
+def test_yandex_guarantee_change_only_invalidates_yandex():
+    from erp_web.stores.product_store import _changed_publish_content_targets
+    previous = {"target_sites": [
+        {"platform": "yandex", "site": "global", "attributes": {}},
+        {"platform": "mercadolibre", "site": "CBT", "attributes": {}},
+    ]}
+    edited = deepcopy(previous)
+    edited["guarantee_period"] = {"timePeriod": 12, "timeUnit": "MONTH"}
+    assert set(_changed_publish_content_targets(previous, edited)) == {0}
+    assert set(_changed_publish_content_targets(edited, previous)) == {0}
+
+
+def test_guarantee_period_survives_draft_save_and_reload():
+    products = get_context().products
+    product = _sample_product()
+    product["drafts"]["yandex"] = {"enabled": True, "title": "保修测试", "platform": "yandex", "site": "global"}
+    saved = products.save_product(product)
+    draft = deepcopy(saved["drafts"]["yandex"])
+    period = {"timePeriod": "12", "timeUnit": "MONTH", "comment": "Гарантия продавца"}
+    draft["guarantee_period"] = period
+    result, error, status = products.save_draft_detail(draft)
+    assert error is None and status == 200
+    loaded, error, status = products.load_draft_detail_from_index(draft["draft_id"])
+    assert error is None and status == 200
+    assert loaded["draft"]["guarantee_period"] == period

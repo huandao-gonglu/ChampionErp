@@ -1665,3 +1665,34 @@ def test_unfilled_optional_enum_does_not_become_a_precheck_requirement():
     product = _validatable_product(attributes={})
     assert validate_yandex_draft(product, _config(), record)["ok"] is True
     assert "parameterValues" not in build_yandex_publish_payload(product, _config(), record)["catalog"]["offer"]
+
+
+@pytest.mark.parametrize("unit", ["HOUR", "DAY", "WEEK", "MONTH", "YEAR"])
+def test_guarantee_period_reaches_official_payload(unit):
+    period = {"timePeriod": "12", "timeUnit": unit, "comment": "Гарантия продавца"}
+    payload = build_yandex_publish_payload(_product(guarantee_period=period), _config(), _record())
+    assert payload["catalog"]["offer"]["guaranteePeriod"] == {**period, "timePeriod": 12}
+    assert not validate_yandex_publish_payload(payload, _config())
+
+
+def test_unset_guarantee_is_not_invented():
+    payload = build_yandex_publish_payload(_product(), _config(), _record())
+    assert "guaranteePeriod" not in payload["catalog"]["offer"]
+
+
+@pytest.mark.parametrize("period", [
+    {"timePeriod": "-1", "timeUnit": "MONTH"},
+    {"timePeriod": "1.5", "timeUnit": "MONTH"},
+    {"timePeriod": True, "timeUnit": "MONTH"},
+    {"timePeriod": 12},
+    {"timeUnit": "MONTH"},
+    {"timePeriod": 12, "timeUnit": "invalid"},
+    {"timePeriod": 12, "timeUnit": "MONTH", "comment": "长" * 501},
+])
+def test_invalid_guarantee_blocks_precheck_and_payload(period):
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+    product = _product(guarantee_period=period)
+    precheck = validate_yandex_draft(product, _config(), _record(), image_stage="source")
+    assert any(issue["code"] == "YANDEX_GUARANTEE_PERIOD_INVALID" for issue in precheck["errors"])
+    with pytest.raises(ValueError, match="保修"):
+        build_yandex_publish_payload(product, _config(), _record())

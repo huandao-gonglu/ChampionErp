@@ -459,7 +459,7 @@ def prepare_and_evaluate_publish_validation(
             raise TypeError("发布上下文中的商品不是对象")
         prepared_context = prepare_publish_context(source_product, platform)
         precheck = (adapter.validate_draft(prepared_context, config, image_stage="source")
-                    if platform in {"yandex", "ozon"} else adapter.validate_draft(prepared_context, config))
+                    if platform in {"yandex", "ozon", "mercadolibre"} else adapter.validate_draft(prepared_context, config))
         if not isinstance(precheck, dict):
             raise TypeError("平台 adapter 返回的校验结果不是对象")
     except Exception as exc:

@@ -159,6 +159,7 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
         language: value.language,
         skuItems: value.skuItems, grouping: value.grouping, images: value.images, pricing: value.pricing,
         saleTerms: identity.platform === 'mercadolibre' ? value.saleTerms : undefined,
+        guaranteePeriod: identity.platform === 'yandex' ? value.guaranteePeriod : undefined,
         allowGtinExemption: identity.platform === 'mercadolibre' ? value.allowGtinExemption : undefined,
         categoryId: value.categoryId, descriptionCategoryId: value.descriptionCategoryId,
         categoryPath: value.categoryPath, attributes: value.attributes,

@@ -22,6 +22,8 @@ from copy import deepcopy
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import time
 from typing import Any
+
+from erp_web.product_model.yandex_warranty_model import compile_yandex_guarantee_period
 from erp_web.context import get_context
 from erp_web.services.yandex_logistics_service import draft_fulfillment_plan
 
@@ -36,6 +38,7 @@ from erp_web.marketplaces.yandex_http import (
     update_yandex_price,
     update_yandex_stock,
 )
+from erp_web.schemas.category_constraints import category_attribute_constraint_error
 from erp_web.schemas.category import (
     category_attribute_text_format_error,
     category_attribute_unit_is_valid,
@@ -281,48 +284,6 @@ def _resolve_unit_id(definition: dict[str, Any], unit: Any) -> int | None:
     )
 
 
-def _validate_text_constraints(
-    definition: dict[str, Any],
-    text: str,
-    attr_id: str,
-) -> None:
-    """按官方 ``constraints`` 校验 NUMERIC 取值范围与 TEXT 长度。"""
-
-    constraints = (
-        definition.get("constraints")
-        if isinstance(definition.get("constraints"), dict)
-        else {}
-    )
-    value_type = str(definition.get("value_type") or "").strip().lower()
-    if value_type == "numeric":
-        try:
-            number = Decimal(text.replace(",", "."))
-        except (InvalidOperation, ValueError) as exc:
-            raise ValueError(f"Yandex 数值属性 {attr_id} 必须是有效数字") from exc
-        if not number.is_finite():
-            raise ValueError(f"Yandex 数值属性 {attr_id} 必须是有限数字")
-        for field, label in (("min_value", "小于"), ("max_value", "大于")):
-            raw = constraints.get(field)
-            if raw is None or not str(raw).strip():
-                continue
-            try:
-                bound = Decimal(str(raw))
-                if not bound.is_finite():
-                    raise ValueError
-            except (InvalidOperation, ValueError):
-                raise ValueError(f"Yandex 属性 {attr_id} 的数值范围定义无效，请刷新类目规则") from None
-            if (field == "min_value" and number < bound) or (field == "max_value" and number > bound):
-                raise ValueError(f"Yandex 数值属性 {attr_id} 不能{label} {raw}")
-    max_length = constraints.get("max_length")
-    if max_length is not None:
-        try:
-            limit = int(max_length)
-        except (TypeError, ValueError):
-            limit = 0
-        if limit > 0 and len(text) > limit:
-            raise ValueError(f"Yandex 属性 {attr_id} 超过最大长度 {limit}")
-
-
 def _compile_parameter_values(
     draft: dict[str, Any],
     definitions: dict[str, dict[str, Any]],
@@ -350,6 +311,8 @@ def _compile_parameter_values(
         format_error = category_attribute_text_format_error(definition, raw_value)
         if format_error:
             raise ValueError(f"Yandex 属性 {attr_id}：{format_error}")
+        if error := category_attribute_constraint_error(definition, raw_value):
+            raise ValueError(f"Yandex 属性 {definition.get('name') or attr_id}（{attr_id}）：{error}")
         parameter_id = int(attr_id)
         value_mode = category_attribute_value_mode(definition)
         rows: list[dict[str, Any]] = []
@@ -431,7 +394,6 @@ def _compile_parameter_values(
                     if text:
                         texts.append(text)
                 for text in texts:
-                    _validate_text_constraints(definition, text, attr_id)
                     row = {"parameterId": parameter_id, "value": text}
                     if unit_id is not None:
                         row["unitId"] = unit_id
@@ -460,7 +422,6 @@ def _compile_parameter_values(
                 )
             unit_id = _resolve_unit_id(definition, unit)
             for text in texts:
-                _validate_text_constraints(definition, text, attr_id)
                 row = {"parameterId": parameter_id, "value": text}
                 if unit_id is not None:
                     row["unitId"] = unit_id
@@ -614,6 +575,10 @@ def build_yandex_publish_payload(
         "basicPrice": {"value": price_value, "currencyId": wire_currency},
     }
 
+    guarantee_period = compile_yandex_guarantee_period(draft.get("guarantee_period"))
+    if guarantee_period is not None:
+        catalog_offer["guaranteePeriod"] = guarantee_period
+
     conditions_offer: dict[str, Any] = {"offerId": offer_id}
     vat = str(store.get("vat") or "").strip()
     if vat:
@@ -677,6 +642,10 @@ def validate_yandex_publish_payload(
         errors.append("店铺身份已变化，payload 与当前授权绑定不一致")
     catalog = payload.get("catalog") if isinstance(payload.get("catalog"), dict) else {}
     offer = catalog.get("offer") if isinstance(catalog.get("offer"), dict) else {}
+    try:
+        compile_yandex_guarantee_period(offer.get("guaranteePeriod"))
+    except ValueError as exc:
+        errors.append(str(exc))
     for key, label in (
         ("offerId", "SKU / offerId"),
         ("name", "标题"),

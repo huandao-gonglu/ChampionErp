@@ -582,7 +582,11 @@ def _changed_publish_content_targets(
             and any(existing.get(field) != incoming.get(field)
                     for field in ("allow_gtin_exemption", "sale_terms"))
         )
-        if root_changed or target_changed or mercado_terms_changed:
+        yandex_warranty_changed = (
+            _draft_target_identity(target)[0] == "yandex"
+            and existing.get("guarantee_period", {}) != incoming.get("guarantee_period", {})
+        )
+        if root_changed or target_changed or mercado_terms_changed or yandex_warranty_changed:
             changed[index] = previous if isinstance(previous, dict) else {}
     return changed
 

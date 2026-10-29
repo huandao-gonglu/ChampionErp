@@ -483,17 +483,38 @@ export async function reconcilePublishJob(jobId: string, platform: Marketplace):
 }
 
 export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = ''): Promise<CategorySelection> {
-  // 类目属性定义只从实时类目接口瞬时加载（编辑态使用），不再持久化进草稿/商品。
-  // 单页 limit=100 请求；若 has_more=true，分页信息保留在 raw 中供诊断。
-  const response = await apiClient.post('/api/category-attrs', {
-    platform,
-    category_id: categoryId,
-    site,
-    limit: 100,
-  })
-  const data = asRecord(response.data)
-  ensureOk(data, '读取类目属性失败')
-  const attributes = (Array.isArray(data.attributes) ? data.attributes : [])
+  // 完整取得属性定义后再更新编辑态；任何分页失败都不返回看似完整的半份规则。
+  const rows: unknown[] = []
+  const cursors = new Set<string>()
+  const ids = new Set<string>()
+  let cursor = ''
+  let resolvedSite: string | undefined
+  let data: Record<string, unknown> = {}
+  do {
+    const response = await apiClient.post('/api/category-attrs', {
+      platform, category_id: categoryId, site, limit: 100, ...(cursor ? { cursor } : {}),
+    })
+    data = asRecord(response.data)
+    ensureOk(data, '读取类目属性失败')
+    if (getString(data, ['category_id'], categoryId) !== categoryId
+      || getString(data, ['platform'], platform) !== platform
+      || (resolvedSite !== undefined && getString(data, ['site'], resolvedSite) !== resolvedSite)) {
+      throw new Error('类目属性身份已变化，请重新读取')
+    }
+    resolvedSite = getString(data, ['site'], site)
+    if (!Array.isArray(data.attributes)) throw new Error('类目属性响应不完整，请重新读取')
+    for (const item of data.attributes) {
+      const id = getString(asRecord(item), ['id', 'attribute_id'])
+      if (!id || ids.has(id)) throw new Error('属性分页存在缺失或重复，请重新读取')
+      ids.add(id)
+      rows.push(item)
+    }
+    if (!data.has_more) break
+    cursor = getString(data, ['next_cursor'])
+    if (!cursor || cursors.has(cursor)) throw new Error('属性分页不完整，请重新读取')
+    cursors.add(cursor)
+  } while (cursor)
+  const attributes = rows
     .map((item): CategoryAttributeDefinition | null => {
       const record = asRecord(item)
       const id = getString(record, ['id', 'attribute_id'])
@@ -519,6 +540,9 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         readOnly: getBoolean(record, ['read_only', 'readOnly']),
         textFormat: getString(record, ['text_format']) === 'name_value_lines' ? 'name_value_lines' : '',
         formatHint: getString(record, ['format_hint']),
+        maxLength: record.max_length == null ? undefined : getNumber(record, ['max_length']),
+        minValue: record.min_value == null ? undefined : String(record.min_value),
+        maxValue: record.max_value == null ? undefined : String(record.max_value),
         unitOptions: Array.isArray(record.unit_options)
           ? record.unit_options.map((option) => getString(asRecord(option), ['name'])).filter(Boolean)
           : stringList(record.unit_options),

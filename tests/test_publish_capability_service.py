@@ -38,7 +38,7 @@ class _Adapter:
         self.prepare_calls += 1
         return deepcopy(product)
 
-    def validate_draft(self, context, config: dict) -> dict:
+    def validate_draft(self, context, config: dict, *, image_stage: str = "final") -> dict:
         return {
             "platform": "mercadolibre",
             "ok": not self.errors,
@@ -357,7 +357,7 @@ def test_explicit_payload_preparation_fails_closed_when_adapter_does_not_confirm
     monkeypatch.setattr(
         adapter,
         "validate_draft",
-        lambda _context, _config: {
+        lambda _context, _config, **_kwargs: {
             "platform": "mercadolibre",
             "ok": False,
             "errors": [],

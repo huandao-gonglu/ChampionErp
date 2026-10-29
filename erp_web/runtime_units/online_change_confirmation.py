@@ -125,7 +125,14 @@ def yandex_change(adapter, listing, request):
                 raise ValueError("商品内容确认身份不一致")
             offer = mappings[0]["offer"]
             for field in set(request.changes)-{"attributes"}:
-                key = "name" if field == "title" else field
+                key = "name" if field == "title" else "guaranteePeriod" if field == "guarantee_period" else field
+                if field == "guarantee_period":
+                    # 官方可选字段缺失表示尚未设置，不能沿用本地旧值确认成功。
+                    fresh.content[field] = offer.get(key) or {}
+                    fresh.snapshot.setdefault("offer", {}).pop(key, None)
+                    if key in offer:
+                        fresh.snapshot["offer"][key] = offer[key]
+                    continue
                 if key not in offer:
                     raise ValueError(f"平台未返回确认字段：{field}")
                 fresh.content[field] = offer[key]

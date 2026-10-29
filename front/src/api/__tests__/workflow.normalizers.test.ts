@@ -297,3 +297,12 @@ describe('workflow 当前 wire schema', () => {
     })).toBe('美客多 · 墨西哥（MLM）')
   })
 })
+
+
+it('Yandex 保修期限经过草稿接口往返保留，旧草稿默认为空', () => {
+  const period = { timePeriod: 12, timeUnit: 'MONTH', comment: 'Гарантия продавца' }
+  const draft = normalizeDraft({ guarantee_period: period }, 'ru-RU')
+  expect(draft.guaranteePeriod).toEqual(period)
+  expect(toBackendDraft(draft).guarantee_period).toEqual(period)
+  expect(normalizeDraft({}, 'ru-RU').guaranteePeriod).toEqual({})
+})

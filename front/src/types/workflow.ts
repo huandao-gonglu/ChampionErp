@@ -40,6 +40,8 @@ export {
   type BackendAiReasoningSettings,
   type BackendAiGenerationSettings,
   type BackendAiUseCaseBinding,
+  type BackendWatermarkSettings,
+  type BackendWatermarkPreview,
   type BackendSystemSettings,
   type BackendAppConfig,
   type BackendStoreConfig,
@@ -124,6 +126,9 @@ export interface CategoryAttributeDefinition {
   /** 平台属性定义提供的文本格式及填写说明。 */
   textFormat?: '' | 'name_value_lines'
   formatHint?: string
+  maxLength?: number
+  minValue?: string
+  maxValue?: string
   unit?: string
   /** 平台允许的计量单位列表（如 Yandex 带单位参数），空 = 无需选单位。 */
   unitOptions?: string[]
@@ -370,6 +375,7 @@ export interface MarketplaceDraft {
   status: WorkflowStatus
   language: string
   saleTerms: UnknownRecord[]
+  guaranteePeriod?: { timePeriod?: number | string; timeUnit?: string; comment?: string }
   allowGtinExemption: boolean
   validationErrors: Array<UnknownRecord | string>
   publishStatus: string

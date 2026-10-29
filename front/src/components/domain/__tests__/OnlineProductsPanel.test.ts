@@ -35,6 +35,23 @@ function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,glob
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
 
 describe('在线商品页面',()=>{
+  it('Yandex 保修修改预览原值与目标值，确认后才提交现有商品', async () => {
+    const row = yandexItem({content: {guarantee_period: {timePeriod: 6, timeUnit: 'MONTH'}},
+      capabilities: {...item.capabilities, content: {enabled: true, fields: ['guarantee_period'], scope: '账号全部店铺', reason: ''}}})
+    vi.mocked(fetchOnlineDetail).mockResolvedValue(row)
+    vi.mocked(onlineAction).mockResolvedValue({id: 'job', operation: 'content', platform: 'yandex', status: 'queued', created_at: '', updated_at: '', target_id: row.id, request: {}, result: {}})
+    render(); await flushPromises(); await click('管理 →'); await click('编辑内容')
+    await wrapper!.get('input[value="guarantee_period"]').setValue(true)
+    await wrapper!.get('[aria-label="Yandex 保修时长"]').setValue('12')
+    await click('预览变更')
+    expect(wrapper!.text()).toContain('原：6 个月')
+    expect(wrapper!.text()).toContain('新：12 个月')
+    expect(onlineAction).not.toHaveBeenCalled()
+    await click('确认提交')
+    expect(onlineAction).toHaveBeenCalledWith('change', expect.objectContaining({listing_id: row.id, version: row.version,
+      operation: 'content', changes: {guarantee_period: {timePeriod: '12', timeUnit: 'MONTH'}}}))
+  })
+
   it('停售入口保留，单件归档与恢复只修改归档状态并切换目录', async () => {
     let row = yandexItem()
     vi.mocked(fetchOnlineProducts).mockImplementation(async params => {
@@ -267,6 +284,21 @@ describe('在线商品页面',()=>{
     await click('确认提交')
     expect(onlineAction).toHaveBeenCalledWith('change', expect.objectContaining({
       listing_id:item.id,version:'v1',scope_id:'warehouse-1',operation:'stock',changes:{quantity:Number(quantity)},
+    }))
+  })
+  it.each([0, null])('Yandex 当前库存为 %s 时允许向指定仓库设置库存', async quantity => {
+    vi.mocked(fetchOnlineDetail).mockResolvedValue(yandexItem({
+      stocks: [{id:'2412479',label:'GUOO-Economy',quantity,writable:true,reason:''}],
+      capabilities: {...item.capabilities,stock:{enabled:true,fields:['quantity'],scope:'所选卖家仓',reason:''}},
+    }))
+    vi.mocked(onlineAction).mockResolvedValue({id:'stock-job',operation:'stock',platform:'yandex',status:'queued',created_at:'',updated_at:'',target_id:item.id,request:{},result:{}})
+    render(); await flushPromises(); await click('管理 →'); await click('修改库存')
+    await wrapper!.get('input[type="number"]').setValue('10')
+    await click('预览变更')
+    expect(onlineAction).not.toHaveBeenCalled()
+    await click('确认提交')
+    expect(onlineAction).toHaveBeenCalledWith('change', expect.objectContaining({
+      listing_id:item.id,version:'v1',scope_id:'2412479',operation:'stock',changes:{quantity:10},
     }))
   })
   it.each(['', '-1', '1.5'])('库存输入 %s 不允许预览或提交', async quantity => {

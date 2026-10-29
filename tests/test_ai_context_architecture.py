@@ -418,7 +418,7 @@ def test_online_batch_reuses_domain_queue_and_platform_batch_adapter():
 
 def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools():
     from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
-    expected = {"online_products_read", "online_products_attributes", "online_products_refresh_status", "online_products_change", "online_products_sync", "online_products_reconcile", "online_products_close", "online_products_retry"}
+    expected = {"online_products_read", "online_products_attributes", "online_products_refresh_status", "online_products_change", "online_products_changes_apply", "online_products_job_read", "online_products_sync", "online_products_reconcile", "online_products_close", "online_products_retry"}
     assert {name for name in APPLICATION_CAPABILITY_CATALOG.tools if name.startswith("online_")} == expected
     source = (ROOT / "erp_web/runtime_units/online_product_capabilities.py").read_text()
     assert "online_product_service import OnlineProductService" in source
@@ -458,6 +458,30 @@ def test_online_changes_complete_on_submission_without_remote_job_wait():
     fields = OnlineSubmissionResult.model_fields
     assert "accepted" in fields and "job_id" in fields
     assert "job_type" not in fields and "evidence" not in fields
+
+
+def test_online_completion_reuses_native_validation_without_another_agent_loop():
+    """完成检查仅读原生回执，领域恢复和写入仍由既有工具执行。"""
+    source = (ROOT / "erp_web/services/online_product_completion.py").read_text()
+    for required in ("ModelRetry", "UserPromptPart", "ToolReturnPart", "remaining_seconds"):
+        assert required in source
+    for forbidden in ("Agent(", "run_sync(", "run_stream", "sqlite3", "while ", "re.search", "re.match"):
+        assert forbidden not in source
+    chat = (ROOT / "erp_web/services/global_agent_chat_service.py").read_text()
+    assert "output_validator=validate_online_completion" in chat
+    for file in ("ai_agent_factory.py", "ai_tool_runtime.py", "ai_tool_catalog.py", "ai_tool_declaration.py"):
+        assert "online_product_completion" not in (ROOT / "erp_web/services" / file).read_text()
+
+
+def test_responses_stream_guard_only_validates_decoded_native_events():
+    """错误补丁限于 SDK 事件检查，不重新实现传输、消息编码或 Agent 执行。"""
+    path = ROOT / "erp_web/services/ai_responses_stream.py"
+    source = path.read_text()
+    targets = {name.split(".")[0] for _, name in imported_targets([path])}
+    assert targets <= {"collections", "openai", "pydantic_ai"}
+    for forbidden in ("json.loads", "json.dumps", "httpx", "Agent(", "ModelRetry", "request_stream(", "sleep("):
+        assert forbidden not in source
+    assert "super()._process_streamed_response" in source
 
 
 def test_online_operation_policy_is_pure_and_shared_by_execution_and_store():
@@ -1172,3 +1196,11 @@ def test_procurement_does_not_own_parcel_lifecycle():
     assert 'UPDATE fulfillments' not in source
     route_targets = {target for _, target in imported_targets([ROOT / 'erp_web/http_route_units/order_routes.py'])}
     assert not any(target.startswith('erp_web.services') for target in route_targets)
+
+
+def test_warranty_compiler_is_shared_by_publishing_and_online_changes():
+    from erp_web.product_model.yandex_warranty_model import compile_yandex_guarantee_period
+    from erp_web.runtime_units import publish_yandex, publish_validation, online_yandex
+    from erp_web.services import online_product_changes
+    for module in (publish_yandex, publish_validation, online_yandex, online_product_changes):
+        assert module.compile_yandex_guarantee_period is compile_yandex_guarantee_period

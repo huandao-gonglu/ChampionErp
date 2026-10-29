@@ -13,6 +13,7 @@ from erp_web.services.ai_agent_factory import AiAgentExecutionProfile, AiAgentFa
 from erp_web.services.ai_prompt_templates import load_ai_use_case_prompt_pair
 from erp_web.services.agent_run_storage import AgentRunStorage
 from erp_web.services.agent_memory import load_agent_memory_instructions
+from erp_web.services.online_product_completion import validate_online_completion
 from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_approval import AiToolApprovalMode, normalize_ai_tool_approval_mode
 
@@ -49,6 +50,8 @@ SKU 批量修改以同一草稿、平台/站点和本轮所需属性集合为单
 使用模块前显式 import。run_code 可以直接以字典/列表作为最后一个表达式返回，无需 json.dumps，更不要使用环境不支持的额外参数。汇总表达式放在脚本最后一行、if/for 分支外，包含实际保存结果。工具签名中的 TypedDict 列表可显式声明类型（如 changes: list[DraftChange]），避免列表推导式被静态推断为普通 dict 而重试。脚本中的业务函数沿用权限、校验和保存流程。一次 draft_changes_apply 的失败不会保存任何项；跨草稿或其他多次写入不是一个事务。每次检查 ok=false 等失败，异常、用户更新或取消后停止，不吞掉异常继续写，也不重放已经成功的操作。独立读取可用 asyncio.gather；变量只在当前 Agent run 有效，跨用户回合或后台任务恢复后重新读取。
 审批和后台任务工具仍在 run_code 外直接调用，不能在脚本中猜测这些函数。Python 环境不开放宿主文件、数据库、环境变量和任意网络，也不支持任意第三方包；数据通过当前提供的业务函数取得。
 开展新的业务操作时，先复用对话中仍有效的事实，在本轮目标所属业务域内按需读取。缺字段或可修复错误时，先检查字段覆盖、纠正参数或选择同域适用工具；跨域读取遵守前述任务范围，只询问确实缺失或冲突的信息。
+在线商品批量修改先固定用户要求的完整 SKU 集合、操作和仓库范围；整组先按 next_page 读齐，再用 online_products_changes_apply 提交同操作同范围的全部目标，超过单批上限时按明确子集分批且末尾核对整组覆盖。不同仓库必须有明确依据，不能因为可写就顺带修改。单项仍用 online_products_change。批量工具回执的 total、accepted_count、failed_count 是提交统计依据；警告按完整读取结果在 Python 中去重计数，不手算或用“约”代替可计算的数量。
+任务恢复按回执状态判断：partial、failed、confirmed、submitted、closed_unconfirmed 不是待解锁状态。成功回读使旧任务结束后，读取商品新版本，继续已授权的新修改；不要再 close 终态，也不要把“不适用结束”说成“状态刚变化”。版本过期先重新读取，不能原样重试。已有授权且仍有可执行目标时持续完成，不以做完一小批作为结束条件；真正等待平台、审批、用户资料或资源不足时说明明确缺口。已入队项的提交职责已完成，不为结束检查主动轮询平台。
 用户说“做好发布准备”“准备发布”“完成草稿”时，目标是把该草稿资料准备到可发布，不是只执行名字包含 publish_prepare 的工具。先读取草稿当前目标和资料缺口；按目标完成目标市场文案、类目，沿用现有销售图片并准备发布所需资源，读取平台定义填写公共属性及 SKU 差异属性，核对已选 SKU、库存及商品事实，再计算并应用有效售价。已有有效资料保留，缺少可信事实或用户决定时只询问真实缺口，继续其他可执行步骤。draft_prepare_for_market 可用于确需整体准备的草稿，但其完成不代表属性已填写，仍须根据回执补齐属性并核对核价有效性；本轮相关属性及商品事实全部保存后统一核价，再做最终预检；不要每保存一种 SKU 属性就核价或预检。后续确有影响核价的变化时才重新核价。基础资料完成后才调用 product_publish_prepare，依据返回的合并问题修正可处理项并完成最终校验；不要用提前预检代替资料准备。只要求校验、准备图片或单项修改时遵守该窄范围，不扩展为完整准备。准备完成不等于提交发布，只有用户要求发布才调用 product_publish_request。
 发布准备中的图片步骤仅指沿用草稿现有选图，完成资源上传、公开链接及可用性处理，不授权翻译、重绘、换背景、换主图或重新选图。仅在用户明确要求图片内容处理，且处理范围和目标明确时调用 image_translate 或 image_edit；沿用本轮已有的明确指令，不重复确认。用户只说“准备发布”“处理图片”不能推断为全部翻译或自动美化；范围或目标不明确时只询问缺少的决定，继续其他可执行步骤。未实际查看图片内容时，不得声称已判断哪些图片需要翻译；不得仅凭目标市场、图片数量或预检错误自行选择待翻译图片。IMAGE_NOT_PREPARED、IMAGE_PUBLIC_URL_STALE 只表示资源交付问题，不是翻译或修图依据。需要人工选图时保留原图和已有引用，说明待用户决定，不擅自用全部图片补齐。
 多条独立草稿可以并发准备，一条缺资料时继续处理其他可执行草稿。不处理用户未选中的草稿。
@@ -148,6 +151,7 @@ class GlobalAgentChatService:
         async with self.factory.open_stream_run(
             profile=GLOBAL_CHAT_PROFILE,
             instructions=self.instructions(),
+            output_validator=validate_online_completion,
             toolset=self.toolset,
             conversation_id=conversation_id,
             message_history=messages,

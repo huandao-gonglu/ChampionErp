@@ -99,3 +99,61 @@ describe('在线商品图片编辑', () => {
     expect(pictures().pictures).toHaveLength(2)
   })
 })
+
+
+describe('Yandex 在线保修期限', () => {
+  const row = (period = {}) => ({...listing, platform: 'yandex' as const,
+    content: {guarantee_period: period},
+    capabilities: {...listing.capabilities, content: {enabled: true, scope: '账号商品', reason: '', fields: ['guarantee_period']}},
+  })
+  it('回显实际值，勾选后才提交，取消勾选保留平台原值', async () => {
+    const original = {timePeriod: 12, timeUnit: 'MONTH', comment: 'Гарантия продавца'}
+    const source = row(original)
+    render(source)
+    expect((wrapper.get('[aria-label="Yandex 保修时长"]').element as HTMLInputElement).value).toBe('12')
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
+    expect(wrapper.emitted('change')).toBeUndefined()
+    await wrapper.get('input[value="guarantee_period"]').setValue(true)
+    await wrapper.get('[aria-label="Yandex 保修时长"]').setValue('24')
+    expect(wrapper.emitted('change')!.at(-1)![0]).toEqual({guarantee_period: {...original, timePeriod: '24'}})
+    expect(source.content.guarantee_period).toEqual(original)
+    await wrapper.get('input[value="guarantee_period"]').setValue(false)
+    expect(wrapper.emitted('change')!.at(-1)![0]).toEqual({})
+  })
+  it('缺失期限不补默认值，已勾选但未填完整时不能确认', async () => {
+    render(row())
+    await wrapper.get('input[value="guarantee_period"]').setValue(true)
+    expect(wrapper.emitted('validity')!.at(-1)![0]).toBe(false)
+    expect((wrapper.get('[aria-label="Yandex 保修时长"]').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('[aria-label="Yandex 保修时长"]').setValue('6')
+    expect(wrapper.emitted('validity')!.at(-1)![0]).toBe(false)
+    await wrapper.get('[aria-label="Yandex 保修单位"]').setValue('MONTH')
+    expect(wrapper.emitted('validity')!.at(-1)![0]).toBe(true)
+    await wrapper.get('[aria-label="Yandex 保修时长"]').setValue('1.5')
+    expect(wrapper.emitted('validity')!.at(-1)![0]).toBe(false)
+    await wrapper.get('input[value="guarantee_period"]').setValue(false)
+    expect(wrapper.emitted('validity')!.at(-1)![0]).toBe(true)
+  })
+  it('其他平台不展示 Yandex 保修期限', () => {
+    render({...row(), platform: 'mercadolibre'})
+    expect(wrapper.find('input[value="guarantee_period"]').exists()).toBe(false)
+  })
+})
+
+it('在线属性超限时阻止提交，修正后恢复，保留已有超长值', async () => {
+  vi.mocked(fetchOnlineAttributes).mockResolvedValue({ ok: true, listing_id: listing.id, version: listing.version,
+    current_values: [{ id: '1', parameterId: 1, value: 'а'.repeat(104) }],
+    page: { category_id: '100', has_more: false, next_cursor: '', attributes: [{ id: '1', name: 'Версия', required: false,
+      read_only: false, managed_by: '', value_type: 'text', value_mode: 'free_text', allow_custom_values: false,
+      is_dictionary: false, is_collection: false, max_value_count: null, default_unit_id: '', unit_options: [], options: [],
+      has_more_values: false, format_hint: '', max_length: 100 }] } })
+  render({ ...listing, platform: 'yandex', content: { attributes: [] },
+    capabilities: { ...listing.capabilities, content: { enabled: true, fields: ['attributes'], scope: '商品', reason: '' } } })
+  await flushPromises()
+  await wrapper.get('input[type="checkbox"]').setValue(true)
+  expect(wrapper.emitted('validity')!.at(-1)).toEqual([false])
+  expect(wrapper.text()).toContain('需减少 4 个字符')
+  expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toHaveLength(104)
+  await wrapper.get('textarea').setValue('а'.repeat(100))
+  expect(wrapper.emitted('validity')!.at(-1)).toEqual([true])
+})

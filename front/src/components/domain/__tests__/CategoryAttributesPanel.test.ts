@@ -1185,3 +1185,32 @@ describe('CategoryAttributesPanel', () => {
     expect(draft.attributes['9048']).toBeUndefined()
   })
 })
+
+describe('草稿属性的官方值限制', () => {
+  it.each([false, true])('普通文本即时显示超长信息且保留输入（SKU 编辑：%s）', async (skuScope) => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'limits'; draft.categoryId = 'category'; draft.attributes = { version: 'а'.repeat(104) }
+    const category: CategorySelection = { platform: 'yandex', categoryId: 'category', categoryPath: '打印机', fetchedAt: '2026-10-28', raw: {},
+      requiredAttributes: [], optionalAttributes: [{ id: 'version', name: 'Версия', required: false, maxLength: 100 }] }
+    const wrapper = mount(CategoryAttributesPanel, { props: { ...panelProps(draft, category), target: yandexTarget, skuScope } })
+    if (!skuScope) await wrapper.findAll('button').find(b => b.text().includes('可选属性 1 个'))!.trigger('click')
+    expect(wrapper.text()).toContain('当前 104 个字符，超过上限 100，需减少 4 个字符')
+    expect(wrapper.text()).toContain('每个值最多 100 个字符')
+    const input = wrapper.get('input[data-attribute-id="version"]')
+    expect((input.element as HTMLInputElement).value).toHaveLength(104)
+    await input.setValue('а'.repeat(100))
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(draft.attributes.version).toHaveLength(100)
+    wrapper.unmount()
+  })
+  it('已保存的自定义枚举值也显示长度限制', async () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'limits'; draft.categoryId = 'category'; draft.attributes = { version: { values: [{ value: 'а'.repeat(104) }] } }
+    const category: CategorySelection = { platform: 'yandex', categoryId: 'category', categoryPath: '打印机', fetchedAt: '2026-10-28', raw: {},
+      requiredAttributes: [], optionalAttributes: [{ id: 'version', name: 'Версия', required: false, maxLength: 100, valueMode: 'open_enum', allowCustomValues: true }] }
+    const wrapper = mount(CategoryAttributesPanel, { props: { ...panelProps(draft, category), target: yandexTarget, skuScope: true } })
+    expect(wrapper.text()).toContain('需减少 4 个字符')
+    expect(draft.attributes.version).toEqual({ values: [{ value: 'а'.repeat(104) }] })
+    wrapper.unmount()
+  })
+})

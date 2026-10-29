@@ -37,11 +37,11 @@ async function mountPanel() {
   })
   wrappers.push(wrapper)
   const scroll = wrapper.get<HTMLElement>('[data-testid="ai-chat-scroll"]')
-  const size = { height: 1000, viewport: 400 }
+  const size = { height: 1000, viewport: 400, reads: 0 }
   let scrollTop = 0
   // jsdom 不提供布局与滚动边界，模拟浏览器对 scrollTop 的截断。
   Object.defineProperties(scroll.element, {
-    scrollHeight: { get: () => size.height },
+    scrollHeight: { get: () => { size.reads++; return size.height } },
     clientHeight: { get: () => size.viewport },
     scrollTop: {
       get: () => scrollTop,
@@ -57,6 +57,8 @@ async function mountPanel() {
   const stream = async () => {
     size.height += 200
     await wrapper.setProps({ messages: messages(`回复长度 ${size.height}`) })
+    // 浏览器由内容实际高度变化通知观察器，文本增量本身不强制读取布局。
+    resizeCallback([], {} as ResizeObserver)
     await flushPromises()
   }
   const resize = async () => {
@@ -67,6 +69,15 @@ async function mountPanel() {
 }
 
 describe('AiChatPanel 消息滚动', () => {
+  it('高度未变化的尾部空白更新不会反复读取布局', async () => {
+    const { wrapper, size } = await mountPanel()
+    const reads = size.reads
+    for (let i = 0; i < 100; i++) {
+      await wrapper.setProps({ messages: messages('正在回复' + ' \n'.repeat(i)) })
+    }
+    expect(size.reads).toBe(reads)
+  })
+
   it('首次打开与流式追加默认跟随最新内容，底部不显示箭头', async () => {
     const { scroll, stream, jump } = await mountPanel()
     expect(scroll.element.scrollTop).toBe(600)
@@ -116,6 +127,7 @@ describe('AiChatPanel 消息滚动', () => {
     const { wrapper, scroll, size, jump } = await mountPanel()
     size.height += 200
     const update = wrapper.setProps({ messages: messages('继续输出') })
+    resizeCallback([], {} as ResizeObserver)
     if (input === 'wheel') {
       scroll.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }))
     } else if (input === 'touch') {

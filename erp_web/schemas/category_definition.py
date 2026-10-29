@@ -171,7 +171,10 @@ class CategoryAttributeSummary(BaseModel):
     value_mode: str = ""
     allow_custom_values: bool = False
     read_only: bool = False
-    #: 仅暴露编辑和生成需要的文本格式，不透传内部 constraints。
+    #: 显式公开填写所需限制，不透传内部平台绑定或任意 constraints。
+    max_length: int | None = Field(default=None, ge=0, description="每个值的最大字符数；null 表示平台未提供。")
+    min_value: str | None = Field(default=None, description="数值下限，保留平台精度；null 表示未提供。")
+    max_value: str | None = Field(default=None, description="数值上限，保留平台精度；null 表示未提供。")
     text_format: Literal["", "name_value_lines"] = ""
     format_hint: str = ""
     is_dictionary: bool = False

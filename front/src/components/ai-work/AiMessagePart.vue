@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { PhBrain, PhCaretRight } from '@phosphor-icons/vue'
 import { i18n } from '@/i18n'
 import type { AiUiPart } from '@/types/aiWork'
 import { describeAiTool } from '@/utils/aiToolLabels'
 import { aiToolIcon } from '@/utils/aiToolIcons'
+import { splitAssistantText } from '@/utils/aiThinkingPresentation'
 import { aiToolName, aiToolStatus, isAiToolPart, toolNeedsAttention, type ToolPartView } from '@/utils/aiMessagePresentation'
 
 const props = defineProps<{
@@ -14,6 +15,10 @@ const props = defineProps<{
 }>()
 
 const partType = computed(() => (props.part as { type: string }).type)
+const expanded = ref<Record<string, boolean>>({})
+function toggleDetails(event: Event, key: string) {
+  expanded.value[key] = (event.target as HTMLDetailsElement).open
+}
 
 const isToolPart = computed(() => isAiToolPart(props.part))
 const tool = computed(() => props.part as ToolPartView)
@@ -87,42 +92,54 @@ const isSafeFileUrl = computed(() => {
 const debugJson = computed(() => formatJson(props.part))
 
 /** text / reasoning part 的正文；模板中不做 `as` 断言，统一在脚本内收敛类型。 */
-const textPartText = computed(() => (props.part as unknown as { text?: string }).text || '')
+// 只移除显示末尾的空白，后续正文到达时中间空白仍完整保留；不修改原生消息。
+const textPartText = computed(() => ((props.part as unknown as { text?: string }).text || '').trimEnd())
 
 const reasoningStreaming = computed(() => (
   (props.part as unknown as { state?: string }).state === 'streaming'
 ))
+const textSegments = computed(() => splitAssistantText(textPartText.value, reasoningStreaming.value))
 </script>
 
 <template>
   <!-- 文本 -->
-  <p
-    v-if="partType === 'text'"
-    class="whitespace-pre-wrap break-words text-sm leading-6"
-    data-testid="ai-part-text"
-  >
-    {{ textPartText }}
-  </p>
+  <template v-if="partType === 'text'">
+    <template v-for="(segment, index) in textSegments" :key="index">
+      <p v-if="segment.kind === 'text'" class="whitespace-pre-wrap break-words text-sm leading-6" data-testid="ai-part-text">{{ segment.text }}</p>
+      <details v-else class="group/reasoning min-w-0" :data-testid="segment.kind === 'thinking' ? 'ai-part-reasoning' : 'ai-part-unseparated'" @toggle="toggleDetails($event, `segment-${index}`)">
+        <summary class="flex cursor-pointer list-none items-center gap-2 py-1 text-xs text-slate-500 focus-visible:outline-primary-500 dark:text-accent-300 [&::-webkit-details-marker]:hidden">
+          <PhBrain :size="16" class="shrink-0" aria-hidden="true" />
+          {{ i18n.global.t(reasoningStreaming ? 'ai.turn.thinking' : segment.kind === 'thinking' ? 'ai.turn.thoughts' : 'ai.turn.unseparatedReply') }}
+          <PhCaretRight :size="12" class="shrink-0 transition-transform group-open/reasoning:rotate-90" aria-hidden="true" />
+        </summary>
+        <template v-if="expanded[`segment-${index}`]">
+          <p v-if="segment.kind === 'unseparated' && !reasoningStreaming" class="py-1 pl-6 text-xs text-slate-500 dark:text-accent-300">{{ i18n.global.t('ai.turn.unseparatedReplyHint') }}</p>
+          <p class="py-1 pl-6 whitespace-pre-wrap break-words text-xs leading-5 text-slate-600 dark:text-accent-200">{{ segment.text }}</p>
+        </template>
+      </details>
+    </template>
+  </template>
 
   <!-- 思考过程：默认折叠，流式时显示进行中 -->
   <details
     v-else-if="partType === 'reasoning'"
     class="group/reasoning min-w-0"
     data-testid="ai-part-reasoning"
+    @toggle="toggleDetails($event, 'reasoning')"
   >
     <summary class="flex cursor-pointer list-none items-center gap-2 py-1 text-xs text-slate-500 focus-visible:outline-primary-500 dark:text-accent-300 [&::-webkit-details-marker]:hidden">
       <PhBrain :size="16" class="shrink-0" aria-hidden="true" />
       {{ reasoningStreaming ? '思考中…' : '思考过程' }}
       <PhCaretRight :size="12" class="shrink-0 transition-transform group-open/reasoning:rotate-90" aria-hidden="true" />
     </summary>
-    <p class="py-1 pl-6 whitespace-pre-wrap break-words text-xs leading-5 text-slate-600 dark:text-accent-200">
+    <p v-if="expanded.reasoning" class="py-1 pl-6 whitespace-pre-wrap break-words text-xs leading-5 text-slate-600 dark:text-accent-200">
       {{ textPartText }}
     </p>
   </details>
 
   <!-- 工具在原位置更新；仅展开时展示参数和回执。 -->
   <div v-else-if="isToolPart" class="min-w-0" data-testid="ai-part-tool">
-    <details data-testid="ai-tool-details" class="group/tool">
+    <details data-testid="ai-tool-details" class="group/tool" @toggle="toggleDetails($event, 'tool')">
       <summary class="flex cursor-pointer list-none items-center gap-2 rounded py-1 text-xs focus-visible:outline-primary-500 [&::-webkit-details-marker]:hidden">
         <component :is="toolIcon" :size="16" class="shrink-0 text-slate-500 dark:text-accent-300" aria-hidden="true" />
         <span class="min-w-0 break-words text-slate-600 dark:text-accent-200">{{ toolName }}</span>
@@ -133,7 +150,7 @@ const reasoningStreaming = computed(() => (
         >{{ toolStatusLabel }}</span>
         <PhCaretRight :size="12" class="shrink-0 text-slate-400 transition-transform group-open/tool:rotate-90" aria-hidden="true" />
       </summary>
-      <div class="ml-3 space-y-2 border-l border-slate-200 py-2 pl-3 dark:border-dark-700">
+      <div v-if="expanded.tool" class="ml-3 space-y-2 border-l border-slate-200 py-2 pl-3 dark:border-dark-700">
         <template v-if="toolInputJson">
           <p class="text-xs text-slate-500">{{ i18n.global.t('ai.turn.operationDetails') }}</p>
           <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-accent-200">{{ toolInputJson }}</pre>
@@ -197,10 +214,11 @@ const reasoningStreaming = computed(() => (
     v-else
     class="rounded-lg border border-dashed border-slate-300 px-3 py-2 dark:border-dark-600"
     data-testid="ai-part-debug"
+    @toggle="toggleDetails($event, 'debug')"
   >
     <summary class="cursor-pointer select-none text-[11px] font-bold text-slate-400">
       详细信息
     </summary>
-    <pre class="mt-1 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-slate-500 dark:text-accent-300">{{ debugJson }}</pre>
+    <pre v-if="expanded.debug" class="mt-1 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-slate-500 dark:text-accent-300">{{ debugJson }}</pre>
   </details>
 </template>

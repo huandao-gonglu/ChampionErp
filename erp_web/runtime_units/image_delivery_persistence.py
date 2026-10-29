@@ -7,6 +7,7 @@ from erp_web.context import get_context
 from erp_web.schemas.image_hosting import DELIVERY_FIELDS, ImageHostingError
 from erp_web.services.image_hosting_config import default_profile, target_fingerprint
 from erp_web.services.image_content import image_content, read_image_file
+from erp_web.services.watermark_service import watermark_fingerprint, watermark_settings
 from .draft_publish_context import load_required_draft_publish_context
 from .image_pool import save_image_pool_for_product
 
@@ -27,7 +28,11 @@ def persist_delivered_image_pool(prepared: dict[str, Any], original: dict[str, A
         with context.config.image_hosting_commit_scope():
             managed = [item for item in pool if item["id"] in selected and item.get("delivery_provider") == "s3_compatible"]
             if managed:
-                profile = default_profile(context.config.load_app_config())
+                config = context.config.load_app_config()
+                profile = default_profile(config)
+                expected_watermark = watermark_fingerprint(watermark_settings(config))
+                if any(item.get("watermark_fingerprint", "") != expected_watermark for item in managed):
+                    raise ImageHostingError("IMAGE_DELIVERY_STALE", "准备期间水印设置已变化")
                 if any(item.get("hosting_profile_id") != profile["id"] or item.get("delivery_fingerprint") != target_fingerprint(profile) for item in managed):
                     raise ImageHostingError("IMAGE_DELIVERY_STALE", "准备期间默认托管目标已变化")
             current = context.products.load_product_from_index(product_id, "")
@@ -54,7 +59,8 @@ def persist_delivered_image_pool(prepared: dict[str, Any], original: dict[str, A
                 if any(item.get(key, "") not in (before.get(key, ""), delivered.get(key, "")) for key in fields):
                     raise ImageHostingError("IMAGE_DELIVERY_STALE", "准备期间交付信息已变化")
                 path = context.image_delivery._source_path(item)
-                if delivered.get("content_sha256") and path and image_content(read_image_file(path))[0] != delivered["content_sha256"]:
+                source_sha = delivered.get("delivery_source_sha256") if delivered.get("watermark_fingerprint") else delivered.get("content_sha256")
+                if source_sha and path and image_content(read_image_file(path))[0] != source_sha:
                     raise ImageHostingError("IMAGE_DELIVERY_STALE", "准备期间图片内容已变化")
             for asset_id, update in updates.items():
                 current_by_id[asset_id].update({field: update.get(field, "") for field in fields})

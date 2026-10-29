@@ -239,9 +239,17 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   每次开始回读先使旧证据失效，`checked_at` 与保留的完整同步时间 `synced_at` 分开；旧历史必须重新查询才能获得结束资格。
   人工决定与证据保存于原任务 `result.resolution`，清除租约防止旧执行者覆盖；旧幂等键和外部请求阻断保持有效，只允许重新读取商品后提交新的操作。
   `OnlineOperationRecovery.vue` 在操作记录提供核对当前值、原目标值及明确结束的共享弹窗；AI 的 `online_products_close` 复用原生审批快照和同一领域入口，绑定任务与商品版本。
+- Yandex 在线内容编辑支持 `content.guarantee_period`（时长、单位、可选说明），从官方 `offer.guaranteePeriod` 读取。草稿与在线编辑共用 `YandexGuaranteePeriodFields.vue`，后端共用纯领域 `product_model/yandex_warranty_model.py` 校验编译。只有勾选的字段进入现有 content 修改任务，按 offerId 局部更新账号商品，不重新发布或改写草稿。空对象不作为清除命令；完整填写后可新增或修改。
+  保修字段纳入快照版本及写前并发检查；历史无保修字段的快照与空值保持相同版本，已有原始字段可读取。回读 `getOfferMappings` 中的实际期限与目标逐项比较，缺失字段不沿用旧值；内容审核和未知结果继续使用原任务流程。页面预览显示原值与目标值，接口受理不等于修改已生效。测试见 `tests/test_online_yandex_warranty.py`。
 - `runtime_units/online_product_capabilities.py` 将现有读取、单件状态刷新、统一修改、同步、回读、重试接口直接装配进主 Agent。
+  `online_products_changes_apply` 按明确清单和固定范围复用逐项修改，整组提交校验成员完整性；
+  `online_products_job_read` 仅读取本地任务。任务回执由 `services/online_product_tool_results.py` 精简投影，完整数据留在原领域任务。
+  `services/online_product_completion.py` 在主对话的原生输出校验中检查本轮实际尝试的可恢复遗漏，
+  不把只读目标变为写入授权、不保存计划或增加执行循环；契约、退出条件及验证见 [在线商品 AI](online-product-ai.md)。
   `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。
   商品数量、SKU 分析等由读取返回值与已有 Code Mode 组合完成，不新增场景工具、查询 DSL 或平台写入旁路。
+  列表和单件均可通过 `fields` 读取所需业务字段及固定身份、版本；已有足够字段时不再读取完整详情。
+  父子字段重叠在参数校验阶段拒绝，避免完整内容与属性重复返回；常用路径说明及分页边界见 [在线商品 AI](online-product-ai.md)。
 - 审批和持久调用直接使用现有 Tool Bridge 的 Pydantic Deferred 机制；修改和重试返回 `OnlineSubmissionResult`，任务入队即完成 AI 工具调用，批量提交继续处理剩余目标，不等待远端终态。
   平台写入由后台处理，回读按需发起；`online_product_job_reader.py` 为同步及已持久化引用读取领域回执。
   `submitted` 只完成提交职责，`confirmed` 才确认实际生效；部分完成、未知结果和等待人工确认保留原状态并结束本次工具等待，不自动重放。
@@ -272,6 +280,18 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 循环的用例使用 Pydantic Agent，不需要 Agent 的普通 chat/JSON/stream/typed output 使用
 Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/native tool。两类调用都
 必须复用 `erp_web/services/ai_model_factory.py` 创建的 Model/Provider。
+
+Responses 流经 `services/ai_responses_stream.py` 校验 SDK 已解码的错误与结束事件，
+随后原样交给原生 `OpenAIResponsesModel`。这是 Pydantic AI 2.44.0 对顶层
+`ResponseErrorEvent` 只警告、前台 EOF 可被记为完成的适配缺口；不解析正文、
+不编码 SSE、不重试或重新执行工具，保留原生后台暂停与取消。上游支持这些错误后，
+通过 `tests/test_ai_responses_stream.py` 的实际 SDK 回放再删除适配。
+依据为安装源码及 [官方模型实现](https://github.com/pydantic/pydantic-ai/blob/v2.44.0/pydantic_ai_slim/pydantic_ai/models/openai.py)。
+
+聊天流式展示由 `front/src/utils/aiChatMessages.ts` 从 SDK 消息派生浅快照，历史消息和
+工具回执保留引用，禁止逐 token 深拷贝全历史。折叠过程及详情在展开后挂载，
+正文只在显示时移除尾部空白，原始消息不变；滚动依赖尺寸观察，不深遍历消息。
+回归覆盖 392 条历史回执、4090 次空白更新、SDK 原地 part 更新、取消和错误恢复。
 
 阶段 6 已完成：普通 chat/JSON/stream 统一由 Pydantic Direct Model Requests 发送；图片请求
 也先进入 Pydantic Direct Model，再由集中 Factory 创建的 focused Images Model 执行。CLI 与
@@ -320,14 +340,14 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
   timeout、模型类型与密钥脱敏规则。显式 Thinking 设置若会被原生模型 profile 忽略，
   Factory 在请求前报配置错误，防止界面选择关闭后仍发送默认请求。
-- `erp_web/services/ai_tagged_thinking.py`：仅兼容已确认的 `v2.pincc.ai` Grok Responses
-  正文推理标签；Pydantic AI 2.44.0 的 Responses 文本路径没有标签解析扩展配置，
-  因此在 Model/StreamedResponse 子类中增量拆分开头的 `<think>`，输出原生 `ThinkingPart`，
-  并复用原生 PartsManager、用量、工具和事件编码，不接管 Agent 循环。
-  标签未闭合且无答案或工具的完整响应直接报格式错误，避免原生空答案重试；有工具则照常执行。
-  普通正文、其他端点和模型不受影响，不改写已保存历史。依赖内部 `_parts_manager`，
-  升级 Pydantic AI 时需运行 `tests/test_ai_tagged_thinking.py`；接口改为独立 reasoning
-  事件或上游支持相同增量解析能力后移除此适配。
+- Responses 全部使用原生 `OpenAIResponsesModel`。曾按 PinCC/Grok 正文 `<think>` 标签
+  重分类并拒绝未闭合输出的适配已删除：真实响应会把业务答复接在未闭合标签之后，
+  重分类会丢失答复并将已完成任务误报为失败。不能从普通文本标签推导执行状态。
+  已核对 Pydantic AI 2.44.0 与[原生 Thinking 文档](https://pydantic.dev/docs/ai/capabilities/thinking/)；
+  原生 reasoning、工具调用、用量及历史仍按真实协议保存，旧原生历史保持可读，不作改写。
+  `front/src/utils/aiThinkingPresentation.ts` 只做显示投影：开头闭合标签中的内容折叠，
+  未闭合内容整段折叠保留（包含可能混入的答案），不猜语言/标题分界；正文复制排除折叠内容。
+  `tests/test_ai_responses_text.py` 验证流式/非流式均不因文本标签报错或额外请求，工具只执行一次。
 - `erp_web/services/ai_agent_factory.py`：唯一 Pydantic Agent 装配与运行入口。`ai_model_errors.py` 统一保留嵌套 Direct Model 错误的 HTTP 状态、可重试性和安全原因，供 Agent 与业务工具边界使用。
   原生 `UsageLimits` 限制模型请求和工具调用；`PrepareTools` 在预算耗尽后隐藏业务工具，
   不预留可执行的额外额度。`Hooks.before_node_run` 在 `UserPromptNode` 和
@@ -650,10 +670,18 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   分页 View 与稳定 fingerprint 的唯一 shape owner。内部定义不含平台原始 `raw` 或完整
   枚举全集，公共 View 也不暴露 `platform_binding`。
 - Yandex“其他属性”（57046341）在 Provider 中声明 `name_value_lines` 文本格式；
-  `schemas/category.py` 统一校验每行的“属性名:属性值”。公共摘要仅投影 `text_format` 和
+  `schemas/category.py` 统一校验每行的“属性名:属性值”。公共摘要投影 `text_format` 和
   `format_hint`，供主 Agent 生成属性与前端多行编辑使用，不暴露内部 constraints。
   属性写工具、草稿发布预检和 payload 编译均执行同一规则；该选填字段只保留没有专用
   平台字段的来源事实，不重复材质等已映射属性，不把整组 SKU 的概括描述套给各规格。
+- `schemas/category_constraints.py` 是属性长度和数值范围的纯校验入口；规范键为
+  `max_length/min_value/max_value`。公共摘要显式提供这三个字段，缺失为 null，数值边界以
+  字符串保留精度；不把内部任意 constraints 暴露到界面或 Agent。Yandex 草稿预检、发布
+  编译、Agent 属性写入及在线修改共用逐值检查，枚举自定义值与普通文本遵守同一长度规则。
+  前端 `utils/categoryConstraints.ts` 提供填写时反馈，后端为最终校验；草稿允许保存待完善值，
+  不静默截断，已知违规禁止发布。`fetchCategoryAttrs` 完整读取属性分页，缺页、重复或身份变化
+  报错，不展示不完整定义。规则缺失不推定统一上限。故障证据及回归见
+  [草稿属性限制验收](draft-attribute-limits.md)。
 - `erp_web/runtime_units/category_catalog.py`：业务消费者的统一类目读取入口；负责 Provider
   解析、定义 Loader 注入与有界公共投影。类目匹配、属性填充、预检、payload 编译、前端和
   Agent 工具不得绕过 Catalog/注入 Loader 直接读取平台规则。
@@ -1075,7 +1103,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - 页面流程为基础资料预检 → 准备素材与预览 → 最终发布校验 → 确认发布。`precheck_publish_payload` 对 Yandex/Ozon 使用 `image_stage="source"`，检查图片来源与选择，不要求已上传；预览准备后、AI `product_publish_validate` 和入队准入仍执行最终校验并验证 digest。基础预检通过不能直接入队。
 - 核价指纹由 `pricing_service.pricing_calculation_fingerprint` 生成，v2 对 JSON 数字统一整数表示，避免页面往返将 `18.0` 写成 `18` 导致失效。`pricing_calculation_fingerprint_matches` 保留旧摘要读取，并仅为历史 Yandex 费用请求恢复明确的 float 字段类型；金额、尺寸或其他事实变化仍须重新核价。
 - 条码资料按目标市场和类目定义显示，共享资料不再提供 UPC 豁免开关。Mercado 的 `EMPTY_GTIN_REASON` 是目标 `attributes` 中的可编辑类目字段，`DraftBarcodeFields.vue` 在类目与发布预检区域展示平台候选原因；预填仅使用平台返回的默认候选，已有值和明确清空均不覆盖。`mercadolibre_attribute_contract.py` 在逐 SKU 编译时只为缺条码的 SKU 提交原因，有实际条码时提交 GTIN。历史 `allow_gtin_exemption` 仅在 Mercado 且尚无显式原因字段时保留读取支持，变更不会撤销其他市场预检；新编辑使用目标属性。
-- `DraftWarrantyFields.vue` 仅在 Mercado 发布区域展示保修。未配置时界面将“无保修”写入草稿 `sale_terms`，随预检前保存提交；已有保修类型、时长和其他销售条款保留。该字段继续使用既有持久化格式，但前后端均只使 Mercado 的预检失效。后端仍校验实际提交的条款，不在 payload 构造阶段静默补值。
+- `DraftWarrantyFields.vue` 在 Mercado 与 Yandex 发布区域展示各自的保修设置。Yandex 由 `YandexWarrantyFields.vue` 编辑草稿 `guarantee_period`（时长、单位、可选说明），保存后由 `product_model/yandex_warranty_model.py` 校验，经 `publish_yandex.py` 写入官方 `catalog.offer.guaranteePeriod`；不补默认期限，未填写给出提醒，填写不完整或无效则阻止发布。修改仅使 Yandex 预检与发布预览失效，不更改已发布商品。官方契约见 [updateOfferMappings](https://yandex.ru/dev/market/partner-api/doc/ru/reference/business-offer-mappings/updateOfferMappings)。
+- Mercado 保修仍使用 `DraftWarrantyFields.vue`。未配置时界面将“无保修”写入草稿 `sale_terms`，随预检前保存提交；已有保修类型、时长和其他销售条款保留。该字段继续使用既有持久化格式，但前后端均只使 Mercado 的预检失效。后端仍校验实际提交的条款，不在 payload 构造阶段静默补值。
 
 - `erp_web/product_model/sku_model.py`：商品实际 SKU、来源快照、草稿选品与每行卖家编码的唯一契约。商品保存全部实际规格；草稿通过 `sku_id` 引用，卖家编码绑定 `draft_id + sku_id`。已发送的编码和远端关联不能由普通保存覆盖。
 - `erp_web/runtime_units/publish_context.py`：一次发布评估共享类目定义及类目币种查询结果。币种结果仅在当前上下文及其 SKU 投影间复用（包括空结果），按类目与授权隔离，不跨请求缓存或持久化。
@@ -1245,6 +1274,14 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `inspect_product(stage="source")` 只读检查源素材，最终阶段要求交付与当前目标一致；
   普通 HTTP 预检和 `product_publish_validate` 均不上传。显式准备覆盖草稿及所选 SKU 图片。
   无默认配置、源丢失、尚未准备及目标变化分别返回类型化错误和下一步提示。
+- `services/watermark_service.py` 使用 Pillow 和随应用分发的 Noto CJK 字体合成斜向平铺的文字／自定义图片水印（两者可同时使用），
+  预览与发布调用同一实现。`watermark_assets.publication_image` 在仓库外临时目录生成副本，
+  远程原图复用受管安全下载；不覆盖原图，不处理物流报单图片。
+  水印在显式发布准备时覆盖共用图和已选 SKU 图，有文字或图片内容即生效，全部清空则不添加；原始内容哈希与交付内容哈希分别保存，
+  水印配置指纹变化使旧交付失效。远程素材保留原 URL，重新准备不得下载已加水印的副本再叠加。
+  Mercado 独立图片上传也使用同一合成服务，在 `platform_uploads.mercadolibre` 保存水印指纹与原图哈希；
+  配置变化必须重新上传。在线商品新选入的源图片同样处理，已有远端图集仅排序／移除不重加水印。
+  队列沿用已确认的冻结图片，不追改已发布或已入队任务。回归见 `tests/test_watermark.py`。
 - `erp_web/runtime_units/image_delivery_persistence.py`：网络完成后在商品与配置短锁内
   检查源内容、图片选择和目标快照，只合并交付字段，保留其他用户编辑。
   队列准入再次复核，已经入队的 worker 发送冻结 URL，不因默认托管切换重新上传。
@@ -1508,6 +1545,12 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 - 左侧栏底部 `AppSidebar.vue` → `/?tab=systemSettings` → `SystemSettingsPanel.vue` 在主区域提供订单自动同步间隔设置；复用工作台导航，支持刷新及浏览器前进、后退。
 - GET/POST `/api/system-settings` → `auth_config_facade` → `ConfigStore.system_settings/save_system_settings`；单项更新保存在 `app_config.system_settings`，通用授权配置合并忽略该区段，避免旧页面覆盖。字段契约由 `schemas/config.py` 定义，前端类型自动生成。旧配置缺少区段时默认 5 小时。
+- `WatermarkSettingsPanel.vue` 是系统设置的「图片水印」页签（`settings_section=watermark`），
+  提供文字／TXT 导入、图片上传、大小、疏密与透明度，不设开关和类型互斥。水印图片以有大小限制的 data URL
+  随应用配置持久化，支持静态 PNG/JPEG/WebP；实际解码校验后才保存。
+  POST `/api/system-settings/watermark-preview` 经 `watermark_preview_service` 自动从现有草稿选取可用本地原图（公共图优先，其次已选 SKU 图），
+  前端防抖自动更新并忽略旧请求回执；无图显示空状态。预览不保存设置、不修改草稿、不上传图床。
+  系统设置按提交的顶层项合并，订单同步间隔与完整水印设置分别保存，旧页面不清空新增设置。旧水印配置读取时保留文字和图片，移除开关、互斥类型与位置字段；后续只写平铺格式。
 - `OrderNotificationService` 通过显式 provider 在每次导航自动同步时读取最新间隔；修改设置不发起外部同步，也不重置既有同步尝试时间。
 
 ### 工作台导航

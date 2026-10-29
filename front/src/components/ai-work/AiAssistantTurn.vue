@@ -4,6 +4,7 @@ import { PhCaretRight, PhCheck, PhCopy, PhGitBranch } from '@phosphor-icons/vue'
 import { i18n } from '@/i18n'
 import type { AiTurnTiming, AiUiPart, PendingToolCall } from '@/types/aiWork'
 import { presentAssistantParts } from '@/utils/aiMessagePresentation'
+import { visibleAssistantText } from '@/utils/aiThinkingPresentation'
 import AiMessagePart from './AiMessagePart.vue'
 
 const props = defineProps<{
@@ -15,6 +16,10 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ branch: [] }>()
 const t = i18n.global.t
+const processOpen = ref(false)
+function toggleProcess(event: Event) {
+  processOpen.value = (event.target as HTMLDetailsElement).open
+}
 const display = computed(() => presentAssistantParts(props.parts, props.pendingToolCalls, props.active))
 const timeline = computed(() => display.value.timeline.filter(entry => entry.part.type !== 'reasoning'))
 const process = computed(() => display.value.process.filter(entry => entry.part.type !== 'reasoning'))
@@ -47,7 +52,7 @@ const finishedTitle = computed(() => Number.isFinite(finishedAt.value)
   : '')
 const responseText = computed(() => display.value.response
   .filter(entry => entry.part.type === 'text')
-  .map(entry => (entry.part as { text: string }).text).join('\n\n'))
+  .map(entry => visibleAssistantText((entry.part as { text: string }).text)).filter(Boolean).join('\n\n'))
 const copied = ref(false)
 const copyError = ref(false)
 let copyTimer: ReturnType<typeof setTimeout> | undefined
@@ -66,7 +71,8 @@ const showProgress = computed(() => {
   if (!props.active || display.value.hasActiveTool) return false
   const latest = display.value.timeline.at(-1)?.part
   // 推理正文不进入聊天视图，只有可见的流式正文可以替代进度提示。
-  return !latest || !(latest.type === 'text' && 'state' in latest && latest.state === 'streaming')
+  return !latest || !(latest.type === 'text' && 'state' in latest && latest.state === 'streaming'
+    && visibleAssistantText(latest.text, true).trim())
 })
 </script>
 
@@ -93,12 +99,13 @@ const showProgress = computed(() => {
         v-if="process.length"
         class="group/process min-w-0"
         data-testid="ai-turn-process"
+        @toggle="toggleProcess"
       >
         <summary class="flex cursor-pointer list-none items-center gap-1.5 border-b border-slate-200 pb-3 text-xs text-slate-500 focus-visible:outline-primary-500 dark:border-dark-700 dark:text-accent-300 [&::-webkit-details-marker]:hidden">
           {{ processLabel }}
           <PhCaretRight :size="12" class="shrink-0 transition-transform group-open/process:rotate-90" aria-hidden="true" />
         </summary>
-        <div class="mt-2 space-y-1">
+        <div v-if="processOpen" class="mt-2 space-y-1">
           <AiMessagePart
             v-for="entry in process"
             :key="entry.key"

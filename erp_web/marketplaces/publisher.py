@@ -39,6 +39,7 @@ class PlatformPublisher(Protocol):
         self,
         context: "PreparedPublishContext",
         config: dict[str, Any],
+        *, image_stage: str = "final",
     ) -> dict[str, Any]:
         ...
 

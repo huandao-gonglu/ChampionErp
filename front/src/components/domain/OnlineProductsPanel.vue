@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatYandexWarranty } from '@/utils/yandexWarranty'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onClickOutside } from '@vueuse/core'
 import OzonExportDialog from './OzonExportDialog.vue'
@@ -142,7 +143,7 @@ const saleState = computed(() => selected.value?.sale_state === 'paused' ? 'acti
 const cardNotice = computed(() => selected.value?.raw_sub_status
   .filter(status => ['HAS_CARD_CAN_NOT_UPDATE', 'HAS_CARD_CAN_UPDATE_ERRORS', 'NO_CARD_NEED_CONTENT', 'NO_CARD_MARKET_WILL_CREATE', 'NO_CARD_ERRORS', 'NO_CARD_ADD_TO_CAMPAIGN'].includes(status))
   .map(label).join('、') || '')
-const fieldNames: Record<string,string> = {preserved_pause:'保持主动停售',amount:'价格', currency:'币种', quantity:'绝对库存', title:'标题', description:'描述', pictures:'完整图片列表', attributes:'属性', state:'销售状态', archived:'归档状态'}
+const fieldNames: Record<string,string> = {preserved_pause:'保持主动停售',amount:'价格', currency:'币种', quantity:'绝对库存', title:'标题', description:'描述', pictures:'完整图片列表', attributes:'属性', guarantee_period:'保修期限', state:'销售状态', archived:'归档状态'}
 const changes = computed<Record<string, unknown>>(() => {
   if (modal.value === 'price') return {amount: String(value.value), currency: price.value?.currency || ''}
   if (modal.value === 'stock') return {quantity: Number(value.value)}
@@ -312,7 +313,7 @@ function begin(operation: OnlineOperation | 'sync') {
 function resetValue() { value.value = modal.value === 'price' ? price.value?.amount || '' : String(stock.value?.quantity ?? '') }
 function makePreview() {
   try {
-    if (modal.value === 'content' && !contentValid.value) throw new Error('请先完整填写已勾选的属性')
+    if (modal.value === 'content' && !contentValid.value) throw new Error('请先完整填写已勾选的内容')
     if(!Object.keys(changes.value).length) throw new Error('请至少选择一个变更字段')
     if (modal.value === 'stock' && (!String(value.value).trim() || !Number.isInteger(Number(value.value)) || Number(value.value)<0)) throw new Error('库存必须是非负整数')
     if (modal.value === 'price' && !(Number(value.value)>0)) throw new Error('请输入有效价格')
@@ -328,6 +329,7 @@ function beforeValue(field: string) {
   return selected.value?.content[field as keyof OnlineListing['content']]
 }
 function displayValue(field: string, data: unknown): string {
+  if(field==='guarantee_period') return formatYandexWarranty(data)
   if(field==='archived') return data ? '已归档' : '普通商品'
   if(field==='state') return label(String(data || ''))
   if(field==='pictures' && Array.isArray(data)) return `${data.length} 张图片（按显示顺序提交）`

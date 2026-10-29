@@ -11,10 +11,12 @@ def test_default_settings_and_persistence_preserve_other_configuration():
     context = get_context()
     config = context.config
     before = config.load_app_config()
-    assert config.system_settings() == {'orders_auto_sync_interval_hours': 5}
+    assert config.system_settings()['orders_auto_sync_interval_hours'] == 5
+    assert config.system_settings()['watermark']['text'] == ''
+    assert config.system_settings()['watermark']['image_data_url'] == ''
     config.save_system_settings({'orders_auto_sync_interval_hours': 12})
     loaded = ConfigStore(context.paths, context.db).load_app_config()
-    assert loaded == {**before, 'system_settings': {'orders_auto_sync_interval_hours': 12}}
+    assert loaded == {**before, 'system_settings': {**before['system_settings'], 'orders_auto_sync_interval_hours': 12}}
     merged = config.merge_app_config_fields(loaded, {'system_settings': {'orders_auto_sync_interval_hours': 5}})
     config.save_app_config(merged)
     assert config.system_settings()['orders_auto_sync_interval_hours'] == 12

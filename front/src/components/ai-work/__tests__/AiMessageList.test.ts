@@ -1,10 +1,14 @@
-import { mount } from '@vue/test-utils'
+import { mount, type DOMWrapper } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
 import type { AiUiPart, PendingToolCall } from '@/types/aiWork'
 import AiMessageList from '../AiMessageList.vue'
 
 const text = (value: string): AiUiPart => ({ type: 'text', text: value })
+async function expand(details: Pick<DOMWrapper<HTMLDetailsElement>, 'element' | 'trigger'>) {
+  details.element.open = true
+  await details.trigger('toggle')
+}
 const user = (id = 'user', value = '查看采购情况'): UIMessage => ({ id, role: 'user', parts: [text(value)] })
 const reply = (id: string, parts: AiUiPart[]): UIMessage => ({ id, role: 'assistant', parts })
 const tool = (id: string, state = 'output-available', output: unknown = { ok: true }): AiUiPart => ({
@@ -31,6 +35,8 @@ describe('AI 对话按轮次展示', () => {
     const wrapper = mount(AiMessageList, { props: { messages: live } })
     const process = wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]')
     expect(process.element.open).toBe(false)
+    expect(process.find('[data-testid="ai-part-tool"]').exists()).toBe(false)
+    await expand(process)
     expect(process.text()).toContain('先查询采购记录')
     expect(process.text()).toContain('查询采购记录')
     expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toContain('采购单已付款。')
@@ -80,13 +86,14 @@ describe('AI 对话按轮次展示', () => {
     [{ ok: false, error: { message: '平台拒绝请求' } }, '操作失败', '平台拒绝请求'],
     [{ ok: false, error: { message: '请核对实际支付状态', details: { outcome_unknown: true } } }, '结果未确认', '请核对实际支付状态'],
     [{ status: 'partial' }, '部分完成', ''],
-  ])('业务异常不藏入已折叠的过程：%j', (output, label, message) => {
+  ])('业务异常不藏入已折叠的过程：%j', async (output, label, message) => {
     const wrapper = mount(AiMessageList, { props: { messages: [user(), reply('a', [tool('ok'), tool('problem', 'output-available', output), text('请处理异常。')])] } })
     const attention = wrapper.get('[data-testid="ai-turn-attention"]')
     expect(attention.element.closest('details')).toBeNull()
     expect(attention.text()).toContain(label)
     expect(attention.text()).toContain(message)
     expect(attention.text()).not.toContain('已完成')
+    await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]'))
     expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('已完成')
   })
 
@@ -127,6 +134,8 @@ describe('AI 对话按轮次展示', () => {
 
     await wrapper.setProps({ active: false })
     expect(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]').element.open).toBe(false)
+    await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]'))
+    await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"] [data-testid="ai-tool-details"]'))
     expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('unresolved-reference')
     expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).not.toContain('脚本检查未通过')
     expect(wrapper.get('[data-testid="ai-turn-attention"] [role="alert"]').text()).toBe('当前商品有待核对的修改')
@@ -137,13 +146,14 @@ describe('AI 对话按轮次展示', () => {
     expect(JSON.stringify(parts)).toBe(saved)
   })
 
-  it('脚本检查失败后正常完成的回复不残留业务失败提示', () => {
+  it('脚本检查失败后正常完成的回复不残留业务失败提示', async () => {
     const wrapper = mount(AiMessageList, { props: { messages: [user(), reply('a', [
       { type: 'tool-run_code', toolCallId: 'check', state: 'output-error', input: {}, errorText: 'Syntax error in code:\ninvalid syntax' },
       tool('corrected'), text('查询完成。'),
     ])] } })
     expect(wrapper.find('[data-testid="ai-turn-attention"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toBe('查询完成。')
+    await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]'))
     expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('脚本检查未通过')
   })
 
@@ -251,6 +261,7 @@ describe('AI 对话按轮次展示', () => {
     await wrapper.setProps({ active: false })
     expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).toContain('结果未确认')
     await wrapper.setProps({ messages: [user(), reply('a', [tool('publish', 'output-available', { status: 'queued' })])] })
+    await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]'))
     expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('已提交')
     expect(wrapper.text()).not.toContain('已完成')
   })

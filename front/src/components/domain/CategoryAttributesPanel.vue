@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { attributeConstraintError, attributeConstraintHint } from '@/utils/categoryConstraints'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import DraftBarcodeFields from './DraftBarcodeFields.vue'
@@ -291,6 +292,8 @@ function setFormattedAttributeValue(attr: CategoryAttributeDefinition, value: st
 }
 
 function attributeTextFormatError(attr: CategoryAttributeDefinition) {
+  const constraintError = attributeConstraintError(attr, activeDraft.value.attributes[attr.id])
+  if (constraintError) return constraintError
   if (attr.textFormat !== 'name_value_lines') return ''
   const lines = unitAttributeValue(attr.id).value.split(/\r\n|\r|\n/)
   for (const [index, line] of lines.entries()) {
@@ -861,6 +864,8 @@ function targetLabel(target: MarketplaceTargetSite) {
                     <button v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query.trim()" class="btn btn-primary shrink-0" type="button" @mousedown.prevent @click="commitCustomAttributeValue(attr)">{{ attr.isCollection ? '添加' : '使用此值' }}</button>
                     <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @mousedown.prevent @click="clearDictionarySearch(attr)">清除搜索</button>
                   </div>
+                  <p v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query" class="px-3 text-xs text-slate-500">{{ attributeConstraintHint(attr, dictionaryState(attr).query) }}</p>
+                  <p v-if="allowsCustomAttributeValue(attr) && attributeConstraintError(attr, dictionaryState(attr).query)" role="alert" class="px-3 text-xs text-rose-600">{{ attributeConstraintError(attr, dictionaryState(attr).query) }}</p>
                   <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
                   <div v-else-if="dictionaryState(attr).error" class="p-3 text-xs text-rose-700">{{ dictionaryState(attr).error }}</div>
                   <button
@@ -942,6 +947,7 @@ function targetLabel(target: MarketplaceTargetSite) {
                 :placeholder="attributePlaceholder(attr)"
                 @input="invalidateEditedAttribute(attr.id)"
               />
+              <span v-if="attributeConstraintHint(attr, activeDraft.attributes[attr.id])" class="mt-1 block text-xs text-slate-500">{{ attributeConstraintHint(attr, activeDraft.attributes[attr.id]) }}</span>
               <span v-if="attr.textFormat" :id="`attribute-format-${targetIdentityKey}-${attr.id}`" class="mt-1 block text-xs text-slate-500">{{ attr.formatHint }}</span>
               <span v-if="attributeTextFormatError(attr)" role="alert" class="mt-1 block text-xs text-rose-600">{{ attributeTextFormatError(attr) }}</span>
             </label>
@@ -998,6 +1004,8 @@ function targetLabel(target: MarketplaceTargetSite) {
                     <button v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query.trim()" class="btn btn-primary shrink-0" type="button" @mousedown.prevent @click="commitCustomAttributeValue(attr)">{{ attr.isCollection ? '添加' : '使用此值' }}</button>
                     <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @mousedown.prevent @click="clearDictionarySearch(attr)">清除搜索</button>
                   </div>
+                  <p v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query" class="px-3 text-xs text-slate-500">{{ attributeConstraintHint(attr, dictionaryState(attr).query) }}</p>
+                  <p v-if="allowsCustomAttributeValue(attr) && attributeConstraintError(attr, dictionaryState(attr).query)" role="alert" class="px-3 text-xs text-rose-600">{{ attributeConstraintError(attr, dictionaryState(attr).query) }}</p>
                   <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
                   <div v-else-if="dictionaryState(attr).error" class="p-3 text-xs text-rose-700">{{ dictionaryState(attr).error }}</div>
                   <button
@@ -1061,6 +1069,7 @@ function targetLabel(target: MarketplaceTargetSite) {
                 <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
               </select>
               <input v-else :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" :placeholder="attributePlaceholder(attr)" @input="invalidateEditedAttribute(attr.id)" />
+              <span v-if="attributeConstraintHint(attr, activeDraft.attributes[attr.id])" class="mt-1 block text-xs text-slate-500">{{ attributeConstraintHint(attr, activeDraft.attributes[attr.id]) }}</span>
               <span v-if="attr.textFormat" :id="`attribute-format-${targetIdentityKey}-${attr.id}`" class="mt-1 block text-xs text-slate-500">{{ attr.formatHint }}</span>
               <span v-if="attributeTextFormatError(attr)" role="alert" class="mt-1 block text-xs text-rose-600">{{ attributeTextFormatError(attr) }}</span>
             </label>

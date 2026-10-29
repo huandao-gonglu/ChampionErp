@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 import urllib.parse
 from pathlib import Path
 from typing import Any, Callable
@@ -10,6 +11,9 @@ from erp_web import marketplaces as publisher
 from erp_web.product_model.precheck_model import PrecheckIssues
 from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import get_context
+from erp_web.services.image_content import image_content, read_image_file
+from erp_web.services.watermark_assets import publication_image
+from erp_web.services.watermark_service import watermark_settings, watermark_fingerprint
 from erp_web.stores.config_store import auth_next_action
 from erp_web.stores.product_store import normalize_product_fields
 
@@ -327,10 +331,12 @@ def _mercadolibre_image_candidates(product: dict[str, Any]) -> list[dict[str, An
 
 
 def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
+    watermark = watermark_settings(get_context().config.load_app_config())
+    fingerprint = watermark_fingerprint(watermark)
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
     pool = _source_pool_items(normalized)
-    selected_ids = {str(item.get("id") or "") for item in _mercadolibre_image_candidates(normalized)}
+    selected_ids = get_context().image_delivery._target_asset_ids(normalized, pool, "mercadolibre")
     errors = PrecheckIssues()
     picture_refs: list[str] = []
     if not selected_ids:
@@ -347,12 +353,18 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *
         picture_id = _mercadolibre_picture_id(item)
         if not picture_id and str(item.get("url") or "").startswith("ml-id:"):
             picture_id = str(item.get("url") or "").split(":", 1)[1].strip()
+        prior = item.get("platform_uploads", {}).get("mercadolibre", {})
+        local_path = _local_path_from_image_item(item)
+        if prior.get("watermark_fingerprint", "") != fingerprint:
+            picture_id = ""
+        if picture_id and fingerprint and local_path and image_content(read_image_file(local_path))[0] != prior.get("source_sha256"):
+            picture_id = ""
         if picture_id:
             item["platform_picture_id"] = picture_id
             item["mercadolibre_picture_id"] = picture_id
             item["upload_status"] = "uploaded"
             item.setdefault("uploaded_at", collect_time_iso())
-            item["platform_uploads"] = {**(item.get("platform_uploads") if isinstance(item.get("platform_uploads"), dict) else {}), "mercadolibre": {"picture_id": picture_id, "upload_status": "uploaded", "uploaded_at": item.get("uploaded_at")}}
+            item["platform_uploads"] = {**(item.get("platform_uploads") if isinstance(item.get("platform_uploads"), dict) else {}), "mercadolibre": {**prior, "picture_id": picture_id, "upload_status": "uploaded", "uploaded_at": item.get("uploaded_at")}}
             picture_refs.append(f"ml-id:{picture_id}")
             if on_progress:
                 on_progress({"stage": "uploading", "completed": len(picture_refs), "total": len(selected_ids)})
@@ -366,7 +378,9 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *
             updated_pool.append(item)
             continue
         try:
-            upload = publisher.upload_mercadolibre_picture(local_path, token)
+            materialized = publication_image(local_path, "", watermark) if fingerprint or prior.get("watermark_fingerprint") else nullcontext((local_path, ""))
+            with materialized as (target, source_sha):
+                upload = publisher.upload_mercadolibre_picture(target, token)
             picture_id = str(upload.get("id") or upload.get("secure_url") or upload.get("url") or "").strip()
             if not picture_id:
                 raise RuntimeError(f"Mercado Libre 图片上传未返回 picture id: {upload}")
@@ -374,7 +388,7 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *
             item["mercadolibre_picture_id"] = picture_id
             item["upload_status"] = "uploaded"
             item["uploaded_at"] = collect_time_iso()
-            item["platform_uploads"] = {**(item.get("platform_uploads") if isinstance(item.get("platform_uploads"), dict) else {}), "mercadolibre": {"picture_id": picture_id, "upload_status": "uploaded", "uploaded_at": item["uploaded_at"]}}
+            item["platform_uploads"] = {**(item.get("platform_uploads") if isinstance(item.get("platform_uploads"), dict) else {}), "mercadolibre": {"picture_id": picture_id, "upload_status": "uploaded", "uploaded_at": item["uploaded_at"], "watermark_fingerprint": fingerprint, "source_sha256": source_sha}}
             picture_refs.append(f"ml-id:{picture_id}")
             if on_progress:
                 on_progress({"stage": "uploading", "completed": len(picture_refs), "total": len(selected_ids)})
@@ -384,6 +398,8 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str, *
             errors.add({**precheck_item("IMAGE_UPLOAD_FAILED", "images", mercadolibre_picture_upload_error_message(exc), "error", "检查图片文件格式/尺寸后重试"), "affected_asset_ids": [str(item.get("id") or "")]})
         updated_pool.append(item)
     source["image_pool"] = updated_pool
+    if watermark_fingerprint(watermark_settings(get_context().config.load_app_config())) != fingerprint:
+        errors.add(precheck_item("IMAGE_DELIVERY_STALE", "images", "上传期间水印设置已变化，请重新准备", "error", "重新准备发布图片"))
     normalized["source"] = source
     # 此处是 Mercado 上传服务写入 picture ID 的唯一可信路径；通用保存入口
     # 会保护已有平台事实，故明确允许本次服务端结果替换上传状态。

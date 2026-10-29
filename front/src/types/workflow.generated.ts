@@ -341,8 +341,24 @@ export interface BackendAiUseCaseBinding {
   generation?: BackendAiGenerationSettings
 }
 
+export interface BackendWatermarkSettings {
+  text: string
+  image_data_url: string
+  opacity: number
+  size_percent: number
+  density: number
+  color: string
+}
+
+export interface BackendWatermarkPreview {
+  preview_url: string
+  sample_name: string
+  message: string
+}
+
 export interface BackendSystemSettings {
   orders_auto_sync_interval_hours: number
+  watermark: BackendWatermarkSettings
 }
 
 export interface BackendAppConfig {
@@ -372,6 +388,9 @@ export interface BackendImageItem {
   delivery_provider?: string
   storage_key?: string
   content_sha256?: string
+  watermark_fingerprint?: string
+  delivery_source_sha256?: string
+  watermark_source_url?: string
   url?: string
   id?: string
   path?: string
@@ -595,6 +614,7 @@ export interface BackendPlatformDraft {
   validation_errors?: Array<unknown>
   images?: Array<BackendDraftImageRef>
   sale_terms?: Array<Record<string, unknown>>
+  guarantee_period?: Record<string, unknown>
   allow_gtin_exemption?: boolean
   shipping?: Record<string, unknown>
   category_precheck?: Record<string, unknown>

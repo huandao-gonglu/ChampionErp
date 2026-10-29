@@ -4,6 +4,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.product_model.yandex_warranty_model import compile_yandex_guarantee_period
+
 from erp_web.product_model.precheck_model import PrecheckIssues
 from erp_web.context import get_context
 from erp_web.marketplace_registry import platform_title_limit
@@ -305,6 +307,7 @@ def validate_mercadolibre_draft(
     *,
     category_definition: CategoryDefinition | None = None,
     category_currency_cache: dict[tuple[str, str], tuple[str, ...]] | None = None,
+    image_stage: str = "final",
 ) -> dict[str, Any]:
     raw_sites_to_sell = mercadolibre_selected_raw_sites_to_sell(product)
     product = normalize_product_fields(product)
@@ -327,6 +330,9 @@ def validate_mercadolibre_draft(
     attrs = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     images = _draft_images(product, "mercadolibre", draft)
+    for problem in get_context().image_delivery.inspect_mercado_watermarks(product, stage=image_stage):
+        errors.append({**precheck_item(problem.code, "images", problem.message, "error", problem.next_action),
+                       "affected_asset_ids": [problem.asset_id]})
     listing_model = str(store.get("listing_model") or "").strip()
     if auth_status in {"未配置", "已保存，未测试", "测试失败", "Token 过期", "权限不足", "被限流"}:
         code = "AUTH_TOKEN_EXPIRED" if auth_status == "Token 过期" else "AUTH_NOT_CONFIGURED"
@@ -674,6 +680,12 @@ def validate_prepared_yandex_draft(
     store = config.get("yandex", {}) if isinstance(config.get("yandex"), dict) else {}
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
+    try:
+        guarantee = compile_yandex_guarantee_period(draft.get("guarantee_period"))
+        if guarantee is None:
+            warnings.append(precheck_item("YANDEX_GUARANTEE_PERIOD_MISSING", "guarantee_period", "尚未填写保修期限，平台可能要求补充", "warning", "按实际售后承诺填写 Yandex 保修期限"))
+    except ValueError as exc:
+        errors.append(precheck_item("YANDEX_GUARANTEE_PERIOD_INVALID", "guarantee_period", str(exc), "error", "检查保修时长、单位和说明"))
     if str(store.get('placement_type') or '').upper() == 'FBS':
         from erp_web.services.yandex_logistics_service import draft_fulfillment_plan
         if error := session.yandex_logistics_error(draft_fulfillment_plan(draft)):

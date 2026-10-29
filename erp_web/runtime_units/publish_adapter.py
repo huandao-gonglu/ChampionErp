@@ -172,6 +172,7 @@ class MercadoLibrePublishingAdapter:
         self,
         context: "PreparedPublishContext",
         config: dict[str, Any],
+        *, image_stage: str = "final",
     ) -> dict[str, Any]:
         result = validate_mercadolibre_draft(
             context.product,
@@ -179,6 +180,7 @@ class MercadoLibrePublishingAdapter:
             context.category_record,
             category_definition=context.category_definition,
             category_currency_cache=context.category_currency_cache,
+            image_stage=image_stage,
         )
         return _flag_definition_unavailable(context, result)
 

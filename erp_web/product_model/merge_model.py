@@ -689,6 +689,7 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         if isinstance(current.get("warranty"), list)
         else []
     )
+    current["guarantee_period"] = deepcopy(current.get("guarantee_period", {}))
     current["shipping"] = deepcopy(
         current.get("shipping")
         if isinstance(current.get("shipping"), dict)

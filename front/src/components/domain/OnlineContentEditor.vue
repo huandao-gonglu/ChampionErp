@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, ref, watch, toRaw } from 'vue'
 import { fetchOnlineSourceImages, type OnlineListing, type SourceImageOption, type SourceImageSelection } from '@/api/onlineProducts'
 import OnlinePicturePreview from './OnlinePicturePreview.vue'
 import OnlineYandexAttributes from './OnlineYandexAttributes.vue'
+import YandexGuaranteePeriodFields from '@/components/shared/YandexGuaranteePeriodFields.vue'
+import type { YandexGuaranteePeriod } from '@/utils/yandexWarranty'
 import type { OnlineAttributeRow } from '@/api/onlineProducts'
 import { onlineAttributeName, onlineAttributeText } from './onlineAttributeDisplay'
 const props = defineProps<{listing: OnlineListing}>()
@@ -10,6 +12,11 @@ const emit = defineEmits<{change:[value:Record<string,unknown>]; picturePreviews
 const yandexAttributes = ref<OnlineAttributeRow[]>([])
 type Picture = string | {id: string; url: string} | {asset_id: string; fingerprint: string; preview_url: string}
 const selectedFields = ref<string[]>([])
+const guaranteePeriod = ref<YandexGuaranteePeriod>(structuredClone(toRaw(props.listing.content.guarantee_period || {})))
+const attributeValid = ref(true)
+const guaranteeValid = ref(true)
+const valid = computed(() => attributeValid.value && (!selectedFields.value.includes('guarantee_period') || guaranteeValid.value))
+watch(valid, value => emit('validity', value), { immediate: true })
 const title = ref(props.listing.content.title || '')
 const description = ref(props.listing.content.description || '')
 const pictures = ref<Picture[]>(structuredClone(toRaw(props.listing.content.pictures || [])))
@@ -88,6 +95,7 @@ function addSelected() {
 }
 const changes = computed(() => {
   const result:Record<string,unknown>={}
+  if(selectedFields.value.includes('guarantee_period')) result.guarantee_period={...guaranteePeriod.value}
   if(selectedFields.value.includes('title')) result.title=title.value
   if(selectedFields.value.includes('description')) result.description=description.value
   if(pictureEditing.value) result.pictures=pictures.value.map(p => typeof p !== 'string' && 'asset_id' in p
@@ -140,7 +148,14 @@ watch(changes, value => {
         </template>
       </div>
     </section>
-    <OnlineYandexAttributes v-if="listing.platform === 'yandex' && listing.capabilities.content.fields.includes('attributes')" :listing="listing" @change="yandexAttributes=$event" @validity="emit('validity', $event)" @names="emit('attributeNames', $event)" />
+    <section v-if="listing.platform === 'yandex' && listing.capabilities.content.fields.includes('guarantee_period')">
+      <label class="flex items-center gap-2"><input v-model="selectedFields" type="checkbox" value="guarantee_period" />保修期限</label>
+      <p class="muted mt-2">按实际售后承诺填写。修改影响该账号下此商品的全部店铺。</p>
+      <fieldset :disabled="!selectedFields.includes('guarantee_period')">
+        <YandexGuaranteePeriodFields v-model="guaranteePeriod" :required="selectedFields.includes('guarantee_period')" @validity="guaranteeValid=$event" />
+      </fieldset>
+    </section>
+    <OnlineYandexAttributes v-if="listing.platform === 'yandex' && listing.capabilities.content.fields.includes('attributes')" :listing="listing" @change="yandexAttributes=$event" @validity="attributeValid=$event" @names="emit('attributeNames', $event)" />
     <section v-else-if="listing.capabilities.content.fields.includes('attributes')"><h3 class="font-medium">商品属性</h3><div class="mt-4 grid gap-4 sm:grid-cols-2"><label v-for="a in attributes" :key="String(a.id)" class="block"><span class="flex items-center gap-2"><input v-model="selectedAttributes" type="checkbox" :value="String(a.id)" :disabled="!editable(a)" />{{ onlineAttributeName(a) }}</span><span class="muted mt-1 block text-xs">属性编号：{{ a.id }}</span><input v-model="values[String(a.id)]" :disabled="!editable(a) || !selectedAttributes.includes(String(a.id))" class="input mt-2" /><span v-if="!editable(a)" class="muted">身份字段、枚举或复杂属性在此仅供查看</span></label></div></section>
     <label v-if="listing.capabilities.content.fields.includes('description')" class="block"><span class="flex items-center gap-2"><input v-model="selectedFields" type="checkbox" value="description" />商品描述</span><textarea v-model="description" :disabled="!selectedFields.includes('description')" class="input mt-3" rows="7" /></label><p v-else class="muted">当前商品暂不支持在此更新描述。</p>
   </div>

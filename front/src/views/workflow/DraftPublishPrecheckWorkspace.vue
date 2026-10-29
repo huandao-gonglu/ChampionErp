@@ -44,7 +44,7 @@ const readyNames = computed(() => publishBatch.value.ready.map((editor) => {
         class="relative min-w-0"
         data-testid="publish-target-editor"
       >
-        <DraftWarrantyFields v-if="editor.target.platform === 'mercadolibre' && !editor.state.queuedPublishJobId" :draft="editor.draft" :issues="editor.state.precheck?.errorItems || []" :loading="loading" @invalidate-publish-validation="editor.actions.invalidatePublishValidation" />
+        <DraftWarrantyFields v-if="['mercadolibre', 'yandex'].includes(editor.target.platform) && !editor.state.queuedPublishJobId" :draft="editor.draft" :issues="editor.state.precheck?.errorItems || []" :loading="loading" @invalidate-publish-validation="editor.actions.invalidatePublishValidation" />
         <DraftBarcodeFields v-if="!editor.state.queuedPublishJobId" :draft="editor.draft" :target="editor.target" :category="editor.state.category" :skus="currentDraftProductContext.skuItems" :loading="loading" auto-load @change="editor.actions.invalidatePublishValidation" />
         <p v-if="editor.state.queuedPublishJobId" class="mb-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200" role="status">已加入发布队列 · {{ editor.state.queuedPublishJobId }}</p>
         <div v-else-if="editor.state.publishFailure" class="mb-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" role="alert">

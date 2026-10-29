@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { attributeConstraintError } from '@/utils/categoryConstraints'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchOnlineAttributes, type OnlineAttributeDefinition, type OnlineAttributeRow, type OnlineListing } from '@/api/onlineProducts'
 import OnlineAttributeField from './OnlineAttributeField.vue'
@@ -56,7 +57,8 @@ const visible = computed(() => definitions.value.filter(attribute => `${attribut
 const invalid = computed(() => selected.value.find(id => {
   const definition = definitions.value.find(item => item.id === id)
   return !definition || !writable(definition) || !values.value[id]?.length || values.value[id]!.some(row =>
-    !row.value.trim() || ((definition.is_dictionary || definition.value_type === 'enum') && !definition.allow_custom_values && !row.valueId)
+    !!attributeConstraintError({maxLength: definition.max_length, minValue: definition.min_value,
+      maxValue: definition.max_value, valueType: definition.value_type}, row.value) || !row.value.trim() || ((definition.is_dictionary || definition.value_type === 'enum') && !definition.allow_custom_values && !row.valueId)
     || (definition.unit_options.length > 0 && !row.unitId))
 }))
 watch([selected, values, loading, error, invalid], () => {
@@ -72,7 +74,7 @@ watch([selected, values, loading, error, invalid], () => {
     <p v-if="loading" role="status" class="muted mt-3">正在读取类目字段…</p>
     <p v-if="error" role="alert" class="mt-3 text-rose-600">{{ error }} <button type="button" class="underline" @click="load">重新读取</button></p>
     <input v-if="definitions.length" v-model="query" type="search" class="input mt-3" aria-label="搜索商品属性" placeholder="搜索属性名称或编号" />
-    <p v-if="invalid" role="alert" class="mt-2 text-rose-600">请完整填写已勾选的属性值和单位。</p>
+    <p v-if="invalid" role="alert" class="mt-2 text-rose-600">请修正已勾选属性的值、单位或平台限制错误。</p>
     <div class="mt-4 grid gap-4 sm:grid-cols-2">
       <div v-for="attribute in visible" :key="attribute.id" class="rounded-lg border border-accent-200 p-3 dark:border-dark-700" :data-attribute-id="attribute.id">
         <label class="flex items-center gap-2"><input v-model="selected" type="checkbox" :value="attribute.id" :disabled="!writable(attribute) || loading" :aria-label="`修改 ${attribute.name}`" /><span>{{ attribute.name }}</span><span v-if="attribute.required" class="text-xs text-rose-600">{{ missing(attribute.id) ? '必填 · 未填写' : '必填' }}</span></label>

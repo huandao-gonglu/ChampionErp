@@ -10,14 +10,17 @@ from typing import Any
 from uuid import uuid4
 
 from erp_web.db import ErpDatabase, utc_now
-from erp_web.product_model.online_operation_model import blocks_modification, effective_job_status, submission_status
+from erp_web.product_model.online_operation_model import UNRESOLVED_STATUSES, blocks_modification, effective_job_status, submission_status
 from erp_web.schemas.online_products import BuyerLink, OnlineListing, OnlineStatus, snapshot_version
 
 
 class OnlineConflict(ValueError):
-    def __init__(self, message: str, *, job_id: str | None = None):
+    def __init__(self, message: str, *, job_id: str | None = None,
+                 code: str = "ONLINE_CONFLICT", details: dict[str, Any] | None = None):
         super().__init__(message)
         self.job_id = job_id
+        self.code = code
+        self.details = details or {}
 
 
 class OnlineProductStore:
@@ -253,7 +256,7 @@ class OnlineProductStore:
         if operation != "sync":
             current = conn.execute("SELECT version FROM online_listings WHERE id=?", (target,)).fetchone()
             if request.get("version") and (not current or current["version"] != request["version"]):
-                raise OnlineConflict("商品快照已更新，请重新查看并确认变更")
+                raise OnlineConflict("商品快照已更新，请重新读取目标字段和版本后提交，原修改未入队", code="ONLINE_VERSION_STALE")
         # 明确受理的修改不占用商品；异步处理中/未知结果只保护相关变更。
         rows = self._resource_jobs(conn, platform, account, target, operation)
         jobs = [self._job(row) for row in rows]
@@ -361,8 +364,12 @@ class OnlineProductStore:
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM online_jobs WHERE id=?", (job_id,)).fetchone()
-            if row is None or self._job(row)["status"] not in ("submitted", "waiting_confirmation", "outcome_unknown"):
-                raise OnlineConflict("只有待确认或结果未知的修改可以查询平台结果")
+            if row is None:
+                raise ValueError("操作记录不存在")
+            if self._job(row)["status"] not in ("submitted", "waiting_confirmation", "outcome_unknown"):
+                raise OnlineConflict("当前状态不需要回读原任务；请读取本地任务状态及商品版本，不要重复回读或重放旧请求",
+                                     code="ONLINE_RECONCILE_NOT_APPLICABLE", job_id=job_id,
+                                     details={"status": self._job(row)["status"], "listing_id": row["target_id"]})
             active = next((other for other in self._resource_jobs(conn, row["platform"], row["account_id"], row["target_id"], row["operation"])
                            if other["status"] in ("queued", "running")), None)
             if active:
@@ -387,9 +394,11 @@ class OnlineProductStore:
             if row["status"] == "closed_unconfirmed" and result.get("resolution", {}).get("based_on_updated_at") == expected_updated_at:
                 return self._job(row)
             if row["updated_at"] != expected_updated_at:
-                raise OnlineConflict("操作记录已变化，请重新查询平台结果并确认")
-            if row["operation"] == "sync" or row["status"] not in ("outcome_unknown", "waiting_confirmation"):
-                raise OnlineConflict("只有查询后仍未确认的商品修改可以人工结束")
+                raise OnlineConflict("操作记录版本已变化，请重新读取任务状态后选择操作", code="ONLINE_JOB_STALE", job_id=job_id)
+            if row["operation"] == "sync" or row["status"] not in UNRESOLVED_STATUSES:
+                raise OnlineConflict("当前状态不适用人工结束；partial、failed、confirmed、submitted、closed_unconfirmed 无需解锁。新修改仍须核对当前商品和其他活动任务",
+                                     code="ONLINE_CLOSE_NOT_APPLICABLE", job_id=job_id,
+                                     details={"status": row["status"], "listing_id": row["target_id"]})
             evidence = result.get("evidence") or {}
             try:
                 checked_at = datetime.fromisoformat(evidence.get("checked_at", "")).timestamp()

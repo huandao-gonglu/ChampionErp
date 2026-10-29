@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import ExitStack
+from pathlib import Path
 from typing import Any
 
 from erp_web.product_model import normalize_image_pool
@@ -10,6 +12,8 @@ from erp_web.schemas.image_hosting import ImageHostingError
 from erp_web.services.image_content import image_content, read_image_file
 from erp_web.services.image_hosting_config import validate_public_url
 from erp_web.services.image_service import file_url
+from erp_web.services.watermark_assets import publication_image
+from erp_web.services.watermark_service import has_watermark_content, watermark_fingerprint, watermark_settings
 
 
 def _records(value: Any) -> dict:
@@ -75,6 +79,7 @@ class OnlineProductImages:
         return product, draft, ""
 
     def assets(self, listing: OnlineListing) -> tuple[dict, dict, list[tuple[SourceImageOption, dict]], str]:
+        watermark = watermark_fingerprint(watermark_settings(self.context.config.load_app_config()))
         product, draft, reason = self.source(listing)
         if reason:
             return product, draft, [], reason
@@ -95,7 +100,7 @@ class OnlineProductImages:
             except (ImageHostingError, ValueError, OSError):
                 continue
             fingerprint = digest([listing.id, product["product_id"], draft["draft_id"], item["id"],
-                                  str(path or ""), content_id])
+                                  str(path or ""), content_id, watermark])
             picture_id = str(item.get("platform_picture_id") or item.get("mercadolibre_picture_id")
                              or _records(_records(item.get("platform_uploads")).get("mercadolibre")).get("picture_id") or "")
             options.append((SourceImageOption(asset_id=item["id"], fingerprint=fingerprint,
@@ -126,7 +131,16 @@ class OnlineProductImages:
         if not assets:
             return deepcopy(pictures)
         if listing.platform == "mercadolibre":
-            prepared = adapter.prepare_pictures(pictures, assets)
+            settings = watermark_settings(self.context.config.load_app_config())
+            with ExitStack() as temporary:
+                publication_assets = deepcopy(assets)
+                if has_watermark_content(settings):
+                    for asset in publication_assets.values():
+                        path, _ = temporary.enter_context(publication_image(
+                            Path(asset["path"]) if asset.get("path") else None,
+                            str(asset.get("watermark_source_url") or (asset.get("url") if not asset.get("delivery_provider") else "") or ""), settings))
+                        asset["path"] = str(path)
+                prepared = adapter.prepare_pictures(pictures, publication_assets)
         else:
             # 只准备本次选中的素材，不更改源草稿选图或其它 SKU 的默认图片。
             selected = {**product, "sku_items": [], "drafts": {listing.platform: {"images": [

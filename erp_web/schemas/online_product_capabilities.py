@@ -1,10 +1,10 @@
 """在线商品工具的有界查询契约；详情与修改复用公开领域结构。"""
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from erp_web.schemas.online_products import (
-    JobStatus, OnlineFeedbackSummary, OnlineProduct, Operation, Platform,
+    JobStatus, OnlineChange, OnlineFeedbackSummary, OnlineProduct, Operation, Platform,
     PriceScope, SourceImageSelection, StockScope,
 )
 
@@ -14,20 +14,29 @@ class OnlineRequest(BaseModel):
 
 
 class OnlineReadRequest(OnlineRequest):
-    id: str = Field(default="", description="列表返回的在线商品 id；提供时读取详情，其余筛选参数不生效。不是本地商品或草稿 ID。")
+    id: str = Field(default="", description="列表返回的在线商品 id；提供时定位单件，仍可用 fields 只取所需字段，列表筛选参数不生效。不是本地商品或草稿 ID。")
     platform: Platform = "mercadolibre"
     q: str = ""
     status: str = ""
     market: str = ""
     catalog: Literal["current", "archived", "all"] = Field(default="current", description="current 为普通商品（默认排除归档），archived 仅归档商品，all 包含全部；归档与停售、库存无关。")
     page: int = Field(default=1, ge=1)
-    limit: int = Field(default=25, ge=1, le=50, description="每页最多返回的摘要条数；查看第一项用 page=1、limit=1。")
+    limit: int = Field(default=25, ge=1, le=50, description="每页最多返回的记录数，不是响应字节保证；长描述、图片、全部属性或完整对象应减小页大小。查看第一项用 page=1、limit=1。")
     view: Literal["groups", "listings"] = Field(default="groups", description="groups 按页面顺序读取父节点及代表刊登；listings 按同序逐 SKU 分页，组合可以跨页。")
     group_id: str = Field(default="", description="列表返回的真实组合或独立节点 ID；用于限定该节点的成员，读取全部成员时使用 view=listings。")
     include_source_images: bool = Field(default=False, description="提供 id 时同时读取关联源草稿的图片资产与内容版本，供在线图片修改选择；不提供 id 时无效。")
     fields: list[str] = Field(default_factory=list, description=(
-        "按需读取公开业务字段，支持对象点路径，如 buyer_links、content.attributes、content.title、prices、stocks。"
-        "有 fields 时 records 返回身份、同步与详情状态，以及 values[字段路径]；缺失路径列入 missing_fields。"
+        "只选择本次任务需要的公开业务字段，支持对象点路径。"
+        "常用路径：title（商品名）、buyer_links（买家链接）、prices（价格及币种范围）、stocks（库存及仓库范围）；"
+        "content.title、content.description、content.pictures、content.attributes 分别为内容标题、长描述、图片、全部属性；"
+        "content.guarantee_period 为 Yandex 保修期限（timePeriod、timeUnit、可选 comment）。"
+        "capabilities.stock、capabilities.content、capabilities.price、capabilities.sale_state、capabilities.archive "
+        "分别返回对应操作的 enabled、reason、fields、scope，按实际操作选择，不必读取完整 capabilities。"
+        "例如核对保修和库存用 ['content.guarantee_period','stocks','capabilities.content','capabilities.stock']。"
+        "仅需子字段时不读取完整 content；不得同时选择父路径及其子路径，如 content 与 content.attributes。"
+        "这些路径是常用示例，不限制其他公开字段。"
+        "有 fields 时 records 固定返回身份、version、同步与详情状态，以及 values[字段路径]；缺失路径列入 missing_fields。"
+        "已取得所需字段和 version 时无需再按 id 读取完整详情。"
         "数组须选择完整数组以保留币种、仓库、属性名和单位，不支持数组下标、通配符或条件表达式。"
         "不传时保留列表摘要/单件完整详情；批量取数用 view=listings 并按 next_page 分页。"
     ))
@@ -50,6 +59,17 @@ def validate_online_fields(fields: list[str]) -> list[str]:
             raise ValueError(f"不是在线商品公开字段：{parts[0]}")
         if path not in result:
             result.append(path)
+    selected = set(result)
+    for path in result:
+        parts = path.split(".")
+        for length in range(1, len(parts)):
+            parent = ".".join(parts[:length])
+            if parent in selected:
+                raise ValueError(
+                    f"在线商品字段选择重叠：{parent} 已包含 {path}。"
+                    f"仅需局部数据时删除 {parent} 并保留所需子路径；"
+                    f"确需完整对象时删除 {path}，避免重复返回。"
+                )
     return result
 
 
@@ -79,7 +99,7 @@ class OnlineJob(BaseModel):
 
 
 class OnlineListingSummary(BaseModel):
-    """用于定位、计价和库存统计的刊登摘要；内容与修改能力按 id 读取详情。"""
+    """用于定位、计价和库存统计的刊登摘要；内容、修改能力与版本通过 fields 按需读取。"""
     model_config = ConfigDict(extra="forbid")
     id: str
     group_id: str
@@ -168,6 +188,16 @@ class OnlineJobResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ok: bool
     job: OnlineJob
+    recovery: "OnlineJobRecovery"
+
+
+class OnlineJobRecovery(BaseModel):
+    """描述这笔任务本身，不承诺目标没有其他阻塞，也不产生写入授权。"""
+    model_config = ConfigDict(extra="forbid")
+    requires_resolution: bool
+    can_reconcile: bool
+    can_close: bool
+    explanation: str
 
 
 class OnlineSubmissionResult(BaseModel):
@@ -179,4 +209,39 @@ class OnlineSubmissionResult(BaseModel):
     platform: Platform
     operation: Operation
     status: JobStatus
+    summary: str
+
+
+class OnlineChangesRequest(OnlineRequest):
+    items: list[OnlineChange] = Field(min_length=1, max_length=100,
+        description="本次全部目标的真实 ID、版本和局部修改。同一批只允许同一操作和仓库范围；不同 SKU 可有不同属性值。")
+    group_id: str = Field(default="", description="单批覆盖整组时必填，服务端核对 items 恰好覆盖整组；局部选择、超过 100 项的子批及失败子集留空，分批后核对完整覆盖。")
+    catalog: Literal["current", "archived", "all"] = "current"
+
+    @model_validator(mode="after")
+    def distinct_targets_and_scope(self):
+        if len({item.listing_id for item in self.items}) != len(self.items):
+            raise ValueError("同一批不能重复提交同一个 SKU")
+        if len({(item.operation, item.scope_id) for item in self.items}) != 1:
+            raise ValueError("同一批必须固定操作和仓库范围，不同操作或仓库分别提交")
+        return self
+
+
+class OnlineChangeReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    listing_id: str
+    accepted: bool
+    job_id: str = ""
+    status: str = ""
+    error_code: str = ""
+    error: str = ""
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class OnlineChangesResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    total: int
+    accepted_count: int
+    failed_count: int
+    items: list[OnlineChangeReceipt]
     summary: str
