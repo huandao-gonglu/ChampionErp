@@ -8,6 +8,7 @@ from erp_web.http_route_units import image_routes
 from .context import get_context
 from .services.external_request_context import request_operation
 from .http_route_units import (
+    wechat_routes,
     ai_chat_routes,
     ai_presentation_routes,
     ai_work_routes,
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_PAGE_ROUTES = get_routes.FRONTEND_PAGE_ROUTES
 GET_ROUTE_UNITS = (
+    wechat_routes,
     pricing_workspace_routes,
     external_request_routes,
     fulfillment_routes,
@@ -60,6 +62,7 @@ GET_API_ROUTES = frozenset(
     for path in getattr(route_unit, "GET_API_ROUTES", frozenset())
 )
 POST_ROUTE_UNITS = (
+    wechat_routes,
     pricing_workspace_routes,
     external_request_routes,
     fulfillment_routes,

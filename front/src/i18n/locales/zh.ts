@@ -172,6 +172,8 @@ export default {
     },
   },
   settings: {
+    wechat: '微信连接',
+    wechatSummary: '扫码绑定微信与 ERP 对话',
     about: '关于',
     aboutSummary: '版本信息、开源许可证、软件许可与服务协议、隐私政策',
     version: '版本',

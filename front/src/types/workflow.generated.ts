@@ -6,6 +6,18 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 5 as const
 
+export interface BackendWechatChannelStatus {
+  ok: boolean
+  bound: boolean
+  connected: boolean
+  status: string
+  conversation_id: string
+  qr_image: string
+  error: string
+  pending_deliveries: number
+  forward_types: Array<"reply" | "progress" | "approval" | "error" | "command">
+}
+
 export interface BackendOrderCenterFilters {
   procurement_status?: "" | "unpurchased" | "partial" | "purchased" | "unknown"
   declaration_status?: "" | "unsubmitted" | "submitting" | "unknown" | "created" | "error" | "cancelled"
@@ -359,6 +371,7 @@ export interface BackendWatermarkPreview {
 export interface BackendSystemSettings {
   orders_auto_sync_interval_hours: number
   watermark: BackendWatermarkSettings
+  wechat_forward_types: Array<"reply" | "progress" | "approval" | "error" | "command">
 }
 
 export interface BackendAppConfig {

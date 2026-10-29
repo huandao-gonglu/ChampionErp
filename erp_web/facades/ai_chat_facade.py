@@ -26,6 +26,18 @@ def build_global_chat_service(context=None):
     )
 
 
+def build_conversation_service(context=None):
+    from erp_web.services.chat_conversation_service import ChatConversationService
+
+    active = context or get_context()
+    return ChatConversationService(
+        chat_service=build_global_chat_service(active), claim_store=active.chat_turn_claims,
+        run_registry=active.chat_runs, call_store=active.agent_calls,
+        empty_owner_reader=active.wechat_store.owns_conversation,
+        empty_owner_writer=active.wechat_store.reserve_conversation,
+    )
+
+
 def build_ui_service(context=None):
     active = context or get_context()
     return VercelAiUiService(
@@ -34,13 +46,14 @@ def build_ui_service(context=None):
         run_registry=active.chat_runs,
         call_store=active.agent_calls,
         approval_session=active.approval_session,
+        empty_owner_reader=active.wechat_store.owns_conversation,
     )
 
 
 def build_job_service(context=None):
     active = context or get_context()
     return AgentJobService(
-        ui_service=build_ui_service(active),
+        ui_service=build_conversation_service(active),
         job_readers=build_job_status_readers(active),
     )
 

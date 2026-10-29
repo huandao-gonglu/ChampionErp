@@ -19,6 +19,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from erp_web.http_route_units import (
+    wechat_routes,
     ai_work_routes,
     get_routes,
     image_routes,
@@ -73,6 +74,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     """
 
     endpoints: set[tuple[str, str]] = set()
+    endpoints.update(("GET", path) for path in wechat_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in get_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in online_product_routes.GET_API_ROUTES)
@@ -87,6 +89,11 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="配置基础设施", disposition="excluded",
+        reason="仅受信设置界面管理扫码、配对及会话绑定，不作为模型工具；微信消息通过共用原生对话入口接收。") for method, path in (
+        ("GET", "/api/wechat/status"), ("POST", "/api/wechat/login"), ("POST", "/api/wechat/verify"),
+        ("POST", "/api/wechat/unbind"), ("POST", "/api/wechat/settings"),
+    )),
     *(AiCapabilityCoverageEntry(method="POST", path=path, business_domain="在线商品", disposition="internal_only",
         reason="在线商品页面的多选范围预览与平台批量投递门面；AI 的 online_products_change/online_products_changes_apply 通过原生审批复用逐项领域队列、版本和冲突校验，不调用此页面门面。") for path in (
         "/api/online-products/change-batch/preview", "/api/online-products/change-batch",

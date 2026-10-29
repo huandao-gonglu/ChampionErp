@@ -170,6 +170,43 @@ class AppContext:
         self._yandex_logistics = None
         self._pricing_cache = None
         self._image_batches = None
+        self._wechat = None
+        self._wechat_store = None
+
+    @property
+    def wechat_store(self):
+        with self._lazy_lock:
+            if self._closed:
+                raise RuntimeError("AppContext 已关闭，不能再访问微信存储。")
+            if self._wechat_store is None:
+                from erp_web.stores.wechat_channel_store import WechatChannelStore
+
+                self._wechat_store = WechatChannelStore(self.paths.data_dir / "wechat-channel.sqlite3")
+            return self._wechat_store
+
+    @property
+    def wechat(self):
+        with self._lazy_lock:
+            if self._closed:
+                raise RuntimeError("AppContext 已关闭，不能再访问微信连接。")
+            if self._wechat is None:
+                from erp_web.facades.ai_chat_facade import build_conversation_service
+                from erp_web.services.wechat_channel_service import WechatChannelService
+
+                self._wechat = WechatChannelService(
+                    store=self.wechat_store,
+                    conversations=build_conversation_service(self),
+                    conversation_factory=lambda: build_conversation_service(self),
+                    forward_types_reader=lambda: self.config.system_settings()["wechat_forward_types"],
+                    forward_types_writer=lambda values: self.config.save_system_settings({"wechat_forward_types": values}),
+                )
+            return self._wechat
+
+    def _notify_conversation_changed(self, conversation_id: str) -> None:
+        """仅唤醒已经创建的渠道；提交历史不反向构造后台资源。"""
+        channel = self._wechat
+        if channel is not None:
+            channel.wake()
 
     @property
     def pricing_cache(self):
@@ -273,7 +310,7 @@ class AppContext:
                 if self._agent_calls is None:
                     from erp_web.stores.agent_call_store import AgentCallStore
 
-                    self._agent_calls = AgentCallStore(self.db)
+                    self._agent_calls = AgentCallStore(self.db, on_change=self._notify_conversation_changed)
         return self._agent_calls
 
     @property
@@ -448,6 +485,9 @@ class AppContext:
             order_notifications = self._order_notifications
             fulfillment = self._fulfillment
             alibaba_self_purchases = self._alibaba_self_purchases
+            wechat = self._wechat
+        if wechat is not None:
+            wechat.close()
         if alibaba_self_purchases is not None:
             alibaba_self_purchases.close()
         if fulfillment is not None:

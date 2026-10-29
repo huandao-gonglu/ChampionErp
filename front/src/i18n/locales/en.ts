@@ -172,6 +172,8 @@ export default {
     },
   },
   settings: {
+    wechat: 'WeChat',
+    wechatSummary: 'Bind WeChat to an ERP conversation',
     about: 'About',
     aboutSummary: 'Version, open source licenses, software license and service agreement, and privacy policy',
     version: 'Version',

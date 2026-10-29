@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import queue
-import re
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -21,9 +19,11 @@ from pydantic_ai.ui.vercel_ai.request_types import (
     TextUIPart,
     UIMessage,
 )
+from erp_web.services.chat_conversation_service import (
+    AcceptedChatInput, ChatConversationError as VercelUiProtocolError,
+    ChatConversationRun, ChatConversationService, MAX_USER_TEXT_CHARS,
+)
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
-from erp_web.services.ai_agent_factory import AiAgentExecutionError
-from erp_web.services.ai_run_cancellation import bind_cancellation_token
 from erp_web.services.agent_run_storage import stored_run_error
 from erp_web.schemas.ai_page_context import AiPageContext
 from erp_web.schemas.ai_work import AiTurnTiming
@@ -33,36 +33,15 @@ from erp_web.services.global_agent_chat_service import (
     GLOBAL_CHAT_PROFILE_ID,
 )
 from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnAlreadyAcceptedError
-from erp_web.stores.pydantic_message_store import PydanticMessageStoreError
 
-_logger = logging.getLogger(__name__)
 VERCEL_SDK_VERSION = 7
-MAX_USER_TEXT_CHARS = 32000
 MAX_DELIVERY_QUEUE_CHUNKS = 1024
-_GLOBAL_CHAT_CONVERSATION_PATTERN = re.compile(
-    r"^conversation_global_chat_[0-9a-f]{32}$"
-)
-
-
-class VercelUiProtocolError(RuntimeError):
-    def __init__(self, status_code: int, code: str, message: str):
-        super().__init__(message)
-        self.status_code = status_code
-        self.code = code
 
 
 def new_event_stream(conversation_id: str) -> VercelAIEventStream:
     return VercelAIEventStream(
         SubmitMessage(id=conversation_id, messages=[]), sdk_version=VERCEL_SDK_VERSION
     )
-
-
-@dataclass
-class AcceptedChatInput:
-    conversation_id: str
-    message_id: str
-    status: str = "received"
-    message: str = "已收到，等待当前操作结束后应用"
 
 
 @dataclass
@@ -122,59 +101,16 @@ class VercelAiChatRun:
                     write_chunk(chunk.encode("utf-8"))
 
     async def _produce_and_finalize(self, deliver) -> None:
-        with bind_cancellation_token(self._service.run_registry.token(self.conversation_id)):
-            await self._run_and_finalize(deliver)
+        await self._run_and_finalize(deliver)
 
     async def _run_and_finalize(self, deliver) -> None:
-        service = self._service
-        started = False
-        try:
-            async with service.chat_service.open_chat_run(
-                conversation_id=self.conversation_id,
-                client_message_id=self.client_message_id,
-            ) as session:
-                stream = new_event_stream(self.conversation_id)
-                started = True
-                async for chunk in stream.encode_stream(
-                    stream.transform_stream(session.events([]))
-                ):
-                    deliver(chunk)
-                if session.failure_error is not None:
-                    raise session.failure_error
-                if session.cancelled:
-                    service.call_store.cancel_pending_work(self.conversation_id)
-                elif service.call_store.pending(self.conversation_id) is None:
-                    service.finish_claims(self.conversation_id, "completed")
-        except Exception as exc:
-            _logger.exception("主 Agent 运行失败：%s", self.conversation_id)
-            service.call_store.fail_unconsumed(self.conversation_id)
-            if not started:
-                failure = exc if isinstance(exc, AiAgentExecutionError) else RuntimeError(
-                    "模型运行未能启动，请检查模型配置后重新发送消息。"
-                )
-
-                async def failed():
-                    raise failure
-                    yield
-
-                stream = new_event_stream(self.conversation_id)
-                async for chunk in stream.encode_stream(
-                    stream.transform_stream(failed())
-                ):
-                    deliver(chunk)
-            service.finish_claims(
-                self.conversation_id,
-                "failed",
-                getattr(exc, "code", "AI_AGENT_RUN_FAILED"),
-            )
-        finally:
-            with service.run_registry.input_guard():
-                if service.run_registry.token(self.conversation_id).cancelled:
-                    service.call_store.cancel_pending_work(self.conversation_id)
-                service.run_registry.release(self.conversation_id)
+        stream = new_event_stream(self.conversation_id)
+        run = ChatConversationRun(self.conversation_id, self.client_message_id, self._service)
+        async for chunk in stream.encode_stream(stream.transform_stream(run.events())):
+            deliver(chunk)
 
 
-class VercelAiUiService:
+class VercelAiUiService(ChatConversationService):
     def __init__(
         self,
         *,
@@ -183,41 +119,15 @@ class VercelAiUiService:
         run_registry,
         call_store,
         approval_session=None,
+        empty_owner_reader=None,
     ):
-        self.chat_service = chat_service
-        self.claim_store = claim_store
-        self.run_registry = run_registry
-        self.call_store = call_store
+        super().__init__(chat_service=chat_service, claim_store=claim_store,
+                         run_registry=run_registry, call_store=call_store, empty_owner_reader=empty_owner_reader)
         self.approval_session = approval_session
 
     def prepare_run(self, body: bytes, *, approval_token: str = ""):
         with self.run_registry.input_guard():
             return self._prepare_run(body, approval_token=approval_token)
-
-    def cancel_run(self, conversation_id: str, message_id: str) -> dict[str, Any]:
-        conversation_id = self._validate_conversation_id(conversation_id)
-        with self.run_registry.input_guard():
-            self._verify_history_ownership(conversation_id)
-            # 重复取消旧消息不应中断后来用户明确启动的新操作。
-            target = self.claim_store.get(conversation_id, message_id)
-            latest = self.claim_store.find_for_conversation(conversation_id)
-            if target and latest and latest.client_message_id != message_id:
-                raise VercelUiProtocolError(409, "AI_CHAT_STOP_TARGET_STALE", "对话已收到新消息，请刷新后停止当前操作。")
-            if target and target.status == "cancelled":
-                return {"ok": True, "conversation_id": conversation_id}
-            self.run_registry.token(conversation_id).cancel()
-            self.call_store.cancel_input(
-                conversation_id, message_id, profile_id=GLOBAL_CHAT_PROFILE_ID,
-                actor_id=GLOBAL_CHAT_ACTOR_ID, tenant_id=GLOBAL_CHAT_TENANT_ID,
-            )
-            self.call_store.cancel_pending_work(conversation_id)
-            if not self.run_registry.is_active(conversation_id):
-                history = self.chat_service.message_store.get(conversation_id)
-                self.call_store.commit(
-                    conversation_id, history.model_messages() if history else [],
-                    expected_version=history.history_version if history else 0,
-                )
-            return {"ok": True, "conversation_id": conversation_id}
 
     def _prepare_run(self, body: bytes, *, approval_token: str = ""):
         run_input = self._parse_run_input(body)
@@ -252,35 +162,19 @@ class VercelAiUiService:
             for item in messages:
                 item.metadata = {"page_context": page_context}
             try:
-                self.call_store.accept_input(
-                    conversation_id,
-                    message.id,
-                    messages,
-                    draft_ids=draft_ids,
-                    profile_id=GLOBAL_CHAT_PROFILE_ID,
-                    actor_id=GLOBAL_CHAT_ACTOR_ID,
-                    tenant_id=GLOBAL_CHAT_TENANT_ID,
-                )
+                self.accept_input(conversation_id, message.id, messages, draft_ids=draft_ids)
             except AiChatTurnAlreadyAcceptedError:
                 raise VercelUiProtocolError(
                     409,
                     "AI_CHAT_TURN_ALREADY_ACCEPTED",
                     "本轮消息已接收，请读取消息历史。",
                 ) from None
-            self.run_registry.new_input(conversation_id)
             message_id = message.id
         else:
             message_id = self._accept_approvals(run_input, approval_token)
-        if self.call_store.pending(
-            conversation_id
-        ) is not None and not self.call_store.ready(conversation_id):
-            return AcceptedChatInput(
-                conversation_id,
-                message_id,
-                message="已收到，等待其余工具结果或审批齐备后应用",
-            )
-        if not self.run_registry.acquire(conversation_id):
-            return AcceptedChatInput(conversation_id, message_id)
+        return self.prepare_accepted(conversation_id, message_id)
+
+    def make_run(self, conversation_id, message_id):
         return VercelAiChatRun(conversation_id, message_id, self)
 
     def _accept_approvals(self, run_input, token: str) -> str:
@@ -360,17 +254,6 @@ class VercelAiUiService:
         except ValueError as exc:
             raise VercelUiProtocolError(409, "AI_APPROVAL_CONFLICT", str(exc)) from None
         return "approval"
-
-    def finish_claims(
-        self, conversation_id: str, status: str, error_code: str = ""
-    ) -> None:
-        with self.call_store.db._connect() as conn:
-            rows = conn.execute(
-                "SELECT claim_id FROM ai_chat_turn_claims WHERE conversation_id=? AND status='claimed' AND client_message_id IN (SELECT message_id FROM ai_chat_inbox WHERE conversation_id=? AND status IN ('applied','failed'))",
-                (conversation_id, conversation_id),
-            ).fetchall()
-        for row in rows:
-            self.claim_store.finish_turn(row[0], status=status, error_code=error_code)
 
     def dump_ui_messages(self, conversation_id: str) -> dict:
         history = self.chat_service.message_store.get(conversation_id)
@@ -534,16 +417,6 @@ class VercelAiUiService:
             )
         return run_input
 
-    def _validate_conversation_id(self, value: Any) -> str:
-        conversation_id = str(value or "").strip()
-        if not _GLOBAL_CHAT_CONVERSATION_PATTERN.fullmatch(conversation_id):
-            raise VercelUiProtocolError(
-                400,
-                "AI_CHAT_CONVERSATION_ID_INVALID",
-                "conversation ID 必须是 conversation_global_chat_ 加 32 位十六进制。",
-            )
-        return conversation_id
-
     def _validate_single_user_message(
         self,
         messages: Sequence[UIMessage],
@@ -596,38 +469,6 @@ class VercelAiUiService:
             )
         return message
 
-    def _verify_history_ownership(self, conversation_id: str) -> None:
-        """已有历史必须归属 global.chat profile；否则拒绝继续运行。"""
-
-        try:
-            history = self.chat_service.message_store.get(conversation_id)
-        except PydanticMessageStoreError as exc:
-            raise VercelUiProtocolError(500, exc.code, str(exc)) from None
-        claim = self.claim_store.find_for_conversation(conversation_id)
-        if history is None and claim is None:
-            return
-        if history is not None and claim is None:
-            messages = history.model_messages()
-            branch = (messages[-1].metadata or {}).get("ai_chat_branch", {}) if messages else {}
-            if (
-                isinstance(branch, dict)
-                and branch.get("profile_id") == GLOBAL_CHAT_PROFILE_ID
-                and branch.get("actor_id") == GLOBAL_CHAT_ACTOR_ID
-                and branch.get("tenant_id") == GLOBAL_CHAT_TENANT_ID
-            ):
-                return
-        if (
-            claim is None
-            or claim.profile_id != GLOBAL_CHAT_PROFILE_ID
-            or claim.actor_id != GLOBAL_CHAT_ACTOR_ID
-            or claim.tenant_id != GLOBAL_CHAT_TENANT_ID
-        ):
-            raise VercelUiProtocolError(
-                409,
-                "AI_CHAT_CONVERSATION_UNOWNED",
-                "该历史不属于全局对话 profile，不能继续运行。",
-            )
-
     def _load_new_messages(self, ui_message: UIMessage) -> list[ModelMessage]:
         """官方 load_messages 转换后由服务端重新标记，忽略客户端 metadata。"""
 
@@ -643,3 +484,6 @@ class VercelAiUiService:
             message.metadata = None
             message.timestamp = None
         return loaded
+
+
+__all__ = ["AcceptedChatInput", "VercelUiProtocolError", "VercelAiChatRun", "VercelAiUiService", "VERCEL_SDK_VERSION"]

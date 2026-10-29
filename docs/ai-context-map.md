@@ -43,6 +43,22 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 
 ## 运行时边界
 
+### 微信 ClawBot 对话窗口
+
+`services/chat_conversation_service.py` 是网页和微信共用的输入接收、归属、取消和原生运行投递入口；
+`vercel_ai_ui_service.py` 只保留网页协议适配，领域 Job 恢复不再依赖 Vercel 编码。
+`services/wechat_channel_service.py` 通过固定版本 `wechatbot-sdk` 转发文字，不提供业务工具或独立 Agent。
+`stores/wechat_channel_store.py` 用独立库保存渠道收件、游标与回复投递，原生消息仍是唯一对话历史。
+`AgentRunStorage` 复用原生 `before_node_run`，在工具节点前保存已完整生成的中途正文，
+`finish` 将最终回答标记随历史同次保存；原生消息仍是唯一事实源，不观察逐字片段。
+历史提交和运行结束后的进程内通知唤醒渠道，按设置生成文字投影，失败只重试投递。
+五类转发选择由 `schemas/wechat_channel.py` 定义，保存于 `app_config.system_settings.wechat_forward_types`；
+关闭某类停发该类排队内容，不影响输入、工具执行、审批或 `/new`，重新勾选不补发。
+绑定接口位于 `http_route_units/wechat_routes.py`，只供受信设置界面使用，不作为 AI Capability。
+扫码确认后自动创建空普通会话，可信归属保存在渠道库；不要求选择旧会话，也不伪造消息或运行。
+微信独立 `/new` 直接新建并切换绑定，保留接收游标和后续收件，旧历史及已提交任务继续由原 owner 管理。
+范围、SDK 适配缺口、恢复语义和验收见 [微信对话窗口](wechat-channel.md)。
+
 - `erp_web/runtime.py` 与原 `runtime_units` 兼容转发模块已经删除，不得重建聚合入口。
 - 直接 import 具体 facade、service、store 或 schema owner。
 - 新 HTTP 行为从 `erp_web/http_route_units/` 的显式 handler map 进入；路由把编排交给

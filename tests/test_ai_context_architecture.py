@@ -51,6 +51,22 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
 )
 
 
+def test_wechat_is_transport_only_and_jobs_use_shared_native_run():
+    """微信不装配模型或工具；历史和恢复继续走同一原生入口。"""
+    paths = [ROOT / "erp_web/services/wechat_channel_service.py", ROOT / "erp_web/stores/wechat_channel_store.py"]
+    targets = {target for _, target in imported_targets(paths)}
+    forbidden = {"openai", "erp_web.services.ai_agent_factory", "erp_web.services.ai_tool_runtime",
+                 "erp_web.facades.agent_capability_facade", "erp_web.services.vercel_ai_ui_service"}
+    assert not targets & forbidden
+    assert "messages_json" not in paths[1].read_text()
+    job = (ROOT / "erp_web/services/agent_job_service.py").read_text()
+    assert "ChatConversationRun" in job and "VercelAiChatRun" not in job
+    from erp_web.http_route_units.wechat_routes import POST_HANDLERS
+    from erp_web.schemas.requests import REQUEST_CONTRACTS
+    assert set(POST_HANDLERS) <= REQUEST_CONTRACTS.keys()
+    assert set(POST_HANDLERS) == {"/api/wechat/login", "/api/wechat/verify", "/api/wechat/unbind", "/api/wechat/settings"}
+
+
 def test_image_batch_keeps_native_model_boundary_and_domain_only_progress():
     """图片领域调度不能引入 SDK 旁路、第二份消息表或自编 SSE。"""
     batch = ROOT / "erp_web/services/image_batch_service.py"

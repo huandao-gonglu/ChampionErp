@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+from collections.abc import Callable
 from uuid import uuid4
 from typing import Any, Sequence
 
@@ -26,11 +28,22 @@ from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnAlreadyAcceptedErr
 _REQUESTS = TypeAdapter(DeferredToolRequests)
 _RESULTS = TypeAdapter(DeferredToolResults)
 _USAGE = TypeAdapter(RunUsage)
+_logger = logging.getLogger(__name__)
 
 
 class AgentCallStore:
-    def __init__(self, db: ErpDatabase) -> None:
+    def __init__(self, db: ErpDatabase, *, on_change: Callable[[str], None] | None = None) -> None:
         self.db = db
+        self._on_change = on_change
+
+    def notify_changed(self, conversation_id: str) -> None:
+        """通知已提交状态变化，不传递或复制消息正文。"""
+        if self._on_change is not None:
+            try:
+                self._on_change(conversation_id)
+            except Exception:
+                # 通知仅用于唤醒观察者，不把已提交的历史误报为运行失败。
+                _logger.warning("对话变更通知失败：%s", conversation_id, exc_info=True)
 
     def current_turn_receipts(self, conversation_id: str) -> list[dict[str, Any]]:
         """按真实输入时间读取本轮业务回执，不存储重试计数或执行计划。"""
@@ -166,6 +179,7 @@ class AgentCallStore:
                     (sequence, conversation_id),
                 )
             conn.commit()
+        self.notify_changed(conversation_id)
         return version + 1
 
     def record_results(
@@ -287,6 +301,7 @@ class AgentCallStore:
                 "UPDATE ai_chat_turn_claims SET status='cancelled',finished_at=? WHERE conversation_id=? AND status='claimed'",
                 (utc_now(), conversation_id),
             )
+        self.notify_changed(conversation_id)
 
     def cancel_input(self, conversation_id: str, message_id: str, *, profile_id: str, actor_id: str, tenant_id: str) -> None:
         """取消先于发送请求到达时，使用现有幂等领取记录阻止该消息迟到后启动。"""

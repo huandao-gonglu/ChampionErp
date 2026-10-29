@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .ai_approval import AiToolApprovalMode
+from .wechat_channel import WECHAT_FORWARD_TYPES, WechatForwardType
 
 
 class AiCapabilityProfile(TypedDict, total=False):
@@ -93,12 +94,14 @@ class WatermarkSettingsRequest(BaseModel):
 class SystemSettings(TypedDict):
     orders_auto_sync_interval_hours: int
     watermark: WatermarkSettings
+    wechat_forward_types: list[WechatForwardType]
 
 
 class SystemSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     orders_auto_sync_interval_hours: int = Field(default=5, ge=5, strict=True)
     watermark: WatermarkSettingsRequest = Field(default_factory=WatermarkSettingsRequest)
+    wechat_forward_types: list[WechatForwardType] = Field(default_factory=lambda: list(WECHAT_FORWARD_TYPES))
 
 
 class AppConfig(TypedDict, total=False):

@@ -13,7 +13,7 @@ from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_tool_runtime import AiToolRuntime
 from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_PROFILE
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
-from erp_web.services.vercel_ai_ui_service import VercelAiChatRun
+from erp_web.services.chat_conversation_service import ChatConversationRun
 from erp_web.services.ai_run_cancellation import bind_cancellation_token, check_cancellation
 from erp_web.services.ai_approval_policy import automatic_approval_results
 
@@ -91,10 +91,10 @@ class AgentJobService:
                     continue
             if not self.ui_service.run_registry.acquire(conversation_id):
                 continue
-            run = VercelAiChatRun(conversation_id, "background", self.ui_service)
+            run = ChatConversationRun(conversation_id, "background", self.ui_service)
             try:
                 get_detached_chat_runner().submit(
-                    run._produce_and_finalize(lambda _: None)
+                    run.run()
                 )
             except Exception:
                 self.ui_service.run_registry.release(conversation_id)

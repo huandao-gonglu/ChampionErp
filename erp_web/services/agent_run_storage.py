@@ -9,8 +9,8 @@ import threading
 from typing import Any
 from collections.abc import Callable
 
-from pydantic_ai import ModelRequestNode, ModelRetry, RunContext, UserPromptNode
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, RetryPromptPart
+from pydantic_ai import CallToolsNode, ModelRequestNode, ModelRetry, RunContext, UserPromptNode
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, ModelResponse, RetryPromptPart, TextPart, ToolCallPart
 
 from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_page_context import page_context_instructions
@@ -114,6 +114,19 @@ class AgentRunStorage:
     def canonical(self, ctx: RunContext) -> list:
         return [*self.history, *(m for m in ctx.messages if m.run_id == ctx.run_id)]
 
+    def checkpoint_response(self, ctx: RunContext, response: ModelResponse) -> None:
+        """在原生工具节点前保存已完整生成的中途正文，不发布流式片段。"""
+        if response.run_id != ctx.run_id or not any(isinstance(part, ToolCallPart) for part in response.parts) or not any(
+            isinstance(part, TextPart) and part.content.strip() for part in response.parts
+        ):
+            return
+        with self.lock:
+            response.metadata = {**(response.metadata or {}), "chat_progress": True}
+            self.version = self.store.commit(
+                self.conversation_id, self.canonical(ctx), expected_version=self.version,
+                consumed_sequences=tuple(self.consumed), replace_deferred=False,
+            )
+
     def receive_at_boundary(self, ctx: RunContext) -> None:
         check_cancellation()
         with self.lock:
@@ -187,9 +200,15 @@ class AgentRunStorage:
         from pydantic_ai import DeferredToolRequests
 
         with self.lock:
+            messages = result.new_messages()
+            if isinstance(result.output, str):
+                # 原生最终回答标记随历史同事务保存，渠道只观察，不保存第二份历史。
+                final = next((m for m in reversed(messages) if isinstance(m, ModelResponse)), None)
+                if final is not None:
+                    final.metadata = {**(final.metadata or {}), "chat_final": True}
             self.version = self.store.commit(
                 self.conversation_id,
-                [*self.history, *result.new_messages()],
+                [*self.history, *messages],
                 expected_version=self.version,
                 requests=result.output
                 if isinstance(result.output, DeferredToolRequests)
@@ -242,6 +261,8 @@ class AgentRunStorage:
 
 async def receive_user_updates(ctx: RunContext, *, node: Any) -> Any:
     support = ctx.deps.tool_runtime.run_support
+    if support is not None and isinstance(node, CallToolsNode):
+        await asyncio.to_thread(support.checkpoint_response, ctx, node.model_response)
     # 带历史或 Deferred 的 UserPromptNode 也会提前准备工具。
     if support is not None and isinstance(node, (UserPromptNode, ModelRequestNode)):
         await asyncio.to_thread(support.receive_at_boundary, ctx)

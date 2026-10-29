@@ -54,7 +54,9 @@ def main() -> None:
     get_context().fulfillment  # 执行自动预报、资料更新及平台取消传播；仓库状态由页面按需查询。
     port = pick_web_port(paths.web_port)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    start_agent_job_worker()
+    job_stop = threading.Event()
+    job_worker = start_agent_job_worker(stop_event=job_stop)
+    get_context().wechat.start()
     url = f"http://127.0.0.1:{port}/"
     logger.info("ERP running at %s", url)
     logger.info("Backend log file: %s", log_file)
@@ -66,7 +68,13 @@ def main() -> None:
             webbrowser.open(url)
         except Exception:
             logger.exception("Failed to open browser for %s", url)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        job_stop.set()
+        job_worker.join(timeout=5)
+        get_context().close()
+        server.server_close()
 
 
 if __name__ == "__main__":

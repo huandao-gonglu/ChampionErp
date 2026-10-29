@@ -29,6 +29,7 @@ class FieldRule:
     choices: frozenset[str] = field(default_factory=frozenset)
     minimum: int | None = None
     maximum: int | None = None
+    allow_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -175,6 +176,11 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/wechat/login": RequestContract(),
+    "/api/wechat/verify": RequestContract(fields={"code": STRING}, required=("code",)),
+    "/api/wechat/unbind": RequestContract(),
+    # 空列表表示全部关闭，不能当成未提供字段。
+    "/api/wechat/settings": RequestContract(fields={"forward_types": FieldRule("string_array", allow_empty=True)}, required=("forward_types",)),
     "/api/orders/address-note": RequestContract(fields={"order_id": STRING, "shipment_id": STRING, "address_key": STRING, "revision": FieldRule("integer", minimum=0), "note": STRING}, required=("order_id", "shipment_id", "address_key", "revision", "note")),
     '/api/yandex/warehouses/refresh': _EMPTY,
     '/api/yandex/warehouses/logistics': _contract(fields={'business_id': STRING, 'campaign_id': STRING, 'revision': FieldRule('integer', minimum=0), 'bindings': ARRAY}, required=('business_id', 'campaign_id', 'revision', 'bindings')),
@@ -277,7 +283,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/orders/chat/history": RequestContract(fields={"order_id": STRING}, required=("order_id",)),
     "/api/orders/chat/send": RequestContract(fields={"order_id": STRING, "message": STRING}, required=("order_id", "message")),
     "/api/orders/sync": RequestContract(fields={"platform": STRING, "automatic": BOOLEAN}),
-    "/api/system-settings": RequestContract(fields={"orders_auto_sync_interval_hours": FieldRule("integer", minimum=5), "watermark": OBJECT}, required_any=(("orders_auto_sync_interval_hours", "watermark"),)),
+    "/api/system-settings": RequestContract(fields={"orders_auto_sync_interval_hours": FieldRule("integer", minimum=5), "watermark": OBJECT, "wechat_forward_types": FieldRule("string_array", allow_empty=True)}, required_any=(("orders_auto_sync_interval_hours", "watermark", "wechat_forward_types"),)),
     "/api/system-settings/watermark-preview": RequestContract(fields={"watermark": OBJECT}, required=("watermark",)),
     "/api/orders/retry": RequestContract(fields={"event_id": FieldRule("integer", minimum=1)}, required=("event_id",)),
     "/api/orders/acknowledge": RequestContract(fields={"through_id": FieldRule("integer", minimum=0)}, required=("through_id",)),
@@ -351,13 +357,13 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
 }
 
 
-def _is_present(value: Any) -> bool:
+def _is_present(value: Any, rule: FieldRule | None = None) -> bool:
     if value is None:
         return False
     if isinstance(value, str):
         return bool(value.strip())
     if isinstance(value, (list, tuple, dict, set, frozenset)):
-        return bool(value)
+        return bool(value) or bool(rule and rule.allow_empty)
     return True
 
 
@@ -488,13 +494,13 @@ def validate_request_payload(
         )
 
     for field_name in contract.required:
-        if not _is_present(normalized.get(field_name)):
+        if not _is_present(normalized.get(field_name), rules.get(field_name)):
             raise RequestValidationError(
                 f"缺少必填字段：{field_name}",
                 error_code="MISSING_REQUIRED_FIELD",
             )
     for alternatives in contract.required_any:
-        if any(_is_present(normalized.get(name)) for name in alternatives):
+        if any(_is_present(normalized.get(name), rules.get(name)) for name in alternatives):
             continue
         names = " / ".join(alternatives)
         raise RequestValidationError(
