@@ -4,6 +4,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
+import { pricingTemplateParameters } from '@/types/pricing'
 import { pricingRecord } from '@/utils/skuPricing'
 import { createEmptyDraftProductContext } from '@/constants/initialState'
 import type { DraftSku, PricingInput, PricingResult, ProductSku, UnknownRecord } from '@/types/workflow'
@@ -150,14 +151,37 @@ function productContext(rows: DraftSku[]) {
     package_dimensions: { length_cm: '32', width_cm: '24', height_cm: '8', weight_kg: '0.45' },
   } as ProductSku)) }
 }
-function mountPricing(rows: DraftSku[], localInput = reactive(structuredClone(input))) {
+function mountPricing(rows: DraftSku[], localInput = reactive(structuredClone(input)), savedPricing: UnknownRecord = {}) {
   return mount(PricingPanel, { props: {
     skuItems: rows, input: localInput, result, draftItems: [], draftId: 'draft', draftTitle: '商品', selectionLocked: true,
-    productContext: productContext(rows), platformOptions: [], loading: false,
+    productContext: productContext(rows), platformOptions: [], loading: false, savedPricing,
   }, global: { stubs: { teleport: true } } })
 }
 
 describe('PricingPanel 对齐 Penpot 核价原型', () => {
+  it.each([
+    [{}, true],
+    [{ common: { domestic_freight_cny: 0 } }, false],
+    [{ targets: { 'mercadolibre:cbt': { payment_fee_percent: 0 } } }, false],
+    [{ updated_at: '2026-10-01T00:00:00Z' }, false],
+    [{ template_source: { id: 'old', name: '历史模板' } }, false],
+  ] as [UnknownRecord, boolean][])('首次核价只为尚无保存参数的草稿填入默认模板：%j', async (savedPricing, expected) => {
+    const localInput = reactive(structuredClone(input))
+    const parameters = pricingTemplateParameters(localInput)
+    parameters.common.domestic_freight_cny = 5
+    parameters.common.packaging_cost_cny = 2.5
+    vi.mocked(workspaceApi.fetchPricingTemplates).mockResolvedValue({
+      default_template_id: 'default', items: [{ id: 'default', name: '默认费用', parameters, updated_at: '' }],
+    })
+    const row = skuRow()
+    row.pricing = { ...row.pricing, targets: {}, applied: false }
+    mountPricing([row], localInput, savedPricing)
+    await flushPromises()
+    expect(localInput.domesticFreightCny).toBe(expected ? 5 : 0)
+    expect(localInput.packagingCostCny).toBe(expected ? 2.5 : 0)
+    expect(localInput.templateSource?.id).toBe(expected ? 'default' : undefined)
+  })
+
   it('定价方式往返切换保留原报价及已应用状态，不重新计算', async () => {
     const rows = reactive([skuRow()])
     const localInput = reactive(structuredClone(input))

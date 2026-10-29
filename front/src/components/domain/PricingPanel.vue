@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
   draftItems: DraftIndexItem[]
   draftId: string
   draftVersion?: string
+  savedPricing?: UnknownRecord
   draftTitle: string
   productContext: DraftProductContext
   platformOptions: MarketplaceOption[]
@@ -30,7 +31,7 @@ const props = withDefaults(defineProps<{
   storeConfig?: UnknownRecord
   error?: string
   refreshProduct?: () => Promise<unknown>
-}>(), { storeConfig: () => ({}), error: '', draftVersion: '' })
+}>(), { storeConfig: () => ({}), savedPricing: () => ({}), error: '', draftVersion: '' })
 const emit = defineEmits<{ calculate: []; apply: []; restore: []; selectDraft: [draftId: string]; refreshDrafts: []; editDraft: []; editProduct: [skuId: string] }>()
 const selectedSkus = computed(() => props.skuItems.filter(row => row.selected))
 const targets = computed(() => selectedPricingTargets(props.input))
@@ -38,6 +39,10 @@ const entries = computed(() => buildSkuPricingEntries(props.skuItems, props.prod
 const allInputErrors = computed(() => [...pricingCommonErrors(props.input), ...targets.value.flatMap(pricingTargetErrors)])
 const issues = computed(() => entries.value.filter(entry => entry.errors.length || entry.status === 'loss' || pricingFactsIssues(entry.cost, entry.dimensions).length))
 const hasSavedPricing = computed(() => props.skuItems.some(row => Object.keys(pricingRecord(row.pricing?.targets)).length > 0))
+const useDefaultTemplate = computed(() => !hasSavedPricing.value
+  && !props.savedPricing.template_source && !props.savedPricing.updated_at
+  && !Object.keys(pricingRecord(props.savedPricing.common)).length
+  && !Object.keys(pricingRecord(props.savedPricing.targets)).length)
 const scopeOpen = ref(false)
 const problemsOpen = ref(false)
 const notice = ref('')
@@ -183,7 +188,7 @@ onBeforeUnmount(() => { disposed = true })
     <PricingExchangeRates ref="rates" :input="input" :disabled="loading || requestActive" @ready="ratesReady = true" @rates="referenceUsdCnyRate = $event.usd_cny_rate" @refresh-start="invalidateQuote" />
     <p v-if="loading" role="status" class="pricing-progress"><span class="h-2 w-2 animate-pulse rounded-full bg-primary-600" />{{ restoring ? '正在恢复上一轮报价' : applying ? '正在校验并保存售价' : `正在核价 ${selectedSkus.length} 个 SKU × ${targets.length} 个市场` }}，已等待 {{ elapsedSeconds }} 秒。</p>
     <div class="pricing-main-grid">
-      <aside class="pricing-fees pricing-card" aria-label="费用与定价"><div class="pricing-fees-scroll"><div class="pricing-section-heading"><h3 class="inline-flex items-center gap-1">费用与定价<WorkspaceHint label="费用与定价说明" content="共用费用和定价参数，单个 SKU 可单独调整。" /></h3></div><PricingTemplates :input="input" :disabled="applying" :use-default="!hasSavedPricing" @ready="templatesReady = true" @notice="notice = $event" /><PricingFeesEditor :input="input" :disabled="applying" :usd-cny-rate="usdCnyRate" @shipping-amount="updateShipping" /></div></aside>
+      <aside class="pricing-fees pricing-card" aria-label="费用与定价"><div class="pricing-fees-scroll"><div class="pricing-section-heading"><h3 class="inline-flex items-center gap-1">费用与定价<WorkspaceHint label="费用与定价说明" content="共用费用和定价参数，单个 SKU 可单独调整。" /></h3></div><PricingTemplates :input="input" :disabled="applying" :use-default="useDefaultTemplate" @ready="templatesReady = true" @notice="notice = $event" /><PricingFeesEditor :input="input" :disabled="applying" :usd-cny-rate="usdCnyRate" @shipping-amount="updateShipping" /></div></aside>
       <PricingSkuResults :entries="entries" :platform-options="platformOptions" :loading="loading" :stale="stale" :usd-cny-rate="usdCnyRate" :error="error || allInputErrors.join('；')" @shipping-amount="updateShipping" @repair="emit('editProduct', $event.row.sku_id)" @retry="requestPreview" @problems="problemsOpen = true" />
     </div>
     <p class="pricing-footnote" role="status"><PhCheckCircle v-if="notice || allApplied" :size="16" class="text-primary-600" /><PhWarningCircle v-else-if="issues.length" :size="16" class="text-amber-600" /><PhLightning v-else :size="16" class="text-primary-600" /><span>{{ notice || (allApplied ? `${entries.length} 项售价已保存到当前草稿。` : '参数改动后请点击「计算核价」，确认报价后点击「应用售价」保存至当前草稿。') }}</span><button v-if="issues.length" type="button" class="pricing-text-button ml-auto" @click="problemsOpen = true">查看 {{ issues.length }} 项异常</button></p>

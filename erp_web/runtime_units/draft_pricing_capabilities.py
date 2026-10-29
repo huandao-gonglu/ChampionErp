@@ -41,7 +41,8 @@ def pricing_summary(result: dict[str, Any]) -> DraftPricingResult:
 @ai_tool(
     name="draft_pricing_preview",
     description=("预览草稿全部已选 SKU 的核价，不保存售价。系统自动读取逐 SKU 已有采购成本、包装资料及费用覆盖，"
-        "无需先读取或重新提交成本。只提交用户明确修改的参数；国内物流填写 common.domestic_freight_cny，"
+        "无需先读取或重新提交成本。新草稿尚无核价配置时自动使用默认模板，已有配置沿用草稿快照。"
+        "只提交用户明确修改的参数；国内物流填写 common.domestic_freight_cny，"
         "shipping_amount 仅表示国际运费。只根据返回的实际缺失字段向用户补问；用户未要求核价时不要主动核价。"),
     permission="pricing.read", side_effect="none", recovery_policy="retry_safe", version="1",
 )

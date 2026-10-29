@@ -22,8 +22,18 @@ const notice = computed(() => props.controller.notice.value)
 const byId = computed(() => new Map(props.images.map(image => [image.id, image])))
 const assignments = computed(() => skuImageAssignments(props.product.skuItems, props.draft).filter(sku => props.draft.skuItems.some(row => row.sku_id === sku.skuId)))
 const commonIds = computed(() => [...props.draft.images].sort((a, b) => a.order - b.order).map(ref => ref.assetId))
-const skuIds = computed(() => [...new Set(assignments.value.map(sku => sku.imageAssetId).filter(id => id && !commonIds.value.includes(id)))])
-const currentIds = computed(() => [...commonIds.value, ...skuIds.value])
+const skuIds = computed(() => [...new Set(assignments.value.map(sku => sku.imageAssetId).filter(Boolean))])
+const currentIds = computed(() => [...new Set([...commonIds.value, ...skuIds.value])])
+const skuNamesByImage = computed(() => {
+  const names = new Map<string, string[]>()
+  for (const sku of assignments.value) {
+    if (!sku.imageAssetId) continue
+    const values = names.get(sku.imageAssetId) || []
+    values.push(sku.name)
+    names.set(sku.imageAssetId, values)
+  }
+  return new Map([...names].map(([id, values]) => [id, values.join('、')]))
+})
 const canProcess = computed(() => selected.value.length > 0 && selected.value.every(id => byId.value.has(id)))
 const selectedCommon = computed(() => selected.value.filter(id => commonIds.value.includes(id)))
 const available = computed(() => props.images.filter(image => !commonIds.value.includes(image.id)))
@@ -138,11 +148,13 @@ watch(busy, value => { if (value) dragging.value = '' })
             <span class="truncate text-xs text-slate-500 dark:text-slate-400" :title="name(id)">{{ name(id) }}</span>
             <button v-if="region.id === 'common'" type="button" class="cursor-grab px-1 text-slate-400 focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-default" :draggable="!busy" :disabled="busy" :aria-label="`排序共用图片 ${name(id)}`" title="拖动排序，也可用左右方向键调整" @dragstart="dragging = id; $event.dataTransfer?.setData('text/plain', id)" @dragend="dragging = ''" @keydown.left.prevent="move(id, -1)" @keydown.right.prevent="move(id, 1)">⠿</button>
           </div>
+          <p v-if="skuNamesByImage.has(id)" class="mt-1 line-clamp-2 text-xs text-slate-500 dark:text-slate-400" :title="`关联 SKU：${skuNamesByImage.get(id)}`">关联 SKU：{{ skuNamesByImage.get(id) }}</p>
+          <p v-if="region.id === 'sku' && commonIds.includes(id)" class="mt-1 text-xs text-slate-500 dark:text-slate-400">同时用于共用区 · 同一张图片</p>
         </article>
       </div>
       <p v-if="!region.ids.length" class="muted py-6">{{ region.id === 'common' ? '暂无共用图片，可从上方添加。' : '暂无独立的 SKU 图片。' }}</p>
     </section>
-    <footer class="muted flex justify-between gap-4"><span>共 {{ currentIds.length }} 张图片</span><span>点击图片可放大查看</span></footer>
+    <footer class="muted flex justify-between gap-4"><span>共 {{ currentIds.length }} 张图片（已去重）</span><span>点击图片可放大查看</span></footer>
     <input ref="input" type="file" accept="image/*" multiple class="hidden" @change="files" />
   </section>
   <WorkspaceDialog :open="Boolean(preview)" title="图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" alt="图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>

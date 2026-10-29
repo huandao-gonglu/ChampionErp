@@ -418,7 +418,7 @@ CLI / Browser use case
 
 ### Focused 例外登记：专用 Images API
 
-- 草稿图片 V2 由 `DraftImageWorkbench.vue` 展示共用主图与去重后的当前 SKU 图片；`ProductImageEditorPanel.vue` 保留商品素材池入口。页面不做版本分组或 SKU 配图，历史错误加入的共用引用照实展示，不自动清理。
+- 草稿图片 V2 由 `DraftImageWorkbench.vue` 展示共用主图与区域内去重后的当前 SKU 图片；同一资产可在两区展示，标明关联 SKU 及共用用途，勾选跨区同步，总数和处理提交按资产 ID 去重。`ProductImageEditorPanel.vue` 保留商品素材池入口。页面不做版本分组或 SKU 配图，历史错误加入的共用引用照实展示，不自动清理。
   `useDraftImageWorkbench.ts` 固定提交目标、清空提交选择；移出、添加、排序和撤销/重做经既有草稿保存入口立即持久化，只改图片引用，保留 SKU 独立引用、价格和源文件。上传在短锁内合入最新素材池，回执 `uploaded_image_ids` 只标识本次上传，不能按素材池增量猜测范围而混入另一草稿的结果。
   撤销栈限定本次打开的草稿工作台，切换工作台内标签保留，关闭或刷新后建立新边界；重新加载或外部更新改变图片引用时旧历史失效。一次批次只记录成功项形成的前后引用差异，重做不再生成或计费。保存回执丢失先重读真实状态，不假报撤销成功。
   `POST /api/draft-images/process` 经 `image_facade` 注册既有 `ImageBatchStore` 批次后异步执行；`POST /api/draft-images/state` 只读查询当前草稿与原批次。批次携带草稿 ID，同草稿只准一批；进度快照必须在草稿读取前固定，避免终态配旧引用。前端断线保留请求 ID，重新打开按草稿恢复查询，不重发模型请求；结果未知保持只读，服务重启仍沿用已有的人工核对边界。
@@ -898,6 +898,12 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `http_route_units/pricing_workspace_routes.py` → `facades/pricing_workspace_facade.py`
   提供人工费用模板和独立汇率查询。模板由 `schemas/pricing_templates.py` 限定形状，
   `ConfigStore.mutate_pricing_template` 在配置短锁内保存到 `app_config.pricing_templates`。
+  默认模板由 `draft_pricing.price_draft` 统一装配，页面、AI 与市场准备均适用：仅当草稿没有已保存的
+  公共/市场核价参数、模板来源、核价时间和 SKU 报价，且请求没有显式模板来源（含 null 清除）时初始化。
+  本次明确参数（包括零值）和 SKU 覆盖优先于模板；已有草稿沿用自己的参数快照。
+  页面在首次显示时预填默认模板，传入完整参数和来源；保存过参数但尚无报价的草稿也不得重新套默认模板。
+  预览不持久化模板，应用售价才保存参数与来源；自动采用的默认模板在计算期间变化会拒绝结果，
+  预览后有效参数或来源变化则要求重新核价，不能把旧报价应用到新模板参数上。
   只保存手动固定费用、市场费率、定价和运费偏好；手动汇率必须显式选中，
   商品事实、单 SKU 覆盖、官方佣金和自动运费回执不进入模板。
   `PricingCommonPatch.exchange_rate_overrides` 按汇率对覆盖同次 API 快照，空对象恢复实时，

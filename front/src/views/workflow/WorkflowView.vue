@@ -703,6 +703,7 @@ watch(
                 :draft-items="pricingDraftItems"
                 :draft-id="currentDraft.draftId"
                 :draft-version="currentDraft.updatedAt"
+                :saved-pricing="currentDraft.pricing"
                 :draft-title="pricingDraftTitle"
                 :product-context="currentDraftProductContext"
                 :platform-options="platformOptions"
