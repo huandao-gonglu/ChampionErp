@@ -309,8 +309,8 @@ def test_build_payload_is_deterministic_and_grouped() -> None:
     assert offer["parameterValues"] == [
         {"parameterId": 85, "valueId": 61573, "value": "настольный"}
     ]
-    # 官方价格：value 为 number，currencyId 为平台枚举 RUR
-    assert offer["basicPrice"] == {"value": 1299, "currencyId": "RUR"}
+    # 价格仅由独立步骤写入，不在目录接口重复设置账号级价格。
+    assert "basicPrice" not in offer
 
     assert first["offer_conditions"]["offer"]["offerId"] == "SKU-001"
     assert first["price"]["level"] == "campaign"
@@ -335,6 +335,30 @@ def test_build_payload_business_price_level_when_only_default_price() -> None:
         _config(only_default_price=True),
     _record(),)
     assert payload["price"]["level"] == "business"
+
+
+@pytest.mark.parametrize("unique_count", [3, 31])
+def test_payload_deduplicates_image_urls_before_limit_without_changing_draft(unique_count):
+    product = _product()
+    urls = [f"https://cdn.example.com/{index}.jpg" for index in range(unique_count)]
+    # 两个不同素材引用同一上传结果；重复项位于首图后，不能挤占数量上限。
+    source_urls = [urls[0], urls[0], *urls[1:]]
+    product["source"]["image_pool"] = [
+        {"id": f"img-{index}", "url": url, "origin": "source", "platforms": ["yandex"],
+         "selected": True, "is_main": index == 0, "order": index}
+        for index, url in enumerate(source_urls)
+    ]
+    product["drafts"]["yandex"]["images"] = [
+        {"asset_id": f"img-{index}", "role": "main" if index == 0 else "gallery", "order": index}
+        for index in range(len(source_urls))
+    ]
+    product["sku_items"][0]["image_asset_id"] = "img-0"
+    original = deepcopy(product)
+
+    payload = build_yandex_publish_payload(product, _config(), _record())
+
+    assert payload["catalog"]["offer"]["pictures"] == urls[:30]
+    assert product == original
 
 
 def test_build_payload_multivalue_rows_and_unit_id() -> None:
@@ -496,11 +520,8 @@ def test_build_payload_decimal_price_is_number() -> None:
 
     payload = build_yandex_publish_payload(product, _config(), _record())
 
-    # 官方 basicPrice.value / price.value 为 JSON number（小数保持 float）。
-    assert payload["catalog"]["offer"]["basicPrice"] == {
-        "value": 1299.5,
-        "currencyId": "RUR",
-    }
+    # 官方 price.value 为 JSON number（小数保持 float）。
+    assert "basicPrice" not in payload["catalog"]["offer"]
     assert payload["price"]["offers"][0]["price"]["value"] == 1299.5
     serialized = json.dumps(payload, ensure_ascii=False)
     assert '"value": 1299.5' in serialized
@@ -576,6 +597,53 @@ def test_validate_payload_flags_binding_and_picture_issues() -> None:
 
 
 # ------------------------------------------------------------ state machine
+
+
+@pytest.mark.parametrize("only_default_price", [True, False])
+def test_publish_writes_price_only_to_selected_price_endpoint(remote, monkeypatch, only_default_price):
+    from erp_web.marketplaces import yandex_http
+
+    requests = []
+
+    def request(method, path, token, payload, **kwargs):
+        requests.append((method, path, deepcopy(payload)))
+        return {"status": "OK"}
+
+    monkeypatch.setattr(yandex_http, "request_yandex_json", request)
+    monkeypatch.setattr(publish_yandex, "update_yandex_offer_mapping", yandex_http.update_yandex_offer_mapping)
+    monkeypatch.setattr(publish_yandex, "update_yandex_price", yandex_http.update_yandex_price)
+    config = _config(only_default_price=only_default_price)
+    payload = build_yandex_publish_payload(_product(), config, _record())
+    assert validate_yandex_publish_payload(payload, config) == []
+
+    result = _drive_to_terminal(publish_yandex_payload(payload, config), config)
+
+    assert result["status"] == "real_publish_success"
+    scope = "businesses/222" if only_default_price else "campaigns/111"
+    assert requests == [
+        ("POST", "/v2/businesses/222/offer-mappings/update",
+         {"offerMappings": [{"offer": payload["catalog"]["offer"]}]}),
+        ("POST", f"/v2/{scope}/offer-prices/updates",
+         {"offers": [{"offerId": "SKU-001", "price": {"value": 1299, "currencyId": "RUR"}}]}),
+    ]
+    assert "basicPrice" not in requests[0][2]["offerMappings"][0]["offer"]
+
+
+def test_saved_payload_with_basic_price_resumes_without_replaying_catalog(remote):
+    config = _config(only_default_price=True)
+    payload = build_yandex_publish_payload(_product(), config, _record())
+    payload["catalog"]["offer"]["basicPrice"] = {"value": 1299, "currencyId": "RUR"}
+    assert validate_yandex_publish_payload(payload, config) == []
+    result = publish_yandex_payload(payload, config)
+    saved = json.loads(json.dumps(result))
+    restored = publish_yandex.restore_yandex_publish_result(saved)
+
+    terminal = _drive_to_terminal(restored, config)
+
+    assert terminal["status"] == "real_publish_success"
+    assert remote.count("update_yandex_offer_mapping") == 1
+    assert remote.count("update_yandex_price") == 1
+    assert saved["result"]["plan"]["catalog_offer"]["basicPrice"] == payload["catalog"]["offer"]["basicPrice"]
 
 
 def test_publish_executes_only_first_mutation(remote) -> None:

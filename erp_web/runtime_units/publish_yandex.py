@@ -550,7 +550,8 @@ def build_yandex_publish_payload(
     title = str(draft.get("title") or product.get("name") or "").strip()
     description = str(draft.get("description") or "").strip()
     vendor = str(draft.get("brand") or product.get("brand") or "").strip()
-    images = _draft_images(product, "yandex", draft)[:MAX_PICTURES]
+    # 不同素材可能上传为同一 URL；先保序去重再截断，保留首图和有效图片名额。
+    images = list(dict.fromkeys(_draft_images(product, "yandex", draft)))[:MAX_PICTURES]
     if not images:
         raise ValueError("缺少商品图片")
 
@@ -570,9 +571,6 @@ def build_yandex_publish_payload(
         "description": description,
         **({"parameterValues": parameter_values} if parameter_values else {}),
         "weightDimensions": _weight_dimensions(draft),
-        # 首次写入可携带 basicPrice；价格同步仍是独立、可观测步骤。
-        # 官方 basicPrice.value 为 number，currencyId 为平台枚举（RUR）。
-        "basicPrice": {"value": price_value, "currencyId": wire_currency},
     }
 
     guarantee_period = compile_yandex_guarantee_period(draft.get("guarantee_period"))
@@ -585,6 +583,7 @@ def build_yandex_publish_payload(
         conditions_offer["vat"] = vat
 
     only_default_price = bool(store.get("only_default_price"))
+    # 价格只由独立步骤按账号能力写入，目录商品不再同时写 basicPrice。
     price: dict[str, Any] = {
         "level": "business" if only_default_price else "campaign",
         "offers": [
@@ -702,6 +701,7 @@ def validate_yandex_publish_payload(
                 errors.append(f"parameterId {parameter_id} 的 unitId 无效")
         if not str(row.get("value") or "").strip() and not row.get("valueId"):
             errors.append(f"parameterId {parameter_id} 缺少值")
+    # 已持久化的批准 payload 可能包含 basicPrice，继续校验并保留其原始内容。
     basic_price = (
         offer.get("basicPrice") if isinstance(offer.get("basicPrice"), dict) else {}
     )

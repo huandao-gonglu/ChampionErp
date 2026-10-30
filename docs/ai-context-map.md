@@ -1243,6 +1243,9 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `poll_yandex_publish_status()` 只读确认；
   重启恢复不重复执行已完成写步骤。价格写入按已验证 `only_default_price` 分流
   Business/Campaign 级接口，价格进入隔离区时阻断自动确认。
+  新编译的目录商品不携带 `basicPrice`，价格统一由上述独立步骤写入；已持久化的批准
+  payload 与 checkpoint 保留原内容和恢复能力。图片按最终 URL 保序去重后再取前 30 张，
+  不改变首图、草稿素材引用或其他 SKU 的图片。标题、描述仍使用草稿文案，不由发布器推测改写。
 - `erp_web/schemas/yandex.py`：Yandex wire 与发布状态机 shape（token/campaign/
   checkpoint/result 等）的唯一 owner。
 - `erp_web/stores/config_store.py`：店铺授权摘要与 `_auth_status_label`。Yandex 在线
