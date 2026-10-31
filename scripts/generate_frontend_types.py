@@ -31,6 +31,7 @@ SCHEMA_MODULES = (
     "erp_web.schemas.product",
     "erp_web.schemas.product_research",
     "erp_web.schemas.publish",
+    "erp_web.schemas.task_queue",
     "erp_web.schemas.ozon_template_export",
 )
 SCHEMA_CONSTANTS = ("API_SCHEMA_VERSION", "PRODUCT_SCHEMA_VERSION")

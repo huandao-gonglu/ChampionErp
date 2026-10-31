@@ -50,7 +50,7 @@ def test_multiple_products_use_native_batches_and_platform_limits(operation, cha
     while service.run_once():
         pass
     assert [len(data.get("offerIds", data.get("hiddenOffers", []))) for _, data in remote.writes] == ([limit, count-limit] if count > limit else [count])
-    expected = "confirmed" if operation == "archive" else "submitted"
+    expected = "confirmed"
     assert all(service.store.job(job["id"])["status"] == expected for job in jobs)
     assert {job["id"] for job in service.change_batch(body)["jobs"]} == {job["id"] for job in jobs}
     assert not service.run_once()

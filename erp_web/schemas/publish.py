@@ -20,12 +20,13 @@ PublishPreparationObserver = Callable[[PublishPreparationProgress], None]
 
 
 class PublishConfirmation(TypedDict, total=False):
-    """发布的最近手动检查；next_check_at 保留历史读取，新记录始终为空。"""
+    """原发布任务的最近查询证据；后续查询计划由 TaskConfirmationStore 持有。"""
 
     submitted_at: str
     next_check_at: str
     last_checked_at: str
     check_error: str
+    requires_attention: bool
 
 
 class PublishPlatformState(TypedDict, total=False):

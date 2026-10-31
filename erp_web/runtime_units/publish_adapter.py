@@ -334,19 +334,17 @@ class OzonPublishingAdapter:
         if task_id in (None, "", 0):
             raise RuntimeError("Ozon 待确认发布结果缺少 task_id")
         store = config.get(self.platform) if isinstance(config.get(self.platform), dict) else {}
-        try:
-            polled = poll_ozon_import_status(
-                task_id,
-                str(store.get("client_id") or "").strip(),
-                str(store.get("api_key") or "").strip(),
-            )
-        except RuntimeError as exc:
-            if not str(exc).startswith("Ozon 商品导入失败："):
-                raise
-            mapped = map_ozon_publish_error(exc)
+        polled = poll_ozon_import_status(
+            task_id,
+            str(store.get("client_id") or "").strip(),
+            str(store.get("api_key") or "").strip(),
+        )
+        if polled["status"] == "failed":
+            mapped = map_ozon_publish_error(RuntimeError(polled["error"]))
             return {
                 "ok": False,
                 "status": "real_publish_failed",
+                "result": polled,
                 "error": mapped["summary"],
                 "error_code": mapped["error_code"],
                 "error_map": mapped,
@@ -514,6 +512,7 @@ def build_publishing_bus(context: AppContext) -> PublishingBus:
             )
         ),
         auto_resume_pending=False,
+        task_queue=context.task_queue,
     )
 
 

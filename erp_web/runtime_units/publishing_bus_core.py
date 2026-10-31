@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from erp_web.services.external_request_context import request_operation
+from erp_web.services.external_request_context import current_task_origin, request_operation
 
 import copy
 import hmac
@@ -133,6 +133,8 @@ def _publish_job_display_status(state: dict[str, Any]) -> str:
         return "running"
     if "pending_confirmation" in statuses:
         return "pending_confirmation"
+    if "needs_attention" in statuses:
+        return "needs_attention"
     if OUTCOME_UNKNOWN_JOB_STATUS in statuses:
         return OUTCOME_UNKNOWN_JOB_STATUS
     if PARTIAL_JOB_STATUS in statuses:
@@ -434,11 +436,13 @@ class PublishingBus:
         ) = None,
         max_workers: int = 6,
         auto_resume_pending: bool = True,
+        task_queue=None,
     ) -> None:
         self.store = store
         self.adapters = adapters
         self.config_provider = config_provider or (lambda: {})
         self.terminal_callback = terminal_callback
+        self.task_queue = task_queue
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="PublishingBus")
         self._lock = threading.RLock()
         self._futures: dict[str, list[Future[Any]]] = {}
@@ -508,6 +512,7 @@ class PublishingBus:
         now = current_time()
         state = {
             "job_id": job_id,
+            "task_origin": current_task_origin(),
             "idempotency_key": trusted_key,
             "idempotency_facts": idempotency_facts,
             "status": "queued",
@@ -800,6 +805,12 @@ class PublishingBus:
             future.result(timeout=remaining)
         self._update_job_status(job_id)
 
+    def retry_terminal_persistence(self) -> None:
+        """已取得终态时只补偿本地回填，不再次查询或提交平台。"""
+        for state in self.store.list_pending_publish_jobs():
+            if state.get("status") in {"completed", OUTCOME_UNKNOWN_JOB_STATUS} and not state.get("terminal_results_persisted"):
+                self._update_job_status(state["job_id"])
+
     def get_status(self, job_id: str) -> dict[str, Any]:
         return self._read_state(job_id)
 
@@ -835,6 +846,9 @@ class PublishingBus:
         self.executor.shutdown(wait=True)
 
     def check_publish_result(self, job_id: str, platform: str, *, trigger: str = "manual") -> dict[str, Any]:
+        if self.task_queue is not None:
+            checked = self.task_queue.check(f"publish:{job_id}:{platform}", trigger=trigger)
+            return self.confirmation._response(job_id, platform, checked["checked"], checked["resolution"])
         return self.confirmation.check(job_id, platform, trigger=trigger)
 
     def list_jobs(
@@ -1125,6 +1139,7 @@ class PublishingBus:
                         "ready_for_real_publish",
                         "skipped",
                         OUTCOME_UNKNOWN_JOB_STATUS,
+                        "needs_attention",
                     }
                     else "failed"
                 )
@@ -1347,6 +1362,7 @@ class PublishingBus:
             "skipped",
             OUTCOME_UNKNOWN_JOB_STATUS,
             "pending_confirmation",
+            "needs_attention",
         }:
             self._update_job_status(job_id)
 
@@ -1358,6 +1374,8 @@ class PublishingBus:
                 state["status"] = "running"
             elif "pending_confirmation" in statuses:
                 state["status"] = "pending_confirmation"
+            elif "needs_attention" in statuses:
+                state["status"] = "needs_attention"
             elif OUTCOME_UNKNOWN_JOB_STATUS in statuses:
                 state["status"] = OUTCOME_UNKNOWN_JOB_STATUS
             elif statuses and all(

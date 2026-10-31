@@ -38,7 +38,7 @@ def compact_online_job(response: dict[str, Any]) -> OnlineJobResult:
     return OnlineJobResult.model_validate({
         "ok": response["ok"], "job": {**job, "result": visible_result},
         "recovery": {"requires_resolution": unresolved,
-                     "can_reconcile": status in {"submitted", "waiting_confirmation", "outcome_unknown"},
+                     "can_reconcile": status in UNRESOLVED_STATUSES or status == "submitted",
                      "can_close": can_close, "explanation": explanation},
     })
 

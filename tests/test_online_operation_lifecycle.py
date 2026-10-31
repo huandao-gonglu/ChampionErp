@@ -62,7 +62,7 @@ def test_acknowledged_changes_finish_submission_without_confirmation_or_extra_re
     job = service.change(body)["job"]
     assert service.run_once()
     current = service.store.job(job["id"])
-    assert current["status"] == "submitted" and "polls" not in current["result"]
+    assert current["status"] == "confirmed" and "polls" not in current["result"]
     assert service.store.get("CBT1").sale_state == "active"  # 受理不伪造平台已生效。
     assert not service.run_once()
     assert service.change(body)["job"]["id"] == job["id"]
@@ -119,13 +119,13 @@ def test_two_concurrent_commands_after_accepted_history_still_have_one_writer(se
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(submit, range(2)))
     assert sum(result is not None for result in results) == 1
-    assert service.store.job(previous["id"])["status"] == "submitted"
+    assert service.store.job(previous["id"])["status"] == "confirmed"
     with pytest.raises(OnlineConflict):
         service.reconcile(previous["id"])
     assert not remote.writes
 
 
-@pytest.mark.parametrize("receipt,status", [({}, "submitted"), ({"task_id": "remote-task"}, "waiting_confirmation"), (None, "outcome_unknown")])
+@pytest.mark.parametrize("receipt,status", [({"task_id": "remote-task"}, "waiting_confirmation"), (None, "outcome_unknown")])
 def test_interrupted_result_query_keeps_saved_receipt_without_replaying_write(setup_online, receipt, status):
     service, remote = setup_online
     previous = old_job(service, price_request(service), receipt)
@@ -151,10 +151,12 @@ def test_checking_old_pause_cannot_override_newer_sale_intent(setup_online):
     with pytest.raises(OnlineConflict):
         service.reconcile(first["id"])
     service.run_once()
-    assert service.store.job(second["id"])["status"] == "submitted"
+    assert service.store.job(second["id"])["status"] == "confirmed"
     assert service.store.get("CBT1").desired_sale_state == "active"
     remote.rows["CBT1"].raw_status = remote.rows["CBT1"].sale_state = "paused"
-    assert service.reconcile(first["id"])["job"]["status"] == "confirmed"
+    with pytest.raises(OnlineConflict):
+        service.reconcile(first["id"])
+    assert service.store.job(first["id"])["status"] == "confirmed"
     assert service.store.get("CBT1").desired_sale_state == "active"
     assert len(remote.writes) == 2
 

@@ -17,7 +17,7 @@ _rejections = ContextVar("external_request_rejections", default=None)
 
 
 @contextmanager
-def request_operation(source, *, operation_id="", trigger="manual", cancel=None, deadline_at=None, cancellation_check=None):
+def request_operation(source, *, operation_id="", trigger="manual", cancel=None, deadline_at=None, cancellation_check=None, before_send=None):
     parent = _operation.get()
     if parent:
         # 领域子操作可以收紧期限，不能覆盖上层 AI/HTTP 的期限或停止检查。
@@ -31,7 +31,15 @@ def request_operation(source, *, operation_id="", trigger="manual", cancel=None,
             cancellation_check = check_cancellation
         if cancel is None:
             cancel = parent["cancel"]
-    value = {"source": source, "operation_id": operation_id or uuid4().hex, "trigger": trigger, "cancel": cancel, "deadline_at":deadline_at,"cancellation_check":cancellation_check}
+        inherited_before_send = parent.get("before_send")
+        if inherited_before_send is not None:
+            child_before_send = before_send
+            def apply_before_send(ctx):
+                inherited_before_send(ctx)
+                if child_before_send is not None:
+                    child_before_send(ctx)
+            before_send = apply_before_send
+    value = {"source": source, "operation_id": operation_id or uuid4().hex, "trigger": trigger, "cancel": cancel, "deadline_at":deadline_at,"cancellation_check":cancellation_check,"before_send":before_send}
     token = _operation.set(value)
     try:
         yield
@@ -65,6 +73,8 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
     account_id = account_id or ("credential:"+credential_id)
     # POST 查询由平台契约列举；未声明的请求保守按写入处理。
     read_post = platform == "ozon" and any(part in parsed.path for part in ("/info", "/list", "/tree", "/attribute", "/seller/info", "/posting/fbs/get", "/posting/fbo/get")) and not any(part in parsed.path for part in ("/update", "/import", "/delete"))
+    if platform == "ozon" and parsed.path == "/v1/product/import/info":
+        read_post = True
     if platform == "yandex":
         read_post = method.upper() == "POST" and not any(part in parsed.path for part in ("/update","/delete","/create")) and not parsed.path.endswith(("/hidden-offers", "/archive", "/unarchive"))
         # 聊天 POST 同时包含查询与写入，按确切路径区分，防止发送未知时被当作只读重放。
@@ -107,3 +117,8 @@ def note_request_rejection(failure):
 
 def current_operation_id():
     return (_operation.get() or {}).get("operation_id", "")
+
+
+def current_task_origin():
+    operation = _operation.get() or {}
+    return "ai" if operation.get("trigger") == "agent_tool" or operation.get("source", "").startswith("ai_tool:") else "page"

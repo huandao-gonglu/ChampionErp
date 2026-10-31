@@ -162,6 +162,7 @@ class AppContext:
         self._approval_session: "ApprovalSession | None" = None
         self._category_catalog: "CategoryCatalog | None" = None
         self._online_products = None
+        self._task_queue = None
         self._external_requests = None
         self._order_notifications = None
         self._order_procurement = None
@@ -292,6 +293,15 @@ class AppContext:
 
                     self._external_requests = ExternalRequestManager(ExternalRequestStore(self.paths.data_dir / "external-requests.sqlite3"))
         return self._external_requests
+
+    @property
+    def task_queue(self):
+        with self._lazy_lock:
+            if self._task_queue is None:
+                from erp_web.services.task_queue_service import TaskQueueService
+
+                self._task_queue = TaskQueueService(self)
+            return self._task_queue
 
     @property
     def online_products(self):
@@ -481,6 +491,7 @@ class AppContext:
                 return
             self._closed = True
             publishing_bus = self._publishing_bus
+            task_queue = self._task_queue
             online_products = self._online_products
             order_notifications = self._order_notifications
             fulfillment = self._fulfillment
@@ -488,6 +499,8 @@ class AppContext:
             wechat = self._wechat
         if wechat is not None:
             wechat.close()
+        if task_queue is not None:
+            task_queue.close()
         if alibaba_self_purchases is not None:
             alibaba_self_purchases.close()
         if fulfillment is not None:

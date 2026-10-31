@@ -870,6 +870,7 @@ export interface BackendPublishConfirmation {
   next_check_at?: string
   last_checked_at?: string
   check_error?: string
+  requires_attention?: boolean
 }
 
 export interface BackendPublishPlatformState {
@@ -945,6 +946,51 @@ export interface BackendPublishJobSummary {
   platforms: Array<BackendPublishJobPlatformSummary>
   created_at: string
   updated_at: string
+}
+
+export interface BackendTaskConfirmationSummary {
+  state: string
+  checks_used: number
+  checks_remaining: number
+  requests_used: number
+  requests_remaining: number
+  last_checked_at: number
+  next_check_at: number
+  deadline_at: number
+  error: string
+}
+
+export interface BackendQueueTask {
+  id: string
+  job_id: string
+  source: "publish" | "online"
+  origin: string
+  platform: string
+  account_id: string
+  operation: string
+  title: string
+  target_id: string
+  status: string
+  business_status: string
+  created_at: string
+  updated_at: string
+  error: string
+  protection: string
+  confirmation: BackendTaskConfirmationSummary | null
+}
+
+export interface BackendTaskQueueResponse {
+  ok: boolean
+  items: Array<BackendQueueTask>
+  total: number
+  page: number
+  accounts: Array<string>
+}
+
+export interface BackendTaskQueueDetail {
+  ok: boolean
+  task: BackendQueueTask
+  detail: Record<string, unknown>
 }
 
 export interface BackendOzonExportTemplate {

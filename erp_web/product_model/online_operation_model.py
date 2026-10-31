@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 
-UNRESOLVED_STATUSES = frozenset({"waiting_confirmation", "outcome_unknown"})
+UNRESOLVED_STATUSES = frozenset({"waiting_confirmation", "outcome_unknown", "needs_attention"})
 NONBLOCKING_STATUSES = frozenset({"submitted", "confirmed", "partial", "failed", "closed_unconfirmed"})
 
 
@@ -37,8 +37,8 @@ def has_async_task(receipt: Any) -> bool:
     return isinstance(receipt, list) and any(has_async_task(value) for value in receipt)
 
 
-def submission_status(platform: str, operation: str, receipt: Any) -> str:
-    """submitted 表示明确受理，不承诺展示已生效，也不要求确认后才能再修改。
+def submission_status(platform: str, operation: str, receipt: Any, *, model: str = "", target_id: str = "", scope_id: str = "") -> str:
+    """同步接口按明确回执完成；只有真实异步或生效审核才等待确认。
 
     Yandex 库存/隐藏接口返回 OK；价格隔离与卡片审核仍需核验。
     Mercado 普通修改可返回空对象，带 task_id 的 User Products 修改需核验任务。
@@ -47,8 +47,29 @@ def submission_status(platform: str, operation: str, receipt: Any) -> str:
     if not isinstance(receipt, dict):
         return "outcome_unknown"
     errors = receipt_errors(receipt)
-    if platform == "mercadolibre" and has_async_task(receipt):
-        return "waiting_confirmation"
+    if platform == "mercadolibre":
+        if has_async_task(receipt):
+            return "waiting_confirmation"
+        if model == "user_products":
+            if target_id and receipt.get("id") != target_id:
+                return "outcome_unknown"
+            targets = receipt.get("listing_sites") or []
+            if operation == "price" and scope_id and scope_id != "global":
+                targets = [row for row in targets if row.get("id") == scope_id]
+                if len(targets) != 1:
+                    return "outcome_unknown"
+            successes = [row.get("success") for row in targets]
+            if any(value is not True and value is not False for value in successes):
+                return "outcome_unknown"
+            if errors or receipt.get("success") is False or False in successes:
+                return "partial" if True in successes or receipt.get("success") is True else "failed"
+            return "confirmed" if receipt.get("success") is True or successes and all(successes) else "outcome_unknown"
+        if errors:
+            return "failed" if receipt.get("success") is False else "partial"
+        # 传统 /global/items 的官方成功回执允许空对象。
+        # 站点改价直接写入所选 Item；历史记录中的 target_id 可能仍是 CBT 父商品。
+        expected_id = scope_id if operation == "price" and scope_id and scope_id != "global" else target_id
+        return "confirmed" if receipt == {} or receipt.get("success") is True or expected_id and receipt.get("id") == expected_id else "outcome_unknown"
     if platform == "yandex" and operation == "archive" and receipt.get("status") == "OK":
         # 每个领域任务只提交一个 SKU；官方返回失败清单，其余即归档/恢复成功。
         return "failed" if errors else "confirmed"
@@ -59,18 +80,18 @@ def submission_status(platform: str, operation: str, receipt: Any) -> str:
         return "failed" if rejected else "partial"
     if platform == "yandex" and receipt.get("status") == "OK":
         if operation in ("stock", "sale_state"):
-            return "submitted"
+            return "confirmed"
         if operation in ("price", "content"):
             return "waiting_confirmation"
-    if platform == "mercadolibre" and operation in ("price", "stock", "content", "sale_state"):
-        return "submitted"
     return "outcome_unknown"
 
 
 def effective_job_status(job: dict[str, Any]) -> str:
     """旧 submitted 记录按实际回执读取；不改写历史、补造确认或发送请求。"""
     if job["status"] == "submitted" and job["operation"] != "sync":
-        return submission_status(job["platform"], job["operation"], job["result"].get("receipt"))
+        result = job["result"]
+        return submission_status(job["platform"], job["operation"], result.get("receipt"),
+            model=result.get("before", {}).get("model", ""), target_id=result.get("receipt_target", ""), scope_id=result.get("scope_id", ""))
     return job["status"]
 
 

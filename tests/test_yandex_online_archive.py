@@ -71,7 +71,8 @@ def test_pause_archive_and_restore_are_distinct_and_preserve_stock(archive_servi
     service, remote, client = archive_service
     pause = service.change(command(service, "sale_state", {"state": "paused"}))["job"]
     service.run_once()
-    service.reconcile(pause["id"])
+    assert service.store.job(pause["id"])["status"] == "confirmed"
+    service.refresh_status(pause["target_id"])
     before = service.store.get(pause["target_id"])
     body = command(service)
     job = service.change(body)["job"]

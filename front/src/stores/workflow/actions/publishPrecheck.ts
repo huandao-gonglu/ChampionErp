@@ -92,7 +92,7 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
       precheckResults.value = result.platformResults
       applyMutationIndexes(result)
       if (result.precheck.ok) currentStage.value = 7
-      addLog(result.precheck.ok ? '预检通过，商品可进入发布队列。' : `预检未通过：${result.precheck.errors.join('、')}`)
+      addLog(result.precheck.ok ? '预检通过，商品可进入任务队列。' : `预检未通过：${result.precheck.errors.join('、')}`)
       return result.precheck
     } catch (exc) {
       if (isCurrent()) setError(exc instanceof Error ? exc.message : '上架预检失败')
@@ -170,7 +170,7 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
     const preview = payloadPreview.value
     const target = selectedPublishTarget.value
     if (!preview?.validationDigest || preview.targetKey !== pricingTargetKey(target.platform, target.site)) {
-      setError('请先生成当前目标站点的 Payload 预览并确认摘要后，再加入发布队列。')
+      setError('请先生成当前目标站点的 Payload 预览并确认摘要后，再加入任务队列。')
       return
     }
     runtime.onPreparationProgress?.(null)
@@ -192,7 +192,7 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
         const updatedIndex = await fetchDraftsIndex()
         if (isCurrent()) draftsIndex.value = updatedIndex
       } catch {
-        addLog('发布任务已入队，列表暂未刷新，请在发布队列查看。')
+        addLog('发布任务已入队，列表暂未刷新，请在任务队列查看。')
       }
       return job
     } catch (exc) {

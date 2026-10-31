@@ -132,7 +132,7 @@ describe('统一草稿核价 API', () => {
 
       pricing_overrides: draft.skuItems[0]!.pricing_overrides,
     })])
-    expect(JSON.stringify(payload.sku_updates)).not.toContain('overrides\":{\"cost_cny')
+    expect(JSON.stringify(payload.sku_updates)).not.toContain('overrides":{"cost_cny')
   })
 
   it('仅提交本次选择的市场和汇率覆盖，保留未选市场规则', () => {

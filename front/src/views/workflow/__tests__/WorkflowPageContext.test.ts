@@ -1,6 +1,8 @@
 import { shallowMount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
+import { createI18n } from 'vue-i18n'
+import zh from '@/i18n/locales/zh'
 import { afterEach, expect, it, vi } from 'vitest'
 import WorkflowView from '../WorkflowView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
@@ -37,7 +39,7 @@ it('真实工作台先传勾选范围，打开和切换编辑草稿后优先传�
   ] })
   await router.push('/?tab=drafts')
   const wrapper = shallowMount(WorkflowView, {
-    global: { plugins: [pinia, router], stubs: { DraftBoxPanel: false } },
+    global: { plugins: [pinia, router, createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { DraftBoxPanel: false } },
   })
   try {
     await flushPromises()

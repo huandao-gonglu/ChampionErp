@@ -14,7 +14,7 @@ watch(() => props.job, job => {
   if (job.updated_at !== reviewed.value.updated_at || job.id !== reviewed.value.id) acknowledged.value = false
   reviewed.value = job
 })
-const eligible = computed(() => ['outcome_unknown', 'waiting_confirmation'].includes(reviewed.value.status))
+const eligible = computed(() => ['outcome_unknown', 'waiting_confirmation', 'needs_attention'].includes(reviewed.value.status))
 const evidence = computed(() => reviewed.value.result.evidence)
 const resultError = computed(() => {
   if (!eligible.value) return ''

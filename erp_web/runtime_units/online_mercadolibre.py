@@ -212,4 +212,6 @@ class MercadoOnlineAdapter:
                     errors.append({"id": row.get("id"), "reasons": row.get("reasons")})
                 elif row.get("status") != "succeeded":
                     pending = True
-        return {"pending": pending, "errors": errors, "tasks": tasks}
+        outcomes = [row.get("status") for task in tasks for row in task["user_products"]]
+        completion = "" if pending or not outcomes else "failed" if set(outcomes) == {"failed"} else "partial" if "failed" in outcomes else "confirmed"
+        return {"pending": pending, "errors": errors, "tasks": tasks, "completion": completion}

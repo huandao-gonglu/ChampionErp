@@ -75,12 +75,11 @@ def test_submission_waits_for_manual_check_and_local_reads_do_not_query(setup):
     assert adapter.reads == 0
 
 
-@pytest.mark.parametrize("trigger", ["scheduled", "view"])
-def test_automatic_triggers_are_rejected_without_remote_reads(setup, trigger):
+def test_page_trigger_is_rejected_without_remote_reads(setup):
     bus, adapter, clock, job_id = setup
     clock[0] += 10000
-    with pytest.raises(ValueError, match="仅支持手动"):
-        bus.check_publish_result(job_id, "ozon", trigger=trigger)
+    with pytest.raises(ValueError, match="任务队列"):
+        bus.check_publish_result(job_id, "ozon", trigger="view")
     assert adapter.reads == 0
 
 

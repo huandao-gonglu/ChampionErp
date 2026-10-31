@@ -135,8 +135,7 @@ def test_local_preview_uses_file_route_and_changes_only_online_images(online_ima
     assert remote.writes[0]["pictures"][1] == {"id": "uploaded-asset-1"}
     saved = service.store.job(job["id"])
     assert saved["result"]["prepared_changes"] == remote.writes[0]
-    # 回读比较平台 ID，不比较本地引用；手动确认不再次上传。
-    service.reconcile(job["id"])
+    # 同步成功即可完成，不再为了确认重复上传或查询。
     assert service.store.job(job["id"])["status"] == "confirmed"
     assert len(remote.preparations) == 1 and len(remote.writes) == 1
     assert get_context().db.load_product_model(product["product_id"]) == original

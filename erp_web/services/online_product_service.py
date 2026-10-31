@@ -257,7 +257,8 @@ class OnlineProductService:
                     self.store.save(fresh, lease=job)
                 raise OnlineConflict("平台商品已变化或读取不完整，未提交修改；请重新同步并确认")
             self._validate_changes(fresh, request)
-            result = {"before": before.model_dump(exclude={"snapshot"}), "changes": request.changes, "scope_id": request.scope_id}
+            result = {"before": before.model_dump(exclude={"snapshot"}), "changes": request.changes, "scope_id": request.scope_id,
+                      "receipt_target": fresh.snapshot.get("siteless_id") or fresh.remote_id}
             prepared_changes = dict(request.changes)
             if "pictures" in prepared_changes:
                 prepared_changes["pictures"] = self.images.prepare(fresh, prepared_changes["pictures"], adapter)
@@ -270,6 +271,7 @@ class OnlineProductService:
                     self.images.validate(fresh, request.changes["pictures"])
             self._config(before.platform, before.account_id)
             result["prepared_changes"] = prepared_changes
+            result["submitted_at"] = utc_now()
             # 写前日志是崩溃边界；此后任何没有明确拒绝证据的错误都按结果未知处理。
             self._update(job, "running", result, dispatched=True)
             dispatched = True
@@ -278,7 +280,8 @@ class OnlineProductService:
             receipt = adapter.write(fresh, request.operation, request.scope_id, prepared_changes)
             write_returned = True
             result["receipt"] = receipt
-            status = submission_status(job["platform"], job["operation"], receipt)
+            status = submission_status(job["platform"], job["operation"], receipt, model=fresh.model,
+                                       target_id=result["receipt_target"], scope_id=request.scope_id)
             if status in ("failed", "partial"):
                 result["platform_errors"] = receipt_errors(receipt)
             if status == "confirmed" and request.operation == "archive":
@@ -286,7 +289,7 @@ class OnlineProductService:
                 result["platform_confirmation"] = {"note": "平台已确认归档操作成功；买家端展示更新可能稍有延迟"}
             if status == "failed" and request.operation == "sale_state":
                 self.store.sale_intent(before.id, before.desired_sale_state, lease=job)
-            elif status == "submitted" and request.operation == "sale_state":
+            elif status in {"submitted", "confirmed"} and request.operation == "sale_state":
                 self.store.sale_intent(before.id, request.changes["state"], lease=job)
             self._update(job, status, result, dispatched=True)
         except Exception as exc:
@@ -306,7 +309,9 @@ class OnlineProductService:
         return True
 
     def _update(self, job, status, result, **kwargs):
-        result = {**{key: value for key, value in job["result"].items() if key.startswith("batch_")}, **result}
+        result = {**{key: value for key, value in job["result"].items() if key.startswith(("batch_", "task_"))}, **result}
+        if "confirmation_lease_until" in job:
+            kwargs["lease_until"] = job["confirmation_lease_until"]
         self.store.update_job(job["id"], status, result, owner=job["lease_token"], **kwargs)
 
     def _prepare_confirmation(self, job, result):
@@ -317,6 +322,7 @@ class OnlineProductService:
         result.pop("next_confirmation_at", None)
         # 新查询失败或进程中断时，不允许拿上次成功证据解除阻塞。
         result.pop("evidence", None)
+        result.pop("check_error", None)
         self._update(job, "running", result, dispatched=True)
 
     def _confirm(self, job: dict[str, Any], adapter, result: dict[str, Any]):
@@ -338,7 +344,8 @@ class OnlineProductService:
         # 展示尚未更新不撤销明确受理；只有真实异步处理或写入未知才保留等待。
         status = "confirmed" if checked and all(checked.values()) else (
             "outcome_unknown" if job["status"] == "outcome_unknown"
-            else submission_status(job["platform"], job["operation"], result.get("receipt"))
+            else submission_status(job["platform"], job["operation"], result.get("receipt"), model=current.model,
+                                   target_id=result.get("receipt_target", ""), scope_id=request.scope_id)
         )
         errors = receipt_errors(result.get("receipt", {})) + platform_result.get("errors", [])
         if platform_result.get("pending"):
@@ -350,18 +357,34 @@ class OnlineProductService:
                 receipt = result.get("receipt", {})
                 fully_rejected = receipt.get("status") == "ERROR" or receipt.get("success") is False and not receipt.get("listing_sites")
                 status = "failed" if fully_rejected and not any(checked.values()) else "partial"
+        if platform_result.get("needs_attention"):
+            status = "needs_attention"
+        elif platform_result.get("completion") in {"confirmed", "partial", "failed"}:
+            status = platform_result["completion"]
         if status == "confirmed" and request.operation == "archive":
             self.store.archive_state(fresh.id, request.changes["archived"], lease=job)
         if status == "confirmed" and request.operation == "sale_state":
             self.store.sale_intent(fresh.id, request.changes["state"], lease=job)
+        elif status == "failed" and request.operation == "sale_state":
+            self.store.sale_intent(fresh.id, result.get("before", {}).get("desired_sale_state", ""), lease=job)
         result["evidence"] = {"version": fresh.version, "synced_at": fresh.synced_at,
                               "checked_at": utc_now(), "observed": observed_changes(fresh, request)} if not fresh.errors else {}
         self._update(job, status, result, dispatched=True)
 
     def reconcile(self, job_id: str) -> dict[str, Any]:
+        queue = getattr(self.context, "task_queue", None)
+        if queue is not None:
+            response = queue.check(f"online:{job_id}")
+            if not response["checked"]:
+                raise OnlineConflict({"cooldown": "刚刚查询过，请稍后再查", "checking": "已有结果查询正在执行"}.get(
+                    response["resolution"], (response["task"].get("confirmation") or {}).get("error") or "当前任务无需查询"))
+            return {"ok": True, "job": self.store.job(job_id)}
+        return self.reconcile_once(job_id)
+
+    def reconcile_once(self, job_id: str, *, lease_until: float | None = None) -> dict[str, Any]:
         job = self.store.job(job_id)
         self._config(job["platform"], job["account_id"])
-        job = self.store.claim_reconcile(job_id)
+        job = self.store.claim_reconcile(job_id, lease_until=lease_until)
         result = job["result"]
         try:
             self._prepare_confirmation(job, result)
@@ -369,6 +392,7 @@ class OnlineProductService:
                 self._confirm(job, self._adapter(job["platform"], job["account_id"]), result)
         except Exception as exc:
             result["error"] = str(exc)
+            result["check_error"] = str(exc)
             # 后续只读查询失败不能把已有明确受理改成写入结果未知。
             self._update(job, job["status"], result, dispatched=True)
         return {"ok": True, "job": self.store.job(job_id)}

@@ -19,6 +19,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from erp_web.http_route_units import (
+    task_queue_routes,
     wechat_routes,
     ai_work_routes,
     get_routes,
@@ -74,6 +75,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     """
 
     endpoints: set[tuple[str, str]] = set()
+    endpoints.update(("GET", path) for path in task_queue_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in wechat_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in get_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
@@ -89,6 +91,10 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="任务队列", disposition="internal_only",
+        reason="可信页面的跨领域任务投影与有限确认门面；AI 继续使用原发布/在线商品领域能力，查询共用同一确认预算。") for method, path in (
+        ("GET", "/api/tasks"), ("POST", "/api/tasks/check"),
+    )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="配置基础设施", disposition="excluded",
         reason="仅受信设置界面管理扫码、配对及会话绑定，不作为模型工具；微信消息通过共用原生对话入口接收。") for method, path in (
         ("GET", "/api/wechat/status"), ("POST", "/api/wechat/login"), ("POST", "/api/wechat/verify"),

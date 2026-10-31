@@ -176,6 +176,7 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/tasks/check": _contract(fields={"task_id": STRING}, required=("task_id",)),
     "/api/wechat/login": RequestContract(),
     "/api/wechat/verify": RequestContract(fields={"code": STRING}, required=("code",)),
     "/api/wechat/unbind": RequestContract(),

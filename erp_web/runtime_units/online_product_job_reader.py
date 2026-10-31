@@ -6,8 +6,9 @@ from erp_web.schemas.domain_jobs import JobStateSnapshot
 
 
 _LABELS = {"queued": "排队中", "running": "执行中", "submitted": "平台已受理",
-           "waiting_confirmation": "等待平台确认", "confirmed": "已生效",
+           "waiting_confirmation": "等待平台确认", "confirmed": "已完成",
            "partial": "部分完成", "failed": "失败", "outcome_unknown": "结果未知，需回读",
+           "needs_attention": "需要处理",
            "closed_unconfirmed": "已人工结束，原结果未确认"}
 
 

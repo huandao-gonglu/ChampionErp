@@ -138,6 +138,16 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   一致性备份，再迁到独立审计库；目标提交成功后才移除主库审计表，并升级在线占用索引到 v17；业务数据不变。
   运行时不会自动迁移；结构拒绝信息列出多余、缺失或定义不一致的对象，不再把同版本结构差异误报为版本过旧。
 
+## 统一任务队列
+
+- `/publish`（原导航键保留）展示「任务队列」，首期仅包含商品发布和在线商品修改。`TaskQueuePanel.vue` 每五秒读取本地投影，支持来源、页面/AI、状态、平台、店铺、操作、日期和任务/商品搜索；不由页面触发平台轮询。
+- `http_route_units/task_queue_routes.py` → `facades/task_queue_facade.py` → `services/task_queue_service.py` 为统一入口。`stores/task_queue_reader.py` 直接读取原领域结果；`schemas/task_queue.py` 定义任务视图和查询策略。
+- 原发布/修改任务在外发前保存，原任务号继续作为统一请求 `operation_id`，发起方式同时冻结。确认计划和已用预算单独保存在 `task-confirmations.sqlite3`，不复制业务回执或创建第二套业务终态。
+- `TaskQueueService` 在启动时运行后台有限确认；自动和人工确认共用账号占位与 30 秒冷却，自动计划有效时共享剩余轮数、真实 HTTP 请求数及截止时间。自动确认停止后，显式人工核验使用受限的单轮请求额度与期限，不清零累计用量或重启自动计划；近期回读证据仍由原领域服务校验。`request_operation.before_send` 在每笔请求发出前持久扣减预算，继承单轮期限与取消约束；统一请求管理器继续负责平台配额及阻断。
+- 同步成功直接完成，只有 Ozon 发布、Yandex 发布/价格/内容、Mercado 真实异步任务及可定位的未知结果进入确认。价格隔离立即转需要处理；确认到期/耗尽只停止查询，不改写为业务失败，不自动重放或解除未知结果保护。
+- 查询结果回写原业务任务；发布终态回填暂时失败时后台仅恢复本地持久化，不重新请求平台。旧记录全部进入列表，旧确认标记不启动新的自动预算。自动查询中断后可重新领取过期租约，已停止的计划不会因人工查询或重启而恢复。过期任务可显式查询或在平台后台核对，在线修改人工结束继续使用原证据与版本校验。
+- 查询策略数值与回归入口见 [任务队列](task-queue.md)。Ozon 在线写入、采购/支付/履约及未开放的 Mercado 商品族编辑不在本次接入范围。
+
 ## 在线商品管理
 
 - Yandex 在线属性编辑通过 `GET /api/online-products/attributes` 按刊登身份和版本读取类目字段、当前值与分页候选；
@@ -233,9 +243,9 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   Yandex 使用 B2C `showcaseUrls`，Mercado 使用站点子刊登 `permalink`；不猜测缺失地址。
   `scripts/backfill_online_buyer_links.py` 补齐当前账号存量链接，只更新导航元数据，保留业务版本及同步时间。
 - `product_model/online_operation_model.py` 是回执语义与冲突范围的纯逻辑 owner，Service 和 Store 共用。
-  Yandex 库存/隐藏接口的 `OK`、Mercado 不带异步任务的成功回执记为 `submitted`（平台已受理），
-  不等同于 `confirmed`（已核验生效），也不占用商品。Yandex 价格隔离/内容审核及 Mercado `task_id`
-  记为 `waiting_confirmation`；不可识别的回执和写入超时保留 `outcome_unknown`。
+  Yandex 库存/隐藏接口的 `OK`、Mercado 同步成功回执记为 `confirmed`（本次操作已完成），不占用商品；
+  Mercado 传统 PUT 允许空对象，User Products 按目标身份和逐项 `success/errors` 判断。Yandex 价格/内容审核及 Mercado `task_id`
+  记为 `waiting_confirmation`；价格隔离转 `needs_attention`，不可识别回执及写入超时保留 `outcome_unknown`。
   历史 `submitted` 按保存的回执投影，缺少回执不能视为受理；读取不改写原任务或发起平台请求。
 - 任务以提交键防重，`queued/running` 执行阶段保留同目标互斥；真实异步或未知结果只阻止相关修改。
   同类修改仍互斥；Mercado 库存与销售状态相互关联；Yandex 隐藏不受旧库存任务阻塞，但恢复销售需排除未知库存修改。
@@ -243,7 +253,7 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   同步和同商品执行期间不能并发查询修改结果，避免快照互相覆盖。写前核对当前店铺及平台业务版本，
   写前日志区分已发送与未发送；未知结果只回读、不自动重放。每次领取生成独立租约，过期执行者不可提交结果。
   工作线程在应用启动时恢复队列，前端轮询仅负责展示；部分同步失败保留旧快照，不推断删除。
-  结果查询由用户主动发起，连续查询间隔 30 秒；失败也保留冷却时间。已明确受理的操作不要求查询后才能继续修改，
+  结果查询由统一任务队列有限调度或用户显式发起，连续查询间隔 30 秒；失败也保留冷却。同步成功不要求回读后才能继续修改，
   后续查询失败、查询进程中断或展示尚未更新不撤销已持久化的受理事实。历史自动确认标记不参与任务领取。
   局部确认更新版本与对应字段，保留完整同步时间；旧任务核验不能覆盖更新的销售意图。
 - 修改或同步被已有任务拦截时，`OnlineConflictResponse.conflict_job_id` 返回实际阻塞任务编号；前端错误提示可直接打开对应操作。
@@ -267,8 +277,8 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   列表和单件均可通过 `fields` 读取所需业务字段及固定身份、版本；已有足够字段时不再读取完整详情。
   父子字段重叠在参数校验阶段拒绝，避免完整内容与属性重复返回；常用路径说明及分页边界见 [在线商品 AI](online-product-ai.md)。
 - 审批和持久调用直接使用现有 Tool Bridge 的 Pydantic Deferred 机制；修改和重试返回 `OnlineSubmissionResult`，任务入队即完成 AI 工具调用，批量提交继续处理剩余目标，不等待远端终态。
-  平台写入由后台处理，回读按需发起；`online_product_job_reader.py` 为同步及已持久化引用读取领域回执。
-  `submitted` 只完成提交职责，`confirmed` 才确认实际生效；部分完成、未知结果和等待人工确认保留原状态并结束本次工具等待，不自动重放。
+  平台写入由后台处理，确认由统一任务队列管理；`online_product_job_reader.py` 为同步及已持久化引用读取领域回执。
+  历史 `submitted` 只完成提交职责，新同步成功及最终确认写入 `confirmed`；部分完成、未知结果和等待人工确认保留原状态并结束本次工具等待，不自动重放。
   协议依据：[Yandex 隐藏](https://yandex.ru/dev/market/partner-api/doc/ru/reference/hidden-offers/addHiddenOffers)、
   [Yandex 库存](https://yandex.ru/dev/market/partner-api/doc/ru/reference/stocks/updateStocksOnPartnerWarehouses)、
   [Mercado 普通修改](https://global-selling.mercadolibre.com/devsite/sync-and-modify-listings-gs)、
@@ -1169,20 +1179,9 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   店铺商品发现、查询和销售状态管理由在线商品模块负责。
 - `erp_web/facades/publish_facade.py`：HTTP 层唯一发布 facade；业务编排进入
   `erp_web/runtime_units/publish_workflows.py`。
-- `erp_web/runtime_units/publish_result_confirmation.py`：发布结果确认的唯一 owner。
-  提交回执持久化后进入 `pending_confirmation`，释放发布 worker，等待用户点击查询最新结果。
-  不保留后台延迟查询调度器，重启不恢复历史 `confirmation.next_check_at` 计划；
-  该字段保留历史读取，新写入为空。`confirmation.last_checked_at/check_error` 保存最近
-  检查时间与查询错误；读失败不改变发布结果，不重放写请求，不释放活动发布锁。
-  `POST /api/publish-bus/reconcile` 仅接受 `trigger=manual`，连续手动查询冷却 30 秒。
-  进入发布列表、打开/切换详情及其他本地刷新都不触发远端查询。
-  同一任务/平台在进程内合并并发查询；平台回执及店铺身份校验仍保留。
-  Yandex 的已批准写步骤由 `advance_yandex_submission` 推进，未完成时是
-  `pending_submission`；`poll_yandex_publish_status` 只能只读确认，不能推进写入。
-  本机制属于 ERP 领域任务调度，不属于 Agent 生命周期。已核对安装的 Pydantic AI
-  2.44.0 及 [Deferred Tools 官方文档](https://ai.pydantic.dev/deferred-tools/)：Agent 暂停与
-  恢复继续使用原生 Deferred Tools，Job Reader 仅投影持久结果；不新增 Agent loop、
-  消息历史或事件协议，也不通过定时器调用模型。
+- `erp_web/runtime_units/publish_result_confirmation.py`：发布单次确认与回写的唯一 owner。
+  提交回执进入 `pending_confirmation`；统一任务队列安排有限只读查询，人工入口共用预算与冷却。
+  确认成功、失败和部分成功回写原任务及草稿；查询失败保留受理事实和原回执。价格隔离转 `needs_attention`，停止普通自动查询。
 - `erp_web/runtime_units/publish_adapter.py`：发布平台适配器注册表。只有这里注册且
   在 `marketplace_registry.py` 声明 `CAP_PUBLISH` 的平台才允许进入真实发布流程。
 - `erp_web/services/mercadolibre_target_contract.py` 与

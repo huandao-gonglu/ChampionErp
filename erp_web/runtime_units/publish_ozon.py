@@ -432,15 +432,6 @@ def poll_ozon_import_status(
     )
     items = _import_items(response)
     item_errors = _item_errors(items)
-    if item_errors:
-        raise RuntimeError(
-            "Ozon 商品导入失败："
-            + json.dumps(
-                {"task_id": task_id, "items": items},
-                ensure_ascii=False,
-            )
-        )
-
     statuses = {
         str(item.get("status") or "").strip().lower()
         for item in items
@@ -449,7 +440,7 @@ def poll_ozon_import_status(
     first = items[0] if items else {}
     product_id = first.get("product_id")
     offer_id = str(first.get("offer_id") or "")
-    if items and statuses == {"imported"}:
+    if items and statuses == {"imported"} and not item_errors:
         return {
             "ok": True,
             "status": "imported",
@@ -459,14 +450,10 @@ def poll_ozon_import_status(
             "offer_id": offer_id,
             "import_info": response,
         }
-    if "failed" in statuses:
-        raise RuntimeError(
-            "Ozon 商品导入失败："
-            + json.dumps(
-                {"task_id": task_id, "items": items},
-                ensure_ascii=False,
-            )
-        )
+    if item_errors or "failed" in statuses:
+        return {"ok": False, "status": "failed", "task_id": task_id,
+                "error": "Ozon 商品导入失败：" + json.dumps({"task_id": task_id, "items": items}, ensure_ascii=False),
+                "import_info": response}
     return {
         "ok": True,
         "status": "pending_confirmation",

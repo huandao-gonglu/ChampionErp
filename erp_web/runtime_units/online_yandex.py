@@ -157,7 +157,7 @@ class YandexOnlineAdapter:
         if operation == "price":
             rows = api.fetch_yandex_price_quarantine(self.token, business_id=self.business if scope == "business" else "",
                 campaign_id=self.campaign if scope == "campaign" else "", offer_ids=[listing.remote_id])
-            return {"pending": bool(rows), "errors": [], "quarantine": rows,
+            return {"pending": False, "needs_attention": bool(rows), "errors": [], "quarantine": rows,
                     "note": "价格进入平台隔离区，尚未确认生效；请先在平台处理价格审核" if rows else ""}
         if operation != "content":
             return {"pending": False, "errors": []}

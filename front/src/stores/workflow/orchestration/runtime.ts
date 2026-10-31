@@ -1055,7 +1055,7 @@ export function createWorkflowRuntime() {
       ['pricing', '核价', '成本、运费、汇率、佣金'],
       ['category', '类目属性', '搜索类目并补齐必填属性'],
       ['precheck', '发布预检', '生成 payload 并检查缺项'],
-      ['publish', '发布队列', '入队、状态、结果'],
+      ['publish', '任务队列', '入队、状态、结果'],
     ].map(([key, title, description], index) => ({
       key,
       title,

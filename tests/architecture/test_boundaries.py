@@ -25,6 +25,13 @@ def test_services_do_not_reverse_depend_on_runtime_units() -> None:
     )
 
 
+def test_task_confirmation_does_not_own_platform_writes_or_agent_execution() -> None:
+    files = [ROOT / "erp_web/services/task_queue_service.py", ROOT / "erp_web/stores/task_confirmation_store.py"]
+    targets = {target for _, target in imported_targets(files)}
+    assert not any(target.startswith(("pydantic_ai", "erp_web.marketplaces", "erp_web.runtime_units")) for target in targets)
+    assert not forbidden_calls(files, {"enqueue", "change", "write", "publish", "publish_payload", "run_sync", "save_product", "save_draft_content"})
+
+
 def test_watermark_rendering_has_no_network_or_application_state_dependency() -> None:
     files = [ROOT / "erp_web/services/watermark_service.py", ROOT / "erp_web/services/watermark_preview_service.py"]
     targets = {target for _, target in imported_targets(files)}

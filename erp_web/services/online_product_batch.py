@@ -123,7 +123,7 @@ def run_batch(service, jobs):
             if job["operation"] == "sale_state":
                 if status == "failed":
                     service.store.sale_intent(listing.id, before[job["id"]].desired_sale_state, lease=job)
-                elif status == "submitted":
+                elif status in {"submitted", "confirmed"}:
                     service.store.sale_intent(listing.id, command["changes"]["state"], lease=job)
             service._update(job, status, result, dispatched=True)
         return True

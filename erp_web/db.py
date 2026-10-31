@@ -1168,6 +1168,7 @@ class ErpDatabase:
                     "dispatching",
                     "outcome_unknown",
                     "pending_confirmation",
+                    "needs_attention",
                 }:
                     raise ValueError("SKU 已有未确认的发布操作，必须先确认远端结果")
             row.setdefault("publications", {})[target_key] = publication
@@ -1935,7 +1936,7 @@ class ErpDatabase:
                             WHERE draft_id = ?
                               AND status IN (
                                 'pending', 'queued', 'running', 'retrying',
-                                'completed', 'outcome_unknown', 'pending_confirmation'
+                                'completed', 'outcome_unknown', 'pending_confirmation', 'needs_attention'
                               )
                               AND instr(
                                 ',' || lower(platform) || ',',

@@ -27,6 +27,8 @@ def remote_status(result: dict[str, Any]) -> str:
         return status
     if status in PENDING:
         return "pending_confirmation"
+    if status == "needs_attention":
+        return status
     if status in SUCCESS and result.get("ok") is not False:
         return "published"
     if status == "outcome_unknown" or result.get("outcome_unknown"):
@@ -177,7 +179,7 @@ class SkuGroupPublishingAdapter:
         for item in payload["items"]:
             existing = get_context().products.sku_publication(payload["draft_id"], item["sku_id"], payload["target_key"])
             status = existing.get("status")
-            if status in {"dispatching", "outcome_unknown", "pending_confirmation", "pending_submission"}:
+            if status in {"dispatching", "outcome_unknown", "pending_confirmation", "pending_submission", "needs_attention"}:
                 states.append({**existing, "status": "outcome_unknown" if status == "dispatching" else status})
                 continue
             if status == "published" and existing.get("fingerprint") == item["fingerprint"]:
@@ -225,8 +227,12 @@ class SkuGroupPublishingAdapter:
         states, errors = [], []
         envelope = result["envelope"]
         for state in result["sku_results"]:
+            if state["status"] == "needs_attention" and result.get("status") != "needs_attention":
+                # 隔离项保留待处理，其他 SKU 的正常查询继续；不重复轮询隔离项。
+                states.append(state)
+                continue
             can_reconcile = state["status"] == "outcome_unknown" and remote_task_ids(state["result"])
-            if state["status"] != "pending_confirmation" and not can_reconcile:
+            if state["status"] not in {"pending_confirmation", "needs_attention"} and not can_reconcile:
                 states.append(state)
                 continue
             try:
@@ -243,7 +249,7 @@ class SkuGroupPublishingAdapter:
 
     def _aggregate(self, envelope: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any]:
         statuses = {state["status"] for state in states}
-        status = "pending_submission" if "pending_submission" in statuses else "published" if statuses == {"published"} else "pending_confirmation" if "pending_confirmation" in statuses else "outcome_unknown" if "outcome_unknown" in statuses else "partial" if "published" in statuses else "failed"
+        status = "pending_submission" if "pending_submission" in statuses else "published" if statuses == {"published"} else "pending_confirmation" if "pending_confirmation" in statuses else "needs_attention" if "needs_attention" in statuses else "outcome_unknown" if "outcome_unknown" in statuses else "partial" if "published" in statuses else "failed"
         grouping = deepcopy(envelope["grouping"])
         group_ids = [text(state.get("siteless_family_id") or state.get("group_id")) for state in states]
         grouping["status"] = "not_requested" if grouping["mode"] != "combined" or len(states) == 1 else "confirmed" if all(group_ids) and len(set(group_ids)) == 1 else "mismatch" if len(set(filter(None, group_ids))) > 1 else "awaiting_remote_confirmation"

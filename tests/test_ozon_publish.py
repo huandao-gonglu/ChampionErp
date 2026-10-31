@@ -339,8 +339,10 @@ def test_poll_ozon_import_status_rejects_failed_terminal_without_error_rows() ->
     with patch(
         "erp_web.runtime_units.publish_ozon.request_ozon_json",
         return_value=response,
-    ), pytest.raises(RuntimeError, match="Ozon 商品导入失败"):
-        poll_ozon_import_status(172549793, "client-id", "api-key")
+    ):
+        result = poll_ozon_import_status(172549793, "client-id", "api-key")
+    assert result["status"] == "failed" and result["ok"] is False
+    assert "Ozon 商品导入失败" in result["error"]
 
 
 def test_publish_ozon_rejects_item_level_errors_and_maps_attribute() -> None:
@@ -373,10 +375,10 @@ def test_publish_ozon_rejects_item_level_errors_and_maps_attribute() -> None:
     with patch(
         "erp_web.runtime_units.publish_ozon.request_ozon_json",
         side_effect=responses[1:],
-    ), pytest.raises(RuntimeError) as caught:
-        poll_ozon_import_status(10, "client-id", "api-key")
-
-    mapped = map_ozon_publish_error(caught.value)
+    ):
+        result = poll_ozon_import_status(10, "client-id", "api-key")
+    assert result["status"] == "failed"
+    mapped = map_ozon_publish_error(RuntimeError(result["error"]))
     assert mapped["error_code"] == "ATTRIBUTE_INVALID"
     assert mapped["field_errors"] == {
         "attributes.85": ["Значение бренда не найдено"]

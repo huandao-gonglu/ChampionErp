@@ -11,7 +11,7 @@ from erp_web.schemas.category_definition import CategoryAttributePage, CategoryA
 
 Platform = Literal["mercadolibre", "ozon", "yandex"]
 Operation = Literal["sync", "price", "stock", "content", "sale_state", "archive"]
-JobStatus = Literal["queued", "running", "submitted", "waiting_confirmation", "confirmed", "partial", "failed", "outcome_unknown", "closed_unconfirmed"]
+JobStatus = Literal["queued", "running", "submitted", "waiting_confirmation", "confirmed", "partial", "failed", "outcome_unknown", "needs_attention", "closed_unconfirmed"]
 
 
 class OnlineConflictResponse(BaseModel):

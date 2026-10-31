@@ -20,7 +20,7 @@ const catalog = ref<'current' | 'archived'>('current')
 const syncCatalog = ref<'current' | 'archived'>('current')
 const syncCatalogLabel = computed(() => syncCatalog.value === 'archived' ? '归档商品' : '普通商品')
 const platforms: Record<OnlinePlatform, string> = {mercadolibre: 'Mercado Libre', ozon: 'Ozon', yandex: 'Yandex Market'}
-const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '平台已受理', waiting_confirmation: '等待平台确认', confirmed: '已生效', PUBLISHED: '在售', NO_STOCKS: '缺货', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', closed_unconfirmed: '已结束，结果未确认', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
+const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '平台已受理', waiting_confirmation: '等待平台确认', confirmed: '已完成', PUBLISHED: '在售', NO_STOCKS: '缺货', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', needs_attention: '需要处理', closed_unconfirmed: '已结束，结果未确认', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
 const page = ref<OnlinePage | null>(null)
 const checkedListings = ref(new Set<string>())
 const actionMenuOpen = ref(false), actionMenu = ref<HTMLElement | null>(null)
@@ -478,7 +478,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
       </div><p class="muted">数据来自最近一次平台同步；修改提交后，以平台回读结果确认生效。</p>
     </template>
     <template v-else>
-      <select v-model="jobFilter" class="input w-auto" aria-label="操作状态"><option value="">全部状态</option><option v-for="s in ['queued','running','submitted','waiting_confirmation','confirmed','partial','failed','outcome_unknown','closed_unconfirmed']" :key="s" :value="s">{{ label(s) }}</option></select>
+      <select v-model="jobFilter" class="input w-auto" aria-label="操作状态"><option value="">全部状态</option><option v-for="s in ['queued','running','submitted','waiting_confirmation','confirmed','partial','failed','outcome_unknown','needs_attention','closed_unconfirmed']" :key="s" :value="s">{{ label(s) }}</option></select>
       <div class="online-card overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr><th>操作 / 商品</th><th>平台</th><th>状态</th><th>提交时间</th><th>处理</th></tr></thead><tbody><tr v-for="job in jobs" :key="job.id"><td><b>{{ label(job.operation) }}</b><p class="muted mt-1">{{ jobTarget(job) }}</p></td><td>{{ platforms[job.platform] }}</td><td><span :class="badge(job.status)">{{ label(job.status) }}</span></td><td>{{ time(job.created_at) }}</td><td><button class="text-primary-700" @click="openJob(job)">查看详情</button></td></tr></tbody></table><p v-if="!jobs.length" class="muted p-10 text-center">暂无操作记录</p></div>
     </template>
 
@@ -503,9 +503,9 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
           <button class="mt-2 underline" :disabled="busy" @click="openJob(newerJob)">查看最新操作</button>
         </div>
         <p v-if="selectedJob.status==='submitted'" class="rounded-lg bg-primary-50 p-4 text-primary-800 dark:bg-primary-500/10 dark:text-primary-200">平台已受理本次修改，页面显示可能稍有延迟。可继续修改商品，也可按需查询实际生效情况。</p>
-        <p v-if="['waiting_confirmation','outcome_unknown'].includes(selectedJob.status)" class="rounded-lg bg-amber-50 p-4 text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">相关修改仍在平台处理中或结果未知。再次修改相同内容前，请先查询处理结果。</p>
+        <p v-if="['waiting_confirmation','outcome_unknown','needs_attention'].includes(selectedJob.status)" class="rounded-lg bg-amber-50 p-4 text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">相关修改仍在平台处理中或结果未知。再次修改相同内容前，请先查询处理结果。</p>
         <div class="flex flex-wrap gap-3">
-          <button v-if="['submitted','waiting_confirmation','outcome_unknown'].includes(selectedJob.status)" class="btn btn-primary" :disabled="busy" @click="jobAction('reconcile',selectedJob)">查询平台结果</button>
+          <button v-if="['submitted','waiting_confirmation','outcome_unknown','needs_attention'].includes(selectedJob.status)" class="btn btn-primary" :disabled="busy" @click="jobAction('reconcile',selectedJob)">查询平台结果</button>
           <OnlineOperationRecovery :key="selectedJob.id" :job="selectedJob" :disabled="busy" @updated="jobUpdated" />
           <button v-if="!newerJob && canRetry(selectedJob)" class="btn btn-outline" :disabled="busy" @click="jobAction('retry',selectedJob)">仅重试失败项</button>
         </div>

@@ -113,6 +113,12 @@ class ExternalRequestManager:
                     ctx.cancel.wait(delay)
                 else:
                     time.sleep(delay)
+            if ctx.before_send is not None:
+                try:
+                    ctx.before_send(ctx)
+                except ExternalRequestBlocked as exc:
+                    self.store.finish(request_id, decision="rejected", not_sent=True, result={"code": exc.code, "outcome": "not_sent"})
+                    raise
             try:
                 with (transport or urllib.request.urlopen)(request,timeout=max(.001,deadline-time.time()),**kwargs) as response:
                     raw = response.read(32 * 1024 * 1024 + 1)

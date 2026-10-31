@@ -1125,7 +1125,7 @@ def _confirmation_readback(
 
     if quarantined is not None:
         checkpoint.evidence["quarantine"] = deepcopy(quarantined)
-        return _terminal_failure(
+        result = _terminal_failure(
             plan,
             checkpoint,
             {
@@ -1139,6 +1139,9 @@ def _confirmation_readback(
                 "raw": "",
             },
         )
+        result["status"] = "needs_attention"
+        result["plan"] = deepcopy(plan)
+        return result
 
     card_status = ""
     group_id = ""

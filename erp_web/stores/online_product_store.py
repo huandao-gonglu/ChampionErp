@@ -12,6 +12,7 @@ from uuid import uuid4
 from erp_web.db import ErpDatabase, utc_now
 from erp_web.product_model.online_operation_model import UNRESOLVED_STATUSES, blocks_modification, effective_job_status, submission_status
 from erp_web.schemas.online_products import BuyerLink, OnlineListing, OnlineStatus, snapshot_version
+from erp_web.services.external_request_context import current_task_origin
 
 
 class OnlineConflict(ValueError):
@@ -232,7 +233,7 @@ class OnlineProductStore:
         """归档为 business 级操作，同一 SKU 在其他店铺的执行也属于同一资源。"""
         prefix = account.split(":", 1)[0] + ":"
         return conn.execute("""SELECT j.* FROM online_jobs j LEFT JOIN online_listings l ON l.id=j.target_id
-            WHERE j.platform=? AND j.status IN ('queued','running','submitted','waiting_confirmation','outcome_unknown')
+            WHERE j.platform=? AND j.status IN ('queued','running','submitted','waiting_confirmation','outcome_unknown','needs_attention')
             AND ((j.account_id=? AND (?='*' OR j.target_id IN (?, '*')))
                 OR (?='yandex' AND substr(j.account_id,1,?)=? AND (j.operation='archive' OR ?='archive')
                     AND (?='*' OR j.target_id='*' OR l.remote_id=(SELECT remote_id FROM online_listings WHERE id=?))))
@@ -272,7 +273,7 @@ class OnlineProductStore:
                 raise OnlineConflict("当前店铺有排队或执行中的商品修改，请完成后再同步", job_id=conflict["id"])
             raise OnlineConflict("该商品正在执行修改，或相关变更仍在平台处理/结果未知，请查看对应操作记录", job_id=conflict["id"])
         conn.execute("INSERT INTO online_jobs(id,platform,account_id,operation,target_id,status,idempotency_key,request_json,result_json,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?,?,?,?)",
-                     (job_id, platform, account, operation, target, key, facts, json.dumps(result or {}, ensure_ascii=False), now, now))
+                     (job_id, platform, account, operation, target, key, facts, json.dumps({"task_origin": current_task_origin(), **(result or {})}, ensure_ascii=False), now, now))
         return self._job(conn.execute("SELECT * FROM online_jobs WHERE id=?", (job_id,)).fetchone())
 
     def batch_jobs(self, batch_id: str) -> list[dict[str, Any]]:
@@ -308,6 +309,7 @@ class OnlineProductStore:
                 row = conn.execute("SELECT version FROM online_listings WHERE id=?", (listing.id,)).fetchone()
                 if not row or row["version"] != job["request"]["version"]:
                     raise OnlineConflict("批量执行前商品版本已变化，请重新确认")
+                result["submitted_at"] = utc_now()
                 conn.execute("UPDATE online_jobs SET dispatched=1,result_json=?,lease_until=?,updated_at=? WHERE id=?",
                              (json.dumps(result, ensure_ascii=False), time.time()+900, utc_now(), job["id"]))
                 if job["operation"] == "sale_state" and job["request"]["changes"]["state"] == "paused":
@@ -321,8 +323,9 @@ class OnlineProductStore:
             # 未发出的任务可恢复；查询中断不撤销已保存的受理回执，已发出的修改永不重放。
             expired = conn.execute("SELECT * FROM online_jobs WHERE status='running' AND lease_until<?", (time.time(),)).fetchall()
             for stale in expired:
-                receipt = json.loads(stale["result_json"]).get("receipt")
-                status = submission_status(stale["platform"], stale["operation"], receipt) if stale["dispatched"] else "queued"
+                result = json.loads(stale["result_json"])
+                status = submission_status(stale["platform"], stale["operation"], result.get("receipt"),
+                    model=result.get("before", {}).get("model", ""), target_id=result.get("receipt_target", ""), scope_id=result.get("scope_id", "")) if stale["dispatched"] else "queued"
                 if stale["operation"] == "archive" and status == "confirmed":
                     # 批量回执与本地各店铺目录更新可能在不同事务，中断时仍需回读补齐投影。
                     status = "outcome_unknown"
@@ -351,22 +354,23 @@ class OnlineProductStore:
         if not row or row["owner"] != job["lease_token"] or row["lease_until"] <= time.time():
             raise OnlineConflict("任务执行租约已失效，禁止过期执行者提交结果")
 
-    def update_job(self, job_id: str, status: str, result: dict[str, Any], *, owner: str, dispatched: bool = False) -> None:
+    def update_job(self, job_id: str, status: str, result: dict[str, Any], *, owner: str, dispatched: bool = False, lease_until: float | None = None) -> None:
         with self.db._connect() as conn:
             cursor = conn.execute("UPDATE online_jobs SET status=?,result_json=?,dispatched=MAX(dispatched,?),lease_until=?,updated_at=? WHERE id=? AND owner=? AND lease_until>?",
-                         (status, json.dumps(result, ensure_ascii=False), int(dispatched), time.time()+(0 if status in {"submitted", "waiting_confirmation"} else 900), utc_now(), job_id, owner, time.time()))
+                         (status, json.dumps(result, ensure_ascii=False), int(dispatched), 0 if status in {"submitted", "waiting_confirmation"} else lease_until or time.time()+900, utc_now(), job_id, owner, time.time()))
             if cursor.rowcount != 1:
                 raise OnlineConflict("任务执行租约已失效，禁止过期执行者提交结果")
             conn.commit()
 
-    def claim_reconcile(self, job_id: str) -> dict[str, Any]:
+    def claim_reconcile(self, job_id: str, *, lease_until: float | None = None) -> dict[str, Any]:
         token = uuid4().hex
+        lease_until = lease_until or time.time()+900
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM online_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 raise ValueError("操作记录不存在")
-            if self._job(row)["status"] not in ("submitted", "waiting_confirmation", "outcome_unknown"):
+            if self._job(row)["status"] not in ("submitted", "waiting_confirmation", "outcome_unknown", "needs_attention"):
                 raise OnlineConflict("当前状态不需要回读原任务；请读取本地任务状态及商品版本，不要重复回读或重放旧请求",
                                      code="ONLINE_RECONCILE_NOT_APPLICABLE", job_id=job_id,
                                      details={"status": self._job(row)["status"], "listing_id": row["target_id"]})
@@ -379,9 +383,9 @@ class OnlineProductStore:
             earliest = float(result.get("last_confirmation_at") or 0) + 30
             if earliest > time.time():
                 raise OnlineConflict(f"平台结果尚在等待窗口，请 {max(1, int(earliest-time.time()))} 秒后查询")
-            conn.execute("UPDATE online_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=?", (token, time.time()+900, utc_now(), job_id))
+            conn.execute("UPDATE online_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=?", (token, lease_until, utc_now(), job_id))
             conn.commit()
-        return {**self._job(row), "lease_token": token}
+        return {**self._job(row), "lease_token": token, "confirmation_lease_until": lease_until}
 
     def close_operation(self, job_id: str, expected_updated_at: str) -> dict[str, Any]:
         """短事务内核验证据并解除目标互斥；旧提交键和外部请求阻断始终保留。"""

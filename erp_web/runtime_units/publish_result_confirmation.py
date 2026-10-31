@@ -1,4 +1,4 @@
-"""发布结果的手动单次只读确认；不运行模型或推进 Agent。"""
+"""发布结果的单次只读确认；调度与预算由任务队列负责。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import copy
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from erp_web.product_model.task_queue_model import has_query_identity
 
 from .publish_confirmation import resolve_publish_store_binding
 
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from .publishing_bus_core import PublishingBus
 
 MANUAL_CHECK_INTERVAL = 30
-CONFIRMABLE_STATUSES = frozenset({"pending_confirmation", "outcome_unknown"})
+CONFIRMABLE_STATUSES = frozenset({"pending_confirmation", "outcome_unknown", "needs_attention"})
 
 
 def timestamp(value: Any) -> float:
@@ -27,25 +28,8 @@ def iso_time(value: float) -> str:
     return datetime.fromtimestamp(value, timezone.utc).isoformat()
 
 
-def has_query_identity(result: dict[str, Any]) -> bool:
-    """任务回执或已完成提交的 checkpoint 才能定位本次远端操作。"""
-    if result.get("task_id") or any(result.get("task_ids") or []):
-        return True
-    checkpoint = result.get("checkpoint")
-    if isinstance(checkpoint, dict) and checkpoint.get("offer_id"):
-        return True
-    inner = result.get("result")
-    if isinstance(inner, dict) and has_query_identity(inner):
-        return True
-    return any(
-        has_query_identity(row)
-        for row in result.get("sku_results", [])
-        if isinstance(row, dict)
-    )
-
-
 class PublishResultConfirmation:
-    """手动确认共用并发占位与冷却限制；后台不调度结果查询。"""
+    """单次确认共用并发占位与冷却，回写原发布记录及草稿。"""
 
     def __init__(self, bus: PublishingBus) -> None:
         self.bus = bus
@@ -69,8 +53,8 @@ class PublishResultConfirmation:
         )
 
     def check(self, job_id: str, platform: str, *, trigger: str = "manual") -> dict[str, Any]:
-        if trigger != "manual":
-            raise ValueError("发布结果仅支持手动查询。")
+        if trigger not in {"manual", "scheduled"}:
+            raise ValueError("发布结果只接受手动或任务队列查询。")
         key = (job_id, platform)
         now = time.time()
         with self.bus._lock:
@@ -100,11 +84,13 @@ class PublishResultConfirmation:
 
         checked_result = None
         check_error = ""
+        requires_attention = False
         try:
             config = self.bus.config_provider()
             approval = state.get("approved_publications", {}).get(platform) or {}
             identity = approval.get("store_identity")
             if identity and resolve_publish_store_binding(platform, config).identity != identity:
+                requires_attention = True
                 raise ValueError("当前店铺与发布时的店铺不一致，请恢复原店铺授权后查询。")
             checked_result = checker(result, config)
             if not isinstance(checked_result, dict):
@@ -124,6 +110,7 @@ class PublishResultConfirmation:
                         "last_checked_at": iso_time(time.time()),
                         "next_check_at": "",
                         "check_error": check_error,
+                        "requires_attention": requires_attention,
                     }
                 )
                 resolved_status = str(item["status"])
@@ -134,6 +121,8 @@ class PublishResultConfirmation:
                         resolved_status, resolution = "pending_confirmation", "pending"
                     elif remote_status == "partial":
                         resolved_status, resolution = "partial", "partially_applied"
+                    elif remote_status == "needs_attention":
+                        resolved_status, resolution = "needs_attention", "needs_attention"
                     elif remote_status in {"failed", "real_publish_failed", "not_ready", "skipped"}:
                         resolved_status, resolution = "failed", "not_applied"
                     elif checked_result.get("ok") is True and (
@@ -168,7 +157,7 @@ class PublishResultConfirmation:
                     item["result"] = self.bus._persisted_platform_result(checked_result)
                     item["error"] = (
                         str(checked_result.get("error") or "")
-                        if resolved_status in {"failed", "partial", "outcome_unknown"}
+                        if resolved_status in {"failed", "partial", "outcome_unknown", "needs_attention"}
                         else ""
                     )
                 if resolved_status not in CONFIRMABLE_STATUSES:

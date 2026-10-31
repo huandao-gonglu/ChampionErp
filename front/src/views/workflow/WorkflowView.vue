@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -23,8 +24,7 @@ import PricingPanel from '@/components/domain/PricingPanel.vue'
 import ProductImageEditorPanel from '@/components/domain/ProductImageEditorPanel.vue'
 import ProductEditorPanel from '@/components/domain/ProductEditorPanel.vue'
 import ProductResearchPanel from '@/components/domain/ProductResearchPanel.vue'
-import PublishJobsPanel from '@/components/domain/PublishJobsPanel.vue'
-import RunLog from '@/components/domain/RunLog.vue'
+import TaskQueuePanel from '@/components/domain/TaskQueuePanel.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useDraftImageWorkbench } from '@/composables/useDraftImageWorkbench'
 import { useDraftImageSaveState } from '@/composables/useDraftImageSaveState'
@@ -43,6 +43,8 @@ import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
 import type { DraftIndexItem, MarketplaceTargetSite, ProductIndexItem } from '@/types/workflow'
+
+const { t } = useI18n()
 
 const store = useWorkflowStore()
 useOrderCenterEntrySync()
@@ -71,17 +73,8 @@ const {
 const {
   pricingInput,
   pricingResult,
-  precheck,
   copyGenerating,
   publishJob,
-  publishJobStatus,
-  publishJobs,
-  selectedPublishJobId,
-  publishJobsNextCursor,
-  publishJobsLoading,
-  publishJobsLastUpdated,
-  publishResult,
-  activeMarketplace,
   platformOptions,
 } = storeToRefs(publishingStore)
 const {
@@ -500,26 +493,8 @@ watch(
           </div>
 
           <div v-else-if="activeNav === 'publish'" class="space-y-6">
-            <PageHeader title="发布队列" description="发布队列、任务状态和运行日志。" />
-            <PublishJobsPanel
-              :jobs="publishJobs"
-              :selected-job-id="selectedPublishJobId"
-              :selected-job-status="publishJobStatus"
-              :loading="publishJobsLoading"
-              :next-cursor="publishJobsNextCursor"
-              :last-updated="publishJobsLastUpdated"
-              :precheck-ok="Boolean(precheck?.ok)"
-              :active-marketplace="activeMarketplace"
-              :platform-options="platformOptions"
-              :busy="loading"
-              @refresh="() => store.refreshPublishJobs()"
-              @select="store.selectPublishJob"
-              @load-more="store.loadMorePublishJobs"
-              @enqueue="store.enqueuePublish"
-              @reconcile="publishingStore.reconcileSelectedPublishJob"
-            />
-            <RunLog :logs="logs" />
-            <pre v-if="publishResult" class="max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishResult, null, 2) }}</pre>
+            <PageHeader :title="t('pages.publish.title')" :description="t('pages.publish.description')" />
+            <TaskQueuePanel />
           </div>
 
           <SystemSettingsPanel v-else-if="activeNav === 'systemSettings'" />
@@ -527,31 +502,31 @@ watch(
           <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" />
 
           <div v-else-if="activeNav === 'auth'" class="space-y-6">
-          <OrderIntegrationSettings />
-          <AuthSettingsPanel
-            :app-config="appConfig"
-            :ai-config="aiConfig"
-            :store-config="storeConfig"
-            :store-auth-summary="storeAuthSummary"
-            :platform-options="platformOptions"
-            :mercadolibre-checklist="mercadolibreAuthChecklist"
-            :last-result="lastAuthResult"
-            :auth-link="authLink"
-            :loading="loading"
-            @save-ai="store.saveAiSettings"
-            @test-ai="store.testAiSettings"
-            @test-api="store.testPlatformApiConfig"
-            @save-store="store.saveStoreConfig"
-            @save-currency="store.saveStoreCurrency"
-            @test-auth="store.testAuth"
-            @refresh-checklist="store.loadMercadoLibreChecklist"
-            @generate-ml-link="store.generateMercadoLibreAuthLink"
-            @open-ml-link="store.openMercadoLibreAuth"
-            @refresh-ml-token="store.refreshMercadoLibreAuthToken"
-            @real-ml-test="store.runMercadoLibreAuthTest"
-            @exchange-ml-code="store.exchangeMlCode"
-            @clear-auth="store.clearPlatformAuth"
-          />
+            <OrderIntegrationSettings />
+            <AuthSettingsPanel
+              :app-config="appConfig"
+              :ai-config="aiConfig"
+              :store-config="storeConfig"
+              :store-auth-summary="storeAuthSummary"
+              :platform-options="platformOptions"
+              :mercadolibre-checklist="mercadolibreAuthChecklist"
+              :last-result="lastAuthResult"
+              :auth-link="authLink"
+              :loading="loading"
+              @save-ai="store.saveAiSettings"
+              @test-ai="store.testAiSettings"
+              @test-api="store.testPlatformApiConfig"
+              @save-store="store.saveStoreConfig"
+              @save-currency="store.saveStoreCurrency"
+              @test-auth="store.testAuth"
+              @refresh-checklist="store.loadMercadoLibreChecklist"
+              @generate-ml-link="store.generateMercadoLibreAuthLink"
+              @open-ml-link="store.openMercadoLibreAuth"
+              @refresh-ml-token="store.refreshMercadoLibreAuthToken"
+              @real-ml-test="store.runMercadoLibreAuthTest"
+              @exchange-ml-code="store.exchangeMlCode"
+              @clear-auth="store.clearPlatformAuth"
+            />
           </div>
         </div>
       </main>

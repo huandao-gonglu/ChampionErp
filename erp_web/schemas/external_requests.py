@@ -26,6 +26,7 @@ class RequestContext:
     fingerprint: str = ""
     deadline_at: float | None = None
     cancellation_check: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+    before_send: Callable[["RequestContext"], None] | None = field(default=None, repr=False, compare=False)
     max_attempts: int = 1
     retry_delay: float = 1
 

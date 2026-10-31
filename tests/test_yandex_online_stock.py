@@ -62,7 +62,7 @@ def test_non_writable_warehouses_still_reject_stock_changes(availability, placem
 
 
 @pytest.mark.parametrize('initial,target', [(None, 10), (0, 10), (None, 0)])
-def test_stock_write_targets_selected_warehouse_and_requires_observed_quantity(monkeypatch, initial, target):
+def test_stock_write_targets_selected_warehouse_and_finishes_on_success_receipt(monkeypatch, initial, target):
     platform = StockPlatform(initial)
     a = stock_adapter(platform)
     service = service_for(a)
@@ -82,15 +82,9 @@ def test_stock_write_targets_selected_warehouse_and_requires_observed_quantity(m
     assert token == 'test'
     assert path == '/v3/businesses/1/offers/stocks/update'
     assert payload == {'skuItems': [{'sku': 'sku-0', 'partnerWarehouseId': 2412479, 'count': target}]}
-    assert service.store.job(job['id'])['status'] == 'submitted'
-    pending = service.reconcile(job['id'])['job']
-    assert pending['status'] != 'confirmed'
-    assert pending['result']['confirmation'] == {'quantity': False}
-    platform.quantity = target
-    after_wait = time.time() + 31
-    monkeypatch.setattr(time, 'time', lambda: after_wait)
-    confirmed = service.reconcile(job['id'])['job']
-    assert confirmed['status'] == 'confirmed'
-    assert confirmed['result']['confirmation'] == {'quantity': True}
-    assert service.store.get(listing.id).stocks[0].quantity == target
+    assert service.store.job(job['id'])['status'] == 'confirmed'
+    # 成功回执完成本次操作；本地旧快照留待按需同步，不要求回读才能完成。
+    assert service.store.get(listing.id).stocks[0].quantity == initial
+    with pytest.raises(ValueError):
+        service.reconcile(job['id'])
     assert len(calls) == 1
