@@ -23,12 +23,23 @@ class OnlineProductJobReader:
             return JobStateSnapshot(status="failed", available=False, error=str(exc)[:2000])
         status, result = job["status"], job["result"]
         # 受理后本次提交已完成；需人工查询的异步结果不让 Agent 永久等待。
-        lifecycle = "success" if status in ("confirmed", "submitted") else "running" if status in ("queued", "running") else "failed"
+        lifecycle = ("success" if status in ("confirmed", "submitted") else
+                     "running" if status in ("queued", "running") else
+                     "partial" if status == "partial" else "failed")
         summary = f"{job['platform']} · {job['operation']}：{_LABELS.get(status, status)}"
         if status == "submitted":
             summary += "；尚未核验展示是否生效，可按需查询平台结果。"
         if job["operation"] == "sync":
             summary += f"；成功 {result.get('completed', 0)}，失败 {result.get('failed', 0)}"
+            if result.get("completed", 0):
+                summary += "；成功项已保存，后续尝试失败不会撤销这些更新。"
+            if status in ("partial", "failed"):
+                if result.get("discovery_complete") is False:
+                    summary += "；目录发现未完成，已发现数量不是全店总数，需重新同步目录。"
+                elif not any(item.get("status") == "failed" for item in result.get("items", [])):
+                    summary += "；未取得可重试的失败项，需重新同步目录。"
+                else:
+                    summary += "；继续处理时只重试失败项，不重复全量同步。"
         if lifecycle == "failed":
             summary += "；未确认全部生效，请读取在线商品操作记录中的逐项证据。"
         return JobStateSnapshot(status=lifecycle, stage_code=status, stage_label=_LABELS.get(status, status),

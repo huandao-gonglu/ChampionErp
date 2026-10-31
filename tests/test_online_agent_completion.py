@@ -121,6 +121,37 @@ def test_partial_result_explains_no_unlock_and_removes_repeated_product_payload(
     assert len(domain.store.jobs("mercadolibre", "seller")) == 2 and not remote.writes
 
 
+@pytest.mark.parametrize("discovery_complete", [True, False])
+def test_sync_detail_keeps_progress_and_bounded_failures_without_raw_payload(online, discovery_complete):
+    _, domain, _, _, _ = online
+    job = domain.sync("mercadolibre", "sync-details")["job"]
+    job["status"] = "partial"
+    job["result"] = {
+        "completed": 200, "failed": 19, "created": 6, "updated": 194, "discovered": 219,
+        "discovery_complete": discovery_complete, "phase": "complete" if discovery_complete else "catalog",
+        "items": [{"remote_id": f"ok-{i}", "status": "confirmed"} for i in range(200)] +
+                 [{"remote_id": f"failed-{i}", "status": "failed", "error": "连接中断" * 1000} for i in range(19)],
+        "before": {"description": "不应重复返回" * 10000}, "raw_response": {"large": "x" * 100000},
+    }
+    result = compact_online_job({"ok": True, "job": job})
+    assert {key: result.job.result[key] for key in (
+        "completed", "failed", "created", "updated", "discovered", "discovery_complete", "phase",
+    )} == {key: job["result"][key] for key in (
+        "completed", "failed", "created", "updated", "discovered", "discovery_complete", "phase",
+    )}
+    failures = result.job.result["failed_items"]
+    assert len(failures) == 10 and failures[0]["remote_id"] == "failed-0"
+    assert all(len(item["error"]) <= 500 for item in failures)
+    assert result.job.result["failed_items_truncated"]
+    assert not {"items", "before", "raw_response"} & result.job.result.keys()
+    assert len(result.model_dump_json().encode()) < 25000
+    assert "无需解锁" in result.recovery.explanation
+    assert not result.recovery.requires_resolution
+    assert ("online_products_retry" in result.recovery.explanation) is discovery_complete
+    assert ("online_products_sync" in result.recovery.explanation) is not discovery_complete
+    assert len(job["result"]["items"]) == 219
+
+
 def transcript(code="ONLINE_CONFLICT", status="partial"):
     command = {"listing_id": "sku-1", "operation": "content", "scope_id": "", "changes": {"title": "新标题"}, "version": "old"}
     return [

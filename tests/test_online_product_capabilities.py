@@ -532,7 +532,8 @@ def test_sync_and_failure_retry_reuse_business_jobs(online):
     result = online_products_sync(OnlineSyncRequest(platform="mercadolibre"), scope, _execution())
     domain.run_once()
     state = OnlineProductJobReader(scope.job).read_job_state(result.job_id)
-    assert state.status == "failed" and state.last_external_status == "partial"
+    assert state.status == "partial" and state.last_external_status == "partial"
+    assert "成功 1，失败 1" in state.summary and "成功项已保存" in state.summary
     retry = OnlineJobRequest(job_id=result.job_id)
     execution = _approved_execution(_retry_snapshot(retry, scope), "online_products_retry", operation_key="retry")
     retried = online_products_retry(retry, scope, execution)
@@ -562,13 +563,87 @@ def test_unknown_is_reported_and_reconcile_never_resends_the_change(online):
 @pytest.mark.parametrize("status,polls,expected", [
     ("queued", 0, "running"), ("running", 0, "running"), ("waiting_confirmation", 19, "failed"),
     ("waiting_confirmation", 20, "failed"), ("submitted", 0, "success"), ("submitted", 20, "success"), ("confirmed", 1, "success"),
-    ("outcome_unknown", 1, "failed"), ("partial", 1, "failed"), ("failed", 1, "failed"),
+    ("outcome_unknown", 1, "failed"), ("partial", 1, "partial"), ("failed", 1, "failed"),
 ])
 def test_job_reader_preserves_platform_state_without_infinite_wait(status, polls, expected):
     reader = OnlineProductJobReader(lambda _: {"platform": "yandex", "operation": "stock", "status": status, "result": {"polls": polls}})
     state = reader.read_job_state("job")
     assert state.status == expected
     assert state.last_external_status == status
+
+
+def test_interrupted_catalog_does_not_present_discovered_count_as_full_store():
+    state = OnlineProductJobReader(lambda _: {
+        "platform": "yandex", "operation": "sync", "status": "partial",
+        "result": {"completed": 0, "failed": 200, "discovered": 200, "discovery_complete": False,
+                   "error": "Yandex 接口网络连接中断"},
+    }).read_job_state("interrupted")
+    assert state.status == "partial"
+    assert "目录发现未完成" in state.summary and "不是全店总数" in state.summary
+    assert "重新同步目录" in state.summary and "只重试失败项" not in state.summary
+    assert state.error == "Yandex 接口网络连接中断"
+
+
+def test_native_sync_returns_partial_counts_and_job_detail_without_losing_successes(online, tmp_path):
+    """通过真实 Deferred 投递和领域 Store 重现成功 200、失败 19 的回执。"""
+    app, domain, remote, _, _ = online
+    for index in range(1, 220):
+        row = listing(f"CBT{index}")
+        if index > 200:
+            row.errors = ["库存：Yandex 接口网络连接中断"]
+        remote.rows[row.remote_id] = row
+    outputs = []
+
+    @discovering_tools("online_products_sync", "online_products_job_read")
+    async def model(messages, info):
+        returned = [part for message in messages for part in message.parts
+                    if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
+        if not returned:
+            yield {0: DeltaToolCall(name="online_products_sync", tool_call_id="sync",
+                                   json_args='{"platform":"mercadolibre"}')}
+        elif returned[-1].tool_name == "online_products_sync":
+            result = returned[-1].content
+            outputs.append(result)
+            assert result["status"] == result["evidence"]["status"] == "partial"
+            assert result["job"]["status"] == "partial"
+            assert result["job"]["summary"] == result["evidence"]["summary"]
+            assert result["ok"] is False  # 部分完成不伪装成全部成功。
+            assert "成功 200，失败 19" in result["evidence"]["summary"]
+            assert "成功项已保存" in result["evidence"]["summary"]
+            yield {0: DeltaToolCall(name="online_products_job_read", tool_call_id="detail",
+                json_args=json.dumps({"job_id": result["job"]["job_id"]}))}
+        else:
+            result = returned[-1].content
+            outputs.append(result)
+            assert result["job"]["result"]["completed"] == 200
+            assert result["job"]["result"]["failed"] == 19
+            assert len(result["job"]["result"]["failed_items"]) == 10
+            assert result["job"]["result"]["failed_items_truncated"]
+            yield "已同步 200 件，另有 19 件因网络中断未完成。"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    asyncio.run(ui.prepare_run(body("同步商品")).stream(lambda _: None))
+    worker = AgentJobService(ui_service=ui, job_readers=build_job_status_readers(app))
+    try:
+        for row in ui.call_store.work():
+            worker.execute_or_reconcile(row)
+        receipt = ui.call_store.receipt(CONVERSATION, "sync")
+        assert receipt["status"] == "waiting_job"
+        assert domain.run_once()
+        for row in ui.call_store.work():
+            worker.execute_or_reconcile(row)
+        worker.scan()
+        for _ in range(500):
+            if not ui.run_registry.is_active(CONVERSATION):
+                break
+            time.sleep(.01)
+        assert len(outputs) == 2 and not ui.run_registry.is_active(CONVERSATION)
+        assert not ui.call_store.pending(CONVERSATION)
+        assert len(domain.store.jobs("mercadolibre", "seller")) == 1
+        assert sum(row.details_state == "ready" for row in domain.store.listings("mercadolibre", "seller")) == 200
+        assert not remote.writes
+    finally:
+        worker.close()
 
 
 @pytest.mark.parametrize("mode", ["ask", "full"])

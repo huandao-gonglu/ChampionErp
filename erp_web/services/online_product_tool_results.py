@@ -35,6 +35,22 @@ def compact_online_job(response: dict[str, Any]) -> OnlineJobResult:
         "changes", "scope_id", "confirmation", "evidence", "platform_confirmation", "platform_errors",
         "read_errors", "error", "error_code", "resolution", "last_confirmation_at", "polls",
     ) if key in result}
+    if job["operation"] == "sync":
+        visible_result.update({key: result[key] for key in (
+            "completed", "failed", "created", "updated", "phase", "discovered", "discovery_complete",
+        ) if key in result})
+        # 同步回执可能包含数千个成功项；只投影有界失败样例，完整集合由原重试入口读取。
+        failures = [item for item in result.get("items", []) if item.get("status") == "failed"]
+        visible_result["failed_items"] = [
+            {"remote_id": item["remote_id"], "error": str(item.get("error") or "")[:500]}
+            for item in failures[:10]
+        ]
+        visible_result["failed_items_truncated"] = len(failures) > 10
+        if status in {"partial", "failed"}:
+            explanation = "同步任务已结束，无需解锁；已保存的成功项不会因后续尝试失败而撤销。"
+            explanation += ("目录发现未完成，需重新调用 online_products_sync 完整发现目录。"
+                            if result.get("discovery_complete") is False or not failures else
+                            "继续处理时调用 online_products_retry 仅重试失败项，不重复全量同步；沿用原审批。")
     return OnlineJobResult.model_validate({
         "ok": response["ok"], "job": {**job, "result": visible_result},
         "recovery": {"requires_resolution": unresolved,

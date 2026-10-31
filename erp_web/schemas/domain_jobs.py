@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
-JobLifecycleStatus = Literal["running", "success", "failed", "cancelled"]
+JobLifecycleStatus = Literal["running", "success", "partial", "failed", "cancelled"]
 JobActivityStatus = Literal["pending", "running", "completed", "failed"]
 
 
@@ -24,7 +24,8 @@ class JobStateActivity(DomainJobModel):
 class JobStateSnapshot(DomainJobModel):
     """``JobStatusReader`` 的类型化通用快照。
 
-    生命周期决定原生工具何时返回终态；其他字段为有界的对账证据。
+    生命周期决定原生工具何时返回终态；partial 已终结但只完成部分目标，
+    不能等同于全部成功或全部失败。其他字段为有界的对账证据。
     """
 
     status: JobLifecycleStatus

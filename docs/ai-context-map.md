@@ -270,6 +270,8 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 - `runtime_units/online_product_capabilities.py` 将现有读取、单件状态刷新、统一修改、同步、回读、重试接口直接装配进主 Agent。
   `online_products_changes_apply` 按明确清单和固定范围复用逐项修改，整组提交校验成员完整性；
   `online_products_job_read` 仅读取本地任务。任务回执由 `services/online_product_tool_results.py` 精简投影，完整数据留在原领域任务。
+  同步保留进度和有界失败样例；`OnlineProductJobReader` 保留 `partial` 终态，不能解释为全部失败。
+  目录完整时继续处理仅重试失败项，目录发现中断才重新全量发现；多次尝试不能覆盖已保存的成功结果。
   `services/online_product_completion.py` 在主对话的原生输出校验中检查本轮实际尝试的可恢复遗漏，
   不把只读目标变为写入授权、不保存计划或增加执行循环；契约、退出条件及验证见 [在线商品 AI](online-product-ai.md)。
   `schemas/online_product_capabilities.py` 只声明现有接口形状；公共 `OnlineProduct` 与 `OnlineChange` 契约从持久快照/HTTP 请求中复用。

@@ -50,7 +50,7 @@
 
 `online_products_changes_apply` 接受至多 100 个 `OnlineChange`，同一批固定平台、账号、操作和范围，拒绝重复 SKU；不同 SKU 可有不同内容值。整组任务传入真实 `group_id`，审批与执行前按当前目录核对成员集合，漏项和组外目标在写入前拒绝。超过上限的目标须先完整读取，再按明确子集分批提交（子批不声明整组），最终按逐项回执核对完整覆盖。原生审批绑定全部参数和目标快照，执行时逐项复用 `change`；部分入队后取消或失败不会回滚已提交项。子项幂等键从可信调用身份和刊登 ID 生成，模型不能覆盖；失败子集恢复不重发成功项，不将批次等同于原子事务或远端原生批量接口。
 
-任务查询、回读和人工结束通过 `online_product_tool_results.py` 返回紧凑回执，移除重复的 `before` 全商品快照和原始平台响应；完整领域记录和历史消息继续保留。`recovery` 只描述该任务自身，不能证明没有其他阻塞或产生写权限。`partial/failed/confirmed/submitted/closed_unconfirmed` 无需再次结束；版本变化、结束状态不适用、回读状态不适用分别有稳定错误码。`can_close` 只是基本证据条件，执行仍在原事务边界重查时效、版本、账号及活动任务。
+任务查询、回读和人工结束通过 `online_product_tool_results.py` 返回紧凑回执，移除重复的 `before` 全商品快照和原始平台响应；完整领域记录和历史消息继续保留。同步保留成功/失败、新建/更新、发现数量、阶段及目录是否完整的统计；`failed_items` 最多返回十个失败样例，错误最多五百字符，`failed_items_truncated` 明确表示样例截断，不能将样例数当作失败总数。完整失败集合仍由既有重试入口读取。`recovery` 只描述该任务自身，不能证明没有其他阻塞或产生写权限。`partial/failed/confirmed/submitted/closed_unconfirmed` 无需再次结束；版本变化、结束状态不适用、回读状态不适用分别有稳定错误码。`can_close` 只是基本证据条件，执行仍在原事务边界重查时效、版本、账号及活动任务。
 
 `GlobalAgentChatService` 通过既有 Factory 的原生 `output_validator` 接入 `online_product_completion.py`。它仅从本轮 `ModelMessage` 的实际修改尝试和回执派生检查：版本过期，或旧阻塞任务已终结而新修改尚未提交时，用 `ModelRetry` 要求模型继续核实。不会把读过的商品当作修改目标，不从用户自然语言生成权限，不保存工具计划，也不调用工具或开启第二个 Agent loop。新用户输入、审批拒绝、真实新阻塞、已入队回执及目标值已满足的明确读取证据均会解除相应检查；未知结果、等待平台和资源不足不强制推进。模型忽略检查时由原生有限重试终止，不能无限发“继续”。尚未被模型声明/尝试的意图没有可靠机器契约，因此不承诺任意自然语言任务都能被强制完成；整组覆盖由批量工具的明确 `group_id` 契约保证。
 
@@ -70,7 +70,13 @@ Mercado 新图片的上传与关联依据官方[图片文档](https://global-sel
 
 修改和失败重试返回 `OnlineSubmissionResult`：`accepted=true` 只表示任务已持久化入队，附任务 ID、目标刊登 ID、平台、操作和当前任务状态，不表示平台已接收或生效。现有 Agent Job Service 把此回执作为原生 Deferred 结果返回，AI 继续提交剩余目标，汇总提交成功/失败后结束；不主动回读或等待远端结果。后台仍独立执行平台写入和回读，用户在在线商品操作记录查看结果，明确要求查询时仍可使用回读工具。同步用于取得后续读取的数据，继续等待领域同步完成。
 
-`OnlineProductJobReader` 把同步及已持久化的待对账引用投影成现有 `JobStateSnapshot`。只有 `confirmed` 为成功；`partial`、`outcome_unknown`、失败及自动回读耗尽以未完成成功的工具结果返回，`last_external_status` 保留领域原始状态。通用状态 `failed` 不代表平台明确拒绝写入；模型须看原状态和操作记录，不得重放未知结果。Reader 不触发模型、平台请求或新任务。
+`OnlineProductJobReader` 把同步及已持久化的待对账引用投影成现有 `JobStateSnapshot`。`confirmed` 与已受理的 `submitted` 为工具生命周期成功，后者仍不表示平台展示已生效；`partial` 返回独立的部分完成终态，不再映射为 `failed`，也不伪装成全部成功，`ok=false` 仅表示未全部完成。`outcome_unknown`、失败及自动回读耗尽继续按未完成成功返回，`last_external_status` 保留领域原始状态。通用状态 `failed` 不代表平台明确拒绝写入；模型须看原状态和操作记录，不得重放未知结果。Reader 不触发模型、平台请求或新任务。
+
+同步汇总保留本轮所有实际尝试中已保存的成功结果，不能用最后一次失败覆盖整轮结论，也不能重复累加同一 SKU。部分完成后不因失败重复全量同步；目录完整且仍需继续时，沿用原审批调用 `online_products_retry` 仅处理失败项。目录发现中断时，已发现数不是全店总数，应重新发现目录。网络中断只说明传输失败，不能要求用户更换凭据，除非有实际授权错误。
+
+`AgentJobService` 返回终态回执时，用当前快照更新任务引用中的状态和摘要，避免外层已结束而引用仍写着 `queued`。原生历史中的原始提交回执不改写。
+
+本次核对安装的 Pydantic AI Slim 2.44.0 / Harness 0.34.0 与官方 [Deferred Tools](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/)：原生 `DeferredToolResults` 可直接返回领域结果，框架不负责 ERP 的部分完成语义；修复限于领域快照、只读投影及工具指令，不另建 Agent 循环或恢复协议。若以后撤销通用 Job 快照适配，应将部分完成信息保留在原生工具返回值中。
 
 人工结束使用 `CloseOnlineOperationRequest`：`job_id`、最近查询返回的 `expected_updated_at`、明确确认 `acknowledge=true`。必须先成功回读平台当前值，证据五分钟内有效，且平台无正在处理标记；查询失败、数据缺失、任务或商品变化、同目标任务执行中均拒绝结束。状态保存为 `closed_unconfirmed`，原请求、错误、回读值和人工决定留在原任务中。此终态仍不代表平台成功或明确失败，原请求可能延迟生效；旧提交键和外部请求保护保持有效。用户确认结束后可重新读取商品，通过原修改入口创建新操作，不能调用 retry 重放旧任务。AI 使用现有原生审批，快照绑定当前商品版本、任务版本和回读证据；不增加审批协议。
 

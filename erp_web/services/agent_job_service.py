@@ -132,7 +132,11 @@ class AgentJobService:
                 call_id,
                 {
                     "ok": state.status == "success",
-                    "job": job,
+                    "job": {
+                        **job,
+                        "status": state.last_external_status or state.status,
+                        "summary": state.summary or job.get("summary", ""),
+                    },
                     "status": state.status,
                     "evidence": state.model_dump(mode="json"),
                 },

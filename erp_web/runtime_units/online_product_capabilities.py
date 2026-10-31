@@ -266,14 +266,16 @@ def online_products_changes_apply(request: OnlineChangesRequest, scope: Annotate
 
 
 @ai_tool(name="online_products_job_read",
-    description="只读本地在线商品任务状态及精简回执，不访问平台。按 recovery 判断是否仍需处理；partial 等终态无需 close。新修改需重读商品版本，不重放旧请求。",
+    description="只读本地在线商品任务状态及精简回执，不访问平台。同步保留成功/失败统计及有界失败样例，partial 不代表全部失败。按 recovery 判断后续处理；终态无需 close。新修改需重读商品版本，不重放旧请求。",
     permission="online_product.read", side_effect="none", recovery_policy="retry_safe")
 def online_products_job_read(request: OnlineJobRequest, scope: Annotated[OnlineProductCapabilityScope, Injected()]) -> OnlineJobResult:
     return compact_online_job({"ok": True, "job": _call(scope.job, request.job_id)})
 
 
 @ai_tool(
-    name="online_products_sync", description="复用在线商品同步接口，读取当前平台店铺并更新 ERP 快照，不修改平台商品；等待任务回执后再读取数据。",
+    name="online_products_sync", description=("读取当前平台店铺并更新 ERP 快照，不修改平台商品；等待任务回执后再读取数据。"
+        "partial 表示部分完成，按实际成功/失败数量汇报。目录发现完整时继续处理用 online_products_retry 仅重试失败项，"
+        "不要因部分失败重复全量同步；目录发现中断才重新同步。多次尝试须保留此前成功结果，不按最后一次覆盖整轮结论。"),
     permission="online_product.sync", side_effect="write", approval_required=False,
     idempotency="required", idempotency_keys=("operation_key",), execution_mode="persistent_job", recovery_policy="idempotent",
 )
