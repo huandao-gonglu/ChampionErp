@@ -1112,7 +1112,7 @@ def test_yandex_adapter_end_to_end_through_publishing_bus(remote) -> None:
         )
         bus.wait(queued["job_id"], timeout=30)
         assert bus.get_status(queued["job_id"])["status"] == "pending_confirmation"
-        bus.check_publish_result(queued["job_id"], "yandex")
+        bus.confirmation.check(queued["job_id"], "yandex")
         state = bus.get_status(queued["job_id"])
     finally:
         bus.close()
@@ -1249,7 +1249,7 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
         )
         bus.wait(queued["job_id"], timeout=30)
         assert bus.get_status(queued["job_id"])["status"] == "pending_confirmation"
-        bus.check_publish_result(queued["job_id"], "yandex")
+        bus.confirmation.check(queued["job_id"], "yandex")
         state = bus.get_status(queued["job_id"])
     finally:
         bus.close()

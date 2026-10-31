@@ -23,9 +23,12 @@ class TaskQueueReader:
                 AND (?='' OR p.job_id=?) AND (?='' OR s.key=?) AND (?='' OR ?='publish')""",
                 (int(pending_only), job_id, job_id, platform, platform, source, source)).fetchall()
             online = conn.execute("""SELECT id,platform,account_id,operation,target_id,status,result_json,created_at,updated_at,
-                (SELECT json_extract(snapshot_json,'$.title') FROM online_listings WHERE id=online_jobs.target_id) AS title
-                FROM online_jobs WHERE operation<>'sync'
-                AND (?=0 OR status IN ('submitted','waiting_confirmation','outcome_unknown','needs_attention'))
+                json_extract(request_json,'$.catalog') AS catalog,
+                (SELECT json_extract(snapshot_json,'$.title') FROM online_listings WHERE id=online_jobs.target_id) AS title,
+                EXISTS(SELECT 1 FROM online_jobs newer WHERE newer.target_id=online_jobs.target_id
+                    AND newer.platform=online_jobs.platform AND newer.account_id=online_jobs.account_id
+                    AND newer.operation<>'sync' AND newer.created_at>online_jobs.created_at) AS has_newer_change
+                FROM online_jobs WHERE (?=0 OR (operation<>'sync' AND status IN ('submitted','waiting_confirmation','outcome_unknown','needs_attention')))
                 AND (?='' OR id=?) AND (?='' OR ?='online')""",
                 (int(pending_only), job_id, job_id, source, source)).fetchall()
         tasks = []
@@ -39,7 +42,7 @@ class TaskQueueReader:
                 "business_status": status, "status": "needs_attention" if row["persistence_error"] else task_display_status(status),
                 "created_at": row["created_at"], "updated_at": item.get("updated_at") or row["updated_at"],
                 "error": row["persistence_error"] or item.get("error") or item.get("confirmation", {}).get("check_error") or "", "protection": "禁止重复发布" if status in PENDING_RESULTS or status in {"queued", "running"} or row["persistence_error"] else "",
-                "confirmation": None, "_result": result, "_submitted_at": item.get("confirmation", {}).get("submitted_at") or item.get("created_at") or row["created_at"],
+                "can_retry": False, "confirmation": None, "_result": result, "_submitted_at": item.get("confirmation", {}).get("submitted_at") or item.get("created_at") or row["created_at"],
                 "_can_query": has_query_identity(result), "_legacy_checks": int(item.get("confirmation", {}).get("checks_used") or 0),
                 "_attention": status == "needs_attention" or bool(item.get("confirmation", {}).get("requires_attention"))})
         for raw in online:
@@ -48,13 +51,26 @@ class TaskQueueReader:
             status = effective_job_status({**row, "result": result})
             if pending_only and status not in PENDING_RESULTS:
                 continue
+            is_sync = row["operation"] == "sync"
+            if is_sync:
+                title = "同步归档商品" if row["catalog"] == "archived" else "同步店铺商品"
+                can_retry = status in {"failed", "partial"} and any(item.get("status") == "failed" for item in result.get("items", []))
+            else:
+                title = result.get("before", {}).get("title") or row["title"] or row["target_id"]
+                can_retry = status == "failed" and not row["has_newer_change"]
+            protection = ""
+            if not is_sync:
+                if status in {"queued", "running"}:
+                    protection = "正在执行，本商品暂不能提交其他修改"
+                elif status in PENDING_RESULTS:
+                    protection = "禁止相关字段的冲突修改；可核对后结束本地操作"
             tasks.append({"id": f"online:{row['id']}", "job_id": row["id"], "source": "online", "origin": result.get("task_origin") or "unknown",
                 "platform": row["platform"], "account_id": row["account_id"], "operation": row["operation"],
-                "title": result.get("before", {}).get("title") or row["title"] or row["target_id"], "target_id": row["target_id"],
+                "title": title, "target_id": row["target_id"],
                 "business_status": status, "status": task_display_status(status), "created_at": row["created_at"], "updated_at": row["updated_at"],
                 "error": (result.get("platform_confirmation", {}).get("note") or result.get("error") or "") if status not in {"confirmed", "closed_unconfirmed"} else "",
-                "protection": "正在执行，本商品暂不能提交其他修改" if status in {"queued", "running"} else "禁止相关字段的冲突修改；可核对后结束本地操作" if status in PENDING_RESULTS else "",
-                "confirmation": None, "_result": result, "_submitted_at": result.get("submitted_at") or row["created_at"], "_can_query": True,
+                "protection": protection, "can_retry": can_retry,
+                "confirmation": None, "_result": result, "_submitted_at": result.get("submitted_at") or row["created_at"], "_can_query": not is_sync,
                 "_legacy_checks": int(result.get("polls") or 0), "_attention": bool(result.get("platform_confirmation", {}).get("needs_attention"))})
         return tasks
 

@@ -271,7 +271,7 @@ class OnlineProductStore:
                 raise OnlineConflict(f"当前店铺正在同步，已处理 {count} 件；请查看同步进度，无需重复启动", job_id=conflict["id"])
             if operation == "sync":
                 raise OnlineConflict("当前店铺有排队或执行中的商品修改，请完成后再同步", job_id=conflict["id"])
-            raise OnlineConflict("该商品正在执行修改，或相关变更仍在平台处理/结果未知，请查看对应操作记录", job_id=conflict["id"])
+            raise OnlineConflict("该商品正在执行修改，或相关变更仍在平台处理/结果未知，请在任务队列查看对应任务", job_id=conflict["id"])
         conn.execute("INSERT INTO online_jobs(id,platform,account_id,operation,target_id,status,idempotency_key,request_json,result_json,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?,?,?,?)",
                      (job_id, platform, account, operation, target, key, facts, json.dumps({"task_origin": current_task_origin(), **(result or {})}, ensure_ascii=False), now, now))
         return self._job(conn.execute("SELECT * FROM online_jobs WHERE id=?", (job_id,)).fetchone())
@@ -379,10 +379,6 @@ class OnlineProductStore:
             if active:
                 message = "当前店铺正在同步" if active["operation"] == "sync" else "该商品正在执行修改"
                 raise OnlineConflict(message + "，请完成后再查询平台结果", job_id=active["id"])
-            result = json.loads(row["result_json"])
-            earliest = float(result.get("last_confirmation_at") or 0) + 30
-            if earliest > time.time():
-                raise OnlineConflict(f"平台结果尚在等待窗口，请 {max(1, int(earliest-time.time()))} 秒后查询")
             conn.execute("UPDATE online_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=?", (token, lease_until, utc_now(), job_id))
             conn.commit()
         return {**self._job(row), "lease_token": token, "confirmation_lease_until": lease_until}

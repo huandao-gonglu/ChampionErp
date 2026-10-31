@@ -65,6 +65,8 @@ def setup_online():
     context = SimpleNamespace(db=get_context().db, config=SimpleNamespace(load_store_config=lambda:{"mercadolibre":{"user_id":"seller"}}))
     service = OnlineProductService(context, adapter_factories={"mercadolibre":lambda config:remote}, start_worker=False)
     service.store.save(remote.rows["CBT1"])
+    context.task_queue = get_context().task_queue
+    get_context()._online_products = service
     yield service,remote
     service.close()
 
@@ -78,6 +80,9 @@ def expire(service, job):
     with service.store.db._connect() as conn:
         conn.execute("UPDATE online_jobs SET lease_until=0,result_json=json_set(result_json,'$.next_confirmation_at',0,'$.last_confirmation_at',0) WHERE id=?",(job,))
         conn.commit()
+    queue = service.context.task_queue
+    with queue.store.connect() as conn:
+        conn.execute("UPDATE confirmations SET last_checked_at=0,next_check_at=0 WHERE id=?", (f"online:{job}",))
 
 
 def test_sync_discovers_goods_without_creating_drafts(setup_online):
@@ -142,7 +147,7 @@ def test_confirmation_failure_keeps_cooldown_and_never_replays_write(setup_onlin
     assert result["status"] == "waiting_confirmation"
     assert result["result"]["receipt"] == {"task_id": "async-price"}
     assert "automatic_confirmation_pending" not in result["result"]
-    with pytest.raises(OnlineConflict, match="等待窗口"):
+    with pytest.raises(OnlineConflict, match="刚刚查询"):
         service.reconcile(job["id"])
     assert not service.run_once()
     assert len(remote.writes) == 1
@@ -231,7 +236,7 @@ def test_sync_and_result_query_are_mutually_exclusive(setup_online, running):
     if running:
         service.store.claim("sync-worker")
     with pytest.raises(OnlineConflict, match="正在同步"):
-        service.reconcile(job["id"])
+        service.reconcile_once(job["id"])
     assert service.store.job(job["id"]) == original
     with pytest.raises(OnlineConflict, match="正在同步"):
         service.sync("mercadolibre", uuid4().hex)

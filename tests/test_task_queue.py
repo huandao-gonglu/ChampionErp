@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 from urllib.request import Request
+from uuid import uuid4
 
 import pytest
 
@@ -10,7 +11,7 @@ from erp_web.runtime_units.publishing_bus_core import PublishingBus
 from erp_web.services.external_request_context import request_operation
 from erp_web.services.external_request_manager import BufferedResponse
 from erp_web.services.task_queue_service import TaskQueueService
-from tests.test_online_products import setup_online, price_request  # noqa: F401
+from tests.test_online_products import listing, setup_online, price_request  # noqa: F401
 
 
 class PublishingRemote:
@@ -78,6 +79,18 @@ def test_local_page_reads_do_not_query_and_scheduled_success_updates_original_jo
     assert service.context.publishing_bus.get_status(job_id)["platforms"]["ozon"]["status"] == "success"
     assert len(callbacks) == 1
     service.run_once()
+    assert remote.reads == remote.writes == 1
+
+
+def test_legacy_publish_check_time_does_not_add_a_second_cooldown(queue):
+    from erp_web.runtime_units.publish_result_confirmation import iso_time
+    import time
+    service, remote, job_id, task_id = queue
+    state = service.context.publishing_bus.get_status(job_id)
+    state["platforms"]["ozon"]["confirmation"]["last_checked_at"] = iso_time(time.time()+86400)
+    service.context.db.save_publish_job(state)
+    remote.result = {"ok": True, "status": "published", "external_id": "remote-item"}
+    assert service.check(task_id)["task"]["status"] == "completed"
     assert remote.reads == remote.writes == 1
 
 
@@ -180,6 +193,56 @@ def test_sync_success_is_history_without_confirmation_plan(setup_online):
     assert response["task"]["status"] == "completed"
     assert response["task"]["confirmation"] is None
     assert len(remote.writes) == 1
+
+
+def test_catalog_sync_appears_in_queue_without_remote_confirmation(setup_online):
+    service, remote = setup_online
+    queue = attach_online(service)
+    job = service.sync("mercadolibre", uuid4().hex)["job"]
+    task_id = f"online:{job['id']}"
+    assert queue.list({"operation": "sync"})["items"][0]["id"] == task_id
+    assert queue.detail(task_id)["task"]["status"] == "queued"
+    assert queue.detail(task_id)["task"]["protection"] == ""
+    assert service.run_once()
+    queue.run_once()
+    detail = queue.detail(task_id)
+    assert detail["task"]["status"] == "completed"
+    assert detail["task"]["confirmation"] is None
+    assert not detail["task"]["can_retry"]
+    assert detail["detail"]["result"]["completed"] == 1
+    assert queue.store.get(task_id) is None
+    assert not queue.check(task_id)["checked"]
+    assert remote.writes == []
+
+
+def test_queue_sync_retry_uses_only_identified_failed_items(setup_online):
+    service, remote = setup_online
+    queue = attach_online(service)
+    remote.rows["CBT1"].errors = ["商品详情读取失败"]
+    remote.rows["CBT2"] = listing("CBT2")
+    job = service.sync("mercadolibre", uuid4().hex)["job"]
+    service.run_once()
+    detail = queue.detail(f"online:{job['id']}")
+    assert detail["task"]["status"] == "partial" and detail["task"]["can_retry"]
+    assert detail["task"]["confirmation"] is None
+    retry = service.retry(job["id"], uuid4().hex)["job"]
+    assert retry["request"]["ids"] == ["CBT1"]
+    assert queue.detail(f"online:{retry['id']}")["task"]["status"] == "queued"
+    assert remote.writes == []
+
+
+def test_queue_does_not_offer_retry_for_failure_before_a_newer_change(setup_online):
+    service, remote = setup_online
+    queue = attach_online(service)
+    old = service.change(price_request(service))["job"]
+    remote.rows["CBT1"].title = "店铺已修改"
+    service.run_once()
+    task_id = f"online:{old['id']}"
+    assert queue.detail(task_id)["task"]["can_retry"]
+    latest = service.change(price_request(service))["job"]
+    assert not queue.detail(task_id)["task"]["can_retry"]
+    assert queue.detail(f"online:{latest['id']}")["task"]["status"] == "queued"
+    assert remote.writes == []
 
 
 def test_online_async_confirmation_and_quarantine_use_original_job(setup_online):

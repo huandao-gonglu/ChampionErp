@@ -10,10 +10,10 @@ import type { WorkflowRuntime } from '../orchestration/runtime'
 
 export type WorkflowPublishPrecheckActionsPort = Pick<WorkflowRuntime,
   | 'currentDraft' | 'currentDraftProductContext' | 'selectedPublishTarget'
-  | 'precheck' | 'precheckResults' | 'payloadPreview' | 'publishJob' | 'publishJobStatus'
-  | 'selectedPublishJobId' | 'draftsIndex' | 'storeConfig' | 'loading' | 'setError' | 'addLog'
+  | 'precheck' | 'precheckResults' | 'payloadPreview' | 'publishJob'
+  | 'draftsIndex' | 'storeConfig' | 'loading' | 'setError' | 'addLog'
   | 'persistCurrentDraftForPublish' | 'syncActivePublishTarget' | 'applyMutationIndexes'
-  | 'pricingTargetKey' | 'currentStage' | 'refreshPublishJobs'
+  | 'pricingTargetKey' | 'currentStage'
 > & { isCurrent?: () => boolean; onPreparationProgress?: (progress: PublishPreparationState | null) => void }
 
 function normalizePayloadPreviewSummary(value: UnknownRecord): PublishPayloadSummary | null {
@@ -47,10 +47,9 @@ function normalizePayloadPreviewSummary(value: UnknownRecord): PublishPayloadSum
 export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPrecheckActionsPort) {
   const {
     currentDraft, currentDraftProductContext, selectedPublishTarget, precheck, precheckResults,
-    payloadPreview, publishJob, publishJobStatus, selectedPublishJobId, draftsIndex, storeConfig,
+    payloadPreview, publishJob, draftsIndex, storeConfig,
     loading, setError, addLog, persistCurrentDraftForPublish, syncActivePublishTarget,
-    applyMutationIndexes, pricingTargetKey, currentStage, refreshPublishJobs,
-  } = runtime
+    applyMutationIndexes, pricingTargetKey, currentStage, } = runtime
   const isCurrent = () => runtime.isCurrent?.() ?? true
 
   function mercadoLibreCbtPublishBlocked(): boolean {
@@ -179,16 +178,13 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
     try {
       // Payload 预览已经保存了草稿并生成确认指纹。确认之后不能再执行写入，
       // 否则保存归一化可能改变发布事实，却仍提交旧 validationDigest。
-      publishJobStatus.value = null
       const job = await enqueuePublishApi(currentDraft.value, target, preview.validationDigest)
       if (!isCurrent()) return
       publishJob.value = job
-      selectedPublishJobId.value = publishJob.value.jobId
       currentStage.value = 8
       addLog(`发布任务已入队：${job.jobId}`)
       // 队列已接受提交；列表刷新失败不能把成功入队误报为可重试的失败。
       try {
-        await refreshPublishJobs({ quiet: true })
         const updatedIndex = await fetchDraftsIndex()
         if (isCurrent()) draftsIndex.value = updatedIndex
       } catch {

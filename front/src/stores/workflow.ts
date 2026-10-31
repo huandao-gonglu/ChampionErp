@@ -32,10 +32,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
       await combined.refreshDraftsIndex()
       return
     }
-    if (key === 'publish') {
-      await combined.refreshPublishJobs()
-      return
-    }
     if (key === 'auth') await combined.loadAiConfig()
   }
 
@@ -77,12 +73,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     payloadPreview: combined.payloadPreview,
     copyGenerating: combined.copyGenerating,
     publishJob: combined.publishJob,
-    publishJobStatus: combined.publishJobStatus,
-    publishJobs: combined.publishJobs,
-    selectedPublishJobId: combined.selectedPublishJobId,
-    publishJobsNextCursor: combined.publishJobsNextCursor,
-    publishJobsLoading: combined.publishJobsLoading,
-    publishJobsLastUpdated: combined.publishJobsLastUpdated,
     activeMarketplace: combined.activeMarketplace,
     platformOptions: combined.platformOptions,
     logs: combined.logs,
@@ -170,10 +160,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     runPrecheck: combined.runPrecheck,
     previewPayload: combined.previewPayload,
     enqueuePublish: combined.enqueuePublish,
-    refreshPublishJob: combined.refreshPublishJob,
-    refreshPublishJobs: combined.refreshPublishJobs,
-    loadMorePublishJobs: combined.loadMorePublishJobs,
-    selectPublishJob: combined.selectPublishJob,
     loadAiConfig: combined.loadAiConfig,
     saveAiSettings: combined.saveAiSettings,
     testAiSettings: combined.testAiSettings,

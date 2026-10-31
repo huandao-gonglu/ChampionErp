@@ -27,7 +27,7 @@ export interface OnlineListing {
 export interface OnlineJob {
   id: string; operation: string; platform: OnlinePlatform; status: string; created_at: string; updated_at: string; target_id: string
   request: Record<string, unknown>
-  result: { automatic_confirmation_pending?: boolean; next_confirmation_at?: number; last_confirmation_at?: number; before?: {title?:string; seller_sku?:string}; platform_confirmation?: {note?:string; pending?:boolean}; platform_errors?: unknown[]; read_errors?: string[]; error?: string; completed?: number; failed?: number; created?: number; updated?: number; discovery_complete?: boolean; phase?: 'catalog' | 'details' | 'complete'; discovered?: number; changes?: Record<string, unknown>; confirmation?: Record<string, boolean>; evidence?: {synced_at: string; checked_at?: string; version?: string; observed?: Record<string, unknown>}; resolution?: {closed_at: string; acknowledged_unconfirmed: boolean}; items?: Array<{remote_id: string; status: string; error?: string}> }
+  result: { last_confirmation_at?: number; before?: {title?:string; seller_sku?:string}; platform_confirmation?: {note?:string; pending?:boolean}; platform_errors?: unknown[]; read_errors?: string[]; error?: string; completed?: number; failed?: number; created?: number; updated?: number; discovery_complete?: boolean; phase?: 'catalog' | 'details' | 'complete'; discovered?: number; changes?: Record<string, unknown>; confirmation?: Record<string, boolean>; evidence?: {synced_at: string; checked_at?: string; version?: string; observed?: Record<string, unknown>}; resolution?: {closed_at: string; acknowledged_unconfirmed: boolean}; items?: Array<{remote_id: string; status: string; error?: string}> }
 }
 export interface OnlineFeedbackSummary { affected_sku_count: number; error_count: number; warning_count: number }
 export interface OnlineBatchPreview {
@@ -53,9 +53,6 @@ export async function fetchOnlineProducts(params: Record<string, string | number
 }
 export async function fetchOnlineDetail(id: string): Promise<OnlineListing> {
   return checked<{item: OnlineListing}>((await apiClient.get('/api/online-products', {params: {id}})).data).item
-}
-export async function fetchOnlineJob(jobId: string): Promise<OnlineJob> {
-  return checked<{job: OnlineJob}>((await apiClient.get('/api/online-products', {params: {job_id: jobId}})).data).job
 }
 export async function fetchOnlineSourceImages(listingId: string): Promise<SourceImageSelection> {
   return checked((await apiClient.get('/api/online-products/source-images', {params: {listing_id: listingId}})).data)

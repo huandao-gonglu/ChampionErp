@@ -1,3 +1,4 @@
+import { apiClient } from '@/api/client'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 import DraftPublishPrecheckWorkspace from '@/views/workflow/DraftPublishPrecheckWorkspace.vue'
@@ -59,9 +60,6 @@ vi.mock('@/api/workflow/publishing', async (importOriginal) => ({
   matchCategory: vi.fn(),
   searchCategories: vi.fn(),
   previewPublishPayload: vi.fn(),
-  fetchPublishJob: vi.fn(),
-  fetchPublishJobs: vi.fn(),
-  reconcilePublishJob: vi.fn(),
   runCategoryPrecheck: vi.fn(),
 }))
 
@@ -273,7 +271,6 @@ describe('workflow store live API flow', () => {
       if (target.platform === 'yandex') throw new Error('Yandex 暂不可用')
       return { jobId: 'job-batch-ozon', platforms: ['ozon'], status: 'queued', createdAt: '2026-09-06' }
     })
-    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({ items: [], nextCursor: '' })
     vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
     await Promise.all([store.publishBatch.precheckAll(), store.publishBatch.precheckAll()])
     expect(workflowApi.saveDraft).toHaveBeenCalledOnce()
@@ -370,7 +367,6 @@ describe('workflow store live API flow', () => {
     ozon.state.precheck = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-09-06' }
     ozon.state.payloadPreview = { platform: 'ozon', site: 'global', targetKey: 'ozon:global', status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'accepted-digest', summary: null, warnings: [] }
     vi.mocked(workflowApi.enqueuePublish).mockResolvedValue({ jobId: 'job-accepted', platforms: ['ozon'], status: 'queued', createdAt: '2026-09-06' })
-    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({ items: [], nextCursor: '' })
     vi.mocked(workflowApi.fetchDraftsIndex).mockRejectedValue(new Error('列表暂不可用'))
     await store.publishBatch.enqueueAll()
     await store.publishBatch.enqueueAll()
@@ -390,7 +386,6 @@ describe('workflow store live API flow', () => {
       validationDigest: `${target.platform}-digest`, summary: {}, warnings: [],
     }))
     vi.mocked(workflowApi.enqueuePublish).mockResolvedValue({ jobId: 'job-ozon', status: 'queued', platforms: ['ozon'], createdAt: '2026-09-05' })
-    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({ items: [], nextCursor: '' })
     vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
     const [yandex, ozon] = store.targetEditors
     await yandex.run(yandex.actions.previewPayload)
@@ -1180,53 +1175,12 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fetchProductsIndex).toHaveBeenCalledOnce()
   })
 
-  it('restores the latest persisted publish job when the queue opens', async () => {
-    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({
-      items: [{
-        jobId: 'job-new',
-        productId: 'product-1',
-        productName: '测试商品',
-        draftId: 'draft-1',
-        status: 'failed',
-        rawStatus: 'completed',
-        stage: 'failed',
-        attempts: 1,
-        error: '合同币种不匹配',
-        errorCode: '',
-        nextAction: '',
-        platforms: [{
-          platform: 'ozon',
-          draftId: 'draft-1',
-          site: 'global',
-          sitesToSell: [],
-          status: 'failed',
-          stage: 'failed',
-          attempts: 1,
-          error: '合同币种不匹配',
-          errorCode: '',
-          nextAction: '',
-          updatedAt: '2026-08-06 22:01:44',
-        }],
-        createdAt: '2026-08-06 22:01:40',
-        updatedAt: '2026-08-06 22:01:44',
-      }],
-      nextCursor: '',
-    })
-    vi.mocked(workflowApi.fetchPublishJob).mockResolvedValue({
-      job_id: 'job-new',
-      display_status: 'failed',
-    })
-
+  it('任务页由统一队列自行加载，工作台不再请求旧发布列表', async () => {
+    const get = vi.spyOn(apiClient, 'get')
     const store = useWorkflowStore()
     await store.hydrateTab('publish')
-
-    expect(store.selectedPublishJobId).toBe('job-new')
-    expect(store.publishJobs[0]?.status).toBe('failed')
-    expect(store.publishJobStatus).toEqual({
-      job_id: 'job-new',
-      display_status: 'failed',
-    })
-    expect(workflowApi.fetchPublishJob).toHaveBeenCalledWith('job-new')
+    expect(get).not.toHaveBeenCalled()
+    get.mockRestore()
   })
 
   it('collects product through backend API and updates diagnostics', async () => {
@@ -1533,7 +1487,6 @@ describe('workflow store live API flow', () => {
       draftId: draft.draftId,
       targetKey: 'mercadolibre:cbt',
     })
-    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({ items: [], nextCursor: '' })
     vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
 
     const store = useWorkflowStore()

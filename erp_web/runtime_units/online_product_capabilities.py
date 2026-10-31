@@ -67,7 +67,7 @@ def _submission(response: dict[str, Any]) -> OnlineSubmissionResult:
     return OnlineSubmissionResult(
         job_id=job["id"], listing_id=job["target_id"], platform=job["platform"],
         operation=job["operation"], status=job["status"],
-        summary="修改请求已进入后台队列。平台受理与实际生效以操作记录为准；需要核验时可查询平台结果。",
+        summary="修改请求已进入任务队列。平台受理与实际生效以任务结果为准；需要核验时可查询平台结果。",
     )
 
 
@@ -194,7 +194,7 @@ def online_products_refresh_status(request: RefreshStatusRequest, scope: Annotat
                  "Yandex DISABLED_AUTOMATICALLY 表示平台自动下架；先核实并修正 platform_issues，sale_state=active 只解除商家主动停售，不能绕过平台审核或保证重新上架。"
                  "accepted=true 表示请求已持久化入队，AI 对该项的提交职责已完成，不代表平台已接收或生效。"
                  "批量修改应继续提交剩余目标，最后汇总已提交与提交失败数量即可结束，不等待或主动回读远端结果。"
-                 "远端结果由后台和操作记录跟踪；除非用户另行要求查询，否则不要调用 reconcile 或轮询库存。"
+                 "远端结果由后台和任务队列跟踪；除非用户另行要求查询，否则不要调用 reconcile 或轮询库存。"
                  "结果未知不能重放修改。"),
     permission="online_product.write", side_effect="write", approval_required=True,
     approval_snapshot=_change_snapshot, idempotency="required", idempotency_keys=("operation_key",),
@@ -313,7 +313,7 @@ def online_products_close(request: CloseOnlineOperationRequest, scope: Annotated
 
 
 @ai_tool(
-    name="online_products_retry", description="按用户要求重试在线商品失败任务：同步仅重试失败项，修改仅重试后端确认可重试的失败；混合或未知结果不能强制重放。accepted=true 表示重试已提交，AI 无需等待远端结果；在操作记录查看后续状态。",
+    name="online_products_retry", description="按用户要求重试在线商品失败任务：同步仅重试失败项，修改仅重试后端确认可重试的失败；混合或未知结果不能强制重放。accepted=true 表示重试已提交，AI 无需等待远端结果；在任务队列查看后续状态。",
     permission="online_product.write", side_effect="write", approval_required=True,
     approval_snapshot=_retry_snapshot, idempotency="required", idempotency_keys=("operation_key",),
     execution_mode="persistent_job", recovery_policy="manual",

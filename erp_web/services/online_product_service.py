@@ -315,8 +315,7 @@ class OnlineProductService:
         self.store.update_job(job["id"], status, result, owner=job["lease_token"], **kwargs)
 
     def _prepare_confirmation(self, job, result):
-        # 发起前持久化冷却时间，认证失败或网络异常也不能绕过查询间隔。
-        result["polls"] = int(result.get("polls", 0)) + 1
+        # 保存本轮业务核对时间，使旧证据失效；调度和冷却归统一队列。
         result.pop("automatic_confirmation_pending", None)
         result["last_confirmation_at"] = time.time()
         result.pop("next_confirmation_at", None)
@@ -372,14 +371,11 @@ class OnlineProductService:
         self._update(job, status, result, dispatched=True)
 
     def reconcile(self, job_id: str) -> dict[str, Any]:
-        queue = getattr(self.context, "task_queue", None)
-        if queue is not None:
-            response = queue.check(f"online:{job_id}")
-            if not response["checked"]:
-                raise OnlineConflict({"cooldown": "刚刚查询过，请稍后再查", "checking": "已有结果查询正在执行"}.get(
-                    response["resolution"], (response["task"].get("confirmation") or {}).get("error") or "当前任务无需查询"))
-            return {"ok": True, "job": self.store.job(job_id)}
-        return self.reconcile_once(job_id)
+        response = self.context.task_queue.check(f"online:{job_id}")
+        if not response["checked"]:
+            raise OnlineConflict({"cooldown": "刚刚查询过，请稍后再查", "checking": "已有结果查询正在执行"}.get(
+                response["resolution"], (response["task"].get("confirmation") or {}).get("error") or "当前任务无需查询"))
+        return {"ok": True, "job": self.store.job(job_id)}
 
     def reconcile_once(self, job_id: str, *, lease_until: float | None = None) -> dict[str, Any]:
         job = self.store.job(job_id)

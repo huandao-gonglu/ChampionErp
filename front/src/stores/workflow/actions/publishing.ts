@@ -40,8 +40,6 @@ type WorkflowPublishingActionsPort = Pick<
   | 'precheckResults'
   | 'payloadPreview'
   | 'publishJob'
-  | 'publishJobStatus'
-  | 'selectedPublishJobId'
   | 'activeMarketplace'
   | 'platformOptions'
   | 'publishResult'
@@ -67,15 +65,13 @@ type WorkflowPublishingActionsPort = Pick<
   | 'restorePrecheckFromProduct'
   | 'restoreCategoryFromProduct'
   | 'persistCurrentDraftForPublish'
-  | 'refreshPublishJobs'
 >
 
 export function createWorkflowPublishingActions(runtime: WorkflowPublishingActionsPort) {
   const {
     product, currentDraft, categoryAttributeTranslations,
     categoryAttributeTranslationsSource, categoryResultTranslations, categoryResultTranslationsSource, categoryPrecheck, precheck,
-    payloadPreview, publishJob, publishJobStatus,
-    activeMarketplace, platformOptions, activePublishTargetKey,
+    payloadPreview, publishJob, activeMarketplace, platformOptions, activePublishTargetKey,
     setError,
     currentPublishTargets, activeMarketplaceSite, persistActiveTargetListingFields, invalidateCategoryAttributeLoad,
     applyTargetListingToDraft, pricingTargetKey, restorePrecheckFromProduct,
@@ -119,7 +115,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
         )
       ) {
         publishJob.value = null
-        publishJobStatus.value = null
       }
     }
   }

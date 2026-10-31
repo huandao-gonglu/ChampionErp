@@ -1,6 +1,9 @@
 export default {
   taskQueue: {
-    "description": "集中查看发布和在线商品修改；等待结果的任务按有限计划自动确认。",
+    "retry": "仅重试失败项",
+    "retryQueued": "重试任务已入队",
+    "syncProgress": "已发现 {discovered} 件 · 成功 {completed} 件 · 失败 {failed} 件",
+    "description": "集中查看发布、店铺同步和商品修改；等待结果的任务按有限计划自动确认。",
     "refresh": "刷新列表",
     "search": "搜索任务号或商品",
     "source": "业务来源",
@@ -16,7 +19,7 @@ export default {
     "allOperations": "全部操作",
     "allAccounts": "全部店铺",
     "publish": "商品发布",
-    "online": "在线修改",
+    "online": "在线商品",
     "page": "页面",
     "unknown": "历史记录",
     "since": "开始日期",
@@ -54,6 +57,7 @@ export default {
       "closed_unconfirmed": "已结束，未确认"
     },
     "operations": {
+      "sync": "同步商品",
       "publish": "发布商品",
       "price": "修改价格",
       "stock": "修改库存",
@@ -224,7 +228,7 @@ export default {
     collect: { title: '采集', subtitle: '链接、Cookie、浏览器标签' },
     library: { title: '商品库', subtitle: '本地商品母库' },
     drafts: { title: '草稿箱', subtitle: '平台草稿、继续编辑' },
-    publish: { title: '任务队列', subtitle: '发布、在线修改' },
+    publish: { title: '任务队列', subtitle: '发布、同步与修改' },
     onlineProducts: { title: '在线商品', subtitle: '店铺商品、价格与库存' },
     auth: { title: '平台授权', subtitle: '授权、AI、汇率' },
   },
@@ -235,7 +239,7 @@ export default {
     },
     publish: {
       title: '任务队列',
-      description: '集中查看发布和在线修改的进度与结果。',
+      description: '集中查看发布、商品同步和修改的进度与结果。',
     },
     onlineProducts: {
       title: '在线商品',

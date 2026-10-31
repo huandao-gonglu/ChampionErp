@@ -13,27 +13,17 @@ from .publish_confirmation import resolve_publish_store_binding
 if TYPE_CHECKING:
     from .publishing_bus_core import PublishingBus
 
-MANUAL_CHECK_INTERVAL = 30
 CONFIRMABLE_STATUSES = frozenset({"pending_confirmation", "outcome_unknown", "needs_attention"})
-
-
-def timestamp(value: Any) -> float:
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
-        return 0.0
-
 
 def iso_time(value: float) -> str:
     return datetime.fromtimestamp(value, timezone.utc).isoformat()
 
 
 class PublishResultConfirmation:
-    """单次确认共用并发占位与冷却，回写原发布记录及草稿。"""
+    """在统一队列领取查询后解释结果，回写原发布记录及草稿。"""
 
     def __init__(self, bus: PublishingBus) -> None:
         self.bus = bus
-        self._checking: set[tuple[str, str]] = set()
 
     def accept(self, job_id: str, platform: str, result: dict[str, Any]) -> None:
         now = time.time()
@@ -41,21 +31,17 @@ class PublishResultConfirmation:
         item = state["platforms"][platform]
         confirmation = item.get("confirmation") or {
             "submitted_at": iso_time(now),
-            "next_check_at": "",
             "last_checked_at": "",
             "check_error": "",
         }
-        confirmation["next_check_at"] = ""
+        confirmation.pop("next_check_at", None)
         self.bus._set_platform(
             job_id, platform, status="pending_confirmation",
             stage="waiting_platform_confirmation", error="",
             result=self.bus._persisted_platform_result(result), confirmation=confirmation,
         )
 
-    def check(self, job_id: str, platform: str, *, trigger: str = "manual") -> dict[str, Any]:
-        if trigger not in {"manual", "scheduled"}:
-            raise ValueError("发布结果只接受手动或任务队列查询。")
-        key = (job_id, platform)
+    def check(self, job_id: str, platform: str) -> dict[str, Any]:
         now = time.time()
         with self.bus._lock:
             state = self.bus._read_state(job_id)
@@ -65,13 +51,8 @@ class PublishResultConfirmation:
             status = item.get("status")
             if status not in CONFIRMABLE_STATUSES:
                 return self._response(job_id, platform, False, "terminal_or_submitting")
-            if key in self._checking:
-                return self._response(job_id, platform, False, "checking")
             confirmation = dict(item.get("confirmation") or {})
-            last_checked = timestamp(confirmation.get("last_checked_at"))
-            submitted = timestamp(confirmation.get("submitted_at") or item.get("created_at"))
-            if last_checked and now - last_checked < MANUAL_CHECK_INTERVAL:
-                return self._response(job_id, platform, False, "cooldown")
+            confirmation.pop("next_check_at", None)
             result = copy.deepcopy(item.get("result"))
             if not isinstance(result, dict):
                 raise ValueError("此任务没有可查询的远端结果，请先在平台后台核实。")
@@ -80,7 +61,6 @@ class PublishResultConfirmation:
             checker = getattr(self.bus.adapters.get(platform), "poll_publish_status", None)
             if not callable(checker):
                 raise ValueError("此平台没有结果查询能力。")
-            self._checking.add(key)
 
         checked_result = None
         check_error = ""
@@ -100,80 +80,75 @@ class PublishResultConfirmation:
             checked_result = None
             check_error = str(exc)
 
-        try:
-            with self.bus._lock:
-                state = self.bus._read_state(job_id)
-                item = state["platforms"][platform]
-                confirmation.update(
-                    {
-                        "submitted_at": confirmation.get("submitted_at") or iso_time(submitted or now),
-                        "last_checked_at": iso_time(time.time()),
-                        "next_check_at": "",
-                        "check_error": check_error,
-                        "requires_attention": requires_attention,
-                    }
+        with self.bus._lock:
+            state = self.bus._read_state(job_id)
+            item = state["platforms"][platform]
+            confirmation.update(
+                {
+                    "submitted_at": confirmation.get("submitted_at") or item.get("created_at") or iso_time(now),
+                    "last_checked_at": iso_time(time.time()),
+                    "check_error": check_error,
+                    "requires_attention": requires_attention,
+                }
+            )
+            resolved_status = str(item["status"])
+            resolution = "query_failed" if check_error else "unconfirmed"
+            if isinstance(checked_result, dict):
+                remote_status = str(checked_result.get("status") or "").lower()
+                if self.bus._is_pending_publish_result(checked_result):
+                    resolved_status, resolution = "pending_confirmation", "pending"
+                elif remote_status == "partial":
+                    resolved_status, resolution = "partial", "partially_applied"
+                elif remote_status == "needs_attention":
+                    resolved_status, resolution = "needs_attention", "needs_attention"
+                elif remote_status in {"failed", "real_publish_failed", "not_ready", "skipped"}:
+                    resolved_status, resolution = "failed", "not_applied"
+                elif checked_result.get("ok") is True and (
+                    remote_status in {"success", "published", "real_publish_success", "imported"}
+                    or checked_result.get("external_id") or checked_result.get("item_id") or checked_result.get("id")
+                ):
+                    resolved_status, resolution = "success", "applied"
+                elif remote_status == "outcome_unknown":
+                    # 已受理的事实不会因为一次确认响应畸形而消失。
+                    confirmation["check_error"] = str(checked_result.get("error") or "本次查询未返回可验证的结果。")
+                    resolution = "query_failed"
+                    checked_result = None
+                else:
+                    confirmation["check_error"] = "平台返回的结果无法判定，保留上次发布状态。"
+                    resolution = "query_failed"
+                    checked_result = None
+                if check_error:
+                    resolution = "query_failed"
+            stage = {
+                "pending_confirmation": "waiting_platform_confirmation",
+                "success": "finished",
+            }.get(resolved_status, resolved_status)
+            item.update(
+                {
+                    "status": resolved_status,
+                    "stage": stage,
+                    "confirmation": confirmation,
+                    "updated_at": iso_time(time.time()),
+                }
+            )
+            if checked_result is not None:
+                item["result"] = self.bus._persisted_platform_result(checked_result)
+                item["error"] = (
+                    str(checked_result.get("error") or "")
+                    if resolved_status in {"failed", "partial", "outcome_unknown", "needs_attention"}
+                    else ""
                 )
-                resolved_status = str(item["status"])
-                resolution = "query_failed" if check_error else "unconfirmed"
-                if isinstance(checked_result, dict):
-                    remote_status = str(checked_result.get("status") or "").lower()
-                    if self.bus._is_pending_publish_result(checked_result):
-                        resolved_status, resolution = "pending_confirmation", "pending"
-                    elif remote_status == "partial":
-                        resolved_status, resolution = "partial", "partially_applied"
-                    elif remote_status == "needs_attention":
-                        resolved_status, resolution = "needs_attention", "needs_attention"
-                    elif remote_status in {"failed", "real_publish_failed", "not_ready", "skipped"}:
-                        resolved_status, resolution = "failed", "not_applied"
-                    elif checked_result.get("ok") is True and (
-                        remote_status in {"success", "published", "real_publish_success", "imported"}
-                        or checked_result.get("external_id") or checked_result.get("item_id") or checked_result.get("id")
-                    ):
-                        resolved_status, resolution = "success", "applied"
-                    elif remote_status == "outcome_unknown":
-                        # 已受理的事实不会因为一次确认响应畸形而消失。
-                        confirmation["check_error"] = str(checked_result.get("error") or "本次查询未返回可验证的结果。")
-                        resolution = "query_failed"
-                        checked_result = None
-                    else:
-                        confirmation["check_error"] = "平台返回的结果无法判定，保留上次发布状态。"
-                        resolution = "query_failed"
-                        checked_result = None
-                    if check_error:
-                        resolution = "query_failed"
-                stage = {
-                    "pending_confirmation": "waiting_platform_confirmation",
-                    "success": "finished",
-                }.get(resolved_status, resolved_status)
-                item.update(
-                    {
-                        "status": resolved_status,
-                        "stage": stage,
-                        "confirmation": confirmation,
-                        "updated_at": iso_time(time.time()),
-                    }
-                )
-                if checked_result is not None:
-                    item["result"] = self.bus._persisted_platform_result(checked_result)
-                    item["error"] = (
-                        str(checked_result.get("error") or "")
-                        if resolved_status in {"failed", "partial", "outcome_unknown", "needs_attention"}
-                        else ""
-                    )
-                if resolved_status not in CONFIRMABLE_STATUSES:
-                    item["reconciliation"] = {
-                        "status": resolution,
-                        "checked_at": confirmation["last_checked_at"],
-                        "write_replayed": False,
-                    }
-                    state.pop("terminal_results_persisted", None)
-                    state.pop("terminal_persistence_error", None)
-                self.bus._write_state(job_id, state)
-            self.bus._update_job_status(job_id)
-            return self._response(job_id, platform, True, resolution)
-        finally:
-            with self.bus._lock:
-                self._checking.discard(key)
+            if resolved_status not in CONFIRMABLE_STATUSES:
+                item["reconciliation"] = {
+                    "status": resolution,
+                    "checked_at": confirmation["last_checked_at"],
+                    "write_replayed": False,
+                }
+                state.pop("terminal_results_persisted", None)
+                state.pop("terminal_persistence_error", None)
+            self.bus._write_state(job_id, state)
+        self.bus._update_job_status(job_id)
+        return self._response(job_id, platform, True, resolution)
 
     def _response(self, job_id: str, platform: str, checked: bool, reason: str) -> dict[str, Any]:
         return {

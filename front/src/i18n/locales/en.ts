@@ -1,6 +1,9 @@
 export default {
   taskQueue: {
-    "description": "Track publishing and online changes, with a finite schedule for result confirmation.",
+    "retry": "Retry failed items",
+    "retryQueued": "Retry task queued",
+    "syncProgress": "Discovered {discovered} · Completed {completed} · Failed {failed}",
+    "description": "Track publishing, store syncs and product changes, with a finite schedule for result confirmation.",
     "refresh": "Refresh",
     "search": "Search task ID or product",
     "source": "Source",
@@ -16,7 +19,7 @@ export default {
     "allOperations": "All operations",
     "allAccounts": "All stores",
     "publish": "Publishing",
-    "online": "Online changes",
+    "online": "Online products",
     "page": "Page",
     "unknown": "Historical record",
     "since": "From",
@@ -54,6 +57,7 @@ export default {
       "closed_unconfirmed": "Closed, unconfirmed"
     },
     "operations": {
+      "sync": "Sync products",
       "publish": "Publish product",
       "price": "Update price",
       "stock": "Update stock",
@@ -224,7 +228,7 @@ export default {
     collect: { title: 'Collect', subtitle: 'Links, cookies, browser tabs' },
     library: { title: 'Library', subtitle: 'Local product master' },
     drafts: { title: 'Drafts', subtitle: 'Platform drafts, continue editing' },
-    publish: { title: 'Task Queue', subtitle: 'Publishing and online changes' },
+    publish: { title: 'Task Queue', subtitle: 'Publishing, syncs and changes' },
     onlineProducts: { title: 'Online products', subtitle: 'Store products, prices and stock' },
     auth: { title: 'Platform Auth', subtitle: 'Auth, AI, exchange rates' },
   },

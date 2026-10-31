@@ -345,6 +345,10 @@ function navigate(key: string) {
   void refreshDomainForNav(key)
 }
 
+function openOnlineTask(jobId?: string) {
+  void router.push({ name: 'WorkflowHome', query: { tab: 'publish', source: 'online', ...(jobId ? { task_id: `online:${jobId}` } : {}) } })
+}
+
 async function claimAndOpenDrafts(productIds: string[], targets: MarketplaceTargetSite[]) {
   const ok = await store.claimProductsToDrafts(productIds, targets)
   if (ok) navigate('drafts')
@@ -494,12 +498,12 @@ watch(
 
           <div v-else-if="activeNav === 'publish'" class="space-y-6">
             <PageHeader :title="t('pages.publish.title')" :description="t('pages.publish.description')" />
-            <TaskQueuePanel />
+            <TaskQueuePanel :initial-task-id="String(route.query.task_id || '')" :initial-source="String(route.query.source || '')" />
           </div>
 
           <SystemSettingsPanel v-else-if="activeNav === 'systemSettings'" />
           <OrderCenterPanel v-else-if="activeNav === 'orders'" />
-          <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" />
+          <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" @open-task="openOnlineTask" />
 
           <div v-else-if="activeNav === 'auth'" class="space-y-6">
             <OrderIntegrationSettings />

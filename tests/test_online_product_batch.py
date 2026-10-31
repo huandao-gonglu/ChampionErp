@@ -99,7 +99,7 @@ def test_network_failure_is_unknown_for_entire_request_without_automatic_replay(
     assert len(service.change_batch(body)["jobs"]) == 3
     assert not service.run_once() and len(remote.writes) == 1
     for job in jobs:
-        assert service.reconcile(job["id"])["job"]["status"] == "confirmed"
+        assert service.reconcile_once(job["id"])["job"]["status"] == "confirmed"
     assert len(remote.writes) == 1
 
 
@@ -182,7 +182,7 @@ def test_crash_after_receipt_keeps_archive_unknown_until_local_projection_is_rec
     assert all(service.store.job(job["id"])["status"] == "outcome_unknown" for job in jobs)
     service.store.archive_state = original
     for job in jobs:
-        assert service.reconcile(job["id"])["job"]["status"] == "confirmed"
+        assert service.reconcile_once(job["id"])["job"]["status"] == "confirmed"
         assert service.store.get(job["target_id"]).archived
     assert len(remote.writes) == 1
 

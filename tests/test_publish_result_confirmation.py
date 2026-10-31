@@ -1,4 +1,4 @@
-"""发布确认的手动冷却、只读边界、持久化恢复和并发行为。"""
+"""统一队列调度发布确认，领域服务仅解释结果与持久化。"""
 
 from copy import deepcopy
 from threading import Event
@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from erp_web.db import ErpDatabase
+from erp_web.context import get_context
 from erp_web.runtime_units import publish_result_confirmation as confirmation
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
 
@@ -45,10 +45,14 @@ class Adapter:
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
     clock = [1_800_000_000.0]
-    monkeypatch.setattr(confirmation, "time", SimpleNamespace(time=lambda: clock[0]))
+    from erp_web.services import task_queue_service
+    from erp_web.stores import task_confirmation_store
+    for module in (confirmation, task_queue_service, task_confirmation_store):
+        monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
     adapter = Adapter()
-    db = ErpDatabase(tmp_path / "publish.sqlite3")
-    bus = PublishingBus(db, {"ozon": adapter}, auto_resume_pending=False)
+    context = get_context()
+    bus = PublishingBus(context.db, {"ozon": adapter}, auto_resume_pending=False, task_queue=context.task_queue)
+    context._publishing_bus = bus
     queued = bus.enqueue({"product_id": "p"}, ["ozon"], targets={"ozon": {
         "draft_id": "d", "site": "global", "product_id": "p",
     }}, idempotency_key="first")
@@ -67,7 +71,7 @@ def test_submission_waits_for_manual_check_and_local_reads_do_not_query(setup):
     item = platform_state(bus, job_id)
     assert adapter.writes == 1 and adapter.reads == 0
     assert item["status"] == bus.get_status(job_id)["status"] == "pending_confirmation"
-    assert item["confirmation"]["next_check_at"] == ""
+    assert "next_check_at" not in item["confirmation"]
     clock[0] += 10000
     bus.get_public_status(job_id)
     bus.list_jobs()
@@ -102,7 +106,7 @@ def test_read_failure_keeps_receipt_pending_state_and_no_write_retry(setup):
     assert item["error"] == ""
     assert item["result"]["task_id"] == "remote-1"
     assert item["confirmation"]["check_error"] == "平台暂时无法连接"
-    assert item["confirmation"]["next_check_at"] == ""
+    assert "next_check_at" not in item["confirmation"]
     assert adapter.reads == adapter.writes == 1
 
 
@@ -149,14 +153,15 @@ def test_restart_ignores_legacy_schedule_but_preserves_manual_confirmation(setup
     state = bus.get_status(job_id)
     state["platforms"]["ozon"]["confirmation"]["next_check_at"] = confirmation.iso_time(clock[0] - 1)
     bus.store.save_publish_job(state)
-    restored = PublishingBus(bus.store, {"ozon": adapter}, auto_resume_pending=False)
+    restored = PublishingBus(bus.store, {"ozon": adapter}, auto_resume_pending=False, task_queue=bus.task_queue)
+    get_context()._publishing_bus = restored
     try:
         restored.recover_pending_jobs()
         assert adapter.writes == 1 and adapter.reads == 0
         assert restored.check_publish_result(job_id, "ozon")["checked"]
         restored.recover_pending_jobs()
         assert adapter.reads == adapter.writes == 1
-        assert platform_state(restored, job_id)["confirmation"]["next_check_at"] == ""
+        assert "next_check_at" not in platform_state(restored, job_id)["confirmation"]
     finally:
         restored.close()
 

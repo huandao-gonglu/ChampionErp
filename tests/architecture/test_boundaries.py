@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import ast
 
 from erp_web.context import AppContext, AppPaths
 from erp_web.db import ErpDatabase
@@ -11,6 +12,8 @@ from .support import (
     forbidden_calls,
     imported_targets,
     python_files,
+    dotted_name,
+    parse_python,
 )
 
 
@@ -30,6 +33,17 @@ def test_task_confirmation_does_not_own_platform_writes_or_agent_execution() -> 
     targets = {target for _, target in imported_targets(files)}
     assert not any(target.startswith(("pydantic_ai", "erp_web.marketplaces", "erp_web.runtime_units")) for target in targets)
     assert not forbidden_calls(files, {"enqueue", "change", "write", "publish", "publish_payload", "run_sync", "save_product", "save_draft_content"})
+
+
+def test_public_confirmation_entries_cannot_bypass_the_task_queue() -> None:
+    for path, name in (
+        ("erp_web/runtime_units/publishing_bus_core.py", "check_publish_result"),
+        ("erp_web/services/online_product_service.py", "reconcile"),
+    ):
+        method = next(node for node in ast.walk(parse_python(path)) if isinstance(node, ast.FunctionDef) and node.name == name)
+        calls = {dotted_name(node.func) for node in ast.walk(method) if isinstance(node, ast.Call)}
+        assert calls & {"self.task_queue.check", "self.context.task_queue.check"}
+        assert not calls & {"self.confirmation.check", "self.reconcile_once"}
 
 
 def test_watermark_rendering_has_no_network_or_application_state_dependency() -> None:

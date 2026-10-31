@@ -41,7 +41,7 @@ class OnlineProductJobReader:
                 else:
                     summary += "；继续处理时只重试失败项，不重复全量同步。"
         if lifecycle == "failed":
-            summary += "；未确认全部生效，请读取在线商品操作记录中的逐项证据。"
+            summary += "；未确认全部生效，请读取任务详情中的逐项证据。"
         return JobStateSnapshot(status=lifecycle, stage_code=status, stage_label=_LABELS.get(status, status),
                                 summary=summary[:500], last_external_status=status,
                                 error=str(result.get("error") or (summary if lifecycle == "failed" else ""))[:2000])

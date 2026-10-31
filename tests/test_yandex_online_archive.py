@@ -126,7 +126,7 @@ def test_timeout_stays_unknown_and_single_target_query_resolves_without_replay(a
     with pytest.raises(OnlineConflict):
         service.change(command(service))
     remote.calls.clear()
-    assert service.reconcile(job["id"])["job"]["status"] == "confirmed"
+    assert service.reconcile_once(job["id"])["job"]["status"] == "confirmed"
     assert service.store.get(job["target_id"]).archived
     assert len(remote.calls) == 1 and remote.calls[0][:2] == ("offer-mappings", {"offerIds": ["sku-0"]})
     assert len(remote.writes) == 1
@@ -202,7 +202,7 @@ def test_archive_protects_same_sku_across_shops_and_does_not_lock_other_goods(ar
         assert service.store.enqueue("yandex", listing.account_id, "sale_state", listing.id, {"operation": "sale_state"}, uuid4().hex)["status"] == "queued"
     assert service.store.enqueue("yandex", second.account_id, "content", second.id, {"operation": "content"}, uuid4().hex)["status"] == "queued"
     with pytest.raises(OnlineConflict):
-        service.reconcile(job["id"])
+        service.reconcile_once(job["id"])
 
 
 def test_success_updates_other_shop_cache_without_changing_inventory(archive_service):

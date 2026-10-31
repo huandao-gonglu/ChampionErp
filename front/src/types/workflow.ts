@@ -694,62 +694,6 @@ export interface PublishJob {
   targetKey?: string
 }
 
-export type PublishJobDisplayStatus = 'pending_confirmation' | 'queued' | 'running' | 'success' | 'failed' | 'partial' | 'outcome_unknown'
-
-export interface PublishConfirmation {
-  submittedAt: string
-  nextCheckAt: string
-  lastCheckedAt: string
-  checkError: string
-}
-
-export interface PublishJobPlatformSummary {
-  confirmation?: PublishConfirmation
-  platform: Marketplace
-  draftId: string
-  site: string
-  sitesToSell: MarketplaceSiteToSell[]
-  marketResults?: PublishJobMarketResultSummary[]
-  status: string
-  stage: string
-  attempts: number
-  error: string
-  errorCode: string
-  nextAction: string
-  updatedAt: string
-}
-
-export interface PublishJobMarketResultSummary {
-  siteId: string
-  logisticType: string
-  status: string
-  itemId: string
-  error: string
-  errorCode: string
-}
-
-export interface PublishJobListItem {
-  jobId: string
-  productId: string
-  productName: string
-  draftId: string
-  status: PublishJobDisplayStatus
-  rawStatus: string
-  stage: string
-  attempts: number
-  error: string
-  errorCode: string
-  nextAction: string
-  platforms: PublishJobPlatformSummary[]
-  createdAt: string
-  updatedAt: string
-}
-
-export interface PublishJobsPage {
-  items: PublishJobListItem[]
-  nextCursor: string
-}
-
 export interface CollectForm {
   productUrl: string
   productUrls: string

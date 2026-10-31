@@ -20,8 +20,6 @@ import type {
   PricingTargetResult,
   ProductIndexItem,
   PublishJob,
-  PublishJobListItem,
-  PublishJobsPage,
   PublishPrecheck,
   UnknownRecord,
 } from '@/types/workflow'
@@ -41,7 +39,6 @@ import {
   normalizeDraftsIndex,
   normalizeProductsIndex,
   normalizePublishPrecheck,
-  normalizeSitesToSell,
   platformList,
   precheckIssues,
   isCategoryDictionaryAttribute,
@@ -50,84 +47,6 @@ import {
   toBackendSitesToSell,
 } from './normalizers'
 import { requiredDraftTarget } from './shared'
-
-function normalizePublishJobListItem(value: unknown): PublishJobListItem {
-  const record = asRecord(value)
-  const platforms = Array.isArray(record.platforms)
-    ? record.platforms.map((value) => {
-      const item = asRecord(value)
-      return {
-        platform: getString(item, ['platform']) as Marketplace,
-        draftId: getString(item, ['draft_id', 'draftId']),
-        site: getString(item, ['site']),
-        sitesToSell: normalizeSitesToSell(item.sites_to_sell),
-        marketResults: Array.isArray(item.market_results)
-          ? item.market_results.map((value) => {
-            const market = asRecord(value)
-            return {
-              siteId: getString(market, ['site_id', 'siteId']),
-              logisticType: getString(market, ['logistic_type', 'logisticType']),
-              status: getString(market, ['status']),
-              itemId: getString(market, ['item_id', 'itemId']),
-              error: getString(market, ['error']),
-              errorCode: getString(market, ['error_code', 'errorCode']),
-            }
-          })
-          : [],
-        status: getString(item, ['status']),
-        stage: getString(item, ['stage']),
-        attempts: getNumber(item, ['attempts']),
-        error: getString(item, ['error']),
-        errorCode: getString(item, ['error_code', 'errorCode']),
-        nextAction: getString(item, ['next_action', 'nextAction']),
-        updatedAt: getString(item, ['updated_at', 'updatedAt']),
-        confirmation: {
-          submittedAt: getString(asRecord(item.confirmation), ['submitted_at']),
-          nextCheckAt: getString(asRecord(item.confirmation), ['next_check_at']),
-          lastCheckedAt: getString(asRecord(item.confirmation), ['last_checked_at']),
-          checkError: getString(asRecord(item.confirmation), ['check_error']),
-        },
-      }
-    })
-    : []
-  return {
-    jobId: getString(record, ['job_id', 'jobId']),
-    productId: getString(record, ['product_id', 'productId']),
-    productName: getString(record, ['product_name', 'productName']),
-    draftId: getString(record, ['draft_id', 'draftId']),
-    status: getString(record, ['status'], 'queued') as PublishJobListItem['status'],
-    rawStatus: getString(record, ['raw_status', 'rawStatus']),
-    stage: getString(record, ['stage']),
-    attempts: getNumber(record, ['attempts']),
-    error: getString(record, ['error']),
-    errorCode: getString(record, ['error_code', 'errorCode']),
-    nextAction: getString(record, ['next_action', 'nextAction']),
-    platforms,
-    createdAt: getString(record, ['created_at', 'createdAt']),
-    updatedAt: getString(record, ['updated_at', 'updatedAt']),
-  }
-}
-
-export async function fetchPublishJobs(options: {
-  limit?: number
-  cursor?: string
-  status?: string
-  platform?: string
-  productId?: string
-} = {}): Promise<PublishJobsPage> {
-  const params = new URLSearchParams({ limit: String(options.limit || 50) })
-  if (options.cursor) params.set('cursor', options.cursor)
-  if (options.status) params.set('status', options.status)
-  if (options.platform) params.set('platform', options.platform)
-  if (options.productId) params.set('product_id', options.productId)
-  const response = await apiClient.get(`/api/publish-bus/jobs?${params.toString()}`)
-  const data = asRecord(response.data)
-  ensureOk(data, '读取发布任务失败')
-  return {
-    items: Array.isArray(data.items) ? data.items.map(normalizePublishJobListItem) : [],
-    nextCursor: getString(data, ['next_cursor', 'nextCursor']),
-  }
-}
 
 function normalizeMoney(value: unknown, currency: string) {
   const record = asRecord(value)
@@ -459,27 +378,6 @@ export async function enqueuePublish(draft: DraftDetail, target: MarketplaceTarg
     draftId: getString(data, ['draft_id'], draft.draftId),
     targetKey: `${targetPlatform}:${targetSite}`.toLowerCase(),
   }
-}
-
-export async function fetchPublishJob(jobId: string): Promise<UnknownRecord> {
-  const response = await apiClient.get(`/api/publish-bus/status?job_id=${encodeURIComponent(jobId)}`)
-  const data = asRecord(response.data)
-  ensureOk(data, '读取任务状态失败')
-  return asRecord(data.job)
-}
-
-export async function reconcilePublishJob(jobId: string, platform: Marketplace): Promise<UnknownRecord> {
-  const normalizedJobId = String(jobId || '').trim()
-  const normalizedPlatform = String(platform || '').trim().toLowerCase()
-  if (!normalizedJobId || !normalizedPlatform) throw new Error('发布结果对账需要 Job ID 与平台。')
-  const response = await apiClient.post('/api/publish-bus/reconcile', {
-    job_id: normalizedJobId,
-    platform: normalizedPlatform,
-    trigger: 'manual',
-  })
-  const data = asRecord(response.data)
-  ensureOk(data, '发布结果对账失败')
-  return { ...data, summary: normalizePublishJobListItem(data.summary) }
 }
 
 export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = ''): Promise<CategorySelection> {

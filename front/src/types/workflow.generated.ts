@@ -977,6 +977,7 @@ export interface BackendQueueTask {
   error: string
   protection: string
   confirmation: BackendTaskConfirmationSummary | null
+  can_retry: boolean
 }
 
 export interface BackendTaskQueueResponse {

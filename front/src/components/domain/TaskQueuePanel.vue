@@ -2,20 +2,21 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { checkTask, fetchTask, fetchTasks } from '@/api/taskQueue'
-import type { OnlineJob } from '@/api/onlineProducts'
+import { onlineAction, type OnlineJob } from '@/api/onlineProducts'
 import type { BackendQueueTask, BackendTaskQueueDetail } from '@/types/workflow.generated'
 import OnlineOperationRecovery from './OnlineOperationRecovery.vue'
 
+const props = defineProps<{ initialTaskId?: string; initialSource?: string }>()
 const { t } = useI18n()
-const filters = reactive({ q: '', source: '', origin: '', status: '', platform: '', operation: '', account_id: '', since: '', until: '' })
+const filters = reactive({ q: '', source: props.initialSource || '', origin: '', status: '', platform: '', operation: '', account_id: '', since: '', until: '' })
 const page = ref(1), total = ref(0), tasks = ref<BackendQueueTask[]>([]), accounts = ref<string[]>([])
-const selectedId = ref(''), selected = ref<BackendTaskQueueDetail | null>(null)
+const selectedId = ref(props.initialTaskId || ''), selected = ref<BackendTaskQueueDetail | null>(null)
 const loading = ref(false), checking = ref(false), error = ref(''), notice = ref('')
 let timer: ReturnType<typeof setInterval> | undefined
 let debounce: ReturnType<typeof setTimeout> | undefined
 let disposed = false, generation = 0
 const statuses = ['queued', 'running', 'waiting', 'needs_attention', 'completed', 'partial', 'failed', 'closed_unconfirmed']
-const operations = ['publish', 'price', 'stock', 'content', 'sale_state', 'archive']
+const operations = ['publish', 'sync', 'price', 'stock', 'content', 'sale_state', 'archive']
 const plan = computed(() => selected.value?.task.confirmation)
 const onlineJob = computed(() => selected.value?.task.source === 'online' ? selected.value.detail as unknown as OnlineJob : null)
 const canCheck = computed(() => selected.value && ['waiting', 'needs_attention'].includes(selected.value.task.status))
@@ -78,6 +79,25 @@ async function check() {
   finally { checking.value = false }
   if (!disposed) await load(true)
 }
+async function retry() {
+  const task = selected.value?.task
+  if (!task?.can_retry || checking.value) return
+  checking.value = true; error.value = ''; notice.value = ''
+  try {
+    const job = await onlineAction('retry', { job_id: task.job_id, idempotency_key: crypto.randomUUID() })
+    if (disposed || selectedId.value !== task.id) return
+    selectedId.value = `online:${job.id}`
+    selected.value = await fetchTask(selectedId.value)
+    notice.value = t('taskQueue.retryQueued')
+  } catch (e) { if (!disposed) error.value = e instanceof Error ? e.message : t('taskQueue.loadFailed') }
+  finally { checking.value = false }
+  if (!disposed) await load(true)
+}
+watch(() => props.initialTaskId, id => {
+  selectedId.value = id || ''; selected.value = null
+  void load(true)
+})
+watch(() => props.initialSource, source => { filters.source = source || '' })
 watch(filters, () => {
   generation++; loading.value = false; page.value = 1
   clearTimeout(debounce)
@@ -135,7 +155,9 @@ onBeforeUnmount(() => { disposed = true; clearInterval(timer); clearTimeout(debo
           <p v-if="selected.task.error" class="mt-3 whitespace-pre-wrap break-words text-sm text-red-700 dark:text-red-300">{{ selected.task.error }}</p>
           <dl v-if="plan" class="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm"><dt>{{ t('taskQueue.lastCheck') }}</dt><dd>{{ formatTime(plan.last_checked_at) }}</dd><dt>{{ t('taskQueue.nextCheck') }}</dt><dd>{{ formatTime(plan.next_check_at) }}</dd><dt>{{ t('taskQueue.remaining') }}</dt><dd>{{ plan.checks_remaining }}</dd><dt>{{ t('taskQueue.requestsRemaining') }}</dt><dd>{{ plan.requests_remaining }}</dd><dt>{{ t('taskQueue.deadline') }}</dt><dd>{{ formatTime(plan.deadline_at) }}</dd></dl>
           <p v-if="plan?.error" class="mt-3 text-sm text-amber-700 dark:text-amber-300">{{ plan.error }}</p>
-          <div class="mt-4 flex flex-wrap gap-2"><button v-if="canCheck" class="btn btn-outline" :disabled="checking || plan?.state === 'checking'" @click="check">{{ checking ? t('taskQueue.checking') : t('taskQueue.check') }}</button><OnlineOperationRecovery v-if="onlineJob" :job="onlineJob" :disabled="checking" @updated="load()" /></div>
+          <div class="mt-4 flex flex-wrap gap-2"><button v-if="canCheck" class="btn btn-outline" :disabled="checking || plan?.state === 'checking'" @click="check">{{ checking ? t('taskQueue.checking') : t('taskQueue.check') }}</button><OnlineOperationRecovery v-if="onlineJob && onlineJob.operation !== 'sync'" :job="onlineJob" :disabled="checking" @updated="load()" /><button v-if="selected.task.can_retry" class="btn btn-outline" :disabled="checking" @click="retry">{{ t('taskQueue.retry') }}</button></div>
+          <p v-if="onlineJob?.operation === 'sync'" role="status" class="mt-4 text-sm">{{ t('taskQueue.syncProgress', { completed: onlineJob.result.completed || 0, failed: onlineJob.result.failed || 0, discovered: onlineJob.result.discovered ?? '—' }) }}</p>
+          <ul v-if="onlineJob?.operation === 'sync'" class="mt-3 max-h-80 space-y-2 overflow-auto text-sm"><li v-for="item in onlineJob.result.items?.filter(item => item.status === 'failed')" :key="item.remote_id">{{ item.remote_id }}：{{ item.error }}</li></ul>
           <div v-if="onlineJob && Object.keys(changes).length" class="mt-4 overflow-auto"><table class="w-full text-left text-xs"><thead><tr><th>{{ t('taskQueue.field') }}</th><th>{{ t('taskQueue.requested') }}</th><th>{{ t('taskQueue.observed') }}</th></tr></thead><tbody><tr v-for="(value, field) in changes" :key="field"><td class="p-2 align-top">{{ field }}</td><td class="p-2"><pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all">{{ display(value) }}</pre></td><td class="p-2"><pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all">{{ display(onlineJob.result.evidence?.observed?.[field]) }}</pre></td></tr></tbody></table></div>
           <ul v-if="onlineJob?.result.platform_errors?.length" class="mt-4 space-y-2 text-sm text-red-700 dark:text-red-300"><li v-for="(item, index) in onlineJob.result.platform_errors" :key="index" class="whitespace-pre-wrap break-words">{{ display(item) }}</li></ul>
           <ul v-if="results.length" class="mt-4 space-y-2"><li v-for="(item, index) in results" :key="index" class="rounded border border-accent-200 p-3 text-sm dark:border-dark-700"><p>{{ item.sku || item.site_id || item.sku_id }} · {{ statusLabel(item.status) }}</p><p v-if="item.error" class="mt-1 break-words text-red-600 dark:text-red-300">{{ display(item.error) }}</p></li></ul>

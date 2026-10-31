@@ -104,6 +104,8 @@ class TaskQueueService:
                 self.check(task["id"], trigger="scheduled")
 
     def check(self, task_id, *, trigger="manual"):
+        if trigger not in {"manual", "scheduled"}:
+            raise ValueError("结果查询只接受手动或任务队列调度。")
         task = self.reader.task(task_id)
         if task is None:
             raise ValueError("任务不存在")
@@ -121,7 +123,7 @@ class TaskQueueService:
                 deadline_at=lease["deadline"], cancel=self._stop,
                 before_send=lambda ctx: self.store.consume_request(task_id, lease, ctx)):
                 if task["source"] == "publish":
-                    result = self.context.publishing_bus.confirmation.check(task["job_id"], task["platform"], trigger=trigger)
+                    result = self.context.publishing_bus.confirmation.check(task["job_id"], task["platform"])
                     resolution = result["resolution"]
                 else:
                     self.context.online_products.reconcile_once(task["job_id"], lease_until=lease["deadline"]+30)

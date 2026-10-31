@@ -664,7 +664,7 @@ def test_native_approval_finishes_batch_after_enqueue_without_platform_wait(onli
         returned = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart) and part.tool_name != "search_tools"]
         if returned:
             results.extend(part.content for part in returned)
-            yield "修改请求已提交，远端处理结果请在操作记录查看。"
+            yield "修改请求已提交，远端处理结果请在任务队列查看。"
         else:
             yield {index: DeltaToolCall(name="online_products_change", json_args=json.dumps(request),
                                        tool_call_id=f"online-change-{index}") for index, request in enumerate(requests)}

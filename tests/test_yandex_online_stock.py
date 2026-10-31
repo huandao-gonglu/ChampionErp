@@ -86,5 +86,5 @@ def test_stock_write_targets_selected_warehouse_and_finishes_on_success_receipt(
     # 成功回执完成本次操作；本地旧快照留待按需同步，不要求回读才能完成。
     assert service.store.get(listing.id).stocks[0].quantity == initial
     with pytest.raises(ValueError):
-        service.reconcile(job['id'])
+        service.reconcile_once(job['id'])
     assert len(calls) == 1

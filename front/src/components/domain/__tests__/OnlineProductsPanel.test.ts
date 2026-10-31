@@ -6,11 +6,10 @@ import { apiClient } from '@/api/client'
 import { useAiPageContextStore } from '@/stores/aiPageContext'
 import OnlineProductsPanel from '../OnlineProductsPanel.vue'
 import OzonExportDialog from '../OzonExportDialog.vue'
-import OnlineOperationRecovery from '../OnlineOperationRecovery.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import { fetchOnlineDetail, fetchOnlineJob, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, previewOnlineBatch, submitOnlineBatch, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
+import { fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, previewOnlineBatch, submitOnlineBatch, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
 
-vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnlineJob: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), previewOnlineBatch:vi.fn(), submitOnlineBatch:vi.fn(), refreshOnlineStatus: vi.fn() }))
+vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), previewOnlineBatch:vi.fn(), submitOnlineBatch:vi.fn(), refreshOnlineStatus: vi.fn() }))
 const item: OnlineListing = {
   id: 'remote-1', platform: 'mercadolibre', account_id: 'shop-1', remote_id: 'CBT123', model: 'traditional_global_items',
   details_state: 'ready', buyer_links: [], title: '店铺同步商品', seller_sku: 'seller-sku', thumbnail: '', raw_status: 'active', sale_state: 'active', raw_sub_status: [], version: 'v1', synced_at: '', status_checked_at: '', errors: [], desired_sale_state: '',
@@ -35,6 +34,14 @@ function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,glob
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
 
 describe('在线商品页面',()=>{
+  it('通过任务队列查看历史，不再保留操作记录列表和详情弹窗', async () => {
+    render(); await flushPromises()
+    expect(wrapper!.text()).not.toContain('操作记录')
+    expect(wrapper!.find('[data-testid="online-job-dialog"]').exists()).toBe(false)
+    await click('任务队列')
+    expect(wrapper!.emitted('open-task')).toEqual([[]])
+    expect(onlineAction).not.toHaveBeenCalled()
+  })
   it('Yandex 保修修改预览原值与目标值，确认后才提交现有商品', async () => {
     const row = yandexItem({content: {guarantee_period: {timePeriod: 6, timeUnit: 'MONTH'}},
       capabilities: {...item.capabilities, content: {enabled: true, fields: ['guarantee_period'], scope: '账号全部店铺', reason: ''}}})
@@ -69,7 +76,6 @@ describe('在线商品页面',()=>{
     await wrapper!.get('[aria-label="商品详情"]').findAll('button').find(button => button.text()==='归档商品')!.trigger('click')
     await click('预览变更'); await click('确认提交')
     expect(onlineAction).toHaveBeenLastCalledWith('change',expect.objectContaining({operation:'archive',scope_id:'business',changes:{archived:true}}))
-    await wrapper!.get('[aria-label="关闭操作详情"]').trigger('click'); await click('返回在线商品')
     expect(wrapper!.find('[data-testid="online-listing"]').exists()).toBe(false)
     await click('归档商品')
     expect(fetchOnlineProducts).toHaveBeenLastCalledWith(expect.objectContaining({catalog:'archived'}))
@@ -80,7 +86,6 @@ describe('在线商品页面',()=>{
     expect(wrapper!.findAll('button').find(button => button.text()==='停售商品')!.attributes('disabled')).toBeDefined()
     await click('恢复归档'); await click('预览变更'); await click('确认提交')
     expect(onlineAction).toHaveBeenLastCalledWith('change',expect.objectContaining({operation:'archive',scope_id:'business',changes:{archived:false}}))
-    await wrapper!.get('[aria-label="关闭操作详情"]').trigger('click'); await click('返回在线商品')
     expect(wrapper!.find('[data-testid="online-listing"]').exists()).toBe(false)
     await click('普通商品')
     expect(wrapper!.find('[data-testid="online-listing"]').exists()).toBe(true)
@@ -174,99 +179,31 @@ describe('在线商品页面',()=>{
     await flushPromises()
     expect(dialog().element.open).toBe(false)
   })
-  it('明确受理与实际生效分开展示，不提示必须核对后才能继续修改', async () => {
-    const job: OnlineJob = {id:'accepted',operation:'sale_state',platform:'yandex',status:'submitted',created_at:'',updated_at:'',target_id:item.id,request:{},result:{}}
-    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[job]})
-    render(); await flushPromises(); await click('操作记录'); await click('查看详情')
-    const detail = wrapper!.get('[data-testid="online-job-detail"]')
-    expect(detail.text()).toContain('停售 / 恢复 · 平台已受理')
-    expect(detail.text()).toContain('可继续修改商品')
-    expect(detail.text()).not.toContain('已生效')
-    expect(wrapper!.find('[data-testid="review-unconfirmed"]').exists()).toBe(false)
-    await vi.advanceTimersByTimeAsync(60000)
-    expect(onlineAction).not.toHaveBeenCalled()
-  })
-  it.each(['NO_STOCKS', 'PUBLISHED'])('库存确认后自动查询销售状态并展示平台实际值 %s', async rawStatus => {
-    const job: OnlineJob = {id:'stock-confirm',operation:'stock',platform:'yandex',status:'submitted',created_at:'',updated_at:'',target_id:item.id,request:{},result:{}}
-    const confirmed = {...job,status:'confirmed'}
-    const fresh = {...item,raw_status:rawStatus,sale_state:rawStatus === 'PUBLISHED' ? 'active' : 'unknown',stocks:[{id:'warehouse',label:'库存仓',quantity:0,writable:true,reason:''}]}
-    vi.mocked(fetchOnlineProducts).mockResolvedValueOnce({...response(),jobs:[job]}).mockResolvedValue({...response(),items:[fresh],jobs:[confirmed]})
-    vi.mocked(onlineAction).mockResolvedValueOnce(confirmed)
-    vi.mocked(refreshOnlineStatus).mockResolvedValueOnce(fresh)
-    render(); await flushPromises(); await click('操作记录'); await click('查看详情'); await click('查询平台结果')
-    expect(refreshOnlineStatus).toHaveBeenCalledTimes(1)
-    expect(refreshOnlineStatus).toHaveBeenCalledWith(item.id)
-    expect(wrapper!.get('[data-testid="online-job-detail"]').text()).toContain('修改库存 · 已完成')
-    await wrapper!.get('[aria-label="关闭操作详情"]').trigger('click'); await click('返回在线商品')
-    expect(wrapper!.get('[data-testid="online-listing"]').text()).toContain(rawStatus === 'NO_STOCKS' ? '缺货' : '在售')
-    expect(onlineAction).toHaveBeenCalledTimes(1)
-    expect(onlineAction).toHaveBeenCalledWith('reconcile', {job_id:job.id})
-  })
-  it('核对弹窗确认库存成功后同样刷新状态；状态查询失败不改变库存成功结果', async () => {
-    const job: OnlineJob = {id:'stock-confirm',operation:'stock',platform:'mercadolibre',status:'outcome_unknown',created_at:'',updated_at:'',target_id:item.id,request:{},result:{}}
-    const confirmed = {...job,status:'confirmed'}
-    vi.mocked(fetchOnlineProducts).mockResolvedValueOnce({...response(),jobs:[job]}).mockResolvedValue({...response(),jobs:[confirmed]})
-    vi.mocked(refreshOnlineStatus).mockRejectedValueOnce(new Error('状态接口超时'))
-    render(); await flushPromises(); await click('操作记录'); await click('查看详情')
-    wrapper!.findComponent(OnlineOperationRecovery).vm.$emit('updated', confirmed)
-    await flushPromises()
-    expect(refreshOnlineStatus).toHaveBeenCalledTimes(1)
-    expect(refreshOnlineStatus).toHaveBeenCalledWith(item.id)
-    const dialog = wrapper!.get('[data-testid="online-job-detail"]')
-    expect(dialog.text()).toContain('修改库存 · 已完成')
-    expect(dialog.get('[role="alert"]').text()).toBe('库存已生效，但销售状态刷新失败：状态接口超时')
-    expect(onlineAction).not.toHaveBeenCalled()
-  })
-  it.each(['submitted','waiting_confirmation','outcome_unknown'])('库存仍为 %s 时不额外查询销售状态', async status => {
-    const job: OnlineJob = {id:'stock-confirm',operation:'stock',platform:'mercadolibre',status:'submitted',created_at:'',updated_at:'',target_id:item.id,request:{},result:{}}
-    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[{...job,status}]})
-    vi.mocked(onlineAction).mockResolvedValueOnce({...job,status})
-    render(); await flushPromises(); await click('操作记录'); await click('查看详情'); await click('查询平台结果')
-    expect(refreshOnlineStatus).not.toHaveBeenCalled()
-  })
-  it('真实 HTTP 错误经过客户端后仍可直达列表之外的对应操作，不重发修改', async () => {
-    const blocking: OnlineJob = {id:'blocking-job',operation:'stock',platform:'mercadolibre',status:'submitted',created_at:'',updated_at:'',target_id:item.id,request:{},result:{before:{seller_sku:'BLOCKED-SKU'}}}
+  it('冲突请求直达任务队列对应任务，不读取旧操作详情或重发修改', async () => {
     const actual = await vi.importActual<typeof import('@/api/onlineProducts')>('@/api/onlineProducts')
     vi.mocked(onlineAction).mockImplementationOnce(actual.onlineAction)
-    vi.mocked(fetchOnlineJob).mockImplementationOnce(actual.fetchOnlineJob)
     const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
-      if (config.method === 'post' && config.url === '/api/online-products/change') {
-        throw new AxiosError('Request failed with status code 409', 'ERR_BAD_REQUEST', config, undefined, {
-          config, status:409, statusText:'Conflict', headers:{},
-          data:{ok:false,error:'该商品已有未完成的修改',error_code:'ONLINE_CONFLICT',conflict_job_id:blocking.id},
-        })
-      }
-      expect(config.method).toBe('get')
-      expect(config.url).toBe('/api/online-products')
-      expect(config.params).toEqual({job_id:blocking.id})
-      return {config,status:200,statusText:'OK',headers:{},data:{ok:true,job:blocking}}
+      expect(config.method).toBe('post')
+      expect(config.url).toBe('/api/online-products/change')
+      throw new AxiosError('Request failed with status code 409', 'ERR_BAD_REQUEST', config, undefined, {
+        config, status:409, statusText:'Conflict', headers:{},
+        data:{ok:false,error:'该商品已有未完成的修改',error_code:'ONLINE_CONFLICT',conflict_job_id:'blocking-job'},
+      })
     })
     apiClient.defaults.adapter = adapter
     render(); await flushPromises(); await click('管理 →'); await click('调整价格')
     await wrapper!.get('input[inputmode="decimal"]').setValue('18.25')
-    await click('预览变更'); await click('确认提交')
-    await wrapper!.get('[data-testid="online-conflict-operation"]').trigger('click'); await flushPromises()
-    expect(fetchOnlineJob).toHaveBeenCalledWith('blocking-job')
-    const dialog = wrapper!.get<HTMLDialogElement>('[data-testid="online-job-dialog"]')
-    expect(dialog.element.open).toBe(true)
-    expect(dialog.text()).toContain('BLOCKED-SKU')
-    expect(dialog.text()).toContain('查询平台结果')
-    expect(wrapper!.find('[aria-label="商品详情"]').exists()).toBe(false)
-    expect(wrapper!.find('[aria-label="调整价格"]').exists()).toBe(false)
+    await click('预览变更'); await click('确认提交'); await click('查看对应任务')
+    expect(wrapper!.emitted('open-task')).toEqual([['blocking-job']])
+    expect(wrapper!.find('[data-testid="online-job-dialog"]').exists()).toBe(false)
     expect(onlineAction).toHaveBeenCalledTimes(1)
-    expect(adapter).toHaveBeenCalledTimes(2)
+    expect(adapter).toHaveBeenCalledTimes(1)
   })
-  it('对应操作读取失败时保留变更弹窗与重试入口，普通错误不显示跳转按钮', async () => {
-    vi.mocked(onlineAction).mockRejectedValueOnce(Object.assign(new Error('已有未完成修改'), {
-      raw:{error_code:'ONLINE_CONFLICT',conflict_job_id:'blocking-job'},
-    }))
-    vi.mocked(fetchOnlineJob).mockRejectedValueOnce(new Error('操作记录读取失败'))
-    render(); await flushPromises(); await click('管理 →'); await click('调整价格')
-    await click('预览变更'); await click('确认提交'); await click('查看对应操作')
-    expect(wrapper!.get('[aria-label="调整价格"]').text()).toContain('操作记录读取失败')
-    expect(wrapper!.find('[data-testid="online-conflict-operation"]').exists()).toBe(true)
+  it('普通提交错误不显示冲突任务链接', async () => {
     vi.mocked(onlineAction).mockRejectedValueOnce(new Error('网络错误'))
-    await click('确认提交')
+    render(); await flushPromises(); await click('管理 →'); await click('调整价格')
+    await click('预览变更'); await click('确认提交')
+    expect(wrapper!.get('[aria-label="调整价格"]').text()).toContain('网络错误')
     expect(wrapper!.find('[data-testid="online-conflict-operation"]').exists()).toBe(false)
   })
   it.each(['0', '25'])('手动输入库存 %s 可预览，确认后按绝对数量提交', async quantity => {
@@ -485,8 +422,8 @@ describe('在线商品页面',()=>{
       expect(fetchOnlineProducts).toHaveBeenCalledTimes(2)
     } finally { hidden.mockRestore() }
   })
-  it('历史延迟确认标记不再启动自动查询', async () => {
-    const job: OnlineJob = {id:'submitted',operation:'price',platform:'mercadolibre',status:'submitted',target_id:item.id,created_at:'',updated_at:'',request:{},result:{automatic_confirmation_pending:true,next_confirmation_at:Date.now()/1000+120}}
+  it('已结束提交的本地记录不再启动页面自动查询', async () => {
+    const job: OnlineJob = {id:'submitted',operation:'price',platform:'mercadolibre',status:'submitted',target_id:item.id,created_at:'',updated_at:'',request:{},result:{}}
     vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[job]})
     render(); await flushPromises()
     await vi.advanceTimersByTimeAsync(120000)
@@ -717,8 +654,6 @@ describe('在线商品页面',()=>{
     await wrapper!.get('[data-testid="online-group"]').trigger('click')
     expect(context.current?.listing_id).toBeUndefined()
     expect(context.current?.group_id).toBe('group-1')
-    await click('操作记录')
-    expect(context.current?.group_id).toBeUndefined()
   })
   it('筛选立即撤销旧焦点，刷新保留有效焦点并清理消失的商品',async()=>{
     render(); await flushPromises()
@@ -784,84 +719,10 @@ describe('在线商品页面',()=>{
     await click('预览变更');expect(onlineAction).not.toHaveBeenCalled()
     await click('确认提交')
     expect(onlineAction).toHaveBeenCalledWith('change',expect.objectContaining({listing_id:'remote-1',version:'v1',scope_id:'global',operation:'price',changes:{amount:'18.25',currency:'USD'}}))
-  })
-  it('长记录列表点击详情立即打开对应抽屉，查询错误显示在抽屉内', async () => {
-    const jobs: OnlineJob[] = Array.from({length:100}, (_, index) => ({
-      id:`job-${index}`,operation:'stock',platform:'mercadolibre',status:'submitted',
-      created_at:'',updated_at:'',target_id:`listing-${index}`,request:{},
-      result:{before:{title:`商品 ${index}`,seller_sku:`SKU-${index}`}},
-    }))
-    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs})
-    render(); await flushPromises(); await click('操作记录')
-    const details = wrapper!.findAll('button').filter(button => button.text() === '查看详情')
-    await details[0].trigger('click'); await flushPromises()
-    const dialog = () => wrapper!.get('[data-testid="online-job-dialog"]')
-    expect((dialog().element as HTMLDialogElement).open).toBe(true)
-    expect(dialog().text()).toContain('SKU-0')
-    expect(dialog().findAll('button').some(button => button.text() === '查询平台结果')).toBe(true)
-    expect(onlineAction).not.toHaveBeenCalled()
-    await dialog().get('[aria-label="关闭操作详情"]').trigger('click'); await flushPromises()
-    expect((dialog().element as HTMLDialogElement).open).toBe(false)
-
-    await details[99].trigger('click'); await flushPromises()
-    expect((dialog().element as HTMLDialogElement).open).toBe(true)
-    expect(dialog().text()).toContain('SKU-99')
-    vi.mocked(onlineAction).mockRejectedValueOnce(new Error('请稍后再查询'))
-    await click('查询平台结果')
-    expect(onlineAction).toHaveBeenCalledWith('reconcile', {job_id:'job-99'})
-    expect(dialog().get('[role="alert"]').text()).toBe('请稍后再查询')
-  })
-  it('操作详情内部按下、遮罩松开不关闭，完整遮罩点击才关闭', async () => {
-    const job: OnlineJob = {id:'submitted',operation:'stock',platform:'mercadolibre',status:'submitted',created_at:'',updated_at:'',target_id:item.id,request:{},result:{}}
-    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[job]})
-    render(); await flushPromises(); await click('操作记录'); await click('查看详情')
-    const dialog = () => wrapper!.get('[data-testid="online-job-dialog"]')
-    const backdrop = wrapper!.get('[data-testid="workspace-dialog-backdrop"]')
-    const pointer = {isPrimary:true,button:0,pointerId:1}
-    await dialog().get('h2').trigger('pointerdown', pointer)
-    await backdrop.trigger('pointerup', pointer)
-    await flushPromises()
-    expect((dialog().element as HTMLDialogElement).open).toBe(true)
-    await backdrop.trigger('pointerdown', pointer)
-    await backdrop.trigger('pointerup', pointer)
-    await flushPromises()
-    expect((dialog().element as HTMLDialogElement).open).toBe(false)
-  })
-  it('旧失败记录指向最新修改，不继续重试旧记录', async () => {
-    const old: OnlineJob = {id:'old',operation:'stock',platform:'yandex',status:'failed',created_at:'2026-10-13T10:12:00Z',updated_at:'',target_id:item.id,request:{},result:{error:'Yandex 接口请求超时'}}
-    const latest: OnlineJob = {...old,id:'latest',status:'submitted',created_at:'2026-10-13T13:04:00Z',result:{}}
-    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),jobs:[latest,old]})
-    render(); await flushPromises(); await click('操作记录')
-    await wrapper!.findAll('button').filter(button => button.text() === '查看详情')[1].trigger('click')
-    await flushPromises()
-    expect(wrapper!.get('[data-testid="online-job-newer"]').text()).toContain('平台已受理')
-    expect(wrapper!.get('[data-testid="online-job-detail"]').text()).not.toContain('仅重试失败项')
-    await click('查看最新操作')
-    const detail = wrapper!.get('[data-testid="online-job-detail"]')
-    expect(detail.text()).toContain('查询平台结果')
-    expect(detail.text()).not.toContain('Yandex 接口请求超时')
-    expect(detail.find('[data-testid="online-job-newer"]').exists()).toBe(false)
-    expect(onlineAction).not.toHaveBeenCalled()
-  })
-  it('结果未知提供核对与人工结束入口，不提供重试',async()=>{
-    const page=response();page.jobs=[{id:'unknown',operation:'price',platform:'mercadolibre',status:'outcome_unknown',created_at:'',updated_at:'',target_id:'remote-1',request:{},result:{error:'平台可能已接受'}}]
-    vi.mocked(fetchOnlineProducts).mockResolvedValue(page)
-    render();await flushPromises();await click('操作记录');await click('查看详情')
-    expect(wrapper!.text()).toContain('查询平台结果');expect(wrapper!.text()).not.toContain('仅重试失败项')
-    expect(wrapper!.get('[data-testid="review-unconfirmed"]').text()).toBe('核对并结束操作')
-    await click('核对并结束操作')
-    expect(wrapper!.get('[data-testid="close-unconfirmed"]').attributes('disabled')).toBeDefined()
-  })
-  it('人工结束后保留未知结果与历史错误，不继续显示阻断或重试入口', async () => {
-    const page=response();page.jobs=[{id:'closed',operation:'stock',platform:'yandex',status:'closed_unconfirmed',created_at:'',updated_at:'',target_id:'remote-1',request:{},result:{error:'原请求超时',resolution:{closed_at:'2026-10-13T10:00:00Z',acknowledged_unconfirmed:true}}}]
-    vi.mocked(fetchOnlineProducts).mockResolvedValue(page)
-    render();await flushPromises();await click('操作记录');await click('查看详情')
-    expect(wrapper!.get('article').text()).toContain('已结束，结果未确认')
-    expect(wrapper!.get('article details').text()).toContain('原请求超时')
-    expect(wrapper!.get('article').find('[role="alert"]').exists()).toBe(false)
-    expect(wrapper!.text()).not.toContain('仅重试失败项')
-    expect(wrapper!.find('[data-testid="review-unconfirmed"]').exists()).toBe(false)
-    expect(onlineAction).not.toHaveBeenCalled()
+    expect(wrapper!.find('[data-testid="online-listing"]').exists()).toBe(true)
+    expect(wrapper!.text()).toContain('处理结果可在任务队列查看')
+    await click('查看任务')
+    expect(wrapper!.emitted('open-task')).toEqual([['job-1']])
   })
   it('网络失败保留错误而不伪装为空店铺',async()=>{
     vi.mocked(fetchOnlineProducts).mockRejectedValue(new Error('授权读取失败'))
@@ -902,6 +763,7 @@ describe('在线商品页面',()=>{
     await click('归档商品')
     expect(wrapper!.text()).toContain('最近同步 · 归档商品')
     await click('查看同步进度')
+    expect(wrapper!.emitted('open-task')).toEqual([['archived-sync']])
     expect(onlineAction).not.toHaveBeenCalled()
   })
   it('已有同步时直接查看阶段进度，不再次提交同步', async () => {
@@ -911,6 +773,7 @@ describe('在线商品页面',()=>{
     render();await flushPromises()
     expect(wrapper!.text()).toContain('正在补齐详情，已处理 101 / 201 件')
     await click('查看同步进度')
+    expect(wrapper!.emitted('open-task')).toEqual([['sync-1']])
     expect(wrapper!.find('[aria-label="同步商品"]').exists()).toBe(false)
     expect(wrapper!.text()).toContain('正在补齐详情，已处理 101 / 201 件')
     expect(wrapper!.text()).not.toContain('网络超时后平台可能已完成修改')

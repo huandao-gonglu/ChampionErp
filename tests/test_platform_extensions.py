@@ -1090,7 +1090,7 @@ def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
         )
         bus.wait(queued["job_id"], timeout=2)
         assert adapter.poll_calls == 0
-        bus.check_publish_result(queued["job_id"], "ozon")
+        bus.confirmation.check(queued["job_id"], "ozon")
         state = bus.get_status(queued["job_id"])
     finally:
         bus.close()
@@ -1215,7 +1215,7 @@ def test_publishing_bus_resumes_saved_platform_poll_without_resubmitting() -> No
         assert bus.recover_pending_jobs() == ["job-pending"]
         bus.wait("job-pending", timeout=2)
         assert adapter.poll_calls == 0
-        bus.check_publish_result("job-pending", "ozon")
+        bus.confirmation.check("job-pending", "ozon")
         state = bus.get_status("job-pending")
     finally:
         bus.close()
@@ -1969,7 +1969,7 @@ def test_outcome_unknown_task_can_be_reconciled_without_replaying_write() -> Non
         auto_resume_pending=False,
     )
     try:
-        result = bus.check_publish_result(
+        result = bus.confirmation.check(
             "job-unknown",
             "mercadolibre",
         )
@@ -2036,7 +2036,7 @@ def test_outcome_unknown_reconciliation_keeps_lock_while_task_is_pending() -> No
         auto_resume_pending=False,
     )
     try:
-        result = bus.check_publish_result(
+        result = bus.confirmation.check(
             "job-pending-reconcile",
             "mercadolibre",
         )
@@ -2087,7 +2087,7 @@ def test_outcome_unknown_without_task_id_cannot_be_auto_reconciled() -> None:
     )
     try:
         with pytest.raises(ValueError, match="没有远端 task_id"):
-            bus.check_publish_result("job-no-task", "mercadolibre")
+            bus.confirmation.check("job-no-task", "mercadolibre")
     finally:
         bus.close()
 

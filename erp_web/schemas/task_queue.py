@@ -56,6 +56,7 @@ class QueueTask(TypedDict):
     error: str
     protection: str
     confirmation: TaskConfirmationSummary | None
+    can_retry: bool
 
 
 class TaskQueueResponse(TypedDict):

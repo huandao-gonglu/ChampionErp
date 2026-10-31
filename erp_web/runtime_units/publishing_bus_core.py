@@ -846,10 +846,8 @@ class PublishingBus:
         self.executor.shutdown(wait=True)
 
     def check_publish_result(self, job_id: str, platform: str, *, trigger: str = "manual") -> dict[str, Any]:
-        if self.task_queue is not None:
-            checked = self.task_queue.check(f"publish:{job_id}:{platform}", trigger=trigger)
-            return self.confirmation._response(job_id, platform, checked["checked"], checked["resolution"])
-        return self.confirmation.check(job_id, platform, trigger=trigger)
+        checked = self.task_queue.check(f"publish:{job_id}:{platform}", trigger=trigger)
+        return self.confirmation._response(job_id, platform, checked["checked"], checked["resolution"])
 
     def list_jobs(
         self,

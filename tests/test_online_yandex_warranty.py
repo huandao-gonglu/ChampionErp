@@ -77,7 +77,7 @@ def test_online_warranty_updates_existing_offer_and_confirms_only_after_readback
     assert calls == [{'offerId': 'sku-0', 'guaranteePeriod': PERIOD}]
     assert {k: platform.rows[0]['offer'][k] for k in original} == original
     assert service.store.job(job['id'])['status'] == 'waiting_confirmation'
-    result = service.reconcile(job['id'])['job']
+    result = service.reconcile_once(job['id'])['job']
     assert result['status'] == 'confirmed'
     assert result['result']['confirmation'] == {'guarantee_period': True}
     assert result['result']['evidence']['observed'] == {'guarantee_period': PERIOD}
