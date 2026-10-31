@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { useI18n } from 'vue-i18n'
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -43,8 +42,6 @@ import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
 import type { DraftIndexItem, MarketplaceTargetSite, ProductIndexItem } from '@/types/workflow'
-
-const { t } = useI18n()
 
 const store = useWorkflowStore()
 useOrderCenterEntrySync()
@@ -348,6 +345,12 @@ function navigate(key: string) {
 function openOnlineTask(jobId?: string) {
   void router.push({ name: 'WorkflowHome', query: { tab: 'publish', source: 'online', ...(jobId ? { task_id: `online:${jobId}` } : {}) } })
 }
+function closeTaskDetail() {
+  if (!route.query.task_id) return
+  const query = { ...route.query }
+  delete query.task_id
+  void router.replace({ query })
+}
 
 async function claimAndOpenDrafts(productIds: string[], targets: MarketplaceTargetSite[]) {
   const ok = await store.claimProductsToDrafts(productIds, targets)
@@ -479,7 +482,6 @@ watch(
           />
 
           <div v-else-if="activeNav === 'drafts'" class="space-y-6">
-            <PageHeader title="草稿箱" description="分别维护各平台的内容、SKU 选品和售价；规格资料可沿用商品或在草稿中单独调整。" />
             <DraftBoxPanel
               :drafts="draftsIndex"
               :platform-options="platformOptions"
@@ -496,17 +498,13 @@ watch(
             />
           </div>
 
-          <div v-else-if="activeNav === 'publish'" class="space-y-6">
-            <PageHeader :title="t('pages.publish.title')" :description="t('pages.publish.description')" />
-            <TaskQueuePanel :initial-task-id="String(route.query.task_id || '')" :initial-source="String(route.query.source || '')" />
-          </div>
+          <TaskQueuePanel v-else-if="activeNav === 'publish'" :initial-task-id="String(route.query.task_id || '')" :initial-source="String(route.query.source || '')" @close-task="closeTaskDetail" />
 
           <SystemSettingsPanel v-else-if="activeNav === 'systemSettings'" />
           <OrderCenterPanel v-else-if="activeNav === 'orders'" />
           <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" @open-task="openOnlineTask" />
 
           <div v-else-if="activeNav === 'auth'" class="space-y-6">
-            <OrderIntegrationSettings />
             <AuthSettingsPanel
               :app-config="appConfig"
               :ai-config="aiConfig"
@@ -531,6 +529,7 @@ watch(
               @exchange-ml-code="store.exchangeMlCode"
               @clear-auth="store.clearPlatformAuth"
             />
+            <OrderIntegrationSettings />
           </div>
         </div>
       </main>

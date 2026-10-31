@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import LibraryMarketSelector from './LibraryMarketSelector.vue'
 import type { MarketplaceOption, MarketplaceTargetSite, ProductIndexItem, UnknownRecord } from '@/types/workflow'
 
@@ -60,98 +61,97 @@ function statusClass(value: string) {
 </script>
 
 <template>
-  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-    <div class="flex flex-wrap items-start justify-between gap-4">
-      <div class="min-w-0">
-        <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">商品库</p>
-        <h2 class="mt-2 card-title">商品母库</h2>
-        <p class="muted mt-1">保存采集后的商品事实、供应链字段和通用图片；发布相关内容进入草稿箱后再编辑。</p>
+  <section class="space-y-6">
+    <PageHeader title="商品库" description="保存采集后的商品事实、供应链字段和通用图片；发布相关内容进入草稿箱后再编辑。">
+      <template #actions>
+        <select v-model="workflowFilter" class="input w-full sm:w-44">
+          <option value="all">全部商品</option>
+          <option value="collected">已采集</option>
+          <option value="not_collected">待补全</option>
+        </select>
+      </template>
+    </PageHeader>
+
+    <div class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+      <div v-if="props.error" class="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
+        {{ props.error }}
       </div>
-      <select v-model="workflowFilter" class="input w-full sm:w-44">
-        <option value="all">全部商品</option>
-        <option value="collected">已采集</option>
-        <option value="not_collected">待补全</option>
-      </select>
-    </div>
 
-    <div v-if="props.error" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
-      {{ props.error }}
-    </div>
+      <LibraryMarketSelector v-model="selectedTargets" :platform-options="props.platformOptions" :store-config="props.storeConfig" :loading="props.loading" />
 
-    <LibraryMarketSelector v-model="selectedTargets" class="mt-5" :platform-options="props.platformOptions" :store-config="props.storeConfig" :loading="props.loading" />
-
-    <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="text-sm text-accent-500 dark:text-accent-400">
-          本地商品库：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ filteredItems.length }} / {{ props.items.length }}</span> 条记录
-          <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
-          已勾选：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ selectedCount }}</span> 个
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refresh')">刷新商品库</button>
-          <button data-testid="library-claim-selected" class="btn btn-primary py-2" :disabled="props.loading || !selectedCount || !selectedTargets.length" @click="requestClaim(props.selectedIds)">推到草稿<span v-if="selectedCount">（{{ selectedCount }} 个商品）</span></button>
-          <button class="btn btn-outline py-2 text-rose-700 dark:text-rose-200" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除</button>
+      <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="text-sm text-accent-500 dark:text-accent-400">
+            本地商品库：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ filteredItems.length }} / {{ props.items.length }}</span> 条记录
+            <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
+            已勾选：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ selectedCount }}</span> 个
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refresh')">刷新商品库</button>
+            <button data-testid="library-claim-selected" class="btn btn-primary py-2" :disabled="props.loading || !selectedCount || !selectedTargets.length" @click="requestClaim(props.selectedIds)">推到草稿<span v-if="selectedCount">（{{ selectedCount }} 个商品）</span></button>
+            <button class="btn btn-outline py-2 text-rose-700 dark:text-rose-200" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除</button>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="mt-5 overflow-x-auto rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full min-w-[760px] table-fixed text-left text-xs">
-        <colgroup>
-          <col class="w-10" />
-          <col class="w-10" />
-          <col class="w-[14%]" />
-          <col />
-          <col class="w-[72px]" />
-          <col class="w-[108px]" />
-          <col class="w-[210px]" />
-        </colgroup>
-        <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
-          <tr class="whitespace-nowrap">
-            <th class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前商品" :checked="allChecked" :disabled="props.loading || !filteredItems.length" @change="emit('selectAll', ($event.target as HTMLInputElement).checked, filteredItems.map((item) => item.productId))" /></th>
-            <th class="p-2">主图</th>
-            <th class="p-2">来源</th>
-            <th class="p-2">商品标题</th>
-            <th class="p-2">采集</th>
-            <th class="p-2">更新</th>
-            <th class="p-2">操作</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
-          <tr v-for="item in filteredItems" :key="item.productId" class="whitespace-nowrap align-middle transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
-            <td class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选商品" :checked="props.selectedIds.includes(item.productId)" :disabled="props.loading" @change="emit('toggle', item.productId, ($event.target as HTMLInputElement).checked)" /></td>
-            <td class="p-2">
-              <img v-if="item.mainImage" :src="item.mainImage" class="size-8 rounded-md object-cover" />
-              <div v-else class="flex size-8 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
-            </td>
-            <td class="min-w-0 p-2">
-              <div class="truncate text-accent-600 dark:text-accent-300" :title="item.sourcePlatform">{{ item.sourcePlatform || '-' }}</div>
-              <input
-                class="input mt-1 min-w-0 rounded-md px-2 py-1 text-xs"
-                type="text"
-                :value="item.sourceUrl"
-                :title="item.sourceUrl"
-                aria-label="来源 URL"
-                placeholder="暂无来源链接"
-                readonly
-              />
-            </td>
-            <td class="min-w-0 p-2">
-              <div class="truncate font-semibold text-accent-950 dark:text-white" :title="`${item.title || '-'} · ${item.productId || '-'}`">{{ item.title || '-' }}</div>
-            </td>
-            <td class="min-w-0 p-2"><span class="inline-flex max-w-full truncate" :class="statusClass(item.collectStatus)" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
-            <td class="min-w-0 p-2 text-accent-500 dark:text-accent-300"><span class="block truncate" :title="item.updatedAt || item.createdAt">{{ item.updatedAt || item.createdAt || '-' }}</span></td>
-            <td class="p-2">
-              <div class="flex flex-nowrap gap-1">
-                <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading" title="编辑商品" @click="emit('edit', item)">编辑</button>
-                <button data-testid="library-claim-row" class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !selectedTargets.length" @click="requestClaim([item.productId])">推到草稿</button>
-                <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-700 dark:text-rose-200" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="!filteredItems.length"><td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">当前筛选下暂无商品。可在采集页导入或采集商品后加入商品库。</td></tr>
-        </tbody>
-      </table>
+      <div class="mt-5 overflow-x-auto rounded-lg border border-accent-200 dark:border-dark-700">
+        <table class="w-full min-w-[760px] table-fixed text-left text-xs">
+          <colgroup>
+            <col class="w-10" />
+            <col class="w-10" />
+            <col class="w-[14%]" />
+            <col />
+            <col class="w-[72px]" />
+            <col class="w-[108px]" />
+            <col class="w-[210px]" />
+          </colgroup>
+          <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
+            <tr class="whitespace-nowrap">
+              <th class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前商品" :checked="allChecked" :disabled="props.loading || !filteredItems.length" @change="emit('selectAll', ($event.target as HTMLInputElement).checked, filteredItems.map((item) => item.productId))" /></th>
+              <th class="p-2">主图</th>
+              <th class="p-2">来源</th>
+              <th class="p-2">商品标题</th>
+              <th class="p-2">采集</th>
+              <th class="p-2">更新</th>
+              <th class="p-2">操作</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
+            <tr v-for="item in filteredItems" :key="item.productId" class="whitespace-nowrap align-middle transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
+              <td class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选商品" :checked="props.selectedIds.includes(item.productId)" :disabled="props.loading" @change="emit('toggle', item.productId, ($event.target as HTMLInputElement).checked)" /></td>
+              <td class="p-2">
+                <img v-if="item.mainImage" :src="item.mainImage" class="size-8 rounded-md object-cover" />
+                <div v-else class="flex size-8 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
+              </td>
+              <td class="min-w-0 p-2">
+                <div class="truncate text-accent-600 dark:text-accent-300" :title="item.sourcePlatform">{{ item.sourcePlatform || '-' }}</div>
+                <input
+                  class="input mt-1 min-w-0 rounded-md px-2 py-1 text-xs"
+                  type="text"
+                  :value="item.sourceUrl"
+                  :title="item.sourceUrl"
+                  aria-label="来源 URL"
+                  placeholder="暂无来源链接"
+                  readonly
+                />
+              </td>
+              <td class="min-w-0 p-2">
+                <div class="truncate font-semibold text-accent-950 dark:text-white" :title="`${item.title || '-'} · ${item.productId || '-'}`">{{ item.title || '-' }}</div>
+              </td>
+              <td class="min-w-0 p-2"><span class="inline-flex max-w-full truncate" :class="statusClass(item.collectStatus)" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
+              <td class="min-w-0 p-2 text-accent-500 dark:text-accent-300"><span class="block truncate" :title="item.updatedAt || item.createdAt">{{ item.updatedAt || item.createdAt || '-' }}</span></td>
+              <td class="p-2">
+                <div class="flex flex-nowrap gap-1">
+                  <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading" title="编辑商品" @click="emit('edit', item)">编辑</button>
+                  <button data-testid="library-claim-row" class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !selectedTargets.length" @click="requestClaim([item.productId])">推到草稿</button>
+                  <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-700 dark:text-rose-200" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!filteredItems.length"><td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">当前筛选下暂无商品。可在采集页导入或采集商品后加入商品库。</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </section>
 </template>

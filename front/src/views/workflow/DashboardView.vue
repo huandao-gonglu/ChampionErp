@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import OrderSummaryCard from '@/components/domain/OrderSummaryCard.vue'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
 import type {
@@ -141,26 +142,18 @@ function scrollToOrders() { emit('navigate', 'orders') }
 
 <template>
   <div class="space-y-5">
+    <PageHeader title="运营仪表盘" :description="currentProductTitle">
+      <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ currentProductMeta }}</p>
+      <template #actions>
+        <button type="button" class="btn btn-primary" :disabled="loading" @click="emit('collect')">采集商品</button>
+        <button type="button" class="btn btn-outline" :disabled="loading" @click="emit('refreshProducts')">刷新商品</button>
+        <button type="button" class="btn btn-secondary" :disabled="loading || !selectedIds.length" @click="emit('publishSelected')">已选通过项入队</button>
+      </template>
+    </PageHeader>
     <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
       <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div class="min-w-0">
-          <div class="flex flex-wrap items-start justify-between gap-4">
-            <div class="min-w-0">
-              <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">Champion ERP</p>
-              <h1 class="mt-2 text-2xl font-black text-accent-950 dark:text-white">运营仪表盘</h1>
-              <p class="mt-2 max-w-3xl text-sm leading-6 text-accent-600 dark:text-accent-300">
-                {{ currentProductTitle }}
-              </p>
-              <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ currentProductMeta }}</p>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <button type="button" class="btn btn-primary" :disabled="loading" @click="emit('collect')">采集商品</button>
-              <button type="button" class="btn btn-outline" :disabled="loading" @click="emit('refreshProducts')">刷新商品</button>
-              <button type="button" class="btn btn-secondary" :disabled="loading || !selectedIds.length" @click="emit('publishSelected')">已选通过项入队</button>
-            </div>
-          </div>
-
-          <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <article
               v-for="metric in dashboardMetrics"
               :key="metric.label"

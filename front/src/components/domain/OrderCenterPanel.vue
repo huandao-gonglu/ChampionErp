@@ -3,6 +3,7 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useOrderNotificationsStore } from '@/stores/orderNotifications'
 import { orderStateNames } from '@/types/orders'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import OrderCenterFilters from './OrderCenterFilters.vue'
 import OrderDetailPanel from './OrderDetailPanel.vue'
 import OrderListTable from './OrderListTable.vue'
@@ -74,47 +75,48 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <section class="order-ui order-center" aria-label="订单中心">
-    <header class="order-row order-center-header">
-      <h2>订单中心</h2>
-      <div class="order-actions">
-        <span v-if="store.lastCheckedAt" class="order-muted">最近刷新
-          {{
-            new Date(store.lastCheckedAt).toLocaleTimeString('zh-CN', {
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false,
-            })
-          }}</span>
-        <button class="order-button" @click="openNotifications">
-          通知 {{ store.summary.unread || 0 }}
-        </button>
-        <button
-          class="order-button order-primary"
-          :disabled="store.busy || syncing"
-          @click="store.command('sync', { platform: store.platform })"
-        >
-          {{ syncing ? '同步中…' : store.busy ? '提交中…' : '同步订单' }}
-        </button>
-        <details ref="more" class="order-more" @keydown.esc="closeMore">
-          <summary class="order-button">更多</summary>
-          <div class="order-more-menu">
-            <button
-              @click="refreshList"
-            >
-              刷新列表
-            </button>
-            <button
-              :disabled="store.desktopEnabled"
-              @click="enableDesktop"
-            >
-              {{ store.desktopEnabled ? '桌面提醒已开启' : '开启桌面提醒' }}
-            </button>
-            <button @click="openNotifications">通知与同步记录</button>
-            <RouterLink :to="{ path: '/', query: { tab: 'auth' } }">平台授权与设置</RouterLink>
-          </div>
-        </details>
-      </div>
-    </header>
+    <PageHeader title="订单中心">
+      <template #actions>
+        <div class="order-actions">
+          <span v-if="store.lastCheckedAt" class="order-muted">最近刷新
+            {{
+              new Date(store.lastCheckedAt).toLocaleTimeString('zh-CN', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+              })
+            }}</span>
+          <button class="order-button" @click="openNotifications">
+            通知 {{ store.summary.unread || 0 }}
+          </button>
+          <button
+            class="order-button order-primary"
+            :disabled="store.busy || syncing"
+            @click="store.command('sync', { platform: store.platform })"
+          >
+            {{ syncing ? '同步中…' : store.busy ? '提交中…' : '同步订单' }}
+          </button>
+          <details ref="more" class="order-more" @keydown.esc="closeMore">
+            <summary class="order-button">更多</summary>
+            <div class="order-more-menu">
+              <button
+                @click="refreshList"
+              >
+                刷新列表
+              </button>
+              <button
+                :disabled="store.desktopEnabled"
+                @click="enableDesktop"
+              >
+                {{ store.desktopEnabled ? '桌面提醒已开启' : '开启桌面提醒' }}
+              </button>
+              <button @click="openNotifications">通知与同步记录</button>
+              <RouterLink :to="{ path: '/', query: { tab: 'auth' } }">平台授权与设置</RouterLink>
+            </div>
+          </details>
+        </div>
+      </template>
+    </PageHeader>
     <p v-if="store.commandError || store.error" role="alert" class="order-error">{{ store.commandError || store.error }}</p>
     <nav class="order-tabs" aria-label="平台订单状态">
       <button

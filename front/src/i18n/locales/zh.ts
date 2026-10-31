@@ -1,9 +1,11 @@
 export default {
   taskQueue: {
+    "detail": "任务详情",
+    "loading": "正在读取任务详情…",
+    "reload": "重新读取",
     "retry": "仅重试失败项",
     "retryQueued": "重试任务已入队",
     "syncProgress": "已发现 {discovered} 件 · 成功 {completed} 件 · 失败 {failed} 件",
-    "description": "集中查看发布、店铺同步和商品修改；等待结果的任务按有限计划自动确认。",
     "refresh": "刷新列表",
     "search": "搜索任务号或商品",
     "source": "业务来源",
@@ -40,7 +42,6 @@ export default {
     "requested": "目标值",
     "observed": "平台当前值",
     "technical": "查看平台回执",
-    "select": "选择任务查看详情",
     "empty": "暂无匹配的任务",
     "total": "共 {total} 条",
     "previous": "上一页",

@@ -112,7 +112,6 @@ function saveSettings() {
 <template>
   <div class="space-y-6">
     <PageHeader
-      eyebrow="商品来源"
       title="采集商品"
       description="从浏览器页面、商品链接或已有资料采集，统一保存到商品库。"
     >

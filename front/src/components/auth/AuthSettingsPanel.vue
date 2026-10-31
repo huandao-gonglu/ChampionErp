@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, reactive, ref, watch } from 'vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
 import CrossborderBusSettingsPanel from '@/components/auth/CrossborderBusSettingsPanel.vue'
@@ -1741,6 +1742,7 @@ function copy(text: string) {
 
 <template>
   <div class="space-y-6">
+    <PageHeader title="授权配置" :description="activeAuthSettingsTabMeta.summary" />
     <div v-if="capabilityProbeDialog.open" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
       <div class="w-full max-w-3xl rounded-lg border border-accent-200 bg-white p-4 shadow-xl dark:border-dark-700 dark:bg-dark-900">
         <div class="flex flex-wrap items-start justify-between gap-3">
@@ -1773,31 +1775,22 @@ function copy(text: string) {
     </div>
 
     <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 class="card-title">授权配置</h2>
-          <p class="muted mt-1">{{ activeAuthSettingsTabMeta.summary }}</p>
-        </div>
-      </div>
-
-      <div class="mt-5 overflow-x-auto rounded-lg border border-accent-200 bg-accent-50 p-1 dark:border-dark-700 dark:bg-dark-950/70">
-        <nav class="flex min-w-max gap-1" aria-label="授权配置分类">
-          <button
-            v-for="tab in authSettingsTabs"
-            :key="tab.key"
-            type="button"
-            class="min-w-32 rounded-lg px-4 py-3 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-primary-300"
-            :class="activeAuthSettingsTab === tab.key ? 'border border-primary-200 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100' : 'border border-transparent text-accent-600 hover:bg-white/80 hover:text-accent-950 dark:text-accent-300 dark:hover:bg-dark-900 dark:hover:text-white'"
-            role="tab"
-            :aria-selected="activeAuthSettingsTab === tab.key"
-            :data-testid="`auth-settings-tab-${tab.key}`"
-            @click="activeAuthSettingsTab = tab.key"
-          >
-            <span class="block whitespace-nowrap font-semibold">{{ tab.label }}</span>
-            <span class="mt-1 hidden whitespace-nowrap text-xs text-accent-500 dark:text-accent-400 md:block">{{ tab.summary }}</span>
-          </button>
-        </nav>
-      </div>
+      <nav class="flex min-w-0 flex-wrap gap-1 border-b border-accent-200 dark:border-dark-700" role="tablist" aria-label="授权配置分类">
+        <button
+          v-for="tab in authSettingsTabs"
+          :key="tab.key"
+          type="button"
+          class="max-w-full rounded-t-lg px-3 py-2 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-300"
+          :title="tab.summary"
+          :class="activeAuthSettingsTab === tab.key ? 'border border-primary-200 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-dark-900 dark:text-primary-100' : 'border border-transparent text-accent-600 hover:bg-white/80 hover:text-accent-950 dark:text-accent-300 dark:hover:bg-dark-900 dark:hover:text-white'"
+          role="tab"
+          :aria-selected="activeAuthSettingsTab === tab.key"
+          :data-testid="`auth-settings-tab-${tab.key}`"
+          @click="activeAuthSettingsTab = tab.key"
+        >
+          <span class="font-semibold">{{ tab.label }}</span>
+        </button>
+      </nav>
 
       <div class="mt-5">
         <section v-show="activeAuthSettingsTab === 'ai_models'" class="relative rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">

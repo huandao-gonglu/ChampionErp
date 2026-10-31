@@ -3,16 +3,47 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { createI18n } from 'vue-i18n'
 import zh from '@/i18n/locales/zh'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import WorkflowView from '../WorkflowView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
+import TaskQueuePanel from '@/components/domain/TaskQueuePanel.vue'
 import { createEmptyDraftDetail } from '@/constants/initialState'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useAiPageContextStore } from '@/stores/aiPageContext'
 import type { DraftIndexItem } from '@/types/workflow'
 
+beforeEach(() => {
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({
+    matches: false, media: query, onchange: null,
+    addListener: vi.fn(), removeListener: vi.fn(),
+    addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+  }))
+})
 afterEach(() => vi.restoreAllMocks())
+
+it('关闭任务详情时移除任务深链，保留当前任务队列及业务来源', async () => {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const workflow = useWorkflowStore()
+  vi.spyOn(workflow, 'loadState').mockResolvedValue(undefined)
+  vi.spyOn(workflow, 'hydrateTab').mockResolvedValue(undefined)
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/', name: 'WorkflowHome', component: WorkflowView },
+  ] })
+  await router.push('/?tab=publish&source=online&task_id=online:sync-1')
+  const wrapper = shallowMount(WorkflowView, {
+    global: { plugins: [pinia, router, createI18n({ legacy: false, locale: 'zh', messages: { zh } })] },
+  })
+  try {
+    await flushPromises()
+    expect(wrapper.getComponent(TaskQueuePanel).props('initialTaskId')).toBe('online:sync-1')
+    wrapper.getComponent(TaskQueuePanel).vm.$emit('close-task')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ tab: 'publish', source: 'online' })
+    expect(wrapper.getComponent(TaskQueuePanel).props('initialTaskId')).toBe('')
+  } finally { wrapper.unmount() }
+})
 
 it('真实工作台先传勾选范围，打开和切换编辑草稿后优先传编辑对象，关闭及离开时清理', async () => {
   localStorage.removeItem('ai-chat-read-background')

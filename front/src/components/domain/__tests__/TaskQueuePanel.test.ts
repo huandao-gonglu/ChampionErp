@@ -20,7 +20,7 @@ const task: BackendQueueTask = {
 }
 const detail = { ok: true, task, detail: { status: 'pending_confirmation', result: { task_id: 'remote-1' } } }
 function render(props: { initialTaskId?: string; initialSource?: string } = {}) {
-  return mount(TaskQueuePanel, { props, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { OnlineOperationRecovery: true } } })
+  return mount(TaskQueuePanel, { props, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { teleport: true, OnlineOperationRecovery: true } } })
 }
 let wrapper: ReturnType<typeof render>
 beforeEach(() => {
@@ -33,6 +33,70 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.clearAllMocks(); vi.useRealTimers() })
 
 describe('统一任务队列', () => {
+  it('点击任务打开右侧抽屉，内部拖出不关闭，完整遮罩点击关闭并停止详情轮询', async () => {
+    wrapper = render()
+    await flushPromises()
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    await wrapper.findAll('button').find(button => button.text() === '测试商品')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('dialog').attributes()).toMatchObject({ 'data-variant': 'drawer', 'aria-modal': 'false' })
+    expect(wrapper.get('dialog').text()).toContain('任务详情')
+    const pointer = { isPrimary: true, button: 0, pointerId: 1 }
+    const backdrop = wrapper.get('[data-testid="workspace-dialog-backdrop"]')
+    await wrapper.get('dialog h2').trigger('pointerdown', pointer)
+    await backdrop.trigger('pointerup', pointer)
+    expect(wrapper.find('dialog').exists()).toBe(true)
+    await backdrop.trigger('pointerdown', pointer)
+    await backdrop.trigger('pointerup', pointer)
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    expect(wrapper.emitted('close-task')).toEqual([[]])
+    vi.mocked(fetchTask).mockClear()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+    expect(fetchTask).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('测试商品')
+  })
+
+  it('关闭加载中的抽屉后忽略迟到详情，再次打开读取失败时可重试', async () => {
+    let resolveDetail!: (value: typeof detail) => void
+    vi.mocked(fetchTask).mockReturnValueOnce(new Promise(resolve => { resolveDetail = resolve }))
+    wrapper = render()
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '测试商品')!.trigger('click')
+    expect(wrapper.get('dialog').text()).toContain('正在读取任务详情')
+    await wrapper.get('[aria-label="关闭任务详情"]').trigger('click')
+    resolveDetail(detail)
+    await flushPromises()
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    vi.mocked(fetchTask).mockRejectedValueOnce(new Error('详情暂时不可用'))
+    await wrapper.findAll('button').find(button => button.text() === '测试商品')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('dialog [role="alert"]').text()).toContain('详情暂时不可用')
+    await wrapper.get('dialog [role="alert"] button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('dialog').text()).toContain('禁止重复发布')
+    expect(wrapper.find('dialog [role="alert"]').exists()).toBe(false)
+  })
+
+  it('查询提交期间阻止关闭，完成后支持 Escape 关闭', async () => {
+    let resolveCheck!: (value: typeof detail & { checked: boolean; resolution: string }) => void
+    vi.mocked(checkTask).mockReturnValueOnce(new Promise(resolve => { resolveCheck = resolve }))
+    wrapper = render({ initialTaskId: task.id })
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '查询平台结果')!.trigger('click')
+    expect(wrapper.get('[aria-label="关闭任务详情"]').attributes('disabled')).toBeDefined()
+    const pointer = { isPrimary: true, button: 0, pointerId: 1 }
+    const backdrop = wrapper.get('[data-testid="workspace-dialog-backdrop"]')
+    await backdrop.trigger('pointerdown', pointer)
+    await backdrop.trigger('pointerup', pointer)
+    await wrapper.get('dialog').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('dialog').exists()).toBe(true)
+    resolveCheck({ ...detail, checked: true, resolution: 'pending' })
+    await flushPromises()
+    await wrapper.get('dialog').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('dialog').exists()).toBe(false)
+  })
+
   it('页面轮询只读本地任务，筛选来源和状态发送给列表接口', async () => {
     wrapper = render()
     await flushPromises()
@@ -89,7 +153,7 @@ describe('统一任务队列', () => {
     await flushPromises()
     expect(fetchTasks).toHaveBeenCalledWith(expect.objectContaining({ source: 'online' }))
     expect(fetchTask).toHaveBeenCalledWith(online.id)
-    expect(wrapper.get('aside').text()).toContain('测试商品')
+    expect(wrapper.get('dialog').text()).toContain('测试商品')
     expect(checkTask).not.toHaveBeenCalled()
     expect(onlineAction).not.toHaveBeenCalled()
   })
@@ -108,16 +172,16 @@ describe('统一任务队列', () => {
     vi.mocked(onlineAction).mockResolvedValue(newJob)
     wrapper = render({ initialTaskId: sync.id })
     await flushPromises()
-    expect(wrapper.get('aside').text()).toContain('已发现 3 件 · 成功 2 件 · 失败 1 件')
-    expect(wrapper.get('aside').text()).toContain('SKU-3：商品详情读取失败')
+    expect(wrapper.get('dialog').text()).toContain('已发现 3 件 · 成功 2 件 · 失败 1 件')
+    expect(wrapper.get('dialog').text()).toContain('SKU-3：商品详情读取失败')
     expect(wrapper.find('online-operation-recovery-stub').exists()).toBe(false)
-    expect(wrapper.get('aside').text()).not.toContain('查询平台结果')
+    expect(wrapper.get('dialog').text()).not.toContain('查询平台结果')
     expect(onlineAction).not.toHaveBeenCalled()
     await wrapper.findAll('button').find(button => button.text() === '仅重试失败项')!.trigger('click')
     await flushPromises()
     expect(onlineAction).toHaveBeenCalledWith('retry', { job_id: 'sync-1', idempotency_key: expect.any(String) })
     expect(fetchTask).toHaveBeenLastCalledWith(retried.id)
-    expect(wrapper.get('aside').text()).toContain('sync-2')
+    expect(wrapper.get('dialog').text()).toContain('sync-2')
     expect(wrapper.text()).toContain('重试任务已入队')
     expect(checkTask).not.toHaveBeenCalled()
   })

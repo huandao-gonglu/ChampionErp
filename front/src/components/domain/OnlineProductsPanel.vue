@@ -8,6 +8,7 @@ import OnlinePicturePreview from './OnlinePicturePreview.vue'
 import OnlineBuyerLinks from './OnlineBuyerLinks.vue'
 import OnlineProductDetails from './OnlineProductDetails.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import OnlinePlatformFeedback from './OnlinePlatformFeedback.vue'
 import { onlineAttributeName } from './onlineAttributeDisplay'
 import { useAiPageContext } from '@/composables/useAiPageContext'
@@ -341,10 +342,9 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
 
 <template>
   <section class="online-products space-y-6">
-    <header class="flex flex-wrap items-start justify-between gap-4">
-      <div><h1 class="text-2xl font-bold">在线商品</h1><p class="muted mt-2">同步店铺已有商品，集中管理销售状态、价格、库存与内容。</p></div>
-      <div class="flex gap-3"><button class="btn btn-outline" @click="emit('open-task')">任务队列</button><button class="btn btn-primary" :disabled="busy || loading || !page?.account_id || otherCatalogSync" @click="showSync">{{ activeSync ? '查看同步进度' : otherCatalogSync ? '其他目录同步中' : '↻ 同步商品' }}</button></div>
-    </header>
+    <PageHeader title="在线商品" description="同步店铺已有商品，集中管理销售状态、价格、库存与内容。">
+      <template #actions><button class="btn btn-outline" @click="emit('open-task')">任务队列</button><button class="btn btn-primary" :disabled="busy || loading || !page?.account_id || otherCatalogSync" @click="showSync">{{ activeSync ? '查看同步进度' : otherCatalogSync ? '其他目录同步中' : '↻ 同步商品' }}</button></template>
+    </PageHeader>
     <div class="flex flex-wrap items-center justify-between gap-4"><div class="flex gap-2" role="tablist" aria-label="平台"><button v-for="(name,key) in platforms" :key="key" role="tab" :disabled="busy" :aria-selected="platform===key" class="btn" :class="platform===key?'btn-primary':'btn-outline'" @click="platform=key">{{ name }}</button></div><span class="input w-auto">{{ page?.store_name || '尚未连接店铺' }}</span></div>
     <p v-if="error" role="alert" class="rounded-lg bg-rose-50 p-4 text-rose-700">{{ error }} <button class="underline" @click="refresh()">重新读取</button></p>
     <p v-if="notice" role="status" class="rounded-lg bg-primary-50 p-4 text-primary-800">{{ notice }} <button v-if="noticeTaskId" type="button" class="underline" @click="emit('open-task', noticeTaskId)">查看任务</button></p>

@@ -1,9 +1,11 @@
 export default {
   taskQueue: {
+    "detail": "Task details",
+    "loading": "Loading task details…",
+    "reload": "Reload",
     "retry": "Retry failed items",
     "retryQueued": "Retry task queued",
     "syncProgress": "Discovered {discovered} · Completed {completed} · Failed {failed}",
-    "description": "Track publishing, store syncs and product changes, with a finite schedule for result confirmation.",
     "refresh": "Refresh",
     "search": "Search task ID or product",
     "source": "Source",
@@ -40,7 +42,6 @@ export default {
     "requested": "Requested",
     "observed": "Current platform value",
     "technical": "Platform receipt",
-    "select": "Select a task for details",
     "empty": "No matching tasks",
     "total": "{total} tasks",
     "previous": "Previous",
