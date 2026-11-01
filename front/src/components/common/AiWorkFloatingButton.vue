@@ -123,7 +123,7 @@ onBeforeUnmount(() => {
         role="region"
         aria-label="AI 助手"
         data-testid="ai-work-floating-panel"
-        class="ai-floating-panel flex h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/[0.3333] text-slate-900 dark:border-dark-700 dark:bg-dark-900/[0.3333] dark:text-white"
+        class="ai-floating-panel flex h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/[0.7843] text-slate-900 dark:border-dark-700 dark:bg-dark-900/[0.7843] dark:text-white"
       >
         <header class="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-dark-700">
           <div class="min-w-0">
@@ -254,7 +254,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .ai-floating-panel {
-  /* 外框保留约 1/3 底色，内部底色更淡，避免嵌套叠加后遮住页面。 */
+  /* 外框 Alpha 为 200/255，内部底色更淡，避免嵌套叠加后遮住页面。 */
   --ai-chat-surface-opacity: 0.12;
   --ai-chat-user-color: theme('colors.slate.900');
 }
