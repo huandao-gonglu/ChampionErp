@@ -39,10 +39,19 @@ class AiChatProvider(AiProvider):
         """检测模型连接和声明能力。"""
 
 
+class AiImageEditProvider(AiProvider):
+    """独立浏览器连接的图片编辑能力，不承接 API 协议。"""
+
+    @abstractmethod
+    def edit_images(self, request: Any) -> list[dict[str, Any]]:
+        """用源图片和修改说明返回可入库的图片结果。"""
+
+
 __all__ = [
     "CAPABILITY_CHAT_JSON",
     "CAPABILITY_IMAGE_EDIT",
     "CAPABILITY_IMAGE_GENERATE",
     "AiChatProvider",
+    "AiImageEditProvider",
     "AiProvider",
 ]

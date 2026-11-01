@@ -343,6 +343,12 @@ export interface BackendAiModelConfig {
   capability_profiles?: Record<string, BackendAiCapabilityProfile>
   timeout_seconds?: number
   thinking_enabled?: boolean
+  browser_provider?: string
+  browser_mode?: string
+  browser_profile?: string
+  browser_port?: string
+  browser_url?: string
+  browser_proxy?: string
   extra?: Record<string, unknown>
   enabled?: boolean
 }
@@ -351,6 +357,14 @@ export interface BackendAiReasoningSettings {
   mode?: string
   effort?: string
   budget_tokens?: number
+}
+
+export interface BackendAiBrowserPreset {
+  id: string
+  label: string
+  description: string
+  model: BackendAiModelConfig
+  supported_capabilities: Array<string>
 }
 
 export interface BackendAiGenerationSettings {

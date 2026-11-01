@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, create_model
 
 
 CopyText = Annotated[
@@ -48,7 +49,34 @@ class MercadoLibreCbtLocalizedCopyOutput(LocalizedCopyOutput):
     )
 
 
+@lru_cache(maxsize=16)
+def localized_copy_output_type(
+    title_limit: int,
+    require_global_title: bool = False,
+) -> type[LocalizedCopyOutput]:
+    """将平台标题上限写入原生输出校验，供模型按错误反馈改写。"""
+    base = MercadoLibreCbtLocalizedCopyOutput if require_global_title else LocalizedCopyOutput
+    title_type = Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=title_limit),
+    ]
+    return create_model(
+        f"{base.__name__}{title_limit}",
+        __base__=base,
+        title=(title_type, Field(description="目标市场语言的商品标题")),
+        alt_titles=(
+            list[title_type],
+            Field(
+                default_factory=list,
+                max_length=3,
+                description="目标市场语言的备选标题，每个标题均须遵守平台字符上限",
+            ),
+        ),
+    )
+
+
 __all__ = [
     "LocalizedCopyOutput",
     "MercadoLibreCbtLocalizedCopyOutput",
+    "localized_copy_output_type",
 ]

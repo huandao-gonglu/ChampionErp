@@ -341,6 +341,8 @@ def translate_images(
         api_key = ai_model_config.model_api_key(cfg)
         if config_error:
             message = f"当前未配置可用图片翻译模型：{config_error}"
+        elif ai_model_config.model_connection_type(cfg) != ai_model_config.CONNECTION_TYPE_API:
+            message = "浏览器图片翻译未返回图片，请检查登录状态、Canvas 页面和模型能力。"
         elif not api_key:
             message = "当前未配置图片翻译模型 API Key，请在系统设置中配置后使用。"
         elif provider is None:
@@ -473,6 +475,8 @@ def edit_images(
         api_key = ai_model_config.model_api_key(cfg)
         if config_error:
             message = f"当前未配置可用图片编辑模型：{config_error}"
+        elif ai_model_config.model_connection_type(cfg) != ai_model_config.CONNECTION_TYPE_API:
+            message = "浏览器修图未返回图片，请检查登录状态、Canvas 页面和模型能力。"
         elif not api_key:
             message = "当前未配置图片编辑模型 API Key，请在系统设置中配置后使用。"
         elif provider is None:

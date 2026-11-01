@@ -25,4 +25,17 @@ class AiChatRequest:
         if self.token_callback:
             self.token_callback(text)
 
-__all__ = ["AiChatRequest"]
+@dataclass(frozen=True)
+class AiImageEditRequest:
+    app_dir: Path | str
+    model: dict[str, Any]
+    prompt: str
+    images: list[dict[str, Any]]
+    mode: str = "edit"
+    size: str = "1024x1024"
+    quality: str = "medium"
+    count: int = 1
+    timeout_seconds: int = 180
+
+
+__all__ = ["AiChatRequest", "AiImageEditRequest"]

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import time
 import urllib.parse
 import urllib.request
@@ -17,23 +16,12 @@ from erp_web.services.browser_debug_service import (
     CdpWebSocket,
     browser_debug_commands,
     browser_debug_next_action,
-    find_chrome_path,
+    ensure_browser_debug_session,
     parse_cookie_header,
 )
 from .category_refresh import http_json
 from .collect_helpers import detect_source_platform, save_collect_snapshot_artifacts
 from .source_collect_verification import same_collection_page
-
-def wait_for_cdp(port: int, timeout: int = 15) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            http_json(f"http://127.0.0.1:{port}/json/version")
-            return
-        except Exception:
-            time.sleep(0.5)
-    raise RuntimeError("Chrome 调试端口启动超时")
-
 
 def normalize_browser_tab(page: dict[str, Any]) -> dict[str, Any]:
     url = str(page.get("url") or "")
@@ -108,30 +96,13 @@ def choose_browser_tab(raw_tabs: list[dict[str, Any]], tab_url: str = "", produc
 
 
 def open_browser_debug_session(url: str, port: int, profile_name: str) -> dict[str, Any]:
-    chrome = find_chrome_path()
     paths = get_context().paths
     profile = (
         paths.browser_profile_dir
         if profile_name.startswith("1688")
         else paths.app_dir / "browser_profile" / profile_name
     )
-    profile.mkdir(parents=True, exist_ok=True)
-    try:
-        http_json(f"http://127.0.0.1:{port}/json/version")
-    except Exception:
-        subprocess.Popen(
-            [
-                chrome,
-                f"--remote-debugging-port={port}",
-                f"--user-data-dir={profile}",
-                "--no-first-run",
-                "--disable-popup-blocking",
-                "--start-maximized",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        wait_for_cdp(port)
+    ensure_browser_debug_session(port, profile)
     return cdp_target_for_url(port, url)
 
 

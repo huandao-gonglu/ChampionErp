@@ -9,6 +9,8 @@ import shutil
 from typing import Any
 
 from . import ai_generation_settings, ai_provider_catalog
+from .browser_connection_config import normalize_browser_proxy
+from erp_web.schemas.config import AiBrowserPreset
 
 CONNECTION_TYPE_API = "api"
 CONNECTION_TYPE_CLI = "cli"
@@ -247,6 +249,24 @@ def default_ai_models() -> list[dict[str, Any]]:
     ]
 
 
+def browser_model_presets() -> list[AiBrowserPreset]:
+    """可重复添加的网页连接模板，不包含用户登录、代理或能力测试结果。"""
+    return [{
+        "id": "gemini_canvas",
+        "label": "Gemini Canvas",
+        "description": "通过 Gemini 网页修改图片，使用自己的 Google 账号登录。",
+        "supported_capabilities": [CAP_IMAGE_EDIT],
+        "model": {
+            "id": "gemini_canvas_browser", "name": "Gemini Canvas 修图",
+            "connection_type": CONNECTION_TYPE_BROWSER, "provider": "Gemini Canvas",
+            "browser_provider": "gemini", "browser_mode": BROWSER_MODE_MANAGED_PROFILE,
+            "browser_profile": "canvas", "browser_port": "", "browser_proxy": "",
+            "browser_url": "https://gemini.google.com/share/a3adc37e7008",
+            "model": "", "timeout_seconds": 180, "capabilities": [], "enabled": True,
+        },
+    }]
+
+
 def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     model_id = str(raw.get("id") or f"ai_model_{index + 1}").strip()
@@ -344,6 +364,9 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         browser_url = str(raw.get("browser_url") or raw.get("browserUrl") or "").strip()
         if browser_url:
             normalized["browser_url"] = browser_url
+        browser_proxy = normalize_browser_proxy(raw.get("browser_proxy"))
+        if browser_proxy:
+            normalized["browser_proxy"] = browser_proxy
     image_capable = model_has_image_capability(normalized)
     for key in ("quality", "size"):
         value_for_key = raw.get(key)
@@ -533,6 +556,8 @@ def model_configuration_fingerprint(model: dict[str, Any]) -> str:
                 "browser_url": str(model.get("browser_url") or "").strip(),
             }
         )
+        if model.get("browser_proxy"):
+            payload["browser_proxy"] = normalize_browser_proxy(model["browser_proxy"])
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -660,6 +685,7 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
         "ai_use_cases": list(AI_USE_CASES.values()),
         "connection_types": list(AI_CONNECTION_TYPES),
         "browser_modes": list(AI_BROWSER_MODES),
+        "browser_presets": browser_model_presets(),
         "capabilities": list(AI_MODEL_CAPABILITIES),
         "api_styles": list(AI_API_STYLES),
         "providers": ai_provider_catalog.public_provider_catalog(),

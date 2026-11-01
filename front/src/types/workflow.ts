@@ -41,6 +41,7 @@ export {
   type BackendAiCapabilityProfile,
   type BackendAiModelConfig,
   type BackendAiReasoningSettings,
+  type BackendAiBrowserPreset,
   type BackendAiGenerationSettings,
   type BackendAiUseCaseBinding,
   type BackendWatermarkSettings,

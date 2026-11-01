@@ -79,6 +79,39 @@ def test_merge_config_reads_key_from_config_not_code(app_dir: Path) -> None:
     assert cfg["model"] == "deepseek-chat"
 
 
+def test_browser_presets_remain_available_after_the_user_deletes_the_model(app_dir: Path) -> None:
+    preset = config_service.public_ai_config(app_dir, {})["browser_presets"][0]
+    assert preset["id"] == "gemini_canvas"
+    assert preset["supported_capabilities"] == ["image_edit"]
+    model = preset["model"]
+    assert model["connection_type"] == "browser"
+    assert model["browser_url"].startswith("https://gemini.google.com/share/")
+    assert model["browser_mode"] == "managed_profile"
+    assert model["capabilities"] == []
+    assert "capability_profiles" not in model and "api_key" not in model
+    saved = config_service.merge_ai_config(app_dir, {}, {
+        "ai_models": [*ai_model_config.default_ai_models(), model],
+    })
+    removed = config_service.merge_ai_config(app_dir, saved, {
+        "ai_models": [item for item in saved["ai_models"] if item["id"] != model["id"]],
+    })
+    public = config_service.public_ai_config(app_dir, removed)
+    assert model["id"] not in {item["id"] for item in public["ai_models"]}
+    assert public["browser_presets"] == [preset]
+
+
+def test_browser_presets_never_copy_personal_browser_settings(app_dir: Path) -> None:
+    template = ai_model_config.browser_model_presets()[0]["model"]
+    personal = {**template, "browser_proxy": "http://private-proxy.test:8123", "browser_profile": "personal"}
+    public = config_service.public_ai_config(app_dir, {"ai_models": [personal]})
+    preset = public["browser_presets"][0]
+    assert preset["model"]["browser_proxy"] == ""
+    assert preset["model"]["browser_profile"] == "canvas"
+    assert "private-proxy" not in json.dumps(public["browser_presets"])
+    preset["model"]["browser_proxy"] = "http://changed.test:8123"
+    assert ai_model_config.browser_model_presets()[0]["model"]["browser_proxy"] == ""
+
+
 def test_ai_model_config_requires_explicit_provider_id() -> None:
     legacy = ai_model_config.normalize_ai_model(
         {

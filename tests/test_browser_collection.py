@@ -78,9 +78,10 @@ def test_opening_browser_returns_the_original_target_without_a_second_lookup(mon
     from types import SimpleNamespace
     target = {'type': 'page', 'url': 'https://detail.1688.com/offer/123.html', 'webSocketDebuggerUrl': 'ws://localhost/original'}
     monkeypatch.setattr(browser, 'get_context', lambda: SimpleNamespace(paths=SimpleNamespace(browser_profile_dir=tmp_path / 'profile')))
-    monkeypatch.setattr(browser, 'find_chrome_path', lambda: 'chrome')
-    monkeypatch.setattr(browser, 'http_json', lambda _: {})
+    ensure = Mock()
+    monkeypatch.setattr(browser, 'ensure_browser_debug_session', ensure)
     lookup = Mock(return_value=target)
     monkeypatch.setattr(browser, 'cdp_target_for_url', lookup)
     assert browser.open_browser_debug_session(target['url'], 9222, '1688') is target
+    ensure.assert_called_once_with(9222, tmp_path / 'profile')
     lookup.assert_called_once_with(9222, target['url'])

@@ -61,7 +61,7 @@ export async function testAiModel(
   const response = await apiClient.post(
     '/api/test-ai-model',
     { model },
-    { aiPresentationId: presentationId },
+    { aiPresentationId: presentationId, ...(model.connection_type === 'browser' ? { timeout: 600_000 } : {}) },
   )
   return normalizeAuthResult(response.data)
 }

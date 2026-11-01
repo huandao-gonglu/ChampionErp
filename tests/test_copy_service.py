@@ -8,6 +8,7 @@ import pytest
 from pydantic_ai.messages import ModelResponse, RetryPromptPart, TextPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from erp_web.services.ai_model_factory import PydanticModelBinding
+from erp_web.services.gemini_canvas_runtime import GeminiCanvasProvider
 
 from conftest import assert_no_old_path
 from erp_web.context import get_context
@@ -130,27 +131,85 @@ def test_generate_copy_uses_bound_model_and_registry_language(
     assert "global_title" not in seen["output_schema"]["properties"]
 
 
+@pytest.mark.parametrize(
+    ("platform", "title_limit"),
+    [("mercadolibre", 60), ("ozon", 120), ("yandex", 120)],
+)
+@pytest.mark.parametrize("field", ["title", "alt_titles"])
 def test_generate_copy_rejects_overlong_title_instead_of_truncating(
     app_dir: Path,
     monkeypatch,
+    platform: str,
+    title_limit: int,
+    field: str,
 ) -> None:
-    overlong_title = "x" * 61
-    _patch_structured_copy(
-        monkeypatch,
-        {"title": overlong_title, "description": "Description"},
-    )
+    overlong_title = "я" * (title_limit + 1)
+    payload = {"title": "Название", "description": "Описание товара."}
+    payload[field] = [overlong_title] if field == "alt_titles" else overlong_title
+    seen = _patch_structured_copy(monkeypatch, payload)
 
     result = copy_service.generate_copy(
         str(app_dir),
         {"name": "Manual organizer"},
         {"ai_models": []},
-        target_market="mercadolibre",
+        target_market=platform,
         language="en-US",
     )
 
     assert result["ok"] is False
-    assert "超过 60 个字符" in result["error"]
     assert result["copy"] == {}
+    assert len(seen["requests"]) == 3
+    feedback = [
+        part.content
+        for message in seen["requests"][-1]
+        for part in message.parts
+        if isinstance(part, RetryPromptPart)
+    ]
+    assert field in str(feedback)
+    assert str(title_limit) in str(feedback)
+    properties = seen["output_schema"]["properties"]
+    assert properties["title"]["maxLength"] == title_limit
+    assert properties["alt_titles"]["items"]["maxLength"] == title_limit
+
+
+@pytest.mark.parametrize("field", ["title", "alt_titles"])
+def test_overlong_copy_title_is_rewritten_before_saving(
+    app_dir: Path, monkeypatch, field: str,
+) -> None:
+    from erp_web.facades.copy_facade import generate_copy_payload
+
+    context = get_context()
+    product = context.products.save_product({
+        "product_id": "copy-title-retry", "name": "挂牌",
+        "drafts": {"yandex": {"enabled": True, "title": "原始标题", "language": "ru-RU"}},
+    })
+    draft_id = product["drafts"]["yandex"]["draft_id"]
+    corrected = {
+        "title": "я" * 120,
+        "description": "Описание товара.",
+        "alt_titles": ["а" * 120],
+    }
+
+    def writer(messages, _info):
+        has_feedback = any(
+            isinstance(part, RetryPromptPart)
+            for message in messages for part in message.parts
+        )
+        if has_feedback:
+            return corrected
+        invalid = dict(corrected)
+        invalid[field] = ["а" * 121] if field == "alt_titles" else "я" * 121
+        return invalid
+
+    seen = _patch_structured_copy(monkeypatch, corrected, writer=writer)
+    response, status = generate_copy_payload({"draft_id": draft_id, "platform": "yandex"})
+
+    assert status == 200
+    assert response["copy"]["title"] == corrected["title"]
+    assert response["copy"]["alt_titles"] == corrected["alt_titles"]
+    assert len(seen["requests"]) == 2
+    saved = context.products.load_draft_from_index(draft_id)["drafts"]["yandex"]
+    assert saved["title"] == corrected["title"]
 
 
 @pytest.mark.parametrize(
@@ -191,6 +250,8 @@ def test_generate_copy_for_cbt_requires_and_preserves_english_global_title(
     assert result["copy"]["global_title"] == global_title
     schema = seen["output_schema"]
     assert "global_title" in schema["required"]
+    assert schema["properties"]["title"]["maxLength"] == 60
+    assert schema["properties"]["alt_titles"]["items"]["maxLength"] == 60
     global_title_description = schema["properties"]["global_title"]["description"]
     assert "English" in global_title_description or "英文" in global_title_description
     user_prompt = next(
@@ -376,6 +437,7 @@ def test_copy_schema_errors_use_native_retry(app_dir: Path, monkeypatch) -> None
 @pytest.mark.parametrize("payload", [
     {"title": "Название", "description": ""},
     {"title": "x" * 121, "description": "Описание товара."},
+    {"title": "Название", "description": "Описание товара.", "alt_titles": ["я" * 121]},
 ])
 def test_invalid_copy_is_not_saved(app_dir: Path, monkeypatch, payload) -> None:
     from erp_web.facades.copy_facade import generate_copy_payload
@@ -489,7 +551,8 @@ def test_api_models_never_enter_external_provider_registry() -> None:
         ai_gateway._provider_for_model(normalized)
     assert {
         type(provider) for provider in ai_gateway.AI_PROVIDER_REGISTRY
-    } == {ai_gateway.CodexCliProvider, ai_gateway.BrowserAiProvider}
+    } == {ai_gateway.CodexCliProvider, ai_gateway.BrowserAiProvider, GeminiCanvasProvider}
+    assert all(not provider.supports(normalized, "image_edit") for provider in ai_gateway.AI_PROVIDER_REGISTRY)
 
 
 def test_codex_cli_chat_json_uses_local_command(tmp_path: Path, monkeypatch) -> None:

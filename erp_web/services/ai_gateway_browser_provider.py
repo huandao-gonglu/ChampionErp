@@ -10,8 +10,9 @@ from . import ai_model_config, browser_ai_runtime
 from .ai_gateway_parsing import parse_json_text
 from .ai_gateway_provider_profiles import non_http_capability_profile
 from .ai_gateway_provider_prompting import _browser_prompt
-from .ai_gateway_provider_types import AiChatRequest
+from .ai_gateway_provider_types import AiChatRequest, AiImageEditRequest
 from .ai_provider_contracts import CAPABILITY_CHAT_JSON, AiChatProvider
+from .gemini_canvas_runtime import GeminiCanvasProvider, check_canvas_connection, is_canvas_model
 
 _probe_options = probe_runtime._probe_options
 _capability_test_outcome = probe_runtime._capability_test_outcome
@@ -180,6 +181,18 @@ class BrowserAiProvider(AiChatProvider):
                     probe_runtime._cli_image_generate_probe_prompt(),
                 ),
             )
+        elif capability == ai_model_config.CAP_IMAGE_EDIT and is_canvas_model(context.model):
+            source = Path(__file__).resolve().parents[1] / "assets" / "image_edit_probe.png"
+            results = GeminiCanvasProvider().edit_images(AiImageEditRequest(
+                app_dir=context.app_dir or ".", model=context.model,
+                prompt=probe_runtime._probe_image_prompt(
+                    options, "将输入图片中的红色改为蓝色，保留其它内容，只返回修改后的图片。",
+                ),
+                images=[{"id": "canvas_probe", "path": str(source)}],
+                timeout_seconds=context.timeout,
+            ))
+            if not results or all(item.get("bytes") == source.read_bytes() for item in results):
+                raise probe_runtime.CapabilityProbeUnsupported("Canvas 未返回经过修改的真实图片。")
         else:
             raise probe_runtime.CapabilityProbeUnavailable(
                 f"浏览器 Provider 尚未接入 {capability} 能力。"
@@ -197,7 +210,16 @@ class BrowserAiProvider(AiChatProvider):
         probe_options = _probe_options(raw)
         requested_capabilities = probe_options["capabilities"] or ai_model_config.normalize_capabilities(model.get("capabilities"))
         probe_requested = raw.get("probe_capabilities", True) is not False
-        page = browser_ai_runtime.open_browser_ai_page(app_dir, model, timeout=min(timeout, 45))
+        canvas = is_canvas_model(model) and ai_model_config.CAP_IMAGE_EDIT in requested_capabilities
+        if canvas:
+            check_canvas_connection(app_dir, model, min(timeout, 45))
+            page = browser_ai_runtime.BrowserAiRunResult(
+                text="", image_urls=[], provider="gemini", browser_url=browser_ai_runtime.browser_ai_url(model),
+                profile_dir=str(browser_ai_runtime.browser_ai_profile_dir(app_dir, model)),
+                port=browser_ai_runtime.browser_ai_port(model), ready=True,
+            )
+        else:
+            page = browser_ai_runtime.open_browser_ai_page(app_dir, model, timeout=min(timeout, 45))
         capability_probe = probe_runtime.empty_capability_probe_report()
         if probe_requested:
             capability_probe = probe_browser_model_capabilities(app_dir, model, requested_capabilities, timeout, probe_options)

@@ -36,6 +36,12 @@ class AiModelConfig(TypedDict, total=False):
     capability_profiles: dict[str, AiCapabilityProfile]
     timeout_seconds: int
     thinking_enabled: bool  # 缺省时沿用高级请求配置或服务商默认。
+    browser_provider: str
+    browser_mode: str
+    browser_profile: str
+    browser_port: str
+    browser_url: str
+    browser_proxy: str
     extra: dict[str, Any]
     enabled: bool
 
@@ -44,6 +50,14 @@ class AiReasoningSettings(TypedDict, total=False):
     mode: str
     effort: str
     budget_tokens: int
+
+
+class AiBrowserPreset(TypedDict):
+    id: str
+    label: str
+    description: str
+    model: AiModelConfig
+    supported_capabilities: list[str]
 
 
 class AiGenerationSettings(TypedDict, total=False):

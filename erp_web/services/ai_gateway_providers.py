@@ -16,7 +16,8 @@ from .ai_gateway_browser_provider import (
     probe_browser_model_capabilities,
 )
 from .ai_gateway_cli_provider import CodexCliProvider, probe_cli_model_capabilities
-from .ai_gateway_provider_types import AiChatRequest
+from .ai_gateway_provider_types import AiChatRequest, AiImageEditRequest
+from .gemini_canvas_runtime import GeminiCanvasProvider
 from .ai_model_discovery import list_remote_models
 from .ai_model_errors import AIHTTPError
 from .ai_model_probe_service import probe_model_capabilities, test_api_model
@@ -25,6 +26,7 @@ from .ai_provider_contracts import (
     CAPABILITY_IMAGE_EDIT,
     CAPABILITY_IMAGE_GENERATE,
     AiChatProvider,
+    AiImageEditProvider,
     AiProvider,
 )
 from .ai_structured_output import (
@@ -39,6 +41,7 @@ from .ai_structured_output import (
 AI_PROVIDER_REGISTRY: tuple[AiProvider, ...] = (
     CodexCliProvider(),
     BrowserAiProvider(),
+    GeminiCanvasProvider(),
 )
 OutputT = TypeVar("OutputT")
 
@@ -321,8 +324,6 @@ def _image_client(
         timeout_seconds=timeout_seconds,
         default_timeout_seconds=180,
     )
-    if client.connection_type != ai_model_config.CONNECTION_TYPE_API:
-        raise RuntimeError("图片 API 能力只允许通过 Pydantic Model 执行。")
     return client
 
 
@@ -348,6 +349,8 @@ def generate_images(
         model_id=model_id,
         timeout_seconds=timeout_seconds,
     )
+    if client.connection_type != ai_model_config.CONNECTION_TYPE_API:
+        raise RuntimeError("当前独立浏览器图片通道只支持基于原图的 AI 修改。")
     required = tuple(
         dict.fromkeys(
             (*client.required_capabilities, ai_model_config.CAP_IMAGE_GENERATE)
@@ -388,6 +391,15 @@ def edit_images(
         model_id=model_id,
         timeout_seconds=timeout_seconds,
     )
+    if client.connection_type != ai_model_config.CONNECTION_TYPE_API:
+        provider = client.provider_for(CAPABILITY_IMAGE_EDIT)
+        if not isinstance(provider, AiImageEditProvider):
+            raise RuntimeError("当前浏览器连接没有实现图片编辑能力。")
+        return provider.edit_images(AiImageEditRequest(
+            app_dir=client.app_dir, model=client.model, prompt=prompt,
+            images=images, mode=mode, size=size, quality=quality, count=count,
+            timeout_seconds=client.timeout_seconds,
+        ))
     return ai_direct_request_service.edit_images(
         app_dir=client.app_dir,
         use_case_id=client.use_case_id,

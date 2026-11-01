@@ -46,6 +46,119 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
   })
 }
 
+describe('AuthSettingsPanel 网页连接预置', () => {
+  const preset = {
+    id: 'gemini_canvas', label: 'Gemini Canvas', description: '通过 Gemini 网页修改图片',
+    supported_capabilities: ['image_edit'],
+    model: {
+      id: 'gemini_canvas_browser', name: 'Gemini Canvas 修图', connection_type: 'browser',
+      browser_provider: 'gemini', browser_mode: 'managed_profile', browser_profile: 'canvas',
+      browser_port: '', browser_proxy: '', browser_url: 'https://gemini.google.com/share/example',
+      provider: 'Gemini Canvas', model: '', capabilities: [], enabled: true,
+    },
+  }
+  const apiModel = { id: 'existing', name: '已有模型', connection_type: 'api', provider_id: 'openai', capabilities: [] }
+  const save = async (wrapper: ReturnType<typeof mountPanel>) => {
+    await wrapper.findAll('button').find(button => button.text() === '保存 AI 设置')!.trigger('click')
+    return wrapper.emitted('saveAi')!.at(-1)![0] as Record<string, unknown>
+  }
+
+  it('从网页入口添加 Gemini，删除后仍能按预置恢复，且不自动启用或测试能力', async () => {
+    const wrapper = mountPanel({ ai_models: [apiModel], browser_presets: [preset] })
+    await wrapper.get('[data-testid="add-web-model"]').setValue('gemini_canvas')
+    expect(wrapper.get('[data-testid="web-model-guide"]').text()).toContain('通过 Gemini 网页修改图片')
+    let payload = await save(wrapper)
+    const added = (payload.ai_models as Record<string, unknown>[]).find(model => model.id === 'gemini_canvas_browser')!
+    expect(added).toMatchObject({ ...preset.model, capabilities: [] })
+    expect(added).not.toHaveProperty('capability_profiles')
+    expect(wrapper.emitted('testAi')).toBeUndefined()
+    await wrapper.findAll('button').find(button => button.text() === '删除当前模型')!.trigger('click')
+    payload = await save(wrapper)
+    expect((payload.ai_models as Record<string, unknown>[]).map(model => model.id)).toEqual(['existing'])
+    await wrapper.get('[data-testid="add-web-model"]').setValue('gemini_canvas')
+    payload = await save(wrapper)
+    expect((payload.ai_models as Record<string, unknown>[]).find(model => model.id === 'gemini_canvas_browser')).toMatchObject(preset.model)
+    expect(wrapper.get('[data-testid="add-web-model"]').findAll('option').map(option => option.text())).toEqual(['添加网页模型', 'Gemini Canvas'])
+  })
+
+  it('重复选择已添加的网页模型只定位现有配置，保留个人代理和资料目录', async () => {
+    const personal = { ...preset.model, browser_proxy: 'http://private.test:8123', browser_profile: 'personal' }
+    const wrapper = mountPanel({ ai_models: [apiModel, personal], browser_presets: [preset] })
+    await wrapper.get('[data-testid="add-web-model"]').setValue('gemini_canvas')
+    const payload = await save(wrapper)
+    expect(payload.ai_models).toHaveLength(2)
+    expect((payload.ai_models as Record<string, unknown>[])[1]).toMatchObject(personal)
+  })
+
+  it('网页服务商来自下拉目录，修改显示名称不改变适配器标识', async () => {
+    const wrapper = mountPanel({ ai_models: [preset.model], browser_presets: [preset] })
+    const selector = wrapper.get('[data-testid="web-provider-id"]')
+    expect(selector.element.tagName).toBe('SELECT')
+    expect(selector.findAll('option').map(option => option.attributes('value'))).toEqual(['', 'gemini'])
+    await wrapper.get('input[placeholder="例如 DeepSeek 文本模型"]').setValue('我的图片助手')
+    const payload = await save(wrapper)
+    expect((payload.ai_models as Record<string, unknown>[])[0]).toMatchObject({
+      name: '我的图片助手', browser_provider: 'gemini', browser_url: preset.model.browser_url,
+    })
+  })
+
+  it('手动切换网页模式必须选择服务商，选择后自动带入对应配置', async () => {
+    const wrapper = mountPanel({ ai_models: [apiModel], browser_presets: [preset] })
+    await wrapper.get('[data-testid="ai-connection-type"]').setValue('browser')
+    await wrapper.findAll('button').find(button => button.text() === '保存 AI 设置')!.trigger('click')
+    expect(wrapper.emitted('saveAi')).toBeUndefined()
+    expect(wrapper.get('[role="alert"]').text()).toContain('选择服务商')
+    await wrapper.get('[data-testid="web-provider-id"]').setValue('gemini')
+    const payload = await save(wrapper)
+    expect((payload.ai_models as Record<string, unknown>[])[0]).toMatchObject({
+      connection_type: 'browser', browser_provider: 'gemini', browser_url: preset.model.browser_url,
+      browser_mode: 'managed_profile', browser_profile: 'canvas', capabilities: [],
+    })
+  })
+
+  it('已保存的目录外服务商保持可读取，显式选择新服务商后清除旧能力证明', async () => {
+    const previous = {
+      ...preset.model, browser_provider: 'saved-service', browser_url: 'https://saved.example/app',
+      browser_proxy: 'http://private.test:8123', capabilities: ['chat'],
+      capability_profiles: { chat: { tested: true } },
+    }
+    const wrapper = mountPanel({ ai_models: [previous], browser_presets: [preset] })
+    expect(wrapper.get('[data-testid="web-provider-id"] option[value="saved-service"]').attributes('disabled')).toBeDefined()
+    let payload = await save(wrapper)
+    expect((payload.ai_models as Record<string, unknown>[])[0]).toMatchObject(previous)
+    await wrapper.get('[data-testid="web-provider-id"]').setValue('gemini')
+    payload = await save(wrapper)
+    expect((payload.ai_models as Record<string, unknown>[])[0]).toMatchObject({
+      browser_provider: 'gemini', browser_url: preset.model.browser_url,
+      browser_proxy: previous.browser_proxy, capabilities: [],
+    })
+    expect((payload.ai_models as Record<string, unknown>[])[0]).not.toHaveProperty('capability_profiles')
+  })
+
+  it('网页模型通过实际能力测试后才启用图像编辑', async () => {
+    const wrapper = mountPanel({ ai_models: [apiModel], browser_presets: [preset] })
+    await wrapper.get('[data-testid="add-web-model"]').setValue('gemini_canvas')
+    await wrapper.get('[data-testid="test-web-capability-image_edit"]').trigger('click')
+    expect(wrapper.emitted('testAi')).toBeUndefined()
+    await wrapper.findAll('button').find(button => button.text() === '确定测试')!.trigger('click')
+    expect(wrapper.emitted('testAi')?.[0]?.[0]).toMatchObject({
+      id: 'gemini_canvas_browser', capabilities: [], probe_only_capability: 'image_edit',
+    })
+    await wrapper.setProps({ lastResult: {
+      ok: true, message: '测试通过', error: '', errorCode: '', nextAction: '', raw: {
+        channel: 'ai_model', model_id: 'gemini_canvas_browser', test_trigger: 'capability_checkbox',
+        supported_capabilities: ['image_edit'], capability_results: {
+          image_edit: { ok: true, capability_profile: { version: 2, tested: true } },
+        },
+      },
+    } })
+    const payload = await save(wrapper)
+    expect((payload.ai_models as Record<string, unknown>[])[1]).toMatchObject({
+      capabilities: ['image_edit'], capability_profiles: { image_edit: { tested: true } },
+    })
+  })
+})
+
 describe('AuthSettingsPanel credential lifecycle', () => {
   it('1688 独立授权只保存自身配置，采购查询测试保留长订单号并沿用保存的凭据', async () => {
     const wrapper = mountPanel()

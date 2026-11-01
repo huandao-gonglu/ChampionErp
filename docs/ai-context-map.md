@@ -115,6 +115,8 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 - `/api/collect-from-browser-tab` 的显式 URL 或标签 ID 只选择指定目标；`save_only` 只保存 HTML/截图，不解析、不下载商品图片、不修改商品。验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
 - `source_collect_browser.cdp_target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。打开操作直接返回目标句柄，采集不重复查找或强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
+- 1688 采集与浏览器 AI 共用 `browser_debug_service.ensure_browser_debug_session`：检测连接、查找本机 Chrome/Edge、使用指定资料目录启动并等待调试端口。调用方分别提供目录和端口；Gemini 默认使用 `browser_profile/ai/gemini/<profile>`，不共用 1688 登录资料，也不依赖 BitBrowser。
+  `browser_connection_config` 纯校验代理地址；浏览器 AI 的可选 `browser_proxy` 只在专用浏览器启动时生效，修改后需关闭专用窗口再重开，不更改采集或后端网络配置。
 
 ## 草稿描述
 
@@ -335,6 +337,20 @@ Responses 流经 `services/ai_responses_stream.py` 校验 SDK 已解码的错误
 阶段 6 已完成：普通 chat/JSON/stream 统一由 Pydantic Direct Model Requests 发送；图片请求
 也先进入 Pydantic Direct Model，再由集中 Factory 创建的 focused Images Model 执行。CLI 与
 浏览器 AI 不属于 API Provider，继续使用独立适配器。
+Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独立执行；
+复用浏览器连接和页面原生模型转发，不进入 API Direct Model，也不创建 Agent loop。
+`gemini_browser_session` 仅编排托管 Chrome 的隐藏执行、交互登录与请求前恢复；
+浏览器进程切换由共享调试服务核对实例归属后完成，沿用同一 Profile，不读取或复制凭据。
+登录等待期间图片领域任务保持执行中，未通过登录检查不发送图片；不另建 Deferred 或任务恢复协议。
+“添加网页模型”的预置目录由 `ai_model_config.browser_model_presets` 经公共 AI 配置的
+`browser_presets` 提供，形状见 `schemas/config.py::AiBrowserPreset`，不混入 API Provider Catalog。
+预置独立于已保存模型，删除后可以重新添加；不携带用户代理、登录资料或已验证的能力回执，能力仍需实测启用。
+网页服务商下拉由该目录中的稳定 `model.browser_provider` ID 生成，显示名称不参与适配器选择；
+界面保留已保存但未在目录中开放新增的服务商值，新增连接须明确选择，切换时清除旧能力回执。
+自有 Canvas 的最小单文件源码在 `erp_web/assets/gemini_canvas_host.html`；维护者创建并分享应用，
+部署时浏览器模型绑定公开 `/share/<分享 ID>` 页面，使用者各自登录 Google。
+私有 `/app/<对话 ID>` 仅作维护入口，不作为跨账号分发地址；不依赖第三方工作台。
+连接设置、已验证范围及限制见 [Gemini Canvas 修图](gemini-canvas-image-edit.md)。
 
 - `erp_web/services/ai_provider_contracts.py`：CLI/Browser 等独立连接的最小产品能力协议；不拥有
   API 厂商 wire protocol。
@@ -395,7 +411,8 @@ Responses 流经 `services/ai_responses_stream.py` 校验 SDK 已解码的错误
   主 Agent 使用 `str | DeferredToolRequests`，focused Agent 保留其类型化输出与独立领域能力。
 - `erp_web/services/copy_service.py`：`copy.generate` 通过同一工厂运行独立文案 Agent。
   使用原生 `PromptedOutput` 校验输出结构，生成后不再额外调用 AI 复核语言、事实或营销措辞。
-  字段类型、必填内容及平台标题长度校验通过后直接交给领域层保存。格式错误的原生重试
+  主标题及每个备选标题的字符上限由平台注册表注入输出 Schema，超长与格式错误均通过原生反馈改写；
+  CBT 根英文标题同样由输出 Schema 校验。字段校验通过后直接交给领域层保存，原生重试
   最多两次，整个生成过程最多三次模型请求，并受总计 240 秒的 deadline 约束。
   事实摘要保留重量的 kg 单位，不复制主 Agent 的全部消息。已核对安装的 Pydantic AI 2.43.0
   与[原生结构化输出文档](https://ai.pydantic.dev/output/#prompted-output)：直接复用原生格式
@@ -451,7 +468,8 @@ CLI / Browser use case
   `image_translate_service.py` 每次生成独立资产 ID 与文件路径，直接来源为实际输入图；旧资产和文件继续读取，曾被历史实现覆盖的文件不能凭关联恢复。发布仍由 `skuPublishImages` / `sku_publish_projection` 按 SKU 专属图在前、共用顺序跟随并去重，不新增平台图片限制。
 - 图片工作台的 `POST /api/image-edit`、`/api/image-translate` 经 `image_facade` →
   `image_batch_service` 按原图建立批次，进程内所有批次共享三路执行上限；每张仍经
-  `image_translate_service` → `ai_gateway` → `ai_direct_request_service` → Pydantic Direct Model。
+  `image_translate_service` → `ai_gateway`；API 进入 `ai_direct_request_service` → Pydantic Direct Model，
+  显式选择的 Gemini Canvas 浏览器连接进入独立图片执行器，两者失败均不自动切换。
   `image_batch_store.py` 在独立 `data/image-batches.sqlite3` 保存排队、执行、成功、失败及结果文件引用；
   不复制模型消息，不改 ERP 主库结构。每张结果在商品短锁内重读最新内容并写回，保存成功才结算成功；
   `replace_all` 仅首张成功时清空目标图集，后续追加，避免并发完成时互相覆盖。

@@ -89,6 +89,40 @@ def test_image_batch_keeps_native_model_boundary_and_domain_only_progress():
     assert "image_draft_guard" in (ROOT / "erp_web/stores/product_store.py").read_text()
 
 
+def test_collection_and_ai_share_browser_process_management():
+    """采集与 AI 只选择自己的资料目录，浏览器启动由同一服务负责。"""
+    for name in ("runtime_units/source_collect_browser.py", "services/browser_ai_runtime.py"):
+        source = (ROOT / "erp_web" / name).read_text()
+        assert "ensure_browser_debug_session(" in source
+        assert "subprocess.Popen" not in source
+
+
+def test_canvas_images_are_an_explicit_browser_transport_without_api_or_agent_owner():
+    """Canvas 只适配浏览器图片能力，不装配 API 客户端、Agent 或另一套任务库。"""
+    path = ROOT / "erp_web/services/gemini_canvas_runtime.py"
+    targets = {target for _, target in imported_targets([path])}
+    forbidden = ("openai", "google.genai", "httpx", "requests", "sqlite3", "pydantic_ai",
+                 "erp_web.services.ai_direct_request_service", "erp_web.services.ai_agent_factory",
+                 "erp_web.stores")
+    assert not any(target.startswith(forbidden) for target in targets)
+    from erp_web.services.ai_gateway_providers import AI_PROVIDER_REGISTRY
+    from erp_web.services.ai_provider_contracts import AiImageEditProvider
+    from erp_web.services.gemini_canvas_runtime import GeminiCanvasProvider
+    assert any(isinstance(provider, GeminiCanvasProvider) for provider in AI_PROVIDER_REGISTRY)
+    assert issubclass(GeminiCanvasProvider, AiImageEditProvider)
+
+
+def test_gemini_login_wait_is_browser_lifecycle_not_an_agent_or_job_protocol():
+    path = ROOT / "erp_web/services/gemini_browser_session.py"
+    targets = {target for _, target in imported_targets([path])}
+    forbidden = ("pydantic_ai", "openai", "httpx", "requests", "sqlite3", "erp_web.stores",
+                 "erp_web.runtime_units", "erp_web.services.ai_agent_factory")
+    assert not any(target.startswith(forbidden) for target in targets)
+    source = path.read_text()
+    assert "connect_browser_ai_page" in source
+    assert "generateContent" not in source and "create_task" not in source
+
+
 def test_purchase_payment_has_explicit_command_and_approved_agent_entry():
     """签约只读检查，真实支付必须经过显式 HTTP 命令或原生审批工具。"""
     from erp_web.ai_capability_coverage import AI_CAPABILITY_COVERAGE_MANIFEST

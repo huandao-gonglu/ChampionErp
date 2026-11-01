@@ -8,16 +8,17 @@ this boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 import re
-import subprocess
 import time
 import urllib.parse
 import urllib.request
 
 from erp_web.services.external_request_manager import managed_urlopen
+from erp_web.services.browser_debug_service import browser_debug_connected, ensure_browser_debug_session
 from pathlib import Path
 from typing import Any
 
@@ -169,6 +170,21 @@ def run_browser_ai_chat(
         cdp.close()
 
 
+@contextmanager
+def connect_browser_ai_page(
+    app_dir: Path | str, model: dict[str, Any], timeout: int = 30, *, headless: bool | None = None,
+):
+    """复用浏览器进程和登录资料，为独立网页能力提供连接。"""
+    url = browser_ai_url(model)
+    target = _ensure_browser_target(app_dir, model, url, timeout, headless=headless)
+    cdp = _cdp_websocket(str(target["webSocketDebuggerUrl"]))
+    try:
+        _prepare_page(cdp, url, timeout)
+        yield cdp
+    finally:
+        cdp.close()
+
+
 def _safe_path_segment(value: str, fallback: str) -> str:
     text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("._")
     return text[:80] or fallback
@@ -180,59 +196,28 @@ def _cdp_websocket(websocket_url: str):
     return CdpWebSocket(websocket_url)
 
 
-def _find_chrome_path() -> str:
-    from erp_web.services.browser_debug_service import find_chrome_path
-
-    return find_chrome_path()
-
-
 def _http_json(url: str, timeout: int = 5) -> Any:
     with managed_urlopen(url, timeout=timeout, source=__name__) as response:
         raw = response.read()
     return json.loads(raw.decode("utf-8")) if raw else None
 
 
-def _cdp_connected(port: int) -> bool:
-    try:
-        payload = _http_json(f"http://127.0.0.1:{port}/json/version", timeout=2)
-        return isinstance(payload, dict)
-    except Exception:
-        return False
-
-
-def _wait_for_cdp(port: int, timeout: int) -> None:
-    deadline = time.time() + max(3, timeout)
-    while time.time() < deadline:
-        if _cdp_connected(port):
-            return
-        time.sleep(0.5)
-    raise RuntimeError(f"浏览器调试端口 {port} 启动超时。")
-
-
-def _ensure_browser_target(app_dir: Path | str, model: dict[str, Any], url: str, timeout: int) -> dict[str, Any]:
+def _ensure_browser_target(
+    app_dir: Path | str, model: dict[str, Any], url: str, timeout: int,
+    *, headless: bool | None = None,
+) -> dict[str, Any]:
     mode = normalize_browser_mode(model.get("browser_mode"))
     port = browser_ai_port(model)
     profile_dir = browser_ai_profile_dir(app_dir, model)
     if mode == BROWSER_AI_MODE_EXISTING_BROWSER:
-        if not _cdp_connected(port):
+        if not browser_debug_connected(port):
             raise RuntimeError(f"未连接浏览器调试端口 {port}。请先启动带 remote debugging 的浏览器。")
-    elif not _cdp_connected(port):
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        chrome = _find_chrome_path()
-        subprocess.Popen(
-            [
-                chrome,
-                f"--remote-debugging-port={port}",
-                f"--user-data-dir={profile_dir}",
-                "--no-first-run",
-                "--disable-popup-blocking",
-                "--start-maximized",
-                url,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+    else:
+        ensure_browser_debug_session(
+            port, profile_dir, min(max(10, timeout), 45),
+            proxy_server=str(model.get("browser_proxy") or ""),
+            headless=headless,
         )
-        _wait_for_cdp(port, min(max(10, timeout), 45))
     return _target_for_url(port, url)
 
 
@@ -240,22 +225,14 @@ def _target_for_url(port: int, url: str) -> dict[str, Any]:
     target = _find_target_for_url(port, url)
     if target:
         return target
-    try:
-        with managed_urlopen(
-            f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}",
-            timeout=5,
-         source=__name__):
-            pass
-    except Exception:
-        pass
-    time.sleep(1.5)
-    target = _find_target_for_url(port, url)
-    if target:
-        return target
-    pages = _page_targets(port)
-    if pages:
-        return pages[0]
-    raise RuntimeError("没有找到可用的浏览器页面。")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}", method="PUT",
+    )
+    with managed_urlopen(request, timeout=5, source=__name__) as response:
+        target = json.load(response)
+    if not isinstance(target, dict) or not target.get("webSocketDebuggerUrl"):
+        raise RuntimeError("浏览器未返回目标页面，请检查浏览器连接后重试。")
+    return target
 
 
 def _find_target_for_url(port: int, url: str) -> dict[str, Any] | None:
@@ -263,11 +240,13 @@ def _find_target_for_url(port: int, url: str) -> dict[str, Any] | None:
     expected_host = parsed.hostname or ""
     for page in _page_targets(port):
         page_url = str(page.get("url") or "")
-        page_host = urllib.parse.urlparse(page_url).hostname or ""
-        if expected_host and page_host.endswith(expected_host):
-            return page
-        if expected_host and expected_host.endswith(page_host):
-            return page
+        current = urllib.parse.urlparse(page_url)
+        if not expected_host or (current.scheme, current.netloc) != (parsed.scheme, parsed.netloc):
+            continue
+        # Canvas 地址绑定具体应用，不能借用同域的其他对话或空白标签。
+        if parsed.path.startswith(("/share/", "/app/")) and current.path != parsed.path:
+            continue
+        return page
     return None
 
 
@@ -494,6 +473,7 @@ __all__ = [
     "browser_ai_port",
     "browser_ai_profile_dir",
     "browser_ai_url",
+    "connect_browser_ai_page",
     "normalize_browser_mode",
     "normalize_browser_provider",
     "open_browser_ai_page",

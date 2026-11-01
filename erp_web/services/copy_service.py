@@ -11,6 +11,7 @@ from erp_web.context import get_context
 from erp_web.schemas.copy import (
     LocalizedCopyOutput,
     MercadoLibreCbtLocalizedCopyOutput,
+    localized_copy_output_type,
 )
 from erp_web.marketplace_registry import (
     default_marketplace_site,
@@ -161,15 +162,9 @@ def build_copy_prompt_from_config(
 
 def _normalized_generated_copy(
     parsed: LocalizedCopyOutput,
-    target_market: str,
 ) -> dict[str, Any]:
     values = parsed.model_dump(mode="json")
-    title_limit = platform_title_limit(target_market)
     title = str(values.get("title") or "").strip()
-    if len(title) > title_limit:
-        raise RuntimeError(
-            f"AI 返回的标题超过 {title_limit} 个字符，请重新生成更短的标题。"
-        )
     result = {
         "title": title,
         "description": str(values.get("description") or "").strip(),
@@ -177,12 +172,7 @@ def _normalized_generated_copy(
         "search_keywords": normalize_copy_list(values.get("search_keywords"), 20),
     }
     if isinstance(parsed, MercadoLibreCbtLocalizedCopyOutput):
-        global_title = parsed.global_title
-        if len(global_title) > title_limit:
-            raise RuntimeError(
-                f"AI 返回的 CBT 根英文标题超过 {title_limit} 个字符，请重新生成更短的标题。"
-            )
-        result["global_title"] = global_title
+        result["global_title"] = parsed.global_title
     return result
 
 
@@ -208,10 +198,9 @@ def generate_copy(
             "id": binding.model_id,
             "provider": binding.model_config.get("provider") or binding.provider_id,
         }
-        output_type = (
-            MercadoLibreCbtLocalizedCopyOutput
-            if require_global_title
-            else LocalizedCopyOutput
+        output_type = localized_copy_output_type(
+            platform_title_limit(target),
+            require_global_title=require_global_title,
         )
         factory = AiAgentFactory(
             app_dir=app_dir,
@@ -241,7 +230,7 @@ def generate_copy(
                 "platform": target,
             },
         )
-        result = _normalized_generated_copy(outcome.output, target)
+        result = _normalized_generated_copy(outcome.output)
         outcome.complete()
     except Exception as exc:
         return {

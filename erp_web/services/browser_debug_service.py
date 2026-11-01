@@ -13,9 +13,115 @@ import time
 import urllib.parse
 import webbrowser
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from typing import Any, Callable
 
 from erp_web.context import get_context
+from erp_web.services.browser_connection_config import normalize_browser_proxy
+from erp_web.services.external_request_manager import managed_urlopen
+
+_browser_launch_lock = Lock()
+_SESSION_FILE = ".erp-browser-session.json"
+
+
+def _browser_version(port: int) -> dict[str, Any]:
+    with managed_urlopen(
+        f"http://127.0.0.1:{port}/json/version", timeout=2, source=__name__,
+    ) as response:
+        version = json.load(response)
+    return version if isinstance(version, dict) else {}
+
+
+def browser_debug_connected(port: int) -> bool:
+    try:
+        return bool(_browser_version(port).get("webSocketDebuggerUrl"))
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_browser_debug_session(
+    port: int, profile_dir: Path, timeout: int = 15, *, proxy_server: str = "",
+    headless: bool | None = None,
+) -> None:
+    """复用本机浏览器，未启动时以独立资料目录打开；不复制其他资料目录的登录。"""
+    proxy_server = normalize_browser_proxy(proxy_server)
+    with _browser_launch_lock:
+        if browser_debug_connected(port):
+            if headless is None:
+                return
+            version = _browser_version(port)
+            try:
+                session = json.loads((profile_dir / _SESSION_FILE).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                session = {}
+            if not isinstance(session, dict):
+                session = {}
+            if session.get("websocket") != version.get("webSocketDebuggerUrl"):
+                raise RuntimeError("专用浏览器端口被其他会话占用，请关闭旧专用浏览器或更换调试端口后重试。")
+            if session.get("headless") is headless and session.get("proxy_server", "") == proxy_server:
+                return
+            _close_managed_browser(port, profile_dir, version, timeout)
+        chrome = find_chrome_path()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        arguments = [
+            chrome,
+            f"--remote-debugging-port={port}",
+            "--remote-debugging-address=127.0.0.1",
+            f"--user-data-dir={profile_dir.resolve()}",
+            "--no-first-run",
+            "--disable-popup-blocking",
+            *(["--headless", "--window-size=1280,900"] if headless else ["--start-maximized"]),
+            *([f"--proxy-server={proxy_server}"] if proxy_server else []),
+        ]
+        app_bundle = Path(chrome).parents[2] if len(Path(chrome).parents) > 2 else Path(chrome)
+        use_mac_launcher = headless is False and sys.platform == "darwin" and app_bundle.suffix == ".app"
+        if use_mac_launcher:
+            # 由系统激活这个独立实例，避免只激活用户日常使用的另一个 Chrome。
+            arguments = ["/usr/bin/open", "-n", "-a", str(app_bundle), "--args", *arguments[1:]]
+        process = subprocess.Popen(
+            arguments,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + max(1, timeout)
+        while time.monotonic() < deadline:
+            if browser_debug_connected(port):
+                version = _browser_version(port)
+                session_file = profile_dir / _SESSION_FILE
+                temporary = session_file.with_suffix(".tmp")
+                temporary.write_text(json.dumps({
+                    "websocket": version["webSocketDebuggerUrl"],
+                    "headless": bool(headless), "proxy_server": proxy_server,
+                }), encoding="utf-8")
+                temporary.replace(session_file)
+                return
+            exit_code = process.poll()
+            if exit_code is not None and (not use_mac_launcher or exit_code != 0):
+                raise RuntimeError("专用浏览器启动失败，请关闭使用同一资料目录的窗口后重试。")
+            time.sleep(0.5)
+        raise RuntimeError(f"浏览器调试端口 {port} 启动超时，请检查浏览器是否已启动。")
+
+
+def _close_managed_browser(port: int, profile_dir: Path, version: dict[str, Any], timeout: int) -> None:
+    """仅关闭身份已核对的专用实例，并等待资料目录锁释放。"""
+    profile_lock = profile_dir / "SingletonLock"
+    had_profile_lock = profile_lock.is_symlink()
+    cdp = CdpWebSocket(version["webSocketDebuggerUrl"])
+    try:
+        try:
+            cdp.call("Browser.close", timeout=5)
+        except (OSError, RuntimeError):
+            # 正常关闭可能先断开 WebSocket；下面仍须确认进程释放连接与资料目录。
+            pass
+    finally:
+        cdp.close()
+    deadline = time.monotonic() + max(1, timeout)
+    while time.monotonic() < deadline:
+        if not browser_debug_connected(port) and not (had_profile_lock and profile_lock.is_symlink()):
+            return
+        time.sleep(0.2)
+    raise RuntimeError("专用浏览器未能退出，尚未切换显示状态；请关闭该专用浏览器后重试。")
 
 def pick_web_port(preferred_port: int, attempts: int = 20) -> int:
     import socket
@@ -125,18 +231,33 @@ class CdpWebSocket:
             if opcode == 9:
                 continue
 
-    def call(self, method: str, params: dict[str, Any] | None = None, timeout: float = 20) -> dict[str, Any]:
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, timeout: float = 20,
+        *, session_id: str = "", on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         message_id = self.next_id
         self.next_id += 1
-        self._send_frame(json.dumps({"id": message_id, "method": method, "params": params or {}}).encode("utf-8"))
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            message = self._recv_frame()
-            if message.get("id") == message_id:
-                if "error" in message:
-                    raise RuntimeError(f"{method} failed: {message['error']}")
-                return message.get("result", {})
-        raise RuntimeError(f"{method} 超时")
+        request = {"id": message_id, "method": method, "params": params or {}}
+        if session_id:
+            request["sessionId"] = session_id
+        self._send_frame(json.dumps(request).encode("utf-8"))
+        deadline = time.monotonic() + timeout
+        previous_timeout = self.sock.gettimeout()
+        try:
+            while time.monotonic() < deadline:
+                self.sock.settimeout(max(0.01, deadline - time.monotonic()))
+                message = self._recv_frame()
+                if message.get("id") == message_id:
+                    if "error" in message:
+                        raise RuntimeError(f"{method} 调用失败：{message['error']}")
+                    return message.get("result", {})
+                if on_event is not None and message.get("method"):
+                    on_event(message)
+        except TimeoutError:
+            raise TimeoutError(f"{method} 超时") from None
+        finally:
+            self.sock.settimeout(previous_timeout)
+        raise TimeoutError(f"{method} 超时")
 
 
 def find_chrome_path() -> str:
@@ -255,10 +376,12 @@ def browser_debug_next_action() -> str:
 
 __all__ = [
     "CdpWebSocket",
+    "browser_debug_connected",
     "browser_debug_commands",
     "browser_debug_next_action",
     "find_chrome_path",
     "find_named_browser_path",
+    "ensure_browser_debug_session",
     "open_auth_link_in_browser",
     "pick_web_port",
 ]

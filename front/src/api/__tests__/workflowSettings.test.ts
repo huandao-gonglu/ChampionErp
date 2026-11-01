@@ -36,4 +36,13 @@ describe('workflow settings API', () => {
     )
     expect(result.ok).toBe(true)
   })
+
+  it('浏览器模型测试允许用户完成交互登录后继续原测试', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true }, status: 200 })
+    const model = { id: 'canvas', connection_type: 'browser' }
+    await testAiModel(model, 'canvas-login')
+    expect(apiClient.post).toHaveBeenCalledWith('/api/test-ai-model', { model }, {
+      aiPresentationId: 'canvas-login', timeout: 600_000,
+    })
+  })
 })

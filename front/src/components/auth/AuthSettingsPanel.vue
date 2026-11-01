@@ -79,6 +79,7 @@ watch(() => authRoute?.query.auth_section, section => {
 }, { immediate: true })
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
+const aiSettingsError = ref('')
 const aiUseCaseBindings = ref<Record<string, UnknownRecord>>({})
 const aiUseCasePrompts = ref<Record<string, UnknownRecord>>({})
 const API_CONNECTION_TYPE = 'api'
@@ -97,7 +98,7 @@ const fallbackProviders = [
   { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '连接通义千问模型', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
 ]
 const modelListDependencyFields = new Set(['provider_id', 'api_style', 'base_url', 'base_url_env', 'api_key', 'api_key_env'])
-const capabilityProbeDependencyFields = new Set([...modelListDependencyFields, 'model', 'connection_type', 'cli_tool', 'command', 'profile', 'sandbox', 'browser_provider', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url'])
+const capabilityProbeDependencyFields = new Set([...modelListDependencyFields, 'model', 'connection_type', 'cli_tool', 'command', 'profile', 'sandbox', 'browser_provider', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy'])
 const lastAutoModelListSignature = ref('')
 const lastAutoCapabilitySignature = ref('')
 const aiRequestPending = ref(false)
@@ -350,6 +351,7 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     browser_profile: firstText(record.browser_profile, record.browserProfile),
     browser_port: firstText(record.browser_port, record.browserPort),
     browser_url: firstText(record.browser_url, record.browserUrl),
+    browser_proxy: firstText(record.browser_proxy),
     extra: asRecord(record.extra),
     enabled: record.enabled !== false,
     api_key_configured: Boolean(record.api_key_configured),
@@ -476,6 +478,28 @@ watch(() => [props.appConfig, props.aiConfig, props.storeConfig], fillFromProps,
 const selectedAiModel = computed(() => aiModels.value[selectedAiModelIndex.value] || null)
 const aiUseCases = computed(() => Array.isArray(props.aiConfig.ai_use_cases) ? props.aiConfig.ai_use_cases.map(asRecord) : [])
 const cliToolOptions = computed(() => normalizeCliToolOptions(props.aiConfig.cli_tools))
+const browserPresets = computed(() => {
+  const presets = Array.isArray(props.aiConfig.browser_presets) ? props.aiConfig.browser_presets : []
+  return presets.map(asRecord).map(preset => ({
+    id: firstText(preset.id),
+    label: firstText(preset.label, preset.id),
+    description: firstText(preset.description),
+    supportedCapabilities: asStringArray(preset.supported_capabilities),
+    model: asRecord(preset.model),
+  })).filter(preset => preset.id && preset.model.connection_type === BROWSER_CONNECTION_TYPE)
+})
+const selectedBrowserPreset = computed(() => browserPresets.value.find(preset =>
+  selectedAiModel.value?.connection_type === BROWSER_CONNECTION_TYPE
+  && selectedAiModel.value?.browser_provider === preset.model.browser_provider
+  && selectedAiModel.value?.browser_url === preset.model.browser_url,
+))
+const browserProviderOptions = computed(() => [...new Map(browserPresets.value.map(preset => [
+  firstText(preset.model.browser_provider),
+  { value: firstText(preset.model.browser_provider), label: preset.label },
+] as const)).values()].filter(option => option.value))
+const browserProviderIsListed = computed(() => browserProviderOptions.value.some(option =>
+  option.value === modelField('browser_provider'),
+))
 const providerOptions = computed(() => {
   const configuredItems = Array.isArray(props.aiConfig.providers) ? props.aiConfig.providers : []
   const rawItems = configuredItems.length ? configuredItems : fallbackProviders
@@ -644,10 +668,11 @@ function aiPayload(): UnknownRecord {
         delete row.browser_profile
         delete row.browser_port
         delete row.browser_url
+        delete row.browser_proxy
         delete row.extra
       } else if (row.connection_type === BROWSER_CONNECTION_TYPE) {
         row.provider = firstText(row.provider, '浏览器 AI')
-        row.browser_provider = firstText(row.browser_provider, 'chatgpt')
+        row.browser_provider = firstText(row.browser_provider)
         row.browser_mode = firstText(row.browser_mode, BROWSER_MODE_MANAGED_PROFILE)
         row.base_url = ''
         row.base_url_env = ''
@@ -675,6 +700,7 @@ function aiPayload(): UnknownRecord {
         delete row.browser_profile
         delete row.browser_port
         delete row.browser_url
+        delete row.browser_proxy
       }
       delete row.model_options
       delete row.model_env
@@ -801,7 +827,22 @@ function clearTransientPlatformApiCredentials() {
   form.alibabaAccessToken = ''
 }
 
+function ensureBrowserProviderSelected(model?: UnknownRecord): boolean {
+  const invalid = (model ? [model] : aiModels.value).find(item =>
+    item.connection_type === BROWSER_CONNECTION_TYPE && !firstText(item.browser_provider),
+  )
+  if (invalid) {
+    selectedAiModelIndex.value = aiModels.value.indexOf(invalid)
+    activeAuthSettingsTab.value = 'ai_models'
+    aiSettingsError.value = `请为网页模型「${firstText(invalid.name, invalid.id)}」选择服务商。`
+    return false
+  }
+  aiSettingsError.value = ''
+  return true
+}
+
 function emitAiSettingsAndClearTransientCredentials() {
+  if (!ensureBrowserProviderSelected()) return
   const payload = aiPayload()
   emit('saveAi', payload)
   clearTransientPlatformApiCredentials()
@@ -864,6 +905,11 @@ function setSelectedModelField(field: string, value: string | boolean) {
     : field === 'provider_id' && typeof value === 'string'
       ? firstText(value).toLowerCase()
       : value
+  if (field === 'browser_provider' && !browserProviderOptions.value.some(option => option.value === value)) {
+    aiSettingsError.value = '请选择列表中的网页服务商。'
+    return
+  }
+  aiSettingsError.value = ''
   const previous = selectedAiModel.value[field]
   if (previous === nextValue) return
   const desiredCapabilities = capabilitySelection(selectedAiModel.value)
@@ -894,9 +940,10 @@ function setSelectedModelField(field: string, value: string | boolean) {
       selectedAiModel.value.browser_profile = ''
       selectedAiModel.value.browser_port = ''
       selectedAiModel.value.browser_url = ''
+      selectedAiModel.value.browser_proxy = ''
     } else if (nextValue === BROWSER_CONNECTION_TYPE) {
       selectedAiModel.value.provider = '浏览器 AI'
-      selectedAiModel.value.browser_provider = firstText(selectedAiModel.value.browser_provider, 'chatgpt')
+      selectedAiModel.value.browser_provider = firstText(selectedAiModel.value.browser_provider)
       selectedAiModel.value.browser_mode = firstText(selectedAiModel.value.browser_mode, BROWSER_MODE_MANAGED_PROFILE)
       selectedAiModel.value.model = ''
       selectedAiModel.value.model_options = []
@@ -921,6 +968,16 @@ function setSelectedModelField(field: string, value: string | boolean) {
         selectedAiModel.value.api_style = apiProvider.defaultApiStyle
         selectedAiModel.value.base_url = apiProvider.defaultBaseUrl
       }
+    }
+  }
+  if (field === 'browser_provider' && typeof nextValue === 'string') {
+    const preset = browserPresets.value.find(item => item.model.browser_provider === nextValue)
+    if (preset) {
+      for (const key of ['browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'model']) {
+        selectedAiModel.value[key] = firstText(preset.model[key])
+      }
+      selectedAiModel.value.provider = firstText(preset.model.provider, preset.label)
+      selectedAiModel.value.model_options = []
     }
   }
   if (field === 'provider_id' && typeof nextValue === 'string') {
@@ -1175,6 +1232,7 @@ function capabilityProbePayload(capability: string): UnknownRecord {
 }
 
 function openCapabilityProbe(capability: string) {
+  if (!selectedAiModel.value || !ensureBrowserProviderSelected(selectedAiModel.value)) return
   const originalCapabilities = selectedCapabilities()
   if (selectedAiModel.value) selectedAiModel.value.capabilities = [...originalCapabilities]
   capabilityProbeDialog.open = true
@@ -1248,6 +1306,32 @@ function addAiModel() {
   if (aiControlsLocked.value) return
   aiModels.value.push(defaultAiModelRow(aiModels.value.length))
   selectedAiModelIndex.value = aiModels.value.length - 1
+}
+
+function addBrowserModel(event: Event) {
+  const select = event.target as HTMLSelectElement
+  const preset = browserPresets.value.find(item => item.id === select.value)
+  select.value = ''
+  if (!preset || aiControlsLocked.value) return
+  const existingIndex = aiModels.value.findIndex(model =>
+    model.connection_type === BROWSER_CONNECTION_TYPE
+    && model.browser_provider === preset.model.browser_provider
+    && (model.id === preset.model.id || model.browser_url === preset.model.browser_url),
+  )
+  if (existingIndex >= 0) {
+    selectedAiModelIndex.value = existingIndex
+    return
+  }
+  aiModels.value.push(normalizeAiModelRow({
+    ...preset.model,
+    id: aiModels.value.some(model => model.id === preset.model.id)
+      ? uniqueAiModelId(firstText(preset.model.id)) : preset.model.id,
+    capabilities: [],
+    capability_profiles: {},
+  }, aiModels.value.length))
+  selectedAiModelIndex.value = aiModels.value.length - 1
+  lastAutoModelListSignature.value = ''
+  lastAutoCapabilitySignature.value = ''
 }
 
 function duplicateSelectedAiModel() {
@@ -1364,6 +1448,7 @@ function capabilitySignature(model: UnknownRecord | null): string {
       String(model.browser_profile || ''),
       String(model.browser_port || ''),
       String(model.browser_url || ''),
+      String(model.browser_proxy || ''),
       String(model.model || ''),
       allCapabilityValues.join(','),
     ].join('|')
@@ -1393,6 +1478,7 @@ function refreshSelectedModelList(force = false) {
 
 function requestAiModelCheck(probeCapabilities: boolean, message: string, trigger: string) {
   if (!selectedAiModel.value || aiControlsLocked.value) return
+  if (!ensureBrowserProviderSelected(selectedAiModel.value)) return
   aiRequestPending.value = true
   aiRequestMessage.value = message
   emit('testAi', { ...aiModelPayloadForCheck(), probe_capabilities: probeCapabilities, test_trigger: trigger })
@@ -1400,6 +1486,7 @@ function requestAiModelCheck(probeCapabilities: boolean, message: string, trigge
 
 function confirmCapabilityProbe() {
   if (!selectedAiModel.value || aiControlsLocked.value || capabilityProbeDialog.pending) return
+  if (!ensureBrowserProviderSelected(selectedAiModel.value)) return
   const capability = capabilityProbeDialog.capability
   if (!capability) return
   let payload: UnknownRecord
@@ -1809,6 +1896,10 @@ function copy(text: string) {
             </div>
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
+              <select data-testid="add-web-model" aria-label="添加网页模型" class="input w-auto py-1.5 text-sm" :disabled="aiControlsLocked || !browserPresets.length" value="" @change="addBrowserModel">
+                <option value="" disabled>添加网页模型</option>
+                <option v-for="preset in browserPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
+              </select>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel" @click="duplicateSelectedAiModel">复制当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : selectedProviderSupportsModelDiscovery ? '请先填写 Base URL 和 API Key' : '当前 Provider 不提供模型目录，请手动填写模型 ID'" @click="refreshSelectedModelList(true)">加载模型列表</button>
@@ -1833,6 +1924,14 @@ function copy(text: string) {
             </div>
 
             <div v-if="selectedAiModel" class="ai-model-form space-y-3">
+              <p v-if="aiSettingsError" role="alert" class="text-sm text-rose-700 dark:text-rose-300">{{ aiSettingsError }}</p>
+              <div v-if="selectedBrowserPreset" data-testid="web-model-guide" class="rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm text-primary-800 dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100">
+                <p>{{ selectedBrowserPreset.description }}</p>
+                <p class="mt-1">网页地址和浏览器设置已填好。按需设置代理，测试通过后保存，并在功能绑定中选择该模型。</p>
+                <button v-for="capability in selectedBrowserPreset.supportedCapabilities.filter(item => !hasCapability(item))" :key="capability" :data-testid="`test-web-capability-${capability}`" class="btn btn-outline mt-2 py-1 text-sm" type="button" :disabled="aiControlsLocked" @click="openCapabilityProbe(capability)">
+                  测试并启用{{ capabilityLabelByValue[capability] || capability }}
+                </button>
+              </div>
               <div class="grid gap-3 md:grid-cols-2">
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型 ID</span>
@@ -1844,7 +1943,7 @@ function copy(text: string) {
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">接入方式</span>
-                  <select class="input" :value="modelField('connection_type', 'api')" :disabled="aiControlsLocked" @change="setSelectedModelField('connection_type', eventText($event))">
+                  <select data-testid="ai-connection-type" class="input" :value="modelField('connection_type', 'api')" :disabled="aiControlsLocked" @change="setSelectedModelField('connection_type', eventText($event))">
                     <option v-for="option in connectionTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                   </select>
                 </label>
@@ -1869,7 +1968,11 @@ function copy(text: string) {
                 </label>
                 <label v-else class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页服务商</span>
-                  <input class="input" :value="modelField('browser_provider')" :disabled="aiControlsLocked" placeholder="例如 chatgpt / claude / gemini" @input="setSelectedModelField('browser_provider', eventText($event))" />
+                  <select data-testid="web-provider-id" class="input" :value="modelField('browser_provider')" :disabled="aiControlsLocked" @change="setSelectedModelField('browser_provider', eventText($event))">
+                    <option value="" disabled>请选择网页服务商</option>
+                    <option v-if="modelField('browser_provider') && !browserProviderIsListed" :value="modelField('browser_provider')" disabled>{{ modelField('browser_provider') }}（已保存配置）</option>
+                    <option v-for="option in browserProviderOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  </select>
                 </label>
                 <template v-if="selectedAiModelIsApi">
                   <label class="block md:col-span-2">
@@ -1910,7 +2013,8 @@ function copy(text: string) {
                     <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('model', eventText($event))" />
                   </label>
                   <div class="md:col-span-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-600 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
-                    首次使用请在打开的浏览器窗口中登录，之后会保留登录状态。
+                    项目托管模式使用本机 Chrome 或 Edge 的独立资料目录，并保留登录状态。
+                    <span v-if="modelField('browser_provider') === 'gemini'" class="mt-1 block">Canvas 修图平时隐藏运行，需要登录时会显示专用窗口，完成后自动隐藏并继续。请在高级连接设置中填写 Canvas 分享页地址；图像编辑测试会实际修改一张测试图片。</span>
                   </div>
                 </template>
                 <label v-if="selectedAiModelImageCapable" class="block">
@@ -2015,6 +2119,11 @@ function copy(text: string) {
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">远程调试端口</span>
                       <input class="input" :value="modelField('browser_port')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('browser_port', eventText($event))" />
+                    </label>
+                    <label v-if="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE) === BROWSER_MODE_MANAGED_PROFILE" class="block md:col-span-2">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器代理</span>
+                      <input class="input" :value="modelField('browser_proxy')" :disabled="aiControlsLocked" placeholder="可选，例如 http://127.0.0.1:7890" @input="setSelectedModelField('browser_proxy', eventText($event))" />
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅用于此专用浏览器，支持 HTTP、HTTPS 和 SOCKS5。地址中不填写账号密码；修改后需关闭专用浏览器，再重新测试连接。</span>
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页 URL</span>
