@@ -53,6 +53,8 @@ export {
   type BackendDraftImageRef,
   type BackendImageBatchItemPayload,
   type BackendImageBatchSnapshot,
+  type BackendImageSetPagePayload,
+  type BackendImageSetPlanPayload,
   type BackendMercadoLibreMarketplaceBinding,
   type BackendMercadoLibreMarketplaceUser,
   type BackendMercadoLibreMarketPublication,

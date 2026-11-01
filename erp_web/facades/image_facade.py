@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import hashlib
+import json
 from typing import Any, Callable
+
+from pydantic import ValidationError
 
 from erp_web.context import get_context
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.services import image_service, image_translate_service
 from erp_web.services.image_batch_service import run_image_batch
+from erp_web.schemas.image_sets import ImageSetPlan
+from erp_web.services import image_set_service
 from erp_web.runtime_units.image_pool import (
     append_images_to_product_pool,
     apply_service_image_pool,
@@ -372,8 +378,129 @@ def process_draft_images_payload(body: dict[str, Any]) -> ResponseWithStatus:
                                    translate=body["operation"] == "translate", background=True)
 
 
+def _image_set_target(body):
+    context = get_context()
+    draft = context.products.draft_record(str(body.get("draft_id") or ""))
+    if not draft or draft.get("product_id") != body.get("product_id"):
+        raise RequestValidationError("目标草稿不存在或不属于当前商品。", status_code=404)
+    if body.get("updated_at") != draft.get("updated_at"):
+        raise RequestValidationError("草稿已更新，请重新读取后生成套图。", status_code=409)
+    context.image_batches.assert_draft_idle(draft["draft_id"])
+    product = context.products.load_product_from_index(draft["product_id"], "")
+    return product, draft
+
+
+def _image_set_sources(product, draft, ids, *, require_current=True):
+    if not ids or len(ids) > 12 or len(set(ids)) != len(ids):
+        raise RequestValidationError("请选择 1 至 12 张不重复的参考素材。")
+    defaults = {sku["id"]: sku.get("image_asset_id", "") for sku in product.get("sku_items", [])}
+    current = {ref["asset_id"] for ref in draft.get("images", [])}
+    current.update(row.get("overrides", {}).get("image_asset_id", defaults.get(row["sku_id"], ""))
+                   for row in draft.get("sku_items", []))
+    sources = image_translate_service.select_source_images(product, ids, draft["platform"])
+    if (require_current and not set(ids).issubset(current)) or {item["id"] for item in sources} != set(ids):
+        raise RequestValidationError("参考素材已不是当前使用的图片，请重新选择。", status_code=409)
+    return sources
+
+
+def plan_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    with context.image_batches.lock, context.products.mutation_scope({"draft_id": body.get("draft_id")}):
+        product, draft = _image_set_target(body)
+        sources = _image_set_sources(product, draft, body.get("source_image_ids") or [])
+    # 识图和结构化输出由原生 Agent 完成，商品锁不跨模型等待。
+    try:
+        plan = image_set_service.plan_image_set(
+            app_dir=_app_dir(), config=load_app_config(), messages=context.pydantic_messages,
+            product=product, draft=draft, sources=sources, count=body.get("count", 6), prompt=body.get("prompt", ""),
+        )
+    except ValueError as exc:
+        raise RequestValidationError(str(exc)) from None
+    with context.image_batches.lock, context.products.mutation_scope({"draft_id": draft["draft_id"]}):
+        _image_set_target(body)
+    return {"ok": True, "plan": plan.model_dump(), "updated_at": draft["updated_at"]}, 200
+
+
+def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    fingerprint = hashlib.sha256(json.dumps({key: value for key, value in body.items() if key != "request_id"},
+                                           sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    with context.image_batches.lock, context.products.mutation_scope({"draft_id": body.get("draft_id")}):
+        existing = context.image_batches.get(str(body.get("request_id") or ""))
+        if existing:
+            if (existing.draft_id != body.get("draft_id") or existing.product_id != body.get("product_id")
+                    or not existing.image_set or existing.request_fingerprint != fingerprint):
+                raise RequestValidationError("图片请求标识已用于其他操作。", status_code=409)
+            return draft_image_state_payload(body)
+        product, draft = _image_set_target(body)
+        retained = {}
+        base_id = str(body.get("base_request_id") or "")
+        if base_id:
+            base = context.image_batches.get(base_id)
+            if not base or base.draft_id != draft["draft_id"] or not base.image_set:
+                raise RequestValidationError("原套图任务不存在或不属于当前草稿。")
+            if context.image_batches.latest_for_draft(draft["draft_id"]).conversation_id != base_id:
+                raise RequestValidationError("套图任务已更新，请重新读取最新结果。", status_code=409)
+            if context.image_batches.blocks_changes(base):
+                raise RequestValidationError("原套图尚未结束或结果待核对，不能重做。", status_code=409)
+            plan = base.image_set
+            retry_ids = body.get("retry_page_ids") or []
+            if not retry_ids or not set(retry_ids).issubset({page.key for page in plan.pages}):
+                raise RequestValidationError("请选择要重做的套图页面。")
+            # 未选择的页面保留真实回执，不重新执行模型或虚构模型历史。
+            retained = {item.source_id: item for item in base.items if item.source_id not in retry_ids}
+        else:
+            if body.get("retry_page_ids"):
+                raise RequestValidationError("重做套图需要提供原任务。")
+            try:
+                plan = ImageSetPlan.model_validate(body.get("plan"))
+            except ValidationError:
+                raise RequestValidationError("套图方案无效，请检查统一风格、主图和每页参考素材。") from None
+        ids = list(dict.fromkeys(id for page in plan.pages for id in page.source_image_ids))
+        sources = _image_set_sources(product, draft, ids, require_current=not base_id)
+    # 文件预检与配置读取在锁外；注册时再次核对草稿版本和任务归属。
+    try:
+        image_set_service.reference_content(_app_dir(), sources)
+    except ValueError as exc:
+        raise RequestValidationError(str(exc)) from None
+    config = load_app_config()
+    pages = {page.key: page for page in plan.pages}
+
+    def process(source):
+        return image_set_service.generate_page(app_dir=_app_dir(), config=config, product=product,
+                                               draft=draft, plan=plan, page=pages[source["id"]])
+
+    def persist(result):
+        with context.products.mutation_scope({"product_id": product["product_id"]}):
+            latest = context.products.load_product_from_index(product["product_id"], "")
+            if latest.get("product_id") != product["product_id"]:
+                raise ValueError("商品已不存在，结果未写入素材池。")
+            save_product(append_images_to_product_pool(latest, result["imagePoolItems"]))
+
+    with context.image_batches.lock, context.products.mutation_scope({"draft_id": draft["draft_id"]}):
+        existing = context.image_batches.get(body["request_id"])
+        if existing:
+            if existing.draft_id != draft["draft_id"] or existing.request_fingerprint != fingerprint:
+                raise RequestValidationError("图片请求标识已用于其他操作。", status_code=409)
+            return draft_image_state_payload(body)
+        _image_set_target(body)
+        if base_id and context.image_batches.latest_for_draft(draft["draft_id"]).conversation_id != base_id:
+            raise RequestValidationError("套图任务已更新，请重新读取最新结果。", status_code=409)
+        run_image_batch(
+            store=context.image_batches, messages=context.pydantic_messages, app_dir=_app_dir(),
+            product_id=product["product_id"], draft_id=draft["draft_id"],
+            request_id=body["request_id"], request_fingerprint=fingerprint,
+            prompt=f"生成 {len(plan.pages)} 张共用套图：{plan.style}",
+            sources=[{"id": page.key} for page in plan.pages], process=process, persist=persist,
+            background=True, image_set=plan, retained_items=retained,
+        )
+        return draft_image_state_payload(body)
+
+
 ImagePayloadHandler = Callable[[dict[str, Any]], ResponseWithStatus]
 IMAGE_PAYLOAD_HANDLERS: dict[str, ImagePayloadHandler] = {
+    "/api/draft-images/plan-set": plan_draft_image_set_payload,
+    "/api/draft-images/generate-set": generate_draft_image_set_payload,
     "/api/draft-images/state": draft_image_state_payload,
     "/api/draft-images/process": process_draft_images_payload,
     "/api/image-pool/upload": upload_images_payload,

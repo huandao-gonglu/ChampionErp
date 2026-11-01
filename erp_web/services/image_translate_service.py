@@ -392,6 +392,7 @@ def edit_images(
     platform: str = "mercadolibre",
     image_ids: list[str] | None = None,
     provider: Provider | None = None,
+    combine_references: bool = False,
 ) -> dict[str, Any]:
     """Run image-to-image editing with the user's prompt and selected images."""
 
@@ -470,6 +471,7 @@ def edit_images(
             mode="edit",
             size=str(cfg.get("size") or DEFAULT_IMAGE_SIZE),
             quality=str(cfg.get("quality") or "medium"),
+            combine_references=combine_references,
         )
     if not generated:
         api_key = ai_model_config.model_api_key(cfg)

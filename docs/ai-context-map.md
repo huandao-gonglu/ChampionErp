@@ -458,6 +458,23 @@ CLI / Browser use case
 
 ### Focused 例外登记：专用 Images API
 
+- 草稿图片工作台提供独立的「生成套图」入口：`POST /api/draft-images/plan-set` 经
+  `image_facade` → `image_set_service.plan_image_set`，用 `image.plan` 绑定的识图 API 模型
+  和 `AiAgentFactory` 原生 `BinaryContent` / `PromptedOutput` 读取整组素材、生成可编辑方案。
+  此功能沿用文本/JSON 能力清单，绑定模型还须实际支持图片输入；识图能力不由名称推测。
+  设计提示词由 `image.plan` 独立配置，不加载文案或图片翻译 Prompt；事实约束由 focused service 注入。
+  方案是待生成图片的领域设计内容，
+  不包含下一步工具计划。生成前后复核草稿版本，模型等待和参考图片文件预检均在商品锁外。
+  `POST /api/draft-images/generate-set` 注册既有 `ImageBatchStore` 批次，每页作为独立输出项，
+  经 `image_translate_service` / `ai_gateway` 生成；`combine_references` 将同页多张参考图放进
+  一次原生多模态请求，API 与显式 Canvas 连接都不逐张套用相同提示词。结果只合入商品素材池，
+  不自动改变草稿引用。`schemas/image_sets.py` 定义方案，批次保存设计内容与真实结果资产 ID，
+  重新打开可恢复预览；单页重做引用原批次，保留未重做页面的实际状态和结果，不重新执行或计费。
+  采用和排序由 `useDraftImageWorkbench` 复用草稿保存与本次打开的撤销边界，只更新共用图片引用，
+  不改 SKU 图关联；第一张采用图成为共用主图。旧图片批次缺省新增字段后继续读取，不重放历史任务。
+  已核对 Pydantic AI 2.44.0 的[多模态输入](https://pydantic.dev/docs/ai/core-concepts/input/)与
+  [结构化输出](https://pydantic.dev/docs/ai/core-concepts/output/)；沿用已有 Images Model 适配，
+  不增加 SDK 推理旁路或 Agent loop。回归见 `tests/test_image_sets.py` 及前端工作台/套图组件测试。
 - 草稿图片 V2 由 `DraftImageWorkbench.vue` 展示共用主图与区域内去重后的当前 SKU 图片；同一资产可在两区展示，标明关联 SKU 及共用用途，勾选跨区同步，总数和处理提交按资产 ID 去重。`ProductImageEditorPanel.vue` 保留商品素材池入口。页面不做版本分组或 SKU 配图，历史错误加入的共用引用照实展示，不自动清理。
   `useDraftImageWorkbench.ts` 固定提交目标、清空提交选择；移出、添加、排序和撤销/重做经既有草稿保存入口立即持久化，只改图片引用，保留 SKU 独立引用、价格和源文件。上传在短锁内合入最新素材池，回执 `uploaded_image_ids` 只标识本次上传，不能按素材池增量猜测范围而混入另一草稿的结果。
   撤销栈限定本次打开的草稿工作台，切换工作台内标签保留，关闭或刷新后建立新边界；重新加载或外部更新改变图片引用时旧历史失效。一次批次只记录成功项形成的前后引用差异，重做不再生成或计费。保存回执丢失先重读真实状态，不假报撤销成功。

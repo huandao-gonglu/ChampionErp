@@ -1,7 +1,9 @@
 """图片批次的领域进度；模型消息仍由 Pydantic AI 保存。"""
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
+
+from .image_sets import ImageSetPlan, ImageSetPlanPayload
 
 
 class ImageBatchItemPayload(TypedDict):
@@ -14,6 +16,7 @@ class ImageBatchItemPayload(TypedDict):
     outcome_unknown: bool
     started_at: str
     finished_at: str
+    result_asset_ids: NotRequired[list[str]]
 
 
 class ImageBatchSnapshot(TypedDict):
@@ -31,6 +34,7 @@ class ImageBatchSnapshot(TypedDict):
     total: int
     completed: int
     terminal: bool
+    image_set: NotRequired[ImageSetPlanPayload | None]
 
 
 class ImageBatchItem(BaseModel):
@@ -44,6 +48,7 @@ class ImageBatchItem(BaseModel):
     outcome_unknown: bool = False
     started_at: str = ""
     finished_at: str = ""
+    result_asset_ids: list[str] = Field(default_factory=list)
 
 
 class ImageBatch(BaseModel):
@@ -55,10 +60,12 @@ class ImageBatch(BaseModel):
     items: list[ImageBatchItem]
     created_at: str
     updated_at: str
+    image_set: ImageSetPlan | None = None
+    request_fingerprint: str = ""
 
     def snapshot(self) -> dict:
         counts = {state: sum(row.status == state for row in self.items)
                   for state in ("queued", "running", "success", "failed")}
-        return {**self.model_dump(), **counts, "total": len(self.items),
+        return {**self.model_dump(exclude={"request_fingerprint"}), **counts, "total": len(self.items),
                 "completed": counts["success"] + counts["failed"],
                 "terminal": not (counts["queued"] or counts["running"])}

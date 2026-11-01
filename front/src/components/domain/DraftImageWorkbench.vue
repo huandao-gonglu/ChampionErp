@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import DraftSkuImagePreview from './DraftSkuImagePreview.vue'
+import DraftImageSetDialog from './DraftImageSetDialog.vue'
 import { imageUrl, skuImageAssignments } from '@/utils/draftImages'
 import type { DraftDetail, ImageAsset, Product } from '@/types/workflow'
 import type { DraftImageWorkbenchController } from '@/composables/useDraftImageWorkbench'
@@ -10,6 +11,7 @@ const props = defineProps<{ draft: DraftDetail; product: Product; images: ImageA
 const selected = ref<string[]>([])
 const preview = ref<ImageAsset | null>(null)
 const previewOpen = ref(false)
+const imageSetOpen = ref(false)
 const dialog = ref<'edit' | 'translate' | 'remove' | 'add' | null>(null)
 const targets = ref<string[]>([])
 const prompt = ref('')
@@ -41,12 +43,13 @@ const regions = computed(() => [
   { id: 'common', title: '共用主图', ids: commonIds.value },
   { id: 'sku', title: 'SKU 图片', ids: skuIds.value },
 ])
-const failedIds = computed(() => batch.value?.items.filter(item => item.status === 'failed' && !item.outcome_unknown && currentIds.value.includes(item.source_id)).map(item => item.source_id) || [])
+const failedIds = computed(() => batch.value?.image_set ? [] : batch.value?.items.filter(item => item.status === 'failed' && !item.outcome_unknown && currentIds.value.includes(item.source_id)).map(item => item.source_id) || [])
 function name(id: string) {
   const ref = props.draft.images.find(image => image.assetId === id)
   return ref?.label || assignments.value.find(sku => sku.imageAssetId === id)?.name || '共用图片'
 }
 function status(id: string) {
+  if (batch.value?.image_set) return ''
   const item = batch.value?.items.find(item => item.source_id === id)
   if (item?.outcome_unknown) return '结果待确认'
   if (item?.status === 'failed') return item.error || '处理失败'
@@ -99,7 +102,7 @@ function files(event: Event) {
   void props.controller.upload(uploads)
 }
 watch(currentIds, ids => { selected.value = selected.value.filter(id => ids.includes(id)) })
-watch(() => props.draft.draftId, () => { selected.value = []; dialog.value = null; preview.value = null })
+watch(() => props.draft.draftId, () => { selected.value = []; dialog.value = null; preview.value = null; imageSetOpen.value = false })
 watch(busy, value => { if (value) dragging.value = '' })
 </script>
 
@@ -113,6 +116,7 @@ watch(busy, value => { if (value) dragging.value = '' })
       <span class="mr-3 min-w-32 text-sm font-medium">{{ selected.length ? `已选 ${selected.length} 张` : '勾选图片开始处理' }}</span>
       <button class="btn btn-primary" type="button" :disabled="busy || !canProcess" @click="open('translate')">翻译图片</button>
       <button class="btn btn-outline" type="button" :disabled="busy || !canProcess" @click="open('edit')">AI 修改</button>
+      <button class="btn btn-outline" type="button" :disabled="!currentIds.length && !batch?.image_set" @click="imageSetOpen = true">{{ batch?.image_set ? '查看套图' : '生成套图' }}</button>
       <button class="btn btn-outline" type="button" :disabled="busy" @click="open('add')">添加图片</button>
       <button class="btn btn-outline" type="button" :disabled="!selected.length" @click="selected = []">取消选择</button>
       <button v-if="selectedCommon.length" class="btn btn-outline" type="button" :disabled="busy" @click="open('remove')">移出共用区（{{ selectedCommon.length }}）</button>
@@ -123,6 +127,7 @@ watch(busy, value => { if (value) dragging.value = '' })
     </div>
     <div v-if="notice || batch" role="status" class="flex flex-wrap items-center gap-3 rounded-lg bg-slate-100 px-4 py-3 text-sm dark:bg-dark-800">
       <span v-if="notice">{{ notice }}</span>
+      <span v-else-if="batch?.image_set">{{ batch.terminal ? '套图生成结束' : '正在生成套图' }} · {{ batch.completed }} / {{ batch.total }} 张 · 成功 {{ batch.success }} 张，可查看套图并选择采用。</span>
       <span v-else-if="batch && !batch.terminal">正在处理 {{ batch.total }} 张图片 · {{ batch.completed }} / {{ batch.total }} 完成</span>
       <span v-else-if="batch">上次处理：成功 {{ batch.success }} 张<span v-if="batch.failed"> · {{ batch.failed }} 张未完成，保留旧图</span></span>
       <button v-if="failedIds.length" type="button" class="ml-auto text-primary-700 underline dark:text-primary-300" @click="selected = [...failedIds]">选中失败项</button>
@@ -159,6 +164,7 @@ watch(busy, value => { if (value) dragging.value = '' })
   </section>
   <WorkspaceDialog :open="Boolean(preview)" title="图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" alt="图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
   <WorkspaceDialog :open="previewOpen" title="发布图片预览" @close="previewOpen = false"><DraftSkuImagePreview :draft="draft" :images="images" :assignments="assignments" /></WorkspaceDialog>
+  <DraftImageSetDialog :open="imageSetOpen" :draft="draft" :images="images" :reference-ids="currentIds" :controller="controller" :loading="loading" @close="imageSetOpen = false" />
   <WorkspaceDialog :open="Boolean(dialog)" :title="dialog === 'edit' ? 'AI 修改' : dialog === 'translate' ? '翻译图片' : dialog === 'remove' ? `移出 ${targets.length} 张共用主图？` : '添加共用图片'" :close-disabled="busy" @close="dialog = null">
     <form class="space-y-5" @submit.prevent="submit">
       <template v-if="dialog === 'add'">

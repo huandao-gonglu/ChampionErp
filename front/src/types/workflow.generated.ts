@@ -483,6 +483,7 @@ export interface BackendImageBatchItemPayload {
   outcome_unknown: boolean
   started_at: string
   finished_at: string
+  result_asset_ids?: Array<string>
 }
 
 export interface BackendImageBatchSnapshot {
@@ -500,6 +501,20 @@ export interface BackendImageBatchSnapshot {
   total: number
   completed: number
   terminal: boolean
+  image_set?: BackendImageSetPlanPayload | null
+}
+
+export interface BackendImageSetPagePayload {
+  key: string
+  title: string
+  role: "main" | "detail" | "scene" | "selling_point" | "material" | "size" | "package"
+  prompt: string
+  source_image_ids: Array<string>
+}
+
+export interface BackendImageSetPlanPayload {
+  style: string
+  pages: Array<BackendImageSetPagePayload>
 }
 
 export interface BackendMercadoLibreMarketplaceBinding {

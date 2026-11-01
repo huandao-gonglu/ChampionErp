@@ -20,6 +20,7 @@ function fixture() {
   const controller: DraftImageWorkbenchController = {
     busy: computed(() => busy.value), batch, notice: ref(''), undoLabel: computed(() => 'AI 修改 2 张'), redoLabel: computed(() => ''),
     start: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
+    planSet: vi.fn(), generateSet: vi.fn(), applySet: vi.fn(),
   }
   const wrapper = mount(DraftImageWorkbench, { attachTo: document.body, props: { draft, product, images, loading: false, controller }, global: { stubs: { Teleport: true } } })
   return { wrapper, draft, product, images, controller, busy, batch }

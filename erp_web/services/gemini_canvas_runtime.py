@@ -218,8 +218,9 @@ class GeminiCanvasProvider(AiImageEditProvider):
             raise ValueError("Canvas 图片模型名称格式无效。")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{name}:generateContent?key="
         results = []
-        for item in request.images:
-            payload = {"contents": [{"parts": [{"text": request.prompt}, _source_part(request.app_dir, item)]}],
+        groups = [request.images] if request.combine_references else [[item] for item in request.images]
+        for group in groups:
+            payload = {"contents": [{"parts": [{"text": request.prompt}, *[_source_part(request.app_dir, item) for item in group]]}],
                        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}}
             for attempt in range(2):
                 with _connection(request.app_dir, request.model, request.timeout_seconds, bool(attempt)) as (cdp, session, context):
@@ -234,7 +235,7 @@ class GeminiCanvasProvider(AiImageEditProvider):
                     break
             if not isinstance(data, dict):
                 raise RuntimeError("Canvas 返回无效结果。")
-            results.extend(_decode_results(data, str(item.get("id") or ""), request.mode))
+            results.extend(_decode_results(data, "" if request.combine_references else str(group[0].get("id") or ""), request.mode))
         return results
 
 

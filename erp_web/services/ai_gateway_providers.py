@@ -383,6 +383,7 @@ def edit_images(
     quality: str = "medium",
     count: int = 1,
     timeout_seconds: int | None = None,
+    combine_references: bool = False,
 ) -> list[dict[str, Any]]:
     client = _image_client(
         app_dir,
@@ -399,6 +400,7 @@ def edit_images(
             app_dir=client.app_dir, model=client.model, prompt=prompt,
             images=images, mode=mode, size=size, quality=quality, count=count,
             timeout_seconds=client.timeout_seconds,
+            combine_references=combine_references,
         ))
     return ai_direct_request_service.edit_images(
         app_dir=client.app_dir,
@@ -412,6 +414,7 @@ def edit_images(
         quality=quality,
         count=count,
         timeout_seconds=client.timeout_seconds,
+        combine_references=combine_references,
     )
 
 

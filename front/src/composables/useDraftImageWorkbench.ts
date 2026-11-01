@@ -1,5 +1,5 @@
 import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
-import { fetchDraftImageState, processDraftImages, type DraftImageState } from '@/api/draftImages'
+import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImageState, type ImageSetPlan } from '@/api/draftImages'
 import { saveDraft, uploadImages } from '@/api/workflow/catalog'
 import type { DraftMutationResponse, ProductMutationResponse } from '@/api/workflow/normalizers'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
@@ -153,6 +153,46 @@ export function useDraftImageWorkbench(options: {
     }
   }
 
+  async function planSet(ids: string[], count: number, prompt: string) {
+    if (busy.value || !ids.length) return
+    const token = epoch
+    saving.value = true; notice.value = ''
+    try {
+      if (!await options.save()) { notice.value = '保存草稿失败，尚未规划套图。'; return }
+      if (token !== epoch) return
+      const result = await planDraftImageSet(draft.value, ids, count, prompt)
+      if (token === epoch) return result
+    } catch (error) {
+      if (token === epoch) notice.value = error instanceof Error ? error.message : '套图规划失败，请检查识图模型配置。'
+    } finally { if (token === epoch) saving.value = false }
+  }
+
+  async function generateSet(plan?: ImageSetPlan, updatedAt = draft.value.updatedAt, retryPageIds?: string[]) {
+    if (busy.value) return
+    const base = batch.value
+    if (!plan && (!base?.image_set || !retryPageIds?.length)) return
+    const token = epoch
+    saving.value = true; notice.value = ''
+    try {
+      pending.value = `draft_image_set_${crypto.randomUUID()}`
+      remember(draft.value.draftId, pending.value)
+      const result = await generateDraftImageSet(draft.value, pending.value, {
+        plan, updatedAt, baseRequestId: plan ? undefined : base!.conversation_id, retryPageIds,
+      })
+      if (token === epoch) applyState(result)
+    } catch (error) {
+      if (token !== epoch) return
+      const status = (error as { response?: { status?: number }; status?: number }).response?.status ?? (error as { status?: number }).status
+      if (status && status >= 400 && status < 500) {
+        pending.value = ''; remember(draft.value.draftId, '')
+        notice.value = error instanceof Error ? error.message : '套图提交失败，请重新读取草稿。'
+        checking.value = true
+      } else notice.value = '套图提交结果尚未确认，正在查询原任务…'
+    } finally {
+      if (token === epoch) { saving.value = false; clearTimeout(timer); if (busy.value) timer = setTimeout(() => void poll(token), 1000) }
+    }
+  }
+
   async function commit(label: string, change: (copy: DraftDetail) => void, direction?: 'undo' | 'redo') {
     if (busy.value) return
     const token = epoch
@@ -168,7 +208,7 @@ export function useDraftImageWorkbench(options: {
       if (direction === 'undo') future.value.push(past.value.pop()!)
       else if (direction === 'redo') past.value.push(future.value.pop()!)
       else record(label, before)
-      batch.value = null
+      if (!batch.value?.image_set) batch.value = null
       notice.value = `${direction === 'undo' ? '已撤销：' : direction === 'redo' ? '已重做：' : '已保存：'}${label}`
     } catch (error) {
       if (token !== epoch) return
@@ -207,7 +247,13 @@ export function useDraftImageWorkbench(options: {
     finally { if (token === epoch) saving.value = false }
   }
   return {
-    busy, batch, notice, undoLabel, redoLabel, start, add, upload,
+    busy, batch, notice, undoLabel, redoLabel, start, add, upload, planSet, generateSet,
+    applySet: (refs: DraftImageRef[]) => {
+      const current = batch.value
+      const available = new Set(current?.items.filter(item => item.status === 'success').flatMap(item => item.result_asset_ids || []))
+      if (!current?.image_set || !refs.length || refs.some(ref => !available.has(ref.assetId))) return
+      return commit(`采用套图 ${refs.length} 张`, copy => { copy.images = clone(refs); normalize(copy) })
+    },
     remove: (ids: string[]) => commit(`移出 ${ids.length} 张共用图`, copy => { copy.images = copy.images.filter(image => !ids.includes(image.assetId)); normalize(copy) }),
     reorder: (ids: string[]) => commit('调整共用图顺序', copy => { const refs = new Map(copy.images.map(image => [image.assetId, image])); copy.images = ids.map(id => refs.get(id)!).filter(Boolean); normalize(copy) }),
     undo: () => { const operation = past.value.at(-1); if (operation) return commit(operation.label, copy => restoreDraftImages(copy, operation.before), 'undo') },

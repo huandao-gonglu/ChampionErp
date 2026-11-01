@@ -264,6 +264,8 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/generate-copy-batch": _contract(required=("product_ids",)),
     "/api/generate-image-prompts": _PRODUCT,
     "/api/draft-images/state": _contract(required=("draft_id",)),
+    "/api/draft-images/plan-set": _contract(required=("product_id", "draft_id", "updated_at", "source_image_ids"), fields={"count": FieldRule("integer", minimum=2, maximum=8)}),
+    "/api/draft-images/generate-set": _contract(required=("product_id", "draft_id", "updated_at", "request_id"), fields={"request_id": STRING, "plan": OBJECT, "base_request_id": STRING, "retry_page_ids": STRING_ARRAY}),
     "/api/draft-images/process": _contract(required=("product_id", "draft_id", "request_id", "updated_at", "operation", "source_image_ids"), fields={"request_id": STRING, "operation": FieldRule("enum", choices=frozenset({"translate", "edit"}))}),
     "/api/image-edit": _contract(required=("product_id", "prompt", "source_image_ids")),
     "/api/image-pool/action": _contract(

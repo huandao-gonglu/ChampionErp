@@ -64,7 +64,7 @@ function safeUrl(url: string): boolean {
       <li v-for="item in batch.items" :key="item.index" :data-status="item.status" class="border-b border-slate-100 py-2 dark:border-dark-700">
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span aria-hidden="true" :class="{ 'text-emerald-600': item.status === 'success', 'text-rose-600': item.status === 'failed' }">{{ icons[item.status] }}</span>
-          <span>第 {{ item.index + 1 }} 张：{{ item.outcome_unknown ? '结果待核对' : labels[item.status] }}</span>
+          <span>第 {{ item.index + 1 }} 张{{ batch.image_set ? ` · ${batch.image_set.pages[item.index]?.title || '套图'}` : '' }}：{{ item.outcome_unknown ? '结果待核对' : labels[item.status] }}</span>
           <a v-if="safeUrl(item.source_url)" :href="item.source_url" target="_blank" rel="noopener noreferrer" class="text-primary-600 underline dark:text-primary-300">查看原图</a>
           <template v-for="(url, index) in item.result_urls" :key="url">
             <a v-if="safeUrl(url)" :href="url" target="_blank" rel="noopener noreferrer" class="text-primary-600 underline dark:text-primary-300">查看结果图{{ item.result_urls.length > 1 ? ` ${index + 1}` : '' }}</a>

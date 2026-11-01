@@ -127,6 +127,18 @@ def test_invalid_source_rejected_before_browser_access(tmp_path, monkeypatch, mo
     assert calls == []
 
 
+def test_combined_references_are_sent_in_one_canvas_request(tmp_path, monkeypatch, model, source):
+    calls = fake_connection(monkeypatch, result={"images": [
+        {"data": base64.b64encode(png("blue")).decode(), "mimeType": "image/png"},
+    ]})
+    result = canvas.GeminiCanvasProvider().edit_images(AiImageEditRequest(
+        tmp_path, model, "参考全部素材，重新构图生成一张主图", [source, {**source, "id": "second"}],
+        combine_references=True,
+    ))
+    assert len(result) == 1 and len(calls) == 1
+    assert calls[0][1]["expression"].count('"inlineData"') == 2
+
+
 def test_returned_image_must_be_decodable_and_match_mime():
     encoded = base64.b64encode(png("blue")).decode()
     with pytest.raises(RuntimeError, match="格式"):

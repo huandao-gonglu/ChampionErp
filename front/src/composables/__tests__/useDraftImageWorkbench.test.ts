@@ -2,13 +2,13 @@ import { effectScope, nextTick, ref } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
-import { fetchDraftImageState, processDraftImages, type DraftImageState } from '@/api/draftImages'
+import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImageState, type ImageSetPlan } from '@/api/draftImages'
 import { saveDraft, uploadImages } from '@/api/workflow/catalog'
 import type { DraftMutationResponse } from '@/api/workflow/normalizers'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import { useDraftImageWorkbench } from '../useDraftImageWorkbench'
 
-vi.mock('@/api/draftImages', () => ({ fetchDraftImageState: vi.fn(), processDraftImages: vi.fn() }))
+vi.mock('@/api/draftImages', () => ({ fetchDraftImageState: vi.fn(), processDraftImages: vi.fn(), planDraftImageSet: vi.fn(), generateDraftImageSet: vi.fn() }))
 vi.mock('@/api/workflow/catalog', () => ({ saveDraft: vi.fn(), uploadImages: vi.fn() }))
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const scopes: ReturnType<typeof effectScope>[] = []
@@ -50,6 +50,59 @@ beforeEach(() => {
 afterEach(() => { scopes.forEach(scope => scope.stop()); scopes.length = 0; vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('图片工作台操作与恢复', () => {
+  it('套图先保存后规划，生成完成仍保留旧引用；采用与撤销只修改共用图', async () => {
+    const { work, draft, response, save } = fixture()
+    await flushPromises()
+    const plan: ImageSetPlan = { style: '简洁留白', pages: [
+      { key: 'main', title: '主图', role: 'main', prompt: '商品展示', source_image_ids: ['common'] },
+      { key: 'detail', title: '细节', role: 'detail', prompt: '材质展示', source_image_ids: ['shared'] },
+    ] }
+    vi.mocked(planDraftImageSet).mockResolvedValue({ ok: true, plan, updated_at: 'v1' })
+    expect((await work.planSet(['common', 'shared'], 2, '明亮'))?.plan).toEqual(plan)
+    expect(save).toHaveBeenCalledOnce()
+    expect(planDraftImageSet).toHaveBeenCalledWith(draft.value, ['common', 'shared'], 2, '明亮')
+    const active = { ...batch(), image_set: plan }
+    vi.mocked(generateDraftImageSet).mockResolvedValue(response(draft.value, active))
+    await work.generateSet(plan, 'v1')
+    expect(work.busy.value).toBe(true)
+    const completed = { ...batch(true), image_set: plan }
+    completed.items[0].result_asset_ids = ['result']
+    vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, completed))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(draft.value.images.map(image => image.assetId)).toEqual(['common', 'shared'])
+    expect(work.undoLabel.value).toBe('')
+    const skus = clone(draft.value.skuItems)
+    await work.applySet([{ assetId: 'result', role: 'main', order: 0 }])
+    expect(draft.value.images.map(image => image.assetId)).toEqual(['result'])
+    expect(draft.value.skuItems).toEqual(skus)
+    await work.undo()
+    expect(draft.value.images.map(image => image.assetId)).toEqual(['common', 'shared'])
+    expect(draft.value.skuItems).toEqual(skus)
+    expect(generateDraftImageSet).toHaveBeenCalledTimes(1)
+    await work.applySet([{ assetId: 'foreign', role: 'main', order: 0 }])
+    expect(draft.value.images.map(image => image.assetId)).toEqual(['common', 'shared'])
+  })
+  it('套图提交超时只恢复原任务，单张重做携带原批次与页面', async () => {
+    const { work, draft, response } = fixture()
+    await flushPromises()
+    const plan: ImageSetPlan = { style: '简洁', pages: [
+      { key: 'main', title: '主图', role: 'main', prompt: '主图', source_image_ids: ['common'] },
+      { key: 'detail', title: '细节', role: 'detail', prompt: '细节', source_image_ids: ['shared'] },
+    ] }
+    vi.mocked(generateDraftImageSet).mockRejectedValueOnce(new Error('timeout'))
+    await work.generateSet(plan)
+    const requestId = localStorage.getItem('draft-image-request:d')
+    expect(requestId).toBeTruthy()
+    expect(work.busy.value).toBe(true)
+    vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, { ...batch(true), image_set: plan, conversation_id: requestId! }))
+    await vi.advanceTimersByTimeAsync(1000)
+    vi.mocked(generateDraftImageSet).mockResolvedValue(response(draft.value, { ...batch(), image_set: plan }))
+    await work.generateSet(undefined, draft.value.updatedAt, ['detail'])
+    expect(generateDraftImageSet).toHaveBeenLastCalledWith(draft.value, expect.any(String), {
+      updatedAt: draft.value.updatedAt, plan: undefined, baseRequestId: requestId, retryPageIds: ['detail'],
+    })
+    expect(generateDraftImageSet).toHaveBeenCalledTimes(2)
+  })
   it('移出仅保存共用引用，撤销重做不改 SKU、商品或核价；新操作清空重做', async () => {
     const { work, draft, product } = fixture()
     await flushPromises()

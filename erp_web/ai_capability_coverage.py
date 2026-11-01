@@ -692,6 +692,14 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     # -------------------------------------------------- 图片（POST）
     AiCapabilityCoverageEntry(
+        method="POST", path="/api/draft-images/plan-set", business_domain="图片",
+        disposition="internal_only", reason="草稿图片工作台的整组素材规划，供用户调整套图方案。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/draft-images/generate-set", business_domain="图片",
+        disposition="internal_only", reason="草稿工作台按方案异步生成和单页重做，生成结果须在工作台预览采用。",
+    ),
+    AiCapabilityCoverageEntry(
         method="POST", path="/api/draft-images/state", business_domain="图片",
         disposition="internal_only", reason="草稿工作台按草稿恢复既有图片领域批次的只读展示。",
     ),

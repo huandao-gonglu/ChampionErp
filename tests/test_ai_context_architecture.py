@@ -82,11 +82,20 @@ def test_image_batch_keeps_native_model_boundary_and_domain_only_progress():
     assert "/api/v1/ai-work/conversations/<conversation_id>/image-batch" in DYNAMIC_GET_HANDLERS
     from erp_web.http_route_units.image_routes import IMAGE_POST_PATHS
     from erp_web.schemas.requests import REQUEST_CONTRACTS
-    for path in ("/api/draft-images/state", "/api/draft-images/process"):
+    for path in ("/api/draft-images/state", "/api/draft-images/process", "/api/draft-images/plan-set", "/api/draft-images/generate-set"):
         assert path in IMAGE_POST_PATHS and path in REQUEST_CONTRACTS
     facade = (ROOT / "erp_web/facades/image_facade.py").read_text()
     assert "run_image_batch(" in facade
     assert "image_draft_guard" in (ROOT / "erp_web/stores/product_store.py").read_text()
+
+
+def test_image_set_uses_native_agent_and_existing_image_execution():
+    """套图仅增加设计语义，共用模型、批次、素材池与草稿保存边界。"""
+    source = (ROOT / "erp_web/services/image_set_service.py").read_text()
+    assert "AiAgentFactory(" in source and "PromptedOutput(ImageSetPlan)" in source
+    assert "BinaryContent(" in source and "image_translate_service.edit_images(" in source
+    targets = {target for _, target in imported_targets([ROOT / "erp_web/services/image_set_service.py"])}
+    assert not any(target.startswith(("openai", "httpx", "sqlite3", "requests")) for target in targets)
 
 
 def test_collection_and_ai_share_browser_process_management():

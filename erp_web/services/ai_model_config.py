@@ -93,6 +93,11 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "label": "图片翻译/重绘",
         "required_capabilities": [CAP_IMAGE_EDIT],
     },
+    "image.plan": {
+        "id": "image.plan",
+        "label": "套图规划（需支持识图）",
+        "required_capabilities": [CAP_CHAT, CAP_JSON],
+    },
     "category.product_match": {
         "id": "category.product_match",
         "label": "商品类目候选匹配",

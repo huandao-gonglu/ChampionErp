@@ -702,7 +702,7 @@ def _image_request(
     prompt: str,
     action: str,
     result_mode: str,
-    source: BinaryContent | None,
+    source: BinaryContent | list[BinaryContent] | None,
     source_id: str,
     size: str,
     quality: str,
@@ -710,7 +710,7 @@ def _image_request(
 ) -> list[dict[str, Any]]:
     user_content: list[str | BinaryContent] = [prompt]
     if source is not None:
-        user_content.append(source)
+        user_content.extend(source if isinstance(source, list) else [source])
     parameters = ModelRequestParameters(
         native_tools=[
             ImageGenerationTool(
@@ -816,6 +816,7 @@ def edit_images(
     quality: str,
     count: int,
     timeout_seconds: int,
+    combine_references: bool = False,
 ) -> list[dict[str, Any]]:
     binding = create_pydantic_model_binding(
         model,
@@ -825,6 +826,7 @@ def edit_images(
     results: list[dict[str, Any]] = []
     last_error: Exception | None = None
     found_source = False
+    references: list[BinaryContent] = []
     for item in images:
         source_path = None
         for key in ("path", "local_path"):
@@ -844,6 +846,9 @@ def edit_images(
             ".jpeg": "image/jpeg",
             ".webp": "image/webp",
         }.get(source_path.suffix.lower(), "image/png")
+        if combine_references:
+            references.append(BinaryContent(data=source_path.read_bytes(), media_type=media_type))
+            continue
         try:
             results.extend(
                 _image_request(
@@ -862,6 +867,17 @@ def edit_images(
                     quality=quality,
                     count=count,
                 )
+            )
+        except Exception as exc:
+            last_error = exc
+    if combine_references and len(references) != len(images):
+        raise ValueError("部分套图参考素材无法读取，请重新采集或上传。")
+    if combine_references and references:
+        try:
+            results = _image_request(
+                app_dir=app_dir, use_case_id=use_case_id, binding=binding, prompt=prompt,
+                action="edit", result_mode=mode, source=references, source_id="",
+                size=size, quality=quality, count=count,
             )
         except Exception as exc:
             last_error = exc

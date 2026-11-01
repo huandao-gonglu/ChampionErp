@@ -10,6 +10,7 @@ from uuid import uuid4
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from erp_web.schemas.image_batches import ImageBatch, ImageBatchItem
+from erp_web.schemas.image_sets import ImageSetPlan
 from erp_web.stores.image_batch_store import utc_now
 from .ai_direct_history import capture_direct_history
 from .ai_model_errors import safe_model_error_text
@@ -25,7 +26,10 @@ _image_slots = BoundedSemaphore(3)
 def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                     sources: list[dict], process: Callable[[dict], dict],
                     persist: Callable[[dict], None], draft_id: str = "",
-                    request_id: str = "", background: bool = False) -> dict:
+                    request_id: str = "", background: bool = False,
+                    image_set: ImageSetPlan | None = None,
+                    retained_items: dict[str, ImageBatchItem] | None = None,
+                    request_fingerprint: str = "") -> dict:
     presentation = current_presentation_context()
     conversation_id = request_id or (presentation.conversation_id if presentation and presentation.is_root_scope
                        else f"conversation_{uuid4().hex}")
@@ -36,18 +40,24 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
     batch = ImageBatch(
         conversation_id=conversation_id, product_id=product_id, draft_id=draft_id, prompt=display_prompt,
         created_at=utc_now(), updated_at=utc_now(),
+        image_set=image_set, request_fingerprint=request_fingerprint,
         items=[ImageBatchItem(index=index, source_id=str(item["id"]),
                              source_url=image_service.preview_for_path(str(item.get("path") or item.get("local_path") or ""), app_dir)
                              or str(item.get("preview_url") or item.get("url") or ""))
                for index, item in enumerate(sources)],
     )
+    for item in batch.items:
+        retained = (retained_items or {}).get(item.source_id)
+        if retained is not None:
+            batch.items[item.index] = retained.model_copy(update={"index": item.index})
     # 注册与幂等检查必须先完成；异步执行仍使用同一领域批次与三路执行上限。
     with store.lock:
         existing = store.get(conversation_id)
         if existing:
             if (existing.product_id != product_id or existing.draft_id != draft_id
                     or [item.source_id for item in existing.items] != [item.source_id for item in batch.items]
-                    or existing.prompt != display_prompt):
+                    or existing.prompt != display_prompt or existing.image_set != image_set
+                    or existing.request_fingerprint != request_fingerprint):
                 raise ValueError("图片请求标识已用于其他操作。")
             return {"ok": True, "imagePoolItems": [], "image_batch": existing.snapshot(),
                     "conversation_id": conversation_id, "message": "已恢复原图片任务。"}
@@ -75,7 +85,7 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                 # persist 必须完成真实商品写入后返回；失败不能标记为成功。
                 persist(result)
                 store.update_item(conversation_id, index, status="success", finished_at=utc_now(),
-                                  result_urls=urls)
+                                  result_urls=urls, result_asset_ids=[str(item["id"]) for item in result["imagePoolItems"] if item.get("id")])
                 return result["imagePoolItems"]
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
@@ -85,7 +95,8 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
 
     def execute():
         with ThreadPoolExecutor(max_workers=3, thread_name_prefix="image-batch") as pool:
-            futures = [pool.submit(copy_context().run, work, index, source) for index, source in enumerate(sources)]
+            futures = [pool.submit(copy_context().run, work, index, source) for index, source in enumerate(sources)
+                       if batch.items[index].status == "queued"]
             # 保存发生在每个 worker 内；这里只按原图顺序汇总，不阻挡其他结果落库。
             results = [item for future in futures for item in future.result()]
         snapshot = store.get(conversation_id).snapshot()

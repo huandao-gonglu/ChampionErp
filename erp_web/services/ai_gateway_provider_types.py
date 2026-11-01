@@ -36,6 +36,7 @@ class AiImageEditRequest:
     quality: str = "medium"
     count: int = 1
     timeout_seconds: int = 180
+    combine_references: bool = False
 
 
 __all__ = ["AiChatRequest", "AiImageEditRequest"]
