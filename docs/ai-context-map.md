@@ -184,9 +184,16 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   `dispatch_batch` 在一个短事务中保存全批写前日志和停售意图，网络等待在事务外；逐项平台回执保存回原任务。
   逐项拒绝、超时和中断保持对应失败/未知语义，已经发出的整批不自动拆成单件重发；回读与明确失败重试继续使用原入口。
 - `services/online_product_service.py` 编排 ERP 领域任务，通过注入访问适配器，不反向导入 runtime。
+  `POST /api/online-products/refresh-detail` → facade → `refresh_detail` 只读取指定刊登详情；本地列表与 GET 详情不外发。
+  页面打开 Yandex 商品时显式调用一次；AI 使用同源 `online_products_refresh_detail`，不因列表字段为空隐式同步店铺。
+  Yandex 复用已取得的目录、卡片及状态资料，只补独立价格、当前店铺价格、库存和必要的属性名称。
+  服务在网络前后核对当前账号；`OnlineProductStore.update_detail` 在短事务核对版本、基础与详情时间、状态时间及活动任务，拒绝迟到响应覆盖新记录。
   `refresh_status` 直接查询单件状态；`POST /api/online-products/refresh-status` 不入同步队列，返回更新后的公开商品。
   `stores/online_product_store.py::update_status` 校验并发版本后合并状态、平台反馈及 `status_checked_at`，保留价格、库存、内容和完整同步时间。
   `services/online_product_sync.py` 消费 `OnlineSyncBatch`、保存目录记录与详情进度，详情失败保留旧业务快照。
+  Yandex 的 `basic` 批次通过 `OnlineProductStore.save_basic` 保存基础资料、销售状态及卡片/店铺错误警告，保留旧价格、库存及其读取时间。
+  `basic_synced_at` 标识基础同步时间，`synced_at` 标识详细数据读取时间；新商品为 `details_state=unloaded`，不伪造零库存。
+  旧快照缺少新时间字段仍可读取，完整快照原时间保持含义；同步只读基础接口，不增加自动重试或失败回退查询。
   同步请求与持久任务保存 `catalog=current/archived`，默认普通商品；Yandex 每次只发现该目录，页面确认、最新进度和失败重试保持同一范围。
   指定 SKU 重试不混传平台禁止的归档过滤条件，读取目标目录身份后排除已移出原目录的商品；单件修改前读取与批量写入校验仍按明确 SKU 读取，不受页面目录限制。
   `services/online_product_changes.py` 负责确定性变更校验与字段回读比较；详情未完整同步时禁止修改。
@@ -214,12 +221,14 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   `OnlineProductStore.latest_sync_summary` 仅读取最新同步的固定状态与进度；AI 详情和写入仍复用原有领域服务。
 - `runtime_units/online_mercadolibre.py`、`online_yandex.py`、`online_ozon.py` 负责平台发现、读取和最小变更。
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
-  `runtime_units/online_yandex_read.py` 负责完整目录分页、隐藏清单分页和每批 100 个 SKU 的详情读取，最多 3 个接口并发；
-  `online_yandex_snapshot.py` 只做响应投影。全店同步不再循环调用单件 `read`；单件完整读取只用于修改前校验。
+  `runtime_units/online_yandex_read.py` 负责目录分页、隐藏清单分页和每批 100 个 SKU 的基础状态/反馈读取，最多 3 个接口并发；
+  逐页消费后即保存基础结果，不累积全店目录后再读取价格和库存。`online_yandex_snapshot.py` 只做响应投影。
+  单件 `read_details` 为打开详情补充数据；修改前的 `read` 和批量 `read_many` 继续按明确目标核对完整事实，不复用缓存绕过写前检查。
   Yandex 属性名称通过统一 `CategoryCatalog.attribute_definitions` 按类目关联，适配器一次运行内共用名称查询；
   名称查询失败保留属性值及平台反馈，并公开 `content.attribute_names_error`，不让整件详情同步失败。
   `online_yandex_snapshot.py::card_issues` 将卡片 `errors` / `warnings` 投影为具名 `PlatformIssue`，保留平台原文及补充说明；
-  完整同步、单件状态刷新及内容回读共用此投影。缺少目标卡片响应时状态查询失败，避免误清除旧反馈。
+  基础同步、完整读取、单件状态刷新及内容回读共用此投影，店铺错误以 `source=campaign` 保留。
+  缺少目标卡片响应时查询失败，避免误清除旧反馈；单件详情成功不清除旧基础读取错误或更新基础状态的时间。
   `runtime_units/online_change_confirmation.py` 按修改字段和范围回读，不重复下载完整聚合。
   `runtime_units/online_product_status.py` 是三个平台的单件状态读取入口，限定目标身份，不扫描全店，不调用独立价格或库存接口。
   `online_mercadolibre_read.py` 先完整扫描目录，再用最多 3 件的并发窗口读取父商品及关联站点，保留 User Products mapping 校验；

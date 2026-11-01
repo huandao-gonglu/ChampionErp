@@ -11,6 +11,7 @@
 | `OnlineProductService.job_detail` 的同源只读任务 | `online_products_job_read` | 查询本地状态和精简回执，不访问平台 |
 | `POST /api/online-products/sync` | `online_products_sync` | 沿用领域同步任务，仅读取平台并刷新本地快照 |
 | `POST /api/online-products/refresh-status` | `online_products_refresh_status` | 按 listing_id 直接查询单件状态并更新本地记录，不扫描店铺、不创建 Job |
+| `POST /api/online-products/refresh-detail` | `online_products_refresh_detail` | 按 listing_id 显式读取当前单件详细数据并保存，不扫描店铺、不自动重试 |
 | `POST /api/online-products/reconcile` | `online_products_reconcile` | 只向平台回读已提交修改的结果，不重发修改 |
 | `POST /api/online-products/close` | `online_products_close` | 核对后通过原生审批结束未确认的本地操作，保留原结果未知记录，不撤销或重放平台请求 |
 | `POST /api/online-products/retry` | `online_products_retry` | 原生审批后交由既有失败重试规则判断，入队即返回 |
@@ -33,6 +34,14 @@
 直接调用和 Code Mode 均遵循原生重试上限；领域权限、审批和写入结果未知的处理不因此放宽。
 
 `online_products_sync` 与 HTTP 同步入口接受 `catalog=current/archived`，默认仅普通商品；归档页明确提交 `archived`，两类不再合并同步。目录范围持久化到领域任务，失败重试和最新同步进度按原目录隔离；AI 同步当前页面时传递相同目录。其他平台暂不接受归档目录同步。旧任务仍可读取，缺少目录的历史记录保留原全店范围显示，旧任务重试按普通商品执行。
+
+Yandex 全量同步仅调用目录、店铺商品、卡片及隐藏清单接口，按页保存基础资料、销售状态和错误警告；不读取独立价格、库存、仓库、账号价格设置或类目名称。卡片已返回的属性一并保存，不为查看属性重复请求整店。新任务结果以 `data_scope=basic` 记录实际读取范围，`completed` 仅表示基础同步完成，不表示详细价格、库存已刷新；历史任务不改写范围，其他平台沿用各自现有同步流程。
+
+`basic_synced_at` 为基础同步时间；`synced_at` 为独立价格、库存等详细数据的读取时间。新商品 `details_state=unloaded`，空价格/库存数组表示尚未读取，不能解释为零值或平台没有该数据。已有详细快照在基础同步后保留原值及时间；旧持久快照仍按原 `ready` 与 `synced_at` 读取，不清库或更改历史回执。
+
+页面打开 Yandex 单件详情时通过 `refresh-detail` 显式查询一次，显示加载状态；失败保留已有资料和反馈，只提供用户主动再次读取，不增加计时重试。读取当前 SKU 的独立价格、库存，必要时以当前 SKU 的店铺商品接口核实独立店铺价；复用目录和卡片内容，仅在详情阶段补类目属性名称。状态和反馈仍标注其原读取时间。并发更新、切换账号或活动任务冲突时拒绝覆盖。写前核验仍读取目标的完整平台事实，不能因缓存存在省略并发检查。
+
+AI 的本地读取仍使用 `online_products_read`；需要未加载或需核实的详细数据时显式调用 `online_products_refresh_detail`，复用同一领域入口和原生 Tool Bridge。该能力是单件资源读取，不新增 Agent 循环、后台计划或自动重试；基础同步的成功回执不得扩大为全部字段实时。
 
 列表默认 `view=groups`：按在线页面的相同顺序返回组合父节点或独立商品，每个节点只返回一个匹配刊登摘要。`groups.representative_id` 对应 `items.id`，`total_count` 为当前目录内整组 SKU 数，`matched_count` 为符合筛选的成员数；不能把代表刊登列表当作全部 SKU。查询“第一个商品”可直接使用 `page=1,limit=1`，无需关键词试探或发布日志。
 

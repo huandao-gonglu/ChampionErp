@@ -10,6 +10,8 @@ def run_sync(service, job, adapter, result):
     identities = {row.remote_id: row.id for row in records if row.archived is (catalog == "archived")}
     discovered, pending = set(), set()
     result.update(phase="catalog", discovered=0, discovery_complete=False)
+    if job["platform"] == "yandex":
+        result["data_scope"] = "basic"
     service._update(job, "running", result)
 
     def failure(remote_id, error):
@@ -41,8 +43,8 @@ def run_sync(service, job, adapter, result):
                 identities[remote_id] = listing.id
                 if batch.phase == "catalog":
                     if remote_id not in known:
-                        service.store.save(listing, lease=job)
-                    else:
+                        service.store.save(listing, lease=job, full_snapshot=job["platform"] != "yandex")
+                    elif job["platform"] != "yandex":
                         service.store.sync_state(listing.id, "pending", [], lease=job)
                     pending.add(remote_id)
                     continue
@@ -52,8 +54,11 @@ def run_sync(service, job, adapter, result):
                         service.store.save(listing, lease=job)
                     failure(remote_id, "；".join(listing.errors))
                     continue
-                listing.details_state = "ready"
-                service.store.save(listing, lease=job)
+                if batch.phase == "basic":
+                    service.store.save_basic(listing, lease=job)
+                else:
+                    listing.details_state = "ready"
+                    service.store.save(listing, lease=job)
                 pending.discard(remote_id)
                 result["created" if remote_id not in known else "updated"] += 1
                 result["completed"] += 1

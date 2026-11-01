@@ -30,6 +30,8 @@ class OnlineProductJobReader:
         if status == "submitted":
             summary += "；尚未核验展示是否生效，可按需查询平台结果。"
         if job["operation"] == "sync":
+            if result.get("data_scope") == "basic":
+                summary += "（基础资料、状态与错误警告；价格和库存未刷新）"
             summary += f"；成功 {result.get('completed', 0)}，失败 {result.get('failed', 0)}"
             if result.get("completed", 0):
                 summary += "；成功项已保存，后续尝试失败不会撤销这些更新。"

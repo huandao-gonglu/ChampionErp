@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import ValidationError
 from erp_web.context import get_context
 from erp_web.marketplaces.publisher import PublishAdapterError
-from erp_web.schemas.online_products import OnlineConflictResponse, OnlineAttributeQuery, RefreshStatusRequest
+from erp_web.schemas.online_products import OnlineConflictResponse, OnlineAttributeQuery, RefreshDetailRequest, RefreshStatusRequest
 from erp_web.stores.online_product_store import OnlineConflict
 
 
@@ -60,6 +60,8 @@ def mutate(action: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
             result = service.close_operation(body)
         elif action == "refresh-status":
             result = service.refresh_status(RefreshStatusRequest.model_validate(body).listing_id)
+        elif action == "refresh-detail":
+            result = service.refresh_detail(RefreshDetailRequest.model_validate(body).listing_id)
         else:
             result = service.retry(body["job_id"], body["idempotency_key"])
         return result, 200

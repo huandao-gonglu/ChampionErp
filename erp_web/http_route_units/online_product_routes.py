@@ -15,6 +15,11 @@ def handle_refresh_status(handler):
     handler.send_json(result, status)
 
 
+def handle_refresh_detail(handler):
+    result, status = online_product_facade.mutate("refresh-detail", validate_request_payload(handler.read_body(), endpoint=handler.path))
+    handler.send_json(result, status)
+
+
 def handle_change(handler):
     result, status = online_product_facade.mutate("change", validate_request_payload(handler.read_body(), endpoint=handler.path))
     handler.send_json(result, status)
@@ -59,6 +64,7 @@ POST_HANDLERS = {
     "/api/online-products/ozon-export/preview": handle_ozon_export_preview,
     "/api/online-products/ozon-export/download": handle_ozon_export_download,
     "/api/online-products/refresh-status": handle_refresh_status,
+    "/api/online-products/refresh-detail": handle_refresh_detail,
     "/api/online-products/sync": handle_sync,
     "/api/online-products/change": handle_change,
     "/api/online-products/change-batch/preview": handle_change_batch_preview,

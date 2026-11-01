@@ -37,7 +37,7 @@ def yandex_status(adapter, listing):
     return OnlineStatus(remote_id=remote_id, raw_status=status,
         sale_state="paused" if remote_id in hidden else "active" if status == "PUBLISHED" and not archived else "unknown", archived=archived,
         raw_sub_status=[card_status] if card_status else [],
-        platform_issues=card_issues(cards[remote_id]),
+        platform_issues=card_issues(cards[remote_id])+card_issues(offers[remote_id], source="campaign"),
         markets=[MarketStatus(id=adapter.campaign, raw_status=status)])
 
 

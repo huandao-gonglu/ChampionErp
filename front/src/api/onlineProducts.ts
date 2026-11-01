@@ -16,7 +16,8 @@ export interface SourceImageSelection {
 export interface OnlineListing {
   id: string; platform: OnlinePlatform; account_id: string; remote_id: string; model: string; seller_sku: string; title: string; thumbnail: string
   buyer_links: BuyerLink[]
-  details_state: 'pending' | 'ready' | 'failed'
+  details_state: 'pending' | 'unloaded' | 'ready' | 'failed'
+  basic_synced_at?: string
   raw_status: string; sale_state: string; raw_sub_status: string[]; prices: PriceScope[]; stocks: StockScope[]; version: string; synced_at: string; status_checked_at: string; errors: string[]; desired_sale_state: string
   platform_issues: PlatformIssue[]
   archived?: boolean
@@ -27,7 +28,7 @@ export interface OnlineListing {
 export interface OnlineJob {
   id: string; operation: string; platform: OnlinePlatform; status: string; created_at: string; updated_at: string; target_id: string
   request: Record<string, unknown>
-  result: { last_confirmation_at?: number; before?: {title?:string; seller_sku?:string}; platform_confirmation?: {note?:string; pending?:boolean}; platform_errors?: unknown[]; read_errors?: string[]; error?: string; completed?: number; failed?: number; created?: number; updated?: number; discovery_complete?: boolean; phase?: 'catalog' | 'details' | 'complete'; discovered?: number; changes?: Record<string, unknown>; confirmation?: Record<string, boolean>; evidence?: {synced_at: string; checked_at?: string; version?: string; observed?: Record<string, unknown>}; resolution?: {closed_at: string; acknowledged_unconfirmed: boolean}; items?: Array<{remote_id: string; status: string; error?: string}> }
+  result: { last_confirmation_at?: number; before?: {title?:string; seller_sku?:string}; platform_confirmation?: {note?:string; pending?:boolean}; platform_errors?: unknown[]; read_errors?: string[]; error?: string; completed?: number; failed?: number; created?: number; updated?: number; discovery_complete?: boolean; phase?: 'catalog' | 'basic' | 'details' | 'complete'; discovered?: number; changes?: Record<string, unknown>; confirmation?: Record<string, boolean>; evidence?: {synced_at: string; checked_at?: string; version?: string; observed?: Record<string, unknown>}; resolution?: {closed_at: string; acknowledged_unconfirmed: boolean}; items?: Array<{remote_id: string; status: string; error?: string}> }
 }
 export interface OnlineFeedbackSummary { affected_sku_count: number; error_count: number; warning_count: number }
 export interface OnlineBatchPreview {
@@ -81,6 +82,9 @@ export async function fetchOnlineAttributeValues(listingId: string, version: str
 }
 export async function refreshOnlineStatus(listingId: string): Promise<OnlineListing> {
   return checked<{item: OnlineListing}>((await apiClient.post('/api/online-products/refresh-status', {listing_id: listingId})).data).item
+}
+export async function refreshOnlineDetail(listingId: string): Promise<OnlineListing> {
+  return checked<{item: OnlineListing}>((await apiClient.post('/api/online-products/refresh-detail', {listing_id: listingId})).data).item
 }
 export async function onlineAction(action: string, body: Record<string, unknown>): Promise<OnlineJob> {
   return checked<{job: OnlineJob}>((await apiClient.post(`/api/online-products/${action}`, body)).data).job

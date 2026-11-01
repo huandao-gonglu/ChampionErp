@@ -23,6 +23,7 @@ class Platform:
             for i in range(count)]
         self.calls = []
         self.fail_prices = False
+        self.fail_cards = False
         self.before_detail = lambda: None
 
     def request(self, path, body=None, *, query=None, method="POST"):
@@ -42,6 +43,8 @@ class Platform:
         if name == "offers":
             return {"result": {"offers": [{"offerId": sku, "status": "CHECKING", "campaignPrice": {"value": 15, "currencyId": "CNY"}} for sku in ids]}}
         if name == "offer-cards":
+            if self.fail_cards:
+                raise TimeoutError("卡片服务超时")
             return {"result": {"offerCards": [{"offerId": sku, "cardStatus": "HAS_CARD_CAN_UPDATE"} for sku in ids]}}
         if name == "offer-prices":
             assert set(body) == {"offerIds"}, "实店 API 禁止 SKU 查询混用其他过滤条件"
@@ -62,25 +65,25 @@ def adapter(platform):
     return result
 
 
-def test_201_goods_use_16_requests_and_catalog_is_emitted_before_details():
+def test_201_goods_sync_only_basic_status_and_feedback_without_price_or_stock():
     platform = Platform()
     platform.rows[-1]["offer"]["archived"] = False
     batches = list(adapter(platform).sync())
     catalog = [row for batch in batches if batch.phase == "catalog" for row in batch.listings]
-    details = [row for batch in batches if batch.phase == "details" for row in batch.listings]
+    details = [row for batch in batches if batch.phase == "basic" for row in batch.listings]
     assert len(catalog) == len(details) == 201
     assert all(row.details_state == "pending" and not any(c.enabled for c in row.capabilities.values()) for row in catalog)
-    assert all(row.details_state == "ready" for row in details)
+    assert all(row.details_state == "unloaded" for row in details)
     assert details[1].sale_state == "paused"
-    assert all(row.stocks[0].quantity == 5 for row in details)
+    assert all(row.stocks == [] and row.prices == [] for row in details)
     assert Counter(call[0] for call in platform.calls) == {
-        "offer-mappings": 3, "hidden-offers": 1, "offers": 3, "offer-cards": 3, "offer-prices": 3, "stocks": 3,
+        "offer-mappings": 3, "hidden-offers": 1, "offers": 3, "offer-cards": 3,
     }
-    assert len(platform.calls) == 16
+    assert len(platform.calls) == 10
     assert all(not call[1].get("offerIds") for call in platform.calls if call[0] == "offer-mappings")
-    assert any(body["offerIds"] == ["sku-200"] for name, body, _, _ in platform.calls if name == "offer-prices")
-    assert [batch.phase for batch in batches[:3]] == ["catalog"] * 3
-    assert batches[3].discovery_complete
+    assert any(body["offerIds"] == ["sku-200"] for name, body, _, _ in platform.calls if name == "offer-cards")
+    assert [batch.phase for batch in batches[:4]] == ["catalog", "basic", "catalog", "basic"]
+    assert batches[-1].discovery_complete
 
 
 def test_hidden_pagination_and_loop_detection():
@@ -161,11 +164,11 @@ def test_catalog_visible_before_network_details_and_failed_batch_preserves_old_s
     platform = Platform(3); a = adapter(platform); service = service_for(a)
     old = service.store.save(a.read('sku-0'))
     platform.rows[0]['offer']['name'] = '目录中更新的名称'
-    platform.fail_prices = True
+    platform.fail_cards = True
     def visible():
         rows = service.store.listings('yandex', '1:2')
         assert len(rows) == 2
-        assert all(row.details_state == 'pending' for row in rows)
+        assert {row.details_state for row in rows} == {'ready', 'pending'}
         assert service.store.get(old.id).title == old.title
     platform.before_detail = visible
     job = service.sync('yandex', uuid4().hex)['job']
@@ -179,12 +182,13 @@ def test_catalog_visible_before_network_details_and_failed_batch_preserves_old_s
     with pytest.raises(ValueError, match='详情尚未完整同步'):
         validate_changes(stored, ChangeRequest(listing_id=old.id, version=old.version, operation='price', scope_id='business', changes={'amount': '13', 'currency': 'CNY'}, idempotency_key='test-key'))
     platform.before_detail = lambda: None
-    platform.fail_prices = False
+    platform.fail_cards = False
     platform.calls.clear()
     retry = service.retry(job['id'], uuid4().hex)['job']
     service.run_once()
     assert service.store.job(retry['id'])['status'] == 'confirmed'
-    assert service.store.get(old.id).details_state == 'ready'
+    assert service.store.get(old.id).details_state == 'unloaded'
+    assert service.store.get(old.id).stocks == old.stocks
     mapping_calls = [body for name, body, _, _ in platform.calls if name == 'offer-mappings']
     assert len(mapping_calls) == 1 and set(mapping_calls[0]['offerIds']) == {'sku-0', 'sku-1'}
     service.close()
@@ -202,7 +206,8 @@ def test_discovery_failure_is_not_reported_as_complete_and_can_retry_known_goods
     result = service.store.job(job['id'])
     assert result['status'] == 'partial' and not result['result']['discovery_complete']
     assert len(service.store.listings('yandex', '1:2')) == 100
-    assert all(row.details_state == 'failed' for row in service.store.listings('yandex', '1:2'))
+    assert all(row.details_state == 'unloaded' for row in service.store.listings('yandex', '1:2'))
+    assert result['result']['completed'] == 100 and result['result']['failed'] == 0
     service.close()
 
 
@@ -224,7 +229,7 @@ def test_missing_requested_sku_is_recorded_as_failure_and_never_expands_scope():
     batches = list(a.sync(['sku-0', 'missing']))
     errors = {sku: error for batch in batches for sku, error in batch.errors.items()}
     assert set(errors) == {'missing'}
-    assert [row.remote_id for batch in batches if batch.phase == 'details' for row in batch.listings] == ['sku-0']
+    assert [row.remote_id for batch in batches if batch.phase == 'basic' for row in batch.listings] == ['sku-0']
     assert all(body.get('offerIds') for name, body, _, _ in platform.calls if name == 'offer-mappings')
 
 
@@ -296,11 +301,11 @@ def test_archived_retry_preserves_scope_and_rejects_items_restored_in_the_meanti
     remote = Platform(3)
     client = adapter(remote)
     service = service_for(client)
-    remote.fail_prices = True
+    remote.fail_cards = True
     job = service.sync("yandex", uuid4().hex, catalog="archived")["job"]
     service.run_once()
     assert service.store.job(job["id"])["status"] == "partial"
-    remote.fail_prices = False
+    remote.fail_cards = False
     remote.rows[-1]["offer"]["archived"] = False
     restored = service.store.save(client.read("sku-2"))
     remote.calls.clear()

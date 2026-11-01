@@ -7,9 +7,9 @@ import { useAiPageContextStore } from '@/stores/aiPageContext'
 import OnlineProductsPanel from '../OnlineProductsPanel.vue'
 import OzonExportDialog from '../OzonExportDialog.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import { fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, previewOnlineBatch, submitOnlineBatch, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
+import { fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, previewOnlineBatch, submitOnlineBatch, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
 
-vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), previewOnlineBatch:vi.fn(), submitOnlineBatch:vi.fn(), refreshOnlineStatus: vi.fn() }))
+vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), previewOnlineBatch:vi.fn(), submitOnlineBatch:vi.fn(), refreshOnlineDetail: vi.fn(), refreshOnlineStatus: vi.fn() }))
 const item: OnlineListing = {
   id: 'remote-1', platform: 'mercadolibre', account_id: 'shop-1', remote_id: 'CBT123', model: 'traditional_global_items',
   details_state: 'ready', buyer_links: [], title: '店铺同步商品', seller_sku: 'seller-sku', thumbnail: '', raw_status: 'active', sale_state: 'active', raw_sub_status: [], version: 'v1', synced_at: '', status_checked_at: '', errors: [], desired_sale_state: '',
@@ -28,7 +28,7 @@ function yandexItem(overrides: Partial<OnlineListing> = {}): OnlineListing {
 }
 let wrapper: VueWrapper | undefined
 const defaultAdapter = apiClient.defaults.adapter
-beforeEach(() => {setActivePinia(createPinia());vi.useFakeTimers(); vi.resetAllMocks();vi.mocked(fetchOnlineProducts).mockResolvedValue(response());vi.mocked(fetchOnlineDetail).mockResolvedValue(item);vi.mocked(previewOnlineBatch).mockResolvedValue({items:[{listing_id:item.id,version:item.version,seller_sku:item.seller_sku,title:item.title,group_id:'single-1'}],errors:[],product_count:1,scope:'商家账号全部店铺'})})
+beforeEach(() => {setActivePinia(createPinia());vi.useFakeTimers(); vi.resetAllMocks();vi.mocked(fetchOnlineProducts).mockResolvedValue(response());vi.mocked(fetchOnlineDetail).mockResolvedValue(item);vi.mocked(refreshOnlineDetail).mockImplementation(async id=>vi.mocked(fetchOnlineDetail)(id));vi.mocked(previewOnlineBatch).mockResolvedValue({items:[{listing_id:item.id,version:item.version,seller_sku:item.seller_sku,title:item.title,group_id:'single-1'}],errors:[],product_count:1,scope:'商家账号全部店铺'})})
 afterEach(() => {wrapper?.unmount();wrapper=undefined;document.body.innerHTML='';apiClient.defaults.adapter=defaultAdapter;vi.useRealTimers()})
 function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,global:{stubs:{Teleport:true,OzonExportDialog:true}}});return wrapper}
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
@@ -801,4 +801,66 @@ describe('在线商品页面',()=>{
     expect(wrapper!.text()).not.toContain('正在补齐详情')
   })
 
+})
+
+describe('Yandex 基础与单件详情', () => {
+  it('列表和展开组合不读取详细数据，打开当前 SKU 才读取一次', async () => {
+    const row = yandexItem({details_state:'unloaded',synced_at:'',basic_synced_at:'2026-11-01T01:00:00Z',prices:[],stocks:[],
+      platform_issues:[{severity:'warning',source:'card',code:'W',message:'已有平台警告',comment:''}]})
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),items:[row]})
+    let done!: (row:OnlineListing)=>void
+    vi.mocked(refreshOnlineDetail).mockReturnValueOnce(new Promise(resolve=>{done=resolve}))
+    render(); await flushPromises(); await click('Yandex Market')
+    expect(refreshOnlineDetail).not.toHaveBeenCalled()
+    expect(wrapper!.text()).toContain('详细数据尚未读取')
+    await click('管理 →')
+    expect(refreshOnlineDetail).toHaveBeenCalledTimes(1)
+    expect(refreshOnlineDetail).toHaveBeenCalledWith(row.id)
+    expect(wrapper!.get('[data-testid="detail-loading"]').text()).toContain('当前商品详情')
+    expect(wrapper!.get('[aria-label="商品详情"]').text()).toContain('已有平台警告')
+    expect(wrapper!.get('[data-testid="detail-sales-summary"]').text()).toContain('尚未取得库存')
+    await click('管理 →')
+    expect(refreshOnlineDetail).toHaveBeenCalledTimes(1)
+    done({...row,details_state:'ready',synced_at:'2026-11-01T01:01:00Z',stocks:[{id:'w',label:'当前仓库',quantity:9,writable:true,reason:''}]})
+    await flushPromises()
+    expect(wrapper!.find('[data-testid="detail-loading"]').exists()).toBe(false)
+    expect(wrapper!.get('[data-testid="detail-sales-summary"]').text()).toContain('9')
+    expect(onlineAction).not.toHaveBeenCalled()
+  })
+
+  it('详情读取失败保留旧价格与警告，不自动重试，可手动重新读取', async () => {
+    const row = yandexItem({basic_synced_at:'2026-11-01T01:00:00Z',synced_at:'2026-10-31T01:00:00Z',
+      platform_issues:[{severity:'warning',source:'card',code:'W',message:'旧警告仍保留',comment:''}]})
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),items:[row]})
+    vi.mocked(refreshOnlineDetail).mockRejectedValueOnce(new Error('库存连接中断')).mockResolvedValueOnce(row)
+    render(); await flushPromises(); await click('Yandex Market'); await click('管理 →')
+    expect(wrapper!.get('[data-testid="detail-error"]').text()).toContain('库存连接中断')
+    expect(wrapper!.get('[data-testid="detail-sales-summary"]').text()).toContain('12')
+    expect(wrapper!.get('[aria-label="商品详情"]').text()).toContain('旧警告仍保留')
+    expect(wrapper!.text()).toContain('价格与库存为缓存')
+    await vi.advanceTimersByTimeAsync(30000); await flushPromises()
+    expect(refreshOnlineDetail).toHaveBeenCalledTimes(1)
+    expect(wrapper!.findAll('button').find(button=>button.text()==='调整价格')!.attributes('disabled')).toBeDefined()
+    await click('重新读取详情')
+    expect(refreshOnlineDetail).toHaveBeenCalledTimes(2)
+    expect(wrapper!.find('[data-testid="detail-error"]').exists()).toBe(false)
+  })
+
+  it('先前商品的迟到响应不能覆盖当前打开的商品', async () => {
+    const first = yandexItem({id:'first'}), second = yandexItem({id:'second',title:'第二个商品'})
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),items:[first,second],groups:[
+      {...response().groups[0],id:'one',item_ids:[first.id]}, {...response().groups[0],id:'two',item_ids:[second.id]},
+    ]})
+    const complete: Record<string,(row:OnlineListing)=>void> = {}
+    vi.mocked(refreshOnlineDetail).mockImplementation(id=>new Promise(resolve=>{complete[id]=resolve}))
+    render(); await flushPromises(); await click('Yandex Market')
+    const manage = wrapper!.findAll('button').filter(button=>button.text()==='管理 →')
+    await manage[0].trigger('click'); await flushPromises()
+    await manage[1].trigger('click'); await flushPromises()
+    complete.second(second); await flushPromises()
+    complete.first({...first,title:'不应覆盖当前商品'}); await flushPromises()
+    expect(wrapper!.get('[aria-label="商品详情"]').text()).toContain('第二个商品')
+    expect(wrapper!.get('[aria-label="商品详情"]').text()).not.toContain('不应覆盖当前商品')
+    expect(refreshOnlineDetail).toHaveBeenCalledTimes(2)
+  })
 })

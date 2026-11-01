@@ -13,7 +13,7 @@ import OnlinePlatformFeedback from './OnlinePlatformFeedback.vue'
 import { onlineAttributeName } from './onlineAttributeDisplay'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
-import { fetchOnlineDetail, fetchOnlineProducts, onlineAction, previewOnlineBatch, submitOnlineBatch, type OnlineBatchPreview, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
+import { fetchOnlineDetail, fetchOnlineProducts, onlineAction, previewOnlineBatch, submitOnlineBatch, type OnlineBatchPreview, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
 
 const emit = defineEmits<{ 'open-task': [jobId?: string] }>()
 
@@ -103,6 +103,8 @@ const checkingStatus = ref(new Set<string>())
 const statusErrors = ref<Record<string, string>>({})
 let viewEpoch = 0
 const selected = ref<OnlineListing | null>(null)
+const detailLoading = ref(false), detailError = ref('')
+let detailSequence = 0
 const modal = ref<OnlineOperation | 'sync' | ''>('')
 const detailBackdrop = useBackdropDismiss(() => { if (!modal.value) selected.value = null })
 const modalBackdrop = useBackdropDismiss(() => { if (!busy.value) modal.value = '' })
@@ -162,14 +164,16 @@ function syncProgress(job: OnlineJob) {
   const processed = (result.completed || 0) + (result.failed || 0)
   if (job.status === 'queued') return '同步已排队，可离开页面'
   if (job.status === 'running' && result.phase === 'catalog') return `正在读取商品目录，已发现 ${result.discovered || 0} 件`
+  if (job.status === 'running' && result.phase === 'basic') return `正在同步基础资料、状态及平台反馈，已处理 ${processed} 件`
   if (job.status === 'running' && result.phase === 'details') return result.discovery_complete
     ? `正在补齐详情，已处理 ${processed} / ${result.discovered || 0} 件`
     : `正在同步商品，已处理 ${processed} 件`
   return `已处理 ${processed} 件${result.discovery_complete === false ? '，目录尚未读取完整' : ''}`
 }
 function detailState(row: OnlineListing) {
-  return row.details_state === 'pending' ? '详情同步中' : row.details_state === 'failed' ? '详情同步失败，请到任务队列重试失败项' : ''
+  return row.details_state === 'unloaded' ? '详细数据尚未读取' : row.details_state === 'pending' ? (row.platform === 'yandex' ? '基础资料同步中' : '详情同步中') : row.details_state === 'failed' ? (row.platform === 'yandex' ? '资料读取失败，请重新读取' : '详情同步失败，请到任务队列重试失败项') : ''
 }
+function cachedDetails(row: OnlineListing) { return !!row.basic_synced_at && !!row.synced_at && row.basic_synced_at > row.synced_at }
 function label(s: string) { return s === 'archive' ? '归档 / 恢复归档' : s === 'unknown' ? '待核实' : labels[s] || s || '未知' }
 function listingStatus(row: OnlineListing) {
   if (row.archived) return 'ARCHIVED'
@@ -222,19 +226,29 @@ async function refresh(quiet = false) {
   }
 }
 async function detail(row: OnlineListing) {
+  if (detailLoading.value && selected.value?.id === row.id) return
   const group = page.value?.groups.find(group => group.item_ids.includes(row.id))
   if (group) focusedProduct.value = {group_id: group.id, listing_id: row.id}
   error.value = ''
   const epoch = viewEpoch
+  const ticket = ++detailSequence
+  selected.value = row
+  detailLoading.value = true
+  detailError.value = ''
   try {
-    const result = await fetchOnlineDetail(row.id)
-    if (disposed || epoch !== viewEpoch || page.value?.account_id !== result.account_id) return
+    const result = row.platform === 'yandex' ? await refreshOnlineDetail(row.id) : await fetchOnlineDetail(row.id)
+    if (disposed || ticket !== detailSequence || epoch !== viewEpoch || selected.value?.id !== row.id || page.value?.account_id !== result.account_id) return
+    sequence++
     const current = page.value.items.find(item => item.id === row.id)
     selected.value = current && current.status_checked_at > result.status_checked_at ? current : result
-  } catch(e) {if (!disposed && epoch === viewEpoch) error.value = String(e)}
+    page.value.items = page.value.items.map(item => item.id === result.id ? selected.value! : item)
+  } catch(e) {
+    if (!disposed && ticket === detailSequence && epoch === viewEpoch && selected.value?.id === row.id)
+      detailError.value = e instanceof Error ? e.message : '详情读取失败，已有数据已保留'
+  } finally { if (ticket === detailSequence) detailLoading.value = false }
 }
 function statusRefreshBlocked(row: OnlineListing) {
-  return checkingStatus.value.has(row.id) || !!modal.value || !!page.value?.jobs.some(job =>
+  return checkingStatus.value.has(row.id) || (detailLoading.value && selected.value?.id === row.id) || !!modal.value || !!page.value?.jobs.some(job =>
     ['queued', 'running'].includes(job.status) && (job.target_id === '*' || job.target_id === row.id))
 }
 async function refreshStatus(row: OnlineListing) {
@@ -316,7 +330,7 @@ async function submit() {
     const body = modal.value === 'sync' ? {platform: platform.value, catalog: syncCatalog.value, idempotency_key: submitKey.value} : {listing_id: selected.value!.id, version: selected.value!.version, operation: modal.value, scope_id: scope.value, changes: changes.value, idempotency_key: submitKey.value}
     const job = await onlineAction(modal.value === 'sync' ? 'sync' : 'change', body)
     modal.value = ''; selected.value = null; noticeTaskId.value = job.id
-    notice.value = job.operation === 'sync' ? `${syncCatalogLabel.value}同步已排队，可离开页面。商品目录与详情进度会持续更新。` : '任务已提交，可离开页面。处理结果可在任务队列查看。'
+    notice.value = job.operation === 'sync' ? `${syncCatalogLabel.value}同步已排队，可离开页面。${platform.value === 'yandex' ? '基础资料、状态及平台反馈会持续更新，详细数据打开商品时读取。' : '商品目录与详情进度会持续更新。'}` : '任务已提交，可离开页面。处理结果可在任务队列查看。'
     await refresh(true)
   } catch(e) {
     error.value = e instanceof Error ? e.message : '提交失败'
@@ -403,7 +417,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
               <td><p v-if="row.prices[0]">{{ row.prices[0].currency }} {{ row.prices[0].amount ?? '未知' }}<span v-if="row.prices.length>1"> · {{ row.prices.length }} 个价格范围</span></p><p v-else>尚未取得价格</p><p class="muted mt-1">{{ row.prices[0] ? priceKind(row.prices[0].kind) : '' }} · {{ [...new Set(row.markets.map(m=>m.site_id))].join(' · ') }}</p></td>
               <td><p>{{ row.stocks[0]?.quantity ?? '未知' }}<span v-if="row.stocks.length>1"> 等 {{ row.stocks.length }} 个范围</span></p><p class="muted mt-1">{{ row.stocks[0]?.label || '未取得库存范围' }}</p></td>
               <td><span :class="badge(listingStatus(row))">{{ label(listingStatus(row)) }}</span><p v-if="detailState(row)" class="mt-1 text-amber-700">{{ detailState(row) }}</p><p v-else-if="row.errors.length" class="mt-1 text-amber-700">读取不完整</p><p v-if="issueSummary(row)" class="mt-1 text-amber-700">{{ issueSummary(row) }}</p></td>
-              <td class="muted whitespace-nowrap"><p>{{ time(row.synced_at) }}</p><p v-if="row.status_checked_at" class="mt-1 text-xs">状态查询：{{ time(row.status_checked_at) }}</p></td>
+              <td class="muted whitespace-nowrap"><p>{{ row.basic_synced_at ? '基础同步：' : '' }}{{ time(row.basic_synced_at || row.synced_at) }}</p><p v-if="cachedDetails(row)" class="mt-1 text-xs">价格与库存为缓存 · {{ time(row.synced_at) }}</p><p v-if="row.status_checked_at" class="mt-1 text-xs">状态查询：{{ time(row.status_checked_at) }}</p></td>
               <td><div class="flex flex-col items-start gap-2"><button class="whitespace-nowrap text-primary-700" @click="detail(row)">管理 →</button><button type="button" data-testid="refresh-status" class="whitespace-nowrap text-primary-700 disabled:opacity-50" :disabled="statusRefreshBlocked(row)" @click="refreshStatus(row)">{{ checkingStatus.has(row.id) ? '查询中…' : '刷新状态' }}</button><p v-if="statusErrors[row.id]" role="alert" class="max-w-64 text-xs text-rose-700">{{ statusErrors[row.id] }}</p><OnlineBuyerLinks :links="row.buyer_links" /></div></td>
             </tr>
           </template>
@@ -434,6 +448,11 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
           </div>
           <p class="muted mt-2 text-xs">{{ selected.status_checked_at ? `状态查询：${time(selected.status_checked_at)}` : `最近同步：${time(selected.synced_at)}` }}</p>
           <p v-if="statusErrors[selected.id]" role="alert" class="mt-3 text-sm text-rose-700 dark:text-rose-300">{{ statusErrors[selected.id] }}</p>
+          <p v-if="detailLoading" role="status" data-testid="detail-loading" class="mt-3 text-sm text-accent-500">正在读取当前商品详情…</p>
+          <div v-if="detailError" role="alert" data-testid="detail-error" class="mt-3 space-y-2 text-sm text-rose-700 dark:text-rose-300">
+            <p>{{ detailError }}；已有资料已保留。</p>
+            <button type="button" class="text-primary-700" @click="detail(selected)">重新读取详情</button>
+          </div>
           <p v-if="detailState(selected)" role="status" class="mt-3 text-sm text-amber-700 dark:text-amber-300">{{ detailState(selected) }}，完成后可修改。</p>
           <p v-for="e in selected.errors" :key="e" role="alert" class="mt-3 text-sm text-rose-700 dark:text-rose-300">{{ e }}</p>
 
@@ -455,14 +474,14 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
               <p v-if="!selected.stocks.length" class="muted truncate text-xs">尚未取得库存</p>
             </div>
           </section>
-          <p class="muted text-xs">价格与库存更新于 {{ time(selected.synced_at) }}</p>
+          <p class="muted text-xs">{{ selected.synced_at ? `价格与库存更新于 ${time(selected.synced_at)}` : '价格与库存尚未读取' }}</p>
           <p v-if="cardNotice" role="status" class="mt-3 text-sm text-amber-700 dark:text-amber-300">{{ cardNotice }}</p>
           <OnlinePlatformFeedback :listing="selected" />
 
           <div class="my-5 flex flex-wrap items-start gap-3" data-testid="detail-actions">
-            <button v-for="op in ['price','stock','content'] as const" :key="op" class="btn btn-outline" :disabled="checkingStatus.has(selected.id) || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities[op]?.enabled" :title="selected.capabilities[op]?.reason" @click="begin(op)">{{ label(op) }}</button>
-            <button class="btn ml-auto text-accent-500 dark:text-accent-300" :disabled="selected.archived || checkingStatus.has(selected.id) || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities.sale_state?.enabled" :title="selected.archived ? '请先恢复归档，再调整销售状态' : selected.capabilities.sale_state?.reason" @click="begin('sale_state')">{{ saleState==='active'?'恢复销售':'停售商品' }}</button>
-            <button v-if="selected.platform==='yandex'" class="btn btn-outline" :disabled="checkingStatus.has(selected.id) || !selected.capabilities.archive?.enabled" @click="begin('archive')">{{ selected.archived ? '恢复归档' : '归档商品' }}</button>
+            <button v-for="op in ['price','stock','content'] as const" :key="op" class="btn btn-outline" :disabled="checkingStatus.has(selected.id) || detailLoading || !!detailError || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities[op]?.enabled" :title="selected.capabilities[op]?.reason" @click="begin(op)">{{ label(op) }}</button>
+            <button class="btn ml-auto text-accent-500 dark:text-accent-300" :disabled="selected.archived || checkingStatus.has(selected.id) || detailLoading || !!detailError || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities.sale_state?.enabled" :title="selected.archived ? '请先恢复归档，再调整销售状态' : selected.capabilities.sale_state?.reason" @click="begin('sale_state')">{{ saleState==='active'?'恢复销售':'停售商品' }}</button>
+            <button v-if="selected.platform==='yandex'" class="btn btn-outline" :disabled="detailLoading || !!detailError || checkingStatus.has(selected.id) || !selected.capabilities.archive?.enabled" @click="begin('archive')">{{ selected.archived ? '恢复归档' : '归档商品' }}</button>
           </div>
           <template v-for="(cap,op) in selected.capabilities" :key="op">
             <p v-if="cap && !cap.enabled && cap.reason" class="muted mb-2 text-xs">{{ label(op) }}：{{ cap.reason }}</p>
@@ -481,9 +500,9 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
           <details class="mt-6 border-t border-accent-200 pt-4 dark:border-dark-700" data-testid="platform-details">
             <summary class="cursor-pointer text-sm text-accent-500 dark:text-accent-300">平台与同步详情</summary>
             <div class="muted mt-4 space-y-3 break-words">
-              <p>最近同步：{{ time(selected.synced_at) }}</p>
+              <p v-if="selected.basic_synced_at">基础同步：{{ time(selected.basic_synced_at) }}</p><p>详情读取：{{ time(selected.synced_at) }}</p>
               <p>状态查询：{{ selected.status_checked_at ? time(selected.status_checked_at) : '尚未查询' }}</p>
-              <p>刷新状态只更新销售状态及平台反馈，不会重试详情同步；详情同步失败时，请到任务队列选择“仅重试失败项”。</p>
+              <p>刷新状态只更新销售状态及平台反馈；重新打开详情会读取当前商品的详细数据。</p>
               <p>卡片状态：{{ selected.raw_sub_status.map(label).join('、') || '平台未提供' }}</p>
               <p class="break-all">平台原始状态：{{ selected.raw_status }} {{ selected.raw_sub_status.join('、') }}</p>
               <p class="break-all">平台商品 ID：{{ selected.remote_id }}</p>
@@ -516,6 +535,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
               <b>同步范围</b>
               <p class="mt-3 leading-relaxed">{{ platform === 'yandex' ? (syncCatalog === 'archived' ? '仅同步当前账号的归档商品。' : '仅同步当前账号的普通商品，包括在售、停售、缺货及审核中的商品。') : '当前账号全部可读取商品及所有关联市场。' }}</p>
             </div>
+            <p v-if="platform==='yandex'" class="muted">同步基础资料、销售状态及错误警告。价格、库存等详细数据打开商品详情时读取。</p>
             <p class="muted">此操作只读取平台商品。部分失败会保留已有快照；离开页面后后台继续同步。</p>
             <button class="btn btn-primary w-full" :disabled="busy" @click="submit">{{ busy ? '正在提交…' : '开始同步' }}</button>
           </template>

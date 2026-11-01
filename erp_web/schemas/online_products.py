@@ -145,9 +145,10 @@ class OnlineProduct(BaseModel):
     capabilities: dict[str, Capability] = Field(default_factory=dict)
     version: str = ""
     synced_at: str = ""
+    basic_synced_at: str = ""
     status_checked_at: str = ""
     errors: list[str] = Field(default_factory=list)
-    details_state: Literal["pending", "ready", "failed"] = "ready"
+    details_state: Literal["pending", "unloaded", "ready", "failed"] = "ready"
     desired_sale_state: str = ""
     sale_state: str = "unknown"
     archived: bool = False
@@ -230,6 +231,10 @@ class RefreshStatusRequest(BaseModel):
     listing_id: str = Field(min_length=1)
 
 
+class RefreshDetailRequest(RefreshStatusRequest):
+    """显式读取当前刊登详情；不扫描店铺或推进修改任务。"""
+
+
 class CloseOnlineOperationRequest(BaseModel):
     """人工接受当前平台状态，仅结束本地待核对操作，不撤销或重放远端请求。"""
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -247,9 +252,9 @@ class CloseOnlineOperationRequest(BaseModel):
 
 @dataclass
 class OnlineSyncBatch:
-    """平台同步的领域批次；目录先展示，完整详情或失败再逐项落库。"""
+    """平台同步的领域批次；目录、基础或完整详情及失败分别落库。"""
 
-    phase: Literal["catalog", "details"]
+    phase: Literal["catalog", "basic", "details"]
     listings: list[OnlineListing] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
     discovery_complete: bool = False

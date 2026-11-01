@@ -37,7 +37,7 @@ def compact_online_job(response: dict[str, Any]) -> OnlineJobResult:
     ) if key in result}
     if job["operation"] == "sync":
         visible_result.update({key: result[key] for key in (
-            "completed", "failed", "created", "updated", "phase", "discovered", "discovery_complete",
+            "completed", "failed", "created", "updated", "phase", "discovered", "discovery_complete", "data_scope",
         ) if key in result})
         # 同步回执可能包含数千个成功项；只投影有界失败样例，完整集合由原重试入口读取。
         failures = [item for item in result.get("items", []) if item.get("status") == "failed"]

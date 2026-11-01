@@ -29,23 +29,82 @@ class OnlineProductStore:
         self.db = db
 
     def save(self, listing: OnlineListing, *, lease: dict[str, Any] | None = None, full_snapshot: bool = True) -> OnlineListing:
-        listing.version = snapshot_version(listing)
         if full_snapshot:
             listing.synced_at = utc_now()
+            if listing.platform == "yandex":
+                listing.basic_synced_at = listing.synced_at
             if listing.details_state == "ready" and not listing.errors:
                 listing.status_checked_at = datetime.now(timezone.utc).isoformat()
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if lease:
                 self._assert_lease(conn, lease)
-            conn.execute("""INSERT INTO online_listings
-                (id,platform,account_id,remote_id,version,snapshot_json,synced_at) VALUES(?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET version=excluded.version,
-                snapshot_json=excluded.snapshot_json,synced_at=excluded.synced_at""",
-                (listing.id, listing.platform, listing.account_id, listing.remote_id,
-                 listing.version, listing.model_dump_json(), listing.synced_at))
+            self._write_listing(conn, listing)
             conn.commit()
         return self.get(listing.id)
+
+    @staticmethod
+    def _write_listing(conn, listing):
+        listing.version = snapshot_version(listing)
+        conn.execute("""INSERT INTO online_listings
+            (id,platform,account_id,remote_id,version,snapshot_json,synced_at) VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET version=excluded.version,
+            snapshot_json=excluded.snapshot_json,synced_at=excluded.synced_at""",
+            (listing.id, listing.platform, listing.account_id, listing.remote_id,
+             listing.version, listing.model_dump_json(), listing.synced_at))
+
+    def save_basic(self, listing: OnlineListing, *, lease: dict[str, Any]) -> OnlineListing:
+        """基础同步不覆盖已缓存的价格、库存或其读取时间。"""
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_lease(conn, lease)
+            row = conn.execute("SELECT snapshot_json FROM online_listings WHERE id=?", (listing.id,)).fetchone()
+            if row:
+                previous = OnlineListing.model_validate_json(row[0])
+                if previous.synced_at:
+                    listing.prices, listing.stocks = previous.prices, previous.stocks
+                listing.synced_at = previous.synced_at
+                listing.snapshot = {**previous.snapshot, **listing.snapshot}
+                if previous.details_state == "ready" and previous.synced_at:
+                    listing.details_state = "ready"
+                    for operation in ("price", "stock", "content"):
+                        if operation in previous.capabilities:
+                            listing.capabilities[operation] = previous.capabilities[operation]
+                previous_category = previous.snapshot.get("offer", {}).get("marketCategoryId") or previous.snapshot.get("mapping", {}).get("marketCategoryId")
+                category = listing.snapshot.get("offer", {}).get("marketCategoryId") or listing.snapshot.get("mapping", {}).get("marketCategoryId")
+                if category == previous_category:
+                    names = {str(a.get("id")): a.get("name") for a in previous.content.get("attributes", []) if a.get("name")}
+                    for attribute in listing.content.get("attributes", []):
+                        if name := names.get(str(attribute.get("id"))):
+                            attribute["name"] = name
+            listing.basic_synced_at = utc_now()
+            listing.status_checked_at = datetime.now(timezone.utc).isoformat()
+            self._write_listing(conn, listing)
+            conn.commit()
+        return self.get(listing.id)
+
+    def update_detail(self, before: OnlineListing, detail: OnlineListing) -> OnlineListing:
+        """单件详情读取后以版本及读取时间核对并发，网络请求不占用写事务。"""
+        if (detail.id, detail.platform, detail.account_id, detail.remote_id) != (before.id, before.platform, before.account_id, before.remote_id):
+            raise ValueError("详情响应商品身份不一致，已保留原记录")
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_status_refreshable(conn, before)
+            row = conn.execute("SELECT snapshot_json FROM online_listings WHERE id=?", (before.id,)).fetchone()
+            if row is None:
+                raise OnlineConflict("商品记录已变化，请重新打开详情")
+            current = OnlineListing.model_validate_json(row[0])
+            if (current.version, current.synced_at, current.basic_synced_at, current.status_checked_at) != (before.version, before.synced_at, before.basic_synced_at, before.status_checked_at):
+                raise OnlineConflict("查询期间商品已更新，请重新打开详情")
+            detail.desired_sale_state = current.desired_sale_state
+            detail.basic_synced_at = current.basic_synced_at
+            detail.details_state = "ready"
+            detail.synced_at = utc_now()
+            if detail.platform != "yandex":
+                detail.status_checked_at = datetime.now(timezone.utc).isoformat()
+            self._write_listing(conn, detail)
+            conn.commit()
+        return self.get(before.id)
 
     def get(self, listing_id: str) -> OnlineListing:
         with self.db._connect() as conn:

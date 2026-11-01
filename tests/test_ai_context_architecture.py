@@ -434,7 +434,7 @@ def test_online_batch_reuses_domain_queue_and_platform_batch_adapter():
 
 def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools():
     from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
-    expected = {"online_products_read", "online_products_attributes", "online_products_refresh_status", "online_products_change", "online_products_changes_apply", "online_products_job_read", "online_products_sync", "online_products_reconcile", "online_products_close", "online_products_retry"}
+    expected = {"online_products_read", "online_products_attributes", "online_products_refresh_status", "online_products_refresh_detail", "online_products_change", "online_products_changes_apply", "online_products_job_read", "online_products_sync", "online_products_reconcile", "online_products_close", "online_products_retry"}
     assert {name for name in APPLICATION_CAPABILITY_CATALOG.tools if name.startswith("online_")} == expected
     source = (ROOT / "erp_web/runtime_units/online_product_capabilities.py").read_text()
     assert "online_product_service import OnlineProductService" in source

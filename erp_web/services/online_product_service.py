@@ -196,6 +196,18 @@ class OnlineProductService:
         listing = self.store.update_status(before, status)
         return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
 
+    def refresh_detail(self, listing_id: str) -> dict[str, Any]:
+        before = self.store.get(listing_id)
+        self._config(before.platform, before.account_id)
+        self.store.assert_status_refreshable(before)
+        adapter = self._adapter(before.platform, before.account_id)
+        detail = adapter.read_details(before) if before.platform == "yandex" else adapter.read(before.remote_id)
+        if detail.errors and before.platform != "yandex":
+            raise ValueError("商品详情读取不完整：" + "；".join(detail.errors))
+        self._config(before.platform, before.account_id)
+        listing = self.store.update_detail(before, detail)
+        return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
+
     def sync(self, platform: str, key: str, *, ids: list[str] | None = None, catalog: str = "current") -> dict[str, Any]:
         if not 8 <= len(key.strip()) <= 128:
             raise ValueError("同步提交键长度必须为 8–128 字符")

@@ -8,7 +8,7 @@ from threading import Event
 from erp_web.marketplaces.online_sync import raise_if_access_blocked
 from typing import Any, Iterator
 
-from erp_web.runtime_units.online_yandex_snapshot import build_listing, build_stocks, catalog_listing
+from erp_web.runtime_units.online_yandex_snapshot import basic_listing, build_listing, build_stocks, catalog_listing
 from erp_web.schemas.online_products import OnlineSyncBatch
 
 BATCH_SIZE = 100
@@ -87,18 +87,11 @@ def stock_result(adapter, path, body):
     return result
 
 
-def read_batch(adapter, mappings, hidden: set[str]) -> OnlineSyncBatch:
-    """同一批接口并发，批与批顺序执行；失败不退化成逐 SKU 请求风暴。"""
-    ids = [row["offer"]["offerId"] for row in mappings]
-    allowed = set(ids)
-
-    def rows(path, key, body):
-        return index_rows([row for page in pages(adapter, path, key, body) for row in page], allowed=allowed)
-
+def detail_requests(adapter, ids):
+    """只有显式详情读取才构造独立价格、仓库及库存请求。"""
     requests = {
-        "campaign": lambda: rows(f"/v2/campaigns/{adapter.campaign}/offers", "offers", {"offerIds": ids}),
-        "cards": lambda: rows(f"/v2/businesses/{adapter.business}/offer-cards", "offerCards", {"offerIds": ids}),
-        "prices": lambda: rows(f"/v2/businesses/{adapter.business}/offer-prices", "offers", {"offerIds": ids}),
+        "prices": lambda: index_rows([row for page in pages(adapter,
+            f"/v2/businesses/{adapter.business}/offer-prices", "offers", {"offerIds": ids}) for row in page], allowed=set(ids)),
     }
     if adapter.mode == "business":
         for warehouse in adapter.warehouses:
@@ -108,6 +101,11 @@ def read_batch(adapter, mappings, hidden: set[str]) -> OnlineSyncBatch:
     elif adapter.mode == "campaign_warehouses":
         requests["stock:campaign"] = lambda: stock_result(adapter,
             f"/v2/campaigns/{adapter.campaign}/offers/stocks", {"offerIds": ids})
+    return requests
+
+
+def request_results(requests):
+    """每个已声明接口只执行一次；复用有限并发及访问受阻时的取消边界。"""
     responses, errors = {}, []
     stopped = Event()
     def run(request):
@@ -134,9 +132,26 @@ def read_batch(adapter, mappings, hidden: set[str]) -> OnlineSyncBatch:
                     for pending in futures:
                         pending.cancel()
                 raise_if_access_blocked(exc)
-                label = {"campaign": "店铺状态", "cards": "商品卡片", "prices": "价格"}.get(name, "库存")
+                label = {"campaign": "店铺状态", "campaign_price": "店铺价格", "cards": "商品卡片", "prices": "价格"}.get(name, "库存")
                 errors.append(f"{label}：{exc}")
-    result = OnlineSyncBatch("details")
+    return responses, errors
+
+
+def read_batch(adapter, mappings, hidden: set[str], *, full=True) -> OnlineSyncBatch:
+    """基础同步只读店铺和卡片；修改前校验仍按明确目标读取完整事实。"""
+    ids = [row["offer"]["offerId"] for row in mappings]
+
+    def rows(path, key):
+        return index_rows([row for page in pages(adapter, path, key, {"offerIds": ids}) for row in page], allowed=set(ids))
+
+    requests = {
+        "campaign": lambda: rows(f"/v2/campaigns/{adapter.campaign}/offers", "offers"),
+        "cards": lambda: rows(f"/v2/businesses/{adapter.business}/offer-cards", "offerCards"),
+    }
+    if full:
+        requests.update(detail_requests(adapter, ids))
+    responses, errors = request_results(requests)
+    result = OnlineSyncBatch("details" if full else "basic")
     if errors:
         result.errors = {remote_id: "；".join(errors) for remote_id in ids}
         return result
@@ -147,6 +162,10 @@ def read_batch(adapter, mappings, hidden: set[str]) -> OnlineSyncBatch:
             if remote_id not in responses["cards"]:
                 raise ValueError("平台未返回该商品的卡片信息，已保留原记录")
             card = responses["cards"][remote_id]
+            if not full:
+                result.listings.append(basic_listing(mapping, responses["campaign"].get(remote_id, {}),
+                    remote_id in hidden, card, account_id=adapter.account_id, campaign_id=adapter.campaign))
+                continue
             names, names_error = {}, ""
             if card.get("parameterValues"):
                 category_id = str(mapping["offer"].get("marketCategoryId") or
@@ -166,27 +185,21 @@ def read_batch(adapter, mappings, hidden: set[str]) -> OnlineSyncBatch:
     return result
 
 
-def sync_yandex(adapter, ids=None, *, catalog="current") -> Iterator[OnlineSyncBatch]:
+def sync_yandex(adapter, ids=None, *, catalog="current", full=False) -> Iterator[OnlineSyncBatch]:
     if catalog not in ("current", "archived") and not (catalog is None and ids is not None):
         raise ValueError("同步目录只能为 current 或 archived")
-    mappings = []
+    discovered, hidden = set(), None
+    phase = "details" if full else "basic"
     for page in catalog_pages(adapter, ids, catalog=catalog):
-        mappings.extend(page)
+        discovered.update(row["offer"]["offerId"] for row in page)
         yield OnlineSyncBatch("catalog", [catalog_listing(row, account_id=adapter.account_id,
-            campaign_id=adapter.campaign, settings=adapter.settings) for row in page])
-    # 阶段标记使空目录也能正确完成，并在首批详情网络请求之前持久化进度。
-    yield OnlineSyncBatch("details", discovery_complete=True)
+            campaign_id=adapter.campaign) for row in page])
+        if page:
+            if hidden is None:
+                hidden = hidden_ids(adapter)
+            yield read_batch(adapter, page, hidden, full=full)
+    yield OnlineSyncBatch(phase, discovery_complete=True)
     if ids is not None:
-        missing = set(ids) - {row["offer"]["offerId"] for row in mappings}
+        missing = set(ids) - discovered
         if missing:
-            yield OnlineSyncBatch("details", errors={sku: "Yandex 未返回该 SKU 的所选目录记录，商品可能已移出该目录" for sku in sorted(missing)})
-    if not mappings:
-        return
-    try:
-        hidden = hidden_ids(adapter)
-    except Exception as exc:
-        raise_if_access_blocked(exc)
-        yield OnlineSyncBatch("details", errors={row["offer"]["offerId"]: str(exc) for row in mappings})
-        return
-    for offset in range(0, len(mappings), BATCH_SIZE):
-        yield read_batch(adapter, mappings[offset:offset + BATCH_SIZE], hidden)
+            yield OnlineSyncBatch(phase, errors={sku: "Yandex 未返回该 SKU 的所选目录记录，商品可能已移出该目录" for sku in sorted(missing)})

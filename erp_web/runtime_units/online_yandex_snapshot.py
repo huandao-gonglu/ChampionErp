@@ -8,9 +8,9 @@ from erp_web.marketplaces.yandex_currency import yandex_internal_currency
 from erp_web.schemas.online_products import Capability, MarketSnapshot, OnlineListing, PlatformIssue, PriceScope, StockScope, listing_identity
 
 
-def card_issues(card):
+def card_issues(card, *, source="card"):
     """保留平台错误和警告的原文及说明，不把警告推断成商品不可售。"""
-    return [PlatformIssue(severity=severity, code=str(row.get("code") or ""),
+    return [PlatformIssue(severity=severity, source=source, code=str(row.get("code") or ""),
                           message=str(row.get("message") or row.get("comment") or "平台未提供反馈说明"),
                           comment=str(row.get("comment") or ""))
             for field, severity in (("errors", "error"), ("warnings", "warning"))
@@ -77,7 +77,7 @@ def build_listing(mapping, campaign, hidden, card, default_price, stocks, *, acc
     return OnlineListing(id=listing_identity("yandex", account_id, remote_id), platform="yandex", account_id=account_id,
         remote_id=remote_id, model="business_offer", title=content["title"], seller_sku=remote_id, thumbnail=next(iter(content["pictures"]), ""),
         buyer_links=yandex_buyer_links(mapping),
-        sale_state="paused" if hidden else ("active" if raw_status == "PUBLISHED" and not offer.get("archived") else "unknown"), raw_status=raw_status, raw_sub_status=[str(card.get("cardStatus") or "")], platform_issues=card_issues(card), prices=prices, stocks=stocks,
+        sale_state="paused" if hidden else ("active" if raw_status == "PUBLISHED" and not offer.get("archived") else "unknown"), raw_status=raw_status, raw_sub_status=[str(card.get("cardStatus") or "")], platform_issues=card_issues(card)+card_issues(campaign, source="campaign"), prices=prices, stocks=stocks,
         markets=[MarketSnapshot(id=campaign_id, site_id=campaign_id, seller_id=account_id.split(":", 1)[0], raw_status=raw_status)], content=content,
         snapshot={"mapping": mapping.get("mapping", {}), "offer": offer, "default_price": default_price, "campaign": campaign, "card": card, "hidden": hidden},
         capabilities={"price": Capability(enabled=any(p.writable for p in prices), scope="所选账号 / 店铺"),
@@ -86,12 +86,24 @@ def build_listing(mapping, campaign, hidden, card, default_price, stocks, *, acc
             "sale_state": Capability(enabled=bool(campaign), scope="当前店铺", reason="隐藏 / 恢复仅影响当前店铺；归档商品需先恢复归档，恢复销售不绕过平台审核")})
 
 
-def catalog_listing(mapping, *, account_id, campaign_id, settings):
+def basic_listing(mapping, campaign, hidden, card, *, account_id, campaign_id):
+    """保留基础接口已返回的内容及反馈，不伪造价格、库存或完整详情就绪状态。"""
+    listing = build_listing(mapping, campaign, hidden, card, {}, [], account_id=account_id,
+                            campaign_id=campaign_id, settings={})
+    listing.prices = []
+    listing.snapshot.pop("default_price", None)
+    listing.details_state = "unloaded"
+    for operation in ("price", "stock", "content"):
+        listing.capabilities[operation] = Capability(reason="打开商品详情后读取当前资料")
+    return listing
+
+
+def catalog_listing(mapping, *, account_id, campaign_id, settings=None):
     """目录记录可展示，详情未齐时不开放任何修改能力。"""
     offer = mapping["offer"]
     campaign = next((row for row in offer.get("campaigns", []) if str(row.get("campaignId")) == campaign_id), {})
     listing = build_listing(mapping, campaign, False, {}, {}, [], account_id=account_id,
-                            campaign_id=campaign_id, settings=settings)
+                            campaign_id=campaign_id, settings=settings or {})
     listing.details_state = "pending"
     listing.capabilities = {name: Capability(reason="商品详情同步中，完成后可修改")
                             for name in ("price", "stock", "content", "sale_state", "archive")}

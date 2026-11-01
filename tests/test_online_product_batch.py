@@ -21,10 +21,9 @@ def setup_batch(count=3, archived=False):
     client = adapter(remote)
     context = SimpleNamespace(db=get_context().db, config=SimpleNamespace(load_store_config=lambda: {"yandex": {"business_id": "1", "campaign_id": "2"}}))
     service = OnlineProductService(context, adapter_factories={"yandex": lambda _: client}, start_worker=False)
-    for batch in client.sync(catalog="archived" if archived else "current"):
-        if batch.phase == "details":
-            for row in batch.listings:
-                service.store.save(row)
+    # 批量写入测试使用已读取完整详情的快照，不把新的基础同步当作详情加载。
+    for row in client.read_many([item["offer"]["offerId"] for item in remote.rows]).listings:
+        service.store.save(row)
     return service, remote, client
 
 
