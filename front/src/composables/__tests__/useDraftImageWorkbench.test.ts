@@ -54,13 +54,13 @@ describe('图片工作台操作与恢复', () => {
     const { work, draft, response, save } = fixture()
     await flushPromises()
     const plan: ImageSetPlan = { style: '简洁留白', pages: [
-      { key: 'main', title: '主图', role: 'main', prompt: '商品展示', source_image_ids: ['common'] },
-      { key: 'detail', title: '细节', role: 'detail', prompt: '材质展示', source_image_ids: ['shared'] },
+      { key: 'common', title: '主图', role: 'main', prompt: '商品展示', source_image_ids: ['common'] },
+      { key: 'shared', title: '细节', role: 'detail', prompt: '材质展示', source_image_ids: ['shared'] },
     ] }
     vi.mocked(planDraftImageSet).mockResolvedValue({ ok: true, plan, updated_at: 'v1' })
     expect((await work.planSet(['common', 'shared'], 2, '明亮'))?.plan).toEqual(plan)
     expect(save).toHaveBeenCalledOnce()
-    expect(planDraftImageSet).toHaveBeenCalledWith(draft.value, ['common', 'shared'], 2, '明亮')
+    expect(planDraftImageSet).toHaveBeenCalledWith(draft.value, ['common', 'shared'], 2, '明亮', [])
     const active = { ...batch(), image_set: plan }
     vi.mocked(generateDraftImageSet).mockResolvedValue(response(draft.value, active))
     await work.generateSet(plan, 'v1')
@@ -102,6 +102,43 @@ describe('图片工作台操作与恢复', () => {
       updatedAt: draft.value.updatedAt, plan: undefined, baseRequestId: requestId, retryPageIds: ['detail'],
     })
     expect(generateDraftImageSet).toHaveBeenCalledTimes(2)
+  })
+  it('共用与 SKU 图同次采用并撤销；失败规格保留原图，SKU 结果不能混入共用图', async () => {
+    const { work, draft } = fixture()
+    await flushPromises()
+    draft.value.skuItems.push({ ...clone(draft.value.skuItems[0]), sku_id: 'pink', overrides: { image_asset_id: 'pink-original' } })
+    const initial = clone(draft.value)
+    const plan: ImageSetPlan = { style: '统一风格', pages: [
+      { key: 'common', title: '共用主图', role: 'main', prompt: '主图', source_image_ids: ['common'] },
+      { key: 'shared', title: '共用细节', role: 'detail', prompt: '细节', source_image_ids: ['shared'] },
+      { key: 'red-page', title: '红色款', role: 'main', prompt: '红色款主图', source_image_ids: ['shared'], scope: 'sku', sku_ids: ['red'] },
+      { key: 'pink-page', title: '粉色款', role: 'main', prompt: '粉色款主图', source_image_ids: ['pink-original'], scope: 'sku', sku_ids: ['pink'] },
+    ] }
+    const completed = { ...batch(true), image_set: plan }
+    completed.items[0].result_asset_ids = ['common-result']
+    completed.items.push({ ...completed.items[0], index: 2, source_id: 'red-page', result_asset_ids: ['red-result'] },
+      { ...completed.items[1], index: 3, source_id: 'pink-page' })
+    work.batch.value = completed
+    await work.applySet([{ assetId: 'red-result', role: 'main', order: 0 }])
+    expect(saveDraft).not.toHaveBeenCalled()
+    await work.applySet([{ assetId: 'common-result', role: 'main', order: 0 }], ['red-page'])
+    expect(saveDraft).toHaveBeenCalledTimes(1)
+    expect(draft.value.images.map(ref => ref.assetId)).toEqual(['common-result'])
+    expect(draft.value.skuItems.map(row => row.overrides.image_asset_id)).toEqual(['red-result', 'pink-original'])
+    expect(draft.value.skuItems[0].pricing).toEqual(initial.skuItems[0].pricing)
+    await work.undo()
+    expect(draft.value.images).toEqual(initial.images)
+    expect(draft.value.skuItems).toEqual(initial.skuItems)
+    await work.redo()
+    expect(draft.value.skuItems[0].overrides.image_asset_id).toBe('red-result')
+    expect(generateDraftImageSet).not.toHaveBeenCalled()
+    await work.undo()
+    await work.applySet([], ['red-page'])
+    expect(draft.value.images).toEqual(initial.images)
+    expect(draft.value.skuItems[0].overrides.image_asset_id).toBe('red-result')
+    const saves = vi.mocked(saveDraft).mock.calls.length
+    await work.applySet([], ['pink-page'])
+    expect(saveDraft).toHaveBeenCalledTimes(saves)
   })
   it('移出仅保存共用引用，撤销重做不改 SKU、商品或核价；新操作清空重做', async () => {
     const { work, draft, product } = fixture()

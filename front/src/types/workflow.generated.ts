@@ -510,6 +510,8 @@ export interface BackendImageSetPagePayload {
   role: "main" | "detail" | "scene" | "selling_point" | "material" | "size" | "package"
   prompt: string
   source_image_ids: Array<string>
+  scope?: "common" | "sku"
+  sku_ids?: Array<string>
 }
 
 export interface BackendImageSetPlanPayload {

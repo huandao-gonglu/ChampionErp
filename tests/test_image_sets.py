@@ -36,11 +36,11 @@ def setup_sources(app_dir):
 
 
 def plan():
-    return {"style": "简洁明亮，统一留白和字体", "pages": [
+    return {"style": "简洁明亮，统一留白和字体", "pages": [{**page, "scope": "common", "sku_ids": []} for page in [
         {"key": "main", "title": "商品主图", "role": "main", "prompt": "根据全部参考素材重新设计主图", "source_image_ids": ["common", "red"]},
         {"key": "detail", "title": "材质细节", "role": "detail", "prompt": "展示已有材质纹理，不增加新结构", "source_image_ids": ["common"]},
         {"key": "scene", "title": "使用场景", "role": "scene", "prompt": "保留真实商品比例，设计使用环境", "source_image_ids": ["red"]},
-    ]}
+    ]]}
 
 
 def body(product, draft, request_id="set-first", **extra):
@@ -237,3 +237,82 @@ def test_request_contract_validates_count_and_retry_shape():
         validate_request_payload({"product_id": "p", "draft_id": "d", "updated_at": "v", "source_image_ids": ["a"], "count": 20}, endpoint="/api/draft-images/plan-set")
     with pytest.raises(RequestValidationError):
         validate_request_payload({"product_id": "p", "draft_id": "d", "updated_at": "v", "request_id": "r", "retry_page_ids": "page"}, endpoint="/api/draft-images/generate-set")
+
+
+def test_sku_plan_deduplicates_shared_source_and_generates_separate_assets(monkeypatch, app_dir):
+    product, draft, raw = setup_sources(app_dir)
+    product["sku_items"][1]["image_asset_id"] = "red"
+    product = get_context().products.save_product(product)
+    draft = get_context().products.draft_record(draft["draft_id"])
+    ids = [row["sku_id"] for row in draft["sku_items"]]
+    monkeypatch.setattr(image_set_service, "plan_image_set", lambda **_: ImageSetPlan.model_validate(plan()))
+    planned, status = image_facade.plan_draft_image_set_payload({**body(product, draft), "source_image_ids": ["common"], "sku_ids": ids, "count": 3})
+    assert status == 200
+    spec = planned["plan"]
+    assert len(spec["pages"]) == 4
+    sku_page = spec["pages"][-1]
+    assert sku_page["scope"] == "sku" and sku_page["sku_ids"] == ids and sku_page["source_image_ids"] == ["red"]
+    calls = image_model(monkeypatch, raw)
+    image_facade.generate_draft_image_set_payload(body(product, draft, plan=spec))
+    done = finish(draft["draft_id"])
+    assert done["image_batch"]["success"] == 4 and len(calls) == 4
+    assert done["draft"]["images"] == draft["images"]
+    assert done["draft"]["sku_items"] == draft["sku_items"]
+    sku_result = next(item for item in done["image_batch"]["items"] if item["source_id"] == sku_page["key"])
+    asset_id = sku_result["result_asset_ids"][0]
+    asset = next(item for item in done["product"]["source"]["image_pool"] if item["id"] == asset_id)
+    assert asset["is_sku"] and asset["raw"]["image_set"]["sku_ids"] == ids
+    sku_call = next(call for call in calls if "当前页仅用于绑定 SKU" in call["prompt"])
+    assert sku_call["image_ids"] == ["red"]
+    adopted = deepcopy(done["draft"])
+    adopted["images"] = [{"asset_id": item["result_asset_ids"][0], "role": "main" if index == 0 else "detail", "order": index}
+                         for index, item in enumerate(done["image_batch"]["items"][:-1])]
+    for row in adopted["sku_items"]:
+        row.setdefault("overrides", {})["image_asset_id"] = asset_id
+    _, error, status = get_context().products.save_draft_content(adopted)
+    assert status == 200 and error is None
+    saved = get_context().products.draft_record(draft["draft_id"])
+    assert asset_id not in {ref["asset_id"] for ref in saved["images"]}
+    assert all(row["overrides"]["image_asset_id"] == asset_id for row in saved["sku_items"])
+    retry_calls = image_model(monkeypatch, raw)
+    image_facade.generate_draft_image_set_payload(body(product, saved, "sku-retry", base_request_id="set-first", retry_page_ids=[sku_page["key"]]))
+    retried = finish(draft["draft_id"])
+    assert len(retry_calls) == 1 and retry_calls[0]["image_ids"] == ["red"]
+    assert retried["draft"]["sku_items"] == saved["sku_items"]
+    assert retried["image_batch"]["success"] == 4
+
+
+def test_sku_target_scope_cannot_be_guessed_or_expanded(monkeypatch, app_dir):
+    product, draft, raw = setup_sources(app_dir)
+    sku_id = draft["sku_items"][0]["sku_id"]
+    targets = image_set_service.sku_image_targets(product, draft, [sku_id])
+    spec = image_set_service.include_sku_pages(ImageSetPlan.model_validate(plan()), targets).model_dump()
+    spec["pages"][-1]["source_image_ids"] = ["common"]
+    with pytest.raises(RequestValidationError, match="关联已变化"):
+        image_facade.generate_draft_image_set_payload(body(product, draft, plan=spec))
+    with pytest.raises(ValueError, match="未启用"):
+        image_set_service.sku_image_targets(product, draft, ["foreign"])
+    unselected = deepcopy(draft); unselected["sku_items"][0]["selected"] = False
+    with pytest.raises(ValueError, match="未启用"):
+        image_set_service.sku_image_targets(product, unselected, [sku_id])
+    missing = deepcopy(draft); missing["sku_items"][0].setdefault("overrides", {})["image_asset_id"] = ""
+    with pytest.raises(ValueError, match="缺少独立图片"):
+        image_set_service.sku_image_targets(product, missing, [sku_id])
+    assert get_context().image_batches.latest_for_draft(draft["draft_id"]) is None
+    calls = image_model(monkeypatch, raw)
+    scoped = image_set_service.include_sku_pages(ImageSetPlan.model_validate(plan()), targets)
+    image_set_service.generate_page(app_dir=app_dir, config={}, product=product, draft=draft, plan=scoped, page=scoped.pages[-1])
+    assert product["sku_items"][0]["name"] in calls[0]["prompt"]
+    assert product["sku_items"][1]["name"] not in calls[0]["prompt"]
+
+
+def test_older_common_plan_still_loads_and_sku_pages_do_not_consume_common_count():
+    old = plan()
+    for page in old["pages"]:
+        page.pop("scope"); page.pop("sku_ids")
+    parsed = ImageSetPlan.model_validate(old)
+    assert all(page.scope == "common" and not page.sku_ids for page in parsed.pages)
+    combined = image_set_service.include_sku_pages(parsed, [
+        {"source_id": f"image-{i}", "sku_ids": [f"sku-{i}"], "names": [f"规格 {i}"]} for i in range(13)
+    ])
+    assert len(combined.pages) == 16

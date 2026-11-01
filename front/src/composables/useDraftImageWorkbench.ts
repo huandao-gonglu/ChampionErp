@@ -153,14 +153,14 @@ export function useDraftImageWorkbench(options: {
     }
   }
 
-  async function planSet(ids: string[], count: number, prompt: string) {
+  async function planSet(ids: string[], count: number, prompt: string, skuIds: string[] = []) {
     if (busy.value || !ids.length) return
     const token = epoch
     saving.value = true; notice.value = ''
     try {
       if (!await options.save()) { notice.value = '保存草稿失败，尚未规划套图。'; return }
       if (token !== epoch) return
-      const result = await planDraftImageSet(draft.value, ids, count, prompt)
+      const result = await planDraftImageSet(draft.value, ids, count, prompt, skuIds)
       if (token === epoch) return result
     } catch (error) {
       if (token === epoch) notice.value = error instanceof Error ? error.message : '套图规划失败，请检查识图模型配置。'
@@ -248,11 +248,30 @@ export function useDraftImageWorkbench(options: {
   }
   return {
     busy, batch, notice, undoLabel, redoLabel, start, add, upload, planSet, generateSet,
-    applySet: (refs: DraftImageRef[]) => {
+    applySet: (refs: DraftImageRef[], skuPageKeys: string[] = []) => {
       const current = batch.value
-      const available = new Set(current?.items.filter(item => item.status === 'success').flatMap(item => item.result_asset_ids || []))
-      if (!current?.image_set || !refs.length || refs.some(ref => !available.has(ref.assetId))) return
-      return commit(`采用套图 ${refs.length} 张`, copy => { copy.images = clone(refs); normalize(copy) })
+      if (!current?.image_set || (!refs.length && !skuPageKeys.length)) return
+      const successful = new Map(current.items.filter(item => item.status === 'success').map(item => [item.source_id, item.result_asset_ids || []]))
+      const available = new Set(current.image_set.pages.filter(page => page.scope !== 'sku').flatMap(page => successful.get(page.key) || []))
+      if (refs.some(ref => !available.has(ref.assetId))) return
+      const skuChanges: Array<{ assetId: string; skuIds: string[] }> = []
+      for (const key of new Set(skuPageKeys)) {
+        const page = current.image_set.pages.find(page => page.key === key && page.scope === 'sku')
+        const assetId = successful.get(key)?.[0]
+        if (!page?.sku_ids?.length || !assetId) { notice.value = '所选 SKU 图片尚不可采用，请重新读取生成结果。'; return }
+        if (page.sku_ids.some(id => !draft.value.skuItems.some(row => row.sku_id === id && row.selected))) {
+          notice.value = '部分 SKU 已取消勾选或移出当前草稿，尚未采用图片，请重新选择规格并规划。'
+          return
+        }
+        skuChanges.push({ assetId, skuIds: page.sku_ids })
+      }
+      return commit(`采用套图 ${refs.length + skuChanges.length} 张`, copy => {
+        if (refs.length) { copy.images = clone(refs); normalize(copy) }
+        for (const change of skuChanges) for (const id of change.skuIds) {
+          const row = copy.skuItems.find(row => row.sku_id === id)!
+          row.overrides.image_asset_id = change.assetId
+        }
+      })
     },
     remove: (ids: string[]) => commit(`移出 ${ids.length} 张共用图`, copy => { copy.images = copy.images.filter(image => !ids.includes(image.assetId)); normalize(copy) }),
     reorder: (ids: string[]) => commit('调整共用图顺序', copy => { const refs = new Map(copy.images.map(image => [image.assetId, image])); copy.images = ids.map(id => refs.get(id)!).filter(Boolean); normalize(copy) }),

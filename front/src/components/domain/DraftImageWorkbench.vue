@@ -164,7 +164,7 @@ watch(busy, value => { if (value) dragging.value = '' })
   </section>
   <WorkspaceDialog :open="Boolean(preview)" title="图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" alt="图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
   <WorkspaceDialog :open="previewOpen" title="发布图片预览" @close="previewOpen = false"><DraftSkuImagePreview :draft="draft" :images="images" :assignments="assignments" /></WorkspaceDialog>
-  <DraftImageSetDialog :open="imageSetOpen" :draft="draft" :images="images" :reference-ids="currentIds" :controller="controller" :loading="loading" @close="imageSetOpen = false" />
+  <DraftImageSetDialog :open="imageSetOpen" :draft="draft" :images="images" :reference-ids="commonIds.length ? commonIds : currentIds" :controller="controller" :loading="loading" :skus="assignments" @close="imageSetOpen = false" />
   <WorkspaceDialog :open="Boolean(dialog)" :title="dialog === 'edit' ? 'AI 修改' : dialog === 'translate' ? '翻译图片' : dialog === 'remove' ? `移出 ${targets.length} 张共用主图？` : '添加共用图片'" :close-disabled="busy" @close="dialog = null">
     <form class="space-y-5" @submit.prevent="submit">
       <template v-if="dialog === 'add'">

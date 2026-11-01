@@ -470,8 +470,14 @@ CLI / Browser use case
   一次原生多模态请求，API 与显式 Canvas 连接都不逐张套用相同提示词。结果只合入商品素材池，
   不自动改变草稿引用。`schemas/image_sets.py` 定义方案，批次保存设计内容与真实结果资产 ID，
   重新打开可恢复预览；单页重做引用原批次，保留未重做页面的实际状态和结果，不重新执行或计费。
-  采用和排序由 `useDraftImageWorkbench` 复用草稿保存与本次打开的撤销边界，只更新共用图片引用，
-  不改 SKU 图关联；第一张采用图成为共用主图。旧图片批次缺省新增字段后继续读取，不重放历史任务。
+  `plan-set` 可同时携带已选启用的 `sku_ids`；`sku_image_targets` 按真实当前图片关联合并目标，
+  共用方案完成后为每组添加沿用统一风格的 SKU 主图页面，不允许模型猜测规格绑定。
+  `ImageSetPage.scope/sku_ids` 区分共用与独立规格用途；旧页面缺省为共用图。
+  SKU 页面只能引用其绑定规格的一张当前原图，生成输入只包含绑定规格的事实，生成与重做均复核范围和来源；采用后的原素材关系
+  由真实生成资产的 `raw.image_set` 保留，用于原方案单页重做。无独立图片的规格继续使用共用套图。
+  采用由 `useDraftImageWorkbench` 同次保存共用引用和选中 SKU 的图片覆盖，SKU 结果不进入共用图集，
+  未采用或失败项保留当前图片；共用图可排序，第一张成为共用主图。整次采用复用本次打开的撤销边界，
+  撤销/重做一起恢复共用与 SKU 引用，不执行模型。旧图片批次缺省新增字段后继续读取，不重放历史任务。
   已核对 Pydantic AI 2.44.0 的[多模态输入](https://pydantic.dev/docs/ai/core-concepts/input/)与
   [结构化输出](https://pydantic.dev/docs/ai/core-concepts/output/)；沿用已有 Images Model 适配，
   不增加 SDK 推理旁路或 Agent loop。回归见 `tests/test_image_sets.py` 及前端工作台/套图组件测试。

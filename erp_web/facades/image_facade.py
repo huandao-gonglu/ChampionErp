@@ -390,13 +390,14 @@ def _image_set_target(body):
     return product, draft
 
 
-def _image_set_sources(product, draft, ids, *, require_current=True):
-    if not ids or len(ids) > 12 or len(set(ids)) != len(ids):
+def _image_set_sources(product, draft, ids, *, require_current=True, limit=12):
+    if not ids or (limit is not None and len(ids) > limit) or len(set(ids)) != len(ids):
         raise RequestValidationError("请选择 1 至 12 张不重复的参考素材。")
     defaults = {sku["id"]: sku.get("image_asset_id", "") for sku in product.get("sku_items", [])}
     current = {ref["asset_id"] for ref in draft.get("images", [])}
-    current.update(row.get("overrides", {}).get("image_asset_id", defaults.get(row["sku_id"], ""))
-                   for row in draft.get("sku_items", []))
+    for row in draft.get("sku_items", []):
+        override = row.get("overrides", {}).get("image_asset_id")
+        current.add(defaults.get(row["sku_id"], "") if override is None else override)
     sources = image_translate_service.select_source_images(product, ids, draft["platform"])
     if (require_current and not set(ids).issubset(current)) or {item["id"] for item in sources} != set(ids):
         raise RequestValidationError("参考素材已不是当前使用的图片，请重新选择。", status_code=409)
@@ -408,12 +409,21 @@ def plan_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus:
     with context.image_batches.lock, context.products.mutation_scope({"draft_id": body.get("draft_id")}):
         product, draft = _image_set_target(body)
         sources = _image_set_sources(product, draft, body.get("source_image_ids") or [])
+        try:
+            sku_targets = image_set_service.sku_image_targets(product, draft, body.get("sku_ids") or [])
+        except ValueError as exc:
+            raise RequestValidationError(str(exc)) from None
+        sku_sources = (_image_set_sources(product, draft, [target["source_id"] for target in sku_targets], limit=None)
+                       if sku_targets else [])
     # 识图和结构化输出由原生 Agent 完成，商品锁不跨模型等待。
     try:
+        for source in sku_sources:
+            image_set_service.reference_content(_app_dir(), [source])
         plan = image_set_service.plan_image_set(
             app_dir=_app_dir(), config=load_app_config(), messages=context.pydantic_messages,
             product=product, draft=draft, sources=sources, count=body.get("count", 6), prompt=body.get("prompt", ""),
         )
+        plan = image_set_service.include_sku_pages(plan, sku_targets)
     except ValueError as exc:
         raise RequestValidationError(str(exc)) from None
     with context.image_batches.lock, context.products.mutation_scope({"draft_id": draft["draft_id"]}):
@@ -457,10 +467,15 @@ def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus
             except ValidationError:
                 raise RequestValidationError("套图方案无效，请检查统一风格、主图和每页参考素材。") from None
         ids = list(dict.fromkeys(id for page in plan.pages for id in page.source_image_ids))
-        sources = _image_set_sources(product, draft, ids, require_current=not base_id)
+        try:
+            image_set_service.validate_sku_pages(plan, product, draft, retry=bool(base_id))
+        except ValueError as exc:
+            raise RequestValidationError(str(exc), status_code=409) from None
+        sources = _image_set_sources(product, draft, ids, require_current=not base_id, limit=None)
     # 文件预检与配置读取在锁外；注册时再次核对草稿版本和任务归属。
     try:
-        image_set_service.reference_content(_app_dir(), sources)
+        for source in sources:
+            image_set_service.reference_content(_app_dir(), [source])
     except ValueError as exc:
         raise RequestValidationError(str(exc)) from None
     config = load_app_config()
@@ -490,7 +505,7 @@ def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus
             store=context.image_batches, messages=context.pydantic_messages, app_dir=_app_dir(),
             product_id=product["product_id"], draft_id=draft["draft_id"],
             request_id=body["request_id"], request_fingerprint=fingerprint,
-            prompt=f"生成 {len(plan.pages)} 张共用套图：{plan.style}",
+            prompt=f"生成 {len(plan.pages)} 张套图：{plan.style}",
             sources=[{"id": page.key} for page in plan.pages], process=process, persist=persist,
             background=True, image_set=plan, retained_items=retained,
         )

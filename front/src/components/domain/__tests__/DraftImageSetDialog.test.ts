@@ -23,28 +23,52 @@ function snapshot(): ImageBatchSnapshot {
       outcome_unknown: false, started_at: '', finished_at: '', result_asset_ids: [page.key], result_urls: [`/${page.key}.png`] })),
   }
 }
-async function fixture(saved?: ImageBatchSnapshot) {
+async function fixture(saved?: ImageBatchSnapshot, withSkus = false) {
   const draft = createEmptyDraftDetail(); draft.draftId = 'd'; draft.updatedAt = 'version'; draft.language = 'ru'
-  const images: ImageAsset[] = ['source', 'main', 'detail'].map(id => ({ id, url: `/${id}.png`, path: '', previewUrl: '', origin: 'source', usage: 'detail', platforms: [], selected: true, isMain: false, status: 'ready', width: 800, height: 800 }))
+  const images: ImageAsset[] = ['source', 'main', 'detail', 'red-original', 'red-result'].map(id => ({ id, url: `/${id}.png`, path: '', previewUrl: '', origin: 'source', usage: 'detail', platforms: [], selected: true, isMain: false, status: 'ready', width: 800, height: 800 }))
   const batch = ref<ImageBatchSnapshot | null>(saved || null), busy = ref(false)
   const controller: DraftImageWorkbenchController = {
     busy: computed(() => busy.value), batch, notice: ref(''), undoLabel: computed(() => ''), redoLabel: computed(() => ''),
     start: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
     planSet: vi.fn(async () => ({ ok: true, plan: structuredClone(plan), updated_at: 'planned-version' })), generateSet: vi.fn(), applySet: vi.fn(),
   }
-  const wrapper = mount(DraftImageSetDialog, { attachTo: document.body, props: { open: false, draft, images, referenceIds: ['source'], controller },
+  const skus = withSkus ? ['red-small', 'red-large'].map(skuId => ({ skuId, name: skuId, imageAssetId: 'red-original', inherited: true, selected: true })) : []
+  const wrapper = mount(DraftImageSetDialog, { attachTo: document.body, props: { open: false, draft, images, referenceIds: ['source'], controller, skus },
     global: { stubs: { Teleport: true } } })
   await wrapper.setProps({ open: true }); await flushPromises()
   return { wrapper, controller, batch, busy }
 }
 
 describe('共用套图规划与采用', () => {
+  it('共用同一原图的 SKU 合并展示，并把明确的规格范围交给规划', async () => {
+    const { wrapper, controller } = await fixture(undefined, true)
+    expect(wrapper.findAll('input[aria-label^="生成 SKU 图"]')).toHaveLength(1)
+    expect(wrapper.text()).toContain('red-small、red-large')
+    expect(wrapper.text()).toContain('预计生成 7 张图片')
+    await button(wrapper, '自动规划套图').trigger('submit'); await flushPromises()
+    expect(controller.planSet).toHaveBeenCalledWith(['source'], 6, '', ['red-small', 'red-large'])
+  })
+  it('SKU 结果标明绑定规格，可单独采用且不会参与共用图排序', async () => {
+    const saved = snapshot()
+    saved.image_set = { style: plan.style, pages: [...plan.pages, {
+      key: 'sku-red', title: '红色规格图', role: 'main', prompt: '规格主图', source_image_ids: ['red-original'], scope: 'sku', sku_ids: ['red-small', 'red-large'],
+    }] }
+    saved.items.push({ ...saved.items[0], index: 2, source_id: 'sku-red', result_asset_ids: ['red-result'] })
+    const { wrapper, controller } = await fixture(saved, true)
+    const skuCard = wrapper.get('[data-set-page="sku-red"]')
+    expect(skuCard.text()).toContain('SKU 图 · red-small、red-large')
+    expect(skuCard.find('button[aria-label^="前移"]').exists()).toBe(false)
+    await wrapper.get('input[aria-label="采用 主图"]').setValue(false)
+    await wrapper.get('input[aria-label="采用 细节"]').setValue(false)
+    await button(wrapper, '采用 1 张并更新图片').trigger('click')
+    expect(controller.applySet).toHaveBeenCalledWith([], ['sku-red'])
+  })
   it('先规划整套图片，允许调整风格与设计后再生成', async () => {
     const { wrapper, controller } = await fixture()
     await wrapper.get('select').setValue('2')
     await wrapper.get('textarea').setValue('简洁风格')
     await button(wrapper, '自动规划套图').trigger('submit'); await flushPromises()
-    expect(controller.planSet).toHaveBeenCalledWith(['source'], 2, '简洁风格')
+    expect(controller.planSet).toHaveBeenCalledWith(['source'], 2, '简洁风格', [])
     expect(controller.generateSet).not.toHaveBeenCalled()
     await wrapper.findAll('textarea')[0].setValue('统一浅灰背景')
     await wrapper.findAll('textarea')[1].setValue('保留商品颜色，重新设计主图')
