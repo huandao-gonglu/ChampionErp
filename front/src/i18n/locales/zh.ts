@@ -248,6 +248,8 @@ export default {
     },
   },
   settings: {
+    forbiddenCategories: '禁售类目',
+    forbiddenCategoriesSummary: '导入 Yandex 禁售名单并在预检时拦截',
     wechat: '微信连接',
     wechatSummary: '扫码绑定微信与 ERP 对话',
     about: '关于',

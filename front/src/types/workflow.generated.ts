@@ -6,6 +6,18 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 5 as const
 
+export interface BackendForbiddenCategory {
+  category_id: string
+  name: string
+}
+
+export interface BackendForbiddenCategories {
+  platform: "yandex"
+  filename: string
+  imported_at: string
+  categories: Array<BackendForbiddenCategory>
+}
+
 export interface BackendWechatChannelStatus {
   ok: boolean
   bound: boolean
@@ -376,6 +388,7 @@ export interface BackendSystemSettings {
 
 export interface BackendAppConfig {
   system_settings?: BackendSystemSettings
+  forbidden_categories?: BackendForbiddenCategories
   image_hosting?: Record<string, unknown>
   ai_tool_approval_mode?: "ask" | "full"
   ai_models?: Array<BackendAiModelConfig>

@@ -54,6 +54,12 @@ def handle_system_settings_save(handler: JsonRequestHandler) -> None:
     ))
 
 
+def handle_forbidden_categories_import(handler: JsonRequestHandler) -> None:
+    _send(handler, auth_config_facade.import_forbidden_categories_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path),
+    ))
+
+
 def handle_watermark_preview(handler: JsonRequestHandler) -> None:
     _send(handler, auth_config_facade.watermark_preview_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path),
@@ -156,6 +162,7 @@ def handle_clear_store_auth(handler: JsonRequestHandler) -> None:
 
 
 POST_HANDLERS: dict[str, PostHandler] = {
+    "/api/system-settings/forbidden-categories/import": handle_forbidden_categories_import,
     "/api/ai/approval-mode": handle_ai_approval_mode_save,
     "/api/system-settings": handle_system_settings_save,
     "/api/system-settings/watermark-preview": handle_watermark_preview,

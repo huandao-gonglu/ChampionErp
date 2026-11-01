@@ -4,6 +4,7 @@ from typing import Any, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .ai_approval import AiToolApprovalMode
 from .wechat_channel import WECHAT_FORWARD_TYPES, WechatForwardType
+from .forbidden_categories import ForbiddenCategories
 
 
 class AiCapabilityProfile(TypedDict, total=False):
@@ -106,6 +107,7 @@ class SystemSettingsRequest(BaseModel):
 
 class AppConfig(TypedDict, total=False):
     system_settings: SystemSettings
+    forbidden_categories: ForbiddenCategories
     image_hosting: dict[str, Any]
     ai_tool_approval_mode: AiToolApprovalMode
     ai_models: list[AiModelConfig]

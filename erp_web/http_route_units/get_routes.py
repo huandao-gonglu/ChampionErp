@@ -8,7 +8,7 @@ from erp_web.context import get_context
 from erp_web.services import config_service
 from erp_web.schemas.api import API_SCHEMA_VERSION, validate_app_state_response
 from erp_web.http_route_units import static_routes
-from erp_web.facades.auth_config_facade import system_settings_payload
+from erp_web.facades.auth_config_facade import system_settings_payload, forbidden_categories_payload
 from .common import JsonRequestHandler
 from ..facades.get_facade import (
     browser_debug_status,
@@ -50,6 +50,7 @@ FRONTEND_PAGE_ROUTES = {
 }
 
 GET_API_ROUTES = {
+    "/api/system-settings/forbidden-categories",
     "/api/system-settings",
     "/api/ai-config",
     "/api/browser-debug/status",
@@ -214,6 +215,7 @@ def handle_mercadolibre_callback(handler: JsonRequestHandler, parsed: object) ->
 
 GET_HANDLERS: dict[str, GetHandler] = {
     "/api/system-settings": lambda handler, parsed: handler.send_json(system_settings_payload()),
+    "/api/system-settings/forbidden-categories": lambda handler, parsed: handler.send_json(forbidden_categories_payload()),
     "/api/state": handle_state,
     "/api/products-index": handle_products_index,
     "/api/drafts-index": handle_drafts_index,

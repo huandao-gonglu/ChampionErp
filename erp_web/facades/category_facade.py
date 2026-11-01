@@ -11,6 +11,7 @@ from typing import Any
 from erp_web.context import get_context
 from erp_web.facades.category_match_facade import match_category
 from erp_web.product_model import validate_category_precheck
+from erp_web.services.forbidden_category_service import forbidden_category_issue
 from erp_web.runtime_units.category_store import (
     fetch_category_attribute_page,
     fetch_category_attribute_values,
@@ -251,6 +252,14 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
     if record_error:
         return record_error
     missing_fields = validate_category_precheck(product, platform, record)
+    if platform == "yandex":
+        settings = get_context().config.forbidden_categories()
+        categories = {item["category_id"]: item["name"] for item in settings["categories"]}
+        draft_category_id = str(product.get("drafts", {}).get(platform, {}).get("category_id") or "")
+        for checked_id in dict.fromkeys((draft_category_id, category_id)):
+            if issue := forbidden_category_issue(platform, checked_id, categories):
+                missing_fields.append(issue["message"])
+        missing_fields = list(dict.fromkeys(missing_fields))
     category_precheck = {
         "ok": not missing_fields,
         "platform": platform,

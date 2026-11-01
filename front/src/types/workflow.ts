@@ -4,6 +4,8 @@ import type { BackendPublishPreparationProgress } from './workflow.generated'
 export {
   API_SCHEMA_VERSION,
   PRODUCT_SCHEMA_VERSION,
+  type BackendForbiddenCategory,
+  type BackendForbiddenCategories,
   type BackendWechatChannelStatus,
   type BackendOrderCenterFilters,
   type BackendOrderChatAttachment,

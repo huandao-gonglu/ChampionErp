@@ -10,6 +10,8 @@ import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 import { fetchRequestControl } from '@/api/externalRequests'
 import { fetchYandexWarehouses } from '@/api/yandexWarehouses'
+import { fetchForbiddenCategories } from '@/api/forbiddenCategories'
+vi.mock('@/api/forbiddenCategories', () => ({ fetchForbiddenCategories: vi.fn(), importForbiddenCategories: vi.fn() }))
 vi.mock('@/api/yandexWarehouses', () => ({ fetchYandexWarehouses: vi.fn(), saveYandexWarehouses: vi.fn() }))
 vi.mock('@/api/systemSettings', () => ({ fetchSystemSettings: vi.fn(), saveSystemSettings: vi.fn() }))
 vi.mock('@/api/externalRequests', () => ({ fetchRequestControl: vi.fn(), recoverRequestBlock: vi.fn(), clearRequestHistory: vi.fn() }))
@@ -21,6 +23,7 @@ beforeEach(() => {
   app.applyTheme()
   app.setUiLocale('zh')
   vi.clearAllMocks()
+  vi.mocked(fetchForbiddenCategories).mockResolvedValue({ platform: 'yandex', filename: '', imported_at: '', categories: [] })
   const watermark = { text: '', image_data_url: '', opacity: 25, size_percent: 30, density: 5, color: '#737373' }
   vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5, watermark, wechat_forward_types: [] })
   vi.mocked(saveSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark, wechat_forward_types: [] })
@@ -36,6 +39,17 @@ afterEach(() => {
 })
 const global = { plugins: [i18n], stubs: { teleport: true } }
 describe('系统设置入口与同步间隔', () => {
+  it('禁售类目支持深链，进入后才读取名单', async () => {
+    const route = reactive({ query: { settings_section: 'general' } })
+    const wrapper = mount(SystemSettingsPanel, { global: { ...global, provide: { [routeLocationKey as symbol]: route } } })
+    await flushPromises()
+    expect(fetchForbiddenCategories).not.toHaveBeenCalled()
+    route.query.settings_section = 'forbidden_categories'
+    await flushPromises()
+    expect(wrapper.get('#system-settings-tab-forbidden_categories').attributes('aria-selected')).toBe('true')
+    expect(wrapper.get('#system-settings-panel-forbidden_categories').text()).toContain('Yandex 禁售类目')
+    expect(fetchForbiddenCategories).toHaveBeenCalledTimes(1)
+  })
   it('Yandex 发布仓库有独立深链入口，进入后才读取关联配置', async () => {
     const route = reactive({ query: { settings_section: 'general' } })
     const wrapper = mount(SystemSettingsPanel, { global: { ...global, provide: { [routeLocationKey as symbol]: route } } })

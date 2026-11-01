@@ -19,6 +19,11 @@ class PublishValidationSession:
     def store_config(self) -> dict[str, Any]:
         return get_context().config.load_store_config()
 
+    @cached_property
+    def forbidden_categories(self) -> dict[str, str]:
+        settings = get_context().config.forbidden_categories()
+        return {item["category_id"]: item["name"] for item in settings["categories"]}
+
     def yandex_logistics_error(self, plan: dict[str, Any]) -> str:
         key = json.dumps(plan, sort_keys=True, ensure_ascii=False)
         if key not in self.logistics_errors:

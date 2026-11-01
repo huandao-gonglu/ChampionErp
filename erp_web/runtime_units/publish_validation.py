@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any
 
 from erp_web.product_model.yandex_warranty_model import compile_yandex_guarantee_period
+from erp_web.services.forbidden_category_service import forbidden_category_issue
 
 from erp_web.product_model.precheck_model import PrecheckIssues
 from erp_web.context import get_context
@@ -710,6 +711,8 @@ def validate_prepared_yandex_draft(
         errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Yandex 类目 ID", "error", "前往类目属性页选择叶子类目"))
     elif not category_id.isdigit() or int(category_id) <= 0:
         errors.append(precheck_item("CATEGORY_INVALID", "category_id", "Yandex 类目 ID 必须是正整数（只能选择叶子类目）", "error", "前往类目属性页重新选择叶子类目"))
+    if issue := forbidden_category_issue("yandex", category_id, session.forbidden_categories):
+        errors.append(issue)
     # 稳定 offerId 身份：服务端比较 draft.sku 与历史发布身份，前端锁定
     # 输入只是交互提示，不能充当约束。
     conflict = yandex_offer_identity_conflict(draft)

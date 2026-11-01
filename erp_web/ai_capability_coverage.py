@@ -91,6 +91,11 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="禁售类目设置", disposition="internal_only",
+        reason="受信系统设置界面维护禁售名单；模型预检和发布使用当前名单，不能通过工具修改禁售规则。") for method, path in (
+        ("GET", "/api/system-settings/forbidden-categories"),
+        ("POST", "/api/system-settings/forbidden-categories/import"),
+    )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="任务队列", disposition="internal_only",
         reason="可信页面的跨领域任务投影与有限确认门面；AI 继续使用原发布/在线商品领域能力，查询共用同一确认预算。") for method, path in (
         ("GET", "/api/tasks"), ("POST", "/api/tasks/check"),

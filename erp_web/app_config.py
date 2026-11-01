@@ -7,6 +7,7 @@ from erp_web.services import ai_model_config, ai_prompt_templates
 from erp_web.services.image_hosting_config import normalize_image_hosting
 from erp_web.schemas.ai_approval import normalize_ai_tool_approval_mode
 from erp_web.schemas.config import SystemSettingsRequest
+from erp_web.schemas.forbidden_categories import ForbiddenCategoryConfiguration
 from erp_web.schemas.pricing_templates import PricingTemplateSettings
 from erp_web.schemas.yandex_warehouses import YandexWarehouseConfiguration
 
@@ -55,6 +56,7 @@ def mask_secret(value: Any) -> str:
 def default_app_config() -> dict[str, Any]:
     return {
         "system_settings": SystemSettingsRequest().model_dump(),
+        "forbidden_categories": ForbiddenCategoryConfiguration().model_dump(),
         "image_hosting": {"default_profile_id": "", "profiles": []},
         "ai_tool_approval_mode": "ask",
         "auto_ai_recognition": "0",
@@ -153,6 +155,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
         incoming.get("ai_tool_approval_mode", "ask")
     )
     canonical["system_settings"] = SystemSettingsRequest.model_validate(incoming.get("system_settings", {})).model_dump()
+    canonical["forbidden_categories"] = ForbiddenCategoryConfiguration.model_validate(incoming.get("forbidden_categories", {})).model_dump()
     canonical["auto_ai_recognition"] = str(
         canonical.get("auto_ai_recognition") or defaults["auto_ai_recognition"]
     )

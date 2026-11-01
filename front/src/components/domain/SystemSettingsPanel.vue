@@ -10,6 +10,7 @@ import AboutSettingsPanel from '@/components/settings/AboutSettingsPanel.vue'
 import YandexWarehouseSettings from '@/components/settings/YandexWarehouseSettings.vue'
 import WatermarkSettingsPanel from '@/components/settings/WatermarkSettingsPanel.vue'
 import WechatSettingsPanel from '@/components/settings/WechatSettingsPanel.vue'
+import ForbiddenCategoriesPanel from '@/components/settings/ForbiddenCategoriesPanel.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
 const { t } = useI18n()
@@ -24,14 +25,15 @@ const tabs = computed(() => [
   { key: 'general', label: '通用设置', summary: '颜色、界面语言与订单自动同步' },
   { key: 'wechat', label: t('settings.wechat'), summary: t('settings.wechatSummary') },
   { key: 'watermark', label: '图片水印', summary: '发布水印、文字与自定义图片' },
+  { key: 'forbidden_categories', label: t('settings.forbiddenCategories'), summary: t('settings.forbiddenCategoriesSummary') },
   { key: 'yandex_warehouses', label: 'Yandex 发布仓库', summary: '同步远端仓库并指定运输模式' },
   { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
   { key: 'about', label: t('settings.about'), summary: t('settings.aboutSummary') },
 ] as const)
-const section = ref<'general' | 'wechat' | 'watermark' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
+const section = ref<'general' | 'wechat' | 'watermark' | 'forbidden_categories' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
 const route = inject(routeLocationKey, undefined)
 watch(() => route?.query.settings_section, value => {
-  section.value = value === 'wechat' || value === 'interruptions' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' ? value : 'general'
+  section.value = value === 'wechat' || value === 'interruptions' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' ? value : 'general'
 }, { immediate: true })
 const activeTab = computed(() => tabs.value.find(tab => tab.key === section.value) || tabs.value[0])
 
@@ -93,6 +95,9 @@ onMounted(load)
       </section>
       <section v-if="section === 'watermark'" id="system-settings-panel-watermark" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-watermark">
         <WatermarkSettingsPanel />
+      </section>
+      <section v-if="section === 'forbidden_categories'" id="system-settings-panel-forbidden_categories" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-forbidden_categories">
+        <ForbiddenCategoriesPanel />
       </section>
       <section v-if="section === 'interruptions'" id="system-settings-panel-interruptions" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-interruptions">
         <ExternalRequestControlPanel />

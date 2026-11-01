@@ -248,6 +248,8 @@ export default {
     },
   },
   settings: {
+    forbiddenCategories: 'Forbidden categories',
+    forbiddenCategoriesSummary: 'Import Yandex forbidden categories and block failed checks',
     wechat: 'WeChat',
     wechatSummary: 'Bind WeChat to an ERP conversation',
     about: 'About',

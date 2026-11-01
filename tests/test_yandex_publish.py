@@ -1329,6 +1329,51 @@ def test_validate_yandex_draft_passes_for_complete_draft() -> None:
     assert result["errors"] == []
 
 
+@pytest.mark.parametrize("image_stage", ["source", "final"])
+def test_forbidden_category_blocks_precheck_and_final_validation(image_stage) -> None:
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+    from tests.test_forbidden_categories import save_list
+
+    product = _validatable_product()
+    assert validate_yandex_draft(product, _config(), _record(), image_stage=image_stage)["ok"] is True
+    save_list()
+    result = validate_yandex_draft(product, _config(), _record(), image_stage=image_stage)
+    assert result["ok"] is False
+    issue = next(item for item in result["errors"] if item["code"] == "CATEGORY_FORBIDDEN")
+    assert issue["field"] == "category_id" and "91596" in issue["message"] and "禁售" in issue["message"]
+    save_list("123", "另一个类目")
+    assert validate_yandex_draft(product, _config(), _record(), image_stage=image_stage)["ok"] is True
+
+
+@pytest.mark.parametrize("image_stage", ["source", "final"])
+def test_forbidden_category_blocks_all_selected_skus_with_one_list_read(image_stage, monkeypatch) -> None:
+    from erp_web.context import get_context
+    from erp_web.runtime_units.publish_adapter import publishing_adapter_for
+    from erp_web.runtime_units.publish_context import PreparedPublishContext
+    from erp_web.schemas.category_definition import CategoryDefinition
+    from tests.test_forbidden_categories import save_list
+
+    save_list()
+    product = _validatable_product()
+    draft = product["drafts"]["yandex"]
+    product["sku_items"].append({**deepcopy(product["sku_items"][0]), "id": "second-sku"})
+    draft["sku_items"].append({**deepcopy(draft["sku_items"][0]), "sku_id": "second-sku", "sku": "SECOND-OFFER"})
+    read = get_context().config.forbidden_categories
+    calls = []
+    def load():
+        calls.append(True)
+        return read()
+    monkeypatch.setattr(get_context().config, "forbidden_categories", load)
+    context = PreparedPublishContext(product=product, draft=draft, target=draft["target_sites"][0], platform="yandex",
+                                     category_definition=CategoryDefinition(platform="yandex", category_id="91596"))
+    result = publishing_adapter_for("yandex").validate_draft(context, _config(), image_stage=image_stage)
+    assert result["ok"] is False
+    errors = [item for item in result["errors"] if item["code"] == "CATEGORY_FORBIDDEN"]
+    assert len(errors) == 1
+    assert len(errors[0]["affected_sku_ids"]) == 2
+    assert len(calls) == 1
+
+
 def _error_codes(result: dict[str, Any]) -> list[str]:
     return [str(item.get("code") or "") for item in result.get("errors") or []]
 

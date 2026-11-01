@@ -1582,6 +1582,9 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 ### 系统设置
 
+- 「禁售类目」（`settings_section=forbidden_categories`）支持导入 Yandex 的 XLSX 名单，列为 `category`、`name`，可含 `int64` / `string` 类型说明行。GET `/api/system-settings/forbidden-categories` 和 POST `/api/system-settings/forbidden-categories/import` 经 `auth_config_facade`、`forbidden_category_service` 与 `ConfigStore` 完整校验并替换 `app_config.forbidden_categories`；空名单、错误行和同 ID 异名均拒绝整次导入，失败保留旧配置。通用配置保存不能覆盖该区段。
+  匹配仅按 Yandex 类目 ID，不按名称推测或自动扩大到父子类目。`category_facade` 类目预检与 `publish_validation` 基础/最终发布校验共同执行；单次 SKU 批次由 `PublishValidationSession` 固定一次名单快照，下一次校验重新读取，旧预检通过不能绕过最终校验。名单更新不改写历史预检或已经提交的发布任务。回归见 `tests/test_forbidden_categories.py`、`tests/test_yandex_publish.py`。
+
 - “关于”页提供应用版本、英文第三方声明，以及独立的中文《软件许可与服务协议》和《隐私政策》。版本与 `front/package.json` 同源，声明由安装依赖生成并在构建时校验指纹；法律文本分别维护于 `front/src/legal/user-agreement.ts` 与 `privacy-policy.ts`，硬件信息期限不适用于自行部署的业务数据库。查看不代表同意，不启用设备上报或自动升级。入口、参考来源及发行边界见 [关于与法律说明](about-and-legal.md)。
 
 - 左侧栏底部 `AppSidebar.vue` → `/?tab=systemSettings` → `SystemSettingsPanel.vue` 在主区域提供订单自动同步间隔设置；复用工作台导航，支持刷新及浏览器前进、后退。

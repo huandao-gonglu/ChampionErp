@@ -511,6 +511,18 @@ class ConfigStore:
     def system_settings(self) -> dict:
         return self.load_app_config()["system_settings"]
 
+    def forbidden_categories(self) -> dict:
+        return self.load_app_config()["forbidden_categories"]
+
+    def save_forbidden_categories(self, settings: dict) -> dict:
+        from erp_web.schemas.forbidden_categories import ForbiddenCategoryConfiguration
+
+        validated = ForbiddenCategoryConfiguration.model_validate(settings).model_dump()
+        with self._save_lock:
+            config = self.load_app_config()
+            self.save_app_config({**config, "forbidden_categories": validated})
+        return validated
+
     def save_system_settings(self, settings: dict) -> dict:
         from erp_web.schemas.config import SystemSettingsRequest
         from erp_web.services.watermark_service import validate_watermark
@@ -547,7 +559,7 @@ class ConfigStore:
         incoming = incoming if isinstance(incoming, dict) else {}
         allowed_keys = set(self.default_app_config()) | set(app_config_runtime.PRESERVED_APP_CONFIG_KEYS)
         for key, value in incoming.items():
-            if key in {"system_settings", "pricing_templates", "yandex_warehouses"}:
+            if key in {"system_settings", "pricing_templates", "yandex_warehouses", "forbidden_categories"}:
                 # 专用入口维护这些配置，避免授权页的旧快照覆盖最新设置。
                 continue
             if key not in allowed_keys:

@@ -30,6 +30,20 @@ from .support import (
 )
 
 
+def test_forbidden_category_rules_are_shared_and_settings_owned():
+    """导入只修改配置；两种预检共用无副作用的规则，模型不能改名单。"""
+    from erp_web.ai_capability_coverage import AI_CAPABILITY_COVERAGE_MANIFEST
+
+    service = ROOT / "erp_web/services/forbidden_category_service.py"
+    targets = {target for _, target in imported_targets([service])}
+    assert not any(target.startswith(("erp_web.context", "erp_web.stores", "erp_web.runtime_units", "erp_web.http_route_units")) for target in targets)
+    for file in ("erp_web/facades/category_facade.py", "erp_web/runtime_units/publish_validation.py"):
+        imports = {target for _, target in imported_targets([ROOT / file])}
+        assert "erp_web.services.forbidden_category_service.forbidden_category_issue" in imports
+    endpoints = {("GET", "/api/system-settings/forbidden-categories"), ("POST", "/api/system-settings/forbidden-categories/import")}
+    assert {(e.method, e.path) for e in AI_CAPABILITY_COVERAGE_MANIFEST if e.disposition == "internal_only"} >= endpoints
+
+
 def test_publish_capabilities_match_real_publishers() -> None:
     required_methods = {
         "prepare_product",
