@@ -484,6 +484,9 @@ def test_online_ai_exposes_existing_resource_interfaces_without_scenario_tools()
     assert "@ai_tool(" in source
     for forbidden in ("requests.", "urllib", "sqlite3", "adapter.write", "Agent(", "while True"):
         assert forbidden not in source
+    detail_reader = ROOT / "erp_web/services/online_product_detail.py"
+    for _, name in imported_targets([detail_reader]):
+        assert not name.startswith(("erp_web.runtime_units", "erp_web.services.ai_", "pydantic_ai"))
 
 
 def test_online_ai_lists_use_bounded_projection_instead_of_page_payload():

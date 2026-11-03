@@ -91,6 +91,8 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    AiCapabilityCoverageEntry(method="POST", path="/api/publish-bus/retry", business_domain="商品发布", disposition="internal_only",
+        reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="禁售类目设置", disposition="internal_only",
         reason="受信系统设置界面维护禁售名单；模型预检和发布使用当前名单，不能通过工具修改禁售规则。") for method, path in (
         ("GET", "/api/system-settings/forbidden-categories"),

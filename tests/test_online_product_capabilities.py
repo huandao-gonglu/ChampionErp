@@ -179,22 +179,22 @@ def test_close_approval_cannot_authorize_changed_snapshot(online):
 def test_reads_share_page_order_and_detail_payload_and_enforce_current_account(online):
     _, domain, _, scope, config = online
     page = domain.list("mercadolibre")
-    result = online_products_read(OnlineReadRequest(), scope).model_dump()
+    result = online_products_read(OnlineReadRequest(), scope, _execution()).model_dump()
     assert result["items"][0]["id"] == page["items"][0]["id"]
     assert result["groups"][0]["id"] == page["groups"][0]["id"]
     assert "jobs" not in result and "content" not in result["items"][0]
-    detail = online_products_read(OnlineReadRequest(id="CBT1"), scope).model_dump()["item"]
+    detail = online_products_read(OnlineReadRequest(id="CBT1"), scope, _execution()).model_dump()["item"]
     assert detail == domain.detail("CBT1")["item"]
     assert "snapshot" not in detail
     config["mercadolibre"]["user_id"] = "another-store"
-    assert online_products_read(OnlineReadRequest(), scope).total == 0
+    assert online_products_read(OnlineReadRequest(), scope, _execution()).total == 0
     with pytest.raises(BusinessCapabilityError, match="店铺身份"):
-        online_products_read(OnlineReadRequest(id="CBT1"), scope)
+        online_products_read(OnlineReadRequest(id="CBT1"), scope, _execution())
 
 
 def test_projected_detail_reuses_account_check_and_keeps_business_context(online):
     _, domain, _, scope, config = online
-    result = online_products_read(OnlineReadRequest(id="CBT1", fields=["content.title", "stocks"]), scope)
+    result = online_products_read(OnlineReadRequest(id="CBT1", fields=["content.title", "stocks"]), scope, _execution())
     assert result.item is None and result.items == [] and len(result.records) == 1
     record = result.records[0]
     assert record.id == "CBT1" and record.account_id == "seller"
@@ -204,9 +204,49 @@ def test_projected_detail_reuses_account_check_and_keeps_business_context(online
     assert record.missing_fields == []
     assert "pictures" not in record.model_dump_json() and "snapshot" not in record.model_dump_json()
     config["mercadolibre"]["user_id"] = "another-store"
-    assert online_products_read(OnlineReadRequest(fields=["stocks"]), scope).records == []
+    assert online_products_read(OnlineReadRequest(fields=["stocks"]), scope, _execution()).records == []
     with pytest.raises(BusinessCapabilityError, match="店铺身份"):
-        online_products_read(OnlineReadRequest(id="CBT1", fields=["stocks"]), scope)
+        online_products_read(OnlineReadRequest(id="CBT1", fields=["stocks"]), scope, _execution())
+
+
+@pytest.mark.parametrize("entry", ["direct", "python"])
+@pytest.mark.parametrize("refresh_first", [True, False])
+def test_native_detail_calls_share_latest_content_in_one_execution(online, tmp_path, monkeypatch, entry, refresh_first):
+    from tests.ai_code_mode_helpers import business_returns, python_call
+
+    app, domain, remote, _, _ = online
+    remote.rows["CBT1"].content["description"] = "平台当前描述"
+    reads = []
+    original = remote.read
+
+    def read(remote_id):
+        reads.append(remote_id)
+        return original(remote_id)
+
+    monkeypatch.setattr(remote, "read", read)
+    order = ["online_products_refresh_detail", "online_products_read"]
+    if not refresh_first:
+        order.reverse()
+
+    @discovering_tools(*order)
+    async def model(messages, info):
+        returned = business_returns(messages)
+        if len(returned) == 2:
+            assert all(item.content["item"]["content"]["description"] == "平台当前描述" for item in returned)
+            yield "已读取当前描述。"
+            return
+        tool = order[len(returned)]
+        arguments = {"id" if tool == "online_products_read" else "listing_id": "CBT1"}
+        request = dict(name=tool, tool_call_id=f"detail-{len(returned)}", json_args=json.dumps(arguments))
+        yield {0: python_call(**request) if entry == "python" else DeltaToolCall(**request)}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    chunks = []
+    asyncio.run(ui.prepare_run(body("读取这个 SKU 的当前描述")).stream(chunks.append))
+    stream = b"".join(chunks).decode()
+    assert '"type":"error"' not in stream and "已读取当前描述" in stream, stream
+    assert reads == ["CBT1"] and not remote.writes
+    assert domain.detail("CBT1")["item"]["content"]["description"] == "平台当前描述"
 
 
 @pytest.fixture
@@ -242,12 +282,12 @@ def test_first_online_product_needs_one_bounded_read(large_online_group, tmp_pat
         pytest.fail("AI 列表不得调用页面完整载荷或加载历史任务")
     monkeypatch.setattr(domain, "list", forbid_full_payload)
     monkeypatch.setattr(domain.store, "jobs", forbid_full_payload)
-    compact = online_products_read(OnlineReadRequest(platform="yandex", limit=1), scope)
+    compact = online_products_read(OnlineReadRequest(platform="yandex", limit=1), scope, _execution())
     assert compact.items[0].id == expected
     assert compact.groups[0].total_count == compact.groups[0].matched_count == 198
     assert compact.latest_sync.completed == 198 and compact.latest_sync.discovery_complete is True
     assert len(compact.model_dump_json().encode()) < 5000
-    empty = online_products_read(OnlineReadRequest(platform="yandex", q="没有此商品"), scope)
+    empty = online_products_read(OnlineReadRequest(platform="yandex", q="没有此商品"), scope, _execution())
     assert empty.total == 0 and empty.summary["total"] == 198 and empty.latest_sync.completed == 198
     assert len(empty.model_dump_json().encode()) < 2000
     requests, outputs = [], []
@@ -323,7 +363,7 @@ def test_code_mode_locates_identifier_with_four_projected_pages_and_no_detail_re
         row.content["attributes"] = [{"name": "款号", "value": "EE001" if row.id == matched_id else "其他款号"},
                                      {"name": "尺寸", "value": "25", "unit": "cm"}]
         domain.store.save(row)
-    group_id = online_products_read(OnlineReadRequest(platform="yandex", limit=1), scope).groups[0].id
+    group_id = online_products_read(OnlineReadRequest(platform="yandex", limit=1), scope, _execution()).groups[0].id
     calls, outputs, requests = [], [], []
     read_page = domain.read_page
 
@@ -392,6 +432,9 @@ def test_yandex_details_pass_native_tool_output_validation(online, tmp_path, ent
         row.account_id = "business:campaign"
         row.raw_status = "DISABLED_AUTOMATICALLY"
         domain.store.save(row)
+        remote.rows[listing_id] = row
+    remote.account_id = "business:campaign"
+    domain.adapter_factories["yandex"] = lambda _: remote
     platform_arg = ", platform='yandex'" if include_platform else ""
     code = (
         "lst = await online_products_read(platform='yandex', status='DISABLED_AUTOMATICALLY')\n"

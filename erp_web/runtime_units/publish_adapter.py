@@ -511,7 +511,6 @@ def build_publishing_bus(context: AppContext) -> PublishingBus:
                 context=context,
             )
         ),
-        auto_resume_pending=False,
         task_queue=context.task_queue,
     )
 
@@ -520,12 +519,12 @@ def get_publishing_bus() -> PublishingBus:
     return get_context().publishing_bus
 
 
-def resume_pending_publish_jobs() -> None:
-    """Explicitly recover publish jobs left queued/running by a previous run."""
+def mark_interrupted_publish_jobs() -> None:
+    """启动时将未完成的发布提交标记为中断，等待用户手动重试。"""
     try:
-        get_publishing_bus().recover_pending_jobs()
+        get_publishing_bus().mark_interrupted_jobs()
     except Exception:
-        logger.exception("Failed to resume pending publish jobs")
+        logger.exception("标记中断发布任务失败")
 
 
 __all__ = [
@@ -536,6 +535,6 @@ __all__ = [
     "get_publishing_bus",
     "publishing_adapter_for",
     "require_publishing_adapter",
-    "resume_pending_publish_jobs",
+    "mark_interrupted_publish_jobs",
     "unsupported_publish_response",
 ]

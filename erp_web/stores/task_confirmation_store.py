@@ -59,6 +59,20 @@ class TaskConfirmationStore:
             conn.execute("UPDATE confirmations SET state='needs_attention',next_check_at=0,error=? WHERE id=? AND lease_until<=?",
                          (error, task_id, time.time()))
 
+    def submission_retried(self, task_id):
+        """显式重试提交后恢复剩余查询额度，不重置用量或期限。"""
+        now = time.time()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT lease_until FROM confirmations WHERE id=?", (task_id,)).fetchone()
+            if row and row["lease_until"] > now:
+                raise ValueError("正在查询发布结果，请查询结束后再重试提交。")
+            conn.execute("""UPDATE confirmations SET state='waiting',error='',
+                next_check_at=MIN(deadline_at,?+json_extract(policy,'$.first_delay'))
+                WHERE id=? AND state='needs_attention' AND lease_until<=? AND deadline_at>?
+                AND checks_used<json_extract(policy,'$.max_checks')
+                AND requests_used<json_extract(policy,'$.max_requests')""", (now, task_id, now, now))
+
     @staticmethod
     def _exhausted(row, policy, now):
         return row["checks_used"] >= policy.max_checks or row["requests_used"] >= policy.max_requests or now >= row["deadline_at"]

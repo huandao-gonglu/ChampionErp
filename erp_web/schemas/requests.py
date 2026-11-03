@@ -323,6 +323,10 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         fields={"trigger": STRING},
         required=("job_id", "platform"),
     ),
+    "/api/publish-bus/retry": _contract(
+        fields={"job_id": STRING, "platform": STRING},
+        required=("job_id", "platform"),
+    ),
     "/api/publish-payload-preview": _DRAFT,
     "/api/publish-precheck": _DRAFT,
     "/api/save-draft": _contract(required_any=(("draft", "draft_id", "draftId"),)),

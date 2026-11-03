@@ -1,5 +1,11 @@
 export default {
   taskQueue: {
+    publishProgress: 'Published {completed} · Awaiting confirmation {waiting} · Awaiting submission {pending} · Unknown {unknown} · Failed {failed} · Needs attention {attention}',
+    retryPublish: 'Retry unfinished submission',
+    pendingSubmission: 'Awaiting submission',
+    outcomeUnknown: 'Outcome unknown',
+    executionAttempts: 'Publish attempts',
+    retryAttempts: 'Manual retries',
     "detail": "Task details",
     "loading": "Loading task details…",
     "reload": "Reload",
@@ -48,6 +54,7 @@ export default {
     "next": "Next",
     "loadFailed": "Unable to load tasks",
     "status": {
+      "interrupted": "Interrupted",
       "queued": "Queued",
       "running": "Running",
       "waiting": "Waiting for result",

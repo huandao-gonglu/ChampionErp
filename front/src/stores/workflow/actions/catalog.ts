@@ -114,7 +114,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     }
   }
 
-  async function refreshDraftsIndex(scope = 'active') {
+  async function refreshDraftsIndex(scope = 'all') {
     loading.value = true
     setError('')
     try {

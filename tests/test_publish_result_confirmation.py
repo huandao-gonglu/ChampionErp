@@ -51,7 +51,7 @@ def setup(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
     adapter = Adapter()
     context = get_context()
-    bus = PublishingBus(context.db, {"ozon": adapter}, auto_resume_pending=False, task_queue=context.task_queue)
+    bus = PublishingBus(context.db, {"ozon": adapter}, task_queue=context.task_queue)
     context._publishing_bus = bus
     queued = bus.enqueue({"product_id": "p"}, ["ozon"], targets={"ozon": {
         "draft_id": "d", "site": "global", "product_id": "p",
@@ -75,7 +75,7 @@ def test_submission_waits_for_manual_check_and_local_reads_do_not_query(setup):
     clock[0] += 10000
     bus.get_public_status(job_id)
     bus.list_jobs()
-    bus.recover_pending_jobs()
+    bus.mark_interrupted_jobs()
     assert adapter.reads == 0
 
 
@@ -153,13 +153,13 @@ def test_restart_ignores_legacy_schedule_but_preserves_manual_confirmation(setup
     state = bus.get_status(job_id)
     state["platforms"]["ozon"]["confirmation"]["next_check_at"] = confirmation.iso_time(clock[0] - 1)
     bus.store.save_publish_job(state)
-    restored = PublishingBus(bus.store, {"ozon": adapter}, auto_resume_pending=False, task_queue=bus.task_queue)
+    restored = PublishingBus(bus.store, {"ozon": adapter}, task_queue=bus.task_queue)
     get_context()._publishing_bus = restored
     try:
-        restored.recover_pending_jobs()
+        restored.mark_interrupted_jobs()
         assert adapter.writes == 1 and adapter.reads == 0
         assert restored.check_publish_result(job_id, "ozon")["checked"]
-        restored.recover_pending_jobs()
+        restored.mark_interrupted_jobs()
         assert adapter.reads == adapter.writes == 1
         assert "next_check_at" not in platform_state(restored, job_id)["confirmation"]
     finally:

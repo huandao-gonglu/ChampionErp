@@ -100,6 +100,7 @@ class ErpDbTests(unittest.TestCase):
         row = {
             "product_json": "{}",
             "draft_id": "draft-no-root-language-fallback",
+            "publish_submitted": False,
             "product_id": "product-no-root-language-fallback",
             "platform": "yandex",
             "site": "global",
@@ -762,6 +763,43 @@ class ErpDbTests(unittest.TestCase):
                 conn.close()
             self.assertEqual(draft_count, 1)
             self.assertEqual(media_count, 1)
+
+    def test_submitted_draft_is_published_in_index_without_changing_remote_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(Path(tmp))
+            product_id = db.upsert_product_model(sample_product())
+            draft_id = db.list_draft_records()[0]["draft_id"]
+            sibling_id = db.upsert_draft_model(product_id, "mercadolibre", {"title": "另一份草稿"})
+            original = db.load_draft_model(draft_id)
+            state = {
+                "job_id": "submitted-job",
+                "idempotency_key": "test:submitted-job",
+                "status": "queued",
+                "draft_id": draft_id,
+                "product": {"product_id": product_id},
+                "platforms": {"mercadolibre": {"status": "queued", "draft_id": draft_id}},
+            }
+            self.assertEqual(db.list_draft_records(scope="published"), [])
+            db.create_publish_job(state)
+            # 任务尚未执行即可归类；重启、失败与普通编辑均不撤销提交事实。
+            for status in ("queued", "running", "pending_confirmation", "failed", "completed"):
+                with self.subTest(status=status):
+                    state["status"] = status
+                    db.save_publish_job(state)
+                    reopened = self._db(Path(tmp))
+                    published = reopened.list_draft_records(scope="published")
+                    self.assertEqual([item["draft_id"] for item in published], [draft_id])
+                    self.assertEqual(published[0]["status"], "published")
+                    self.assertEqual(published[0]["publish_status"], original.get("publish_status", ""))
+                    self.assertEqual(reopened.load_publish_job(state["job_id"])["status"], status)
+                    self.assertEqual([item["draft_id"] for item in reopened.list_draft_records()], [sibling_id])
+            db.upsert_draft_model(product_id, "mercadolibre", {**original, "title": "提交后修改"})
+            self.assertEqual(db.list_draft_records(scope="published")[0]["title"], "提交后修改")
+            # 同一草稿再次提交，列表仍只有一行。
+            db.save_publish_job({**state, "terminal_results_persisted": True})
+            _, created = db.create_publish_job({**state, "job_id": "second-job", "idempotency_key": "test:second-job", "status": "failed"})
+            self.assertTrue(created)
+            self.assertEqual(len(db.list_draft_records(scope="all")), 2)
 
     def test_iter_draft_records_reads_beyond_bounded_index_and_filters_afterward(
         self,

@@ -132,7 +132,6 @@ def test_publish_jobs_never_persist_credentials(tmp_path) -> None:
                 "app_secret": app_secret,
             }
         },
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(

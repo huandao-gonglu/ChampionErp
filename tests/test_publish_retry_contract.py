@@ -2,7 +2,7 @@
 """PublishAdapterError.retryable 类型化重试契约与 HTTP 错误分类测试。
 
 覆盖文档 §5.6：
-- PublishingBus 只对 ``PublishAdapterError(retryable=True)`` 重试；
+- PublishingBus 不自动重放发布，失败后由用户显式重试；
 - 确认绑定失效与未分类异常默认不可重试；
 - Ozon / Mercado Libre HTTP 边界把远端失败分类为类型化错误，
   并保持既有 "failed:" 消息格式供字符串解析继续使用。
@@ -87,7 +87,6 @@ def _run_bus(adapter: _FakeAdapter) -> dict[str, Any]:
         _MemoryPublishJobStore(),
         adapters={"mercadolibre": adapter},
         config_provider=lambda: {"mercadolibre": {}},
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(

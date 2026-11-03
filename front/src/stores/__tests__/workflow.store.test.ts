@@ -15,6 +15,7 @@ import { jsonProbeMessages, JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabi
 import { applyPricingTemplate, pricingTemplateParameters } from '@/types/pricing'
 import { withAiForeground } from '@/services/withAiForeground'
 import type { AuthResult, DraftDetail, DraftIndexItem, Product } from '@/types/workflow'
+import { normalizeDraftIndexItem } from '@/api/workflow/normalizers/responses'
 
 vi.mock('@/api/workflow/state', () => ({
   fetchState: vi.fn(),
@@ -363,6 +364,7 @@ describe('workflow store live API flow', () => {
   it('入队成功后列表刷新失败仍记录成功，避免再次提交', async () => {
     const store = useWorkflowStore()
     store.currentDraft = multiMarketCategoryDraft()
+    store.draftsIndex = [normalizeDraftIndexItem({ draft_id: store.currentDraft.draftId, status: 'ready_to_publish' })]
     const ozon = store.targetEditors[1]
     ozon.state.precheck = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-09-06' }
     ozon.state.payloadPreview = { platform: 'ozon', site: 'global', targetKey: 'ozon:global', status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'accepted-digest', summary: null, warnings: [] }
@@ -373,6 +375,7 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.enqueuePublish).toHaveBeenCalledOnce()
     expect(ozon.state.queuedPublishJobId).toBe('job-accepted')
     expect(ozon.state.publishFailure).toBeNull()
+    expect(store.draftsIndex[0].status).toBe('published')
   })
 
   it('各市场分别保存 Payload 确认，入队使用本市场指纹且不再保存草稿', async () => {

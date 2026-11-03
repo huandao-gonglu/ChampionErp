@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { PhX } from '@phosphor-icons/vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import { checkTask, fetchTask, fetchTasks } from '@/api/taskQueue'
+import { checkTask, fetchTask, fetchTasks, retryPublishTask } from '@/api/taskQueue'
 import { onlineAction, type OnlineJob } from '@/api/onlineProducts'
 import type { BackendQueueTask, BackendTaskQueueDetail } from '@/types/workflow.generated'
 import OnlineOperationRecovery from './OnlineOperationRecovery.vue'
@@ -21,7 +21,7 @@ let timer: ReturnType<typeof setInterval> | undefined
 let debounce: ReturnType<typeof setTimeout> | undefined
 let disposed = false, generation = 0
 let detailGeneration = 0
-const statuses = ['queued', 'running', 'waiting', 'needs_attention', 'completed', 'partial', 'failed', 'closed_unconfirmed']
+const statuses = ['queued', 'running', 'waiting', 'interrupted', 'needs_attention', 'completed', 'partial', 'failed', 'closed_unconfirmed']
 const operations = ['publish', 'sync', 'price', 'stock', 'content', 'sale_state', 'archive']
 const plan = computed(() => selected.value?.task.confirmation)
 const onlineJob = computed(() => selected.value?.task.source === 'online' ? selected.value.detail as unknown as OnlineJob : null)
@@ -34,12 +34,28 @@ const results = computed(() => {
   const markets = record(result.publication).markets
   return Array.isArray(markets) ? markets.map(record) : []
 })
+const publishProgress = computed(() => {
+  if (selected.value?.task.source !== 'publish' || !Array.isArray(record(selected.value.detail.result).sku_results)) return null
+  const counts = { completed: 0, waiting: 0, pending: 0, unknown: 0, failed: 0, attention: 0 }
+  for (const row of results.value) {
+    const status = String(row.status)
+    if (['published', 'success', 'real_publish_success', 'imported'].includes(status)) counts.completed++
+    else if (['pending_confirmation', 'publish_pending_confirmation'].includes(status)) counts.waiting++
+    else if (['queued', 'pending_submission'].includes(status)) counts.pending++
+    else if (['outcome_unknown', 'dispatching'].includes(status)) counts.unknown++
+    else if (status === 'needs_attention') counts.attention++
+    else counts.failed++
+  }
+  return counts
+})
 function formatTime(value: string | number) {
   if (!value) return '—'
   return new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString()
 }
 function display(value: unknown) { return value == null ? '—' : typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value) }
 function statusLabel(value: unknown) {
+  if (value === 'pending_submission') return t('taskQueue.pendingSubmission')
+  if (value === 'outcome_unknown') return t('taskQueue.outcomeUnknown')
   const aliases: Record<string, string> = { success: 'completed', published: 'completed', confirmed: 'completed', submitted: 'completed', pending_confirmation: 'waiting', waiting_confirmation: 'waiting', outcome_unknown: 'needs_attention' }
   const status = aliases[String(value)] || String(value)
   return statuses.includes(status) ? t(`taskQueue.status.${status}`) : status
@@ -107,9 +123,14 @@ async function retry() {
   detailGeneration++; detailLoading.value = false
   checking.value = true; error.value = ''; notice.value = ''
   try {
-    const job = await onlineAction('retry', { job_id: task.job_id, idempotency_key: crypto.randomUUID() })
+    let id = task.id
+    if (task.source === 'publish') await retryPublishTask(task.job_id, task.platform)
+    else {
+      const job = await onlineAction('retry', { job_id: task.job_id, idempotency_key: crypto.randomUUID() })
+      id = `online:${job.id}`
+    }
     if (disposed || selectedId.value !== task.id) return
-    selectedId.value = `online:${job.id}`
+    selectedId.value = id
     selected.value = await fetchTask(selectedId.value)
     notice.value = t('taskQueue.retryQueued')
   } catch (e) { if (!disposed) error.value = e instanceof Error ? e.message : t('taskQueue.loadFailed') }
@@ -181,16 +202,17 @@ onBeforeUnmount(() => { disposed = true; detailGeneration++; clearInterval(timer
       <p v-if="notice" role="status" class="mb-4 text-sm text-accent-600 dark:text-accent-300">{{ notice }}</p>
       <template v-if="selected">
         <p class="break-all font-mono text-xs text-accent-500">{{ selected.task.job_id }}</p>
-        <dl class="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm"><dt>{{ t('taskQueue.target') }}</dt><dd class="break-all">{{ selected.task.target_id }}</dd><dt>{{ t('taskQueue.account') }}</dt><dd class="break-all">{{ selected.task.account_id || '—' }}</dd><dt>{{ t('taskQueue.updatedAt') }}</dt><dd>{{ formatTime(selected.task.updated_at) }}</dd></dl>
+        <dl class="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm"><dt>{{ t('taskQueue.target') }}</dt><dd class="break-all">{{ selected.task.target_id }}</dd><dt>{{ t('taskQueue.account') }}</dt><dd class="break-all">{{ selected.task.account_id || '—' }}</dd><dt>{{ t('taskQueue.updatedAt') }}</dt><dd>{{ formatTime(selected.task.updated_at) }}</dd><template v-if="selected.task.source === 'publish'"><dt>{{ t('taskQueue.executionAttempts') }}</dt><dd>{{ selected.detail.attempts || 0 }}</dd><dt>{{ t('taskQueue.retryAttempts') }}</dt><dd>{{ Math.max(0, Number(selected.detail.attempts || 0) - 1) }}</dd></template></dl>
         <p v-if="selected.task.protection" class="mt-4 rounded bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ selected.task.protection }}</p>
         <p v-if="selected.task.error" class="mt-3 whitespace-pre-wrap break-words text-sm text-red-700 dark:text-red-300">{{ selected.task.error }}</p>
         <dl v-if="plan" class="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm"><dt>{{ t('taskQueue.lastCheck') }}</dt><dd>{{ formatTime(plan.last_checked_at) }}</dd><dt>{{ t('taskQueue.nextCheck') }}</dt><dd>{{ formatTime(plan.next_check_at) }}</dd><dt>{{ t('taskQueue.remaining') }}</dt><dd>{{ plan.checks_remaining }}</dd><dt>{{ t('taskQueue.requestsRemaining') }}</dt><dd>{{ plan.requests_remaining }}</dd><dt>{{ t('taskQueue.deadline') }}</dt><dd>{{ formatTime(plan.deadline_at) }}</dd></dl>
         <p v-if="plan?.error" class="mt-3 text-sm text-amber-700 dark:text-amber-300">{{ plan.error }}</p>
-        <div class="mt-4 flex flex-wrap gap-2"><button v-if="canCheck" class="btn btn-outline" :disabled="checking || plan?.state === 'checking'" @click="check">{{ checking ? t('taskQueue.checking') : t('taskQueue.check') }}</button><OnlineOperationRecovery v-if="onlineJob && onlineJob.operation !== 'sync'" :job="onlineJob" :disabled="checking" @updated="load()" /><button v-if="selected.task.can_retry" class="btn btn-outline" :disabled="checking" @click="retry">{{ t('taskQueue.retry') }}</button></div>
+        <div class="mt-4 flex flex-wrap gap-2"><button v-if="canCheck" class="btn btn-outline" :disabled="checking || plan?.state === 'checking'" @click="check">{{ checking ? t('taskQueue.checking') : t('taskQueue.check') }}</button><OnlineOperationRecovery v-if="onlineJob && onlineJob.operation !== 'sync'" :job="onlineJob" :disabled="checking" @updated="load()" /><button v-if="selected.task.can_retry" class="btn btn-outline" :disabled="checking" @click="retry">{{ t(selected.task.source === 'publish' ? 'taskQueue.retryPublish' : 'taskQueue.retry') }}</button></div>
         <p v-if="onlineJob?.operation === 'sync'" role="status" class="mt-4 text-sm">{{ t('taskQueue.syncProgress', { completed: onlineJob.result.completed || 0, failed: onlineJob.result.failed || 0, discovered: onlineJob.result.discovered ?? '—' }) }}</p>
         <ul v-if="onlineJob?.operation === 'sync'" class="mt-3 max-h-80 space-y-2 overflow-auto text-sm"><li v-for="item in onlineJob.result.items?.filter(item => item.status === 'failed')" :key="item.remote_id">{{ item.remote_id }}：{{ item.error }}</li></ul>
         <div v-if="onlineJob && Object.keys(changes).length" class="mt-4 overflow-auto"><table class="w-full table-fixed text-left text-xs"><thead><tr><th class="w-1/4">{{ t('taskQueue.field') }}</th><th>{{ t('taskQueue.requested') }}</th><th>{{ t('taskQueue.observed') }}</th></tr></thead><tbody><tr v-for="(value, field) in changes" :key="field"><td class="break-all p-2 align-top">{{ field }}</td><td class="p-2"><pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all">{{ display(value) }}</pre></td><td class="p-2"><pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all">{{ display(onlineJob.result.evidence?.observed?.[field]) }}</pre></td></tr></tbody></table></div>
         <ul v-if="onlineJob?.result.platform_errors?.length" class="mt-4 space-y-2 text-sm text-red-700 dark:text-red-300"><li v-for="(item, index) in onlineJob.result.platform_errors" :key="index" class="whitespace-pre-wrap break-words">{{ display(item) }}</li></ul>
+        <p v-if="publishProgress" class="mt-4 text-sm" role="status">{{ t('taskQueue.publishProgress', publishProgress) }}</p>
         <ul v-if="results.length" class="mt-4 space-y-2"><li v-for="(item, index) in results" :key="index" class="rounded border border-accent-200 p-3 text-sm dark:border-dark-700"><p>{{ item.sku || item.site_id || item.sku_id }} · {{ statusLabel(item.status) }}</p><p v-if="item.error" class="mt-1 break-words text-red-600 dark:text-red-300">{{ display(item.error) }}</p></li></ul>
         <details class="mt-5 text-xs"><summary class="cursor-pointer text-accent-500">{{ t('taskQueue.technical') }}</summary><pre class="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-all">{{ display(selected.detail) }}</pre></details>
       </template>

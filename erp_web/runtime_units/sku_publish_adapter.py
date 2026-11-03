@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import replace
+import time
 from typing import Any
 
 from erp_web.schemas.publish import PublishPreparationObserver
@@ -174,6 +175,22 @@ class SkuGroupPublishingAdapter:
         get_context().products.save_sku_publication(envelope["draft_id"], item["sku_id"], envelope["target_key"], state)
         return state
 
+    def saved_publish_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """从逐项持久化记录重建进度，不执行平台请求。"""
+        states = []
+        for item in payload["items"]:
+            saved = get_context().products.sku_publication(payload["draft_id"], item["sku_id"], payload["target_key"])
+            if saved:
+                state = deepcopy(saved)
+                if state["status"] == "dispatching":
+                    previous = {**deepcopy(state["result"]), "ok": False, "status": "outcome_unknown",
+                                "error": "提交过程中服务中断，请先核对平台结果。"}
+                    state = self._save(payload, item, previous, "outcome_unknown")
+            else:
+                state = {**{key: item[key] for key in ("sku_id", "sku", "fingerprint")}, "status": "queued", "result": {}}
+            states.append(state)
+        return self._aggregate(payload, states)
+
     def publish_payload(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         states = []
         for item in payload["items"]:
@@ -185,6 +202,12 @@ class SkuGroupPublishingAdapter:
             if status == "published" and existing.get("fingerprint") == item["fingerprint"]:
                 states.append(existing)
                 continue
+            if status == "failed":
+                restore = getattr(self.item_adapter, "restore_publish_result", None)
+                previous = record(existing.get("result"))
+                if callable(restore) and previous.get("plan") and previous.get("checkpoint"):
+                    states.append(self._save(payload, item, restore({**previous, "status": "pending_submission"})))
+                    continue
             outgoing = deepcopy(item["payload"])
             publication = record(record(existing.get("result")).get("publication"))
             if self.platform == "mercadolibre" and publication:
@@ -205,22 +228,29 @@ class SkuGroupPublishingAdapter:
 
     def advance_submission(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         states = []
-        for state in result["sku_results"]:
+        for index, state in enumerate(result["sku_results"]):
             if state["status"] != "pending_submission":
                 states.append(state)
                 continue
-            advanced = self.item_adapter.advance_submission(state["result"], config)
-            states.append(self._save(result["envelope"], state, advanced))
-        return self._aggregate(result["envelope"], states)
-
-    def restore_publish_result(self, result: dict[str, Any]) -> dict[str, Any]:
-        restore = getattr(self.item_adapter, "restore_publish_result", None)
-        if not callable(restore):
-            return result
-        states = []
-        for state in result["sku_results"]:
-            restored = restore(state["result"])
-            states.append({**state, "result": restored, "status": remote_status(restored)})
+            previous = state["result"]
+            inner = record(previous.get("result")) or previous
+            checkpoint = record(inner.get("checkpoint"))
+            if checkpoint.get("next_poll_at", 0) > time.time():
+                states.append(state)
+                continue
+            self._save(result["envelope"], state, previous, "dispatching")
+            try:
+                advanced = self.item_adapter.advance_submission(previous, config)
+            except Exception as exc:
+                mapped = self.item_adapter.map_publish_error(exc)
+                unknown = not isinstance(exc, PublishAdapterError) or exc.details.get("outcome_unknown") or exc.details.get("remote_write_dispatched")
+                advanced = {**deepcopy(previous), "ok": False, "status": "outcome_unknown" if unknown else "failed",
+                            "error": mapped.get("summary") or str(exc), "error_map": mapped}
+            saved = self._save(result["envelope"], state, advanced)
+            states.append(saved)
+            if saved["status"] in {"failed", "outcome_unknown", "needs_attention"}:
+                states.extend(deepcopy(result["sku_results"][index + 1:]))
+                return {**self._aggregate(result["envelope"], states), "ok": False, "status": "needs_attention"}
         return self._aggregate(result["envelope"], states)
 
     def poll_publish_status(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:

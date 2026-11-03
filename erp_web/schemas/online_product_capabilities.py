@@ -14,7 +14,7 @@ class OnlineRequest(BaseModel):
 
 
 class OnlineReadRequest(OnlineRequest):
-    id: str = Field(default="", description="列表返回的在线商品 id；提供时定位单件，仍可用 fields 只取所需字段，列表筛选参数不生效。不是本地商品或草稿 ID。")
+    id: str = Field(default="", description="列表返回的在线商品 id；提供时自动读取该 SKU 当前完整详情，包含最新内容，再按 fields 投影。同轮与主动刷新共用读取结果；列表筛选参数不生效。不是本地商品或草稿 ID。")
     platform: Platform = "mercadolibre"
     q: str = ""
     status: str = ""
@@ -36,7 +36,7 @@ class OnlineReadRequest(OnlineRequest):
         "仅需子字段时不读取完整 content；不得同时选择父路径及其子路径，如 content 与 content.attributes。"
         "这些路径是常用示例，不限制其他公开字段。"
         "有 fields 时 records 固定返回身份、version、同步与详情状态，以及 values[字段路径]；缺失路径列入 missing_fields。"
-        "已取得所需字段和 version 时无需再按 id 读取完整详情。"
+        "本轮已取得单件当前字段和 version 时直接复用，无需再读完整详情或主动刷新。"
         "数组须选择完整数组以保留币种、仓库、属性名和单位，不支持数组下标、通配符或条件表达式。"
         "不传时保留列表摘要/单件完整详情；批量取数用 view=listings 并按 next_page 分页。"
     ))

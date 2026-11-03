@@ -970,7 +970,7 @@ class ProductStore:
                 "deletedDraftIds": [],
                 "deletedIds": [],
                 "missingIds": [],
-                "draftsIndex": self.load_drafts_index(),
+                "draftsIndex": self.load_drafts_index(scope="all"),
             }
 
         deleted_ids: list[str] = []
@@ -1009,7 +1009,7 @@ class ProductStore:
             "affectedProductIds": affected_product_ids,
             "product": product,
             "productsIndex": self.load_products_index(),
-            "draftsIndex": self.load_drafts_index(),
+            "draftsIndex": self.load_drafts_index(scope="all"),
             "imagePool": current_image_pool(product),
             "message": message,
             "error": "" if deleted_count else "草稿不存在或已被删除。",
@@ -1123,7 +1123,7 @@ class ProductStore:
         result.update(
             productContext=self.draft_product_context(product),
             productsIndex=self.load_products_index(),
-            draftsIndex=self.load_drafts_index(),
+            draftsIndex=self.load_drafts_index(scope="all"),
         )
         return result
 
@@ -1280,7 +1280,7 @@ class ProductStore:
                 "draft": draft,
                 "productContext": self.draft_product_context(product),
                 "productsIndex": self.load_products_index(),
-                "draftsIndex": self.load_drafts_index(),
+                "draftsIndex": self.load_drafts_index(scope="all"),
                 "message": "草稿已复制。",
             },
             None,
@@ -1883,7 +1883,7 @@ class ProductStore:
                 "draft": draft,
                 "productContext": self.draft_product_context(product),
                 "productsIndex": self.load_products_index(),
-                "draftsIndex": self.load_drafts_index(),
+                "draftsIndex": self.load_drafts_index(scope="all"),
                 "message": "草稿发布状态已保存。",
             },
             None,
@@ -1942,7 +1942,7 @@ class ProductStore:
                 "draft": draft,
                 "productContext": self.draft_product_context(product),
                 "productsIndex": self.load_products_index(),
-                "draftsIndex": self.load_drafts_index(),
+                "draftsIndex": self.load_drafts_index(scope="all"),
                 "message": "草稿图片已更新。",
             },
             None,

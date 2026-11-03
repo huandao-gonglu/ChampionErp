@@ -223,7 +223,7 @@ def _generated_image_response(
         "productsIndex": load_products_index(),
         "draft": draft_result.get("draft"),
         "productContext": draft_result.get("productContext"),
-        "draftsIndex": draft_result.get("draftsIndex") or load_drafts_index(),
+        "draftsIndex": draft_result.get("draftsIndex") or load_drafts_index(scope="all"),
     }
 
 

@@ -150,6 +150,8 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 - 查询结果回写原业务任务；发布终态回填暂时失败时后台仅恢复本地持久化，不重新请求平台。旧记录全部进入列表，旧确认标记不启动新的自动预算。自动查询中断后可重新领取过期租约，已停止的计划不会因人工查询或重启而恢复。过期任务可显式查询或在平台后台核对，在线修改人工结束继续使用原证据与版本校验。
 - 旧发布列表/详情/分页 Store、页面专用 API 封装、展示类型及旧测试已移除；导航和入队不再额外加载旧发布队列。公开确认入口统一经过任务队列，不保留缺少队列时直接查询的分支。领域层只保留业务互斥、版本和证据校验，不再另设查询冷却或查询占位；历史提交状态、查询字段和回执继续读取。
 - 在线商品页旧「操作记录」列表、详情及专用读取封装已移除，提交、同步进度和冲突提示通过 `open-task` 进入统一队列，`task_id` / `source` 查询参数定位原任务。同步进度仅读原任务，不进入确认调度；失败项重试和人工核对复用原领域接口。已有较新修改的旧失败任务不显示重试入口。
+- 发布提交重启后仅标记 `interrupted`，不自动继续写入。`server.py` → `publish_adapter.mark_interrupted_publish_jobs` → `PublishingBus.mark_interrupted_jobs` 只更新本地中断状态和已有回填；已完整提交的任务继续原只读确认。任务页「重试未完成提交」通过 `POST /api/publish-bus/retry` → `publish_facade` / `publish_workflows` → `PublishingBus.retry` 显式继续原批准内容，累计执行次数并保留每次重试的日志；查询次数与执行次数分开。
+- `SkuGroupPublishingAdapter` 逐 SKU 保存后续写步骤的发送边界和结果；中断时从真实 owner 的最新记录重建任务进度，结果未知项不重发。单项异常保留原计划、检查点及其他 SKU 结果；已受理项可独立只读核验，剩余明确未完成项等待用户重试。重试重新校验原批准绑定，不重置已有结果确认预算或截止时间。业务回归见 `tests/test_publish_manual_retry.py`。
 - 查询策略数值与回归入口见 [任务队列](task-queue.md)。Ozon 在线写入、采购/支付/履约及未开放的 Mercado 商品族编辑不在本次接入范围。
 
 ## 在线商品管理
@@ -187,14 +189,16 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   逐项拒绝、超时和中断保持对应失败/未知语义，已经发出的整批不自动拆成单件重发；回读与明确失败重试继续使用原入口。
 - `services/online_product_service.py` 编排 ERP 领域任务，通过注入访问适配器，不反向导入 runtime。
   `POST /api/online-products/refresh-detail` → facade → `refresh_detail` 只读取指定刊登详情；本地列表与 GET 详情不外发。
-  页面打开 Yandex 商品时显式调用一次；AI 使用同源 `online_products_refresh_detail`，不因列表字段为空隐式同步店铺。
-  Yandex 复用已取得的目录、卡片及状态资料，只补独立价格、当前店铺价格、库存和必要的属性名称。
+  页面打开 Yandex 商品时显式调用一次；AI 的 `online_products_read(id=...)` 自动取得当前完整详情，含最新内容，再投影所需字段。
+  `services/online_product_detail.py::OnlineProductDetailReader` 为自动读取与主动刷新共用的 owner；两者统一调用适配器 `read`。
+  同一原生 Task/attempt、账号和 SKU 复用成功快照，并发查询共用正在执行的请求；快照变化、提交修改或新执行重新读取。
+  标记仅在原执行 deadline 内保留；列表及 HTTP GET 不外发，不因字段为空隐式同步店铺，不增加自动重试或后台调度。
   服务在网络前后核对当前账号；`OnlineProductStore.update_detail` 在短事务核对版本、基础与详情时间、状态时间及活动任务，拒绝迟到响应覆盖新记录。
   `refresh_status` 直接查询单件状态；`POST /api/online-products/refresh-status` 不入同步队列，返回更新后的公开商品。
   `stores/online_product_store.py::update_status` 校验并发版本后合并状态、平台反馈及 `status_checked_at`，保留价格、库存、内容和完整同步时间。
   `services/online_product_sync.py` 消费 `OnlineSyncBatch`、保存目录记录与详情进度，详情失败保留旧业务快照。
   Yandex 的 `basic` 批次通过 `OnlineProductStore.save_basic` 保存基础资料、销售状态及卡片/店铺错误警告，保留旧价格、库存及其读取时间。
-  `basic_synced_at` 标识基础同步时间，`synced_at` 标识详细数据读取时间；新商品为 `details_state=unloaded`，不伪造零库存。
+  `basic_synced_at` 标识基础资料读取时间，`synced_at` 标识完整详情读取时间；新商品为 `details_state=unloaded`，不伪造零库存。
   旧快照缺少新时间字段仍可读取，完整快照原时间保持含义；同步只读基础接口，不增加自动重试或失败回退查询。
   同步请求与持久任务保存 `catalog=current/archived`，默认普通商品；Yandex 每次只发现该目录，页面确认、最新进度和失败重试保持同一范围。
   指定 SKU 重试不混传平台禁止的归档过滤条件，读取目标目录身份后排除已移出原目录的商品；单件修改前读取与批量写入校验仍按明确 SKU 读取，不受页面目录限制。
@@ -225,7 +229,7 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
   `runtime_units/online_yandex_read.py` 负责目录分页、隐藏清单分页和每批 100 个 SKU 的基础状态/反馈读取，最多 3 个接口并发；
   逐页消费后即保存基础结果，不累积全店目录后再读取价格和库存。`online_yandex_snapshot.py` 只做响应投影。
-  单件 `read_details` 为打开详情补充数据；修改前的 `read` 和批量 `read_many` 继续按明确目标核对完整事实，不复用缓存绕过写前检查。
+  单件详情与修改前核验统一使用 `read`，批量写入使用 `read_many`；写前核验独立执行，不复用 AI 取数跳过并发检查。
   Yandex 属性名称通过统一 `CategoryCatalog.attribute_definitions` 按类目关联，适配器一次运行内共用名称查询；
   名称查询失败保留属性值及平台反馈，并公开 `content.attribute_names_error`，不让整件详情同步失败。
   `online_yandex_snapshot.py::card_issues` 将卡片 `errors` / `warnings` 投影为具名 `PlatformIssue`，保留平台原文及补充说明；
@@ -1197,6 +1201,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 商品发布
 
+- 草稿箱的「已发布」表示该草稿已成功提交发布任务：索引按 `publish_jobs` 中同商品、同草稿的持久记录归类，入队后立即生效，失败或后续编辑不撤销该归类；未入队的预览不计入。该展示状态不改写草稿 `publish_status`、SKU 回执或任务结果，不能据此判断平台已上架。界面加载及修改响应均返回全部草稿，由现有分区筛选显示。
+
 - 主 Agent 将“做好发布准备／准备发布／完成草稿”理解为资料完成目标：按目标站点补齐文案、销售图片、类目、公共及 SKU 属性、选品与库存，核对事实并计算应用有效售价，再准备发布素材与最终校验。`draft_prepare_for_market` 不包含属性填写，必须继续处理；单项任务保持原范围，准备不构成发布授权。说明同时由 `GlobalAgentChatService.NATIVE_INSTRUCTIONS` 和 `config/prompts/global_chat.json` 提供。
 - `prepare_product_publish` 使用 `prepare_and_evaluate_publish_validation` 的阶段结果：基础资料失败就返回并保存该失败，不再追加最终图片校验；准备成功仍使用该流程的持久化后回读与最终校验。
 - 页面流程为基础资料预检 → 准备素材与预览 → 最终发布校验 → 确认发布。`precheck_publish_payload` 对 Yandex/Ozon 使用 `image_stage="source"`，检查图片来源与选择，不要求已上传；预览准备后、AI `product_publish_validate` 和入队准入仍执行最终校验并验证 digest。基础预检通过不能直接入队。
@@ -1294,7 +1300,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   checkpoint 状态机与错误映射。`publish_yandex_payload()` 只执行第一个尚未完成的
   远端 mutation；`advance_yandex_submission()` 依据已持久化 checkpoint 推进剩余写步骤，
   `poll_yandex_publish_status()` 只读确认；
-  重启恢复不重复执行已完成写步骤。价格写入按已验证 `only_default_price` 分流
+  重启后提交停止，手动重试跳过已完成及结果未知的写步骤。价格写入按已验证 `only_default_price` 分流
   Business/Campaign 级接口，价格进入隔离区时阻断自动确认。
   新编译的目录商品不携带 `basicPrice`，价格统一由上述独立步骤写入；已持久化的批准
   payload 与 checkpoint 保留原内容和恢复能力。图片按最终 URL 保序去重后再取前 30 张，

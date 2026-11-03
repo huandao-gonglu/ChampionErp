@@ -12,8 +12,7 @@ from erp_web.runtime_units.online_change_confirmation import yandex_change
 from erp_web.marketplaces import yandex_http as api
 from erp_web.marketplaces.yandex_currency import yandex_wire_currency
 from erp_web.schemas.online_products import OnlineListing
-from erp_web.runtime_units.online_yandex_read import catalog_pages, detail_requests, hidden_ids, index_rows, pages, read_batch, request_results, sync_yandex
-from erp_web.runtime_units.online_yandex_snapshot import build_listing, build_stocks
+from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, read_batch, sync_yandex
 from erp_web.runtime_units.online_product_status import yandex_status
 from erp_web.runtime_units.category_catalog import get_category_catalog
 from erp_web.product_model.online_attribute_model import merge_yandex_attributes, yandex_category_id
@@ -75,45 +74,6 @@ class YandexOnlineAdapter:
 
     def read_confirmation(self, listing, request):
         return yandex_change(self, listing, request)
-
-    def read_details(self, listing: OnlineListing) -> OnlineListing:
-        """打开详情仅补当前 SKU 的价格、库存与属性名称，不重拉已获得的基础资料。"""
-        if not listing.snapshot.get("offer") or "card" not in listing.snapshot or not (listing.basic_synced_at or listing.synced_at):
-            raise ValueError("商品基础资料尚未同步完成，请先同步商品")
-        requests = detail_requests(self, [listing.remote_id])
-        if self.settings.get("onlyDefaultPrice") is False:
-            requests["campaign_price"] = lambda: index_rows([row for page in pages(self,
-                f"/v2/campaigns/{self.campaign}/offers", "offers", {"offerIds": [listing.remote_id]}) for row in page],
-                allowed={listing.remote_id})
-        responses, errors = request_results(requests)
-        if errors:
-            raise ValueError("；".join(errors))
-        mapping = {"offer": listing.snapshot["offer"], "mapping": listing.snapshot.get("mapping", {})}
-        card = listing.snapshot["card"]
-        names, names_error = {}, ""
-        if card.get("parameterValues"):
-            try:
-                category = yandex_category_id(listing)
-            except ValueError:
-                category = ""
-            if category:
-                names, names_error = self.attribute_names(category)
-            else:
-                names_error = "平台未返回类目编号，暂时无法关联属性名称"
-        stocks = {name.removeprefix("stock:"): value for name, value in responses.items() if name.startswith("stock:")}
-        campaign = dict(listing.snapshot.get("campaign", {}))
-        if "campaign_price" in responses:
-            campaign["campaignPrice"] = responses["campaign_price"].get(listing.remote_id, {}).get("campaignPrice", {})
-        detail = build_listing(mapping, campaign, bool(listing.snapshot.get("hidden")),
-            card, responses["prices"].get(listing.remote_id, {}).get("price", {}),
-            build_stocks(self.mode, self.warehouses, stocks, listing.remote_id),
-            account_id=self.account_id, campaign_id=self.campaign, settings=self.settings,
-            attribute_names=names, attribute_names_error=names_error)
-        detail.buyer_links = listing.buyer_links
-        detail.status_checked_at = listing.status_checked_at
-        # 补读价格和库存不会修复此前的基础读取错误，也不清除旧平台反馈。
-        detail.errors = list(listing.errors)
-        return detail
 
     def read_many(self, remote_ids):
         """目标目录和详情按平台批量接口校验，不逐个 SKU 重复下载。"""

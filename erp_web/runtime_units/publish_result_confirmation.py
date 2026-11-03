@@ -101,6 +101,8 @@ class PublishResultConfirmation:
                     resolved_status, resolution = "partial", "partially_applied"
                 elif remote_status == "needs_attention":
                     resolved_status, resolution = "needs_attention", "needs_attention"
+                elif remote_status == "pending_submission" and checked_result.get("sku_results"):
+                    resolved_status, resolution = "needs_attention", "submission_incomplete"
                 elif remote_status in {"failed", "real_publish_failed", "not_ready", "skipped"}:
                     resolved_status, resolution = "failed", "not_applied"
                 elif checked_result.get("ok") is True and (
@@ -109,10 +111,13 @@ class PublishResultConfirmation:
                 ):
                     resolved_status, resolution = "success", "applied"
                 elif remote_status == "outcome_unknown":
-                    # 已受理的事实不会因为一次确认响应畸形而消失。
-                    confirmation["check_error"] = str(checked_result.get("error") or "本次查询未返回可验证的结果。")
-                    resolution = "query_failed"
-                    checked_result = None
+                    if checked_result.get("sku_results"):
+                        resolved_status, resolution = "outcome_unknown", "unconfirmed"
+                    else:
+                        # 已受理的事实不会因为一次确认响应畸形而消失。
+                        confirmation["check_error"] = str(checked_result.get("error") or "本次查询未返回可验证的结果。")
+                        resolution = "query_failed"
+                        checked_result = None
                 else:
                     confirmation["check_error"] = "平台返回的结果无法判定，保留上次发布状态。"
                     resolution = "query_failed"

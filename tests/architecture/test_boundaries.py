@@ -46,6 +46,16 @@ def test_public_confirmation_entries_cannot_bypass_the_task_queue() -> None:
         assert not calls & {"self.confirmation.check", "self.reconcile_once"}
 
 
+def test_publish_startup_does_not_submit_remote_work() -> None:
+    tree = parse_python("erp_web/runtime_units/publishing_bus_core.py")
+    bus = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PublishingBus")
+    for name in ("__init__", "mark_interrupted_jobs"):
+        method = next(node for node in bus.body if isinstance(node, ast.FunctionDef) and node.name == name)
+        calls = {dotted_name(node.func) for node in ast.walk(method) if isinstance(node, ast.Call)}
+        assert not calls & {"self._submit_job", "self.executor.submit", "self._run_platform", "self._run_platform_once"}
+    assert not any(isinstance(node, ast.FunctionDef) and node.name in {"recover_pending_jobs", "_resume_state"} for node in bus.body)
+
+
 def test_watermark_rendering_has_no_network_or_application_state_dependency() -> None:
     files = [ROOT / "erp_web/services/watermark_service.py", ROOT / "erp_web/services/watermark_preview_service.py"]
     targets = {target for _, target in imported_targets(files)}

@@ -181,6 +181,9 @@ export function createWorkflowPublishPrecheckActions(runtime: WorkflowPublishPre
       const job = await enqueuePublishApi(currentDraft.value, target, preview.validationDigest)
       if (!isCurrent()) return
       publishJob.value = job
+      draftsIndex.value = draftsIndex.value.map((draft) => (
+        draft.draftId === currentDraft.value.draftId ? { ...draft, status: 'published' } : draft
+      ))
       currentStage.value = 8
       addLog(`发布任务已入队：${job.jobId}`)
       // 队列已接受提交；列表刷新失败不能把成功入队误报为可重试的失败。

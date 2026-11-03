@@ -466,7 +466,7 @@ def _save_updated_draft(
             source_product
         ),
         "productsIndex": active_context.products.load_products_index(),
-        "draftsIndex": active_context.products.load_drafts_index(),
+        "draftsIndex": active_context.products.load_drafts_index(scope="all"),
     }
 
 

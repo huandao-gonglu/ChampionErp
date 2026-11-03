@@ -7,7 +7,6 @@ import pytest
 
 from erp_web.context import get_context
 from erp_web.facades import online_product_facade
-from erp_web.schemas.online_products import BuyerLink
 from erp_web.schemas.requests import validate_request_payload
 from erp_web.stores.online_product_store import OnlineConflict
 from tests.test_yandex_online_sync import Platform, adapter, service_for
@@ -57,7 +56,7 @@ def test_basic_sync_includes_feedback_and_attributes_without_detail_requests():
         service.close()
 
 
-def test_open_detail_reads_only_current_sku_and_reuses_received_basic_content():
+def test_open_detail_reads_current_sku_latest_content_and_feedback():
     platform = feedback_platform()
     client = adapter(platform)
     service = service_for(client)
@@ -65,17 +64,21 @@ def test_open_detail_reads_only_current_sku_and_reuses_received_basic_content():
         sync(service)
         before = next(row for row in service.store.listings("yandex", "1:2") if row.remote_id == "sku-0")
         other = next(row for row in service.store.listings("yandex", "1:2") if row.remote_id == "sku-1")
-        before.buyer_links = [BuyerLink(label="商品", url="https://market.yandex.ru/product/1")]
-        service.store.save(before, full_snapshot=False)
+        platform.rows[0]["offer"].update(name="当前平台标题", description="当前平台描述", pictures=["https://example.com/new.jpg"])
         platform.calls.clear()
         detail = service.refresh_detail(before.id)["item"]
-        assert detail["synced_at"] and detail["basic_synced_at"] == before.basic_synced_at
+        assert detail["synced_at"] == detail["basic_synced_at"] > before.basic_synced_at
+        assert detail["status_checked_at"] > before.status_checked_at
         assert detail["details_state"] == "ready" and detail["stocks"][0]["quantity"] == 5
+        assert detail["title"] == detail["content"]["title"] == "当前平台标题"
+        assert detail["content"]["description"] == "当前平台描述"
+        assert detail["content"]["pictures"] == ["https://example.com/new.jpg"]
         assert detail["content"]["attributes"][0]["value"] == "红色"
         assert detail["platform_issues"] == [issue.model_dump() for issue in before.platform_issues]
-        assert detail["buyer_links"] == [link.model_dump() for link in before.buyer_links]
-        assert Counter(name for name, *_ in platform.calls) == {"offer-prices": 1, "stocks": 1, "offers": 1}
-        assert all(body.get("offerIds") == ["sku-0"] for _, body, *_ in platform.calls)
+        assert Counter(name for name, *_ in platform.calls) == {
+            "offer-mappings": 1, "hidden-offers": 1, "offer-cards": 1, "offer-prices": 1, "stocks": 1, "offers": 1}
+        assert all(body.get("offerIds") == ["sku-0"] for _, body, *_ in platform.calls if body)
+        assert next(query for name, _, query, _ in platform.calls if name == "hidden-offers") == {"offer_id": "sku-0"}
         assert service.store.get(other.id).model_dump() == other.model_dump()
         # 本地列表和详情 GET 不会因缺少详细数据而隐式请求平台。
         platform.calls.clear()
@@ -147,14 +150,14 @@ def test_detail_response_cannot_overwrite_concurrent_update(monkeypatch):
     try:
         sync(service)
         before = service.store.listings("yandex", "1:2")[0]
-        original = client.read_details
-        def read(row):
-            result = original(row)
-            current = service.store.get(row.id)
+        original = client.read
+        def read(remote_id):
+            result = original(remote_id)
+            current = service.store.get(before.id)
             current.title = "并发保存的标题"
             service.store.save(current, full_snapshot=False)
             return result
-        monkeypatch.setattr(client, "read_details", read)
+        monkeypatch.setattr(client, "read", read)
         with pytest.raises(OnlineConflict, match="查询期间商品已更新"):
             service.refresh_detail(before.id)
         assert service.store.get(before.id).title == "并发保存的标题"
@@ -201,7 +204,8 @@ def test_ai_detail_resource_calls_same_service_for_only_selected_sku():
         assert result.ok
         item = result.to_dict()["output"]["item"]
         assert item["id"] == before.id and item["details_state"] == "ready" and item["basic_synced_at"]
-        assert all(body.get("offerIds") == [before.remote_id] for _, body, *_ in platform.calls)
-        assert not {"offer-mappings", "offer-cards", "hidden-offers"} & {name for name, *_ in platform.calls}
+        assert all(body.get("offerIds") == [before.remote_id] for _, body, *_ in platform.calls if body)
+        assert Counter(name for name, *_ in platform.calls) == {
+            "offer-mappings": 1, "hidden-offers": 1, "offers": 1, "offer-cards": 1, "offer-prices": 1, "stocks": 1}
     finally:
         service.close()

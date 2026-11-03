@@ -665,6 +665,45 @@ def test_publish_executes_only_first_mutation(remote) -> None:
     assert remote.count("update_yandex_stock") == 0
 
 
+def test_stock_unknown_keeps_plan_checkpoint_and_concrete_error(remote, monkeypatch):
+    from erp_web.marketplaces.publisher import PublishAdapterError
+    config = _config()
+    result = publish_yandex_payload(build_yandex_publish_payload(_product(), config, _record()), config)
+    result = advance_yandex_submission(_allow_poll(result), config)
+    result = advance_yandex_submission(_allow_poll(result), config)
+
+    def unknown_stock(*args, **kwargs):
+        raise PublishAdapterError("EXTERNAL_WRITE_OUTCOME_UNKNOWN", "平台未返回明确写入结果", details={"http_status": 500, "outcome_unknown": True, "remote_write_dispatched": True})
+
+    monkeypatch.setattr(publish_yandex, "update_yandex_stock", unknown_stock)
+    failed = advance_yandex_submission(_allow_poll(result), config)
+    assert failed["status"] == "outcome_unknown"
+    assert failed["checkpoint"]["completed_steps"] == ["offer_mapping", "campaign_offer", "price"]
+    assert failed["plan"]["offer_id"] == failed["checkpoint"]["offer_id"]
+    assert failed["details"] == {"http_status": 500, "step": "stock"}
+    assert "库存" in failed["error"] and "500" in failed["error"]
+    assert remote.count("fetch_yandex_offer_mapping") == 0
+
+
+def test_explicit_retry_of_known_failed_step_keeps_completed_catalog(remote, monkeypatch):
+    config = _config()
+    result = publish_yandex_payload(build_yandex_publish_payload(_product(), config, _record()), config)
+    original = publish_yandex.update_yandex_campaign_offer
+
+    def reject(*args, **kwargs):
+        raise publish_yandex.YandexApiError("YANDEX_REQUEST_INVALID", "上架条件未被接受", retryable=False)
+
+    monkeypatch.setattr(publish_yandex, "update_yandex_campaign_offer", reject)
+    failed = advance_yandex_submission(_allow_poll(result), config)
+    assert failed["status"] == "real_publish_failed"
+    assert failed["plan"] and failed["checkpoint"]["completed_steps"] == ["offer_mapping"]
+    restored = publish_yandex.restore_yandex_publish_result({**failed, "status": "pending_submission"})
+    monkeypatch.setattr(publish_yandex, "update_yandex_campaign_offer", original)
+    continued = advance_yandex_submission(_allow_poll(restored), config)
+    assert _checkpoint(continued)["completed_steps"] == ["offer_mapping", "campaign_offer"]
+    assert remote.count("update_yandex_offer_mapping") == 1
+
+
 def test_full_flow_success_without_repeating_steps(remote) -> None:
     config = _config()
     payload = build_yandex_publish_payload(_product(), config, _record())
@@ -1088,7 +1127,6 @@ def test_yandex_adapter_end_to_end_through_publishing_bus(remote) -> None:
         _MemoryPublishJobStore(),
         adapters={"yandex": YandexPublishingAdapter()},
         config_provider=lambda: deepcopy(config),
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(
@@ -1225,7 +1263,6 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
         _MemoryPublishJobStore(),
         adapters={"yandex": YandexPublishingAdapter()},
         config_provider=lambda: deepcopy(config),
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(

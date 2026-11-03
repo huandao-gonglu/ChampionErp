@@ -3,11 +3,11 @@ import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TaskQueuePanel from '../TaskQueuePanel.vue'
 import zh from '@/i18n/locales/zh'
-import { checkTask, fetchTask, fetchTasks } from '@/api/taskQueue'
+import { checkTask, fetchTask, fetchTasks, retryPublishTask } from '@/api/taskQueue'
 import { onlineAction, type OnlineJob } from '@/api/onlineProducts'
 import type { BackendQueueTask } from '@/types/workflow.generated'
 
-vi.mock('@/api/taskQueue', () => ({ checkTask: vi.fn(), fetchTask: vi.fn(), fetchTasks: vi.fn() }))
+vi.mock('@/api/taskQueue', () => ({ checkTask: vi.fn(), fetchTask: vi.fn(), fetchTasks: vi.fn(), retryPublishTask: vi.fn() }))
 vi.mock('@/api/onlineProducts', () => ({ onlineAction: vi.fn() }))
 const task: BackendQueueTask = {
   id: 'publish:job-1:ozon', job_id: 'job-1', source: 'publish', origin: 'page', platform: 'ozon',
@@ -33,6 +33,34 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.clearAllMocks(); vi.useRealTimers() })
 
 describe('统一任务队列', () => {
+  it('中断发布仅在点击后重试原任务，展示执行次数与逐项错误', async () => {
+    const interrupted = { ...task, status: 'interrupted', business_status: 'interrupted', can_retry: true, confirmation: null }
+    const stopped = { ok: true, task: interrupted, detail: { attempts: 1, result: { sku_results: [
+      { sku: 'SKU-1', status: 'outcome_unknown', error: '库存提交失败（HTTP 500）' },
+      { sku: 'SKU-2', status: 'pending_submission' },
+    ] } } }
+    vi.mocked(fetchTasks).mockResolvedValue({ ok: true, items: [interrupted], total: 1, page: 1, accounts: [] })
+    vi.mocked(fetchTask).mockResolvedValue(stopped)
+    wrapper = render({ initialTaskId: task.id })
+    await flushPromises()
+    expect(wrapper.get('dialog').text()).toContain('发布执行次数1')
+    expect(wrapper.get('dialog').text()).toContain('手动重试次数0')
+    expect(wrapper.get('dialog').text()).toContain('库存提交失败（HTTP 500）')
+    expect(wrapper.get('dialog').text()).toContain('待提交')
+    expect(wrapper.get('dialog').text()).toContain('待提交 1 · 结果未知 1')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(retryPublishTask).not.toHaveBeenCalled()
+    expect(checkTask).not.toHaveBeenCalled()
+    vi.mocked(fetchTask).mockResolvedValue({ ...stopped, detail: { ...stopped.detail, attempts: 2 } })
+    await wrapper.findAll('button').find(button => button.text() === '重试未完成提交')!.trigger('click')
+    await flushPromises()
+    expect(retryPublishTask).toHaveBeenCalledOnce()
+    expect(retryPublishTask).toHaveBeenCalledWith(task.job_id, task.platform)
+    expect(onlineAction).not.toHaveBeenCalled()
+    expect(wrapper.get('dialog').text()).toContain('发布执行次数2')
+    expect(wrapper.get('dialog').text()).toContain('手动重试次数1')
+  })
+
   it('点击任务打开右侧抽屉，内部拖出不关闭，完整遮罩点击关闭并停止详情轮询', async () => {
     wrapper = render()
     await flushPromises()

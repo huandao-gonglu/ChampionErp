@@ -288,7 +288,6 @@ def test_publishing_bus_blocks_before_publish_when_required_attributes_are_missi
         store,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: {"mercadolibre": {}},
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(
@@ -322,7 +321,6 @@ def test_publishing_bus_reuses_persisted_job_for_same_idempotency_facts() -> Non
     bus = PublishingBus(
         store,
         adapters={"mercadolibre": adapter, "ozon": adapter},
-        auto_resume_pending=False,
     )
     target = {
         "mercadolibre": {
@@ -368,7 +366,6 @@ def test_publishing_bus_reuses_idempotency_mapping_after_restart(tmp_path) -> No
     first_bus = PublishingBus(
         database,
         adapters={"mercadolibre": adapter},
-        auto_resume_pending=False,
     )
     try:
         first = first_bus.enqueue(
@@ -384,7 +381,6 @@ def test_publishing_bus_reuses_idempotency_mapping_after_restart(tmp_path) -> No
     restarted_bus = PublishingBus(
         database,
         adapters={"mercadolibre": adapter},
-        auto_resume_pending=False,
     )
     try:
         replay = restarted_bus.enqueue(
@@ -410,7 +406,6 @@ def test_publishing_bus_rejects_idempotency_key_bound_to_different_facts() -> No
     bus = PublishingBus(
         store,
         adapters={"mercadolibre": adapter, "ozon": adapter},
-        auto_resume_pending=False,
     )
     key = "global-task-2:publish-step-1"
     try:
@@ -494,7 +489,6 @@ def test_approved_publish_uses_exact_persisted_payload_and_hides_binding() -> No
         store,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(config),
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(
@@ -542,7 +536,6 @@ def test_approved_publish_blocks_changed_store_identity_before_network() -> None
         store,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(current_config),
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(
@@ -584,7 +577,6 @@ def test_approved_publish_rejects_payload_changed_after_digest() -> None:
         store,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(config),
-        auto_resume_pending=False,
     )
     try:
         with pytest.raises(PublishApprovalBindingError, match="digest"):
@@ -623,7 +615,6 @@ def test_recover_publish_job_after_restart_matches_all_confirmation_facts(
         database,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(config),
-        auto_resume_pending=False,
     )
     try:
         first = first_bus.enqueue(
@@ -647,7 +638,6 @@ def test_recover_publish_job_after_restart_matches_all_confirmation_facts(
         database,
         adapters={"mercadolibre": adapter},
         config_provider=lambda: deepcopy(config),
-        auto_resume_pending=False,
     )
     try:
         recovered = restarted.recover_publish_job(
@@ -692,7 +682,6 @@ def test_publishing_bus_requires_trusted_idempotency_key() -> None:
     bus = PublishingBus(
         store,
         adapters={"mercadolibre": _RequiredAttributeAdapter()},
-        auto_resume_pending=False,
     )
     try:
         with pytest.raises(ValueError, match="可信 idempotency_key"):
@@ -741,7 +730,7 @@ def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
             },
         }
     }
-    bus = PublishingBus(store, adapters={}, auto_resume_pending=False)
+    bus = PublishingBus(store, adapters={})
     try:
         result = bus.list_jobs(status="failed")
     finally:
@@ -879,7 +868,7 @@ def test_publishing_bus_lists_mercadolibre_sales_markets_without_payload_leaks()
             },
         },
     }
-    bus = PublishingBus(store, adapters={}, auto_resume_pending=False)
+    bus = PublishingBus(store, adapters={})
     try:
         items = {
             item["job_id"]: item
@@ -943,7 +932,7 @@ def test_publishing_bus_sales_markets_fall_back_to_frozen_product_snapshot() -> 
             },
         }
     }
-    bus = PublishingBus(store, adapters={}, auto_resume_pending=False)
+    bus = PublishingBus(store, adapters={})
     try:
         result = bus.list_jobs()
     finally:
@@ -989,7 +978,6 @@ def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> No
         store,
         adapters={"mercadolibre": InvalidSuccessAdapter()},
         terminal_callback=on_terminal,
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(
@@ -1073,7 +1061,6 @@ def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
     bus = PublishingBus(
         store,
         adapters={"ozon": adapter},
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(
@@ -1114,7 +1101,7 @@ def test_pending_remote_result_is_not_success_or_failure() -> None:
     assert _remote_publish_succeeded(result) is False
 
 
-def test_publishing_bus_resumes_saved_platform_poll_without_resubmitting() -> None:
+def test_restart_keeps_submitted_result_for_read_only_confirmation() -> None:
     class RecoverableStore(_MemoryPublishJobStore):
         def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
             return [deepcopy(state) for state in self.states.values()]
@@ -1209,10 +1196,9 @@ def test_publishing_bus_resumes_saved_platform_poll_without_resubmitting() -> No
     bus = PublishingBus(
         store,
         adapters={"ozon": adapter},
-        auto_resume_pending=False,
     )
     try:
-        assert bus.recover_pending_jobs() == ["job-pending"]
+        assert bus.mark_interrupted_jobs() == ["job-pending"]
         bus.wait("job-pending", timeout=2)
         assert adapter.poll_calls == 0
         bus.confirmation.check("job-pending", "ozon")
@@ -1260,7 +1246,6 @@ def test_publishing_bus_does_not_duplicate_product_in_platform_result() -> None:
     bus = PublishingBus(
         store,
         adapters={"ozon": FailedAdapter()},
-        auto_resume_pending=False,
     )
     try:
         queued = bus.enqueue(
@@ -1344,7 +1329,6 @@ def test_terminal_hook_persists_product_and_log_without_status_poll(
                 context=context,
             )
         ),
-        auto_resume_pending=False,
     )
     try:
         persisted_draft = saved["drafts"]["mercadolibre"]
@@ -1754,10 +1738,9 @@ def test_completed_job_without_terminal_marker_is_compensated_after_restart(
                 context=context,
             )
         ),
-        auto_resume_pending=False,
     )
     try:
-        recovered = bus.recover_pending_jobs()
+        recovered = bus.mark_interrupted_jobs()
     finally:
         bus.close()
 
@@ -1778,7 +1761,7 @@ def test_completed_job_without_terminal_marker_is_compensated_after_restart(
         if path.is_file()
     }
 
-    assert recovered == ["job-crash-window"]
+    assert recovered == []
     assert persisted_job["terminal_results_persisted"] is True
     assert (
         persisted_product["drafts"]["mercadolibre"][
@@ -1853,7 +1836,7 @@ def test_source_site_registry_dispatches_detection_checks_and_parser() -> None:
     assert parsed["name"] == "通用商品标题"
 
 
-def test_publish_recovery_fences_crash_during_remote_write(tmp_path) -> None:
+def test_restart_marks_inflight_publish_interrupted_without_replaying(tmp_path) -> None:
     database = ErpDatabase(tmp_path / "erp.sqlite3")
     state = {
         "job_id": "job-write-crash",
@@ -1883,16 +1866,15 @@ def test_publish_recovery_fences_crash_during_remote_write(tmp_path) -> None:
     bus = PublishingBus(
         database,
         adapters={"mercadolibre": adapter},
-        auto_resume_pending=False,
     )
     try:
-        recovered = bus.recover_pending_jobs()
+        recovered = bus.mark_interrupted_jobs()
         persisted = bus.get_status("job-write-crash")
     finally:
         bus.close()
 
     assert recovered == ["job-write-crash"]
-    assert persisted["status"] == "outcome_unknown"
+    assert persisted["status"] == "interrupted"
     assert persisted["platforms"]["mercadolibre"]["result"][
         "outcome_unknown"
     ] is True
@@ -1966,7 +1948,6 @@ def test_outcome_unknown_task_can_be_reconciled_without_replaying_write() -> Non
         terminal_callback=lambda state: terminal_states.append(
             deepcopy(state)
         ) or state,
-        auto_resume_pending=False,
     )
     try:
         result = bus.confirmation.check(
@@ -2033,7 +2014,6 @@ def test_outcome_unknown_reconciliation_keeps_lock_while_task_is_pending() -> No
         store,
         adapters={"mercadolibre": PendingAdapter()},
         terminal_callback=lambda state: terminal_states.append(state) or state,
-        auto_resume_pending=False,
     )
     try:
         result = bus.confirmation.check(
@@ -2083,7 +2063,6 @@ def test_outcome_unknown_without_task_id_cannot_be_auto_reconciled() -> None:
     bus = PublishingBus(
         store,
         adapters={"mercadolibre": PollCapableAdapter()},
-        auto_resume_pending=False,
     )
     try:
         with pytest.raises(ValueError, match="没有远端 task_id"):

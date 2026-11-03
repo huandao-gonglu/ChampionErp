@@ -361,7 +361,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 [item["draft_id"] for item in result["draftsIndex"]],
-                [duplicated["draft_id"]],
+                [duplicated["draft_id"], original_id],
             )
             self.assertEqual(result["message"], "草稿已复制。")
 

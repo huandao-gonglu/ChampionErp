@@ -51,7 +51,7 @@ export async function fetchProductsIndex(): Promise<ProductIndexItem[]> {
   return normalizeProductsIndex(data.items)
 }
 
-export async function fetchDraftsIndex(scope = 'active'): Promise<DraftIndexItem[]> {
+export async function fetchDraftsIndex(scope = 'all'): Promise<DraftIndexItem[]> {
   const params = new URLSearchParams({ scope })
   const response = await apiClient.get(`/api/drafts-index?${params.toString()}`)
   const data = asRecord(response.data)

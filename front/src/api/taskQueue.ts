@@ -15,3 +15,7 @@ export async function checkTask(task_id: string) {
   const { data } = await apiClient.post<BackendTaskQueueDetail & { checked: boolean; resolution: string }>('/api/tasks/check', { task_id })
   return data
 }
+
+export async function retryPublishTask(job_id: string, platform: string) {
+  await apiClient.post('/api/publish-bus/retry', { job_id, platform })
+}

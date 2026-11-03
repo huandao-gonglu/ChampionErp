@@ -76,11 +76,19 @@ def handle_publish_bus_reconcile(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_publish_bus_retry(handler: JsonRequestHandler) -> None:
+    result, status = publish_facade.retry_publish_job(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
+    handler.send_json(result, status)
+
+
 POST_HANDLERS: dict[str, PostHandler] = {
     "/api/publish-precheck": handle_publish_precheck,
     "/api/publish-payload-preview": handle_publish_payload_preview,
     "/api/publish-bus/enqueue": handle_publish_bus_enqueue,
     "/api/publish-bus/reconcile": handle_publish_bus_reconcile,
+    "/api/publish-bus/retry": handle_publish_bus_retry,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 

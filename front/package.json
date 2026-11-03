@@ -61,6 +61,7 @@
   "build": {
     "appId": "com.champion.erp.front",
     "productName": "Champion ERP",
+    "icon": "desktop/assets/icon.png",
     "directories": {
       "output": "release"
     },
@@ -70,6 +71,7 @@
       "package.json"
     ],
     "mac": {
+      "icon": "desktop/assets/icon.icns",
       "target": [
         "dmg",
         "zip"

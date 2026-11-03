@@ -11,7 +11,7 @@ from .context import build_default_context, get_context, set_context
 from .facades.ai_chat_facade import build_job_service
 from .http_handler import Handler
 from .logging_config import configure_logging
-from .runtime_units.publish_adapter import resume_pending_publish_jobs
+from .runtime_units.publish_adapter import mark_interrupted_publish_jobs
 from .services.browser_debug_service import pick_web_port
 from .services.config_service import load_env
 
@@ -48,7 +48,7 @@ def main() -> None:
     load_env(paths.app_dir)
     log_file = configure_logging(paths.app_dir)
     paths.output_dir.mkdir(parents=True, exist_ok=True)
-    resume_pending_publish_jobs()
+    mark_interrupted_publish_jobs()
     get_context().online_products  # 启动持久化在线商品任务恢复与执行。
     get_context().task_queue.start()
     get_context().order_notifications  # 处理平台回调和页面发起的订单同步；不调度周期对账。

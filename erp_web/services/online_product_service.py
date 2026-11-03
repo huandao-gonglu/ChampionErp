@@ -18,6 +18,7 @@ from erp_web.product_model.online_attribute_model import yandex_category_id
 from erp_web.services.online_product_changes import confirmation, observed_changes, validate_changes
 from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields
 from erp_web.services.online_product_images import OnlineProductImages
+from erp_web.services.online_product_detail import OnlineProductDetailReader
 from erp_web.services.online_ozon_export import OnlineOzonExportService
 from erp_web.services.online_product_sync import run_sync
 from erp_web.services.online_product_batch import preview_batch, submit_batch, run_batch
@@ -43,6 +44,7 @@ class OnlineProductService:
         self.adapter_factories = adapter_factories
         self.store = OnlineProductStore(context.db)
         self.images = OnlineProductImages(context)
+        self.details = OnlineProductDetailReader(self.store, self._config, self._adapter)
         self.ozon_export = OnlineOzonExportService(self.store, lambda: self._config("yandex")[1])
         self.owner = uuid4().hex
         self._stop = threading.Event()
@@ -123,8 +125,10 @@ class OnlineProductService:
         self._config(job["platform"], job["account_id"])
         return {"ok": True, "job": job}
 
-    def detail(self, listing_id: str, *, fields: list[str] | None = None) -> dict[str, Any]:
-        listing = self.store.get(listing_id)
+    def detail(self, listing_id: str, *, fields: list[str] | None = None,
+               read_scope: tuple[str, ...] = (), expires_at: float = 0) -> dict[str, Any]:
+        listing = (self.details.read(listing_id, read_scope=read_scope, expires_at=expires_at)
+                   if read_scope else self.store.get(listing_id))
         self._config(listing.platform, listing.account_id)
         if fields:
             return {"ok": True, "records": [project_listing_fields(listing, fields)]}
@@ -196,16 +200,8 @@ class OnlineProductService:
         listing = self.store.update_status(before, status)
         return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
 
-    def refresh_detail(self, listing_id: str) -> dict[str, Any]:
-        before = self.store.get(listing_id)
-        self._config(before.platform, before.account_id)
-        self.store.assert_status_refreshable(before)
-        adapter = self._adapter(before.platform, before.account_id)
-        detail = adapter.read_details(before) if before.platform == "yandex" else adapter.read(before.remote_id)
-        if detail.errors and before.platform != "yandex":
-            raise ValueError("商品详情读取不完整：" + "；".join(detail.errors))
-        self._config(before.platform, before.account_id)
-        listing = self.store.update_detail(before, detail)
+    def refresh_detail(self, listing_id: str, *, read_scope: tuple[str, ...] = (), expires_at: float = 0) -> dict[str, Any]:
+        listing = self.details.read(listing_id, read_scope=read_scope, expires_at=expires_at)
         return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
 
     def sync(self, platform: str, key: str, *, ids: list[str] | None = None, catalog: str = "current") -> dict[str, Any]:
@@ -233,6 +229,7 @@ class OnlineProductService:
         if "pictures" in request.changes:
             self.images.validate(listing, request.changes["pictures"])
         job = self.store.enqueue(listing.platform, listing.account_id, request.operation, listing.id, request.model_dump(), request.idempotency_key)
+        self.details.invalidate(listing.id)
         self._wake.set()
         return {"ok": True, "job": job}
 

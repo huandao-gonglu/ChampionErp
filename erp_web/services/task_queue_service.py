@@ -94,6 +94,9 @@ class TaskQueueService:
             detail = self.context.online_products.store.job(task["job_id"])
         return {"ok": True, "task": self._project(task), "detail": detail}
 
+    def submission_retried(self, task_id):
+        self.store.submission_retried(task_id)
+
     def run_once(self):
         self.context.publishing_bus.retry_terminal_persistence()
         for task in self.reader.tasks(pending_only=True):

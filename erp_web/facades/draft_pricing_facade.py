@@ -14,7 +14,7 @@ def price_draft_payload(body: dict[str, Any], *, apply: bool, restore: bool = Fa
         products = get_context().products
         result = price_draft(request, product_store=products, apply=apply, restore=restore)
         if result["applied"]:
-            result.update(productsIndex=products.load_products_index(), draftsIndex=products.load_drafts_index())
+            result.update(productsIndex=products.load_products_index(), draftsIndex=products.load_drafts_index(scope="all"))
         return result, 200
     except ValidationError as exc:
         return {"ok": False, "error_code": "PRICING_INPUT_INVALID", "error": "核价参数格式不正确。",

@@ -108,9 +108,10 @@ def test_source_association_requires_published_id_and_account(online_images):
 def test_existing_ai_read_can_include_same_source_image_selection(online_images):
     from erp_web.runtime_units.online_product_capabilities import OnlineProductCapabilityScope, online_products_read
     from erp_web.schemas.online_product_capabilities import OnlineReadRequest
+    from tests.approval_support import _execution
     service, _ = online_images
     source_product()
-    result = online_products_read(OnlineReadRequest(id="online-1", include_source_images=True), OnlineProductCapabilityScope(lambda: service))
+    result = online_products_read(OnlineReadRequest(id="online-1", include_source_images=True), OnlineProductCapabilityScope(lambda: service), _execution())
     assert result.item.id == "online-1"
     assert result.source_images.model_dump() == service.source_images("online-1")
 

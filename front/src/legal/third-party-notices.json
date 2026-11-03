@@ -10,7 +10,7 @@
     "scripts/legal-notices/supplements.json",
     "scripts/legal-notices/python-supplements.json"
   ],
-  "inputDigest": "9f8643a8cb995e131481df4457977f731815b9991bbb49613682d229030eceed",
+  "inputDigest": "502d157e56a6161ba36268b035ba6a7058fad8558b6e76c36ac6c0e636622184",
   "incompleteNotices": [
     "npm:@humanfs/types@0.15.0",
     "npm:chromium-pickle-js@0.2.0",

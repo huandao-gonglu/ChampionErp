@@ -26,6 +26,7 @@ from typing import Any
 from erp_web.product_model.yandex_warranty_model import compile_yandex_guarantee_period
 from erp_web.context import get_context
 from erp_web.services.yandex_logistics_service import draft_fulfillment_plan
+from erp_web.marketplaces.publisher import PublishAdapterError
 
 from erp_web.marketplaces.yandex_currency import yandex_wire_currency
 from erp_web.marketplaces.yandex_http import (
@@ -855,6 +856,7 @@ def _terminal_failure(
         "error": mapped.get("summary") or "Yandex 发布失败",
         "error_code": mapped.get("error_code") or "YANDEX_PUBLISH_FAILED",
         "error_map": mapped,
+        "plan": deepcopy(plan),
         "checkpoint": checkpoint.model_dump(),
         "checked_at": collect_time_iso(),
     }
@@ -993,8 +995,16 @@ def _execute_mutation(
                 f"Yandex 发布状态机步骤未知：{step}",
                 retryable=False,
             )
-    except YandexApiError as exc:
-        if exc.retryable and checkpoint.retries < _step_retry_limit(config):
+    except PublishAdapterError as exc:
+        mapped = map_yandex_publish_error(exc)
+        status = exc.details.get("http_status")
+        stage = {"offer_mapping": "商品资料", "campaign_offer": "上架条件", "price": "价格", "stock": "库存"}[step]
+        mapped["summary"] = f"{stage}提交失败" + (f"（HTTP {status}）" if status else "") + f"：{mapped['summary']}"
+        if exc.details.get("outcome_unknown") or exc.details.get("remote_write_dispatched"):
+            failed = _terminal_failure(plan, checkpoint, mapped)
+            failed.update(status="outcome_unknown", outcome_unknown=True, details={"http_status": status, "step": step})
+            return failed
+        if isinstance(exc, YandexApiError) and exc.retryable and checkpoint.retries < _step_retry_limit(config):
             checkpoint.retries += 1
             checkpoint.next_poll_at = _backoff_at(checkpoint, config)
             checkpoint.last_response_summary = {
@@ -1004,7 +1014,7 @@ def _execute_mutation(
                 "checked_at": collect_time_iso(),
             }
             return _pending_result(plan, checkpoint)
-        return _terminal_failure(plan, checkpoint, map_yandex_publish_error(exc))
+        return _terminal_failure(plan, checkpoint, mapped)
     _record_response(checkpoint, step, body)
     if step == 'stock':
         checkpoint.evidence['stock'].update(deepcopy(plan['stock']))
@@ -1316,6 +1326,8 @@ def poll_yandex_publish_status(result: dict[str, Any], config: dict[str, Any]) -
 def map_yandex_publish_error(error: Exception) -> dict[str, Any]:
     """类型化错误 → 摘要、字段错误、平台 code 与 retryable。"""
 
+    if isinstance(error, PublishAdapterError) and not isinstance(error, YandexApiError):
+        return error.to_error_map()
     if isinstance(error, YandexApiError):
         field_errors: dict[str, list[str]] = {}
         for row in error.errors:

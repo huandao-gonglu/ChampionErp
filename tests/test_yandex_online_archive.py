@@ -12,6 +12,7 @@ from erp_web.schemas.online_products import OnlineChange, OnlineListing, listing
 from erp_web.services.external_request_context import request_context
 from erp_web.services.online_product_service import OnlineProductService
 from erp_web.stores.online_product_store import OnlineConflict
+from tests.approval_support import _execution
 from tests.test_yandex_online_sync import Platform, adapter
 
 
@@ -149,8 +150,8 @@ def test_archive_query_and_ai_approval_expose_catalog_and_account_scope(archive_
     service, remote, client = archive_service
     service.store.save(client.read("sku-2"))
     scope = OnlineProductCapabilityScope(lambda: service)
-    normal = online_products_read(OnlineReadRequest(platform="yandex", view="listings"), scope)
-    archived = online_products_read(OnlineReadRequest(platform="yandex", view="listings", catalog="archived"), scope)
+    normal = online_products_read(OnlineReadRequest(platform="yandex", view="listings"), scope, _execution())
+    archived = online_products_read(OnlineReadRequest(platform="yandex", view="listings", catalog="archived"), scope, _execution())
     assert [row.remote_id for row in normal.items] == ["sku-0"]
     assert [row.remote_id for row in archived.items] == ["sku-2"] and archived.items[0].archived
     assert service.read_page("yandex", catalog="all", view="listings")["listing_total"] == 2

@@ -1,5 +1,11 @@
 export default {
   taskQueue: {
+    publishProgress: '已发布 {completed} · 待确认 {waiting} · 待提交 {pending} · 结果未知 {unknown} · 失败 {failed} · 需处理 {attention}',
+    retryPublish: '重试未完成提交',
+    pendingSubmission: '待提交',
+    outcomeUnknown: '结果未知',
+    executionAttempts: '发布执行次数',
+    retryAttempts: '手动重试次数',
     "detail": "任务详情",
     "loading": "正在读取任务详情…",
     "reload": "重新读取",
@@ -48,6 +54,7 @@ export default {
     "next": "下一页",
     "loadFailed": "读取任务失败",
     "status": {
+      "interrupted": "已中断",
       "queued": "排队中",
       "running": "执行中",
       "waiting": "等待结果",

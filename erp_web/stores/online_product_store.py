@@ -97,11 +97,10 @@ class OnlineProductStore:
             if (current.version, current.synced_at, current.basic_synced_at, current.status_checked_at) != (before.version, before.synced_at, before.basic_synced_at, before.status_checked_at):
                 raise OnlineConflict("查询期间商品已更新，请重新打开详情")
             detail.desired_sale_state = current.desired_sale_state
-            detail.basic_synced_at = current.basic_synced_at
             detail.details_state = "ready"
             detail.synced_at = utc_now()
-            if detail.platform != "yandex":
-                detail.status_checked_at = datetime.now(timezone.utc).isoformat()
+            detail.basic_synced_at = detail.synced_at if detail.platform == "yandex" else current.basic_synced_at
+            detail.status_checked_at = datetime.now(timezone.utc).isoformat()
             self._write_listing(conn, detail)
             conn.commit()
         return self.get(before.id)

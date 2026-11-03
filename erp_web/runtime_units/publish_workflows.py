@@ -247,6 +247,15 @@ def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
         }, 502
 
 
+def retry_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
+    try:
+        return get_publishing_bus().retry(body["job_id"], body["platform"]), 200
+    except FileNotFoundError as exc:
+        return {"ok": False, "error": str(exc), "error_code": "PUBLISH_JOB_NOT_FOUND"}, 404
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "error_code": "PUBLISH_RETRY_NOT_AVAILABLE"}, 409
+
+
 def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
     """人工确认入队：必须携带显式确认与预览 digest。
 
@@ -339,6 +348,7 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 __all__ = [
+    "retry_publish_job",
     "enqueue_publish_job",
     "precheck_publish_payload",
     "preview_publish_payload",

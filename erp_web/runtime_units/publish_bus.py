@@ -55,6 +55,8 @@ def publish_bus_terminal_status(status: str) -> str:
         return "published"
     if value == "outcome_unknown":
         return "outcome_unknown"
+    if value == "interrupted":
+        return value
     if value in {
         "failed",
         "partial",
@@ -254,11 +256,8 @@ def append_publish_bus_terminal_log(
         if isinstance(item.get("reconciliation"), dict)
         else {}
     )
-    log_job_id = (
-        f"{job_id}:reconciliation"
-        if job_id and reconciliation
-        else job_id
-    )
+    attempts = int(item.get("attempts") or 0)
+    log_job_id = f"{job_id}:reconciliation" if job_id and reconciliation else f"{job_id}:retry:{attempts}" if job_id and attempts > 1 else job_id
     if (
         log_job_id
         and runtime_context.db.publish_log_exists(log_job_id, platform)
@@ -290,7 +289,7 @@ def append_publish_bus_terminal_log(
     runtime_context.db.insert_publish_log_once(
         {
             "job_id": log_job_id,
-            **({"source_job_id": job_id} if reconciliation else {}),
+            **({"source_job_id": job_id} if log_job_id != job_id else {}),
             **({"reconciliation": reconciliation} if reconciliation else {}),
             "product_id": str(item.get("product_id") or product.get("product_id") or _product_id_for_log(product, platform)),
             "platform": platform,

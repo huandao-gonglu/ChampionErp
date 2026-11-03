@@ -1328,9 +1328,15 @@ class ErpDatabase:
                          WHERE m.product_id = d.product_id
                          ORDER BY m.is_main DESC, m.sort_order ASC, m.id ASC
                          LIMIT 1
-                       ) AS main_image
+                       ) AS main_image,
+                       submitted.draft_id IS NOT NULL AS publish_submitted
                 FROM platform_drafts d
                 JOIN products p ON p.product_id = d.product_id
+                LEFT JOIN (
+                    SELECT DISTINCT product_id, draft_id FROM publish_jobs
+                    WHERE draft_id != ''
+                ) submitted ON submitted.product_id = d.product_id
+                           AND submitted.draft_id = d.draft_id
                 ORDER BY d.created_at DESC, d.rowid DESC
                 """,
             )
@@ -1369,6 +1375,9 @@ class ErpDatabase:
             or row["status"]
             or "claimed"
         )
+        # 草稿箱以成功提交任务为「已发布」；平台实际结果仍由发布任务持有。
+        if row["publish_submitted"]:
+            status = "published"
         selected_site = marketplace_site(row["platform"], row["site"])
         target_sites = (
             draft.get("target_sites")
@@ -1936,7 +1945,7 @@ class ErpDatabase:
                             WHERE draft_id = ?
                               AND status IN (
                                 'pending', 'queued', 'running', 'retrying',
-                                'completed', 'outcome_unknown', 'pending_confirmation', 'needs_attention'
+                                'completed', 'outcome_unknown', 'pending_confirmation', 'needs_attention', 'interrupted'
                               )
                               AND instr(
                                 ',' || lower(platform) || ',',
@@ -2046,7 +2055,7 @@ class ErpDatabase:
         return state if isinstance(state, dict) else {}
 
     def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
-        """Return worker-resume and terminal-compensation candidates.
+        """读取需标记中断的任务及待补偿本地回填的任务。
 
         ``completed`` rows remain candidates until their terminal callback has
         durably persisted product/log side effects. This closes the crash
@@ -2060,7 +2069,7 @@ class ErpDatabase:
                 FROM publish_jobs
                 WHERE status IN (
                     'pending', 'queued', 'running', 'retrying', 'completed',
-                    'outcome_unknown', 'pending_confirmation'
+                    'outcome_unknown', 'pending_confirmation', 'interrupted'
                 )
                 ORDER BY created_at ASC
                 """,
@@ -2073,6 +2082,7 @@ class ErpDatabase:
                 if str(row["status"] or "").lower() in {
                     "completed",
                     "outcome_unknown",
+                    "interrupted",
                 } and state.get("terminal_results_persisted"):
                     continue
                 states.append(state)

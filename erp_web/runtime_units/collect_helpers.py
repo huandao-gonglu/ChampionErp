@@ -502,7 +502,7 @@ def claim_products_to_platforms(
         "draft_count": sum(len(item.get("draft_ids", [])) for item in items),
         "items": items,
         "productsIndex": products.load_products_index(),
-        "draftsIndex": products.load_drafts_index(),
+        "draftsIndex": products.load_drafts_index(scope="all"),
     }
 
 

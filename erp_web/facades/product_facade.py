@@ -35,7 +35,7 @@ def save_product_payload(body: dict[str, Any]) -> ApiResponse:
         "ok": True,
         "product": product,
         "productsIndex": products.load_products_index(),
-        "draftsIndex": products.load_drafts_index(),
+        "draftsIndex": products.load_drafts_index(scope="all"),
         "imagePool": current_image_pool(product),
     }
 
@@ -50,7 +50,7 @@ def load_product_payload(body: dict[str, Any]) -> ApiResponse:
         "ok": True,
         "product": product,
         "productsIndex": products.load_products_index(),
-        "draftsIndex": products.load_drafts_index(),
+        "draftsIndex": products.load_drafts_index(scope="all"),
         "imagePool": current_image_pool(product),
         "sourceImages": current_source_images(product),
     }

@@ -31,7 +31,12 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
     return publish_workflows.enqueue_publish_job(body)
 
 
+def retry_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
+    return publish_workflows.retry_publish_job(body)
+
+
 __all__ = [
+    "retry_publish_job",
     "enqueue_publish_job",
     "precheck_publish_payload",
     "preview_publish_payload",

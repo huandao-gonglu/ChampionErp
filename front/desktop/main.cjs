@@ -176,6 +176,7 @@ async function createWindow() {
     minWidth: 1120,
     minHeight: 720,
     title: 'Champion ERP',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

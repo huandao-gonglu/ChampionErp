@@ -40,7 +40,7 @@ class PublishingRemote:
 def queue():
     context = get_context()
     remote = PublishingRemote()
-    context._publishing_bus = PublishingBus(context.db, {"ozon": remote}, task_queue=context.task_queue, auto_resume_pending=False)
+    context._publishing_bus = PublishingBus(context.db, {"ozon": remote}, task_queue=context.task_queue)
     with request_operation("ai_tool:product_publish_request", trigger="agent_tool"):
         job = context.publishing_bus.enqueue({"product_id": "product", "name": "测试发布商品"}, ["ozon"],
             targets={"ozon": {"draft_id": "draft", "site": "global"}}, idempotency_key="publish-1")
@@ -481,6 +481,24 @@ def test_task_post_contract_and_routes():
     assert "/api/tasks" in GET_API_ROUTES and "/api/tasks/check" in POST_API_ROUTES
     with pytest.raises(RequestValidationError):
         validate_request_payload({}, endpoint="/api/tasks/check")
+    assert "/api/publish-bus/retry" in POST_API_ROUTES
+    with pytest.raises(RequestValidationError):
+        validate_request_payload({}, endpoint="/api/publish-bus/retry")
+    assert validate_request_payload({"job_id": "job", "platform": "yandex"}, endpoint="/api/publish-bus/retry")["job_id"] == "job"
+
+
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_manual_submission_retry_uses_remaining_confirmation_budget(queue, exhausted):
+    service, _, _, task_id = queue
+    service.detail(task_id)
+    with service.store.connect() as conn:
+        conn.execute("UPDATE confirmations SET state='needs_attention',checks_used=?,requests_used=3,error='提交中断' WHERE id=?", (10 if exhausted else 2, task_id))
+    before = service.store.get(task_id)
+    service.submission_retried(task_id)
+    after = service.store.get(task_id)
+    assert after["checks_used"] == before["checks_used"] and after["requests_used"] == 3
+    assert after["deadline_at"] == before["deadline_at"]
+    assert after["state"] == ("needs_attention" if exhausted else "waiting")
 
 
 @pytest.mark.parametrize("receipt,model,target,scope,expected", [

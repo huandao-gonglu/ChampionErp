@@ -222,7 +222,6 @@ def test_publish_submission_finishes_chat_before_remote_result(
         adapters={"ozon": SkuGroupPublishingAdapter(adapter)},
         config_provider=context.config.load_store_config,
         terminal_callback=persist_terminal,
-        auto_resume_pending=False,
     )
     context._publishing_bus = bus
     submission_results = []
