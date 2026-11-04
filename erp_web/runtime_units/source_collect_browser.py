@@ -19,7 +19,7 @@ from erp_web.services.browser_debug_service import (
     ensure_browser_debug_session,
     parse_cookie_header,
 )
-from .category_refresh import http_json
+from erp_web.services.browser_debug_http import browser_debug_json
 from .collect_helpers import detect_source_platform, save_collect_snapshot_artifacts
 from .source_collect_verification import same_collection_page
 
@@ -43,7 +43,7 @@ def browser_debug_status(
         port = get_context().paths.browser_debug_port
     commands = browser_debug_commands(port)
     try:
-        raw_tabs = tabs_override if tabs_override is not None else http_json(f"http://127.0.0.1:{port}/json")
+        raw_tabs = tabs_override if tabs_override is not None else browser_debug_json(port, "/json")
         if not isinstance(raw_tabs, list):
             raw_tabs = []
         page_tabs = [tab for tab in raw_tabs if isinstance(tab, dict) and str(tab.get("type") or "page") == "page"]
@@ -107,18 +107,15 @@ def open_browser_debug_session(url: str, port: int, profile_name: str) -> dict[s
 
 
 def cdp_target_for_url(port: int, url: str) -> dict[str, Any]:
-    pages = http_json(f"http://127.0.0.1:{port}/json/list")
+    pages = browser_debug_json(port, "/json/list")
     for page in pages:
         current_url = str(page.get("url") or "")
         if page.get("type") == "page" and same_collection_page(url, current_url):
             return page
     # Chrome 的新建标签接口要求 PUT，并直接返回新标签，避免误用其他商品页。
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}",
-        method="PUT",
+    target = browser_debug_json(
+        port, f"/json/new?{urllib.parse.quote(url, safe='')}", method="PUT", timeout=5,
     )
-    with managed_urlopen(request, timeout=5, source=__name__) as response:
-        target = json.load(response)
     if not isinstance(target, dict) or not target.get("webSocketDebuggerUrl"):
         raise RuntimeError("Chrome 未返回新页面，请刷新浏览器连接后重试。")
     return target

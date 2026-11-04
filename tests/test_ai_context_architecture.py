@@ -1015,8 +1015,8 @@ def test_external_response_policy_is_pure_and_receives_interface_context():
 
 
 def test_external_api_sends_have_one_managed_boundary():
-    """业务 HTTP 发送保持受控；AI Provider 使用原生客户端，不经过业务请求阻断。"""
-    allowed = {"erp_web/services/external_request_manager.py"}
+    """业务 HTTP 保持受控；本机 CDP 与原生 AI 客户端具有独立传输边界。"""
+    allowed = {"erp_web/services/external_request_manager.py", "erp_web/services/browser_debug_http.py"}
     violations = []
     for path in python_files(ROOT / "erp_web"):
         relative = _relative_posix(path)

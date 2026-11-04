@@ -1,6 +1,5 @@
 """共享浏览器启动、登录资料隔离和 Canvas 页面身份回归。"""
 
-from io import BytesIO
 import json
 from unittest.mock import Mock
 
@@ -74,11 +73,11 @@ def test_canvas_target_is_exact_and_new_tabs_use_put(monkeypatch):
         {"url": "https://gemini.google.com.evil.test/share/wanted"},
     ]
     monkeypatch.setattr(ai, "_page_targets", lambda _: wrong)
-    opener = Mock(return_value=BytesIO(b'{"id":"wanted","webSocketDebuggerUrl":"ws://localhost/wanted"}'))
-    monkeypatch.setattr(ai, "managed_urlopen", opener)
+    opener = Mock(return_value={"id": "wanted", "webSocketDebuggerUrl": "ws://localhost/wanted"})
+    monkeypatch.setattr(ai, "browser_debug_json", opener)
     assert ai._target_for_url(9335, url)["id"] == "wanted"
-    request = opener.call_args.args[0]
-    assert request.get_method() == "PUT"
+    assert opener.call_args.args[0] == 9335
+    assert opener.call_args.kwargs["method"] == "PUT"
     original = {"url": url, "webSocketDebuggerUrl": "ws://localhost/original"}
     monkeypatch.setattr(ai, "_page_targets", lambda _: [*wrong, original])
     assert ai._target_for_url(9335, url) is original
@@ -87,7 +86,7 @@ def test_canvas_target_is_exact_and_new_tabs_use_put(monkeypatch):
 
 def test_canvas_target_creation_failure_never_uses_unrelated_page(monkeypatch):
     monkeypatch.setattr(ai, "_page_targets", lambda _: [{"url": "https://gemini.google.com/share/other"}])
-    monkeypatch.setattr(ai, "managed_urlopen", Mock(side_effect=OSError("浏览器已关闭")))
+    monkeypatch.setattr(ai, "browser_debug_json", Mock(side_effect=OSError("浏览器已关闭")))
     with pytest.raises(OSError, match="已关闭"):
         ai._target_for_url(9335, "https://gemini.google.com/share/wanted")
 

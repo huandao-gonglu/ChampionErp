@@ -75,6 +75,10 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   `not_sent` 本地拒绝，释放租约且不触发写入结果未知阻断；平台错误由 `schemas/platform_errors.py` 持有。
 - `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传与采集请求均接入。
+  本机 Chrome 的版本检查、标签页查询/创建及采集验证轮询统一经 `services/browser_debug_http.py`；
+  只访问固定回环地址的 CDP 接口，禁用代理与重定向，保留任务取消、期限及响应大小限制。
+  这些本地控制请求不读写外部请求审计或阻断；已有历史记录保留，但不再影响浏览器连接。
+  远端网页和图片下载仍经外部请求管理器，不按 IP 对业务请求作通用豁免。
   AI 推理经 `ai_provider_catalog.py` 使用原生 Provider/SDK 客户端，不接入业务请求排队、限流、熔断或写入未知阻断。
   SDK 使用原生有限重试，模型超时、Agent 总任务期限与取消仍有效；AI 调用的业务工具仍经过业务请求管理器。
   专项传输诊断已退役，保留常规运行错误与原生消息历史；既有请求审计和诊断历史仍可读取。

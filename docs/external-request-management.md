@@ -7,6 +7,7 @@
 - `schemas/external_requests.py` 定义不可变请求上下文及本地阻断、写入结果未知异常；`schemas/platform_errors.py` 持有平台错误公共类型。
 - `services/external_request_context.py` 关联 HTTP 操作、后台 Job、AI Tool 任务及触发方式。发送前只读取本地身份，不做账号预检查。凭据只存 SHA-256 指纹。
 - `services/external_request_manager.py` 是 urllib 外发唯一入口，`http_client.py`、平台 JSON、表单、图片上传、采集与物流客户端均通过它发送。独立物流模块通过必需的 opener 参数注入入口，不依赖 ERP。
+- 本机 Chrome 的 CDP HTTP 通信由 `services/browser_debug_http.py` 独立发送：版本检查、标签页查询/创建及采集验证轮询不参与外部请求审计、限流、熔断与未知写入保护。入口固定回环主机和 CDP 路径，禁用代理及重定向，保留任务取消、期限、响应大小限制与原始错误。已有本地请求审计和阻断历史保留，新入口不读取它们；远端网页和图片请求仍受统一管理。
 - AI 推理不接入本管理器，使用原生 Provider/SDK 客户端的连接池、超时与有限重试；不参与业务请求排队、限流、连续失败熔断或写入结果未知阻断。AI 发起的业务工具仍受本管理器约束。
 - `services/platform_request_policy.py` 纯解析 HTTP、业务错误及恢复时间；商品、授权和发布业务仍由原适配器解释。
 - `stores/external_request_store.py` 负责请求审计、短事务内检查与并发名额分配、持久阻断及明确恢复记录。控制锁不跨网络等待。

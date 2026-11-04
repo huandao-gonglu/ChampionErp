@@ -18,17 +18,14 @@ from typing import Any, Callable
 
 from erp_web.context import get_context
 from erp_web.services.browser_connection_config import normalize_browser_proxy
-from erp_web.services.external_request_manager import managed_urlopen
+from erp_web.services.browser_debug_http import browser_debug_json
 
 _browser_launch_lock = Lock()
 _SESSION_FILE = ".erp-browser-session.json"
 
 
 def _browser_version(port: int) -> dict[str, Any]:
-    with managed_urlopen(
-        f"http://127.0.0.1:{port}/json/version", timeout=2, source=__name__,
-    ) as response:
-        version = json.load(response)
+    version = browser_debug_json(port, "/json/version", timeout=2)
     return version if isinstance(version, dict) else {}
 
 

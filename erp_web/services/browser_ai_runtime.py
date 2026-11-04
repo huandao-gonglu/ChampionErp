@@ -15,9 +15,7 @@ import os
 import re
 import time
 import urllib.parse
-import urllib.request
-
-from erp_web.services.external_request_manager import managed_urlopen
+from erp_web.services.browser_debug_http import browser_debug_json
 from erp_web.services.browser_debug_service import browser_debug_connected, ensure_browser_debug_session
 from pathlib import Path
 from typing import Any
@@ -196,12 +194,6 @@ def _cdp_websocket(websocket_url: str):
     return CdpWebSocket(websocket_url)
 
 
-def _http_json(url: str, timeout: int = 5) -> Any:
-    with managed_urlopen(url, timeout=timeout, source=__name__) as response:
-        raw = response.read()
-    return json.loads(raw.decode("utf-8")) if raw else None
-
-
 def _ensure_browser_target(
     app_dir: Path | str, model: dict[str, Any], url: str, timeout: int,
     *, headless: bool | None = None,
@@ -225,11 +217,9 @@ def _target_for_url(port: int, url: str) -> dict[str, Any]:
     target = _find_target_for_url(port, url)
     if target:
         return target
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}", method="PUT",
+    target = browser_debug_json(
+        port, f"/json/new?{urllib.parse.quote(url, safe='')}", method="PUT", timeout=5,
     )
-    with managed_urlopen(request, timeout=5, source=__name__) as response:
-        target = json.load(response)
     if not isinstance(target, dict) or not target.get("webSocketDebuggerUrl"):
         raise RuntimeError("浏览器未返回目标页面，请检查浏览器连接后重试。")
     return target
@@ -252,7 +242,7 @@ def _find_target_for_url(port: int, url: str) -> dict[str, Any] | None:
 
 def _page_targets(port: int) -> list[dict[str, Any]]:
     try:
-        payload = _http_json(f"http://127.0.0.1:{port}/json/list", timeout=5)
+        payload = browser_debug_json(port, "/json/list", timeout=5)
     except Exception:
         payload = []
     if not isinstance(payload, list):

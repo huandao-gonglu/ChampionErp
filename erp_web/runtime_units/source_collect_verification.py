@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from erp_web.context import get_context
 from erp_web.schemas.collection import CollectionVerificationStatus
 from erp_web.services.browser_debug_service import CdpWebSocket
-from .category_refresh import http_json
+from erp_web.services.browser_debug_http import browser_debug_json
 from .collect_helpers import collect_error_code, collect_time_iso, detect_source_platform
 from .source_sites import source_site
 
@@ -50,7 +50,7 @@ def waiting_verification_result(snapshot: dict[str, Any], source_url: str, platf
 def inspect_collection_verification(browser_tab_id: str, source_url: str) -> CollectionVerificationStatus:
     try:
         port = get_context().paths.browser_debug_port
-        tabs = http_json(f"http://127.0.0.1:{port}/json")
+        tabs = browser_debug_json(port, "/json")
         target = next((tab for tab in tabs if tab.get("id") == browser_tab_id and tab.get("type") == "page"), None)
         if not target:
             return {"ok": True, "status": "unavailable", "message": "原商品标签页已关闭，请重新开始采集。"}

@@ -31,7 +31,7 @@ from .publish_bus import page_snapshot_from_html
 from .source_collect_1688_api import collect_1688_product_via_api
 from .source_collect_verification import same_collection_page, waiting_verification_result
 from .source_sites import VERIFY_MARKERS, parse_source_snapshot, source_site
-from .category_refresh import http_json
+from erp_web.services.browser_debug_http import browser_debug_json
 from .collect_helpers import (
     apply_claimed_platform_drafts,
     collect_error_code,
@@ -363,7 +363,7 @@ def collect_from_browser_tab(
         # 由 Task/对话保存，避免一次环境检查意外修改无关业务数据。
         return {"ok": False, "product": original_product, "imagePool": current_image_pool(original_product), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": diagnostics["error_message"], "next_action": diagnostics["next_action"], "real_publish_called": False}
     try:
-        raw_tabs = http_json(f"http://127.0.0.1:{port}/json")
+        raw_tabs = browser_debug_json(port, "/json")
         raw_tabs = raw_tabs if isinstance(raw_tabs, list) else []
         target = (next((tab for tab in raw_tabs if tab.get("id") == browser_tab_id and tab.get("type") == "page"), None)
                   if browser_tab_id else choose_browser_tab(raw_tabs, tab_url, product_url, platform_hint))

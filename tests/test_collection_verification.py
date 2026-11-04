@@ -36,7 +36,7 @@ def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry
     fetch = Mock(return_value=snapshot)
     monkeypatch.setattr(workflows, 'fetch_page_snapshot_with_browser_session', fetch)
     monkeypatch.setattr(workflows, 'browser_debug_status', lambda _: {'connected': True})
-    monkeypatch.setattr(workflows, 'http_json', lambda _: [TARGET])
+    monkeypatch.setattr(workflows, 'browser_debug_json', lambda *_: [TARGET])
     monkeypatch.setattr(workflows, 'snapshot_from_cdp_target', lambda *_: snapshot)
     if entry == 'browser':
         result = workflows.collect_from_browser_tab(tab_url=URL, product_url=URL)
@@ -65,7 +65,7 @@ def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry
     ({'url': 'https://detail.1688.com/offer/456.html', 'ready': 'complete'}, 'unavailable'),
 ])
 def test_probe_only_reads_original_tab_without_refresh_or_capture(monkeypatch, page, expected):
-    monkeypatch.setattr(verification, 'http_json', lambda _: [TARGET])
+    monkeypatch.setattr(verification, 'browser_debug_json', lambda *_: [TARGET])
     cdp = Mock()
     cdp.call.return_value = {'result': {'value': page}}
     connect = Mock(return_value=cdp)
@@ -81,7 +81,7 @@ def test_probe_only_reads_original_tab_without_refresh_or_capture(monkeypatch, p
 
 
 def test_closed_original_tab_does_not_switch_to_other_product(monkeypatch):
-    monkeypatch.setattr(verification, 'http_json', lambda _: [{**TARGET, 'id': 'other'}])
+    monkeypatch.setattr(verification, 'browser_debug_json', lambda *_: [{**TARGET, 'id': 'other'}])
     connect = Mock()
     monkeypatch.setattr(verification, 'CdpWebSocket', connect)
     assert verification.inspect_collection_verification('original', URL)['status'] == 'unavailable'
@@ -93,7 +93,7 @@ def test_resume_uses_stable_tab_id_and_preserves_product_identity(monkeypatch):
     before = context.products.save_product({'name': '原商品', 'source': {'title': '原商品', 'source_url': URL}})
     target = {**TARGET, 'url': URL + '?verified=1'}
     monkeypatch.setattr(workflows, 'browser_debug_status', lambda _: {'connected': True})
-    monkeypatch.setattr(workflows, 'http_json', lambda _: [{**TARGET, 'id': 'wrong', 'url': URL}, target])
+    monkeypatch.setattr(workflows, 'browser_debug_json', lambda *_: [{**TARGET, 'id': 'wrong', 'url': URL}, target])
     snapshot = Mock(return_value={'url': target['url'], 'html': '<html>新商品标题</html>', 'text': '新商品标题', 'html_snapshot_path': '/tmp/product.html'})
     monkeypatch.setattr(workflows, 'snapshot_from_cdp_target', snapshot)
     source = {'title': '新商品标题', 'source_url': target['url'], 'images': ['https://example.test/product.jpg']}
@@ -108,7 +108,7 @@ def test_resume_uses_stable_tab_id_and_preserves_product_identity(monkeypatch):
 
 def test_resume_rechecks_identity_before_parsing(monkeypatch):
     monkeypatch.setattr(workflows, 'browser_debug_status', lambda _: {'connected': True})
-    monkeypatch.setattr(workflows, 'http_json', lambda _: [TARGET])
+    monkeypatch.setattr(workflows, 'browser_debug_json', lambda *_: [TARGET])
     monkeypatch.setattr(workflows, 'snapshot_from_cdp_target', lambda *_: {'url': 'https://detail.1688.com/offer/456.html', 'html': '<html>其他商品</html>', 'html_snapshot_path': '/tmp/other.html'})
     parser = Mock(side_effect=AssertionError('不能解析其他商品'))
     monkeypatch.setattr(workflows, 'source_site', lambda _: replace(source_site('1688'), parser=parser))
