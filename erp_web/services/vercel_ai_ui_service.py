@@ -11,7 +11,7 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from pydantic import ValidationError
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart, RetryPromptPart
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, UserPromptPart, ModelResponse, ToolCallPart, ToolReturnPart, RetryPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import (
     RegenerateMessage,
@@ -335,7 +335,10 @@ class VercelAiUiService(ChatConversationService):
             if pending
             else [],
             "received_messages": [
-                {"message_id": r["message_id"], "status": "received"}
+                {"message_id": r["message_id"], "status": "received", "text": "\n".join(
+                    part.content for message in ModelMessagesTypeAdapter.validate_json(r["messages_json"])
+                    for part in message.parts if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+                )}
                 for r in self.call_store.inbox(conversation_id)
             ],
         }

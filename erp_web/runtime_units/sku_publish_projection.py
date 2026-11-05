@@ -124,6 +124,15 @@ def grouping_contract(context: PreparedPublishContext) -> dict[str, Any]:
     return result
 
 
+def sku_listing_attributes(context: PreparedPublishContext, row: dict[str, Any], definitions: list[dict[str, Any]]) -> dict[str, Any]:
+    """发布和 AI 规格核对使用同一目标的有效属性及派生组名。"""
+    overrides = record(record(row.get("attributes_by_target")).get(target_key(context)))
+    return apply_listing_grouping_attributes(
+        {**record(context.draft.get("attributes")), **overrides},
+        context.draft, context.platform, definitions, seller_sku=row.get("sku", ""),
+    )
+
+
 def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict[str, Any], grouping: dict[str, Any]) -> PreparedPublishContext:
     # 先缩小输入再复制，避免每个 SKU 都携带整组报价、其它平台草稿及上次预检。
     # 来源规格只服务采集；发布使用已经合并覆盖值的 fact，并保留完整图片池。
@@ -144,14 +153,9 @@ def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict
     key = target_key(context)
     pricing = deepcopy(record(row.get("pricing")))
     quote = record(record(pricing.get("targets")).get(key))
-    attrs = {**record(context.draft.get("attributes")), **record(record(row.get("attributes_by_target")).get(key))}
     definition = context.category_definition
-    if definition:
-        attrs = apply_listing_grouping_attributes(
-            attrs, context.draft, context.platform,
-            [attr.model_dump() for attr in (*definition.required, *definition.optional)],
-            seller_sku=row.get("sku", ""),
-        )
+    definitions = [attr.model_dump() for attr in (*definition.required, *definition.optional)] if definition else []
+    attrs = sku_listing_attributes(context, row, definitions)
     reviews = deepcopy(context.draft.get("validation_errors") or [])
     if definition:
         variants = {attr.id: attr.model_dump() for attr in (*definition.required, *definition.optional)
@@ -292,4 +296,4 @@ def validate_grouping(context: PreparedPublishContext, grouping: dict[str, Any],
     return []
 
 
-__all__ = ["SkuGroupingMember", "grouping_contract", "same_number", "sku_context", "sku_quote_errors", "target_key", "validate_grouping"]
+__all__ = ["SkuGroupingMember", "grouping_contract", "same_number", "sku_context", "sku_listing_attributes", "sku_quote_errors", "target_key", "validate_grouping"]

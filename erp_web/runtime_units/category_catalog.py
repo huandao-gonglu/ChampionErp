@@ -106,6 +106,17 @@ class CategoryCatalog:
             timeout_seconds=timeout_seconds,
         )
 
+    def refresh_yandex_variant_settings(
+        self, category_id: str, *, site: str, timeout_seconds: float,
+    ) -> CategoryDefinition:
+        """核实商家操作后的变体设置，同时更新此店铺和类目的定义缓存。"""
+        from .category_providers import YandexCategoryProvider
+
+        provider = self.provider_for("yandex")
+        if not isinstance(provider, YandexCategoryProvider):
+            raise ValueError("当前 Yandex 类目来源不支持实时核对变体设置。")
+        return provider.attribute_definitions(category_id, site=site, timeout_seconds=timeout_seconds, force_refresh=True)
+
     def attribute_values(
         self,
         platform: str,

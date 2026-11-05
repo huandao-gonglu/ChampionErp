@@ -16,7 +16,7 @@ def create_service(context):
     orders = context.order_notifications
     store = FulfillmentStore(orders.store)
     labels = PlatformLabelService(context.config.load_store_config, context.config.load_app_config)
-    return FulfillmentService(store, CrossborderBusClient(store), orders.accounts, lambda order_id: context.order_procurement.detail(order_id), label_provider=labels,
+    return FulfillmentService(store, CrossborderBusClient(store, context.config), orders.accounts, lambda order_id: context.order_procurement.detail(order_id), label_provider=labels,
         image_delivery=lambda url: deliver_platform_image(context.config.load_app_config(), url))
 
 
@@ -64,7 +64,7 @@ def command(action, body):
         return deliver_label(get_context().config.load_app_config(), request.order_id, request.content_base64)
     if action == "authorize":
         request = BusCredentials.model_validate(body)
-        service.client.authorize(request.client_secret, request.user_name, request.password)
+        service.client.authorize(request.user_name, request.password)
         return service.settings()
     if action == "catalog":
         service.client.catalog()

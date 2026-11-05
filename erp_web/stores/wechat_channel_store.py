@@ -6,16 +6,18 @@ from pathlib import Path
 import sqlite3
 import time
 from threading import RLock
+from uuid import uuid4
 
 
 def _initial_state():
-    return {"generation": 0, "credentials": None, "conversation_id": "", "cursor": "",
+    return {"generation": 0, "credential_id": "", "conversation_id": "", "cursor": "",
             "context_token": "", "history_position": 0, "accept_after_ms": 0}
 
 
 class WechatChannelStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, config_store):
         self.path = path
+        self.config_store = config_store
         self.lock = RLock()
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -54,6 +56,9 @@ class WechatChannelStore:
                          OR delivery_key LIKE 'rejected:%' THEN 'error'
                     ELSE 'reply' END""")
             conn.execute("INSERT OR IGNORE INTO channel_state VALUES(1,?)", (json.dumps(_initial_state()),))
+            state = json.loads(conn.execute("SELECT payload FROM channel_state WHERE id=1").fetchone()[0])
+            if state.get("credentials"):
+                raise RuntimeError("微信绑定凭据尚未迁移，请停止服务后运行 scripts/migrate_credentials.py。")
 
     @contextmanager
     def _connect(self):
@@ -66,10 +71,16 @@ class WechatChannelStore:
             conn.close()
 
     def _read(self, conn):
-        return json.loads(conn.execute("SELECT payload FROM channel_state WHERE id=1").fetchone()[0])
+        state = json.loads(conn.execute("SELECT payload FROM channel_state WHERE id=1").fetchone()[0])
+        ident = state.get("credential_id", "")
+        credentials = self.config_store.integration_credentials("wechat", ident) if ident else None
+        if ident and not credentials:
+            raise RuntimeError("微信绑定引用的凭据缺失，请恢复同一备份中的主库和渠道库。")
+        return {**state, "credentials": credentials, "credential_id": ident}
 
     def _write(self, conn, state):
-        conn.execute("UPDATE channel_state SET payload=? WHERE id=1", (json.dumps(state, ensure_ascii=False),))
+        persisted = {key: value for key, value in state.items() if key != "credentials"}
+        conn.execute("UPDATE channel_state SET payload=? WHERE id=1", (json.dumps(persisted, ensure_ascii=False),))
 
     def state(self):
         with self.lock, self._connect() as conn:
@@ -112,21 +123,28 @@ class WechatChannelStore:
             return True
 
     def configure(self, *, conversation_id: str, history_position: int, credentials=None, unbind=False):
-        with self.lock, self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            state = self._read(conn)
-            state["generation"] += 1
-            if unbind:
-                state = {**_initial_state(), "generation": state["generation"]}
-            else:
-                state.update(conversation_id=conversation_id, history_position=history_position,
-                             accept_after_ms=int(time.time() * 1000))
-                if credentials is not None:
-                    state.update(credentials=credentials, cursor="", context_token="")
-            # 更换绑定不向新目标发送旧回复，也不转移未交给 ERP 的旧输入。
-            conn.execute("DELETE FROM channel_inbox")
-            conn.execute("DELETE FROM channel_deliveries")
-            self._write(conn, state)
+        with self.lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                state = self._read(conn)
+                old_id = state["credential_id"]
+                state["generation"] += 1
+                if unbind:
+                    state = {**_initial_state(), "credentials": None, "generation": state["generation"]}
+                else:
+                    state.update(conversation_id=conversation_id, history_position=history_position,
+                                 accept_after_ms=int(time.time() * 1000))
+                    if credentials is not None:
+                        ident = uuid4().hex
+                        # 先保存不可变凭据，再原子切换渠道指针。跨库失败不会留下悬空绑定。
+                        self.config_store.save_integration_credentials("wechat", credentials, ident)
+                        state.update(credentials=credentials, credential_id=ident, cursor="", context_token="")
+                # 更换绑定不向新目标发送旧回复，也不转移未交给 ERP 的旧输入。
+                conn.execute("DELETE FROM channel_inbox")
+                conn.execute("DELETE FROM channel_deliveries")
+                self._write(conn, state)
+            if old_id and old_id != state["credential_id"]:
+                self.config_store.delete_integration_credentials("wechat", old_id)
             return state
 
     def ingest(self, generation, cursor, messages):

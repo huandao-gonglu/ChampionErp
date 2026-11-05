@@ -17,6 +17,7 @@ from erp_web.services.external_request_manager import managed_urlopen
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 
 
+CROSSBORDER_PRODUCT = "product.search.queryProductDetail"
 ORDER_DETAIL = "alibaba.trade.get.buyerView"
 LOGISTICS_INFO = "alibaba.trade.getLogisticsInfos.buyerView"
 LOGISTICS_TRACE = "alibaba.trade.getLogisticsTraceInfo.buyerView"
@@ -59,7 +60,7 @@ class AlibabaApiClient:
         self.app_secret = str(config.get("app_secret") or "").strip()
         self.access_token = str(config.get("access_token") or "").strip()
         if not (self.app_key and self.app_secret and self.access_token):
-            raise AlibabaApiError("请先在授权配置的「1688 授权」中保存 AppKey、AppSecret 和 Access Token")
+            raise AlibabaApiError("请先在授权配置的「1688 授权」中连接采购账号；服务未配置时请联系管理员")
         if not re.fullmatch(r"[0-9]+", self.app_key):
             raise AlibabaApiError("1688 AppKey 格式无效")
         try:
@@ -75,6 +76,19 @@ class AlibabaApiClient:
         if logistics_id:
             params["logisticsId"] = logistics_id
         return self._request(api, params, namespace=_NAMESPACES[api], semantics="read")
+
+    def test_product(self, product_id: str) -> dict:
+        if not re.fullmatch(r"[1-9][0-9]{0,18}", product_id) or int(product_id) > 2**63 - 1:
+            raise AlibabaApiError("请填写有效的 1688 商品编号")
+        response = self._request(CROSSBORDER_PRODUCT, {"offerDetailParam": {"offerId": int(product_id), "country": "en"}},
+                                 namespace="com.alibaba.fenxiao.crossborder", semantics="read")
+        detail = response.get("result")
+        if not isinstance(detail, dict) or str(detail.get("offerId")) != product_id:
+            raise AlibabaApiError("1688 未返回该商品的详情")
+        skus = detail.get("productSkuInfos") or []
+        if not isinstance(skus, list) or not all(isinstance(sku, dict) for sku in skus):
+            raise AlibabaApiError("1688 返回的商品规格格式无效")
+        return {"ok": True, "sku_count": len(skus), "spec_id_count": sum(bool(sku.get("specId")) for sku in skus)}
 
     def _request(self, api, values, *, namespace, semantics):
         path = f"param2/1/{namespace}/{api}/{self.app_key}"
@@ -92,7 +106,7 @@ class AlibabaApiClient:
         )
         context = request_context(
             url, data=request.data, method="POST", timeout=self.timeout,
-            source="1688采购" + ("查询" if semantics == "read" else "支付" if api == "alibaba.trade.pay.protocolPay.preparePay" else "下单"), account_id="app:" + self.app_key, semantics=semantics,
+            source="1688跨境商品查询" if api == CROSSBORDER_PRODUCT else "1688采购" + ("查询" if semantics == "read" else "支付" if api == "alibaba.trade.pay.protocolPay.preparePay" else "下单"), account_id="app:" + self.app_key, semantics=semantics,
         )
         context = replace(context, interface=api, credential_id=credential_fingerprint(self.access_token))
         try:
@@ -111,7 +125,7 @@ class AlibabaApiClient:
             if rejected:
                 raise AlibabaApiRejected(rejected) from None
             if exc.code == 401:
-                raise AlibabaApiError("1688 用户授权无效或已过期，请更新 Access Token 后重试") from None
+                raise AlibabaApiError("1688 用户授权无效或已过期，请重新连接账号后重试") from None
             if exc.code == 403:
                 raise AlibabaApiError("1688 拒绝访问，请检查应用的接口权限和采购账号授权") from None
             raise AlibabaApiError(f"1688 查询失败（HTTP {exc.code}），请稍后手动重试") from None
@@ -123,6 +137,8 @@ class AlibabaApiClient:
             payload = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
             raise AlibabaApiError("1688 返回了无法解析的响应") from None
+        if api == CROSSBORDER_PRODUCT and isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+            payload = payload["result"]
         # 订单详情实测返回字符串 "true"，物流接口返回 JSON 布尔值。
         success = payload.get("success") if isinstance(payload, dict) else None
         if not (success is True or success == "true"):

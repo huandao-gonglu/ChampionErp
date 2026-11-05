@@ -1,44 +1,33 @@
 """单件在线状态读取：限定已知商品身份，不扫描目录，不读取价格和库存接口。"""
-from contextvars import copy_context
-from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 from erp_web.marketplaces.mercadolibre_mapping import validate_user_product_mapping
 from erp_web.product_model import canonicalize_mercadolibre_siteless_user_product_id
 from erp_web.runtime_units.online_ozon_read import index_rows as ozon_rows
-from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, index_rows, pages
+from erp_web.runtime_units.online_yandex_read import catalog_pages, read_batch
 from erp_web.schemas.online_products import MarketStatus, OnlineStatus
-from erp_web.runtime_units.online_yandex_snapshot import card_issues
 
 
 def yandex_status(adapter, listing):
     remote_id = listing.remote_id
 
-    def fetch(path, key):
-        rows = [row for page in pages(adapter, path, key, {"offerIds": [remote_id]}) for row in page]
-        return index_rows(rows, allowed={remote_id})
-
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="online-status") as pool:
-        offer_future = pool.submit(copy_context().run, fetch, f"/v2/campaigns/{adapter.campaign}/offers", "offers")
-        card_future = pool.submit(copy_context().run, fetch, f"/v2/businesses/{adapter.business}/offer-cards", "offerCards")
-        hidden_future = pool.submit(copy_context().run, hidden_ids, adapter, remote_id)
-        mapping_future = pool.submit(copy_context().run, lambda: [row for page in catalog_pages(adapter, [remote_id]) for row in page])
-        offers, cards, hidden = offer_future.result(), card_future.result(), hidden_future.result()
-        mappings = mapping_future.result()
+    mappings = [row for page in catalog_pages(adapter, [remote_id]) for row in page]
     if len(mappings) != 1 or mappings[0]["offer"]["offerId"] != remote_id:
         raise ValueError("Yandex 未返回该商品的归档状态，已保留原记录")
     archived = mappings[0]["offer"].get("archived", False)
     if type(archived) is not bool:
         raise ValueError("Yandex 商品归档状态无效，已保留原记录")
-    if remote_id not in offers or remote_id not in cards:
-        raise ValueError("Yandex 未返回该商品的店铺状态，已保留原记录")
-    status = str(offers[remote_id].get("status") or "")
-    card_status = str(cards.get(remote_id, {}).get("cardStatus") or "")
-    return OnlineStatus(remote_id=remote_id, raw_status=status,
-        sale_state="paused" if remote_id in hidden else "active" if status == "PUBLISHED" and not archived else "unknown", archived=archived,
-        raw_sub_status=[card_status] if card_status else [],
-        platform_issues=card_issues(cards[remote_id])+card_issues(offers[remote_id], source="campaign"),
-        markets=[MarketStatus(id=adapter.campaign, raw_status=status)])
+    result = read_batch(adapter, mappings, {}, full=False)
+    if result.errors or not result.listings or not result.listings[0].raw_status:
+        raise ValueError(result.errors.get(remote_id) or "Yandex 未返回该商品的店铺状态，已保留原记录")
+    fresh = result.listings[0]
+    return OnlineStatus(remote_id=remote_id, raw_status=fresh.raw_status,
+        sale_state=fresh.sale_state, archived=archived, raw_sub_status=fresh.raw_sub_status,
+        platform_issues=fresh.platform_issues,
+        markets=[MarketStatus(id=market.id, name=market.name, raw_status=market.raw_status or 'unknown',
+                              raw_sub_status=market.raw_sub_status) for market in fresh.markets],
+        warehouses=fresh.snapshot.get('warehouse_catalog', []),
+        hidden_campaigns=fresh.snapshot.get('hidden_campaigns', {}))
 
 
 def ozon_status(adapter, listing):

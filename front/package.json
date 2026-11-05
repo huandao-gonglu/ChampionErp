@@ -1,6 +1,6 @@
 {
   "name": "champion-erp-front",
-  "version": "1.2.1",
+  "version": "1.2.5",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
@@ -9,8 +9,10 @@
     "build": "vue-tsc -b && vite build",
     "build:desktop": "vue-tsc -b && vite build --mode desktop",
     "desktop:dev": "pnpm build:desktop && electron .",
-    "desktop:pack": "pnpm build:desktop && electron-builder --dir",
-    "desktop:dist": "pnpm build:desktop && electron-builder",
+    "build:backend": "python3 ../scripts/build_desktop_backend.py",
+    "desktop:pack": "pnpm build:backend && pnpm build:desktop && electron-builder --dir",
+    "desktop:dist": "pnpm build:backend && pnpm build:desktop && electron-builder",
+    "test:desktop": "node --test desktop/*.test.cjs",
     "preview": "vite preview --host 127.0.0.1",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix",
     "lint:check": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts",
@@ -67,8 +69,14 @@
     },
     "files": [
       "desktop/**/*",
+      "!desktop/**/*.test.cjs",
       "dist-desktop/**/*",
+      "!dist-desktop/licenses/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      { "from": ".desktop-backend/champion-erp-backend", "to": "backend" },
+      { "from": "dist-desktop/licenses", "to": "licenses" }
     ],
     "mac": {
       "icon": "desktop/assets/icon.icns",

@@ -130,8 +130,8 @@ def _connection(app_dir, model, timeout, force_login=False):
         lock.release()
 
 
-def check_canvas_connection(app_dir, model, timeout=30) -> None:
-    with _connection(app_dir, model, timeout):
+def check_canvas_connection(app_dir, model, timeout=30, *, force_login: bool = False) -> None:
+    with _connection(app_dir, model, timeout, force_login=force_login):
         pass
 
 

@@ -55,12 +55,13 @@ def runtime(monkeypatch):
     monkeypatch.setattr(get_context().config, "load_store_config", lambda: deepcopy(config))
 
     class Shipping:
+        yandex_plans = [{'fingerprint': 'plan', 'publish_warehouse_id': 31}]
         module = SimpleNamespace(ozon_discovery_ms=0)
 
         def __call__(self, common, target):
             return {"amount": "7", "currency": "CNY", "minimum_price_cny": "0",
                     "billable_g": "1000", "evidence": {"source": "tariff_template",
-                    "fulfillment_plan": {"fingerprint": "plan", "publish_warehouse_id": 31}}, "candidates": []}
+                    "fulfillment_plan": {"fingerprint": "plan", "publish_warehouse_id": 31}}, "candidates": [{"amount_cny": "7", "fulfillment_plan": self.yandex_plans[0]}]}
 
     monkeypatch.setattr(pricing_runtime, "PricingShipping", lambda *_args, **_kwargs: Shipping())
     calls = []
@@ -367,3 +368,24 @@ def test_return_loss_reuses_rules_and_keeps_final_batch_verification(runtime, mo
         assert new["return_loss_cny"] > 0
         assert new["calculation_basis"]["commission_evidence"]["price"] == new["applied_price"]
     print(f"货损批量回归 {mode}: 9 SKU 首算 {cold_ms:.2f} ms，缓存重算 {warm_ms:.2f} ms（平台响应替身）")
+
+
+def test_campaigns_keep_separate_fee_batches_receipts_and_rule_cache():
+    from erp_web.services.yandex_commission_batch import YandexCommissionBatch, CommissionBatchPending
+    calls = []
+    def request(method, endpoint, token, body):
+        campaign = body['parameters']['campaignId']
+        calls.append(deepcopy(body))
+        return {'result': {'offers': [{'offer': offer, 'tariffs': [tariff(Decimal(str(offer['price'])), rate='20' if campaign == 987 else '30')]}
+                                     for offer in body['offers']]}}
+    fees = YandexCommissionBatch({'api_token': 'test', 'campaign_id': '987'}, request, rule_cache=get_context().pricing_cache.rules)
+    offer = {'categoryId': 123, 'price': 100, 'quantity': 1, 'weight': 1, 'length': 20, 'width': 10, 'height': 5}
+    for campaign in ('987', '988', '988'):
+        with pytest.raises(CommissionBatchPending):
+            fees.quote(offer, 'CNY', campaign_id=campaign)
+    fees.flush()
+    assert [body['parameters']['campaignId'] for body in calls] == [987, 988]
+    assert [len(body['offers']) for body in calls] == [1, 1]
+    assert Decimal(fees.quote(offer, 'CNY', campaign_id='987')['amount']) == 20
+    assert Decimal(fees.quote(offer, 'CNY', campaign_id='988')['amount']) == 30
+    assert fees.rule_key(offer, 'CNY', '987') != fees.rule_key(offer, 'CNY', '988')

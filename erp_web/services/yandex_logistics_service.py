@@ -54,10 +54,17 @@ class YandexLogisticsService:
             if not account['business_id'] or not account['campaign_id'] or not store.get('api_token'):
                 raise ValueError('请先完成 Yandex 店铺授权')
             rows = fetch_yandex_partner_warehouses(store['api_token'], account['business_id'])
-            items = [{'id': int(row['id']), 'name': str(row.get('name') or row['id'])} for row in rows
-                     if str(row.get('id', '')).isdigit() and int(row['id']) > 0
-                     and any(m.get('placementType') == 'FBS' and m.get('apiAvailability') == 'AVAILABLE'
-                             for m in row.get('models', []) if isinstance(m, dict))]
+            items = []
+            for row in rows:
+                models = [m for m in row.get('models', []) if isinstance(m, dict)
+                          and m.get('placementType') == 'FBS' and m.get('apiAvailability') == 'AVAILABLE']
+                campaigns = {str(m['campaignId']) for m in models if m.get('campaignId')}
+                if not str(row.get('id', '')).isdigit() or not models:
+                    continue
+                if len(campaigns) != 1:
+                    raise ValueError(f"仓库 {row.get('name') or row['id']} 未提供唯一的 FBS 店铺关联")
+                items.append({'id': int(row['id']), 'name': str(row.get('name') or row['id']),
+                              'campaign_id': campaigns.pop()})
             if identity != self.identity():
                 raise ValueError('Yandex 账号已变化，请重新同步发布仓库')
             cached = {'identity': identity, 'items': items, 'checked_at': utc_iso()}
@@ -151,12 +158,14 @@ class YandexLogisticsService:
         bindings, _ = self.mode_bindings(list(routes.values()), configured)
         for binding in bindings:
             warehouse = warehouses.get(binding['warehouse_id'])
-            if not binding['enabled'] or not warehouse:
+            if not binding['enabled'] or not warehouse or not warehouse.get('campaign_id'):
                 continue
             for route in routes.values():
                 if route['carrier'] != binding['carrier'] or shipping_mode_name(route) != binding['shipping_mode']:
                     continue
-                plan = {**account, 'route_id': route['id'], 'route_name': route['name'], 'carrier': route['carrier'],
+                plan = {**account, 'authorization_campaign_id': account['campaign_id'],
+                        'campaign_id': warehouse['campaign_id'],
+                        'route_id': route['id'], 'route_name': route['name'], 'carrier': route['carrier'],
                         'shipping_mode': binding['shipping_mode'],
                         'publish_warehouse_id': warehouse['id'], 'publish_warehouse_name': warehouse['name'],
                         'configuration_revision': configured['revision']}

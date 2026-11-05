@@ -754,6 +754,7 @@ class YandexCategoryProvider(CategoryProvider):
         *,
         site: str = "",
         timeout_seconds: float | None = None,
+        force_refresh: bool = False,
     ) -> CategoryDefinition:
         del site
         category_id = str(category_id or "").strip()
@@ -765,6 +766,7 @@ class YandexCategoryProvider(CategoryProvider):
             record = fetch_yandex_leaf_record(
                 category_id,
                 include_attributes=True,
+                force_refresh=force_refresh,
                 timeout_seconds=_remaining_timeout(deadline_at),
             )
             attributes = (
@@ -800,6 +802,7 @@ class YandexCategoryProvider(CategoryProvider):
             site="global",
             category_id=category_id,
             live_loader=live_loader,
+            force_refresh=force_refresh,
             fresh_ttl=timedelta(seconds=self.definition_fresh_ttl_seconds),
             max_age=DEFINITION_CACHE_MAX_AGE,
         )
@@ -816,24 +819,25 @@ class YandexCategoryProvider(CategoryProvider):
         timeout_seconds: float | None = None,
     ) -> CategoryAttributeValuePage:
         del site
+        target_id = str(attribute_id or "").strip()
+        if target_id.casefold() in {"brand", "vendor"}:
+            raise ValueError("Yandex 品牌取自草稿或商品的品牌字段（vendor），无需查询类目候选。")
         parameters = fetch_yandex_category_parameter_definitions(
             category_id,
             timeout_seconds=timeout_seconds,
         )
-        target_id = str(attribute_id or "").strip()
+        parameter = next(
+            (item for item in parameters if str(item["parameter_id"]) == target_id),
+            None,
+        )
+        if parameter is None:
+            raise ValueError(f"Yandex 类目 {category_id} 没有属性 {target_id}，请使用当前类目定义中的属性 ID。")
         candidates: list[tuple[str, str]] = []
-        for parameter in parameters if isinstance(parameters, list) else []:
-            if not isinstance(parameter, dict):
+        for row in parameter.get("values") or []:
+            if not isinstance(row, dict):
                 continue
-            if str(parameter.get("parameter_id") or "").strip() != target_id:
-                continue
-            for row in parameter.get("values") or []:
-                if not isinstance(row, dict):
-                    continue
-                value = str(row.get("value") or "").strip()
-                if not value:
-                    continue
-                # valueId 规范化为字符串 dictionary_value_id。
+            value = str(row.get("value") or "").strip()
+            if value:
                 candidates.append((value, str(row.get("value_id") or "").strip()))
         return paginate_value_candidates(
             candidates,

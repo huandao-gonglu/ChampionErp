@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 from erp_web.http_route_units import (
     task_queue_routes,
     wechat_routes,
+    alibaba_authorization_routes,
     ai_work_routes,
     get_routes,
     image_routes,
@@ -77,6 +78,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     endpoints: set[tuple[str, str]] = set()
     endpoints.update(("GET", path) for path in task_queue_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in wechat_routes.GET_API_ROUTES)
+    endpoints.update(("GET", path) for path in alibaba_authorization_routes.GET_HANDLED_PATHS)
     endpoints.update(("GET", path) for path in get_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in online_product_routes.GET_API_ROUTES)
@@ -91,6 +93,14 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
+        reason="1688 买家 OAuth 状态、官方登录及一次性回调只供受信界面与授权服务使用，不向模型开放凭据操作。") for method, path in (
+        ("GET", "/api/alibaba/crossborder/authorization"),
+        ("POST", "/api/alibaba/crossborder/authorization/start"), ("POST", "/api/alibaba/crossborder/authorization/complete"),
+        ("POST", "/api/alibaba/crossborder/authorization/test-product"),
+        ("GET", "/api/alibaba/authorization"), ("GET", "/auth/alibaba/callback"),
+        ("POST", "/api/alibaba/authorization/start"), ("POST", "/api/alibaba/authorization/complete"),
+    )),
     AiCapabilityCoverageEntry(method="POST", path="/api/publish-bus/retry", business_domain="商品发布", disposition="internal_only",
         reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="禁售类目设置", disposition="internal_only",
@@ -389,6 +399,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         business_domain="静态资源",
         disposition="excluded",
         reason="本地图片静态文件服务，基础设施。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="GET",
+        path="/licenses/THIRD-PARTY-NOTICES.txt",
+        business_domain="静态资源",
+        disposition="excluded",
+        reason="开源许可证声明下载，不属于业务能力。",
     ),
     AiCapabilityCoverageEntry(
         method="GET",

@@ -63,6 +63,7 @@ GET_API_ROUTES = {
 }
 
 STATIC_ROUTES = {
+    "/licenses/THIRD-PARTY-NOTICES.txt",
     "/file",
     "/auth/mercadolibre",
     "/auth/ozon",
@@ -214,6 +215,7 @@ def handle_mercadolibre_callback(handler: JsonRequestHandler, parsed: object) ->
 
 
 GET_HANDLERS: dict[str, GetHandler] = {
+    "/licenses/THIRD-PARTY-NOTICES.txt": handle_assets,
     "/api/system-settings": lambda handler, parsed: handler.send_json(system_settings_payload()),
     "/api/system-settings/forbidden-categories": lambda handler, parsed: handler.send_json(forbidden_categories_payload()),
     "/api/state": handle_state,

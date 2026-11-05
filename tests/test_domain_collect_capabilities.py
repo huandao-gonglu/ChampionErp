@@ -384,24 +384,21 @@ def test_claim_products_with_real_store_and_failure_mapping() -> None:
     assert error.value.code == "CLAIM_PRODUCTS_FAILED"
 
 
-def test_collect_credentials_resolve_from_saved_config_only() -> None:
+def test_collect_credentials_resolve_from_saved_config_only(monkeypatch) -> None:
     context = get_context()
     assert agent_capability_facade._resolved_collect_cookie(context) == ""
     assert agent_capability_facade._saved_1688_api_config(context) is None
 
     config = context.config.load_app_config()
     config["alibaba_cookie"] = "saved-cookie"
-    config["1688_api"] = {
-        "app_key": "key-1",
-        "app_secret": "secret-1",
-        "access_token": "token-1",
-    }
+    monkeypatch.setenv("ERP_ALIBABA_APP_KEY", "12345")
+    monkeypatch.setenv("ERP_ALIBABA_APP_SECRET", "secret-1")
     context.config.save_app_config(config)
 
     assert agent_capability_facade._resolved_collect_cookie(context) == "saved-cookie"
     api = agent_capability_facade._saved_1688_api_config(context)
     assert api is not None
-    assert api["app_key"] == "key-1"
+    assert api["app_key"] == "12345"
 
 
 # ---------------------------------------------------------------- 研究

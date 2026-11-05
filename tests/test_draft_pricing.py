@@ -31,8 +31,9 @@ def pricing_draft(monkeypatch):
         def __call__(self, common, target):
             if target['platform'] == 'ozon':
                 return super().__call__(common, target)
+            self.yandex_plans = [deepcopy(PLAN)]
             return {'amount': '4', 'currency': 'CNY', 'minimum_price_cny': '0', 'billable_g': str(float(common['weight_kg']) * 1000),
-                    'evidence': {'fulfillment_plan': deepcopy(PLAN)}, 'candidates': []}
+                    'evidence': {'fulfillment_plan': deepcopy(PLAN)}, 'candidates': [{'amount_cny': '4', 'fulfillment_plan': deepcopy(PLAN)}]}
     monkeypatch.setattr('erp_web.runtime_units.pricing_runtime.PricingShipping', Shipping)
     seed_store_currency("ozon", "CNY", identity={"client_id": "test", "api_key": "test"})
     seed_store_currency("yandex", "RUB", mode="manual")

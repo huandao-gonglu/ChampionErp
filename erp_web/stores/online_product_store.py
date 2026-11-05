@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from erp_web.db import ErpDatabase, utc_now
 from erp_web.product_model.online_operation_model import UNRESOLVED_STATUSES, blocks_modification, effective_job_status, submission_status
-from erp_web.schemas.online_products import BuyerLink, OnlineListing, OnlineStatus, snapshot_version
+from erp_web.schemas.online_products import BuyerLink, MarketSnapshot, OnlineListing, OnlineStatus, snapshot_version
 from erp_web.services.external_request_context import current_task_origin
 
 
@@ -65,6 +65,15 @@ class OnlineProductStore:
                     listing.prices, listing.stocks = previous.prices, previous.stocks
                 listing.synced_at = previous.synced_at
                 listing.snapshot = {**previous.snapshot, **listing.snapshot}
+                if listing.platform == 'yandex':
+                    for stock in listing.stocks:
+                        warehouse = next((row for row in listing.snapshot.get('warehouse_catalog', []) if row['id'] == stock.id), None)
+                        if warehouse:
+                            stock.campaign_id = warehouse['campaign_id']
+                            market = next((market for market in listing.markets if market.id == stock.campaign_id), None)
+                            stock.raw_status = market.raw_status if market else ''
+                            stock.sale_state = ('paused' if listing.snapshot.get('hidden_campaigns', {}).get(stock.campaign_id)
+                                                else 'active' if stock.raw_status == 'PUBLISHED' and not listing.archived else 'unknown')
                 if previous.details_state == "ready" and previous.synced_at:
                     listing.details_state = "ready"
                     for operation in ("price", "stock", "content"):
@@ -148,7 +157,10 @@ class OnlineProductStore:
             if (current.version, current.synced_at, current.status_checked_at) != (before.version, before.synced_at, before.status_checked_at):
                 raise OnlineConflict("查询期间商品数据已更新，请重新刷新状态")
             markets = {item.id: item for item in status.markets}
-            if len(markets) != len(status.markets) or set(markets) - {item.id for item in current.markets}:
+            allowed = {item.id for item in current.markets}
+            if current.platform == 'yandex':
+                allowed |= {warehouse.campaign_id for warehouse in status.warehouses}
+            if len(markets) != len(status.markets) or set(markets) - allowed:
                 raise OnlineConflict("商品市场关系已变化，请同步店铺商品")
             current.raw_status = status.raw_status
             current.raw_sub_status = status.raw_sub_status
@@ -162,6 +174,23 @@ class OnlineProductStore:
                 if market.id in markets:
                     market.raw_status = markets[market.id].raw_status
                     market.raw_sub_status = markets[market.id].raw_sub_status
+            if current.platform == 'yandex' and status.warehouses:
+                current.snapshot['warehouse_catalog'] = [warehouse.model_dump() for warehouse in status.warehouses]
+                current.snapshot['hidden_campaigns'] = status.hidden_campaigns
+                current.snapshot['hidden'] = status.hidden_campaigns.get(current.account_id.split(':', 1)[1], False)
+                current.markets = [next((market for market in current.markets if market.id == item.id),
+                    MarketSnapshot(id=item.id, site_id=item.id, seller_id=current.account_id.split(':', 1)[0], name=item.name))
+                    for item in status.markets]
+                for market in current.markets:
+                    market.raw_status, market.raw_sub_status = markets[market.id].raw_status, markets[market.id].raw_sub_status
+                for stock in current.stocks:
+                    warehouse = next((warehouse for warehouse in status.warehouses if warehouse.id == stock.id), None)
+                    if warehouse:
+                        stock.campaign_id = warehouse.campaign_id
+                        market = markets.get(stock.campaign_id)
+                        stock.raw_status = market.raw_status if market else ''
+                        stock.sale_state = ('paused' if status.hidden_campaigns.get(stock.campaign_id)
+                                            else 'active' if stock.raw_status == 'PUBLISHED' and not current.archived else 'unknown')
             current.status_checked_at = datetime.now(timezone.utc).isoformat()
             current.version = snapshot_version(current)
             conn.execute("UPDATE online_listings SET version=?,snapshot_json=? WHERE id=?",
@@ -211,6 +240,9 @@ class OnlineProductStore:
         return result
 
     def sale_intent(self, listing_id: str, state: str, *, lease: dict[str, Any]) -> None:
+        if lease['platform'] == 'yandex' and lease['request'].get('scope_id', '').startswith('campaign:'):
+            # Yandex 按店铺隐藏；单仓操作不写入全局停售意图，结果由隐藏状态回读保存。
+            return
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_lease(conn, lease)

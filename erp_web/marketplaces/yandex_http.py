@@ -870,6 +870,7 @@ def fetch_yandex_price_quarantine(
         path,
         api_token,
         payload,
+        query={'limit': 200} if len(identifiers) > 100 else None,
         timeout_seconds=timeout_seconds,
     )
     result = body.get("result") if isinstance(body.get("result"), dict) else {}

@@ -1,5 +1,7 @@
 """交货信息只读查询：订单关联、地址方向、分页完整性和账号隔离。"""
 
+from erp_web.context import get_context
+
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -166,7 +168,7 @@ def test_shipment_request_scope_matches_campaign_quota():
 def test_sync_and_notifications_persist_handover_and_detail_reads_stay_local(tmp_path, monkeypatch):
     config = {"yandex": {"campaign_id": "4", "business_id": "5", "api_token": "test-token"}}
     store = OrderNotificationStore(tmp_path / "orders.sqlite3")
-    service = OrderNotificationService(store, lambda: config, adapters={"yandex": YandexOrderAdapter},
+    service = OrderNotificationService(store, lambda: config, config_store=get_context().config, adapters={"yandex": YandexOrderAdapter},
                                        parser=parse_notification, start_worker=False)
     row = {"orderId": 123, "campaignId": 4, "programType": "FBS", "status": "PROCESSING",
            "substatus": "READY_TO_SHIP", "updateDate": "2026-10-05T11:00:00+03:00",

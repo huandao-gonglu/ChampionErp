@@ -187,6 +187,7 @@ def test_facade_registration_queries_once_and_keeps_purchase_on_failure(setup, m
     from erp_web.services.alibaba_api_client import AlibabaApiClient
     procurement, fulfillment, body, client, _ = setup
     record = procurement.store.purchase_record(**body, accounts=procurement.accounts_provider())
+    monkeypatch.setattr(facade, 'alibaba_runtime_config', lambda store: CONFIG)
     monkeypatch.setattr(facade, 'get_context', lambda: SimpleNamespace(order_procurement=procurement,
         fulfillment=fulfillment, config=SimpleNamespace(load_app_config=lambda: {'1688_api': CONFIG})))
     calls = []

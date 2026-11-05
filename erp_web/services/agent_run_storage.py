@@ -12,6 +12,8 @@ from collections.abc import Callable
 from pydantic_ai import CallToolsNode, ModelRequestNode, ModelRetry, RunContext, UserPromptNode
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, ModelResponse, RetryPromptPart, TextPart, ToolCallPart
 
+from pydantic_ai.models import ModelRequestContext
+
 from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_page_context import page_context_instructions
 from erp_web.schemas.ai_approval import AiToolApprovalMode
@@ -149,6 +151,15 @@ class AgentRunStorage:
                     self.target_draft_ids = ids
                 self.consumed.add(row["sequence"])
 
+    def checkpoint_inputs(self, ctx: RunContext) -> None:
+        # 原生队列已把本批输入加入 ctx.messages，此时才将历史和收件状态一起提交。
+        with self.lock:
+            self.version = self.store.commit(
+                self.conversation_id, self.canonical(ctx), expected_version=self.version,
+                consumed_sequences=tuple(self.consumed), replace_deferred=False,
+            )
+            self.consumed.clear()
+
     def before_tool(self, ctx: RunContext, *, writing: bool) -> None:
         check_cancellation()
         if any(
@@ -267,3 +278,9 @@ async def receive_user_updates(ctx: RunContext, *, node: Any) -> Any:
     if support is not None and isinstance(node, (UserPromptNode, ModelRequestNode)):
         await asyncio.to_thread(support.receive_at_boundary, ctx)
     return node
+
+async def checkpoint_model_inputs(ctx: RunContext, request_context: ModelRequestContext) -> ModelRequestContext:
+    support = ctx.deps.tool_runtime.run_support
+    if support is not None and support.consumed:
+        await asyncio.to_thread(support.checkpoint_inputs, ctx)
+    return request_context

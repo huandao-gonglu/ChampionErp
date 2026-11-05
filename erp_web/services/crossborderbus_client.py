@@ -20,8 +20,9 @@ READ_PATHS = frozenset({"/erpapi/storehouse/cooperationStorehouse", "/erpapi/sto
 
 
 class CrossborderBusClient:
-    def __init__(self, store):
+    def __init__(self, store, config_store):
         self.store = store
+        self.config_store = config_store
         self.token_lock = threading.RLock()
         self.cancel = None
         self.authorizing = threading.local()
@@ -29,13 +30,13 @@ class CrossborderBusClient:
     def credentials(self):
         if hasattr(self.authorizing, "credentials"):
             return self.authorizing.credentials
-        return self.store.setting("credentials", {})
+        return self.config_store.crossborderbus_credentials()
 
     def _save_credentials(self, credentials):
         if hasattr(self.authorizing, "credentials"):
             self.authorizing.credentials = credentials
         else:
-            self.store.set_setting("credentials", credentials)
+            self.config_store.save_crossborderbus_credentials(credentials)
 
     def identity(self):
         value = self.credentials()
@@ -82,7 +83,7 @@ class CrossborderBusClient:
         with self.token_lock:
             credentials = self.credentials()
             if not credentials.get("client_secret"):
-                raise FulfillmentError("请在授权配置中填写跨境巴士企业密钥。")
+                raise FulfillmentError("授权服务暂未配置，请联系管理员。")
             if credentials.get("access_token") and credentials.get("expires_at", 0) > time.time() + 3600:
                 return credentials["access_token"]
             refresh = credentials.get("expires_token")
@@ -102,22 +103,20 @@ class CrossborderBusClient:
                 raise FulfillmentError("跨境巴士账号尚未授权。")
             return self._request(path, body, {"authorization": self.token(), "k-client-secret": credentials["client_secret"], "k-app-uid": str(credentials["app_uid"])})
 
-    def authorize(self, client_secret, user_name, password):
+    def authorize(self, user_name, password):
         with self.token_lock:
             old = self.credentials()
-            secret = client_secret or old.get("client_secret", "")
+            secret = old.get("client_secret", "")
             if not secret:
-                raise FulfillmentError("请填写企业密钥。")
+                raise FulfillmentError("授权服务暂未配置，请联系管理员。")
             if bool(user_name) != bool(password):
                 raise FulfillmentError("请同时填写跨境巴士账号和密码。")
-            if secret != old.get("client_secret") and not password:
-                raise FulfillmentError("更换企业密钥时必须重新填写账号和密码完成授权。")
             # 候选凭据只在授权线程内可见，验证失败保留原授权。
-            self.authorizing.credentials = ({**old} if secret == old.get("client_secret") else {"client_secret": secret})
+            self.authorizing.credentials = {**old}
             try:
                 token = self.token()
-                if secret == old.get("client_secret"):
-                    self.store.set_setting("credentials", self.credentials())
+                if old.get("app_uid"):
+                    self.config_store.save_crossborderbus_credentials(self.credentials())
                 if password:
                     result = self._request("/erpapi/user/authorization", {"user_name": user_name, "password": password}, {"authorization": token, "k-client-secret": secret})
                     if type(result.get("app_uid")) is not int or result["app_uid"] <= 0:
@@ -128,7 +127,7 @@ class CrossborderBusClient:
                 else:
                     raise FulfillmentError("请填写跨境巴士账号和密码完成授权。")
                 catalog = self.catalog()
-                self.store.set_setting("credentials", self.credentials())
+                self.config_store.save_crossborderbus_credentials(self.credentials())
                 return catalog
             finally:
                 del self.authorizing.credentials

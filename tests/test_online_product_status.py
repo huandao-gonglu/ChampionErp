@@ -201,7 +201,8 @@ def test_http_refresh_request_validation(backend_server):
 def test_yandex_status_requests_only_the_target_and_skips_price_stock_and_settings(monkeypatch):
     from erp_web.runtime_units import online_yandex as module
     monkeypatch.setattr(module.api, "fetch_yandex_campaign", lambda *_: {"business": {"id": 1}})
-    for name in ("fetch_yandex_business_settings", "fetch_yandex_partner_warehouses"):
+    monkeypatch.setattr(module.api, "fetch_yandex_partner_warehouses", lambda *_: [])
+    for name in ("fetch_yandex_business_settings",):
         monkeypatch.setattr(module.api, name, Mock(side_effect=AssertionError("刷新状态不应读取此接口")))
     adapter = YandexOnlineAdapter({"yandex": {"business_id": "1", "campaign_id": "2", "api_token": "test", "stock_update_mode": "business"}})
     calls = []
@@ -229,7 +230,7 @@ def test_yandex_status_requests_only_the_target_and_skips_price_stock_and_settin
 @pytest.mark.parametrize("rows", [[], [{"offerId": "other", "status": "PUBLISHED"}], [{"offerId": "sku-1"}]])
 def test_yandex_missing_or_foreign_status_is_not_success(rows):
     adapter = object.__new__(YandexOnlineAdapter)
-    adapter.business, adapter.campaign = "1", "2"
+    adapter.business, adapter.campaign, adapter.account_id, adapter.mode = "1", "2", "1:2", "none"
     def request(path, *args, **kwargs):
         key = "hiddenOffers" if path.endswith("hidden-offers") else "offerCards" if path.endswith("offer-cards") else "offers"
         return {"result": {key: rows if key == "offers" else []}}
@@ -240,7 +241,7 @@ def test_yandex_missing_or_foreign_status_is_not_success(rows):
 
 def test_yandex_missing_target_card_does_not_turn_unknown_feedback_into_empty_feedback():
     adapter = object.__new__(YandexOnlineAdapter)
-    adapter.business, adapter.campaign = '1', '2'
+    adapter.business, adapter.campaign, adapter.account_id, adapter.mode = '1', '2', '1:2', 'none'
     def request(path, *args, **kwargs):
         if path.endswith('/offers'):
             return {'result': {'offers': [{'offerId': 'sku-1', 'status': 'PUBLISHED'}]}}

@@ -4,6 +4,7 @@ import type { BackendPublishPreparationProgress } from './workflow.generated'
 export {
   API_SCHEMA_VERSION,
   PRODUCT_SCHEMA_VERSION,
+  type BackendAlibabaAuthorizationStatus,
   type BackendForbiddenCategory,
   type BackendForbiddenCategories,
   type BackendWechatChannelStatus,
@@ -704,10 +705,6 @@ export interface CollectForm {
   productUrls: string
   platform: string
   mode: CollectMode
-  alibabaApiBaseUrl: string
-  alibabaApiMethod: string
-  alibabaApiVersion: string
-  alibabaApiTimeoutSeconds: string
   autoAiRecognition: boolean
   outputDir: string
   selectedClaimPlatforms: Marketplace[]

@@ -160,7 +160,7 @@ def online_products_read(request: OnlineReadRequest, scope: Annotated[OnlineProd
     result = (_call(service.detail, request.id, fields=request.fields, **_detail_read_context(execution)) if request.id else
               _call(service.read_page, request.platform, query=request.q, status=request.status,
                     market=request.market, page=request.page, limit=request.limit, view=request.view,
-                    group_id=request.group_id, fields=request.fields, catalog=request.catalog))
+                    group_id=request.group_id, fields=request.fields, catalog=request.catalog, warehouse_id=request.warehouse_id))
     if request.id and request.include_source_images:
         result["source_images"] = _call(service.source_images, request.id)
     return OnlineReadResult.model_validate(result)

@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import webbrowser
+from collections.abc import Callable
 from http.server import ThreadingHTTPServer
 
 from .context import build_default_context, get_context, set_context
@@ -14,6 +15,7 @@ from .logging_config import configure_logging
 from .runtime_units.publish_adapter import mark_interrupted_publish_jobs
 from .services.browser_debug_service import pick_web_port
 from .services.config_service import load_env
+from .stores.credential_layout import assert_credentials_migrated
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +42,12 @@ def start_agent_job_worker(*, stop_event=None, interval_seconds=1.0):
     return worker
 
 
-def main() -> None:
+def main(*, on_ready: Callable[[str], None] | None = None,
+         stop_event: threading.Event | None = None) -> None:
     # build_default_context() 构造 ErpDatabase：schema 初始化在构造期完成。
     set_context(build_default_context())
     paths = get_context().paths
+    assert_credentials_migrated(paths.app_dir)
     # 日志配置也允许写在 config/.env；环境变量仍具有更高优先级。
     load_env(paths.app_dir)
     log_file = configure_logging(paths.app_dir)
@@ -58,7 +62,7 @@ def main() -> None:
     job_stop = threading.Event()
     job_worker = start_agent_job_worker(stop_event=job_stop)
     get_context().wechat.start()
-    url = f"http://127.0.0.1:{port}/"
+    url = f"http://127.0.0.1:{server.server_port}/"
     logger.info("ERP running at %s", url)
     logger.info("Backend log file: %s", log_file)
     if (
@@ -70,8 +74,18 @@ def main() -> None:
         except Exception:
             logger.exception("Failed to open browser for %s", url)
     try:
+        if stop_event is not None:
+            def stop_server():
+                stop_event.wait()
+                server.shutdown()
+
+            threading.Thread(target=stop_server, name="erp-server-stop", daemon=True).start()
+        if on_ready is not None:
+            on_ready(url)
         server.serve_forever()
     finally:
+        if stop_event is not None:
+            stop_event.set()
         job_stop.set()
         job_worker.join(timeout=5)
         get_context().close()

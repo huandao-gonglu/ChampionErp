@@ -23,7 +23,7 @@ def routing(tmp_path, monkeypatch):
                          'placement_type': 'FBS', 'stock_update_mode': 'business'}}
     store = get_context().config
     monkeypatch.setattr(store, 'load_store_config', lambda: deepcopy(config))
-    rows = [{'id': ident, 'name': name, 'models': [{'placementType': 'FBS', 'apiAvailability': 'AVAILABLE'}]}
+    rows = [{'id': ident, 'name': name, 'models': [{'placementType': 'FBS', 'apiAvailability': 'AVAILABLE', 'campaignId': '111'}]}
             for ident, name in [(31, 'CEL 发布仓'), (32, 'GUOO 发布仓')]]
     calls = []
     def fetch(*args):
@@ -322,3 +322,52 @@ def test_warehouse_http_endpoints_are_registered(backend_server):
     assert read.status_code == 200 and 'warehouses' in read.json()
     invalid = requests.post(backend_server + '/api/yandex/warehouses/logistics', json={'revision': 0}, timeout=5)
     assert invalid.status_code == 400
+
+
+def test_warehouse_plan_uses_model_campaign_instead_of_authorization_campaign(routing):
+    service, body, _, rows, _ = routing
+    rows[1]['models'][0]['campaignId'] = 333
+    body['bindings'].append({'warehouse_id': 32, 'carrier': 'GUOO_GTA', 'shipping_mode': 'Economy', 'enabled': True})
+    service.save(body)
+    plans = {plan['publish_warehouse_id']: plan for plan in service.plans()}
+    assert plans[31]['campaign_id'] == '111'
+    assert plans[32]['campaign_id'] == '333'
+    assert plans[32]['authorization_campaign_id'] == '111'
+    assert service.validate(plans[32]) == plans[32]
+
+
+def test_all_selected_skus_use_lowest_total_common_warehouse(routing, monkeypatch):
+    from erp_web.runtime_units import pricing_runtime
+    from erp_web.runtime_units.pricing_batch import calculate_sku_prices
+    from tests.runtime_test_utils import seed_store_currency
+    service, body, config, _, calls = routing
+    source = service.rules_dir.parent / 'yandex.xlsx'
+    xlsx(source, 'yandex', rows=[{**YA, 'group': 'Other', 'rate': '10', 'fixed': 20},
+                               {**YA, 'group': 'Other', 'carrier': 'GUOO(GTA)', 'rate': '100', 'fixed': 0}])
+    import_template(source, 'yandex', service.rules_dir)
+    body['bindings'].append({'warehouse_id': 32, 'carrier': 'GUOO_GTA', 'shipping_mode': 'Economy', 'enabled': True})
+    service.save(body)
+    currency_fingerprint = seed_store_currency('yandex', 'RUB', identity={'business_id': '222', 'campaign_id': '111'})
+    config['yandex'].update(listing_currency='RUB', allowed_currencies=['RUB'], currency_mode='locked',
+                            currency_status='ready', currency_source='account_api', currency_fingerprint=currency_fingerprint)
+    monkeypatch.setattr(pricing_runtime, 'PricingCommissions', lambda *_, **__: official_commission)
+    monkeypatch.setattr(pricing_runtime, 'PricingShipping', lambda *_args, **_kwargs: shipping(service, config))
+    inputs = [{'sku_id': name, 'input': {'exchange_rate_mode': 'manual', 'common': {**COMMON, 'weight_kg': weight},
+                 'targets': [target('yandex', listing_currency='RUB')]}} for name, weight in [('light', '.1'), ('heavy', '1')]]
+    resolver = shipping(service, config)
+    assert resolver(inputs[0]['input']['common'], target('yandex'))['evidence']['fulfillment_plan']['publish_warehouse_id'] == 32
+    assert resolver(inputs[1]['input']['common'], target('yandex'))['evidence']['fulfillment_plan']['publish_warehouse_id'] == 31
+    before = len(calls)
+    result = calculate_sku_prices({'items': inputs})
+    assert result['metrics']['failed_sku_count'] == 0
+    quotes = [row['result']['results'][0] for row in result['items']]
+    assert {quote['calculation_basis']['shipping_evidence']['fulfillment_plan']['publish_warehouse_id'] for quote in quotes} == {31}
+    assert len(calls) == before + 1
+    # 明确选择了互不相同的仓库时，不悄悄覆盖选择，也不拆仓出价。
+    for item, warehouse in zip(inputs, (31, 32), strict=True):
+        plan = next(plan for plan in service.plans() if plan['publish_warehouse_id'] == warehouse)
+        item['input']['targets'][0]['shipping_selection'] = {'warehouse_id': warehouse, 'route_id': plan['route_id']}
+    failed = calculate_sku_prices({'items': inputs})
+    assert failed['metrics']['failed_sku_count'] == 2
+    assert all(row['result']['error_code'] == 'YANDEX_NO_COMMON_WAREHOUSE' for row in failed['items'])
+    assert {row['sku_id'] for row in failed['items']} == {'light', 'heavy'}

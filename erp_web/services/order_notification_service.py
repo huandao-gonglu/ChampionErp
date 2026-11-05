@@ -31,6 +31,7 @@ class OrderNotificationService:
         store: OrderNotificationStore,
         config_provider: Callable[[], dict[str, Any]],
         *,
+        config_store,
         adapters: dict[str, Callable[[dict[str, Any]], OrderAdapter]],
         parser: Callable[
             [str, dict[str, Any], dict[str, Any]],
@@ -48,6 +49,7 @@ class OrderNotificationService:
         self.auto_sync_interval_provider = auto_sync_interval_provider
         self.store = store
         self.config_provider = config_provider
+        self.config_store = config_store
         self.adapters = adapters
         self.parser = parser
         self.stop_event = threading.Event()
@@ -69,7 +71,7 @@ class OrderNotificationService:
     def receive(
         self, platform: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
-        expected = self.store.setting("token:" + platform)
+        expected = self.config_store.order_notification_token(platform)
         if not expected or not secrets.compare_digest(expected, token):
             raise PermissionError("订单回调凭据无效")
         event, response = self.parser(platform, body, self.config_provider())
@@ -78,7 +80,7 @@ class OrderNotificationService:
 
     def integrations(self) -> dict[str, Any]:
         accounts = self.accounts()
-        base = self.store.setting("public_url")
+        base = self.config_store.order_notification_public_url()
         return {
             "ok": True,
             "public_url": base,
@@ -87,7 +89,7 @@ class OrderNotificationService:
                     "platform": platform,
                     "account_id": accounts.get(platform, ""),
                     "configured": platform in accounts,
-                    "callback_url": f"{base}/api/{platform}/notifications?token={self.store.setting('token:' + platform)}"
+                    "callback_url": f"{base}/api/{platform}/notifications?token={self.config_store.order_notification_token(platform)}"
                     if base
                     else "",
                     "last_received": self.store.setting("last_received:" + platform),
@@ -109,7 +111,7 @@ class OrderNotificationService:
             or parsed.path
         ):
             raise ValueError("请填写不含路径、查询参数及凭据的公网 HTTPS 地址")
-        self.store.set_setting("public_url", value)
+        self.config_store.save_order_notification_public_url(value)
         return self.integrations()
 
     def sync(self, platform: str = "", *, automatic: bool = False) -> dict[str, Any]:

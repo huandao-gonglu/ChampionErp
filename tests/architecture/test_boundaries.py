@@ -28,6 +28,37 @@ def test_services_do_not_reverse_depend_on_runtime_units() -> None:
     )
 
 
+def test_desktop_only_composes_existing_server() -> None:
+    entry = [ROOT / "erp_web/desktop.py"]
+    targets = {target for _, target in imported_targets(entry)}
+    assert "erp_web.server.main" in targets
+    assert not any(target.startswith(("pydantic_ai", "erp_web.http_handler", "http.server")) for target in targets)
+
+
+def test_integrations_do_not_persist_credentials_in_business_stores() -> None:
+    bus = parse_python("erp_web/services/crossborderbus_client.py")
+    notification = parse_python("erp_web/services/order_notification_service.py")
+    for tree in (bus, notification):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and dotted_name(node.func) in {"self.store.setting", "self.store.set_setting"}:
+                assert not any(isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+                               and (argument.value in {"credentials", "public_url"} or argument.value.startswith("token:"))
+                               for argument in ast.walk(node))
+    startup = parse_python("erp_web/server.py")
+    main = next(node for node in startup.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+    calls = [dotted_name(node.func) for statement in main.body for node in ast.walk(statement) if isinstance(node, ast.Call)]
+    assert calls.index("assert_credentials_migrated") < calls.index("mark_interrupted_publish_jobs")
+
+
+def test_bus_user_authorization_does_not_accept_developer_secrets() -> None:
+    from erp_web.schemas.fulfillment import BusCredentials
+    from erp_web.schemas.requests import REQUEST_CONTRACTS
+
+    assert set(BusCredentials.model_fields) == {"user_name", "password"}
+    assert BusCredentials.model_config["extra"] == "forbid"
+    assert set(REQUEST_CONTRACTS["/api/crossborderbus/authorize"].fields) == {"user_name", "password"}
+
+
 def test_task_confirmation_does_not_own_platform_writes_or_agent_execution() -> None:
     files = [ROOT / "erp_web/services/task_queue_service.py", ROOT / "erp_web/stores/task_confirmation_store.py"]
     targets = {target for _, target in imported_targets(files)}
@@ -182,3 +213,14 @@ def test_ogl_calculation_has_no_network_store_or_runtime_dependency() -> None:
     retired = (ROOT / 'erp_web/international_shipping/platform_api.py').read_text()
     assert '/v2/delivery-method/list' not in retired
     assert '/v2/warehouse/list' not in retired
+
+
+def test_alibaba_business_facades_use_authorization_owner() -> None:
+    for name in ("alibaba_self_purchase_facade", "order_procurement_facade", "order_notification_facade", "agent_capability_facade"):
+        tree = parse_python(f"erp_web/facades/{name}.py")
+        calls = [dotted_name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        assert "alibaba_runtime_config" in calls
+        assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                       and node.func.attr == "get" and node.args
+                       and isinstance(node.args[0], ast.Constant) and node.args[0].value == "1688_api"
+                       for node in ast.walk(tree))

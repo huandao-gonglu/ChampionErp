@@ -1,6 +1,7 @@
 """销售订单的 1688 采购装配。"""
 import logging
 
+from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 from erp_web.context import get_context
 from erp_web.services.alibaba_self_purchase_service import AlibabaSelfPurchaseService, account_scope
 from erp_web.stores.order_address_note_store import OrderAddressNoteStore
@@ -9,7 +10,7 @@ from erp_web.services.alibaba_purchase_sync_service import sync_purchases
 
 def create_service(context):
     return AlibabaSelfPurchaseService(context.alibaba_self_purchases,
-        lambda: context.config.load_app_config().get("1688_api", {}), context.order_procurement,
+        lambda: alibaba_runtime_config(context.config), context.order_procurement,
         address_notes=OrderAddressNoteStore(context.order_notifications.store), receiving=context.fulfillment.receiving)
 
 

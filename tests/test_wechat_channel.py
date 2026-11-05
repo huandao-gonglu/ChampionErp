@@ -63,7 +63,7 @@ def channel(tmp_path, monkeypatch):
     binding = PydanticModelBinding(model=FunctionModel(stream_function=respond), model_settings=ModelSettings(),
                                   model_id="test", model_name="test", provider_id="test", provider_family="test", api_style="chat_completions")
     conversations.chat_service.factory.model_binding_factory = lambda *args, **kwargs: binding
-    store = WechatChannelStore(tmp_path / "wechat.sqlite3")
+    store = WechatChannelStore(tmp_path / "wechat.sqlite3", get_context().config)
     store.configure(conversation_id=CONVERSATION, history_position=2, credentials=CREDENTIALS)
     service = WechatChannelService(
         store=store, conversations=conversations, api=FakeApi(),
@@ -100,7 +100,7 @@ def test_wechat_input_uses_same_native_history_and_web_projection(channel):
 def test_duplicate_replay_and_restart_do_not_execute_again(channel):
     ingest(channel, [incoming(), incoming()])
     channel.service.transfer_inputs(channel.store.state())
-    restored = WechatChannelStore(channel.store.path)
+    restored = WechatChannelStore(channel.store.path, get_context().config)
     channel.service.store = restored
     channel.store = restored
     ingest(channel, [incoming()], "cursor-2")
@@ -164,7 +164,7 @@ def test_reply_failure_retries_only_delivery_with_same_identifier(channel):
     channel.service.api.fail = True
     with pytest.raises(TimeoutError):
         asyncio.run(channel.service.send_pending(channel.store.state()))
-    channel.service.store = WechatChannelStore(channel.store.path)
+    channel.service.store = WechatChannelStore(channel.store.path, get_context().config)
     channel.service.collect_replies(channel.service.store.state())
     channel.service.api.fail = False
     asyncio.run(channel.service.send_pending(channel.service.store.state()))
@@ -615,11 +615,11 @@ def test_existing_delivery_database_adds_types_without_losing_queued_messages(tm
             status TEXT NOT NULL DEFAULT 'pending',UNIQUE(generation,delivery_key))""")
         for key in ("final:1", "approval:1", "new:1", "error:1", "unsupported:1", "rejected:1"):
             conn.execute("INSERT INTO channel_deliveries(generation,delivery_key,text,client_id) VALUES(1,?,?,?)", (key, "原有待发内容", key))
-    store = WechatChannelStore(path)
+    store = WechatChannelStore(path, get_context().config)
     rows = store.pending(1)
     assert [row["forward_type"] for row in rows] == ["reply", "approval", "command", "error", "error", "error"]
     assert len(rows) == 6 and all(row["text"] == "原有待发内容" for row in rows)
-    assert WechatChannelStore(path).pending(1) == rows
+    assert WechatChannelStore(path, get_context().config).pending(1) == rows
 
 
 def test_http_forwarding_settings_validate_and_persist_without_binding():

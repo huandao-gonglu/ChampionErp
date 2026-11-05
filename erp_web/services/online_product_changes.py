@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from erp_web.product_model.yandex_warranty_model import compile_yandex_guarantee_period
+from erp_web.product_model.online_scope_model import yandex_campaign_id
 
 from erp_web.schemas.online_products import ChangeRequest, OnlineListing
 from erp_web.product_model.online_attribute_model import validate_yandex_attribute_rows
@@ -45,9 +46,15 @@ def validate_changes(listing: OnlineListing, request: ChangeRequest) -> None:
     elif request.operation == "sale_state":
         if listing.archived:
             raise ValueError("商品已归档，请先恢复归档，再调整停售或销售状态")
-        if request.scope_id not in ("", "global") or set(changes) != {"state"} or changes["state"] not in ("paused", "active"):
+        if set(changes) != {"state"} or changes["state"] not in ("paused", "active"):
             raise ValueError("销售状态仅支持在声明范围内停售或恢复")
-        if changes["state"] == "active" and listing.stocks and all(s.quantity == 0 for s in listing.stocks):
+        stocks = listing.stocks
+        if listing.platform == 'yandex':
+            campaign = yandex_campaign_id(listing, request.scope_id)
+            stocks = [stock for stock in stocks if stock.campaign_id == campaign] if any(stock.campaign_id for stock in stocks) else stocks
+        elif request.scope_id not in ('', 'global'):
+            raise ValueError('销售状态仅支持在声明范围内停售或恢复')
+        if changes["state"] == "active" and stocks and all(s.quantity == 0 for s in stocks):
             raise ValueError("库存为零，不能请求恢复销售")
     else:
         if request.scope_id not in ("", "global"):
@@ -141,13 +148,15 @@ def confirmation(listing: OnlineListing, request: ChangeRequest) -> dict[str, bo
     if request.operation == "stock":
         row = next((s for s in listing.stocks if s.id == request.scope_id), None)
         result = {"quantity": bool(row and row.quantity == changes["quantity"])}
-        if listing.desired_sale_state == "paused":
+        if listing.platform == 'mercadolibre' and listing.desired_sale_state == "paused":
             result["preserved_pause"] = listing.sale_state == "paused"
         return result
     if request.operation == "sale_state":
         state = changes["state"]
         if listing.platform == "yandex":
-            return {"state": listing.snapshot.get("hidden") is (state == "paused")}
+            hidden = (listing.snapshot.get('hidden_campaigns', {}).get(yandex_campaign_id(listing, request.scope_id))
+                      if request.scope_id.startswith('campaign:') else listing.snapshot.get('hidden'))
+            return {"state": hidden is (state == "paused")}
         if listing.platform == "ozon":
             return {"state": listing.snapshot.get("info", {}).get("is_archived") is (state == "paused")}
         return {"state": listing.raw_status == state, **{f"market:{m.id}": m.raw_status == state for m in listing.markets}}
@@ -187,5 +196,8 @@ def observed_changes(listing: OnlineListing, request: ChangeRequest) -> dict[str
         row = next((p for p in listing.prices if p.id == request.scope_id), None)
         return {"amount": row.amount if row else None, "currency": row.currency if row else None}
     if request.operation == "sale_state":
+        if listing.platform == 'yandex' and request.scope_id.startswith('campaign:'):
+            hidden = listing.snapshot.get('hidden_campaigns', {}).get(yandex_campaign_id(listing, request.scope_id))
+            return {'state': 'paused' if hidden else 'active' if hidden is False else None}
         return {"state": listing.sale_state if listing.sale_state != "unknown" else None}
     return {key: listing.content.get(key) for key in request.changes}

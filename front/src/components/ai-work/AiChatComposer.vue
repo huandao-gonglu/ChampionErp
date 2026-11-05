@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onDeactivated, ref, watch } from 'vue'
 import { useEventListener } from '@vueuse/core'
-import { PhEye, PhEyeSlash, PhPlus } from '@phosphor-icons/vue'
+import { PhEye, PhEyeSlash, PhListDashes, PhPlus } from '@phosphor-icons/vue'
 import AiChatCommandPanel from './AiChatCommandPanel.vue'
 import AiApprovalModeSelect from './AiApprovalModeSelect.vue'
 import { useChatCommands } from '@/composables/useChatCommands'
@@ -11,6 +11,8 @@ const props = withDefaults(defineProps<{
   modelValue: string
   busy: boolean
   stopping?: boolean
+  queuedMessages?: { message_id: string; text: string }[]
+  statusNotice?: string
   conversationId?: string
   /** 非空时锁定普通发送（例如存在未解决的全局任务），并展示原因。 */
   sendDisabledReason?: string
@@ -180,6 +182,20 @@ function onKeydown(event: KeyboardEvent) {
         @select="selectCommandByIndex"
         @hover="hoverCommand"
       />
+      <div v-if="statusNotice" role="status" class="mx-3 mb-1.5 text-xs text-slate-600 dark:text-accent-300">
+        {{ statusNotice }}
+      </div>
+      <div
+        v-if="queuedMessages?.length" role="status" aria-live="polite" aria-label="排队消息"
+        data-testid="ai-chat-queue"
+        class="mx-3 max-h-28 overflow-y-auto rounded-t-2xl border border-b-0 border-slate-200 bg-slate-50 px-3 py-1 text-sm dark:border-dark-600 dark:bg-dark-700"
+      >
+        <div v-for="message in queuedMessages" :key="message.message_id" class="flex min-h-8 items-center gap-2">
+          <PhListDashes :size="16" class="shrink-0 text-slate-500 dark:text-accent-400" aria-hidden="true" />
+          <span class="min-w-0 flex-1 truncate text-slate-800 dark:text-accent-100" :title="message.text">{{ message.text }}</span>
+          <span class="shrink-0 text-xs text-slate-500 dark:text-accent-300">排队中</span>
+        </div>
+      </div>
       <div class="ai-chat-composer-surface rounded-2xl border border-slate-200 bg-white/[var(--ai-chat-surface-opacity,1)] px-3 pb-2.5 pt-2 shadow-sm transition focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-200/60 dark:border-dark-600 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:focus-within:border-primary-500/60 dark:focus-within:ring-primary-500/15">
         <label class="sr-only" for="ai-chat-input">发送消息</label>
         <textarea

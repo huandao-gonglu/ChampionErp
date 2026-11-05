@@ -55,6 +55,7 @@ class SaveYandexWarehouses(YandexWarehouseAccount):
 class RemoteWarehouse(WarehouseInput):
     id: int = Field(gt=0, strict=True)
     name: str
+    campaign_id: str = ''
 
 
 class YandexWarehouseCatalog(WarehouseInput):

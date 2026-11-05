@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-from html.parser import HTMLParser
 from importlib import metadata
 import json
 from pathlib import Path
@@ -15,10 +14,35 @@ from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / 'front/src/legal/third-party-notices.json'
-INPUTS = ['requirements.txt', 'requirements-dev.txt', 'package.json', 'package-lock.json',
+INPUTS = ['requirements.txt',
           'front/package.json', 'front/pnpm-lock.yaml', 'scripts/generate_third_party_notices.py',
           'scripts/legal-notices/supplements.json', 'scripts/legal-notices/python-supplements.json']
 NOTICE_NAME = re.compile(r'^(licen[sc]e|notice|copying|copyright|third[-_ ]party[-_ ]notices?)(\..*|-.*)?$', re.I)
+
+# 只拆出有明确起止标记的许可正文；版权、附录及未识别的声明原样保留。
+# 不按 SPDX 名称合并：同名许可证中的措辞差异也必须保留。
+LICENSE_BODY = re.compile(
+    r'Apache\s+License\s+Version\s+2\.0,\s+January\s+2004.*?END\s+OF\s+TERMS\s+AND\s+CONDITIONS'
+    r'|Permission\s+is\s+hereby\s+granted,\s+free\s+of\s+charge,.*?'
+    r'THE\s+SOFTWARE\s+IS\s+PROVIDED.*?OTHER\s+DEALINGS\s+IN\s+THE\s+SOFTWARE\.'
+    r'|Redistribution\s+and\s+use\s+in\s+source\s+and\s+binary\s+forms,.*?'
+    r'POSSIBILITY\s+OF\s+SUCH\s+DAMAGE\.'
+    r'|Permission\s+to\s+use,\s+copy,\s+modify,\s+and(?:/or)?\s+distribute\s+this\s+software.*?'
+    r'(?:USE\s+OR\s+PERFORMANCE\s+OF\s+THIS\s+SOFTWARE|OTHER\s+DEALINGS\s+IN\s+THE\s+SOFTWARE)\.',
+    re.S,
+)
+
+
+def split_notice(content: str):
+    """分段后可无损拼回原文；只在存储时忽略段首尾空白。"""
+    start = 0
+    for match in LICENSE_BODY.finditer(content):
+        if match.start() > start:
+            yield 'notice', content[start:match.start()]
+        yield 'license', match.group()
+        start = match.end()
+    if start < len(content):
+        yield 'notice', content[start:]
 
 
 def input_digest() -> str:
@@ -49,40 +73,9 @@ def read_notices(folder: Path) -> list[tuple[str, str]]:
     return result
 
 
-class ChromiumCredits(HTMLParser):
-    """仅提取上游标题、主页和原始许可证文本，不执行或渲染 HTML。"""
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.entries = []
-        self.entry = None
-        self.capture = ''
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == 'div' and attrs.get('class') == 'product':
-            self.entry = {'name': '', 'homepage': '', 'text': ''}
-            self.entries.append(self.entry)
-        if self.entry is None:
-            return
-        if tag == 'span' and attrs.get('class') == 'title':
-            self.capture = 'name'
-        elif tag == 'pre':
-            self.capture = 'text'
-        elif tag == 'a' and not self.entry['homepage']:
-            self.entry['homepage'] = attrs.get('href', '')
-
-    def handle_endtag(self, tag):
-        if tag in {'span', 'pre'}:
-            self.capture = ''
-
-    def handle_data(self, data):
-        if self.entry is not None and self.capture:
-            self.entry[self.capture] += data
-
-
 def python_dependencies():
     pending = []
-    for filename in ['requirements.txt', 'requirements-dev.txt']:
+    for filename in ['requirements.txt']:
         for line in (ROOT / filename).read_text().splitlines():
             if line.strip() and not line.startswith(('#', '-')):
                 pending.append(Requirement(line))
@@ -117,9 +110,10 @@ def generate():
     if python_supplements.exists():
         supplements.update(json.loads(python_supplements.read_text()))
 
-    def add(ecosystem, name, version, license_name, homepage, notices):
+    def add(ecosystem, name, version, license_name, homepage, notices, paths=()):
         key = f'{ecosystem}:{name}@{version}'
         if key in entries:
+            entries[key]['paths'] = sorted(set(entries[key]['paths']) | set(paths))
             return
         extra = supplements.get(key)
         if extra:
@@ -129,13 +123,20 @@ def generate():
             content = content.strip()
             if not content:
                 continue
-            digest = hashlib.sha256(content.encode()).hexdigest()[:20]
-            texts[digest] = content
-            refs.append({'source': source, 'text': digest})
-        # Chromium 的公共领域声明可能很短；不能把字数少误判为原文缺失。
+            parts = []
+            for kind, part in split_notice(content):
+                if not part.strip():
+                    continue
+                # 换行与缩进不同、文字相同的正文共用一份；版权声明不做归一化。
+                normalized = ' '.join(part.split()) if kind == 'license' else part.strip()
+                digest = hashlib.sha256(normalized.encode()).hexdigest()[:20]
+                texts.setdefault(digest, part.strip())
+                parts.append({'kind': kind, 'text': digest})
+            refs.append({'source': source, 'parts': parts})
+        # 简短的完整声明不能仅凭字数误判为原文缺失。
         declaration_only = refs and all(
-            len(texts[ref['text']]) < 350 and
-            ('(license section)' in ref['source'] or 'See the LICENSE file' in texts[ref['text']])
+            sum(len(texts[part['text']]) for part in ref['parts']) < 350 and
+            ('(license section)' in ref['source'] or any('See the LICENSE file' in texts[part['text']] for part in ref['parts']))
             for ref in refs
         )
         incomplete = not refs or (ecosystem == 'npm' and not extra and declaration_only)
@@ -143,27 +144,18 @@ def generate():
             missing.append(key)
         entries[key] = {'name': name, 'version': version, 'ecosystem': ecosystem,
                         'license': license_name or 'See included notices', 'homepage': homepage or '',
-                        'noticeStatus': 'declaration-only' if incomplete else 'included', 'notices': refs}
+                        'noticeStatus': 'declaration-only' if incomplete else 'included', 'notices': refs,
+                        'paths': sorted(paths)}
 
-    report = json.loads(subprocess.check_output(['pnpm', 'licenses', 'list', '--json'], cwd=ROOT / 'front'))
+    report = json.loads(subprocess.check_output(['pnpm', 'licenses', 'list', '--prod', '--json'], cwd=ROOT / 'front'))
     for group in report.values():
         for item in group:
             for folder in item['paths']:
                 path = Path(folder)
                 package = json.loads((path / 'package.json').read_text())
                 homepage = item.get('homepage') or f'https://www.npmjs.com/package/{package["name"]}/v/{package["version"]}'
-                add('npm', package['name'], package['version'], item.get('license'), homepage, read_notices(path))
-    root_lock = json.loads((ROOT / 'package-lock.json').read_text())
-    for folder, locked in root_lock['packages'].items():
-        if not folder:
-            continue
-        path = ROOT / folder
-        if not path.exists() and locked.get('optional'):
-            continue
-        package = json.loads((path / 'package.json').read_text())
-        if package['version'] != locked['version']:
-            raise RuntimeError(f'根目录 npm 依赖版本与锁文件不一致：{folder}')
-        add('npm', package['name'], package['version'], package.get('license'), package.get('homepage'), read_notices(path))
+                add('npm', package['name'], package['version'], item.get('license'), homepage, read_notices(path),
+                    [path.resolve().relative_to(ROOT / 'front').as_posix()])
 
     for dist in python_dependencies():
         meta = dist.metadata
@@ -180,17 +172,6 @@ def generate():
             urls = meta.get_all('Project-URL') or []
             homepage = urls[0].split(', ', 1)[-1] if urls else ''
         add('Python', meta['Name'], dist.version, license_name, homepage, notices)
-
-    electron = ROOT / 'front/node_modules/electron'
-    electron_version = json.loads((electron / 'package.json').read_text())['version']
-    parser = ChromiumCredits()
-    parser.feed((electron / 'dist/LICENSES.chromium.html').read_text())
-    if not parser.entries or any(not entry['text'].strip() for entry in parser.entries):
-        raise RuntimeError('Electron 的 Chromium 声明解析不完整')
-    for index, entry in enumerate(parser.entries):
-        # 上游 credits 未逐项提供版本，不伪造版本号；重复标题保留其不同声明。
-        add('Electron / Chromium', entry['name'], f'Electron {electron_version} / notice {index + 1}',
-            'See included notices', entry['homepage'], [('Electron LICENSES.chromium.html', entry['text'])])
 
     return {'inputFiles': INPUTS, 'inputDigest': input_digest(), 'incompleteNotices': sorted(missing),
             'packages': sorted(entries.values(), key=lambda x: (x['ecosystem'], x['name'].lower(), x['version'])),

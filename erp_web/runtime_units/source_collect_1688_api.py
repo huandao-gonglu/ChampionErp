@@ -15,7 +15,7 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result, parse_dimensions_text
-from erp_web.services.config_service import merge_runtime_secret_section
+from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 
 from .collect_helpers import (
     apply_claimed_platform_drafts,
@@ -53,7 +53,7 @@ def normalize_1688_api_config(config: dict[str, Any] | None = None) -> dict[str,
     app_cfg = (
         config
         if isinstance(config, dict)
-        else get_context().config.load_app_config()
+        else alibaba_runtime_config(get_context().config)
     )
     if any(key in app_cfg for key in ("app_key", "app_secret", "base_url", "method")):
         raw = app_cfg
@@ -72,39 +72,13 @@ def normalize_1688_api_config(config: dict[str, Any] | None = None) -> dict[str,
 
 
 def resolve_1688_api_config(config: dict[str, Any] | None = None) -> dict[str, str]:
-    """将请求瞬态配置叠加到已保存真值，过滤空值和公共掩码。"""
-
-    saved_app_config = get_context().config.load_app_config()
-    saved = (
-        saved_app_config.get("1688_api")
-        if isinstance(saved_app_config.get("1688_api"), dict)
-        else {}
-    )
-    incoming_app_config = config if isinstance(config, dict) else {}
-    if any(
-        key in incoming_app_config
-        for key in ("app_key", "app_secret", "access_token", "base_url", "method")
-    ):
-        incoming = incoming_app_config
-    else:
-        incoming = (
-            incoming_app_config.get("1688_api")
-            if isinstance(incoming_app_config.get("1688_api"), dict)
-            else {}
-        )
-    explicit_values = {
-        key: value
-        for key, value in incoming.items()
-        if not isinstance(value, str) or value.strip()
-    }
-    return normalize_1688_api_config(
-        merge_runtime_secret_section(saved, explicit_values)
-    )
+    """调用方不能替换企业密钥、买家授权或发送凭据的网关。"""
+    return normalize_1688_api_config(alibaba_runtime_config(get_context().config))
 
 
 def ensure_1688_api_ready(config: dict[str, str]) -> None:
     if not config.get("app_key") or not config.get("app_secret"):
-        raise RuntimeError("1688_API_CREDENTIALS_MISSING：请先填写 1688 App Key 和 App Secret。")
+        raise RuntimeError("1688_API_CREDENTIALS_MISSING：授权服务未配置，请联系管理员。")
     if not config.get("base_url"):
         raise RuntimeError("1688_API_BASE_URL_MISSING：请先填写 1688 API 请求地址。")
 

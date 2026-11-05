@@ -291,6 +291,7 @@ def load_definition_through_cache(
     site: str,
     category_id: str,
     live_loader: Callable[[], CategoryDefinition],
+    force_refresh: bool = False,
     fresh_ttl: timedelta = DEFINITION_CACHE_FRESH_TTL,
     max_age: timedelta = DEFINITION_CACHE_MAX_AGE,
     now: datetime | None = None,
@@ -298,7 +299,8 @@ def load_definition_through_cache(
     """按 §5.2 读取规则执行 fresh/live/stale/expired 四条路径。"""
 
     current = now or _utc_now()
-    cached = read_definition_cache(
+    # 用户刚修改店铺设置时，不能用新鲜缓存或过期回退确认修改成功。
+    cached = None if force_refresh else read_definition_cache(
         cache_root,
         platform=platform,
         credential_scope_hash=credential_scope_hash,

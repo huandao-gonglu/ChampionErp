@@ -39,13 +39,12 @@ def _auth_state(cdp) -> str:
 
 
 def _wait_auth_state(
-    cdp, timeout: float, *, wait_for_login: bool = False, previous_loader: str = "",
+    cdp, timeout: float, *, wait_for_login: bool = False,
 ) -> str:
     deadline = time.monotonic() + timeout
     while True:
         check_cancellation()
-        frame = cdp.call("Page.getFrameTree").get("frameTree", {}).get("frame", {}) if previous_loader else {}
-        state = "loading" if previous_loader and frame.get("loaderId") == previous_loader else _auth_state(cdp)
+        state = _auth_state(cdp)
         if state == "signed_in" or (state == "login_required" and not wait_for_login):
             return state
         if time.monotonic() >= deadline:
@@ -60,19 +59,17 @@ def _interactive_login(app_dir, model, timeout: int) -> None:
     url = browser_ai_runtime.browser_ai_url(model)
     pending_error = False
     try:
-        with browser_ai_runtime.connect_browser_ai_page(app_dir, model, timeout, headless=False) as cdp:
+        # 首次配置直接显示登录入口，不先等待隐藏的 Canvas 页面完成加载。
+        login_model = {
+            **model,
+            "browser_url": "https://accounts.google.com/ServiceLogin?continue=" + quote(url, safe=""),
+        }
+        with browser_ai_runtime.connect_browser_ai_page(app_dir, login_model, timeout, headless=False) as cdp:
             # 登录在同一个专用 Profile 内由用户完成，程序不读取或填写凭据。
-            frame = cdp.call("Page.getFrameTree").get("frameTree", {}).get("frame", {})
-            navigation = cdp.call("Page.navigate", {
-                "url": "https://accounts.google.com/ServiceLogin?continue=" + quote(url, safe=""),
-            }, timeout=15)
-            if navigation.get("errorText"):
-                raise RuntimeError("Google 登录页无法加载，请检查网络和代理；本次尚未发送修图请求。")
             cdp.call("Page.bringToFront", timeout=5)
             logger.info("已显示 Gemini 专用登录窗口，等待登录完成后自动继续。")
             try:
-                _wait_auth_state(cdp, LOGIN_WAIT_SECONDS, wait_for_login=True,
-                                 previous_loader=str(frame.get("loaderId") or ""))
+                _wait_auth_state(cdp, LOGIN_WAIT_SECONDS, wait_for_login=True)
             except TimeoutError:
                 raise
             except (OSError, RuntimeError) as exc:

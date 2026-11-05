@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from erp_web.schemas.online_products import (
     JobStatus, OnlineChange, OnlineFeedbackSummary, OnlineProduct, Operation, Platform,
-    PriceScope, SourceImageSelection, StockScope,
+    PriceScope, SourceImageSelection, StockScope, OnlineWarehouse,
 )
 
 
@@ -19,6 +19,7 @@ class OnlineReadRequest(OnlineRequest):
     q: str = ""
     status: str = ""
     market: str = ""
+    warehouse_id: str = Field(default='', description='Yandex 仓库 ID；列表按此仓库库存及店铺状态展示，留空查看全部仓库。')
     catalog: Literal["current", "archived", "all"] = Field(default="current", description="current 为普通商品（默认排除归档），archived 仅归档商品，all 包含全部；归档与停售、库存无关。")
     page: int = Field(default=1, ge=1)
     limit: int = Field(default=25, ge=1, le=50, description="每页最多返回的记录数，不是响应字节保证；长描述、图片、全部属性或完整对象应减小页大小。查看第一项用 page=1、limit=1。")
@@ -180,6 +181,7 @@ class OnlineReadResult(BaseModel):
     next_page: int | None = None
     summary: dict[str, int] = Field(default_factory=dict)
     markets: list[str] = Field(default_factory=list)
+    warehouses: list[OnlineWarehouse] = Field(default_factory=list)
     statuses: list[str] = Field(default_factory=list)
     latest_sync: OnlineSyncSummary | None = None
     state: str = ""

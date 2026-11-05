@@ -3,6 +3,7 @@ import { computed, inject, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
+import AlibabaSettingsPanel from '@/components/auth/AlibabaSettingsPanel.vue'
 import CrossborderBusSettingsPanel from '@/components/auth/CrossborderBusSettingsPanel.vue'
 import { routeLocationKey } from 'vue-router'
 import { jsonProbeMessages } from '@/constants/aiCapabilityProbe'
@@ -50,15 +51,6 @@ const form = reactive({
   exchangeRateApiUrl: '',
   exchangeRateTimeoutSeconds: '10',
   exchangeRateCacheTtlSeconds: '3600',
-  alibabaAppKey: '',
-  alibabaAppSecret: '',
-  alibabaAccessToken: '',
-  alibabaApiBaseUrl: 'https://gw.open.1688.com/openapi/param2/1/com.alibaba.product/alibaba.product.get',
-  alibabaApiMethod: 'alibaba.product.get',
-  alibabaApiVersion: '1.0',
-  alibabaApiTimeoutSeconds: '20',
-  alibabaTestOfferId: '',
-  alibabaTestOrderNumber: '',
   mlAppId: '',
   mlClientSecret: '',
   mlRedirectUri: DEFAULT_ML_REDIRECT_URI,
@@ -142,6 +134,7 @@ const capabilityOptions = [
   { value: 'image_edit', label: '图像编辑' },
   { value: 'tool_calling', label: 'Function Call' },
 ]
+const visibleCapabilityOptions = capabilityOptions.filter(item => item.value !== 'image_generate')
 const allCapabilityValues = capabilityOptions.map((item) => item.value)
 const imageCapabilityValues = new Set(['image_generate', 'image_edit'])
 const connectionTypeOptions = [
@@ -443,27 +436,32 @@ function normalizeUseCasePrompts(value: unknown): Record<string, UnknownRecord> 
   return result
 }
 
+let lastIncomingAiModels: UnknownRecord[] = []
 function fillFromProps() {
   const pricing = asRecord(props.appConfig.pricing_defaults)
-  const alibabaApi = asRecord(props.appConfig['1688_api'])
   const ml = asRecord(props.storeConfig.mercadolibre)
   const yandex = asRecord(props.storeConfig.yandex)
   const ozon = asRecord(props.storeConfig.ozon)
   const modelRows = Array.isArray(props.aiConfig.ai_models) ? props.aiConfig.ai_models : Array.isArray(props.appConfig.ai_models) ? props.appConfig.ai_models : []
-  aiModels.value = modelRows.length ? modelRows.map((item, index) => normalizeAiModelRow(displayAiModelRecord(item), index)) : [defaultAiModelRow(0)]
+  const incoming = modelRows.length ? modelRows.map((item, index) => normalizeAiModelRow(displayAiModelRecord(item), index)) : [defaultAiModelRow(0)]
+  const previous = new Map(lastIncomingAiModels.map(model => [model.id, model]))
+  const local = new Map(aiModels.value.map(model => [model.id, model]))
+  // 单个模型自动保存后，保留其他模型尚未提交的编辑、新增和删除。
+  aiModels.value = incoming.flatMap(model => {
+    const unchanged = JSON.stringify(previous.get(model.id)) === JSON.stringify(model)
+    if (unchanged && !local.has(model.id)) return []
+    return [unchanged ? local.get(model.id)! : model]
+  })
+  for (const model of local.values()) {
+    if (!previous.has(model.id) && !incoming.some(row => row.id === model.id)) aiModels.value.push(model)
+  }
+  lastIncomingAiModels = JSON.parse(JSON.stringify(incoming)) as UnknownRecord[]
   selectedAiModelIndex.value = Math.min(selectedAiModelIndex.value, Math.max(aiModels.value.length - 1, 0))
   aiUseCaseBindings.value = normalizeUseCaseBindings(props.aiConfig.ai_use_case_bindings || props.appConfig.ai_use_case_bindings)
   aiUseCasePrompts.value = normalizeUseCasePrompts(props.aiConfig.ai_use_case_prompts || props.appConfig.ai_use_case_prompts)
   form.exchangeRateApiUrl = firstText(pricing.exchange_rate_api_url, 'https://open.er-api.com/v6/latest/USD')
   form.exchangeRateTimeoutSeconds = firstText(pricing.exchange_rate_timeout_seconds, '10')
   form.exchangeRateCacheTtlSeconds = firstText(pricing.exchange_rate_cache_ttl_seconds, '3600')
-  form.alibabaAppKey = ''
-  form.alibabaAppSecret = ''
-  form.alibabaAccessToken = ''
-  form.alibabaApiBaseUrl = firstText(alibabaApi.base_url, form.alibabaApiBaseUrl)
-  form.alibabaApiMethod = firstText(alibabaApi.method, form.alibabaApiMethod)
-  form.alibabaApiVersion = firstText(alibabaApi.api_version, form.alibabaApiVersion)
-  form.alibabaApiTimeoutSeconds = firstText(alibabaApi.timeout_seconds, form.alibabaApiTimeoutSeconds)
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
@@ -483,16 +481,9 @@ const browserPresets = computed(() => {
   return presets.map(asRecord).map(preset => ({
     id: firstText(preset.id),
     label: firstText(preset.label, preset.id),
-    description: firstText(preset.description),
-    supportedCapabilities: asStringArray(preset.supported_capabilities),
     model: asRecord(preset.model),
   })).filter(preset => preset.id && preset.model.connection_type === BROWSER_CONNECTION_TYPE)
 })
-const selectedBrowserPreset = computed(() => browserPresets.value.find(preset =>
-  selectedAiModel.value?.connection_type === BROWSER_CONNECTION_TYPE
-  && selectedAiModel.value?.browser_provider === preset.model.browser_provider
-  && selectedAiModel.value?.browser_url === preset.model.browser_url,
-))
 const browserProviderOptions = computed(() => [...new Map(browserPresets.value.map(preset => [
   firstText(preset.model.browser_provider),
   { value: firstText(preset.model.browser_provider), label: preset.label },
@@ -579,45 +570,8 @@ const aiBlockingMessage = computed(() => aiRequestMessage.value || '正在检测
 const selectedAiModelImageCapable = computed(() => modelHasImageCapability(selectedAiModel.value))
 const exchangeRateReady = computed(() => Boolean(form.exchangeRateApiUrl.trim()))
 const exchangeRateHint = computed(() => props.loading ? '正在处理，请稍候' : '请填写汇率 API URL')
-const savedAlibabaApi = computed(() => asRecord(props.appConfig['1688_api']))
-const savedAlibabaCredentialsReady = computed(() => (
-  firstText(savedAlibabaApi.value.status) === '已配置'
-  || Boolean(firstText(savedAlibabaApi.value.masked_app_key) && firstText(savedAlibabaApi.value.masked_app_secret))
-))
-const alibabaApiReady = computed(() => Boolean(
-  form.alibabaApiBaseUrl.trim()
-  && (
-    savedAlibabaCredentialsReady.value
-    || (form.alibabaAppKey.trim() && form.alibabaAppSecret.trim())
-  )
-))
-const alibabaApiHint = computed(() => {
-  if (props.loading) return '正在处理，请稍候'
-  return savedAlibabaCredentialsReady.value
-    ? '将使用已保存凭据；也可填写一组仅供本次请求使用的新凭据'
-    : '请填写 1688 App Key、App Secret 和 API 请求地址'
-})
-const alibabaAppKeyPlaceholder = computed(() => {
-  const masked = firstText(savedAlibabaApi.value.masked_app_key)
-  return masked ? `已配置 ${masked}；留空沿用` : 'App Key'
-})
-const alibabaAppSecretPlaceholder = computed(() => {
-  const masked = firstText(savedAlibabaApi.value.masked_app_secret)
-  return masked ? `已配置 ${masked}；留空沿用` : 'App Secret'
-})
-const alibabaAccessTokenPlaceholder = computed(() => {
-  const masked = firstText(savedAlibabaApi.value.masked_access_token)
-  return masked ? `已配置 ${masked}；留空沿用` : 'Access Token（采购订单与物流查询必填）'
-})
 const lastConfigResultChannel = computed(() => String(props.lastResult?.raw?.channel || ''))
 const showApiConfigResult = computed(() => lastConfigResultChannel.value === 'exchange_rate')
-const showAlibabaConfigResult = computed(() => ['1688', '1688_order'].includes(lastConfigResultChannel.value))
-const alibabaOrderReady = computed(() => Boolean(
-  (form.alibabaAppKey.trim() || firstText(savedAlibabaApi.value.masked_app_key))
-  && (form.alibabaAppSecret.trim() || firstText(savedAlibabaApi.value.masked_app_secret))
-  && (form.alibabaAccessToken.trim() || firstText(savedAlibabaApi.value.masked_access_token))
-  && /^[0-9]{1,30}$/.test(form.alibabaTestOrderNumber.trim())
-))
 
 function useCaseBindingGenerationPayload(binding: UnknownRecord): UnknownRecord | null {
   const generation = asRecord(binding.generation)
@@ -743,15 +697,6 @@ function aiPayload(): UnknownRecord {
       exchange_rate_timeout_seconds: form.exchangeRateTimeoutSeconds.trim(),
       exchange_rate_cache_ttl_seconds: form.exchangeRateCacheTtlSeconds.trim(),
     },
-    '1688_api': {
-      app_key: form.alibabaAppKey.trim(),
-      app_secret: form.alibabaAppSecret.trim(),
-      access_token: form.alibabaAccessToken.trim(),
-      base_url: form.alibabaApiBaseUrl.trim(),
-      method: form.alibabaApiMethod.trim(),
-      api_version: form.alibabaApiVersion.trim(),
-      timeout_seconds: form.alibabaApiTimeoutSeconds.trim(),
-    },
   }
 }
 
@@ -821,12 +766,6 @@ function commitCustomRequestBody(): boolean {
   }
 }
 
-function clearTransientPlatformApiCredentials() {
-  form.alibabaAppKey = ''
-  form.alibabaAppSecret = ''
-  form.alibabaAccessToken = ''
-}
-
 function ensureBrowserProviderSelected(model?: UnknownRecord): boolean {
   const invalid = (model ? [model] : aiModels.value).find(item =>
     item.connection_type === BROWSER_CONNECTION_TYPE && !firstText(item.browser_provider),
@@ -841,42 +780,20 @@ function ensureBrowserProviderSelected(model?: UnknownRecord): boolean {
   return true
 }
 
-function emitAiSettingsAndClearTransientCredentials() {
+function emitAiSettings() {
   if (!ensureBrowserProviderSelected()) return
   const payload = aiPayload()
   emit('saveAi', payload)
-  clearTransientPlatformApiCredentials()
 }
 
 function saveAiSettings() {
   if (aiControlsLocked.value || !commitCustomRequestBody()) return
-  emitAiSettingsAndClearTransientCredentials()
+  emitAiSettings()
 }
 
 function saveApiSettings() {
   if (props.loading) return
-  emitAiSettingsAndClearTransientCredentials()
-}
-
-function saveAlibabaSettings() {
-  if (props.loading) return
-  emit('saveAi', { '1688_api': asRecord(aiPayload()['1688_api']) })
-  clearTransientPlatformApiCredentials()
-}
-
-function testAlibabaOrder() {
-  if (props.loading || !alibabaOrderReady.value) return
-  emit('testApi', '1688_order', asRecord(aiPayload()['1688_api']), form.alibabaTestOrderNumber.trim())
-  clearTransientPlatformApiCredentials()
-}
-
-function testAlibabaApi() {
-  const payload = asRecord(aiPayload()['1688_api'])
-  const testOfferId = form.alibabaTestOfferId
-  emit('testApi', '1688', payload, testOfferId)
-  form.alibabaAppKey = ''
-  form.alibabaAppSecret = ''
-  form.alibabaAccessToken = ''
+  emitAiSettings()
 }
 
 function modelField(field: string, fallback = ''): string {
@@ -1925,13 +1842,6 @@ function copy(text: string) {
 
             <div v-if="selectedAiModel" class="ai-model-form space-y-3">
               <p v-if="aiSettingsError" role="alert" class="text-sm text-rose-700 dark:text-rose-300">{{ aiSettingsError }}</p>
-              <div v-if="selectedBrowserPreset" data-testid="web-model-guide" class="rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm text-primary-800 dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100">
-                <p>{{ selectedBrowserPreset.description }}</p>
-                <p class="mt-1">网页地址和浏览器设置已填好。按需设置代理，测试通过后保存，并在功能绑定中选择该模型。</p>
-                <button v-for="capability in selectedBrowserPreset.supportedCapabilities.filter(item => !hasCapability(item))" :key="capability" :data-testid="`test-web-capability-${capability}`" class="btn btn-outline mt-2 py-1 text-sm" type="button" :disabled="aiControlsLocked" @click="openCapabilityProbe(capability)">
-                  测试并启用{{ capabilityLabelByValue[capability] || capability }}
-                </button>
-              </div>
               <div class="grid gap-3 md:grid-cols-2">
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型 ID</span>
@@ -2012,10 +1922,6 @@ function copy(text: string) {
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页模型</span>
                     <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('model', eventText($event))" />
                   </label>
-                  <div class="md:col-span-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-600 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
-                    项目托管模式使用本机 Chrome 或 Edge 的独立资料目录，并保留登录状态。
-                    <span v-if="modelField('browser_provider') === 'gemini'" class="mt-1 block">Canvas 修图平时隐藏运行，需要登录时会显示专用窗口，完成后自动隐藏并继续。请在高级连接设置中填写 Canvas 分享页地址；图像编辑测试会实际修改一张测试图片。</span>
-                  </div>
                 </template>
                 <label v-if="selectedAiModelImageCapable" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">图片质量</span>
@@ -2135,7 +2041,7 @@ function copy(text: string) {
 
               <div class="flex flex-wrap gap-2">
                 <label
-                  v-for="capability in capabilityOptions"
+                  v-for="capability in visibleCapabilityOptions"
                   :key="capability.value"
                   class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition"
                   :class="[capabilityStateClass(capability.value), 'cursor-pointer hover:border-primary-200 hover:bg-primary-50/50 dark:hover:border-primary-500/40 dark:hover:bg-primary-500/10']"
@@ -2512,57 +2418,10 @@ function copy(text: string) {
           </div>
         </section>
 
-        <section v-show="activeAuthSettingsTab === 'alibaba'" class="space-y-4">
-          <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h3 class="font-semibold text-accent-950 dark:text-white">1688 授权</h3>
-                <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">使用采购账号的授权查询订单和物流。凭据留空沿用已保存值。</p>
-              </div>
-              <button data-testid="save-1688-settings" class="btn btn-primary py-1.5 text-sm" :disabled="props.loading" @click="saveAlibabaSettings">保存 1688 授权</button>
-            </div>
-            <div class="mt-3 grid gap-3 md:grid-cols-2">
-              <label class="space-y-1 text-sm">AppKey
-                <input v-model="form.alibabaAppKey" aria-label="1688 AppKey" data-testid="transient-1688-app-key" class="input" :placeholder="alibabaAppKeyPlaceholder" autocomplete="off" spellcheck="false" />
-              </label>
-              <label class="space-y-1 text-sm">AppSecret
-                <input v-model="form.alibabaAppSecret" aria-label="1688 AppSecret" data-testid="transient-1688-app-secret" type="password" class="input" :placeholder="alibabaAppSecretPlaceholder" autocomplete="off" spellcheck="false" />
-              </label>
-              <label class="space-y-1 text-sm md:col-span-2">Access Token
-                <input v-model="form.alibabaAccessToken" aria-label="1688 Access Token" data-testid="transient-1688-access-token" type="password" class="input" :placeholder="alibabaAccessTokenPlaceholder" autocomplete="off" spellcheck="false" />
-              </label>
-              <label class="space-y-1 text-sm">请求超时（秒）
-                <input v-model="form.alibabaApiTimeoutSeconds" class="input" type="number" min="3" max="30" placeholder="20" />
-              </label>
-            </div>
-            <p class="mt-3 text-sm text-accent-500">AppKey、AppSecret 和 Access Token 均为采购查询必填项；Access Token 过期后需更新。采购账号须有对应订单及物流接口权限。</p>
-            <div class="mt-4 flex flex-wrap items-center gap-3">
-              <input v-model="form.alibabaTestOrderNumber" data-testid="1688-test-order-number" aria-label="测试采购订单号" class="input flex-1" placeholder="填写该采购账号的 1688 订单号" inputmode="numeric" />
-              <button data-testid="test-1688-order" class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !alibabaOrderReady" @click="testAlibabaOrder">测试订单查询</button>
-            </div>
-          </div>
-          <details>
-            <summary class="cursor-pointer text-sm">商品采集 API 设置</summary>
-            <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <h4 class="font-semibold text-accent-950 dark:text-white">1688 采集 API</h4>
-                <button data-testid="test-1688-api" class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !alibabaApiReady" :title="alibabaApiReady ? '' : alibabaApiHint" @click="testAlibabaApi">测试</button>
-              </div>
-              <div class="mt-3 grid gap-3 md:grid-cols-2">
-                <input v-model="form.alibabaApiMethod" class="input" placeholder="alibaba.product.get" />
-                <input v-model="form.alibabaApiVersion" class="input" placeholder="API 版本" />
-                <input v-model="form.alibabaApiBaseUrl" class="input md:col-span-2 font-mono text-xs" placeholder="API 请求地址" />
-                <input v-model="form.alibabaTestOfferId" class="input md:col-span-2" placeholder="测试商品 ID / 详情链接，可选" />
-              </div>
-            </div>
-          </details>
-          <div v-if="showAlibabaConfigResult && props.lastResult" class="rounded-lg p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-100 dark:ring-emerald-500/30' : 'bg-rose-50 text-rose-950 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-100 dark:ring-rose-500/30'">
-            <div class="font-semibold">最近 API 测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
-            <div class="mt-1 break-words">{{ props.lastResult.message || props.lastResult.error }}</div>
-            <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700 dark:text-blue-200">下一步：{{ props.lastResult.nextAction }}</div>
-            <pre class="mt-3 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(props.lastResult.raw, null, 2) }}</pre>
-          </div>
-        </section>
+        <template v-if="activeAuthSettingsTab === 'alibaba'">
+          <AlibabaSettingsPanel />
+          <AlibabaSettingsPanel crossborder />
+        </template>
 
         <section v-if="activeAuthSettingsTab === 'image_hosting'">
           <ImageHostingSettingsPanel />

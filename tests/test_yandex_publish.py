@@ -1846,3 +1846,19 @@ def test_invalid_guarantee_blocks_precheck_and_payload(period):
     assert any(issue["code"] == "YANDEX_GUARANTEE_PERIOD_INVALID" for issue in precheck["errors"])
     with pytest.raises(ValueError, match="保修"):
         build_yandex_publish_payload(product, _config(), _record())
+
+
+def test_payload_uses_selected_warehouse_campaign_and_keeps_authorization_identity(monkeypatch):
+    plan = {**PLAN, 'campaign_id': '333', 'authorization_campaign_id': '111'}
+    install_logistics(monkeypatch, [plan])
+    pricing = deepcopy(_draft()['pricing'])
+    quote = pricing['targets']['yandex:global']
+    quote['calculation_basis']['shipping_evidence']['fulfillment_plan'] = plan
+    quote['calculation_fingerprint'] = pricing_calculation_fingerprint(quote['calculation_basis'])
+    payload = build_yandex_publish_payload(_product(pricing=pricing), _config(), _record())
+    assert payload['campaign_id'] == '333' and payload['authorization_campaign_id'] == '111'
+    assert payload['stock']['warehouse_ids'] == ['31']
+    assert validate_yandex_publish_payload(payload, _config()) == []
+    changed = deepcopy(payload)
+    changed['campaign_id'] = '111'
+    assert any('发布店铺与核价仓库' in error for error in validate_yandex_publish_payload(changed, _config()))

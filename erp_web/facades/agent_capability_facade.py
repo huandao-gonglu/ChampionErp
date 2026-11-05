@@ -9,6 +9,7 @@ from erp_web.services.ai_tool_registry import deadline_aware_tool_executor
 from typing import Any
 
 
+from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 from erp_web.context import AppContext, get_context
 from erp_web.facades import alibaba_self_purchase_facade, order_procurement_facade, order_notification_facade
 from erp_web.runtime_units.order_capability_support import OrderCapabilityScope
@@ -111,7 +112,7 @@ def _resolved_collect_cookie(context: AppContext) -> str:
 def _saved_1688_api_config(context: AppContext) -> dict[str, Any] | None:
     """已配置且完整的 1688 API 凭据；未配置时返回 None。"""
 
-    api = context.config.load_app_config().get("1688_api")
+    api = alibaba_runtime_config(context.config)
     if not isinstance(api, dict):
         return None
     if not str(api.get("app_key") or "").strip():

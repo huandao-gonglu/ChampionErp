@@ -494,7 +494,7 @@ def _stock_plan(
     fulfillment_plan = None
     if placement_type == 'FBS':
         fulfillment_plan = get_context().yandex_logistics.validate(draft_fulfillment_plan(draft))
-        if any(str(fulfillment_plan[k]) != str(store.get(k) or '') for k in ('business_id', 'campaign_id', 'stock_update_mode')):
+        if any(str(fulfillment_plan[k]) != str(store.get(k) or '') for k in ('business_id', 'stock_update_mode')):
             raise ValueError('核价仓库方案与当前 Yandex 店铺绑定不一致，请重新核价')
         warehouse_ids = [str(fulfillment_plan['publish_warehouse_id'])]
     if placement_type == "FBY":
@@ -562,6 +562,9 @@ def build_yandex_publish_payload(
     wire_currency = yandex_wire_currency(currency)
     price_value = _price_number(price_value_text)
     stock = _stock_plan(draft, store)
+    authorization_campaign_id = campaign_id
+    if stock.get('fulfillment_plan'):
+        campaign_id = str(stock['fulfillment_plan']['campaign_id'])
 
     catalog_offer: dict[str, Any] = {
         "offerId": offer_id,
@@ -599,6 +602,7 @@ def build_yandex_publish_payload(
         "platform": "yandex",
         "offer_id": offer_id,
         "campaign_id": campaign_id,
+        "authorization_campaign_id": authorization_campaign_id,
         "business_id": business_id,
         "catalog": {"offer": catalog_offer},
         "offer_conditions": {"offer": conditions_offer},
@@ -634,7 +638,7 @@ def validate_yandex_publish_payload(
     if not str(store.get("business_id") or "").strip():
         errors.append("Yandex business_id（在线授权校验派生）")
     payload = payload if isinstance(payload, dict) else {}
-    if str(payload.get("campaign_id") or "").strip() != str(
+    if str(payload.get("authorization_campaign_id") or payload.get("campaign_id") or "").strip() != str(
         store.get("campaign_id") or ""
     ).strip() or str(payload.get("business_id") or "").strip() != str(
         store.get("business_id") or ""
@@ -741,8 +745,10 @@ def validate_yandex_publish_payload(
     if str(store.get('placement_type') or '').upper() == 'FBS':
         try:
             plan = get_context().yandex_logistics.validate(stock.get('fulfillment_plan'))
-            if any(str(plan[k]) != str(store.get(k) or '') for k in ('business_id', 'campaign_id', 'stock_update_mode')):
+            if any(str(plan[k]) != str(store.get(k) or '') for k in ('business_id', 'stock_update_mode')):
                 errors.append('核价仓库方案与当前 Yandex 店铺绑定不一致')
+            if str(payload.get('campaign_id')) != str(plan['campaign_id']):
+                errors.append('店铺身份已变化，发布店铺与核价仓库对应的店铺不一致')
             if stock.get('mode') != 'business' or [str(v) for v in stock.get('warehouse_ids', [])] != [str(plan['publish_warehouse_id'])]:
                 errors.append('发布库存仓库与核价选中的物流方案不一致')
         except ValueError as exc:
@@ -775,6 +781,7 @@ def _publish_plan(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "offer_id": str(payload.get("offer_id") or ""),
         "campaign_id": str(payload.get("campaign_id") or ""),
+        "authorization_campaign_id": str(payload.get("authorization_campaign_id") or payload.get("campaign_id") or ""),
         "business_id": str(payload.get("business_id") or ""),
         "catalog_offer": deepcopy(catalog.get("offer") or {}),
         "campaign_offer": deepcopy(conditions.get("offer") or {}),
@@ -788,7 +795,7 @@ def _assert_plan_binding(
     campaign_id: str,
     business_id: str,
 ) -> None:
-    if str(plan.get("campaign_id") or "") != campaign_id or str(
+    if str(plan.get("authorization_campaign_id") or plan.get("campaign_id") or "") != campaign_id or str(
         plan.get("business_id") or ""
     ) != business_id:
         raise YandexApiError(
@@ -907,12 +914,26 @@ def _record_response(
     }
 
 
+def _assert_logistics_plan(plan, config):
+    if str(_yandex_store(config).get('placement_type') or '').upper() != 'FBS':
+        return
+    bound = get_context().yandex_logistics.validate(plan.get('stock', {}).get('fulfillment_plan'))
+    store = _yandex_store(config)
+    if any(str(bound[k]) != str(store.get(k) or '') for k in ('business_id', 'stock_update_mode')):
+        raise ValueError('核价仓库方案与当前 Yandex 店铺绑定不一致')
+    if str(plan.get('campaign_id')) != str(bound['campaign_id']):
+        raise ValueError('发布店铺与核价仓库对应的店铺不一致')
+    if plan.get('stock', {}).get('mode') != 'business' or [str(v) for v in plan.get('stock', {}).get('warehouse_ids', [])] != [str(bound['publish_warehouse_id'])]:
+        raise ValueError('发布仓库与核价物流方案不一致')
+
+
 def _execute_mutation(
     step: str,
     plan: dict[str, Any],
     checkpoint: YandexPublishCheckpoint,
     api_token: str,
     config: dict[str, Any],
+    *, response=None,
 ) -> dict[str, Any] | None:
     """执行单个写步骤；返回 None 表示成功并已更新 checkpoint。
 
@@ -921,80 +942,78 @@ def _execute_mutation(
     """
 
     timeout = _timeout_seconds(config)
-    if str(_yandex_store(config).get('placement_type') or '').upper() == 'FBS':
+    if response is None:
         try:
-            bound = get_context().yandex_logistics.validate(plan.get('stock', {}).get('fulfillment_plan'))
-            store = _yandex_store(config)
-            if any(str(bound[k]) != str(store.get(k) or '') for k in ('business_id', 'campaign_id', 'stock_update_mode')):
-                raise ValueError('核价仓库方案与当前 Yandex 店铺绑定不一致')
-            if plan.get('stock', {}).get('mode') != 'business' or [str(v) for v in plan.get('stock', {}).get('warehouse_ids', [])] != [str(bound['publish_warehouse_id'])]:
-                raise ValueError('发布仓库与核价物流方案不一致')
+            _assert_logistics_plan(plan, config)
         except ValueError as exc:
             return _terminal_failure(plan, checkpoint, {'error_code': 'YANDEX_LOGISTICS_CHANGED', 'summary': str(exc), 'retryable': False})
     try:
-        if step == "offer_mapping":
-            body = update_yandex_offer_mapping(
-                api_token,
-                checkpoint.business_id,
-                plan["catalog_offer"],
-                timeout_seconds=timeout,
-            )
-        elif step == "campaign_offer":
-            body = update_yandex_campaign_offer(
-                api_token,
-                checkpoint.campaign_id,
-                plan["campaign_offer"],
-                timeout_seconds=timeout,
-            )
-        elif step == "price":
-            price = plan.get("price") if isinstance(plan.get("price"), dict) else {}
-            offers = price.get("offers") if isinstance(price.get("offers"), list) else []
-            if str(price.get("level") or "") == "business":
-                body = update_yandex_price(
+        if response is not None:
+            body = response()
+        else:
+            if step == "offer_mapping":
+                body = update_yandex_offer_mapping(
                     api_token,
+                    checkpoint.business_id,
+                    plan["catalog_offer"],
+                    timeout_seconds=timeout,
+                )
+            elif step == "campaign_offer":
+                body = update_yandex_campaign_offer(
+                    api_token,
+                    checkpoint.campaign_id,
+                    plan["campaign_offer"],
+                    timeout_seconds=timeout,
+                )
+            elif step == "price":
+                price = plan.get("price") if isinstance(plan.get("price"), dict) else {}
+                offers = price.get("offers") if isinstance(price.get("offers"), list) else []
+                if str(price.get("level") or "") == "business":
+                    body = update_yandex_price(
+                        api_token,
+                        business_id=checkpoint.business_id,
+                        offers=deepcopy(offers),
+                        timeout_seconds=timeout,
+                    )
+                else:
+                    body = update_yandex_price(
+                        api_token,
+                        campaign_id=checkpoint.campaign_id,
+                        offers=deepcopy(offers),
+                        timeout_seconds=timeout,
+                    )
+            elif step == "stock":
+                stock = plan.get("stock") if isinstance(plan.get("stock"), dict) else {}
+                mode = str(stock.get("mode") or "")
+                if mode == "none":
+                    checkpoint.evidence["stock"] = {
+                        "skipped": "FBY 库存由 Yandex 履约侧管理",
+                        "at": collect_time_iso(),
+                    }
+                    checkpoint.completed_steps.append("stock")
+                    checkpoint.phase = "confirmation"
+                    checkpoint.last_response_summary = {
+                        "step": "stock",
+                        "status": "SKIPPED",
+                        "checked_at": collect_time_iso(),
+                    }
+                    return None
+                body = update_yandex_stock(
+                    api_token,
+                    mode=mode,
+                    campaign_id=checkpoint.campaign_id,
                     business_id=checkpoint.business_id,
-                    offers=deepcopy(offers),
+                    warehouse_ids=list(stock.get("warehouse_ids") or []),
+                    offer_id=checkpoint.offer_id,
+                    count=int(stock.get("count") or 0),
                     timeout_seconds=timeout,
                 )
             else:
-                body = update_yandex_price(
-                    api_token,
-                    campaign_id=checkpoint.campaign_id,
-                    offers=deepcopy(offers),
-                    timeout_seconds=timeout,
+                raise YandexApiError(
+                    "YANDEX_PUBLISH_STEP_UNKNOWN",
+                    f"Yandex 发布状态机步骤未知：{step}",
+                    retryable=False,
                 )
-        elif step == "stock":
-            stock = plan.get("stock") if isinstance(plan.get("stock"), dict) else {}
-            mode = str(stock.get("mode") or "")
-            if mode == "none":
-                checkpoint.evidence["stock"] = {
-                    "skipped": "FBY 库存由 Yandex 履约侧管理",
-                    "at": collect_time_iso(),
-                }
-                checkpoint.completed_steps.append("stock")
-                checkpoint.phase = "confirmation"
-                checkpoint.last_response_summary = {
-                    "step": "stock",
-                    "status": "SKIPPED",
-                    "checked_at": collect_time_iso(),
-                }
-                return None
-            body = update_yandex_stock(
-                api_token,
-                mode=mode,
-                campaign_id=checkpoint.campaign_id,
-                business_id=checkpoint.business_id,
-                warehouse_ids=list(stock.get("warehouse_ids") or []),
-                offer_id=checkpoint.offer_id,
-                count=int(stock.get("count") or 0),
-                timeout_seconds=timeout,
-            )
-        else:
-            raise YandexApiError(
-                "YANDEX_PUBLISH_STEP_UNKNOWN",
-                f"Yandex 发布状态机步骤未知：{step}",
-                retryable=False,
-            )
     except PublishAdapterError as exc:
         mapped = map_yandex_publish_error(exc)
         status = exc.details.get("http_status")
@@ -1047,15 +1066,7 @@ def publish_yandex_payload(
     payload = payload if isinstance(payload, dict) else {}
     api_token, campaign_id, business_id = _yandex_publish_credentials(config)
     plan = _publish_plan(payload)
-    if (
-        str(plan.get("campaign_id") or "") != campaign_id
-        or str(plan.get("business_id") or "") != business_id
-    ):
-        raise YandexApiError(
-            "YANDEX_STORE_BINDING_CHANGED",
-            "已批准 payload 的店铺身份与当前授权绑定不一致，已阻止外发。",
-            retryable=False,
-        )
+    _assert_plan_binding(plan, campaign_id, business_id)
     if not str(plan.get("offer_id") or "").strip():
         raise YandexApiError(
             "YANDEX_OFFER_ID_MISSING",
@@ -1065,7 +1076,7 @@ def publish_yandex_payload(
     checkpoint = YandexPublishCheckpoint(
         phase="offer_mapping",
         offer_id=str(plan.get("offer_id")),
-        campaign_id=campaign_id,
+        campaign_id=str(plan['campaign_id']),
         business_id=business_id,
         next_poll_at=time.time() + _step_interval_seconds(config),
     )
@@ -1115,23 +1126,28 @@ def _confirmation_readback(
     checkpoint: YandexPublishCheckpoint,
     api_token: str,
     config: dict[str, Any],
+    *, facts=None,
 ) -> dict[str, Any]:
     """只读回读 Business 商品映射与 Campaign 商品状态。"""
 
     timeout = _timeout_seconds(config)
-    mappings = fetch_yandex_offer_mapping(
-        api_token,
-        checkpoint.business_id,
-        [checkpoint.offer_id],
-        timeout_seconds=timeout,
-    )
-    offers = fetch_yandex_campaign_offer(
-        api_token,
-        checkpoint.campaign_id,
-        offer_ids=[checkpoint.offer_id],
-        timeout_seconds=timeout,
-    )
-    quarantined = _quarantined_offer(plan, api_token, checkpoint, config)
+    if facts is not None:
+        mappings, offers = facts["mappings"], facts["offers"]
+        quarantined = next((row for row in facts["quarantine"] if str(row.get("offerId")) == checkpoint.offer_id), None)
+    else:
+        mappings = fetch_yandex_offer_mapping(
+            api_token,
+            checkpoint.business_id,
+            [checkpoint.offer_id],
+            timeout_seconds=timeout,
+        )
+        offers = fetch_yandex_campaign_offer(
+            api_token,
+            checkpoint.campaign_id,
+            offer_ids=[checkpoint.offer_id],
+            timeout_seconds=timeout,
+        )
+        quarantined = _quarantined_offer(plan, api_token, checkpoint, config)
 
     if quarantined is not None:
         checkpoint.evidence["quarantine"] = deepcopy(quarantined)

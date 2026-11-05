@@ -1,5 +1,7 @@
 """原图交付与仓库跨站访问：内容不替换，图片准备失败不创建报单。"""
 
+from erp_web.context import get_context
+
 import io
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -108,6 +110,6 @@ def test_remote_formal_order_edit_rejection_is_explained(domain, monkeypatch):
     response = {"code": 2, "message": "订单非草稿状态,不可修改 private-secret"}
     monkeypatch.setattr(bus, "managed_urlopen", lambda *args, **kwargs: io.BytesIO(json.dumps(response).encode()))
     with pytest.raises(FulfillmentError, match="正式报单") as error:
-        bus.CrossborderBusClient(domain[0].store)._request("/erpapi/order/updateOrderPackage", {})
+        bus.CrossborderBusClient(domain[0].store, get_context().config)._request("/erpapi/order/updateOrderPackage", {})
     assert error.value.definitive and not error.value.unknown
     assert "private-secret" not in str(error.value)

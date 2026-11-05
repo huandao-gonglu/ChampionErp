@@ -1,5 +1,7 @@
 """跨境履约关键回归：幂等、未知回执、采购数量、配送范围与取消确认。"""
 
+from erp_web.context import get_context
+
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -15,6 +17,11 @@ from erp_web.services.order_procurement_service import OrderProcurementService
 from erp_web.stores.fulfillment_store import FulfillmentStore
 from erp_web.stores.order_notification_store import OrderNotificationStore
 from erp_web.stores.order_procurement_store import OrderProcurementStore
+
+
+@pytest.fixture(autouse=True)
+def isolated_bus_environment(monkeypatch):
+    monkeypatch.delenv("ERP_CROSSBORDERBUS_CLIENT_SECRET", raising=False)
 
 
 class Bus:
@@ -563,8 +570,8 @@ def test_account_switch_blocks_existing_remote_operations(domain):
 
 def test_client_token_refresh_uses_persisted_refresh_token(domain, monkeypatch):
     store = domain[0].store
-    store.set_setting("credentials", {"client_secret": "enterprise-secret", "app_uid": 4, "access_token": "old", "expires_token": "refresh", "expires_at": 0})
-    client = CrossborderBusClient(store)
+    get_context().config.save_integration_credentials("crossborderbus", {"client_secret": "enterprise-secret", "app_uid": 4, "access_token": "old", "expires_token": "refresh", "expires_at": 0})
+    client = CrossborderBusClient(store, get_context().config)
     calls = []
     def response(path, body, headers=None):
         calls.append((path, body))
@@ -573,11 +580,11 @@ def test_client_token_refresh_uses_persisted_refresh_token(domain, monkeypatch):
     assert client.token() == "new"
     assert client.token() == "new"
     assert calls == [("/erpapi/token/refresh", {"client_secret": "enterprise-secret", "expires_token": "refresh"})]
-    assert store.setting("credentials")["expires_token"] == "next"
+    assert get_context().config.integration_credentials("crossborderbus")["expires_token"] == "next"
 
 
 def test_bus_search_matches_exact_section_order_and_checks_all_pages(domain, monkeypatch):
-    client = CrossborderBusClient(domain[0].store)
+    client = CrossborderBusClient(domain[0].store, get_context().config)
     pages = []
     def request(path, body, **kwargs):
         pages.append(body["page"])
@@ -640,7 +647,8 @@ def test_update_sends_full_package_list_and_locks_after_packing(domain):
 
 def test_settings_never_return_bus_secrets(domain):
     service = domain[0]
-    service.store.set_setting("credentials", {"client_secret": "private-secret", "access_token": "private-token", "expires_token": "private-refresh"})
+    get_context().config.save_integration_credentials("crossborderbus", {"client_secret": "private-secret", "access_token": "private-token", "expires_token": "private-refresh"})
+    service.client = CrossborderBusClient(service.store, get_context().config)
     import json
     value = json.dumps(service.settings())
     assert "private-secret" not in value
@@ -706,7 +714,7 @@ def test_pdf_storage_reuses_matching_object_without_upload(monkeypatch):
 def test_unknown_write_cannot_bypass_request_manager(domain, monkeypatch):
     from erp_web.schemas.external_requests import ExternalRequestOutcomeUnknown
     from erp_web.services import crossborderbus_client as module
-    client = CrossborderBusClient(domain[0].store)
+    client = CrossborderBusClient(domain[0].store, get_context().config)
     def unknown(*args, **kwargs):
         raise ExternalRequestOutcomeUnknown()
     monkeypatch.setattr(module, "managed_urlopen", unknown)
@@ -716,7 +724,7 @@ def test_unknown_write_cannot_bypass_request_manager(domain, monkeypatch):
 
 
 def test_remote_search_checks_authorization_identity(domain):
-    client = CrossborderBusClient(domain[0].store)
+    client = CrossborderBusClient(domain[0].store, get_context().config)
     with pytest.raises(FulfillmentError, match="授权账号已变化"):
         client.search("order", expected_identity="previous-account")
 
@@ -728,7 +736,7 @@ def test_no_unpack_parcel_conflict_explains_rejection_without_exposing_response(
 
     response = {"code": 2, "message": "快递单号YT123已提交过不拆包订单(合单号515167),只能作为一个国际包裹发出。请先将订单修改为拆包验货订单。private-secret"}
     monkeypatch.setattr(module, "managed_urlopen", lambda *args, **kwargs: io.BytesIO(json.dumps(response).encode()))
-    client = module.CrossborderBusClient(domain[0].store)
+    client = module.CrossborderBusClient(domain[0].store, get_context().config)
     with pytest.raises(FulfillmentError, match="同一国内快递单号已用于不拆包订单") as error:
         client._request("/erpapi/order/createOrder", {"order_data": []})
     assert error.value.definitive and not error.value.unknown
@@ -813,21 +821,22 @@ def test_manual_sync_can_refresh_shipped_order(domain):
 def test_failed_authorization_preserves_previous_credentials(domain, monkeypatch):
     store = domain[0].store
     old = {"client_secret": "old-secret", "app_uid": 4, "user_name": "old-user", "access_token": "old-token", "expires_token": "old-refresh", "expires_at": time.time() + 7200}
-    store.set_setting("credentials", old)
-    client = CrossborderBusClient(store)
+    get_context().config.save_integration_credentials("crossborderbus", old)
+    client = CrossborderBusClient(store, get_context().config)
     def response(path, body, headers=None):
         if path.endswith("index"):
             return {"access_token": "new-token", "expires_token": "new-refresh", "expires_in": 7200}
         raise FulfillmentError("新账号授权失败")
     monkeypatch.setattr(client, "_request", response)
     with pytest.raises(FulfillmentError):
-        client.authorize("new-secret", "new-user", "password")
-    assert store.setting("credentials") == old
+        client.authorize("new-user", "password")
+    assert get_context().config.integration_credentials("crossborderbus") == old
     assert client.credentials() == old
 
 
 def test_authorization_saves_app_uid_but_not_password(domain, monkeypatch):
-    client = CrossborderBusClient(domain[0].store)
+    monkeypatch.setenv("ERP_CROSSBORDERBUS_CLIENT_SECRET", "secret")
+    client = CrossborderBusClient(domain[0].store, get_context().config)
     def response(path, body, headers=None):
         if path.endswith("index"):
             return {"access_token": "token", "expires_token": "refresh", "expires_in": 7200}
@@ -835,10 +844,81 @@ def test_authorization_saves_app_uid_but_not_password(domain, monkeypatch):
             return {"app_uid": 42}
         return {"data": []}
     monkeypatch.setattr(client, "_request", response)
-    client.authorize("secret", "user", "private-password")
+    client.authorize("user", "private-password")
     saved = client.credentials()
     assert saved["app_uid"] == 42 and saved["user_name"] == "user"
     assert "private-password" not in str(saved)
+    persisted = get_context().config.integration_credentials("crossborderbus")
+    assert "client_secret" not in persisted
+    assert "private-password" not in str(persisted)
+
+
+def test_deployment_secret_preserves_matching_existing_authorization(domain, monkeypatch):
+    config = get_context().config
+    old = {"client_secret": "enterprise-secret", "app_uid": 4, "access_token": "old-token",
+           "expires_token": "refresh", "expires_at": time.time() + 7200}
+    config.save_integration_credentials("crossborderbus", old)
+    client = CrossborderBusClient(domain[0].store, config)
+    identity = client.identity()
+    monkeypatch.setenv("ERP_CROSSBORDERBUS_CLIENT_SECRET", "enterprise-secret")
+    assert client.identity() == identity
+    assert client.token() == "old-token"
+    config.save_crossborderbus_credentials(client.credentials())
+    assert "client_secret" not in config.integration_credentials("crossborderbus")
+    assert client.token() == "old-token"
+    assert client.identity() == identity
+    monkeypatch.delenv("ERP_CROSSBORDERBUS_CLIENT_SECRET")
+    assert client.identity() == ""
+    with pytest.raises(FulfillmentError, match="授权服务暂未配置"):
+        client.token()
+
+
+def test_changed_deployment_secret_does_not_reuse_old_authorization(domain, monkeypatch):
+    config = get_context().config
+    old = {"client_secret": "old-secret", "app_uid": 4, "access_token": "old-token", "expires_token": "old-refresh"}
+    config.save_integration_credentials("crossborderbus", old)
+    monkeypatch.setenv("ERP_CROSSBORDERBUS_CLIENT_SECRET", "new-secret")
+    client = CrossborderBusClient(domain[0].store, config)
+    assert client.identity() == ""
+    calls = []
+    def response(path, body, headers=None):
+        calls.append((path, body, headers))
+        if path.endswith("index"):
+            return {"access_token": "new-token", "expires_token": "new-refresh", "expires_in": 7200}
+        raise FulfillmentError("账号授权失败")
+    monkeypatch.setattr(client, "_request", response)
+    with pytest.raises(FulfillmentError, match="账号授权失败"):
+        client.authorize("user", "password")
+    assert calls[0] == ("/erpapi/token/index", {"client_secret": "new-secret"}, None)
+    assert calls[1][2]["k-client-secret"] == "new-secret"
+    assert "old-token" not in str(calls) and "old-refresh" not in str(calls)
+    assert config.integration_credentials("crossborderbus") == old
+
+
+def test_missing_deployment_secret_never_sends_authorization(domain, monkeypatch):
+    client = CrossborderBusClient(domain[0].store, get_context().config)
+    def unexpected_request(*args, **kwargs):
+        pytest.fail("未配置服务时不应发送外部请求")
+    monkeypatch.setattr(client, "_request", unexpected_request)
+    with pytest.raises(FulfillmentError, match="授权服务暂未配置"):
+        client.authorize("user", "password")
+
+
+@pytest.mark.parametrize("field", ["client_secret", "access_token", "expires_token", "app_uid"])
+def test_authorization_http_rejects_developer_credentials(domain, monkeypatch, field):
+    from types import SimpleNamespace
+    from erp_web.facades import fulfillment_facade
+    from erp_web.http_route_units.fulfillment_routes import POST_HANDLERS
+
+    monkeypatch.setattr(fulfillment_facade, "get_context", lambda: SimpleNamespace(fulfillment=domain[0]))
+    sent = []
+    handler = SimpleNamespace(path="/api/crossborderbus/authorize",
+                              read_body=lambda: {"user_name": "user", "password": "password", field: "injected-private-value"},
+                              send_json=lambda value, status=200: sent.append((value, status)))
+    POST_HANDLERS[handler.path](handler)
+    assert sent[0][1] == 400
+    assert "injected-private-value" not in str(sent)
+    assert get_context().config.integration_credentials("crossborderbus") == {}
 
 
 def test_cancel_rejection_remains_visible_until_explicit_retry(domain):
@@ -858,7 +938,7 @@ def test_cancel_rejection_remains_visible_until_explicit_retry(domain):
 
 
 def test_catalog_normalizes_string_ids_from_actual_api(domain, monkeypatch):
-    client = CrossborderBusClient(domain[0].store)
+    client = CrossborderBusClient(domain[0].store, get_context().config)
     raw = [{"section_id": "143", "section_name": "Yandex", "storehouse_list": [{"id": "54", "name": "122义乌优易仓", "code": "122"}]}]
     monkeypatch.setattr(client, "request", lambda *args, **kwargs: {"data": raw})
     catalog = client.catalog()
@@ -882,13 +962,13 @@ def test_existing_catalog_is_read_without_losing_string_ids(domain):
 
 
 def test_services_normalize_ids_and_string_fees(domain, monkeypatch):
-    client = CrossborderBusClient(domain[0].store)
+    client = CrossborderBusClient(domain[0].store, get_context().config)
     monkeypatch.setattr(client, "request", lambda *args, **kwargs: {"data": {"core_data": [{"id": "2", "name": "验货", "gold": "0.50"}], "optional_data": []}})
     assert client.services(1, 10)["core_data"] == [{"id": 2, "name": "验货", "gold": 0.5}]
 
 
 def test_invalid_catalog_id_is_not_silently_dropped(domain, monkeypatch):
-    client = CrossborderBusClient(domain[0].store)
+    client = CrossborderBusClient(domain[0].store, get_context().config)
     monkeypatch.setattr(client, "request", lambda *args, **kwargs: {"data": [{"section_id": "invalid", "section_name": "Yandex", "storehouse_list": []}]})
     with pytest.raises(FulfillmentError, match="回执字段无效"):
         client.catalog()
@@ -1222,7 +1302,7 @@ def test_reconciliation_never_reattaches_archived_cancelled_order(domain):
 
 
 def test_bus_search_filters_history_but_still_rejects_multiple_new_attempts(domain, monkeypatch):
-    client = CrossborderBusClient(domain[0].store)
+    client = CrossborderBusClient(domain[0].store, get_context().config)
     rows = [{'id': n, 'sheet_info': {'section_order': '123'}} for n in [99, 100]]
     monkeypatch.setattr(client, 'request', lambda *a, **kw: {'data': {'count': len(rows), 'list': rows}})
     assert client.search('123', exclude_order_ids={99})['id'] == 100

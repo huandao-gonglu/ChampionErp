@@ -68,7 +68,9 @@ function sanitizeConfigValue(value: unknown): unknown {
  */
 export function sanitizePublicAppConfig(value: unknown): UnknownRecord {
   const sanitized = sanitizeConfigValue(value)
-  return sanitized && typeof sanitized === 'object' && !Array.isArray(sanitized)
+  const result = sanitized && typeof sanitized === 'object' && !Array.isArray(sanitized)
     ? sanitized as UnknownRecord
     : {}
+  delete result['1688_api']
+  return result
 }

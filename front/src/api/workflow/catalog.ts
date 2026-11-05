@@ -100,15 +100,6 @@ function collectCredentialsPayload(credentials: TransientCollectCredentials): Un
   return cookie ? { cookie } : {}
 }
 
-function collectApiOptions(form: CollectForm): UnknownRecord {
-  return {
-    base_url: form.alibabaApiBaseUrl,
-    method: form.alibabaApiMethod,
-    api_version: form.alibabaApiVersion,
-    timeout_seconds: form.alibabaApiTimeoutSeconds,
-  }
-}
-
 export type CollectionAttempt =
   | (ProductMutationResponse & { verification?: undefined })
   | { verification: CollectionVerification; diagnostics: UnknownRecord }
@@ -155,7 +146,6 @@ export async function collectProduct(
     url,
     mode: form.mode,
     ...collectCredentialsPayload(credentials),
-    '1688_api': collectApiOptions(form),
     platform: form.platform === 'unknown' ? '' : form.platform,
   })
   return normalizeCollectionAttempt(response.data)
@@ -176,7 +166,6 @@ export async function collectBatch(
     urls: form.productUrls,
     mode: form.mode === 'extension' ? 'manual' : form.mode,
     ...collectCredentialsPayload(credentials),
-    '1688_api': collectApiOptions(form),
     platform: ['manual', 'unknown'].includes(form.platform) ? '' : form.platform,
   })
   const data = asRecord(response.data)
@@ -296,12 +285,6 @@ export async function saveCollectSettings(
   const response = await apiClient.post('/api/save-settings', {
     appConfig: {
       ...(alibabaCookie ? { alibaba_cookie: alibabaCookie } : {}),
-      '1688_api': {
-        base_url: form.alibabaApiBaseUrl,
-        method: form.alibabaApiMethod,
-        api_version: form.alibabaApiVersion,
-        timeout_seconds: form.alibabaApiTimeoutSeconds,
-      },
       collect_output_dir: form.outputDir,
       auto_ai_recognition: form.autoAiRecognition ? '1' : '0',
     },

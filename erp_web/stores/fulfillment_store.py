@@ -30,15 +30,21 @@ class FulfillmentStore:
         self.receiving = ReceivingWarehouseStore(orders)
         with orders.connect() as conn:
             conn.executescript(SCHEMA)
+            if conn.execute("SELECT 1 FROM bus_settings WHERE key='credentials'").fetchone():
+                raise RuntimeError("跨境巴士授权尚未迁移，请停止服务后运行 scripts/migrate_credentials.py。")
             conn.commit()
 
     def setting(self, key, default=None):
+        if key == "credentials":
+            raise ValueError("跨境巴士授权由 ConfigStore 管理")
         with self.orders.connect() as conn:
             row = conn.execute("SELECT value FROM bus_settings WHERE key=?", (key,)).fetchone()
         value = json.loads(row[0]) if row else default
         return normalize_bus_catalog(value or {}) if key == "catalog" else value
 
     def set_setting(self, key, value):
+        if key == "credentials":
+            raise ValueError("跨境巴士授权由 ConfigStore 管理")
         with self.orders.connect() as conn:
             conn.execute("INSERT OR REPLACE INTO bus_settings VALUES (?,?)", (key, json.dumps(value, ensure_ascii=False)))
             conn.commit()

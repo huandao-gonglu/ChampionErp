@@ -59,6 +59,13 @@ def validate_request_metadata(handler: BaseHTTPRequestHandler) -> None:
             error_code="UNTRUSTED_HOST",
         )
 
+    # 官方 OAuth 的顶层回跳以服务端保存的一次性 state 校验来源；仅放行此 GET 页面。
+    if (getattr(handler, "command", "") == "GET"
+            and urllib.parse.urlsplit(getattr(handler, "path", "")).path == "/auth/alibaba/callback"
+            and _header(handler, "Sec-Fetch-Mode") == "navigate"
+            and _header(handler, "Sec-Fetch-Dest") == "document"):
+        return
+
     fetch_site = _header(handler, "Sec-Fetch-Site").lower()
     if fetch_site == "cross-site":
         raise RequestValidationError(

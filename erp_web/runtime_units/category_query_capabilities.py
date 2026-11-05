@@ -222,7 +222,7 @@ def category_attributes_query(
 
 @ai_tool(
     name=CATEGORY_ATTRIBUTE_VALUES_QUERY_TOOL,
-    description="分页查询类目属性真实候选。有限的小字典优先空 query 读取首屏，避免同义词搜空后再读全表；品牌等大字典使用关键词。多个独立属性可同时查询。has_more 时用 cursor 继续；搜索为空不能证明字典无匹配。",
+    description="用当前类目定义返回的属性 ID 分页查询真实候选。有限的小字典优先空 query 读取首屏，避免同义词搜空后再读全表；品牌等大字典使用关键词。多个独立属性可同时查询。has_more 时用 cursor 继续；搜索为空不能证明字典无匹配。",
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",

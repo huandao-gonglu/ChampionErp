@@ -669,6 +669,7 @@ describe('workflow store live API flow', () => {
       'presentation-store-test',
     )
     expect(store.lastAuthResult).toEqual(result)
+    expect(workflowApi.saveAiConfig).not.toHaveBeenCalled()
   })
 
   it('JSON 能力测试在 presentation 中显示实际 user 消息', async () => {
@@ -697,6 +698,39 @@ describe('workflow store live API flow', () => {
     )
   })
 
+  it('能力测试成功只自动保存当前模型与真实回执，不提交其他本地编辑', async () => {
+    const profile = { version: 2, tested: true, configuration_fingerprint: 'verified' }
+    const result: AuthResult = { ok: true, message: '通过', error: '', errorCode: '', nextAction: '', raw: {
+      channel: 'ai_model', model_id: 'canvas', supported_capabilities: ['image_edit'],
+      capability_results: { image_edit: { ok: true, capability_profile: profile } },
+    } }
+    vi.mocked(workflowApi.testAiModel).mockResolvedValue(result)
+    const other = { id: 'other', name: '服务器上的其他模型', capabilities: ['chat'] }
+    vi.mocked(workflowApi.fetchAiConfig).mockResolvedValue({ raw: { ai_models: [other] } })
+    vi.mocked(workflowApi.saveAiConfig).mockImplementation(async config => ({ raw: config }))
+    const store = useWorkflowStore()
+    store.aiConfig = { ai_models: [{ ...other, name: '不应提交的本地修改' }] }
+    await store.testAiSettings({ id: 'canvas', name: '测试的模型', capabilities: [],
+      test_trigger: 'capability_checkbox', probe_capabilities: true, probe_only_capability: 'image_edit' })
+    expect(workflowApi.saveAiConfig).toHaveBeenCalledWith({ ai_models: [other, {
+      id: 'canvas', name: '测试的模型', capabilities: ['image_edit'], capability_profiles: { image_edit: profile },
+    }] })
+    expect(store.lastAuthResult?.message).toContain('已自动保存')
+    expect(store.aiConfig.ai_models).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'canvas', capabilities: ['image_edit'] })]))
+  })
+
+  it('测试通过但保存失败不能显示已启用，也不能掩盖保存错误', async () => {
+    vi.mocked(workflowApi.testAiModel).mockResolvedValue({ ok: true, message: '通过', error: '', errorCode: '', nextAction: '', raw: {
+      supported_capabilities: ['chat'], capability_results: { chat: { ok: true, capability_profile: { tested: true } } },
+    } })
+    vi.mocked(workflowApi.fetchAiConfig).mockResolvedValue({ raw: { ai_models: [] } })
+    vi.mocked(workflowApi.saveAiConfig).mockRejectedValue(new Error('保存失败'))
+    const store = useWorkflowStore()
+    await store.testAiSettings({ id: 'model', test_trigger: 'capability_checkbox', probe_capabilities: true, probe_only_capability: 'chat' })
+    expect(store.lastAuthResult?.ok).toBe(false)
+    expect(store.lastAuthResult?.error).toContain('能力测试通过，但自动保存失败')
+  })
+
   it('自动加载模型列表时不占用 AI Work presentation', async () => {
     const result: AuthResult = {
       ok: true,
@@ -717,6 +751,7 @@ describe('workflow store live API flow', () => {
     })
 
     expect(withAiForeground).not.toHaveBeenCalled()
+    expect(workflowApi.saveAiConfig).not.toHaveBeenCalled()
     expect(workflowApi.testAiModel).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'model-list-a' }),
     )
@@ -945,12 +980,8 @@ describe('workflow store live API flow', () => {
     const store = useWorkflowStore()
     await store.loadState()
 
-    const api1688 = store.appConfig['1688_api'] as Record<string, unknown>
     expect(store.appConfig.alibaba_cookie).toBe('')
-    expect(api1688.app_key).toBe('')
-    expect(api1688.app_secret).toBe('')
-    expect(api1688.access_token).toBe('')
-    expect(api1688.masked_app_secret).toBe('app...cret')
+    expect(store.appConfig).not.toHaveProperty('1688_api')
     expect(store.collectForm).not.toHaveProperty('alibabaCookie')
     expect(store.collectForm).not.toHaveProperty('alibabaAppSecret')
   })
@@ -992,7 +1023,7 @@ describe('workflow store live API flow', () => {
     ]) {
       expect(serialized).not.toContain(secret)
     }
-    expect((store.appConfig['1688_api'] as Record<string, unknown>).app_secret).toBe('')
+    expect(store.appConfig).not.toHaveProperty('1688_api')
   })
 
   it('keeps a newly saved API key configured when the provider model is still blank', async () => {

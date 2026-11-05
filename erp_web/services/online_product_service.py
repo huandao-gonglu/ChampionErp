@@ -16,7 +16,7 @@ from erp_web.schemas.online_products import ChangeRequest, CloseOnlineOperationR
 from erp_web.services.online_product_attributes import validate_yandex_attributes
 from erp_web.product_model.online_attribute_model import yandex_category_id
 from erp_web.services.online_product_changes import confirmation, observed_changes, validate_changes
-from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields
+from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields, warehouse_projection
 from erp_web.services.online_product_images import OnlineProductImages
 from erp_web.services.online_product_detail import OnlineProductDetailReader
 from erp_web.services.online_ozon_export import OnlineOzonExportService
@@ -86,7 +86,7 @@ class OnlineProductService:
             raise OnlineConflict("授权刷新后店铺身份变化，操作已停止")
         return adapter
 
-    def _list_context(self, platform: str, catalog: str = "current"):
+    def _list_context(self, platform: str, catalog: str = "current", warehouse_id: str = ""):
         if catalog not in ("current", "archived", "all"):
             raise ValueError("商品目录范围只能为 current、archived 或 all")
         config = self.context.config.load_store_config()
@@ -94,6 +94,14 @@ class OnlineProductService:
         records = self.store.listings(platform, account) if account else []
         if catalog != "all":
             records = [row for row in records if row.archived is (catalog == "archived")]
+        warehouses = {}
+        if platform == 'yandex':
+            for row in records:
+                for warehouse in row.snapshot.get('warehouse_catalog', []):
+                    warehouses[str(warehouse['id'])] = warehouse
+                for stock in row.stocks:
+                    warehouses.setdefault(stock.id, {'id': stock.id, 'name': stock.label, 'campaign_id': stock.campaign_id})
+            records = [projected for row in records if (projected := warehouse_projection(row, warehouse_id)) is not None]
         latest_sync = self.store.latest_sync_summary(platform, account, catalog=catalog) if account else None
         return records, {"ok": True, "platform": platform, "account_id": account, "catalog": catalog,
             "summary": {"total": len(records), "active": sum(r.sale_state == "active" for r in records),
@@ -101,22 +109,22 @@ class OnlineProductService:
             "markets": sorted({m.site_id for r in records for m in r.markets}),
             "statuses": sorted({r.raw_status for r in records}), "latest_sync": latest_sync,
             "state": "authorization_required" if not account else ("never_synced" if not latest_sync else "authorization_failed" if "AUTH" in latest_sync["error_code"] else "sync_failed" if latest_sync["status"] == "failed" else "ready"),
-            "store_name": str(config.get(platform, {}).get("shop_name") or account),
+            "store_name": str(config.get(platform, {}).get("shop_name") or account), 'warehouses': list(warehouses.values()),
         }
 
-    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1, catalog: str = "current") -> dict[str, Any]:
-        records, context = self._list_context(platform, catalog)
+    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1, catalog: str = "current", warehouse_id: str = "") -> dict[str, Any]:
+        records, context = self._list_context(platform, catalog, warehouse_id)
         jobs = self.store.jobs(platform, context["account_id"]) if context["account_id"] else []
         return {**context, **listing_page(records, query=query, status=status, market=market, page=page),
                 "jobs": jobs, "latest_sync": next((job for job in jobs if job["operation"] == "sync" and (catalog == "all" or job["request"].get("catalog", "all") in (catalog, "all"))), None)}
 
     def read_page(self, platform: str, *, query: str = "", status: str = "", market: str = "",
                   page: int = 1, limit: int = 25, view: Literal["groups", "listings"] = "groups",
-                  group_id: str = "", fields: list[str] | None = None, catalog: str = "current") -> dict[str, Any]:
+                  group_id: str = "", fields: list[str] | None = None, catalog: str = "current", warehouse_id: str = "") -> dict[str, Any]:
         """按页面同序返回有界摘要或所选业务字段；组内 SKU 可跨页。"""
         if not 1 <= limit <= 50 or page < 1 or view not in ("groups", "listings"):
             raise ValueError("在线商品分页参数无效")
-        records, context = self._list_context(platform, catalog)
+        records, context = self._list_context(platform, catalog, warehouse_id)
         return {**context, **listing_summary_page(records, query=query, status=status, market=market,
                 page=page, limit=limit, view=view, group_id=group_id, fields=fields)}
 

@@ -160,7 +160,7 @@ class YandexOfferMappingPayload(BaseModel):
 class YandexPublishCheckpoint(BaseModel):
     """Yandex 发布状态机检查点：可持久化、无凭据。
 
-    PublishingBus 通过 pending result 持久化本结构并在重启后恢复；
+    PublishingBus 通过 pending result 持久化本结构，供手动重试与结果核对使用；
     绝不包含 API-Key 或其它秘密。
     """
 

@@ -125,6 +125,7 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
         "drafts_query",
         "product_read",
         "draft_attributes_read",
+        "draft_sku_variants_check",
         "inspect_source_facts",
         "product_publish_validate",
         "draft_read",

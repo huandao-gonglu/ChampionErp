@@ -18,7 +18,7 @@ from erp_web.runtime_units.online_product_capabilities import (
 )
 from erp_web.runtime_units.online_product_job_reader import OnlineProductJobReader
 from erp_web.schemas.online_product_capabilities import OnlineReadRequest, OnlineJobRequest, OnlineSyncRequest
-from erp_web.schemas.online_products import BuyerLink, CloseOnlineOperationRequest, OnlineChange
+from erp_web.schemas.online_products import BuyerLink, CloseOnlineOperationRequest, MarketSnapshot, OnlineChange
 from erp_web.schemas.ai_tools import AiToolCommand, AiToolExecutionError
 from erp_web.services.ai_tool_runtime import AiToolRuntime
 from erp_web.services.agent_job_service import AgentJobService
@@ -430,7 +430,10 @@ def test_yandex_details_pass_native_tool_output_validation(online, tmp_path, ent
         row = listing(listing_id)
         row.platform = "yandex"
         row.account_id = "business:campaign"
+        row.model = 'business_offer'
+        row.stocks = []
         row.raw_status = "DISABLED_AUTOMATICALLY"
+        row.markets = [MarketSnapshot(id='campaign', site_id='campaign', raw_status='DISABLED_AUTOMATICALLY')]
         domain.store.save(row)
         remote.rows[listing_id] = row
     remote.account_id = "business:campaign"

@@ -355,7 +355,7 @@ describe('原生等待与批量入口', () => {
     let request: { id: string; target_draft_ids: string[]; messages: { id: string; parts: { text: string }[] }[] } | undefined
     vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
       request = JSON.parse(init.body)
-      mocks.fetchUiMessages.mockResolvedValue({ history_version: 0, messages: [], pending_tool_calls: [], received_messages: [{ message_id: request!.messages[0].id }] })
+      mocks.fetchUiMessages.mockResolvedValue({ history_version: 0, messages: [], pending_tool_calls: [], received_messages: [{ message_id: request!.messages[0].id, status: 'received', text: request!.messages[0].parts[0].text }] })
       return new Response(JSON.stringify({ conversation_id: request!.id, message: '已收到，等待当前操作结束后应用' }), { status: 202 })
     }))
     const store = useAiChatStore()
@@ -363,7 +363,7 @@ describe('原生等待与批量入口', () => {
     await vi.waitFor(() => expect(request).toBeDefined())
     expect(request!.target_draft_ids).toEqual(['draft-a', 'draft-b'])
     expect(request!.messages[0].parts[0].text).toContain('本次仅准备草稿')
-    await vi.waitFor(() => expect(store.receivedNotice).toContain('已收到'))
+    await vi.waitFor(() => expect(store.receivedMessages[0]?.text).toContain('本次仅准备草稿'))
     expect(store.floatingOpen).toBe(true)
   })
   it('等待工具时追加输入直接进入同一会话收件箱', async () => {
@@ -372,6 +372,10 @@ describe('原生等待与批量入口', () => {
     store.pendingToolCalls = [{ tool_call_id: 'external', tool_name: 'prepare', kind: 'external', summary: '' }]
     const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       expect(url).toContain('/runs'); expect(init?.method).toBe('POST')
+      const message = JSON.parse(String(init?.body)).messages[0]
+      mocks.fetchUiMessages.mockResolvedValue({ history_version: 0, messages: [],
+        pending_tool_calls: store.pendingToolCalls,
+        received_messages: [{ message_id: message.id, status: 'received', text: message.parts[0].text }] })
       return new Response(JSON.stringify({ message: '已收到' }), { status: 202 })
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -390,6 +394,50 @@ describe('原生等待与批量入口', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).not.toHaveProperty('page_context')
   })
+  it('重试直接开流时丢弃迟到的排队快照；追加输入被采用后立即移除且保留实时回复', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const store = useAiChatStore()
+    const id = store.startConversation()
+    let stale!: (value: unknown) => void
+    mocks.fetchUiMessages.mockImplementationOnce(() => new Promise(resolve => { stale = resolve }))
+    store.refreshHistory()
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c } })
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(stream, { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } }))
+      .mockImplementationOnce(async (_, init) => {
+        const message = JSON.parse(init.body).messages[0]
+        mocks.fetchUiMessages.mockResolvedValue({ history_version: 3, messages: [], run_active: true,
+          received_messages: [{ message_id: message.id, status: 'received', text: message.parts[0].text }] })
+        return new Response('{}', { status: 202 })
+      })
+    vi.stubGlobal('fetch', fetchMock)
+    store.input = '没完成的工作重试'
+    store.sendMessage()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    controller.enqueue(encodedChunk({ type: 'start', messageId: 'live' }))
+    controller.enqueue(encodedChunk({ type: 'text-start', id: 't' }))
+    controller.enqueue(encodedChunk({ type: 'text-delta', id: 't', delta: '正在执行' }))
+    await vi.waitFor(() => expect(store.status).toBe('streaming'))
+    stale({ history_version: 2, messages: [], received_messages: [{ message_id: store.messages[0].id, text: '没完成的工作重试' }] })
+    await Promise.resolve()
+    expect(store.receivedMessages).toEqual([])
+
+    store.input = '只处理当前草稿'
+    store.sendMessage()
+    await vi.waitFor(() => expect(FakeEventSource.instances.at(-1)?.url).toContain('after_history_version=3'))
+    expect(store.receivedMessages.map(row => row.text)).toEqual(['只处理当前草稿'])
+    mocks.fetchUiMessages.mockResolvedValue({ history_version: 4, messages: [], received_messages: [] })
+    FakeEventSource.instances.at(-1)!.emit({ type: 'resync_required', history_version: 4 })
+    await vi.waitFor(() => expect(store.receivedMessages).toEqual([]))
+    expect(store.messages.at(-1)?.parts[0]).toMatchObject({ text: '正在执行' })
+    expect(store.status).toBe('streaming')
+    expect(store.activeConversationId).toBe(id)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    controller.enqueue(encodedChunk('[DONE]'))
+    controller.close()
+    await vi.waitFor(() => expect(store.isBusy).toBe(false))
+  })
+
   it('打开对话只绑定已读取历史，旧会话的订阅回调不能断开当前订阅', () => {
     vi.stubGlobal('EventSource', FakeEventSource)
     const fetchMock = vi.fn()

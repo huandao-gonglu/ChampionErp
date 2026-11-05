@@ -41,11 +41,9 @@ describe('采集请求凭据边界', () => {
     await collectProduct(form)
 
     const payload = vi.mocked(apiClient.post).mock.calls[0]?.[1] as Record<string, unknown>
-    const apiConfig = payload['1688_api'] as Record<string, unknown>
     expect(payload).not.toHaveProperty('cookie')
-    expect(apiConfig).not.toHaveProperty('app_key')
-    expect(apiConfig).not.toHaveProperty('app_secret')
-    expect(apiConfig).not.toHaveProperty('access_token')
+    expect(payload).not.toHaveProperty('1688_api')
+    expect((payload as { appConfig?: unknown }).appConfig || {}).not.toHaveProperty('1688_api')
   })
 
   it('只把显式请求瞬态 Cookie 发送一次', async () => {
@@ -83,11 +81,9 @@ describe('采集请求凭据边界', () => {
     const payload = vi.mocked(apiClient.post).mock.calls[0]?.[1] as {
       appConfig: Record<string, unknown>
     }
-    const apiConfig = payload.appConfig['1688_api'] as Record<string, unknown>
     expect(payload.appConfig).not.toHaveProperty('alibaba_cookie')
-    expect(apiConfig).not.toHaveProperty('app_key')
-    expect(apiConfig).not.toHaveProperty('app_secret')
-    expect(apiConfig).not.toHaveProperty('access_token')
+    expect(payload).not.toHaveProperty('1688_api')
+    expect((payload as { appConfig?: unknown }).appConfig || {}).not.toHaveProperty('1688_api')
   })
   it('浏览器快照请求携带精确目标，响应不生成空商品', async () => {
     const form = createDefaultCollectForm()

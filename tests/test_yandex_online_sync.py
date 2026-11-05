@@ -359,3 +359,73 @@ def test_sync_rejects_invalid_catalog_before_enqueue(catalog):
         service.sync("yandex", uuid4().hex, catalog=catalog)
     assert not service.store.jobs("yandex", "1:2")
     service.close()
+
+
+def test_business_warehouses_keep_separate_stock_status_and_operation_targets(monkeypatch):
+    from erp_web.services.online_product_changes import confirmation
+    from erp_web.schemas.online_product_capabilities import OnlineReadResult
+    remote = Platform(3)
+    a = adapter(remote)
+    a.mode = 'business'
+    a.warehouses = [{'id': wid, 'name': name, 'models': [{'placementType': 'FBS', 'apiAvailability': 'AVAILABLE', 'campaignId': cid}]}
+                    for wid, name, cid in [(3, 'Economy', 2), (4, 'Express', 3)]]
+    calls = []
+    hidden = set()
+    def request(path, body=None, *, query=None, method='POST'):
+        calls.append((path, deepcopy(body), query, method))
+        ids = (body or {}).get('offerIds', [])
+        if path.endswith('/offers'):
+            return {'result': {'offers': [{'offerId': sku, 'status': 'PUBLISHED' if '/3/' in path else 'NO_STOCKS',
+                'campaignPrice': {'value': 15, 'currencyId': 'CNY'}} for sku in ids]}}
+        if path.endswith('/stocks'):
+            wid = body['partnerWarehouseId']
+            return {'result': {'partnerWarehouseId': wid, 'offers': [{'offerId': sku,
+                'stocks': [{'type': 'AVAILABLE', 'count': 7 if wid == 4 else 0}]} for sku in ids]}}
+        if path.endswith('/hidden-offers'):
+            if method == 'POST':
+                hidden.update(row['offerId'] for row in body['hiddenOffers'])
+                return {'status': 'OK'}
+            return {'result': {'hiddenOffers': [{'offerId': sku} for sku in hidden if not (query or {}).get('offer_id') or sku == query['offer_id']]}}
+        return remote.request(path, body, query=query, method=method)
+    a.request = request
+    result = read_batch(a, remote.rows[:2], set())
+    assert not result.errors
+    first = result.listings[0]
+    assert first.sale_state == 'active' and first.raw_status == 'PUBLISHED'
+    assert [(s.id, s.campaign_id, s.quantity, s.raw_status) for s in first.stocks] == [('3', '2', 0, 'NO_STOCKS'), ('4', '3', 7, 'PUBLISHED')]
+    assert {price.id for price in first.prices} == {'business', 'campaign:2', 'campaign:3'}
+    assert len([path for path, _, _, _ in calls if path.endswith('/offers')]) == 2
+    assert len([path for path, _, _, _ in calls if path.endswith('/stocks')]) == 2
+    assert all(len(body['offerIds']) == 2 for _, body, _, _ in calls if body and 'offerIds' in body)
+    service = OnlineProductService(get_context(), adapter_factories={'yandex': lambda _: a}, start_worker=False)
+    monkeypatch.setattr(get_context().config, 'load_store_config', lambda: {'yandex': {'business_id': '1', 'campaign_id': '2'}})
+    for listing in result.listings:
+        service.store.save(listing)
+    all_rows = service.list('yandex')
+    assert len(all_rows['warehouses']) == 2 and len(all_rows['items'][0]['stocks']) == 2
+    filtered = service.list('yandex', warehouse_id='4')
+    assert all(row['stocks'][0]['quantity'] == 7 and row['raw_status'] == 'PUBLISHED' for row in filtered['items'])
+    assert service.list('yandex', warehouse_id='3')['items'][0]['raw_status'] == 'NO_STOCKS'
+    assert OnlineReadResult.model_validate(service.read_page('yandex', warehouse_id='4')).warehouses[1].id == '4'
+    command = ChangeRequest(listing_id=first.id, version=first.version, operation='sale_state',
+        scope_id='campaign:3', changes={'state': 'paused'}, idempotency_key='warehouse-target')
+    validate_changes(first, command)
+    a.write_batch(result.listings, command.operation, command.scope_id, command.changes)
+    assert calls[-1][0] == '/v2/campaigns/3/hidden-offers'
+    assert len(calls[-1][1]['hiddenOffers']) == 2
+    checked = a.read_confirmation(first, command)
+    assert confirmation(checked, command) == {'state': True}
+    assert checked.snapshot['hidden_campaigns']['3'] is True
+    assert checked.snapshot['hidden_campaigns']['2'] is False
+    assert checked.stocks[0].sale_state == 'unknown' and checked.stocks[1].sale_state == 'paused'
+    # 选中仓库库存为零时不能借用其他仓库的数量请求恢复销售。
+    with pytest.raises(ValueError, match='库存为零'):
+        validate_changes(first, command.model_copy(update={'scope_id': 'campaign:2', 'changes': {'state': 'active'}}))
+    # 单件刷新状态更新全部仓库的状态，保留价格、库存数量与详情读取时间。
+    saved = service.store.get(first.id)
+    status = a.read_status(saved)
+    refreshed = service.store.update_status(saved, status)
+    assert [stock.quantity for stock in refreshed.stocks] == [0, 7]
+    assert refreshed.synced_at == saved.synced_at and refreshed.prices == saved.prices
+    assert refreshed.stocks[1].sale_state == 'paused'
+    service.close()

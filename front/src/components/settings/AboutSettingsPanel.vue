@@ -3,13 +3,28 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { version } from '../../../package.json'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import OpenSourceNotices from './OpenSourceNotices.vue'
 import { companyName, supportEmail } from '@/legal/legal-info'
 import { agreementTitle, agreementVersion, agreementIntroduction, agreementSections } from '@/legal/user-agreement'
 import { privacyTitle, privacyVersion, privacyIntroduction, privacySections } from '@/legal/privacy-policy'
 
 const { t } = useI18n()
-const document = ref<'licenses' | 'agreement' | 'privacy' | null>(null)
+const document = ref<'agreement' | 'privacy' | null>(null)
+const desktop = window.championDesktop
+const licensesUrl = `${import.meta.env.BASE_URL}licenses/THIRD-PARTY-NOTICES.txt`
+const openingLicenses = ref(false)
+const licensesError = ref('')
+async function openLicenses() {
+  if (!desktop || openingLicenses.value) return
+  licensesError.value = ''
+  openingLicenses.value = true
+  try {
+    await desktop.openLicenses()
+  } catch {
+    licensesError.value = t('settings.openLicensesFailed')
+  } finally {
+    openingLicenses.value = false
+  }
+}
 const legalDocument = computed(() => {
   if (document.value === 'agreement') return { title: agreementTitle, version: agreementVersion, introduction: agreementIntroduction, sections: agreementSections }
   if (document.value === 'privacy') return { title: privacyTitle, version: privacyVersion, introduction: privacyIntroduction, sections: privacySections }
@@ -31,8 +46,13 @@ const legalDocument = computed(() => {
 
     <div class="divide-y divide-accent-200 overflow-hidden rounded-xl border border-accent-200 dark:divide-dark-700 dark:border-dark-700">
       <div class="flex flex-wrap items-center justify-between gap-4 p-5">
-        <div><h4 class="font-semibold">{{ t('settings.openSource') }}</h4><p class="muted mt-1 text-sm">{{ t('settings.openSourceSummary') }}</p></div>
-        <button type="button" class="btn btn-outline shrink-0" data-testid="view-licenses" aria-haspopup="dialog" @click="document = 'licenses'">{{ t('settings.view') }}<span class="sr-only">{{ t('settings.openSource') }}</span></button>
+        <div>
+          <h4 class="font-semibold">{{ t('settings.openSource') }}</h4>
+          <p class="muted mt-1 text-sm">{{ t('settings.openSourceSummary') }}</p>
+          <p v-if="licensesError" role="alert" class="mt-1 text-sm text-red-600 dark:text-red-400">{{ licensesError }}</p>
+        </div>
+        <button v-if="desktop" type="button" class="btn btn-outline shrink-0" data-testid="view-licenses" :disabled="openingLicenses" @click="openLicenses">{{ t('settings.view') }}<span class="sr-only">{{ t('settings.openSource') }}</span></button>
+        <a v-else class="btn btn-outline shrink-0" data-testid="view-licenses" :href="licensesUrl" download="THIRD-PARTY-NOTICES.txt">{{ t('settings.downloadLicenses') }}</a>
       </div>
       <div class="flex flex-wrap items-center justify-between gap-4 p-5">
         <div><h4 class="font-semibold">{{ t('settings.userAgreement') }}</h4><p class="muted mt-1 text-sm">{{ t('settings.userAgreementSummary') }}</p></div>
@@ -44,9 +64,8 @@ const legalDocument = computed(() => {
       </div>
     </div>
 
-    <WorkspaceDialog v-if="document" :open="true" :title="legalDocument?.title ?? 'Open Source Licenses'" width="72rem" @close="document = null">
-      <OpenSourceNotices v-if="document === 'licenses'" />
-      <article v-else-if="legalDocument" lang="zh-CN" class="mx-auto max-w-4xl space-y-7 text-sm leading-7">
+    <WorkspaceDialog v-if="legalDocument" :open="true" :title="legalDocument.title" width="72rem" @close="document = null">
+      <article lang="zh-CN" class="mx-auto max-w-4xl space-y-7 text-sm leading-7">
         <div>
           <p class="text-accent-500 dark:text-accent-400">版本日期：{{ legalDocument.version }}</p>
           <p class="mt-4 font-semibold">{{ legalDocument.introduction }}</p>

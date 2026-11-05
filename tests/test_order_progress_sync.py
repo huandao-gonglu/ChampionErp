@@ -1,4 +1,6 @@
 """订单同轮刷新采购和仓库快照；不创建采购单或预报单。"""
+
+from erp_web.context import get_context
 from types import SimpleNamespace
 
 import pytest
@@ -65,7 +67,7 @@ def test_new_platform_shipping_state_stops_progress_queries_in_same_cycle(setup,
     monkeypatch.setattr(fulfillment, 'sync', lambda *a: pytest.fail('本轮确认平台发货后不再查询报单'))
     store = procurement.store.orders
     worker = OrderNotificationService(
-        store, lambda: {'yandex': {'campaign_id': '4', 'api_token': 'test-token'}},
+        store, lambda: {'yandex': {'campaign_id': '4', 'api_token': 'test-token'}}, config_store=get_context().config,
         adapters={'yandex': lambda _: Adapter()}, parser=lambda *a: (None, {}),
         progress_sync=lambda order_id, checkpoint: service.sync_order_progress(
             procurement, fulfillment, lambda: {}, order_id, checkpoint,

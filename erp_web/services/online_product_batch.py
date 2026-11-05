@@ -7,8 +7,8 @@ from erp_web.services.online_product_listing import _matching_groups
 from erp_web.stores.online_product_store import OnlineConflict
 
 
-def scope_for(operation):
-    return "business" if operation == "archive" else "global"
+def scope_for(operation, scope_id=''):
+    return scope_id or ("business" if operation == "archive" else "global")
 
 
 def submission_result(jobs):
@@ -30,7 +30,7 @@ def preview_batch(service, body):
             found_groups.add(group.id)
             found_items.add(row.id)
             command = ChangeRequest(listing_id=row.id, version=row.version, operation=request.operation,
-                                    scope_id=scope_for(request.operation), changes=request.changes, idempotency_key="batch-preview")
+                                    scope_id=scope_for(request.operation, request.scope_id), changes=request.changes, idempotency_key="batch-preview")
             try:
                 validate_changes(row, command)
             except ValueError as exc:
@@ -42,7 +42,7 @@ def preview_batch(service, body):
     if not items or len(items) > 5000:
         raise ValueError("请选择 1–5000 个 SKU")
     return {"ok": True, "items": items, "errors": errors, "product_count": len(found_groups),
-            "scope": "商家账号全部店铺" if request.operation == "archive" else "当前店铺"}
+            "scope": "商家账号全部店铺" if request.operation == "archive" else f"所选仓库店铺 {request.scope_id.removeprefix('campaign:')}" if request.scope_id else "当前店铺"}
 
 
 def submit_batch(service, body):
@@ -66,7 +66,7 @@ def submit_batch(service, body):
         if listing.version != item.version:
             raise OnlineConflict(f"商品 {listing.seller_sku} 已变化，请重新预览")
         command = ChangeRequest(**item.model_dump(), operation=request.operation, changes=request.changes,
-                                scope_id=scope_for(request.operation), idempotency_key=f"batch:{batch_id}:{index:05d}")
+                                scope_id=scope_for(request.operation, request.scope_id), idempotency_key=f"batch:{batch_id}:{index:05d}")
         validate_changes(listing, command)
         commands.append(command.model_dump())
     jobs = service.store.enqueue_batch(platform, account, commands, batch_id=batch_id,

@@ -19,7 +19,7 @@ def read(query: dict[str, str]) -> dict[str, Any]:
         page = max(1, int(query.get("page") or 1))
     except ValueError:
         page = 1
-    return service.list(query.get("platform") or "mercadolibre", query=query.get("q", ""), status=query.get("status", ""), market=query.get("market", ""), page=page, catalog=query.get("catalog", "current"))
+    return service.list(query.get("platform") or "mercadolibre", query=query.get("q", ""), status=query.get("status", ""), market=query.get("market", ""), page=page, catalog=query.get("catalog", "current"), warehouse_id=query.get('warehouse_id', ''))
 
 
 def read_source_images(query: dict[str, str]) -> dict[str, Any]:

@@ -19,30 +19,33 @@ const emit = defineEmits<{ 'open-task': [jobId?: string] }>()
 
 const platform = ref<OnlinePlatform>('mercadolibre')
 const catalog = ref<'current' | 'archived'>('current')
+const warehouse = ref('')
 const syncCatalog = ref<'current' | 'archived'>('current')
 const syncCatalogLabel = computed(() => syncCatalog.value === 'archived' ? '归档商品' : '普通商品')
 const platforms: Record<OnlinePlatform, string> = {mercadolibre: 'Mercado Libre', ozon: 'Ozon', yandex: 'Yandex Market'}
-const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '平台已受理', waiting_confirmation: '等待平台确认', confirmed: '已完成', PUBLISHED: '在售', NO_STOCKS: '缺货', CHECKING: '审核中', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', needs_attention: '需要处理', closed_unconfirmed: '已结束，结果未确认', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
+const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '平台已受理', waiting_confirmation: '等待平台确认', confirmed: '已完成', PUBLISHED: '在售', CHECKING: '审核中', CREATING_CARD: '建卡中', NO_CARD: '待补充商品信息', REJECTED_BY_MARKET: '平台拒绝', DISABLED_AUTOMATICALLY: '平台停售', DISABLED_BY_PARTNER: '已停售', NO_STOCKS: '缺货', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', needs_attention: '需要处理', closed_unconfirmed: '已结束，结果未确认', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
 const page = ref<OnlinePage | null>(null)
 const checkedListings = ref(new Set<string>())
 const actionMenuOpen = ref(false), actionMenu = ref<HTMLElement | null>(null)
 const showOzonExport = ref(false)
 const exportListingIds = ref<string[]>([])
 const checkedGroups = ref(new Set<string>())
-const batchSelection = ref<{preview:OnlineBatchPreview; operation:'sale_state'|'archive'; changes:Record<string,unknown>; title:string; key:string} | null>(null)
+const batchSelection = ref<{preview:OnlineBatchPreview; operation:'sale_state'|'archive'; changes:Record<string,unknown>; title:string; key:string; scope_id:string} | null>(null)
 const batchError = ref('')
 const selectedRows = computed(() => (page.value?.items || []).filter(row=>checkedListings.value.has(row.id)))
 const canArchiveSelection = computed(() => selectedRows.value.length > 0 && selectedRows.value.every(row=>row.capabilities.archive?.enabled))
-const canSaleSelection = computed(() => selectedRows.value.length > 0 && selectedRows.value.every(row=>!row.archived && row.details_state==='ready' && !row.errors.length && row.capabilities.sale_state?.enabled))
+const selectedWarehouse = computed(() => page.value?.warehouses?.find(item=>item.id===warehouse.value))
+const canSaleSelection = computed(() => (!page.value?.warehouses?.length || !!selectedWarehouse.value) && selectedRows.value.length > 0 && selectedRows.value.every(row=>!row.archived && row.details_state==='ready' && !row.errors.length && row.capabilities.sale_state?.enabled))
 async function beginSelection(operation:'sale_state'|'archive', target:boolean | 'paused' | 'active') {
   if (busy.value) return
   const changes = operation==='archive' ? {archived:target} : {state:target}
+  const scope_id = operation==='archive' ? 'business' : selectedWarehouse.value ? `campaign:${selectedWarehouse.value.campaign_id}` : 'global'
   const title = operation==='archive' ? (target ? '归档所选商品' : '恢复所选归档') : target==='paused' ? '停售所选商品' : '恢复所选商品销售'
   busy.value = true; error.value=''; batchError.value=''; actionMenuOpen.value=false
   try {
     const result = await previewOnlineBatch({platform:platform.value,catalog:catalog.value,
-      group_ids:[...checkedGroups.value],listing_ids:[...checkedListings.value],operation,changes})
-    batchSelection.value = {preview:result,operation,changes,title,key:crypto.randomUUID()}
+      group_ids:[...checkedGroups.value],listing_ids:[...checkedListings.value],operation,changes,scope_id})
+    batchSelection.value = {preview:result,operation,changes,title,key:crypto.randomUUID(),scope_id}
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '读取所选商品失败' }
   finally { busy.value=false }
 }
@@ -52,7 +55,7 @@ async function submitSelection() {
   busy.value = true; batchError.value=''
   try {
     const jobs = await submitOnlineBatch({items:batch.preview.items.map(({listing_id,version})=>({listing_id,version})),
-      operation:batch.operation,changes:batch.changes,idempotency_key:batch.key})
+      operation:batch.operation,changes:batch.changes,scope_id:batch.scope_id,idempotency_key:batch.key})
     notice.value = `已提交 ${batch.preview.product_count} 个商品、${jobs.length} 个 SKU 的${batch.title.replace('所选商品','').replace('所选','')}请求，处理结果可在任务队列查看。`
     noticeTaskId.value = jobs[0]?.id || ''
     batchSelection.value=null
@@ -137,7 +140,9 @@ const storeSync = computed(() => page.value?.jobs.find(j => j.operation === 'syn
 const activeSync = computed(() => storeSync.value && (!storeSync.value.request.catalog || storeSync.value.request.catalog === catalog.value) ? storeSync.value : undefined)
 const otherCatalogSync = computed(() => !!storeSync.value && !activeSync.value)
 const stale = computed(() => !!page.value?.latest_sync && Date.now() - Date.parse(page.value.latest_sync.updated_at) > 3600000)
-const saleState = computed(() => selected.value?.sale_state === 'paused' ? 'active' : 'paused')
+const saleMarket = computed(() => selected.value?.markets.find(market=>`campaign:${market.id}`===scope.value))
+const currentSaleState = computed(() => saleMarket.value ? (saleMarket.value.raw_sub_status?.includes('hidden') ? 'paused' : saleMarket.value.raw_status==='PUBLISHED' ? 'active' : 'unknown') : selected.value?.sale_state)
+const saleState = computed(() => currentSaleState.value === 'paused' ? 'active' : 'paused')
 const cardNotice = computed(() => selected.value?.raw_sub_status
   .filter(status => ['HAS_CARD_CAN_NOT_UPDATE', 'HAS_CARD_CAN_UPDATE_ERRORS', 'NO_CARD_NEED_CONTENT', 'NO_CARD_MARKET_WILL_CREATE', 'NO_CARD_ERRORS', 'NO_CARD_ADD_TO_CAMPAIGN'].includes(status))
   .map(label).join('、') || '')
@@ -177,6 +182,13 @@ function cachedDetails(row: OnlineListing) { return !!row.basic_synced_at && !!r
 function label(s: string) { return s === 'archive' ? '归档 / 恢复归档' : s === 'unknown' ? '待核实' : labels[s] || s || '未知' }
 function listingStatus(row: OnlineListing) {
   if (row.archived) return 'ARCHIVED'
+  if (row.platform==='yandex' && warehouse.value) {
+    const campaign = selectedWarehouse.value?.campaign_id
+    const market = row.markets.find(item=>item.id===campaign)
+    const inventory = row.stocks.find(item=>item.id===warehouse.value)
+    if (market?.raw_sub_status?.includes('hidden') || inventory?.sale_state==='paused') return 'paused'
+    return market?.raw_status || inventory?.raw_status || 'unknown'
+  }
   if (row.sale_state === 'paused') return 'paused'
   return row.platform === 'yandex' && row.raw_status === 'ARCHIVED' ? 'unknown' : row.raw_status
 }
@@ -199,7 +211,7 @@ async function refresh(quiet = false) {
   const ticket = ++sequence
   if (!quiet) loading.value = true
   try {
-    const result = await fetchOnlineProducts({platform:platform.value, q:query.value, status:status.value, market:market.value, page:currentPage.value, catalog:catalog.value})
+    const result = await fetchOnlineProducts({platform:platform.value, q:query.value, status:status.value, market:market.value, page:currentPage.value, catalog:catalog.value, ...(platform.value==='yandex' && warehouse.value ? {warehouse_id:warehouse.value} : {})})
     if (ticket !== sequence) return
     if (page.value?.account_id !== result.account_id) {
       clearSelection()
@@ -208,6 +220,9 @@ async function refresh(quiet = false) {
       selected.value = null
     }
     page.value = result
+    if (warehouse.value && !result.warehouses?.some(item=>item.id===warehouse.value)) {
+      warehouse.value=''; await refresh(quiet); return
+    }
     const visibleIds = new Set(result.items.map(row => row.id))
     checkedListings.value = new Set([...checkedListings.value].filter(id => visibleIds.has(id)))
     checkedGroups.value = new Set([...checkedGroups.value].filter(id=>result.groups.some(group=>group.id===id)))
@@ -287,15 +302,22 @@ function begin(operation: OnlineOperation | 'sync') {
   contentValid.value = true
   contentAttributeNames.value = {}
   contentPicturePreviews.value = []
-  saleTarget.value = saleState.value
   archiveTarget.value = !selected.value?.archived
-  scope.value = operation === 'price' ? selected.value?.prices.find(p=>p.writable)?.id || '' : operation === 'stock' ? selected.value?.stocks.find(s=>s.writable)?.id || '' : operation === 'archive' ? 'business' : 'global'
+  scope.value = operation === 'price' ? selected.value?.prices.find(p=>p.writable)?.id || '' : operation === 'stock' ? (selected.value?.stocks.find(s=>s.id===warehouse.value && s.writable) || selected.value?.stocks.find(s=>s.writable))?.id || '' : operation === 'archive' ? 'business' : operation === 'sale_state' && selected.value?.platform==='yandex' && page.value?.warehouses?.length ? (selectedWarehouse.value ? `campaign:${selectedWarehouse.value.campaign_id}` : '') : 'global'
+  saleTarget.value = saleState.value
   resetValue()
+}
+function stockSummary(row: OnlineListing) {
+  const scopes = warehouse.value && row.platform==='yandex' ? row.stocks.filter(item=>item.id===warehouse.value) : row.stocks
+  const known = scopes.filter(item=>item.quantity!==null)
+  return {quantity: known.length ? known.reduce((total,item)=>total+item.quantity!,0) : null,
+    partial: known.length>0 && known.length<scopes.length}
 }
 function resetValue() { value.value = modal.value === 'price' ? price.value?.amount || '' : String(stock.value?.quantity ?? '') }
 function makePreview() {
   try {
     if (modal.value === 'content' && !contentValid.value) throw new Error('请先完整填写已勾选的内容')
+    if (modal.value==='sale_state' && selected.value?.platform==='yandex' && page.value?.warehouses?.length && !scope.value) throw new Error('请先选择要操作的仓库店铺')
     if(!Object.keys(changes.value).length) throw new Error('请至少选择一个变更字段')
     if (modal.value === 'stock' && (!String(value.value).trim() || !Number.isInteger(Number(value.value)) || Number(value.value)<0)) throw new Error('库存必须是非负整数')
     if (modal.value === 'price' && !(Number(value.value)>0)) throw new Error('请输入有效价格')
@@ -307,7 +329,7 @@ function beforeValue(field: string) {
   if(field==='amount') return price.value?.amount
   if(field==='currency') return price.value?.currency
   if(field==='quantity') return stock.value?.quantity
-  if(field==='state') return selected.value?.sale_state
+  if(field==='state') return currentSaleState.value
   return selected.value?.content[field as keyof OnlineListing['content']]
 }
 function displayValue(field: string, data: unknown): string {
@@ -342,7 +364,7 @@ async function submit() {
 function filter() {clearSelection(); focusedProduct.value=null; currentPage.value=1; void refresh()}
 watch(currentPage, clearSelection, {flush:'sync'})
 watch(currentPage, () => { focusedProduct.value = null }, {flush:'sync'})
-watch(platform, () => { viewEpoch++; catalog.value='current'; focusedProduct.value=null; statusErrors.value={}; modal.value=''; notice.value=''; page.value=null; selected.value=null; noticeTaskId.value=''; expandedGroups.value.clear(); status.value=market.value=''; filter() })
+watch(platform, () => { viewEpoch++; warehouse.value=''; catalog.value='current'; focusedProduct.value=null; statusErrors.value={}; modal.value=''; notice.value=''; page.value=null; selected.value=null; noticeTaskId.value=''; expandedGroups.value.clear(); status.value=market.value=''; filter() })
 function visibilityChanged() {
   clearTimeout(timer)
   if (!document.hidden) void refresh(true)
@@ -359,7 +381,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
     <PageHeader title="在线商品" description="同步店铺已有商品，集中管理销售状态、价格、库存与内容。">
       <template #actions><button class="btn btn-outline" @click="emit('open-task')">任务队列</button><button class="btn btn-primary" :disabled="busy || loading || !page?.account_id || otherCatalogSync" @click="showSync">{{ activeSync ? '查看同步进度' : otherCatalogSync ? '其他目录同步中' : '↻ 同步商品' }}</button></template>
     </PageHeader>
-    <div class="flex flex-wrap items-center justify-between gap-4"><div class="flex gap-2" role="tablist" aria-label="平台"><button v-for="(name,key) in platforms" :key="key" role="tab" :disabled="busy" :aria-selected="platform===key" class="btn" :class="platform===key?'btn-primary':'btn-outline'" @click="platform=key">{{ name }}</button></div><span class="input w-auto">{{ page?.store_name || '尚未连接店铺' }}</span></div>
+    <div class="flex flex-wrap items-center justify-between gap-4"><div class="flex gap-2" role="tablist" aria-label="平台"><button v-for="(name,key) in platforms" :key="key" role="tab" :disabled="busy" :aria-selected="platform===key" class="btn" :class="platform===key?'btn-primary':'btn-outline'" @click="platform=key">{{ name }}</button></div></div>
     <p v-if="error" role="alert" class="rounded-lg bg-rose-50 p-4 text-rose-700">{{ error }} <button class="underline" @click="refresh()">重新读取</button></p>
     <p v-if="notice" role="status" class="rounded-lg bg-primary-50 p-4 text-primary-800">{{ notice }} <button v-if="noticeTaskId" type="button" class="underline" @click="emit('open-task', noticeTaskId)">查看任务</button></p>
     <p v-if="stale" class="rounded-lg bg-amber-50 p-3 text-amber-800">价格、库存和内容快照已超过一小时，可同步更新；商品状态可单独刷新。</p>
@@ -371,7 +393,8 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
     <div class="grid grid-cols-2 gap-4 lg:grid-cols-4"><article v-for="(count,key) in page?.summary || {total:0,active:0,paused:0,attention:0}" :key="key" class="online-card p-4"><p class="muted">{{ {total:'全部刊登 / SKU',active:'在售',paused:'已停售',attention:'需关注'}[key] }}</p><strong class="mt-2 block text-2xl" :class="key==='active'?'text-primary-700':key==='attention'?'text-amber-700':''">{{ count }}</strong></article></div>
     <div v-if="page?.latest_sync" class="online-card flex flex-wrap items-center justify-between gap-3 p-4"><div><b>最近同步 · {{ syncTarget(page.latest_sync) }} · {{ page.latest_sync.status==='confirmed'?'同步完成':label(page.latest_sync.status) }}</b><p class="mt-1" role="status">{{ syncProgress(page.latest_sync) }}</p><p class="muted mt-1">成功 {{ page.latest_sync.result.completed || 0 }} · 新增 {{ page.latest_sync.result.created || 0 }} · 更新 {{ page.latest_sync.result.updated || 0 }} · 失败 {{ page.latest_sync.result.failed || 0 }}</p><p v-if="page.latest_sync.result.error" class="text-sm text-rose-600">{{ page.latest_sync.result.error }}</p></div><button class="text-primary-700" @click="emit('open-task', page.latest_sync.id)">查看结果 →</button></div>
     <form class="flex flex-wrap items-center gap-3" @submit.prevent="filter">
-      <input v-model="query" class="input w-full md:max-w-sm" placeholder="搜索标题、卖家 SKU 或平台商品 ID" aria-label="搜索商品" /><select v-model="status" class="input w-auto" aria-label="销售状态" @change="filter"><option value="">全部状态</option><option v-for="s in page?.statuses" :key="s" :value="s">{{ label(s) }}</option></select><select v-model="market" class="input w-auto" aria-label="销售市场" @change="filter"><option value="">全部市场</option><option v-for="s in page?.markets" :key="s">{{ s }}</option></select><button class="btn btn-outline" type="submit">搜索</button>
+      <select v-if="platform==='yandex'" v-model="warehouse" class="input w-auto" aria-label="仓库" @change="clearSelection(); filter()"><option value="">全部仓库</option><option v-for="item in page?.warehouses" :key="item.id" :value="item.id">{{ item.name }}</option></select>
+      <input v-model="query" class="input w-full md:max-w-sm" placeholder="搜索标题、卖家 SKU 或平台商品 ID" aria-label="搜索商品" /><select v-model="status" class="input w-auto" aria-label="销售状态" @change="filter"><option value="">全部状态</option><option v-for="s in page?.statuses" :key="s" :value="s">{{ label(s) }}</option></select><select v-if="platform!=='yandex'" v-model="market" class="input w-auto" aria-label="销售市场" @change="filter"><option value="">全部市场</option><option v-for="s in page?.markets" :key="s">{{ s }}</option></select><button class="btn btn-outline" type="submit">搜索</button>
       <div v-if="platform==='yandex'" ref="actionMenu" class="relative" @keydown.esc.stop="actionMenuOpen=false">
         <button type="button" class="btn btn-outline" aria-haspopup="true" :aria-expanded="actionMenuOpen" aria-controls="online-product-actions" data-testid="online-actions" @click="actionMenuOpen=!actionMenuOpen">操作 <span aria-hidden="true">⌄</span></button>
         <div v-if="actionMenuOpen" id="online-product-actions" class="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-slate-200 bg-white p-2 shadow-lg dark:border-dark-700 dark:bg-dark-800">
@@ -415,7 +438,8 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
               <td v-if="platform==='yandex'"><input type="checkbox" class="size-4 accent-primary-600" :checked="checkedListings.has(row.id)" :disabled="loading" :aria-label="`选择 SKU：${row.seller_sku || row.remote_id}`" data-testid="select-online-listing" @click.stop @change="toggleListings([row.id], ($event.target as HTMLInputElement).checked)" /></td>
               <td><div class="flex max-w-sm items-center gap-3" :class="{'ml-7 border-l-2 border-primary-200 pl-4': group.kind === 'group'}"><img v-if="row.thumbnail" referrerpolicy="no-referrer" :src="row.thumbnail" alt="" class="size-12 shrink-0 rounded-lg object-cover" /><div v-else class="size-12 shrink-0 rounded-lg bg-accent-100" /><div><p class="line-clamp-2 font-medium">{{ row.title || row.remote_id }}</p><p class="muted mt-1 break-all">{{ row.seller_sku || row.remote_id }}</p></div></div></td>
               <td><p v-if="row.prices[0]">{{ row.prices[0].currency }} {{ row.prices[0].amount ?? '未知' }}<span v-if="row.prices.length>1"> · {{ row.prices.length }} 个价格范围</span></p><p v-else>尚未取得价格</p><p class="muted mt-1">{{ row.prices[0] ? priceKind(row.prices[0].kind) : '' }} · {{ [...new Set(row.markets.map(m=>m.site_id))].join(' · ') }}</p></td>
-              <td><p>{{ row.stocks[0]?.quantity ?? '未知' }}<span v-if="row.stocks.length>1"> 等 {{ row.stocks.length }} 个范围</span></p><p class="muted mt-1">{{ row.stocks[0]?.label || '未取得库存范围' }}</p></td>
+              <td v-if="row.platform==='yandex'" data-testid="stock-summary"><p>{{ stockSummary(row).quantity ?? '未知' }}</p><p v-if="stockSummary(row).partial" class="muted mt-1 text-xs">部分仓库库存未知</p></td>
+              <td v-else><div v-for="inventory in row.stocks" :key="inventory.id"><p>{{ inventory.quantity ?? '未知' }}</p><p class="muted mt-1">{{ inventory.label }}</p></div><p v-if="!row.stocks.length" class="muted">尚未取得库存范围</p></td>
               <td><span :class="badge(listingStatus(row))">{{ label(listingStatus(row)) }}</span><p v-if="detailState(row)" class="mt-1 text-amber-700">{{ detailState(row) }}</p><p v-else-if="row.errors.length" class="mt-1 text-amber-700">读取不完整</p><p v-if="issueSummary(row)" class="mt-1 text-amber-700">{{ issueSummary(row) }}</p></td>
               <td class="muted whitespace-nowrap"><p>{{ row.basic_synced_at ? '基础同步：' : '' }}{{ time(row.basic_synced_at || row.synced_at) }}</p><p v-if="cachedDetails(row)" class="mt-1 text-xs">价格与库存为缓存 · {{ time(row.synced_at) }}</p><p v-if="row.status_checked_at" class="mt-1 text-xs">状态查询：{{ time(row.status_checked_at) }}</p></td>
               <td><div class="flex flex-col items-start gap-2"><button class="whitespace-nowrap text-primary-700" @click="detail(row)">管理 →</button><button type="button" data-testid="refresh-status" class="whitespace-nowrap text-primary-700 disabled:opacity-50" :disabled="statusRefreshBlocked(row)" @click="refreshStatus(row)">{{ checkingStatus.has(row.id) ? '查询中…' : '刷新状态' }}</button><p v-if="statusErrors[row.id]" role="alert" class="max-w-64 text-xs text-rose-700">{{ statusErrors[row.id] }}</p><OnlineBuyerLinks :links="row.buyer_links" /></div></td>
@@ -438,7 +462,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             <div class="min-w-0">
               <h3 class="break-words text-lg font-semibold">{{ selected.title || selected.remote_id }}</h3>
               <p class="muted mt-2 break-all">SKU {{ selected.seller_sku || '未提供' }} · {{ platforms[selected.platform] }}</p>
-              <p class="muted mt-1">{{ page?.store_name }}</p>
+              <p v-if="selected.platform!=='yandex'" class="muted mt-1">{{ page?.store_name }}</p>
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-3">
@@ -492,7 +516,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             <div class="online-card mt-3 overflow-x-auto">
               <table class="w-full text-left text-sm">
                 <thead><tr><th>销售市场</th><th>价格 / 币种</th><th>销售状态</th></tr></thead>
-                <tbody><tr v-for="m in selected.markets" :key="m.id"><td>{{ m.site_id }}<span v-if="m.logistic_type"> · {{ m.logistic_type }}</span></td><td>{{ m.currency }} {{ m.price ?? '未知' }}</td><td>{{ label(m.raw_status) }}</td></tr></tbody>
+                <tbody><tr v-for="m in selected.markets" :key="m.id"><td>{{ m.name || m.site_id }}<span v-if="m.logistic_type"> · {{ m.logistic_type }}</span></td><td>{{ m.currency }} {{ m.price ?? '未知' }}</td><td>{{ label(m.raw_status) }}</td></tr></tbody>
               </table>
             </div>
           </details>
@@ -504,11 +528,11 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
               <p>状态查询：{{ selected.status_checked_at ? time(selected.status_checked_at) : '尚未查询' }}</p>
               <p>刷新状态只更新销售状态及平台反馈；重新打开详情会读取当前商品的详细数据。</p>
               <p>卡片状态：{{ selected.raw_sub_status.map(label).join('、') || '平台未提供' }}</p>
-              <p class="break-all">平台原始状态：{{ selected.raw_status }} {{ selected.raw_sub_status.join('、') }}</p>
+              <p class="break-all">{{ selected.platform==='yandex' ? '仓库状态汇总' : '平台原始状态' }}：{{ selected.raw_status }} {{ selected.raw_sub_status.join('、') }}</p>
               <p class="break-all">平台商品 ID：{{ selected.remote_id }}</p>
               <p class="break-all">商品模型：{{ selected.model }}</p>
               <p class="break-all">店铺账号：{{ selected.account_id }}</p>
-              <p v-for="m in selected.markets" :key="m.id" class="break-all">市场 ID：{{ m.id }} · {{ m.site_id }}</p>
+              <p v-for="m in selected.markets" :key="m.id" class="break-all">{{ m.name || m.site_id }} · 市场 ID：{{ m.id }} · {{ m.raw_status }}</p>
               <template v-for="(issue,index) in selected.platform_issues" :key="index">
                 <p v-if="issue.code">平台代码：{{ issue.code }} · {{ issue.message }}</p>
               </template>
@@ -530,7 +554,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             <button v-if="conflictJobId" type="button" class="btn btn-outline" :disabled="busy" data-testid="online-conflict-operation" @click="emit('open-task', conflictJobId)">查看对应任务</button>
           </div>
           <template v-if="modal==='sync'">
-            <p class="break-words">同步 {{ platforms[platform] }} 店铺：{{ page?.store_name }}</p>
+            <p class="break-words">同步 {{ platforms[platform] }} {{ platform==='yandex' ? '账号商品（包含全部仓库对应店铺）' : `店铺：${page?.store_name}` }}</p>
             <div class="rounded-lg border border-accent-200 bg-accent-50 p-5 text-accent-800 dark:border-dark-700 dark:bg-dark-800 dark:text-accent-100">
               <b>同步范围</b>
               <p class="mt-3 leading-relaxed">{{ platform === 'yandex' ? (syncCatalog === 'archived' ? '仅同步当前账号的归档商品。' : '仅同步当前账号的普通商品，包括在售、停售、缺货及审核中的商品。') : '当前账号全部可读取商品及所有关联市场。' }}</p>
@@ -540,7 +564,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             <button class="btn btn-primary w-full" :disabled="busy" @click="submit">{{ busy ? '正在提交…' : '开始同步' }}</button>
           </template>
           <template v-else-if="selected">
-            <p class="font-medium">{{ selected.title }}</p><p class="muted">作用范围：{{ modal==='price' ? price?.label : modal==='stock' ? stock?.label : selected.capabilities[modal]?.scope }}</p>
+            <p class="font-medium">{{ selected.title }}</p><p class="muted">作用范围：{{ modal==='price' ? price?.label : modal==='stock' ? stock?.label : modal==='sale_state' && saleMarket ? saleMarket.name || saleMarket.site_id : selected.capabilities[modal]?.scope }}</p>
             <p v-if="selected.capabilities[modal]?.reason" class="muted">{{ selected.capabilities[modal]?.reason }}</p>
             <p v-if="modal==='archive'" class="rounded-lg bg-amber-50 p-5 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ archiveTarget ? '归档后移入归档列表，并停止在此商家账号的所有店铺展示。原库存与停售设置保留，可以恢复归档。' : '恢复后移回普通商品列表，原停售设置与库存保留；满足平台库存、价格及审核条件后才可销售。' }}</p>
             <p v-if="modal==='stock' && stock?.reason" class="muted">{{ stock.reason }}</p>
@@ -549,7 +573,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             <template v-if="!preview">
               <template v-if="modal==='price'"><label class="block">价格范围<select v-model="scope" class="input mt-2" @change="resetValue"><option v-for="p in selected.prices" :key="p.id" :value="p.id" :disabled="!p.writable">{{ p.label }} · {{ priceKind(p.kind) }} · {{ p.currency }}</option></select></label><p class="muted">当前：{{ price?.currency }} {{ price?.amount }} · {{ priceKind(price?.kind || '') }}</p><label class="block">新价格（{{ price?.currency }}）<input v-model="value" class="input mt-2" inputmode="decimal" /></label></template>
               <template v-if="modal==='stock'"><label class="block">库存范围<select v-model="scope" class="input mt-2" @change="resetValue"><option v-for="s in selected.stocks" :key="s.id" :value="s.id" :disabled="!s.writable">{{ s.label }}</option></select></label><p class="muted">当前库存：{{ stock?.quantity }}。设置绝对数量，不是增减量。</p><label class="block">目标可售数量<input v-model="value" type="number" min="0" step="1" class="input mt-2" /></label></template>
-              <template v-if="modal==='sale_state'"><label class="block">目标销售状态<select v-model="saleTarget" class="input mt-2"><option value="paused">停售（已暂停时可重新确认主动停售）</option><option value="active">恢复销售</option></select></label><p class="rounded-lg bg-amber-50 p-5 text-amber-800">{{ saleTarget==='paused'?'主动停售会影响上述范围内的销售市场，库存同步不会取消停售意图。':'恢复请求仍须满足平台库存、审核及账号限制；提交成功不代表已经恢复在售。' }}</p><p>{{ selected.markets.map(m=>`${m.site_id} · ${m.logistic_type}`).join('、') }}</p></template>
+              <template v-if="modal==='sale_state'"><label v-if="selected.platform==='yandex' && page?.warehouses?.length" class="mb-4 block">仓库店铺<select v-model="scope" class="input mt-2" @change="saleTarget=saleState"><option disabled value="">请选择仓库店铺</option><option v-for="saleOption in selected.markets" :key="saleOption.id" :value="`campaign:${saleOption.id}`">{{ saleOption.name || saleOption.site_id }}</option></select></label><label class="block">目标销售状态<select v-model="saleTarget" class="input mt-2"><option value="paused">停售（已暂停时可重新确认主动停售）</option><option value="active">恢复销售</option></select></label><p class="rounded-lg bg-amber-50 p-5 text-amber-800">{{ saleTarget==='paused'?'主动停售会影响上述范围内的销售市场，库存同步不会取消停售意图。':'恢复请求仍须满足平台库存、审核及账号限制；提交成功不代表已经恢复在售。' }}</p><p>{{ (saleMarket ? [saleMarket] : selected.markets).map(m=>m.name || `${m.site_id} ${m.logistic_type}`).join('、') }}</p></template>
               <button class="btn btn-primary w-full" @click="makePreview">预览变更</button>
             </template>
             <template v-else><div v-for="(next,field) in changes" :key="field" class="rounded-lg border p-4"><b>{{ fieldNames[field] || field }}</b><p class="muted mt-2 break-all">原：{{ displayValue(field, beforeValue(field)) }}</p><p class="mt-2 break-all text-primary-700">新：{{ displayValue(field, next) }}</p><div v-if="field==='pictures'" class="mt-3 flex flex-wrap gap-2"><OnlinePicturePreview v-for="(url,index) in contentPicturePreviews" :key="index" :src="url" :alt="`目标图片 ${index+1}`" class="size-16" /></div></div><p class="muted">提交前将重新读取平台字段；发生并发变化时会停止修改。</p><div class="flex gap-3"><button class="btn btn-outline" :disabled="busy" @click="preview=false">返回编辑</button><button class="btn btn-primary flex-1" :disabled="busy" @click="submit">{{ busy?'正在提交…':'确认提交' }}</button></div></template>

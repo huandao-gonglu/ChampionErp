@@ -26,8 +26,8 @@ def offer_id(url):
 
 
 def account_scope(config):
-    # 凭据变更使未提交预览失效；不持久化密钥或令牌。
-    return hashlib.sha256(json.dumps([config.get("app_key"), config.get("access_token")]).encode()).hexdigest()
+    # 新授权以已验证买家身份隔离，刷新 Token 不改变归属；旧记录保留原摘要。
+    return config.get("account_scope") or hashlib.sha256(json.dumps([config.get("app_key"), config.get("access_token")]).encode()).hexdigest()
 
 
 def public_record(row):

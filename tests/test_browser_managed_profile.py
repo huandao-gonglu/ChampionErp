@@ -12,14 +12,19 @@ from erp_web.services import ai_model_config
 from erp_web.services.browser_connection_config import normalize_browser_proxy
 
 
-def test_existing_browser_is_reused_without_launch_or_profile_changes(monkeypatch, tmp_path):
+def test_owned_browser_is_reused_without_launch_or_profile_changes(monkeypatch, tmp_path):
     monkeypatch.setattr(browser, "browser_debug_connected", lambda _: True)
+    monkeypatch.setattr(browser, "_browser_version", lambda _: {"webSocketDebuggerUrl": "ws://localhost/owned"})
     launch = Mock()
     monkeypatch.setattr(browser.subprocess, "Popen", launch)
-    profile = tmp_path / "not-created"
+    profile = tmp_path / "existing"
+    profile.mkdir()
+    session = profile / browser._SESSION_FILE
+    session.write_text(json.dumps({"websocket": "ws://localhost/owned"}))
+    original = session.read_bytes()
     browser.ensure_browser_debug_session(9335, profile)
     launch.assert_not_called()
-    assert not profile.exists()
+    assert session.read_bytes() == original
 
 
 def test_browser_start_uses_persistent_profile_and_loopback_port(monkeypatch, tmp_path):
@@ -182,3 +187,25 @@ def test_unknown_browser_instance_is_not_closed_or_hidden(monkeypatch, tmp_path)
         browser.ensure_browser_debug_session(9335, tmp_path, headless=True)
     close.assert_not_called()
     launch.assert_not_called()
+
+
+@pytest.mark.parametrize("destination", [
+    "https://accounts.google.com/v3/signin/identifier",
+    "https://gemini.google.com/share/owned",
+])
+def test_page_preparation_waits_for_initial_load_without_restarting_redirect(monkeypatch, destination):
+    values = iter(["about:blank", "complete", destination, "interactive"])
+    monkeypatch.setattr(ai, "_evaluate", lambda *args, **kwargs: next(values))
+    monkeypatch.setattr(ai.time, "sleep", lambda _: None)
+    cdp = Mock()
+    ai._prepare_page(cdp, 5)
+    assert [call.args[0] for call in cdp.call.call_args_list] == ["Page.enable", "Runtime.enable"]
+
+
+def test_page_preparation_reports_unloaded_page_without_navigating(monkeypatch):
+    monkeypatch.setattr(ai, "_evaluate", lambda cdp, expression, **kwargs:
+                        "about:blank" if expression.startswith("location") else "complete")
+    cdp = Mock()
+    with pytest.raises(TimeoutError, match="页面加载超时"):
+        ai._prepare_page(cdp, 0)
+    assert [call.args[0] for call in cdp.call.call_args_list] == ["Page.enable", "Runtime.enable"]

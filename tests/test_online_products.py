@@ -470,7 +470,8 @@ def test_yandex_price_quarantine_requires_attention_and_stops_pending(monkeypatc
     adapter=object.__new__(YandexOnlineAdapter);adapter.token="test";adapter.business="1";adapter.campaign="2"
     captured=[]
     monkeypatch.setattr("erp_web.runtime_units.online_yandex.api.fetch_yandex_price_quarantine",lambda *args,**kwargs:captured.append(kwargs) or [{"offerId":"CBT1"}])
-    result=adapter.confirmation_details(listing(),"price",{},"campaign")
+    row = listing().model_copy(update={"platform": "yandex", "account_id": "1:2"})
+    result=adapter.confirmation_details(row,"price",{},"campaign")
     assert result["pending"] is False
     assert result["needs_attention"] is True
     assert captured[0]["business_id"]=="" and captured[0]["campaign_id"]=="2"

@@ -13,6 +13,7 @@ from erp_web.schemas.pricing_batch import (
     validate_pricing_items,
 )
 from .pricing_runtime import PricingSession
+from erp_web.services.yandex_pricing_selection import unify_yandex_warehouse
 
 logger = logging.getLogger("erp.pricing")
 
@@ -25,6 +26,7 @@ def calculate_sku_prices(body: dict[str, Any]) -> PricingBatchResult:
     logger.info("核价批次 %s 开始：%d 个 SKU，%d 项市场报价", batch_id, len(items), target_count)
     session = PricingSession()
     calculated = session.calculate_many([item["input"] for item in items])
+    calculated = unify_yandex_warehouse(session, items, calculated)
     results: list[SkuPricingResult] = []
     failed = 0
     for index, (item, result) in enumerate(zip(items, calculated, strict=True), 1):

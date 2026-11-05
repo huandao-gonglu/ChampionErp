@@ -5,6 +5,7 @@ from typing import Any
 
 from erp_web.marketplaces.online_buyer_links import yandex_buyer_links
 from erp_web.marketplaces.yandex_currency import yandex_internal_currency
+from erp_web.product_model.online_listing_summary import summarize_yandex_status
 from erp_web.schemas.online_products import Capability, MarketSnapshot, OnlineListing, PlatformIssue, PriceScope, StockScope, listing_identity
 
 
@@ -45,7 +46,10 @@ def build_stocks(mode, warehouses, stock_results, remote_id):
             quantity = available_stock(stock_offer.get("stocks", []))
             writable = any(m.get("apiAvailability") == "AVAILABLE" and m.get("placementType") != "FBY" for m in warehouse.get("models", []))
             # 设置绝对库存无需已有数量；平台未返回数量时保留未知值，不影响仓库写入权限。
-            stocks.append(StockScope(id=wid, label=str(warehouse.get("name") or f"卖家仓 {wid}"), warehouse_id=wid, quantity=quantity, writable=writable, reason="" if writable else "仓库当前不允许写入"))
+            campaign_ids = {str(m['campaignId']) for m in warehouse.get('models', []) if m.get('campaignId') and m.get('placementType') == 'FBS'}
+            stocks.append(StockScope(id=wid, label=str(warehouse.get("name") or f"卖家仓 {wid}"), warehouse_id=wid,
+                campaign_id=next(iter(campaign_ids)) if len(campaign_ids) == 1 else '',
+                quantity=quantity, writable=writable, reason="" if writable else "仓库当前不允许写入"))
     elif mode == "campaign_warehouses":
         response = stock_results["campaign"]
         warehouses = response.get("warehouses")
@@ -95,6 +99,49 @@ def basic_listing(mapping, campaign, hidden, card, *, account_id, campaign_id):
     listing.details_state = "unloaded"
     for operation in ("price", "stock", "content"):
         listing.capabilities[operation] = Capability(reason="打开商品详情后读取当前资料")
+    return listing
+
+
+def with_warehouses(listing, warehouses, campaigns, hidden, *, settings=None):
+    """各仓库的库存与其实际店铺状态分别保存，不更改刊登持久身份。"""
+    catalog = []
+    markets = []
+    for warehouse in warehouses:
+        ids = {str(model['campaignId']) for model in warehouse.get('models', [])
+               if model.get('placementType') == 'FBS' and model.get('campaignId')}
+        if len(ids) != 1:
+            continue
+        campaign_id = ids.pop()
+        row = campaigns.get(campaign_id, {})
+        status = str(row.get('status') or '')
+        paused = listing.remote_id in hidden.get(campaign_id, set())
+        sale_state = 'paused' if paused else 'active' if status == 'PUBLISHED' and not listing.archived else 'unknown'
+        catalog.append({'id': str(warehouse['id']), 'name': str(warehouse.get('name') or warehouse['id']), 'campaign_id': campaign_id})
+        if not any(m.id == campaign_id for m in markets):
+            markets.append(MarketSnapshot(id=campaign_id, site_id=campaign_id, seller_id=listing.account_id.split(':')[0],
+                name=str(warehouse.get('name') or campaign_id), raw_status=status, raw_sub_status=['hidden'] if paused else []))
+        stock = next((stock for stock in listing.stocks if stock.id == str(warehouse['id'])), None)
+        if stock:
+            stock.campaign_id, stock.raw_status, stock.sale_state = campaign_id, status, sale_state
+    if catalog:
+        listing.markets = markets
+        listing.snapshot.update(warehouse_catalog=catalog, campaigns=campaigns,
+                                hidden_campaigns={key: listing.remote_id in ids for key, ids in hidden.items()})
+        listing.platform_issues = card_issues(listing.snapshot.get('card', {})) + [issue
+            for row in campaigns.values() for issue in card_issues(row, source='campaign')]
+        listing.capabilities['sale_state'].scope = '所选仓库对应店铺（scope_id=campaign:<店铺 ID>）'
+        listing.capabilities['sale_state'].enabled = any(campaigns.values())
+        if listing.prices and settings is not None:
+            listing.prices = [price for price in listing.prices if price.id == 'business']
+            for market in markets:
+                raw = campaigns.get(market.id, {}).get('campaignPrice') or {}
+                currency = yandex_internal_currency(str(raw.get('currencyId') or settings.get('currency') or ''))
+                enabled = settings.get('onlyDefaultPrice') is False
+                listing.prices.append(PriceScope(id='campaign:' + market.id, label=market.name + ' 独立价',
+                    amount=str(raw['value']) if raw.get('value') is not None else None, currency=currency,
+                    writable=enabled and bool(currency), reason='' if enabled else '店铺仅使用账号基础价'))
+                market.price, market.currency = listing.prices[-1].amount, currency
+        summarize_yandex_status(listing)
     return listing
 
 

@@ -168,7 +168,6 @@ class FulfillmentCommand(FulfillmentInput):
 
 
 class BusCredentials(FulfillmentInput):
-    client_secret: str = Field(default="", max_length=1000)
     user_name: str = Field(default="", max_length=200)
     password: str = Field(default="", max_length=1000)
 

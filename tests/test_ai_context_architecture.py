@@ -887,7 +887,7 @@ def test_attribute_ai_has_only_the_main_conversation_entry():
 
     retired_tools = {"product_attributes_fill", "draft_sku_attributes_fill", "category_attribute_values_search"}
     assert not retired_tools.intersection(APPLICATION_CAPABILITY_CATALOG.tools)
-    assert {"draft_attributes_read", "category_attributes_query", "category_attribute_values_query"} <= GLOBAL_CHAT_CAPABILITIES
+    assert {"draft_attributes_read", "draft_sku_variants_check", "category_attributes_query", "category_attribute_values_query"} <= GLOBAL_CHAT_CAPABILITIES
     assert {"product_attributes_update", "draft_sku_attributes_update"} <= _WRITE_CAPABILITIES
     assert "/api/category-ai-fill" not in HANDLED_PATHS | REQUEST_CONTRACTS.keys()
     assert "category.attribute_fill" not in AI_USE_CASES.keys() | DEFAULT_AI_USE_CASE_PROMPTS.keys()

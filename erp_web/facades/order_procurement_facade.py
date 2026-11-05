@@ -2,6 +2,7 @@
 
 import logging
 
+from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 from erp_web.context import get_context
 from erp_web.services.alibaba_purchase_sync_service import sync_purchase as sync_alibaba_purchase
 from erp_web.services.alibaba_purchase_assignment import supported
@@ -54,14 +55,14 @@ def detail(order_id=""):
 def query_purchase(body, *, context=None):
     context = context or get_context()
     return query_alibaba_purchase(
-        context.order_procurement, context.config.load_app_config().get("1688_api", {}), body,
+        context.order_procurement, alibaba_runtime_config(context.config), body,
     )
 
 
 def sync_purchase(body, *, once=False, context=None):
     context = context or get_context()
     return sync_alibaba_purchase(context.order_procurement, context.fulfillment,
-                                lambda: context.config.load_app_config().get("1688_api", {}), body, once=once)
+                                lambda: alibaba_runtime_config(context.config), body, once=once)
 
 
 def command(action, body, *, context=None):

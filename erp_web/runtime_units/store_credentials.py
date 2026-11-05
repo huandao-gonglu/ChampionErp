@@ -115,15 +115,14 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
     if kind == "1688_order":
         from erp_web.services.alibaba_api_client import AlibabaApiClient, ORDER_DETAIL, validate_order_number
         from erp_web.services.alibaba_purchase_query_service import normalize_order
-        from erp_web.services.config_service import merge_runtime_secret_section
+        from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 
         number = validate_order_number(test_value)
-        saved = get_context().config.load_app_config().get("1688_api", {})
-        client = AlibabaApiClient(merge_runtime_secret_section(saved, config))
+        client = AlibabaApiClient(alibaba_runtime_config(get_context().config))
         order = normalize_order(client.query(ORDER_DETAIL, number), number)
         return {"ok": True, "channel": kind, "order": order,
                 "message": f"1688 授权测试成功：订单 {number}，{order['status_label']}。",
-                "next_action": "若使用了新凭据，请填写并保存授权配置后再从采购记录查询。"}
+                "next_action": "已使用当前连接的采购账号查询。"}
     if kind in {"exchange_rate", "exchange", "pricing"}:
         from .pricing_runtime import fetch_pricing_exchange_rates
 

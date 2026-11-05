@@ -14,6 +14,8 @@ presentation helpers stay module-level. This module never imports
 import hashlib
 import json
 import logging
+import os
+import secrets
 import threading
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
@@ -410,7 +412,7 @@ def _sync_mercadolibre_secret_aliases(store: dict[str, Any]) -> None:
 
 
 class ConfigStore:
-    """Read/write app + store configuration (file statics ⊕ store_auth table)."""
+    """配置与授权的统一入口；秘密及授权态只存主库，JSON 保存应用静态设置。"""
 
     def __init__(self, paths: AppPaths, db: ErpDatabase) -> None:
         self._app_config_path = paths.app_config_path
@@ -425,8 +427,113 @@ class ConfigStore:
 
         migrate_store_currency_source(db, self._store_config_path)
 
-    # -- app config -----------------------------------------------------------
+    # -- 集成授权与订单回调配置 --------------------------------------------------
 
+    def integration_credentials(self, provider: str, record_id: str = "active") -> dict:
+        if provider not in {"crossborderbus", "wechat"}:
+            raise ValueError("不支持的集成授权类型")
+        return self._db.runtime_secret("credentials:" + provider, record_id, {})
+
+    def save_integration_credentials(self, provider: str, credentials: dict, record_id: str = "active") -> None:
+        if provider not in {"crossborderbus", "wechat"} or not record_id:
+            raise ValueError("无效的集成授权记录")
+        self._db.set_runtime_secret("credentials:" + provider, record_id, credentials)
+
+    def crossborderbus_credentials(self) -> dict:
+        """部署密钥优先；既有数据库凭据保留读取，企业变更不得沿用旧授权。"""
+        credentials = self.integration_credentials("crossborderbus")
+        secret = os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
+        if not secret:
+            return credentials
+        fingerprint = hashlib.sha256(secret.encode()).hexdigest()
+        previous = credentials.get("client_secret_fingerprint")
+        if credentials.get("client_secret"):
+            previous = hashlib.sha256(credentials["client_secret"].encode()).hexdigest()
+        if previous != fingerprint:
+            return {"client_secret": secret}
+        return {**credentials, "client_secret": secret}
+
+    def save_crossborderbus_credentials(self, credentials: dict) -> None:
+        """环境注入的企业密钥不复制到数据库，只保存授权与密钥指纹。"""
+        value = dict(credentials)
+        secret = os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
+        if secret:
+            if value.get("client_secret") != secret:
+                raise ValueError("跨境巴士服务配置已变化，请重试授权")
+            value.pop("client_secret", None)
+            value["client_secret_fingerprint"] = hashlib.sha256(secret.encode()).hexdigest()
+        self.save_integration_credentials("crossborderbus", value)
+
+    def delete_integration_credentials(self, provider: str, record_id: str) -> None:
+        if provider not in {"crossborderbus", "wechat"} or not record_id:
+            raise ValueError("无效的集成授权记录")
+        self._db.set_runtime_secret("credentials:" + provider, record_id, None)
+
+    def alibaba_credentials(self, *, crossborder=False) -> dict:
+        """首次读取拆分旧凭据；先原子保存新记录，再清理旧位置，重启可续迁。"""
+        from erp_web.services.alibaba_credentials import application_fingerprint, legacy_account_scope
+
+        with self._save_lock:
+            if crossborder:
+                return self._db.runtime_secret("credentials:alibaba", "crossborder", {})
+            state = self._db.runtime_secret("credentials:alibaba", "state", None)
+            config = self.load_app_config()
+            legacy = config.get("1688_api", {})
+            if state is None:
+                application = {key: legacy.get(key, "") for key in ("app_key", "app_secret")}
+                authorization = {}
+                if legacy.get("access_token"):
+                    authorization = {"access_token": legacy["access_token"], "app_key": application["app_key"],
+                        "application_fingerprint": application_fingerprint(application),
+                        "account_scope": legacy_account_scope(legacy), "member_id": "", "expires_at": 0}
+                state = {"application": application, "authorization": authorization}
+                self._db.set_runtime_secret("credentials:alibaba", "state", state)
+            if any(legacy.get(key) for key in ("app_key", "app_secret", "access_token")):
+                config["1688_api"] = {**legacy, "app_key": "", "app_secret": "", "access_token": ""}
+                self.save_app_config(config)
+            return state
+
+    def alibaba_application(self, *, crossborder=False) -> dict:
+        if crossborder:
+            return {field: os.environ.get("ERP_ALIBABA_CROSSBORDER_" + field.upper(), "").strip()
+                    for field in ("app_key", "app_secret", "redirect_uri")}
+        state = self.alibaba_credentials()
+        application = dict(state.get("application", {}))
+        key = os.environ.get("ERP_ALIBABA_APP_KEY", "").strip()
+        secret = os.environ.get("ERP_ALIBABA_APP_SECRET", "").strip()
+        # 配置了一项即按部署配置处理，不和另一套旧密钥拼接。
+        if key or secret:
+            application = {"app_key": key, "app_secret": secret}
+        application["redirect_uri"] = os.environ.get("ERP_ALIBABA_REDIRECT_URI", "").strip()
+        return application
+
+    def update_alibaba_credentials(self, update, *, expected=None, application=None, crossborder=False) -> dict:
+        """网络操作后短锁校验，防止迟到的授权/刷新回执覆盖新账号。"""
+        with self._save_lock:
+            state = self.alibaba_credentials(crossborder=crossborder)
+            if expected is not None and state != expected:
+                raise ValueError("1688 授权已变化，请重新操作")
+            if application is not None and self.alibaba_application(crossborder=crossborder) != application:
+                raise ValueError("1688 应用配置已变化，请重新授权")
+            state.update(update)
+            self._db.set_runtime_secret("credentials:alibaba", "crossborder" if crossborder else "state", state)
+            return state
+
+    def order_notification_token(self, platform: str) -> str:
+        from erp_web.schemas.orders import PLATFORMS
+
+        if platform not in PLATFORMS:
+            raise ValueError("不支持的订单通知平台")
+        return self._db.set_runtime_secret("order_notifications", "token:" + platform,
+                                           secrets.token_urlsafe(32), only_if_missing=True)
+
+    def order_notification_public_url(self) -> str:
+        return self._db.runtime_secret("order_notifications", "public_url", "")
+
+    def save_order_notification_public_url(self, value: str) -> None:
+        self._db.set_runtime_secret("order_notifications", "public_url", value)
+
+    # -- app config -----------------------------------------------------------
     def default_app_config(self) -> dict[str, Any]:
         return app_config_runtime.default_app_config()
 
@@ -559,7 +666,7 @@ class ConfigStore:
         incoming = incoming if isinstance(incoming, dict) else {}
         allowed_keys = set(self.default_app_config()) | set(app_config_runtime.PRESERVED_APP_CONFIG_KEYS)
         for key, value in incoming.items():
-            if key in {"system_settings", "pricing_templates", "yandex_warehouses", "forbidden_categories"}:
+            if key in {"1688_api", "system_settings", "pricing_templates", "yandex_warehouses", "forbidden_categories"}:
                 # 专用入口维护这些配置，避免授权页的旧快照覆盖最新设置。
                 continue
             if key not in allowed_keys:

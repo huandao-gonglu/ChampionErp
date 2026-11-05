@@ -15,6 +15,8 @@ from pydantic import (
     with_config,
 )
 
+from erp_web.schemas.publish_capabilities import ProductPublishValidateRequest, PublishValidationIssue
+
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
 
@@ -138,6 +140,28 @@ class DraftAttributesReadRequest(BaseModel):
         return self
 
 
+class DraftSkuVariantsCheckRequest(ProductPublishValidateRequest):
+    yandex_variant_field_ids: list[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=80)]] = Field(
+        default_factory=list, max_length=30,
+        description="仅 Yandex 同卡变体。来源 SKU 确有差异、与之匹配的本类目属性 ID。传入时实时核对店铺设置；商家保存后用同一组 ID 再查。",
+    )
+
+
+class DraftSkuVariantsCheckResult(BaseModel):
+    """只核对选中且启用的 SKU 在当前目标下能否组合，不执行完整发布预检。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    updated_at: str
+    sku_count: int
+    grouping_mode: str
+    status: Literal["not_applicable", "distinct", "issues"]
+    settings_guidance: str = Field(default="", description="需要商家调整 Yandex 类目时的具体步骤，含当前类目和字段原名。")
+    writable_variant_fields: dict[str, str] = Field(default_factory=dict)
+    stored_sku_count_by_field: dict[str, int] = Field(default_factory=dict, description="每个可写差异字段在本目标 SKU 行上已有结构有效值的数量。")
+    missing_required_by_field: dict[str, list[str]] = Field(default_factory=dict)
+    issues: list[PublishValidationIssue] = Field(default_factory=list)
+
+
 class DraftAttributeTarget(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     platform: str
@@ -221,6 +245,8 @@ __all__ = [
     "DraftAttributeTarget",
     "DraftAttributeSku",
     "DraftSkuAttributesUpdateRequest",
+    "DraftSkuVariantsCheckRequest",
+    "DraftSkuVariantsCheckResult",
     "ProductAttributesUpdateRequest",
     "ProductAttributesUpdateResult",
     "ProductDraftFacts",

@@ -1,9 +1,17 @@
-const { app, BrowserWindow, dialog, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
 const path = require('node:path')
 const { URL } = require('node:url')
+const { backendExecutable, startBackend } = require('./backend.cjs')
+const { registerLicenseDirectory } = require('./licenses.cjs')
+
+if (app.isPackaged) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'Champion ERP'))
+}
+const ownsInstance = app.requestSingleInstanceLock()
+if (!ownsInstance) app.quit()
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -29,8 +37,46 @@ const BACKEND_PROXY_PREFIXES = [
 ]
 
 let frontendServer
+let backend
+let packagedBackendUrl
+let quitting = false
+
+app.on('second-instance', () => {
+  const win = BrowserWindow.getAllWindows()[0]
+  if (win) {
+    if (win.isMinimized()) win.restore()
+    win.focus()
+  }
+})
+
+async function initializePackagedBackend() {
+  const dataDir = path.join(app.getPath('userData'), 'backend')
+  const executable = backendExecutable(process.resourcesPath)
+  backend = startBackend(executable, dataDir, {
+    onUnexpectedExit: (error) => {
+      dialog.showErrorBox('Champion ERP 后端已停止', error.message)
+      app.quit()
+    },
+  })
+  packagedBackendUrl = await backend.started
+  const menu = Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { label: '文件', submenu: [
+      { label: '打开数据文件夹', click: () => { void shell.openPath(dataDir) } },
+      { role: 'quit', label: '退出' },
+    ] },
+    { role: 'editMenu', label: '编辑' },
+    { role: 'viewMenu', label: '视图' },
+    { role: 'windowMenu', label: '窗口' },
+  ])
+  Menu.setApplicationMenu(menu)
+}
 
 function getBackendBaseUrl() {
+  if (app.isPackaged) {
+    if (!packagedBackendUrl) throw new Error('桌面后端尚未就绪。')
+    return packagedBackendUrl
+  }
   const explicitUrl =
     process.env.CHAMPION_ERP_BACKEND_URL ||
     process.env.ERP_DESKTOP_BACKEND_URL ||
@@ -178,10 +224,16 @@ async function createWindow() {
     title: 'Champion ERP',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  })
+
+  registerLicenseDirectory({
+    ipcMain, shell, win, frontendUrl: url,
+    directory: path.join(app.isPackaged ? process.resourcesPath : getFrontendRoot(), 'licenses'),
   })
 
   win.webContents.setWindowOpenHandler(({ url: nextUrl }) => {
@@ -206,7 +258,11 @@ async function createWindow() {
   await win.loadURL(url)
 }
 
-app.whenReady().then(createWindow).catch((error) => {
+app.whenReady().then(async () => {
+  if (!ownsInstance) return
+  if (app.isPackaged) await initializePackagedBackend()
+  await createWindow()
+}).catch((error) => {
   dialog.showErrorBox('Champion ERP 启动失败', error instanceof Error ? error.message : String(error))
   app.quit()
 })
@@ -215,9 +271,14 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   if (frontendServer) {
     frontendServer.close()
     frontendServer = undefined
+  }
+  if (backend && !quitting) {
+    event.preventDefault()
+    quitting = true
+    void backend.stop().finally(() => app.quit())
   }
 })

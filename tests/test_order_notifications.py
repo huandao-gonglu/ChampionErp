@@ -75,7 +75,7 @@ def save(store, value, payload=None, now=None):
 def service(store, adapters):
     return OrderNotificationService(
         store,
-        lambda: deepcopy(CONFIG),
+        lambda: deepcopy(CONFIG), config_store=get_context().config,
         adapters=adapters,
         parser=parse_notification,
         start_worker=False,
@@ -192,7 +192,7 @@ def test_receive_only_persists_and_does_not_run_adapter(store):
         "seller_id": 3,
         "posting_number": "10-1",
     }
-    token = store.setting("token:ozon")
+    token = get_context().config.order_notification_token("ozon")
     result = svc.receive("ozon", token, body)
     assert result["name"] == "Champion ERP"
     assert store.read({"ozon": "3"})["notifications"][0]["status"] == "queued"
@@ -208,7 +208,7 @@ def test_receive_only_persists_and_does_not_run_adapter(store):
 )
 def test_platform_ping_has_required_response_without_enqueue(store, platform, body):
     result = service(store, {}).receive(
-        platform, store.setting("token:" + platform), body
+        platform, get_context().config.order_notification_token(platform), body
     )
     assert set(result) == {"name", "version", "time"}
     assert store.read({"ozon": "3", "yandex": "4"})["notifications"] == []
@@ -398,7 +398,7 @@ def test_http_callback_and_reads_are_separate_from_remote_availability(store):
     base = f"http://127.0.0.1:{server.server_port}"
     try:
         callback = (
-            base + "/api/yandex/notifications?token=" + store.setting("token:yandex")
+            base + "/api/yandex/notifications?token=" + get_context().config.order_notification_token("yandex")
         )
         response = requests.post(
             callback,
@@ -745,7 +745,7 @@ def test_order_sync_health_uses_business_scope_and_ignores_old_credentials(store
     from dataclasses import replace
     external = get_context().external_requests.store
     scopes = order_request_scopes(CONFIG)
-    svc = OrderNotificationService(store, lambda: deepcopy(CONFIG), adapters={}, parser=parse_notification,
+    svc = OrderNotificationService(store, lambda: deepcopy(CONFIG), config_store=get_context().config, adapters={}, parser=parse_notification,
                                    start_worker=False, external_store=external, request_scopes=order_request_scopes)
     yandex = scopes['yandex'][0]
     assert yandex.account_id == '5'  # 订单以 campaign 归属，请求控制按 business 归属。
@@ -778,7 +778,7 @@ def test_order_sync_cooling_does_not_exhaust_retry_and_manual_sync_wakes_job(sto
     class Adapter:
         def sync(self):
             raise ExternalRequestBlocked(failure)
-    svc = OrderNotificationService(store, lambda: deepcopy(CONFIG), adapters={'yandex':lambda c:Adapter()}, parser=parse_notification,
+    svc = OrderNotificationService(store, lambda: deepcopy(CONFIG), config_store=get_context().config, adapters={'yandex':lambda c:Adapter()}, parser=parse_notification,
                                    start_worker=False, external_store=external, request_scopes=order_request_scopes)
     svc.sync('yandex')
     with store.connect() as conn:

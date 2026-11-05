@@ -210,9 +210,16 @@ class BrowserAiProvider(AiChatProvider):
         probe_options = _probe_options(raw)
         requested_capabilities = probe_options["capabilities"] or ai_model_config.normalize_capabilities(model.get("capabilities"))
         probe_requested = raw.get("probe_capabilities", True) is not False
-        canvas = is_canvas_model(model) and ai_model_config.CAP_IMAGE_EDIT in requested_capabilities
+        canvas = is_canvas_model(model)
         if canvas:
-            check_canvas_connection(app_dir, model, min(timeout, 45))
+            check_canvas_connection(
+                app_dir, model, min(timeout, 45),
+                force_login=(
+                    probe_requested
+                    and browser_ai_runtime.normalize_browser_mode(model.get("browser_mode")) == "managed_profile"
+                    and ai_model_config.CAP_IMAGE_EDIT not in ai_model_config.normalize_capabilities(model.get("capabilities"))
+                ),
+            )
             page = browser_ai_runtime.BrowserAiRunResult(
                 text="", image_urls=[], provider="gemini", browser_url=browser_ai_runtime.browser_ai_url(model),
                 profile_dir=str(browser_ai_runtime.browser_ai_profile_dir(app_dir, model)),

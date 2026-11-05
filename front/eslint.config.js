@@ -6,7 +6,7 @@ import vueParser from 'vue-eslint-parser'
 
 export default [
   {
-    ignores: ['dist/**', 'dist-desktop/**', 'coverage/**', 'node_modules/**', '../erp_web/static/dist/**', '.eslintrc.cjs'],
+    ignores: ['dist/**', 'dist-desktop/**', 'release/**', '.desktop-backend/**', 'coverage/**', 'node_modules/**', '../erp_web/static/dist/**', '.eslintrc.cjs'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

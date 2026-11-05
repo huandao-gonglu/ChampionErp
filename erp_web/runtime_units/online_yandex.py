@@ -16,6 +16,7 @@ from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, 
 from erp_web.runtime_units.online_product_status import yandex_status
 from erp_web.runtime_units.category_catalog import get_category_catalog
 from erp_web.product_model.online_attribute_model import merge_yandex_attributes, yandex_category_id
+from erp_web.product_model.online_scope_model import yandex_campaign_id
 
 
 class YandexOnlineAdapter:
@@ -91,8 +92,12 @@ class YandexOnlineAdapter:
             raise ValueError("Yandex 批量操作或数量无效")
         try:
             if operation == "sale_state":
+                campaigns = {yandex_campaign_id(row, scope) for row in listings}
+                if len(campaigns) != 1:
+                    raise ValueError('批量停售只能操作同一个仓库店铺')
+                campaign = campaigns.pop()
                 suffix = "" if changes["state"] == "paused" else "/delete"
-                receipt = self.request(f"/v2/campaigns/{self.campaign}/hidden-offers{suffix}", {"hiddenOffers": [{"offerId": sku} for sku in ids]})
+                receipt = self.request(f"/v2/campaigns/{campaign}/hidden-offers{suffix}", {"hiddenOffers": [{"offerId": sku} for sku in ids]})
                 return {sku: deepcopy(receipt) for sku in ids}
             action = "archive" if changes["archived"] else "unarchive"
             receipt = self.request(f"/v2/businesses/{self.business}/offer-mappings/{action}", {"offerIds": ids})
@@ -133,10 +138,12 @@ class YandexOnlineAdapter:
         if operation in self.batch_limits:
             return self.write_batch([listing], operation, scope, changes)[listing.remote_id]
         if operation == "price":
-            raw = listing.snapshot["default_price"] if scope == "business" else listing.snapshot["campaign"].get("campaignPrice", {})
-            price = {k: raw[k] for k in ("discountBase", "vat", "minimumForBestseller") if k in raw and (scope == "campaign" or k != "vat")}
+            campaign = yandex_campaign_id(listing, scope) if scope != 'business' else ''
+            raw = (listing.snapshot["default_price"] if scope == "business" else
+                   listing.snapshot.get('campaigns', {}).get(campaign, listing.snapshot.get('campaign', {})).get('campaignPrice', {}))
+            price = {k: raw[k] for k in ("discountBase", "vat", "minimumForBestseller") if k in raw and (scope != "business" or k != "vat")}
             price.update(value=float(changes["amount"]), currencyId=yandex_wire_currency(changes["currency"]))
-            return api.update_yandex_price(self.token, business_id=self.business if scope=="business" else "", campaign_id=self.campaign if scope=="campaign" else "", offers=[{"offerId":listing.remote_id,"price":price}])
+            return api.update_yandex_price(self.token, business_id=self.business if scope=="business" else "", campaign_id=campaign, offers=[{"offerId":listing.remote_id,"price":price}])
         if operation == "stock":
             return api.update_yandex_stock(self.token, mode=self.mode, business_id=self.business, campaign_id=self.campaign,
                 warehouse_ids=[scope] if self.mode=="business" else None, offer_id=listing.remote_id, count=changes["quantity"])
@@ -156,7 +163,7 @@ class YandexOnlineAdapter:
     def confirmation_details(self, listing, operation, receipt, scope=""):
         if operation == "price":
             rows = api.fetch_yandex_price_quarantine(self.token, business_id=self.business if scope == "business" else "",
-                campaign_id=self.campaign if scope == "campaign" else "", offer_ids=[listing.remote_id])
+                campaign_id=yandex_campaign_id(listing, scope) if scope != "business" else "", offer_ids=[listing.remote_id])
             return {"pending": False, "needs_attention": bool(rows), "errors": [], "quarantine": rows,
                     "note": "价格进入平台隔离区，尚未确认生效；请先在平台处理价格审核" if rows else ""}
         if operation != "content":

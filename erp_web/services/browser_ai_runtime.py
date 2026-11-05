@@ -111,7 +111,7 @@ def open_browser_ai_page(app_dir: Path | str, model: dict[str, Any], timeout: in
     target = _ensure_browser_target(app_dir, model, url, timeout)
     cdp = _cdp_websocket(str(target["webSocketDebuggerUrl"]))
     try:
-        _prepare_page(cdp, url, timeout)
+        _prepare_page(cdp, timeout)
         readiness = _readiness(cdp)
         ready = bool(readiness.get("hasInput"))
         message = "浏览器 AI 页面已连接。" if ready else "浏览器已打开，请在页面中手动登录后再测试能力。"
@@ -145,7 +145,7 @@ def run_browser_ai_chat(
     target = _ensure_browser_target(app_dir, model, url, timeout)
     cdp = _cdp_websocket(str(target["webSocketDebuggerUrl"]))
     try:
-        _prepare_page(cdp, url, min(timeout, 45))
+        _prepare_page(cdp, min(timeout, 45))
         readiness = _readiness(cdp)
         if not readiness.get("hasInput"):
             raise RuntimeError("浏览器 AI 页面没有发现可输入的对话框；请先在打开的页面中完成登录。")
@@ -177,7 +177,7 @@ def connect_browser_ai_page(
     target = _ensure_browser_target(app_dir, model, url, timeout, headless=headless)
     cdp = _cdp_websocket(str(target["webSocketDebuggerUrl"]))
     try:
-        _prepare_page(cdp, url, timeout)
+        _prepare_page(cdp, timeout)
         yield cdp
     finally:
         cdp.close()
@@ -250,17 +250,18 @@ def _page_targets(port: int) -> list[dict[str, Any]]:
     return [item for item in payload if isinstance(item, dict) and str(item.get("type") or "page") == "page" and item.get("webSocketDebuggerUrl")]
 
 
-def _prepare_page(cdp, url: str, timeout: int) -> None:
+def _prepare_page(cdp, timeout: int) -> None:
     cdp.call("Page.enable", timeout=10)
     cdp.call("Runtime.enable", timeout=10)
-    current = str(_evaluate(cdp, "location.href || ''", timeout=10) or "")
-    if not current.startswith(("http://", "https://")) or urllib.parse.urlparse(current).hostname != urllib.parse.urlparse(url).hostname:
-        cdp.call("Page.navigate", {"url": url}, timeout=20)
-    deadline = time.time() + max(5, timeout)
-    while time.time() < deadline:
+    # 目标已由 _target_for_url 选中或创建；不能打断首次加载和登录重定向。
+    deadline = time.monotonic() + max(0, timeout)
+    while True:
+        current = str(_evaluate(cdp, "location.href || ''", timeout=10) or "")
         state = str(_evaluate(cdp, "document.readyState", timeout=10) or "")
-        if state in {"interactive", "complete"}:
+        if current.startswith(("http://", "https://")) and state in {"interactive", "complete"}:
             return
+        if time.monotonic() >= deadline:
+            raise TimeoutError("浏览器页面加载超时，请检查网络和浏览器代理后重试。")
         time.sleep(0.5)
 
 

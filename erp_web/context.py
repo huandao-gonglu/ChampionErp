@@ -182,7 +182,7 @@ class AppContext:
             if self._wechat_store is None:
                 from erp_web.stores.wechat_channel_store import WechatChannelStore
 
-                self._wechat_store = WechatChannelStore(self.paths.data_dir / "wechat-channel.sqlite3")
+                self._wechat_store = WechatChannelStore(self.paths.data_dir / "wechat-channel.sqlite3", self.config)
             return self._wechat_store
 
     @property

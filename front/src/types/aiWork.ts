@@ -54,7 +54,7 @@ export interface AiWorkUiMessagesResponse {
   latest_message_id?: string | null
   run_status?: 'claimed' | 'completed' | 'failed' | 'cancelled' | null
   pending_tool_calls?: PendingToolCall[]
-  received_messages?: { message_id: string; status: string }[]
+  received_messages?: { message_id: string; status: string; text: string }[]
 }
 
 export interface AiChatCancelResponse {

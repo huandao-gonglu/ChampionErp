@@ -76,7 +76,7 @@ function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig
   }
   if (isRecord(safeSubmittedConfig.ai_use_case_bindings)) merged.ai_use_case_bindings = safeSubmittedConfig.ai_use_case_bindings
   if (isRecord(safeSubmittedConfig.ai_use_case_prompts)) merged.ai_use_case_prompts = safeSubmittedConfig.ai_use_case_prompts
-  for (const section of ['1688_api', 'pricing_defaults']) {
+  for (const section of ['pricing_defaults']) {
     const publicSection = isRecord(safePublicConfig[section]) ? safePublicConfig[section] as UnknownRecord : {}
     const submittedSection = isRecord(safeSubmittedConfig[section]) ? safeSubmittedConfig[section] as UnknownRecord : {}
     merged[section] = { ...publicSection, ...submittedSection }
@@ -125,6 +125,41 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     }
   }
 
+  async function testAndSaveModel(model: UnknownRecord, presentationId?: string): Promise<AuthResult> {
+    const result = await testAiModel(model, presentationId)
+    if (!result.ok || model.test_trigger !== 'capability_checkbox') return result
+    const capability = String(model.probe_only_capability || '')
+    const supported = Array.isArray(result.raw?.supported_capabilities) ? result.raw.supported_capabilities : []
+    const results = isRecord(result.raw?.capability_results) ? result.raw.capability_results : {}
+    const receipt = isRecord(results[capability]) ? results[capability] : {}
+    if (!supported.includes(capability) || !isRecord(receipt.capability_profile) || receipt.capability_profile.tested !== true) {
+      throw new Error('能力测试缺少有效回执，未自动保存。')
+    }
+    try {
+      // 只保存刚测试的模型；其他模型及功能绑定沿用服务器最新配置。
+      const latest = await fetchAiConfig()
+      const rows = Array.isArray(latest.raw.ai_models) ? latest.raw.ai_models.filter(isRecord) : []
+      const current = rows.find(row => row.id === model.id) || {}
+      const tested = { ...current, ...model }
+      for (const key of Object.keys(tested)) {
+        if (key.startsWith('probe_') || key === 'test_trigger') delete tested[key]
+      }
+      tested.capabilities = [...new Set([...(Array.isArray(model.capabilities) ? model.capabilities : []), capability])]
+      tested.capability_profiles = {
+        ...(isRecord(model.capability_profiles) ? model.capability_profiles : {}),
+        [capability]: receipt.capability_profile,
+      }
+      const models = rows.some(row => row.id === model.id)
+        ? rows.map(row => row.id === model.id ? tested : row) : [...rows, tested]
+      const saved = await saveAiConfig({ ai_models: models })
+      aiConfig.value = sanitizePublicAppConfig(saved.raw)
+      appConfig.value = sanitizePublicAppConfig({ ...appConfig.value, ...saved.raw })
+      return { ...result, message: `${result.message || '能力测试通过'}，已自动保存。`, nextAction: '' }
+    } catch (error) {
+      throw new Error(`能力测试通过，但自动保存失败：${error instanceof Error ? error.message : '请重试保存'}`)
+    }
+  }
+
   async function testAiSettings(model: UnknownRecord) {
     activity.loading = true
     activity.setError('')
@@ -145,7 +180,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
               error instanceof Error ? error.message : `${modelLabel} 能力测试失败`
             ),
           },
-          ({ presentationId }) => testAiModel(model, presentationId),
+          ({ presentationId }) => testAndSaveModel(model, presentationId),
         )
       lastAuthResult.value = result
       activity.addLog(`AI 模型测试：${result.message || result.error || '完成'}`)

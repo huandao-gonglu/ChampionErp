@@ -427,7 +427,7 @@ def test_yandex_sync_stops_remaining_batches_after_access_rejection(monkeypatch)
     mappings = [{"offer":{"offerId":str(i)}} for i in range(201)]
     monkeypatch.setattr(read,"catalog_pages",lambda *a,**k:[mappings])
     monkeypatch.setattr(read,"catalog_listing",lambda row,**k:row)
-    monkeypatch.setattr(read,"hidden_ids",lambda *a:set())
+    monkeypatch.setattr(read,"hidden_ids",lambda *a,**k:set())
     calls = []
     def send(*a,**k):
         calls.append(a[0])

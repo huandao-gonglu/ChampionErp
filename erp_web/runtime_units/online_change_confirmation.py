@@ -4,6 +4,8 @@ from urllib.parse import quote
 from erp_web.marketplaces.yandex_currency import yandex_internal_currency
 from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, index_rows, pages, stock_result
 from erp_web.runtime_units.online_yandex_snapshot import build_stocks, card_attributes, card_issues
+from erp_web.product_model.online_listing_summary import summarize_yandex_status
+from erp_web.product_model.online_scope_model import yandex_campaign_id
 
 
 def mercado_change(adapter, listing, request):
@@ -91,21 +93,37 @@ def yandex_change(adapter, listing, request):
         if archived and fresh.sale_state == "active":
             fresh.sale_state = "unknown"
     elif request.operation == "sale_state":
-        hidden = remote_id in hidden_ids(adapter,remote_id)
-        fresh.snapshot["hidden"] = hidden
+        campaign_id = yandex_campaign_id(listing, scope)
+        hidden = remote_id in hidden_ids(adapter,remote_id,campaign_id=campaign_id)
+        fresh.snapshot.setdefault('hidden_campaigns', {})[campaign_id] = hidden
+        for market in fresh.markets:
+            if market.id == campaign_id:
+                market.raw_sub_status = ['hidden'] if hidden else []
+        for stock in fresh.stocks:
+            if stock.campaign_id == campaign_id:
+                stock.sale_state = 'paused' if hidden else 'active' if stock.raw_status == 'PUBLISHED' else 'unknown'
+        if campaign_id == adapter.campaign:
+            fresh.snapshot["hidden"] = hidden
         # 隐藏解除只证明请求生效，不推断商品已通过平台审核。
-        fresh.sale_state = "paused" if hidden else ("active" if fresh.raw_status == "PUBLISHED" else "unknown")
+        summarize_yandex_status(fresh)
     elif request.operation == "price":
         if scope == "business":
             row = one(f"/v2/businesses/{adapter.business}/offer-prices","offers").get("price",{})
             fresh.snapshot["default_price"] = row
         else:
-            campaign = one(f"/v2/campaigns/{adapter.campaign}/offers","offers")
+            campaign_id = yandex_campaign_id(listing, scope)
+            campaign = one(f"/v2/campaigns/{campaign_id}/offers","offers")
             row = campaign.get("campaignPrice",{})
-            fresh.snapshot["campaign"] = campaign
+            fresh.snapshot.setdefault('campaigns', {})[campaign_id] = campaign
+            if campaign_id == adapter.campaign:
+                fresh.snapshot["campaign"] = campaign
         price = next(p for p in fresh.prices if p.id == scope)
         price.amount = str(row["value"]) if row.get("value") is not None else None
         price.currency = yandex_internal_currency(str(row.get("currencyId") or ""))
+        if scope != 'business':
+            for market in fresh.markets:
+                if market.id == campaign_id:
+                    market.price, market.currency = price.amount, price.currency
     elif request.operation == "stock":
         if adapter.mode == "business":
             stock = next(s for s in fresh.stocks if s.id == scope)
@@ -116,8 +134,6 @@ def yandex_change(adapter, listing, request):
             result = stock_result(adapter,f"/v2/campaigns/{adapter.campaign}/offers/stocks",body)
             checked = build_stocks(adapter.mode,[],{"campaign":result},remote_id)[0]
         next(s for s in fresh.stocks if s.id == scope).quantity = checked.quantity
-        if listing.desired_sale_state == "paused":
-            fresh.sale_state = "paused" if remote_id in hidden_ids(adapter,remote_id) else "unknown"
     else:
         if set(request.changes)-{"attributes"}:
             mappings = [r for page in catalog_pages(adapter,[remote_id]) for r in page]

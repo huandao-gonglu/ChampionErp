@@ -8,7 +8,7 @@ from threading import Event
 from erp_web.marketplaces.online_sync import raise_if_access_blocked
 from typing import Any, Iterator
 
-from erp_web.runtime_units.online_yandex_snapshot import basic_listing, build_listing, build_stocks, catalog_listing
+from erp_web.runtime_units.online_yandex_snapshot import basic_listing, build_listing, build_stocks, catalog_listing, with_warehouses
 from erp_web.schemas.online_products import OnlineSyncBatch
 
 BATCH_SIZE = 100
@@ -59,10 +59,10 @@ def catalog_pages(adapter, ids: list[str] | None = None, *, catalog: str | None 
             yield fresh
 
 
-def hidden_ids(adapter, remote_id: str = "") -> set[str]:
+def hidden_ids(adapter, remote_id: str = "", *, campaign_id: str = "") -> set[str]:
     result = set()
     query = {"offer_id": remote_id} if remote_id else {"limit": 500}
-    for rows in pages(adapter, f"/v2/campaigns/{adapter.campaign}/hidden-offers", "hiddenOffers", query=query, method="GET"):
+    for rows in pages(adapter, f"/v2/campaigns/{campaign_id or adapter.campaign}/hidden-offers", "hiddenOffers", query=query, method="GET"):
         result.update(index_rows(rows, allowed={remote_id} if remote_id else None))
     return result
 
@@ -132,7 +132,7 @@ def request_results(requests):
                     for pending in futures:
                         pending.cancel()
                 raise_if_access_blocked(exc)
-                label = {"campaign": "店铺状态", "campaign_price": "店铺价格", "cards": "商品卡片", "prices": "价格"}.get(name, "库存")
+                label = {"campaign": "店铺状态", "hidden": "店铺隐藏状态", "cards": "商品卡片", "prices": "价格"}.get(name.split(':', 1)[0], "库存")
                 errors.append(f"{label}：{exc}")
     return responses, errors
 
@@ -144,10 +144,17 @@ def read_batch(adapter, mappings, hidden: set[str], *, full=True) -> OnlineSyncB
     def rows(path, key):
         return index_rows([row for page in pages(adapter, path, key, {"offerIds": ids}) for row in page], allowed=set(ids))
 
+    warehouses = adapter.warehouses if adapter.mode == 'business' else []
+    campaign_ids = {str(model['campaignId']) for warehouse in warehouses for model in warehouse.get('models', [])
+                    if model.get('placementType') == 'FBS' and model.get('campaignId')} | {adapter.campaign}
+    hidden = hidden if isinstance(hidden, dict) else {adapter.campaign: hidden}
     requests = {
-        "campaign": lambda: rows(f"/v2/campaigns/{adapter.campaign}/offers", "offers"),
         "cards": lambda: rows(f"/v2/businesses/{adapter.business}/offer-cards", "offerCards"),
     }
+    for campaign_id in sorted(campaign_ids):
+        requests['campaign:' + campaign_id] = lambda cid=campaign_id: rows(f'/v2/campaigns/{cid}/offers', 'offers')
+        if campaign_id not in hidden:
+            requests['hidden:' + campaign_id] = lambda cid=campaign_id: hidden_ids(adapter, ids[0] if len(ids) == 1 else '', campaign_id=cid)
     if full:
         requests.update(detail_requests(adapter, ids))
     responses, errors = request_results(requests)
@@ -156,15 +163,18 @@ def read_batch(adapter, mappings, hidden: set[str], *, full=True) -> OnlineSyncB
         result.errors = {remote_id: "；".join(errors) for remote_id in ids}
         return result
     stocks = {name.removeprefix("stock:"): value for name, value in responses.items() if name.startswith("stock:")}
+    hidden = {**hidden, **{name.removeprefix('hidden:'): value for name, value in responses.items() if name.startswith('hidden:')}}
     for mapping in mappings:
         remote_id = mapping["offer"]["offerId"]
         try:
             if remote_id not in responses["cards"]:
                 raise ValueError("平台未返回该商品的卡片信息，已保留原记录")
             card = responses["cards"][remote_id]
+            campaigns = {cid: responses['campaign:' + cid].get(remote_id, {}) for cid in campaign_ids}
             if not full:
-                result.listings.append(basic_listing(mapping, responses["campaign"].get(remote_id, {}),
-                    remote_id in hidden, card, account_id=adapter.account_id, campaign_id=adapter.campaign))
+                listing = basic_listing(mapping, campaigns[adapter.campaign],
+                    remote_id in hidden[adapter.campaign], card, account_id=adapter.account_id, campaign_id=adapter.campaign)
+                result.listings.append(with_warehouses(listing, warehouses, campaigns, hidden))
                 continue
             names, names_error = {}, ""
             if card.get("parameterValues"):
@@ -175,11 +185,12 @@ def read_batch(adapter, mappings, hidden: set[str], *, full=True) -> OnlineSyncB
                     names, names_error = adapter.attribute_names(category_id)
                 else:
                     names_error = "平台未返回类目编号，暂时无法关联属性名称"
-            result.listings.append(build_listing(mapping, responses["campaign"].get(remote_id, {}), remote_id in hidden,
+            listing = build_listing(mapping, campaigns[adapter.campaign], remote_id in hidden[adapter.campaign],
                 card, responses["prices"].get(remote_id, {}).get("price", {}),
                 build_stocks(adapter.mode, adapter.warehouses, stocks, remote_id),
                 account_id=adapter.account_id, campaign_id=adapter.campaign, settings=adapter.settings,
-                attribute_names=names, attribute_names_error=names_error))
+                attribute_names=names, attribute_names_error=names_error)
+            result.listings.append(with_warehouses(listing, warehouses, campaigns, hidden, settings=adapter.settings))
         except Exception as exc:
             result.errors[remote_id] = str(exc)
     return result
@@ -196,7 +207,9 @@ def sync_yandex(adapter, ids=None, *, catalog="current", full=False) -> Iterator
             campaign_id=adapter.campaign) for row in page])
         if page:
             if hidden is None:
-                hidden = hidden_ids(adapter)
+                campaigns = {str(model['campaignId']) for warehouse in (adapter.warehouses if adapter.mode == 'business' else [])
+                             for model in warehouse.get('models', []) if model.get('placementType') == 'FBS' and model.get('campaignId')} | {adapter.campaign}
+                hidden = {cid: hidden_ids(adapter, campaign_id=cid) for cid in sorted(campaigns)}
             yield read_batch(adapter, page, hidden, full=full)
     yield OnlineSyncBatch(phase, discovery_complete=True)
     if ids is not None:

@@ -376,6 +376,18 @@ class YandexPublishingAdapter:
 
     platform = "yandex"
 
+    def publish_payloads(self, payloads, config, **callbacks):
+        from .yandex_publish_batch import publish_many
+        return publish_many(payloads, config, **callbacks)
+
+    def advance_submissions(self, results, config, **callbacks):
+        from .yandex_publish_batch import submit_many
+        return submit_many(results, config, **callbacks)
+
+    def poll_publish_statuses(self, results, config):
+        from .yandex_publish_batch import confirm_many
+        return confirm_many(results, config)
+
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
         if str(config.get('yandex', {}).get('placement_type') or '').upper() == 'FBS':
             get_context().yandex_logistics.pricing_plans()

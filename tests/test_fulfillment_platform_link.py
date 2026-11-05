@@ -1,5 +1,7 @@
 """平台订单关联：只发唯一报单 ID，关联失败不重复创建或重放未知写入。"""
 
+from erp_web.context import get_context
+
 import pytest
 
 from erp_web.schemas.fulfillment import FulfillmentError
@@ -151,6 +153,6 @@ def test_missing_platform_order_error_is_definitive_and_sanitized(domain, monkey
     response = {"code": 0, "message": "关联失败,未查询到关联订单 secret-value"}
     monkeypatch.setattr(module, "managed_urlopen", lambda *args, **kwargs: io.BytesIO(json.dumps(response).encode()))
     with pytest.raises(FulfillmentError, match="未找到可关联的平台订单") as error:
-        module.CrossborderBusClient(domain[0].store)._request(PATH, {"order_id": 99})
+        module.CrossborderBusClient(domain[0].store, get_context().config)._request(PATH, {"order_id": 99})
     assert error.value.definitive and not error.value.unknown
     assert "secret-value" not in str(error.value)

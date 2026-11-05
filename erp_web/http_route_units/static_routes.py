@@ -8,6 +8,7 @@ from typing import Any
 
 
 FRONTEND_CONTENT_TYPES = {
+    ".txt": "text/plain; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".mjs": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",

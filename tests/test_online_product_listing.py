@@ -271,3 +271,61 @@ def test_warranty_and_stock_projection_pages_all_skus_without_unrelated_content(
         encoded = p.model_dump_json()
         assert len(encoded.encode()) < 64 * 1024
         assert "无关" not in encoded and "example.com" not in encoded
+
+
+@pytest.mark.parametrize(('express_status', 'expected'), [('PUBLISHED', 'PUBLISHED'), ('CHECKING', 'CHECKING'), ('NO_STOCKS', 'NO_STOCKS')])
+def test_warehouse_status_summary_respects_scope_and_priority_without_changing_saved_facts(monkeypatch, express_status, expected):
+    app = get_context()
+    monkeypatch.setattr(app.config, 'load_store_config', lambda: {'yandex': {'business_id': '1', 'campaign_id': '2'}})
+    service = OnlineProductService(app, adapter_factories={}, start_worker=False)
+    row = product(1)
+    row.account_id = '1:2'
+    row.raw_status = 'NO_STOCKS'
+    row.sale_state = 'unknown'
+    row.markets = [MarketSnapshot(id='2', site_id='2', raw_status='NO_STOCKS'),
+                   MarketSnapshot(id='3', site_id='3', raw_status=express_status)]
+    row.snapshot['warehouse_catalog'] = [{'id':'economy','name':'Economy','campaign_id':'2'},
+                                         {'id':'express','name':'Express','campaign_id':'3'}]
+    from erp_web.schemas.online_products import StockScope
+    row.stocks = [StockScope(id='economy', label='Economy', quantity=0, campaign_id='2'),
+                  StockScope(id='express', label='Express', quantity=576, campaign_id='3')]
+    original = service.store.save(row)
+    all_rows = service.list('yandex')
+    assert all_rows['items'][0]['raw_status'] == expected
+    assert all_rows['summary']['active'] == (1 if expected == 'PUBLISHED' else 0)
+    assert service.list('yandex', status=expected)['listing_total'] == 1
+    assert service.list('yandex', warehouse_id='economy')['items'][0]['raw_status'] == 'NO_STOCKS'
+    assert service.list('yandex', warehouse_id='express')['items'][0]['raw_status'] == expected
+    assert OnlineReadResult.model_validate(service.read_page('yandex')).items[0].raw_status == expected
+    assert service.store.get(row.id) == original
+    assert all_rows['items'][0]['version'] == original.version
+    service.close()
+
+
+def test_positive_stock_with_missing_other_campaign_states_is_unconfirmed_instead_of_default_stockout():
+    from erp_web.schemas.online_products import StockScope
+    from erp_web.services.online_product_listing import warehouse_projection
+    row = product(1, raw_status='NO_STOCKS', markets=[MarketSnapshot(id='2', site_id='2', raw_status='NO_STOCKS')],
+        stocks=[StockScope(id='economy', label='Economy', quantity=None), StockScope(id='express', label='Express', quantity=576)])
+    assert warehouse_projection(row).raw_status == 'unknown'
+    assert warehouse_projection(row).sale_state == 'unknown'
+    assert row.raw_status == 'NO_STOCKS'
+
+
+def test_hidden_market_does_not_override_visible_published_market():
+    from erp_web.services.online_product_listing import warehouse_projection
+    row = product(1, sale_state='paused', markets=[
+        MarketSnapshot(id='2', site_id='2', raw_status='PUBLISHED', raw_sub_status=['hidden']),
+        MarketSnapshot(id='3', site_id='3', raw_status='PUBLISHED')])
+    assert warehouse_projection(row).sale_state == 'active'
+    assert warehouse_projection(row).raw_status == 'PUBLISHED'
+
+
+def test_campaign_group_uses_its_confirmed_hidden_state():
+    from erp_web.services.online_product_listing import warehouse_projection
+    row = product(1, sale_state='paused', markets=[MarketSnapshot(id='2', site_id='2', raw_status='NO_STOCKS')],
+                  stocks=[{'id':'campaign','label':'仓库组','quantity':0}],
+                  raw_status='NO_STOCKS')
+    row.account_id = '1:2'
+    row.snapshot['hidden'] = True
+    assert warehouse_projection(row).sale_state == 'paused'

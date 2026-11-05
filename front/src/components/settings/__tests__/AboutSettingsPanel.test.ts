@@ -8,14 +8,6 @@ enableAutoUnmount(afterEach)
 afterEach(() => vi.unstubAllGlobals())
 const global = { plugins: [i18n], stubs: { teleport: true } }
 const pointer = { isPrimary: true, button: 0, pointerId: 1 }
-const fixture = {
-  packages: [
-    { name: 'vue', version: '3.5.35', ecosystem: 'npm', license: 'MIT', homepage: 'https://vuejs.org', notices: [{ source: 'LICENSE', text: 'vue' }] },
-    { name: 'Pillow', version: '12.2.0', ecosystem: 'Python', license: 'MIT-CMU', homepage: 'javascript:alert(1)', notices: [{ source: 'LICENSE', text: 'pillow' }] },
-  ],
-  texts: { vue: 'Copyright Vue contributors\nPermission is hereby granted', pillow: 'Pillow license text' },
-}
-
 describe('关于与法律声明', () => {
   it('展示包版本和公司信息；协议与隐私政策独立打开且不发起网络请求', async () => {
     const fetch = vi.fn()
@@ -53,43 +45,44 @@ describe('关于与法律声明', () => {
     expect(wrapper.find('dialog').exists()).toBe(false)
   })
 
-  it('英文声明以单栏连续展示全部原文，内容拖出不关闭，正常遮罩点击关闭', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => fixture }))
-    const wrapper = mount(AboutSettingsPanel, { global })
-    await wrapper.get('[data-testid="view-licenses"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.get('[lang="en"]').text()).toContain('THIRD PARTY SOFTWARE')
-    const notices = wrapper.get('pre').text()
-    expect(notices).toContain(fixture.texts.vue)
-    expect(notices).toContain(fixture.texts.pillow)
-    expect(notices).toContain('The following software may be included in this product: Pillow (12.2.0)')
-    expect(notices).toContain('\n\n---\n\n')
-    expect(notices.indexOf('Pillow')).toBeLessThan(notices.indexOf('vue ('))
-    expect(wrapper.find('input[type="search"]').exists()).toBe(false)
-    expect(wrapper.find('nav').exists()).toBe(false)
-    expect(wrapper.find('[role="tablist"]').exists()).toBe(false)
-    expect(wrapper.findAll('pre')).toHaveLength(1)
-    expect(wrapper.find('a[href^="javascript:"]').exists()).toBe(false)
-    await wrapper.get('pre').trigger('pointerdown', pointer)
-    await wrapper.get('dialog').trigger('pointerup', pointer)
-    expect(wrapper.find('dialog').exists()).toBe(true)
-    await wrapper.get('dialog').trigger('pointerdown', pointer)
-    await wrapper.get('dialog').trigger('pointerup', pointer)
-    expect(wrapper.find('dialog').exists()).toBe(false)
-  })
-
-  it('声明加载失败时提供重试；关闭会取消未完成读取', async () => {
-    const fetch = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ ok: true, json: async () => fixture })
+  it('Web 提供文本下载入口，不加载声明或打开全文弹窗', () => {
+    const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)
     const wrapper = mount(AboutSettingsPanel, { global })
+    const link = wrapper.get('[data-testid="view-licenses"]')
+    expect(link.element.tagName).toBe('A')
+    expect(link.attributes('href')).toBe('/licenses/THIRD-PARTY-NOTICES.txt')
+    expect(link.attributes('download')).toBe('THIRD-PARTY-NOTICES.txt')
+    expect(link.attributes('aria-haspopup')).toBeUndefined()
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    expect(wrapper.find('pre').exists()).toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('桌面入口只打开随包目录，不传入路径或展开全文', async () => {
+    const openLicenses = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('championDesktop', { openLicenses })
+    const wrapper = mount(AboutSettingsPanel, { global })
+    const button = wrapper.get('[data-testid="view-licenses"]')
+    expect(button.element.tagName).toBe('BUTTON')
+    await button.trigger('click')
+    await flushPromises()
+    expect(openLicenses.mock.calls).toEqual([[]])
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    expect(wrapper.find('pre').exists()).toBe(false)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('目录打开失败时提示重试', async () => {
+    const openLicenses = vi.fn().mockRejectedValueOnce(new Error('unavailable')).mockResolvedValueOnce(undefined)
+    vi.stubGlobal('championDesktop', { openLicenses })
+    const wrapper = mount(AboutSettingsPanel, { global })
     await wrapper.get('[data-testid="view-licenses"]').trigger('click')
     await flushPromises()
-    expect(wrapper.get('[role="alert"]').text()).toContain('Unable to load')
-    await wrapper.get('[role="alert"] button').trigger('click')
+    expect(wrapper.get('[role="alert"]').text()).toContain('无法打开许可证文件夹')
+    await wrapper.get('[data-testid="view-licenses"]').trigger('click')
     await flushPromises()
-    expect(wrapper.get('pre').text()).toContain('Copyright Vue contributors')
-    const signal = fetch.mock.calls[1][1].signal as AbortSignal
-    await wrapper.get('dialog').trigger('cancel')
-    expect(signal.aborted).toBe(true)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(openLicenses).toHaveBeenCalledTimes(2)
   })
 })

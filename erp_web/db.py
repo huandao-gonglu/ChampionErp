@@ -1581,6 +1581,30 @@ class ErpDatabase:
 
     # -- runtime_secrets ----------------------------------------------------
 
+    def runtime_secret(self, namespace: str, key: str, default=None):
+        """读取一个具名凭据记录，不把不同集成的配置混成一次覆盖写。"""
+        with self._connect() as conn:
+            row = conn.execute("SELECT secret_json FROM runtime_secrets WHERE namespace=? AND secret_path=?",
+                               (namespace, key)).fetchone()
+        return json_loads(row[0], default) if row else default
+
+    def set_runtime_secret(self, namespace: str, key: str, value, *, only_if_missing=False):
+        """单记录原子写入；首次生成回调令牌时由数据库防止并发替换。"""
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if value is None:
+                conn.execute("DELETE FROM runtime_secrets WHERE namespace=? AND secret_path=?", (namespace, key))
+                result = None
+            else:
+                conflict = "DO NOTHING" if only_if_missing else "DO UPDATE SET secret_json=excluded.secret_json, updated_at=excluded.updated_at"
+                conn.execute("INSERT INTO runtime_secrets(namespace,secret_path,secret_json,updated_at) VALUES (?,?,?,?) "
+                             "ON CONFLICT(namespace,secret_path) " + conflict,
+                             (namespace, key, json_dumps(value), utc_now()))
+                result = json_loads(conn.execute("SELECT secret_json FROM runtime_secrets WHERE namespace=? AND secret_path=?",
+                                                (namespace, key)).fetchone()[0], None)
+            conn.commit()
+            return result
+
     def load_runtime_secrets(self, namespace: str) -> dict[str, Any]:
         namespace = str(namespace or "").strip()
         if not namespace:

@@ -155,7 +155,7 @@ def test_yandex_definition_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         category_providers,
         "fetch_yandex_leaf_record",
-        lambda category_id, include_attributes=False, timeout_seconds=None: leaf_record,
+        lambda category_id, include_attributes=False, timeout_seconds=None, force_refresh=False: leaf_record,
     )
     monkeypatch.setattr(
         category_providers,
@@ -804,3 +804,59 @@ def test_definition_from_legacy_drops_unidentified_attributes() -> None:
         optional=[],
     )
     assert [attribute.id for attribute in definition.required] == ["85"]
+
+
+@pytest.mark.parametrize("attribute_id", ["brand", "vendor"])
+def test_yandex_offer_brand_is_not_a_category_parameter(monkeypatch, attribute_id):
+    monkeypatch.setattr(
+        category_providers, "fetch_yandex_category_parameter_definitions",
+        lambda *args, **kwargs: pytest.fail("商品品牌无需请求类目字典"),
+    )
+    provider = category_providers.YandexCategoryProvider()
+    with pytest.raises(ValueError, match="品牌字段（vendor）"):
+        provider.attribute_values("62149272", attribute_id, query="Нет бренда")
+
+
+def test_yandex_distinguishes_unknown_parameter_from_empty_search(monkeypatch):
+    monkeypatch.setattr(
+        category_providers, "fetch_yandex_category_parameter_definitions",
+        lambda *args, **kwargs: [{"parameter_id": "85", "values": [{"value_id": "1", "value": "黑色"}]}],
+    )
+    provider = category_providers.YandexCategoryProvider()
+    with pytest.raises(ValueError, match="没有属性 99"):
+        provider.attribute_values("62149272", "99")
+    assert not provider.attribute_values("62149272", "85", query="蓝色").values
+    assert provider.attribute_values("62149272", "85", query="黑色").values[0].dictionary_value_id == "1"
+
+
+def test_yandex_variant_settings_refresh_bypasses_both_caches_and_updates_normal_reads(monkeypatch, tmp_path):
+    from erp_web.runtime_units import yandex_category_api as api
+    from erp_web.runtime_units.category_catalog import CategoryCatalog
+    from erp_web.runtime_units.category_definition_support import CategoryAttributesUnavailableError
+
+    monkeypatch.setattr(category_providers, "_cache_root", lambda: tmp_path)
+    monkeypatch.setattr(api, "_yandex_credentials", lambda: ("settings-test-token", "fake-store"))
+    monkeypatch.setattr(api, "load_yandex_category_corpus", lambda **kw: ([{"category_id": "shoes"}], {}))
+    enabled = False
+    offline = False
+    calls = []
+    def parameters(token, category_id, business_id, **kwargs):
+        calls.append((category_id, business_id))
+        if offline:
+            raise TimeoutError("平台查询超时")
+        return [{"id": 5678, "name": "Размер", "type": "TEXT", "distinctive": enabled}]
+    monkeypatch.setattr(api, "fetch_yandex_category_parameters", parameters)
+    catalog = CategoryCatalog({"yandex": category_providers.YandexCategoryProvider()})
+    def read():
+        return catalog.attribute_definitions("yandex", "shoes").attribute_by_id("5678").variation_role
+    def refresh():
+        return catalog.refresh_yandex_variant_settings("shoes", site="global", timeout_seconds=10)
+    assert read() != "variant"
+    enabled = True
+    assert read() != "variant"
+    assert refresh().attribute_by_id("5678").variation_role == "variant"
+    assert read() == "variant" and len(calls) == 2
+    offline = True
+    with pytest.raises(CategoryAttributesUnavailableError, match="平台查询超时"):
+        refresh()
+    assert len(calls) == 3 and read() == "variant"

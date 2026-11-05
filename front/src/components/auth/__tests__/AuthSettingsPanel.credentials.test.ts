@@ -41,6 +41,7 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
     global: {
       stubs: {
         ProductResearchSettingsPanel: true,
+        AlibabaSettingsPanel: true,
       },
     },
   })
@@ -66,7 +67,8 @@ describe('AuthSettingsPanel 网页连接预置', () => {
   it('从网页入口添加 Gemini，删除后仍能按预置恢复，且不自动启用或测试能力', async () => {
     const wrapper = mountPanel({ ai_models: [apiModel], browser_presets: [preset] })
     await wrapper.get('[data-testid="add-web-model"]').setValue('gemini_canvas')
-    expect(wrapper.get('[data-testid="web-model-guide"]').text()).toContain('通过 Gemini 网页修改图片')
+    expect(wrapper.find('[data-testid="web-model-guide"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('项目托管模式使用')
     let payload = await save(wrapper)
     const added = (payload.ai_models as Record<string, unknown>[]).find(model => model.id === 'gemini_canvas_browser')!
     expect(added).toMatchObject({ ...preset.model, capabilities: [] })
@@ -135,10 +137,21 @@ describe('AuthSettingsPanel 网页连接预置', () => {
     expect((payload.ai_models as Record<string, unknown>[])[0]).not.toHaveProperty('capability_profiles')
   })
 
+  it('单个模型自动保存回读时保留其他模型未提交的编辑', async () => {
+    const wrapper = mountPanel({ ai_models: [apiModel, preset.model], browser_presets: [preset] })
+    await wrapper.get('input[placeholder="例如 DeepSeek 文本模型"]').setValue('尚未保存的名称')
+    expect(wrapper.emitted('saveAi')).toBeUndefined()
+    expect(wrapper.emitted('testAi')).toBeUndefined()
+    await wrapper.setProps({ aiConfig: { ai_models: [apiModel, { ...preset.model, capabilities: ['image_edit'] }], browser_presets: [preset] } })
+    expect((wrapper.get('input[placeholder="例如 DeepSeek 文本模型"]').element as HTMLInputElement).value).toBe('尚未保存的名称')
+  })
+
   it('网页模型通过实际能力测试后才启用图像编辑', async () => {
     const wrapper = mountPanel({ ai_models: [apiModel], browser_presets: [preset] })
     await wrapper.get('[data-testid="add-web-model"]').setValue('gemini_canvas')
-    await wrapper.get('[data-testid="test-web-capability-image_edit"]').trigger('click')
+    expect(wrapper.text()).not.toContain('测试并启用图像编辑')
+    const imageEdit = wrapper.findAll('label').find(label => label.text().trim() === '图像编辑')!
+    await imageEdit.get('input[type="checkbox"]').setValue(true)
     expect(wrapper.emitted('testAi')).toBeUndefined()
     await wrapper.findAll('button').find(button => button.text() === '确定测试')!.trigger('click')
     expect(wrapper.emitted('testAi')?.[0]?.[0]).toMatchObject({
@@ -160,18 +173,13 @@ describe('AuthSettingsPanel 网页连接预置', () => {
 })
 
 describe('AuthSettingsPanel credential lifecycle', () => {
-  it('1688 独立授权只保存自身配置，采购查询测试保留长订单号并沿用保存的凭据', async () => {
+  it('1688 使用独立账号连接面板，普通配置不再提交企业密钥或 Token', async () => {
     const wrapper = mountPanel()
-    expect(wrapper.find('[data-testid="auth-settings-tab-interruptions"]').exists()).toBe(false)
     await wrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
-    expect(wrapper.get('[data-testid="test-1688-order"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('[data-testid="1688-test-order-number"]').setValue('3317081160226242182')
-    await wrapper.get('[data-testid="test-1688-order"]').trigger('click')
-    expect(wrapper.emitted('testApi')?.[0]).toEqual(['1688_order', expect.objectContaining({ app_key: '', app_secret: '', access_token: '' }), '3317081160226242182'])
-    await wrapper.get('[data-testid="transient-1688-access-token"]').setValue('replacement-token')
-    await wrapper.get('[data-testid="save-1688-settings"]').trigger('click')
-    expect(wrapper.emitted('saveAi')?.[0]?.[0]).toEqual({ '1688_api': expect.objectContaining({ access_token: 'replacement-token' }) })
-    expect((wrapper.get('[data-testid="transient-1688-access-token"]').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.find('alibaba-settings-panel-stub').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="transient-1688-access-token"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="save-platform-api-settings"]').trigger('click')
+    expect(wrapper.emitted('saveAi')?.[0]?.[0]).not.toHaveProperty('1688_api')
   })
 
   it('API 设置仅提供汇率与 1688，不再显示或提交云途配置', async () => {
@@ -179,7 +187,6 @@ describe('AuthSettingsPanel credential lifecycle', () => {
 
     await wrapper.get('[data-testid="auth-settings-tab-apis"]').trigger('click')
     expect(wrapper.text()).toContain('核价汇率')
-    expect(wrapper.text()).toContain('1688 采集 API')
     expect(wrapper.text()).not.toContain('云途')
     expect(wrapper.find('[data-testid="test-yunexpress-api"]').exists()).toBe(false)
 
@@ -193,37 +200,6 @@ describe('AuthSettingsPanel credential lifecycle', () => {
     expect(wrapper.text()).toContain('平台配置加载中')
     await wrapper.setProps({ platformOptions: defaultPlatformOptions })
     expect(wrapper.text()).toContain('Mercado Libre')
-  })
-
-  it('does not replay public masks when testing saved 1688 credentials', async () => {
-    const wrapper = mountPanel()
-
-    await wrapper.get('[data-testid="test-1688-api"]').trigger('click')
-
-    const event = wrapper.emitted('testApi')?.[0]
-    expect(event?.[0]).toBe('1688')
-    expect(event?.[1]).toEqual(expect.objectContaining({
-      app_key: '',
-      app_secret: '',
-      access_token: '',
-    }))
-    expect(JSON.stringify(event?.[1])).not.toContain('mask...cret')
-  })
-
-  it('每次请求后清空临时填写的 1688 凭据', async () => {
-    const wrapper = mountPanel()
-    const appKey = wrapper.get('[data-testid="transient-1688-app-key"]')
-    const appSecret = wrapper.get('[data-testid="transient-1688-app-secret"]')
-
-    await appKey.setValue('request-1688-app-key')
-    await appSecret.setValue('request-1688-app-secret')
-    await wrapper.get('[data-testid="test-1688-api"]').trigger('click')
-    expect(wrapper.emitted('testApi')?.[0]?.[1]).toEqual(expect.objectContaining({
-      app_key: 'request-1688-app-key',
-      app_secret: 'request-1688-app-secret',
-    }))
-    expect((appKey.element as HTMLInputElement).value).toBe('')
-    expect((appSecret.element as HTMLInputElement).value).toBe('')
   })
 
   it('Ozon 授权测试直接提交尚未保存的表单凭据', async () => {

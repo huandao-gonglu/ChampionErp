@@ -164,6 +164,7 @@ def public_app_config(
     load_env(app_dir)
     safe = json.loads(json.dumps(app_config or {}, ensure_ascii=False))
     public = mask_nested_config(safe)
+    public.pop("1688_api", None)
     hosting = public.get("image_hosting", {})
     for profile in hosting.get("profiles", []):
         raw = next((item for item in safe["image_hosting"]["profiles"] if item["id"] == profile["id"]), {})
@@ -207,8 +208,8 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
     load_env(app_dir)
     cfg = app_config if isinstance(app_config, dict) else {}
     public = ai_model_config.public_ai_config(cfg)
-    # 授权页沿用此读写入口；保存后立即回传已确认的掩码，避免必须刷新页面才能测试。
-    public["1688_api"] = mask_nested_config(cfg.get("1688_api", {}))
+    # 1688 应用与买家授权通过独立入口管理，不进入通用配置视图。
+    public.pop("1688_api", None)
     public["ai_use_case_prompts"] = ai_prompt_templates.public_ai_use_case_prompts(app_dir, cfg)
     public["storage"] = {
         "config_dir": str(config_dir(app_dir)),
@@ -253,13 +254,6 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
         current_pricing = merged.get("pricing_defaults") if isinstance(merged.get("pricing_defaults"), dict) else {}
         incoming_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}
         merged["pricing_defaults"] = {**current_pricing, **incoming_pricing}
-    if isinstance(incoming.get("1688_api"), dict):
-        current_1688_api = merged.get("1688_api") if isinstance(merged.get("1688_api"), dict) else {}
-        incoming_1688_api = incoming.get("1688_api") if isinstance(incoming.get("1688_api"), dict) else {}
-        merged["1688_api"] = _merge_masked_secret_section(
-            current_1688_api,
-            incoming_1688_api,
-        )
     ai_model_config.validate_ai_use_case_generation_bindings(merged)
     ai_model_config.validate_ai_model_request_overrides(merged)
     return merged

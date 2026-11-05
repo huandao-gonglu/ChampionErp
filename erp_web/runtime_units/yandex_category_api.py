@@ -677,6 +677,7 @@ def fetch_yandex_leaf_record(
     *,
     include_attributes: bool = False,
     timeout_seconds: float | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     """返回单个叶子类目的平台 shape 记录（可含类目属性）。"""
 
@@ -696,6 +697,7 @@ def fetch_yandex_leaf_record(
         parameters = fetch_yandex_category_parameter_definitions(
             category_id,
             timeout_seconds=timeout_seconds,
+            force_refresh=force_refresh,
         )
         required = [item for item in parameters if item.get("required")]
         optional = [item for item in parameters if not item.get("required")]

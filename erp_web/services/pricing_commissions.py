@@ -136,7 +136,7 @@ class PricingCommissions:
     def _yandex(self, store, category, source, amount, currency, *, force_official=False):
         if not category.isdigit() or int(category) <= 0:
             raise ValueError("Yandex 官方佣金查询需要有效的末级类目 ID")
-        campaign = str(store.get("campaign_id") or "")
+        campaign = str(source.get('_yandex_campaign_id') or store.get("campaign_id") or "")
         if not campaign.isdigit() or int(campaign) <= 0 or not store.get("api_token"):
             raise ValueError("Yandex 官方佣金查询需要当前店铺授权和 Campaign ID")
         # 按 Campaign 试算时售价和费用使用店铺币种，不能同时传 currency。
@@ -146,7 +146,10 @@ class PricingCommissions:
             offer[key] = float(decimal(value, f"包装 {key}", positive=True))
         payload = {"parameters": {"campaignId": int(campaign)}, "offers": [offer]}
         endpoint = "/v2/tariffs/calculate"
-        fee = self.yandex_quote(offer, currency, force_official=True) if force_official else self.yandex_quote(offer, currency)
+        options = {'campaign_id': campaign} if source.get('_yandex_campaign_id') else {}
+        if force_official:
+            options['force_official'] = True
+        fee = self.yandex_quote(offer, currency, **options)
         if "cached_rule" in fee:
             return decimal(fee.get("amount"), "金额"), {
                 "source": "local_calculation", "cached_rule": fee["cached_rule"],

@@ -125,6 +125,25 @@ def test_chat_inbox_canonical_history_and_official_stream(tmp_path):
     assert not ui.run_registry.is_active(CONVERSATION)
 
 
+def test_input_leaves_queue_before_model_replies(tmp_path):
+    async def model(messages, info):
+        snapshot = ui.dump_ui_messages(CONVERSATION)
+        assert snapshot["run_active"]
+        assert snapshot["received_messages"] == []
+        assert any(part.get("text") == "没完成的工作重试"
+                   for msg in snapshot["messages"] for part in msg["parts"])
+        yield "完成"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model))
+    run = ui.prepare_run(body("没完成的工作重试", "retry-1"))
+    assert ui.dump_ui_messages(CONVERSATION)["received_messages"] == [
+        {"message_id": "retry-1", "status": "received", "text": "没完成的工作重试"}
+    ]
+    chunks = []
+    asyncio.run(run.stream(chunks.append))
+    assert ui.claim_store.find_for_conversation(CONVERSATION).status == "completed"
+
+
 def test_multiple_external_calls_commit_before_dispatch_and_resume_with_more_tools(
     tmp_path,
 ):

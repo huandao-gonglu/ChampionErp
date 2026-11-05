@@ -163,6 +163,8 @@ def category_attribute_values_payload(body: Payload) -> ResponseWithStatus:
             ),
             200,
         )
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "error_code": "CATEGORY_QUERY_INVALID"}, 400
     except Exception as exc:
         return _category_error(exc)
 

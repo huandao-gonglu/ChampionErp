@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 from erp_web.context import get_context
 from erp_web.runtime_units.order_notifications import parse_notification, order_request_scopes
 from erp_web.runtime_units.orders_mercadolibre import MercadoLibreOrderAdapter
@@ -24,12 +25,13 @@ def create_order_notification_service(context, *, start_worker=True):
     import_historical_notifications(store, context.paths.db_path)
     def refresh_progress(order_id, checkpoint):
         return sync_order_progress(context.order_procurement, context.fulfillment,
-                                   lambda: context.config.load_app_config().get("1688_api", {}),
+                                   lambda: alibaba_runtime_config(context.config),
                                    order_id, checkpoint, cancel=context.order_notifications.stop_event)
 
     service = OrderNotificationService(
         store,
         context.config.load_store_config,
+        config_store=context.config,
         adapters={
             "mercadolibre": MercadoLibreOrderAdapter,
             "ozon": OzonOrderAdapter,

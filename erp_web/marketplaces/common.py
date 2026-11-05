@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import secrets
 import urllib.error
@@ -12,7 +13,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-APP_DIR = Path(__file__).resolve().parents[2]
+APP_DIR = Path(os.environ.get("ERP_APP_DIR", str(Path(__file__).resolve().parents[2]))).expanduser().resolve()
 MARKETPLACE_CACHE_DIR = APP_DIR / "data" / "cache" / "marketplaces"
 ML_CATEGORY_SHIPPING_CACHE_PATH = MARKETPLACE_CACHE_DIR / "ml_category_shipping_cache.json"
 

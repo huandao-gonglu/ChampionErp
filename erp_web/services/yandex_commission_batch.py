@@ -70,7 +70,7 @@ class YandexCommissionBatch:
         self.store = store
         self.request = request
         self.receipts: dict[str, dict | ValueError] = {}
-        self.pending: dict[str, tuple[dict, str]] = {}
+        self.pending: dict[str, tuple[dict, str, str]] = {}
         self.failure = ""
         self.request_count = 0
         self.duration_ms = 0.0
@@ -79,38 +79,39 @@ class YandexCommissionBatch:
         self.account_key = hashlib.sha256(json.dumps(store, sort_keys=True, default=str).encode()).hexdigest()
 
     @staticmethod
-    def key(offer: dict, currency: str) -> str:
-        return json.dumps([currency, offer], sort_keys=True)
+    def key(offer: dict, currency: str, campaign_id: str = '') -> str:
+        return json.dumps([campaign_id, currency, offer], sort_keys=True)
 
-    def rule_key(self, offer: dict, currency: str) -> str:
+    def rule_key(self, offer: dict, currency: str, campaign_id: str = '') -> str:
         return hashlib.sha256(self.key(
-            {"account": self.account_key, **{k: v for k, v in offer.items() if k != "price"}}, currency
+            {"account": self.account_key, **{k: v for k, v in offer.items() if k != "price"}}, currency, campaign_id or str(self.store.get('campaign_id') or '')
         ).encode()).hexdigest()
 
-    def quote(self, offer: dict, currency: str, *, force_official=False) -> dict:
+    def quote(self, offer: dict, currency: str, *, force_official=False, campaign_id: str = '') -> dict:
         if self.failure:
             raise ValueError(self.failure)
-        key = self.key(offer, currency)
+        campaign_id = campaign_id or str(self.store.get('campaign_id') or '')
+        key = self.key(offer, currency, campaign_id)
         receipt = self.receipts.get(key)
         if isinstance(receipt, ValueError):
             raise receipt
         if receipt is not None:
             return deepcopy(receipt)
         if not force_official and self.rule_cache is not None:
-            rule = self.rule_cache.get(self.rule_key(offer, currency))
+            rule = self.rule_cache.get(self.rule_key(offer, currency, campaign_id))
             amount = rule_fee(rule, Decimal(str(offer["price"]))) if rule else None
             if amount is not None:
                 return {"amount": str(amount), "currency": currency, "cached_rule": rule}
-        self.pending[key] = (deepcopy(offer), currency)
+        self.pending[key] = (deepcopy(offer), currency, campaign_id)
         raise CommissionBatchPending
 
-    def quote_one(self, offer: dict, currency: str, *, force_official=False) -> dict:
+    def quote_one(self, offer: dict, currency: str, *, force_official=False, campaign_id: str = '') -> dict:
         """独立费用查询也使用同一个批量协议与回执校验。"""
         try:
-            return self.quote(offer, currency, force_official=True)
+            return self.quote(offer, currency, force_official=True, campaign_id=campaign_id)
         except CommissionBatchPending:
             self.flush()
-        return self.quote(offer, currency, force_official=True)
+        return self.quote(offer, currency, force_official=True, campaign_id=campaign_id)
 
     def fail_pending(self, message: str) -> None:
         self.failure = message
@@ -120,17 +121,17 @@ class YandexCommissionBatch:
 
     def flush(self) -> None:
         groups = defaultdict(list)
-        for key, (offer, currency) in self.pending.items():
-            groups[currency].append((key, offer))
+        for key, (offer, currency, campaign_id) in self.pending.items():
+            groups[(currency, campaign_id)].append((key, offer))
         self.pending.clear()
-        for currency, items in groups.items():
+        for (currency, campaign_id), items in groups.items():
             for offset in range(0, len(items), 200):
                 chunk = items[offset:offset + 200]
                 if self.failure:
                     for key, _ in chunk:
                         self.receipts[key] = ValueError(self.failure)
                     continue
-                payload = {"parameters": {"campaignId": int(self.store["campaign_id"])}, "offers": [offer for _, offer in chunk]}
+                payload = {"parameters": {"campaignId": int(campaign_id)}, "offers": [offer for _, offer in chunk]}
                 started = perf_counter()
                 self.request_count += 1
                 try:
@@ -153,7 +154,7 @@ class YandexCommissionBatch:
                             _number(fee.get("amount"))
                             self.receipts[key] = deepcopy(fee)
                             if self.rule_cache is not None:
-                                rule_key = self.rule_key(_offer, currency)
+                                rule_key = self.rule_key(_offer, currency, campaign_id)
                                 rule = parse_rule(fee, Decimal(str(_offer["price"])))
                                 if rule is None:
                                     self.rule_cache.discard(rule_key)

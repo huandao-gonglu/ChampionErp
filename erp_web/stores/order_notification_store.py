@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import secrets
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -51,11 +50,8 @@ class OrderNotificationStore:
                 raise ValueError("订单通知库版本不受支持")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
-            for platform in PLATFORMS:
-                conn.execute(
-                    "INSERT OR IGNORE INTO settings VALUES (?,?)",
-                    ("token:" + platform, secrets.token_urlsafe(32)),
-                )
+            if conn.execute("SELECT 1 FROM settings WHERE key LIKE 'token:%' OR key='public_url'").fetchone():
+                raise RuntimeError("订单回调配置尚未迁移，请停止服务后运行 scripts/migrate_credentials.py。")
             conn.execute("PRAGMA user_version=1")
             conn.commit()
         self.path.chmod(0o600)
@@ -70,6 +66,8 @@ class OrderNotificationStore:
             conn.close()
 
     def setting(self, key: str) -> str:
+        if key.startswith("token:") or key == "public_url":
+            raise ValueError("订单回调配置由 ConfigStore 管理")
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT value FROM settings WHERE key=?", (key,)
@@ -77,6 +75,8 @@ class OrderNotificationStore:
             return row[0] if row else ""
 
     def set_setting(self, key: str, value: str) -> None:
+        if key.startswith("token:") or key == "public_url":
+            raise ValueError("订单回调配置由 ConfigStore 管理")
         with self.connect() as conn:
             conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
             conn.commit()

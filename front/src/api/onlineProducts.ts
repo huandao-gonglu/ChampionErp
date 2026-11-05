@@ -4,7 +4,7 @@ import type { YandexGuaranteePeriod } from '@/utils/yandexWarranty'
 export type OnlinePlatform = 'mercadolibre' | 'ozon' | 'yandex'
 export type OnlineOperation = 'price' | 'stock' | 'content' | 'sale_state' | 'archive'
 export interface PriceScope { id: string; label: string; amount: string | null; currency: string; kind: string; writable: boolean; reason: string }
-export interface StockScope { id: string; label: string; quantity: number | null; writable: boolean; reason: string }
+export interface StockScope { id: string; label: string; quantity: number | null; writable: boolean; reason: string; campaign_id?: string; raw_status?: string; sale_state?: string }
 export interface BuyerLink { label: string; url: string; site_id: string }
 export interface PlatformIssue { severity: 'error' | 'warning'; source: string; code: string; message: string; comment: string }
 export interface SourceImageOption {
@@ -21,7 +21,7 @@ export interface OnlineListing {
   raw_status: string; sale_state: string; raw_sub_status: string[]; prices: PriceScope[]; stocks: StockScope[]; version: string; synced_at: string; status_checked_at: string; errors: string[]; desired_sale_state: string
   platform_issues: PlatformIssue[]
   archived?: boolean
-  markets: Array<{ id: string; site_id: string; logistic_type: string; raw_status: string; price: string | null; currency: string }>
+  markets: Array<{ name?: string; raw_sub_status?: string[]; id: string; site_id: string; logistic_type: string; raw_status: string; price: string | null; currency: string }>
   content: { guarantee_period?: YandexGuaranteePeriod; title?: string; description?: string; pictures?: Array<string | {id: string; url: string}>; attributes?: Array<Record<string, unknown>>; attribute_names_error?: string }
   capabilities: Record<Exclude<OnlineOperation, 'archive'>, {enabled: boolean; reason: string; scope: string; fields: string[]}> & {archive?: {enabled: boolean; reason: string; scope: string; fields: string[]}}
 }
@@ -42,6 +42,7 @@ export interface OnlineProductGroup {
   feedback_summary: OnlineFeedbackSummary
 }
 export interface OnlinePage {
+  warehouses?: Array<{id:string; name:string; campaign_id:string}>
   items: OnlineListing[]; groups: OnlineProductGroup[]; total: number; listing_total: number; page: number; per_page: number; account_id: string; store_name: string; state: string; markets: string[]; statuses: string[]
   summary: { total: number; active: number; paused: number; attention: number }; latest_sync: OnlineJob | null; jobs: OnlineJob[]
 }

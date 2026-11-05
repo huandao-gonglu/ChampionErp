@@ -606,7 +606,7 @@ def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates()
         "ozon-private-key",
     ):
         assert secret not in serialized
-    assert public_app["1688_api"]["app_secret"]
+    assert "1688_api" not in public_app
     assert public_store["mercadolibre"]["app_id"] == "ml-public-app-id"
     assert (
         public_store["mercadolibre"]["client_id"]
@@ -628,9 +628,10 @@ def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates()
         get_context().paths.app_dir,
         current,
     )
+    assert "1688_api" not in masked
     merged = config_store.merge_app_config_fields(
         current,
-        {"1688_api": {"app_secret": masked["1688_api"]["app_secret"]}},
+        {"1688_api": {"app_secret": "client-must-not-replace"}},
     )
     assert merged["1688_api"]["app_secret"] == "keep-this-secret"
 

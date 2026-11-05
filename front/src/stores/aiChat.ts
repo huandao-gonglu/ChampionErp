@@ -40,6 +40,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const localError = ref<AiChatError>()
   const targetDraftIds = ref<string[]>([])
   const receivedMessages = ref<{ message_id: string; text: string }[]>([])
+  let directRunMessageId: string | null = null
   let eventSource: EventSource | null = null
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   let generation = 0
@@ -106,16 +107,15 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (retryTimer) clearTimeout(retryTimer)
     retryTimer = undefined
   }
-  function connectEvents(conversationId: string): void {
+  function connectEvents(conversationId: string, afterVersion = historyVersion.value): void {
     if (activeConversationId.value !== conversationId) return
     disconnectEvents()
     if (typeof EventSource === 'undefined') return
-    const source = new EventSource(conversationEventsUrl(conversationId, historyVersion.value))
+    const source = new EventSource(conversationEventsUrl(conversationId, afterVersion))
     eventSource = source
     source.onmessage = () => {
       if (eventSource !== source) return
       source.close()
-      if (isBusy.value) return
       void resyncFromServer(conversationId)
     }
     source.onerror = () => {
@@ -126,7 +126,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   }
   async function resyncFromServer(conversationId: string, attempt = 0): Promise<void> {
     if (activeConversationId.value !== conversationId) return
-    if (isBusy.value) {
+    if (isBusy.value && (!receivedMessages.value.length || stopping.value)) {
       if (stopping.value) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 500)
       return
     }
@@ -135,6 +135,15 @@ export const useAiChatStore = defineStore('aiChat', () => {
       const detail = await fetchUiMessages(conversationId)
       if (requestGeneration !== generation || chat.value?.id !== conversationId) return
       if (detail.history_version < historyVersion.value) return
+      // 原生流持有正在输出的消息；此时只同步等待列表，不用历史快照覆盖实时正文。
+      receivedMessages.value = (detail.received_messages ?? []).filter(row => row.message_id !== directRunMessageId)
+      if (isBusy.value) {
+        if (receivedMessages.value.length) {
+          connectEvents(conversationId, detail.history_version)
+          if (typeof EventSource === 'undefined') retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
+        }
+        return
+      }
       runActive.value = detail.run_active ?? false
       if (!pendingInputIds.size) latestMessageId.value = detail.latest_message_id ?? latestMessageId.value
       if (runActive.value && detail.run_status === 'cancelled') stopping.value = true
@@ -147,9 +156,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
       historyVersion.value = detail.history_version
       pendingToolCalls.value = detail.pending_tool_calls ?? []
       localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
-      const pending = new Set((detail.received_messages ?? []).map(row => row.message_id))
-      receivedMessages.value = receivedMessages.value.filter(row => pending.has(row.message_id))
-      receivedNotice.value = pending.size ? '已收到，等待当前操作结束后应用' : ''
+      receivedNotice.value = ''
       connectEvents(conversationId)
       if (runActive.value && typeof EventSource === 'undefined') retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
     } catch {
@@ -168,7 +175,6 @@ export const useAiChatStore = defineStore('aiChat', () => {
     const response = await fetch(url, init)
     if (response.status === 202) {
       const receipt = await response.json()
-      if (receipt.conversation_id === activeConversationId.value) receivedNotice.value = receipt.message
       const accepted = new Error(receipt.message) as AiChatError
       accepted.code = 'AI_CHAT_INPUT_ACCEPTED'
       throw accepted
@@ -229,6 +235,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     stopping.value = false
     runActive.value = false
     latestMessageId.value = null
+    directRunMessageId = null
     chat.value = createChat(id, [])
     connectEvents(id)
     return id
@@ -256,10 +263,15 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (requestVersion !== stopRequestVersion || stopping.value) { await response.body?.cancel(); return }
     if (!response.ok) throw new Error((await response.json()).error ?? '消息未能提交')
     if (activeConversationId.value !== id) { await response.body?.cancel(); return }
-    receivedMessages.value.push({ message_id: messageId, text })
-    receivedNotice.value = response.status === 202 ? (await response.json()).message : '已收到，正在应用'
-    if (response.status !== 202) await response.body?.cancel()
-    connectEvents(id)
+    if (response.status === 202) {
+      if (!receivedMessages.value.some(row => row.message_id === messageId)) {
+        receivedMessages.value.push({ message_id: messageId, text })
+      }
+    } else {
+      directRunMessageId = messageId
+    }
+    await response.body?.cancel()
+    if (requestVersion === stopRequestVersion) await resyncFromServer(id)
   }
   function commandContext(): ChatCommandContext {
     return { isBusy: canStop.value, startConversation, stopStreaming, refreshHistory }
@@ -282,6 +294,9 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (isBusy.value || runActive.value || pendingToolCalls.value.length) {
       void queueText(text).catch(cause => { localError.value = cause; input.value = text })
     } else {
+      // 作废发送前发起的历史读取，防止旧快照覆盖新一轮回复或误报排队。
+      generation++
+      disconnectEvents()
       localTurnStartedAt.value = new Date().toISOString()
       void chat.value?.sendMessage({ text }, { body: {
         target_draft_ids: [...targetDraftIds.value],
@@ -334,8 +349,9 @@ export const useAiChatStore = defineStore('aiChat', () => {
     pendingToolCalls.value = detail.pending_tool_calls ?? []
     localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
     targetDraftIds.value = []
-    receivedMessages.value = []
-    receivedNotice.value = detail.received_messages?.length ? '已收到，等待当前操作结束后应用' : ''
+    directRunMessageId = null
+    receivedMessages.value = detail.received_messages ?? []
+    receivedNotice.value = ''
     finishRestore()
     connectEvents(id)
     if (runActive.value) retryTimer = setTimeout(() => void resyncFromServer(id), 200)

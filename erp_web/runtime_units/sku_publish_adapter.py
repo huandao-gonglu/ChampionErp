@@ -167,6 +167,11 @@ class SkuGroupPublishingAdapter:
                 errors.append("发布 SKU 身份或编码为空、重复")
             ids.add(row.get("sku_id")); codes.add(row.get("sku"))
             errors.extend(f"{row.get('sku')}：{error}" for error in self.item_adapter.validate_payload(row.get("payload"), config))
+        if self.platform == 'yandex':
+            warehouses = {tuple(str(value) for value in record(row.get('payload')).get('stock', {}).get('warehouse_ids', []))
+                          for row in payload['items']}
+            if len(warehouses) > 1:
+                errors.append('同一商品的所选 SKU 必须使用同一个发布仓库，请统一重新核价')
         return errors
 
     def _save(self, envelope: dict[str, Any], item: dict[str, Any], result: dict[str, Any], status: str | None = None) -> dict[str, Any]:
@@ -192,6 +197,8 @@ class SkuGroupPublishingAdapter:
         return self._aggregate(payload, states)
 
     def publish_payload(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        if callable(getattr(self.item_adapter, 'publish_payloads', None)):
+            return self._publish_native_batch(payload, config)
         states = []
         for item in payload["items"]:
             existing = get_context().products.sku_publication(payload["draft_id"], item["sku_id"], payload["target_key"])
@@ -227,6 +234,12 @@ class SkuGroupPublishingAdapter:
         return self._aggregate(payload, states)
 
     def advance_submission(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        if callable(getattr(self.item_adapter, 'advance_submissions', None)):
+            states = deepcopy(result['sku_results'])
+            indices = [index for index, state in enumerate(states) if state['status'] == 'pending_submission'
+                       and (record(record(state['result']).get('result')) or state['result']).get('checkpoint', {}).get('next_poll_at', 0) <= time.time()]
+            return self._native_mutations(result['envelope'], states, indices, [states[index]['result'] for index in indices],
+                                          self.item_adapter.advance_submissions, config)
         states = []
         for index, state in enumerate(result["sku_results"]):
             if state["status"] != "pending_submission":
@@ -254,6 +267,17 @@ class SkuGroupPublishingAdapter:
         return self._aggregate(result["envelope"], states)
 
     def poll_publish_status(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        if callable(getattr(self.item_adapter, 'poll_publish_statuses', None)):
+            states = deepcopy(result['sku_results'])
+            indices = [index for index, state in enumerate(states) if state['status'] == 'pending_confirmation'
+                       or state['status'] == 'needs_attention' and result.get('status') == 'needs_attention']
+            values = self.item_adapter.poll_publish_statuses([states[index]['result'] for index in indices], config)
+            errors = []
+            for index, value in zip(indices, values, strict=True):
+                if value.get('check_error'):
+                    errors.append(f"{states[index]['sku']}：{value['check_error']}")
+                states[index] = self._save(result['envelope'], states[index], value)
+            return {**self._aggregate(result['envelope'], states), 'check_error': '；'.join(errors)}
         states, errors = [], []
         envelope = result["envelope"]
         for state in result["sku_results"]:
@@ -276,6 +300,43 @@ class SkuGroupPublishingAdapter:
                 continue
             states.append(self._save(envelope, state, polled))
         return {**self._aggregate(envelope, states), "check_error": "；".join(errors)}
+
+    def _publish_native_batch(self, payload, config):
+        states, indices, outgoing = [], [], []
+        for item in payload['items']:
+            previous = get_context().products.sku_publication(payload['draft_id'], item['sku_id'], payload['target_key'])
+            status = previous.get('status')
+            if status in {'dispatching', 'outcome_unknown', 'pending_confirmation', 'pending_submission', 'needs_attention'} or status == 'published' and previous.get('fingerprint') == item['fingerprint']:
+                states.append({**previous, 'status': 'outcome_unknown' if status == 'dispatching' else status})
+            elif status == 'failed' and record(previous.get('result')).get('plan') and record(previous.get('result')).get('checkpoint'):
+                restored = self.item_adapter.restore_publish_result({**previous['result'], 'status': 'pending_submission'})
+                states.append(self._save(payload, item, restored))
+            else:
+                indices.append(len(states))
+                outgoing.append(item['payload'])
+                states.append({**item, 'status': 'queued', 'result': previous.get('result', {})})
+        return self._native_mutations(payload, states, indices, outgoing, self.item_adapter.publish_payloads, config)
+
+    def _native_mutations(self, envelope, states, indices, values, execute, config):
+        if not indices:
+            return self._aggregate(envelope, states)
+
+        def dispatch(batch):
+            for position in batch:
+                index = indices[position]
+                self._save(envelope, states[index], states[index].get('result', {}), 'dispatching')
+
+        def saved(position, value):
+            index = indices[position]
+            states[index] = self._save(envelope, states[index], value)
+
+        results = execute(values, config, on_dispatch=dispatch, on_result=saved)
+        for position, value in enumerate(results):
+            saved(position, value)
+        aggregate = self._aggregate(envelope, states)
+        if any(state['status'] in ('failed', 'outcome_unknown', 'needs_attention') for state in states) and any(state['status'] == 'pending_submission' for state in states):
+            aggregate.update(ok=False, status='needs_attention')
+        return aggregate
 
     def _aggregate(self, envelope: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any]:
         statuses = {state["status"] for state in states}

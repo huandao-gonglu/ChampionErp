@@ -814,6 +814,10 @@ class PricingIntervalEmpty(ValueError):
 
 def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], index: int = 0, *, shipping_quote: ShippingResolution | None = None, commission_resolver: CommissionResolver | None = None) -> dict[str, Any]:
     """官方费用与最终舍入售价校准；手填佣金只作为历史数据读取，不参与计算。"""
+    if target.get('platform') == 'yandex' and shipping_quote:
+        plan = shipping_quote.get('evidence', {}).get('fulfillment_plan', {})
+        if plan.get('campaign_id'):
+            target = {**target, '_yandex_campaign_id': plan['campaign_id']}
     result = _calculate_target_amounts(common, target, index, shipping_quote=shipping_quote)
     if not result["ok"]:
         return result

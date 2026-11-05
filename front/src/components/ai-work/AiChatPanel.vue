@@ -195,16 +195,13 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
         </button>
       </div>
 
-      <div v-if="chatStore.receivedNotice" role="status" class="mb-2 rounded-lg bg-sky-50/[var(--ai-chat-surface-opacity,1)] p-3 text-sm text-sky-800">
-        {{ chatStore.receivedNotice }}
-        <p v-for="message in chatStore.receivedMessages" :key="message.message_id">{{ message.text }}</p>
-      </div>
-
       <!-- 输入框 -->
       <AiChatComposer
         :model-value="input"
         :busy="busy || chatStore.canStop"
         :stopping="chatStore.stopping"
+        :queued-messages="chatStore.receivedMessages"
+        :status-notice="chatStore.receivedNotice"
         :conversation-id="conversationId"
         @update:model-value="emit('update:input', $event)"
         @send="emit('send')"

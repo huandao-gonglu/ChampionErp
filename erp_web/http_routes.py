@@ -14,6 +14,7 @@ from .http_route_units import (
     ai_presentation_routes,
     ai_work_routes,
     auth_config_routes,
+    alibaba_authorization_routes,
     external_request_routes,
     image_hosting_routes,
     category_routes,
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_PAGE_ROUTES = get_routes.FRONTEND_PAGE_ROUTES
 GET_ROUTE_UNITS = (
+    alibaba_authorization_routes,
     task_queue_routes,
     wechat_routes,
     pricing_workspace_routes,
@@ -64,6 +66,7 @@ GET_API_ROUTES = frozenset(
     for path in getattr(route_unit, "GET_API_ROUTES", frozenset())
 )
 POST_ROUTE_UNITS = (
+    alibaba_authorization_routes,
     task_queue_routes,
     wechat_routes,
     pricing_workspace_routes,

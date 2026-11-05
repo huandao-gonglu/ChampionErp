@@ -131,7 +131,7 @@ def test_missing_credentials_never_send(monkeypatch, missing):
     def unexpected(*args, **kwargs):
         pytest.fail("缺少凭据不得外发请求")
     monkeypatch.setattr(api, "managed_urlopen", unexpected)
-    with pytest.raises(api.AlibabaApiError, match="保存"):
+    with pytest.raises(api.AlibabaApiError, match="连接采购账号"):
         api.AlibabaApiClient({**CONFIG, missing: ""})
 
 
@@ -186,7 +186,7 @@ def test_http_auth_failure_is_safe_and_closes_response(monkeypatch):
     def send(*args, **kwargs):
         raise HTTPError("https://example.invalid/?token=test-token", 401, "test-token", {}, stream)
     monkeypatch.setattr(api, "managed_urlopen", send)
-    with pytest.raises(api.AlibabaApiError, match="更新 Access Token") as error:
+    with pytest.raises(api.AlibabaApiError, match="重新连接账号") as error:
         api.AlibabaApiClient(CONFIG).query(api.ORDER_DETAIL, NUMBER)
     assert "test-token" not in str(error.value) and stream.closed
 
@@ -198,27 +198,24 @@ def test_order_config_test_uses_saved_secrets_without_exposing_them(monkeypatch)
     context.config.save_app_config(config)
     # 只检查实际客户端收到的凭据；不要求测试伪客户端的 calls 属性。
     def query(self, name, number):
-        assert self.app_secret == CONFIG["app_secret"] and self.access_token == "new-token"
+        assert self.app_secret == CONFIG["app_secret"] and self.access_token == "test-token"
         return Client(CONFIG).query(name, number)
     monkeypatch.setattr(api.AlibabaApiClient, "query", query)
     result = run_config_test("1688_order", {"app_key": "", "app_secret": "", "access_token": "new-token"}, NUMBER)
     assert result["ok"] and result["order"]["order_number"] == NUMBER
     assert "new-token" not in json.dumps(result) and "test-secret" not in json.dumps(result)
-    assert context.config.load_app_config()["1688_api"]["access_token"] == "test-token"
+    assert context.config.alibaba_credentials()["authorization"]["access_token"] == "test-token"
 
 
-def test_saved_authorization_returns_masks_and_blank_fields_preserve_secrets():
+def test_public_settings_cannot_replace_saved_authorization():
     from erp_web.facades.auth_config_facade import save_ai_config_payload
-
-    result, status = save_ai_config_payload({"1688_api": CONFIG})
-    assert status == 200
-    section = result["config"]["1688_api"]
-    assert section["masked_app_key"] and section["masked_app_secret"] and section["masked_access_token"]
-    assert "test-secret" not in json.dumps(result) and "test-token" not in json.dumps(result)
-    result, status = save_ai_config_payload({"1688_api": {"app_key": "", "app_secret": section["masked_app_secret"], "access_token": ""}})
-    assert status == 200
-    saved = get_context().config.load_app_config()["1688_api"]
-    assert {key: saved[key] for key in CONFIG} == CONFIG
+    store = get_context().config
+    config = store.load_app_config()
+    config['1688_api'] = CONFIG
+    store.save_app_config(config)
+    result, status = save_ai_config_payload({'1688_api': {'app_key': '999', 'access_token': 'injected'}})
+    assert status == 200 and '1688_api' not in result['config']
+    assert store.alibaba_credentials()['authorization']['access_token'] == CONFIG['access_token']
 
 
 def test_http_purchase_query_contract_and_blocked_response(registered, monkeypatch):

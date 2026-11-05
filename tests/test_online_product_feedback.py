@@ -138,6 +138,8 @@ def test_active_product_with_warning_is_counted_as_needing_attention():
     try:
         row = a.read('sku-0')
         row.raw_status, row.sale_state = 'PUBLISHED', 'active'
+        for market in row.markets:
+            market.raw_status = 'PUBLISHED'
         service.store.save(row)
         result = service.list('yandex')
         assert result['summary']['active'] == 1

@@ -8,7 +8,7 @@ from erp_web.services.external_request_manager import managed_urlopen
 from decimal import Decimal
 from pathlib import Path
 
-from erp_web.international_shipping.models import Package, number
+from erp_web.international_shipping.models import Package, QuoteResult, number
 from erp_web.international_shipping.service import ShippingModule
 from erp_web.schemas.shipping import ShippingResolution
 from erp_web.schemas.commissions import CommissionResolver
@@ -90,13 +90,14 @@ class PricingShipping:
         def converted(amount: Decimal, unit: str) -> Decimal:
             return amount / per_cny(unit) * target_rate
 
-        def price_for_shipping(amount: Decimal, unit: str, minimum: Decimal, conditions=None) -> Decimal | None:
+        def price_for_shipping(amount: Decimal, unit: str, minimum: Decimal, conditions=None, *, campaign_id='') -> Decimal | None:
             quote: ShippingResolution = {
                 'amount': str(converted(amount, unit)), 'currency': currency,
                 'minimum_price_cny': str(minimum), 'billable_g': str(package.weight_g),
                 'evidence': {}, 'candidates': [], **(conditions or {}),
             }
-            calculation = pricing_service.calculate_target_pricing(common, target, shipping_quote=quote, commission_resolver=self.commission_resolver)
+            selected_target = {**target, '_yandex_campaign_id': campaign_id} if campaign_id else target
+            calculation = pricing_service.calculate_target_pricing(common, selected_target, shipping_quote=quote, commission_resolver=self.commission_resolver)
             if not calculation['ok']:
                 if conditions and calculation['errors'][0].get('code') == 'PRICING_INTERVAL_EMPTY':
                     return None
@@ -106,8 +107,8 @@ class PricingShipping:
 
         original_callback = price_for_shipping
         @lru_cache(maxsize=None)
-        def cached_price(amount, unit, minimum):
-            return original_callback(amount, unit, minimum)
+        def cached_price(amount, unit, minimum, campaign_id=''):
+            return original_callback(amount, unit, minimum, campaign_id=campaign_id)
         if target['platform'] != 'ozon':
             price_for_shipping = cached_price
 
@@ -134,16 +135,30 @@ class PricingShipping:
                 conditions = destinations[0]
             else:
                 binding = {'site_id': target.get('site'), 'user_id': config.get('user_id'), 'logistic_type': 'local'}
-        result = self.module.quote(
-            platform, package, price_for_shipping,
-            cny_per_rub=Decimal(1) / per_cny('RUB') if platform in ('yandex', 'ozon') else None,
-            cny_per_usd=Decimal(1) / per_cny('USD') if platform == 'mercadolibre' else None,
-            binding=binding, category_id=str(target.get('category_id') or ''),
-            listing_type_id=str(conditions.get('listing_type_id') or 'gold_pro'),
-            free_shipping=conditions.get('free_shipping', True),
-            tariff_version=target.get('shipping_tariff_version'),
-            route_ids={plan['route_id'] for plan in plans} if platform == 'yandex' else None,
-        )
+        if platform == 'yandex':
+            result = QuoteResult()
+            campaigns = {str(plan.get('campaign_id') or '') for plan in plans}
+            for campaign_id in sorted(campaigns):
+                routes = {plan['route_id'] for plan in plans if str(plan.get('campaign_id') or '') == campaign_id}
+                partial = self.module.quote(platform, package,
+                    lambda amount, unit, minimum, cid=campaign_id: cached_price(amount, unit, minimum, cid),
+                    cny_per_rub=Decimal(1) / per_cny('RUB'), route_ids=routes,
+                    tariff_version=target.get('shipping_tariff_version'))
+                for candidate in partial.candidates:
+                    candidate.evidence['campaign_id'] = campaign_id
+                result.candidates.extend(partial.candidates)
+                for reason, count in partial.rejected.items():
+                    result.rejected[reason] = result.rejected.get(reason, 0) + count
+        else:
+            result = self.module.quote(
+                platform, package, price_for_shipping,
+                cny_per_rub=Decimal(1) / per_cny('RUB') if platform == 'ozon' else None,
+                cny_per_usd=Decimal(1) / per_cny('USD') if platform == 'mercadolibre' else None,
+                binding=binding, category_id=str(target.get('category_id') or ''),
+                listing_type_id=str(conditions.get('listing_type_id') or 'gold_pro'),
+                free_shipping=conditions.get('free_shipping', True),
+                tariff_version=target.get('shipping_tariff_version'),
+            )
         if not result.candidates:
             reasons = '；'.join(f'{reason}（{count}）' for reason, count in result.rejected.items())
             raise ValueError('没有可用的国际物流报价' + (f'：{reasons}' if reasons else '，请检查店铺渠道与包装参数'))
@@ -158,10 +173,15 @@ class PricingShipping:
             'quoted_at': datetime.now(timezone.utc).isoformat(),
         }
         if platform == 'yandex':
-            evidence['fulfillment_plan'] = next(plan for plan in plans if plan['route_id'] == selected.route_id)
+            evidence['fulfillment_plan'] = next(plan for plan in plans if plan['route_id'] == selected.route_id and str(plan.get('campaign_id') or '') == selected.evidence['campaign_id'])
         return {
             'amount': str(converted(selected.amount, selected.currency)), 'currency': currency,
             'minimum_price_cny': str(selected.minimum_price_cny), 'billable_g': str(selected.billable_g),
             'evidence': evidence, **selected.evidence.get('conditions', {}),
-            'candidates': [{**item.to_dict(), 'converted_amount': str(converted(item.amount, item.currency)), 'converted_currency': currency} for item in candidates],
+            'candidates': [{**item.to_dict(), 'converted_amount': str(converted(item.amount, item.currency)),
+                            'converted_currency': currency,
+                            **({'amount_cny': str(item.amount / per_cny(item.currency)), 'fulfillment_plan': plan}
+                               if platform == 'yandex' else {})}
+                           for item in candidates
+                           for plan in ([p for p in plans if p['route_id'] == item.route_id and str(p.get('campaign_id') or '') == item.evidence['campaign_id']] if platform == 'yandex' else [{}])],
         }

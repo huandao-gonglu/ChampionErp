@@ -864,3 +864,63 @@ describe('Yandex 基础与单件详情', () => {
     expect(refreshOnlineDetail).toHaveBeenCalledTimes(2)
   })
 })
+
+
+
+function multiWarehouseRow(): OnlineListing {
+  return yandexItem({account_id:'1:2',raw_status:'PUBLISHED',sale_state:'active',
+    stocks:[{id:'economy',label:'Economy 仓',quantity:10,writable:true,reason:'',campaign_id:'2',raw_status:'NO_STOCKS'},
+      {id:'express',label:'Express 仓',quantity:576,writable:true,reason:'',campaign_id:'3',raw_status:'PUBLISHED'}],
+    markets:[{id:'2',site_id:'2',name:'Economy 仓',raw_status:'NO_STOCKS',logistic_type:'',price:null,currency:'CNY'},
+      {id:'3',site_id:'3',name:'Express 仓',raw_status:'PUBLISHED',logistic_type:'',price:null,currency:'CNY'}],
+    capabilities:{...item.capabilities,stock:{enabled:true,scope:'所选仓库',reason:'',fields:['quantity']}}})
+}
+const warehouseOptions = [{id:'economy',name:'Economy 仓',campaign_id:'2'},{id:'express',name:'Express 仓',campaign_id:'3'}]
+
+it('列表库存只显示筛选范围的合计，保留管理入口并移除表中表', async () => {
+  const row = multiWarehouseRow()
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),account_id:'1:2',items:[row],warehouses:warehouseOptions})
+  vi.mocked(refreshOnlineDetail).mockResolvedValue(row)
+  vi.mocked(onlineAction).mockResolvedValue({id:'stock-job',operation:'stock',platform:'yandex',status:'queued',target_id:row.id,created_at:'',updated_at:'',request:{},result:{}})
+  render(); await flushPromises(); await click('Yandex Market')
+  expect(wrapper!.get('[data-testid="stock-summary"]').text()).toBe('586')
+  expect(wrapper!.find('[aria-label="各仓库库存"]').exists()).toBe(false)
+  expect(wrapper!.get('[data-testid="online-listing"]').find('table').exists()).toBe(false)
+  await wrapper!.get('[aria-label="仓库"]').setValue('express'); await flushPromises()
+  expect(fetchOnlineProducts).toHaveBeenLastCalledWith(expect.objectContaining({warehouse_id:'express'}))
+  expect(wrapper!.get('[data-testid="stock-summary"]').text()).toBe('576')
+  await click('管理 →'); await click('修改库存')
+  const dialog = wrapper!.get('[aria-label="修改库存"]')
+  expect((dialog.get('select').element as HTMLSelectElement).value).toBe('express')
+  await dialog.get('input[type="number"]').setValue('9')
+  await click('预览变更'); await click('确认提交')
+  expect(onlineAction).toHaveBeenLastCalledWith('change',expect.objectContaining({scope_id:'express',changes:{quantity:9}}))
+})
+
+it.each([
+  [[null,576], '576', true],
+  [[0,0], '0', false],
+  [[null,null], '未知', false],
+] as const)('库存 %j 正确汇总，未知值保留说明', async (quantities, total, partial) => {
+  const row = multiWarehouseRow()
+  row.stocks = row.stocks.map((stock,index)=>({...stock,quantity:quantities[index]}))
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),account_id:'1:2',items:[row],warehouses:warehouseOptions})
+  render(); await flushPromises(); await click('Yandex Market')
+  const cell = wrapper!.get('[data-testid="stock-summary"]')
+  expect(cell.findAll('p')[0].text()).toBe(total)
+  expect(cell.text().includes('部分仓库库存未知')).toBe(partial)
+})
+
+it('单仓查看及打开详情后，状态和库存仍按选中仓库展示', async () => {
+  const row = multiWarehouseRow()
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(),account_id:'1:2',items:[row],warehouses:warehouseOptions})
+  vi.mocked(refreshOnlineDetail).mockResolvedValue(row)
+  render(); await flushPromises(); await click('Yandex Market')
+  expect(wrapper!.get('[data-testid="online-listing"]').text()).toContain('在售')
+  await wrapper!.get('[aria-label="仓库"]').setValue('economy'); await flushPromises()
+  expect(wrapper!.get('[data-testid="stock-summary"]').text()).toBe('10')
+  expect(wrapper!.get('[data-testid="online-listing"]').text()).toContain('缺货')
+  await click('管理 →')
+  expect(wrapper!.get('[data-testid="stock-summary"]').text()).toBe('10')
+  expect(wrapper!.get('[data-testid="online-listing"]').text()).toContain('缺货')
+})

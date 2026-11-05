@@ -43,6 +43,47 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 
 ## 运行时边界
 
+### 配置与授权
+
+`ConfigStore` 统一持有应用、店铺、跨境巴士、订单回调和微信绑定的授权读写入口；
+密钥本体集中于主库 `store_auth` / `runtime_secrets`，业务 Store 不保存重复凭据。
+跨境巴士企业密钥由开发者通过后端 `ERP_CROSSBORDERBUS_CLIENT_SECRET` 注入；
+`ConfigStore.crossborderbus_credentials/save_crossborderbus_credentials` 负责企业密钥与用户授权绑定，
+环境密钥不入库，企业变化不得沿用旧 Token 或 `app_uid`。已有主库密钥保留读取及同值配置升级能力。
+用户授权接口只接受账号和密码，前端不提供企业密钥输入；配置方式及桌面分发边界见
+[跨境履约说明](crossborder-fulfillment.md#开发入口)。
+微信渠道库只保存主库凭据引用，收发队列、代次和游标仍属于渠道事务。
+物流地址与履约规则保留在订单库，以维持订单创建时的事务校验。
+旧数据通过 `scripts/migrate_credentials.py` 离线备份迁移；`server.main` 在后台任务启动前
+调用 `assert_credentials_migrated`，拒绝未迁移布局。存储清单、迁移与恢复边界见
+[配置与授权存储](configuration-storage.md)。
+
+### 1688 应用与账号授权
+
+`ConfigStore.alibaba_credentials/alibaba_application/update_alibaba_credentials` 管理应用凭据、买家授权和一次性登录请求，
+首次读取保留并迁移旧 `1688_api` 凭据；通用配置和采集入参不能覆盖凭据或网关。
+`services/alibaba_authorization_service.py` 独占官方登录链接、授权码交换、买家身份核验和 Token 刷新；
+采购、订单物流及 API 采集经 `alibaba_runtime_config` 取用。公共状态不发起远程请求。
+`facades/alibaba_authorization_facade.py` / `http_route_units/alibaba_authorization_routes.py` 提供
+GET `/api/alibaba/authorization`、POST `/start`、`/complete`（后两者位于 `/api/alibaba/authorization` 下）
+及 GET `/auth/alibaba/callback`；仅该回调的顶层 GET 导航允许跨站，仍必须校验服务端单次 state。
+`AlibabaSettingsPanel.vue` 只提供客户账号连接，不收集企业密钥。
+新采购归属按应用与官方买家身份固定，刷新 Token 不改变历史范围；旧 Token 的范围摘要原样保留。
+采购和跨境商品查询各有独立的应用配置、活动买家授权和登录请求。跨境状态和操作经
+`/api/alibaba/crossborder/authorization`，其中 `test-product` 只读验证商品规格。两者共用官方回调入口，按一次性 state 分开核验；桌面分发不得携带公司 AppSecret。
+部署、迁移限制、协议依据及验证见 [1688 授权](alibaba-authorization.md)。
+
+### 独立桌面版
+
+`front/desktop/backend.cjs` 管理自带后端进程与就绪管道；`erp_web/desktop.py`
+在导入业务模块前设置独立 `ERP_APP_DIR`、随机 HTTP 端口与专用浏览器端口，
+再复用 `server.main(on_ready=..., stop_event=...)`。父进程退出或管道断开会关闭后端。
+发行版不使用开发 URL 回退，数据目录与程序包分开；平台类目缓存也必须遵循 `ERP_APP_DIR`。
+`scripts/build_desktop_backend.py` / `desktop_backend.spec` 是后端构建入口，
+只收集代码、依赖及指定默认资源。开发配置搬迁是一次性本机操作，不提供产品导入流程。
+构建和隔离回归见
+[独立桌面版](desktop-packaging.md)、`tests/test_desktop.py` 与 `front/desktop/backend.test.cjs`。
+
 ### 微信 ClawBot 对话窗口
 
 `services/chat_conversation_service.py` 是网页和微信共用的输入接收、归属、取消和原生运行投递入口；
@@ -233,6 +274,17 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
   复用现有授权与 HTTP 客户端；Mercado mapping 身份校验抽至 `marketplaces/mercadolibre_mapping.py`。
   `runtime_units/online_yandex_read.py` 负责目录分页、隐藏清单分页和每批 100 个 SKU 的基础状态/反馈读取，最多 3 个接口并发；
   逐页消费后即保存基础结果，不累积全店目录后再读取价格和库存。`online_yandex_snapshot.py` 只做响应投影。
+  Business 库存模式按 v3 仓库 `models[].campaignId` 关联实际店铺：卡片及基础价按 Business 合批，
+  店铺状态按 Campaign 合批、库存按仓库合批，保留各仓库独立的数量、状态与操作范围。
+  `product_model/online_listing_summary.py` 是同步、回读及列表共用的状态汇总 owner；
+  在售优先，其次为审核/建卡、待处理状态、停售和缺货；旧记录缺少其他仓库状态时显示待核实，
+  不将默认店铺缺货代表全部仓库，也不依据正库存推断在售。列表按当前仓库范围重新汇总后再筛选和统计。
+  库存列只显示当前仓库筛选范围内的数量合计，不嵌套仓库表；部分数量未知时展示已知合计及简短说明。
+  单仓筛选仅做查询投影，不改写刊登身份、保存的库存范围或版本；修改库存仍明确选择目标仓库。
+  `OnlineReadRequest.warehouse_id` 与页面仓库筛选共用此投影；页面去掉原店铺名称控件。
+  `product_model/online_scope_model.py` 校验 `campaign:<id>` 只指向已核验的关联店铺；停售和独立价
+  按该 Campaign 写入及回读，单仓停售不写全局停售意图。库存操作仍使用真实仓库 ID。
+  已持久化的 `global` / `campaign` 旧任务继续指向原授权店铺，不重写历史任务的目标。
   单件详情与修改前核验统一使用 `read`，批量写入使用 `read_many`；写前核验独立执行，不复用 AI 取数跳过并发检查。
   Yandex 属性名称通过统一 `CategoryCatalog.attribute_definitions` 按类目关联，适配器一次运行内共用名称查询；
   名称查询失败保留属性值及平台反馈，并公开 `content.attribute_names_error`，不让整件详情同步失败。
@@ -350,6 +402,9 @@ Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独�
 `gemini_browser_session` 仅编排托管 Chrome 的隐藏执行、交互登录与请求前恢复；
 浏览器进程切换由共享调试服务核对实例归属后完成，沿用同一 Profile，不读取或复制凭据。
 登录等待期间图片领域任务保持执行中，未通过登录检查不发送图片；不另建 Deferred 或任务恢复协议。
+首次图像编辑能力测试（尚未启用该能力）直接显示专用 Google 登录入口，不先等待隐藏 Canvas 页面；
+登录完成后恢复隐藏连接并测试，新增模型本身不打开浏览器。
+浏览器目标已由查找或创建标签页入口确定，连接准备只等待加载，不重复导航打断 Google 登录重定向。
 “添加网页模型”的预置目录由 `ai_model_config.browser_model_presets` 经公共 AI 配置的
 `browser_presets` 提供，形状见 `schemas/config.py::AiBrowserPreset`，不混入 API Provider Catalog。
 预置独立于已保存模型，删除后可以重新添加；不携带用户代理、登录资料或已验证的能力回执，能力仍需实测启用。
@@ -442,7 +497,7 @@ Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独�
   （共享 `Chat.messages`）或服务端 `/ui-messages` 只读派生历史；“原始消息”辅助标签提供
   规范 Pydantic JSON 树、Raw JSON 与下载；支持 `conversation_id` / `presentation_id` query 定位。
   全局对话与草稿箱批量准备共享 `front/src/stores/aiChat.ts`。原生工具卡提交批准/拒绝；
-  运行期间仍可提交用户消息，收件箱显示接收状态。后台只发送历史版本变更通知，
+  运行期间仍可提交用户消息。原生队列将输入加入模型上下文后，`before_model_request` 同事务提交完整原生历史与收件箱状态；输入框上方只展示仍在等待的消息。后台只发送历史版本变更通知，
   前端用官方 Adapter 派生的历史恢复消息，不在浏览器推进 Agent。
   前台短句 `initialUserMessage` 经 reserve 的 `initial_user_message` 传入 presentation scope，
   由 `AiAgentFactory` 保存到原生输入 metadata 的 `presentation_user_message`；只用于展示，
@@ -849,10 +904,12 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   `description-category/attribute/values/search` 大字典搜索接口；结果短时缓存。品牌空查询首屏
   会用当前类目的实时搜索结果置顶官方“无品牌”候选；`无品牌/其他/Generic/no brand` 等查询别名
   只转换为平台原文检索词，枚举 ID 不做跨类目硬编码。
+  Yandex 发布时从草稿或商品品牌读取商品级字段 `vendor`。类目候选只接受当前类目定义的属性 ID，属性不存在会返回参数错误。
 - `erp_web/schemas/category_brand.py`：平台品牌身份及无品牌查询词；仅采用平台实际返回的候选。
 - `erp_web/product_model/category_model.py`：类目选择、属性有效性与发布必填项判断。
 - `erp_web/runtime_units/product_capabilities.py`：属性任务优先使用 `draft_attributes_read(scope=common)`，一次返回 `product` 商品/来源事实、`targets` 全部目标的类目及完整已填公共属性和 SKU 数量，不携带图片或 SKU 明细。指定 `scope=sku` 和明确平台/站点后，一次读取全部已选启用 SKU 的有效事实和差异属性；大量数据可用 `limit` / `next_offset` 分段。
 - `category_attributes_query` 默认 `scope=common`，SKU 任务使用 `scope=sku`，检查全部定义可用 `scope=all`；`write_scope` 标明可写范围，排除字段通过 `excluded_attributes` 的精简记录说明。过滤沿用原始分页游标，空页仍按 `has_more` 继续；不丢弃必填或可选属性。`category_attribute_values_query` 查询真实候选，小字典优先空查询，独立目标/候选并行，同一目标集中写入。主对话负责事实判断、语义匹配、翻译和缺资料时询问用户；不设前 20 个可选属性的限制。
+- 主对话按 SKU 的来源规格拆分独立事实，仅写目标类目允许的差异字段。整组填写后用只读 `draft_sku_variants_check` 核对当前已保存组合；与发布共用属性投影及组合判定，不触发核价或完整预检。Yandex 同卡组合缺少来源规格对应的差异字段时，传入 `yandex_variant_field_ids` 实时核对该店铺类目，返回适用的后台设置步骤。商家保存后用相同字段重新核对，并让后续读写使用更新的定义。
 - `product_attributes_update` / `draft_sku_attributes_update` 分别保存公共属性和指定 SKU 的差异属性。`erp_web/runtime_units/category_attribute_updates.py` 只执行确定性校验：服务端重读类目定义，核对作用域、只读字段、值类型/数量/单位以及平台枚举 ID 与原文。网络校验后在商品锁内重读当前目标，再局部合并本次字段，拒绝变化后的类目、停用或未选 SKU。
 - `erp_web/runtime_units/category_attribute_access.py` 是查询与写入共用的纯作用域规则：公共、SKU、托管及只读字段一致判定。托管字段在枚举查询前拒绝；Ozon 单字符枚举值用字典分页按 ID 和原文精确核对，不走至少两字符的搜索端点，不跳过枚举真实性校验。本地查询参数错误不可重试，网络故障保留可重试属性。
 - 属性填写只有主对话这一条 AI 路径。页面入口、专用属性 Agent/复核模型、局部 HTTP 调用和复合草稿准备里的隐式属性步骤均已删除。`draft_prepare_for_market` 返回的完成步骤只包含目标、文案、图片、类目和定价；主对话随后按需直接填写属性。
@@ -1044,6 +1101,11 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   当前仅支持 `stock_update_mode=business`，仓库组不能指定组内单仓，故阻止参与此流程。
   无有效映射时停止核价；手填 Yandex 运费无法确定发布仓，须改为自动核价。
   每批先刷新平台仓，再按包装/货值筛选各仓指定模式的运价；同步失败不沿用旧快照。
+  `services/yandex_pricing_selection.py` 对同一草稿全部已选 SKU 取共同可用仓库，按每个 SKU
+  一件的运费合计最低选仓；无共同仓库时整批不得应用售价，错误逐 SKU 返回，不拆仓核价。
+  仓库实际 Campaign 来自 `models[].campaignId`，独立保留授权 Campaign；不得把授权探测店铺
+  当作全部仓库的发布目标。各渠道货值试算与最终售价均按其实际 Campaign 查询佣金，费用缓存
+  及原生批量请求按 Campaign 隔离；统一选仓后的必要重算复用本轮汇率、运价和费用回执。
   选中方案保存在逐 SKU `calculation_basis.shipping_evidence.fulfillment_plan`，纳入报价指纹。
   应用时复核配置及方案；发布准备刷新仓库，每次发布写入前复核方案版本，库存仅写该
   `publish_warehouse_id`，不再使用授权探测时选出的最小仓库。旧报价可读取，但须重新核价。
@@ -1062,7 +1124,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   避免费率反推造成价位振荡；依据仍绑定该售价的真实佣金回执。
   已删除手填佣金请求字段与 16%／20% 默认值；旧配置和报价继续可读，缺少上架前官方依据的
   历史报价不能用于发布。Mercado 多国家即使使用手动运费，也分别查询和计算。
-  Yandex 使用当前 Campaign 的 `/v2/tariffs/calculate`，只取 `FEE`；按店铺发布币种
+  Yandex 使用所选仓库对应 Campaign 的 `/v2/tariffs/calculate`，只取 `FEE`；按店铺发布币种
   传售价并核对回执币种（`RUR` 与 `RUB` 等价），不把 CNY 售价预先换成卢布。
   `PricingSession.calculate_many` 汇集同轮缺少的费用，由 `services/yandex_commission_batch.py`
   按当前账号、币种和完整商品参数去重，每次最多 200 项；已经完成的 SKU 不再执行。
@@ -1232,6 +1294,10 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   Yandex 数值约束在定义转换时保留零值，兼容读取空上下限；预检复用属性编译规则，在上传前报告越界、非有限数字或无效规则，不能等到预览构造时才暴露 `Decimal` 异常。
 - Yandex 型号按具体类目要求判断，不设通用“型号必填”阻断。无类目参数时省略 `parameterValues`，显式提供时必须为非空数组；类目必填、枚举、单位、文本格式校验仍保留。依据：[官方商品写入接口](https://www.yandex.ru/dev/market/partner-api/doc/en/reference/business-offer-mappings/updateOfferMappings)、[官方类目参数规则](https://yandex.ru/dev/market/partner-api/doc/en/reference/content/getCategoryContentParameters)。
 - `erp_web/runtime_units/sku_publish_adapter.py`：注册表唯一发布入口，委托 `sku_precheck.py` 汇总 SKU 预检错误和提醒；编译带每项身份的冻结 SKU 清单；平台叶子适配器保留原生单品 I/O。每项写前落盘、写后保存响应，成功项按内容指纹跳过，未知结果禁止再次创建，异步确认仅推进原任务。
+  Yandex 经 `runtime_units/yandex_publish_batch.py` 按同一实际 Business / Campaign 及接口上限合批
+  商品资料、上架条件、价格、库存和确认读取；发送前及响应后仍逐 SKU 持久化原检查点。
+  发布计划与库存证据保存选中仓库及其实际 Campaign，确认查询使用该 Campaign。
+  合批不改变发布成功判定、手动重试与未知写入规则，不增加重启后续发。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
 - `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。
 - 前端 `SkuImagePicker.vue` 从素材池选图；商品素材池“关联 SKU”复用商品保存入口；草稿 V2 不提供配图入口。`replace_selected` 处理结果只替换当前草稿的相应 SKU 引用，换图不使核价失效。无调用方的 `set_sku` 素材标记 action 已删除。
@@ -1645,7 +1711,7 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 - 「禁售类目」（`settings_section=forbidden_categories`）支持导入 Yandex 的 XLSX 名单，列为 `category`、`name`，可含 `int64` / `string` 类型说明行。GET `/api/system-settings/forbidden-categories` 和 POST `/api/system-settings/forbidden-categories/import` 经 `auth_config_facade`、`forbidden_category_service` 与 `ConfigStore` 完整校验并替换 `app_config.forbidden_categories`；空名单、错误行和同 ID 异名均拒绝整次导入，失败保留旧配置。通用配置保存不能覆盖该区段。
   匹配仅按 Yandex 类目 ID，不按名称推测或自动扩大到父子类目。`category_facade` 类目预检与 `publish_validation` 基础/最终发布校验共同执行；单次 SKU 批次由 `PublishValidationSession` 固定一次名单快照，下一次校验重新读取，旧预检通过不能绕过最终校验。名单更新不改写历史预检或已经提交的发布任务。回归见 `tests/test_forbidden_categories.py`、`tests/test_yandex_publish.py`。
 
-- “关于”页提供应用版本、英文第三方声明，以及独立的中文《软件许可与服务协议》和《隐私政策》。版本与 `front/package.json` 同源，声明由安装依赖生成并在构建时校验指纹；法律文本分别维护于 `front/src/legal/user-agreement.ts` 与 `privacy-policy.ts`，硬件信息期限不适用于自行部署的业务数据库。查看不代表同意，不启用设备上报或自动升级。入口、参考来源及发行边界见 [关于与法律说明](about-and-legal.md)。
+- “关于”页提供应用版本、英文第三方声明，以及独立的中文《软件许可与服务协议》和《隐私政策》。版本与 `front/package.json` 同源。第三方声明从运行依赖生成并校验指纹，`front/build/third-party-notices.ts` 按 Web 实际构建模块或桌面交付范围筛选，排除纯开发与测试工具；许可证及声明生成为 `licenses/` 下的可读文件，桌面版随安装包放在 ASAR 外，“关于”仅打开该目录，Web 仅提供 TXT 下载；不在弹窗加载或展开全文。组件版权和 NOTICE 保留，来源与发行边界见 [第三方声明来源](../scripts/legal-notices/README.md)。法律文本分别维护于 `front/src/legal/user-agreement.ts` 与 `privacy-policy.ts`，硬件信息期限不适用于自行部署的业务数据库。查看不代表同意，不启用设备上报或自动升级。
 
 - 左侧栏底部 `AppSidebar.vue` → `/?tab=systemSettings` → `SystemSettingsPanel.vue` 在主区域提供订单自动同步间隔设置；复用工作台导航，支持刷新及浏览器前进、后退。
 - GET/POST `/api/system-settings` → `auth_config_facade` → `ConfigStore.system_settings/save_system_settings`；单项更新保存在 `app_config.system_settings`，通用授权配置合并忽略该区段，避免旧页面覆盖。字段契约由 `schemas/config.py` 定义，前端类型自动生成。旧配置缺少区段时默认 5 小时。

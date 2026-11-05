@@ -1340,3 +1340,12 @@ def test_normalize_yandex_parameter_official_shape() -> None:
     assert shared_unit["default_unit_id"] == "1"
     assert shared_unit["constraints"] == {"min_value": 0.1, "max_value": 1000}
     assert shared_unit["value_mode"] == "free_text"
+
+
+def test_price_quarantine_large_filter_uses_full_page(harness):
+    ids = [f'SKU-{index}' for index in range(151)]
+    harness.route('POST /v2/businesses/222/price-quarantine', {'status': 'OK', 'result': {'offers': []}})
+    fetch_yandex_price_quarantine(API_TOKEN, business_id='222', offer_ids=ids)
+    request = harness.requests[-1]
+    assert 'limit=200' in request.full_url
+    assert harness.body(request) == {'offerIds': ids}

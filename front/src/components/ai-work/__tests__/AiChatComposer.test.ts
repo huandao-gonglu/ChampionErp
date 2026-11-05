@@ -49,6 +49,20 @@ describe('AiChatComposer 斜杠命令面板', () => {
     localStorage.removeItem('ai-chat-read-background')
   })
 
+  it('只在输入框上方展示仍等待的消息，被采用后移除', async () => {
+    const { wrapper } = mountComposer()
+    const messages = [{ message_id: 'retry', text: '没完成的工作重试' }, { message_id: 'next', text: '补充规格' }]
+    await wrapper.setProps({ queuedMessages: messages })
+    const queue = () => wrapper.find('[data-testid="ai-chat-queue"]')
+    expect(queue().text()).toContain('没完成的工作重试')
+    expect(queue().element.compareDocumentPosition(wrapper.get('textarea').element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await wrapper.setProps({ queuedMessages: messages.slice(1) })
+    expect(queue().text()).toContain('补充规格')
+    expect(queue().text()).not.toContain('没完成的工作重试')
+    await wrapper.setProps({ queuedMessages: [] })
+    expect(queue().exists()).toBe(false)
+  })
+
   it('眼睛开关显示背景提示、切换为斜杠眼睛并记住选择，不发送消息', async () => {
     const saved = new Map<string, string>()
     vi.spyOn(localStorage, 'getItem').mockImplementation(key => saved.get(key) ?? null)

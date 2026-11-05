@@ -44,8 +44,6 @@ def ensure_browser_debug_session(
     proxy_server = normalize_browser_proxy(proxy_server)
     with _browser_launch_lock:
         if browser_debug_connected(port):
-            if headless is None:
-                return
             version = _browser_version(port)
             try:
                 session = json.loads((profile_dir / _SESSION_FILE).read_text(encoding="utf-8"))
@@ -55,6 +53,8 @@ def ensure_browser_debug_session(
                 session = {}
             if session.get("websocket") != version.get("webSocketDebuggerUrl"):
                 raise RuntimeError("专用浏览器端口被其他会话占用，请关闭旧专用浏览器或更换调试端口后重试。")
+            if headless is None:
+                return
             if session.get("headless") is headless and session.get("proxy_server", "") == proxy_server:
                 return
             _close_managed_browser(port, profile_dir, version, timeout)

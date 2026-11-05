@@ -7,6 +7,28 @@ from erp_web.schemas.online_product_capabilities import (
     OnlineGroupSummary, OnlineListingSummary, OnlineProductFields, validate_online_fields,
 )
 from erp_web.schemas.online_products import OnlineFeedbackSummary, OnlineListing, OnlineProductGroup, digest
+from erp_web.product_model.online_listing_summary import summarize_yandex_status
+
+
+def warehouse_projection(listing, warehouse_id=''):
+    if not warehouse_id:
+        return summarize_yandex_status(listing.model_copy())
+    catalog = listing.snapshot.get('warehouse_catalog', [])
+    warehouse = next((row for row in catalog if str(row['id']) == warehouse_id), None)
+    stock = next((row for row in listing.stocks if row.id == warehouse_id), None)
+    if not warehouse and stock is None:
+        return None
+    campaign_id = warehouse['campaign_id'] if warehouse else stock.campaign_id
+    market = next((row for row in listing.markets if row.id == campaign_id), None)
+    result = listing.model_copy()
+    result.raw_status = market.raw_status if market else ''
+    hidden = listing.snapshot.get('hidden_campaigns', {}).get(campaign_id, False)
+    result.sale_state = 'paused' if hidden else 'active' if result.raw_status == 'PUBLISHED' and not result.archived else 'unknown'
+    result.stocks = [stock] if stock else []
+    result.markets = [market] if market else []
+    result.prices = [price for price in listing.prices if price.id in ('business', 'campaign:' + campaign_id)
+                     or price.id == 'campaign' and campaign_id == listing.account_id.split(':', 1)[1]]
+    return summarize_yandex_status(result)
 
 
 def _group_identity(listing: OnlineListing) -> str:

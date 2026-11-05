@@ -68,23 +68,9 @@ def test_1688_config_uses_saved_truth_instead_of_public_masks(
         "api_version": "1.0",
         "timeout_seconds": "30",
     }
-    monkeypatch.setattr(
-        get_context().config,
-        "load_app_config",
-        lambda: {"1688_api": saved},
-    )
-    public = config_service.public_app_config(
-        tmp_path,
-        {"1688_api": saved},
-    )["1688_api"]
-
-    resolved_after_refresh = source_collect_1688_api.resolve_1688_api_config({})
-    resolved_from_public_form = (
-        source_collect_1688_api.resolve_1688_api_config(public)
-    )
-
-    for resolved in (resolved_after_refresh, resolved_from_public_form):
-        assert resolved["app_key"] == saved["app_key"]
-        assert resolved["app_secret"] == saved["app_secret"]
-        assert resolved["access_token"] == saved["access_token"]
-    assert resolved_from_public_form["app_secret"] != public["app_secret"]
+    monkeypatch.setattr(source_collect_1688_api, "alibaba_runtime_config", lambda store: saved)
+    public = config_service.public_app_config(tmp_path, {"1688_api": saved})
+    assert "1688_api" not in public
+    for incoming in ({}, {"app_key": "injected", "access_token": "other", "base_url": "https://attacker.test"}):
+        resolved = source_collect_1688_api.resolve_1688_api_config(incoming)
+        assert resolved == saved | {"sign_method": "md5"}

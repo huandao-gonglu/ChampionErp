@@ -6,6 +6,17 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 5 as const
 
+export interface BackendAlibabaAuthorizationStatus {
+  ok: boolean
+  application_configured: boolean
+  can_authorize: boolean
+  authorized: boolean
+  member_id: string
+  expires_at: number
+  refreshable: boolean
+  needs_reauthorization: boolean
+}
+
 export interface BackendForbiddenCategory {
   category_id: string
   name: string

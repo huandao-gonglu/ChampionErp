@@ -76,6 +76,9 @@ class StockScope(BaseModel):
     reason: str = ""
     warehouse_id: str = ""
     variation_id: str = ""
+    campaign_id: str = ""
+    raw_status: str = ""
+    sale_state: str = "unknown"
 
 
 class MarketSnapshot(BaseModel):
@@ -87,6 +90,7 @@ class MarketSnapshot(BaseModel):
     raw_sub_status: list[str] = Field(default_factory=list)
     price: str | None = None
     currency: str = ""
+    name: str = ""
 
 
 class Capability(BaseModel):
@@ -212,6 +216,14 @@ class MarketStatus(BaseModel):
     id: str
     raw_status: str = Field(min_length=1)
     raw_sub_status: list[str] = Field(default_factory=list)
+    name: str = ''
+
+
+class OnlineWarehouse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    id: str
+    name: str
+    campaign_id: str = ''
 
 
 class OnlineStatus(BaseModel):
@@ -224,6 +236,8 @@ class OnlineStatus(BaseModel):
     raw_sub_status: list[str] = Field(default_factory=list)
     platform_issues: list[PlatformIssue] = Field(default_factory=list)
     markets: list[MarketStatus] = Field(default_factory=list)
+    warehouses: list[OnlineWarehouse] = Field(default_factory=list)
+    hidden_campaigns: dict[str, bool] = Field(default_factory=dict)
 
 
 class RefreshStatusRequest(BaseModel):
@@ -305,6 +319,7 @@ class BatchChangePreviewRequest(BaseModel):
     group_ids: list[str] = Field(default_factory=list, max_length=1000)
     listing_ids: list[str] = Field(default_factory=list, max_length=1000)
     operation: Literal["sale_state", "archive"]
+    scope_id: str = ''
     changes: dict[str, Any]
 
 
@@ -312,6 +327,7 @@ class BatchChangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     items: list[BatchChangeTarget] = Field(min_length=1, max_length=5000)
     operation: Literal["sale_state", "archive"]
+    scope_id: str = ''
     changes: dict[str, Any]
     idempotency_key: str = Field(min_length=8, max_length=128)
 
@@ -345,6 +361,14 @@ def snapshot_version(listing: OnlineListing) -> str:
     facts = {key: data[key] for key in (
         "remote_id", "model", "title", "sale_state", "raw_status", "raw_sub_status", "markets", "prices", "stocks", "content",
     )}
+    for market in facts['markets']:
+        market.pop('name', None)
+    for stock in facts['stocks']:
+        for key in ('campaign_id', 'raw_status'):
+            if not stock.get(key):
+                stock.pop(key, None)
+        if stock.get('sale_state') == 'unknown':
+            stock.pop('sale_state', None)
     # 未归档的旧快照保持版本稳定；归档变化进入业务并发校验。
     if listing.archived:
         facts["archived"] = True

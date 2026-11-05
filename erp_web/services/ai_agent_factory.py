@@ -21,7 +21,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.capabilities import HandleDeferredToolCalls, Hooks, PrepareTools, ToolSearch
 from pydantic_ai.usage import RunUsage
-from .agent_run_storage import annotate_run_error, receive_user_updates
+from .agent_run_storage import annotate_run_error, checkpoint_model_inputs, receive_user_updates
 from .ai_approval_policy import handle_configured_tool_approvals
 from .ai_run_cancellation import current_cancellation_token, check_cancellation
 from pydantic_ai.exceptions import (
@@ -920,7 +920,8 @@ class AiAgentFactory:
             name=profile.use_case_id.replace(".", "_"),
             capabilities=[
                 ToolSearch(strategy=match_tool_queries),
-                Hooks(before_node_run=receive_user_updates, model_request=project_model_request),
+                Hooks(before_node_run=receive_user_updates, before_model_request=checkpoint_model_inputs,
+                      model_request=project_model_request),
                 HandleDeferredToolCalls(handler=handle_configured_tool_approvals),
                 PrepareTools(_prepare_tools_within_usage_limit),
                 *(build_python_capabilities(

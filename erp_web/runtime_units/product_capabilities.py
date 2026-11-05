@@ -23,6 +23,8 @@ from erp_web.runtime_units.category_attribute_updates import validate_attribute_
 from erp_web.runtime_units.product_attribute_patch import apply_attribute_patch
 from erp_web.schemas.product_capabilities import (
     DraftSkuAttributesUpdateRequest,
+    DraftSkuVariantsCheckRequest,
+    DraftSkuVariantsCheckResult,
     DraftAttributesReadRequest,
     DraftAttributesReadResult,
     DraftAttributeTarget,
@@ -34,6 +36,14 @@ from erp_web.schemas.product_capabilities import (
     ProductImagesPrepareResult,
     ProductReadRequest,
     ProductReadResult,
+)
+from erp_web.schemas.publish_capabilities import PublishIssueSku
+from erp_web.runtime_units.category_attribute_access import attribute_write_scope
+from erp_web.runtime_units.category_catalog import get_category_catalog
+from erp_web.runtime_units.category_definition_support import definition_to_legacy_attribute, is_transient_category_api_error
+from erp_web.runtime_units.publish_context import PreparedPublishContext
+from erp_web.runtime_units.sku_publish_projection import (
+    SkuGroupingMember, grouping_contract, sku_listing_attributes, target_key, validate_grouping,
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import (
@@ -665,7 +675,7 @@ def product_read(
 
 @ai_tool(
     name="draft_attributes_read",
-    description="属性任务优先使用此工具：默认返回商品/来源事实、全部平台目标的类目和已填公共属性，不含图片与 SKU 列表，无需先调用 draft_read/product_read。SKU 任务用 scope=sku 并明确平台/站点，一次返回范围内全部事实和属性；默认全部已选启用 SKU，局部核实用 sku_ids，分页用 limit 和 next_offset。先明确本轮全部 category_attributes_query 定义，保留一次读取的 draft_data 并据此批量补齐候选，再同时计算颜色、规格等本轮所需属性并合并提交，不按属性分轮重读整批 SKU。跨脚本复用本轮 REPL 变量；保存回执已有实际值，无需再次读取确认。返回 cost_cny、cost_source 和商品规格包装；核价直接用 draft_pricing_preview/apply，不为核价预读成本。只向模型汇总数量、缺口及少量必要样本，不输出整份数据。",
+    description="属性任务优先使用此工具：默认返回商品/来源事实、全部平台目标的类目和已填公共属性，不含图片与 SKU 列表，无需先调用 draft_read/product_read。SKU 任务用 scope=sku 并明确平台/站点，一次返回范围内全部事实和属性；默认全部已选启用 SKU，局部核实用 sku_ids，分页用 limit 和 next_offset。先明确本轮全部 category_attributes_query 定义，保留一次读取的 draft_data 并据此批量补齐候选，再同时计算颜色、规格等本轮所需属性并合并提交，不按属性分轮重读整批 SKU。跨脚本复用本轮 REPL 变量；保存回执已有实际值，无需再次读取确认；整组差异任务用 draft_sku_variants_check 核对组合。返回 cost_cny、cost_source 和商品规格包装；核价直接用 draft_pricing_preview/apply，不为核价预读成本。只向模型汇总数量、缺口及少量必要样本，不输出整份数据。",
     permission="product.read", side_effect="none", recovery_policy="retry_safe", version="2",
 )
 def draft_attributes_read(
@@ -713,6 +723,92 @@ def draft_attributes_read(
         draft_id=request.draft_id, updated_at=_text(draft.get("updated_at")), product=_product_facts(product), targets=target_facts,
         skus=items, sku_count=len(selected),
         next_offset=end if request.scope == "sku" and end < len(selected) else None,
+    )
+
+
+@ai_tool(
+    name="draft_sku_variants_check",
+    description="核对指定目标当前已保存的 SKU 组合。填写差异属性后或确认无字段可写时使用。Yandex 真实差异在公共字段时传 yandex_variant_field_ids 实时查询店铺规则及后台操作步骤；用户保存后用同一组 ID 重查。返回各差异字段实际填写数量、必填缺口、重复组及受影响 SKU ID；distinct 仅表示规格组合可区分。独立刊登或少于两个可编辑 SKU 时不比较。不写草稿、不核价、不发布。",
+    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="1",
+)
+def draft_sku_variants_check(
+    request: DraftSkuVariantsCheckRequest,
+    scope: Annotated[ProductCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> DraftSkuVariantsCheckResult:
+    draft, product = _load_draft(scope.products, request.draft_id)
+    target = _select_target(draft, platform=request.platform, site=request.site)
+    projection = draft_for_publish_target(draft, target)
+    selected = editable_selected_skus(product, draft)
+    mode = (projection.get("grouping") or {}).get("mode", "combined")
+    summary = dict(updated_at=_text(draft.get("updated_at")), sku_count=len(selected), grouping_mode=mode)
+    if mode != "combined" or len(selected) < 2:
+        return DraftSkuVariantsCheckResult(**summary, status="not_applicable")
+    category_id = _text(projection.get("category_id"))
+    if not category_id:
+        raise BusinessCapabilityError("CATEGORY_REQUIRED", "请先为此目标选择类目，再核对规格组合。")
+    platform = target["platform"]
+    timeout = execution.bounded_timeout_seconds()
+    candidates = set(request.yandex_variant_field_ids)
+    if candidates and platform != "yandex":
+        raise BusinessCapabilityError("PLATFORM_UNSUPPORTED", "变体设置实时核对仅适用于 Yandex。")
+    catalog = get_category_catalog()
+    try:
+        if candidates:
+            definition = catalog.refresh_yandex_variant_settings(category_id, site=target["site"], timeout_seconds=timeout)
+        else:
+            definition = catalog.attribute_definitions(platform, category_id, site=target["site"], timeout_seconds=timeout)
+    except BusinessCapabilityError:
+        raise
+    except Exception as exc:
+        raise BusinessCapabilityError("CATEGORY_LIVE_API_FAILED", str(exc), retryable=is_transient_category_api_error(exc)) from exc
+    if definition.category_id != category_id:
+        raise BusinessCapabilityError("CATEGORY_CHANGED", "返回的类目与当前目标不一致，请重新查询。")
+    context = PreparedPublishContext(product, projection, target, definition, platform)
+    definitions = [definition_to_legacy_attribute(attr) for attr in (*definition.required, *definition.optional)]
+    key = target_key(context)
+    members = [
+        SkuGroupingMember(
+            identity=PublishIssueSku(sku_id=row["sku_id"], sku=row.get("sku", ""), name=fact.get("name", "")),
+            attributes=sku_listing_attributes(context, row, definitions),
+            custom_attributes=(row.get("custom_attributes_by_target") or {}).get(key, []),
+        )
+        for fact, row in selected
+    ]
+    grouping = grouping_contract(context)
+    issues = validate_grouping(context, grouping, members)
+    guidance = ""
+    if candidates and grouping["attribute_id"] and grouping["name"] and (
+        not grouping["variation_ids"] or any(issue.code in {
+            "SKU_VARIATION_ATTRIBUTES_EMPTY", "SKU_VARIATION_COMBINATION_DUPLICATE",
+        } for issue in issues)
+    ):
+        names = [attr["name"] for attr in definitions if attr["id"] in candidates
+                 and attribute_write_scope(platform, attr) == "common"]
+        if names:
+            category = definition.category_path or projection.get("category_path")
+            category_label = f"{category}（{category_id}）" if category else f"类目 ID {category_id}"
+            guidance = (
+                f"打开 Yandex 商家后台「商品（Товары）→ 卡片处理设置（Настройки работы с карточками）」。"
+                f"在「产品类别」选择 {category_label}。"
+                f"在变体特征中点「＋ Добавить признак」，查看能否添加 {'、'.join(names)}，保留仍需要的已有特征。"
+                "设置会影响该类目的新旧变体组。确认范围后点「Сохранить」保存，再回 ERP 告知已保存。"
+            )
+    writable = [attr for attr in definitions if attribute_write_scope(platform, attr) == "sku"]
+    stored = [(row.get("attributes_by_target") or {}).get(key, {}) for _, row in selected]
+    missing = {}
+    counts = {}
+    for attr in writable:
+        counts[attr["id"]] = sum(category_attribute_value_is_valid(attr, values.get(attr["id"])) for values in stored)
+        if attr["required"]:
+            sku_ids = [member.identity.sku_id for member in members
+                       if not category_attribute_value_is_valid(attr, member.attributes.get(attr["id"]))]
+            if sku_ids:
+                missing[attr["id"]] = sku_ids
+    return DraftSkuVariantsCheckResult(
+        **summary, status="issues" if issues or missing else "distinct", issues=issues, settings_guidance=guidance,
+        writable_variant_fields={attr["id"]: attr["name"] for attr in writable},
+        stored_sku_count_by_field=counts, missing_required_by_field=missing,
     )
 
 
@@ -772,6 +868,7 @@ def product_images_prepare(
 PRODUCT_AI_CAPABILITIES = (
     product_read,
     draft_attributes_read,
+    draft_sku_variants_check,
     product_attributes_update,
     draft_sku_attributes_update,
     product_images_prepare,
@@ -791,6 +888,7 @@ __all__ = [
     "product_images_prepare",
     "product_read",
     "draft_attributes_read",
+    "draft_sku_variants_check",
     "read_product",
     "update_product_attributes",
 ]
