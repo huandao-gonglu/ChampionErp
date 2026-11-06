@@ -10,9 +10,10 @@ const { registerLicenseDirectory } = require('./licenses.cjs')
 const { AccountSession, proxyBackendRequest } = require('./account-session.cjs')
 const { NewAPIBrowserBridge, registerNewAPIBridge } = require('./newapi.cjs')
 
-if (app.isPackaged) {
-  app.setPath('userData', path.join(app.getPath('appData'), 'Champion ERP'))
-}
+const { name: packageName, productName } = require('../package.json')
+
+// 显示名称可以更新，正式版和开发版各自沿用原有的配置目录。
+app.setPath('userData', path.join(app.getPath('appData'), app.isPackaged ? 'Champion ERP' : packageName))
 const ownsInstance = app.requestSingleInstanceLock()
 if (!ownsInstance) app.quit()
 
@@ -60,7 +61,7 @@ async function initializeDesktop() {
   const dataDir = path.join(app.getPath('userData'), 'backend')
   const options = { onUnexpectedExit: (error) => {
     void desktopConnection?.stop()
-    dialog.showErrorBox('Champion ERP 本机执行器已停止', error.message)
+    dialog.showErrorBox(`${productName} 本机执行器已停止`, error.message)
   } }
   if (app.isPackaged) runtime = startRuntime(runtimeExecutable(process.resourcesPath), dataDir, options)
   else {
@@ -89,7 +90,9 @@ function getBackendBaseUrl() {
 }
 
 function getFrontendRoot() {
-  if (app.isPackaged) {
+  const { name: packageName, productName } = require('../package.json')
+
+if (app.isPackaged) {
     return path.join(app.getAppPath(), 'dist-desktop')
   }
   return path.resolve(__dirname, '..', 'dist-desktop')
@@ -168,7 +171,7 @@ function proxyToBackend(req, res, backendBaseUrl) {
       desktopConnection = await connectDesktop(backendBaseUrl, runtime, {
         session: accountSession,
         onDisconnected: error => {
-          if (!quitting && accountSession.cookie) dialog.showErrorBox('Champion ERP 本机连接已断开', `${error.message}。请重新登录后重试。`)
+          if (!quitting && accountSession.cookie) dialog.showErrorBox(`${productName} 本机连接已断开`, `${error.message}。请重新登录后重试。`)
         },
       })
     },
@@ -223,7 +226,7 @@ async function createWindow() {
     height: 960,
     minWidth: 1120,
     minHeight: 720,
-    title: 'Champion ERP',
+    title: productName,
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -267,7 +270,7 @@ app.whenReady().then(async () => {
   await initializeDesktop()
   await createWindow()
 }).catch((error) => {
-  dialog.showErrorBox('Champion ERP 启动失败', error instanceof Error ? error.message : String(error))
+  dialog.showErrorBox(`${productName} 启动失败`, error instanceof Error ? error.message : String(error))
   app.quit()
 })
 

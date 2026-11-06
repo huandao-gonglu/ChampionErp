@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import logoCartUrl from '@/assets/logo-cart.svg'
-import { APP_VERSION } from '@/constants/branding'
+import { APP_LOGO, APP_NAME, APP_VERSION } from '@/constants/branding'
 import type { WorkflowStep } from '@/types/workflow'
 import type { WorkflowNavItem } from '@/constants/navigation'
 import { useAccountStore } from '@/stores/account'
@@ -33,10 +32,10 @@ function stepStatus(key: string) {
   >
     <div class="flex h-[92px] items-center gap-4 border-b border-accent-200 px-5 dark:border-primary-500/15">
       <div class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-white p-2 shadow-glow">
-        <img :src="logoCartUrl" alt="Champion ERP logo" class="size-full" />
+        <img :src="APP_LOGO" :alt="APP_NAME" class="size-full" />
       </div>
       <div v-if="!props.collapsed" class="min-w-0">
-        <h1 class="truncate text-xl font-black tracking-tight text-accent-950 dark:text-white">Champion</h1>
+        <h1 class="truncate text-xl font-black tracking-tight text-accent-950 dark:text-white">{{ APP_NAME }}</h1>
         <div class="mt-1 inline-flex items-center gap-2 rounded-xl bg-warning-50 px-3 py-1 text-sm font-semibold text-warning-700 ring-1 ring-warning-100 dark:bg-warning-950/70 dark:text-warning-300 dark:ring-0">
           <span>{{ APP_VERSION }}</span>
           <span class="size-2 rounded-full bg-warning-400 shadow-glow" />

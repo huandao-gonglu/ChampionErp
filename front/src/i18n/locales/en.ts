@@ -1,3 +1,5 @@
+import { APP_NAME } from '@/constants/branding'
+
 export default {
   account: {
     newapi: 'Tokens and billing',
@@ -16,7 +18,7 @@ export default {
     newapiApprove: 'Approve authorization',
     newapiApproved: 'Approved. Return to the New API browser page.',
     login: 'Sign in', register: 'Register', personal: 'My account', users: 'Users',
-    loginTitle: 'Sign in to Champion ERP', registerTitle: 'Create your account', intro: 'Manage your products, stores and business.',
+    loginTitle: `Sign in to ${APP_NAME}`, registerTitle: 'Create your account', intro: 'Manage your products, stores and business.',
     name: 'Display name', email: 'Email', password: 'Password', confirmPassword: 'Confirm password',
     passwordHint: 'Use 15–128 characters. Pasting from a password manager is supported.',
     passwordMismatch: 'The passwords do not match.', submitting: 'Submitting…', failed: 'The operation failed. Please try again.',
@@ -280,7 +282,7 @@ export default {
     },
   },
   app: {
-    title: 'Champion ERP Core Workflow',
+    title: `${APP_NAME} Core Workflow`,
     subtitle: 'Frontend workflow board powered by backend APIs',
   },
   routes: {

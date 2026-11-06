@@ -1,5 +1,6 @@
 {
   "name": "champion-erp-front",
+  "productName": "gongluErp",
   "version": "1.2.5",
   "private": true,
   "type": "module",
@@ -62,7 +63,6 @@
   },
   "build": {
     "appId": "com.champion.erp.front",
-    "productName": "Champion ERP",
     "icon": "desktop/assets/icon.png",
     "directories": {
       "output": "release"

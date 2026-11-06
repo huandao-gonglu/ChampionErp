@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -17,7 +18,10 @@ class FrontendTemplateTests(unittest.TestCase):
 
         self.assertIn('<div id="app"></div>', html)
         self.assertIn('type="module" src="/src/main.ts"', html)
-        self.assertIn("Champion ERP Flow", html)
+        product_name = json.loads((FRONT_DIR / "package.json").read_text(encoding="utf-8"))["productName"]
+        self.assertEqual(product_name, "gongluErp")
+        self.assertIn(f"<title>{product_name}</title>", html)
+        self.assertIn('rel="icon" href="/desktop/assets/icon.png"', html)
         self.assertNotIn("cdn.tailwindcss.com", html)
         self.assertNotIn("__ACTIVE_PAGE__", html)
 

@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAccountStore } from '@/stores/account'
 import { registerAccount } from '@/api/accounts'
-import logo from '@/assets/logo-cart.svg'
+import { APP_LOGO, APP_NAME } from '@/constants/branding'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -37,7 +37,7 @@ async function submit() {
 <template>
   <main class="flex min-h-screen items-center justify-center bg-accent-50 p-6 text-accent-950 dark:bg-dark-950 dark:text-white">
     <section class="w-full max-w-md rounded-2xl border border-accent-200 bg-white p-8 shadow-card dark:border-white/10 dark:bg-dark-900">
-      <img :src="logo" alt="Champion ERP" class="mb-6 size-12" />
+      <img :src="APP_LOGO" :alt="APP_NAME" class="mb-6 size-12" />
       <h1 class="text-2xl font-bold">{{ t(registering ? 'account.registerTitle' : 'account.loginTitle') }}</h1>
       <p class="mt-2 text-sm text-accent-500 dark:text-accent-300">{{ t('account.intro') }}</p>
       <p v-if="!account.initialized" role="status" class="mt-5 text-sm text-warning-700 dark:text-warning-300">{{ t('account.uninitialized') }}</p>

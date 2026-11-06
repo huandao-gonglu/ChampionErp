@@ -1,14 +1,15 @@
+import { APP_NAME } from '@/constants/branding'
 import { companyName, supportEmail } from './legal-info'
 
 export const privacyVersion = '2026-10-14'
 export const privacyTitle = '隐私政策'
-export const privacyIntroduction = `${companyName}（以下简称“我们”）尊重您的个人信息权益。本政策说明 Champion ERP 向本公司上报硬件信息的范围、用途、保存期限和您的权利。软件采用自行部署方式，我们不通过软件采集、上传您的业务数据至本公司。请重点阅读硬件信息与保存期限条款。仅查看本政策不代表同意采集。`
+export const privacyIntroduction = `${companyName}（以下简称“我们”）尊重您的个人信息权益。本政策说明 ${APP_NAME} 向本公司上报硬件信息的范围、用途、保存期限和您的权利。软件采用自行部署方式，我们不通过软件采集、上传您的业务数据至本公司。请重点阅读硬件信息与保存期限条款。仅查看本政策不代表同意采集。`
 
 export const privacySections = [
   {
     title: '一、适用范围',
     paragraphs: [
-      '本政策适用于我们通过 Champion ERP 处理硬件信息的活动。您自行部署环境中的业务数据库由您或您委托的部署管理者管理。您自行接入的第三方 API 等服务，适用对应服务商的隐私规则；我们不代替第三方作出数据处理承诺。',
+      `本政策适用于我们通过 ${APP_NAME} 处理硬件信息的活动。您自行部署环境中的业务数据库由您或您委托的部署管理者管理。您自行接入的第三方 API 等服务，适用对应服务商的隐私规则；我们不代替第三方作出数据处理承诺。`,
       '能够识别或关联自然人的硬件标识信息属于需要依法保护的个人信息。我们不会仅因其属于设备信息或经过哈希处理，就将其视为匿名信息。',
     ],
   },

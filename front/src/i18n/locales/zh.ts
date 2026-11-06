@@ -1,3 +1,5 @@
+import { APP_NAME } from '@/constants/branding'
+
 export default {
   account: {
     newapi: 'Token 与账单',
@@ -16,7 +18,7 @@ export default {
     newapiApprove: '确认授权',
     newapiApproved: '已授权，请返回 New API 浏览器页面。',
     login: '登录', register: '注册', personal: '个人账号', users: '用户管理',
-    loginTitle: '登录 Champion ERP', registerTitle: '创建个人账号', intro: '管理你的商品、店铺和业务。',
+    loginTitle: `登录 ${APP_NAME}`, registerTitle: '创建个人账号', intro: '管理你的商品、店铺和业务。',
     name: '显示名称', email: '登录邮箱', password: '密码', confirmPassword: '确认密码',
     passwordHint: '使用 15 至 128 个字符，可直接粘贴密码管理器生成的密码。',
     passwordMismatch: '两次输入的密码不一致。', submitting: '正在提交…', failed: '操作失败，请重试。',
@@ -280,7 +282,7 @@ export default {
     },
   },
   app: {
-    title: 'Champion ERP 核心流程',
+    title: `${APP_NAME} 核心流程`,
     subtitle: '真实接口驱动的前端流程面板',
   },
   routes: {

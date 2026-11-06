@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { APP_NAME } from '@/constants/branding'
 import { version } from '../../../package.json'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { companyName, supportEmail } from '@/legal/legal-info'
@@ -37,7 +38,7 @@ const legalDocument = computed(() => {
     <section class="rounded-xl border border-accent-200 bg-accent-50 p-6 dark:border-dark-700 dark:bg-dark-950/70">
       <p class="text-xs font-semibold uppercase tracking-widest text-accent-500">{{ t('settings.about') }}</p>
       <div class="mt-3 flex flex-wrap items-center gap-3">
-        <h3 class="text-2xl font-bold tracking-tight">Champion ERP</h3>
+        <h3 class="text-2xl font-bold tracking-tight">{{ APP_NAME }}</h3>
         <span class="rounded-full border border-accent-200 bg-white px-3 py-1 text-xs font-medium tabular-nums dark:border-dark-700 dark:bg-dark-900" data-testid="app-version">{{ t('settings.version') }} {{ version }}</span>
       </div>
       <p class="mt-3 text-sm text-accent-600 dark:text-accent-300">{{ companyName }}</p>
