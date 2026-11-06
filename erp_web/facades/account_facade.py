@@ -3,6 +3,7 @@ from http.cookies import SimpleCookie
 import os
 
 from erp_web.schemas.accounts import AccountError, SESSION_COOKIE, SESSION_SECONDS, public_user
+from erp_web.schemas.newapi import NewAPIConnectionInfo, NewAPIAuthorizationPreview
 from erp_web.services.account_request import account_runtime, client_ip
 
 
@@ -49,6 +50,7 @@ def login(handler, body):
     if previous:
         runtime.store.revoke_session(previous.token_hash)
         runtime.disconnect(previous.user["id"], previous.token_hash)
+        runtime.newapi.sync()
     _cookie(handler, token)
     return {"ok": True, "user": public_user(value.user), "csrf_token": value.csrf_token}
 
@@ -59,7 +61,7 @@ def logout(handler, body):
     runtime.store.revoke_session(value.token_hash)
     runtime.disconnect(value.user["id"], value.token_hash)
     _cookie(handler, "")
-    return {"ok": True}
+    return {"ok": True, "newapi_sync_pending": runtime.newapi.sync()}
 
 
 def password(handler, body):
@@ -68,7 +70,7 @@ def password(handler, body):
     runtime.service.change_password(value, body)
     runtime.disconnect(value.user["id"])
     _cookie(handler, "")
-    return {"ok": True}
+    return {"ok": True, "newapi_sync_pending": runtime.newapi.sync()}
 
 
 def users(handler, query):
@@ -98,7 +100,7 @@ def status(handler, body):
     runtime.store.set_status(body["user_id"], body["status"])
     if body["status"] == "disabled":
         runtime.disconnect(body["user_id"])
-    return {"ok": True}
+    return {"ok": True, "newapi_sync_pending": runtime.newapi.sync()}
 
 
 def reset_password(handler, body):
@@ -106,4 +108,36 @@ def reset_password(handler, body):
     runtime = account_runtime(handler)
     runtime.service.reset_password(body)
     runtime.disconnect(body["user_id"])
-    return {"ok": True}
+    return {"ok": True, "newapi_sync_pending": runtime.newapi.sync()}
+
+
+def newapi_info(handler, query) -> NewAPIConnectionInfo:
+    _require_session(handler)
+    bridge = account_runtime(handler).newapi
+    return {"ok": True, "configured": bridge.configured,
+            "url": bridge.public_url + "/sign-in?force_erp=true" if bridge.configured else "",
+            "sync_pending": bridge.sync()}
+
+
+def newapi_preview(handler, body) -> NewAPIAuthorizationPreview:
+    value = _require_session(handler)
+    runtime = account_runtime(handler)
+    runtime.service.limit("newapi-preview", value.user["email"], client_ip(handler))
+    flow = runtime.newapi.flow(body["code"])
+    return {"ok": True, "target": flow["target"], "expires_at": flow["expires_at"], "code": body["code"]}
+
+
+def newapi_authorize(handler, body):
+    return account_runtime(handler).newapi.authorize(_require_session(handler), body, client_ip(handler))
+
+
+def newapi_exchange(handler, body):
+    return account_runtime(handler).store.exchange_newapi_ticket(body)
+
+
+def newapi_session(handler, body):
+    return {"active": account_runtime(handler).store.newapi_session_active(body["user_id"], body["session_ref"])}
+
+
+def newapi_user(handler, body):
+    return {"active": account_runtime(handler).store.newapi_user_active(body["user_id"])}

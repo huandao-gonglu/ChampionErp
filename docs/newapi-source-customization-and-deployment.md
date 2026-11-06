@@ -1,6 +1,6 @@
 # New API 源码改造与部署实施方案
 
-状态：待实施。本文补充 [ERP 与 New API 账号及计费接入调整方案](erp-newapi-account-integration-plan.md)，说明 New API 源码如何获取、改哪些入口、保留哪些能力，以及如何构建和部署。本文交付不包含实际拉取源码、修改代码或操作服务器。
+状态：源码改造与 ERP 适配已开发，相关编译、回归和真实数据库迁移验证已完成。当前按用户确认的既有 `107.174.48.241` 进行内网部署；正式 HTTPS 与官方收款尚未验收。实际发布版本、运营绑定和备份恢复见 [服务器部署记录](server-deployment.md)。
 
 ## 1. 与已有方案的关系
 
@@ -57,7 +57,7 @@ git -C "$NEWAPI_SOURCE_DIR" rev-parse HEAD
 
 ### 3.1 需要核对的后端入口
 
-本轮核对了官方主线的[路由文件](https://github.com/QuantumNous/new-api/blob/main/router/api-router.go)，以下用于定位，最终路由清单必须在锁定版本补齐：
+本轮核对了官方主线的[路由文件](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/router/api-router.go)，以下用于定位，最终路由清单必须在锁定版本补齐：
 
 - 登录注册：`/api/user/login`、`/api/user/register`，以及登录验证、Passkey 等分支。
 - 密码找回：`/api/reset_password`、`/api/user/reset`，以及个人资料接口中的密码更新字段。
@@ -77,7 +77,7 @@ New API 增加 ERP 身份绑定记录，以稳定的 ERP 用户 ID 唯一关联�
 
 原集成方案的一次性票据和浏览器关联校验必须落实。New API 先建立当前浏览器的交接关联，再接受对应 ERP 授权结果；兑换由 New API 后端访问 ERP 的固定交换接口完成。跳转目标使用钱包、账单、Key 等固定枚举，不接受任意返回地址。
 
-New API 复用锁定版本的原生会话签发及前端登录初始化流程。若该版本使用 Access Token 和 Refresh Cookie，回调后通过原生刷新恢复前端身份，不把 Access Token 放入跳转 URL 或另建长期登录令牌。实现前核对[官方认证说明](https://github.com/QuantumNous/new-api/blob/main/docs/authentication.md)。
+New API 复用锁定版本的原生会话签发及前端登录初始化流程。若该版本使用 Access Token 和 Refresh Cookie，回调后通过原生刷新恢复前端身份，不把 Access Token 放入跳转 URL 或另建长期登录令牌。实现前核对[官方认证说明](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/docs/authentication.md)。
 
 记录 ERP 会话关联标识与交接产生的 New API 会话标识，用于按原集成方案撤销；不得把 ERP 的可用会话凭据复制进绑定表。服务间撤销、启停接口只接受可信服务调用，普通用户不能指定其他用户或会话。
 
@@ -107,13 +107,13 @@ Stripe、Creem、易支付等不符合本次官方直连选择的渠道不启用
 
 ## 6. 修改版构建与交付
 
-使用锁定提交的[官方 Dockerfile](https://github.com/QuantumNous/new-api/blob/main/Dockerfile)作为构建起点，构建改造后的完整前后端。服务端使用与目标服务器相符的 CPU 架构；在 Mac 构建时显式核对目标平台，避免把仅适用于本机的镜像发布到服务器。
+使用锁定提交的[官方 Dockerfile](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/Dockerfile)作为构建起点，构建改造后的完整前后端。服务端使用与目标服务器相符的 CPU 架构；在 Mac 构建时显式核对目标平台，避免把仅适用于本机的镜像发布到服务器。
 
 以改造提交 SHA 标记镜像，例如 `champion/new-api:<改造提交SHA>`；发布记录同时保存镜像摘要、上游 SHA、改造 SHA 和所需配置。部署使用这个已验证的修改版镜像，不能改完源码后仍拉取官方 `latest` 镜像。
 
 源码仓库内交付部署模板、无真实密钥的配置示例、入口清单和改造说明。构建产物通过镜像仓库或镜像归档交付；运行数据库及密钥不打进镜像。
 
-保留 New API 的版权、许可证及第三方声明，并按其 [AGPL-3.0 许可证](https://github.com/QuantumNous/new-api/blob/main/LICENSE)向网络使用者提供该修改版对应源码的获取方式。提供的源码应与实际运行提交一致，排除真实业务数据与部署凭据。
+保留 New API 的版权、许可证及第三方声明，并按其 [AGPL-3.0 许可证](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/LICENSE)向网络使用者提供该修改版对应源码的获取方式。提供的源码应与实际运行提交一致，排除真实业务数据与部署凭据。
 
 ## 7. 服务器部署
 
@@ -145,7 +145,7 @@ services:
       SQLITE_PATH: /data/new-api.db
 ```
 
-配置项在锁定版本核实。当前官方[环境配置示例](https://github.com/QuantumNous/new-api/blob/main/.env.example)包含 SQLite 路径及会话相关设置。不要原样复制[官方 Compose 示例](https://github.com/QuantumNous/new-api/blob/main/docker-compose.yml)中的默认密码、公开端口、`latest` 镜像或与本次无关的数据库服务。
+配置项在锁定版本核实。当前官方[环境配置示例](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/.env.example)包含 SQLite 路径及会话相关设置。不要原样复制[官方 Compose 示例](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/docker-compose.yml)中的默认密码、公开端口、`latest` 镜像或与本次无关的数据库服务。
 
 运行配置至少包括 New API 原生会话密钥、ERP 固定交换地址、服务间凭据及公开站点地址。生产启用安全 Cookie 和实际 HTTPS Origin 校验，准确配置可信反向代理；具体变量以锁定版本为准。实际密钥在服务器生成，配置文件限制读取权限，不写入仓库、前端包或日志。
 
@@ -197,4 +197,15 @@ SQLite 使用一致性备份；运行中不能只复制主数据库文件而忽�
 
 测试清理仅针对被替换入口的旧成功路径及废弃实现，保留或改写为“接口已关闭”的回归验证。保留原生会话、权限、支付验签、扣费和账务测试，也保留 ERP 账号及个人空间测试；不能为通过测试删除仍有效的业务约束。
 
-本文中的官方主线链接用于说明已核对的能力；实施交付应改为所选提交的永久链接，并记录实际执行的测试及部署结果。当前仅新增方案文档，不代表上述工程工作已经完成。
+本次固定官方 `v1.0.0-rc.48`、上游提交 `706144769e5bed5a47b78721e3bb11da3cf4c0b9`；改造分支位于同级独立仓库 `/Users/hdgl/work/new-api`，发布提交为 `515f0fa7ab8e5ec4bb50594432861f2870b17128`。该仓库的 `ERP-INTEGRATION.md` 记录接口边界、安全参考、构建和备份命令，`deploy/erp/` 提供无凭据模板及迁移验证工具。网络使用者可从运行站点的 `/source/new-api.tar.gz` 获取对应提交源码。
+
+
+## 本次实现与验证补充
+
+- ERP 网页的「个人账号」增加「Token 与账单」。先在 New API 浏览器生成三分钟关联码，再回到已登录 ERP 核对当前账号和目的并确认；授权票据最多两分钟且只能消费一次。敏感操作重新验证 ERP 密码，同账号可在不同 ERP 设备完成验证，原登录关联仍须有效；已有 MFA 不降级。
+- 退出、改密和启停先完成 ERP 状态变更，账号库在同一事务写入待同步记录。New API 不可用时返回 `newapi_sync_pending` 并展示提示，每 30 秒按顺序重试，不阻断 ERP 登录与业务。
+- New API 首次交接只创建普通计费用户；运营账号由服务器命令显式初始化或绑定，普通用户与 ERP 管理员角色都不能自动提权。独立账号、身份修改、站内聊天、签到与推广转移均有后端限制。模型 Key、钱包、账单、原生权限和会话机制保留。
+- 在线收款下单关闭，保留余额和历史。当前未接入官方支付宝/微信商户，也未用聚合支付替代，不以测试充值或模拟通知宣称实际收款通过。
+- 真实 SQLite 3.50.4、MySQL 8.4.13、PostgreSQL 18.6 已验证交接与撤销；三种数据库的新库和固定官方镜像旧库升级均连续启动两次，已有用户、Key、余额、日志、会话与索引保持一致。迁移工具只操作独立测试库。
+- ERP 全后端、前端、桌面以及 New API 账号相关 Go/前端回归的最终结果记录在服务器文档。全量 Go 的一个代理错误断言在未修改上游中也会失败，已单独记录，不能表述为全仓全部通过。
+- 内网入口使用 ERP 的 `127.0.0.1` 与 New API 的 `localhost`，通过 SSH 转发；端口不同不能隔离 Cookie。正式环境仍应使用两个独立 HTTPS 主机名，不能把此次内网部署当作正式云环境切换。

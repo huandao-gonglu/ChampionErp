@@ -12,6 +12,7 @@ const query = ref('')
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
+const syncPending = ref(false)
 const creating = ref(false)
 const resetUser = ref<AccountUser | null>(null)
 const resetPassword = ref('')
@@ -41,9 +42,15 @@ async function reset() {
   const user = resetUser.value
   if (!user) return
   await perform(async () => {
-    await resetAccountUserPassword(user.id, resetPassword.value)
+    const result = await resetAccountUserPassword(user.id, resetPassword.value)
+    syncPending.value = result?.data?.newapi_sync_pending === true
     resetPassword.value = ''; resetUser.value = null
   }, t('account.passwordReset'))
+}
+async function setStatus(user: AccountUser) {
+  const result = await setAccountUserStatus(user.id, user.status === 'enabled' ? 'disabled' : 'enabled')
+  syncPending.value = result?.data?.newapi_sync_pending === true
+  await load()
 }
 onMounted(() => { void perform(load) })
 </script>
@@ -59,6 +66,7 @@ onMounted(() => { void perform(load) })
         </template>
       </PageHeader>
       <p v-if="error" role="alert" class="text-sm text-danger-600 dark:text-danger-300">{{ error }}</p>
+      <p v-if="syncPending" role="status" class="text-sm text-warning-700 dark:text-warning-300">{{ t('account.newapiPending') }}</p>
       <p v-if="notice" role="status" class="text-sm text-success-700 dark:text-success-300">{{ notice }}</p>
       <form v-if="creating" class="space-y-4 rounded-2xl border border-accent-200 bg-white p-6 dark:border-white/10 dark:bg-dark-900" @submit.prevent="create">
         <h2 class="font-bold">{{ t('account.createUser') }}</h2>
@@ -86,7 +94,7 @@ onMounted(() => { void perform(load) })
             <tr v-for="user in users" :key="user.id" class="border-b border-accent-100 dark:border-white/5">
               <td class="p-4">{{ user.display_name }}</td><td class="p-4">{{ user.email }}</td><td class="p-4">{{ t(user.status === 'enabled' ? 'account.enabled' : 'account.disabled') }}</td>
               <td class="space-x-3 whitespace-nowrap p-4">
-                <button class="font-semibold text-primary-600 dark:text-primary-300" :disabled="busy" @click="perform(async () => { await setAccountUserStatus(user.id, user.status === 'enabled' ? 'disabled' : 'enabled'); await load() })">{{ t(user.status === 'enabled' ? 'account.disable' : 'account.enable') }}</button>
+                <button class="font-semibold text-primary-600 dark:text-primary-300" :disabled="busy" @click="perform(async () => { await setStatus(user) })">{{ t(user.status === 'enabled' ? 'account.disable' : 'account.enable') }}</button>
                 <button class="font-semibold text-primary-600 dark:text-primary-300" :disabled="busy" @click="resetUser = user; resetPassword = ''">{{ t('account.resetPassword') }}</button>
               </td>
             </tr>

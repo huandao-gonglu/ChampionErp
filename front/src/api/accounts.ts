@@ -25,3 +25,7 @@ export const listAccountUsers = async (params: { page: number; q: string }) => (
 export const createAccountUser = (body: CreateAccount) => apiClient.post('/api/admin/users', body)
 export const setAccountUserStatus = (user_id: string, status: AccountUser['status']) => apiClient.post('/api/admin/users/status', { user_id, status })
 export const resetAccountUserPassword = (user_id: string, password: string) => apiClient.post('/api/admin/users/password', { user_id, password })
+
+export const fetchNewAPIInfo = async () => (await apiClient.get<{ configured: boolean; url: string; sync_pending: boolean }>('/api/account/newapi')).data
+export const previewNewAPI = async (code: string) => (await apiClient.post<{ code: string; target: 'keys' | 'wallet' | 'usage' | 'proof'; expires_at: number }>('/api/account/newapi/preview', { code })).data
+export const authorizeNewAPI = (body: { code: string; password?: string }) => apiClient.post('/api/account/newapi/authorize', body)

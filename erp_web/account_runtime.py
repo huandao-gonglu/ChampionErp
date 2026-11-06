@@ -5,11 +5,13 @@ import logging
 from pathlib import Path
 from threading import Event, RLock, Thread
 import shutil
+import time
 
 from erp_web.context import AppContext, AppPaths, bind_context
 from erp_web.db import ErpDatabase
 from erp_web.stores.account_store import AccountStore
 from erp_web.services.account_service import AccountService
+from erp_web.services.newapi_bridge import NewAPIBridge
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,7 @@ class AccountRuntime:
         self.root = root
         self.store = AccountStore(root.paths.app_dir / "accounts.sqlite3")
         self.service = AccountService(self.store)
+        self.newapi = NewAPIBridge(self.store, self.service)
         self._contexts = {}
         self._jobs = {}
         self._lock = RLock()
@@ -94,7 +97,14 @@ class AccountRuntime:
         self._worker.start()
 
     def _scan(self):
+        next_newapi_sync = 0.0
         while not self._stop.wait(1):
+            if time.monotonic() >= next_newapi_sync:
+                try:
+                    self.newapi.sync()
+                except Exception:
+                    logger.exception("New API 账号同步暂未完成。")
+                next_newapi_sync = time.monotonic() + 30
             with self._lock:
                 contexts = list(self._contexts.items())
             for identity, context in contexts:

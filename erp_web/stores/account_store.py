@@ -36,6 +36,16 @@ class AccountStore:
                     csrf_token TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+                CREATE TABLE IF NOT EXISTS newapi_tickets (
+                    ticket_hash TEXT PRIMARY KEY, flow_id TEXT NOT NULL UNIQUE,
+                    challenge TEXT NOT NULL, target TEXT NOT NULL,
+                    session_hash TEXT NOT NULL REFERENCES sessions(token_hash) ON DELETE CASCADE,
+                    expires_at REAL NOT NULL, reauthenticated INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS newapi_sync (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+                    session_ref TEXT NOT NULL, action TEXT NOT NULL
+                );
                 PRAGMA user_version=1;
             """)
         self.path.chmod(0o600)
@@ -114,6 +124,10 @@ class AccountStore:
 
     def revoke_session(self, token_hash):
         with self._connection() as db:
+            row = db.execute("SELECT user_id FROM sessions WHERE token_hash=?", (token_hash,)).fetchone()
+            if row:
+                db.execute("INSERT INTO newapi_sync(user_id,session_ref,action) VALUES (?,?,?)",
+                           (row["user_id"], self.newapi_session_ref(token_hash), "revoke"))
             db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
 
     def session_valid(self, token_hash):
@@ -131,6 +145,7 @@ class AccountStore:
             if expected_hash is not None and row["password_hash"] != expected_hash:
                 raise AccountError("密码已变更，请重新登录。", status_code=401, error_code="SESSION_EXPIRED")
             db.execute("UPDATE users SET password_hash=?,updated_at=? WHERE id=?", (password_hash, time.time(), user_id))
+            db.execute("INSERT INTO newapi_sync(user_id,session_ref,action) VALUES (?,?,'revoke')", (user_id, ""))
             db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
     def rehash_password(self, user_id, old_hash, new_hash):
@@ -143,5 +158,63 @@ class AccountStore:
             result = db.execute("UPDATE users SET status=?,updated_at=? WHERE id=? AND role='user'", (status, time.time(), user_id))
             if not result.rowcount:
                 raise AccountError("只能管理普通用户。", status_code=403, error_code="FORBIDDEN")
+            db.execute("INSERT INTO newapi_sync(user_id,session_ref,action) VALUES (?,?,?)",
+                       (user_id, "", "disable" if status == "disabled" else "enable"))
             if status == "disabled":
                 db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+
+    @staticmethod
+    def newapi_session_ref(token_hash):
+        return hashlib.sha256(("newapi-session-v1:" + token_hash).encode()).hexdigest()
+
+    def newapi_ticket(self, session, flow, *, reauthenticated=False):
+        ticket = secrets.token_urlsafe(48)
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT u.password_hash FROM sessions s JOIN users u ON u.id=s.user_id "
+                             "WHERE s.token_hash=? AND s.user_id=? AND s.expires_at>? AND u.status='enabled'",
+                             (session.token_hash, session.user["id"], time.time())).fetchone()
+            if not row or row["password_hash"] != session.user["password_hash"]:
+                raise AccountError("会话已失效，请重新登录。", status_code=401)
+            db.execute("DELETE FROM newapi_tickets WHERE expires_at<=?", (time.time(),))
+            try:
+                db.execute("INSERT INTO newapi_tickets VALUES (?,?,?,?,?,?,?)", (
+                    hashlib.sha256(ticket.encode()).hexdigest(), flow["flow_id"], flow["challenge"],
+                    flow["target"], session.token_hash, min(flow["expires_at"], time.time()+120), int(reauthenticated)))
+            except sqlite3.IntegrityError as exc:
+                raise AccountError("该交接已经授权，请重新发起。", status_code=409) from exc
+        return ticket
+
+    def exchange_newapi_ticket(self, body):
+        digest = hashlib.sha256(body["ticket"].encode()).hexdigest()
+        challenge = hashlib.sha256(body["verifier"].encode()).hexdigest()
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT t.*,u.id AS user_id,u.display_name FROM newapi_tickets t "
+                             "JOIN sessions s ON s.token_hash=t.session_hash JOIN users u ON u.id=s.user_id "
+                             "WHERE t.ticket_hash=? AND t.flow_id=? AND t.challenge=? AND t.target=? "
+                             "AND t.expires_at>? AND s.expires_at>? AND u.status='enabled'", (
+                                 digest, body["flow_id"], challenge, body["target"], time.time(), time.time())).fetchone()
+            if not row:
+                raise AccountError("交接已过期、已使用或与浏览器不匹配。", status_code=401)
+            db.execute("DELETE FROM newapi_tickets WHERE ticket_hash=?", (digest,))
+            return {"user_id": row["user_id"], "display_name": row["display_name"],
+                    "session_ref": self.newapi_session_ref(row["session_hash"]), "reauthenticated": bool(row["reauthenticated"])}
+
+    def newapi_session_active(self, user_id, session_ref):
+        with self._connection() as db:
+            rows = db.execute("SELECT s.token_hash FROM sessions s JOIN users u ON u.id=s.user_id "
+                              "WHERE s.user_id=? AND s.expires_at>? AND u.status='enabled'", (user_id, time.time())).fetchall()
+            return any(secrets.compare_digest(self.newapi_session_ref(row[0]), session_ref) for row in rows)
+
+    def newapi_user_active(self, user_id):
+        with self._connection() as db:
+            return db.execute("SELECT 1 FROM users WHERE id=? AND status='enabled'", (user_id,)).fetchone() is not None
+
+    def newapi_pending(self):
+        with self._connection() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM newapi_sync ORDER BY id LIMIT 100")]
+
+    def newapi_ack(self, identity):
+        with self._connection() as db:
+            db.execute("DELETE FROM newapi_sync WHERE id=?", (identity,))

@@ -176,6 +176,11 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/account/newapi/preview": _contract(fields={"code": STRING}, required=("code",)),
+    "/api/account/newapi/authorize": _contract(fields={"code": STRING, "password": STRING}, required=("code",)),
+    "/api/internal/newapi/exchange": _contract(fields={"ticket": STRING, "verifier": STRING, "flow_id": STRING, "target": STRING}, required=("ticket", "verifier", "flow_id", "target")),
+    "/api/internal/newapi/session": _contract(fields={"user_id": STRING, "session_ref": STRING}, required=("user_id", "session_ref")),
+    "/api/internal/newapi/user": _contract(fields={"user_id": STRING}, required=("user_id",)),
     "/api/account/register": _contract(fields={"email": STRING, "display_name": STRING, "password": STRING}, required=("email", "display_name", "password")),
     "/api/account/login": _contract(fields={"email": STRING, "password": STRING}, required=("email", "password")),
     "/api/account/logout": _EMPTY,

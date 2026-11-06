@@ -41,6 +41,7 @@ async function submit() {
       <h1 class="text-2xl font-bold">{{ t(registering ? 'account.registerTitle' : 'account.loginTitle') }}</h1>
       <p class="mt-2 text-sm text-accent-500 dark:text-accent-300">{{ t('account.intro') }}</p>
       <p v-if="!account.initialized" role="status" class="mt-5 text-sm text-warning-700 dark:text-warning-300">{{ t('account.uninitialized') }}</p>
+      <p v-if="route.query.newapi_sync === 'pending'" role="status" class="mt-5 text-sm text-warning-700 dark:text-warning-300">{{ t('account.newapiPending') }}</p>
       <p v-if="account.error || error" role="alert" class="mt-5 text-sm text-danger-600 dark:text-danger-300">{{ error || account.error }}</p>
       <div v-if="registered" class="mt-6 space-y-4">
         <p role="status">{{ t('account.registered') }}</p>

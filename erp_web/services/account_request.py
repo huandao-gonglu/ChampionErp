@@ -18,6 +18,7 @@ _runtime_lock = Lock()
 PUBLIC_POST_PATHS = frozenset({"/api/account/login", "/api/account/register"})
 CALLBACK_POST_PATHS = frozenset({f"/api/{p}/notifications" for p in ("mercadolibre", "ozon", "yandex")})
 CALLBACK_GET_PATHS = frozenset({"/auth/alibaba/callback", "/auth/mercadolibre/callback"})
+INTERNAL_NEWAPI_PATHS = frozenset({"/api/internal/newapi/exchange", "/api/internal/newapi/session", "/api/internal/newapi/user"})
 
 
 def current_session():
@@ -78,6 +79,15 @@ def _authenticate(handler, stack, public_pages):
     runtime = account_runtime(handler)
     parsed = urlsplit(handler.path)
     method = handler.command
+    if method == "POST" and parsed.path in INTERNAL_NEWAPI_PATHS:
+        secret = runtime.newapi.secret
+        if (len(secret) < 32 or not secrets.compare_digest(handler.headers.get("Authorization", "").encode(), ("Bearer " + secret).encode())
+                or handler.headers.get("Origin") or handler.headers.get("Cookie")):
+            raise AccountError("内部服务身份无效。", status_code=401, error_code="SERVICE_UNAUTHORIZED")
+        handler.account_session = None
+        handler.desktop_scope_allowed = False
+        stack.enter_context(bind_context(runtime.root))
+        return
     session = runtime.store.session(session_cookie(handler.headers))
     handler.account_session = session
     _session.set(session)

@@ -4,6 +4,11 @@ from erp_web.schemas.requests import validate_request_payload, RequestValidation
 from urllib.parse import parse_qs
 
 POST_HANDLERS = {
+    "/api/account/newapi/preview": account_facade.newapi_preview,
+    "/api/account/newapi/authorize": account_facade.newapi_authorize,
+    "/api/internal/newapi/exchange": account_facade.newapi_exchange,
+    "/api/internal/newapi/session": account_facade.newapi_session,
+    "/api/internal/newapi/user": account_facade.newapi_user,
     "/api/account/register": account_facade.register,
     "/api/account/login": account_facade.login,
     "/api/account/logout": account_facade.logout,
@@ -13,6 +18,7 @@ POST_HANDLERS = {
     "/api/admin/users/password": account_facade.reset_password,
 }
 GET_HANDLERS = {
+    "/api/account/newapi": account_facade.newapi_info,
     "/api/account/session": account_facade.session,
     "/api/admin/users": account_facade.users,
 }

@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import NewAPIAccount from '@/components/account/NewAPIAccount.vue'
 import { useAccountStore } from '@/stores/account'
 import { changeAccountPassword } from '@/api/accounts'
 
@@ -15,8 +16,8 @@ const error = ref('')
 async function changePassword() {
   if (password.value !== confirmation.value) { error.value = t('account.passwordMismatch'); return }
   await perform(async () => {
-    await changeAccountPassword({ current_password: current.value, password: password.value })
-    account.reloadIdentity('/login')
+    const result = await changeAccountPassword({ current_password: current.value, password: password.value })
+    account.reloadIdentity(result?.data?.newapi_sync_pending ? '/login?newapi_sync=pending' : '/login')
   })
 }
 async function perform(action: () => Promise<unknown>) {
@@ -42,6 +43,7 @@ async function perform(action: () => Promise<unknown>) {
         <p class="mt-2 text-sm">{{ account.user?.email }}</p>
         <p class="mt-2 text-sm text-accent-500 dark:text-accent-300">{{ t(account.isAdmin ? 'account.admin' : 'account.user') }}</p>
       </section>
+      <NewAPIAccount />
       <form class="space-y-5 rounded-2xl border border-accent-200 bg-white p-6 dark:border-white/10 dark:bg-dark-900" @submit.prevent="changePassword">
         <h2 class="text-lg font-bold">{{ t('account.changePassword') }}</h2>
         <p class="text-sm text-accent-500 dark:text-accent-300">{{ t('account.passwordHint') }} {{ t('account.passwordRevokes') }}</p>

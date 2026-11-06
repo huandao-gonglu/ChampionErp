@@ -1,6 +1,5 @@
 """通过真实 HTTP 验证个人账号、权限和跨空间隔离。"""
 from concurrent.futures import ThreadPoolExecutor
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 import sqlite3
 import threading
@@ -18,6 +17,7 @@ from erp_web.account_runtime import AccountRuntime
 from erp_web.accounts import initialize_admin
 from erp_web.context import bind_context, get_context
 from erp_web.http_handler import Handler
+from erp_web.server import ERPHTTPServer
 from erp_web.schemas.accounts import SESSION_COOKIE
 from erp_web.services import ai_model_config, ai_prompt_templates
 
@@ -29,7 +29,7 @@ NEW_PASSWORD = "这是修改后的独立账号回归测试密码456"
 def accounts_http():
     runtime = AccountRuntime(get_context())
     runtime.service.create({"email": "admin@example.com", "display_name": "初始管理员", "password": PASSWORD}, admin=True)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = ERPHTTPServer(("127.0.0.1", 0), Handler)
     server.account_runtime = runtime
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()

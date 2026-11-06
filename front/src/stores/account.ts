@@ -57,8 +57,8 @@ export const useAccountStore = defineStore('account', () => {
   }
 
   async function logout() {
-    await logoutAccount()
-    reloadIdentity('/login')
+    const result = await logoutAccount()
+    reloadIdentity(result?.data?.newapi_sync_pending ? '/login?newapi_sync=pending' : '/login')
   }
 
   return { user, ready, initialized, error, isAdmin, refresh, login, logout, signedOut, reloadIdentity }

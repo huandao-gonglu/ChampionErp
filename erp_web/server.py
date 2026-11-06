@@ -18,6 +18,12 @@ from .account_runtime import AccountRuntime
 logger = logging.getLogger(__name__)
 
 
+class ERPHTTPServer(ThreadingHTTPServer):
+    """网页与多账号并行建立连接时保留足够的接入队列。"""
+
+    request_queue_size = 128
+
+
 def main(*, on_ready: Callable[[str], None] | None = None,
          stop_event: threading.Event | None = None) -> None:
     # build_default_context() 构造 ErpDatabase：schema 初始化在构造期完成。
@@ -33,7 +39,7 @@ def main(*, on_ready: Callable[[str], None] | None = None,
         raise RuntimeError("请先运行 python -m erp_web.accounts init-admin 初始化管理员。")
     host = os.environ.get('ERP_BIND_HOST', '127.0.0.1')
     port = paths.web_port
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = ERPHTTPServer((host, port), Handler)
     server.account_runtime = accounts
     accounts.start()
     url = f"http://127.0.0.1:{server.server_port}/"

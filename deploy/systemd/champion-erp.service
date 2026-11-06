@@ -16,6 +16,7 @@ Environment=ERP_PUBLIC_URL=http://127.0.0.1:15050
 Environment=ERP_LOG_FILE=/var/lib/champion-erp/data/logs/backend.log
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=-/etc/champion-erp/newapi.env
 ExecStart=/opt/champion-erp/venv/bin/python -m erp_web.server
 Restart=on-failure
 RestartSec=5

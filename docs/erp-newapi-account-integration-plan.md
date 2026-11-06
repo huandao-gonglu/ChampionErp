@@ -1,6 +1,6 @@
 # ERP 与 New API 账号及计费接入调整方案
 
-状态：后续集成方案，待实施。以 [ERP 个人账号管理方案](personal-account-management-plan.md) 的实施结果为基础，增加 New API 接入；不替代或打断上一份方案。本次只修订本文，不修改业务代码或部署。
+状态：账号交接、个人入口与会话/用户状态联动已开发，已完成专项回归。New API 源码位于同级独立仓库；当前按用户确认的 `107.174.48.241` 内网验收范围部署，具体版本和实际验收见 [服务器部署记录](server-deployment.md)。正式 HTTPS 与官方收款不属于已验收结果。
 
 ## 1. 目标与职责
 
@@ -99,6 +99,6 @@ ERP 现有账号、密码哈希、用户 ID、个人空间、会话与业务记�
 
 复用现有业务测试，仅清理 New API 被替换的直接登录入口测试；保留 ERP 账号、密码及个人隔离测试。文档应记录开发回归与真实环境验收各自的结果，不把账号专项测试通过写成整套系统已经完成安全验收。
 
-当前文档交付仅检查方案与链接，不修改认证、账务代码或部署配置。
+源码与实施说明位于 `/Users/hdgl/work/new-api`。交接采用“New API 浏览器先生成关联码 → 当前 ERP 账号明确确认 → 固定内部接口交换一次性票据”，Electron 不需要与系统浏览器共享 Cookie。实际部署和回归结果以服务器记录为准。
 
 参考：[New API 认证说明](https://github.com/QuantumNous/new-api/blob/main/docs/authentication.md)、[用户处理器](https://github.com/QuantumNous/new-api/blob/main/controller/user.go)、[AGPL-3.0 许可证](https://github.com/QuantumNous/new-api/blob/main/LICENSE)、[阿里云 ECS 责任边界](https://help.aliyun.com/zh/ecs/user-guide/ecs-shared-responsibility-model)、[腾讯云责任边界](https://www.tencentcloud.com/zh/services/compliance)。主线材料用于确认方向，实际实施以固定版本为准。
