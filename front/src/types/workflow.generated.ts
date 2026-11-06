@@ -6,6 +6,22 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 5 as const
 
+export interface BackendDesktopCall {
+  id: string
+  operation: "browser.status" | "browser.open" | "browser.profile" | "collect.read" | "collect.verify" | "browser.ai.open" | "browser.ai.chat" | "canvas.check" | "canvas.edit" | "cli.run" | "cli.status" | "config.read" | "config.write" | "auth.open"
+  params: Record<string, unknown>
+  timeout: number
+}
+
+export interface BackendDesktopReply {
+  id: string
+  ok: boolean
+  result: Record<string, unknown>
+  error: string
+  error_code: string
+  outcome_unknown: boolean
+}
+
 export interface BackendAlibabaAuthorizationStatus {
   ok: boolean
   application_configured: boolean
@@ -354,6 +370,8 @@ export interface BackendAiModelConfig {
   capability_profiles?: Record<string, BackendAiCapabilityProfile>
   timeout_seconds?: number
   thinking_enabled?: boolean
+  local_connection_id?: string
+  local_config_fingerprint?: string
   browser_provider?: string
   browser_mode?: string
   browser_profile?: string

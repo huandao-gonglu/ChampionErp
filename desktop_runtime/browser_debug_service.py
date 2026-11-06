@@ -12,13 +12,13 @@ import sys
 import time
 import urllib.parse
 import webbrowser
+from .operation import check_cancellation, remaining_seconds
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
 
-from erp_web.context import get_context
-from erp_web.services.browser_connection_config import normalize_browser_proxy
-from erp_web.services.browser_debug_http import browser_debug_json
+from erp_shared.browser_connection_config import normalize_browser_proxy
+from desktop_runtime.browser_debug_http import browser_debug_json
 
 _browser_launch_lock = Lock()
 _SESSION_FILE = ".erp-browser-session.json"
@@ -120,40 +120,6 @@ def _close_managed_browser(port: int, profile_dir: Path, version: dict[str, Any]
         time.sleep(0.2)
     raise RuntimeError("专用浏览器未能退出，尚未切换显示状态；请关闭该专用浏览器后重试。")
 
-def pick_web_port(preferred_port: int, attempts: int = 20) -> int:
-    import socket
-
-    for port in range(preferred_port, preferred_port + attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind(("127.0.0.1", port))
-            except OSError:
-                continue
-            return port
-    raise RuntimeError(f"没有可用端口，已尝试从 {preferred_port} 开始的 {attempts} 个端口")
-
-
-def file_url(path: Path) -> str:
-    return f"/file?path={urllib.parse.quote(str(path), safe='')}"
-
-
-def parse_cookie_header(cookie: str, url: str) -> list[dict[str, str]]:
-    parsed = urllib.parse.urlparse(url)
-    domain = parsed.hostname or ""
-    cookies: list[dict[str, str]] = []
-    for part in cookie.split(";"):
-        if "=" not in part:
-            continue
-        name, value = part.split("=", 1)
-        name = name.strip()
-        value = value.strip()
-        if not name:
-            continue
-        cookies.append({"name": name, "value": value, "domain": domain, "path": "/"})
-    return cookies
-
-
 class CdpWebSocket:
     def __init__(self, websocket_url: str) -> None:
         parsed = urllib.parse.urlparse(websocket_url)
@@ -201,7 +167,16 @@ class CdpWebSocket:
     def _recv_exact(self, length: int) -> bytes:
         chunks = bytearray()
         while len(chunks) < length:
-            chunk = self.sock.recv(length - len(chunks))
+            check_cancellation()
+            deadline = getattr(self, '_call_deadline', None)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('Chrome DevTools 读取超时')
+            wait = min(0.5, deadline - time.monotonic()) if deadline is not None else 0.5
+            self.sock.settimeout(remaining_seconds(max(0.01, wait)))
+            try:
+                chunk = self.sock.recv(length - len(chunks))
+            except socket.timeout:
+                continue
             if not chunk:
                 raise RuntimeError("Chrome DevTools 连接已关闭")
             chunks.extend(chunk)
@@ -232,6 +207,8 @@ class CdpWebSocket:
         self, method: str, params: dict[str, Any] | None = None, timeout: float = 20,
         *, session_id: str = "", on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        check_cancellation()
+        timeout = remaining_seconds(timeout)
         message_id = self.next_id
         self.next_id += 1
         request = {"id": message_id, "method": method, "params": params or {}}
@@ -240,6 +217,8 @@ class CdpWebSocket:
         self._send_frame(json.dumps(request).encode("utf-8"))
         deadline = time.monotonic() + timeout
         previous_timeout = self.sock.gettimeout()
+        previous_deadline = getattr(self, "_call_deadline", None)
+        self._call_deadline = deadline
         try:
             while time.monotonic() < deadline:
                 self.sock.settimeout(max(0.01, deadline - time.monotonic()))
@@ -254,6 +233,7 @@ class CdpWebSocket:
             raise TimeoutError(f"{method} 超时") from None
         finally:
             self.sock.settimeout(previous_timeout)
+            self._call_deadline = previous_deadline
         raise TimeoutError(f"{method} 超时")
 
 
@@ -351,10 +331,8 @@ def open_auth_link_in_browser(url: str, browser: str = "default") -> dict[str, A
     return {"ok": True, "opened": True, "browser": "default"}
 
 
-def browser_debug_commands(port: int | None = None) -> dict[str, str]:
-    paths = get_context().paths
-    port = paths.browser_debug_port if port is None else port
-    profile = str(paths.browser_debug_profile_dir)
+def browser_debug_commands(port: int, profile_dir: Path) -> dict[str, str]:
+    profile = str(profile_dir)
     chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
     powershell_command = f'Start-Process "{chrome}" -ArgumentList \'--remote-debugging-port={port} --user-data-dir="{profile}"\''
     cmd_command = f'start chrome --remote-debugging-port={port} --user-data-dir="{profile}"'
@@ -380,5 +358,4 @@ __all__ = [
     "find_named_browser_path",
     "ensure_browser_debug_session",
     "open_auth_link_in_browser",
-    "pick_web_port",
 ]

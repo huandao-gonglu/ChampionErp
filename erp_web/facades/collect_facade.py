@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from typing import Any
 
 from erp_web.context import get_context
@@ -10,7 +7,7 @@ from erp_web.services import collect_service, config_service
 
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
 from erp_web.runtime_units.source_collect_verification import inspect_collection_verification
-from erp_web.runtime_units.source_collect_browser import open_browser_debug_session
+from erp_web.services.desktop_connection_service import call_desktop
 from erp_web.runtime_units.source_collect_workflows import (
     collect_1688_payload_service,
     collect_batch_products,
@@ -104,12 +101,10 @@ def clean_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def collect_from_browser_tab_payload(body: dict[str, Any]) -> ApiResponse:
-    debug_port = get_context().paths.browser_debug_port
     return collect_from_browser_tab(
         tab_url=str(body.get("tab_url") or ""),
         platform_hint=str(body.get("platform_hint") or ""),
         product_url=str(body.get("product_url") or body.get("url") or ""),
-        port=int(body.get("port") or debug_port),
         claim_platforms=body.get("platforms") if isinstance(body.get("platforms"), list) else None,
         save_only=bool(body.get("save_only")),
         browser_tab_id=str(body.get("browser_tab_id") or ""),
@@ -121,29 +116,17 @@ def collection_verification_payload(body: dict[str, Any]) -> ApiResponse:
 
 
 def open_browser_profile_payload() -> ResponseWithStatus:
-    profile_dir = get_context().paths.browser_debug_profile_dir
-    profile_dir.mkdir(parents=True, exist_ok=True)
     try:
-        if os.name == "nt":
-            os.startfile(str(profile_dir))  # type: ignore[attr-defined]
-        else:
-            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(profile_dir)])
-        return {"ok": True, "profile_dir": str(profile_dir)}, 200
+        return call_desktop('browser.profile'), 200
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "profile_dir": str(profile_dir)}, 400
+        return {'ok': False, 'error': str(exc)}, 400
 
 
 def open_1688_browser_payload() -> ResponseWithStatus:
-    debug_port = get_context().paths.browser_debug_port
     try:
-        open_browser_debug_session("https://www.1688.com/", debug_port, "1688")
-        return {
-            "ok": True,
-            "message": f"已用调试端口 {debug_port} 打开 1688 浏览器会话，请先登录后再采集。",
-            "port": debug_port,
-        }, 200
+        return call_desktop('browser.open'), 200
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 400
+        return {'ok': False, 'error': str(exc)}, 400
 
 
 def collect_extension_payload_response(body: dict[str, Any]) -> ResponseWithStatus:

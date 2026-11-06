@@ -185,7 +185,9 @@ class PydanticToolBridge:
                     if ctx.tool_call_approved
                     else frozenset(),
                 )
+            from .desktop_connection_service import current_desktop_connection, bind_desktop_connection
             metadata = dict(ctx.tool_call_metadata or {})
+            metadata.setdefault("desktop_connection", current_desktop_connection())
             if support is not None and writing:
                 unknown = support.store.unresolved_outcome(
                     support.conversation_id, definition.name, arguments
@@ -209,6 +211,7 @@ class PydanticToolBridge:
                     }
                 revision = support.version if support is not None else 1
                 metadata = {
+                    **metadata,
                     "summary": snapshot.summary,
                     "approval_revision": revision,
                     "approval_digest": approval_binding_digest(
@@ -258,14 +261,15 @@ class PydanticToolBridge:
                         },
                     }
             try:
-                output = self.execute(
-                    dependencies=ctx.deps,
-                    tool_name=definition.name,
-                    tool_call_id=str(ctx.tool_call_id or ""),
-                    arguments=arguments,
-                    round_number=ctx.run_step,
-                    execution_context=execution,
-                )
+                with bind_desktop_connection(metadata["desktop_connection"]):
+                    output = self.execute(
+                        dependencies=ctx.deps,
+                        tool_name=definition.name,
+                        tool_call_id=str(ctx.tool_call_id or ""),
+                        arguments=arguments,
+                        round_number=ctx.run_step,
+                        execution_context=execution,
+                    )
             except Exception:
                 if support is not None and writing:
                     support.store.mark_unknown(

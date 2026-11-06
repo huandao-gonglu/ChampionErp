@@ -266,7 +266,6 @@ def build_capability_binding_scope(
                             tab_url=tab_url,
                             platform_hint=platform_hint,
                             product_url=product_url,
-                            port=context.paths.browser_debug_port,
                             claim_platforms=list(claim_platforms) or None,
                             save_only=save_only,
                         )

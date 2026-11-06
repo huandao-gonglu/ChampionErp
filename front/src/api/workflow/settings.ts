@@ -1,3 +1,4 @@
+import { prepareLocalModel } from '@/utils/desktop'
 import {  apiClient } from '@/api/client'
 import type {
 
@@ -41,7 +42,9 @@ export async function fetchAiConfig(): Promise<AiPublicConfig> {
 }
 
 export async function saveAiConfig(config: UnknownRecord): Promise<AiPublicConfig> {
-  const response = await apiClient.post('/api/ai-config/save', { config })
+  const prepared = { ...config }
+  if (Array.isArray(config.ai_models)) prepared.ai_models = await Promise.all(config.ai_models.map(model => prepareLocalModel(asRecord(model))))
+  const response = await apiClient.post('/api/ai-config/save', { config: prepared })
   const data = asRecord(response.data)
   ensureOk(data, '保存 AI 配置失败')
   return { raw: asRecord(data.config) }
@@ -60,7 +63,7 @@ export async function testAiModel(
 ): Promise<AuthResult> {
   const response = await apiClient.post(
     '/api/test-ai-model',
-    { model },
+    { model: await prepareLocalModel(model) },
     { aiPresentationId: presentationId, ...(model.connection_type === 'browser' ? { timeout: 600_000 } : {}) },
   )
   return normalizeAuthResult(response.data)

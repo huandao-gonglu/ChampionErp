@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import CollectView from '../CollectView.vue'
 import type { CollectDiagnostics, CollectForm, Product } from '@/types/workflow'
 
@@ -126,4 +126,19 @@ describe('CollectView', () => {
     expect(wrapper.emitted('cancelVerification')).toHaveLength(1)
   })
 
+})
+
+
+it('网页不会展示采集浏览器控制，URL 采集使用 HTTP', async () => {
+  vi.stubGlobal('championDesktop', undefined)
+  const collectForm = { ...form }
+  const wrapper = mount(CollectView, { props: { form: collectForm, diagnostics, product, loading: false,
+    error: '', batchRows: [], browserStatus: null, browserRows: [] } })
+  await wrapper.get('[data-testid="collect-method-browser"]').trigger('click')
+  expect(wrapper.text()).toContain('请使用桌面端')
+  expect(wrapper.findAll('button').some(button => button.text() === '打开采集浏览器')).toBe(false)
+  await wrapper.get('[data-testid="collect-method-url"]').trigger('click')
+  expect(collectForm.mode).toBe('http')
+  wrapper.unmount()
+  vi.unstubAllGlobals()
 })

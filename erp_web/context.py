@@ -62,14 +62,11 @@ class AppPaths:
     source_dir: Path
     upload_dir: Path
     collect_debug_dir: Path
-    browser_profile_dir: Path
-    browser_debug_profile_dir: Path
     front_dir: Path
     front_dist_dir: Path
     front_dist_index_path: Path
     web_template_path: Path
     web_port: int
-    browser_debug_port: int
 
     @classmethod
     def from_app_dir(cls, app_dir: Path) -> "AppPaths":
@@ -88,8 +85,10 @@ class AppPaths:
         logs_dir = data_dir / "logs"
         images_dir = data_dir / "images"
         output_dir = logs_dir
-        front_dir = app_dir / "front"
-        front_dist_dir = app_dir / "erp_web" / "static" / "dist"
+        # 前端属于程序资源；ERP_APP_DIR 只选择业务数据和配置根目录。
+        package_dir = Path(__file__).resolve().parent
+        front_dir = package_dir.parent / "front"
+        front_dist_dir = package_dir / "static" / "dist"
         return cls(
             app_dir=app_dir,
             dist_dir=app_dir / "dist",
@@ -108,19 +107,11 @@ class AppPaths:
             source_dir=images_dir / "source",
             upload_dir=images_dir / "uploads",
             collect_debug_dir=cache_dir / "collect_debug",
-            browser_profile_dir=app_dir / "browser_profile" / "1688",
-            browser_debug_profile_dir=Path(
-                os.environ.get(
-                    "ERP_BROWSER_PROFILE_DIR",
-                    str(app_dir / "browser_profile" / "debug"),
-                )
-            ),
             front_dir=front_dir,
             front_dist_dir=front_dist_dir,
             front_dist_index_path=front_dist_dir / "index.html",
             web_template_path=front_dir / "index.html",
             web_port=int(os.environ.get("ERP_PORT", "5000")),
-            browser_debug_port=int(os.environ.get("ERP_BROWSER_DEBUG_PORT", "9222")),
         )
 
 
@@ -171,8 +162,19 @@ class AppContext:
         self._yandex_logistics = None
         self._pricing_cache = None
         self._image_batches = None
+        self._desktop_connections = None
         self._wechat = None
         self._wechat_store = None
+
+    @property
+    def desktop_connections(self):
+        with self._lazy_lock:
+            if self._closed:
+                raise RuntimeError("AppContext 已关闭，不能再访问桌面连接。")
+            if self._desktop_connections is None:
+                from erp_web.services.desktop_connection_service import DesktopConnections
+                self._desktop_connections = DesktopConnections()
+            return self._desktop_connections
 
     @property
     def wechat_store(self):
@@ -497,6 +499,8 @@ class AppContext:
             fulfillment = self._fulfillment
             alibaba_self_purchases = self._alibaba_self_purchases
             wechat = self._wechat
+        if self._desktop_connections is not None:
+            self._desktop_connections.close()
         if wechat is not None:
             wechat.close()
         if task_queue is not None:
@@ -520,6 +524,8 @@ _context: AppContext | None = None
 def build_default_context() -> AppContext:
     """Build the context from the repository layout (current APP_DIR logic)."""
     paths = AppPaths.from_app_dir(_DEFAULT_APP_DIR)
+    if (paths.app_dir / "migration-incomplete").exists():
+        raise RuntimeError("业务数据迁移尚未完成，请检查迁移报告后再启动。")
     return AppContext(paths=paths, db=ErpDatabase(paths.db_path))
 
 

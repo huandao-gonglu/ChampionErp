@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -52,9 +53,15 @@ def validate_request_metadata(handler: BaseHTTPRequestHandler) -> None:
     """
 
     host = _header(handler, "Host")
-    if host and not _loopback_hostname(_parse_host(host)):
+    public = os.environ.get('ERP_PUBLIC_URL', '').strip()
+    public_host = urllib.parse.urlsplit(public).hostname if public else None
+    allowed_hosts = {item.strip().lower() for item in os.environ.get('ERP_ALLOWED_HOSTS', '').split(',') if item.strip()}
+    if public_host:
+        allowed_hosts.add(public_host.lower())
+    hostname = _parse_host(host)
+    if host and not (_loopback_hostname(hostname) or (hostname and hostname.lower() in allowed_hosts)):
         raise RequestValidationError(
-            "Host 必须指向本机回环地址",
+            "Host 未在允许的后端地址中",
             status_code=403,
             error_code="UNTRUSTED_HOST",
         )
@@ -66,8 +73,12 @@ def validate_request_metadata(handler: BaseHTTPRequestHandler) -> None:
             and _header(handler, "Sec-Fetch-Dest") == "document"):
         return
 
+    origin = _header(handler, 'Origin')
+    allowed_origins = {item.strip().rstrip('/') for item in os.environ.get('ERP_ALLOWED_ORIGINS', '').split(',') if item.strip()}
+    if public:
+        allowed_origins.add(public.rstrip('/'))
     fetch_site = _header(handler, "Sec-Fetch-Site").lower()
-    if fetch_site == "cross-site":
+    if fetch_site == "cross-site" and origin.rstrip('/') not in allowed_origins:
         raise RequestValidationError(
             "不允许浏览器跨站请求",
             status_code=403,
@@ -90,7 +101,7 @@ def validate_request_metadata(handler: BaseHTTPRequestHandler) -> None:
         parsed.scheme not in {"http", "https"}
         or parsed.username is not None
         or parsed.password is not None
-        or not _loopback_hostname(parsed.hostname)
+        or not (_loopback_hostname(parsed.hostname) or origin.rstrip('/') in allowed_origins)
         or parsed.path not in {"", "/"}
         or parsed.query
         or parsed.fragment

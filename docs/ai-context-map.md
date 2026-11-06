@@ -73,16 +73,30 @@ GET `/api/alibaba/authorization`、POST `/start`、`/complete`（后两者位于
 `/api/alibaba/crossborder/authorization`，其中 `test-product` 只读验证商品规格。两者共用官方回调入口，按一次性 state 分开核验；桌面分发不得携带公司 AppSecret。
 部署、迁移限制、协议依据及验证见 [1688 授权](alibaba-authorization.md)。
 
-### 独立桌面版
+### 桌面与统一业务后端
 
-`front/desktop/backend.cjs` 管理自带后端进程与就绪管道；`erp_web/desktop.py`
-在导入业务模块前设置独立 `ERP_APP_DIR`、随机 HTTP 端口与专用浏览器端口，
-再复用 `server.main(on_ready=..., stop_event=...)`。父进程退出或管道断开会关闭后端。
-发行版不使用开发 URL 回退，数据目录与程序包分开；平台类目缓存也必须遵循 `ERP_APP_DIR`。
-`scripts/build_desktop_backend.py` / `desktop_backend.spec` 是后端构建入口，
-只收集代码、依赖及指定默认资源。开发配置搬迁是一次性本机操作，不提供产品导入流程。
-构建和隔离回归见
-[独立桌面版](desktop-packaging.md)、`tests/test_desktop.py` 与 `front/desktop/backend.test.cjs`。
+网页和 Electron 共用 Vue 业务界面与统一后端；前端程序资源跟随代码目录，`ERP_APP_DIR` 仅选择业务数据/配置目录。`front/desktop/main.cjs` 只提供前端代理、
+本机执行器生命周期和当前桌面连接；`runtime.cjs` / `connection.cjs` 分别持有进程管道和后端等待通道。
+`desktop_runtime/__main__.py` 不导入 `erp_web`、数据库或后台业务服务。
+浏览器/CDP、Gemini 登录和 CLI 实现在 `desktop_runtime/`；无副作用契约、站点识别和页面提取在 `erp_shared/`。
+
+`http_route_units/desktop_routes.py` → `facades/desktop_facade.py` →
+`services/desktop_connection_service.py` 只做进程内调用关联。普通调用不创建领域 Job；
+断连、取消和期限终止等待，已发送操作不重放。HTTP 的当前桌面绑定由 Electron 代理注入；
+图片批次沿用原 `copy_context`，原生工具审批/Deferred 的 metadata 只补充任务执行需要的连接引用，
+现有 Job 和 Agent 生命周期仍由原 owner / Pydantic AI 负责。
+
+`source_collect_workflows.collect_from_browser_tab` 调用本机 `collect.read`，后端才读目标商品、
+规范化、登记图片并经 `ProductStore` 保存；验证检查也走同一连接。
+采集素材逐张交接，`desktop_asset_service` 复用图片服务生成后端引用。
+Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model / Direct / Factory 不变。
+`desktop_model_config_service` 维护业务连接引用和指纹，具体命令、资料、代理由本机配置 owner 管理；
+配置写入只通过来源受限的 preload IPC，后端调用通道不能修改本机命令。
+
+`requirements-desktop.txt` / `scripts/build_desktop_runtime.py` / `scripts/desktop_runtime.spec`
+是本机执行器构建入口，不冻结完整 ERP 后端。
+`scripts/migrate_desktop_business.py` 提供先备份的离线一次性迁移与关联检查，浏览器资料留在本机。
+部署、配置、迁移门禁和隔离验收见 [桌面与统一后端](desktop-packaging.md)；当前服务器、访问通道及备份位置见 [服务器部署记录](server-deployment.md)。
 
 ### 微信 ClawBot 对话窗口
 
@@ -116,7 +130,7 @@ GET `/api/alibaba/authorization`、POST `/start`、`/complete`（后两者位于
   `not_sent` 本地拒绝，释放租约且不触发写入结果未知阻断；平台错误由 `schemas/platform_errors.py` 持有。
 - `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传与采集请求均接入。
-  本机 Chrome 的版本检查、标签页查询/创建及采集验证轮询统一经 `services/browser_debug_http.py`；
+  本机 Chrome 的版本检查、标签页查询/创建及采集验证轮询统一经 `desktop_runtime/browser_debug_http.py`；
   只访问固定回环地址的 CDP 接口，禁用代理与重定向，保留任务取消、期限及响应大小限制。
   这些本地控制请求不读写外部请求审计或阻断；已有历史记录保留，但不再影响浏览器连接。
   远端网页和图片下载仍经外部请求管理器，不按 IP 对业务请求作通用豁免。
@@ -160,7 +174,7 @@ GET `/api/alibaba/authorization`、POST `/start`、`/complete`（后两者位于
 - `/api/collect-from-browser-tab` 的显式 URL 或标签 ID 只选择指定目标；`save_only` 只保存 HTML/截图，不解析、不下载商品图片、不修改商品。验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
 - `source_collect_browser.cdp_target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。打开操作直接返回目标句柄，采集不重复查找或强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
-- 1688 采集与浏览器 AI 共用 `browser_debug_service.ensure_browser_debug_session`：检测连接、查找本机 Chrome/Edge、使用指定资料目录启动并等待调试端口。调用方分别提供目录和端口；Gemini 默认使用 `browser_profile/ai/gemini/<profile>`，不共用 1688 登录资料，也不依赖 BitBrowser。
+- 1688 采集与浏览器 AI 共用 `desktop_runtime.browser_debug_service.ensure_browser_debug_session`：检测连接、查找本机 Chrome/Edge、使用指定资料目录启动并等待调试端口。调用方分别提供目录和端口；Gemini 默认使用 `browser_profile/ai/gemini/<profile>`，不共用 1688 登录资料，也不依赖 BitBrowser。
   `browser_connection_config` 纯校验代理地址；浏览器 AI 的可选 `browser_proxy` 只在专用浏览器启动时生效，修改后需关闭专用窗口再重开，不更改采集或后端网络配置。
 
 ## 草稿描述
@@ -399,7 +413,7 @@ Responses 流经 `services/ai_responses_stream.py` 校验 SDK 已解码的错误
 浏览器 AI 不属于 API Provider，继续使用独立适配器。
 Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独立执行；
 复用浏览器连接和页面原生模型转发，不进入 API Direct Model，也不创建 Agent loop。
-`gemini_browser_session` 仅编排托管 Chrome 的隐藏执行、交互登录与请求前恢复；
+`desktop_runtime/gemini_browser_session` 仅编排托管 Chrome 的隐藏执行、交互登录与请求前恢复；
 浏览器进程切换由共享调试服务核对实例归属后完成，沿用同一 Profile，不读取或复制凭据。
 登录等待期间图片领域任务保持执行中，未通过登录检查不发送图片；不另建 Deferred 或任务恢复协议。
 首次图像编辑能力测试（尚未启用该能力）直接显示专用 Google 登录入口，不先等待隐藏 Canvas 页面；

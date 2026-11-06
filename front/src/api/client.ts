@@ -1,4 +1,5 @@
 import { observeExternalOperations } from '@/utils/externalRequestNotices'
+import { hasLocalOperations } from '@/utils/desktop'
 import axios, { AxiosError } from 'axios'
 import { uiLocaleOption } from '@/constants/locales'
 import { normalizeApiError } from '@/utils/apiError'
@@ -32,6 +33,7 @@ export const apiClient = axios.create({
 })
 
 apiClient.interceptors.request.use((config) => {
+  if (hasLocalOperations()) config.baseURL = ''
   config.headers.set('Accept-Language', uiLocaleOption(localStorage.getItem('uiLocale') || localStorage.getItem('locale')).acceptLanguage)
   config.headers.set('X-Timezone', Intl.DateTimeFormat().resolvedOptions().timeZone)
   if (config.aiPresentationId) {

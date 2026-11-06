@@ -13,7 +13,7 @@ from erp_web.product_model import (
 )
 from erp_web.product_model.common import normalize_list
 from erp_web.marketplace_registry import marketplace_spec
-from erp_web.services.browser_debug_service import file_url
+from erp_web.services.local_urls import file_url
 
 
 if TYPE_CHECKING:

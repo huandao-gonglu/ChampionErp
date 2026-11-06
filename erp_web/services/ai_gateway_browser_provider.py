@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from . import ai_gateway_probe as probe_runtime
-from . import ai_model_config, browser_ai_runtime
-from .ai_gateway_parsing import parse_json_text
+from . import ai_model_config
+from . import desktop_browser_service as browser_ai_runtime
+from erp_shared.ai_parsing import parse_json_text
 from .ai_gateway_provider_profiles import non_http_capability_profile
 from .ai_gateway_provider_prompting import _browser_prompt
 from .ai_gateway_provider_types import AiChatRequest, AiImageEditRequest
@@ -210,20 +211,22 @@ class BrowserAiProvider(AiChatProvider):
         probe_options = _probe_options(raw)
         requested_capabilities = probe_options["capabilities"] or ai_model_config.normalize_capabilities(model.get("capabilities"))
         probe_requested = raw.get("probe_capabilities", True) is not False
+        from .desktop_model_config_service import local_models_view
+        connection_model = local_models_view([model])[0]
         canvas = is_canvas_model(model)
         if canvas:
-            check_canvas_connection(
+            connection = check_canvas_connection(
                 app_dir, model, min(timeout, 45),
                 force_login=(
                     probe_requested
-                    and browser_ai_runtime.normalize_browser_mode(model.get("browser_mode")) == "managed_profile"
+                    and browser_ai_runtime.normalize_browser_mode(connection_model.get("browser_mode")) == "managed_profile"
                     and ai_model_config.CAP_IMAGE_EDIT not in ai_model_config.normalize_capabilities(model.get("capabilities"))
                 ),
             )
             page = browser_ai_runtime.BrowserAiRunResult(
-                text="", image_urls=[], provider="gemini", browser_url=browser_ai_runtime.browser_ai_url(model),
-                profile_dir=str(browser_ai_runtime.browser_ai_profile_dir(app_dir, model)),
-                port=browser_ai_runtime.browser_ai_port(model), ready=True,
+                text="", image_urls=[], provider="gemini", browser_url=connection.get("browser_url") or browser_ai_runtime.browser_ai_url(connection_model),
+                profile_dir=connection["profile_dir"],
+                port=connection["port"], ready=True,
             )
         else:
             page = browser_ai_runtime.open_browser_ai_page(app_dir, model, timeout=min(timeout, 45))
@@ -255,8 +258,8 @@ class BrowserAiProvider(AiChatProvider):
             "provider": model.get("provider"),
             "connection_type": ai_model_config.CONNECTION_TYPE_BROWSER,
             "browser_provider": browser_ai_runtime.normalize_browser_provider(model.get("browser_provider")),
-            "browser_mode": browser_ai_runtime.normalize_browser_mode(model.get("browser_mode")),
-            "browser_profile": str(model.get("browser_profile") or "default"),
+            "browser_mode": browser_ai_runtime.normalize_browser_mode(connection_model.get("browser_mode")),
+            "browser_profile": str(connection_model.get("browser_profile") or "default"),
             "browser_url": page.browser_url,
             "profile_dir": page.profile_dir,
             "port": page.port,

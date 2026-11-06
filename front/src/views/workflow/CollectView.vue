@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { hasLocalOperations } from '@/utils/desktop'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import CollectBatchManager from './CollectBatchManager.vue'
 import BrowserCollector from './BrowserCollector.vue'
@@ -33,7 +34,8 @@ const emit = defineEmits<{
 
 type CollectTab = 'manual' | 'browser' | 'api' | 'url'
 
-const activeCollectTab = ref<CollectTab>('browser')
+const localOperations = hasLocalOperations()
+const activeCollectTab = ref<CollectTab>(localOperations ? 'browser' : 'manual')
 const advancedOpen = ref(false)
 const transientAlibabaCookie = ref('')
 
@@ -54,7 +56,7 @@ const panelStyle = {
 }
 
 const urlCollectModes = [
-  { value: 'browser', label: '浏览器会话优先' },
+  ...(localOperations ? [{ value: 'browser', label: '浏览器会话' }] : []),
   { value: 'http', label: 'HTTP 抓取' },
 ] as const
 
@@ -76,7 +78,7 @@ function selectCollectTab(tab: CollectTab) {
     props.form.mode = 'api'
   }
   if (tab === 'url') {
-    if (['manual', 'extension', 'api'].includes(props.form.mode)) props.form.mode = 'browser'
+    if (['manual', 'extension', 'api'].includes(props.form.mode) || (!localOperations && props.form.mode === 'browser')) props.form.mode = localOperations ? 'browser' : 'http'
     props.form.platform = 'unknown'
   }
 }
@@ -144,7 +146,7 @@ function saveSettings() {
 
     <section class="grid gap-6 2xl:grid-cols-[minmax(0,1fr)_320px]">
       <main class="space-y-6">
-        <section v-if="activeCollectTab === 'manual'" class="card space-y-6">
+        <section v-if="activeCollectTab === 'manual'" data-testid="collect-active-card" class="card space-y-6">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 class="card-title">手动 / HTML 导入</h3>
@@ -216,7 +218,10 @@ function saveSettings() {
           </div>
         </section>
 
-        <BrowserCollector v-else-if="activeCollectTab === 'browser'" :status="props.browserStatus" :rows="props.browserRows" :loading="props.loading" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrls) => emit('collectFromBrowser', saveOnly, tabUrls)" />
+        <template v-else-if="activeCollectTab === 'browser'">
+          <p v-if="!localOperations" role="status" class="card text-sm text-slate-600 dark:text-accent-200">浏览器采集需要本机登录状态，请使用桌面端打开采集浏览器。网页端可使用 API、HTTP 或手动导入。</p>
+          <BrowserCollector v-else :status="props.browserStatus" :rows="props.browserRows" :loading="props.loading" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrls) => emit('collectFromBrowser', saveOnly, tabUrls)" />
+        </template>
 
         <section v-else-if="activeCollectTab === 'api'" data-testid="collect-active-card" class="card space-y-6">
           <div class="flex flex-wrap items-start justify-between gap-3">

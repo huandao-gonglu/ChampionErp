@@ -176,6 +176,12 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    '/api/desktop/connect': RequestContract(),
+    '/api/desktop/poll': RequestContract(),
+    '/api/desktop/disconnect': RequestContract(),
+    '/api/desktop/result': RequestContract(fields={'id': STRING, 'ok': BOOLEAN, 'result': OBJECT, 'error': STRING, 'error_code': STRING, 'outcome_unknown': BOOLEAN}, required=('id', 'ok')),
+    '/api/desktop/asset': RequestContract(fields={'id': STRING, 'asset': OBJECT}, required=('id', 'asset')),
+
     "/api/system-settings/forbidden-categories/import": _contract(
         fields={"platform": FieldRule("enum", choices=frozenset({"yandex"})), "filename": STRING, "content_base64": STRING},
         required=("platform", "filename", "content_base64"),

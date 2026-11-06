@@ -1384,7 +1384,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             url = "https://detail.1688.com/offer/123456.html"
             with patch.object(
                 source_collect_workflows,
-                "fetch_page_html_with_status",
+                "fetch_url_html_with_status",
                 return_value=("", ""),
             ):
                 result = source_collect_workflows.collect_source_product(url, mode="http", platform="1688", claim_platforms=["mercadolibre"])

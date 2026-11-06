@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 from typing import Any
 
+from erp_shared.desktop import LOCAL_MODEL_FIELDS
 from . import ai_generation_settings, ai_provider_catalog
-from .browser_connection_config import normalize_browser_proxy
+from erp_shared.browser_connection_config import normalize_browser_proxy
 from erp_web.schemas.config import AiBrowserPreset
 
 CONNECTION_TYPE_API = "api"
@@ -372,6 +372,12 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         browser_proxy = normalize_browser_proxy(raw.get("browser_proxy"))
         if browser_proxy:
             normalized["browser_proxy"] = browser_proxy
+    if connection_type in {CONNECTION_TYPE_CLI, CONNECTION_TYPE_BROWSER} and raw.get('local_connection_id'):
+        normalized['local_connection_id'] = str(raw['local_connection_id'])
+        normalized['local_config_fingerprint'] = str(raw.get('local_config_fingerprint') or '')
+        if not any(key in raw for key in LOCAL_MODEL_FIELDS):
+            for key in LOCAL_MODEL_FIELDS:
+                normalized.pop(key, None)
     image_capable = model_has_image_capability(normalized)
     for key in ("quality", "size"):
         value_for_key = raw.get(key)
@@ -525,6 +531,9 @@ def model_configuration_fingerprint(model: dict[str, Any]) -> str:
         "connection_type": connection_type,
         "model": model_name(model),
     }
+    if connection_type in {CONNECTION_TYPE_CLI, CONNECTION_TYPE_BROWSER} and model.get('local_connection_id'):
+        payload.update({key: model.get(key, '') for key in ('local_connection_id', 'local_config_fingerprint', 'cli_tool', 'browser_provider')})
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     if connection_type == CONNECTION_TYPE_API:
         if isinstance(model.get("thinking_enabled"), bool):
             payload["thinking_enabled"] = model["thinking_enabled"]
@@ -703,7 +712,7 @@ def local_cli_tool_status() -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     for tool in AI_CLI_TOOLS:
         command = default_cli_command(tool)
-        path = shutil.which(command) if command else ""
+        path = ""
         tools.append(
             {
                 "value": tool,

@@ -10,13 +10,7 @@ IMAGE_USAGES = ("main", "detail", "size", "scene", "package", "selling_point", "
 SOURCE_IMAGE_ORIGINS = {"source", "amazon", "1688", "browser", "html_import", "manual", "extension"}
 
 
-def normalize_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if value is None:
-        return []
-    return [line.strip() for line in str(value).splitlines() if line.strip()]
-
+from erp_shared.text import normalize_list
 
 _DIMENSION_NUMBER = r"[0-9]+(?:[.,][0-9]+)?"
 _DIMENSION_UNIT = r"(?:毫米|厘米|英寸|mm|cm|inches?|inch|in|m|米)"

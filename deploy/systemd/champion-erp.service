@@ -1,0 +1,33 @@
+[Unit]
+Description=Champion ERP 统一业务后端
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=champion-erp
+Group=champion-erp
+WorkingDirectory=/opt/champion-erp/current
+Environment=ERP_APP_DIR=/var/lib/champion-erp
+Environment=ERP_BIND_HOST=127.0.0.1
+Environment=ERP_PORT=5050
+Environment=ERP_NO_BROWSER=1
+Environment=ERP_PUBLIC_URL=http://127.0.0.1:15050
+Environment=ERP_LOG_FILE=/var/lib/champion-erp/data/logs/backend.log
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/champion-erp/venv/bin/python -m erp_web.server
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+SuccessExitStatus=130 SIGINT
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

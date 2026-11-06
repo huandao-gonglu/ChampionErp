@@ -111,6 +111,7 @@ def test_business_endpoints_are_capability_or_internal_only() -> None:
         "静态资源",
         "浏览器调试",
         "AI 会话运输",
+        "本机连接协议",
     }
     allowed_business_exclusions = {
         ("POST", "/api/mercadolibre/notifications"),

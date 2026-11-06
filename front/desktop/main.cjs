@@ -4,7 +4,9 @@ const http = require('node:http')
 const https = require('node:https')
 const path = require('node:path')
 const { URL } = require('node:url')
-const { backendExecutable, startBackend } = require('./backend.cjs')
+const { runtimeExecutable, startRuntime } = require('./runtime.cjs')
+const { normalizeBackendUrl, connectDesktop } = require('./connection.cjs')
+const { registerLocalConfig } = require('./local-config.cjs')
 const { registerLicenseDirectory } = require('./licenses.cjs')
 
 if (app.isPackaged) {
@@ -34,11 +36,12 @@ const BACKEND_PROXY_PREFIXES = [
   '/file',
   '/auth/mercadolibre',
   '/auth/ozon',
+  '/auth/alibaba',
 ]
 
 let frontendServer
-let backend
-let packagedBackendUrl
+let runtime
+let desktopConnection
 let quitting = false
 
 app.on('second-instance', () => {
@@ -49,40 +52,40 @@ app.on('second-instance', () => {
   }
 })
 
-async function initializePackagedBackend() {
+async function initializeDesktop() {
+  // 沿用原桌面资料根目录，浏览器登录资料不搬入统一后端。
   const dataDir = path.join(app.getPath('userData'), 'backend')
-  const executable = backendExecutable(process.resourcesPath)
-  backend = startBackend(executable, dataDir, {
-    onUnexpectedExit: (error) => {
-      dialog.showErrorBox('Champion ERP 后端已停止', error.message)
-      app.quit()
-    },
+  const options = { onUnexpectedExit: (error) => {
+    void desktopConnection?.stop()
+    dialog.showErrorBox('Champion ERP 本机执行器已停止', error.message)
+  } }
+  if (app.isPackaged) runtime = startRuntime(runtimeExecutable(process.resourcesPath), dataDir, options)
+  else {
+    const root = path.resolve(__dirname, '../..')
+    const python = path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+    runtime = startRuntime(python, dataDir, { ...options, cwd: root, args: ['-m', 'desktop_runtime'] })
+  }
+  await runtime.started
+  desktopConnection = await connectDesktop(getBackendBaseUrl(), runtime, {
+    onDisconnected: (error) => dialog.showErrorBox('Champion ERP 本机连接已断开', `${error.message}。请检查网络后重新打开桌面程序。`),
   })
-  packagedBackendUrl = await backend.started
-  const menu = Menu.buildFromTemplate([
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     { label: '文件', submenu: [
-      { label: '打开数据文件夹', click: () => { void shell.openPath(dataDir) } },
+      { label: '打开本机配置文件夹', click: () => { void shell.openPath(dataDir) } },
       { role: 'quit', label: '退出' },
     ] },
-    { role: 'editMenu', label: '编辑' },
-    { role: 'viewMenu', label: '视图' },
-    { role: 'windowMenu', label: '窗口' },
-  ])
-  Menu.setApplicationMenu(menu)
+    { role: 'editMenu', label: '编辑' }, { role: 'viewMenu', label: '视图' }, { role: 'windowMenu', label: '窗口' },
+  ]))
 }
 
 function getBackendBaseUrl() {
-  if (app.isPackaged) {
-    if (!packagedBackendUrl) throw new Error('桌面后端尚未就绪。')
-    return packagedBackendUrl
-  }
-  const explicitUrl =
-    process.env.CHAMPION_ERP_BACKEND_URL ||
-    process.env.ERP_DESKTOP_BACKEND_URL ||
-    process.env.VITE_DEV_PROXY_TARGET
-  if (explicitUrl) return explicitUrl.replace(/\/+$/, '')
-  return `http://127.0.0.1:${process.env.ERP_PORT || '5000'}`
+  const explicitUrl = process.env.CHAMPION_ERP_BACKEND_URL || process.env.ERP_DESKTOP_BACKEND_URL || process.env.VITE_DEV_PROXY_TARGET
+  if (explicitUrl) return normalizeBackendUrl(explicitUrl)
+  const configPath = path.join(app.getPath('userData'), 'connection.json')
+  if (fs.existsSync(configPath)) return normalizeBackendUrl(JSON.parse(fs.readFileSync(configPath, 'utf8')).backend_url)
+  if (!app.isPackaged) return `http://127.0.0.1:${process.env.ERP_PORT || '5000'}`
+  throw new Error(`请在 ${configPath} 设置 backend_url，或通过 CHAMPION_ERP_BACKEND_URL 指定统一业务后端地址。`)
 }
 
 function getFrontendRoot() {
@@ -157,9 +160,17 @@ function serveFrontend(req, res, requestUrl, frontendRoot) {
 }
 
 function proxyToBackend(req, res, backendBaseUrl) {
-  const targetUrl = new URL(req.url || '/', `${backendBaseUrl}/`)
+  const requestPath = new URL(req.url || '/', 'http://desktop.invalid')
+  const targetUrl = new URL(backendBaseUrl)
+  targetUrl.pathname = requestPath.pathname
+  targetUrl.search = requestPath.search
   const transport = targetUrl.protocol === 'https:' ? https : http
   const headers = { ...req.headers, host: targetUrl.host }
+  // 当前连接只由主进程注入，不能由页面选择或伪造。
+  delete headers['x-champion-desktop']
+  if (desktopConnection?.id) headers['x-champion-desktop'] = desktopConnection.id
+  if (headers.origin) headers.origin = new URL(backendBaseUrl).origin
+  delete headers['sec-fetch-site']
 
   const proxyReq = transport.request(
     targetUrl,
@@ -174,6 +185,7 @@ function proxyToBackend(req, res, backendBaseUrl) {
   )
 
   proxyReq.on('error', (error) => {
+    if (res.headersSent || res.destroyed) { res.destroy(error); return }
     const message = JSON.stringify({
       ok: false,
       error: `后端未连接：${backendBaseUrl}`,
@@ -186,6 +198,8 @@ function proxyToBackend(req, res, backendBaseUrl) {
     res.end(message)
   })
 
+  req.on('aborted', () => proxyReq.destroy())
+  res.on('close', () => { if (!res.writableEnded) proxyReq.destroy() })
   req.pipe(proxyReq)
 }
 
@@ -195,6 +209,17 @@ function startFrontendServer() {
 
   frontendServer = http.createServer((req, res) => {
     const requestUrl = new URL(req.url || '/', 'http://127.0.0.1')
+    const ownOrigin = `http://127.0.0.1:${frontendServer.address().port}`
+    if (req.headers.host !== new URL(ownOrigin).host ||
+        (req.headers.origin && req.headers.origin !== ownOrigin) || req.headers['sec-fetch-site'] === 'cross-site') {
+      send(res, 403, '请求来源无效', 'text/plain; charset=utf-8')
+      return
+    }
+    // 传输协议只供主进程使用，渲染页面不能创建或接管桌面连接。
+    if (requestUrl.pathname.startsWith('/api/desktop/')) {
+      send(res, 403, '不允许访问桌面连接协议', 'text/plain; charset=utf-8')
+      return
+    }
     if (shouldProxy(requestUrl.pathname)) {
       proxyToBackend(req, res, backendBaseUrl)
       return
@@ -215,7 +240,7 @@ function startFrontendServer() {
 }
 
 async function createWindow() {
-  const { url, backendBaseUrl } = await startFrontendServer()
+  const { url } = await startFrontendServer()
   const win = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -231,6 +256,7 @@ async function createWindow() {
     },
   })
 
+  registerLocalConfig({ ipcMain, win, frontendUrl: url, runtime })
   registerLicenseDirectory({
     ipcMain, shell, win, frontendUrl: url,
     directory: path.join(app.isPackaged ? process.resourcesPath : getFrontendRoot(), 'licenses'),
@@ -250,7 +276,7 @@ async function createWindow() {
   })
 
   win.webContents.on('will-navigate', (event, nextUrl) => {
-    if (nextUrl.startsWith(url) || nextUrl.startsWith(backendBaseUrl)) return
+    if (new URL(nextUrl).origin === new URL(url).origin) return
     event.preventDefault()
     shell.openExternal(nextUrl)
   })
@@ -260,7 +286,7 @@ async function createWindow() {
 
 app.whenReady().then(async () => {
   if (!ownsInstance) return
-  if (app.isPackaged) await initializePackagedBackend()
+  await initializeDesktop()
   await createWindow()
 }).catch((error) => {
   dialog.showErrorBox('Champion ERP 启动失败', error instanceof Error ? error.message : String(error))
@@ -276,9 +302,9 @@ app.on('before-quit', (event) => {
     frontendServer.close()
     frontendServer = undefined
   }
-  if (backend && !quitting) {
+  if (runtime && !quitting) {
     event.preventDefault()
     quitting = true
-    void backend.stop().finally(() => app.quit())
+    void (async () => { await desktopConnection?.stop(); await runtime.stop() })().finally(() => app.quit())
   }
 })

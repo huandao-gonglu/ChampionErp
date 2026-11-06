@@ -421,7 +421,8 @@ def edit_images(
 def test_ai_model(app_dir: Path | str, model: dict[str, Any]) -> dict[str, Any]:
     config_service.load_env(app_dir)
     raw_model = model if isinstance(model, dict) else {}
-    normalized = ai_model_config.normalize_ai_model(raw_model)
+    from .desktop_model_config_service import prepare_local_model
+    normalized = ai_model_config.normalize_ai_model(prepare_local_model(raw_model))
     connection_type = ai_model_config.model_connection_type(normalized)
     if connection_type == ai_model_config.CONNECTION_TYPE_API:
         return test_api_model(app_dir, normalized, raw_model)

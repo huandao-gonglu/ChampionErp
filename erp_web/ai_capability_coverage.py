@@ -93,6 +93,10 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method='POST', path='/api/desktop/' + suffix,
+        business_domain='本机连接协议', disposition='excluded',
+        reason='仅 Electron 主进程使用的调用关联与素材交接；模型不能选择桌面或消费传输协议。')
+      for suffix in ('connect', 'poll', 'result', 'asset', 'disconnect')),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
         reason="1688 买家 OAuth 状态、官方登录及一次性回调只供受信界面与授权服务使用，不向模型开放凭据操作。") for method, path in (
         ("GET", "/api/alibaba/crossborder/authorization"),

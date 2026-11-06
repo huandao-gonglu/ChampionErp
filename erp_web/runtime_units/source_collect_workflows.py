@@ -17,21 +17,13 @@ from erp_web.product_model.common import normalize_list
 from erp_web.services import collect_service, html_extract_service, image_service
 from erp_web.stores.product_store import normalize_product_fields
 
-from .source_collect_browser import (
-    browser_debug_status,
-    choose_browser_tab,
-    fetch_1688_page_snapshot_with_browser_session,
-    fetch_page_html,
-    fetch_page_html_with_status,
-    fetch_page_snapshot_with_browser_session,
-    maybe_fetch_page_html_with_playwright,
-    snapshot_from_cdp_target,
-)
+from erp_web.services.desktop_connection_service import call_desktop, DesktopUnavailable
+from erp_web.services.desktop_collection_service import apply_uploaded_assets
+from erp_web.services.html_extract_service import fetch_url_html_with_status
 from .publish_bus import page_snapshot_from_html
 from .source_collect_1688_api import collect_1688_product_via_api
 from .source_collect_verification import same_collection_page, waiting_verification_result
 from .source_sites import VERIFY_MARKERS, parse_source_snapshot, source_site
-from erp_web.services.browser_debug_http import browser_debug_json
 from .collect_helpers import (
     apply_claimed_platform_drafts,
     collect_error_code,
@@ -100,15 +92,12 @@ def collect_source_product(
             return collect_1688_product_via_api(url, claim_platforms, api_config)
 
         if collect_mode == "browser":
-            snapshot = fetch_page_snapshot_with_browser_session(url, profile_name=site.browser_profile)
-            if not snapshot and site.playwright_fallback:
-                html = maybe_fetch_page_html_with_playwright(url, cookie) or ""
-                if html:
-                    snapshot = page_snapshot_from_html(url, html, html_extract_service.html_to_text(html), html_extract_service.extract_page_title(html), html_extract_service.extract_product_image_urls(html, url, limit=20))
-        if not snapshot:
-            html, http_status = fetch_page_html_with_status(url, cookie)
-            if html:
-                snapshot = page_snapshot_from_html(url, html, html_extract_service.html_to_text(html), html_extract_service.extract_page_title(html), html_extract_service.extract_product_image_urls(html, url, limit=20))
+            return collect_from_browser_tab(product_url=url, platform_hint=platform_detected,
+                                            claim_platforms=claim_platforms, open_url=True)
+        html, http_status = fetch_url_html_with_status(url, cookie)
+        if html:
+            snapshot = page_snapshot_from_html(url, html, html_extract_service.html_to_text(html),
+                html_extract_service.extract_page_title(html), html_extract_service.extract_product_image_urls(html, url, limit=20))
         if not snapshot:
             raise RuntimeError("NO_SNAPSHOT")
 
@@ -129,7 +118,7 @@ def collect_source_product(
         waiting = waiting_verification_result(snapshot, url, platform_detected, diagnostics, error_reason)
         if waiting:
             return waiting
-        parsed_product = site.parse(snapshot, final_url)
+        parsed_product = parse_source_snapshot(site.key, snapshot, final_url)
 
         source_updates = parsed_product.get("source") if isinstance(parsed_product.get("source"), dict) else {}
         source_updates = normalize_collect_source_images(source_updates, platform_detected, collect_mode, claim_platforms)
@@ -207,7 +196,7 @@ def collect_source_product(
         diagnostics["partial_success"] = bool(snapshot or html or text)
         if snapshot or html or text:
             fallback_snapshot = snapshot or page_snapshot_from_html(url, html, text, title)
-            parsed_product = site.parse(fallback_snapshot, final_url)
+            parsed_product = parse_source_snapshot(site.key, fallback_snapshot, final_url)
             source_updates = parsed_product.get("source") if isinstance(parsed_product.get("source"), dict) else {}
             source_updates = normalize_collect_source_images(source_updates, platform_detected, collect_mode, claim_platforms)
             diagnostics.update(snapshot_field_flags(source_updates))
@@ -329,48 +318,20 @@ def collect_batch_products(
 
 
 def collect_from_browser_tab(
-    tab_url: str = "",
-    platform_hint: str = "",
-    product_url: str = "",
-    port: int | None = None,
-    claim_platforms: list[str] | None = None,
-    save_only: bool = False,
-    browser_tab_id: str = "",
+    tab_url: str = "", platform_hint: str = "", product_url: str = "",
+    claim_platforms: list[str] | None = None, save_only: bool = False,
+    browser_tab_id: str = "", open_url: bool = False,
 ) -> dict[str, Any]:
-    if port is None:
-        port = get_context().paths.browser_debug_port
     original_product = get_context().products.load_product()
     started_at = collect_time_iso()
-    status = browser_debug_status(port)
-    if not status.get("connected"):
-        diagnostics = default_collect_diagnostics()
-        diagnostics.update(
-            {
-                "collect_mode": "browser_debugging",
-                "started_at": started_at,
-                "finished_at": collect_time_iso(),
-                "success": False,
-                "partial_success": False,
-                "error_code": status.get("error_code") or "REMOTE_DEBUGGING_NOT_CONNECTED",
-                "error_message": status.get("error_message") or "未连接 Chrome remote debugging",
-                "browser_connected": False,
-                "debug_port": port,
-                "next_action": status.get("next_action") or "请启动专用 Chrome 后重试。",
-                "checked_at": collect_time_iso(),
-            }
-        )
-        # 尚未定位到任何目标标签时不得把失败诊断写进“最近商品”；失败事实
-        # 由 Task/对话保存，避免一次环境检查意外修改无关业务数据。
-        return {"ok": False, "product": original_product, "imagePool": current_image_pool(original_product), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": diagnostics["error_message"], "next_action": diagnostics["next_action"], "real_publish_called": False}
+    status = {}
     try:
-        raw_tabs = browser_debug_json(port, "/json")
-        raw_tabs = raw_tabs if isinstance(raw_tabs, list) else []
-        target = (next((tab for tab in raw_tabs if tab.get("id") == browser_tab_id and tab.get("type") == "page"), None)
-                  if browser_tab_id else choose_browser_tab(raw_tabs, tab_url, product_url, platform_hint))
-        if not target:
-            raise RuntimeError("NO_PRODUCT_TAB_FOUND")
-        snapshot = snapshot_from_cdp_target(target, platform_hint)
-        snapshot["browser_tab_id"] = str(target.get("id") or "")
+        facts = call_desktop('collect.read', {
+            'tab_url': tab_url, 'platform_hint': platform_hint, 'product_url': product_url,
+            'save_only': save_only, 'browser_tab_id': browser_tab_id, 'open_url': open_url,
+        }, timeout=900)
+        snapshot = facts['snapshot']
+        status = facts.get('browserStatus') or {}
         final_url = str(snapshot.get("final_url") or snapshot.get("url") or product_url or tab_url or "")
         original_product = get_context().products.collection_product(product_url or final_url)
         html_text = str(snapshot.get("html") or "")
@@ -392,14 +353,14 @@ def collect_from_browser_tab(
                 "html_snapshot_path": str(snapshot.get("html_snapshot_path") or ""),
                 "screenshot_path": str(snapshot.get("screenshot_path") or ""),
                 "browser_connected": True,
-                "debug_port": port,
+                "debug_port": status.get("port"),
                 "tab_url": final_url,
                 "tab_title": title,
             }
         )
-        if not diagnostics["html_snapshot_path"] and html_text:
-            diagnostics["html_snapshot_path"] = write_collect_debug_html(final_url, html_text, platform_detected)
         if save_only:
+            diagnostics["html_snapshot_path"] = write_collect_debug_html(final_url, html_text, platform_detected) if html_text else ""
+            diagnostics["screenshot_path"] = ""
             if not diagnostics["html_snapshot_path"]:
                 raise RuntimeError("TAB_NOT_ACCESSIBLE：页面没有可保存的 HTML，请等待页面加载后重试。")
             return {"ok": True, "saved_only": True, "diagnostics": diagnostics, "browserStatus": status, "html": html_text, "real_publish_called": False}
@@ -416,8 +377,9 @@ def collect_from_browser_tab(
             return {**waiting, "browserStatus": status}
         if browser_tab_id and not same_collection_page(product_url, final_url):
             raise RuntimeError("TAB_NOT_ACCESSIBLE：原标签页已离开目标商品，请返回商品页后重试。")
-        parsed = site.parse(snapshot, final_url)
+        parsed = parse_source_snapshot(site.key, snapshot, final_url)
         source_updates = parsed.get("source") if isinstance(parsed.get("source"), dict) else {}
+        source_updates = apply_uploaded_assets(source_updates, facts.get('uploaded_assets') or {})
         source_updates = normalize_collect_source_images(source_updates, platform_detected, "browser", claim_platforms)
         flags = snapshot_field_flags(source_updates)
         error_reason = site.quality_reason(flags, error_reason)
@@ -443,49 +405,11 @@ def collect_from_browser_tab(
         return {"ok": diagnostics["success"], "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": "" if diagnostics["success"] else diagnostics["error_message"], "next_action": diagnostics.get("next_action", ""), "real_publish_called": False}
     except Exception as exc:
         message = str(exc)
-        code = "NO_PRODUCT_TAB_FOUND" if "NO_PRODUCT_TAB_FOUND" in message else "TAB_NOT_ACCESSIBLE" if "TAB_NOT_ACCESSIBLE" in message else "REMOTE_DEBUGGING_NOT_CONNECTED"
+        code = getattr(exc, "code", "") or ("NO_PRODUCT_TAB_FOUND" if "NO_PRODUCT_TAB_FOUND" in message else "TAB_NOT_ACCESSIBLE" if "TAB_NOT_ACCESSIBLE" in message else "REMOTE_DEBUGGING_NOT_CONNECTED")
         diagnostics = default_collect_diagnostics()
-        diagnostics.update({"collect_mode": "browser_debugging", "started_at": started_at, "finished_at": collect_time_iso(), "success": False, "partial_success": False, "error_code": code, "error_message": message, "browser_connected": bool(status.get("connected")), "debug_port": port, "next_action": "请确认专用 Chrome 已打开商品页；如果仍失败，点击保存 HTML 快照或使用 HTML 导入 / 手动补充。", "checked_at": collect_time_iso()})
+        diagnostics.update({"collect_mode": "browser_debugging", "started_at": started_at, "finished_at": collect_time_iso(), "success": False, "partial_success": False, "error_code": code, "error_message": message, "browser_connected": bool(status.get("connected")), "debug_port": status.get("port"), "next_action": "请确认专用 Chrome 已打开商品页；如果仍失败，点击保存 HTML 快照或使用 HTML 导入 / 手动补充。", "checked_at": collect_time_iso()})
         # 目标页失效、快照失败等情况只返回诊断，不修改之前采集的商品。
         return {"ok": False, "product": original_product, "imagePool": current_image_pool(original_product), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": message, "next_action": diagnostics["next_action"], "real_publish_called": False}
-
-
-def collect_1688_product(url: str, cookie: str | None = None) -> dict[str, Any]:
-    if not url.strip():
-        raise RuntimeError("请先输入商品链接。")
-    cookie = (cookie or "").strip()
-    snapshot = fetch_1688_page_snapshot_with_browser_session(url)
-    if not snapshot:
-        html = maybe_fetch_page_html_with_playwright(url, cookie)
-        if html:
-            snapshot = {
-                "url": url,
-                "html": html,
-                "text": html_extract_service.html_to_text(html),
-                "title": html_extract_service.extract_page_title(html),
-                "image_urls": html_extract_service.extract_product_image_urls(html, url, limit=20),
-            }
-    if not snapshot:
-        html = fetch_page_html(url, cookie)
-        if html:
-            snapshot = {
-                "url": url,
-                "html": html,
-                "text": html_extract_service.html_to_text(html),
-                "title": html_extract_service.extract_page_title(html),
-                "image_urls": html_extract_service.extract_product_image_urls(html, url, limit=20),
-            }
-    if not snapshot:
-        raise RuntimeError("采集失败：可能需要登录 1688 或完成验证码。请点击“打开 1688 浏览器会话”，登录后重试。")
-    html = str(snapshot.get("html") or "")
-    text = str(snapshot.get("text") or "")
-    if not html.strip() or any(marker in html for marker in VERIFY_MARKERS) or any(marker in text for marker in VERIFY_MARKERS):
-        raise RuntimeError("采集失败：1688 返回了登录、验证码或安全验证页面。请在打开的 1688 浏览器中完成验证后重试。")
-    product = parse_source_snapshot("1688", snapshot, url)
-    if not product.get("name"):
-        raise RuntimeError("采集失败：没有识别到商品标题。请确认链接是商品详情页，或登录 1688 后重试。")
-    get_context().products.save_product(product)
-    return product
 
 
 def collect_1688_payload_service(body: dict[str, Any]) -> dict[str, Any]:
@@ -675,7 +599,6 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
-    "collect_1688_product",
     "collect_1688_payload_service",
     "collect_batch_products",
     "collect_extension_payload",

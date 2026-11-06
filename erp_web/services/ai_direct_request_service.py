@@ -33,7 +33,7 @@ from erp_web.context import get_context
 
 from . import ai_generation_settings, ai_model_config, image_service
 from .ai_agent_instrumentation import AiAgentInstrumentation
-from .ai_gateway_parsing import parse_json_text
+from erp_shared.ai_parsing import parse_json_text
 from .ai_model_errors import map_pydantic_model_error
 from .ai_model_factory import PydanticModelBinding, create_pydantic_model_binding
 from .ai_presentation_context import current_presentation_context

@@ -8,7 +8,8 @@ import json
 from PIL import Image
 import pytest
 
-from erp_web.services import ai_gateway_providers, gemini_canvas_runtime as canvas
+from erp_web.services import ai_gateway_providers
+from desktop_runtime import gemini_canvas_runtime as canvas
 from erp_web.services import image_translate_service
 from erp_web.services.ai_gateway_provider_types import AiImageEditRequest
 
@@ -57,6 +58,8 @@ def test_existing_image_service_saves_canvas_result_with_source_identity(tmp_pat
     calls = fake_connection(monkeypatch, result={"images": [
         {"data": base64.b64encode(blue).decode(), "mimeType": "image/png"},
     ]})
+    from erp_web.services import gemini_canvas_runtime as backend_canvas
+    monkeypatch.setattr(backend_canvas, "call_desktop", lambda operation, params, **kw: {"images": [{"source_id": "original", "provider": "Gemini Canvas", "mode": "edit", "data": base64.b64encode(blue).decode(), "mime": "image/png", "suffix": ".png"}]})
     monkeypatch.setattr(ai_gateway_providers.ai_direct_request_service, "edit_images",
                         lambda **kwargs: pytest.fail("浏览器修图不能调用 API"))
     config = {"ai_models": [model], "ai_use_case_bindings": {"image.translate": {"model_id": "canvas"}}}
@@ -70,6 +73,7 @@ def test_existing_image_service_saves_canvas_result_with_source_identity(tmp_pat
     assert saved["provider"] == "Gemini Canvas"
     assert (tmp_path / saved["path"]).read_bytes() == blue
     assert (tmp_path / "source.png").read_bytes() == png("red")
+    canvas.GeminiCanvasProvider().edit_images(AiImageEditRequest(tmp_path, model, prompt, [source]))
     expression = calls[0][1]["expression"]
     assert json.dumps(prompt) in expression
     assert base64.b64encode(png("red")).decode() in expression
@@ -232,7 +236,7 @@ def test_absent_canvas_frame_reports_manual_login_or_preview():
 
 
 def test_cdp_frame_events_and_timeout_stay_scoped_to_one_call():
-    from erp_web.services.browser_debug_service import CdpWebSocket
+    from desktop_runtime.browser_debug_service import CdpWebSocket
     sent, events = [], []
 
     class Socket:

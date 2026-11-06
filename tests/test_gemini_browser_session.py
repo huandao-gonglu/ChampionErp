@@ -4,10 +4,10 @@ from contextlib import contextmanager
 from unittest.mock import Mock
 
 import pytest
-from pydantic_ai import CancellationToken, RunCancelled
+from threading import Event
+from desktop_runtime.operation import bind_operation
 
-from erp_web.services import gemini_browser_session as session
-from erp_web.services.ai_run_cancellation import bind_cancellation_token
+from desktop_runtime import gemini_browser_session as session
 
 
 MODEL = {"browser_provider": "gemini", "browser_mode": "managed_profile",
@@ -68,18 +68,18 @@ def test_login_timeout_hides_window_without_continuing_task(monkeypatch, tmp_pat
 
 def test_cancel_during_login_restores_hidden_mode_and_preserves_cancellation(monkeypatch, tmp_path):
     calls, _, models = connections(monkeypatch, ["login_required"])
-    token = CancellationToken()
+    token = Event()
     checks = 0
 
     def state(_):
         nonlocal checks
         checks += 1
         if checks == 2:
-            token.cancel()
+            token.set()
         return "login_required"
 
     monkeypatch.setattr(session, "_auth_state", state)
-    with bind_cancellation_token(token), pytest.raises(RunCancelled):
+    with bind_operation(token, 30), pytest.raises(RuntimeError, match="取消"):
         with session.connect_gemini_page(tmp_path, MODEL):
             pytest.fail("取消后不能继续任务")
     assert calls == [True, False]
@@ -103,7 +103,12 @@ def test_new_canvas_without_capabilities_checks_login_without_model_request(
     monkeypatch, tmp_path, states, expected_windows,
 ):
     from erp_web.services import ai_gateway_browser_provider as provider
-    from erp_web.services import gemini_canvas_runtime as canvas
+    from desktop_runtime import gemini_canvas_runtime as canvas
+    from dataclasses import asdict
+    def check(app_dir, model, timeout, **kwargs):
+        canvas.check_canvas_connection(app_dir, model, timeout, **kwargs)
+        return {"profile_dir": str(tmp_path), "port": 19335}
+    monkeypatch.setattr(provider, "check_canvas_connection", check)
 
     calls, _, models = connections(monkeypatch, states)
     monkeypatch.setattr(canvas, "_canvas_context", lambda _: ("", 1))
@@ -119,7 +124,12 @@ def test_new_canvas_without_capabilities_checks_login_without_model_request(
 
 def test_first_capability_test_opens_login_before_hidden_canvas(monkeypatch, tmp_path):
     from erp_web.services import ai_gateway_browser_provider as provider
-    from erp_web.services import gemini_canvas_runtime as canvas
+    from desktop_runtime import gemini_canvas_runtime as canvas
+    from dataclasses import asdict
+    def check(app_dir, model, timeout, **kwargs):
+        canvas.check_canvas_connection(app_dir, model, timeout, **kwargs)
+        return {"profile_dir": str(tmp_path), "port": 19335}
+    monkeypatch.setattr(provider, "check_canvas_connection", check)
 
     calls, _, models = connections(monkeypatch, ["signed_in", "signed_in"])
     monkeypatch.setattr(canvas, "_canvas_context", lambda _: ("", 1))
@@ -143,7 +153,12 @@ def test_existing_browser_and_verified_model_keep_normal_login_check(
     monkeypatch, tmp_path, mode, capabilities, expected_windows,
 ):
     from erp_web.services import ai_gateway_browser_provider as provider
-    from erp_web.services import gemini_canvas_runtime as canvas
+    from desktop_runtime import gemini_canvas_runtime as canvas
+    from dataclasses import asdict
+    def check(app_dir, model, timeout, **kwargs):
+        canvas.check_canvas_connection(app_dir, model, timeout, **kwargs)
+        return {"profile_dir": str(tmp_path), "port": 19335}
+    monkeypatch.setattr(provider, "check_canvas_connection", check)
 
     calls, _, _ = connections(monkeypatch, ["signed_in"])
     monkeypatch.setattr(canvas, "_canvas_context", lambda _: ("", 1))

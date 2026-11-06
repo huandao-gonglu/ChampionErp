@@ -7,7 +7,8 @@ import pytest
 
 from conftest import assert_no_old_path
 from erp_web import app_config
-from erp_web.services import ai_model_config, ai_prompt_templates, browser_ai_runtime, config_service
+from erp_web.services import ai_model_config, ai_prompt_templates, config_service
+from desktop_runtime import browser_ai_runtime
 
 
 def test_config_paths_are_project_local(
@@ -79,7 +80,20 @@ def test_merge_config_reads_key_from_config_not_code(app_dir: Path) -> None:
     assert cfg["model"] == "deepseek-chat"
 
 
-def test_browser_presets_remain_available_after_the_user_deletes_the_model(app_dir: Path) -> None:
+def test_browser_presets_remain_available_after_the_user_deletes_the_model(app_dir: Path, monkeypatch) -> None:
+    from desktop_runtime.config import LocalConfig
+    from desktop_runtime.dispatcher import dispatch
+    from erp_web.services import desktop_model_config_service as desktop_config
+    local_owner = LocalConfig(app_dir / 'desktop')
+    monkeypatch.setattr(desktop_config, 'current_desktop_connection', lambda: 'test')
+    original_prepare = desktop_config.prepare_local_model
+    def prepare(model):
+        from erp_shared.desktop import LOCAL_MODEL_FIELDS
+        if model.get('connection_type') in {'browser', 'cli'}:
+            local_owner.update({str(model.get('id')): {key: value for key, value in model.items() if key in LOCAL_MODEL_FIELDS}})
+        return original_prepare(model)
+    monkeypatch.setattr(desktop_config, 'prepare_local_model', prepare)
+    monkeypatch.setattr(desktop_config, 'call_desktop', lambda operation, params=None, **kw: dispatch(local_owner, operation, params or {}))
     preset = config_service.public_ai_config(app_dir, {})["browser_presets"][0]
     assert preset["id"] == "gemini_canvas"
     assert preset["supported_capabilities"] == ["image_edit"]
@@ -369,7 +383,21 @@ def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
 
 def test_merge_config_clears_saved_api_key_when_model_switches_to_cli(
     app_dir: Path,
+    monkeypatch,
 ) -> None:
+    from desktop_runtime.config import LocalConfig
+    from desktop_runtime.dispatcher import dispatch
+    from erp_web.services import desktop_model_config_service as desktop_config
+    local_owner = LocalConfig(app_dir / 'desktop')
+    monkeypatch.setattr(desktop_config, 'current_desktop_connection', lambda: 'test')
+    original_prepare = desktop_config.prepare_local_model
+    def prepare(model):
+        from erp_shared.desktop import LOCAL_MODEL_FIELDS
+        if model.get('connection_type') in {'browser', 'cli'}:
+            local_owner.update({str(model.get('id')): {key: value for key, value in model.items() if key in LOCAL_MODEL_FIELDS}})
+        return original_prepare(model)
+    monkeypatch.setattr(desktop_config, 'prepare_local_model', prepare)
+    monkeypatch.setattr(desktop_config, 'call_desktop', lambda operation, params=None, **kw: dispatch(local_owner, operation, params or {}))
     current = {
         "ai_models": [
             {
@@ -404,12 +432,27 @@ def test_merge_config_clears_saved_api_key_when_model_switches_to_cli(
 
     assert merged["ai_models"][0]["connection_type"] == "cli"
     assert merged["ai_models"][0]["api_key"] == ""
-    assert merged["ai_models"][0]["command"] == "codex"
+    assert "command" not in merged["ai_models"][0]
+    assert local_owner.read()["copy_model"]["command"] == "codex"
 
 
 def test_merge_config_clears_saved_api_key_when_model_switches_to_browser(
     app_dir: Path,
+    monkeypatch,
 ) -> None:
+    from desktop_runtime.config import LocalConfig
+    from desktop_runtime.dispatcher import dispatch
+    from erp_web.services import desktop_model_config_service as desktop_config
+    local_owner = LocalConfig(app_dir / 'desktop')
+    monkeypatch.setattr(desktop_config, 'current_desktop_connection', lambda: 'test')
+    original_prepare = desktop_config.prepare_local_model
+    def prepare(model):
+        from erp_shared.desktop import LOCAL_MODEL_FIELDS
+        if model.get('connection_type') in {'browser', 'cli'}:
+            local_owner.update({str(model.get('id')): {key: value for key, value in model.items() if key in LOCAL_MODEL_FIELDS}})
+        return original_prepare(model)
+    monkeypatch.setattr(desktop_config, 'prepare_local_model', prepare)
+    monkeypatch.setattr(desktop_config, 'call_desktop', lambda operation, params=None, **kw: dispatch(local_owner, operation, params or {}))
     current = {
         "ai_models": [
             {
@@ -445,7 +488,8 @@ def test_merge_config_clears_saved_api_key_when_model_switches_to_browser(
     assert merged["ai_models"][0]["connection_type"] == "browser"
     assert merged["ai_models"][0]["api_key"] == ""
     assert merged["ai_models"][0]["browser_provider"] == "chatgpt"
-    assert merged["ai_models"][0]["browser_profile"] == "default"
+    assert "browser_profile" not in merged["ai_models"][0]
+    assert local_owner.read()["copy_model"]["browser_profile"] == "default"
 
 
 def test_normalize_ai_model_keeps_quality_only_for_image_models() -> None:

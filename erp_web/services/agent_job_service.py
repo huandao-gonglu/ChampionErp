@@ -91,7 +91,12 @@ class AgentJobService:
                     continue
             if not self.ui_service.run_registry.acquire(conversation_id):
                 continue
-            run = ChatConversationRun(conversation_id, "background", self.ui_service)
+            connection = ''
+            if pending:
+                requests = pending[0]
+                connection = next((str(meta.get('desktop_connection') or '') for meta in requests.metadata.values()
+                                   if isinstance(meta, dict) and meta.get('desktop_connection')), '')
+            run = ChatConversationRun(conversation_id, "background", self.ui_service, desktop_connection=connection)
             try:
                 get_detached_chat_runner().submit(
                     run.run()
@@ -101,7 +106,9 @@ class AgentJobService:
                 raise
 
     def execute_or_reconcile(self, row, token=None):
-        with bind_cancellation_token(token or self.ui_service.run_registry.token(row["conversation_id"])):
+        from .desktop_connection_service import bind_desktop_connection
+        meta = json.loads(row.get("execution_json") or "{}")
+        with bind_desktop_connection(meta.get("desktop_connection", "")), bind_cancellation_token(token or self.ui_service.run_registry.token(row["conversation_id"])):
             return self._execute_or_reconcile(row)
 
     def _execute_or_reconcile(self, row):

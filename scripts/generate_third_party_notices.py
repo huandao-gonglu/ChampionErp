@@ -14,7 +14,7 @@ from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / 'front/src/legal/third-party-notices.json'
-INPUTS = ['requirements.txt',
+INPUTS = ['requirements.txt', 'requirements-desktop.txt',
           'front/package.json', 'front/pnpm-lock.yaml', 'scripts/generate_third_party_notices.py',
           'scripts/legal-notices/supplements.json', 'scripts/legal-notices/python-supplements.json']
 NOTICE_NAME = re.compile(r'^(licen[sc]e|notice|copying|copyright|third[-_ ]party[-_ ]notices?)(\..*|-.*)?$', re.I)

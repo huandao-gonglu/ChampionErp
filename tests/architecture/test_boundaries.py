@@ -28,12 +28,6 @@ def test_services_do_not_reverse_depend_on_runtime_units() -> None:
     )
 
 
-def test_desktop_only_composes_existing_server() -> None:
-    entry = [ROOT / "erp_web/desktop.py"]
-    targets = {target for _, target in imported_targets(entry)}
-    assert "erp_web.server.main" in targets
-    assert not any(target.startswith(("pydantic_ai", "erp_web.http_handler", "http.server")) for target in targets)
-
 
 def test_integrations_do_not_persist_credentials_in_business_stores() -> None:
     bus = parse_python("erp_web/services/crossborderbus_client.py")
@@ -224,3 +218,30 @@ def test_alibaba_business_facades_use_authorization_owner() -> None:
                        and node.func.attr == "get" and node.args
                        and isinstance(node.args[0], ast.Constant) and node.args[0].value == "1688_api"
                        for node in ast.walk(tree))
+
+
+def test_desktop_runtime_has_no_business_initialization_or_backend_packaging():
+    """执行器仅依赖共享纯模块；后端也不能重新导入本机实现。"""
+    paths = [*python_files('desktop_runtime'), *python_files('erp_shared')]
+    targets = {target for _, target in imported_targets(paths)}
+    assert not any(target.startswith(('erp_web', 'sqlite3', 'pydantic_ai', 'openai')) for target in targets)
+    assert not forbidden_calls(paths, {'get_context', 'build_default_context', 'ErpDatabase', 'save_product', 'save_draft_content'})
+    targets = {target for _, target in imported_targets(python_files('erp_web'))}
+    assert not any(target.startswith('desktop_runtime') for target in targets)
+    for retired in ('erp_web/desktop.py', 'scripts/desktop_backend.spec', 'scripts/desktop_backend_entry.py',
+                    'scripts/build_desktop_backend.py', 'front/desktop/backend.cjs'):
+        assert not (ROOT / retired).exists()
+    import json
+    package = json.loads((ROOT / 'front/package.json').read_text())
+    assert all('backend' not in resource['to'] for resource in package['build']['extraResources'])
+    assert 'collect_submodules("erp_web")' not in (ROOT / 'scripts/desktop_runtime.spec').read_text()
+
+
+def test_desktop_transport_routes_use_contracts_and_do_not_become_ai_tools():
+    from erp_web.http_route_units.desktop_routes import HANDLED_PATHS
+    from erp_web.schemas.requests import REQUEST_CONTRACTS
+    from erp_web.ai_capability_coverage import AI_CAPABILITY_COVERAGE_MANIFEST
+    assert HANDLED_PATHS <= REQUEST_CONTRACTS.keys()
+    entries = [entry for entry in AI_CAPABILITY_COVERAGE_MANIFEST if entry.path in HANDLED_PATHS]
+    assert {entry.path for entry in entries} == HANDLED_PATHS
+    assert all(entry.disposition == 'excluded' for entry in entries)

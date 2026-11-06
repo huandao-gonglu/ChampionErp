@@ -1,5 +1,4 @@
 """采集入库与发货包装完整性分别判断，缺失资料不伪造。"""
-from dataclasses import replace
 
 import pytest
 
@@ -52,9 +51,8 @@ def test_batch_saves_skus_without_package_and_returns_success_with_followup(monk
     url = 'https://detail.1688.com/offer/1060853411600.html'
     source = {'title': '休闲鞋', 'source_url': url, 'source_platform': '1688', 'price': '20', 'currency': 'CNY', 'images': ['https://example.test/shoe.jpg'],
               'skus': [{'id': 'red-39', 'name': '红色 / 39', 'price': '20', 'package_dimensions': {}}, {'id': 'black-40', 'name': '黑色 / 40', 'price': '25', 'package_dimensions': {}}]}
-    spec = replace(source_site('1688'), parser=lambda *_: {'source': source})
-    monkeypatch.setattr(workflows, 'source_site', lambda _: spec)
-    monkeypatch.setattr(workflows, 'fetch_page_snapshot_with_browser_session', lambda *_args, **_kwargs: {'html': '<html><body>休闲鞋</body></html>', 'html_snapshot_path': '/tmp/shoe.html', 'url': url})
+    monkeypatch.setattr(workflows, 'parse_source_snapshot', lambda *_: {'source': source})
+    monkeypatch.setattr(workflows, 'call_desktop', lambda *_args, **_kwargs: {'snapshot': {'html': '<html><body>休闲鞋</body></html>', 'url': url}, 'browserStatus': {'connected': True}})
     monkeypatch.setattr(workflows, 'normalize_collect_source_images', lambda source, *_args: source)
     result = workflows.collect_batch_products([url], platforms=[])
     row = result['items'][0]

@@ -9,9 +9,9 @@
     "build": "vue-tsc -b && vite build",
     "build:desktop": "vue-tsc -b && vite build --mode desktop",
     "desktop:dev": "pnpm build:desktop && electron .",
-    "build:backend": "python3 ../scripts/build_desktop_backend.py",
-    "desktop:pack": "pnpm build:backend && pnpm build:desktop && electron-builder --dir",
-    "desktop:dist": "pnpm build:backend && pnpm build:desktop && electron-builder",
+    "build:runtime": "python3 ../scripts/build_desktop_runtime.py",
+    "desktop:pack": "pnpm build:runtime && pnpm build:desktop && electron-builder --dir",
+    "desktop:dist": "pnpm build:runtime && pnpm build:desktop && electron-builder",
     "test:desktop": "node --test desktop/*.test.cjs",
     "preview": "vite preview --host 127.0.0.1",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix",
@@ -75,7 +75,7 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": ".desktop-backend/champion-erp-backend", "to": "backend" },
+      { "from": ".desktop-runtime/champion-erp-runtime", "to": "runtime" },
       { "from": "dist-desktop/licenses", "to": "licenses" }
     ],
     "mac": {

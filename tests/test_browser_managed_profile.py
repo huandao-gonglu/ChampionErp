@@ -6,10 +6,10 @@ from unittest.mock import Mock
 import pytest
 
 from erp_web.context import get_context
-from erp_web.services import browser_ai_runtime as ai
-from erp_web.services import browser_debug_service as browser
+from desktop_runtime import browser_ai_runtime as ai
+from desktop_runtime import browser_debug_service as browser
 from erp_web.services import ai_model_config
-from erp_web.services.browser_connection_config import normalize_browser_proxy
+from erp_shared.browser_connection_config import normalize_browser_proxy
 
 
 def test_owned_browser_is_reused_without_launch_or_profile_changes(monkeypatch, tmp_path):
@@ -64,10 +64,12 @@ def test_gemini_managed_profile_is_separate_from_collection(monkeypatch, tmp_pat
     monkeypatch.setattr(ai, "_target_for_url", lambda *_: target)
     assert ai._ensure_browser_target(tmp_path, model, "https://gemini.google.com/share/test", 30) == target
     profile = ai.browser_ai_profile_dir(tmp_path, model)
-    ensure.assert_called_once_with(9335, profile, 30, proxy_server="", headless=None)
+    ensure.assert_called_once_with(ai.browser_ai_port(model), profile, 30, proxy_server="", headless=None)
     assert profile == tmp_path / "browser_profile" / "ai" / "gemini" / "canvas"
-    assert profile != get_context().paths.browser_profile_dir
-    assert ai.browser_ai_port(model) != get_context().paths.browser_debug_port
+    from desktop_runtime.config import LocalConfig
+    local = LocalConfig(tmp_path)
+    assert profile != local.browser_profile
+    assert ai.browser_ai_port(model) != local.browser_port
 
 
 def test_canvas_target_is_exact_and_new_tabs_use_put(monkeypatch):
@@ -141,7 +143,7 @@ def test_ai_managed_profile_passes_its_proxy_to_shared_browser_manager(monkeypat
     monkeypatch.setattr(ai, "_target_for_url", lambda *_: {})
     model = {"browser_provider": "gemini", "browser_profile": "canvas", "browser_proxy": "http://localhost:7890"}
     ai._ensure_browser_target(tmp_path, model, "https://gemini.google.com/share/test", 30)
-    ensure.assert_called_once_with(9335, ai.browser_ai_profile_dir(tmp_path, model), 30, proxy_server="http://localhost:7890", headless=None)
+    ensure.assert_called_once_with(ai.browser_ai_port(model), ai.browser_ai_profile_dir(tmp_path, model), 30, proxy_server="http://localhost:7890", headless=None)
 
 
 def test_hidden_browser_launch_records_its_instance_identity(monkeypatch, tmp_path):

@@ -158,17 +158,14 @@ class FrontendTemplateTests(unittest.TestCase):
 
         self.assertEqual(duplicates, [])
 
-    def test_python_backend_prefers_built_vue_dist_and_serves_assets(self) -> None:
-        context_py = (APP_DIR / "erp_web" / "context.py").read_text(encoding="utf-8")
-        get_routes = (APP_DIR / "erp_web" / "http_route_units" / "get_routes.py").read_text(encoding="utf-8")
-        static_routes = (APP_DIR / "erp_web" / "http_route_units" / "static_routes.py").read_text(encoding="utf-8")
-
-        self.assertFalse((APP_DIR / "erp_web" / "runtime_units" / "runtime_common.py").exists())
-        self.assertIn("front_dist_dir: Path", context_py)
-        self.assertIn("front_dist_index_path: Path", context_py)
-        self.assertIn('"erp_web" / "static" / "dist"', context_py)
-        self.assertIn("def serve_frontend_asset", static_routes)
-        self.assertIn('parsed.path.startswith("/assets/")', get_routes)
+    def test_backend_resources_stay_with_code_when_business_directory_changes(self) -> None:
+        from erp_web.context import AppPaths, get_context
+        business = get_context().paths.app_dir
+        paths = AppPaths.from_app_dir(business)
+        self.assertEqual(paths.db_path.parent, business)
+        self.assertEqual(paths.front_dist_dir, APP_DIR / 'erp_web' / 'static' / 'dist')
+        self.assertEqual(paths.web_template_path, FRONT_INDEX_PATH)
+        self.assertFalse(paths.front_dist_dir.is_relative_to(business))
 
 
 if __name__ == "__main__":

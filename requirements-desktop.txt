@@ -1,0 +1,3 @@
+# 独立本机执行器的运行依赖；ERP 服务端依赖见 requirements.txt。
+pydantic==2.13.4
+pillow==12.2.0

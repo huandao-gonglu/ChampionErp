@@ -17,7 +17,7 @@ from erp_web.services import (
     ai_gateway,
     ai_gateway_providers,
     ai_model_config,
-    browser_ai_runtime,
+    desktop_browser_service as browser_ai_runtime,
     copy_service,
 )
 from tests.runtime_test_utils import temp_app_context
@@ -556,23 +556,12 @@ def test_api_models_never_enter_external_provider_registry() -> None:
 
 
 def test_codex_cli_chat_json_uses_local_command(tmp_path: Path, monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
-
-    monkeypatch.setattr(
-        ai_gateway.shutil,
-        "which",
-        lambda command: f"/usr/local/bin/{command}" if command == "codex" else "",
-    )
-
-    def fake_run(args, input, text, capture_output, cwd, timeout, check):
-        Path(args[args.index("-o") + 1]).write_text(
-            '{"ok":true,"title":"Codex OK"}',
-            encoding="utf-8",
-        )
-        calls.append({"args": args, "input": input, "cwd": cwd, "timeout": timeout})
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(ai_gateway.subprocess, "run", fake_run)
+    from erp_web.services import ai_gateway_cli_provider as provider
+    calls = []
+    def call(operation, params, **kwargs):
+        calls.append((operation, params))
+        return {'text': '{"ok":true,"title":"Codex OK"}'}
+    monkeypatch.setattr(provider, 'call_desktop', call)
     result = ai_gateway.chat_json(
         tmp_path,
         {
@@ -594,8 +583,8 @@ def test_codex_cli_chat_json_uses_local_command(tmp_path: Path, monkeypatch) -> 
     )
 
     assert result == {"ok": True, "title": "Codex OK"}
-    assert calls[0]["args"][:2] == ["codex", "exec"]
-    assert "最终输出必须是一个合法 JSON 对象" in calls[0]["input"]
+    assert calls[0][0] == "cli.run"
+    assert "最终输出必须是一个合法 JSON 对象" in calls[0][1]["prompt"]
 
 
 def test_browser_ai_provider_uses_browser_runtime(tmp_path: Path, monkeypatch) -> None:

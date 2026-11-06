@@ -42,7 +42,7 @@ test('系统打开失败传回失败状态，不误报成功', async () => {
   await assert.rejects(handler({ sender: win.webContents, senderFrame: win.webContents.mainFrame }), /无法打开许可证目录/)
 })
 
-test('预加载只暴露无参数的许可证入口', async () => {
+test('预加载仅声明本机能力并暴露无参数的许可证入口', async () => {
   let bridge
   const calls = []
   vm.runInNewContext(readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8'), {
@@ -54,7 +54,8 @@ test('预加载只暴露无参数的许可证入口', async () => {
       }
     },
   })
-  assert.deepEqual(Object.keys(bridge), ['openLicenses'])
+  assert.deepEqual(Object.keys(bridge), ['localOperations', 'configureModels', 'openLicenses'])
+  assert.equal(bridge.localOperations, true)
   await bridge.openLicenses('/arbitrary/path')
   assert.deepEqual(calls, [['licenses:open']])
 })

@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AuthSettingsPanel from '../AuthSettingsPanel.vue'
 
 const defaultPlatformOptions = [
@@ -47,7 +47,9 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
   })
 }
 
-describe('AuthSettingsPanel 网页连接预置', () => {
+describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
+  beforeEach(() => vi.stubGlobal('championDesktop', { localOperations: true }))
+  afterEach(() => vi.unstubAllGlobals())
   const preset = {
     id: 'gemini_canvas', label: 'Gemini Canvas', description: '通过 Gemini 网页修改图片',
     supported_capabilities: ['image_edit'],

@@ -100,8 +100,8 @@ def test_image_set_uses_native_agent_and_existing_image_execution():
 
 def test_collection_and_ai_share_browser_process_management():
     """采集与 AI 只选择自己的资料目录，浏览器启动由同一服务负责。"""
-    for name in ("runtime_units/source_collect_browser.py", "services/browser_ai_runtime.py"):
-        source = (ROOT / "erp_web" / name).read_text()
+    for name in ("collection.py", "browser_ai_runtime.py"):
+        source = (ROOT / "desktop_runtime" / name).read_text()
         assert "ensure_browser_debug_session(" in source
         assert "subprocess.Popen" not in source
 
@@ -122,7 +122,7 @@ def test_canvas_images_are_an_explicit_browser_transport_without_api_or_agent_ow
 
 
 def test_gemini_login_wait_is_browser_lifecycle_not_an_agent_or_job_protocol():
-    path = ROOT / "erp_web/services/gemini_browser_session.py"
+    path = ROOT / "desktop_runtime/gemini_browser_session.py"
     targets = {target for _, target in imported_targets([path])}
     forbidden = ("pydantic_ai", "openai", "httpx", "requests", "sqlite3", "erp_web.stores",
                  "erp_web.runtime_units", "erp_web.services.ai_agent_factory")

@@ -1,11 +1,45 @@
-# 独立桌面版
+# 桌面端与统一业务后端
 
-发行版包含 Electron、前端构建产物、Python 解释器及后端运行依赖。安装后无需项目目录、开发虚拟环境或单独启动后端。
-浏览器 AI / 浏览器采集仍使用用户安装的 Chrome 或 Edge；CLI 类型模型仍需要对应 CLI 工具。
+桌面安装包包含 Electron、同一套 Vue 前端和独立 Python 本机执行器。业务后端单独部署，网页与桌面连接同一后端、使用同一份商品、草稿、订单、任务和消息历史。桌面退出只关闭本次启动的执行器，业务后端及其 worker 继续运行。
+
+浏览器采集、Browser AI、Gemini Canvas 和 CLI 在用户电脑执行；需要本机 Chrome / Edge 或已安装并登录的 Codex CLI。API 模型继续由后端执行，不自动切换连接方式。
+
+## 启动与连接
+
+开发时先启动统一后端，再在 `front/` 执行 `pnpm desktop:dev`。开发默认后端为 `http://127.0.0.1:5000`；`scripts/dev.sh` 设置端口时沿用 `ERP_PORT` / `VITE_DEV_PROXY_TARGET`。
+
+安装版必须明确配置业务后端：
+
+- 设置环境变量 `CHAMPION_ERP_BACKEND_URL=https://erp.example.com`；或
+- 在 Electron 的 `Champion ERP/connection.json` 写入 `{"backend_url":"https://erp.example.com"}`。
+
+地址只接受 HTTP/HTTPS 站点根地址。桌面用随机回环端口提供前端并代理普通 API、AI SSE、图片、文件及 OAuth 链接；代理目标固定为上述业务后端。原始 Host/Origin 在桌面代理处核验，当前桌面连接由主进程注入，页面不能指定其他桌面。
+
+部署后端时，`ERP_BIND_HOST` 指定监听地址，默认 `127.0.0.1`。反向代理部署应配置 `ERP_PUBLIC_URL`；确有额外站点时通过逗号分隔的 `ERP_ALLOWED_HOSTS` / `ERP_ALLOWED_ORIGINS` 放行。它们延续既有请求来源校验，不引入新的账号或多租户体系。
+
+## 本机执行器与配置
+
+`front/desktop/runtime.cjs` 管理执行器进程与 JSON 行管道；`desktop_runtime/__main__.py` 是 Python 启动入口。stdout 只传固定动作、素材与结果，日志写 stderr。开发使用 `.venv`，安装版使用自带可执行文件。
+
+macOS 沿用 `~/Library/Application Support/Champion ERP/backend` 作为本机目录；Windows/Linux 使用系统应用数据目录下的同名目录。保留目录名是为了沿用已有浏览器登录资料，不代表继续启动本地业务后端。
+
+- `config/desktop-connections.json` 保存 CLI 路径/Profile、浏览器模式、资料目录名、端口、网页 URL 和代理。
+- 采集资料位于 `browser_profile/1688`；AI 资料位于 `browser_profile/ai/<provider>/<profile>`，两者分开。
+- 本机设置通过受限 preload IPC 保存。主进程校验主窗口、主 frame、来源和字段；业务后端不能通过调用通道改写命令或本机路径。
+- 后端模型配置只保存业务模型、能力、用例绑定和 `local_connection_id` / 配置指纹。执行时核验实际本机配置，变更后重新测试，旧能力证明不能沿用。
+- 不携带店铺凭据、业务数据库、开发 `.env`、业务 worker、API 模型 SDK 或开发浏览器资料。
+
+`front/desktop/connection.cjs` 在主进程持续等待后端本机调用，不依赖 Vue 页面挂载。普通操作采用请求/响应。断连、取消和超时结束受影响调用；已发送操作不会自动重放，结果未知仍由原业务入口解释。连接仅存在于当前后端进程内，不跨重启恢复或改派其他桌面。网络断开后重新打开桌面连接。
+
+核对项目安装的 Pydantic AI 2.44.0 后，任务归属使用原生 `CallDeferred` / `ApprovalRequired` 的 metadata，
+不修改 Agent run、审批、恢复和消息编码。依据见 [官方 Deferred Tools](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/)。
+项目适配仅补充原生 Agent 不负责的 Electron/CDP 进程传输；若将来采用可直接管理本机执行器的原生连接，移除这层进程通道。
+
+采集图片逐张通过后端素材入口交接，商品仍由 `ProductStore` 保存；Canvas 源图由后端读取，返回图片经原图片服务校验和保存。本机绝对路径不能成为商品素材持久引用。
 
 ## 构建
 
-在目标系统和架构上准备项目 `.venv`、`requirements.txt` 和前端 pnpm 依赖，然后执行：
+在目标平台和架构上安装 Python 与前端 pnpm 依赖，然后执行：
 
 ```sh
 .venv/bin/python scripts/generate_third_party_notices.py
@@ -13,39 +47,39 @@ cd front
 pnpm desktop:dist
 ```
 
-后端构建脚本在仓库外创建临时构建环境，只引用开发环境已安装的运行依赖，不向开发 `.venv` 安装构建工具。
-后端中间产物位于忽略目录 `front/.desktop-backend`，安装包位于 `front/release`。
-构建方案使用 [PyInstaller 的目录分发模式](https://www.pyinstaller.org/en/stable/usage.html)，
-通过 Electron 的 `process.resourcesPath` 定位随包后端；不会将 Python 放进 ASAR。
-macOS 正式分发时需另行提供开发者签名和公证；本机构建未配置证书时为未签名版本。
+`build:runtime` 在仓库外创建独立构建环境，仅安装 `requirements-desktop.txt` 和构建工具；`scripts/desktop_runtime.spec` 仅收集 `desktop_runtime`、`erp_shared` 和所需依赖，明确排除 `erp_web`、SQLite 与业务 SDK。输出为 `front/.desktop-runtime/champion-erp-runtime`，安装包资源目录为 `runtime`，不放入 ASAR。
 
-第三方许可证随前端构建写入 `front/dist-desktop/licenses`，打包时由 `extraResources` 复制到安装资源目录的 `licenses`，不放入 ASAR。目录内含应用依赖汇总 `THIRD-PARTY-NOTICES.txt` 和 Electron 官方 `Electron/LICENSE.txt`、`Electron/LICENSES.chromium.html`。“关于 → 开源许可证 → 查看”通过受限 IPC 打开该目录，不在页面展开全文。Web 版提供自己的声明 TXT 下载。收集范围和更新方式见 [第三方声明来源](../scripts/legal-notices/README.md)。
+前端输出到 `front/dist-desktop`，发行产物位于 `front/release`。第三方声明及 Electron 官方许可证继续通过 `extraResources` 放在 `licenses`，关于页通过固定 IPC 打开目录。macOS 签名、公证仍需发行环境配置。
 
-## 数据隔离
+## 旧桌面数据迁移
 
-macOS 数据目录为 `~/Library/Application Support/Champion ERP/backend`。
-Windows / Linux 使用 Electron 的系统应用数据目录下同名目录。程序内「文件 → 打开数据文件夹」可定位。
+切换前停止旧桌面和来源业务进程。不要把新后端指向一份空库后继续维护两套业务数据。迁移和程序切换分别执行：
 
-- 主数据库、辅助数据库、配置、图片、缓存、日志及浏览器资料都写入独立目录；升级程序不会覆盖这些数据。
-- 发行版不接受开发端口和后端 URL 环境变量。后端绑定 `127.0.0.1:0`，操作系统分配空闲端口，并通过自有子进程管道报告地址与 PID。
-- 桌面端在后端就绪后打开窗口；后端异常退出会报错，不能悄悄连接其他运行中的服务。退出时先关闭控制管道，超时后仅终止本次启动的子进程。
-- 同一桌面数据目录只运行一个应用实例。浏览器采集默认使用 19222，浏览器 AI 默认从 19333 起分配，浏览器资料也使用桌面目录。
-- 专用浏览器复用前核对资料目录记录的会话身份；端口被其他环境占用时直接报错，不接管其他浏览器。
-- `.app` 里只有程序及公开默认配置，不含本机的 `app_config.json`、`store_config.json`、`.env`、数据库或浏览器登录信息。
+```sh
+.venv/bin/python scripts/migrate_desktop_business.py \
+  --source '/旧桌面/Champion ERP/backend' \
+  --target '/统一后端/erp-data' \
+  --backup '/独立备份/desktop-before-split' \
+  --local '/旧桌面/Champion ERP/backend'
+```
 
-## 配置与程序分开
+来源须含当前格式 `erp.sqlite3`；旧数据库结构或旧凭据布局先按原迁移文档处理。目标和备份目录必须不存在，来源与目标不得互相包含。迁移器先备份主库、辅助库、配置和素材，再生成业务目标；SQLite 使用一致性备份，不直接复制 WAL 中的数据库文件。
 
-开发配置的搬迁是一次性本机操作，在打包后复制到桌面数据目录，不放入安装包，也不增加应用内导入功能。
-店铺授权在主库 `store_auth` 表，应用密钥、跨境巴士、订单回调和微信凭据统一由主库 `runtime_secrets` 保存；只复制 `config` 目录会漏掉凭据。完整存储清单和旧数据升级步骤见 [配置与授权存储](configuration-storage.md)。
-独立配置还需将浏览器模型调试端口调整为桌面默认端口，避免复用开发浏览器；浏览器登录和微信绑定须分别建立。
-程序启动只补充缺失的默认提示词、Agent 记忆和平台预设，已有设置不覆盖，两边后续配置不自动同步。
+跨电脑迁移时，`--source` 指向上传后的快照目录，另用 `--source-prefix` 指定快照中持久化路径使用的原电脑绝对目录。`--local` 可先指向独立输出目录，再通过本机配置 owner 将本机参数保存回原电脑。
+
+转换仅重写来源目录下的资产路径及 `/file` 引用，保留业务 ID、记录数量和关联。随后通过 `ConfigStore` 读写业务配置和凭据，通过本机配置 owner 分离 Browser/CLI 参数；浏览器登录资料留在原电脑。失败保留备份及 `migration-incomplete` 门禁，不能直接启动未完成的目标。完成后生成 `desktop-migration-report.json`，核对记录、素材访问和原历史回执，再配置后端 `ERP_APP_DIR` 与桌面连接地址。
+
+程序启动不会自动迁移或覆盖业务数据。2026-11-06 已按用户选择迁移真实桌面数据并完成服务器切换；实际地址、验收证据、备份及恢复方式见 [服务器部署记录](server-deployment.md)。项目开发数据库未参与本次迁移。
 
 ## 验证
 
 ```sh
+.venv/bin/python -m compileall -q desktop_runtime erp_shared erp_web
 .venv/bin/python -m pytest tests -q
-node --test front/desktop/backend.test.cjs
+node --test front/desktop/*.test.cjs
+pnpm --dir front test:run
+pnpm --dir front types:check
+pnpm --dir front build:desktop
 ```
 
-发行前另用打包后的后端，在仓库外临时目录和不含开发路径的环境中启动，检查 `/api/state`，
-关闭父进程管道并验证进程退出。测试不得携带真实店铺配置或触发平台业务操作。
+发行时另用打包后的执行器，在仓库外临时目录验证就绪管道、固定动作、父进程 EOF 和无业务数据库初始化。安装版连真实服务器、真实浏览器登录及实际数据迁移需在目标环境验收，不用测试结果代替这些上线步骤。

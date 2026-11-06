@@ -28,7 +28,7 @@ from erp_web.product_model.image_pool_model import normalize_image_pool_item
 from erp_web.product_model.sku_image_model import ensure_source_image_asset
 from erp_web.product_model.sku_model import new_draft_sku_rows
 from erp_web.services import image_service
-from erp_web.services.browser_debug_service import file_url
+from erp_web.services.local_urls import file_url
 from erp_web.services.mercadolibre_target_contract import mercadolibre_sales_target_selectors
 from erp_web.stores.product_store import normalize_product_fields
 

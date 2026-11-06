@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from erp_web.services import browser_debug_service
+from desktop_runtime import browser_debug_service
 
 
 def test_find_chrome_path_prefers_env_override(monkeypatch, tmp_path: Path) -> None:
@@ -24,83 +24,3 @@ def test_find_chrome_path_detects_macos_chrome_candidate(monkeypatch) -> None:
     monkeypatch.setattr(browser_debug_service.Path, "exists", lambda self: str(self) == expected)
 
     assert browser_debug_service.find_chrome_path() == expected
-
-
-def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> None:
-    from erp_web.runtime_units import source_collect_browser
-
-    opened: dict[str, object] = {}
-
-    def fake_open_browser_debug_session(url: str, port: int, profile_name: str) -> dict:
-        opened["url"] = url
-        opened["port"] = port
-        opened["profile_name"] = profile_name
-        return {"webSocketDebuggerUrl": "ws://fake"}
-
-    monkeypatch.setenv("ERP_1688_CDP_PORT", "9224")
-    monkeypatch.setattr(source_collect_browser, "open_browser_debug_session", fake_open_browser_debug_session)
-    calls: list[str] = []
-    monkeypatch.setattr(source_collect_browser.time, "sleep", lambda _: None)
-
-    class FakeCdp:
-        def __init__(self, _url: str) -> None:
-            pass
-
-        def call(self, method: str, params: dict | None = None, timeout: int | None = None) -> dict:
-            calls.append(method)
-            if method == "Runtime.evaluate":
-                expression = (params or {}).get("expression", "")
-                if expression == "document.readyState":
-                    return {"result": {"value": "complete"}}
-                if expression == "document.documentElement.outerHTML":
-                    return {"result": {"value": "<html><title>ok</title><body>ok</body></html>"}}
-                if expression == "document.body ? document.body.innerText : ''":
-                    return {"result": {"value": "ok"}}
-                if expression == "document.title || ''":
-                    return {"result": {"value": "ok"}}
-                if expression == "location.href || ''":
-                    return {"result": {"value": "https://detail.1688.com/offer/1.html"}}
-                if "document.images" in expression:
-                    return {"result": {"value": []}}
-                return {"result": {"value": ""}}
-            if method == "Page.captureScreenshot":
-                return {"data": ""}
-            return {}
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(source_collect_browser, "CdpWebSocket", FakeCdp)
-    monkeypatch.setattr(source_collect_browser, "save_collect_snapshot_artifacts", lambda *args, **kwargs: {"html_snapshot_path": "", "screenshot_path": ""})
-
-    snapshot = source_collect_browser.fetch_page_snapshot_with_browser_session(
-        "https://detail.1688.com/offer/1.html",
-        port=9222,
-    )
-
-    assert opened["port"] == 9222
-    assert snapshot
-    assert "Page.navigate" not in calls
-    assert "Page.reload" not in calls
-
-
-def test_open_1688_browser_uses_unified_debug_port(monkeypatch) -> None:
-    from erp_web.runtime_units import source_collect_browser
-
-    opened: dict[str, object] = {}
-
-    def fake_open_browser_debug_session(url: str, port: int, profile_name: str) -> None:
-        opened["url"] = url
-        opened["port"] = port
-        opened["profile_name"] = profile_name
-
-    monkeypatch.setenv("ERP_1688_CDP_PORT", "9224")
-    monkeypatch.setattr(source_collect_browser, "open_browser_debug_session", fake_open_browser_debug_session)
-
-    source_collect_browser.open_browser_debug_session(
-        "https://www.1688.com/",
-        9222,
-        "1688",
-    )
-
-    assert opened["port"] == 9222

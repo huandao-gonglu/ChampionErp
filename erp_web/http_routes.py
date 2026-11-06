@@ -7,6 +7,7 @@ import urllib.parse
 from erp_web.http_route_units import image_routes
 from .context import get_context
 from .services.external_request_context import request_operation
+from .services.desktop_connection_service import desktop_request
 from .http_route_units import (
     task_queue_routes,
     wechat_routes,
@@ -19,6 +20,7 @@ from .http_route_units import (
     image_hosting_routes,
     category_routes,
     collect_routes,
+    desktop_routes,
     copy_routes,
     get_routes,
     order_routes,
@@ -66,6 +68,7 @@ GET_API_ROUTES = frozenset(
     for path in getattr(route_unit, "GET_API_ROUTES", frozenset())
 )
 POST_ROUTE_UNITS = (
+    desktop_routes,
     alibaba_authorization_routes,
     task_queue_routes,
     wechat_routes,
@@ -104,6 +107,7 @@ __all__ = [
 
 
 @request_operation("http_get")
+@desktop_request
 def handle_get(handler: JsonRequestHandler) -> None:
     parsed = urllib.parse.urlparse(handler.path)
     try:
@@ -161,6 +165,7 @@ def _claim_presentation_scope(handler: JsonRequestHandler):
 
 
 @request_operation("http_post")
+@desktop_request
 def handle_post(handler: JsonRequestHandler) -> None:
     parsed = urllib.parse.urlparse(handler.path)
     if (

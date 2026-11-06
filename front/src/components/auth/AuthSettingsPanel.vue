@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { hasLocalOperations } from '@/utils/desktop'
 import { computed, inject, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
@@ -137,6 +138,7 @@ const capabilityOptions = [
 const visibleCapabilityOptions = capabilityOptions.filter(item => item.value !== 'image_generate')
 const allCapabilityValues = capabilityOptions.map((item) => item.value)
 const imageCapabilityValues = new Set(['image_generate', 'image_edit'])
+const localOperations = hasLocalOperations()
 const connectionTypeOptions = [
   { value: API_CONNECTION_TYPE, label: 'API 服务' },
   { value: CLI_CONNECTION_TYPE, label: '本地 CLI' },
@@ -311,6 +313,8 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
   const providerId = normalizeProviderId(record.provider_id)
   return {
     id: firstText(record.id, fallbackId),
+    local_connection_id: firstText(record.local_connection_id),
+    local_config_fingerprint: firstText(record.local_config_fingerprint),
     name: firstText(record.name, record.id, `AI 模型 ${index + 1}`),
     connection_type: connectionType,
     provider: connectionType === CLI_CONNECTION_TYPE
@@ -659,6 +663,9 @@ function aiPayload(): UnknownRecord {
       delete row.model_options
       delete row.model_env
       delete row.generation_capabilities
+      if (!localOperations && row.connection_type !== API_CONNECTION_TYPE) {
+        for (const key of ['command', 'profile', 'sandbox', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy']) delete row[key]
+      }
       return row
     }),
     ai_use_case_bindings: Object.fromEntries(
@@ -1395,6 +1402,7 @@ function refreshSelectedModelList(force = false) {
 
 function requestAiModelCheck(probeCapabilities: boolean, message: string, trigger: string) {
   if (!selectedAiModel.value || aiControlsLocked.value) return
+  if (!localOperations && !selectedAiModelIsApi.value) { aiSettingsError.value = '请在桌面端测试本机模型。'; return }
   if (!ensureBrowserProviderSelected(selectedAiModel.value)) return
   aiRequestPending.value = true
   aiRequestMessage.value = message
@@ -1403,6 +1411,7 @@ function requestAiModelCheck(probeCapabilities: boolean, message: string, trigge
 
 function confirmCapabilityProbe() {
   if (!selectedAiModel.value || aiControlsLocked.value || capabilityProbeDialog.pending) return
+  if (!localOperations && !selectedAiModelIsApi.value) { aiSettingsError.value = '请在桌面端测试本机模型。'; return }
   if (!ensureBrowserProviderSelected(selectedAiModel.value)) return
   const capability = capabilityProbeDialog.capability
   if (!capability) return
@@ -1813,7 +1822,7 @@ function copy(text: string) {
             </div>
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
-              <select data-testid="add-web-model" aria-label="添加网页模型" class="input w-auto py-1.5 text-sm" :disabled="aiControlsLocked || !browserPresets.length" value="" @change="addBrowserModel">
+              <select data-testid="add-web-model" aria-label="添加网页模型" class="input w-auto py-1.5 text-sm" :disabled="aiControlsLocked || !browserPresets.length || !localOperations" value="" @change="addBrowserModel">
                 <option value="" disabled>添加网页模型</option>
                 <option v-for="preset in browserPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
               </select>
@@ -1841,6 +1850,7 @@ function copy(text: string) {
             </div>
 
             <div v-if="selectedAiModel" class="ai-model-form space-y-3">
+              <p v-if="!localOperations && !selectedAiModelIsApi" role="status" class="text-sm text-amber-700 dark:text-amber-300">此模型需要本机浏览器或 CLI，请在桌面端配置、测试和使用；网页端可选择 API 模型。</p>
               <p v-if="aiSettingsError" role="alert" class="text-sm text-rose-700 dark:text-rose-300">{{ aiSettingsError }}</p>
               <div class="grid gap-3 md:grid-cols-2">
                 <label class="block">
@@ -1854,7 +1864,7 @@ function copy(text: string) {
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">接入方式</span>
                   <select data-testid="ai-connection-type" class="input" :value="modelField('connection_type', 'api')" :disabled="aiControlsLocked" @change="setSelectedModelField('connection_type', eventText($event))">
-                    <option v-for="option in connectionTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                    <option v-for="option in connectionTypeOptions" :key="option.value" :value="option.value" :disabled="!localOperations && option.value !== API_CONNECTION_TYPE">{{ option.label }}</option>
                   </select>
                 </label>
                 <label v-if="selectedAiModelIsApi" class="block">
@@ -1872,13 +1882,13 @@ function copy(text: string) {
                 </label>
                 <label v-else-if="selectedAiModelIsCli" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI 工具</span>
-                  <select class="input" :value="modelField('cli_tool', 'codex')" :disabled="aiControlsLocked" @change="setSelectedModelField('cli_tool', eventText($event))">
+                  <select class="input" :value="modelField('cli_tool', 'codex')" :disabled="aiControlsLocked || !localOperations" @change="setSelectedModelField('cli_tool', eventText($event))">
                     <option v-for="tool in cliToolOptions" :key="tool.value" :value="tool.value">{{ tool.label }}{{ tool.installed ? '（已安装）' : '' }}</option>
                   </select>
                 </label>
                 <label v-else class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页服务商</span>
-                  <select data-testid="web-provider-id" class="input" :value="modelField('browser_provider')" :disabled="aiControlsLocked" @change="setSelectedModelField('browser_provider', eventText($event))">
+                  <select data-testid="web-provider-id" class="input" :value="modelField('browser_provider')" :disabled="aiControlsLocked || !localOperations" @change="setSelectedModelField('browser_provider', eventText($event))">
                     <option value="" disabled>请选择网页服务商</option>
                     <option v-if="modelField('browser_provider') && !browserProviderIsListed" :value="modelField('browser_provider')" disabled>{{ modelField('browser_provider') }}（已保存配置）</option>
                     <option v-for="option in browserProviderOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -1907,7 +1917,7 @@ function copy(text: string) {
                 <template v-else-if="selectedAiModelIsCli">
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI 命令</span>
-                    <input class="input" :value="modelField('command')" :disabled="aiControlsLocked" placeholder="例如 codex" @input="setSelectedModelField('command', eventText($event))" />
+                    <input class="input" :value="modelField('command')" :disabled="aiControlsLocked || !localOperations" placeholder="例如 codex" @input="setSelectedModelField('command', eventText($event))" />
                   </label>
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
@@ -2002,11 +2012,11 @@ function copy(text: string) {
                   <div v-else-if="selectedAiModelIsCli" class="mt-3 grid gap-3 md:grid-cols-2">
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI Profile</span>
-                      <input class="input" :value="modelField('profile')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('profile', eventText($event))" />
+                      <input class="input" :value="modelField('profile')" :disabled="aiControlsLocked || !localOperations" placeholder="可选" @input="setSelectedModelField('profile', eventText($event))" />
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Sandbox</span>
-                      <select class="input" :value="modelField('sandbox', 'read-only')" :disabled="aiControlsLocked" @change="setSelectedModelField('sandbox', eventText($event))">
+                      <select class="input" :value="modelField('sandbox', 'read-only')" :disabled="aiControlsLocked || !localOperations" @change="setSelectedModelField('sandbox', eventText($event))">
                         <option v-for="option in cliSandboxOptions" :key="option" :value="option">{{ option }}</option>
                       </select>
                     </label>
@@ -2014,26 +2024,26 @@ function copy(text: string) {
                   <div v-else class="mt-3 grid gap-3 md:grid-cols-2">
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器模式</span>
-                      <select class="input" :value="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE)" :disabled="aiControlsLocked" @change="setSelectedModelField('browser_mode', eventText($event))">
+                      <select class="input" :value="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE)" :disabled="aiControlsLocked || !localOperations" @change="setSelectedModelField('browser_mode', eventText($event))">
                         <option v-for="option in browserModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                       </select>
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器 Profile</span>
-                      <input class="input" :value="modelField('browser_profile')" :disabled="aiControlsLocked" placeholder="留空使用 default" @input="setSelectedModelField('browser_profile', eventText($event))" />
+                      <input class="input" :value="modelField('browser_profile')" :disabled="aiControlsLocked || !localOperations" placeholder="留空使用 default" @input="setSelectedModelField('browser_profile', eventText($event))" />
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">远程调试端口</span>
-                      <input class="input" :value="modelField('browser_port')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('browser_port', eventText($event))" />
+                      <input class="input" :value="modelField('browser_port')" :disabled="aiControlsLocked || !localOperations" placeholder="可选" @input="setSelectedModelField('browser_port', eventText($event))" />
                     </label>
                     <label v-if="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE) === BROWSER_MODE_MANAGED_PROFILE" class="block md:col-span-2">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器代理</span>
-                      <input class="input" :value="modelField('browser_proxy')" :disabled="aiControlsLocked" placeholder="可选，例如 http://127.0.0.1:7890" @input="setSelectedModelField('browser_proxy', eventText($event))" />
+                      <input class="input" :value="modelField('browser_proxy')" :disabled="aiControlsLocked || !localOperations" placeholder="可选，例如 http://127.0.0.1:7890" @input="setSelectedModelField('browser_proxy', eventText($event))" />
                       <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅用于此专用浏览器，支持 HTTP、HTTPS 和 SOCKS5。地址中不填写账号密码；修改后需关闭专用浏览器，再重新测试连接。</span>
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页 URL</span>
-                      <input class="input" :value="modelField('browser_url')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('browser_url', eventText($event))" />
+                      <input class="input" :value="modelField('browser_url')" :disabled="aiControlsLocked || !localOperations" placeholder="可选" @input="setSelectedModelField('browser_url', eventText($event))" />
                     </label>
                   </div>
                 </details>

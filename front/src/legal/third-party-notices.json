@@ -1,13 +1,14 @@
 {
   "inputFiles": [
     "requirements.txt",
+    "requirements-desktop.txt",
     "front/package.json",
     "front/pnpm-lock.yaml",
     "scripts/generate_third_party_notices.py",
     "scripts/legal-notices/supplements.json",
     "scripts/legal-notices/python-supplements.json"
   ],
-  "inputDigest": "460d33f7c9ea049116651d9d7188d83b7304ff712f15275cd2abda960706eb94",
+  "inputDigest": "545215aa0a4134ab9929e765aba4645b936a6faadb55793bd8f96b457b222911",
   "incompleteNotices": [],
   "packages": [
     {

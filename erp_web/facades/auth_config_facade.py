@@ -9,9 +9,7 @@ from erp_web.context import get_context
 from erp_web.marketplace_registry import marketplace_spec
 from erp_web.services import config_service
 from erp_web.services.approval_session import ApprovalSessionError
-from erp_web.services.browser_debug_service import (
-    open_auth_link_in_browser,
-)
+from erp_web.services.desktop_connection_service import call_desktop
 from erp_web.services.listing_currency_service import (
     CurrencySelectionError,
     apply_currency_selection,
@@ -192,10 +190,7 @@ def mercadolibre_auth_checklist_payload() -> ResponseWithStatus:
 
 def open_auth_link_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
-        result = open_auth_link_in_browser(
-            str(body.get("url") or ""),
-            str(body.get("browser") or "default"),
-        )
+        result = call_desktop("auth.open", {"url": str(body.get("url") or ""), "browser": str(body.get("browser") or "default")})
         return result, 200 if result.get("ok") else 400
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 400

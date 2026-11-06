@@ -119,10 +119,7 @@ def handle_drafts_index(handler: JsonRequestHandler, parsed: object) -> None:
 
 
 def handle_browser_debug_status(handler: JsonRequestHandler, parsed: object) -> None:
-    default_port = get_context().paths.browser_debug_port
-    params = urllib.parse.parse_qs(parsed.query)
-    port = int((params.get("port") or [str(default_port)])[0] or default_port)
-    handler.send_json(browser_debug_status(port))
+    handler.send_json(browser_debug_status())
 
 
 def handle_publish_logs(handler: JsonRequestHandler, parsed: object) -> None:

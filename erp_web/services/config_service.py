@@ -208,6 +208,8 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
     load_env(app_dir)
     cfg = app_config if isinstance(app_config, dict) else {}
     public = ai_model_config.public_ai_config(cfg)
+    from .desktop_model_config_service import local_models_view
+    public['ai_models'] = local_models_view(public['ai_models'])
     # 1688 应用与买家授权通过独立入口管理，不进入通用配置视图。
     public.pop("1688_api", None)
     public["ai_use_case_prompts"] = ai_prompt_templates.public_ai_use_case_prompts(app_dir, cfg)
@@ -221,7 +223,8 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
 def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current or {})
     if isinstance(incoming.get("ai_models"), list):
-        raw_models = incoming.get("ai_models")
+        from .desktop_model_config_service import prepare_local_model
+        raw_models = [prepare_local_model(model) for model in incoming["ai_models"]]
         current_models = ai_model_config.normalize_ai_models(current.get("ai_models") if isinstance(current, dict) else None)
         current_by_id = {str(model.get("id") or ""): model for model in current_models if str(model.get("id") or "")}
         copy_source_by_id = {

@@ -7,7 +7,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from erp_web.services.external_request_context import request_context
+from .operation import check_cancellation, remaining_seconds
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -27,15 +27,8 @@ def browser_debug_json(port: int, path: str, *, method: str = "GET", timeout: fl
         raise ValueError("无效的本机浏览器调试请求")
     url = f"http://127.0.0.1:{port}{path}"
     # 这里只复用操作上下文的取消与期限，不调用外部请求管理器或业务发送钩子。
-    ctx = request_context(url, method=method, timeout=timeout, source=__name__)
-    if ctx.cancellation_check is not None:
-        ctx.cancellation_check()
-    if ctx.cancel is not None and ctx.cancel.is_set():
-        raise RuntimeError("任务已取消，尚未发送浏览器调试请求")
-    remaining = min(timeout, ctx.deadline_at - time.time()) if ctx.deadline_at is not None else timeout
-    if remaining <= 0:
-        # 任务过期不是连接失败，不能被连接探测当作浏览器尚未启动。
-        raise RuntimeError("浏览器调试请求超过任务时间边界，尚未发送")
+    check_cancellation()
+    remaining = remaining_seconds(timeout)
     # 本机控制通道直连，不受系统代理影响，也不跟随重定向到其他服务。
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     request = urllib.request.Request(url, method=method, headers={"Accept": "application/json"})

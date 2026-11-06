@@ -13,7 +13,6 @@ from .facades.ai_chat_facade import build_job_service
 from .http_handler import Handler
 from .logging_config import configure_logging
 from .runtime_units.publish_adapter import mark_interrupted_publish_jobs
-from .services.browser_debug_service import pick_web_port
 from .services.config_service import load_env
 from .stores.credential_layout import assert_credentials_migrated
 
@@ -57,8 +56,9 @@ def main(*, on_ready: Callable[[str], None] | None = None,
     get_context().task_queue.start()
     get_context().order_notifications  # 处理平台回调和页面发起的订单同步；不调度周期对账。
     get_context().fulfillment  # 执行自动预报、资料更新及平台取消传播；仓库状态由页面按需查询。
-    port = pick_web_port(paths.web_port)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    host = os.environ.get('ERP_BIND_HOST', '127.0.0.1')
+    port = paths.web_port
+    server = ThreadingHTTPServer((host, port), Handler)
     job_stop = threading.Event()
     job_worker = start_agent_job_worker(stop_event=job_stop)
     get_context().wechat.start()

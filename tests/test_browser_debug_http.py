@@ -10,10 +10,12 @@ from unittest.mock import Mock
 import pytest
 
 from erp_web.context import get_context
-from erp_web.runtime_units import source_collect_browser as collection
-from erp_web.services import browser_ai_runtime as ai
-from erp_web.services import browser_debug_http as transport
-from erp_web.services import browser_debug_service as browser
+from desktop_runtime import collection
+from desktop_runtime.config import LocalConfig
+from desktop_runtime.operation import bind_operation
+from desktop_runtime import browser_ai_runtime as ai
+from desktop_runtime import browser_debug_http as transport
+from desktop_runtime import browser_debug_service as browser
 from erp_web.services.external_request_context import request_context, request_operation
 from erp_web.schemas.external_requests import ExternalRequestBlocked, RequestFailure
 
@@ -38,7 +40,7 @@ def test_browser_recovers_after_repeated_disconnects_without_external_audit(monk
     assert store.blocks() == []
 
 
-def test_old_loopback_blocks_do_not_affect_browser_but_business_requests_stay_blocked(monkeypatch):
+def test_old_loopback_blocks_do_not_affect_browser_but_business_requests_stay_blocked(monkeypatch, tmp_path):
     manager = get_context().external_requests
     ctx = request_context("http://127.0.0.1:9222/json/version")
     manager.store.block(ctx, RequestFailure("EXTERNAL_API_DISABLED", "已有阻断", "account"))
@@ -50,9 +52,12 @@ def test_old_loopback_blocks_do_not_affect_browser_but_business_requests_stay_bl
         return io.BytesIO(json.dumps(payload).encode())
     fake_transport(monkeypatch, side_effect=send)
     assert browser.browser_debug_connected(9222)
-    assert collection.browser_debug_status(9222)["connected"]
+    config = LocalConfig(tmp_path)
+    config.browser_port = 9222
+    monkeypatch.setattr(collection, "ensure_browser_debug_session", lambda *_: None)
+    assert collection.browser_status(config)["connected"]
     assert ai._page_targets(9222) == [target]
-    assert collection.cdp_target_for_url(9222, target["url"]) == target
+    assert collection.target_for_url(config, target["url"]) == target
     assert manager.store.query()["items"] == []
     assert manager.store.blocks() == original_blocks
     network = Mock(side_effect=AssertionError("已有业务阻断不能绕过"))
@@ -61,35 +66,23 @@ def test_old_loopback_blocks_do_not_affect_browser_but_business_requests_stay_bl
     network.assert_not_called()
 
 
-@pytest.mark.parametrize("reason", ["cancel", "deadline", "native_cancel"])
-def test_cancelled_or_expired_operation_does_not_send(monkeypatch, reason):
-    send = fake_transport(monkeypatch, side_effect=AssertionError("已取消任务不能发送"))
+@pytest.mark.parametrize('expired', [False, True])
+def test_cancelled_or_expired_operation_does_not_send(monkeypatch, expired):
+    send = fake_transport(monkeypatch, side_effect=AssertionError('已取消操作不能发送'))
     cancel = Event()
-    cancel.set()
-    def native_cancel():
-        raise RuntimeError("原生取消")
-    options = {"cancel": {"cancel": cancel}, "deadline": {"deadline_at": time.time() - 1},
-               "native_cancel": {"cancellation_check": native_cancel}}[reason]
-    with request_operation("test", **options):
+    if not expired:
+        cancel.set()
+    with bind_operation(cancel, -1 if expired else 20):
         with pytest.raises((RuntimeError, TimeoutError)):
-            transport.browser_debug_json(9222, "/json/list")
+            transport.browser_debug_json(9222, '/json/list')
     send.assert_not_called()
-
-
-def test_expired_task_does_not_launch_browser(monkeypatch, tmp_path):
-    launch = Mock(side_effect=AssertionError("已过期任务不能启动浏览器"))
-    monkeypatch.setattr(browser.subprocess, "Popen", launch)
-    with request_operation("test", deadline_at=time.time() - 1):
-        with pytest.raises(RuntimeError, match="任务时间边界"):
-            browser.ensure_browser_debug_session(9222, tmp_path)
-    launch.assert_not_called()
 
 
 def test_operation_deadline_limits_socket_timeout(monkeypatch):
     send = fake_transport(monkeypatch, return_value=io.BytesIO(b'[]'))
-    with request_operation("test", deadline_at=time.time() + 2):
-        assert transport.browser_debug_json(9222, "/json/list", timeout=8) == []
-    assert 0 < send.call_args.kwargs["timeout"] <= 2
+    with bind_operation(Event(), 2):
+        assert transport.browser_debug_json(9222, '/json/list', timeout=8) == []
+    assert 0 < send.call_args.kwargs['timeout'] <= 2
 
 
 @pytest.mark.parametrize(("port", "path", "method"), [

@@ -1,7 +1,7 @@
 """网页与微信共用的输入接收和原生运行投递；不实现 Agent 循环或消息编码。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import re
 from typing import Any
@@ -13,6 +13,8 @@ from erp_web.services.ai_agent_factory import AiAgentExecutionError
 from erp_web.services.ai_run_cancellation import bind_cancellation_token
 from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_ACTOR_ID, GLOBAL_CHAT_TENANT_ID, GLOBAL_CHAT_PROFILE_ID
 from erp_web.stores.pydantic_message_store import PydanticMessageStoreError
+
+from .desktop_connection_service import current_desktop_connection, bind_desktop_connection
 
 _logger = logging.getLogger(__name__)
 MAX_USER_TEXT_CHARS = 32000
@@ -39,11 +41,12 @@ class ChatConversationRun:
     conversation_id: str
     client_message_id: str
     _service: Any
+    desktop_connection: str = field(default_factory=current_desktop_connection)
 
     async def events(self):
         """原样传递 Factory 的原生事件，提交与取消仍由既有 owner 负责。"""
         service = self._service
-        with bind_cancellation_token(service.run_registry.token(self.conversation_id)):
+        with bind_desktop_connection(self.desktop_connection), bind_cancellation_token(service.run_registry.token(self.conversation_id)):
             try:
                 async with service.chat_service.open_chat_run(
                     conversation_id=self.conversation_id, client_message_id=self.client_message_id,

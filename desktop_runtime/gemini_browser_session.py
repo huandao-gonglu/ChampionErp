@@ -6,7 +6,7 @@ import time
 from urllib.parse import quote
 
 from . import browser_ai_runtime
-from .ai_run_cancellation import check_cancellation
+from .operation import check_cancellation
 
 logger = logging.getLogger(__name__)
 LOGIN_WAIT_SECONDS = 300

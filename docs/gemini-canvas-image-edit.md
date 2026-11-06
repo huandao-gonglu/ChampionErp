@@ -57,12 +57,12 @@ Google Canvas 默认执行环境，调用 Google 注入的模型转发函数；�
 
 ## 边界
 
-- 1688 与 Gemini 共用 `browser_debug_service.ensure_browser_debug_session` 的浏览器发现、启动和连接等待。
-  `browser_ai_runtime` 负责 AI 独立资料目录与页面连接；创建页面使用 `PUT /json/new`，
+- 1688 与 Gemini 共用 `desktop_runtime.browser_debug_service.ensure_browser_debug_session` 的浏览器发现、启动和连接等待。
+  `desktop_runtime/browser_ai_runtime` 负责 AI 独立资料目录与页面连接；创建页面使用 `PUT /json/new`，
   Canvas 只复用配置地址对应的页面，不借用其他对话或空白标签。
   普通 Chrome/Edge 已提供独立资料目录和 CDP，无需额外浏览器框架或指纹内核；
   [Chrome 136 起的远程调试要求](https://developer.chrome.com/blog/remote-debugging-port)也要求非默认资料目录。
-  `gemini_browser_session` 负责登录检查、最长五分钟的交互登录等待及恢复原任务；
+  `desktop_runtime/gemini_browser_session` 负责登录检查、最长五分钟的交互登录等待及恢复原任务；
   1688 和其他浏览器调用保持其显式显示方式，“连接已打开浏览器”模式由用户管理窗口。
   Profile 不改变网络出口或地区资格，产品运行时不自动创建 Canvas。
 - 隐藏执行使用 Chrome 原生 `--headless`，登录显示与隐藏之间顺序重启同一个专用 Profile，
@@ -110,3 +110,9 @@ HTTP 连接测试仍通过；无需保持私有维护页或第三方工作台页
 网页入口按目录数据生成选项，后续只加入已完成适配的网页服务。
 `tests/test_gemini_browser_session.py` 覆盖已登录时保持隐藏、登录后恢复、等待超时、取消、
 登录导航完成前拒绝旧文档状态，以及用户自行管理的浏览器不被重启。
+
+
+桌面与统一后端拆分后，后端 `gemini_canvas_runtime.GeminiCanvasProvider` 负责传递源图和校验返回图片，
+本机页面执行在 `desktop_runtime/gemini_canvas_runtime.py`。结果仍由原图片服务保存和关联来源；网页不能执行本机模型，
+桌面关闭或连接中断时明确失败/结果待核对，不切换到 API。
+连接配置和数据迁移见 [桌面与统一后端](desktop-packaging.md)。

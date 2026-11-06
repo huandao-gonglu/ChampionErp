@@ -6,12 +6,8 @@ CLI 与浏览器是明确的非 API 连接，不参与 API 协议转换。
 
 from __future__ import annotations
 
-# CLI 测试和运行时打桩依赖标准库模块单例；它们不属于 API 推理路径。
-import shutil
-import subprocess
-
-from . import browser_ai_runtime
-from .ai_gateway_parsing import parse_json_text
+from . import desktop_browser_service as browser_ai_runtime
+from erp_shared.ai_parsing import parse_json_text
 from .ai_gateway_probe import _web_search_probe_date_iso
 from .ai_gateway_providers import (
     AI_PROVIDER_REGISTRY,

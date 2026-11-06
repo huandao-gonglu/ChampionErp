@@ -21,8 +21,9 @@ from zoneinfo import ZoneInfo
 
 from pydantic_ai.exceptions import ModelHTTPError
 
-from . import ai_model_config, browser_ai_runtime
-from .ai_gateway_parsing import parse_json_text
+from . import ai_model_config
+from . import desktop_browser_service as browser_ai_runtime
+from erp_shared.ai_parsing import parse_json_text
 from .ai_model_errors import AIHTTPError, model_http_error_detail
 
 

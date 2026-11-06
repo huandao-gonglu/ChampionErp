@@ -17,7 +17,6 @@ from erp_web.runtime_units import (
     image_pool_core,
     publish_logs_runtime,
     publish_mercadolibre,
-    source_collect_browser,
     source_collect_workflows,
 )
 from tests.runtime_test_utils import temp_app_context
@@ -77,24 +76,6 @@ def test_runtime_paths_follow_context_rebinding_after_module_import(tmp_path: Pa
     assert second["last_payload"] == tmp_path / "second/data/logs/last_mercadolibre_payload.json"
     assert Path(second_generated[0]["path"]).is_relative_to(tmp_path / "second")
 
-
-def test_browser_port_defaults_are_resolved_at_call_time(tmp_path: Path) -> None:
-    assert inspect.signature(source_collect_browser.browser_debug_status).parameters["port"].default is None
-    assert inspect.signature(source_collect_workflows.collect_from_browser_tab).parameters["port"].default is None
-
-    previous = get_context()
-    paths = replace(
-        AppPaths.from_app_dir(tmp_path / "browser-port"),
-        browser_debug_port=19_822,
-    )
-    context = AppContext(paths, ErpDatabase(paths.db_path))
-    set_context(context)
-    try:
-        status = source_collect_browser.browser_debug_status(tabs_override=[])
-    finally:
-        set_context(previous)
-
-    assert status["port"] == 19_822
 
 
 def test_publish_artifact_names_are_unique_and_private_in_same_second(

@@ -66,3 +66,6 @@ docs/online-product-management/penpot-manifest.json
 
 # 外部请求阻断与审计属于本地运行数据。
 data/external-requests.sqlite3*
+
+# 独立本机执行器的构建产物。
+front/.desktop-runtime/

@@ -46,3 +46,15 @@ describe('workflow settings API', () => {
     })
   })
 })
+
+it('桌面先保存本机连接，业务请求只发送引用和指纹', async () => {
+  const configureModels = vi.fn().mockResolvedValue({ fingerprints: { canvas: 'actual-config' }, models: {} })
+  vi.stubGlobal('championDesktop', { localOperations: true, configureModels })
+  vi.mocked(apiClient.post).mockResolvedValue({ data: { ok: true }, status: 200 })
+  await testAiModel({ id: 'canvas', connection_type: 'browser', browser_profile: 'personal', browser_proxy: 'http://127.0.0.1:7890' })
+  expect(configureModels).toHaveBeenCalledWith({ canvas: { browser_profile: 'personal', browser_proxy: 'http://127.0.0.1:7890' } })
+  expect(apiClient.post).toHaveBeenLastCalledWith('/api/test-ai-model', {
+    model: { id: 'canvas', connection_type: 'browser', local_connection_id: 'canvas', local_config_fingerprint: 'actual-config' },
+  }, { aiPresentationId: '', timeout: 600_000 })
+  vi.unstubAllGlobals()
+})
