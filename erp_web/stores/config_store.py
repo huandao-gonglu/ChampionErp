@@ -40,6 +40,7 @@ from erp_web.services.image_hosting_credentials import merge_profile
 from erp_web.services import ai_model_config
 from erp_web.services.config_service import (
     is_sensitive_config_key,
+    merge_ai_config,
     mask_nested_config,
 )
 from erp_web.services.mercadolibre_credential_lock import (
@@ -418,6 +419,7 @@ class ConfigStore:
 
     def __init__(self, paths: AppPaths, db: ErpDatabase) -> None:
         self.managed_models: list[dict[str, Any]] | None = None
+        self._app_dir = paths.app_dir
         self._app_config_path = paths.app_config_path
         self._store_config_path = paths.store_config_path
         self._db = db
@@ -748,6 +750,9 @@ class ConfigStore:
                     section[field] = deepcopy(field_value)
             else:
                 merged[key] = deepcopy(value)
+        if self.managed_models is not None and "ai_models" in incoming:
+            rows = self.check_system_models(incoming["ai_models"])
+            merged = merge_ai_config(self._app_dir, merged, {"ai_models": rows})
         return merged
 
     @contextmanager

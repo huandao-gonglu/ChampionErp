@@ -218,6 +218,10 @@ def test_fixed_models_use_only_current_account_credentials(accounts_http, monkey
             selected = ai_model_config.resolve_ai_model(cfg, "global.chat")
             assert selected["id"] == "custom" and ai_model_config.model_api_key(selected) == "personal-secret"
             assert ai_model_config.resolve_ai_model(cfg, "image.translate")["name"] == "重命名"
+        assert client.post(url + "/api/save-settings", json={"appConfig": {"ai_models": []}}).status_code == 403
+        general = {"appConfig": {"ai_models": rows, "ai_use_case_bindings": {"global.chat": {"model_id": sys_text["id"]}}}}
+        assert client.post(url + "/api/save-settings", json=general).status_code == 200
+        assert "custom" not in {m["id"] for m in context.config.load_app_config()["ai_models"]}
         assert save(rows, ai_use_case_bindings={}).status_code == 200
         assert not any(m["id"] == "custom" for m in context.config.load_app_config()["ai_models"])
         assert not calls

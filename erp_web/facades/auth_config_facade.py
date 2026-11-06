@@ -399,6 +399,8 @@ def _save_settings_payload_unlocked(
             "error": str(exc),
             "error_code": exc.code,
         }, 403
+    except SystemModelError as exc:
+        return {"ok": False, "error": str(exc)}, 403
     except ValueError as exc:
         return {
             "ok": False,
