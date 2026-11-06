@@ -173,9 +173,8 @@ def test_two_users_have_concurrent_independent_business_files_and_config(account
     monkeypatch.setenv("OPENAI_API_KEY", "admin-only-secret")
     for context in contexts:
         with bind_context(context):
-            for override in ({"api_key_env": "OPENAI_API_KEY"}, {"api_key": "own-key"}):
-                with pytest.raises(ValueError, match="当前账号"):
-                    ai_model_config.model_api_key(override)
+            assert ai_model_config.model_api_key({"api_key_env": "OPENAI_API_KEY"}) == ""
+            assert ai_model_config.model_api_key({"api_key": "own-key"}) == "own-key"
             with pytest.raises(ValueError, match="当前账号"):
                 ai_prompt_templates.write_prompt_json(context.paths.app_dir, str(runtime.root.paths.config_dir / "stolen.json"), system="越界")
     assert runtime.context_for(runtime.store.admin()).paths.app_dir == runtime.root.paths.app_dir
@@ -196,12 +195,31 @@ def test_fixed_models_use_only_current_account_credentials(accounts_http, monkey
         user = runtime.store.by_email(email)
         context = runtime.context_for(user)
         public = client.get(url + "/api/ai-config").json()["config"]
-        assert public["models_managed"] and [m["name"] for m in public["ai_models"]] == ["dsflash", "qwenflash"]
-        assert all("api_key" not in m and "api_key_env" not in m for m in public["ai_models"])
-        for models in ([], [{"id": "default_text", "api_key": "custom", "base_url": "https://example.org"}]):
-            assert client.post(url + "/api/ai-config/save", json={"config": {"ai_models": models}}).status_code == 403
-        assert client.post(url + "/api/test-ai-model", json={"model": {"id":"default_text"}}).status_code == 403
-        assert client.post(url + "/api/ai-config/save", json={"config": {"ai_use_case_bindings": {"image.translate": {"timeout_override_seconds": 90}}}}).status_code == 200
+        rows = public["ai_models"]
+        sys_text, sys_image = rows[:2]
+        assert [m["name"] for m in rows if m.get("system_managed")] == ["dsflash", "qwenflash"]
+        assert all("api_key" not in m and "api_key_env" not in m for m in (sys_text, sys_image))
+        def save(models, **changes):
+            return client.post(url + "/api/ai-config/save", json={"config": {"ai_models": models, **changes}})
+
+        for models in (rows[1:], rows + [sys_text], [{**sys_text, "base_url": "https://example.org"}, *rows[1:]]):
+            assert save(models).status_code == 403
+        assert client.post(url + "/api/test-ai-model", json={"model": {**sys_image, "api_key": "custom"}}).status_code == 403
+        custom = {"id": "custom", "name": "个人连接", "provider_id": "openai", "model": "custom-chat",
+                  "base_url": "https://example.org", "api_key": "personal-secret", "capabilities": ["chat", "tool_calling"]}
+        bindings = {"global.chat": {"model_id": "custom"}, "image.translate": {"model_id": sys_image["id"]}}
+        result = save([*rows, custom], ai_use_case_bindings=bindings)
+        assert result.status_code == 200, result.text
+        public_models = result.json()["config"]["ai_models"]
+        assert "personal-secret" not in result.text
+        assert save([{**m, "name": "重命名"} if m["id"] == sys_image["id"] else m for m in public_models]).status_code == 200
+        with bind_context(context):
+            cfg = context.config.load_app_config()
+            selected = ai_model_config.resolve_ai_model(cfg, "global.chat")
+            assert selected["id"] == "custom" and ai_model_config.model_api_key(selected) == "personal-secret"
+            assert ai_model_config.resolve_ai_model(cfg, "image.translate")["name"] == "重命名"
+        assert save(rows, ai_use_case_bindings={}).status_code == 200
+        assert not any(m["id"] == "custom" for m in context.config.load_app_config()["ai_models"])
         assert not calls
         with bind_context(context):
             cfg = context.config.load_app_config()

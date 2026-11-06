@@ -10,6 +10,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from erp_web.context import get_context
+from erp_web.services.ai_model_config import SystemModelError
 from erp_web.marketplace_registry import default_marketplace_site
 from erp_web.product_model import PLATFORMS
 from erp_web.runtime_units.copy_generation import (
@@ -214,11 +215,11 @@ def _model_config_from_body(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_ai_model_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    if get_context().config.managed_models is not None:
-        return {"ok": False, "error": "AI 模型及连接凭据由服务器管理。"}, 403
     model_config = _model_config_from_body(body)
     try:
         return test_ai_model_config(model_config), 200
+    except SystemModelError as exc:
+        return {"ok": False, "error": str(exc)}, 403
     except Exception as exc:
         logger.info(
             "AI model test failed trigger=%s model_id=%s provider=%s model=%s probe=%s error=%s",

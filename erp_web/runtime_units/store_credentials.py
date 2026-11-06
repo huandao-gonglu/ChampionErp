@@ -83,6 +83,12 @@ def _store_publish_readiness_next_action(
 def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
     incoming = dict(model_config if isinstance(model_config, dict) else {})
     model_id = str(incoming.get("id") or "").strip()
+    systems = {m["id"]: m for m in get_context().config.managed_models or ()}
+    if model_id in systems:
+        incoming = ai_model_config.system_model_input(incoming, systems[model_id])
+    elif (incoming.get("system_managed") or incoming.get("api_key_env") == ai_model_config.MANAGED_KEY_SOURCE
+          or incoming.get("copy_source_id") in systems):
+        raise ai_model_config.SystemModelError("个人模型不能使用系统模型凭据。")
     if not model_id:
         return incoming
     source_model_id = str(incoming.get("copy_source_id") or "").strip()

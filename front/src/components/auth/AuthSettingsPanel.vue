@@ -313,6 +313,7 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
   const providerId = normalizeProviderId(record.provider_id)
   return {
     id: firstText(record.id, fallbackId),
+    ...(record.system_managed === true ? { system_managed: true } : {}),
     local_connection_id: firstText(record.local_connection_id),
     local_config_fingerprint: firstText(record.local_config_fingerprint),
     name: firstText(record.name, record.id, `AI 模型 ${index + 1}`),
@@ -531,6 +532,21 @@ const globalPromptUseCases = computed(() => aiUseCases.value.filter((useCase) =>
 const activeAuthSettingsTabMeta = computed(() => authSettingsTabs.find((tab) => tab.key === activeAuthSettingsTab.value) || authSettingsTabs[0])
 const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) => [item.value, item.label]))
 const selectedAiModelConnectionType = computed(() => normalizeConnectionType(modelField('connection_type', API_CONNECTION_TYPE)))
+const selectedSystemModel = computed(() => selectedAiModel.value?.system_managed === true)
+const systemConnectionFields = new Set([
+  'id', 'connection_type', 'provider_id', 'api_style', 'base_url', 'base_url_env',
+  'api_key', 'api_key_env', 'model', 'model_env',
+])
+
+function modelForServer(row: UnknownRecord): UnknownRecord {
+  if (row.system_managed) {
+    for (const field of systemConnectionFields) {
+      if (field !== 'id') delete row[field]
+    }
+  }
+  return row
+}
+
 const selectedAiModelIsApi = computed(() => selectedAiModelConnectionType.value === API_CONNECTION_TYPE)
 const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value === CLI_CONNECTION_TYPE)
 const selectedModelThinkingSupported = computed(() => firstText(asRecord(derivedGenerationCapabilities(selectedAiModel.value).reasoning).status) === 'supported')
@@ -566,7 +582,7 @@ const selectedModelListReady = computed(() => Boolean(
   selectedAiModel.value
   && selectedAiModelIsApi.value
   && selectedProviderSupportsModelDiscovery.value
-  && String(selectedAiModel.value.base_url || selectedAiModel.value.base_url_env || '').trim()
+  && (selectedSystemModel.value || String(selectedAiModel.value.base_url || selectedAiModel.value.base_url_env || '').trim())
   && (String(selectedAiModel.value.api_key || '').trim() || selectedAiModel.value.api_key_configured),
 ))
 const aiControlsLocked = computed(() => props.loading || aiRequestPending.value)
@@ -600,7 +616,7 @@ function useCaseBindingGenerationPayload(binding: UnknownRecord): UnknownRecord 
 
 function aiPayload(): UnknownRecord {
   return {
-    ...(props.aiConfig.models_managed ? {} : { ai_models: aiModels.value.map((model, index) => {
+    ai_models: aiModels.value.map((model, index) => {
       const row = normalizeAiModelRow(model, index)
       delete row.provider_family
       const copySourceId = firstText(model.copy_source_id)
@@ -661,13 +677,12 @@ function aiPayload(): UnknownRecord {
         delete row.browser_proxy
       }
       delete row.model_options
-      delete row.model_env
       delete row.generation_capabilities
       if (!localOperations && row.connection_type !== API_CONNECTION_TYPE) {
         for (const key of ['command', 'profile', 'sandbox', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy']) delete row[key]
       }
-      return row
-    }) }),
+      return modelForServer(row)
+    }),
     ai_use_case_bindings: Object.fromEntries(
       Object.entries(aiUseCaseBindings.value)
         .filter(([useCaseId]) => globalPromptUseCases.value.some((useCase) => String(useCase.id || '') === useCaseId))
@@ -823,7 +838,7 @@ function setModelThinking(value: boolean | null) {
 
 function setSelectedModelField(field: string, value: string | boolean) {
   if (!selectedAiModel.value) return
-  if (aiControlsLocked.value) return
+  if (aiControlsLocked.value || (selectedSystemModel.value && systemConnectionFields.has(field))) return
   const nextValue = field === 'connection_type' && typeof value === 'string'
     ? normalizeConnectionType(value)
     : field === 'provider_id' && typeof value === 'string'
@@ -1265,13 +1280,15 @@ function duplicateSelectedAiModel() {
   const sourceId = firstText(current.id)
   const cloned = normalizeAiModelRow({
     ...current,
+    system_managed: false,
+    ...(current.system_managed ? { api_key_configured: false, api_key_masked: '', api_key_env: '', base_url: '' } : {}),
     id: uniqueAiModelId(sourceId || firstText(current.model) || `ai_model_${aiModels.value.length + 1}`),
     name: uniqueAiModelName(firstText(current.name, current.id, `AI 模型 ${aiModels.value.length + 1}`)),
     capabilities: asStringArray(current.capabilities),
     capability_profiles: normalizeCapabilityProfiles(current.capability_profiles),
     model_options: normalizeModelOptions(current.model_options),
   }, aiModels.value.length)
-  if (sourceId && !firstText(cloned.api_key)) cloned.copy_source_id = sourceId
+  if (sourceId && !current.system_managed && !firstText(cloned.api_key)) cloned.copy_source_id = sourceId
   aiModels.value.splice(selectedAiModelIndex.value + 1, 0, cloned)
   selectedAiModelIndex.value += 1
   lastAutoModelListSignature.value = ''
@@ -1281,7 +1298,7 @@ function duplicateSelectedAiModel() {
 function removeSelectedAiModel() {
   if (aiControlsLocked.value) return
   const current = selectedAiModel.value
-  if (!current || aiModels.value.length <= 1) return
+  if (!current || current.system_managed || aiModels.value.length <= 1) return
   const removedId = String(current.id || '')
   aiModels.value.splice(selectedAiModelIndex.value, 1)
   for (const [useCaseId, binding] of Object.entries(aiUseCaseBindings.value)) {
@@ -1389,7 +1406,7 @@ function aiModelPayloadForCheck(): UnknownRecord {
   delete model.model_options
   // 显式传 null，避免探测接口合并已保存配置时恢复被清除的开关。
   model.thinking_enabled = typeof model.thinking_enabled === 'boolean' ? model.thinking_enabled : null
-  return model
+  return modelForServer(model)
 }
 
 function refreshSelectedModelList(force = false) {
@@ -1480,7 +1497,7 @@ function applyAiTestResult(result: AuthResult | null) {
   if (options.length) {
     target.model_options = options
     const selectedModel = String(target.model || '').trim()
-    if (selectedModel && !options.some((option) => option.id === selectedModel)) {
+    if (!target.system_managed && selectedModel && !options.some((option) => option.id === selectedModel)) {
       target.model = ''
     }
   }
@@ -1806,17 +1823,7 @@ function copy(text: string) {
       </nav>
 
       <div class="mt-5">
-        <section v-if="props.aiConfig.models_managed" v-show="activeAuthSettingsTab === 'ai_models'" class="rounded-lg border border-accent-200 p-4 dark:border-dark-700">
-          <h3 class="font-semibold">AI 模型</h3>
-          <p class="mt-1 text-sm text-accent-500">模型调用使用当前账号的 New API 额度。</p>
-          <dl class="mt-4 grid gap-3">
-            <div v-for="model in aiModels" :key="String(model.id)" class="flex items-baseline gap-3">
-              <dt>{{ model.id === 'default_text' ? '文本模型' : '图片模型' }}</dt>
-              <dd><strong>{{ model.name }}</strong> · {{ model.model }}</dd>
-            </div>
-          </dl>
-        </section>
-        <section v-else v-show="activeAuthSettingsTab === 'ai_models'" class="relative rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+        <section v-show="activeAuthSettingsTab === 'ai_models'" class="relative rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
           <div v-if="aiControlsLocked" class="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-slate-950/15 p-4 backdrop-blur-sm dark:bg-slate-950/45">
             <div class="flex min-w-64 flex-col items-center rounded-lg border border-accent-200 bg-white px-6 py-5 text-center shadow-lg dark:border-dark-700 dark:bg-dark-900">
               <span class="size-8 animate-spin rounded-full border-4 border-primary-100 border-t-primary-600 dark:border-primary-500/20 dark:border-t-primary-300"></span>
@@ -1837,7 +1844,7 @@ function copy(text: string) {
                 <option v-for="preset in browserPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
               </select>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel" @click="duplicateSelectedAiModel">复制当前模型</button>
-              <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
+              <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : selectedProviderSupportsModelDiscovery ? '请先填写 Base URL 和 API Key' : '当前 Provider 不提供模型目录，请手动填写模型 ID'" @click="refreshSelectedModelList(true)">加载模型列表</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存 AI 设置</button>
             </div>
@@ -1855,17 +1862,18 @@ function copy(text: string) {
                 @click="selectedAiModelIndex = index"
               >
                 <span class="block truncate font-semibold">{{ model.name || model.id || '未命名模型' }}</span>
-                <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ aiModelProviderLabel(model) }} · {{ model.model || '未选模型' }}</span>
+                <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ model.system_managed ? '系统 · New API' : aiModelProviderLabel(model) }} · {{ model.model || '未选模型' }}</span>
               </button>
             </div>
 
             <div v-if="selectedAiModel" class="ai-model-form space-y-3">
+              <p v-if="selectedSystemModel" class="text-sm text-accent-500 dark:text-accent-400">系统模型通过 New API 调用，使用当前账号的额度。</p>
               <p v-if="!localOperations && !selectedAiModelIsApi" role="status" class="text-sm text-amber-700 dark:text-amber-300">此模型需要本机浏览器或 CLI，请在桌面端配置、测试和使用；网页端可选择 API 模型。</p>
               <p v-if="aiSettingsError" role="alert" class="text-sm text-rose-700 dark:text-rose-300">{{ aiSettingsError }}</p>
               <div class="grid gap-3 md:grid-cols-2">
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型 ID</span>
-                  <input class="input" :value="modelField('id')" :disabled="aiControlsLocked" placeholder="例如 deepseek_text" @input="setSelectedModelField('id', eventText($event))" />
+                  <input class="input" :value="modelField('id')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="例如 deepseek_text" @input="setSelectedModelField('id', eventText($event))" />
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">显示名称</span>
@@ -1873,20 +1881,20 @@ function copy(text: string) {
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">接入方式</span>
-                  <select data-testid="ai-connection-type" class="input" :value="modelField('connection_type', 'api')" :disabled="aiControlsLocked" @change="setSelectedModelField('connection_type', eventText($event))">
+                  <select data-testid="ai-connection-type" class="input" :value="modelField('connection_type', 'api')" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('connection_type', eventText($event))">
                     <option v-for="option in connectionTypeOptions" :key="option.value" :value="option.value" :disabled="!localOperations && option.value !== API_CONNECTION_TYPE">{{ option.label }}</option>
                   </select>
                 </label>
                 <label v-if="selectedAiModelIsApi" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">服务商</span>
-                  <select data-testid="ai-provider-id" class="input" :value="modelField('provider_id')" :disabled="aiControlsLocked" @change="setSelectedModelField('provider_id', eventText($event))">
+                  <select data-testid="ai-provider-id" class="input" :value="modelField('provider_id')" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('provider_id', eventText($event))">
                     <option value="" disabled>请选择服务商</option>
                     <option v-for="option in providerOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
                   </select>
                 </label>
                 <label v-if="selectedAiModelIsApi" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API 协议</span>
-                  <select data-testid="ai-api-style" class="input" :value="modelField('api_style', 'openai_compatible')" :disabled="aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
+                  <select data-testid="ai-api-style" class="input" :value="modelField('api_style', 'openai_compatible')" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
                     <option v-for="apiStyle in selectedProviderApiStyleOptions" :key="apiStyle" :value="apiStyle">{{ apiStyle === 'openai_responses' ? 'Responses' : 'Chat Completions' }}</option>
                   </select>
                 </label>
@@ -1907,20 +1915,20 @@ function copy(text: string) {
                 <template v-if="selectedAiModelIsApi">
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL</span>
-                    <input class="input" :value="modelField('base_url')" :disabled="aiControlsLocked || !selectedProviderBaseUrlEditable" placeholder="https://api.example.com/v1" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
+                    <input class="input" :value="modelField('base_url')" :disabled="selectedSystemModel || aiControlsLocked || !selectedProviderBaseUrlEditable" :placeholder="selectedSystemModel ? '由 New API 管理' : 'https://api.example.com/v1'" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
                     <span v-if="!selectedProviderBaseUrlEditable" class="mt-1 block text-xs text-accent-500 dark:text-accent-400">该服务商使用固定官方地址。</span>
                   </label>
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API Key</span>
-                    <input type="password" class="input" :value="modelField('api_key')" :disabled="aiControlsLocked" :placeholder="apiKeyPlaceholder()" autocomplete="off" spellcheck="false" @input="setSelectedModelField('api_key', eventText($event))" @blur="handleAiConfigFieldBlur('api_key')" />
+                    <input type="password" class="input" :value="modelField('api_key')" :disabled="selectedSystemModel || aiControlsLocked" :placeholder="selectedSystemModel ? '当前账号托管密钥' : apiKeyPlaceholder()" autocomplete="off" spellcheck="false" @input="setSelectedModelField('api_key', eventText($event))" @blur="handleAiConfigFieldBlur('api_key')" />
                   </label>
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                    <select v-if="selectedModelOptions.length" class="input" :value="modelField('model')" :disabled="aiControlsLocked" @change="handleAiModelSelect(eventText($event))">
+                    <select v-if="selectedModelOptions.length" class="input" :value="modelField('model')" :disabled="selectedSystemModel || aiControlsLocked" @change="handleAiModelSelect(eventText($event))">
                       <option value="">{{ selectedModelOptions.length ? '请选择模型' : '填写 URL 和 API Key 后自动加载' }}</option>
                       <option v-for="option in selectedModelOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
                     </select>
-                    <input v-else class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="先加载模型列表，或直接填写模型 ID" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
+                    <input v-else class="input" :value="modelField('model')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="先加载模型列表，或直接填写模型 ID" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
                     <span v-if="!selectedModelOptions.length" class="mt-1 block text-xs text-accent-500 dark:text-accent-400">Provider 不支持模型列表时，可直接填写模型 ID。</span>
                   </label>
                 </template>
@@ -1931,7 +1939,7 @@ function copy(text: string) {
                   </label>
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                    <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="可留空使用 CLI 默认" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
+                    <input class="input" :value="modelField('model')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可留空使用 CLI 默认" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
                   </label>
                   <div class="md:col-span-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-600 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
                     {{ selectedCliStatusText }}
@@ -1940,7 +1948,7 @@ function copy(text: string) {
                 <template v-else>
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页模型</span>
-                    <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('model', eventText($event))" />
+                    <input class="input" :value="modelField('model')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可选" @input="setSelectedModelField('model', eventText($event))" />
                   </label>
                 </template>
                 <label v-if="selectedAiModelImageCapable" class="block">
@@ -1989,11 +1997,11 @@ function copy(text: string) {
                   <div v-if="selectedAiModelIsApi" class="mt-3 grid gap-3 md:grid-cols-2">
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL 环境变量</span>
-                      <input class="input" :value="modelField('base_url_env')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('base_url_env', eventText($event))" />
+                      <input class="input" :value="modelField('base_url_env')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可选" @input="setSelectedModelField('base_url_env', eventText($event))" />
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API Key 环境变量</span>
-                      <input class="input" :value="modelField('api_key_env')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('api_key_env', eventText($event))" />
+                      <input class="input" :value="modelField('api_key_env')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可选" @input="setSelectedModelField('api_key_env', eventText($event))" />
                     </label>
                     <label class="block md:col-span-2">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">自定义请求 JSON</span>
@@ -2097,7 +2105,7 @@ function copy(text: string) {
               </div>
               <label class="mt-3 block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                <select class="input" :disabled="Boolean(props.aiConfig.models_managed)" :value="useCaseBindingField(String(useCase.id || ''), 'model_id')" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
+                <select class="input" :value="useCaseBindingField(String(useCase.id || ''), 'model_id')" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
                   <option value="">自动匹配</option>
                   <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
                 </select>

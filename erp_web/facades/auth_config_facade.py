@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from erp_web.context import get_context
 from erp_web.marketplace_registry import marketplace_spec
 from erp_web.services import config_service
+from erp_web.services.ai_model_config import SystemModelError
 from erp_web.services.approval_session import ApprovalSessionError
 from erp_web.services.desktop_connection_service import call_desktop
 from erp_web.services.listing_currency_service import (
@@ -159,11 +160,13 @@ def _app_dir():
 def save_ai_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
     app_dir = _app_dir()
     incoming = body.get("config") if isinstance(body.get("config"), dict) else body
-    if get_context().config.managed_models is not None:
-        if "ai_models" in incoming:
-            return {"ok": False, "error": "AI 模型及连接凭据由服务器管理。"}, 403
-    else:
-        config_service.write_env_template(app_dir)
+    store = get_context().config
+    if store.managed_models is not None and "ai_models" in incoming:
+        try:
+            incoming = {**incoming, "ai_models": store.check_system_models(incoming["ai_models"])}
+        except SystemModelError as exc:
+            return {"ok": False, "error": str(exc)}, 403
+    config_service.write_env_template(app_dir)
     app_config = config_service.merge_ai_config(
         app_dir,
         load_app_config(),

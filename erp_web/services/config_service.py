@@ -168,6 +168,11 @@ def public_app_config(
     load_env(app_dir)
     safe = json.loads(json.dumps(app_config or {}, ensure_ascii=False))
     public = mask_nested_config(safe)
+    for model in public.get("ai_models", []):
+        if model.get("api_key_env") == ai_model_config.MANAGED_KEY_SOURCE:
+            model["system_managed"] = True
+            for field in ("base_url", "base_url_env", "api_key", "api_key_env", "model_env"):
+                model.pop(field, None)
     public.pop("1688_api", None)
     hosting = public.get("image_hosting", {})
     for profile in hosting.get("profiles", []):
@@ -213,7 +218,7 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
     cfg = app_config if isinstance(app_config, dict) else {}
     public = ai_model_config.public_ai_config(cfg)
     from .desktop_model_config_service import local_models_view
-    if not public['models_managed']:
+    if any(row.get("connection_type") in {"browser", "cli"} for row in public["ai_models"]):
         public['ai_models'] = local_models_view(public['ai_models'])
     # 1688 应用与买家授权通过独立入口管理，不进入通用配置视图。
     public.pop("1688_api", None)

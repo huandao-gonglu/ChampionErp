@@ -59,7 +59,7 @@ New API 的登录/注册页面统一引导到 ERP，密码登录与公开注册�
 
 - ERP 商品、草稿、店铺授权、对话、素材、后台任务和桌面连接继续按用户隔离。现有 Store 和领域服务保留职责，账号接入不重写 Pydantic AI 执行机制。
 - ERP 经 New API 调用模型时，使用当前用户所属的模型 API Key，由 New API 完成扣费与账单。登录令牌与模型 API Key 分别管理。
-- 每个 New API 计费账号在创建或绑定时配发一把 `default` 分组的托管 Key。ERP 服务端按当前账号取用，文本模型 `dsflash`（`deepseek-flash`）和图片模型 `qwenflash`（`qwen-image-3.0`）共用这把 Key。ERP 设置页只读，密钥留在服务端，New API 按令牌所属用户检查额度和记录消费。
+- 每个 New API 计费账号在创建或绑定时配发一把 `default` 分组的托管 Key。ERP 服务端按当前账号取用，文本模型 `dsflash`（`deepseek-flash`）和图片模型 `qwenflash`（`qwen-image-3.0`）共用这把 Key。这两条系统模型加入原模型列表，保留个人模型管理和功能绑定。两条记录均不可删除，其受管连接由服务器提供；启用、名称、能力、超时等使用原有设置。New API 按令牌所属用户检查额度和记录消费。
 - 直接调用其他供应商、Browser AI 或 CLI 不会自动进入 New API 账单；本方案不增加事后补扣费流程。
 - 充值、余额、支付订单和回调留在 New API，ERP 只提供入口。支付仍需满足官方直连要求，具体版本的渠道能力需在 New API 端核实，不因存在充值页面就认定满足。
 - ERP 功能会员是否与 New API 订阅关联，后续另行定义。本次不将 API 配额套餐自动视为 ERP 会员。

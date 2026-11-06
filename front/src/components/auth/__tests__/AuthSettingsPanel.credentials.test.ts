@@ -47,20 +47,27 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
   })
 }
 
-it('账号模型仅展示文本和图片，不提供配置或删除操作', () => {
+it('同一列表中仅系统模型保护连接与删除，个人模型可以编辑、保存和删除', async () => {
   const wrapper = mountPanel({
-    models_managed: true,
     ai_models: [
-      { id: 'default_text', name: 'dsflash', model: 'deepseek-flash', capabilities: ['chat'] },
-      { id: 'default_image', name: 'qwenflash', model: 'qwen-image-3.0', capabilities: ['image_edit'] },
+      { id: 'erp_newapi_text', name: 'dsflash', model: 'deepseek-flash', system_managed: true, provider_id: 'openai' },
+      { id: 'erp_newapi_image', name: 'qwenflash', model: 'qwen-image-3.0', system_managed: true, provider_id: 'openai' },
+      { id: 'personal', name: '我的模型', model: 'personal-chat', provider_id: 'openai' },
     ],
   })
-  const list = wrapper.get('dl')
-  expect(list.text()).toContain('dsflash')
-  expect(list.text()).toContain('qwenflash')
-  expect(list.findAll('dd')).toHaveLength(2)
-  expect(wrapper.text()).not.toContain('添加模型')
-  expect(wrapper.find('input[placeholder="API Key"]').exists()).toBe(false)
+  const button = (label: string) => wrapper.findAll('button').find(b => b.text().includes(label))!
+  expect(button('添加模型').element.disabled).toBe(false)
+  expect(button('删除当前模型').element.disabled).toBe(true)
+  expect(wrapper.get('input[placeholder="当前账号托管密钥"]').attributes('disabled')).toBeDefined()
+  expect(wrapper.get('input[placeholder="例如 DeepSeek 文本模型"]').attributes('disabled')).toBeUndefined()
+  await button('我的模型').trigger('click')
+  expect(button('删除当前模型').element.disabled).toBe(false)
+  expect(wrapper.get('input[placeholder="API Key"]').attributes('disabled')).toBeUndefined()
+  await button('删除当前模型').trigger('click')
+  await button('保存 AI 设置').trigger('click')
+  const payload = wrapper.emitted('saveAi')![0][0] as { ai_models: Record<string, unknown>[] }
+  expect(payload.ai_models.map(m => m.id)).toEqual(['erp_newapi_text', 'erp_newapi_image'])
+  expect(payload.ai_models[0]).not.toHaveProperty('api_key')
 })
 
 describe('AuthSettingsPanel 桌面浏览器连接预置', () => {

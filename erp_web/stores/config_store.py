@@ -37,6 +37,7 @@ from erp_web.schemas.pricing_templates import SavePricingTemplate
 from erp_web.schemas.yandex_warehouses import SaveYandexWarehouses, YandexWarehouseCatalog, account_key
 from erp_web.services.image_hosting_config import config_version, require_ready
 from erp_web.services.image_hosting_credentials import merge_profile
+from erp_web.services import ai_model_config
 from erp_web.services.config_service import (
     is_sensitive_config_key,
     mask_nested_config,
@@ -569,11 +570,36 @@ class ConfigStore:
         with self._save_lock:
             config = self._load_app_config_unlocked()
             if self.managed_models is not None:
-                config["ai_models"] = deepcopy(self.managed_models)
-                # 旧绑定按功能所需能力重新选择；提示词、超时和生成参数继续生效。
-                for binding in config["ai_use_case_bindings"].values():
-                    binding.pop("model_id", None)
+                stored = {row["id"]: row for row in config["ai_models"]}
+                system_rows = []
+                for template in self.managed_models:
+                    row = stored.pop(template["id"], {})
+                    system_rows.append({**template, **row, **{
+                        field: template[field] for field in ai_model_config.SYSTEM_CONNECTION_FIELDS
+                    }})
+                config["ai_models"] = [*system_rows, *stored.values()]
             return config
+
+    def check_system_models(self, models) -> list[dict]:
+        """验证整表保存包含每条系统模型，桌面和网页共用此规则。"""
+        systems = {row["id"]: row for row in self.managed_models or ()}
+        result = []
+        seen = set()
+        for row in models if isinstance(models, list) else ():
+            if not isinstance(row, dict):
+                raise ValueError("模型配置必须是对象。")
+            model_id = str(row.get("id") or "").strip()
+            if model_id in systems:
+                if model_id in seen:
+                    raise ai_model_config.SystemModelError("不能重复使用系统模型 ID。")
+                row = ai_model_config.system_model_input(row, systems[model_id])
+                seen.add(model_id)
+            elif row.get("system_managed") or row.get("api_key_env") == ai_model_config.MANAGED_KEY_SOURCE:
+                raise ai_model_config.SystemModelError("个人模型不能使用系统模型凭据。")
+            result.append(row)
+        if seen != systems.keys():
+            raise ai_model_config.SystemModelError("不能删除系统模型。")
+        return result
 
     def _load_app_config_unlocked(self) -> dict[str, Any]:
         if self._app_config_path.exists():
@@ -621,10 +647,7 @@ class ConfigStore:
                 else normalize_ai_tool_approval_mode(approval_mode)
             )}
             if self.managed_models is not None:
-                if config.get("ai_models", self.managed_models) != self.managed_models:
-                    raise ValueError("AI 模型由服务器管理。")
-                # 写其他设置时保留历史模型及其数据库凭据。
-                config["ai_models"] = self._load_app_config_unlocked()["ai_models"]
+                config["ai_models"] = self.check_system_models(config.get("ai_models"))
             config = self.normalize_app_config(config)
             hosting = config["image_hosting"]
             if hosting["default_profile_id"]:

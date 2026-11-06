@@ -59,7 +59,9 @@ class AccountRuntime:
                 context.user_id = user["id"]
                 context.allow_environment_credentials = workspace == "."
                 context.account_store = self.store
-                context.config.managed_models = managed_newapi_models(self.newapi.internal_url)
+                context.config.managed_models = managed_newapi_models(
+                    self.newapi.internal_url, context.config.load_app_config()["ai_models"],
+                )
                 context.model_key = partial(self.newapi.model_key, user["id"], user["display_name"])
                 self._contexts[user["id"]] = context
             return context

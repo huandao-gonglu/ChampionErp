@@ -257,7 +257,25 @@ def default_ai_models() -> list[dict[str, Any]]:
 MANAGED_KEY_SOURCE = "ERP_ACCOUNT_NEWAPI"
 
 
-def managed_newapi_models(internal_url: str) -> list[dict[str, Any]]:
+SYSTEM_CONNECTION_FIELDS = (
+    "id", "connection_type", "provider_id", "api_style", "base_url", "base_url_env",
+    "api_key", "api_key_env", "model", "model_env",
+)
+
+
+class SystemModelError(ValueError):
+    """系统模型被移除，或请求试图覆盖受保护的连接配置。"""
+
+
+def system_model_input(raw: dict, system: dict) -> dict:
+    """浏览器只拿到公开字段；实际地址、模型标识与凭据来源始终以服务端为准。"""
+    for field in SYSTEM_CONNECTION_FIELDS:
+        if field in raw and raw[field] != system[field]:
+            raise SystemModelError("系统模型的 ID、接入方式、模型和凭据由服务器管理。")
+    return {**raw, **{field: system[field] for field in SYSTEM_CONNECTION_FIELDS}}
+
+
+def managed_newapi_models(internal_url: str, saved_models=()) -> list[dict[str, Any]]:
     common = {
         "connection_type": CONNECTION_TYPE_API,
         "provider_id": ai_provider_catalog.PROVIDER_ID_OPENAI,
@@ -265,12 +283,23 @@ def managed_newapi_models(internal_url: str) -> list[dict[str, Any]]:
         "base_url": internal_url + "/v1",
         "api_key_env": MANAGED_KEY_SOURCE,
     }
-    return normalize_ai_models([
-        {**common, "id": "default_text", "name": "dsflash", "model": "deepseek-flash",
+    models = normalize_ai_models([
+        {**common, "id": "erp_newapi_text", "name": "dsflash", "model": "deepseek-flash",
          "capabilities": [CAP_CHAT, CAP_JSON, CAP_TOOL_CALLING]},
-        {**common, "id": "default_image", "name": "qwenflash", "model": "qwen-image-3.0",
+        {**common, "id": "erp_newapi_image", "name": "qwenflash", "model": "qwen-image-3.0",
          "capabilities": [CAP_IMAGE_GENERATE, CAP_IMAGE_EDIT]},
     ])
+    # 保留已有同名个人条目的 ID 和功能绑定；系统条目一旦保存就复用其 ID。
+    occupied = {m["id"] for m in saved_models if m.get("api_key_env") != MANAGED_KEY_SOURCE}
+    for model in models:
+        saved = next((m for m in saved_models if m.get("api_key_env") == MANAGED_KEY_SOURCE
+                      and m["model"] == model["model"]), None)
+        if saved:
+            model["id"] = saved["id"]
+        else:
+            while model["id"] in occupied:
+                model["id"] += "_system"
+    return models
 
 
 def browser_model_presets() -> list[AiBrowserPreset]:
@@ -508,9 +537,11 @@ def ai_use_case_binding(app_config: dict[str, Any] | None, use_case_id: str) -> 
 def model_api_key(model: dict[str, Any]) -> str:
     from erp_web.context import bound_context
     context = bound_context()
-    if model.get("api_key_env") == MANAGED_KEY_SOURCE or (context and context.model_key is not None):
-        if not context or not context.model_key or normalize_ai_model(model) not in context.config.managed_models:
-            raise ValueError("该模型不属于当前账号的 New API 配置。")
+    systems = context.config.managed_models if context and context.model_key else ()
+    system = next((row for row in systems if row["id"] == model.get("id")), None)
+    if system or model.get("api_key_env") == MANAGED_KEY_SOURCE:
+        if not system or not all(model.get(field) == system[field] for field in SYSTEM_CONNECTION_FIELDS):
+            raise SystemModelError("系统模型连接与当前账号不匹配。")
         return context.model_key()
     api_key = str(model.get("api_key") or "").strip()
     if api_key:
@@ -538,7 +569,7 @@ def model_name(model: dict[str, Any]) -> str:
 def _personal_environment(env_name: str) -> str:
     from erp_web.context import peek_context
     context = peek_context()
-    if context is not None and not context.allow_environment_credentials:
+    if env_name in {"NEWAPI_SERVICE_SECRET", "ERP_SERVICE_SECRET"} or (context is not None and not context.allow_environment_credentials):
         return ""
     return os.getenv(env_name, "").strip() if env_name else ""
 
@@ -728,12 +759,12 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
         public["api_key_configured"] = managed or bool(key)
         public["api_key_masked"] = mask_secret(key)
         if managed:
+            public["system_managed"] = True
             for field in ("base_url", "base_url_env", "api_key_env", "model_env"):
                 public.pop(field, None)
         public.pop("api_key", None)
         models.append(public)
     return {
-        "models_managed": all(m.get("api_key_env") == MANAGED_KEY_SOURCE for m in normalized),
         "ai_models": models,
         "ai_use_case_bindings": normalize_ai_use_case_bindings(config.get("ai_use_case_bindings")),
         "ai_use_cases": list(AI_USE_CASES.values()),
