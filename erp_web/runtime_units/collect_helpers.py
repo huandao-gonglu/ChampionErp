@@ -28,6 +28,7 @@ from erp_web.product_model.image_pool_model import normalize_image_pool_item
 from erp_web.product_model.sku_image_model import ensure_source_image_asset
 from erp_web.product_model.sku_model import new_draft_sku_rows
 from erp_web.services import image_service
+from erp_web.services.desktop_connection_service import desktop_unavailable_reason
 from erp_web.services.local_urls import file_url
 from erp_web.services.mercadolibre_target_contract import mercadolibre_sales_target_selectors
 from erp_web.stores.product_store import normalize_product_fields
@@ -49,6 +50,12 @@ def normalize_collect_mode(mode: str, url: str = "") -> str:
     if "amazon." in str(url).lower():
         return "http"
     return "browser"
+
+
+def collect_platform_reason(mode, urls):
+    if any(normalize_collect_mode(mode, url) == "browser" for url in parse_collect_urls(urls)):
+        return desktop_unavailable_reason()
+    return ""
 
 
 def detect_source_platform(url: str) -> str:
@@ -525,6 +532,7 @@ __all__ = [
     "detect_source_platform",
     "finalize_collect_diagnostics",
     "normalize_collect_mode",
+    "collect_platform_reason",
     "normalize_collect_source_images",
     "parse_collect_urls",
     "productImages_from_source",

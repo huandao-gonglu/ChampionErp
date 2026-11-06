@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import CollectBatchManager from '../CollectBatchManager.vue'
 import { appendCollectUrls, createCollectBatchRow, restoreCollectQueue } from '@/utils/collectQueue'
 import type { CollectBatchRow } from '@/types/workflow'
@@ -80,8 +80,11 @@ describe('批量采集列表', () => {
     row.verification = { browserTabId: 'original', sourceUrl: row.url, platform: '1688' }
     const restored = restoreCollectQueue(JSON.stringify([row]))
     expect(restored[0]).toMatchObject({ status: 'waiting_verification', verification: row.verification, error: '' })
-    const { button } = setup(restored)
-    expect(button('开始采集（1）').attributes('disabled')).toBeUndefined()
+    expect(setup(restored).button('开始采集（0）').attributes('disabled')).toBeDefined()
+    vi.stubGlobal('championDesktop', { localOperations: true })
+    try {
+      expect(setup(restored).button('开始采集（1）').attributes('disabled')).toBeUndefined()
+    } finally { vi.unstubAllGlobals() }
   })
 
 })

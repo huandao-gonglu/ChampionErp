@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { hasLocalOperations } from '@/utils/desktop'
+import { desktopOperationReason, hasLocalOperations } from '@/utils/desktop'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import CollectBatchManager from './CollectBatchManager.vue'
 import BrowserCollector from './BrowserCollector.vue'
@@ -35,12 +35,13 @@ const emit = defineEmits<{
 type CollectTab = 'manual' | 'browser' | 'api' | 'url'
 
 const localOperations = hasLocalOperations()
+const desktopReason = computed(desktopOperationReason)
 const activeCollectTab = ref<CollectTab>(localOperations ? 'browser' : 'manual')
 const advancedOpen = ref(false)
 const transientAlibabaCookie = ref('')
 
 const collectTabs: Array<{ key: CollectTab; title: string; subtitle: string }> = [
-  { key: 'browser', title: '浏览器采集', subtitle: '登录后选择商品页面' },
+  ...(localOperations ? [{ key: 'browser' as const, title: '浏览器采集', subtitle: '登录后选择商品页面' }] : []),
   { key: 'url', title: 'URL / 批量采集', subtitle: '管理链接并逐条采集' },
   { key: 'manual', title: '手动 / HTML 导入', subtitle: '粘贴已有商品资料' },
   { key: 'api', title: 'API 采集', subtitle: '使用已授权的 1688 API' },
@@ -69,7 +70,7 @@ const collectStatusLabel = computed(() => {
 })
 
 function selectCollectTab(tab: CollectTab) {
-  if (props.loading) return
+  if (props.loading || (tab === 'browser' && desktopReason.value)) return
   activeCollectTab.value = tab
   if (tab === 'manual' && props.form.mode !== 'extension') props.form.mode = 'manual'
   if (tab === 'browser') props.form.mode = 'browser'
@@ -137,9 +138,9 @@ function saveSettings() {
 
     <nav data-testid="collect-method-card" class="card p-4">
       <div class="grid grid-cols-2 gap-2 lg:grid-cols-4" aria-label="采集方式">
-        <button v-for="tab in collectTabs" :key="tab.key" class="rounded-xl border p-4 text-left transition-colors disabled:opacity-50" :class="activeCollectTab === tab.key ? 'border-primary-400 bg-primary-50/60 dark:border-primary-500 dark:bg-primary-500/10' : 'border-transparent hover:bg-slate-50 dark:hover:bg-dark-900'" :aria-pressed="activeCollectTab === tab.key" :disabled="props.loading" :data-testid="`collect-method-${tab.key}`" @click="selectCollectTab(tab.key)">
+        <button v-for="tab in collectTabs" :key="tab.key" class="rounded-xl border p-4 text-left transition-colors disabled:opacity-50" :class="activeCollectTab === tab.key ? 'border-primary-400 bg-primary-50/60 dark:border-primary-500 dark:bg-primary-500/10' : 'border-transparent hover:bg-slate-50 dark:hover:bg-dark-900'" :aria-pressed="activeCollectTab === tab.key" :disabled="props.loading || (tab.key === 'browser' && !!desktopReason)" :data-testid="`collect-method-${tab.key}`" @click="selectCollectTab(tab.key)">
           <span class="block text-sm font-semibold" :class="activeCollectTab === tab.key ? 'text-primary-800 dark:text-primary-200' : ''">{{ tab.title }}</span>
-          <span class="muted mt-1 block text-xs">{{ tab.subtitle }}</span>
+          <span class="muted mt-1 block text-xs">{{ (tab.key === 'browser' && desktopReason) || tab.subtitle }}</span>
         </button>
       </div>
     </nav>
@@ -219,8 +220,7 @@ function saveSettings() {
         </section>
 
         <template v-else-if="activeCollectTab === 'browser'">
-          <p v-if="!localOperations" role="status" class="card text-sm text-slate-600 dark:text-accent-200">浏览器采集需要本机登录状态，请使用桌面端打开采集浏览器。网页端可使用 API、HTTP 或手动导入。</p>
-          <BrowserCollector v-else :status="props.browserStatus" :rows="props.browserRows" :loading="props.loading" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrls) => emit('collectFromBrowser', saveOnly, tabUrls)" />
+          <BrowserCollector :status="props.browserStatus" :rows="props.browserRows" :loading="props.loading || !!desktopReason" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrls) => emit('collectFromBrowser', saveOnly, tabUrls)" />
         </template>
 
         <section v-else-if="activeCollectTab === 'api'" data-testid="collect-active-card" class="card space-y-6">
@@ -267,7 +267,7 @@ function saveSettings() {
             <label class="flex items-center gap-3 text-sm font-medium">
               采集模式
               <select v-model="props.form.mode" :disabled="props.loading" class="input w-auto">
-                <option v-for="mode in urlCollectModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+                <option v-for="mode in urlCollectModes" :key="mode.value" :value="mode.value" :disabled="mode.value === 'browser' && !!desktopReason">{{ mode.label }}</option>
               </select>
             </label>
             <button type="button" class="btn btn-outline py-2 text-sm" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen">高级选项：Cookie / 保存位置 {{ advancedOpen ? '−' : '+' }}</button>
@@ -277,13 +277,13 @@ function saveSettings() {
             <label class="block"><span class="text-xs font-semibold">保存位置</span><input v-model="props.form.outputDir" :disabled="props.loading" class="input mt-1" placeholder="data/images/source" /></label>
             <button type="button" class="btn btn-outline" :disabled="props.loading" @click="saveSettings">保存 Cookie / 设置</button>
           </div>
-          <CollectBatchManager :rows="props.batchRows" :loading="props.loading" @update="emit('updateBatchRows', $event)" @collect="collectBatch" />
+          <CollectBatchManager :browser-mode="props.form.mode === 'browser'" :rows="props.batchRows" :loading="props.loading" @update="emit('updateBatchRows', $event)" @collect="collectBatch" />
           <details class="rounded-xl border border-slate-200 p-4 dark:border-dark-700">
             <summary class="cursor-pointer text-sm font-semibold">单链接快捷采集</summary>
             <div class="mt-4 space-y-3">
               <label class="block"><span class="text-xs font-semibold">来源平台</span><select v-model="props.form.platform" class="input mt-1" :disabled="props.loading"><option value="unknown">自动识别</option><option value="1688">1688</option><option value="amazon">Amazon</option></select></label>
               <label class="block"><span class="text-xs font-semibold">单个商品链接</span><input v-model="props.form.productUrl" :disabled="props.loading" class="input mt-1" placeholder="https://detail.1688.com/offer/..." /></label>
-              <button class="btn btn-primary" :disabled="props.loading || !props.form.productUrl.trim()" @click="collectProduct">采集单链接</button>
+              <button class="btn btn-primary" :disabled="props.loading || !props.form.productUrl.trim() || (props.form.mode === 'browser' && !!desktopReason)" @click="collectProduct">采集单链接</button>
             </div>
           </details>
         </section>

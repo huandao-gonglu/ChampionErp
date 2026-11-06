@@ -9,6 +9,7 @@ import shutil
 import time
 
 from erp_web.context import AppContext, AppPaths, bind_context
+from erp_web.services.desktop_connection_service import server_worker_context
 from erp_web.db import ErpDatabase
 from erp_web.stores.account_store import AccountStore
 from erp_web.services.account_service import AccountService
@@ -99,7 +100,7 @@ class AccountRuntime:
                 if ((context.paths.data_dir / "wechat-channel.sqlite3").exists()
                         and context.wechat_store.state()["credentials"]):
                     context.wechat.start()
-        self._worker = Thread(target=self._scan, name="erp-account-jobs", daemon=True)
+        self._worker = Thread(target=server_worker_context().run, args=(self._scan,), name="erp-account-jobs", daemon=True)
         self._worker.start()
 
     def _scan(self):

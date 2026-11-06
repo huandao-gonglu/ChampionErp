@@ -14,6 +14,7 @@ from erp_web.context import get_context
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.services import image_service, image_translate_service
 from erp_web.services.image_batch_service import run_image_batch
+from erp_web.services.operation_availability import require_model_platform
 from erp_web.schemas.image_sets import ImageSetPlan
 from erp_web.services import image_set_service
 from erp_web.runtime_units.image_pool import (
@@ -297,6 +298,7 @@ def _run_images_payload(body: dict[str, Any], *, translate: bool, background: bo
         app_dir=_app_dir(), product_id=product_id, prompt=prompt,
         sources=sources, process=process, persist=persist, draft_id=draft_id,
         request_id=str(body.get("request_id") or ""), background=background,
+        before_create=lambda: require_model_platform(config, "image.translate"),
     )
     result.update(prompt=prompt, platform=platform, mode=str(body.get("mode") or "translate") if translate else "edit",
                   source_image_ids=[item["id"] for item in sources])
@@ -416,11 +418,13 @@ def plan_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus:
         sku_sources = (_image_set_sources(product, draft, [target["source_id"] for target in sku_targets], limit=None)
                        if sku_targets else [])
     # 识图和结构化输出由原生 Agent 完成，商品锁不跨模型等待。
+    config = load_app_config()
+    require_model_platform(config, "image.plan")
     try:
         for source in sku_sources:
             image_set_service.reference_content(_app_dir(), [source])
         plan = image_set_service.plan_image_set(
-            app_dir=_app_dir(), config=load_app_config(), messages=context.pydantic_messages,
+            app_dir=_app_dir(), config=config, messages=context.pydantic_messages,
             product=product, draft=draft, sources=sources, count=body.get("count", 6), prompt=body.get("prompt", ""),
         )
         plan = image_set_service.include_sku_pages(plan, sku_targets)
@@ -508,6 +512,7 @@ def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus
             prompt=f"生成 {len(plan.pages)} 张套图：{plan.style}",
             sources=[{"id": page.key} for page in plan.pages], process=process, persist=persist,
             background=True, image_set=plan, retained_items=retained,
+            before_create=lambda: require_model_platform(config, "image.translate"),
         )
         return draft_image_state_payload(body)
 

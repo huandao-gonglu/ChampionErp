@@ -6,6 +6,7 @@ from typing import Callable
 
 from erp_web.context import get_context
 from erp_web.services import config_service
+from erp_web.services.operation_availability import operation_availability
 from erp_web.schemas.api import API_SCHEMA_VERSION, validate_app_state_response
 from erp_web.http_route_units import static_routes
 from erp_web.facades.auth_config_facade import system_settings_payload, forbidden_categories_payload
@@ -57,6 +58,7 @@ GET_API_ROUTES = {
     "/api/system-settings/forbidden-categories",
     "/api/system-settings",
     "/api/ai-config",
+    "/api/operation-availability",
     "/api/browser-debug/status",
     "/api/drafts-index",
     "/api/products-index",
@@ -216,6 +218,9 @@ def handle_mercadolibre_callback(handler: JsonRequestHandler, parsed: object) ->
 
 
 GET_HANDLERS: dict[str, GetHandler] = {
+    "/api/operation-availability": lambda handler, parsed: handler.send_json(
+        {"ok": True, **operation_availability(load_app_config())}
+    ),
     "/licenses/THIRD-PARTY-NOTICES.txt": handle_assets,
     "/api/system-settings": lambda handler, parsed: handler.send_json(system_settings_payload()),
     "/api/system-settings/forbidden-categories": lambda handler, parsed: handler.send_json(forbidden_categories_payload()),

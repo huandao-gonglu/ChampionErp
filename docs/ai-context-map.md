@@ -99,6 +99,17 @@ GET `/api/alibaba/authorization`、POST `/start`、`/complete`（后两者位于
 图片批次沿用原 `copy_context`，原生工具审批/Deferred 的 metadata 只补充任务执行需要的连接引用，
 现有 Job 和 Agent 生命周期仍由原 owner / Pydantic AI 负责。
 
+当前端可用性由 `services/operation_availability.py` 按实际模型绑定和当前请求的桌面连接计算。
+`GET /api/operation-availability` 只返回限制原因；前端 `utils/desktop.ts` 用它展示、禁用操作。
+新增本机动作继续经 `call_desktop` 投递。业务工具需要按端筛选时，在应用装配的
+`AiToolBinding.unavailable_reason` 声明依赖；原生工具发现和运行时复核共用该判断。
+混合工具按参数检查，例如链接采集仅在浏览器模式需要桌面。后台长任务在创建前检查，
+按已存在的请求 ID 查询或恢复原结果仍可用。
+
+每条聊天输入的设备引用保存在服务端收件箱。主 Agent 在模型请求边界应用新输入，
+通过原生消息的输入 ID 恢复来源；同批混合来源不授予本机能力。审批和领域 Job 只用原调用
+的 Deferred metadata，审批窗口、后台扫描和微信连接的启动端都不能换设备。
+
 `source_collect_workflows.collect_from_browser_tab` 调用本机 `collect.read`，后端才读目标商品、
 规范化、登记图片并经 `ProductStore` 保存；验证检查也走同一连接。
 采集素材逐张交接，`desktop_asset_service` 复用图片服务生成后端引用。

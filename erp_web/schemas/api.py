@@ -9,6 +9,11 @@ from .collection import CollectionVerification
 API_SCHEMA_VERSION = 1
 
 
+class OperationAvailability(TypedDict):
+    desktop_reason: str
+    blocked_use_cases: dict[str, str]
+
+
 class ApiResponse(TypedDict, total=False):
     schemaVersion: int
     ok: bool
@@ -87,6 +92,7 @@ def validate_app_state_response(payload: dict[str, Any]) -> AppStateResponse:
 
 __all__ = [
     "API_SCHEMA_VERSION",
+    "OperationAvailability",
     "ApiResponse",
     "AppStateResponse",
     "validate_app_state_response",

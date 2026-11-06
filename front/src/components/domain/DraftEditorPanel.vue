@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { modelOperationReason } from '@/utils/desktop'
 import { computed } from 'vue'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
 import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
@@ -58,7 +59,8 @@ const titleLimit = computed(() => (
       <div class="flex flex-wrap items-start justify-between gap-3">
         <h2 class="text-xl font-black text-slate-950 dark:text-white">草稿编辑</h2>
         <div class="flex flex-wrap gap-2">
-          <button class="btn btn-outline" :disabled="props.loading || !canGenerateCopy" @click="emit('generateCopy')">生成/改写本地化文案</button>
+          <span v-if="modelOperationReason('copy.generate')" role="status" class="muted">{{ modelOperationReason('copy.generate') }}</span>
+          <button class="btn btn-outline" :disabled="props.loading || !canGenerateCopy || !!modelOperationReason('copy.generate')" @click="emit('generateCopy')">生成/改写本地化文案</button>
           <button class="btn btn-primary" :disabled="props.loading || !canSaveDraft" :title="saveBlockedReason" @click="emit('save')">保存草稿</button>
           <button class="btn btn-outline" @click="emit('close')">关闭</button>
         </div>

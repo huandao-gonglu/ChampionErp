@@ -390,6 +390,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     # -------------------------------------------------- 基础设施（GET）
     AiCapabilityCoverageEntry(
         method="GET",
+        path="/api/operation-availability",
+        business_domain="客户端能力",
+        disposition="internal_only",
+        reason="向当前客户端提供操作限制，AI 通过绑定工具和运行上下文获得相同判断。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="GET",
         path="/api/state",
         business_domain="聚合基础设施",
         disposition="excluded",

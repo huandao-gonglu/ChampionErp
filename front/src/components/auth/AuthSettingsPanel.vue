@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { hasLocalOperations } from '@/utils/desktop'
+import { desktopOperationReason, hasLocalOperations, modelOperationReason } from '@/utils/desktop'
 import { computed, inject, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
@@ -140,7 +140,9 @@ const capabilityOptions = [
 const visibleCapabilityOptions = capabilityOptions.filter(item => item.value !== 'image_generate')
 const allCapabilityValues = capabilityOptions.map((item) => item.value)
 const imageCapabilityValues = new Set(['image_generate', 'image_edit'])
-const localOperations = hasLocalOperations()
+const desktopShell = hasLocalOperations()
+const desktopReason = computed(desktopOperationReason)
+const localOperations = computed(() => !desktopReason.value)
 const connectionTypeOptions = [
   { value: API_CONNECTION_TYPE, label: 'API 服务' },
   { value: CLI_CONNECTION_TYPE, label: '本地 CLI' },
@@ -550,6 +552,7 @@ function modelForServer(row: UnknownRecord): UnknownRecord {
 }
 
 const selectedAiModelIsApi = computed(() => selectedAiModelConnectionType.value === API_CONNECTION_TYPE)
+const localModelBlocked = computed(() => !selectedAiModelIsApi.value && Boolean(desktopReason.value))
 const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value === CLI_CONNECTION_TYPE)
 const selectedModelThinkingSupported = computed(() => firstText(asRecord(derivedGenerationCapabilities(selectedAiModel.value).reasoning).status) === 'supported')
 const selectedModelThinkingExplicit = computed(() => typeof selectedAiModel.value?.thinking_enabled === 'boolean')
@@ -684,7 +687,7 @@ function aiPayload(): UnknownRecord {
       }
       delete row.model_options
       delete row.generation_capabilities
-      if (!localOperations && row.connection_type !== API_CONNECTION_TYPE) {
+      if (!localOperations.value && row.connection_type !== API_CONNECTION_TYPE) {
         for (const key of ['command', 'profile', 'sandbox', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy']) delete row[key]
       }
       return modelForServer(row)
@@ -1226,7 +1229,7 @@ function removeCapabilityProfile(model: UnknownRecord, capability: string) {
 
 function setCapability(capability: string, checked: boolean, event?: Event) {
   if (!selectedAiModel.value) return
-  if (aiControlsLocked.value) return
+  if (aiControlsLocked.value || localModelBlocked.value) return
   if (checked && !hasCapability(capability)) {
     const input = event?.target
     if (input instanceof HTMLInputElement) input.checked = false
@@ -1257,7 +1260,7 @@ function addBrowserModel(event: Event) {
   const select = event.target as HTMLSelectElement
   const preset = browserPresets.value.find(item => item.id === select.value)
   select.value = ''
-  if (!preset || aiControlsLocked.value) return
+  if (!preset || aiControlsLocked.value || !localOperations.value) return
   const existingIndex = aiModels.value.findIndex(model =>
     model.connection_type === BROWSER_CONNECTION_TYPE
     && model.browser_provider === preset.model.browser_provider
@@ -1425,7 +1428,7 @@ function refreshSelectedModelList(force = false) {
 
 function requestAiModelCheck(probeCapabilities: boolean, message: string, trigger: string) {
   if (!selectedAiModel.value || aiControlsLocked.value) return
-  if (!localOperations && !selectedAiModelIsApi.value) { aiSettingsError.value = '请在桌面端测试本机模型。'; return }
+  if (!localOperations.value && !selectedAiModelIsApi.value) { aiSettingsError.value = desktopReason.value; return }
   if (!ensureBrowserProviderSelected(selectedAiModel.value)) return
   aiRequestPending.value = true
   aiRequestMessage.value = message
@@ -1434,7 +1437,7 @@ function requestAiModelCheck(probeCapabilities: boolean, message: string, trigge
 
 function confirmCapabilityProbe() {
   if (!selectedAiModel.value || aiControlsLocked.value || capabilityProbeDialog.pending) return
-  if (!localOperations && !selectedAiModelIsApi.value) { aiSettingsError.value = '请在桌面端测试本机模型。'; return }
+  if (!localOperations.value && !selectedAiModelIsApi.value) { aiSettingsError.value = desktopReason.value; return }
   if (!ensureBrowserProviderSelected(selectedAiModel.value)) return
   const capability = capabilityProbeDialog.capability
   if (!capability) return
@@ -1803,7 +1806,8 @@ function copy(text: string) {
         </div>
         <div class="mt-4 flex flex-wrap justify-end gap-2">
           <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe()">取消</button>
-          <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="confirmCapabilityProbe">
+          <p v-if="localModelBlocked" role="status" class="muted">{{ desktopReason }}</p>
+          <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending || localModelBlocked" @click="confirmCapabilityProbe">
             {{ capabilityProbeDialog.pending ? '测试中' : '确定测试' }}
           </button>
         </div>
@@ -1837,13 +1841,13 @@ function copy(text: string) {
             </div>
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
-              <select data-testid="add-web-model" aria-label="添加网页模型" class="input w-auto py-1.5 text-sm" :disabled="aiControlsLocked || !browserPresets.length || !localOperations" value="" @change="addBrowserModel">
+              <select v-if="desktopShell" data-testid="add-web-model" aria-label="添加网页模型" class="input w-auto py-1.5 text-sm" :disabled="aiControlsLocked || !browserPresets.length || !localOperations" value="" @change="addBrowserModel">
                 <option value="" disabled>添加网页模型</option>
                 <option v-for="preset in browserPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
               </select>
-              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel" @click="duplicateSelectedAiModel">复制当前模型</button>
-              <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
-              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : selectedProviderSupportsModelDiscovery ? '请先填写 Base URL 和 API Key' : '当前 Provider 不提供模型目录，请手动填写模型 ID'" @click="refreshSelectedModelList(true)">加载模型列表</button>
+              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel || localModelBlocked" @click="duplicateSelectedAiModel">复制当前模型</button>
+              <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || localModelBlocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
+              <button v-if="selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : selectedProviderSupportsModelDiscovery ? '请先填写 Base URL 和 API Key' : '当前 Provider 不提供模型目录，请手动填写模型 ID'" @click="refreshSelectedModelList(true)">加载模型列表</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存 AI 设置</button>
             </div>
           </div>
@@ -1864,9 +1868,9 @@ function copy(text: string) {
               </button>
             </div>
 
-            <div v-if="selectedAiModel" class="ai-model-form space-y-3">
+            <fieldset v-if="selectedAiModel" class="ai-model-form min-w-0 space-y-3" :disabled="localModelBlocked">
               <p v-if="selectedSystemModel" class="text-sm text-accent-500 dark:text-accent-400">系统模型通过 New API 调用，使用当前账号的额度。</p>
-              <p v-if="!localOperations && !selectedAiModelIsApi" role="status" class="text-sm text-amber-700 dark:text-amber-300">此模型需要本机浏览器或 CLI，请在桌面端配置、测试和使用；网页端可选择 API 模型。</p>
+              <p v-if="!localOperations && !selectedAiModelIsApi" role="status" class="text-sm text-amber-700 dark:text-amber-300">{{ desktopReason }}</p>
               <p v-if="aiSettingsError" role="alert" class="text-sm text-rose-700 dark:text-rose-300">{{ aiSettingsError }}</p>
               <div class="grid gap-3 md:grid-cols-2">
                 <label class="block">
@@ -1880,7 +1884,7 @@ function copy(text: string) {
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">接入方式</span>
                   <select data-testid="ai-connection-type" class="input" :value="modelField('connection_type', 'api')" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('connection_type', eventText($event))">
-                    <option v-for="option in connectionTypeOptions" :key="option.value" :value="option.value" :disabled="!localOperations && option.value !== API_CONNECTION_TYPE">{{ option.label }}</option>
+                    <option v-for="option in connectionTypeOptions.filter(item => desktopShell || item.value === API_CONNECTION_TYPE || item.value === selectedAiModelConnectionType)" :key="option.value" :value="option.value" :disabled="!localOperations && option.value !== API_CONNECTION_TYPE">{{ option.label }}</option>
                   </select>
                 </label>
                 <label v-if="selectedAiModelIsApi" class="block">
@@ -2080,7 +2084,7 @@ function copy(text: string) {
                   <span>启用</span>
                 </label>
               </div>
-            </div>
+            </fieldset>
           </div>
         </section>
 
@@ -2105,9 +2109,10 @@ function copy(text: string) {
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
                 <select class="input" :value="useCaseBindingField(String(useCase.id || ''), 'model_id')" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
                   <option value="">自动匹配</option>
-                  <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
+                  <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :disabled="model.connection_type !== API_CONNECTION_TYPE && (!localOperations || !useCase.desktop_capability)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
                 </select>
               </label>
+              <p v-if="modelOperationReason(String(useCase.id))" role="status" class="muted mt-2">{{ modelOperationReason(String(useCase.id)) }}</p>
               <label class="mt-3 block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">超时覆盖（秒）</span>
                 <input
@@ -2255,7 +2260,8 @@ function copy(text: string) {
               <div class="mt-3 flex flex-wrap gap-2">
                 <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('refreshChecklist')">刷新清单</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlCanGenerateLink" title="需要 App ID 和 https:// Redirect URI" @click="emit('generateMlLink', form.mlAppId, form.mlRedirectUri)">生成授权链接</button>
-                <button class="btn btn-outline py-1.5" :disabled="props.loading || !props.authLink" @click="emit('openMlLink', props.authLink)">打开授权链接</button>
+                <button v-if="localOperations" class="btn btn-outline py-1.5" :disabled="props.loading || !props.authLink" @click="emit('openMlLink', props.authLink)">打开授权链接</button>
+                <a v-else-if="props.authLink && /^https?:\/\//i.test(props.authLink)" :href="props.authLink" class="btn btn-outline py-1.5" target="_blank" rel="noopener noreferrer">打开授权链接</a>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlCanExchangeCode" title="需要 App ID、Client Secret、https:// Redirect URI 和回跳 code" @click="emit('exchangeMlCode', form.mlCode, { app_id: form.mlAppId, client_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri })">用 code 换 token</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlHasRefreshToken" title="需要先用 code 换到 Refresh Token" @click="emit('refreshMlToken', { app_id: form.mlAppId, client_secret: form.mlClientSecret })">刷新 token</button>
                 <button data-testid="test-mercadolibre-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'mercadolibre')">重新验证并刷新账户能力</button>

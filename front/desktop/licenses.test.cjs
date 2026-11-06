@@ -45,16 +45,24 @@ test('系统打开失败传回失败状态，不误报成功', async () => {
 test('预加载仅声明本机能力并暴露无参数的许可证入口', async () => {
   let bridge
   const calls = []
+  const ipcRenderer = new (require('node:events').EventEmitter)()
+  ipcRenderer.invoke = (...args) => { calls.push(args); return Promise.resolve() }
   vm.runInNewContext(readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8'), {
     require(name) {
       assert.equal(name, 'electron')
       return {
         contextBridge: { exposeInMainWorld(name, api) { assert.equal(name, 'championDesktop'); bridge = api } },
-        ipcRenderer: { invoke(...args) { calls.push(args); return Promise.resolve() } },
+        ipcRenderer,
       }
     },
   })
-  assert.deepEqual(Object.keys(bridge), ['localOperations', 'openNewAPI', 'configureModels', 'openLicenses'])
+  assert.deepEqual(Object.keys(bridge), ['localOperations', 'onConnectionChanged', 'openNewAPI', 'configureModels', 'openLicenses'])
+  const events = []
+  const unsubscribe = bridge.onConnectionChanged((...args) => events.push(args))
+  ipcRenderer.emit('desktop:connection-changed', { sender: '主进程' })
+  unsubscribe()
+  ipcRenderer.emit('desktop:connection-changed', {})
+  assert.deepEqual(events, [[]])
   assert.equal(bridge.localOperations, true)
   await bridge.openLicenses('/arbitrary/path')
   assert.deepEqual(calls, [['licenses:open']])

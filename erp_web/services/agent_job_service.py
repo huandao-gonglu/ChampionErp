@@ -92,12 +92,7 @@ class AgentJobService:
                     continue
             if not self.ui_service.run_registry.acquire(conversation_id):
                 continue
-            connection = ''
-            if pending:
-                requests = pending[0]
-                connection = next((str(meta.get('desktop_connection') or '') for meta in requests.metadata.values()
-                                   if isinstance(meta, dict) and meta.get('desktop_connection')), '')
-            run = ChatConversationRun(conversation_id, "background", self.ui_service, desktop_connection=connection)
+            run = ChatConversationRun(conversation_id, "background", self.ui_service)
             try:
                 get_detached_chat_runner().submit(
                     run.run()

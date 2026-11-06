@@ -343,6 +343,18 @@ class AgentCallStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def input_desktop_connection(self, conversation_id: str, message_id: str) -> str:
+        """只从该对话的私有收件记录恢复来源，历史和展示只引用消息 ID。"""
+        with self.db._connect() as conn:
+            row = conn.execute(
+                "SELECT messages_json FROM ai_chat_inbox WHERE conversation_id=? AND message_id=?",
+                (conversation_id, message_id),
+            ).fetchone()
+        if not row:
+            return ""
+        messages = ModelMessagesTypeAdapter.validate_json(row["messages_json"])
+        return str((messages[-1].metadata or {}).get("desktop_connection") or "") if messages else ""
+
     def user_facts(self, conversation_id: str) -> list[dict[str, Any]]:
         from pydantic_ai.messages import UserPromptPart
 

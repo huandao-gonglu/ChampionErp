@@ -150,6 +150,8 @@ class GlobalAgentChatService:
             raise ValueError(
                 "原生 Deferred 的结果尚未齐备；用户消息已接收，恢复时应用。"
             )
+        if pending:
+            support.resume_deferred(pending[0])
         async with self.factory.open_stream_run(
             profile=GLOBAL_CHAT_PROFILE,
             instructions=self.instructions(),

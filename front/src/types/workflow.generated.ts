@@ -291,6 +291,11 @@ export interface BackendPurchaseProgressView {
   data: BackendAlibabaPurchaseQueryResult | null
 }
 
+export interface BackendOperationAvailability {
+  desktop_reason: string
+  blocked_use_cases: Record<string, string>
+}
+
 export interface BackendApiResponse {
   schemaVersion?: number
   ok?: boolean

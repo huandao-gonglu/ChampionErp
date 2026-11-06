@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { modelOperationReason } from '@/utils/desktop'
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -633,7 +634,8 @@ watch(
           @close="closeDraftWorkspace"
         >
           <template #actions>
-            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="draftWorkspaceLoading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
+            <span v-if="draftWorkspaceTab === 'text' && modelOperationReason('copy.generate')" role="status" class="muted">{{ modelOperationReason('copy.generate') }}</span>
+            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="draftWorkspaceLoading || !!modelOperationReason('copy.generate') || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
               {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
             </button>
             <button class="btn btn-primary" :disabled="loading || imageWorkbenchBusy || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="imageSaveState.save">{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}</button>

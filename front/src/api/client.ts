@@ -1,5 +1,5 @@
 import { observeExternalOperations } from '@/utils/externalRequestNotices'
-import { hasLocalOperations } from '@/utils/desktop'
+import { hasLocalOperations, OPERATION_AVAILABILITY_CHANGED } from '@/utils/desktop'
 import axios, { AxiosError } from 'axios'
 import { uiLocaleOption } from '@/constants/locales'
 import { normalizeApiError } from '@/utils/apiError'
@@ -46,8 +46,15 @@ apiClient.interceptors.request.use((config) => {
   return config
 })
 
+function observePlatformRejection(path?: string, code?: unknown) {
+  if (path !== '/api/operation-availability' && (code === 'OPERATION_UNAVAILABLE' || code === 'DESKTOP_UNAVAILABLE')) {
+    window.dispatchEvent(new Event(OPERATION_AVAILABILITY_CHANGED))
+  }
+}
+
 apiClient.interceptors.response.use(
   (response) => {
+    observePlatformRejection(response.config.url, response.data?.error_code)
     observeExternalOperations(response.headers, response.config.method, response.config.url)
     return response
   },
@@ -56,6 +63,7 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401 && !publicAccount) sessionExpired()
     if (error.response) observeExternalOperations(error.response.headers, error.config?.method, error.config?.url)
     const data = error.response?.data as Record<string, unknown> | undefined
+    observePlatformRejection(error.config?.url, data?.error_code)
     const normalized = normalizeApiError(
       {
         message: data?.error || data?.message || error.message,

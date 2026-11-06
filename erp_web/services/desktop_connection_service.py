@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import deque
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 import secrets
 from threading import Condition, Event, Thread
@@ -12,19 +12,38 @@ from typing import Any
 from uuid import uuid4
 
 from erp_shared.desktop import validate_action
+from .capability_errors import BusinessCapabilityError
 
 _connection = ContextVar('desktop_connection', default='')
 
 
-class DesktopUnavailable(RuntimeError):
+class DesktopUnavailable(BusinessCapabilityError):
     def __init__(self, message='本机连接不可用，请在桌面端连接后重试。', *, outcome_unknown=False):
-        super().__init__(message)
-        self.code = 'DESKTOP_RESULT_UNKNOWN' if outcome_unknown else 'DESKTOP_UNAVAILABLE'
+        super().__init__('DESKTOP_RESULT_UNKNOWN' if outcome_unknown else 'DESKTOP_UNAVAILABLE', message,
+                         details={'outcome_unknown': True} if outcome_unknown else None)
         self.outcome_unknown = outcome_unknown
 
 
 def current_desktop_connection():
     return _connection.get()
+
+
+def server_worker_context():
+    """常驻服务继承业务空间，但不能继承碰巧启动它的请求所绑定的设备。"""
+    context = copy_context()
+    context.run(_connection.set, '')
+    return context
+
+
+def desktop_unavailable_reason(connection_id=None):
+    """只核对本次操作的连接，不探测浏览器或挑选同账号的其他设备。"""
+    key = current_desktop_connection() if connection_id is None else connection_id
+    if not key:
+        return '当前操作需要本机执行器，请从桌面端发起。'
+    from erp_web.context import get_context
+    if not get_context().desktop_connections.is_connected(key):
+        return '发起操作的桌面连接已断开，请在原桌面端重新登录。'
+    return ''
 
 
 @contextmanager
@@ -91,6 +110,14 @@ class DesktopConnections:
             if self.session_validator is not None and connection.session_hash != session_hash:
                 raise DesktopUnavailable('桌面连接不属于当前登录会话。')
         return key
+
+    def is_connected(self, key):
+        with self.condition:
+            try:
+                self._get(key)
+            except DesktopUnavailable:
+                return False
+            return True
 
     def revoke_sessions(self, token_hash=None):
         with self.condition:
@@ -166,6 +193,8 @@ class DesktopConnections:
         from .external_request_context import request_context
         from .ai_run_cancellation import check_cancellation
         key = current_desktop_connection()
+        if not key:
+            raise DesktopUnavailable(desktop_unavailable_reason(key))
         params = validate_action(operation, params)
         ctx = request_context('desktop://local', timeout=timeout, source='desktop')
         deadlines = [time.time() + timeout]
@@ -240,7 +269,15 @@ def desktop_request(func):
         headers = getattr(handler, 'headers', None)
         key = str(headers.get('X-Champion-Desktop', '') or '') if headers else ''
         from urllib.parse import urlsplit
-        if urlsplit(handler.path).path.startswith(('/api/account/', '/api/admin/')):
+        path = urlsplit(handler.path).path
+        # Electron 主进程使用原生 HTTP。普通网页不能注册执行器或领取本机调用。
+        if path.startswith('/api/desktop/') and headers and any(
+            headers.get(name) for name in ('Origin', 'Sec-Fetch-Mode', 'Sec-Fetch-Site')
+        ):
+            handler.send_json({'ok': False, 'error': '桌面连接协议仅供本机执行器使用。',
+                               'error_code': 'DESKTOP_PROTOCOL_FORBIDDEN'}, 403)
+            return
+        if path.startswith(('/api/account/', '/api/admin/')):
             key = ''
         if not getattr(handler, 'desktop_scope_allowed', True):
             key = ''

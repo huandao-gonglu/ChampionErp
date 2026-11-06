@@ -10,6 +10,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from erp_web.context import get_context
+from erp_web.services.desktop_connection_service import DesktopUnavailable
+from erp_web.services.operation_availability import require_model_platform
 from erp_web.services.ai_model_config import SystemModelError
 from erp_web.marketplace_registry import default_marketplace_site
 from erp_web.product_model import PLATFORMS
@@ -151,13 +153,15 @@ def generate_copy_payload(body: dict[str, Any]) -> ResponseWithStatus:
     if platform not in PLATFORMS:
         return {"ok": False, "error": "不支持的平台"}, 400
 
+    config = context.config.load_app_config()
+    require_model_platform(config, "copy.generate")
     result = generate_ai_copy_bundle(
         product,
         platform,
         platform,
         _copy_language(body, product, platform),
         str(body.get("mode") or "rewrite"),
-        context.config.load_app_config(),
+        config,
     )
     if not result.get("ok"):
         _log_copy_failure(product, draft_id, platform, result)
@@ -172,6 +176,7 @@ def generate_copy_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def generate_copy_batch_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    require_model_platform(get_context().config.load_app_config(), "copy.generate")
     result = batch_generate_copy_for_products(
         body.get("product_ids") if isinstance(body.get("product_ids"), list) else [],
         str(body.get("platform") or "mercadolibre"),
@@ -218,6 +223,8 @@ def test_ai_model_payload(body: dict[str, Any]) -> ResponseWithStatus:
     model_config = _model_config_from_body(body)
     try:
         return test_ai_model_config(model_config), 200
+    except DesktopUnavailable as exc:
+        return {"ok": False, "error": str(exc), "error_code": exc.code}, 409
     except SystemModelError as exc:
         return {"ok": False, "error": str(exc)}, 403
     except Exception as exc:

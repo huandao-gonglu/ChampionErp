@@ -7,6 +7,7 @@ import { saveDraft, uploadImages } from '@/api/workflow/catalog'
 import type { DraftMutationResponse } from '@/api/workflow/normalizers'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import { useDraftImageWorkbench } from '../useDraftImageWorkbench'
+import { setOperationAvailability } from '@/utils/desktop'
 
 vi.mock('@/api/draftImages', () => ({ fetchDraftImageState: vi.fn(), processDraftImages: vi.fn(), planDraftImageSet: vi.fn(), generateDraftImageSet: vi.fn() }))
 vi.mock('@/api/workflow/catalog', () => ({ saveDraft: vi.fn(), uploadImages: vi.fn() }))
@@ -50,6 +51,19 @@ beforeEach(() => {
 afterEach(() => { scopes.forEach(scope => scope.stop()); scopes.length = 0; vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('图片工作台操作与恢复', () => {
+  it('当前端不能修图时可读原任务，翻译、编辑和重做均不保存草稿或创建批次', async () => {
+    setOperationAvailability({ desktop_reason: '需要桌面端', blocked_use_cases: { 'image.translate': 'Gemini Canvas 需要桌面端' } })
+    const { work, save } = fixture()
+    await flushPromises()
+    await work.start('translate', ['common'])
+    await work.start('edit', ['common'], '修图')
+    await work.generateSet(undefined, 'v1', ['page-1'])
+    expect(work.notice.value).toContain('Gemini Canvas')
+    expect(fetchDraftImageState).toHaveBeenCalled()
+    expect(save).not.toHaveBeenCalled()
+    expect(processDraftImages).not.toHaveBeenCalled()
+    expect(generateDraftImageSet).not.toHaveBeenCalled()
+  })
   it('套图先保存后规划，生成完成仍保留旧引用；采用与撤销只修改共用图', async () => {
     const { work, draft, response, save } = fixture()
     await flushPromises()

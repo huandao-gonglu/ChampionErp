@@ -46,6 +46,8 @@ class AiToolBinding:
 
     # 纯参数校验；由原生 args_validator 反馈 ModelRetry，不执行领域 I/O。
     arguments_validator: Callable[[dict[str, Any]], None] | None = None
+    # 参数为空时用于发现工具，执行时依据实际参数复核；由应用装配提供。
+    unavailable_reason: Callable[[dict[str, Any] | None], str] | None = None
 
     def __post_init__(self) -> None:
         if not callable(self.executor):

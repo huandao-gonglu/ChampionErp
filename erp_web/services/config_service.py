@@ -11,6 +11,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from erp_web.schemas.requests import RequestValidationError
 from . import ai_model_config, ai_prompt_templates
 
 
@@ -230,19 +231,30 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
     return public
 
 
-def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict[str, Any], *, preserve_local_models: bool = False) -> dict[str, Any]:
     merged = dict(current or {})
     if isinstance(incoming.get("ai_models"), list):
         from .desktop_model_config_service import prepare_local_model
-        raw_models = [prepare_local_model(model) for model in incoming["ai_models"]]
         current_models = ai_model_config.normalize_ai_models(current.get("ai_models") if isinstance(current, dict) else None)
         current_by_id = {str(model.get("id") or ""): model for model in current_models if str(model.get("id") or "")}
+        incoming_models = incoming["ai_models"]
+        if not all(isinstance(row, dict) for row in incoming_models):
+            raise RequestValidationError("模型配置必须是对象。")
+        raw_models = incoming_models if preserve_local_models else [prepare_local_model(model) for model in incoming_models]
         copy_source_by_id = {
             str(model.get("id") or "").strip(): str(model.get("copy_source_id") or "").strip()
             for model in raw_models
             if isinstance(model, dict) and str(model.get("id") or "").strip() and str(model.get("copy_source_id") or "").strip()
         }
         next_models = ai_model_config.normalize_ai_models(raw_models)
+        if preserve_local_models:
+            # 先规范化 ID 和连接类型；别名、大小写和重复 ID 不能绕过网页的只读限制。
+            saved_local = {key: row for key, row in current_by_id.items() if row['connection_type'] != ai_model_config.CONNECTION_TYPE_API}
+            incoming_local = {row['id'] for row in next_models if row['connection_type'] != ai_model_config.CONNECTION_TYPE_API}
+            local_id_count = sum(row['id'] in saved_local for row in next_models)
+            if incoming_local != saved_local.keys() or local_id_count != len(saved_local):
+                raise RequestValidationError('本机模型需要在桌面端管理。请刷新后重试。', status_code=409, error_code='OPERATION_UNAVAILABLE')
+            next_models = [saved_local.get(row['id'], row) for row in next_models]
         for model in next_models:
             if ai_model_config.model_connection_type(model) in {ai_model_config.CONNECTION_TYPE_CLI, ai_model_config.CONNECTION_TYPE_BROWSER}:
                 model["api_key"] = ""

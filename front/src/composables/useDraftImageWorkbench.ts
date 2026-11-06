@@ -1,3 +1,4 @@
+import { modelOperationReason } from '@/utils/desktop'
 import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
 import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImageState, type ImageSetPlan } from '@/api/draftImages'
 import { saveDraft, uploadImages } from '@/api/workflow/catalog'
@@ -127,8 +128,14 @@ export function useDraftImageWorkbench(options: {
   })
   onScopeDispose(() => { ++epoch; clearTimeout(timer) })
 
+  function platformBlocked(useCase: string) {
+    const reason = modelOperationReason(useCase)
+    if (reason) notice.value = reason
+    return Boolean(reason)
+  }
+
   async function start(operation: 'translate' | 'edit', ids: string[], prompt = '') {
-    if (busy.value || !ids.length) return
+    if (busy.value || !ids.length || platformBlocked('image.translate')) return
     const token = epoch
     const targets = [...ids]
     saving.value = true; notice.value = ''
@@ -156,7 +163,7 @@ export function useDraftImageWorkbench(options: {
   }
 
   async function planSet(ids: string[], count: number, prompt: string, skuIds: string[] = []) {
-    if (busy.value || !ids.length) return
+    if (busy.value || !ids.length || platformBlocked('image.plan')) return
     const token = epoch
     saving.value = true; notice.value = ''
     try {
@@ -170,7 +177,7 @@ export function useDraftImageWorkbench(options: {
   }
 
   async function generateSet(plan?: ImageSetPlan, updatedAt = draft.value.updatedAt, retryPageIds?: string[]) {
-    if (busy.value) return
+    if (busy.value || platformBlocked('image.translate')) return
     const base = batch.value
     if (!plan && (!base?.image_set || !retryPageIds?.length)) return
     const token = epoch

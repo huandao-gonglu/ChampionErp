@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { modelOperationReason } from '@/utils/desktop'
 import { computed, ref, watch } from 'vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import SkuImageAssignmentDialog from './SkuImageAssignmentDialog.vue'
@@ -30,6 +31,7 @@ const assignmentsByImage = computed(() => {
   for (const sku of props.skuAssignments || []) result.set(sku.imageAssetId, [...(result.get(sku.imageAssetId) || []), sku])
   return result
 })
+const imageReason = computed(() => modelOperationReason('image.translate'))
 const selectedIds = computed(() => props.images.filter(image => selectedImageIdSet.value.has(image.id)).map(image => image.id))
 const languages = computed(() => [...new Set(props.images.map(image => image.targetLanguage || 'original'))])
 function label(image: ImageAsset) { return `${imageSourceLabel(image)} ${props.images.indexOf(image) + 1}` }
@@ -58,7 +60,7 @@ function selectImage(image: ImageAsset, checked: boolean) {
 function selectVisible() { selectedImageIdSet.value = new Set([...selectedImageIdSet.value, ...visibleImages.value.map(image => image.id)]) }
 function openEdit() { imageEditPrompt.value = ''; imageEditPromptOpen.value = true }
 function submitEdit() {
-  if (!imageEditPrompt.value.trim() || props.loading || !selectedIds.value.length) return
+  if (imageReason.value || !imageEditPrompt.value.trim() || props.loading || !selectedIds.value.length) return
   emit('imageEdit', { prompt: imageEditPrompt.value.trim(), imageIds: [...selectedIds.value] })
   imageEditPromptOpen.value = false
 }
@@ -78,11 +80,12 @@ watch(() => props.images, () => {
   <section class="card" aria-label="素材图片池">
     <div class="space-y-4">
       <div><h2 class="card-title">素材图片池</h2><p class="muted mt-1">商品共享素材。上传和 AI 处理结果会保存到素材库；删除素材会影响引用它的商品和草稿。</p></div>
+      <p v-if="imageReason" role="status" class="muted">{{ imageReason }}</p>
       <div class="flex flex-wrap gap-2">
         <input ref="input" type="file" accept="image/*" multiple class="hidden" @change="selectedFiles" />
         <button type="button" class="btn btn-outline" :disabled="loading" @click="input?.click()">上传图片</button>
-        <button type="button" class="btn btn-secondary" :disabled="loading || !selectedIds.length" @click="openEdit">AI 图生图（{{ selectedIds.length }}）</button>
-        <button v-if="showTranslateAction !== false" type="button" class="btn btn-primary" :disabled="loading || !selectedIds.length" @click="emit('translate', [...selectedIds])">AI 翻译/重绘（{{ selectedIds.length }}）</button>
+        <button type="button" class="btn btn-secondary" :disabled="!!imageReason || loading || !selectedIds.length" @click="openEdit">AI 图生图（{{ selectedIds.length }}）</button>
+        <button v-if="showTranslateAction !== false" type="button" class="btn btn-primary" :disabled="!!imageReason || loading || !selectedIds.length" @click="emit('translate', [...selectedIds])">AI 翻译/重绘（{{ selectedIds.length }}）</button>
         <button type="button" class="btn btn-outline" :disabled="loading || !visibleImages.length" @click="selectVisible">选择筛选结果</button>
         <button v-if="selectedIds.length" type="button" class="btn btn-outline" :disabled="loading" @click="selectedImageIdSet = new Set()">取消选择</button>
       </div>
@@ -112,7 +115,7 @@ watch(() => props.images, () => {
     <p v-else-if="!visibleImages.length" class="py-8 text-center text-sm text-slate-500">没有符合条件的素材，请调整筛选条件。</p>
   </section>
   <WorkspaceDialog :open="Boolean(previewImage)" title="图片预览" @close="previewImage = null"><img v-if="previewImage" :src="imageUrl(previewImage)" :alt="label(previewImage)" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
-  <WorkspaceDialog :open="imageEditPromptOpen" title="图生图" @close="imageEditPromptOpen = false"><form class="space-y-4" @submit.prevent="submitEdit"><p>已选 {{ selectedIds.length }} 张图片</p><label class="block text-sm">处理要求<textarea v-model="imageEditPrompt" rows="5" class="input mt-2" placeholder="输入本次图片处理要求" /></label><div class="flex justify-end gap-3"><button type="button" class="btn btn-outline" @click="imageEditPromptOpen = false">取消</button><button type="submit" class="btn btn-primary" :disabled="loading || !imageEditPrompt.trim() || !selectedIds.length">生成图片</button></div></form></WorkspaceDialog>
+  <WorkspaceDialog :open="imageEditPromptOpen" title="图生图" @close="imageEditPromptOpen = false"><form class="space-y-4" @submit.prevent="submitEdit"><p>已选 {{ selectedIds.length }} 张图片</p><p v-if="imageReason" role="status" class="muted">{{ imageReason }}</p><label class="block text-sm">处理要求<textarea v-model="imageEditPrompt" rows="5" class="input mt-2" placeholder="输入本次图片处理要求" /></label><div class="flex justify-end gap-3"><button type="button" class="btn btn-outline" @click="imageEditPromptOpen = false">取消</button><button type="submit" class="btn btn-primary" :disabled="!!imageReason || loading || !imageEditPrompt.trim() || !selectedIds.length">生成图片</button></div></form></WorkspaceDialog>
   <SkuImageAssignmentDialog :image="assignmentImage" :images="images" :assignments="skuAssignments || []" :draft-scope="false" :loading="loading" @close="assignmentImage = null" @apply="emit('assignSkus', $event)" />
   <WorkspaceDialog :open="Boolean(deleteRequest)" title="删除商品共享素材" @close="deleteRequest = null"><div class="space-y-4"><p>将从商品素材库删除 {{ deleteRequest?.ids.length }} 张图片。引用这些素材的其他草稿也会受影响；这不是从当前草稿移除图片。</p><p v-if="deletionUses.length">当前关联的 SKU：{{ deletionUses.map(sku => sku.name).join('、') }}。删除后需重新选图。</p><p v-else>当前商品未关联 SKU 主图；其他草稿仍可能引用这些素材。</p><p>确认已不再需要这些共享素材后再删除。</p><div class="flex justify-end gap-3"><button type="button" class="btn btn-outline" @click="deleteRequest = null">取消</button><button type="button" class="btn btn-primary" :disabled="loading" @click="confirmDelete">确认删除共享素材</button></div></div></WorkspaceDialog>
 </template>

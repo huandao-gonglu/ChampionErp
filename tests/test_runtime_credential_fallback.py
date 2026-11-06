@@ -47,7 +47,7 @@ def test_collect_cookie_uses_saved_value_when_request_is_empty_or_masked(
         {"url": "https://example.test/empty"},
         {"url": "https://example.test/masked", "cookie": masked_cookie},
     ):
-        result, status = collect_facade.collect_source_payload(body)
+        result, status = collect_facade.collect_source_payload({**body, "mode": "http"})
         assert status == 200
         assert result["ok"] is True
 

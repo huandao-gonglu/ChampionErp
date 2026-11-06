@@ -1,4 +1,5 @@
 import { prepareLocalModel } from '@/utils/desktop'
+import { refreshOperationAvailability } from '@/api/operationAvailability'
 import {  apiClient } from '@/api/client'
 import type {
 
@@ -47,6 +48,7 @@ export async function saveAiConfig(config: UnknownRecord): Promise<AiPublicConfi
   const response = await apiClient.post('/api/ai-config/save', { config: prepared })
   const data = asRecord(response.data)
   ensureOk(data, '保存 AI 配置失败')
+  await refreshOperationAvailability()
   return { raw: asRecord(data.config) }
 }
 

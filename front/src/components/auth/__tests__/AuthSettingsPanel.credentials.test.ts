@@ -92,6 +92,15 @@ describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
     },
   }
   const apiModel = { id: 'existing', name: '已有模型', connection_type: 'api', provider_id: 'openai', capabilities: [] }
+  it('网页版隐藏本机模型预置并以只读方式显示已有 Canvas 配置', async () => {
+    vi.stubGlobal('championDesktop', undefined)
+    const wrapper = mountPanel({ ai_models: [preset.model, apiModel], browser_presets: [preset] })
+    expect(wrapper.find('[data-testid="add-web-model"]').exists()).toBe(false)
+    expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('请从桌面端发起')
+    await wrapper.findAll('button').find(button => button.text().includes('已有模型'))!.trigger('click')
+    expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeUndefined()
+  })
   const save = async (wrapper: ReturnType<typeof mountPanel>) => {
     await wrapper.findAll('button').find(button => button.text() === '保存 AI 设置')!.trigger('click')
     return wrapper.emitted('saveAi')!.at(-1)![0] as Record<string, unknown>

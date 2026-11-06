@@ -309,6 +309,10 @@ class AiToolRuntime:
         started_at = time.monotonic()
         check_cancellation()
         try:
+            if binding.unavailable_reason:
+                reason = binding.unavailable_reason(arguments)
+                if reason:
+                    raise AiToolExecutionError("OPERATION_UNAVAILABLE", reason)
             output = binding.executor(
                 arguments,
                 call_execution,

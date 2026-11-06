@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { modelOperationReason } from '@/utils/desktop'
 import { computed, onDeactivated, ref, watch } from 'vue'
 import { useEventListener } from '@vueuse/core'
 import { PhEye, PhEyeSlash, PhListDashes, PhPlus } from '@phosphor-icons/vue'
@@ -75,8 +76,9 @@ useEventListener(window, 'blur', resetStopShortcut)
 useEventListener(document, 'visibilitychange', resetStopShortcut)
 onDeactivated(resetStopShortcut)
 
+const blockedReason = computed(() => props.sendDisabledReason || modelOperationReason('global.chat'))
 const canSend = computed(() => (
-  props.modelValue.trim().length > 0 && !props.sendDisabledReason && !props.stopping && !composing.value
+  props.modelValue.trim().length > 0 && !blockedReason.value && !props.stopping && !composing.value
 ))
 
 /** 输入以 `/` 开头时返回其后的查询串，否则返回 null。 */
@@ -262,12 +264,12 @@ function onKeydown(event: KeyboardEvent) {
       </div>
     </div>
     <p
-      v-if="sendDisabledReason"
+      v-if="blockedReason"
       role="status"
       class="mt-2 rounded-lg bg-amber-50/[var(--ai-chat-surface-opacity,1)] px-3 py-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-amber-200 dark:ring-amber-500/30"
       data-testid="ai-chat-send-blocked"
     >
-      {{ sendDisabledReason }}
+      {{ blockedReason }}
     </p>
     <p class="mt-2 text-xs text-slate-400">
       ai也会犯错，重要内容请仔细核对

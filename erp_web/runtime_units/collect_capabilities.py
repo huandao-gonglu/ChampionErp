@@ -69,7 +69,7 @@ def _require_collect_ok(
         )
         or default_message
     )
-    raise BusinessCapabilityError(code, message)
+    raise BusinessCapabilityError(code, message, details={"outcome_unknown": True} if code == "DESKTOP_RESULT_UNKNOWN" else None)
 
 
 @dataclass(frozen=True)

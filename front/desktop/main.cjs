@@ -48,6 +48,12 @@ let desktopConnection
 let quitting = false
 const accountSession = new AccountSession()
 
+function notifyConnectionChanged() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('desktop:connection-changed')
+  }
+}
+
 app.on('second-instance', () => {
   const win = BrowserWindow.getAllWindows()[0]
   if (win) {
@@ -61,6 +67,7 @@ async function initializeDesktop() {
   const dataDir = path.join(app.getPath('userData'), 'backend')
   const options = { onUnexpectedExit: (error) => {
     void desktopConnection?.stop()
+    notifyConnectionChanged()
     dialog.showErrorBox(`${productName} 本机执行器已停止`, error.message)
   } }
   if (app.isPackaged) runtime = startRuntime(runtimeExecutable(process.resourcesPath), dataDir, options)
@@ -90,9 +97,7 @@ function getBackendBaseUrl() {
 }
 
 function getFrontendRoot() {
-  const { name: packageName, productName } = require('../package.json')
-
-if (app.isPackaged) {
+  if (app.isPackaged) {
     return path.join(app.getAppPath(), 'dist-desktop')
   }
   return path.resolve(__dirname, '..', 'dist-desktop')
@@ -171,9 +176,11 @@ function proxyToBackend(req, res, backendBaseUrl) {
       desktopConnection = await connectDesktop(backendBaseUrl, runtime, {
         session: accountSession,
         onDisconnected: error => {
+          notifyConnectionChanged()
           if (!quitting && accountSession.cookie) dialog.showErrorBox(`${productName} 本机连接已断开`, `${error.message}。请重新登录后重试。`)
         },
       })
+      notifyConnectionChanged()
     },
     onLogout: () => { void desktopConnection?.stop(); desktopConnection = undefined },
   })

@@ -90,6 +90,7 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
     },
     "image.translate": {
         "id": "image.translate",
+        "desktop_capability": CAP_IMAGE_EDIT,
         "label": "图片翻译/重绘",
         "required_capabilities": [CAP_IMAGE_EDIT],
     },
@@ -108,6 +109,7 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
     },
     "text.translate": {
         "id": "text.translate",
+        "desktop_capability": "chat_json",
         "label": "翻译",
         "required_capabilities": [CAP_CHAT, CAP_JSON],
     },

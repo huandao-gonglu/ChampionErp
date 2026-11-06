@@ -22,6 +22,7 @@ from .ai_agent_dependencies import AiAgentDependencies
 from .ai_tool_registry import AiToolSet
 from .ai_tool_contract_description import parameter_constraints
 from .capability_errors import BusinessCapabilityError
+from .desktop_connection_service import bind_desktop_connection, current_desktop_connection
 
 
 class AiToolArgumentRetry(ModelRetry):
@@ -171,6 +172,19 @@ class PydanticToolBridge:
                     tool_name=definition.name,
                 ) from exc
 
+        def recorded_write(receipt, arguments, call_id):
+            if receipt and (receipt["tool_name"] != definition.name or json.loads(receipt["arguments_json"]) != arguments):
+                raise AiToolBridgeError(
+                    code="TOOL_CALL_ID_CONFLICT", message="工具调用 ID 已用于其他参数，不能重新执行。",
+                    tool_name=definition.name, tool_call_id=call_id,
+                )
+            if receipt and receipt["output_json"]:
+                return json.loads(receipt["output_json"])
+            return {"ok": False, "error": {
+                "code": "TOOL_OUTCOME_UNKNOWN", "message": "该调用已开始但缺少完成回执，请先查询业务状态。",
+                "details": {"outcome_unknown": True},
+            }}
+
         def invoke(ctx: RunContext[AiAgentDependencies], **arguments: Any) -> Any:
             runtime = ctx.deps.tool_runtime
             support = runtime.run_support
@@ -185,15 +199,26 @@ class PydanticToolBridge:
                     if ctx.tool_call_approved
                     else frozenset(),
                 )
-            from .desktop_connection_service import current_desktop_connection, bind_desktop_connection
             metadata = dict(ctx.tool_call_metadata or {})
-            metadata.setdefault("desktop_connection", current_desktop_connection())
+            # 审批只能使用原调用保存的连接，旧回执没有来源时按无本机能力处理。
+            origin = support.desktop_connection if support is not None else current_desktop_connection()
+            metadata.setdefault("desktop_connection", "" if ctx.tool_call_approved else origin)
             if support is not None and writing:
                 unknown = support.store.unresolved_outcome(
                     support.conversation_id, definition.name, arguments
                 )
                 if unknown is not None:
                     return unknown
+            binding = self.toolset.bindings[definition.name]
+            if binding.unavailable_reason:
+                with bind_desktop_connection(metadata["desktop_connection"]):
+                    reason = binding.unavailable_reason(arguments)
+                if reason:
+                    if support is not None and writing and definition.execution_mode == "sync":
+                        receipt = support.store.receipt(support.conversation_id, str(ctx.tool_call_id))
+                        if receipt:
+                            return recorded_write(receipt, arguments, str(ctx.tool_call_id))
+                    return {"ok": False, "error": {"code": "OPERATION_UNAVAILABLE", "message": reason}}
             if definition.approval_required and not ctx.tool_call_approved:
                 from .tool_approval import approval_binding_digest
 
@@ -240,26 +265,7 @@ class PydanticToolBridge:
                     receipt = support.store.receipt(
                         support.conversation_id, str(ctx.tool_call_id)
                     )
-                    if receipt and (
-                        receipt["tool_name"] != definition.name
-                        or json.loads(receipt["arguments_json"]) != arguments
-                    ):
-                        raise AiToolBridgeError(
-                            code="TOOL_CALL_ID_CONFLICT",
-                            message="工具调用 ID 已用于其他参数，不能重新执行。",
-                            tool_name=definition.name,
-                            tool_call_id=str(ctx.tool_call_id),
-                        )
-                    if receipt and receipt["output_json"]:
-                        return json.loads(receipt["output_json"])
-                    return {
-                        "ok": False,
-                        "error": {
-                            "code": "TOOL_OUTCOME_UNKNOWN",
-                            "message": "该调用已开始但缺少完成回执，请先查询业务状态。",
-                            "details": {"outcome_unknown": True},
-                        },
-                    }
+                    return recorded_write(receipt, arguments, str(ctx.tool_call_id))
             try:
                 with bind_desktop_connection(metadata["desktop_connection"]):
                     output = self.execute(
@@ -289,7 +295,16 @@ class PydanticToolBridge:
 
         def prepare_contract(
             ctx: RunContext[AiAgentDependencies], tool_def: ToolDefinition,
-        ) -> ToolDefinition:
+        ) -> ToolDefinition | None:
+            binding = self.toolset.bindings[definition.name]
+            if binding.unavailable_reason:
+                support = ctx.deps.tool_runtime.run_support
+                origin = support.desktop_connection if support is not None else current_desktop_connection()
+                with bind_desktop_connection(origin):
+                    # 原生 Deferred 恢复需要找到原定义，invoke 会按原设备返回实际回执。
+                    resuming = support is not None and definition.name in support.resuming_tools
+                    if not resuming and binding.unavailable_reason(None):
+                        return None
             # from_schema 不接收返回 Schema；通过原生 prepare 交给 CodeMode
             # 生成返回类型，避免模型靠试写猜测回执字段。
             return replace(tool_def, return_schema=contract["output_schema"])

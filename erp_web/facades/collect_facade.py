@@ -5,9 +5,10 @@ from typing import Any
 from erp_web.context import get_context
 from erp_web.services import collect_service, config_service
 
-from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
+from erp_web.runtime_units.collect_helpers import claim_products_to_platforms, collect_platform_reason
 from erp_web.runtime_units.source_collect_verification import inspect_collection_verification
 from erp_web.services.desktop_connection_service import call_desktop
+from erp_web.schemas.requests import RequestValidationError
 from erp_web.runtime_units.source_collect_workflows import (
     collect_1688_payload_service,
     collect_batch_products,
@@ -18,6 +19,11 @@ from erp_web.runtime_units.source_collect_workflows import (
 from erp_web.schemas.api import ApiResponse
 
 ResponseWithStatus = tuple[ApiResponse, int]
+
+
+def _check_platform(reason):
+    if reason:
+        raise RequestValidationError(reason, status_code=409, error_code="DESKTOP_UNAVAILABLE")
 
 
 def _resolved_collect_cookie(
@@ -36,6 +42,7 @@ def _resolved_collect_cookie(
 
 
 def collect_source_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    _check_platform(collect_platform_reason(body.get("mode", "browser"), body.get("url")))
     context = get_context()
     try:
         result = collect_source_product(
@@ -58,6 +65,7 @@ def collect_source_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def collect_batch_payload(body: dict[str, Any]) -> ApiResponse:
+    _check_platform(collect_platform_reason(body.get("mode", "browser"), body.get("urls") or body.get("url")))
     config = get_context().config.load_app_config()
     return collect_batch_products(
         body.get("urls") if body.get("urls") is not None else body.get("url", ""),
@@ -81,6 +89,8 @@ def claim_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def collect_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    if not str(body.get("text") or body.get("html") or body.get("source_text") or "").strip():
+        _check_platform(collect_platform_reason(body.get("mode", "browser"), body.get("url")))
     config = get_context().config.load_app_config()
     try:
         resolved_body = dict(body)

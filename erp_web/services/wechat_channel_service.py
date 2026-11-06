@@ -17,6 +17,7 @@ from wechatbot.protocol import DEFAULT_BASE_URL, ILinkApi
 
 from erp_web.schemas.wechat_channel import WECHAT_FORWARD_TYPES, WechatChannelStatus
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
+from erp_web.services.desktop_connection_service import server_worker_context
 from erp_web.services.chat_conversation_service import ChatConversationError, ChatConversationRun
 from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnAlreadyAcceptedError
 
@@ -85,8 +86,7 @@ class WechatChannelService:
                 raise RuntimeError("微信连接已关闭。")
             if self._thread is not None:
                 return
-            from contextvars import copy_context
-            self._thread = threading.Thread(target=copy_context().run, args=(lambda: asyncio.run(self._serve()),), name="erp-wechat", daemon=True)
+            self._thread = threading.Thread(target=server_worker_context().run, args=(lambda: asyncio.run(self._serve()),), name="erp-wechat", daemon=True)
             self._thread.start()
         if not self._ready.wait(3):
             raise RuntimeError("微信连接尚未就绪，请稍后重试。")

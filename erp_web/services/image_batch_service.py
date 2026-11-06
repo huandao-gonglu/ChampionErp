@@ -29,7 +29,7 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                     request_id: str = "", background: bool = False,
                     image_set: ImageSetPlan | None = None,
                     retained_items: dict[str, ImageBatchItem] | None = None,
-                    request_fingerprint: str = "") -> dict:
+                    request_fingerprint: str = "", before_create: Callable[[], None] | None = None) -> dict:
     presentation = current_presentation_context()
     conversation_id = request_id or (presentation.conversation_id if presentation and presentation.is_root_scope
                        else f"conversation_{uuid4().hex}")
@@ -61,6 +61,8 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                 raise ValueError("图片请求标识已用于其他操作。")
             return {"ok": True, "imagePoolItems": [], "image_batch": existing.snapshot(),
                     "conversation_id": conversation_id, "message": "已恢复原图片任务。"}
+        if before_create is not None:
+            before_create()
         store.create(batch)
         messages.save(conversation_id, [initial])
 
@@ -90,7 +92,8 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
                 error = f"图片服务返回 HTTP {status}。" if status else safe_model_error_text(exc)
-                store.update_item(conversation_id, index, status="failed", finished_at=utc_now(), error=error or "图片处理失败。")
+                store.update_item(conversation_id, index, status="failed", finished_at=utc_now(), error=error or "图片处理失败。",
+                                  outcome_unknown=bool(getattr(exc, "outcome_unknown", False)))
                 return []
 
     def execute():

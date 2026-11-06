@@ -409,6 +409,8 @@ def collect_from_browser_tab(
         diagnostics = default_collect_diagnostics()
         diagnostics.update({"collect_mode": "browser_debugging", "started_at": started_at, "finished_at": collect_time_iso(), "success": False, "partial_success": False, "error_code": code, "error_message": message, "browser_connected": bool(status.get("connected")), "debug_port": status.get("port"), "next_action": "请确认专用 Chrome 已打开商品页；如果仍失败，点击保存 HTML 快照或使用 HTML 导入 / 手动补充。", "checked_at": collect_time_iso()})
         # 目标页失效、快照失败等情况只返回诊断，不修改之前采集的商品。
+        if isinstance(exc, DesktopUnavailable):
+            diagnostics["next_action"] = message
         return {"ok": False, "product": original_product, "imagePool": current_image_pool(original_product), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": message, "next_action": diagnostics["next_action"], "real_publish_called": False}
 
 

@@ -33,11 +33,14 @@ from erp_web.marketplace_registry import MARKETPLACE_SPECS, marketplace_spec
 from erp_web.runtime_units.json_store import write_json
 from erp_web.schemas.ai_approval import AiToolApprovalMode, normalize_ai_tool_approval_mode
 from erp_web.schemas.image_hosting import ImageHostingError
+from erp_web.schemas.requests import RequestValidationError
 from erp_web.schemas.pricing_templates import SavePricingTemplate
 from erp_web.schemas.yandex_warehouses import SaveYandexWarehouses, YandexWarehouseCatalog, account_key
 from erp_web.services.image_hosting_config import config_version, require_ready
 from erp_web.services.image_hosting_credentials import merge_profile
 from erp_web.services import ai_model_config
+from erp_web.services.desktop_connection_service import current_desktop_connection
+from erp_web.services.operation_availability import require_model_platform
 from erp_web.services.config_service import (
     is_sensitive_config_key,
     merge_ai_config,
@@ -711,6 +714,28 @@ class ConfigStore:
             self.save_app_config(config, approval_mode=mode)
             return self.ai_tool_approval_mode()
 
+    def _merge_client_ai_config(self, current, incoming):
+        if self.managed_models is not None and "ai_models" in incoming:
+            incoming = {**incoming, "ai_models": self.check_system_models(incoming["ai_models"])}
+        merged = merge_ai_config(self._app_dir, current, incoming, preserve_local_models=not current_desktop_connection())
+        if isinstance(incoming.get("ai_use_case_bindings"), dict):
+            previous = ai_model_config.normalize_ai_use_case_bindings(current.get("ai_use_case_bindings"))
+            for use_case, binding in merged["ai_use_case_bindings"].items():
+                model_id = binding.get("model_id")
+                if model_id and model_id != previous.get(use_case, {}).get("model_id"):
+                    require_model_platform(merged, use_case)
+        return merged
+
+    def save_client_app_config(self, incoming, *, ai_only=False):
+        current = self.load_app_config()
+        merged = self._merge_client_ai_config(current, incoming) if ai_only else self.merge_app_config_fields(current, incoming)
+        # 本机配置指纹可能需要网络往返；只在最终比较和写入期间持有配置锁。
+        with self._save_lock:
+            if self.load_app_config() != current:
+                raise RequestValidationError("设置已由其他操作更新，请刷新后重试。", status_code=409, error_code="APP_CONFIG_CHANGED")
+            self.save_app_config(merged)
+        return merged
+
     def merge_app_config_fields(
         self,
         current: dict[str, Any] | None,
@@ -727,7 +752,7 @@ class ConfigStore:
         incoming = incoming if isinstance(incoming, dict) else {}
         allowed_keys = set(self.default_app_config()) | set(app_config_runtime.PRESERVED_APP_CONFIG_KEYS)
         for key, value in incoming.items():
-            if key == "ai_models" and self.managed_models is not None:
+            if key in {"ai_models", "ai_use_case_bindings"}:
                 continue
             if key in {"1688_api", "system_settings", "pricing_templates", "yandex_warehouses", "forbidden_categories"}:
                 # 专用入口维护这些配置，避免授权页的旧快照覆盖最新设置。
@@ -750,9 +775,11 @@ class ConfigStore:
                     section[field] = deepcopy(field_value)
             else:
                 merged[key] = deepcopy(value)
-        if self.managed_models is not None and "ai_models" in incoming:
-            rows = self.check_system_models(incoming["ai_models"])
-            merged = merge_ai_config(self._app_dir, merged, {"ai_models": rows})
+        ai_changes = {key: incoming[key] for key in ("ai_models", "ai_use_case_bindings") if key in incoming}
+        if isinstance(ai_changes.get("ai_use_case_bindings"), dict):
+            ai_changes["ai_use_case_bindings"] = {**(current or {}).get("ai_use_case_bindings", {}), **ai_changes["ai_use_case_bindings"]}
+        if ai_changes:
+            merged = self._merge_client_ai_config(merged, ai_changes)
         return merged
 
     @contextmanager

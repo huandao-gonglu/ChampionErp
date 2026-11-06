@@ -18,6 +18,17 @@ from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_page_context import page_context_instructions
 from erp_web.schemas.ai_approval import AiToolApprovalMode
 from erp_web.services.ai_run_cancellation import check_cancellation
+from erp_web.services.operation_availability import operation_availability
+
+
+def _inbox_input(row):
+    messages = ModelMessagesTypeAdapter.validate_json(row["messages_json"])
+    origin = ""
+    for message in messages:
+        metadata = dict(message.metadata or {})
+        origin = metadata.pop("desktop_connection", "")
+        message.metadata = metadata
+    return messages, origin
 
 
 def annotate_run_error(messages: list[ModelMessage], run_id: str, error: dict[str, Any]) -> None:
@@ -71,6 +82,8 @@ class AgentRunStorage:
         self.version = version
         self.approval_mode_reader = approval_mode_reader
         self.consumed: set[int] = set()
+        self.desktop_connection = ""
+        self.resuming_tools: frozenset[str] = frozenset()
         self.lock = threading.RLock()
         self.target_draft_ids: tuple[str, ...] = store.selected_drafts(conversation_id)
         self.page_context = None
@@ -79,9 +92,23 @@ class AgentRunStorage:
             if "page_context" in metadata:
                 self.page_context = metadata["page_context"]
 
+    def resume_deferred(self, requests) -> None:
+        self.resuming_tools = frozenset(call.tool_name for call in (*requests.approvals, *requests.calls))
+        # 只有继续原有 Deferred 操作才恢复来源。新运行仅接受本轮收件箱提供的来源。
+        last_input = next(((m.metadata or {}) for m in reversed(self.history) if (m.metadata or {}).get("user_message_id")), {})
+        if last_input.get("desktop_input"):
+            self.desktop_connection = self.store.input_desktop_connection(self.conversation_id, last_input["user_message_id"])
+
     def context_instructions(self) -> str:
         """由原生动态 instructions 读取本轮背景，关闭时不复用旧页面。"""
-        return page_context_instructions(self.page_context)
+        from erp_web.context import get_context
+        availability = operation_availability(get_context().config.load_app_config(), connection_id=self.desktop_connection)
+        reason = availability["desktop_reason"]
+        platform = (f"本次操作没有可用的本机执行器。{reason} "
+                    "按链接采集可使用 HTTP 或已配置的 API；需要本机的步骤请说明原因。"
+                    if reason else "本次操作可以调用发起请求的桌面端。")
+        return "\n".join(filter(None, (page_context_instructions(self.page_context), platform,
+                                      *availability["blocked_use_cases"].values())))
 
     def code_failure_instructions(self, messages: list) -> str:
         """脚本异常后补充已有业务回执，避免把整段脚本当作从未执行。"""
@@ -132,10 +159,13 @@ class AgentRunStorage:
     def receive_at_boundary(self, ctx: RunContext) -> None:
         check_cancellation()
         with self.lock:
+            origins = {self.desktop_connection} if self.consumed else set()
+            received = []
             for row in self.store.inbox(self.conversation_id):
                 if row["sequence"] in self.consumed:
                     continue
-                messages = ModelMessagesTypeAdapter.validate_json(row["messages_json"])
+                messages, origin = _inbox_input(row)
+                origins.add(origin)
                 for message in messages:
                     message.run_id = ctx.run_id
                     message.conversation_id = self.conversation_id
@@ -145,11 +175,19 @@ class AgentRunStorage:
                         "page_context": self.page_context,
                     }
                 # 在模型节点开始前更新页面背景，用户消息由原生队列注入和编码。
-                ctx.enqueue(*messages)
+                received.extend(messages)
                 ids = tuple(json.loads(row["target_draft_ids"]))
                 if ids:
                     self.target_draft_ids = ids
                 self.consumed.add(row["sequence"])
+            if origins:
+                # 同批合并来自不同端的输入时，不能把其中一端的本机能力授予整批。
+                self.desktop_connection = origins.pop() if len(origins) == 1 else ""
+            if received:
+                if self.desktop_connection:
+                    # 历史只记该批输入允许引用来源；连接密钥留在服务端收件箱。
+                    received[-1].metadata["desktop_input"] = True
+                ctx.enqueue(*received)
 
     def checkpoint_inputs(self, ctx: RunContext) -> None:
         # 原生队列已把本批输入加入 ctx.messages，此时才将历史和收件状态一起提交。
@@ -237,7 +275,7 @@ class AgentRunStorage:
                 for row in self.store.inbox(self.conversation_id):
                     if row["sequence"] in self.consumed:
                         continue
-                    received = ModelMessagesTypeAdapter.validate_json(row["messages_json"])
+                    received, _ = _inbox_input(row)
                     for message in received:
                         message.run_id = run_id
                         message.conversation_id = self.conversation_id
@@ -272,6 +310,9 @@ class AgentRunStorage:
 
 async def receive_user_updates(ctx: RunContext, *, node: Any) -> Any:
     support = ctx.deps.tool_runtime.run_support
+    if support is not None and isinstance(node, ModelRequestNode):
+        # 原调用已经闭合；新模型请求重新应用当前来源的工具可见性。
+        support.resuming_tools = frozenset()
     if support is not None and isinstance(node, CallToolsNode):
         await asyncio.to_thread(support.checkpoint_response, ctx, node.model_response)
     # 带历史或 Deferred 的 UserPromptNode 也会提前准备工具。

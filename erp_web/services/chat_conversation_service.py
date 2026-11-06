@@ -1,7 +1,7 @@
 """网页与微信共用的输入接收和原生运行投递；不实现 Agent 循环或消息编码。"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
 import re
 from typing import Any
@@ -15,6 +15,7 @@ from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_ACTOR_ID, GLO
 from erp_web.stores.pydantic_message_store import PydanticMessageStoreError
 
 from .desktop_connection_service import current_desktop_connection, bind_desktop_connection
+from .operation_availability import model_platform_reason
 
 _logger = logging.getLogger(__name__)
 MAX_USER_TEXT_CHARS = 32000
@@ -41,12 +42,12 @@ class ChatConversationRun:
     conversation_id: str
     client_message_id: str
     _service: Any
-    desktop_connection: str = field(default_factory=current_desktop_connection)
 
     async def events(self):
         """原样传递 Factory 的原生事件，提交与取消仍由既有 owner 负责。"""
         service = self._service
-        with bind_desktop_connection(self.desktop_connection), bind_cancellation_token(service.run_registry.token(self.conversation_id)):
+        # 用户输入和原工具调用记录决定来源；后台线程、流连接或审批端都不能指定设备。
+        with bind_desktop_connection(""), bind_cancellation_token(service.run_registry.token(self.conversation_id)):
             try:
                 async with service.chat_service.open_chat_run(
                     conversation_id=self.conversation_id, client_message_id=self.client_message_id,
@@ -112,8 +113,14 @@ class ChatConversationService:
     def accept_input(self, conversation_id, message_id, messages, *, draft_ids=()):
         conversation_id = self._validate_conversation_id(conversation_id)
         self._verify_history_ownership(conversation_id)
+        reason = model_platform_reason(self.chat_service.app_config, GLOBAL_CHAT_PROFILE_ID)
+        if reason:
+            raise ChatConversationError(409, "OPERATION_UNAVAILABLE", reason)
         if self.run_registry.token(conversation_id).cancelled and self.run_registry.is_active(conversation_id):
             raise ChatConversationError(409, "AI_CHAT_STOPPING", "当前操作正在停止，请稍后发送。")
+        # 仅写入服务端收件箱；装配原生历史前移除连接标识。客户端 metadata 不能指定设备。
+        for message in messages:
+            message.metadata = {**(message.metadata or {}), "desktop_connection": current_desktop_connection()}
         self.call_store.accept_input(
             conversation_id, message_id, messages, draft_ids=draft_ids,
             profile_id=GLOBAL_CHAT_PROFILE_ID, actor_id=GLOBAL_CHAT_ACTOR_ID, tenant_id=GLOBAL_CHAT_TENANT_ID,

@@ -1,6 +1,29 @@
-/** 本机能力只由桌面 preload 声明，普通网页不探测服务器本机环境。 */
+import { shallowRef } from 'vue'
+import type { BackendOperationAvailability } from '@/types/workflow.generated'
+
+/** 识别桌面外壳；当前连接是否可执行由服务端判断。 */
 export function hasLocalOperations(): boolean {
   return window.championDesktop?.localOperations === true
+}
+
+const availability = shallowRef<BackendOperationAvailability | null>(null)
+export const OPERATION_AVAILABILITY_CHANGED = 'champion-operation-availability-changed'
+const pendingReason = shallowRef('正在确认当前端的可用操作…')
+
+export function setOperationAvailability(value: BackendOperationAvailability | null, message = '正在确认当前端的可用操作…') {
+  availability.value = value
+  pendingReason.value = message
+}
+
+export function desktopOperationReason(): string {
+  if (!hasLocalOperations()) return '当前操作需要本机执行器，请从桌面端发起。'
+  if (!availability.value) return pendingReason.value
+  return availability.value.desktop_reason ? '桌面连接不可用，请重新登录桌面端。' : ''
+}
+
+export function modelOperationReason(useCase: string): string {
+  if (!availability.value) return pendingReason.value
+  return availability.value.blocked_use_cases[useCase] || ''
 }
 
 const localFields = new Set(['command', 'profile', 'sandbox', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy'])
@@ -11,7 +34,7 @@ export async function prepareLocalModel(model: Record<string, unknown>): Promise
   const prepared = { ...model }
   const reference = String(model.local_connection_id || model.id || '')
   const fields = Object.fromEntries(Object.entries(model).filter(([key]) => localFields.has(key)).map(([key, value]) => [key, String(value ?? '')]))
-  if (hasLocalOperations() && window.championDesktop?.configureModels && Object.keys(fields).length) {
+  if (!desktopOperationReason() && window.championDesktop?.configureModels && Object.keys(fields).length) {
     const saved = await window.championDesktop.configureModels({ [reference]: fields })
     prepared.local_connection_id = reference
     prepared.local_config_fingerprint = saved.fingerprints[reference]

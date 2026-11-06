@@ -34,6 +34,7 @@ from erp_web.runtime_units.category_store import (
 )
 from erp_web.runtime_units.collect_capabilities import CollectCapabilityScope
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms, claim_products_to_markets
+from erp_web.runtime_units.collect_helpers import collect_platform_reason
 from erp_web.runtime_units.content_capabilities import ContentCapabilityScope
 from erp_web.runtime_units.copy_generation import generate_ai_copy_bundle
 from erp_web.runtime_units.draft_capabilities import DraftQueryCapabilityScope
@@ -77,6 +78,8 @@ from erp_web.ai_capability_composition import (
 from erp_web.services import collect_service, config_service, product_research_service
 from erp_web.services.ai_tool_catalog import AiToolBindingScope
 from erp_web.services.ai_tool_registry import AiToolSet
+from erp_web.services.desktop_connection_service import desktop_unavailable_reason
+from erp_web.services.operation_availability import model_platform_reason
 
 
 from erp_web.runtime_units.domain_job_readers import (
@@ -313,6 +316,28 @@ def build_global_chat_toolset(context: AppContext | None = None) -> AiToolSet:
         declared_permissions=global_chat_permissions(),
     )
 
+    # 声明业务工具与执行依赖的关系；工具搜索、直接调用和后台投递共用 binding。
+    model_dependencies = {
+        'image_translate': 'image.translate', 'image_edit': 'image.translate',
+        'text_translate': 'text.translate', 'copy_generate': 'copy.generate',
+        'copy_generate_batch': 'copy.generate', 'category_match': 'category.product_match',
+    }
+
+    def availability(name):
+        if name in model_dependencies:
+            return lambda _: model_platform_reason(active.config.load_app_config(), model_dependencies[name])
+        if name == 'collect_from_browser_tab':
+            return lambda _: desktop_unavailable_reason()
+        if name == 'collect_1688':
+            return lambda args: desktop_unavailable_reason() if args is not None and not str(args.get('text') or '').strip() else ''
+        if name in {'source_collect', 'collect_batch'}:
+            def collect_reason(args):
+                if args is None:
+                    return ''
+                return collect_platform_reason(args.get('mode') or 'browser', args.get('urls') or args.get('url'))
+            return collect_reason
+        return None
+
     def guarded(binding):
         @deadline_aware_tool_executor
         def execute(arguments, execution):
@@ -427,9 +452,10 @@ def build_global_chat_toolset(context: AppContext | None = None) -> AiToolSet:
         toolset_id=toolset.toolset_id,
         defer_loading=True,
         bindings={
-            name: guarded(binding)
-            if binding.definition.side_effect == "write"
-            else binding
+            name: replace(
+                guarded(binding) if binding.definition.side_effect == "write" else binding,
+                unavailable_reason=availability(name),
+            )
             for name, binding in toolset.bindings.items()
         },
     )

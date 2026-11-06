@@ -10,7 +10,8 @@ from erp_web.marketplace_registry import marketplace_spec
 from erp_web.services import config_service
 from erp_web.services.ai_model_config import SystemModelError
 from erp_web.services.approval_session import ApprovalSessionError
-from erp_web.services.desktop_connection_service import call_desktop
+from erp_web.services.desktop_connection_service import call_desktop, DesktopUnavailable
+from erp_web.schemas.requests import RequestValidationError
 from erp_web.services.listing_currency_service import (
     CurrencySelectionError,
     apply_currency_selection,
@@ -161,18 +162,11 @@ def save_ai_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
     app_dir = _app_dir()
     incoming = body.get("config") if isinstance(body.get("config"), dict) else body
     store = get_context().config
-    if store.managed_models is not None and "ai_models" in incoming:
-        try:
-            incoming = {**incoming, "ai_models": store.check_system_models(incoming["ai_models"])}
-        except SystemModelError as exc:
-            return {"ok": False, "error": str(exc)}, 403
     config_service.write_env_template(app_dir)
-    app_config = config_service.merge_ai_config(
-        app_dir,
-        load_app_config(),
-        incoming,
-    )
-    save_app_config(app_config)
+    try:
+        app_config = store.save_client_app_config(incoming, ai_only=True)
+    except SystemModelError as exc:
+        return {"ok": False, "error": str(exc)}, 403
     config_service.save_config_snapshot(app_dir, app_config)
     return {
         "ok": True,
@@ -199,6 +193,8 @@ def open_auth_link_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
         result = call_desktop("auth.open", {"url": str(body.get("url") or ""), "browser": str(body.get("browser") or "default")})
         return result, 200 if result.get("ok") else 400
+    except DesktopUnavailable as exc:
+        return {"ok": False, "error": str(exc), "error_code": exc.code}, 409
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 400
 
@@ -372,7 +368,7 @@ def _save_settings_payload_unlocked(
         if isinstance(incoming_app, dict) and incoming_app:
             # 授权偏好只允许专用受信入口修改，设置页的旧快照不能覆盖当前授权。
             incoming_app = {key: value for key, value in incoming_app.items() if key != "ai_tool_approval_mode"}
-            save_app_config(merge_app_config_fields(load_app_config(), incoming_app))
+            get_context().config.save_client_app_config(incoming_app)
         incoming_store = body.get("storeConfig")
         if isinstance(incoming_store, dict) and incoming_store:
             # 信任边界：只接受注册表凭据字段与非敏感静态字段；币种/授权
@@ -401,6 +397,8 @@ def _save_settings_payload_unlocked(
         }, 403
     except SystemModelError as exc:
         return {"ok": False, "error": str(exc)}, 403
+    except RequestValidationError:
+        raise
     except ValueError as exc:
         return {
             "ok": False,

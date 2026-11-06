@@ -120,7 +120,10 @@ def test_verification_request_validation_and_1688_waiting_http_status(monkeypatc
     with pytest.raises(RequestValidationError):
         validate_request_payload({'source_url': URL, 'browser_tab_id': {}}, endpoint='/api/collect-verification')
     monkeypatch.setattr(collect_facade, 'collect_1688_payload_service', lambda _: {'ok': False, 'status': 'waiting_verification'})
-    assert collect_facade.collect_1688_payload({'url': URL})[1] == 200
+    from erp_web.services.desktop_connection_service import bind_desktop_connection
+    connection = get_context().desktop_connections.connect()['connection_id']
+    with bind_desktop_connection(connection):
+        assert collect_facade.collect_1688_payload({'url': URL})[1] == 200
 
 
 @pytest.mark.parametrize('platform', ['1688', 'amazon'])

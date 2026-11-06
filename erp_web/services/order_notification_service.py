@@ -7,7 +7,7 @@ import re
 import secrets
 import threading
 import time
-from contextvars import copy_context
+from .desktop_connection_service import server_worker_context
 from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import urlsplit
@@ -60,7 +60,7 @@ class OrderNotificationService:
         if start_worker:
             for platform in PLATFORMS:
                 worker = threading.Thread(
-                    target=copy_context().run,
+                    target=server_worker_context().run,
                     args=(self._run, platform),
                     name=f"orders-{platform}",
                     daemon=True,

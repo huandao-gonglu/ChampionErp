@@ -12,6 +12,7 @@ from erp_web.marketplace_registry import MarketplaceSpec, marketplace_spec, plat
 from erp_web import marketplaces as publisher
 from erp_web.services import ai_gateway, ai_model_config
 from erp_web.services.config_service import public_store_config
+from erp_web.services.desktop_connection_service import DesktopUnavailable, desktop_unavailable_reason
 from erp_web.services.listing_currency_service import (
     apply_currency_discovery,
     public_currency_configuration,
@@ -110,9 +111,14 @@ def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]
 
 
 def test_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
+    model = _merge_saved_ai_model_config(model_config)
+    if ai_model_config.model_connection_type(model) != ai_model_config.CONNECTION_TYPE_API:
+        reason = desktop_unavailable_reason()
+        if reason:
+            raise DesktopUnavailable(reason)
     return ai_gateway.test_ai_model(
         get_context().paths.app_dir,
-        _merge_saved_ai_model_config(model_config),
+        model,
     )
 
 

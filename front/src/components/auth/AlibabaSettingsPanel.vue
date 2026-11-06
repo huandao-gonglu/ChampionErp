@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { fetchAlibabaAuthorization, startAlibabaAuthorization, completeAlibabaAuthorization, testAlibabaCrossborderProduct, testAlibabaOrder } from '@/api/alibabaAuthorization'
+import { desktopOperationReason } from '@/utils/desktop'
 import { openAuthLink } from '@/api/workflow/settings'
 import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generated'
 
@@ -27,6 +28,7 @@ function connect() {
   return run(async () => {
     callbackUrl.value = ''
     authUrl.value = (await startAlibabaAuthorization(props.crossborder)).url
+    if (desktopOperationReason()) return
     const result = await openAuthLink(authUrl.value)
     if (!result.ok) throw new Error(result.error || t('alibabaAuth.failed'))
   })

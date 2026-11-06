@@ -12,6 +12,7 @@ from erp_web.context import get_context
 from erp_web.facades.category_match_facade import match_category
 from erp_web.product_model import validate_category_precheck
 from erp_web.services.forbidden_category_service import forbidden_category_issue
+from erp_web.services.operation_availability import require_model_platform
 from erp_web.runtime_units.category_store import (
     fetch_category_attribute_page,
     fetch_category_attribute_values,
@@ -241,6 +242,7 @@ def category_match_payload(body: Payload) -> ResponseWithStatus:
     product, draft, target, error = load_category_match_subject(body)
     if error is not None:
         return error
+    require_model_platform(get_context().config.load_app_config(), "category.product_match")
     result = match_category(product, draft, target)
     return dict(result), 200
 

@@ -88,6 +88,16 @@ def test_full_collection_over_http_shares_backend_product_and_asset():
 
     try:
         connection = post('/api/desktop/connect', {})['connection_id']
+        def availability(headers):
+            with urllib.request.urlopen(urllib.request.Request(base + '/api/operation-availability', headers=headers)) as response:
+                return json.load(response)
+        assert availability(auth_headers)['desktop_reason']
+        assert not availability({**auth_headers, 'X-Champion-Desktop': connection})['desktop_reason']
+        browser_request = urllib.request.Request(base + '/api/desktop/connect', data=b'{}',
+            headers={**auth_headers, 'Content-Type': 'application/json', 'Origin': base, 'Sec-Fetch-Mode': 'cors'})
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(browser_request)
+        assert denied.value.code == 403 and json.load(denied.value)['error_code'] == 'DESKTOP_PROTOCOL_FORBIDDEN'
         with ThreadPoolExecutor(max_workers=1) as pool:
             worker = pool.submit(desktop, connection)
             result = post('/api/collect-from-browser-tab', {'product_url': URL, 'browser_tab_id': 'original'}, connection)

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { modelOperationReason } from '@/utils/desktop'
 import { computed, ref, watch } from 'vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { imageUrl, type SkuImageAssignment } from '@/utils/draftImages'
@@ -66,6 +67,8 @@ watch(results, values => {
     ? chosen.value.filter(key => values.some(value => value.page.key === key && value.asset))
     : values.filter(value => value.asset).map(value => value.page.key)
 }, { immediate: true })
+const planReason = computed(() => modelOperationReason('image.plan'))
+const generateReason = computed(() => modelOperationReason('image.translate'))
 function newPlan() {
   planningNew.value = true; plan.value = null
   sourceIds.value = [...props.referenceIds].slice(0, 12)
@@ -96,13 +99,15 @@ function applySelection() {
 <template>
   <WorkspaceDialog :open="open" title="生成套图" variant="drawer" width="64rem" @close="emit('close')">
     <div v-if="open" class="space-y-5" data-testid="image-set-dialog">
+      <p v-if="planReason" role="status" class="muted">{{ planReason }}</p>
+      <p v-if="generateReason && generateReason !== planReason" role="status" class="muted">{{ generateReason }}</p>
       <p class="muted">共用套图与 SKU 图统一风格，生成后预览并选择采用。SKU 图只写回对应规格，不加入共用图集。</p>
       <p v-if="controller.notice.value" role="status" class="rounded-lg bg-slate-100 p-3 text-sm dark:bg-dark-800">{{ controller.notice.value }}</p>
       <button v-if="planningNew && batch?.image_set" class="btn btn-outline" type="button" :disabled="busy" @click="planningNew = false">返回上次套图</button>
       <template v-if="resultPlan">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <p role="status" class="text-sm">{{ batch?.terminal ? '生成结束' : '正在生成套图' }} · {{ batch?.completed }} / {{ batch?.total }} 张<span v-if="batch?.failed"> · {{ batch.failed }} 张未完成</span></p>
-          <button class="btn btn-outline" type="button" :disabled="busy" @click="newPlan">规划新套图</button>
+          <button class="btn btn-outline" type="button" :disabled="busy || !!planReason" @click="newPlan">规划新套图</button>
         </div>
         <p class="text-sm">统一风格：{{ resultPlan.style }}</p>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -116,7 +121,7 @@ function applySelection() {
               <label v-if="result.asset" class="mr-auto flex items-center gap-2 text-sm"><input type="checkbox" :checked="chosen.includes(result.page.key)" :disabled="busy" :aria-label="`采用 ${result.page.title}`" @change="toggle(result.page.key, ($event.target as HTMLInputElement).checked)" />采用</label>
               <button v-if="result.asset && chosen.includes(result.page.key) && result.page.scope !== 'sku'" class="btn btn-outline px-2" type="button" :disabled="busy || commonOrder.indexOf(result.page.key) === 0" :aria-label="`前移 ${result.page.title}`" @click="move(result.page.key, -1)">←</button>
               <button v-if="result.asset && chosen.includes(result.page.key) && result.page.scope !== 'sku'" class="btn btn-outline px-2" type="button" :disabled="busy || commonOrder.indexOf(result.page.key) === commonOrder.length - 1" :aria-label="`后移 ${result.page.title}`" @click="move(result.page.key, 1)">→</button>
-              <button class="btn btn-outline" type="button" :disabled="busy" :aria-label="`重做 ${result.page.title}`" @click="controller.generateSet(undefined, draft.updatedAt, [result.page.key])">重做此图</button>
+              <button class="btn btn-outline" type="button" :disabled="busy || !!generateReason" :aria-label="`重做 ${result.page.title}`" @click="controller.generateSet(undefined, draft.updatedAt, [result.page.key])">重做此图</button>
             </div>
           </article>
         </div>
@@ -132,7 +137,7 @@ function applySelection() {
           <div class="flex flex-wrap gap-2"><img v-for="id in page.source_image_ids" :key="id" :src="byId.has(id) ? imageUrl(byId.get(id)!) : ''" alt="本页参考素材" class="h-16 w-16 rounded object-contain" /></div>
         </article>
         <p class="muted">生成 {{ plan.pages.length }} 张新图（共用 {{ plan.pages.filter(page => page.scope !== 'sku').length }} 张，SKU {{ plan.pages.filter(page => page.scope === 'sku').length }} 张），不立即替换当前草稿图片。</p>
-        <div class="flex justify-end gap-3"><button class="btn btn-outline" type="button" :disabled="busy" @click="plan = null">返回调整</button><button class="btn btn-primary" type="submit" :disabled="busy">{{ busy ? '正在提交…' : `开始生成 ${plan.pages.length} 张` }}</button></div>
+        <div class="flex justify-end gap-3"><button class="btn btn-outline" type="button" :disabled="busy" @click="plan = null">返回调整</button><button class="btn btn-primary" type="submit" :disabled="busy || !!generateReason">{{ busy ? '正在提交…' : `开始生成 ${plan.pages.length} 张` }}</button></div>
       </form>
       <form v-else class="space-y-5" @submit.prevent="prepare">
         <fieldset :disabled="busy" class="space-y-5">
@@ -154,7 +159,7 @@ function applySelection() {
           </div>
           <label class="block text-sm font-medium">补充要求（可选）<textarea v-model="prompt" class="input mt-2" rows="3" maxlength="4000" placeholder="例如：简洁明亮的风格，重点展示收纳方式和材质细节。" /></label>
           <p class="muted">目标语言：{{ draft.language }}。预计生成 {{ count + skuSourceIds.length }} 张图片。先规划共用套图，再按同一风格设计各 SKU 图，可在生成前调整方案。</p>
-          <div class="flex justify-end"><button type="submit" class="btn btn-primary" :disabled="busy || !sourceIds.length || sourceIds.length > 12">{{ busy ? '正在规划…' : '自动规划套图' }}</button></div>
+          <div class="flex justify-end"><button type="submit" class="btn btn-primary" :disabled="busy || !!planReason || !sourceIds.length || sourceIds.length > 12">{{ busy ? '正在规划…' : '自动规划套图' }}</button></div>
         </fieldset>
       </form>
     </div>
