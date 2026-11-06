@@ -4,7 +4,7 @@ import httpx
 from erp_web.schemas.accounts import AccountError
 
 
-_PATHS = frozenset({"/api/internal/erp/flow", "/api/internal/erp/authorize", "/api/internal/erp/sync"})
+_PATHS = frozenset({"/api/internal/erp/flow", "/api/internal/erp/authorize", "/api/internal/erp/sync", "/api/internal/erp/model-key"})
 
 
 def post_newapi(base_url, secret, path, body):

@@ -158,8 +158,12 @@ def _app_dir():
 
 def save_ai_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
     app_dir = _app_dir()
-    config_service.write_env_template(app_dir)
     incoming = body.get("config") if isinstance(body.get("config"), dict) else body
+    if get_context().config.managed_models is not None:
+        if "ai_models" in incoming:
+            return {"ok": False, "error": "AI 模型及连接凭据由服务器管理。"}, 403
+    else:
+        config_service.write_env_template(app_dir)
     app_config = config_service.merge_ai_config(
         app_dir,
         load_app_config(),

@@ -213,7 +213,8 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
     cfg = app_config if isinstance(app_config, dict) else {}
     public = ai_model_config.public_ai_config(cfg)
     from .desktop_model_config_service import local_models_view
-    public['ai_models'] = local_models_view(public['ai_models'])
+    if not public['models_managed']:
+        public['ai_models'] = local_models_view(public['ai_models'])
     # 1688 应用与买家授权通过独立入口管理，不进入通用配置视图。
     public.pop("1688_api", None)
     public["ai_use_case_prompts"] = ai_prompt_templates.public_ai_use_case_prompts(app_dir, cfg)

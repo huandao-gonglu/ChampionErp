@@ -254,6 +254,25 @@ def default_ai_models() -> list[dict[str, Any]]:
     ]
 
 
+MANAGED_KEY_SOURCE = "ERP_ACCOUNT_NEWAPI"
+
+
+def managed_newapi_models(internal_url: str) -> list[dict[str, Any]]:
+    common = {
+        "connection_type": CONNECTION_TYPE_API,
+        "provider_id": ai_provider_catalog.PROVIDER_ID_OPENAI,
+        "api_style": API_STYLE_OPENAI_COMPATIBLE,
+        "base_url": internal_url + "/v1",
+        "api_key_env": MANAGED_KEY_SOURCE,
+    }
+    return normalize_ai_models([
+        {**common, "id": "default_text", "name": "dsflash", "model": "deepseek-flash",
+         "capabilities": [CAP_CHAT, CAP_JSON, CAP_TOOL_CALLING]},
+        {**common, "id": "default_image", "name": "qwenflash", "model": "qwen-image-3.0",
+         "capabilities": [CAP_IMAGE_GENERATE, CAP_IMAGE_EDIT]},
+    ])
+
+
 def browser_model_presets() -> list[AiBrowserPreset]:
     """可重复添加的网页连接模板，不包含用户登录、代理或能力测试结果。"""
     return [{
@@ -487,6 +506,12 @@ def ai_use_case_binding(app_config: dict[str, Any] | None, use_case_id: str) -> 
 
 
 def model_api_key(model: dict[str, Any]) -> str:
+    from erp_web.context import bound_context
+    context = bound_context()
+    if model.get("api_key_env") == MANAGED_KEY_SOURCE or (context and context.model_key is not None):
+        if not context or not context.model_key or normalize_ai_model(model) not in context.config.managed_models:
+            raise ValueError("该模型不属于当前账号的 New API 配置。")
+        return context.model_key()
     api_key = str(model.get("api_key") or "").strip()
     if api_key:
         return api_key
@@ -694,14 +719,21 @@ def validate_ai_model_request_overrides(
 def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
     config = app_config if isinstance(app_config, dict) else {}
     models: list[dict[str, Any]] = []
-    for model in normalize_ai_models(config.get("ai_models")):
+    normalized = normalize_ai_models(config.get("ai_models"))
+    for model in normalized:
         public = dict(model)
         public["generation_capabilities"] = ai_generation_settings.generation_capabilities(model)
-        public["api_key_configured"] = bool(model_api_key(model))
-        public["api_key_masked"] = mask_secret(model_api_key(model))
+        managed = model.get("api_key_env") == MANAGED_KEY_SOURCE
+        key = "" if managed else model_api_key(model)
+        public["api_key_configured"] = managed or bool(key)
+        public["api_key_masked"] = mask_secret(key)
+        if managed:
+            for field in ("base_url", "base_url_env", "api_key_env", "model_env"):
+                public.pop(field, None)
         public.pop("api_key", None)
         models.append(public)
     return {
+        "models_managed": all(m.get("api_key_env") == MANAGED_KEY_SOURCE for m in normalized),
         "ai_models": models,
         "ai_use_case_bindings": normalize_ai_use_case_bindings(config.get("ai_use_case_bindings")),
         "ai_use_cases": list(AI_USE_CASES.values()),

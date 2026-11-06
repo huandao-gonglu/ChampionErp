@@ -416,6 +416,7 @@ class ConfigStore:
     """配置与授权的统一入口；秘密及授权态只存主库，JSON 保存应用静态设置。"""
 
     def __init__(self, paths: AppPaths, db: ErpDatabase) -> None:
+        self.managed_models: list[dict[str, Any]] | None = None
         self._app_config_path = paths.app_config_path
         self._store_config_path = paths.store_config_path
         self._db = db
@@ -566,7 +567,13 @@ class ConfigStore:
 
     def load_app_config(self) -> dict[str, Any]:
         with self._save_lock:
-            return self._load_app_config_unlocked()
+            config = self._load_app_config_unlocked()
+            if self.managed_models is not None:
+                config["ai_models"] = deepcopy(self.managed_models)
+                # 旧绑定按功能所需能力重新选择；提示词、超时和生成参数继续生效。
+                for binding in config["ai_use_case_bindings"].values():
+                    binding.pop("model_id", None)
+            return config
 
     def _load_app_config_unlocked(self) -> dict[str, Any]:
         if self._app_config_path.exists():
@@ -613,6 +620,11 @@ class ConfigStore:
                 self.ai_tool_approval_mode() if approval_mode is None
                 else normalize_ai_tool_approval_mode(approval_mode)
             )}
+            if self.managed_models is not None:
+                if config.get("ai_models", self.managed_models) != self.managed_models:
+                    raise ValueError("AI 模型由服务器管理。")
+                # 写其他设置时保留历史模型及其数据库凭据。
+                config["ai_models"] = self._load_app_config_unlocked()["ai_models"]
             config = self.normalize_app_config(config)
             hosting = config["image_hosting"]
             if hosting["default_profile_id"]:
@@ -690,6 +702,8 @@ class ConfigStore:
         incoming = incoming if isinstance(incoming, dict) else {}
         allowed_keys = set(self.default_app_config()) | set(app_config_runtime.PRESERVED_APP_CONFIG_KEYS)
         for key, value in incoming.items():
+            if key == "ai_models" and self.managed_models is not None:
+                continue
             if key in {"1688_api", "system_settings", "pricing_templates", "yandex_warehouses", "forbidden_categories"}:
                 # 专用入口维护这些配置，避免授权页的旧快照覆盖最新设置。
                 continue

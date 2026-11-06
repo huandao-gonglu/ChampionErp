@@ -1,4 +1,4 @@
-"""固定 New API 服务的账号交接与可重试撤销；不管理模型 Key 或账务。"""
+"""固定 New API 服务的账号交接与可重试撤销与账号专属模型凭据。"""
 import os
 import re
 import hashlib
@@ -40,6 +40,13 @@ class NewAPIBridge:
         if not self.configured:
             raise AccountError("New API 尚未配置。", status_code=503)
         return post_newapi(self.internal_url, self.secret, path, body)
+
+    def model_key(self, user_id, display_name):
+        result = self.call("/api/internal/erp/model-key", {"user_id": user_id, "display_name": display_name})
+        key = result.get("key")
+        if not isinstance(key, str) or not key.startswith("sk-erp.v1."):
+            raise AccountError("New API 返回的账号凭据无效。", status_code=502)
+        return key
 
     def flow(self, code):
         if not isinstance(code, str) or re.fullmatch(r"[A-Z0-9]{12}", code) is None:

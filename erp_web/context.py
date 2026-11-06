@@ -135,6 +135,7 @@ class AppContext:
         self.paths = paths
         self.db = db
         self.user_id = ""
+        self.model_key = None
         self.allow_environment_credentials = True
         self.account_store = None
         # A lazy service may depend on another lazy service while it is being
@@ -561,6 +562,11 @@ def get_context() -> AppContext:
                 context = build_default_context()
                 _context = context
     return context
+
+
+def bound_context() -> AppContext | None:
+    """账号凭据只使用显式绑定的请求或后台任务上下文。"""
+    return _request_context.get()
 
 
 def peek_context() -> AppContext | None:

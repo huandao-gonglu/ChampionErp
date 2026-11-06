@@ -214,6 +214,8 @@ def _model_config_from_body(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_ai_model_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    if get_context().config.managed_models is not None:
+        return {"ok": False, "error": "AI 模型及连接凭据由服务器管理。"}, 403
     model_config = _model_config_from_body(body)
     try:
         return test_ai_model_config(model_config), 200

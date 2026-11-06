@@ -173,11 +173,49 @@ def test_two_users_have_concurrent_independent_business_files_and_config(account
     monkeypatch.setenv("OPENAI_API_KEY", "admin-only-secret")
     for context in contexts:
         with bind_context(context):
-            assert ai_model_config.model_api_key({"api_key_env": "OPENAI_API_KEY"}) == ""
-            assert ai_model_config.model_api_key({"api_key": "own-key"}) == "own-key"
+            for override in ({"api_key_env": "OPENAI_API_KEY"}, {"api_key": "own-key"}):
+                with pytest.raises(ValueError, match="当前账号"):
+                    ai_model_config.model_api_key(override)
             with pytest.raises(ValueError, match="当前账号"):
                 ai_prompt_templates.write_prompt_json(context.paths.app_dir, str(runtime.root.paths.config_dir / "stolen.json"), system="越界")
     assert runtime.context_for(runtime.store.admin()).paths.app_dir == runtime.root.paths.app_dir
+
+
+def test_fixed_models_use_only_current_account_credentials(accounts_http, monkeypatch):
+    url, runtime, login = accounts_http
+    monkeypatch.setattr(runtime.newapi, "internal_url", "http://127.0.0.1:3000")
+    calls = []
+    def issue(user_id, name):
+        calls.append(user_id)
+        return "sk-erp.v1.test-" + user_id
+    monkeypatch.setattr(runtime.newapi, "model_key", issue)
+    for email in ("admin@example.com", "client@example.com"):
+        if email.startswith("client"):
+            register(url, email)
+        client = login(email)
+        user = runtime.store.by_email(email)
+        context = runtime.context_for(user)
+        public = client.get(url + "/api/ai-config").json()["config"]
+        assert public["models_managed"] and [m["name"] for m in public["ai_models"]] == ["dsflash", "qwenflash"]
+        assert all("api_key" not in m and "api_key_env" not in m for m in public["ai_models"])
+        for models in ([], [{"id": "default_text", "api_key": "custom", "base_url": "https://example.org"}]):
+            assert client.post(url + "/api/ai-config/save", json={"config": {"ai_models": models}}).status_code == 403
+        assert client.post(url + "/api/test-ai-model", json={"model": {"id":"default_text"}}).status_code == 403
+        assert client.post(url + "/api/ai-config/save", json={"config": {"ai_use_case_bindings": {"image.translate": {"timeout_override_seconds": 90}}}}).status_code == 200
+        assert not calls
+        with bind_context(context):
+            cfg = context.config.load_app_config()
+            for use_case, name in (("global.chat", "deepseek-flash"), ("image.translate", "qwen-image-3.0")):
+                model = ai_model_config.resolve_ai_model(cfg, use_case)
+                assert model["model"] == name and model["base_url"] == "http://127.0.0.1:3000/v1"
+                assert model["api_style"] == "openai_compatible"
+                assert ai_model_config.model_api_key(model) == "sk-erp.v1.test-" + user["id"]
+                with pytest.raises(ValueError, match="当前账号"):
+                    ai_model_config.model_api_key({**model, "base_url": "https://example.org/v1"})
+        assert calls == [user["id"], user["id"]]
+        calls.clear()
+        with pytest.raises(ValueError, match="当前账号"):
+            ai_model_config.model_api_key(model)
 
 
 def test_desktop_connection_is_bound_to_user_and_session(accounts_http):

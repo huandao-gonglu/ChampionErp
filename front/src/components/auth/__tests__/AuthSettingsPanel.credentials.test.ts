@@ -47,6 +47,22 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
   })
 }
 
+it('账号模型仅展示文本和图片，不提供配置或删除操作', () => {
+  const wrapper = mountPanel({
+    models_managed: true,
+    ai_models: [
+      { id: 'default_text', name: 'dsflash', model: 'deepseek-flash', capabilities: ['chat'] },
+      { id: 'default_image', name: 'qwenflash', model: 'qwen-image-3.0', capabilities: ['image_edit'] },
+    ],
+  })
+  const list = wrapper.get('dl')
+  expect(list.text()).toContain('dsflash')
+  expect(list.text()).toContain('qwenflash')
+  expect(list.findAll('dd')).toHaveLength(2)
+  expect(wrapper.text()).not.toContain('添加模型')
+  expect(wrapper.find('input[placeholder="API Key"]').exists()).toBe(false)
+})
+
 describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
   beforeEach(() => vi.stubGlobal('championDesktop', { localOperations: true }))
   afterEach(() => vi.unstubAllGlobals())

@@ -1,6 +1,7 @@
 """共享账号服务、个人业务上下文与领域恢复的进程组合根。"""
 from __future__ import annotations
 
+from functools import partial
 import logging
 from pathlib import Path
 from threading import Event, RLock, Thread
@@ -11,6 +12,7 @@ from erp_web.context import AppContext, AppPaths, bind_context
 from erp_web.db import ErpDatabase
 from erp_web.stores.account_store import AccountStore
 from erp_web.services.account_service import AccountService
+from erp_web.services.ai_model_config import managed_newapi_models
 from erp_web.services.newapi_bridge import NewAPIBridge
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,8 @@ class AccountRuntime:
                 context.user_id = user["id"]
                 context.allow_environment_credentials = workspace == "."
                 context.account_store = self.store
+                context.config.managed_models = managed_newapi_models(self.newapi.internal_url)
+                context.model_key = partial(self.newapi.model_key, user["id"], user["display_name"])
                 self._contexts[user["id"]] = context
             return context
 

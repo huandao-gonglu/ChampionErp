@@ -600,7 +600,7 @@ function useCaseBindingGenerationPayload(binding: UnknownRecord): UnknownRecord 
 
 function aiPayload(): UnknownRecord {
   return {
-    ai_models: aiModels.value.map((model, index) => {
+    ...(props.aiConfig.models_managed ? {} : { ai_models: aiModels.value.map((model, index) => {
       const row = normalizeAiModelRow(model, index)
       delete row.provider_family
       const copySourceId = firstText(model.copy_source_id)
@@ -667,7 +667,7 @@ function aiPayload(): UnknownRecord {
         for (const key of ['command', 'profile', 'sandbox', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy']) delete row[key]
       }
       return row
-    }),
+    }) }),
     ai_use_case_bindings: Object.fromEntries(
       Object.entries(aiUseCaseBindings.value)
         .filter(([useCaseId]) => globalPromptUseCases.value.some((useCase) => String(useCase.id || '') === useCaseId))
@@ -1806,7 +1806,17 @@ function copy(text: string) {
       </nav>
 
       <div class="mt-5">
-        <section v-show="activeAuthSettingsTab === 'ai_models'" class="relative rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+        <section v-if="props.aiConfig.models_managed" v-show="activeAuthSettingsTab === 'ai_models'" class="rounded-lg border border-accent-200 p-4 dark:border-dark-700">
+          <h3 class="font-semibold">AI 模型</h3>
+          <p class="mt-1 text-sm text-accent-500">模型调用使用当前账号的 New API 额度。</p>
+          <dl class="mt-4 grid gap-3">
+            <div v-for="model in aiModels" :key="String(model.id)" class="flex items-baseline gap-3">
+              <dt>{{ model.id === 'default_text' ? '文本模型' : '图片模型' }}</dt>
+              <dd><strong>{{ model.name }}</strong> · {{ model.model }}</dd>
+            </div>
+          </dl>
+        </section>
+        <section v-else v-show="activeAuthSettingsTab === 'ai_models'" class="relative rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
           <div v-if="aiControlsLocked" class="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-slate-950/15 p-4 backdrop-blur-sm dark:bg-slate-950/45">
             <div class="flex min-w-64 flex-col items-center rounded-lg border border-accent-200 bg-white px-6 py-5 text-center shadow-lg dark:border-dark-700 dark:bg-dark-900">
               <span class="size-8 animate-spin rounded-full border-4 border-primary-100 border-t-primary-600 dark:border-primary-500/20 dark:border-t-primary-300"></span>
@@ -2087,7 +2097,7 @@ function copy(text: string) {
               </div>
               <label class="mt-3 block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                <select class="input" :value="useCaseBindingField(String(useCase.id || ''), 'model_id')" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
+                <select class="input" :disabled="Boolean(props.aiConfig.models_managed)" :value="useCaseBindingField(String(useCase.id || ''), 'model_id')" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
                   <option value="">自动匹配</option>
                   <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
                 </select>
