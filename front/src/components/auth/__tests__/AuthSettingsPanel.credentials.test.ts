@@ -47,6 +47,14 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
   })
 }
 
+it('仅模型读取显示正在读取模型，其他工作台加载不会误报模型检测', async () => {
+  const wrapper = mountPanel()
+  await wrapper.setProps({ loading: true })
+  expect(wrapper.text()).not.toContain('正在读取模型')
+  await wrapper.setProps({ modelsReading: true })
+  expect(wrapper.get('[role="status"]').text()).toBe('正在读取模型')
+})
+
 it('同一列表中仅系统模型保护连接与删除，个人模型可以编辑、保存和删除', async () => {
   const wrapper = mountPanel({
     ai_models: [

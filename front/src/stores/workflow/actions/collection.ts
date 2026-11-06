@@ -138,7 +138,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
       storeConfig.value = state.storeConfig
       storeAuthSummary.value = state.storeAuthSummary
       mercadolibreAuthChecklist.value = state.mercadolibreAuthChecklist || null
-      aiConfig.value = publicAppConfig
+      if (!Array.isArray(aiConfig.value.ai_use_cases)) aiConfig.value = publicAppConfig
       fillFormFromState(publicAppConfig, state.outputDir)
       syncCollectDiagnosticsFromProduct('后端状态已加载。')
       syncPricingInputFromProduct()

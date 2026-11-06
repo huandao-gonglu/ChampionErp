@@ -77,6 +77,8 @@ const {
 const {
   appConfig,
   aiConfig,
+  modelsReading,
+  modelsSaving,
   storeConfig,
   storeAuthSummary,
   mercadolibreAuthChecklist,
@@ -365,9 +367,12 @@ function warnUnsavedImages(event: BeforeUnloadEvent) {
 onMounted(async () => {
   window.addEventListener('beforeunload', warnUnsavedImages)
   window.addEventListener('focus', checkDraftUpdates)
+  const initialTab = activeNav.value
+  const modelLoad = initialTab === 'auth' ? refreshDomainForNav(initialTab) : undefined
   await store.loadState()
   initialStateLoaded = true
-  await refreshDomainForNav(activeNav.value)
+  if (activeNav.value === 'auth' && modelLoad) await modelLoad
+  else await refreshDomainForNav(activeNav.value)
 })
 
 onActivated(() => {
@@ -508,6 +513,8 @@ watch(
             <AuthSettingsPanel
               :app-config="appConfig"
               :ai-config="aiConfig"
+              :models-reading="modelsReading"
+              :models-saving="modelsSaving"
               :store-config="storeConfig"
               :store-auth-summary="storeAuthSummary"
               :platform-options="platformOptions"

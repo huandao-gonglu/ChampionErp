@@ -180,6 +180,21 @@ describe('workflow store live API flow', () => {
     vi.clearAllMocks()
   })
 
+  it('进入授权页合并并发读取，一分钟内重用配置，过期后重新读取', async () => {
+    const store = useWorkflowStore()
+    const fetch = vi.mocked(settingsApi.fetchAiConfig)
+    fetch.mockResolvedValue({ raw: { ai_models: [], ai_use_cases: [] } })
+    const now = vi.spyOn(Date, 'now').mockReturnValue(120000)
+    try {
+      await Promise.all([store.hydrateTab('auth'), store.hydrateTab('auth')])
+      await store.hydrateTab('auth')
+      expect(fetch).toHaveBeenCalledTimes(1)
+      now.mockReturnValue(180001)
+      await store.hydrateTab('auth')
+      expect(fetch).toHaveBeenCalledTimes(2)
+    } finally { now.mockRestore() }
+  })
+
   it('三个目标市场完整展开，用统一按钮全部预检，失败可单独重试', async () => {
     const store = useWorkflowStore()
     store.currentDraft = multiMarketCategoryDraft()

@@ -30,6 +30,8 @@ const props = defineProps<{
   lastResult: AuthResult | null
   authLink: string
   loading: boolean
+  modelsReading?: boolean
+  modelsSaving?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -585,8 +587,12 @@ const selectedModelListReady = computed(() => Boolean(
   && (selectedSystemModel.value || String(selectedAiModel.value.base_url || selectedAiModel.value.base_url_env || '').trim())
   && (String(selectedAiModel.value.api_key || '').trim() || selectedAiModel.value.api_key_configured),
 ))
-const aiControlsLocked = computed(() => props.loading || aiRequestPending.value)
-const aiBlockingMessage = computed(() => aiRequestMessage.value || '正在检测 AI 配置，请稍候')
+const aiControlsLocked = computed(() => props.modelsReading || props.modelsSaving || aiRequestPending.value)
+const modelStatus = computed(() => {
+  if (aiRequestPending.value) return aiRequestMessage.value
+  if (props.modelsSaving) return '正在保存模型设置'
+  return props.modelsReading ? '正在读取模型' : ''
+})
 const selectedAiModelImageCapable = computed(() => modelHasImageCapability(selectedAiModel.value))
 const exchangeRateReady = computed(() => Boolean(form.exchangeRateApiUrl.trim()))
 const exchangeRateHint = computed(() => props.loading ? '正在处理，请稍候' : '请填写汇率 API URL')
@@ -1824,18 +1830,10 @@ function copy(text: string) {
 
       <div class="mt-5">
         <section v-show="activeAuthSettingsTab === 'ai_models'" class="relative rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-          <div v-if="aiControlsLocked" class="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-slate-950/15 p-4 backdrop-blur-sm dark:bg-slate-950/45">
-            <div class="flex min-w-64 flex-col items-center rounded-lg border border-accent-200 bg-white px-6 py-5 text-center shadow-lg dark:border-dark-700 dark:bg-dark-900">
-              <span class="size-8 animate-spin rounded-full border-4 border-primary-100 border-t-primary-600 dark:border-primary-500/20 dark:border-t-primary-300"></span>
-              <span class="mt-3 text-sm font-semibold text-accent-900 dark:text-accent-100">{{ aiBlockingMessage }}</span>
-              <span class="mt-1 text-xs text-accent-500 dark:text-accent-400">请稍候，当前配置区已锁定</span>
-            </div>
-          </div>
-
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 class="font-semibold text-accent-950 dark:text-white">AI Provider / 模型</h3>
-              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">{{ aiModels.length }} 个模型，维护连接、模型名和能力。</p>
+              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400" role="status">{{ modelStatus || `${aiModels.length} 个模型，维护连接、模型名和能力。` }}</p>
             </div>
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>

@@ -95,21 +95,31 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
 
   const activity = useWorkflowActivityStore()
 
-  async function loadAiConfig() {
-    activity.loading = true
+  const modelsReading = ref(false)
+  const modelsSaving = ref(false)
+  let modelRead: Promise<void> | undefined
+  let modelsLoadedAt = 0
+
+  function loadAiConfig() {
+    if (modelRead) return modelRead
+    if (modelsLoadedAt && Date.now() - modelsLoadedAt < 60_000 && Array.isArray(aiConfig.value.ai_use_cases)) return
+    modelsReading.value = true
     activity.setError('')
-    try {
-      const result = await fetchAiConfig()
+    modelRead = fetchAiConfig().then(result => {
       aiConfig.value = sanitizePublicAppConfig(result.raw)
+      modelsLoadedAt = Date.now()
       activity.addLog('AI 配置已读取。')
-    } catch (exc) {
+    }).catch(exc => {
       activity.setError(exc instanceof Error ? exc.message : '读取 AI 配置失败')
-    } finally {
-      activity.loading = false
-    }
+    }).finally(() => {
+      modelsReading.value = false
+      modelRead = undefined
+    })
+    return modelRead
   }
 
   async function saveAiSettings(config: UnknownRecord) {
+    modelsSaving.value = true
     activity.loading = true
     activity.setError('')
     try {
@@ -121,6 +131,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     } catch (exc) {
       activity.setError(exc instanceof Error ? exc.message : '保存平台授权设置失败')
     } finally {
+      modelsSaving.value = false
       activity.loading = false
     }
   }
@@ -400,6 +411,8 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     mercadolibreAuthChecklist,
     lastAuthResult,
     authLink,
+    modelsReading,
+    modelsSaving,
     loadAiConfig,
     saveAiSettings,
     testAiSettings,
