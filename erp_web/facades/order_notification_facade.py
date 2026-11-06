@@ -32,6 +32,7 @@ def create_order_notification_service(context, *, start_worker=True):
         store,
         context.config.load_store_config,
         config_store=context.config,
+        owner_id=context.user_id,
         adapters={
             "mercadolibre": MercadoLibreOrderAdapter,
             "ozon": OzonOrderAdapter,

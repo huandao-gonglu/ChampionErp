@@ -4,6 +4,7 @@ import { saveDraft, uploadImages } from '@/api/workflow/catalog'
 import type { DraftMutationResponse, ProductMutationResponse } from '@/api/workflow/normalizers'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import type { DraftDetail, DraftImageRef, Product } from '@/types/workflow'
+import { businessStorageKey } from '@/utils/accountTransport'
 
 export interface ImageSnapshot { images: DraftImageRef[]; skus: Array<[string, string | null]> }
 interface ImageOperation { label: string; before: ImageSnapshot; after: ImageSnapshot }
@@ -52,7 +53,8 @@ export function useDraftImageWorkbench(options: {
   const busy = computed(() => checking.value || saving.value || Boolean(pending.value) || Boolean(batch.value && (!batch.value.terminal || unknown.value)))
   const undoLabel = computed(() => past.value.at(-1)?.label || '')
   const redoLabel = computed(() => future.value.at(-1)?.label || '')
-  const key = (id: string) => `draft-image-request:${id}`
+  const storagePrefix = businessStorageKey('draft-image-request')
+  const key = (id: string) => `${storagePrefix}:${id}`
   function remember(id: string, value: string) {
     try { if (value) localStorage.setItem(key(id), value); else localStorage.removeItem(key(id)) } catch { /* 后端仍按草稿恢复任务。 */ }
   }

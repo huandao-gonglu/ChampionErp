@@ -292,15 +292,18 @@ def test_http_detail_source_and_purchase_contract(domain):
     service, order, key = domain
     get_context()._order_procurement = service
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    from tests.account_test_utils import authenticated_headers
+    client = requests.Session()
+    client.headers.update(authenticated_headers(server))
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_port}/api/orders"
     try:
-        response = requests.get(
+        response = client.get(
             url + "/detail", params={"order_id": order.identity}, timeout=3
         )
         assert response.status_code == 200
-        response = requests.post(
+        response = client.post(
             url + "/select-source",
             json={
                 "order_id": order.identity,
@@ -311,7 +314,7 @@ def test_http_detail_source_and_purchase_contract(domain):
             timeout=3,
         )
         assert response.status_code == 200
-        response = requests.post(
+        response = client.post(
             url + "/record-purchase", json=purchase_body(order, key), timeout=3
         )
         assert (
@@ -319,7 +322,7 @@ def test_http_detail_source_and_purchase_contract(domain):
             and response.json()["lines"][0]["purchased_quantity"] == 1
         )
         assert (
-            requests.post(
+            client.post(
                 url + "/record-purchase",
                 json={"order_id": order.identity, "quantity": -1},
                 timeout=3,
@@ -327,7 +330,7 @@ def test_http_detail_source_and_purchase_contract(domain):
             == 400
         )
         assert (
-            requests.get(
+            client.get(
                 url + "/detail", params={"order_id": "not-owned"}, timeout=3
             ).status_code
             == 400

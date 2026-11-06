@@ -92,7 +92,8 @@ def _resolve_local_image_ref(value: str, app_dir: Path | None = None) -> Path | 
     candidate = Path(value)
     if not candidate.is_absolute():
         candidate = (app_dir or _runtime_paths().app_dir) / candidate
-    return candidate
+    from erp_web.services.workspace_files import owned_path
+    return owned_path(candidate)
 
 
 def _display_image_ref(value: str, app_dir: Path | None = None) -> str:
@@ -160,15 +161,18 @@ def _local_path_from_image_item(item: dict[str, Any]) -> Path | None:
             parsed = urllib.parse.urlparse(value)
             path = urllib.parse.parse_qs(parsed.query).get("path", [""])[0]
             if path:
-                candidate = Path(path)
+                from erp_web.services.workspace_files import owned_path
+                candidate = owned_path(path)
                 if candidate.exists():
                     return candidate
         if value.startswith("file:"):
-            candidate = Path(urllib.parse.urlparse(value).path)
+            from erp_web.services.workspace_files import owned_path
+            candidate = owned_path(urllib.parse.urlparse(value).path)
             if candidate.exists():
                 return candidate
         if not value.startswith(("http://", "https://", "ml-id:")):
-            candidate = Path(value)
+            from erp_web.services.workspace_files import owned_path
+            candidate = owned_path(value)
             if candidate.exists():
                 return candidate
     return None

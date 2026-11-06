@@ -8,7 +8,7 @@ import requests
 
 
 def post_json(base_url: str, path: str, payload: dict, expected_status: int = 200) -> dict:
-    response = requests.post(f"{base_url}{path}", json=payload, timeout=20)
+    response = base_url.client.post(f"{base_url}{path}", json=payload, timeout=20)
     assert response.status_code == expected_status, response.text[:500]
     data = response.json()
     assert isinstance(data, dict)
@@ -17,7 +17,7 @@ def post_json(base_url: str, path: str, payload: dict, expected_status: int = 20
 
 
 def get_json(base_url: str, path: str, params: dict | None = None, expected_status: int = 200) -> dict:
-    response = requests.get(f"{base_url}{path}", params=params, timeout=20)
+    response = base_url.client.get(f"{base_url}{path}", params=params, timeout=20)
     assert response.status_code == expected_status, response.text[:500]
     data = response.json()
     assert isinstance(data, dict)

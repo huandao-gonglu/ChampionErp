@@ -7,8 +7,12 @@ from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationS
 
 def authorization_payload(action, body=None, *, crossborder=False):
     if action == 'callback':
-        crossborder = (body or {}).get('state', '').startswith('crossborder.')
-    service = AlibabaAuthorizationService(get_context().config, crossborder=crossborder)
+        state = (body or {}).get('state', '')
+        if state.startswith('account.'):
+            state = state.split('.', 2)[-1]
+        crossborder = state.startswith('crossborder.')
+    context = get_context()
+    service = AlibabaAuthorizationService(context.config, crossborder=crossborder, owner_id=context.user_id)
     try:
         if action == 'status':
             return service.status(), 200

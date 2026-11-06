@@ -1,10 +1,18 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAccountStore } from '@/stores/account'
 import DraftWorkspacePanel from '@/components/domain/DraftWorkspacePanel.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { router } from '../index'
 
 describe('工作流顶级导航', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    const account = useAccountStore()
+    account.ready = true
+    account.user = { id: 'test', email: 'test@example.com', display_name: '测试用户', role: 'user', status: 'enabled', created_at: 0, updated_at: 0 }
+  })
   it('核价保留在草稿工作台中，旧入口会跳转到对应工作流标签', async () => {
     Object.defineProperty(window, 'scrollTo', { configurable: true, value: () => undefined })
     const navKeys = workflowNavItems.map((item) => item.key)

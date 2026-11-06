@@ -49,6 +49,25 @@ python scripts/migrate_desktop_business.py \
 
 `--source-prefix` 只指定待转换的原始路径前缀；备份仍读取 `--source`。本机配置输出应通过 `desktop_runtime.config.LocalConfig` 保存回原电脑，浏览器登录资料继续留在原电脑。已部署的数据不要再次执行迁移。
 
+## 账号版本切换
+
+仓库已实现个人账号体系；上文仍记录账号接入前的发布。此次开发的验证使用隔离数据目录，目标环境需另行切换。
+
+1. 完成回归、网页和桌面构建，将代码放入独立发布目录，在服务端环境安装新版 `requirements.txt`；`argon2-cffi` 不属于本机执行器依赖。
+2. 停止 `champion-erp.service`，在新发布目录用服务账号执行：
+
+   ```sh
+   sudo -u champion-erp /opt/champion-erp/venv/bin/python -m erp_web.accounts init-admin \
+     --app-dir /var/lib/champion-erp --email admin@example.com --name 管理员
+   ```
+
+   将示例邮箱 `admin@example.com` 替换为管理员的实际登录邮箱。交互输入密码，不将其放入参数、环境变量或日志。命令先在业务目录 `backups/` 创建 SQLite 一致性备份及原配置、素材归档，再创建管理员；原库、业务 ID、素材和凭据保留原位。重复执行不覆盖账号、改密或重新分配归属，不要再次运行桌面迁移器。
+3. 切换发布链接并启动服务。后端在缺少管理员时拒绝启动；初始化后开放普通用户注册。先经现有私有通道核对管理员原数据，再确认新账号为空、账号之间不能访问业务或接管桌面连接。
+4. 更新桌面安装包，分别验证网页和桌面登录、退出、改密、禁用与重新登录。本机浏览器资料及 CLI 设置仍在原电脑。
+5. 公网切换使用有效 HTTPS 入口和实际 `ERP_PUBLIC_URL`，核对 Secure/HttpOnly/SameSite Cookie、来源校验及平台回调；反代必须以实际客户端地址覆盖 `X-Real-IP`，不透传客户端同名值，供登录/注册 IP 限流使用。无域名时先验收 IP 证书和自动续期，再切换访问入口。
+
+初始化备份仅表示接入账号前的快照。后续常规备份须同时覆盖 `accounts.sqlite3`、原管理员业务目录和 `users/` 中所有个人业务库、配置与素材，逐库使用一致性备份；只恢复账号库或业务库均不完整。
+
 ## 运维
 
 登录服务器后执行：

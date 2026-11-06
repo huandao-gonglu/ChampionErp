@@ -42,9 +42,10 @@ def _authorization(state, application):
 
 
 class AlibabaAuthorizationService:
-    def __init__(self, config_store, *, crossborder=False):
+    def __init__(self, config_store, *, crossborder=False, owner_id=''):
         self.store = config_store
         self.crossborder = crossborder
+        self.owner_id = owner_id
 
     def status(self) -> AlibabaAuthorizationStatus:
         application = self.store.alibaba_application(crossborder=self.crossborder)
@@ -72,6 +73,9 @@ class AlibabaAuthorizationService:
             state = secrets.token_urlsafe(32)
             if self.crossborder:
                 state = "crossborder." + state
+            owner = self.owner_id
+            if owner:
+                state = f"account.{owner}.{state}"
             snapshot = self.store.alibaba_credentials(crossborder=self.crossborder)
             self.store.update_alibaba_credentials({'pending': {
                 'state_hash': hashlib.sha256(state.encode()).hexdigest(),

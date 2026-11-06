@@ -4,7 +4,9 @@ from erp_web.services.desktop_connection_service import current_desktop_connecti
 
 
 def connect(body):
-    return get_context().desktop_connections.connect()
+    from erp_web.services.account_request import current_session
+    session = current_session()
+    return get_context().desktop_connections.connect(session_hash=session.token_hash if session else '')
 
 
 def poll(body):

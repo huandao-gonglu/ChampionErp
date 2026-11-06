@@ -27,6 +27,12 @@ def load_app_config() -> dict[str, Any]:
     return get_context().config.load_app_config()
 
 
+def exchange_mercadolibre_callback(body: dict[str, Any]) -> dict[str, Any]:
+    context = get_context()
+    context.config.consume_mercadolibre_oauth(body.get("state", ""), allow_existing_pkce=context.allow_environment_credentials)
+    return exchange_mercadolibre_code_from_body({"code_or_url": body["code_or_url"]})
+
+
 def load_store_config() -> dict[str, Any]:
     return get_context().config.load_store_config()
 
@@ -57,6 +63,7 @@ __all__ = [
     "current_image_pool",
     "current_source_images",
     "exchange_mercadolibre_code_from_body",
+    "exchange_mercadolibre_callback",
     "get_publishing_bus",
     "html_page",
     "load_app_config",

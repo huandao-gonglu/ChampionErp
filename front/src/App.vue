@@ -5,6 +5,8 @@ import AiWorkFloatingButton from '@/components/common/AiWorkFloatingButton.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import ExternalRequestNotice from '@/components/common/ExternalRequestNotice.vue'
 import Toast from '@/components/common/Toast.vue'
+import { useAccountStore } from '@/stores/account'
+const account = useAccountStore()
 </script>
 
 <template>
@@ -23,8 +25,8 @@ import Toast from '@/components/common/Toast.vue'
       :key="String(route.name)"
     />
   </RouterView>
-  <AiWorkFloatingButton />
+  <AiWorkFloatingButton v-if="account.user" />
   <Toast />
-  <ExternalRequestNotice />
-  <OrderAlertBanner />
+  <ExternalRequestNotice v-if="account.user" />
+  <OrderAlertBanner v-if="account.user" />
 </template>

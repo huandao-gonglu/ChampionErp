@@ -229,18 +229,21 @@ def test_http_cleanup_validates_body_origin_and_returns_count(audit):
     record(manager, ctx, status=503)
     clock[0] += 601
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    from tests.account_test_utils import authenticated_headers
+    client = requests.Session()
+    client.headers.update(authenticated_headers(server))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         base = f'http://127.0.0.1:{server.server_port}'
         url = base + '/api/external-requests/history/clear'
-        snapshot = requests.get(base + '/api/external-requests/status', timeout=3).json()
+        snapshot = client.get(base + '/api/external-requests/status', timeout=3).json()
         assert snapshot['clearable_count'] == 1
         payload = {'before': snapshot['cleanup_before']}
-        assert requests.post(url, json=payload, headers={'Origin': 'https://untrusted.example'}, timeout=3).status_code == 403
+        assert client.post(url, json=payload, headers={'Origin': 'https://untrusted.example'}, timeout=3).status_code == 403
         for invalid in ({}, {'before': True}, {'before': -1}, {'before': None}):
-            assert requests.post(url, json=invalid, headers={'Origin': base}, timeout=3).status_code == 400
-        response = requests.post(url, json=payload, headers={'Origin': base}, timeout=3)
+            assert client.post(url, json=invalid, headers={'Origin': base}, timeout=3).status_code == 400
+        response = client.post(url, json=payload, headers={'Origin': base}, timeout=3)
         assert response.status_code == 200 and response.json()['cleared_count'] == 1
         assert manager.store.query()['stats']['attempts'] == 0
     finally:

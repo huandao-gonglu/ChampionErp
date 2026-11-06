@@ -197,25 +197,28 @@ def test_http_callback_completes_once_and_never_returns_credentials(service, mon
     configure(monkeypatch)
     monkeypatch.setattr(oauth.AlibabaAuthorizationService, '_token', staticmethod(lambda *args: token()))
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    from tests.account_test_utils import authenticated_headers
+    client = requests.Session()
+    client.headers.update(authenticated_headers(server))
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     origin = f'http://127.0.0.1:{server.server_port}'
     monkeypatch.setenv('ERP_ALIBABA_REDIRECT_URI', origin + '/auth/alibaba/callback')
     try:
-        response = requests.get(origin + '/api/alibaba/authorization', timeout=3)
+        response = client.get(origin + '/api/alibaba/authorization', timeout=3)
         assert response.status_code == 200 and not response.json()['authorized']
-        response = requests.post(origin + '/api/alibaba/authorization/start', json={}, timeout=3)
+        response = client.post(origin + '/api/alibaba/authorization/start', json={}, timeout=3)
         assert response.status_code == 200
         query = parse_qs(urlsplit(response.json()['url']).query)
         callback_url = query['redirect_uri'][0] + '?' + urlencode({'code': 'private-code', 'state': query['state'][0]})
         headers = {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document'}
-        response = requests.get(callback_url, headers=headers, timeout=3)
+        response = client.get(callback_url, headers=headers, timeout=3)
         assert response.status_code == 200 and '账号已连接' in response.text
         assert response.headers['Cache-Control'] == 'no-store'
         assert not any(secret in response.text for secret in ('private-code', 'buyer-token', 'enterprise-secret'))
-        assert requests.get(callback_url, headers=headers, timeout=3).status_code == 400
-        assert requests.get(origin + '/api/alibaba/authorization', timeout=3).json()['member_id'] == 'buyer-a'
-        assert requests.post(origin + '/api/alibaba/authorization/complete', json={'callback_url': 123}, timeout=3).status_code == 400
+        assert client.get(callback_url, headers=headers, timeout=3).status_code == 400
+        assert client.get(origin + '/api/alibaba/authorization', timeout=3).json()['member_id'] == 'buyer-a'
+        assert client.post(origin + '/api/alibaba/authorization/complete', json={'callback_url': 123}, timeout=3).status_code == 400
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=3)
 

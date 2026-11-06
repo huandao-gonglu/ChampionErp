@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any
 
 from pydantic_ai import DeferredToolResults, RunCancelled
@@ -52,7 +53,7 @@ class AgentJobService:
             key = (row["conversation_id"], row["tool_call_id"])
             if key not in self.futures and len(self.futures) < 8:
                 self.futures[key] = self.pool.submit(
-                    self.execute_or_reconcile, row,
+                    copy_context().run, self.execute_or_reconcile, row,
                     self.ui_service.run_registry.token(row["conversation_id"]),
                 )
         for conversation_id in self.store.conversations():

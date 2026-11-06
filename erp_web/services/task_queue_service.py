@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextvars import copy_context
 
 from erp_web.product_model.task_queue_model import PENDING_RESULTS, task_timestamp
 from erp_web.schemas.task_queue import confirmation_policy
@@ -24,7 +25,7 @@ class TaskQueueService:
 
     def start(self):
         if self._thread is None:
-            self._thread = threading.Thread(target=self._loop, name="task-confirmations", daemon=True)
+            self._thread = threading.Thread(target=copy_context().run, args=(self._loop,), name="task-confirmations", daemon=True)
             self._thread.start()
 
     def close(self):

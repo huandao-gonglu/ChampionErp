@@ -3,6 +3,7 @@ import { hasLocalOperations } from '@/utils/desktop'
 import axios, { AxiosError } from 'axios'
 import { uiLocaleOption } from '@/constants/locales'
 import { normalizeApiError } from '@/utils/apiError'
+import { accountHeaders, sessionExpired } from '@/utils/accountTransport'
 
 /** 业务 API 与 AI Work presentation 的纯传输层关联。 */
 export interface AiPresentationTransport {
@@ -33,6 +34,9 @@ export const apiClient = axios.create({
 })
 
 apiClient.interceptors.request.use((config) => {
+  if (!['get', 'head', 'options'].includes(config.method || 'get')) {
+    for (const [name, value] of Object.entries(accountHeaders())) config.headers.set(name, value)
+  }
   if (hasLocalOperations()) config.baseURL = ''
   config.headers.set('Accept-Language', uiLocaleOption(localStorage.getItem('uiLocale') || localStorage.getItem('locale')).acceptLanguage)
   config.headers.set('X-Timezone', Intl.DateTimeFormat().resolvedOptions().timeZone)
@@ -48,6 +52,8 @@ apiClient.interceptors.response.use(
     return response
   },
   (error: AxiosError) => {
+    const publicAccount = ['/api/account/login', '/api/account/register', '/api/account/session'].includes(error.config?.url || '')
+    if (error.response?.status === 401 && !publicAccount) sessionExpired()
     if (error.response) observeExternalOperations(error.response.headers, error.config?.method, error.config?.url)
     const data = error.response?.data as Record<string, unknown> | undefined
     const normalized = normalizeApiError(

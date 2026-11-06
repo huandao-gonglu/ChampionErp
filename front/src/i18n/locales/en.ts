@@ -1,4 +1,20 @@
 export default {
+  account: {
+    login: 'Sign in', register: 'Register', personal: 'My account', users: 'Users',
+    loginTitle: 'Sign in to Champion ERP', registerTitle: 'Create your account', intro: 'Manage your products, stores and business.',
+    name: 'Display name', email: 'Email', password: 'Password', confirmPassword: 'Confirm password',
+    passwordHint: 'Use 15–128 characters. Pasting from a password manager is supported.',
+    passwordMismatch: 'The passwords do not match.', submitting: 'Submitting…', failed: 'The operation failed. Please try again.',
+    uninitialized: 'Accounts are not available yet. Contact your administrator.', registered: 'Your account is ready. Sign in with your email and password.',
+    haveAccount: 'Already have an account?', needAccount: 'Need an account?', forgotPassword: 'Contact your administrator if you need a password reset.',
+    back: 'Back to workspace', logout: 'Sign out', admin: 'Administrator', user: 'User',
+    changePassword: 'Change password', currentPassword: 'Current password', newPassword: 'New password',
+    passwordRevokes: 'Changing the password signs out all devices.', createUser: 'Create user',
+    created: 'User created.', passwordReset: 'Password reset. The user must sign in again.', resetPassword: 'Reset password',
+    resetFor: 'Reset password for {email}', cancel: 'Cancel', search: 'Search by email or name', searchButton: 'Search',
+    status: 'Status', actions: 'Actions', enabled: 'Enabled', disabled: 'Disabled', disable: 'Disable', enable: 'Enable',
+    loading: 'Loading…', empty: 'No matching users.', total: '{total} users', previous: 'Previous', next: 'Next',
+  },
   alibabaAuth: {
     "crossborderTitle": "1688 cross-border product authorization",
     "crossborderIntro": "Connect your buyer account to the cross-border app to look up products and SKUs.",

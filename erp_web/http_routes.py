@@ -8,7 +8,9 @@ from erp_web.http_route_units import image_routes
 from .context import get_context
 from .services.external_request_context import request_operation
 from .services.desktop_connection_service import desktop_request
+from .services.account_request import CALLBACK_POST_PATHS
 from .http_route_units import (
+    account_routes,
     task_queue_routes,
     wechat_routes,
     ai_chat_routes,
@@ -47,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_PAGE_ROUTES = get_routes.FRONTEND_PAGE_ROUTES
 GET_ROUTE_UNITS = (
+    account_routes,
     alibaba_authorization_routes,
     task_queue_routes,
     wechat_routes,
@@ -68,6 +71,7 @@ GET_API_ROUTES = frozenset(
     for path in getattr(route_unit, "GET_API_ROUTES", frozenset())
 )
 POST_ROUTE_UNITS = (
+    account_routes,
     desktop_routes,
     alibaba_authorization_routes,
     task_queue_routes,
@@ -189,6 +193,10 @@ def handle_post(handler: JsonRequestHandler) -> None:
             },
             exc.status_code,
         )
+        return
+    # 账号操作和平台回调不属于 AI 业务展示；不能消费根业务空间的 reservation。
+    if parsed.path in account_routes.HANDLED_PATHS or parsed.path in CALLBACK_POST_PATHS:
+        _dispatch_post(handler, parsed)
         return
     scope = _claim_presentation_scope(handler)
     if scope is _CLAIM_REJECTED:

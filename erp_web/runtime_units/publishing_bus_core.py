@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any, Callable, Protocol
 
 from erp_web.marketplaces.publisher import PublishAdapterError
@@ -916,7 +917,7 @@ class PublishingBus:
 
     def _submit_job(self, job_id: str, product: dict[str, Any], platforms: list[str]) -> None:
         futures = [
-            self.executor.submit(self._run_platform, job_id, copy.deepcopy(product), platform)
+            self.executor.submit(copy_context().run, self._run_platform, job_id, copy.deepcopy(product), platform)
             for platform in platforms
         ]
         self._futures[job_id] = futures

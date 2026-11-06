@@ -491,7 +491,7 @@ def model_api_key(model: dict[str, Any]) -> str:
     if api_key:
         return api_key
     env_name = str(model.get("api_key_env") or "").strip()
-    return os.getenv(env_name, "").strip() if env_name else ""
+    return _personal_environment(env_name)
 
 
 def model_base_url(model: dict[str, Any]) -> str:
@@ -499,7 +499,7 @@ def model_base_url(model: dict[str, Any]) -> str:
     if explicit_base_url:
         return explicit_base_url
     env_name = str(model.get("base_url_env") or "").strip()
-    return os.getenv(env_name, "").strip() if env_name else ""
+    return _personal_environment(env_name)
 
 
 def model_name(model: dict[str, Any]) -> str:
@@ -507,6 +507,14 @@ def model_name(model: dict[str, Any]) -> str:
     if explicit_model:
         return explicit_model
     env_name = str(model.get("model_env") or "").strip()
+    return _personal_environment(env_name)
+
+
+def _personal_environment(env_name: str) -> str:
+    from erp_web.context import peek_context
+    context = peek_context()
+    if context is not None and not context.allow_environment_credentials:
+        return ""
     return os.getenv(env_name, "").strip() if env_name else ""
 
 

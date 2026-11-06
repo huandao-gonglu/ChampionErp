@@ -14,6 +14,7 @@
 
 import { Chat } from '@ai-sdk/vue'
 import { DefaultChatTransport } from 'ai'
+import { accountFetch } from '@/utils/accountTransport'
 import type { UIMessage } from 'ai'
 import { apiClient } from './client'
 import { asRecord, getString } from './workflow/normalizers'
@@ -113,7 +114,7 @@ async function observePresentationFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
-  const response = await fetch(input, init)
+  const response = await accountFetch(input, init)
   if (response.ok || response.status === 204) {
     return response
   }

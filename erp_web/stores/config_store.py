@@ -17,6 +17,7 @@ import logging
 import os
 import secrets
 import threading
+import time
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -428,6 +429,29 @@ class ConfigStore:
         migrate_store_currency_source(db, self._store_config_path)
 
     # -- 集成授权与订单回调配置 --------------------------------------------------
+
+    def begin_mercadolibre_oauth(self, owner: str) -> str:
+        state = secrets.token_urlsafe(32)
+        if owner:
+            state = f"account.{owner}.{state}"
+        with self._save_lock:
+            self._db.set_runtime_secret("oauth:mercadolibre", "pending", {
+                "state_hash": hashlib.sha256(state.encode()).hexdigest(),
+                "expires_at": time.time() + 600,
+            })
+        return state
+
+    def consume_mercadolibre_oauth(self, state: str, *, allow_existing_pkce=False) -> None:
+        with self._save_lock:
+            pending = self._db.runtime_secret("oauth:mercadolibre", "pending", {})
+            if (not pending and not state and allow_existing_pkce
+                    and self.load_store_config().get("mercadolibre", {}).get("code_verifier")):
+                # 已发出的旧链接仍由原 PKCE verifier 和平台换码校验。
+                return
+            if (not state or not secrets.compare_digest(pending.get("state_hash", ""), hashlib.sha256(state.encode()).hexdigest())
+                    or pending.get("expires_at", 0) <= time.time()):
+                raise ValueError("Mercado Libre 授权请求已失效或不匹配，请重新生成授权链接。")
+            self._db.set_runtime_secret("oauth:mercadolibre", "pending", {})
 
     def integration_credentials(self, provider: str, record_id: str = "active") -> dict:
         if provider not in {"crossborderbus", "wechat"}:

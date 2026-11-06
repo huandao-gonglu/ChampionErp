@@ -8,6 +8,7 @@ import threading
 import time
 import warnings
 from http.server import ThreadingHTTPServer
+from tests.account_test_utils import authenticated_headers, AuthenticatedPort
 from typing import Any, Iterator
 
 import http.client
@@ -167,7 +168,7 @@ def _post(
             "POST",
             path,
             body=body,
-            headers={"Content-Type": content_type},
+            headers={"Content-Type": content_type, **getattr(port, "headers", {})},
         )
         response = conn.getresponse()
         data = response.read()
@@ -180,7 +181,7 @@ def _post(
 def _get(port: int, path: str) -> tuple[int, bytes]:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     try:
-        conn.request("GET", path)
+        conn.request("GET", path, headers=getattr(port, "headers", {}))
         response = conn.getresponse()
         return response.status, response.read()
     finally:
@@ -262,10 +263,11 @@ def chat_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
 
     holder = _patch_chat_model(monkeypatch)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    headers = authenticated_headers(server)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield {"port": server.server_address[1], "model": holder}
+        yield {"port": AuthenticatedPort(server.server_address[1], headers), "headers": headers, "model": holder}
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1095,6 +1097,8 @@ def test_real_socket_receives_incremental_chunks_before_finish(
         request = (
             f"POST {CHAT_PATH} HTTP/1.1\r\n"
             f"Host: 127.0.0.1:{port}\r\n"
+            f"Cookie: {chat_server['headers']['Cookie']}\r\n"
+            f"X-CSRF-Token: {chat_server['headers']['X-CSRF-Token']}\r\n"
             "Content-Type: application/json\r\n"
             f"Content-Length: {len(body)}\r\n"
             "Connection: close\r\n"

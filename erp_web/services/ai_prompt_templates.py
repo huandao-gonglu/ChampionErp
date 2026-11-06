@@ -62,6 +62,12 @@ def _project_root() -> Path:
 
 
 def _candidate_prompt_paths(app_dir: Path | str, prompt_path: str) -> list[Path]:
+    from erp_web.context import peek_context
+    from .workspace_files import owned_path
+    context = peek_context()
+    if context is not None and context.user_id:
+        path = owned_path(prompt_path, app_dir=app_dir)
+        return [path]
     path = Path(prompt_path).expanduser()
     if path.is_absolute():
         return [path]
@@ -69,6 +75,11 @@ def _candidate_prompt_paths(app_dir: Path | str, prompt_path: str) -> list[Path]
 
 
 def _writable_prompt_path(app_dir: Path | str, prompt_path: str) -> Path:
+    from erp_web.context import peek_context
+    from .workspace_files import owned_path
+    context = peek_context()
+    if context is not None and context.user_id:
+        return owned_path(prompt_path, app_dir=app_dir)
     path = Path(prompt_path).expanduser()
     if path.is_absolute():
         return path

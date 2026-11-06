@@ -85,7 +85,8 @@ class WechatChannelService:
                 raise RuntimeError("微信连接已关闭。")
             if self._thread is not None:
                 return
-            self._thread = threading.Thread(target=lambda: asyncio.run(self._serve()), name="erp-wechat", daemon=True)
+            from contextvars import copy_context
+            self._thread = threading.Thread(target=copy_context().run, args=(lambda: asyncio.run(self._serve()),), name="erp-wechat", daemon=True)
             self._thread.start()
         if not self._ready.wait(3):
             raise RuntimeError("微信连接尚未就绪，请稍后重试。")

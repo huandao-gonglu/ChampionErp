@@ -235,19 +235,22 @@ def test_http_purchase_query_contract_and_blocked_response(registered, monkeypat
         return Client(CONFIG).query(name, number)
     monkeypatch.setattr(api.AlibabaApiClient, "query", query)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    from tests.account_test_utils import authenticated_headers
+    client = requests.Session()
+    client.headers.update(authenticated_headers(server))
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_port}/api/orders/purchase-query"
     try:
-        response = requests.post(url, json=body, timeout=3)
+        response = client.post(url, json=body, timeout=3)
         assert response.status_code == 200 and response.json()["order"]["order_number"] == NUMBER
-        assert requests.post(url, json={**body, "kind": "write"}, timeout=3).status_code == 400
-        assert requests.post(url, json={**body, "record_id": 123}, timeout=3).status_code == 400
-        assert requests.post(url, json={**body, "order_id": "other-order"}, timeout=3).status_code == 400
+        assert client.post(url, json={**body, "kind": "write"}, timeout=3).status_code == 400
+        assert client.post(url, json={**body, "record_id": 123}, timeout=3).status_code == 400
+        assert client.post(url, json={**body, "order_id": "other-order"}, timeout=3).status_code == 400
         def blocked(*args):
             raise ExternalRequestBlocked(RequestFailure("TEST_BLOCK", "已中断"))
         monkeypatch.setattr(api.AlibabaApiClient, "query", blocked)
-        response = requests.post(url, json=body, timeout=3)
+        response = client.post(url, json=body, timeout=3)
         assert response.status_code == 409 and "中断与恢复" in response.json()["error"]
     finally:
         server.shutdown()

@@ -117,7 +117,7 @@ def handle_ml_callback(
         if code:
             # OAuth 客户端凭据与 PKCE verifier 只从后端 store_auth 读取，
             # 绝不接受 URL 参数，避免进入浏览器历史、代理日志和 Referer。
-            exchange_code({"code_or_url": code})
+            exchange_code({"code_or_url": code, "state": params.get("state", [""])[0]})
             status = "exchanged"
             message = "授权 code 已接收，并已尝试自动换取 token。"
         else:

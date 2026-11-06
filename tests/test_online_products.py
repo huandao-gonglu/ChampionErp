@@ -411,13 +411,13 @@ def test_online_http_contracts(backend_server):
     import requests
     from erp_web.http_route_units.get_routes import FRONTEND_PAGE_ROUTES
     assert FRONTEND_PAGE_ROUTES["/online-products"] == "online-products"
-    assert requests.get(backend_server+"/ml-items",timeout=10).status_code==404
-    page=requests.get(backend_server+"/api/online-products",params={"platform":"mercadolibre"},timeout=10)
+    assert backend_server.client.get(backend_server+"/ml-items",timeout=10).status_code==404
+    page=backend_server.client.get(backend_server+"/api/online-products",params={"platform":"mercadolibre"},timeout=10)
     assert page.status_code==200
     assert page.json()["state"]=="authorization_required"
-    invalid=requests.post(backend_server+"/api/online-products/change",json={"operation":"price"},timeout=10)
+    invalid=backend_server.client.post(backend_server+"/api/online-products/change",json={"operation":"price"},timeout=10)
     assert invalid.status_code==400
-    missing_source=requests.get(backend_server+"/api/online-products/source-images",timeout=10)
+    missing_source=backend_server.client.get(backend_server+"/api/online-products/source-images",timeout=10)
     assert missing_source.status_code==400 and "listing_id" in missing_source.json()["error"]
 
 

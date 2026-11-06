@@ -1,4 +1,20 @@
 export default {
+  account: {
+    login: '登录', register: '注册', personal: '个人账号', users: '用户管理',
+    loginTitle: '登录 Champion ERP', registerTitle: '创建个人账号', intro: '管理你的商品、店铺和业务。',
+    name: '显示名称', email: '登录邮箱', password: '密码', confirmPassword: '确认密码',
+    passwordHint: '使用 15 至 128 个字符，可直接粘贴密码管理器生成的密码。',
+    passwordMismatch: '两次输入的密码不一致。', submitting: '正在提交…', failed: '操作失败，请重试。',
+    uninitialized: '账号服务暂未开放，请联系管理员。', registered: '注册成功，请使用邮箱和密码登录。',
+    haveAccount: '已有账号？', needAccount: '还没有账号？', forgotPassword: '忘记密码请联系管理员重置。',
+    back: '返回工作台', logout: '退出登录', admin: '管理员', user: '普通用户',
+    changePassword: '修改密码', currentPassword: '原密码', newPassword: '新密码',
+    passwordRevokes: '密码变更后，所有设备需要重新登录。', createUser: '创建普通用户',
+    created: '用户已创建。', passwordReset: '密码已重置，该用户需要重新登录。', resetPassword: '重置密码',
+    resetFor: '重置 {email} 的密码', cancel: '取消', search: '按邮箱或名称查询', searchButton: '查询',
+    status: '状态', actions: '操作', enabled: '已启用', disabled: '已禁用', disable: '禁用', enable: '启用',
+    loading: '正在加载…', empty: '没有匹配的普通用户。', total: '共 {total} 位用户', previous: '上一页', next: '下一页',
+  },
   alibabaAuth: {
     "crossborderTitle": "1688 跨境商品查询授权",
     "crossborderIntro": "使用采购账号授权跨境应用，查询商品和 SKU 规格。",

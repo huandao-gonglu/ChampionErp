@@ -4,13 +4,15 @@ from __future__ import annotations
 """Application context: single home for path/port wiring.
 
 ``AppPaths`` collects every filesystem location and port the backend derives
-from the application directory. ``AppContext`` carries the process-wide
+from the application directory. ``AppContext`` carries each workspace's
 wiring for the database and stateful services. Runtime compatibility path
 constants have been removed; callers resolve paths through the active context.
 """
 
 import os
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -116,7 +118,7 @@ class AppPaths:
 
 
 class AppContext:
-    """Process-wide application wiring: paths, database and the stateful services.
+    """个人业务空间的路径、数据库与有状态服务，由请求局部绑定选择。
 
     The store/service attributes are created lazily on first access.  Their
     modules import runtime units which in turn import this module at import
@@ -132,6 +134,9 @@ class AppContext:
     def __init__(self, paths: AppPaths, db: ErpDatabase) -> None:
         self.paths = paths
         self.db = db
+        self.user_id = ""
+        self.allow_environment_credentials = True
+        self.account_store = None
         # A lazy service may depend on another lazy service while it is being
         # constructed (the publishing bus needs both products and config).
         # Re-entrant locking keeps that dependency chain safe without
@@ -173,7 +178,9 @@ class AppContext:
                 raise RuntimeError("AppContext 已关闭，不能再访问桌面连接。")
             if self._desktop_connections is None:
                 from erp_web.services.desktop_connection_service import DesktopConnections
-                self._desktop_connections = DesktopConnections()
+                self._desktop_connections = DesktopConnections(
+                    session_validator=self.account_store.session_valid if self.account_store else None,
+                )
             return self._desktop_connections
 
     @property
@@ -470,7 +477,7 @@ class AppContext:
 
     @property
     def approval_session(self) -> "ApprovalSession":
-        """进程级可信审批凭据；token 只随受信 UI bootstrap 下发，不进入模型上下文。"""
+        """个人空间的可信审批凭据；仅随受信 UI bootstrap 下发，不进入模型上下文。"""
 
         if self._approval_session is None:
             with self._lazy_lock:
@@ -519,6 +526,17 @@ class AppContext:
 
 _context_lock = threading.Lock()
 _context: AppContext | None = None
+_request_context: ContextVar[AppContext | None] = ContextVar("erp_app_context", default=None)
+
+
+@contextmanager
+def bind_context(context: AppContext):
+    """绑定一次请求或后台执行的业务空间，退出时恢复原上下文。"""
+    token = _request_context.set(context)
+    try:
+        yield context
+    finally:
+        _request_context.reset(token)
 
 
 def build_default_context() -> AppContext:
@@ -530,7 +548,10 @@ def build_default_context() -> AppContext:
 
 
 def get_context() -> AppContext:
-    """Return the active context, lazily constructing the default one."""
+    """优先返回请求/后台执行绑定的空间；离线入口才使用进程默认上下文。"""
+    active = _request_context.get()
+    if active is not None:
+        return active
     global _context
     context = _context
     if context is None:
@@ -545,6 +566,9 @@ def get_context() -> AppContext:
 def peek_context() -> AppContext | None:
     """读取已安装上下文但不触发默认数据库构造，供生命周期编排使用。"""
 
+    active = _request_context.get()
+    if active is not None:
+        return active
     with _context_lock:
         return _context
 

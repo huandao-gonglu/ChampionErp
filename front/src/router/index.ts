@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory, type LocationQueryRaw, type RouteRecordRaw } from 'vue-router'
 import { updateDocumentTitle } from './title'
+import { useAccountStore } from '@/stores/account'
+import { accountDestination } from '@/utils/accountTransport'
 
 const workflowComponent = () => import('@/views/workflow/WorkflowView.vue')
 
@@ -44,6 +46,10 @@ const legacyEntryRoutes: RouteRecordRaw[] = legacyWorkflowEntries.map((entry) =>
 }))
 
 const routes: RouteRecordRaw[] = [
+  { path: '/login', name: 'AccountLogin', component: () => import('@/views/account/AccountLoginView.vue'), meta: { public: true, titleKey: 'account.login' } },
+  { path: '/register', name: 'AccountRegister', component: () => import('@/views/account/AccountLoginView.vue'), meta: { public: true, titleKey: 'account.register' } },
+  { path: '/account', name: 'PersonalAccount', component: () => import('@/views/account/PersonalAccountView.vue'), meta: { titleKey: 'account.personal' } },
+  { path: '/admin/users', name: 'AccountUsers', component: () => import('@/views/account/AccountUsersView.vue'), meta: { admin: true, titleKey: 'account.users' } },
   // Setup Routes
   // Public Routes
   ...workflowRoutes,
@@ -81,7 +87,14 @@ export const router = createRouter({
   },
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
+  const account = useAccountStore()
+  if (!account.ready) {
+    try { await account.refresh() } catch { /* 登录页展示连接错误，业务页继续受身份保护。 */ }
+  }
+  if (!to.meta.public && !account.user) return { name: 'AccountLogin', query: { redirect: to.fullPath } }
+  if (to.meta.admin && !account.isAdmin) return { name: 'WorkflowHome' }
+  if (to.meta.public && account.user) return accountDestination(to.query.redirect)
   if (to.name === 'WorkflowHome' && to.query.auth_section === 'interruptions') {
     const query: LocationQueryRaw = { ...to.query, tab: 'systemSettings', settings_section: 'interruptions' }
     delete query.auth_section

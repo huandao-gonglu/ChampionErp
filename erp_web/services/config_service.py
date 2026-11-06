@@ -64,6 +64,10 @@ def env_path(app_dir: Path | str) -> Path:
 
 
 def load_env(app_dir: Path | str) -> None:
+    from erp_web.context import peek_context
+    context = peek_context()
+    if context is not None and not context.allow_environment_credentials:
+        return
     load_dotenv(env_path(app_dir), override=False)
 
 

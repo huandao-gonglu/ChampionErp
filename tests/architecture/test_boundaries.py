@@ -41,7 +41,7 @@ def test_integrations_do_not_persist_credentials_in_business_stores() -> None:
     startup = parse_python("erp_web/server.py")
     main = next(node for node in startup.body if isinstance(node, ast.FunctionDef) and node.name == "main")
     calls = [dotted_name(node.func) for statement in main.body for node in ast.walk(statement) if isinstance(node, ast.Call)]
-    assert calls.index("assert_credentials_migrated") < calls.index("mark_interrupted_publish_jobs")
+    assert calls.index("assert_credentials_migrated") < calls.index("accounts.start")
 
 
 def test_bus_user_authorization_does_not_accept_developer_secrets() -> None:

@@ -68,7 +68,7 @@ def validate_request_metadata(handler: BaseHTTPRequestHandler) -> None:
 
     # 官方 OAuth 的顶层回跳以服务端保存的一次性 state 校验来源；仅放行此 GET 页面。
     if (getattr(handler, "command", "") == "GET"
-            and urllib.parse.urlsplit(getattr(handler, "path", "")).path == "/auth/alibaba/callback"
+            and urllib.parse.urlsplit(getattr(handler, "path", "")).path in {"/auth/alibaba/callback", "/auth/mercadolibre/callback"}
             and _header(handler, "Sec-Fetch-Mode") == "navigate"
             and _header(handler, "Sec-Fetch-Dest") == "document"):
         return

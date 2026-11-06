@@ -2874,7 +2874,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             handler.read_body = lambda: {"app_id": "", "client_secret": "", "refresh_token": ""}
             handler.send_json = lambda data, status=200: captured.update({"data": data, "status": status})
 
-            Handler.do_POST(handler)
+            from erp_web.http_routes import handle_post
+            handle_post(handler)
 
             data = captured["data"]
             self.assertEqual(captured["status"], 400)

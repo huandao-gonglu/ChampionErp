@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextvars import copy_context
 
 from erp_web.schemas.fulfillment import FulfillmentCommand, FulfillmentError, FulfillmentRule, FulfillmentView, LabelInput
 from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
@@ -32,7 +33,7 @@ class FulfillmentService:
         self.client.cancel = self.stop_event
         self.worker = None
         if start_worker:
-            self.worker = threading.Thread(target=self._run, name="crossborder-fulfillment", daemon=True)
+            self.worker = threading.Thread(target=copy_context().run, args=(self._run,), name="crossborder-fulfillment", daemon=True)
             self.worker.start()
 
     def order_detail(self, order_id):

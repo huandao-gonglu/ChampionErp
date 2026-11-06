@@ -92,21 +92,21 @@ def test_template_http_round_trip_and_invalid_payload(backend_server):
     import requests
 
     url = backend_server + "/api/pricing/templates"
-    before = requests.get(url, timeout=5)
+    before = backend_server.client.get(url, timeout=5)
     assert before.status_code == 200 and before.json()["ok"]
-    created = requests.post(url + "/save", json={"name": "HTTP 核价模板", "parameters": parameters(), "set_default": True}, timeout=5)
+    created = backend_server.client.post(url + "/save", json={"name": "HTTP 核价模板", "parameters": parameters(), "set_default": True}, timeout=5)
     assert created.status_code == 200
     identity = created.json()["saved_id"]
-    listed = requests.get(url, timeout=5).json()
+    listed = backend_server.client.get(url, timeout=5).json()
     assert listed["default_template_id"] == identity
     assert any(item["id"] == identity for item in listed["items"])
-    invalid = requests.post(url + "/save", json={"name": "", "parameters": parameters()}, timeout=5)
+    invalid = backend_server.client.post(url + "/save", json={"name": "", "parameters": parameters()}, timeout=5)
     assert invalid.status_code == 400 and invalid.json()["error_code"] == "MISSING_REQUIRED_FIELD"
     invalid_fees = parameters()
     invalid_fees["common"]["domestic_freight_cny"] = -1
-    invalid = requests.post(url + "/save", json={"name": "无效费用", "parameters": invalid_fees}, timeout=5)
+    invalid = backend_server.client.post(url + "/save", json={"name": "无效费用", "parameters": invalid_fees}, timeout=5)
     assert invalid.status_code == 400 and invalid.json()["error_code"] == "PRICING_TEMPLATE_INVALID"
-    removed = requests.post(url + "/delete", json={"id": identity}, timeout=5)
+    removed = backend_server.client.post(url + "/delete", json={"id": identity}, timeout=5)
     assert removed.status_code == 200
     assert removed.json()["default_template_id"] == ""
 

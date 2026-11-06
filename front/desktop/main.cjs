@@ -1,13 +1,13 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
 const fs = require('node:fs')
 const http = require('node:http')
-const https = require('node:https')
 const path = require('node:path')
 const { URL } = require('node:url')
 const { runtimeExecutable, startRuntime } = require('./runtime.cjs')
 const { normalizeBackendUrl, connectDesktop } = require('./connection.cjs')
 const { registerLocalConfig } = require('./local-config.cjs')
 const { registerLicenseDirectory } = require('./licenses.cjs')
+const { AccountSession, proxyBackendRequest } = require('./account-session.cjs')
 
 if (app.isPackaged) {
   app.setPath('userData', path.join(app.getPath('appData'), 'Champion ERP'))
@@ -43,6 +43,7 @@ let frontendServer
 let runtime
 let desktopConnection
 let quitting = false
+const accountSession = new AccountSession()
 
 app.on('second-instance', () => {
   const win = BrowserWindow.getAllWindows()[0]
@@ -66,9 +67,6 @@ async function initializeDesktop() {
     runtime = startRuntime(python, dataDir, { ...options, cwd: root, args: ['-m', 'desktop_runtime'] })
   }
   await runtime.started
-  desktopConnection = await connectDesktop(getBackendBaseUrl(), runtime, {
-    onDisconnected: (error) => dialog.showErrorBox('Champion ERP 本机连接已断开', `${error.message}。请检查网络后重新打开桌面程序。`),
-  })
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     { label: '文件', submenu: [
@@ -160,47 +158,20 @@ function serveFrontend(req, res, requestUrl, frontendRoot) {
 }
 
 function proxyToBackend(req, res, backendBaseUrl) {
-  const requestPath = new URL(req.url || '/', 'http://desktop.invalid')
-  const targetUrl = new URL(backendBaseUrl)
-  targetUrl.pathname = requestPath.pathname
-  targetUrl.search = requestPath.search
-  const transport = targetUrl.protocol === 'https:' ? https : http
-  const headers = { ...req.headers, host: targetUrl.host }
-  // 当前连接只由主进程注入，不能由页面选择或伪造。
-  delete headers['x-champion-desktop']
-  if (desktopConnection?.id) headers['x-champion-desktop'] = desktopConnection.id
-  if (headers.origin) headers.origin = new URL(backendBaseUrl).origin
-  delete headers['sec-fetch-site']
-
-  const proxyReq = transport.request(
-    targetUrl,
-    {
-      method: req.method,
-      headers,
+  proxyBackendRequest(req, res, backendBaseUrl, {
+    session: accountSession,
+    connectionId: () => desktopConnection?.id || '',
+    onLogin: async () => {
+      await desktopConnection?.stop()
+      desktopConnection = await connectDesktop(backendBaseUrl, runtime, {
+        session: accountSession,
+        onDisconnected: error => {
+          if (!quitting && accountSession.cookie) dialog.showErrorBox('Champion ERP 本机连接已断开', `${error.message}。请重新登录后重试。`)
+        },
+      })
     },
-    (proxyRes) => {
-      res.writeHead(proxyRes.statusCode || 502, proxyRes.headers)
-      proxyRes.pipe(res)
-    },
-  )
-
-  proxyReq.on('error', (error) => {
-    if (res.headersSent || res.destroyed) { res.destroy(error); return }
-    const message = JSON.stringify({
-      ok: false,
-      error: `后端未连接：${backendBaseUrl}`,
-      detail: error.message,
-    })
-    res.writeHead(502, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Content-Length': Buffer.byteLength(message),
-    })
-    res.end(message)
+    onLogout: () => { void desktopConnection?.stop(); desktopConnection = undefined },
   })
-
-  req.on('aborted', () => proxyReq.destroy())
-  res.on('close', () => { if (!res.writableEnded) proxyReq.destroy() })
-  req.pipe(proxyReq)
 }
 
 function startFrontendServer() {

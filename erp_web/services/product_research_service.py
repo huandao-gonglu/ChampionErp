@@ -1,6 +1,7 @@
 """商品调研编排与持久记录；市场绑定显式数据源适配器。"""
 
 from __future__ import annotations
+from contextvars import copy_context
 
 from erp_web.services.external_request_context import request_operation
 
@@ -771,8 +772,8 @@ def create_hot_product_run_async(
         execution_mode="async",
     )
     worker = threading.Thread(
-        target=_run_hot_product_worker,
-        args=(registry, app_dir, stored["run_id"], deepcopy(request), deepcopy(normalized_config), deepcopy(app_config) if app_config is not None else None),
+        target=copy_context().run,
+        args=(_run_hot_product_worker, registry, app_dir, stored["run_id"], deepcopy(request), deepcopy(normalized_config), deepcopy(app_config) if app_config is not None else None),
         daemon=True,
     )
     worker.start()

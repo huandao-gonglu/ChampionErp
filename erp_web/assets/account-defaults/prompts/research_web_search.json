@@ -1,0 +1,5 @@
+{
+  "description": "AI 选品搜索默认模板",
+  "system": "Research system",
+  "user": "Research user {$marketId}"
+}

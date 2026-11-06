@@ -4,6 +4,7 @@ import { defineComponent, h, ref } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it } from 'vitest'
 import App from '@/App.vue'
+import { createPinia } from 'pinia'
 
 const WorkflowHarness = defineComponent({
   name: 'WorkflowHarness',
@@ -45,7 +46,7 @@ describe('工作台路由状态保活', () => {
 
     const wrapper = mount(App, {
       global: {
-        plugins: [router],
+        plugins: [createPinia(), router],
         stubs: {
           AiWorkFloatingButton: true,
           NavigationProgress: true,

@@ -216,6 +216,8 @@ def _build_mercadolibre_auth_link_unlocked(
     config["mercadolibre"]["redirect_uri"] = redirect_uri
     config["mercadolibre"]["app_id"] = app_id
     get_context().config.save_store_config(config)
+    state = get_context().config.begin_mercadolibre_oauth(get_context().user_id)
+    url += "&state=" + urllib.parse.quote(state, safe='')
     return {"url": url, "verifier_saved": True}
 
 

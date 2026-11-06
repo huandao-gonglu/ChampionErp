@@ -194,7 +194,7 @@ def test_ai_status_tool_reuses_service_without_creating_jobs(setup_status):
 def test_http_refresh_request_validation(backend_server):
     import requests
     for payload in ({}, {"listing_id": 3}, {"listing_id": ""}, {"listing_id": "unknown", "platform": "yandex"}):
-        response = requests.post(backend_server + "/api/online-products/refresh-status", json=payload, timeout=10)
+        response = backend_server.client.post(backend_server + "/api/online-products/refresh-status", json=payload, timeout=10)
         assert response.status_code == 400
 
 

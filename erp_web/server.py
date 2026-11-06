@@ -9,36 +9,13 @@ from collections.abc import Callable
 from http.server import ThreadingHTTPServer
 
 from .context import build_default_context, get_context, set_context
-from .facades.ai_chat_facade import build_job_service
 from .http_handler import Handler
 from .logging_config import configure_logging
-from .runtime_units.publish_adapter import mark_interrupted_publish_jobs
 from .services.config_service import load_env
 from .stores.credential_layout import assert_credentials_migrated
+from .account_runtime import AccountRuntime
 
 logger = logging.getLogger(__name__)
-
-
-def start_agent_job_worker(*, stop_event=None, interval_seconds=1.0):
-    context = get_context()
-    stopped = stop_event or threading.Event()
-    service = build_job_service(context)
-    context.agent_calls.mark_interrupted_writes()
-
-    def recover():
-        try:
-            while not stopped.is_set():
-                try:
-                    service.scan()
-                except Exception:
-                    logger.exception("领取或对账后台工具失败")
-                stopped.wait(max(0.1, float(interval_seconds)))
-        finally:
-            service.close()
-
-    worker = threading.Thread(target=recover, name="erp-job-dispatch", daemon=True)
-    worker.start()
-    return worker
 
 
 def main(*, on_ready: Callable[[str], None] | None = None,
@@ -51,17 +28,14 @@ def main(*, on_ready: Callable[[str], None] | None = None,
     load_env(paths.app_dir)
     log_file = configure_logging(paths.app_dir)
     paths.output_dir.mkdir(parents=True, exist_ok=True)
-    mark_interrupted_publish_jobs()
-    get_context().online_products  # 启动持久化在线商品任务恢复与执行。
-    get_context().task_queue.start()
-    get_context().order_notifications  # 处理平台回调和页面发起的订单同步；不调度周期对账。
-    get_context().fulfillment  # 执行自动预报、资料更新及平台取消传播；仓库状态由页面按需查询。
+    accounts = AccountRuntime(get_context())
+    if accounts.store.admin() is None:
+        raise RuntimeError("请先运行 python -m erp_web.accounts init-admin 初始化管理员。")
     host = os.environ.get('ERP_BIND_HOST', '127.0.0.1')
     port = paths.web_port
     server = ThreadingHTTPServer((host, port), Handler)
-    job_stop = threading.Event()
-    job_worker = start_agent_job_worker(stop_event=job_stop)
-    get_context().wechat.start()
+    server.account_runtime = accounts
+    accounts.start()
     url = f"http://127.0.0.1:{server.server_port}/"
     logger.info("ERP running at %s", url)
     logger.info("Backend log file: %s", log_file)
@@ -86,9 +60,7 @@ def main(*, on_ready: Callable[[str], None] | None = None,
     finally:
         if stop_event is not None:
             stop_event.set()
-        job_stop.set()
-        job_worker.join(timeout=5)
-        get_context().close()
+        accounts.close()
         server.server_close()
 
 

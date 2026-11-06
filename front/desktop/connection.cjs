@@ -9,12 +9,13 @@ function normalizeBackendUrl(value) {
   return url.origin
 }
 
-function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 25000, signal) {
+function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 25000, signal, session) {
   const url = new URL(pathname, baseUrl)
   return new Promise((resolve, reject) => {
     const raw = JSON.stringify(data)
     const request = (url.protocol === 'https:' ? https : http).request(url, {
       method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw),
+        ...session?.headers(),
         ...(connectionId ? { 'X-Champion-Desktop': connectionId } : {}) },
     }, (response) => {
       let body = ''
@@ -38,8 +39,9 @@ function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 250
   })
 }
 
-async function connectDesktop(baseUrl, runtime, { onDisconnected = () => {} } = {}) {
-  const registration = await requestJson(baseUrl, '/api/desktop/connect', {})
+async function connectDesktop(baseUrl, runtime, { onDisconnected = () => {}, session } = {}) {
+  const send = (pathname, data, connectionId = '', timeoutMs = 25000, signal) => requestJson(baseUrl, pathname, data, connectionId, timeoutMs, signal, session)
+  const registration = await send('/api/desktop/connect', {})
   const id = registration.connection_id
   if (typeof id !== 'string' || id.length < 32) throw new Error('桌面连接标识无效。')
   const active = new Set()
@@ -53,7 +55,7 @@ async function connectDesktop(baseUrl, runtime, { onDisconnected = () => {} } = 
       controller.abort()
       for (const callId of active) runtime.cancel(callId)
       // 断开是尽力通知；结果回执从不重试。
-      await requestJson(baseUrl, '/api/desktop/disconnect', {}, id, 3000).catch(() => {})
+      await send('/api/desktop/disconnect', {}, id, 3000).catch(() => {})
     },
   }
   async function execute(call) {
@@ -62,11 +64,11 @@ async function connectDesktop(baseUrl, runtime, { onDisconnected = () => {} } = 
       let reply
       try {
         if (call.operation === 'config.write') throw new Error('业务后端不能修改本机连接配置，请在桌面设置中保存。')
-        reply = await runtime.perform(call, (asset) => requestJson(baseUrl, '/api/desktop/asset', { id: call.id, asset }, id, 60000, controller.signal))
+        reply = await runtime.perform(call, (asset) => send('/api/desktop/asset', { id: call.id, asset }, id, 60000, controller.signal))
       } catch (error) {
         reply = { id: call.id, ok: false, error: error.message, error_code: 'DESKTOP_RESULT_UNKNOWN', outcome_unknown: true }
       }
-      if (!stopped) await requestJson(baseUrl, '/api/desktop/result', reply, id, 60000, controller.signal)
+      if (!stopped) await send('/api/desktop/result', reply, id, 60000, controller.signal)
     } catch (error) {
       if (!stopped) { await connection.stop(); onDisconnected(error) }
     } finally { active.delete(call.id) }
@@ -74,7 +76,7 @@ async function connectDesktop(baseUrl, runtime, { onDisconnected = () => {} } = 
   async function poll() {
     while (!stopped) {
       try {
-        const result = await requestJson(baseUrl, '/api/desktop/poll', {}, id, 25000, controller.signal)
+        const result = await send('/api/desktop/poll', {}, id, 25000, controller.signal)
         if (!Array.isArray(result.calls)) throw new Error('后端调用列表无效。')
         for (const call of result.calls) {
           if (stopped) break

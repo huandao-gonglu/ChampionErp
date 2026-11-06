@@ -2,6 +2,7 @@ import { computed, ref, shallowRef, nextTick } from 'vue'
 import { defineStore } from 'pinia'
 import { Chat } from '@ai-sdk/vue'
 import { DefaultChatTransport } from 'ai'
+import { accountFetch, businessStorageKey } from '@/utils/accountTransport'
 import type { UIMessage } from 'ai'
 import { AI_CHAT_RUNS_PATH, cancelChatRun, conversationEventsUrl, fetchUiMessages, forkChatConversation } from '@/api/aiWork'
 import { apiClient } from '@/api/client'
@@ -20,6 +21,7 @@ export function createChatConversationId(): string {
 }
 
 export const useAiChatStore = defineStore('aiChat', () => {
+  const selectionKey = businessStorageKey(AI_CHAT_SELECTION_KEY)
   const pageContext = useAiPageContextStore()
   const activeConversationId = ref<string | null>(null)
   const chat = shallowRef<Chat<UIMessage> | null>(null)
@@ -62,8 +64,8 @@ export const useAiChatStore = defineStore('aiChat', () => {
   // 只记住选择，不复制消息；消息与活动运行始终从服务端恢复。
   function rememberConversation(id: string | null): void {
     try {
-      if (id) localStorage.setItem(AI_CHAT_SELECTION_KEY, id)
-      else localStorage.removeItem(AI_CHAT_SELECTION_KEY)
+      if (id) localStorage.setItem(selectionKey, id)
+      else localStorage.removeItem(selectionKey)
     } catch { /* 存储不可用时仍允许当前标签页继续对话。 */ }
   }
   function finishRestore(): void {
@@ -75,7 +77,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (restored || chat.value) return Promise.resolve()
     if (restoring.value && restorePromise) return restorePromise
     let id: string | null = null
-    try { id = localStorage.getItem(AI_CHAT_SELECTION_KEY) } catch { /* 无可恢复选择。 */ }
+    try { id = localStorage.getItem(selectionKey) } catch { /* 无可恢复选择。 */ }
     if (!id?.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)) {
       finishRestore()
       return Promise.resolve()
@@ -172,7 +174,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     }
   }
   async function chatFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-    const response = await fetch(url, init)
+    const response = await accountFetch(url, init)
     if (response.status === 202) {
       const receipt = await response.json()
       const accepted = new Error(receipt.message) as AiChatError
@@ -249,7 +251,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     pendingInputIds.add(messageId)
     let response: Response
     try {
-      response = await fetch(AI_CHAT_RUNS_PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+      response = await accountFetch(AI_CHAT_RUNS_PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         id, trigger: 'submit-message', messages: [{ id: messageId, role: 'user', parts: [{ type: 'text', text }] }],
         target_draft_ids: targetDraftIds.value,
         page_context: pageContext.snapshot(),

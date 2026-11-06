@@ -445,7 +445,7 @@ def test_oauth_callback_never_forwards_credentials_from_query_string() -> None:
         mask_secret=lambda value: "masked" if value else "",
     )
 
-    assert exchanged == [{"code_or_url": "authorization-code"}]
+    assert exchanged == [{"code_or_url": "authorization-code", "state": ""}]
     assert b"query-secret" not in handler.wfile.getvalue()
 
 

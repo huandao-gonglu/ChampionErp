@@ -15,7 +15,7 @@ from ..facades.get_facade import (
     current_generated_images,
     current_image_pool,
     current_source_images,
-    exchange_mercadolibre_code_from_body,
+    exchange_mercadolibre_callback,
     get_publishing_bus,
     html_page,
     load_app_config,
@@ -32,6 +32,10 @@ from ..facades.get_facade import (
 GetHandler = Callable[[JsonRequestHandler, object], None]
 
 FRONTEND_PAGE_ROUTES = {
+    "/login": "login",
+    "/register": "register",
+    "/account": "account",
+    "/admin/users": "admin-users",
     "/": "workbench",
     "/research": "research",
     "/collect": "collect",
@@ -206,7 +210,7 @@ def handle_mercadolibre_callback(handler: JsonRequestHandler, parsed: object) ->
     static_routes.handle_ml_callback(
         handler,
         parsed,
-        exchange_code=exchange_mercadolibre_code_from_body,
+        exchange_code=exchange_mercadolibre_callback,
         mask_secret=mask_secret,
     )
 

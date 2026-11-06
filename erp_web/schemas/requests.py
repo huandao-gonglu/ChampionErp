@@ -176,6 +176,13 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/account/register": _contract(fields={"email": STRING, "display_name": STRING, "password": STRING}, required=("email", "display_name", "password")),
+    "/api/account/login": _contract(fields={"email": STRING, "password": STRING}, required=("email", "password")),
+    "/api/account/logout": _EMPTY,
+    "/api/account/password": _contract(fields={"current_password": STRING, "password": STRING}, required=("current_password", "password")),
+    "/api/admin/users": _contract(fields={"email": STRING, "display_name": STRING, "password": STRING}, required=("email", "display_name", "password")),
+    "/api/admin/users/status": _contract(fields={"user_id": STRING, "status": FieldRule("enum", choices=frozenset({"enabled", "disabled"}))}, required=("user_id", "status")),
+    "/api/admin/users/password": _contract(fields={"user_id": STRING, "password": STRING}, required=("user_id", "password")),
     '/api/desktop/connect': RequestContract(),
     '/api/desktop/poll': RequestContract(),
     '/api/desktop/disconnect': RequestContract(),

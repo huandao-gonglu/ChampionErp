@@ -1,12 +1,12 @@
 # 桌面端与统一业务后端
 
-桌面安装包包含 Electron、同一套 Vue 前端和独立 Python 本机执行器。业务后端单独部署，网页与桌面连接同一后端、使用同一份商品、草稿、订单、任务和消息历史。桌面退出只关闭本次启动的执行器，业务后端及其 worker 继续运行。
+桌面安装包包含 Electron、同一套 Vue 前端和独立 Python 本机执行器。业务后端单独部署，同一账号在网页与桌面读取相同的商品、草稿、订单、任务和消息历史；不同账号分别使用自己的业务空间。桌面退出关闭本次执行器并断开本机调用连接，业务后端及其 worker 继续运行。
 
 浏览器采集、Browser AI、Gemini Canvas 和 CLI 在用户电脑执行；需要本机 Chrome / Edge 或已安装并登录的 Codex CLI。API 模型继续由后端执行，不自动切换连接方式。
 
 ## 启动与连接
 
-开发时先启动统一后端，再在 `front/` 执行 `pnpm desktop:dev`。开发默认后端为 `http://127.0.0.1:5000`；`scripts/dev.sh` 设置端口时沿用 `ERP_PORT` / `VITE_DEV_PROXY_TARGET`。
+开发时先按[账号初始化步骤](server-deployment.md#账号版本切换)创建管理员，再启动统一后端，在 `front/` 执行 `pnpm desktop:dev`。开发默认后端为 `http://127.0.0.1:5000`；`scripts/dev.sh` 设置端口时沿用 `ERP_PORT` / `VITE_DEV_PROXY_TARGET`。
 
 安装版必须明确配置业务后端：
 
@@ -15,7 +15,9 @@
 
 地址只接受 HTTP/HTTPS 站点根地址。桌面用随机回环端口提供前端并代理普通 API、AI SSE、图片、文件及 OAuth 链接；代理目标固定为上述业务后端。原始 Host/Origin 在桌面代理处核验，当前桌面连接由主进程注入，页面不能指定其他桌面。
 
-部署后端时，`ERP_BIND_HOST` 指定监听地址，默认 `127.0.0.1`。反向代理部署应配置 `ERP_PUBLIC_URL`；确有额外站点时通过逗号分隔的 `ERP_ALLOWED_HOSTS` / `ERP_ALLOWED_ORIGINS` 放行。它们延续既有请求来源校验，不引入新的账号或多租户体系。
+部署后端时，`ERP_BIND_HOST` 指定监听地址，默认 `127.0.0.1`。反向代理应配置实际 `ERP_PUBLIC_URL`，HTTPS 公网入口使用 Secure Cookie；确有额外站点时通过 `ERP_ALLOWED_HOSTS` / `ERP_ALLOWED_ORIGINS` 放行。来源校验与账号认证分别执行。
+
+桌面先显示登录页，登录成功后才建立本机调用连接。`account-session.cjs` 在主进程内存保存远端 Cookie，剥离代理响应的 `Set-Cookie`，渲染页面只取得用户和 CSRF。后端核对空间及会话，退出、切换或失效时断开；关闭程序后重新登录，不保存远端密码或会话文件。
 
 ## 本机执行器与配置
 

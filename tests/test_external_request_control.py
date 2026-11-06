@@ -220,19 +220,22 @@ def test_http_block_notice_survives_domain_error_rewriting(monkeypatch):
             return {'ok':False,'error':'领域层的通用错误'}, 200
     monkeypatch.setattr(auth_config_facade, 'test_store_auth_payload', action)
     server = ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    from tests.account_test_utils import authenticated_headers
+    client = requests.Session()
+    client.headers.update(authenticated_headers(server))
     thread = threading.Thread(target=server.serve_forever,daemon=True)
     thread.start()
     try:
         base = f'http://127.0.0.1:{server.server_port}'
-        response = requests.post(base+'/api/test-store-auth',json={'platform':'yandex'},headers={'Origin':base})
+        response = client.post(base+'/api/test-store-auth',json={'platform':'yandex'},headers={'Origin':base})
         assert response.status_code == 200
         assert response.headers['X-External-Request-Blocked'] == '1'
         assert response.headers['X-External-Operation-Ids']
-        response = requests.get(base+'/api/external-requests/status')
+        response = client.get(base+'/api/external-requests/status')
         assert response.status_code == 200
         assert 'X-External-Request-Blocked' not in response.headers
         assert response.json()['blocks'][0]['recovery_mode'] == 'probe'
-        denied = requests.post(base+'/api/external-requests/recover',json={'block_id':response.json()['blocks'][0]['id']},headers={'Origin':'https://untrusted.example'})
+        denied = client.post(base+'/api/external-requests/recover',json={'block_id':response.json()['blocks'][0]['id']},headers={'Origin':'https://untrusted.example'})
         assert denied.status_code == 403
     finally:
         server.shutdown()

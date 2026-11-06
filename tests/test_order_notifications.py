@@ -393,6 +393,9 @@ def test_http_callback_and_reads_are_separate_from_remote_availability(store):
     svc = service(store, {})
     ctx._order_notifications = svc
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    from tests.account_test_utils import authenticated_headers
+    client = requests.Session()
+    client.headers.update(authenticated_headers(server))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
@@ -400,27 +403,27 @@ def test_http_callback_and_reads_are_separate_from_remote_availability(store):
         callback = (
             base + "/api/yandex/notifications?token=" + get_context().config.order_notification_token("yandex")
         )
-        response = requests.post(
+        response = client.post(
             callback,
             json={"notificationType": "ORDER_CREATED", "orderId": 10, "campaignId": 4},
             timeout=3,
         )
         assert response.status_code == 200
         assert response.json()["version"] == "1.0.0"
-        page = requests.get(base + "/api/orders", timeout=3)
+        page = client.get(base + "/api/orders", timeout=3)
         assert page.status_code == 200 and len(page.json()["notifications"]) == 1
         assert (
-            requests.get(base + "/api/mercadolibre/orders", timeout=3).status_code
+            client.get(base + "/api/mercadolibre/orders", timeout=3).status_code
             == 404
         )
         assert (
-            requests.post(
+            client.post(
                 base + "/api/orders/retry", json={"event_id": -1}, timeout=3
             ).status_code
             == 400
         )
         assert (
-            requests.post(
+            client.post(
                 base + "/api/yandex/notifications",
                 json={"notificationType": "PING"},
                 timeout=3,
@@ -428,7 +431,7 @@ def test_http_callback_and_reads_are_separate_from_remote_availability(store):
             == 403
         )
         assert (
-            requests.get(
+            client.get(
                 base + "/api/orders", headers={"Host": "evil.example"}, timeout=3
             ).status_code
             == 403

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextvars import copy_context
 
 from erp_web.services.external_request_context import request_operation
 from typing import Any, Literal
@@ -49,7 +50,7 @@ class OnlineProductService:
         self.owner = uuid4().hex
         self._stop = threading.Event()
         self._wake = threading.Event()
-        self._thread = threading.Thread(target=self._loop, name="online-products", daemon=True)
+        self._thread = threading.Thread(target=copy_context().run, args=(self._loop,), name="online-products", daemon=True)
         if start_worker:
             self._thread.start()
 

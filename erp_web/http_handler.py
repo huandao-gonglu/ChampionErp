@@ -12,6 +12,7 @@ from typing import Any
 from . import http_routes
 from .http_request import safe_json_body
 from .services.external_request_context import capture_request_rejections, current_operation_id
+from .services.account_request import authenticated_request
 
 access_logger = logging.getLogger("erp.access")
 response_logger = logging.getLogger("erp.http.response")
@@ -84,6 +85,16 @@ def _response_diagnostics(data: Any) -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def end_headers(self) -> None:
+        cookie = getattr(self, "account_set_cookie", "")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+            self.account_set_cookie = ""
+        if not urllib.parse.urlsplit(self.path).path.startswith("/assets/"):
+            self._headers_buffer = [line for line in getattr(self, "_headers_buffer", []) if not line.lower().startswith(b"cache-control:")]
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def log_message(self, format: str, *args: Any) -> None:
         safe_args = tuple(
             _without_query_from_request_line(arg) if isinstance(arg, str) else arg
@@ -195,6 +206,9 @@ class Handler(BaseHTTPRequestHandler):
     def write_sse_chunk(self, chunk: bytes) -> None:
         """逐块写 SSE 并立即 flush，保证增量实时送达。"""
 
+        session = getattr(self, "account_session", None)
+        if session is not None and not self.server.account_runtime.store.session_valid(session.token_hash):
+            raise BrokenPipeError("登录会话已失效，结束事件流。")
         self.wfile.write(chunk)
         self.wfile.flush()
 
@@ -202,10 +216,14 @@ class Handler(BaseHTTPRequestHandler):
         return safe_json_body(self)
 
     def do_GET(self) -> None:
-        with capture_request_rejections() as self.external_rejections:
-            http_routes.handle_get(self)
+        with authenticated_request(self, public_pages=http_routes.FRONTEND_PAGE_ROUTES) as allowed:
+            if allowed:
+                with capture_request_rejections() as self.external_rejections:
+                    http_routes.handle_get(self)
 
     def do_POST(self) -> None:
         self.request_started = time.time()
-        with capture_request_rejections() as self.external_rejections:
-            http_routes.handle_post(self)
+        with authenticated_request(self, public_pages=http_routes.FRONTEND_PAGE_ROUTES) as allowed:
+            if allowed:
+                with capture_request_rejections() as self.external_rejections:
+                    http_routes.handle_post(self)

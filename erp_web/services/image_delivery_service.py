@@ -103,6 +103,8 @@ class ImageDeliveryService:
             candidate = Path(value).expanduser()
             if not candidate.is_absolute():
                 candidate = self.paths.app_dir / candidate
+            from .workspace_files import owned_path
+            candidate = owned_path(candidate, app_dir=self.paths.app_dir)
             if candidate.is_file():
                 return candidate.resolve()
         return None

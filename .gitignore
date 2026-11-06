@@ -69,3 +69,7 @@ data/external-requests.sqlite3*
 
 # 独立本机执行器的构建产物。
 front/.desktop-runtime/
+
+# 个人业务空间与账号初始化备份均包含私有业务资料。
+/users/
+/backups/

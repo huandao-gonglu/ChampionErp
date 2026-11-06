@@ -64,7 +64,7 @@ def old_path_markers() -> tuple[str, ...]:
 
 def _server_ready(base_url: str) -> bool:
     try:
-        response = requests.get(f"{base_url}/api/state", timeout=3)
+        response = requests.get(f"{base_url}/api/account/session", timeout=3)
         return response.status_code == 200
     except requests.RequestException:
         return False
@@ -86,6 +86,8 @@ def _prepare_backend_test_app_dir(app_dir: Path) -> None:
             source_config,
             target_config,
             ignore=shutil.ignore_patterns(
+                ".env",
+                ".env.*",
                 "app_config.json",
                 "store_config.json",
                 "ai_config.snapshot.json",
@@ -106,6 +108,11 @@ def backend_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
         base_url = f"http://127.0.0.1:{port}"
         server_app_dir = tmp_path_factory.mktemp("backend-server")
         _prepare_backend_test_app_dir(server_app_dir)
+        from tests.account_test_utils import _password_hash
+        from erp_web.stores.account_store import AccountStore
+        AccountStore(server_app_dir / "accounts.sqlite3").create_user(
+            "test-admin@example.com", "测试管理员", _password_hash(), admin=True,
+        )
 
     process: subprocess.Popen[str] | None = None
     if not _server_ready(base_url):
@@ -132,7 +139,18 @@ def backend_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
             time.sleep(0.5)
         else:
             raise RuntimeError(f"ERP backend did not become ready on port {port}.")
-    yield base_url
+    client = requests.Session()
+    email = os.environ.get("ERP_TEST_EMAIL", "test-admin@example.com")
+    password = os.environ.get("ERP_TEST_PASSWORD", "仅用于隔离测试目录的管理员密码")
+    response = client.post(base_url + "/api/account/login", json={"email": email, "password": password}, timeout=10)
+    assert response.status_code == 200, "业务集成测试须提供有效的测试账号。"
+    client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
+    class BackendUrl(str):
+        pass
+    authenticated_url = BackendUrl(base_url)
+    authenticated_url.client = client
+    yield authenticated_url
+    client.close()
     if process:
         if process.poll() is None:
             process.terminate()

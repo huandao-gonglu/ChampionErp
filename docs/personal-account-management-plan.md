@@ -1,6 +1,6 @@
 # ERP 个人账号管理实施方案
 
-状态：技术选型与功能范围已确认，尚未实施。本文是后续开发方案；本次交付仅新增方案文档。
+状态：账号、个人空间隔离、网页和 Electron 接入已实现。目标环境的管理员初始化、版本发布和 HTTPS 验收尚未执行；切换步骤见[服务器部署记录](server-deployment.md#账号版本切换)。
 
 ## 1. 目标与范围
 
@@ -163,7 +163,18 @@ Vue 增加登录、注册、个人账号和用户管理页面。用户管理入�
 
 后端完成编译检查、架构测试及 `.venv/bin/python -m pytest tests -q`；前端运行相关测试、类型检查及构建；桌面运行 Node 测试并验证安装包登录链路。删除仅验证“业务接口匿名可用”等退役行为的测试，保留并适配仍有业务价值的用例，不为旧测试保留匿名旁路。
 
-实施完成后更新 [AI 上下文地图](ai-context-map.md)、[前端规范](../front/前端规范.md)、[桌面打包说明](desktop-packaging.md)及部署记录。当前文档交付只需检查方案与链接，不运行无关功能测试。
+实现入口、职责与验证说明已更新到 [AI 上下文地图](ai-context-map.md)、[前端规范](../front/前端规范.md)、[桌面打包说明](desktop-packaging.md)及部署记录。开发回归与目标环境发布验收分别记录，不把模拟平台或隔离环境测试当作线上验收。
+
+### 实现说明
+
+- 在新版本程序目录执行 `python -m erp_web.accounts init-admin --app-dir <ERP_APP_DIR> --email <管理员邮箱>`，通过终端交互输入密码。命令先备份原业务库、配置和素材，再将原目录绑定初始管理员；重复执行不覆盖账号、改密或重新分配归属。
+- `Handler` 在路由、桌面关联和展示 claim 前验证来源、会话、CSRF 与角色，再通过 `bind_context` 选择空间。`AccountRuntime` 统一恢复已有空间；注册、登录和会话查询不创建个人业务库，实际业务访问才装配。
+- 新用户模板来自 `erp_web/assets/account-defaults/`，不继承管理员配置和记忆。新用户模型忽略环境变量密钥引用，须保存自己的 API Key；平台应用环境凭据仍由各集成 owner 管理。
+- 新订单回调包含 owner，新 OAuth state 带空间归属；目标空间仍校验原 token/state/PKCE。缺少归属的旧回调归初始管理员，保留原凭据校验。
+- Electron 的远端 Cookie 只保存在 `account-session.cjs` 主进程内存；登录后建立会话绑定的本机连接。代理剥离 `Set-Cookie`，不向渲染页面转交 Secure Cookie。
+- 退出、改密或会话失效通过整页重载释放业务 Store、KeepAlive 和订阅；采集队列、图片请求及聊天选择按用户 ID 分开，并在退出时清除。已提交任务仍按原领域规则执行。
+
+主要回归见 `tests/test_accounts.py`、`tests/test_server_recovery.py`、`front/src/router/__tests__/accounts.test.ts` 和 `front/desktop/account-session.test.cjs`。原业务 HTTP 测试使用真实账号库会话夹具，不保留匿名业务旁路。
 
 ## 8. 后续充值与会员的衔接
 

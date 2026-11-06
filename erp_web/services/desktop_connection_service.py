@@ -47,6 +47,7 @@ class _Call:
 
 @dataclass
 class _Connection:
+    session_hash: str = ''
     touched: float = field(default_factory=time.monotonic)
     queue: deque = field(default_factory=deque)
     calls: dict[str, _Call] = field(default_factory=dict)
@@ -56,34 +57,46 @@ class _Connection:
 class DesktopConnections:
     LEASE_SECONDS = 45
 
-    def __init__(self):
+    def __init__(self, *, session_validator=None):
+        self.session_validator = session_validator
         self.condition = Condition()
         self.connections: dict[str, _Connection] = {}
         self.stopped = Event()
         self.worker = Thread(target=self._expire, name='desktop-connections', daemon=True)
         self.worker.start()
 
-    def connect(self):
+    def connect(self, *, session_hash=''):
         with self.condition:
             if self.stopped.is_set():
                 raise DesktopUnavailable()
+            if self.session_validator is not None and not self.session_validator(session_hash):
+                raise DesktopUnavailable('登录会话已失效，请重新登录。')
             key = secrets.token_urlsafe(32)
-            self.connections[key] = _Connection()
+            self.connections[key] = _Connection(session_hash=session_hash)
             return {'ok': True, 'connection_id': key}
 
     def _get(self, key):
         connection = self.connections.get(key)
         if connection is None:
             raise DesktopUnavailable()
-        if time.monotonic() - connection.touched > self.LEASE_SECONDS:
+        if (time.monotonic() - connection.touched > self.LEASE_SECONDS
+                or (self.session_validator is not None and not self.session_validator(connection.session_hash))):
             self.disconnect(key)
             raise DesktopUnavailable()
         return connection
 
-    def validate_connection(self, key):
+    def validate_connection(self, key, *, session_hash=''):
         with self.condition:
-            self._get(key)
+            connection = self._get(key)
+            if self.session_validator is not None and connection.session_hash != session_hash:
+                raise DesktopUnavailable('桌面连接不属于当前登录会话。')
         return key
+
+    def revoke_sessions(self, token_hash=None):
+        with self.condition:
+            for key, connection in list(self.connections.items()):
+                if token_hash is None or connection.session_hash == token_hash:
+                    self.disconnect(key)
 
     def disconnect(self, key):
         with self.condition:
@@ -202,7 +215,8 @@ class DesktopConnections:
         while not self.stopped.wait(2):
             with self.condition:
                 for key, connection in list(self.connections.items()):
-                    if time.monotonic() - connection.touched > self.LEASE_SECONDS:
+                    if (time.monotonic() - connection.touched > self.LEASE_SECONDS
+                            or (self.session_validator is not None and not self.session_validator(connection.session_hash))):
                         self.disconnect(key)
 
     def close(self):
@@ -225,13 +239,20 @@ def desktop_request(func):
     def wrapped(handler, *args, **kwargs):
         headers = getattr(handler, 'headers', None)
         key = str(headers.get('X-Champion-Desktop', '') or '') if headers else ''
+        from urllib.parse import urlsplit
+        if urlsplit(handler.path).path.startswith(('/api/account/', '/api/admin/')):
+            key = ''
+        if not getattr(handler, 'desktop_scope_allowed', True):
+            key = ''
         if key:
             from erp_web.context import get_context
             from erp_web.http_request import validate_request_metadata
             from erp_web.schemas.requests import RequestValidationError
             try:
                 validate_request_metadata(handler)
-                get_context().desktop_connections.validate_connection(key)
+                from .account_request import current_session
+                session = current_session()
+                get_context().desktop_connections.validate_connection(key, session_hash=session.token_hash if session else '')
             except RequestValidationError as exc:
                 handler.send_json({'ok': False, 'error': str(exc), 'error_code': exc.error_code}, exc.status_code)
                 return

@@ -19,6 +19,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from erp_web.http_route_units import (
+    account_routes,
     task_queue_routes,
     wechat_routes,
     alibaba_authorization_routes,
@@ -76,6 +77,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     """
 
     endpoints: set[tuple[str, str]] = set()
+    endpoints.update(("GET", path) for path in account_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in task_queue_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in wechat_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in alibaba_authorization_routes.GET_HANDLED_PATHS)
@@ -93,6 +95,15 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
+        reason="个人账号、会话及管理员用户管理只供受信界面和部署命令使用，不向模型提供身份或权限操作。")
+      for method, path in (
+          ("GET", "/api/account/session"), ("GET", "/api/admin/users"),
+          *(("POST", path) for path in account_routes.HANDLED_PATHS),
+      )),
+    *(AiCapabilityCoverageEntry(method="GET", path=path, business_domain="前端页面", disposition="excluded",
+        reason="账号界面只加载页面资源；业务 API 独立认证。")
+      for path in ("/login", "/register", "/account", "/admin/users")),
     *(AiCapabilityCoverageEntry(method='POST', path='/api/desktop/' + suffix,
         business_domain='本机连接协议', disposition='excluded',
         reason='仅 Electron 主进程使用的调用关联与素材交接；模型不能选择桌面或消费传输协议。')

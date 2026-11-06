@@ -137,10 +137,8 @@ def normalize_platforms(value: Any) -> list[str]:
 def resolve_local_path(path: str, app_dir: Path | str | None) -> Path | None:
     if not path or not app_dir:
         return None
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        candidate = Path(app_dir) / candidate
-    return candidate
+    from .workspace_files import owned_path
+    return owned_path(path, app_dir=app_dir)
 
 
 def preview_for_path(path: str, app_dir: Path | str | None) -> str:
@@ -236,7 +234,7 @@ def upload_images(app_dir: Path | str, uploads: list[dict[str, Any]], product_id
             source_path = str(upload.get("path") or upload.get("local_path") or "").strip()
             if not source_path:
                 continue
-            src = Path(source_path)
+            src = resolve_local_path(source_path, app_dir)
             if not src.exists() or not src.is_file():
                 continue
             dest = target_dir / safe_filename(str(upload.get("filename") or src.name), src.suffix or ".png")
@@ -361,9 +359,7 @@ def materialize_image_values(
         if text.startswith(("http://", "https://")):
             item = download_remote_image(app_dir, text, product_id, index)
         else:
-            src = Path(text)
-            if not src.is_absolute():
-                src = Path(app_dir) / src
+            src = resolve_local_path(text, app_dir)
             uploads = (
                 upload_images(
                     app_dir,
@@ -436,7 +432,7 @@ def delete_images(pool: list[dict[str, Any]], image_ids: list[str], app_dir: Pat
                 full = resolve_local_path(str(item.get("path") or ""), app_dir)
                 try:
                     root = images_root(app_dir).resolve()
-                    if full and str(full.resolve()).startswith(str(root)) and full.exists():
+                    if full and full.resolve().is_relative_to(root) and full.exists():
                         full.unlink()
                 except Exception:
                     pass

@@ -320,17 +320,19 @@ def test_http_login_needs_no_conversation_and_status_exposes_qr_without_credenti
 
     service.api.get_qr_code, service.api.poll_qr_status = get_qr, poll
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    from tests.account_test_utils import authenticated_headers
+    auth_headers = authenticated_headers(server)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_port}"
     try:
-        request = urllib.request.Request(url + "/api/wechat/login", data=b"{}", headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(url + "/api/wechat/login", data=b"{}", headers={"Content-Type": "application/json", **auth_headers})
         with urllib.request.urlopen(request, timeout=3) as response:
             payload = json.load(response)
         assert payload["ok"] and not payload["bound"]
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            with urllib.request.urlopen(url + "/api/wechat/status", timeout=3) as response:
+            with urllib.request.urlopen(urllib.request.Request(url + "/api/wechat/status", headers=auth_headers), timeout=3) as response:
                 payload = json.load(response)
             if payload["qr_image"]:
                 break
@@ -625,28 +627,30 @@ def test_existing_delivery_database_adds_types_without_losing_queued_messages(tm
 def test_http_forwarding_settings_validate_and_persist_without_binding():
     context = get_context()
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    from tests.account_test_utils import authenticated_headers
+    auth_headers = authenticated_headers(server)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_port}/api/wechat/settings"
     try:
-        request = urllib.request.Request(url, data=json.dumps({"forward_types": ["reply", "error"]}).encode(), headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(url, data=json.dumps({"forward_types": ["reply", "error"]}).encode(), headers={"Content-Type": "application/json", **auth_headers})
         with urllib.request.urlopen(request, timeout=3) as response:
             payload = json.load(response)
         assert payload["forward_types"] == ["reply", "error"] and not payload["bound"]
         assert context.config.system_settings()["wechat_forward_types"] == ["reply", "error"]
-        request = urllib.request.Request(url, data=b'{"forward_types":[]}', headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(url, data=b'{"forward_types":[]}', headers={"Content-Type": "application/json", **auth_headers})
         with urllib.request.urlopen(request, timeout=3) as response:
             assert json.load(response)["forward_types"] == []
         general_url = f"http://127.0.0.1:{server.server_port}/api/system-settings"
-        request = urllib.request.Request(general_url, data=b'{"wechat_forward_types":[]}', headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(general_url, data=b'{"wechat_forward_types":[]}', headers={"Content-Type": "application/json", **auth_headers})
         with urllib.request.urlopen(request, timeout=3) as response:
             assert json.load(response)["wechat_forward_types"] == []
-        request = urllib.request.Request(url, data=b'{}', headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(url, data=b'{}', headers={"Content-Type": "application/json", **auth_headers})
         with pytest.raises(urllib.error.HTTPError) as missing:
             urllib.request.urlopen(request, timeout=3)
         assert missing.value.code == 400
         for invalid in ("reply", ["thinking"], [True], None):
-            request = urllib.request.Request(url, data=json.dumps({"forward_types": invalid}).encode(), headers={"Content-Type": "application/json"})
+            request = urllib.request.Request(url, data=json.dumps({"forward_types": invalid}).encode(), headers={"Content-Type": "application/json", **auth_headers})
             with pytest.raises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(request, timeout=3)
             assert error.value.code == 400

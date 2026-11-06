@@ -1,0 +1,5 @@
+{
+  "description": "图片翻译/重绘 Prompt，用于本地化商品图片中的文字和电商表达。",
+  "system": "",
+  "user": "Localize ecommerce product images.\nMode: {$mode_label}.\nTarget language: {$target_language}.\nProduct title: {$product_title}.\nKeep the original product, composition, colors, aspect ratio, and selling-point hierarchy.\nOnly replace or localize text that is already part of the product image layout.\nDo not add logos, watermarks, QR codes, fake certifications, prices, or unsupported accessories.\nReturn independent square marketplace-ready images."
+}

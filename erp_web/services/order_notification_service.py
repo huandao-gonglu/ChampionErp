@@ -7,6 +7,7 @@ import re
 import secrets
 import threading
 import time
+from contextvars import copy_context
 from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import urlsplit
@@ -32,6 +33,7 @@ class OrderNotificationService:
         config_provider: Callable[[], dict[str, Any]],
         *,
         config_store,
+        owner_id: str = "",
         adapters: dict[str, Callable[[dict[str, Any]], OrderAdapter]],
         parser: Callable[
             [str, dict[str, Any], dict[str, Any]],
@@ -50,6 +52,7 @@ class OrderNotificationService:
         self.store = store
         self.config_provider = config_provider
         self.config_store = config_store
+        self.owner_id = owner_id
         self.adapters = adapters
         self.parser = parser
         self.stop_event = threading.Event()
@@ -57,8 +60,8 @@ class OrderNotificationService:
         if start_worker:
             for platform in PLATFORMS:
                 worker = threading.Thread(
-                    target=self._run,
-                    args=(platform,),
+                    target=copy_context().run,
+                    args=(self._run, platform),
                     name=f"orders-{platform}",
                     daemon=True,
                 )
@@ -72,7 +75,7 @@ class OrderNotificationService:
         self, platform: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
         expected = self.config_store.order_notification_token(platform)
-        if not expected or not secrets.compare_digest(expected, token):
+        if not expected or not secrets.compare_digest(expected.encode("utf-8"), token.encode("utf-8")):
             raise PermissionError("订单回调凭据无效")
         event, response = self.parser(platform, body, self.config_provider())
         self.store.receive(platform, event)
@@ -89,7 +92,7 @@ class OrderNotificationService:
                     "platform": platform,
                     "account_id": accounts.get(platform, ""),
                     "configured": platform in accounts,
-                    "callback_url": f"{base}/api/{platform}/notifications?token={self.config_store.order_notification_token(platform)}"
+                    "callback_url": self._callback_url(base, platform)
                     if base
                     else "",
                     "last_received": self.store.setting("last_received:" + platform),
@@ -97,6 +100,11 @@ class OrderNotificationService:
                 for platform in PLATFORMS
             ],
         }
+
+    def _callback_url(self, base, platform):
+        owner = self.owner_id
+        suffix = f"&owner={owner}" if owner else ""
+        return f"{base}/api/{platform}/notifications?token={self.config_store.order_notification_token(platform)}{suffix}"
 
     def configure(self, public_url: str) -> dict[str, Any]:
         value = public_url.strip().rstrip("/")

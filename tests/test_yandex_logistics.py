@@ -318,9 +318,9 @@ def test_http_contract_reaches_real_owner_and_preserves_bindings(routing):
 
 def test_warehouse_http_endpoints_are_registered(backend_server):
     import requests
-    read = requests.get(backend_server + '/api/yandex/warehouses', timeout=5)
+    read = backend_server.client.get(backend_server + '/api/yandex/warehouses', timeout=5)
     assert read.status_code == 200 and 'warehouses' in read.json()
-    invalid = requests.post(backend_server + '/api/yandex/warehouses/logistics', json={'revision': 0}, timeout=5)
+    invalid = backend_server.client.post(backend_server + '/api/yandex/warehouses/logistics', json={'revision': 0}, timeout=5)
     assert invalid.status_code == 400
 
 

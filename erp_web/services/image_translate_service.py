@@ -112,7 +112,8 @@ def _bytes_from_result(result: dict[str, Any]) -> tuple[bytes, str]:
 
     path = str(result.get("path") or result.get("local_path") or "").strip()
     if path:
-        candidate = Path(path)
+        from .workspace_files import owned_path
+        candidate = owned_path(path)
         if candidate.exists() and candidate.is_file():
             return candidate.read_bytes(), candidate.suffix or ".png"
 

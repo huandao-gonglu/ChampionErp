@@ -18,6 +18,7 @@ from pydantic_ai import CancellationToken, RunCancelled
 from erp_web.context import get_context
 from erp_web.http_handler import Handler
 from http.server import ThreadingHTTPServer
+from tests.account_test_utils import authenticated_headers
 from erp_web.services.desktop_connection_service import DesktopConnections, DesktopUnavailable, bind_desktop_connection
 from erp_web.services.ai_run_cancellation import bind_cancellation_token
 
@@ -60,13 +61,14 @@ def test_backend_does_not_import_local_execution_implementations(tmp_path):
 def test_full_collection_over_http_shares_backend_product_and_asset():
     context = get_context()
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    auth_headers = authenticated_headers(server)
     server_thread = Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
 
     def post(path, body, connection=''):
         request = urllib.request.Request(base + path, data=json.dumps(body).encode(),
-            headers={'Content-Type': 'application/json', **({'X-Champion-Desktop': connection} if connection else {})})
+            headers={'Content-Type': 'application/json', **auth_headers, **({'X-Champion-Desktop': connection} if connection else {})})
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.load(response)
 
@@ -92,20 +94,20 @@ def test_full_collection_over_http_shares_backend_product_and_asset():
             worker.result(timeout=10)
         assert result['ok'], result
         saved = result['product']
-        with urllib.request.urlopen(base + '/api/products-index') as response:
+        with urllib.request.urlopen(urllib.request.Request(base + '/api/products-index', headers=auth_headers)) as response:
             items = json.load(response)['items']
         assert saved['product_id'] in {row.get('product_id') or row.get('id') for row in items}
         asset = saved['source']['image_pool'][0]
         assert asset['path'].startswith('data/images/')
         assert (context.paths.app_dir / asset['path']).read_bytes() == png()
-        with urllib.request.urlopen(base + asset['preview_url']) as response:
+        with urllib.request.urlopen(urllib.request.Request(base + asset['preview_url'], headers=auth_headers)) as response:
             assert response.read() == png()
         post('/api/desktop/disconnect', {}, connection)
         failed = post('/api/collect-from-browser-tab', {'product_url': URL})
         assert not failed['ok'] and failed['diagnostics']['error_code'] == 'DESKTOP_UNAVAILABLE'
         assert context.products.load_product_from_index(saved['product_id'])['source']['title'] == '采集测试商品'
         # 桌面断开后，后端普通读取仍使用原数据。
-        with urllib.request.urlopen(base + '/api/products-index') as response:
+        with urllib.request.urlopen(urllib.request.Request(base + '/api/products-index', headers=auth_headers)) as response:
             assert json.load(response)['items']
     finally:
         server.shutdown()
