@@ -7,7 +7,9 @@
 | ERP | <https://107.174.48.241/> | `127.0.0.1:5050` |
 | New API | <https://107.174.48.241:8443/> | `127.0.0.1:3000` |
 
-ERP 发布提交为 `cb4364b5ba118fd407e23e73d6e602268733aacc`，New API 镜像标签为 `champion/new-api:b5595206a1b6511da804a30f42c6ac17c310aae9`，镜像 ID 为 `sha256:5b3f96d5f404c8ed965be1ed62e1875d2e7c6c6db2e011c9cd670d4faa5719dd`。服务器镜像归档为 `/opt/new-api/artifacts/new-api-b5595206a-linux-amd64.tar.gz`，SHA256 为 `125b2f43dbbd45c83132c0555fe10bee694ffaed66446e422a3aca072efc1e3f`。
+ERP 当前运行提交为 `d0cc1ff668bddeffa208e237de9e5736fd7b7d8b`，New API 镜像为 `champion/new-api:62286b3f3fdc614c3935bb24a5d97d36a8448324`。镜像 ID 为 `sha256:9d6454155bdebb2d5c92d184e0b1671584f9752363430dd7adc925350dbd93f7`。本次切换前两端各自的备份文件名为 `20261106T111150Z-fixed-models.tar.gz`，已分别通过恢复校验。
+
+ERP 固定使用文本模型 `dsflash`（`deepseek-flash`）与图片模型 `qwenflash`（`qwen-image-3.0`）。公网验收覆盖运营账号和普通账号自动登录、建号时配发独立的 default 分组密钥、重复取用同一把密钥、模型设置写保护。查询有效绑定账号时缺失托管密钥数与重复数都为零。生产文本、出图及编辑请求均通过网关鉴权，零余额验收账号得到 `insufficient_user_quota`，验收后已停用。本地用两个账号和模拟上游分别跑通三种调用与结果解析。真实上游输出和成功扣费需使用有余额的账号验收。
 
 [公网 Nginx 配置](../deploy/nginx/champion-public-ip.conf) 按端口转发，覆盖客户端地址头并筛选上游 Cookie。两端均封住 `/api/internal/`。80 端口提供 ACME 验证，并将普通 HTTP 请求重定向到 ERP 的 HTTPS 地址。IP 证书位于 `/etc/letsencrypt/live/champion-erp-ip/`，`champion-certbot-renew.timer` 每天检查两次，模拟续期与重载已通过。切换前配置保存在 `/srv/champion-erp/backups/20261106T095331Z-public-ports/`。
 
