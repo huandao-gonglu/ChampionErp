@@ -1,12 +1,23 @@
 # 服务器部署、账号与 New API 验收
 
-## 公网 IP 入口准备（2026-11-06）
+## 当前公网部署（2026-11-06）
 
-Nginx 已在服务器接管 80 和 443。80 提供 ACME 验证，公网 `https://107.174.48.241/healthz` 已从 Mac 直连验证，返回 204 且证书校验通过。IP 证书位于 `/etc/letsencrypt/live/champion-erp-ip/`，`champion-certbot-renew.timer` 每天检查两次，模拟续期及 Nginx 重载已通过。
+| 服务 | 用户入口 | Nginx 上游 |
+| --- | --- | --- |
+| ERP | <https://107.174.48.241/> | `127.0.0.1:5050` |
+| New API | <https://107.174.48.241:8443/> | `127.0.0.1:3000` |
 
-当前公网根路径返回 503，ERP 与 New API 的业务访问仍沿用下文的 SSH 通道。计划入口为 ERP 的 `/` 和 New API 的 `/newapi/`。开放前需完成子路径适配，并按同源应用核对权限、Cookie 和前端内容的可信范围。
+ERP 发布提交为 `cb4364b5ba118fd407e23e73d6e602268733aacc`，New API 镜像标签为 `champion/new-api:b5595206a1b6511da804a30f42c6ac17c310aae9`，镜像 ID 为 `sha256:5b3f96d5f404c8ed965be1ed62e1875d2e7c6c6db2e011c9cd670d4faa5719dd`。服务器镜像归档为 `/opt/new-api/artifacts/new-api-b5595206a-linux-amd64.tar.gz`，SHA256 为 `125b2f43dbbd45c83132c0555fe10bee694ffaed66446e422a3aca072efc1e3f`。
 
-## 当前部署
+[公网 Nginx 配置](../deploy/nginx/champion-public-ip.conf) 按端口转发，覆盖客户端地址头并筛选上游 Cookie。两端均封住 `/api/internal/`。80 端口提供 ACME 验证，并将普通 HTTP 请求重定向到 ERP 的 HTTPS 地址。IP 证书位于 `/etc/letsencrypt/live/champion-erp-ip/`，`champion-certbot-renew.timer` 每天检查两次，模拟续期与重载已通过。切换前配置保存在 `/srv/champion-erp/backups/20261106T095331Z-public-ports/`。
+
+从 Mac 公网直连已验证 ERP 的 443 登录、自动 POST 到 8443、303 进入 `/keys`、运营身份及退出联动。桌面新包的 IPC 和浏览器表单同样通过两个公网地址完成交接。验收使用入口组件测试、实际安装包模块和 HTTP 客户端。合成 Cookie 在回环上游的实际核对表明 ERP 只收到 `champion_session`，New API 只收到本应用的 Cookie。两端均拒绝错误端口的认证 Origin。
+
+桌面 `connection.json` 已切换到 ERP 公网 HTTPS 地址，正在运行的桌面程序需重启。普通访问可直接通过公网 HTTPS 完成。
+
+## 公网切换前的内网部署记录
+
+以下入口、镜像与快照对应此前的 SSH 部署。
 
 2026-11-06 已按用户选择，在既有 `107.174.48.241` 完成 ERP 个人账号版与修改版 New API 的内网部署。管理员邮箱为 `huandao-gonglu@qq.com`。两个服务独立运行、独立持久化，业务端口只监听回环地址；本次未配置公网 HTTPS 或官方支付商户。
 
