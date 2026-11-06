@@ -1,5 +1,11 @@
 # 服务器部署、账号与 New API 验收
 
+## 公网 IP 入口准备（2026-11-06）
+
+Nginx 已在服务器接管 80 和 443。80 提供 ACME 验证，公网 `https://107.174.48.241/healthz` 已从 Mac 直连验证，返回 204 且证书校验通过。IP 证书位于 `/etc/letsencrypt/live/champion-erp-ip/`，`champion-certbot-renew.timer` 每天检查两次，模拟续期及 Nginx 重载已通过。
+
+当前公网根路径返回 503，ERP 与 New API 的业务访问仍沿用下文的 SSH 通道。计划入口为 ERP 的 `/` 和 New API 的 `/newapi/`。开放前需完成子路径适配，并按同源应用核对权限、Cookie 和前端内容的可信范围。
+
 ## 当前部署
 
 2026-11-06 已按用户选择，在既有 `107.174.48.241` 完成 ERP 个人账号版与修改版 New API 的内网部署。管理员邮箱为 `huandao-gonglu@qq.com`。两个服务独立运行、独立持久化，业务端口只监听回环地址；本次未配置公网 HTTPS 或官方支付商户。
