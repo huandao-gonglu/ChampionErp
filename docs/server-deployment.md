@@ -6,8 +6,8 @@
 
 | 内容 | 实际版本或位置 |
 | --- | --- |
-| ERP 运行代码 | `a00f45f9bdca0b408e75fee44cc655ae4c10e761` |
-| ERP 发布目录 | `/opt/champion-erp/releases/20261106-account-newapi` |
+| ERP 运行代码 | `cb4364b5ba118fd407e23e73d6e602268733aacc` |
+| ERP 发布目录 | `/opt/champion-erp/releases/20261106-auto-newapi` |
 | ERP 程序入口 | `/opt/champion-erp/current`，指向上述发布 |
 | Python 环境 | `/opt/champion-erp/venv`，Python 3.12.3；账号版增加 `argon2-cffi` |
 | ERP 数据 | `/var/lib/champion-erp`，账号库 `accounts.sqlite3`，原管理员业务数据保留原位，普通用户空间位于 `users/<用户ID>/` |
@@ -15,10 +15,10 @@
 | ERP 监听与本机入口 | `127.0.0.1:5050`；Mac 访问 <http://127.0.0.1:15050> |
 | New API 源码 | 同级独立仓库 `/Users/hdgl/work/new-api`，分支 `codex/erp-integration` |
 | New API 上游 | 官方 `v1.0.0-rc.48`，提交 `706144769e5bed5a47b78721e3bb11da3cf4c0b9` |
-| New API 改造提交 | `515f0fa7ab8e5ec4bb50594432861f2870b17128` |
-| New API 运行版本 | `v1.0.0-rc.48-erp.515f0fa7ab8e`，Linux/amd64 |
-| New API 镜像 | `champion/new-api:515f0fa7ab8e5ec4bb50594432861f2870b17128` |
-| 本地镜像 ID | `sha256:dba131776de0ac12c4d979382e77895ed69d6601165b4500563d9ac93a6c3d35`；这是本机构建镜像 ID，没有镜像仓库 RepoDigest |
+| New API 改造提交 | `fe8edf388783655de8e569d891c9dd2a571f100f` |
+| New API 运行版本 | `v1.0.0-rc.48-erp.fe8edf388783`，Linux/amd64 |
+| New API 镜像 | `champion/new-api:fe8edf388783655de8e569d891c9dd2a571f100f` |
+| 本地镜像 ID | `sha256:ad44f94f7f6f6d78bc14c87c520f9bce5876db4704c454aa069cec81a49f461d`；这是本机构建镜像 ID，没有镜像仓库 RepoDigest |
 | New API 部署与数据 | `/opt/new-api/deploy`；`/var/lib/new-api/new-api.db`，运行身份 UID/GID 10001，数据目录权限 0700 |
 | New API 服务 | Docker 容器 `champion-new-api`，重启策略 `unless-stopped`，健康检查通过 |
 | New API 监听与本机入口 | `127.0.0.1:3000`；Mac 访问 <http://localhost:13000> |
@@ -33,9 +33,11 @@
 
 ERP 管理员 ID 为 `3552abddc46b46a2baad9bce26f4dc87`，已由服务器 CLI 明确绑定 New API 原生 root 运营账号。普通交接固定创建普通计费用户，ERP 管理员角色不会自动提权。运营账号重复绑定已实测幂等。
 
-从 ERP 的「个人账号 → Token 与账单」打开 New API，在 New API 页面生成关联码，回到已登录的 ERP 核对并确认，再在 New API 完成交接。桌面主进程与系统浏览器不共享 Cookie，使用同一流程；新用户仍在 ERP 注册。
+从 ERP 的「个人账号 → Token 与账单」点击打开后，直接自动登录 New API，不再输入关联码、点击继续或确认账号。网页用来源绑定的一次性票据 POST 交接；桌面通过主进程和本机临时页面自动提交，不与系统浏览器共享 Cookie。新用户仍在 ERP 注册；敏感操作保留二次验证。
 
-`/Applications/Champion ERP.app` 已更新为本次账号与 New API 版，版本号沿用 `1.2.5`。实际安装的 `app.asar` 与本次构建摘要一致：`de0cbf66bcc707ff0e52c0513c22c11772daa762788d7c0cd71edcc4a16e9531`。旧程序备份在 `/Users/hdgl/Library/Application Support/Champion ERP/install-backups/20261106-150452/Champion ERP.before-account-newapi.app`。本机构建尚未签名、公证。本机浏览器资料、CLI 和本机模型设置继续保存在原电脑。
+本次新桌面包位于 `/Users/hdgl/Library/Application Support/Champion ERP/updates/newapi-auto-login-20261106/Champion ERP.app`，版本号沿用 `1.2.5`，`app.asar` SHA256 为 `236ee96e69cd1d2134fbfd66164e061012784a76e56d970bd680932782f6fb7e`。当前 `/Applications/Champion ERP.app` 正在运行，已准备退出后安装：`install-when-closed.py` 等待正常退出后备份旧程序并原子替换；如安装目录已被其他更新改动则跳过，避免覆盖并行更新。状态记录在同目录 `install.json`，旧程序备份位置为 `Champion ERP.before-auto-login.app`。截至本次交付，状态为 `waiting_for_exit`；退出后重新打开生效。
+
+本机构建尚未签名、公证；本机浏览器资料、CLI、模型配置和业务数据不因安装包更新迁移。本次从独立检出构建，只发布自动登录修复，保留原工作区的并行品牌修改。
 
 ### SSH 入口
 
@@ -52,7 +54,18 @@ ERP 使用主机名 `127.0.0.1`，New API 使用 `localhost`，必须按上表�
 
 正式公开部署仍需两个独立 HTTPS 主机名、有效证书、Secure Cookie、精确 Origin 和可信代理；完成后再切换双方公开地址。当前 HTTP 只在回环地址及 SSH 加密通道内使用，ERP/New API 端口均未直接对公网开放。
 
-## 本次实际验收
+## 自动登录修复验收（2026-11-06）
+
+- 真实 ERP 网页账号接口直接签发 60 秒票据，经 `POST /api/erp/login` 返回 303 到钱包、Key 或消费页，未经过「Sign in with ERP」或手动关联码步骤。
+- 运营账号保留既有 root 绑定；两个新普通用户各自进入原生普通计费账号，同一用户的网页与实际新安装包 IPC 进入相同用户，跨账号读取模型 Key 被拒绝。
+- 实际新包的主进程申请票据、生成本机一次性页面、系统浏览器 POST、原生刷新完成联调；未操作图形界面。重放本机入口或票据被拒绝，错来源无法消费票据。
+- 桌面退出撤销对应原生会话，另一 ERP 设备的原生会话仍有效。原计费用户、绑定、余额和三条消费记录均保留；本次没有模型调用费用。
+- SQLite 3.50.4、PostgreSQL 18.6、MySQL 8.4.13 的八项 ERP 相关 Go 回归均通过；数据库结构未改变。相关五个 Go 包通过，前端 2465 项通过；共享加载/错误组件继续复用。
+- ERP 独立检出完成全后端 4143 项及 53 个 subtest，前端 1126 项、桌面 17 项、类型检查、生成契约检查和构建；lint 无新增错误，保留 16 项原有警告。
+- 切换前快照分别为 `/srv/champion-erp/backups/20261106-before-auto-login.tar.gz` 和 `/srv/new-api/backups/20261106-before-auto-login.tar.gz`；验收后最新快照见下文。两次快照均独立恢复校验通过。
+- 账号验收摘要位于 `/opt/new-api/deployment-records/20261106-auto-login/acceptance.json`；测试账号已禁用、临时 Key 已撤销、独立数据库和凭据已清理。
+
+## 原账号版本验收记录
 
 本次通过实际服务、API、CLI 和安装包内主进程模块验证；未操作图形界面。
 
@@ -72,9 +85,9 @@ ERP 使用主机名 `127.0.0.1`，New API 使用 `localhost`，必须按上表�
 
 | 范围 | 最终结果 |
 | --- | --- |
-| ERP 全后端 | `4141 passed, 53 subtests passed`，包含编译和架构边界验证 |
+| ERP 全后端 | `4143 passed, 53 subtests passed`，包含编译和架构边界验证 |
 | ERP 前端 | 128 个文件，1126 个测试通过；类型、API 类型检查和网页/桌面构建通过 |
-| ERP 桌面 Node | 14 个测试通过；实际安装包内账号代理完成真实服务联调 |
+| ERP 桌面 Node | 17 个测试通过；实际安装包内账号代理完成真实服务联调 |
 | New API 相关 Go 包 | `controller`、`model`、`middleware`、`service`、`router` 全部通过 |
 | New API 前端 | 203 个文件、2465 个测试通过；类型检查、相关文件 lint、完整生产构建通过 |
 | SQLite 3.50.4 | 新库及官方发布库升级，各连续启动两次；原数据及旧、新索引保留 |
@@ -91,9 +104,9 @@ ERP 使用主机名 `127.0.0.1`，New API 使用 `localhost`，必须按上表�
 
 ## 镜像与对应源码
 
-- 镜像归档：`/opt/new-api/artifacts/new-api-515f0fa7-linux-amd64.tar.gz`，Linux/amd64，84,313,000 字节。
-- 归档 SHA256：`2b73ea148ac1e678447f02de7c9bbcacbc4c5cf0373dfadd861002f24308ea10`，同目录另有 `.sha256` 文件。该摘要对应镜像归档，区别于上表镜像 ID。
-- 网络使用者可从 <http://localhost:13000/source/new-api.tar.gz> 或登录页、页脚获取修改版源码。实际下载与构建归档 SHA256 都为 `ac0ce160b57cd7602a11c0fcc573c9c5954615091fe648a961ecfe2ded4897c2`，7,140,150 字节，内含 `SOURCE_REVISION=515f0fa7ab8e5ec4bb50594432861f2870b17128`。
+- 镜像归档：`/opt/new-api/artifacts/new-api-fe8edf388-linux-amd64.tar.gz`，Linux/amd64，84,316,090 字节。
+- 归档 SHA256：`2045b05b51e67dfc43a4ed0b7fb095089d7404c522decac69bf06a19082850ce`，同目录另有 `.sha256` 文件。该摘要对应镜像归档，区别于上表镜像 ID。
+- 网络使用者可从 <http://localhost:13000/source/new-api.tar.gz> 或登录页、页脚获取修改版源码。实际下载与构建归档 SHA256 都为 `ac5e752ea2177f78d573e4eb09e2e374ed5fa6a67750b40a28e350154039703f`，7,140,491 字节，内含 `SOURCE_REVISION=fe8edf388783655de8e569d891c9dd2a571f100f`。
 - 原 AGPL-3.0、NOTICE、第三方声明及 New API / QuantumNous 标识保留；源码归档不含 `.git`、数据库、运行配置或真实凭据。
 - 独立源码仓库的 `ERP-INTEGRATION.md` 与 `deploy/erp/` 提供入口边界、构建、运行配置示例、运营绑定、迁移及备份工具。
 
@@ -154,8 +167,8 @@ ERP 应用日志另存 `/var/lib/champion-erp/data/logs/backend.log`。代码和
 
 | 快照 | 位置 | 已验证内容 |
 | --- | --- | --- |
-| ERP | `/srv/champion-erp/backups/20261106-account-newapi.tar.gz` | 75,048,903 字节；账号库、原管理员与全部普通用户业务库、配置、素材、桥接配置；逐文件 SHA256、各 SQLite 完整性 |
-| New API | `/srv/new-api/backups/20261106-account-newapi.tar.gz` | 26,651 字节；用户、身份绑定、会话、模型 Key、余额、日志及全部其他表、运行配置；逐表行数及摘要 |
+| ERP | `/srv/champion-erp/backups/20261106-auto-login.tar.gz` | 75,071,452 字节；账号库、原管理员与全部普通用户业务库、配置、素材、桥接配置；逐文件 SHA256、各 SQLite 完整性 |
+| New API | `/srv/new-api/backups/20261106-auto-login.tar.gz` | 29,237 字节；用户、身份绑定、会话、模型 Key、余额、日志及全部其他表、运行配置；逐表行数及摘要 |
 
 已在停止写入后生成快照，并在独立临时目录恢复校验，未覆盖运行库。SQLite 使用 backup API，未直接复制活动主文件或忽略 WAL。当前运行库不因恢复演练被回写。
 
