@@ -4,18 +4,20 @@
 
 | 服务 | 用户入口 | Nginx 上游 |
 | --- | --- | --- |
-| ERP | <https://107.174.48.241/> | `127.0.0.1:5050` |
-| New API | <https://107.174.48.241:8443/> | `127.0.0.1:3000` |
+| ERP | <https://hdgl.cc.cd/> | `127.0.0.1:5050` |
+| New API | <https://hdgl.cc.cd:8443/> | `127.0.0.1:3000` |
 
-ERP 当前运行提交为 `dbae2dd1487823a7b248485d6494431b395fd51e`，New API 镜像为 `champion/new-api:62286b3f3fdc614c3935bb24a5d97d36a8448324`。镜像 ID 为 `sha256:9d6454155bdebb2d5c92d184e0b1671584f9752363430dd7adc925350dbd93f7`。New API 托管令牌上线前，两端各自备份为 `20261106T111150Z-fixed-models.tar.gz`；ERP 此次发布前的备份为 `/srv/champion-erp/backups/20261106T113321Z-custom-models.tar.gz`，均通过恢复校验。
+DNSHE 将 `hdgl.cc.cd` 委派给 `damien.ns.cloudflare.com` 和 `emerie.ns.cloudflare.com`。Cloudflare Free 的根域 A 记录代理到 `107.174.48.241`，回源模式为 Full (strict)。域名证书由 Let's Encrypt 签发，位于 `/etc/letsencrypt/live/champion-erp-domain/`，模拟续期通过。用户经旧 IP 打开网页会转到对应端口的域名。
+
+ERP 运行提交为 `af05c4fdb6b6d584eab28e31dfde2203ffde1208`，New API 镜像为 `champion/new-api:89bda6caa5664f4cc0fc2abf0f634dc0ad4518a8`。两端数据备份及变更前的运行配置位于 `/srv/champion-erp/backups/20261106T122451Z-domain/`。对应 New API 镜像归档位于 `/opt/new-api/artifacts/new-api-89bda6ca-linux-amd64.tar.gz`，SHA256 为 `874bc8177c828774c437651d34a28d32b6ca886793a3eceb32003b014fecbb2b`。
+
+公开的 ERP 构建资源由 Nginx 直接提供并由边缘节点缓存。业务响应使用 `private, no-store`。同一台 Mac 测得模型配置接口从旧入口约 6–8 秒降到 0.62–0.67 秒，三次均为 gzip 和 `CF-Cache-Status: DYNAMIC`。同一桌面连接流程包含本机配置回传，单次对照从 9.99 秒降到 1.57 秒；本机文件读取均在 3 毫秒以内。静态资源第二次读取命中香港边缘节点。模型面板在一分钟内复用当前账号已读的完整配置，并将并发读取合并。
 
 ERP 原模型目录新增两条系统模型，即文本模型 `dsflash`（`deepseek-flash`）与图片模型 `qwenflash`（`qwen-image-3.0`）。管理员原有 7 条模型和 5 项功能绑定与服务器持久化数据逐项匹配，现共 9 条模型。普通账号的个人模型支持添加、使用独立凭据测试、绑定和删除。两条系统模型支持原设置中的改名、启停和能力测试，服务端保护其 ID、连接信息及删除操作。运营账号和普通账号均已验证自动登录和各自的 default 分组托管密钥。查询有效绑定账号时缺失托管密钥数与重复数都为零。生产文本、出图及编辑请求均通过网关鉴权，零余额验收账号得到 `insufficient_user_quota`，验收后已停用。本地用两个账号和模拟上游分别跑通三种调用与结果解析。真实上游输出和成功扣费需使用有余额的账号验收。
 
-[公网 Nginx 配置](../deploy/nginx/champion-public-ip.conf) 按端口转发，覆盖客户端地址头并筛选上游 Cookie。两端均封住 `/api/internal/`。80 端口提供 ACME 验证，并将普通 HTTP 请求重定向到 ERP 的 HTTPS 地址。IP 证书位于 `/etc/letsencrypt/live/champion-erp-ip/`，`champion-certbot-renew.timer` 每天检查两次，模拟续期与重载已通过。切换前配置保存在 `/srv/champion-erp/backups/20261106T095331Z-public-ports/`。
+域名站点配置为 `deploy/nginx/champion-cloudflare.conf`，在服务器上以 `sites-enabled/champion-zone-hdgl` 加载，排在提供公共日志格式的 `champion-ip-https` 后。真实客户端 IP 仅信任从 Cloudflare 官方 `ips-v4` 和 `ips-v6` 清单生成的 `/etc/nginx/snippets/champion-cloudflare-realip.conf`。反代按端口分别筛选 Cookie，两端均封住 `/api/internal/`。IP 和域名的证书均由 `champion-certbot-renew.timer` 维护。
 
-从 Mac 公网直连已验证 ERP 的 443 登录、自动 POST 到 8443、303 进入 `/keys`、运营身份及退出联动。桌面新包的 IPC 和浏览器表单同样通过两个公网地址完成交接。验收使用入口组件测试、实际安装包模块和 HTTP 客户端。合成 Cookie 在回环上游的实际核对表明 ERP 只收到 `champion_session`，New API 只收到本应用的 Cookie。两端均拒绝错误端口的认证 Origin。
-
-桌面 `connection.json` 已切换到 ERP 公网 HTTPS 地址，正在运行的桌面程序需重启。普通访问可直接通过公网 HTTPS 完成。
+已在域名上验证 ERP 登录、自动 POST 交接、进入 New API 的 `/keys`、运营身份和退出联动，以及匿名模型接口和错误 Origin 的拒绝。本机桌面 `connection.json` 已切换到域名，退出应用后安装待更新包。
 
 ## 公网切换前的内网部署记录
 
