@@ -3,7 +3,7 @@ from http.cookies import SimpleCookie
 import os
 
 from erp_web.schemas.accounts import AccountError, SESSION_COOKIE, SESSION_SECONDS, public_user
-from erp_web.schemas.newapi import NewAPIConnectionInfo, NewAPIAuthorizationPreview
+from erp_web.schemas.newapi import NewAPIConnectionInfo, NewAPIAuthorizationPreview, NewAPILaunch
 from erp_web.services.account_request import account_runtime, client_ip
 
 
@@ -129,6 +129,15 @@ def newapi_preview(handler, body) -> NewAPIAuthorizationPreview:
 
 def newapi_authorize(handler, body):
     return account_runtime(handler).newapi.authorize(_require_session(handler), body, client_ip(handler))
+
+
+def newapi_launch(handler, body) -> NewAPILaunch:
+    origin = handler.headers.get("Origin") or os.environ.get("ERP_PUBLIC_URL") or "http://" + handler.headers["Host"]
+    return account_runtime(handler).newapi.launch(_require_session(handler), body, origin.rstrip("/"), client_ip(handler))
+
+
+def newapi_launch_exchange(handler, body):
+    return account_runtime(handler).store.exchange_newapi_launch(body)
 
 
 def newapi_exchange(handler, body):

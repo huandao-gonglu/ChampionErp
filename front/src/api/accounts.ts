@@ -29,3 +29,6 @@ export const resetAccountUserPassword = (user_id: string, password: string) => a
 export const fetchNewAPIInfo = async () => (await apiClient.get<{ configured: boolean; url: string; sync_pending: boolean }>('/api/account/newapi')).data
 export const previewNewAPI = async (code: string) => (await apiClient.post<{ code: string; target: 'keys' | 'wallet' | 'usage' | 'proof'; expires_at: number }>('/api/account/newapi/preview', { code })).data
 export const authorizeNewAPI = (body: { code: string; password?: string }) => apiClient.post('/api/account/newapi/authorize', body)
+
+export interface NewAPILaunch { ok: boolean; url: string; ticket: string; expires_at: number }
+export const launchNewAPI = async (target: 'keys' | 'wallet' | 'usage') => (await apiClient.post<NewAPILaunch>('/api/account/newapi/launch', { target })).data

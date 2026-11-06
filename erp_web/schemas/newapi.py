@@ -27,3 +27,10 @@ class NewAPIAuthorizationPreview(TypedDict):
     code: str
     target: NewAPITarget
     expires_at: int
+
+
+class NewAPILaunch(TypedDict):
+    ok: bool
+    url: str
+    ticket: str
+    expires_at: int

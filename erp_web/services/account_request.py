@@ -18,7 +18,7 @@ _runtime_lock = Lock()
 PUBLIC_POST_PATHS = frozenset({"/api/account/login", "/api/account/register"})
 CALLBACK_POST_PATHS = frozenset({f"/api/{p}/notifications" for p in ("mercadolibre", "ozon", "yandex")})
 CALLBACK_GET_PATHS = frozenset({"/auth/alibaba/callback", "/auth/mercadolibre/callback"})
-INTERNAL_NEWAPI_PATHS = frozenset({"/api/internal/newapi/exchange", "/api/internal/newapi/session", "/api/internal/newapi/user"})
+INTERNAL_NEWAPI_PATHS = frozenset({"/api/internal/newapi/exchange", "/api/internal/newapi/launch", "/api/internal/newapi/session", "/api/internal/newapi/user"})
 
 
 def current_session():

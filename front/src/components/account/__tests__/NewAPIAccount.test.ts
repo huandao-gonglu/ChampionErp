@@ -4,12 +4,14 @@ import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import NewAPIAccount from '../NewAPIAccount.vue'
 import { useAccountStore } from '@/stores/account'
-import { authorizeNewAPI, fetchNewAPIInfo, previewNewAPI } from '@/api/accounts'
+import { authorizeNewAPI, fetchNewAPIInfo, previewNewAPI, launchNewAPI } from '@/api/accounts'
 import zh from '@/i18n/locales/zh'
 
-vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
-vi.mock('@/api/accounts', () => ({ authorizeNewAPI: vi.fn(), fetchNewAPIInfo: vi.fn(), previewNewAPI: vi.fn() }))
+const route = vi.hoisted(() => ({ query: {} as Record<string, string> }))
+vi.mock('vue-router', () => ({ useRoute: () => route }))
+vi.mock('@/api/accounts', () => ({ authorizeNewAPI: vi.fn(), fetchNewAPIInfo: vi.fn(), previewNewAPI: vi.fn(), launchNewAPI: vi.fn() }))
 beforeEach(() => {
+  route.query = {}
   setActivePinia(createPinia())
   useAccountStore().user = { id: 'a', email: 'a@example.com', display_name: '甲', role: 'user', status: 'enabled', created_at: 0, updated_at: 0 }
   vi.mocked(fetchNewAPIInfo).mockResolvedValue({ configured: true, url: 'http://localhost:13000/sign-in?force_erp=true', sync_pending: false })
@@ -18,21 +20,24 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks())
 const render = () => mount(NewAPIAccount, { global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] } })
 
-it('先核对浏览器授权码，再显式确认当前账号身份', async () => {
+it('从 ERP 点击后直接 POST 当前会话的一次性票据，不要求输入或确认关联码', async () => {
+  vi.mocked(launchNewAPI).mockResolvedValue({ ok: true, url: 'http://localhost:13000/api/erp/login', ticket: 'short-once-ticket', expires_at: 9999999999 })
+  const submit = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(function(this: HTMLFormElement) {
+    expect(this.method).toBe('post')
+    expect(this.action).toBe('http://localhost:13000/api/erp/login')
+    expect(this.querySelector('input[name="ticket"]')?.getAttribute('value')).toBe('short-once-ticket')
+  })
   const view = render(); await flushPromises()
-  expect(view.find('a').attributes('target')).toBe('_blank')
+  expect(view.find('input').exists()).toBe(false)
+  await view.find('[data-test="newapi-open"]').trigger('click'); await flushPromises()
+  expect(launchNewAPI).toHaveBeenCalledWith('keys')
+  expect(submit).toHaveBeenCalledOnce()
   expect(authorizeNewAPI).not.toHaveBeenCalled()
-  await view.find('input').setValue('abcdef123456')
-  await view.find('form').trigger('submit'); await flushPromises()
-  expect(previewNewAPI).toHaveBeenCalledWith('ABCDEF123456')
-  expect(view.text()).toContain('a@example.com')
-  await view.findAll('form')[1]!.trigger('submit'); await flushPromises()
-  expect(authorizeNewAPI).toHaveBeenCalledWith({ code: 'ABCDEF123456' })
-  expect(view.text()).toContain('已授权')
-  view.unmount()
+  submit.mockRestore();view.unmount()
 })
 
 it('敏感操作确认时需要 ERP 密码，提交后清除输入', async () => {
+  route.query = { newapi_code: 'ABCDEF123456' }
   vi.mocked(previewNewAPI).mockResolvedValue({ code: 'ABCDEF123456', target: 'proof', expires_at: Date.now()/1000+180 })
   const view = render(); await flushPromises()
   await view.find('input').setValue('ABCDEF123456')
@@ -45,6 +50,7 @@ it('敏感操作确认时需要 ERP 密码，提交后清除输入', async () =>
 })
 
 it('修改授权码后必须重新核对，旧确认不能提交', async () => {
+  route.query = { newapi_code: 'ABCDEF123456' }
   const view = render(); await flushPromises()
   await view.find('input').setValue('ABCDEF123456')
   await view.find('form').trigger('submit'); await flushPromises()

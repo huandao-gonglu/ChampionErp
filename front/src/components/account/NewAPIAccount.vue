@@ -3,7 +3,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAccountStore } from '@/stores/account'
-import { authorizeNewAPI, fetchNewAPIInfo, previewNewAPI } from '@/api/accounts'
+import { authorizeNewAPI, fetchNewAPIInfo, previewNewAPI, launchNewAPI } from '@/api/accounts'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -15,6 +15,7 @@ const preview = ref<Awaited<ReturnType<typeof previewNewAPI>> | null>(null)
 const busy = ref(false)
 const error = ref('')
 const approved = ref(false)
+const sensitive = ref(Boolean(route.query.newapi_code))
 watch(code, () => { preview.value = null; password.value = ''; approved.value = false })
 
 async function perform(action: () => Promise<void>) {
@@ -23,7 +24,25 @@ async function perform(action: () => Promise<void>) {
   try { await action() } catch (cause) { error.value = cause instanceof Error ? cause.message : t('account.failed') }
   finally { busy.value = false; password.value = '' }
 }
-onMounted(() => perform(async () => { info.value = await fetchNewAPIInfo() }))
+onMounted(async () => {
+  await perform(async () => { info.value = await fetchNewAPIInfo() })
+  if (route.query.newapi_error) error.value = t('account.newapiLaunchFailed')
+  else if (['keys', 'wallet', 'usage'].includes(String(route.query.newapi_target)) && info.value?.configured) await open()
+})
+async function open() {
+  const requested = String(route.query.newapi_target || 'keys')
+  const target = requested === 'wallet' || requested === 'usage' ? requested : 'keys'
+  await perform(async () => {
+    if (window.championDesktop?.openNewAPI) { await window.championDesktop.openNewAPI(target); return }
+    const launch = await launchNewAPI(target)
+    const form = document.createElement('form')
+    form.method = 'POST'; form.action = launch.url
+    const ticket = document.createElement('input')
+    ticket.type = 'hidden'; ticket.name = 'ticket'; ticket.setAttribute('value', launch.ticket)
+    form.append(ticket); document.body.append(form)
+    try { form.submit() } finally { form.remove() }
+  })
+}
 async function inspect() {
   await perform(async () => { preview.value = await previewNewAPI(code.value.trim().toUpperCase()) })
 }
@@ -44,9 +63,9 @@ async function approve() {
     <p v-if="info && !info.configured" class="text-sm">{{ t('account.newapiNotConfigured') }}</p>
     <template v-if="info?.configured">
       <p class="text-sm">{{ t('account.newapiIntro') }}</p>
-      <a :href="info.url" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">{{ t('account.newapiOpen') }}</a>
+      <button data-test="newapi-open" type="button" class="btn btn-secondary" :disabled="busy" @click="open">{{ t('account.newapiOpen') }}</button>
       <p v-if="info.sync_pending" role="status" class="text-sm text-warning-700 dark:text-warning-300">{{ t('account.newapiPending') }}</p>
-      <form class="space-y-4" @submit.prevent="inspect">
+      <form v-if="sensitive" class="space-y-4" @submit.prevent="inspect">
         <label class="block text-sm font-semibold">{{ t('account.newapiCode') }}<input v-model="code" class="input mt-2 w-full font-mono uppercase" autocomplete="off" minlength="12" maxlength="12" required :disabled="busy" /></label>
         <button type="submit" class="btn btn-secondary" :disabled="busy">{{ t('account.newapiInspect') }}</button>
       </form>

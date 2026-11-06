@@ -54,7 +54,7 @@ test('预加载仅声明本机能力并暴露无参数的许可证入口', async
       }
     },
   })
-  assert.deepEqual(Object.keys(bridge), ['localOperations', 'configureModels', 'openLicenses'])
+  assert.deepEqual(Object.keys(bridge), ['localOperations', 'openNewAPI', 'configureModels', 'openLicenses'])
   assert.equal(bridge.localOperations, true)
   await bridge.openLicenses('/arbitrary/path')
   assert.deepEqual(calls, [['licenses:open']])

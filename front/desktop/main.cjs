@@ -8,6 +8,7 @@ const { normalizeBackendUrl, connectDesktop } = require('./connection.cjs')
 const { registerLocalConfig } = require('./local-config.cjs')
 const { registerLicenseDirectory } = require('./licenses.cjs')
 const { AccountSession, proxyBackendRequest } = require('./account-session.cjs')
+const { NewAPIBrowserBridge, registerNewAPIBridge } = require('./newapi.cjs')
 
 if (app.isPackaged) {
   app.setPath('userData', path.join(app.getPath('appData'), 'Champion ERP'))
@@ -40,6 +41,7 @@ const BACKEND_PROXY_PREFIXES = [
 ]
 
 let frontendServer
+let newapiBridge
 let runtime
 let desktopConnection
 let quitting = false
@@ -181,8 +183,11 @@ function startFrontendServer() {
   frontendServer = http.createServer((req, res) => {
     const requestUrl = new URL(req.url || '/', 'http://127.0.0.1')
     const ownOrigin = `http://127.0.0.1:${frontendServer.address().port}`
-    if (req.headers.host !== new URL(ownOrigin).host ||
-        (req.headers.origin && req.headers.origin !== ownOrigin) || req.headers['sec-fetch-site'] === 'cross-site') {
+    if (req.headers.host !== new URL(ownOrigin).host) {
+      send(res, 403, '请求来源无效', 'text/plain; charset=utf-8'); return
+    }
+    if (newapiBridge?.handle(req, res)) return
+    if ((req.headers.origin && req.headers.origin !== ownOrigin) || req.headers['sec-fetch-site'] === 'cross-site') {
       send(res, 403, '请求来源无效', 'text/plain; charset=utf-8')
       return
     }
@@ -202,6 +207,7 @@ function startFrontendServer() {
     frontendServer.on('error', reject)
     frontendServer.listen(0, '127.0.0.1', () => {
       const address = frontendServer.address()
+      newapiBridge = new NewAPIBrowserBridge({ backendBaseUrl, frontendUrl: `http://127.0.0.1:${address.port}/`, session: accountSession })
       resolve({
         url: `http://127.0.0.1:${address.port}/`,
         backendBaseUrl,
@@ -228,6 +234,7 @@ async function createWindow() {
   })
 
   registerLocalConfig({ ipcMain, win, frontendUrl: url, runtime })
+  registerNewAPIBridge({ ipcMain, win, shell, bridge: newapiBridge })
   registerLicenseDirectory({
     ipcMain, shell, win, frontendUrl: url,
     directory: path.join(app.isPackaged ? process.resourcesPath : getFrontendRoot(), 'licenses'),

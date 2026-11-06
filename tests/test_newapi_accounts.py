@@ -153,3 +153,40 @@ def test_disable_and_password_change_enqueue_revocations_atomically(bridge_http)
     response = client.post(url + "/api/account/password", json={"current_password": PASSWORD, "password": "新的独立测试密码必须足够长123456"})
     assert response.status_code == 200
     assert peer["synced"][-1] == {"action": "revoke", "user_id": user["id"], "session_ref": ""}
+
+
+def test_auto_launch_is_bound_to_current_user_origin_and_one_use(bridge_http):
+    url, runtime, login, _ = bridge_http
+    user = register(url, "auto@example.com")
+    client = login("auto@example.com")
+    response = client.post(url + "/api/account/newapi/launch", json={"target": "wallet"}, headers={"Origin": url})
+    assert response.status_code == 200
+    launch = response.json()
+    assert launch["url"] == "http://127.0.0.1:3000/api/erp/login"
+    assert "ticket" not in launch["url"] and 0 < launch["expires_at"]-time.time() <= 60
+    assert client.post(url + "/api/account/newapi/launch", json={"target": "keys", "user_id": "other"}).status_code == 400
+    assert client.post(url + "/api/account/newapi/launch", json={"target": "proof"}).status_code == 400
+    assert client.post(url + "/api/account/newapi/launch", json={"target": "keys", "source_origin": "https://attacker.invalid"}).status_code == 400
+    endpoint = url + "/api/internal/newapi/launch"
+    headers = {"Authorization": "Bearer " + SECRET}
+    assert requests.post(endpoint, json={"ticket": launch["ticket"], "origin": "https://attacker.invalid"}, headers=headers).status_code == 401
+    result = requests.post(endpoint, json={"ticket": launch["ticket"], "origin": url}, headers=headers)
+    assert result.status_code == 200
+    assert result.json()["user_id"] == user["id"] and result.json()["target"] == "wallet"
+    assert not {"password", "role", "email", "csrf_token"} & result.json().keys()
+    assert requests.post(endpoint, json={"ticket": launch["ticket"], "origin": url}, headers=headers).status_code == 401
+    assert runtime._contexts == {}
+
+
+def test_auto_launch_desktop_origin_expiry_and_logout(bridge_http):
+    url, runtime, login, _ = bridge_http
+    client = login()
+    for action in ("expired", "logout"):
+        launch = client.post(url + "/api/account/newapi/launch", json={"target": "keys", "source_origin": "http://127.0.0.1:43210"}).json()
+        assert "ticket" in launch
+        if action == "expired":
+            with runtime.store._connection() as db:
+                db.execute("UPDATE newapi_tickets SET expires_at=?", (time.time()-1,))
+        else:
+            assert client.post(url + "/api/account/logout", json={}).status_code == 200
+        assert requests.post(url + "/api/internal/newapi/launch", json={"ticket": launch["ticket"], "origin": "http://127.0.0.1:43210"}, headers={"Authorization": "Bearer " + SECRET}).status_code == 401

@@ -17,5 +17,5 @@ interface ImportMeta {
 }
 
 interface Window {
-  championDesktop?: { localOperations?: boolean; configureModels?: (models: Record<string, Record<string, string>>) => Promise<{ models: Record<string, Record<string, string>>; fingerprints: Record<string, string> }>; openLicenses: () => Promise<void> }
+  championDesktop?: { localOperations?: boolean; configureModels?: (models: Record<string, Record<string, string>>) => Promise<{ models: Record<string, Record<string, string>>; fingerprints: Record<string, string> }>; openNewAPI?: (target: 'keys' | 'wallet' | 'usage') => Promise<void>; openLicenses: () => Promise<void> }
 }

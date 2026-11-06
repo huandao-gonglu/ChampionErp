@@ -29,19 +29,15 @@ ERP 的日常登录和非 New API 业务不依赖 New API 在线。New API 不�
 
 ## 3. 跳转到 New API
 
-普通链接不会自动建立 New API 登录态，需要增加只用于这两个系统的固定交接流程：
+用户从已登录的 ERP 点击入口后自动进入对应 New API 页面，不再输入授权码、点击继续登录或确认账号。
 
-1. 用户点击 ERP 内的「Token 与账单」等入口，发起与当前浏览器关联的登录交接。
-2. ERP 校验当前登录会话及用户状态，为 New API 签发短时、一次性授权票据。用户 ID 来自服务端会话，不接受页面自行指定。
-3. New API 服务端向 ERP 的固定内部交换接口验证并消费票据，取得必要的用户身份。交换接口核验服务身份、有效期、一次性使用及对应 ERP 会话是否仍有效。
-4. New API 绑定或创建计费用户，检查其状态，复用原生会话签发逻辑，在自己的站点建立登录态。
-5. 进入指定的钱包、账单或 API Key 页面。跳转目标使用固定入口，登录交接保留浏览器关联校验，不能把票据实现为可任意转发的长期免登录链接。
+1. ERP 入口经当前 Cookie、用户状态与 CSRF 校验，签发最多 60 秒的一次性票据。用户和会话只取自服务端，目标限定为 Key、钱包或消费。
+2. 网页将票据作为表单 POST 提交到 New API 的固定入口；票据不进入 URL，绑定实际提交 Origin。
+3. Electron 通过受限主进程 IPC 申请票据，打开只监听本机的临时页面，在系统浏览器自动 POST。临时入口一次性、60 秒有效，绑定当前桌面账号会话版本；不要求共享 Cookie。
+4. New API 只接受固定 ERP 站点或本机 HTTP Origin，后端调用 ERP 固定内部接口验证服务身份、消费票据并确认会话。未知、缺失、`null` 或与签发不匹配的来源不能登录。
+5. 按 ERP 用户 ID 解析既有计费用户，沿用原生会话和权限，再次检查关联 ERP 会话后以 303 跳转固定页面。ERP 管理员角色不会自动提升原生权限。
 
-票据不是模型 API Key、ERP 会话 Cookie 或 New API 长期登录令牌；这些凭据不写入跳转 URL。服务间凭据通过部署配置提供，不交给浏览器，不复用运营管理员的全局管理 Token 作为用户身份。
-
-本次增加范围限定的 ERP 票据签发/交换和 New API 交接适配，复用双方现有会话能力。New API 已有的外部 OIDC 配置不等于 ERP 已经提供 OIDC 服务，不将建设完整 OIDC Provider 作为本次前置工作。
-
-Electron 打开的系统浏览器也通过该入口建立 New API 会话，不依赖它与桌面渲染页共享 Cookie。同服务器、同域名不作为已经共享登录态的依据。
+未登录直接访问 New API 时自动回到 ERP，已登录则继续交接。敏感操作仍保留重新验证 ERP 密码及原生操作 Proof，不把普通免登录扩展成跳过敏感认证。旧浏览器关联接口供已发布客户端和敏感验证使用，当前普通入口不再依赖它。
 
 ## 4. 关闭 New API 登录注册入口
 
@@ -99,6 +95,6 @@ ERP 现有账号、密码哈希、用户 ID、个人空间、会话与业务记�
 
 复用现有业务测试，仅清理 New API 被替换的直接登录入口测试；保留 ERP 账号、密码及个人隔离测试。文档应记录开发回归与真实环境验收各自的结果，不把账号专项测试通过写成整套系统已经完成安全验收。
 
-源码与实施说明位于 `/Users/hdgl/work/new-api`。交接采用“New API 浏览器先生成关联码 → 当前 ERP 账号明确确认 → 固定内部接口交换一次性票据”，Electron 不需要与系统浏览器共享 Cookie。实际部署和回归结果以服务器记录为准。
+源码与实施说明位于 `/Users/hdgl/work/new-api`。普通入口采用当前 ERP 会话签发来源绑定的 60 秒票据，经表单 POST 自动交接；Electron 不需要与系统浏览器共享 Cookie。实际部署和回归结果以服务器记录为准。
 
 参考：[New API 认证说明](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/docs/authentication.md)、[用户处理器](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/controller/user.go)、[AGPL-3.0 许可证](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/LICENSE)、[阿里云 ECS 责任边界](https://help.aliyun.com/zh/ecs/user-guide/ecs-shared-responsibility-model)、[腾讯云责任边界](https://www.tencentcloud.com/zh/services/compliance)。主线材料用于确认方向，实际实施以固定版本为准。

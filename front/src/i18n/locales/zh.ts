@@ -2,7 +2,8 @@ export default {
   account: {
     newapi: 'Token 与账单',
     newapiNotConfigured: 'Token 与账单服务尚未配置。',
-    newapiIntro: '在浏览器打开 New API，将浏览器显示的授权码填到这里。请只确认自己发起的授权。',
+    newapiLaunchFailed: '登录交接未完成，请重新点击打开。',
+    newapiIntro: '使用当前 ERP 账号管理模型 Key、余额与账单。',
     newapiOpen: '打开 Token 与账单',
     newapiPending: 'ERP 操作已完成；New API 会话或账号状态同步待重试。同步完成前，请勿假定 New API 已退出或停用。',
     newapiCode: '浏览器中的 12 位授权码',

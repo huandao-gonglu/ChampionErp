@@ -2,7 +2,8 @@ export default {
   account: {
     newapi: 'Tokens and billing',
     newapiNotConfigured: 'Tokens and billing are not configured yet.',
-    newapiIntro: 'Open New API in your browser, then enter its authorization code here. Only approve requests you started.',
+    newapiLaunchFailed: 'Sign-in could not be completed. Open New API again.',
+    newapiIntro: 'Manage API keys, balance and usage with your current ERP account.',
     newapiOpen: 'Open tokens and billing',
     newapiPending: 'The ERP action is complete. New API session or account synchronization is pending and will be retried. Do not assume New API is signed out or disabled yet.',
     newapiCode: '12-character code shown in the browser',

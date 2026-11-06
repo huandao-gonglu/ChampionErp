@@ -207,6 +207,16 @@ class AccountStore:
                               "WHERE s.user_id=? AND s.expires_at>? AND u.status='enabled'", (user_id, time.time())).fetchall()
             return any(secrets.compare_digest(self.newapi_session_ref(row[0]), session_ref) for row in rows)
 
+    def exchange_newapi_launch(self, body):
+        digest = hashlib.sha256(body["ticket"].encode()).hexdigest()
+        with self._connection() as db:
+            row = db.execute("SELECT flow_id,target FROM newapi_tickets WHERE ticket_hash=?", (digest,)).fetchone()
+        if not row or not row["flow_id"].startswith("launch-") or row["target"] not in {"keys", "wallet", "usage"}:
+            raise AccountError("登录交接已过期或已使用。", status_code=401)
+        identity = self.exchange_newapi_ticket({"ticket": body["ticket"], "verifier": body["origin"],
+                                               "flow_id": row["flow_id"], "target": row["target"]})
+        return {**identity, "target": row["target"]}
+
     def newapi_user_active(self, user_id):
         with self._connection() as db:
             return db.execute("SELECT 1 FROM users WHERE id=? AND status='enabled'", (user_id,)).fetchone() is not None

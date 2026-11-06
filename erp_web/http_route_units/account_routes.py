@@ -4,6 +4,8 @@ from erp_web.schemas.requests import validate_request_payload, RequestValidation
 from urllib.parse import parse_qs
 
 POST_HANDLERS = {
+    "/api/account/newapi/launch": account_facade.newapi_launch,
+    "/api/internal/newapi/launch": account_facade.newapi_launch_exchange,
     "/api/account/newapi/preview": account_facade.newapi_preview,
     "/api/account/newapi/authorize": account_facade.newapi_authorize,
     "/api/internal/newapi/exchange": account_facade.newapi_exchange,

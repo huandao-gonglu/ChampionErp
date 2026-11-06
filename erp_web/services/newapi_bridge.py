@@ -1,6 +1,9 @@
 """固定 New API 服务的账号交接与可重试撤销；不管理模型 Key 或账务。"""
 import os
 import re
+import hashlib
+import secrets
+import time
 from threading import Lock
 from urllib.parse import urlsplit
 
@@ -46,6 +49,30 @@ class NewAPIBridge:
             return NewAPIFlow.model_validate(value).model_dump()
         except ValidationError as exc:
             raise AccountError("New API 交接数据无效。", status_code=502) from exc
+
+    def launch(self, session, body, origin, ip):
+        if not self.configured:
+            raise AccountError("New API 尚未配置。", status_code=503)
+        self.account_service.limit("newapi", session.user["email"], ip)
+        source = body.get("source_origin") or origin
+        try:
+            parsed = urlsplit(source)
+            local = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"} and bool(parsed.port)
+        except ValueError as exc:
+            raise AccountError("登录交接来源无效。") from exc
+        if (not source or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment
+                or source != f"{parsed.scheme}://{parsed.netloc}" or (source != origin and not local)):
+            raise AccountError("登录交接来源无效。")
+        target = body["target"]
+        if target not in {"keys", "wallet", "usage"}:
+            raise AccountError("登录目标无效。")
+        expires_at = int(time.time()) + 60
+        ticket = self.store.newapi_ticket(session, {
+            "flow_id": "launch-" + secrets.token_urlsafe(32),
+            "challenge": hashlib.sha256(source.encode()).hexdigest(),
+            "target": target, "expires_at": expires_at,
+        })
+        return {"ok": True, "url": self.public_url + "/api/erp/login", "ticket": ticket, "expires_at": expires_at}
 
     def authorize(self, session, body, ip):
         self.account_service.limit("newapi", session.user["email"], ip)
