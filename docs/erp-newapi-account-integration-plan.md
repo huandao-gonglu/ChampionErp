@@ -1,6 +1,6 @@
 # ERP 与 New API 账号及计费接入调整方案
 
-状态：账号交接、个人入口与会话/用户状态联动已开发，已完成专项回归。New API 源码位于同级独立仓库；当前按用户确认的 `107.174.48.241` 内网验收范围部署，具体版本和实际验收见 [服务器部署记录](server-deployment.md)。正式 HTTPS 与官方收款不属于已验收结果。
+状态：账号交接、个人入口与会话/用户状态联动已开发，已完成专项回归。New API 源码位于同级独立仓库；已按用户确认在 `107.174.48.241` 完成内网部署与双用户验收，具体版本和实际验收见 [服务器部署记录](server-deployment.md)。正式 HTTPS 与官方收款不属于已验收结果。
 
 ## 1. 目标与职责
 
@@ -14,7 +14,7 @@ ERP 和 New API 部署在服务器上。用户从 ERP 注册、登录和使用 E
 
 账号身份以 ERP 用户 ID 为准，账务以 New API 为准。两个服务分别管理自己的数据，通过接口关联身份，不共同写用户表，不复制密码或密码哈希。ERP 不另建余额或扣费账本。
 
-保留现有 Python、Vue、Electron、Pydantic AI、SQLite 和 `argon2-cffi` 账号实现，复用现有 HTTP 客户端。不部署额外身份服务，不建设多身份源或通用 SSO 平台。New API 使用固定上游版本的改造分支，记录本次改动，便于升级时核对。
+保留现有 Python、Vue、Electron、Pydantic AI、SQLite 和 `argon2-cffi` 账号实现。业务模型请求沿用现有 HTTP 客户端；账号控制面使用独立的短请求客户端，不创建个人业务空间或写入业务外部请求历史。不部署额外身份服务，不建设多身份源或通用 SSO 平台。New API 使用固定上游版本的改造分支，记录本次改动，便于升级时核对。
 
 ## 2. 沿用 ERP 账号与个人空间
 
@@ -76,7 +76,7 @@ ERP 现有账号、密码哈希、用户 ID、个人空间、会话与业务记�
 
 正式环境按阿里云 ECS 或腾讯云 CVM 部署两个独立服务，公开站点使用 HTTPS，内部服务通过受控接口通信。地址、证书、端口和回调以实际部署验收结果为准，同服务器不代表共用数据库、会话或 Cookie。
 
-部署与备份沿用 [服务器部署记录](server-deployment.md)。备份同时覆盖 ERP 账号/业务空间及 New API 用户绑定、账务数据，并验证可恢复。本文是后续集成计划，不作为停止原账号实施或立即切换生产的指令。
+部署与备份沿用 [服务器部署记录](server-deployment.md)。备份同时覆盖 ERP 账号/业务空间及 New API 用户绑定、账务数据，并验证可恢复。本文说明集成职责与验收边界，实际已完成版本和部署范围以服务器记录为准。
 
 ## 8. 安全与维护职责
 
@@ -101,4 +101,4 @@ ERP 现有账号、密码哈希、用户 ID、个人空间、会话与业务记�
 
 源码与实施说明位于 `/Users/hdgl/work/new-api`。交接采用“New API 浏览器先生成关联码 → 当前 ERP 账号明确确认 → 固定内部接口交换一次性票据”，Electron 不需要与系统浏览器共享 Cookie。实际部署和回归结果以服务器记录为准。
 
-参考：[New API 认证说明](https://github.com/QuantumNous/new-api/blob/main/docs/authentication.md)、[用户处理器](https://github.com/QuantumNous/new-api/blob/main/controller/user.go)、[AGPL-3.0 许可证](https://github.com/QuantumNous/new-api/blob/main/LICENSE)、[阿里云 ECS 责任边界](https://help.aliyun.com/zh/ecs/user-guide/ecs-shared-responsibility-model)、[腾讯云责任边界](https://www.tencentcloud.com/zh/services/compliance)。主线材料用于确认方向，实际实施以固定版本为准。
+参考：[New API 认证说明](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/docs/authentication.md)、[用户处理器](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/controller/user.go)、[AGPL-3.0 许可证](https://github.com/QuantumNous/new-api/blob/706144769e5bed5a47b78721e3bb11da3cf4c0b9/LICENSE)、[阿里云 ECS 责任边界](https://help.aliyun.com/zh/ecs/user-guide/ecs-shared-responsibility-model)、[腾讯云责任边界](https://www.tencentcloud.com/zh/services/compliance)。主线材料用于确认方向，实际实施以固定版本为准。
