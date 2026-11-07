@@ -30,6 +30,7 @@ def test_new_desktop_version_checked_before_switch(monkeypatch):
     url = release.desktop_manifest_url(update)
     def fetch(request, timeout):
         assert request.full_url == url
+        assert request.get_header('User-agent') == 'gongluErp-release'
         if previous is None:
             raise release.HTTPError(url, 404, '首次发布', {}, None)
         response = BytesIO(json.dumps({**update, 'version': previous}).encode())

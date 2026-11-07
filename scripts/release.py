@@ -18,6 +18,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+RELEASE_HEADERS = {'User-Agent': 'gongluErp-release', 'Cache-Control': 'no-cache'}
 
 
 def digest(path):
@@ -87,7 +88,7 @@ def verify_public(public_url, source):
     entry = re.search(r'src="(/assets/[^" ]+\.js)"', index)
     if not entry:
         raise RuntimeError('网页构建未找到入口资源')
-    headers = {'User-Agent': 'gongluErp-release'}
+    headers = RELEASE_HEADERS
     with urlopen(Request(public_url.rstrip('/') + '/api/account/session', headers=headers), timeout=30) as response:
         session = json.load(response)
     if not session.get('initialized') or not session.get('ok'):
@@ -152,7 +153,7 @@ def check_new_desktop_version(update):
     """在切换后端前识别版本冲突，服务器在正式发布时仍会持锁复核。"""
     url = desktop_manifest_url(update)
     try:
-        with urlopen(Request(url, headers={'Cache-Control': 'no-cache'}), timeout=30) as response:
+        with urlopen(Request(url, headers=RELEASE_HEADERS), timeout=30) as response:
             if response.geturl() != url:
                 raise RuntimeError('桌面更新清单地址发生重定向，请检查更新站点配置')
             manifest = json.load(response)
@@ -192,7 +193,7 @@ def publish_desktop_update(args, record, folder, source):
             command.extend([path_flag, destination, digest_flag, update[key]['sha256']])
     print(remote_output(args, command), flush=True)
     manifest_url = desktop_manifest_url(update)
-    with urlopen(Request(manifest_url, headers={'Cache-Control': 'no-cache'}), timeout=30) as response:
+    with urlopen(Request(manifest_url, headers=RELEASE_HEADERS), timeout=30) as response:
         manifest = json.load(response)
         if (response.geturl() != manifest_url or manifest['version'] != update['version']
                 or manifest['installer']['sha256'] != update['installer']['sha256']
