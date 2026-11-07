@@ -58,7 +58,14 @@ python3 /opt/champion-erp/current/deploy/publish_desktop.py --policy-only \
 
 ## 当前公网部署（2026-11-07）
 
-ERP 与本机桌面当前为 **1.2.7**，应用代码提交 `34bcbc5a2c0a3b88eba951a2002a4ee096f0ea1d`。统一发布脚本已完成编译、服务器备份与切换、公网资源核验以及本机应用替换，状态为 `complete`。
+后端、网页版和 Apple 芯片 Mac 桌面版 **1.2.8** 已发布，代码提交为 `d70e926b7f75`。首次切换在维护窗口完成，当前服务已启用任务准入和安全停机协调。
+
+- 发布记录为 `20261107t074511z-d70e926b7f75`，状态为 `complete`。对应业务备份在 `/srv/champion-erp/backups/20261107t074511z-d70e926b7f75/accounts.tar.gz`，恢复检查通过。公网账号入口、网页资源摘要、管理员设置和匿名访问检查通过。
+- 桌面策略为可选升级。已从公网完整下载并校验 [Apple 芯片 Mac 安装包](https://hdgl.cc.cd/desktop-updates/darwin-arm64/1.2.8/installer.dmg)，大小为 151757340 字节，SHA-256 为 `ee82f69818c036b1a12a5a5e5dff75bb292df98d31d5541d515f5467f8d0b366`。1.2.7 用户需手动安装一次。
+
+## 1.2.7 发布记录（2026-11-07）
+
+ERP 与本机桌面当时发布为 **1.2.7**，应用代码提交 `34bcbc5a2c0a3b88eba951a2002a4ee096f0ea1d`。统一发布脚本已完成编译、服务器备份与切换、公网资源核验以及本机应用替换，状态为 `complete`。
 
 - 服务器目录为 `/opt/champion-erp/releases/20261107t040708z-34bcbc5a2c0a`，备份为 `/srv/champion-erp/backups/20261107t040708z-34bcbc5a2c0a/accounts.tar.gz`，恢复摘要和数据库完整性验证通过。
 - 本机 `/Applications/Champion ERP.app` 显示版本为 `1.2.7`。旧包位于 `/Applications/.Champion ERP-20261107t040708z-34bcbc5a2c0a.backup.app`。构建与发布记录保存在 `/Users/hdgl/Library/Application Support/Champion ERP/releases/20261107t040708z-34bcbc5a2c0a/`。
