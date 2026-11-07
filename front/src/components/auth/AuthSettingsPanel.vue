@@ -37,7 +37,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   saveAi: [config: UnknownRecord]
   testAi: [model: UnknownRecord]
-  testApi: [kind: 'exchange_rate' | '1688' | '1688_order', config: UnknownRecord, testValue?: string]
+  testApi: [kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue?: string]
   saveStore: [config: UnknownRecord]
   saveCurrency: [platform: Marketplace, currency: string]
   testAuth: [platform: Marketplace, scope?: string, config?: UnknownRecord]

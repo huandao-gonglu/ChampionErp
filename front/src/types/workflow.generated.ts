@@ -28,6 +28,8 @@ export interface BackendAlibabaAuthorizationStatus {
   can_authorize: boolean
   authorized: boolean
   member_id: string
+  account_name: string
+  attempt: "idle" | "waiting" | "expired" | "failed"
   expires_at: number
   refreshable: boolean
   needs_reauthorization: boolean

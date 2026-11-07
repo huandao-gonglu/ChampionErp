@@ -341,10 +341,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/mercadolibre/real-auth-test": _PRODUCT,
     "/api/mercadolibre/refresh-token": _EMPTY,
     "/api/alibaba/crossborder/authorization/start": _EMPTY,
-    "/api/alibaba/crossborder/authorization/complete": RequestContract(fields={"callback_url": STRING}, required=("callback_url",)),
-    "/api/alibaba/crossborder/authorization/test-product": RequestContract(fields={"product_id": STRING}, required=("product_id",)),
     "/api/alibaba/authorization/start": _EMPTY,
-    "/api/alibaba/authorization/complete": RequestContract(fields={"callback_url": STRING}, required=("callback_url",)),
     "/api/open-1688-browser": _EMPTY,
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(

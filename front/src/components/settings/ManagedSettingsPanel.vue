@@ -75,7 +75,7 @@ onMounted(load)
         <h4 class="font-semibold">{{ app.label }}</h4>
         <label class="block text-sm">应用编号<input v-model="settings[app.key].app_key" maxlength="256" autocomplete="off" class="input mt-2 w-full" /></label>
         <label class="block text-sm">应用密钥<input v-model="secrets[app.key]" type="password" maxlength="4096" autocomplete="new-password" :placeholder="settings[app.key].secret_configured ? '已配置，填写可更换' : '尚未配置'" class="input mt-2 w-full" /></label>
-        <label class="block text-sm">授权回调地址<input v-model="settings[app.key].redirect_uri" type="url" maxlength="2048" class="input mt-2 w-full" /></label>
+        <label class="block text-sm">授权回调地址<input v-model="settings[app.key].redirect_uri" type="url" placeholder="https://你的ERP域名/auth/alibaba/callback" maxlength="2048" class="input mt-2 w-full" /></label>
       </section>
       <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
         <h4 class="font-semibold">跨境巴士企业应用</h4>

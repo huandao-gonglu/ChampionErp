@@ -10,10 +10,11 @@ import secrets
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request
 
-from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus
+from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt
+from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
@@ -57,9 +58,19 @@ class AlibabaAuthorizationService:
         except ValueError:
             can_authorize = False
         expires = auth.get('expires_at', 0)
+        pending = state.get('pending') or {}
+        attempt: AuthorizationAttempt = 'idle'
+        if pending and pending.get('application_fingerprint') == application_fingerprint(application):
+            if pending.get('failed'):
+                attempt = 'failed'
+            elif pending.get('expires_at', 0) <= time.time():
+                attempt = 'expired'
+            else:
+                attempt = 'waiting'
         return {'ok': True, 'application_configured': _configured(application), 'can_authorize': can_authorize,
                 'authorized': bool(auth.get('access_token') and _configured(application)),
-                'member_id': auth.get('member_id', ''), 'expires_at': expires,
+                'member_id': auth.get('member_id', ''), 'account_name': auth.get('account_name') or auth.get('member_id', ''),
+                'attempt': attempt, 'expires_at': expires,
                 'refreshable': bool(auth.get('refresh_token')),
                 'needs_reauthorization': bool(state.get('authorization') and not auth)
                     or bool(expires and expires <= time.time() and not auth.get('refresh_token'))}
@@ -86,18 +97,6 @@ class AlibabaAuthorizationService:
             params['_aop_signature'] = hmac.new(application['app_secret'].encode(), signing.encode(), hashlib.sha1).hexdigest().upper()
             return {'ok': True, 'url': 'https://auth.1688.com/auth/authorize.htm?' + urlencode(params)}
 
-    def complete(self, callback_url):
-        with _AUTH_LOCK:
-            application = self.store.alibaba_application(crossborder=self.crossborder)
-            redirect = _redirect(application)
-            parsed = urlsplit(callback_url)
-            if parsed._replace(query='', fragment='').geturl() != redirect or parsed.fragment:
-                raise ValueError('请粘贴本次 1688 授权完成后的完整回调地址')
-            query = parse_qs(parsed.query, keep_blank_values=True)
-            if any(len(query.get(key, [])) != 1 or not query[key][0] for key in ('state', 'code')):
-                raise ValueError('1688 授权回调缺少有效的 code 或 state，请重新授权')
-            return self._complete(application, query['code'][0], query['state'][0])
-
     def callback(self, code, state):
         with _AUTH_LOCK:
             return self._complete(self.store.alibaba_application(crossborder=self.crossborder), code, state)
@@ -105,17 +104,29 @@ class AlibabaAuthorizationService:
     def _complete(self, application, code, state):
         snapshot = self.store.alibaba_credentials(crossborder=self.crossborder)
         pending = snapshot.get('pending') or {}
-        if (not code or not state or len(code) > 4096 or len(state) > 256
+        if (not state or len(code) > 4096 or len(state) > 256
                 or not secrets.compare_digest(pending.get('state_hash', ''), hashlib.sha256(state.encode()).hexdigest())
                 or pending.get('expires_at', 0) <= time.time()
                 or pending.get('application_fingerprint') != application_fingerprint(application)
                 or pending.get('redirect_uri') != application.get('redirect_uri')):
             raise ValueError('1688 授权请求已失效或不匹配，请重新连接账号')
         # 授权码只交换一次；超时不重放，原授权仍保留。
-        consumed = self.store.update_alibaba_credentials({'pending': {}}, expected=snapshot, application=application, crossborder=self.crossborder)
-        payload = self._token(application, {'grant_type': 'authorization_code', 'code': code})
-        auth = self._parse_token(application, payload)
-        self.store.update_alibaba_credentials({'authorization': auth}, expected=consumed, application=application, crossborder=self.crossborder)
+        # 已按时收到回调，给正在进行的 Token 交换保留完成时间。
+        processing = {**pending, 'state_hash': '', 'expires_at': max(pending['expires_at'], time.time() + 60)}
+        consumed = self.store.update_alibaba_credentials(
+            {'pending': processing}, expected=snapshot, application=application, crossborder=self.crossborder)
+        try:
+            if not code:
+                raise ValueError('1688 未返回授权码，请重新授权')
+            payload = self._token(application, {'grant_type': 'authorization_code', 'code': code})
+            auth = self._parse_token(application, payload)
+        except (ValueError, ExternalRequestBlocked):
+            self.store.update_alibaba_credentials(
+                {'pending': {**processing, 'failed': True}}, expected=consumed,
+                application=application, crossborder=self.crossborder)
+            raise
+        self.store.update_alibaba_credentials(
+            {'authorization': auth, 'pending': {}}, expected=consumed, application=application, crossborder=self.crossborder)
         return self.status()
 
     def runtime_config(self):
@@ -138,7 +149,7 @@ class AlibabaAuthorizationService:
     def _parse_token(application, payload, previous=None):
         previous = previous or {}
         token = payload.get('access_token')
-        member = str(payload.get('memberId') or previous.get('member_id') or '')
+        member = str(payload.get('memberId') or payload.get('member_id') or previous.get('member_id') or '')
         if not isinstance(token, str) or not token or not member:
             raise ValueError('1688 未返回完整的账号授权，请重新连接账号')
         if previous.get('member_id') and member != previous['member_id']:
@@ -154,6 +165,7 @@ class AlibabaAuthorizationService:
             raise ValueError('1688 返回的刷新凭据无效，请重新连接账号')
         return {'access_token': token, 'refresh_token': refresh, 'expires_at': time.time() + expires,
                 'refresh_token_timeout': payload.get('refresh_token_timeout', previous.get('refresh_token_timeout', '')),
+                'account_name': str(payload.get('resource_owner') or previous.get('account_name') or member),
                 'member_id': member, 'app_key': application['app_key'],
                 'account_scope': previous.get('account_scope') or buyer_scope(application['app_key'], member),
                 'application_fingerprint': application_fingerprint(application)}

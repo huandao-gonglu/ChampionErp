@@ -26,6 +26,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': devProxyTarget,
         '/file': devProxyTarget,
+        '/auth/alibaba/callback': devProxyTarget,
         '/auth/mercadolibre': devProxyTarget,
         '/auth/ozon': devProxyTarget,
       },

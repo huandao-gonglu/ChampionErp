@@ -213,7 +213,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     }
   }
 
-  async function testPlatformApiConfig(kind: 'exchange_rate' | '1688' | '1688_order', config: UnknownRecord, testValue = '') {
+  async function testPlatformApiConfig(kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue = '') {
     activity.loading = true
     activity.setError('')
     try {

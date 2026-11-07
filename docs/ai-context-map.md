@@ -91,12 +91,12 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 `services/alibaba_authorization_service.py` 独占官方登录链接、授权码交换、买家身份核验和 Token 刷新；
 采购、订单物流及 API 采集经 `alibaba_runtime_config` 取用。公共状态不发起远程请求。
 `facades/alibaba_authorization_facade.py` / `http_route_units/alibaba_authorization_routes.py` 提供
-GET `/api/alibaba/authorization`、POST `/start`、`/complete`（后两者位于 `/api/alibaba/authorization` 下）
+GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
 及 GET `/auth/alibaba/callback`；仅该回调的顶层 GET 导航允许跨站，仍必须校验服务端单次 state。
-`AlibabaSettingsPanel.vue` 只提供客户账号连接，不收集企业密钥。
+`AlibabaSettingsPanel.vue` 打开浏览器授权，在等待期间查询服务器状态，并显示完成授权的账号名称。
 新采购归属按应用与官方买家身份固定，刷新 Token 不改变历史范围；旧 Token 的范围摘要原样保留。
 采购和跨境商品查询各有独立的应用配置、活动买家授权和登录请求。跨境状态和操作经
-`/api/alibaba/crossborder/authorization`，其中 `test-product` 只读验证商品规格。两者共用官方回调入口，按一次性 state 分开核验；桌面分发不得携带公司 AppSecret。
+`/api/alibaba/crossborder/authorization`。两者共用官方回调入口，按一次性 state 分开核验；桌面分发不得携带公司 AppSecret。
 部署、迁移限制、协议依据及验证见 [1688 授权](alibaba-authorization.md)。
 
 ### 桌面与统一业务后端
@@ -1687,7 +1687,7 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 
 ### 1688 采购状态与物流
 
-- `AuthSettingsPanel.vue` 的「1688 授权」沿用 `1688_api` 配置与 `ConfigStore` 的运行时秘密存储；空值或掩码沿用已保存凭据。采购查询需要 AppKey、AppSecret、Access Token，测试类型 `1688_order` 用输入订单号真实读取；商品采集的原有设置继续保留。
+- 采购查询使用当前采购账号的服务端授权，账号连接入口见上文「1688 应用与账号授权」。
 - POST `/api/orders/purchase-query` → `order_procurement_facade.query_purchase` → `services/alibaba_purchase_query_service.py`。请求只接受销售订单 ID、采购记录 ID 和查询种类；服务端读取冻结采购单号，网络前后校验店铺归属和记录未作废，不跨网络持有事务。请求与返回形状见 `schemas/alibaba_orders.py`。
 - `order_notification_facade.py` 向 `OrderNotificationService` 显式注入 `services/order_progress_sync_service.py`：导航进入订单中心且满足 5 小时自动同步间隔、点击同步订单及平台通知保存快照后，按最新平台状态和当前报单阶段查询。平台已发货或已送达时，不再查询 1688 采购状态/国内物流和仓库报单；平台尚未发货且当前报单已有远端编号时，只刷新仓库状态；当前报单尚未确认成功时，刷新有效采购及创建待核实的仓库单。仅配置方案、提交中、失败、结果待核实和已归档的旧报单不算当前报单成功。单轮同订单去重，每笔网络请求前续租并验证账号与停止状态；查询期间不持数据库锁。单笔失败继续其他查询，各领域保留旧快照和错误，订单任务汇总部分失败且不自动重试附属查询。单笔人工查询入口仍可按需刷新。
 - 列表、详情及履约页签定时刷新只读取数据库；详情编辑和提交期间暂停替换内容，旧响应不得覆盖较新的手动结果。采购与仓库单笔刷新入口保留。

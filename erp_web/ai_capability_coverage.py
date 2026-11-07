@@ -120,10 +120,9 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
         reason="1688 买家 OAuth 状态、官方登录及一次性回调只供受信界面与授权服务使用，不向模型开放凭据操作。") for method, path in (
         ("GET", "/api/alibaba/crossborder/authorization"),
-        ("POST", "/api/alibaba/crossborder/authorization/start"), ("POST", "/api/alibaba/crossborder/authorization/complete"),
-        ("POST", "/api/alibaba/crossborder/authorization/test-product"),
+        ("POST", "/api/alibaba/crossborder/authorization/start"),
         ("GET", "/api/alibaba/authorization"), ("GET", "/auth/alibaba/callback"),
-        ("POST", "/api/alibaba/authorization/start"), ("POST", "/api/alibaba/authorization/complete"),
+        ("POST", "/api/alibaba/authorization/start"),
     )),
     AiCapabilityCoverageEntry(method="POST", path="/api/publish-bus/retry", business_domain="商品发布", disposition="internal_only",
         reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),

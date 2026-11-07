@@ -6,18 +6,15 @@ from erp_web.facades.alibaba_authorization_facade import authorization_payload
 from erp_web.schemas.requests import validate_request_payload
 
 
-def _post(handler, action, *, crossborder=False):
-    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
-    payload, status = authorization_payload(action, body, crossborder=crossborder)
+def _start(handler, *, crossborder=False):
+    validate_request_payload(handler.read_body(), endpoint=handler.path)
+    payload, status = authorization_payload('start', crossborder=crossborder)
     handler.send_json(payload, status)
 
 
 POST_HANDLERS = {
-    '/api/alibaba/authorization/start': lambda handler: _post(handler, 'start'),
-    '/api/alibaba/authorization/complete': lambda handler: _post(handler, 'complete'),
-    '/api/alibaba/crossborder/authorization/start': lambda handler: _post(handler, 'start', crossborder=True),
-    '/api/alibaba/crossborder/authorization/complete': lambda handler: _post(handler, 'complete', crossborder=True),
-    '/api/alibaba/crossborder/authorization/test-product': lambda handler: _post(handler, 'test_product', crossborder=True),
+    '/api/alibaba/authorization/start': _start,
+    '/api/alibaba/crossborder/authorization/start': lambda handler: _start(handler, crossborder=True),
 }
 GET_API_ROUTES = frozenset({'/api/alibaba/authorization', '/api/alibaba/crossborder/authorization'})
 GET_HANDLED_PATHS = GET_API_ROUTES | {'/auth/alibaba/callback'}
@@ -40,9 +37,12 @@ def handle_get(handler, parsed):
     if parsed.path != '/auth/alibaba/callback':
         return False
     query = parse_qs(parsed.query, keep_blank_values=True)
-    body = {key: values[0] for key, values in query.items() if key in {'code', 'state'} and len(values) == 1}
-    payload, status = authorization_payload('callback', body)
-    message = '1688 账号已连接，请返回 ERP 刷新授权状态。' if payload.get('ok') else payload['error']
+    if any(len(query.get(key, [])) > 1 for key in ('state', 'code')):
+        payload, status = {'error': '1688 授权回调包含重复参数，请重新授权'}, 400
+    else:
+        body = {key: query[key][0] for key in ('code', 'state') if key in query}
+        payload, status = authorization_payload('callback', body)
+    message = '1688 账号已连接，可关闭此页面并返回 ERP。' if payload.get('ok') else payload['error']
     raw = ('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>1688 账号授权</title>'
            '<meta name="referrer" content="no-referrer"><body><p>' + escape(message) + '</p></body></html>').encode()
     handler.send_response(status)

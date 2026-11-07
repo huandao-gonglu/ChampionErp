@@ -9,7 +9,6 @@ from urllib.parse import parse_qs
 import pytest
 
 from erp_web.context import get_context
-from erp_web.runtime_units.store_credentials import test_api_config as run_config_test
 from erp_web.services import alibaba_api_client as api
 from erp_web.services.alibaba_purchase_query_service import query_purchase, normalize_order
 from tests.test_order_procurement import domain, confirm, purchase_body
@@ -189,22 +188,6 @@ def test_http_auth_failure_is_safe_and_closes_response(monkeypatch):
     with pytest.raises(api.AlibabaApiError, match="重新连接账号") as error:
         api.AlibabaApiClient(CONFIG).query(api.ORDER_DETAIL, NUMBER)
     assert "test-token" not in str(error.value) and stream.closed
-
-
-def test_order_config_test_uses_saved_secrets_without_exposing_them(monkeypatch):
-    context = get_context()
-    config = context.config.load_app_config()
-    config["1688_api"] = CONFIG
-    context.config.save_app_config(config)
-    # 只检查实际客户端收到的凭据；不要求测试伪客户端的 calls 属性。
-    def query(self, name, number):
-        assert self.app_secret == CONFIG["app_secret"] and self.access_token == "test-token"
-        return Client(CONFIG).query(name, number)
-    monkeypatch.setattr(api.AlibabaApiClient, "query", query)
-    result = run_config_test("1688_order", {"app_key": "", "app_secret": "", "access_token": "new-token"}, NUMBER)
-    assert result["ok"] and result["order"]["order_number"] == NUMBER
-    assert "new-token" not in json.dumps(result) and "test-secret" not in json.dumps(result)
-    assert context.config.alibaba_credentials()["authorization"]["access_token"] == "test-token"
 
 
 def test_public_settings_cannot_replace_saved_authorization():
