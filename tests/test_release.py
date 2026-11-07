@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import shutil
 import tarfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -99,3 +101,46 @@ def test_server_failed_smoke_restores_code_and_service_configuration(tmp_path, m
     assert override.read_text() == 'previous-python'
     assert json.loads((staging / 'server-result.json').read_text())['status'] == 'rolled_back'
     assert calls[-1] == ('systemctl', 'start', release_server.SERVICE)
+
+
+def test_public_verification_identifies_release_client_and_checks_asset_digest(tmp_path):
+    static = tmp_path / 'erp_web/static/dist'
+    (static / 'assets').mkdir(parents=True)
+    (static / 'index.html').write_text('<script src="/assets/index-test.js"></script>')
+    (static / 'assets/index-test.js').write_bytes(b'compiled application')
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.headers.get('User-Agent', '').startswith('Python-urllib'):
+                self.send_error(403)
+                return
+            if self.path == '/api/account/session':
+                content = b'{"ok":true,"initialized":true}'
+            else:
+                content = (static / ('index.html' if self.path == '/' else self.path.lstrip('/'))).read_bytes()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(content)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        result = release.verify_public(f'http://127.0.0.1:{server.server_port}', tmp_path)
+        assert result['account_session']
+        assert result['web_sha256'] == release.digest(static / 'assets/index-test.js')
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
+def test_resume_refuses_when_another_server_release_is_active(tmp_path, monkeypatch):
+    archive = tmp_path / 'server.tar.gz'
+    archive.write_bytes(b'original package')
+    release.write_record(tmp_path / 'release.json', {'status': 'failed_after_server_published',
+        'archive_sha256': release.digest(archive), 'server': {'release': '/expected-release'}})
+    monkeypatch.setattr(release, 'remote_output', lambda *args: '/other-release')
+    with pytest.raises(RuntimeError, match='其他发布'):
+        release.resume_release(argparse.Namespace(resume=tmp_path))

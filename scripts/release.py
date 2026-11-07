@@ -16,7 +16,7 @@ import sys
 import tarfile
 import tempfile
 import time
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -136,18 +136,62 @@ def verify_public(public_url, source):
     entry = re.search(r'src="(/assets/[^" ]+\.js)"', index)
     if not entry:
         raise RuntimeError('网页构建未找到入口资源')
-    with urlopen(public_url.rstrip('/') + '/api/account/session', timeout=30) as response:
+    headers = {'User-Agent': 'gongluErp-release'}
+    with urlopen(Request(public_url.rstrip('/') + '/api/account/session', headers=headers), timeout=30) as response:
         session = json.load(response)
     if not session.get('initialized') or not session.get('ok'):
         raise RuntimeError('公网账号入口尚未就绪')
-    with urlopen(public_url.rstrip('/') + '/', timeout=30) as response:
+    with urlopen(Request(public_url.rstrip('/') + '/', headers=headers), timeout=30) as response:
         if entry[1] not in response.read().decode():
             raise RuntimeError('公网页面尚未提供本次网页版本')
-    with urlopen(public_url.rstrip('/') + entry[1], timeout=30) as response:
+    with urlopen(Request(public_url.rstrip('/') + entry[1], headers=headers), timeout=30) as response:
         received = hashlib.sha256(response.read()).hexdigest()
     if received != digest(source / 'erp_web/static/dist' / entry[1].lstrip('/')):
         raise RuntimeError('公网静态资源与构建包不一致')
     return {'account_session': True, 'web_entry': entry[1], 'web_sha256': received}
+
+
+def finish_install(args, record, folder, source):
+    app = Path(record['desktop_source'])
+    if desktop_hash(app) != record['desktop_asar_sha256']:
+        raise RuntimeError('已构建的桌面包摘要发生变化，请重新构建')
+    record['public'] = verify_public(args.public_url, source)
+    write_record(folder / 'release.json', record)
+    print('服务器已升级，正在替换本机桌面程序', flush=True)
+    record['desktop'] = install_desktop(app, Path(record['desktop_target']), record['previous_desktop_sha256'],
+                                      record['release_id'], args.wait_desktop_seconds)
+    record['status'] = 'complete'
+    write_record(folder / 'release.json', record)
+    print(f"发布完成，版本 {record['version']}，代码 {record['revision'][:12]}。记录保存在 {folder / 'release.json'}", flush=True)
+
+
+def resume_release(args):
+    folder = args.resume.expanduser().resolve()
+    record = json.loads((folder / 'release.json').read_text())
+    if record['status'] not in {'server_published', 'failed_after_server_published'}:
+        raise RuntimeError('该发布记录不处于可继续的服务器已发布阶段')
+    archive = folder / 'server.tar.gz'
+    if digest(archive) != record['archive_sha256']:
+        raise RuntimeError('已有服务器发布包摘要发生变化')
+    current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
+    if current != record['server']['release']:
+        raise RuntimeError('服务器已切换到其他发布，拒绝安装旧版本桌面程序')
+    manifest = json.loads(remote_output(args, ['cat', current + '/release-manifest.json']))
+    if manifest['revision'] != record['revision']:
+        raise RuntimeError('服务器代码版本与发布记录不一致')
+    for key in ('previous_desktop_sha256', 'desktop_asar_sha256', 'desktop_target'):
+        if key not in record:
+            raise RuntimeError('旧发布记录缺少桌面校验信息，请先人工核对并补齐记录')
+    try:
+        with tempfile.TemporaryDirectory(prefix='erp-release-resume-') as temporary:
+            source = Path(temporary)
+            with tarfile.open(archive) as package:
+                package.extractall(source, filter='data')
+            finish_install(args, record, folder, source)
+    except BaseException:
+        record['status'] = 'failed_after_server_published'
+        write_record(folder / 'release.json', record)
+        raise
 
 
 def release(args):
@@ -171,6 +215,8 @@ def release(args):
     environment = {key: value for key, value in os.environ.items() if not key.startswith(('ERP_', 'VITE_', 'CHAMPION_ERP_'))}
     environment['CSC_IDENTITY_AUTO_DISCOVERY'] = 'false'
     previous_desktop = desktop_hash(args.desktop_target)
+    record.update(previous_desktop_sha256=previous_desktop, desktop_target=str(args.desktop_target))
+    write_record(record_path, record)
     try:
         current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
         if not current.startswith('/opt/champion-erp/releases/'):
@@ -222,7 +268,8 @@ def release(args):
                 archive.add(source / 'erp_web/static/dist', arcname='erp_web/static/dist')
                 for name in ('REVISION', 'release-manifest.json'):
                     archive.add(source / name, arcname=name)
-            record.update(status='built', archive_sha256=digest(archive_path), desktop_source=str(app))
+            record.update(status='built', archive_sha256=digest(archive_path), desktop_source=str(app),
+                          desktop_asar_sha256=desktop_hash(app))
             write_record(record_path, record)
             if desktop_hash(args.desktop_target) != previous_desktop:
                 raise RuntimeError('编译期间桌面程序已被其他更新更换，请核对后重新发布')
@@ -237,12 +284,7 @@ def release(args):
             record['server'] = json.loads(remote_output(args, ['cat', remote_folder + '/server-result.json']))
             record['status'] = 'server_published'
             write_record(record_path, record)
-            record['public'] = verify_public(args.public_url, source)
-            print('服务器已升级，正在替换本机桌面程序', flush=True)
-            record['desktop'] = install_desktop(app, args.desktop_target, previous_desktop, release_id, args.wait_desktop_seconds)
-        record['status'] = 'complete'
-        write_record(record_path, record)
-        print(f'发布完成，版本 {version}，代码 {revision[:12]}。记录保存在 {record_path}', flush=True)
+            finish_install(args, record, folder, source)
     except BaseException:
         record['status'] = 'failed_after_' + record['status']
         write_record(record_path, record)
@@ -260,12 +302,18 @@ def main():
     parser.add_argument('--desktop-target', type=Path, default=current_app if current_app.exists() else Path('/Applications/gongluErp.app'))
     parser.add_argument('--output-dir', type=Path, default=Path.home() / 'Library/Application Support/Champion ERP/releases')
     parser.add_argument('--wait-desktop-seconds', type=int, default=3600)
+    parser.add_argument('--resume', type=Path, help='从已有发布目录继续公网验证和桌面替换')
     args = parser.parse_args()
     args.output_dir = args.output_dir.expanduser().absolute()
+    if args.resume:
+        args.output_dir = args.resume.expanduser().resolve().parent
     args.output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (args.output_dir / '.release.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        release(args)
+        if args.resume:
+            resume_release(args)
+        else:
+            release(args)
 
 
 if __name__ == '__main__':
