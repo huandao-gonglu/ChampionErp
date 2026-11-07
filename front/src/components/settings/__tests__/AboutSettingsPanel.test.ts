@@ -22,7 +22,7 @@ describe('关于与法律声明', () => {
     expect(wrapper.get('dialog').text()).toContain('软件许可与服务协议')
     expect(wrapper.get('article').text()).toContain('免费提供下载、安装和基础功能使用')
     expect(wrapper.get('article').text()).not.toContain('diskid')
-    expect(wrapper.get('article').text()).toContain('当前版本未提供后台自动下载')
+    expect(wrapper.get('article').text()).toContain('下载和安装由用户确认')
     expect(wrapper.get('article').text()).toContain('仅打开或关闭本协议不代表同意')
     expect(fetch).not.toHaveBeenCalled()
     await wrapper.get('dialog').trigger('cancel')

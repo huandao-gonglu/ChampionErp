@@ -16,7 +16,7 @@ class AccountSession {
   }
 }
 
-function proxyBackendRequest(req, res, baseUrl, { session, connectionId = () => '', onLogin = async () => {}, onLogout = () => {} }) {
+function proxyBackendRequest(req, res, baseUrl, { session, client = '', connectionId = () => '', onLogin = async () => {}, onLogout = () => {} }) {
   const requestPath = new URL(req.url || '/', 'http://desktop.invalid')
   const target = new URL(baseUrl)
   target.pathname = requestPath.pathname
@@ -30,6 +30,8 @@ function proxyBackendRequest(req, res, baseUrl, { session, connectionId = () => 
   delete headers.authorization
   delete headers['x-real-ip']
   delete headers['x-forwarded-for']
+  delete headers['x-champion-client']
+  if (client) headers['x-champion-client'] = client
   delete headers['x-champion-desktop']
   if (session.cookie) headers.cookie = session.cookie
   if (!requestPath.pathname.startsWith('/api/account/') && !requestPath.pathname.startsWith('/api/admin/') && connectionId()) headers['x-champion-desktop'] = connectionId()
@@ -64,8 +66,10 @@ function proxyBackendRequest(req, res, baseUrl, { session, connectionId = () => 
   })
   function fail(error) {
     if (res.headersSent || res.destroyed) { res.destroy(error); return }
-    const raw = JSON.stringify({ ok: false, error: '业务后端连接失败，请重试。' })
-    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(raw) })
+    const upgrade = error?.code === 'DESKTOP_UPDATE_REQUIRED'
+    if (upgrade) { session.clear(); onLogout() }
+    const raw = JSON.stringify({ ok: false, error: upgrade ? error.message : '业务后端连接失败，请重试。' })
+    res.writeHead(upgrade ? 426 : 502, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(raw) })
     res.end(raw)
   }
   upstream.on('error', fail)

@@ -137,6 +137,11 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 直到真实工作返回。排队和线程交接期间同样受保护。可恢复的外部确认由原领域服务处理，平台待确认状态本身不占用发布等待。
 运行细节与首次接入步骤见[统一编译与发布](server-deployment.md#统一编译与发布)。
 
+统一发布默认分发可选桌面更新，构建用 Mac 同样通过客户端升级。`--server-only` 跳过桌面打包和分发。
+桌面版本发布由 `scripts/release.py` 和 `deploy/publish_desktop.py` 写入同一套平台/架构清单，Nginx 独立提供安装包。
+`front/desktop/updates.cjs` 负责启动检查与下载，`services/desktop_version_policy.py` 在已上报版本的桌面新提交上执行最低版本规则。
+桌面回执和网页继续使用原入口。发布与撤回见[桌面更新发布服务](server-deployment.md#桌面更新发布服务)。
+
 部署、配置、迁移门禁和隔离验收见 [桌面与统一后端](desktop-packaging.md)；当前服务器、访问通道及备份位置见 [服务器部署记录](server-deployment.md)。
 
 ### 微信 ClawBot 对话窗口
@@ -1766,7 +1771,7 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 - 「禁售类目」（`settings_section=forbidden_categories`）支持导入 Yandex 的 XLSX 名单，列为 `category`、`name`，可含 `int64` / `string` 类型说明行。GET `/api/system-settings/forbidden-categories` 和 POST `/api/system-settings/forbidden-categories/import` 经 `auth_config_facade`、`forbidden_category_service` 与根 `ConfigStore` 完整校验并替换共享 `app_config.forbidden_categories`；导入仅管理员开放，所有个人空间的预检读取同一名单。空名单、错误行和同 ID 异名均拒绝整次导入，失败保留旧配置。通用配置保存不能覆盖该区段。
   匹配仅按 Yandex 类目 ID，不按名称推测或自动扩大到父子类目。`category_facade` 类目预检与 `publish_validation` 基础/最终发布校验共同执行；单次 SKU 批次由 `PublishValidationSession` 固定一次名单快照，下一次校验重新读取，旧预检通过不能绕过最终校验。名单更新不改写历史预检或已经提交的发布任务。回归见 `tests/test_forbidden_categories.py`、`tests/test_yandex_publish.py`。
 
-- “关于”页提供应用版本、英文第三方声明，以及独立的中文《软件许可与服务协议》和《隐私政策》。版本与 `front/package.json` 同源。第三方声明从运行依赖生成并校验指纹，`front/build/third-party-notices.ts` 按 Web 实际构建模块或桌面交付范围筛选，排除纯开发与测试工具；许可证及声明生成为 `licenses/` 下的可读文件，桌面版随安装包放在 ASAR 外，“关于”仅打开该目录，Web 仅提供 TXT 下载；不在弹窗加载或展开全文。组件版权和 NOTICE 保留，来源与发行边界见 [第三方声明来源](../scripts/legal-notices/README.md)。法律文本分别维护于 `front/src/legal/user-agreement.ts` 与 `privacy-policy.ts`，硬件信息期限不适用于自行部署的业务数据库。查看不代表同意，不启用设备上报或自动升级。
+- “关于”页提供应用版本、英文第三方声明，以及独立的中文《软件许可与服务协议》和《隐私政策》。版本与 `front/package.json` 同源。第三方声明从运行依赖生成并校验指纹，`front/build/third-party-notices.ts` 按 Web 实际构建模块或桌面交付范围筛选，排除纯开发与测试工具；许可证及声明生成为 `licenses/` 下的可读文件，桌面版随安装包放在 ASAR 外，“关于”打开该目录，Web 仅提供 TXT 下载；不在弹窗加载或展开全文。组件版权和 NOTICE 保留，来源与发行边界见 [第三方声明来源](../scripts/legal-notices/README.md)。法律文本分别维护于 `front/src/legal/user-agreement.ts` 与 `privacy-policy.ts`，硬件信息期限不适用于自行部署的业务数据库。查看不代表同意，不启用设备上报或自动升级。
 
 - 左侧栏底部 `AppSidebar.vue` → `/?tab=systemSettings` → `SystemSettingsPanel.vue` 在主区域提供订单自动同步间隔设置；复用工作台导航，支持刷新及浏览器前进、后退。
 - GET/POST `/api/system-settings` → `auth_config_facade` → `ConfigStore.system_settings/save_system_settings`；单项更新保存在 `app_config.system_settings`，通用授权配置合并忽略该区段，避免旧页面覆盖。字段契约由 `schemas/config.py` 定义，前端类型自动生成。旧配置缺少区段时默认 5 小时。

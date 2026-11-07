@@ -9,13 +9,14 @@ function normalizeBackendUrl(value) {
   return url.origin
 }
 
-function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 25000, signal, session) {
+function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 25000, signal, session, client = '') {
   const url = new URL(pathname, baseUrl)
   return new Promise((resolve, reject) => {
     const raw = JSON.stringify(data)
     const request = (url.protocol === 'https:' ? https : http).request(url, {
       method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw),
         ...session?.headers(),
+        ...(client ? { 'X-Champion-Client': client } : {}),
         ...(connectionId ? { 'X-Champion-Desktop': connectionId } : {}) },
     }, (response) => {
       let body = ''
@@ -28,7 +29,11 @@ function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 250
       response.on('end', () => {
         try {
           const result = JSON.parse(body)
-          if (response.statusCode !== 200 || !result.ok) throw new Error(result.error || `后端返回 HTTP ${response.statusCode}`)
+          if (response.statusCode !== 200 || !result.ok) {
+            const error = new Error(result.error || `后端返回 HTTP ${response.statusCode}`)
+            error.code = result.error_code
+            throw error
+          }
           resolve(result)
         } catch (error) { reject(error) }
       })
@@ -39,8 +44,8 @@ function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 250
   })
 }
 
-async function connectDesktop(baseUrl, runtime, { onDisconnected = () => {}, session } = {}) {
-  const send = (pathname, data, connectionId = '', timeoutMs = 25000, signal) => requestJson(baseUrl, pathname, data, connectionId, timeoutMs, signal, session)
+async function connectDesktop(baseUrl, runtime, { onDisconnected = () => {}, session, client = '' } = {}) {
+  const send = (pathname, data, connectionId = '', timeoutMs = 25000, signal) => requestJson(baseUrl, pathname, data, connectionId, timeoutMs, signal, session, client)
   const registration = await send('/api/desktop/connect', {})
   const id = registration.connection_id
   if (typeof id !== 'string' || id.length < 32) throw new Error('桌面连接标识无效。')

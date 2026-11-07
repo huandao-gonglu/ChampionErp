@@ -54,7 +54,7 @@ macOS 沿用 `~/Library/Application Support/Champion ERP/backend` 作为本机�
 
 ## 构建
 
-同时升级服务器与本机桌面时，在项目根目录执行 `.venv/bin/python scripts/release.py`。统一流程会执行回归检查、构建、服务器备份切换、公网验证以及桌面旧包备份和替换，详见[统一编译与发布](server-deployment.md#统一编译与发布)。
+同时发布服务器、网页和可选桌面更新时，在项目根目录执行 `.venv/bin/python scripts/release.py`。构建用 Mac 也通过客户端检查更新。需要强制升级时加 `--desktop-update required`；仅发布服务器和网页时加 `--server-only`。详见[统一编译与发布](server-deployment.md#统一编译与发布)。
 
 在目标平台和架构上安装 Python 与前端 pnpm 依赖，然后执行：
 
@@ -67,6 +67,14 @@ pnpm desktop:dist
 `build:runtime` 在仓库外创建独立构建环境，仅安装 `requirements-desktop.txt` 和构建工具；`scripts/desktop_runtime.spec` 仅收集 `desktop_runtime`、`erp_shared` 和所需依赖，明确排除 `erp_web`、SQLite 与业务 SDK。输出为 `front/.desktop-runtime/champion-erp-runtime`，安装包资源目录为 `runtime`，不放入 ASAR。
 
 前端输出到 `front/dist-desktop`，发行产物位于 `front/release`。第三方声明及 Electron 官方许可证继续通过 `extraResources` 放在 `licenses`，关于页通过固定 IPC 打开目录。macOS 签名、公证仍需发行环境配置。
+
+## 客户端获取更新
+
+自 1.2.8 起，正式包在启动本机执行器前检查发行站点，运行期间每 30 分钟检查一次，也可从“文件 → 检查桌面更新”立即检查。检查只按操作系统和 CPU 架构选包。版本策略与业务登录独立，发行站点不可达时沿用最后成功取得的策略。尚未取得过策略时仍可启动，接入已发布最低版本策略的业务后端后，新请求会再经服务端检查。
+
+用户确认后才下载。Mac 客户端校验 DMG 的长度及 SHA-256，启动阶段打开安装包，使用期间只在 Finder 中定位下载文件。无 Apple 开发者证书时，统一发布脚本使用免费的本机临时签名，未经 Apple 公证，其他 Mac 上首次打开可能遇到系统安全提示。退出旧程序后用 DMG 内的应用替换原应用；原安装名称若为 `Champion ERP.app`，替换时请保留此名称，避免留下两个桌面入口。Windows 对应 NSIS 安装包，Linux 定位已校验的 AppImage。可选更新允许稍后使用原版本。低于最低版本时，新启动不能跳过更新进入业务；使用中的客户端仍保留当前会话和本机调用回执。
+
+已有 Developer ID 和公证配置时，在统一发布命令追加 `--signed-desktop`，将验证签名和公证票据，发布 DMG 并额外提供原生更新 ZIP。已签名的 Mac 客户端在启动阶段可使用 Electron 的 `autoUpdater` 安装并重启，也可选择下载 DMG。首次从缺少签名的客户端切到已签名版本仍走安装包。Apple 会员与签名配置见 [Apple Developer ID](https://developer.apple.com/developer-id/)，原生更新要求见 [Electron autoUpdater](https://www.electronjs.org/docs/latest/api/auto-updater#macos)。
 
 ## 旧桌面数据迁移
 

@@ -2,19 +2,19 @@
 
 ## 统一编译与发布
 
-在目标 Mac 的项目根目录执行以下命令。先将待发布代码提交到 Git，脚本拒绝脏工作区，使用独立目录检出固定提交。
+在构建用 Mac 的项目根目录执行以下命令。默认发布服务器、网页和该 Mac 架构的可选桌面更新。发布前先准备好新版号、提交代码，脚本从干净的 Git 版本构建。首次分发需先完成下方的[更新站点配置](#桌面更新发布服务)。
 
 ```sh
 .venv/bin/python scripts/release.py
 ```
 
-服务器包上传完成后，若等待任务超时、首次接入需安排维护，或公网验证、桌面安装中断，可以用同一发布目录继续。脚本校验版本与包摘要，复用已经准备好的环境。
+服务器包上传完成后，若等待任务超时、首次接入需安排维护，或公网验证、桌面包分发中断，可以用同一发布目录继续。脚本校验版本与包摘要，复用已经准备好的环境。
 
 ```sh
 .venv/bin/python scripts/release.py --resume '/发布记录所在目录'
 ```
 
-默认目标为当前 SSH 服务器及 `https://hdgl.cc.cd`。SSH 使用现有密钥并校验已知主机，不转发 Agent。`--help` 可查看服务器、密钥、安装目录与等待时间参数。
+默认目标为当前 SSH 服务器及 `https://hdgl.cc.cd`。SSH 使用现有密钥并校验已知主机，不转发 Agent。`--help` 可查看服务器、密钥、发布记录目录与任务等待时间参数。
 
 脚本依次检查第三方声明，运行后端全量、前端、桌面及生成契约回归，编译网页和独立本机执行器，再生成 macOS 应用包。只上传 Git 跟踪的源码与本次网页构建，不上传开发配置、数据库、浏览器资料或本机依赖缓存。
 
@@ -28,9 +28,33 @@
 
 **首次从旧版接入**时，旧进程尚无活动任务登记。脚本先准备新版，检测到旧服务仍在运行就退出。安排一次维护窗口，暂停用户和外部任务来源，确认已有任务收尾后，在服务器执行 `systemctl stop champion-erp.service`，再从 Mac 用 `--resume` 继续。之后统一发布会通过 systemd 的 `release-python.conf` 自动配置 `ERP_RELEASE_GUARD_DIR`。直接执行 `systemctl restart` 会跳过发布等待。
 
-健康检查包含真实临时管理员会话的共享设置、运费表、禁售名单及匿名拒绝检查，结束后撤销该会话。公网页面和 JS 入口须匹配本次构建摘要。服务器发布成功后，脚本等待本机桌面正常退出，备份旧应用并原子替换，再验证已安装执行器的就绪、配置读取和 EOF 退出。安装后检查失败时恢复旧程序。
+健康检查包含真实临时管理员会话的共享设置、运费表、禁售名单及匿名拒绝检查，结束后撤销该会话。公网页面和 JS 入口须匹配本次构建摘要。公网验收成功后，脚本分发经过签名完整性和执行器检查的桌面包，校验公网更新清单后结束。构建用 Mac 与其他客户端一样，通过“文件 → 检查桌面更新”取得新版。
 
-构建日志、服务器包及 `release.json` 保存在 `~/Library/Application Support/Champion ERP/releases/<发布标识>/`，服务器数据备份保存在 `/srv/champion-erp/backups/<发布标识>/`。桌面旧包保存在安装目录下带发布标识的隐藏备份目录。程序更新沿用原有 `Champion ERP` 本机配置和浏览器资料目录。脚本不会强制关闭桌面程序，运行中的程序需正常退出后才继续安装。
+构建日志、服务器包及 `release.json` 保存在 `~/Library/Application Support/Champion ERP/releases/<发布标识>/`，服务器数据备份保存在 `/srv/champion-erp/backups/<发布标识>/`。安装新版后沿用原有 `Champion ERP` 本机配置和浏览器资料目录。
+
+## 桌面更新发布服务
+
+安装包和版本清单由现有 Nginx 通过 HTTPS 提供，在 ERP 切换后端进程期间也能下载。首次启用时，将本仓库 Nginx 模板中 `location ^~ /desktop-updates/` 合入 ERP 的 443 站点，创建 `/var/www/champion-erp/desktop-updates`（管理员可写，Nginx 和 ERP 可读），通过 `nginx -t` 后重载。发行站点固定在构建输入 `front/package.json` 的 `desktopUpdateOrigin`；自托管发行时须同时配置这个地址和 `--public-url`。
+
+每次分发新安装包先提高 `front/package.json` 的版本号，重新生成第三方声明，并按统一发布流程提交代码。在目标 Mac 执行以下命令之一。
+
+```sh
+.venv/bin/python scripts/release.py --update-notes '本次更新内容'
+.venv/bin/python scripts/release.py --desktop-update required --update-notes '本次升级原因'
+```
+
+只更新后端或网页版时，执行 `.venv/bin/python scripts/release.py --server-only`，跳过桌面构建和分发，现有桌面版本策略继续生效。脚本从实际应用可执行文件读取架构，生成 DMG，在公网网页验收成功后上传到服务器。发布程序按 SHA-256 复核内容，将安装包放入按平台、架构和版本区分的固定目录，检查公网分段下载，再原子更新该目标的 `latest.json`。同一平台和架构的新发布须提高桌面版本号；版本冲突会在切换后端前报错。失败后用原发布目录的 `--resume` 继续。
+
+- **可选**保留原先的最低可用版本。比如 1.3.0 曾设为强制，1.3.1 设为可选，1.3.0 可以稍后升级，1.2.9 仍需升级。
+- **强制**把该平台和架构的最低版本提高到本次版本。支持更新协议的客户端在启动时执行策略，已打开的客户端定时检查；业务后端在接收带版本的新提交时也检查同一清单。已发送的桌面调用、素材和回执继续处理。
+- **撤回强制**可在服务器修改当前清单，保留原安装包。以下示例要求当前线上目标恰为 1.3.1，版本已变会拒绝覆盖。客户端下次检查后取得新策略。
+
+```sh
+python3 /opt/champion-erp/current/deploy/publish_desktop.py --policy-only \
+  --platform darwin --arch arm64 --version 1.3.1 --policy optional --minimum 0.0.0
+```
+
+首次安装支持版本检查的客户端需手动下载。Mac Apple 芯片的安装地址形如 `/desktop-updates/darwin-arm64/1.2.8/installer.dmg`。旧客户端未上报桌面版本，网页也不参与桌面最低版本检查。Windows 的 NSIS 安装包和 Linux 的 AppImage 需在对应构建环境生成，再在服务器用同一 `publish_desktop.py` 提供 `--platform win32|linux`、`--arch`、`--version`、`--installer`、`--sha256`、`--public-url` 和 `--policy` 发布。每个已发布架构有独立的清单。
 
 ## 当前公网部署（2026-11-07）
 

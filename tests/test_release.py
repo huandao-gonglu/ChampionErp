@@ -1,9 +1,8 @@
-"""发布程序的桌面原子替换、并行更新保护及服务器失败回退。"""
+"""发布入口、桌面更新分发、断点继续及服务器失败回退。"""
 import argparse
 import hashlib
 import json
-from pathlib import Path
-import shutil
+from io import BytesIO
 import tarfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,58 +14,34 @@ from deploy import release_server
 from scripts import release
 
 
-def app(path, content):
-    archive = path / 'Contents/Resources/app.asar'
-    archive.parent.mkdir(parents=True)
-    archive.write_bytes(content)
-    return path
+@pytest.mark.parametrize(('flags', 'policy'), [
+    ([], 'optional'), (['--desktop-update', 'required'], 'required'), (['--server-only'], None),
+])
+def test_release_cli_selects_desktop_policy(flags, policy, tmp_path, monkeypatch):
+    options = []
+    monkeypatch.setattr(release.sys, 'argv', ['release.py', '--output-dir', str(tmp_path), *flags])
+    monkeypatch.setattr(release, 'release', options.append)
+    release.main()
+    assert options[0].desktop_update == policy
 
 
-@pytest.fixture
-def desktop(monkeypatch, tmp_path):
-    source = app(tmp_path / 'built.app', b'new')
-    target = app(tmp_path / 'installed.app', b'old')
-    monkeypatch.setattr(release, 'desktop_running', lambda target: False)
-    monkeypatch.setattr(release, 'check_runtime', lambda executable: None)
-    monkeypatch.setattr(release.subprocess, 'run', lambda args, **kwargs: shutil.copytree(args[1], args[2]))
-    return source, target
+def test_new_desktop_version_checked_before_switch(monkeypatch):
+    update = {'public_url': 'https://erp.example', 'platform': 'darwin', 'arch': 'arm64', 'version': '1.10.0'}
+    url = release.desktop_manifest_url(update)
+    def fetch(request, timeout):
+        assert request.full_url == url
+        if previous is None:
+            raise release.HTTPError(url, 404, '首次发布', {}, None)
+        response = BytesIO(json.dumps({**update, 'version': previous}).encode())
+        response.geturl = lambda: url
+        return response
 
-
-def test_desktop_update_preserves_old_package_and_installs_exact_build(desktop):
-    source, target = desktop
-    old = release.desktop_hash(target)
-    result = release.install_desktop(source, target, old, 'release-1', 0)
-    assert release.desktop_hash(target) == release.desktop_hash(source)
-    assert release.desktop_hash(Path(result['backup'])) == old
-
-
-def test_desktop_smoke_failure_restores_previous_program(desktop, monkeypatch):
-    source, target = desktop
-    old = release.desktop_hash(target)
-    def failed(executable):
-        raise RuntimeError('执行器检查失败')
-    monkeypatch.setattr(release, 'check_runtime', failed)
-    with pytest.raises(RuntimeError, match='执行器检查失败'):
-        release.install_desktop(source, target, old, 'release-1', 0)
-    assert release.desktop_hash(target) == old
-
-
-def test_concurrent_desktop_update_is_not_overwritten(desktop):
-    source, target = desktop
-    old = release.desktop_hash(target)
-    (target / 'Contents/Resources/app.asar').write_bytes(b'other-update')
-    with pytest.raises(RuntimeError, match='其他更新'):
-        release.install_desktop(source, target, old, 'release-1', 0)
-    assert (target / 'Contents/Resources/app.asar').read_bytes() == b'other-update'
-
-
-def test_running_desktop_times_out_without_replacing_program(desktop, monkeypatch):
-    source, target = desktop
-    old = release.desktop_hash(target)
-    monkeypatch.setattr(release, 'desktop_running', lambda target: True)
-    with pytest.raises(RuntimeError, match='退出超时'):
-        release.install_desktop(source, target, old, 'release-1', 0)
-    assert release.desktop_hash(target) == old
+    monkeypatch.setattr(release, 'urlopen', fetch)
+    for previous in (None, '1.9.9'):
+        release.check_new_desktop_version(update)
+    for previous in ('1.10.0', '2.0.0'):
+        with pytest.raises(RuntimeError, match='提高桌面版本号'):
+            release.check_new_desktop_version(update)
 
 
 def test_server_timeout_can_resume_and_failed_smoke_restores_previous_service(tmp_path, monkeypatch, release_guard_dir):
@@ -237,7 +212,8 @@ with release_guard.serving(sys.argv[1]):
             backend.kill()
 
 
-def test_resume_after_drain_timeout_uses_staged_build(tmp_path, monkeypatch):
+@pytest.mark.parametrize('desktop', [None, {'policy': 'required'}, {'policy': 'optional'}])
+def test_resume_after_drain_timeout_uses_staged_build(tmp_path, monkeypatch, desktop):
     archive = tmp_path / 'server.tar.gz'
     with tarfile.open(archive, 'w:gz') as package:
         entry = tmp_path / 'REVISION'
@@ -246,8 +222,7 @@ def test_resume_after_drain_timeout_uses_staged_build(tmp_path, monkeypatch):
 
     release.write_record(tmp_path / 'release.json', {
         'status': 'failed_after_server_staged', 'archive_sha256': release.digest(archive),
-        'revision': 'revision', 'previous_desktop_sha256': 'old', 'desktop_asar_sha256': 'new',
-        'desktop_target': '/unused',
+        'revision': 'revision', 'version': '1.2.8', 'desktop_update': desktop,
     })
     calls = []
 
@@ -261,6 +236,15 @@ def test_resume_after_drain_timeout_uses_staged_build(tmp_path, monkeypatch):
 
     monkeypatch.setattr(release, 'switch_server', switch)
     monkeypatch.setattr(release, 'remote_output', remote)
-    monkeypatch.setattr(release, 'finish_install', lambda *args: calls.append('desktop'))
-    release.resume_release(argparse.Namespace(resume=tmp_path))
-    assert calls == ['server', 'desktop']
+    def publish(args, record, folder, source):
+        calls.append(record['desktop_update']['policy'])
+
+    def verify(url, source):
+        calls.append('public')
+        return {'account_session': True}
+
+    monkeypatch.setattr(release, 'verify_public', verify)
+    monkeypatch.setattr(release, 'publish_desktop_update', publish)
+    release.resume_release(argparse.Namespace(resume=tmp_path, public_url='https://erp.example'))
+    assert calls == ['server', 'public'] + ([desktop['policy']] if desktop else [])
+    assert json.loads((tmp_path / 'release.json').read_text())['status'] == 'complete'

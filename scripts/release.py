@@ -1,4 +1,4 @@
-"""从固定 Git 版本编译、发布服务器，并替换本机 macOS 桌面程序。"""
+"""从固定 Git 版本发布服务器和网页，默认通过更新服务分发 macOS 桌面新版。"""
 import argparse
 from datetime import datetime, timezone
 import fcntl
@@ -10,12 +10,11 @@ import plistlib
 import re
 import selectors
 import shlex
-import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
-import time
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,54 +82,6 @@ def check_runtime(executable):
                     child.wait()
 
 
-def desktop_running(target):
-    prefix = str(target / 'Contents') + '/'
-    return any(row.startswith(prefix) for row in output('ps', '-axo', 'command=').splitlines())
-
-
-def desktop_hash(target):
-    return digest(target / 'Contents/Resources/app.asar') if target.exists() else None
-
-
-def install_desktop(source, target, expected_hash, release_id, wait_seconds):
-    deadline = time.monotonic() + wait_seconds
-    announced = False
-    while desktop_running(target):
-        if not announced:
-            print('请正常退出桌面程序，脚本将自动继续替换。', flush=True)
-            announced = True
-        if time.monotonic() >= deadline:
-            raise RuntimeError('等待桌面程序退出超时，已构建的新包保留在发布目录')
-        time.sleep(3)
-    if desktop_hash(target) != expected_hash:
-        raise RuntimeError('本机程序已被其他更新更换，拒绝覆盖，请核对后重新发布')
-    staging = target.parent / ('.' + target.stem + '-' + release_id + '.staging.app')
-    backup = target.parent / ('.' + target.stem + '-' + release_id + '.backup.app')
-    if staging.exists() or backup.exists():
-        raise RuntimeError('桌面安装暂存或备份目录已存在，拒绝覆盖')
-    subprocess.run(['ditto', str(source), str(staging)], check=True)
-    if desktop_running(target) or desktop_hash(target) != expected_hash:
-        raise RuntimeError('桌面程序状态在复制期间发生变化，保留暂存包并停止安装')
-    source_hash = digest(source / 'Contents/Resources/app.asar')
-    if digest(staging / 'Contents/Resources/app.asar') != source_hash:
-        raise RuntimeError('桌面暂存包校验失败')
-    had_target = target.exists()
-    if had_target:
-        target.rename(backup)
-    try:
-        staging.rename(target)
-        if desktop_hash(target) != source_hash:
-            raise RuntimeError('桌面替换后摘要不一致')
-        check_runtime(target / 'Contents/Resources/runtime/champion-erp-runtime')
-    except BaseException:
-        if target.exists():
-            target.rename(staging)
-        if had_target:
-            backup.rename(target)
-        raise
-    return {'target': str(target), 'backup': str(backup) if had_target else '', 'asar_sha256': source_hash}
-
-
 def verify_public(public_url, source):
     index = (source / 'erp_web/static/dist/index.html').read_text()
     entry = re.search(r'src="(/assets/[^" ]+\.js)"', index)
@@ -151,15 +102,113 @@ def verify_public(public_url, source):
     return {'account_session': True, 'web_entry': entry[1], 'web_sha256': received}
 
 
-def finish_install(args, record, folder, source):
-    app = Path(record['desktop_source'])
-    if desktop_hash(app) != record['desktop_asar_sha256']:
-        raise RuntimeError('已构建的桌面包摘要发生变化，请重新构建')
+def desktop_release_artifacts(folder, app, version, args):
+    architecture = output('lipo', '-archs', app / 'Contents/MacOS' / plistlib.loads(
+        (app / 'Contents/Info.plist').read_bytes())['CFBundleExecutable'])
+    arch = {'arm64': 'arm64', 'x86_64': 'x64'}.get(architecture)
+    if not arch:
+        raise RuntimeError('请为每个桌面架构单独构建和发布安装包')
+    record = {'platform': 'darwin', 'arch': arch, 'version': version, 'policy': args.desktop_update,
+              'notes': args.update_notes, 'public_url': args.public_url.rstrip('/')}
+    for key, extension in [('installer', '.dmg'), *([('mac_zip', '.zip')] if args.signed_desktop else [])]:
+        files = list((folder / 'desktop').glob('*' + extension))
+        if len(files) != 1:
+            raise RuntimeError(f'本次构建应产生唯一的 {extension} 桌面安装包')
+        record[key] = {'name': files[0].name, 'sha256': digest(files[0])}
+    if args.signed_desktop:
+        signature = subprocess.check_output(['codesign', '-dv', '--verbose=2', app], stderr=subprocess.STDOUT, text=True)
+        if 'Authority=Developer ID Application:' not in signature:
+            raise RuntimeError('签名发布需要 Developer ID Application 身份')
+        subprocess.run(['xcrun', 'stapler', 'validate', app], check=True)
+    return record
+
+
+def build_desktop_update(args, source, folder, version, log, environment):
+    print('构建并验证桌面更新包', flush=True)
+    run([sys.executable, 'scripts/build_desktop_runtime.py'], cwd=source, log=log, env=environment)
+    run(['pnpm', 'build:desktop'], cwd=source / 'front', log=log, env=environment)
+    targets = ['dmg', 'zip'] if args.signed_desktop else ['dmg']
+    signing = [] if args.signed_desktop else ['--config.mac.identity=-', '--config.mac.hardenedRuntime=false']
+    run(['pnpm', 'exec', 'electron-builder', '--mac', *targets, '--publish', 'never',
+         *signing, '--config.directories.output=' + str(folder / 'desktop')],
+        cwd=source / 'front', log=log, env=environment)
+    apps = list((folder / 'desktop').glob('*/*.app'))
+    if len(apps) != 1:
+        raise RuntimeError('桌面构建没有产生唯一的应用包')
+    app = apps[0]
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', app], check=True)
+    with (app / 'Contents/Info.plist').open('rb') as info:
+        if plistlib.load(info)['CFBundleShortVersionString'] != version:
+            raise RuntimeError('桌面安装包版本不一致')
+    check_runtime(app / 'Contents/Resources/runtime/champion-erp-runtime')
+    return desktop_release_artifacts(folder, app, version, args)
+
+
+def desktop_manifest_url(update):
+    return f"{update['public_url']}/desktop-updates/{update['platform']}-{update['arch']}/latest.json"
+
+
+def check_new_desktop_version(update):
+    """在切换后端前识别版本冲突，服务器在正式发布时仍会持锁复核。"""
+    url = desktop_manifest_url(update)
+    try:
+        with urlopen(Request(url, headers={'Cache-Control': 'no-cache'}), timeout=30) as response:
+            if response.geturl() != url:
+                raise RuntimeError('桌面更新清单地址发生重定向，请检查更新站点配置')
+            manifest = json.load(response)
+    except HTTPError as error:
+        if error.code == 404 and error.geturl() == url:
+            return
+        raise
+    if (manifest['platform'], manifest['arch']) != (update['platform'], update['arch']):
+        raise RuntimeError('桌面更新清单与本次发布平台不符')
+    if tuple(map(int, update['version'].split('.'))) <= tuple(map(int, manifest['version'].split('.'))):
+        raise RuntimeError('请提高桌面版本号；仅发布服务器和网页请使用 --server-only，重试原发布请使用 --resume')
+
+
+def publish_desktop_update(args, record, folder, source):
+    update = record.get('desktop_update')
+    if not update or update.get('published'):
+        return
+    if args.public_url.rstrip('/') != update['public_url']:
+        raise RuntimeError('续发目标与桌面包的更新服务地址不一致')
+    staging = '/srv/champion-erp/staging/' + record['release_id']
+    scp = ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes',
+           '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes']
+    subprocess.run([*scp, source / 'deploy/publish_desktop.py', args.ssh_host + ':' + staging + '/'], check=True)
+    command = ['python3', staging + '/publish_desktop.py', '--public-url', update['public_url'],
+               '--platform', update['platform'], '--arch', update['arch'], '--version', update['version'],
+               '--policy', update['policy'], '--notes', update['notes']]
+    for key, remote_name, path_flag, digest_flag in (
+        ('installer', 'installer.dmg', '--installer', '--sha256'),
+        ('mac_zip', 'update.zip', '--mac-zip', '--zip-sha256'),
+    ):
+        if key in update:
+            artifact = folder / 'desktop' / update[key]['name']
+            if digest(artifact) != update[key]['sha256']:
+                raise RuntimeError('桌面分发包摘要发生变化，请重新构建')
+            destination = staging + '/' + remote_name
+            subprocess.run([*scp, artifact, args.ssh_host + ':' + destination], check=True)
+            command.extend([path_flag, destination, digest_flag, update[key]['sha256']])
+    print(remote_output(args, command), flush=True)
+    manifest_url = desktop_manifest_url(update)
+    with urlopen(Request(manifest_url, headers={'Cache-Control': 'no-cache'}), timeout=30) as response:
+        manifest = json.load(response)
+        if (response.geturl() != manifest_url or manifest['version'] != update['version']
+                or manifest['installer']['sha256'] != update['installer']['sha256']
+                or (update['policy'] == 'required' and manifest['minimum'] != update['version'])):
+            raise RuntimeError('公网桌面更新清单与本次发布不一致')
+    update['published'] = True
+    write_record(folder / 'release.json', record)
+
+
+def finish_release(args, record, folder, source):
     record['public'] = verify_public(args.public_url, source)
     write_record(folder / 'release.json', record)
-    print('服务器已升级，正在替换本机桌面程序', flush=True)
-    record['desktop'] = install_desktop(app, Path(record['desktop_target']), record['previous_desktop_sha256'],
-                                      record['release_id'], args.wait_desktop_seconds)
+    if record.get('desktop_update'):
+        publish_desktop_update(args, record, folder, source)
+    elif record.get('desktop_target'):
+        print('旧发布记录没有桌面分发包，本次继续完成服务器和网页发布。', flush=True)
     record['status'] = 'complete'
     write_record(folder / 'release.json', record)
     print(f"发布完成，版本 {record['version']}，代码 {record['revision'][:12]}。记录保存在 {folder / 'release.json'}", flush=True)
@@ -189,7 +238,7 @@ def switch_server(args, record, folder, source):
 def verify_server_release(args, record):
     current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
     if current != record['server']['release']:
-        raise RuntimeError('服务器已切换到其他发布，拒绝安装旧版本桌面程序')
+        raise RuntimeError('服务器已切换到其他发布，拒绝继续旧发布')
     manifest = json.loads(remote_output(args, ['cat', current + '/release-manifest.json']))
     if manifest['revision'] != record['revision']:
         raise RuntimeError('服务器代码版本与发布记录不一致')
@@ -206,9 +255,6 @@ def resume_release(args):
         raise RuntimeError('已有服务器发布包摘要发生变化')
     if not staged:
         verify_server_release(args, record)
-    for key in ('previous_desktop_sha256', 'desktop_asar_sha256', 'desktop_target'):
-        if key not in record:
-            raise RuntimeError('旧发布记录缺少桌面校验信息，请先人工核对并补齐记录')
     try:
         with tempfile.TemporaryDirectory(prefix='erp-release-resume-') as temporary:
             source = Path(temporary)
@@ -217,7 +263,7 @@ def resume_release(args):
             if staged:
                 switch_server(args, record, folder, source)
                 verify_server_release(args, record)
-            finish_install(args, record, folder, source)
+            finish_release(args, record, folder, source)
     except BaseException:
         record['status'] = 'failed_after_' + record['status'].removeprefix('failed_after_')
         write_record(folder / 'release.json', record)
@@ -225,15 +271,12 @@ def resume_release(args):
 
 
 def release(args):
-    if sys.platform != 'darwin':
-        raise RuntimeError('统一发布包含本机 macOS 程序替换，请在目标 Mac 上执行')
+    if args.desktop_update and sys.platform != 'darwin':
+        raise RuntimeError('构建 macOS 更新包需要 Mac，仅发布服务器和网页可使用 --server-only')
     if output('git', 'status', '--porcelain', '--untracked-files=normal'):
         raise RuntimeError('请先提交本次代码修改，发布仅使用干净的 Git 版本')
     if not args.ssh_identity.is_file():
         raise RuntimeError('SSH 密钥文件不存在')
-    args.desktop_target = args.desktop_target.expanduser().absolute()
-    if args.desktop_target.suffix != '.app' or not os.access(args.desktop_target.parent, os.W_OK):
-        raise RuntimeError('桌面安装位置须为可写目录下的 .app 路径')
     revision = output('git', 'rev-parse', 'HEAD')
     version = json.loads((ROOT / 'front/package.json').read_text())['version']
     release_id = datetime.now(timezone.utc).strftime('%Y%m%dt%H%M%Sz') + '-' + revision[:12]
@@ -243,10 +286,11 @@ def release(args):
     record_path = folder / 'release.json'
     write_record(record_path, record)
     environment = {key: value for key, value in os.environ.items() if not key.startswith(('ERP_', 'VITE_', 'CHAMPION_ERP_'))}
-    environment['CSC_IDENTITY_AUTO_DISCOVERY'] = 'false'
-    previous_desktop = desktop_hash(args.desktop_target)
-    record.update(previous_desktop_sha256=previous_desktop, desktop_target=str(args.desktop_target))
-    write_record(record_path, record)
+    environment['CSC_IDENTITY_AUTO_DISCOVERY'] = 'true' if args.signed_desktop else 'false'
+    if args.desktop_update:
+        origin = json.loads((ROOT / 'front/package.json').read_text())['desktopUpdateOrigin']
+        if origin != args.public_url.rstrip('/'):
+            raise RuntimeError('桌面包的发行站点必须与发布目标一致')
     try:
         current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
         if not current.startswith('/opt/champion-erp/releases/'):
@@ -263,7 +307,8 @@ def release(args):
             git_archive.unlink()
             print('安装锁定的前端依赖并检查发布输入', flush=True)
             run(['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts'], cwd=source / 'front', log=log, env=environment)
-            run(['node', 'node_modules/electron/install.js'], cwd=source / 'front', log=log, env=environment)
+            if args.desktop_update:
+                run(['node', 'node_modules/electron/install.js'], cwd=source / 'front', log=log, env=environment)
             run([sys.executable, 'scripts/generate_third_party_notices.py', '--check'], cwd=source, log=log, env=environment)
             print('运行后端、前端及桌面回归检查', flush=True)
             for command, cwd in (
@@ -273,20 +318,11 @@ def release(args):
                 (['pnpm', 'test:desktop'], source / 'front'),
             ):
                 run(command, cwd=cwd, log=log, env=environment)
-            print('编译网页、本机执行器及桌面安装包', flush=True)
+            print('编译网页', flush=True)
             run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
-            run([sys.executable, 'scripts/build_desktop_runtime.py'], cwd=source, log=log, env=environment)
-            run(['pnpm', 'build:desktop'], cwd=source / 'front', log=log, env=environment)
-            run(['pnpm', 'exec', 'electron-builder', '--mac', '--dir', '--config.directories.output=' + str(folder / 'desktop')],
-                cwd=source / 'front', log=log, env=environment)
-            apps = list((folder / 'desktop').glob('*/*.app'))
-            if len(apps) != 1:
-                raise RuntimeError('桌面构建没有产生唯一的应用包')
-            app = apps[0]
-            with (app / 'Contents/Info.plist').open('rb') as info:
-                if plistlib.load(info)['CFBundleShortVersionString'] != version:
-                    raise RuntimeError('桌面安装包版本不一致')
-            check_runtime(app / 'Contents/Resources/runtime/champion-erp-runtime')
+            if args.desktop_update:
+                record['desktop_update'] = build_desktop_update(args, source, folder, version, log, environment)
+                check_new_desktop_version(record['desktop_update'])
             # 只发布 Git 跟踪的公开源码及本次网页构建，排除工作区配置、数据库和依赖缓存。
             tracked = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', '-z', revision], cwd=ROOT).decode().split('\0')
             (source / 'REVISION').write_text(revision + '\n')
@@ -298,11 +334,8 @@ def release(args):
                 archive.add(source / 'erp_web/static/dist', arcname='erp_web/static/dist')
                 for name in ('REVISION', 'release-manifest.json'):
                     archive.add(source / name, arcname=name)
-            record.update(status='built', archive_sha256=digest(archive_path), desktop_source=str(app),
-                          desktop_asar_sha256=desktop_hash(app))
+            record.update(status='built', archive_sha256=digest(archive_path))
             write_record(record_path, record)
-            if desktop_hash(args.desktop_target) != previous_desktop:
-                raise RuntimeError('编译期间桌面程序已被其他更新更换，请核对后重新发布')
             remote_folder = '/srv/champion-erp/staging/' + release_id
             remote_output(args, ['mkdir', '-p', remote_folder + '/erp_web', remote_folder + '/deploy'])
             scp = ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes', '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes']
@@ -313,7 +346,7 @@ def release(args):
             record['status'] = 'server_staged'
             write_record(record_path, record)
             switch_server(args, record, folder, source)
-            finish_install(args, record, folder, source)
+            finish_release(args, record, folder, source)
     except BaseException:
         record['status'] = 'failed_after_' + record['status']
         write_record(record_path, record)
@@ -327,13 +360,23 @@ def main():
     parser.add_argument('--ssh-port', type=int, default=22)
     parser.add_argument('--ssh-identity', type=Path, default=Path.home() / '.ssh/id_ed25519')
     parser.add_argument('--public-url', default='https://hdgl.cc.cd', help='升级后验证的公网地址')
-    current_app = Path('/Applications/Champion ERP.app')
-    parser.add_argument('--desktop-target', type=Path, default=current_app if current_app.exists() else Path('/Applications/gongluErp.app'))
     parser.add_argument('--output-dir', type=Path, default=Path.home() / 'Library/Application Support/Champion ERP/releases')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--desktop-update', choices=['optional', 'required'], help='发布桌面升级，默认 optional，可显式指定 required')
+    mode.add_argument('--server-only', action='store_true', help='仅发布服务器和网页，跳过桌面打包和分发')
+    parser.add_argument('--update-notes', default='', help='向用户展示的更新说明')
+    parser.add_argument('--signed-desktop', action='store_true', help='使用 Developer ID 签名及公证构建原生更新 ZIP')
     parser.add_argument('--wait-tasks-seconds', type=int, default=3600, help='服务器等待已接任务安全停机的最长秒数')
-    parser.add_argument('--wait-desktop-seconds', type=int, default=3600)
-    parser.add_argument('--resume', type=Path, help='从已上传的发布目录继续服务器切换、验证和桌面替换')
+    parser.add_argument('--resume', type=Path, help='从已上传的发布目录继续原有服务器切换、验证和更新包分发')
     args = parser.parse_args()
+    if args.resume and (args.desktop_update or args.server_only or args.signed_desktop or args.update_notes):
+        parser.error('--resume 沿用发布记录中的桌面策略、签名与更新说明')
+    if args.server_only and (args.signed_desktop or args.update_notes):
+        parser.error('--server-only 不能与桌面签名或更新说明一起使用')
+    if not args.resume and not args.server_only and not args.desktop_update:
+        args.desktop_update = 'optional'
+    if len(args.update_notes) > 2000:
+        parser.error('桌面更新说明最多 2000 字')
     if args.wait_tasks_seconds < 0:
         parser.error('等待任务时间必须为非负数')
     args.output_dir = args.output_dir.expanduser().absolute()

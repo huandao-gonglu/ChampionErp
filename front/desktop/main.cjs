@@ -1,5 +1,8 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell, autoUpdater } = require('electron')
 const fs = require('node:fs')
+const { execFile } = require('node:child_process')
+const { promisify } = require('node:util')
+const { createDesktopUpdates } = require('./updates.cjs')
 const http = require('node:http')
 const path = require('node:path')
 const { URL } = require('node:url')
@@ -10,7 +13,7 @@ const { registerLicenseDirectory } = require('./licenses.cjs')
 const { AccountSession, proxyBackendRequest } = require('./account-session.cjs')
 const { NewAPIBrowserBridge, registerNewAPIBridge } = require('./newapi.cjs')
 
-const { name: packageName, productName } = require('../package.json')
+const { name: packageName, productName, desktopUpdateOrigin } = require('../package.json')
 
 // 显示名称可以更新，正式版和开发版各自沿用原有的配置目录。
 app.setPath('userData', path.join(app.getPath('appData'), app.isPackaged ? 'Champion ERP' : packageName))
@@ -41,12 +44,15 @@ const BACKEND_PROXY_PREFIXES = [
   '/auth/alibaba',
 ]
 
+let updates
+let starting = true
 let frontendServer
 let newapiBridge
 let runtime
 let desktopConnection
 let quitting = false
 const accountSession = new AccountSession()
+const desktopClient = app.isPackaged ? `${process.platform}-${process.arch}/${app.getVersion()}` : ''
 
 function notifyConnectionChanged() {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -80,6 +86,7 @@ async function initializeDesktop() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     { label: '文件', submenu: [
+      ...(updates ? [{ label: '检查桌面更新…', click: () => { void updates.manual() } }] : []),
       { label: '打开本机配置文件夹', click: () => { void shell.openPath(dataDir) } },
       { role: 'quit', label: '退出' },
     ] },
@@ -169,12 +176,12 @@ function serveFrontend(req, res, requestUrl, frontendRoot) {
 
 function proxyToBackend(req, res, backendBaseUrl) {
   proxyBackendRequest(req, res, backendBaseUrl, {
-    session: accountSession,
+    session: accountSession, client: desktopClient,
     connectionId: () => desktopConnection?.id || '',
     onLogin: async () => {
       await desktopConnection?.stop()
       desktopConnection = await connectDesktop(backendBaseUrl, runtime, {
-        session: accountSession,
+        session: accountSession, client: desktopClient,
         onDisconnected: error => {
           notifyConnectionChanged()
           if (!quitting && accountSession.cookie) dialog.showErrorBox(`${productName} 本机连接已断开`, `${error.message}。请重新登录后重试。`)
@@ -204,6 +211,11 @@ function startFrontendServer() {
     // 传输协议只供主进程使用，渲染页面不能创建或接管桌面连接。
     if (requestUrl.pathname.startsWith('/api/desktop/')) {
       send(res, 403, '不允许访问桌面连接协议', 'text/plain; charset=utf-8')
+      return
+    }
+    if (updates?.blocksRequest(req.method, requestUrl.pathname)) {
+      send(res, 426, JSON.stringify({ ok: false, error: '当前桌面版本需要升级。请在文件菜单检查更新。' }),
+        'application/json; charset=utf-8')
       return
     }
     if (shouldProxy(requestUrl.pathname)) {
@@ -287,20 +299,63 @@ async function createWindow() {
   await win.loadURL(url)
 }
 
+function showDownloadProgress(cancel) {
+  const progress = new BrowserWindow({
+    width: 410, height: 145, resizable: false, autoHideMenuBar: true, title: '正在下载桌面更新',
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+  })
+  const page = '<meta charset="utf-8"><style>body{font:15px system-ui;padding:8px 18px}</style>' +
+    '<p>正在下载安装包，完成后会校验文件。</p><p>关闭此窗口可取消下载。</p>'
+  void progress.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(page)).catch(cancel)
+  progress.once('closed', cancel)
+  let percent = -1
+  return {
+    update(value) {
+      const next = Math.floor(value * 100)
+      if (progress.isDestroyed() || percent === next) return
+      percent = next
+      progress.setTitle('正在下载桌面更新 · ' + percent + '%')
+      progress.setProgressBar(value)
+    },
+    close() {
+      progress.removeListener('closed', cancel)
+      if (!progress.isDestroyed()) progress.destroy()
+    },
+  }
+}
+
 app.whenReady().then(async () => {
   if (!ownsInstance) return
+  if (app.isPackaged) {
+    updates = createDesktopUpdates({ app, dialog, shell, autoUpdater, origin: desktopUpdateOrigin,
+      showProgress: showDownloadProgress, parentWindow: () => BrowserWindow.getAllWindows()[0],
+      nativeSigned: async () => {
+        if (process.platform !== 'darwin') return false
+        try {
+          const { stderr } = await promisify(execFile)('/usr/bin/codesign', ['-dv', '--verbose=2', process.execPath])
+          return /^Authority=Developer ID Application:/m.test(stderr)
+        } catch { return false }
+      },
+    })
+    const result = await updates.startup()
+    if (result === 'installing') return
+    if (!result) { app.quit(); return }
+  }
   await initializeDesktop()
   await createWindow()
+  starting = false
+  updates?.watch()
 }).catch((error) => {
   dialog.showErrorBox(`${productName} 启动失败`, error instanceof Error ? error.message : String(error))
   app.quit()
 })
 
 app.on('window-all-closed', () => {
-  app.quit()
+  if (!starting) app.quit()
 })
 
 app.on('before-quit', (event) => {
+  updates?.stop()
   if (frontendServer) {
     frontendServer.close()
     frontendServer = undefined

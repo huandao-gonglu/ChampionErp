@@ -467,3 +467,21 @@ def test_release_pauses_new_requests_and_preserves_reads_and_desktop_results(acc
         invalid_reply = client.post(url + '/api/desktop/result', json={}, timeout=2)
         assert invalid_reply.status_code == 400
     assert client.post(url + '/api/publish-bus/retry', json={}, timeout=2).status_code != 503
+
+
+def test_desktop_minimum_rejects_new_registration_but_allows_existing_receipts(accounts_http, tmp_path, monkeypatch):
+    import json
+    from erp_web.services import desktop_version_policy
+
+    url, _, login = accounts_http
+    client = login()
+    monkeypatch.setattr(desktop_version_policy, 'RELEASES', tmp_path)
+    folder = tmp_path / 'darwin-arm64'
+    folder.mkdir()
+    (folder / 'latest.json').write_text(json.dumps({'platform': 'darwin', 'arch': 'arm64', 'minimum': '1.2.9'}))
+    headers = {'X-Champion-Client': 'darwin-arm64/1.2.8'}
+    for endpoint in ('/api/desktop/connect', '/api/publish-bus/retry'):
+        response = client.post(url + endpoint, json={}, headers=headers, timeout=3)
+        assert response.status_code == 426 and response.json()['error_code'] == 'DESKTOP_UPDATE_REQUIRED'
+    assert client.post(url + '/api/desktop/result', json={}, headers=headers, timeout=3).status_code != 426
+    assert client.post(url + '/api/desktop/connect', json={}, timeout=3).status_code == 200

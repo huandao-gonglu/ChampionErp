@@ -13,6 +13,7 @@ from erp_web.release_guard import release_guard
 from . import http_routes
 from .http_request import safe_json_body
 from .services.external_request_context import capture_request_rejections, current_operation_id
+from .services.desktop_version_policy import minimum_update
 from .services.account_request import CALLBACK_GET_PATHS, authenticated_request
 
 access_logger = logging.getLogger("erp.access")
@@ -252,6 +253,21 @@ class Handler(BaseHTTPRequestHandler):
             if allowed:
                 with capture_request_rejections() as self.external_rejections:
                     path = urllib.parse.urlsplit(self.path).path
+                    client = self.headers.get("X-Champion-Client")
+                    if client and (path == "/api/desktop/connect" or
+                                   path not in _DRAIN_ALLOWED_POST_PATHS | _CONFIRMATION_READS):
+                        try:
+                            floor = minimum_update(client)
+                        except ValueError:
+                            self.send_json({"ok": False, "error": "桌面版本标识无效。"}, 400)
+                            return
+                        except (OSError, KeyError, RuntimeError, TypeError):
+                            self.send_json({"ok": False, "error": "桌面版本策略暂时不可用。"}, 503)
+                            return
+                        if floor:
+                            self.send_json({"ok": False, "error_code": "DESKTOP_UPDATE_REQUIRED",
+                                            "error": f"请升级到 {floor} 或更高版本后继续。"}, 426)
+                            return
                     if path in _DRAIN_ALLOWED_POST_PATHS:
                         http_routes.handle_post(self)
                     else:
