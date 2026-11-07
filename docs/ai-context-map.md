@@ -132,6 +132,11 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 `requirements-desktop.txt` / `scripts/build_desktop_runtime.py` / `scripts/desktop_runtime.spec`
 是本机执行器构建入口，不冻结完整 ERP 后端。
 `scripts/migrate_desktop_business.py` 提供先备份的离线一次性迁移与关联检查，浏览器资料留在本机。
+统一发布等待由 `scripts/release.py` → `deploy/release_server.py` 协调，服务端入口为
+`erp_web/release_guard.py`。新增能启动业务工作的入口须在领取前检查准入；已接工作的异步分支须在提交到线程或队列前登记，
+直到真实工作返回。排队和线程交接期间同样受保护。可恢复的外部确认由原领域服务处理，平台待确认状态本身不占用发布等待。
+运行细节与首次接入步骤见[统一编译与发布](server-deployment.md#统一编译与发布)。
+
 部署、配置、迁移门禁和隔离验收见 [桌面与统一后端](desktop-packaging.md)；当前服务器、访问通道及备份位置见 [服务器部署记录](server-deployment.md)。
 
 ### 微信 ClawBot 对话窗口

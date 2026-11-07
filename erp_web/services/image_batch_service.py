@@ -4,11 +4,12 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import replace
-from threading import BoundedSemaphore, RLock, Thread
+from threading import BoundedSemaphore, RLock
 from uuid import uuid4
 
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
+from erp_web.release_guard import release_guard
 from erp_web.schemas.image_batches import ImageBatch, ImageBatchItem
 from erp_web.schemas.image_sets import ImageSetPlan
 from erp_web.stores.image_batch_store import utc_now
@@ -112,7 +113,7 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                 "message": message}
 
     if background:
-        Thread(target=copy_context().run, args=(execute,), daemon=True, name="draft-image-batch").start()
+        release_guard.start_thread("图片批次", "draft-image-batch", execute)
         return {"ok": True, "imagePoolItems": [], "image_batch": batch.snapshot(),
                 "conversation_id": conversation_id, "message": "图片处理已开始。"}
     return execute()

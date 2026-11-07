@@ -15,6 +15,7 @@ from pydantic_ai.messages import ModelResponse, TextPart
 from wechatbot.errors import ApiError
 from wechatbot.protocol import DEFAULT_BASE_URL, ILinkApi
 
+from erp_web.release_guard import release_guard
 from erp_web.schemas.wechat_channel import WECHAT_FORWARD_TYPES, WechatChannelStatus
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
 from erp_web.services.desktop_connection_service import server_worker_context
@@ -160,7 +161,9 @@ class WechatChannelService:
             self.store.configure(conversation_id="", history_position=0, unbind=True)
             self._qr_image, self._verification = "", ""
             self._set_status("logging_in")
-            self._login_future = asyncio.run_coroutine_threadsafe(self._login(serial, old), self._loop)
+            self._login_future = release_guard.submit(
+                "微信渠道", asyncio.run_coroutine_threadsafe, self._login(serial, old), self._loop,
+            )
             self.wake()
 
     def verify(self, code):
@@ -388,9 +391,11 @@ class WechatChannelService:
             retry = False
             try:
                 if state["credentials"] and self._expired_generation != state["generation"]:
-                    self.transfer_inputs(state)
-                    self.collect_replies(self.store.state())
-                    await self.send_pending(self.store.state())
+                    with release_guard.admit("微信渠道") as allowed:
+                        if allowed:
+                            self.transfer_inputs(state)
+                            self.collect_replies(self.store.state())
+                            await self.send_pending(self.store.state())
             except ChatConversationError:
                 self._set_status("conversation_missing", "绑定的对话已失效，请在微信发送 /new。", generation=state["generation"])
             except ApiError as exc:

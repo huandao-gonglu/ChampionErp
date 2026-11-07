@@ -9,6 +9,7 @@ from contextvars import copy_context
 from typing import Any
 
 from pydantic_ai import DeferredToolResults, RunCancelled
+from erp_web.release_guard import release_guard
 from erp_web.schemas.ai_tools import AiToolCommand
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_tool_runtime import AiToolRuntime
@@ -30,8 +31,11 @@ class AgentJobService:
         self.futures: dict[tuple[str, str], Any] = {}
 
     def scan(self):
-        with self.ui_service.run_registry.input_guard():
-            self._scan()
+        with release_guard.admit("后台工具") as allowed:
+            if not allowed:
+                return
+            with self.ui_service.run_registry.input_guard():
+                self._scan()
 
     def _scan(self):
         # 扫描线程只读取/领取/投递，不同步运行工具或模型。
@@ -52,8 +56,8 @@ class AgentJobService:
         for row in self.store.work():
             key = (row["conversation_id"], row["tool_call_id"])
             if key not in self.futures and len(self.futures) < 8:
-                self.futures[key] = self.pool.submit(
-                    copy_context().run, self.execute_or_reconcile, row,
+                self.futures[key] = release_guard.submit(
+                    "后台工具", self.pool.submit, copy_context().run, self.execute_or_reconcile, row,
                     self.ui_service.run_registry.token(row["conversation_id"]),
                 )
         for conversation_id in self.store.conversations():

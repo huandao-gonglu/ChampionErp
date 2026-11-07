@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import urlsplit
 
+from erp_web.release_guard import release_guard
 from erp_web.schemas.orders import (
     PLATFORMS,
     OrderAdapter,
@@ -267,7 +268,8 @@ class OrderNotificationService:
     def _run(self, platform: str) -> None:
         while not self.stop_event.is_set():
             try:
-                worked = self.process_one(platform)
+                with release_guard.admit("订单处理") as allowed:
+                    worked = allowed and self.process_one(platform)
             except Exception:
                 logger.exception("订单后台任务失败：平台=%s", platform)
                 worked = False

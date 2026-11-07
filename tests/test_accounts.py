@@ -452,3 +452,18 @@ def test_account_and_callback_requests_cannot_claim_business_presentations(accou
     response = client.post(url + "/api/save-product", json={"product": {"name": "甲", "source": {"title": "甲"}}})
     assert response.status_code == 200, response.text
     assert claims == ["/api/save-product"]
+
+
+def test_release_pauses_new_requests_and_preserves_reads_and_desktop_results(accounts_http, release_guard_dir):
+    from erp_web.release_guard import locked_file, release_guard
+
+    url, _, login = accounts_http
+    client = login()
+    with release_guard.serving(release_guard_dir), locked_file(release_guard_dir, 'admission', exclusive=True):
+        blocked = client.post(url + '/api/publish-bus/retry', json={}, timeout=2)
+        assert blocked.status_code == 503
+        assert blocked.json()['error_code'] == 'RELEASE_DRAINING'
+        assert client.get(url + '/api/publish-bus/jobs', timeout=2).status_code == 200
+        invalid_reply = client.post(url + '/api/desktop/result', json={}, timeout=2)
+        assert invalid_reply.status_code == 400
+    assert client.post(url + '/api/publish-bus/retry', json={}, timeout=2).status_code != 503

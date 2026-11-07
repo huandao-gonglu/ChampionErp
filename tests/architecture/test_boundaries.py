@@ -60,6 +60,16 @@ def test_task_confirmation_does_not_own_platform_writes_or_agent_execution() -> 
     assert not forbidden_calls(files, {"enqueue", "change", "write", "publish", "publish_payload", "run_sync", "save_product", "save_draft_content"})
 
 
+def test_release_coordination_is_independent_of_business_job_statuses() -> None:
+    files = [ROOT / 'erp_web/release_guard.py', ROOT / 'deploy/release_server.py']
+    targets = {target for _, target in imported_targets(files)}
+    assert not any(target.startswith(('erp_web.stores', 'erp_web.runtime_units', 'erp_web.services', 'sqlite3'))
+                   for target in targets)
+    confirmation = parse_python('erp_web/services/task_queue_service.py')
+    calls = {dotted_name(node.func) for node in ast.walk(confirmation) if isinstance(node, ast.Call)}
+    assert not calls & {'release_guard.submit', 'release_guard.start_thread', 'release_guard.admit'}
+
+
 def test_public_confirmation_entries_cannot_bypass_the_task_queue() -> None:
     for path, name in (
         ("erp_web/runtime_units/publishing_bus_core.py", "check_publish_result"),

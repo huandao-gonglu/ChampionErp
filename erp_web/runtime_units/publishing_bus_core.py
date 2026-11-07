@@ -12,6 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import copy_context
 from typing import Any, Callable, Protocol
 
+from erp_web.release_guard import release_guard
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.product_model.task_queue_model import publish_can_retry
 from erp_web.schemas.publish import (
@@ -917,7 +918,8 @@ class PublishingBus:
 
     def _submit_job(self, job_id: str, product: dict[str, Any], platforms: list[str]) -> None:
         futures = [
-            self.executor.submit(copy_context().run, self._run_platform, job_id, copy.deepcopy(product), platform)
+            release_guard.submit("商品提交", self.executor.submit, copy_context().run,
+                                 self._run_platform, job_id, copy.deepcopy(product), platform)
             for platform in platforms
         ]
         self._futures[job_id] = futures

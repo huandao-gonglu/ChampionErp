@@ -7,6 +7,7 @@ import threading
 import time
 from .desktop_connection_service import server_worker_context
 
+from erp_web.release_guard import release_guard
 from erp_web.schemas.fulfillment import FulfillmentCommand, FulfillmentError, FulfillmentRule, FulfillmentView, LabelInput
 from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
 from erp_web.services.fulfillment_packages import parcel_payloads, domestic_waybill_key
@@ -635,7 +636,10 @@ class FulfillmentService:
                         break
                     if order.state == "pending_shipment" or self.store.tracked(order):
                         try:
-                            self.process_one(order)
+                            with release_guard.admit("跨境履约") as allowed:
+                                if not allowed:
+                                    break
+                                self.process_one(order)
                         except ValueError:
                             # 前端编辑与领取发生冲突时跳过本单，下一轮读取最新版本。
                             continue

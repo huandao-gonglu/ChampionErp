@@ -8,6 +8,7 @@ from threading import Event, RLock, Thread
 import shutil
 import time
 
+from erp_web.release_guard import release_guard
 from erp_web.context import AppContext, AppPaths, bind_context
 from erp_web.services.desktop_connection_service import server_worker_context
 from erp_web.db import ErpDatabase
@@ -110,7 +111,9 @@ class AccountRuntime:
         while not self._stop.wait(1):
             if time.monotonic() >= next_newapi_sync:
                 try:
-                    self.newapi.sync()
+                    with release_guard.admit("账号同步") as allowed:
+                        if allowed:
+                            self.newapi.sync()
                 except Exception:
                     logger.exception("New API 账号同步暂未完成。")
                 next_newapi_sync = time.monotonic() + 30

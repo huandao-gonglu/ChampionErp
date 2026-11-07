@@ -1,15 +1,24 @@
 """接收已构建的 ERP 发布包，备份数据后切换版本并验证真实 HTTP 入口。"""
 import argparse
+from contextlib import contextmanager
+import grp
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import time
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+
+# 上传目录沿用仓库结构，使独立运行的发布脚本使用同版本的协调协议。
+if __name__ == '__main__':
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from erp_web.release_guard import ACTIVITIES, locked_file
 
 BASE = Path('/opt/champion-erp')
 BACKUPS = Path('/srv/champion-erp/backups')
@@ -110,6 +119,53 @@ def switch_link(target):
     temporary.replace(BASE / 'current')
 
 
+def prepare_guard(directory):
+    """协调文件跨版本保留，服务组可加锁，只有发布账号可替换文件。"""
+    group = grp.getgrnam('champion-erp').gr_gid
+    directory.mkdir(mode=0o750, exist_ok=True)
+    os.chown(directory, 0, group)
+    directory.chmod(0o750)
+    for name in ('admission', 'active', 'server', *ACTIVITIES):
+        path = directory / name
+        path.touch(exist_ok=True)
+        os.chown(path, 0, group)
+        path.chmod(0o640)
+
+
+def in_use(directory, name):
+    try:
+        with locked_file(directory, name, exclusive=True, blocking=False):
+            return False
+    except BlockingIOError:
+        return True
+
+
+@contextmanager
+def safe_release(directory, wait_seconds):
+    prepare_guard(directory)
+    # 跨备份、启动验收和回滚持锁。发布程序退出后，正在运行的版本自动恢复准入。
+    with locked_file(directory, 'admission', exclusive=True):
+        if not in_use(directory, 'server'):
+            state = subprocess.check_output(
+                ['systemctl', 'show', SERVICE, '--property=ActiveState', '--value'], text=True,
+            ).strip()
+            if state != 'inactive':
+                raise RuntimeError('当前服务未启用发布协调。首次接入请在维护窗口停止旧版，再继续本次发布。')
+        deadline = time.monotonic() + wait_seconds
+        previous = None
+        while in_use(directory, 'active'):
+            blockers = [name for name in ACTIVITIES if in_use(directory, name)]
+            summary = '、'.join(blockers) or '正在交接的任务'
+            if previous != summary:
+                print(f'已暂停接收新任务，等待完成：{summary}', flush=True)
+                previous = summary
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f'等待安全停机超时，本次不切换版本。仍在执行：{summary}')
+            time.sleep(min(1, remaining))
+        yield
+
+
 def deploy(args):
     if os.geteuid() != 0:
         raise RuntimeError('服务器发布须由具有服务管理权限的账号执行')
@@ -119,7 +175,7 @@ def deploy(args):
     if actual != args.sha256:
         raise RuntimeError('上传的发布包摘要不一致')
     # 发布 ID 由本地脚本生成，只允许单层目录名。
-    if not args.release_id or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-.' for c in args.release_id):
+    if args.release_id in ('', '.', '..') or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-.' for c in args.release_id):
         raise ValueError('发布标识无效')
     release = BASE / 'releases' / args.release_id
     current = (BASE / 'current').resolve(strict=True)
@@ -135,59 +191,73 @@ def deploy(args):
         return
     if str(current) != args.expected_current:
         raise RuntimeError('服务器版本已被其他发布更新，请重新核对后发布')
-    if release.exists():
-        raise RuntimeError('发布目录已经存在，请使用新的发布标识')
-    release.mkdir(parents=True, mode=0o755)
-    with tarfile.open(archive, 'r:gz') as package:
-        package.extractall(release, filter='data')
-    manifest = json.loads((release / 'release-manifest.json').read_text())
-    if manifest['revision'] != args.revision:
-        raise RuntimeError('发布包代码版本不一致')
-    print('准备服务器独立依赖环境', flush=True)
     python = release / '.venv/bin/python'
-    run('/usr/bin/python3', '-m', 'venv', release / '.venv')
-    run(python, '-m', 'pip', 'install', '--disable-pip-version-check', '-r', release / 'requirements.txt')
-    run(python, '-m', 'pip', 'check')
-    run(python, '-m', 'compileall', '-q', release / 'erp_web', release / 'erp_shared')
-    run('runuser', '-u', 'champion-erp', '--', 'test', '-r', release / 'erp_web/static/dist/index.html')
     backup_dir = BACKUPS / args.release_id
-    backup_dir.mkdir(parents=True, mode=0o700)
     previous_override = PYTHON_OVERRIDE.read_bytes() if PYTHON_OVERRIDE.exists() else None
-    if previous_override is not None:
-        (backup_dir / 'release-python.conf').write_bytes(previous_override)
-    write_json(backup_dir / 'previous-release.json', {'release': str(current), 'python_override_existed': previous_override is not None})
-    result = {'status': 'prepared', 'release': str(release), 'previous_release': str(current),
-              'revision': args.revision, 'backup': str(backup_dir / 'accounts.tar.gz')}
-    write_json(record_path, result)
-    try:
-        print('短暂停止 ERP，备份并验证业务数据', flush=True)
-        run('systemctl', 'stop', SERVICE)
-        backup_script = release / 'deploy/backup_accounts.py'
-        run(python, backup_script, 'backup', '--archive', result['backup'])
-        run(python, backup_script, 'verify', '--archive', result['backup'])
-        switch_link(release)
-        PYTHON_OVERRIDE.parent.mkdir(parents=True, exist_ok=True)
-        PYTHON_OVERRIDE.write_text('[Service]\nExecStart=\nExecStart=/opt/champion-erp/current/.venv/bin/python -m erp_web.server\n')
-        run('systemctl', 'daemon-reload')
-        run('systemctl', 'start', SERVICE)
-        wait_ready()
-        result.update(status='published', checks=smoke_check(release))
+    if release.exists():
+        result = json.loads(record_path.read_text()) if record_path.is_file() else {}
+        if not (result.get('status') == 'prepared' and result.get('release') == str(release)
+                and result.get('previous_release') == str(current) and result.get('archive_sha256') == actual
+                and result.get('revision') == args.revision):
+            raise RuntimeError('发布目录已经存在，只有同一发布包尚未切换时可继续')
+    else:
+        release.mkdir(parents=True, mode=0o755)
+        with tarfile.open(archive, 'r:gz') as package:
+            package.extractall(release, filter='data')
+        manifest = json.loads((release / 'release-manifest.json').read_text())
+        if manifest['revision'] != args.revision:
+            raise RuntimeError('发布包代码版本不一致')
+        print('准备服务器独立依赖环境', flush=True)
+        run('/usr/bin/python3', '-m', 'venv', release / '.venv')
+        run(python, '-m', 'pip', 'install', '--disable-pip-version-check', '-r', release / 'requirements.txt')
+        run(python, '-m', 'pip', 'check')
+        run(python, '-m', 'compileall', '-q', release / 'erp_web', release / 'erp_shared')
+        run('runuser', '-u', 'champion-erp', '--', 'test', '-r', release / 'erp_web/static/dist/index.html')
+        backup_dir.mkdir(parents=True, mode=0o700)
+        if previous_override is not None:
+            (backup_dir / 'release-python.conf').write_bytes(previous_override)
+        write_json(backup_dir / 'previous-release.json', {'release': str(current), 'python_override_existed': previous_override is not None})
+        result = {'status': 'prepared', 'release': str(release), 'previous_release': str(current),
+                  'revision': args.revision, 'archive_sha256': actual, 'backup': str(backup_dir / 'accounts.tar.gz')}
         write_json(record_path, result)
-        print('服务器发布与登录设置接口验证通过', flush=True)
-    except BaseException:
-        print('发布未通过，恢复上一个程序版本', flush=True)
-        run('systemctl', 'stop', SERVICE)
-        switch_link(current)
-        if previous_override is None:
-            PYTHON_OVERRIDE.unlink(missing_ok=True)
-        else:
-            PYTHON_OVERRIDE.write_bytes(previous_override)
-        run('systemctl', 'daemon-reload')
-        run('systemctl', 'start', SERVICE)
-        wait_ready()
-        result['status'] = 'rolled_back'
+    directory = BASE / '.release-control-v1'
+    with safe_release(directory, args.wait_tasks_seconds):
+        result['status'] = 'switching'
         write_json(record_path, result)
-        raise
+        try:
+            print('短暂停止 ERP，备份并验证业务数据', flush=True)
+            run('systemctl', 'stop', SERVICE)
+            backup_script = release / 'deploy/backup_accounts.py'
+            run(python, backup_script, 'backup', '--archive', result['backup'])
+            run(python, backup_script, 'verify', '--archive', result['backup'])
+            switch_link(release)
+            PYTHON_OVERRIDE.parent.mkdir(parents=True, exist_ok=True)
+            PYTHON_OVERRIDE.write_text(
+                f'[Service]\nEnvironment=ERP_RELEASE_GUARD_DIR={directory}\n'
+                'ExecStart=\nExecStart=/opt/champion-erp/current/.venv/bin/python -m erp_web.server\n'
+            )
+            run('systemctl', 'daemon-reload')
+            run('systemctl', 'start', SERVICE)
+            wait_ready()
+            if not in_use(directory, 'server'):
+                raise RuntimeError('新版服务未启用发布协调')
+            result.update(status='published', checks=smoke_check(release))
+            write_json(record_path, result)
+            print('服务器发布与登录设置接口验证通过', flush=True)
+        except BaseException:
+            print('发布未通过，恢复上一个程序版本', flush=True)
+            run('systemctl', 'stop', SERVICE)
+            switch_link(current)
+            if previous_override is None:
+                PYTHON_OVERRIDE.unlink(missing_ok=True)
+            else:
+                PYTHON_OVERRIDE.write_bytes(previous_override)
+            run('systemctl', 'daemon-reload')
+            run('systemctl', 'start', SERVICE)
+            wait_ready()
+            result['status'] = 'rolled_back'
+            write_json(record_path, result)
+            raise
 
 
 def main():
@@ -197,7 +267,10 @@ def main():
     parser.add_argument('--release-id', required=True)
     parser.add_argument('--revision', required=True)
     parser.add_argument('--expected-current', required=True)
+    parser.add_argument('--wait-tasks-seconds', type=int, default=3600, help='等待已接任务安全停机的最长秒数')
     args = parser.parse_args()
+    if args.wait_tasks_seconds < 0:
+        parser.error('等待任务时间必须为非负数')
     with (BASE / '.release.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         deploy(args)

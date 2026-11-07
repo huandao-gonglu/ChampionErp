@@ -10,6 +10,7 @@ from erp_web.services.external_request_context import request_operation
 from typing import Any, Literal
 from uuid import uuid4
 
+from erp_web.release_guard import release_guard
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.product_model.online_operation_model import receipt_errors, submission_status
 from erp_web.db import utc_now
@@ -63,8 +64,9 @@ class OnlineProductService:
     def _loop(self):
         while not self._stop.is_set():
             try:
-                if self.run_once():
-                    continue
+                with release_guard.admit("在线商品") as allowed:
+                    if allowed and self.run_once():
+                        continue
             except Exception:
                 logger.exception("在线商品后台任务异常，已保留持久化状态")
             self._wake.wait(2)

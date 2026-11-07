@@ -1,7 +1,6 @@
 """商品调研编排与持久记录；市场绑定显式数据源适配器。"""
 
 from __future__ import annotations
-from contextvars import copy_context
 
 from erp_web.services.external_request_context import request_operation
 
@@ -20,6 +19,7 @@ from typing import Any, Callable
 from erp_web.context import get_context
 from erp_web.db import ErpDatabase
 from erp_web.product_research_config import normalize_product_research_config
+from erp_web.release_guard import release_guard
 from erp_web.schemas.product_research import (
     HotProductCandidate,
     ProductResearchConfig,
@@ -771,12 +771,10 @@ def create_hot_product_run_async(
         config,
         execution_mode="async",
     )
-    worker = threading.Thread(
-        target=copy_context().run,
-        args=(_run_hot_product_worker, registry, app_dir, stored["run_id"], deepcopy(request), deepcopy(normalized_config), deepcopy(app_config) if app_config is not None else None),
-        daemon=True,
+    release_guard.start_thread(
+        "选品调研", "product-research", _run_hot_product_worker, registry, app_dir, stored["run_id"],
+        deepcopy(request), deepcopy(normalized_config), deepcopy(app_config),
     )
-    worker.start()
     return stored
 
 

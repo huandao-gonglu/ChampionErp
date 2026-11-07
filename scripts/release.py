@@ -165,20 +165,47 @@ def finish_install(args, record, folder, source):
     print(f"发布完成，版本 {record['version']}，代码 {record['revision'][:12]}。记录保存在 {folder / 'release.json'}", flush=True)
 
 
-def resume_release(args):
-    folder = args.resume.expanduser().resolve()
-    record = json.loads((folder / 'release.json').read_text())
-    if record['status'] not in {'server_published', 'failed_after_server_published'}:
-        raise RuntimeError('该发布记录不处于可继续的服务器已发布阶段')
-    archive = folder / 'server.tar.gz'
-    if digest(archive) != record['archive_sha256']:
-        raise RuntimeError('已有服务器发布包摘要发生变化')
+def switch_server(args, record, folder, source):
+    staging = '/srv/champion-erp/staging/' + record['release_id']
+    command = ['python3', staging + '/deploy/release_server.py', '--archive', staging + '/server.tar.gz',
+               '--sha256', record['archive_sha256'], '--release-id', record['release_id'],
+               '--revision', record['revision'], '--expected-current', record['previous_server_release'],
+               '--wait-tasks-seconds', str(args.wait_tasks_seconds)]
+    # 等待原因直接输出到终端，同时保存在原发布日志中。
+    with (folder / 'build.log').open('a') as log, subprocess.Popen(
+        [*ssh_args(args), shlex.join(command)], cwd=source, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    ) as process:
+        for line in process.stdout:
+            print(line, end='', flush=True)
+            log.write(line)
+        if process.wait():
+            raise RuntimeError('服务器切换未完成，请检查本次发布日志')
+    record['server'] = json.loads(remote_output(args, ['cat', staging + '/server-result.json']))
+    record['status'] = 'server_published'
+    write_record(folder / 'release.json', record)
+
+
+def verify_server_release(args, record):
     current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
     if current != record['server']['release']:
         raise RuntimeError('服务器已切换到其他发布，拒绝安装旧版本桌面程序')
     manifest = json.loads(remote_output(args, ['cat', current + '/release-manifest.json']))
     if manifest['revision'] != record['revision']:
         raise RuntimeError('服务器代码版本与发布记录不一致')
+
+
+def resume_release(args):
+    folder = args.resume.expanduser().resolve()
+    record = json.loads((folder / 'release.json').read_text())
+    staged = record['status'] in {'server_staged', 'failed_after_server_staged'}
+    if not staged and record['status'] not in {'server_published', 'failed_after_server_published'}:
+        raise RuntimeError('只有已上传或已发布的版本可以继续')
+    archive = folder / 'server.tar.gz'
+    if digest(archive) != record['archive_sha256']:
+        raise RuntimeError('已有服务器发布包摘要发生变化')
+    if not staged:
+        verify_server_release(args, record)
     for key in ('previous_desktop_sha256', 'desktop_asar_sha256', 'desktop_target'):
         if key not in record:
             raise RuntimeError('旧发布记录缺少桌面校验信息，请先人工核对并补齐记录')
@@ -187,9 +214,12 @@ def resume_release(args):
             source = Path(temporary)
             with tarfile.open(archive) as package:
                 package.extractall(source, filter='data')
+            if staged:
+                switch_server(args, record, folder, source)
+                verify_server_release(args, record)
             finish_install(args, record, folder, source)
     except BaseException:
-        record['status'] = 'failed_after_server_published'
+        record['status'] = 'failed_after_' + record['status'].removeprefix('failed_after_')
         write_record(folder / 'release.json', record)
         raise
 
@@ -274,16 +304,15 @@ def release(args):
             if desktop_hash(args.desktop_target) != previous_desktop:
                 raise RuntimeError('编译期间桌面程序已被其他更新更换，请核对后重新发布')
             remote_folder = '/srv/champion-erp/staging/' + release_id
-            remote_output(args, ['mkdir', '-p', remote_folder])
+            remote_output(args, ['mkdir', '-p', remote_folder + '/erp_web', remote_folder + '/deploy'])
             scp = ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes', '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes']
             print('上传服务器发布包并执行备份切换', flush=True)
-            run([*scp, archive_path, source / 'deploy/release_server.py', args.ssh_host + ':' + remote_folder + '/'], cwd=source, log=log, env=environment)
-            command = ['python3', remote_folder + '/release_server.py', '--archive', remote_folder + '/server.tar.gz',
-                       '--sha256', record['archive_sha256'], '--release-id', release_id, '--revision', revision, '--expected-current', current]
-            run([*ssh_args(args), shlex.join(command)], cwd=source, log=log, env=environment)
-            record['server'] = json.loads(remote_output(args, ['cat', remote_folder + '/server-result.json']))
-            record['status'] = 'server_published'
+            run([*scp, archive_path, args.ssh_host + ':' + remote_folder + '/'], cwd=source, log=log, env=environment)
+            run([*scp, source / 'deploy/release_server.py', args.ssh_host + ':' + remote_folder + '/deploy/'], cwd=source, log=log, env=environment)
+            run([*scp, source / 'erp_web/__init__.py', source / 'erp_web/release_guard.py', args.ssh_host + ':' + remote_folder + '/erp_web/'], cwd=source, log=log, env=environment)
+            record['status'] = 'server_staged'
             write_record(record_path, record)
+            switch_server(args, record, folder, source)
             finish_install(args, record, folder, source)
     except BaseException:
         record['status'] = 'failed_after_' + record['status']
@@ -301,9 +330,12 @@ def main():
     current_app = Path('/Applications/Champion ERP.app')
     parser.add_argument('--desktop-target', type=Path, default=current_app if current_app.exists() else Path('/Applications/gongluErp.app'))
     parser.add_argument('--output-dir', type=Path, default=Path.home() / 'Library/Application Support/Champion ERP/releases')
+    parser.add_argument('--wait-tasks-seconds', type=int, default=3600, help='服务器等待已接任务安全停机的最长秒数')
     parser.add_argument('--wait-desktop-seconds', type=int, default=3600)
-    parser.add_argument('--resume', type=Path, help='从已有发布目录继续公网验证和桌面替换')
+    parser.add_argument('--resume', type=Path, help='从已上传的发布目录继续服务器切换、验证和桌面替换')
     args = parser.parse_args()
+    if args.wait_tasks_seconds < 0:
+        parser.error('等待任务时间必须为非负数')
     args.output_dir = args.output_dir.expanduser().absolute()
     if args.resume:
         args.output_dir = args.resume.expanduser().resolve().parent

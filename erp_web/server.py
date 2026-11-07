@@ -8,6 +8,7 @@ import webbrowser
 from collections.abc import Callable
 from http.server import ThreadingHTTPServer
 
+from erp_web.release_guard import release_guard
 from .context import build_default_context, get_context, set_context
 from .http_handler import Handler
 from .logging_config import configure_logging
@@ -41,33 +42,34 @@ def main(*, on_ready: Callable[[str], None] | None = None,
     port = paths.web_port
     server = ERPHTTPServer((host, port), Handler)
     server.account_runtime = accounts
-    accounts.start()
-    url = f"http://127.0.0.1:{server.server_port}/"
-    logger.info("ERP running at %s", url)
-    logger.info("Backend log file: %s", log_file)
-    if (
-        os.environ.get("ERP_NO_BROWSER") != "1"
-        and os.environ.get("ERP_SKIP_OPEN_BROWSER") != "1"
-    ):
+    with release_guard.serving(os.environ.get("ERP_RELEASE_GUARD_DIR")):
+        accounts.start()
+        url = f"http://127.0.0.1:{server.server_port}/"
+        logger.info("ERP running at %s", url)
+        logger.info("Backend log file: %s", log_file)
+        if (
+            os.environ.get("ERP_NO_BROWSER") != "1"
+            and os.environ.get("ERP_SKIP_OPEN_BROWSER") != "1"
+        ):
+            try:
+                webbrowser.open(url)
+            except Exception:
+                logger.exception("Failed to open browser for %s", url)
         try:
-            webbrowser.open(url)
-        except Exception:
-            logger.exception("Failed to open browser for %s", url)
-    try:
-        if stop_event is not None:
-            def stop_server():
-                stop_event.wait()
-                server.shutdown()
+            if stop_event is not None:
+                def stop_server():
+                    stop_event.wait()
+                    server.shutdown()
 
-            threading.Thread(target=stop_server, name="erp-server-stop", daemon=True).start()
-        if on_ready is not None:
-            on_ready(url)
-        server.serve_forever()
-    finally:
-        if stop_event is not None:
-            stop_event.set()
-        accounts.close()
-        server.server_close()
+                threading.Thread(target=stop_server, name="erp-server-stop", daemon=True).start()
+            if on_ready is not None:
+                on_ready(url)
+            server.serve_forever()
+        finally:
+            if stop_event is not None:
+                stop_event.set()
+            accounts.close()
+            server.server_close()
 
 
 if __name__ == "__main__":

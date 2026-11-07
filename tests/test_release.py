@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from erp_web.release_guard import locked_file, release_guard
 from deploy import release_server
 from scripts import release
 
@@ -68,7 +69,7 @@ def test_running_desktop_times_out_without_replacing_program(desktop, monkeypatc
     assert release.desktop_hash(target) == old
 
 
-def test_server_failed_smoke_restores_code_and_service_configuration(tmp_path, monkeypatch):
+def test_server_timeout_can_resume_and_failed_smoke_restores_previous_service(tmp_path, monkeypatch, release_guard_dir):
     base = tmp_path / 'server'
     previous = base / 'releases/previous'
     previous.mkdir(parents=True)
@@ -88,13 +89,20 @@ def test_server_failed_smoke_restores_code_and_service_configuration(tmp_path, m
     monkeypatch.setattr(release_server, 'PYTHON_OVERRIDE', override)
     monkeypatch.setattr(release_server.os, 'geteuid', lambda: 0)
     calls = []
+    active = {'server', 'active', '商品提交'}
+    monkeypatch.setattr(release_server, 'in_use', lambda directory, name: name in active)
     monkeypatch.setattr(release_server, 'run', lambda *args: calls.append(args))
     monkeypatch.setattr(release_server, 'wait_ready', lambda: None)
     def failed(path):
         raise RuntimeError('HTTP 验证失败')
     monkeypatch.setattr(release_server, 'smoke_check', failed)
     args = argparse.Namespace(archive=archive, sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
-        release_id='release-1', revision='new-revision', expected_current=str(previous))
+        release_id='release-1', revision='new-revision', expected_current=str(previous), wait_tasks_seconds=0)
+    with pytest.raises(TimeoutError, match='商品提交'):
+        release_server.deploy(args)
+    assert json.loads((staging / 'server-result.json').read_text())['status'] == 'prepared'
+    assert not any(call[0] == 'systemctl' for call in calls)
+    active.remove('active')
     with pytest.raises(RuntimeError, match='HTTP 验证失败'):
         release_server.deploy(args)
     assert (base / 'current').resolve() == previous
@@ -144,3 +152,115 @@ def test_resume_refuses_when_another_server_release_is_active(tmp_path, monkeypa
     monkeypatch.setattr(release, 'remote_output', lambda *args: '/other-release')
     with pytest.raises(RuntimeError, match='其他发布'):
         release.resume_release(argparse.Namespace(resume=tmp_path))
+
+
+def test_safe_release_waits_for_submitted_work_and_allows_existing_handoff(release_guard_dir):
+    from concurrent.futures import ThreadPoolExecutor
+
+    finish = threading.Event()
+    with release_guard.serving(release_guard_dir), ThreadPoolExecutor() as pool:
+        with release_guard.admit('业务请求') as accepted:
+            assert accepted
+            with locked_file(release_guard_dir, 'admission', exclusive=True):
+                with release_guard.admit('订单处理') as admitted:
+                    assert not admitted
+                job = release_guard.submit('图片批次', pool.submit, finish.wait, 5)
+        try:
+            with pytest.raises(TimeoutError, match='图片批次'), release_server.safe_release(release_guard_dir, 0):
+                pytest.fail('已有图片批次尚未结束')
+            assert release_guard.accepting()
+        finally:
+            finish.set()
+            job.result(timeout=2)
+        with release_server.safe_release(release_guard_dir, 2):
+            assert not release_guard.accepting()
+        assert release_guard.accepting()
+
+
+def test_guard_requires_maintenance_for_an_uninstrumented_running_service(release_guard_dir, monkeypatch):
+    monkeypatch.setattr(release_server.subprocess, 'check_output', lambda *args, **kwargs: 'active\n')
+    with pytest.raises(RuntimeError, match='首次接入'), release_server.safe_release(release_guard_dir, 0):
+        pytest.fail('旧服务仍在运行')
+    monkeypatch.setattr(release_server.subprocess, 'check_output', lambda *args, **kwargs: 'inactive\n')
+    with release_server.safe_release(release_guard_dir, 0), release_guard.serving(release_guard_dir):
+        assert not release_guard.accepting()
+
+
+def test_release_waits_across_processes_and_reopens_admission(release_guard_dir, monkeypatch):
+    import subprocess
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+
+    # 用独立进程模拟线上服务，避免同进程线程测试掩盖部署端的锁行为。
+    code = """
+import sys
+from erp_web.release_guard import release_guard
+with release_guard.serving(sys.argv[1]):
+    with release_guard.admit('商品提交') as allowed:
+        assert allowed
+        print('ready', flush=True)
+        input()
+    input()
+"""
+    waiting = threading.Event()
+    probe = release_server.in_use
+
+    def observe(directory, name):
+        busy = probe(directory, name)
+        if name == 'active' and busy:
+            waiting.set()
+        return busy
+
+    monkeypatch.setattr(release_server, 'in_use', observe)
+
+    def switch():
+        with release_server.safe_release(release_guard_dir, 5):
+            assert probe(release_guard_dir, 'admission')
+            assert not probe(release_guard_dir, 'active')
+
+    with subprocess.Popen([sys.executable, '-c', code, str(release_guard_dir)],
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as backend:
+        try:
+            assert backend.stdout.readline().strip() == 'ready'
+            with ThreadPoolExecutor() as pool:
+                release = pool.submit(switch)
+                assert waiting.wait(2)
+                assert not release.done()
+                backend.stdin.write('\n')
+                backend.stdin.flush()
+                release.result(timeout=4)
+            assert not probe(release_guard_dir, 'admission')
+            backend.stdin.write('\n')
+            backend.stdin.flush()
+            assert backend.wait(timeout=2) == 0
+        finally:
+            backend.kill()
+
+
+def test_resume_after_drain_timeout_uses_staged_build(tmp_path, monkeypatch):
+    archive = tmp_path / 'server.tar.gz'
+    with tarfile.open(archive, 'w:gz') as package:
+        entry = tmp_path / 'REVISION'
+        entry.write_text('revision')
+        package.add(entry, arcname='REVISION')
+
+    release.write_record(tmp_path / 'release.json', {
+        'status': 'failed_after_server_staged', 'archive_sha256': release.digest(archive),
+        'revision': 'revision', 'previous_desktop_sha256': 'old', 'desktop_asar_sha256': 'new',
+        'desktop_target': '/unused',
+    })
+    calls = []
+
+    def switch(args, record, folder, source):
+        assert (source / 'REVISION').read_text() == record['revision']
+        record.update(status='server_published', server={'release': '/published'})
+        calls.append('server')
+
+    def remote(args, command):
+        return '/published' if command[0] == 'readlink' else json.dumps({'revision': 'revision'})
+
+    monkeypatch.setattr(release, 'switch_server', switch)
+    monkeypatch.setattr(release, 'remote_output', remote)
+    monkeypatch.setattr(release, 'finish_install', lambda *args: calls.append('desktop'))
+    release.resume_release(argparse.Namespace(resume=tmp_path))
+    assert calls == ['server', 'desktop']

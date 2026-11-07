@@ -17,6 +17,8 @@ import concurrent.futures
 import threading
 from typing import Any, Coroutine
 
+from erp_web.release_guard import release_guard
+
 
 class DetachedChatRunner:
     """专用后台 event loop 的进程级 owner。"""
@@ -33,7 +35,7 @@ class DetachedChatRunner:
         """把 producer 协程提交到 runner loop；线程安全，可并发调用。"""
 
         loop = self._ensure_running()
-        return asyncio.run_coroutine_threadsafe(coro, loop)
+        return release_guard.submit("AI 对话", asyncio.run_coroutine_threadsafe, coro, loop)
 
     def _ensure_running(self) -> asyncio.AbstractEventLoop:
         with self._lock:

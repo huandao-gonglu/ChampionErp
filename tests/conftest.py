@@ -51,6 +51,23 @@ def app_dir(_isolated_app_context: None) -> Path:
     return get_context().paths.app_dir
 
 
+@pytest.fixture
+def release_guard_dir(tmp_path, monkeypatch):
+    """使用真实文件锁，仅替换服务器专属的账号和目录权限设置。"""
+    from deploy import release_server
+    from erp_web.release_guard import ACTIVITIES
+
+    def prepare(directory):
+        directory.mkdir(exist_ok=True)
+        for name in ('admission', 'active', 'server', *ACTIVITIES):
+            (directory / name).touch()
+
+    monkeypatch.setattr(release_server, 'prepare_guard', prepare)
+    directory = tmp_path / 'release-control'
+    prepare(directory)
+    return directory
+
+
 @pytest.fixture(scope="session")
 def repo_dir() -> Path:
     """仓库目录只用于读取源码，不能作为测试运行时数据目录。"""

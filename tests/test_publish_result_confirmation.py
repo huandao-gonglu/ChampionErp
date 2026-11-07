@@ -192,3 +192,49 @@ def test_non_object_response_keeps_persisted_receipt(setup):
     adapter.result = []
     assert bus.check_publish_result(job_id, "ozon")["resolution"] == "query_failed"
     assert platform_state(bus, job_id)["result"]["task_id"] == "remote-1"
+
+
+def test_release_waits_for_submission_but_not_platform_confirmation(release_guard_dir, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from deploy import release_server
+    from erp_web.release_guard import release_guard
+
+    adapter = Adapter()
+    sending, finish = Event(), Event()
+    original_publish = adapter.publish
+
+    def publish(*args):
+        sending.set()
+        assert finish.wait(5)
+        return original_publish(*args)
+
+    monkeypatch.setattr(adapter, 'publish', publish)
+    context = get_context()
+    bus = PublishingBus(context.db, {'ozon': adapter}, task_queue=context.task_queue)
+    context._publishing_bus = bus
+    try:
+        with release_guard.serving(release_guard_dir), ThreadPoolExecutor() as pool:
+            queued = bus.enqueue({'product_id': 'p'}, ['ozon'], targets={'ozon': {
+                'draft_id': 'd', 'site': 'global', 'product_id': 'p',
+            }}, idempotency_key='release-drain')
+            assert sending.wait(2)
+            with pytest.raises(TimeoutError, match='商品提交'), release_server.safe_release(release_guard_dir, 0):
+                pytest.fail('提交中的平台写入不能中断')
+            finish.set()
+            bus.wait(queued['job_id'], timeout=2)
+            adapter.entered, adapter.release = Event(), Event()
+            checking = pool.submit(bus.check_publish_result, queued['job_id'], 'ozon')
+            assert adapter.entered.wait(2)
+            try:
+                with release_server.safe_release(release_guard_dir, 0):
+                    item = platform_state(bus, queued['job_id'])
+                    assert item['status'] == 'pending_confirmation'
+                    assert item['result']['task_id'] == 'remote-1'
+                    assert not checking.done()
+            finally:
+                adapter.release.set()
+            checking.result(timeout=2)
+            assert adapter.writes == 1
+    finally:
+        finish.set()
+        bus.close()

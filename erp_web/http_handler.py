@@ -9,10 +9,11 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from erp_web.release_guard import release_guard
 from . import http_routes
 from .http_request import safe_json_body
 from .services.external_request_context import capture_request_rejections, current_operation_id
-from .services.account_request import authenticated_request
+from .services.account_request import CALLBACK_GET_PATHS, authenticated_request
 
 access_logger = logging.getLogger("erp.access")
 response_logger = logging.getLogger("erp.http.response")
@@ -82,6 +83,19 @@ def _response_diagnostics(data: Any) -> dict[str, Any]:
             data.get("error") or data.get("message") or failure.get("message")
         ),
     }
+
+
+# 已接任务所需的桌面回执、进度读取和用户停止操作，在等待期间仍可用。
+_DRAIN_ALLOWED_POST_PATHS = frozenset({
+    "/api/desktop/connect", "/api/desktop/poll", "/api/desktop/asset", "/api/desktop/result",
+    "/api/desktop/disconnect", "/api/v1/ai-chat/cancel", "/api/wechat/verify",
+    "/api/draft-images/state", "/api/load-draft", "/api/load-product",
+    "/api/account/login", "/api/account/logout", "/api/internal/newapi/session", "/api/internal/newapi/user",
+})
+
+
+# 查询使用原有持久化确认计划；发布可中断一次回读，不影响已经受理的写入。
+_CONFIRMATION_READS = frozenset({"/api/tasks/check", "/api/publish-bus/reconcile", "/api/online-products/reconcile"})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -215,15 +229,31 @@ class Handler(BaseHTTPRequestHandler):
     def read_body(self) -> dict[str, Any]:
         return safe_json_body(self)
 
+    def _dispatch_business_request(self, dispatch, *, activity="业务请求") -> None:
+        with release_guard.admit(activity) as allowed:
+            if allowed:
+                dispatch(self)
+            else:
+                self.send_json({"ok": False, "error_code": "RELEASE_DRAINING",
+                                "error": "系统正在升级，请稍后再提交。"}, 503)
+
     def do_GET(self) -> None:
         with authenticated_request(self, public_pages=http_routes.FRONTEND_PAGE_ROUTES) as allowed:
             if allowed:
                 with capture_request_rejections() as self.external_rejections:
-                    http_routes.handle_get(self)
+                    if urllib.parse.urlsplit(self.path).path in CALLBACK_GET_PATHS:
+                        self._dispatch_business_request(http_routes.handle_get)
+                    else:
+                        http_routes.handle_get(self)
 
     def do_POST(self) -> None:
         self.request_started = time.time()
         with authenticated_request(self, public_pages=http_routes.FRONTEND_PAGE_ROUTES) as allowed:
             if allowed:
                 with capture_request_rejections() as self.external_rejections:
-                    http_routes.handle_post(self)
+                    path = urllib.parse.urlsplit(self.path).path
+                    if path in _DRAIN_ALLOWED_POST_PATHS:
+                        http_routes.handle_post(self)
+                    else:
+                        activity = None if path in _CONFIRMATION_READS else "业务请求"
+                        self._dispatch_business_request(http_routes.handle_post, activity=activity)

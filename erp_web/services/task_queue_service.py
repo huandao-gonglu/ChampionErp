@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from erp_web.release_guard import release_guard
+
 from .desktop_connection_service import server_worker_context
 
 from erp_web.product_model.task_queue_model import PENDING_RESULTS, task_timestamp
@@ -36,7 +38,8 @@ class TaskQueueService:
     def _loop(self):
         while not self._stop.is_set():
             try:
-                self.run_once()
+                if release_guard.accepting():
+                    self.run_once()
             except Exception:
                 logger.exception("任务结果确认失败，已保留原业务记录")
             self._stop.wait(2)
@@ -101,7 +104,7 @@ class TaskQueueService:
     def run_once(self):
         self.context.publishing_bus.retry_terminal_persistence()
         for task in self.reader.tasks(pending_only=True):
-            if self._stop.is_set():
+            if self._stop.is_set() or not release_guard.accepting():
                 return
             plan = self._plan(task)
             if plan["state"] in {"waiting", "checking"} and plan["next_check_at"] <= time.time():
