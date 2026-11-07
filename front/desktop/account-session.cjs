@@ -23,6 +23,9 @@ function proxyBackendRequest(req, res, baseUrl, { session, connectionId = () => 
   target.search = requestPath.search
   const revision = session.revision
   const headers = { ...req.headers, host: target.host }
+  const isLogin = req.method === 'POST' && requestPath.pathname === '/api/account/login'
+  // 主进程需要解析登录回执；其余响应仍由渲染页面协商压缩。
+  if (isLogin) headers['accept-encoding'] = 'identity'
   delete headers.cookie
   delete headers.authorization
   delete headers['x-real-ip']
@@ -40,7 +43,7 @@ function proxyBackendRequest(req, res, baseUrl, { session, connectionId = () => 
     if (req.method === 'POST' && ['/api/account/logout', '/api/account/password'].includes(requestPath.pathname) && status === 200) {
       session.clear(); onLogout()
     }
-    if (req.method === 'POST' && requestPath.pathname === '/api/account/login' && status === 200) {
+    if (isLogin && status === 200) {
       let raw = ''
       response.setEncoding('utf8')
       response.on('data', chunk => { raw += chunk; if (raw.length > 65536) response.destroy(new Error('登录响应超过大小上限。')) })
