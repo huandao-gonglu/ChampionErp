@@ -250,6 +250,21 @@ async function createWindow() {
     directory: path.join(app.isPackaged ? process.resourcesPath : getFrontendRoot(), 'licenses'),
   })
 
+  if (process.platform === 'darwin') {
+    win.webContents.on('context-menu', (_event, { isEditable, editFlags, frame }) => {
+      if (!isEditable || !frame) return
+      const menu = Menu.buildFromTemplate([
+        { role: 'cut', enabled: editFlags.canCut },
+        { role: 'copy', enabled: editFlags.canCopy },
+        { role: 'paste', enabled: editFlags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll', enabled: editFlags.canSelectAll },
+      ])
+      // macOS 使用被右键点击的页面框架提供系统自动填充菜单。
+      menu.popup({ window: win, frame })
+    })
+  }
+
   win.webContents.setWindowOpenHandler(({ url: nextUrl }) => {
     try {
       const parsed = new URL(nextUrl)
