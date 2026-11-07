@@ -58,6 +58,10 @@ python3 /opt/champion-erp/current/deploy/publish_desktop.py --policy-only \
 
 ## 当前公网部署（2026-11-07）
 
+网页版、业务后端及 Apple 芯片 Mac 可选更新已发布 **1.2.13**（`20261107t122406z-3325c4004ae7`）。管理员可在 1688 授权页粘贴完整回调地址，由服务器完成换码。已验证公网资源、桌面更新清单和服务器端管理员请求校验，真实 1688 换码需管理员在浏览器完成登录。[下载 Mac 安装包](https://hdgl.cc.cd/desktop-updates/darwin-arm64/1.2.13/installer.dmg)
+
+## 1.2.12 发布记录（2026-11-07）
+
 网页版、业务后端和 Apple 芯片 Mac 可选更新为 **1.2.12**，发布记录为 `20261107t095635z-ce769a5f4610`。1688 商品、采购、订单和物流统一使用跨境 ERP 服务商应用 4848173。企业自用应用已从 ERP 退役。备份恢复、登录设置接口、公网资源和桌面更新清单均通过验证。[下载 Mac 安装包](https://hdgl.cc.cd/desktop-updates/darwin-arm64/1.2.12/installer.dmg)
 
 发布时使用生产回调 `https://hdgl.cc.cd/auth/alibaba/callback` 的授权链接仍被 1688 拒绝。客户真实授权需在开放平台确认已审核的回调和订购入口。
