@@ -26,6 +26,17 @@
 
 ## 当前公网部署（2026-11-07）
 
+ERP 与本机桌面当前为 **1.2.7**，应用代码提交 `34bcbc5a2c0a3b88eba951a2002a4ee096f0ea1d`。统一发布脚本已完成编译、服务器备份与切换、公网资源核验以及本机应用替换，状态为 `complete`。
+
+- 服务器目录为 `/opt/champion-erp/releases/20261107t040708z-34bcbc5a2c0a`，备份为 `/srv/champion-erp/backups/20261107t040708z-34bcbc5a2c0a/accounts.tar.gz`，恢复摘要和数据库完整性验证通过。
+- 本机 `/Applications/Champion ERP.app` 显示版本为 `1.2.7`。旧包位于 `/Applications/.Champion ERP-20261107t040708z-34bcbc5a2c0a.backup.app`。构建与发布记录保存在 `/Users/hdgl/Library/Application Support/Champion ERP/releases/20261107t040708z-34bcbc5a2c0a/`。
+- 已通过真实管理员会话读取新增运费规则接口，Yandex 22 条、Ozon 6 条，版本及数量与当前生效表一致。公网网页引用 `/assets/index-B6MPGpey.js`，内容摘要匹配本次构建。已安装执行器完成就绪、配置读取和 EOF 退出校验。
+- 独立构建完成后端 `4176 passed, 53 subtests passed`、前端 131 个文件共 1143 个测试、桌面 Node 回归、生成契约检查与 Web/macOS 构建。
+
+系统设置的「国际物流运费表」现提供当前表及管理员默认表的查看入口，直接读取已有导入数据，展示来源、版本、费用、适用限制并支持搜索与分页。网页刷新或桌面重开后可用。
+
+## 1.2.6 发布记录（2026-11-07）
+
 ERP 与本机桌面已通过统一脚本发布为 **1.2.6**，应用代码提交为 `f9cc6bda6e030f2e99ac793dae3af59bd6110893`。发布脚本随后在 `708b8a4` 补充明确的 HTTP 客户端标识和断点继续，通过已构建包完成公网验收及桌面安装。
 
 | 项目 | 当前位置或结果 |
