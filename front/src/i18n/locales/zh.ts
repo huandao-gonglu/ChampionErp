@@ -2,6 +2,15 @@ import { APP_NAME } from '@/constants/branding'
 
 export default {
   account: {
+    rememberPassword: '记住密码',
+    autoLogin: '自动登录',
+    emailCode: '邮箱验证码',
+    sendCode: '发送验证码',
+    codeSent: '验证码已发送至 {email}',
+    resendIn: '{seconds} 秒后可重发',
+    verificationUnavailable: '人机验证暂时不可用。',
+    retryVerification: '重试',
+    registerBrowser: '在浏览器中注册',
     newapi: 'Token 与账单',
     newapiNotConfigured: 'Token 与账单服务尚未配置。',
     newapiLaunchFailed: '登录交接未完成，请重新点击打开。',

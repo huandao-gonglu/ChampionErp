@@ -4,6 +4,7 @@ import os
 
 from erp_web.schemas.accounts import AccountError, SESSION_COOKIE, SESSION_SECONDS, public_user
 from erp_web.schemas.newapi import NewAPIConnectionInfo, NewAPIAuthorizationPreview, NewAPILaunch
+from erp_web.services import registration_verification
 from erp_web.services.account_request import account_runtime, client_ip
 
 
@@ -36,10 +37,19 @@ def session(handler, parsed=None):
             "initialized": account_runtime(handler).store.admin() is not None}
 
 
+def registration_config(handler, parsed=None):
+    return {"ok": True, "site_key": os.environ.get("ERP_TURNSTILE_SITE_KEY", "")}
+
+
+def registration_code(handler, body):
+    return registration_verification.issue_code(account_runtime(handler).service, body, client_ip(handler))
+
+
 def register(handler, body):
     runtime = account_runtime(handler)
     runtime.service.limit("register", body["email"], client_ip(handler))
-    return {"ok": True, "user": runtime.service.create(body)}
+    digest = registration_verification.verified_digest(body["email"], body["email_code"])
+    return {"ok": True, "user": runtime.service.create(body, registration_digest=digest)}
 
 
 def login(handler, body):

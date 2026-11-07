@@ -1,5 +1,6 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell, autoUpdater } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell, safeStorage, autoUpdater } = require('electron')
 const fs = require('node:fs')
+const { randomBytes } = require('node:crypto')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { createDesktopUpdates } = require('./updates.cjs')
@@ -10,6 +11,7 @@ const { runtimeExecutable, startRuntime } = require('./runtime.cjs')
 const { normalizeBackendUrl, connectDesktop } = require('./connection.cjs')
 const { registerLocalConfig } = require('./local-config.cjs')
 const { registerLicenseDirectory } = require('./licenses.cjs')
+const { SavedLogin, registerSavedLogin } = require('./saved-login.cjs')
 const { AccountSession, proxyBackendRequest } = require('./account-session.cjs')
 const { NewAPIBrowserBridge, registerNewAPIBridge } = require('./newapi.cjs')
 
@@ -49,8 +51,10 @@ let starting = true
 let frontendServer
 let newapiBridge
 let runtime
+let vault
 let desktopConnection
 let quitting = false
+const localRequestKey = randomBytes(32).toString('hex')
 const accountSession = new AccountSession()
 const desktopClient = app.isPackaged ? `${process.platform}-${process.arch}/${app.getVersion()}` : ''
 
@@ -174,22 +178,31 @@ function serveFrontend(req, res, requestUrl, frontendRoot) {
   sendFrontendFile(res, indexPath)
 }
 
+async function connectAccount(backendBaseUrl) {
+  await desktopConnection?.stop()
+  desktopConnection = await connectDesktop(backendBaseUrl, runtime, {
+    session: accountSession, client: desktopClient,
+    onDisconnected: error => {
+      notifyConnectionChanged()
+      if (!quitting && accountSession.cookie) dialog.showErrorBox(`${productName} 本机连接已断开`, `${error.message}。请重新登录后重试。`)
+    },
+  })
+  notifyConnectionChanged()
+}
+
 function proxyToBackend(req, res, backendBaseUrl) {
   proxyBackendRequest(req, res, backendBaseUrl, {
     session: accountSession, client: desktopClient,
     connectionId: () => desktopConnection?.id || '',
     onLogin: async () => {
-      await desktopConnection?.stop()
-      desktopConnection = await connectDesktop(backendBaseUrl, runtime, {
-        session: accountSession, client: desktopClient,
-        onDisconnected: error => {
-          notifyConnectionChanged()
-          if (!quitting && accountSession.cookie) dialog.showErrorBox(`${productName} 本机连接已断开`, `${error.message}。请重新登录后重试。`)
-        },
-      })
-      notifyConnectionChanged()
+      vault.write({})
+      await connectAccount(backendBaseUrl)
     },
-    onLogout: () => { void desktopConnection?.stop(); desktopConnection = undefined },
+    onLogout: reason => {
+      vault.forgetSession(reason === '/api/account/password')
+      void desktopConnection?.stop()
+      desktopConnection = undefined
+    },
   })
 }
 
@@ -219,6 +232,11 @@ function startFrontendServer() {
       return
     }
     if (shouldProxy(requestUrl.pathname)) {
+      if (req.headers['x-erp-local-window'] !== localRequestKey) {
+        send(res, 403, '仅桌面窗口可调用本机代理', 'text/plain; charset=utf-8')
+        return
+      }
+      delete req.headers['x-erp-local-window']
       proxyToBackend(req, res, backendBaseUrl)
       return
     }
@@ -239,7 +257,17 @@ function startFrontendServer() {
 }
 
 async function createWindow() {
-  const { url } = await startFrontendServer()
+  const { url, backendBaseUrl } = await startFrontendServer()
+  vault = new SavedLogin(app.getPath('userData'), backendBaseUrl, safeStorage)
+  const saved = vault.read()
+  if (saved.cookie && saved.csrf) {
+    Object.assign(accountSession, { cookie: saved.cookie, csrf: saved.csrf, email: saved.email })
+    try { await connectAccount(backendBaseUrl) }
+    catch (error) {
+      accountSession.clear()
+      if (error.status === 401 || error.status === 403 || error.status === 426) vault.forgetSession()
+    }
+  }
   const win = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -255,6 +283,11 @@ async function createWindow() {
     },
   })
 
+  win.webContents.session.webRequest.onBeforeSendHeaders({ urls: [url + '*'] }, (details, callback) => {
+    if (details.webContentsId === win.webContents.id) details.requestHeaders['X-ERP-Local-Window'] = localRequestKey
+    callback({ requestHeaders: details.requestHeaders })
+  })
+  registerSavedLogin({ ipcMain, win, url, vault, session: accountSession })
   registerLocalConfig({ ipcMain, win, frontendUrl: url, runtime })
   registerNewAPIBridge({ ipcMain, win, shell, bridge: newapiBridge })
   registerLicenseDirectory({
@@ -280,6 +313,10 @@ async function createWindow() {
   win.webContents.setWindowOpenHandler(({ url: nextUrl }) => {
     try {
       const parsed = new URL(nextUrl)
+      if (parsed.href === new URL('/register', url).href) {
+        void shell.openExternal(new URL('/register', backendBaseUrl).href)
+        return { action: 'deny' }
+      }
       if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
         shell.openExternal(nextUrl)
         return { action: 'deny' }

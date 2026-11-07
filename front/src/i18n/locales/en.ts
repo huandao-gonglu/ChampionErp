@@ -2,6 +2,15 @@ import { APP_NAME } from '@/constants/branding'
 
 export default {
   account: {
+    rememberPassword: 'Remember password',
+    autoLogin: 'Sign in automatically',
+    emailCode: 'Email verification code',
+    sendCode: 'Send code',
+    codeSent: 'Code sent to {email}',
+    resendIn: 'Resend in {seconds}s',
+    verificationUnavailable: 'Human verification is unavailable.',
+    retryVerification: 'Retry',
+    registerBrowser: 'Register in browser',
     newapi: 'Tokens and billing',
     newapiNotConfigured: 'Tokens and billing are not configured yet.',
     newapiLaunchFailed: 'Sign-in could not be completed. Open New API again.',

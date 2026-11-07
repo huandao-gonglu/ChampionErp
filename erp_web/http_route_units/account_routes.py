@@ -11,6 +11,7 @@ POST_HANDLERS = {
     "/api/internal/newapi/exchange": account_facade.newapi_exchange,
     "/api/internal/newapi/session": account_facade.newapi_session,
     "/api/internal/newapi/user": account_facade.newapi_user,
+    "/api/account/registration-code": account_facade.registration_code,
     "/api/account/register": account_facade.register,
     "/api/account/login": account_facade.login,
     "/api/account/logout": account_facade.logout,
@@ -20,6 +21,7 @@ POST_HANDLERS = {
     "/api/admin/users/password": account_facade.reset_password,
 }
 GET_HANDLERS = {
+    "/api/account/registration-config": account_facade.registration_config,
     "/api/account/newapi": account_facade.newapi_info,
     "/api/account/session": account_facade.session,
     "/api/admin/users": account_facade.users,

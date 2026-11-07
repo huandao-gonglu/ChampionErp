@@ -3,14 +3,15 @@ const https = require('node:https')
 
 // 凭据只留在主进程内存；不交给 localhost 的浏览器 Cookie jar。
 class AccountSession {
-  constructor() { this.cookie = ''; this.csrf = ''; this.revision = 0 }
+  constructor() { this.cookie = ''; this.csrf = ''; this.email = ''; this.revision = 0 }
   headers() { return { ...(this.cookie ? { Cookie: this.cookie } : {}), ...(this.csrf ? { 'X-CSRF-Token': this.csrf } : {}) } }
-  clear() { this.cookie = ''; this.csrf = ''; this.revision++ }
+  clear() { this.cookie = ''; this.csrf = ''; this.email = ''; this.revision++ }
   accept(headers, body) {
     const cookies = headers['set-cookie'] || []
     const session = cookies.map(value => value.split(';', 1)[0]).find(value => value.startsWith('champion_session='))
     if (!session || !session.slice('champion_session='.length) || !body.user || !body.csrf_token) throw new Error('登录会话响应无效。')
     this.cookie = session
+    this.email = body.user.email || ''
     this.csrf = body.csrf_token
     this.revision++
   }
@@ -43,7 +44,7 @@ function proxyBackendRequest(req, res, baseUrl, { session, client = '', connecti
     const status = response.statusCode || 502
     if (status === 401 && revision === session.revision) { session.clear(); onLogout() }
     if (req.method === 'POST' && ['/api/account/logout', '/api/account/password'].includes(requestPath.pathname) && status === 200) {
-      session.clear(); onLogout()
+      session.clear(); onLogout(requestPath.pathname)
     }
     if (isLogin && status === 200) {
       let raw = ''
@@ -51,12 +52,17 @@ function proxyBackendRequest(req, res, baseUrl, { session, client = '', connecti
       response.on('data', chunk => { raw += chunk; if (raw.length > 65536) response.destroy(new Error('登录响应超过大小上限。')) })
       response.on('error', fail)
       response.on('end', async () => {
+        let acceptedRevision
         try {
           session.accept(response.headers, JSON.parse(raw))
+          acceptedRevision = session.revision
           await onLogin()
           res.writeHead(status, forwarded)
           res.end(raw)
-        } catch (error) { fail(error) }
+        } catch (error) {
+          if (acceptedRevision === session.revision) { session.clear(); onLogout() }
+          fail(error)
+        }
       })
     } else {
       res.writeHead(status, forwarded)

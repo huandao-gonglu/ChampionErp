@@ -40,8 +40,9 @@ export const useAccountStore = defineStore('account', () => {
     window.location.replace(destination)
   }
 
-  async function login(email: string, password: string, destination: unknown) {
+  async function login(email: string, password: string, destination: unknown, preferences?: { remember: boolean; auto: boolean }) {
     const data = await loginAccount({ email, password })
+    if (preferences) await window.championDesktop?.rememberLogin?.({ email, password, ...preferences })
     user.value = data.user
     setCsrfToken(data.csrf_token)
     reloadIdentity(accountDestination(destination))

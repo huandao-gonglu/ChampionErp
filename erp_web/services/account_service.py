@@ -33,11 +33,11 @@ class AccountService:
             while len(self._attempts) > 10000:
                 self._attempts.popitem(last=False)
 
-    def create(self, body, *, admin=False):
+    def create(self, body, *, admin=False, registration_digest=None):
         email = normalize_email(body["email"])
         name = validate_display_name(body["display_name"])
         password = validate_password(body["password"])
-        return public_user(self.store.create_user(email, name, self.hasher.hash(password), admin=admin))
+        return public_user(self.store.create_user(email, name, self.hasher.hash(password), admin=admin, registration_digest=registration_digest))
 
     def login(self, body):
         email = normalize_email(body["email"])

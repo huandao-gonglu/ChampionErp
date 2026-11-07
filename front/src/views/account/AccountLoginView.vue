@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAccountStore } from '@/stores/account'
+import RegistrationCode from '@/components/account/RegistrationCode.vue'
 import { registerAccount } from '@/api/accounts'
 import { APP_LOGO, APP_NAME } from '@/constants/branding'
 
@@ -12,12 +13,34 @@ const account = useAccountStore()
 const registering = computed(() => route.name === 'AccountRegister')
 const email = ref('')
 const name = ref('')
+const emailCode = ref('')
+const desktop = window.championDesktop
+const remember = ref(false)
+const auto = ref(false)
+const canRemember = ref(false)
 const password = ref('')
 const confirmation = ref('')
 const busy = ref(false)
 const error = ref('')
 const registered = ref(false)
 watch(registering, () => { password.value = ''; confirmation.value = ''; error.value = ''; registered.value = false })
+
+watch(registering, async (isRegistering, _, onCleanup) => {
+  let active = true
+  onCleanup(() => { active = false })
+  emailCode.value = ''
+  if (!isRegistering && desktop?.savedLogin) {
+    try {
+      const saved = await desktop.savedLogin()
+      if (active) {
+        canRemember.value = saved.available
+        if (!password.value && !email.value && saved.password) {
+          email.value = saved.email; password.value = saved.password; remember.value = true
+        }
+      }
+    } catch { if (active) canRemember.value = false }
+  }
+}, { immediate: true })
 
 async function submit() {
   if (busy.value) return
@@ -26,9 +49,10 @@ async function submit() {
   busy.value = true
   try {
     if (registering.value) {
-      await registerAccount({ email: email.value, display_name: name.value, password: password.value })
+      await registerAccount({ email: email.value, display_name: name.value, password: password.value, email_code: emailCode.value })
       password.value = ''; confirmation.value = ''; registered.value = true
-    } else await account.login(email.value, password.value, route.query.redirect)
+    } else await account.login(email.value, password.value, route.query.redirect,
+      canRemember.value ? { remember: remember.value, auto: auto.value } : undefined)
   } catch (cause) { error.value = cause instanceof Error ? cause.message : t('account.failed') }
   finally { busy.value = false }
 }
@@ -46,6 +70,9 @@ async function submit() {
       <div v-if="registered" class="mt-6 space-y-4">
         <p role="status">{{ t('account.registered') }}</p>
         <RouterLink to="/login" class="btn btn-primary">{{ t('account.login') }}</RouterLink>
+      </div>
+      <div v-else-if="registering && desktop" class="mt-6">
+        <a href="/register" target="_blank" rel="noopener noreferrer" class="btn btn-primary">{{ t('account.registerBrowser') }}</a>
       </div>
       <form v-else class="mt-6 space-y-5" @submit.prevent="submit">
         <label v-if="registering" class="block text-sm font-semibold">
@@ -65,11 +92,17 @@ async function submit() {
           {{ t('account.confirmPassword') }}
           <input v-model="confirmation" type="password" name="password_confirmation" autocomplete="new-password" required minlength="15" maxlength="128" class="input mt-2 w-full" :disabled="busy" />
         </label>
+        <RegistrationCode v-if="registering" v-model="emailCode" :email="email" />
+        <div v-else-if="canRemember" class="flex flex-wrap gap-x-5 gap-y-2 text-sm">
+          <label><input v-model="remember" type="checkbox" /> {{ t('account.rememberPassword') }}</label>
+          <label><input v-model="auto" type="checkbox" /> {{ t('account.autoLogin') }}</label>
+        </div>
         <button type="submit" class="btn btn-primary w-full" :disabled="busy || !account.initialized">{{ t(busy ? 'account.submitting' : registering ? 'account.register' : 'account.login') }}</button>
       </form>
       <p v-if="!registered" class="mt-6 text-center text-sm">
         {{ t(registering ? 'account.haveAccount' : 'account.needAccount') }}
-        <RouterLink :to="{ name: registering ? 'AccountLogin' : 'AccountRegister', query: route.query }" class="ml-2 font-semibold text-primary-600 dark:text-primary-300">{{ t(registering ? 'account.login' : 'account.register') }}</RouterLink>
+        <a v-if="desktop && !registering" href="/register" target="_blank" rel="noopener noreferrer" class="ml-2 font-semibold text-primary-600 dark:text-primary-300">{{ t('account.registerBrowser') }}</a>
+        <RouterLink v-else :to="{ name: registering ? 'AccountLogin' : 'AccountRegister', query: route.query }" class="ml-2 font-semibold text-primary-600 dark:text-primary-300">{{ t(registering ? 'account.login' : 'account.register') }}</RouterLink>
       </p>
       <p v-if="!registering" class="mt-5 text-xs text-accent-500 dark:text-accent-300">{{ t('account.forgotPassword') }}</p>
     </section>

@@ -17,5 +17,8 @@ interface ImportMeta {
 }
 
 interface Window {
-  championDesktop?: { localOperations?: boolean; onConnectionChanged?: (callback: () => void) => () => void; configureModels?: (models: Record<string, Record<string, string>>) => Promise<{ models: Record<string, Record<string, string>>; fingerprints: Record<string, string> }>; openNewAPI?: (target: 'keys' | 'wallet' | 'usage') => Promise<void>; openLicenses: () => Promise<void> }
+  championDesktop?: { localOperations?: boolean;
+    savedLogin?: () => Promise<{ available: boolean; email: string; password: string }>;
+    rememberLogin?: (options: { email: string; password: string; remember: boolean; auto: boolean }) => Promise<void>;
+     onConnectionChanged?: (callback: () => void) => () => void; configureModels?: (models: Record<string, Record<string, string>>) => Promise<{ models: Record<string, Record<string, string>>; fingerprints: Record<string, string> }>; openNewAPI?: (target: 'keys' | 'wallet' | 'usage') => Promise<void>; openLicenses: () => Promise<void> }
 }

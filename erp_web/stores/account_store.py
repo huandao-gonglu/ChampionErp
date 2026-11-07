@@ -31,6 +31,9 @@ class AccountStore:
                     created_at REAL NOT NULL, updated_at REAL NOT NULL
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS initial_admin ON users(role) WHERE role='admin';
+                CREATE TABLE IF NOT EXISTS registration_codes (
+                    email TEXT PRIMARY KEY, digest TEXT NOT NULL, sent_at REAL NOT NULL, attempts INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
                     csrf_token TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL
@@ -75,7 +78,21 @@ class AccountStore:
             row = db.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
             return dict(row) if row else None
 
-    def create_user(self, email, name, password_hash, *, admin=False):
+    def reserve_registration_code(self, email, digest):
+        now = time.time()
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM registration_codes WHERE sent_at<=?", (now - 600,))
+            row = db.execute("SELECT sent_at FROM registration_codes WHERE email=?", (email,)).fetchone()
+            if row and row["sent_at"] > now - 60:
+                raise AccountError("请在上次发送 60 秒后重试。", status_code=429)
+            db.execute("INSERT OR REPLACE INTO registration_codes VALUES (?,?,?,0)", (email, digest, now))
+
+    def discard_registration_code(self, email, digest):
+        with self._connection() as db:
+            db.execute("DELETE FROM registration_codes WHERE email=? AND digest=?", (email, digest))
+
+    def create_user(self, email, name, password_hash, *, admin=False, registration_digest=None):
         identity = uuid4().hex
         now = time.time()
         try:
@@ -87,6 +104,14 @@ class AccountStore:
                         return dict(existing)
                 elif not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
                     raise AccountError("请先通过部署命令初始化管理员。", status_code=503, error_code="ACCOUNT_NOT_INITIALIZED")
+                if registration_digest is not None:
+                    row = db.execute("SELECT digest FROM registration_codes WHERE email=? AND sent_at>? AND attempts<5",
+                                     (email, now - 600)).fetchone()
+                    if not row or not secrets.compare_digest(row["digest"], registration_digest):
+                        db.execute("UPDATE registration_codes SET attempts=attempts+1 WHERE email=? AND attempts<5", (email,))
+                        db.commit()
+                        raise AccountError("邮箱验证码错误或已失效，请重新核对。")
+                    db.execute("DELETE FROM registration_codes WHERE email=?", (email,))
                 db.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?)", (
                     identity, email, name, password_hash, "admin" if admin else "user",
                     "enabled", "." if admin else f"users/{identity}", now, now,

@@ -26,7 +26,12 @@ NEW_PASSWORD = "这是修改后的独立账号回归测试密码456"
 
 
 @pytest.fixture
-def accounts_http():
+def accounts_http(monkeypatch):
+    from erp_web.services import registration_verification as verification
+    monkeypatch.setenv("ERP_TURNSTILE_SECRET", "测试专用服务密钥")
+    monkeypatch.setattr(verification, "verify_human", lambda token, ip: None)
+    monkeypatch.setattr(verification, "send_email", lambda email, code: None)
+    monkeypatch.setattr(verification, "_new_code", lambda: "625317")
     runtime = AccountRuntime(get_context())
     runtime.service.create({"email": "admin@example.com", "display_name": "初始管理员", "password": PASSWORD}, admin=True)
     server = ERPHTTPServer(("127.0.0.1", 0), Handler)
@@ -50,7 +55,9 @@ def accounts_http():
 
 
 def register(url, email="user@example.com"):
-    response = requests.post(url + "/api/account/register", json={"email": email, "display_name": "普通用户", "password": PASSWORD}, timeout=5)
+    sent = requests.post(url + "/api/account/registration-code", json={"email": email, "human_token": "测试验证"}, timeout=5)
+    assert sent.status_code == 200
+    response = requests.post(url + "/api/account/register", json={"email": email, "display_name": "普通用户", "password": PASSWORD, "email_code": "625317"}, timeout=5)
     assert response.status_code == 200, response.text
     return response.json()["user"]
 
@@ -67,12 +74,12 @@ def test_public_session_and_all_business_entries_require_login(accounts_http):
 
 def test_registration_contract_and_normalized_email(accounts_http):
     url, runtime, login = accounts_http
-    response = requests.post(url + "/api/account/register", json={"email": "First@Example.com ", "display_name": " 小明 ", "password": PASSWORD, "role": "admin"})
+    response = requests.post(url + "/api/account/register", json={"email": "First@Example.com ", "display_name": " 小明 ", "password": PASSWORD, "role": "admin", "email_code": "625317"})
     assert response.status_code == 400
     user = register(url, "First@Example.com ")
     assert user["role"] == "user" and user["email"] == "first@example.com"
     assert "password_hash" not in user and "workspace" not in user
-    duplicate = requests.post(url + "/api/account/register", json={"email": "FIRST@example.com", "display_name": "重复", "password": PASSWORD})
+    duplicate = requests.post(url + "/api/account/registration-code", json={"email": "FIRST@example.com", "human_token": "测试验证"})
     assert duplicate.status_code == 409
     assert login("first@example.com").get(url + "/api/admin/users").status_code == 403
     assert not (runtime.root.paths.app_dir / "users" / user["id"]).exists()
@@ -90,7 +97,7 @@ def test_password_policy_and_session_hash_cookie(accounts_http, monkeypatch):
         assert row["token_hash"] != raw and raw not in str(tuple(row))
         assert db.execute("SELECT password_hash FROM users").fetchone()[0].startswith("$argon2id$")
     for password in ("too-short", "x" * 129):
-        result = requests.post(url + "/api/account/register", json={"email": "short@example.com", "display_name": "普通用户", "password": password})
+        result = requests.post(url + "/api/account/register", json={"email": "short@example.com", "display_name": "普通用户", "password": password, "email_code": "625317"})
         assert result.status_code == 400
 
 
@@ -444,7 +451,8 @@ def test_account_and_callback_requests_cannot_claim_business_presentations(accou
     from erp_web import http_routes
     claims = []
     monkeypatch.setattr(http_routes, "_claim_presentation_scope", lambda handler: claims.append(handler.path))
-    response = requests.post(url + "/api/account/register", json={"email": "a@example.com", "display_name": "甲", "password": PASSWORD}, headers={"X-AI-Presentation-ID": "another-users-presentation"})
+    assert requests.post(url + "/api/account/registration-code", json={"email": "a@example.com", "human_token": "测试验证"}).ok
+    response = requests.post(url + "/api/account/register", json={"email": "a@example.com", "display_name": "甲", "password": PASSWORD, "email_code": "625317"}, headers={"X-AI-Presentation-ID": "another-users-presentation"})
     assert response.status_code == 200
     client = login("a@example.com")
     assert requests.post(url + "/api/yandex/notifications?token=wrong", json={"notificationType": "PING"}, headers={"X-AI-Presentation-ID": "another-users-presentation"}).status_code == 403
@@ -485,3 +493,24 @@ def test_desktop_minimum_rejects_new_registration_but_allows_existing_receipts(a
         assert response.status_code == 426 and response.json()['error_code'] == 'DESKTOP_UPDATE_REQUIRED'
     assert client.post(url + '/api/desktop/result', json={}, headers=headers, timeout=3).status_code != 426
     assert client.post(url + '/api/desktop/connect', json={}, timeout=3).status_code == 200
+
+
+def test_registration_code_required_limited_and_single_use(accounts_http):
+    url, runtime, _ = accounts_http
+    email = "verify@example.com"
+    user = {"email": email, "display_name": "测试注册", "password": PASSWORD}
+    path = url + "/api/account/registration-code"
+    form = {"email": email, "human_token": "测试验证"}
+    assert requests.post(url + "/api/account/register", json=user).status_code == 400
+    assert requests.post(path, json=form).ok
+    assert requests.post(path, json=form).status_code == 429
+    for _ in range(5):
+        assert requests.post(url + "/api/account/register", json={**user, "email_code": "000000"}).status_code == 400
+    assert requests.post(url + "/api/account/register", json={**user, "email_code": "625317"}).status_code == 400
+    assert runtime.store.by_email(email) is None
+    with runtime.store._connection() as db:
+        db.execute("UPDATE registration_codes SET sent_at=0 WHERE email=?", (email,))
+    assert requests.post(url + "/api/account/register", json={**user, "email_code": "625317"}).status_code == 400
+    assert requests.post(path, json=form).ok
+    assert requests.post(url + "/api/account/register", json={**user, "email_code": "625317"}).ok
+    assert requests.post(url + "/api/account/register", json={**user, "email_code": "625317"}).status_code == 400

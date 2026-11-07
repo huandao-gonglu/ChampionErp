@@ -32,6 +32,7 @@ function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 250
           if (response.statusCode !== 200 || !result.ok) {
             const error = new Error(result.error || `后端返回 HTTP ${response.statusCode}`)
             error.code = result.error_code
+            error.status = response.statusCode
             throw error
           }
           resolve(result)

@@ -15,7 +15,7 @@ from erp_web.schemas.requests import RequestValidationError
 
 _session = ContextVar("erp_account_session", default=None)
 _runtime_lock = Lock()
-PUBLIC_POST_PATHS = frozenset({"/api/account/login", "/api/account/register"})
+PUBLIC_POST_PATHS = frozenset({"/api/account/login", "/api/account/register", "/api/account/registration-code"})
 CALLBACK_POST_PATHS = frozenset({f"/api/{p}/notifications" for p in ("mercadolibre", "ozon", "yandex")})
 CALLBACK_GET_PATHS = frozenset({"/auth/alibaba/callback", "/auth/mercadolibre/callback"})
 INTERNAL_NEWAPI_PATHS = frozenset({"/api/internal/newapi/exchange", "/api/internal/newapi/launch", "/api/internal/newapi/session", "/api/internal/newapi/user"})
@@ -93,7 +93,7 @@ def _authenticate(handler, stack, public_pages):
     _session.set(session)
     public = method == "GET" and (
         parsed.path in public_pages
-        or parsed.path in {"/api/account/session", "/licenses/THIRD-PARTY-NOTICES.txt"}
+        or parsed.path in {"/api/account/session", "/api/account/registration-config", "/licenses/THIRD-PARTY-NOTICES.txt"}
         or parsed.path.startswith("/assets/")
     )
     account_endpoint = parsed.path.startswith(("/api/account/", "/api/admin/"))

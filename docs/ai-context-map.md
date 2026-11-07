@@ -47,6 +47,7 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 
 - `accounts.py` 是交互式管理员初始化入口，先备份现有数据库、配置和素材；原目录绑定初始管理员，业务 ID 不变。账号库为根目录 `accounts.sqlite3`，新用户空间位于 `users/<id>/`。部署见[账号版本切换](server-deployment.md#账号切换记录)。
 - `schemas/accounts.py`、`stores/account_store.py`、`services/account_service.py` 分别持有账号形状、SQLite 事实与 Argon2/限流业务。账号路由经 `account_facade.py` 编排，不加入模型工具清单。
+- 公开注册发码由 `services/registration_verification.py` 校验 Turnstile 后发送 SMTP 邮件，账号库在建号事务内消费验证码；管理员建号仍走独立的角色校验入口。
 - `schemas/newapi.py` 持有交接的共享形状；`services/newapi_bridge.py` 处理固定 New API 服务的自动登录票据、敏感验证与账号联动；`newapi_http.py` 是不记录凭据或票据的账号控制面传输，不使用业务请求历史。普通入口经当前会话与 CSRF 签发 60 秒票据，通过来源绑定的表单 POST 自动建立原生会话；Electron 主进程经本机一次性页面交接。敏感操作仍需重新验证 ERP 密码，已有 New API MFA 不降级。
 - New API 票据和待同步撤销保存在账号库；退出只关联当前设备，改密撤销全部关联会话，启停保持顺序重试。网络失败不撤销已完成的 ERP 操作，HTTP 返回 `newapi_sync_pending`，账号扫描器每 30 秒重试。内部交换、会话核验和运营绑定查询只接受独立服务凭据，不接受浏览器 Cookie；不实例化个人业务上下文。
 - `server.py::ERPHTTPServer` 为网页并行请求保留连接接入队列，账号 HTTP 回归复用同一入口。`Handler` → `services/account_request.py` 先检查来源、会话、CSRF 与角色，再由 `account_runtime.py::AccountRuntime` 取得业务上下文。客户端业务 ID、owner 和桌面连接标识不能选择空间；账号操作和外部回调不消费业务 presentation reservation。
