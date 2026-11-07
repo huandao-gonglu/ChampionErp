@@ -342,6 +342,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/mercadolibre/refresh-token": _EMPTY,
     "/api/alibaba/crossborder/authorization/start": _EMPTY,
     "/api/alibaba/authorization/start": _EMPTY,
+    "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING}, required=("callback_url",)),
     "/api/open-1688-browser": _EMPTY,
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(

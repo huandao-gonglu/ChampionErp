@@ -94,6 +94,7 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
 及 GET `/auth/alibaba/callback`；仅该回调的顶层 GET 导航允许跨站，仍必须校验服务端单次 state。
 `AlibabaSettingsPanel.vue` 打开浏览器授权，在等待期间查询服务器状态，并显示完成授权的账号名称。
+管理员可将完整回调地址 POST 到 `/api/alibaba/authorization/complete`。该接口绑定登录管理员的业务空间，复用同一组单次 state 和授权码交换校验。
 新采购归属按应用与官方买家身份固定，刷新 Token 不改变历史范围；旧 Token 的范围摘要原样保留。
 商品查询、采购和物流共用当前客户的跨境 ERP 授权（生产 AppKey 4848173）。旧客户端的跨境授权路径映射到同一服务。
 已退役的企业自用凭据仅归档，旧采购归属不会被新的应用接管。商品详情通过 `product.search.queryProductDetail` 读取。

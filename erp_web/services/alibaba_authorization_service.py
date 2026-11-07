@@ -10,7 +10,7 @@ import secrets
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request
 
 from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt
@@ -97,6 +97,24 @@ class AlibabaAuthorizationService:
     def callback(self, code, state):
         with _AUTH_LOCK:
             return self._complete(self.store.alibaba_application(), code, state)
+
+    def complete_from_url(self, callback_url: str):
+        """只解析管理员粘贴的 URL，授权码仍由当前账号的服务端会话交换。"""
+        with _AUTH_LOCK:
+            application = self.store.alibaba_application()
+            base, separator, query = callback_url.strip().partition('?')
+            if (not separator or base != _redirect(application) or '#' in callback_url
+                    or len(callback_url) > 16384):
+                raise ValueError('请粘贴与本次授权回调地址一致的完整 URL')
+            try:
+                params = parse_qs(query, keep_blank_values=True, max_num_fields=32, errors='strict')
+            except ValueError:
+                raise ValueError('授权回调 URL 的参数无效') from None
+            for key in ('code', 'state'):
+                values = params.get(key, [])
+                if len(values) != 1 or not values[0].strip():
+                    raise ValueError('完整回调地址必须包含唯一的 code 和 state')
+            return self._complete(application, params['code'][0], params['state'][0])
 
     def _complete(self, application, code, state):
         snapshot = self.store.alibaba_credentials()

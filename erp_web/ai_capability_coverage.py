@@ -122,7 +122,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         ("GET", "/api/alibaba/crossborder/authorization"),
         ("POST", "/api/alibaba/crossborder/authorization/start"),
         ("GET", "/api/alibaba/authorization"), ("GET", "/auth/alibaba/callback"),
-        ("POST", "/api/alibaba/authorization/start"),
+        ("POST", "/api/alibaba/authorization/start"), ("POST", "/api/alibaba/authorization/complete"),
     )),
     AiCapabilityCoverageEntry(method="POST", path="/api/publish-bus/retry", business_domain="商品发布", disposition="internal_only",
         reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),

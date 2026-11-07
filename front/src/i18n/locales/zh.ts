@@ -42,6 +42,10 @@ export default {
     loading: '正在加载…', empty: '没有匹配的普通用户。', total: '共 {total} 位用户', previous: '上一页', next: '下一页',
   },
   alibabaAuth: {
+    callbackLabel: "授权后的完整回调地址",
+    callbackHint: "粘贴浏览器地址栏中的完整 URL",
+    complete: "完成授权",
+    completing: "正在完成授权…",
     "title": "1688 账号授权",
     "connected": "已连接",
     "disconnected": "未连接",

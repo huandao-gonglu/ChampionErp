@@ -337,6 +337,51 @@ def test_oauth_callback_routes_and_consumes_state_in_correct_space(accounts_http
             assert context.config.alibaba_credentials()["authorization"]["member_id"] == str(index)
 
 
+def test_admin_pastes_1688_callback_into_own_space(accounts_http, monkeypatch):
+    from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
+
+    origin, _, login = accounts_http
+    redirect = 'http://localhost:5050/auth/alibaba/callback'
+    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_KEY", "4848173")
+    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_SECRET", "secret")
+    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_REDIRECT_URI", redirect)
+    exchanges = []
+
+    def exchange(app, values):
+        exchanges.append((app['redirect_uri'], values['code']))
+        return {'access_token': 'hidden-token', 'memberId': '42', 'resource_owner': '买家甲', 'expires_in': 3600}
+
+    monkeypatch.setattr(AlibabaAuthorizationService, '_token', staticmethod(exchange))
+    admin = login()
+    register(origin)
+    user = login('user@example.com')
+    auth = origin + '/api/alibaba/authorization'
+    complete = auth + '/complete'
+
+    def callback(client):
+        link = client.post(auth + '/start', json={}).json()['url']
+        state = parse_qs(urlsplit(link).query)['state'][0]
+        return redirect + '?code=private%2Bcode&state=' + state
+
+    admin_url = callback(admin)
+    user_url = callback(user)
+    body = {'callback_url': admin_url}
+    assert requests.post(complete, json=body).status_code == 401
+    assert user.post(complete, json=body).status_code == 403
+    assert admin.post(complete, json=body, headers={'X-CSRF-Token': ''}).status_code == 403
+    for invalid in (user_url, admin_url.replace('localhost', 'example.com'), admin_url.replace('/callback', '/other'),
+                    admin_url + '&code=b', admin_url + '&state=b', admin_url.replace('code=', 'x=')):
+        result = admin.post(complete, json={'callback_url': invalid})
+        assert result.status_code == 400 and 'private' not in result.text
+    assert not exchanges
+    result = admin.post(complete, json=body)
+    assert result.status_code == 200 and result.json()['account_name'] == '买家甲'
+    assert 'hidden-token' not in result.text and 'private' not in result.text
+    assert admin.get(auth).json()['authorized'] and not user.get(auth).json()['authorized']
+    assert admin.post(complete, json=body).status_code == 400
+    assert exchanges == [(redirect, 'private+code')]
+
+
 def test_background_threads_and_detached_coroutines_keep_original_space(accounts_http, monkeypatch):
     _, runtime, _ = accounts_http
     from erp_web.services import product_research_service

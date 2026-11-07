@@ -111,7 +111,9 @@ def _authenticate(handler, stack, public_pages):
         if session is None:
             raise AccountError("请先登录。", status_code=401, error_code="UNAUTHENTICATED")
         user = session.user
-    admin_only = parsed.path.startswith("/api/admin/") or (method == "POST" and parsed.path == "/api/system-settings/forbidden-categories/import")
+    admin_only = parsed.path.startswith("/api/admin/") or (method == "POST" and parsed.path in {
+        "/api/system-settings/forbidden-categories/import", "/api/alibaba/authorization/complete",
+    })
     if admin_only and (session is None or session.user["role"] != "admin"):
         raise AccountError("需要管理员权限。", status_code=403, error_code="FORBIDDEN")
     # 页面资源和账号接口不装配个人业务服务，业务身份只来自服务端会话。

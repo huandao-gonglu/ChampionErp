@@ -42,6 +42,10 @@ export default {
     loading: 'Loading…', empty: 'No matching users.', total: '{total} users', previous: 'Previous', next: 'Next',
   },
   alibabaAuth: {
+    callbackLabel: "Full callback URL after authorization",
+    callbackHint: "Paste the complete URL from the browser address bar",
+    complete: "Complete authorization",
+    completing: "Completing authorization…",
     "title": "1688 account authorization",
     "connected": "Connected",
     "disconnected": "Not connected",

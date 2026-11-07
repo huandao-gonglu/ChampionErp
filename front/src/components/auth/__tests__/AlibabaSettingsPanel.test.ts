@@ -7,7 +7,9 @@ import * as api from '@/api/alibabaAuthorization'
 import { hasLocalOperations } from '@/utils/desktop'
 import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generated'
 
-vi.mock('@/api/alibabaAuthorization', () => ({ fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
+const account = vi.hoisted(() => ({ isAdmin: false }))
+vi.mock('@/stores/account', () => ({ useAccountStore: () => account }))
+vi.mock('@/api/alibabaAuthorization', () => ({ completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
 vi.mock('@/utils/desktop', () => ({ hasLocalOperations: vi.fn() }))
 enableAutoUnmount(afterEach)
 const status: BackendAlibabaAuthorizationStatus = {
@@ -24,6 +26,7 @@ async function panel() {
   return wrapper
 }
 beforeEach(() => {
+  account.isAdmin = false
   vi.useFakeTimers()
   vi.clearAllMocks()
   vi.mocked(hasLocalOperations).mockReturnValue(false)
@@ -58,6 +61,21 @@ describe('1688 浏览器授权', () => {
     expect(wrapper.text()).not.toContain('等待浏览器完成授权')
     await vi.advanceTimersByTimeAsync(5000)
     expect(api.fetchAlibabaAuthorization).toHaveBeenCalledTimes(3)
+  })
+
+  it('管理员提交回调后显示授权账号并清空输入', async () => {
+    account.isAdmin = true
+    const wrapper = await panel()
+    const callback = 'http://localhost:5050/auth/alibaba/callback?code=c&state=s'
+    const input = wrapper.get('input')
+    await input.setValue(callback)
+    vi.mocked(api.completeAlibabaAuthorization).mockResolvedValue({ ...status, account_name: '管理员买家' })
+    await wrapper.get('button[type="button"]').trigger('click')
+    await flushPromises()
+    expect(api.completeAlibabaAuthorization).toHaveBeenCalledWith(callback)
+    expect(wrapper.text()).toContain('管理员买家')
+    expect((input.element as HTMLInputElement).value).toBe('')
+    expect(window.open).not.toHaveBeenCalled()
   })
 
   it('桌面端交给系统浏览器打开官方地址', async () => {

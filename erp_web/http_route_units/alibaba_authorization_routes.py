@@ -12,7 +12,14 @@ def _start(handler):
     handler.send_json(payload, status)
 
 
+def _complete(handler):
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    payload, status = authorization_payload('complete', body)
+    handler.send_json(payload, status)
+
+
 POST_HANDLERS = {
+    '/api/alibaba/authorization/complete': _complete,
     '/api/alibaba/authorization/start': _start,
     '/api/alibaba/crossborder/authorization/start': _start,
 }
