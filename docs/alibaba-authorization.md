@@ -1,64 +1,20 @@
-# 1688 应用配置与买家授权
+# 1688 跨境 ERP 授权
 
-## 配置与使用
+生产环境使用跨境 ERP 服务商应用（AppKey 4848173）。商品采集、采购、订单、支付和物流共用同一应用，每位客户的买家授权保存在自己的 ERP 空间。企业自用应用 1938727 已退出 ERP 业务。
 
-管理员在「系统设置 → 管理员共享设置」分别维护采购和跨境商品应用的编号、密钥与回调。
-企业应用保存于根库 `runtime_secrets / enterprise_applications / active`，所有账号共用应用，各自保存买家授权。
-尚未通过管理页面保存时，支持以下后端环境输入：
+## 管理员配置与客户使用
 
-```dotenv
-ERP_ALIBABA_APP_KEY=你的应用编号
-ERP_ALIBABA_APP_SECRET=你的应用密钥
-ERP_ALIBABA_REDIRECT_URI=开发者后台登记的完整回调地址
-```
+管理员在「系统设置 → 管理员共享设置 → 1688 跨境 ERP 服务商应用」维护 AppKey、AppSecret 和回调地址。首次保存前可通过后端环境变量 `ERP_ALIBABA_CROSSBORDER_APP_KEY`、`ERP_ALIBABA_CROSSBORDER_APP_SECRET` 和 `ERP_ALIBABA_CROSSBORDER_REDIRECT_URI` 提供初始值。密钥仅保存在服务端。
 
-AppKey 与 AppSecret 成对设置，不与历史配置拼接。回调必须是 HTTPS，或本机调试的
-`http://127.0.0.1:<端口>/auth/alibaba/callback` / localhost；实际能否登记该回调由 1688 平台决定。
-配置文件可使用后端 `config/.env`，不要使用 `VITE_` 变量或将真实凭据提交到仓库。
-管理员首次保存时会将当前应用配置接管到根库，后续以根库配置为准。环境缺省时保留已迁移的根库应用凭据读取能力。
+按跨境 ERP 方案完成资质、订购和上架审核，使用平台认可的聚石塔应用回调地址。将审核通过的服务订购地址提供给客户。客户先订购，再到「授权配置 → 1688 授权」打开浏览器，登录自己的 1688 账号。ERP 服务端收到回调后校验一次性 state、交换授权码，并在发起授权的客户空间保存 Token。页面自动显示授权账号。
 
-客户在「授权配置 → 1688 授权」点击连接，在官方页面登录自己的采购账号并同意授权。
-两套应用在 1688 开发者后台和 ERP 管理员共享设置中须登记相同的服务端回调地址，例如
-`https://erp.example.com/auth/alibaba/callback`。服务器收到回调后校验本次 state，交换授权码并保存账号。
-设置页自动更新，优先显示官方返回的登录账号名，缺少名称时显示会员标识。
+## 已有客户与采购记录
 
-授权状态读取不发送远程请求；后续 API 调用在到期前五分钟刷新 Token。授权码只交换一次，
-失败保留原账号，需重新发起登录。刷新回执必须属于原买家；网络期间配置或授权改变时，迟到
-回执不能覆盖新状态。请求统一经过外部请求管理器，不自动重放结果未知的请求。
+共享应用沿用根库 `enterprise_applications / active` 下的 `alibaba_crossborder`，客户授权沿用各自数据库的 `credentials:alibaba / crossborder`。已有跨境授权、配置代次和当前授权请求继续有效。只连接过企业自用应用的客户需要订购并重新授权。旧的数据库授权和采购记录保留原归属，自用凭据不会参与发起授权、换码、查询或支付。
 
-## 存储与业务归属
+历史桌面客户端的两组授权接口都连接同一个服务商应用。当前版本只显示一个授权入口。查询账号状态不发送远程请求。业务调用在到期前五分钟刷新 Token，刷新结果校验买家身份。
 
-`ConfigStore` 在主库 `runtime_secrets` 的 `credentials:alibaba / state` 保存结构化授权状态：
-应用凭据 `application`、当前买家 `authorization`、短期授权请求 `pending` 各自独立。
-应用权限属于 AppKey；买家 Token 绑定签发应用与账号，公司的买家 Token 不能跨客户共享。
-应用配置变更会更新配置代次，旧授权和待完成授权失效；换回先前密钥也需要重新授权。
-
-每个数据目录的采购应用和跨境商品查询应用各有一个活动买家授权。采购授权保存在原有的
-`credentials:alibaba / state`，跨境授权使用同一命名空间下独立的 `crossborder` 记录。
-跨境应用也可在首次管理员保存前使用后端变量 `ERP_ALIBABA_CROSSBORDER_APP_KEY`、`ERP_ALIBABA_CROSSBORDER_APP_SECRET`
-和 `ERP_ALIBABA_CROSSBORDER_REDIRECT_URI`。可登记同一个回调 URL，服务端按一次性 state
-选择应用并核验。两个授权卡片分别显示各自已连接的账号。
-
-开发版跨境应用实测使用 `http://localhost:5050/auth/alibaba/callback` 可以进入官方授权页。
-同端口和路径使用 `127.0.0.1` 时平台显示“非法请求”。配置时按应用实际接受的主机名填写。
-新授权的采购范围由 AppKey 和官方返回的 memberId 确定。刷新 Token 或同账号重新授权不改变
-历史归属；切换账号不能处理另一个账号的采购请求。原有跨授权未决采购防重继续生效。
-
-首次读取授权时，将旧 `app_config / 1688_api` 的 AppKey、AppSecret、Access Token 写入
-上述独立记录，成功后清空旧凭据。先落新记录再清理旧字段，异常中断可续迁；静态采集选项保留。
-历史采购范围摘要原样保留，迁移不猜测旧 Token 的账号身份。旧 Token 没有 memberId 和刷新凭据，
-继续按原有范围使用，到期需重新授权；新授权不能自动接管无法证明归属的旧请求，历史记录不删除。
-
-公共配置不再下发 1688 凭据或掩码；通用配置保存及瞬态采集参数均不能覆盖应用密钥、买家授权、
-请求网关。采购、物流与 API 采集统一从授权服务取得服务端凭据。
-
-## 桌面交付与平台权限
-
-桌面版通过系统默认浏览器登录，回调地址应指向统一业务后端。公司 AppSecret 由服务端持有。
-远程部署应登记用户浏览器可访问的 HTTPS 地址；localhost 仅适用于业务后端运行在用户本机的开发环境。
-
-应用仍须实际开通服务商方案和具体接口权限。账号授权成功不代表商品详情、下单或免密支付接口可用，
-不改变平台额度规则，也不解除已有外部请求阻断。
+商品详情经多语言商详接口读取，保留原文标题和 SKU 规格。请求固定发送到 1688 官方网关并使用服务端签名。[1688 官方商详接口定义](https://open.1688.com/api/data/getApiDetail.json?namespace=com.alibaba.fenxiao.crossborder&name=product.search.queryProductDetail&version=1)
 
 ## 协议依据与验证
 
@@ -70,6 +26,3 @@ AppKey 与 AppSecret 成对设置，不与历史配置拼接。回调必须是 H
   签名授权链接 `https://auth.1688.com/auth/authorize.htm`，site=china；
   换取和刷新使用 `/openapi/http/1/system.oauth2/getToken/{AppKey}`，表单提交，刷新使用
   grant_type=refresh_token。读取官方响应的 memberId、access_token、refresh_token、expires_in。
-
-回归覆盖迁移、应用更换、回调 state/期限/单次使用、刷新与账号一致性、迟到回执、公共配置及界面凭据边界。
-测试使用隔离数据库与替身响应；未执行真实客户授权、创建订单或支付。上线仍需配置真实回调并由客户完成登录验证。

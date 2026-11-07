@@ -6,15 +6,15 @@ from erp_web.facades.alibaba_authorization_facade import authorization_payload
 from erp_web.schemas.requests import validate_request_payload
 
 
-def _start(handler, *, crossborder=False):
+def _start(handler):
     validate_request_payload(handler.read_body(), endpoint=handler.path)
-    payload, status = authorization_payload('start', crossborder=crossborder)
+    payload, status = authorization_payload('start')
     handler.send_json(payload, status)
 
 
 POST_HANDLERS = {
     '/api/alibaba/authorization/start': _start,
-    '/api/alibaba/crossborder/authorization/start': lambda handler: _start(handler, crossborder=True),
+    '/api/alibaba/crossborder/authorization/start': _start,
 }
 GET_API_ROUTES = frozenset({'/api/alibaba/authorization', '/api/alibaba/crossborder/authorization'})
 GET_HANDLED_PATHS = GET_API_ROUTES | {'/auth/alibaba/callback'}
@@ -31,7 +31,7 @@ def handle_post(handler, parsed):
 
 def handle_get(handler, parsed):
     if parsed.path in GET_API_ROUTES:
-        payload, status = authorization_payload('status', crossborder=parsed.path == '/api/alibaba/crossborder/authorization')
+        payload, status = authorization_payload('status')
         handler.send_json(payload, status)
         return True
     if parsed.path != '/auth/alibaba/callback':

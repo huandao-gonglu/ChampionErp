@@ -44,15 +44,6 @@ _RETIRED_AI_CONFIG_KEYS = frozenset(
 )
 
 
-def mask_secret(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if len(text) <= 8:
-        return f"{text[:2]}****"
-    return f"{text[:4]}****{text[-4:]}"
-
-
 def default_app_config() -> dict[str, Any]:
     return {
         "system_settings": SystemSettingsRequest().model_dump(),
@@ -65,10 +56,6 @@ def default_app_config() -> dict[str, Any]:
             "app_key": "",
             "app_secret": "",
             "access_token": "",
-            "base_url": "https://gw.open.1688.com/openapi/param2/1/com.alibaba.product/alibaba.product.get",
-            "method": "alibaba.product.get",
-            "api_version": "1.0",
-            "sign_method": "md5",
             "timeout_seconds": "20",
         },
         "ai_models": ai_model_config.default_ai_models(),
@@ -170,32 +157,10 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "app_key": str(raw_1688_api.get("app_key") or "").strip(),
         "app_secret": str(raw_1688_api.get("app_secret") or "").strip(),
         "access_token": str(raw_1688_api.get("access_token") or "").strip(),
-        "base_url": str(
-            raw_1688_api.get("base_url") or defaults_1688_api["base_url"]
-        ).strip(),
-        "method": str(
-            raw_1688_api.get("method") or defaults_1688_api["method"]
-        ).strip(),
-        "api_version": str(
-            raw_1688_api.get("api_version") or defaults_1688_api["api_version"]
-        ).strip(),
-        "sign_method": str(
-            raw_1688_api.get("sign_method") or defaults_1688_api["sign_method"]
-        )
-        .strip()
-        .lower(),
         "timeout_seconds": str(
             raw_1688_api.get("timeout_seconds") or defaults_1688_api["timeout_seconds"]
         ).strip(),
     }
-    next_1688_api["masked_app_key"] = mask_secret(next_1688_api["app_key"])
-    next_1688_api["masked_app_secret"] = mask_secret(next_1688_api["app_secret"])
-    next_1688_api["masked_access_token"] = mask_secret(next_1688_api["access_token"])
-    next_1688_api["status"] = (
-        "已配置"
-        if next_1688_api["app_key"] and next_1688_api["app_secret"]
-        else "未配置"
-    )
     canonical["1688_api"] = next_1688_api
     canonical["image_hosting"] = normalize_image_hosting(incoming.get("image_hosting"))
     canonical["ai_models"] = ai_models

@@ -17,6 +17,7 @@ from erp_web.services.external_request_manager import managed_urlopen
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 
 
+PRODUCT_DETAIL = "product.search.queryProductDetail"
 ORDER_DETAIL = "alibaba.trade.get.buyerView"
 LOGISTICS_INFO = "alibaba.trade.getLogisticsInfos.buyerView"
 LOGISTICS_TRACE = "alibaba.trade.getLogisticsTraceInfo.buyerView"
@@ -76,6 +77,14 @@ class AlibabaApiClient:
             params["logisticsId"] = logistics_id
         return self._request(api, params, namespace=_NAMESPACES[api], semantics="read")
 
+    def product_detail(self, offer_id: str) -> dict:
+        payload = self._request(PRODUCT_DETAIL, {"offerDetailParam": {"offerId": int(offer_id), "country": "en"}},
+                                namespace="com.alibaba.fenxiao.crossborder", semantics="read")
+        product = payload.get("result")
+        if not isinstance(product, dict) or str(product.get("offerId", "")) != offer_id:
+            raise AlibabaApiError("1688 返回的商品详情与请求不符")
+        return product
+
     def _request(self, api, values, *, namespace, semantics):
         path = f"param2/1/{namespace}/{api}/{self.app_key}"
         params = {key: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
@@ -124,6 +133,8 @@ class AlibabaApiClient:
         except (ValueError, UnicodeDecodeError):
             raise AlibabaApiError("1688 返回了无法解析的响应") from None
         # 订单详情实测返回字符串 "true"，物流接口返回 JSON 布尔值。
+        if api == PRODUCT_DETAIL and isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+            payload = payload["result"]
         success = payload.get("success") if isinstance(payload, dict) else None
         if not (success is True or success == "true"):
             # 官方物流接口用 500_2 表达尚未发货；保留原始业务码，并归一为空物流列表。

@@ -21,7 +21,7 @@ LEGACY = {'app_key': '12345', 'app_secret': 'old-app-secret', 'access_token': 'o
 
 @pytest.fixture
 def service(monkeypatch):
-    for key in ('ERP_ALIBABA_APP_KEY', 'ERP_ALIBABA_APP_SECRET', 'ERP_ALIBABA_REDIRECT_URI'):
+    for key in ('ERP_ALIBABA_CROSSBORDER_APP_KEY', 'ERP_ALIBABA_CROSSBORDER_APP_SECRET', 'ERP_ALIBABA_CROSSBORDER_REDIRECT_URI'):
         monkeypatch.delenv(key, raising=False)
     return oauth.AlibabaAuthorizationService(get_context().config)
 
@@ -34,9 +34,9 @@ def save_legacy():
 
 
 def configure(monkeypatch):
-    monkeypatch.setenv('ERP_ALIBABA_APP_KEY', '12345')
-    monkeypatch.setenv('ERP_ALIBABA_APP_SECRET', 'enterprise-secret')
-    monkeypatch.setenv('ERP_ALIBABA_REDIRECT_URI', 'https://erp.example.test/auth/alibaba/callback')
+    monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_APP_KEY', '12345')
+    monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_APP_SECRET', 'enterprise-secret')
+    monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_REDIRECT_URI', 'https://erp.example.test/auth/alibaba/callback')
 
 
 def start_state(service):
@@ -47,31 +47,18 @@ def token(member='buyer-a', **extra):
     return {'access_token': 'buyer-token', 'refresh_token': 'refresh-1', 'expires_in': 36000, 'memberId': member, **extra}
 
 
-def test_legacy_migration_preserves_purchase_scope_and_cleans_old_location(service):
-    save_legacy()
-    config = service.runtime_config()
-    assert {key: config[key] for key in LEGACY} == LEGACY
-    assert account_scope(config) == legacy_account_scope(LEGACY)
-    state = service.store.alibaba_credentials()
-    assert state['application'] == {k: LEGACY[k] for k in ('app_key', 'app_secret')}
-    assert 'app_secret' not in state['authorization']
-    assert service.status()['authorized'] and not service.status()['refreshable']
-    assert service.store.load_app_config()['1688_api']['access_token'] == ''
-    assert oauth.AlibabaAuthorizationService(service.store).runtime_config() == config
-
-
-def test_matching_environment_preserves_migration_but_new_app_never_uses_old_token(service, monkeypatch):
+def test_retired_credentials_are_archived_and_never_used(service, monkeypatch):
     save_legacy()
     monkeypatch.setenv('ERP_ALIBABA_APP_KEY', LEGACY['app_key'])
     monkeypatch.setenv('ERP_ALIBABA_APP_SECRET', LEGACY['app_secret'])
-    assert service.runtime_config()['access_token'] == LEGACY['access_token']
-    monkeypatch.setenv('ERP_ALIBABA_APP_SECRET', 'new-enterprise-secret')
     assert not service.runtime_config()['access_token']
-    assert service.status()['needs_reauthorization']
-    assert 'new-enterprise-secret' not in json.dumps(service.store.alibaba_credentials())
-    monkeypatch.delenv('ERP_ALIBABA_APP_SECRET')
-    assert not service.status()['application_configured']
-    assert not service.runtime_config()['app_secret']
+    assert not service.status()['can_authorize']
+    archived = service.store.archive_legacy_alibaba_credentials()
+    assert archived['authorization']['account_scope'] == legacy_account_scope(LEGACY)
+    assert service.store.load_app_config()['1688_api']['access_token'] == ''
+    configure(monkeypatch)
+    assert service.status()['can_authorize']
+    assert not service.status()['authorized']
 
 
 def test_public_settings_cannot_read_or_replace_application_and_user_credentials(service):
@@ -101,8 +88,9 @@ def test_official_authorization_signature_and_no_secret_on_client(service, monke
 
 @pytest.mark.parametrize('invalid', ['state', 'expired', 'application', 'redirect'])
 def test_invalid_callbacks_never_exchange_and_preserve_existing_authorization(service, monkeypatch, invalid):
-    save_legacy()
     configure(monkeypatch)
+    monkeypatch.setattr(service, '_token', lambda *args: token())
+    service.callback('code', start_state(service))
     state_token = start_state(service)
     before = service.store.alibaba_credentials()['authorization']
     if invalid == 'state': state_token = 'wrong'
@@ -110,8 +98,8 @@ def test_invalid_callbacks_never_exchange_and_preserve_existing_authorization(se
         state = service.store.alibaba_credentials()
         state['pending']['expires_at'] = 1
         service.store.update_alibaba_credentials({'pending': state['pending']})
-    if invalid == 'application': monkeypatch.setenv('ERP_ALIBABA_APP_SECRET', 'changed')
-    if invalid == 'redirect': monkeypatch.setenv('ERP_ALIBABA_REDIRECT_URI', 'https://changed.test/callback')
+    if invalid == 'application': monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_APP_SECRET', 'changed')
+    if invalid == 'redirect': monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_REDIRECT_URI', 'https://changed.test/callback')
     monkeypatch.setattr(service, '_token', lambda *args: pytest.fail('无效回调不得发送请求'))
     with pytest.raises(ValueError): service.callback('one-use-code', state_token)
     assert service.store.alibaba_credentials()['authorization'] == before
@@ -201,10 +189,13 @@ def test_http_callback_completes_once_and_never_returns_credentials(service, mon
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     origin = f'http://127.0.0.1:{server.server_port}'
-    monkeypatch.setenv('ERP_ALIBABA_REDIRECT_URI', origin + '/auth/alibaba/callback')
+    monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_REDIRECT_URI', origin + '/auth/alibaba/callback')
     try:
         response = client.get(origin + '/api/alibaba/authorization', timeout=3)
         assert response.status_code == 200 and not response.json()['authorized']
+        old_path = '/api/alibaba/crossborder/authorization'
+        old_start = client.post(origin + old_path + '/start', json={}, timeout=3)
+        assert parse_qs(urlsplit(old_start.json()['url']).query)['client_id'] == ['12345']
         response = client.post(origin + '/api/alibaba/authorization/start', json={}, timeout=3)
         assert response.status_code == 200
         query = parse_qs(urlsplit(response.json()['url']).query)
@@ -218,6 +209,7 @@ def test_http_callback_completes_once_and_never_returns_credentials(service, mon
         assert not any(secret in response.text for secret in ('private-code', 'buyer-token', 'enterprise-secret'))
         assert client.get(callback_url, headers=headers, timeout=3).status_code == 400
         status = client.get(origin + '/api/alibaba/authorization', timeout=3).json()
+        assert client.get(origin + old_path, timeout=3).json() == status
         assert (status['member_id'], status['account_name'], status['attempt']) == ('buyer-a', '采购账号', 'idle')
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=3)
@@ -246,31 +238,20 @@ def test_interrupted_migration_reuses_persisted_authorization(service, monkeypat
     monkeypatch.setattr(service.store, 'save_app_config', interrupted)
     with pytest.raises(OSError): service.store.alibaba_credentials()
     monkeypatch.setattr(service.store, 'save_app_config', original_save)
-    assert service.runtime_config()['access_token'] == LEGACY['access_token']
-    assert account_scope(service.runtime_config()) == legacy_account_scope(LEGACY)
+    assert not service.runtime_config()['access_token']
+    assert service.store.archive_legacy_alibaba_credentials()['authorization']['account_scope'] == legacy_account_scope(LEGACY)
     assert not service.store.load_app_config()['1688_api']['access_token']
 
 
-def test_crossborder_callback_is_isolated_from_purchase(service, monkeypatch):
+def test_retired_pending_state_cannot_replace_service_provider_grant(service, monkeypatch):
     from erp_web.facades.alibaba_authorization_facade import authorization_payload
 
     configure(monkeypatch)
-    monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_APP_KEY', '9876')
-    monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_APP_SECRET', 'cross-secret')
-    monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_REDIRECT_URI', 'http://127.0.0.1:5050/auth/alibaba/callback')
-    cross = oauth.AlibabaAuthorizationService(service.store, crossborder=True)
-    purchase_state_token = start_state(service)
-    cross_state_token = start_state(cross)
-    purchase_state = service.store.alibaba_credentials()
-    assert not cross.runtime_config()['access_token']
-    monkeypatch.setattr(oauth.AlibabaAuthorizationService, '_token', staticmethod(
-        lambda app, values: token(access_token='buyer-' + app['app_key'])))
-    with pytest.raises(ValueError):
-        service.callback('one-use-code', cross_state_token)
-    body = {'state': cross_state_token, 'code': 'one-use-code'}
-    assert authorization_payload('callback', body)[1] == 200
-    assert authorization_payload('callback', body)[1] == 400
-    assert service.store.alibaba_credentials() == purchase_state
-    assert service.callback('one-use-code', purchase_state_token)['authorized']
-    assert service.runtime_config()['access_token'] == 'buyer-12345'
-    assert cross.runtime_config()['access_token'] == 'buyer-9876'
+    state = start_state(service)
+    old = 'retired-pending'
+    service.store._db.set_runtime_secret('credentials:alibaba', 'state', {'pending': {
+        'state_hash': hashlib.sha256(old.encode()).hexdigest()}})
+    monkeypatch.setattr(oauth.AlibabaAuthorizationService, '_token', staticmethod(lambda *args: token()))
+    assert authorization_payload('callback', {'state': old, 'code': 'code'})[1] == 400
+    assert authorization_payload('callback', {'state': state, 'code': 'code'})[1] == 200
+    assert oauth.alibaba_runtime_config(service.store)['access_token'] == 'buyer-token'

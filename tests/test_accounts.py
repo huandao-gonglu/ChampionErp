@@ -308,9 +308,9 @@ def test_callbacks_select_owner_and_still_verify_domain_credentials(accounts_htt
 
 def test_oauth_callback_routes_and_consumes_state_in_correct_space(accounts_http, monkeypatch):
     url, runtime, login = accounts_http
-    monkeypatch.setenv("ERP_ALIBABA_APP_KEY", "123456")
-    monkeypatch.setenv("ERP_ALIBABA_APP_SECRET", "deployment-application-secret")
-    monkeypatch.setenv("ERP_ALIBABA_REDIRECT_URI", url + "/auth/alibaba/callback")
+    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_KEY", "123456")
+    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_SECRET", "deployment-application-secret")
+    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_REDIRECT_URI", url + "/auth/alibaba/callback")
     from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
     monkeypatch.setattr(AlibabaAuthorizationService, "_token", staticmethod(lambda application, values: {
         "access_token": "buyer-token-" + values["code"], "memberId": values["code"], "expires_in": 3600,

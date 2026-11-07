@@ -4,11 +4,10 @@ import { fetchManagedSettings, saveManagedSettings, type ManagedSettings } from 
 import { testApiConfig } from '@/api/workflow/settings'
 
 const settings = ref<ManagedSettings | null>(null)
-const secrets = ref({ alibaba: '', alibaba_crossborder: '', crossborderbus: '' })
+const secrets = ref({ alibaba_crossborder: '', crossborderbus: '' })
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
-const applications = [{ key: 'alibaba', label: '1688 采购应用' }, { key: 'alibaba_crossborder', label: '1688 跨境商品应用' }] as const
 
 async function load() {
   busy.value = true
@@ -23,16 +22,15 @@ async function save() {
   error.value = notice.value = ''
   try {
     const value = settings.value
-    const application = (key: 'alibaba' | 'alibaba_crossborder') => ({
-      app_key: value[key].app_key, redirect_uri: value[key].redirect_uri,
-      ...(secrets.value[key].trim() ? { app_secret: secrets.value[key].trim() } : {}),
-    })
     settings.value = await saveManagedSettings({
       revision: value.revision, exchange_rates: value.exchange_rates,
-      alibaba: application('alibaba'), alibaba_crossborder: application('alibaba_crossborder'),
+      alibaba_crossborder: {
+        app_key: value.alibaba_crossborder.app_key, redirect_uri: value.alibaba_crossborder.redirect_uri,
+        ...(secrets.value.alibaba_crossborder.trim() ? { app_secret: secrets.value.alibaba_crossborder.trim() } : {}),
+      },
       ...(secrets.value.crossborderbus.trim() ? { crossborderbus_client_secret: secrets.value.crossborderbus.trim() } : {}),
     })
-    secrets.value = { alibaba: '', alibaba_crossborder: '', crossborderbus: '' }
+    secrets.value = { alibaba_crossborder: '', crossborderbus: '' }
     notice.value = '共享设置已保存'
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '共享设置保存失败' }
   finally { busy.value = false }
@@ -71,11 +69,11 @@ onMounted(load)
         </div>
       </section>
       <p class="text-sm text-amber-700 dark:text-amber-300">更换企业应用凭据后，对应的用户授权将失效，需要重新连接账号。已保存的密钥留空可继续使用。</p>
-      <section v-for="app in applications" :key="app.key" class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
-        <h4 class="font-semibold">{{ app.label }}</h4>
-        <label class="block text-sm">应用编号<input v-model="settings[app.key].app_key" maxlength="256" autocomplete="off" class="input mt-2 w-full" /></label>
-        <label class="block text-sm">应用密钥<input v-model="secrets[app.key]" type="password" maxlength="4096" autocomplete="new-password" :placeholder="settings[app.key].secret_configured ? '已配置，填写可更换' : '尚未配置'" class="input mt-2 w-full" /></label>
-        <label class="block text-sm">授权回调地址<input v-model="settings[app.key].redirect_uri" type="url" placeholder="https://你的ERP域名/auth/alibaba/callback" maxlength="2048" class="input mt-2 w-full" /></label>
+      <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
+        <h4 class="font-semibold">1688 跨境 ERP 服务商应用</h4>
+        <label class="block text-sm">应用编号<input v-model="settings.alibaba_crossborder.app_key" maxlength="256" autocomplete="off" class="input mt-2 w-full" /></label>
+        <label class="block text-sm">应用密钥<input v-model="secrets.alibaba_crossborder" type="password" maxlength="4096" autocomplete="new-password" :placeholder="settings.alibaba_crossborder.secret_configured ? '已配置，填写可更换' : '尚未配置'" class="input mt-2 w-full" /></label>
+        <label class="block text-sm">授权回调地址<input v-model="settings.alibaba_crossborder.redirect_uri" type="url" placeholder="https://你的ERP域名/auth/alibaba/callback" maxlength="2048" class="input mt-2 w-full" /></label>
       </section>
       <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
         <h4 class="font-semibold">跨境巴士企业应用</h4>

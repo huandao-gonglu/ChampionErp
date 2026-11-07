@@ -150,7 +150,7 @@ class ManagedSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     revision: str
     exchange_rates: ExchangeRateSettings
-    alibaba: AlibabaApplicationSettings
+    alibaba: AlibabaApplicationSettings | None = None  # 旧桌面端可能提交，服务端忽略。
     alibaba_crossborder: AlibabaApplicationSettings
     crossborderbus_client_secret: str | None = Field(default=None, max_length=4096)
 

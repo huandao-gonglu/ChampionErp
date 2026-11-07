@@ -895,8 +895,8 @@ def test_normalize_app_config_keeps_1688_api_credentials() -> None:
     assert saved["1688_api"]["app_key"] == "app-key-123456"
     assert saved["1688_api"]["app_secret"] == "secret-abcdef"
     assert saved["1688_api"]["access_token"] == "token-xyz"
-    assert saved["1688_api"]["base_url"] == "https://example.test/openapi"
-    assert saved["1688_api"]["masked_app_secret"].startswith("secr")
+    assert "base_url" not in saved["1688_api"]
+    assert saved["1688_api"]["timeout_seconds"] == "30"
 
 
 def test_normalize_app_config_rejects_legacy_nested_ai_sections(

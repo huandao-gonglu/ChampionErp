@@ -30,7 +30,6 @@ from erp_web.stores.config_store import (
     store_auth_failure_code,
     summarize_store_auth_states,
 )
-from erp_web.stores.product_store import mask_secret
 
 from .collect_helpers import collect_time_iso
 from .mercadolibre_auth import (
@@ -148,8 +147,6 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
         }
     if kind in {"1688", "alibaba", "1688_api"}:
         from .source_collect_1688_api import (
-            build_1688_api_params,
-            ensure_1688_api_ready,
             extract_1688_offer_id,
             parse_1688_api_product,
             request_1688_product_detail,
@@ -159,22 +156,9 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
         api_config = resolve_1688_api_config(
             config if isinstance(config, dict) else {}
         )
-        ensure_1688_api_ready(api_config)
         offer_id = extract_1688_offer_id(test_value)
         if not offer_id:
-            params = build_1688_api_params(api_config, "123456789")
-            return {
-                "ok": True,
-                "channel": "1688",
-                "message": "1688 API 配置校验通过：凭证、请求地址和签名参数可生成。",
-                "next_action": "如需真实连通测试，请填写一个 1688 商品 ID 或详情链接后再点测试。",
-                "request": {
-                    "base_url": api_config.get("base_url"),
-                    "method": api_config.get("method"),
-                    "app_key": mask_secret(api_config.get("app_key")),
-                    "sign_length": len(str(params.get("sign") or "")),
-                },
-            }
+            raise ValueError("请填写 1688 商品 ID 或详情链接")
         response = request_1688_product_detail(api_config, offer_id)
         raw = response.get("raw") if isinstance(response.get("raw"), dict) else {}
         source = parse_1688_api_product(raw, f"https://detail.1688.com/offer/{offer_id}.html", offer_id)

@@ -16,8 +16,8 @@ const status: BackendAlibabaAuthorizationStatus = {
 }
 const url = 'https://auth.1688.com/auth/authorize.htm?state=opaque'
 const tab = { location: { replace: vi.fn() }, close: vi.fn(), opener: window }
-async function panel(crossborder = false) {
-  const wrapper = mount(AlibabaSettingsPanel, { props: { crossborder }, global: {
+async function panel() {
+  const wrapper = mount(AlibabaSettingsPanel, { global: {
     plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })],
   } })
   await flushPromises()
@@ -38,13 +38,13 @@ afterEach(() => {
 })
 
 describe('1688 浏览器授权', () => {
-  it.each([false, true])('服务器完成回调后自动更新当前卡片的账号，跨境应用 %s', async crossborder => {
-    const wrapper = await panel(crossborder)
+  it('服务器完成回调后自动更新账号', async () => {
+    const wrapper = await panel()
     expect(wrapper.text()).toContain('采购甲')
     expect(wrapper.findAll('button')).toHaveLength(1)
     await wrapper.get('button').trigger('click')
     await flushPromises()
-    expect(api.startAlibabaAuthorization).toHaveBeenCalledWith(crossborder)
+    expect(api.startAlibabaAuthorization).toHaveBeenCalledWith()
     expect(tab.opener).toBeNull()
     expect(tab.location.replace).toHaveBeenCalledWith(url)
     expect(wrapper.find('a, input, form').exists()).toBe(false)
@@ -53,7 +53,7 @@ describe('1688 浏览器授权', () => {
     expect(wrapper.text()).toContain('等待浏览器完成授权')
     vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, account_name: '采购乙' })
     await vi.advanceTimersByTimeAsync(2500)
-    expect(api.fetchAlibabaAuthorization).toHaveBeenLastCalledWith(crossborder)
+    expect(api.fetchAlibabaAuthorization).toHaveBeenLastCalledWith()
     expect(wrapper.text()).toContain('采购乙')
     expect(wrapper.text()).not.toContain('等待浏览器完成授权')
     await vi.advanceTimersByTimeAsync(5000)

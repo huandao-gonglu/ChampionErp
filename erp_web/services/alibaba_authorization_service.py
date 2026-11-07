@@ -43,14 +43,13 @@ def _authorization(state, application):
 
 
 class AlibabaAuthorizationService:
-    def __init__(self, config_store, *, crossborder=False, owner_id=''):
+    def __init__(self, config_store, *, owner_id=''):
         self.store = config_store
-        self.crossborder = crossborder
         self.owner_id = owner_id
 
     def status(self) -> AlibabaAuthorizationStatus:
-        application = self.store.alibaba_application(crossborder=self.crossborder)
-        state = self.store.alibaba_credentials(crossborder=self.crossborder)
+        application = self.store.alibaba_application()
+        state = self.store.alibaba_credentials()
         auth = _authorization(state, application)
         try:
             _redirect(application)
@@ -77,21 +76,19 @@ class AlibabaAuthorizationService:
 
     def start(self):
         with _AUTH_LOCK:
-            application = self.store.alibaba_application(crossborder=self.crossborder)
+            application = self.store.alibaba_application()
             if not _configured(application):
                 raise ValueError('1688 授权服务暂未配置，请联系管理员')
             redirect = _redirect(application)
-            state = secrets.token_urlsafe(32)
-            if self.crossborder:
-                state = "crossborder." + state
+            state = "crossborder." + secrets.token_urlsafe(32)
             owner = self.owner_id
             if owner:
                 state = f"account.{owner}.{state}"
-            snapshot = self.store.alibaba_credentials(crossborder=self.crossborder)
+            snapshot = self.store.alibaba_credentials()
             self.store.update_alibaba_credentials({'pending': {
                 'state_hash': hashlib.sha256(state.encode()).hexdigest(),
                 'expires_at': time.time() + 600, 'application_fingerprint': application_fingerprint(application),
-                'redirect_uri': redirect}}, expected=snapshot, application=application, crossborder=self.crossborder)
+                'redirect_uri': redirect}}, expected=snapshot, application=application)
             params = {'client_id': application['app_key'], 'site': 'china', 'redirect_uri': redirect, 'state': state}
             signing = ''.join(key + params[key] for key in sorted(params))
             params['_aop_signature'] = hmac.new(application['app_secret'].encode(), signing.encode(), hashlib.sha1).hexdigest().upper()
@@ -99,10 +96,10 @@ class AlibabaAuthorizationService:
 
     def callback(self, code, state):
         with _AUTH_LOCK:
-            return self._complete(self.store.alibaba_application(crossborder=self.crossborder), code, state)
+            return self._complete(self.store.alibaba_application(), code, state)
 
     def _complete(self, application, code, state):
-        snapshot = self.store.alibaba_credentials(crossborder=self.crossborder)
+        snapshot = self.store.alibaba_credentials()
         pending = snapshot.get('pending') or {}
         if (not state or len(code) > 4096 or len(state) > 256
                 or not secrets.compare_digest(pending.get('state_hash', ''), hashlib.sha256(state.encode()).hexdigest())
@@ -114,7 +111,7 @@ class AlibabaAuthorizationService:
         # 已按时收到回调，给正在进行的 Token 交换保留完成时间。
         processing = {**pending, 'state_hash': '', 'expires_at': max(pending['expires_at'], time.time() + 60)}
         consumed = self.store.update_alibaba_credentials(
-            {'pending': processing}, expected=snapshot, application=application, crossborder=self.crossborder)
+            {'pending': processing}, expected=snapshot, application=application)
         try:
             if not code:
                 raise ValueError('1688 未返回授权码，请重新授权')
@@ -123,26 +120,26 @@ class AlibabaAuthorizationService:
         except (ValueError, ExternalRequestBlocked):
             self.store.update_alibaba_credentials(
                 {'pending': {**processing, 'failed': True}}, expected=consumed,
-                application=application, crossborder=self.crossborder)
+                application=application)
             raise
         self.store.update_alibaba_credentials(
-            {'authorization': auth, 'pending': {}}, expected=consumed, application=application, crossborder=self.crossborder)
+            {'authorization': auth, 'pending': {}}, expected=consumed, application=application)
         return self.status()
 
     def runtime_config(self):
         with _AUTH_LOCK:
-            application = self.store.alibaba_application(crossborder=self.crossborder)
-            snapshot = self.store.alibaba_credentials(crossborder=self.crossborder)
+            application = self.store.alibaba_application()
+            snapshot = self.store.alibaba_credentials()
             auth = _authorization(snapshot, application)
             if auth.get('expires_at') and auth['expires_at'] <= time.time() + 300:
                 if not auth.get('refresh_token'):
                     raise ValueError('1688 账号授权已到期，请重新连接账号')
                 payload = self._token(application, {'grant_type': 'refresh_token', 'refresh_token': auth['refresh_token']})
                 refreshed = self._parse_token(application, payload, previous=auth)
-                self.store.update_alibaba_credentials({'authorization': refreshed}, expected=snapshot, application=application, crossborder=self.crossborder)
+                self.store.update_alibaba_credentials({'authorization': refreshed}, expected=snapshot, application=application)
                 auth = refreshed
-            options = {} if self.crossborder else self.store.load_app_config().get('1688_api', {})
-            return {**options, **application, 'access_token': auth.get('access_token', ''),
+            timeout = self.store.load_app_config().get('1688_api', {}).get('timeout_seconds', '20')
+            return {'timeout_seconds': timeout, **application, 'access_token': auth.get('access_token', ''),
                     'member_id': auth.get('member_id', ''), 'account_scope': auth.get('account_scope', '')}
 
     @staticmethod

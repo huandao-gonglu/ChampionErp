@@ -136,7 +136,7 @@ def test_enterprise_rotation_invalidates_each_users_authorization_even_when_reve
     admin = login()
     user = register(url)
     body = settings_body(admin, url)
-    body['alibaba'] = dict(app_key='123', app_secret='secret-a', redirect_uri='https://erp.example/auth/alibaba/callback')
+    body['alibaba_crossborder'] = dict(app_key='123', app_secret='secret-a', redirect_uri='https://erp.example/auth/alibaba/callback')
     body['crossborderbus_client_secret'] = 'bus-secret-a'
     public = post_settings(admin, url, body)
     assert 'secret-a' not in json.dumps(public)
@@ -151,7 +151,7 @@ def test_enterprise_rotation_invalidates_each_users_authorization_even_when_reve
     late_bus_receipt = store.crossborderbus_credentials()
     for app_secret, bus_secret in [('secret-b', 'bus-secret-b'), ('secret-a', 'bus-secret-a')]:
         body = settings_body(admin, url)
-        body['alibaba']['app_secret'] = app_secret
+        body['alibaba_crossborder']['app_secret'] = app_secret
         body['crossborderbus_client_secret'] = bus_secret
         post_settings(admin, url, body)
         assert not AlibabaAuthorizationService(store).status()['authorized']
@@ -171,7 +171,7 @@ def test_managed_settings_compare_revision_and_never_echo_validation_secrets(acc
     post_settings(admin, url, first)
     assert admin.post(url + '/api/admin/settings', json=second).status_code == 409
     invalid = settings_body(admin, url)
-    invalid['alibaba']['app_secret'] = ['sensitive-value']
+    invalid['alibaba_crossborder']['app_secret'] = ['sensitive-value']
     result = admin.post(url + '/api/admin/settings', json=invalid)
     assert result.status_code == 400
     assert 'sensitive-value' not in result.text

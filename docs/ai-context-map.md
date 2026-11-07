@@ -61,7 +61,7 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 
 `ConfigStore` 统一持有应用、店铺、跨境巴士、订单回调和微信绑定的授权读写入口；
 密钥本体集中于主库 `store_auth` / `runtime_secrets`，业务 Store 不保存重复凭据。
-1688 两套应用及跨境巴士企业密钥由管理员在「系统设置 → 管理员共享设置」维护，保存至根库
+1688 跨境 ERP 服务商应用及跨境巴士企业密钥由管理员在「系统设置 → 管理员共享设置」维护，保存至根库
 `runtime_secrets / enterprise_applications / active`；尚未保存时可读取后端环境变量或既有根库凭据。
 `ConfigStore.crossborderbus_credentials/save_crossborderbus_credentials` 负责企业密钥与用户授权绑定，
 首次管理员保存会显式接管当前配置。凭据变化使用新的配置代次，旧 Token、待完成授权及 `app_uid` 失效，换回旧密钥也须重新授权。已有主库密钥保留读取及同值配置升级能力。
@@ -95,8 +95,8 @@ GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
 及 GET `/auth/alibaba/callback`；仅该回调的顶层 GET 导航允许跨站，仍必须校验服务端单次 state。
 `AlibabaSettingsPanel.vue` 打开浏览器授权，在等待期间查询服务器状态，并显示完成授权的账号名称。
 新采购归属按应用与官方买家身份固定，刷新 Token 不改变历史范围；旧 Token 的范围摘要原样保留。
-采购和跨境商品查询各有独立的应用配置、活动买家授权和登录请求。跨境状态和操作经
-`/api/alibaba/crossborder/authorization`。两者共用官方回调入口，按一次性 state 分开核验；桌面分发不得携带公司 AppSecret。
+商品查询、采购和物流共用当前客户的跨境 ERP 授权（生产 AppKey 4848173）。旧客户端的跨境授权路径映射到同一服务。
+已退役的企业自用凭据仅归档，旧采购归属不会被新的应用接管。商品详情通过 `product.search.queryProductDetail` 读取。
 部署、迁移限制、协议依据及验证见 [1688 授权](alibaba-authorization.md)。
 
 ### 桌面与统一业务后端
@@ -1757,7 +1757,7 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 - `services/alibaba_purchase_address.py` 归一化全部 1688 保存地址，并从订单交货快照和 `OrderAddressNoteStore` 读取揽收／交货地址及本地备注。GET `/api/orders/alibaba-purchase/addresses` 提供候选，POST `/parse-address` 只在本地提取地址文本中的有用字段；优先明确标注的收货联系人和电话，同类多个号码取优先级最高的首个，手机和座机分别填入，忽略备用资料及备注，缺失字段提示补全，用户修改并确认后才能预览，不改写原始地址或备注。保存地址使用内容指纹选择，选择后到预览前发生变更须重选；预览之后按已确认快照提交，不静默改为账号最新默认地址。
 - Yandex 的收货地址统一由物流设置维护，`AlibabaSelfPurchaseDialog.vue` 直接展示已确定仓库的地址，预览请求只传收货仓版本，不能传其他地址覆盖。其他平台的 `AlibabaPurchaseAddressPicker.vue` 保留地址选择、粘贴解析和字段核对。`AlibabaSelfPurchaseDialog.vue` 单独展示订单预览与支付方式。地址或数量变化使旧预览失效；支付渠道只使用本次预览返回的可用值。
 - `stores/alibaba_self_purchase_store.py` 由 AppContext 持有，未提交预览仅在内存中短期保留（十分钟、最多 256 条），不写数据库、不出现在采购历史中；关闭弹窗或刷新页面后重新预览，服务重启后预览失效。用户提交时才在独立的 `data/alibaba-self-purchases.sqlite3` 原子保存请求，随后允许调用创建接口。版本 2 将旧 listing_id 列迁移为 target_key，历史数据保留读取能力，旧持久化预览不展示也不能提交。未知请求阻止同订单行重复采购，换授权不能绕过防重。
-- 创建接口使用采购解决方案（买家自用版）对应的 `alibaba.trade.fastCreateOrder`，不调用分销方案的 `alibaba.trade.fenxiaoOrder.create`。只发送该接口声明的参数，预选支付渠道不是付款操作。预览、网关参数校验或替身测试成功，都不能表述为真实下单已成功；验收须以实际创建回执和订单查询为准。
+- 创建接口使用跨境 ERP 对接方案中的 `alibaba.trade.fastCreateOrder`，不调用分销方案的 `alibaba.trade.fenxiaoOrder.create`。只发送该接口声明的参数，预选支付渠道不是付款操作。预览、网关参数校验或替身测试成功，都不能表述为真实下单已成功；验收须以实际创建回执和订单查询为准。
 - `OrderProcurementStore` 在订单库以短事务为自动采购占位，阻止同一商品存在未决请求时再下单或修改来源；人工登记已发生的采购不受数量占位限制。占位冻结收货仓、来源及数量，创建前再次核对价格与渠道；不限制采购量小于销售量，建议剩余量仅用于默认填写。回执不明只查原请求，不重发。
 - 1688 创建回执先持久化，再幂等回填订单级采购单和明细；独立请求保存采购单 ID，批量多 SKU 指向同一个 ID。关联失败可查询原订单重试。远端取消经查询确认后作废整笔登记；本地作废不会取消远端订单或退款。
 - 支付渠道支持 alipay / shegou（先采后付）。两种渠道均由用户确认创建并支付后，前端依次调用 create 和 POST `/api/orders/alibaba-purchase/pay`，不在 GET、后台同步或查询恢复中发起支付。POST `/payment-status` 必填 pay_channel，只读查询当前授权的对应渠道免密签约，必须同时 signedStatus、bindingStatus 为 true。支付宝明确提示直接扣款；批量混合渠道逐项检查签约。`AlibabaPaymentAgreement.vue` 展示官方签约链接与主动刷新，`AlibabaPurchasePayment.vue` 为已创建且未发起支付的订单提供单独确认入口。

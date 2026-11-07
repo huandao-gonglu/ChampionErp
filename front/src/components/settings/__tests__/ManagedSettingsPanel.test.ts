@@ -24,8 +24,9 @@ it('管理员读取仅展示配置状态，空密钥保存时沿用已有值', a
   await wrapper.get('form').trigger('submit'); await flushPromises()
   const payload = vi.mocked(saveManagedSettings).mock.calls[0][0]
   expect(payload).toMatchObject({ revision: 'revision-1', exchange_rates: saved.exchange_rates })
-  expect(payload.alibaba).not.toHaveProperty('app_secret')
-  expect(payload.alibaba).not.toHaveProperty('secret_configured')
+  expect(payload.alibaba_crossborder).not.toHaveProperty('app_secret')
+  expect(payload.alibaba_crossborder).not.toHaveProperty('secret_configured')
+  expect(payload).not.toHaveProperty('alibaba')
   expect(payload).not.toHaveProperty('crossborderbus_client_secret')
   expect(wrapper.text()).toContain('共享设置已保存')
 })

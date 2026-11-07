@@ -1,20 +1,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-
-from erp_web.services.external_request_manager import managed_urlopen
 from copy import deepcopy
 from typing import Any
 
 from erp_web.context import get_context
 from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result, parse_dimensions_text
+from erp_web.services.alibaba_api_client import AlibabaApiClient, PRODUCT_DETAIL
 from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 
 from .collect_helpers import (
@@ -26,9 +19,6 @@ from .collect_helpers import (
     snapshot_field_flags,
 )
 from .image_pool_core import current_image_pool, current_source_images
-
-
-DEFAULT_1688_DETAIL_API_URL = "https://gw.open.1688.com/openapi/param2/1/com.alibaba.product/alibaba.product.get"
 
 
 def extract_1688_offer_id(url_or_id: str) -> str:
@@ -49,102 +39,14 @@ def extract_1688_offer_id(url_or_id: str) -> str:
     return ""
 
 
-def normalize_1688_api_config(config: dict[str, Any] | None = None) -> dict[str, str]:
-    app_cfg = (
-        config
-        if isinstance(config, dict)
-        else alibaba_runtime_config(get_context().config)
-    )
-    if any(key in app_cfg for key in ("app_key", "app_secret", "base_url", "method")):
-        raw = app_cfg
-    else:
-        raw = app_cfg.get("1688_api") if isinstance(app_cfg.get("1688_api"), dict) else {}
-    return {
-        "app_key": str(raw.get("app_key") or "").strip(),
-        "app_secret": str(raw.get("app_secret") or "").strip(),
-        "access_token": str(raw.get("access_token") or "").strip(),
-        "base_url": str(raw.get("base_url") or DEFAULT_1688_DETAIL_API_URL).strip(),
-        "method": str(raw.get("method") or "alibaba.product.get").strip(),
-        "api_version": str(raw.get("api_version") or "1.0").strip(),
-        "sign_method": str(raw.get("sign_method") or "md5").strip().lower(),
-        "timeout_seconds": str(raw.get("timeout_seconds") or "20").strip(),
-    }
+def resolve_1688_api_config(config: dict[str, Any] | None = None) -> dict:
+    """仅使用当前客户在跨境服务商应用下的授权。"""
+    return alibaba_runtime_config(get_context().config)
 
 
-def resolve_1688_api_config(config: dict[str, Any] | None = None) -> dict[str, str]:
-    """调用方不能替换企业密钥、买家授权或发送凭据的网关。"""
-    return normalize_1688_api_config(alibaba_runtime_config(get_context().config))
-
-
-def ensure_1688_api_ready(config: dict[str, str]) -> None:
-    if not config.get("app_key") or not config.get("app_secret"):
-        raise RuntimeError("1688_API_CREDENTIALS_MISSING：授权服务未配置，请联系管理员。")
-    if not config.get("base_url"):
-        raise RuntimeError("1688_API_BASE_URL_MISSING：请先填写 1688 API 请求地址。")
-
-
-def sign_1688_params(params: dict[str, Any], app_secret: str) -> str:
-    signing_items = [(str(key), str(value)) for key, value in params.items() if key != "sign" and value not in (None, "")]
-    signing_items.sort(key=lambda item: item[0])
-    sign_text = "".join(f"{key}{value}" for key, value in signing_items)
-    sign_text = f"{app_secret}{sign_text}{app_secret}"
-    return hashlib.md5(sign_text.encode("utf-8")).hexdigest().upper()
-
-
-def build_1688_api_params(config: dict[str, str], offer_id: str, fields: str = "") -> dict[str, Any]:
-    params: dict[str, Any] = {
-        "app_key": config["app_key"],
-        "method": config["method"],
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-        "format": "json",
-        "v": config["api_version"],
-        "sign_method": config.get("sign_method") or "md5",
-        "productID": offer_id,
-        "productId": offer_id,
-        "offerId": offer_id,
-    }
-    if config.get("access_token"):
-        params["access_token"] = config["access_token"]
-        params["session"] = config["access_token"]
-    if fields:
-        params["fields"] = fields
-    params["sign"] = sign_1688_params(params, config["app_secret"])
-    return params
-
-
-def request_1688_product_detail(config: dict[str, str], offer_id: str) -> dict[str, Any]:
-    try:
-        timeout = max(3, min(120, int(float(config.get("timeout_seconds") or "20"))))
-    except Exception:
-        timeout = 20
-    params = build_1688_api_params(config, offer_id)
-    encoded = urllib.parse.urlencode(params).encode("utf-8")
-    request = urllib.request.Request(
-        config["base_url"],
-        data=encoded,
-        headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "Accept": "application/json"},
-        method="POST",
-    )
-    try:
-        with managed_urlopen(request, timeout=timeout, source=__name__) as response:
-            text = response.read().decode("utf-8", errors="replace")
-            status = getattr(response, "status", 200)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"1688_API_HTTP_{exc.code}: {body[:500]}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"1688_API_NETWORK_ERROR：{exc.reason}") from exc
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"1688_API_INVALID_JSON：{text[:500]}") from exc
-    if isinstance(payload, dict) and payload.get("error_response"):
-        error = payload.get("error_response") if isinstance(payload.get("error_response"), dict) else {}
-        message = str(error.get("sub_msg") or error.get("msg") or payload.get("error_response") or "")
-        raise RuntimeError(f"1688_API_ERROR：{message}")
-    if isinstance(payload, dict) and (payload.get("errorCode") or payload.get("error_message") or payload.get("errorMsg")):
-        raise RuntimeError(f"1688_API_ERROR：{payload.get('error_message') or payload.get('errorMsg') or payload.get('errorCode')}")
-    return {"http_status": status, "raw": payload, "request": {"base_url": config["base_url"], "method": config["method"], "offer_id": offer_id}}
+def request_1688_product_detail(config: dict, offer_id: str) -> dict:
+    product = AlibabaApiClient(config).product_detail(offer_id)
+    return {"http_status": 200, "raw": product, "request": {"method": PRODUCT_DETAIL, "offer_id": offer_id}}
 
 
 def first_text(*values: Any) -> str:
@@ -231,10 +133,16 @@ def collect_skus(raw: Any) -> list[dict[str, str]]:
     for index, item in enumerate(rows):
         if not isinstance(item, dict):
             continue
-        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        attrs = dict(item["attributes"]) if isinstance(item.get("attributes"), dict) else {}
+        sku_image = ""
+        for attribute in item.get("skuAttributes") or []:
+            if isinstance(attribute, dict):
+                if attribute.get("attributeName") and attribute.get("value"):
+                    attrs[attribute["attributeName"]] = attribute["value"]
+                sku_image = sku_image or attribute.get("skuImageUrl") or ""
         price = find_first_key(item, {"price", "discountPrice", "retailPrice", "consignPrice"})
         stock = find_first_key(item, {"stock", "amountOnSale", "canBookCount", "inventory"})
-        name = first_text(item.get("skuName"), item.get("name"), item.get("specId"), attrs.get("name"), f"SKU {index + 1}")
+        name = first_text(item.get("skuName"), item.get("name"), " / ".join(str(v) for v in attrs.values()), item.get("specId"), f"SKU {index + 1}")
         skus.append(
             {
                 "id": first_text(item.get("skuId"), item.get("id")),
@@ -243,7 +151,7 @@ def collect_skus(raw: Any) -> list[dict[str, str]]:
                 "options": {str(key): str(value) for key, value in attrs.items() if value is not None},
                 "price": first_text(price),
                 "stock": str(stock) if stock is not None else "",
-                "image": first_text(item.get("imageUrl"), item.get("picUrl"), item.get("image")),
+                "image": first_text(item.get("imageUrl"), item.get("picUrl"), item.get("image"), sku_image),
             }
         )
     return skus
@@ -302,7 +210,6 @@ def collect_1688_product_via_api(
     if not offer_id:
         raise RuntimeError("1688_API_OFFER_ID_MISSING：请使用 detail.1688.com/offer/{id}.html 商品详情链接。")
     api_config = resolve_1688_api_config(config)
-    ensure_1688_api_ready(api_config)
     started_at = collect_time_iso()
     original_product = get_context().products.collection_product(source_url)
     diagnostics = default_collect_diagnostics()
@@ -314,7 +221,7 @@ def collect_1688_product_via_api(
             "platform_detected": "1688",
             "started_at": started_at,
             "api_offer_id": offer_id,
-            "api_method": api_config.get("method") or "",
+            "api_method": PRODUCT_DETAIL,
         }
     )
     try:
@@ -361,7 +268,7 @@ def collect_1688_product_via_api(
         diagnostics["partial_success"] = False
         diagnostics["error_code"] = "1688_API_FAILED"
         diagnostics["error_message"] = str(exc)
-        diagnostics["next_action"] = "请检查 1688 App Key/App Secret、接口权限、API 地址和商品链接；如果权限未开通，先在开放平台申请商品详情接口。"
+        diagnostics["next_action"] = "请检查商品链接和当前 1688 买家授权。若平台提示缺少商详权限，请联系 ERP 管理员。"
         diagnostics["checked_at"] = collect_time_iso()
         merged = merge_source_partial_result(original_product, {}, diagnostics)
         if source_url:
@@ -374,12 +281,9 @@ def collect_1688_product_via_api(
 
 
 __all__ = [
-    "build_1688_api_params",
     "collect_1688_product_via_api",
     "extract_1688_offer_id",
-    "normalize_1688_api_config",
     "resolve_1688_api_config",
     "parse_1688_api_product",
     "request_1688_product_detail",
-    "sign_1688_params",
 ]

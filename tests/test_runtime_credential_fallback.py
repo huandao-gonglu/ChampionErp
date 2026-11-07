@@ -73,4 +73,4 @@ def test_1688_config_uses_saved_truth_instead_of_public_masks(
     assert "1688_api" not in public
     for incoming in ({}, {"app_key": "injected", "access_token": "other", "base_url": "https://attacker.test"}):
         resolved = source_collect_1688_api.resolve_1688_api_config(incoming)
-        assert resolved == saved | {"sign_method": "md5"}
+        assert resolved == saved

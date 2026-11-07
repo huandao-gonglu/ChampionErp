@@ -2397,7 +2397,6 @@ function copy(text: string) {
 
         <template v-if="activeAuthSettingsTab === 'alibaba'">
           <AlibabaSettingsPanel />
-          <AlibabaSettingsPanel crossborder />
         </template>
 
         <section v-if="activeAuthSettingsTab === 'image_hosting'">

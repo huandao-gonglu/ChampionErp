@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from erp_web.runtime_units.source_collect_1688_api import (
-    build_1688_api_params,
     extract_1688_offer_id,
-    normalize_1688_api_config,
     parse_1688_api_product,
 )
 
@@ -13,33 +11,27 @@ def test_extract_1688_offer_id_from_detail_url() -> None:
     assert extract_1688_offer_id("735716533861") == "735716533861"
 
 
-def test_build_1688_api_params_signs_without_secret_leak() -> None:
-    config = {
-        "app_key": "app-key",
-        "app_secret": "secret",
-        "access_token": "token",
-        "method": "alibaba.product.get",
-        "api_version": "1.0",
-        "sign_method": "md5",
-    }
+def test_crossborder_product_request_and_sku_mapping(monkeypatch):
+    import io
+    import json
+    from urllib.parse import parse_qs
+    from erp_web.services import alibaba_api_client as api
 
-    params = build_1688_api_params(config, "735716533861")
-
-    assert params["app_key"] == "app-key"
-    assert params["productId"] == "735716533861"
-    assert params["offerId"] == "735716533861"
-    assert params["access_token"] == "token"
-    assert "secret" not in params
-    assert len(params["sign"]) == 32
-
-
-def test_normalize_1688_api_config_accepts_direct_section() -> None:
-    cfg = normalize_1688_api_config({"app_key": "key", "app_secret": "secret", "base_url": "https://example.test/api"})
-
-    assert "enabled" not in cfg
-    assert cfg["app_key"] == "key"
-    assert cfg["app_secret"] == "secret"
-    assert cfg["base_url"] == "https://example.test/api"
+    product = {"offerId": 123456, "subject": "商品", "productSkuInfos": [{
+        "skuId": 7, "specId": "blue", "amountOnSale": 0, "price": "4.20",
+        "skuAttributes": [{"attributeName": "颜色", "value": "蓝色", "skuImageUrl": "https://example.test/blue.jpg"}]}]}
+    def send(request, **kwargs):
+        assert request.full_url.endswith('/com.alibaba.fenxiao.crossborder/product.search.queryProductDetail/4848173')
+        params = parse_qs(request.data.decode())
+        assert json.loads(params['offerDetailParam'][0]) == {'offerId': 123456, 'country': 'en'}
+        assert params['access_token'] == ['buyer-token'] and len(params['_aop_signature'][0]) == 40
+        assert not kwargs['follow_redirects']
+        return io.BytesIO(json.dumps({'result': {'success': True, 'result': product}}).encode())
+    monkeypatch.setattr(api, 'managed_urlopen', send)
+    result = api.AlibabaApiClient({'app_key': '4848173', 'app_secret': 'secret', 'access_token': 'buyer-token'}).product_detail('123456')
+    source = parse_1688_api_product(result, 'https://detail.1688.com/offer/123456.html', '123456')
+    assert source['skus'][0]['options'] == {'颜色': '蓝色'}
+    assert source['skus'][0]['stock'] == '0' and source['skus'][0]['price'] == '4.20'
 
 
 def test_parse_1688_api_product_maps_common_fields() -> None:

@@ -78,7 +78,7 @@ try:
     assert read('/api/account/session')['user']['role'] == 'admin'
     settings = read('/api/admin/settings')
     assert settings['ok'] and settings['revision'] and settings['exchange_rates']['exchange_rate_api_url']
-    assert 'app_secret' not in settings['alibaba']
+    assert 'app_secret' not in settings['alibaba_crossborder'] and not settings['alibaba']['app_key']
     tariffs = read('/api/shipping/tariffs')
     assert {item['platform'] for item in tariffs['items']} == {'yandex', 'ozon'}
     for item in tariffs['items']:

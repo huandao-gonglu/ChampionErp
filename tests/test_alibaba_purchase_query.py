@@ -198,7 +198,7 @@ def test_public_settings_cannot_replace_saved_authorization():
     store.save_app_config(config)
     result, status = save_ai_config_payload({'1688_api': {'app_key': '999', 'access_token': 'injected'}})
     assert status == 200 and '1688_api' not in result['config']
-    assert store.alibaba_credentials()['authorization']['access_token'] == CONFIG['access_token']
+    assert store.archive_legacy_alibaba_credentials()['authorization']['access_token'] == CONFIG['access_token']
 
 
 def test_http_purchase_query_contract_and_blocked_response(registered, monkeypatch):
@@ -211,9 +211,12 @@ def test_http_purchase_query_contract_and_blocked_response(registered, monkeypat
     service, body = registered
     context = get_context()
     context._order_procurement = service
-    config = context.config.load_app_config()
-    config["1688_api"] = CONFIG
-    context.config.save_app_config(config)
+    from erp_web.services.alibaba_credentials import application_fingerprint
+    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_KEY", CONFIG["app_key"])
+    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_SECRET", CONFIG["app_secret"])
+    context.config.update_alibaba_credentials({"authorization": {
+        "access_token": CONFIG["access_token"],
+        "application_fingerprint": application_fingerprint(context.config.alibaba_application())}})
     def query(self, name, number):
         return Client(CONFIG).query(name, number)
     monkeypatch.setattr(api.AlibabaApiClient, "query", query)

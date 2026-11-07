@@ -120,7 +120,7 @@ def _saved_1688_api_config(context: AppContext) -> dict[str, Any] | None:
         return None
     if not str(api.get("app_key") or "").strip():
         return None
-    if not str(api.get("app_secret") or "").strip():
+    if not api.get("app_secret") or not api.get("access_token"):
         return None
     return dict(api)
 

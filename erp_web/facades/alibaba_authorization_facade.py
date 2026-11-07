@@ -4,14 +4,9 @@ from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
 
 
-def authorization_payload(action, body=None, *, crossborder=False):
-    if action == 'callback':
-        state = (body or {}).get('state', '')
-        if state.startswith('account.'):
-            state = state.split('.', 2)[-1]
-        crossborder = state.startswith('crossborder.')
+def authorization_payload(action, body=None):
     context = get_context()
-    service = AlibabaAuthorizationService(context.config, crossborder=crossborder, owner_id=context.user_id)
+    service = AlibabaAuthorizationService(context.config, owner_id=context.user_id)
     try:
         if action == 'status':
             return service.status(), 200

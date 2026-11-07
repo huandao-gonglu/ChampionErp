@@ -5,7 +5,6 @@ import { fetchAlibabaAuthorization, startAlibabaAuthorization } from '@/api/alib
 import { hasLocalOperations } from '@/utils/desktop'
 import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generated'
 
-const props = defineProps<{ crossborder?: boolean }>()
 const { t } = useI18n()
 const status = ref<BackendAlibabaAuthorizationStatus | null>(null)
 const opening = ref(false)
@@ -24,7 +23,7 @@ async function refresh() {
   let retryDelay = 2500
   reading = true
   try {
-    const next = await fetchAlibabaAuthorization(props.crossborder)
+    const next = await fetchAlibabaAuthorization()
     if (current !== revision) return
     status.value = next
     waiting.value = next.attempt === 'waiting' && !browserError.value
@@ -58,7 +57,7 @@ async function connect() {
   opening.value = true
   error.value = ''
   try {
-    const { url } = await startAlibabaAuthorization(props.crossborder)
+    const { url } = await startAlibabaAuthorization()
     try {
       if (tab) tab.location.replace(url)
       else if (window.championDesktop?.openAlibabaAuthorization) await window.championDesktop.openAlibabaAuthorization(url)
@@ -91,19 +90,19 @@ onUnmounted(() => {
 })
 </script>
 <template>
-  <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" :aria-label="t(crossborder ? 'alibabaAuth.crossborderTitle' : 'alibabaAuth.title')">
+  <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" :aria-label="t('alibabaAuth.title')">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <h3 class="font-semibold text-accent-950 dark:text-white">{{ t(crossborder ? 'alibabaAuth.crossborderTitle' : 'alibabaAuth.title') }}</h3>
+      <h3 class="font-semibold text-accent-950 dark:text-white">{{ t('alibabaAuth.title') }}</h3>
       <span v-if="status" aria-live="polite">{{ t(status.authorized && !status.needs_reauthorization ? 'alibabaAuth.connected' : 'alibabaAuth.disconnected') }}</span>
     </div>
-    <p class="text-sm text-accent-500">{{ t(crossborder ? 'alibabaAuth.crossborderIntro' : 'alibabaAuth.intro') }}</p>
+    <p class="text-sm text-accent-500">{{ t('alibabaAuth.intro') }}</p>
     <p v-if="status && !status.application_configured" role="status">{{ t('alibabaAuth.notConfigured') }}</p>
     <p v-else-if="status && !status.can_authorize" role="status">{{ t('alibabaAuth.noCallback') }}</p>
     <p v-if="status?.needs_reauthorization" role="status">{{ t('alibabaAuth.needsAuth') }}</p>
     <p v-if="status?.account_name">{{ t('alibabaAuth.account') }}：{{ status.account_name }}</p>
     <p v-else-if="status?.authorized" class="text-sm">{{ t('alibabaAuth.legacy') }}</p>
     <p v-if="status?.expires_at" class="text-sm">{{ t('alibabaAuth.expiry') }}：{{ new Date(status.expires_at * 1000).toLocaleString() }} <span v-if="status.refreshable">{{ t('alibabaAuth.autoRefresh') }}</span></p>
-    <button :data-testid="crossborder ? 'connect-1688-crossborder' : 'connect-1688'" class="btn btn-primary" :disabled="opening || !status?.can_authorize" @click="connect">
+    <button data-testid="connect-1688" class="btn btn-primary" :disabled="opening || !status?.can_authorize" @click="connect">
       {{ t(status?.authorized || waiting ? 'alibabaAuth.reconnect' : 'alibabaAuth.connect') }}
     </button>
     <p v-if="waiting" role="status">{{ t('alibabaAuth.waiting') }}</p>

@@ -227,7 +227,7 @@ function saveSettings() {
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 class="card-title text-blue-950 dark:text-blue-100">API 采集</h3>
-              <p class="mt-1 text-sm text-blue-700 dark:text-blue-200">使用“平台授权”里的 1688 AppKey / Secret，从官方接口采集商品详情。</p>
+              <p class="mt-1 text-sm text-blue-700 dark:text-blue-200">使用已连接的 1688 采购账号采集商品详情。</p>
             </div>
             <span class="rounded-full bg-white px-3 py-1 text-xs text-blue-700 ring-1 ring-blue-100 dark:bg-dark-900 dark:text-blue-200 dark:ring-blue-500/20">1688 API</span>
           </div>
