@@ -24,7 +24,27 @@
 
 构建日志、服务器包及 `release.json` 保存在 `~/Library/Application Support/Champion ERP/releases/<发布标识>/`，服务器数据备份保存在 `/srv/champion-erp/backups/<发布标识>/`。桌面旧包保存在安装目录下带发布标识的隐藏备份目录。程序更新沿用原有 `Champion ERP` 本机配置和浏览器资料目录。脚本不会强制关闭桌面程序，运行中的程序需正常退出后才继续安装。
 
-## 当前公网部署（2026-11-06）
+## 当前公网部署（2026-11-07）
+
+ERP 与本机桌面已通过统一脚本发布为 **1.2.6**，应用代码提交为 `f9cc6bda6e030f2e99ac793dae3af59bd6110893`。发布脚本随后在 `708b8a4` 补充明确的 HTTP 客户端标识和断点继续，通过已构建包完成公网验收及桌面安装。
+
+| 项目 | 当前位置或结果 |
+| --- | --- |
+| ERP 公网入口 | <https://hdgl.cc.cd/> |
+| ERP 运行目录 | `/opt/champion-erp/releases/20261107t024300z-f9cc6bda6e03`，由 `current` 指向 |
+| ERP Python 环境 | 当前发布目录内 `.venv`，通过 `release-python.conf` 加载，Python 3.12.3 |
+| 服务器备份 | `/srv/champion-erp/backups/20261107t024300z-f9cc6bda6e03/accounts.tar.gz`，75,123,327 字节，恢复摘要及 SQLite 完整性验证通过 |
+| 本机应用 | `/Applications/Champion ERP.app`，显示名称 `gongluErp`，版本 `1.2.6` |
+| 本机旧包 | `/Applications/.Champion ERP-20261107t024300z-f9cc6bda6e03.backup.app` |
+| 发布记录和构建产物 | `/Users/hdgl/Library/Application Support/Champion ERP/releases/20261107t024300z-f9cc6bda6e03/` |
+
+固定提交的独立构建完成后端 `4173 passed, 53 subtests passed`、前端 130 个文件共 1138 个测试、桌面 Node 回归、生成契约检查及 Web/macOS 构建。发布脚本的公网请求、恢复入口、安装失败回退与并行保护共 7 项专项回归通过。
+
+服务器切换后已用实际管理员临时会话读取共享设置、两平台运费表和禁售名单，验证会话已撤销。当前共享 Yandex 运费表为 `yandex-d1749fe4d569da571a33`，22 条规则；Ozon 为 `ozon-2abffa086b075eb2e375`，6 档规则；禁售名单为 555 个类目。匿名管理员入口被拒绝。公网账户入口就绪，网页引用 `/assets/index-CPxEk4Dp.js`，响应内容 SHA256 与构建结果一致。
+
+本机新应用 ASAR SHA256 为 `d3d077aa3c729b755b2370596a88e6f21dbff0a3719d8f624193b3792dcd959c`，已与构建包核对，并从实际安装目录启动独立执行器验证就绪、空临时配置读取与 EOF 正常退出。发布状态记录为 `complete`。新桌面在用户重新打开后进入登录及业务流程。
+
+## 域名与网关部署记录（2026-11-06）
 
 | 服务 | 用户入口 | Nginx 上游 |
 | --- | --- | --- |
