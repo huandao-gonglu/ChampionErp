@@ -59,6 +59,7 @@ POST_HANDLERS = {"/api/admin/settings": handle_managed_settings,
                  "/api/yandex/warehouses/refresh": handle_warehouse_refresh, "/api/yandex/warehouses/logistics": handle_warehouse_save, "/api/pricing/templates/save": handle_save, "/api/pricing/templates/default": handle_default,
                  "/api/pricing/templates/delete": handle_delete}
 GET_HANDLERS = {"/api/admin/settings": lambda handler, parsed: handler.send_json(*managed_settings_facade.managed_settings_payload()),
+                "/api/shipping/tariffs/rules": lambda handler, parsed: handler.send_json(*managed_settings_facade.tariff_rules_payload(parse_qs(parsed.query, keep_blank_values=True))),
                 "/api/shipping/tariffs": lambda handler, parsed: handler.send_json(*managed_settings_facade.tariff_settings_payload()),
                 "/api/yandex/warehouses": lambda handler, parsed: handler.send_json(*facade.yandex_warehouses_payload()), "/api/pricing/templates": lambda handler, parsed: handler.send_json(*facade.pricing_templates_payload()),
                 "/api/pricing/exchange-rates": handle_rates}

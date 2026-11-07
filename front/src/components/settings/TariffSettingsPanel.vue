@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useAccountStore } from '@/stores/account'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import TariffRulesDrawer from './TariffRulesDrawer.vue'
 import { fetchTariffSettings, importTariffFile, readTariffFile, upgradeTariff, type TariffDiff, type TariffImport, type TariffSettings } from '@/api/managedSettings'
 
 const account = useAccountStore()
@@ -9,6 +10,7 @@ const items = ref<TariffSettings[]>([])
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
+const viewing = ref<{ platform: TariffSettings['platform']; scope: 'effective' | 'shared' } | null>(null)
 const importing = ref<TariffSettings | null>(null)
 const upgrading = ref<TariffSettings | null>(null)
 const scope = ref<TariffImport['scope']>('personal')
@@ -119,6 +121,8 @@ onMounted(load)
       <p v-if="item.source === 'personal' && item.shared.error" class="text-sm text-amber-700 dark:text-amber-300">管理员版本暂不可用，{{ item.shared.error }}</p>
       <p v-if="item.update_available" role="status" class="text-sm text-amber-700 dark:text-amber-300">管理员已发布更新，你的个人运费表正在继续使用，可确认后升级覆盖。</p>
       <div class="flex flex-wrap gap-3">
+        <button type="button" class="btn btn-secondary" :disabled="busy || !item.version" @click="viewing = { platform: item.platform, scope: 'effective' }">查看当前运费表</button>
+        <button v-if="item.source === 'personal' && item.shared.version" type="button" class="btn btn-secondary" :disabled="busy" @click="viewing = { platform: item.platform, scope: 'shared' }">查看管理员默认表</button>
         <button type="button" class="btn btn-secondary" :disabled="busy" @click="openImport(item, 'personal')">导入个人运费表</button>
         <button v-if="account.isAdmin" type="button" class="btn btn-primary" :disabled="busy" @click="openImport(item, 'shared')">发布默认运费表</button>
         <button v-if="item.source === 'personal' && item.shared.version" type="button" class="btn btn-secondary" :disabled="busy" @click="upgrading = item; dialogError = ''">{{ item.update_available ? '升级并覆盖个人表' : '恢复跟随管理员' }}</button>
@@ -126,6 +130,7 @@ onMounted(load)
     </article>
     <p class="muted text-sm">Mercado Libre 按个人店铺授权向平台接口试算运费。</p>
   </div>
+  <TariffRulesDrawer v-if="viewing" :key="`${viewing.platform}-${viewing.scope}`" :platform="viewing.platform" :scope="viewing.scope" @close="viewing = null" />
 
   <WorkspaceDialog :open="!!importing" :title="`${scope === 'shared' ? '发布默认' : '导入个人'}运费表`" width="640px" :close-disabled="busy" @close="importing = null">
     <div v-if="importing" class="space-y-4 py-5">

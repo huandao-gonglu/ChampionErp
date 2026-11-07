@@ -50,6 +50,49 @@ class TariffSettingsResponse(TypedDict):
     items: list[TariffSettings]
 
 
+class TariffRule(TypedDict):
+    id: str
+    name: str
+    carrier: str
+    service: str
+    transport: str
+    group: str
+    currency: str
+    fixed: str
+    per_g: str
+    step_g: str
+    min_g: str
+    max_g: str
+    price_min: str
+    price_max: str
+    price_currency: str
+    max_edge_cm: str
+    max_sum_cm: str
+    volume_divisor_g: str
+    battery: bool | None
+    liquid: bool | None
+    source_cell: str
+
+
+class TariffRulesResponse(TypedDict):
+    ok: bool
+    platform: Literal['yandex', 'ozon']
+    source: Literal['personal', 'shared']
+    version: str
+    filename: str
+    sheet: str
+    imported_at: str
+    effective_date: str
+    warnings: list[str]
+    rules: list[TariffRule]
+
+
+class TariffRulesQuery(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    platform: Literal['yandex', 'ozon']
+    scope: Literal['effective', 'shared'] = 'effective'
+
+
 class TariffFieldChange(TypedDict):
     before: Any
     after: Any
@@ -138,5 +181,6 @@ class TariffUpgradeRequest(BaseModel):
 
 
 __all__ = ["EXCHANGE_RATE_FIELDS", "ManagedSettings", "PublicExchangeRateSettings", "PublicEnterpriseApplication",
+           "TariffRule", "TariffRulesResponse", "TariffRulesQuery",
            "TariffVersion", "TariffSettings", "TariffSettingsResponse", "TariffDiff", "TariffFieldChange", "TariffRuleChange", "ExchangeRateSettings", "AlibabaApplicationSettings",
            "ManagedSettingsRequest", "TariffImportRequest", "TariffUpgradeRequest"]

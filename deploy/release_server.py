@@ -72,6 +72,11 @@ try:
     assert 'app_secret' not in settings['alibaba']
     tariffs = read('/api/shipping/tariffs')
     assert {item['platform'] for item in tariffs['items']} == {'yandex', 'ozon'}
+    for item in tariffs['items']:
+        if item['version']:
+            details = read('/api/shipping/tariffs/rules?platform=' + item['platform'])
+            assert details['version'] == item['version'] and len(details['rules']) == item['rules_count']
+            assert all(rule['currency'] in ('CNY', 'RUB') for rule in details['rules'])
     categories = read('/api/system-settings/forbidden-categories')
     try:
         read('/api/admin/settings', False)

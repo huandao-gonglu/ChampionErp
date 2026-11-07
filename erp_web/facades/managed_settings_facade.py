@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from erp_web.context import get_context
 from erp_web.schemas.requests import RequestValidationError
+from erp_web.schemas.managed_settings import TariffRulesQuery
 from erp_web.services.account_request import current_session
 
 
@@ -34,4 +35,9 @@ def tariff_settings_payload(body=None, *, upgrade=False):
     return _result(lambda: service.import_file(body, is_admin=bool(session and session.user['role'] == 'admin')))
 
 
-__all__ = ['managed_settings_payload', 'tariff_settings_payload']
+def tariff_rules_payload(query):
+    values = {key: items[0] if len(items) == 1 else items for key, items in query.items()}
+    return _result(lambda: get_context().tariffs.rules(TariffRulesQuery.model_validate(values)))
+
+
+__all__ = ['managed_settings_payload', 'tariff_settings_payload', 'tariff_rules_payload']

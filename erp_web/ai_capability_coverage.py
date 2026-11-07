@@ -100,6 +100,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
       for method, path in (
           ("GET", "/api/admin/settings"), ("POST", "/api/admin/settings"),
           ("GET", "/api/shipping/tariffs"), ("POST", "/api/shipping/tariffs/import"),
+          ("GET", "/api/shipping/tariffs/rules"),
           ("POST", "/api/shipping/tariffs/upgrade"),
       )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",

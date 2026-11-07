@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from erp_web.international_shipping.tariff_store import atomic_write, import_template, load_active, read_current
-from erp_web.schemas.managed_settings import TariffImportRequest, TariffUpgradeRequest
+from erp_web.schemas.managed_settings import TariffImportRequest, TariffUpgradeRequest, TariffRulesQuery, TariffRulesResponse
 from erp_web.schemas.requests import RequestValidationError
 
 
@@ -27,9 +27,40 @@ class TariffSettingsService:
 
     def load(self, platform, version=None):
         """新核价选择当前有效来源，单批由 ShippingModule 固定快照。"""
-        personal = read_current(self.personal_dir)['platforms']
-        directory = self.personal_dir if platform in personal else self.shared_dir
-        return load_active(directory, platform, version)
+        return load_active(self._directory(platform), platform, version)
+
+    def _directory(self, platform, scope='effective'):
+        if scope == 'effective' and platform in read_current(self.personal_dir)['platforms']:
+            return self.personal_dir
+        return self.shared_dir
+
+    def rules(self, query: TariffRulesQuery) -> TariffRulesResponse:
+        directory = self._directory(query.platform, query.scope)
+        pack = load_active(directory, query.platform)
+        content = pack['content']
+        rules = []
+        for row in content['rules']:
+            rule = {key: str(row.get(key) or '') for key in (
+                'id', 'name', 'carrier', 'service', 'transport', 'group', 'fixed', 'per_g',
+                'step_g', 'min_g', 'max_g', 'max_edge_cm', 'max_sum_cm', 'volume_divisor_g', 'source_cell',
+            )}
+            currency = 'CNY' if query.platform == 'ozon' else 'RUB'
+            rule.update(currency=currency, price_currency=currency, price_min=str(row.get('price_min_cny') or ''),
+                        price_max=str(row.get('price_max_cny') or ''), battery=row.get('battery'), liquid=row.get('liquid'))
+            if query.platform == 'ozon':
+                rule['step_g'] = '1'
+            elif row['group'] == 'Extra Small':
+                policy = content['policies']['extra_small']
+                rule.update(max_g=str(policy['max_g']), price_max=str(policy['price_max_rub']),
+                            max_edge_cm=str(policy['max_edge_cm']), max_sum_cm=str(policy['max_sum_cm']))
+            rules.append(rule)
+        warnings = list(content.get('warnings', []))
+        if query.platform == 'yandex' and any(row['group'] == 'Other' for row in rules):
+            warnings.append('普通件模板缺少完整准入限制，其运费结果用于试算。')
+        return {'ok': True, 'platform': query.platform, 'source': 'personal' if directory == self.personal_dir else 'shared',
+                'version': pack['version'], 'filename': Path(str(pack.get('source_path') or '').replace('\\', '/')).name,
+                'sheet': str(content.get('sheet') or ''), 'imported_at': pack.get('imported_at', ''),
+                'effective_date': content.get('effective_date') or '', 'warnings': warnings, 'rules': rules}
 
     @staticmethod
     def _summary(directory, platform):

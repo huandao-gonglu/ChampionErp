@@ -1,11 +1,12 @@
 import { apiClient } from './client'
 
-import type { BackendManagedSettings, BackendPublicEnterpriseApplication, BackendTariffSettings, BackendTariffDiff } from '@/types/workflow.generated'
+import type { BackendManagedSettings, BackendPublicEnterpriseApplication, BackendTariffSettings, BackendTariffDiff, BackendTariffRulesResponse } from '@/types/workflow.generated'
 
 export type ManagedSettings = BackendManagedSettings
 export type ApplicationSettings = BackendPublicEnterpriseApplication
 export type TariffSettings = BackendTariffSettings
 export type TariffDiff = BackendTariffDiff
+export type TariffRules = BackendTariffRulesResponse
 
 export interface TariffImport {
   platform: TariffSettings['platform']
@@ -28,6 +29,9 @@ export async function saveManagedSettings(settings: Omit<ManagedSettings, 'ok' |
 }
 export async function fetchTariffSettings(): Promise<TariffSettings[]> {
   return (await apiClient.get('/api/shipping/tariffs')).data.items
+}
+export async function fetchTariffRules(platform: TariffSettings['platform'], scope: 'effective' | 'shared' = 'effective'): Promise<TariffRules> {
+  return (await apiClient.get('/api/shipping/tariffs/rules', { params: { platform, scope } })).data
 }
 export async function importTariffFile(body: TariffImport): Promise<{ items: TariffSettings[]; diff: TariffDiff }> {
   return (await apiClient.post('/api/shipping/tariffs/import', body)).data

@@ -62,6 +62,41 @@ def import_rates(client, url, body):
     return response.json()
 
 
+def tariff_rules(client, url, platform='yandex', scope='effective'):
+    response = client.get(url + '/api/shipping/tariffs/rules', params={'platform': platform, 'scope': scope})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_imported_rules_are_visible_with_personal_isolation_and_explicit_units(accounts_http, tmp_path):
+    url, _, login = accounts_http
+    admin = login()
+    register(url)
+    user = login('user@example.com')
+    import_rates(admin, url, import_body(admin, url, tmp_path))
+    default = tariff_rules(user, url)
+    assert default['source'] == 'shared' and default['filename'] == 'rates.xlsx'
+    rule = default['rules'][0]
+    assert rule['currency'] == rule['price_currency'] == 'RUB'
+    assert rule['max_g'] == '500' and rule['price_max'] == '1500'
+    assert rule['max_edge_cm'] == '60' and rule['max_sum_cm'] == '90'
+    assert rule['liquid'] is None
+    assert '/tmp/' not in json.dumps(default) and '/var/' not in json.dumps(default)
+    import_rates(user, url, import_body(user, url, tmp_path, scope='personal', fixed=101))
+    assert tariff_rules(user, url)['rules'][0]['fixed'] == '101'
+    assert tariff_rules(user, url)['source'] == 'personal'
+    assert tariff_rules(user, url, scope='shared')['rules'][0]['fixed'] == '78'
+    assert tariff_rules(admin, url)['rules'][0]['fixed'] == '78'
+    ogl = tariff_rules(user, url, platform='ozon')
+    assert len(ogl['rules']) == 6
+    big = next(row for row in ogl['rules'] if row['group'] == 'Big')
+    assert big['currency'] == big['price_currency'] == 'CNY'
+    assert big['volume_divisor_g'] == '12' and big['step_g'] == '1'
+    for query in ({'platform': 'mercadolibre'}, {'platform': 'yandex', 'scope': 'personal'},
+                  {'platform': 'yandex', 'owner': 'other'}, {'platform': 'yandex', 'scope': '../private'}):
+        assert user.get(url + '/api/shipping/tariffs/rules', params=query).status_code == 400
+
+
 def test_rates_and_forbidden_categories_are_shared_and_user_cannot_overwrite(accounts_http):
     url, runtime, login = accounts_http
     admin = login()

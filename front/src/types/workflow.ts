@@ -15,6 +15,8 @@ export {
   type BackendTariffVersion,
   type BackendTariffSettings,
   type BackendTariffSettingsResponse,
+  type BackendTariffRule,
+  type BackendTariffRulesResponse,
   type BackendTariffFieldChange,
   type BackendTariffRuleChange,
   type BackendTariffDiff,

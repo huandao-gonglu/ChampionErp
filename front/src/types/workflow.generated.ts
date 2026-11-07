@@ -89,6 +89,43 @@ export interface BackendTariffSettingsResponse {
   items: Array<BackendTariffSettings>
 }
 
+export interface BackendTariffRule {
+  id: string
+  name: string
+  carrier: string
+  service: string
+  transport: string
+  group: string
+  currency: string
+  fixed: string
+  per_g: string
+  step_g: string
+  min_g: string
+  max_g: string
+  price_min: string
+  price_max: string
+  price_currency: string
+  max_edge_cm: string
+  max_sum_cm: string
+  volume_divisor_g: string
+  battery: boolean | null
+  liquid: boolean | null
+  source_cell: string
+}
+
+export interface BackendTariffRulesResponse {
+  ok: boolean
+  platform: "yandex" | "ozon"
+  source: "personal" | "shared"
+  version: string
+  filename: string
+  sheet: string
+  imported_at: string
+  effective_date: string
+  warnings: Array<string>
+  rules: Array<BackendTariffRule>
+}
+
 export interface BackendTariffFieldChange {
   before: unknown
   after: unknown

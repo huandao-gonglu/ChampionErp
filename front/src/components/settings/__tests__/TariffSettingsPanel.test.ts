@@ -4,9 +4,9 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAccountStore } from '@/stores/account'
 import TariffSettingsPanel from '../TariffSettingsPanel.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import { fetchTariffSettings, importTariffFile, readTariffFile, upgradeTariff, type TariffSettings } from '@/api/managedSettings'
+import { fetchTariffSettings, fetchTariffRules, importTariffFile, readTariffFile, upgradeTariff, type TariffSettings } from '@/api/managedSettings'
 
-vi.mock('@/api/managedSettings', () => ({ fetchTariffSettings: vi.fn(), importTariffFile: vi.fn(), readTariffFile: vi.fn(), upgradeTariff: vi.fn() }))
+vi.mock('@/api/managedSettings', () => ({ fetchTariffSettings: vi.fn(), fetchTariffRules: vi.fn(), importTariffFile: vi.fn(), readTariffFile: vi.fn(), upgradeTariff: vi.fn() }))
 enableAutoUnmount(afterEach)
 const shared = { version: 'yandex-new', effective_date: '', rules_count: 2, error: '' }
 const custom: TariffSettings = { platform: 'yandex', source: 'personal', version: 'yandex-custom', effective_date: '', rules_count: 1, error: '', shared, update_available: true }
@@ -20,12 +20,22 @@ beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.mocked(fetchTariffSettings).mockResolvedValue([structuredClone(custom)])
+  vi.mocked(fetchTariffRules).mockResolvedValue({ ok: true, platform: 'yandex', source: 'personal', version: custom.version,
+    filename: '个人表.xlsx', sheet: '', imported_at: '', effective_date: '', rules: [], warnings: [] })
   vi.mocked(upgradeTariff).mockResolvedValue([followed])
   vi.mocked(readTariffFile).mockResolvedValue('encoded-file')
   vi.mocked(importTariffFile).mockResolvedValue({ items: [custom], diff: { after_version: 'new', added: [], removed: [], changed: [], policy_change: null, status: '校验通过' } })
 })
 
 describe('国际物流运费表', () => {
+  it('可分别查看当前表和管理员默认表', async () => {
+    const wrapper = open(); await flushPromises()
+    await click(wrapper, '查看当前运费表')
+    expect(fetchTariffRules).toHaveBeenLastCalledWith('yandex', 'effective')
+    await click(wrapper, '关闭')
+    await click(wrapper, '查看管理员默认表')
+    expect(fetchTariffRules).toHaveBeenLastCalledWith('yandex', 'shared')
+  })
   it('普通账号可导入个人表，覆盖管理员更新前需要本人确认', async () => {
     const wrapper = open(); await flushPromises()
     expect(wrapper.text()).toContain('管理员已发布更新')

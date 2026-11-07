@@ -79,6 +79,7 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 - `AppContext.tariffs` 装配 `TariffSettingsService`。共享费率位于根 `data/tariffs`，普通用户覆盖位于其空间 `data/tariffs`，根管理员的个人覆盖位于 `data/personal-tariffs`。按平台选择来源，未自定义者自动跟随；自定义表记录 `customized_from`，管理员版本改变时提示更新，用户显式确认覆盖后恢复跟随，原版本文件保留。
 - GET `/api/shipping/tariffs`、POST `/import` 与 `/upgrade` 位于 `pricing_workspace_routes`。仅管理员可写 shared scope，所有用户可写 personal scope。导入复用模块 XLSX 解析和差异比较，限制文件/解压大小，校验表头、单位、明确数值和完整规则，失败保留生效版本。预览后显式发布，写入与升级均核对预期版本，尚未生效日期拒绝发布。
 - 核价 `ShippingModule`、Yandex 发布仓运输模式和 `draft_pricing._pricing_environment` 使用同一份有效费率来源；单次核价固定快照，更新后旧预览须重算。发布校验会比较已保存报价的运费版本与当前有效版本，单次 SKU 批次由 `PublishValidationSession` 固定版本读取，历史报价保留展示。当前导入支持 Yandex FBS 与 Ozon OGL，Mercado 按个人店铺授权调用远端试算。
+- GET `/api/shipping/tariffs/rules?platform=yandex|ozon&scope=effective|shared` 提供已导入有效规则。读取范围由会话空间及共享 owner 决定，不接收 owner、路径或任意版本；响应只含文件名和公开规则。按计算器口径展示原币固定费／每克费、重量、货值、包装及准入规则，轻小件限制从同一政策快照读取。前端 `TariffRulesDrawer.vue` 支持当前表、管理员默认表、搜索和分页。
 - 前端入口为系统设置 `settings_section=managed`（仅管理员）和 `settings_section=tariffs`（所有账号）；`TariffUpdateNotice` 在核价页提示个人表可升级。禁售名单所有账号只读，原导入入口单独校验管理员角色。
 - 真实双账号权限、共享读取、凭据换回仍失效、导入校验和升级冲突见 `tests/test_managed_settings.py`。
 
