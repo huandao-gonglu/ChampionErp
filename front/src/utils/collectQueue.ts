@@ -74,7 +74,7 @@ export function restoreCollectQueue(value: string | null): CollectBatchRow[] {
       }
       row.ok = row.status === 'success'
       if (item.status === 'running') {
-        row.error = '页面关闭或刷新，未确认采集结果。请先检查商品库，再决定是否重试。'
+        row.error = '页面关闭或刷新，未确认采集结果。请先检查采集箱，再决定是否重试。'
         row.errorCode = 'COLLECT_RESULT_UNCONFIRMED'
         row.nextAction = ''
       }

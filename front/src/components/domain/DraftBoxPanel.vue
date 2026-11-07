@@ -202,7 +202,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
               </td>
             </tr>
             <tr v-if="!draftRows.length">
-              <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="8">暂无草稿。可先从商品库勾选商品并推到草稿箱。</td>
+              <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="8">暂无草稿。可先从采集箱勾选商品并推到草稿箱。</td>
             </tr>
           </tbody>
         </table>

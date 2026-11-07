@@ -62,7 +62,7 @@ function statusClass(value: string) {
 
 <template>
   <section class="space-y-6">
-    <PageHeader title="商品库" description="保存采集后的商品事实、供应链字段和通用图片；发布相关内容进入草稿箱后再编辑。">
+    <PageHeader title="采集箱" description="保存采集后的商品事实、供应链字段和通用图片；发布相关内容进入草稿箱后再编辑。">
       <template #actions>
         <select v-model="workflowFilter" class="input w-full sm:w-44">
           <option value="all">全部商品</option>
@@ -82,12 +82,12 @@ function statusClass(value: string) {
       <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="text-sm text-accent-500 dark:text-accent-400">
-            本地商品库：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ filteredItems.length }} / {{ props.items.length }}</span> 条记录
+            本地采集箱：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ filteredItems.length }} / {{ props.items.length }}</span> 条记录
             <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
             已勾选：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ selectedCount }}</span> 个
           </div>
           <div class="flex flex-wrap gap-2">
-            <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refresh')">刷新商品库</button>
+            <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refresh')">刷新采集箱</button>
             <button data-testid="library-claim-selected" class="btn btn-primary py-2" :disabled="props.loading || !selectedCount || !selectedTargets.length" @click="requestClaim(props.selectedIds)">推到草稿<span v-if="selectedCount">（{{ selectedCount }} 个商品）</span></button>
             <button class="btn btn-outline py-2 text-rose-700 dark:text-rose-200" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除</button>
           </div>
@@ -148,7 +148,7 @@ function statusClass(value: string) {
                 </div>
               </td>
             </tr>
-            <tr v-if="!filteredItems.length"><td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">当前筛选下暂无商品。可在采集页导入或采集商品后加入商品库。</td></tr>
+            <tr v-if="!filteredItems.length"><td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">当前筛选下暂无商品。可在采集页导入或采集商品后加入采集箱。</td></tr>
           </tbody>
         </table>
       </div>

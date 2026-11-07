@@ -57,7 +57,7 @@ function assignSkus(changes: SkuImageBatchChange[]) {
   <DraftImageWorkbench v-if="draft && workbench" :draft="draft" :product="product" :images="images" :loading="loading" :controller="workbench" />
   <div v-else-if="!draft" class="space-y-5">
     <section class="card">
-      <h2 class="card-title">{{ title || '商品库图片编辑' }}</h2>
+      <h2 class="card-title">{{ title || '采集箱图片编辑' }}</h2>
       <p class="muted mt-1">{{ product.source.title || product.name || product.productId }}</p>
       <p v-if="error" role="alert" class="mt-3 text-sm text-rose-600">{{ error }}</p>
     </section>

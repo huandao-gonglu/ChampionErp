@@ -13,7 +13,7 @@ export const workflowNavItems: WorkflowNavItem[] = [
   { key: 'orders', title: '订单中心', subtitle: '订单、采购与履约', icon: '▤' },
   { key: 'research', title: '选品调研', titleKey: 'nav.research.title', subtitle: '市场需求、机会评分', subtitleKey: 'nav.research.subtitle', icon: '◈' },
   { key: 'collect', title: '采集', titleKey: 'nav.collect.title', subtitle: '链接、Cookie、浏览器标签', subtitleKey: 'nav.collect.subtitle', icon: '☷' },
-  { key: 'library', title: '商品库', titleKey: 'nav.library.title', subtitle: '本地商品母库', subtitleKey: 'nav.library.subtitle', icon: '▱' },
+  { key: 'library', title: '采集箱', titleKey: 'nav.library.title', subtitle: '已采集的商品', subtitleKey: 'nav.library.subtitle', icon: '▱' },
   { key: 'drafts', title: '草稿箱', titleKey: 'nav.drafts.title', subtitle: '平台草稿、继续编辑', subtitleKey: 'nav.drafts.subtitle', icon: '▤' },
   { key: 'publish', title: '任务队列', titleKey: 'nav.publish.title', subtitle: '任务状态、日志', subtitleKey: 'nav.publish.subtitle', icon: '▣' },
   { key: 'onlineProducts', title: '在线商品', titleKey: 'nav.onlineProducts.title', subtitle: '店铺商品、价格与库存', subtitleKey: 'nav.onlineProducts.subtitle', icon: '▨' },

@@ -64,6 +64,15 @@ describe('图片工作台操作与恢复', () => {
     expect(processDraftImages).not.toHaveBeenCalled()
     expect(generateDraftImageSet).not.toHaveBeenCalled()
   })
+  it('只生成 SKU 图可独立提交，空选择不会创建方案', async () => {
+    const { work, draft, save } = fixture()
+    await flushPromises()
+    await work.planSet([], undefined, '', [])
+    expect(save).not.toHaveBeenCalled()
+    await work.planSet([], undefined, '统一光线', ['red'])
+    expect(save).toHaveBeenCalledOnce()
+    expect(planDraftImageSet).toHaveBeenCalledWith(draft.value, [], undefined, '统一光线', ['red'])
+  })
   it('套图先保存后规划，生成完成仍保留旧引用；采用与撤销只修改共用图', async () => {
     const { work, draft, response, save } = fixture()
     await flushPromises()

@@ -59,11 +59,11 @@ async function importProduct() {
       <p v-if="sourcing.items && !sourcing.items.length" class="muted">暂无货源，请调整关键词后再次查询。</p>
     </div>
     <template v-if="selected">
-      <label class="mt-4 flex gap-2 text-sm"><input v-model="confirmed" type="checkbox" :disabled="busy" />我已核对所选货源的款式和规格，确认采集到商品库</label>
+      <label class="mt-4 flex gap-2 text-sm"><input v-model="confirmed" type="checkbox" :disabled="busy" />我已核对所选货源的款式和规格，确认采集到采集箱</label>
       <button class="btn btn-primary mt-3 w-full" :disabled="busy || !confirmed" @click="importProduct">确认货源并采集入库（约 2 额度）</button>
       <p class="muted mt-2">采集标题、主图、人民币采购价和 SKU；包装尺寸、重量及材质需后续核对补充。</p>
     </template>
-    <p v-if="importedId" role="status" class="mt-3 text-sm text-success-700">已入库：{{ importedId }}。可在商品库继续核价与编辑。</p>
+    <p v-if="importedId" role="status" class="mt-3 text-sm text-success-700">已入库：{{ importedId }}。可在采集箱继续核价与编辑。</p>
     <p v-for="(receipt, index) in receipts" :key="index" class="muted mt-2">消耗 {{ receipt.request_consumed ?? '未知' }}，剩余 {{ receipt.request_left ?? '未知' }}。</p>
     <p v-if="error" role="alert" class="mt-3 text-sm text-danger-700">{{ error }}</p>
   </section>

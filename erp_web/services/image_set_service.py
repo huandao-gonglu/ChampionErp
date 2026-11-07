@@ -78,8 +78,9 @@ def sku_image_targets(product, draft, sku_ids):
     return list(groups.values())
 
 
-def include_sku_pages(plan, targets):
-    pages = list(plan.pages)
+def assemble_image_set(common_plan, targets, *, sku_prompt=""):
+    pages = list(common_plan.pages) if common_plan else []
+    style = common_plan.style if common_plan else "统一背景、光线与留白，清晰展示各规格的真实外观。"
     for target in targets:
         key = "sku_" + hashlib.sha256(json.dumps([target["source_id"], target["sku_ids"]]).encode()).hexdigest()[:24]
         if any(page.key == key for page in pages):
@@ -87,11 +88,11 @@ def include_sku_pages(plan, targets):
         pages.append(ImageSetPage(
             key=key, title=("SKU 图 · " + "、".join(target["names"]))[:100], role="main", scope="sku",
             sku_ids=target["sku_ids"], source_image_ids=[target["source_id"]],
-            prompt="沿用整套图片的视觉风格与主图构图语言，为绑定 SKU 重新设计一张独立规格主图。"
+            prompt=sku_prompt or "沿用整套图片的视觉风格与主图构图语言，为绑定 SKU 重新设计一张独立规格主图。"
                    "主体颜色、数量、结构和配件严格以本页原图为准。共用该原图的规格只展示共同外观，"
                    "不要把不同尺寸或选项合并成一套，也不要添加未经证实的参数。",
         ))
-    return ImageSetPlan(style=plan.style, pages=pages)
+    return ImageSetPlan(style=style, pages=pages)
 
 
 def validate_sku_pages(plan, product, draft, *, retry=False):

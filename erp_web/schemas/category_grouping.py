@@ -1,4 +1,4 @@
-"""刊登分组字段的唯一派生规则；不读取商品库或调用模型、平台。"""
+"""刊登分组字段的唯一派生规则；不读取采集箱或调用模型、平台。"""
 
 from hashlib import sha256
 from typing import Any, Mapping

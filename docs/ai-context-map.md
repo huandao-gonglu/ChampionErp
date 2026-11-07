@@ -209,7 +209,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 
 - 1688 图片由 `source_collect_parsers.py` 优先读取 `gallery.fields.mainImage`，再通过 `html_extract_service.fetch_1688_detail_html` 读取独立 `description.fields.detailUrl` 的详情内容；SKU 图仅由规格关联入池。`collect_helpers.normalize_collect_source_images` 统一下载全部公共图和规格图，以原 URL 保留稳定资产身份，不再截断前五张，也不重复保存本地路径和远程 URL。详情读取失败显式报告采集失败，不能以已有 SKU 图片假报完整采集。
 
-- 商品库推到草稿统一从 `/api/claim-products` → `collect_facade.claim_products_payload` → `collect_helpers.claim_products_to_platforms`，请求必须显式携带 `product_ids` 与 `targets`（平台、销售市场、注册语言）。每个商品按语言创建一份独立草稿，市场只包含该语言下勾选的项目；美客多销售市场按授权物流操作归入 CBT 的 `sites_to_sell`。响应的 `claimed_count` 统计成功商品数，`draft_count` 统计实际创建草稿数。
+- 采集箱推到草稿统一从 `/api/claim-products` → `collect_facade.claim_products_payload` → `collect_helpers.claim_products_to_platforms`，请求必须显式携带 `product_ids` 与 `targets`（平台、销售市场、注册语言）。每个商品按语言创建一份独立草稿，市场只包含该语言下勾选的项目；美客多销售市场按授权物流操作归入 CBT 的 `sites_to_sell`。响应的 `claimed_count` 统计成功商品数，`draft_count` 统计实际创建草稿数。
 - 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
 
 - `source_sites.py` 的采集质量门槛与核价/发布条件分开：1688 有标题和图片且未被验证拦截即可入库。缺失包装长宽高、重量通过 `collect_helpers.py` 的 `missing_fields` / `next_action` 提示在 SKU 页补齐，不触发采集失败；有规格时逐 SKU 判断包装完整性，不用首项资料代表整组。
@@ -221,8 +221,9 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - 用户可以取消等待，未开始的链接保持原状。`collectQueue.ts` 本地保留等待项的标签 ID 和 URL，刷新应用或取消后点击开始采集可恢复；采集应用关闭后不承诺后台执行。不保存凭据或整份商品。正在实际采集时刷新仍标记结果未确认，避免假报成功。删除列表行不删除入库商品。
 - `/api/collect-from-browser-tab` 的显式 URL 或标签 ID 只选择指定目标；`save_only` 只保存 HTML/截图，不解析、不下载商品图片、不修改商品。验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
-- `source_collect_browser.cdp_target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。打开操作直接返回目标句柄，采集不重复查找或强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
+- `desktop_runtime.collection.target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。打开操作直接返回目标句柄，采集不重复查找或强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
 - 1688 采集与浏览器 AI 共用 `desktop_runtime.browser_debug_service.ensure_browser_debug_session`：检测连接、查找本机 Chrome/Edge、使用指定资料目录启动并等待调试端口。调用方分别提供目录和端口；Gemini 默认使用 `browser_profile/ai/gemini/<profile>`，不共用 1688 登录资料，也不依赖 BitBrowser。
+  同一调试端口的任务与收尾串行。采集读取完成后关闭已消费的任务标签；还有其他网页时保留实例，人工验证、手动快照及正在操作的登录窗口保留原页。最后一个任务页完成后退出专用浏览器。托管网页 AI 在整次本机调用结束时关闭，人工登录例外；退出桌面执行器回收本次持有的实例。关闭前核对 Profile 的实例标识，确认退出后只清网页、代码和图形缓存，保留登录、站点存储与扩展。外部浏览器的生命周期由用户管理。
   `browser_connection_config` 纯校验代理地址；浏览器 AI 的可选 `browser_proxy` 只在专用浏览器启动时生效，修改后需关闭专用窗口再重开，不更改采集或后端网络配置。
 
 ## 草稿描述
@@ -595,7 +596,10 @@ CLI / Browser use case
   一次原生多模态请求，API 与显式 Canvas 连接都不逐张套用相同提示词。结果只合入商品素材池，
   不自动改变草稿引用。`schemas/image_sets.py` 定义方案，批次保存设计内容与真实结果资产 ID，
   重新打开可恢复预览；单页重做引用原批次，保留未重做页面的实际状态和结果，不重新执行或计费。
-  `plan-set` 可同时携带已选启用的 `sku_ids`；`sku_image_targets` 按真实当前图片关联合并目标，
+  套图范围支持全部生成、只生成共用主图、只生成 SKU 图。
+  `plan-set` 按实际目标接收共用参考图或启用的 `sku_ids`，也可同时接收两组。
+  只选 SKU 时从已绑定原图直接组成可编辑的规格图方案，无需共用图参考素材或共用图规划模型。
+  `sku_image_targets` 按真实当前图片关联合并目标，
   共用方案完成后为每组添加沿用统一风格的 SKU 主图页面，不允许模型猜测规格绑定。
   `ImageSetPage.scope/sku_ids` 区分共用与独立规格用途；旧页面缺省为共用图。
   SKU 页面只能引用其绑定规格的一张当前原图，生成输入只包含绑定规格的事实，生成与重做均复核范围和来源；采用后的原素材关系
@@ -726,8 +730,8 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 
 - `erp_web/ai_capability_composition.py`：显式 Catalog 与场景权限；全局工具包含领域读写工具。
 - `erp_web/facades/agent_capability_facade.py`：应用能力 Scope、所选草稿范围、可信消息来源、Job Reader 装配。
-- `erp_web/services/global_agent_chat_service.py`：主对话服务；主模型依据完整对话选择实际提供的工具，并按原生执行回执回答先前操作结果。`GLOBAL_RESPONSE_INSTRUCTIONS` 统一约束所有全局回答，装配在业务提示词和长期记忆之后：结果优先，只保留必要依据与限制；批量汇报覆盖及异常范围，合并同类失败。取数先在当前目标所属业务域完成，只有目标需要或必要事实有可信跨域关联时才扩大范围；搜索未命中不能当作其他字段无数据。额度不足时仍围绕当前问题回答，不强制纯查询或解释汇报写入。不增加回答压缩模型或工具授权推断层。
-- `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
+- `erp_web/services/global_agent_chat_service.py`：主对话服务；主模型依据完整对话选择实际提供的工具，并按原生执行回执回答先前操作结果。`GLOBAL_RESPONSE_INSTRUCTIONS` 统一约束所有全局回答，装配在业务提示词和长期记忆之后。新任务先用一句原生流式正文说明目标和下一步，再调用工具或继续作答；最终汇报结果优先，只保留必要依据与限制；批量汇报覆盖及异常范围，合并同类失败。取数先在当前目标所属业务域完成，只有目标需要或必要事实有可信跨域关联时才扩大范围；搜索未命中不能当作其他字段无数据。额度不足时仍围绕当前问题回答，不强制纯查询或解释汇报写入。不增加回答压缩模型或工具授权推断层。
+- `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和采集箱市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：机械参数校验、原生并发、审批快照与 Deferred 转接；不选择下一步。
 - `erp_web/services/tool_approval.py`：业务审批内容 digest，绑定工具名/版本、operation key、原生 call ID 和审批版本；执行前重核。
 - `erp_web/schemas/ai_approval.py`、`erp_web/services/ai_approval_policy.py`：工具审批偏好 `ask/full` 与原生 `HandleDeferredToolCalls` 接法。完全授权只产生带原快照的 `DeferredToolResults.approvals`，不修改工具权限、不跳过执行校验，也不接管 Agent 循环。
@@ -1789,7 +1793,7 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 - 发布日志 Tab、仪表盘日志摘要及其前端加载链路已退役。后端 `publish_logs` 表、发布产物、日志写入、`GET /api/publish-logs` 和 AI `publish_logs_query` 继续保留；`schemas/ai_page_context.py` 继续读取历史 `logs` 页面快照。
 
-- 待处理 Tab 及仪表盘的待处理统计、待办队列已退役，不再按商品索引状态生成待办。商品库、草稿箱及各领域任务继续使用原有索引和业务状态。
+- 待处理 Tab 及仪表盘的待处理统计、待办队列已退役，不再按商品索引状态生成待办。采集箱、草稿箱及各领域任务继续使用原有索引和业务状态。
 - 前端页面背景只包含现有页面；`schemas/ai_page_context.py` 保留历史 `pending` 页面快照的读取与校验，不作为当前导航入口。
 
 账号业务上下文通过 `AccountRuntime.context_for` 在原有个人模型目录中加入两条 New API 系统模型，保留个人连接及功能绑定。系统模型复用模型管理、测试和推理入口，服务端校验其 ID 与连接信息；运行时只有这两条记录从显式绑定的用户上下文取得托管令牌。

@@ -40,7 +40,7 @@ function rowStatusLabel(row: BrowserCollectRow) {
 <template>
   <section data-testid="collect-active-card" class="card space-y-5">
     <div class="flex flex-wrap items-start justify-between gap-3">
-      <div><h3 class="card-title">浏览器采集</h3><p class="muted mt-1">在专用 Chrome 登录并打开商品详情页，可多选页面，按列表顺序逐个采集到商品库。</p></div>
+      <div><h3 class="card-title">浏览器采集</h3><p class="muted mt-1">在专用 Chrome 登录并打开商品详情页，可多选页面，按列表顺序逐个采集到采集箱。</p></div>
       <span class="rounded-full px-3 py-1 text-xs font-medium" :class="props.status?.connected ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200' : 'bg-slate-100 text-slate-600 dark:bg-dark-700 dark:text-accent-200'">{{ props.status ? props.status.connected ? '浏览器已连接' : '浏览器未连接' : '尚未检测' }}</span>
     </div>
     <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-dark-700 dark:bg-dark-900/60">

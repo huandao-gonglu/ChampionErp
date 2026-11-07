@@ -28,6 +28,7 @@ const byId = computed(() => new Map(props.images.map(image => [image.id, image])
 const assignments = computed(() => skuImageAssignments(props.product.skuItems, props.draft).filter(sku => props.draft.skuItems.some(row => row.sku_id === sku.skuId)))
 const commonIds = computed(() => [...props.draft.images].sort((a, b) => a.order - b.order).map(ref => ref.assetId))
 const skuIds = computed(() => [...new Set(assignments.value.map(sku => sku.imageAssetId).filter(Boolean))])
+const hasSkuTargets = computed(() => assignments.value.some(sku => sku.selected && byId.value.has(sku.imageAssetId)))
 const currentIds = computed(() => [...new Set([...commonIds.value, ...skuIds.value])])
 const skuNamesByImage = computed(() => {
   const names = new Map<string, string[]>()
@@ -119,7 +120,7 @@ watch(busy, value => { if (value) dragging.value = '' })
       <span class="mr-3 min-w-32 text-sm font-medium">{{ selected.length ? `已选 ${selected.length} 张` : '勾选图片开始处理' }}</span>
       <button class="btn btn-primary" type="button" :disabled="!!imageReason || busy || !canProcess" @click="open('translate')">翻译图片</button>
       <button class="btn btn-outline" type="button" :disabled="!!imageReason || busy || !canProcess" @click="open('edit')">AI 修改</button>
-      <button class="btn btn-outline" type="button" :disabled="(!currentIds.length || !!planReason) && !batch?.image_set" @click="imageSetOpen = true">{{ batch?.image_set ? '查看套图' : '生成套图' }}</button>
+      <button class="btn btn-outline" type="button" :disabled="(!currentIds.length || (!!planReason && !hasSkuTargets)) && !batch?.image_set" @click="imageSetOpen = true">{{ batch?.image_set ? '查看套图' : '生成套图' }}</button>
       <button class="btn btn-outline" type="button" :disabled="busy" @click="open('add')">添加图片</button>
       <button class="btn btn-outline" type="button" :disabled="!selected.length" @click="selected = []">取消选择</button>
       <button v-if="selectedCommon.length" class="btn btn-outline" type="button" :disabled="busy" @click="open('remove')">移出共用区（{{ selectedCommon.length }}）</button>

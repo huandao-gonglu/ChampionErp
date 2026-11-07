@@ -261,7 +261,7 @@ export default {
       image_pool_sync_generated: '同步生成图片',
       image_translate: '翻译图片',
       image_edit: '编辑图片',
-      products_index_query: '查询商品库',
+      products_index_query: '查询采集箱',
       platform_orders_query: '查询平台订单',
       publish_logs_query: '查询发布记录',
       publish_jobs_query: '查询发布任务',
@@ -290,7 +290,7 @@ export default {
   routes: {
     workflow: {
       title: '跨境 ERP Web 工作台',
-      description: '采集、商品库、编辑、图片文案、核价、预检、授权和日志。',
+      description: '采集、采集箱、编辑、图片文案、核价、预检、授权和日志。',
     },
     notFound: {
       title: '页面不存在',
@@ -300,7 +300,7 @@ export default {
   nav: {
     dashboard: { title: '仪表盘', subtitle: '流程总览' },
     collect: { title: '采集', subtitle: '链接、Cookie、浏览器标签' },
-    library: { title: '商品库', subtitle: '本地商品母库' },
+    library: { title: '采集箱', subtitle: '已采集的商品' },
     drafts: { title: '草稿箱', subtitle: '平台草稿、继续编辑' },
     publish: { title: '任务队列', subtitle: '发布、同步与修改' },
     onlineProducts: { title: '在线商品', subtitle: '店铺商品、价格与库存' },
@@ -309,7 +309,7 @@ export default {
   pages: {
     drafts: {
       title: '草稿箱',
-      description: '来自商品库的平台编辑稿，聚焦未发布完成的文案、图片、类目和发布预检。',
+      description: '来自采集箱的平台编辑稿，聚焦未发布完成的文案、图片、类目和发布预检。',
     },
     publish: {
       title: '任务队列',

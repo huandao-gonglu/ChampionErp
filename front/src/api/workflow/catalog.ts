@@ -47,7 +47,7 @@ import { imageTranslateTimeoutMs, normalizeAuthResult, requiredProductId } from 
 export async function fetchProductsIndex(): Promise<ProductIndexItem[]> {
   const response = await apiClient.get('/api/products-index')
   const data = asRecord(response.data)
-  ensureOk(data, '读取商品库失败')
+  ensureOk(data, '读取采集箱失败')
   return normalizeProductsIndex(data.items)
 }
 

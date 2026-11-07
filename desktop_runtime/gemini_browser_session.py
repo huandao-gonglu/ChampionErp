@@ -55,36 +55,24 @@ def _wait_auth_state(
 
 
 def _interactive_login(app_dir, model, timeout: int) -> None:
-    """只显示项目托管实例，登录成功或等待结束后恢复无窗口模式。"""
+    """使用专用 Profile 显示登录入口；成功后由调用方打开隐藏页。"""
     url = browser_ai_runtime.browser_ai_url(model)
-    pending_error = False
-    try:
-        # 首次配置直接显示登录入口，不先等待隐藏的 Canvas 页面完成加载。
-        login_model = {
-            **model,
-            "browser_url": "https://accounts.google.com/ServiceLogin?continue=" + quote(url, safe=""),
-        }
-        with browser_ai_runtime.connect_browser_ai_page(app_dir, login_model, timeout, headless=False) as cdp:
-            # 登录在同一个专用 Profile 内由用户完成，程序不读取或填写凭据。
-            cdp.call("Page.bringToFront", timeout=5)
-            logger.info("已显示 Gemini 专用登录窗口，等待登录完成后自动继续。")
-            try:
-                _wait_auth_state(cdp, LOGIN_WAIT_SECONDS, wait_for_login=True)
-            except TimeoutError:
-                raise
-            except (OSError, RuntimeError) as exc:
-                check_cancellation()
-                raise RuntimeError("Google 登录窗口已关闭或连接中断，本次尚未发送修图请求。") from exc
-    except BaseException:
-        pending_error = True
-        raise
-    finally:
+    # 首次配置直接显示登录入口，不先等待隐藏的 Canvas 页面完成加载。
+    login_model = {
+        **model,
+        "browser_url": "https://accounts.google.com/ServiceLogin?continue=" + quote(url, safe=""),
+    }
+    with browser_ai_runtime.connect_browser_ai_page(app_dir, login_model, timeout, headless=False) as cdp:
+        # 登录在同一个专用 Profile 内由用户完成，程序不读取或填写凭据。
+        cdp.call("Page.bringToFront", timeout=5)
+        logger.info("已显示 Gemini 专用登录窗口，等待登录完成后自动继续。")
         try:
-            browser_ai_runtime._ensure_browser_target(app_dir, model, url, timeout, headless=True)
-        except Exception:
-            if not pending_error:
-                raise
-            logger.exception("登录等待结束后恢复无窗口浏览器失败。")
+            _wait_auth_state(cdp, LOGIN_WAIT_SECONDS, wait_for_login=True)
+        except TimeoutError:
+            raise
+        except (OSError, RuntimeError) as exc:
+            check_cancellation()
+            raise RuntimeError("Google 登录窗口已关闭或连接中断，本次尚未发送修图请求。") from exc
 
 
 @contextmanager

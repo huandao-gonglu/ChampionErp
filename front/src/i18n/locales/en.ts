@@ -261,7 +261,7 @@ export default {
       image_pool_sync_generated: 'Sync generated images',
       image_translate: 'Translate image',
       image_edit: 'Edit image',
-      products_index_query: 'Search product library',
+      products_index_query: 'Search collection inbox',
       platform_orders_query: 'Find marketplace orders',
       publish_logs_query: 'Find publishing records',
       publish_jobs_query: 'Find publishing tasks',
@@ -290,7 +290,7 @@ export default {
   routes: {
     workflow: {
       title: 'Cross-border ERP Workbench',
-      description: 'Collect, library, editing, copy, pricing, precheck, auth, and logs.',
+      description: 'Collection, collection inbox, editing, copy, pricing, precheck, auth, and logs.',
     },
     notFound: {
       title: 'Page not found',
@@ -300,7 +300,7 @@ export default {
   nav: {
     dashboard: { title: 'Dashboard', subtitle: 'Workflow overview' },
     collect: { title: 'Collect', subtitle: 'Links, cookies, browser tabs' },
-    library: { title: 'Library', subtitle: 'Local product master' },
+    library: { title: 'Collection Inbox', subtitle: 'Collected products' },
     drafts: { title: 'Drafts', subtitle: 'Platform drafts, continue editing' },
     publish: { title: 'Task Queue', subtitle: 'Publishing, syncs and changes' },
     onlineProducts: { title: 'Online products', subtitle: 'Store products, prices and stock' },
@@ -309,7 +309,7 @@ export default {
   pages: {
     drafts: {
       title: 'Drafts',
-      description: 'Platform editing drafts created from the product library, focused on copy, images, category, and publish precheck.',
+      description: 'Platform editing drafts created from the collection inbox, focused on copy, images, category, and publish precheck.',
     },
     publish: {
       title: 'Task Queue',

@@ -96,10 +96,9 @@ function startRuntime(executable, dataDir, { args = [], cwd = dataDir, onUnexpec
     stopPromise = (async () => {
       if (exited) return
       child.stdin.end()
-      const terminate = setTimeout(() => child.kill('SIGTERM'), 3000)
-      const force = setTimeout(() => child.kill('SIGKILL'), 7000)
+      // 本机浏览器启动握手最长 45 秒，退出时要给已启动的专用进程留出关闭时间。
+      const force = setTimeout(() => child.kill('SIGKILL'), 60000)
       await exitPromise
-      clearTimeout(terminate)
       clearTimeout(force)
     })()
     return stopPromise

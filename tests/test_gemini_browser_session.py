@@ -51,22 +51,20 @@ def test_first_login_waits_then_returns_a_hidden_connection(monkeypatch, tmp_pat
         assert calls == [True, False, True]
     assert any(method == "Page.bringToFront" for method, _ in actions)
     assert models[1]["browser_url"].startswith("https://accounts.google.com/ServiceLogin?")
-    session.browser_ai_runtime._ensure_browser_target.assert_called_once_with(
-        tmp_path, MODEL, MODEL["browser_url"], 45, headless=True,
-    )
+    session.browser_ai_runtime._ensure_browser_target.assert_not_called()
 
 
-def test_login_timeout_hides_window_without_continuing_task(monkeypatch, tmp_path):
+def test_login_timeout_does_not_launch_another_browser(monkeypatch, tmp_path):
     calls, _, models = connections(monkeypatch, ["login_required", "login_required"])
     monkeypatch.setattr(session, "LOGIN_WAIT_SECONDS", 0)
     with pytest.raises(TimeoutError, match="尚未发送"):
         with session.connect_gemini_page(tmp_path, MODEL):
             pytest.fail("登录未完成不能继续发送图片")
     assert calls == [True, False]
-    assert session.browser_ai_runtime._ensure_browser_target.call_args.kwargs == {"headless": True}
+    session.browser_ai_runtime._ensure_browser_target.assert_not_called()
 
 
-def test_cancel_during_login_restores_hidden_mode_and_preserves_cancellation(monkeypatch, tmp_path):
+def test_cancel_during_login_does_not_relaunch_or_mask_cancellation(monkeypatch, tmp_path):
     calls, _, models = connections(monkeypatch, ["login_required"])
     token = Event()
     checks = 0
@@ -83,7 +81,7 @@ def test_cancel_during_login_restores_hidden_mode_and_preserves_cancellation(mon
         with session.connect_gemini_page(tmp_path, MODEL):
             pytest.fail("取消后不能继续任务")
     assert calls == [True, False]
-    assert session.browser_ai_runtime._ensure_browser_target.call_args.kwargs == {"headless": True}
+    session.browser_ai_runtime._ensure_browser_target.assert_not_called()
 
 
 def test_user_managed_browser_is_never_restarted_or_hidden(monkeypatch, tmp_path):

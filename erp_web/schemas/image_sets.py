@@ -36,16 +36,16 @@ class ImageSetPage(BaseModel):
 class ImageSetPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     style: str = Field(min_length=1, max_length=2000, description="整套图片共同的配色、字体、布局和视觉风格")
-    pages: list[ImageSetPage] = Field(min_length=2)
+    pages: list[ImageSetPage] = Field(min_length=1)
 
     @model_validator(mode="after")
     def coherent_pages(self):
         if len({page.key for page in self.pages}) != len(self.pages):
             raise ValueError("套图的页面标识不能重复。")
         common = [page for page in self.pages if page.scope == "common"]
-        if not 2 <= len(common) <= 8:
+        if common and not 2 <= len(common) <= 8:
             raise ValueError("共用套图需要 2 至 8 张图片。")
-        if common[0].role != "main" or any(page.role == "main" for page in common[1:]):
+        if common and (common[0].role != "main" or any(page.role == "main" for page in common[1:])):
             raise ValueError("套图必须且只能以一张主图开始。")
         sku_ids = []
         for page in self.pages:

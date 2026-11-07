@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import Context, copy_context
+from dataclasses import dataclass
 import base64
 import json
+import logging
 import os
 import shutil
 import socket
@@ -20,7 +24,25 @@ from typing import Any, Callable
 from erp_shared.browser_connection_config import normalize_browser_proxy
 from desktop_runtime.browser_debug_http import browser_debug_json
 
+
+@dataclass
+class _OwnedBrowser:
+    endpoint: str
+    process: subprocess.Popen | None
+    had_profile_lock: bool
+
+    def exited(self, profile_dir: Path) -> bool:
+        if (profile_dir / "SingletonLock").is_symlink():
+            return False
+        if self.process is not None:
+            return self.process.poll() is not None
+        return self.had_profile_lock
+
+
 _browser_launch_lock = Lock()
+_port_locks: dict[int, Lock] = {}
+_owned_sessions: dict[tuple[int, Path], _OwnedBrowser] = {}
+logger = logging.getLogger(__name__)
 _SESSION_FILE = ".erp-browser-session.json"
 
 
@@ -36,6 +58,126 @@ def browser_debug_connected(port: int) -> bool:
         return False
 
 
+@contextmanager
+def browser_operation(port: int):
+    """一个端口一次处理一个完整操作，收尾完成后才交给下一项。"""
+    with _browser_launch_lock:
+        lock = _port_locks.setdefault(port, Lock())
+    while not lock.acquire(timeout=0.25):
+        check_cancellation()
+    try:
+        check_cancellation()
+        yield
+    finally:
+        lock.release()
+
+
+def _session_record(profile_dir: Path) -> dict:
+    try:
+        record = json.loads((profile_dir / _SESSION_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _remember_session(port: int, profile_dir: Path, endpoint: str, process=None) -> _OwnedBrowser:
+    key = (port, profile_dir)
+    owned = _owned_sessions.get(key)
+    if owned is None or owned.endpoint != endpoint:
+        owned = _OwnedBrowser(endpoint, process, (profile_dir / "SingletonLock").is_symlink())
+        _owned_sessions[key] = owned
+    return owned
+
+
+def _clear_profile_caches(profile_dir: Path) -> None:
+    """仅删除专用资料目录内可重建的资源，不跟随链接或目录联接。"""
+    root = profile_dir.resolve()
+    for relative in (
+        "Default/Cache", "Default/Code Cache", "Default/GPUCache",
+        "Default/DawnGraphiteCache", "Default/DawnWebGPUCache",
+        "GraphiteDawnCache", "GrShaderCache", "ShaderCache",
+    ):
+        path = profile_dir / relative
+        try:
+            if path.resolve() == root / relative and path.is_dir():
+                shutil.rmtree(path)
+        except OSError:
+            logger.warning("未能删除浏览器缓存 %s", relative, exc_info=True)
+
+
+def finish_browser_session(port: int, profile_dir: Path, *, completed_page: tuple[str, str] | None = None,
+                           landing_page: tuple[str, str] | None = None) -> None:
+    """完整动作结束后回收实例。有其他任务页时，仅关闭已消费的页面。"""
+    try:
+        # 操作本身即使已经取消或超时，仍需给关闭协议独立的有限时间。
+        Context().run(_finish_browser_session, port, profile_dir, completed_page, landing_page)
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+        logger.warning("专用浏览器收尾未完成，端口 %s", port, exc_info=True)
+
+
+def _release_page(port, endpoint, completed_page, landing_page) -> bool:
+    """返回浏览器是否还有使用中的页面。人工导航后的同一标签属于新页面。"""
+    targets = browser_debug_json(port, "/json/list")
+    if not isinstance(targets, list):
+        raise ValueError("无法确认采集浏览器的剩余标签页。")
+    try:
+        pages = {(tab["id"], tab["url"]) for tab in targets if tab["type"] == "page"}
+    except (KeyError, TypeError) as exc:
+        raise ValueError("采集浏览器返回了无法识别的标签页。") from exc
+    remaining = pages - {completed_page, landing_page}
+    if all(url in ("about:blank", "chrome://newtab/", "edge://newtab/") for _, url in remaining):
+        return False
+    if completed_page in pages:
+        cdp = CdpWebSocket(endpoint)
+        try:
+            cdp.call("Target.closeTarget", {"targetId": completed_page[0]}, timeout=5)
+        finally:
+            cdp.close()
+    return True
+
+
+def _discard_closed_session(port: int, profile_dir: Path, owned: _OwnedBrowser) -> None:
+    if _session_record(profile_dir).get("websocket") == owned.endpoint:
+        _clear_profile_caches(profile_dir)
+        (profile_dir / _SESSION_FILE).unlink(missing_ok=True)
+    del _owned_sessions[port, profile_dir]
+
+
+def _finish_browser_session(port, profile_dir, completed_page, landing_page) -> None:
+    with _browser_launch_lock:
+        key = (port, profile_dir)
+        recorded = _session_record(profile_dir).get("websocket")
+        # 重启执行器后，手动选择的原采集标签仍可按磁盘记录核对归属。
+        owned = _owned_sessions.get(key)
+        expected = owned.endpoint if owned else (recorded if completed_page and completed_page[0] else None)
+        if not expected or recorded != expected:
+            return
+        try:
+            version = _browser_version(port)
+        except OSError:
+            if owned and owned.exited(profile_dir):
+                _discard_closed_session(port, profile_dir, owned)
+                return
+            raise
+        if version.get("webSocketDebuggerUrl") != expected:
+            return
+        owned = _remember_session(port, profile_dir, expected)
+        if completed_page is not None and _release_page(port, expected, completed_page, landing_page):
+            return
+        _close_managed_browser(port, profile_dir, version, 5)
+        if owned.process is not None:
+            owned.process.wait(timeout=5)
+        _discard_closed_session(port, profile_dir, owned)
+
+
+def close_runtime_browsers() -> None:
+    """执行器退出时回收本次持有的实例，包括仍供人工操作的窗口。"""
+    with _browser_launch_lock:
+        sessions = list(_owned_sessions)
+    for port, profile_dir in sessions:
+        finish_browser_session(port, profile_dir)
+
+
 def ensure_browser_debug_session(
     port: int, profile_dir: Path, timeout: int = 15, *, proxy_server: str = "",
     headless: bool | None = None,
@@ -45,14 +187,11 @@ def ensure_browser_debug_session(
     with _browser_launch_lock:
         if browser_debug_connected(port):
             version = _browser_version(port)
-            try:
-                session = json.loads((profile_dir / _SESSION_FILE).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                session = {}
-            if not isinstance(session, dict):
-                session = {}
-            if session.get("websocket") != version.get("webSocketDebuggerUrl"):
+            session = _session_record(profile_dir)
+            endpoint = version.get("webSocketDebuggerUrl")
+            if not endpoint or session.get("websocket") != endpoint:
                 raise RuntimeError("专用浏览器端口被其他会话占用，请关闭旧专用浏览器或更换调试端口后重试。")
+            _remember_session(port, profile_dir, endpoint)
             if headless is None:
                 return
             if session.get("headless") is headless and session.get("proxy_server", "") == proxy_server:
@@ -75,29 +214,45 @@ def ensure_browser_debug_session(
         if use_mac_launcher:
             # 由系统激活这个独立实例，避免只激活用户日常使用的另一个 Chrome。
             arguments = ["/usr/bin/open", "-n", "-a", str(app_bundle), "--args", *arguments[1:]]
+        check_cancellation()
         process = subprocess.Popen(
             arguments,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        deadline = time.monotonic() + max(1, timeout)
-        while time.monotonic() < deadline:
-            if browser_debug_connected(port):
-                version = _browser_version(port)
-                session_file = profile_dir / _SESSION_FILE
-                temporary = session_file.with_suffix(".tmp")
-                temporary.write_text(json.dumps({
-                    "websocket": version["webSocketDebuggerUrl"],
-                    "headless": bool(headless), "proxy_server": proxy_server,
-                }), encoding="utf-8")
-                temporary.replace(session_file)
-                return
-            exit_code = process.poll()
-            if exit_code is not None and (not use_mac_launcher or exit_code != 0):
-                raise RuntimeError("专用浏览器启动失败，请关闭使用同一资料目录的窗口后重试。")
-            time.sleep(0.5)
-        raise RuntimeError(f"浏览器调试端口 {port} 启动超时，请检查浏览器是否已启动。")
+        try:
+            # macOS 的 open 不是 Chrome 本身，须先完成有时限的握手以便取消时能关闭真实实例。
+            handshake = Context() if use_mac_launcher else copy_context()
+            deadline = time.monotonic() + max(1, timeout)
+            while time.monotonic() < deadline:
+                if handshake.run(browser_debug_connected, port):
+                    version = handshake.run(_browser_version, port)
+                    session_file = profile_dir / _SESSION_FILE
+                    temporary = session_file.with_suffix(".tmp")
+                    temporary.write_text(json.dumps({
+                        "websocket": version["webSocketDebuggerUrl"],
+                        "headless": bool(headless), "proxy_server": proxy_server,
+                    }), encoding="utf-8")
+                    temporary.replace(session_file)
+                    _remember_session(port, profile_dir, version["webSocketDebuggerUrl"],
+                                      None if use_mac_launcher else process)
+                    return
+                exit_code = process.poll()
+                if exit_code is not None and (not use_mac_launcher or exit_code != 0):
+                    raise RuntimeError("专用浏览器启动失败，请关闭使用同一资料目录的窗口后重试。")
+                time.sleep(0.5)
+            raise RuntimeError(f"浏览器调试端口 {port} 启动超时，请检查浏览器是否已启动。")
+        except BaseException:
+            # 握手失败时尚无可核对的端点，只回收本次启动的子进程。
+            if not use_mac_launcher and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+            raise
 
 
 def _close_managed_browser(port: int, profile_dir: Path, version: dict[str, Any], timeout: int) -> None:
@@ -118,7 +273,8 @@ def _close_managed_browser(port: int, profile_dir: Path, version: dict[str, Any]
         if not browser_debug_connected(port) and not (had_profile_lock and profile_lock.is_symlink()):
             return
         time.sleep(0.2)
-    raise RuntimeError("专用浏览器未能退出，尚未切换显示状态；请关闭该专用浏览器后重试。")
+    raise RuntimeError("专用浏览器未能退出，请手动关闭专用浏览器后重试。")
+
 
 class CdpWebSocket:
     def __init__(self, websocket_url: str) -> None:
@@ -357,5 +513,8 @@ __all__ = [
     "find_chrome_path",
     "find_named_browser_path",
     "ensure_browser_debug_session",
+    "browser_operation",
+    "finish_browser_session",
+    "close_runtime_browsers",
     "open_auth_link_in_browser",
 ]

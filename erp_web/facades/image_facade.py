@@ -410,24 +410,29 @@ def plan_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus:
     context = get_context()
     with context.image_batches.lock, context.products.mutation_scope({"draft_id": body.get("draft_id")}):
         product, draft = _image_set_target(body)
-        sources = _image_set_sources(product, draft, body.get("source_image_ids") or [])
+        reference_ids = body.get("source_image_ids") or []
+        sources = _image_set_sources(product, draft, reference_ids) if reference_ids else []
         try:
             sku_targets = image_set_service.sku_image_targets(product, draft, body.get("sku_ids") or [])
         except ValueError as exc:
             raise RequestValidationError(str(exc)) from None
         sku_sources = (_image_set_sources(product, draft, [target["source_id"] for target in sku_targets], limit=None)
                        if sku_targets else [])
-    # 识图和结构化输出由原生 Agent 完成，商品锁不跨模型等待。
-    config = load_app_config()
-    require_model_platform(config, "image.plan")
+    # 共用图由识图模型规划，独立 SKU 图直接使用草稿中的规格与原图关联。
+    if sources:
+        config = load_app_config()
+        require_model_platform(config, "image.plan")
     try:
         for source in sku_sources:
             image_set_service.reference_content(_app_dir(), [source])
-        plan = image_set_service.plan_image_set(
-            app_dir=_app_dir(), config=config, messages=context.pydantic_messages,
-            product=product, draft=draft, sources=sources, count=body.get("count", 6), prompt=body.get("prompt", ""),
-        )
-        plan = image_set_service.include_sku_pages(plan, sku_targets)
+        prompt = (body.get("prompt") or "").strip()
+        common_plan = None
+        if sources:
+            common_plan = image_set_service.plan_image_set(
+                app_dir=_app_dir(), config=config, messages=context.pydantic_messages,
+                product=product, draft=draft, sources=sources, count=body.get("count", 6), prompt=prompt,
+            )
+        plan = image_set_service.assemble_image_set(common_plan, sku_targets, sku_prompt="" if common_plan else prompt)
     except ValueError as exc:
         raise RequestValidationError(str(exc)) from None
     with context.image_batches.lock, context.products.mutation_scope({"draft_id": draft["draft_id"]}):

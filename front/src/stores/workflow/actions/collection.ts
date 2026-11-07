@@ -244,7 +244,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
             }
           } else applyMutationIndexes(result)
           Object.assign(row, collected, { status: collected.ok ? 'success' : 'failed', verification: undefined })
-          if (collected.status === 'partial') row.error = collected.error || '仅采集到部分资料，请检查商品库并补充或重试。'
+          if (collected.status === 'partial') row.error = collected.error || '仅采集到部分资料，请检查采集箱并补充或重试。'
           if (!collected.ok && !row.error) row.error = '采集未完成，请查看失败原因或重试。'
           if (collected.ok) {
             succeeded++
@@ -272,7 +272,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
       collectDiagnostics.value = {
         ...collectDiagnostics.value, status: succeeded === completed ? 'success' : 'failed',
         progress: Math.round(completed / rows.length * 100), message,
-        nextAction: succeeded < completed ? '查看列表中的失败原因，可编辑链接后重试。' : '可前往商品库检查采集结果。',
+        nextAction: succeeded < completed ? '查看列表中的失败原因，可编辑链接后重试。' : '可前往采集箱检查采集结果。',
       }
       addLog(message)
     } finally {
@@ -360,7 +360,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
       const message = `本轮${saveOnly ? '快照保存' : '采集'}结束：${succeeded} 页完成，${completed - succeeded} 页失败。`
       collectDiagnostics.value = {
         ...collectDiagnostics.value, status: succeeded === completed ? 'success' : 'failed', progress: 100, message,
-        nextAction: succeeded < completed ? '查看本轮结果中的失败原因，勾选失败页面后可重新采集。' : saveOnly ? '可在本轮结果中打开各页面的 HTML 快照。' : '可前往商品库检查采集结果。',
+        nextAction: succeeded < completed ? '查看本轮结果中的失败原因，勾选失败页面后可重新采集。' : saveOnly ? '可在本轮结果中打开各页面的 HTML 快照。' : '可前往采集箱检查采集结果。',
       }
       addLog(message)
     } finally {
@@ -444,7 +444,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
         ...collectDiagnostics.value,
         status: cleaned.ok === false ? 'failed' : 'success',
         progress: cleaned.ok === false ? 0 : 100,
-        message: String(cleaned.message || '1688 文本已清洗，可检查字段后导入商品库。'),
+        message: String(cleaned.message || '1688 文本已清洗，可检查字段后导入采集箱。'),
         downloadedImages: Array.isArray(cleaned.images) ? cleaned.images.length : collectDiagnostics.value.downloadedImages,
         antiBotWarning: Boolean(cleaned.manual_required),
         raw: cleaned,

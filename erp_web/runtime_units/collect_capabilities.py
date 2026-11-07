@@ -98,7 +98,7 @@ CLAIM_PRODUCTS_TOOL = "claim_products"
 
 @ai_tool(
     name=SOURCE_COLLECT_TOOL,
-    description="按链接采集源平台商品并保存到本地商品库。",
+    description="按链接采集源平台商品并保存到本地采集箱。",
     permission="collect.write",
     side_effect="write",
     approval_required=False,

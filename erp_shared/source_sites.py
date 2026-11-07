@@ -150,7 +150,7 @@ class SourceSiteSpec:
     def next_action(self, error_code: str) -> str:
         code = str(error_code or "").upper()
         if not code:
-            return "采集已完成，可进入商品库继续 AI 文案、生图和编辑。"
+            return "采集已完成，可进入采集箱继续 AI 文案、生图和编辑。"
         if self.key == "1688":
             if "API" in code:
                 return "请检查 1688 官方 API 凭证、接口权限和商品详情接口地址；未开通权限时可切回浏览器采集。"

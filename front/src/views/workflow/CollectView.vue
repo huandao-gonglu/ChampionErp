@@ -116,7 +116,7 @@ function saveSettings() {
   <div class="space-y-6">
     <PageHeader
       title="采集商品"
-      description="从浏览器页面、商品链接或已有资料采集，统一保存到商品库。"
+      description="从浏览器页面、商品链接或已有资料采集，统一保存到采集箱。"
     >
       <template #actions>
         <span class="rounded-full bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-700 ring-1 ring-primary-100 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30">{{ collectStatusLabel }}</span>
@@ -209,8 +209,8 @@ function saveSettings() {
           <div class="rounded-2xl border border-slate-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div class="text-sm font-bold text-slate-950 dark:text-white">4. 导入商品库</div>
-                <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">导入后会生成商品记录和来源图片，可在商品库推到草稿箱。</p>
+                <div class="text-sm font-bold text-slate-950 dark:text-white">4. 导入采集箱</div>
+                <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">导入后会生成商品记录和来源图片，可在采集箱推到草稿箱。</p>
               </div>
               <div class="flex flex-wrap gap-2">
                 <button class="btn btn-primary" :disabled="props.loading" @click="emit('importManual')">导入手动内容</button>
@@ -241,13 +241,13 @@ function saveSettings() {
               </label>
               <label class="mt-4 flex items-center gap-2 rounded-2xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100 dark:bg-blue-500/10 dark:ring-blue-500/20">
                 <input v-model="props.form.autoAiRecognition" type="checkbox" class="size-4 rounded border-blue-200 text-brand-600 focus:ring-brand-500" />
-                <span class="text-sm font-medium text-blue-950 dark:text-blue-100">采集后提示检查商品库</span>
+                <span class="text-sm font-medium text-blue-950 dark:text-blue-100">采集后提示检查采集箱</span>
               </label>
             </div>
 
             <div class="rounded-2xl bg-white p-4 ring-1 ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20">
               <div class="text-sm font-bold text-slate-950 dark:text-white">2. 入库后处理</div>
-              <p class="mt-3 text-sm text-slate-700 dark:text-accent-200">采集完成后先在商品库检查文本和通用图片，再推到草稿箱生成独立草稿。</p>
+              <p class="mt-3 text-sm text-slate-700 dark:text-accent-200">采集完成后先在采集箱检查文本和通用图片，再推到草稿箱生成独立草稿。</p>
             </div>
           </div>
 

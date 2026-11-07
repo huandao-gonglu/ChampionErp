@@ -140,7 +140,7 @@ function checkDraftUpdates() {
 }
 const draftWorkspaceImagesLoadedFor = ref('')
 const editorMode = ref<'text' | 'images'>('text')
-const imageEditorTitle = ref('商品库图片编辑')
+const imageEditorTitle = ref('采集箱图片编辑')
 const navItems = workflowNavItems
 
 useAiPageContext(() => {
@@ -183,7 +183,7 @@ async function openProductEditor(item?: ProductIndexItem) {
   focusProductSku.value = ''
   if (item) await store.loadProduct(item)
   editorMode.value = 'text'
-  imageEditorTitle.value = '商品库图片编辑'
+  imageEditorTitle.value = '采集箱图片编辑'
   editorOpen.value = true
 }
 

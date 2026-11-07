@@ -1,6 +1,6 @@
 /** 页面定位快照；不包含商品正文、表单值或系统指令。 */
 export const aiPageLabels = {
-  orders: '订单中心', dashboard: '仪表盘', research: '选品调研', collect: '采集', library: '商品库',
+  orders: '订单中心', dashboard: '仪表盘', research: '选品调研', collect: '采集', library: '采集箱',
   drafts: '草稿箱', publish: '任务队列', onlineProducts: '在线商品',
   auth: '平台授权与设置', ai_work: '主对话',
   systemSettings: '系统设置',

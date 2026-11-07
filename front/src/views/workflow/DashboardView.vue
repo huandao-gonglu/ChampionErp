@@ -49,7 +49,7 @@ const currentProductMeta = computed(() => {
     props.product.source.price ? `${props.product.source.price} ${props.product.source.currency || ''}`.trim() : '',
     props.product.source.imagePool.length ? `${props.product.source.imagePool.length} 张图片` : '',
   ].filter(Boolean)
-  return parts.length ? parts.join(' / ') : '等待采集或从商品库加载'
+  return parts.length ? parts.join(' / ') : '等待采集或从采集箱加载'
 })
 
 const recentProducts = computed(() => [...props.productsIndex]
@@ -214,7 +214,7 @@ function scrollToOrders() { emit('navigate', 'orders') }
             <h2 class="card-title">最近商品</h2>
             <p class="muted mt-1">最近更新的本地商品记录。</p>
           </div>
-          <button type="button" class="btn btn-outline" @click="emit('navigate', 'library')">进入商品库</button>
+          <button type="button" class="btn btn-outline" @click="emit('navigate', 'library')">进入采集箱</button>
         </div>
 
         <div class="mt-4 overflow-hidden">

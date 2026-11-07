@@ -12,6 +12,7 @@ import signal
 import sys
 from threading import Event, Lock
 
+from .browser_debug_service import close_runtime_browsers
 from .config import LocalConfig
 from .dispatcher import dispatch
 from .operation import bind_operation
@@ -92,7 +93,10 @@ def main():
                           'ok': False, 'error': str(exc), 'error_code': 'INVALID_DESKTOP_CALL'})
     finally:
         stop()
+        # 取消后即可释放专用浏览器，避免被仍在收尾的网络读取拖住。
+        close_runtime_browsers()
         pool.shutdown(wait=True, cancel_futures=True)
+        close_runtime_browsers()
 
 
 if __name__ == '__main__':

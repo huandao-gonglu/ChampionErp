@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
-from pathlib import Path
 import time
 import urllib.parse
 import urllib.request
@@ -15,9 +13,15 @@ from erp_shared import html as page_html
 from erp_shared.source_parser import extract_1688_context_data, extract_1688_detail_images, collect_product_image_urls, validated_1688_detail_url
 from erp_shared.source_sites import detect_source_site, source_site
 from .browser_debug_http import browser_debug_json
-from .browser_debug_service import CdpWebSocket, browser_debug_commands, ensure_browser_debug_session
+from .browser_debug_service import (
+    CdpWebSocket, browser_debug_commands, browser_operation, ensure_browser_debug_session,
+    finish_browser_session,
+)
 from .operation import check_cancellation, remaining_seconds, LocalOperationError
 from erp_shared.collection import same_collection_page, VERIFICATION_REASONS, WAIT_MESSAGE
+
+
+_COLLECTION_HOME = 'https://www.1688.com/'
 
 
 def browser_status(config):
@@ -52,7 +56,14 @@ def target_for_url(config, url):
 
 
 def open_browser(config, url=''):
-    target_for_url(config, url or 'https://www.1688.com/')
+    with browser_operation(config.browser_port):
+        try:
+            target = target_for_url(config, url or _COLLECTION_HOME)
+            if not url or url == _COLLECTION_HOME:
+                config.collection_landing_tab_id = str(target.get('id') or '')
+        except Exception:
+            finish_browser_session(config.browser_port, config.browser_profile, completed_page=('', ''))
+            raise
     return {'ok': True, 'port': config.browser_port, 'message': '已打开采集浏览器，请先登录后再采集。'}
 
 
@@ -114,7 +125,49 @@ def _fetch(cdp, url, referer, limit):
 def read_collection(config, *, tab_url='', platform_hint='', product_url='', browser_tab_id='', save_only=False, open_url=False):
     """显式接收本机配置和目标；返回的页面、素材与错误均不含业务写入。"""
     if open_url:
-        target = target_for_url(config, product_url or tab_url)
+        _require_web_url(product_url or tab_url)
+    with browser_operation(config.browser_port):
+        target = None
+        keep_page = not open_url
+        page_url = product_url or tab_url
+        try:
+            if open_url:
+                target = target_for_url(config, product_url or tab_url)
+            else:
+                target = _select_target(config, browser_tab_id, product_url, tab_url, platform_hint)
+            if not target:
+                raise LocalOperationError('NO_PRODUCT_TAB_FOUND', 'NO_PRODUCT_TAB_FOUND：未找到指定的商品标签页。')
+            snapshot, assets, verification = _read_target(
+                config, target, product_url, tab_url, platform_hint, save_only, open_url,
+            )
+            # 人工验证必须用原标签恢复；手动保存快照后仍可从同一页正式采集。
+            page_url = snapshot.get('url') or page_url
+            keep_page = verification or (save_only and not open_url)
+        finally:
+            if not keep_page and (target or open_url):
+                finish_browser_session(config.browser_port, config.browser_profile,
+                                       completed_page=(str((target or {}).get('id') or ''), page_url),
+                                       landing_page=(config.collection_landing_tab_id, _COLLECTION_HOME))
+        return {'snapshot': snapshot, 'assets': assets, 'browserStatus': browser_status(config)}
+
+
+def _select_target(config, browser_tab_id, product_url, tab_url, platform_hint):
+    try:
+        tabs = browser_debug_json(config.browser_port, '/json')
+    except OSError as exc:
+        raise LocalOperationError('REMOTE_DEBUGGING_NOT_CONNECTED', '未连接采集浏览器，请打开专用浏览器后重试。') from exc
+    pages = [tab for tab in tabs if tab.get('type') == 'page']
+    if browser_tab_id:
+        return next((tab for tab in pages if tab.get('id') == browser_tab_id), None)
+    explicit = tab_url or product_url
+    if explicit:
+        return next((tab for tab in pages if same_collection_page(explicit, str(tab.get('url') or ''))), None)
+    platforms = [platform_hint] if platform_hint else ['1688', 'amazon']
+    return next((tab for tab in pages if detect_source_site(str(tab.get('url') or '')) in platforms), None)
+
+
+def _read_target(config, target, product_url, tab_url, platform_hint, save_only, open_url):
+    if open_url:
         # 新页面仍沿用原来的 complete 等待上限。
         with_cdp = CdpWebSocket(target['webSocketDebuggerUrl'])
         try:
@@ -126,18 +179,6 @@ def read_collection(config, *, tab_url='', platform_hint='', product_url='', bro
                 time.sleep(1)
         finally:
             with_cdp.close()
-    else:
-        try:
-            tabs = browser_debug_json(config.browser_port, '/json')
-        except OSError as exc:
-            raise LocalOperationError('REMOTE_DEBUGGING_NOT_CONNECTED', '未连接采集浏览器，请打开专用浏览器后重试。') from exc
-        pages = [tab for tab in tabs if tab.get('type') == 'page']
-        target = next((tab for tab in pages if tab.get('id') == browser_tab_id), None) if browser_tab_id else None
-        if not browser_tab_id:
-            explicit = tab_url or product_url
-            target = next((tab for tab in pages if same_collection_page(explicit, str(tab.get('url') or ''))), None) if explicit else next((tab for tab in pages if detect_source_site(str(tab.get('url') or '')) in ([platform_hint] if platform_hint else ['1688', 'amazon'])), None)
-    if not target:
-        raise LocalOperationError('NO_PRODUCT_TAB_FOUND', 'NO_PRODUCT_TAB_FOUND：未找到指定的商品标签页。')
     _require_web_url(str(target.get('url') or product_url or tab_url))
     cdp = CdpWebSocket(target['webSocketDebuggerUrl'])
     try:
@@ -146,7 +187,7 @@ def read_collection(config, *, tab_url='', platform_hint='', product_url='', bro
         platform = detected if detected != 'generic' else platform_hint or detected
         _, reason = source_site(platform).diagnose(snapshot['url'], snapshot['html'], snapshot['text'], snapshot['title'], detect_slider=True)
         if save_only or reason in VERIFICATION_REASONS:
-            return {'snapshot': snapshot, 'assets': [], 'browserStatus': browser_status(config)}
+            return snapshot, [], reason in VERIFICATION_REASONS
         if (product_url or tab_url) and not same_collection_page(product_url or tab_url, snapshot['url']):
             raise LocalOperationError('TAB_NOT_ACCESSIBLE', 'TAB_NOT_ACCESSIBLE：原标签页已离开目标商品，请返回商品页后重试。')
         assets = []
@@ -166,7 +207,7 @@ def read_collection(config, *, tab_url='', platform_hint='', product_url='', bro
             except (OSError, ValueError) as exc:
                 # 后端仍可下载公开素材；无法下载的资料由原完整性规则判断。
                 assets.append({'url': url, 'error': str(exc)})
-        return {'snapshot': snapshot, 'assets': assets, 'browserStatus': browser_status(config)}
+        return snapshot, assets, False
     finally:
         cdp.close()
 

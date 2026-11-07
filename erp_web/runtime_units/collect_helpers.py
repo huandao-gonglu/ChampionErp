@@ -459,7 +459,7 @@ def claim_products_to_platforms(
     if selected_markets is not None:
         groups = _selected_market_groups(selected_markets, active_context.config.load_store_config())
     else:
-        # AI 认领与市场准备任务仍显式按平台创建；与商品库共用复制及持久化流程。
+        # AI 认领与市场准备任务仍显式按平台创建；与采集箱共用复制及持久化流程。
         targets = normalize_platforms(platforms) or ["mercadolibre"]
         groups = [default_draft(platform)["target_sites"] for platform in targets if platform in PLATFORMS]
     targets = list(dict.fromkeys(target["platform"] for group in groups for target in group))

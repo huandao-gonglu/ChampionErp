@@ -31,6 +31,11 @@ from erp_shared.browser_ai import (
     browser_ai_port,
 )
 
+
+class BrowserLoginRequired(RuntimeError):
+    """保留可见网页，由用户登录后再发起下一次操作。"""
+
+
 def open_browser_ai_page(app_dir: Path | str, model: dict[str, Any], timeout: int = 30) -> BrowserAiRunResult:
     provider = normalize_browser_provider(model.get("browser_provider"))
     url = browser_ai_url(model)
@@ -76,7 +81,7 @@ def run_browser_ai_chat(
         _prepare_page(cdp, min(timeout, 45))
         readiness = _readiness(cdp)
         if not readiness.get("hasInput"):
-            raise RuntimeError("浏览器 AI 页面没有发现可输入的对话框；请先在打开的页面中完成登录。")
+            raise BrowserLoginRequired("浏览器 AI 页面没有发现可输入的对话框；请先在打开的页面中完成登录。")
         before = _assistant_messages(cdp)
         _send_prompt(cdp, prompt)
         item = _wait_for_new_answer(cdp, len(before), timeout)
@@ -396,5 +401,6 @@ __all__ = [
     "normalize_browser_mode",
     "normalize_browser_provider",
     "open_browser_ai_page",
+    "BrowserLoginRequired",
     "run_browser_ai_chat",
 ]

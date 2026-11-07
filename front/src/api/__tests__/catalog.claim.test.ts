@@ -4,7 +4,7 @@ import { claimProducts } from '@/api/workflow/catalog'
 
 vi.mock('@/api/client', () => ({ API_REQUEST_TIMEOUT_MS: 30000, apiClient: { post: vi.fn() } }))
 
-describe('商品库推到草稿请求', () => {
+describe('采集箱推到草稿请求', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('一次提交商品和选中的市场，由后端按语言分组并返回实际数量', async () => {

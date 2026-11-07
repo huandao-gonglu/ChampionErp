@@ -104,6 +104,9 @@ def test_collection_and_ai_share_browser_process_management():
         source = (ROOT / "desktop_runtime" / name).read_text()
         assert "ensure_browser_debug_session(" in source
         assert "subprocess.Popen" not in source
+    for path in (ROOT / "desktop_runtime").glob("*.py"):
+        if path.name != "browser_debug_service.py":
+            assert "Browser.close" not in path.read_text() and "Target.closeTarget" not in path.read_text()
 
 
 def test_canvas_images_are_an_explicit_browser_transport_without_api_or_agent_owner():

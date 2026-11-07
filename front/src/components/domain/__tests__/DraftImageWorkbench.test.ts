@@ -29,7 +29,7 @@ function fixture() {
 
 describe('草稿图片 V2 工作台', () => {
   it('按绑定分别限制修图和套图规划，已有素材仍可选中', async () => {
-    const { wrapper } = fixture()
+    const { wrapper, draft } = fixture()
     await wrapper.get('[data-region="sku"] input[aria-label="选择处理图片 red"]').setValue(true)
     setOperationAvailability({ desktop_reason: '使用桌面端', blocked_use_cases: { 'image.translate': 'Gemini Canvas 需要桌面端' } })
     await flushPromises()
@@ -40,6 +40,12 @@ describe('草稿图片 V2 工作台', () => {
     setOperationAvailability({ desktop_reason: '', blocked_use_cases: { 'image.plan': '套图规划需要 API 模型' } })
     await flushPromises()
     expect(button(wrapper, 'AI 修改').attributes('disabled')).toBeUndefined()
+    expect(button(wrapper, '生成套图').attributes('disabled')).toBeUndefined()
+    await button(wrapper, '生成套图').trigger('click')
+    await wrapper.get('input[value="sku"]').setValue()
+    expect(button(wrapper, '自动规划套图').attributes('disabled')).toBeUndefined()
+    draft.skuItems.forEach(row => { row.selected = false })
+    await flushPromises()
     expect(button(wrapper, '生成套图').attributes('disabled')).toBeDefined()
   })
   it('共用图仍展示在 SKU 区，两区勾选同步且批量处理只提交一次', async () => {

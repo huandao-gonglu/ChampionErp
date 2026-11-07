@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from erp_shared.desktop import LocalImageEditRequest, validate_action
 from . import browser_ai_runtime, collection
-from .browser_debug_service import open_auth_link_in_browser
+from .browser_debug_service import browser_operation, finish_browser_session, open_auth_link_in_browser
 from .local_actions import open_profile
 from .cli import _cli_command_parts, _run_codex_cli_text
 from .gemini_canvas_runtime import GeminiCanvasProvider, check_canvas_connection
@@ -31,7 +31,8 @@ def dispatch(config, operation, params):
     if operation == 'collect.read':
         return collection.read_collection(config, **params)
     if operation == 'collect.verify':
-        return collection.inspect_verification(config, **params)
+        with browser_operation(config.browser_port):
+            return collection.inspect_verification(config, **params)
     if operation == 'auth.open':
         if urlsplit(params['url']).scheme not in {'http', 'https'}:
             raise ValueError('授权链接必须使用 HTTP 或 HTTPS。')
@@ -46,6 +47,24 @@ def dispatch(config, operation, params):
         if params['probe_image']:
             text = _inline_cli_probe_image(text, config.directory)
         return {'text': text}
+    port = browser_ai_runtime.browser_ai_port(model)
+    profile = browser_ai_runtime.browser_ai_profile_dir(config.directory, model)
+    managed = browser_ai_runtime.normalize_browser_mode(model.get('browser_mode')) == 'managed_profile'
+    with browser_operation(port):
+        keep_for_login = False
+        try:
+            result = _dispatch_browser_ai(config, operation, params, model, timeout)
+            keep_for_login = operation == 'browser.ai.open' and not result['ready']
+            return result
+        except browser_ai_runtime.BrowserLoginRequired:
+            keep_for_login = True
+            raise
+        finally:
+            if managed and not keep_for_login:
+                finish_browser_session(port, profile)
+
+
+def _dispatch_browser_ai(config, operation, params, model, timeout):
     if operation == 'browser.ai.open':
         return asdict(browser_ai_runtime.open_browser_ai_page(config.directory, model, timeout))
     if operation == 'browser.ai.chat':

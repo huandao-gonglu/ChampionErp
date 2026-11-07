@@ -106,9 +106,9 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     setError('')
     try {
       productsIndex.value = await fetchProductsIndex()
-      addLog(`商品库已刷新：${productsIndex.value.length} 条。`)
+      addLog(`采集箱已刷新：${productsIndex.value.length} 条。`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '刷新商品库失败')
+      setError(exc instanceof Error ? exc.message : '刷新采集箱失败')
     } finally {
       loading.value = false
     }
@@ -137,7 +137,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       restorePrecheckFromProduct()
       applyMutationIndexes(result)
       fillFormFromState(appConfig.value)
-      syncCollectDiagnosticsFromProduct('已加载商品库商品。')
+      syncCollectDiagnosticsFromProduct('已加载采集箱中的商品。')
       syncPricingInputFromProduct()
       addLog(`已加载商品：${product.value.source.title || product.value.name || item.productId}`)
     } catch (exc) {

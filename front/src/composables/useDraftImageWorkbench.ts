@@ -162,8 +162,9 @@ export function useDraftImageWorkbench(options: {
     }
   }
 
-  async function planSet(ids: string[], count: number, prompt: string, skuIds: string[] = []) {
-    if (busy.value || !ids.length || platformBlocked('image.plan')) return
+  async function planSet(ids: string[], count: number | undefined, prompt: string, skuIds: string[] = []) {
+    if (busy.value || (!ids.length && !skuIds.length)) return
+    if (ids.length && platformBlocked('image.plan')) return
     const token = epoch
     saving.value = true; notice.value = ''
     try {

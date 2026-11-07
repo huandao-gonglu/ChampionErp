@@ -22,7 +22,7 @@ export async function processDraftImages(draft: DraftDetail, operation: 'transla
   return state(data)
 }
 
-export async function planDraftImageSet(draft: DraftDetail, ids: string[], count: number, prompt: string, skuIds: string[] = []) {
+export async function planDraftImageSet(draft: DraftDetail, ids: string[], count: number | undefined, prompt: string, skuIds: string[] = []) {
   const { data } = await apiClient.post<{ ok: boolean; plan: ImageSetPlan; updated_at: string }>('/api/draft-images/plan-set', {
     product_id: draft.productId, draft_id: draft.draftId, updated_at: draft.updatedAt,
     source_image_ids: ids, count, prompt, sku_ids: skuIds,

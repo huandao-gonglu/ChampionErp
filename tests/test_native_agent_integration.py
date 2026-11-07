@@ -125,6 +125,36 @@ def test_chat_inbox_canonical_history_and_official_stream(tmp_path):
     assert not ui.run_registry.is_active(CONVERSATION)
 
 
+def test_task_opening_streams_before_business_tool_executes(tmp_path):
+    opening = "我会核对所选草稿的库存，列出缺货的 SKU。"
+    outcome = "所选草稿没有缺货的 SKU。"
+    events = []
+
+    async def model(messages, info):
+        if business_returns(messages):
+            yield outcome
+            return
+        assert "在第一个工具调用" in info.instructions
+        yield opening
+        yield {0: DeltaToolCall(name="read_stock", json_args='{"draft_id":"draft-a"}',
+                                tool_call_id="read-once")}
+
+    def read_stock(args, ctx):
+        events.append("执行库存查询")
+        return {"out_of_stock": []}
+
+    def observe(chunk):
+        for line in chunk.decode().splitlines():
+            if line.startswith("data: {"):
+                frame = json.loads(line.removeprefix("data: "))
+                if frame["type"] == "text-delta":
+                    events.append(frame["delta"])
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(binding("read_stock", read_stock)))
+    asyncio.run(ui.prepare_run(body("帮我看看这个草稿哪些 SKU 缺货")).stream(observe))
+    assert "".join(events) == opening + "执行库存查询" + outcome
+
+
 def test_input_leaves_queue_before_model_replies(tmp_path):
     async def model(messages, info):
         snapshot = ui.dump_ui_messages(CONVERSATION)

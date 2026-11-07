@@ -23,7 +23,7 @@ function mountPanel(selectedIds: string[] = []) {
   return mount(LibraryPanel, { props: { items, selectedIds, platformOptions, storeConfig, loading: false } })
 }
 
-describe('商品库按语言选择目标市场', () => {
+describe('采集箱按语言选择目标市场', () => {
   it('语言为父级，市场为子级，同语言跨平台归组且不展示 CBT', async () => {
     const wrapper = mountPanel()
     const spanish = wrapper.get('[data-language="es"]')

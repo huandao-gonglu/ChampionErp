@@ -428,7 +428,7 @@ onBeforeUnmount(() => {
         <div class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
           <div>
             <h2 class="card-title">来源状态</h2>
-            <p class="muted mt-1">调研结果自动保存；确认货源后才写入商品库。</p>
+            <p class="muted mt-1">调研结果自动保存；确认货源后才写入采集箱。</p>
           </div>
           <div class="mt-4 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
             <table class="w-full min-w-[560px] text-left text-sm">

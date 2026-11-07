@@ -2,6 +2,8 @@
 
 生产环境使用跨境 ERP 服务商应用（AppKey 4848173）。商品采集、采购、订单、支付和物流共用同一应用，每位客户的买家授权保存在自己的 ERP 空间。企业自用应用 1938727 已退出 ERP 业务。
 
+方案提供的接口、消息类型及 ERP 已接入的 11 个业务接口见 [1688 API 与消息目录](alibaba-api-catalog.md)。
+
 ## 管理员配置与客户使用
 
 管理员在「系统设置 → 管理员共享设置 → 1688 跨境 ERP 服务商应用」维护 AppKey、AppSecret 和回调地址。首次保存前可通过后端环境变量 `ERP_ALIBABA_CROSSBORDER_APP_KEY`、`ERP_ALIBABA_CROSSBORDER_APP_SECRET` 和 `ERP_ALIBABA_CROSSBORDER_REDIRECT_URI` 提供初始值。密钥仅保存在服务端。

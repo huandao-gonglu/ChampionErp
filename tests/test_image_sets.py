@@ -239,6 +239,27 @@ def test_request_contract_validates_count_and_retry_shape():
         validate_request_payload({"product_id": "p", "draft_id": "d", "updated_at": "v", "request_id": "r", "retry_page_ids": "page"}, endpoint="/api/draft-images/generate-set")
 
 
+def test_sku_only_plans_and_generates_exactly_one_sku_without_common_planning(monkeypatch, app_dir):
+    product, draft, raw = setup_sources(app_dir)
+    sku_id = draft["sku_items"][0]["sku_id"]
+    request = {"product_id": product["product_id"], "draft_id": draft["draft_id"], "updated_at": draft["updated_at"],
+               "source_image_ids": [], "sku_ids": [sku_id], "prompt": "使用浅蓝色背景"}
+    endpoint = "/api/draft-images/plan-set"
+    with pytest.raises(RequestValidationError):
+        validate_request_payload({**request, "sku_ids": []}, endpoint=endpoint)
+    monkeypatch.setattr(image_set_service, "plan_image_set", lambda **_: pytest.fail("只生成 SKU 图时不应规划共用图"))
+    result, status = image_facade.plan_draft_image_set_payload(validate_request_payload(request, endpoint=endpoint))
+    assert status == 200
+    [page] = result["plan"]["pages"]
+    assert page["scope"] == "sku" and page["sku_ids"] == [sku_id] and page["source_image_ids"] == ["red"]
+    calls = image_model(monkeypatch, raw)
+    image_facade.generate_draft_image_set_payload(body(product, draft, plan=result["plan"]))
+    done = finish(draft["draft_id"])
+    assert done["image_batch"]["success"] == 1 and len(calls) == 1
+    assert calls[0]["image_ids"] == ["red"] and request["prompt"] in calls[0]["prompt"]
+    assert done["draft"]["images"] == draft["images"]
+
+
 def test_sku_plan_deduplicates_shared_source_and_generates_separate_assets(monkeypatch, app_dir):
     product, draft, raw = setup_sources(app_dir)
     product["sku_items"][1]["image_asset_id"] = "red"
@@ -286,7 +307,7 @@ def test_sku_target_scope_cannot_be_guessed_or_expanded(monkeypatch, app_dir):
     product, draft, raw = setup_sources(app_dir)
     sku_id = draft["sku_items"][0]["sku_id"]
     targets = image_set_service.sku_image_targets(product, draft, [sku_id])
-    spec = image_set_service.include_sku_pages(ImageSetPlan.model_validate(plan()), targets).model_dump()
+    spec = image_set_service.assemble_image_set(ImageSetPlan.model_validate(plan()), targets).model_dump()
     spec["pages"][-1]["source_image_ids"] = ["common"]
     with pytest.raises(RequestValidationError, match="关联已变化"):
         image_facade.generate_draft_image_set_payload(body(product, draft, plan=spec))
@@ -300,7 +321,7 @@ def test_sku_target_scope_cannot_be_guessed_or_expanded(monkeypatch, app_dir):
         image_set_service.sku_image_targets(product, missing, [sku_id])
     assert get_context().image_batches.latest_for_draft(draft["draft_id"]) is None
     calls = image_model(monkeypatch, raw)
-    scoped = image_set_service.include_sku_pages(ImageSetPlan.model_validate(plan()), targets)
+    scoped = image_set_service.assemble_image_set(ImageSetPlan.model_validate(plan()), targets)
     image_set_service.generate_page(app_dir=app_dir, config={}, product=product, draft=draft, plan=scoped, page=scoped.pages[-1])
     assert product["sku_items"][0]["name"] in calls[0]["prompt"]
     assert product["sku_items"][1]["name"] not in calls[0]["prompt"]
@@ -312,7 +333,7 @@ def test_older_common_plan_still_loads_and_sku_pages_do_not_consume_common_count
         page.pop("scope"); page.pop("sku_ids")
     parsed = ImageSetPlan.model_validate(old)
     assert all(page.scope == "common" and not page.sku_ids for page in parsed.pages)
-    combined = image_set_service.include_sku_pages(parsed, [
+    combined = image_set_service.assemble_image_set(parsed, [
         {"source_id": f"image-{i}", "sku_ids": [f"sku-{i}"], "names": [f"规格 {i}"]} for i in range(13)
     ])
     assert len(combined.pages) == 16
