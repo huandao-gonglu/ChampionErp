@@ -58,6 +58,10 @@ python3 /opt/champion-erp/current/deploy/publish_desktop.py --policy-only \
 
 ## 当前公网部署（2026-11-07）
 
+网页版、业务后端和 Apple 芯片 Mac 桌面更新为 **1.2.11**，发布记录为 `20261107t084447z-0ad6cec2929a`。此版修复 macOS 默认浏览器为 Chrome 时，1688 授权只出现 Dock 图标的问题。已在有无头 Chrome 实例运行的 Mac 上验证新窗口可见且获得焦点。[下载 Mac 安装包](https://hdgl.cc.cd/desktop-updates/darwin-arm64/1.2.11/installer.dmg)
+
+## 1.2.10 发布记录（2026-11-07）
+
 公网 ERP 网页、业务后端和 Apple 芯片 Mac 桌面更新已发布 **1.2.10**，发布记录为 `20261107t082738z-89449751fd6c`。公网首页加载 `/assets/index-DP16RMPL.js`，已核对页面版本与 1688 浏览器授权界面。桌面采用可选升级。[下载 Mac 安装包](https://hdgl.cc.cd/desktop-updates/darwin-arm64/1.2.10/installer.dmg)
 
 采购和跨境应用的 ERP 生产回调地址均已更新为 `https://hdgl.cc.cd/auth/alibaba/callback`，服务切换后已回读确认。使用原授权的账号需重新登录 1688。
