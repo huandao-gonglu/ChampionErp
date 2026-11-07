@@ -58,6 +58,12 @@ python3 /opt/champion-erp/current/deploy/publish_desktop.py --policy-only \
 
 ## 当前公网部署（2026-11-07）
 
+公网 ERP 网页、业务后端和 Apple 芯片 Mac 桌面更新已发布 **1.2.10**，发布记录为 `20261107t082738z-89449751fd6c`。公网首页加载 `/assets/index-DP16RMPL.js`，已核对页面版本与 1688 浏览器授权界面。桌面采用可选升级。[下载 Mac 安装包](https://hdgl.cc.cd/desktop-updates/darwin-arm64/1.2.10/installer.dmg)
+
+采购和跨境应用的 ERP 生产回调地址均已更新为 `https://hdgl.cc.cd/auth/alibaba/callback`，服务切换后已回读确认。使用原授权的账号需重新登录 1688。
+
+## 1.2.8 发布记录（2026-11-07）
+
 后端、网页版和 Apple 芯片 Mac 桌面版 **1.2.8** 已发布，代码提交为 `d70e926b7f75`。首次切换在维护窗口完成，当前服务已启用任务准入和安全停机协调。
 
 - 发布记录为 `20261107t074511z-d70e926b7f75`，状态为 `complete`。对应业务备份在 `/srv/champion-erp/backups/20261107t074511z-d70e926b7f75/accounts.tar.gz`，恢复检查通过。公网账号入口、网页资源摘要、管理员设置和匿名访问检查通过。
