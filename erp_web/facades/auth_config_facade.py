@@ -63,7 +63,7 @@ def import_forbidden_categories_payload(body: dict) -> ResponseWithStatus:
 
     try:
         settings = import_configuration(body)
-        return get_context().config.save_forbidden_categories(settings), 200
+        return get_context().config.shared_config.save_forbidden_categories(settings), 200
     except ValidationError:
         return {"ok": False, "error": "导入参数无效：仅支持 Yandex XLSX 禁售名单，文件不能超过 3 MiB"}, 400
     except ValueError as exc:
@@ -327,6 +327,8 @@ def _store_currency_selection_payload_unlocked(
 
 def test_api_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
     kind = str(body.get("kind") or "").strip().lower()
+    if kind in {"exchange_rate", "exchange", "pricing"}:
+        body = {**body, "config": get_context().config.load_app_config()["pricing_defaults"]}
     try:
         result = test_api_config(
             kind,

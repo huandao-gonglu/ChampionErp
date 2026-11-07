@@ -50,8 +50,8 @@ def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[
     default_cfg = app_config_runtime.default_app_config()["pricing_defaults"]
     return {
         "api_url": str(cfg.get("exchange_rate_api_url") or default_cfg["exchange_rate_api_url"]).strip(),
-        "timeout_seconds": max(1, min(30, int(pricing_service.number_value(cfg.get("exchange_rate_timeout_seconds"), 5) or 5))),
-        "cache_ttl_seconds": max(0, int(pricing_service.number_value(cfg.get("exchange_rate_cache_ttl_seconds"), 3600) or 3600)),
+        "timeout_seconds": max(1, min(120, int(pricing_service.number_value(cfg.get("exchange_rate_timeout_seconds"), 10)))),
+        "cache_ttl_seconds": max(0, int(pricing_service.number_value(cfg.get("exchange_rate_cache_ttl_seconds"), 3600))),
     }
 
 
@@ -112,6 +112,7 @@ class ExchangeRateService:
         self._lock = threading.Lock()
         self._cached_result: dict[str, Any] | None = None
         self._cached_at_ts: float = 0.0
+        self._cached_url = ""
 
     @staticmethod
     def _pair(quote: str) -> str:
@@ -129,13 +130,15 @@ class ExchangeRateService:
         except (ValueError, OverflowError):
             return 0.0
 
-    def _load_stored(self) -> tuple[dict[str, float], str]:
+    def _load_stored(self, api_url: str = "") -> tuple[dict[str, float], str]:
         stored = self._db.load_exchange_rates()
+        if stored.get("source") and api_url and stored["source"] != api_url:
+            return {}, ""
         rates = {self._quote(pair): rate for pair, rate in stored["rates"].items() if rate > 0}
         return rates, stored["fetched_at"]
 
-    def _stored_result(self, *, stale: bool, error: str = "") -> dict[str, Any] | None:
-        rates, fetched_at = self._load_stored()
+    def _stored_result(self, *, stale: bool, error: str = "", api_url: str = "") -> dict[str, Any] | None:
+        rates, fetched_at = self._load_stored(api_url)
         section = _rates_section(rates)
         if section is None:
             return None
@@ -154,42 +157,45 @@ class ExchangeRateService:
 
     def get_rates(self, cfg: dict[str, Any], force_refresh: bool = False) -> dict[str, Any]:
         api_url = str(cfg.get("api_url") or "")
+        public_source = api_url.split("?", 1)[0].split("#", 1)[0]
         ttl_seconds = float(cfg.get("cache_ttl_seconds") or 0)
         now = time.time()
         if not force_refresh and ttl_seconds > 0:
             with self._lock:
-                if self._cached_result is not None and now - self._cached_at_ts < ttl_seconds:
+                if self._cached_result is not None and self._cached_url == api_url and now - self._cached_at_ts < ttl_seconds:
                     return {**deepcopy(self._cached_result), "cached": True}
             # 启动 / 缓存 miss：先查表，fetched_at 在 TTL 内直接用。
-            rates, fetched_at = self._load_stored()
+            rates, fetched_at = self._load_stored(api_url)
             fetched_ts = self._parse_fetched_at(fetched_at)
             if rates and fetched_ts > 0 and now - fetched_ts < ttl_seconds:
-                stored_result = self._stored_result(stale=False)
+                stored_result = self._stored_result(stale=False, api_url=api_url)
                 if stored_result is not None:
                     with self._lock:
                         self._cached_result = deepcopy(stored_result)
                         self._cached_at_ts = fetched_ts
+                        self._cached_url = api_url
                     return stored_result
         try:
             request = urllib.request.Request(api_url, headers={"Accept": "application/json", "User-Agent": "ChampionERP/1.0"})
             with managed_urlopen(request, timeout=cfg["timeout_seconds"], source=__name__) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
-            fallback = self._stored_result(stale=True, error=f"实时汇率获取失败：{exc}")
+            error = f"实时汇率获取失败：{str(exc).replace(api_url, public_source)}"
+            fallback = self._stored_result(stale=True, api_url=api_url, error=error)
             if fallback is not None:
                 return fallback
-            return {"ok": False, "error": f"实时汇率获取失败：{exc}", "source": api_url}
+            return {"ok": False, "error": error, "source": public_source}
         rates = _extract_usd_rates(payload)
         section = _rates_section(rates)
         if section is None:
-            fallback = self._stored_result(stale=True, error="实时汇率响应缺少 CNY 或 MXN 汇率。")
+            fallback = self._stored_result(stale=True, api_url=api_url, error="实时汇率响应缺少 CNY 或 MXN 汇率。")
             if fallback is not None:
                 return fallback
-            return {"ok": False, "error": "实时汇率响应缺少 CNY 或 MXN 汇率。", "source": api_url, "raw": payload}
+            return {"ok": False, "error": "实时汇率响应缺少 CNY 或 MXN 汇率。", "source": public_source, "raw": payload}
         fetched_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
         result = {
             "ok": True,
-            "source": api_url,
+            "source": public_source,
             "fetched_at": fetched_at,
             "cached": False,
             "rates": section,
@@ -198,13 +204,14 @@ class ExchangeRateService:
         try:
             self._db.save_exchange_rates(
                 {self._pair(currency): float(rate) for currency, rate in rates.items() if rate > 0},
-                fetched_at,
+                fetched_at, source=api_url,
             )
         except Exception:
             pass  # 表写失败不阻塞核价；内存缓存仍然生效。
         with self._lock:
             self._cached_result = deepcopy(result)
             self._cached_at_ts = now
+            self._cached_url = api_url
         return result
 
 
@@ -221,6 +228,7 @@ class PricingSession:
     def __init__(self) -> None:
         self.store_config = get_context().config.load_store_config()
         self.shipping = PricingShipping(get_context().paths.data_dir / "tariffs", self.store_config,
+                                        snapshot_loader=get_context().tariffs.load,
                                         yandex_plans_loader=lambda: get_context().yandex_logistics.pricing_plans())
         self.yandex_commissions = create_yandex_commission_batch(self.store_config)
         self.commissions = PricingCommissions(self.store_config, ozon_category_loader=self.ozon_categories,

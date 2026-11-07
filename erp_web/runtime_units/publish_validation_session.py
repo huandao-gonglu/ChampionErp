@@ -24,6 +24,10 @@ class PublishValidationSession:
         settings = get_context().config.forbidden_categories()
         return {item["category_id"]: item["name"] for item in settings["categories"]}
 
+    @cached_property
+    def tariff_versions(self) -> dict[str, str]:
+        return get_context().tariffs.versions()
+
     def yandex_logistics_error(self, plan: dict[str, Any]) -> str:
         key = json.dumps(plan, sort_keys=True, ensure_ascii=False)
         if key not in self.logistics_errors:

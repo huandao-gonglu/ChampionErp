@@ -60,16 +60,27 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 
 `ConfigStore` 统一持有应用、店铺、跨境巴士、订单回调和微信绑定的授权读写入口；
 密钥本体集中于主库 `store_auth` / `runtime_secrets`，业务 Store 不保存重复凭据。
-跨境巴士企业密钥由开发者通过后端 `ERP_CROSSBORDERBUS_CLIENT_SECRET` 注入；
+1688 两套应用及跨境巴士企业密钥由管理员在「系统设置 → 管理员共享设置」维护，保存至根库
+`runtime_secrets / enterprise_applications / active`；尚未保存时可读取后端环境变量或既有根库凭据。
 `ConfigStore.crossborderbus_credentials/save_crossborderbus_credentials` 负责企业密钥与用户授权绑定，
-环境密钥不入库，企业变化不得沿用旧 Token 或 `app_uid`。已有主库密钥保留读取及同值配置升级能力。
-用户授权接口只接受账号和密码，前端不提供企业密钥输入；配置方式及桌面分发边界见
+首次管理员保存会显式接管当前配置。凭据变化使用新的配置代次，旧 Token、待完成授权及 `app_uid` 失效，换回旧密钥也须重新授权。已有主库密钥保留读取及同值配置升级能力。
+普通用户授权接口只接受账号和密码；配置方式及桌面分发边界见
 [跨境履约说明](crossborder-fulfillment.md#开发入口)。
 微信渠道库只保存主库凭据引用，收发队列、代次和游标仍属于渠道事务。
 物流地址与履约规则保留在订单库，以维持订单创建时的事务校验。
 旧数据通过 `scripts/migrate_credentials.py` 离线备份迁移；`server.main` 在后台任务启动前
 调用 `assert_credentials_migrated`，拒绝未迁移布局。存储清单、迁移与恢复边界见
 [配置与授权存储](configuration-storage.md)。
+
+### 管理员共享设置与个人费率
+
+- `AccountRuntime.context_for` 将每个空间的 `ConfigStore.shared_config` 和 `AppContext.shared_paths` 绑定到根配置与路径，客户端不能选择共享 owner。仅汇率 API 配置、禁售名单和企业应用使用此共享来源。个人核价模板、手动汇率、店铺授权与 Mercado 应用配置仍由个人持有。
+- GET/POST `/api/admin/settings` 经 `managed_settings_facade`、`schemas/managed_settings.py` 和 `ConfigStore.managed_settings/save_managed_settings` 管理企业应用及汇率 API；请求带配置 revision，冲突拒绝整次更新。企业密钥只返回是否配置。通用设置和 AI 设置不能改写汇率 API，普通配置视图不下发该地址；汇率缓存记录来源，切换 API 不复用旧来源缓存。
+- `AppContext.tariffs` 装配 `TariffSettingsService`。共享费率位于根 `data/tariffs`，普通用户覆盖位于其空间 `data/tariffs`，根管理员的个人覆盖位于 `data/personal-tariffs`。按平台选择来源，未自定义者自动跟随；自定义表记录 `customized_from`，管理员版本改变时提示更新，用户显式确认覆盖后恢复跟随，原版本文件保留。
+- GET `/api/shipping/tariffs`、POST `/import` 与 `/upgrade` 位于 `pricing_workspace_routes`。仅管理员可写 shared scope，所有用户可写 personal scope。导入复用模块 XLSX 解析和差异比较，限制文件/解压大小，校验表头、单位、明确数值和完整规则，失败保留生效版本。预览后显式发布，写入与升级均核对预期版本，尚未生效日期拒绝发布。
+- 核价 `ShippingModule`、Yandex 发布仓运输模式和 `draft_pricing._pricing_environment` 使用同一份有效费率来源；单次核价固定快照，更新后旧预览须重算。发布校验会比较已保存报价的运费版本与当前有效版本，单次 SKU 批次由 `PublishValidationSession` 固定版本读取，历史报价保留展示。当前导入支持 Yandex FBS 与 Ozon OGL，Mercado 按个人店铺授权调用远端试算。
+- 前端入口为系统设置 `settings_section=managed`（仅管理员）和 `settings_section=tariffs`（所有账号）；`TariffUpdateNotice` 在核价页提示个人表可升级。禁售名单所有账号只读，原导入入口单独校验管理员角色。
+- 真实双账号权限、共享读取、凭据换回仍失效、导入校验和升级冲突见 `tests/test_managed_settings.py`。
 
 ### 1688 应用与账号授权
 
@@ -1108,7 +1119,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   不反向导入 ERP。Mercado 的内置运费表已删除，多销售国家分别请求报价并计算售价。
   凭据由项目装配，Mercado token 仍通过 `get_mercadolibre_access_token()` 取得。
   证据进入既有核价依据和指纹；逐 SKU 核价固定模板版本。无新增 tariff HTTP 端点，
-  模板导入/预览/启用由模块 CLI 维护，详见 `erp_web/international_shipping/README.md`。
+  模板导入/预览/发布支持系统设置界面，模块 CLI 继续可用于离线维护，详见 `erp_web/international_shipping/README.md`。
 - Ozon 统一使用 `international_shipping/ogl.py` 的单 SKU、数量 1、单独成包 OGL 预估。
   随应用分发 `ogl_20260824.json`，由官方 2026-08-24 Excel 导入并校验内容哈希；后续仍用原 CLI
   导入完整 OGL 表并显式指定生效日期。旧 `current.json` 指向第三方表时，新核价使用内置 OGL
@@ -1746,7 +1757,7 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 ### 系统设置
 
-- 「禁售类目」（`settings_section=forbidden_categories`）支持导入 Yandex 的 XLSX 名单，列为 `category`、`name`，可含 `int64` / `string` 类型说明行。GET `/api/system-settings/forbidden-categories` 和 POST `/api/system-settings/forbidden-categories/import` 经 `auth_config_facade`、`forbidden_category_service` 与 `ConfigStore` 完整校验并替换 `app_config.forbidden_categories`；空名单、错误行和同 ID 异名均拒绝整次导入，失败保留旧配置。通用配置保存不能覆盖该区段。
+- 「禁售类目」（`settings_section=forbidden_categories`）支持导入 Yandex 的 XLSX 名单，列为 `category`、`name`，可含 `int64` / `string` 类型说明行。GET `/api/system-settings/forbidden-categories` 和 POST `/api/system-settings/forbidden-categories/import` 经 `auth_config_facade`、`forbidden_category_service` 与根 `ConfigStore` 完整校验并替换共享 `app_config.forbidden_categories`；导入仅管理员开放，所有个人空间的预检读取同一名单。空名单、错误行和同 ID 异名均拒绝整次导入，失败保留旧配置。通用配置保存不能覆盖该区段。
   匹配仅按 Yandex 类目 ID，不按名称推测或自动扩大到父子类目。`category_facade` 类目预检与 `publish_validation` 基础/最终发布校验共同执行；单次 SKU 批次由 `PublishValidationSession` 固定一次名单快照，下一次校验重新读取，旧预检通过不能绕过最终校验。名单更新不改写历史预检或已经提交的发布任务。回归见 `tests/test_forbidden_categories.py`、`tests/test_yandex_publish.py`。
 
 - “关于”页提供应用版本、英文第三方声明，以及独立的中文《软件许可与服务协议》和《隐私政策》。版本与 `front/package.json` 同源。第三方声明从运行依赖生成并校验指纹，`front/build/third-party-notices.ts` 按 Web 实际构建模块或桌面交付范围筛选，排除纯开发与测试工具；许可证及声明生成为 `licenses/` 下的可读文件，桌面版随安装包放在 ASAR 外，“关于”仅打开该目录，Web 仅提供 TXT 下载；不在弹窗加载或展开全文。组件版权和 NOTICE 保留，来源与发行边界见 [第三方声明来源](../scripts/legal-notices/README.md)。法律文本分别维护于 `front/src/legal/user-agreement.ts` 与 `privacy-policy.ts`，硬件信息期限不适用于自行部署的业务数据库。查看不代表同意，不启用设备上报或自动升级。

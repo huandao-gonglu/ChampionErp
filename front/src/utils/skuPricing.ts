@@ -28,7 +28,7 @@ export interface SkuPricingEntry {
   status: 'pending' | 'error' | 'loss' | 'applied' | 'preview'
 }
 
-export function buildSkuPricingEntries(rows: DraftSku[], skus: ProductSku[], targets: PricingTargetInput[]): SkuPricingEntry[] {
+export function buildSkuPricingEntries(rows: DraftSku[], skus: ProductSku[], targets: PricingTargetInput[], tariffVersions: Record<string, string> = {}): SkuPricingEntry[] {
   const skuById = new Map(skus.map(sku => [sku.id, sku]))
   return rows.filter(row => row.selected).flatMap(row => {
     const sku = skuById.get(row.sku_id)
@@ -40,6 +40,10 @@ export function buildSkuPricingEntries(rows: DraftSku[], skus: ProductSku[], tar
         typeof error === 'string' ? error : String(pricingRecord(error).message || pricingRecord(error).field || '')
       )).filter(Boolean))]
       const commission = pricingRecord(pricingRecord(quote?.calculation_basis).commission_evidence)
+      const tariffVersion = pricingRecord(pricingRecord(quote?.calculation_basis).shipping_evidence).tariff_version
+      if (tariffVersion && target.platform in tariffVersions && tariffVersions[target.platform] !== tariffVersion) {
+        errors.push('国际物流运费表已更新，请重新核价')
+      }
       if (quote && !errors.length && (commission.purpose !== 'prelisting'
         || ['/v5/product/info/prices', '/v3/product/info/list'].includes(String(commission.endpoint)))) {
         errors.push('历史报价缺少上架前官方佣金依据，请重新核价')

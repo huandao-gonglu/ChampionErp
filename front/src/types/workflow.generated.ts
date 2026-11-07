@@ -45,6 +45,70 @@ export interface BackendForbiddenCategories {
   categories: Array<BackendForbiddenCategory>
 }
 
+export interface BackendPublicEnterpriseApplication {
+  app_key: string
+  redirect_uri: string
+  secret_configured: boolean
+}
+
+export interface BackendPublicExchangeRateSettings {
+  exchange_rate_api_url: string
+  exchange_rate_timeout_seconds: string
+  exchange_rate_cache_ttl_seconds: string
+}
+
+export interface BackendManagedSettings {
+  ok: boolean
+  revision: string
+  exchange_rates: BackendPublicExchangeRateSettings
+  alibaba: BackendPublicEnterpriseApplication
+  alibaba_crossborder: BackendPublicEnterpriseApplication
+  crossborderbus_secret_configured: boolean
+}
+
+export interface BackendTariffVersion {
+  version: string
+  effective_date: string
+  rules_count: number
+  error: string
+}
+
+export interface BackendTariffSettings {
+  version: string
+  effective_date: string
+  rules_count: number
+  error: string
+  platform: "yandex" | "ozon"
+  source: "personal" | "shared"
+  shared: BackendTariffVersion
+  update_available: boolean
+}
+
+export interface BackendTariffSettingsResponse {
+  ok: boolean
+  items: Array<BackendTariffSettings>
+}
+
+export interface BackendTariffFieldChange {
+  before: unknown
+  after: unknown
+}
+
+export interface BackendTariffRuleChange {
+  id: string
+  name: string
+  fields: Record<string, BackendTariffFieldChange>
+}
+
+export interface BackendTariffDiff {
+  after_version: string
+  added: Array<Record<string, unknown>>
+  removed: Array<Record<string, unknown>>
+  changed: Array<BackendTariffRuleChange>
+  policy_change: unknown
+  status: string
+}
+
 export interface BackendWechatChannelStatus {
   ok: boolean
   bound: boolean

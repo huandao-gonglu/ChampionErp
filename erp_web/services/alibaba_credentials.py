@@ -4,7 +4,10 @@ import json
 
 
 def application_fingerprint(application):
-    return hashlib.sha256(json.dumps([application.get('app_key'), application.get('app_secret')]).encode()).hexdigest()
+    identity = [application.get('app_key'), application.get('app_secret')]
+    if application.get('credential_generation'):
+        identity.append(application['credential_generation'])
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
 def legacy_account_scope(config):

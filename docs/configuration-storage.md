@@ -7,9 +7,9 @@
 | 内容 | 持久化位置与负责模块 |
 | --- | --- |
 | 店铺密钥、OAuth 令牌和动态授权状态 | 主库 `store_auth`，由 `ConfigStore` 管理 |
-| 1688 应用与买家授权 | 主库 `runtime_secrets` 的 `credentials:alibaba` 命名空间，采购用 `state`，跨境查询用 `crossborder`。环境应用密钥不复制入库；见 [1688 授权](alibaba-authorization.md) |
+| 1688 应用与买家授权 | 主库 `runtime_secrets` 的 `credentials:alibaba` 命名空间，采购用 `state`，跨境查询用 `crossborder`。企业应用由根库 `enterprise_applications / active` 共享提供，环境变量用于首次管理员保存前的输入；见 [1688 授权](alibaba-authorization.md) |
 | AI、图床等应用密钥 | 主库 `runtime_secrets` 的 `app_config` 命名空间，由 `ConfigStore` 拆分、合并和脱敏 |
-| 跨境巴士企业密钥 | 开发者注入后端环境变量 `ERP_CROSSBORDERBUS_CLIENT_SECRET`（本机可写 `config/.env`），不经用户界面或授权接口设置；保留旧主库密钥读取，下一次保存时以指纹替换 |
+| 跨境巴士企业密钥 | 管理员维护根库 `runtime_secrets / enterprise_applications / active`；首次保存前读取 `ERP_CROSSBORDERBUS_CLIENT_SECRET` 或旧根库密钥。用户空间仅保存授权与指纹 |
 | 跨境巴士访问及刷新令牌、用户授权和企业密钥指纹 | 主库 `runtime_secrets` 的 `credentials:crossborderbus` 命名空间，由 `ConfigStore.crossborderbus_credentials/save_crossborderbus_credentials` 绑定当前企业配置 |
 | 微信绑定凭据 | 主库 `runtime_secrets` 的 `credentials:wechat` 命名空间；渠道库仅保存凭据引用 |
 | 订单回调令牌及公网回调地址 | 主库 `runtime_secrets` 的 `order_notifications` 命名空间；已有令牌原值保留 |

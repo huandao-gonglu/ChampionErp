@@ -13,10 +13,11 @@ from .tariff_store import load_active
 
 
 class ShippingModule:
-    def __init__(self, rules_dir: Path, credentials: dict[str, dict], *, opener):
+    def __init__(self, rules_dir: Path, credentials: dict[str, dict], *, opener, snapshot_loader=None):
         self.opener = opener
         self.rules_dir = rules_dir
         self.credentials = credentials
+        self.snapshot_loader = snapshot_loader or (lambda platform, version=None: load_active(rules_dir, platform, version))
         self.snapshots: dict[str, dict] = {}
         self.errors: dict[str, str] = {}
         self.ozon_discovery_ms = 0.0
@@ -41,7 +42,7 @@ class ShippingModule:
             raise ValueError(self.errors[platform])
         if platform not in self.snapshots:
             try:
-                self.snapshots[platform] = load_active(self.rules_dir, platform, tariff_version)
+                self.snapshots[platform] = self.snapshot_loader(platform, tariff_version)
             except (ValueError, FileNotFoundError) as exc:
                 self.errors[platform] = str(exc)
                 raise

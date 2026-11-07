@@ -4,6 +4,8 @@ import { useI18n } from 'vue-i18n'
 import { fetchForbiddenCategories, importForbiddenCategories } from '@/api/forbiddenCategories'
 import type { BackendForbiddenCategories } from '@/types/workflow.generated'
 
+const props = withDefaults(defineProps<{ editable?: boolean }>(), { editable: false })
+
 const { t, locale } = useI18n({ useScope: 'local', messages: {
   zh: {
     title: 'Yandex 禁售类目', help: '当前名单中的 Yandex 类目不能通过类目预检和发布预检。',
@@ -17,6 +19,7 @@ const { t, locale } = useI18n({ useScope: 'local', messages: {
     previous: '上一页', next: '下一页', page: '第 {page} / {total} 页', perPage: '每页条数', range: '第 {start}–{end} 条，共 {total} 条',
     clear: '清空搜索', noResultsHelp: '请更换关键词，或清空搜索查看全部已导入类目。',
     scope: '按类目 ID 精确匹配，仅对 Yandex 生效。',
+    managed: '由管理员统一维护，所有账号使用同一份禁售名单。',
   },
   en: {
     title: 'Yandex forbidden categories', help: 'Yandex categories on the current list cannot pass category or publication checks.',
@@ -30,6 +33,7 @@ const { t, locale } = useI18n({ useScope: 'local', messages: {
     previous: 'Previous', next: 'Next', page: 'Page {page} of {total}', perPage: 'Rows per page', range: '{start}–{end} of {total}',
     clear: 'Clear search', noResultsHelp: 'Try another keyword, or clear your search to view all imported categories.',
     scope: 'Exact category ID matching. Applies to Yandex only.',
+    managed: 'Maintained by the administrator and applied to all accounts.',
   },
 } })
 const settings = ref<BackendForbiddenCategories | null>(null)
@@ -58,6 +62,7 @@ async function load() {
   finally { if (!disposed) loading.value = false }
 }
 async function upload(event: Event) {
+  if (!props.editable) return
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file || busy.value) return
@@ -75,7 +80,7 @@ onBeforeUnmount(() => { disposed = true })
 
 <template>
   <div class="min-w-0 space-y-5" :aria-busy="busy || loading">
-    <div><h3 class="font-semibold">{{ t('title') }}</h3><p class="muted mt-1 text-sm">{{ t('help') }}</p></div>
+    <div><h3 class="font-semibold">{{ t('title') }}</h3><p class="muted mt-1 text-sm">{{ t('help') }}</p><p v-if="!editable" class="muted mt-1 text-sm">{{ t('managed') }}</p></div>
     <p v-if="loading" role="status" class="muted py-4 text-sm">{{ t('loading') }}</p>
     <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">{{ error }} <button v-if="!settings" type="button" class="ml-2 underline" :disabled="loading" @click="load">{{ t('retry') }}</button></p>
     <p v-if="notice" role="status" class="text-sm text-primary-700 dark:text-primary-300">{{ notice }}</p>
@@ -91,7 +96,7 @@ onBeforeUnmount(() => { disposed = true })
           <h4 class="font-medium">{{ t('empty') }}</h4>
           <p class="muted max-w-xl text-sm">{{ t('emptyHelp') }}</p>
         </div>
-        <fieldset :disabled="busy || loading || !settings" class="shrink-0">
+        <fieldset v-if="editable" :disabled="busy || loading || !settings" class="shrink-0">
           <label class="btn inline-flex cursor-pointer focus-within:ring-2 focus-within:ring-primary-500" :class="[settings?.categories.length ? 'btn-secondary' : 'btn-primary', { 'pointer-events-none opacity-50': busy || loading || !settings }]">
             {{ busy ? t('busy') : settings?.categories.length ? t('replace') : t('choose') }}
             <input type="file" accept=".xlsx" class="sr-only" @change="upload" />
@@ -102,8 +107,8 @@ onBeforeUnmount(() => { disposed = true })
         <div class="min-w-0"><dt class="muted text-xs">{{ t('source') }}</dt><dd class="mt-1 break-all">{{ settings.filename }}</dd></div>
         <div class="min-w-0"><dt class="muted text-xs">{{ t('time') }}</dt><dd class="mt-1 tabular-nums">{{ importedAt }}</dd></div>
       </dl>
-      <p v-if="settings?.categories.length" class="muted mt-4 text-xs">{{ t('replaceHelp') }}</p>
-      <details v-if="settings" class="mt-3 text-xs text-accent-500 dark:text-accent-400">
+      <p v-if="editable && settings?.categories.length" class="muted mt-4 text-xs">{{ t('replaceHelp') }}</p>
+      <details v-if="editable && settings" class="mt-3 text-xs text-accent-500 dark:text-accent-400">
         <summary class="w-fit cursor-pointer rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500">{{ t('formatTitle') }}</summary>
         <p class="mt-2 leading-5">{{ t('format') }}</p>
       </details>

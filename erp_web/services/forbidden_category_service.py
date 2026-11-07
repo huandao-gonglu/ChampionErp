@@ -133,7 +133,7 @@ def forbidden_category_issue(platform: str, category_id: str, categories: dict[s
         return None
     return {"code": "CATEGORY_FORBIDDEN", "field": "category_id", "severity": "error",
             "message": f"Yandex 类目 {category_id}（{categories[category_id]}）在禁售名单中，不能通过预检",
-            "next_action": "停止发布此类商品；如名单有误，请在系统设置中更新禁售类目"}
+            "next_action": "停止发布此类商品；如名单有误，请联系管理员核实禁售类目"}
 
 
 __all__ = ["parse_categories", "import_configuration", "forbidden_category_issue"]

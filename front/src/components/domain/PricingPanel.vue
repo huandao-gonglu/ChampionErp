@@ -13,6 +13,7 @@ import PricingExchangeRates from './PricingExchangeRates.vue'
 import PricingFeesEditor from './PricingFeesEditor.vue'
 import PricingTemplates from './PricingTemplates.vue'
 import PricingScopeDialog from './PricingScopeDialog.vue'
+import TariffUpdateNotice from './TariffUpdateNotice.vue'
 import './pricing-workspace.css'
 
 const props = withDefaults(defineProps<{
@@ -35,7 +36,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ calculate: []; apply: []; restore: []; selectDraft: [draftId: string]; refreshDrafts: []; editDraft: []; editProduct: [skuId: string] }>()
 const selectedSkus = computed(() => props.skuItems.filter(row => row.selected))
 const targets = computed(() => selectedPricingTargets(props.input))
-const entries = computed(() => buildSkuPricingEntries(props.skuItems, props.productContext.skuItems, targets.value))
+const tariffVersions = ref<Record<string, string>>({})
+const entries = computed(() => buildSkuPricingEntries(props.skuItems, props.productContext.skuItems, targets.value, tariffVersions.value))
 const allInputErrors = computed(() => [...pricingCommonErrors(props.input), ...targets.value.flatMap(pricingTargetErrors)])
 const issues = computed(() => entries.value.filter(entry => entry.errors.length || entry.status === 'loss' || pricingFactsIssues(entry.cost, entry.dimensions).length))
 const hasSavedPricing = computed(() => props.skuItems.some(row => Object.keys(pricingRecord(row.pricing?.targets)).length > 0))
@@ -179,6 +181,7 @@ onBeforeUnmount(() => { disposed = true })
 
 <template>
   <section class="pricing-workspace">
+    <TariffUpdateNotice @versions="tariffVersions = $event" />
     <header class="pricing-page-header">
       <div class="min-w-0"><div class="flex items-center gap-4"><h2>核价</h2><span class="pricing-tag" :class="issues.length || error ? 'pricing-tag-amber' : 'pricing-tag-green'">{{ statusText }}</span></div><p v-if="!selectionLocked" class="pricing-subtle mt-2 text-sm">{{ draftTitle || '选择草稿后开始核价' }}<span v-if="draftId" class="ml-3">/ 仅核算本次勾选的规格与市场</span></p></div>
       <div class="flex shrink-0 flex-wrap gap-3"><button type="button" class="pricing-button" :disabled="loading || requestActive || refreshing || !draftId" @click="refreshData"><PhArrowsClockwise :size="16" :class="{ 'animate-spin': refreshing }" />{{ refreshing ? '正在刷新…' : '刷新数据' }}</button><button type="button" data-testid="pricing-calculate" class="pricing-button pricing-button-primary" :disabled="loading || requestActive || refreshing || !prepared || !canCalculate" @click="requestPreview"><PhLightning :size="17" />{{ restoring ? '正在恢复报价…' : loading && !applying ? '正在计算…' : '计算核价' }}</button><button type="button" data-testid="pricing-apply" class="pricing-button pricing-apply-button" :disabled="!canApply || allApplied" @click="apply"><PhCheckCircle v-if="allApplied" :size="17" />{{ applying && loading ? '正在保存售价…' : allApplied ? '已应用至草稿' : issues.length ? '处理问题后应用' : `应用 ${entries.length} 项售价` }}</button></div>

@@ -51,9 +51,6 @@ const emit = defineEmits<{
 }>()
 
 const form = reactive({
-  exchangeRateApiUrl: '',
-  exchangeRateTimeoutSeconds: '10',
-  exchangeRateCacheTtlSeconds: '3600',
   mlAppId: '',
   mlClientSecret: '',
   mlRedirectUri: DEFAULT_ML_REDIRECT_URI,
@@ -66,7 +63,7 @@ const form = reactive({
 })
 
 const selectedStorePlatform = ref<Marketplace>('mercadolibre')
-type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'research' | 'image_hosting' | 'crossborderbus' | 'alibaba'
+type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'research' | 'image_hosting' | 'crossborderbus' | 'alibaba'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const authRoute = inject(routeLocationKey, undefined)
 watch(() => authRoute?.query.auth_section, section => {
@@ -123,7 +120,6 @@ const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: st
   { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
   { key: 'stores', label: '店铺授权', summary: '按一级平台保存，子站点共用凭证' },
   { key: 'alibaba', label: '1688 授权', summary: '采购订单、物流查询与商品采集' },
-  { key: 'apis', label: '核价汇率', summary: '汇率 API 与缓存设置' },
   { key: 'image_hosting', label: '图片托管', summary: 'S3 存储、默认目标与公开读取测试' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
   { key: 'crossborderbus', label: '跨境巴士', summary: '账号授权与物流收货地址' },
@@ -447,7 +443,6 @@ function normalizeUseCasePrompts(value: unknown): Record<string, UnknownRecord> 
 
 let lastIncomingAiModels: UnknownRecord[] = []
 function fillFromProps() {
-  const pricing = asRecord(props.appConfig.pricing_defaults)
   const ml = asRecord(props.storeConfig.mercadolibre)
   const yandex = asRecord(props.storeConfig.yandex)
   const ozon = asRecord(props.storeConfig.ozon)
@@ -468,9 +463,6 @@ function fillFromProps() {
   selectedAiModelIndex.value = Math.min(selectedAiModelIndex.value, Math.max(aiModels.value.length - 1, 0))
   aiUseCaseBindings.value = normalizeUseCaseBindings(props.aiConfig.ai_use_case_bindings || props.appConfig.ai_use_case_bindings)
   aiUseCasePrompts.value = normalizeUseCasePrompts(props.aiConfig.ai_use_case_prompts || props.appConfig.ai_use_case_prompts)
-  form.exchangeRateApiUrl = firstText(pricing.exchange_rate_api_url, 'https://open.er-api.com/v6/latest/USD')
-  form.exchangeRateTimeoutSeconds = firstText(pricing.exchange_rate_timeout_seconds, '10')
-  form.exchangeRateCacheTtlSeconds = firstText(pricing.exchange_rate_cache_ttl_seconds, '3600')
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
@@ -597,10 +589,6 @@ const modelStatus = computed(() => {
   return props.modelsReading ? '正在读取模型' : ''
 })
 const selectedAiModelImageCapable = computed(() => modelHasImageCapability(selectedAiModel.value))
-const exchangeRateReady = computed(() => Boolean(form.exchangeRateApiUrl.trim()))
-const exchangeRateHint = computed(() => props.loading ? '正在处理，请稍候' : '请填写汇率 API URL')
-const lastConfigResultChannel = computed(() => String(props.lastResult?.raw?.channel || ''))
-const showApiConfigResult = computed(() => lastConfigResultChannel.value === 'exchange_rate')
 
 function useCaseBindingGenerationPayload(binding: UnknownRecord): UnknownRecord | null {
   const generation = asRecord(binding.generation)
@@ -723,11 +711,6 @@ function aiPayload(): UnknownRecord {
         ]
       }),
     ),
-    pricing_defaults: {
-      exchange_rate_api_url: form.exchangeRateApiUrl.trim(),
-      exchange_rate_timeout_seconds: form.exchangeRateTimeoutSeconds.trim(),
-      exchange_rate_cache_ttl_seconds: form.exchangeRateCacheTtlSeconds.trim(),
-    },
   }
 }
 
@@ -819,11 +802,6 @@ function emitAiSettings() {
 
 function saveAiSettings() {
   if (aiControlsLocked.value || !commitCustomRequestBody()) return
-  emitAiSettings()
-}
-
-function saveApiSettings() {
-  if (props.loading) return
   emitAiSettings()
 }
 
@@ -2414,39 +2392,6 @@ function copy(text: string) {
               <div v-if="selectedStoreResultMessage" class="mt-1 text-slate-200">{{ selectedStoreResultMessage }}</div>
               <pre class="mt-2 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(selectedStoreResultDetails, null, 2) }}</pre>
             </div>
-          </div>
-        </section>
-
-        <section v-show="activeAuthSettingsTab === 'apis'" class="space-y-4">
-          <div class="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-            <div>
-              <h3 class="font-semibold text-accent-950 dark:text-white">核价汇率 API</h3>
-              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">维护核价使用的汇率服务。</p>
-            </div>
-            <button data-testid="save-platform-api-settings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="props.loading" @click="saveApiSettings">保存 API 设置</button>
-          </div>
-
-          <div class="grid gap-4 xl:grid-cols-2">
-            <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <h4 class="font-semibold text-accent-950 dark:text-white">核价汇率</h4>
-                <button class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !exchangeRateReady" :title="exchangeRateReady ? '' : exchangeRateHint" @click="emit('testApi', 'exchange_rate', aiPayload().pricing_defaults as UnknownRecord)">测试</button>
-              </div>
-              <div class="mt-3 grid gap-3">
-                <input v-model="form.exchangeRateApiUrl" class="input" placeholder="汇率 API URL" />
-                <div class="grid gap-3 sm:grid-cols-2">
-                  <input v-model="form.exchangeRateTimeoutSeconds" class="input" placeholder="超时秒数，例如 10" />
-                  <input v-model="form.exchangeRateCacheTtlSeconds" class="input" placeholder="缓存秒数，例如 3600" />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="showApiConfigResult && props.lastResult" class="rounded-lg p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-100 dark:ring-emerald-500/30' : 'bg-rose-50 text-rose-950 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-100 dark:ring-rose-500/30'">
-            <div class="font-semibold">最近 API 测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
-            <div class="mt-1 break-words">{{ props.lastResult.message || props.lastResult.error }}</div>
-            <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700 dark:text-blue-200">下一步：{{ props.lastResult.nextAction }}</div>
-            <pre class="mt-3 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(props.lastResult.raw, null, 2) }}</pre>
           </div>
         </section>
 

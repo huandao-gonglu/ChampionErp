@@ -17,9 +17,9 @@ from erp_web.services.mercadolibre_target_contract import mercadolibre_binding_f
 
 
 class PricingShipping:
-    def __init__(self, rules_dir: Path, store_config: dict, *, yandex_plans_loader=None):
+    def __init__(self, rules_dir: Path, store_config: dict, *, yandex_plans_loader=None, snapshot_loader=None):
         self.store_config = store_config
-        self.module = ShippingModule(rules_dir, store_config, opener=managed_urlopen)
+        self.module = ShippingModule(rules_dir, store_config, opener=managed_urlopen, snapshot_loader=snapshot_loader)
         self.commission_resolver: CommissionResolver | None = None
         self.yandex_plans_loader = yandex_plans_loader
         self.yandex_plans = None

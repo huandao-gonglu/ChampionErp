@@ -2,6 +2,7 @@
 from urllib.parse import parse_qs
 
 from erp_web.facades import pricing_workspace_facade as facade
+from erp_web.facades import managed_settings_facade
 from erp_web.schemas.requests import validate_request_payload
 from .common import JsonRequestHandler
 
@@ -37,9 +38,29 @@ def handle_warehouse_save(handler: JsonRequestHandler) -> None:
     handler.send_json(*facade.yandex_warehouses_payload(body=body))
 
 
-POST_HANDLERS = {"/api/yandex/warehouses/refresh": handle_warehouse_refresh, "/api/yandex/warehouses/logistics": handle_warehouse_save, "/api/pricing/templates/save": handle_save, "/api/pricing/templates/default": handle_default,
+def handle_managed_settings(handler: JsonRequestHandler) -> None:
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    handler.send_json(*managed_settings_facade.managed_settings_payload(body))
+
+
+def handle_tariff_import(handler: JsonRequestHandler) -> None:
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    handler.send_json(*managed_settings_facade.tariff_settings_payload(body))
+
+
+def handle_tariff_upgrade(handler: JsonRequestHandler) -> None:
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    handler.send_json(*managed_settings_facade.tariff_settings_payload(body, upgrade=True))
+
+
+POST_HANDLERS = {"/api/admin/settings": handle_managed_settings,
+                 "/api/shipping/tariffs/import": handle_tariff_import,
+                 "/api/shipping/tariffs/upgrade": handle_tariff_upgrade,
+                 "/api/yandex/warehouses/refresh": handle_warehouse_refresh, "/api/yandex/warehouses/logistics": handle_warehouse_save, "/api/pricing/templates/save": handle_save, "/api/pricing/templates/default": handle_default,
                  "/api/pricing/templates/delete": handle_delete}
-GET_HANDLERS = {"/api/yandex/warehouses": lambda handler, parsed: handler.send_json(*facade.yandex_warehouses_payload()), "/api/pricing/templates": lambda handler, parsed: handler.send_json(*facade.pricing_templates_payload()),
+GET_HANDLERS = {"/api/admin/settings": lambda handler, parsed: handler.send_json(*managed_settings_facade.managed_settings_payload()),
+                "/api/shipping/tariffs": lambda handler, parsed: handler.send_json(*managed_settings_facade.tariff_settings_payload()),
+                "/api/yandex/warehouses": lambda handler, parsed: handler.send_json(*facade.yandex_warehouses_payload()), "/api/pricing/templates": lambda handler, parsed: handler.send_json(*facade.pricing_templates_payload()),
                 "/api/pricing/exchange-rates": handle_rates}
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_API_ROUTES = frozenset(GET_HANDLERS)

@@ -35,6 +35,7 @@ from erp_web.schemas.ai_approval import AiToolApprovalMode, normalize_ai_tool_ap
 from erp_web.schemas.image_hosting import ImageHostingError
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.schemas.pricing_templates import SavePricingTemplate
+from erp_web.schemas.managed_settings import EXCHANGE_RATE_FIELDS, ManagedSettingsRequest
 from erp_web.schemas.yandex_warehouses import SaveYandexWarehouses, YandexWarehouseCatalog, account_key
 from erp_web.services.image_hosting_config import config_version, require_ready
 from erp_web.services.image_hosting_credentials import merge_profile
@@ -421,6 +422,7 @@ class ConfigStore:
     """配置与授权的统一入口；秘密及授权态只存主库，JSON 保存应用静态设置。"""
 
     def __init__(self, paths: AppPaths, db: ErpDatabase) -> None:
+        self.shared_config = self
         self.managed_models: list[dict[str, Any]] | None = None
         self._app_dir = paths.app_dir
         self._app_config_path = paths.app_config_path
@@ -471,29 +473,110 @@ class ConfigStore:
         self._db.set_runtime_secret("credentials:" + provider, record_id, credentials)
 
     def crossborderbus_credentials(self) -> dict:
-        """部署密钥优先；既有数据库凭据保留读取，企业变更不得沿用旧授权。"""
+        """解析共享企业配置；企业变更后旧授权失效，既有凭据保留读取。"""
         credentials = self.integration_credentials("crossborderbus")
-        secret = os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
-        if not secret:
+        if self._uses_legacy_bus_secret():
             return credentials
-        fingerprint = hashlib.sha256(secret.encode()).hexdigest()
+        application = self.enterprise_application("crossborderbus")
+        secret = application.get("client_secret", "")
+        if not secret:
+            return {}
+        fingerprint = self._bus_fingerprint(application)
         previous = credentials.get("client_secret_fingerprint")
-        if credentials.get("client_secret"):
+        if credentials.get("client_secret") and not application.get("credential_generation"):
             previous = hashlib.sha256(credentials["client_secret"].encode()).hexdigest()
         if previous != fingerprint:
-            return {"client_secret": secret}
-        return {**credentials, "client_secret": secret}
+            return {"client_secret": secret, "client_secret_fingerprint": fingerprint}
+        return {**credentials, "client_secret": secret, "client_secret_fingerprint": fingerprint}
 
     def save_crossborderbus_credentials(self, credentials: dict) -> None:
-        """环境注入的企业密钥不复制到数据库，只保存授权与密钥指纹。"""
+        """用户授权只保存共享企业配置的指纹，拒绝迟到的旧代次回执。"""
         value = dict(credentials)
-        secret = os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
-        if secret:
-            if value.get("client_secret") != secret:
+        with self.shared_config._save_lock:
+            application = self.enterprise_application("crossborderbus")
+            secret = application.get("client_secret", "")
+            fingerprint = self._bus_fingerprint(application)
+            if (value.get("client_secret") != secret
+                    or value.get("client_secret_fingerprint", fingerprint) != fingerprint):
                 raise ValueError("跨境巴士服务配置已变化，请重试授权")
-            value.pop("client_secret", None)
-            value["client_secret_fingerprint"] = hashlib.sha256(secret.encode()).hexdigest()
-        self.save_integration_credentials("crossborderbus", value)
+            if secret and not self._uses_legacy_bus_secret():
+                value.pop("client_secret", None)
+                value["client_secret_fingerprint"] = fingerprint
+            self.save_integration_credentials("crossborderbus", value)
+
+    def _uses_legacy_bus_secret(self):
+        return (self.shared_config is self and not os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
+                and "crossborderbus" not in self._db.runtime_secret("enterprise_applications", "active", {}))
+
+    @staticmethod
+    def _bus_fingerprint(application):
+        value = application.get("client_secret", "") + application.get("credential_generation", "")
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    def enterprise_application(self, provider: str) -> dict:
+        """共享应用凭据只由根配置持有，用户 Token 留在各自数据库。"""
+        if self.shared_config is not self:
+            return self.shared_config.enterprise_application(provider)
+        saved = self._db.runtime_secret("enterprise_applications", "active", {})
+        if provider in saved:
+            return dict(saved[provider])
+        if provider == "crossborderbus":
+            secret = os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
+            return {"client_secret": secret or self.integration_credentials("crossborderbus").get("client_secret", "")}
+        crossborder = provider == "alibaba_crossborder"
+        prefix = "ERP_ALIBABA_CROSSBORDER_" if crossborder else "ERP_ALIBABA_"
+        application = {} if crossborder else dict(self.alibaba_credentials().get("application", {}))
+        key, secret = (os.environ.get(prefix + name, "").strip() for name in ("APP_KEY", "APP_SECRET"))
+        if crossborder or key or secret:
+            application = {"app_key": key, "app_secret": secret}
+        application["redirect_uri"] = os.environ.get(prefix + "REDIRECT_URI", "").strip()
+        return application
+
+    def managed_settings(self) -> dict:
+        owner = self.shared_config
+        applications = {provider: owner.enterprise_application(provider)
+                        for provider in ("alibaba", "alibaba_crossborder", "crossborderbus")}
+        rates = {key: owner.load_app_config()["pricing_defaults"][key] for key in EXCHANGE_RATE_FIELDS}
+        revision = hashlib.sha256(json.dumps([applications, rates], sort_keys=True).encode()).hexdigest()
+        public = {provider: {"app_key": value.get("app_key", ""), "redirect_uri": value.get("redirect_uri", ""),
+                             "secret_configured": bool(value.get("app_secret"))}
+                  for provider, value in applications.items() if provider != "crossborderbus"}
+        return {"ok": True, "revision": revision, "exchange_rates": rates, **public,
+                "crossborderbus_secret_configured": bool(applications["crossborderbus"].get("client_secret"))}
+
+    def save_managed_settings(self, incoming: dict) -> dict:
+        request = ManagedSettingsRequest.model_validate(incoming)
+        owner = self.shared_config
+        with owner._save_lock:
+            if request.revision != owner.managed_settings()["revision"]:
+                raise RequestValidationError("共享设置已更新，请重新读取后保存。", status_code=409)
+            previous = owner._db.runtime_secret("enterprise_applications", "active", {})
+            applications = {}
+            for provider in ("alibaba", "alibaba_crossborder", "crossborderbus"):
+                old = owner.enterprise_application(provider)
+                if provider == "crossborderbus":
+                    changes = {"client_secret": request.crossborderbus_client_secret}
+                else:
+                    changes = getattr(request, provider).model_dump()
+                value = {**old, **{key: val for key, val in changes.items() if val is not None}}
+                if provider != "crossborderbus" and any(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
+                    if not all(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
+                        raise ValueError("1688 应用编号、密钥和回调地址须填写完整")
+                if value != old:
+                    value["credential_generation"] = uuid4().hex
+                applications[provider] = value
+            config = owner.load_app_config()
+            # 旧汇率表没有来源字段，接管配置时先归属到原 API，避免换地址后复用。
+            owner._db.set_runtime_secret("exchange_rates", "source", config["pricing_defaults"]["exchange_rate_api_url"], only_if_missing=True)
+            rates = {key: str(value) for key, value in request.exchange_rates.model_dump().items()}
+            config["pricing_defaults"].update(rates)
+            owner._db.set_runtime_secret("enterprise_applications", "active", applications)
+            try:
+                owner.save_app_config(config)
+            except BaseException:
+                owner._db.set_runtime_secret("enterprise_applications", "active", previous)
+                raise
+            return owner.managed_settings()
 
     def delete_integration_credentials(self, provider: str, record_id: str) -> None:
         if provider not in {"crossborderbus", "wechat"} or not record_id:
@@ -525,18 +608,7 @@ class ConfigStore:
             return state
 
     def alibaba_application(self, *, crossborder=False) -> dict:
-        if crossborder:
-            return {field: os.environ.get("ERP_ALIBABA_CROSSBORDER_" + field.upper(), "").strip()
-                    for field in ("app_key", "app_secret", "redirect_uri")}
-        state = self.alibaba_credentials()
-        application = dict(state.get("application", {}))
-        key = os.environ.get("ERP_ALIBABA_APP_KEY", "").strip()
-        secret = os.environ.get("ERP_ALIBABA_APP_SECRET", "").strip()
-        # 配置了一项即按部署配置处理，不和另一套旧密钥拼接。
-        if key or secret:
-            application = {"app_key": key, "app_secret": secret}
-        application["redirect_uri"] = os.environ.get("ERP_ALIBABA_REDIRECT_URI", "").strip()
-        return application
+        return self.enterprise_application("alibaba_crossborder" if crossborder else "alibaba")
 
     def update_alibaba_credentials(self, update, *, expected=None, application=None, crossborder=False) -> dict:
         """网络操作后短锁校验，防止迟到的授权/刷新回执覆盖新账号。"""
@@ -574,6 +646,10 @@ class ConfigStore:
     def load_app_config(self) -> dict[str, Any]:
         with self._save_lock:
             config = self._load_app_config_unlocked()
+            if self.shared_config is not self:
+                shared = self.shared_config.load_app_config()
+                config["forbidden_categories"] = shared["forbidden_categories"]
+                config["pricing_defaults"].update({key: shared["pricing_defaults"][key] for key in EXCHANGE_RATE_FIELDS})
             if self.managed_models is not None:
                 stored = {row["id"]: row for row in config["ai_models"]}
                 system_rows = []
@@ -653,6 +729,11 @@ class ConfigStore:
             )}
             if self.managed_models is not None:
                 config["ai_models"] = self.check_system_models(config.get("ai_models"))
+            if self.shared_config is not self:
+                defaults = self.default_app_config()
+                config["forbidden_categories"] = defaults["forbidden_categories"]
+                config["pricing_defaults"] = {**config.get("pricing_defaults", {}),
+                                              **{key: defaults["pricing_defaults"][key] for key in EXCHANGE_RATE_FIELDS}}
             config = self.normalize_app_config(config)
             hosting = config["image_hosting"]
             if hosting["default_profile_id"]:
@@ -728,6 +809,12 @@ class ConfigStore:
 
     def save_client_app_config(self, incoming, *, ai_only=False):
         current = self.load_app_config()
+        pricing = incoming.get("pricing_defaults", {})
+        if not isinstance(pricing, dict):
+            raise RequestValidationError("汇率配置必须为对象。")
+        for key in EXCHANGE_RATE_FIELDS:
+            if key in pricing and str(pricing[key]) != str(current["pricing_defaults"][key]):
+                raise RequestValidationError("汇率 API 由管理员在共享设置中维护。", status_code=403)
         merged = self._merge_client_ai_config(current, incoming) if ai_only else self.merge_app_config_fields(current, incoming)
         # 本机配置指纹可能需要网络往返；只在最终比较和写入期间持有配置锁。
         with self._save_lock:

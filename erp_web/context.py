@@ -133,6 +133,7 @@ class AppContext:
 
     def __init__(self, paths: AppPaths, db: ErpDatabase) -> None:
         self.paths = paths
+        self.shared_paths = paths
         self.db = db
         self.user_id = ""
         self.model_key = None
@@ -247,8 +248,15 @@ class AppContext:
                 if self._yandex_logistics is None:
                     from erp_web.services.yandex_logistics_service import YandexLogisticsService
 
-                    self._yandex_logistics = YandexLogisticsService(config, self.paths.data_dir / 'tariffs')
+                    self._yandex_logistics = YandexLogisticsService(config, self.shared_paths.data_dir / 'tariffs', snapshot_loader=self.tariffs.load)
         return self._yandex_logistics
+
+    @property
+    def tariffs(self):
+        from erp_web.services.tariff_settings_service import TariffSettingsService
+
+        personal = self.paths.data_dir / ('personal-tariffs' if self.paths == self.shared_paths else 'tariffs')
+        return TariffSettingsService(personal, self.shared_paths.data_dir / 'tariffs')
 
     @property
     def fulfillment(self):

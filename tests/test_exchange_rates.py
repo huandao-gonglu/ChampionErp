@@ -280,3 +280,38 @@ def test_cbt_pricing_blocks_invalid_sales_target_contract(
     assert result["field"]
     assert result["next_action"]
     assert result["sales_target_options"] == expected_options
+
+
+def test_api_change_bypasses_both_memory_and_persisted_cache(monkeypatch):
+    calls = []
+
+    def response(request, timeout):
+        calls.append(request.full_url)
+        return _FakeRatesResponse({"rates": {"CNY": 7 if "first" in request.full_url else 8, "MXN": 18}})
+
+    monkeypatch.setattr(pricing_runtime.urllib.request, "urlopen", response)
+    db = get_context().db
+    service = pricing_runtime.ExchangeRateService(db)
+    first = {**_service_cfg(), "api_url": "https://first.example/rates"}
+    second = {**first, "api_url": "https://second.example/rates"}
+    assert service.get_rates(first)["rates"]["usd_cny_rate"] == 7
+    assert service.get_rates(second)["rates"]["usd_cny_rate"] == 8
+    restarted = pricing_runtime.ExchangeRateService(db)
+    assert restarted.get_rates(first)["rates"]["usd_cny_rate"] == 7
+    assert calls == [first["api_url"], second["api_url"], first["api_url"]]
+
+
+def test_zero_cache_ttl_is_preserved():
+    config = {"pricing_defaults": {"exchange_rate_cache_ttl_seconds": 0}}
+    assert pricing_runtime._pricing_exchange_rate_config(config)["cache_ttl_seconds"] == 0
+
+
+def test_public_rates_source_omits_admin_api_query(monkeypatch):
+    def response(request, timeout):
+        assert "private-key" in request.full_url
+        return _FakeRatesResponse({"rates": {"CNY": 7, "MXN": 18}})
+    monkeypatch.setattr(pricing_runtime.urllib.request, "urlopen", response)
+    cfg = {**_service_cfg(), "api_url": "https://rates.example/api?key=private-key"}
+    result = get_context().exchange_rates.get_rates(cfg)
+    assert result["source"] == "https://rates.example/api"
+    assert "private-key" not in json.dumps(result)

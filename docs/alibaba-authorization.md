@@ -2,7 +2,9 @@
 
 ## 配置与使用
 
-服务商的应用凭据由受控后端配置：
+管理员在「系统设置 → 管理员共享设置」分别维护采购和跨境商品应用的编号、密钥与回调。
+企业应用保存于根库 `runtime_secrets / enterprise_applications / active`，所有账号共用应用，各自保存买家授权。
+尚未通过管理页面保存时，支持以下后端环境输入：
 
 ```dotenv
 ERP_ALIBABA_APP_KEY=你的应用编号
@@ -13,7 +15,7 @@ ERP_ALIBABA_REDIRECT_URI=开发者后台登记的完整回调地址
 AppKey 与 AppSecret 成对设置，不与历史配置拼接。回调必须是 HTTPS，或本机调试的
 `http://127.0.0.1:<端口>/auth/alibaba/callback` / localhost；实际能否登记该回调由 1688 平台决定。
 配置文件可使用后端 `config/.env`，不要使用 `VITE_` 变量或将真实凭据提交到仓库。
-环境注入的密钥不会复制到数据库。环境缺省时保留已迁移的本机应用凭据。
+管理员首次保存时会将当前应用配置接管到根库，后续以根库配置为准。环境缺省时保留已迁移的根库应用凭据读取能力。
 
 客户在「授权配置 → 1688 授权」点击连接，在官方页面登录自己的采购账号并同意授权。
 不填写 AppKey、AppSecret 或 Token。回调到本后端的 `/auth/alibaba/callback` 时自动完成；
@@ -29,11 +31,11 @@ AppKey 与 AppSecret 成对设置，不与历史配置拼接。回调必须是 H
 `ConfigStore` 在主库 `runtime_secrets` 的 `credentials:alibaba / state` 保存结构化授权状态：
 应用凭据 `application`、当前买家 `authorization`、短期授权请求 `pending` 各自独立。
 应用权限属于 AppKey；买家 Token 绑定签发应用与账号，公司的买家 Token 不能跨客户共享。
-同应用密钥配置变更后，旧授权保留但不再使用，需要重新授权。
+应用配置变更会更新配置代次，旧授权和待完成授权失效；换回先前密钥也需要重新授权。
 
 每个数据目录的采购应用和跨境商品查询应用各有一个活动买家授权。采购授权保存在原有的
 `credentials:alibaba / state`，跨境授权使用同一命名空间下独立的 `crossborder` 记录。
-跨境应用使用后端变量 `ERP_ALIBABA_CROSSBORDER_APP_KEY`、`ERP_ALIBABA_CROSSBORDER_APP_SECRET`
+跨境应用也可在首次管理员保存前使用后端变量 `ERP_ALIBABA_CROSSBORDER_APP_KEY`、`ERP_ALIBABA_CROSSBORDER_APP_SECRET`
 和 `ERP_ALIBABA_CROSSBORDER_REDIRECT_URI`。可登记同一个回调 URL，服务端按一次性 state
 选择应用并核验。用户在「1688 跨境商品查询授权」用原采购账号再次登录后，可以输入商品编号
 验证多语言商品详情接口返回的 SKU 数和含 specId 的数量。

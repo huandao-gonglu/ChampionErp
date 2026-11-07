@@ -176,6 +176,14 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/admin/settings": _contract(fields={"revision": STRING, "exchange_rates": OBJECT, "alibaba": OBJECT,
+        "alibaba_crossborder": OBJECT, "crossborderbus_client_secret": STRING},
+        required=("revision", "exchange_rates", "alibaba", "alibaba_crossborder")),
+    "/api/shipping/tariffs/import": _contract(fields={"platform": STRING, "scope": STRING, "filename": STRING,
+        "content_base64": STRING, "effective_date": STRING, "expected_version": FieldRule("string", allow_empty=True), "preview": BOOLEAN},
+        required=("platform", "scope", "filename", "content_base64", "expected_version")),
+    "/api/shipping/tariffs/upgrade": _contract(fields={"platform": STRING, "shared_version": STRING, "expected_version": STRING},
+        required=("platform", "shared_version", "expected_version")),
     "/api/account/newapi/launch": _contract(fields={"target": STRING, "source_origin": STRING}, required=("target",)),
     "/api/internal/newapi/launch": _contract(fields={"ticket": STRING, "origin": STRING}, required=("ticket", "origin")),
     "/api/account/newapi/preview": _contract(fields={"code": STRING}, required=("code",)),
@@ -398,7 +406,7 @@ def _is_present(value: Any, rule: FieldRule | None = None) -> bool:
     if value is None:
         return False
     if isinstance(value, str):
-        return bool(value.strip())
+        return bool(value.strip()) or bool(rule and rule.allow_empty)
     if isinstance(value, (list, tuple, dict, set, frozenset)):
         return bool(value) or bool(rule and rule.allow_empty)
     return True

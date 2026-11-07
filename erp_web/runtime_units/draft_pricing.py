@@ -11,7 +11,6 @@ from uuid import uuid4
 from typing import Any, Protocol
 
 from erp_web.context import get_context
-from erp_web.international_shipping.tariff_store import default_snapshot
 from erp_web.product_model import mercadolibre_sales_condition_basis
 from erp_web.product_model.sku_model import selected_skus
 from erp_web.runtime_units.draft_publish_context import draft_for_publish_target
@@ -59,11 +58,9 @@ def _configuration_basis(config: dict[str, Any]) -> dict[str, Any]:
 def _pricing_environment() -> str:
     """应用沿用预览的汇率快照，但配置或物流费率版本改变必须重算。"""
     context = get_context()
-    current = context.paths.data_dir / "tariffs" / "current.json"
     return _fingerprint([
         context.config.load_app_config().get("pricing_defaults"),
-        current.read_text() if current.exists() else None,
-        default_snapshot()["version"],
+        context.tariffs.versions(),
     ])
 
 

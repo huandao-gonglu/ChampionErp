@@ -24,3 +24,17 @@ def test_only_startup_installs_the_process_default_context():
                 if any(item.name in {"set_context", "clear_context"} for item in node.names):
                     offenders.append(str(path.relative_to(ROOT)))
     assert not offenders, f"请求和后台执行须通过 bind_context 绑定个人空间：{offenders}"
+
+
+def test_shared_settings_owner_is_only_bound_by_composition_root():
+    offenders = []
+    for path in python_files("erp_web"):
+        if path.name in {"account_runtime.py", "context.py", "config_store.py"}:
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute) and target.attr in {"shared_config", "shared_paths"}:
+                        offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, f"共享配置归属只能由组合根绑定，业务请求不得切换共享空间：{offenders}"

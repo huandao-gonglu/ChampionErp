@@ -5,7 +5,7 @@ import { reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
 import { pricingTemplateParameters } from '@/types/pricing'
-import { pricingRecord } from '@/utils/skuPricing'
+import { buildSkuPricingEntries, pricingRecord } from '@/utils/skuPricing'
 import { createEmptyDraftProductContext } from '@/constants/initialState'
 import type { DraftSku, PricingInput, PricingResult, ProductSku, UnknownRecord } from '@/types/workflow'
 
@@ -730,4 +730,17 @@ describe('PricingPanel 对齐 Penpot 核价原型', () => {
     expect(rows[1].overrides.package_dimensions).toBeUndefined()
     expect(wrapper.emitted('calculate')).toBeUndefined()
   })
+})
+
+it('运费版本更新后旧报价提示重算，新报价仍可用', () => {
+  const row = skuRow()
+  const quote = pricingRecord(row.pricing.targets)['mercadolibre:cbt'] as UnknownRecord
+  pricingRecord(pricingRecord(quote.calculation_basis).shipping_evidence).tariff_version = 'ozon-old'
+  row.pricing.targets = { 'ozon:global': quote }
+  const target = { ...input.targets[0], platform: 'ozon' as const, site: 'global', targetKey: 'ozon:global' }
+  const entries = buildSkuPricingEntries([row], productContext([row]).skuItems, [target], { ozon: 'ozon-new' })
+  expect(entries[0].errors).toContain('国际物流运费表已更新，请重新核价')
+  expect(entries[0].status).toBe('error')
+  const current = buildSkuPricingEntries([row], productContext([row]).skuItems, [target], { ozon: 'ozon-old' })
+  expect(current[0].errors).toEqual([])
 })

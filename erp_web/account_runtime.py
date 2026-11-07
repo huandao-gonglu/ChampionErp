@@ -58,6 +58,8 @@ class AccountRuntime:
                         if not destination.exists():
                             shutil.copyfile(source, destination)
                 context.user_id = user["id"]
+                context.shared_paths = self.root.paths
+                context.config.shared_config = self.root.config
                 context.allow_environment_credentials = workspace == "."
                 context.account_store = self.store
                 context.config.managed_models = managed_newapi_models(

@@ -54,6 +54,8 @@ macOS 沿用 `~/Library/Application Support/Champion ERP/backend` 作为本机�
 
 ## 构建
 
+同时升级服务器与本机桌面时，在项目根目录执行 `.venv/bin/python scripts/release.py`。统一流程会执行回归检查、构建、服务器备份切换、公网验证以及桌面旧包备份和替换，详见[统一编译与发布](server-deployment.md#统一编译与发布)。
+
 在目标平台和架构上安装 Python 与前端 pnpm 依赖，然后执行：
 
 ```sh

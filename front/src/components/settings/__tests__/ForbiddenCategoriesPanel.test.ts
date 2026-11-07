@@ -8,7 +8,7 @@ import type { BackendForbiddenCategories } from '@/types/workflow.generated'
 vi.mock('@/api/forbiddenCategories', () => ({ fetchForbiddenCategories: vi.fn(), importForbiddenCategories: vi.fn() }))
 enableAutoUnmount(afterEach)
 const saved: BackendForbiddenCategories = { platform: 'yandex', filename: '旧名单.xlsx', imported_at: '2026-11-01T03:00:00Z', categories: [{ category_id: '123', name: '测试禁售类目' }, { category_id: '456', name: '另一类目' }] }
-const open = () => mount(ForbiddenCategoriesPanel, { global: { plugins: [i18n] } })
+const open = (editable = true) => mount(ForbiddenCategoriesPanel, { props: { editable }, global: { plugins: [i18n] } })
 async function choose(wrapper: ReturnType<typeof open>, file: File) {
   const input = wrapper.get('input[type="file"]')
   Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
@@ -20,6 +20,12 @@ beforeEach(() => {
   vi.mocked(importForbiddenCategories).mockResolvedValue({ ...saved, filename: '新名单.xlsx', categories: [{ category_id: '789', name: '新类目' }] })
 })
 describe('禁售类目设置', () => {
+  it('普通用户只能查看管理员名单', async () => {
+    const wrapper = open(false); await flushPromises()
+    expect(wrapper.find('input[type="file"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('由管理员统一维护')
+    expect(wrapper.text()).toContain('测试禁售类目')
+  })
   it('展示来源和数量，可按 ID、名称搜索', async () => {
     const wrapper = open(); await flushPromises()
     expect(wrapper.text()).toContain('当前禁售类目：2 个')

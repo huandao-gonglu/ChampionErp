@@ -76,11 +76,6 @@ function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig
   }
   if (isRecord(safeSubmittedConfig.ai_use_case_bindings)) merged.ai_use_case_bindings = safeSubmittedConfig.ai_use_case_bindings
   if (isRecord(safeSubmittedConfig.ai_use_case_prompts)) merged.ai_use_case_prompts = safeSubmittedConfig.ai_use_case_prompts
-  for (const section of ['pricing_defaults']) {
-    const publicSection = isRecord(safePublicConfig[section]) ? safePublicConfig[section] as UnknownRecord : {}
-    const submittedSection = isRecord(safeSubmittedConfig[section]) ? safeSubmittedConfig[section] as UnknownRecord : {}
-    merged[section] = { ...publicSection, ...submittedSection }
-  }
   return sanitizePublicAppConfig(merged)
 }
 

@@ -39,7 +39,10 @@ def dec(value, label, positive=False):
 
 
 def numeric(value):
-    return format(Decimal(str(value)).normalize(), 'f')
+    number = Decimal(str(value))
+    if not number.is_finite() or (number and abs(number.adjusted()) > 18) or len(number.as_tuple().digits) > 50:
+        raise ValueError('费率数值的大小或精度超出支持范围')
+    return format(number.normalize(), 'f')
 
 
 def canonical(value):
@@ -67,12 +70,25 @@ class Workbook:
         if content is None and self.path is None:
             raise ValueError('缺少 XLSX 文件内容')
         self.bytes = content if content is not None else self.path.read_bytes()
+        if len(self.bytes) > 8 * 1024 * 1024:
+            raise ValueError('运费表不能超过 8 MiB')
         self.sha = hashlib.sha256(self.bytes).hexdigest()
         self.sheets = []
         self.strings = []
         try:
             from io import BytesIO
             with ZipFile(BytesIO(self.bytes)) as archive:
+                entries = archive.infolist()
+                if (len(entries) > 2000 or sum(item.file_size for item in entries) > 32 * 1024 * 1024
+                        or len({item.filename for item in entries}) != len(entries)):
+                    raise ValueError('运费表解压内容过大或包含重复文件')
+                if any('vbaproject' in item.filename.lower() for item in entries):
+                    raise ValueError('请上传不含宏的 XLSX 运费表')
+                for item in entries:
+                    if item.filename.endswith('.xml'):
+                        xml = archive.read(item).upper()
+                        if b'<!DOCTYPE' in xml or b'<!ENTITY' in xml:
+                            raise ValueError('运费表含不支持的 XML 声明')
                 if 'xl/sharedStrings.xml' in archive.namelist():
                     shared = ET.fromstring(archive.read('xl/sharedStrings.xml'))
                     self.strings = [''.join(n.itertext()) for n in shared.findall('s:si', NS)]
@@ -102,8 +118,8 @@ class Workbook:
                             values[column] = {'value': text or '', 'formula': formula.text if formula is not None else None, 'address': address}
                         rows[int(row.attrib['r'])] = values
                     self.sheets.append({'name': sheet.attrib['name'], 'rows': rows})
-        except (BadZipFile, ET.ParseError, KeyError, IndexError, InvalidOperation) as exc:
-            raise ValueError(f'无法读取 XLSX：{type(exc).__name__}') from None
+        except (BadZipFile, ET.ParseError, KeyError, IndexError, InvalidOperation, TypeError, OverflowError, RuntimeError, NotImplementedError):
+            raise ValueError('无法读取 XLSX 运费表，请核对文件格式和内容') from None
 
 
 YA_HEADERS = {
@@ -335,7 +351,7 @@ def diff_markdown(diff, pack, status):
     return '\n'.join(lines) + '\n'
 
 
-def import_template(path, platform, root, effective_date=None, preview=False):
+def import_template(path, platform, root, effective_date=None, preview=False, *, expected_version=None, customized_from=None):
     pack, source_bytes = parse_template(path, platform, effective_date)
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     # 文件锁只覆盖本地版本切换，不包含网络请求。
@@ -343,6 +359,8 @@ def import_template(path, platform, root, effective_date=None, preview=False):
         fcntl.flock(lock, fcntl.LOCK_EX)
         current = read_current(root)
         old_id = current['platforms'].get(platform)
+        if expected_version is not None and (old_id or '') != expected_version:
+            raise ValueError('运费表已更新，请重新读取并预览后再导入')
         old = read_version(root, old_id) if old_id else None
         diff = compare(old, pack)
         future = effective_date and date.fromisoformat(effective_date) > date.today()
@@ -360,6 +378,8 @@ def import_template(path, platform, root, effective_date=None, preview=False):
         atomic_write(folder / 'diff.md', diff_markdown(diff, pack, status).encode())
         if not preview and not future and not unchanged:
             current['platforms'][platform] = pack['version']
+            if customized_from is not None:
+                current.setdefault('customized_from', {})[platform] = customized_from
             atomic_write(root / 'current.json', json.dumps(current, ensure_ascii=False, indent=2).encode())
         return {**diff, 'status': status, 'report': str(folder / 'diff.md')}
 

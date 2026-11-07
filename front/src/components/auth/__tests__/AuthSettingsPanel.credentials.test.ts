@@ -47,6 +47,11 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, sto
   })
 }
 
+const save = async (wrapper: ReturnType<typeof mountPanel>) => {
+  await wrapper.findAll('button').find(button => button.text() === '保存 AI 设置')!.trigger('click')
+  return wrapper.emitted('saveAi')!.at(-1)![0] as Record<string, unknown>
+}
+
 it('仅模型读取显示正在读取模型，其他工作台加载不会误报模型检测', async () => {
   const wrapper = mountPanel()
   await wrapper.setProps({ loading: true })
@@ -101,10 +106,7 @@ describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
     await wrapper.findAll('button').find(button => button.text().includes('已有模型'))!.trigger('click')
     expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeUndefined()
   })
-  const save = async (wrapper: ReturnType<typeof mountPanel>) => {
-    await wrapper.findAll('button').find(button => button.text() === '保存 AI 设置')!.trigger('click')
-    return wrapper.emitted('saveAi')!.at(-1)![0] as Record<string, unknown>
-  }
+
 
   it('从网页入口添加 Gemini，删除后仍能按预置恢复，且不自动启用或测试能力', async () => {
     const wrapper = mountPanel({ ai_models: [apiModel], browser_presets: [preset] })
@@ -220,20 +222,15 @@ describe('AuthSettingsPanel credential lifecycle', () => {
     await wrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
     expect(wrapper.find('alibaba-settings-panel-stub').exists()).toBe(true)
     expect(wrapper.find('[data-testid="transient-1688-access-token"]').exists()).toBe(false)
-    await wrapper.get('[data-testid="save-platform-api-settings"]').trigger('click')
-    expect(wrapper.emitted('saveAi')?.[0]?.[0]).not.toHaveProperty('1688_api')
+    const payload = await save(wrapper)
+    expect(payload).not.toHaveProperty('1688_api')
   })
 
-  it('API 设置仅提供汇率与 1688，不再显示或提交云途配置', async () => {
+  it('个人授权页不提供汇率 API 配置，也不随个人模型设置提交', async () => {
     const wrapper = mountPanel()
-
-    await wrapper.get('[data-testid="auth-settings-tab-apis"]').trigger('click')
-    expect(wrapper.text()).toContain('核价汇率')
-    expect(wrapper.text()).not.toContain('云途')
-    expect(wrapper.find('[data-testid="test-yunexpress-api"]').exists()).toBe(false)
-
-    await wrapper.get('[data-testid="save-platform-api-settings"]').trigger('click')
-    expect(wrapper.emitted('saveAi')?.[0]?.[0]).not.toHaveProperty('yunexpress')
+    expect(wrapper.find('[data-testid="auth-settings-tab-apis"]').exists()).toBe(false)
+    const payload = await save(wrapper)
+    expect(payload).not.toHaveProperty('pricing_defaults')
   })
 
   it('异步配置尚未返回时可渲染空平台状态', async () => {

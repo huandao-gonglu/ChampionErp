@@ -175,6 +175,8 @@ def public_app_config(
             for field in ("base_url", "base_url_env", "api_key", "api_key_env", "model_env"):
                 model.pop(field, None)
     public.pop("1688_api", None)
+    # 共享汇率 API 只通过管理员设置下发，地址可能带服务商访问参数。
+    public.pop("pricing_defaults", None)
     hosting = public.get("image_hosting", {})
     for profile in hosting.get("profiles", []):
         raw = next((item for item in safe["image_hosting"]["profiles"] if item["id"] == profile["id"]), {})
@@ -275,10 +277,6 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
             current if isinstance(current, dict) else {},
             incoming.get("ai_use_case_prompts"),
         )
-    if isinstance(incoming.get("pricing_defaults"), dict):
-        current_pricing = merged.get("pricing_defaults") if isinstance(merged.get("pricing_defaults"), dict) else {}
-        incoming_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}
-        merged["pricing_defaults"] = {**current_pricing, **incoming_pricing}
     ai_model_config.validate_ai_use_case_generation_bindings(merged)
     ai_model_config.validate_ai_model_request_overrides(merged)
     return merged

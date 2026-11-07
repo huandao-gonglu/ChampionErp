@@ -26,9 +26,10 @@ def shipping_mode_name(route):
 
 
 class YandexLogisticsService:
-    def __init__(self, config_store, rules_dir):
+    def __init__(self, config_store, rules_dir, *, snapshot_loader=None):
         self.config_store = config_store
         self.rules_dir = rules_dir
+        self.snapshot_loader = snapshot_loader or (lambda platform: load_active(rules_dir, platform))
 
     def account(self):
         store = self.config_store.load_store_config().get('yandex', {})
@@ -72,7 +73,7 @@ class YandexLogisticsService:
         return cached if cached.get('identity') == identity else {'items': [], 'checked_at': ''}
 
     def routes(self):
-        snapshot = load_active(self.rules_dir, 'yandex')
+        snapshot = self.snapshot_loader('yandex')
         return [{'id': row['id'], 'name': row['name'], 'carrier': carrier_key(row['carrier']),
                  'transport': row['transport'], 'service': row['service'], 'group': row['group']}
                 for row in snapshot['content']['rules'] if carrier_key(row['carrier'])]

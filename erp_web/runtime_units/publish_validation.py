@@ -236,6 +236,13 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any], *, se
         or str(basis.get("listing_currency") or "").upper() != listing_currency
     ):
         return [precheck_item(PRICING_STALE, "pricing", "核价依据缺失或已变化", "error", "前往核价页重新计算并应用售价")]
+    shipping = basis.get('shipping_evidence') if isinstance(basis.get('shipping_evidence'), dict) else {}
+    tariff_version = shipping.get('tariff_version')
+    if platform in {'yandex', 'ozon'} and tariff_version:
+        versions = session.tariff_versions if session is not None else get_context().tariffs.versions()
+        if tariff_version != versions.get(platform):
+            return [precheck_item(PRICING_STALE, 'pricing', '国际物流运费表已更新，旧核价结果已失效',
+                                 'error', '前往核价页重新计算并应用售价')]
     if (
         platform == "mercadolibre"
         and str(draft.get("site") or draft.get("site_id") or "")

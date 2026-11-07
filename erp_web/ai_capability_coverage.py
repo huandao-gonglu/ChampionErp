@@ -95,6 +95,13 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="共享设置与运费表", disposition="internal_only",
+        reason="管理员维护共享企业凭据、汇率 API 与默认运费，用户显式导入个人表或确认覆盖；模型只消费生效配置。")
+      for method, path in (
+          ("GET", "/api/admin/settings"), ("POST", "/api/admin/settings"),
+          ("GET", "/api/shipping/tariffs"), ("POST", "/api/shipping/tariffs/import"),
+          ("POST", "/api/shipping/tariffs/upgrade"),
+      )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
         reason="个人账号、会话、用户管理及 New API 账号交接仅供受信界面、内部服务和部署命令使用，不向模型提供身份或权限操作。")
       for method, path in (

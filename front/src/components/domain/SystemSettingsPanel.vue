@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { routeLocationKey } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { useAccountStore } from '@/stores/account'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import { UI_LOCALE_OPTIONS, type SupportedUiLocale } from '@/constants/locales'
 import ExternalRequestControlPanel from '@/components/settings/ExternalRequestControlPanel.vue'
@@ -11,10 +12,13 @@ import YandexWarehouseSettings from '@/components/settings/YandexWarehouseSettin
 import WatermarkSettingsPanel from '@/components/settings/WatermarkSettingsPanel.vue'
 import WechatSettingsPanel from '@/components/settings/WechatSettingsPanel.vue'
 import ForbiddenCategoriesPanel from '@/components/settings/ForbiddenCategoriesPanel.vue'
+import ManagedSettingsPanel from '@/components/settings/ManagedSettingsPanel.vue'
+import TariffSettingsPanel from '@/components/settings/TariffSettingsPanel.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const account = useAccountStore()
 const colorMode = computed({
   get: () => appStore.theme,
   set: (value: 'light' | 'dark') => {
@@ -26,14 +30,17 @@ const tabs = computed(() => [
   { key: 'wechat', label: t('settings.wechat'), summary: t('settings.wechatSummary') },
   { key: 'watermark', label: '图片水印', summary: '发布水印、文字与自定义图片' },
   { key: 'forbidden_categories', label: t('settings.forbiddenCategories'), summary: t('settings.forbiddenCategoriesSummary') },
+  { key: 'tariffs', label: '国际物流运费表', summary: 'FBS 默认费率、个人导入与版本升级' },
+  ...(account.isAdmin ? [{ key: 'managed', label: '管理员共享设置', summary: '企业应用凭据与汇率 API' }] as const : []),
   { key: 'yandex_warehouses', label: 'Yandex 发布仓库', summary: '同步远端仓库并指定运输模式' },
   { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
   { key: 'about', label: t('settings.about'), summary: t('settings.aboutSummary') },
 ] as const)
-const section = ref<'general' | 'wechat' | 'watermark' | 'forbidden_categories' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
+const section = ref<'general' | 'wechat' | 'watermark' | 'forbidden_categories' | 'tariffs' | 'managed' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
 const route = inject(routeLocationKey, undefined)
 watch(() => route?.query.settings_section, value => {
-  section.value = value === 'wechat' || value === 'interruptions' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' ? value : 'general'
+  if (value === 'managed') section.value = account.isAdmin ? 'managed' : 'general'
+  else section.value = value === 'wechat' || value === 'interruptions' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' || value === 'tariffs' ? value : 'general'
 }, { immediate: true })
 const activeTab = computed(() => tabs.value.find(tab => tab.key === section.value) || tabs.value[0])
 
@@ -97,7 +104,13 @@ onMounted(load)
         <WatermarkSettingsPanel />
       </section>
       <section v-if="section === 'forbidden_categories'" id="system-settings-panel-forbidden_categories" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-forbidden_categories">
-        <ForbiddenCategoriesPanel />
+        <ForbiddenCategoriesPanel :editable="account.isAdmin" />
+      </section>
+      <section v-if="section === 'tariffs'" id="system-settings-panel-tariffs" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-tariffs">
+        <TariffSettingsPanel />
+      </section>
+      <section v-if="section === 'managed' && account.isAdmin" id="system-settings-panel-managed" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-managed">
+        <ManagedSettingsPanel />
       </section>
       <section v-if="section === 'interruptions'" id="system-settings-panel-interruptions" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-interruptions">
         <ExternalRequestControlPanel />

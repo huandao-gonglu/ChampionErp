@@ -2737,7 +2737,7 @@ class ErpDatabase:
 
     # -- exchange_rates -----------------------------------------------------------
 
-    def save_exchange_rates(self, rates: dict[str, float], fetched_at: str) -> None:
+    def save_exchange_rates(self, rates: dict[str, float], fetched_at: str, *, source: str = "") -> None:
         """Replace the stored snapshot: one row per currency pair."""
         fetched = str(fetched_at or "") or utc_now()
         with self._connect() as conn:
@@ -2754,18 +2754,24 @@ class ErpDatabase:
                     "INSERT OR REPLACE INTO exchange_rates (pair, rate, fetched_at) VALUES (?, ?, ?)",
                     (pair_key, rate_value, fetched),
                 )
+            conn.execute(
+                "INSERT OR REPLACE INTO runtime_secrets(namespace, secret_path, secret_json, updated_at) VALUES (?, ?, ?, ?)",
+                ("exchange_rates", "source", json_dumps(source), utc_now()),
+            )
             conn.commit()
 
     def load_exchange_rates(self) -> dict[str, Any]:
         """Return ``{"rates": {pair: rate}, "fetched_at": str}`` (empty when unset)."""
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM exchange_rates").fetchall()
+            source = conn.execute("SELECT secret_json FROM runtime_secrets WHERE namespace=? AND secret_path=?",
+                                  ("exchange_rates", "source")).fetchone()
         rates: dict[str, float] = {}
         fetched_at = ""
         for row in rows:
             rates[str(row["pair"])] = float(row["rate"] or 0)
             fetched_at = max(fetched_at, str(row["fetched_at"] or ""))
-        return {"rates": rates, "fetched_at": fetched_at}
+        return {"rates": rates, "fetched_at": fetched_at, "source": json_loads(source[0], "") if source else ""}
 
 
 def _record_from_row(
