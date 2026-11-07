@@ -32,6 +32,7 @@ beforeEach(() => {
   vi.mocked(api.startAlibabaAuthorization).mockResolvedValue({ ok: true, url })
 })
 afterEach(() => {
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
   vi.useRealTimers()
 })
@@ -61,10 +62,27 @@ describe('1688 浏览器授权', () => {
 
   it('桌面端交给系统浏览器打开官方地址', async () => {
     vi.mocked(hasLocalOperations).mockReturnValue(true)
+    const openAlibabaAuthorization = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('championDesktop', { openAlibabaAuthorization })
     const wrapper = await panel()
     await wrapper.get('button').trigger('click')
     await flushPromises()
-    expect(window.open).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer')
+    expect(openAlibabaAuthorization).toHaveBeenCalledWith(url)
+    expect(window.open).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('等待浏览器完成授权')
+  })
+
+  it('桌面浏览器启动失败后显示错误，服务端待回调不会覆盖提示', async () => {
+    vi.mocked(hasLocalOperations).mockReturnValue(true)
+    vi.stubGlobal('championDesktop', { openAlibabaAuthorization: vi.fn().mockRejectedValue(new Error()) })
+    const wrapper = await panel()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, attempt: 'waiting' })
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('无法打开系统浏览器')
+    expect(wrapper.text()).not.toContain('等待浏览器完成授权')
   })
 
   it('弹窗被拦截时允许重试', async () => {

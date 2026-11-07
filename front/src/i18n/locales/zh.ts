@@ -60,6 +60,7 @@ export default {
     "failed": "1688 授权操作失败",
     "waiting": "等待浏览器完成授权…",
     "incomplete": "本次授权未完成，请重新授权。",
+    "browserFailed": "无法打开系统浏览器，请再次点击授权。",
     "popupBlocked": "请允许此站点打开弹窗，再次点击授权。"
 },
   taskQueue: {

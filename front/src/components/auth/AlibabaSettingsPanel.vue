@@ -11,6 +11,7 @@ const status = ref<BackendAlibabaAuthorizationStatus | null>(null)
 const opening = ref(false)
 const waiting = ref(false)
 const error = ref('')
+const browserError = ref('')
 let timer: number | undefined
 let revision = 0
 let reading = false
@@ -26,7 +27,7 @@ async function refresh() {
     const next = await fetchAlibabaAuthorization(props.crossborder)
     if (current !== revision) return
     status.value = next
-    waiting.value = next.attempt === 'waiting'
+    waiting.value = next.attempt === 'waiting' && !browserError.value
     error.value = ''
   } catch (exc) {
     if (current !== revision) return
@@ -42,11 +43,12 @@ async function refresh() {
 
 async function connect() {
   if (opening.value) return
+  browserError.value = ''
   // 网页必须在点击事件内打开标签页，否则异步取得授权地址后可能被浏览器拦截。
   const desktop = hasLocalOperations()
   const tab = desktop ? null : window.open('about:blank', '_blank')
   if (!desktop && !tab) {
-    error.value = t('alibabaAuth.popupBlocked')
+    browserError.value = t('alibabaAuth.popupBlocked')
     return
   }
   if (tab) tab.opener = null
@@ -57,8 +59,16 @@ async function connect() {
   error.value = ''
   try {
     const { url } = await startAlibabaAuthorization(props.crossborder)
-    if (tab) tab.location.replace(url)
-    else window.open(url, '_blank', 'noopener,noreferrer')
+    try {
+      if (tab) tab.location.replace(url)
+      else if (window.championDesktop?.openAlibabaAuthorization) await window.championDesktop.openAlibabaAuthorization(url)
+      else throw new Error()
+    } catch {
+      tab?.close()
+      waiting.value = false
+      browserError.value = t('alibabaAuth.browserFailed')
+      return
+    }
     waiting.value = true
   } catch (exc) {
     tab?.close()
@@ -98,6 +108,6 @@ onUnmounted(() => {
     </button>
     <p v-if="waiting" role="status">{{ t('alibabaAuth.waiting') }}</p>
     <p v-else-if="status?.attempt === 'failed' || status?.attempt === 'expired'" role="status">{{ t('alibabaAuth.incomplete') }}</p>
-    <p v-if="error" role="alert" class="text-red-600">{{ error }}</p>
+    <p v-if="browserError || error" role="alert" class="text-red-600">{{ browserError || error }}</p>
   </section>
 </template>

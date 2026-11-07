@@ -60,6 +60,7 @@ export default {
     "failed": "1688 authorization failed",
     "waiting": "Waiting for authorization in your browser…",
     "incomplete": "Authorization did not complete. Please authorize again.",
+    "browserFailed": "The browser could not be opened. Try authorizing again.",
     "popupBlocked": "Allow pop-ups for this site, then try again."
 },
   taskQueue: {

@@ -13,6 +13,7 @@ const { registerLocalConfig } = require('./local-config.cjs')
 const { registerLicenseDirectory } = require('./licenses.cjs')
 const { SavedLogin, registerSavedLogin } = require('./saved-login.cjs')
 const { AccountSession, proxyBackendRequest } = require('./account-session.cjs')
+const { registerAlibabaAuthorization } = require('./alibaba-authorization.cjs')
 const { NewAPIBrowserBridge, registerNewAPIBridge } = require('./newapi.cjs')
 
 const { name: packageName, productName, desktopUpdateOrigin } = require('../package.json')
@@ -289,6 +290,7 @@ async function createWindow() {
   })
   registerSavedLogin({ ipcMain, win, url, vault, session: accountSession })
   registerLocalConfig({ ipcMain, win, frontendUrl: url, runtime })
+  registerAlibabaAuthorization({ ipcMain, win, frontendUrl: url, app, shell })
   registerNewAPIBridge({ ipcMain, win, shell, bridge: newapiBridge })
   registerLicenseDirectory({
     ipcMain, shell, win, frontendUrl: url,

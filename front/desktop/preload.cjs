@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('championDesktop', {
     ipcRenderer.on('desktop:connection-changed', listener)
     return () => ipcRenderer.removeListener('desktop:connection-changed', listener)
   },
+  openAlibabaAuthorization: url => ipcRenderer.invoke('desktop:open-alibaba-authorization', url),
   openNewAPI: (target) => ipcRenderer.invoke('account:open-newapi', target),
   configureModels: (models) => ipcRenderer.invoke('desktop:configure-models', models),
   openLicenses: () => ipcRenderer.invoke('licenses:open'),
