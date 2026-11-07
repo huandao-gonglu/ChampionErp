@@ -25,6 +25,55 @@ def test_release_cli_selects_desktop_policy(flags, policy, tmp_path, monkeypatch
     assert options[0].desktop_update == policy
 
 
+@pytest.mark.parametrize('skip', [False, True])
+@pytest.mark.parametrize('desktop', [False, True])
+def test_release_cli_runs_selected_checks_before_web_build(tmp_path, monkeypatch, skip, desktop):
+    identity = tmp_path / 'identity'
+    identity.touch()
+    flags = ['--output-dir', str(tmp_path), '--ssh-identity', str(identity)]
+    if skip:
+        flags.append('--skip-tests')
+    if not desktop:
+        flags.append('--server-only')
+    monkeypatch.setattr(release.sys, 'argv', ['release.py', *flags])
+    monkeypatch.setattr(release.sys, 'platform', 'darwin')
+    monkeypatch.setattr(release, 'output', lambda *args: {
+        ('git', 'status', '--porcelain', '--untracked-files=normal'): '',
+        ('git', 'rev-parse', 'HEAD'): 'revision',
+        ('node', '-p', 'process.arch'): 'arm64',
+    }[args])
+    calls = []
+    monkeypatch.setattr(release, 'check_new_desktop_version', lambda update: calls.append(('版本预检', update['arch'])))
+    monkeypatch.setattr(release, 'remote_output', lambda *args: '/opt/champion-erp/releases/previous')
+
+    def git_archive(command, *, cwd, stdout, check):
+        assert command == ['git', 'archive', 'revision']
+        with tarfile.open(fileobj=stdout, mode='w'):
+            pass
+
+    monkeypatch.setattr(release.subprocess, 'run', git_archive)
+
+    def capture(command, **kwargs):
+        calls.append(tuple(command))
+        if command == ['pnpm', 'build']:
+            raise RuntimeError('测试到达网页构建')
+
+    monkeypatch.setattr(release, 'run', capture)
+    with pytest.raises(RuntimeError, match='测试到达网页构建'):
+        release.main()
+    expected = [('版本预检', 'arm64')] if desktop else []
+    expected.append(('pnpm', 'install', '--frozen-lockfile', '--ignore-scripts'))
+    if desktop:
+        expected.append(('node', 'node_modules/electron/install.js'))
+    expected.extend([(release.sys.executable, 'scripts/generate_third_party_notices.py', '--check'),
+                     ('pnpm', 'types:check')])
+    if not skip:
+        expected.extend([(release.sys.executable, '-m', 'pytest', 'tests', '-q'),
+                         ('pnpm', 'test:run'), ('pnpm', 'test:desktop')])
+    assert calls == [*expected, ('pnpm', 'build')]
+    assert json.loads(next(tmp_path.glob('*/release.json')).read_text())['skip_tests'] is skip
+
+
 def test_new_desktop_version_checked_before_switch(monkeypatch):
     update = {'public_url': 'https://erp.example', 'platform': 'darwin', 'arch': 'arm64', 'version': '1.10.0'}
     url = release.desktop_manifest_url(update)

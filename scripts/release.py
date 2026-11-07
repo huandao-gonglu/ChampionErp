@@ -164,7 +164,8 @@ def check_new_desktop_version(update):
     if (manifest['platform'], manifest['arch']) != (update['platform'], update['arch']):
         raise RuntimeError('桌面更新清单与本次发布平台不符')
     if tuple(map(int, update['version'].split('.'))) <= tuple(map(int, manifest['version'].split('.'))):
-        raise RuntimeError('请提高桌面版本号；仅发布服务器和网页请使用 --server-only，重试原发布请使用 --resume')
+        raise RuntimeError(f"本地桌面版本 {update['version']}，已发布版本 {manifest['version']}。"
+                           '请提高桌面版本号，或用 --server-only 仅发布服务器和网页')
 
 
 def publish_desktop_update(args, record, folder, source):
@@ -279,20 +280,24 @@ def release(args):
     if not args.ssh_identity.is_file():
         raise RuntimeError('SSH 密钥文件不存在')
     revision = output('git', 'rev-parse', 'HEAD')
-    version = json.loads((ROOT / 'front/package.json').read_text())['version']
+    package = json.loads((ROOT / 'front/package.json').read_text())
+    version = package['version']
     release_id = datetime.now(timezone.utc).strftime('%Y%m%dt%H%M%Sz') + '-' + revision[:12]
     folder = args.output_dir / release_id
     folder.mkdir(mode=0o700)
-    record = {'release_id': release_id, 'revision': revision, 'version': version, 'status': 'preparing'}
+    record = {'release_id': release_id, 'revision': revision, 'version': version, 'status': 'preparing',
+              'skip_tests': args.skip_tests}
     record_path = folder / 'release.json'
     write_record(record_path, record)
     environment = {key: value for key, value in os.environ.items() if not key.startswith(('ERP_', 'VITE_', 'CHAMPION_ERP_'))}
     environment['CSC_IDENTITY_AUTO_DISCOVERY'] = 'true' if args.signed_desktop else 'false'
-    if args.desktop_update:
-        origin = json.loads((ROOT / 'front/package.json').read_text())['desktopUpdateOrigin']
-        if origin != args.public_url.rstrip('/'):
-            raise RuntimeError('桌面包的发行站点必须与发布目标一致')
     try:
+        if args.desktop_update:
+            origin = package['desktopUpdateOrigin']
+            if origin != args.public_url.rstrip('/'):
+                raise RuntimeError('桌面包的发行站点必须与发布目标一致')
+            check_new_desktop_version({'public_url': origin, 'platform': 'darwin',
+                                       'arch': output('node', '-p', 'process.arch'), 'version': version})
         current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
         if not current.startswith('/opt/champion-erp/releases/'):
             raise RuntimeError('服务器当前版本路径不符合部署约定')
@@ -311,14 +316,14 @@ def release(args):
             if args.desktop_update:
                 run(['node', 'node_modules/electron/install.js'], cwd=source / 'front', log=log, env=environment)
             run([sys.executable, 'scripts/generate_third_party_notices.py', '--check'], cwd=source, log=log, env=environment)
-            print('运行后端、前端及桌面回归检查', flush=True)
-            for command, cwd in (
-                ([sys.executable, '-m', 'pytest', 'tests', '-q'], source),
-                (['pnpm', 'types:check'], source / 'front'),
-                (['pnpm', 'test:run'], source / 'front'),
-                (['pnpm', 'test:desktop'], source / 'front'),
-            ):
-                run(command, cwd=cwd, log=log, env=environment)
+            run(['pnpm', 'types:check'], cwd=source / 'front', log=log, env=environment)
+            if args.skip_tests:
+                print('已按 --skip-tests 跳过后端、前端和桌面全量测试', flush=True)
+            else:
+                print('运行后端、前端及桌面回归检查', flush=True)
+                run([sys.executable, '-m', 'pytest', 'tests', '-q'], cwd=source, log=log, env=environment)
+                run(['pnpm', 'test:run'], cwd=source / 'front', log=log, env=environment)
+                run(['pnpm', 'test:desktop'], cwd=source / 'front', log=log, env=environment)
             print('编译网页', flush=True)
             run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
             if args.desktop_update:
@@ -365,6 +370,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--desktop-update', choices=['optional', 'required'], help='发布桌面升级，默认 optional，可显式指定 required')
     mode.add_argument('--server-only', action='store_true', help='仅发布服务器和网页，跳过桌面打包和分发')
+    parser.add_argument('--skip-tests', action='store_true', help='跳过后端、前端和桌面全量测试，继续执行构建检查与发布验收')
     parser.add_argument('--update-notes', default='', help='向用户展示的更新说明')
     parser.add_argument('--signed-desktop', action='store_true', help='使用 Developer ID 签名及公证构建原生更新 ZIP')
     parser.add_argument('--wait-tasks-seconds', type=int, default=3600, help='服务器等待已接任务安全停机的最长秒数')

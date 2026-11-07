@@ -39,6 +39,7 @@
 
 ## 验证与文档
 
+- AI 每完成一项项目修改，都要主动更新 `front/package.json` 的 `version`。同一任务升版一次，默认将补丁号加一，用户指定版本时按指定版本执行。升版后运行 `.venv/bin/python scripts/generate_third_party_notices.py`，将版本号和生成的声明随本次修改一起交付。
 - 后端公共入口或职责边界变化时更新 `docs/ai-context-map.md`；地图记录导航和不明显的约束，函数签名、字段全集和依赖版本以代码、Schema 及配置为准。
 - 架构规则由 `tests/test_ai_context_architecture.py` 和 `tests/architecture/` 等守卫保护；新增或调整边界时更新对应守卫。
 - 后端重构完成后运行 `.venv/bin/python -m pytest tests -q`；涉及导入或模块边界时至少完成编译检查与架构测试。其他改动按影响范围选择验证，文档修改不要求运行无关功能测试。
