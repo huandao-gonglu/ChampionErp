@@ -64,7 +64,7 @@ cd front
 pnpm desktop:dist
 ```
 
-`build:runtime` 在仓库外创建独立构建环境，仅安装 `requirements-desktop.txt` 和构建工具；`scripts/desktop_runtime.spec` 仅收集 `desktop_runtime`、`erp_shared` 和所需依赖，明确排除 `erp_web`、SQLite 与业务 SDK。输出为 `front/.desktop-runtime/champion-erp-runtime`，安装包资源目录为 `runtime`，不放入 ASAR。
+`build:runtime` 在仓库外创建独立构建环境。`requirements-desktop-build.txt` 引用执行器运行依赖并锁定打包工具，构建优先从本机 wheel 缓存安装，缺项时自动补齐。`scripts/desktop_runtime.spec` 仅收集 `desktop_runtime`、`erp_shared` 和所需依赖，明确排除 `erp_web`、SQLite 与业务 SDK。输出为 `front/.desktop-runtime/champion-erp-runtime`，安装包资源目录为 ASAR 外的 `runtime`。
 
 前端输出到 `front/dist-desktop`，发行产物位于 `front/release`。第三方声明及 Electron 官方许可证继续通过 `extraResources` 放在 `licenses`，关于页通过固定 IPC 打开目录。macOS 签名、公证仍需发行环境配置。
 

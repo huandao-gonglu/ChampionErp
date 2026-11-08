@@ -17,9 +17,8 @@ def main() -> None:
         env_root = work / "venv"
         subprocess.run([sys.executable, "-m", "venv", str(env_root)], check=True)
         python = env_root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
-                        "-r", str(ROOT / "requirements-desktop.txt"),
-                        "pyinstaller==6.22.3", "pyinstaller-hooks-contrib==2026.9"], check=True)
+        subprocess.run([str(python), str(ROOT / "scripts/install_release_dependencies.py"),
+                        str(ROOT / "requirements-desktop-build.txt")], check=True)
         environment = {key: value for key, value in os.environ.items() if not key.startswith(("ERP_", "VITE_", "CHAMPION_ERP_"))}
         subprocess.run([str(python), "-m", "PyInstaller", "--noconfirm", "--clean",
                         "--distpath", str(ROOT / "front" / ".desktop-runtime"),

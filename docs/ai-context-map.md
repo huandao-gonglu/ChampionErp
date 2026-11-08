@@ -131,8 +131,9 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 `desktop_model_config_service` 维护业务连接引用和指纹，具体命令、资料、代理由本机配置 owner 管理；
 配置写入只通过来源受限的 preload IPC，后端调用通道不能修改本机命令。
 
-`requirements-desktop.txt` / `scripts/build_desktop_runtime.py` / `scripts/desktop_runtime.spec`
-是本机执行器构建入口，不冻结完整 ERP 后端。
+`scripts/build_desktop_runtime.py` 和 `scripts/desktop_runtime.spec` 构建本机执行器。
+`requirements-desktop-build.txt` 引用运行依赖 `requirements-desktop.txt` 并指定打包工具。
+桌面构建和服务器部署共用 `scripts/install_release_dependencies.py` 安装各自的 Python 依赖并复用本机 wheel 缓存。
 `scripts/migrate_desktop_business.py` 提供先备份的离线一次性迁移与关联检查，浏览器资料留在本机。
 统一发布等待由 `scripts/release.py` → `deploy/release_server.py` 协调，服务端入口为
 `erp_web/release_guard.py`。新增能启动业务工作的入口须在领取前检查准入；已接工作的异步分支须在提交到线程或队列前登记，

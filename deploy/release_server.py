@@ -209,7 +209,7 @@ def deploy(args):
             raise RuntimeError('发布包代码版本不一致')
         print('准备服务器独立依赖环境', flush=True)
         run('/usr/bin/python3', '-m', 'venv', release / '.venv')
-        run(python, '-m', 'pip', 'install', '--disable-pip-version-check', '-r', release / 'requirements.txt')
+        run(python, release / 'scripts/install_release_dependencies.py', release / 'requirements.txt')
         run(python, '-m', 'pip', 'check')
         run(python, '-m', 'compileall', '-q', release / 'erp_web', release / 'erp_shared')
         run('runuser', '-u', 'champion-erp', '--', 'test', '-r', release / 'erp_web/static/dist/index.html')
