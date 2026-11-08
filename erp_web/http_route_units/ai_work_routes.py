@@ -36,7 +36,14 @@ def _limit_param(params: dict[str, list[str]]) -> int:
 
 def handle_conversation_list(handler: JsonRequestHandler, parsed: object) -> None:
     try:
-        limit = _limit_param(urllib.parse.parse_qs(parsed.query))
+        params = urllib.parse.parse_qs(parsed.query)
+        scope = params.pop("scope", [""])[0]
+        if scope not in ("", "all", "chats"):
+            raise ValueError("对话列表范围无效。")
+        offset = int(params.pop("offset", ["0"])[0])
+        if offset < 0:
+            raise ValueError("列表起始位置不能小于零。")
+        limit = _limit_param(params)
     except ValueError as exc:
         handler.send_json(
             {
@@ -46,6 +53,10 @@ def handle_conversation_list(handler: JsonRequestHandler, parsed: object) -> Non
             },
             400,
         )
+        return
+    if scope:
+        rows = ai_chat_facade.named_conversations(limit, offset, scope == "chats")
+        handler.send_json({"ok": True, "conversations": rows})
         return
     summaries = get_context().pydantic_messages.list(limit=limit)
     handler.send_json(
@@ -199,6 +210,14 @@ def handle_conversation_events(
             loop.close()
 
 
+def handle_title(handler: JsonRequestHandler, parsed: object) -> None:
+    key = _conversation_id(parsed.path[:-len("/title")])
+    if key is None or parsed.query:
+        handler.send_json({"ok": False, "error": "对话地址无效。"}, 400)
+        return
+    handler.send_json({"ok": True, **ai_chat_facade.conversation_title(key)})
+
+
 def handle_image_batch(handler: JsonRequestHandler, parsed: object) -> None:
     conversation_id = _conversation_id(parsed.path[:-len(IMAGE_BATCH_SUFFIX)])
     if conversation_id is None or parsed.query:
@@ -212,7 +231,9 @@ def handle_get(handler: JsonRequestHandler, parsed: object) -> bool:
         handle_conversation_list(handler, parsed)
         return True
     if parsed.path.startswith(f"{CONVERSATIONS_PATH}/"):
-        if parsed.path.endswith(IMAGE_BATCH_SUFFIX):
+        if parsed.path.endswith("/title"):
+            handle_title(handler, parsed)
+        elif parsed.path.endswith(IMAGE_BATCH_SUFFIX):
             handle_image_batch(handler, parsed)
         elif parsed.path.endswith(UI_MESSAGES_SUFFIX):
             handle_conversation_ui_messages(handler, parsed)
@@ -226,6 +247,7 @@ def handle_get(handler: JsonRequestHandler, parsed: object) -> bool:
 
 GET_HANDLERS = {CONVERSATIONS_PATH: handle_conversation_list}
 DYNAMIC_GET_HANDLERS = {
+    f"{CONVERSATIONS_PATH}/<conversation_id>/title": handle_title,
     f"{CONVERSATIONS_PATH}/<conversation_id>{IMAGE_BATCH_SUFFIX}": handle_image_batch,
     f"{CONVERSATIONS_PATH}/": handle_conversation,
     f"{CONVERSATIONS_PATH}/<conversation_id>{UI_MESSAGES_SUFFIX}": (

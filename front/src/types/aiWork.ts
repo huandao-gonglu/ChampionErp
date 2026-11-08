@@ -1,6 +1,7 @@
 import type { UIMessage } from 'ai'
 
 export interface PydanticConversationSummary {
+  title?: string
   conversation_id: string
   created_at: string
   updated_at: string

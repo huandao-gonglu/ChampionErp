@@ -131,7 +131,7 @@ onBeforeUnmount(() => {
               AI 助手
             </p>
             <p class="mt-0.5 truncate text-[11px] text-slate-500 dark:text-accent-300">
-              {{ chatStore.restoring ? '正在恢复上次对话…' : chatStore.restoreError ? '上次对话暂时无法读取' : chatStore.activeConversationId || '发送第一条消息后自动创建会话' }}
+              {{ chatStore.restoring ? '正在恢复上次对话…' : chatStore.restoreError ? '上次对话暂时无法读取' : chatStore.activeTitle }}
             </p>
           </div>
           <div class="flex shrink-0 items-center">

@@ -133,6 +133,12 @@ class ChatConversationService:
             profile_id=GLOBAL_CHAT_PROFILE_ID, actor_id=GLOBAL_CHAT_ACTOR_ID, tenant_id=GLOBAL_CHAT_TENANT_ID,
         )
         self.run_registry.new_input(conversation_id)
+        title_scheduler = getattr(self.chat_service, "title_scheduler", None)
+        if not queued and answer_to is None and title_scheduler:
+            try:
+                title_scheduler(self.chat_service, conversation_id, messages)
+            except Exception:
+                _logger.warning("对话已接收，暂时无法生成标题。", exc_info=True)
 
     def accept_text(self, conversation_id: str, message_id: str, text: str):
         if not text.strip() or len(text) > MAX_USER_TEXT_CHARS:

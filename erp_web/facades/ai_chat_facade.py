@@ -1,6 +1,7 @@
 """主 Agent 的领域工具、原生会话与后台 Job 组合根。"""
 
 from erp_web.context import get_context
+from erp_web.services.chat_titles import chat_titles, schedule_chat_title
 from erp_web.facades.agent_capability_facade import (
     build_global_chat_toolset,
     build_job_status_readers,
@@ -18,6 +19,7 @@ def build_global_chat_service(context=None):
     active = context or get_context()
     chat_config = active.config.load_app_config()
     return GlobalAgentChatService(
+        title_scheduler=lambda service, key, messages: schedule_chat_title(active, service, key, messages),
         app_dir=active.paths.app_dir,
         app_config=chat_config,
         message_store=active.pydantic_messages,
@@ -25,6 +27,17 @@ def build_global_chat_service(context=None):
         call_store=active.agent_calls,
         approval_mode_reader=active.config.ai_tool_approval_mode,
     )
+
+
+def named_conversations(limit, offset, chats_only):
+    context = get_context()
+    rows = context.db.list_pydantic_message_histories(limit=limit, chats_only=chats_only, offset=offset)
+    titles = chat_titles(context, [row["conversation_id"] for row in rows])
+    return [{**row, **titles.get(row["conversation_id"], {})} for row in rows]
+
+
+def conversation_title(key):
+    return chat_titles(get_context(), [key]).get(key, {"title": "", "title_pending": False})
 
 
 def build_conversation_service(context=None):

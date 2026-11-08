@@ -2525,9 +2525,35 @@ class ErpDatabase:
             ).fetchone()
         return int(row["history_version"] or 0) if row is not None else 0
 
+    def conversation_openings(self, ids: list[str]) -> dict[str, str]:
+        """旧对话只抽取可展示的首句，图片字节和业务 Agent 的内部提示留在历史里。"""
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as conn:
+            rows = conn.execute(f"""
+                SELECT h.conversation_id, (
+                    SELECT substr(CASE
+                        WHEN json_type(m.value,'$.metadata.presentation_user_message') = 'text'
+                            THEN json_extract(m.value,'$.metadata.presentation_user_message')
+                        WHEN h.conversation_id GLOB 'conversation_global_chat_*' THEN
+                            CASE json_type(p.value,'$.content')
+                                WHEN 'text' THEN json_extract(p.value,'$.content')
+                                WHEN 'array' THEN COALESCE((SELECT value FROM json_each(p.value,'$.content')
+                                    WHERE type='text' AND length(trim(value))>0 LIMIT 1),'图片对话')
+                            END
+                        END, 1, 160)
+                    FROM json_each(CAST(h.messages_json AS TEXT)) m, json_each(m.value,'$.parts') p
+                    WHERE json_extract(p.value,'$.part_kind')='user-prompt'
+                      AND (h.conversation_id GLOB 'conversation_global_chat_*'
+                           OR length(json_extract(m.value,'$.metadata.presentation_user_message'))>0)
+                    LIMIT 1) AS opening
+                FROM pydantic_message_histories h WHERE h.conversation_id IN ({placeholders})""", ids)
+            return {row["conversation_id"]: row["opening"] or "" for row in rows}
+
     def list_pydantic_message_histories(
         self,
-        limit: int = 50,
+        limit: int = 50, *, chats_only: bool = False, offset: int = 0,
     ) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -2535,10 +2561,11 @@ class ErpDatabase:
                 SELECT conversation_id, created_at, updated_at
                 FROM pydantic_message_histories
                 WHERE conversation_id NOT GLOB 'chat_reply_*'
+                  AND (NOT ? OR conversation_id GLOB 'conversation_global_chat_*')
                 ORDER BY updated_at DESC, conversation_id DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (max(1, int(limit or 50)),),
+                (chats_only, max(1, int(limit or 50)), offset),
             ).fetchall()
         return [
             {

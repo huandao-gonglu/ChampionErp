@@ -9,11 +9,18 @@ import type {
 const CONVERSATIONS_PATH = '/api/v1/ai-work/conversations'
 
 export async function fetchPydanticConversations(
-  limit = 100,
+  limit = 100, scope: 'all' | 'chats' = 'all', offset = 0,
 ): Promise<PydanticConversationListResponse> {
   const response = await apiClient.get<PydanticConversationListResponse>(CONVERSATIONS_PATH, {
-    params: { limit },
+    params: { limit, scope, offset },
   })
+  return response.data
+}
+
+export async function fetchConversationTitle(id: string) {
+  const response = await apiClient.get<{ title: string; title_pending: boolean }>(
+    `${CONVERSATIONS_PATH}/${encodeURIComponent(id)}/title`,
+  )
   return response.data
 }
 

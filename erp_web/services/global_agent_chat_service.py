@@ -105,8 +105,10 @@ class GlobalAgentChatService:
         toolset: Any,
         factory: Any = None,
         call_store: AgentCallStore | None = None,
+        title_scheduler: Callable | None = None,
         approval_mode_reader: Callable[[], AiToolApprovalMode] | None = None,
     ) -> None:
+        self.title_scheduler = title_scheduler
         self.app_dir = Path(app_dir)
         self.app_config = dict(app_config or {})
         self.approval_mode_reader = approval_mode_reader or (

@@ -97,7 +97,7 @@ useEventListener(window, 'blur', resetStopShortcut)
 useEventListener(document, 'visibilitychange', resetStopShortcut)
 onDeactivated(resetStopShortcut)
 
-const blockedReason = computed(() => props.sendDisabledReason || modelOperationReason('global.chat') || (chatStore.images.attachments.length ? chatStore.images.blocked : ''))
+const blockedReason = computed(() => (!chatStore.images.attachments.length && props.modelValue.trim() === '/resume') ? '' : props.sendDisabledReason || modelOperationReason('global.chat') || (chatStore.images.attachments.length ? chatStore.images.blocked : ''))
 const canSend = computed(() => (
   (props.modelValue.trim().length > 0 || chatStore.images.attachments.length > 0) && !chatStore.images.reading && !blockedReason.value && !props.stopping && !composing.value
 ))
@@ -119,7 +119,7 @@ const commandPanelVisible = computed(() => (
   commandQuery.value !== null
   && matchedCommandEntries.value.length > 0
   && !commandPanelDismissed.value
-  && !props.busy
+  && (!props.busy || matchedCommandEntries.value.some(entry => entry.command.name === 'resume'))
 ))
 
 // 查询串变化（继续输入或删除 `/`）时把高亮重置为第一个可执行项，并恢复被 Esc 关闭的面板。

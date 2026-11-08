@@ -22,6 +22,7 @@ export function useChatCommands() {
 
   const context = computed<ChatCommandContext>(() => ({
     isBusy: chatStore.isBusy,
+    openResume: chatStore.openResume,
     startConversation: chatStore.startConversation,
     stopStreaming: chatStore.stopStreaming,
     refreshHistory: chatStore.refreshHistory,

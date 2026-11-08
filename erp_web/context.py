@@ -168,6 +168,7 @@ class AppContext:
         self._fulfillment = None
         self._yandex_logistics = None
         self._pricing_cache = None
+        self._conversation_titles = None
         self._image_batches = None
         self._desktop_connections = None
         self._desktop_handoffs = None
@@ -242,6 +243,15 @@ class AppContext:
 
                     self._pricing_cache = PricingCache()
         return self._pricing_cache
+
+    @property
+    def conversation_titles(self):
+        if self._conversation_titles is None:
+            with self._lazy_lock:
+                if self._conversation_titles is None:
+                    from erp_web.stores.conversation_titles import ConversationTitles
+                    self._conversation_titles = ConversationTitles(self.paths.data_dir / "conversation-titles.sqlite3")
+        return self._conversation_titles
 
     @property
     def image_batches(self):

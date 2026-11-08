@@ -475,6 +475,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="会话列表读取（尾斜杠别名），chat/会话 transport。",
     ),
     AiCapabilityCoverageEntry(
+        method="GET", path="/api/v1/ai-work/conversations/<conversation_id>/title",
+        business_domain="AI 会话运输", disposition="excluded", reason="读取当前账号的对话展示标题。",
+    ),
+    AiCapabilityCoverageEntry(
         method="GET",
         path="/api/v1/ai-work/conversations/<conversation_id>/ui-messages",
         business_domain="AI 会话运输",

@@ -161,6 +161,13 @@ const displayConversations = computed<ConversationListEntry[]>(() => {
   return entries
 })
 
+function conversationTitle(id: string, saved?: string): string {
+  if (id === chatStore.activeConversationId && chatStore.activeTitle !== '新对话') return chatStore.activeTitle
+  if (id === foregroundPresentation.value?.conversationId && foregroundPresentation.value.displayTitle)
+    return foregroundPresentation.value.displayTitle
+  return saved || (id.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX) ? '新对话' : '业务任务')
+}
+
 function byUpdatedDesc(
   left: PydanticConversationSummary,
   right: PydanticConversationSummary,
@@ -475,9 +482,9 @@ onBeforeUnmount(() => {
               @click="selectConversation(conversation.conversation_id)"
             >
               <span class="flex items-center gap-2">
-                <code class="block min-w-0 flex-1 truncate text-xs font-bold text-slate-800 dark:text-accent-100">
-                  {{ conversation.conversation_id }}
-                </code>
+                <span class="block min-w-0 flex-1 truncate text-sm font-bold text-slate-800 dark:text-accent-100">
+                  {{ conversationTitle(conversation.conversation_id, conversation.title) }}
+                </span>
                 <span
                   v-if="conversation.temporary"
                   class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/15 dark:text-amber-200"
@@ -518,9 +525,9 @@ onBeforeUnmount(() => {
                 <p class="text-xs font-black uppercase tracking-[0.14em] text-primary-600 dark:text-primary-300">
                   对话
                 </p>
-                <code class="mt-1 block break-all text-sm font-bold" data-testid="ai-work-selected-id">
-                  {{ selectedId }}
-                </code>
+                <h2 class="mt-1 break-words text-sm font-bold" data-testid="ai-work-selected-id" :data-conversation-id="selectedId">
+                  {{ conversationTitle(selectedId, selectedSummary?.title) }}
+                </h2>
                 <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-accent-300">
                   <span>创建：{{ formatTime(selectedCreatedAt) }}</span>
                   <span>更新：{{ formatTime(selectedUpdatedAt) }}</span>

@@ -158,7 +158,7 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     expect(newestId).not.toBe(firstNewId)
     expect(newestId).not.toBe(oldId)
     expect(router.currentRoute.value.query).toEqual({ workspace_tab: 'drafts' })
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newestId)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(newestId)
     expect(store.chat).toBe(newestChat)
     expect(runFetchCount).toBe(0)
     expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
@@ -168,7 +168,7 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     await router.push(latestRoute)
     await flushPromises()
     expect(store.chat).toBe(newestChat)
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newestId)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(newestId)
     await wrapper.get('[data-testid="ai-chat-input"]').setValue('查询最新订单')
     await wrapper.get('[data-testid="ai-chat-composer"]').trigger('submit')
     await vi.waitFor(() => expect(runFetchCount).toBe(1))
@@ -235,7 +235,7 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     // AiWork 立即绑定活动会话：浮动入口隐藏，实时区域接管且不请求派生接口。
     expect(wrapper.find('[data-testid="ai-work-floating"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(conversationId)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(conversationId)
     expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
     expect(wrapper.get('[data-testid="ai-work-live-chat"]').text()).toContain('第一段')
 

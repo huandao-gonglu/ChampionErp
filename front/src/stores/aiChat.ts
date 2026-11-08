@@ -1,11 +1,11 @@
-import { computed, ref, shallowRef, nextTick } from 'vue'
+import { computed, ref, shallowRef, nextTick, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { Chat } from '@ai-sdk/vue'
 import { DefaultChatTransport } from 'ai'
 import { accountFetch, businessStorageKey } from '@/utils/accountTransport'
 import { useChatImages } from '@/composables/useChatImages'
 import type { FileUIPart, UIMessage } from 'ai'
-import { AI_CHAT_RUNS_PATH, cancelChatRun, updateQueuedMessage, conversationEventsUrl, fetchUiMessages, forkChatConversation } from '@/api/aiWork'
+import { AI_CHAT_RUNS_PATH, cancelChatRun, updateQueuedMessage, conversationEventsUrl, fetchConversationTitle, fetchUiMessages, forkChatConversation } from '@/api/aiWork'
 import { apiClient } from '@/api/client'
 import { matchChatCommand } from '@/services/chatCommands'
 import type { ChatCommandContext } from '@/services/chatCommands'
@@ -29,6 +29,8 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const chat = shallowRef<Chat<UIMessage> | null>(null)
   const input = ref('')
   const images = useChatImages()
+  const resumeOpen = ref(false)
+  function openResume() { resumeOpen.value = true }
   const floatingOpen = ref(false)
   const restoring = ref(false)
   const restoreError = ref('')
@@ -67,6 +69,34 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const messages = computed<UIMessage[]>(previous => projectChatMessages(
     chat.value?.messages ?? [], localTurnStartedAt.value, previous,
   ))
+  const firstLine = computed(() => {
+    const opening = chat.value?.messages.find(message => message.role === 'user')
+    const text = opening?.parts.filter(part => part.type === 'text').map(part => part.text).join(' ').trim().split(/[\r\n]|(?<=[。！？!?])/, 1)[0].replace(/\s+/g, ' ')
+    const chars = Array.from(text || '')
+    if (!chars.length) return opening ? '图片对话' : ''
+    return chars.slice(0, 24).join('') + (chars.length > 24 ? '…' : '')
+  })
+  const savedTitle = ref<{ id: string; title: string }>()
+  const activeTitle = computed(() => (savedTitle.value?.id === activeConversationId.value && savedTitle.value?.title)
+    || firstLine.value || '新对话')
+  watch([activeConversationId, firstLine, historyVersion], ([id, opening, version], _, cleanup) => {
+    if (!id || (!opening && !version)) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    const until = Date.now() + 120_000
+    cleanup(() => { active = false; clearTimeout(timer) })
+    async function readTitle(key: string) {
+      let retry = false
+      try {
+        const result = await fetchConversationTitle(key)
+        if (!active) return
+        if (result.title && !(opening && result.title === '新对话')) savedTitle.value = { id: key, title: result.title }
+        retry = result.title_pending || !result.title || (!version && result.title === '新对话')
+      } catch { retry = true }
+      if (active && retry && Date.now() < until) timer = setTimeout(() => void readTitle(key), 2500)
+    }
+    void readTitle(id)
+  })
   const error = computed(() => localError.value ?? chat.value?.error as AiChatError | undefined)
   const canSend = computed(() => Boolean(input.value.trim() || images.attachments.value.length) && !images.reading.value
     && !(images.attachments.value.length && images.blocked.value) && !stopping.value && !forking.value && !restoring.value && !restoreError.value)
@@ -291,21 +321,20 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (requestVersion === stopRequestVersion) await resyncFromServer(currentId, 0, true)
   }
   function commandContext(): ChatCommandContext {
-    return { isBusy: canStop.value, startConversation, stopStreaming, refreshHistory }
+    return { isBusy: canStop.value, openResume, startConversation, stopStreaming, refreshHistory }
   }
   function sendMessage(): void {
     if (stopping.value || forking.value) return
-    if (!restored && !chat.value) void restoreConversation()
-    if (restoring.value || restoreError.value) return
-    if (!canSend.value) return
-    const attachments = images.attachments.value
-    const files = attachments.map(item => item.part)
-    const text = input.value.trim() || '请读取图片上的内容。'
-    const command = !files.length && matchChatCommand(text)
+    const command = !images.attachments.value.length && matchChatCommand(input.value)
     if (command && command.command.available(commandContext())) {
       if (command.command.execute(commandContext(), command.arg)) input.value = ''
       return
     }
+    if (!restored && !chat.value) void restoreConversation()
+    if (restoring.value || restoreError.value || !canSend.value) return
+    const attachments = images.attachments.value
+    const files = attachments.map(item => item.part)
+    const text = input.value.trim() || '请读取图片上的内容。'
     if (handoffModelOperation('global.chat', {
       target: floatingOpen.value ? undefined : '/aiWork' + (conversationLinkId.value ? `?conversation_id=${encodeURIComponent(conversationLinkId.value)}` : ''),
       state: { chat: { text: input.value, attachments, conversationId: conversationLinkId.value, floating: floatingOpen.value, draftIds: targetDraftIds.value } },
@@ -502,7 +531,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     await submitApproval(reply.conversation_id, reply.messages, id, approved)
   }
   function clearError(): void { localError.value = undefined; chat.value?.clearError() }
-  return { images, activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
+  return { images, resumeOpen, openResume, activeTitle, activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
     error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
     restoring, restoreError, restoreConversation, actOnQueue, queueAction, queueRows, parallelReplies, stopParallelReply, respondToParallelApproval,
     sendMessage, stopStreaming, respondToApproval, answerQuestion, clearError, openConversation, connectEvents, disconnectEvents,

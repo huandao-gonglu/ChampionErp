@@ -1,6 +1,7 @@
 /** 会话快捷命令；审批直接使用原生工具卡。 */
 export interface ChatCommandContext {
   isBusy: boolean
+  openResume: () => void
   startConversation: () => void
   stopStreaming: () => void
   refreshHistory: () => void
@@ -24,6 +25,8 @@ export interface ChatCommand {
 export const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: 'new', title: '新对话', description: '开始新对话', available: () => true,
     execute: context => { context.startConversation(); return true } },
+  { name: 'resume', title: '切换对话', description: '选择要继续的历史对话', available: () => true,
+    execute: context => { context.openResume(); return true } },
   { name: 'cancel', title: '取消当前操作', description: '停止后续操作，已发出的平台请求按回执对账', available: () => true,
     execute: context => { context.stopStreaming(); return true } },
   { name: 'refresh', title: '刷新历史', description: '读取服务端已提交消息', available: () => true,

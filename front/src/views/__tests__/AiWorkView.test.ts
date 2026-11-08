@@ -170,7 +170,7 @@ describe('AiWorkView 对话与历史', () => {
     const wrapper = mountNow()
     await flushPromises()
     expect(store.activeConversationId).toBe(GLOBAL_CHAT_ID)
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(GLOBAL_CHAT_ID)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(GLOBAL_CHAT_ID)
     expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1)
     expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
   })
@@ -218,7 +218,7 @@ describe('AiWorkView 对话与历史', () => {
     expect(mocks.fetchUiMessages).toHaveBeenCalledWith('conversation-1')
     expect(mocks.fetchUiMessages).not.toHaveBeenCalledWith(GLOBAL_CHAT_ID)
     expect(localStorage.getItem(AI_CHAT_SELECTION_KEY)).toBe(GLOBAL_CHAT_ID)
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-1')
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe('conversation-1')
   })
 
   it('选中活动会话时直接绑定共享 Chat 消息，不请求派生接口', async () => {
@@ -264,7 +264,7 @@ describe('AiWorkView 对话与历史', () => {
     await flushPromises()
     expect(store.activeConversationId).toBe(newId)
     expect(store.chat).toBe(newChat)
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newId)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(newId)
     expect(wrapper.find('[data-testid="ai-chat-empty"]').exists()).toBe(true)
     expect(mocks.replaceRoute).toHaveBeenLastCalledWith(expect.objectContaining({ query: {
       workspace_tab: 'orders',
@@ -273,7 +273,7 @@ describe('AiWorkView 对话与历史', () => {
     await wrapper.get('[data-testid="ai-work-refresh"]').trigger('click')
     await flushPromises()
     expect(store.chat).toBe(newChat)
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newId)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(newId)
     wrapper.unmount()
   })
 
@@ -299,7 +299,7 @@ describe('AiWorkView 对话与历史', () => {
 
     expect(store.activeConversationId).toBe(newId)
     expect(store.messages).toEqual([])
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(newId)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(newId)
     expect(wrapper.find('[data-testid="ai-work-ui-loading"]').exists()).toBe(false)
     wrapper.unmount()
   })
@@ -311,7 +311,7 @@ describe('AiWorkView 对话与历史', () => {
     const wrapper = mountNow()
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(conversationId)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(conversationId)
     expect(wrapper.find('[data-testid="ai-work-conversation-temporary"]').exists()).toBe(true)
 
     mocks.fetchConversations.mockResolvedValue({
@@ -332,7 +332,7 @@ describe('AiWorkView 对话与历史', () => {
     expect(mocks.fetchConversations).toHaveBeenCalledTimes(2)
     expect(wrapper.find('[data-testid="ai-work-conversation-temporary"]').exists()).toBe(false)
     expect(wrapper.find(`[data-testid="ai-work-conversation-${conversationId}"]`).exists()).toBe(true)
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(conversationId)
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe(conversationId)
     expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
 
     // 持久化完成后读取一次规范 detail，更新头部元数据。
@@ -472,7 +472,7 @@ describe('AiWorkView 对话与历史', () => {
     await flushPromises()
     resolveHistory(uiMessages(GLOBAL_CHAT_ID))
     await flushPromises()
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-1')
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe('conversation-1')
     expect(store.activeConversationId).toBeNull()
     expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(false)
     wrapper.unmount()
@@ -504,7 +504,7 @@ describe('AiWorkView 对话与历史', () => {
     const wrapper = mountNow()
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-2')
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe('conversation-2')
     expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="ai-work-chat-view"]').text()).toContain(
       '这是任务记录，无法在此继续对话',
@@ -628,7 +628,7 @@ describe('AiWorkView 对话与历史', () => {
       await wrapper.get('[data-testid="ai-work-conversation-conversation-1"]').trigger('click')
       await flushPromises()
 
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-1')
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe('conversation-1')
       // query 残留 presentation_id 不是替代选择条件：不得在该历史标题下串显实时消息。
       expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(false)
       const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
@@ -639,7 +639,7 @@ describe('AiWorkView 对话与历史', () => {
       // 点回 presentation 临时条目：重新绑定 observe Chat 的实时展示。
       await wrapper.get('[data-testid="ai-work-conversation-temporary"]').trigger('click')
       await flushPromises()
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text())
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id'))
         .toBe(PRESENTATION_CONVERSATION_ID)
       expect(wrapper.get('[data-testid="ai-work-presentation-live"]').text())
         .toContain('正在检索类目：ventilador')
@@ -658,14 +658,14 @@ describe('AiWorkView 对话与历史', () => {
 
       const wrapper = mountNow()
       // 首帧即把 presentation_id 解析为该 presentation 的 conversation 并绑定 observe Chat。
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text())
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id'))
         .toBe(PRESENTATION_CONVERSATION_ID)
       expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
 
       await flushPromises()
 
       // 列表刷新后仍保持 presentation conversation 选中，不默认落到其他历史。
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text())
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id'))
         .toBe(PRESENTATION_CONVERSATION_ID)
       expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
       expect(mocks.fetchUiMessages).not.toHaveBeenCalledWith(PRESENTATION_CONVERSATION_ID)
@@ -690,7 +690,7 @@ describe('AiWorkView 对话与历史', () => {
       expect(mocks.fetchConversations).toHaveBeenCalledTimes(2)
       expect(mocks.fetchUiMessages).toHaveBeenCalledWith(PRESENTATION_CONVERSATION_ID)
       expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(false)
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text())
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id'))
         .toBe(PRESENTATION_CONVERSATION_ID)
       const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
       expect(chatView.text()).toContain(`派生回答-${PRESENTATION_CONVERSATION_ID}`)
