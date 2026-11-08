@@ -84,9 +84,7 @@ const showProgress = computed(() => {
         :part="entry.part"
         :pending-kind="entry.pendingKind"
         :active="display.live"
-      >
-        <template #approval="scope"><slot name="approval" v-bind="scope" /></template>
-      </AiMessagePart>
+      />
       <p v-if="showProgress" role="status" class="flex items-center gap-2 py-1 text-xs text-slate-500 dark:text-accent-300" data-testid="ai-turn-progress">
         <span class="size-1.5 shrink-0 rounded-full bg-primary-500/[var(--ai-chat-surface-opacity,1)] motion-safe:animate-pulse" aria-hidden="true" />
         正在处理…

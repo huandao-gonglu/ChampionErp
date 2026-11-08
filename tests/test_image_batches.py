@@ -260,3 +260,22 @@ def test_batch_read_route_and_ui_projection_preserve_canonical_history():
     assert status == 200
     assert len(ui["messages"]) == 1
     assert len(get_context().pydantic_messages.get(conversation_id).model_messages()) == 3
+
+
+def test_superseded_image_keeps_provider_result_without_applying_old_request():
+    from pydantic_ai import CancellationToken
+    from erp_web.services.ai_run_cancellation import bind_cancellation_token
+
+    token = CancellationToken()
+    saved = []
+
+    def process(source):
+        token.cancel()
+        return {"ok": True, "imagePoolItems": [{"preview_url": "/file?path=old.png"}]}
+
+    with bind_cancellation_token(token):
+        result = run_image_batch(**arguments(process, saved.append, count=1))
+    assert not saved
+    item = result["image_batch"]["items"][0]
+    assert item["status"] == "failed"
+    assert item["result_urls"] == ["/file?path=old.png"]

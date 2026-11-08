@@ -86,9 +86,12 @@ class AgentRunStorage:
         self.resuming_tools: frozenset[str] = frozenset()
         self.lock = threading.RLock()
         self.target_draft_ids: tuple[str, ...] = store.selected_drafts(conversation_id)
+        self.web_input = False
         self.page_context = None
         for message in history:
             metadata = message.metadata or {}
+            if "user_message_id" in metadata:
+                self.web_input = bool(metadata.get("web_input"))
             if "page_context" in metadata:
                 self.page_context = metadata["page_context"]
 
@@ -161,7 +164,7 @@ class AgentRunStorage:
         with self.lock:
             origins = {self.desktop_connection} if self.consumed else set()
             received = []
-            for row in self.store.inbox(self.conversation_id):
+            for row in self.store.inbox(self.conversation_id, include_answers=True):
                 if row["sequence"] in self.consumed:
                     continue
                 messages, origin = _inbox_input(row)
@@ -170,10 +173,13 @@ class AgentRunStorage:
                     message.run_id = ctx.run_id
                     message.conversation_id = self.conversation_id
                     self.page_context = (message.metadata or {}).get("page_context")
-                    message.metadata = {
-                        "user_message_id": row["message_id"],
-                        "page_context": self.page_context,
-                    }
+                    self.web_input = bool((message.metadata or {}).get("web_input"))
+                    background = (message.metadata or {}).get("immediate_context")
+                    message.metadata = {"user_message_id": row["message_id"], "page_context": self.page_context}
+                    if self.web_input:
+                        message.metadata["web_input"] = True
+                    if background:
+                        message.metadata["immediate_context"] = background
                 # 在模型节点开始前更新页面背景，用户消息由原生队列注入和编码。
                 received.extend(messages)
                 ids = tuple(json.loads(row["target_draft_ids"]))
@@ -272,7 +278,7 @@ class AgentRunStorage:
             current = [message for message in messages if message.run_id == run_id]
             if error is not None and not current:
                 # 装配失败也保留已经接受的真实输入；不重新运行这批失败消息。
-                for row in self.store.inbox(self.conversation_id):
+                for row in self.store.inbox(self.conversation_id, include_answers=True):
                     if row["sequence"] in self.consumed:
                         continue
                     received, _ = _inbox_input(row)

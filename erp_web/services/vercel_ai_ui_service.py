@@ -23,6 +23,7 @@ from pydantic_ai.ui.vercel_ai.request_types import (
 from erp_web.services.chat_images import (
     IMAGE_TYPES, MAX_CHAT_IMAGES, MAX_CHAT_TOTAL_BYTES, chat_image_reason, identify_uploads, prompt_summary, validate_image_attachment,
 )
+from erp_web.schemas.chat_conversations import is_global_id
 from erp_web.services.chat_conversation_service import (
     AcceptedChatInput, ChatConversationError as VercelUiProtocolError,
     ChatConversationRun, ChatConversationService, MAX_USER_TEXT_CHARS,
@@ -36,6 +37,7 @@ from erp_web.services.global_agent_chat_service import (
     GLOBAL_CHAT_TENANT_ID,
     GLOBAL_CHAT_PROFILE_ID,
 )
+from erp_web.stores.agent_call_store import UserInputNotPending
 from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnAlreadyAcceptedError
 
 VERCEL_SDK_VERSION = 7
@@ -46,6 +48,36 @@ def new_event_stream(conversation_id: str) -> VercelAIEventStream:
     return VercelAIEventStream(
         SubmitMessage(id=conversation_id, messages=[]), sdk_version=VERCEL_SDK_VERSION
     )
+
+
+def _pending_tool_calls(pending, history):
+    if not pending:
+        return []
+    requests, results, _ = pending
+    remaining = requests.remaining(results)
+    if not remaining:
+        return []
+
+    # 同一模型回复可以同时产生审批、提问和后台操作，保留其原始调用顺序。
+    positions = {
+        part.tool_call_id: (message.timestamp.isoformat(), index)
+        for message in history if isinstance(message, ModelResponse)
+        for index, part in enumerate(message.parts) if isinstance(part, ToolCallPart)
+    }
+    rows = []
+    for kind, calls in (("approval", remaining.approvals), ("external", remaining.calls)):
+        for call in calls:
+            call_id = call.tool_call_id
+            row = {
+                "tool_call_id": call_id, "tool_name": call.tool_name, "kind": kind,
+                "requested_at": positions.get(call_id, ("", 0))[0],
+                "summary": remaining.metadata.get(call_id, {}).get("summary", ""),
+            }
+            if call.tool_name == "request_user_input":
+                args = call.args_as_dict()
+                row.update(kind="input", title=args["title"], question=args["question"], options=args.get("options") or [])
+            rows.append(row)
+    return sorted(rows, key=lambda row: positions.get(row["tool_call_id"], ("", 0)))
 
 
 @dataclass
@@ -124,10 +156,12 @@ class VercelAiUiService(ChatConversationService):
         call_store,
         approval_session=None,
         empty_owner_reader=None,
+        queue_progress=None,
     ):
         super().__init__(chat_service=chat_service, claim_store=claim_store,
                          run_registry=run_registry, call_store=call_store, empty_owner_reader=empty_owner_reader)
         self.approval_session = approval_session
+        self.queue_progress = queue_progress
 
     def prepare_run(self, body: bytes, *, approval_token: str = ""):
         run_input = self._parse_run_input(body)
@@ -157,10 +191,22 @@ class VercelAiUiService(ChatConversationService):
                 ) from None
             messages = self._load_new_messages(message)
             for item in messages:
-                item.metadata = {"page_context": page_context}
+                item.metadata = {"page_context": page_context, "web_input": True}
+            from .chat_queue_service import related_context
+            answer_to = raw.get("answer_to")
+            related = related_context(self, conversation_id) if answer_to is None else []
+            if related:
+                for item in messages:
+                    item.metadata["immediate_context"] = related
             with self.run_registry.input_guard():
                 try:
-                    self.accept_input(conversation_id, message.id, messages, draft_ids=draft_ids)
+                    queued = raw.get("queue_if_busy") is True and (
+                        self.run_registry.is_active(conversation_id) or self.call_store.pending(conversation_id) is not None
+                    )
+                    self.accept_input(conversation_id, message.id, messages, draft_ids=draft_ids if answer_to is None else (),
+                                      queued=queued, answer_to=answer_to)
+                except UserInputNotPending as exc:
+                    raise VercelUiProtocolError(409, "AI_CHAT_QUESTION_CLOSED", str(exc)) from None
                 except AiChatTurnAlreadyAcceptedError:
                     raise VercelUiProtocolError(
                         409, "AI_CHAT_TURN_ALREADY_ACCEPTED", "本轮消息已接收，请读取消息历史。",
@@ -255,22 +301,31 @@ class VercelAiUiService(ChatConversationService):
         return "approval"
 
     def dump_ui_messages(self, conversation_id: str) -> dict:
+        result = self._dump_turn(conversation_id)
+        if is_global_id(conversation_id):
+            result["parallel_replies"] = [self._dump_turn(run_id) for run_id in self.call_store.parallel_runs(conversation_id)]
+        return result
+
+    def _dump_turn(self, conversation_id: str) -> dict:
         history = self.chat_service.message_store.get(conversation_id)
         claim = self.claim_store.find_for_conversation(conversation_id)
         if history is None and claim is None:
             raise VercelUiProtocolError(
                 404, "PYDANTIC_MESSAGE_HISTORY_NOT_FOUND", "Pydantic 对话不存在。"
             )
+        native_history = history.model_messages() if history else []
         ui = VercelAIAdapter.dump_messages(
-            [message for message in history.model_messages()
-             if "image_batch_item" not in (message.metadata or {})] if history else [],
+            [message for message in native_history if "image_batch_item" not in (message.metadata or {})],
             sdk_version=VERCEL_SDK_VERSION
         )
         script_receipts = self.call_store.script_write_receipts(conversation_id)
         visible = []
         turn = None
         for message in ui:
-            metadata = message.metadata or {}
+            metadata = dict(message.metadata or {})
+            if "immediate_context" in metadata:
+                metadata.pop("immediate_context")
+                message = message.model_copy(update={"metadata": metadata})
             if message.role == "user":
                 turn = self._turn_display(conversation_id, metadata)
             if message.role in ("user", "assistant") and turn:
@@ -293,18 +348,19 @@ class VercelAiUiService(ChatConversationService):
             visible.append(message)
         ui = visible
         pending = self.call_store.pending(conversation_id)
+        run_active = self.run_registry.is_active(conversation_id)
         # metadata 是领域展示摘要；工具 state 与审批 ID 仍由官方 Adapter 提供。
         return {
             "ok": True,
             "conversation_id": conversation_id,
             "history_version": history.history_version if history else 0,
-            "run_active": self.run_registry.is_active(conversation_id),
+            "run_active": run_active,
             "run_status": claim.status if claim else None,
             "latest_message_id": claim.client_message_id if claim else None,
             "created_at": history.created_at if history else claim.claimed_at,
             "updated_at": history.updated_at if history else claim.claimed_at,
             "run_error": stored_run_error(
-                history.model_messages() if history else [],
+                native_history,
                 claim.client_message_id, claim.error_code,
             )
             if claim and claim.status == "failed"
@@ -312,32 +368,14 @@ class VercelAiUiService(ChatConversationService):
             "messages": [
                 m.model_dump(mode="json", by_alias=True, exclude_none=True) for m in ui
             ],
-            "pending_tool_calls": [
-                {
-                    "tool_call_id": c.tool_call_id,
-                    "tool_name": c.tool_name,
-                    "kind": kind,
-                    "summary": pending[0]
-                    .metadata.get(c.tool_call_id, {})
-                    .get("summary", ""),
-                }
-                for kind, calls in (
-                    ("approval", pending[0].approvals),
-                    ("external", pending[0].calls),
-                )
-                for c in calls
-                if c.tool_call_id
-                not in (
-                    pending[1].approvals if kind == "approval" else pending[1].calls
-                )
-            ]
-            if pending
-            else [],
+            "pending_tool_calls": _pending_tool_calls(pending, native_history),
             "received_messages": [
-                {"message_id": r["message_id"], "status": "received", "text": prompt_summary(
+                {"message_id": r["message_id"],
+                 "status": "queued" if pending and not run_active and r["status"] == "received" else r["status"],
+                 "text": prompt_summary(
                     ModelMessagesTypeAdapter.validate_json(r["messages_json"])
                 )}
-                for r in self.call_store.inbox(conversation_id)
+                for r in self.call_store.inbox(conversation_id, include_queued=True)
             ],
         }
 

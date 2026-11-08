@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
 import NativeToolApprovals from '../NativeToolApprovals.vue'
+import ChatPendingActions from '../ChatPendingActions.vue'
 import AiChatPanel from '../AiChatPanel.vue'
 import { useAiChatStore } from '@/stores/aiChat'
 
@@ -45,7 +46,7 @@ describe('原生工具审批卡', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="native-tool-approvals"]').exists()).toBe(false)
   })
-  it('确认按钮就地显示且不重复，多个审批共享提交状态并使用对应原生 ID', async () => {
+  it('待确认项留在输入框上方，展开后使用对应原生 ID', async () => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
     const store = useAiChatStore()
     store.chat = new Chat<UIMessage>({ id: 'inline-approval-test', messages: [{ id: 'assistant', role: 'assistant', parts: [
@@ -61,28 +62,62 @@ describe('原生工具审批卡', () => {
       global: { stubs: { AiChatComposer: true } },
     })
     try {
-      const rows = wrapper.findAll('[data-testid="ai-part-tool"]')
-      expect(rows).toHaveLength(2)
-      expect(wrapper.findAll('[data-testid="native-tool-approvals"]')).toHaveLength(2)
-      for (const [index, row] of rows.entries()) {
-        const approval = row.get('[data-testid="native-tool-approvals"]')
-        expect(approval.text()).toContain(`确认 send-${index + 1}`)
-        expect(approval.element.closest('details')).toBeNull()
-        expect(approval.get('summary').text()).toBe('查看操作参数')
-      }
-      expect(rows[1].get('pre').text()).toContain('第二条完整消息')
-      await rows[1].findAll('button')[0].trigger('click')
+      const scroll = wrapper.get('[data-testid="ai-chat-scroll"]')
+      expect(scroll.find('[data-testid="native-tool-approvals"]').exists()).toBe(false)
+      const queue = wrapper.get('[aria-label="等待你处理"]')
+      expect(scroll.element.contains(queue.element)).toBe(false)
+      expect(queue.find('[data-testid="native-tool-approvals"]').exists()).toBe(false)
+      const rows = queue.findAll('button[aria-expanded]')
+      expect(rows.map(row => row.text())).toEqual(['确认 send-1', '确认 send-2'])
+      await rows[1].trigger('click')
+      const card = queue.get('[data-testid="native-tool-approvals"]')
+      expect(card.get('pre').text()).toContain('第二条完整消息')
+      await card.findAll('button')[0].trigger('click')
       expect(respond).toHaveBeenCalledTimes(1)
       expect(respond).toHaveBeenCalledWith('approval-2', true, undefined)
       expect(wrapper.findAll('button.btn').every(button => button.attributes('disabled') !== undefined)).toBe(true)
       rejectSubmission(new Error('提交失败，请重试'))
       await flushPromises()
-      expect(rows[1].get('[role="alert"]').text()).toBe('提交失败，请重试')
+      expect(card.get('[role="alert"]').text()).toBe('提交失败，请重试')
       expect(rows[0].find('[role="alert"]').exists()).toBe(false)
       expect(wrapper.findAll('button.btn').every(button => button.attributes('disabled') === undefined)).toBe(true)
     } finally {
       wrapper.unmount()
     }
+  })
+
+  it('主任务和即时回复的同名调用分别保留草稿，并按提问时间排列', async () => {
+    const store = useAiChatStore()
+    store.activeConversationId = 'main'
+    const question = { tool_call_id: 'same', tool_name: 'request_user_input', kind: 'input' as const,
+      summary: '', title: '确认颜色', question: '请选择商品的颜色', options: ['蓝色'] }
+    store.pendingToolCalls = [{ ...question, requested_at: '2026-11-08T10:02:00Z' }]
+    store.parallelReplies = [{ ok: true, conversation_id: 'parallel', history_version: 1, messages: [], created_at: '', updated_at: '',
+      pending_tool_calls: [{ ...question, requested_at: '2026-11-08T10:01:00Z', title: '确认数量', question: '采购多少件？' }] }]
+    const answer = vi.spyOn(store, 'answerQuestion').mockRejectedValue(new Error('暂时无法连接'))
+    const wrapper = mount(ChatPendingActions)
+    const [first, second] = wrapper.findAll('button[aria-expanded]')
+    expect([first.text(), second.text()]).toEqual(['确认数量', '确认颜色'])
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    await first.trigger('click')
+    await wrapper.get('textarea').setValue('12')
+    await second.trigger('click')
+    expect(wrapper.get('textarea').element.value).toBe('')
+    await wrapper.get('button[aria-pressed]').trigger('click')
+    expect(wrapper.get('textarea').element.value).toBe('蓝色')
+    await first.trigger('click')
+    expect(wrapper.get('textarea').element.value).toBe('12')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(answer).toHaveBeenCalledWith('parallel', 'same', '12')
+    expect(wrapper.get('[role="alert"]').text()).toBe('暂时无法连接')
+    expect(wrapper.get('textarea').element.value).toBe('12')
+    store.parallelReplies = []
+    await flushPromises()
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    await second.trigger('click')
+    expect(wrapper.get('textarea').element.value).toBe('蓝色')
+    wrapper.unmount()
   })
 
 })

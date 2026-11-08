@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-import re
 from typing import Any
 from uuid import uuid4
 
 from pydantic_ai import RunCancelled
 from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+from erp_web.schemas.chat_conversations import is_global_id, reply_root
 from erp_web.services.ai_agent_factory import AiAgentExecutionError
 from erp_web.services.ai_run_cancellation import bind_cancellation_token
 from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_ACTOR_ID, GLOBAL_CHAT_TENANT_ID, GLOBAL_CHAT_PROFILE_ID
@@ -19,7 +20,6 @@ from .operation_availability import model_platform_reason
 
 _logger = logging.getLogger(__name__)
 MAX_USER_TEXT_CHARS = 32000
-_GLOBAL_CHAT_CONVERSATION_PATTERN = re.compile(r"^conversation_global_chat_[0-9a-f]{32}$")
 
 
 class ChatConversationError(RuntimeError):
@@ -47,6 +47,7 @@ class ChatConversationRun:
         """原样传递 Factory 的原生事件，提交与取消仍由既有 owner 负责。"""
         service = self._service
         # 用户输入和原工具调用记录决定来源；后台线程、流连接或审批端都不能指定设备。
+        cancelled = False
         with bind_desktop_connection(""), bind_cancellation_token(service.run_registry.token(self.conversation_id)):
             try:
                 async with service.chat_service.open_chat_run(
@@ -56,12 +57,11 @@ class ChatConversationRun:
                         yield event
                     if session.failure_error is not None:
                         raise session.failure_error
-                    if session.cancelled:
-                        service.call_store.cancel_pending_work(self.conversation_id)
-                    elif service.call_store.pending(self.conversation_id) is None:
+                    cancelled = session.cancelled
+                    if not cancelled and service.call_store.pending(self.conversation_id) is None:
                         service.finish_claims(self.conversation_id, "completed")
             except RunCancelled:
-                service.call_store.cancel_pending_work(self.conversation_id)
+                cancelled = True
                 raise
             except Exception as exc:
                 _logger.exception("主 Agent 运行失败：%s", self.conversation_id)
@@ -72,9 +72,16 @@ class ChatConversationRun:
                 raise RuntimeError("模型运行未能完成，请在 ERP 中查看本轮结果。") from None
             finally:
                 with service.run_registry.input_guard():
-                    if service.run_registry.token(self.conversation_id).cancelled:
-                        service.call_store.cancel_pending_work(self.conversation_id)
+                    superseded = service.run_registry.is_superseded(self.conversation_id)
+                    if cancelled or service.run_registry.token(self.conversation_id).cancelled:
+                        service.call_store.cancel_pending_work(
+                            self.conversation_id, preserve_queue=superseded,
+                        )
                     service.run_registry.release(self.conversation_id)
+                    if superseded:
+                        service.run_registry.new_input(self.conversation_id)
+                    if not service.call_store.release_replacement(self.conversation_id) and service.call_store.pending(self.conversation_id) is None:
+                        service.call_store.release_queue(self.conversation_id)
                 service.call_store.notify_changed(self.conversation_id)
 
     async def run(self):
@@ -110,7 +117,7 @@ class ChatConversationService:
             self.chat_service.message_store.save(conversation_id, [])
         return conversation_id
 
-    def accept_input(self, conversation_id, message_id, messages, *, draft_ids=()):
+    def accept_input(self, conversation_id, message_id, messages, *, draft_ids=(), queued=False, answer_to=None):
         conversation_id = self._validate_conversation_id(conversation_id)
         self._verify_history_ownership(conversation_id)
         reason = model_platform_reason(self.chat_service.app_config, GLOBAL_CHAT_PROFILE_ID)
@@ -122,7 +129,7 @@ class ChatConversationService:
         for message in messages:
             message.metadata = {**(message.metadata or {}), "desktop_connection": current_desktop_connection()}
         self.call_store.accept_input(
-            conversation_id, message_id, messages, draft_ids=draft_ids,
+            conversation_id, message_id, messages, draft_ids=draft_ids, queued=queued, answer_to=answer_to,
             profile_id=GLOBAL_CHAT_PROFILE_ID, actor_id=GLOBAL_CHAT_ACTOR_ID, tenant_id=GLOBAL_CHAT_TENANT_ID,
         )
         self.run_registry.new_input(conversation_id)
@@ -182,7 +189,9 @@ class ChatConversationService:
 
     def _validate_conversation_id(self, value: Any) -> str:
         conversation_id = str(value or "").strip()
-        if not _GLOBAL_CHAT_CONVERSATION_PATTERN.fullmatch(conversation_id):
+        if reply_root(conversation_id) and self.claim_store.find_for_conversation(conversation_id):
+            return conversation_id
+        if not is_global_id(conversation_id):
             raise ChatConversationError(
                 400,
                 "AI_CHAT_CONVERSATION_ID_INVALID",

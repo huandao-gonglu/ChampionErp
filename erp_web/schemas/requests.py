@@ -386,11 +386,16 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
             "messages": ARRAY,
             "target_draft_ids": ARRAY,
             "page_context": OBJECT,
+            "queue_if_busy": BOOLEAN,
+            "answer_to": STRING,
         },
         required=("id", "messages"),
     ),
     "/api/v1/ai-chat/cancel": _contract(
         fields={"id": STRING, "message_id": STRING}, required=("id", "message_id"),
+    ),
+    "/api/v1/ai-chat/queue": _contract(
+        fields={"id": STRING, "message_id": STRING, "action": STRING}, required=("id", "message_id", "action"),
     ),
     "/api/v1/ai-chat/fork": _contract(
         fields={"id": STRING, "message_id": STRING}, required=("id", "message_id"),

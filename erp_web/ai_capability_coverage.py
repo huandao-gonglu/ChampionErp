@@ -508,6 +508,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="POST",
+        path="/api/v1/ai-chat/queue",
+        business_domain="AI 会话运输",
+        disposition="excluded",
+        reason="用户处理已接收的排队输入，由对话入口领取或删除。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST",
         path="/api/v1/ai-chat/fork",
         business_domain="AI 会话运输",
         disposition="excluded",

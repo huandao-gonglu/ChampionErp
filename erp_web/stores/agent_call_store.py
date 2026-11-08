@@ -23,12 +23,17 @@ from erp_web.stores.pydantic_message_store import (
     canonical_model_messages_json,
     PydanticMessageStoreError,
 )
+from erp_web.schemas.chat_conversations import reply_prefix
 from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnAlreadyAcceptedError
 
 _REQUESTS = TypeAdapter(DeferredToolRequests)
 _RESULTS = TypeAdapter(DeferredToolResults)
 _USAGE = TypeAdapter(RunUsage)
 _logger = logging.getLogger(__name__)
+
+
+class UserInputNotPending(ValueError):
+    """该范围内没有对应的未回答问题。"""
 
 
 class AgentCallStore:
@@ -51,7 +56,7 @@ class AgentCallStore:
             rows = conn.execute(
                 """SELECT tool_call_id,tool_name,arguments_json,output_json,status FROM ai_tool_receipts
                 WHERE conversation_id=? AND updated_at >= COALESCE(
-                    (SELECT MAX(created_at) FROM ai_chat_inbox WHERE conversation_id=?), '')
+                    (SELECT MAX(created_at) FROM ai_chat_inbox WHERE conversation_id=? AND status IN ('applied','received')), '')
                 ORDER BY updated_at""", (conversation_id, conversation_id),
             ).fetchall()
         return [{"tool_call_id": row["tool_call_id"], "tool_name": row["tool_name"], "status": row["status"],
@@ -157,6 +162,8 @@ class AgentCallStore:
                     ),
                 )
                 for call in requests.calls:
+                    if call.tool_name == "request_user_input":
+                        continue
                     conn.execute(
                         """INSERT INTO ai_tool_receipts
                         (conversation_id,tool_call_id,tool_name,arguments_json,execution_json,status,updated_at)
@@ -247,6 +254,8 @@ class AgentCallStore:
         messages: Sequence[ModelMessage],
         *,
         draft_ids=(),
+        queued: bool = False,
+        answer_to: str | None = None,
         profile_id: str,
         actor_id: str,
         tenant_id: str,
@@ -257,6 +266,8 @@ class AgentCallStore:
         try:
             with self.db._connect() as conn, conn:
                 conn.execute("BEGIN IMMEDIATE")
+                if answer_to is not None:
+                    self._answer_question(conn, conversation_id, answer_to, message_id, messages)
                 conn.execute(
                     """INSERT INTO ai_chat_turn_claims
                     (claim_id,conversation_id,client_message_id,profile_id,actor_id,tenant_id,status,claimed_at)
@@ -272,36 +283,78 @@ class AgentCallStore:
                     ),
                 )
                 conn.execute(
-                    "INSERT INTO ai_chat_inbox(conversation_id,message_id,messages_json,target_draft_ids,created_at) VALUES(?,?,?,?,?)",
+                    "INSERT INTO ai_chat_inbox(conversation_id,message_id,messages_json,target_draft_ids,created_at,status) VALUES(?,?,?,?,?,?)",
                     (
                         conversation_id,
                         message_id,
                         encoded,
                         json.dumps(list(draft_ids)),
-                        utc_now(),
+                        utc_now(), "answer" if answer_to is not None else "queued" if queued else "received",
                     ),
                 )
         except sqlite3.IntegrityError:
             raise AiChatTurnAlreadyAcceptedError("本轮消息已经被接收。") from None
 
-    def cancel_pending_work(self, conversation_id: str) -> None:
+    @staticmethod
+    def _answer_question(conn, conversation_id, call_id, message_id, messages):
+        from erp_web.services.chat_images import prompt_summary
+
+        row = conn.execute(
+            "SELECT requests_json,results_json FROM ai_deferred_requests WHERE conversation_id=?", (conversation_id,),
+        ).fetchone()
+        if row:
+            requests = _REQUESTS.validate_json(row[0])
+            results = _RESULTS.validate_json(row[1])
+            if call_id not in results.calls and any(
+                call.tool_call_id == call_id and call.tool_name == "request_user_input" for call in requests.calls
+            ):
+                # 将真实答复与原问题配对，多项倒序回答时模型仍能区分。
+                results.calls[call_id] = {"user_message_id": message_id, "answer": prompt_summary(messages)}
+                conn.execute("UPDATE ai_deferred_requests SET results_json=? WHERE conversation_id=?",
+                             (_RESULTS.dump_json(results), conversation_id))
+                return
+        raise UserInputNotPending("这项提问已处理或已失效，请查看当前待办。")
+
+    def cancel_pending_work(self, conversation_id: str, *, preserve_queue: bool = False) -> None:
         """撤下未执行的领域任务和恢复请求；已发出的操作继续保留真实回执。"""
+        with self.db._connect() as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._cancel_work(conn, conversation_id, preserve_queue=preserve_queue)
+        self.notify_changed(conversation_id)
+
+    @staticmethod
+    def _cancel_work(conn, conversation_id: str, *, preserve_queue: bool):
         output = json.dumps({"ok": False, "error": {
             "code": "OPERATION_CANCELLED", "message": "用户已停止，本次工具未执行。",
         }}, ensure_ascii=False)
+        conn.execute(
+            "UPDATE ai_tool_receipts SET status='completed',output_json=?,updated_at=? WHERE conversation_id=? AND status='queued'",
+            (output, utc_now(), conversation_id),
+        )
+        conn.execute("DELETE FROM ai_deferred_requests WHERE conversation_id=?", (conversation_id,))
+        conn.execute("UPDATE ai_chat_inbox SET status='failed' WHERE conversation_id=? AND status IN ('received','answer')", (conversation_id,))
+        if not preserve_queue:
+            conn.execute("UPDATE ai_chat_inbox SET status='failed' WHERE conversation_id=? AND status IN ('queued','routing','replacement')",
+                         (conversation_id,))
+        conn.execute(
+            """UPDATE ai_chat_turn_claims SET status='cancelled',finished_at=? WHERE conversation_id=? AND status='claimed'
+            AND client_message_id NOT IN (SELECT message_id FROM ai_chat_inbox WHERE conversation_id=?
+            AND status IN ('queued','routing','replacement'))""",
+            (utc_now(), conversation_id, conversation_id),
+        )
+
+    def release_queue(self, conversation_id):
+        """只在前一轮及其 Deferred 结束后投递普通排队项。"""
         with self.db._connect() as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "UPDATE ai_tool_receipts SET status='completed',output_json=?,updated_at=? WHERE conversation_id=? AND status='queued'",
-                (output, utc_now(), conversation_id),
-            )
-            conn.execute("DELETE FROM ai_deferred_requests WHERE conversation_id=?", (conversation_id,))
-            conn.execute("UPDATE ai_chat_inbox SET status='failed' WHERE conversation_id=? AND status='received'", (conversation_id,))
-            conn.execute(
-                "UPDATE ai_chat_turn_claims SET status='cancelled',finished_at=? WHERE conversation_id=? AND status='claimed'",
-                (utc_now(), conversation_id),
-            )
-        self.notify_changed(conversation_id)
+            conn.execute("""UPDATE ai_chat_inbox SET status='received' WHERE sequence=(
+                SELECT MIN(sequence) FROM ai_chat_inbox WHERE conversation_id=? AND status='queued')
+                AND NOT EXISTS (SELECT 1 FROM ai_chat_inbox WHERE conversation_id=? AND status='received')""",
+                (conversation_id, conversation_id))
+
+    def release_replacement(self, conversation_id):
+        with self.db._connect() as conn, conn:
+            return conn.execute("UPDATE ai_chat_inbox SET status='received' WHERE conversation_id=? AND status='replacement'",
+                                (conversation_id,)).rowcount
 
     def cancel_input(self, conversation_id: str, message_id: str, *, profile_id: str, actor_id: str, tenant_id: str) -> None:
         """取消先于发送请求到达时，使用现有幂等领取记录阻止该消息迟到后启动。"""
@@ -316,7 +369,7 @@ class AgentCallStore:
     def fail_unconsumed(self, conversation_id: str) -> None:
         with self.db._connect() as conn, conn:
             conn.execute(
-                "UPDATE ai_chat_inbox SET status='failed' WHERE conversation_id=? AND status='received'",
+                "UPDATE ai_chat_inbox SET status='failed' WHERE conversation_id=? AND status IN ('received','answer')",
                 (conversation_id,),
             )
 
@@ -335,11 +388,74 @@ class AgentCallStore:
             },
         )
 
-    def inbox(self, conversation_id: str) -> list[dict[str, Any]]:
+    def change_queued_input(self, conversation_id, message_id, *, action, deferred_wait=False):
+        """与原生领取竞争同一条记录；删除保留幂等身份并清除输入内容。"""
+        with self.db._connect() as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM ai_chat_inbox WHERE conversation_id=? AND message_id=?",
+                               (conversation_id, message_id)).fetchone()
+            if row is None or (row["status"] != "queued" and not (deferred_wait and row["status"] == "received")):
+                return None
+            if action == "delete":
+                conn.execute("UPDATE ai_chat_inbox SET status='removed',messages_json=?,target_draft_ids='[]' WHERE sequence=?",
+                             (b"[]", row["sequence"]))
+                conn.execute("UPDATE ai_chat_turn_claims SET status='cancelled',finished_at=? WHERE conversation_id=? AND client_message_id=?",
+                             (utc_now(), conversation_id, message_id))
+            else:
+                conn.execute("UPDATE ai_chat_inbox SET status='routing' WHERE sequence=?", (row["sequence"],))
+            return dict(row)
+
+    def restore_queued_input(self, sequence: int) -> bool:
+        with self.db._connect() as conn, conn:
+            return bool(conn.execute("UPDATE ai_chat_inbox SET status='queued' WHERE sequence=? AND status='routing'",
+                                     (sequence,)).rowcount)
+
+    def active_input_id(self, conversation_id: str) -> str | None:
+        with self.db._connect() as conn:
+            row = conn.execute("""SELECT i.message_id FROM ai_chat_inbox i JOIN ai_chat_turn_claims c
+                ON c.conversation_id=i.conversation_id AND c.client_message_id=i.message_id
+                WHERE i.conversation_id=? AND i.status IN ('applied','received') AND c.status='claimed'
+                ORDER BY sequence DESC LIMIT 1""", (conversation_id,)).fetchone()
+        return row[0] if row else None
+
+    def parallel_runs(self, root_id: str) -> list[str]:
+        with self.db._connect() as conn:
+            return [row[0] for row in conn.execute(
+                """SELECT conversation_id FROM ai_chat_turn_claims WHERE conversation_id GLOB ?
+                GROUP BY conversation_id ORDER BY MIN(claimed_at), conversation_id""", (reply_prefix(root_id) + "*",),
+            )]
+
+    def dispatch_queued_input(self, row, target, messages, obsolete_scopes):
+        """消息交接与撤下旧审批/未执行的任务在同一事务内完成。"""
+        origin, message_id = row["conversation_id"], row["message_id"]
+        same_scope = target == origin
+        target_status = "replacement" if obsolete_scopes else "received"
+        with self.db._connect() as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            moved = conn.execute("UPDATE ai_chat_inbox SET status=? WHERE sequence=? AND status='routing'",
+                                 (target_status if same_scope else "parallel", row["sequence"])).rowcount
+            if not moved:
+                return False
+            if not same_scope:
+                conn.execute("""INSERT INTO ai_chat_turn_claims
+                    (claim_id,conversation_id,client_message_id,profile_id,actor_id,tenant_id,status,claimed_at)
+                    SELECT ?,?,client_message_id,profile_id,actor_id,tenant_id,'claimed',claimed_at
+                    FROM ai_chat_turn_claims WHERE conversation_id=? AND client_message_id=?""",
+                    (f"claim_{uuid4().hex}", target, origin, message_id))
+                conn.execute("""INSERT INTO ai_chat_inbox(conversation_id,message_id,messages_json,target_draft_ids,created_at,status)
+                    VALUES(?,?,?,?,?,?)""", (target, message_id, ModelMessagesTypeAdapter.dump_json(messages),
+                                             row["target_draft_ids"], row["created_at"], target_status))
+                conn.execute("""UPDATE ai_chat_turn_claims SET status='completed',finished_at=?
+                    WHERE conversation_id=? AND client_message_id=?""", (utc_now(), origin, message_id))
+            for scope in obsolete_scopes:
+                self._cancel_work(conn, scope, preserve_queue=True)
+            return True
+
+    def inbox(self, conversation_id: str, *, include_queued: bool = False, include_answers: bool = False) -> list[dict[str, Any]]:
         with self.db._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM ai_chat_inbox WHERE conversation_id=? AND status='received' ORDER BY sequence",
-                (conversation_id,),
+                "SELECT * FROM ai_chat_inbox WHERE conversation_id=? AND (status='received' OR (? AND status='answer') OR (? AND status IN ('queued','routing','replacement'))) ORDER BY sequence",
+                (conversation_id, include_answers, include_queued),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -360,7 +476,7 @@ class AgentCallStore:
 
         with self.db._connect() as conn:
             rows = conn.execute(
-                "SELECT message_id,messages_json,target_draft_ids FROM ai_chat_inbox WHERE conversation_id=? ORDER BY sequence DESC LIMIT 50",
+                "SELECT message_id,messages_json,target_draft_ids FROM ai_chat_inbox WHERE conversation_id=? AND status NOT IN ('removed','queued','routing','parallel','replacement') ORDER BY sequence DESC LIMIT 50",
                 (conversation_id,),
             )
             # 每次只解码一条输入；返回给工具的事实不携带图片字节。
@@ -374,7 +490,7 @@ class AgentCallStore:
     def selected_drafts(self, conversation_id: str) -> tuple[str, ...]:
         with self.db._connect() as conn:
             row = conn.execute(
-                "SELECT target_draft_ids FROM ai_chat_inbox WHERE conversation_id=? AND target_draft_ids!='[]' ORDER BY sequence DESC LIMIT 1",
+                "SELECT target_draft_ids FROM ai_chat_inbox WHERE conversation_id=? AND status NOT IN ('removed','queued','parallel','routing','replacement') AND target_draft_ids!='[]' ORDER BY sequence DESC LIMIT 1",
                 (conversation_id,),
             ).fetchone()
         return tuple(json.loads(row[0])) if row else ()
@@ -502,10 +618,18 @@ class AgentCallStore:
         )
         with self.db._connect() as conn:
             with conn:
+                conn.execute("UPDATE ai_chat_inbox SET status='queued' WHERE status='routing'")
+                conn.execute("UPDATE ai_chat_inbox SET status='received' WHERE status='replacement'")
+                conn.execute("""UPDATE ai_chat_inbox SET status='received' WHERE sequence IN (
+                    SELECT MIN(sequence) FROM ai_chat_inbox WHERE status='queued' GROUP BY conversation_id)
+                    AND conversation_id NOT IN (SELECT conversation_id FROM ai_deferred_requests)
+                    AND conversation_id NOT IN (SELECT conversation_id FROM ai_chat_inbox WHERE status='received')""")
                 conn.execute(
                     """UPDATE ai_chat_turn_claims SET status='failed',error_code='TOOL_OUTCOME_UNKNOWN',finished_at=?
                     WHERE status='claimed' AND conversation_id IN (SELECT conversation_id FROM ai_tool_receipts WHERE status='executing')
-                    AND conversation_id NOT IN (SELECT conversation_id FROM ai_deferred_requests)""",
+                    AND conversation_id NOT IN (SELECT conversation_id FROM ai_deferred_requests)
+                    AND NOT EXISTS (SELECT 1 FROM ai_chat_inbox i WHERE i.conversation_id=ai_chat_turn_claims.conversation_id
+                        AND i.message_id=ai_chat_turn_claims.client_message_id AND i.status IN ('received','queued'))""",
                     (utc_now(),),
                 )
                 return conn.execute(

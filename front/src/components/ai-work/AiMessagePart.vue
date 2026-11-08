@@ -9,7 +9,7 @@ import { aiToolName, aiToolStatus, isAiToolPart, toolNeedsAttention, type ToolPa
 
 const props = defineProps<{
   part: AiUiPart
-  pendingKind?: 'approval' | 'external'
+  pendingKind?: 'approval' | 'external' | 'input'
   active?: boolean
 }>()
 
@@ -39,6 +39,7 @@ const toolStatusClass = computed(() => {
       return 'bg-rose-50/[var(--ai-chat-surface-opacity,1)] text-rose-700 ring-rose-200 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200 dark:ring-rose-500/30'
     case 'unknown':
     case 'partial':
+    case 'input':
     case 'approval':
     case 'denied':
       return 'bg-amber-50/[var(--ai-chat-surface-opacity,1)] text-amber-800 ring-amber-200 dark:bg-amber-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-amber-100 dark:ring-amber-500/30'
@@ -110,6 +111,7 @@ const statusLabels: Record<string, string> = {
   preparing: '正在准备…',
   running: '处理中',
   approval: '等待确认',
+  input: '等待回复',
   waiting: '等待结果',
   unknown: '结果未确认',
   failed: '操作失败',
@@ -191,7 +193,6 @@ const statusLabels: Record<string, string> = {
     <p v-else-if="toolNeedsAttention(status) && status !== 'approval'" class="ml-3 mt-1 text-xs text-amber-800 dark:text-amber-200">
       {{ attentionMessages[status] }}
     </p>
-    <slot v-if="status === 'approval'" name="approval" :tool-call-id="tool.toolCallId" />
   </div>
 
   <!-- 来源链接 / 来源文档 -->

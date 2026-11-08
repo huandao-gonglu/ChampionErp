@@ -87,6 +87,7 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                 urls = [str(item.get("preview_url") or "") for item in result["imagePoolItems"]]
                 store.update_item(conversation_id, index, result_urls=urls)
                 # persist 必须完成真实商品写入后返回；失败不能标记为成功。
+                check_cancellation()
                 persist(result)
                 store.update_item(conversation_id, index, status="success", finished_at=utc_now(),
                                   result_urls=urls, result_asset_ids=[str(item["id"]) for item in result["imagePoolItems"] if item.get("id")])

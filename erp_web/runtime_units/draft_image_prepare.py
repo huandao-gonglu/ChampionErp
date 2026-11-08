@@ -150,6 +150,7 @@ def prepare_draft_images(request, *, context, operation_key=""):
         return response("failed", "套图未全部生成成功，已保留当前图片；成功结果在图片池和原套图任务中保留，可核对后采用或重做失败页。", batch=batch)
     check_cancellation()
     with context.image_batches.lock, products.mutation_scope({"draft_id": draft_id}):
+        check_cancellation()
         latest_product, latest = load()
         for target in [latest, *latest.get("target_sites", [])]:
             assert_target_mutable(target)

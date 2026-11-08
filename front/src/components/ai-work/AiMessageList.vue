@@ -39,9 +39,7 @@ const groups = computed(() => groupAiMessages(props.messages))
           :timing="message.timing"
           :allow-branch="allowBranch && message.timing?.status === 'completed'"
           @branch="emit('branch', message.messageId)"
-        >
-          <template #approval="scope"><slot name="approval" v-bind="scope" /></template>
-        </AiAssistantTurn>
+        />
         <div v-else class="space-y-2">
           <AiMessagePart
             v-for="(part, index) in message.parts"

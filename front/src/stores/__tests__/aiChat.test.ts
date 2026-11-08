@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AiWorkUiMessagesResponse } from '@/types/aiWork'
 import { useAiChatStore } from '../aiChat'
+import { apiClient } from '@/api/client'
 import { useAiPageContextStore } from '../aiPageContext'
 
 beforeEach(() => localStorage.removeItem(AI_CHAT_SELECTION_KEY))
@@ -103,6 +104,44 @@ describe('对话分支', () => {
     resolve({ ok: true, conversation_id: 'branch', messages: [], history_version: 1, created_at: '', updated_at: '' })
     await pending
     expect(store.activeConversationId).toBe(newId)
+  })
+})
+
+describe('当前对话待办', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    mocks.fetchUiMessages.mockReset()
+    vi.stubGlobal('EventSource', FakeEventSource)
+  })
+  afterEach(() => { useAiChatStore().disconnectEvents(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+  it('按来源逐项提交原生审批和问题回复，主输入框保留草稿', async () => {
+    const store = useAiChatStore()
+    const root = store.startConversation()
+    const reply: AiWorkUiMessagesResponse = {
+      ok: true, conversation_id: 'parallel', history_version: 2, created_at: '', updated_at: '',
+      messages: [{ id: 'pending', role: 'assistant', parts: ['one', 'two'].map(id => ({
+        type: 'tool-publish', state: 'approval-requested', toolCallId: id, input: { draft: id }, approval: { id },
+      })) }],
+    }
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { status: 202 }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { approvalToken: 'token' } })
+    mocks.fetchUiMessages.mockResolvedValue({ history_version: 2, messages: [], parallel_replies: [reply] })
+    store.input = '稍后再发送'
+    await store.respondToParallelApproval(reply, 'two', false)
+    const approval = fetchMock.mock.calls[0][1]
+    expect(approval.headers.get('X-Approval-Token')).toBe('token')
+    const submitted = JSON.parse(approval.body)
+    expect(submitted.id).toBe('parallel')
+    expect(submitted.messages[0].parts).toEqual([{ type: 'tool-publish', state: 'approval-responded',
+      toolCallId: 'two', input: { draft: 'two' }, approval: { id: 'two', approved: false } }])
+    await store.answerQuestion(root, 'question', '蓝色')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+      id: root, answer_to: 'question', messages: [{ role: 'user', parts: [{ type: 'text', text: '蓝色' }] }],
+    })
+    expect(store.input).toBe('稍后再发送')
+    expect(store.activeConversationId).toBe(root)
   })
 })
 

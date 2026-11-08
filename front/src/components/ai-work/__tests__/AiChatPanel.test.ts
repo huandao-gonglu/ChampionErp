@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AiChatPanel from '../AiChatPanel.vue'
 
 vi.mock('@/stores', () => ({
-  useAiChatStore: () => ({ pendingToolCalls: [], canStop: false, stopping: false }),
+  useAiChatStore: () => ({ pendingToolCalls: [], parallelReplies: [], canStop: false, stopping: false }),
 }))
 
 let resizeCallback: ResizeObserverCallback

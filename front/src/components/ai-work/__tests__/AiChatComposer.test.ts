@@ -63,6 +63,18 @@ describe('AiChatComposer 斜杠命令面板', () => {
     expect(queue().exists()).toBe(false)
   })
 
+  it.each([['立即发送', 'send'], ['删除', 'delete']] as const)('排队操作%s只提交所选消息', async (label, action) => {
+    const { store, wrapper } = mountComposer()
+    const submit = vi.spyOn(store, 'actOnQueue').mockResolvedValue()
+    await wrapper.setProps({ conversationId: '当前对话', queuedMessages: [
+      { message_id: 'first', text: '进度如何' }, { message_id: 'next', text: '另一条消息' },
+    ] })
+    const buttons = wrapper.get('[data-testid="ai-chat-queue"]').findAll('button').filter(button => button.text() === label)
+    await buttons[1]!.trigger('click')
+    expect(submit).toHaveBeenCalledTimes(1)
+    expect(submit).toHaveBeenCalledWith('当前对话', 'next', action)
+  })
+
   it('眼睛开关显示背景提示、切换为斜杠眼睛并记住选择，不发送消息', async () => {
     const saved = new Map<string, string>()
     vi.spyOn(localStorage, 'getItem').mockImplementation(key => saved.get(key) ?? null)

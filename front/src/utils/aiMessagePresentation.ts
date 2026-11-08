@@ -56,7 +56,7 @@ export function aiToolName(part: AiUiPart): string {
   return tool.toolName || tool.type.replace(/^tool-/, '')
 }
 
-export type ToolDisplayStatus = 'preparing' | 'running' | 'approval' | 'waiting'
+export type ToolDisplayStatus = 'preparing' | 'running' | 'approval' | 'waiting' | 'input'
   | 'unknown' | 'failed' | 'partial' | 'denied' | 'completed' | 'submitted' | 'script_error'
 
 function record(value: unknown): Record<string, unknown> {
@@ -83,6 +83,7 @@ export function aiToolStatus(part: AiUiPart, pendingKind?: PendingToolCall['kind
     if (['pending', 'queued', 'running', 'processing'].includes(String(output.status))) return 'submitted'
     return 'completed'
   }
+  if (pendingKind === 'input') return 'input'
   if (pendingKind === 'approval') return 'approval'
   if (pendingKind === 'external') return 'running'
   if (active) return tool.state === 'input-streaming' ? 'preparing' : 'waiting'

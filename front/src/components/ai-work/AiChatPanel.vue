@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { PhArrowDown } from '@phosphor-icons/vue'
 import type { UIMessage } from 'ai'
+import type { AiTurnTiming, AiWorkUiMessagesResponse } from '@/types/aiWork'
 import AiChatComposer from './AiChatComposer.vue'
 import AiMessageList from './AiMessageList.vue'
-import NativeToolApprovals from './NativeToolApprovals.vue'
+import ChatPendingActions from './ChatPendingActions.vue'
 import { useAiChatStore } from '@/stores'
 
 const props = withDefaults(defineProps<{
@@ -32,7 +33,30 @@ const contentRef = ref<HTMLElement | null>(null)
 const followingLatest = ref(true)
 const showJumpToLatest = ref(false)
 const chatStore = useAiChatStore()
-const approvalBusy = ref(false)
+// 同一对话按提问时间排列，后续普通回合仍在即时回复下方。
+const turns = computed(() => {
+  type Turn = { key: string; messages: UIMessage[]; time: string; active: boolean; reply?: AiWorkUiMessagesResponse }
+  if (!chatStore.parallelReplies.length) {
+    return [{ key: 'main', messages: props.messages, time: '', active: props.busy || chatStore.isRunning }] as Turn[]
+  }
+  const result: Turn[] = []
+  function append(messages: UIMessage[], active: boolean, reply?: AiWorkUiMessagesResponse) {
+    let current: Turn | undefined
+    for (const message of messages) {
+      if (!current || message.role === 'user') {
+        const timing = (message.metadata as { ai_turn?: AiTurnTiming } | undefined)?.ai_turn
+        current = { key: (reply?.conversation_id ?? 'main') + message.id, messages: [], reply,
+          time: timing?.started_at ?? reply?.created_at ?? '', active: false }
+        result.push(current)
+      }
+      current.messages.push(message)
+    }
+    if (current) current.active = active
+  }
+  append(props.messages, props.busy || chatStore.isRunning)
+  for (const reply of chatStore.parallelReplies) append(reply.messages, !!reply.run_active, reply)
+  return result.sort((a, b) => a.time.localeCompare(b.time))
+})
 let lastScrollTop = 0
 let lastTouchY: number | undefined
 let resizeObserver: ResizeObserver | undefined
@@ -162,14 +186,21 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
             </div>
 
             <!-- 消息气泡 -->
-            <AiMessageList
-              v-else :messages="messages" :pending-tool-calls="chatStore.pendingToolCalls" :active="busy || chatStore.isRunning"
-              :allow-branch="!chatStore.canStop && !chatStore.forking" @branch="chatStore.forkConversation"
-            >
-              <template #approval="{ toolCallId }">
-                <NativeToolApprovals :tool-call-id="toolCallId" :busy="approvalBusy" @submitting="approvalBusy = $event" />
+            <section v-for="turn in turns" v-show="turn.messages.length" :key="turn.key">
+              <AiMessageList
+                :messages="turn.messages" :pending-tool-calls="turn.reply?.pending_tool_calls ?? chatStore.pendingToolCalls"
+                :active="turn.active" :allow-branch="!turn.reply && !chatStore.canStop && !chatStore.forking" @branch="chatStore.forkConversation"
+              />
+              <template v-if="turn.reply && turn.messages.at(-1)?.id === turn.reply.messages.at(-1)?.id">
+                <p v-if="turn.reply.run_error" role="alert" class="text-sm text-rose-600">{{ turn.reply.run_error.message }}</p>
+                <button
+                  v-if="turn.reply.run_active || turn.reply.pending_tool_calls?.length" type="button" class="btn btn-outline"
+                  @click="chatStore.stopParallelReply(turn.reply)"
+                >
+                  停止此任务
+                </button>
               </template>
-            </AiMessageList>
+            </section>
 
             <!-- 错误提示 -->
             <p
@@ -195,12 +226,13 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
         </button>
       </div>
 
+      <ChatPendingActions :key="conversationId" />
       <!-- 输入框 -->
       <AiChatComposer
         :model-value="input"
         :busy="busy || chatStore.canStop"
         :stopping="chatStore.stopping"
-        :queued-messages="chatStore.receivedMessages"
+        :queued-messages="chatStore.queueRows"
         :status-notice="chatStore.receivedNotice"
         :conversation-id="conversationId"
         @update:model-value="emit('update:input', $event)"

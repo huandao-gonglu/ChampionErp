@@ -74,7 +74,7 @@ class AgentJobService:
                     if automatic is not None:
                         self.store.record_results(conversation_id, automatic)
                 for call in requests.calls:
-                    if call.tool_call_id in results.calls:
+                    if call.tool_name == "request_user_input" or call.tool_call_id in results.calls:
                         continue
                     receipt = self.store.receipt(conversation_id, call.tool_call_id)
                     if (

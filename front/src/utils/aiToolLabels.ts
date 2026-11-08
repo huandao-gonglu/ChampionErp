@@ -1,4 +1,5 @@
 const toolLabels: Record<string, string> = {
+  request_user_input: '补充信息',
   run_code: '处理业务',
   order_detail_read: '查看订单详情',
   orders_summary_read: '汇总订单',

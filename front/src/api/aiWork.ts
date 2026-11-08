@@ -57,6 +57,10 @@ export async function forkChatConversation(conversationId: string, messageId: st
   return response.data
 }
 
+export async function updateQueuedMessage(id: string, messageId: string, action: 'delete' | 'send'): Promise<void> {
+  await apiClient.post('/api/v1/ai-chat/queue', { id, message_id: messageId, action })
+}
+
 export async function cancelChatRun(conversationId: string, messageId: string): Promise<AiChatCancelResponse> {
   const response = await apiClient.post<AiChatCancelResponse>('/api/v1/ai-chat/cancel', {
     id: conversationId, message_id: messageId,

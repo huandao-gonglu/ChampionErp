@@ -568,8 +568,9 @@ Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独�
   右侧按优先级选择数据源——前台 presentation（observe Chat 实时消息）、活动 `global.chat`
   （共享 `Chat.messages`）或服务端 `/ui-messages` 只读派生历史；“原始消息”辅助标签提供
   规范 Pydantic JSON 树、Raw JSON 与下载；支持 `conversation_id` / `presentation_id` query 定位。
-  全局对话与草稿箱批量准备共享 `front/src/stores/aiChat.ts`。原生工具卡提交批准/拒绝；
-  运行期间仍可提交用户消息。原生队列将输入加入模型上下文后，`before_model_request` 同事务提交完整原生历史与收件箱状态；输入框上方只展示仍在等待的消息。后台只发送历史版本变更通知，
+  全局对话与草稿箱批量准备共享 `front/src/stores/aiChat.ts`。
+  网页聊天通过原生 Deferred 工具 `request_user_input` 等待填写或选择。人工答复按运行范围和调用 ID 与真实用户消息同事务关联。人工提问不投递给后台任务执行器。工作台与浮窗的 `ChatPendingActions.vue` 合并主任务和即时回复的未决提问与审批。
+  运行期间网页输入框以 `queue_if_busy` 提交排队消息，前一任务及其审批结束后自动投递。排队行支持逐条删除及立即发送。其他渠道的原生队列将输入加入模型上下文后，`before_model_request` 同事务提交完整原生历史与收件箱状态；输入框上方只展示仍在等待的消息。后台只发送历史版本变更通知，
   前端用官方 Adapter 派生的历史恢复消息，不在浏览器推进 Agent。
   前台短句 `initialUserMessage` 经 reserve 的 `initial_user_message` 传入 presentation scope，
   由 `AiAgentFactory` 保存到原生输入 metadata 的 `presentation_user_message`；只用于展示，
@@ -781,7 +782,7 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 
 原生 Deferred 要求当前批次全部调用结果/审批齐备才恢复模型。部分结果先落盘，独立领域 Job 可并发。
 发布仅使用原生审批和普通工具返回：已核对当前安装的 Pydantic AI 2.44.0 及[官方审批文档](https://ai.pydantic.dev/deferred-tools/)，原生能力满足需求，无需自建完成协议或等待状态机。提交回执表示队列接收成功，不表示平台发布成功；模型不得主动轮询、等待或因后台失败重新发布，用户另行请求查看或处理时才继续。
-新增用户消息始终可接收，在下一个原生模型边界生效。取消不会撤销已经发出的平台操作；未开始的调用先返回用户要求已更新，等待模型重新决定。
+直接追加的用户消息在下一个原生模型边界生效。网页显式排队的输入在原任务结束后生效。取消不会撤销已经发出的平台操作；未开始的调用先返回用户要求已更新，等待模型重新决定。
 
 缺资料是工具业务结果，包含字段、原因、选项和工具参数路径；主 Agent 可以先读取关联商品、草稿、平台和有权限历史。
 商品共用事实与各草稿/站点决定分开保存。`source_message_id`/`source_conversation_id` 只定位实际消息，服务端检查归属、实体范围与值；已保存销售目标可以复用。
@@ -832,9 +833,11 @@ transcript 或 Tool 输出。
 
 - `POST /api/v1/ai-chat/fork` → `ai_chat_facade.fork_chat_conversation` → `VercelAiUiService.fork_conversation`：验证普通对话归属及已闭合的回复边界，复制原生历史前缀到新会话；不启动 Agent 或复制待办、Job、写权限。分支归属和来源保存在原生应用 metadata，首次发送后的归属仍由 claim 校验。`/ui-messages` 从既有 claim 投影每轮时间到 `metadata.ai_turn`；聊天隐藏推理正文，原始消息不变。展示及适配边界见 [AI Work](aiworkpage.md)。
 
-- `POST /api/v1/ai-chat/runs`：新用户消息或官方 approval-responded 消息。用户消息 ID 幂等领取与输入同事务保存；仅服务端历史参与模型调用。
+- `POST /api/v1/ai-chat/runs`：新用户消息、关联待答问题的用户回复（`answer_to`）或官方 approval-responded 消息。用户消息 ID 幂等领取与输入同事务保存；仅服务端历史参与模型调用。
 - 对话输入框支持粘贴和选择 JPEG、PNG、WebP 图片。服务端按全局 AI 实际绑定的 API 模型校验 `image_understanding`，验证原图后交由 Vercel Adapter 转为原生消息。图片随收件箱和对话历史保存。模型输入投影附上内容 ID，切换文本模型后仅提供附件引用。
 - `runtime_units/image_capabilities.py` 的 `product_image_read` 按商品列出素材，由商品 SKU 的 `image_asset_id` 反查每张图关联的全部 SKU，并通过 `ai_direct_request_service.image_to_text` 用同一模型读取指定原图。`chat_images_save_to_product` 从当前会话的用户消息取指定附件，以短锁合入最新商品图片池。两条入口分别使用商品读权限和图片写权限。
+- `POST /api/v1/ai-chat/queue` 按会话与消息 ID 处理仍在排队的输入。删除清除正文并保留幂等身份。立即发送由 `chat_queue_service.py` 将新消息和活动任务交给全局模型判断是否取代旧要求，提交前重核目标轮次。撤下过期审批、交接新输入和保护其他排队项使用同一事务。进度查询和独立任务使用自己的原生执行范围、审批及回执，在原对话按提问时间展示。后续输入可读取同一对话其他回合的近期记录。
+  已核对 Pydantic AI 2.44.0 的原生队列、并发运行及取消令牌。ERP 负责用户收件箱和业务意图分流，Agent 循环和原生事件继续由框架负责。框架原生支持并发处理可撤回输入并按意图取消时，可移除对应适配。[Pydantic AI 运行与取消](https://pydantic.dev/docs/ai/core-concepts/agent/#cancelling-a-run)
 - `POST /api/v1/ai-chat/cancel`：接收 `{id, message_id}`，直接取消本轮原生令牌；不排队发送取消 prompt。相同消息的停止幂等，已知旧消息不能取消新回合；取消先于发送到达时，现有 claim 幂等记录阻止迟到消息启动。
 - 同会话有活动 run 或未齐备 Deferred 时返回 HTTP 202 接收凭据。批准/拒绝还需 `X-Approval-Token`，客户端不能更改服务端 call ID、工具名或参数。
 - `GET /api/v1/ai-work/conversations` 与 `/{id}`：历史索引和 canonical Pydantic JSON。

@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   modelValue: string
   busy: boolean
   stopping?: boolean
-  queuedMessages?: { message_id: string; text: string }[]
+  queuedMessages?: { conversation_id?: string; status?: string; message_id: string; text: string }[]
   statusNotice?: string
   conversationId?: string
   /** 非空时锁定普通发送（例如存在未解决的全局任务），并展示原因。 */
@@ -215,7 +215,19 @@ function onKeydown(event: KeyboardEvent) {
         <div v-for="message in queuedMessages" :key="message.message_id" class="flex min-h-8 items-center gap-2">
           <PhListDashes :size="16" class="shrink-0 text-slate-500 dark:text-accent-400" aria-hidden="true" />
           <span class="min-w-0 flex-1 truncate text-slate-800 dark:text-accent-100" :title="message.text">{{ message.text }}</span>
-          <span class="shrink-0 text-xs text-slate-500 dark:text-accent-300">排队中</span>
+          <span class="shrink-0 text-xs text-slate-500 dark:text-accent-300">{{ chatStore.queueAction === message.message_id || message.status === 'routing' ? '处理中' : message.status && message.status !== 'queued' ? '发送中' : '排队中' }}</span>
+          <button
+            v-if="!message.status || message.status === 'queued'" type="button" class="shrink-0 rounded px-1.5 py-1 text-xs font-semibold text-primary-700 hover:underline disabled:opacity-50 dark:text-primary-300"
+            :disabled="!!chatStore.queueAction || stopping" @click="chatStore.actOnQueue(message.conversation_id || conversationId, message.message_id, 'send')"
+          >
+            立即发送
+          </button>
+          <button
+            v-if="!message.status || message.status === 'queued'" type="button" class="shrink-0 rounded px-1.5 py-1 text-xs text-slate-600 hover:underline disabled:opacity-50 dark:text-accent-200"
+            :disabled="!!chatStore.queueAction || stopping" @click="chatStore.actOnQueue(message.conversation_id || conversationId, message.message_id, 'delete')"
+          >
+            删除
+          </button>
         </div>
       </div>
       <div class="ai-chat-composer-surface rounded-2xl border border-slate-200 bg-white/[var(--ai-chat-surface-opacity,1)] px-3 pb-2.5 pt-2 shadow-sm transition focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-200/60 dark:border-dark-600 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:focus-within:border-primary-500/60 dark:focus-within:ring-primary-500/15">

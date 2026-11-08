@@ -41,7 +41,18 @@ def build_conversation_service(context=None):
 
 def build_ui_service(context=None):
     active = context or get_context()
+    def queue_progress(conversation_id, calls):
+        progress = []
+        for call in calls:
+            if call.tool_name == "draft_images_prepare":
+                batch = active.image_batches.get(f"draft_image_prepare_{conversation_id}:{call.tool_call_id}")
+                if batch:
+                    counts = batch.snapshot()
+                    progress.append({key: counts[key] for key in ("draft_id", "total", "queued", "running", "success", "failed")})
+        return progress
+
     return VercelAiUiService(
+        queue_progress=queue_progress,
         chat_service=build_global_chat_service(active),
         claim_store=active.chat_turn_claims,
         run_registry=active.chat_runs,
@@ -69,6 +80,13 @@ def build_conversation_event_stream(conversation_id, *, after_history_version):
 
 def run_chat_stream(raw_body, *, approval_token=""):
     return build_ui_service().prepare_run(raw_body, approval_token=approval_token)
+
+
+def update_queued_message(conversation_id, message_id, action):
+    from erp_web.services.chat_queue_service import act_on_queue
+
+    act_on_queue(build_ui_service(), conversation_id, message_id, action)
+    return {"ok": True}
 
 
 def cancel_chat_run(conversation_id, message_id):

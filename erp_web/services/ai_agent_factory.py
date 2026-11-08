@@ -49,6 +49,7 @@ from erp_web.stores.pydantic_message_store import (
     PydanticMessageStoreError,
 )
 
+from .chat_user_input import USER_INPUT_TOOL
 from .ai_agent_budget import agent_budget_error, agent_budget_instructions
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_code_mode import build_python_capabilities
@@ -128,6 +129,7 @@ class AiAgentExecutionProfile(Generic[OutputT]):
     result_version: str = "v1"
     allow_write: bool = False
     python_tools: bool = False
+    user_input_tool: bool = False
 
     def __post_init__(self) -> None:
         if not self.use_case_id or not self.toolset_id or not self.budget_profile:
@@ -916,6 +918,7 @@ class AiAgentFactory:
             deps_type=AiAgentDependencies,
             model_settings=self._bounded_model_settings(binding.model_settings),
             retries=profile.retries,
+            tools=[USER_INPUT_TOOL] if profile.user_input_tool else [],
             toolsets=[build_pydantic_toolset(toolset)],
             name=profile.use_case_id.replace(".", "_"),
             capabilities=[

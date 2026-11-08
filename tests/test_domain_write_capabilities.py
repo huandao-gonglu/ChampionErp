@@ -968,6 +968,15 @@ def test_image_edit_can_persist_generated_image_as_main(
 
     def fake_edit_images(*args: Any, **kwargs: Any) -> dict[str, Any]:
         del args, kwargs
+        # 出图期间另一项工作更新商品，采用新图时应合入最新快照。
+        latest = context.products.load_product_from_index("product-image-replace-main", "")
+        from erp_web.runtime_units.image_pool import append_images_to_product_pool
+        latest = append_images_to_product_pool(latest, [{
+            "id": "other-upload", "url": "https://cdn.example.com/other-upload.png",
+            "origin": "upload", "selected": True, "status": "ready",
+        }])
+        saved = context.products.save_product(latest)
+        assert "other-upload" in {item["id"] for item in saved["source"]["image_pool"]}
         return {
             "ok": True,
             "message": "编辑完成。",
@@ -1004,4 +1013,5 @@ def test_image_edit_can_persist_generated_image_as_main(
         "",
     )
     pool = list(dict(saved.get("source") or {}).get("image_pool") or [])
+    assert "other-upload" in {item["id"] for item in pool}
     assert [item["id"] for item in pool if item.get("is_main")] == ["generated-main-1"]

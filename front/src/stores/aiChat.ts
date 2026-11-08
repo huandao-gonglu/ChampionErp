@@ -5,7 +5,7 @@ import { DefaultChatTransport } from 'ai'
 import { accountFetch, businessStorageKey } from '@/utils/accountTransport'
 import { useChatImages } from '@/composables/useChatImages'
 import type { FileUIPart, UIMessage } from 'ai'
-import { AI_CHAT_RUNS_PATH, cancelChatRun, conversationEventsUrl, fetchUiMessages, forkChatConversation } from '@/api/aiWork'
+import { AI_CHAT_RUNS_PATH, cancelChatRun, updateQueuedMessage, conversationEventsUrl, fetchUiMessages, forkChatConversation } from '@/api/aiWork'
 import { apiClient } from '@/api/client'
 import { matchChatCommand } from '@/services/chatCommands'
 import type { ChatCommandContext } from '@/services/chatCommands'
@@ -44,6 +44,13 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const localError = ref<AiChatError>()
   const targetDraftIds = ref<string[]>([])
   const receivedMessages = ref<{ message_id: string; text: string }[]>([])
+  const parallelReplies = ref<AiWorkUiMessagesResponse[]>([])
+  const queueAction = ref('')
+  const parallelActive = computed(() => parallelReplies.value.some(reply => reply.run_active || reply.received_messages?.length || reply.pending_tool_calls?.length))
+  const queueRows = computed(() => [
+    ...receivedMessages.value.map(row => ({ ...row, conversation_id: activeConversationId.value! })),
+    ...parallelReplies.value.flatMap(reply => (reply.received_messages ?? []).map(row => ({ ...row, conversation_id: reply.conversation_id }))),
+  ])
   let directRunMessageId: string | null = null
   let eventSource: EventSource | null = null
   let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -129,9 +136,9 @@ export const useAiChatStore = defineStore('aiChat', () => {
       retryTimer = setTimeout(() => void resyncFromServer(conversationId), 1000)
     }
   }
-  async function resyncFromServer(conversationId: string, attempt = 0): Promise<void> {
+  async function resyncFromServer(conversationId: string, attempt = 0, force = false): Promise<void> {
     if (activeConversationId.value !== conversationId) return
-    if (isBusy.value && (!receivedMessages.value.length || stopping.value)) {
+    if (!force && !parallelActive.value && isBusy.value && (!receivedMessages.value.length || stopping.value)) {
       if (stopping.value) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 500)
       return
     }
@@ -142,15 +149,21 @@ export const useAiChatStore = defineStore('aiChat', () => {
       if (detail.history_version < historyVersion.value) return
       // 原生流持有正在输出的消息；此时只同步等待列表，不用历史快照覆盖实时正文。
       receivedMessages.value = (detail.received_messages ?? []).filter(row => row.message_id !== directRunMessageId)
+      pendingToolCalls.value = detail.pending_tool_calls ?? []
+      parallelReplies.value = detail.parallel_replies ?? []
+      if (!pendingInputIds.size) latestMessageId.value = detail.latest_message_id ?? latestMessageId.value
+      if (parallelActive.value) {
+        if (retryTimer) clearTimeout(retryTimer)
+        retryTimer = setTimeout(() => void resyncFromServer(conversationId, 0, true), 1000)
+      }
       if (isBusy.value) {
-        if (receivedMessages.value.length) {
+        if (receivedMessages.value.length && !parallelActive.value) {
           connectEvents(conversationId, detail.history_version)
           if (typeof EventSource === 'undefined') retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
         }
         return
       }
       runActive.value = detail.run_active ?? false
-      if (!pendingInputIds.size) latestMessageId.value = detail.latest_message_id ?? latestMessageId.value
       if (runActive.value && detail.run_status === 'cancelled') stopping.value = true
       if (stopping.value && runActive.value) {
         retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
@@ -159,11 +172,10 @@ export const useAiChatStore = defineStore('aiChat', () => {
       stopping.value = false
       chat.value.messages = detail.messages
       historyVersion.value = detail.history_version
-      pendingToolCalls.value = detail.pending_tool_calls ?? []
       localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
       receivedNotice.value = ''
-      connectEvents(conversationId)
-      if (runActive.value && typeof EventSource === 'undefined') retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
+      if (!parallelActive.value) connectEvents(conversationId)
+      if (!parallelActive.value && (pendingToolCalls.value.length || (runActive.value && typeof EventSource === 'undefined'))) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
     } catch {
       if (requestGeneration !== generation || activeConversationId.value !== conversationId) return
       if (attempt < 3) retryTimer = setTimeout(() => void resyncFromServer(conversationId, attempt + 1), 500 * 2 ** attempt)
@@ -198,13 +210,8 @@ export const useAiChatStore = defineStore('aiChat', () => {
         api: AI_CHAT_RUNS_PATH, credentials: 'same-origin', fetch: chatFetch,
         prepareSendMessagesRequest: async ({ id, messages: all, trigger, body }) => {
           const latest = all.at(-1)
-          if (latest?.role === 'assistant') {
-            const parts = latest.parts.filter(part => 'state' in part && part.state === 'approval-responded')
-            const { data } = await apiClient.get<{ approvalToken: string }>('/api/state')
-            return { headers: { 'X-Approval-Token': data.approvalToken }, body: { id, trigger, messages: [{ ...latest, parts }] } }
-          }
           if (latest?.role === 'user' && activeConversationId.value === id) latestMessageId.value = latest.id
-          return { body: { id, trigger, messages: latest ? [latest] : [], ...body } }
+          return { body: { id, trigger, queue_if_busy: true, messages: latest ? [latest] : [], ...body } }
         },
       }),
       onFinish: () => {
@@ -235,6 +242,8 @@ export const useAiChatStore = defineStore('aiChat', () => {
     historyVersion.value = 0
     pendingToolCalls.value = []
     receivedMessages.value = []
+    parallelReplies.value = []
+    queueAction.value = ''
     receivedNotice.value = ''
     targetDraftIds.value = []
     localError.value = undefined
@@ -246,17 +255,18 @@ export const useAiChatStore = defineStore('aiChat', () => {
     connectEvents(id)
     return id
   }
-  async function queueMessage(text: string, files: FileUIPart[]): Promise<void> {
-    const id = activeConversationId.value
+  async function queueMessage(text: string, files: FileUIPart[], targetId?: string): Promise<void> {
+    const currentId = activeConversationId.value
+    const id = targetId ?? currentId
     if (!id) return
     const messageId = crypto.randomUUID()
-    latestMessageId.value = messageId
+    if (id === currentId) latestMessageId.value = messageId
     const requestVersion = stopRequestVersion
     pendingInputIds.add(messageId)
     let response: Response
     try {
       response = await accountFetch(AI_CHAT_RUNS_PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-        id, trigger: 'submit-message', messages: [{ id: messageId, role: 'user', parts: [{ type: 'text', text }, ...files] }],
+        id, queue_if_busy: true, trigger: 'submit-message', messages: [{ id: messageId, role: 'user', parts: [{ type: 'text', text }, ...files] }],
         target_draft_ids: targetDraftIds.value,
         page_context: pageContext.snapshot(),
       }) })
@@ -268,16 +278,16 @@ export const useAiChatStore = defineStore('aiChat', () => {
     }
     if (requestVersion !== stopRequestVersion || stopping.value) { await response.body?.cancel(); return }
     if (!response.ok) throw new Error((await response.json()).error ?? '消息未能提交')
-    if (activeConversationId.value !== id) { await response.body?.cancel(); return }
-    if (response.status === 202) {
+    if (!currentId || activeConversationId.value !== currentId) { await response.body?.cancel(); return }
+    if (response.status === 202 && id === currentId) {
       if (!receivedMessages.value.some(row => row.message_id === messageId)) {
         receivedMessages.value.push({ message_id: messageId, text })
       }
-    } else {
+    } else if (id === currentId) {
       directRunMessageId = messageId
     }
     await response.body?.cancel()
-    if (requestVersion === stopRequestVersion) await resyncFromServer(id)
+    if (requestVersion === stopRequestVersion) await resyncFromServer(currentId, 0, true)
   }
   function commandContext(): ChatCommandContext {
     return { isBusy: canStop.value, startConversation, stopStreaming, refreshHistory }
@@ -307,8 +317,11 @@ export const useAiChatStore = defineStore('aiChat', () => {
         images.attachments.value = attachments
       }
     }
-    if (isBusy.value || runActive.value || pendingToolCalls.value.length) {
-      void queueMessage(text, files).catch(cause => {
+    if (isBusy.value || runActive.value || pendingToolCalls.value.length || parallelActive.value) {
+      const activeReply = !isBusy.value && !runActive.value && !pendingToolCalls.value.length
+        ? parallelReplies.value.slice().reverse().find(reply => reply.run_active || reply.pending_tool_calls?.length)
+        : undefined
+      void queueMessage(text, files, activeReply?.conversation_id).catch(cause => {
         if (chat.value !== instance) return
         localError.value = cause
         restoreInput()
@@ -351,9 +364,41 @@ export const useAiChatStore = defineStore('aiChat', () => {
       receivedNotice.value = '停止请求失败，请重试'
     })
   }
-  async function respondToApproval(id: string, approved: boolean, reason?: string): Promise<void> {
-    await chat.value?.addToolApprovalResponse({ id, approved, reason })
-    await chat.value?.sendMessage()
+  async function submitPending(scope: string, message: UIMessage, answerTo?: string, approvalToken?: string) {
+    const root = activeConversationId.value
+    if (!root) throw new Error('当前对话已关闭')
+    try {
+      const response = await accountFetch(AI_CHAT_RUNS_PATH, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(approvalToken && { 'X-Approval-Token': approvalToken }) },
+        body: JSON.stringify({ id: scope, answer_to: answerTo, trigger: 'submit-message', messages: [message] }),
+      })
+      if (!response.ok) throw new Error((await response.json()).error ?? '提交失败，请重试')
+      await response.body?.cancel()
+    } finally {
+      await resyncFromServer(root, 0, true)
+    }
+  }
+  function answerQuestion(scope: string, callId: string, text: string) {
+    return submitPending(scope, { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }] }, callId)
+  }
+  async function submitApproval(scope: string, messages: UIMessage[], id: string, approved: boolean, reason?: string) {
+    const root = activeConversationId.value
+    for (const message of messages) {
+      const part = message.parts.find(part => 'state' in part && part.state === 'approval-requested' && part.approval.id === id)
+      if (!part || !('state' in part) || part.state !== 'approval-requested') continue
+      // 只交给 SDK 当前一项，其他待办不随本次决定提交。
+      const decision = new Chat<UIMessage>({ id: scope, messages: [{ ...message, parts: [part] }] })
+      await decision.addToolApprovalResponse({ id, approved, reason })
+      const { data } = await apiClient.get<{ approvalToken: string }>('/api/state')
+      if (activeConversationId.value !== root) return
+      await submitPending(scope, decision.messages[0], undefined, data.approvalToken)
+      return
+    }
+    throw new Error('这项审批已失效，请查看当前待办。')
+  }
+  function respondToApproval(id: string, approved: boolean, reason?: string) {
+    if (!chat.value) throw new Error('当前对话已关闭')
+    return submitApproval(chat.value.id, chat.value.messages, id, approved, reason)
   }
   function openConversation(detail: AiWorkUiMessagesResponse): void {
     rememberConversation(detail.conversation_id)
@@ -375,10 +420,12 @@ export const useAiChatStore = defineStore('aiChat', () => {
     targetDraftIds.value = []
     directRunMessageId = null
     receivedMessages.value = detail.received_messages ?? []
+    queueAction.value = ''
+    parallelReplies.value = detail.parallel_replies ?? []
     receivedNotice.value = ''
     finishRestore()
     connectEvents(id)
-    if (runActive.value) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
+    if (runActive.value || parallelActive.value || pendingToolCalls.value.length) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
   }
   function estimatePackageDimensions(draftId: string, skuIds: string[], markets: string[]): void {
     startConversation()
@@ -412,11 +459,42 @@ export const useAiChatStore = defineStore('aiChat', () => {
   function refreshHistory(): void {
     if (activeConversationId.value) void resyncFromServer(activeConversationId.value)
   }
+  async function actOnQueue(id: string, messageId: string, action: 'send' | 'delete') {
+    const currentId = activeConversationId.value
+    const instance = chat.value
+    if (!currentId || queueAction.value) return
+    queueAction.value = messageId
+    localError.value = undefined
+    try {
+      await updateQueuedMessage(id, messageId, action)
+      if (chat.value === instance) await resyncFromServer(currentId, 0, true)
+    } catch (cause) {
+      if (chat.value === instance) {
+        await resyncFromServer(currentId, 0, true)
+        if (chat.value === instance) localError.value = cause as AiChatError
+      }
+    } finally {
+      if (chat.value === instance) queueAction.value = ''
+    }
+  }
+  async function stopParallelReply(reply: AiWorkUiMessagesResponse) {
+    const id = activeConversationId.value
+    if (!id || !reply.latest_message_id) return
+    try {
+      await cancelChatRun(reply.conversation_id, reply.latest_message_id)
+      await resyncFromServer(id, 0, true)
+    } catch (cause) {
+      if (activeConversationId.value === id) localError.value = cause as AiChatError
+    }
+  }
+  async function respondToParallelApproval(reply: AiWorkUiMessagesResponse, id: string, approved: boolean) {
+    await submitApproval(reply.conversation_id, reply.messages, id, approved)
+  }
   function clearError(): void { localError.value = undefined; chat.value?.clearError() }
   return { images, activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
     error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
-    restoring, restoreError, restoreConversation,
-    sendMessage, stopStreaming, respondToApproval, clearError, openConversation, connectEvents, disconnectEvents,
+    restoring, restoreError, restoreConversation, actOnQueue, queueAction, queueRows, parallelReplies, stopParallelReply, respondToParallelApproval,
+    sendMessage, stopStreaming, respondToApproval, answerQuestion, clearError, openConversation, connectEvents, disconnectEvents,
     prepareDrafts, estimatePackageDimensions, refreshHistory, forking, forkConversation,
     openFloating: () => { floatingOpen.value = true; void restoreConversation() }, closeFloating: () => { floatingOpen.value = false } }
 })

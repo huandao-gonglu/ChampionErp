@@ -358,7 +358,7 @@ def test_sse_run_streams_official_tool_chunks(
             # 按需发现后只提供本次需要的业务工具和控制工具。
             assert {
                 tool.name for tool in agent_info.function_tools
-            } - {"search_tools", "run_code"} == {"drafts_query"}
+            } == {"search_tools", "run_code", "request_user_input", "drafts_query"}
             yield {
                 0: DeltaThinkingPart(content="先查询当前草稿。"),
                 1: python_call(
@@ -1810,3 +1810,49 @@ def test_chat_images_reach_model_and_can_be_saved_by_reference(chat_service, mon
     body["messages"][0]["parts"][1]["url"] = "data:image/png;base64,SGVsbG8="
     with pytest.raises(VercelUiProtocolError, match="损坏"):
         service.prepare_run(json.dumps(body).encode())
+
+
+def test_queue_buttons_operate_on_running_http_conversation(chat_server, monkeypatch):
+    from erp_web.services import chat_queue_service
+
+    entered, release = threading.Event(), threading.Event()
+
+    async def model(messages, info):
+        if not entered.is_set():
+            entered.set()
+            while not release.is_set():
+                await asyncio.sleep(0.02)
+            yield "原任务完成"
+        else:
+            yield "原任务仍在进行"
+
+    monkeypatch.setattr(chat_queue_service, "chat_structured",
+                        lambda *args, **kwargs: chat_queue_service.TaskRelation(superseded=[]))
+    chat_server["model"]["model"] = FunctionModel(stream_function=model)
+    port = chat_server["port"]
+    thread = threading.Thread(target=lambda: _post(port, CHAT_PATH, _submit_body(CONVERSATION, "first", "生成图片")))
+    thread.start()
+    try:
+        assert entered.wait(5)
+        for message_id, text in [("drop", "删除这条"), ("check", "图片做好了吗")]:
+            assert _post(port, CHAT_PATH, {**_submit_body(CONVERSATION, message_id, text), "queue_if_busy": True})[0] == 202
+        path = "/api/v1/ai-chat/queue"
+        assert _post(port, path, {"id": CONVERSATION, "message_id": "drop", "action": "delete"})[0] == 200
+        assert _post(port, path, {"id": CONVERSATION, "message_id": "check", "action": "send"})[0] == 200
+        deadline = time.monotonic() + 4
+        while True:
+            status, raw = _get(port, f"/api/v1/ai-work/conversations/{CONVERSATION}/ui-messages")
+            assert status == 200
+            view = json.loads(raw)
+            reply = view["parallel_replies"][0]
+            if reply["run_status"] == "completed":
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        assert view["run_active"]
+        assert view["received_messages"] == []
+        assert reply["messages"][-1]["parts"][-1]["text"] == "原任务仍在进行"
+        assert _post(port, path, {"id": CONVERSATION, "message_id": "check", "action": "send"})[0] == 409
+    finally:
+        release.set()
+        thread.join(5)

@@ -193,6 +193,11 @@ async def project_model_request(
             continue
         parts = []
         for part in message.parts:
+            snapshot = (message.metadata or {}).get("immediate_context")
+            if isinstance(part, UserPromptPart) and snapshot:
+                context = "同一对话其他任务的已保存记录，仅作背景。只处理下方新消息。\n" + json.dumps(snapshot, ensure_ascii=False)
+                content = [part.content] if isinstance(part.content, str) else list(part.content)
+                part = dataclasses.replace(part, content=[context, *content])
             if isinstance(part, UserPromptPart) and isinstance(part.content, (list, tuple)):
                 content = []
                 for item in part.content:

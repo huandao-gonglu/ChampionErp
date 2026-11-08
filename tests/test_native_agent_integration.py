@@ -466,7 +466,7 @@ def test_followup_keeps_code_defined_tools_while_model_selects_operation(tmp_pat
         expected = {"填写公共属性": "product_attributes_update", "填写全部 SKU": "draft_sku_attributes_update"}[latest]
         names = {tool.name for tool in info.function_tools}
         observations.append((latest, names))
-        assert names == {"run_code", "product_attributes_update", "draft_sku_attributes_update"}
+        assert names == {"run_code", "product_attributes_update", "draft_sku_attributes_update", "request_user_input"}
         assert "async def product_attributes_update" in available_python_functions(info)
         assert "async def draft_sku_attributes_update" in available_python_functions(info)
         if any(isinstance(p, ToolReturnPart) and p.tool_name == expected for p in business_returns(messages)):
@@ -506,3 +506,74 @@ def test_failed_call_evidence_is_preserved_for_followup_without_business_reads(t
         asyncio.run(ui.prepare_run(body(text, identifier)).stream(lambda _: None))
     assert executed == []
     assert observed == ["应用尺寸", "应用尺寸", "你没有把尺寸写入草稿吗"]
+
+
+def test_pending_user_questions_are_scoped_and_resume_with_actual_answers(tmp_path):
+    async def model(messages, info):
+        if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
+            texts = [part.content for message in messages for part in message.parts if isinstance(part, UserPromptPart)]
+            assert texts[-2:] == ["蓝色", "20"]
+            yield "已收到颜色和数量。"
+            return
+        assert "request_user_input" in {tool.name for tool in info.function_tools}
+        yield {i: DeltaToolCall(name="request_user_input", json_args=json.dumps(
+            {"title": title, "question": "请填写" + title, "options": options}), tool_call_id=str(i))
+            for i, (title, options) in enumerate([("数量", []), ("颜色", ["蓝色", "红色"])])}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model))
+    asyncio.run(ui.prepare_run(body()).stream(lambda _: None))
+    def pending():
+        return ui.dump_ui_messages(CONVERSATION)["pending_tool_calls"]
+
+    assert [(c["title"], c["kind"]) for c in pending()] == [("数量", "input"), ("颜色", "input")]
+    assert not ui.call_store.work()
+    other = "conversation_global_chat_" + "b" * 32
+    with pytest.raises(VercelUiProtocolError, match="已处理或已失效"):
+        ui.prepare_run(body("其他任务的答复", "wrong-scope", id=other, answer_to="0"))
+    assert not ui.claim_store.get(other, "wrong-scope")
+    assert pending()[1]["options"] == ["蓝色", "红色"]
+    ui.prepare_run(body("蓝色", "color", answer_to="1"))
+    assert [c["title"] for c in pending()] == ["数量"]
+    assert not ui.call_store.inbox(CONVERSATION)
+    assert ui.call_store.pending(CONVERSATION)[1].calls["1"]["answer"] == "蓝色"
+    with pytest.raises(VercelUiProtocolError, match="已处理或已失效"):
+        ui.prepare_run(body("红色", "late", answer_to="1"))
+    assert not ui.claim_store.get(CONVERSATION, "late")
+    asyncio.run(ui.prepare_run(body("20", "quantity", answer_to="0")).stream(lambda _: None))
+    snapshot = ui.dump_ui_messages(CONVERSATION)
+    assert not snapshot["pending_tool_calls"]
+    assert snapshot["messages"][-1]["parts"][-1]["text"] == "已收到颜色和数量。"
+
+
+def test_answer_does_not_cancel_sibling_job_or_accept_its_result(tmp_path):
+    executed = []
+    async def model(messages, info):
+        if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
+            yield "任务已完成"
+            return
+        yield {
+            0: DeltaToolCall(name="request_user_input", json_args='{"title":"选择颜色","question":"要什么颜色？"}', tool_call_id="color"),
+            1: DeltaToolCall(name="prepare", json_args='{"draft_id":"A"}', tool_call_id="job"),
+        }
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(binding(
+        "prepare", lambda args, ctx: executed.append(args["draft_id"]) or {"ok": True}, external=True,
+    )))
+    asyncio.run(ui.prepare_run(body()).stream(lambda _: None))
+    with pytest.raises(VercelUiProtocolError, match="已处理或已失效"):
+        ui.prepare_run(body("冒充工具回执", "wrong", answer_to="job"))
+    assert isinstance(ui.prepare_run(body("蓝色", "color-answer", answer_to="color")), AcceptedChatInput)
+    assert [item["kind"] for item in ui.dump_ui_messages(CONVERSATION)["pending_tool_calls"]] == ["external"]
+    worker = AgentJobService(ui_service=ui, job_readers={})
+    try:
+        row, = ui.call_store.work()
+        worker.execute_or_reconcile(row)
+        assert executed == ["A"]
+        worker.scan()
+        for _ in range(100):
+            if not ui.run_registry.is_active(CONVERSATION):
+                break
+            time.sleep(0.01)
+        assert ui.dump_ui_messages(CONVERSATION)["messages"][-1]["parts"][-1]["text"] == "任务已完成"
+    finally:
+        worker.close()

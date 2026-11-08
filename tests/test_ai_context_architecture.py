@@ -42,6 +42,7 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
         "erp_web/services/ai_agent_factory.py",
         "erp_web/services/ai_tool_bridge.py",
         "erp_web/services/ai_approval_policy.py",
+        "erp_web/services/chat_user_input.py",
         "erp_web/services/global_agent_chat_service.py",
         "erp_web/services/agent_job_service.py",
         "erp_web/services/agent_run_storage.py",

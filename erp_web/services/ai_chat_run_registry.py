@@ -18,6 +18,7 @@ class AiChatRunRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._active: set[str] = set()
+        self._superseded: set[str] = set()
         self._tokens: dict[str, CancellationToken] = {}
 
     def input_guard(self):
@@ -36,6 +37,15 @@ class AiChatRunRegistry:
                     return False
                 self._tokens[conversation_id] = CancellationToken()
             return True
+
+    def supersede(self, conversation_id: str) -> None:
+        with self._lock:
+            self._superseded.add(conversation_id)
+            self.token(conversation_id).cancel()
+
+    def is_superseded(self, conversation_id: str) -> bool:
+        with self._lock:
+            return conversation_id in self._superseded
 
     def acquire(self, conversation_id: str) -> bool:
         """领取成功返回 True；已有活动 run 时返回 False。"""
@@ -57,6 +67,7 @@ class AiChatRunRegistry:
             return
         with self._lock:
             self._active.discard(normalized)
+            self._superseded.discard(normalized)
 
     def is_active(self, conversation_id: str) -> bool:
         normalized = str(conversation_id or "").strip()

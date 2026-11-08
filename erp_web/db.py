@@ -2534,6 +2534,7 @@ class ErpDatabase:
                 """
                 SELECT conversation_id, created_at, updated_at
                 FROM pydantic_message_histories
+                WHERE conversation_id NOT GLOB 'chat_reply_*'
                 ORDER BY updated_at DESC, conversation_id DESC
                 LIMIT ?
                 """,
@@ -2727,7 +2728,10 @@ class ErpDatabase:
             row = conn.execute(
                 """
                 SELECT * FROM ai_chat_turn_claims
-                WHERE conversation_id = ?
+                WHERE conversation_id = ? AND NOT EXISTS (
+                    SELECT 1 FROM ai_chat_inbox i WHERE i.conversation_id=ai_chat_turn_claims.conversation_id
+                    AND i.message_id=ai_chat_turn_claims.client_message_id AND i.status IN ('removed','parallel')
+                )
                 ORDER BY claimed_at DESC, claim_id DESC
                 LIMIT 1
                 """,

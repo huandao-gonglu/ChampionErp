@@ -140,7 +140,7 @@ def test_script_uses_existing_tools_and_persists_individual_write_receipts(tmp_p
     async def model(messages, info):
         returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
         if not returns:
-            assert {t.name for t in info.function_tools} == {"read_rows", "update_row", "run_code"}
+            assert {t.name for t in info.function_tools} == {"read_rows", "update_row", "run_code", "request_user_input"}
             yield {0: code_delta(
                 "rows = await read_rows(draft_id='selected')\n"
                 "saved = []\n"
@@ -213,8 +213,9 @@ def test_script_cannot_call_approval_or_job_tools(tmp_path):
 
     async def model(messages, info):
         names = {t.name for t in info.function_tools}
-        assert names == {"run_code", "publish", "job"}
+        assert names == {"run_code", "publish", "job", "request_user_input"}
         code_tool = next(t for t in info.function_tools if t.name == "run_code")
+        assert "async def request_user_input" not in (info.instructions or "")
         assert "async def publish" not in code_tool.description
         assert "async def job" not in code_tool.description
         retries = [p for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]

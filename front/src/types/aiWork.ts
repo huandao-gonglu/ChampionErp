@@ -49,6 +49,7 @@ export interface AiWorkUiMessagesResponse {
   created_at: string
   updated_at: string
   messages: UIMessage[]
+  parallel_replies?: AiWorkUiMessagesResponse[]
   run_error?: { code: string; message: string } | null
   run_active?: boolean
   latest_message_id?: string | null
@@ -65,6 +66,10 @@ export interface AiChatCancelResponse {
 export interface PendingToolCall {
   tool_call_id: string
   tool_name: string
-  kind: 'approval' | 'external'
+  kind: 'approval' | 'external' | 'input'
+  requested_at?: string
+  title?: string
+  question?: string
+  options?: string[]
   summary: string
 }

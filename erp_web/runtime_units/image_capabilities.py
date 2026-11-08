@@ -31,6 +31,7 @@ from erp_web.schemas.image_capabilities import (
     ImageTranslateRequest,
 )
 from erp_web.services import ai_direct_request_service, ai_model_config, image_service, image_translate_service
+from erp_web.services.ai_run_cancellation import check_cancellation
 from erp_web.services.chat_images import user_images
 from erp_web.services.image_content import image_content
 from erp_web.services.image_source import read_source_image, source_image_path
@@ -355,7 +356,6 @@ def image_pool_sync_generated(
 
 def _apply_generated_result(
     scope: ImageCapabilityScope,
-    product: dict[str, Any],
     request: ImageTranslateRequest | ImageEditRequest,
     result: dict[str, Any],
 ) -> ImageGenerationResult:
@@ -366,26 +366,30 @@ def _apply_generated_result(
             or "图片生成失败。",
         )
     items = _dict_rows(result.get("imagePoolItems"))
-    updated = append_images_to_product_pool(product, list(items))
-    main_image_id = ""
-    if isinstance(request, ImageEditRequest) and request.set_as_main and items:
-        main_image_id = _text(items[0].get("id"))
-        if not main_image_id:
-            raise BusinessCapabilityError(
-                "IMAGE_GENERATED_ID_MISSING",
-                "生成图片缺少稳定 ID，不能设为主图。",
+    with scope.context.products.mutation_scope({"product_id": request.product_id}):
+        check_cancellation()
+        product = _load_product(scope, request.product_id)
+        updated = append_images_to_product_pool(product, list(items))
+        main_image_id = ""
+        if isinstance(request, ImageEditRequest) and request.set_as_main and items:
+            main_image_id = _text(items[0].get("id"))
+            if not main_image_id:
+                raise BusinessCapabilityError(
+                    "IMAGE_GENERATED_ID_MISSING",
+                    "生成图片缺少稳定 ID，不能设为主图。",
+                )
+            updated = apply_service_image_pool(
+                updated,
+                image_service.set_main_image(
+                    [dict(item) for item in current_image_pool(updated)],
+                    main_image_id,
+                    scope.context.paths.app_dir,
+                ),
             )
-        updated = apply_service_image_pool(
-            updated,
-            image_service.set_main_image(
-                [dict(item) for item in current_image_pool(updated)],
-                main_image_id,
-                scope.context.paths.app_dir,
-            ),
-        )
-    saved = _save_product(scope, updated)
+        saved = _save_product(scope, updated)
     draft_id = ""
     if request.apply_to_draft:
+        check_cancellation()
         draft_result, draft_error, _status = scope.context.products.apply_image_assets_to_draft(
             request.draft_id,
             list(items),
@@ -443,7 +447,7 @@ def image_translate(
         image_ids=list(request.source_image_ids),
         mode=request.mode or "translate",
     )
-    return _apply_generated_result(scope, product, request, result)
+    return _apply_generated_result(scope, request, result)
 
 
 @ai_tool(
@@ -483,7 +487,7 @@ def image_edit(
         platform=request.platform or "mercadolibre",
         image_ids=source_image_ids,
     )
-    return _apply_generated_result(scope, product, request, result)
+    return _apply_generated_result(scope, request, result)
 
 
 @ai_tool(
