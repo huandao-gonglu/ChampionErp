@@ -3,7 +3,6 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
-import NativeToolApprovals from '../NativeToolApprovals.vue'
 import ChatPendingActions from '../ChatPendingActions.vue'
 import AiChatPanel from '../AiChatPanel.vue'
 import { useAiChatStore } from '@/stores/aiChat'
@@ -21,12 +20,14 @@ describe('原生工具审批卡', () => {
     }] }] })
     store.pendingToolCalls = [{ tool_call_id: 'estimate', tool_name: 'draft_package_estimates_confirm', kind: 'approval', summary: '确认建议值' }]
     const respond = vi.spyOn(store, 'respondToApproval').mockResolvedValue()
-    const wrapper = mount(NativeToolApprovals)
+    const wrapper = mount(ChatPendingActions)
+    await wrapper.get('button[aria-expanded]').trigger('click')
     const review = wrapper.get('[aria-label="待确认的包装外尺寸"]').text()
     for (const text of ['10 L 桶', 's-1', '包装长 30 cm', '28–32 cm', input.estimates[0].basis]) expect(review).toContain(text)
     expect(respond).not.toHaveBeenCalled()
-    await wrapper.get('button').trigger('click')
+    await wrapper.get('button.btn-primary').trigger('click')
     expect(respond).toHaveBeenCalledWith('estimate', true, undefined)
+    expect(wrapper.get('button[aria-expanded]').attributes('aria-expanded')).toBe('false')
   })
   it('只展示服务端当前未决定的审批，使用原生 approval ID 提交', async () => {
     const store = useAiChatStore()
@@ -36,12 +37,14 @@ describe('原生工具审批卡', () => {
     ] }] })
     store.pendingToolCalls = [{ tool_call_id: 'call-1', tool_name: 'publish', kind: 'approval', summary: '发布指定草稿' }, { tool_call_id: 'call-2', tool_name: 'prepare', kind: 'external', summary: '' }]
     const respond = vi.spyOn(store, 'respondToApproval').mockResolvedValue()
-    const wrapper = mount(NativeToolApprovals)
-    expect(wrapper.findAll('section')).toHaveLength(1)
+    const wrapper = mount(ChatPendingActions)
+    await wrapper.get('button[aria-expanded]').trigger('click')
+    expect(wrapper.findAll('button[aria-expanded]')).toHaveLength(1)
     expect(wrapper.text()).toContain('发布指定草稿')
-    await wrapper.findAll('button')[1].trigger('click')
+    await wrapper.get('button.btn-outline').trigger('click')
     await flushPromises()
     expect(respond).toHaveBeenCalledWith('call-1', false, '用户拒绝此操作')
+    expect(wrapper.find('[data-testid="native-tool-approvals"]').exists()).toBe(false)
     store.pendingToolCalls = store.pendingToolCalls.filter(call => call.kind === 'external')
     await flushPromises()
     expect(wrapper.find('[data-testid="native-tool-approvals"]').exists()).toBe(false)
@@ -75,12 +78,16 @@ describe('原生工具审批卡', () => {
       await card.findAll('button')[0].trigger('click')
       expect(respond).toHaveBeenCalledTimes(1)
       expect(respond).toHaveBeenCalledWith('approval-2', true, undefined)
-      expect(wrapper.findAll('button.btn').every(button => button.attributes('disabled') !== undefined)).toBe(true)
+      expect(queue.find('[data-testid="native-tool-approvals"]').exists()).toBe(false)
+      expect(rows[1].attributes('aria-expanded')).toBe('false')
+      expect(rows[1].attributes('disabled')).toBeDefined()
+      await rows[0].trigger('click')
+      expect(rows[0].attributes('aria-expanded')).toBe('true')
       rejectSubmission(new Error('提交失败，请重试'))
       await flushPromises()
-      expect(card.get('[role="alert"]').text()).toBe('提交失败，请重试')
-      expect(rows[0].find('[role="alert"]').exists()).toBe(false)
-      expect(wrapper.findAll('button.btn').every(button => button.attributes('disabled') === undefined)).toBe(true)
+      expect(queue.get('[role="alert"]').text()).toBe('提交失败，请重试')
+      expect(rows[0].attributes('aria-expanded')).toBe('true')
+      expect(rows[1].attributes('disabled')).toBeUndefined()
     } finally {
       wrapper.unmount()
     }
@@ -94,7 +101,8 @@ describe('原生工具审批卡', () => {
     store.pendingToolCalls = [{ ...question, requested_at: '2026-11-08T10:02:00Z' }]
     store.parallelReplies = [{ ok: true, conversation_id: 'parallel', history_version: 1, messages: [], created_at: '', updated_at: '',
       pending_tool_calls: [{ ...question, requested_at: '2026-11-08T10:01:00Z', title: '确认数量', question: '采购多少件？' }] }]
-    const answer = vi.spyOn(store, 'answerQuestion').mockRejectedValue(new Error('暂时无法连接'))
+    let rejectAnswer!: (error: Error) => void
+    const answer = vi.spyOn(store, 'answerQuestion').mockImplementation(() => new Promise((_, reject) => { rejectAnswer = reject }))
     const wrapper = mount(ChatPendingActions)
     const [first, second] = wrapper.findAll('button[aria-expanded]')
     expect([first.text(), second.text()]).toEqual(['确认数量', '确认颜色'])
@@ -108,9 +116,14 @@ describe('原生工具审批卡', () => {
     await first.trigger('click')
     expect(wrapper.get('textarea').element.value).toBe('12')
     await wrapper.get('form').trigger('submit')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(first.attributes('disabled')).toBeDefined()
+    rejectAnswer(new Error('暂时无法连接'))
     await flushPromises()
     expect(answer).toHaveBeenCalledWith('parallel', 'same', '12')
     expect(wrapper.get('[role="alert"]').text()).toBe('暂时无法连接')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    await first.trigger('click')
     expect(wrapper.get('textarea').element.value).toBe('12')
     store.parallelReplies = []
     await flushPromises()
