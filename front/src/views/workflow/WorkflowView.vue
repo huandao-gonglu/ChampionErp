@@ -69,8 +69,6 @@ const {
   collectForm,
   collectDiagnostics,
   collectBatchRows,
-  browserDebugStatus,
-  browserCollectRows,
 } = storeToRefs(collectionStore)
 const {
   pricingInput,
@@ -137,8 +135,9 @@ useDesktopHandoffContext(() => {
   return { target: route.fullPath, state: Object.keys(workflow).length ? { workflow } : {} }
 })
 let restoringHandoff = ''
-watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath], async ([handoff, loaded]) => {
+watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading], async ([handoff, loaded]) => {
   if (!handoff || !loaded || route.fullPath !== handoff.target || !handoff.state.workflow || restoringHandoff === handoff.requestId) return
+  if (handoff.state.workflow.collectAction && loading.value) return
   restoringHandoff = handoff.requestId
   try {
     const state = handoff.state.workflow as DesktopWorkflowState
@@ -165,6 +164,8 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath], async 
       editorOpen.value = true
     }
     await acknowledgeDesktopHandoff(handoff.requestId, 'workflow')
+    if (state.collectAction?.type === 'single') await store.collectProduct()
+    else if (state.collectAction?.type === 'batch') await store.collectBatch({}, state.collectAction.rowIds)
   } catch (cause) {
     activityStore.setError(cause instanceof Error ? cause.message : '桌面页面恢复失败，请回网页重试。')
   } finally { restoringHandoff = '' }
@@ -468,20 +469,12 @@ watch(
             :loading="loading"
             :error="error"
             :batch-rows="collectBatchRows"
-            :browser-status="browserDebugStatus"
-            :browser-rows="browserCollectRows"
             @collect="store.collectProduct"
             @batch-collect="store.collectBatch"
             @cancel-verification="store.cancelCollectionVerification"
             @update-batch-rows="store.updateCollectBatchRows"
-            @collect-from-browser="store.collectFromBrowserTabs"
-            @open1688-browser="store.open1688Browser"
-            @check-browser="store.checkBrowserDebugStatus"
-            @open-profile="store.openDebugProfile"
             @clear-product="store.clearCollectedProduct"
             @save-settings="store.saveCollectSettings"
-            @import-manual="store.importManual"
-            @clean1688="store.previewClean1688Text"
           />
 
           <LibraryPanel

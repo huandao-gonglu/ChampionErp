@@ -12,7 +12,6 @@ from erp_web.http_route_units import static_routes
 from erp_web.facades.auth_config_facade import system_settings_payload, forbidden_categories_payload, user_agents_payload
 from .common import JsonRequestHandler
 from ..facades.get_facade import (
-    browser_debug_status,
     current_generated_images,
     current_image_pool,
     current_source_images,
@@ -60,7 +59,6 @@ GET_API_ROUTES = {
     "/api/system-settings",
     "/api/ai-config",
     "/api/operation-availability",
-    "/api/browser-debug/status",
     "/api/drafts-index",
     "/api/products-index",
     "/api/publish-bus/jobs",
@@ -125,8 +123,6 @@ def handle_drafts_index(handler: JsonRequestHandler, parsed: object) -> None:
     handler.send_json({"ok": True, "items": load_drafts_index(scope)})
 
 
-def handle_browser_debug_status(handler: JsonRequestHandler, parsed: object) -> None:
-    handler.send_json(browser_debug_status())
 
 
 def handle_publish_logs(handler: JsonRequestHandler, parsed: object) -> None:
@@ -229,7 +225,6 @@ GET_HANDLERS: dict[str, GetHandler] = {
     "/api/state": handle_state,
     "/api/products-index": handle_products_index,
     "/api/drafts-index": handle_drafts_index,
-    "/api/browser-debug/status": handle_browser_debug_status,
     "/api/publish-logs": handle_publish_logs,
     "/api/ai-config": handle_ai_config,
     "/api/publish-bus/jobs": handle_publish_bus_jobs,

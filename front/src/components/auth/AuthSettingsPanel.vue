@@ -534,11 +534,6 @@ useDesktopHandoffContext(() => authRoute?.path === '/' && authRoute.query.tab ==
   state: { modelSettings: { selectedModelId: modelField('id'), model: selectedAiModel.value } },
 } : null)
 
-function selectAiModel(index: number) {
-  selectedAiModelIndex.value = index
-  if (!desktopShell && !selectedAiModelIsApi.value) void launchDesktop()
-}
-
 const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value === CLI_CONNECTION_TYPE)
 const selectedModelThinkingSupported = computed(() => firstText(asRecord(derivedGenerationCapabilities(selectedAiModel.value).reasoning).status) === 'supported')
 const selectedModelThinkingExplicit = computed(() => typeof selectedAiModel.value?.thinking_enabled === 'boolean')
@@ -1696,7 +1691,7 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
                 class="w-full rounded-lg border px-3 py-2 text-left text-sm transition"
                 :class="selectedAiModelIndex === index ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100' : 'border-accent-200 bg-white text-accent-700 hover:bg-accent-50 dark:border-dark-700 dark:bg-dark-900/70 dark:text-accent-200'"
                 :disabled="aiControlsLocked"
-                @click="selectAiModel(index)"
+                @click="selectedAiModelIndex = index"
               >
                 <span class="block truncate font-semibold">{{ model.name || model.id || '未命名模型' }}</span>
                 <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ model.system_managed ? '系统 · New API' : aiModelProviderLabel(model) }} · {{ model.model || '未选模型' }}</span>

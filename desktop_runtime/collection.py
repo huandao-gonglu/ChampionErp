@@ -2,14 +2,10 @@
 from __future__ import annotations
 
 import base64
-import json
 import time
 import urllib.parse
 import urllib.request
-from typing import Any
-from uuid import uuid4
 
-from erp_shared import html as page_html
 from erp_shared.source_parser import extract_1688_context_data, extract_1688_detail_images, collect_product_image_urls, validated_1688_detail_url
 from erp_shared.source_sites import detect_source_site, source_site
 from .browser_debug_http import browser_debug_json
@@ -19,9 +15,6 @@ from .browser_debug_service import (
 )
 from .operation import check_cancellation, remaining_seconds, LocalOperationError
 from erp_shared.collection import same_collection_page, VERIFICATION_REASONS, WAIT_MESSAGE
-
-
-_COLLECTION_HOME = 'https://www.1688.com/'
 
 
 def browser_status(config):
@@ -55,19 +48,7 @@ def target_for_url(config, url):
     return browser_debug_json(config.browser_port, '/json/new?' + urllib.parse.quote(url, safe=''), method='PUT')
 
 
-def open_browser(config, url=''):
-    with browser_operation(config.browser_port):
-        try:
-            target = target_for_url(config, url or _COLLECTION_HOME)
-            if not url or url == _COLLECTION_HOME:
-                config.collection_landing_tab_id = str(target.get('id') or '')
-        except Exception:
-            finish_browser_session(config.browser_port, config.browser_profile, completed_page=('', ''))
-            raise
-    return {'ok': True, 'port': config.browser_port, 'message': '已打开采集浏览器，请先登录后再采集。'}
-
-
-def _snapshot(cdp, target, config, save_only):
+def _snapshot(cdp, target):
     cdp.call('Page.enable')
     cdp.call('Runtime.enable')
     # 保留原有滚动加载，不刷新人工完成验证后的页面。
@@ -90,18 +71,6 @@ def _snapshot(cdp, target, config, save_only):
         raise LocalOperationError('TAB_NOT_ACCESSIBLE', 'TAB_NOT_ACCESSIBLE：页面没有可读取的 HTML。')
     result['final_url'] = result['url']
     result['browser_tab_id'] = str(target.get('id') or '')
-    if save_only:
-        config.debug_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path = config.debug_dir / (uuid4().hex + '.html')
-        path.write_text(result['html'])
-        result['html_snapshot_path'] = str(path)
-        try:
-            screenshot = cdp.call('Page.captureScreenshot', {'format': 'png', 'captureBeyondViewport': True})
-            path = path.with_suffix('.png')
-            path.write_bytes(base64.b64decode(screenshot['data']))
-            result['screenshot_path'] = str(path)
-        except (OSError, ValueError, RuntimeError, KeyError):
-            pass
     return result
 
 
@@ -138,16 +107,16 @@ def read_collection(config, *, tab_url='', platform_hint='', product_url='', bro
             if not target:
                 raise LocalOperationError('NO_PRODUCT_TAB_FOUND', 'NO_PRODUCT_TAB_FOUND：未找到指定的商品标签页。')
             snapshot, assets, verification = _read_target(
-                config, target, product_url, tab_url, platform_hint, save_only, open_url,
+                config, target, product_url, tab_url, platform_hint, open_url,
             )
-            # 人工验证必须用原标签恢复；手动保存快照后仍可从同一页正式采集。
+            # 人工验证继续使用原商品页，完成后正常关闭本次会话。
             page_url = snapshot.get('url') or page_url
-            keep_page = verification or (save_only and not open_url)
+            keep_page = verification
         finally:
             if not keep_page and (target or open_url):
                 finish_browser_session(config.browser_port, config.browser_profile,
                                        completed_page=(str((target or {}).get('id') or ''), page_url),
-                                       landing_page=(config.collection_landing_tab_id, _COLLECTION_HOME))
+                                       landing_page=('', ''))
         return {'snapshot': snapshot, 'assets': assets, 'browserStatus': browser_status(config)}
 
 
@@ -162,11 +131,10 @@ def _select_target(config, browser_tab_id, product_url, tab_url, platform_hint):
     explicit = tab_url or product_url
     if explicit:
         return next((tab for tab in pages if same_collection_page(explicit, str(tab.get('url') or ''))), None)
-    platforms = [platform_hint] if platform_hint else ['1688', 'amazon']
-    return next((tab for tab in pages if detect_source_site(str(tab.get('url') or '')) in platforms), None)
+    return None
 
 
-def _read_target(config, target, product_url, tab_url, platform_hint, save_only, open_url):
+def _read_target(config, target, product_url, tab_url, platform_hint, open_url):
     if open_url:
         # 新页面仍沿用原来的 complete 等待上限。
         with_cdp = CdpWebSocket(target['webSocketDebuggerUrl'])
@@ -182,11 +150,11 @@ def _read_target(config, target, product_url, tab_url, platform_hint, save_only,
     _require_web_url(str(target.get('url') or product_url or tab_url))
     cdp = CdpWebSocket(target['webSocketDebuggerUrl'])
     try:
-        snapshot = _snapshot(cdp, target, config, save_only)
+        snapshot = _snapshot(cdp, target)
         detected = detect_source_site(product_url or snapshot['url'])
         platform = detected if detected != 'generic' else platform_hint or detected
         _, reason = source_site(platform).diagnose(snapshot['url'], snapshot['html'], snapshot['text'], snapshot['title'], detect_slider=True)
-        if save_only or reason in VERIFICATION_REASONS:
+        if reason in VERIFICATION_REASONS:
             return snapshot, [], reason in VERIFICATION_REASONS
         if (product_url or tab_url) and not same_collection_page(product_url or tab_url, snapshot['url']):
             raise LocalOperationError('TAB_NOT_ACCESSIBLE', 'TAB_NOT_ACCESSIBLE：原标签页已离开目标商品，请返回商品页后重试。')

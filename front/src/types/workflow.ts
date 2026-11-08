@@ -292,7 +292,7 @@ export type WorkflowStatus =
   | 'published'
   | 'failed'
 
-export type CollectMode = 'browser' | 'http' | 'manual' | 'extension' | 'api'
+export type CollectMode = 'browser' | 'http'
 
 export type UnknownRecord = Record<string, unknown>
 
@@ -727,15 +727,7 @@ export interface CollectForm {
   productUrls: string
   platform: string
   mode: CollectMode
-  autoAiRecognition: boolean
   outputDir: string
-  selectedClaimPlatforms: Marketplace[]
-  manualTitle: string
-  manualPrice: string
-  manualDimensions: string
-  manualWeight: string
-  manualImages: string
-  rawText: string
 }
 
 export interface TransientCollectCredentials {
@@ -784,33 +776,11 @@ export interface CollectBatchRow extends CollectBatchResultRow {
   status: CollectBatchStatus
 }
 
-export interface BrowserDebugTab {
-  platformDetected: string
-  title: string
-  url: string
-}
 
-export interface BrowserCollectRow extends BrowserDebugTab {
-  status: CollectBatchStatus
-  verification?: CollectionVerification
-  error: string
-  nextAction: string
-  saveOnly: boolean
-  htmlSnapshotPath: string
-}
 
-export interface BrowserDebugStatus {
-  connected: boolean
-  port: number
-  tabsCount: number
-  tabs: BrowserDebugTab[]
-  errorCode: string
-  errorMessage: string
-  nextAction: string
-  powershellCommand: string
-  cmdCommand: string
-  profileDir: string
-}
+
+
+
 
 export interface ProductIndexItem {
   productId: string

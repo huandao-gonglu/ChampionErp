@@ -38,24 +38,12 @@ def test_disconnected_read_never_changes_current_product(monkeypatch):
     context = get_context()
     before = context.products.save_product({'name': '原商品', 'source': {'title': '原商品'}})
     monkeypatch.setattr(workflows, 'call_desktop', Mock(side_effect=DesktopUnavailable()))
-    result = workflows.collect_from_browser_tab(product_url=URL)
+    result = workflows.collect_browser_url(product_url=URL)
     assert not result['ok']
     assert result['diagnostics']['error_code'] == 'DESKTOP_UNAVAILABLE'
     assert context.products.load_product() == before
 
 
-def test_save_snapshot_skips_parser_assets_and_product_write(monkeypatch):
-    context = get_context()
-    before = context.products.save_product({'name': '原商品', 'source': {'title': '原商品'}})
-    monkeypatch.setattr(workflows, 'call_desktop', lambda *_, **kw: {'snapshot': {'url': URL, 'html': '<html>安全验证</html>'}, 'browserStatus': {'connected': True}})
-    parser = Mock(side_effect=AssertionError('快照不能解析或下载图片'))
-    monkeypatch.setattr(workflows, 'parse_source_snapshot', parser)
-    monkeypatch.setattr(workflows, 'normalize_collect_source_images', parser)
-    result = workflows.collect_from_browser_tab(tab_url=URL, save_only=True)
-    assert result['ok'] and result['saved_only']
-    assert result['diagnostics']['html_snapshot_path'].startswith(str(context.paths.collect_debug_dir))
-    parser.assert_not_called()
-    assert context.products.load_product() == before
 
 
 @pytest.mark.parametrize('url', ['file:///etc/passwd', 'javascript:alert(1)', 'http://user:secret@example.test/product'])

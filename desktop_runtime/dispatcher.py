@@ -9,7 +9,6 @@ from urllib.parse import urlsplit
 from erp_shared.desktop import LocalImageEditRequest, validate_action
 from . import browser_ai_runtime, collection
 from .browser_debug_service import browser_operation, finish_browser_session, open_auth_link_in_browser
-from .local_actions import open_profile
 from .cli import _cli_command_parts, _run_codex_cli_text
 from .gemini_canvas_runtime import GeminiCanvasProvider, check_canvas_connection
 from .operation import remaining_seconds
@@ -24,10 +23,6 @@ def dispatch(config, operation, params):
         return config.update(params['models'])
     if operation == 'browser.status':
         return collection.browser_status(config)
-    if operation == 'browser.open':
-        return collection.open_browser(config, params['url'])
-    if operation == 'browser.profile':
-        return open_profile(config)
     if operation == 'collect.read':
         return collection.read_collection(config, **params)
     if operation == 'collect.verify':

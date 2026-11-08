@@ -145,7 +145,6 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
         "draft_package_estimates_preview",
         "store_auth_checklist",
         "store_auth_check",
-        "collect_1688_clean",
         "research_run_status_query",
     }
 )
@@ -218,9 +217,7 @@ _WRITE_CAPABILITIES = frozenset(
         "upc_import",
         "source_collect",
         "collect_batch",
-        "collect_from_browser_tab",
         "collect_1688",
-        "collect_1688_clean",
         "claim_products",
         "research_hot_products_search",
         "research_run_status_query",

@@ -1,15 +1,10 @@
 import {
 
-  clean1688Text,
   collectBatch as collectBatchApi,
-  collectFromBrowserTab as collectFromBrowserTabApi,
+  resumeCollection,
   collectProduct as collectProductApi,
-  fetchBrowserDebugStatus,
   inspectCollectionVerification,
   type CollectionAttempt,
-  importManualProduct,
-  open1688Browser as open1688BrowserApi,
-  openBrowserProfile,
   saveCollectSettings as saveCollectSettingsApi,
 } from '@/api/workflow/catalog'
 import { fetchState } from '@/api/workflow/state'
@@ -28,8 +23,6 @@ type WorkflowCollectionActionsPort = Pick<
   | 'collectForm'
   | 'collectDiagnostics'
   | 'collectBatchRows'
-  | 'browserDebugStatus'
-  | 'browserCollectRows'
   | 'fillFormFromState'
   | 'pricingResult'
   | 'category'
@@ -42,7 +35,6 @@ type WorkflowCollectionActionsPort = Pick<
   | 'storeConfig'
   | 'storeAuthSummary'
   | 'mercadolibreAuthChecklist'
-  | 'lastAuthResult'
   | 'loading'
   | 'addLog'
   | 'setError'
@@ -57,10 +49,10 @@ type WorkflowCollectionActionsPort = Pick<
 export function createWorkflowCollectionActions(runtime: WorkflowCollectionActionsPort) {
   const {
     product, productsIndex, collectForm, collectDiagnostics,
-    collectBatchRows, browserDebugStatus, browserCollectRows, fillFormFromState, pricingResult, category,
+    collectBatchRows, fillFormFromState, pricingResult, category,
     precheck, payloadPreview, publishJob,
     platformOptions, appConfig, aiConfig, storeConfig, storeAuthSummary,
-    mercadolibreAuthChecklist, lastAuthResult, loading, addLog, setError,
+    mercadolibreAuthChecklist, loading, addLog, setError,
     currentStage, applyMutationIndexes, restorePrecheckFromProduct, restoreCategoryFromProduct, syncCollectDiagnosticsFromProduct,
     syncPricingInputFromProduct,
   } = runtime
@@ -99,11 +91,9 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
         if (state.status !== 'ready') continue
         if (row) row.status = 'running'
         collectDiagnostics.value = { ...collectDiagnostics.value, status: 'running', message: '验证已完成，正在继续采集原商品页…', nextAction: '' }
-        const result = await collectFromBrowserTabApi({ ...collectForm.value, productUrl: verification.sourceUrl, platform: verification.platform }, false, '', verification.browserTabId)
+        const result = await resumeCollection(verification)
         cancelled()
-        if (result.savedOnly) throw new Error('服务端没有返回商品采集结果。')
         if (result.verification) { verification = result.verification; continue }
-        if (result.browserStatus) browserDebugStatus.value = result.browserStatus
         if (row) row.verification = undefined
         return result
       }
@@ -159,8 +149,8 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
 
   async function collectProduct(credentials: TransientCollectCredentials = {}) {
     if (loading.value) return
-    if (!collectForm.value.productUrl.trim() && !collectForm.value.manualTitle.trim() && !collectForm.value.rawText.trim()) {
-      setError('请先输入产品网址，或填写手动标题/粘贴原始文本。')
+    if (!collectForm.value.productUrl.trim()) {
+      setError('请先输入商品链接。')
       return
     }
     loading.value = true
@@ -180,7 +170,6 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
       syncPricingInputFromProduct()
       currentStage.value = 1
       addLog(`采集完成：${product.value.source.title || product.value.name || product.value.productId || '未命名商品'}`)
-      if (collectForm.value.autoAiRecognition) addLog('已开启自动 AI 识别：请进入“文案”页面生成平台文案。')
     } catch (exc) {
       if (exc instanceof VerificationCancelled) { showVerificationCancelled(); return }
       const message = exc instanceof Error ? exc.message : '采集失败'
@@ -280,183 +269,6 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     }
   }
 
-  async function collectFromBrowserTabs(saveOnly: boolean, tabUrls: string[]) {
-    if (loading.value) return
-    const urls = [...new Set(tabUrls)]
-    const tabs = browserDebugStatus.value?.tabs || []
-    if (!browserDebugStatus.value?.connected || !urls.length || urls.some((url) => !/^https?:\/\//i.test(url) || !tabs.some((tab) => tab.url === url))) {
-      setError('请先检测浏览器并选择要采集的标签页。')
-      return
-    }
-    const previousRows = new Map(browserCollectRows.value.map((row) => [row.url, row]))
-    const resuming = !saveOnly && urls.some((url) => previousRows.get(url)?.verification)
-    // 固定本轮目标及顺序，逐项响应中的浏览器状态更新不改变队列。
-    browserCollectRows.value = urls.map((url) => {
-      const previous = previousRows.get(url)
-      if (resuming && previous && !previous.saveOnly) return { ...previous }
-      return {
-        ...tabs.find((tab) => tab.url === url)!, status: 'pending', error: '', nextAction: '',
-        saveOnly, htmlSnapshotPath: '',
-      }
-    })
-    const rows = browserCollectRows.value
-    const form = { ...collectForm.value }
-    loading.value = true
-    setError('')
-    let completed = rows.filter((row) => ['success', 'failed'].includes(row.status)).length
-    let succeeded = rows.filter((row) => row.status === 'success').length
-    try {
-      for (const row of rows) {
-        if (['success', 'failed'].includes(row.status)) continue
-        row.status = 'running'
-        collectDiagnostics.value = {
-          ...createDefaultCollectDiagnostics(), status: 'running', progress: Math.round(completed / rows.length * 100),
-          message: `正在${saveOnly ? '保存快照' : '采集'} ${completed + 1}/${rows.length}：${row.title || row.url}`,
-          lastSourceUrl: row.url,
-        }
-        try {
-          const result = row.verification
-            ? { ...await waitForVerification(row.verification, row), savedOnly: false as const }
-            : await collectFromBrowserTabApi({
-              ...form, productUrl: row.url, platform: row.platformDetected === 'unknown' ? '' : row.platformDetected,
-            }, saveOnly, row.url)
-          if (result.browserStatus) browserDebugStatus.value = result.browserStatus
-          if (result.savedOnly) {
-            collectDiagnostics.value = {
-              ...collectDiagnostics.value, message: 'HTML 快照已保存。',
-              htmlSnapshotPath: String(result.diagnostics.html_snapshot_path || ''),
-              screenshotPath: String(result.diagnostics.screenshot_path || ''), raw: result.diagnostics,
-            }
-          } else {
-            const collected = result.verification ? await waitForVerification(result.verification, row) : result
-            product.value = collected.product
-            applyMutationIndexes(collected)
-            syncCollectDiagnosticsFromProduct('已从所选浏览器页面采集。', collected.diagnostics)
-            syncPricingInputFromProduct()
-            currentStage.value = 1
-          }
-          row.status = 'success'
-          row.verification = undefined
-          row.nextAction = ''
-          row.htmlSnapshotPath = collectDiagnostics.value.htmlSnapshotPath
-          succeeded++
-          addLog(`${saveOnly ? '已保存 HTML 快照' : '已采集商品'}：${row.title || row.url}`)
-        } catch (exc) {
-          if (exc instanceof VerificationCancelled) {
-            row.nextAction = '已取消等待；保留原商品页，重新采集所选页面可继续。'
-            showVerificationCancelled()
-            collectDiagnostics.value.nextAction = '保留原商品页，再次点击“采集所选页面”可继续；后续页面尚未开始。'
-            return
-          }
-          row.status = 'failed'
-          row.verification = undefined
-          row.error = exc instanceof Error ? exc.message : '浏览器采集失败'
-          row.nextAction = '请确认页面仍可访问并已完成登录或验证，再勾选重试。'
-          addLog(`${saveOnly ? '保存快照失败' : '采集失败'}：${row.title || row.url}；${row.error}`)
-        }
-        completed++
-        collectDiagnostics.value.progress = Math.round(completed / rows.length * 100)
-      }
-      const message = `本轮${saveOnly ? '快照保存' : '采集'}结束：${succeeded} 页完成，${completed - succeeded} 页失败。`
-      collectDiagnostics.value = {
-        ...collectDiagnostics.value, status: succeeded === completed ? 'success' : 'failed', progress: 100, message,
-        nextAction: succeeded < completed ? '查看本轮结果中的失败原因，勾选失败页面后可重新采集。' : saveOnly ? '可在本轮结果中打开各页面的 HTML 快照。' : '可前往采集箱检查采集结果。',
-      }
-      addLog(message)
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function open1688Browser() {
-    loading.value = true
-    setError('')
-    try {
-      const message = await open1688BrowserApi()
-      addLog(message)
-      await checkBrowserDebugStatus()
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '打开 1688 浏览器失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function checkBrowserDebugStatus() {
-    const wasLoading = loading.value
-    loading.value = true
-    try {
-      setError('')
-      browserDebugStatus.value = await fetchBrowserDebugStatus()
-      addLog(browserDebugStatus.value.connected ? '浏览器调试端口已连接。' : `浏览器未连接：${browserDebugStatus.value.errorMessage}`)
-    } catch (exc) {
-      browserDebugStatus.value = null
-      setError(exc instanceof Error ? exc.message : '检测浏览器失败')
-    } finally {
-      loading.value = wasLoading
-    }
-  }
-
-  async function openDebugProfile() {
-    try {
-      lastAuthResult.value = await openBrowserProfile()
-      addLog(lastAuthResult.value.message || '已请求打开浏览器 profile。')
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '打开浏览器 profile 失败')
-    }
-  }
-
-  async function importManual() {
-    loading.value = true
-    setError('')
-    try {
-      const result = await importManualProduct(collectForm.value)
-      product.value = result.product
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
-      syncCollectDiagnosticsFromProduct('手动导入完成。', result.diagnostics)
-      syncPricingInputFromProduct()
-      currentStage.value = 1
-      addLog(`手动导入完成：${product.value.source.title || product.value.name || '未命名商品'}`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '手动导入失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function previewClean1688Text() {
-    const raw = `${collectForm.value.rawText || ''}`.trim()
-    if (!raw) {
-      setError('请先在“原始文本 / HTML 导入”里粘贴 1688 文本或 HTML。')
-      return
-    }
-    loading.value = true
-    setError('')
-    try {
-      const cleaned = await clean1688Text(raw, collectForm.value.productUrl)
-      collectForm.value.platform = '1688'
-      collectForm.value.manualTitle = String(cleaned.title || collectForm.value.manualTitle || '')
-      collectForm.value.manualPrice = String(cleaned.source_price_cny || cleaned.source_price_cny_for_cost || collectForm.value.manualPrice || '')
-      collectForm.value.manualDimensions = String(cleaned.dimensions || collectForm.value.manualDimensions || '')
-      collectForm.value.manualWeight = String(cleaned.source_weight_kg || collectForm.value.manualWeight || '')
-      if (Array.isArray(cleaned.images) && cleaned.images.length) collectForm.value.manualImages = cleaned.images.map(String).join('\n')
-      collectDiagnostics.value = {
-        ...collectDiagnostics.value,
-        status: cleaned.ok === false ? 'failed' : 'success',
-        progress: cleaned.ok === false ? 0 : 100,
-        message: String(cleaned.message || '1688 文本已清洗，可检查字段后导入采集箱。'),
-        downloadedImages: Array.isArray(cleaned.images) ? cleaned.images.length : collectDiagnostics.value.downloadedImages,
-        antiBotWarning: Boolean(cleaned.manual_required),
-        raw: cleaned,
-      }
-      addLog(`1688 文本清洗完成：${collectForm.value.manualTitle || '未识别标题'}`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '1688 文本清洗失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
   async function clearCollectedProduct() {
     product.value = createEmptyProduct()
     pricingResult.value = null
@@ -489,7 +301,6 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
 
   return {
     cancelCollectionVerification,
-    loadState, resetForm, collectProduct, collectBatch, updateCollectBatchRows, collectFromBrowserTabs, open1688Browser,
-    checkBrowserDebugStatus, openDebugProfile, importManual, previewClean1688Text, clearCollectedProduct, saveCollectSettings,
+    loadState, resetForm, collectProduct, collectBatch, updateCollectBatchRows, clearCollectedProduct, saveCollectSettings,
   }
 }

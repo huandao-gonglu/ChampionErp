@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { desktopOperationReason } from '@/utils/desktop'
-import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { computed, ref } from 'vue'
 import type { CollectBatchRow, CollectBatchStatus } from '@/types/workflow'
 import { appendCollectUrls, collectBatchStatusLabels, createCollectBatchRow, normalizeCollectUrl } from '@/utils/collectQueue'
@@ -96,8 +95,8 @@ function removeRow(id: string) {
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex flex-wrap gap-2">
         <span v-if="desktopReason && (browserMode || props.rows.some(row => row.verification))" role="status" class="muted">{{ desktopReason }}</span>
-        <button v-desktop="Boolean(browserMode || pendingRows.some(row => row.verification))" class="btn btn-primary" :disabled="props.loading || !pendingRows.length || !!editingId" @click="emit('collect', pendingRows.map(row => row.id))">{{ props.loading && counts.waiting_verification ? '等待验证…' : counts.running ? '正在采集…' : `开始采集（${pendingRows.length}）` }}</button>
-        <button v-desktop="Boolean(browserMode || retryRows.some(row => row.verification))" class="btn btn-outline" :disabled="props.loading || !retryRows.length || !!editingId" @click="emit('collect', retryRows.map(row => row.id))">重试失败项</button>
+        <button class="btn btn-primary" :disabled="props.loading || !pendingRows.length || !!editingId" @click="emit('collect', pendingRows.map(row => row.id))">{{ props.loading && counts.waiting_verification ? '等待验证…' : counts.running ? '正在采集…' : `开始采集（${pendingRows.length}）` }}</button>
+        <button class="btn btn-outline" :disabled="props.loading || !retryRows.length || !!editingId" @click="emit('collect', retryRows.map(row => row.id))">重试失败项</button>
       </div>
       <button class="btn btn-ghost text-sm" :disabled="props.loading || !counts.success || !!editingId" @click="emit('update', props.rows.filter((row) => row.status !== 'success'))">移除已完成</button>
     </div>
@@ -134,7 +133,7 @@ function removeRow(id: string) {
               <div class="flex flex-wrap gap-x-3 gap-y-2">
                 <button class="text-primary-700 disabled:opacity-40 dark:text-primary-300" :disabled="props.loading || !!editingId" @click="editRow(row)">编辑</button>
                 <button class="text-rose-600 disabled:opacity-40 dark:text-rose-300" :disabled="props.loading" @click="removeRow(row.id)">删除</button>
-                <button v-if="row.status === 'failed'" v-desktop="Boolean(browserMode || row.verification)" class="text-primary-700 disabled:opacity-40 dark:text-primary-300" :disabled="props.loading || !!editingId || !runnable(row)" @click="emit('collect', [row.id])">重试</button>
+                <button v-if="row.status === 'failed'" class="text-primary-700 disabled:opacity-40 dark:text-primary-300" :disabled="props.loading || !!editingId || !runnable(row)" @click="emit('collect', [row.id])">重试</button>
               </div>
             </td>
           </tr>

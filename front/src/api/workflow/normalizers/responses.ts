@@ -1,5 +1,4 @@
 import type {
-  BrowserDebugStatus,
   DraftIndexItem,
   Marketplace,
   MercadoLibreAuthChecklist,
@@ -336,31 +335,6 @@ export function normalizeDraftMutation(data: unknown): DraftMutationResponse {
   }
 }
 
-export function normalizeBrowserStatus(value: unknown): BrowserDebugStatus {
-  const record = asRecord(value)
-  const tabs = Array.isArray(record.current_tabs)
-    ? record.current_tabs.map((item) => {
-      const tab = asRecord(item)
-      return {
-        platformDetected: getString(tab, ['platform_detected']),
-        title: getString(tab, ['title']),
-        url: getString(tab, ['url']),
-      }
-    })
-    : []
-  return {
-    connected: getBoolean(record, ['connected']),
-    port: getNumber(record, ['port'], 9222),
-    tabsCount: getNumber(record, ['tabs_count'], tabs.length),
-    tabs,
-    errorCode: getString(record, ['error_code']),
-    errorMessage: getString(record, ['error_message']),
-    nextAction: getString(record, ['next_action']),
-    powershellCommand: getString(record, ['powershell_command']),
-    cmdCommand: getString(record, ['cmd_command']),
-    profileDir: getString(record, ['profile_dir']),
-  }
-}
 
 export function normalizeMercadoLibreAuthChecklist(value: unknown): MercadoLibreAuthChecklist {
   const record = asRecord(value)

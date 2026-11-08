@@ -118,17 +118,9 @@ export function createDefaultCollectForm(): CollectForm {
   return {
     productUrl: '',
     productUrls: '',
-    platform: '1688',
+    platform: 'unknown',
     mode: 'browser',
-    autoAiRecognition: true,
     outputDir: 'data/images/source',
-    selectedClaimPlatforms: ['mercadolibre'],
-    manualTitle: '',
-    manualPrice: '',
-    manualDimensions: '',
-    manualWeight: '',
-    manualImages: '',
-    rawText: '',
   }
 }
 

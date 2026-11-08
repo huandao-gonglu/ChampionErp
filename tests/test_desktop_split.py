@@ -100,7 +100,7 @@ def test_full_collection_over_http_shares_backend_product_and_asset():
         assert denied.value.code == 403 and json.load(denied.value)['error_code'] == 'DESKTOP_PROTOCOL_FORBIDDEN'
         with ThreadPoolExecutor(max_workers=1) as pool:
             worker = pool.submit(desktop, connection)
-            result = post('/api/collect-from-browser-tab', {'product_url': URL, 'browser_tab_id': 'original'}, connection)
+            result = post('/api/collect-resume', {'source_url': URL, 'browser_tab_id': 'original'}, connection)
             worker.result(timeout=10)
         assert result['ok'], result
         saved = result['product']
@@ -113,7 +113,7 @@ def test_full_collection_over_http_shares_backend_product_and_asset():
         with urllib.request.urlopen(urllib.request.Request(base + asset['preview_url'], headers=auth_headers)) as response:
             assert response.read() == png()
         post('/api/desktop/disconnect', {}, connection)
-        failed = post('/api/collect-from-browser-tab', {'product_url': URL})
+        failed = post('/api/collect-resume', {'source_url': URL, 'browser_tab_id': 'original'})
         assert not failed['ok'] and failed['diagnostics']['error_code'] == 'DESKTOP_UNAVAILABLE'
         assert context.products.load_product_from_index(saved['product_id'])['source']['title'] == '采集测试商品'
         # 桌面断开后，后端普通读取仍使用原数据。

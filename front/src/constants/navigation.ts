@@ -10,7 +10,7 @@ export const workflowNavItems: WorkflowNavItem[] = [
   { key: 'dashboard', title: '仪表盘', subtitle: '流程总览', icon: '▦' },
   { key: 'orders', title: '订单中心', subtitle: '订单、采购与履约', icon: '▤' },
   { key: 'research', title: '选品调研', subtitle: '市场需求、机会评分', icon: '◈' },
-  { key: 'collect', title: '采集', subtitle: '链接、Cookie、浏览器标签', icon: '☷' },
+  { key: 'collect', title: '采集', subtitle: '单链接与批量 URL 采集', icon: '☷' },
   { key: 'library', title: '采集箱', subtitle: '已采集的商品', icon: '▱' },
   { key: 'drafts', title: '草稿箱', subtitle: '平台草稿、继续编辑', icon: '▤' },
   { key: 'publish', title: '任务队列', subtitle: '任务状态、日志', icon: '▣' },

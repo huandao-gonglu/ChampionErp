@@ -150,6 +150,18 @@ describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
     expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeUndefined()
   })
 
+  it('查看本机模型和说明留在网页，点击编辑字段时才交接桌面', async () => {
+    vi.stubGlobal('championDesktop', undefined)
+    vi.mocked(launchDesktop).mockClear()
+    const wrapper = mountPanel({ ai_models: [apiModel, preset.model], browser_presets: [preset] })
+    await wrapper.findAll('button').find(button => button.text().includes('Gemini Canvas 修图'))!.trigger('click')
+    await wrapper.get('fieldset.ai-model-form').trigger('click')
+    expect(launchDesktop).not.toHaveBeenCalled()
+    await wrapper.get('input[placeholder="例如 DeepSeek 文本模型"]').trigger('click')
+    expect(launchDesktop).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
 
   it('从网页入口添加 Gemini，删除后仍能按预置恢复，且不自动启用或测试能力', async () => {
     const wrapper = mountPanel({ ai_models: [apiModel], browser_presets: [preset] })

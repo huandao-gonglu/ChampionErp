@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-"""采集、1688 清洗保存、浏览器 Tab 导入与目标平台认领 Capability。
+"""URL 采集与目标平台认领 Capability。
 
-领域逻辑仍由 ``source_collect_workflows`` / ``collect_helpers`` /
-``collect_service`` 拥有；Capability 只做类型化编排。Cookie 与 1688 API
+领域逻辑由 ``source_collect_workflows`` 与 ``collect_helpers`` 拥有。
+Capability 提供类型化编排，Cookie 与 1688 API
 凭据一律由 Scope provider 从已保存配置解析，模型不得提供。
 """
 
@@ -15,14 +15,10 @@ from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.collect_capabilities import (
     ClaimProductsRequest,
     ClaimProductsResult,
-    Collect1688CleanRequest,
-    Collect1688CleanResult,
     Collect1688Request,
     Collect1688Result,
     CollectBatchRequest,
     CollectBatchResult,
-    CollectFromBrowserTabRequest,
-    CollectFromBrowserTabResult,
     SourceCollectRequest,
     SourceCollectResult,
 )
@@ -80,19 +76,13 @@ class CollectCapabilityScope:
     batch_collector: Callable[
         [tuple[str, ...], str, str, tuple[str, ...]], dict[str, Any]
     ]
-    browser_tab_collector: Callable[
-        [str, str, str, tuple[str, ...], bool], dict[str, Any]
-    ]
     online_1688_collector: Callable[[dict[str, Any]], dict[str, Any]]
-    text_cleaner: Callable[[str, str], dict[str, Any]]
     claimer: Callable[[list[str], list[dict[str, str]] | None], dict[str, Any]]
 
 
 SOURCE_COLLECT_TOOL = "source_collect"
 COLLECT_BATCH_TOOL = "collect_batch"
-COLLECT_FROM_BROWSER_TAB_TOOL = "collect_from_browser_tab"
 COLLECT_1688_TOOL = "collect_1688"
-COLLECT_1688_CLEAN_TOOL = "collect_1688_clean"
 CLAIM_PRODUCTS_TOOL = "claim_products"
 
 
@@ -193,54 +183,6 @@ def collect_batch(
 
 
 @ai_tool(
-    name=COLLECT_FROM_BROWSER_TAB_TOOL,
-    description="从已连接的调试浏览器标签页导入当前商品页。",
-    permission="collect.write",
-    side_effect="write",
-    approval_required=False,
-    idempotency="required",
-    idempotency_keys=("operation_key",),
-    recovery_policy="manual",
-    version="1",
-)
-def collect_from_browser_tab(
-    request: CollectFromBrowserTabRequest,
-    scope: Annotated[CollectCapabilityScope, Injected()],
-    execution: Annotated[AiExecutionContext, Injected()],
-) -> CollectFromBrowserTabResult:
-    del execution
-    try:
-        result = scope.browser_tab_collector(
-            request.tab_url,
-            request.platform_hint,
-            request.product_url,
-            tuple(request.claim_platforms),
-            request.save_only,
-        )
-    except BusinessCapabilityError:
-        raise
-    except Exception as exc:
-        raise BusinessCapabilityError(
-            "BROWSER_TAB_COLLECT_FAILED",
-            str(exc) or "浏览器标签页导入失败。",
-        ) from exc
-    _require_collect_ok(
-        result,
-        default_code="BROWSER_TAB_COLLECT_FAILED",
-        default_message="浏览器标签页导入失败。",
-    )
-    return CollectFromBrowserTabResult(
-        ok=bool(result.get("ok")),
-        product=_dict_value(result.get("product")),
-        image_pool=_dict_rows(result.get("imagePool")),
-        diagnostics=_dict_value(result.get("diagnostics")),
-        browser_status=_dict_value(result.get("browserStatus")),
-        next_action=_text(result.get("next_action")),
-        products_index=_dict_rows(result.get("productsIndex")),
-    )
-
-
-@ai_tool(
     name=COLLECT_1688_TOOL,
     description="采集 1688 商品，或清洗粘贴的 1688 页面文本并保存到商品。",
     permission="collect.write",
@@ -259,8 +201,6 @@ def collect_1688(
     del execution
     body: dict[str, Any] = {
         "url": request.url,
-        "text": request.text,
-        "save": request.save,
     }
     if request.claim_platforms:
         body["platforms"] = list(request.claim_platforms)
@@ -301,28 +241,6 @@ def collect_1688(
         message=_text(result.get("message")),
         products_index=_dict_rows(result.get("productsIndex")),
     )
-
-
-@ai_tool(
-    name=COLLECT_1688_CLEAN_TOOL,
-    description="清洗 1688 页面文本，提取价格/材质/规格等结构化信息（纯计算）。",
-    permission="collect.read",
-    side_effect="none",
-    recovery_policy="retry_safe",
-    version="1",
-)
-def collect_1688_clean(
-    request: Collect1688CleanRequest,
-    scope: Annotated[CollectCapabilityScope, Injected()],
-) -> Collect1688CleanResult:
-    cleaned = scope.text_cleaner(request.text, request.url)
-    if not isinstance(cleaned, dict) or not cleaned.get("ok"):
-        raise BusinessCapabilityError(
-            "COLLECT_1688_CLEAN_FAILED",
-            _text(cleaned.get("error") if isinstance(cleaned, dict) else "")
-            or "1688 文本清洗失败。",
-        )
-    return Collect1688CleanResult(ok=True, cleaned=dict(cleaned))
 
 
 @ai_tool(
@@ -370,9 +288,7 @@ def claim_products(
 COLLECTION_AI_CAPABILITIES = (
     source_collect,
     collect_batch,
-    collect_from_browser_tab,
     collect_1688,
-    collect_1688_clean,
     claim_products,
 )
 
@@ -380,16 +296,12 @@ COLLECTION_AI_CAPABILITIES = (
 __all__ = [
     "CLAIM_PRODUCTS_TOOL",
     "COLLECTION_AI_CAPABILITIES",
-    "COLLECT_1688_CLEAN_TOOL",
     "COLLECT_1688_TOOL",
     "COLLECT_BATCH_TOOL",
-    "COLLECT_FROM_BROWSER_TAB_TOOL",
     "CollectCapabilityScope",
     "SOURCE_COLLECT_TOOL",
     "claim_products",
     "collect_1688",
-    "collect_1688_clean",
     "collect_batch",
-    "collect_from_browser_tab",
     "source_collect",
 ]

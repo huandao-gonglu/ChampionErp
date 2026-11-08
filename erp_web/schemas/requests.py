@@ -50,6 +50,7 @@ UPLOADS = FieldRule("uploads")
 BOOLEAN = FieldRule("boolean")
 LIMIT = FieldRule("integer", minimum=1, maximum=500)
 PORT = FieldRule("integer", minimum=1, maximum=65535)
+COLLECT_MODE = FieldRule("enum", choices=frozenset({"browser", "http", "api", "playwright", "browser-session", "browser_session", "fetch", "request", "requests"}))
 IMAGE_ACTION = FieldRule(
     "enum",
     choices=frozenset({"upload", "sort", "delete", "replace", "set_main", "filter"}),
@@ -256,7 +257,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/ai-config/save": _EMPTY,
     "/api/v1/ai-presentations": _EMPTY,
     "/api/assign-upc": RequestContract(fields={"product_id": STRING, "sku_ids": STRING_ARRAY}, required=("product_id",)),
-    "/api/browser-debug/open-profile": _EMPTY,
     "/api/draft-pricing/preview": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
     "/api/draft-pricing/restore": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
     "/api/pricing/templates/save": RequestContract(fields={"id": STRING, "name": STRING, "parameters": OBJECT, "set_default": BOOLEAN}, required=("name", "parameters")),
@@ -282,13 +282,11 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     ),
     "/api/category-search": _contract(required_any=(("query", "keyword"),)),
     "/api/claim-products": _contract(required=("product_ids", "targets")),
-    "/api/collect-1688": _contract(required=("url",)),
-    "/api/collect-1688-clean": _contract(required_any=(("text", "html"),)),
-    "/api/collect-batch": _contract(required_any=(("urls", "url"),)),
-    "/api/collect-extension-payload": _EMPTY,
+    "/api/collect-1688": _contract(fields={"mode": COLLECT_MODE}, required=("url",)),
+    "/api/collect-batch": _contract(fields={"mode": COLLECT_MODE}, required_any=(("urls", "url"),)),
+    "/api/collect-resume": RequestContract(fields={"browser_tab_id": STRING, "source_url": STRING, "platform": STRING}, required=("browser_tab_id", "source_url")),
     "/api/collect-verification": _contract(required=("browser_tab_id", "source_url")),
-    "/api/collect-from-browser-tab": _EMPTY,
-    "/api/collect-source": _contract(required=("url",)),
+    "/api/collect-source": _contract(fields={"mode": COLLECT_MODE}, required=("url",)),
     "/api/delete-draft": _contract(
         required_any=(("draft_ids", "draftIds", "draft_id", "draftId"),)
     ),
@@ -353,7 +351,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/alibaba/crossborder/authorization/start": _EMPTY,
     "/api/alibaba/authorization/start": _EMPTY,
     "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING}, required=("callback_url",)),
-    "/api/open-1688-browser": _EMPTY,
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(
         # 人工确认摘要指纹：HTTP 边界声明字符串类型；业务判空与绑定校验

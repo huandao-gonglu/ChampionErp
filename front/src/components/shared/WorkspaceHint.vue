@@ -49,6 +49,9 @@ function leave() {
     if (!anchor.value?.contains(document.activeElement)) hide()
   }, 120)
 }
+function blur() {
+  if (!pinned) hide()
+}
 function toggle() {
   if (pinned) hide()
   else { pinned = true; void show() }
@@ -83,7 +86,7 @@ onBeforeUnmount(() => {
 
 <template>
   <span ref="anchor" class="inline-flex shrink-0 align-middle" @mouseenter="show" @mouseleave="leave">
-    <slot name="trigger" :attrs="{ 'aria-describedby': open ? id : undefined, onFocus: show, onBlur: leave }">
+    <slot name="trigger" :attrs="{ 'aria-describedby': open ? id : undefined, onFocus: show, onBlur: blur }">
       <button
         type="button"
         class="inline-flex size-5 cursor-pointer items-center justify-center rounded text-accent-400 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:text-accent-400 dark:hover:text-primary-300"
@@ -91,7 +94,7 @@ onBeforeUnmount(() => {
         :aria-describedby="open ? id : undefined"
         :aria-expanded="open"
         @focus="show"
-        @blur="leave"
+        @blur="blur"
         @click.prevent.stop="toggle"
       ><PhInfo :size="15" aria-hidden="true" /></button>
     </slot>

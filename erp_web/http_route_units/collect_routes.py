@@ -41,20 +41,10 @@ def handle_collect_1688(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
-def handle_collect_1688_clean(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.clean_1688_payload(
+def handle_collect_resume(handler: JsonRequestHandler) -> None:
+    handler.send_json(collect_facade.resume_collection_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
-
-
-def handle_collect_from_browser_tab(handler: JsonRequestHandler) -> None:
-    handler.send_json(
-        collect_facade.collect_from_browser_tab_payload(
-            validate_request_payload(handler.read_body(), endpoint=handler.path)
-        ),
-        200,
-    )
+    ))
 
 
 def handle_collection_verification(handler: JsonRequestHandler) -> None:
@@ -66,34 +56,13 @@ def handle_collection_verification(handler: JsonRequestHandler) -> None:
     )
 
 
-def handle_browser_debug_open_profile(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.open_browser_profile_payload()
-    handler.send_json(result, status)
-
-
-def handle_open_1688_browser(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.open_1688_browser_payload()
-    handler.send_json(result, status)
-
-
-def handle_collect_extension_payload(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.collect_extension_payload_response(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
-
-
 POST_HANDLERS: dict[str, PostHandler] = {
     "/api/collect-source": handle_collect_source,
     "/api/collect-batch": handle_collect_batch,
     "/api/claim-products": handle_claim_products,
     "/api/collect-1688": handle_collect_1688,
-    "/api/collect-1688-clean": handle_collect_1688_clean,
     "/api/collect-verification": handle_collection_verification,
-    "/api/collect-from-browser-tab": handle_collect_from_browser_tab,
-    "/api/browser-debug/open-profile": handle_browser_debug_open_profile,
-    "/api/open-1688-browser": handle_open_1688_browser,
-    "/api/collect-extension-payload": handle_collect_extension_payload,
+    "/api/collect-resume": handle_collect_resume,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 

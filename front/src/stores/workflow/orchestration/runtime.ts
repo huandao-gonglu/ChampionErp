@@ -155,8 +155,7 @@ export function createWorkflowRuntime() {
     collectForm,
     collectDiagnostics,
     collectBatchRows,
-    browserDebugStatus,
-    browserCollectRows,
+
   } = storeToRefs(collectionStore)
   const { fillFormFromState } = collectionStore
   const {
@@ -1035,7 +1034,7 @@ export function createWorkflowRuntime() {
     const hasPublished = (publishJobMatches && publishJob.value?.status === 'completed') || progressDraft?.status === 'published'
     const flags = [hasCollected, hasLibrary, hasCopy, hasImages, hasEdit, hasPrice, hasCategory, hasPrecheck, hasPublished]
     return [
-      ['collect', '采集商品', '链接、Cookie、浏览器标签、手动导入'],
+      ['collect', '采集商品', '单链接和批量 URL 采集'],
       ['library', '采集箱', 'SQLite 本地采集箱和草稿复制'],
       ['copy', 'AI 文案', '生成目标平台标题和完整商品描述'],
       ['images', '图片处理', '上传、图片池、图片翻译'],
@@ -1158,7 +1157,7 @@ export function createWorkflowRuntime() {
 
   return {
     product, productsIndex, draftsIndex, selectedProductIds, currentDraft, currentDraftProductContext,
-    imagePrompt, collectForm, collectDiagnostics, collectBatchRows, browserDebugStatus, browserCollectRows, fillFormFromState,
+    imagePrompt, collectForm, collectDiagnostics, collectBatchRows, fillFormFromState,
     pricingInput, pricingResult, category, categoryQuery, categoryResults, categoryRecommendations,
     categoryAutoMatching, categoryAutoMatchMessage, categoryAutoMatchCurrent, categoryAutoMatchTotal, categoryAutoMatchProductName,
     categoryAttributeTranslations, categoryAttributeTranslationsSource, categoryAttributeTranslating, categoryAttributeLoading, categoryAttributeError, categoryResultTranslations,

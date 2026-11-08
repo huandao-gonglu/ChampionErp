@@ -1,21 +1,15 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from erp_web.context import get_context
 from erp_web.product_model import (
     default_collect_diagnostics,
     default_product_model,
-    default_source,
     merge_source_partial_result,
-    normalize_platforms,
-    parse_dimensions_text,
 )
-from erp_web.product_model.common import normalize_list
-from erp_web.services import collect_service, html_extract_service, image_service
-from erp_web.stores.product_store import normalize_product_fields
+from erp_web.services import html_extract_service
 
 from erp_web.services.desktop_connection_service import call_desktop, DesktopUnavailable
 from erp_web.services.desktop_collection_service import apply_uploaded_assets
@@ -23,11 +17,10 @@ from erp_web.services.html_extract_service import fetch_url_html_with_status
 from .publish_bus import page_snapshot_from_html
 from .source_collect_1688_api import collect_1688_product_via_api
 from .source_collect_verification import same_collection_page, waiting_verification_result
-from .source_sites import VERIFY_MARKERS, parse_source_snapshot, source_site
+from .source_sites import parse_source_snapshot, source_site
 from .collect_helpers import (
     apply_claimed_platform_drafts,
     collect_error_code,
-    collect_image_origin,
     collect_time_iso,
     detect_source_platform,
     finalize_collect_diagnostics,
@@ -40,14 +33,6 @@ from .collect_helpers import (
 from .image_pool_core import current_image_pool, current_source_images
 
 
-class ManualCollectRequested(RuntimeError):
-    """collect_mode='manual' — the plugin/manual import flow must be used instead.
-
-    Typed replacement for the old ``raise RuntimeError("MANUAL_MODE")`` +
-    string-matching control flow.
-    """
-
-
 def collect_source_product(
     url: str,
     mode: str = "browser",
@@ -58,7 +43,7 @@ def collect_source_product(
 ) -> dict[str, Any]:
     url = str(url or "").strip()
     if not url:
-        raise RuntimeError("璇峰厛杈撳叆鍟嗗搧閾炬帴銆?")
+        raise RuntimeError("请先输入商品链接。")
 
     platform_detected = (platform or detect_source_platform(url)).lower() or "unknown"
     site = source_site(platform_detected)
@@ -84,15 +69,13 @@ def collect_source_product(
     error_reason = ""
 
     try:
-        if collect_mode == "manual":
-            raise ManualCollectRequested("MANUAL_MODE")
         if collect_mode == "api":
             if not site.supports_api_collect:
                 raise RuntimeError("API_MODE_ONLY_SUPPORTS_1688")
             return collect_1688_product_via_api(url, claim_platforms, api_config)
 
         if collect_mode == "browser":
-            return collect_from_browser_tab(product_url=url, platform_hint=platform_detected,
+            return collect_browser_url(product_url=url, platform_hint=platform_detected,
                                             claim_platforms=claim_platforms, open_url=True)
         html, http_status = fetch_url_html_with_status(url, cookie)
         if html:
@@ -176,8 +159,6 @@ def collect_source_product(
         }
     except Exception as exc:
         error_message = str(exc)
-        if isinstance(exc, ManualCollectRequested):
-            error_message = "手动模式请走插件/手动导入接口"
         if not diagnostics.get("error_code"):
             if error_message == "NO_SNAPSHOT":
                 reason = "REMOTE" if collect_mode == "browser" else "SELECTOR"
@@ -302,7 +283,7 @@ def collect_batch_products(
                     "status": "failed",
                     "error": str(exc),
                     "error_code": "COLLECT_FAILED",
-                    "next_action": "请检查链接、登录状态或改用手动导入。",
+                    "next_action": "请检查商品链接及采集浏览器的登录状态后重试。",
                 }
             )
         items.append(row)
@@ -317,9 +298,9 @@ def collect_batch_products(
     }
 
 
-def collect_from_browser_tab(
-    tab_url: str = "", platform_hint: str = "", product_url: str = "",
-    claim_platforms: list[str] | None = None, save_only: bool = False,
+def collect_browser_url(
+    product_url: str, platform_hint: str = "",
+    claim_platforms: list[str] | None = None,
     browser_tab_id: str = "", open_url: bool = False,
 ) -> dict[str, Any]:
     original_product = get_context().products.load_product()
@@ -327,12 +308,12 @@ def collect_from_browser_tab(
     status = {}
     try:
         facts = call_desktop('collect.read', {
-            'tab_url': tab_url, 'platform_hint': platform_hint, 'product_url': product_url,
-            'save_only': save_only, 'browser_tab_id': browser_tab_id, 'open_url': open_url,
+            'platform_hint': platform_hint, 'product_url': product_url,
+            'browser_tab_id': browser_tab_id, 'open_url': open_url,
         }, timeout=900)
         snapshot = facts['snapshot']
         status = facts.get('browserStatus') or {}
-        final_url = str(snapshot.get("final_url") or snapshot.get("url") or product_url or tab_url or "")
+        final_url = str(snapshot.get("final_url") or snapshot.get("url") or product_url or "")
         original_product = get_context().products.collection_product(product_url or final_url)
         html_text = str(snapshot.get("html") or "")
         text = str(snapshot.get("text") or "")
@@ -358,12 +339,6 @@ def collect_from_browser_tab(
                 "tab_title": title,
             }
         )
-        if save_only:
-            diagnostics["html_snapshot_path"] = write_collect_debug_html(final_url, html_text, platform_detected) if html_text else ""
-            diagnostics["screenshot_path"] = ""
-            if not diagnostics["html_snapshot_path"]:
-                raise RuntimeError("TAB_NOT_ACCESSIBLE：页面没有可保存的 HTML，请等待页面加载后重试。")
-            return {"ok": True, "saved_only": True, "diagnostics": diagnostics, "browserStatus": status, "html": html_text, "real_publish_called": False}
         page_diagnostics, error_reason = site.diagnose(
             final_url,
             html_text,
@@ -372,7 +347,7 @@ def collect_from_browser_tab(
             detect_slider=True,
         )
         diagnostics.update(page_diagnostics)
-        waiting = waiting_verification_result(snapshot, product_url or tab_url or final_url, platform_detected, diagnostics, error_reason)
+        waiting = waiting_verification_result(snapshot, product_url or final_url, platform_detected, diagnostics, error_reason)
         if waiting:
             return {**waiting, "browserStatus": status}
         if browser_tab_id and not same_collection_page(product_url, final_url):
@@ -407,7 +382,7 @@ def collect_from_browser_tab(
         message = str(exc)
         code = getattr(exc, "code", "") or ("NO_PRODUCT_TAB_FOUND" if "NO_PRODUCT_TAB_FOUND" in message else "TAB_NOT_ACCESSIBLE" if "TAB_NOT_ACCESSIBLE" in message else "REMOTE_DEBUGGING_NOT_CONNECTED")
         diagnostics = default_collect_diagnostics()
-        diagnostics.update({"collect_mode": "browser_debugging", "started_at": started_at, "finished_at": collect_time_iso(), "success": False, "partial_success": False, "error_code": code, "error_message": message, "browser_connected": bool(status.get("connected")), "debug_port": status.get("port"), "next_action": "请确认专用 Chrome 已打开商品页；如果仍失败，点击保存 HTML 快照或使用 HTML 导入 / 手动补充。", "checked_at": collect_time_iso()})
+        diagnostics.update({"collect_mode": "browser_debugging", "started_at": started_at, "finished_at": collect_time_iso(), "success": False, "partial_success": False, "error_code": code, "error_message": message, "browser_connected": bool(status.get("connected")), "debug_port": status.get("port"), "next_action": "请确认采集浏览器中原商品页可访问，完成登录或验证码后重试该链接。", "checked_at": collect_time_iso()})
         # 目标页失效、快照失败等情况只返回诊断，不修改之前采集的商品。
         if isinstance(exc, DesktopUnavailable):
             diagnostics["next_action"] = message
@@ -415,195 +390,19 @@ def collect_from_browser_tab(
 
 
 def collect_1688_payload_service(body: dict[str, Any]) -> dict[str, Any]:
-    """处理 1688 文本清洗保存或在线采集；facade 只负责 HTTP 状态映射。"""
-
-    pasted = str(body.get("text") or body.get("html") or body.get("source_text") or "").strip()
-    if not pasted:
-        result = collect_source_product(
-            body.get("url", ""),
-            body.get("mode", "browser"),
-            body.get("cookie", ""),
-            "1688",
-            body.get("platforms") if isinstance(body.get("platforms"), list) else None,
-            body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
-        )
-        result["productsIndex"] = (
-            get_context().products.load_products_index()
-        )
-        return result
-
-    cleaned = collect_service.clean_1688_text(
-        pasted,
-        str(body.get("url") or body.get("source_url") or ""),
+    return collect_source_product(
+        str(body.get('url') or ''),
+        str(body.get('mode') or 'browser'),
+        str(body.get('cookie') or ''),
+        '1688',
+        body.get('platforms'),
+        body.get('1688_api'),
     )
-    if not body.get("save"):
-        return cleaned
-
-    product = normalize_product_fields(
-        body.get("product") or get_context().products.load_product()
-    )
-    product.update(
-        {
-            "source_price_cny": cleaned.get("source_price_cny", ""),
-            "source_price_cny_for_cost": cleaned.get("source_price_cny_for_cost", ""),
-            "source_material": cleaned.get("source_material", ""),
-            "source_weight_kg": cleaned.get("source_weight_kg", ""),
-            "materials": cleaned.get("materials") or product.get("materials", []),
-            "dimensions": cleaned.get("dimensions") or product.get("dimensions", ""),
-            "colors": cleaned.get("colors") or product.get("colors", []),
-            "package_includes": cleaned.get("package_includes") or product.get("package_includes", []),
-            "target_customer": cleaned.get("target_customer") or product.get("target_customer", ""),
-            "source_text": cleaned.get("source_text", ""),
-            "supplemental_info": cleaned.get("supplemental_info", ""),
-        }
-    )
-    source = product.get("source") if isinstance(product.get("source"), dict) else default_source()
-    source.update(
-        {
-            "source_platform": "1688",
-            "source_url": cleaned.get("source_url") or source.get("source_url") or "",
-            "price": cleaned.get("source_price_cny") or source.get("price") or "",
-            "currency": "CNY" if cleaned.get("source_price_cny") else source.get("currency", ""),
-            "attributes": cleaned.get("source_attributes") or {},
-        }
-    )
-    product["source"] = source
-    saved = get_context().products.save_product(product)
-    cleaned["product"] = saved
-    cleaned["productsIndex"] = get_context().products.load_products_index()
-    return cleaned
-
-
-def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    payload = payload if isinstance(payload, dict) else {}
-    source_url = str(payload.get("source_url") or "").strip()
-    original_product = get_context().products.collection_product(source_url)
-    platform = str(payload.get("platform") or detect_source_platform(source_url) or "unknown").strip().lower()
-    raw_html = str(payload.get("raw_html_optional") or payload.get("raw_text") or payload.get("text") or "").strip()
-    claim_platforms = normalize_platforms(payload.get("platforms"))
-    explicit_collect_mode = "collect_mode" in payload
-    collect_mode = str(payload.get("collect_mode") or "manual").strip().lower()
-    image_origin_mode = collect_mode if explicit_collect_mode else "extension"
-    if platform in {"manual", ""} and source_url:
-        platform = detect_source_platform(source_url) or "unknown"
-    parsed_source: dict[str, Any] = {}
-    if raw_html:
-        html_platform = detect_source_platform(source_url) or platform or "unknown"
-        snapshot = page_snapshot_from_html(source_url or "manual://html-import", raw_html)
-        parsed_product = parse_source_snapshot(html_platform, snapshot, source_url)
-        parsed_source = parsed_product.get("source") if isinstance(parsed_product.get("source"), dict) else {}
-        platform = html_platform
-    image_values = normalize_list(payload.get("images"))
-    manual_image_pool = image_service.materialize_image_values(
-        get_context().paths.app_dir,
-        image_values,
-        source_url or str(payload.get("title") or "manual-import"),
-        claim_platforms,
-        collect_image_origin(platform, image_origin_mode),
-    )
-    manual_updates = {
-        "source_url": source_url,
-        "source_platform": platform,
-        "title": str(payload.get("title") or "").strip(),
-        "price": str(payload.get("price") or "").strip(),
-        "currency": str(payload.get("currency") or "").strip(),
-        "images": image_values,
-        "image_pool": manual_image_pool,
-        "dimensions": payload.get("dimensions") if isinstance(payload.get("dimensions"), dict) else parse_dimensions_text(
-            payload.get("dimensions"),
-            default_unit="mm" if platform == "1688" else "cm",
-        ),
-        "weight_kg": str(payload.get("weight") or "").strip(),
-        "material": str(payload.get("material") or "").strip(),
-        "package_contents": normalize_list(payload.get("package_contents")),
-        "skus": deepcopy(payload.get("sku_options") or []),
-        "collect_status": "manual_completed",
-    }
-    if raw_html:
-        try:
-            cleaned = collect_service.clean_1688_text(raw_html, source_url)
-            if isinstance(cleaned, dict):
-                manual_updates["source_price_cny_for_cost"] = cleaned.get("source_price_cny_for_cost") or manual_updates.get("price")
-                manual_updates["source_weight_kg"] = cleaned.get("source_weight_kg") or manual_updates.get("weight_kg")
-                manual_updates["source_material"] = cleaned.get("source_material") or manual_updates.get("material")
-                manual_updates["materials"] = cleaned.get("materials") or ([manual_updates["material"]] if manual_updates.get("material") else [])
-                manual_updates["package_includes"] = cleaned.get("package_includes") or manual_updates.get("package_contents")
-                manual_updates["source_attributes"] = cleaned.get("source_attributes") or {}
-                manual_updates["clean_source_text"] = cleaned.get("clean_source_text") or raw_html[:3000]
-                manual_updates["source_text"] = cleaned.get("source_text") or manual_updates["clean_source_text"]
-                current_dimensions = manual_updates.get("dimensions") if isinstance(manual_updates.get("dimensions"), dict) else {}
-                if cleaned.get("dimensions") and not any(current_dimensions.values()):
-                    manual_updates["dimensions"] = parse_dimensions_text(
-                        cleaned.get("dimensions"),
-                        default_unit="mm" if platform == "1688" else "cm",
-                    )
-        except Exception:
-            manual_updates["source_text"] = raw_html[:3000]
-    source_updates = deepcopy(parsed_source)
-    for key, value in manual_updates.items():
-        if value not in (None, "", [], {}):
-            source_updates[key] = value
-    source_updates = normalize_collect_source_images(source_updates, platform, image_origin_mode, claim_platforms)
-    diagnostics = default_collect_diagnostics()
-    diagnostics.update(
-        {
-            "collect_mode": collect_mode,
-            "source_url": source_url,
-            "normalized_url": source_url,
-            "platform_detected": platform,
-            "started_at": collect_time_iso(),
-            "finished_at": collect_time_iso(),
-            "success": True,
-            "partial_success": True,
-            "error_code": "",
-            "error_message": "HTML 导入" if raw_html else "手动补充",
-            "page_title": str(payload.get("title") or parsed_source.get("title") or "").strip(),
-            "final_url": source_url,
-            "html_snapshot_path": "",
-            "screenshot_path": "",
-            "parser_version": "collect-v2",
-        }
-    )
-    if raw_html:
-        diagnostics["html_snapshot_path"] = write_collect_debug_html(source_url or "manual", raw_html, "manual")
-    diagnostics = finalize_collect_diagnostics(diagnostics, source_updates, platform)
-    merged = merge_source_partial_result(original_product, source_updates, diagnostics)
-    merged["source"]["collect_status"] = "manual_completed"
-    merged["source"]["collect_logs"] = list(merged["source"].get("collect_logs") or [])
-    merged["source"]["collect_logs"].append(
-        {
-            "started_at": diagnostics["started_at"],
-            "finished_at": diagnostics["finished_at"],
-            "mode": collect_mode,
-            "platform": platform,
-            "success": True,
-            "partial_success": True,
-            "error_code": "",
-            "error_message": diagnostics["error_message"],
-        }
-    )
-    merged["source"]["collect_diagnostics"] = diagnostics
-    original_url = str((original_product.get("source") or {}).get("source_url") or "").strip()
-    if source_url and source_url != original_url:
-        merged.pop("product_id", None)
-        merged.pop("id", None)
-    merged = apply_claimed_platform_drafts(merged, claim_platforms)
-    saved = get_context().products.save_product(merged)
-    return {
-        "ok": True,
-        "product": saved,
-        "imagePool": current_image_pool(saved),
-        "sourceImages": current_source_images(saved),
-        "productsIndex": get_context().products.load_products_index(),
-        "diagnostics": diagnostics,
-        "error": "",
-    }
 
 
 __all__ = [
     "collect_1688_payload_service",
     "collect_batch_products",
-    "collect_extension_payload",
-    "collect_from_browser_tab",
+    "collect_browser_url",
     "collect_source_product",
 ]

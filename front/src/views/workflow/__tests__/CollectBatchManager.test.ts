@@ -3,8 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import CollectBatchManager from '../CollectBatchManager.vue'
 import { appendCollectUrls, createCollectBatchRow, restoreCollectQueue } from '@/utils/collectQueue'
 import type { CollectBatchRow } from '@/types/workflow'
-import { launchDesktop } from '@/utils/desktopHandoff'
-vi.mock('@/utils/desktopHandoff', async importOriginal => ({ ...await importOriginal<object>(), launchDesktop: vi.fn() }))
 
 function setup(rows: CollectBatchRow[] = []) {
   const wrapper = mount(CollectBatchManager, { props: { rows, loading: false } })
@@ -85,8 +83,7 @@ describe('批量采集列表', () => {
     const web = setup(restored)
     expect(web.button('开始采集（1）').attributes('disabled')).toBeUndefined()
     await web.button('开始采集（1）').trigger('click')
-    expect(launchDesktop).toHaveBeenCalled()
-    expect(web.wrapper.emitted('collect')).toBeUndefined()
+    expect(web.wrapper.emitted('collect')?.[0]).toEqual([[restored[0].id]])
     web.wrapper.unmount()
     vi.stubGlobal('championDesktop', { localOperations: true })
     try {

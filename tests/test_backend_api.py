@@ -4,8 +4,6 @@ import base64
 import json
 import time
 
-import requests
-
 
 def post_json(base_url: str, path: str, payload: dict, expected_status: int = 200) -> dict:
     response = base_url.client.post(f"{base_url}{path}", json=payload, timeout=20)
@@ -63,24 +61,11 @@ def test_state_contract_is_versioned_and_never_returns_plaintext_secrets(
         assert secret not in serialized
 
 
-def test_collect_api_manual_import_returns_product(backend_server: str) -> None:
-    data = post_json(
-        backend_server,
-        "/api/collect-extension-payload",
-        {
-            "source_url": "https://detail.1688.com/offer/pytest-stage3a.html",
-            "platform": "1688",
-            "title": "Stage 3A API collect product",
-            "price": "30",
-            "description": "Manual import for API test.",
-            "raw_html_optional": "标题：Stage 3A API collect product\n材质：PP\n尺寸：20x15x10 cm\n重量：0.5 kg",
-            "platforms": ["mercadolibre"],
-        },
-    )
-
-    assert data["ok"] is True
-    assert data["product"]["source"]["title"]
-    assert data["product"]["drafts"]["mercadolibre"]["title"]
+def test_retired_collection_endpoints_are_unavailable(backend_server: str) -> None:
+    for path in ('/api/collect-extension-payload', '/api/collect-1688-clean', '/api/collect-from-browser-tab',
+                 '/api/open-1688-browser', '/api/browser-debug/open-profile'):
+        response = backend_server.client.post(f"{backend_server}{path}", json={}, timeout=10)
+        assert response.status_code == 404, response.text[:300]
 
 
 def test_image_upload_and_delete_api(backend_server: str, sample_product: dict) -> None:
@@ -156,7 +141,6 @@ def test_image_translate_api_returns_configuration_warning_without_key(backend_s
     assert data["imagePoolItems"] == []
     assert "Target language: Spanish (Mexico)" in data["prompt"]
     assert data["product"]["product_id"]
-
 
 
 def test_generate_copy_api_returns_error_without_key(backend_server: str, sample_product: dict) -> None:

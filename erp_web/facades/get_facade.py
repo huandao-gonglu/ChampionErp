@@ -18,7 +18,6 @@ from erp_web.runtime_units.publish_bus import (
     persist_publish_bus_terminal_results,
 )
 from erp_web.runtime_units.runtime_api import html_page
-from erp_web.services.desktop_collection_service import browser_debug_status
 from erp_web.stores.config_store import summarize_store_auth_states
 from erp_web.stores.product_store import mask_secret
 
@@ -58,7 +57,6 @@ def load_drafts_index(
 
 
 __all__ = [
-    "browser_debug_status",
     "current_generated_images",
     "current_image_pool",
     "current_source_images",

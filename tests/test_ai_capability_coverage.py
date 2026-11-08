@@ -98,8 +98,7 @@ def test_entry_validation_rejects_misshaped_classifications() -> None:
 def test_business_endpoints_are_capability_or_internal_only() -> None:
     """覆盖治理底线：业务 API 不允许被静默 excluded。
 
-    规划 §7 明确的协议级例外：webhook/notification 接收与扩展原始
-    payload 接收属于外部协议入口，允许 excluded，但必须显式登记。
+    规划 §7 明确的协议级例外：webhook/notification 接收属于外部协议入口，允许 excluded，但必须显式登记。
     订单买家聊天通过显式能力接入 Agent，后台不自动读取或发送。
     """
 
@@ -118,7 +117,6 @@ def test_business_endpoints_are_capability_or_internal_only() -> None:
         ("POST", "/api/mercadolibre/notifications"),
         ("POST", "/api/ozon/notifications"),
         ("POST", "/api/yandex/notifications"),
-        ("POST", "/api/collect-extension-payload"),
     }
     for entry in AI_CAPABILITY_COVERAGE_MANIFEST:
         if entry.disposition != "excluded":

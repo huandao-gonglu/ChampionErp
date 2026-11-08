@@ -3,7 +3,7 @@ import { apiClient } from '@/api/client'
 import {
   collectProduct,
   collectBatch,
-  collectFromBrowserTab,
+  resumeCollection,
   inspectCollectionVerification,
   saveCollectSettings,
 } from '@/api/workflow/catalog'
@@ -29,7 +29,7 @@ describe('采集请求凭据边界', () => {
     const form = createDefaultCollectForm()
     form.productUrl = 'https://detail.1688.com/offer/123456789.html'
     form.platform = '1688'
-    form.mode = 'api'
+    form.mode = 'browser'
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
         ok: true,
@@ -85,20 +85,7 @@ describe('采集请求凭据边界', () => {
     expect(payload).not.toHaveProperty('1688_api')
     expect((payload as { appConfig?: unknown }).appConfig || {}).not.toHaveProperty('1688_api')
   })
-  it('浏览器快照请求携带精确目标，响应不生成空商品', async () => {
-    const form = createDefaultCollectForm()
-    form.productUrl = 'https://detail.1688.com/offer/123.html'
-    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: {
-      ok: true, saved_only: true, diagnostics: { html_snapshot_path: '/tmp/snapshot.html' },
-      browserStatus: { connected: true, current_tabs: [] },
-    } })
-    const result = await collectFromBrowserTab(form, true, form.productUrl)
-    expect(apiClient.post).toHaveBeenCalledWith('/api/collect-from-browser-tab', expect.objectContaining({
-      tab_url: form.productUrl, product_url: form.productUrl, save_only: true,
-    }))
-    expect(result).toMatchObject({ savedOnly: true, diagnostics: { html_snapshot_path: '/tmp/snapshot.html' } })
-    expect(result).not.toHaveProperty('product')
-  })
+
 
   it('自动识别不把 unknown 当作明确平台发送，批量凭据只来自本次参数', async () => {
     const form = createDefaultCollectForm()
@@ -121,8 +108,8 @@ describe('采集请求凭据边界', () => {
     const result = await collectProduct(form)
     expect(result).not.toHaveProperty('product')
     expect(result.verification?.browserTabId).toBe('original')
-    expect((await collectFromBrowserTab(form, false, '', 'original')).savedOnly).toBe(false)
-    expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-from-browser-tab', expect.objectContaining({ browser_tab_id: 'original', product_url: form.productUrl }))
+    expect(await resumeCollection(result.verification!)).not.toHaveProperty('product')
+    expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-resume', expect.objectContaining({ browser_tab_id: 'original', source_url: form.productUrl }))
     const signal = new AbortController().signal
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true, status: 'ready', message: '验证已完成' } })
     await inspectCollectionVerification(result.verification!, signal)

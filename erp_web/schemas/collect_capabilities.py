@@ -56,57 +56,11 @@ class CollectBatchResult(BaseModel):
     products_index: tuple[dict[str, JsonValue], ...] = ()
 
 
-class CollectFromBrowserTabRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    tab_url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
-    product_url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
-    platform_hint: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    claim_platforms: tuple[str, ...] = ()
-    save_only: bool = False
-
-class CollectFromBrowserTabResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    ok: bool = False
-    product: dict[str, JsonValue] = Field(default_factory=dict)
-    image_pool: tuple[dict[str, JsonValue], ...] = ()
-    diagnostics: dict[str, JsonValue] = Field(default_factory=dict)
-    browser_status: dict[str, JsonValue] = Field(default_factory=dict)
-    next_action: TrimmedText = ""
-    products_index: tuple[dict[str, JsonValue], ...] = ()
-
-
 class Collect1688Request(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        json_schema_extra={
-            "anyOf": [
-                {
-                    "type": "object",
-                    "required": ["url"],
-                    "properties": {"url": {"type": "string", "minLength": 1}},
-                },
-                {
-                    "type": "object",
-                    "required": ["text"],
-                    "properties": {"text": {"type": "string", "minLength": 1}},
-                },
-            ]
-        },
-    )
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
-    text: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200000)] = ""
-    save: bool = True
+    url: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=2000)]
     claim_platforms: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def require_subject(self) -> "Collect1688Request":
-        if not self.url and not self.text:
-            raise ValueError("url 与 text 至少填写一个")
-        return self
 
 
 class Collect1688Result(BaseModel):
@@ -119,20 +73,6 @@ class Collect1688Result(BaseModel):
     next_action: TrimmedText = ""
     message: TrimmedText = ""
     products_index: tuple[dict[str, JsonValue], ...] = ()
-
-
-class Collect1688CleanRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200000)]
-    url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
-
-
-class Collect1688CleanResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    ok: bool = False
-    cleaned: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ClaimMarket(BaseModel):
@@ -195,14 +135,10 @@ class ResearchRunStatusQueryResult(BaseModel):
 __all__ = [
     "ClaimProductsRequest",
     "ClaimProductsResult",
-    "Collect1688CleanRequest",
-    "Collect1688CleanResult",
     "Collect1688Request",
     "Collect1688Result",
     "CollectBatchRequest",
     "CollectBatchResult",
-    "CollectFromBrowserTabRequest",
-    "CollectFromBrowserTabResult",
     "ResearchHotProductsSearchRequest",
     "ResearchRunStatusQueryRequest",
     "ResearchRunStatusQueryResult",

@@ -86,11 +86,9 @@ def test_batch_keeps_other_tabs_then_exits_after_last_product(owned, monkeypatch
     assert not browser._owned_sessions
 
 
-@pytest.mark.parametrize("verification, save_only, should_close", [
-    (True, False, False), (False, True, False), (False, False, True),
-])
+@pytest.mark.parametrize("verification, should_close", [(True, False), (False, True)])
 def test_collection_keeps_intermediate_page_and_reports_final_status(
-    tmp_path, monkeypatch, verification, save_only, should_close,
+    tmp_path, monkeypatch, verification, should_close,
 ):
     config = LocalConfig(tmp_path)
     closed = Mock()
@@ -98,7 +96,7 @@ def test_collection_keeps_intermediate_page_and_reports_final_status(
     monkeypatch.setattr(collection, "_read_target", lambda *_: ({"html": "页面"}, [], verification))
     monkeypatch.setattr(collection, "finish_browser_session", closed)
     monkeypatch.setattr(collection, "browser_status", lambda _: {"connected": not closed.called})
-    result = collection.read_collection(config, browser_tab_id="original", save_only=save_only)
+    result = collection.read_collection(config, browser_tab_id="original", product_url="https://detail.1688.com/offer/123.html")
     assert closed.called is should_close
     assert result["browserStatus"]["connected"] is not should_close
 

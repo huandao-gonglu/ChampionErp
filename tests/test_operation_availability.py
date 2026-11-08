@@ -69,18 +69,17 @@ def test_model_and_collection_rules_follow_current_connection_and_actual_binding
     assert 'Codex CLI' in blocked['blocked_use_cases']['text.translate']
     assert {'image.translate', 'text.translate'} <= set(blocked['desktop_use_cases'])
     assert catalog.get('image_edit').unavailable_reason(None) == blocked['blocked_use_cases']['image.translate']
-    assert catalog.get('collect_from_browser_tab').unavailable_reason(None) == blocked['desktop_reason']
     batch = catalog.get('collect_batch')
     assert not batch.unavailable_reason(None)
     assert not batch.unavailable_reason({'mode': 'http', 'urls': ['https://example.org/1']})
     assert batch.unavailable_reason({'urls': ['https://example.org/1']}) == blocked['desktop_reason']
     mixed = catalog.get('collect_1688')
-    assert not mixed.unavailable_reason({'text': '商品资料'})
+    assert catalog.get('collect_from_browser_tab') is None
+    assert catalog.get('collect_1688_clean') is None
     assert mixed.unavailable_reason({'url': 'https://detail.1688.com/offer/1'}) == blocked['desktop_reason']
     with bind_desktop_connection(key):
         assert not catalog.get('image_edit').unavailable_reason(None)
         assert not catalog.get('text_translate').unavailable_reason(None)
-        assert not catalog.get('collect_from_browser_tab').unavailable_reason(None)
         assert 'API 模型' in operation_availability(config)['blocked_use_cases']['image.plan']
         context.desktop_connections.disconnect(key)
         assert '断开' in catalog.get('image_edit').unavailable_reason(None)

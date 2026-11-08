@@ -41,7 +41,9 @@ def collect_time_iso() -> str:
 
 def normalize_collect_mode(mode: str, url: str = "") -> str:
     value = str(mode or "").strip().lower()
-    if value in {"browser", "http", "manual", "api"}:
+    if value in {"manual", "extension"}:
+        raise ValueError("手动与 HTML 导入已下线，请使用商品 URL 采集。")
+    if value in {"browser", "http", "api"}:
         return value
     if value in {"playwright", "browser-session", "browser_session"}:
         return "browser"

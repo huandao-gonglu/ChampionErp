@@ -13,7 +13,7 @@ export interface BackendUserAgentsDocument {
 
 export interface BackendDesktopCall {
   id: string
-  operation: "browser.status" | "browser.open" | "browser.profile" | "collect.read" | "collect.verify" | "browser.ai.open" | "browser.ai.chat" | "canvas.check" | "canvas.edit" | "cli.run" | "cli.status" | "config.read" | "config.write" | "auth.open"
+  operation: "browser.status" | "collect.read" | "collect.verify" | "browser.ai.open" | "browser.ai.chat" | "canvas.check" | "canvas.edit" | "cli.run" | "cli.status" | "config.read" | "config.write" | "auth.open"
   params: Record<string, unknown>
   timeout: number
 }

@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from erp_web.runtime_units.collect_capabilities import collect_from_browser_tab
+from erp_web.runtime_units.collect_capabilities import source_collect
 from erp_web.schemas.ai_tools import (
     AiToolCommand,
     AiToolExecutionError,
@@ -267,11 +267,11 @@ def test_compiler_preserves_input_option_label_and_value() -> None:
     )
 
 
-def test_compiled_browser_collect_schema_matches_runtime_validation() -> None:
+def test_compiled_url_collect_schema_matches_runtime_validation() -> None:
     """模型可见 Schema 与 request adapter 必须对同一输入给出相同结论。"""
 
-    tool = AiToolCompiler.compile(collect_from_browser_tab)
-    payload = {"platform_hint": "1688"}
+    tool = AiToolCompiler.compile(source_collect)
+    payload = {"platform": "1688"}
 
     schema_accepts = True
     try:

@@ -3,17 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.context import get_context
-from erp_web.services import collect_service, config_service
+from erp_web.services import config_service
 
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms, collect_platform_reason
 from erp_web.runtime_units.source_collect_verification import inspect_collection_verification
-from erp_web.services.desktop_connection_service import call_desktop
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.runtime_units.source_collect_workflows import (
     collect_1688_payload_service,
     collect_batch_products,
-    collect_extension_payload,
-    collect_from_browser_tab,
+    collect_browser_url,
     collect_source_product,
 )
 from erp_web.schemas.api import ApiResponse
@@ -89,8 +87,7 @@ def claim_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def collect_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    if not str(body.get("text") or body.get("html") or body.get("source_text") or "").strip():
-        _check_platform(collect_platform_reason(body.get("mode", "browser"), body.get("url")))
+    _check_platform(collect_platform_reason(body.get("mode", "browser"), body.get("url")))
     config = get_context().config.load_app_config()
     try:
         resolved_body = dict(body)
@@ -105,19 +102,11 @@ def collect_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return {"ok": False, "error": str(exc)}, 400
 
 
-def clean_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    cleaned = collect_service.clean_1688_text(str(body.get("text") or body.get("html") or ""), str(body.get("url") or ""))
-    return cleaned, 200 if cleaned.get("ok") else 400
-
-
-def collect_from_browser_tab_payload(body: dict[str, Any]) -> ApiResponse:
-    return collect_from_browser_tab(
-        tab_url=str(body.get("tab_url") or ""),
-        platform_hint=str(body.get("platform_hint") or ""),
-        product_url=str(body.get("product_url") or body.get("url") or ""),
-        claim_platforms=body.get("platforms") if isinstance(body.get("platforms"), list) else None,
-        save_only=bool(body.get("save_only")),
-        browser_tab_id=str(body.get("browser_tab_id") or ""),
+def resume_collection_payload(body: dict[str, Any]) -> ApiResponse:
+    return collect_browser_url(
+        product_url=str(body['source_url']),
+        platform_hint=str(body.get('platform') or ''),
+        browser_tab_id=str(body['browser_tab_id']),
     )
 
 
@@ -125,37 +114,11 @@ def collection_verification_payload(body: dict[str, Any]) -> ApiResponse:
     return inspect_collection_verification(str(body["browser_tab_id"]), str(body["source_url"]))
 
 
-def open_browser_profile_payload() -> ResponseWithStatus:
-    try:
-        return call_desktop('browser.profile'), 200
-    except Exception as exc:
-        return {'ok': False, 'error': str(exc)}, 400
-
-
-def open_1688_browser_payload() -> ResponseWithStatus:
-    try:
-        return call_desktop('browser.open'), 200
-    except Exception as exc:
-        return {'ok': False, 'error': str(exc)}, 400
-
-
-def collect_extension_payload_response(body: dict[str, Any]) -> ResponseWithStatus:
-    try:
-        result = collect_extension_payload(body)
-        return result, 200 if result.get("ok") else 400
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 400
-
-
 __all__ = [
     "collection_verification_payload",
+    "resume_collection_payload",
     "claim_products_payload",
-    "clean_1688_payload",
     "collect_1688_payload",
     "collect_batch_payload",
-    "collect_extension_payload_response",
-    "collect_from_browser_tab_payload",
     "collect_source_payload",
-    "open_1688_browser_payload",
-    "open_browser_profile_payload",
 ]

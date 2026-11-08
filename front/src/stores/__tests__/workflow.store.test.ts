@@ -24,26 +24,21 @@ vi.mock('@/api/workflow/state', () => ({
 vi.mock('@/api/workflow/catalog', () => ({
   saveProduct: vi.fn(),
   collectProduct: vi.fn(),
-  importManualProduct: vi.fn(),
   saveCollectSettings: vi.fn(),
   uploadImages: vi.fn(),
   generateCopy: vi.fn(),
   imageEdit: vi.fn(),
   imageTranslate: vi.fn(),
-  openBrowserProfile: vi.fn(),
-  open1688Browser: vi.fn(),
   loadProduct: vi.fn(),
   generateImagePrompts: vi.fn(),
   fetchProductsIndex: vi.fn(),
   fetchDraftsIndex: vi.fn(),
-  fetchBrowserDebugStatus: vi.fn(),
   inspectCollectionVerification: vi.fn(),
   deleteProducts: vi.fn(),
-  clean1688Text: vi.fn(),
   saveImagePool: vi.fn(),
   imagePoolAction: vi.fn(),
   generateCopyBatch: vi.fn(),
-  collectFromBrowserTab: vi.fn(),
+  resumeCollection: vi.fn(),
   collectBatch: vi.fn(),
   claimProducts: vi.fn(),
   loadDraft: vi.fn(),
@@ -3410,113 +3405,18 @@ describe('workflow store live API flow', () => {
   })
 })
 
-describe('采集列表执行与浏览器快照', () => {
+describe('URL 采集列表执行与验证续采', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(catalogApi.collectBatch).mockReset()
-    vi.mocked(catalogApi.collectFromBrowserTab).mockReset()
+    vi.mocked(catalogApi.resumeCollection).mockReset()
     localStorage.clear()
     setActivePinia(createPinia())
   })
 
-  function browserQueue() {
-    const store = useWorkflowStore()
-    const urls = ['https://detail.1688.com/offer/1.html', 'https://amazon.com/dp/ABC123', 'https://detail.1688.com/offer/3.html']
-    store.browserDebugStatus = {
-      connected: true, port: 9222, tabsCount: urls.length,
-      tabs: urls.map((url, index) => ({ url, title: `商品 ${index + 1}`, platformDetected: index === 1 ? 'amazon' : '1688' })),
-      errorCode: '', errorMessage: '', nextAction: '', powershellCommand: '', cmdCommand: '', profileDir: '',
-    }
-    return { store, urls }
-  }
 
-  it('多选浏览器页面串行采集，失败继续，状态刷新不改变队列且不重复提交', async () => {
-    const { store, urls } = browserQueue()
-    type BrowserResult = Awaited<ReturnType<typeof catalogApi.collectFromBrowserTab>>
-    let finishFirst!: (value: BrowserResult) => void
-    let failSecond!: (error: Error) => void
-    const lastProduct = { ...collectedProduct(), productId: '最后一个商品' }
-    vi.mocked(catalogApi.collectFromBrowserTab)
-      .mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve }))
-      .mockImplementationOnce(() => new Promise((_resolve, reject) => { failSecond = reject }))
-      .mockResolvedValueOnce({ ...mutation(lastProduct), savedOnly: false })
-    const run = store.collectFromBrowserTabs(false, [...urls, urls[0]])
-    expect(store.browserCollectRows.map(row => row.status)).toEqual(['running', 'pending', 'pending'])
-    await store.collectFromBrowserTabs(false, urls)
-    expect(catalogApi.collectFromBrowserTab).toHaveBeenCalledTimes(1)
-    finishFirst({ ...mutation(collectedProduct()), savedOnly: false, browserStatus: { ...store.browserDebugStatus!, tabs: [] } })
-    await flushPromises()
-    expect(store.browserCollectRows.map(row => row.status)).toEqual(['success', 'running', 'pending'])
-    expect(store.collectDiagnostics.progress).toBe(33)
-    failSecond(new Error('页面已关闭'))
-    await run
-    expect(vi.mocked(catalogApi.collectFromBrowserTab).mock.calls.map(call => [call[0].productUrl, call[0].platform, call[2]])).toEqual([
-      [urls[0], '1688', urls[0]], [urls[1], 'amazon', urls[1]], [urls[2], '1688', urls[2]],
-    ])
-    expect(store.browserCollectRows.map(row => row.status)).toEqual(['success', 'failed', 'success'])
-    expect(store.browserCollectRows[1].error).toBe('页面已关闭')
-    expect(store.collectDiagnostics).toMatchObject({ status: 'failed', progress: 100, message: '本轮采集结束：2 页完成，1 页失败。' })
-    expect(store.product.productId).toBe('最后一个商品')
-    expect(store.loading).toBe(false)
-  })
 
-  it('浏览器批量等待验证时不推进，恢复时跳过已完成项并继续原标签和后续页面', async () => {
-    vi.useFakeTimers()
-    const { store, urls } = browserQueue()
-    const verification = { browserTabId: 'original-tab', sourceUrl: urls[1], platform: 'amazon' }
-    vi.mocked(catalogApi.collectFromBrowserTab)
-      .mockResolvedValueOnce({ ...mutation(collectedProduct()), savedOnly: false })
-      .mockResolvedValueOnce({ savedOnly: false, verification, diagnostics: {} })
-    const run = store.collectFromBrowserTabs(false, urls)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(store.browserCollectRows.map(row => row.status)).toEqual(['success', 'waiting_verification', 'pending'])
-    expect(catalogApi.collectFromBrowserTab).toHaveBeenCalledTimes(2)
-    store.cancelCollectionVerification()
-    await run
-    expect(store.browserCollectRows[1].verification).toEqual(verification)
-    expect(store.loading).toBe(false)
-    vi.mocked(catalogApi.inspectCollectionVerification).mockReset().mockResolvedValueOnce({ status: 'ready', message: '' })
-    vi.mocked(catalogApi.collectFromBrowserTab)
-      .mockResolvedValueOnce({ ...mutation(collectedProduct()), savedOnly: false })
-      .mockResolvedValueOnce({ ...mutation(collectedProduct()), savedOnly: false })
-    const resumed = store.collectFromBrowserTabs(false, urls)
-    expect(catalogApi.collectFromBrowserTab).toHaveBeenCalledTimes(2)
-    await vi.advanceTimersByTimeAsync(2000)
-    await resumed
-    expect(vi.mocked(catalogApi.collectFromBrowserTab).mock.calls[2]).toEqual([expect.objectContaining({ productUrl: urls[1] }), false, '', 'original-tab'])
-    expect(vi.mocked(catalogApi.collectFromBrowserTab).mock.calls[3][2]).toBe(urls[2])
-    expect(store.browserCollectRows.map(row => row.status)).toEqual(['success', 'success', 'success'])
-    expect(store.browserCollectRows[1].verification).toBeUndefined()
-  })
 
-  it('批量保存快照保留每页路径，失败可只重试该页且不修改当前商品', async () => {
-    const { store, urls } = browserQueue()
-    store.product = collectedProduct()
-    vi.mocked(catalogApi.collectFromBrowserTab)
-      .mockResolvedValueOnce({ savedOnly: true, diagnostics: { html_snapshot_path: '/tmp/1.html' } })
-      .mockRejectedValueOnce(new Error('快照失败'))
-      .mockResolvedValueOnce({ savedOnly: true, diagnostics: { html_snapshot_path: '/tmp/3.html' } })
-    await store.collectFromBrowserTabs(true, urls)
-    expect(store.browserCollectRows.map(row => row.htmlSnapshotPath)).toEqual(['/tmp/1.html', '', '/tmp/3.html'])
-    expect(store.browserCollectRows.map(row => row.status)).toEqual(['success', 'failed', 'success'])
-    expect(store.product.productId).toBe('real-product-1')
-    vi.mocked(catalogApi.collectFromBrowserTab).mockResolvedValueOnce({ savedOnly: true, diagnostics: { html_snapshot_path: '/tmp/2.html' } })
-    await store.collectFromBrowserTabs(true, [urls[1]])
-    expect(catalogApi.collectFromBrowserTab).toHaveBeenCalledTimes(4)
-    expect(vi.mocked(catalogApi.collectFromBrowserTab).mock.calls[3][2]).toBe(urls[1])
-    expect(store.browserCollectRows[0]).toMatchObject({ status: 'success', htmlSnapshotPath: '/tmp/2.html' })
-  })
-
-  it('没有明确有效目标时不调用采集接口', async () => {
-    const { store, urls } = browserQueue()
-    await store.collectFromBrowserTabs(false, [])
-    await store.collectFromBrowserTabs(false, [urls[0], 'https://example.com/closed'])
-    store.browserDebugStatus!.connected = false
-    await store.collectFromBrowserTabs(false, [urls[0]])
-    expect(catalogApi.collectFromBrowserTab).not.toHaveBeenCalled()
-    expect(store.browserCollectRows).toHaveLength(0)
-    expect(store.error).toContain('请先检测浏览器')
-  })
 
   it('逐条呈现真实进度，失败继续执行，重试只处理指定失败项', async () => {
     const { appendCollectUrls } = await import('@/utils/collectQueue')
@@ -3573,17 +3473,17 @@ describe('采集列表执行与浏览器快照', () => {
     vi.mocked(catalogApi.inspectCollectionVerification)
       .mockResolvedValueOnce({ status: 'waiting_verification', message: '请完成验证' })
       .mockResolvedValueOnce({ status: 'ready', message: '已完成验证' })
-    vi.mocked(catalogApi.collectFromBrowserTab).mockResolvedValueOnce({ ...mutation(collectedProduct()), savedOnly: false })
+    vi.mocked(catalogApi.resumeCollection).mockResolvedValueOnce({ ...mutation(collectedProduct()) })
     const run = store.collectBatch()
     await vi.advanceTimersByTimeAsync(2000)
     expect(store.collectBatchRows.map(row => row.status)).toEqual(['waiting_verification', 'pending'])
     expect(store.collectDiagnostics.status).toBe('waiting_verification')
     expect(store.loading).toBe(true)
     expect(catalogApi.collectBatch).toHaveBeenCalledTimes(1)
-    expect(catalogApi.collectFromBrowserTab).not.toHaveBeenCalled()
+    expect(catalogApi.resumeCollection).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(2000)
     await run
-    expect(catalogApi.collectFromBrowserTab).toHaveBeenCalledWith(expect.objectContaining({ productUrl: verification.sourceUrl }), false, '', 'original-tab')
+    expect(catalogApi.resumeCollection).toHaveBeenCalledWith(verification)
     expect(store.collectBatchRows.map(row => row.status)).toEqual(['success', 'success'])
     expect(store.collectBatchRows[0].verification).toBeUndefined()
     expect(catalogApi.collectBatch).toHaveBeenCalledTimes(2)
@@ -3604,7 +3504,7 @@ describe('采集列表执行与浏览器快照', () => {
     expect(catalogApi.inspectCollectionVerification).not.toHaveBeenCalled()
     expect(catalogApi.collectBatch).toHaveBeenCalledTimes(1)
     vi.mocked(catalogApi.inspectCollectionVerification).mockResolvedValueOnce({ status: 'ready', message: '' })
-    vi.mocked(catalogApi.collectFromBrowserTab).mockResolvedValueOnce({ ...mutation(collectedProduct()), savedOnly: false })
+    vi.mocked(catalogApi.resumeCollection).mockResolvedValueOnce({ ...mutation(collectedProduct()) })
     const resumed = store.collectBatch()
     await vi.advanceTimersByTimeAsync(2000)
     await resumed
@@ -3619,22 +3519,19 @@ describe('采集列表执行与浏览器快照', () => {
     await vi.advanceTimersByTimeAsync(2000)
     await run
     expect(store.collectBatchRows[0]).toMatchObject({ status: 'failed', error: '原商品标签页已关闭' })
-    expect(catalogApi.collectFromBrowserTab).not.toHaveBeenCalled()
+    expect(catalogApi.resumeCollection).not.toHaveBeenCalled()
   })
 
-  it.each(['url', 'browser'])('单次 %s 采集也会等待验证并自动继续', async (entry) => {
+  it('单链接采集等待验证后自动继续', async () => {
     vi.useFakeTimers()
     const store = useWorkflowStore()
     const url = 'https://detail.1688.com/offer/123.html'
     store.collectForm.productUrl = url
     const waiting = { verification: { browserTabId: 'original-tab', sourceUrl: url, platform: '1688' }, diagnostics: {} }
     vi.mocked(catalogApi.inspectCollectionVerification).mockResolvedValueOnce({ status: 'ready', message: '' })
-    if (entry === 'browser') {
-      store.browserDebugStatus = { connected: true, port: 9222, tabsCount: 1, tabs: [{ url, title: '商品页', platformDetected: '1688' }], errorCode: '', errorMessage: '', nextAction: '', powershellCommand: '', cmdCommand: '', profileDir: '' }
-      vi.mocked(catalogApi.collectFromBrowserTab).mockResolvedValueOnce({ ...waiting, savedOnly: false })
-    } else vi.mocked(catalogApi.collectProduct).mockResolvedValueOnce(waiting)
-    vi.mocked(catalogApi.collectFromBrowserTab).mockResolvedValueOnce({ ...mutation(collectedProduct()), savedOnly: false })
-    const run = entry === 'browser' ? store.collectFromBrowserTabs(false, [url]) : store.collectProduct()
+    vi.mocked(catalogApi.collectProduct).mockResolvedValueOnce(waiting)
+    vi.mocked(catalogApi.resumeCollection).mockResolvedValueOnce({ ...mutation(collectedProduct()) })
+    const run = store.collectProduct()
     await vi.advanceTimersByTimeAsync(0)
     expect(store.collectDiagnostics.status).toBe('waiting_verification')
     await vi.advanceTimersByTimeAsync(2000)
@@ -3657,20 +3554,5 @@ describe('采集列表执行与浏览器快照', () => {
     expect(store.loading).toBe(false)
   })
 
-  it('保存快照不会清空当前商品，失败时退出正在采集状态', async () => {
-    const store = useWorkflowStore()
-    store.product = collectedProduct()
-    const url = 'https://amazon.com/dp/ABC123'
-    store.browserDebugStatus = { connected: true, port: 9222, tabsCount: 1, tabs: [{ url, title: '商品页', platformDetected: 'amazon' }], errorCode: '', errorMessage: '', nextAction: '', powershellCommand: '', cmdCommand: '', profileDir: '' }
-    vi.mocked(catalogApi.collectFromBrowserTab).mockResolvedValueOnce({ savedOnly: true, diagnostics: { html_snapshot_path: '/tmp/snapshot.html' } })
-    await store.collectFromBrowserTabs(true, [url])
-    expect(store.product.productId).toBe('real-product-1')
-    expect(store.collectDiagnostics).toMatchObject({ status: 'success', htmlSnapshotPath: '/tmp/snapshot.html' })
-    expect(catalogApi.collectFromBrowserTab).toHaveBeenCalledWith(expect.objectContaining({ productUrl: url, platform: 'amazon' }), true, url)
-    vi.mocked(catalogApi.collectFromBrowserTab).mockRejectedValueOnce(new Error('页面已关闭'))
-    await store.collectFromBrowserTabs(false, [url])
-    expect(store.collectDiagnostics).toMatchObject({ status: 'failed', progress: 100 })
-    expect(store.browserCollectRows[0]).toMatchObject({ status: 'failed', error: '页面已关闭' })
-    expect(store.product.productId).toBe('real-product-1')
-  })
+
 })

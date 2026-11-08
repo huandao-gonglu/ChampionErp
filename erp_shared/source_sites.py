@@ -155,13 +155,13 @@ class SourceSiteSpec:
             if "API" in code:
                 return "请检查 1688 官方 API 凭证、接口权限和商品详情接口地址；未开通权限时可切回浏览器采集。"
             if any(key in code for key in ("LOGIN", "CAPTCHA", "SECURITY", "SLIDER", "REMOTE_DEBUGGING")):
-                return "1688 触发验证，请手动打开浏览器完成验证，或使用手动导入。"
-            return "请尝试浏览器会话采集；如果仍失败，保存商品详情页 HTML 后导入，或手动补充缺失字段。"
+                return "请在采集浏览器的原商品页完成登录或验证码，再继续采集。"
+            return "请确认商品链接可访问，使用浏览器会话重新采集；缺失资料可在采集箱中补齐。"
         if self.key == "amazon":
             if any(key in code for key in ("ROBOT", "REGION", "LOGIN", "FORBIDDEN")):
-                return "请使用已登录且地区正确的浏览器会话重试；如果仍被拦截，请使用 HTML 导入 / 手动补充。"
-            return "请尝试浏览器登录后采集；如果选择器失败，使用 HTML 导入或手动补充。"
-        return "无法稳定自动解析该来源，请使用 HTML 导入或手动补充后继续后续流程。"
+                return "请在采集浏览器完成登录并确认地区设置，再重试当前商品链接。"
+            return "请确认商品链接和浏览器登录状态后重新采集；缺失资料可在采集箱中补齐。"
+        return "请确认商品链接可访问后重新采集；来源资料不完整时可在采集箱中补齐。"
 
 
 SOURCE_SITES: tuple[SourceSiteSpec, ...] = (

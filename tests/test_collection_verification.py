@@ -39,7 +39,7 @@ def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry
     if entry == 'http':
         monkeypatch.setattr(workflows, 'fetch_url_html_with_status', lambda *_: (snapshot['html'], 200))
     if entry == 'browser':
-        result = workflows.collect_from_browser_tab(tab_url=URL, product_url=URL)
+        result = workflows.collect_browser_url(product_url=URL)
     elif entry == 'batch':
         batch = workflows.collect_batch_products([URL, 'https://detail.1688.com/offer/456.html'])
         assert [row['status'] for row in batch['items']] == ['waiting_verification', 'pending']
@@ -97,7 +97,7 @@ def test_resume_uses_stable_tab_id_and_preserves_product_identity(monkeypatch):
     source = {'title': '新商品标题', 'source_url': target['url'], 'images': ['https://example.test/product.jpg']}
     monkeypatch.setattr(workflows, 'parse_source_snapshot', lambda *_: {'source': source})
     monkeypatch.setattr(workflows, 'normalize_collect_source_images', lambda source, *_: source)
-    result = workflows.collect_from_browser_tab(product_url=URL, browser_tab_id='original')
+    result = workflows.collect_browser_url(product_url=URL, browser_tab_id='original')
     assert result['ok'] is True
     assert result['product']['product_id'] == before['product_id']
     assert result['product']['source']['source_url'] == URL
@@ -108,7 +108,7 @@ def test_resume_rechecks_identity_before_parsing(monkeypatch):
     monkeypatch.setattr(workflows, 'call_desktop', lambda *_, **kw: {'snapshot': {'url': 'https://detail.1688.com/offer/456.html', 'html': '<html>其他商品</html>'}})
     parser = Mock(side_effect=AssertionError('不能解析其他商品'))
     monkeypatch.setattr(workflows, 'parse_source_snapshot', parser)
-    result = workflows.collect_from_browser_tab(product_url=URL, browser_tab_id='original')
+    result = workflows.collect_browser_url(product_url=URL, browser_tab_id='original')
     assert result['ok'] is False
     assert '原标签页已离开' in result['error']
     parser.assert_not_called()

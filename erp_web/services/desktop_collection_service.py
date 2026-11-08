@@ -1,14 +1,5 @@
 """后端采集的本机事实适配与素材关联。"""
 from copy import deepcopy
-from .desktop_connection_service import call_desktop, DesktopUnavailable
-
-
-def browser_debug_status():
-    try:
-        return call_desktop('browser.status', timeout=15)
-    except DesktopUnavailable as exc:
-        return {'ok': True, 'connected': False, 'current_tabs': [], 'tabs_count': 0,
-                'error_code': exc.code, 'error_message': str(exc), 'next_action': str(exc)}
 
 
 def apply_uploaded_assets(source, uploaded):

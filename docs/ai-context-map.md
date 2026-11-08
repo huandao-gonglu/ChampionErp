@@ -133,8 +133,9 @@ GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
 通过原生消息的输入 ID 恢复来源；同批混合来源不授予本机能力。审批和领域 Job 只用原调用
 的 Deferred metadata，审批窗口、后台扫描和微信连接的启动端都不能换设备。
 
-`source_collect_workflows.collect_from_browser_tab` 调用本机 `collect.read`，后端才读目标商品、
-规范化、登记图片并经 `ProductStore` 保存；验证检查也走同一连接。
+`source_collect_workflows.collect_browser_url` 调用本机 `collect.read`，后端才读目标商品、
+规范化、登记图片并经 `ProductStore` 保存。采集页仅提供 URL 单链接与批量入口，浏览器标签页采集和手动/HTML 导入已下线。
+`/api/collect-verification` 检查原页面验证，`/api/collect-resume` 在验证完成后沿用原桌面连接读取该商品页。
 采集素材逐张交接，`desktop_asset_service` 复用图片服务生成后端引用。
 Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model / Direct / Factory 不变。
 `desktop_model_config_service` 维护业务连接引用和指纹，具体命令、资料、代理由本机配置 owner 管理；
@@ -223,17 +224,16 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
 
 - `source_sites.py` 的采集质量门槛与核价/发布条件分开：1688 有标题和图片且未被验证拦截即可入库。缺失包装长宽高、重量通过 `collect_helpers.py` 的 `missing_fields` / `next_action` 提示在 SKU 页补齐，不触发采集失败；有规格时逐 SKU 判断包装完整性，不用首项资料代表整组。
-- `front/src/views/workflow/CollectView.vue` 组织采集方式；`BrowserCollector.vue` 负责浏览器页面选择，
-  `CollectBatchManager.vue` 负责 URL 增删改、状态筛选和失败重试。
+- `front/src/views/workflow/CollectView.vue` 仅组织 URL 采集，`CollectBatchManager.vue` 负责 URL 增删改、状态筛选和失败重试。网页在提交实际采集时交接链接、队列与操作范围，桌面恢复并确认接收后直接执行，页面查看和编辑不触发交接。
 - 批量列表状态为 `pending`（未开始）、`running`（正在采集）、`waiting_verification`（等待验证）、`success`（完成）、`failed`（失败）。部分结果保留资料提示并显示失败。
 - `front/src/stores/workflow/actions/collection.ts` 逐条提交 `/api/collect-batch`。遇到登录或验证码，后端在解析、下载、商品写入之前返回 `waiting_verification`；其 `verification` 契约由 `schemas/collection.py` 定义，仅含标签 ID、原商品 URL、平台。
-- `/api/collect-verification` 由 `collect_routes` → `collect_facade` → `source_collect_verification.inspect_collection_verification` 只读检查原标签。前端每两秒检查一次，不导航、不刷新；验证完成后用原标签 ID 调用 `/api/collect-from-browser-tab`，再次验证页面身份并采集，然后继续后续链接。标签被关闭、离开商品或无法读取时返回可操作提示，不改采集目标。
+- `/api/collect-verification` 由 `collect_routes` → `collect_facade` → `source_collect_verification.inspect_collection_verification` 只读检查原标签。前端每两秒检查一次，不导航、不刷新；验证完成后用原标签 ID 和 URL 调用 `/api/collect-resume`，再次验证页面身份并采集，然后继续后续链接。标签被关闭、离开商品或无法读取时返回可操作提示，不改采集目标。
 - 用户可以取消等待，未开始的链接保持原状。`collectQueue.ts` 本地保留等待项的标签 ID 和 URL，刷新应用或取消后点击开始采集可恢复；采集应用关闭后不承诺后台执行。不保存凭据或整份商品。正在实际采集时刷新仍标记结果未确认，避免假报成功。删除列表行不删除入库商品。
-- `/api/collect-from-browser-tab` 的显式 URL 或标签 ID 只选择指定目标；`save_only` 只保存 HTML/截图，不解析、不下载商品图片、不修改商品。验证码页不会作为部分商品写入。
+- 浏览器标签页选择与独立保存 HTML/截图的操作已移除；URL 采集仅使用指定商品页，验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
 - `desktop_runtime.collection.target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。打开操作直接返回目标句柄，采集不重复查找或强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
 - 1688 采集与浏览器 AI 共用 `desktop_runtime.browser_debug_service.ensure_browser_debug_session`：检测连接、查找本机 Chrome/Edge、使用指定资料目录启动并等待调试端口。调用方分别提供目录和端口；Gemini 默认使用 `browser_profile/ai/gemini/<profile>`，不共用 1688 登录资料，也不依赖 BitBrowser。
-  同一调试端口的任务与收尾串行。采集读取完成后关闭已消费的任务标签；还有其他网页时保留实例，人工验证、手动快照及正在操作的登录窗口保留原页。最后一个任务页完成后退出专用浏览器。托管网页 AI 在整次本机调用结束时关闭，人工登录例外；退出桌面执行器回收本次持有的实例。关闭前核对 Profile 的实例标识，确认退出后只清网页、代码和图形缓存，保留登录、站点存储与扩展。外部浏览器的生命周期由用户管理。
+  同一调试端口的任务与收尾串行。采集读取完成后关闭已消费的任务标签；还有其他网页时保留实例，人工验证及正在操作的登录窗口保留原页。最后一个任务页完成后退出专用浏览器。托管网页 AI 在整次本机调用结束时关闭，人工登录例外；退出桌面执行器回收本次持有的实例。关闭前核对 Profile 的实例标识，确认退出后只清网页、代码和图形缓存，保留登录、站点存储与扩展。外部浏览器的生命周期由用户管理。
   `browser_connection_config` 纯校验代理地址；浏览器 AI 的可选 `browser_proxy` 只在专用浏览器启动时生效，修改后需关闭专用窗口再重开，不更改采集或后端网络配置。
 
 ## 草稿描述

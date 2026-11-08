@@ -426,13 +426,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="GET",
-        path="/api/browser-debug/status",
-        business_domain="浏览器调试",
-        disposition="excluded",
-        reason="浏览器调试连接状态，采集基础设施，非业务能力。",
-    ),
-    AiCapabilityCoverageEntry(
-        method="GET",
         path="/file",
         business_domain="静态资源",
         disposition="excluded",
@@ -678,45 +671,14 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="POST",
-        path="/api/collect-1688-clean",
-        business_domain="采集与认领",
-        disposition="capability",
-        capability_names=("collect_1688_clean",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/collect-from-browser-tab",
-        business_domain="采集与认领",
-        disposition="capability",
-        capability_names=("collect_from_browser_tab",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
         path="/api/claim-products",
         business_domain="采集与认领",
         disposition="capability",
         capability_names=("claim_products",),
     ),
     AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/browser-debug/open-profile",
-        business_domain="浏览器调试",
-        disposition="excluded",
-        reason="打开本地浏览器 profile，本机调试基础设施。",
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/open-1688-browser",
-        business_domain="浏览器调试",
-        disposition="excluded",
-        reason="打开任意 URL 的浏览器会话，本机调试基础设施。",
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/collect-extension-payload",
-        business_domain="采集与认领",
-        disposition="excluded",
-        reason="浏览器扩展原始 payload 接收协议，不包装为能力。",
+        method="POST", path="/api/collect-resume", business_domain="采集与认领", disposition="internal_only",
+        reason="URL 采集验证码完成后读取同一桌面上的原商品页，沿用原请求身份。",
     ),
     # -------------------------------------------------- 文案与翻译（POST）
     AiCapabilityCoverageEntry(

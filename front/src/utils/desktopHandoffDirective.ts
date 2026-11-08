@@ -11,6 +11,7 @@ export const vDesktop: Directive<HTMLElement, DesktopAction> = {
     const entry = { value: binding.value, listener: (() => {}) as EventListener }
     entry.listener = event => {
       if (element.tagName === 'FORM' && event.type === 'click') return
+      if (element.tagName === 'FIELDSET' && (!(event.target instanceof Element) || !event.target.closest('input, select, textarea, button'))) return
       const required = typeof entry.value === 'string' ? modelRequiresDesktop(entry.value) : entry.value && !hasLocalOperations()
       if (!required || (element as HTMLButtonElement).disabled) return
       event.preventDefault()

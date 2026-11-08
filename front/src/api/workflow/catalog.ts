@@ -1,7 +1,6 @@
 import { apiClient, type AiPresentationTransport } from '@/api/client'
 import { listingLanguageValue } from '@/constants/locales'
 import type {
-  BrowserDebugStatus,
   CollectBatchResultRow,
   CollectionVerification,
   DraftIndexItem,
@@ -18,7 +17,6 @@ import type {
 } from '@/types/workflow'
 import type {
 
-  AuthResult,
   DeleteProductsResult,
   DraftMutationResponse,
   ProductMutationResponse,
@@ -30,20 +28,18 @@ import {
   getNumber,
   getString,
   normalizeBackendProduct,
-  normalizeBrowserStatus,
   normalizeDeleteProductsResult,
   normalizeDraftMutation,
   normalizeDraftsIndex,
   normalizeProductMutation,
   normalizeProductsIndex,
-  stringList,
   toBackendImageAsset,
   toBackendDraftDetail,
   toBackendProduct,
 } from './normalizers'
 
 
-import { imageTranslateTimeoutMs, normalizeAuthResult, requiredProductId } from './shared'
+import { imageTranslateTimeoutMs, requiredProductId } from './shared'
 
 export async function fetchProductsIndex(): Promise<ProductIndexItem[]> {
   const response = await apiClient.get('/api/products-index')
@@ -139,9 +135,7 @@ export async function collectProduct(
   credentials: TransientCollectCredentials = {},
 ): Promise<CollectionAttempt> {
   const url = form.productUrl.trim()
-  if (!url || form.mode === 'extension' || form.mode === 'manual') {
-    return importManualProduct(form)
-  }
+  if (!url) throw new Error('请先输入商品链接。')
   const path = form.platform.toLowerCase() === '1688' ? '/api/collect-1688' : '/api/collect-source'
   const response = await apiClient.post(path, {
     url,
@@ -152,20 +146,13 @@ export async function collectProduct(
   return normalizeCollectionAttempt(response.data)
 }
 
-export async function clean1688Text(text: string, url = ''): Promise<UnknownRecord> {
-  const response = await apiClient.post('/api/collect-1688-clean', { text, html: text, url })
-  const data = asRecord(response.data)
-  ensureOk(data, '清洗 1688 文本失败')
-  return data
-}
-
 export async function collectBatch(
   form: CollectForm,
   credentials: TransientCollectCredentials = {},
 ): Promise<{ rows: CollectBatchResultRow[]; productsIndex: ProductIndexItem[] }> {
   const response = await apiClient.post('/api/collect-batch', {
     urls: form.productUrls,
-    mode: form.mode === 'extension' ? 'manual' : form.mode,
+    mode: form.mode,
     ...collectCredentialsPayload(credentials),
     platform: ['manual', 'unknown'].includes(form.platform) ? '' : form.platform,
   })
@@ -193,59 +180,14 @@ export async function collectBatch(
   return { rows, productsIndex: normalizeProductsIndex(data.productsIndex) }
 }
 
-type BrowserCollectResponse = (
-  | (CollectionAttempt & { savedOnly: false })
-  | { savedOnly: true; diagnostics: UnknownRecord }
-) & { browserStatus?: BrowserDebugStatus }
-
-export async function collectFromBrowserTab(form: CollectForm, saveOnly = false, tabUrl = '', browserTabId = ''): Promise<BrowserCollectResponse> {
-  const response = await apiClient.post('/api/collect-from-browser-tab', {
-    tab_url: tabUrl,
-    product_url: form.productUrl,
-    platform_hint: form.platform === 'manual' ? '' : form.platform,
-    save_only: saveOnly,
-    ...(browserTabId ? { browser_tab_id: browserTabId } : {}),
+/** 验证完成后只读取原商品页，沿用原采集连接。 */
+export async function resumeCollection(verification: CollectionVerification): Promise<CollectionAttempt> {
+  const response = await apiClient.post('/api/collect-resume', {
+    browser_tab_id: verification.browserTabId,
+    source_url: verification.sourceUrl,
+    platform: verification.platform,
   })
-  const data = asRecord(response.data)
-  const browserStatus = data.browserStatus ? normalizeBrowserStatus(data.browserStatus) : undefined
-  if (saveOnly) {
-    ensureOk(data, '保存 HTML 快照失败')
-    return { savedOnly: true, diagnostics: asRecord(data.diagnostics), browserStatus }
-  }
-  const result = normalizeCollectionAttempt(data)
-  return { ...result, savedOnly: false, browserStatus }
-}
-
-export async function open1688Browser(): Promise<string> {
-  const response = await apiClient.post('/api/open-1688-browser', {})
-  const data = asRecord(response.data)
-  ensureOk(data, '打开 1688 浏览器失败')
-  return getString(data, ['message'], '已打开浏览器会话')
-}
-
-export async function fetchBrowserDebugStatus(): Promise<BrowserDebugStatus> {
-  const response = await apiClient.get('/api/browser-debug/status')
-  return normalizeBrowserStatus(response.data)
-}
-
-export async function openBrowserProfile(): Promise<AuthResult> {
-  const response = await apiClient.post('/api/browser-debug/open-profile', {})
-  const data = asRecord(response.data)
-  return normalizeAuthResult(data)
-}
-
-export async function importManualProduct(form: CollectForm): Promise<ProductMutationResponse> {
-  const response = await apiClient.post('/api/collect-extension-payload', {
-    source_url: form.productUrl,
-    platform: form.platform,
-    title: form.manualTitle,
-    price: form.manualPrice,
-    dimensions: form.manualDimensions,
-    weight: form.manualWeight,
-    images: stringList(form.manualImages),
-    raw_html_optional: form.rawText,
-  })
-  return normalizeProductMutation(response.data)
+  return normalizeCollectionAttempt(response.data)
 }
 
 export interface ClaimProductsResult {
@@ -287,7 +229,6 @@ export async function saveCollectSettings(
     appConfig: {
       ...(alibabaCookie ? { alibaba_cookie: alibabaCookie } : {}),
       collect_output_dir: form.outputDir,
-      auto_ai_recognition: form.autoAiRecognition ? '1' : '0',
     },
   })
   ensureOk(asRecord(response.data), '保存设置失败')

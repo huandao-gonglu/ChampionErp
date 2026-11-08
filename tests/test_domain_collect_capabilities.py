@@ -17,13 +17,10 @@ from erp_web.runtime_units.collect_capabilities import (
     CollectCapabilityScope,
     claim_products,
     collect_1688,
-    collect_1688_clean,
     collect_batch,
-    collect_from_browser_tab,
     source_collect,
 )
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
-from erp_web.runtime_units import source_collect_workflows
 from erp_web.runtime_units.research_capabilities import (
     ResearchCapabilityScope,
     research_hot_products_search,
@@ -32,10 +29,8 @@ from erp_web.runtime_units.research_capabilities import (
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.collect_capabilities import (
     ClaimProductsRequest,
-    Collect1688CleanRequest,
     Collect1688Request,
     CollectBatchRequest,
-    CollectFromBrowserTabRequest,
     ResearchHotProductsSearchRequest,
     ResearchRunStatusQueryRequest,
     SourceCollectRequest,
@@ -73,17 +68,6 @@ def _collect_scope(**overrides: Any) -> CollectCapabilityScope:
             "items": [{"url": item, "status": "success"} for item in urls],
             "productsIndex": [],
         },
-        browser_tab_collector=(
-            lambda tab_url, platform_hint, product_url, claim_platforms, save_only: {
-                "ok": True,
-                "product": {"product_id": "product-tab"},
-                "imagePool": [{"id": "tab-image"}],
-                "diagnostics": {"collect_mode": "browser_debugging"},
-                "browserStatus": {"connected": True},
-                "next_action": "",
-                "productsIndex": [],
-            }
-        ),
         online_1688_collector=lambda body: {
             "ok": True,
             "product": {"product_id": "product-1688"},
@@ -91,11 +75,6 @@ def _collect_scope(**overrides: Any) -> CollectCapabilityScope:
             "source_material": "ABS",
             "productsIndex": [],
             "echo": dict(body),
-        },
-        text_cleaner=lambda text, url: {
-            "ok": True,
-            "source_price_cny": "19.9",
-            "clean_source_text": text,
         },
         claimer=lambda product_ids, platforms: {
             "ok": True,
@@ -217,37 +196,6 @@ def test_collect_batch_counts_and_failure() -> None:
     assert broken.value.code == "COLLECT_BATCH_FAILED"
 
 
-def test_collect_from_browser_tab_success_and_not_connected() -> None:
-    scope = _collect_scope()
-    result = collect_from_browser_tab(
-        CollectFromBrowserTabRequest(
-            product_url="https://detail.1688.com/offer/9.html"
-        ),
-        scope=scope,
-        execution=_execution(),
-    )
-    assert result.ok is True
-    assert dict(result.product)["product_id"] == "product-tab"
-    assert dict(result.browser_status)["connected"] is True
-
-    disconnected_scope = _collect_scope(
-        browser_tab_collector=lambda *args: {
-            "ok": False,
-            "diagnostics": {"error_code": "REMOTE_DEBUGGING_NOT_CONNECTED"},
-            "error": "未连接 Chrome remote debugging",
-            "next_action": "请启动专用 Chrome 后重试。",
-        }
-    )
-    with pytest.raises(BusinessCapabilityError) as error:
-        collect_from_browser_tab(
-            CollectFromBrowserTabRequest(),
-            scope=disconnected_scope,
-            execution=_execution(),
-        )
-    assert error.value.code == "REMOTE_DEBUGGING_NOT_CONNECTED"
-
-
-
 def test_collect_1688_body_contract_and_cleaned_mapping() -> None:
     captured: dict[str, Any] = {}
 
@@ -273,33 +221,12 @@ def test_collect_1688_body_contract_and_cleaned_mapping() -> None:
     )
     body = captured["body"]
     assert body["url"] == "https://detail.1688.com/offer/9.html"
-    assert body["save"] is True
     assert body["platforms"] == ["mercadolibre"]
     # Capability 契约不接受模型提供的 cookie；凭据由 Scope 在边界内解析。
     assert "cookie" not in body
     assert result.product.get("product_id") == "product-1688"
     assert result.cleaned["source_price_cny"] == "19.9"
     assert "unrelated_key" not in result.cleaned
-
-
-def test_collect_1688_clean_passthrough_and_failure() -> None:
-    scope = _collect_scope()
-    result = collect_1688_clean(
-        Collect1688CleanRequest(text="价格：￥19.9 材质：ABS"),
-        scope=scope,
-    )
-    assert result.ok is True
-    assert dict(result.cleaned)["source_price_cny"] == "19.9"
-
-    failing_scope = _collect_scope(
-        text_cleaner=lambda text, url: {"ok": False, "error": "无法识别价格"}
-    )
-    with pytest.raises(BusinessCapabilityError) as error:
-        collect_1688_clean(
-            Collect1688CleanRequest(text="无效文本"),
-            scope=failing_scope,
-        )
-    assert error.value.code == "COLLECT_1688_CLEAN_FAILED"
 
 
 def test_claim_products_with_real_store_and_failure_mapping() -> None:

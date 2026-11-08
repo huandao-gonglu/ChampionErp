@@ -11,7 +11,6 @@ class LocalConfig:
         self.path = directory / 'config' / 'desktop-connections.json'
         self.lock = RLock()
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.collection_landing_tab_id = ""
         self.browser_port = 19222
         self.browser_profile = directory / 'browser_profile' / '1688'
         self.debug_dir = directory / 'data' / 'cache' / 'collect_debug'

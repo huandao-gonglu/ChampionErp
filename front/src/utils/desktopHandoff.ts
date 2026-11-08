@@ -12,8 +12,8 @@ export interface DesktopWorkflowState {
   product?: Product
   editorMode?: 'text' | 'images'
   collect?: { mode: string; productUrl: string; platform: string }
-  collectTab?: 'manual' | 'browser' | 'api' | 'url'
   batchRows?: CollectBatchRow[]
+  collectAction?: { type: 'single' } | { type: 'batch'; rowIds?: string[] }
 }
 
 export interface DesktopHandoffContext {

@@ -65,7 +65,6 @@ from erp_web.runtime_units.research_capabilities import ResearchCapabilityScope
 from erp_web.runtime_units.source_collect_workflows import (
     collect_1688_payload_service,
     collect_batch_products,
-    collect_from_browser_tab as collect_from_browser_tab_workflow,
     collect_source_product,
 )
 from erp_web.runtime_units.store_auth_capabilities import StoreAuthCapabilityScope
@@ -77,7 +76,7 @@ from erp_web.ai_capability_composition import (
     application_capability_permissions,
     bind_global_chat_toolset as bind_chat_capabilities,
 )
-from erp_web.services import collect_service, config_service, product_research_service
+from erp_web.services import config_service, product_research_service
 from erp_web.services.ai_tool_catalog import AiToolBindingScope
 from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.services.desktop_connection_service import desktop_unavailable_reason
@@ -267,23 +266,11 @@ def build_capability_binding_scope(
                         )
                     )
                 ),
-                browser_tab_collector=(
-                    lambda tab_url, platform_hint, product_url, claim_platforms, save_only: (
-                        collect_from_browser_tab_workflow(
-                            tab_url=tab_url,
-                            platform_hint=platform_hint,
-                            product_url=product_url,
-                            claim_platforms=list(claim_platforms) or None,
-                            save_only=save_only,
-                        )
-                    )
-                ),
                 online_1688_collector=(
                     lambda body: collect_1688_payload_service(
                         {**body, "cookie": _resolved_collect_cookie(context)}
                     )
                 ),
-                text_cleaner=collect_service.clean_1688_text,
                 claimer=(
                     lambda product_ids, targets: claim_products_to_markets(
                         product_ids,
@@ -332,10 +319,8 @@ def build_global_chat_toolset(context: AppContext | None = None, *, chat_config:
             return lambda _: chat_image_reason(chat_config if chat_config is not None else active.config.load_app_config())
         if name in model_dependencies:
             return lambda _: model_platform_reason(active.config.load_app_config(), model_dependencies[name])
-        if name == 'collect_from_browser_tab':
-            return lambda _: desktop_unavailable_reason()
         if name == 'collect_1688':
-            return lambda args: desktop_unavailable_reason() if args is not None and not str(args.get('text') or '').strip() else ''
+            return lambda _: desktop_unavailable_reason()
         if name in {'source_collect', 'collect_batch'}:
             def collect_reason(args):
                 if args is None:

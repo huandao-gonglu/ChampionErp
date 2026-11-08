@@ -7,7 +7,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
 
 DesktopOperation = Literal[
-    'browser.status', 'browser.open', 'browser.profile', 'collect.read', 'collect.verify',
+    'browser.status', 'collect.read', 'collect.verify',
     'browser.ai.open', 'browser.ai.chat', 'canvas.check', 'canvas.edit',
     'cli.run', 'cli.status', 'config.read', 'config.write', 'auth.open',
 ]
@@ -37,16 +37,13 @@ class ActionParams(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
 
 
-class BrowserParams(ActionParams):
-    url: str = ''
-
-
 class CollectReadParams(ActionParams):
     tab_url: str = ''
     platform_hint: str = ''
     product_url: str = ''
     browser_tab_id: str = ''
-    save_only: bool = False
+    # 读取已发布协议中的 false 占位，独立快照操作已下线。
+    save_only: Literal[False] = False
     open_url: bool = False
 
 
@@ -80,7 +77,7 @@ class AuthParams(ActionParams):
 
 
 ACTION_PARAMS: dict[str, type[ActionParams]] = {
-    'browser.status': ActionParams, 'browser.open': BrowserParams, 'browser.profile': ActionParams,
+    'browser.status': ActionParams,
     'collect.read': CollectReadParams, 'collect.verify': VerificationParams,
     'browser.ai.open': ModelParams, 'browser.ai.chat': ModelParams, 'canvas.check': ModelParams,
     'canvas.edit': CanvasParams, 'cli.run': ModelParams, 'cli.status': ModelParams,
