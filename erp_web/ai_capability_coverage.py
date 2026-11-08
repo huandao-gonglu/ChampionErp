@@ -117,6 +117,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         business_domain='本机连接协议', disposition='excluded',
         reason='仅 Electron 主进程使用的调用关联与素材交接；模型不能选择桌面或消费传输协议。')
       for suffix in ('connect', 'poll', 'result', 'asset', 'disconnect')),
+    *(AiCapabilityCoverageEntry(method='POST', path='/api/desktop-handoff/' + suffix,
+        business_domain='桌面导航交接', disposition='excluded',
+        reason='网页与同账号桌面之间的短期页面交接和确认，不提供业务执行或设备授权。')
+      for suffix in ('create', 'status', 'resolve', 'acknowledge', 'installers')),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
         reason="1688 买家 OAuth 状态、官方登录及一次性回调只供受信界面与授权服务使用，不向模型开放凭据操作。") for method, path in (
         ("GET", "/api/alibaba/crossborder/authorization"),

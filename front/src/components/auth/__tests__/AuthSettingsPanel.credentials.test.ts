@@ -2,6 +2,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as settingsApi from '@/api/workflow/settings'
 import AuthSettingsPanel from '../AuthSettingsPanel.vue'
+import { launchDesktop } from '@/utils/desktopHandoff'
+vi.mock('@/utils/desktopHandoff', async importOriginal => ({ ...await importOriginal<object>(), launchDesktop: vi.fn() }))
 
 const defaultPlatformOptions = [
   {
@@ -136,12 +138,14 @@ describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
     },
   }
   const apiModel = { id: 'existing', name: '已有模型', connection_type: 'api', provider_id: 'openai', capabilities: [] }
-  it('网页版隐藏本机模型预置并以只读方式显示已有 Canvas 配置', async () => {
+  it('网页版保留本机模型入口，操作时直接交接到桌面设置', async () => {
     vi.stubGlobal('championDesktop', undefined)
     const wrapper = mountPanel({ ai_models: [preset.model, apiModel], browser_presets: [preset] })
-    expect(wrapper.find('[data-testid="add-web-model"]').exists()).toBe(false)
-    expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('请从桌面端发起')
+    expect(wrapper.find('[data-testid="add-web-model"]').exists()).toBe(true)
+    expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="add-web-model"]').setValue('gemini_canvas')
+    expect(launchDesktop).toHaveBeenCalledWith(expect.objectContaining({ state: { modelSettings: { browserPresetId: 'gemini_canvas' } } }))
+    expect(wrapper.emitted('saveAi')).toBeUndefined()
     await wrapper.findAll('button').find(button => button.text().includes('已有模型'))!.trigger('click')
     expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeUndefined()
   })

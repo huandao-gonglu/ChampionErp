@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { modelOperationReason } from '@/utils/desktop'
 import type { Marketplace, Product } from '@/types/workflow'
 import { statusBadgeClass, workflowStatusLabel } from '@/utils/status'
@@ -40,7 +41,7 @@ function copyPrompt() {
 
     <div class="mt-4 flex flex-wrap gap-2">
       <span v-if="modelOperationReason('copy.generate')" role="status" class="muted">{{ modelOperationReason('copy.generate') }}</span>
-      <button class="btn btn-primary" :disabled="!!modelOperationReason('copy.generate')" @click="emit('generate')">生成 AI 文案</button>
+      <button v-desktop="'copy.generate'" class="btn btn-primary" :disabled="!!modelOperationReason('copy.generate')" @click="emit('generate')">生成 AI 文案</button>
       <button class="btn btn-secondary" @click="emit('generateImagePrompt')">生成 GPT 生图任务包</button>
       <button class="btn btn-outline" :disabled="!props.imagePrompt" @click="copyPrompt">复制生图提示词</button>
     </div>

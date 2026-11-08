@@ -11,9 +11,57 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.runtime_units.package_estimate_capabilities import CONFIRM, _size_check, draft_package_estimates_preview, PackageEstimateScope
 from erp_web.schemas.package_estimates import EdgeEstimate, PackageEstimatesRequest, PackageFreightPreviewRequest
-from tests.ai_code_mode_helpers import discovering_tools
+from tests.ai_code_mode_helpers import discovering_tools, python_call
 from tests.test_draft_edit_capabilities import seed_draft
 from tests.test_native_agent_integration import CONVERSATION, body, service
+
+
+@pytest.mark.parametrize("vision,complete", [(True, False), (False, False), (True, True)])
+def test_draft_page_discloses_package_tools_before_search(tmp_path, vision, complete):
+    app, draft_id = seed_draft()
+    if complete:
+        product, _ = proposal(app, draft_id)
+        app.products.update_product_sku_facts({
+            "product_id": product["product_id"], "expected_updated_at": product["updated_at"],
+            "changes": [{"sku_id": sku["id"], "package_dimensions": {"length_cm": 10, "width_cm": 8, "height_cm": 5}}
+                        for sku in product["sku_items"]],
+        })
+    seen = []
+
+    async def model(messages, info):
+        seen.append({tool.name for tool in info.function_tools})
+        yield "已核对工具。"
+
+    caps = ["chat", "tool_calling"] + (["image_understanding"] if vision else [])
+    config = {"ai_models": [{"id": "test", "capabilities": caps}],
+              "ai_use_case_bindings": {"global.chat": {"model_id": "test"}}}
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app, chat_config=config))
+    run = ui.prepare_run(body("准备这个草稿", page_context={"page": "draft_editor", "draft_id": draft_id}))
+    asyncio.run(run.stream(lambda _: None))
+    names, = seen
+    assert (CONFIRM in names) == (not complete)
+    assert ("draft_package_estimates_preview" in names) == (not complete)
+    assert ("product_image_read" in names) == (vision and not complete)
+
+
+@pytest.mark.parametrize("via_python", [False, True])
+def test_pricing_missing_size_discloses_tools_without_page_or_target(tmp_path, via_python):
+    app, draft_id = seed_draft()
+    seen = []
+    async def model(messages, info):
+        names = {tool.name for tool in info.function_tools}
+        seen.append(names)
+        if len(seen) == 1:
+            yield {0: DeltaToolCall(name="search_tools", json_args='{"queries":["draft_pricing_preview"]}', tool_call_id="find")}
+        elif len(seen) == 2:
+            call = python_call if via_python else DeltaToolCall
+            yield {0: call(name="draft_pricing_preview", json_args=json.dumps({"draft_id": draft_id}), tool_call_id="price")}
+        else:
+            yield "已收到包装资料缺项。"
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    asyncio.run(ui.prepare_run(body("核价")).stream(lambda _: None))
+    assert len(seen) == 3 and all(CONFIRM not in names for names in seen[:2])
+    assert {CONFIRM, "draft_package_estimates_preview", "product_read"} <= seen[2]
 
 
 def proposal(app, draft_id):

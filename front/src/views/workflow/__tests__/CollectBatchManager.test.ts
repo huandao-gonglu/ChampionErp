@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import CollectBatchManager from '../CollectBatchManager.vue'
 import { appendCollectUrls, createCollectBatchRow, restoreCollectQueue } from '@/utils/collectQueue'
 import type { CollectBatchRow } from '@/types/workflow'
+import { launchDesktop } from '@/utils/desktopHandoff'
+vi.mock('@/utils/desktopHandoff', async importOriginal => ({ ...await importOriginal<object>(), launchDesktop: vi.fn() }))
 
 function setup(rows: CollectBatchRow[] = []) {
   const wrapper = mount(CollectBatchManager, { props: { rows, loading: false } })
@@ -80,7 +82,12 @@ describe('批量采集列表', () => {
     row.verification = { browserTabId: 'original', sourceUrl: row.url, platform: '1688' }
     const restored = restoreCollectQueue(JSON.stringify([row]))
     expect(restored[0]).toMatchObject({ status: 'waiting_verification', verification: row.verification, error: '' })
-    expect(setup(restored).button('开始采集（0）').attributes('disabled')).toBeDefined()
+    const web = setup(restored)
+    expect(web.button('开始采集（1）').attributes('disabled')).toBeUndefined()
+    await web.button('开始采集（1）').trigger('click')
+    expect(launchDesktop).toHaveBeenCalled()
+    expect(web.wrapper.emitted('collect')).toBeUndefined()
+    web.wrapper.unmount()
     vi.stubGlobal('championDesktop', { localOperations: true })
     try {
       expect(setup(restored).button('开始采集（1）').attributes('disabled')).toBeUndefined()

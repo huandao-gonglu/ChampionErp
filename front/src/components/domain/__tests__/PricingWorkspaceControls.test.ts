@@ -94,6 +94,40 @@ describe('核价汇率和模板控件', () => {
     expect(input.templateSource).toEqual({ id: 'chosen', name: '日常费用' })
   })
 
+  it('保存写回所选模板，保留其他市场，并允许在保存期间继续改草稿', async () => {
+    const input = fixture()
+    const parameters = pricingTemplateParameters(input)
+    parameters.targets['yandex:ru'] = { ...parameters.targets['ozon:global'] }
+    const template = { id: 'chosen', name: '日常费用', parameters, updated_at: '' }
+    const other = { ...template, id: 'other', name: '另一份模板' }
+    vi.mocked(api.fetchPricingTemplates).mockResolvedValue({ default_template_id: other.id, items: [other, template] })
+    let finish!: (settings: PricingTemplateSettings) => void
+    vi.mocked(api.savePricingTemplate).mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    const wrapper = mount(PricingTemplates, { props: { input } })
+    const button = (label: string) => wrapper.findAll('button').find(item => item.text() === label)
+    await flushPromises()
+    expect(button('保存')).toBeUndefined()
+    await wrapper.get('select').setValue(template.id)
+    input.domesticFreightCny = 9
+    input.targets[0].targetMarginPercent = 35
+    input.exchangeRateOverrides = { usd_cny_rate: 7 }
+    await button('保存')!.trigger('click')
+    const [body] = vi.mocked(api.savePricingTemplate).mock.calls[0]
+    expect(body).toMatchObject({ id: template.id, name: template.name, set_default: false })
+    expect(body.parameters.common.domestic_freight_cny).toBe(9)
+    expect(body.parameters.common.exchange_rate_overrides).toEqual({})
+    expect(body.parameters.targets['ozon:global'].target_margin_percent).toBe(35)
+    expect(body.parameters.targets['yandex:ru']).toEqual(parameters.targets['yandex:ru'])
+    expect(button('保存')!.attributes('disabled')).toBeDefined()
+    input.domesticFreightCny = 10
+    finish({ default_template_id: other.id, saved_id: template.id, items: [other, { ...template, parameters: body.parameters }] })
+    await flushPromises()
+    expect(input.domesticFreightCny).toBe(10)
+    expect(wrapper.get<HTMLSelectElement>('select').element.value).toBe(template.id)
+    expect(wrapper.emitted('notice')?.at(-1)).toEqual(['已保存「日常费用」。'])
+    expect(button('另存模板')).toBeDefined()
+  })
+
   it('说明收进可展开的 hint，切换定价方式同步说明', async () => {
     const wrapper = mount(PricingFeesEditor, { props: { input: fixture() }, attachTo: document.body })
     expect(wrapper.text()).not.toContain('利润率 =')

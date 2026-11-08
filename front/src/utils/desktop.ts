@@ -16,14 +16,20 @@ export function setOperationAvailability(value: BackendOperationAvailability | n
 }
 
 export function desktopOperationReason(): string {
-  if (!hasLocalOperations()) return '当前操作需要本机执行器，请从桌面端发起。'
+  if (!hasLocalOperations()) return ''
   if (!availability.value) return pendingReason.value
   return availability.value.desktop_reason ? '桌面连接不可用，请重新登录桌面端。' : ''
 }
 
 export function modelOperationReason(useCase: string): string {
   if (!availability.value) return pendingReason.value
+  if (modelRequiresDesktop(useCase)) return ''
   return availability.value.blocked_use_cases[useCase] || ''
+}
+
+/** 网页入口转为桌面交接，配置错误仍由原入口解释。 */
+export function modelRequiresDesktop(useCase: string): boolean {
+  return !hasLocalOperations() && (availability.value?.desktop_use_cases || []).includes(useCase)
 }
 
 const localFields = new Set(['command', 'profile', 'sandbox', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy'])

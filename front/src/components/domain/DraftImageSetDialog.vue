@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { modelOperationReason } from '@/utils/desktop'
 import { computed, ref, watch } from 'vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
@@ -139,7 +140,7 @@ function applySelection() {
               <label v-if="result.asset" class="mr-auto flex items-center gap-2 text-sm"><input type="checkbox" :checked="chosen.includes(result.page.key)" :disabled="busy" :aria-label="`采用 ${result.page.title}`" @change="toggle(result.page.key, ($event.target as HTMLInputElement).checked)" />采用</label>
               <button v-if="result.asset && chosen.includes(result.page.key) && result.page.scope !== 'sku'" class="btn btn-outline px-2" type="button" :disabled="busy || commonOrder.indexOf(result.page.key) === 0" :aria-label="`前移 ${result.page.title}`" @click="move(result.page.key, -1)">←</button>
               <button v-if="result.asset && chosen.includes(result.page.key) && result.page.scope !== 'sku'" class="btn btn-outline px-2" type="button" :disabled="busy || commonOrder.indexOf(result.page.key) === commonOrder.length - 1" :aria-label="`后移 ${result.page.title}`" @click="move(result.page.key, 1)">→</button>
-              <button class="btn btn-outline" type="button" :disabled="busy || !!generateReason" :aria-label="`重做 ${result.page.title}`" @click="controller.generateSet(undefined, draft.updatedAt, [result.page.key])">重做此图</button>
+              <button v-desktop="'image.translate'" class="btn btn-outline" type="button" :disabled="busy || !!generateReason" :aria-label="`重做 ${result.page.title}`" @click="controller.generateSet(undefined, draft.updatedAt, [result.page.key])">重做此图</button>
             </div>
           </article>
         </div>
@@ -147,7 +148,7 @@ function applySelection() {
         <p v-if="selectedSkuKeys.length" class="muted">采用 {{ selectedSkuKeys.length }} 张 SKU 图，更新对应规格；未采用或生成失败的规格继续使用当前图片。</p>
         <div class="flex justify-end gap-3"><button type="button" class="btn btn-outline" @click="emit('close')">关闭</button><button type="button" class="btn btn-primary" :disabled="busy || !selectedCount" @click="applySelection">{{ selectedSkuKeys.length ? `采用 ${selectedCount} 张并更新图片` : `采用 ${selectedRefs.length} 张并替换共用图` }}</button></div>
       </template>
-      <form v-else-if="plan" class="space-y-5" @submit.prevent="controller.generateSet(plan, planVersion)">
+      <form v-else-if="plan" v-desktop="'image.translate'" class="space-y-5" @submit.prevent="controller.generateSet(plan, planVersion)">
         <label class="block text-sm font-medium">统一视觉风格<textarea v-model="plan.style" class="input mt-2" rows="3" maxlength="2000" required :disabled="busy" /></label>
         <article v-for="(page, index) in plan.pages" :key="page.key" class="space-y-3 rounded-xl border border-slate-200 p-4 dark:border-dark-700">
           <label class="block text-sm font-medium">第 {{ index + 1 }} 张 · {{ targetLabel(page) }}{{ page.role === 'main' ? ' · 主图' : '' }}<input v-model="page.title" class="input mt-2" maxlength="100" required :disabled="busy" /></label>
@@ -155,9 +156,9 @@ function applySelection() {
           <div class="flex flex-wrap gap-2"><img v-for="id in page.source_image_ids" :key="id" :src="byId.has(id) ? imageUrl(byId.get(id)!) : ''" alt="本页参考素材" class="h-16 w-16 rounded object-contain" /></div>
         </article>
         <p class="muted">生成 {{ plan.pages.length }} 张新图（共用 {{ plan.pages.filter(page => page.scope !== 'sku').length }} 张，SKU {{ plan.pages.filter(page => page.scope === 'sku').length }} 张），不立即替换当前草稿图片。</p>
-        <div class="flex justify-end gap-3"><button class="btn btn-outline" type="button" :disabled="busy" @click="plan = null">返回调整</button><button class="btn btn-primary" type="submit" :disabled="busy || !!generateReason">{{ busy ? '正在提交…' : `开始生成 ${plan.pages.length} 张` }}</button></div>
+        <div class="flex justify-end gap-3"><button class="btn btn-outline" type="button" :disabled="busy" @click="plan = null">返回调整</button><button v-desktop="'image.translate'" class="btn btn-primary" type="submit" :disabled="busy || !!generateReason">{{ busy ? '正在提交…' : `开始生成 ${plan.pages.length} 张` }}</button></div>
       </form>
-      <form v-else class="space-y-5" @submit.prevent="prepare">
+      <form v-else v-desktop="includeCommon ? 'image.plan' : false" class="space-y-5" @submit.prevent="prepare">
         <fieldset :disabled="busy" class="space-y-5">
           <legend class="mb-3 text-sm font-medium">生成范围</legend>
           <div class="flex flex-wrap gap-4">

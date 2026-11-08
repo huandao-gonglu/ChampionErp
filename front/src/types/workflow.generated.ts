@@ -402,6 +402,36 @@ export interface BackendPurchaseProgressView {
 export interface BackendOperationAvailability {
   desktop_reason: string
   blocked_use_cases: Record<string, string>
+  desktop_use_cases: Array<string>
+}
+
+export interface BackendDesktopHandoffCreated {
+  ok: boolean
+  request_id: string
+  expires_in: number
+}
+
+export interface BackendDesktopHandoffStatus {
+  ok: boolean
+  opened: boolean
+}
+
+export interface BackendDesktopHandoffResolved {
+  ok: boolean
+  target: string
+  state: Record<string, unknown>
+  opened: boolean
+}
+
+export interface BackendDesktopInstaller {
+  label: string
+  version: string
+  url: string
+}
+
+export interface BackendDesktopInstallers {
+  ok: boolean
+  items: Array<BackendDesktopInstaller>
 }
 
 export interface BackendApiResponse {

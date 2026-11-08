@@ -183,7 +183,8 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
             sku_targets.append(calculated_target)
         items.append({"sku_id": row["sku_id"], "input": {**sku_common, "common": sku_common, "targets": sku_targets}})
     if errors:
-        raise BusinessCapabilityError("PRICING_INPUT_INVALID", "部分 SKU 的采购成本或包装资料缺失，请只补充列出的字段。", details={"errors": errors})
+        raise BusinessCapabilityError("PRICING_INPUT_INVALID", "部分 SKU 的采购成本或包装资料缺失。",
+                                      details={"draft_id": request.draft_id, "errors": errors})
     source = deepcopy(stored.get("template_source"))
     if default_template:
         source = {"id": default_template["id"], "name": default_template["name"]}

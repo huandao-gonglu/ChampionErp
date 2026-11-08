@@ -13,6 +13,7 @@ import { GLOBAL_CHAT_CONVERSATION_PREFIX } from '@/types/aiWork'
 import type { AiWorkUiMessagesResponse, PendingToolCall } from '@/types/aiWork'
 import { useAiPageContextStore } from './aiPageContext'
 import { projectChatMessages } from '@/utils/aiChatMessages'
+import { handoffModelOperation, type DesktopChatState } from '@/utils/desktopHandoff'
 
 export const AI_CHAT_TURN_ALREADY_ACCEPTED = 'AI_CHAT_TURN_ALREADY_ACCEPTED'
 export const AI_CHAT_SELECTION_KEY = 'ai-chat-selected-conversation'
@@ -305,6 +306,10 @@ export const useAiChatStore = defineStore('aiChat', () => {
       if (command.command.execute(commandContext(), command.arg)) input.value = ''
       return
     }
+    if (handoffModelOperation('global.chat', {
+      target: floatingOpen.value ? undefined : '/aiWork' + (conversationLinkId.value ? `?conversation_id=${encodeURIComponent(conversationLinkId.value)}` : ''),
+      state: { chat: { text: input.value, attachments, conversationId: conversationLinkId.value, floating: floatingOpen.value, draftIds: targetDraftIds.value } },
+    })) return
     if (!chat.value) startConversation()
     rememberConversation(activeConversationId.value)
     images.clear()
@@ -434,6 +439,12 @@ export const useAiChatStore = defineStore('aiChat', () => {
     floatingOpen.value = true
     sendMessage()
   }
+  function restoreDesktopInput(state: DesktopChatState): void {
+    input.value = state.text
+    images.attachments.value = state.attachments
+    targetDraftIds.value = state.draftIds || []
+    floatingOpen.value = state.floating === true
+  }
   function prepareDrafts(ids: string[], goal = '准备所选草稿，复用已有资料，完成可执行的准备工作并按草稿汇报剩余问题。'): void {
     startConversation()
     targetDraftIds.value = [...new Set(ids)]
@@ -495,6 +506,6 @@ export const useAiChatStore = defineStore('aiChat', () => {
     error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
     restoring, restoreError, restoreConversation, actOnQueue, queueAction, queueRows, parallelReplies, stopParallelReply, respondToParallelApproval,
     sendMessage, stopStreaming, respondToApproval, answerQuestion, clearError, openConversation, connectEvents, disconnectEvents,
-    prepareDrafts, estimatePackageDimensions, refreshHistory, forking, forkConversation,
+    prepareDrafts, estimatePackageDimensions, restoreDesktopInput, refreshHistory, forking, forkConversation,
     openFloating: () => { floatingOpen.value = true; void restoreConversation() }, closeFloating: () => { floatingOpen.value = false } }
 })

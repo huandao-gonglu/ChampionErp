@@ -17,7 +17,8 @@ const templatesLoaded = ref(false)
 let disposed = false
 onBeforeUnmount(() => { disposed = true })
 const currentId = computed(() => props.input.templateSource?.id || '')
-const missingTemplate = computed(() => !!currentId.value && !settings.value.items.some(item => item.id === currentId.value))
+const currentTemplate = computed(() => settings.value.items.find(item => item.id === currentId.value))
+const missingTemplate = computed(() => !!currentId.value && !currentTemplate.value)
 const initialParameters = JSON.stringify(pricingTemplateParameters(props.input))
 const managerOpen = ref(false)
 const saveOpen = ref(false)
@@ -30,7 +31,13 @@ const setDefault = ref(true)
 const editing = ref<PricingTemplate | null>(null)
 const editInput = ref<PricingInput | null>(null)
 const filtered = computed(() => settings.value.items.filter(item => item.name.toLowerCase().includes(search.value.trim().toLowerCase())))
-const saveErrors = computed(() => editInput.value ? [...pricingCommonErrors({ ...editInput.value, exchangeRateOverrides: includeRates.value ? editInput.value.exchangeRateOverrides : {} }), ...selectedPricingTargets(editInput.value).flatMap(pricingTargetErrors)] : [])
+function templateErrors(input: PricingInput, withRates: boolean) {
+  return [...pricingCommonErrors({ ...input, exchangeRateOverrides: withRates ? input.exchangeRateOverrides : {} }), ...selectedPricingTargets(input).flatMap(pricingTargetErrors)]
+}
+const saveErrors = computed(() => editInput.value ? templateErrors(editInput.value, includeRates.value) : [])
+function hasSavedRates(template: PricingTemplate) {
+  return Object.keys(template.parameters.common.exchange_rate_overrides || {}).length > 0
+}
 function useTemplate(template: PricingTemplate) {
   applyPricingTemplate(props.input, template)
   emit('notice', `已使用「${template.name}」，请点击「计算核价」。`)
@@ -53,34 +60,52 @@ async function load() {
 function openSave(template: PricingTemplate | null = null) {
   editing.value = template
   name.value = template?.name || ''
-  includeRates.value = !!template && Object.keys(template.parameters.common.exchange_rate_overrides || {}).length > 0
+  includeRates.value = !!template && hasSavedRates(template)
   setDefault.value = template ? template.id === settings.value.default_template_id : !settings.value.default_template_id
   editInput.value = JSON.parse(JSON.stringify(props.input)) as PricingInput
   if (template) applyPricingTemplate(editInput.value, template)
   error.value = ''
   saveOpen.value = true
 }
-async function save() {
-  if (!editInput.value || !name.value.trim() || saveErrors.value.length || busy.value) return
+async function persistTemplate(input: PricingInput, template: PricingTemplate | null, templateName: string, withRates: boolean, makeDefault: boolean) {
+  if (busy.value || props.disabled) return
   busy.value = true
   error.value = ''
   try {
-    const parameters = pricingTemplateParameters(editInput.value, includeRates.value)
-    // 编辑模板时保留本次草稿未包含的市场规则。
-    if (editing.value) parameters.targets = { ...editing.value.parameters.targets, ...parameters.targets }
-    const savedSettings = await savePricingTemplate({ id: editing.value?.id, name: name.value.trim(), parameters, set_default: setDefault.value })
+    const parameters = pricingTemplateParameters(input, withRates)
+    // 保留当前草稿未选用的市场规则。
+    if (template) parameters.targets = { ...template.parameters.targets, ...parameters.targets }
+    const savedSettings = await savePricingTemplate({ id: template?.id, name: templateName, parameters, set_default: makeDefault })
     if (disposed) return
     settings.value = savedSettings
-    const saved = settings.value.items.find(item => item.id === settings.value.saved_id)
-    if (saved) {
-      const currentRates = { ...props.input.exchangeRateOverrides }
-      useTemplate(saved)
-      if (!includeRates.value) props.input.exchangeRateOverrides = currentRates
-    }
-    saveOpen.value = false
-    emit('notice', `已保存「${name.value.trim()}」${setDefault.value ? '并设为默认模板' : ''}。`)
+    return savedSettings.items.find(item => item.id === savedSettings.saved_id)
   } catch (exc) { error.value = exc instanceof Error ? exc.message : '保存核价模板失败' }
   finally { busy.value = false }
+}
+async function saveCurrent() {
+  const template = currentTemplate.value
+  if (!template) return
+  const withRates = hasSavedRates(template)
+  const [firstError] = templateErrors(props.input, withRates)
+  if (firstError) {
+    error.value = firstError
+    return
+  }
+  const saved = await persistTemplate(props.input, template, template.name, withRates, template.id === settings.value.default_template_id)
+  if (saved) {
+    if (currentId.value === saved.id) props.input.templateSource = { id: saved.id, name: saved.name }
+    emit('notice', `已保存「${saved.name}」。`)
+  }
+}
+async function save() {
+  if (!editInput.value || !name.value.trim() || saveErrors.value.length) return
+  const saved = await persistTemplate(editInput.value, editing.value, name.value.trim(), includeRates.value, setDefault.value)
+  if (!saved) return
+  const currentRates = { ...props.input.exchangeRateOverrides }
+  useTemplate(saved)
+  if (!includeRates.value) props.input.exchangeRateOverrides = currentRates
+  saveOpen.value = false
+  emit('notice', `已保存「${saved.name}」${setDefault.value ? '并设为默认模板' : ''}。`)
 }
 async function changeDefault(id: string) {
   busy.value = true
@@ -115,10 +140,11 @@ onMounted(async () => { await load(); emit('ready') })
       <WorkspaceHint label="核价模板说明" content="保存草稿或应用售价时保存模板来源与当前参数；再次打开沿用草稿参数，模板修改或删除不会覆盖它们。默认模板仅在新草稿首次核价时填入。" />
     </div>
     <div class="mt-3 flex items-center justify-between gap-2">
-      <button type="button" class="pricing-text-button" :disabled="disabled" @click="managerOpen = true">管理模板</button>
-      <button type="button" class="pricing-text-button" :disabled="disabled" @click="openSave()"><PhFloppyDisk :size="15" />{{ settings.items.length ? '另存模板' : '保存为模板' }}</button>
+      <button type="button" class="pricing-text-button mr-auto" :disabled="disabled || busy" @click="managerOpen = true">管理模板</button>
+      <button v-if="currentTemplate" type="button" class="pricing-text-button" :disabled="disabled || busy" @click="saveCurrent"><PhFloppyDisk :size="15" />保存</button>
+      <button type="button" class="pricing-text-button" :disabled="disabled || busy" @click="openSave()">{{ settings.items.length ? '另存模板' : '保存为模板' }}</button>
     </div>
-    <p v-if="error && !managerOpen && !saveOpen" class="pricing-field-error mt-2" role="alert">{{ error }} <button type="button" class="underline" @click="load">重试</button></p>
+    <p v-if="error && !managerOpen && !saveOpen" class="pricing-field-error mt-2" role="alert">{{ error }} <button v-if="!templatesLoaded" type="button" class="underline" @click="load">重试</button></p>
   </div>
 
   <WorkspaceDialog :open="managerOpen" title="核价模板" variant="drawer" width="544px" :close-disabled="busy" @close="managerOpen = false">

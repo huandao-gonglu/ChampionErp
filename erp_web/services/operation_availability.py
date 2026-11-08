@@ -46,13 +46,16 @@ def require_model_platform(config, use_case):
 def operation_availability(config, *, connection_id=None) -> OperationAvailability:
     desktop_reason = desktop_unavailable_reason(connection_id)
     blocked = {}
+    desktop_use_cases = []
     for use_case in ai_model_config.AI_USE_CASES:
         if ai_model_config.AI_USE_CASES[use_case].get('global_binding') is False:
             continue
         reason = model_platform_reason(config, use_case, desktop_reason=desktop_reason)
         if reason:
             blocked[use_case] = reason
+            if desktop_reason and not model_platform_reason(config, use_case, desktop_reason=''):
+                desktop_use_cases.append(use_case)
     image_reason = chat_image_reason(config)
     if image_reason:
         blocked["global.chat.images"] = image_reason
-    return {'desktop_reason': desktop_reason, 'blocked_use_cases': blocked}
+    return {'desktop_reason': desktop_reason, 'blocked_use_cases': blocked, 'desktop_use_cases': desktop_use_cases}

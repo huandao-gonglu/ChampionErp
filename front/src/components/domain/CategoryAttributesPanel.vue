@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { modelOperationReason } from '@/utils/desktop'
 import { attributeConstraintError, attributeConstraintHint } from '@/utils/categoryConstraints'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
@@ -731,14 +732,14 @@ function targetLabel(target: MarketplaceTargetSite) {
             <p v-else class="mt-1 text-sm text-accent-500 dark:text-accent-400">可手动输入关键词搜索当前目标站点，或按需使用 AI 识别商品主体并生成候选。</p>
           </div>
           <span v-if="modelOperationReason('text.translate')" role="status" class="muted">{{ modelOperationReason('text.translate') }}</span>
-          <button class="btn btn-outline" :disabled="!!modelOperationReason('text.translate') || props.loading || props.categoryResultTranslating || !props.categoryResults.length" @click="emit('translateCategoryResults')">翻译候选类目</button>
+          <button v-desktop="'text.translate'" class="btn btn-outline" :disabled="!!modelOperationReason('text.translate') || props.loading || props.categoryResultTranslating || !props.categoryResults.length" @click="emit('translateCategoryResults')">翻译候选类目</button>
         </div>
         <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ props.loading ? '正在请求当前平台实时类目接口...' : '候选类目来自当前平台实时搜索；选中类目后再读取并保存平台属性定义。' }}</p>
         <p v-if="props.categoryAutoMatchTargetError" class="mt-2 text-xs text-amber-700 dark:text-amber-300">本目标站点自动匹配未完成：{{ props.categoryAutoMatchTargetError }}</p>
         <div class="mt-4 flex gap-2">
           <input :value="props.categoryQuery" class="input" placeholder="类目关键词" @input="emit('updateCategoryQuery', ($event.target as HTMLInputElement).value)" @keyup.enter="emit('searchCategory')" />
           <span v-if="modelOperationReason('category.product_match')" role="status" class="muted">{{ modelOperationReason('category.product_match') }}</span>
-          <button class="btn btn-outline shrink-0" :disabled="!!modelOperationReason('category.product_match') || props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">AI 匹配类目</button>
+          <button v-desktop="'category.product_match'" class="btn btn-outline shrink-0" :disabled="!!modelOperationReason('category.product_match') || props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">AI 匹配类目</button>
           <button class="btn btn-primary shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('searchCategory')">搜索</button>
         </div>
         <div class="mt-4 max-h-80 space-y-2 overflow-y-auto">
@@ -775,7 +776,7 @@ function targetLabel(target: MarketplaceTargetSite) {
         <div class="mt-4 flex flex-wrap gap-2">
           <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory" @click="emit('applyCategory')">刷新平台属性</button>
           <span v-if="modelOperationReason('text.translate')" role="status" class="muted">{{ modelOperationReason('text.translate') }}</span>
-          <button class="btn btn-outline" :disabled="!!modelOperationReason('text.translate') || props.loading || props.categoryAttributeTranslating || categoryAttributeState !== 'ready'" @click="emit('translateCategoryAttributes')">翻译平台属性</button>
+          <button v-desktop="'text.translate'" class="btn btn-outline" :disabled="!!modelOperationReason('text.translate') || props.loading || props.categoryAttributeTranslating || categoryAttributeState !== 'ready'" @click="emit('translateCategoryAttributes')">翻译平台属性</button>
           <button v-if="!props.skuScope" class="btn btn-outline" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('categoryPrecheck')">类目预检</button>
         </div>
 

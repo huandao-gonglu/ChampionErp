@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { draftContextTitle, draftListTitle } from '@/utils/draftDisplayTitle'
 import { modelOperationReason } from '@/utils/desktop'
-import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { vDesktop } from '@/utils/desktopHandoffDirective'
+import { useDesktopHandoffContext, receivedDesktopHandoff, acknowledgeDesktopHandoff, type DesktopWorkflowState } from '@/utils/desktopHandoff'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -39,7 +41,7 @@ import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
-import { loadProduct as loadProductForEditor } from '@/api/workflow/catalog'
+import { loadDraft as loadDraftForHandoff, loadProduct as loadProductForEditor } from '@/api/workflow/catalog'
 import { useAiDraftSync } from '@/composables/useAiDraftSync'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
@@ -104,7 +106,7 @@ const route = useRoute()
 const router = useRouter()
 const { copied: productIdCopied, copy: copyToClipboard } = useClipboard()
 const activeNav = ref('dashboard')
-let initialStateLoaded = false
+const initialStateLoaded = ref(false)
 const editorOpen = ref(false)
 const focusProductSku = ref('')
 const draftWorkspaceOpen = ref(false)
@@ -115,6 +117,58 @@ watch(draftWorkspaceOpen, (open, _previous, onCleanup) => {
   onCleanup(() => { document.body.style.overflow = previousOverflow })
 })
 const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
+useDesktopHandoffContext(() => {
+  if (route.path !== '/') return null
+  const workflow: DesktopWorkflowState = {}
+  if (draftWorkspaceOpen.value) {
+    workflow.draft = currentDraft.value
+    workflow.draftContext = currentDraftProductContext.value
+    workflow.draftTab = draftWorkspaceTab.value
+    workflow.pricingInput = pricingInput.value
+  }
+  if (editorOpen.value) {
+    workflow.product = product.value
+    workflow.editorMode = editorMode.value
+  }
+  if (activeNav.value === 'collect') {
+    workflow.collect = { mode: collectForm.value.mode, productUrl: collectForm.value.productUrl, platform: collectForm.value.platform }
+    workflow.batchRows = collectBatchRows.value
+  }
+  return { target: route.fullPath, state: Object.keys(workflow).length ? { workflow } : {} }
+})
+let restoringHandoff = ''
+watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath], async ([handoff, loaded]) => {
+  if (!handoff || !loaded || route.fullPath !== handoff.target || !handoff.state.workflow || restoringHandoff === handoff.requestId) return
+  restoringHandoff = handoff.requestId
+  try {
+    const state = handoff.state.workflow as DesktopWorkflowState
+    if (state.collect) {
+      Object.assign(collectForm.value, state.collect)
+      if (state.batchRows) collectBatchRows.value = state.batchRows
+    }
+    if (state.draft?.draftId && state.draftContext) {
+      const saved = await loadDraftForHandoff(state.draft.draftId)
+      if (receivedDesktopHandoff.value?.requestId !== handoff.requestId) return
+      store.acceptLoadedDraft(saved)
+      await nextTick()
+      // 建立服务端基线后恢复本地编辑，沿用原来的脏状态和版本校验。
+      Object.assign(currentDraft.value, state.draft)
+      if (state.pricingInput) Object.assign(pricingInput.value, state.pricingInput)
+      currentDraftProductContext.value = state.draftContext
+      store.setMarketplace(state.draft.platform)
+      draftWorkspaceTab.value = state.draftTab || 'text'
+      draftWorkspaceOpen.value = true
+    }
+    if (state.product) {
+      product.value = state.product
+      editorMode.value = state.editorMode || 'text'
+      editorOpen.value = true
+    }
+    await acknowledgeDesktopHandoff(handoff.requestId, 'workflow')
+  } catch (cause) {
+    activityStore.setError(cause instanceof Error ? cause.message : '桌面页面恢复失败，请回网页重试。')
+  } finally { restoringHandoff = '' }
+})
 const draftSync = useAiDraftSync({
   draft: currentDraft, input: pricingInput, loading,
   accept: result => store.acceptLoadedDraft(result),
@@ -331,14 +385,14 @@ onMounted(async () => {
   const initialTab = activeNav.value
   const modelLoad = initialTab === 'auth' ? refreshDomainForNav(initialTab) : undefined
   await store.loadState()
-  initialStateLoaded = true
   if (activeNav.value === 'auth' && modelLoad) await modelLoad
   else await refreshDomainForNav(activeNav.value)
+  initialStateLoaded.value = true
 })
 
 onActivated(() => {
   checkDraftUpdates()
-  if (initialStateLoaded && activeNav.value === 'publish') void refreshDomainForNav('publish')
+  if (initialStateLoaded.value && activeNav.value === 'publish') void refreshDomainForNav('publish')
 })
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnUnsavedImages)
@@ -352,7 +406,7 @@ watch(
     const tab = String(route.query.tab || '')
     const previous = activeNav.value
     activeNav.value = navItems.some((item) => item.key === tab) ? tab : 'dashboard'
-    if (initialStateLoaded && previous !== activeNav.value) {
+    if (initialStateLoaded.value && previous !== activeNav.value) {
       void refreshDomainForNav(activeNav.value)
     }
   },
@@ -595,7 +649,7 @@ watch(
         >
           <template #actions>
             <span v-if="draftWorkspaceTab === 'text' && modelOperationReason('copy.generate')" role="status" class="muted">{{ modelOperationReason('copy.generate') }}</span>
-            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="draftWorkspaceLoading || !!modelOperationReason('copy.generate') || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
+            <button v-if="draftWorkspaceTab === 'text'" v-desktop="'copy.generate'" class="btn btn-outline" :disabled="draftWorkspaceLoading || !!modelOperationReason('copy.generate') || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
               {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
             </button>
             <button class="btn btn-primary" :disabled="loading || imageWorkbenchBusy || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="imageSaveState.save">{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}</button>

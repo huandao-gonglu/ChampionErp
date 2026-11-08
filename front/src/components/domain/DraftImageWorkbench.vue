@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { modelOperationReason } from '@/utils/desktop'
 import { computed, ref, watch } from 'vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
@@ -118,8 +119,8 @@ watch(busy, value => { if (value) dragging.value = '' })
     </header>
     <div class="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-dark-700 dark:bg-dark-900" aria-label="图片处理工具栏">
       <span class="mr-3 min-w-32 text-sm font-medium">{{ selected.length ? `已选 ${selected.length} 张` : '勾选图片开始处理' }}</span>
-      <button class="btn btn-primary" type="button" :disabled="!!imageReason || busy || !canProcess" @click="open('translate')">翻译图片</button>
-      <button class="btn btn-outline" type="button" :disabled="!!imageReason || busy || !canProcess" @click="open('edit')">AI 修改</button>
+      <button v-desktop="'image.translate'" class="btn btn-primary" type="button" :disabled="!!imageReason || busy || !canProcess" @click="open('translate')">翻译图片</button>
+      <button v-desktop="'image.translate'" class="btn btn-outline" type="button" :disabled="!!imageReason || busy || !canProcess" @click="open('edit')">AI 修改</button>
       <button class="btn btn-outline" type="button" :disabled="(!currentIds.length || (!!planReason && !hasSkuTargets)) && !batch?.image_set" @click="imageSetOpen = true">{{ batch?.image_set ? '查看套图' : '生成套图' }}</button>
       <button class="btn btn-outline" type="button" :disabled="busy" @click="open('add')">添加图片</button>
       <button class="btn btn-outline" type="button" :disabled="!selected.length" @click="selected = []">取消选择</button>
@@ -186,7 +187,7 @@ watch(busy, value => { if (value) dragging.value = '' })
         <template v-if="dialog === 'remove'"><p>将从本草稿全部 SKU 的共用图中移出。</p><p class="muted">图片文件和独立的 SKU 图片关联保留，可撤销。</p></template>
         <template v-else><p v-if="imageReason" role="status" class="muted">{{ imageReason }}</p><label v-if="dialog === 'edit'" class="block text-sm font-medium">修改要求<textarea v-model="prompt" class="input mt-2" rows="5" placeholder="例如：修正标题文字，保留每张图各自的商品颜色和版式。" /></label><p v-else>翻译为 {{ draft.language }}。</p><p class="muted">处理成功后自动使用新图，可撤销。失败的图片继续使用当前图。</p></template>
       </template>
-      <div class="flex justify-end gap-3"><button type="button" class="btn btn-outline" :disabled="busy" @click="dialog = null">取消</button><button type="submit" class="btn btn-primary" :disabled="busy || ((dialog === 'edit' || dialog === 'translate') && !!imageReason) || (dialog === 'edit' && !prompt.trim()) || (dialog === 'add' && !additions.length)">{{ dialog === 'remove' ? '移出共用区' : dialog === 'add' ? `添加 ${additions.length} 张` : `开始处理 ${targets.length} 张` }}</button></div>
+      <div class="flex justify-end gap-3"><button type="button" class="btn btn-outline" :disabled="busy" @click="dialog = null">取消</button><button v-desktop="'image.translate'" type="submit" class="btn btn-primary" :disabled="busy || ((dialog === 'edit' || dialog === 'translate') && !!imageReason) || (dialog === 'edit' && !prompt.trim()) || (dialog === 'add' && !additions.length)">{{ dialog === 'remove' ? '移出共用区' : dialog === 'add' ? `添加 ${additions.length} 张` : `开始处理 ${targets.length} 张` }}</button></div>
     </form>
   </WorkspaceDialog>
 </template>

@@ -12,6 +12,36 @@ API_SCHEMA_VERSION = 1
 class OperationAvailability(TypedDict):
     desktop_reason: str
     blocked_use_cases: dict[str, str]
+    desktop_use_cases: list[str]
+
+
+class DesktopHandoffCreated(TypedDict):
+    ok: bool
+    request_id: str
+    expires_in: int
+
+
+class DesktopHandoffStatus(TypedDict):
+    ok: bool
+    opened: bool
+
+
+class DesktopHandoffResolved(TypedDict):
+    ok: bool
+    target: str
+    state: dict[str, Any]
+    opened: bool
+
+
+class DesktopInstaller(TypedDict):
+    label: str
+    version: str
+    url: str
+
+
+class DesktopInstallers(TypedDict):
+    ok: bool
+    items: list[DesktopInstaller]
 
 
 class ApiResponse(TypedDict, total=False):

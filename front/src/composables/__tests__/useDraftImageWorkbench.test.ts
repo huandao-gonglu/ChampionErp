@@ -53,7 +53,7 @@ afterEach(() => { scopes.forEach(scope => scope.stop()); scopes.length = 0; vi.c
 
 describe('图片工作台操作与恢复', () => {
   it('当前端不能修图时可读原任务，翻译、编辑和重做均不保存草稿或创建批次', async () => {
-    setOperationAvailability({ desktop_reason: '需要桌面端', blocked_use_cases: { 'image.translate': 'Gemini Canvas 需要桌面端' } })
+    setOperationAvailability({ desktop_use_cases: [], desktop_reason: '需要桌面端', blocked_use_cases: { 'image.translate': 'Gemini Canvas 需要桌面端' } })
     const { work, save } = fixture()
     await flushPromises()
     await work.start('translate', ['common'])

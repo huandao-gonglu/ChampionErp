@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext, Tool
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred
 from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.toolsets import AbstractToolset
 
 from erp_web.schemas.ai_tools import (
     AiToolCommand,
@@ -334,8 +335,9 @@ class PydanticToolBridge:
 
 def build_pydantic_toolset(
     toolset: AiToolSet,
-) -> FunctionToolset[AiAgentDependencies]:
-    return PydanticToolBridge(toolset).as_toolset()
+) -> AbstractToolset[AiAgentDependencies]:
+    native = PydanticToolBridge(toolset).as_toolset()
+    return native.prepared(toolset.prepare_tools) if toolset.prepare_tools else native
 
 
 __all__ = [

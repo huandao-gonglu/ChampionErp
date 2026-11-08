@@ -170,8 +170,21 @@ class AppContext:
         self._pricing_cache = None
         self._image_batches = None
         self._desktop_connections = None
+        self._desktop_handoffs = None
         self._wechat = None
         self._wechat_store = None
+
+    @property
+    def desktop_handoffs(self):
+        with self._lazy_lock:
+            if self._closed:
+                raise RuntimeError("AppContext 已关闭，不能再访问桌面交接。")
+            if self._desktop_handoffs is None:
+                from erp_web.services.desktop_handoff_service import DesktopHandoffs
+                self._desktop_handoffs = DesktopHandoffs(
+                    session_validator=self.account_store.session_valid if self.account_store else None,
+                )
+            return self._desktop_handoffs
 
     @property
     def desktop_connections(self):

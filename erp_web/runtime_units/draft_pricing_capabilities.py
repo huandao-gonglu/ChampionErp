@@ -8,6 +8,8 @@ from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.draft_pricing import DraftPricingRequest, DraftPricingResult
 from erp_web.schemas.draft_pricing import PricingIssue
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
+from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.product_model.sku_model import PACKAGE_FIELDS
 
 
 @dataclass(frozen=True)
@@ -43,11 +45,19 @@ def pricing_summary(result: dict[str, Any]) -> DraftPricingResult:
     description=("预览草稿全部已选 SKU 的核价，不保存售价。系统自动读取逐 SKU 已有采购成本、包装资料及费用覆盖，"
         "无需先读取或重新提交成本。新草稿尚无核价配置时自动使用默认模板，已有配置沿用草稿快照。"
         "只提交用户明确修改的参数；国内物流填写 common.domestic_freight_cny，"
-        "shipping_amount 仅表示国际运费。只根据返回的实际缺失字段向用户补问；用户未要求核价时不要主动核价。"),
+        "shipping_amount 仅表示国际运费。缺失包装边长时先读对应 SKU 原图，再按有依据的包装区间试算物流影响并提交确认；缺成本或毛重再补问；用户未要求核价时不要主动核价。"),
     permission="pricing.read", side_effect="none", recovery_policy="retry_safe", version="1",
 )
 def draft_pricing_preview(request: DraftPricingRequest, scope: Annotated[DraftPricingCapabilityScope, Injected()]) -> DraftPricingResult:
-    return pricing_summary(price_draft(request, product_store=scope.products))
+    try:
+        return pricing_summary(price_draft(request, product_store=scope.products))
+    except BusinessCapabilityError as exc:
+        issues = (exc.details or {}).get("errors", ())
+        if exc.code != "PRICING_INPUT_INVALID" or not any(issue.get("field") in PACKAGE_FIELDS[:3] for issue in issues):
+            raise
+        raise BusinessCapabilityError(exc.code, "已选 SKU 缺少包装边长。先核对相应 SKU 原图上的尺寸与包装层级；"
+                                      "根据已有事实估算缺失边，用区间两端试算物流影响，再提交建议供用户确认。"
+                                      "现有资料不足时说明具体缺口。", details=exc.details) from exc
 
 
 @ai_tool(

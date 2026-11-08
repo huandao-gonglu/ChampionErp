@@ -5,6 +5,7 @@ import AiWorkFloatingButton from '@/components/common/AiWorkFloatingButton.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import ExternalRequestNotice from '@/components/common/ExternalRequestNotice.vue'
 import Toast from '@/components/common/Toast.vue'
+import DesktopHandoffNotice from '@/components/common/DesktopHandoffNotice.vue'
 import { useAccountStore } from '@/stores/account'
 import { onMounted, onUnmounted, watch } from 'vue'
 import { refreshOperationAvailability, resetOperationAvailability } from '@/api/operationAvailability'
@@ -49,6 +50,7 @@ onUnmounted(() => {
   </RouterView>
   <AiWorkFloatingButton v-if="account.user" />
   <Toast />
+  <DesktopHandoffNotice />
   <ExternalRequestNotice v-if="account.user" />
   <OrderAlertBanner v-if="account.user" />
 </template>

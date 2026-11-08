@@ -5,6 +5,7 @@ from typing import Any
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart, UserPromptPart
 
+from erp_web.services.ai_code_mode import iter_message_parts
 from erp_web.services.ai_agent_dependencies import AiAgentDependencies
 from erp_web.services.online_product_changes import contains, same_number
 from erp_web.product_model.online_operation_model import NONBLOCKING_STATUSES
@@ -52,17 +53,6 @@ def _object(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _parts(message):
-    """同时读取官方 CodeMode 留在原生 metadata 中的真实嵌套回执。"""
-    for part in message.parts:
-        yield part
-        if isinstance(part, ToolReturnPart) and (part.metadata or {}).get("code_mode"):
-            for nested in part.metadata.get("tool_calls", {}).values():
-                yield ToolCallPart(**nested) if isinstance(nested, dict) else nested
-            for nested in part.metadata.get("tool_returns", {}).values():
-                yield ToolReturnPart(**nested) if isinstance(nested, dict) else nested
-
-
 def recoverable_online_changes(messages) -> list[dict]:
     """只认实际尝试的写入；读过的商品不自动成为写入目标。后续用户输入重置范围。"""
     calls, attempts, jobs = {}, {}, {}
@@ -84,7 +74,7 @@ def recoverable_online_changes(messages) -> list[dict]:
                              "conflict_job_id": details.get("conflict_job_id"), "command": command}
 
     for message in messages:
-        for part in _parts(message):
+        for part in iter_message_parts(message):
             if isinstance(part, UserPromptPart):
                 calls.clear()
                 attempts.clear()

@@ -789,6 +789,9 @@ def test_tool_discovery_and_result_projection_keep_generic_boundaries() -> None:
     assert "ToolSearch(strategy=match_tool_queries)" in factory
     bridge = (ROOT / "erp_web/services/ai_tool_bridge.py").read_text(encoding="utf-8")
     assert "tool.defer_loading = self.toolset.defer_loading" in bridge
+    assert "native.prepared(toolset.prepare_tools)" in bridge
+    for generic in (factory, bridge):
+        assert "agent_package_tools" not in generic and "draft_package_estimates_" not in generic
     for name in ("ai_tool_discovery.py", "ai_tool_result_projection.py"):
         source = (ROOT / "erp_web/services" / name).read_text(encoding="utf-8")
         assert not any(value in source for value in ("runtime_units", "facades", "sqlite3", "yandex", "ozon", "exec(", "eval("))

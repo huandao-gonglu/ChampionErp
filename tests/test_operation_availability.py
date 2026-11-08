@@ -67,6 +67,7 @@ def test_model_and_collection_rules_follow_current_connection_and_actual_binding
     blocked = operation_availability(config)
     assert blocked['desktop_reason'] and 'Gemini Canvas' in blocked['blocked_use_cases']['image.translate']
     assert 'Codex CLI' in blocked['blocked_use_cases']['text.translate']
+    assert {'image.translate', 'text.translate'} <= set(blocked['desktop_use_cases'])
     assert catalog.get('image_edit').unavailable_reason(None) == blocked['blocked_use_cases']['image.translate']
     assert catalog.get('collect_from_browser_tab').unavailable_reason(None) == blocked['desktop_reason']
     batch = catalog.get('collect_batch')

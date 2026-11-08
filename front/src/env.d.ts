@@ -18,6 +18,9 @@ interface ImportMeta {
 
 interface Window {
   championDesktop?: { localOperations?: boolean;
+    pendingHandoff?: () => Promise<string>;
+    finishHandoff?: (id: string) => Promise<void>;
+    onHandoff?: (callback: (id: string) => void) => () => void;
     openAlibabaAuthorization?: (url: string) => Promise<void>;
     savedLogin?: () => Promise<{ available: boolean; email: string; password: string }>;
     rememberLogin?: (options: { email: string; password: string; remember: boolean; auto: boolean }) => Promise<void>;

@@ -114,11 +114,20 @@ GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
 现有 Job 和 Agent 生命周期仍由原 owner / Pydantic AI 负责。
 
 当前端可用性由 `services/operation_availability.py` 按实际模型绑定和当前请求的桌面连接计算。
-`GET /api/operation-availability` 只返回限制原因；前端 `utils/desktop.ts` 用它展示、禁用操作。
+`GET /api/operation-availability` 返回限制原因及需要桌面的模型用例。网页通过
+`utils/desktopHandoff.ts`、`desktopHandoffDirective.ts` 接管原功能入口并直接唤起桌面，配置问题在原地展示。
 新增本机动作继续经 `call_desktop` 投递。业务工具需要按端筛选时，在应用装配的
 `AiToolBinding.unavailable_reason` 声明依赖；原生工具发现和运行时复核共用该判断。
 混合工具按参数检查，例如链接采集仅在浏览器模式需要桌面。后台长任务在创建前检查，
 按已存在的请求 ID 查询或恢复原结果仍可用。
+
+网页到桌面的页面交接由 `desktop_routes.py` → `desktop_facade.py` →
+`desktop_handoff_service.py` 管理，POST `/api/desktop-handoff/{create,status,resolve,acknowledge,installers}`
+全部经过账号与请求体验证。短期请求属于来源账号与网页会话，领取和确认绑定实际桌面连接，
+只恢复页面、编辑内容及对话输入。`front/desktop/deep-links.cjs` 验证 `champion-erp://continue`
+所属站点与配置一致，主进程处理冷启动、macOS `open-url` 和 Windows `second-instance`，preload 仅让主页面接收编号。
+`DesktopHandoffNotice.vue` 在登录后接收，所有页面内容恢复完成后才确认，未确认时显示重试与安装入口。
+安装包列表复用 `desktop_version_policy.RELEASES` 下发布清单，文件由现有 Nginx 发行目录提供。
 
 每条聊天输入的设备引用保存在服务端收件箱。主 Agent 在模型请求边界应用新输入，
 通过原生消息的输入 ID 恢复来源；同批混合来源不授予本机能力。审批和领域 Job 只用原调用
@@ -1398,6 +1407,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   商品资料、上架条件、价格、库存和确认读取；发送前及响应后仍逐 SKU 持久化原检查点。
   发布计划与库存证据保存选中仓库及其实际 Campaign，确认查询使用该 Campaign。
   合批不改变发布成功判定、手动重试与未知写入规则，不增加重启后续发。
+- `erp_web/facades/agent_package_tools.py` 在原生工具集的 `prepared` 阶段检查目标草稿已选、启用的 SKU。缺包装边长时，当前允许的商品读取、原图识别、运费区间试算与估算确认工具直接可见；无页面目标时从本轮真实的草稿读取或核价缺项回执定位。工具可见性不产生写入或授权。
 - 核价页或主对话可以发起包装外尺寸估算。`package_estimate_capabilities.py` 使用草稿已选 SKU 和商品版本，复用核价批处理比较区间端点，保留整组 SKU 共同选仓语义。端点报价只供估算比较。确认建议使用 Pydantic AI 原生审批，服务端快照的 `requires_user_confirmation` 标记让通用自动批准策略跳过需要人工核对的建议。确认后经 ProductStore 保存建议值和逐边依据，商品编辑及重采集按当前值保留适用标记。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
 - `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。

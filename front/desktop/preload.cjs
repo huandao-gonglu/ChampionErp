@@ -3,6 +3,13 @@ const { contextBridge, ipcRenderer } = require('electron')
 // 只暴露固定能力，页面不能选择本机路径或发送任意 IPC。
 contextBridge.exposeInMainWorld('championDesktop', {
   localOperations: true,
+  pendingHandoff: () => ipcRenderer.invoke('desktop:pending-handoff'),
+  finishHandoff: id => ipcRenderer.invoke('desktop:finish-handoff', id),
+  onHandoff: callback => {
+    const listener = (_event, id) => callback(id)
+    ipcRenderer.on('desktop:handoff', listener)
+    return () => ipcRenderer.removeListener('desktop:handoff', listener)
+  },
   savedLogin: () => ipcRenderer.invoke('account:saved-login'),
   rememberLogin: options => ipcRenderer.invoke('account:remember-login', options),
   onConnectionChanged: (callback) => {

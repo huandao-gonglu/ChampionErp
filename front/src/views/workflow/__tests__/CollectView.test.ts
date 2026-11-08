@@ -2,6 +2,8 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import CollectView from '../CollectView.vue'
 import type { CollectDiagnostics, CollectForm, Product } from '@/types/workflow'
+import { launchDesktop } from '@/utils/desktopHandoff'
+vi.mock('@/utils/desktopHandoff', async importOriginal => ({ ...await importOriginal<object>(), launchDesktop: vi.fn() }))
 
 const form: CollectForm = {
   productUrl: '',
@@ -129,13 +131,15 @@ describe('CollectView', () => {
 })
 
 
-it('网页不会展示采集浏览器控制，URL 采集使用 HTTP', async () => {
+it('网页点击浏览器采集直接交接，URL 采集仍可选择 HTTP', async () => {
   vi.stubGlobal('championDesktop', undefined)
   const collectForm = { ...form }
   const wrapper = mount(CollectView, { props: { form: collectForm, diagnostics, product, loading: false,
     error: '', batchRows: [], browserStatus: null, browserRows: [] } })
-  expect(wrapper.find('[data-testid="collect-method-browser"]').exists()).toBe(false)
-  expect(wrapper.findAll('button').some(button => button.text() === '打开采集浏览器')).toBe(false)
+  expect(wrapper.get('[data-testid="collect-method-browser"]').attributes('disabled')).toBeUndefined()
+  await wrapper.get('[data-testid="collect-method-browser"]').trigger('click')
+  expect(launchDesktop).toHaveBeenCalledWith(expect.objectContaining({ state: expect.objectContaining({ workflow: expect.objectContaining({ collect: expect.objectContaining({ mode: 'browser' }) }) }) }))
+  expect(wrapper.emitted('open1688Browser')).toBeUndefined()
   await wrapper.get('[data-testid="collect-method-url"]').trigger('click')
   expect(collectForm.mode).toBe('http')
   wrapper.unmount()

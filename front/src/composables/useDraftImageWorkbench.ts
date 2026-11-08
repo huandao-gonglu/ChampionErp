@@ -1,4 +1,5 @@
 import { modelOperationReason } from '@/utils/desktop'
+import { handoffModelOperation } from '@/utils/desktopHandoff'
 import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
 import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImageState, type ImageSetPlan } from '@/api/draftImages'
 import { saveDraft, uploadImages } from '@/api/workflow/catalog'
@@ -129,6 +130,7 @@ export function useDraftImageWorkbench(options: {
   onScopeDispose(() => { ++epoch; clearTimeout(timer) })
 
   function platformBlocked(useCase: string) {
+    if (handoffModelOperation(useCase)) return true
     const reason = modelOperationReason(useCase)
     if (reason) notice.value = reason
     return Boolean(reason)

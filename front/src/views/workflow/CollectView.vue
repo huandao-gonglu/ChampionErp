@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { desktopOperationReason, hasLocalOperations } from '@/utils/desktop'
+import { launchDesktop, useDesktopHandoffContext, receivedDesktopHandoff } from '@/utils/desktopHandoff'
+import { vDesktop } from '@/utils/desktopHandoffDirective'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import CollectBatchManager from './CollectBatchManager.vue'
 import BrowserCollector from './BrowserCollector.vue'
@@ -36,12 +38,20 @@ type CollectTab = 'manual' | 'browser' | 'api' | 'url'
 
 const localOperations = hasLocalOperations()
 const desktopReason = computed(desktopOperationReason)
-const activeCollectTab = ref<CollectTab>(localOperations ? 'browser' : 'manual')
+const activeCollectTab = ref<CollectTab>(props.form.mode === 'browser' ? 'browser' : localOperations ? 'browser' : 'manual')
 const advancedOpen = ref(false)
 const transientAlibabaCookie = ref('')
+useDesktopHandoffContext(() => ({
+  target: '/?tab=collect',
+  state: { workflow: { collect: { mode: props.form.mode, productUrl: props.form.productUrl, platform: props.form.platform }, collectTab: activeCollectTab.value, batchRows: props.batchRows } },
+}))
+watch(receivedDesktopHandoff, handoff => {
+  const tab = handoff?.state.workflow?.collectTab
+  if (tab) activeCollectTab.value = tab
+}, { immediate: true })
 
 const collectTabs: Array<{ key: CollectTab; title: string; subtitle: string }> = [
-  ...(localOperations ? [{ key: 'browser' as const, title: '浏览器采集', subtitle: '登录后选择商品页面' }] : []),
+  { key: 'browser', title: '浏览器采集', subtitle: '登录后选择商品页面' },
   { key: 'url', title: 'URL / 批量采集', subtitle: '管理链接并逐条采集' },
   { key: 'manual', title: '手动 / HTML 导入', subtitle: '粘贴已有商品资料' },
   { key: 'api', title: 'API 采集', subtitle: '使用已授权的 1688 API' },
@@ -57,7 +67,7 @@ const panelStyle = {
 }
 
 const urlCollectModes = [
-  ...(localOperations ? [{ value: 'browser', label: '浏览器会话' }] : []),
+  { value: 'browser', label: '浏览器会话' },
   { value: 'http', label: 'HTTP 抓取' },
 ] as const
 
@@ -71,6 +81,10 @@ const collectStatusLabel = computed(() => {
 
 function selectCollectTab(tab: CollectTab) {
   if (props.loading || (tab === 'browser' && desktopReason.value)) return
+  if (tab === 'browser' && !localOperations) {
+    void launchDesktop({ state: { workflow: { collect: { mode: 'browser', productUrl: props.form.productUrl, platform: props.form.platform }, collectTab: 'browser', batchRows: props.batchRows } } })
+    return
+  }
   activeCollectTab.value = tab
   if (tab === 'manual' && props.form.mode !== 'extension') props.form.mode = 'manual'
   if (tab === 'browser') props.form.mode = 'browser'
@@ -100,10 +114,15 @@ function takeTransientCollectCredentials(): TransientCollectCredentials {
 }
 
 function collectProduct() {
+  if (props.form.mode === 'browser' && !localOperations) { void launchDesktop(); return }
   emit('collect', takeTransientCollectCredentials())
 }
 
 function collectBatch(rowIds?: string[]) {
+  if (!localOperations && (props.form.mode === 'browser' || props.batchRows.some(row => row.verification && (!rowIds || rowIds.includes(row.id))))) {
+    void launchDesktop()
+    return
+  }
   emit('batchCollect', takeTransientCollectCredentials(), rowIds)
 }
 
@@ -220,7 +239,7 @@ function saveSettings() {
         </section>
 
         <template v-else-if="activeCollectTab === 'browser'">
-          <BrowserCollector :status="props.browserStatus" :rows="props.browserRows" :loading="props.loading || !!desktopReason" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrls) => emit('collectFromBrowser', saveOnly, tabUrls)" />
+          <BrowserCollector v-desktop="true" :status="props.browserStatus" :rows="props.browserRows" :loading="props.loading || !!desktopReason" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrls) => emit('collectFromBrowser', saveOnly, tabUrls)" />
         </template>
 
         <section v-else-if="activeCollectTab === 'api'" data-testid="collect-active-card" class="card space-y-6">

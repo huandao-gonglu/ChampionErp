@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { desktopOperationReason, hasLocalOperations, modelOperationReason } from '@/utils/desktop'
+import { vDesktop } from '@/utils/desktopHandoffDirective'
+import { launchDesktop, useDesktopHandoffContext, receivedDesktopHandoff, acknowledgeDesktopHandoff } from '@/utils/desktopHandoff'
 import { computed, inject, reactive, ref, watch } from 'vue'
 import ApiModelPicker from './ApiModelPicker.vue'
 import { testAiModel } from '@/api/workflow/settings'
@@ -139,7 +141,7 @@ const allCapabilityValues = capabilityOptions.map((item) => item.value)
 const imageCapabilityValues = new Set(['image_generate', 'image_edit'])
 const desktopShell = hasLocalOperations()
 const desktopReason = computed(desktopOperationReason)
-const localOperations = computed(() => !desktopReason.value)
+const localOperations = computed(() => desktopShell && !desktopReason.value)
 const connectionTypeOptions = [
   { value: API_CONNECTION_TYPE, label: 'API 服务' },
   { value: CLI_CONNECTION_TYPE, label: '本地 CLI' },
@@ -526,7 +528,17 @@ function modelForServer(row: UnknownRecord): UnknownRecord {
 }
 
 const selectedAiModelIsApi = computed(() => selectedAiModelConnectionType.value === API_CONNECTION_TYPE)
-const localModelBlocked = computed(() => !selectedAiModelIsApi.value && Boolean(desktopReason.value))
+const localModelBlocked = computed(() => desktopShell && !selectedAiModelIsApi.value && Boolean(desktopReason.value))
+useDesktopHandoffContext(() => authRoute?.path === '/' && authRoute.query.tab === 'auth' && activeAuthSettingsTab.value === 'ai_models' ? {
+  target: '/?tab=auth&auth_section=ai_models',
+  state: { modelSettings: { selectedModelId: modelField('id'), model: selectedAiModel.value } },
+} : null)
+
+function selectAiModel(index: number) {
+  selectedAiModelIndex.value = index
+  if (!desktopShell && !selectedAiModelIsApi.value) void launchDesktop()
+}
+
 const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value === CLI_CONNECTION_TYPE)
 const selectedModelThinkingSupported = computed(() => firstText(asRecord(derivedGenerationCapabilities(selectedAiModel.value).reasoning).status) === 'supported')
 const selectedModelThinkingExplicit = computed(() => typeof selectedAiModel.value?.thinking_enabled === 'boolean')
@@ -766,6 +778,7 @@ function emitAiSettings() {
 }
 
 function saveAiSettings() {
+  if (!desktopShell && !selectedAiModelIsApi.value) { void launchDesktop(); return }
   if (aiControlsLocked.value || !commitCustomRequestBody()) return
   emitAiSettings()
 }
@@ -791,6 +804,10 @@ function setModelThinking(value: boolean | null) {
 function setSelectedModelField(field: string, value: string | boolean) {
   if (!selectedAiModel.value) return
   if (aiControlsLocked.value || (selectedSystemModel.value && systemConnectionFields.has(field))) return
+  if (!desktopShell && field === 'connection_type' && value !== API_CONNECTION_TYPE) {
+    void launchDesktop({ target: '/?tab=auth&auth_section=ai_models', state: { modelSettings: { selectedModelId: modelField('id'), model: selectedAiModel.value, connectionType: value } } })
+    return
+  }
   const nextValue = field === 'connection_type' && typeof value === 'string'
     ? normalizeConnectionType(value)
     : field === 'provider_id' && typeof value === 'string'
@@ -1139,9 +1156,19 @@ function addAiModel() {
 
 function addBrowserModel(event: Event) {
   const select = event.target as HTMLSelectElement
-  const preset = browserPresets.value.find(item => item.id === select.value)
+  const id = select.value
   select.value = ''
-  if (!preset || aiControlsLocked.value || !localOperations.value) return
+  addBrowserPreset(id)
+}
+
+function addBrowserPreset(id: string) {
+  const preset = browserPresets.value.find(item => item.id === id)
+  if (!preset || aiControlsLocked.value) return
+  if (!desktopShell) {
+    void launchDesktop({ target: '/?tab=auth&auth_section=ai_models', state: { modelSettings: { browserPresetId: preset.id } } })
+    return
+  }
+  if (!localOperations.value) return
   const existingIndex = aiModels.value.findIndex(model =>
     model.connection_type === BROWSER_CONNECTION_TYPE
     && model.browser_provider === preset.model.browser_provider
@@ -1572,6 +1599,29 @@ const mlHasRefreshToken = computed(() => Boolean(props.mercadolibreChecklist?.fi
 function copy(text: string) {
   if (text) void navigator.clipboard?.writeText(text)
 }
+let restoringModelHandoff = ''
+watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.length, localOperations], async ([handoff, reading, , connected]) => {
+  if (!desktopShell || !handoff?.state.modelSettings || reading || !connected || restoringModelHandoff === handoff.requestId) return
+  restoringModelHandoff = handoff.requestId
+  try {
+    const state = handoff.state.modelSettings
+    activeAuthSettingsTab.value = 'ai_models'
+    let index = aiModels.value.findIndex(model => model.id === state.selectedModelId)
+    if (state.model) {
+      const model = normalizeAiModelRow(state.model, index >= 0 ? index : aiModels.value.length)
+      if (index >= 0) aiModels.value[index] = model
+      else { aiModels.value.push(model); index = aiModels.value.length - 1 }
+    }
+    if (index >= 0) selectedAiModelIndex.value = index
+    if (state.connectionType) setSelectedModelField('connection_type', state.connectionType)
+    if (state.browserPresetId) {
+      if (!browserPresets.value.some(preset => preset.id === state.browserPresetId)) throw new Error('未能读取对应的网页模型预置，请重新读取模型后重试。')
+      addBrowserPreset(state.browserPresetId)
+    }
+    await acknowledgeDesktopHandoff(handoff.requestId, 'modelSettings')
+  } catch (cause) { aiSettingsError.value = cause instanceof Error ? cause.message : '模型设置恢复失败，请重试。' }
+  finally { restoringModelHandoff = '' }
+}, { flush: 'post', immediate: true })
 </script>
 
 <template>
@@ -1593,7 +1643,7 @@ function copy(text: string) {
         <div class="mt-4 flex flex-wrap justify-end gap-2">
           <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe()">取消</button>
           <p v-if="localModelBlocked" role="status" class="muted">{{ desktopReason }}</p>
-          <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending || localModelBlocked" @click="confirmCapabilityProbe">
+          <button v-desktop="!selectedAiModelIsApi" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending || localModelBlocked" @click="confirmCapabilityProbe">
             {{ capabilityProbeDialog.pending ? '测试中' : '确定测试' }}
           </button>
         </div>
@@ -1627,12 +1677,12 @@ function copy(text: string) {
             </div>
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
-              <select v-if="desktopShell" data-testid="add-web-model" aria-label="添加网页模型" class="input w-auto py-1.5 text-sm" :disabled="aiControlsLocked || !browserPresets.length || !localOperations" value="" @change="addBrowserModel">
+              <select data-testid="add-web-model" aria-label="添加网页模型" class="input w-auto py-1.5 text-sm" :disabled="aiControlsLocked || !browserPresets.length || (desktopShell && !localOperations)" value="" @change="addBrowserModel">
                 <option value="" disabled>添加网页模型</option>
                 <option v-for="preset in browserPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
               </select>
-              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel || localModelBlocked" @click="duplicateSelectedAiModel">复制当前模型</button>
-              <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || localModelBlocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
+              <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel || localModelBlocked" @click="duplicateSelectedAiModel">复制当前模型</button>
+              <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || localModelBlocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存 AI 设置</button>
             </div>
           </div>
@@ -1646,16 +1696,16 @@ function copy(text: string) {
                 class="w-full rounded-lg border px-3 py-2 text-left text-sm transition"
                 :class="selectedAiModelIndex === index ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100' : 'border-accent-200 bg-white text-accent-700 hover:bg-accent-50 dark:border-dark-700 dark:bg-dark-900/70 dark:text-accent-200'"
                 :disabled="aiControlsLocked"
-                @click="selectedAiModelIndex = index"
+                @click="selectAiModel(index)"
               >
                 <span class="block truncate font-semibold">{{ model.name || model.id || '未命名模型' }}</span>
                 <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ model.system_managed ? '系统 · New API' : aiModelProviderLabel(model) }} · {{ model.model || '未选模型' }}</span>
               </button>
             </div>
 
-            <fieldset v-if="selectedAiModel" class="ai-model-form min-w-0 space-y-3" :disabled="localModelBlocked">
+            <fieldset v-if="selectedAiModel" v-desktop="!selectedAiModelIsApi" class="ai-model-form min-w-0 space-y-3" :disabled="localModelBlocked">
               <p v-if="selectedSystemModel" class="text-sm text-accent-500 dark:text-accent-400">系统模型通过 New API 调用，使用当前账号的额度。</p>
-              <p v-if="!localOperations && !selectedAiModelIsApi" role="status" class="text-sm text-amber-700 dark:text-amber-300">{{ desktopReason }}</p>
+              <p v-if="desktopShell && !localOperations && !selectedAiModelIsApi" role="status" class="text-sm text-amber-700 dark:text-amber-300">{{ desktopReason }}</p>
               <p v-if="aiSettingsError" role="alert" class="text-sm text-rose-700 dark:text-rose-300">{{ aiSettingsError }}</p>
               <div class="grid gap-3 md:grid-cols-2">
                 <label class="block">
@@ -1669,7 +1719,7 @@ function copy(text: string) {
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">接入方式</span>
                   <select data-testid="ai-connection-type" class="input" :value="modelField('connection_type', 'api')" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('connection_type', eventText($event))">
-                    <option v-for="option in connectionTypeOptions.filter(item => desktopShell || item.value === API_CONNECTION_TYPE || item.value === selectedAiModelConnectionType)" :key="option.value" :value="option.value" :disabled="!localOperations && option.value !== API_CONNECTION_TYPE">{{ option.label }}</option>
+                    <option v-for="option in connectionTypeOptions" :key="option.value" :value="option.value" :disabled="desktopShell && !localOperations && option.value !== API_CONNECTION_TYPE">{{ option.label }}</option>
                   </select>
                 </label>
                 <label v-if="selectedAiModelIsApi" class="block">
@@ -1687,13 +1737,13 @@ function copy(text: string) {
                 </label>
                 <label v-else-if="selectedAiModelIsCli" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI 工具</span>
-                  <select class="input" :value="modelField('cli_tool', 'codex')" :disabled="aiControlsLocked || !localOperations" @change="setSelectedModelField('cli_tool', eventText($event))">
+                  <select class="input" :value="modelField('cli_tool', 'codex')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" @change="setSelectedModelField('cli_tool', eventText($event))">
                     <option v-for="tool in cliToolOptions" :key="tool.value" :value="tool.value">{{ tool.label }}{{ tool.installed ? '（已安装）' : '' }}</option>
                   </select>
                 </label>
                 <label v-else class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页服务商</span>
-                  <select data-testid="web-provider-id" class="input" :value="modelField('browser_provider')" :disabled="aiControlsLocked || !localOperations" @change="setSelectedModelField('browser_provider', eventText($event))">
+                  <select data-testid="web-provider-id" class="input" :value="modelField('browser_provider')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" @change="setSelectedModelField('browser_provider', eventText($event))">
                     <option value="" disabled>请选择网页服务商</option>
                     <option v-if="modelField('browser_provider') && !browserProviderIsListed" :value="modelField('browser_provider')" disabled>{{ modelField('browser_provider') }}（已保存配置）</option>
                     <option v-for="option in browserProviderOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -1718,7 +1768,7 @@ function copy(text: string) {
                 <template v-else-if="selectedAiModelIsCli">
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI 命令</span>
-                    <input class="input" :value="modelField('command')" :disabled="aiControlsLocked || !localOperations" placeholder="例如 codex" @input="setSelectedModelField('command', eventText($event))" />
+                    <input class="input" :value="modelField('command')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="例如 codex" @input="setSelectedModelField('command', eventText($event))" />
                   </label>
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
@@ -1813,11 +1863,11 @@ function copy(text: string) {
                   <div v-else-if="selectedAiModelIsCli" class="mt-3 grid gap-3 md:grid-cols-2">
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI Profile</span>
-                      <input class="input" :value="modelField('profile')" :disabled="aiControlsLocked || !localOperations" placeholder="可选" @input="setSelectedModelField('profile', eventText($event))" />
+                      <input class="input" :value="modelField('profile')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="可选" @input="setSelectedModelField('profile', eventText($event))" />
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Sandbox</span>
-                      <select class="input" :value="modelField('sandbox', 'read-only')" :disabled="aiControlsLocked || !localOperations" @change="setSelectedModelField('sandbox', eventText($event))">
+                      <select class="input" :value="modelField('sandbox', 'read-only')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" @change="setSelectedModelField('sandbox', eventText($event))">
                         <option v-for="option in cliSandboxOptions" :key="option" :value="option">{{ option }}</option>
                       </select>
                     </label>
@@ -1825,26 +1875,26 @@ function copy(text: string) {
                   <div v-else class="mt-3 grid gap-3 md:grid-cols-2">
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器模式</span>
-                      <select class="input" :value="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE)" :disabled="aiControlsLocked || !localOperations" @change="setSelectedModelField('browser_mode', eventText($event))">
+                      <select class="input" :value="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE)" :disabled="aiControlsLocked || (desktopShell && !localOperations)" @change="setSelectedModelField('browser_mode', eventText($event))">
                         <option v-for="option in browserModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                       </select>
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器 Profile</span>
-                      <input class="input" :value="modelField('browser_profile')" :disabled="aiControlsLocked || !localOperations" placeholder="留空使用 default" @input="setSelectedModelField('browser_profile', eventText($event))" />
+                      <input class="input" :value="modelField('browser_profile')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="留空使用 default" @input="setSelectedModelField('browser_profile', eventText($event))" />
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">远程调试端口</span>
-                      <input class="input" :value="modelField('browser_port')" :disabled="aiControlsLocked || !localOperations" placeholder="可选" @input="setSelectedModelField('browser_port', eventText($event))" />
+                      <input class="input" :value="modelField('browser_port')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="可选" @input="setSelectedModelField('browser_port', eventText($event))" />
                     </label>
                     <label v-if="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE) === BROWSER_MODE_MANAGED_PROFILE" class="block md:col-span-2">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器代理</span>
-                      <input class="input" :value="modelField('browser_proxy')" :disabled="aiControlsLocked || !localOperations" placeholder="可选，例如 http://127.0.0.1:7890" @input="setSelectedModelField('browser_proxy', eventText($event))" />
+                      <input class="input" :value="modelField('browser_proxy')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="可选，例如 http://127.0.0.1:7890" @input="setSelectedModelField('browser_proxy', eventText($event))" />
                       <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅用于此专用浏览器，支持 HTTP、HTTPS 和 SOCKS5。地址中不填写账号密码；修改后需关闭专用浏览器，再重新测试连接。</span>
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页 URL</span>
-                      <input class="input" :value="modelField('browser_url')" :disabled="aiControlsLocked || !localOperations" placeholder="可选" @input="setSelectedModelField('browser_url', eventText($event))" />
+                      <input class="input" :value="modelField('browser_url')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="可选" @input="setSelectedModelField('browser_url', eventText($event))" />
                     </label>
                   </div>
                 </details>
@@ -1890,7 +1940,7 @@ function copy(text: string) {
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
                 <select class="input" :value="useCaseBindingField(String(useCase.id || ''), 'model_id')" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
                   <option value="">自动匹配</option>
-                  <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :disabled="model.connection_type !== API_CONNECTION_TYPE && (!localOperations || !useCase.desktop_capability)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
+                  <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :disabled="model.connection_type !== API_CONNECTION_TYPE && ((desktopShell && !localOperations) || !useCase.desktop_capability)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
                 </select>
               </label>
               <p v-if="modelOperationReason(String(useCase.id))" role="status" class="muted mt-2">{{ modelOperationReason(String(useCase.id)) }}</p>

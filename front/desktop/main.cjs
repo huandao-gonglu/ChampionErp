@@ -15,6 +15,7 @@ const { SavedLogin, registerSavedLogin } = require('./saved-login.cjs')
 const { AccountSession, proxyBackendRequest } = require('./account-session.cjs')
 const { registerAlibabaAuthorization } = require('./alibaba-authorization.cjs')
 const { NewAPIBrowserBridge, registerNewAPIBridge } = require('./newapi.cjs')
+const { DESKTOP_SCHEME, parseDesktopLink, desktopLinkArgument, registerDesktopHandoff } = require('./deep-links.cjs')
 
 const { name: packageName, productName, desktopUpdateOrigin } = require('../package.json')
 
@@ -65,7 +66,35 @@ function notifyConnectionChanged() {
   }
 }
 
-app.on('second-instance', () => {
+let pendingHandoff = ''
+let pendingLinkError = ''
+function receiveDesktopLink(value) {
+  try {
+    pendingHandoff = parseDesktopLink(value, getBackendBaseUrl())
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('desktop:handoff', pendingHandoff)
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    }
+  } catch (error) {
+    if (app.isReady()) dialog.showErrorBox('无法打开桌面页面', error.message)
+    else pendingLinkError = error.message
+  }
+}
+
+// macOS 的启动链接可能早于 ready 到达，先保存，待页面和登录完成后接收。
+app.on('open-url', (event, value) => {
+  event.preventDefault()
+  receiveDesktopLink(value)
+})
+const initialLink = desktopLinkArgument(process.argv)
+if (ownsInstance && initialLink) receiveDesktopLink(initialLink)
+
+app.on('second-instance', (_event, argv) => {
+  const link = desktopLinkArgument(argv)
+  if (link) receiveDesktopLink(link)
   const win = BrowserWindow.getAllWindows()[0]
   if (win) {
     if (win.isMinimized()) win.restore()
@@ -105,7 +134,7 @@ function getBackendBaseUrl() {
   const configPath = path.join(app.getPath('userData'), 'connection.json')
   if (fs.existsSync(configPath)) return normalizeBackendUrl(JSON.parse(fs.readFileSync(configPath, 'utf8')).backend_url)
   if (!app.isPackaged) return `http://127.0.0.1:${process.env.ERP_PORT || '5000'}`
-  throw new Error(`请在 ${configPath} 设置 backend_url，或通过 CHAMPION_ERP_BACKEND_URL 指定统一业务后端地址。`)
+  return normalizeBackendUrl(desktopUpdateOrigin)
 }
 
 function getFrontendRoot() {
@@ -290,6 +319,8 @@ async function createWindow() {
   })
   registerSavedLogin({ ipcMain, win, url, vault, session: accountSession })
   registerLocalConfig({ ipcMain, win, frontendUrl: url, runtime })
+  registerDesktopHandoff({ ipcMain, win, frontendUrl: url, pending: () => pendingHandoff,
+    finish: id => { if (pendingHandoff === id) pendingHandoff = '' } })
   registerAlibabaAuthorization({ ipcMain, win, frontendUrl: url, app, shell })
   registerNewAPIBridge({ ipcMain, win, shell, bridge: newapiBridge })
   registerLicenseDirectory({
@@ -365,6 +396,9 @@ function showDownloadProgress(cancel) {
 
 app.whenReady().then(async () => {
   if (!ownsInstance) return
+  if (app.isPackaged) app.setAsDefaultProtocolClient(DESKTOP_SCHEME)
+  else if (process.platform === 'win32') app.setAsDefaultProtocolClient(DESKTOP_SCHEME, process.execPath, [path.resolve(process.argv[1])])
+  if (pendingLinkError) dialog.showErrorBox('无法打开桌面页面', pendingLinkError)
   if (app.isPackaged) {
     updates = createDesktopUpdates({ app, dialog, shell, autoUpdater, origin: desktopUpdateOrigin,
       showProgress: showDownloadProgress, parentWindow: () => BrowserWindow.getAllWindows()[0],

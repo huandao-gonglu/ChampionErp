@@ -9,6 +9,11 @@ POST_HANDLERS = {
     '/api/desktop/result': desktop_facade.complete,
     '/api/desktop/asset': desktop_facade.upload_asset,
     '/api/desktop/disconnect': desktop_facade.disconnect,
+    '/api/desktop-handoff/create': desktop_facade.create_handoff,
+    '/api/desktop-handoff/status': desktop_facade.handoff_status,
+    '/api/desktop-handoff/resolve': desktop_facade.resolve_handoff,
+    '/api/desktop-handoff/acknowledge': desktop_facade.acknowledge_handoff,
+    '/api/desktop-handoff/installers': desktop_facade.desktop_installers,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 
@@ -22,6 +27,8 @@ def handle_post(handler, parsed):
         handler.send_json(action(body))
     except DesktopUnavailable as exc:
         handler.send_json({'ok': False, 'error': str(exc), 'error_code': exc.code}, 409)
+    except RequestValidationError:
+        raise
     except (ValueError, KeyError) as exc:
         raise RequestValidationError(str(exc)) from exc
     return True

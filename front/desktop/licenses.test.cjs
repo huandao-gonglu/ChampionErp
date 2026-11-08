@@ -56,7 +56,7 @@ test('预加载仅声明本机能力并暴露无参数的许可证入口', async
       }
     },
   })
-  assert.deepEqual(Object.keys(bridge), ['localOperations', 'savedLogin', 'rememberLogin', 'onConnectionChanged', 'openAlibabaAuthorization', 'openNewAPI', 'configureModels', 'openLicenses'])
+  assert.deepEqual(Object.keys(bridge), ['localOperations', 'pendingHandoff', 'finishHandoff', 'onHandoff', 'savedLogin', 'rememberLogin', 'onConnectionChanged', 'openAlibabaAuthorization', 'openNewAPI', 'configureModels', 'openLicenses'])
   const events = []
   const unsubscribe = bridge.onConnectionChanged((...args) => events.push(args))
   ipcRenderer.emit('desktop:connection-changed', { sender: '主进程' })

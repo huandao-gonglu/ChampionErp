@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai import RunContext
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.messages import ModelMessage, ToolCallPart, ToolReturnPart
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
@@ -16,6 +16,17 @@ from pydantic_ai_harness.tool_output_limits import Band, Truncate
 
 from .ai_tool_registry import AiToolSet
 from .ai_agent_dependencies import AiAgentDependencies
+
+
+def iter_message_parts(message: ModelMessage):
+    """同时读取官方 CodeMode 留在原生 metadata 中的真实嵌套回执。"""
+    for part in message.parts:
+        yield part
+        if isinstance(part, ToolReturnPart) and (part.metadata or {}).get("code_mode"):
+            for nested in part.metadata.get("tool_calls", {}).values():
+                yield ToolCallPart(**nested) if isinstance(nested, dict) else nested
+            for nested in part.metadata.get("tool_returns", {}).values():
+                yield ToolReturnPart(**nested) if isinstance(nested, dict) else nested
 
 
 class DirectAndPythonToolset(CodeModeToolset[AiAgentDependencies]):

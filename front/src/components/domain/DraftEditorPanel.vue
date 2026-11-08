@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { modelOperationReason } from '@/utils/desktop'
 import { computed } from 'vue'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
@@ -60,7 +61,7 @@ const titleLimit = computed(() => (
         <h2 class="text-xl font-black text-slate-950 dark:text-white">草稿编辑</h2>
         <div class="flex flex-wrap gap-2">
           <span v-if="modelOperationReason('copy.generate')" role="status" class="muted">{{ modelOperationReason('copy.generate') }}</span>
-          <button class="btn btn-outline" :disabled="props.loading || !canGenerateCopy || !!modelOperationReason('copy.generate')" @click="emit('generateCopy')">生成/改写本地化文案</button>
+          <button v-desktop="'copy.generate'" class="btn btn-outline" :disabled="props.loading || !canGenerateCopy || !!modelOperationReason('copy.generate')" @click="emit('generateCopy')">生成/改写本地化文案</button>
           <button class="btn btn-primary" :disabled="props.loading || !canSaveDraft" :title="saveBlockedReason" @click="emit('save')">保存草稿</button>
           <button class="btn btn-outline" @click="emit('close')">关闭</button>
         </div>

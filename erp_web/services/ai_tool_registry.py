@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import wraps
 from types import MappingProxyType
-from typing import Any, Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
+
+from pydantic_ai.tools import ToolsPrepareFunc
+
+if TYPE_CHECKING:
+    from .ai_agent_dependencies import AiAgentDependencies
 
 from erp_web.schemas.ai_tools import AiToolDefinition
 from erp_web.schemas.ai_trace import AiExecutionContext
@@ -76,6 +81,7 @@ class AiToolSet:
     bindings: Mapping[str, AiToolBinding]
     # 大型能力目录交由 Pydantic AI 原生 Tool Search 按需发现；小型 focused 集合直接提供。
     defer_loading: bool = False
+    prepare_tools: ToolsPrepareFunc[AiAgentDependencies] | None = None
 
     def __post_init__(self) -> None:
         if not self.toolset_id:
