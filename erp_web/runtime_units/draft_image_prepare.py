@@ -3,15 +3,50 @@
 from copy import deepcopy
 from uuid import uuid4
 
+from erp_web.product_model.draft_image_model import draft_image_refs_from_pool
 from erp_web.product_model.image_preparation import image_bindings, image_content_fingerprint, image_preparation_status
 from erp_web.runtime_units.image_pool import append_images_to_product_pool
 from erp_web.runtime_units.market_capability_support import assert_target_mutable
 from erp_web.schemas.image_capabilities import DraftImagesPrepareResult
+from erp_web.schemas.image_sets import MAX_IMAGE_SET_REFERENCES
 from erp_web.services import image_set_service, image_translate_service
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.image_batch_service import run_image_batch
 from erp_web.services.operation_availability import require_model_platform
 from erp_web.services.ai_run_cancellation import check_cancellation
+
+
+def _common_references(app_dir, product, draft):
+    pool = {item["id"]: item for item in product.get("source", {}).get("image_pool", [])}
+    refs = draft.get("images") or []
+
+    def usable(item):
+        path = image_set_service.reference_path(app_dir, item)
+        return path is not None and 0 < path.stat().st_size <= image_translate_service.MAX_PROVIDER_IMAGE_BYTES
+
+    if refs:
+        refs = [ref for ref in refs if ref["asset_id"] in pool and usable(pool[ref["asset_id"]])]
+    else:
+        sku_assets = {row.get("image_asset_id") for row in product.get("sku_items", [])}
+        sku_assets.update(asset for _, asset in image_bindings(product, draft, selected_only=False)["skus"])
+        candidates = [item for item in pool.values()
+                      if item["id"] not in sku_assets and not item.get("is_sku") and not item.get("sku")
+                      and (not item.get("platforms") or draft["platform"] in item["platforms"])
+                      and usable(item)]
+        refs = draft_image_refs_from_pool({"source": {"image_pool": candidates}}, draft["platform"])
+
+    # 每种用途先选一张，余下名额按草稿顺序补齐。
+    by_role = {}
+    extras = []
+    for ref in refs:
+        item = pool[ref["asset_id"]]
+        role = ref["role"]
+        if role in by_role:
+            extras.append(item)
+        else:
+            by_role[role] = item
+    primary = [by_role.pop("main")] if "main" in by_role else []
+    return [*primary, *by_role.values(), *extras][:MAX_IMAGE_SET_REFERENCES]
 
 
 def prepare_draft_images(request, *, context, operation_key=""):
@@ -58,17 +93,12 @@ def prepare_draft_images(request, *, context, operation_key=""):
         if request.decision == "auto" and previous and previous.preparation_fingerprint == fingerprint:
             return response("failed", "已有本组图片的套图任务，请核对原结果或明确重做；不会自动重新生成或计费。", batch=previous)
         bindings = image_bindings(product, draft)
-        common_ids = [ref["asset_id"] for ref in draft.get("images", [])]
-        if not common_ids:
-            return response("needs_selection", "请先选择共用主图素材；未擅自从整个图片池选图。")
-        if len(common_ids) > 12:
-            return response("needs_selection", "当前共用图片超过 12 张，请选择最多 12 张套图参考素材；未自动遗漏其余图片。")
         # 每组 SKU 只使用当前独立图片；没有独立图片的规格沿用共用套图。
         sku_ids = [id for id, asset in bindings["skus"] if asset]
         targets = image_set_service.sku_image_targets(product, draft, sku_ids)
-        sources = image_translate_service.select_source_images(product, common_ids, draft["platform"])
-        if {item["id"] for item in sources} != set(common_ids):
-            raise BusinessCapabilityError("IMAGE_SOURCE_MISSING", "当前共用素材缺失，请重新选择图片。")
+    sources = _common_references(context.paths.app_dir, product, draft)
+    if not sources:
+        return response("needs_selection", "没有可用的共用参考图，请采集或上传一张可读取且不超过 20 MB 的商品图。")
     config = context.config.load_app_config()
     require_model_platform(config, "image.plan")
     require_model_platform(config, "image.translate")

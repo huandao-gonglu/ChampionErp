@@ -391,7 +391,7 @@ def image_edit(
 @ai_tool(
     name="draft_images_prepare",
     description=("准备草稿图片内容，使用套图能力生成共用主图和已选 SKU 的独立图片。"
-                 "完整草稿准备先用 auto：手动修改或已有加工图片返回 needs_confirmation，询问保留还是重做，默认保留。"
+                 "工具会自动挑选最多 12 张共用参考图，无需用户勾选。完整草稿准备先用 auto：手动修改或已有加工图片返回 needs_confirmation，询问保留还是重做，默认保留。"
                  "明确保留用 keep；用户明确要求生成套图或确认重做用 regenerate，须传当前图片 fingerprint。"
                  "当前已完成版本自动复用，原图保留。上传、水印和发布链接另用 product_publish_prepare。"),
     permission="image.write", side_effect="write", approval_required=False,

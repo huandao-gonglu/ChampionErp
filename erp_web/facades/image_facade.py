@@ -15,7 +15,7 @@ from erp_web.schemas.requests import RequestValidationError
 from erp_web.services import image_service, image_translate_service
 from erp_web.services.image_batch_service import run_image_batch
 from erp_web.services.operation_availability import require_model_platform
-from erp_web.schemas.image_sets import ImageSetPlan
+from erp_web.schemas.image_sets import MAX_IMAGE_SET_REFERENCES, ImageSetPlan
 from erp_web.services import image_set_service
 from erp_web.runtime_units.image_pool import (
     append_images_to_product_pool,
@@ -394,7 +394,7 @@ def _image_set_target(body):
     return product, draft
 
 
-def _image_set_sources(product, draft, ids, *, require_current=True, limit=12):
+def _image_set_sources(product, draft, ids, *, require_current=True, limit=MAX_IMAGE_SET_REFERENCES):
     if not ids or (limit is not None and len(ids) > limit) or len(set(ids)) != len(ids):
         raise RequestValidationError("请选择 1 至 12 张不重复的参考素材。")
     defaults = {sku["id"]: sku.get("image_asset_id", "") for sku in product.get("sku_items", [])}

@@ -4,6 +4,8 @@ from typing import Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+MAX_IMAGE_SET_REFERENCES = 12
+
 ImageSetRole = Literal["main", "detail", "scene", "selling_point", "material", "size", "package"]
 
 
@@ -28,7 +30,7 @@ class ImageSetPage(BaseModel):
     title: str = Field(min_length=1, max_length=100, description="供运营审核的中文图片名称，品牌和型号可保留原文")
     role: ImageSetRole
     prompt: str = Field(min_length=1, max_length=4000, description="用中文说明构图、事实依据和视觉要求，用引号标出按草稿目标语言书写的上图文字")
-    source_image_ids: list[str] = Field(min_length=1, max_length=12, description="支持该画面的参考素材 ID")
+    source_image_ids: list[str] = Field(min_length=1, max_length=MAX_IMAGE_SET_REFERENCES, description="支持该画面的参考素材 ID")
     scope: Literal["common", "sku"] = "common"
     sku_ids: list[str] = Field(default_factory=list, description="SKU 图对应的规格 ID；共用图为空")
 

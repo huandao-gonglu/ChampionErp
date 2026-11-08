@@ -100,6 +100,45 @@ def test_auto_set_generates_common_and_sku_adopts_and_reuses(monkeypatch, app_di
     assert prepare(draft).status == "generated" and len(calls) == count
 
 
+@pytest.mark.parametrize("use_draft_images", [True, False])
+def test_auto_selects_references_and_completes_set(monkeypatch, app_dir, use_draft_images):
+    product, draft, raw = setup_sources(app_dir)
+    products = get_context().products
+    refs = []
+    for i in range(20):
+        asset_id = f"ref-{i}"
+        path = app_dir / f"{asset_id}.png"
+        path.write_bytes(raw)
+        role = {17: "main", 18: "size", 19: "scene"}.get(i, "detail")
+        product["source"]["image_pool"].append({
+            "id": asset_id, "path": str(path), "usage": role, "selected": True, "is_main": role == "main",
+        })
+        refs.append({"asset_id": asset_id, "role": role, "order": i})
+    product["source"]["image_pool"][0]["selected"] = False
+    products.save_product(product)
+    draft = products.draft_record(draft["draft_id"])
+    draft["images"] = refs if use_draft_images else []
+    products.save_draft_content(draft)
+    observed = []
+
+    def planner(*, sources, **kwargs):
+        observed.extend(item["id"] for item in sources)
+        proposal = plan()
+        for page in proposal["pages"]:
+            page["source_image_ids"] = [observed[0]]
+        return ImageSetPlan.model_validate(proposal)
+
+    monkeypatch.setattr(image_set_service, "plan_image_set", planner)
+    image_model(monkeypatch, raw)
+    result = prepare(draft)
+    assert result.status == "generated"
+    assert len(observed) == len(set(observed)) == 12
+    assert observed[0] == "ref-17" and {"ref-18", "ref-19"}.issubset(observed)
+    assert set(observed).issubset(ref["asset_id"] for ref in refs)
+    saved = products.load_product_from_index(product["product_id"], "")
+    assert {ref["asset_id"] for ref in refs}.issubset(item["id"] for item in saved["source"]["image_pool"])
+
+
 def test_partial_generation_keeps_originals_and_does_not_automatically_retry(monkeypatch, app_dir):
     _, draft, raw = setup_sources(app_dir)
     monkeypatch.setattr(image_set_service, "plan_image_set", lambda **_: ImageSetPlan.model_validate(plan()))

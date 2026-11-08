@@ -590,7 +590,10 @@ CLI / Browser use case
 - 完整草稿准备的图片内容入口为 `draft_images_prepare` → `runtime_units/draft_image_prepare.py`，
   以原生 Deferred 后台工具复用套图规划、`run_image_batch` 与 `ProductStore`，不增加 Agent loop。
   `auto` 对未加工图片生成共用套图及已选 SKU 独立图；人工修改或历史加工素材返回待确认，
-  其他资料可继续准备。明确保留使用 `keep`，明确要求套图或确认重做使用 `regenerate`；
+  等待确认期间其他资料可继续准备。共用参考优先使用当前草稿，草稿尚无共用图时，
+  从本商品适用于目标平台的非 SKU 素材中选取。自动规划最多读取 12 张可用参考，
+  优先主图与不同用途，再按原顺序补足。
+  明确保留使用 `keep`，明确要求套图或确认重做使用 `regenerate`；
   两者绑定当前图片内容指纹，确认期间图片变化则拒绝旧决定。
   HTTP 草稿保存以共用图集合及 SKU 配图变化记录 `images_manually_modified_at`，
   排序、角色调整和 SKU 勾选不算人工内容修改；手动修图结果在资产 `raw.image_content_actor` 记录来源。
