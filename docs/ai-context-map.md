@@ -1774,6 +1774,8 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 ### 系统设置
 
+- 界面语言设置与 `vue-i18n` 已退役；前端文案、路由标题及业务 HTTP 的语言头固定为中文，不读取历史设备语言偏好。刊登语言与图片翻译目标语言仍由各自业务契约维护。
+
 - 「禁售类目」（`settings_section=forbidden_categories`）支持导入 Yandex 的 XLSX 名单，列为 `category`、`name`，可含 `int64` / `string` 类型说明行。GET `/api/system-settings/forbidden-categories` 和 POST `/api/system-settings/forbidden-categories/import` 经 `auth_config_facade`、`forbidden_category_service` 与根 `ConfigStore` 完整校验并替换共享 `app_config.forbidden_categories`；导入仅管理员开放，所有个人空间的预检读取同一名单。空名单、错误行和同 ID 异名均拒绝整次导入，失败保留旧配置。通用配置保存不能覆盖该区段。
   匹配仅按 Yandex 类目 ID，不按名称推测或自动扩大到父子类目。`category_facade` 类目预检与 `publish_validation` 基础/最终发布校验共同执行；单次 SKU 批次由 `PublishValidationSession` 固定一次名单快照，下一次校验重新读取，旧预检通过不能绕过最终校验。名单更新不改写历史预检或已经提交的发布任务。回归见 `tests/test_forbidden_categories.py`、`tests/test_yandex_publish.py`。
 

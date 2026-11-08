@@ -1,7 +1,6 @@
 import { observeExternalOperations } from '@/utils/externalRequestNotices'
 import { hasLocalOperations, OPERATION_AVAILABILITY_CHANGED } from '@/utils/desktop'
 import axios, { AxiosError } from 'axios'
-import { uiLocaleOption } from '@/constants/locales'
 import { normalizeApiError } from '@/utils/apiError'
 import { accountHeaders, sessionExpired } from '@/utils/accountTransport'
 
@@ -38,7 +37,7 @@ apiClient.interceptors.request.use((config) => {
     for (const [name, value] of Object.entries(accountHeaders())) config.headers.set(name, value)
   }
   if (hasLocalOperations()) config.baseURL = ''
-  config.headers.set('Accept-Language', uiLocaleOption(localStorage.getItem('uiLocale') || localStorage.getItem('locale')).acceptLanguage)
+  config.headers.set('Accept-Language', 'zh-CN,zh;q=0.9')
   config.headers.set('X-Timezone', Intl.DateTimeFormat().resolvedOptions().timeZone)
   if (config.aiPresentationId) {
     config.headers.set('X-AI-Presentation-ID', config.aiPresentationId)

@@ -1,7 +1,7 @@
 import { effectScope, nextTick, ref } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
+import { createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct } from '@/constants/initialState'
 import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImageState, type ImageSetPlan } from '@/api/draftImages'
 import { saveDraft, uploadImages } from '@/api/workflow/catalog'
 import type { DraftMutationResponse } from '@/api/workflow/normalizers'
@@ -20,6 +20,7 @@ function fixture() {
   draft.value.skuItems = [{ sku_id: 'red', selected: true, overrides: { image_asset_id: 'shared' }, pricing: { applied: true }, sku: 'R', stock: '2', attributes_by_target: {}, publications: {} }]
   const product = ref(createEmptyProduct())
   product.value.productId = 'p'
+  const productContext = ref({ ...createEmptyDraftProductContext(), productId: 'p' })
   const active = ref(true)
   const response = (value = draft.value, batch: ImageBatchSnapshot | null = null): DraftImageState => ({
     draft: clone(value), product: clone(product.value), productContext: undefined,
@@ -29,7 +30,7 @@ function fixture() {
   vi.mocked(saveDraft).mockImplementation(async next => ({ ...response(next), draft: { ...clone(next), updatedAt: 'saved' } } as DraftMutationResponse))
   const save = vi.fn(async () => true)
   const scope = effectScope(); scopes.push(scope)
-  const work = scope.run(() => useDraftImageWorkbench({ draft, product, active, save,
+  const work = scope.run(() => useDraftImageWorkbench({ draft, productContext, active, save,
     accept: result => { if (result.draft) draft.value = result.draft; if ('product' in result) product.value = result.product },
   }))!
   return { draft, product, active, response, work, save }

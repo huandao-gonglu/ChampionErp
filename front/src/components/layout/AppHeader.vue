@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { useI18n } from 'vue-i18n'
 import { APP_NAME } from '@/constants/branding'
 
 const route = useRoute()
-const { t } = useI18n()
 
-const title = computed(() => (typeof route.meta.titleKey === 'string' ? t(route.meta.titleKey) : route.meta.title || APP_NAME))
-const description = computed(() => (typeof route.meta.descriptionKey === 'string' ? t(route.meta.descriptionKey) : ''))
+const title = computed(() => (route.meta.title || APP_NAME))
+const description = computed(() => (route.meta.description || ''))
 </script>
 
 <template>

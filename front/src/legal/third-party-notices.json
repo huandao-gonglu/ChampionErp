@@ -8,7 +8,7 @@
     "scripts/legal-notices/supplements.json",
     "scripts/legal-notices/python-supplements.json"
   ],
-  "inputDigest": "343335035882937c214caa7cdc09d5548bf1dd24da663a0f35a27549507f33c3",
+  "inputDigest": "1be2abbe4e7364dbe39087266ddd4f9881e8131a9fa1614256bcd276bd6a455a",
   "incompleteNotices": [],
   "packages": [
     {
@@ -1980,84 +1980,6 @@
       ]
     },
     {
-      "name": "@intlify/core-base",
-      "version": "9.14.5",
-      "ecosystem": "npm",
-      "license": "MIT",
-      "homepage": "https://github.com/intlify/vue-i18n/tree/master/packages/core-base#readme",
-      "noticeStatus": "included",
-      "notices": [
-        {
-          "source": "LICENSE",
-          "parts": [
-            {
-              "kind": "notice",
-              "text": "3dd7fa7817f1924698bd"
-            },
-            {
-              "kind": "license",
-              "text": "fe2a9817987f862eaced"
-            }
-          ]
-        }
-      ],
-      "paths": [
-        "node_modules/.pnpm/@intlify+core-base@9.14.5/node_modules/@intlify/core-base"
-      ]
-    },
-    {
-      "name": "@intlify/message-compiler",
-      "version": "9.14.5",
-      "ecosystem": "npm",
-      "license": "MIT",
-      "homepage": "https://github.com/intlify/vue-i18n/tree/master/packages/message-compiler#readme",
-      "noticeStatus": "included",
-      "notices": [
-        {
-          "source": "LICENSE",
-          "parts": [
-            {
-              "kind": "notice",
-              "text": "3dd7fa7817f1924698bd"
-            },
-            {
-              "kind": "license",
-              "text": "fe2a9817987f862eaced"
-            }
-          ]
-        }
-      ],
-      "paths": [
-        "node_modules/.pnpm/@intlify+message-compiler@9.14.5/node_modules/@intlify/message-compiler"
-      ]
-    },
-    {
-      "name": "@intlify/shared",
-      "version": "9.14.5",
-      "ecosystem": "npm",
-      "license": "MIT",
-      "homepage": "https://github.com/intlify/vue-i18n/tree/master/packages/shared#readme",
-      "noticeStatus": "included",
-      "notices": [
-        {
-          "source": "LICENSE",
-          "parts": [
-            {
-              "kind": "notice",
-              "text": "3dd7fa7817f1924698bd"
-            },
-            {
-              "kind": "license",
-              "text": "fe2a9817987f862eaced"
-            }
-          ]
-        }
-      ],
-      "paths": [
-        "node_modules/.pnpm/@intlify+shared@9.14.5/node_modules/@intlify/shared"
-      ]
-    },
-    {
       "name": "@jridgewell/sourcemap-codec",
       "version": "1.5.5",
       "ecosystem": "npm",
@@ -3796,32 +3718,6 @@
       ]
     },
     {
-      "name": "vue-i18n",
-      "version": "9.14.5",
-      "ecosystem": "npm",
-      "license": "MIT",
-      "homepage": "https://github.com/intlify/vue-i18n/tree/master/packages/vue-i18n#readme",
-      "noticeStatus": "included",
-      "notices": [
-        {
-          "source": "LICENSE",
-          "parts": [
-            {
-              "kind": "notice",
-              "text": "3dd7fa7817f1924698bd"
-            },
-            {
-              "kind": "license",
-              "text": "fe2a9817987f862eaced"
-            }
-          ]
-        }
-      ],
-      "paths": [
-        "node_modules/.pnpm/vue-i18n@9.14.5_vue@3.5.35_typescript@5.6.3_/node_modules/vue-i18n"
-      ]
-    },
-    {
       "name": "vue-router",
       "version": "4.6.4",
       "ecosystem": "npm",
@@ -3913,7 +3809,6 @@
     "39ab214fc0665e3202bb": "Copyright © 2020, [Encode OSS Ltd](https://www.encode.io/).\nAll rights reserved.",
     "3b0e6de901cc7ab500aa": "(The MIT License)\n\nCopyright (c) 2014 Jonathan Ong <me@jongleberry.com>\nCopyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>",
     "3dcc21a5fc8b7c1ec54b": "BSD 3-Clause License\n\nCopyright (c) 2013-2026, Kim Davies and contributors.\nAll rights reserved.",
-    "3dd7fa7817f1924698bd": "The MIT License (MIT)\n\nCopyright (c) 2020 kazuya kawaguchi",
     "3e6f6e5c72968daead26": "Redistribution and use in source and binary forms, with or without modification,\nare permitted provided that the following conditions are met:\n\n- Redistributions of source code must retain the above copyright notice,\n  this list of conditions and the following disclaimer.\n\n- Redistributions in binary form must reproduce the above copyright notice,\n  this list of conditions and the following disclaimer in the documentation\n  and/or other materials provided with the distribution.\n\n- Neither the name of django-dotenv nor the names of its contributors\n  may be used to endorse or promote products derived from this software\n  without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n\"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\nLIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\nA PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR\nCONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,\nEXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,\nPROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR\nPROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF\nLIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING\nNEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
     "3f301018aa1722424511": "MIT License\n\nCopyright © 2018 Fedor Indutny",
     "3f9aea86b5b3d26c01f9": "BSD 3-Clause License\n\nCopyright (c) 2004 Infrae. All rights reserved.",

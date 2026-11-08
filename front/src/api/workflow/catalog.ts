@@ -6,6 +6,7 @@ import type {
   CollectionVerification,
   DraftIndexItem,
   DraftDetail,
+  DraftProductContext,
   CollectForm,
   ImageAsset,
   Marketplace,
@@ -292,14 +293,14 @@ export async function saveCollectSettings(
   ensureOk(asRecord(response.data), '保存设置失败')
 }
 
-export async function uploadImages(product: Product, uploads: Array<{ filename: string; data_url: string }>): Promise<ProductMutationResponse> {
+export async function uploadImages(product: Pick<DraftProductContext, 'productId' | 'imagePool'>, uploads: Array<{ filename: string; data_url: string }>): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/image-pool/upload', {
     product_id: requiredProductId(product, '上传图片'),
     uploads: uploads.map((upload, index) => ({
       ...upload,
       platforms: [],
       selected: true,
-      is_main: index === 0 && product.source.imagePool.length === 0,
+      is_main: index === 0 && product.imagePool.length === 0,
     })),
   })
   return normalizeProductMutation(response.data)

@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
-import { createI18n } from 'vue-i18n'
-import zh from '@/i18n/locales/zh'
 import AlibabaSettingsPanel from '../AlibabaSettingsPanel.vue'
 import * as api from '@/api/alibabaAuthorization'
 import { hasLocalOperations } from '@/utils/desktop'
@@ -19,9 +17,7 @@ const status: BackendAlibabaAuthorizationStatus = {
 const url = 'https://auth.1688.com/auth/authorize.htm?state=opaque'
 const tab = { location: { replace: vi.fn() }, close: vi.fn(), opener: window }
 async function panel() {
-  const wrapper = mount(AlibabaSettingsPanel, { global: {
-    plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })],
-  } })
+  const wrapper = mount(AlibabaSettingsPanel)
   await flushPromises()
   return wrapper
 }

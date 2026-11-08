@@ -3,9 +3,7 @@ import { APP_LOGO, APP_NAME, APP_VERSION } from '@/constants/branding'
 import type { WorkflowStep } from '@/types/workflow'
 import type { WorkflowNavItem } from '@/constants/navigation'
 import { useAccountStore } from '@/stores/account'
-import { useI18n } from 'vue-i18n'
 const account = useAccountStore()
-const { t } = useI18n()
 
 const props = defineProps<{
   items: WorkflowNavItem[]
@@ -81,11 +79,11 @@ function stepStatus(key: string) {
     </nav>
 
     <div class="border-t border-accent-200 px-3 py-3 dark:border-white/10">
-      <RouterLink to="/account" class="flex h-11 items-center gap-3 rounded-2xl px-4 text-sm font-semibold hover:bg-accent-50 dark:hover:bg-white/5" :title="t('account.personal')">
-        <span aria-hidden="true">◉</span><span v-if="!props.collapsed" class="truncate">{{ account.user?.display_name || t('account.personal') }}</span>
+      <RouterLink to="/account" class="flex h-11 items-center gap-3 rounded-2xl px-4 text-sm font-semibold hover:bg-accent-50 dark:hover:bg-white/5" title="个人账号">
+        <span aria-hidden="true">◉</span><span v-if="!props.collapsed" class="truncate">{{ account.user?.display_name || '个人账号' }}</span>
       </RouterLink>
-      <RouterLink v-if="account.isAdmin" to="/admin/users" class="flex h-11 items-center gap-3 rounded-2xl px-4 text-sm font-semibold hover:bg-accent-50 dark:hover:bg-white/5" :title="t('account.users')">
-        <span aria-hidden="true">♙</span><span v-if="!props.collapsed">{{ t('account.users') }}</span>
+      <RouterLink v-if="account.isAdmin" to="/admin/users" class="flex h-11 items-center gap-3 rounded-2xl px-4 text-sm font-semibold hover:bg-accent-50 dark:hover:bg-white/5" title="用户管理">
+        <span aria-hidden="true">♙</span><span v-if="!props.collapsed">用户管理</span>
       </RouterLink>
       <button
         type="button"

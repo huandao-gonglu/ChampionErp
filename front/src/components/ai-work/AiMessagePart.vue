@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { PhBrain, PhCaretRight } from '@phosphor-icons/vue'
-import { i18n } from '@/i18n'
 import type { AiUiPart } from '@/types/aiWork'
 import { describeAiTool } from '@/utils/aiToolLabels'
 import { aiToolIcon } from '@/utils/aiToolIcons'
@@ -31,7 +30,7 @@ const businessResult = computed(() => (
     : undefined
 ))
 const status = computed(() => aiToolStatus(props.part, props.pendingKind, props.active))
-const toolStatusLabel = computed(() => i18n.global.t(`ai.status.${status.value}`))
+const toolStatusLabel = computed(() => statusLabels[status.value])
 const toolError = computed(() => tool.value.errorText || businessResult.value?.error?.message || '')
 
 const toolStatusClass = computed(() => {
@@ -99,6 +98,27 @@ const reasoningStreaming = computed(() => (
   (props.part as unknown as { state?: string }).state === 'streaming'
 ))
 const textSegments = computed(() => splitAssistantText(textPartText.value, reasoningStreaming.value))
+
+const attentionMessages: Record<string, string> = {
+  unknown: '尚未收到明确结果，请核对实际状态。',
+  failed: '此次操作未成功，请查看处理结果。',
+  partial: '部分操作尚未完成，请查看处理结果。',
+  denied: '此次操作未获批准。',
+}
+
+const statusLabels: Record<string, string> = {
+  preparing: '正在准备…',
+  running: '处理中',
+  approval: '等待确认',
+  waiting: '等待结果',
+  unknown: '结果未确认',
+  failed: '操作失败',
+  partial: '部分完成',
+  denied: '未获批准',
+  completed: '已完成',
+  submitted: '已提交',
+  script_error: '脚本检查未通过',
+}
 </script>
 
 <template>
@@ -109,11 +129,11 @@ const textSegments = computed(() => splitAssistantText(textPartText.value, reaso
       <details v-else class="group/reasoning min-w-0" :data-testid="segment.kind === 'thinking' ? 'ai-part-reasoning' : 'ai-part-unseparated'" @toggle="toggleDetails($event, `segment-${index}`)">
         <summary class="flex cursor-pointer list-none items-center gap-2 py-1 text-xs text-slate-500 focus-visible:outline-primary-500 dark:text-accent-300 [&::-webkit-details-marker]:hidden">
           <PhBrain :size="16" class="shrink-0" aria-hidden="true" />
-          {{ i18n.global.t(reasoningStreaming ? 'ai.turn.thinking' : segment.kind === 'thinking' ? 'ai.turn.thoughts' : 'ai.turn.unseparatedReply') }}
+          {{ (reasoningStreaming ? '正在思考…' : (segment.kind === 'thinking' ? '思考过程' : '查看回复原文（含思考内容）')) }}
           <PhCaretRight :size="12" class="shrink-0 transition-transform group-open/reasoning:rotate-90" aria-hidden="true" />
         </summary>
         <template v-if="expanded[`segment-${index}`]">
-          <p v-if="segment.kind === 'unseparated' && !reasoningStreaming" class="py-1 pl-6 text-xs text-slate-500 dark:text-accent-300">{{ i18n.global.t('ai.turn.unseparatedReplyHint') }}</p>
+          <p v-if="segment.kind === 'unseparated' && !reasoningStreaming" class="py-1 pl-6 text-xs text-slate-500 dark:text-accent-300">接口未分开思考与答复，完整内容保留在这里。</p>
           <p class="py-1 pl-6 whitespace-pre-wrap break-words text-xs leading-5 text-slate-600 dark:text-accent-200">{{ segment.text }}</p>
         </template>
       </details>
@@ -152,11 +172,11 @@ const textSegments = computed(() => splitAssistantText(textPartText.value, reaso
       </summary>
       <div v-if="expanded.tool" class="ml-3 space-y-2 border-l border-slate-200 py-2 pl-3 dark:border-dark-700">
         <template v-if="toolInputJson">
-          <p class="text-xs text-slate-500">{{ i18n.global.t('ai.turn.operationDetails') }}</p>
+          <p class="text-xs text-slate-500">操作详情</p>
           <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-accent-200">{{ toolInputJson }}</pre>
         </template>
         <template v-if="toolOutputJson">
-          <p class="text-xs text-slate-500">{{ i18n.global.t('ai.turn.operationResult') }}</p>
+          <p class="text-xs text-slate-500">处理结果</p>
           <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-accent-200">{{ toolOutputJson }}</pre>
         </template>
         <template v-if="status === 'script_error' && toolError">
@@ -169,7 +189,7 @@ const textSegments = computed(() => splitAssistantText(textPartText.value, reaso
       {{ toolError }}
     </p>
     <p v-else-if="toolNeedsAttention(status) && status !== 'approval'" class="ml-3 mt-1 text-xs text-amber-800 dark:text-amber-200">
-      {{ i18n.global.t(`ai.attention.${status}`) }}
+      {{ attentionMessages[status] }}
     </p>
     <slot v-if="status === 'approval'" name="approval" :tool-call-id="tool.toolCallId" />
   </div>

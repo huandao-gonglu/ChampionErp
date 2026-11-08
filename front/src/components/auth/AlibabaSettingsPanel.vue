@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { useI18n } from 'vue-i18n'
 import { useAccountStore } from '@/stores/account'
 import { completeAlibabaAuthorization, fetchAlibabaAuthorization, startAlibabaAuthorization } from '@/api/alibabaAuthorization'
 import { hasLocalOperations } from '@/utils/desktop'
@@ -10,7 +9,6 @@ const account = useAccountStore()
 const callbackUrl = ref('')
 const completing = ref(false)
 const manualError = ref('')
-const { t } = useI18n()
 const status = ref<BackendAlibabaAuthorizationStatus | null>(null)
 const opening = ref(false)
 const waiting = ref(false)
@@ -35,7 +33,7 @@ async function refresh() {
     error.value = ''
   } catch (exc) {
     if (current !== revision) return
-    error.value = exc instanceof Error ? exc.message : t('alibabaAuth.failed')
+    error.value = exc instanceof Error ? exc.message : '1688 授权操作失败'
     retryDelay = 10000
   } finally {
     if (current === revision) {
@@ -53,7 +51,7 @@ async function connect() {
   const desktop = hasLocalOperations()
   const tab = desktop ? null : window.open('about:blank', '_blank')
   if (!desktop && !tab) {
-    browserError.value = t('alibabaAuth.popupBlocked')
+    browserError.value = '请允许此站点打开弹窗，再次点击授权。'
     return
   }
   if (tab) tab.opener = null
@@ -71,13 +69,13 @@ async function connect() {
     } catch {
       tab?.close()
       waiting.value = false
-      browserError.value = t('alibabaAuth.browserFailed')
+      browserError.value = '无法打开系统浏览器，请再次点击授权。'
       return
     }
     waiting.value = true
   } catch (exc) {
     tab?.close()
-    error.value = exc instanceof Error ? exc.message : t('alibabaAuth.failed')
+    error.value = exc instanceof Error ? exc.message : '1688 授权操作失败'
   } finally {
     opening.value = false
     if (waiting.value && !disposed) timer = window.setTimeout(refresh, 2500)
@@ -97,7 +95,7 @@ async function complete() {
     callbackUrl.value = browserError.value = error.value = ''
     waiting.value = false
   } catch (exc) {
-    manualError.value = exc instanceof Error ? exc.message : t('alibabaAuth.failed')
+    manualError.value = exc instanceof Error ? exc.message : '1688 授权操作失败'
     if (!disposed) timer = window.setTimeout(refresh, 0)
   } finally {
     completing.value = false
@@ -116,30 +114,32 @@ onUnmounted(() => {
 })
 </script>
 <template>
-  <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" :aria-label="t('alibabaAuth.title')">
+  <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" aria-label="1688 账号授权">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <h3 class="font-semibold text-accent-950 dark:text-white">{{ t('alibabaAuth.title') }}</h3>
-      <span v-if="status" aria-live="polite">{{ t(status.authorized && !status.needs_reauthorization ? 'alibabaAuth.connected' : 'alibabaAuth.disconnected') }}</span>
+      <h3 class="font-semibold text-accent-950 dark:text-white">1688 账号授权</h3>
+      <span v-if="status" aria-live="polite">{{ (status.authorized && !status.needs_reauthorization ? '已连接' : '未连接') }}</span>
     </div>
-    <p class="text-sm text-accent-500">{{ t('alibabaAuth.intro') }}</p>
-    <p v-if="status && !status.application_configured" role="status">{{ t('alibabaAuth.notConfigured') }}</p>
-    <p v-else-if="status && !status.can_authorize" role="status">{{ t('alibabaAuth.noCallback') }}</p>
-    <p v-if="status?.needs_reauthorization" role="status">{{ t('alibabaAuth.needsAuth') }}</p>
-    <p v-if="status?.account_name">{{ t('alibabaAuth.account') }}：{{ status.account_name }}</p>
-    <p v-else-if="status?.authorized" class="text-sm">{{ t('alibabaAuth.legacy') }}</p>
-    <p v-if="status?.expires_at" class="text-sm">{{ t('alibabaAuth.expiry') }}：{{ new Date(status.expires_at * 1000).toLocaleString() }} <span v-if="status.refreshable">{{ t('alibabaAuth.autoRefresh') }}</span></p>
+    <p class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号，即可查询商品、采购订单和物流。</p>
+    <p v-if="status && !status.application_configured" role="status">授权服务暂未配置，请联系管理员。</p>
+    <p v-else-if="status && !status.can_authorize" role="status">暂时无法发起登录授权，请联系管理员配置授权服务。</p>
+    <p v-if="status?.needs_reauthorization" role="status">授权已过期或应用配置已变化，请重新连接账号。</p>
+    <p v-if="status?.account_name">当前账号：{{ status.account_name }}</p>
+    <p v-else-if="status?.authorized" class="text-sm">已保留原有授权；重新登录后可显示账号并自动续期。</p>
+    <p v-if="status?.expires_at" class="text-sm">授权到期时间：{{ new Date(status.expires_at * 1000).toLocaleString() }} <span v-if="status.refreshable">使用时自动续期。</span></p>
     <button data-testid="connect-1688" class="btn btn-primary" :disabled="opening || completing || !status?.can_authorize" @click="connect">
-      {{ t(status?.authorized || waiting ? 'alibabaAuth.reconnect' : 'alibabaAuth.connect') }}
+      {{ (status?.authorized || waiting ? '重新授权' : '连接 1688 账号') }}
     </button>
-    <p v-if="waiting" role="status">{{ t('alibabaAuth.waiting') }}</p>
-    <p v-else-if="status?.attempt === 'failed' || status?.attempt === 'expired'" role="status">{{ t('alibabaAuth.incomplete') }}</p>
+    <p v-if="waiting" role="status">等待浏览器完成授权…</p>
+    <p v-else-if="status?.attempt === 'failed' || status?.attempt === 'expired'" role="status">本次授权未完成，请重新授权。</p>
     <div v-if="account.isAdmin" class="space-y-2">
-      <label class="block text-sm" for="alibaba-callback-url">{{ t('alibabaAuth.callbackLabel') }}</label>
-      <input id="alibaba-callback-url" v-model="callbackUrl" type="password" maxlength="16384" autocomplete="off"
-        spellcheck="false" class="input w-full" :placeholder="t('alibabaAuth.callbackHint')" :disabled="completing"
-        @keydown.enter.prevent="complete" />
+      <label class="block text-sm" for="alibaba-callback-url">授权后的完整回调地址</label>
+      <input
+        id="alibaba-callback-url" v-model="callbackUrl" type="password" maxlength="16384" autocomplete="off"
+        spellcheck="false" class="input w-full" placeholder="粘贴浏览器地址栏中的完整 URL" :disabled="completing"
+        @keydown.enter.prevent="complete"
+      />
       <button type="button" class="btn btn-secondary" :disabled="opening || completing || !callbackUrl.trim()" @click="complete">
-        {{ t(completing ? 'alibabaAuth.completing' : 'alibabaAuth.complete') }}
+        {{ (completing ? '正在完成授权…' : '完成授权') }}
       </button>
       <p v-if="manualError" role="alert" class="text-red-600">{{ manualError }}</p>
     </div>

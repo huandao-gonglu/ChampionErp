@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
-import { i18n } from '@/i18n'
 import WatermarkSettingsPanel from '../WatermarkSettingsPanel.vue'
 import { fetchSystemSettings, previewWatermark, saveSystemSettings, type WatermarkPreview } from '@/api/systemSettings'
 import type { BackendWatermarkSettings } from '@/types/workflow.generated'
@@ -17,7 +16,7 @@ beforeEach(() => {
   vi.mocked(saveSystemSettings).mockImplementation(async change => ({ orders_auto_sync_interval_hours: 12, watermark: change.watermark!, wechat_forward_types: [] }))
 })
 afterEach(() => vi.useRealTimers())
-const open = () => mount(WatermarkSettingsPanel, { global: { plugins: [i18n] } })
+const open = () => mount(WatermarkSettingsPanel, { global: {  } })
 const updatePreview = async () => { await flushPromises(); await vi.advanceTimersByTimeAsync(300); await flushPromises() }
 
 describe('图片水印设置', () => {

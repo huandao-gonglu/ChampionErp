@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
-import { i18n } from '@/i18n'
 import { version } from '../../../../package.json'
 import AboutSettingsPanel from '../AboutSettingsPanel.vue'
 
 enableAutoUnmount(afterEach)
 afterEach(() => vi.unstubAllGlobals())
-const global = { plugins: [i18n], stubs: { teleport: true } }
+const global = { stubs: { teleport: true } }
 const pointer = { isPrimary: true, button: 0, pointerId: 1 }
 describe('关于与法律声明', () => {
   it('展示包版本和公司信息；协议与隐私政策独立打开且不发起网络请求', async () => {

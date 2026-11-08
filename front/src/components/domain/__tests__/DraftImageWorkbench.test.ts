@@ -2,7 +2,7 @@ import { enableAutoUnmount, flushPromises, mount, type DOMWrapper } from '@vue/t
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { computed, reactive, ref } from 'vue'
 import DraftImageWorkbench from '../DraftImageWorkbench.vue'
-import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
+import { createEmptyDraftDetail, createEmptyDraftProductContext } from '@/constants/initialState'
 import { setOperationAvailability } from '@/utils/desktop'
 import type { DraftImageWorkbenchController } from '@/composables/useDraftImageWorkbench'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
@@ -12,8 +12,9 @@ enableAutoUnmount(afterEach)
 function button(wrapper: { findAll(selector: string): DOMWrapper<Element>[] }, text: string) { return wrapper.findAll('button').find(item => item.text() === text)! }
 function fixture() {
   const images = ['common', 'red', 'pink', 'old', 'result'].map(id => ({ id, url: `/${id}.png`, path: '', previewUrl: '', origin: 'source', usage: 'detail', platforms: [], selected: true, isMain: false, status: 'ready', width: 800, height: 800 } as ImageAsset))
-  const product = reactive(createEmptyProduct())
+  const product = reactive(createEmptyDraftProductContext())
   product.skuItems = ['red', 'pink', 'red'].map((id, index) => ({ id: `sku${index}`, name: `${id}款`, image_asset_id: id, active: true } as typeof product.skuItems[number]))
+  product.imagePool = images
   const draft = reactive(createEmptyDraftDetail()); draft.draftId = 'd'; draft.language = 'ru'
   draft.images = [{ assetId: 'common', role: 'main', order: 0 }]
   draft.skuItems = product.skuItems.map(sku => ({ sku_id: sku.id, selected: true, overrides: {}, sku: sku.id, stock: '20', pricing: {}, publications: {}, attributes_by_target: {} }))
@@ -23,7 +24,7 @@ function fixture() {
     start: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
     planSet: vi.fn(), generateSet: vi.fn(), applySet: vi.fn(),
   }
-  const wrapper = mount(DraftImageWorkbench, { attachTo: document.body, props: { draft, product, images, loading: false, controller }, global: { stubs: { Teleport: true } } })
+  const wrapper = mount(DraftImageWorkbench, { attachTo: document.body, props: { draft, productContext: product, loading: false, controller }, global: { stubs: { Teleport: true } } })
   return { wrapper, draft, product, images, controller, busy, batch }
 }
 

@@ -503,7 +503,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
           data_url: await readFileAsDataUrl(file),
         })),
       )
-      const result = await uploadImages(product.value, uploads)
+      const result = await uploadImages({ productId: product.value.productId, imagePool: product.value.source.imagePool }, uploads)
       product.value = result.product
       if (result.productsIndex.length) productsIndex.value = result.productsIndex
       syncCollectDiagnosticsFromProduct('参考图片已上传。')

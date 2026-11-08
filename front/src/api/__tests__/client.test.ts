@@ -6,6 +6,23 @@ import { SESSION_EXPIRED_EVENT } from '@/utils/accountTransport'
 const defaultAdapter = apiClient.defaults.adapter
 afterEach(() => { apiClient.defaults.adapter = defaultAdapter })
 
+it('忽略历史界面语言偏好，业务请求始终使用中文语言头', async () => {
+  const saved = ['uiLocale', 'locale'].map(key => [key, localStorage.getItem(key)] as const)
+  localStorage.setItem('uiLocale', 'en')
+  localStorage.setItem('locale', 'en')
+  apiClient.defaults.adapter = async config => {
+    expect(config.headers.get('Accept-Language')).toBe('zh-CN,zh;q=0.9')
+    return { config, status: 200, statusText: 'OK', headers: {}, data: {} }
+  }
+  try { await apiClient.get('/api/state') }
+  finally {
+    for (const [key, value] of saved) {
+      if (value === null) localStorage.removeItem(key)
+      else localStorage.setItem(key, value)
+    }
+  }
+})
+
 describe('业务 API 错误传输', () => {
   it('改密和退出的 401 通知会话失效，登录密码错误仍在登录页处理', async () => {
     const expired = vi.fn()

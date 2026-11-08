@@ -1,7 +1,7 @@
 {
   "name": "champion-erp-front",
   "productName": "gongluErp",
-  "version": "1.2.15",
+  "version": "1.2.17",
   "desktopUpdateOrigin": "https://hdgl.cc.cd",
   "private": true,
   "type": "module",
@@ -35,7 +35,6 @@
     "pinia": "^2.3.1",
     "vue": "^3.5.35",
     "vue-chartjs": "^5.3.3",
-    "vue-i18n": "^9.14.5",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {

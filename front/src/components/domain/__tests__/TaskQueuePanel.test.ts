@@ -1,8 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TaskQueuePanel from '../TaskQueuePanel.vue'
-import zh from '@/i18n/locales/zh'
 import { checkTask, fetchTask, fetchTasks, retryPublishTask } from '@/api/taskQueue'
 import { onlineAction, type OnlineJob } from '@/api/onlineProducts'
 import type { BackendQueueTask } from '@/types/workflow.generated'
@@ -20,7 +18,7 @@ const task: BackendQueueTask = {
 }
 const detail = { ok: true, task, detail: { status: 'pending_confirmation', result: { task_id: 'remote-1' } } }
 function render(props: { initialTaskId?: string; initialSource?: string } = {}) {
-  return mount(TaskQueuePanel, { props, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { teleport: true, OnlineOperationRecovery: true } } })
+  return mount(TaskQueuePanel, { props, global: { stubs: { teleport: true, OnlineOperationRecovery: true } } })
 }
 let wrapper: ReturnType<typeof render>
 beforeEach(() => {

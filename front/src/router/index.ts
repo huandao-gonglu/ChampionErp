@@ -11,8 +11,8 @@ const workflowRoutes: RouteRecordRaw[] = [
     name: 'WorkflowHome',
     component: workflowComponent,
     meta: {
-      titleKey: 'routes.workflow.title',
-      descriptionKey: 'routes.workflow.description',
+      title: '跨境 ERP Web 工作台',
+      description: '采集、采集箱、编辑、图片文案、核价、预检、授权和日志。',
       icon: '▦',
       keepAlive: true,
     },
@@ -46,10 +46,10 @@ const legacyEntryRoutes: RouteRecordRaw[] = legacyWorkflowEntries.map((entry) =>
 }))
 
 const routes: RouteRecordRaw[] = [
-  { path: '/login', name: 'AccountLogin', component: () => import('@/views/account/AccountLoginView.vue'), meta: { public: true, titleKey: 'account.login' } },
-  { path: '/register', name: 'AccountRegister', component: () => import('@/views/account/AccountLoginView.vue'), meta: { public: true, titleKey: 'account.register' } },
-  { path: '/account', name: 'PersonalAccount', component: () => import('@/views/account/PersonalAccountView.vue'), meta: { titleKey: 'account.personal' } },
-  { path: '/admin/users', name: 'AccountUsers', component: () => import('@/views/account/AccountUsersView.vue'), meta: { admin: true, titleKey: 'account.users' } },
+  { path: '/login', name: 'AccountLogin', component: () => import('@/views/account/AccountLoginView.vue'), meta: { public: true, title: '登录' } },
+  { path: '/register', name: 'AccountRegister', component: () => import('@/views/account/AccountLoginView.vue'), meta: { public: true, title: '注册' } },
+  { path: '/account', name: 'PersonalAccount', component: () => import('@/views/account/PersonalAccountView.vue'), meta: { title: '个人账号' } },
+  { path: '/admin/users', name: 'AccountUsers', component: () => import('@/views/account/AccountUsersView.vue'), meta: { admin: true, title: '用户管理' } },
   // Setup Routes
   // Public Routes
   ...workflowRoutes,
@@ -72,8 +72,8 @@ const routes: RouteRecordRaw[] = [
     name: 'NotFound',
     component: () => import('@/views/NotFoundView.vue'),
     meta: {
-      titleKey: 'routes.notFound.title',
-      descriptionKey: 'routes.notFound.description',
+      title: '页面不存在',
+      description: '请求的页面不存在或已迁移。',
       hideInMenu: true,
     },
   },

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
-import { i18n } from '@/i18n'
 import WechatSettingsPanel from '../WechatSettingsPanel.vue'
 import { fetchWechatStatus, saveWechatForwardTypes, startWechatLogin, unbindWechat, verifyWechatLogin } from '@/api/wechat'
 import type { BackendWechatChannelStatus } from '@/types/workflow.generated'
@@ -16,11 +15,10 @@ const qrStatus = () => status({ status: 'waiting_scan', qr_image: 'data:image/pn
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
-  i18n.global.locale.value = 'zh'
   vi.mocked(fetchWechatStatus).mockResolvedValue(status())
 })
 afterEach(() => vi.useRealTimers())
-const open = () => mount(WechatSettingsPanel, { global: { plugins: [i18n] } })
+const open = () => mount(WechatSettingsPanel, { global: {  } })
 const qrDialog = () => new DOMWrapper(document.body.querySelector('dialog')!)
 const dialogOpen = () => document.body.querySelector<HTMLDialogElement>('dialog')?.open ?? false
 const pointer = { isPrimary: true, button: 0, pointerId: 1 }

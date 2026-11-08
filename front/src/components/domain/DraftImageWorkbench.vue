@@ -5,10 +5,10 @@ import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import DraftSkuImagePreview from './DraftSkuImagePreview.vue'
 import DraftImageSetDialog from './DraftImageSetDialog.vue'
 import { imageUrl, skuImageAssignments } from '@/utils/draftImages'
-import type { DraftDetail, ImageAsset, Product } from '@/types/workflow'
+import type { DraftDetail, DraftProductContext, ImageAsset } from '@/types/workflow'
 import type { DraftImageWorkbenchController } from '@/composables/useDraftImageWorkbench'
 
-const props = defineProps<{ draft: DraftDetail; product: Product; images: ImageAsset[]; loading: boolean; controller: DraftImageWorkbenchController }>()
+const props = defineProps<{ draft: DraftDetail; productContext: DraftProductContext; loading: boolean; controller: DraftImageWorkbenchController }>()
 const selected = ref<string[]>([])
 const preview = ref<ImageAsset | null>(null)
 const previewOpen = ref(false)
@@ -24,8 +24,8 @@ const dragging = ref('')
 const busy = computed(() => props.loading || props.controller.busy.value)
 const batch = computed(() => props.controller.batch.value)
 const notice = computed(() => props.controller.notice.value)
-const byId = computed(() => new Map(props.images.map(image => [image.id, image])))
-const assignments = computed(() => skuImageAssignments(props.product.skuItems, props.draft).filter(sku => props.draft.skuItems.some(row => row.sku_id === sku.skuId)))
+const byId = computed(() => new Map(props.productContext.imagePool.map(image => [image.id, image])))
+const assignments = computed(() => skuImageAssignments(props.productContext.skuItems, props.draft).filter(sku => props.draft.skuItems.some(row => row.sku_id === sku.skuId)))
 const commonIds = computed(() => [...props.draft.images].sort((a, b) => a.order - b.order).map(ref => ref.assetId))
 const skuIds = computed(() => [...new Set(assignments.value.map(sku => sku.imageAssetId).filter(Boolean))])
 const hasSkuTargets = computed(() => assignments.value.some(sku => sku.selected && byId.value.has(sku.imageAssetId)))
@@ -42,7 +42,7 @@ const skuNamesByImage = computed(() => {
 })
 const canProcess = computed(() => selected.value.length > 0 && selected.value.every(id => byId.value.has(id)))
 const selectedCommon = computed(() => selected.value.filter(id => commonIds.value.includes(id)))
-const available = computed(() => props.images.filter(image => !commonIds.value.includes(image.id)))
+const available = computed(() => props.productContext.imagePool.filter(image => !commonIds.value.includes(image.id)))
 const regions = computed(() => [
   { id: 'common', title: '共用主图', ids: commonIds.value },
   { id: 'sku', title: 'SKU 图片', ids: skuIds.value },
@@ -113,7 +113,7 @@ watch(busy, value => { if (value) dragging.value = '' })
 <template>
   <section class="space-y-6" aria-label="草稿图片处理">
     <header class="flex items-center justify-between gap-3">
-      <div class="min-w-0"><h2 class="card-title">图片处理</h2><p class="muted mt-1 truncate">{{ product.source.title || product.name }}</p></div>
+      <div class="min-w-0"><h2 class="card-title">图片处理</h2><p class="muted mt-1 truncate">{{ productContext.sourceTitle || productContext.title }}</p></div>
       <button class="btn btn-outline shrink-0" type="button" @click="previewOpen = true">发布预览</button>
     </header>
     <div class="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-dark-700 dark:bg-dark-900" aria-label="图片处理工具栏">
@@ -169,8 +169,8 @@ watch(busy, value => { if (value) dragging.value = '' })
     <input ref="input" type="file" accept="image/*" multiple class="hidden" @change="files" />
   </section>
   <WorkspaceDialog :open="Boolean(preview)" title="图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" alt="图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
-  <WorkspaceDialog :open="previewOpen" title="发布图片预览" @close="previewOpen = false"><DraftSkuImagePreview :draft="draft" :images="images" :assignments="assignments" /></WorkspaceDialog>
-  <DraftImageSetDialog :open="imageSetOpen" :draft="draft" :images="images" :reference-ids="commonIds.length ? commonIds : currentIds" :controller="controller" :loading="loading" :skus="assignments" @close="imageSetOpen = false" />
+  <WorkspaceDialog :open="previewOpen" title="发布图片预览" @close="previewOpen = false"><DraftSkuImagePreview :draft="draft" :images="productContext.imagePool" :assignments="assignments" /></WorkspaceDialog>
+  <DraftImageSetDialog :open="imageSetOpen" :draft="draft" :images="productContext.imagePool" :reference-ids="commonIds.length ? commonIds : currentIds" :controller="controller" :loading="loading" :skus="assignments" @close="imageSetOpen = false" />
   <WorkspaceDialog :open="Boolean(dialog)" :title="dialog === 'edit' ? 'AI 修改' : dialog === 'translate' ? '翻译图片' : dialog === 'remove' ? `移出 ${targets.length} 张共用主图？` : '添加共用图片'" :close-disabled="busy" @close="dialog = null">
     <form class="space-y-5" @submit.prevent="submit">
       <template v-if="dialog === 'add'">

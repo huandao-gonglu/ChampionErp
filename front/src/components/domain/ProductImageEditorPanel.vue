@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import DraftImageWorkbench from './DraftImageWorkbench.vue'
-import type { DraftImageWorkbenchController } from '@/composables/useDraftImageWorkbench'
 import { skuImageAssignments, type SkuImageBatchChange } from '@/utils/draftImages'
 import ImagePoolPanel from '@/components/domain/ImagePoolPanel.vue'
-import type { DraftDetail, ImageAsset, Product } from '@/types/workflow'
+import type { ImageAsset, Product } from '@/types/workflow'
 
 interface ImageEditRequest {
   prompt: string
@@ -18,8 +16,6 @@ const props = defineProps<{
   loading: boolean
   error?: string
   showTranslateAction?: boolean
-  draft?: DraftDetail
-  workbench?: DraftImageWorkbenchController
 }>()
 
 const emit = defineEmits<{
@@ -54,8 +50,7 @@ function assignSkus(changes: SkuImageBatchChange[]) {
 </script>
 
 <template>
-  <DraftImageWorkbench v-if="draft && workbench" :draft="draft" :product="product" :images="images" :loading="loading" :controller="workbench" />
-  <div v-else-if="!draft" class="space-y-5">
+  <div class="space-y-5">
     <section class="card">
       <h2 class="card-title">{{ title || '采集箱图片编辑' }}</h2>
       <p class="muted mt-1">{{ product.source.title || product.name || product.productId }}</p>

@@ -9,7 +9,7 @@ export function imageTranslateTimeoutMs(imageIds: string[]): number {
   return IMAGE_TRANSLATE_TIMEOUT_PER_IMAGE_MS * Math.max(imageIds.length, 1)
 }
 
-export function requiredProductId(product: Product, action = '继续操作'): string {
+export function requiredProductId(product: Pick<Product, 'productId'>, action = '继续操作'): string {
   const productId = product.productId.trim()
   if (!productId) throw new Error(`请先保存或加载商品后再${action}`)
   return productId

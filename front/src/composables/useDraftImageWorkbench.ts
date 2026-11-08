@@ -4,7 +4,7 @@ import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, process
 import { saveDraft, uploadImages } from '@/api/workflow/catalog'
 import type { DraftMutationResponse, ProductMutationResponse } from '@/api/workflow/normalizers'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
-import type { DraftDetail, DraftImageRef, Product } from '@/types/workflow'
+import type { DraftDetail, DraftImageRef, DraftProductContext } from '@/types/workflow'
 import { businessStorageKey } from '@/utils/accountTransport'
 
 export interface ImageSnapshot { images: DraftImageRef[]; skus: Array<[string, string | null]> }
@@ -32,7 +32,7 @@ function readFile(file: File): Promise<string> {
   })
 }
 export function useDraftImageWorkbench(options: {
-  draft: Ref<DraftDetail>; product: Ref<Product>; active: Ref<boolean>
+  draft: Ref<DraftDetail>; productContext: Ref<DraftProductContext>; active: Ref<boolean>
   save: () => Promise<boolean>
   accept: (result: DraftMutationResponse | ProductMutationResponse) => void
 }) {
@@ -245,7 +245,8 @@ export function useDraftImageWorkbench(options: {
     saving.value = true
     try {
       const uploads = await Promise.all(files.map(async file => ({ filename: file.name, data_url: await readFile(file) })))
-      const result = await uploadImages(options.product.value, uploads)
+      if (token !== epoch) return
+      const result = await uploadImages(options.productContext.value, uploads)
       if (token !== epoch) return
       options.accept(result)
       const uploadedIds = result.raw?.uploaded_image_ids

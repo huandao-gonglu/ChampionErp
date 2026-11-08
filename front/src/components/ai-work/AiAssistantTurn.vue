@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { PhCaretRight, PhCheck, PhCopy, PhGitBranch } from '@phosphor-icons/vue'
-import { i18n } from '@/i18n'
 import type { AiTurnTiming, AiUiPart, PendingToolCall } from '@/types/aiWork'
 import { presentAssistantParts } from '@/utils/aiMessagePresentation'
 import { visibleAssistantText } from '@/utils/aiThinkingPresentation'
@@ -15,7 +14,6 @@ const props = defineProps<{
   allowBranch?: boolean
 }>()
 const emit = defineEmits<{ branch: [] }>()
-const t = i18n.global.t
 const processOpen = ref(false)
 function toggleProcess(event: Event) {
   processOpen.value = (event.target as HTMLDetailsElement).open
@@ -38,17 +36,17 @@ const duration = computed(() => {
   const seconds = Math.max(0, Math.floor((end - startedAt.value) / 1000))
   const minutes = Math.floor(seconds / 60)
   return minutes
-    ? t('ai.turn.minutesSeconds', { minutes, seconds: seconds % 60 })
-    : t('ai.turn.seconds', { seconds })
+    ? `${minutes}分钟 ${seconds % 60}秒`
+    : `${seconds}秒`
 })
 const processLabel = computed(() => duration.value
-  ? t(display.value.live ? 'ai.turn.elapsed' : 'ai.turn.duration', { duration: duration.value })
-  : t(display.value.live ? 'ai.turn.processing' : 'ai.turn.process'))
+  ? (display.value.live ? `已处理 ${duration.value}` : `用时 ${duration.value}`)
+  : (display.value.live ? '正在处理…' : '处理过程'))
 const finishedTime = computed(() => Number.isFinite(finishedAt.value)
-  ? new Date(finishedAt.value).toLocaleTimeString(i18n.global.locale.value, { hour: '2-digit', minute: '2-digit', hour12: false })
+  ? new Date(finishedAt.value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
   : '')
 const finishedTitle = computed(() => Number.isFinite(finishedAt.value)
-  ? new Date(finishedAt.value).toLocaleString(i18n.global.locale.value, { hour12: false })
+  ? new Date(finishedAt.value).toLocaleString('zh-CN', { hour12: false })
   : '')
 const responseText = computed(() => display.value.response
   .filter(entry => entry.part.type === 'text')
@@ -91,7 +89,7 @@ const showProgress = computed(() => {
       </AiMessagePart>
       <p v-if="showProgress" role="status" class="flex items-center gap-2 py-1 text-xs text-slate-500 dark:text-accent-300" data-testid="ai-turn-progress">
         <span class="size-1.5 shrink-0 rounded-full bg-primary-500/[var(--ai-chat-surface-opacity,1)] motion-safe:animate-pulse" aria-hidden="true" />
-        {{ t('ai.turn.processing') }}
+        正在处理…
       </p>
     </div>
     <template v-else>
@@ -133,25 +131,25 @@ const showProgress = computed(() => {
       <div v-if="display.response.length" class="flex items-center gap-3 pt-1 text-slate-400 dark:text-accent-400" data-testid="ai-turn-actions">
         <button
           v-if="responseText" type="button" class="group/copy relative p-1 hover:text-slate-700 focus-visible:outline-primary-500 dark:hover:text-accent-100"
-          :aria-label="t(copied ? 'ai.turn.copied' : 'ai.turn.copy')" @click="copyResponse"
+          :aria-label="(copied ? '已复制' : '复制这个回复')" @click="copyResponse"
         >
           <component :is="copied ? PhCheck : PhCopy" :size="16" aria-hidden="true" />
           <span aria-hidden="true" class="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden whitespace-nowrap rounded-md bg-slate-800/[var(--ai-chat-surface-opacity,1)] px-2.5 py-1.5 text-xs text-[color:var(--ai-chat-user-color,white)] shadow-sm group-hover/copy:block group-focus-visible/copy:block dark:bg-dark-600/[var(--ai-chat-surface-opacity,1)]">
-            {{ t(copied ? 'ai.turn.copied' : 'ai.turn.copy') }}
+            {{ (copied ? '已复制' : '复制这个回复') }}
           </span>
         </button>
         <button
           v-if="allowBranch" type="button" class="group/branch relative p-1 hover:text-slate-700 focus-visible:outline-primary-500 dark:hover:text-accent-100"
-          :aria-label="t('ai.turn.branch')" @click="emit('branch')"
+          aria-label="分支到新的聊天" @click="emit('branch')"
         >
           <PhGitBranch :size="16" aria-hidden="true" />
           <span aria-hidden="true" class="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden whitespace-nowrap rounded-md bg-slate-800/[var(--ai-chat-surface-opacity,1)] px-2.5 py-1.5 text-xs text-[color:var(--ai-chat-user-color,white)] shadow-sm group-hover/branch:block group-focus-visible/branch:block dark:bg-dark-600/[var(--ai-chat-surface-opacity,1)]">
-            {{ t('ai.turn.branch') }}
+            分支到新的聊天
           </span>
         </button>
         <time v-if="finishedTime" :datetime="timing?.finished_at" :title="finishedTitle" class="text-xs">{{ finishedTime }}</time>
       </div>
-      <p v-if="copyError" role="alert" class="text-xs text-rose-600 dark:text-rose-300">{{ t('ai.turn.copyFailed') }}</p>
+      <p v-if="copyError" role="alert" class="text-xs text-rose-600 dark:text-rose-300">复制失败，请重试或手动选择回复文字。</p>
     </template>
   </div>
 </template>

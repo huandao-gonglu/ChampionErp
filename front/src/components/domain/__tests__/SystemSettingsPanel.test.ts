@@ -3,7 +3,6 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { reactive } from 'vue'
 import { routeLocationKey } from 'vue-router'
-import { i18n } from '@/i18n'
 import { useAppStore } from '@/stores/app'
 import SystemSettingsPanel from '../SystemSettingsPanel.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -21,7 +20,6 @@ beforeEach(() => {
   const app = useAppStore()
   app.darkMode = false
   app.applyTheme()
-  app.setUiLocale('zh')
   vi.clearAllMocks()
   vi.mocked(fetchForbiddenCategories).mockResolvedValue({ platform: 'yandex', filename: '', imported_at: '', categories: [] })
   const watermark = { text: '', image_data_url: '', opacity: 25, size_percent: 30, density: 5, color: '#737373' }
@@ -34,10 +32,9 @@ afterEach(() => {
   const app = useAppStore()
   app.darkMode = false
   app.applyTheme()
-  app.setUiLocale('zh')
   vi.useRealTimers()
 })
-const global = { plugins: [i18n], stubs: { teleport: true } }
+const global = { stubs: { teleport: true } }
 describe('系统设置入口与同步间隔', () => {
   it('禁售类目支持深链，进入后才读取名单', async () => {
     const route = reactive({ query: { settings_section: 'general' } })
@@ -73,7 +70,7 @@ describe('系统设置入口与同步间隔', () => {
     await wrapper.setProps({ activeKey: 'systemSettings' })
     expect(wrapper.get('[aria-label="系统设置"]').attributes('aria-current')).toBe('page')
   })
-  it('颜色和语言立即生效并保存，系统配置读取失败也可调整', async () => {
+  it('颜色立即生效并保存，系统配置读取失败也可调整', async () => {
     vi.mocked(fetchSystemSettings).mockRejectedValue(new Error('系统设置读取失败'))
     const persist = vi.spyOn(window.localStorage, 'setItem')
     const wrapper = mount(SystemSettingsPanel, { global }); await flushPromises()
@@ -83,20 +80,12 @@ describe('系统设置入口与同步间隔', () => {
     await wrapper.get('#settings-color-mode').setValue('light')
     expect(document.documentElement.classList.contains('dark')).toBe(false)
     expect(persist).toHaveBeenCalledWith('theme', 'light')
-    await wrapper.get('#settings-ui-language').setValue('en')
-    expect(useAppStore().uiLocale).toBe('en')
-    expect(i18n.global.locale.value).toBe('en')
-    expect(document.documentElement.lang).toBe('en')
-    expect(wrapper.text()).toContain('Appearance and language')
-    expect(persist).toHaveBeenCalledWith('uiLocale', 'en')
+    expect(wrapper.find('#settings-ui-language').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('界面语言')
     expect(saveSystemSettings).not.toHaveBeenCalled()
     wrapper.unmount()
     const reopened = mount(SystemSettingsPanel, { global }); await flushPromises()
     expect(reopened.get('#settings-color-mode').element).toHaveProperty('value', 'light')
-    expect(reopened.get('#settings-ui-language').element).toHaveProperty('value', 'en')
-    await reopened.get('#settings-ui-language').setValue('zh')
-    expect(document.documentElement.lang).toBe('zh-CN')
-    expect(persist).toHaveBeenCalledWith('uiLocale', 'zh')
     persist.mockRestore()
   })
   it('默认展示通用设置，切换中断页后返回保留输入并停止中断轮询', async () => {

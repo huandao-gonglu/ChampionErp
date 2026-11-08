@@ -38,7 +38,7 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         output: {
           manualChunks: {
-            vue: ['vue', 'vue-router', 'pinia', 'vue-i18n'],
+            vue: ['vue', 'vue-router', 'pinia'],
             charts: ['chart.js', 'vue-chartjs'],
           },
         },

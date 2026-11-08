@@ -1,11 +1,9 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import NewAPIAccount from '../NewAPIAccount.vue'
 import { useAccountStore } from '@/stores/account'
 import { authorizeNewAPI, fetchNewAPIInfo, previewNewAPI, launchNewAPI } from '@/api/accounts'
-import zh from '@/i18n/locales/zh'
 
 const route = vi.hoisted(() => ({ query: {} as Record<string, string> }))
 vi.mock('vue-router', () => ({ useRoute: () => route }))
@@ -18,7 +16,7 @@ beforeEach(() => {
   vi.mocked(previewNewAPI).mockResolvedValue({ code: 'ABCDEF123456', target: 'keys', expires_at: Date.now()/1000+180 })
 })
 afterEach(() => vi.clearAllMocks())
-const render = () => mount(NewAPIAccount, { global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] } })
+const render = () => mount(NewAPIAccount)
 
 it('从 ERP 点击后直接 POST 当前会话的一次性票据，不要求输入或确认关联码', async () => {
   vi.mocked(launchNewAPI).mockResolvedValue({ ok: true, url: 'http://localhost:13000/api/erp/login', ticket: 'short-once-ticket', expires_at: 9999999999 })

@@ -1,7 +1,5 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { detectUiLocale, setUiLocale as applyUiLocale } from '@/i18n'
-import type { SupportedUiLocale } from '@/constants/locales'
 import type { UnknownRecord } from '@/types/workflow'
 
 export type ToastKind = 'success' | 'info' | 'warning' | 'error'
@@ -24,7 +22,6 @@ export const useAppStore = defineStore('app', () => {
   const mobileSidebarOpen = ref(false)
   const globalLoading = ref(false)
   const darkMode = ref(preferredDarkMode())
-  const uiLocale = ref<SupportedUiLocale>(detectUiLocale())
   const publicConfig = ref<UnknownRecord>({})
   const toasts = ref<ToastMessage[]>([])
   let toastId = 0
@@ -39,11 +36,6 @@ export const useAppStore = defineStore('app', () => {
   function toggleTheme() {
     darkMode.value = !darkMode.value
     applyTheme()
-  }
-
-  function setUiLocale(locale: SupportedUiLocale) {
-    uiLocale.value = locale
-    applyUiLocale(locale)
   }
 
   function setSidebarCollapsed(value: boolean) {
@@ -66,13 +58,11 @@ export const useAppStore = defineStore('app', () => {
     mobileSidebarOpen,
     globalLoading,
     darkMode,
-    uiLocale,
     publicConfig,
     toasts,
     theme,
     applyTheme,
     toggleTheme,
-    setUiLocale,
     setSidebarCollapsed,
     pushToast,
     dismissToast,

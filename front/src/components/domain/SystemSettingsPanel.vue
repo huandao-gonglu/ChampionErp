@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { routeLocationKey } from 'vue-router'
-import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAccountStore } from '@/stores/account'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import { UI_LOCALE_OPTIONS, type SupportedUiLocale } from '@/constants/locales'
 import ExternalRequestControlPanel from '@/components/settings/ExternalRequestControlPanel.vue'
 import AboutSettingsPanel from '@/components/settings/AboutSettingsPanel.vue'
 import YandexWarehouseSettings from '@/components/settings/YandexWarehouseSettings.vue'
@@ -16,7 +14,6 @@ import ManagedSettingsPanel from '@/components/settings/ManagedSettingsPanel.vue
 import TariffSettingsPanel from '@/components/settings/TariffSettingsPanel.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
-const { t } = useI18n()
 const appStore = useAppStore()
 const account = useAccountStore()
 const colorMode = computed({
@@ -26,15 +23,15 @@ const colorMode = computed({
   },
 })
 const tabs = computed(() => [
-  { key: 'general', label: '通用设置', summary: '颜色、界面语言与订单自动同步' },
-  { key: 'wechat', label: t('settings.wechat'), summary: t('settings.wechatSummary') },
+  { key: 'general', label: '通用设置', summary: '颜色与订单自动同步' },
+  { key: 'wechat', label: '微信连接', summary: '扫码绑定微信与 ERP 对话' },
   { key: 'watermark', label: '图片水印', summary: '发布水印、文字与自定义图片' },
-  { key: 'forbidden_categories', label: t('settings.forbiddenCategories'), summary: t('settings.forbiddenCategoriesSummary') },
+  { key: 'forbidden_categories', label: '禁售类目', summary: '导入 Yandex 禁售名单并在预检时拦截' },
   { key: 'tariffs', label: '国际物流运费表', summary: 'FBS 默认费率、个人导入与版本升级' },
   ...(account.isAdmin ? [{ key: 'managed', label: '管理员共享设置', summary: '企业应用凭据与汇率 API' }] as const : []),
   { key: 'yandex_warehouses', label: 'Yandex 发布仓库', summary: '同步远端仓库并指定运输模式' },
   { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
-  { key: 'about', label: t('settings.about'), summary: t('settings.aboutSummary') },
+  { key: 'about', label: '关于', summary: '版本信息、开源许可证、软件许可与服务协议、隐私政策' },
 ] as const)
 const section = ref<'general' | 'wechat' | 'watermark' | 'forbidden_categories' | 'tariffs' | 'managed' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
 const route = inject(routeLocationKey, undefined)
@@ -123,23 +120,17 @@ onMounted(load)
       </section>
       <section v-show="section === 'general'" id="system-settings-panel-general" class="mt-5 space-y-5" role="tabpanel" aria-labelledby="system-settings-tab-general">
         <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" aria-labelledby="appearance-settings-title">
-          <h3 id="appearance-settings-title" class="font-semibold">{{ t('settings.appearanceAndLanguage') }}</h3>
+          <h3 id="appearance-settings-title" class="font-semibold">颜色</h3>
           <div class="grid gap-4 sm:grid-cols-2">
             <label for="settings-color-mode" class="block text-sm font-medium">
-              <span class="mb-2 block">{{ t('settings.colorMode') }}</span>
+              <span class="mb-2 block">颜色模式</span>
               <select id="settings-color-mode" v-model="colorMode" class="input">
-                <option value="light">{{ t('settings.lightMode') }}</option>
-                <option value="dark">{{ t('settings.darkMode') }}</option>
-              </select>
-            </label>
-            <label for="settings-ui-language" class="block text-sm font-medium">
-              <span class="mb-2 block">{{ t('settings.uiLanguage') }}</span>
-              <select id="settings-ui-language" :value="appStore.uiLocale" class="input" @change="appStore.setUiLocale(($event.target as HTMLSelectElement).value as SupportedUiLocale)">
-                <option v-for="locale in UI_LOCALE_OPTIONS" :key="locale.value" :value="locale.value">{{ locale.label }}</option>
+                <option value="light">浅色模式</option>
+                <option value="dark">深色模式</option>
               </select>
             </label>
           </div>
-          <p class="muted text-sm">{{ t('settings.preferencesAutoSaved') }}</p>
+          <p class="muted text-sm">切换后立即生效，并自动保存到当前浏览器。</p>
         </section>
         <form id="system-settings-form" class="space-y-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" @submit.prevent="save">
           <p v-if="loading" role="status" class="text-sm text-accent-500">正在读取设置…</p>

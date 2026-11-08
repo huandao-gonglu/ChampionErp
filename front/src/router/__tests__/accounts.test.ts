@@ -53,13 +53,11 @@ describe('账号路由及传输边界', () => {
     localStorage.setItem('champion-erp.collect-queue.v1', 'old')
     localStorage.setItem('draft-image-request:old', 'old')
     localStorage.setItem('theme', 'dark')
-    localStorage.setItem('uiLocale', 'zh-CN')
     clearBusinessStorage()
     expect(localStorage.getItem('ai-chat-selected-conversation')).toBeNull()
     expect(localStorage.getItem('champion-erp.collect-queue.v1')).toBeNull()
     expect(localStorage.getItem('draft-image-request:old')).toBeNull()
     expect(localStorage.getItem('theme')).toBe('dark')
-    expect(localStorage.getItem('uiLocale')).toBe('zh-CN')
   })
   it('不同账号使用不同的业务缓存键', () => {
     setAccountIdentity('a')

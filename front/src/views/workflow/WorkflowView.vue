@@ -10,6 +10,7 @@ import DraftPublishPrecheckWorkspace from './DraftPublishPrecheckWorkspace.vue'
 import CollectView from '@/views/workflow/CollectView.vue'
 import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
+import DraftImageWorkbench from '@/components/domain/DraftImageWorkbench.vue'
 import DraftSkuPanel from '@/components/domain/DraftSkuPanel.vue'
 import DraftSkuAttributesEditor from '@/components/domain/DraftSkuAttributesEditor.vue'
 import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
@@ -113,7 +114,6 @@ watch(draftWorkspaceOpen, (open, _previous, onCleanup) => {
   onCleanup(() => { document.body.style.overflow = previousOverflow })
 })
 const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
-const draftWorkspaceItem = ref<DraftIndexItem | null>(null)
 const draftSync = useAiDraftSync({
   draft: currentDraft, input: pricingInput, loading,
   accept: result => store.acceptLoadedDraft(result),
@@ -123,6 +123,8 @@ const draftSync = useAiDraftSync({
       currentDraftProductContext.value = result.productContext
       pricingResult.value = null
       for (const row of currentDraft.value.skuItems) row.pricing.applied = false
+    } else {
+      currentDraftProductContext.value.imagePool = result.productContext.imagePool
     }
   },
   clearError: () => activityStore.setError(''),
@@ -138,7 +140,6 @@ async function reloadDraft() {
 function checkDraftUpdates() {
   if (draftWorkspaceOpen.value) void draftSync.refresh()
 }
-const draftWorkspaceImagesLoadedFor = ref('')
 const editorMode = ref<'text' | 'images'>('text')
 const imageEditorTitle = ref('采集箱图片编辑')
 const navItems = workflowNavItems
@@ -215,41 +216,17 @@ async function openProductImageEditor(item?: ProductIndexItem) {
   editorMode.value = 'images'
 }
 
-function productIndexFromDraft(item: DraftIndexItem): ProductIndexItem {
-  const platforms = [item.platform]
-  return {
-    productId: item.sourceProductId || item.productId,
-    title: item.productTitle || item.title,
-    mainImage: item.mainImage,
-    sourcePlatform: item.sourcePlatform,
-    sourceUrl: item.sourceUrl,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
-    platforms,
-    draftStatuses: Object.fromEntries(platforms.map((platform) => [platform, item.status])) as ProductIndexItem['draftStatuses'],
-    productFilePath: item.productFilePath,
-    collectStatus: '',
-    workflowStatus: '',
-    aiCopyStatus: '',
-    imageStatus: '',
-    categoryStatus: '',
-    attributesStatus: '',
-    pricingStatus: '',
-    precheckStatus: '',
-    publishStatus: item.publishStatus,
-    publishQueueReady: false,
-    optimized: false,
-    raw: item.raw,
-  }
-}
-
 const imageWorkbench = useDraftImageWorkbench({
-  draft: currentDraft, product, active: draftWorkspaceOpen,
+  draft: currentDraft, productContext: currentDraftProductContext, active: draftWorkspaceOpen,
   save: () => imageSaveState.save(),
   accept: result => {
     if ('product' in result) product.value = result.product
     if (result.draft) currentDraft.value = result.draft
     if (result.productContext) currentDraftProductContext.value = result.productContext
+    else if ('product' in result && result.product.productId === currentDraftProductContext.value.productId) {
+      // 单独上传返回商品素材；加入草稿之前也可从素材列表选取。
+      currentDraftProductContext.value.imagePool = result.imagePool
+    }
     if (result.productsIndex.length) productsIndex.value = result.productsIndex
     if (result.draftsIndex?.length) draftsIndex.value = result.draftsIndex
   },
@@ -261,23 +238,8 @@ async function openDraftWorkspace(item: DraftIndexItem, tab: DraftWorkspaceTab =
   store.setMarketplace(item.platform)
   await store.loadDraft(item)
   if (currentDraft.value.draftId !== item.draftId) return
-  draftWorkspaceItem.value = item
-  draftWorkspaceImagesLoadedFor.value = ''
-  draftWorkspaceOpen.value = true
-  await switchDraftWorkspaceTab(tab)
-}
-
-async function ensureDraftWorkspaceImages() {
-  const item = draftWorkspaceItem.value
-  if (!item || draftWorkspaceImagesLoadedFor.value === item.draftId) return
-  await store.loadProduct(productIndexFromDraft(item))
-  if (currentDraft.value.draftId === item.draftId) draftWorkspaceImagesLoadedFor.value = item.draftId
-}
-
-async function switchDraftWorkspaceTab(tab: DraftWorkspaceTab) {
-  if (tab === 'images') await ensureDraftWorkspaceImages()
   draftWorkspaceTab.value = tab
-
+  draftWorkspaceOpen.value = true
 }
 
 async function translateEditorImages(imageIds: string[]) {
@@ -316,8 +278,6 @@ function closeDraftWorkspace() {
   if (imageSaveState.dirty.value && !window.confirm('图片设置尚未保存，关闭将放弃这些修改。确认关闭？')) return
   draftWorkspaceOpen.value = false
   resetDraftWorkspaceBackdropPointer()
-  draftWorkspaceItem.value = null
-  draftWorkspaceImagesLoadedFor.value = ''
 }
 
 const {
@@ -630,7 +590,7 @@ watch(
           :reload-disabled="loading || imageWorkbenchBusy"
           :editing-disabled="imageWorkbenchBusy"
           @reload="reloadDraft"
-          @update-active-tab="switchDraftWorkspaceTab"
+          @update-active-tab="draftWorkspaceTab = $event"
           @close="closeDraftWorkspace"
         >
           <template #actions>
@@ -655,7 +615,7 @@ watch(
           </template>
 
           <template #skus>
-            <DraftSkuPanel :categories="Object.fromEntries(store.targetEditors.map(editor => [editor.key, editor.state.category]))" :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="draftWorkspaceLoading" @edit-product="editDraftProduct">
+            <DraftSkuPanel :categories="Object.fromEntries(store.targetEditors.map(editor => [editor.key, editor.state.category]))" :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="currentDraftProductContext.imagePool" :loading="draftWorkspaceLoading" @edit-product="editDraftProduct">
               <template #attributes="{ row, sku, targetKey }">
                 <DraftSkuAttributesEditor :sku-id="row.sku_id" :sku="sku" :target-key="targetKey" />
               </template>
@@ -663,15 +623,11 @@ watch(
           </template>
 
           <template #images>
-            <ProductImageEditorPanel
-              title="草稿图片编辑"
-              :product="product"
-              :images="imagePool"
-              :loading="draftWorkspaceLoading"
-              :error="error"
-              show-translate-action
+            <DraftImageWorkbench
               :draft="currentDraft"
-              :workbench="imageWorkbench"
+              :product-context="currentDraftProductContext"
+              :loading="draftWorkspaceLoading"
+              :controller="imageWorkbench"
             />
           </template>
 

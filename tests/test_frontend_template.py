@@ -25,14 +25,12 @@ class FrontendTemplateTests(unittest.TestCase):
         self.assertNotIn("cdn.tailwindcss.com", html)
         self.assertNotIn("__ACTIVE_PAGE__", html)
 
-    def test_vue_entry_bootstraps_pinia_router_i18n_and_waits_for_router(self) -> None:
+    def test_vue_entry_bootstraps_pinia_router_and_waits_for_router(self) -> None:
         main_ts = (FRONT_SRC_DIR / "main.ts").read_text(encoding="utf-8")
 
         self.assertIn("createApp", main_ts)
         self.assertIn("createPinia", main_ts)
-        self.assertIn("await initI18n()", main_ts)
         self.assertIn("app.use(router)", main_ts)
-        self.assertIn("app.use(i18n)", main_ts)
         self.assertIn("await router.isReady()", main_ts)
         self.assertIn("app.mount('#app')", main_ts)
 
@@ -50,7 +48,7 @@ class FrontendTemplateTests(unittest.TestCase):
         self.assertIn("createRouter", router)
         self.assertIn("createWebHistory", router)
         self.assertIn("import('@/views/workflow/WorkflowView.vue')", router)
-        self.assertIn("titleKey", router)
+        self.assertIn("title:", router)
         self.assertIn("router.beforeEach", router)
         self.assertIn("router.onError", router)
 
@@ -58,7 +56,7 @@ class FrontendTemplateTests(unittest.TestCase):
         meta = (FRONT_SRC_DIR / "router" / "meta.d.ts").read_text(encoding="utf-8")
 
         self.assertIn("interface RouteMeta", meta)
-        self.assertIn("descriptionKey", meta)
+        self.assertIn("description?", meta)
         self.assertIn("hideInMenu", meta)
         self.assertNotIn("requiresAuth", meta)
         self.assertNotIn("requiresAdmin", meta)
@@ -135,15 +133,6 @@ class FrontendTemplateTests(unittest.TestCase):
         for path in expected:
             with self.subTest(path=path):
                 self.assertTrue(path.exists())
-
-    def test_i18n_uses_locale_modules_and_initializer(self) -> None:
-        i18n = (FRONT_SRC_DIR / "i18n" / "index.ts").read_text(encoding="utf-8")
-
-        self.assertIn("createI18n", i18n)
-        self.assertIn("initI18n", i18n)
-        self.assertIn("localStorage.getItem('locale')", i18n)
-        self.assertTrue((FRONT_SRC_DIR / "i18n" / "locales" / "zh.ts").exists())
-        self.assertTrue((FRONT_SRC_DIR / "i18n" / "locales" / "en.ts").exists())
 
     def test_tailwind_style_defines_shared_component_classes(self) -> None:
         style = (FRONT_SRC_DIR / "style.css").read_text(encoding="utf-8")
