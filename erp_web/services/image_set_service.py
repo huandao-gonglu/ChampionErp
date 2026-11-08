@@ -3,6 +3,7 @@
 import json
 import mimetypes
 import hashlib
+import re
 
 from pydantic_ai import BinaryContent, PromptedOutput
 from pydantic_ai.exceptions import ModelRetry
@@ -14,6 +15,10 @@ from .copy_service import product_summary
 from . import ai_prompt_templates, image_service, image_translate_service
 
 PLAN_TOOLSET = AiToolSet.bind("image.plan.internal", [], {})
+PLAN_LANGUAGE_RULES = """套图方案供中文运营人员审核。统一视觉风格、每页标题和设计说明必须用中文编写。
+实际印在图片上的文字使用草稿目标语言，并在设计说明中用「」逐段引出。品牌、型号和 SKU 规格名称保留原文。"""
+_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_QUOTED_TEXT = re.compile(r'「[^」]*」|“[^”]*”|"[^"]*"|«[^»]*»')
 FACT_RULES = """商品外观、颜色、结构、数量及配件必须与参考素材一致。不能杜撰尺寸、材质、性能、认证、
 赠品或不存在的细节和角度。不同 SKU 的差异不能混成同一商品，也不能把某一颜色宣称为全部款式。
 共用图有颜色或规格差异时优先使用共同细节、明确标注的款式展示，避免暗示所有 SKU 都包含图中全部款式。
@@ -111,6 +116,16 @@ def validate_sku_pages(plan, product, draft, *, retry=False):
                 raise ValueError("SKU 图片关联已变化，不能将旧方案用于其他规格图片，请重新规划。")
 
 
+def _has_chinese_description(text: str) -> bool:
+    # 单独看说明正文，避免长段上图文案干扰判断。整个字段被引号包住时仍检查其内容。
+    prose = _QUOTED_TEXT.sub(" ", text)
+    if not any(char.isalpha() for char in prose):
+        prose = text
+    han_count = len(_HAN.findall(prose))
+    other_words = re.findall(r"[^\W\d_]+", _HAN.sub(" ", prose))
+    return han_count > 0 and han_count >= len(other_words)
+
+
 def plan_image_set(*, app_dir, config, messages, product, draft, sources, count, prompt):
     content = reference_content(app_dir, sources)
     allowed_ids = {source["id"] for source in sources}
@@ -122,6 +137,12 @@ def plan_image_set(*, app_dir, config, messages, product, draft, sources, count,
             raise ModelRetry("每张图的参考素材 ID 只能取自本次提供的图片。")
         if any(page.scope != "common" for page in plan.pages):
             raise ModelRetry("本次只规划共用页面，SKU 图由已确认的规格关联装配。")
+        fields = [("统一视觉风格", plan.style)]
+        for index, page in enumerate(plan.pages, 1):
+            fields.extend([(f"第 {index} 张标题", page.title), (f"第 {index} 张设计说明", page.prompt)])
+        invalid = [label for label, value in fields if not _has_chinese_description(value)]
+        if invalid:
+            raise ModelRetry(f"请用中文重写{'、'.join(invalid)}。用「」保留要印在图片上的目标语言文案。")
         return plan
 
     factory = AiAgentFactory(app_dir=app_dir, app_config=config, message_store=messages)
@@ -133,7 +154,7 @@ def plan_image_set(*, app_dir, config, messages, product, draft, sources, count,
             permissions=frozenset(), timeout_seconds=180, max_model_requests=3,
             max_tool_calls=1, max_tool_output_bytes=64 * 1024, retries=2,
         ),
-        instructions=pair["system"] + "\n" + FACT_RULES,
+        instructions="\n".join((pair["system"], FACT_RULES, PLAN_LANGUAGE_RULES)),
         user_prompt=[f"{pair['user']}\n生成 {count} 张套图的方案。资料：{facts(product, draft)}\n用户补充：{prompt}", *content],
         toolset=PLAN_TOOLSET, output_validator=validate_plan,
         business_scope={"product_id": product["product_id"], "draft_id": draft["draft_id"], "platform": draft["platform"]},

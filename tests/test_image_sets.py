@@ -8,7 +8,7 @@ from threading import Event
 from types import SimpleNamespace
 
 import pytest
-from pydantic_ai.messages import BinaryContent, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import BinaryContent, ModelResponse, RetryPromptPart, TextPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.providers import Provider
 
@@ -63,15 +63,32 @@ def image_model(monkeypatch, raw, fail_scene=False):
     return calls
 
 
-def test_native_planner_sees_all_images_and_retries_invalid_output(monkeypatch, app_dir):
+@pytest.mark.parametrize(("invalid_field", "feedback"), [
+    ("source_image_ids", "参考素材 ID"),
+    ("style", "统一视觉风格"),
+    ("title", "第 2 张标题"),
+    ("prompt", "第 2 张设计说明"),
+])
+def test_native_planner_sees_all_images_and_retries_invalid_output(monkeypatch, app_dir, invalid_field, feedback):
     product, draft, _ = setup_sources(app_dir)
+    draft = {**draft, "language": "ru"}
     requests = []
+    expected = plan()
+    expected["pages"][1]["title"] = "材质细节 · SUS304"
+    expected["pages"][1]["prompt"] = "标题写「Канистра из нержавеющей стали с удобной ручкой для переноски」，右侧展示提手。"
 
     def model(messages, info):
         requests.append(messages)
-        payload = plan()
+        payload = deepcopy(expected)
         if len(requests) == 1:
-            payload["pages"][0]["source_image_ids"] = ["not-provided"]
+            if invalid_field == "style":
+                payload["style"] = "Единый индустриальный стиль с холодным освещением"
+            else:
+                payload["pages"][1][invalid_field] = {
+                    "source_image_ids": ["not-provided"],
+                    "title": "Материал и детали корпуса",
+                    "prompt": "Покажите фактуру стали и добавьте надпись «不锈钢».",
+                }[invalid_field]
         return ModelResponse(parts=[TextPart(json.dumps(payload, ensure_ascii=False))])
 
     factory = image_set_service.AiAgentFactory
@@ -81,8 +98,10 @@ def test_native_planner_sees_all_images_and_retries_invalid_output(monkeypatch, 
     sources = image_translate_service.select_source_images(product, ["common", "red"])
     result = image_set_service.plan_image_set(app_dir=app_dir, config={}, messages=get_context().pydantic_messages,
         product=product, draft=draft, sources=sources, count=3, prompt="风格统一")
-    assert result.model_dump() == plan()
+    assert result.model_dump() == expected
     assert len(requests) == 2
+    assert any(isinstance(part, RetryPromptPart) and feedback in str(part.content)
+               for message in requests[1] for part in message.parts)
     content = next(part.content for message in requests[0] for part in message.parts if isinstance(part, UserPromptPart))
     assert len([item for item in content if isinstance(item, BinaryContent)]) == 2
     assert "目标语言" in content[0]

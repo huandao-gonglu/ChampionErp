@@ -25,9 +25,9 @@ class ImageSetPlanPayload(TypedDict):
 class ImageSetPage(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     key: str = Field(min_length=1, max_length=60, pattern=r"^[a-zA-Z0-9_-]+$")
-    title: str = Field(min_length=1, max_length=100, description="供用户查看的中文图片名称")
+    title: str = Field(min_length=1, max_length=100, description="供运营审核的中文图片名称，品牌和型号可保留原文")
     role: ImageSetRole
-    prompt: str = Field(min_length=1, max_length=4000, description="该图的构图、事实依据、目标语言文案和视觉要求")
+    prompt: str = Field(min_length=1, max_length=4000, description="用中文说明构图、事实依据和视觉要求，用引号标出按草稿目标语言书写的上图文字")
     source_image_ids: list[str] = Field(min_length=1, max_length=12, description="支持该画面的参考素材 ID")
     scope: Literal["common", "sku"] = "common"
     sku_ids: list[str] = Field(default_factory=list, description="SKU 图对应的规格 ID；共用图为空")
@@ -35,7 +35,7 @@ class ImageSetPage(BaseModel):
 
 class ImageSetPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    style: str = Field(min_length=1, max_length=2000, description="整套图片共同的配色、字体、布局和视觉风格")
+    style: str = Field(min_length=1, max_length=2000, description="用中文说明整套图片的配色、字体、布局和视觉风格")
     pages: list[ImageSetPage] = Field(min_length=1)
 
     @model_validator(mode="after")
