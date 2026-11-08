@@ -14,7 +14,8 @@ class TaskQueueReader:
     def tasks(self, *, pending_only=False, source="", job_id="", platform=""):
         with self.db._connect() as conn:
             publishes = conn.execute("""SELECT p.job_id,p.product_id,p.created_at,p.updated_at,s.key AS platform,s.value AS item,
-                json_extract(p.payload_json,'$.product_name') AS title,
+                COALESCE(NULLIF(json_extract(p.payload_json,'$.product.source.title'),''),
+                         json_extract(p.payload_json,'$.product_name')) AS title,
                 json_extract(p.payload_json,'$.task_origin') AS origin,
                 json_type(p.payload_json,'$.approved_publications.' || s.key) AS approval,
                 json_extract(p.payload_json,'$.approved_publications.' || s.key || '.store_identity') AS account_id,

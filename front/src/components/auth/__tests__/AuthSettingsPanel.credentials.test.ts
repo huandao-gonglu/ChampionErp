@@ -1,5 +1,6 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as settingsApi from '@/api/workflow/settings'
 import AuthSettingsPanel from '../AuthSettingsPanel.vue'
 
 const defaultPlatformOptions = [
@@ -58,6 +59,44 @@ it('仅模型读取显示正在读取模型，其他工作台加载不会误报�
   expect(wrapper.text()).not.toContain('正在读取模型')
   await wrapper.setProps({ modelsReading: true })
   expect(wrapper.get('[role="status"]').text()).toBe('正在读取模型')
+})
+
+it('只在打开模型字段时查询目录，取回列表后由用户选择模型', async () => {
+  const list = vi.spyOn(settingsApi, 'testAiModel').mockResolvedValue({
+    ok: true, message: '', error: '', errorCode: '', nextAction: '',
+    raw: { available_models: [{ id: 'model-b', name: '模型 B' }] },
+  })
+  try {
+    const wrapper = mountPanel({
+      providers: [{ id: 'openai', model_discovery: 'openai_models' }],
+      ai_models: [{ id: 'demo', model: 'custom', provider_id: 'openai', base_url: 'https://example.test', api_key_configured: true }],
+    })
+    expect(wrapper.findAll('button').some(button => button.text() === '加载模型列表')).toBe(false)
+    await wrapper.get('input[type="password"]').trigger('blur')
+    await wrapper.get('input[placeholder="https://api.example.com/v1"]').trigger('blur')
+    expect(list).not.toHaveBeenCalled()
+
+    const field = wrapper.get('input[role="combobox"]')
+    await field.trigger('click')
+    await field.trigger('click')
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ id: 'demo', probe_capabilities: false }))
+    expect((field.element as HTMLInputElement).value).toBe('custom')
+    await wrapper.get('[role="option"]').trigger('click')
+    expect((field.element as HTMLInputElement).value).toBe('model-b')
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+
+    list.mockRejectedValueOnce(new Error('模型目录暂不可用'))
+    await field.trigger('keydown', { key: 'ArrowDown' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('模型目录暂不可用')
+    await field.setValue('manual-id')
+    await field.trigger('blur')
+    expect((await save(wrapper)).ai_models).toEqual([expect.objectContaining({ model: 'manual-id' })])
+  } finally {
+    list.mockRestore()
+  }
 })
 
 it('同一列表中仅系统模型保护连接与删除，个人模型可以编辑、保存和删除', async () => {
@@ -466,6 +505,35 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     expect((wrapper.get('[data-testid="ai-provider-id"]').element as HTMLSelectElement).value).toBe('')
     expect(wrapper.text()).toContain('未选择服务商')
     expect(wrapper.get('[data-testid="ai-provider-id"]').findAll('option').map((item) => item.text())).not.toContain('自定义服务')
+  })
+
+  it('图片理解通过双图测试后才可用于套图规划', async () => {
+    const wrapper = mountPanel({
+      ...qwenConfig,
+      ai_use_cases: [{ id: 'image.plan', label: '套图规划', required_capabilities: ['chat', 'json', 'image_understanding'] }],
+      ai_use_case_prompts: { 'image.plan': { path: 'config/prompts/image_set_plan.json' } },
+    })
+    const toggle = wrapper.findAll('label').find(label => label.text().trim() === '图片理解')!.get('input')
+    const select = wrapper.findAll('select').find(item => item.findAll('option').some(option => option.text() === '自动匹配'))!
+    expect(select.find('option[value="qwen_translation"]').exists()).toBe(false)
+    await toggle.setValue(true)
+    expect(wrapper.text()).toContain('两张测试图片')
+    await wrapper.findAll('button').find(button => button.text() === '确定测试')!.trigger('click')
+    expect(wrapper.emitted('testAi')?.at(-1)?.[0]).toMatchObject({
+      probe_only_capability: 'image_understanding', capabilities: ['chat', 'json'],
+    })
+    await wrapper.setProps({ lastResult: {
+      ok: true, message: '', error: '', errorCode: '', nextAction: '',
+      raw: {
+        channel: 'ai_model', model_id: 'qwen_translation', test_trigger: 'capability_checkbox',
+        supported_capabilities: ['image_understanding'],
+        capability_results: { image_understanding: { ok: true, capability_profile: { tested: true, version: 2 } } },
+      },
+    } })
+    expect(select.find('option[value="qwen_translation"]').exists()).toBe(true)
+    expect((await save(wrapper)).ai_models).toEqual([expect.objectContaining({
+      capability_profiles: { image_understanding: expect.objectContaining({ tested: true }) },
+    })])
   })
 
   it('能力探测不会在请求前伪造待测 capability', async () => {

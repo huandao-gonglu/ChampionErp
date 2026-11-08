@@ -77,6 +77,21 @@ describe('DraftBoxPanel', () => {
     wrapper.unmount()
     expect(context.snapshot()).toBeUndefined()
   })
+  it('改写刊登标题后仍显示采集标题，缺少商品名称时显示商品编号', async () => {
+    const row = draft('fan', 'claimed', '便携风扇')
+    const wrapper = mount(DraftBoxPanel, {
+      props: { drafts: [row], platformOptions: [], storeConfig: {}, loading: false },
+    })
+    const localized = { ...row, title: 'Ventilador portátil' }
+    await wrapper.setProps({ drafts: [localized] })
+    expect(wrapper.text()).toContain(row.productTitle)
+    expect(wrapper.text()).not.toContain(localized.title)
+
+    await wrapper.setProps({ drafts: [{ ...localized, productTitle: '' }] })
+    expect(wrapper.text()).toContain(row.productId)
+    expect(wrapper.text()).not.toContain(localized.title)
+  })
+
   it('展示草稿创建时间', () => {
     const row = draft('created-time', 'claimed', '带创建时间的草稿')
     row.createdAt = '2026-09-01T12:34:56+08:00'

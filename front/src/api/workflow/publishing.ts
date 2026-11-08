@@ -590,6 +590,7 @@ function normalizeCategoryMatchResult(data: UnknownRecord): CategoryMatchResult 
 export async function matchCategory(
   draft: DraftDetail,
   target: MarketplaceTargetSite,
+  productLabel = draft.draftId,
 ): Promise<CategoryMatchResult> {
   // 同步 focused 业务 response 是唯一结果事实；withAiForeground 只提供前台
   // 实时展示（reserve → observe stream → 业务 header 关联）。业务判断失败
@@ -597,7 +598,7 @@ export async function matchCategory(
   return withAiForeground(
     {
       displayTitle: 'AI 匹配类目',
-      initialUserMessage: `为“${draft.title || draft.draftId}”匹配 ${target.platform.toUpperCase()} ${target.site || ''} 类目。`.trim(),
+      initialUserMessage: `为“${productLabel}”匹配 ${target.platform.toUpperCase()} ${target.site || ''} 类目。`.trim(),
       successNotice: (result) => (
         result.status === 'completed'
           ? '类目匹配完成'

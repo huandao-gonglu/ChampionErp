@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { draftContextTitle, draftListTitle } from '@/utils/draftDisplayTitle'
 import { modelOperationReason } from '@/utils/desktop'
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -167,8 +168,7 @@ useAiPageContext(() => editorOpen.value && route.path === '/' ? {
 } : null, 30)
 
 const pricingDraftItems = computed(() => draftsIndex.value.filter((item) => item.draftId))
-const pricingDraftTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || currentDraft.value.draftId)
-const draftWorkspaceTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || '草稿编辑')
+const draftWorkspaceTitle = computed(() => draftContextTitle(currentDraftProductContext.value, currentDraft.value.draftId) || '草稿编辑')
 const draftSaveBlockedReason = computed(() => (
   currentDraft.value.draftId ? '' : '当前草稿暂无 ID。'
 ))
@@ -251,7 +251,7 @@ async function editEditorImages(request: { prompt: string; imageIds: string[] })
 }
 
 async function deleteDraft(item: DraftIndexItem) {
-  const title = item.title || item.productTitle || item.draftId
+  const title = draftListTitle(item)
   if (!window.confirm(`确认删除草稿「${title}」？商品本身不会被删除。`)) return
   await store.deleteDraft(item)
 }
@@ -512,7 +512,7 @@ watch(
       <div class="w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ product.name || '商品编辑' }}</h2>
+            <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ product.source.title || product.name || product.productId || '商品编辑' }}</h2>
             <p class="mt-1 text-sm text-slate-500 dark:text-accent-300">{{ product.productId || '在同一工作台完成文本与图片编辑' }}</p>
           </div>
           <div class="flex flex-wrap gap-2">
@@ -647,7 +647,7 @@ watch(
                 :draft-id="currentDraft.draftId"
                 :draft-version="currentDraft.updatedAt"
                 :saved-pricing="currentDraft.pricing"
-                :draft-title="pricingDraftTitle"
+                :draft-title="draftWorkspaceTitle"
                 :product-context="currentDraftProductContext"
                 :platform-options="platformOptions"
                 :loading="draftWorkspaceLoading"

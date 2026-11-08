@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import base64
+import re
+from io import BytesIO
 from pathlib import Path
+from random import SystemRandom
 from typing import Any
 
+from PIL import Image, ImageDraw
 from pydantic import BaseModel, ConfigDict
-from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart
+from pydantic_ai import BinaryContent
+from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.tools import ToolDefinition
 
 from . import ai_direct_request_service, ai_gateway_probe, ai_model_config
-from .ai_model_discovery import AiModelDiscoveryError, list_remote_models
+from .ai_model_discovery import list_remote_models
 from .ai_model_factory import (
     AiModelFactoryError,
     PydanticModelBinding,
@@ -43,6 +48,51 @@ def _image_edit_probe_bytes() -> bytes:
     """读取随应用发布的有效 PNG，供图片编辑能力探测使用。"""
 
     return _IMAGE_EDIT_PROBE_PATH.read_bytes()
+
+
+def _shape_image(color: str, shape: str) -> BinaryContent:
+    image = Image.new("RGB", (192, 192), "white")
+    draw = ImageDraw.Draw(image)
+    bounds = (32, 32, 160, 160)
+    if shape == "圆形":
+        draw.ellipse(bounds, fill=color)
+    elif shape == "正方形":
+        draw.rectangle(bounds, fill=color)
+    else:
+        draw.polygon([(96, 32), (160, 160), (32, 160)], fill=color)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return BinaryContent(data=buffer.getvalue(), media_type="image/png")
+
+
+def _probe_image_understanding(
+    context: ai_gateway_probe.CapabilityProbeContext,
+    binding: PydanticModelBinding,
+) -> dict[str, Any]:
+    colors = {"红色": "red", "蓝色": "blue", "绿色": "green", "黄色": "yellow"}
+    random = SystemRandom()
+    chosen_colors = random.sample(list(colors), 2)
+    chosen_shapes = random.sample(["圆形", "正方形", "三角形"], 2)
+    expected = list(zip(chosen_colors, chosen_shapes, strict=True))
+    prompt = (
+        "请按两张图片的顺序，各写出图形的颜色和形状。"
+        "颜色用红色、蓝色、绿色或黄色，形状用圆形、正方形或三角形。"
+        "每行写一组颜色和形状。"
+    )
+    images = [_shape_image(colors[color], shape) for color, shape in expected]
+    response = ai_direct_request_service.request_for_probe(
+        app_dir=context.app_dir or ".",
+        binding=binding,
+        messages=[ModelRequest(parts=[UserPromptPart(content=[prompt, *images])])],
+    )
+    words = re.findall(r"[红蓝绿黄]色|圆形|正方形|三角形", response.text or "")
+    if words != [word for pair in expected for word in pair]:
+        raise ai_gateway_probe.CapabilityProbeInconclusive(
+            "模型未按顺序识别出两张图片的颜色和形状，尚未确认图片理解能力。"
+        )
+    return ai_gateway_probe.build_capability_profile(
+        context.model, context.capability, strategy="ordered_image_input",
+    )
 
 
 def _json_probe_strategy(binding: PydanticModelBinding) -> str:
@@ -129,6 +179,8 @@ def _probe_capability(
         if "未接入" in str(exc) or "不支持 API 协议" in str(exc):
             raise ai_gateway_probe.CapabilityProbeUnavailable(str(exc)) from None
         raise ai_gateway_probe.CapabilityProbeInconclusive(str(exc)) from None
+    if capability == ai_model_config.CAP_IMAGE_UNDERSTANDING:
+        return _probe_image_understanding(context, binding)
     if capability == ai_model_config.CAP_CHAT:
         messages = ai_gateway_probe._chat_probe_default_messages()
         response = ai_direct_request_service.request_for_probe(
@@ -362,27 +414,16 @@ def test_api_model(
     model_name = ai_model_config.model_name(model)
     timeout = int(model.get("timeout_seconds") or 60)
     available_models: list[dict[str, str]] = []
-    discovery_error = ""
-    discovery_succeeded = False
-    try:
-        available_models = list_remote_models(
-            str(model.get("provider_id") or ""),
-            base_url,
-            api_key,
-            timeout,
-        )
-        discovery_succeeded = True
-    except AiModelDiscoveryError as exc:
-        discovery_error = str(exc)
     probe_requested = raw.get("probe_capabilities", True) is not False
-    options = ai_gateway_probe._probe_options(raw)
-    requested = options["capabilities"] or ai_model_config.normalize_capabilities(
-        model.get("capabilities")
-    )
+    requested: list[str] = []
     capability_probe = ai_gateway_probe.empty_capability_probe_report()
     if probe_requested:
         if not model_name:
             raise RuntimeError("请先选择模型。")
+        options = ai_gateway_probe._probe_options(raw)
+        requested = options["capabilities"] or ai_model_config.normalize_capabilities(
+            model.get("capabilities")
+        )
         capability_probe = probe_model_capabilities(
             model,
             api_key,
@@ -392,24 +433,24 @@ def test_api_model(
             options,
             app_dir=app_dir,
         )
-    elif discovery_error:
-        raise RuntimeError(discovery_error)
-    connection_ok = discovery_succeeded or bool(
-        capability_probe["supported"] or capability_probe["unsupported"]
-    )
-    connection_message = (
-        f"{model.get('name') or model.get('id')} 测试成功：推理接口可以连接。"
-        if connection_ok
-        else f"{model.get('name') or model.get('id')} 尚未确认推理接口连接。"
-    )
-    if discovery_error and connection_ok:
-        connection_message += " 当前 Provider 未提供可用的模型目录。"
+        connection_ok = bool(capability_probe["supported"] or capability_probe["unsupported"])
+        connection_message = (
+            f"{model.get('name') or model.get('id')} 推理接口已响应。"
+            if connection_ok
+            else f"{model.get('name') or model.get('id')} 尚未确认推理接口连接。"
+        )
+    else:
+        available_models = list_remote_models(
+            str(model.get("provider_id") or ""), base_url, api_key, timeout
+        )
+        connection_ok = True
+        connection_message = f"已获取模型列表，共 {len(available_models)} 个模型。"
     outcome = ai_gateway_probe._capability_test_outcome(
         capability_probe,
         probe_requested,
         connection_ok,
         connection_message,
-        "可以保存配置并继续使用 AI 功能。",
+        "请检查模型配置后重试。" if not connection_ok else "",
     )
     return {
         **outcome,
@@ -421,7 +462,7 @@ def test_api_model(
         "api_style": ai_model_config.normalize_api_style(model.get("api_style")),
         "model": model_name,
         "available_models": available_models,
-        "model_discovery_error": discovery_error,
+        "model_discovery_error": "",
         "supported_capabilities": capability_probe["supported"],
         "unsupported_capabilities": capability_probe["unsupported"],
         "unavailable_capabilities": capability_probe["unavailable"],

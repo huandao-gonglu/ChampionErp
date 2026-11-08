@@ -1,3 +1,4 @@
+import { draftContextTitle } from '@/utils/draftDisplayTitle'
 import { fetchCategoryAttrs, matchCategory, runCategoryPrecheck, searchCategories } from '@/api/workflow/publishing'
 import { translateText, type TextTranslationMap } from '@/api/workflow/translation'
 import { withAiForeground } from '@/services/withAiForeground'
@@ -164,14 +165,14 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
   }
 
   async function autoMatchCategories(targets: MarketplaceTargetSite[]) {
-    categoryAutoMatchProductName.value = currentDraftProductContext.value.title || currentDraft.value.title
+    categoryAutoMatchProductName.value = draftContextTitle(currentDraftProductContext.value, currentDraft.value.draftId)
     const recommendations: Record<string, { query: string; results: CategorySearchResult[]; error: string }> = {}
     let candidateTargetCount = 0
     let completedCount = 0
     for (const [index, target] of targets.entries()) {
       categoryAutoMatchMessage.value = `正在为 ${target.platform.toUpperCase()} ${target.site} 运行类目能力（${index + 1}/${targets.length}）…`
       try {
-        const result = await matchCategory(currentDraft.value, target)
+        const result = await matchCategory(currentDraft.value, target, categoryAutoMatchProductName.value)
         recommendations[targetSiteKey(target)] = {
           query: result.query,
           results: result.candidates,

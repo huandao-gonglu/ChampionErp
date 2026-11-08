@@ -42,7 +42,7 @@ def queue():
     remote = PublishingRemote()
     context._publishing_bus = PublishingBus(context.db, {"ozon": remote}, task_queue=context.task_queue)
     with request_operation("ai_tool:product_publish_request", trigger="agent_tool"):
-        job = context.publishing_bus.enqueue({"product_id": "product", "name": "测试发布商品"}, ["ozon"],
+        job = context.publishing_bus.enqueue({"product_id": "product", "name": "内部商品名", "source": {"title": "测试发布商品"}}, ["ozon"],
             targets={"ozon": {"draft_id": "draft", "site": "global"}}, idempotency_key="publish-1")
     context.publishing_bus.wait(job["job_id"], timeout=2)
     task_id = f"publish:{job['job_id']}:ozon"
@@ -66,7 +66,8 @@ def due(queue, task_id):
 def test_local_page_reads_do_not_query_and_scheduled_success_updates_original_job(queue):
     service, remote, job_id, task_id = queue
     assert service.list({"source": "publish", "origin": "ai", "q": "测试"})["total"] == 1
-    service.detail(task_id)
+    assert service.detail(task_id)["task"]["title"] == "测试发布商品"
+    assert service.context.publishing_bus.get_job_summary(job_id)["product_name"] == "测试发布商品"
     service.run_once()
     assert remote.reads == 0 and remote.writes == 1
     remote.result = {"ok": True, "status": "published", "external_id": "remote-item"}

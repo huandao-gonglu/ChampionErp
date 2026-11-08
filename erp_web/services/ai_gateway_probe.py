@@ -247,11 +247,13 @@ _PROBE_OPERATIONS = {
     ai_model_config.CAP_JSON: "model.request.structured",
     ai_model_config.CAP_WEB_SEARCH: "model.request.native_tool",
     ai_model_config.CAP_TOOL_CALLING: "model.request.function_tool",
+    ai_model_config.CAP_IMAGE_UNDERSTANDING: "model.request.image_input",
     ai_model_config.CAP_IMAGE_GENERATE: "model.request.image_generate",
     ai_model_config.CAP_IMAGE_EDIT: "model.request.image_edit",
 }
 
 _PROBE_VERSIONS = {
+    ai_model_config.CAP_IMAGE_UNDERSTANDING: 1,
     ai_model_config.CAP_CHAT: 3,
     ai_model_config.CAP_JSON: 4,
 }
@@ -363,6 +365,7 @@ _CAPABILITY_LABELS = {
     ai_model_config.CAP_CHAT: "对话",
     ai_model_config.CAP_JSON: "JSON 输出",
     ai_model_config.CAP_WEB_SEARCH: "联网搜索",
+    ai_model_config.CAP_IMAGE_UNDERSTANDING: "图片理解",
     ai_model_config.CAP_IMAGE_GENERATE: "图片生成",
     ai_model_config.CAP_IMAGE_EDIT: "图片编辑",
     ai_model_config.CAP_TOOL_CALLING: "Function Call",

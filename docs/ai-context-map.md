@@ -499,13 +499,13 @@ Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独�
   versioned capability profile owner；探测结果归一化进 capability profile；
   未接入能力不得静默跳过，临时网络错误不得记为不支持。
 - `erp_web/services/ai_model_probe_service.py`：API 模型能力探测 adapter；chat、JSON、联网、
-  Function Call、图片生成和图片编辑全部使用独立 probe binding。探测不读取待测 capability
+  Function Call、图片理解、图片生成和图片编辑全部使用独立 probe binding。图片理解用两张随机图形的原生二进制输入核验识别结果及顺序。探测不读取待测 capability
   声明，Function Call 必须完成 tool call → tool result → final response 的完整往返。
 - `erp_web/services/ai_model_config.py`：保存带 `configuration_fingerprint` 的 v2 能力证明；Provider、
   Base URL、模型名、API style、模型 Thinking 开关、transport 配置或受控 `extra` 改变后，规范化阶段会移除失效证明及
   对应 capability，旧版无指纹配置仍可读取并通过重新探测升级。
 - `erp_web/services/ai_model_discovery.py`：与推理解耦的远端模型目录发现；按 Catalog 的可选发现
-  策略复用 Pydantic Provider 持有的 client，目录不可用不改变推理能力判定。
+  策略复用 Pydantic Provider 持有的 client。设置页打开模型选择框时才读取目录，单项能力测试直接请求所选模型。
 - `erp_web/services/ai_model_errors.py`：Provider/Pydantic Model 错误的最薄脱敏透传边界；保留
   HTTP 状态、Provider code/message/request ID，不得改写为其他业务含义。
 - `erp_web/services/ai_gateway_cli_provider.py`：CLI Provider 实现。
@@ -601,7 +601,7 @@ CLI / Browser use case
 - 草稿图片工作台提供独立的「生成套图」入口：`POST /api/draft-images/plan-set` 经
   `image_facade` → `image_set_service.plan_image_set`，用 `image.plan` 绑定的识图 API 模型
   和 `AiAgentFactory` 原生 `BinaryContent` / `PromptedOutput` 读取整组素材、生成可编辑方案。
-  此功能沿用文本/JSON 能力清单，绑定模型还须实际支持图片输入；识图能力不由名称推测。
+  此功能要求文本、JSON 和图片理解（`image_understanding`）三项能力。已有绑定保留模型 ID，曾仅通过文本和 JSON 测试的模型需补测图片理解。
   设计提示词由 `image.plan` 独立配置，不加载文案或图片翻译 Prompt；事实约束由 focused service 注入。
   方案是待生成图片的领域设计内容，
   不包含下一步工具计划。生成前后复核草稿版本，模型等待和参考图片文件预检均在商品锁外。

@@ -1,3 +1,4 @@
+import { draftContextTitle, draftListTitle } from '@/utils/draftDisplayTitle'
 import {
   claimProducts as claimProductsApi,
   deleteDraft as deleteDraftApi,
@@ -171,7 +172,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     try {
       const result = await loadDraftApi(item.draftId)
       acceptLoadedDraft(result, false)
-      addLog(`已加载草稿：${item.title || item.productTitle || item.draftId}`)
+      addLog(`已加载草稿：${draftListTitle(item)}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '加载草稿失败')
     } finally {
@@ -198,7 +199,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       applyMutationIndexes(result)
       syncPricingInputFromProduct()
       currentStage.value = 5
-      addLog(`已进入草稿核价：${result.draft.title || result.productContext.title || result.draft.draftId}`)
+      addLog(`已进入草稿核价：${draftContextTitle(result.productContext, result.draft.draftId)}`)
       return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '加载核价草稿失败')
@@ -219,7 +220,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     try {
       const result = await duplicateDraftApi(draftId)
       applyMutationIndexes(result)
-      const sourceTitle = item.title || item.productTitle || draftId
+      const sourceTitle = draftListTitle(item)
       addLog(result.message || `已复制草稿：${sourceTitle}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '复制草稿失败')
@@ -362,7 +363,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
         }
       }
       const deletedCount = result.deleted ?? deletedIds.length
-      const fallbackTitle = items[0]?.title || items[0]?.productTitle || ids[0]
+      const fallbackTitle = items[0] ? draftListTitle(items[0]) : ids[0]
       addLog(result.message || (deletedCount === 1 ? `已删除草稿：${fallbackTitle}` : `已删除 ${deletedCount} 个草稿。`))
       if (result.missingIds?.length) addLog(`未找到草稿：${result.missingIds.join('、')}`)
     } catch (exc) {
@@ -649,7 +650,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       precheckResults.value = {}
       payloadPreview.value = null
       applyMutationIndexes(result)
-      addLog(result.message || `草稿已保存：${result.draft.title || result.draft.draftId}`)
+      addLog(result.message || `草稿已保存：${draftContextTitle(result.productContext, result.draft.draftId)}`)
       return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '保存草稿失败')
@@ -688,12 +689,9 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
         ? { ...product.value, productId: draftProductId }
         : product.value
       const platform = activeMarketplace.value
-      const productLabel = String(
-        currentDraftProductContext.value.title
-        || currentDraft.value.title
-        || productForCopy.name
-        || productForCopy.productId,
-      ).trim()
+      const productLabel = useCurrentDraft
+        ? draftContextTitle(currentDraftProductContext.value, currentDraft.value.draftId)
+        : product.value.source.title || product.value.name || product.value.productId
       const actionLabel = useCurrentDraft ? '生成/改写本地化文案' : '生成 AI 文案'
       const result = await withAiForeground(
         {

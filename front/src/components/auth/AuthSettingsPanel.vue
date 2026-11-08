@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { desktopOperationReason, hasLocalOperations, modelOperationReason } from '@/utils/desktop'
 import { computed, inject, reactive, ref, watch } from 'vue'
+import ApiModelPicker from './ApiModelPicker.vue'
+import { testAiModel } from '@/api/workflow/settings'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
@@ -84,15 +86,13 @@ const PROVIDER_ID_DEEPSEEK = 'deepseek'
 const PROVIDER_ID_ALIBABA = 'alibaba'
 const PROVIDER_ID_OMLX = 'omlx'
 const fallbackProviders = [
-  { id: PROVIDER_ID_OPENAI, label: 'OpenAI', description: 'OpenAI 服务预设；代理可修改 Base URL，API 协议可选 Chat Completions 或 Responses', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
-  { id: PROVIDER_ID_OMLX, label: 'oMLX（本地模型）', description: '通过 OpenAI 兼容接口连接 oMLX，默认使用 Chat Completions，支持模型 Thinking 开关', provider_family: 'omlx', default_base_url: 'http://127.0.0.1:8000/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
-  { id: PROVIDER_ID_DEEPSEEK, label: 'DeepSeek', description: '连接 DeepSeek 模型', provider_family: 'generic_openai', default_base_url: 'https://api.deepseek.com', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible'], base_url_editable: false },
-  { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '连接通义千问模型', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
+  { id: PROVIDER_ID_OPENAI, label: 'OpenAI', description: 'OpenAI 服务预设；代理可修改 Base URL，API 协议可选 Chat Completions 或 Responses', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
+  { id: PROVIDER_ID_OMLX, label: 'oMLX（本地模型）', description: '通过 OpenAI 兼容接口连接 oMLX，默认使用 Chat Completions，支持模型 Thinking 开关', provider_family: 'omlx', default_base_url: 'http://127.0.0.1:8000/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
+  { id: PROVIDER_ID_DEEPSEEK, label: 'DeepSeek', description: '连接 DeepSeek 模型', provider_family: 'generic_openai', default_base_url: 'https://api.deepseek.com', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible'], model_discovery: 'openai_models', base_url_editable: false },
+  { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '连接通义千问模型', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
 ]
 const modelListDependencyFields = new Set(['provider_id', 'api_style', 'base_url', 'base_url_env', 'api_key', 'api_key_env'])
 const capabilityProbeDependencyFields = new Set([...modelListDependencyFields, 'model', 'connection_type', 'cli_tool', 'command', 'profile', 'sandbox', 'browser_provider', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy'])
-const lastAutoModelListSignature = ref('')
-const lastAutoCapabilitySignature = ref('')
 const aiRequestPending = ref(false)
 const aiRequestMessage = ref('')
 const capabilityProbeDialog = reactive({
@@ -129,11 +129,14 @@ const capabilityOptions = [
   { value: 'chat', label: '文本' },
   { value: 'json', label: 'JSON 模式' },
   { value: 'web_search', label: '联网搜索' },
+  { value: 'image_understanding', label: '图片理解' },
   { value: 'image_generate', label: '图像生成' },
   { value: 'image_edit', label: '图像编辑' },
   { value: 'tool_calling', label: 'Function Call' },
 ]
-const visibleCapabilityOptions = capabilityOptions.filter(item => item.value !== 'image_generate')
+const visibleCapabilityOptions = computed(() => capabilityOptions.filter(item =>
+  item.value !== 'image_generate' && (item.value !== 'image_understanding' || selectedAiModelIsApi.value),
+))
 const allCapabilityValues = capabilityOptions.map((item) => item.value)
 const imageCapabilityValues = new Set(['image_generate', 'image_edit'])
 const desktopShell = hasLocalOperations()
@@ -304,10 +307,6 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
   const record = asRecord(value)
   const fallbackId = index === 0 ? 'default_text' : index === 1 ? 'default_image' : `ai_model_${index + 1}`
   const model = firstText(record.model)
-  const modelOptions = normalizeModelOptions(record.model_options || record.available_models)
-  if (model && !modelOptions.some((item) => item.id === model)) {
-    modelOptions.unshift({ id: model, label: model })
-  }
   const connectionType = normalizeConnectionType(record.connection_type)
   const cliTool = firstText(record.cli_tool, record.cli_provider, 'codex')
   const providerId = normalizeProviderId(record.provider_id)
@@ -353,7 +352,6 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     extra: asRecord(record.extra),
     enabled: record.enabled !== false,
     api_key_configured: Boolean(record.api_key_configured),
-    model_options: modelOptions,
     generation_capabilities: JSON.parse(JSON.stringify(asRecord(record.generation_capabilities))) as UnknownRecord,
   }
 }
@@ -552,7 +550,6 @@ const selectedProviderSpec = computed(() => providerOptions.value.find((item) =>
 const selectedProviderApiStyleOptions = computed(() => selectedProviderSpec.value?.supportedApiStyles || ['openai_compatible'])
 const selectedProviderBaseUrlEditable = computed(() => selectedProviderSpec.value?.baseUrlEditable !== false)
 const selectedProviderSupportsModelDiscovery = computed(() => selectedProviderSpec.value?.modelDiscovery === 'openai_models')
-const selectedModelOptions = computed(() => selectedAiModelIsApi.value ? normalizeModelOptions(selectedAiModel.value?.model_options) : [])
 const capabilityProbeLabel = computed(() => capabilityLabelByValue[capabilityProbeDialog.capability] || capabilityProbeDialog.capability || '能力')
 const selectedCliToolStatus = computed(() => cliToolOptions.value.find((tool) => tool.value === modelField('cli_tool', 'codex')) || cliToolOptions.value[0])
 const selectedCliStatusText = computed(() => {
@@ -579,8 +576,9 @@ const selectedModelListReady = computed(() => Boolean(
   selectedAiModel.value
   && selectedAiModelIsApi.value
   && selectedProviderSupportsModelDiscovery.value
-  && (selectedSystemModel.value || String(selectedAiModel.value.base_url || selectedAiModel.value.base_url_env || '').trim())
-  && (String(selectedAiModel.value.api_key || '').trim() || selectedAiModel.value.api_key_configured),
+  && !selectedSystemModel.value
+  && firstText(selectedAiModel.value.base_url, selectedAiModel.value.base_url_env)
+  && (firstText(selectedAiModel.value.api_key, selectedAiModel.value.api_key_env) || selectedAiModel.value.api_key_configured),
 ))
 const aiControlsLocked = computed(() => props.modelsReading || props.modelsSaving || aiRequestPending.value)
 const modelStatus = computed(() => {
@@ -673,7 +671,6 @@ function aiPayload(): UnknownRecord {
         delete row.browser_url
         delete row.browser_proxy
       }
-      delete row.model_options
       delete row.generation_capabilities
       if (!localOperations.value && row.connection_type !== API_CONNECTION_TYPE) {
         for (const key of ['command', 'profile', 'sandbox', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy']) delete row[key]
@@ -732,7 +729,6 @@ function updateCustomRequestBodyText(value: string) {
 function clearCapabilityProofs(model: UnknownRecord) {
   model.capabilities = []
   model.capability_profiles = {}
-  lastAutoCapabilitySignature.value = ''
 }
 
 function commitCustomRequestBody(): boolean {
@@ -854,7 +850,6 @@ function setSelectedModelField(field: string, value: string | boolean) {
       selectedAiModel.value.command = firstText(selectedAiModel.value.command, cliToolDefaultCommand(cliTool))
       selectedAiModel.value.provider = cliToolLabel(cliTool)
       selectedAiModel.value.model = ''
-      selectedAiModel.value.model_options = []
       selectedAiModel.value.base_url = ''
       selectedAiModel.value.base_url_env = ''
       selectedAiModel.value.api_key = ''
@@ -872,7 +867,6 @@ function setSelectedModelField(field: string, value: string | boolean) {
       selectedAiModel.value.browser_provider = firstText(selectedAiModel.value.browser_provider)
       selectedAiModel.value.browser_mode = firstText(selectedAiModel.value.browser_mode, BROWSER_MODE_MANAGED_PROFILE)
       selectedAiModel.value.model = ''
-      selectedAiModel.value.model_options = []
       selectedAiModel.value.model_env = ''
       selectedAiModel.value.base_url = ''
       selectedAiModel.value.base_url_env = ''
@@ -903,7 +897,6 @@ function setSelectedModelField(field: string, value: string | boolean) {
         selectedAiModel.value[key] = firstText(preset.model[key])
       }
       selectedAiModel.value.provider = firstText(preset.model.provider, preset.label)
-      selectedAiModel.value.model_options = []
     }
   }
   if (field === 'provider_id' && typeof nextValue === 'string') {
@@ -932,13 +925,11 @@ function setSelectedModelField(field: string, value: string | boolean) {
   }
   if (typeof value === 'string' && modelListDependencyFields.has(field)) {
     selectedAiModel.value.model = ''
-    selectedAiModel.value.model_options = []
   }
   if (typeof value === 'string' && capabilityProbeDependencyFields.has(field)) {
     if (desiredCapabilities.length || Object.keys(asRecord(selectedAiModel.value.capability_profiles)).length) {
       clearCapabilityProofs(selectedAiModel.value)
     }
-    lastAutoModelListSignature.value = ''
   }
 }
 
@@ -959,7 +950,6 @@ function applyWebSearchRequestMode(mode: string) {
   if (mode === 'enable_search') delete extra.web_search_request_mode
   else extra.web_search_request_mode = mode
   selectedAiModel.value.extra = extra
-  lastAutoCapabilitySignature.value = ''
 }
 
 function setWebSearchRequestMode(mode: string) {
@@ -1225,7 +1215,6 @@ function setCapability(capability: string, checked: boolean, event?: Event) {
     selectedAiModel.value.quality = ''
     selectedAiModel.value.size = ''
   }
-  lastAutoCapabilitySignature.value = ''
 }
 
 function addAiModel() {
@@ -1256,8 +1245,6 @@ function addBrowserModel(event: Event) {
     capability_profiles: {},
   }, aiModels.value.length))
   selectedAiModelIndex.value = aiModels.value.length - 1
-  lastAutoModelListSignature.value = ''
-  lastAutoCapabilitySignature.value = ''
 }
 
 function duplicateSelectedAiModel() {
@@ -1273,13 +1260,10 @@ function duplicateSelectedAiModel() {
     name: uniqueAiModelName(firstText(current.name, current.id, `AI 模型 ${aiModels.value.length + 1}`)),
     capabilities: asStringArray(current.capabilities),
     capability_profiles: normalizeCapabilityProfiles(current.capability_profiles),
-    model_options: normalizeModelOptions(current.model_options),
   }, aiModels.value.length)
   if (sourceId && !current.system_managed && !firstText(cloned.api_key)) cloned.copy_source_id = sourceId
   aiModels.value.splice(selectedAiModelIndex.value + 1, 0, cloned)
   selectedAiModelIndex.value += 1
-  lastAutoModelListSignature.value = ''
-  lastAutoCapabilitySignature.value = ''
 }
 
 function removeSelectedAiModel() {
@@ -1343,74 +1327,21 @@ function setUseCaseBinding(useCaseId: string, modelId: string) {
   setUseCaseBindingField(useCaseId, 'model_id', modelId)
 }
 
-function modelListSignature(model: UnknownRecord | null): string {
-  if (!model) return ''
-  if (normalizeConnectionType(model.connection_type) !== API_CONNECTION_TYPE) return ''
-  return [
-    String(model.id || ''),
-    String(model.provider_id || ''),
-    String(model.base_url || model.base_url_env || '').trim(),
-    String(model.api_key || '').trim() || (model.api_key_configured ? 'saved' : ''),
-  ].join('|')
-}
-
-function capabilitySignature(model: UnknownRecord | null): string {
-  if (!model) return ''
-  const connectionType = normalizeConnectionType(model.connection_type)
-  if (connectionType === CLI_CONNECTION_TYPE) {
-    return [
-      String(model.id || ''),
-      String(model.cli_tool || ''),
-      String(model.command || ''),
-      String(model.profile || ''),
-      String(model.sandbox || ''),
-      String(model.model || ''),
-      allCapabilityValues.join(','),
-    ].join('|')
-  }
-  if (connectionType === BROWSER_CONNECTION_TYPE) {
-    return [
-      String(model.id || ''),
-      String(model.browser_provider || ''),
-      String(model.browser_mode || ''),
-      String(model.browser_profile || ''),
-      String(model.browser_port || ''),
-      String(model.browser_url || ''),
-      String(model.browser_proxy || ''),
-      String(model.model || ''),
-      allCapabilityValues.join(','),
-    ].join('|')
-  }
-  return [
-    modelListSignature(model),
-    String(model.model || '').trim(),
-    allCapabilityValues.join(','),
-  ].join('|')
-}
-
 function aiModelPayloadForCheck(): UnknownRecord {
   const model = selectedAiModel.value ? { ...selectedAiModel.value } : {}
-  delete model.model_options
   // 显式传 null，避免探测接口合并已保存配置时恢复被清除的开关。
   model.thinking_enabled = typeof model.thinking_enabled === 'boolean' ? model.thinking_enabled : null
   return modelForServer(model)
 }
 
-function refreshSelectedModelList(force = false) {
-  if (!selectedAiModel.value || aiControlsLocked.value || !selectedModelListReady.value) return
-  const signature = modelListSignature(selectedAiModel.value)
-  if (!signature || (!force && signature === lastAutoModelListSignature.value)) return
-  lastAutoModelListSignature.value = signature
-  requestAiModelCheck(false, '正在加载模型列表', force ? 'manual_model_list' : 'auto_model_list')
-}
-
-function requestAiModelCheck(probeCapabilities: boolean, message: string, trigger: string) {
-  if (!selectedAiModel.value || aiControlsLocked.value) return
-  if (!localOperations.value && !selectedAiModelIsApi.value) { aiSettingsError.value = desktopReason.value; return }
-  if (!ensureBrowserProviderSelected(selectedAiModel.value)) return
-  aiRequestPending.value = true
-  aiRequestMessage.value = message
-  emit('testAi', { ...aiModelPayloadForCheck(), probe_capabilities: probeCapabilities, test_trigger: trigger })
+async function loadSelectedModelOptions() {
+  const result = await testAiModel({
+    ...aiModelPayloadForCheck(),
+    probe_capabilities: false,
+    test_trigger: 'manual_model_list',
+  })
+  if (!result.ok) throw new Error(firstText(result.error, result.message, '加载模型列表失败'))
+  return normalizeModelOptions(result.raw?.available_models)
 }
 
 function confirmCapabilityProbe() {
@@ -1439,15 +1370,6 @@ function confirmCapabilityProbe() {
   })
 }
 
-function handleAiConfigFieldBlur(field: 'base_url' | 'api_key' | 'model') {
-  lastAutoModelListSignature.value = ''
-  if (field === 'base_url' || field === 'api_key') refreshSelectedModelList()
-}
-
-function handleAiModelSelect(value: string) {
-  setSelectedModelField('model', value)
-}
-
 function applyAiTestResult(result: AuthResult | null) {
   const raw = asRecord(result?.raw)
   if (raw.channel !== 'ai_model') return
@@ -1462,8 +1384,6 @@ function applyAiTestResult(result: AuthResult | null) {
     && (capabilityProbeDialog.pending || String(raw.test_trigger || '') === 'capability_checkbox' || pendingCapability in capabilityResults || supported.has(pendingCapability)),
   )
   if (result?.ok === false) {
-    lastAutoModelListSignature.value = ''
-    lastAutoCapabilitySignature.value = ''
     if (isPendingCapabilityProbe) {
       restoreCapabilityProbeSelection()
       capabilityProbeDialog.pending = false
@@ -1480,21 +1400,12 @@ function applyAiTestResult(result: AuthResult | null) {
   const rawModelId = String(raw.model_id || '').trim()
   const target = aiModels.value.find((model) => String(model.id || '') === rawModelId) || selectedAiModel.value
   if (!target) return
-  const options = normalizeModelOptions(raw.available_models)
-  if (options.length) {
-    target.model_options = options
-    const selectedModel = String(target.model || '').trim()
-    if (!target.system_managed && selectedModel && !options.some((option) => option.id === selectedModel)) {
-      target.model = ''
-    }
-  }
   if (isPendingCapabilityProbe) {
     capabilityProbeDialog.pending = false
     const capabilityResult = asRecord(capabilityResults[pendingCapability])
     if (supported.has(pendingCapability) && capabilityResult.ok !== false) {
       saveCapabilityProfile(target, pendingCapability, capabilityResult.capability_profile)
       addCapability(target, pendingCapability)
-      lastAutoCapabilitySignature.value = capabilitySignature(target)
       closeCapabilityProbe(false)
       return
     }
@@ -1769,7 +1680,8 @@ function copy(text: string) {
           </div>
           <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe()">关闭</button>
         </div>
-        <label class="mt-4 block">
+        <p v-if="capabilityProbeDialog.capability === 'image_understanding'" class="mt-4 text-sm">将发送两张测试图片，请模型按顺序识别颜色和形状。</p>
+        <label v-else class="mt-4 block">
           <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">测试内容</span>
           <textarea
             class="input min-h-72 font-mono text-xs"
@@ -1825,7 +1737,6 @@ function copy(text: string) {
               </select>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel || localModelBlocked" @click="duplicateSelectedAiModel">复制当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || localModelBlocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
-              <button v-if="selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : selectedProviderSupportsModelDiscovery ? '请先填写 Base URL 和 API Key' : '当前 Provider 不提供模型目录，请手动填写模型 ID'" @click="refreshSelectedModelList(true)">加载模型列表</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存 AI 设置</button>
             </div>
           </div>
@@ -1895,22 +1806,18 @@ function copy(text: string) {
                 <template v-if="selectedAiModelIsApi">
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL</span>
-                    <input class="input" :value="modelField('base_url')" :disabled="selectedSystemModel || aiControlsLocked || !selectedProviderBaseUrlEditable" :placeholder="selectedSystemModel ? '由 New API 管理' : 'https://api.example.com/v1'" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
+                    <input class="input" :value="modelField('base_url')" :disabled="selectedSystemModel || aiControlsLocked || !selectedProviderBaseUrlEditable" :placeholder="selectedSystemModel ? '由 New API 管理' : 'https://api.example.com/v1'" @input="setSelectedModelField('base_url', eventText($event))" />
                     <span v-if="!selectedProviderBaseUrlEditable" class="mt-1 block text-xs text-accent-500 dark:text-accent-400">该服务商使用固定官方地址。</span>
                   </label>
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API Key</span>
-                    <input type="password" class="input" :value="modelField('api_key')" :disabled="selectedSystemModel || aiControlsLocked" :placeholder="selectedSystemModel ? '当前账号托管密钥' : apiKeyPlaceholder()" autocomplete="off" spellcheck="false" @input="setSelectedModelField('api_key', eventText($event))" @blur="handleAiConfigFieldBlur('api_key')" />
+                    <input type="password" class="input" :value="modelField('api_key')" :disabled="selectedSystemModel || aiControlsLocked" :placeholder="selectedSystemModel ? '当前账号托管密钥' : apiKeyPlaceholder()" autocomplete="off" spellcheck="false" @input="setSelectedModelField('api_key', eventText($event))" />
                   </label>
-                  <label class="block md:col-span-2">
-                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                    <select v-if="selectedModelOptions.length" class="input" :value="modelField('model')" :disabled="selectedSystemModel || aiControlsLocked" @change="handleAiModelSelect(eventText($event))">
-                      <option value="">{{ selectedModelOptions.length ? '请选择模型' : '填写 URL 和 API Key 后自动加载' }}</option>
-                      <option v-for="option in selectedModelOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
-                    </select>
-                    <input v-else class="input" :value="modelField('model')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="先加载模型列表，或直接填写模型 ID" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
-                    <span v-if="!selectedModelOptions.length" class="mt-1 block text-xs text-accent-500 dark:text-accent-400">Provider 不支持模型列表时，可直接填写模型 ID。</span>
-                  </label>
+                  <ApiModelPicker
+                    :key="modelField('id')" class="md:col-span-2" :value="modelField('model')"
+                    :disabled="selectedSystemModel || aiControlsLocked" :can-load="selectedModelListReady"
+                    :load-options="loadSelectedModelOptions" @change="setSelectedModelField('model', $event)"
+                  />
                 </template>
                 <template v-else-if="selectedAiModelIsCli">
                   <label class="block">
@@ -1919,7 +1826,7 @@ function copy(text: string) {
                   </label>
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                    <input class="input" :value="modelField('model')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可留空使用 CLI 默认" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
+                    <input class="input" :value="modelField('model')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可留空使用 CLI 默认" @input="setSelectedModelField('model', eventText($event))" />
                   </label>
                   <div class="md:col-span-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-600 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
                     {{ selectedCliStatusText }}

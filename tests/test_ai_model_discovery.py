@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -114,3 +115,32 @@ def test_model_discovery_sanitizes_native_connection_error(monkeypatch):
     assert message == "远端模型目录连接失败。"
     assert "secret" not in message
     assert provider.closed is True
+
+
+def test_directory_and_capability_checks_make_independent_requests(monkeypatch, tmp_path):
+    from erp_web.services import ai_gateway_probe, ai_model_probe_service
+
+    model = {
+        "id": "demo",
+        "model": "model-a",
+        "provider_id": "openai",
+        "base_url": "https://models.example.invalid/v1",
+        "api_key": "test",
+        "capabilities": ["chat"],
+    }
+    directory = Mock(return_value=[{"id": "model-a", "name": "model-a"}])
+    report = ai_gateway_probe.empty_capability_probe_report()
+    report["supported"] = ["chat"]
+    probe = Mock(return_value=report)
+    monkeypatch.setattr(ai_model_probe_service, "list_remote_models", directory)
+    monkeypatch.setattr(ai_model_probe_service, "probe_model_capabilities", probe)
+
+    result = ai_model_probe_service.test_api_model(tmp_path, model, {"probe_capabilities": False})
+    assert result["ok"] and result["message"] == "已获取模型列表，共 1 个模型。"
+    assert result["tested_capabilities"] == []
+    probe.assert_not_called()
+
+    result = ai_model_probe_service.test_api_model(tmp_path, model, {"probe_only_capability": "chat"})
+    assert result["ok"] and result["supported_capabilities"] == ["chat"]
+    probe.assert_called_once()
+    directory.assert_called_once()

@@ -56,7 +56,9 @@ it('真实工作台先传勾选范围，打开和切换编辑草稿后优先传�
   vi.spyOn(workflow, 'loadState').mockResolvedValue(undefined)
   vi.spyOn(workflow, 'hydrateTab').mockResolvedValue(undefined)
   vi.spyOn(workflow, 'loadDraft').mockImplementation(async (item) => {
-    catalog.currentDraft = { ...createEmptyDraftDetail(), draftId: item.draftId, productId: item.productId }
+    catalog.currentDraft = { ...createEmptyDraftDetail(), draftId: item.draftId, productId: item.productId, title: '本地化文案' }
+    catalog.currentDraftProductContext.sourceTitle = '采集商品 ' + item.productId
+    catalog.currentDraftProductContext.title = '内部名称'
   })
   const rows: DraftIndexItem[] = ['a', 'b'].map(id => ({
     draftId: `draft-${id}`, productId: `product-${id}`, title: id,
@@ -84,6 +86,7 @@ it('真实工作台先传勾选范围，打开和切换编辑草稿后优先传�
     box.vm.$emit('edit', rows[1])
     await flushPromises()
     expect(context.snapshot()?.draft_id).toBe('draft-b')
+    expect(wrapper.getComponent({ name: 'DraftWorkspacePanel' }).props('draftTitle')).toBe('采集商品 product-b')
     wrapper.getComponent({ name: 'DraftWorkspacePanel' }).vm.$emit('close')
     await flushPromises()
     expect(context.snapshot()).toEqual({ page: 'drafts', selected_draft_ids: ['draft-a', 'draft-b'] })

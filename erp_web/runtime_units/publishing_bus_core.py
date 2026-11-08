@@ -409,7 +409,7 @@ def _publish_job_summary(state: dict[str, Any]) -> PublishJobSummary:
     return {
         "job_id": str(state.get("job_id") or ""),
         "product_id": str(product.get("product_id") or state.get("product_id") or ""),
-        "product_name": str(state.get("product_name") or product.get("name") or ""),
+        "product_name": str((product.get("source") or {}).get("title") or state.get("product_name") or product.get("name") or ""),
         "draft_id": draft_id,
         "status": _publish_job_display_status(state),
         "raw_status": str(state.get("status") or ""),
@@ -521,7 +521,7 @@ class PublishingBus:
             "created_at": now,
             "updated_at": now,
             "draft_id": next(iter(bindings.values()))["draft_id"] if len(bindings) == 1 else "",
-            "product_name": str(product.get("name") or ""),
+            "product_name": str((product.get("source") or {}).get("title") or product.get("name") or ""),
             "product": copy.deepcopy(product),
             **(
                 {"approved_publications": approvals}

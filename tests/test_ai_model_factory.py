@@ -405,3 +405,16 @@ def test_factory_rejects_unmapped_deepseek_reasoning_instead_of_silent_downgrade
             ),
             generation_settings={"reasoning": {"mode": "enabled", "effort": "medium"}},
         )
+
+
+def test_image_plan_selects_a_vision_model_and_preserves_an_explicit_binding(tmp_path):
+    text = model_config()
+    vision = model_config(id="vision", capabilities=["chat", "json", "image_understanding"])
+    config = {"ai_models": [text, vision]}
+    binding = create_pydantic_model_binding_for_use_case(tmp_path, config, "image.plan")
+    assert binding.model_id == "vision"
+    assert isinstance(binding.model, OpenAIChatModel)
+
+    config["ai_use_case_bindings"] = {"image.plan": {"model_id": text["id"]}}
+    with pytest.raises(AiModelFactoryError, match="image_understanding"):
+        create_pydantic_model_binding_for_use_case(tmp_path, config, "image.plan")

@@ -605,7 +605,7 @@ describe('workflow store live API flow', () => {
     await ozon!.run(ozon!.actions.suggestCategoryByAi)
     expect(ozon!.state.error).toContain('没有找到')
     expect(workflowApi.matchCategory).toHaveBeenCalledTimes(1)
-    expect(workflowApi.matchCategory).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'draft-multi-category', platform: 'ozon' }), expect.objectContaining({ platform: 'ozon', site: 'global' }))
+    expect(workflowApi.matchCategory).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'draft-multi-category', platform: 'ozon' }), expect.objectContaining({ platform: 'ozon', site: 'global' }), 'draft-multi-category')
     expect(yandex!.state.categoryQuery).toBe('')
     expect(store.selectedPublishTarget.platform).toBe('yandex')
   })
@@ -746,7 +746,7 @@ describe('workflow store live API flow', () => {
     expect(store.lastAuthResult?.error).toContain('能力测试通过，但自动保存失败')
   })
 
-  it('自动加载模型列表时不占用 AI Work presentation', async () => {
+  it('仅查询模型目录时不占用 AI Work presentation', async () => {
     const result: AuthResult = {
       ok: true,
       message: '模型列表加载完成。',
@@ -762,7 +762,7 @@ describe('workflow store live API flow', () => {
       id: 'model-list-a',
       name: '模型列表 A',
       probe_capabilities: false,
-      test_trigger: 'auto_model_list',
+      test_trigger: 'manual_model_list',
     })
 
     expect(withAiForeground).not.toHaveBeenCalled()
@@ -2940,7 +2940,7 @@ describe('workflow store live API flow', () => {
 
     expect(workflowApi.duplicateDraft).toHaveBeenCalledWith('draft-1')
     expect(store.draftsIndex).toEqual([source, copy])
-    expect(store.logs[0]).toContain('已复制草稿：原草稿')
+    expect(store.logs[0]).toContain('已复制草稿：来源商品')
     expect(store.error).toBe('')
   })
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { draftListTitle } from '@/utils/draftDisplayTitle'
 import { computed, ref, watch } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import { useAiChatStore } from '@/stores/aiChat'
@@ -165,7 +166,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
                   <img v-if="row.mainImage" :src="row.mainImage" class="size-8 shrink-0 rounded-md object-cover" />
                   <div v-else class="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
                   <div class="min-w-0">
-                    <div class="truncate font-semibold text-accent-950 dark:text-white">{{ row.title || row.productTitle || row.productId || '-' }}</div>
+                    <div class="truncate font-semibold text-accent-950 dark:text-white">{{ draftListTitle(row) || '-' }}</div>
                   </div>
                 </div>
               </td>

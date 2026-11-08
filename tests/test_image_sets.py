@@ -24,6 +24,13 @@ from tests.test_draft_image_workbench import seeded, finish
 
 
 def setup_sources(app_dir):
+    config_store = get_context().config
+    config = config_store.load_app_config()
+    config["ai_models"] = [*config.get("ai_models", []), {
+        "id": "vision-test", "provider_id": "openai", "model": "vision-test",
+        "capabilities": ["chat", "json", "image_understanding"],
+    }]
+    config_store.save_app_config(config)
     product, draft = seeded()
     raw = ai_model_probe_service._image_edit_probe_bytes()
     for item in product["source"]["image_pool"]:

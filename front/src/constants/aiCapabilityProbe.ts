@@ -35,6 +35,7 @@ export function capabilityProbeUserMessage(
   if (capability === 'tool_calling') {
     return 'Call the noop tool with the probe token, then return the completion marker.'
   }
+  if (capability === 'image_understanding') return '请按顺序识别两张测试图片的颜色和形状。'
   if (capability === 'image_generate') {
     return String(model.probe_image_prompt || '').trim() || 'single small blue square'
   }

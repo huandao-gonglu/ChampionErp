@@ -43,7 +43,7 @@ def draft_watermark_preview(settings: dict, *, drafts: Iterable[dict],
             except (ValueError, OSError):
                 continue
             return {"preview_url": preview_watermark(settings, data),
-                    "sample_name": str(draft.get("title") or product.get("name") or "草稿图片"), "message": ""}
+                    "sample_name": str(product.get("source", {}).get("title") or product.get("name") or product_id or "草稿图片"), "message": ""}
     return {"preview_url": "", "sample_name": "", "message": "草稿中暂无可用的本地图片，请先为草稿添加图片。"}
 
 

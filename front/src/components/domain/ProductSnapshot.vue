@@ -11,8 +11,7 @@ const props = defineProps<{
     <div class="flex items-start justify-between gap-4">
       <div>
         <p class="text-xs font-semibold uppercase tracking-wide text-brand-600">采集商品</p>
-        <h2 class="mt-1 text-xl font-bold text-slate-950">{{ props.product.name }}</h2>
-        <p class="muted mt-1">{{ props.product.source.title }}</p>
+        <h2 class="mt-1 text-xl font-bold text-slate-950">{{ props.product.source.title || props.product.name || props.product.productId }}</h2>
       </div>
       <span class="badge-info">{{ props.product.source.sourcePlatform }}</span>
     </div>

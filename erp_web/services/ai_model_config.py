@@ -45,6 +45,7 @@ AI_BROWSER_MODES = (BROWSER_MODE_MANAGED_PROFILE, BROWSER_MODE_EXISTING_BROWSER)
 CAP_CHAT = "chat"
 CAP_JSON = "json"
 CAP_WEB_SEARCH = "web_search"
+CAP_IMAGE_UNDERSTANDING = "image_understanding"
 CAP_IMAGE_GENERATE = "image_generate"
 CAP_IMAGE_EDIT = "image_edit"
 CAP_TOOL_CALLING = "tool_calling"
@@ -58,6 +59,7 @@ AI_MODEL_CAPABILITIES = (
     CAP_CHAT,
     CAP_JSON,
     CAP_WEB_SEARCH,
+    CAP_IMAGE_UNDERSTANDING,
     CAP_IMAGE_GENERATE,
     CAP_IMAGE_EDIT,
     CAP_TOOL_CALLING,
@@ -97,7 +99,7 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
     "image.plan": {
         "id": "image.plan",
         "label": "套图规划（需支持识图）",
-        "required_capabilities": [CAP_CHAT, CAP_JSON],
+        "required_capabilities": [CAP_CHAT, CAP_JSON, CAP_IMAGE_UNDERSTANDING],
     },
     "category.product_match": {
         "id": "category.product_match",
@@ -649,6 +651,8 @@ def model_configuration_fingerprint(model: dict[str, Any]) -> str:
 
 
 def model_has_capabilities(model: dict[str, Any], required: list[str] | tuple[str, ...] | set[str]) -> bool:
+    if CAP_IMAGE_UNDERSTANDING in required and model_connection_type(model) != CONNECTION_TYPE_API:
+        return False
     capabilities = set(normalize_capabilities(model.get("capabilities")))
     return all(item in capabilities for item in required)
 

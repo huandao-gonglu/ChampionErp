@@ -10,6 +10,8 @@ def model_platform_reason(config, use_case, *, desktop_reason=None):
     try:
         model = ai_model_config.resolve_ai_model(config, use_case)
     except RuntimeError:
+        if use_case == 'image.plan':
+            return '套图规划需要具备文本、JSON 和图片理解能力的 API 模型，请在模型设置中测试并绑定。'
         # 显式绑定的桌面模型即使尚未通过测试，在网页也不能运行。其余配置问题交回模型校验。
         bound_id = ai_model_config.ai_use_case_binding(config, use_case).get('model_id')
         if not bound_id:

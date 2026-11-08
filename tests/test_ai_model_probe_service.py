@@ -5,13 +5,16 @@ import json
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
+import httpx
+from openai import AsyncOpenAI
+from PIL import Image, ImageChops
 import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
-from erp_web.services import ai_gateway_probe, ai_model_probe_service
+from erp_web.services import ai_gateway_probe, ai_model_probe_service, ai_provider_catalog
 from erp_web.services.ai_model_factory import PydanticModelBinding
 
 
@@ -438,3 +441,68 @@ def test_provider_error_keeps_safe_diagnostics_in_result_and_log(
     assert "code=invalid_tool_schema" in caplog.text
     assert "request_id=request-123" in caplog.text
     assert "secret-value" not in caplog.text
+
+
+@pytest.mark.parametrize("api_style", ["openai_compatible", "openai_responses"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_image_understanding_reads_two_ordered_pngs_via_provider(
+    tmp_path, monkeypatch, api_style, reverse,
+):
+    # 从发往服务商的真实 PNG 像素还原答案，覆盖协议编码以及顺序校验。
+    def respond(request):
+        body = json.loads(request.content)
+        chat = api_style == "openai_compatible"
+        parts = body["messages" if chat else "input"][0]["content"]
+        images = [part for part in parts if part["type"] in {"image_url", "input_image"}]
+        assert len(images) == 2
+        answers = []
+        for part in images:
+            url = part["image_url"]["url"] if chat else part["image_url"]
+            assert url.startswith("data:image/png;base64,")
+            with Image.open(BytesIO(base64.b64decode(url.split(",", 1)[1]))) as image:
+                background = Image.new("RGB", image.size, "white")
+                bounds = ImageChops.difference(image, background).getbbox()
+                area, color = next(pair for pair in image.getcolors() if pair[1] != (255, 255, 255))
+                colors = {
+                    (255, 0, 0): "红色", (0, 128, 0): "绿色",
+                    (0, 0, 255): "蓝色", (255, 255, 0): "黄色",
+                }
+                ratio = area / ((bounds[2] - bounds[0]) * (bounds[3] - bounds[1]))
+                if ratio > 0.9:
+                    shape = "正方形"
+                elif ratio > 0.65:
+                    shape = "圆形"
+                else:
+                    shape = "三角形"
+                answers.append(colors[color] + shape)
+        assert answers[0] != answers[1]
+        answer = "、".join(reversed(answers) if reverse else answers)
+        if chat:
+            payload = {"id": "chat", "model": "test", "object": "chat.completion", "created": 0,
+                       "choices": [{"index": 0, "message": {"role": "assistant", "content": answer},
+                                    "finish_reason": "stop"}]}
+        else:
+            payload = {"id": "resp", "model": "test", "object": "response", "created_at": 0,
+                       "status": "completed", "parallel_tool_calls": False, "tools": [], "tool_choice": "auto",
+                       "output": [{"type": "message", "id": "msg", "role": "assistant", "status": "completed",
+                                   "content": [{"type": "output_text", "text": answer, "annotations": []}]}]}
+        return httpx.Response(200, json=payload)
+
+    client = AsyncOpenAI(
+        api_key="test",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    monkeypatch.setattr(
+        ai_provider_catalog,
+        "create_pydantic_provider",
+        lambda *args, **kwargs: OpenAIProvider(openai_client=client),
+    )
+    model = {**_model(), "api_style": api_style}
+    result = _run(tmp_path, model, "image_understanding")["results"]["image_understanding"]
+    if reverse:
+        assert result["status"] == "inconclusive"
+        assert "capability_profile" not in result
+    else:
+        assert result["status"] == "supported", result
+        assert result["capability_profile"]["operation"] == "model.request.image_input"
+        assert result["capability_profile"]["configuration_fingerprint"]
