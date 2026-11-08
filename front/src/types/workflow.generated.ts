@@ -6,6 +6,11 @@
 export const API_SCHEMA_VERSION = 1 as const
 export const PRODUCT_SCHEMA_VERSION = 5 as const
 
+export interface BackendUserAgentsDocument {
+  content: string
+  revision: string
+}
+
 export interface BackendDesktopCall {
   id: string
   operation: "browser.status" | "browser.open" | "browser.profile" | "collect.read" | "collect.verify" | "browser.ai.open" | "browser.ai.chat" | "canvas.check" | "canvas.edit" | "cli.run" | "cli.status" | "config.read" | "config.write" | "auth.open"
@@ -544,7 +549,6 @@ export interface BackendAppConfig {
   ai_tool_approval_mode?: "ask" | "full"
   ai_models?: Array<BackendAiModelConfig>
   ai_use_case_bindings?: Record<string, BackendAiUseCaseBinding>
-  ai_use_case_prompts?: Record<string, Record<string, string>>
   pricing?: Record<string, unknown>
   pricing_defaults?: Record<string, unknown>
   yandex_warehouses?: Record<string, unknown>

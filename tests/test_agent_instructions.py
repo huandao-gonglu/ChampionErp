@@ -1,4 +1,4 @@
-"""ERP 记忆跨对话加载、更新与原生系统上下文集成。"""
+"""用户偏好跨对话加载与系统规则隔离。"""
 
 import asyncio
 
@@ -6,16 +6,17 @@ import pytest
 from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 
-from erp_web.services.agent_memory import (
-    AGENT_MEMORY_PATH,
-    MAX_AGENT_MEMORY_BYTES,
-    load_agent_memory_instructions,
+from erp_web.services.user_agents import (
+    USER_AGENTS_PATH,
+    load_user_agent_instructions,
 )
+from erp_web.schemas.agent_instructions import MAX_USER_AGENTS_BYTES
+from erp_web.services.agent_instructions import load_system_agent_instructions
 from tests.test_native_agent_integration import CONVERSATION, body, service
 
 
 def write_memory(app_dir, text):
-    path = app_dir / AGENT_MEMORY_PATH
+    path = app_dir / USER_AGENTS_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
@@ -23,14 +24,38 @@ def write_memory(app_dir, text):
 
 def test_memory_is_instance_local_and_never_reads_development_agents(tmp_path):
     (tmp_path / "AGENTS.md").write_text("仅供开发 Agent 阅读", encoding="utf-8")
-    assert load_agent_memory_instructions(tmp_path) == ""
+    assert load_user_agent_instructions(tmp_path) == ""
     write_memory(tmp_path, "品牌优先平台真实无品牌。")
-    instructions = load_agent_memory_instructions(tmp_path)
+    instructions = load_user_agent_instructions(tmp_path)
     assert "品牌优先平台真实无品牌。" in instructions
     assert "仅供开发 Agent 阅读" not in instructions
     other = tmp_path / "另一实例"
     other.mkdir()
-    assert load_agent_memory_instructions(other) == ""
+    assert load_user_agent_instructions(other) == ""
+
+
+def test_instance_copies_cannot_override_system_rules(tmp_path):
+    (tmp_path / "config").mkdir()
+    for name in ("agents.md", "systemAgents.md"):
+        (tmp_path / "config" / name).write_text("实例旧规则标记", encoding="utf-8")
+    instructions = load_system_agent_instructions()
+    assert "实例旧规则标记" not in instructions
+    assert "买家沟通" in instructions and "系统级" in instructions
+
+
+def test_native_run_uses_current_system_prompts_and_ignores_legacy_copies(tmp_path):
+    config = tmp_path / "config"
+    (config / "prompts").mkdir(parents=True)
+    (config / "agents.md").write_text("已退役旧记忆标记", encoding="utf-8")
+    (config / "prompts/global_chat.json").write_text('{"system":"已退役旧提示词标记","user":""}')
+    observed = []
+    async def model(messages, info):
+        observed.append(info.instructions)
+        yield "已读取"
+    ui = service(tmp_path, FunctionModel(stream_function=model))
+    asyncio.run(ui.prepare_run(body("准备草稿", "u1")).stream(lambda _: None))
+    assert "draft_images_prepare" in observed[0] and "systemAgents.md" in observed[0]
+    assert "已退役旧" not in observed[0]
 
 
 def test_memory_reloads_between_runs_and_is_independent_of_page_background(tmp_path):
@@ -55,7 +80,7 @@ def test_memory_reloads_between_runs_and_is_independent_of_page_background(tmp_p
     assert "长期规则乙" in observed[1]
     assert "长期规则甲" not in observed[1]
     assert "当前草稿 ID：draft-a" not in observed[1]
-    assert "ERP 长期记忆（来源：config/agents.md）" not in observed[2]
+    assert "用户自定义全局偏好（userAgents.md）" not in observed[2]
     history = ui.chat_service.trusted_history(CONVERSATION)
     assert [p.content for m in history for p in m.parts if isinstance(p, UserPromptPart)] == [
         "填写属性", "继续", "查看情况",
@@ -80,11 +105,11 @@ def test_new_conversation_reads_persisted_memory(tmp_path):
 
 
 @pytest.mark.parametrize("raw, message", [
-    (b"x" * (MAX_AGENT_MEMORY_BYTES + 1), "不能超过 32 KiB"),
+    (b"x" * (MAX_USER_AGENTS_BYTES + 1), "不能超过 32 KiB"),
     (b"\xff", "必须使用 UTF-8"),
 ])
 def test_invalid_memory_is_not_silently_truncated_or_ignored(tmp_path, raw, message):
     path = write_memory(tmp_path, "原始规则")
     path.write_bytes(raw)
     with pytest.raises(ValueError, match=message):
-        load_agent_memory_instructions(tmp_path)
+        load_user_agent_instructions(tmp_path)

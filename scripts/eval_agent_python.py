@@ -84,7 +84,7 @@ def evaluate(args):
     record = {**target, "attributes": {"required": [d for d in definitions if d.get("required")],
                                         "optional": [d for d in definitions if not d.get("required")]}}
     with tempfile.TemporaryDirectory(prefix="erp-live-eval-") as directory, temp_app_context(Path(directory)) as app:
-        for name in ("agents.md", "prompts"):
+        for name in ("userAgents.md",):
             source, dest = args.config_root / "config" / name, Path(directory) / "config" / name
             if source.is_dir(): shutil.copytree(source, dest, dirs_exist_ok=True)
             elif source.exists(): shutil.copy2(source, dest)

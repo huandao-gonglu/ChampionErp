@@ -9,7 +9,7 @@ from erp_web.services import config_service
 from erp_web.services.operation_availability import operation_availability
 from erp_web.schemas.api import API_SCHEMA_VERSION, validate_app_state_response
 from erp_web.http_route_units import static_routes
-from erp_web.facades.auth_config_facade import system_settings_payload, forbidden_categories_payload
+from erp_web.facades.auth_config_facade import system_settings_payload, forbidden_categories_payload, user_agents_payload
 from .common import JsonRequestHandler
 from ..facades.get_facade import (
     browser_debug_status,
@@ -55,6 +55,7 @@ FRONTEND_PAGE_ROUTES = {
 }
 
 GET_API_ROUTES = {
+    "/api/system-settings/user-agents",
     "/api/system-settings/forbidden-categories",
     "/api/system-settings",
     "/api/ai-config",
@@ -218,6 +219,7 @@ def handle_mercadolibre_callback(handler: JsonRequestHandler, parsed: object) ->
 
 
 GET_HANDLERS: dict[str, GetHandler] = {
+    "/api/system-settings/user-agents": lambda handler, parsed: handler.send_json(*user_agents_payload()),
     "/api/operation-availability": lambda handler, parsed: handler.send_json(
         {"ok": True, **operation_availability(load_app_config())}
     ),

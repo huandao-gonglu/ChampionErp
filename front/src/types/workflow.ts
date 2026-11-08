@@ -4,6 +4,7 @@ import type { BackendPublishPreparationProgress } from './workflow.generated'
 export {
   API_SCHEMA_VERSION,
   PRODUCT_SCHEMA_VERSION,
+  type BackendUserAgentsDocument,
   type BackendDesktopCall,
   type BackendDesktopReply,
   type BackendAlibabaAuthorizationStatus,

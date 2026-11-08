@@ -130,7 +130,7 @@ def build_copy_prompt_from_config(
 ) -> dict[str, str]:
     title_limit = platform_title_limit(target_market)
     market_label = _market_label(target_market)
-    pair = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "copy.generate")
+    pair = ai_prompt_templates.load_ai_use_case_prompt_pair("copy.generate")
     configured_user = pair["user"]
     required_context_markers = (
         ("{$language}", "{language}"),
@@ -139,10 +139,10 @@ def build_copy_prompt_from_config(
     )
     has_required_context = all(any(marker in configured_user for marker in alternatives) for alternatives in required_context_markers)
     configured_system = pair["system"].strip()
-    if not configured_system or configured_system == "System from settings":
-        raise RuntimeError("功能绑定“文案生成”的系统提示词未配置，请在 AI 设置中维护 copy.generate 提示词。")
+    if not configured_system:
+        raise RuntimeError("文案生成的系统提示词缺失，请检查应用安装文件。")
     if not has_required_context:
-        raise RuntimeError("功能绑定“文案生成”的用户提示词必须包含 language、market_label 和 product_summary 上下文。")
+        raise RuntimeError("文案生成的系统模板缺少 language、market_label 或 product_summary 上下文。")
     user_prompt = ai_prompt_templates.render_prompt_template(
         configured_user,
         {

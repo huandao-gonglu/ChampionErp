@@ -54,6 +54,24 @@ def system_settings_payload() -> dict:
     return get_context().config.system_settings()
 
 
+def user_agents_payload() -> ResponseWithStatus:
+    try:
+        return get_context().config.user_agents(), 200
+    except (ValueError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}, 500
+
+
+def save_user_agents_payload(body: dict) -> ResponseWithStatus:
+    try:
+        return get_context().config.save_user_agents(body), 200
+    except RequestValidationError as exc:
+        return {"ok": False, "error": str(exc), "error_code": exc.error_code}, exc.status_code
+    except (ValidationError, UnicodeError):
+        return {"ok": False, "error": "请提供有效的内容和版本号，userAgents.md 须为 UTF-8 且不超过 32 KiB。"}, 400
+    except (ValueError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}, 400
+
+
 def forbidden_categories_payload() -> dict:
     return get_context().config.forbidden_categories()
 
@@ -421,6 +439,8 @@ def clear_store_auth_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 __all__ = [
+    "user_agents_payload",
+    "save_user_agents_payload",
     "forbidden_categories_payload",
     "import_forbidden_categories_payload",
     "append_ml_auth_test_log",

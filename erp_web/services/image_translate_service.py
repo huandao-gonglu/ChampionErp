@@ -48,7 +48,7 @@ def build_translate_prompt(
     title = str(product.get("name") or source.get("title") or "").strip()
     target = str(target_language or DEFAULT_TARGET_LANGUAGE).strip() or DEFAULT_TARGET_LANGUAGE
     mode_label = "translate existing text" if str(mode or "").strip().lower() == "translate" else "localized ecommerce conversion"
-    template = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "image.translate")["user"]
+    template = ai_prompt_templates.load_ai_use_case_prompt_pair("image.translate")["user"]
     return ai_prompt_templates.render_prompt_template(
         template,
         {

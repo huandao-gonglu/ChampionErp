@@ -25,11 +25,7 @@ def run_ai_use_case(
     context = get_context()
     app_dir = context.paths.app_dir
     app_config = context.config.load_app_config()
-    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(
-        app_dir,
-        app_config,
-        use_case_id,
-    )
+    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(use_case_id)
     messages = [
         {"role": "system", "content": prompt_pair["system"]},
         {

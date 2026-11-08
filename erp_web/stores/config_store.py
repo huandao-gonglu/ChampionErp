@@ -765,6 +765,17 @@ class ConfigStore:
     def system_settings(self) -> dict:
         return self.load_app_config()["system_settings"]
 
+    def user_agents(self) -> dict:
+        from erp_web.services.user_agents import read_user_agents
+        return read_user_agents(self._app_dir)
+
+    def save_user_agents(self, body: dict) -> dict:
+        from erp_web.schemas.agent_instructions import UserAgentsSaveRequest
+        from erp_web.services.user_agents import save_user_agents
+        request = UserAgentsSaveRequest.model_validate(body)
+        with self._save_lock:
+            return save_user_agents(self._app_dir, **request.model_dump())
+
     def forbidden_categories(self) -> dict:
         return self.load_app_config()["forbidden_categories"]
 
@@ -839,6 +850,9 @@ class ConfigStore:
         """
         merged = deepcopy(current if isinstance(current, dict) else self.default_app_config())
         incoming = incoming if isinstance(incoming, dict) else {}
+        if "ai_use_case_prompts" in incoming:
+            raise RequestValidationError("功能提示词由系统维护，不能通过用户配置修改。请刷新页面。",
+                                         status_code=403, error_code="SYSTEM_PROMPT_READ_ONLY")
         allowed_keys = set(self.default_app_config()) | set(app_config_runtime.PRESERVED_APP_CONFIG_KEYS)
         for key, value in incoming.items():
             if key in {"ai_models", "ai_use_case_bindings"}:

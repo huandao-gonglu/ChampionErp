@@ -12,7 +12,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from erp_web.schemas.requests import RequestValidationError
-from . import ai_model_config, ai_prompt_templates
+from . import ai_model_config
 
 
 SENSITIVE_CONFIG_KEYS = {
@@ -169,6 +169,7 @@ def public_app_config(
     load_env(app_dir)
     safe = json.loads(json.dumps(app_config or {}, ensure_ascii=False))
     public = mask_nested_config(safe)
+    public.pop("ai_use_case_prompts", None)
     for model in public.get("ai_models", []):
         if model.get("api_key_env") == ai_model_config.MANAGED_KEY_SOURCE:
             model["system_managed"] = True
@@ -225,7 +226,6 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
         public['ai_models'] = local_models_view(public['ai_models'])
     # 1688 应用与买家授权通过独立入口管理，不进入通用配置视图。
     public.pop("1688_api", None)
-    public["ai_use_case_prompts"] = ai_prompt_templates.public_ai_use_case_prompts(app_dir, cfg)
     public["storage"] = {
         "config_dir": str(config_dir(app_dir)),
         "env_path": str(env_path(app_dir)),
@@ -234,7 +234,10 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
 
 
 def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict[str, Any], *, preserve_local_models: bool = False) -> dict[str, Any]:
-    merged = dict(current or {})
+    if "ai_use_case_prompts" in incoming:
+        raise RequestValidationError("功能提示词由系统维护，不能通过用户配置修改。请刷新页面。",
+                                     status_code=403, error_code="SYSTEM_PROMPT_READ_ONLY")
+    merged = {key: value for key, value in (current or {}).items() if key != "ai_use_case_prompts"}
     if isinstance(incoming.get("ai_models"), list):
         from .desktop_model_config_service import prepare_local_model
         current_models = ai_model_config.normalize_ai_models(current.get("ai_models") if isinstance(current, dict) else None)
@@ -271,12 +274,6 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
         merged["ai_models"] = next_models
     if isinstance(incoming.get("ai_use_case_bindings"), dict):
         merged["ai_use_case_bindings"] = ai_model_config.normalize_ai_use_case_bindings(incoming.get("ai_use_case_bindings"))
-    if isinstance(incoming.get("ai_use_case_prompts"), dict):
-        merged["ai_use_case_prompts"] = ai_prompt_templates.merge_ai_use_case_prompts(
-            app_dir,
-            current if isinstance(current, dict) else {},
-            incoming.get("ai_use_case_prompts"),
-        )
     ai_model_config.validate_ai_use_case_generation_bindings(merged)
     ai_model_config.validate_ai_model_request_overrides(merged)
     return merged

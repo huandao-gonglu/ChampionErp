@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from erp_web.services import ai_model_config, ai_prompt_templates
+from erp_web.services import ai_model_config
 from erp_web.services.image_hosting_config import normalize_image_hosting
 from erp_web.schemas.ai_approval import normalize_ai_tool_approval_mode
 from erp_web.schemas.config import SystemSettingsRequest
@@ -60,7 +60,6 @@ def default_app_config() -> dict[str, Any]:
         },
         "ai_models": ai_model_config.default_ai_models(),
         "ai_use_case_bindings": {},
-        "ai_use_case_prompts": ai_prompt_templates.default_ai_use_case_prompts(),
         "pricing_defaults": {
             "target_margin_percent": "30",
             "domestic_freight": "0",
@@ -98,7 +97,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
             + ", ".join(retired_ai_keys)
             + "；请仅使用 ai_models"
         )
-    allowed_top_level = set(defaults) | PRESERVED_APP_CONFIG_KEYS
+    allowed_top_level = set(defaults) | PRESERVED_APP_CONFIG_KEYS | {"ai_use_case_prompts"}
     unknown_top_level = sorted(set(incoming) - allowed_top_level)
     if unknown_top_level:
         raise ValueError(
@@ -113,9 +112,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     ai_use_case_bindings = ai_model_config.normalize_ai_use_case_bindings(
         incoming.get("ai_use_case_bindings")
     )
-    ai_use_case_prompts = ai_prompt_templates.normalize_ai_use_case_prompts(
-        incoming.get("ai_use_case_prompts")
-    )
+    # 旧持久化路径继续可读，但不进入当前配置，也不再作为提示词来源。
     raw_pricing = (
         incoming.get("pricing_defaults")
         if isinstance(incoming.get("pricing_defaults"), dict)
@@ -165,7 +162,6 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     canonical["image_hosting"] = normalize_image_hosting(incoming.get("image_hosting"))
     canonical["ai_models"] = ai_models
     canonical["ai_use_case_bindings"] = ai_use_case_bindings
-    canonical["ai_use_case_prompts"] = ai_use_case_prompts
     canonical["pricing_defaults"] = pricing_defaults
     canonical["pricing_templates"] = PricingTemplateSettings.model_validate(incoming.get("pricing_templates", {})).model_dump(exclude_none=True)
     canonical["yandex_warehouses"] = YandexWarehouseConfiguration.model_validate(incoming.get("yandex_warehouses", {})).model_dump()

@@ -5,7 +5,8 @@
 - 本文件记录长期开发边界；具体入口见 [AI 上下文地图](docs/ai-context-map.md)，前端约定见 [前端规范](front/前端规范.md)，按任务读取相关部分。
 - 历史方案和验收记录描述当时的决策与证据，不构成新的任务授权；其中的清库许可、阶段顺序和临时限制不延续到后续任务。
 - **Developer instructions are not product copy.** 开发约束、架构说明、任务解释和验收标准默认只指导实现；只有任务明确要求或真实 UX 需要时，才转为用户可见文案。
-- `config/agents.md` 和 `config/prompts/` 是 ERP 产品运行时配置，不是 Codex 开发规范；修改它们会改变产品 Agent 行为。
+- `erp_web/assets/systemAgents.md` 和 `erp_web/assets/prompts/` 是随版本发布的 ERP 系统规则与业务提示词，不是 Codex 开发规范。
+- `config/userAgents.md` 是用户独有的全局偏好，只能由用户在系统设置中编辑；开发和升级不得写入、追加或覆盖其内容。初始注释大纲由 `erp_web/assets/account-defaults/userAgents.md` 提供。
 
 ## 产品阶段与兼容策略
 

@@ -96,7 +96,7 @@ def test_approval_level_is_not_model_controlled_and_retired_debug_surface_is_abs
     retired_command = "/" + "allow"
     retired_endpoint = "/api/v1/" + "debug-autonomy"
     guarded_files = (
-        APP_ROOT / "config" / "prompts" / "global_chat.json",
+        APP_ROOT / "erp_web" / "assets" / "prompts" / "global_chat.json",
         APP_ROOT / "erp_web" / "http_routes.py",
         APP_ROOT / "erp_web" / "services" / "vercel_ai_ui_service.py",
         APP_ROOT / "front" / "src" / "stores" / "aiChat.ts",

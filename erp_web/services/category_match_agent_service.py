@@ -248,11 +248,7 @@ def _prepare_run_params(
 ) -> _CategoryMatchRunParams:
     context = get_context()
     app_config = context.config.load_app_config()
-    prompt = load_ai_use_case_prompt_pair(
-        context.paths.app_dir,
-        app_config,
-        CATEGORY_MATCH_USE_CASE_ID,
-    )
+    prompt = load_ai_use_case_prompt_pair(CATEGORY_MATCH_USE_CASE_ID)
     instructions = prompt.get("system") or (
         "必须先调用当前类目检索工具，只能选择工具真实返回的商品类型；"
         "树导航按真实分支逐层展开；关键词模式一次提交 keywords 列表，无匹配时 abstain。"

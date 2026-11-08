@@ -12,7 +12,8 @@ from erp_web.ai_capability_composition import application_capability_permissions
 from erp_web.services.ai_agent_factory import AiAgentExecutionProfile, AiAgentFactory
 from erp_web.services.ai_prompt_templates import load_ai_use_case_prompt_pair
 from erp_web.services.agent_run_storage import AgentRunStorage
-from erp_web.services.agent_memory import load_agent_memory_instructions
+from erp_web.services.agent_instructions import load_system_agent_instructions
+from erp_web.services.user_agents import load_user_agent_instructions
 from erp_web.services.online_product_completion import validate_online_completion
 from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_approval import AiToolApprovalMode, normalize_ai_tool_approval_mode
@@ -116,13 +117,12 @@ class GlobalAgentChatService:
         )
 
     def instructions(self) -> str:
-        pair = load_ai_use_case_prompt_pair(
-            self.app_dir, self.app_config, GLOBAL_CHAT_USE_CASE_ID
-        )
+        pair = load_ai_use_case_prompt_pair(GLOBAL_CHAT_USE_CASE_ID)
         return "\n\n".join(filter(None, (
             NATIVE_INSTRUCTIONS,
             str(pair.get("system") or ""),
-            load_agent_memory_instructions(self.app_dir),
+            load_system_agent_instructions(),
+            load_user_agent_instructions(self.app_dir),
             GLOBAL_RESPONSE_INSTRUCTIONS,
         )))
 

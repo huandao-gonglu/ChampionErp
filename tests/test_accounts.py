@@ -19,7 +19,7 @@ from erp_web.context import bind_context, get_context
 from erp_web.http_handler import Handler
 from erp_web.server import ERPHTTPServer
 from erp_web.schemas.accounts import SESSION_COOKIE
-from erp_web.services import ai_model_config, ai_prompt_templates
+from erp_web.services import ai_model_config
 
 PASSWORD = "这是用于账号回归测试的完整密码123"
 NEW_PASSWORD = "这是修改后的独立账号回归测试密码456"
@@ -182,8 +182,9 @@ def test_two_users_have_concurrent_independent_business_files_and_config(account
         with bind_context(context):
             assert ai_model_config.model_api_key({"api_key_env": "OPENAI_API_KEY"}) == ""
             assert ai_model_config.model_api_key({"api_key": "own-key"}) == "own-key"
-            with pytest.raises(ValueError, match="当前账号"):
-                ai_prompt_templates.write_prompt_json(context.paths.app_dir, str(runtime.root.paths.config_dir / "stolen.json"), system="越界")
+            with pytest.raises(ValueError):
+                context.config.save_user_agents({"content": "越界", "expected_revision": "0" * 64,
+                                                "path": str(runtime.root.paths.config_dir / "stolen.md")})
     assert runtime.context_for(runtime.store.admin()).paths.app_dir == runtime.root.paths.app_dir
 
 
@@ -559,3 +560,37 @@ def test_registration_code_required_limited_and_single_use(accounts_http):
     assert requests.post(path, json=form).ok
     assert requests.post(url + "/api/account/register", json={**user, "email_code": "625317"}).ok
     assert requests.post(url + "/api/account/register", json={**user, "email_code": "625317"}).status_code == 400
+
+
+def test_user_agents_http_is_private_and_preserved_across_initialization(accounts_http):
+    url, runtime, login = accounts_http
+    users = [runtime.service.create({"email": email, "display_name": email, "password": PASSWORD})
+             for email in ("prompt-a@example.com", "prompt-b@example.com")]
+    clients = [login(user["email"]) for user in users]
+    first = clients[0].get(url + "/api/system-settings/user-agents")
+    assert first.status_code == 200 and "交流偏好" in first.json()["content"]
+    config = runtime.context_for(users[0]).paths.config_dir
+    assert (config / "userAgents.md").exists()
+    assert not (config / "prompts").exists()
+    assert not (config / "systemAgents.md").exists()
+    saved = clients[0].post(url + "/api/system-settings/user-agents", json={
+        "content": "答复用中文，先给结果。", "expected_revision": first.json()["revision"],
+    })
+    assert saved.status_code == 200
+    other = clients[1].get(url + "/api/system-settings/user-agents?user_id=" + users[0]["id"])
+    assert other.status_code == 200 and "先给结果" not in other.json()["content"]
+    stale = clients[0].post(url + "/api/system-settings/user-agents", json={
+        "content": "旧页面覆盖", "expected_revision": first.json()["revision"],
+    })
+    assert stale.status_code == 409
+    forbidden = clients[0].post(url + "/api/ai-config/save", json={
+        "ai_use_case_prompts": {"global.chat": {"system_prompt": "覆盖系统规则"}},
+    })
+    assert forbidden.status_code == 403
+    assert "ai_use_case_prompts" not in clients[0].get(url + "/api/ai-config").json()
+    replacement = AccountRuntime(runtime.root)
+    try:
+        restored = replacement.context_for(next(row for row in runtime.store.users() if row["id"] == users[0]["id"]))
+        assert restored.config.user_agents() == saved.json()
+    finally:
+        replacement.close()

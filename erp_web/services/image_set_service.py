@@ -146,7 +146,7 @@ def plan_image_set(*, app_dir, config, messages, product, draft, sources, count,
         return plan
 
     factory = AiAgentFactory(app_dir=app_dir, app_config=config, message_store=messages)
-    pair = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, config, "image.plan")
+    pair = ai_prompt_templates.load_ai_use_case_prompt_pair("image.plan")
     outcome = factory.run_sync(
         profile=AiAgentExecutionProfile(
             use_case_id="image.plan", output_type=PromptedOutput(ImageSetPlan),

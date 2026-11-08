@@ -481,6 +481,18 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     expect(JSON.stringify(bindings)).not.toContain('reasoning_effort')
   })
 
+  it('功能绑定保留模型设置，移除所有系统提示词编辑与提交入口', async () => {
+    const wrapper = mountPanel(qwenConfig)
+    await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
+    expect(wrapper.text()).not.toContain('Prompt JSON 文件')
+    expect(wrapper.text()).not.toContain('System Prompt')
+    expect(wrapper.text()).not.toContain('User Prompt')
+    await wrapper.get('[data-testid="save-ai-bindings"]').trigger('click')
+    const payload = wrapper.emitted('saveAi')?.[0]?.[0] as Record<string, unknown>
+    expect(payload).not.toHaveProperty('ai_use_case_prompts')
+    expect(payload).toHaveProperty('ai_use_case_bindings')
+  })
+
   it('模型配置只提交 provider_id，不再提交 provider_family', async () => {
     const wrapper = mountPanel(qwenConfig)
     await wrapper.get('[data-testid="ai-provider-id"]').setValue('openai')

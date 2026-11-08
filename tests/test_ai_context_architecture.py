@@ -238,17 +238,21 @@ def test_frontend_backdrops_do_not_close_from_a_single_self_event():
     assert not violations, "遮罩关闭须使用 WorkspaceDialog 或 useBackdropDismiss：\n" + "\n".join(violations)
 
 
-def test_agent_memory_is_loaded_only_by_the_main_chat_service():
-    """长期记忆通过现有主 Agent 指令装配进入，不散落到工具或传输层。"""
+def test_agent_instructions_have_separate_system_and_user_owners():
+    """系统规则只能来自发布资源，用户偏好只由设置入口写入。"""
     consumers = {
         _relative_posix(path)
         for path, target in imported_targets(python_files(ROOT / "erp_web"))
-        if target.startswith("erp_web.services.agent_memory")
+        if target.startswith("erp_web.services.agent_instructions")
     }
     assert consumers == {"erp_web/services/global_agent_chat_service.py"}
-    memory_imports = imported_targets([ROOT / "erp_web/services/agent_memory.py"])
-    assert not any(target.startswith(("pydantic_ai", "erp_web.runtime_units", "erp_web.stores"))
-                   for _, target in memory_imports)
+    source = (ROOT / "erp_web/services/ai_prompt_templates.py").read_text()
+    assert "app_dir" not in source and "write_prompt_json" not in source
+    assert not (ROOT / "erp_web/services/agent_memory.py").exists()
+    for path in (ROOT / "erp_web/runtime_units").glob("*.py"):
+        assert "save_user_agents" not in path.read_text(), path
+    assert not (ROOT / "erp_web/assets/account-defaults/prompts").exists()
+    assert not (ROOT / "config/agents.md").exists()
 
 
 def test_agent_tool_budget_visibility_uses_native_prepare_tools():
@@ -406,7 +410,7 @@ def test_copy_generation_uses_typed_schema_instead_of_prompt_field_contract() ->
     assert "ai_gateway.chat_json(" not in service_source
 
     prompt_config = json.loads(
-        (ROOT / "config/prompts/copy_generate.json").read_text(encoding="utf-8")
+        (ROOT / "erp_web/assets/prompts/copy_generate.json").read_text(encoding="utf-8")
     )
     prompt_text = "\n".join(
         str(prompt_config.get(key) or "") for key in ("system", "user")
@@ -898,14 +902,14 @@ def test_attribute_ai_has_only_the_main_conversation_entry():
     from erp_web.http_route_units.category_routes import HANDLED_PATHS
     from erp_web.schemas.requests import REQUEST_CONTRACTS
     from erp_web.services.ai_model_config import AI_USE_CASES
-    from erp_web.services.ai_prompt_templates import DEFAULT_AI_USE_CASE_PROMPTS
+    from erp_web.services.ai_prompt_templates import SYSTEM_PROMPT_FILES
 
     retired_tools = {"product_attributes_fill", "draft_sku_attributes_fill", "category_attribute_values_search"}
     assert not retired_tools.intersection(APPLICATION_CAPABILITY_CATALOG.tools)
     assert {"draft_attributes_read", "draft_sku_variants_check", "category_attributes_query", "category_attribute_values_query"} <= GLOBAL_CHAT_CAPABILITIES
     assert {"product_attributes_update", "draft_sku_attributes_update"} <= _WRITE_CAPABILITIES
     assert "/api/category-ai-fill" not in HANDLED_PATHS | REQUEST_CONTRACTS.keys()
-    assert "category.attribute_fill" not in AI_USE_CASES.keys() | DEFAULT_AI_USE_CASE_PROMPTS.keys()
+    assert "category.attribute_fill" not in AI_USE_CASES.keys() | SYSTEM_PROMPT_FILES.keys()
     for path in ['erp_web/runtime_units/attribute_fill_capabilities.py', 'erp_web/runtime_units/category_attribute_ai_fill.py', 'erp_web/runtime_units/category_attribute_tools.py', 'erp_web/runtime_units/category_brand_values.py', 'erp_web/runtime_units/sku_attribute_batch.py', 'erp_web/runtime_units/sku_attribute_capabilities.py', 'erp_web/runtime_units/sku_attribute_fill.py', 'erp_web/runtime_units/sku_attribute_images.py', 'erp_web/runtime_units/sku_source_attributes.py', 'erp_web/services/category_attribute_fill_agent_service.py', 'erp_web/services/sku_attribute_fill_agent_service.py', 'erp_web/services/attribute_fact_review.py', 'erp_web/services/attribute_model_input.py', 'erp_web/schemas/category_attribute.py', 'erp_web/schemas/category_attribute_validation.py', 'erp_web/schemas/category_attribute_evidence.py', 'erp_web/schemas/category_attribute_feature_evidence.py', 'erp_web/schemas/category_attribute_sku_scope.py', 'erp_web/schemas/attribute_image_evidence.py', 'config/prompts/category_attribute_fill.json', 'front/src/components/domain/DraftSkuAttributeBatchFill.vue']:
         assert not (ROOT / path).exists(), path
     for directory in (ROOT / "erp_web", ROOT / "front/src"):

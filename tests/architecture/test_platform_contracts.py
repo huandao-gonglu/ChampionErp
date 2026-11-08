@@ -260,10 +260,10 @@ def test_text_translation_is_the_only_translation_contract() -> None:
     }
 
     assert "text.translate" in ai_model_config.AI_USE_CASES
-    assert "text.translate" in ai_prompt_templates.DEFAULT_AI_USE_CASE_PROMPTS
+    assert "text.translate" in ai_prompt_templates.SYSTEM_PROMPT_FILES
     assert "/api/text-translate" in http_routes.POST_API_ROUTES
     assert retired_use_cases.isdisjoint(ai_model_config.AI_USE_CASES)
-    assert retired_use_cases.isdisjoint(ai_prompt_templates.DEFAULT_AI_USE_CASE_PROMPTS)
+    assert retired_use_cases.isdisjoint(ai_prompt_templates.SYSTEM_PROMPT_FILES)
     assert retired_endpoints.isdisjoint(http_routes.POST_API_ROUTES)
 
 

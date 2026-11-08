@@ -2362,7 +2362,7 @@ def test_run_ai_use_case_renders_payload_and_normalizes_result(monkeypatch) -> N
     monkeypatch.setattr(
         ai_use_case.ai_prompt_templates,
         "load_ai_use_case_prompt_pair",
-        lambda app_dir, app_config, use_case_id: {
+        lambda use_case_id: {
             "system": "只返回 JSON",
             "user": "输入：{{input_json}}",
         },

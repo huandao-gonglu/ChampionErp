@@ -83,7 +83,7 @@ def test_background_is_native_instructions_and_switch_off_clears_old_location(tm
 
     assert "当前草稿 ID：draft-a" in observed[0]
     assert "当前属性 ID：85" in observed[0]
-    assert "页面背景" not in observed[1]
+    assert "页面背景（本条用户消息发送时的界面位置）" not in observed[1]
     assert "draft-a" not in observed[1]
     assert "当前商品 ID：product-b" in observed[2]
     assert "draft-a" not in observed[2]

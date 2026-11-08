@@ -128,7 +128,6 @@ class AppConfig(TypedDict, total=False):
     ai_tool_approval_mode: AiToolApprovalMode
     ai_models: list[AiModelConfig]
     ai_use_case_bindings: dict[str, AiUseCaseBinding]
-    ai_use_case_prompts: dict[str, dict[str, str]]
     pricing: dict[str, Any]
     pricing_defaults: dict[str, Any]
     yandex_warehouses: dict[str, Any]

@@ -75,7 +75,6 @@ function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig
       })
   }
   if (isRecord(safeSubmittedConfig.ai_use_case_bindings)) merged.ai_use_case_bindings = safeSubmittedConfig.ai_use_case_bindings
-  if (isRecord(safeSubmittedConfig.ai_use_case_prompts)) merged.ai_use_case_prompts = safeSubmittedConfig.ai_use_case_prompts
   return sanitizePublicAppConfig(merged)
 }
 

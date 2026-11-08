@@ -5,7 +5,6 @@ from functools import partial
 import logging
 from pathlib import Path
 from threading import Event, RLock, Thread
-import shutil
 import time
 
 from erp_web.release_guard import release_guard
@@ -51,13 +50,18 @@ class AccountRuntime:
                     paths = AppPaths.from_app_dir(directory)
                     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                     context = AppContext(paths, ErpDatabase(paths.db_path))
-                defaults = Path(__file__).resolve().parents[1] / "assets" / "account-defaults"
+                defaults = Path(__file__).resolve().parent / "assets" / "account-defaults"
                 for source in defaults.rglob("*"):
                     if source.is_file():
                         destination = context.paths.config_dir / source.relative_to(defaults)
                         destination.parent.mkdir(parents=True, exist_ok=True)
-                        if not destination.exists():
-                            shutil.copyfile(source, destination)
+                        # 默认文件仅初始化一次；并发初始化也不能覆盖用户内容。
+                        try:
+                            with destination.open("xb") as target:
+                                target.write(source.read_bytes())
+                            destination.chmod(0o600)
+                        except FileExistsError:
+                            pass
                 context.user_id = user["id"]
                 context.shared_paths = self.root.paths
                 context.config.shared_config = self.root.config

@@ -7,6 +7,8 @@ import { useAppStore } from '@/stores/app'
 import SystemSettingsPanel from '../SystemSettingsPanel.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
+import { fetchUserAgents } from '@/api/userAgents'
+vi.mock('@/api/userAgents', () => ({ fetchUserAgents: vi.fn(), saveUserAgents: vi.fn() }))
 import { fetchRequestControl } from '@/api/externalRequests'
 import { fetchYandexWarehouses } from '@/api/yandexWarehouses'
 import { fetchForbiddenCategories } from '@/api/forbiddenCategories'
@@ -21,6 +23,7 @@ beforeEach(() => {
   app.darkMode = false
   app.applyTheme()
   vi.clearAllMocks()
+  vi.mocked(fetchUserAgents).mockResolvedValue({ content: '<!-- 交流偏好 -->', revision: 'a'.repeat(64) })
   vi.mocked(fetchForbiddenCategories).mockResolvedValue({ platform: 'yandex', filename: '', imported_at: '', categories: [] })
   const watermark = { text: '', image_data_url: '', opacity: 25, size_percent: 30, density: 5, color: '#737373' }
   vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5, watermark, wechat_forward_types: [] })
@@ -36,6 +39,17 @@ afterEach(() => {
 })
 const global = { stubs: { teleport: true } }
 describe('系统设置入口与同步间隔', () => {
+  it('用户自定义指令支持独立深链，进入后才读取', async () => {
+    const route = reactive({ query: { settings_section: 'general' } })
+    const wrapper = mount(SystemSettingsPanel, { global: { ...global, provide: { [routeLocationKey as symbol]: route } } })
+    await flushPromises()
+    expect(fetchUserAgents).not.toHaveBeenCalled()
+    route.query.settings_section = 'user_agents'
+    await flushPromises()
+    expect(wrapper.get('#system-settings-tab-user_agents').attributes('aria-selected')).toBe('true')
+    expect((wrapper.get('textarea#user-agents-content').element as HTMLTextAreaElement).value).toContain('交流偏好')
+    expect(fetchUserAgents).toHaveBeenCalledTimes(1)
+  })
   it('禁售类目支持深链，进入后才读取名单', async () => {
     const route = reactive({ query: { settings_section: 'general' } })
     const wrapper = mount(SystemSettingsPanel, { global: { ...global, provide: { [routeLocationKey as symbol]: route } } })

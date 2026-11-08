@@ -75,7 +75,6 @@ const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
 const aiSettingsError = ref('')
 const aiUseCaseBindings = ref<Record<string, UnknownRecord>>({})
-const aiUseCasePrompts = ref<Record<string, UnknownRecord>>({})
 const API_CONNECTION_TYPE = 'api'
 const CLI_CONNECTION_TYPE = 'cli'
 const BROWSER_CONNECTION_TYPE = 'browser'
@@ -429,16 +428,6 @@ function normalizeUseCaseBindings(value: unknown): Record<string, UnknownRecord>
   return result
 }
 
-function normalizeUseCasePrompts(value: unknown): Record<string, UnknownRecord> {
-  const record = asRecord(value)
-  const result: Record<string, UnknownRecord> = {}
-  for (const [key, raw] of Object.entries(record)) {
-    const item = asRecord(raw)
-    if (key) result[key] = { ...item }
-  }
-  return result
-}
-
 let lastIncomingAiModels: UnknownRecord[] = []
 function fillFromProps() {
   const ml = asRecord(props.storeConfig.mercadolibre)
@@ -460,7 +449,6 @@ function fillFromProps() {
   lastIncomingAiModels = JSON.parse(JSON.stringify(incoming)) as UnknownRecord[]
   selectedAiModelIndex.value = Math.min(selectedAiModelIndex.value, Math.max(aiModels.value.length - 1, 0))
   aiUseCaseBindings.value = normalizeUseCaseBindings(props.aiConfig.ai_use_case_bindings || props.appConfig.ai_use_case_bindings)
-  aiUseCasePrompts.value = normalizeUseCasePrompts(props.aiConfig.ai_use_case_prompts || props.appConfig.ai_use_case_prompts)
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
@@ -519,10 +507,7 @@ function aiModelProviderLabel(model: UnknownRecord): string {
   return providerOptions.value.find((item) => item.id === providerId)?.label
     || providerLabel(providerId)
 }
-const globalPromptUseCases = computed(() => aiUseCases.value.filter((useCase) => {
-  const id = String(useCase.id || '')
-  return id && Boolean(aiUseCasePrompts.value[id])
-}))
+const bindableUseCases = computed(() => aiUseCases.value.filter(useCase => useCase.global_binding !== false))
 const activeAuthSettingsTabMeta = computed(() => authSettingsTabs.find((tab) => tab.key === activeAuthSettingsTab.value) || authSettingsTabs[0])
 const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) => [item.value, item.label]))
 const selectedAiModelConnectionType = computed(() => normalizeConnectionType(modelField('connection_type', API_CONNECTION_TYPE)))
@@ -679,7 +664,7 @@ function aiPayload(): UnknownRecord {
     }),
     ai_use_case_bindings: Object.fromEntries(
       Object.entries(aiUseCaseBindings.value)
-        .filter(([useCaseId]) => globalPromptUseCases.value.some((useCase) => String(useCase.id || '') === useCaseId))
+        .filter(([useCaseId]) => bindableUseCases.value.some((useCase) => String(useCase.id || '') === useCaseId))
         .map(([useCaseId, binding]) => [
           useCaseId,
           {
@@ -692,21 +677,6 @@ function aiPayload(): UnknownRecord {
           const record = asRecord(binding)
           return Boolean(firstText(record.model_id, record.timeout_override_seconds) || Object.keys(asRecord(record.generation)).length)
         }),
-    ),
-    ai_use_case_prompts: Object.fromEntries(
-      globalPromptUseCases.value.map((useCase) => {
-        const useCaseId = String(useCase.id || '')
-        const prompt = aiUseCasePrompts.value[useCaseId] || {}
-        return [
-          useCaseId,
-          {
-            path: String(prompt.path || '').trim(),
-            description: String(prompt.description || ''),
-            system_prompt: String(prompt.system_prompt || ''),
-            user_prompt: String(prompt.user_prompt || ''),
-          },
-        ]
-      }),
     ),
   }
 }
@@ -1078,23 +1048,6 @@ function useCaseGenerationModelText(useCase: UnknownRecord): string {
 function useCaseCapabilityText(useCase: UnknownRecord): string {
   const labels = useCaseRequiredCapabilities(useCase).map((capability) => capabilityLabelByValue[capability] || capability)
   return labels.length ? labels.join(' / ') : '无特殊能力要求'
-}
-
-function useCasePrompt(useCaseId: string): UnknownRecord {
-  if (!aiUseCasePrompts.value[useCaseId]) aiUseCasePrompts.value[useCaseId] = {}
-  return aiUseCasePrompts.value[useCaseId]
-}
-
-function useCasePromptField(useCaseId: string, field: string): string {
-  return String(useCasePrompt(useCaseId)[field] || '')
-}
-
-function setUseCasePromptField(useCaseId: string, field: string, value: string) {
-  if (aiControlsLocked.value) return
-  aiUseCasePrompts.value[useCaseId] = {
-    ...useCasePrompt(useCaseId),
-    [field]: value,
-  }
 }
 
 function hasCapability(capability: string): boolean {
@@ -1981,8 +1934,8 @@ function copy(text: string) {
             </div>
             <button data-testid="save-ai-bindings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存功能绑定</button>
           </div>
-          <div v-if="globalPromptUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2">
-            <div v-for="useCase in globalPromptUseCases" :key="String(useCase.id)" class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
+          <div v-if="bindableUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2">
+            <div v-for="useCase in bindableUseCases" :key="String(useCase.id)" class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <span class="block text-sm font-semibold text-accent-950 dark:text-white">{{ useCase.label || useCase.id }}</span>
@@ -2087,22 +2040,6 @@ function copy(text: string) {
                 <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ useCaseReasoningCapabilities(useCase).note || '当前模型未声明推理参数映射。' }}</p>
                 <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">关闭推理通常能降低首字延迟，但不能保证翻译准确率；温度设为 0 也只提高稳定性，不等于结果必然正确。</p>
               </details>
-              <label class="mt-3 block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Prompt JSON 文件</span>
-                <input class="input font-mono text-xs" :value="useCasePromptField(String(useCase.id || ''), 'path')" @input="setUseCasePromptField(String(useCase.id || ''), 'path', eventText($event))" />
-              </label>
-              <label class="mt-3 block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">说明</span>
-                <textarea class="input min-h-16 resize-y text-sm leading-5" :value="useCasePromptField(String(useCase.id || ''), 'description')" @input="setUseCasePromptField(String(useCase.id || ''), 'description', eventText($event))" />
-              </label>
-              <label class="mt-3 block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">System Prompt</span>
-                <textarea class="input min-h-24 resize-y font-mono text-xs leading-5" :value="useCasePromptField(String(useCase.id || ''), 'system_prompt')" spellcheck="false" @input="setUseCasePromptField(String(useCase.id || ''), 'system_prompt', eventText($event))" />
-              </label>
-              <label class="mt-3 block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">User Prompt</span>
-                <textarea class="input min-h-40 resize-y font-mono text-xs leading-5" :value="useCasePromptField(String(useCase.id || ''), 'user_prompt')" spellcheck="false" @input="setUseCasePromptField(String(useCase.id || ''), 'user_prompt', eventText($event))" />
-              </label>
             </div>
           </div>
           <div v-else class="mt-4 rounded-lg border border-dashed border-accent-300 bg-white p-6 text-center text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">

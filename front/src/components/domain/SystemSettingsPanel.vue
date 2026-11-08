@@ -12,6 +12,7 @@ import WechatSettingsPanel from '@/components/settings/WechatSettingsPanel.vue'
 import ForbiddenCategoriesPanel from '@/components/settings/ForbiddenCategoriesPanel.vue'
 import ManagedSettingsPanel from '@/components/settings/ManagedSettingsPanel.vue'
 import TariffSettingsPanel from '@/components/settings/TariffSettingsPanel.vue'
+import UserAgentsSettingsPanel from '@/components/settings/UserAgentsSettingsPanel.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 
 const appStore = useAppStore()
@@ -24,6 +25,7 @@ const colorMode = computed({
 })
 const tabs = computed(() => [
   { key: 'general', label: '通用设置', summary: '颜色与订单自动同步' },
+  { key: 'user_agents', label: 'AI 自定义指令', summary: '你的长期偏好与业务习惯，升级时保留' },
   { key: 'wechat', label: '微信连接', summary: '扫码绑定微信与 ERP 对话' },
   { key: 'watermark', label: '图片水印', summary: '发布水印、文字与自定义图片' },
   { key: 'forbidden_categories', label: '禁售类目', summary: '导入 Yandex 禁售名单并在预检时拦截' },
@@ -33,11 +35,11 @@ const tabs = computed(() => [
   { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
   { key: 'about', label: '关于', summary: '版本信息、开源许可证、软件许可与服务协议、隐私政策' },
 ] as const)
-const section = ref<'general' | 'wechat' | 'watermark' | 'forbidden_categories' | 'tariffs' | 'managed' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
+const section = ref<'general' | 'user_agents' | 'wechat' | 'watermark' | 'forbidden_categories' | 'tariffs' | 'managed' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
 const route = inject(routeLocationKey, undefined)
 watch(() => route?.query.settings_section, value => {
   if (value === 'managed') section.value = account.isAdmin ? 'managed' : 'general'
-  else section.value = value === 'wechat' || value === 'interruptions' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' || value === 'tariffs' ? value : 'general'
+  else section.value = value === 'user_agents' || value === 'wechat' || value === 'interruptions' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' || value === 'tariffs' ? value : 'general'
 }, { immediate: true })
 const activeTab = computed(() => tabs.value.find(tab => tab.key === section.value) || tabs.value[0])
 
@@ -94,6 +96,9 @@ onMounted(load)
           <span class="font-semibold">{{ tab.label }}</span>
         </button>
       </nav>
+      <section v-if="section === 'user_agents'" id="system-settings-panel-user_agents" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-user_agents">
+        <UserAgentsSettingsPanel />
+      </section>
       <section v-if="section === 'wechat'" id="system-settings-panel-wechat" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-wechat">
         <WechatSettingsPanel />
       </section>

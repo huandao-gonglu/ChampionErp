@@ -6,7 +6,7 @@
 
 - 当前领域契约：见各节链接的 SKU、AI Work、在线商品、外部请求、订单和物流说明。
 - 历史方案与验收：类目 Schema 分离、币种迁移、原生 Agent 重构及旧 Global Task 验收记录只用于追溯；其中的实施步骤、未勾选清单和数据删除授权不作为当前任务指令。
-- 产品 Agent 指令：`config/agents.md`、`config/prompts/` 及服务中的运行时指令由产品加载，与开发规范分开。
+- 产品 Agent 指令：`erp_web/assets/systemAgents.md`、`erp_web/assets/prompts/` 及服务中的运行时指令由产品加载，与开发规范分开。
 
 ## 主 Agent 的通用 Python 执行
 
@@ -752,7 +752,10 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 - `erp_web/facades/ai_approval_facade.py`：`POST /api/ai/approval-mode` 的受信 UI 入口，要求 `X-Approval-Token`；模式存入 `app_config.ai_tool_approval_mode`，只读值随 `/api/state` 返回。普通设置保存保留最新授权偏好，模型没有修改模式的工具。
 - `front/src/components/ai-work/AiApprovalModeSelect.vue`：主对话与浮动对话共用的“询问审批 / 完全授权”选择器，全局保存。完全授权覆盖后续调用和未决定的审批，既有批准/拒绝不改写；普通未返回工具只显示“等待工具结果”，审批标签以服务端 `pending_tool_calls` 为准。
 - `erp_web/services/agent_run_storage.py`：原生 hook 到消息 CAS、输入收件箱与副作用检查点的适配。
-- `config/agents.md`、`erp_web/services/agent_memory.py`：ERP 主 Agent 的长期业务记忆与唯一文件读取边界。`GlobalAgentChatService.instructions()` 在每次新运行或 Deferred 恢复时加载当前应用目录下的文件，沿现有 Factory 的原生 `instructions` 注入系统上下文；不增加 Agent loop 或消息协议。它不受页面背景眼睛开关影响，不加载仓库开发用 `AGENTS.md`，不回退到其他实例的记忆。文件为 UTF-8、上限 32 KiB；缺失或空文件表示没有附加记忆，读取失败、非法编码和超限明确报错，不静默截断规则。文件编辑在下次 run 生效；当前仅提供文件读取，未提供 Agent 自主写入记忆工具。属性填写现由主对话承担，确定性校验仍归领域工具。
+- ERP 主 Agent 的固定规则归 `erp_web/assets/systemAgents.md` 和 `services/agent_instructions.py`，功能模板归 `erp_web/assets/prompts/` 和 `services/ai_prompt_templates.py`。文件只从当前发布包加载，不接受用户路径，不回退到实例目录的旧 prompt/agents.md；缺失或无效时明确报错。发布直接更新系统规则，不再向账号复制功能 prompt。
+- 用户补充偏好唯一归 `config/userAgents.md`，`services/user_agents.py` 提供固定路径、UTF-8、32 KiB、原子写入和内容版本校验。`GlobalAgentChatService.instructions()` 在每次新运行及 Deferred 恢复时，沿 `AiAgentFactory` 的原生 instructions 加载系统规则和当前账号偏好；不增加 Agent loop。已核对 Pydantic AI 2.44.0 与[原生指令文档](https://ai.pydantic.dev/agents/#instructions)。用户偏好不替代系统权限、业务校验或本轮明确要求，注释大纲不注入模型。
+- `GET/POST /api/system-settings/user-agents` 经 `auth_config_facade` → `ConfigStore` → `user_agents` 读写当前账号文件；POST 必须携带 expected_revision，冲突返回 409 并保留双方内容。前端「系统设置 → AI 自定义指令」只展示编辑此文件，功能绑定页仅维护模型及生成参数。没有 Agent 自主写入偏好工具，开发过程不得追加业务规则、记忆或任务总结。
+- `assets/account-defaults/userAgents.md` 只有注释过的编辑大纲，账号首次初始化以排他创建方式复制；存在的文件（包括空文件）不覆盖。实际 `config/userAgents.md` 不入 Git、不随发布写入。旧 app_config 的 ai_use_case_prompts 字段可读后丢弃，旧 prompt/agents.md 文件保留但不再执行；旧内容若需保留为偏好，由用户自行整理到新文件，不自动混入系统或用户指令。回归见 `tests/test_agent_instructions.py`、`test_user_agents.py`、账号 HTTP 及前端指令设置测试。
 - `erp_web/schemas/ai_page_context.py`：主对话页面背景的有界契约与中文指令渲染，只接受页面枚举和资源 ID。`vercel_ai_ui_service.py` 校验请求的 `page_context` 后写入原生消息 metadata，缺省表示本条消息不携带背景；客户端消息 metadata 仍被丢弃。`AgentRunStorage` 随用户输入更新背景，Factory 使用 Pydantic AI 原生动态 `instructions` 注入模型系统上下文，不创建独立系统消息历史或新 Agent loop；Deferred 恢复复用已保存快照，后续关闭开关会清除当前背景。
 - `front/src/stores/aiPageContext.ts`、`useAiPageContext.ts`：可见页面及编辑区域提供定位信息，输入框眼睛开关默认开启并在本机记住选择；普通发送和运行中追加消息均在发送瞬间复制背景。关闭编辑器、切换页面或 KeepAlive 停用时撤销该区域背景，页面背景不作为写权限，也不携带表单未保存值。
   草稿箱通过 `selected_draft_ids` 传递发送时的勾选 ID（最多 1000 个），空数组明确表示未勾选；不读取商品正文，也不改写显式任务范围 `target_draft_ids`。编辑中的 `draft_id` 优先于列表勾选背景，关闭后恢复列表快照。`drafts_query.selected_items` 是查询位置选择，不能用作界面勾选状态。
@@ -965,7 +968,7 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
 - `erp_web/facades/translation_facade.py`：HTTP 状态映射，不包含类目或属性领域分支。
 - `erp_web/runtime_units/text_translation.py`：唯一 `text.translate` AI 用例调用方；校验请求与
   模型响应拥有完全相同的 key 集合，并统一返回扁平 `{key: value}`。
-- `config/prompts/text_translate.json`：唯一“翻译” Prompt。调用方负责注入目标语言和具体文本；
+- `erp_web/assets/prompts/text_translate.json`：唯一“翻译” Prompt。调用方负责注入目标语言和具体文本；
   类目候选与平台属性在前端各自独立组装内容并触发，不共享领域 payload。
 
 已退役的类目结果翻译、类目属性翻译端点、用例、Prompt 和 runtime unit 不提供兼容路径。
@@ -993,7 +996,7 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
 - `product_attributes_update` / `draft_sku_attributes_update` 分别保存公共属性和指定 SKU 的差异属性。`erp_web/runtime_units/category_attribute_updates.py` 只执行确定性校验：服务端重读类目定义，核对作用域、只读字段、值类型/数量/单位以及平台枚举 ID 与原文。网络校验后在商品锁内重读当前目标，再局部合并本次字段，拒绝变化后的类目、停用或未选 SKU。
 - `erp_web/runtime_units/category_attribute_access.py` 是查询与写入共用的纯作用域规则：公共、SKU、托管及只读字段一致判定。托管字段在枚举查询前拒绝；Ozon 单字符枚举值用字典分页按 ID 和原文精确核对，不走至少两字符的搜索端点，不跳过枚举真实性校验。本地查询参数错误不可重试，网络故障保留可重试属性。
 - 属性填写只有主对话这一条 AI 路径。页面入口、专用属性 Agent/复核模型、局部 HTTP 调用和复合草稿准备里的隐式属性步骤均已删除。`draft_prepare_for_market` 返回的完成步骤只包含目标、文案、图片、类目和定价；主对话随后按需直接填写属性。
-- `erp_web/services/global_agent_chat_service.py` 与 `config/agents.md` 规定事实复用、公共/SKU 边界、无品牌优先及缺口汇报。继续使用已安装的 Pydantic AI 2.44.0 原生工具调用、消息历史和指令装配；此次不需要新增 Agent loop 或生命周期。
+- `erp_web/services/global_agent_chat_service.py` 与 `erp_web/assets/systemAgents.md` 规定事实复用、公共/SKU 边界、无品牌优先及缺口汇报。继续使用已安装的 Pydantic AI 2.44.0 原生工具调用、消息历史和指令装配；此次不需要新增 Agent loop 或生命周期。
 - `front/src/composables/useAiDraftSync.ts` 在原生对话历史提交、流结束及返回草稿工作台时读取最新业务数据，统一同步属性、包装、库存、核价参数、SKU 售价和保存版本。无未保存编辑时自动更新；有编辑时保留页面并提示重新加载，覆盖前需确认。重新加载是只读操作，不重放 AI 工具或提交表单；过期读取响应不能覆盖切换后的草稿。`DraftWorkspacePanel` 在工作台内持续显示错误与“重新加载最新数据”入口。眼睛开关继续控制发送时的页面背景。
 - `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
   `dictionary_value_id + value`（ID 原样按字符串存取，不做数值化），搜索输入不进入草稿；
@@ -1052,7 +1055,7 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   完成，route 不读取 presentation header，不导入 registry/SSE。
   `category_facade.py::load_category_match_subject` 只做草稿上下文加载；其完整路径为
   `erp_web/facades/category_facade.py`。
-- `config/prompts/category_product_match.json`：`category.product_match`
+- `erp_web/assets/prompts/category_product_match.json`：`category.product_match`
   Execution Profile 的可配置 prompt。
 - `front/src/api/workflow/publishing.ts::matchCategory`：经通用 `withAiForeground`
   wrapper 调用同步 `POST /api/v1/category-match`；presentation ID 通过 axios config
@@ -1349,7 +1352,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 - 草稿箱的「已发布」表示该草稿已成功提交发布任务：索引按 `publish_jobs` 中同商品、同草稿的持久记录归类，入队后立即生效，失败或后续编辑不撤销该归类；未入队的预览不计入。该展示状态不改写草稿 `publish_status`、SKU 回执或任务结果，不能据此判断平台已上架。界面加载及修改响应均返回全部草稿，由现有分区筛选显示。
 
-- 主 Agent 将“做好发布准备／准备发布／完成草稿”理解为资料完成目标：按目标站点补齐文案、销售图片、类目、公共及 SKU 属性、选品与库存，核对事实并计算应用有效售价，再准备发布素材与最终校验。`draft_prepare_for_market` 不包含属性填写，必须继续处理；单项任务保持原范围，准备不构成发布授权。说明同时由 `GlobalAgentChatService.NATIVE_INSTRUCTIONS` 和 `config/prompts/global_chat.json` 提供。
+- 主 Agent 将“做好发布准备／准备发布／完成草稿”理解为资料完成目标：按目标站点补齐文案、销售图片、类目、公共及 SKU 属性、选品与库存，核对事实并计算应用有效售价，再准备发布素材与最终校验。`draft_prepare_for_market` 不包含属性填写，必须继续处理；单项任务保持原范围，准备不构成发布授权。说明同时由 `GlobalAgentChatService.NATIVE_INSTRUCTIONS` 和 `erp_web/assets/prompts/global_chat.json` 提供。
 - `prepare_product_publish` 使用 `prepare_and_evaluate_publish_validation` 的阶段结果：基础资料失败就返回并保存该失败，不再追加最终图片校验；准备成功仍使用该流程的持久化后回读与最终校验。
 - 页面流程为基础资料预检 → 准备素材与预览 → 最终发布校验 → 确认发布。`precheck_publish_payload` 对 Yandex/Ozon 使用 `image_stage="source"`，检查图片来源与选择，不要求已上传；预览准备后、AI `product_publish_validate` 和入队准入仍执行最终校验并验证 digest。基础预检通过不能直接入队。
 - 核价指纹由 `pricing_service.pricing_calculation_fingerprint` 生成，v2 对 JSON 数字统一整数表示，避免页面往返将 `18.0` 写成 `18` 导致失效。`pricing_calculation_fingerprint_matches` 保留旧摘要读取，并仅为历史 Yandex 费用请求恢复明确的 float 字段类型；金额、尺寸或其他事实变化仍须重新核价。
@@ -1676,7 +1679,7 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
   正文不改写、不截断；超过摘要长度时在原生审批的完整 `message` 参数中展示，不扩展审批协议。
   发送未知回执携带 `outcome_unknown`，复用原生 Agent 已有写调用回执防重；不自动重发，不把成功回执解释为已读。
   拟稿/翻译由主 Agent 完成，不为其新增发送旁路；买家内容不是操作授权，附件不自动下载。
-  买家正文语言按 `config/agents.md` 的长期约定选择：用户指定优先，其次买家沟通语言，再次订单目标市场语言；Yandex 无其他依据时默认俄语。已批准或明确要求原文发送的正文不自动改写。
+  买家正文语言按 `erp_web/assets/systemAgents.md` 的长期约定选择：用户指定优先，其次买家沟通语言，再次订单目标市场语言；Yandex 无其他依据时默认俄语。已批准或明确要求原文发送的正文不自动改写。
 - `schemas/order_chat.py` 定义生成到前端的响应契约。页面仍只在请求及弹窗内存中保存消息、附件链接和 chat ID；
   AI 工具参数、回执与审批按既有原生会话历史持久化。不另建消息表、缓存、浏览器存储或后台聊天通知；外部请求管理继续保留脱敏请求审计。
 - 回归入口：`tests/test_order_chat.py`、`tests/test_order_chat_ai_capabilities.py`、`OrderChatDialog.test.ts`；覆盖分页完整性、归属校验、手动获取边界、原生审批与未知回执防重、发送不回读及遮罩手势。

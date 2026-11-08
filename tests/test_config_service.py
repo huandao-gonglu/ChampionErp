@@ -48,9 +48,7 @@ def test_default_env_template_and_public_config(
         for item in public["providers"]
     )
     assert all("generation_capabilities" in model for model in public["ai_models"])
-    assert "copy.generate" in public["ai_use_case_prompts"]
-    assert "research.web_search" not in public["ai_use_case_prompts"]
-    assert public["ai_use_case_prompts"]["copy.generate"]["user_prompt"]
+    assert "ai_use_case_prompts" not in public
     assert public["storage"]["config_dir"].startswith(str(app_dir / "config"))
     assert_no_old_path(public, old_path_markers)
 
@@ -281,67 +279,47 @@ def test_merge_ai_config_rejects_reasoning_for_unmapped_deepseek_profile(
         )
 
 
-def test_merge_config_writes_ai_use_case_prompt_files(tmp_path: Path) -> None:
-    merged = config_service.merge_ai_config(
-        tmp_path,
-        {},
-        {
-            "ai_use_case_prompts": {
-                "copy.generate": {
-                    "path": "config/prompts/copy_generate.json",
-                    "description": "文案生成提示词",
-                    "system_prompt": "System from settings",
-                    "user_prompt": "User prompt {$language}",
-                },
-                "text.translate": {
-                    "path": "config/prompts/text_translate.json",
-                    "description": "翻译默认模板",
-                    "system_prompt": "Translate system",
-                    "user_prompt": "Translate user {$language}",
-                },
-            }
-        },
-    )
-
-    assert (
-        merged["ai_use_case_prompts"]["copy.generate"]["path"]
-        == "config/prompts/copy_generate.json"
-    )
-    assert (
-        merged["ai_use_case_prompts"]["text.translate"]["path"]
-        == "config/prompts/text_translate.json"
-    )
-    written = json.loads(
-        (tmp_path / "config/prompts/copy_generate.json").read_text(encoding="utf-8")
-    )
-    assert written["description"] == "文案生成提示词"
-    assert written["system"] == "System from settings"
-    assert written["user"] == "User prompt {$language}"
-    translate_written = json.loads(
-        (tmp_path / "config/prompts/text_translate.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert translate_written["description"] == "翻译默认模板"
-    assert translate_written["system"] == "Translate system"
-    assert translate_written["user"] == "Translate user {$language}"
+def test_user_configuration_cannot_write_system_prompt_files(tmp_path: Path) -> None:
+    from erp_web.schemas.requests import RequestValidationError
+    with pytest.raises(RequestValidationError, match="系统维护") as error:
+        config_service.merge_ai_config(tmp_path, {}, {
+            "ai_use_case_prompts": {"global.chat": {"path": "config/prompts/global_chat.json", "system_prompt": "旧规则"}},
+        })
+    assert error.value.status_code == 403
+    assert not (tmp_path / "config/prompts/global_chat.json").exists()
 
 
-def test_load_prompt_json_joins_system_segments(tmp_path: Path) -> None:
+def test_legacy_configuration_remains_readable_but_no_longer_controls_prompts():
+    old = {**app_config.default_app_config(), "ai_use_case_prompts": {"global.chat": {"path": "/old/prompt.json"}}}
+    assert "ai_use_case_prompts" not in app_config.normalize_app_config(old)
+
+
+def test_system_prompt_ignores_instance_files(tmp_path: Path):
     path = tmp_path / "config/prompts/global_chat.json"
     path.parent.mkdir(parents=True)
-    path.write_text(
-        json.dumps({"description": "说明", "system": ["第一句。", "第二句。"], "user": "{$input_text}"}),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps({"system": "用户目录旧规则，不生成套图", "user": "旧输入"}), encoding="utf-8")
+    pair = ai_prompt_templates.load_ai_use_case_prompt_pair("global.chat")
+    assert "draft_images_prepare" in pair["system"]
+    assert "用户目录旧规则" not in pair["system"]
+    assert "发布准备中的图片步骤仅指" not in pair["system"]
 
-    prompt = ai_prompt_templates.load_prompt_json(tmp_path, "config/prompts/global_chat.json")
 
-    assert prompt == {
-        "description": "说明",
-        "system": "第一句。第二句。",
-        "user": "{$input_text}",
-    }
+def test_system_prompt_segments_and_installation_errors(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(ai_prompt_templates, "SYSTEM_PROMPT_DIR", tmp_path)
+    path = tmp_path / "global_chat.json"
+    path.write_text(json.dumps({"system": ["第一句。", "第二句。"], "user": "{$input_text}"}), encoding="utf-8")
+    assert ai_prompt_templates.load_ai_use_case_prompt_pair("global.chat") == {"system": "第一句。第二句。", "user": "{$input_text}"}
+    path.unlink()
+    with pytest.raises(ValueError, match="应用安装文件"):
+        ai_prompt_templates.load_ai_use_case_prompt_pair("global.chat")
+    with pytest.raises(ValueError, match="没有系统提示词"):
+        ai_prompt_templates.load_ai_use_case_prompt_pair("../other")
+
+
+def test_image_prompt_uses_user_template_without_a_chat_system_message():
+    prompt = ai_prompt_templates.load_ai_use_case_prompt_pair("image.translate")
+    assert prompt["system"] == ""
+    assert "language" in prompt["user"]
 
 
 def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(

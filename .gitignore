@@ -2,8 +2,8 @@ node_modules/
 .venv/
 .codegraph/
 AGENTS.md
-# ERP 运行时记忆是产品配置，随代码保存；不沿用开发约定文件的忽略规则。
-!config/agents.md
+# 用户偏好仅由用户维护，不进入源码发布或开发修改。
+config/userAgents.md
 .DS_Store
 __pycache__/
 .pytest_cache/
