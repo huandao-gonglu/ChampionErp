@@ -181,7 +181,7 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
               </div>
               <h3 class="mt-4 text-base font-black">告诉我你想处理什么</h3>
               <p class="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500 dark:text-accent-300">
-                查询商品和订单、准备草稿，或处理日常业务。完成草稿包含共用主图和 SKU 套图生成；已手动修改的图片会先确认保留或重做，原图保留。
+                查询商品和订单、准备草稿，或处理日常业务。
               </p>
             </div>
 
