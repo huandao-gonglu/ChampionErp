@@ -179,9 +179,12 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
               <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-500/[var(--ai-chat-surface-opacity,1)] text-xl text-[color:var(--ai-chat-user-color,white)] shadow-lg shadow-primary-500/20">
                 ✦
               </div>
-              <h3 class="mt-4 text-base font-black">告诉我你想处理什么</h3>
+              <h3 class="mt-4 text-base font-black">一切尽在掌握中</h3>
               <p class="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500 dark:text-accent-300">
                 查询商品和订单、准备草稿，或处理日常业务。
+              </p>
+              <p class="mx-auto mt-2 max-w-xl text-xs leading-5 text-slate-500 dark:text-accent-300">
+                包装尺寸估算 · 计费重量测算 · 运费择优 · 商品套图生成
               </p>
             </div>
 
