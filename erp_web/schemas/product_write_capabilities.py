@@ -145,6 +145,7 @@ class DraftReadView(BaseModel):
     category_path: TrimmedText = ""
     attributes: dict[str, JsonValue] = Field(default_factory=dict)
     image_count: int = 0
+    image_preparation: dict[str, JsonValue] = Field(default_factory=dict)
     validation_errors: tuple[JsonValue, ...] = ()
     category_precheck: dict[str, JsonValue] = Field(default_factory=dict)
     last_precheck: dict[str, JsonValue] = Field(default_factory=dict)

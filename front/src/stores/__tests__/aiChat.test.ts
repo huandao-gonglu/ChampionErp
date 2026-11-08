@@ -363,6 +363,8 @@ describe('原生等待与批量入口', () => {
     await vi.waitFor(() => expect(request).toBeDefined())
     expect(request!.target_draft_ids).toEqual(['draft-a', 'draft-b'])
     expect(request!.messages[0].parts[0].text).toContain('本次仅准备草稿')
+    expect(request!.messages[0].parts[0].text).toContain('包含共用主图和 SKU 套图生成')
+    expect(request!.messages[0].parts[0].text).toContain('手动修改过的图片先确认保留或重做')
     await vi.waitFor(() => expect(store.receivedMessages[0]?.text).toContain('本次仅准备草稿'))
     expect(store.floatingOpen).toBe(true)
   })

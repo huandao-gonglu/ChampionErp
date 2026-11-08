@@ -207,6 +207,7 @@ _WRITE_CAPABILITIES = frozenset(
         "image_pool_sync_generated",
         "image_translate",
         "image_edit",
+        "draft_images_prepare",
         "upc_assign",
         "upc_import",
         "source_collect",

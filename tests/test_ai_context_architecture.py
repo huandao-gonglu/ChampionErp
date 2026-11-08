@@ -98,6 +98,18 @@ def test_image_set_uses_native_agent_and_existing_image_execution():
     assert not any(target.startswith(("openai", "httpx", "sqlite3", "requests")) for target in targets)
 
 
+def test_draft_image_preparation_reuses_native_deferred_and_domain_owners():
+    """整套图片准备复用原生后台工具、图片批次与商品 Store，不增加执行协议。"""
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG, _WRITE_CAPABILITIES
+    tool = APPLICATION_CAPABILITY_CATALOG.tools["draft_images_prepare"].definition
+    assert tool.execution_mode == "persistent_job"
+    assert "draft_images_prepare" in _WRITE_CAPABILITIES
+    source = (ROOT / "erp_web/runtime_units/draft_image_prepare.py").read_text()
+    assert "run_image_batch(" in source and "products.save_draft_content(" in source
+    targets = {target for _, target in imported_targets([ROOT / "erp_web/runtime_units/draft_image_prepare.py"])}
+    assert not any(target.startswith(("openai", "httpx", "sqlite3", "requests")) for target in targets)
+
+
 def test_collection_and_ai_share_browser_process_management():
     """采集与 AI 只选择自己的资料目录，浏览器启动由同一服务负责。"""
     for name in ("collection.py", "browser_ai_runtime.py"):

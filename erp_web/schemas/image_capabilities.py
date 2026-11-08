@@ -2,12 +2,34 @@ from __future__ import annotations
 
 """图片池维护与图片翻译/编辑的 Capability 契约。"""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, model_validator
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
+
+
+class DraftImagesPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    decision: Literal["auto", "keep", "regenerate"] = Field(default="auto", description=(
+        "完整准备默认 auto：未手动修改时生成共用主图及 SKU 套图；已处理则返回待确认。"
+        "用户明确保留现图时用 keep；明确要求生成套图或确认重做时用 regenerate。不得代替用户确认。"))
+    expected_fingerprint: str = Field(default="", max_length=64, description="keep/regenerate 须传最近读取的 image_preparation.fingerprint，防止确认期间图片变化。")
+    count: int = Field(default=6, ge=2, le=8)
+    prompt: str = Field(default="", max_length=4000)
+
+
+class DraftImagesPrepareResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    draft_id: str
+    status: Literal["needs_confirmation", "kept", "generated", "failed", "needs_selection"]
+    fingerprint: str
+    message: str
+    batch_id: str = ""
+    generated_count: int = 0
+    failed_count: int = 0
 
 
 class ImagePoolUploadRequest(BaseModel):
@@ -139,6 +161,8 @@ class ImageGenerationResult(BaseModel):
 
 
 __all__ = [
+    "DraftImagesPrepareRequest",
+    "DraftImagesPrepareResult",
     "ImageEditRequest",
     "ImageGenerationResult",
     "ImagePoolActionRequest",

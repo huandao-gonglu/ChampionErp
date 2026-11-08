@@ -361,7 +361,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   function prepareDrafts(ids: string[], goal = '准备所选草稿，复用已有资料，完成可执行的准备工作并按草稿汇报剩余问题。'): void {
     startConversation()
     targetDraftIds.value = [...new Set(ids)]
-    input.value = `${goal}\n目标 draft_id：${targetDraftIds.value.join('、')}。本次仅准备草稿。`
+    input.value = `${goal}\n目标 draft_id：${targetDraftIds.value.join('、')}。本次仅准备草稿，包含共用主图和 SKU 套图生成；手动修改过的图片先确认保留或重做，原图保留。`
     floatingOpen.value = true
     sendMessage()
   }

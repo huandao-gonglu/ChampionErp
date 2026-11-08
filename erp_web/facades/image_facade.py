@@ -188,6 +188,8 @@ def _apply_result_to_product(
         }, 200
     items = result.get("imagePoolItems")
     items = items if isinstance(items, list) else []
+    for item in items:
+        item["raw"] = {**item.get("raw", {}), "image_content_actor": "user"}
     saved = save_product(append_images_to_product_pool(product, items))
     draft_result: dict[str, Any] = {}
     if _truthy(body.get("apply_to_draft")):
@@ -491,8 +493,11 @@ def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus
     pages = {page.key: page for page in plan.pages}
 
     def process(source):
-        return image_set_service.generate_page(app_dir=_app_dir(), config=config, product=product,
-                                               draft=draft, plan=plan, page=pages[source["id"]])
+        result = image_set_service.generate_page(app_dir=_app_dir(), config=config, product=product,
+                                                 draft=draft, plan=plan, page=pages[source["id"]])
+        for item in result.get("imagePoolItems", []):
+            item["raw"] = {**item.get("raw", {}), "image_content_actor": "user"}
+        return result
 
     def persist(result):
         with context.products.mutation_scope({"product_id": product["product_id"]}):

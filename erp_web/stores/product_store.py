@@ -1355,9 +1355,9 @@ class ProductStore:
                 "updated_at": saved["updated_at"], "sku_ids": [item.sku_id for item in request.changes]}
 
     def save_draft_detail(
-        self, draft_payload: dict[str, Any]
+        self, draft_payload: dict[str, Any], *, user_image_edit: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
-        result, error, status = self.save_draft_content(draft_payload)
+        result, error, status = self.save_draft_content(draft_payload, user_image_edit=user_image_edit)
         if error is not None:
             return result, error, status
         return self._draft_detail_response(result), None, status
@@ -1366,6 +1366,7 @@ class ProductStore:
     def save_draft_content(
         self, draft_payload: dict[str, Any],
         *, calculated_pricing: dict[str, Any] | None = None,
+        user_image_edit: bool = False, image_preparation: dict[str, str] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
         """草稿保存唯一实现；保留互斥、版本检查和发布状态失效规则。"""
         draft_id = str(
@@ -1544,6 +1545,15 @@ class ProductStore:
         for row in merged.get("sku_items", []):
             row["publications"] = deepcopy(sku_publications.get(row.get("sku_id"), {}))
         merged["images"] = normalize_draft_image_refs(merged.get("images"))
+        # 图片内容记录由服务端维护，客户端/模型的整对象保存不能清除保护或伪造完成。
+        from erp_web.product_model.image_preparation import image_bindings
+        image_product = self._db.load_product_model(product_id) or {}
+        merged["images_manually_modified_at"] = existing.get("images_manually_modified_at", "")
+        merged["image_preparation"] = deepcopy(existing.get("image_preparation") or {})
+        if user_image_edit and image_bindings(image_product, merged, selected_only=False) != image_bindings(image_product, existing, selected_only=False):
+            merged["images_manually_modified_at"] = datetime.now(timezone.utc).isoformat()
+        if image_preparation is not None:
+            merged["image_preparation"] = deepcopy(image_preparation)
         merged = normalize_platform_draft(
             merged,
             platform,

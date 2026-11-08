@@ -62,10 +62,11 @@ class ImageBatch(BaseModel):
     updated_at: str
     image_set: ImageSetPlan | None = None
     request_fingerprint: str = ""
+    preparation_fingerprint: str = ""
 
     def snapshot(self) -> dict:
         counts = {state: sum(row.status == state for row in self.items)
                   for state in ("queued", "running", "success", "failed")}
-        return {**self.model_dump(exclude={"request_fingerprint"}), **counts, "total": len(self.items),
+        return {**self.model_dump(exclude={"request_fingerprint", "preparation_fingerprint"}), **counts, "total": len(self.items),
                 "completed": counts["success"] + counts["failed"],
                 "terminal": not (counts["queued"] or counts["running"])}

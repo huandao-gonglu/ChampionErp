@@ -584,6 +584,20 @@ CLI / Browser use case
 
 ### Focused 例外登记：专用 Images API
 
+- 完整草稿准备的图片内容入口为 `draft_images_prepare` → `runtime_units/draft_image_prepare.py`，
+  以原生 Deferred 后台工具复用套图规划、`run_image_batch` 与 `ProductStore`，不增加 Agent loop。
+  `auto` 对未加工图片生成共用套图及已选 SKU 独立图；人工修改或历史加工素材返回待确认，
+  其他资料可继续准备。明确保留使用 `keep`，明确要求套图或确认重做使用 `regenerate`；
+  两者绑定当前图片内容指纹，确认期间图片变化则拒绝旧决定。
+  HTTP 草稿保存以共用图集合及 SKU 配图变化记录 `images_manually_modified_at`，
+  排序、角色调整和 SKU 勾选不算人工内容修改；手动修图结果在资产 `raw.image_content_actor` 记录来源。
+  `image_preparation` 是 Store 维护的当前版本决定，普通保存不能伪造或清除。
+  缺少历史操作者证据时仅保护已加工素材，不推断由谁完成。
+  全批成功后一次采用，原图留在素材池；部分失败或结果未知保留原引用，按原批次核对，
+  不自动重放计费。当前已生成或已保留版本重复准备直接复用；新图片使旧决定失效。
+  内容状态与上传、水印、托管链接独立，发布资源仍经 `product_publish_prepare` 检查和准备。
+  `draft_prepare_for_market` 的图片步骤只整理现有引用，不能替代套图内容准备。
+  回归见 `tests/test_draft_image_prepare.py`。
 - 草稿图片工作台提供独立的「生成套图」入口：`POST /api/draft-images/plan-set` 经
   `image_facade` → `image_set_service.plan_image_set`，用 `image.plan` 绑定的识图 API 模型
   和 `AiAgentFactory` 原生 `BinaryContent` / `PromptedOutput` 读取整组素材、生成可编辑方案。

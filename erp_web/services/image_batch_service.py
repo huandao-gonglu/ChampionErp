@@ -30,7 +30,8 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                     request_id: str = "", background: bool = False,
                     image_set: ImageSetPlan | None = None,
                     retained_items: dict[str, ImageBatchItem] | None = None,
-                    request_fingerprint: str = "", before_create: Callable[[], None] | None = None) -> dict:
+                    request_fingerprint: str = "", before_create: Callable[[], None] | None = None,
+                    preparation_fingerprint: str = "") -> dict:
     presentation = current_presentation_context()
     conversation_id = request_id or (presentation.conversation_id if presentation and presentation.is_root_scope
                        else f"conversation_{uuid4().hex}")
@@ -41,7 +42,7 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
     batch = ImageBatch(
         conversation_id=conversation_id, product_id=product_id, draft_id=draft_id, prompt=display_prompt,
         created_at=utc_now(), updated_at=utc_now(),
-        image_set=image_set, request_fingerprint=request_fingerprint,
+        image_set=image_set, request_fingerprint=request_fingerprint, preparation_fingerprint=preparation_fingerprint,
         items=[ImageBatchItem(index=index, source_id=str(item["id"]),
                              source_url=image_service.preview_for_path(str(item.get("path") or item.get("local_path") or ""), app_dir)
                              or str(item.get("preview_url") or item.get("url") or ""))

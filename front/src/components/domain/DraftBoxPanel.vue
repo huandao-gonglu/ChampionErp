@@ -128,6 +128,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
           <button class="btn btn-outline px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading || !selectedCount" @click="deleteSelectedDrafts">批量删除选中</button>
         </div>
       </div>
+      <p class="muted mt-3 text-sm">AI 准备包含共用主图和 SKU 套图生成；图片有手动修改时会先确认保留或重做，原图保留。</p>
       <div v-if="props.error" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
         {{ props.error }}
       </div>

@@ -471,7 +471,7 @@ DRAFT_PREPARE_FOR_MARKET_TOOL = "draft_prepare_for_market"
 
 @ai_tool(
     name=DRAFT_PREPARE_FOR_MARKET_TOOL,
-    description=("把来源草稿准备为目标市场草稿：认领、文案、图片、类目与定价；属性需要主对话查询后单独填写。"),
+    description=("把来源草稿准备为目标市场草稿：认领、文案、现有图片引用、类目与定价；不包含套图生成，完整准备仍须调用 draft_images_prepare；属性需要主对话查询后单独填写。"),
     permission="product.write",
     side_effect="write",
     approval_required=False,

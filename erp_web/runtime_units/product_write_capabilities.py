@@ -547,8 +547,11 @@ def draft_read(
         default_code="DRAFT_NOT_FOUND",
         default_message="草稿不存在。",
     )
+    from erp_web.product_model.image_preparation import image_preparation_status
+    draft = result.get("draft") or {}
+    product = scope.products.load_product_from_index(str(draft.get("product_id") or ""), "")
     return DraftReadResult(
-        draft=_ai_draft_read_view(result.get("draft")),
+        draft=_ai_draft_read_view(draft).model_copy(update={"image_preparation": image_preparation_status(product, draft)}),
         product_context=_ai_draft_product_context(result.get("productContext")),
     )
 

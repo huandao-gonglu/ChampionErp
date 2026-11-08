@@ -1,0 +1,143 @@
+"""草稿套图准备：保护人工内容、复用原生图片批次，并在完成后采用真实结果。"""
+
+from copy import deepcopy
+from uuid import uuid4
+
+from erp_web.product_model.image_preparation import image_bindings, image_content_fingerprint, image_preparation_status
+from erp_web.runtime_units.image_pool import append_images_to_product_pool
+from erp_web.runtime_units.market_capability_support import assert_target_mutable
+from erp_web.schemas.image_capabilities import DraftImagesPrepareResult
+from erp_web.services import image_set_service, image_translate_service
+from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.image_batch_service import run_image_batch
+from erp_web.services.operation_availability import require_model_platform
+from erp_web.services.ai_run_cancellation import check_cancellation
+
+
+def prepare_draft_images(request, *, context, operation_key=""):
+    products = context.products
+    draft_id = request.draft_id
+
+    def load():
+        draft = products.draft_record(draft_id)
+        if not draft:
+            raise BusinessCapabilityError("DRAFT_NOT_FOUND", "草稿不存在。")
+        product = products.load_product_from_index(draft["product_id"], "")
+        return product, draft
+
+    def response(status, message, *, batch=None):
+        return DraftImagesPrepareResult(
+            draft_id=draft_id, status=status, fingerprint=fingerprint, message=message,
+            batch_id=batch.conversation_id if batch else "",
+            generated_count=sum(item.status == "success" for item in batch.items) if batch else 0,
+            failed_count=sum(item.status == "failed" for item in batch.items) if batch else 0,
+        )
+
+    with context.image_batches.lock, products.mutation_scope({"draft_id": draft_id}):
+        product, draft = load()
+        for target in [draft, *draft.get("target_sites", [])]:
+            assert_target_mutable(target)
+        state = image_preparation_status(product, draft)
+        fingerprint = state["fingerprint"]
+        if request.decision != "auto" and request.expected_fingerprint != fingerprint:
+            raise BusinessCapabilityError("DRAFT_IMAGES_CHANGED", "当前图片与确认时不一致，请重新读取图片状态后决定。")
+        if request.decision == "auto" and state["status"] in {"kept", "generated"}:
+            return response(state["status"], "继续使用当前图片，内容准备无需重复执行；发布资源仍需独立检查。")
+        if request.decision == "auto" and state["status"] == "needs_confirmation":
+            return response("needs_confirmation", "当前图片有手动修改或已有加工结果。请确认保留当前图片，还是重新生成共用主图和 SKU 整套图片；默认保留，其他草稿准备可继续。")
+        context.image_batches.assert_draft_idle(draft_id)
+        if request.decision == "keep":
+            _, error, _ = products.save_draft_content(
+                {"draft_id": draft_id, "updated_at": draft["updated_at"]},
+                image_preparation={"mode": "kept", "fingerprint": fingerprint},
+            )
+            if error:
+                raise BusinessCapabilityError("DRAFT_SAVE_FAILED", error["error"])
+            return response("kept", "已采用当前图片；后续仅检查上传、水印与发布链接。")
+        previous = context.image_batches.latest_for_draft(draft_id)
+        if request.decision == "auto" and previous and previous.preparation_fingerprint == fingerprint:
+            return response("failed", "已有本组图片的套图任务，请核对原结果或明确重做；不会自动重新生成或计费。", batch=previous)
+        bindings = image_bindings(product, draft)
+        common_ids = [ref["asset_id"] for ref in draft.get("images", [])]
+        if not common_ids:
+            return response("needs_selection", "请先选择共用主图素材；未擅自从整个图片池选图。")
+        if len(common_ids) > 12:
+            return response("needs_selection", "当前共用图片超过 12 张，请选择最多 12 张套图参考素材；未自动遗漏其余图片。")
+        # 每组 SKU 只使用当前独立图片；没有独立图片的规格沿用共用套图。
+        sku_ids = [id for id, asset in bindings["skus"] if asset]
+        targets = image_set_service.sku_image_targets(product, draft, sku_ids)
+        sources = image_translate_service.select_source_images(product, common_ids, draft["platform"])
+        if {item["id"] for item in sources} != set(common_ids):
+            raise BusinessCapabilityError("IMAGE_SOURCE_MISSING", "当前共用素材缺失，请重新选择图片。")
+    config = context.config.load_app_config()
+    require_model_platform(config, "image.plan")
+    require_model_platform(config, "image.translate")
+    # 模型、文件读取、并发图片生成均在商品锁之外。
+    pool = {item["id"]: item for item in product.get("source", {}).get("image_pool", [])}
+    for target in targets:
+        if target["source_id"] not in pool:
+            raise BusinessCapabilityError("IMAGE_SOURCE_MISSING", "部分 SKU 原图缺失，请重新选择。")
+        image_set_service.reference_content(context.paths.app_dir, [pool[target["source_id"]]])
+    common_plan = image_set_service.plan_image_set(
+        app_dir=context.paths.app_dir, config=config, messages=context.pydantic_messages,
+        product=product, draft=draft, sources=sources, count=request.count, prompt=request.prompt,
+    )
+    plan = image_set_service.assemble_image_set(common_plan, targets)
+    pages = {page.key: page for page in plan.pages}
+
+    def process(source):
+        result = image_set_service.generate_page(
+            app_dir=context.paths.app_dir, config=config, product=product, draft=draft,
+            plan=plan, page=pages[source["id"]],
+        )
+        for item in result.get("imagePoolItems", []):
+            item["raw"] = {**item.get("raw", {}), "image_content_actor": "agent"}
+        return result
+
+    def persist(result):
+        with products.mutation_scope({"product_id": product["product_id"]}):
+            latest, _ = load()
+            products.save_product(append_images_to_product_pool(latest, result["imagePoolItems"]))
+
+    def before_create():
+        check_cancellation()
+        with products.mutation_scope({"draft_id": draft_id}):
+            latest_product, latest = load()
+            if latest["updated_at"] != draft["updated_at"] or image_content_fingerprint(latest_product, latest) != fingerprint:
+                raise BusinessCapabilityError("DRAFT_IMAGES_CHANGED", "草稿在规划期间已更新，未启动图片生成，请重新读取。")
+            context.image_batches.assert_draft_idle(draft_id)
+
+    batch_id = "draft_image_prepare_" + (operation_key or uuid4().hex)
+    run_image_batch(
+        store=context.image_batches, messages=context.pydantic_messages, app_dir=context.paths.app_dir,
+        product_id=product["product_id"], draft_id=draft_id, request_id=batch_id,
+        prompt=f"为草稿生成共用主图和 SKU 套图：{plan.style}",
+        sources=[{"id": page.key} for page in plan.pages], process=process, persist=persist,
+        image_set=plan, preparation_fingerprint=fingerprint, before_create=before_create,
+    )
+    batch = context.image_batches.get(batch_id)
+    if any(item.status != "success" or item.outcome_unknown for item in batch.items):
+        return response("failed", "套图未全部生成成功，已保留当前图片；成功结果在图片池和原套图任务中保留，可核对后采用或重做失败页。", batch=batch)
+    check_cancellation()
+    with context.image_batches.lock, products.mutation_scope({"draft_id": draft_id}):
+        latest_product, latest = load()
+        for target in [latest, *latest.get("target_sites", [])]:
+            assert_target_mutable(target)
+        if image_content_fingerprint(latest_product, latest) != fingerprint:
+            return response("failed", "图片在生成期间已变化，生成结果已保留在素材池，未替换当前图片。", batch=batch)
+        changed = deepcopy(latest)
+        results = {item.source_id: item.result_asset_ids[0] for item in batch.items}
+        changed["images"] = [{"asset_id": results[page.key], "role": page.role, "order": index}
+                             for index, page in enumerate(page for page in plan.pages if page.scope == "common")]
+        sku_assets = {id: results[page.key] for page in plan.pages if page.scope == "sku" for id in page.sku_ids}
+        for row in changed["sku_items"]:
+            if row["sku_id"] in sku_assets:
+                row.setdefault("overrides", {})["image_asset_id"] = sku_assets[row["sku_id"]]
+        prepared = image_content_fingerprint(latest_product, changed)
+        _, error, _ = products.save_draft_content(changed, image_preparation={
+            "mode": "generated", "fingerprint": prepared, "batch_id": batch_id,
+        })
+        if error:
+            raise BusinessCapabilityError("DRAFT_SAVE_FAILED", error["error"])
+    fingerprint = prepared
+    return response("generated", "已生成并采用共用主图及 SKU 套图，原图保留在素材池；发布资源仍需独立准备。", batch=batch)

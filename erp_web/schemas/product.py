@@ -89,6 +89,8 @@ class DraftTargetSite(TypedDict, total=False):
 
 
 class PlatformDraft(TypedDict, total=False):
+    images_manually_modified_at: str
+    image_preparation: dict[str, str]
     sku_items: list[dict[str, Any]]
     grouping: dict[str, Any]
     draft_id: str

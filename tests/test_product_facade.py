@@ -11,7 +11,7 @@ class _Products:
         self.saved: dict[str, Any] = {}
 
     def save_draft_detail(
-        self, draft: dict[str, Any]
+        self, draft: dict[str, Any], *, user_image_edit: bool = False
     ) -> tuple[dict[str, Any], None, int]:
         self.saved = draft
         return {"ok": True, "draft": draft}, None, 200

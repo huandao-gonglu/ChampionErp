@@ -13,6 +13,8 @@ from typing import Annotated, Any
 from erp_web.context import AppContext
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.image_capabilities import (
+    DraftImagesPrepareRequest,
+    DraftImagesPrepareResult,
     ImageEditRequest,
     ImageGenerationResult,
     ImagePoolActionRequest,
@@ -351,7 +353,7 @@ def image_translate(
     description=(
         "按提示词编辑商品图片并写回图片池（AI 生成）；"
         "仅用于用户明确要求且范围、目标明确的修图任务，"
-        "准备发布不授权换背景、重绘或换主图；"
+        "完整草稿的套图生成应使用 draft_images_prepare；"
         "source_image_ids 省略时自动使用商品主图；用户要求替换或设为主图时"
         "必须传 set_as_main=true。"
     ),
@@ -386,7 +388,28 @@ def image_edit(
     return _apply_generated_result(scope, product, request, result)
 
 
+@ai_tool(
+    name="draft_images_prepare",
+    description=("准备草稿图片内容，使用套图能力生成共用主图和已选 SKU 的独立图片。"
+                 "完整草稿准备先用 auto：手动修改或已有加工图片返回 needs_confirmation，询问保留还是重做，默认保留。"
+                 "明确保留用 keep；用户明确要求生成套图或确认重做用 regenerate，须传当前图片 fingerprint。"
+                 "当前已完成版本自动复用，原图保留。上传、水印和发布链接另用 product_publish_prepare。"),
+    permission="image.write", side_effect="write", approval_required=False,
+    idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual",
+    execution_mode="persistent_job", version="1",
+)
+def draft_images_prepare(
+    request: DraftImagesPrepareRequest,
+    scope: Annotated[ImageCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> DraftImagesPrepareResult:
+    from erp_web.runtime_units.draft_image_prepare import prepare_draft_images
+    return prepare_draft_images(request, context=scope.context,
+                                operation_key=str(execution.idempotency_context.get("operation_key") or ""))
+
+
 IMAGE_AI_CAPABILITIES = (
+    draft_images_prepare,
     image_pool_upload,
     image_pool_save,
     image_pool_action,
@@ -406,6 +429,7 @@ __all__ = [
     "IMAGE_TRANSLATE_TOOL",
     "ImageCapabilityScope",
     "image_edit",
+    "draft_images_prepare",
     "image_pool_action",
     "image_pool_save",
     "image_pool_sync_generated",

@@ -782,6 +782,8 @@ export interface BackendDraftTargetSite {
 }
 
 export interface BackendPlatformDraft {
+  images_manually_modified_at?: string
+  image_preparation?: Record<string, string>
   sku_items?: Array<Record<string, unknown>>
   grouping?: Record<string, unknown>
   draft_id?: string
