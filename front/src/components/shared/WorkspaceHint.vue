@@ -5,7 +5,6 @@ import { PhInfo } from '@phosphor-icons/vue'
 defineProps<{ content: string; label: string }>()
 const id = useId()
 const anchor = ref<HTMLElement>()
-const trigger = ref<HTMLButtonElement>()
 const panel = ref<HTMLElement>()
 const teleportTarget = ref<HTMLElement | string>('body')
 const open = ref(false)
@@ -47,7 +46,7 @@ async function show() {
 function leave() {
   keep()
   if (!pinned) timer = setTimeout(() => {
-    if (document.activeElement !== trigger.value) hide()
+    if (!anchor.value?.contains(document.activeElement)) hide()
   }, 120)
 }
 function toggle() {
@@ -84,17 +83,18 @@ onBeforeUnmount(() => {
 
 <template>
   <span ref="anchor" class="inline-flex shrink-0 align-middle" @mouseenter="show" @mouseleave="leave">
-    <button
-      ref="trigger"
-      type="button"
-      class="inline-flex size-5 cursor-pointer items-center justify-center rounded text-accent-400 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:text-accent-400 dark:hover:text-primary-300"
-      :aria-label="label"
-      :aria-describedby="open ? id : undefined"
-      :aria-expanded="open"
-      @focus="show"
-      @blur="leave"
-      @click.prevent.stop="toggle"
-    ><PhInfo :size="15" aria-hidden="true" /></button>
+    <slot name="trigger" :attrs="{ 'aria-describedby': open ? id : undefined, onFocus: show, onBlur: leave }">
+      <button
+        type="button"
+        class="inline-flex size-5 cursor-pointer items-center justify-center rounded text-accent-400 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:text-accent-400 dark:hover:text-primary-300"
+        :aria-label="label"
+        :aria-describedby="open ? id : undefined"
+        :aria-expanded="open"
+        @focus="show"
+        @blur="leave"
+        @click.prevent.stop="toggle"
+      ><PhInfo :size="15" aria-hidden="true" /></button>
+    </slot>
     <Teleport :to="teleportTarget">
       <span
         v-if="open"

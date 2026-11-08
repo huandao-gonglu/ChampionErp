@@ -9,9 +9,10 @@ export const useAiPageContextStore = defineStore('aiPageContext', () => {
   const sources = shallowRef(new Map<symbol, { priority: number; context: AiPageContext }>())
   const current = computed(() => [...sources.value.values()]
     .sort((a, b) => b.priority - a.priority)[0]?.context ?? null)
-  const hint = computed(() => enabled.value
-    ? `读取背景（已开启，点击关闭）\n${describeAiPageContext(current.value)}`
-    : '读取背景（已关闭，点击开启）\n后续消息不再附带页面背景')
+  const hint = computed(() => [
+    describeAiPageContext(current.value),
+    enabled.value ? '背景读取已开启' : '背景读取已关闭，发送消息时不会附带页面背景',
+  ].join('\n'))
 
   function toggle(): void {
     enabled.value = !enabled.value

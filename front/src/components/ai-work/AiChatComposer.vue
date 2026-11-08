@@ -7,6 +7,7 @@ import { useEventListener } from '@vueuse/core'
 import { PhEye, PhEyeSlash, PhListDashes, PhPlus } from '@phosphor-icons/vue'
 import AiChatCommandPanel from './AiChatCommandPanel.vue'
 import AiApprovalModeSelect from './AiApprovalModeSelect.vue'
+import WorkspaceHint from '@/components/shared/WorkspaceHint.vue'
 import { useChatCommands } from '@/composables/useChatCommands'
 import { useAiPageContextStore } from '@/stores/aiPageContext'
 
@@ -267,19 +268,23 @@ function onKeydown(event: KeyboardEvent) {
             >
               <PhPlus :size="24" weight="regular" />
             </button>
-            <button
-              type="button"
-              class="flex size-9 shrink-0 items-center justify-center rounded-xl transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)]"
-              :class="pageContext.enabled ? 'text-primary-600 dark:text-primary-300' : 'text-slate-400 dark:text-accent-400'"
-              aria-label="读取背景"
-              :aria-pressed="pageContext.enabled"
-              :title="pageContext.hint"
-              data-testid="ai-chat-background-toggle"
-              @click="pageContext.toggle"
-            >
-              <PhEye v-if="pageContext.enabled" :size="22" aria-hidden="true" />
-              <PhEyeSlash v-else :size="22" aria-hidden="true" />
-            </button>
+            <WorkspaceHint label="读取背景" :content="pageContext.hint">
+              <template #trigger="{ attrs }">
+                <button
+                  type="button"
+                  class="flex size-9 shrink-0 items-center justify-center rounded-xl transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)]"
+                  :class="pageContext.enabled ? 'text-primary-600 dark:text-primary-300' : 'text-slate-400 dark:text-accent-400'"
+                  aria-label="读取背景"
+                  :aria-pressed="pageContext.enabled"
+                  v-bind="attrs"
+                  data-testid="ai-chat-background-toggle"
+                  @click="pageContext.toggle"
+                >
+                  <PhEye v-if="pageContext.enabled" :size="22" aria-hidden="true" />
+                  <PhEyeSlash v-else :size="22" aria-hidden="true" />
+                </button>
+              </template>
+            </WorkspaceHint>
           </div>
           <div class="flex items-center gap-2">
             <button
