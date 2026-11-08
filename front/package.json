@@ -1,7 +1,7 @@
 {
   "name": "champion-erp-front",
   "productName": "gongluErp",
-  "version": "1.2.27",
+  "version": "1.2.28",
   "desktopUpdateOrigin": "https://hdgl.cc.cd",
   "private": true,
   "type": "module",
@@ -62,6 +62,7 @@
     "vue-tsc": "^2.2.12"
   },
   "build": {
+    "extends": "./electron-download.mjs",
     "appId": "com.champion.erp.front",
     "icon": "desktop/assets/icon.png",
     "directories": {
