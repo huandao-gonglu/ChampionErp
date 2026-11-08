@@ -22,6 +22,13 @@ def read(query: dict[str, str]) -> dict[str, Any]:
     return service.list(query.get("platform") or "mercadolibre", query=query.get("q", ""), status=query.get("status", ""), market=query.get("market", ""), page=page, catalog=query.get("catalog", "current"), warehouse_id=query.get('warehouse_id', ''))
 
 
+def read_yandex_shop_names(query: dict[str, str]) -> dict[str, Any]:
+    account = query.get("account_id", "").strip()
+    if not account:
+        raise ValueError("缺少在线商品账号")
+    return {"ok": True, "names": get_context().online_products.yandex_shop_names(account)}
+
+
 def read_source_images(query: dict[str, str]) -> dict[str, Any]:
     listing_id = query.get("listing_id", "").strip()
     if not listing_id:

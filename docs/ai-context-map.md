@@ -264,6 +264,8 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 
 ## 在线商品管理
 
+- 价格列的店名提示通过 `GET /api/online-products/yandex-shop-names` 按当前账号读取 Yandex 店铺目录；商品列表、库存仓名和历史快照均可独立使用。
+
 - Yandex 在线属性编辑通过 `GET /api/online-products/attributes` 按刊登身份和版本读取类目字段、当前值与分页候选；
   AI 的 `online_products_attributes` 复用同一服务，从真实刊登解析类目，不接受模型指定或猜测类目。
   `OnlineProductService.attribute_options` 从真实快照解析类目，复用注入的 `CategoryCatalog`，不接受客户端指定类目。
@@ -497,7 +499,8 @@ Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独�
 - `erp_web/services/ai_gateway_probe.py`：API/CLI/Browser 共用的能力探测编排、四态结果
   （`supported` / `unsupported` / `unavailable` / `inconclusive`）、确定性探测素材、连接指纹与
   versioned capability profile owner；探测结果归一化进 capability profile；
-  未接入能力不得静默跳过，临时网络错误不得记为不支持。
+  未接入能力不得静默跳过，临时网络错误不得记为不支持。API、CLI 与 Browser 的测试消息、
+  图片提示词和素材全部由系统提供，请求只选择待测能力；设置页展示固定测试说明并等待确认。
 - `erp_web/services/ai_model_probe_service.py`：API 模型能力探测 adapter；chat、JSON、联网、
   Function Call、图片理解、图片生成和图片编辑全部使用独立 probe binding。图片理解用两张随机图形的原生二进制输入核验识别结果及顺序。探测不读取待测 capability
   声明，Function Call 必须完成 tool call → tool result → final response 的完整往返。

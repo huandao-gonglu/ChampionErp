@@ -335,6 +335,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="SPA 页面壳，前端静态路由，无业务行为。",
     ),
     AiCapabilityCoverageEntry(method="GET", path="/api/online-products", business_domain="在线商品", disposition="capability", capability_names=("online_products_read",)),
+    AiCapabilityCoverageEntry(method="GET", path="/api/online-products/yandex-shop-names", business_domain="在线商品", disposition="internal_only",
+        reason="在线商品价格提示按已连接账号读取平台店名。"),
     AiCapabilityCoverageEntry(method="GET", path="/api/online-products/source-images", business_domain="在线商品", disposition="capability", capability_names=("online_products_read",)),
     AiCapabilityCoverageEntry(method="GET", path="/api/online-products/attributes", business_domain="在线商品", disposition="capability", capability_names=("online_products_attributes",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/sync", business_domain="在线商品", disposition="capability", capability_names=("online_products_sync",)),

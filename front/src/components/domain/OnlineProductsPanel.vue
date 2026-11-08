@@ -5,6 +5,7 @@ import { onClickOutside } from '@vueuse/core'
 import OzonExportDialog from './OzonExportDialog.vue'
 import OnlineContentEditor from './OnlineContentEditor.vue'
 import OnlinePicturePreview from './OnlinePicturePreview.vue'
+import OnlinePriceCell from './OnlinePriceCell.vue'
 import OnlineBuyerLinks from './OnlineBuyerLinks.vue'
 import OnlineProductDetails from './OnlineProductDetails.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
@@ -13,7 +14,7 @@ import OnlinePlatformFeedback from './OnlinePlatformFeedback.vue'
 import { onlineAttributeName } from './onlineAttributeDisplay'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
-import { fetchOnlineDetail, fetchOnlineProducts, onlineAction, previewOnlineBatch, submitOnlineBatch, type OnlineBatchPreview, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
+import { fetchYandexShopNames, fetchOnlineDetail, fetchOnlineProducts, onlineAction, previewOnlineBatch, submitOnlineBatch, type OnlineBatchPreview, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
 
 const emit = defineEmits<{ 'open-task': [jobId?: string] }>()
 
@@ -25,6 +26,19 @@ const syncCatalogLabel = computed(() => syncCatalog.value === 'archived' ? '归�
 const platforms: Record<OnlinePlatform, string> = {mercadolibre: 'Mercado Libre', ozon: 'Ozon', yandex: 'Yandex Market'}
 const labels: Record<string, string> = {active: '在售', paused: '已停售', closed: '已关闭', under_review: '审核中', queued: '排队中', running: '执行中', submitted: '平台已受理', waiting_confirmation: '等待平台确认', confirmed: '已完成', PUBLISHED: '在售', CHECKING: '审核中', CREATING_CARD: '建卡中', NO_CARD: '待补充商品信息', REJECTED_BY_MARKET: '平台拒绝', DISABLED_AUTOMATICALLY: '平台停售', DISABLED_BY_PARTNER: '已停售', NO_STOCKS: '缺货', DISABLED: '不可售', ARCHIVED: '已归档', HAS_CARD_CAN_UPDATE: '卡片可更新', HAS_CARD_CAN_NOT_UPDATE: '平台卡片只读', HAS_CARD_CAN_UPDATE_ERRORS: '卡片修改未被接受', HAS_CARD_CAN_UPDATE_PROCESSING: '卡片修改处理中', NO_CARD_NEED_CONTENT: '等待补充卡片内容', NO_CARD_MARKET_WILL_CREATE: '平台将创建卡片', NO_CARD_ERRORS: '卡片创建失败', NO_CARD_PROCESSING: '卡片创建处理中', NO_CARD_ADD_TO_CAMPAIGN: '等待添加到店铺', partial: '部分成功', failed: '失败', outcome_unknown: '结果未知', needs_attention: '需要处理', closed_unconfirmed: '已结束，结果未确认', sync: '同步店铺商品', price: '调整价格', stock: '修改库存', content: '编辑内容', sale_state: '停售 / 恢复'}
 const page = ref<OnlinePage | null>(null)
+const shopNames = ref<Record<string, string>>({})
+watch(() => page.value?.account_id, async (account, _, onCleanup) => {
+  shopNames.value = {}
+  if (!account || platform.value !== 'yandex') return
+  let current = true
+  onCleanup(() => { current = false })
+  try {
+    const names = await fetchYandexShopNames(account)
+    if (current) shopNames.value = names
+  } catch {
+    // 店名不可用时仍可查看已同步的价格。
+  }
+})
 const checkedListings = ref(new Set<string>())
 const actionMenuOpen = ref(false), actionMenu = ref<HTMLElement | null>(null)
 const showOzonExport = ref(false)
@@ -408,7 +422,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
     </form>
     <div class="online-card overflow-x-auto" :aria-busy="loading">
       <table class="w-full min-w-[950px] text-left text-sm">
-        <thead><tr><th v-if="platform==='yandex'" class="w-10" aria-label="选择 SKU"></th><th>商品</th><th>市场 / 价格</th><th>库存</th><th>销售状态</th><th>最近同步</th><th>操作</th></tr></thead>
+        <thead><tr><th v-if="platform==='yandex'" class="w-10" aria-label="选择 SKU"></th><th>商品</th><th>价格</th><th>库存</th><th>销售状态</th><th>最近同步</th><th>操作</th></tr></thead>
         <tbody v-for="group in listingGroups" :key="group.id">
           <tr v-if="group.kind === 'group'" class="online-group" data-testid="online-group" @click="focusedProduct={group_id:group.id}" @focusin="focusedProduct={group_id:group.id}">
             <td v-if="platform==='yandex'"><input type="checkbox" class="size-4 accent-primary-600" :checked="groupChecked(group.item_ids)" :indeterminate.prop="groupPartial(group.item_ids)" :disabled="loading || busy" :aria-label="`选择商品：${group.title}`" data-testid="select-online-group" @click.stop @change="toggleListings(group.item_ids, ($event.target as HTMLInputElement).checked, group.id)" /></td>
@@ -437,7 +451,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
             <tr v-for="row in group.rows" :key="row.id" data-testid="online-listing" :class="{'online-child': group.kind === 'group'}" @click="focusedProduct={group_id:group.id,listing_id:row.id}" @focusin="focusedProduct={group_id:group.id,listing_id:row.id}">
               <td v-if="platform==='yandex'"><input type="checkbox" class="size-4 accent-primary-600" :checked="checkedListings.has(row.id)" :disabled="loading" :aria-label="`选择 SKU：${row.seller_sku || row.remote_id}`" data-testid="select-online-listing" @click.stop @change="toggleListings([row.id], ($event.target as HTMLInputElement).checked)" /></td>
               <td><div class="flex max-w-sm items-center gap-3" :class="{'ml-7 border-l-2 border-primary-200 pl-4': group.kind === 'group'}"><img v-if="row.thumbnail" referrerpolicy="no-referrer" :src="row.thumbnail" alt="" class="size-12 shrink-0 rounded-lg object-cover" /><div v-else class="size-12 shrink-0 rounded-lg bg-accent-100" /><div><p class="line-clamp-2 font-medium">{{ row.title || row.remote_id }}</p><p class="muted mt-1 break-all">{{ row.seller_sku || row.remote_id }}</p></div></div></td>
-              <td><p v-if="row.prices[0]">{{ row.prices[0].currency }} {{ row.prices[0].amount ?? '未知' }}<span v-if="row.prices.length>1"> · {{ row.prices.length }} 个价格范围</span></p><p v-else>尚未取得价格</p><p class="muted mt-1">{{ row.prices[0] ? priceKind(row.prices[0].kind) : '' }} · {{ [...new Set(row.markets.map(m=>m.site_id))].join(' · ') }}</p></td>
+              <td><OnlinePriceCell :row="row" :shop-names="shopNames" :store-name="page?.store_name" /></td>
               <td v-if="row.platform==='yandex'" data-testid="stock-summary"><p>{{ stockSummary(row).quantity ?? '未知' }}</p><p v-if="stockSummary(row).partial" class="muted mt-1 text-xs">部分仓库库存未知</p></td>
               <td v-else><div v-for="inventory in row.stocks" :key="inventory.id"><p>{{ inventory.quantity ?? '未知' }}</p><p class="muted mt-1">{{ inventory.label }}</p></div><p v-if="!row.stocks.length" class="muted">尚未取得库存范围</p></td>
               <td><span :class="badge(listingStatus(row))">{{ label(listingStatus(row)) }}</span><p v-if="detailState(row)" class="mt-1 text-amber-700">{{ detailState(row) }}</p><p v-else-if="row.errors.length" class="mt-1 text-amber-700">读取不完整</p><p v-if="issueSummary(row)" class="mt-1 text-amber-700">{{ issueSummary(row) }}</p></td>

@@ -89,6 +89,11 @@ class OnlineProductService:
             raise OnlineConflict("授权刷新后店铺身份变化，操作已停止")
         return adapter
 
+    def yandex_shop_names(self, account: str) -> dict[str, str]:
+        adapter = self._adapter("yandex", account)
+        with request_operation("online_products"):
+            return adapter.shop_names()
+
     def _list_context(self, platform: str, catalog: str = "current", warehouse_id: str = ""):
         if catalog not in ("current", "archived", "all"):
             raise ValueError("商品目录范围只能为 current、archived 或 all")

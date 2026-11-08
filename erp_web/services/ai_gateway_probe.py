@@ -73,7 +73,6 @@ class CapabilityProbeContext:
 
     model: dict[str, Any]
     timeout: int
-    probe_options: dict[str, Any] | None = None
     app_dir: Path | str | None = None
     api_key: str = ""
     model_name: str = ""
@@ -206,40 +205,14 @@ def _capability_error_status(exc: Exception) -> tuple[str, str]:
     return PROBE_STATUS_UNSUPPORTED, "CAPABILITY_PROBE_CONTRACT_FAILED"
 
 
-def _normalize_probe_messages(value: Any) -> list[dict[str, str]]:
-    raw_items = value if isinstance(value, list) else []
-    messages: list[dict[str, str]] = []
-    for item in raw_items:
-        record = item if isinstance(item, dict) else {}
-        role = str(record.get("role") or "user").strip().lower()
-        if role not in {"system", "user", "assistant"}:
-            role = "user"
-        content = str(record.get("content") or "").strip()
-        if content:
-            messages.append({"role": role, "content": content})
-    return messages
+def requested_probe_capabilities(raw_model: dict[str, Any] | None = None) -> list[str]:
+    """请求只选择待测能力，测试消息和素材由系统提供。"""
 
-
-def _probe_options(raw_model: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = raw_model if isinstance(raw_model, dict) else {}
     capability_value = raw.get("probe_only_capability") or raw.get("probe_capability")
-    capabilities = ai_model_config.normalize_capabilities([capability_value] if capability_value else raw.get("probe_capabilities"))
-    return {
-        "capabilities": capabilities,
-        "messages": _normalize_probe_messages(raw.get("probe_messages")),
-        "image_prompt": str(raw.get("probe_image_prompt") or "").strip(),
-    }
-
-
-def _probe_messages(probe_options: dict[str, Any] | None, default: list[dict[str, str]]) -> list[dict[str, str]]:
-    options = probe_options if isinstance(probe_options, dict) else {}
-    messages = options.get("messages")
-    return messages if isinstance(messages, list) and messages else default
-
-
-def _probe_image_prompt(probe_options: dict[str, Any] | None, default: str) -> str:
-    options = probe_options if isinstance(probe_options, dict) else {}
-    return str(options.get("image_prompt") or "").strip() or default
+    return ai_model_config.normalize_capabilities(
+        [capability_value] if capability_value else raw.get("probe_capabilities")
+    )
 
 
 _PROBE_OPERATIONS = {
@@ -581,6 +554,7 @@ __all__ = [
     "build_capability_profile",
     "capability_configuration_fingerprint",
     "empty_capability_probe_report",
+    "requested_probe_capabilities",
     "run_capability_probes",
     "_capability_error_text",
     "_capability_test_outcome",
@@ -589,10 +563,6 @@ __all__ = [
     "_cli_image_probe_data_from_text",
     "_existing_image_path",
     "_json_probe_default_messages",
-    "_normalize_probe_messages",
-    "_probe_image_prompt",
-    "_probe_messages",
-    "_probe_options",
     "_valid_base64_image",
     "_validate_browser_image_generate_probe",
     "_validate_chat_probe_text",

@@ -496,3 +496,23 @@ def test_legacy_confirmation_timer_never_dispatches_and_manual_check_ignores_due
         conn.commit()
     assert service.reconcile(job["id"])["job"]["status"] == "confirmed"
     assert len(remote.writes) == 1
+
+
+def test_yandex_price_hint_shop_names_follow_pages_and_account(monkeypatch):
+    adapter = YandexOnlineAdapter({"yandex": {"api_token": "test", "business_id": "10", "campaign_id": "1"}})
+    pages = [
+        {"campaigns": [{"id": 1, "domain": "店铺甲", "business": {"id": 10}},
+                       {"id": 3, "domain": "其他账号", "business": {"id": 20}}],
+         "paging": {"nextPageToken": "next"}},
+        {"campaigns": [{"id": 2, "domain": "店铺乙", "business": {"id": 10}}]},
+    ]
+    queries = []
+
+    def request(path, *, query, method):
+        assert path == "/v2/campaigns" and method == "GET"
+        queries.append(query)
+        return pages.pop(0)
+
+    monkeypatch.setattr(adapter, "request", request)
+    assert adapter.shop_names() == {"1": "店铺甲", "2": "店铺乙"}
+    assert queries == [{"limit": 100}, {"limit": 100, "pageToken": "next"}]

@@ -7,9 +7,9 @@ import { useAiPageContextStore } from '@/stores/aiPageContext'
 import OnlineProductsPanel from '../OnlineProductsPanel.vue'
 import OzonExportDialog from '../OzonExportDialog.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import { fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, previewOnlineBatch, submitOnlineBatch, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
+import { fetchYandexShopNames, fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, previewOnlineBatch, submitOnlineBatch, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
 
-vi.mock('@/api/onlineProducts', () => ({ fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), previewOnlineBatch:vi.fn(), submitOnlineBatch:vi.fn(), refreshOnlineDetail: vi.fn(), refreshOnlineStatus: vi.fn() }))
+vi.mock('@/api/onlineProducts', () => ({ fetchYandexShopNames: vi.fn(), fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), previewOnlineBatch:vi.fn(), submitOnlineBatch:vi.fn(), refreshOnlineDetail: vi.fn(), refreshOnlineStatus: vi.fn() }))
 const item: OnlineListing = {
   id: 'remote-1', platform: 'mercadolibre', account_id: 'shop-1', remote_id: 'CBT123', model: 'traditional_global_items',
   details_state: 'ready', buyer_links: [], title: '店铺同步商品', seller_sku: 'seller-sku', thumbnail: '', raw_status: 'active', sale_state: 'active', raw_sub_status: [], version: 'v1', synced_at: '', status_checked_at: '', errors: [], desired_sale_state: '',
@@ -28,12 +28,29 @@ function yandexItem(overrides: Partial<OnlineListing> = {}): OnlineListing {
 }
 let wrapper: VueWrapper | undefined
 const defaultAdapter = apiClient.defaults.adapter
-beforeEach(() => {setActivePinia(createPinia());vi.useFakeTimers(); vi.resetAllMocks();vi.mocked(fetchOnlineProducts).mockResolvedValue(response());vi.mocked(fetchOnlineDetail).mockResolvedValue(item);vi.mocked(refreshOnlineDetail).mockImplementation(async id=>vi.mocked(fetchOnlineDetail)(id));vi.mocked(previewOnlineBatch).mockResolvedValue({items:[{listing_id:item.id,version:item.version,seller_sku:item.seller_sku,title:item.title,group_id:'single-1'}],errors:[],product_count:1,scope:'商家账号全部店铺'})})
+beforeEach(() => {setActivePinia(createPinia());vi.useFakeTimers(); vi.resetAllMocks();vi.mocked(fetchYandexShopNames).mockResolvedValue({});vi.mocked(fetchOnlineProducts).mockResolvedValue(response());vi.mocked(fetchOnlineDetail).mockResolvedValue(item);vi.mocked(refreshOnlineDetail).mockImplementation(async id=>vi.mocked(fetchOnlineDetail)(id));vi.mocked(previewOnlineBatch).mockResolvedValue({items:[{listing_id:item.id,version:item.version,seller_sku:item.seller_sku,title:item.title,group_id:'single-1'}],errors:[],product_count:1,scope:'商家账号全部店铺'})})
 afterEach(() => {wrapper?.unmount();wrapper=undefined;document.body.innerHTML='';apiClient.defaults.adapter=defaultAdapter;vi.useRealTimers()})
 function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,global:{stubs:{Teleport:true,OzonExportDialog:true}}});return wrapper}
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
 
 describe('在线商品页面',()=>{
+  it('价格列只显示有金额的报价，真实店铺名称放在提示中', async () => {
+    const market = {id: '149191519', site_id: '149191519', name: '仓库甲', logistic_type: '', raw_status: '', price: null, currency: ''}
+    const base = {...item.prices[0], id: 'business', amount: '48', currency: 'CNY', label: '账号基础价'}
+    const independent = {...base, id: 'campaign:149191519', label: '仓库甲 独立价', amount: '50'}
+    const row = yandexItem({markets: [market], prices: [base, independent, {...base, id: 'campaign:3', amount: null}]})
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(), items: [row]})
+    vi.mocked(fetchYandexShopNames).mockResolvedValue({'149191519': '春日商店'})
+    render(); await flushPromises(); await click('Yandex Market')
+    const cell = wrapper!.getComponent({name: 'OnlinePriceCell'})
+    expect(cell.findAll('p').map(p => p.text())).toEqual(['CNY 48', 'CNY 50'])
+    expect(cell.text()).not.toMatch(/149191519|仓库甲|春日商店|未知|价格范围/)
+    await cell.get('button').trigger('focus')
+    expect(cell.get('[role="tooltip"]').text()).toContain('春日商店：CNY 50')
+    expect(cell.text()).not.toMatch(/149191519|仓库甲/)
+    expect(fetchYandexShopNames).toHaveBeenCalledTimes(1)
+  })
+
   it('通过任务队列查看历史，不再保留操作记录列表和详情弹窗', async () => {
     render(); await flushPromises()
     expect(wrapper!.text()).not.toContain('操作记录')
@@ -564,7 +581,8 @@ describe('在线商品页面',()=>{
     await toggle.trigger('click')
     expect(toggle.attributes('aria-expanded')).toBe('true')
     expect(wrapper!.findAll('[data-testid="online-listing"]')).toHaveLength(30)
-    await wrapper!.findAll('[data-testid="online-listing"]')[1].get('button').trigger('click');await flushPromises()
+    const variant = wrapper!.findAll('[data-testid="online-listing"]')[1]
+    await variant.findAll('button').find(button => button.text() === '管理 →')!.trigger('click');await flushPromises()
     expect(fetchOnlineDetail).toHaveBeenCalledWith('variant-1')
     await click('关闭 ×');await toggle.trigger('click')
     expect(wrapper!.findAll('[data-testid="online-listing"]')).toHaveLength(0)

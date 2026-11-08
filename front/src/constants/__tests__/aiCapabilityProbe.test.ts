@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   capabilityProbeUserMessage,
+  CAPABILITY_PROBE_DESCRIPTIONS,
   CHAT_PROBE_USER_MESSAGE,
-  jsonProbeMessages,
   JSON_PROBE_USER_MESSAGE,
 } from '@/constants/aiCapabilityProbe'
 
@@ -13,18 +13,20 @@ describe('AI 能力探测 user 消息', () => {
     })).toBe(CHAT_PROBE_USER_MESSAGE)
     expect(capabilityProbeUserMessage({
       probe_only_capability: 'json',
-      probe_messages: jsonProbeMessages(),
     })).toBe(JSON_PROBE_USER_MESSAGE)
   })
 
-  it('优先显示调用方配置的首次 user 消息', () => {
+  it('旧请求中的自定义内容不会替换系统测试消息', () => {
     expect(capabilityProbeUserMessage({
-      probe_only_capability: 'web_search',
+      probe_only_capability: 'json',
       probe_messages: [
         { role: 'system', content: 'system prompt' },
-        { role: 'user', content: '查询成都实时天气' },
+        { role: 'user', content: '自定义测试内容' },
       ],
-    })).toBe('查询成都实时天气')
+    })).toBe(JSON_PROBE_USER_MESSAGE)
+    expect(capabilityProbeUserMessage({
+      probe_only_capability: 'web_search',
+    })).toBe(CAPABILITY_PROBE_DESCRIPTIONS.web_search)
   })
 
   it('为 Function Call 与图片探针提供 user 气泡', () => {
@@ -34,6 +36,6 @@ describe('AI 能力探测 user 消息', () => {
     expect(capabilityProbeUserMessage({
       probe_only_capability: 'image_edit',
       probe_image_prompt: 'Turn it blue.',
-    })).toBe('Turn it blue.')
+    })).toBe('Change the red image to blue while preserving its dimensions.')
   })
 })

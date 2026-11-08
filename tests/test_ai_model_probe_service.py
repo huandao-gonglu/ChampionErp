@@ -15,6 +15,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from erp_web.services import ai_gateway_probe, ai_model_probe_service, ai_provider_catalog
+from erp_web.services import ai_gateway_browser_provider, ai_gateway_cli_provider
 from erp_web.services.ai_model_factory import PydanticModelBinding
 
 
@@ -153,19 +154,19 @@ def test_json_probe_only_requires_a_json_object() -> None:
         ai_gateway_probe._validate_json_probe_data([])  # type: ignore[arg-type]
 
 
-def test_json_probe_uses_configured_messages(
+def test_json_probe_ignores_user_messages_and_uses_system_test(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     model = _model()
-    model["probe_messages"] = [
+    custom_messages = [
         {"role": "system", "content": "Return JSON."},
         {"role": "user", "content": "Return a custom JSON object."},
     ]
     _install_probe_binding(monkeypatch, model)
 
     def request_json_for_probe(**kwargs):
-        assert kwargs["messages"] == model["probe_messages"]
+        assert kwargs["messages"] == ai_gateway_probe._json_probe_default_messages()
         return {"custom": True}, ""
 
     monkeypatch.setattr(
@@ -174,17 +175,13 @@ def test_json_probe_uses_configured_messages(
         request_json_for_probe,
     )
 
-    report = ai_model_probe_service.probe_model_capabilities(
+    result = ai_model_probe_service.test_api_model(
+        tmp_path,
         model,
-        "ignored",
-        "ignored",
-        ["json"],
-        10,
-        probe_options=ai_gateway_probe._probe_options(model),
-        app_dir=tmp_path,
+        {"probe_only_capability": "json", "probe_messages": custom_messages},
     )
 
-    assert report["results"]["json"]["status"] == "supported"
+    assert result["supported_capabilities"] == ["json"]
 
 
 def test_internal_probe_assertion_is_inconclusive_not_unsupported(
@@ -204,6 +201,58 @@ def test_internal_probe_assertion_is_inconclusive_not_unsupported(
     probe = result["results"]["json"]
     assert probe["status"] == "inconclusive"
     assert probe["error_code"] == "CAPABILITY_PROBE_INTERNAL_ERROR"
+
+
+@pytest.mark.parametrize("connection_type", ["cli", "browser"])
+def test_local_json_probe_ignores_user_test_messages(
+    tmp_path: Path,
+    monkeypatch,
+    connection_type: str,
+) -> None:
+    model = {**_model(), "connection_type": connection_type, "cli_tool": "codex"}
+    raw = {
+        "probe_only_capability": "json",
+        "probe_messages": [{"role": "user", "content": "用户自定义测试"}],
+    }
+    calls = []
+    if connection_type == "cli":
+        def run_text(app_dir, model, prompt, timeout):
+            calls.append(prompt)
+            return '{"ok": true}'
+
+        monkeypatch.setattr(ai_gateway_cli_provider, "_run_codex_cli_text", run_text)
+        monkeypatch.setattr(
+            ai_gateway_cli_provider,
+            "call_desktop",
+            lambda *args, **kwargs: {"command": "codex", "command_path": "/test/codex"},
+        )
+        provider = ai_gateway_cli_provider.CodexCliProvider()
+    else:
+        from types import SimpleNamespace
+
+        page = SimpleNamespace(
+            text='{"ok": true}', ready=True, browser_url="https://example.invalid",
+            profile_dir=str(tmp_path), port=19335,
+        )
+
+        def chat_result(app_dir, model, messages, timeout, **kwargs):
+            calls.append(json.dumps(messages))
+            return page
+
+        monkeypatch.setattr(ai_gateway_browser_provider, "_browser_chat_result", chat_result)
+        monkeypatch.setattr(
+            ai_gateway_browser_provider.browser_ai_runtime,
+            "open_browser_ai_page",
+            lambda *args, **kwargs: page,
+        )
+        provider = ai_gateway_browser_provider.BrowserAiProvider()
+
+    result = provider.test_model(tmp_path, model, raw)
+
+    assert result["supported_capabilities"] == ["json"]
+    assert len(calls) == 1
+    assert "用户自定义测试" not in calls[0]
+    assert "Return one JSON object. Any keys and values are acceptable." in calls[0]
 
 
 def test_web_search_probe_persists_the_verified_request_mode(
@@ -359,23 +408,36 @@ def test_image_generate_and_edit_probes_validate_real_image_data(
     _install_probe_binding(monkeypatch, model)
     generated = base64.b64encode(_png_bytes((0, 0, 255))).decode()
     edited = base64.b64encode(_png_bytes((0, 0, 255))).decode()
+
+    def generate_images_for_probe(**kwargs):
+        assert kwargs["prompt"] == "single small blue square"
+        return [{"b64_json": generated}]
+
+    def edit_image_for_probe(**kwargs):
+        assert kwargs["prompt"] == "Change the red image to blue while preserving its dimensions."
+        return [{"b64_json": edited, "source_id": "probe"}]
+
     monkeypatch.setattr(
         ai_model_probe_service.ai_direct_request_service,
         "generate_images_for_probe",
-        lambda **kwargs: [{"b64_json": generated}],
+        generate_images_for_probe,
     )
     monkeypatch.setattr(
         ai_model_probe_service.ai_direct_request_service,
         "edit_image_for_probe",
-        lambda **kwargs: [{"b64_json": edited, "source_id": "probe"}],
+        edit_image_for_probe,
     )
 
-    generated_report = _run(tmp_path, model, "image_generate")
-    edited_report = _run(tmp_path, model, "image_edit")
+    generated_report = ai_model_probe_service.test_api_model(tmp_path, model, {
+        "probe_only_capability": "image_generate", "probe_image_prompt": "用户自定义生图内容",
+    })
+    edited_report = ai_model_probe_service.test_api_model(tmp_path, model, {
+        "probe_only_capability": "image_edit", "probe_image_prompt": "用户自定义编辑内容",
+    })
 
-    assert generated_report["results"]["image_generate"]["status"] == "supported"
-    assert edited_report["results"]["image_edit"]["status"] == "supported"
-    assert "conversation_id" not in edited_report["results"]["image_edit"]
+    assert generated_report["capability_results"]["image_generate"]["status"] == "supported"
+    assert edited_report["capability_results"]["image_edit"]["status"] == "supported"
+    assert "conversation_id" not in edited_report["capability_results"]["image_edit"]
 
 
 def test_transient_provider_failure_is_inconclusive_instead_of_unsupported(

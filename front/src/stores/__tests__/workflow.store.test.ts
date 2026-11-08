@@ -11,7 +11,7 @@ import * as publishingApi from '@/api/workflow/publishing'
 import * as settingsApi from '@/api/workflow/settings'
 import * as stateApi from '@/api/workflow/state'
 import * as translationApi from '@/api/workflow/translation'
-import { jsonProbeMessages, JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabilityProbe'
+import { JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabilityProbe'
 import { applyPricingTemplate, pricingTemplateParameters } from '@/types/pricing'
 import { withAiForeground } from '@/services/withAiForeground'
 import type { AuthResult, DraftDetail, DraftIndexItem, Product } from '@/types/workflow'
@@ -704,7 +704,6 @@ describe('workflow store live API flow', () => {
       name: 'JSON 模型',
       probe_only_capability: 'json',
       probe_capabilities: true,
-      probe_messages: jsonProbeMessages(),
     })
 
     expect(withAiForeground).toHaveBeenCalledWith(

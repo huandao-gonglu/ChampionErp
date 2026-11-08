@@ -519,6 +519,40 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     expect(wrapper.get('[data-testid="ai-provider-id"]').findAll('option').map((item) => item.text())).not.toContain('自定义服务')
   })
 
+  it.each([
+    ['chat', '文本', '简单问候'],
+    ['json', 'JSON 模式', '返回一个 JSON 对象'],
+    ['web_search', '联网搜索', '成都此刻的天气'],
+    ['tool_calling', 'Function Call', '调用测试工具'],
+    ['image_understanding', '图片理解', '两张测试图片'],
+    ['image_edit', '图像编辑', '红色改为蓝色'],
+  ])('%s 测试展示固定说明，只提交能力选择', async (capability, label, description) => {
+    const wrapper = mountPanel({
+      ...qwenConfig,
+      ai_models: [{ ...qwenConfig.ai_models[0], capabilities: [] }],
+    })
+    const toggle = wrapper.findAll('label').find(item => item.text().trim() === label)!.get('input')
+    await toggle.setValue(true)
+
+    const dialog = wrapper.get('[data-testid="capability-probe-dialog"]')
+    expect(dialog.get('[data-testid="capability-probe-description"]').text()).toContain(description)
+    expect(dialog.find('textarea, input, [contenteditable="true"]').exists()).toBe(false)
+    expect(wrapper.emitted('testAi')).toBeUndefined()
+
+    await dialog.findAll('button').find(button => button.text() === '确定测试')!.trigger('click')
+    const payload = wrapper.emitted('testAi')!.at(-1)![0] as Record<string, unknown>
+    expect(payload).toMatchObject({
+      probe_only_capability: capability,
+      probe_capabilities: true,
+      test_trigger: 'capability_checkbox',
+      capabilities: [],
+    })
+    expect(payload).not.toHaveProperty('probe_messages')
+    expect(payload).not.toHaveProperty('probe_image_prompt')
+    expect(dialog.findAll('button').every(button => button.attributes('disabled') !== undefined)).toBe(true)
+    wrapper.unmount()
+  })
+
   it('图片理解通过双图测试后才可用于套图规划', async () => {
     const wrapper = mountPanel({
       ...qwenConfig,

@@ -15,7 +15,6 @@ from .ai_gateway_provider_types import AiChatRequest, AiImageEditRequest
 from .ai_provider_contracts import CAPABILITY_CHAT_JSON, AiChatProvider
 from .gemini_canvas_runtime import GeminiCanvasProvider, check_canvas_connection, is_canvas_model
 
-_probe_options = probe_runtime._probe_options
 _capability_test_outcome = probe_runtime._capability_test_outcome
 
 def _browser_chat_result(
@@ -41,7 +40,6 @@ def probe_browser_model_capabilities(
     model: dict[str, Any],
     capabilities: list[str],
     timeout: int,
-    probe_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return probe_runtime.run_capability_probes(
         BrowserAiProvider(),
@@ -49,7 +47,6 @@ def probe_browser_model_capabilities(
             model=model,
             app_dir=app_dir,
             timeout=timeout,
-            probe_options=probe_options,
         ),
         capabilities,
     )
@@ -152,7 +149,6 @@ class BrowserAiProvider(AiChatProvider):
         capability: str,
         context: probe_runtime.CapabilityProbeContext,
     ) -> dict[str, Any]:
-        options = context.probe_options
         if capability == ai_model_config.CAP_CHAT:
             self._probe_chat(
                 context,
@@ -161,34 +157,23 @@ class BrowserAiProvider(AiChatProvider):
         elif capability == ai_model_config.CAP_JSON:
             self._probe_json(
                 context,
-                probe_runtime._probe_messages(
-                    options,
-                    probe_runtime._json_probe_default_messages(),
-                ),
+                probe_runtime._json_probe_default_messages(),
             )
         elif capability == ai_model_config.CAP_WEB_SEARCH:
             self._probe_web_search(
                 context,
-                probe_runtime._probe_messages(
-                    options,
-                    probe_runtime._web_search_probe_prompt(),
-                ),
+                probe_runtime._web_search_probe_prompt(),
             )
         elif capability == ai_model_config.CAP_IMAGE_GENERATE:
             self._probe_image_generate(
                 context,
-                probe_runtime._probe_messages(
-                    options,
-                    probe_runtime._cli_image_generate_probe_prompt(),
-                ),
+                probe_runtime._cli_image_generate_probe_prompt(),
             )
         elif capability == ai_model_config.CAP_IMAGE_EDIT and is_canvas_model(context.model):
             source = Path(__file__).resolve().parents[1] / "assets" / "image_edit_probe.png"
             results = GeminiCanvasProvider().edit_images(AiImageEditRequest(
                 app_dir=context.app_dir or ".", model=context.model,
-                prompt=probe_runtime._probe_image_prompt(
-                    options, "将输入图片中的红色改为蓝色，保留其它内容，只返回修改后的图片。",
-                ),
+                prompt="将输入图片中的红色改为蓝色，保留其它内容，只返回修改后的图片。",
                 images=[{"id": "canvas_probe", "path": str(source)}],
                 timeout_seconds=context.timeout,
             ))
@@ -208,8 +193,7 @@ class BrowserAiProvider(AiChatProvider):
     def test_model(self, app_dir: Path | str, model: dict[str, Any], raw_model: dict[str, Any] | None = None) -> dict[str, Any]:
         raw = raw_model if isinstance(raw_model, dict) else {}
         timeout = int(model.get("timeout_seconds") or 180)
-        probe_options = _probe_options(raw)
-        requested_capabilities = probe_options["capabilities"] or ai_model_config.normalize_capabilities(model.get("capabilities"))
+        requested_capabilities = probe_runtime.requested_probe_capabilities(raw) or ai_model_config.normalize_capabilities(model.get("capabilities"))
         probe_requested = raw.get("probe_capabilities", True) is not False
         from .desktop_model_config_service import local_models_view
         connection_model = local_models_view([model])[0]
@@ -232,7 +216,7 @@ class BrowserAiProvider(AiChatProvider):
             page = browser_ai_runtime.open_browser_ai_page(app_dir, model, timeout=min(timeout, 45))
         capability_probe = probe_runtime.empty_capability_probe_report()
         if probe_requested:
-            capability_probe = probe_browser_model_capabilities(app_dir, model, requested_capabilities, timeout, probe_options)
+            capability_probe = probe_browser_model_capabilities(app_dir, model, requested_capabilities, timeout)
         connection_ok = bool(page.ready)
         connection_message = (
             f"{model.get('name') or model.get('id')} 测试成功：浏览器网页已连接。"

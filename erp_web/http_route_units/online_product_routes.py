@@ -75,6 +75,7 @@ POST_HANDLERS = {
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {
+    "/api/online-products/yandex-shop-names": online_product_facade.read_yandex_shop_names,
     "/api/online-products": online_product_facade.read,
     "/api/online-products/source-images": online_product_facade.read_source_images,
     "/api/online-products/attributes": online_product_facade.read_attributes,

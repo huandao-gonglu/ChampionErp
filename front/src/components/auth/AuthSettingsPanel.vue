@@ -9,7 +9,7 @@ import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSetti
 import AlibabaSettingsPanel from '@/components/auth/AlibabaSettingsPanel.vue'
 import CrossborderBusSettingsPanel from '@/components/auth/CrossborderBusSettingsPanel.vue'
 import { routeLocationKey } from 'vue-router'
-import { jsonProbeMessages } from '@/constants/aiCapabilityProbe'
+import { CAPABILITY_PROBE_DESCRIPTIONS } from '@/constants/aiCapabilityProbe'
 import type { AuthResult, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 import {
   MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
@@ -97,7 +97,6 @@ const aiRequestMessage = ref('')
 const capabilityProbeDialog = reactive({
   open: false,
   capability: '',
-  payloadText: '',
   pending: false,
   error: '',
   originalCapabilities: [] as string[],
@@ -1064,49 +1063,12 @@ function capabilitySelection(model: UnknownRecord | null): string[] {
   return asStringArray(model.capabilities)
 }
 
-function capabilityProbePayload(capability: string): UnknownRecord {
-  const base: UnknownRecord = {
-    probe_only_capability: capability,
-    probe_capabilities: true,
-  }
-  if (capability === 'json') {
-    base.probe_messages = jsonProbeMessages()
-  } else if (capability === 'web_search') {
-    base.probe_messages = [
-      {
-        role: 'system',
-        content: '必须调用实时联网或搜索能力查询天气，不要凭记忆回答；只返回 JSON。',
-      },
-      {
-        role: 'user',
-        content: '请使用当前会话可用的实时联网或搜索能力，查询中国四川省成都市此刻的实时天气。不要把当前日期理解成未来天气预报；请从实时搜索结果中取得信息对应的中国日期。只有在已经实时查询成功时，返回 {"can_access_web": true, "source_url": "...", "location": "成都", "date": "YYYY-MM-DD", "weather": "...", "temperature": "...", "evidence": "..."}。如果当前模型没有实时联网/搜索能力，或访问失败，返回 {"can_access_web": false, "reason": "..."}。',
-      },
-    ]
-  } else if (capability === 'image_generate') {
-    base.probe_image_prompt = 'single small blue square'
-    base.probe_messages = [
-      {
-        role: 'system',
-        content: 'Use an available image generation tool if possible. Do not return SVG, ASCII art, or a textual description as a substitute. Return JSON only when possible.',
-      },
-      {
-        role: 'user',
-        content: 'Generate a small test image of a single blue square. After the image exists, return {"can_generate_image": true, "image_path": "file:///..."} or {"can_generate_image": true, "image_url": "https://..."} or {"can_generate_image": true, "image_base64": "...", "mime_type": "image/png"}. If unavailable, return {"can_generate_image": false, "reason": "..."}.',
-      },
-    ]
-  } else if (capability === 'image_edit') {
-    base.probe_image_prompt = 'Change the red image to blue while preserving its dimensions.'
-  }
-  return base
-}
-
 function openCapabilityProbe(capability: string) {
   if (!selectedAiModel.value || !ensureBrowserProviderSelected(selectedAiModel.value)) return
   const originalCapabilities = selectedCapabilities()
   if (selectedAiModel.value) selectedAiModel.value.capabilities = [...originalCapabilities]
   capabilityProbeDialog.open = true
   capabilityProbeDialog.capability = capability
-  capabilityProbeDialog.payloadText = JSON.stringify(capabilityProbePayload(capability), null, 2)
   capabilityProbeDialog.pending = false
   capabilityProbeDialog.error = ''
   capabilityProbeDialog.originalCapabilities = originalCapabilities
@@ -1122,7 +1084,6 @@ function closeCapabilityProbe(restoreSelection = true) {
   if (restoreSelection) restoreCapabilityProbeSelection()
   capabilityProbeDialog.open = false
   capabilityProbeDialog.capability = ''
-  capabilityProbeDialog.payloadText = ''
   capabilityProbeDialog.error = ''
   capabilityProbeDialog.originalCapabilities = []
 }
@@ -1303,20 +1264,12 @@ function confirmCapabilityProbe() {
   if (!ensureBrowserProviderSelected(selectedAiModel.value)) return
   const capability = capabilityProbeDialog.capability
   if (!capability) return
-  let payload: UnknownRecord
-  try {
-    payload = asRecord(JSON.parse(capabilityProbeDialog.payloadText || '{}'))
-  } catch {
-    capabilityProbeDialog.error = '测试内容不是合法 JSON'
-    return
-  }
   capabilityProbeDialog.pending = true
   capabilityProbeDialog.error = ''
   aiRequestPending.value = true
   aiRequestMessage.value = `正在测试 ${capabilityLabelByValue[capability] || capability}`
   emit('testAi', {
     ...aiModelPayloadForCheck(),
-    ...payload,
     probe_only_capability: capability,
     probe_capabilities: true,
     test_trigger: 'capability_checkbox',
@@ -1625,7 +1578,7 @@ function copy(text: string) {
   <div class="space-y-6">
     <PageHeader title="授权配置" :description="activeAuthSettingsTabMeta.summary" />
     <div v-if="capabilityProbeDialog.open" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
-      <div class="w-full max-w-3xl rounded-lg border border-accent-200 bg-white p-4 shadow-xl dark:border-dark-700 dark:bg-dark-900">
+      <div class="w-full max-w-3xl rounded-lg border border-accent-200 bg-white p-4 shadow-xl dark:border-dark-700 dark:bg-dark-900" role="dialog" aria-modal="true" :aria-label="`测试 ${capabilityProbeLabel}`" data-testid="capability-probe-dialog">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 class="font-semibold text-accent-950 dark:text-white">测试 {{ capabilityProbeLabel }}</h3>
@@ -1633,17 +1586,7 @@ function copy(text: string) {
           </div>
           <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe()">关闭</button>
         </div>
-        <p v-if="capabilityProbeDialog.capability === 'image_understanding'" class="mt-4 text-sm">将发送两张测试图片，请模型按顺序识别颜色和形状。</p>
-        <label v-else class="mt-4 block">
-          <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">测试内容</span>
-          <textarea
-            class="input min-h-72 font-mono text-xs"
-            :value="capabilityProbeDialog.payloadText"
-            :disabled="capabilityProbeDialog.pending"
-            spellcheck="false"
-            @input="capabilityProbeDialog.payloadText = eventText($event)"
-          ></textarea>
-        </label>
+        <p class="mt-4 text-sm" data-testid="capability-probe-description">{{ CAPABILITY_PROBE_DESCRIPTIONS[capabilityProbeDialog.capability] }}</p>
         <div v-if="capabilityProbeDialog.error" class="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
           {{ capabilityProbeDialog.error }}
         </div>

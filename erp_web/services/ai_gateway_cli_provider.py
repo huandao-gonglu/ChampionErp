@@ -15,7 +15,6 @@ from .ai_gateway_provider_types import AiChatRequest
 from .desktop_connection_service import call_desktop
 from .ai_provider_contracts import CAPABILITY_CHAT_JSON, AiChatProvider
 
-_probe_options = probe_runtime._probe_options
 _capability_test_outcome = probe_runtime._capability_test_outcome
 
 def _run_codex_cli_text(app_dir, model, prompt, timeout, *, probe_image=False):
@@ -64,7 +63,6 @@ def probe_cli_model_capabilities(
     model: dict[str, Any],
     capabilities: list[str],
     timeout: int,
-    probe_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     requested = ai_model_config.normalize_capabilities(capabilities)
     cli_tool = ai_model_config.model_cli_tool(model)
@@ -92,7 +90,6 @@ def probe_cli_model_capabilities(
             model=model,
             app_dir=app_dir,
             timeout=timeout,
-            probe_options=probe_options,
         ),
         requested,
     )
@@ -193,7 +190,6 @@ class CodexCliProvider(AiChatProvider):
         capability: str,
         context: probe_runtime.CapabilityProbeContext,
     ) -> dict[str, Any]:
-        options = context.probe_options
         if capability == ai_model_config.CAP_CHAT:
             self._probe_chat(
                 context,
@@ -202,26 +198,17 @@ class CodexCliProvider(AiChatProvider):
         elif capability == ai_model_config.CAP_JSON:
             self._probe_json(
                 context,
-                probe_runtime._probe_messages(
-                    options,
-                    probe_runtime._json_probe_default_messages(),
-                ),
+                probe_runtime._json_probe_default_messages(),
             )
         elif capability == ai_model_config.CAP_WEB_SEARCH:
             self._probe_web_search(
                 context,
-                probe_runtime._probe_messages(
-                    options,
-                    probe_runtime._web_search_probe_prompt(),
-                ),
+                probe_runtime._web_search_probe_prompt(),
             )
         elif capability == ai_model_config.CAP_IMAGE_GENERATE:
             self._probe_image_generate(
                 context,
-                probe_runtime._probe_messages(
-                    options,
-                    probe_runtime._cli_image_generate_probe_prompt(),
-                ),
+                probe_runtime._cli_image_generate_probe_prompt(),
             )
         else:
             raise probe_runtime.CapabilityProbeUnavailable(
@@ -237,12 +224,11 @@ class CodexCliProvider(AiChatProvider):
     def test_model(self, app_dir: Path | str, model: dict[str, Any], raw_model: dict[str, Any] | None = None) -> dict[str, Any]:
         raw = raw_model if isinstance(raw_model, dict) else {}
         timeout = int(model.get("timeout_seconds") or 180)
-        probe_options = _probe_options(raw)
-        requested_capabilities = probe_options["capabilities"] or ai_model_config.normalize_capabilities(model.get("capabilities"))
+        requested_capabilities = probe_runtime.requested_probe_capabilities(raw) or ai_model_config.normalize_capabilities(model.get("capabilities"))
         probe_requested = raw.get("probe_capabilities", True) is not False
         capability_probe = probe_runtime.empty_capability_probe_report()
         if probe_requested:
-            capability_probe = probe_cli_model_capabilities(app_dir, model, requested_capabilities, timeout, probe_options)
+            capability_probe = probe_cli_model_capabilities(app_dir, model, requested_capabilities, timeout)
         status = call_desktop('cli.status', {'model': model}, timeout=30)
         command = status['command']
         installed_path = status['command_path']

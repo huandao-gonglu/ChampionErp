@@ -152,11 +152,6 @@ def _probe_capability(
     model = context.model
     capability = context.capability
     timeout = context.timeout
-    options = (
-        context.probe_options
-        if isinstance(context.probe_options, dict)
-        else {}
-    )
     probe_token = context.probe_token
     try:
         binding = create_pydantic_probe_binding(
@@ -195,10 +190,7 @@ def _probe_capability(
             strategy="pydantic_direct_text",
         )
     if capability == ai_model_config.CAP_JSON:
-        messages = ai_gateway_probe._probe_messages(
-            options,
-            ai_gateway_probe._json_probe_default_messages(),
-        )
+        messages = ai_gateway_probe._json_probe_default_messages()
         data, _ = ai_direct_request_service.request_json_for_probe(
             app_dir=app_dir,
             binding=binding,
@@ -211,10 +203,7 @@ def _probe_capability(
             strategy=_json_probe_strategy(binding),
         )
     if capability == ai_model_config.CAP_WEB_SEARCH:
-        messages = ai_gateway_probe._probe_messages(
-            options,
-            ai_gateway_probe._web_search_probe_prompt(),
-        )
+        messages = ai_gateway_probe._web_search_probe_prompt()
         try:
             data, request_mode = ai_direct_request_service.request_json_for_probe(
                 app_dir=app_dir,
@@ -325,10 +314,7 @@ def _probe_capability(
             strategy="function_tool_round_trip",
         )
     if capability == ai_model_config.CAP_IMAGE_GENERATE:
-        prompt = ai_gateway_probe._probe_image_prompt(
-            options,
-            "single small blue square",
-        )
+        prompt = "single small blue square"
         results = ai_direct_request_service.generate_images_for_probe(
             app_dir=app_dir,
             binding=binding,
@@ -342,10 +328,7 @@ def _probe_capability(
         )
     if capability == ai_model_config.CAP_IMAGE_EDIT:
         source = _image_edit_probe_bytes()
-        prompt = ai_gateway_probe._probe_image_prompt(
-            options,
-            "Change the red image to blue while preserving its dimensions.",
-        )
+        prompt = "Change the red image to blue while preserving its dimensions."
         results = ai_direct_request_service.edit_image_for_probe(
             app_dir=app_dir,
             binding=binding,
@@ -369,11 +352,10 @@ def probe_model_capabilities(
     model_name: str,
     capabilities: list[str],
     timeout: int,
-    probe_options: dict[str, Any] | None = None,
     *,
     app_dir: Path | str = ".",
 ) -> dict[str, Any]:
-    """稳定公开签名；认证和模型名以规范化 model 配置为唯一真实来源。"""
+    """认证和模型名以规范化 model 配置为唯一真实来源。"""
 
     del api_key, model_name
     return ai_gateway_probe.run_capability_probes(
@@ -382,7 +364,6 @@ def probe_model_capabilities(
             model=model,
             app_dir=app_dir,
             timeout=timeout,
-            probe_options=probe_options,
         ),
         capabilities,
     )
@@ -420,8 +401,7 @@ def test_api_model(
     if probe_requested:
         if not model_name:
             raise RuntimeError("请先选择模型。")
-        options = ai_gateway_probe._probe_options(raw)
-        requested = options["capabilities"] or ai_model_config.normalize_capabilities(
+        requested = ai_gateway_probe.requested_probe_capabilities(raw) or ai_model_config.normalize_capabilities(
             model.get("capabilities")
         )
         capability_probe = probe_model_capabilities(
@@ -430,7 +410,6 @@ def test_api_model(
             model_name,
             requested,
             timeout,
-            options,
             app_dir=app_dir,
         )
         connection_ok = bool(capability_probe["supported"] or capability_probe["unsupported"])
