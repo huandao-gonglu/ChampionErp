@@ -447,6 +447,11 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/native tool。两类调用都
 必须复用 `erp_web/services/ai_model_factory.py` 创建的 Model/Provider。
 
+OpenAI 预设连接自定义 Responses 地址时，Factory 通过原生 profile 关闭 `additional_tools`。
+Pydantic AI 2.44.0 的 OpenAIProvider 将该能力用于官方服务，自定义网关可能把历史中的
+命名空间和函数名拼接为重名。此设置让本地工具搜索揭示的函数通过普通工具列表声明，
+原生消息、失败调用和执行回执均保留。SDK 能按实际端点识别该能力后，可移除覆盖。
+
 Responses 流经 `services/ai_responses_stream.py` 校验 SDK 已解码的错误与结束事件，
 随后原样交给原生 `OpenAIResponsesModel`。这是 Pydantic AI 2.44.0 对顶层
 `ResponseErrorEvent` 只警告、前台 EOF 可被记为完成的适配缺口；不解析正文、

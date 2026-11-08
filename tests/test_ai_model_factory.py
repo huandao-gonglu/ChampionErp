@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 from pydantic_ai import Agent, FunctionToolset, RunContext, Tool
+from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
@@ -123,6 +125,32 @@ def test_factory_builds_responses_model_and_unified_openai_thinking() -> None:
     assert binding.model_settings["max_tokens"] == 1200
     assert binding.model_settings["thinking"] == "high"
     assert "parallel_tool_calls" not in binding.model_settings
+
+
+def test_custom_responses_gateway_replays_failed_and_corrected_calls_with_distinct_names():
+    model = create_pydantic_model_binding(model_config(api_style="openai_responses", model="deepseek-flash")).model
+    name = "draft_attributes_read"
+    wrong = f"{name}__{name}"
+    history = [
+        ModelResponse(parts=[ToolCallPart(wrong, {}, "failed_call")]),
+        ModelRequest(parts=[RetryPromptPart(content="工具名无效", tool_name=wrong, tool_call_id="failed_call")]),
+        ModelResponse(parts=[ToolCallPart(name, {}, "successful_call")]),
+        ModelRequest(parts=[ToolReturnPart(name, {"ok": True}, "successful_call")]),
+    ]
+    definitions = [ToolDefinition(name=t, defer_loading=True) for t in (name, "draft_images_prepare")]
+    _, params = model.prepare_request(None, ModelRequestParameters(
+        function_tools=definitions, revealed_tool_names={name},
+    ))
+    tools, _ = model._get_responses_tool_choice({}, params)
+    assert [tool["name"] for tool in tools] == [name]
+    _, items = asyncio.run(model._map_messages(model.prepare_messages(history, params), {}, params))
+    calls = [item for item in items if item["type"] == "function_call"]
+    assert [(c["name"], c.get("namespace"), c["call_id"]) for c in calls] == [
+        (wrong, None, "failed_call"), (name, None, "successful_call"),
+    ]
+    assert [item["call_id"] for item in items if item["type"] == "function_call_output"] == [
+        "failed_call", "successful_call",
+    ]
 
 
 def test_alibaba_qwen_responses_downgrades_required_tool_choice_to_auto() -> None:

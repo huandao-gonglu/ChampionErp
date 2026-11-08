@@ -215,6 +215,11 @@ def _build_pydantic_model_binding(
                     model_name,
                 )
             )
+            if (provider_id == ai_provider_catalog.PROVIDER_ID_OPENAI
+                    and base_url.rstrip("/") != provider_spec.default_base_url):
+                # 自定义 Responses 网关可能把 additional_tools 的命名空间拼入函数名。
+                # 由 SDK 在普通工具列表中声明本地搜索揭示的函数，历史按同一名字回传。
+                profile_payload["tool_addition_mode"] = None
             profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
             pydantic_model: Model = CheckedOpenAIResponsesModel(
                 model_name,
