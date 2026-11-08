@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useAiChatStore } from '@/stores/aiChat'
 import { describeAiTool } from '@/utils/aiToolLabels'
+import PackageEstimateReview from './PackageEstimateReview.vue'
 const props = defineProps<{ toolCallId?: string; busy?: boolean }>()
 const emit = defineEmits<{ submitting: [value: boolean] }>()
 const chat = useAiChatStore()
@@ -12,7 +13,7 @@ const approvals = computed(() => chat.messages.flatMap(message => message.parts.
   const callId = 'toolCallId' in part ? String(part.toolCallId) : ''
   if (props.toolCallId && callId !== props.toolCallId) return []
   const pending = chat.pendingToolCalls.find(call => call.tool_call_id === callId && call.kind === 'approval')
-  return pending ? [{ id: part.approval.id, callId, name: describeAiTool(pending.tool_name), summary: pending.summary, input: 'input' in part ? part.input : {} }] : []
+  return pending ? [{ id: part.approval.id, callId, name: describeAiTool(pending.tool_name), tool: pending.tool_name, summary: pending.summary, input: 'input' in part ? part.input : {} }] : []
 })))
 async function respond(id: string, approved: boolean) {
   if (props.busy || submitting.value !== null || chat.isBusy) return
@@ -29,6 +30,7 @@ async function respond(id: string, approved: boolean) {
     <section v-for="approval in approvals" :key="approval.callId" class="rounded-xl border border-amber-200 bg-amber-50/[var(--ai-chat-surface-opacity,1)] p-4 dark:border-amber-700 dark:bg-amber-950/[var(--ai-chat-surface-opacity,1)]">
       <p v-if="!toolCallId" class="font-semibold">等待确认：{{ approval.name }}</p>
       <p class="mt-2 text-sm">{{ approval.summary }}</p>
+      <PackageEstimateReview v-if="approval.tool === 'draft_package_estimates_confirm'" :input="approval.input" />
       <details class="mt-2 text-xs"><summary>查看操作参数</summary><pre class="overflow-auto whitespace-pre-wrap">{{ JSON.stringify(approval.input, null, 2) }}</pre></details>
       <div class="mt-3 flex gap-2">
         <button class="btn btn-primary" :disabled="busy || submitting !== null || chat.isBusy" @click="respond(approval.id, true)">批准</button>

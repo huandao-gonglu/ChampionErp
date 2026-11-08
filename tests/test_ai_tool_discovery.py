@@ -20,9 +20,37 @@ def test_matching_prefers_exact_names_and_supports_chinese():
               ToolDefinition(name="draft_save", description="保存草稿，先调用 draft_read"),
               ToolDefinition(name="orders_read", description="查询订单")]
     assert match_tool_queries(None, ["draft_read"], corpus) == ["draft_read"]
+    assert match_tool_queries(None, ["draft read", "draft_read"], corpus) == ["draft_read"]
     assert match_tool_queries(None, ["订单"], corpus) == ["orders_read"]
     assert match_tool_queries(None, ["draft_read", "draft_save"], corpus) == ["draft_read", "draft_save"]
     assert match_tool_queries(None, ["unknown_tool"], corpus) == []
+
+
+@pytest.mark.parametrize("vision", [False, True])
+def test_mixed_sku_and_image_query_discovers_reader_in_full_catalog(tmp_path, vision):
+    queries = ["draft sku read", "product image read", "product_sku_facts_update", "draft images"]
+    requests = []
+
+    async def model(messages, info):
+        names = {tool.name for tool in info.function_tools}
+        requests.append(names)
+        if len(requests) == 1:
+            yield {0: DeltaToolCall(name="search_tools", json_args=json.dumps({"queries": queries}),
+                                    tool_call_id="find-sku-images")}
+        else:
+            yield "已查找所需工具。"
+
+    capabilities = ["chat", "tool_calling"]
+    if vision:
+        capabilities.append("image_understanding")
+    config = {"ai_models": [{"id": "test", "capabilities": capabilities}],
+              "ai_use_case_bindings": {"global.chat": {"model_id": "test"}}}
+    toolset = build_global_chat_toolset(get_context(), chat_config=config)
+    ui = service(tmp_path, FunctionModel(stream_function=model, profile={"supported_native_tools": frozenset()}), toolset)
+    asyncio.run(ui.prepare_run(body("把当前草稿 SKU 图片上的尺寸识别写入 SKU 包装尺寸")).stream(lambda _: None))
+    assert len(requests) == 2
+    assert "product_sku_facts_update" in requests[1]
+    assert ("product_image_read" in requests[1]) == vision
 
 
 @pytest.mark.parametrize("native_search", [False, True])

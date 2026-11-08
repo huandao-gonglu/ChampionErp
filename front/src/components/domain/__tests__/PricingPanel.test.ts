@@ -2,6 +2,9 @@
 
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAiChatStore } from '@/stores/aiChat'
+import { setOperationAvailability } from '@/utils/desktop'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
 import { pricingTemplateParameters } from '@/types/pricing'
@@ -159,6 +162,23 @@ function mountPricing(rows: DraftSku[], localInput = reactive(structuredClone(in
 }
 
 describe('PricingPanel 对齐 Penpot 核价原型', () => {
+  it('只为已选且缺少边长的 SKU 发起估算，单缺重量的规格不计入', async () => {
+    setActivePinia(createPinia())
+    setOperationAvailability({ desktop_reason: '', blocked_use_cases: {} })
+    const chat = vi.spyOn(useAiChatStore(), 'estimatePackageDimensions').mockImplementation(() => {})
+    const rows = [skuRow('缺长度'), skuRow('缺重量'), { ...skuRow('未选择'), selected: false }]
+    const context = productContext(rows)
+    context.skuItems[0].package_dimensions.length_cm = ''
+    context.skuItems[1].package_dimensions.weight_kg = ''
+    context.skuItems[2].package_dimensions.height_cm = ''
+    const wrapper = mountPricing(rows)
+    await wrapper.setProps({ productContext: context })
+    const button = wrapper.findAll('button').find(item => item.text().includes('AI 估算包装尺寸'))!
+    expect(button.text()).toContain('1 个 SKU')
+    await button.trigger('click')
+    expect(chat).toHaveBeenCalledWith('draft', ['缺长度'], ['mercadolibre:cbt'])
+    setOperationAvailability(null)
+  })
   it.each([
     [{}, true],
     [{ common: { domestic_freight_cny: 0 } }, false],

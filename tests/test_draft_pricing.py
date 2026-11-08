@@ -650,3 +650,27 @@ def test_restore_only_returns_preview_for_current_pricing_inputs(pricing_draft, 
 def test_restore_http_returns_empty_when_no_preview_exists(pricing_draft):
     result, status = price_draft_payload({'draft_id': 'pricing-draft'}, apply=False, restore=True)
     assert status == 200 and result == {'applied': False, 'preview_id': ''}
+
+
+def test_package_estimate_endpoints_use_ogl_volume_rates_without_applying(pricing_draft):
+    from erp_web.runtime_units.package_estimate_capabilities import PackageEstimateScope, draft_package_estimates_preview
+    from erp_web.schemas.package_estimates import PackageFreightPreviewRequest
+
+    store, draft, _ = pricing_draft
+    app = get_context()
+    store.update_draft_sku_selection(draft["draft_id"], ["sku-0"])
+    product = app.db.load_product_model("pricing-product")
+    row = product["sku_items"][0]
+    row.update(cost_cny="150", package_dimensions={"length_cm": "", "width_cm": "30", "height_cm": "20", "weight_kg": "3"})
+    product = store.save_product_profile(product)
+    request = PackageFreightPreviewRequest(
+        draft_id=draft["draft_id"], expected_product_updated_at=product["updated_at"], target_keys=["ozon:global"],
+        estimates=[{"sku_id": "sku-0", "basis": "两种外箱长度", "dimensions": {"length_cm": {"low": 55, "suggested": 60, "high": 70}}}],
+    )
+    preview = draft_package_estimates_preview(request, PackageEstimateScope(store, app.tariffs.load))
+    low, high = preview.scenarios
+    assert not low.errors and not high.errors, preview
+    assert low.quotes[0].amount < high.quotes[0].amount
+    assert low.quotes[0].currency == high.quotes[0].currency == "CNY"
+    assert app.db.load_product_model("pricing-product")["sku_items"][0]["package_dimensions"]["length_cm"] == ""
+    assert app.pricing_cache.previews.latest(lambda entry: True) is None

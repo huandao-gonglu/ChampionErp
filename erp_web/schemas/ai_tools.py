@@ -931,6 +931,7 @@ class ToolApprovalSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    requires_user_confirmation: bool = False
     summary: str = Field(min_length=1, max_length=2000)
     canonical_payload: dict[str, JsonValue] = Field(
         default_factory=dict,

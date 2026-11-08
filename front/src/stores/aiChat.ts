@@ -380,6 +380,13 @@ export const useAiChatStore = defineStore('aiChat', () => {
     connectEvents(id)
     if (runActive.value) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
   }
+  function estimatePackageDimensions(draftId: string, skuIds: string[], markets: string[]): void {
+    startConversation()
+    targetDraftIds.value = [draftId]
+    input.value = `请估算草稿 ${draftId} 中下列 SKU 缺失的包装外尺寸：${skuIds.join('、')}。按已保存的核价设置比较${markets.join('、')}的物流影响，列出区间和建议值供我确认。`
+    floatingOpen.value = true
+    sendMessage()
+  }
   function prepareDrafts(ids: string[], goal = '准备所选草稿，复用已有资料，完成可执行的准备工作并按草稿汇报剩余问题。'): void {
     startConversation()
     targetDraftIds.value = [...new Set(ids)]
@@ -410,6 +417,6 @@ export const useAiChatStore = defineStore('aiChat', () => {
     error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
     restoring, restoreError, restoreConversation,
     sendMessage, stopStreaming, respondToApproval, clearError, openConversation, connectEvents, disconnectEvents,
-    prepareDrafts, refreshHistory, forking, forkConversation,
+    prepareDrafts, estimatePackageDimensions, refreshHistory, forking, forkConversation,
     openFloating: () => { floatingOpen.value = true; void restoreConversation() }, closeFloating: () => { floatingOpen.value = false } }
 })

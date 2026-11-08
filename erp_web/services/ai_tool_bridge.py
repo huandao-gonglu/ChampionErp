@@ -238,6 +238,7 @@ class PydanticToolBridge:
                 metadata = {
                     **metadata,
                     "summary": snapshot.summary,
+                    **({"requires_user_confirmation": True} if snapshot.requires_user_confirmation else {}),
                     "approval_revision": revision,
                     "approval_digest": approval_binding_digest(
                         snapshot=snapshot,

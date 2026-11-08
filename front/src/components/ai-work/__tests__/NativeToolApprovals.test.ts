@@ -10,6 +10,23 @@ import { useAiChatStore } from '@/stores/aiChat'
 describe('原生工具审批卡', () => {
   beforeEach(() => setActivePinia(createPinia()))
   afterEach(() => vi.unstubAllGlobals())
+  it('核对每个 SKU 的建议值、区间和依据后，才提交原生确认', async () => {
+    const store = useAiChatStore()
+    const input = { estimates: [{ sku_id: 's-1', sku_name: '10 L 桶', basis: '按桶身标注预留纸箱空间', dimensions: {
+      length_cm: { low: 28, suggested: 30, high: 32 },
+    } }] }
+    store.chat = new Chat<UIMessage>({ id: 'size-review', messages: [{ id: 'a', role: 'assistant', parts: [{
+      type: 'tool-draft_package_estimates_confirm', toolCallId: 'estimate', input, state: 'approval-requested', approval: { id: 'estimate' },
+    }] }] })
+    store.pendingToolCalls = [{ tool_call_id: 'estimate', tool_name: 'draft_package_estimates_confirm', kind: 'approval', summary: '确认建议值' }]
+    const respond = vi.spyOn(store, 'respondToApproval').mockResolvedValue()
+    const wrapper = mount(NativeToolApprovals)
+    const review = wrapper.get('[aria-label="待确认的包装外尺寸"]').text()
+    for (const text of ['10 L 桶', 's-1', '包装长 30 cm', '28–32 cm', input.estimates[0].basis]) expect(review).toContain(text)
+    expect(respond).not.toHaveBeenCalled()
+    await wrapper.get('button').trigger('click')
+    expect(respond).toHaveBeenCalledWith('estimate', true, undefined)
+  })
   it('只展示服务端当前未决定的审批，使用原生 approval ID 提交', async () => {
     const store = useAiChatStore()
     store.chat = new Chat<UIMessage>({ id: 'approval-test', messages: [{ id: 'assistant', role: 'assistant', parts: [

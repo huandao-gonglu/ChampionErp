@@ -1,4 +1,4 @@
-import type { BackendPublishPreparationProgress } from './workflow.generated'
+import type { BackendConfirmedEdgeEstimate, BackendPublishPreparationProgress } from './workflow.generated'
 
 // <schema-generated-types>
 export {
@@ -75,6 +75,7 @@ export {
   type BackendMercadoLibreMarketplaceUser,
   type BackendMercadoLibreMarketPublication,
   type BackendMercadoLibrePublication,
+  type BackendConfirmedEdgeEstimate,
   type BackendProductSku,
   type BackendProductSource,
   type BackendMercadoLibreSiteToSell,
@@ -360,6 +361,7 @@ export interface ProductSku extends UnknownRecord {
   image_asset_id: string
   barcode: string
   package_dimensions: Record<string, string>
+  package_estimates?: Record<string, BackendConfirmedEdgeEstimate>
   battery?: boolean
   liquid?: boolean
   active: boolean

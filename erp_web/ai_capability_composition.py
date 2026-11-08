@@ -32,6 +32,7 @@ from erp_web.runtime_units.draft_pricing_capabilities import DRAFT_PRICING_AI_CA
 from erp_web.runtime_units.upc_capabilities import (
     UPC_AI_CAPABILITIES,
 )
+from erp_web.runtime_units.package_estimate_capabilities import PACKAGE_ESTIMATE_CAPABILITIES
 from erp_web.runtime_units.product_capabilities import PRODUCT_AI_CAPABILITIES
 from erp_web.runtime_units.product_write_capabilities import (
     DRAFT_WRITE_AI_CAPABILITIES,
@@ -79,6 +80,7 @@ ALL_AI_CAPABILITIES = (
     *ONLINE_PRODUCT_AI_CAPABILITIES,
     *CONVERSATION_FACT_CAPABILITIES,
     *PRODUCT_CAPABILITIES,
+    *PACKAGE_ESTIMATE_CAPABILITIES,
     *PRODUCT_WRITE_CAPABILITIES,
     *CATEGORY_CAPABILITIES,
     *CATEGORY_QUERY_CAPABILITIES,
@@ -140,6 +142,7 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
         "category_attribute_values_query",
         "category_precheck",
         "draft_pricing_preview",
+        "draft_package_estimates_preview",
         "store_auth_checklist",
         "store_auth_check",
         "collect_1688_clean",
@@ -187,6 +190,7 @@ _WRITE_CAPABILITIES = frozenset(
         "draft_duplicate",
         "draft_sku_selection_update",
         "product_sku_facts_update",
+        "draft_package_estimates_confirm",
         "draft_changes_apply",
         "draft_pricing_apply",
         "draft_delete",

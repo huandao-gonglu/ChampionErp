@@ -709,7 +709,7 @@ CLI / Browser use case
   `FunctionToolset`；Pydantic tool 只调用 `AiToolRuntime.execute(...)`，不直接调用
   领域 executor；原生 Pydantic 调度独立同步工具的并发，Runtime 仅按 call ID 去重。
   主对话的大型目录在组合根设置 `AiToolSet.defer_loading`，Bridge 映射为原生 `Tool.defer_loading`；小型 focused 工具集直接提供。工具发现不改变 Runtime allowlist、目标范围或审批权限。
-- `erp_web/services/ai_tool_discovery.py`：原生 `ToolSearch` 的匹配策略，完整工具名精确匹配，关键词支持中文；发现、Provider 适配及历史恢复均由 Pydantic AI 管理。已核对安装的 Pydantic AI 2.44.0 / Harness 0.34.0 和[官方工具搜索文档](https://github.com/pydantic/pydantic-ai/blob/main/docs/capabilities/tool-search.md)。原生关键词算法只识别 ASCII，且完整工具名也召回引用该名称的其他工具，因此仅适配目录匹配；原生算法支持这两点时可移除该策略。CodeMode 对按需目录使用原生 `dynamic_catalog`，仅为已发现的同步非审批能力生成 Python 类型与签名，不再预注入全部函数；保留直接调用入口，执行仍归官方 CodeMode。
+- `erp_web/services/ai_tool_discovery.py`：原生 `ToolSearch` 的匹配策略，完整工具名优先匹配，同样支持用空格分隔名称各词（如 `product image read`），关键词支持中文；发现、Provider 适配及历史恢复均由 Pydantic AI 管理。已核对安装的 Pydantic AI 2.44.0 / Harness 0.34.0 和[官方工具搜索文档](https://github.com/pydantic/pydantic-ai/blob/main/docs/capabilities/tool-search.md)。原生关键词算法只识别 ASCII，且完整工具名也召回引用该名称的其他工具，因此仅适配目录匹配；原生算法支持这两点时可移除该策略。CodeMode 对按需目录使用原生 `dynamic_catalog`，仅为已发现的同步非审批能力生成 Python 类型与签名，不再预注入全部函数；保留直接调用入口，执行仍归官方 CodeMode。
 - `erp_web/services/ai_agent_factory.py`：由 Pydantic Agent 独占 model → tool → model
   循环、类型化 output、重试和 usage limit；`run_sync(...)` 与 `open_stream_run(...)`
   是统一同步/流式入口，保留完整 canonical history，仅追加原生 `new_messages()`；不能把模型上下文裁剪结果写回历史。
@@ -834,7 +834,7 @@ transcript 或 Tool 输出。
 
 - `POST /api/v1/ai-chat/runs`：新用户消息或官方 approval-responded 消息。用户消息 ID 幂等领取与输入同事务保存；仅服务端历史参与模型调用。
 - 对话输入框支持粘贴和选择 JPEG、PNG、WebP 图片。服务端按全局 AI 实际绑定的 API 模型校验 `image_understanding`，验证原图后交由 Vercel Adapter 转为原生消息。图片随收件箱和对话历史保存。模型输入投影附上内容 ID，切换文本模型后仅提供附件引用。
-- `runtime_units/image_capabilities.py` 的 `product_image_read` 按商品列出素材，并通过 `ai_direct_request_service.image_to_text` 用同一模型读取指定原图。`chat_images_save_to_product` 从当前会话的用户消息取指定附件，以短锁合入最新商品图片池。两条入口分别使用商品读权限和图片写权限。
+- `runtime_units/image_capabilities.py` 的 `product_image_read` 按商品列出素材，由商品 SKU 的 `image_asset_id` 反查每张图关联的全部 SKU，并通过 `ai_direct_request_service.image_to_text` 用同一模型读取指定原图。`chat_images_save_to_product` 从当前会话的用户消息取指定附件，以短锁合入最新商品图片池。两条入口分别使用商品读权限和图片写权限。
 - `POST /api/v1/ai-chat/cancel`：接收 `{id, message_id}`，直接取消本轮原生令牌；不排队发送取消 prompt。相同消息的停止幂等，已知旧消息不能取消新回合；取消先于发送到达时，现有 claim 幂等记录阻止迟到消息启动。
 - 同会话有活动 run 或未齐备 Deferred 时返回 HTTP 202 接收凭据。批准/拒绝还需 `X-Approval-Token`，客户端不能更改服务端 call ID、工具名或参数。
 - `GET /api/v1/ai-work/conversations` 与 `/{id}`：历史索引和 canonical Pydantic JSON。
@@ -1395,6 +1395,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   商品资料、上架条件、价格、库存和确认读取；发送前及响应后仍逐 SKU 持久化原检查点。
   发布计划与库存证据保存选中仓库及其实际 Campaign，确认查询使用该 Campaign。
   合批不改变发布成功判定、手动重试与未知写入规则，不增加重启后续发。
+- 核价页或主对话可以发起包装外尺寸估算。`package_estimate_capabilities.py` 使用草稿已选 SKU 和商品版本，复用核价批处理比较区间端点，保留整组 SKU 共同选仓语义。端点报价只供估算比较。确认建议使用 Pydantic AI 原生审批，服务端快照的 `requires_user_confirmation` 标记让通用自动批准策略跳过需要人工核对的建议。确认后经 ProductStore 保存建议值和逐边依据，商品编辑及重采集按当前值保留适用标记。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
 - `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。
 - 前端 `SkuImagePicker.vue` 从素材池选图；商品素材池“关联 SKU”复用商品保存入口；草稿 V2 不提供配图入口。`replace_selected` 处理结果只替换当前草稿的相应 SKU 引用，换图不使核价失效。无调用方的 `set_sku` 素材标记 action 已删除。

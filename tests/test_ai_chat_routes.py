@@ -1777,11 +1777,19 @@ def test_chat_images_reach_model_and_can_be_saved_by_reference(chat_service, mon
     receipt = context.agent_calls.receipt(CONVERSATION, "save-photo")
     assert receipt and json.loads(receipt["output_json"])["asset_ids"] == [attachment_ids[1]]
     result = chat_images_save_to_product(save, scope, execution)
-    pool = context.products.load_product_from_index(product["product_id"])["source"]["image_pool"]
+    saved_product = context.products.load_product_from_index(product["product_id"])
+    pool = saved_product["source"]["image_pool"]
     assert len(pool) == 2 and pool[0]["is_main"]
     assert (context.paths.app_dir / pool[1]["path"]).read_bytes() == originals[1]
     listing = ProductImageReadRequest(product_id=product["product_id"])
     assert [row.asset_id for row in product_image_read(listing, scope, execution).images] == [row["id"] for row in pool]
+    saved_product["sku_items"] = [
+        {"id": sku_id, "name": sku_id, "image_asset_id": pool[index]["id"]}
+        for sku_id, index in [("a", 0), ("b", 1), ("c", 1)]
+    ]
+    context.products.save_product(saved_product)
+    listed = product_image_read(listing, scope, execution).images
+    assert [(row.sku, row.sku_ids) for row in listed] == [("a", ["a"]), ("", ["b", "c"])]
 
     def read(messages, _info):
         assert messages[0].parts[0].content[1].data == originals[1]

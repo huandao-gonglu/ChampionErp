@@ -9,6 +9,13 @@ from .mercadolibre import MercadoLibrePublication
 PRODUCT_SCHEMA_VERSION = 5
 
 
+class ConfirmedEdgeEstimate(TypedDict):
+    low: float
+    suggested: float
+    high: float
+    basis: str
+
+
 class ProductSku(TypedDict, total=False):
     """商品规格的默认图片仅引用商品图片池资产，采集地址保留在 source.skus。"""
 
@@ -23,6 +30,7 @@ class ProductSku(TypedDict, total=False):
     image_asset_id: str
     barcode: str
     package_dimensions: dict[str, str]
+    package_estimates: dict[str, ConfirmedEdgeEstimate]
     battery: bool
     liquid: bool
     active: bool
@@ -173,5 +181,6 @@ __all__ = [
     "PlatformDraft",
     "Product",
     "ProductSku",
+    "ConfirmedEdgeEstimate",
     "ProductSource",
 ]

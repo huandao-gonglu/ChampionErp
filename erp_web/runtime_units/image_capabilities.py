@@ -119,7 +119,7 @@ IMAGE_EDIT_TOOL = "image_edit"
 
 @ai_tool(
     name="product_image_read", permission="product.read", recovery_policy="retry_safe",
-    description="识图、读取图片文字或商品外观。先用 product_id 列出该商品图片，再用 asset_id 与 question 读取指定图片。按问题所需范围选图，保留图片与 SKU 的归属。",
+    description="识图、读取图片文字或商品外观。先用 product_id 列出商品图片及各图关联的 sku_ids，再用 asset_id 与 question 读取指定图片。",
 )
 def product_image_read(
     request: ProductImageReadRequest,
@@ -138,10 +138,18 @@ def product_image_read(
         pool = [item for item in pool if item["id"] == request.asset_id]
         if len(pool) != 1:
             raise BusinessCapabilityError("IMAGE_ASSET_NOT_FOUND", "未找到该商品唯一对应的可用图片。")
-    result = ProductImageReadResult(product_id=request.product_id, images=[
-        ProductImageChoice(asset_id=item["id"], usage=item["usage"], is_main=item["is_main"], sku=item.get("sku", ""))
-        for item in pool
-    ])
+    sku_ids_by_asset: dict[str, list[str]] = {}
+    for sku in product["sku_items"]:
+        if sku["image_asset_id"]:
+            sku_ids_by_asset.setdefault(sku["image_asset_id"], []).append(sku["id"])
+    choices = []
+    for item in pool:
+        sku_ids = sku_ids_by_asset.get(item["id"], [])
+        choices.append(ProductImageChoice(
+            asset_id=item["id"], usage=item["usage"], is_main=item["is_main"],
+            sku=sku_ids[0] if len(sku_ids) == 1 else "", sku_ids=sku_ids,
+        ))
+    result = ProductImageReadResult(product_id=request.product_id, images=choices)
     if not request.asset_id:
         return result
     item = pool[0]

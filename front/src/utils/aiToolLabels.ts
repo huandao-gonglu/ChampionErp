@@ -60,6 +60,8 @@ const toolLabels: Record<string, string> = {
   draft_attributes_read: '查看草稿属性',
   draft_sku_attributes_update: '更新规格属性',
   draft_sku_selection_update: '选择商品规格',
+  draft_package_estimates_preview: '比较尺寸区间运费',
+  draft_package_estimates_confirm: '确认包装尺寸估算',
   product_sku_facts_update: '更新商品 SKU 资料',
   draft_changes_apply: '保存草稿修改',
   copy_generate: '生成商品文案',

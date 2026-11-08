@@ -192,6 +192,11 @@ def _prepare(request: DraftPricingRequest, draft: dict[str, Any], product: dict[
     return items, {"common": common, "targets": templates, "template_source": source}, selected_targets
 
 
+def prepare_pricing_inputs(request: DraftPricingRequest, draft: dict[str, Any], product: dict[str, Any]):
+    """按当前草稿与默认模板构造试算输入，不创建可应用预览。"""
+    return _prepare(request, draft, product, _default_template(request, draft))
+
+
 def _validate_results(batch: dict[str, Any], inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = batch.get("items") or []
     expected = {item["sku_id"]: {target_key(t) for t in item["input"]["targets"]} for item in inputs}
@@ -346,4 +351,4 @@ def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStor
     return response
 
 
-__all__ = ["BatchCalculator", "DraftPricingStore", "price_draft"]
+__all__ = ["BatchCalculator", "DraftPricingStore", "prepare_pricing_inputs", "price_draft"]

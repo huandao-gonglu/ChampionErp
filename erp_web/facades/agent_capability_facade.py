@@ -53,6 +53,7 @@ from erp_web.runtime_units.draft_pricing_capabilities import DraftPricingCapabil
 from erp_web.runtime_units.upc_capabilities import (
     UpcCapabilityScope,
 )
+from erp_web.runtime_units.package_estimate_capabilities import PackageEstimateScope
 from erp_web.runtime_units.product_capabilities import ProductCapabilityScope
 from erp_web.runtime_units.product_write_capabilities import (
     ProductWriteCapabilityScope,
@@ -222,6 +223,7 @@ def build_capability_binding_scope(
                 ),
                 product_loader=context.products.load_required_product_from_body,
             ),
+            PackageEstimateScope: PackageEstimateScope(context.products, lambda platform: context.tariffs.load(platform)),
             DraftPricingCapabilityScope: DraftPricingCapabilityScope(products=context.products),
             UpcCapabilityScope: UpcCapabilityScope(
                 products=context.products,

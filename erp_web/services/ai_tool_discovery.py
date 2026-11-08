@@ -11,7 +11,7 @@ from pydantic_ai.tools import ToolDefinition
 def match_tool_queries(
     ctx: RunContext[Any], queries: Sequence[str], tools: Sequence[ToolDefinition],
 ) -> list[str]:
-    """精确工具名只返回该工具；关键词同时支持英文名称和中文说明。
+    """完整工具名支持下划线和空格分词；关键词同时支持英文名称和中文说明。
 
     原生 keywords 仅提取 ASCII 单词，而且完整工具名会召回提及该名称的
     其他工具。只适配这两个匹配缺口，权限、结果上限与恢复均交给原生 ToolSearch。
@@ -22,9 +22,10 @@ def match_tool_queries(
     scores: dict[str, int] = {}
     for query in queries:
         query = query.strip()
-        if query in names:
-            if query not in exact:
-                exact.append(query)
+        name = query if query in names else "_".join(query.lower().split())
+        if name in names:
+            if name not in exact:
+                exact.append(name)
             continue
         terms = set(re.findall(r"[a-z0-9]+|[\u3400-\u9fff]+", query.lower()))
         for tool in tools:

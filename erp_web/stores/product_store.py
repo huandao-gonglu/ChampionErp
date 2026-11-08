@@ -18,6 +18,7 @@ from typing import Any, Callable, Iterator
 from pydantic import ValidationError
 
 from erp_web.db import ErpDatabase, product_identity
+from erp_web.schemas.product import ConfirmedEdgeEstimate
 from erp_web.schemas.product_facts import ProductSkuFactsUpdateRequest
 from erp_web.stores.product_mutation import product_mutation, product_resource_locks
 from erp_web.marketplace_registry import marketplace_site
@@ -839,11 +840,24 @@ class ProductStore:
         return self.save_product(data)
 
     @product_mutation("product")
-    def save_product_profile(self, data: dict[str, Any]) -> dict[str, Any]:
+    def save_product_profile(
+        self, data: dict[str, Any], *,
+        estimate_updates: dict[str, dict[str, ConfirmedEdgeEstimate]] | None = None,
+    ) -> dict[str, Any]:
         product_data = dict(data or {})
         product_data.pop("drafts", None)
         product_id = str(product_data.get("product_id") or "").strip()
         existing = self.load_product_from_index(product_id, "") if product_id else {}
+        if existing.get("product_id") != product_id:
+            existing = {}
+        if "sku_items" in product_data:
+            # 估算来源由服务端维护。旧客户端省略此字段时也能保留，改值后由 SKU 归一化清除。
+            previous = {row["id"]: row.get("package_estimates", {}) for row in existing.get("sku_items", [])}
+            origins = {**previous, **(estimate_updates or {})}
+            product_data["sku_items"] = [
+                {**row, "package_estimates": origins.get(row.get("id"), {})}
+                for row in product_data["sku_items"]
+            ]
         if str(existing.get("product_id") or "").strip() == product_id:
             if product_data.get("updated_at") and product_data["updated_at"] != existing.get("updated_at"):
                 raise ValueError("商品资料已更新，请重新加载后保存。")
@@ -1329,7 +1343,10 @@ class ProductStore:
         return {"changed": error is None}, error, status
 
     @product_mutation("product")
-    def update_product_sku_facts(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_product_sku_facts(
+        self, payload: dict[str, Any], *,
+        confirmed_estimates: dict[str, dict[str, ConfirmedEdgeEstimate]] | None = None,
+    ) -> dict[str, Any]:
         request = ProductSkuFactsUpdateRequest.model_validate(payload)
         product = self.load_product_from_index(request.product_id)
         if product.get("product_id") != request.product_id:
@@ -1340,6 +1357,7 @@ class ProductStore:
         if any(change.sku_id not in rows for change in request.changes):
             raise ValueError("指定 SKU 不属于当前商品。")
         changed = 0
+        estimate_updates = {}
         for change in request.changes:
             row = rows[change.sku_id]
             before = deepcopy(row)
@@ -1347,10 +1365,18 @@ class ProductStore:
             for key, value in patch.items():
                 if key == "package_dimensions":
                     row[key] = {**row.get(key, {}), **{field: str(v) for field, v in value.items()}}
+                    # 明确提供的事实可以取代同值的估算。
+                    origins = dict(row.get("package_estimates") or {})
+                    for field in value:
+                        origins.pop(field, None)
+                    origins.update((confirmed_estimates or {}).get(change.sku_id, {}))
+                    if origins or row.get("package_estimates"):
+                        row["package_estimates"] = origins
+                        estimate_updates[change.sku_id] = origins
                 else:
                     row[key] = value if key in {"battery", "liquid", "options"} else str(value)
             changed += row != before
-        saved = self.save_product_profile(product) if changed else product
+        saved = self.save_product_profile(product, estimate_updates=estimate_updates) if changed else product
         return {"product_id": request.product_id, "changed_count": changed,
                 "updated_at": saved["updated_at"], "sku_ids": [item.sku_id for item in request.changes]}
 

@@ -23,6 +23,7 @@ class ProductImageChoice(BaseModel):
     usage: str
     is_main: bool
     sku: str
+    sku_ids: list[str] = Field(default_factory=list, description="将该素材用作默认图片的全部商品 SKU ID。")
 
 
 class ProductImageReadResult(BaseModel):

@@ -22,6 +22,8 @@ def automatic_approval_results(
     confirmed_at = datetime.now(timezone.utc).isoformat()
     for call in requests.approvals:
         snapshot = requests.metadata.get(call.tool_call_id, {})
+        if snapshot.get("requires_user_confirmation"):
+            continue
         if not snapshot.get("approval_digest") or not snapshot.get("approval_revision"):
             continue
         approvals[call.tool_call_id] = True

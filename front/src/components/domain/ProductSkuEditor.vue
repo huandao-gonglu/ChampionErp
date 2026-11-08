@@ -68,7 +68,7 @@ function add() {
               <td class="min-w-44 p-1"><input v-model="row.name" class="input !py-1.5" aria-label="SKU 名称" :disabled="disabled" /><span class="text-xs text-slate-500">{{ Object.values(row.options).join(' / ') }}</span></td>
               <td class="w-28 p-1"><input v-model="row.cost_cny" class="input !py-1.5" type="number" min="0" step="0.01" aria-label="采购成本 CNY" :disabled="disabled" /></td>
               <td class="w-24 p-1"><input v-model="row.supplier_stock" class="input !py-1.5" aria-label="供应商库存" :disabled="disabled" /></td>
-              <td v-for="field in fields" :key="field[0]" class="w-24 p-1"><input v-model="row.package_dimensions[field[0]]" class="input !py-1.5" type="number" min="0" step="any" :aria-label="field[1]" :disabled="disabled" /></td>
+              <td v-for="field in fields" :key="field[0]" class="w-24 p-1"><input v-model="row.package_dimensions[field[0]]" class="input !py-1.5" type="number" min="0" step="any" :aria-label="field[1]" :disabled="disabled" /><small v-if="row.package_estimates?.[field[0]] && Number(row.package_dimensions[field[0]]) === row.package_estimates[field[0]].suggested" class="text-xs text-slate-500" :title="row.package_estimates[field[0]].basis">确认估算 · {{ row.package_estimates[field[0]].low }}–{{ row.package_estimates[field[0]].high }} cm</small></td>
               <td class="whitespace-nowrap"><button class="p-2" :aria-label="`编辑 ${row.name} 详情`" @click="expanded = expanded === row.id ? '' : row.id"><PhCaretDown /></button><button v-if="!row.source_sku_id" class="p-2 text-red-500" aria-label="停用 SKU" title="停用 SKU" :disabled="disabled" @click="row.active = false"><PhTrash /></button></td>
             </tr>
             <tr v-if="expanded === row.id">

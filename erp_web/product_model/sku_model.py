@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import uuid
@@ -27,6 +28,15 @@ def sku_fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def positive_measurement(value: Any) -> Decimal | None:
+    """来源与旧数据允许空串或无效文本；只有有限正数可作包装事实。"""
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() and number > 0 else None
+
+
 def normalize_product_skus(value: Any) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -41,6 +51,12 @@ def normalize_product_skus(value: Any) -> list[dict[str, Any]]:
             raise ValueError("商品 SKU ID 重复：" + sku_id)
         seen.add(sku_id)
         options = {text(k): text(v) for k, v in record(raw.get("options")).items() if text(k)}
+        dimensions = {key: text(record(raw.get("package_dimensions")).get(key)) for key in PACKAGE_FIELDS}
+        # 人工更改某条边后，仅移除该边旧的估算标记。
+        estimates = {key: deepcopy(estimate) for key, estimate in record(raw.get("package_estimates")).items()
+                     if key in PACKAGE_FIELDS[:3] and isinstance(estimate, dict)
+                     and (value := positive_measurement(dimensions[key])) is not None
+                     and positive_measurement(estimate.get("suggested")) == value}
         result.append({
             "id": sku_id,
             "source_sku_id": text(raw.get("source_sku_id")),
@@ -52,7 +68,8 @@ def normalize_product_skus(value: Any) -> list[dict[str, Any]]:
             "supplier_stock": text(raw.get("supplier_stock")),
             "image_asset_id": text(raw.get("image_asset_id")),
             "barcode": text(raw.get("barcode")),
-            "package_dimensions": {k: text(record(raw.get("package_dimensions")).get(k)) for k in PACKAGE_FIELDS},
+            "package_dimensions": dimensions,
+            **({"package_estimates": estimates} if estimates else {}),
             "battery": raw.get("battery") is True,
             "liquid": raw.get("liquid") is True,
             "active": raw.get("active") is not False,
@@ -109,6 +126,8 @@ def merge_collected_skus(existing: Any, source: dict[str, Any]) -> list[dict[str
             # 用户编辑过的事实保留；新来源事实仍完整写入 source_snapshot 供核对。
             if (field in snapshot and old.get(field) != snapshot.get(field)) or (field in {"battery", "liquid"} and field not in snapshot):
                 row[field] = deepcopy(old[field])
+        if old.get("package_estimates"):
+            row["package_estimates"] = deepcopy(old["package_estimates"])
         row["active"] = old["active"]
     # 来源消失的 SKU 保留身份并停用，已发布关联仍可追溯。
     incoming.extend({**row, "active": False if row["source_sku_id"] else row["active"]} for row in previous.values())
@@ -218,4 +237,4 @@ def retain_sku_publications(previous: dict[str, Any], incoming: dict[str, Any]) 
     return result
 
 
-__all__ = ["single_sku_publish_draft", "retain_sku_publications", "PACKAGE_FIELDS", "SKU_FACT_FIELDS", "collected_skus", "effective_sku", "editable_selected_skus", "merge_collected_skus", "new_draft_sku_rows", "normalize_draft_skus", "normalize_product_skus", "selected_skus", "sku_fingerprint"]
+__all__ = ["single_sku_publish_draft", "retain_sku_publications", "PACKAGE_FIELDS", "positive_measurement", "SKU_FACT_FIELDS", "collected_skus", "effective_sku", "editable_selected_skus", "merge_collected_skus", "new_draft_sku_rows", "normalize_draft_skus", "normalize_product_skus", "selected_skus", "sku_fingerprint"]

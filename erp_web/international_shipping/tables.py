@@ -6,6 +6,15 @@ from decimal import Decimal, ROUND_CEILING
 from .models import Candidate, Package, PriceForShipping, QuoteResult, money, number
 
 
+def extra_small_size_excess(edges, policy):
+    exceeded = []
+    if max(edges) > Decimal(policy["max_edge_cm"]):
+        exceeded.append(f"最长边是否超过 {policy['max_edge_cm']} cm")
+    if sum(edges) > Decimal(policy["max_sum_cm"]):
+        exceeded.append(f"三边和是否超过 {policy['max_sum_cm']} cm")
+    return exceeded
+
+
 def yandex_shipping(package: Package, route: dict) -> tuple[Decimal, Decimal]:
     step = Decimal(route['step_g'])
     grams = (package.weight_g / step).to_integral_value(rounding=ROUND_CEILING) * step
@@ -36,8 +45,7 @@ def quote_table(
             result.reject('模板没有液体准入规则，无法确认'); continue
         if route['group'] == 'Extra Small' and (
             actual_g > Decimal(policy['max_g'])
-            or max(package.edges) > Decimal(policy['max_edge_cm'])
-            or sum(package.edges) > Decimal(policy['max_sum_cm'])
+            or extra_small_size_excess(package.edges, policy)
         ):
             result.reject('不符合轻小件重量或尺寸'); continue
         amount, grams = yandex_shipping(package, route)

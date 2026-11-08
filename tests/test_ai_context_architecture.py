@@ -717,6 +717,7 @@ def test_generic_object_saves_not_in_global_task_allowlist() -> None:
         "draft_duplicate",
         "draft_sku_selection_update",
         "product_sku_facts_update",
+        "draft_package_estimates_confirm",
         "draft_pricing_apply",
         "product_attributes_update",
     ):

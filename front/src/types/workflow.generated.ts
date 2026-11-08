@@ -710,6 +710,13 @@ export interface BackendMercadoLibrePublication {
   updated_at?: string
 }
 
+export interface BackendConfirmedEdgeEstimate {
+  low: number
+  suggested: number
+  high: number
+  basis: string
+}
+
 export interface BackendProductSku {
   id?: string
   source_sku_id?: string
@@ -722,6 +729,7 @@ export interface BackendProductSku {
   image_asset_id?: string
   barcode?: string
   package_dimensions?: Record<string, string>
+  package_estimates?: Record<string, BackendConfirmedEdgeEstimate>
   battery?: boolean
   liquid?: boolean
   active?: boolean

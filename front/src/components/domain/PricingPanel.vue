@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { draftListTitle } from '@/utils/draftDisplayTitle'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { useAiChatStore } from '@/stores/aiChat'
+import { modelOperationReason } from '@/utils/desktop'
 import { useNow } from '@vueuse/core'
 import { selectedPricingTargets } from '@/types/pricing'
 import { PhArrowsClockwise, PhCheckCircle, PhLightning, PhPackage, PhSlidersHorizontal, PhWarningCircle } from '@phosphor-icons/vue'
@@ -39,6 +41,12 @@ const selectedSkus = computed(() => props.skuItems.filter(row => row.selected))
 const targets = computed(() => selectedPricingTargets(props.input))
 const tariffVersions = ref<Record<string, string>>({})
 const entries = computed(() => buildSkuPricingEntries(props.skuItems, props.productContext.skuItems, targets.value, tariffVersions.value))
+const missingSizeIds = computed(() => [...new Set(entries.value.filter(entry =>
+  ['length_cm', 'width_cm', 'height_cm'].some(key => !Number.isFinite(Number(entry.dimensions[key])) || Number(entry.dimensions[key]) <= 0),
+).map(entry => entry.row.sku_id))])
+function estimateDimensions() {
+  useAiChatStore().estimatePackageDimensions(props.draftId, missingSizeIds.value, targets.value.map(target => target.targetKey))
+}
 const allInputErrors = computed(() => [...pricingCommonErrors(props.input), ...targets.value.flatMap(pricingTargetErrors)])
 const issues = computed(() => entries.value.filter(entry => entry.errors.length || entry.status === 'loss' || pricingFactsIssues(entry.cost, entry.dimensions).length))
 const hasSavedPricing = computed(() => props.skuItems.some(row => Object.keys(pricingRecord(row.pricing?.targets)).length > 0))
@@ -189,6 +197,10 @@ onBeforeUnmount(() => { disposed = true })
     </header>
     <div v-if="!selectionLocked" class="pricing-card mb-4 flex flex-wrap items-center gap-3 p-4"><label class="min-w-48 flex-1"><span class="sr-only">草稿</span><select class="pricing-input w-full" :disabled="loading || !draftItems.length" :value="draftId" @change="emit('selectDraft', ($event.target as HTMLSelectElement).value)"><option value="">选择草稿</option><option v-for="item in draftItems" :key="item.draftId" :value="item.draftId">{{ draftListTitle(item) }}</option></select></label><button type="button" class="pricing-button" :disabled="loading" @click="emit('refreshDrafts')">刷新草稿</button><button type="button" class="pricing-button" :disabled="loading || !draftId" @click="emit('editDraft')">编辑草稿</button></div>
     <section class="pricing-scope-bar pricing-card" aria-label="当前核价范围"><div class="pricing-scope-count"><PhPackage :size="22" class="shrink-0 text-primary-600" /><div><p class="font-semibold">{{ selectedSkus.length }} 个 SKU</p><p class="pricing-subtle mt-1 text-[11px]">{{ issues.some(entry => pricingFactsIssues(entry.cost, entry.dimensions).length) ? '部分采购或包装资料待补充' : '采购成本与包装按规格读取' }}</p></div></div><div class="min-w-0 flex-1"><div class="flex flex-wrap gap-2"><span v-for="target in targets" :key="target.targetKey" class="pricing-tag">{{ marketName(target) }} · {{ marketSite(target) }}</span><span v-if="!targets.length" class="pricing-subtle text-xs">未选择核价市场</span></div><p class="pricing-subtle mt-2 text-[11px]">按当前店铺物流配置与运输属性匹配可用渠道</p></div><button type="button" class="pricing-button" :disabled="applying || !draftId" @click="scopeOpen = true"><PhSlidersHorizontal :size="16" />修改核价范围</button></section>
+    <div v-if="draftId && missingSizeIds.length" class="mb-3 flex flex-wrap items-center gap-3">
+      <button type="button" class="pricing-button" :disabled="loading || requestActive || !!modelOperationReason('global.chat')" @click="estimateDimensions">AI 估算包装尺寸（{{ missingSizeIds.length }} 个 SKU）</button>
+      <span class="pricing-subtle text-xs">{{ modelOperationReason('global.chat') || '确认建议值后保存至商品资料。' }}</span>
+    </div>
     <PricingExchangeRates ref="rates" :input="input" :disabled="loading || requestActive" @ready="ratesReady = true" @rates="referenceUsdCnyRate = $event.usd_cny_rate" @refresh-start="invalidateQuote" />
     <p v-if="loading" role="status" class="pricing-progress"><span class="h-2 w-2 animate-pulse rounded-full bg-primary-600" />{{ restoring ? '正在恢复上一轮报价' : applying ? '正在校验并保存售价' : `正在核价 ${selectedSkus.length} 个 SKU × ${targets.length} 个市场` }}，已等待 {{ elapsedSeconds }} 秒。</p>
     <div class="pricing-main-grid">

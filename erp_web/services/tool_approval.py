@@ -35,6 +35,8 @@ def approval_binding_digest(
         "summary": snapshot.summary,
         "canonical_payload": snapshot.canonical_payload,
     }
+    if snapshot.requires_user_confirmation:
+        payload["requires_user_confirmation"] = True
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -59,6 +61,8 @@ def verify_execution_approval(
     在“所见非所批”的状态下执行破坏性写入。
     """
 
+    if snapshot.requires_user_confirmation and not execution.business_scope.get("approver", "").startswith("local-ui:"):
+        raise AiToolExecutionError("USER_CONFIRMATION_REQUIRED", "请先核对并确认建议值。")
     digest = str(execution.approval_digest or "").strip()
     if not digest or execution.approval_revision <= 0:
         raise AiToolExecutionError(
