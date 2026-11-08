@@ -79,6 +79,7 @@ from erp_web.services import collect_service, config_service, product_research_s
 from erp_web.services.ai_tool_catalog import AiToolBindingScope
 from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.services.desktop_connection_service import desktop_unavailable_reason
+from erp_web.services.chat_images import chat_image_reason
 from erp_web.services.operation_availability import model_platform_reason
 
 
@@ -140,7 +141,7 @@ def _create_research_run(
 
 
 def build_capability_binding_scope(
-    context: AppContext,
+    context: AppContext, *, chat_config: dict | None = None,
 ) -> AiToolBindingScope:
     """从 AppContext 装配全部领域 Capability 的可信 Scope provider。"""
 
@@ -238,7 +239,7 @@ def build_capability_binding_scope(
                 app_config_loader=context.config.load_app_config,
             ),
             ImageCapabilityScope: ImageCapabilityScope(
-                context=context,
+                context=context, chat_config=chat_config,
             ),
             CollectCapabilityScope: CollectCapabilityScope(
                 source_collector=(
@@ -309,10 +310,10 @@ def build_job_status_readers(
     }
 
 
-def build_global_chat_toolset(context: AppContext | None = None) -> AiToolSet:
+def build_global_chat_toolset(context: AppContext | None = None, *, chat_config: dict | None = None) -> AiToolSet:
     active = context or get_context()
     toolset = bind_chat_capabilities(
-        scope=build_capability_binding_scope(active),
+        scope=build_capability_binding_scope(active, chat_config=chat_config),
         declared_permissions=global_chat_permissions(),
     )
 
@@ -324,6 +325,8 @@ def build_global_chat_toolset(context: AppContext | None = None) -> AiToolSet:
     }
 
     def availability(name):
+        if name == "product_image_read":
+            return lambda _: chat_image_reason(chat_config if chat_config is not None else active.config.load_app_config())
         if name in model_dependencies:
             return lambda _: model_platform_reason(active.config.load_app_config(), model_dependencies[name])
         if name == 'collect_from_browser_tab':

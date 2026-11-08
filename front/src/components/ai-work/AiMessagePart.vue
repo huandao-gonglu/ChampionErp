@@ -216,8 +216,15 @@ const statusLabels: Record<string, string> = {
     class="rounded-lg border border-slate-200 bg-slate-50/[var(--ai-chat-surface-opacity,1)] px-3 py-2 text-xs dark:border-dark-700 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
     data-testid="ai-part-file"
   >
+    <img
+      v-if="/^data:image\/(?:png|jpeg|webp);base64,/i.test(fileUrl)"
+      :src="fileUrl"
+      :alt="fileName"
+      class="max-h-56 max-w-full rounded object-contain"
+      loading="lazy"
+    />
     <a
-      v-if="isSafeFileUrl"
+      v-else-if="isSafeFileUrl"
       :href="fileUrl"
       target="_blank"
       rel="noopener noreferrer"

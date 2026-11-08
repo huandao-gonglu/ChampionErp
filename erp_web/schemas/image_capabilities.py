@@ -10,6 +10,42 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints,
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
 
 
+class ProductImageReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    product_id: TrimmedText = Field(min_length=1, max_length=160)
+    asset_id: TrimmedText = Field(default="", max_length=200, description="留空列出商品图片，传入素材 ID 读取指定原图。")
+    question: TrimmedText = Field(default="转录可辨认的原文，并描述图片主体。", max_length=2000)
+
+
+class ProductImageChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    asset_id: str
+    usage: str
+    is_main: bool
+    sku: str
+
+
+class ProductImageReadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    product_id: str
+    images: list[ProductImageChoice]
+    content: str = ""
+
+
+class ChatImagesSaveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    product_id: TrimmedText = Field(min_length=1, max_length=160)
+    attachment_ids: list[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=80)]] = Field(
+        min_length=1, max_length=4, description="从模型所见的「对话图片 ID」按用户指定顺序选取。")
+
+
+
+class ChatImagesSaveResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    product_id: str
+    asset_ids: list[str]
+
+
 class DraftImagesPrepareRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
@@ -161,6 +197,11 @@ class ImageGenerationResult(BaseModel):
 
 
 __all__ = [
+    "ProductImageChoice",
+    "ProductImageReadRequest",
+    "ProductImageReadResult",
+    "ChatImagesSaveRequest",
+    "ChatImagesSaveResult",
     "DraftImagesPrepareRequest",
     "DraftImagesPrepareResult",
     "ImageEditRequest",

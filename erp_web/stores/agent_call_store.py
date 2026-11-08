@@ -356,28 +356,20 @@ class AgentCallStore:
         return str((messages[-1].metadata or {}).get("desktop_connection") or "") if messages else ""
 
     def user_facts(self, conversation_id: str) -> list[dict[str, Any]]:
-        from pydantic_ai.messages import UserPromptPart
+        from erp_web.services.chat_images import prompt_summary
 
         with self.db._connect() as conn:
             rows = conn.execute(
                 "SELECT message_id,messages_json,target_draft_ids FROM ai_chat_inbox WHERE conversation_id=? ORDER BY sequence DESC LIMIT 50",
                 (conversation_id,),
-            ).fetchall()
-        return [
-            {
-                "message_id": row["message_id"],
-                "draft_ids": json.loads(row["target_draft_ids"]),
-                "text": "\n".join(
-                    str(part.content)
-                    for message in ModelMessagesTypeAdapter.validate_json(
-                        row["messages_json"]
-                    )
-                    for part in message.parts
-                    if isinstance(part, UserPromptPart)
-                )[:4000],
-            }
-            for row in reversed(rows)
-        ]
+            )
+            # 每次只解码一条输入；返回给工具的事实不携带图片字节。
+            facts = [
+                {"message_id": row["message_id"], "draft_ids": json.loads(row["target_draft_ids"]),
+                 "text": prompt_summary(ModelMessagesTypeAdapter.validate_json(row["messages_json"]))[:4000]}
+                for row in rows
+            ]
+        return list(reversed(facts))
 
     def selected_drafts(self, conversation_id: str) -> tuple[str, ...]:
         with self.db._connect() as conn:

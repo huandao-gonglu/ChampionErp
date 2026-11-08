@@ -3,7 +3,8 @@ import { defineStore } from 'pinia'
 import { Chat } from '@ai-sdk/vue'
 import { DefaultChatTransport } from 'ai'
 import { accountFetch, businessStorageKey } from '@/utils/accountTransport'
-import type { UIMessage } from 'ai'
+import { useChatImages } from '@/composables/useChatImages'
+import type { FileUIPart, UIMessage } from 'ai'
 import { AI_CHAT_RUNS_PATH, cancelChatRun, conversationEventsUrl, fetchUiMessages, forkChatConversation } from '@/api/aiWork'
 import { apiClient } from '@/api/client'
 import { matchChatCommand } from '@/services/chatCommands'
@@ -26,6 +27,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const activeConversationId = ref<string | null>(null)
   const chat = shallowRef<Chat<UIMessage> | null>(null)
   const input = ref('')
+  const images = useChatImages()
   const floatingOpen = ref(false)
   const restoring = ref(false)
   const restoreError = ref('')
@@ -58,7 +60,8 @@ export const useAiChatStore = defineStore('aiChat', () => {
     chat.value?.messages ?? [], localTurnStartedAt.value, previous,
   ))
   const error = computed(() => localError.value ?? chat.value?.error as AiChatError | undefined)
-  const canSend = computed(() => Boolean(input.value.trim()) && !stopping.value && !forking.value && !restoring.value && !restoreError.value)
+  const canSend = computed(() => Boolean(input.value.trim() || images.attachments.value.length) && !images.reading.value
+    && !(images.attachments.value.length && images.blocked.value) && !stopping.value && !forking.value && !restoring.value && !restoreError.value)
   const canStop = computed(() => isBusy.value || runActive.value || pendingToolCalls.value.length > 0 || stopping.value)
 
   // 只记住选择，不复制消息；消息与活动运行始终从服务端恢复。
@@ -220,6 +223,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   }
   function startConversation(): string {
     finishRestore()
+    images.clear()
     // 未发送的空白对话不在服务端存在；刷新后继续保持空白，不恢复上一段。
     rememberConversation(null)
     localTurnStartedAt.value = ''
@@ -242,7 +246,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     connectEvents(id)
     return id
   }
-  async function queueText(text: string): Promise<void> {
+  async function queueMessage(text: string, files: FileUIPart[]): Promise<void> {
     const id = activeConversationId.value
     if (!id) return
     const messageId = crypto.randomUUID()
@@ -252,7 +256,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     let response: Response
     try {
       response = await accountFetch(AI_CHAT_RUNS_PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-        id, trigger: 'submit-message', messages: [{ id: messageId, role: 'user', parts: [{ type: 'text', text }] }],
+        id, trigger: 'submit-message', messages: [{ id: messageId, role: 'user', parts: [{ type: 'text', text }, ...files] }],
         target_draft_ids: targetDraftIds.value,
         page_context: pageContext.snapshot(),
       }) })
@@ -282,28 +286,45 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (stopping.value || forking.value) return
     if (!restored && !chat.value) void restoreConversation()
     if (restoring.value || restoreError.value) return
-    const text = input.value.trim()
-    if (!text) return
-    const command = matchChatCommand(text)
+    if (!canSend.value) return
+    const attachments = images.attachments.value
+    const files = attachments.map(item => item.part)
+    const text = input.value.trim() || '请读取图片上的内容。'
+    const command = !files.length && matchChatCommand(text)
     if (command && command.command.available(commandContext())) {
       if (command.command.execute(commandContext(), command.arg)) input.value = ''
       return
     }
     if (!chat.value) startConversation()
     rememberConversation(activeConversationId.value)
+    images.clear()
     input.value = ''
     localError.value = undefined
+    const instance = chat.value
+    function restoreInput() {
+      if (chat.value === instance && !input.value && !images.attachments.value.length && !images.reading.value) {
+        input.value = text
+        images.attachments.value = attachments
+      }
+    }
     if (isBusy.value || runActive.value || pendingToolCalls.value.length) {
-      void queueText(text).catch(cause => { localError.value = cause; input.value = text })
+      void queueMessage(text, files).catch(cause => {
+        if (chat.value !== instance) return
+        localError.value = cause
+        restoreInput()
+      })
     } else {
       // 作废发送前发起的历史读取，防止旧快照覆盖新一轮回复或误报排队。
       generation++
       disconnectEvents()
       localTurnStartedAt.value = new Date().toISOString()
-      void chat.value?.sendMessage({ text }, { body: {
+      void instance?.sendMessage(files.length ? { text, files } : { text }, { body: {
         target_draft_ids: [...targetDraftIds.value],
         page_context: pageContext.snapshot(),
-      } })
+      } }).then(() => {
+        const status = (instance.error as AiChatError | undefined)?.status
+        if (files.length && status && status >= 400 && status < 500) restoreInput()
+      })
     }
   }
   function stopStreaming(): void {
@@ -337,6 +358,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   function openConversation(detail: AiWorkUiMessagesResponse): void {
     rememberConversation(detail.conversation_id)
     localTurnStartedAt.value = ''
+    images.clear()
     const id = detail.conversation_id
     // 页面已校验响应并确认仍选中该会话；打开只绑定历史，不提交模型请求。
     generation++
@@ -384,7 +406,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (activeConversationId.value) void resyncFromServer(activeConversationId.value)
   }
   function clearError(): void { localError.value = undefined; chat.value?.clearError() }
-  return { activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
+  return { images, activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
     error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
     restoring, restoreError, restoreConversation,
     sendMessage, stopStreaming, respondToApproval, clearError, openConversation, connectEvents, disconnectEvents,

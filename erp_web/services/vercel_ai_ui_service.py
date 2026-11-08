@@ -11,13 +11,17 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from pydantic import ValidationError
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, UserPromptPart, ModelResponse, ToolCallPart, ToolReturnPart, RetryPromptPart
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelResponse, ToolCallPart, ToolReturnPart, RetryPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import (
+    FileUIPart,
     RegenerateMessage,
     SubmitMessage,
     TextUIPart,
     UIMessage,
+)
+from erp_web.services.chat_images import (
+    IMAGE_TYPES, MAX_CHAT_IMAGES, MAX_CHAT_TOTAL_BYTES, chat_image_reason, identify_uploads, prompt_summary, validate_image_attachment,
 )
 from erp_web.services.chat_conversation_service import (
     AcceptedChatInput, ChatConversationError as VercelUiProtocolError,
@@ -126,16 +130,9 @@ class VercelAiUiService(ChatConversationService):
         self.approval_session = approval_session
 
     def prepare_run(self, body: bytes, *, approval_token: str = ""):
-        with self.run_registry.input_guard():
-            return self._prepare_run(body, approval_token=approval_token)
-
-    def _prepare_run(self, body: bytes, *, approval_token: str = ""):
         run_input = self._parse_run_input(body)
         conversation_id = self._validate_conversation_id(run_input.id)
-        self._verify_history_ownership(conversation_id)
         raw = json.loads(body)
-        if self.run_registry.token(conversation_id).cancelled and self.run_registry.is_active(conversation_id):
-            raise VercelUiProtocolError(409, "AI_CHAT_STOPPING", "当前操作正在停止，请稍后发送。")
         draft_ids = raw.get("target_draft_ids", [])
         if (
             not isinstance(draft_ids, list)
@@ -161,18 +158,20 @@ class VercelAiUiService(ChatConversationService):
             messages = self._load_new_messages(message)
             for item in messages:
                 item.metadata = {"page_context": page_context}
-            try:
-                self.accept_input(conversation_id, message.id, messages, draft_ids=draft_ids)
-            except AiChatTurnAlreadyAcceptedError:
-                raise VercelUiProtocolError(
-                    409,
-                    "AI_CHAT_TURN_ALREADY_ACCEPTED",
-                    "本轮消息已接收，请读取消息历史。",
-                ) from None
-            message_id = message.id
-        else:
+            with self.run_registry.input_guard():
+                try:
+                    self.accept_input(conversation_id, message.id, messages, draft_ids=draft_ids)
+                except AiChatTurnAlreadyAcceptedError:
+                    raise VercelUiProtocolError(
+                        409, "AI_CHAT_TURN_ALREADY_ACCEPTED", "本轮消息已接收，请读取消息历史。",
+                    ) from None
+                return self.prepare_accepted(conversation_id, message.id)
+        with self.run_registry.input_guard():
+            self._verify_history_ownership(conversation_id)
+            if self.run_registry.token(conversation_id).cancelled and self.run_registry.is_active(conversation_id):
+                raise VercelUiProtocolError(409, "AI_CHAT_STOPPING", "当前操作正在停止，请稍后发送。")
             message_id = self._accept_approvals(run_input, approval_token)
-        return self.prepare_accepted(conversation_id, message_id)
+            return self.prepare_accepted(conversation_id, message_id)
 
     def make_run(self, conversation_id, message_id):
         return VercelAiChatRun(conversation_id, message_id, self)
@@ -190,7 +189,7 @@ class VercelAiUiService(ChatConversationService):
             raise VercelUiProtocolError(
                 400,
                 "AI_CHAT_MESSAGE_INVALID",
-                "只能提交一条新用户文本或原生工具审批响应。",
+                "只能提交一条新用户消息或原生工具审批响应。",
             )
         from erp_web.services.approval_session import ApprovalSessionError
 
@@ -335,9 +334,8 @@ class VercelAiUiService(ChatConversationService):
             if pending
             else [],
             "received_messages": [
-                {"message_id": r["message_id"], "status": "received", "text": "\n".join(
-                    part.content for message in ModelMessagesTypeAdapter.validate_json(r["messages_json"])
-                    for part in message.parts if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+                {"message_id": r["message_id"], "status": "received", "text": prompt_summary(
+                    ModelMessagesTypeAdapter.validate_json(r["messages_json"])
                 )}
                 for r in self.call_store.inbox(conversation_id)
             ],
@@ -449,13 +447,29 @@ class VercelAiUiService(ChatConversationService):
                 "AI_CHAT_MESSAGE_INVALID",
                 "用户消息不能为空。",
             )
+        images = [part for part in message.parts if isinstance(part, FileUIPart)]
+        if any(part.media_type not in IMAGE_TYPES for part in images):
+            raise VercelUiProtocolError(400, "AI_CHAT_PART_UNSUPPORTED", "支持 JPEG、PNG 和 WebP 图片。")
+        if images:
+            reason = chat_image_reason(self.chat_service.app_config)
+            if reason:
+                raise VercelUiProtocolError(409, "AI_CHAT_IMAGE_UNSUPPORTED", reason)
+            try:
+                if len(images) > MAX_CHAT_IMAGES:
+                    raise ValueError("每条消息最多可附 4 张图片。")
+                if sum(validate_image_attachment(part) for part in images) > MAX_CHAT_TOTAL_BYTES:
+                    raise ValueError("每条消息的图片合计不能超过 20 MiB。")
+            except ValueError as exc:
+                raise VercelUiProtocolError(400, "AI_CHAT_IMAGE_INVALID", str(exc)) from None
         total_chars = 0
         for part in message.parts:
+            if isinstance(part, FileUIPart):
+                continue
             if not isinstance(part, TextUIPart):
                 raise VercelUiProtocolError(
                     400,
                     "AI_CHAT_PART_UNSUPPORTED",
-                    "本期入口只接受非空 text part。",
+                    "用户消息仅支持文字和图片。",
                 )
             if not str(part.text or "").strip():
                 raise VercelUiProtocolError(
@@ -483,6 +497,7 @@ class VercelAiUiService(ChatConversationService):
                 "AI_CHAT_MESSAGE_INVALID",
                 "用户消息无法转换为 Pydantic 消息。",
             ) from None
+        identify_uploads(loaded)
         for message in loaded:
             message.metadata = None
             message.timestamp = None

@@ -1287,3 +1287,15 @@ def test_warranty_compiler_is_shared_by_publishing_and_online_changes():
     from erp_web.services import online_product_changes
     for module in (publish_yandex, publish_validation, online_yandex, online_product_changes):
         assert module.compile_yandex_guarantee_period is compile_yandex_guarantee_period
+
+
+def test_chat_product_images_use_separate_read_and_write_permissions():
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG, GLOBAL_CHAT_CAPABILITIES, _WRITE_CAPABILITIES
+
+    read = APPLICATION_CAPABILITY_CATALOG.tools["product_image_read"].definition
+    save = APPLICATION_CAPABILITY_CATALOG.tools["chat_images_save_to_product"].definition
+    assert read.name in GLOBAL_CHAT_CAPABILITIES
+    assert (read.side_effect, read.required_permission) == ("none", "product.read")
+    assert save.name in _WRITE_CAPABILITIES and save.name not in GLOBAL_CHAT_CAPABILITIES
+    assert (save.side_effect, save.required_permission) == ("write", "image.write")
+    assert set(save.input_schema["properties"]) == {"product_id", "attachment_ids"}

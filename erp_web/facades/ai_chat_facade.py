@@ -16,11 +16,12 @@ from erp_web.services.agent_job_service import AgentJobService
 
 def build_global_chat_service(context=None):
     active = context or get_context()
+    chat_config = active.config.load_app_config()
     return GlobalAgentChatService(
         app_dir=active.paths.app_dir,
-        app_config=active.config.load_app_config(),
+        app_config=chat_config,
         message_store=active.pydantic_messages,
-        toolset=build_global_chat_toolset(active),
+        toolset=build_global_chat_toolset(active, chat_config=chat_config),
         call_store=active.agent_calls,
         approval_mode_reader=active.config.ai_tool_approval_mode,
     )

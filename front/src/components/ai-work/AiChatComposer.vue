@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useAiChatStore } from '@/stores/aiChat'
+import { chatImageAccept } from '@/composables/useChatImages'
 import { modelOperationReason } from '@/utils/desktop'
 import { computed, onDeactivated, ref, watch } from 'vue'
 import { useEventListener } from '@vueuse/core'
@@ -18,6 +20,8 @@ const props = withDefaults(defineProps<{
   /** 非空时锁定普通发送（例如存在未解决的全局任务），并展示原因。 */
   sendDisabledReason?: string
 }>(), {
+  queuedMessages: () => [],
+  statusNotice: '',
   sendDisabledReason: '',
   conversationId: '',
 })
@@ -30,6 +34,22 @@ const emit = defineEmits<{
 
 const { commandsFor, selectCommand } = useChatCommands()
 const pageContext = useAiPageContextStore()
+const chatStore = useAiChatStore()
+const picker = ref<HTMLInputElement>()
+function onPick(event: Event) {
+  const element = event.target as HTMLInputElement
+  void chatStore.images.add(Array.from(element.files ?? []))
+  element.value = ''
+}
+function onPaste(event: ClipboardEvent) {
+  const clipboard = event.clipboardData
+  if (!clipboard) return
+  const files = clipboard.files.length ? Array.from(clipboard.files) : Array.from(clipboard.items)
+    .map(item => item.getAsFile()).filter((file): file is File => file !== null)
+  if (!files.length) return
+  event.preventDefault()
+  void chatStore.images.add(files)
+}
 const composing = ref(false)
 const stopArmed = ref(false)
 
@@ -76,14 +96,14 @@ useEventListener(window, 'blur', resetStopShortcut)
 useEventListener(document, 'visibilitychange', resetStopShortcut)
 onDeactivated(resetStopShortcut)
 
-const blockedReason = computed(() => props.sendDisabledReason || modelOperationReason('global.chat'))
+const blockedReason = computed(() => props.sendDisabledReason || modelOperationReason('global.chat') || (chatStore.images.attachments.length ? chatStore.images.blocked : ''))
 const canSend = computed(() => (
-  props.modelValue.trim().length > 0 && !blockedReason.value && !props.stopping && !composing.value
+  (props.modelValue.trim().length > 0 || chatStore.images.attachments.length > 0) && !chatStore.images.reading && !blockedReason.value && !props.stopping && !composing.value
 ))
 
 /** 输入以 `/` 开头时返回其后的查询串，否则返回 null。 */
 const commandQuery = computed(() => (
-  props.modelValue.startsWith('/') ? props.modelValue.slice(1) : null
+  !chatStore.images.attachments.length && props.modelValue.startsWith('/') ? props.modelValue.slice(1) : null
 ))
 const matchedCommandEntries = computed(() => (
   commandQuery.value === null ? [] : commandsFor(commandQuery.value)
@@ -199,6 +219,15 @@ function onKeydown(event: KeyboardEvent) {
         </div>
       </div>
       <div class="ai-chat-composer-surface rounded-2xl border border-slate-200 bg-white/[var(--ai-chat-surface-opacity,1)] px-3 pb-2.5 pt-2 shadow-sm transition focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-200/60 dark:border-dark-600 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:focus-within:border-primary-500/60 dark:focus-within:ring-primary-500/15">
+        <div v-if="chatStore.images.attachments.length" class="flex flex-wrap gap-2">
+          <div v-for="(item, index) in chatStore.images.attachments" :key="index" class="relative">
+            <img :src="item.part.url" :alt="item.part.filename || '待发送图片'" class="h-16 w-16 rounded-md object-contain" />
+            <button type="button" :aria-label="`移除第 ${index + 1} 张图片`" class="absolute right-0 top-0 rounded bg-slate-800 px-1.5 text-white" @click="chatStore.images.attachments.splice(index, 1)">×</button>
+          </div>
+        </div>
+        <p v-if="chatStore.images.error" role="alert" class="text-xs text-rose-600">{{ chatStore.images.error }}</p>
+        <p v-if="chatStore.images.reading" role="status" class="text-xs">正在读取图片…</p>
+        <input ref="picker" type="file" :accept="chatImageAccept" multiple hidden @change="onPick" />
         <label class="sr-only" for="ai-chat-input">发送消息</label>
         <textarea
           id="ai-chat-input"
@@ -206,6 +235,7 @@ function onKeydown(event: KeyboardEvent) {
           class="min-h-20 w-full resize-y bg-transparent px-1 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:text-white dark:placeholder:text-accent-400"
           placeholder="输入问题或描述要处理的事情"
           data-testid="ai-chat-input"
+          @paste="onPaste"
           @input="onInput"
           @keydown="onKeydown"
           @compositionstart="onCompositionStart"
@@ -217,10 +247,11 @@ function onKeydown(event: KeyboardEvent) {
             <button
               type="button"
               class="flex size-9 shrink-0 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 disabled:cursor-not-allowed disabled:opacity-50 dark:text-accent-300 dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)] dark:hover:text-white"
-              aria-label="添加文件（暂未开放）"
-              title="添加文件（暂未开放）"
+              aria-label="添加图片"
+              :title="chatStore.images.blocked || '添加图片，也可将图片粘贴到输入框'"
               data-testid="ai-chat-add-file"
-              disabled
+              :disabled="Boolean(chatStore.images.blocked) || chatStore.images.reading"
+              @click="picker?.click()"
             >
               <PhPlus :size="24" weight="regular" />
             </button>

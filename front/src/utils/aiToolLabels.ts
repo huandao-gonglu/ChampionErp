@@ -70,6 +70,8 @@ const toolLabels: Record<string, string> = {
   image_pool_save: '保存图片',
   image_pool_action: '管理商品图片',
   image_pool_sync_generated: '同步生成图片',
+  product_image_read: '读取商品图片',
+  chat_images_save_to_product: '保存对话图片到商品',
   image_translate: '翻译图片',
   image_edit: '编辑图片',
   products_index_query: '查询采集箱',

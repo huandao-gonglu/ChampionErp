@@ -1,6 +1,7 @@
 """从操作的实际模型绑定与当前请求的桌面连接计算平台限制。"""
 
 from . import ai_model_config
+from .chat_images import chat_image_reason
 from .desktop_connection_service import desktop_unavailable_reason
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.schemas.api import OperationAvailability
@@ -51,4 +52,7 @@ def operation_availability(config, *, connection_id=None) -> OperationAvailabili
         reason = model_platform_reason(config, use_case, desktop_reason=desktop_reason)
         if reason:
             blocked[use_case] = reason
+    image_reason = chat_image_reason(config)
+    if image_reason:
+        blocked["global.chat.images"] = image_reason
     return {'desktop_reason': desktop_reason, 'blocked_use_cases': blocked}

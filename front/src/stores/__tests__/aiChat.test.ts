@@ -368,6 +368,30 @@ describe('原生等待与批量入口', () => {
     await vi.waitFor(() => expect(store.receivedMessages[0]?.text).toContain('本次仅准备草稿'))
     expect(store.floatingOpen).toBe(true)
   })
+  it.each([false, true])('纯图片输入保留原生附件和读图请求（排队 %s）', async queued => {
+    const store = useAiChatStore()
+    if (queued) {
+      store.startConversation()
+      store.pendingToolCalls = [{ tool_call_id: 'busy', tool_name: 'prepare', kind: 'external', summary: '' }]
+    }
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => queued
+      ? new Response('{}', { status: 202 })
+      : new Response('data: [DONE]\n\n', { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    mocks.fetchUiMessages.mockResolvedValue({ history_version: 1, messages: [], received_messages: [] })
+    await store.images.add([new File(['image'], '型号.png', { type: 'image/png' })])
+    expect(store.canSend).toBe(true)
+    store.sendMessage()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    const submitted = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).messages[0]
+    expect(submitted.parts).toEqual(expect.arrayContaining([
+      { type: 'text', text: '请读取图片上的内容。' },
+      { type: 'file', mediaType: 'image/png', filename: '型号.png', url: 'data:image/png;base64,aW1hZ2U=' },
+    ]))
+    expect(store.images.attachments).toHaveLength(0)
+    await vi.waitFor(() => expect(store.isBusy).toBe(false))
+  })
+
   it('等待工具时追加输入直接进入同一会话收件箱', async () => {
     const store = useAiChatStore()
     const id = store.startConversation()

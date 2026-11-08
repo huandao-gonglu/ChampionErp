@@ -72,3 +72,18 @@ def test_redirect_and_oversized_download_are_rejected(monkeypatch, status, data,
     monkeypatch.setattr(transport, "_PinnedHTTPSConnection", lambda *a, **k: connection)
     with pytest.raises(error):
         transport.safe_image_urlopen(Request("https://images.example.test/test.png"), max_bytes=4)
+
+
+def test_source_image_get_preserves_cdn_query_and_keeps_default_url_contract(monkeypatch):
+    response = io.BytesIO(b"image")
+    response.status = 200
+    response.headers = {}
+    targets = []
+    connection = SimpleNamespace(request=lambda method, target, **kw: targets.append(target),
+                                 getresponse=lambda: response, sock=None, close=lambda: None)
+    monkeypatch.setattr(transport, "_PinnedHTTPSConnection", lambda *a, **kw: connection)
+    req = Request("https://images.example.test/photo.png?size=large&v=2")
+    with pytest.raises(ExternalRequestNotSent):
+        transport.safe_image_urlopen(req)
+    assert transport.safe_image_urlopen(req, allow_query=True).read() == b"image"
+    assert targets == ["/photo.png?size=large&v=2"]

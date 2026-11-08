@@ -55,16 +55,19 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
-def safe_image_urlopen(request, *, timeout=30, max_bytes=MAX_IMAGE_BYTES):
+def safe_image_urlopen(request, *, timeout=30, max_bytes=MAX_IMAGE_BYTES, allow_query=False):
     try:
-        validate_public_url(request.full_url)
+        validate_public_url(request.full_url, allow_query=allow_query and request.get_method() == "GET")
     except ImageHostingError as exc:
         raise ExternalRequestNotSent(RequestFailure(exc.code, str(exc))) from None
     parsed = urlsplit(request.full_url)
     connection = _PinnedHTTPSConnection(parsed.hostname, parsed.port or 443, timeout=timeout, context=ssl.create_default_context())
     deadline = time.monotonic() + timeout
     try:
-        connection.request(request.get_method(), parsed.path or "/", body=request.data, headers=dict(request.header_items()))
+        target = parsed.path or "/"
+        if parsed.query:
+            target += "?" + parsed.query
+        connection.request(request.get_method(), target, body=request.data, headers=dict(request.header_items()))
         response = connection.getresponse()
         raw = bytearray()
         while True:

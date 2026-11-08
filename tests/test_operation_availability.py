@@ -287,3 +287,18 @@ def test_background_job_and_next_decision_keep_origin_across_detached_runs(tmp_p
         assert len(visible_on_resume) == 1 and 'local_job' in visible_on_resume[0]
     finally:
         worker.close()
+
+
+def test_chat_image_input_and_read_tool_follow_selected_chat_model(monkeypatch):
+    context = get_context()
+    config = {"ai_models": [
+        {"id": "text", "capabilities": ["chat", "tool_calling"]},
+        {"id": "visual", "capabilities": ["chat", "tool_calling", "image_understanding"]},
+    ]}
+    monkeypatch.setattr(context.config, "load_app_config", lambda: config)
+    tool = build_global_chat_toolset(context).get("product_image_read")
+    blocked = operation_availability(config)["blocked_use_cases"]
+    assert "global.chat" not in blocked and blocked["global.chat.images"] == tool.unavailable_reason(None)
+    config["ai_use_case_bindings"] = {"global.chat": {"model_id": "visual"}}
+    assert "global.chat.images" not in operation_availability(config)["blocked_use_cases"]
+    assert not tool.unavailable_reason(None)

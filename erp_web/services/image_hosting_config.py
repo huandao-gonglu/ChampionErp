@@ -14,7 +14,7 @@ from erp_web.schemas.image_hosting import ImageHostingConfig, ImageHostingError,
 _TARGET_FIELDS = ("type", "endpoint_url", "region", "bucket", "key_prefix", "public_base_url", "addressing_style")
 
 
-def validate_public_url(value: str) -> str:
+def validate_public_url(value: str, *, allow_query: bool = False) -> str:
     try:
         parsed = urlsplit(value)
         host = parsed.hostname or ""
@@ -22,7 +22,7 @@ def validate_public_url(value: str) -> str:
     except ValueError:
         raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "图片地址的主机或端口无效") from None
     if (parsed.scheme != "https" or not host or parsed.username is not None or parsed.password is not None
-            or parsed.query or parsed.fragment or port == 0 or any(c.isspace() or ord(c) < 32 for c in value)
+            or (parsed.query and not allow_query) or parsed.fragment or port == 0 or any(c.isspace() or ord(c) < 32 for c in value)
             or "\\" in value):
         raise ImageHostingError("IMAGE_HOSTING_CONFIG_INVALID", "图片地址必须是无凭据、查询参数和片段的 HTTPS 地址")
     if host.lower() in {"localhost", "metadata.google.internal"} or host.lower().endswith((".localhost", ".local", ".internal")):

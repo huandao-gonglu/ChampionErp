@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Sequence
 
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelMessage,
     ModelRequest,
     ModelResponse,
@@ -192,6 +193,16 @@ async def project_model_request(
             continue
         parts = []
         for part in message.parts:
+            if isinstance(part, UserPromptPart) and isinstance(part.content, (list, tuple)):
+                content = []
+                for item in part.content:
+                    if isinstance(item, BinaryContent) and item.identifier.startswith("chat_"):
+                        content.append(f"对话图片 ID：{item.identifier}")
+                        if ctx.deps.business_scope.get("chat_image_input") == "disabled":
+                            content.append("当前模型不支持识图，无法查看该附件内容。")
+                            continue
+                    content.append(item)
+                part = dataclasses.replace(part, content=content)
             if type(part) is ToolReturnPart and part.tool_kind is None:
                 content = share_repeated_json_values(part.content)
                 if content is not part.content:

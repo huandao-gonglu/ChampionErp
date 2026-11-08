@@ -139,7 +139,7 @@ def _messages(value: Sequence[dict[str, str]]) -> list[ModelMessage]:
     return messages
 
 
-def _probe_model_messages(
+def _model_messages(
     value: Sequence[dict[str, str] | ModelMessage],
 ) -> list[ModelMessage]:
     messages: list[ModelMessage] = []
@@ -157,10 +157,10 @@ def _probe_model_messages(
         elif isinstance(item, dict):
             pending_records.append(item)
         else:
-            raise TypeError("能力探测消息必须是对话字典或 Pydantic ModelMessage。")
+            raise TypeError("模型消息必须是对话字典或 Pydantic ModelMessage。")
     flush_records()
     if not messages:
-        raise ValueError("AI 能力探测消息不能为空。")
+        raise ValueError("AI 消息不能为空。")
     return messages
 
 
@@ -490,11 +490,11 @@ def _chat_response(
     use_case_id: str,
     model: dict[str, Any],
     required_capabilities: Iterable[str],
-    messages: list[dict[str, str]],
+    messages: Sequence[dict[str, str] | ModelMessage],
     generation_settings: dict[str, Any] | None,
     temperature: float,
     max_tokens: int | None,
-    timeout_seconds: int,
+    timeout_seconds: float,
     response_format: bool,
     stream: bool,
     output_object: OutputObjectDefinition | None = None,
@@ -542,7 +542,7 @@ def _chat_response(
             app_dir=app_dir,
             use_case_id=use_case_id,
             binding=binding,
-            messages=_messages(messages),
+            messages=_model_messages(messages),
             parameters=parameters,
             stream=stream,
             emit_text_delta=emit_text_delta,
@@ -561,6 +561,20 @@ def _chat_response(
             raise
         raise mapped from None
     return response
+
+
+def image_to_text(
+    *, app_dir: Path | str, use_case_id: str, model: dict[str, Any], image: BinaryContent,
+    instructions: str, prompt: str, generation_settings: dict[str, Any] | None, timeout_seconds: float,
+) -> str:
+    response = _chat_response(
+        app_dir=app_dir, use_case_id=use_case_id, model=model,
+        required_capabilities=[ai_model_config.CAP_CHAT, ai_model_config.CAP_IMAGE_UNDERSTANDING],
+        messages=[ModelRequest(parts=[UserPromptPart([prompt, image])], instructions=instructions)],
+        generation_settings=generation_settings,
+        temperature=0, max_tokens=None, timeout_seconds=timeout_seconds, response_format=False, stream=False,
+    )
+    return (response.text or "").strip()
 
 
 def chat_json(
@@ -925,7 +939,7 @@ def request_for_probe(
             app_dir=app_dir,
             use_case_id="config.ai_model_probe",
             binding=binding,
-            messages=_probe_model_messages(messages),
+            messages=_model_messages(messages),
             parameters=parameters,
             stream=False,
             emit_text_delta=None,
@@ -1065,6 +1079,7 @@ __all__ = [
     "PYDANTIC_DIRECT_PROVIDER_ID",
     "chat_json",
     "chat_structured",
+    "image_to_text",
     "edit_images",
     "edit_image_for_probe",
     "generate_images",

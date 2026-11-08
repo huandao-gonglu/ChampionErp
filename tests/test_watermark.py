@@ -170,7 +170,7 @@ def test_setting_changes_during_upload_reject_delivery(tmp_path, monkeypatch):
 
 
 def test_external_source_reuses_original_url_and_never_downloads_marked_copy(monkeypatch):
-    from erp_web.services import watermark_assets
+    from erp_web.services import image_source
     from erp_web.services.external_request_manager import BufferedResponse
     context = get_context()
     configure(context)
@@ -180,7 +180,7 @@ def test_external_source_reuses_original_url_and_never_downloads_marked_copy(mon
     def download(request, **kwargs):
         urls.append(request.full_url)
         return BufferedResponse(image_bytes(), headers={'Content-Type': 'image/png'}, status=200, url=request.full_url)
-    monkeypatch.setattr(watermark_assets, 'managed_urlopen', download)
+    monkeypatch.setattr(image_source, 'managed_urlopen', download)
     original_url = 'https://supplier.example.test/original.png'
     original = {'source': {'image_pool': [{'id': 'a', 'url': original_url}]}, 'drafts': {'ozon': {'images': [{'asset_id': 'a'}]}}}
     prepared = context.image_delivery.prepare_product(original, 'ozon')

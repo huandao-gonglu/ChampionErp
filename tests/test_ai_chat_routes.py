@@ -1699,3 +1699,106 @@ def test_safe_json_body_with_raw_reads_body_once() -> None:
     # 单次读取后 socket 流已耗尽，二次读取返回空。
     assert handler.rfile.read() == b""
     assert VERCEL_SDK_VERSION == 7
+
+
+def test_chat_images_reach_model_and_can_be_saved_by_reference(chat_service, monkeypatch):
+    """用受控模型核对真实像素、附件顺序、恢复后的引用及商品写回。"""
+    import base64
+    import io
+    from PIL import Image
+    from pydantic_ai import BinaryContent
+    from erp_web.runtime_units.image_capabilities import (
+        ImageCapabilityScope, chat_images_save_to_product, product_image_read,
+    )
+    from erp_web.schemas.image_capabilities import ChatImagesSaveRequest, ProductImageReadRequest
+    from erp_web.schemas.ai_trace import AiExecutionContext
+    from erp_web.services.capability_errors import BusinessCapabilityError
+    from erp_web.services import ai_direct_request_service
+    from erp_web.services.vercel_ai_ui_service import VercelUiProtocolError
+    from tests.test_domain_write_capabilities import _seed_product
+
+    service = chat_service["service"]
+    context = get_context()
+    scope = ImageCapabilityScope(context)
+    product = _seed_product("image-chat-fan")
+    config = {"ai_models": [{"id": "vision", "model": "vision", "connection_type": "api",
+                             "capabilities": ["chat", "tool_calling", "image_understanding"]}]}
+    body = _submit_body(CONVERSATION, "photo-1", "读取第二张图")
+    originals = []
+    for color in ("red", "blue"):
+        buffer = io.BytesIO()
+        Image.new("RGB", (11, 8), color).save(buffer, "PNG")
+        originals.append(buffer.getvalue())
+        body["messages"][0]["parts"].append({
+            "type": "file", "mediaType": "image/png",
+            "url": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode(),
+        })
+    with pytest.raises(VercelUiProtocolError, match="图片理解"):
+        service.prepare_run(json.dumps(body).encode())
+    service.chat_service.app_config = config
+    monkeypatch.setattr(context.config, "load_app_config", lambda: config)
+    seen = []
+
+    async def model(messages, _info):
+        for message in messages:
+            for part in message.parts:
+                if isinstance(part, UserPromptPart) and isinstance(part.content, list):
+                    seen.extend(part.content)
+        yield "已读图"
+
+    chat_service["model"]["model"] = FunctionModel(stream_function=model)
+    run = service.prepare_run(json.dumps(body).encode())
+    assert "［图片］" in service.dump_ui_messages(CONVERSATION)["received_messages"][0]["text"]
+    asyncio.run(run.stream(lambda _: None))
+    assert [part.data for part in seen if isinstance(part, BinaryContent)] == originals
+    attachment_ids = [item.identifier for item in seen if isinstance(item, BinaryContent)]
+    assert all(f"对话图片 ID：{key}" in seen for key in attachment_ids)
+    restored = service.dump_ui_messages(CONVERSATION)["messages"][0]["parts"]
+    assert [p["url"] for p in restored if p["type"] == "file"] == [
+        item["url"] for item in body["messages"][0]["parts"][1:]
+    ]
+    execution = AiExecutionContext.create(budget_profile="test", timeout_seconds=60,
+                                          business_scope={"conversation_id": CONVERSATION})
+    save = ChatImagesSaveRequest(product_id=product["product_id"], attachment_ids=[attachment_ids[1]])
+    with pytest.raises(BusinessCapabilityError, match="没有对应"):
+        chat_images_save_to_product(save.model_copy(update={"attachment_ids": ["other"]}), scope, execution)
+    @discovering_tools("chat_images_save_to_product")
+    async def save_model(messages, _info):
+        if any(isinstance(part, ToolReturnPart) and part.tool_name == "chat_images_save_to_product"
+               for message in messages for part in message.parts):
+            yield "已保存"
+        else:
+            yield {0: DeltaToolCall(name="chat_images_save_to_product", json_args=save.model_dump_json(),
+                                    tool_call_id="save-photo")}
+
+    chat_service["model"]["model"] = FunctionModel(stream_function=save_model)
+    followup = service.prepare_run(json.dumps(_submit_body(CONVERSATION, "save-2", "把第二张图加入商品图片池")).encode())
+    asyncio.run(followup.stream(lambda _: None))
+    receipt = context.agent_calls.receipt(CONVERSATION, "save-photo")
+    assert receipt and json.loads(receipt["output_json"])["asset_ids"] == [attachment_ids[1]]
+    result = chat_images_save_to_product(save, scope, execution)
+    pool = context.products.load_product_from_index(product["product_id"])["source"]["image_pool"]
+    assert len(pool) == 2 and pool[0]["is_main"]
+    assert (context.paths.app_dir / pool[1]["path"]).read_bytes() == originals[1]
+    listing = ProductImageReadRequest(product_id=product["product_id"])
+    assert [row.asset_id for row in product_image_read(listing, scope, execution).images] == [row["id"] for row in pool]
+
+    def read(messages, _info):
+        assert messages[0].parts[0].content[1].data == originals[1]
+        return ModelResponse(parts=[TextPart("蓝色")])
+
+    def visual_binding(model, **kwargs):
+        assert model["id"] == "vision" and "image_understanding" in kwargs["required_capabilities"]
+        return PydanticModelBinding(model=FunctionModel(read), model_settings={}, model_id="vision",
+                                   model_name="vision", provider_id="test", provider_family="test", api_style="test")
+
+    monkeypatch.setattr(ai_direct_request_service, "create_pydantic_model_binding", visual_binding)
+    assert product_image_read(listing.model_copy(update={"asset_id": result.asset_ids[0]}), scope, execution).content == "蓝色"
+    with pytest.raises(BusinessCapabilityError, match="未找到"):
+        product_image_read(listing.model_copy(update={"asset_id": "不属于此商品"}), scope, execution)
+    body["messages"][0]["parts"][1]["url"] = "https://localhost/secret"
+    with pytest.raises(VercelUiProtocolError, match="本地图片"):
+        service.prepare_run(json.dumps(body).encode())
+    body["messages"][0]["parts"][1]["url"] = "data:image/png;base64,SGVsbG8="
+    with pytest.raises(VercelUiProtocolError, match="损坏"):
+        service.prepare_run(json.dumps(body).encode())

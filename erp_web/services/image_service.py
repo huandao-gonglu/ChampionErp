@@ -13,6 +13,7 @@ import mimetypes
 import os
 import re
 import shutil
+from tempfile import NamedTemporaryFile
 import time
 import urllib.parse
 import urllib.request
@@ -217,6 +218,23 @@ def normalize_pool(pool: list[dict[str, Any]], app_dir: Path | str | None = None
         ready_items[0]["is_main"] = True
         ready_items[0]["usage"] = "main"
     return items
+
+
+def store_chat_image(app_dir: Path, product_id: str, data: bytes) -> dict[str, Any]:
+    """按原图内容稳定命名，重试和并发保存可复用同一份完整文件。"""
+    from .image_content import image_content
+    from .workspace_files import owned_path
+    digest, suffix, _ = image_content(data)
+    directory = owned_path(images_root(app_dir) / safe_segment(product_id), app_dir=app_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    asset_id = f"chat_{digest}"
+    path = directory / f"{asset_id}.{suffix}"
+    with NamedTemporaryFile(dir=directory, delete_on_close=False) as pending:
+        pending.write(data)
+        pending.close()
+        os.replace(pending.name, path)
+    return {"id": asset_id, "path": relative_to_app(path, app_dir), "origin": "local_upload",
+            "usage": "detail", "is_main": False, "status": "ready"}
 
 
 def upload_images(app_dir: Path | str, uploads: list[dict[str, Any]], product_id: str = "") -> list[dict[str, Any]]:

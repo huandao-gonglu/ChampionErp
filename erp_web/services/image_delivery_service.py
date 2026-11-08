@@ -1,7 +1,6 @@
 """发布图片的唯一交付边界：外部直链与当前默认 S3 目标。"""
 from __future__ import annotations
 
-import urllib.parse
 from copy import deepcopy
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextvars import copy_context
@@ -19,6 +18,7 @@ from erp_web.schemas.image_hosting import DeliveredImage, ImageHostingError
 from erp_web.services.image_hosting_config import config_version, content_storage_key, default_profile, public_url, target_fingerprint, validate_public_url
 from erp_web.services.image_content import MAX_IMAGE_BYTES, image_content, read_image_file
 from erp_web.services.s3_image_storage import S3ImageStorage
+from erp_web.services.image_source import source_image_path
 from erp_web.services.watermark_assets import publication_image
 from erp_web.services.watermark_service import has_watermark_content, watermark_fingerprint, watermark_settings
 
@@ -90,24 +90,7 @@ class ImageDeliveryService:
         return problems
 
     def _source_path(self, item: dict) -> Path | None:
-        for key in ("path", "preview_url", "url"):
-            value = str(item.get(key) or "").strip()
-            if not value:
-                continue
-            if value.startswith("/file?"):
-                value = urllib.parse.parse_qs(urllib.parse.urlparse(value).query).get("path", [""])[0]
-            elif value.startswith("file:"):
-                value = urllib.parse.unquote(urllib.parse.urlparse(value).path)
-            elif value.startswith(("http://", "https://", "ml-id:", "data:", "blob:")):
-                continue
-            candidate = Path(value).expanduser()
-            if not candidate.is_absolute():
-                candidate = self.paths.app_dir / candidate
-            from .workspace_files import owned_path
-            candidate = owned_path(candidate, app_dir=self.paths.app_dir)
-            if candidate.is_file():
-                return candidate.resolve()
-        return None
+        return source_image_path(self.paths.app_dir, item)
 
     @staticmethod
     def _target_asset_ids(product: dict, pool: list[dict], platform: str) -> set[str]:
