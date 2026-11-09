@@ -9,10 +9,11 @@ import type {
 const CONVERSATIONS_PATH = '/api/v1/ai-work/conversations'
 
 export async function fetchPydanticConversations(
-  limit = 100, scope: 'all' | 'chats' = 'all', offset = 0,
+  limit = 100, scope: 'all' | 'chats' = 'all', offset = 0, signal?: AbortSignal,
 ): Promise<PydanticConversationListResponse> {
   const response = await apiClient.get<PydanticConversationListResponse>(CONVERSATIONS_PATH, {
-    params: { limit, scope, offset },
+    params: { limit, scope, offset }, signal,
+    ...(scope === 'chats' ? { timeout: 15_000 } : {}),
   })
   return response.data
 }
@@ -34,10 +35,10 @@ export async function fetchPydanticConversation(
 }
 
 export async function fetchUiMessages(
-  conversationId: string,
+  conversationId: string, signal?: AbortSignal,
 ): Promise<AiWorkUiMessagesResponse> {
   const response = await apiClient.get<AiWorkUiMessagesResponse>(
-    `${CONVERSATIONS_PATH}/${encodeURIComponent(conversationId)}/ui-messages`,
+    `${CONVERSATIONS_PATH}/${encodeURIComponent(conversationId)}/ui-messages`, { signal },
   )
   return response.data
 }

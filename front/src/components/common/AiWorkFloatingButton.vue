@@ -52,10 +52,16 @@ function handleMouseEnter(): void {
   chatStore.openFloating()
 }
 
+// 切换窗口会接管焦点和指针，选择完成后仍要回到原聊天面板。
+function closeIfOutside(): void {
+  if (!pointerWithin.value && !focusWithin.value && !isPinned.value && !chatStore.resumeOpen)
+    chatStore.closeFloating()
+}
+
 function handleMouseLeave(): void {
   pointerWithin.value = false
   if (floatingDrag.dragging.value) return
-  if (!focusWithin.value && !isPinned.value) chatStore.closeFloating()
+  closeIfOutside()
 }
 
 function handleFocusIn(): void {
@@ -67,7 +73,7 @@ function handleFocusOut(event: FocusEvent): void {
   const nextTarget = event.relatedTarget as Node | null
   if (nextTarget && floatingElement.value?.contains(nextTarget)) return
   focusWithin.value = false
-  if (!pointerWithin.value && !isPinned.value) chatStore.closeFloating()
+  closeIfOutside()
 }
 
 function togglePinned(): void {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import OrderAlertBanner from '@/components/common/OrderAlertBanner.vue'
 import { RouterView } from 'vue-router'
+import ChatResumeDialog from '@/components/ai-work/ChatResumeDialog.vue'
 import AiWorkFloatingButton from '@/components/common/AiWorkFloatingButton.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import ExternalRequestNotice from '@/components/common/ExternalRequestNotice.vue'
@@ -49,6 +50,7 @@ onUnmounted(() => {
     />
   </RouterView>
   <AiWorkFloatingButton v-if="account.user" />
+  <ChatResumeDialog v-if="account.user" />
   <Toast />
   <DesktopHandoffNotice />
   <ExternalRequestNotice v-if="account.user" />

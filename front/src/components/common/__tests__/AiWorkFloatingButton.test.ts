@@ -214,6 +214,24 @@ describe('AiWorkFloatingButton', () => {
     expect(wrapper.find('[role="region"]').exists()).toBe(false)
   })
 
+  it('/resume 打开期间转移焦点和鼠标保留聊天，关闭后恢复自动收起', async () => {
+    const { wrapper, store } = await mountFloatingButton()
+    const floating = wrapper.get('[data-testid="ai-work-floating"]')
+    await floating.trigger('mouseenter')
+    await floating.trigger('focusin')
+    store.input = '/resume'
+    store.sendMessage()
+    await floating.trigger('mouseleave')
+    await floating.trigger('focusout', { relatedTarget: document.body })
+    expect(store.resumeOpen).toBe(true)
+    expect(wrapper.find('[data-testid="ai-work-floating-panel"]').exists()).toBe(true)
+
+    store.resumeOpen = false
+    await floating.trigger('mouseenter')
+    await floating.trigger('mouseleave')
+    expect(store.floatingOpen).toBe(false)
+  })
+
   it('图钉位于关闭按钮左侧，钉住后鼠标和焦点移出都不收起', async () => {
     const { wrapper, store } = await mountFloatingButton()
     const floating = wrapper.get('[data-testid="ai-work-floating"]')

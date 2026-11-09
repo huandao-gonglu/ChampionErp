@@ -5,7 +5,6 @@ import type { UIMessage } from 'ai'
 import type { AiTurnTiming, AiWorkUiMessagesResponse } from '@/types/aiWork'
 import AiChatComposer from './AiChatComposer.vue'
 import AiMessageList from './AiMessageList.vue'
-import ChatResumeDialog from './ChatResumeDialog.vue'
 import ChatPendingActions from './ChatPendingActions.vue'
 import { useAiChatStore } from '@/stores'
 
@@ -230,7 +229,6 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
         </button>
       </div>
 
-      <ChatResumeDialog />
       <ChatPendingActions :key="conversationId" />
       <!-- 输入框 -->
       <AiChatComposer
