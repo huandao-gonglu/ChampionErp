@@ -911,6 +911,10 @@ class ErpDatabase:
                     status=excluded.status,
                     draft_json=excluded.draft_json,
                     updated_at=excluded.updated_at
+                WHERE platform_drafts.platform IS NOT excluded.platform
+                   OR platform_drafts.site IS NOT excluded.site
+                   OR platform_drafts.status IS NOT excluded.status
+                   OR platform_drafts.draft_json IS NOT excluded.draft_json
                 """,
                 (
                     draft_id,

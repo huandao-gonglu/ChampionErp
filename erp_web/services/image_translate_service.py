@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from . import ai_gateway, ai_model_config, ai_prompt_templates, image_service
+from . import ai_gateway, ai_model_config, ai_prompt_templates, gemini_canvas_runtime, image_service
 
 Provider = Callable[[dict[str, Any], dict[str, Any]], list[dict[str, Any]]]
 
@@ -34,6 +34,13 @@ IMAGE_AI_TIMEOUT_SECONDS = int(os.environ.get("AI_IMAGE_REQUEST_TIMEOUT_SECONDS"
 
 def service_status() -> dict[str, str]:
     return {"service": "image_translate", "status": "ready"}
+
+
+def check_batch_connection(app_dir: Path, config: dict) -> None:
+    """在规划和逐页派发之前确认当前绑定的 Canvas 通道，不发送生图请求。"""
+    model = ai_gateway.resolve_model_for_use_case(app_dir, config, "image.translate")
+    if gemini_canvas_runtime.is_canvas_model(model):
+        gemini_canvas_runtime.check_canvas_connection(app_dir, model)
 
 
 def build_translate_prompt(

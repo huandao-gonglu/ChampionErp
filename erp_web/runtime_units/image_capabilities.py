@@ -13,11 +13,14 @@ from typing import Annotated, Any
 from pydantic_ai import BinaryContent
 
 from erp_web.context import AppContext
+from erp_web.product_model import SOURCE_IMAGE_ORIGINS
+from erp_web.schemas.ai_tools import JobReferenceResult
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.image_capabilities import (
     ChatImagesSaveRequest, ChatImagesSaveResult, ProductImageChoice, ProductImageReadRequest, ProductImageReadResult,
     DraftImagesPrepareRequest,
     DraftImagesPrepareResult,
+    DraftImagesWaitRequest,
     ImageEditRequest,
     ImageGenerationResult,
     ImagePoolActionRequest,
@@ -120,7 +123,7 @@ IMAGE_EDIT_TOOL = "image_edit"
 
 @ai_tool(
     name="product_image_read", permission="product.read", recovery_policy="retry_safe",
-    description="识图、读取图片文字或商品外观。先用 product_id 列出商品图片及各图关联的 sku_ids，再用 asset_id 与 question 读取指定图片。",
+    description="识图、读取图片文字或商品外观。先用 product_id 列出商品图片及各图关联的 sku_ids，再用 asset_id 与 question 读取指定图片。商品事实使用 source_only=true 的来源原图。",
 )
 def product_image_read(
     request: ProductImageReadRequest,
@@ -135,10 +138,14 @@ def product_image_read(
     product = _load_product(scope, request.product_id)
     pool = [item for item in product["source"]["image_pool"]
             if item["status"] not in {"empty", "failed", "error", "pending"}]
+    if request.source_only:
+        origins = SOURCE_IMAGE_ORIGINS | {"local_upload"}
+        pool = [item for item in pool if item.get("origin") in origins and not item.get("derived_from_id")]
     if request.asset_id:
         pool = [item for item in pool if item["id"] == request.asset_id]
         if len(pool) != 1:
-            raise BusinessCapabilityError("IMAGE_ASSET_NOT_FOUND", "未找到该商品唯一对应的可用图片。")
+            message = "未找到该商品对应的可用原图。" if request.source_only else "未找到该商品唯一对应的可用图片。"
+            raise BusinessCapabilityError("IMAGE_ASSET_NOT_FOUND", message)
     sku_ids_by_asset: dict[str, list[str]] = {}
     for sku in product["sku_items"]:
         if sku["image_asset_id"]:
@@ -156,7 +163,12 @@ def product_image_read(
     item = pool[0]
     try:
         path = source_image_path(context.paths.app_dir, item)
-        data = read_source_image(path, item["url"] or item["preview_url"], account_id="product-image-read",
+        source_url = item["url"] or item["preview_url"]
+        if request.source_only and any(item.get(key) for key in (
+            "watermark_fingerprint", "delivery_provider", "storage_key", "hosting_profile_id", "delivery_fingerprint",
+        )):
+            source_url = item.get("watermark_source_url") or ""
+        data = read_source_image(path, source_url, account_id="product-image-read",
                                  timeout=execution.bounded_timeout_seconds(30), allow_query=True)
         _, _, media_type = image_content(data)
     except (ImageHostingError, OSError, ExternalRequestBlocked, ExternalRequestNotSent):
@@ -495,10 +507,10 @@ def image_edit(
     description=("准备草稿图片内容，使用套图能力生成共用主图和已选 SKU 的独立图片。"
                  "工具会自动挑选最多 12 张共用参考图，无需用户勾选。完整草稿准备先用 auto：手动修改或已有加工图片返回 needs_confirmation，询问保留还是重做，默认保留。"
                  "明确保留用 keep；用户明确要求生成套图或确认重做用 regenerate，须传当前图片 fingerprint。"
-                 "当前已完成版本自动复用，原图保留。上传、水印和发布链接另用 product_publish_prepare。"),
+                 "queued 表示已提交，立即继续其他草稿和资料；独立工作完成后用 draft_images_wait 等待原批次。当前已完成版本自动复用，原图保留。"),
     permission="image.write", side_effect="write", approval_required=False,
     idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual",
-    execution_mode="persistent_job", version="1",
+    version="2",
 )
 def draft_images_prepare(
     request: DraftImagesPrepareRequest,
@@ -510,10 +522,28 @@ def draft_images_prepare(
                                 operation_key=str(execution.idempotency_context.get("operation_key") or ""))
 
 
+DRAFT_IMAGE_JOB_TYPE = "draft_image_preparation"
+
+
+@ai_tool(
+    name="draft_images_wait", permission="product.read", execution_mode="persistent_job", recovery_policy="retry_safe",
+    description="独立资料工作完成后等待此前提交的套图批次，返回生成及采用结果。多个批次同轮调用，无需轮询。",
+)
+def draft_images_wait(
+    request: DraftImagesWaitRequest,
+    scope: Annotated[ImageCapabilityScope, Injected()],
+) -> JobReferenceResult:
+    job = scope.context.image_batches.preparation(request.batch_id)
+    if not job or job.draft_id != request.draft_id:
+        raise BusinessCapabilityError("IMAGE_JOB_NOT_FOUND", "未找到属于该草稿的套图任务。")
+    return JobReferenceResult(job_id=job.batch_id, job_type=DRAFT_IMAGE_JOB_TYPE, summary=job.message)
+
+
 IMAGE_AI_CAPABILITIES = (
     product_image_read,
     chat_images_save_to_product,
     draft_images_prepare,
+    draft_images_wait,
     image_pool_upload,
     image_pool_save,
     image_pool_action,
@@ -536,6 +566,8 @@ __all__ = [
     "ImageCapabilityScope",
     "image_edit",
     "draft_images_prepare",
+    "draft_images_wait",
+    "DRAFT_IMAGE_JOB_TYPE",
     "image_pool_action",
     "image_pool_save",
     "image_pool_sync_generated",

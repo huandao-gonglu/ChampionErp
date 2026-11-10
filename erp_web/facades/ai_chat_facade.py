@@ -91,8 +91,10 @@ def build_ui_service(context=None):
     def queue_progress(conversation_id, calls):
         progress = []
         for call in calls:
-            if call.tool_name == "draft_images_prepare":
-                batch = active.image_batches.get(f"draft_image_prepare_{conversation_id}:{call.tool_call_id}")
+            if call.tool_name in {"draft_images_prepare", "draft_images_wait"}:
+                batch_id = (call.args_as_dict().get("batch_id") if call.tool_name == "draft_images_wait"
+                            else f"draft_image_prepare_{conversation_id}:{call.tool_call_id}")
+                batch = active.image_batches.get(batch_id)
                 if batch:
                     counts = batch.snapshot()
                     progress.append({key: counts[key] for key in ("draft_id", "total", "queued", "running", "success", "failed")})

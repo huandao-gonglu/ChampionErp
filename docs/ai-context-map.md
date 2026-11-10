@@ -604,7 +604,12 @@ CLI / Browser use case
 ### Focused 例外登记：专用 Images API
 
 - 完整草稿准备的图片内容入口为 `draft_images_prepare` → `runtime_units/draft_image_prepare.py`，
-  以原生 Deferred 后台工具复用套图规划、`run_image_batch` 与 `ProductStore`，不增加 Agent loop。
+  先在图片批次库登记准备任务，返回 `queued` 和批次编号；后台用提交时的原图与 SKU 执行规划、生成、采用。
+  多草稿先提交，主对话继续做文案、属性和核价。商品事实读图默认仅接受来源原图。
+  无关资料更新可与规划并行；逐页入池时，内容相同的草稿保留版本，整套采用前复核素材、目标语言和 SKU，再合入最新草稿。规划和逐页生成共用图片请求并发上限。使用 Gemini Canvas 的批次在规划前检查通道，失败即返回原因。
+  独立工作完成后，`draft_images_wait` 经 Pydantic AI 原生 Deferred 和领域 Job 读取器等待实际采用结果。
+  当前安装的 Harness BackgroundTools 在 run 因审批或补问暂停时会取消未完成任务，因此任务必须由领域库持有；
+  若原生后台工具支持跨暂停恢复已登记领域任务，可重新评估此适配。服务重启结算为待核对，不重放生成。
   `auto` 对未加工图片生成共用套图及已选 SKU 独立图；人工修改或历史加工素材返回待确认，
   等待确认期间其他资料可继续准备。共用参考优先使用当前草稿，草稿尚无共用图时，
   从本商品适用于目标平台的非 SKU 素材中选取。自动规划最多读取 12 张可用参考，

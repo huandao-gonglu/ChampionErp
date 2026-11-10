@@ -1,8 +1,9 @@
-"""选品研究 Job 的有界只读状态；不选择或推进 Agent 工具。"""
+"""领域 Job 的有界只读状态；不选择或推进 Agent 工具。"""
 
 from __future__ import annotations
 from datetime import datetime
 from typing import Any, Callable, Mapping, cast
+from erp_web.schemas.image_capabilities import DraftImagesPrepareResult
 from erp_web.schemas.domain_jobs import (
     JobLifecycleStatus,
     JobStateActivity,
@@ -107,3 +108,17 @@ class ResearchJobStatusReader:
             ),
             activities=_research_activities(run),
         )
+
+
+class DraftImageJobStatusReader:
+    def __init__(self, load: Callable[[str], DraftImagesPrepareResult | None]):
+        self.load = load
+
+    def read_job_state(self, job_id: str) -> JobStateSnapshot:
+        result = self.load(job_id)
+        if result is None:
+            return JobStateSnapshot(status="failed", error="未找到套图任务。")
+        status = {"queued": "running", "generated": "success"}.get(result.status, "failed")
+        summary = f"草稿 {result.draft_id}：生成 {result.generated_count} 张，失败 {result.failed_count} 张。{result.message}"
+        return JobStateSnapshot(status=status, last_external_status=result.status, summary=summary[:500],
+                                error=result.message[:2000] if status == "failed" else "")

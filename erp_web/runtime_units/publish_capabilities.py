@@ -540,6 +540,10 @@ def prepare_product_publish(
 ) -> ProductPublishPrepareResult:
     """复用素材准备写路径；以落盘后回读的事实校验，不创建发布任务。"""
     active_context = context or get_context()
+    images = active_context.image_batches.latest_preparation(request.draft_id)
+    if images and images.status == "queued":
+        raise BusinessCapabilityError("DRAFT_IMAGES_PENDING", "套图仍在准备中，请先用 draft_images_wait 等待当前批次。",
+                                      details={"draft_id": request.draft_id, "batch_id": images.batch_id})
     target = ProductPublishValidateRequest(
         draft_id=request.draft_id, platform=request.platform, site=request.site,
     )

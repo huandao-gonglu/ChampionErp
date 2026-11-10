@@ -1787,7 +1787,16 @@ def test_chat_images_reach_model_and_can_be_saved_by_reference(chat_service, mon
         {"id": sku_id, "name": sku_id, "image_asset_id": pool[index]["id"]}
         for sku_id, index in [("a", 0), ("b", 1), ("c", 1)]
     ]
+    saved_product["source"]["image_pool"].extend([
+        {**pool[0], "id": "generated", "url": "https://cdn.example.com/generated.jpg", "origin": "ai_generated"},
+        {**pool[0], "id": "derivative", "url": "https://cdn.example.com/derived.jpg", "derived_from_id": pool[0]["id"]},
+    ])
     context.products.save_product(saved_product)
+    for asset_id in ("generated", "derivative"):
+        with pytest.raises(BusinessCapabilityError, match="未找到"):
+            product_image_read(listing.model_copy(update={"asset_id": asset_id}), scope, execution)
+    all_images = product_image_read(listing.model_copy(update={"source_only": False}), scope, execution).images
+    assert {row.asset_id for row in all_images} == {pool[0]["id"], pool[1]["id"], "generated", "derivative"}
     listed = product_image_read(listing, scope, execution).images
     assert [(row.sku, row.sku_ids) for row in listed] == [("a", ["a"]), ("", ["b", "c"])]
 

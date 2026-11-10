@@ -21,7 +21,7 @@ from . import image_service
 
 
 # 进程内所有图片批次共享上限，不能因同时提交多个批次而放大并发。
-_image_slots = BoundedSemaphore(3)
+image_request_slots = BoundedSemaphore(3)
 
 
 def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
@@ -76,7 +76,7 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
             messages.save(conversation_id, [initial, *(message for key in sorted(histories) for message in histories[key])])
 
     def work(index, source):
-        with _image_slots:
+        with image_request_slots:
             try:
                 check_cancellation()
                 store.update_item(conversation_id, index, status="running", started_at=utc_now())

@@ -103,7 +103,8 @@ def test_draft_image_preparation_reuses_native_deferred_and_domain_owners():
     """整套图片准备复用原生后台工具、图片批次与商品 Store，不增加执行协议。"""
     from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG, _WRITE_CAPABILITIES
     tool = APPLICATION_CAPABILITY_CATALOG.tools["draft_images_prepare"].definition
-    assert tool.execution_mode == "persistent_job"
+    assert tool.execution_mode == "sync"
+    assert APPLICATION_CAPABILITY_CATALOG.tools["draft_images_wait"].definition.execution_mode == "persistent_job"
     assert "draft_images_prepare" in _WRITE_CAPABILITIES
     source = (ROOT / "erp_web/runtime_units/draft_image_prepare.py").read_text()
     assert "run_image_batch(" in source and "products.save_draft_content(" in source

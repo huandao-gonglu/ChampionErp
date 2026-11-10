@@ -28,7 +28,7 @@ def setup_sources(app_dir):
     config = config_store.load_app_config()
     config["ai_models"] = [*config.get("ai_models", []), {
         "id": "vision-test", "provider_id": "openai", "model": "vision-test",
-        "capabilities": ["chat", "json", "image_understanding"],
+        "capabilities": ["chat", "json", "image_understanding", "image_edit"],
     }]
     config_store.save_app_config(config)
     product, draft = seeded()

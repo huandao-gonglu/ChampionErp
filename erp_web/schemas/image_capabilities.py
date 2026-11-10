@@ -14,6 +14,7 @@ class ProductImageReadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     product_id: TrimmedText = Field(min_length=1, max_length=160)
     asset_id: TrimmedText = Field(default="", max_length=200, description="留空列出商品图片，传入素材 ID 读取指定原图。")
+    source_only: bool = Field(default=True, description="提取商品事实只读取采集原图。明确查看加工效果时可设为 false。")
     question: TrimmedText = Field(default="转录可辨认的原文，并描述图片主体。", max_length=2000)
 
 
@@ -61,12 +62,18 @@ class DraftImagesPrepareRequest(BaseModel):
 class DraftImagesPrepareResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     draft_id: str
-    status: Literal["needs_confirmation", "kept", "generated", "failed", "needs_selection"]
+    status: Literal["queued", "needs_confirmation", "kept", "generated", "failed", "needs_selection"]
     fingerprint: str
     message: str
     batch_id: str = ""
     generated_count: int = 0
     failed_count: int = 0
+
+
+class DraftImagesWaitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    draft_id: TrimmedText = Field(min_length=1, max_length=160)
+    batch_id: TrimmedText = Field(min_length=1, max_length=200, description="提交套图时返回的批次编号。")
 
 
 class ImagePoolUploadRequest(BaseModel):
@@ -205,6 +212,7 @@ __all__ = [
     "ChatImagesSaveResult",
     "DraftImagesPrepareRequest",
     "DraftImagesPrepareResult",
+    "DraftImagesWaitRequest",
     "ImageEditRequest",
     "ImageGenerationResult",
     "ImagePoolActionRequest",

@@ -41,7 +41,7 @@ from erp_web.runtime_units.draft_capabilities import DraftQueryCapabilityScope
 from erp_web.runtime_units.draft_publish_context import (
     load_required_draft_publish_context,
 )
-from erp_web.runtime_units.image_capabilities import ImageCapabilityScope
+from erp_web.runtime_units.image_capabilities import DRAFT_IMAGE_JOB_TYPE, ImageCapabilityScope
 from erp_web.runtime_units.market_prepare_capabilities import (
     MarketPrepareCapabilityScope,
 )
@@ -84,6 +84,7 @@ from erp_web.services.operation_availability import model_platform_reason
 
 
 from erp_web.runtime_units.domain_job_readers import (
+    DraftImageJobStatusReader,
     ResearchJobStatusReader,
 )
 
@@ -261,6 +262,7 @@ def build_job_status_readers(
     return {
         ONLINE_PRODUCT_JOB_TYPE: OnlineProductJobReader(OnlineProductCapabilityScope(lambda: active_context.online_products).job),
         PRODUCT_RESEARCH_JOB_TYPE: ResearchJobStatusReader(),
+        DRAFT_IMAGE_JOB_TYPE: DraftImageJobStatusReader(lambda key: active_context.image_batches.preparation(key)),
     }
 
 
