@@ -31,7 +31,7 @@ def build_business_data_catalog(context):
                          lambda _: {'ok': True, **context.config.load_app_config()['pricing_templates']}, permission='pricing.read'),
         BusinessResource('draft.content', '草稿完整业务资料，可展开 pricing 参数、sku_items 及已保存核价明细；不重新核价。', DraftDataParameters,
                          draft_content, '', ('draft_id', 'product_id', 'platform', 'title', 'updated_at'), permission='draft.read'),
-        BusinessResource('draft.pricing', '逐 SKU 核价明细、包装、所选物流、候选报价、筛选依据和统一选仓理由。preview_id 可读取尚未应用的预览；历史缺失依据不能猜测。', PricingDataParameters,
+        BusinessResource('draft.pricing', '逐 SKU 核价明细。shipping_summary 给出候选与决策的相对字段路径，用 fields 读取 sku_id 和这些路径即可核对物流，无需载入整份佣金回执或重复读取摘要。preview_id 读取未应用预览；历史未记录的筛选原因不能猜测。', PricingDataParameters,
                          lambda request: draft_pricing_data(context.products, context.pricing_cache, request), 'rows',
                          ('sku_id', 'target_key', 'applied_price', 'current_package', 'shipping_summary'), permission='pricing.read'),
         BusinessResource('product.skus', '商品全部规格事实、成本及包装尺寸重量；读取不修改资料。', ProductDataParameters,

@@ -7,6 +7,8 @@ from typing import Any
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelMessage, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ToolReturn
+from pydantic_core import to_jsonable_python
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
@@ -53,6 +55,13 @@ class PythonOutputLimits(ToolOutputLimits[AiAgentDependencies]):
     def get_toolset(self) -> None:
         """只截断汇总，不生成溢出文件或额外文件读取工具。"""
         return None
+
+    async def after_tool_execute(self, ctx, *, call, tool_def, args, result):
+        if call.tool_name == 'run_code' and isinstance(result, ToolReturn) and not isinstance(result.return_value, BaseException):
+            # Harness 0.34.0 会把 type([]) 等结果原样返回，随后原生消息的 JSON
+            # 编码会失败。仅规范化脚本的对外结果；内核变量、嵌套业务回执不变。
+            result = replace(result, return_value=to_jsonable_python(result.return_value, fallback=repr))
+        return await super().after_tool_execute(ctx, call=call, tool_def=tool_def, args=args, result=result)
 
 
 @dataclass

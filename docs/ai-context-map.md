@@ -17,6 +17,8 @@
 调用、REPL、审批与生命周期仍由官方实现负责，不另建数据接口或业务批量 DSL。
 当前依赖为 Pydantic AI 2.44.0 / Harness 0.34.0 / Monty 0.0.23；旧条目中的版本号记录当时核对依据。
 职责、限制、原生机制选型及验收见 [通用 Python 执行](agent-python-execution.md)。
+脚本对外结果通过原生输出 hook 转为 JSON 可编码值，避免 `type(...)` 等 Python
+对象使整轮历史编码失败；内核与业务回执不变，版本缺口与移除条件见[共用业务数据读取](business-data-access.md)。
 
 `ai_tool_bridge.py` 将已有输出 Schema 通过原生 `Tool.prepare` / `ToolDefinition.return_schema`
 交给 CodeMode 生成返回类型；`ai_tool_contract_description.py` 只补充 Python 签名不显示的参数约束说明。

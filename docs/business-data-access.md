@@ -40,6 +40,13 @@
 不能退化为“稍后重试”并迫使模型循环猜测。运费结果同时提供固定费、实重/体积重、
 未知准入值的共用计费说明，避免仅凭字段名猜测业务含义。
 
+线上真实预览还复现了 Harness 0.34.0 的输出边界缺口：脚本末尾返回
+`type(...)` 时，CodeMode 返回 Python 类型对象，随后原生消息 JSON 编码失败，
+不是核价失败。`PythonOutputLimits.after_tool_execute` 在官方公开输出 hook 中
+调用 Pydantic Core 的 `to_jsonable_python(..., fallback=repr)`，仅将脚本对外结果
+转换为可编码值，再交回原生输出限制。内核变量、嵌套业务回执、Agent run、工具循环
+与重试均未改写；上游 CodeMode 自带等价结果规范化后应移除此适配。
+
 ## 核价解释依据
 
 `draft.pricing` 读取已保存报价；传 `preview_id` 可读取尚未应用的原生核价预览，

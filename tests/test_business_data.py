@@ -196,3 +196,33 @@ def test_native_query_error_guides_recovery_instead_of_opaque_retry(tmp_path):
     chunks = []
     asyncio.run(ui.prepare_run(body('查询模板')).stream(chunks.append))
     assert '正确资源' in b''.join(chunks).decode()
+
+
+def test_code_mode_type_result_is_json_safe_without_changing_kernel_state(tmp_path, monkeypatch):
+    """复现线上 type(...) 作为脚本结果导致原生消息编码失败的边界。"""
+    import asyncio
+    import json
+    from pydantic_ai.models.function import FunctionModel, DeltaToolCall
+    from erp_web.facades.agent_capability_facade import build_global_chat_toolset
+    from tests.ai_code_mode_helpers import business_returns
+    from tests.test_native_agent_integration import body, service, CONVERSATION
+    app = get_context()
+    monkeypatch.setattr(type(app), 'tariffs', property(lambda _: SimpleNamespace(rules=lambda _: {'rules': [{'id': '1'}, {'id': '2'}]})))
+    async def model(messages, info):
+        returned = business_returns(messages)
+        outer = [p for m in messages for p in m.parts if getattr(p, 'tool_name', '') == 'run_code' and p.part_kind == 'tool-return']
+        if not outer:
+            code = 'r = await business_data_read(resource="shipping.tariff_rules", params={"platform":"yandex"})\nlen(r["data"]), type(r["data"])'
+            yield {0: DeltaToolCall(name='run_code', json_args=json.dumps({'code': code}), tool_call_id='types')}
+        elif len(outer) == 1:
+            assert outer[-1].content == [2, "<class 'list'>"]
+            yield {0: DeltaToolCall(name='run_code', json_args=json.dumps({'code': 'len(r["data"])'}), tool_call_id='kernel')}
+        else:
+            assert outer[-1].content == 2 and returned
+            yield '脚本结果与内核状态均正常。'
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    chunks = []
+    asyncio.run(ui.prepare_run(body('读取并核对类型')).stream(chunks.append))
+    assert b'"type":"error"' not in b''.join(chunks)
+    assert '内核状态均正常' in b''.join(chunks).decode()
+    assert ui.chat_service.trusted_history(CONVERSATION)

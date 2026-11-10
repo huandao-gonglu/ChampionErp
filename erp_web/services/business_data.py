@@ -84,7 +84,7 @@ class BusinessDataCatalog:
         path = request.path or resource.default_path
         value = at_path(full, path)
         fields = request.fields or (list(resource.default_fields) if not request.path else [])
-        metadata = {key: full[key] for key in ('version', 'source', 'filename', 'warnings', 'calculation_notes', 'updated_at', 'preview_id', 'state') if isinstance(full, dict) and key in full}
+        metadata = {key: full[key] for key in ('version', 'source', 'filename', 'imported_at', 'effective_date', 'warnings', 'calculation_notes', 'updated_at', 'preview_id', 'state') if isinstance(full, dict) and key in full}
         if len(json.dumps(metadata, ensure_ascii=False)) > 2000:
             metadata = {'notice': '元数据较大，请用 path=$ 和 fields 单独读取所需字段。'}
         if isinstance(value, str):
@@ -102,7 +102,7 @@ class BusinessDataCatalog:
         rows = value if isinstance(value, list) else [value]
         if request.filters:
             rows = [row for row in rows if all(at_path(row, key) == expected for key, expected in request.filters.items())]
-        available = list(dict.fromkeys(key for row in rows[:50] if isinstance(row, dict) for key in row))[:40]
+        available = list(dict.fromkeys(key for row in rows[:50] if isinstance(row, dict) for key in row))[:100]
         result = DataReadResult(resource=request.resource, path=path, data=[], total=len(rows), offset=request.offset,
                                 available_fields=available, metadata=metadata)
         selected = []

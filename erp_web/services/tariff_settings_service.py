@@ -64,7 +64,8 @@ class TariffSettingsService:
                 'calculation_notes': ['fixed 为每个包裹固定处理费，不是首重费；per_g 为每克费率，step_g 为重量向上进位步长。',
                     'max_g、max_edge_cm、max_sum_cm、price_max 为空表示表内未注明上限，不表示无限制。',
                     'volume_divisor_g 为空时按实际重量计费；非空时按本渠道实重与体积重取大。',
-                    'battery/liquid 为 null 表示准入未知，不能解释为允许。']}
+                    'battery/liquid 为 null 表示准入未知，不能解释为允许。',
+                    'Yandex Extra Small 的 price_max 用核价最终舍入后的买家售价（RUB）校验，不是采购成本或自行申报金额。']}
 
 
     @staticmethod

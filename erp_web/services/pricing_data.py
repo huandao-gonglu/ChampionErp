@@ -31,7 +31,11 @@ def draft_pricing_data(products, cache, request):
                          'current_package': deepcopy(facts.get('package_dimensions', {})), **deepcopy(quote),
                          'shipping_summary': {'route': evidence.get('route', ''), 'tariff_version': evidence.get('tariff_version', ''),
                              'warehouse': evidence.get('fulfillment_plan', {}).get('publish_warehouse_name', ''),
-                             'decision_available': bool(evidence.get('decision')), 'limitation': evidence.get('limitation', '')}})
+                             'decision_available': bool(evidence.get('decision')),
+                             'decision_status': '已记录实际筛选过程' if evidence.get('decision') else '历史报价未保存筛选记录，不能据此认定渠道被拒绝',
+                             'decision_path': 'calculation_basis.shipping_evidence.decision' if evidence.get('decision') else '',
+                             'candidates_path': 'shipping_candidates',
+                             'limitation': evidence.get('limitation', '')}})
     return {'state': state, 'updated_at': draft.get('updated_at', ''), 'preview_id': request.preview_id,
             'warnings': ['当前包装可能已修改；历史计算应以 calculation_basis 中的参数与费率版本为准。'], 'rows': rows}
 
