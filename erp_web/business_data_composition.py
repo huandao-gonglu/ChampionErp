@@ -20,7 +20,9 @@ def build_business_data_catalog(context):
 
     return BusinessDataCatalog((
         BusinessResource('shipping.tariff_rules', '国际物流运费表、渠道尺寸重量货值限制、电池准入和费率；按 platform 查询。', TariffRulesQuery,
-                         lambda request: context.tariffs.rules(request), 'rules', permission='pricing.read'),
+                         lambda request: context.tariffs.rules(request), 'rules',
+                         ('id', 'carrier', 'service', 'group', 'max_g', 'max_edge_cm', 'max_sum_cm', 'price_max',
+                          'price_currency', 'fixed', 'per_g', 'currency', 'step_g', 'battery', 'liquid'), permission='pricing.read'),
         BusinessResource('shipping.tariff_versions', '当前国际物流运费表来源、版本与更新状态。', NoDataParameters,
                          lambda _: context.tariffs.detail(), 'items', permission='pricing.read'),
         BusinessResource('yandex.warehouses', 'Yandex 已配置发布仓、运输模式及可比价物流方案；只读本地目录，不刷新远端。', NoDataParameters,

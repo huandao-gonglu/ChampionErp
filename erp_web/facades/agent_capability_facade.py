@@ -17,7 +17,7 @@ from erp_web.runtime_units.order_capability_support import OrderCapabilityScope
 from erp_web.runtime_units.order_chat_capabilities import OrderChatCapabilityScope
 from erp_web.facades import order_chat_facade
 from erp_web.facades.agent_draft_scope import authorized_draft_ids
-from erp_web.facades.agent_package_tools import prepare_package_tools
+from erp_web.facades.agent_tool_visibility import prepare_chat_tools
 from erp_web.runtime_units.conversation_fact_capabilities import ConversationFactScope
 from erp_web.runtime_units.online_product_capabilities import ONLINE_PRODUCT_JOB_TYPE, OnlineProductCapabilityScope
 from erp_web.runtime_units.online_product_job_reader import OnlineProductJobReader
@@ -414,7 +414,7 @@ def build_global_chat_toolset(context: AppContext | None = None, *, chat_config:
     return AiToolSet(
         toolset_id=toolset.toolset_id,
         defer_loading=True,
-        prepare_tools=prepare_package_tools(active.products),
+        prepare_tools=prepare_chat_tools(active.products),
         bindings={
             name: replace(
                 guarded(binding) if binding.definition.side_effect == "write" else binding,

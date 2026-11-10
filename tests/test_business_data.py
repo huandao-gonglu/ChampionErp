@@ -78,10 +78,10 @@ def test_page_and_ai_share_tariff_source_without_exposing_secrets(monkeypatch):
     monkeypatch.setattr(type(app), 'tariffs', property(lambda _: SimpleNamespace(rules=lambda _: deepcopy(data))))
     expected, status = tariff_rules_payload({'platform': ['yandex']})
     assert status == 200
-    result = business_data_read(DataReadRequest(resource='shipping.tariff_rules', params={'platform': 'yandex'}),
+    result = business_data_read(DataReadRequest(resource='shipping.tariff_rules', params={'platform': 'yandex'}, path='rules'),
                                 BusinessDataScope(lambda: build_business_data_catalog(app)), execution())
     assert result.data == expected['rules'] and result.metadata['version'] == 'v1'
-    body, status = business_data_payload({'resource': 'shipping.tariff_rules', 'params': {'platform': 'yandex'}})
+    body, status = business_data_payload({'resource': 'shipping.tariff_rules', 'params': {'platform': 'yandex'}, 'path': 'rules'})
     assert status == 200 and body['data'] == result.data
     for name in ('config', 'store_auth', 'runtime_secrets', '/etc/passwd'):
         assert business_data_payload({'resource': name})[1] == 400
@@ -142,9 +142,7 @@ def test_native_chat_discovers_and_reads_shared_data_with_bounded_context(tmp_pa
     rules = [{'id': str(n), 'max_edge_cm': '60', 'max_sum_cm': '90', 'max_g': '500'} for n in range(100)]
     monkeypatch.setattr(type(app), 'tariffs', property(lambda _: SimpleNamespace(rules=lambda _: {'version': 'test', 'rules': rules})))
     async def model(messages, info):
-        if discovery := discover_tools(info, 'business_data_read'):
-            yield {0: discovery}
-            return
+        assert {'business_data_read', 'business_data_catalog'} <= {tool.name for tool in info.function_tools}
         previous = business_returns(messages)
         if previous:
             result = previous[-1].content
@@ -161,3 +159,40 @@ def test_native_chat_discovers_and_reads_shared_data_with_bounded_context(tmp_pa
     asyncio.run(run.stream(chunks.append))
     assert b'"type":"finish"' in b''.join(chunks)
     assert '60' in b''.join(chunks).decode()
+
+
+def test_catalog_matches_separate_keywords_and_ai_errors_are_actionable():
+    from erp_web.services.capability_errors import BusinessCapabilityError
+    from erp_web.runtime_units.business_data_capabilities import business_data_catalog
+    catalog = BusinessDataCatalog((BusinessResource('sample', '物流尺寸限制', NoDataParameters,
+        lambda _: {'rows': []}),))
+    assert catalog.describe(DataCatalogRequest(keyword='运费 尺寸 重量')).total == 1
+    with pytest.raises(BusinessCapabilityError, match='可用字段'):
+        business_data_read(DataReadRequest(resource='sample', path='$[0]'), BusinessDataScope(lambda: catalog), execution())
+    with pytest.raises(BusinessCapabilityError, match='未知业务数据'):
+        business_data_catalog(DataCatalogRequest(resource='wrong'), BusinessDataScope(lambda: catalog), execution())
+
+
+def test_native_query_error_guides_recovery_instead_of_opaque_retry(tmp_path):
+    import asyncio
+    import json
+    from pydantic_ai.models.function import FunctionModel, DeltaToolCall
+    from erp_web.facades.agent_capability_facade import build_global_chat_toolset
+    from tests.ai_code_mode_helpers import business_returns
+    from tests.test_native_agent_integration import body, service
+    async def model(messages, info):
+        previous = business_returns(messages)
+        if not previous:
+            yield {0: DeltaToolCall(name='business_data_read', json_args=json.dumps({'resource': 'unknown'}), tool_call_id='bad')}
+        elif len(previous) == 1:
+            error = previous[-1].content['error']
+            assert error['code'] == 'BUSINESS_DATA_QUERY_INVALID'
+            assert '目录' in error['message']
+            yield {0: DeltaToolCall(name='business_data_catalog', json_args=json.dumps({'resource': 'pricing.templates'}), tool_call_id='recover')}
+        else:
+            assert previous[-1].content['resources'][0]['name'] == 'pricing.templates'
+            yield '已通过目录找到正确资源。'
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(get_context()))
+    chunks = []
+    asyncio.run(ui.prepare_run(body('查询模板')).stream(chunks.append))
+    assert '正确资源' in b''.join(chunks).decode()

@@ -84,6 +84,7 @@ class TariffRulesResponse(TypedDict):
     imported_at: str
     effective_date: str
     warnings: list[str]
+    calculation_notes: list[str]
     rules: list[TariffRule]
 
 

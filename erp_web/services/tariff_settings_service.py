@@ -60,7 +60,12 @@ class TariffSettingsService:
         return {'ok': True, 'platform': query.platform, 'source': 'personal' if directory == self.personal_dir else 'shared',
                 'version': pack['version'], 'filename': Path(str(pack.get('source_path') or '').replace('\\', '/')).name,
                 'sheet': str(content.get('sheet') or ''), 'imported_at': pack.get('imported_at', ''),
-                'effective_date': content.get('effective_date') or '', 'warnings': warnings, 'rules': rules}
+                'effective_date': content.get('effective_date') or '', 'warnings': warnings, 'rules': rules,
+                'calculation_notes': ['fixed 为每个包裹固定处理费，不是首重费；per_g 为每克费率，step_g 为重量向上进位步长。',
+                    'max_g、max_edge_cm、max_sum_cm、price_max 为空表示表内未注明上限，不表示无限制。',
+                    'volume_divisor_g 为空时按实际重量计费；非空时按本渠道实重与体积重取大。',
+                    'battery/liquid 为 null 表示准入未知，不能解释为允许。']}
+
 
     @staticmethod
     def _summary(directory, platform):

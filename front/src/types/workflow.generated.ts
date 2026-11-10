@@ -130,6 +130,7 @@ export interface BackendTariffRulesResponse {
   imported_at: string
   effective_date: string
   warnings: Array<string>
+  calculation_notes: Array<string>
   rules: Array<BackendTariffRule>
 }
 

@@ -17,7 +17,8 @@ def at_path(value, path):
         elif isinstance(value, list) and key.isdigit() and int(key) < len(value):
             value = value[int(key)]
         else:
-            raise ValueError(f'数据字段不存在：{path}')
+            available = list(value)[:20] if isinstance(value, dict) else (f'数组长度 {len(value)}' if isinstance(value, list) else type(value).__name__)
+            raise ValueError(f'数据字段不存在：{path}；此处可用字段或范围：{available}。使用点分隔路径，例如 rows.0.calculation_basis。')
     return value
 
 
@@ -66,8 +67,9 @@ class BusinessDataCatalog:
         rows = [self.resource(request.resource)] if request.resource else self.resources.values()
         if request.resource and permissions is not None and self.resource(request.resource).permission not in permissions:
             raise ValueError('无权读取此业务资源')
+        terms = request.keyword.casefold().split()
         matched = [r for r in rows if (permissions is None or r.permission in permissions)
-            and (not request.keyword or request.keyword.casefold() in (r.name + r.description).casefold())]
+            and (not terms or any(term in (r.name + r.description).casefold() for term in terms))]
         end = request.offset + request.limit
         return DataCatalogResult(resources=[DataResourceInfo(
             name=r.name, description=r.description, default_path=r.default_path,
@@ -82,7 +84,7 @@ class BusinessDataCatalog:
         path = request.path or resource.default_path
         value = at_path(full, path)
         fields = request.fields or (list(resource.default_fields) if not request.path else [])
-        metadata = {key: full[key] for key in ('version', 'source', 'filename', 'warnings', 'updated_at', 'preview_id', 'state') if isinstance(full, dict) and key in full}
+        metadata = {key: full[key] for key in ('version', 'source', 'filename', 'warnings', 'calculation_notes', 'updated_at', 'preview_id', 'state') if isinstance(full, dict) and key in full}
         if len(json.dumps(metadata, ensure_ascii=False)) > 2000:
             metadata = {'notice': '元数据较大，请用 path=$ 和 fields 单独读取所需字段。'}
         if isinstance(value, str):
@@ -109,7 +111,7 @@ class BusinessDataCatalog:
             result.data = [*selected, candidate]
             if len(result.model_dump_json()) > result.max_chars - 700:
                 result.limited = True
-                result.notice = '本页达到上下文预算；用 fields 选择字段，或用 path 展开单项明细。未返回的数据仍可继续读取。'
+                result.notice = '本页达到上下文预算。data 只含当前页，不能用 total 直接索引；按 next_offset 继续，或用 fields 缩小字段。path 展开单项明细。'
                 break
             selected.append(candidate)
         result.data = selected if isinstance(value, list) else (selected[0] if selected else None)

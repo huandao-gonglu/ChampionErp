@@ -1,4 +1,4 @@
-"""主对话按目标草稿的包装缺项提供工具，调用和审批仍由原生 Agent 处理。"""
+"""主对话提供通用读取入口，并按包装缺项调整原生工具可见性。"""
 
 from asyncio import to_thread
 from dataclasses import replace
@@ -19,7 +19,7 @@ PACKAGE_TOOLS = frozenset({
 })
 
 
-def prepare_package_tools(products: ProductStore):
+def prepare_chat_tools(products: ProductStore):
     # 一个原生步骤可能为直接调用和 CodeMode 多次准备目录；共用这一步的业务快照。
     @lru_cache(maxsize=1)
     def missing_size(run_id: str, step: int, draft_ids: tuple[str, ...]) -> bool:
@@ -36,6 +36,8 @@ def prepare_package_tools(products: ProductStore):
         return False
 
     async def prepare(ctx: RunContext[AiAgentDependencies], tools: list[ToolDefinition]) -> list[ToolDefinition]:
+        # 通用读取是稳定的基础入口，避免为普通查询搜索出一批无关业务工具。
+        tools = [replace(tool, defer_loading=False) if tool.name in {'business_data_catalog', 'business_data_read'} else tool for tool in tools]
         support = ctx.deps.tool_runtime.run_support
         if support is None or not {"product.read", "draft.read"} <= ctx.deps.permissions:
             return tools
