@@ -277,6 +277,7 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
     expect(panel.text()).toContain('查询草稿')
     expect(panel.text()).toContain('第一段第二段')
-    expect(panel.text()).toContain(conversationId || '')
+    expect(store.activeConversationId).toBe(conversationId)
+    expect(panel.text()).not.toContain(conversationId || '')
   })
 })

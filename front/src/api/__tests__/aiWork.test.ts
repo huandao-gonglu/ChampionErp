@@ -19,8 +19,8 @@ describe('AI Work 只读 API', () => {
     await aiWorkApi.fetchPydanticConversations(25)
 
     expect(vi.mocked(apiClient.get).mock.calls).toEqual([
-      ['/api/v1/ai-work/conversations', { params: { limit: 100 } }],
-      ['/api/v1/ai-work/conversations', { params: { limit: 25 } }],
+      ['/api/v1/ai-work/conversations', { params: { limit: 100, scope: 'all', offset: 0 }, signal: undefined }],
+      ['/api/v1/ai-work/conversations', { params: { limit: 25, scope: 'all', offset: 0 }, signal: undefined }],
     ])
   })
 
@@ -36,7 +36,7 @@ describe('AI Work 只读 API', () => {
     await aiWorkApi.fetchUiMessages('conversation_global_chat_abc')
 
     expect(apiClient.get).toHaveBeenCalledWith(
-      '/api/v1/ai-work/conversations/conversation_global_chat_abc/ui-messages',
+      '/api/v1/ai-work/conversations/conversation_global_chat_abc/ui-messages', { signal: undefined },
     )
   })
 

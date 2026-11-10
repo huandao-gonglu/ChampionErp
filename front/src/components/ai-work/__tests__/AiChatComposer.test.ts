@@ -140,10 +140,11 @@ describe('AiChatComposer 斜杠命令面板', () => {
     expect(store.input).toBe('/')
   })
 
-  it('busy 时不显示命令面板', async () => {
-    const { wrapper } = mountComposer('/')
+  it('运行中仍可查看恢复对话命令', async () => {
+    const { wrapper } = mountComposer('/resume')
     await wrapper.setProps({ busy: true })
-    expect(wrapper.find('[data-testid="ai-chat-command-panel"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-chat-command-panel"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ai-chat-command-resume"]').exists()).toBe(true)
   })
 })
 
@@ -283,6 +284,10 @@ describe('输入法组合输入', () => {
     expect(wrapper.get('[data-testid="ai-chat-stop"]').text()).toBe('停止')
     expect(wrapper.emitted('stop')).toBeUndefined()
     await input.trigger('compositionend')
+    // 结束输入法后的第一次 Esc 先关闭命令面板，下一次才进入停止确认。
+    await input.trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('[data-testid="ai-chat-command-panel"]').exists()).toBe(false)
+    expect(wrapper.emitted('stop')).toBeUndefined()
     await input.trigger('keydown', { key: 'Escape' })
     expect(wrapper.get('[data-testid="ai-chat-stop"]').text()).toBe('Esc')
     // 开始新的组合输入也会取消之前的 Esc 等待。
