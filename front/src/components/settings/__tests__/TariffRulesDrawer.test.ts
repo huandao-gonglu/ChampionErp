@@ -13,7 +13,7 @@ const rule: TariffRules['rules'][number] = {
 }
 const saved: TariffRules = { ok: true, platform: 'yandex', source: 'shared', version: 'yandex-version',
   filename: '运费表.xlsx', sheet: '表1', imported_at: '2026-11-07T00:00:00Z', effective_date: '',
-  rules: Array.from({ length: 21 }, (_, index) => ({ ...rule, id: String(index), name: index === 20 ? 'GUOO Economy Extra Small' : rule.name, carrier: index === 20 ? 'GUOO' : 'CEL' })), warnings: ['规则来源说明'] }
+  rules: Array.from({ length: 21 }, (_, index) => ({ ...rule, id: String(index), name: index === 20 ? 'GUOO Economy Extra Small' : rule.name, carrier: index === 20 ? 'GUOO' : 'CEL' })), calculation_notes: [], warnings: ['规则来源说明'] }
 const open = () => mount(TariffRulesDrawer, { props: { platform: 'yandex', scope: 'effective' }, global: { stubs: { teleport: true } } })
 beforeEach(() => {
   vi.clearAllMocks()

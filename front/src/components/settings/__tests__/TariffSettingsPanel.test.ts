@@ -21,7 +21,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(fetchTariffSettings).mockResolvedValue([structuredClone(custom)])
   vi.mocked(fetchTariffRules).mockResolvedValue({ ok: true, platform: 'yandex', source: 'personal', version: custom.version,
-    filename: '个人表.xlsx', sheet: '', imported_at: '', effective_date: '', rules: [], warnings: [] })
+    filename: '个人表.xlsx', sheet: '', imported_at: '', effective_date: '', rules: [], calculation_notes: [], warnings: [] })
   vi.mocked(upgradeTariff).mockResolvedValue([followed])
   vi.mocked(readTariffFile).mockResolvedValue('encoded-file')
   vi.mocked(importTariffFile).mockResolvedValue({ items: [custom], diff: { after_version: 'new', added: [], removed: [], changed: [], policy_change: null, status: '校验通过' } })
