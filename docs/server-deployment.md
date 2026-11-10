@@ -64,7 +64,15 @@ python3 /opt/champion-erp/current/deploy/publish_desktop.py --policy-only \
 
 首次安装支持版本检查的客户端需手动下载。Mac Apple 芯片的安装地址形如 `/desktop-updates/darwin-arm64/1.2.8/installer.dmg`。旧客户端未上报桌面版本，网页也不参与桌面最低版本检查。Windows 的 NSIS 安装包和 Linux 的 AppImage 需在对应构建环境生成，再在服务器用同一 `publish_desktop.py` 提供 `--platform win32|linux`、`--arch`、`--version`、`--installer`、`--sha256`、`--public-url` 和 `--policy` 发布。每个已发布架构有独立的清单。
 
-## 当前公网部署（2026-11-07）
+## 当前公网部署（2026-11-11）
+
+业务版本 **1.2.58** 已发布，网页与后端最终代码为 `0b5e87a0c2e6`，发布记录为
+`20261110t160323z-0b5e87a0c2e6`；Apple 芯片 Mac 的 1.2.58 可选更新已分发。
+页面与 AI 共用业务数据目录，首批覆盖运费、仓库、模板、草稿、核价及 SKU 事实。
+已通过公网真实模型验证物流规则读取、历史解释与新核价选仓，并比较商品/草稿摘要
+确认未应用售价。上下文数据、自动回归和限制见[业务数据验收](business-data-verification.md)。
+
+## 1.2.13 发布记录（2026-11-07）
 
 网页版、业务后端及 Apple 芯片 Mac 可选更新已发布 **1.2.13**（`20261107t122406z-3325c4004ae7`）。管理员可在 1688 授权页粘贴完整回调地址，由服务器完成换码。已验证公网资源、桌面更新清单和服务器端管理员请求校验，真实 1688 换码需管理员在浏览器完成登录。[下载 Mac 安装包](https://hdgl.cc.cd/desktop-updates/darwin-arm64/1.2.13/installer.dmg)
 
