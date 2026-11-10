@@ -787,7 +787,7 @@ def test_history_projection_uses_official_model_request_hook() -> None:
 
 def test_tool_discovery_and_result_projection_keep_generic_boundaries() -> None:
     factory = (ROOT / "erp_web/services/ai_agent_factory.py").read_text(encoding="utf-8")
-    assert "ToolSearch(strategy=match_tool_queries)" in factory
+    assert "ToolSearch(strategy=match_tool_queries, max_results=3)" in factory
     bridge = (ROOT / "erp_web/services/ai_tool_bridge.py").read_text(encoding="utf-8")
     assert "tool.defer_loading = self.toolset.defer_loading" in bridge
     assert "native.prepared(toolset.prepare_tools)" in bridge

@@ -12,7 +12,7 @@
   也绑定同一目录；原 HTTP 响应形状保持不变。
 - AI：`business_data_catalog` 和 `business_data_read`，两者都只是薄适配。
   这两个基础入口通过原生 `ToolDefinition.defer_loading=False` 保持可见，其他领域工具
-  继续按需发现，避免普通读取触发宽泛搜索、加载无关工具定义。
+  继续按需发现；原生 ToolSearch 每次最多返回三个候选，避免宽泛搜索一次加载一批无关工具定义。
   目录只列有权读取的资源，具体读取复核资源权限；可信 Scope 由组合根提供，
   账号与草稿选择范围沿用现有 Runtime，不接收 owner、数据库路径或会话凭据。
 - 通用服务 `services/business_data.py` 不依赖平台、领域 runtime、HTTP 或 Agent。
