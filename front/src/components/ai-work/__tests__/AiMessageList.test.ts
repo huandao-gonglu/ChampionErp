@@ -157,6 +157,23 @@ describe('AI 对话按轮次展示', () => {
     expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('脚本检查未通过')
   })
 
+  it('运行时诊断在实时和历史中均默认折叠，失败提示继续保留', async () => {
+    const errorText = 'Runtime error:\nTraceback (most recent call last):\nNameError: Unknown function: draft_package_estimates_preview'
+    const failed: AiUiPart = { type: 'tool-run_code', toolCallId: 'runtime', state: 'output-error', input: {}, errorText }
+    const parts = [failed, text('请核对处理结果。')]
+    const saved = JSON.stringify(parts)
+    const wrapper = mount(AiMessageList, { props: { active: true, messages: [user(), reply('live', parts)] } })
+    expect(wrapper.text()).toContain('操作失败')
+    expect(wrapper.text()).not.toContain('Traceback')
+    await wrapper.setProps({ active: false, messages: [user(), reply('history', parts)] })
+    const attention = wrapper.get('[data-testid="ai-turn-attention"]')
+    expect(attention.text()).toContain('操作失败')
+    expect(attention.text()).not.toContain('Traceback')
+    await expand(attention.get<HTMLDetailsElement>('[data-testid="ai-tool-details"]'))
+    expect(attention.get('[data-testid="ai-script-diagnostic"]').text()).toBe(errorText)
+    expect(JSON.stringify(parts)).toBe(saved)
+  })
+
   it('执行中的文字和并行工具按顺序原地更新，完成后才收起过程', async () => {
     const wrapper = mount(AiMessageList, { props: { active: true, messages: [user(), reply('a', [text('先查询')])] } })
     const prose = wrapper.get('[data-testid="ai-part-text"]').element

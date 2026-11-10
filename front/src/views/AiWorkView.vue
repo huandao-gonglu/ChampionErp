@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
-import { PhPencilSimple, PhPushPin, PhTrash } from '@phosphor-icons/vue'
+import { PhCheck, PhPencilSimple, PhPushPin, PhTrash, PhX } from '@phosphor-icons/vue'
 import type { UIMessage } from 'ai'
 import {
   fetchPydanticConversation,
@@ -10,6 +10,7 @@ import {
   manageConversation,
   type ChatManagementAction,
 } from '@/api/aiWork'
+import WorkspaceHint from '@/components/shared/WorkspaceHint.vue'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiMessageList from '@/components/ai-work/AiMessageList.vue'
 import AiImageBatchProgress from '@/components/ai-work/AiImageBatchProgress.vue'
@@ -183,7 +184,10 @@ function editRow(row: PydanticConversationSummary, mode: 'rename' | 'delete') {
   editor.value = { id: row.conversation_id, mode }
   if (mode === 'rename') {
     name.value = conversationTitle(row.conversation_id, row.title)
-    void nextTick(() => nameInput.value?.select())
+    void nextTick(() => {
+      nameInput.value?.focus()
+      nameInput.value?.select()
+    })
   }
 }
 
@@ -525,11 +529,21 @@ onBeforeUnmount(() => {
           </p>
         </div>
 
-        <ul v-else class="max-h-[calc(100vh-230px)] divide-y divide-slate-100 overflow-auto dark:divide-dark-800">
-          <li v-for="conversation in displayConversations" :key="conversation.conversation_id">
-            <div class="flex items-center" :class="selectedId === conversation.conversation_id ? 'bg-primary-50 dark:bg-primary-500/10' : ''">
+        <ul v-else class="ai-work-conversation-list max-h-[calc(100vh-230px)] divide-y divide-slate-100 overflow-auto dark:divide-dark-800">
+          <li v-for="conversation in displayConversations" :key="conversation.conversation_id"
+            :class="selectedId === conversation.conversation_id ? 'bg-primary-50 dark:bg-primary-500/10' : ''">
+            <div class="flex items-center">
+              <form v-if="editor?.id === conversation.conversation_id && editor.mode === 'rename'"
+                :id="`rename-${conversation.conversation_id}`" class="min-w-0 flex-1 px-4 py-3"
+                @submit.prevent="change(conversation, 'rename')">
+                <input :ref="el => { nameInput = el as HTMLInputElement | undefined }" v-model="name"
+                  aria-label="对话名称" maxlength="80" class="input w-full min-w-0 text-sm font-bold"
+                  :disabled="saving" @keydown.esc.stop.prevent="!saving && (editor = undefined)">
+                <span class="mt-2 block text-[11px] text-slate-500 dark:text-accent-300">更新：{{ formatTime(conversation.updated_at) }}</span>
+                <span class="mt-0.5 block text-[11px] text-slate-400">创建：{{ formatTime(conversation.created_at) }}</span>
+              </form>
               <button
-                type="button"
+                v-else type="button"
                 class="min-w-0 flex-1 px-4 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-dark-800"
                 :data-testid="conversation.temporary
                   ? 'ai-work-conversation-temporary'
@@ -562,35 +576,56 @@ onBeforeUnmount(() => {
               </button>
               <div v-if="!conversation.temporary && conversation.conversation_id.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)"
                 class="mr-2 flex shrink-0 items-center">
-                <button type="button" class="rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-dark-800"
-                  :class="{ 'text-primary-600 dark:text-primary-400': conversation.pinned }" :disabled="saving"
-                  :aria-label="conversation.pinned ? '取消置顶' : '置顶对话'" :aria-pressed="!!conversation.pinned" :title="conversation.pinned ? '取消置顶' : '置顶对话'"
-                  @click="change(conversation, conversation.pinned ? 'unpin' : 'pin')">
-                  <PhPushPin :size="18" :weight="conversation.pinned ? 'fill' : 'regular'" />
-                </button>
-                <button type="button" class="rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-dark-800"
-                  aria-label="重命名对话" title="重命名" :disabled="saving" @click="editRow(conversation, 'rename')">
-                  <PhPencilSimple :size="18" />
-                </button>
-                <button type="button" class="rounded-lg p-1.5 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-dark-800"
-                  aria-label="删除对话" title="删除对话" :disabled="saving" @click="editRow(conversation, 'delete')">
-                  <PhTrash :size="18" />
-                </button>
+                <template v-if="editor?.id === conversation.conversation_id && editor.mode === 'rename'">
+                  <WorkspaceHint label="保存名称" content="保存名称">
+                    <template #trigger="{ attrs }">
+                      <button v-bind="attrs" type="submit" :form="`rename-${conversation.conversation_id}`"
+                        class="rounded-lg p-1.5 text-primary-600 hover:bg-slate-100 dark:hover:bg-dark-800"
+                        aria-label="保存名称" :disabled="saving || !name.trim()"><PhCheck :size="18" /></button>
+                    </template>
+                  </WorkspaceHint>
+                  <WorkspaceHint label="取消重命名" content="取消重命名">
+                    <template #trigger="{ attrs }">
+                      <button v-bind="attrs" type="button" class="rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-dark-800"
+                        aria-label="取消重命名" :disabled="saving" @click="editor = undefined"><PhX :size="18" /></button>
+                    </template>
+                  </WorkspaceHint>
+                </template>
+                <template v-else>
+                  <WorkspaceHint :label="conversation.pinned ? '取消置顶' : '置顶对话'" :content="conversation.pinned ? '取消置顶' : '置顶对话'">
+                    <template #trigger="{ attrs }">
+                      <button v-bind="attrs" type="button" class="rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-dark-800"
+                        :class="{ 'text-primary-600 dark:text-primary-400': conversation.pinned }" :disabled="saving"
+                        :aria-label="conversation.pinned ? '取消置顶' : '置顶对话'" :aria-pressed="!!conversation.pinned"
+                        @click="change(conversation, conversation.pinned ? 'unpin' : 'pin')">
+                        <PhPushPin :size="18" :weight="conversation.pinned ? 'fill' : 'regular'" />
+                      </button>
+                    </template>
+                  </WorkspaceHint>
+                  <WorkspaceHint label="重命名对话" content="重命名对话">
+                    <template #trigger="{ attrs }">
+                      <button v-bind="attrs" type="button" class="rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-dark-800"
+                        aria-label="重命名对话" :disabled="saving" @click="editRow(conversation, 'rename')">
+                        <PhPencilSimple :size="18" />
+                      </button>
+                    </template>
+                  </WorkspaceHint>
+                  <WorkspaceHint label="删除对话" content="删除对话">
+                    <template #trigger="{ attrs }">
+                      <button v-bind="attrs" type="button" class="rounded-lg p-1.5 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-dark-800"
+                        aria-label="删除对话" :disabled="saving" @click="editRow(conversation, 'delete')">
+                        <PhTrash :size="18" />
+                      </button>
+                    </template>
+                  </WorkspaceHint>
+                </template>
               </div>
             </div>
-            <div v-if="editor?.id === conversation.conversation_id" class="px-3 pb-3">
-              <form v-if="editor.mode === 'rename'" class="flex flex-wrap items-center gap-2" @submit.prevent="change(conversation, 'rename')">
-                <input :ref="el => { nameInput = el as HTMLInputElement | undefined }" v-model="name" aria-label="对话名称"
-                  maxlength="80" class="input min-w-0 flex-1" :disabled="saving" @keydown.esc.stop.prevent="editor = undefined">
-                <button class="btn btn-primary" :disabled="saving || !name.trim()">保存</button>
+            <div v-if="editor?.id === conversation.conversation_id && editor.mode === 'delete'" class="px-3 pb-3">
+              <p class="mb-2 text-sm">删除这段对话及其消息？删除后无法恢复。</p>
+              <div class="flex justify-end gap-2">
                 <button type="button" class="btn btn-outline" :disabled="saving" @click="editor = undefined">取消</button>
-              </form>
-              <div v-else>
-                <p class="mb-2 text-sm">删除这段对话及其消息？删除后无法恢复。</p>
-                <div class="flex justify-end gap-2">
-                  <button type="button" class="btn btn-outline" :disabled="saving" @click="editor = undefined">取消</button>
-                  <button type="button" class="btn btn-outline text-rose-600" :disabled="saving" @click="change(conversation, 'delete')">确认删除</button>
-                </div>
+                <button type="button" class="btn btn-outline text-rose-600" :disabled="saving" @click="change(conversation, 'delete')">确认删除</button>
               </div>
             </div>
             <p v-if="actionError?.id === conversation.conversation_id" role="alert" class="px-3 pb-3 text-sm text-rose-600">{{ actionError.message }}</p>
@@ -739,3 +774,13 @@ onBeforeUnmount(() => {
     </main>
   </div>
 </template>
+
+<style scoped>
+/* 列表仍可滚动，选中背景铺满侧栏，避免透明滚动条轨道留出右侧空隙。 */
+.ai-work-conversation-list {
+  scrollbar-width: none;
+}
+.ai-work-conversation-list::-webkit-scrollbar {
+  display: none;
+}
+</style>

@@ -99,6 +99,75 @@ def test_model_claim_excludes_delete_and_failed_routing_restores_waiting_input(t
     assert not ui.run_registry.token(CONVERSATION).cancelled
 
 
+def test_immediate_screenshot_keeps_pending_question_context(tmp_path, monkeypatch):
+    """等待补充信息时立即发送图片，模型能同时看到原问题、截图和等待状态。"""
+    from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
+    from pydantic_ai.models.function import DeltaToolCall
+    from erp_web.services.agent_run_storage import AgentRunStorage
+
+    seen = []
+    image = BinaryContent(data=b"test-screenshot", media_type="image/png")
+
+    async def model(messages, info):
+        seen.append(info.instructions)
+        if len(seen) == 1:
+            yield {0: DeltaToolCall(
+                name="request_user_input", tool_call_id="where-channel",
+                json_args='{"title":"物流渠道来源","question":"economy other 显示在哪里？"}',
+            )}
+        else:
+            assert "为什么采用 economy other" in info.instructions
+            assert "economy other 显示在哪里" in info.instructions
+            assert "等待用户回答" in info.instructions
+            assert any(isinstance(part, UserPromptPart) and isinstance(part.content, list)
+                       and any(isinstance(item, BinaryContent) and item.data == image.data
+                               for item in part.content)
+                       for message in messages for part in message.parts)
+            yield "截图显示待应用售价，继续核对 economy other 的选择依据。"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model))
+    monkeypatch.setattr("erp_web.services.global_agent_chat_service.chat_image_reason", lambda _: "")
+    asyncio.run(ui.prepare_run(body("为什么采用 economy other")).stream(lambda _: None))
+    assert ui.call_store.pending(CONVERSATION)
+    ui.accept_input(CONVERSATION, "screenshot", [ModelRequest(parts=[UserPromptPart([
+        "请读取图片上的内容。", image,
+    ])])], queued=True)
+    monkeypatch.setattr(queue, "superseded_indices", lambda *args: [])
+    queue.act_on_queue(ui, CONVERSATION, "screenshot", "send")
+    child = queue.parallel_run_id(CONVERSATION, "screenshot")
+    wait_for(lambda: ui.claim_store.get(child, "screenshot").status in {"completed", "failed"})
+    assert ui.claim_store.get(child, "screenshot").status == "completed"
+    assert len(seen) == 2
+    assert ui.call_store.pending(CONVERSATION)
+    history = ui.chat_service.trusted_history(child)
+    # Deferred 恢复或重开运行时仍由已保存的原生 metadata 恢复背景。
+    support = AgentRunStorage(ui.call_store, child, history, 0)
+    assert "economy other 显示在哪里" in support.context_instructions()
+
+
+def test_immediate_message_keeps_root_context_after_original_finishes(tmp_path, monkeypatch):
+    """选中消息的分流期间原任务结束，独立回合仍须带上原对话背景。"""
+    seen = []
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    async def model(messages, info):
+        seen.append(info.instructions)
+        yield "原任务完成" if len(seen) == 1 else "沿用原对话背景回答"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model))
+    asyncio.run(ui.prepare_run(body("分析 economy other 的来源")).stream(lambda _: None))
+    # 保留一条排队输入，模拟立即处理时原任务已经完成的窗口。
+    ui.accept_input(CONVERSATION, "screenshot", [ModelRequest(parts=[
+        UserPromptPart("补充一张截图"),
+    ])], queued=True)
+    monkeypatch.setattr(queue, "superseded_indices", lambda *args: [])
+    queue.act_on_queue(ui, CONVERSATION, "screenshot", "send")
+    child = queue.parallel_run_id(CONVERSATION, "screenshot")
+    wait_for(lambda: ui.claim_store.get(child, "screenshot").status in {"completed", "failed"})
+    assert ui.claim_store.get(child, "screenshot").status == "completed"
+    assert "分析 economy other 的来源" in seen[-1]
+
+
 def test_replacement_recalls_deferred_work_before_execution(tmp_path, monkeypatch):
     from pydantic_ai.models.function import DeltaToolCall
     from tests.test_native_agent_integration import binding, tools

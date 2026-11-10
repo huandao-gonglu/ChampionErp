@@ -850,7 +850,7 @@ transcript 或 Tool 输出。
 - `POST /api/v1/ai-chat/runs`：新用户消息、关联待答问题的用户回复（`answer_to`）或官方 approval-responded 消息。用户消息 ID 幂等领取与输入同事务保存；仅服务端历史参与模型调用。
 - 对话输入框支持粘贴和选择 JPEG、PNG、WebP 图片。服务端按全局 AI 实际绑定的 API 模型校验 `image_understanding`，验证原图后交由 Vercel Adapter 转为原生消息。图片随收件箱和对话历史保存。模型输入投影附上内容 ID，切换文本模型后仅提供附件引用。
 - `runtime_units/image_capabilities.py` 的 `product_image_read` 按商品列出素材，由商品 SKU 的 `image_asset_id` 反查每张图关联的全部 SKU，并通过 `ai_direct_request_service.image_to_text` 用同一模型读取指定原图。`chat_images_save_to_product` 从当前会话的用户消息取指定附件，以短锁合入最新商品图片池。两条入口分别使用商品读权限和图片写权限。
-- `POST /api/v1/ai-chat/queue` 按会话与消息 ID 处理仍在排队的输入。删除清除正文并保留幂等身份。立即发送由 `chat_queue_service.py` 将新消息和活动任务交给全局模型判断是否取代旧要求，提交前重核目标轮次。撤下过期审批、交接新输入和保护其他排队项使用同一事务。进度查询和独立任务使用自己的原生执行范围、审批及回执，在原对话按提问时间展示。后续输入可读取同一对话其他回合的近期记录。
+- `POST /api/v1/ai-chat/queue` 按会话与消息 ID 处理仍在排队的输入。删除清除正文并保留幂等身份。立即发送由 `chat_queue_service.py` 将新消息和活动任务交给全局模型判断是否取代旧要求，提交前重核目标轮次。撤下过期审批、交接新输入和保护其他排队项使用同一事务。进度查询和独立任务使用自己的原生执行范围、审批及回执，在原对话按提问时间展示。独立即时回合携带主对话和近期即时回合的事实摘要，即使分流时旧任务已经结束也保留主对话背景。`AgentRunStorage` 将服务端保存的 `immediate_context` 交给原生动态 instructions，恢复运行时沿用；摘要只提供上下文，不复制开放工具协议或扩大授权。回归见 `tests/test_chat_queue_actions.py` 中等待回答时补发截图及旧任务结束后的即时分流场景。
   已核对 Pydantic AI 2.44.0 的原生队列、并发运行及取消令牌。ERP 负责用户收件箱和业务意图分流，Agent 循环和原生事件继续由框架负责。框架原生支持并发处理可撤回输入并按意图取消时，可移除对应适配。[Pydantic AI 运行与取消](https://pydantic.dev/docs/ai/core-concepts/agent/#cancelling-a-run)
 - `POST /api/v1/ai-chat/cancel`：接收 `{id, message_id}`，直接取消本轮原生令牌；不排队发送取消 prompt。相同消息的停止幂等，已知旧消息不能取消新回合；取消先于发送到达时，现有 claim 幂等记录阻止迟到消息启动。
 - 同会话有活动 run 或未齐备 Deferred 时返回 HTTP 202 接收凭据。批准/拒绝还需 `X-Approval-Token`，客户端不能更改服务端 call ID、工具名或参数。

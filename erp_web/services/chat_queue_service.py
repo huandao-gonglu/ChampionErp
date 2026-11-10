@@ -113,8 +113,6 @@ def act_on_queue(service, conversation_id, message_id, action):
         messages = ModelMessagesTypeAdapter.validate_json(row["messages_json"])
         snapshots = [task_snapshot(service, turn.scope) for turn in turns]
         indices = superseded_indices(service.chat_service, snapshots, messages) if turns else []
-        if not indices:
-            snapshots = [task_snapshot(service, turn.scope) for turn in turns]
         with registry.input_guard():
             if source_token.cancelled:
                 raise _stale()
@@ -128,9 +126,10 @@ def act_on_queue(service, conversation_id, message_id, action):
                     obsolete.append(turn)
             target = next((turn.scope for turn in obsolete if turn.scope == conversation_id),
                           obsolete[0].scope if obsolete else parallel_run_id(conversation_id, message_id))
-            if target != conversation_id and snapshots:
+            if target != conversation_id:
+                background = related_context(service, target)
                 for message in messages:
-                    message.metadata = {**(message.metadata or {}), "immediate_context": snapshots}
+                    message.metadata = {**(message.metadata or {}), "immediate_context": background}
             if not store.dispatch_queued_input(row, target, messages, [turn.scope for turn in obsolete]):
                 raise _stale()
             for turn in obsolete:

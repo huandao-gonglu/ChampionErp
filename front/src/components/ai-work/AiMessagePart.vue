@@ -31,7 +31,16 @@ const businessResult = computed(() => (
 ))
 const status = computed(() => aiToolStatus(props.part, props.pendingKind, props.active))
 const toolStatusLabel = computed(() => statusLabels[status.value])
-const toolError = computed(() => tool.value.errorText || businessResult.value?.error?.message || '')
+// 原生脚本诊断供模型修正和人工展开查看；运行时失败状态仍保留，不能据此断言没有写入。
+const scriptDiagnostic = computed(() => (
+  aiToolName(props.part) === 'run_code' && tool.value.state === 'output-error'
+    && /^(?:(?:Type|Syntax) error in code:|Runtime error:)\r?\n/.test(tool.value.errorText || '')
+    ? tool.value.errorText : ''
+))
+const toolError = computed(() => (
+  scriptDiagnostic.value ? businessResult.value?.error?.message || ''
+    : tool.value.errorText || businessResult.value?.error?.message || ''
+))
 
 const toolStatusClass = computed(() => {
   switch (status.value) {
@@ -181,13 +190,13 @@ const statusLabels: Record<string, string> = {
           <p class="text-xs text-slate-500">处理结果</p>
           <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-accent-200">{{ toolOutputJson }}</pre>
         </template>
-        <template v-if="status === 'script_error' && toolError">
-          <p class="text-xs text-slate-500">{{ toolStatusLabel }}</p>
-          <pre data-testid="ai-script-diagnostic" class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-accent-200">{{ toolError }}</pre>
+        <template v-if="scriptDiagnostic">
+          <p class="text-xs text-slate-500">脚本诊断</p>
+          <pre data-testid="ai-script-diagnostic" class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-accent-200">{{ scriptDiagnostic }}</pre>
         </template>
       </div>
     </details>
-    <p v-if="toolError && status !== 'script_error'" class="ml-3 mt-1 break-words text-xs text-rose-700 dark:text-rose-300" role="alert">
+    <p v-if="toolError" class="ml-3 mt-1 break-words text-xs text-rose-700 dark:text-rose-300" role="alert">
       {{ toolError }}
     </p>
     <p v-else-if="toolNeedsAttention(status) && status !== 'approval'" class="ml-3 mt-1 text-xs text-amber-800 dark:text-amber-200">

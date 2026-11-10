@@ -166,7 +166,7 @@ def _scenario(endpoint, quotes, errors):
 
 @ai_tool(
     name="draft_package_estimates_preview", permission="pricing.read",
-    description="按草稿已保存的核价设置、全部已选 SKU、当前运费规则分别试算包装尺寸区间的两个端点，返回渠道、仓库和费用。需要时传 target_keys 限定市场。每端返回估算范围的报价总数、前 40 条报价及前 20 条异常；只比较已返回的明细。相同端点只算一次。结果只用于比较，不产生可应用的核价预览。缺重量或成本时仍可向用户展示尺寸建议。"
+    description="仅用于已选 SKU 缺失包装边长的估算，不接受已有有效值的边长，不用于查询已有运费的渠道明细。按草稿已保存的核价设置、全部已选 SKU、当前运费规则分别试算包装尺寸区间的两个端点，返回渠道、仓库和费用。需要时传 target_keys 限定市场。每端返回估算范围的报价总数、前 40 条报价及前 20 条异常；只比较已返回的明细。相同端点只算一次。结果只用于比较，不产生可应用的核价预览。缺重量或成本时仍可向用户展示尺寸建议。"
 )
 def draft_package_estimates_preview(
     request: PackageFreightPreviewRequest, scope: Annotated[PackageEstimateScope, Injected()],

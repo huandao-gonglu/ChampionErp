@@ -26,7 +26,7 @@ class EdgeEstimate(EstimateModel):
 
 class SkuPackageEstimate(EstimateModel):
     sku_id: Identity
-    sku_name: str = Field(default="", max_length=500, description="商品资料中的规格原名，提供后展示给用户。")
+    sku_name: str = Field(default="", max_length=500, description="可省略；提供时必须与 sku_id 对应的商品规格原名完全一致，不得缩写、翻译或省略材质等差异。仅需用 ID 定位时省略此字段。")
     dimensions: dict[Edge, EdgeEstimate] = Field(min_length=1, max_length=3)
     basis: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)] = Field(
         description="写明此规格的资料来源、读到的数值及从商品到装箱外尺寸的假设。"

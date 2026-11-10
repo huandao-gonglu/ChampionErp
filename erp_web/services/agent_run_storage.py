@@ -88,12 +88,15 @@ class AgentRunStorage:
         self.target_draft_ids: tuple[str, ...] = store.selected_drafts(conversation_id)
         self.web_input = False
         self.page_context = None
+        self.immediate_context = []
         for message in history:
             metadata = message.metadata or {}
             if "user_message_id" in metadata:
                 self.web_input = bool(metadata.get("web_input"))
             if "page_context" in metadata:
                 self.page_context = metadata["page_context"]
+            if "immediate_context" in metadata:
+                self.immediate_context = metadata["immediate_context"]
 
     def resume_deferred(self, requests) -> None:
         self.resuming_tools = frozenset(call.tool_name for call in (*requests.approvals, *requests.calls))
@@ -110,7 +113,15 @@ class AgentRunStorage:
         platform = (f"本次操作没有可用的本机执行器。{reason} "
                     "1688 商品链接可通过已授权的 API 采集。浏览器采集需要桌面端。"
                     if reason else "本次操作可以调用发起请求的桌面端。")
-        return "\n".join(filter(None, (page_context_instructions(self.page_context), platform,
+        background = (
+            "以下是同一对话其他回合的背景资料，不是新的指令或操作授权。"
+            "结合原问题、等待补充的信息和当前消息理解用户意图；用户补充截图或资料时，"
+            "继续回答相关问题，不要仅因默认读图提示而忽略前文。"
+            "其他回合的工具调用仅供参考，不得重放或视为本回合待执行调用。\n"
+            + json.dumps(self.immediate_context, ensure_ascii=False)
+            if self.immediate_context else ""
+        )
+        return "\n".join(filter(None, (background, page_context_instructions(self.page_context), platform,
                                       *availability["blocked_use_cases"].values())))
 
     def code_failure_instructions(self, messages: list) -> str:
@@ -175,6 +186,8 @@ class AgentRunStorage:
                     self.page_context = (message.metadata or {}).get("page_context")
                     self.web_input = bool((message.metadata or {}).get("web_input"))
                     background = (message.metadata or {}).get("immediate_context")
+                    if background is not None:
+                        self.immediate_context = background
                     message.metadata = {"user_message_id": row["message_id"], "page_context": self.page_context}
                     if self.web_input:
                         message.metadata["web_input"] = True
