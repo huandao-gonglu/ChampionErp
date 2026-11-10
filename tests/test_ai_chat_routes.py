@@ -355,10 +355,10 @@ def test_sse_run_streams_official_tool_chunks(
         nonlocal turns
         turns += 1
         if turns == 1:
-            # 按需发现后只提供本次需要的业务工具和控制工具。
+            # 常驻基础读取与控制工具保留，其余业务工具按需发现。
             assert {
                 tool.name for tool in agent_info.function_tools
-            } == {"search_tools", "run_code", "request_user_input", "drafts_query"}
+            } == {"search_tools", "run_code", "request_user_input", "drafts_query", "business_data_catalog", "business_data_read"}
             yield {
                 0: DeltaThinkingPart(content="先查询当前草稿。"),
                 1: python_call(

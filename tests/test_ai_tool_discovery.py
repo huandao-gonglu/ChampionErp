@@ -60,13 +60,13 @@ def test_full_catalog_starts_small_and_restores_only_discovered_tools(tmp_path, 
         names = {tool.name for tool in info.function_tools}
         requests.append(names)
         if len(requests) == 1:
-            assert names <= {"search_tools", "run_code", "request_user_input"}
-            assert sum(len(t.description or "") + len(json.dumps(t.parameters_json_schema)) for t in info.function_tools) < 6000
-            assert len(info.instructions or "") < 15000
+            assert names <= {"search_tools", "run_code", "request_user_input", "business_data_catalog", "business_data_read"}
+            assert sum(len(t.description or "") + len(json.dumps(t.parameters_json_schema)) for t in info.function_tools) < 7000
+            assert len(info.instructions or "") < 18000
             yield {0: DeltaToolCall(name="search_tools", json_args='{"queries":["product_publish_validate"]}', tool_call_id="find-validate")}
         else:
             assert "product_publish_validate" in names
-            assert names <= {"search_tools", "run_code", "request_user_input", "product_publish_validate"}
+            assert names <= {"search_tools", "run_code", "request_user_input", "product_publish_validate", "business_data_catalog", "business_data_read"}
             assert "async def product_publish_validate(" in info.instructions
             assert "async def order_detail_read(" not in info.instructions
             yield "已找到预检能力。"
