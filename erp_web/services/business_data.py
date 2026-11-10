@@ -66,11 +66,13 @@ class BusinessDataCatalog:
         rows = [self.resource(request.resource)] if request.resource else self.resources.values()
         if request.resource and permissions is not None and self.resource(request.resource).permission not in permissions:
             raise ValueError('无权读取此业务资源')
+        matched = [r for r in rows if (permissions is None or r.permission in permissions)
+            and (not request.keyword or request.keyword.casefold() in (r.name + r.description).casefold())]
+        end = request.offset + request.limit
         return DataCatalogResult(resources=[DataResourceInfo(
             name=r.name, description=r.description, default_path=r.default_path,
             default_fields=list(r.default_fields), permission=r.permission, parameters=r.parameters.model_json_schema() if request.resource else {},
-        ) for r in rows if (permissions is None or r.permission in permissions)
-            and (not request.keyword or request.keyword.casefold() in (r.name + r.description).casefold())])
+        ) for r in matched[request.offset:end]], total=len(matched), next_offset=end if end < len(matched) else None)
 
     def read(self, request: DataReadRequest, *, permissions=None):
         resource = self.resource(request.resource)
@@ -86,11 +88,15 @@ class BusinessDataCatalog:
         if isinstance(value, str):
             if fields or request.filters:
                 raise ValueError('文本字段不支持 fields 或 filters')
-            chunk = value[request.offset:request.offset + 9000]
-            end = request.offset + len(chunk)
-            return DataReadResult(resource=request.resource, path=path, data=chunk, total=len(value), offset=request.offset,
-                                  next_offset=end if end < len(value) else None, metadata=metadata,
-                                  limited=end < len(value), notice='文本按字符位置分段，next_offset 可继续读取。')
+            result = DataReadResult(resource=request.resource, path=path, data='', total=len(value), offset=request.offset,
+                                    metadata=metadata, notice='文本按字符位置分段，next_offset 可继续读取。')
+            result.data = value[request.offset:request.offset + 9000]
+            while len(result.model_dump_json()) > result.max_chars - 100:
+                result.data = result.data[:len(result.data) * 3 // 4]
+            end = request.offset + len(result.data)
+            result.next_offset = end if end < len(value) else None
+            result.limited = end < len(value)
+            return result
         rows = value if isinstance(value, list) else [value]
         if request.filters:
             rows = [row for row in rows if all(at_path(row, key) == expected for key, expected in request.filters.items())]

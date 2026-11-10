@@ -63,6 +63,15 @@ def test_large_records_are_not_silently_truncated_and_can_be_expanded():
     assert len(start.model_dump_json()) <= start.max_chars
 
 
+def test_text_budget_includes_json_escaping_and_discovery_is_paginated():
+    catalog = BusinessDataCatalog(tuple(BusinessResource(str(n), '测试', NoDataParameters,
+        lambda _: {'text': '\n' * 50000}) for n in range(100)))
+    page = catalog.describe(DataCatalogRequest(limit=5))
+    assert len(page.resources) == 5 and page.total == 100 and page.next_offset == 5
+    text = read(catalog, resource='0', path='text')
+    assert len(text.model_dump_json()) <= text.max_chars and text.next_offset > 0
+
+
 def test_page_and_ai_share_tariff_source_without_exposing_secrets(monkeypatch):
     app = get_context()
     data = {'ok': True, 'version': 'v1', 'rules': [{'name': '物流', 'max_edge_cm': '60'}]}

@@ -29,6 +29,8 @@ class ProductDataParameters(DataModel):
 class DataCatalogRequest(DataModel):
     keyword: str = Field(default='', max_length=100)
     resource: str = Field(default='', max_length=100, description='指定资源时返回其参数 Schema 和默认字段。')
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=50)
 
 
 class DataReadRequest(DataModel):
@@ -52,6 +54,8 @@ class DataResourceInfo(DataModel):
 
 class DataCatalogResult(DataModel):
     resources: list[DataResourceInfo]
+    total: int = 0
+    next_offset: int | None = None
 
 
 class DataReadResult(DataModel):
