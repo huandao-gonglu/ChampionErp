@@ -41,6 +41,17 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 `load_draft_detail_from_index` / `save_draft_detail` 为页面薄包装，另行生成商品上下文和列表索引。
 属性、图片、文案、核价及 SKU 包装/勾选操作使用内容入口，避免逐项扫描全库页面列表。
 
+## 共用业务数据目录
+
+`business_data_composition.py` 显式装配页面和 AI 共用的只读资源；普通查询新增资源声明，
+不按问题增加 AI 工具。`services/business_data.py` 统一处理发现、字段投影、过滤、分页
+和 12,000 字符预算，保留逐项展开路径。HTTP `/api/business-data/catalog`、`/read`
+与 `business_data_catalog` / `business_data_read` 共用同一目录，权限与空间由可信作用域决定。
+首批覆盖运费表、仓库、模板、草稿内容、核价明细和 SKU 事实，非全业务覆盖声明。
+`services/pricing_data.py` 读取已保存和短期预览的原始核价结果，不触发模型或重新核价。
+Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不推测补造。
+开发边界、字段展开、预算与验证见[共用业务数据读取](business-data-access.md)。
+
 ## 运行时边界
 
 ### 个人账号与空间隔离

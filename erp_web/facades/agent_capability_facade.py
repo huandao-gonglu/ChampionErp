@@ -10,6 +10,8 @@ from typing import Any
 
 
 from erp_web.context import AppContext, get_context
+from erp_web.business_data_composition import build_business_data_catalog
+from erp_web.runtime_units.business_data_capabilities import BusinessDataScope
 from erp_web.facades import alibaba_self_purchase_facade, order_procurement_facade, order_notification_facade
 from erp_web.runtime_units.order_capability_support import OrderCapabilityScope
 from erp_web.runtime_units.order_chat_capabilities import OrderChatCapabilityScope
@@ -121,6 +123,7 @@ def build_capability_binding_scope(
 
     return AiToolBindingScope(
         {
+            BusinessDataScope: BusinessDataScope(lambda: build_business_data_catalog(context)),
             OrderChatCapabilityScope: OrderChatCapabilityScope(service=lambda: order_chat_facade.create_service(context)),
             OrderCapabilityScope: OrderCapabilityScope(
                 orders=lambda: context.order_notifications,

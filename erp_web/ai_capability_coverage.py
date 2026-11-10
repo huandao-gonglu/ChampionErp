@@ -95,12 +95,16 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    AiCapabilityCoverageEntry(method="GET", path="/api/business-data/catalog", business_domain="业务数据", disposition="capability", capability_names=("business_data_catalog",)),
+    *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="业务数据", disposition="capability", capability_names=("business_data_read",)) for method, path in (
+        ("POST", "/api/business-data/read"), ("GET", "/api/shipping/tariffs"),
+        ("GET", "/api/shipping/tariffs/rules"), ("GET", "/api/yandex/warehouses"), ("GET", "/api/pricing/templates"),
+    )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="共享设置与运费表", disposition="internal_only",
         reason="管理员维护共享企业凭据、汇率 API 与默认运费，用户显式导入个人表或确认覆盖；模型只消费生效配置。")
       for method, path in (
           ("GET", "/api/admin/settings"), ("POST", "/api/admin/settings"),
-          ("GET", "/api/shipping/tariffs"), ("POST", "/api/shipping/tariffs/import"),
-          ("GET", "/api/shipping/tariffs/rules"),
+          ("POST", "/api/shipping/tariffs/import"),
           ("POST", "/api/shipping/tariffs/upgrade"),
       )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
@@ -149,12 +153,11 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         "/api/online-products/change-batch/preview", "/api/online-products/change-batch",
     )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="发布仓库设置", disposition="internal_only", reason="用户在系统设置中同步远端发布仓库并指定物流商和运输模式；核价和发布能力使用已确认的配置，模型不推断仓库运输服务。") for method, path in (
-        ("GET", "/api/yandex/warehouses"),
         ("POST", "/api/yandex/warehouses/refresh"),
         ("POST", "/api/yandex/warehouses/logistics"),
     )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="核价设置", disposition="internal_only", reason="核价页面维护人工费用模板及实时汇率参考；业务核价仍通过 draft_pricing 能力完成。") for method, path in (
-        ("GET", "/api/pricing/templates"), ("GET", "/api/pricing/exchange-rates"),
+        ("GET", "/api/pricing/exchange-rates"),
         ("POST", "/api/pricing/templates/save"), ("POST", "/api/pricing/templates/default"), ("POST", "/api/pricing/templates/delete"),
     )),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/chat/history", business_domain="订单聊天", disposition="capability", capability_names=("order_buyer_chat_read",)),

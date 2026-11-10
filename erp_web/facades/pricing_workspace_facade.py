@@ -2,11 +2,12 @@
 from pydantic import ValidationError
 
 from erp_web.context import get_context
+from erp_web.business_data_composition import build_business_data_catalog
 from erp_web.runtime_units.pricing_runtime import fetch_pricing_exchange_rates
 
 
 def pricing_templates_payload() -> tuple[dict, int]:
-    return {"ok": True, **get_context().config.load_app_config()["pricing_templates"]}, 200
+    return build_business_data_catalog(get_context()).load('pricing.templates'), 200
 
 
 def mutate_pricing_template_payload(body: dict, operation: str) -> tuple[dict, int]:
@@ -28,7 +29,7 @@ def pricing_exchange_rates_payload(force_refresh: bool = False) -> tuple[dict, i
 def yandex_warehouses_payload(*, refresh: bool = False, body: dict | None = None) -> tuple[dict, int]:
     try:
         service = get_context().yandex_logistics
-        return (service.save(body) if body is not None else service.detail(refresh)), 200
+        return (service.save(body) if body is not None else service.detail(True) if refresh else build_business_data_catalog(get_context()).load('yandex.warehouses')), 200
     except (ValidationError, ValueError) as exc:
         return {'ok': False, 'error': str(exc), 'error_code': 'YANDEX_WAREHOUSE_CONFIG_INVALID'}, 400
 

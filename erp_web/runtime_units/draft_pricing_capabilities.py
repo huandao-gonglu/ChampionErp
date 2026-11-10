@@ -45,7 +45,7 @@ def pricing_summary(result: dict[str, Any]) -> DraftPricingResult:
     description=("预览草稿全部已选 SKU 的核价，不保存售价。系统自动读取逐 SKU 已有采购成本、包装资料及费用覆盖，"
         "无需先读取或重新提交成本。新草稿尚无核价配置时自动使用默认模板，已有配置沿用草稿快照。"
         "只提交用户明确修改的参数；国内物流填写 common.domestic_freight_cny，"
-        "shipping_amount 仅表示国际运费。缺失包装边长时先读对应 SKU 原图，再按有依据的包装区间试算物流影响并提交确认；缺成本或毛重再补问；用户未要求核价时不要主动核价。"),
+        "shipping_amount 仅表示国际运费。缺失包装边长时先读对应 SKU 原图，再按有依据的包装区间试算物流影响并提交确认；缺成本或毛重再补问；用户未要求核价时不要主动核价。已有结果或预览的物流、费用明细通过 business_data_read(resource=draft.pricing, params 含 draft_id 与可选 preview_id) 按需读取，不要为解释重新核价。"),
     permission="pricing.read", side_effect="none", recovery_policy="retry_safe", version="1",
 )
 def draft_pricing_preview(request: DraftPricingRequest, scope: Annotated[DraftPricingCapabilityScope, Injected()]) -> DraftPricingResult:

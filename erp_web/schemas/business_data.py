@@ -1,0 +1,72 @@
+"""页面与 Agent 共用的只读业务数据契约。"""
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+
+
+class DataModel(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+
+class NoDataParameters(DataModel):
+    pass
+
+
+class DraftDataParameters(DataModel):
+    draft_id: str = Field(min_length=1, max_length=160)
+
+
+class PricingDataParameters(DraftDataParameters):
+    sku_id: str = Field(default='', max_length=160)
+    target_key: str = Field(default='', max_length=80)
+    preview_id: str = Field(default='', max_length=80)
+
+
+class ProductDataParameters(DataModel):
+    product_id: str = Field(min_length=1, max_length=160)
+
+
+class DataCatalogRequest(DataModel):
+    keyword: str = Field(default='', max_length=100)
+    resource: str = Field(default='', max_length=100, description='指定资源时返回其参数 Schema 和默认字段。')
+
+
+class DataReadRequest(DataModel):
+    resource: str = Field(min_length=1, max_length=100)
+    params: dict[str, JsonValue] = Field(default_factory=dict, description='资源参数，先通过目录查询参数 Schema。')
+    path: str = Field(default='', max_length=300, description='留空读取资源默认集合；$ 读取根对象；点分隔字段或数组下标可展开明细。')
+    fields: list[str] = Field(default_factory=list, max_length=30, description='返回字段，支持点分隔路径；留空使用默认摘要，path 非空时读取该处完整内容。')
+    filters: dict[str, JsonValue] = Field(default_factory=dict, description='对集合按字段精确匹配，支持点分隔路径。')
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class DataResourceInfo(DataModel):
+    name: str
+    description: str
+    default_path: str
+    default_fields: list[str]
+    permission: str
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class DataCatalogResult(DataModel):
+    resources: list[DataResourceInfo]
+
+
+class DataReadResult(DataModel):
+    resource: str
+    path: str
+    data: JsonValue
+    total: int
+    offset: int
+    next_offset: int | None = None
+    available_fields: list[str] = Field(default_factory=list)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    limited: bool = False
+    notice: str = ''
+    max_chars: int = 12000
+
+
+__all__ = ['DataCatalogRequest', 'DataCatalogResult', 'DataReadRequest', 'DataReadResult', 'DataResourceInfo',
+           'DraftDataParameters', 'NoDataParameters', 'PricingDataParameters', 'ProductDataParameters']

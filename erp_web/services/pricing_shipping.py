@@ -147,6 +147,7 @@ class PricingShipping:
                 for candidate in partial.candidates:
                     candidate.evidence['campaign_id'] = campaign_id
                 result.candidates.extend(partial.candidates)
+                result.exclusions.extend({**item, 'campaign_id': campaign_id} for item in partial.exclusions)
                 for reason, count in partial.rejected.items():
                     result.rejected[reason] = result.rejected.get(reason, 0) + count
         else:
@@ -174,6 +175,13 @@ class PricingShipping:
         }
         if platform == 'yandex':
             evidence['fulfillment_plan'] = next(plan for plan in plans if plan['route_id'] == selected.route_id and str(plan.get('campaign_id') or '') == selected.evidence['campaign_id'])
+            evidence['decision'] = {
+                'selection': 'specified' if target.get('shipping_selection') else 'lowest_shipping_cost',
+                'package': {key: str(getattr(package, key)) for key in ('weight_g', 'length_cm', 'width_cm', 'height_cm')},
+                'battery': package.battery, 'liquid': package.liquid,
+                'configured_plans': [{'route_id': plan['route_id'], 'warehouse_id': plan['publish_warehouse_id']} for plan in plans],
+                'exclusions': result.exclusions,
+            }
         return {
             'amount': str(converted(selected.amount, selected.currency)), 'currency': currency,
             'minimum_price_cny': str(selected.minimum_price_cny), 'billable_g': str(selected.billable_g),

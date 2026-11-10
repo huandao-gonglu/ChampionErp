@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from typing import Collection
+from erp_web.runtime_units.business_data_capabilities import BUSINESS_DATA_CAPABILITIES
 from erp_web.runtime_units.conversation_fact_capabilities import (
     CONVERSATION_FACT_CAPABILITIES,
 )
@@ -73,6 +74,7 @@ RESEARCH_CAPABILITIES = RESEARCH_AI_CAPABILITIES
 SOURCE_INSPECT_CAPABILITIES = SOURCE_INSPECT_AI_CAPABILITIES
 
 ALL_AI_CAPABILITIES = (
+    *BUSINESS_DATA_CAPABILITIES,
     *ORDER_AI_CAPABILITIES,
     *ORDER_CHAT_AI_CAPABILITIES,
     *ORDER_PURCHASE_AI_CAPABILITIES,
@@ -106,6 +108,8 @@ APPLICATION_CAPABILITY_CATALOG = AiToolCatalog.compile(ALL_AI_CAPABILITIES)
 #: 主 Agent 的查询和纯计算能力。
 GLOBAL_CHAT_CAPABILITIES = frozenset(
     {
+        "business_data_catalog",
+        "business_data_read",
         "order_detail_read",
         "order_buyer_chat_read",
         "orders_summary_read",

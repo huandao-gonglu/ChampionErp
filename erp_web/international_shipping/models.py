@@ -68,9 +68,10 @@ class Candidate:
 class QuoteResult:
     candidates: list[Candidate] = field(default_factory=list)
     rejected: dict[str, int] = field(default_factory=dict)
+    exclusions: list[dict] = field(default_factory=list)
 
     def reject(self, reason: str) -> None:
         self.rejected[reason] = self.rejected.get(reason, 0) + 1
 
     def to_dict(self) -> dict:
-        return {'candidates': [item.to_dict() for item in self.candidates], 'rejected': self.rejected}
+        return {'candidates': [item.to_dict() for item in self.candidates], 'rejected': self.rejected, 'exclusions': self.exclusions}

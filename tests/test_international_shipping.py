@@ -278,3 +278,12 @@ def test_mercado_destination_conditions_and_sku_units_reach_api(rules, monkeypat
     assert all(params['dimensions'] == '11x21x31,901' for _, params in requests)
     assert all(params['listing_type_id'] == 'gold_special' and params['free_shipping'] == 'false' for _, params in requests)
     assert all(params['currency_id'] == 'USD' for _, params in requests)
+
+
+def test_yandex_exclusions_preserve_measured_dimensions_and_rule_limits(rules):
+    snapshot = load_active(rules, 'yandex')
+    result = quote_table(snapshot, Package('400', '61', '10', '5'), lambda *_: Decimal('10'), cny_per_rub=Decimal('.1'))
+    assert result.exclusions
+    exclusion = next(item for item in result.exclusions if item['reason'] == '不符合轻小件重量或尺寸')
+    assert exclusion['longest_cm'] == '61' and exclusion['limits']['max_edge_cm'] == '60'
+    assert exclusion['route_id'] and exclusion['route']

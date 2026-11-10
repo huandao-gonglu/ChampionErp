@@ -1305,3 +1305,16 @@ def test_chat_product_images_use_separate_read_and_write_permissions():
     assert save.name in _WRITE_CAPABILITIES and save.name not in GLOBAL_CHAT_CAPABILITIES
     assert (save.side_effect, save.required_permission) == ("write", "image.write")
     assert set(save.input_schema["properties"]) == {"product_id", "attachment_ids"}
+
+
+def test_shared_business_queries_are_domain_independent_and_not_ai_specific():
+    """查询引擎不调用 HTTP/Agent；页面和 AI 都绑定同一业务资源目录。"""
+    engine = ROOT / 'erp_web/services/business_data.py'
+    targets = {target for _, target in imported_targets([engine])}
+    assert not any('runtime_units' in target or 'pydantic_ai' in target or 'facades' in target for target in targets)
+    for relative in ('erp_web/facades/managed_settings_facade.py', 'erp_web/facades/pricing_workspace_facade.py',
+                     'erp_web/facades/business_data_facade.py', 'erp_web/facades/agent_capability_facade.py'):
+        assert 'build_business_data_catalog' in (ROOT / relative).read_text()
+    from erp_web.ai_capability_composition import GLOBAL_CHAT_CAPABILITIES
+    assert {'business_data_catalog', 'business_data_read'} <= GLOBAL_CHAT_CAPABILITIES
+    assert not any(name.startswith('shipping_tariff_') for name in GLOBAL_CHAT_CAPABILITIES)

@@ -36,34 +36,44 @@ def quote_table(
     cny_per_rub = number(cny_per_rub, 'RUB 换算汇率', positive=True)
     result = QuoteResult()
     actual_g = package.weight_g.to_integral_value(rounding=ROUND_CEILING)
+    def exclude(route, reason, **facts):
+        result.reject(reason)
+        result.exclusions.append({'route_id': route['id'], 'route': route['name'], 'reason': reason, **facts})
+
     for route in content['rules']:
         if route_ids is not None and route['id'] not in route_ids:
             result.reject('未配置可用合作仓与发布仓库'); continue
         minimum = Decimal(0)
         policy = content['policies']['extra_small']
         if package.liquid:
-            result.reject('模板没有液体准入规则，无法确认'); continue
+            exclude(route, '模板没有液体准入规则，无法确认'); continue
         if route['group'] == 'Extra Small' and (
             actual_g > Decimal(policy['max_g'])
             or extra_small_size_excess(package.edges, policy)
         ):
-            result.reject('不符合轻小件重量或尺寸'); continue
+            exclude(route, '不符合轻小件重量或尺寸', actual_g=str(actual_g),
+                    longest_cm=str(max(package.edges)), sum_cm=str(sum(package.edges)),
+                    limits={key: policy[key] for key in ('max_g', 'max_edge_cm', 'max_sum_cm')}); continue
         amount, grams = yandex_shipping(package, route)
         currency = 'RUB'
         if package.battery and not route['battery']:
-            result.reject('渠道不允许电池'); continue
+            exclude(route, '渠道不允许电池'); continue
         # 仅货值准入需要售价；普通 Yandex 渠道的运费只取决于包装。
         # 在此逐渠道核价会放大官方佣金请求，最终选中渠道仍由核价引擎校验。
         if route['group'] == 'Extra Small':
             price = price_for_shipping(amount, currency, minimum)
             if price / cny_per_rub > Decimal(policy['price_max_rub']):
-                result.reject('售价超过轻小件货值上限'); continue
+                exclude(route, '售价超过轻小件货值上限', price_rub=str(price / cny_per_rub),
+                        price_max_rub=policy['price_max_rub']); continue
         evidence = {
             'source': 'tariff_template', 'tariff_version': snapshot['version'],
             'source_cell': route['source_cell'], 'group': route['group'],
             'carrier': route['carrier'], 'service': route['service'],
             'volume_weight_g': '0',
+            'rate': {key: route[key] for key in ('fixed', 'per_g', 'step_g')},
         }
+        if route['group'] == 'Extra Small':
+            evidence['limits'] = {key: policy[key] for key in ('max_g', 'max_edge_cm', 'max_sum_cm', 'price_max_rub')}
         evidence['channel_basis'] = 'template_mainland_channels'
         if route['group'] == 'Other':
             evidence['limitation'] = '模板缺少普通件完整准入限制；本结果为运费试算'

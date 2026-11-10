@@ -83,6 +83,8 @@ def test_explicit_shipping_option_uses_requested_warehouse_even_when_more_expens
     }))
     assert automatic['evidence']['fulfillment_plan']['publish_warehouse_id'] == 32
     assert explicit['evidence']['fulfillment_plan']['publish_warehouse_id'] == 31
+    assert explicit['evidence']['decision']['selection'] == 'specified'
+    assert automatic['evidence']['decision']['selection'] == 'lowest_shipping_cost'
     assert len(explicit['candidates']) == 1
     assert float(explicit['amount']) > float(automatic['amount'])
     # 恢复全部比价不受前一次过滤污染，同一批只同步一次仓库。
@@ -362,6 +364,15 @@ def test_all_selected_skus_use_lowest_total_common_warehouse(routing, monkeypatc
     assert result['metrics']['failed_sku_count'] == 0
     quotes = [row['result']['results'][0] for row in result['items']]
     assert {quote['calculation_basis']['shipping_evidence']['fulfillment_plan']['publish_warehouse_id'] for quote in quotes} == {31}
+    from erp_web.services.pricing_service import pricing_calculation_fingerprint
+    for quote in quotes:
+        decision = quote['calculation_basis']['shipping_evidence']['decision']
+        assert decision['warehouse_selection']['basis'] == 'all_selected_skus_one_each'
+        assert decision['warehouse_selection']['warehouse_id'] == 31
+        assert len(decision['warehouse_selection']['warehouses']) == 2
+        assert len(quote['shipping_candidates']) == 2
+        assert quote['calculation_fingerprint'] == pricing_calculation_fingerprint(quote['calculation_basis'])
+
     assert len(calls) == before + 1
     # 明确选择了互不相同的仓库时，不悄悄覆盖选择，也不拆仓出价。
     for item, warehouse in zip(inputs, (31, 32), strict=True):

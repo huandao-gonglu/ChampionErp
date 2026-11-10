@@ -177,6 +177,7 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
+    "/api/business-data/read": _contract(fields={"resource": STRING, "params": OBJECT, "path": FieldRule("string", allow_empty=True), "fields": STRING_ARRAY, "filters": OBJECT, "offset": FieldRule("integer", minimum=0), "limit": LIMIT}, required=("resource",)),
     "/api/admin/settings": _contract(fields={"revision": STRING, "exchange_rates": OBJECT, "alibaba": OBJECT,
         "alibaba_crossborder": OBJECT, "crossborderbus_client_secret": STRING},
         required=("revision", "exchange_rates", "alibaba_crossborder")),
