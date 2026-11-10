@@ -146,14 +146,9 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
   }
 }
 
-/** 只传页面当前的费用和覆盖配置，SKU 采购成本与包装事实由后端装配。 */
-export function draftPricingPayload(draft: DraftDetail, input: PricingInput): UnknownRecord {
-  const targets = selectedPricingTargets(input)
+function draftPricingParameters(input: PricingInput, targets: PricingInput['targets']) {
   return {
-    draft_id: draft.draftId,
-    expected_updated_at: draft.updatedAt,
     template_source: input.templateSource || null,
-    target_keys: targets.map(target => target.targetKey.toLowerCase()),
     common: {
       domestic_freight_cny: input.domesticFreightCny,
       packaging_cost_cny: input.packagingCostCny, other_cost_cny: input.otherCostCny,
@@ -174,6 +169,17 @@ export function draftPricingPayload(draft: DraftDetail, input: PricingInput): Un
       shipping_amount: target.shippingAmount, manual_price: target.manualPrice,
       shipping_selection: target.shippingSelection || null,
     }])),
+  }
+}
+
+/** 只传页面当前的费用和覆盖配置，SKU 采购成本与包装事实由后端装配。 */
+export function draftPricingPayload(draft: DraftDetail, input: PricingInput): UnknownRecord {
+  const targets = selectedPricingTargets(input)
+  return {
+    draft_id: draft.draftId,
+    expected_updated_at: draft.updatedAt,
+    target_keys: targets.map(target => target.targetKey.toLowerCase()),
+    ...draftPricingParameters(input, targets),
     target_selections: Object.fromEntries(draft.targetSites.filter(target =>
       target.platform === 'mercadolibre' && target.site.toLowerCase() === 'cbt'
       && targets.some(item => item.targetKey.toLowerCase() === `${target.platform}:${target.site}`.toLowerCase()),
@@ -186,8 +192,10 @@ export function draftPricingPayload(draft: DraftDetail, input: PricingInput): Un
 }
 
 /** 保存草稿时记录完整参数与模板来源；预览结果仍须通过应用售价确认。 */
-export function draftWithPricingInput(draft: DraftDetail, input: PricingInput): DraftDetail {
-  const parameters = draftPricingPayload(draft, { ...input, selectedTargetKeys: undefined })
+export function draftWithPricingInput(draft: DraftDetail, input: PricingInput, savedInput: PricingInput): DraftDetail {
+  const parameters = draftPricingParameters(input, input.targets)
+  // 仅编辑其他草稿资料时保留原始核价状态，首次核价仍可套用默认模板。
+  if (JSON.stringify(parameters) === JSON.stringify(draftPricingParameters(savedInput, savedInput.targets))) return draft
   const storedTargets = asRecord(draft.pricing.targets)
   return {
     ...draft,

@@ -71,7 +71,8 @@ def test_model_and_collection_rules_follow_current_connection_and_actual_binding
     assert catalog.get('image_edit').unavailable_reason(None) == blocked['blocked_use_cases']['image.translate']
     batch = catalog.get('collect_batch')
     assert not batch.unavailable_reason(None)
-    assert not batch.unavailable_reason({'mode': 'http', 'urls': ['https://example.org/1']})
+    assert '仅支持浏览器采集和 API 采集' in batch.unavailable_reason({'mode': 'http', 'urls': ['https://example.org/1']})
+    assert not batch.unavailable_reason({'mode': 'api', 'urls': ['https://detail.1688.com/offer/12345678.html']})
     assert batch.unavailable_reason({'urls': ['https://example.org/1']}) == blocked['desktop_reason']
     mixed = catalog.get('collect_1688')
     assert catalog.get('collect_from_browser_tab') is None
@@ -199,10 +200,10 @@ def test_python_tool_keeps_server_branch_and_returns_reason_for_local_branch(tmp
     async def model(messages, info):
         results = business_returns(messages)
         if len(results) < 2:
-            branch = 'browser' if not results else 'http'
+            branch = 'browser' if not results else 'api'
             yield {0: python_call(name='collect_item', json_args=json.dumps({'draft_id': branch}), tool_call_id=branch)}
         else:
-            yield "网页已使用 HTTP 完成采集"
+            yield "网页已使用 API 完成采集"
     mixed = replace(binding('collect_item', lambda args, _: executed.append(args['draft_id']) or {'ok': True}, write=True),
                     unavailable_reason=lambda args: desktop_unavailable_reason() if args and args['draft_id'] == 'browser' else '')
     ui = service(tmp_path, FunctionModel(stream_function=model), tools(mixed))
@@ -210,7 +211,7 @@ def test_python_tool_keeps_server_branch_and_returns_reason_for_local_branch(tmp
     results = business_returns(ui.chat_service.trusted_history(CONVERSATION))
     assert results[0].content['error']['code'] == 'OPERATION_UNAVAILABLE'
     assert '桌面端' in results[0].content['error']['message']
-    assert executed == ['http']
+    assert executed == ['api']
 
 
 @pytest.mark.parametrize('disconnect', [False, True])

@@ -28,7 +28,7 @@ const groups = computed(() => groupAiMessages(props.messages))
       <div
         class="min-w-0 text-sm leading-6"
         :class="message.role === 'user'
-          ? 'max-w-[82%] rounded-2xl rounded-br-md bg-primary-600/[var(--ai-chat-surface-opacity,1)] px-4 py-3 text-[color:var(--ai-chat-user-color,white)] shadow-sm'
+          ? 'max-w-[82%] rounded-2xl rounded-br-md bg-primary-600 px-4 py-3 text-white shadow-sm'
           : 'w-full py-2 text-slate-800 dark:text-accent-100'"
       >
         <AiAssistantTurn

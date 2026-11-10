@@ -39,23 +39,17 @@ def collect_time_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
 
 
-def normalize_collect_mode(mode: str, url: str = "") -> str:
-    value = str(mode or "").strip().lower()
-    if value in {"manual", "extension"}:
-        raise ValueError("手动与 HTML 导入已下线，请使用商品 URL 采集。")
-    if value in {"browser", "http", "api"}:
-        return value
-    if value in {"playwright", "browser-session", "browser_session"}:
+def normalize_collect_mode(mode: str) -> str:
+    value = str(mode or "browser").strip().lower()
+    if value in {"browser", "playwright", "browser-session", "browser_session"}:
         return "browser"
-    if value in {"fetch", "request", "requests"}:
-        return "http"
-    if "amazon." in str(url).lower():
-        return "http"
-    return "browser"
+    if value == "api":
+        return "api"
+    raise ValueError("采集方式仅支持浏览器采集和 API 采集。")
 
 
 def collect_platform_reason(mode, urls):
-    if any(normalize_collect_mode(mode, url) == "browser" for url in parse_collect_urls(urls)):
+    if parse_collect_urls(urls) and normalize_collect_mode(mode) == "browser":
         return desktop_unavailable_reason()
     return ""
 

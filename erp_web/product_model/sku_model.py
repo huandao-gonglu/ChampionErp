@@ -135,8 +135,8 @@ def merge_collected_skus(existing: Any, source: dict[str, Any]) -> list[dict[str
 
 
 def new_draft_sku_rows(product_skus: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """新草稿默认选中全部启用规格；卖家编码在取得草稿身份后生成。"""
-    return [{"sku_id": row["id"], "selected": row.get("active") is not False} for row in product_skus]
+    """新草稿只加入启用规格并默认选中；卖家编码在取得草稿身份后生成。"""
+    return [{"sku_id": row["id"], "selected": True} for row in product_skus if row.get("active") is not False]
 
 
 def normalize_draft_skus(value: Any, product_skus: Any, draft_id: str) -> list[dict[str, Any]]:

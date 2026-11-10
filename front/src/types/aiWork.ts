@@ -2,6 +2,7 @@ import type { UIMessage } from 'ai'
 
 export interface PydanticConversationSummary {
   title?: string
+  pinned?: boolean
   conversation_id: string
   created_at: string
   updated_at: string

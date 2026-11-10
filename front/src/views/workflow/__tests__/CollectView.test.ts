@@ -1,3 +1,4 @@
+import { reactive } from 'vue'
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CollectView from '../CollectView.vue'
@@ -10,31 +11,37 @@ vi.mock('@/utils/desktopHandoff', async importOriginal => ({ ...await importOrig
 beforeEach(() => { vi.mocked(launchDesktop).mockClear(); vi.stubGlobal('championDesktop', undefined) })
 afterEach(() => vi.unstubAllGlobals())
 
-function setup(mode: 'browser' | 'http' = 'browser') {
-  const form = { ...createDefaultCollectForm(), mode, productUrl: 'https://detail.1688.com/offer/1.html' }
-  const wrapper = mount(CollectView, { props: { form, diagnostics: createDefaultCollectDiagnostics(), product: createEmptyProduct(),
+function setup() {
+  const form = reactive({ ...createDefaultCollectForm(), productUrl: 'https://detail.1688.com/offer/1.html' })
+  const wrapper = mount(CollectView, { attachTo: document.body, props: { form, diagnostics: createDefaultCollectDiagnostics(), product: createEmptyProduct(),
     loading: false, error: '', batchRows: [createCollectBatchRow(form.productUrl)] } })
   const button = (name: string) => wrapper.findAll('button').find(item => item.text() === name)!
   return { wrapper, form, button }
 }
 
 describe('URL 采集页面', () => {
-  it('仅展示 URL 采集，进入页面、展开选项和修改输入均留在网页', async () => {
-    const { wrapper, form } = setup()
-    expect(wrapper.find('[data-testid="collect-method-card"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('导入手动内容')
-    expect(wrapper.text()).not.toContain('打开采集浏览器')
-    expect(wrapper.text()).not.toContain('API 采集')
-    expect(wrapper.find('[data-testid="collect-batch-manager"]').exists()).toBe(true)
-    await wrapper.findAll('summary')[0].trigger('click')
-    const input = wrapper.findAll('input').find(item => item.attributes('placeholder')?.startsWith('https://detail.1688.com'))!
-    await input.setValue('https://detail.1688.com/offer/2.html')
-    expect(form.productUrl).toContain('/2.html')
+  it('只在 URL 批量与 API 之间切换，API 接收商品链接并直接提交', async () => {
+    const { wrapper, form, button } = setup()
+    expect(wrapper.findAll('[role="tab"]').map(item => item.text())).toEqual(['浏览器采集', 'API 采集'])
+    expect(wrapper.text()).not.toContain('HTTP 抓取')
+    expect(wrapper.text()).not.toContain('浏览器会话')
+    await wrapper.get('#batch-url-input').setValue('https://example.org/pending')
+    await button('浏览器采集').trigger('keydown', { key: 'ArrowRight' })
+    expect(form.mode).toBe('api')
+    expect(wrapper.get('#collect-panel-browser').isVisible()).toBe(false)
+    await wrapper.get('input[type="url"]').setValue('https://detail.1688.com/offer/2.html')
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('collect')).toEqual([[]])
+    expect(form.productUrl).toBe('https://detail.1688.com/offer/2.html')
+    await button('浏览器采集').trigger('click')
+    expect(form.mode).toBe('browser')
+    expect(wrapper.get('#collect-panel-browser').isVisible()).toBe(true)
+    expect((wrapper.get('#batch-url-input').element as HTMLTextAreaElement).value).toBe('https://example.org/pending')
     expect(launchDesktop).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
-  it('网页只在点击批量采集或单链接采集时交接桌面', async () => {
+  it('网页提交批量队列时交接桌面', async () => {
     const { wrapper, button, form } = setup()
     expect(form.mode).toBe('browser')
     await button('开始采集（1）').trigger('click')
@@ -44,10 +51,6 @@ describe('URL 采集页面', () => {
       collectAction: { type: 'batch', rowIds: [wrapper.props('batchRows')[0].id] },
     }) } }))
     expect(wrapper.emitted('batchCollect')).toBeUndefined()
-    await button('采集单链接').trigger('click')
-    expect(launchDesktop).toHaveBeenCalledTimes(2)
-    expect(launchDesktop).toHaveBeenLastCalledWith(expect.objectContaining({ state: { workflow: expect.objectContaining({ collectAction: { type: 'single' } }) } }))
-    expect(wrapper.emitted('collect')).toBeUndefined()
     wrapper.unmount()
   })
 
@@ -63,26 +66,11 @@ describe('URL 采集页面', () => {
     wrapper.unmount()
   })
 
-  it('显式选择 HTTP 后在网页执行，Cookie 只从本次输入提交并随即清空', async () => {
-    const { wrapper, form, button } = setup('http')
-    await wrapper.findAll('button').find(item => item.text().includes('高级选项'))!.trigger('click')
-    const input = wrapper.get('[data-testid="transient-alibaba-cookie"]')
-    await input.setValue('request-only-cookie')
-    expect(JSON.stringify(form)).not.toContain('request-only-cookie')
-    await button('采集单链接').trigger('click')
-    expect(wrapper.emitted('collect')?.at(-1)).toEqual([{ alibabaCookie: 'request-only-cookie' }])
-    expect((input.element as HTMLTextAreaElement).value).toBe('')
-    await button('开始采集（1）').trigger('click')
-    expect(wrapper.emitted('batchCollect')).toHaveLength(1)
-    expect(launchDesktop).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('桌面直接提交 URL，等待验证码时可取消等待', async () => {
+  it('桌面直接提交批量链接，等待验证码时可取消', async () => {
     vi.stubGlobal('championDesktop', { localOperations: true })
     const { wrapper, button } = setup()
-    await button('采集单链接').trigger('click')
-    expect(wrapper.emitted('collect')).toHaveLength(1)
+    await button('开始采集（1）').trigger('click')
+    expect(wrapper.emitted('batchCollect')?.at(-1)).toEqual([[wrapper.props('batchRows')[0].id]])
     expect(launchDesktop).not.toHaveBeenCalled()
     await wrapper.setProps({ diagnostics: { ...createDefaultCollectDiagnostics(), status: 'waiting_verification' } })
     await button('取消等待').trigger('click')

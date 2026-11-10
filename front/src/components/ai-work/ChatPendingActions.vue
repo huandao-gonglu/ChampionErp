@@ -58,16 +58,16 @@ function decide(item: PendingItem, id: string, approved: boolean) {
 </script>
 
 <template>
-  <section v-if="items.length" aria-label="等待你处理" class="mb-1 max-h-[45%] shrink-0 overflow-y-auto overscroll-contain rounded-xl border border-slate-300 dark:border-dark-600">
+  <section v-if="items.length" aria-label="等待你处理" class="max-h-[45%] shrink-0 overflow-y-auto overscroll-contain border-t border-slate-200 bg-white dark:border-dark-700 dark:bg-dark-900">
     <div v-for="item in items" :key="item.key" class="border-b border-slate-200 last:border-b-0 dark:border-dark-600">
       <button type="button" :aria-expanded="expanded === item.key" :disabled="submitting.has(item.key)" :title="item.title"
-        class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold focus-visible:outline-primary-500"
+        class="flex w-full items-center gap-2 py-2 text-left text-sm font-semibold focus-visible:outline-primary-500"
         @click="expanded = expanded === item.key ? '' : item.key">
         <PhCaretDown :size="14" aria-hidden="true" class="shrink-0" :class="{ '-rotate-90': expanded !== item.key }" />
-        <span class="truncate">{{ item.title }}</span>
+        <span class="min-w-0 break-words" :class="{ truncate: expanded !== item.key }">{{ item.title }}</span>
       </button>
-      <p v-if="errors[item.key]" role="alert" class="px-3 pb-2 text-sm text-rose-600">{{ errors[item.key] }}</p>
-      <div v-if="expanded === item.key" class="px-3 pb-3">
+      <p v-if="errors[item.key]" role="alert" class="pb-2 text-sm text-rose-600">{{ errors[item.key] }}</p>
+      <div v-if="expanded === item.key" class="min-w-0 pb-3">
         <NativeToolApprovals v-if="item.call.kind === 'approval'" :reply="item.reply" :tool-call-id="item.call.tool_call_id"
           @decide="(id, approved) => decide(item, id, approved)" />
         <form v-else class="space-y-2" @submit.prevent="answer(item)">
@@ -77,7 +77,7 @@ function decide(item: PendingItem, id: string, approved: boolean) {
               :aria-pressed="drafts[item.key] === option" :disabled="submitting.has(item.key)" @click="drafts[item.key] = option">{{ option }}</button>
           </div>
           <textarea v-model="drafts[item.key]" :aria-label="item.title" rows="2" maxlength="32000" placeholder="填写回复"
-            :disabled="submitting.has(item.key)" class="block w-full resize-y rounded-lg border border-slate-300 bg-transparent p-2 text-sm dark:border-dark-600" />
+            :disabled="submitting.has(item.key)" class="block w-full resize-y rounded-lg border border-slate-300 bg-white p-2 text-sm dark:border-dark-600 dark:bg-dark-800" />
           <button type="submit" class="btn btn-primary" :disabled="!drafts[item.key]?.trim() || submitting.has(item.key)">提交回复</button>
         </form>
       </div>

@@ -11,6 +11,30 @@ def test_extract_1688_offer_id_from_detail_url() -> None:
     assert extract_1688_offer_id("735716533861") == "735716533861"
 
 
+def test_web_api_collection_accepts_detail_url_without_desktop(monkeypatch):
+    from erp_web.context import get_context
+    from erp_web.facades.collect_facade import collect_1688_payload
+    from erp_web.runtime_units import source_collect_1688_api as collector
+    from erp_web.services import image_service
+
+    url = "https://detail.1688.com/offer/735716533861.html?spm=test"
+    def fetch_detail(config, offer_id):
+        assert offer_id == "735716533861"
+        assert config == {"access_token": "saved-token"}
+        return {"raw": {"subject": "厨房置物架", "images": ["https://example.test/product.jpg"]}}
+
+    monkeypatch.setattr(collector, "alibaba_runtime_config", lambda _: {"access_token": "saved-token"})
+    monkeypatch.setattr(collector, "request_1688_product_detail", fetch_detail)
+    monkeypatch.setattr(image_service, "download_remote_image", lambda _app, url, _product, index: {
+        "id": f"download-{index}", "url": url, "status": "ready",
+    })
+    result, status = collect_1688_payload({"url": url, "mode": "api"})
+    assert status == 200 and result["ok"]
+    assert result["diagnostics"]["collect_mode"] == "api"
+    saved = get_context().products.load_product()["source"]
+    assert saved["source_url"] == url and saved["title"] == "厨房置物架"
+
+
 def test_crossborder_product_request_and_sku_mapping(monkeypatch):
     import io
     import json

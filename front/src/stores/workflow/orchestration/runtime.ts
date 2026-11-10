@@ -1106,30 +1106,39 @@ export function createWorkflowRuntime() {
     }
   }
 
-  function syncPricingInputFromProduct() {
-    const draftDetail = currentDraft.value
+  function readPricingInput(draftDetail: DraftDetail, input = createDefaultPricingInput()) {
     const hasDraft = Boolean(draftDetail.draftId)
     const pricing = hasDraft && isRecord(draftDetail.pricing) ? draftDetail.pricing : {}
     const source = isRecord(pricing.template_source) ? pricing.template_source : {}
-    pricingInput.value.templateSource = typeof source.id === 'string' && source.id && typeof source.name === 'string' && source.name
+    input.templateSource = typeof source.id === 'string' && source.id && typeof source.name === 'string' && source.name
       ? { id: source.id, name: source.name } : null
-    const defaults = createDefaultPricingInput()
     const common = isRecord(pricing.common) ? pricing.common as UnknownRecord : {}
-    pricingInput.value.domesticFreightCny = recordNumber(common, ['domesticFreightCny', 'domestic_freight_cny', 'domestic_freight'], defaults.domesticFreightCny)
-    pricingInput.value.packagingCostCny = recordNumber(common, ['packagingCostCny', 'packaging_cost_cny', 'packaging_cost'], defaults.packagingCostCny)
-    pricingInput.value.otherCostCny = recordNumber(common, ['otherCostCny', 'other_cost_cny', 'other_cost'], defaults.otherCostCny)
-    pricingInput.value.usdCnyRate = recordNumber(common, ['usdCnyRate', 'usd_cny_rate'], defaults.usdCnyRate)
-    pricingInput.value.mxnUsdRate = recordNumber(common, ['mxnUsdRate', 'mxn_usd_rate'], defaults.mxnUsdRate)
-    pricingInput.value.rubCnyRate = recordNumber(common, ['rubCnyRate', 'rub_cny_rate'], defaults.rubCnyRate)
-    pricingInput.value.exchangeRateMode = recordString(common, ['exchange_rate_mode'], 'live') === 'manual' ? 'manual' : 'live'
-    pricingInput.value.exchangeRateOverrides = Object.fromEntries(Object.entries(isRecord(common.exchange_rate_overrides) ? common.exchange_rate_overrides : {})
+    input.domesticFreightCny = recordNumber(common, ['domesticFreightCny', 'domestic_freight_cny', 'domestic_freight'])
+    input.packagingCostCny = recordNumber(common, ['packagingCostCny', 'packaging_cost_cny', 'packaging_cost'])
+    input.otherCostCny = recordNumber(common, ['otherCostCny', 'other_cost_cny', 'other_cost'])
+    input.usdCnyRate = recordNumber(common, ['usdCnyRate', 'usd_cny_rate'])
+    input.mxnUsdRate = recordNumber(common, ['mxnUsdRate', 'mxn_usd_rate'])
+    input.rubCnyRate = recordNumber(common, ['rubCnyRate', 'rub_cny_rate'])
+    input.exchangeRateMode = recordString(common, ['exchange_rate_mode'], 'live') === 'manual' ? 'manual' : 'live'
+    input.exchangeRateOverrides = Object.fromEntries(Object.entries(isRecord(common.exchange_rate_overrides) ? common.exchange_rate_overrides : {})
       .filter(([key, value]) => ['usd_cny_rate', 'mxn_usd_rate', 'rub_cny_rate'].includes(key) && Number(value) > 0)
       .map(([key, value]) => [key, Number(value)]))
-    pricingInput.value.platform = hasDraft ? draftDetail.platform : activeMarketplace.value
-    pricingInput.value.site = hasDraft ? draftDetail.site : activeMarketplaceSite()
-    pricingInput.value.targets = hasDraft ? pricingTargetsFromDraft(draftDetail).map((target) => pricingTargetInput(target, pricing)) : []
-    pricingInput.value.selectedTargetKeys = undefined
-    pricingResult.value = hasDraft ? pricingResultFromDraft(draftDetail.skuItems.find(row => row.selected)?.pricing || {}, pricingInput.value.targets) : null
+    input.platform = hasDraft ? draftDetail.platform : activeMarketplace.value
+    input.site = hasDraft ? draftDetail.site : activeMarketplaceSite()
+    input.targets = hasDraft ? pricingTargetsFromDraft(draftDetail).map((target) => pricingTargetInput(target, pricing)) : []
+    input.selectedTargetKeys = undefined
+    return input
+  }
+
+  function syncPricingInputFromProduct() {
+    const draftDetail = currentDraft.value
+    readPricingInput(draftDetail, pricingInput.value)
+    pricingResult.value = draftDetail.draftId ? pricingResultFromDraft(draftDetail.skuItems.find(row => row.selected)?.pricing || {}, pricingInput.value.targets) : null
+  }
+
+  function draftForSave() {
+    const draft = currentDraft.value
+    return draftWithPricingInput(draft, pricingInput.value, readPricingInput(draft))
   }
 
   async function persistCurrentDraftForPublish() {
@@ -1143,7 +1152,7 @@ export function createWorkflowRuntime() {
     syncActivePublishTarget()
     const target = selectedPublishTarget.value
     const draftId = currentDraft.value.draftId
-    const result = await saveDraftApi(draftWithPricingInput(currentDraft.value, pricingInput.value))
+    const result = await saveDraftApi(draftForSave())
     if (currentDraft.value.draftId !== draftId) {
       throw new Error('草稿已改变，已忽略上一份草稿的保存响应。')
     }
@@ -1175,7 +1184,7 @@ export function createWorkflowRuntime() {
     applyTargetListingToDraft, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, pricingTargetKey, platformSite,
     pricingTargetDefaults, pricingTargetsFromDraft, normalizedDraftTargets, syncActivePublishTarget, pricingTargetRecord, recordNumber,
     pricingTargetInput, draftDetailFromProduct, applyMutationIndexes, restorePrecheckFromProduct, restoreCategoryFromProduct, syncCollectDiagnosticsFromProduct,
-    syncPricingInputFromProduct, persistCurrentDraftForPublish,
+    syncPricingInputFromProduct, draftForSave, persistCurrentDraftForPublish,
   }
 }
 

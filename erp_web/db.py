@@ -2553,7 +2553,7 @@ class ErpDatabase:
 
     def list_pydantic_message_histories(
         self,
-        limit: int = 50, *, chats_only: bool = False, offset: int = 0,
+        limit: int = 50, *, chats_only: bool = False, offset: int = 0, pinned_ids=(),
     ) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -2562,10 +2562,11 @@ class ErpDatabase:
                 FROM pydantic_message_histories
                 WHERE conversation_id NOT GLOB 'chat_reply_*'
                   AND (NOT ? OR conversation_id GLOB 'conversation_global_chat_*')
-                ORDER BY updated_at DESC, conversation_id DESC
+                ORDER BY conversation_id IN (SELECT value FROM json_each(?)) DESC,
+                         updated_at DESC, conversation_id DESC
                 LIMIT ? OFFSET ?
                 """,
-                (chats_only, max(1, int(limit or 50)), offset),
+                (chats_only, json.dumps(list(pinned_ids)), max(1, int(limit or 50)), offset),
             ).fetchall()
         return [
             {
@@ -2575,6 +2576,28 @@ class ErpDatabase:
             }
             for row in rows
         ]
+
+    def delete_idle_chat(self, key: str, reply_pattern: str, title_index: Path) -> bool:
+        """一起清除主对话与并行回复，留下删除标记，避免其他窗口沿用旧 ID。"""
+        scope = "(conversation_id=? OR conversation_id GLOB ?)"
+        ids = (key, reply_pattern)
+        with self._write_lock, self._connect() as conn, conn:
+            conn.execute("ATTACH DATABASE ? AS chat_index", (str(title_index),))
+            conn.execute("BEGIN IMMEDIATE")
+            busy_conditions = (
+                ("ai_chat_turn_claims", "status='claimed'"),
+                ("ai_chat_inbox", "status IN ('received','queued','answer','routing','replacement')"),
+                ("ai_deferred_requests", "1"),
+                ("ai_tool_receipts", "status IN ('queued','executing','waiting_job')"),
+            )
+            for table, condition in busy_conditions:
+                if conn.execute(f"SELECT 1 FROM {table} WHERE {scope} AND {condition} LIMIT 1", ids).fetchone():
+                    return False
+            for table in ("pydantic_message_histories", "ai_chat_inbox", "ai_chat_turn_claims",
+                          "chat_index.pins", "chat_index.titles"):
+                conn.execute(f"DELETE FROM {table} WHERE {scope}", ids)
+            conn.execute("INSERT INTO chat_index.titles(conversation_id,title,state) VALUES (?,'','deleted')", (key,))
+        return True
 
     def delete_pydantic_message_history(
         self,

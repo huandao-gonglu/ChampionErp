@@ -46,28 +46,16 @@ describe('采集请求凭据边界', () => {
     expect((payload as { appConfig?: unknown }).appConfig || {}).not.toHaveProperty('1688_api')
   })
 
-  it('只把显式请求瞬态 Cookie 发送一次', async () => {
+  it('API 模式直接提交 1688 链接，使用服务端授权', async () => {
     const form = createDefaultCollectForm()
-    form.productUrl = 'https://detail.1688.com/offer/123456789.html'
-    form.platform = '1688'
-    vi.mocked(apiClient.post).mockResolvedValueOnce({
-      data: {
-        ok: true,
-        product: toBackendProduct(createEmptyProduct()),
-        productsIndex: [],
-      },
-    })
-
-    await collectProduct(form, {
-      alibabaCookie: 'request-only-cookie-secret',
-    })
-
-    expect(vi.mocked(apiClient.post).mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({
-        cookie: 'request-only-cookie-secret',
-      }),
-    )
-    expect(JSON.stringify(form)).not.toContain('request-only-cookie-secret')
+    form.mode = 'api'
+    form.productUrl = 'https://detail.1688.com/offer/123456789.html?spm=test'
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true, product: toBackendProduct(createEmptyProduct()) } })
+    await collectProduct(form)
+    expect(apiClient.post).toHaveBeenCalledWith('/api/collect-1688', { mode: 'api', url: form.productUrl })
+    form.productUrl = 'https://1688.com.example.org/offer/123456789.html'
+    await expect(collectProduct(form)).rejects.toThrow('请输入 1688 商品详情链接')
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
   })
 
   it('保存非敏感采集设置时不会提交空凭据占位', async () => {
@@ -87,7 +75,7 @@ describe('采集请求凭据边界', () => {
   })
 
 
-  it('自动识别不把 unknown 当作明确平台发送，批量凭据只来自本次参数', async () => {
+  it('自动识别不把 unknown 当作明确平台发送', async () => {
     const form = createDefaultCollectForm()
     form.platform = 'unknown'
     form.productUrl = 'https://amazon.com/dp/ABC123'
@@ -96,9 +84,9 @@ describe('采集请求凭据边界', () => {
     await collectProduct(form)
     expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-source', expect.objectContaining({ platform: '' }))
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true, items: [] } })
-    await collectBatch(form, { alibabaCookie: 'transient-cookie' })
-    expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-batch', expect.objectContaining({ platform: '', urls: form.productUrl, cookie: 'transient-cookie' }))
-    expect(JSON.stringify(form)).not.toContain('transient-cookie')
+    await collectBatch(form)
+    expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-batch', expect.objectContaining({ platform: '', urls: form.productUrl }))
+    expect(vi.mocked(apiClient.post).mock.lastCall?.[1]).not.toHaveProperty('cookie')
   })
 
   it('等待验证响应不生成商品，继续请求只携带原标签身份', async () => {

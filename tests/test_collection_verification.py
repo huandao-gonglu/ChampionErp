@@ -22,7 +22,7 @@ def verification_snapshot():
             'html_snapshot_path': '/tmp/verification.html'}
 
 
-@pytest.mark.parametrize('entry', ['url', 'browser', 'batch', 'http'])
+@pytest.mark.parametrize('entry', ['url', 'browser', 'batch'])
 def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry):
     context = get_context()
     before = context.products.save_product({'name': '原商品', 'source': {'title': '原商品'}})
@@ -32,12 +32,8 @@ def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry
     monkeypatch.setattr(workflows, 'parse_source_snapshot', parse)
     monkeypatch.setattr(workflows, 'normalize_collect_source_images', images)
     snapshot = verification_snapshot()
-    if entry == 'http':
-        snapshot.pop('browser_tab_id')
     fetch = Mock(return_value={'snapshot': snapshot, 'browserStatus': {'connected': True}})
     monkeypatch.setattr(workflows, 'call_desktop', fetch)
-    if entry == 'http':
-        monkeypatch.setattr(workflows, 'fetch_url_html_with_status', lambda *_: (snapshot['html'], 200))
     if entry == 'browser':
         result = workflows.collect_browser_url(product_url=URL)
     elif entry == 'batch':
@@ -47,10 +43,9 @@ def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry
         fetch.assert_called_once()
         result = batch['items'][0]
     else:
-        result = workflows.collect_source_product(URL, mode='http' if entry == 'http' else 'browser')
-    assert result['status'] == ('failed' if entry == 'http' else 'waiting_verification')
-    if entry != 'http':
-        assert result['verification'] == {'browser_tab_id': 'original', 'source_url': URL, 'platform': '1688'}
+        result = workflows.collect_source_product(URL, mode='browser')
+    assert result['status'] == 'waiting_verification'
+    assert result['verification'] == {'browser_tab_id': 'original', 'source_url': URL, 'platform': '1688'}
     parse.assert_not_called()
     images.assert_not_called()
     assert context.products.load_product() == before

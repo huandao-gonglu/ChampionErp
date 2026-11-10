@@ -82,6 +82,20 @@ describe('核价汇率和模板控件', () => {
     expect(input.templateSource).toEqual({ id: 'deleted', name: '历史模板' })
   })
 
+  it('首次读取失败后重试，默认模板就绪才允许开始核价', async () => {
+    const input = fixture()
+    const template = { id: 'retry', name: '重试模板', parameters: pricingTemplateParameters(input), updated_at: '' }
+    vi.mocked(api.fetchPricingTemplates).mockRejectedValueOnce(new Error('暂时无法读取模板'))
+      .mockResolvedValueOnce({ items: [template], default_template_id: template.id })
+    const wrapper = mount(PricingTemplates, { props: { input, useDefault: true } })
+    await flushPromises()
+    expect(wrapper.emitted('ready')).toBeUndefined()
+    await wrapper.get('[role="alert"] button').trigger('click')
+    await flushPromises()
+    expect(input.templateSource?.id).toBe(template.id)
+    expect(wrapper.emitted('ready')).toHaveLength(1)
+  })
+
   it('旧草稿不猜测来源，选择模板后记录来源供核价保存', async () => {
     const input = fixture()
     const template = { id: 'chosen', name: '日常费用', parameters: pricingTemplateParameters(input), updated_at: '' }
@@ -92,6 +106,26 @@ describe('核价汇率和模板控件', () => {
     expect(input.templateSource).toBeUndefined()
     await wrapper.get('select').setValue('chosen')
     expect(input.templateSource).toEqual({ id: 'chosen', name: '日常费用' })
+  })
+
+  it('在核价页直接设置与取消默认模板，保留本次费用', async () => {
+    const input = fixture()
+    const template = { id: 'chosen', name: '日常费用', parameters: pricingTemplateParameters(input), updated_at: '' }
+    vi.mocked(api.fetchPricingTemplates).mockResolvedValue({ items: [template], default_template_id: '' })
+    vi.mocked(api.setDefaultPricingTemplate).mockImplementation(async id => ({ items: [template], default_template_id: id }))
+    const wrapper = mount(PricingTemplates, { props: { input } })
+    await flushPromises()
+    await wrapper.get('select').setValue(template.id)
+    input.domesticFreightCny = 9
+    const button = (label: string) => wrapper.get('.pricing-template-picker').findAll('button').find(item => item.text() === label)!
+    await button('设为默认').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('option[value="chosen"]').text()).toContain('默认')
+    await button('取消默认').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(api.setDefaultPricingTemplate).mock.calls).toEqual([[template.id], ['']])
+    expect(wrapper.get('option[value="chosen"]').text()).toBe(template.name)
+    expect(input.domesticFreightCny).toBe(9)
   })
 
   it('保存写回所选模板，保留其他市场，并允许在保存期间继续改草稿', async () => {

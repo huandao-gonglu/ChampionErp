@@ -130,7 +130,10 @@ def download_images(urls: list[str], dest_dir: Path) -> list[str]:
     return paths
 
 
-def fetch_url_html_with_status(url: str, cookie: str = "") -> tuple[str, int]:
+def fetch_1688_detail_html(url: str) -> str:
+    """读取浏览器商品快照引用的 1688 独立详情。"""
+    from erp_shared.source_parser import validated_1688_detail_url
+    detail_url = validated_1688_detail_url(url)
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -145,27 +148,12 @@ def fetch_url_html_with_status(url: str, cookie: str = "") -> tuple[str, int]:
         "Referer": "https://www.1688.com/",
         "Connection": "close",
     }
-    if cookie.strip():
-        headers["Cookie"] = cookie.strip()
-    request = urllib.request.Request(url, headers=headers)
-    with managed_urlopen(request, timeout=25, source=__name__) as response:
-        raw = response.read(900_000)
-        status = int(getattr(response, "status", 200) or 200)
-    return raw.decode("utf-8", errors="ignore"), status
-
-
-def fetch_url_html(url: str, cookie: str = "") -> str:
-    return fetch_url_html_with_status(url, cookie)[0]
-
-
-def fetch_1688_detail_html(url: str) -> str:
-    """读取 1688 独立详情接口；失败必须显式报告，不能假报完整采集。"""
-    from erp_shared.source_parser import validated_1688_detail_url
-    detail_url = validated_1688_detail_url(url)
+    request = urllib.request.Request(detail_url, headers=headers)
     try:
-        return fetch_url_html(detail_url)
+        with managed_urlopen(request, timeout=25, source=__name__) as response:
+            return response.read(900_000).decode("utf-8", errors="ignore")
     except Exception as exc:
         raise RuntimeError("1688 详情图片读取失败，请重试采集") from exc
 
 
-__all__ = ['normalize_space', 'html_to_text', 'clean_price_number', 'normalize_image_url', 'extract_product_image_urls', 'upscale_amazon_image_url', 'extract_page_title', 'infer_product_from_title', 'extract_price_currency', 'inch_to_cm', 'ounce_to_kg', 'pound_to_kg', 'format_cm', 'extract_measurements', 'load_app_config', 'extension_from_url', 'download_images', 'fetch_url_html_with_status', 'fetch_url_html', 'fetch_1688_detail_html']
+__all__ = ['normalize_space', 'html_to_text', 'clean_price_number', 'normalize_image_url', 'extract_product_image_urls', 'upscale_amazon_image_url', 'extract_page_title', 'infer_product_from_title', 'extract_price_currency', 'inch_to_cm', 'ounce_to_kg', 'pound_to_kg', 'format_cm', 'extract_measurements', 'load_app_config', 'extension_from_url', 'download_images', 'fetch_1688_detail_html']

@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
+import { PhPencilSimple, PhPushPin, PhTrash } from '@phosphor-icons/vue'
 import type { UIMessage } from 'ai'
 import {
   fetchPydanticConversation,
   fetchPydanticConversations,
   fetchUiMessages,
+  manageConversation,
+  type ChatManagementAction,
 } from '@/api/aiWork'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiMessageList from '@/components/ai-work/AiMessageList.vue'
@@ -41,6 +44,13 @@ const loadingUiMessages = ref(false)
 const uiMessagesError = ref('')
 const imageBatch = ref<ImageBatchSnapshot | null>(null)
 
+const editor = ref<{ id: string; mode: 'rename' | 'delete' }>()
+const nameInput = ref<HTMLInputElement>()
+const name = ref('')
+const saving = ref(false)
+const actionError = ref<{ id: string; message: string }>()
+
+let keepSidebarSelection = false
 let listRequestGeneration = 0
 let detailRequestGeneration = 0
 let uiMessagesRequestGeneration = 0
@@ -158,7 +168,7 @@ const displayConversations = computed<ConversationListEntry[]>(() => {
       temporary: true,
     })
   }
-  return entries
+  return entries.sort((left, right) => Number(!!right.pinned) - Number(!!left.pinned))
 })
 
 function conversationTitle(id: string, saved?: string): string {
@@ -168,10 +178,55 @@ function conversationTitle(id: string, saved?: string): string {
   return saved || (id.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX) ? '新对话' : '业务任务')
 }
 
+function editRow(row: PydanticConversationSummary, mode: 'rename' | 'delete') {
+  actionError.value = undefined
+  editor.value = { id: row.conversation_id, mode }
+  if (mode === 'rename') {
+    name.value = conversationTitle(row.conversation_id, row.title)
+    void nextTick(() => nameInput.value?.select())
+  }
+}
+
+async function change(row: PydanticConversationSummary, action: ChatManagementAction) {
+  if (saving.value) return
+  const id = row.conversation_id
+  const title = action === 'rename' ? name.value.trim() : undefined
+  if (action === 'rename' && !title) return
+  saving.value = true
+  actionError.value = undefined
+  try {
+    await manageConversation(id, action, title)
+    editor.value = undefined
+    keepSidebarSelection = action === 'delete' && selectedId.value !== id
+    try {
+      chatStore.applyConversationChange(id, action, title)
+    } finally {
+      keepSidebarSelection = false
+    }
+    if (disposed) return
+    if (action === 'delete') {
+      conversations.value = conversations.value.filter(item => item.conversation_id !== id)
+      if (selectedId.value === id) {
+        const next = chatStore.activeConversationId || chatStore.startConversation()
+        await selectConversation(next)
+      }
+    } else {
+      const item = conversations.value.find(entry => entry.conversation_id === id)
+      if (item && action === 'rename') item.title = title
+      else if (item) item.pinned = action === 'pin'
+    }
+  } catch (cause) {
+    actionError.value = { id, message: formatError(cause, '对话操作失败') }
+  } finally {
+    saving.value = false
+  }
+}
+
 function byUpdatedDesc(
   left: PydanticConversationSummary,
   right: PydanticConversationSummary,
 ): number {
+  if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
   const leftTime = Date.parse(left.updated_at)
   const rightTime = Date.parse(right.updated_at)
   if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime) && leftTime !== rightTime) {
@@ -365,14 +420,14 @@ async function refreshConversations(): Promise<void> {
 }
 
 // 活动运行完成（store historyVersion 变化）时只刷新一次历史列表。
-watch(() => chatStore.historyVersion, () => {
+watch([() => chatStore.historyVersion, () => chatStore.conversationListVersion], () => {
   void refreshConversations()
 })
 
 // /new 先替换共享 Chat，再同步页面选择；同步执行使旧请求来不及重新激活旧会话。
 // 普通历史读取会先选中再打开 Chat，因此不会重复加载或抢占业务任务展示。
 watch(() => chatStore.chat?.id, (conversationId) => {
-  if (chatStore.restoring) return
+  if (chatStore.restoring || keepSidebarSelection) return
   if (conversationId && conversationId !== selectedId.value) {
     void selectConversation(conversationId)
   }
@@ -472,39 +527,73 @@ onBeforeUnmount(() => {
 
         <ul v-else class="max-h-[calc(100vh-230px)] divide-y divide-slate-100 overflow-auto dark:divide-dark-800">
           <li v-for="conversation in displayConversations" :key="conversation.conversation_id">
-            <button
-              type="button"
-              class="w-full px-4 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-dark-800"
-              :class="selectedId === conversation.conversation_id ? 'bg-primary-50 dark:bg-primary-500/10' : ''"
-              :data-testid="conversation.temporary
-                ? 'ai-work-conversation-temporary'
-                : `ai-work-conversation-${conversation.conversation_id}`"
-              @click="selectConversation(conversation.conversation_id)"
-            >
-              <span class="flex items-center gap-2">
-                <span class="block min-w-0 flex-1 truncate text-sm font-bold text-slate-800 dark:text-accent-100">
-                  {{ conversationTitle(conversation.conversation_id, conversation.title) }}
+            <div class="flex items-center" :class="selectedId === conversation.conversation_id ? 'bg-primary-50 dark:bg-primary-500/10' : ''">
+              <button
+                type="button"
+                class="min-w-0 flex-1 px-4 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-dark-800"
+                :data-testid="conversation.temporary
+                  ? 'ai-work-conversation-temporary'
+                  : `ai-work-conversation-${conversation.conversation_id}`"
+                @click="selectConversation(conversation.conversation_id)"
+              >
+                <span class="flex items-center gap-2">
+                  <span class="block min-w-0 flex-1 truncate text-sm font-bold text-slate-800 dark:text-accent-100">
+                    {{ conversationTitle(conversation.conversation_id, conversation.title) }}
+                  </span>
+                  <span
+                    v-if="conversation.temporary"
+                    class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/15 dark:text-amber-200"
+                  >
+                    进行中
+                  </span>
+                  <span
+                    v-else-if="chatStore.chat?.id === conversation.conversation_id"
+                    class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200"
+                  >
+                    活动
+                  </span>
                 </span>
-                <span
-                  v-if="conversation.temporary"
-                  class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/15 dark:text-amber-200"
-                >
-                  进行中
+                <span v-if="!conversation.temporary" class="mt-2 block text-[11px] text-slate-500 dark:text-accent-300">
+                  更新：{{ formatTime(conversation.updated_at) }}
                 </span>
-                <span
-                  v-else-if="chatStore.chat?.id === conversation.conversation_id"
-                  class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200"
-                >
-                  活动
+                <span v-if="!conversation.temporary" class="mt-0.5 block text-[11px] text-slate-400">
+                  创建：{{ formatTime(conversation.created_at) }}
                 </span>
-              </span>
-              <span v-if="!conversation.temporary" class="mt-2 block text-[11px] text-slate-500 dark:text-accent-300">
-                更新：{{ formatTime(conversation.updated_at) }}
-              </span>
-              <span v-if="!conversation.temporary" class="mt-0.5 block text-[11px] text-slate-400">
-                创建：{{ formatTime(conversation.created_at) }}
-              </span>
-            </button>
+              </button>
+              <div v-if="!conversation.temporary && conversation.conversation_id.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)"
+                class="mr-2 flex shrink-0 items-center">
+                <button type="button" class="rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-dark-800"
+                  :class="{ 'text-primary-600 dark:text-primary-400': conversation.pinned }" :disabled="saving"
+                  :aria-label="conversation.pinned ? '取消置顶' : '置顶对话'" :aria-pressed="!!conversation.pinned" :title="conversation.pinned ? '取消置顶' : '置顶对话'"
+                  @click="change(conversation, conversation.pinned ? 'unpin' : 'pin')">
+                  <PhPushPin :size="18" :weight="conversation.pinned ? 'fill' : 'regular'" />
+                </button>
+                <button type="button" class="rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-dark-800"
+                  aria-label="重命名对话" title="重命名" :disabled="saving" @click="editRow(conversation, 'rename')">
+                  <PhPencilSimple :size="18" />
+                </button>
+                <button type="button" class="rounded-lg p-1.5 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-dark-800"
+                  aria-label="删除对话" title="删除对话" :disabled="saving" @click="editRow(conversation, 'delete')">
+                  <PhTrash :size="18" />
+                </button>
+              </div>
+            </div>
+            <div v-if="editor?.id === conversation.conversation_id" class="px-3 pb-3">
+              <form v-if="editor.mode === 'rename'" class="flex flex-wrap items-center gap-2" @submit.prevent="change(conversation, 'rename')">
+                <input :ref="el => { nameInput = el as HTMLInputElement | undefined }" v-model="name" aria-label="对话名称"
+                  maxlength="80" class="input min-w-0 flex-1" :disabled="saving" @keydown.esc.stop.prevent="editor = undefined">
+                <button class="btn btn-primary" :disabled="saving || !name.trim()">保存</button>
+                <button type="button" class="btn btn-outline" :disabled="saving" @click="editor = undefined">取消</button>
+              </form>
+              <div v-else>
+                <p class="mb-2 text-sm">删除这段对话及其消息？删除后无法恢复。</p>
+                <div class="flex justify-end gap-2">
+                  <button type="button" class="btn btn-outline" :disabled="saving" @click="editor = undefined">取消</button>
+                  <button type="button" class="btn btn-outline text-rose-600" :disabled="saving" @click="change(conversation, 'delete')">确认删除</button>
+                </div>
+              </div>
+            </div>
+            <p v-if="actionError?.id === conversation.conversation_id" role="alert" class="px-3 pb-3 text-sm text-rose-600">{{ actionError.message }}</p>
           </li>
         </ul>
       </aside>

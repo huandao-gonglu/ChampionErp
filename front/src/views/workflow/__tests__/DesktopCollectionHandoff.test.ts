@@ -78,7 +78,7 @@ it('已打开的客户端忙碌时等待，空闲后仅采集网页指定的重�
     await flushPromises()
     expect(collection.collectBatchRows).toEqual(rows)
     expect(batch).toHaveBeenCalledOnce()
-    expect(batch).toHaveBeenCalledWith({}, [rows[1].id])
+    expect(batch).toHaveBeenCalledWith([rows[1].id])
     expect(single).not.toHaveBeenCalled()
   } finally { wrapper.unmount() }
 })

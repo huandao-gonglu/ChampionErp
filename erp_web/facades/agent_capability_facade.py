@@ -9,7 +9,6 @@ from erp_web.services.ai_tool_registry import deadline_aware_tool_executor
 from typing import Any
 
 
-from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 from erp_web.context import AppContext, get_context
 from erp_web.facades import alibaba_self_purchase_facade, order_procurement_facade, order_notification_facade
 from erp_web.runtime_units.order_capability_support import OrderCapabilityScope
@@ -76,7 +75,7 @@ from erp_web.ai_capability_composition import (
     application_capability_permissions,
     bind_global_chat_toolset as bind_chat_capabilities,
 )
-from erp_web.services import config_service, product_research_service
+from erp_web.services import product_research_service
 from erp_web.services.ai_tool_catalog import AiToolBindingScope
 from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.services.desktop_connection_service import desktop_unavailable_reason
@@ -98,33 +97,6 @@ def global_chat_permissions() -> frozenset[str]:
     """主 Agent Execution Profile 的可信权限集合。"""
 
     return application_capability_permissions()
-
-
-def _resolved_collect_cookie(context: AppContext) -> str:
-    """采集 Cookie 只能来自已保存配置；模型不得提供凭据。"""
-
-    saved = str(context.config.load_app_config().get("alibaba_cookie") or "")
-    return str(
-        config_service.resolve_runtime_secret_value(
-            saved,
-            None,
-            "alibaba_cookie",
-        )
-        or ""
-    )
-
-
-def _saved_1688_api_config(context: AppContext) -> dict[str, Any] | None:
-    """已配置且完整的 1688 API 凭据；未配置时返回 None。"""
-
-    api = alibaba_runtime_config(context.config)
-    if not isinstance(api, dict):
-        return None
-    if not str(api.get("app_key") or "").strip():
-        return None
-    if not api.get("app_secret") or not api.get("access_token"):
-        return None
-    return dict(api)
 
 
 def _create_research_run(
@@ -248,10 +220,8 @@ def build_capability_binding_scope(
                     lambda url, mode, platform, claim_platforms: collect_source_product(
                         url,
                         mode,
-                        _resolved_collect_cookie(context),
                         platform or None,
                         list(claim_platforms) or None,
-                        _saved_1688_api_config(context),
                     )
                 ),
                 batch_collector=(
@@ -259,18 +229,12 @@ def build_capability_binding_scope(
                         collect_batch_products(
                             list(urls),
                             mode,
-                            _resolved_collect_cookie(context),
                             platform or None,
                             list(claim_platforms) or None,
-                            _saved_1688_api_config(context),
                         )
                     )
                 ),
-                online_1688_collector=(
-                    lambda body: collect_1688_payload_service(
-                        {**body, "cookie": _resolved_collect_cookie(context)}
-                    )
-                ),
+                online_1688_collector=collect_1688_payload_service,
                 claimer=(
                     lambda product_ids, targets: claim_products_to_markets(
                         product_ids,
@@ -325,7 +289,10 @@ def build_global_chat_toolset(context: AppContext | None = None, *, chat_config:
             def collect_reason(args):
                 if args is None:
                     return ''
-                return collect_platform_reason(args.get('mode') or 'browser', args.get('urls') or args.get('url'))
+                try:
+                    return collect_platform_reason(args.get('mode') or 'browser', args.get('urls') or args.get('url'))
+                except ValueError as exc:
+                    return str(exc)
             return collect_reason
         return None
 

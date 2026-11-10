@@ -1374,36 +1374,16 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [f"https://img.example/{index}.jpg" for index in range(8)],
         }
 
-        normalized = collect_helpers.normalize_collect_source_images(source, "1688", "http", ["mercadolibre"])
+        normalized = collect_helpers.normalize_collect_source_images(source, "1688", "browser", ["mercadolibre"])
 
         self.assertEqual(len(normalized["image_pool"]), 8)
         self.assertEqual(normalized["images"], [f"https://img.example/{index}.jpg" for index in range(8)])
-
-    def test_failed_new_collect_creates_failed_sqlite_record(self) -> None:
-        def run(app_dir: Path) -> None:
-            url = "https://detail.1688.com/offer/123456.html"
-            with patch.object(
-                source_collect_workflows,
-                "fetch_url_html_with_status",
-                return_value=("", ""),
-            ):
-                result = source_collect_workflows.collect_source_product(url, mode="http", platform="1688", claim_platforms=["mercadolibre"])
-
-            self.assertFalse(result["ok"])
-            records = get_context().db.list_product_records()
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["source_url"], url)
-            self.assertEqual(records[0]["collect_status"], "failed")
-            loaded = get_context().db.load_product_model(records[0]["product_id"])
-            self.assertEqual(loaded["source"]["collect_diagnostics"]["error_code"], "1688_SELECTOR_FAILED")
-
-        self.with_temp_app(run)
 
     def test_collect_batch_products_returns_each_row_and_saves_successes(self) -> None:
         def run(app_dir: Path) -> None:
             calls: list[str] = []
 
-            def fake_collect(url: str, mode: str = "browser", cookie: str | None = None, platform: str | None = None, claim_platforms: list[str] | None = None) -> dict:
+            def fake_collect(url: str, mode: str = "browser", platform: str | None = None, claim_platforms: list[str] | None = None) -> dict:
                 calls.append(url)
                 if "bad" in url:
                     raise RuntimeError("blocked")
@@ -1420,7 +1400,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             ):
                 result = source_collect_workflows.collect_batch_products(
                     "https://detail.1688.com/offer/1.html\nhttps://detail.1688.com/offer/bad.html",
-                    mode="http",
+                    mode="browser",
                     platforms=["mercadolibre"],
                 )
 

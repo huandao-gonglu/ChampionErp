@@ -5,7 +5,6 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from erp_web.context import get_context
-from erp_web.services import html_extract_service
 from erp_web.runtime_units.order_source_bindings import bindings_from_publish_job
 from erp_web.stores.order_notification_store import OrderNotificationStore
 from erp_web.stores.order_procurement_store import OrderProcurementStore
@@ -28,16 +27,6 @@ if TYPE_CHECKING:
 _OUTCOME_UNKNOWN_NEXT_ACTION = (
     "请先通过平台后台、任务或映射对账确认远端结果；确认前不要重新发布"
 )
-
-
-def page_snapshot_from_html(url: str, html: str, text: str = "", title: str = "", image_urls: list[str] | None = None) -> dict[str, Any]:
-    return {
-        "url": url,
-        "html": html,
-        "text": text or html_extract_service.html_to_text(html),
-        "title": title or html_extract_service.extract_page_title(html),
-        "image_urls": image_urls or html_extract_service.extract_product_image_urls(html, url, limit=20),
-    }
 
 
 def append_publish_log(entry: dict[str, Any]) -> None:
@@ -423,7 +412,6 @@ __all__ = [
     "apply_publish_bus_result_to_draft",
     "append_publish_bus_terminal_log",
     "load_publish_logs",
-    "page_snapshot_from_html",
     "persist_publish_bus_terminal_results",
     "publish_bus_log_exists",
     "publish_bus_terminal_status",

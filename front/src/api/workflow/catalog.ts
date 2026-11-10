@@ -1,4 +1,5 @@
 import { apiClient, type AiPresentationTransport } from '@/api/client'
+import { normalizeCollectUrl } from '@/utils/collectQueue'
 import { listingLanguageValue } from '@/constants/locales'
 import type {
   CollectBatchResultRow,
@@ -12,7 +13,6 @@ import type {
   MarketplaceTargetSite,
   Product,
   ProductIndexItem,
-  TransientCollectCredentials,
   UnknownRecord,
 } from '@/types/workflow'
 import type {
@@ -92,11 +92,6 @@ export async function deleteProducts(productIds: string[]): Promise<DeleteProduc
   return normalizeDeleteProductsResult(response.data)
 }
 
-function collectCredentialsPayload(credentials: TransientCollectCredentials): UnknownRecord {
-  const cookie = String(credentials.alibabaCookie || '').trim()
-  return cookie ? { cookie } : {}
-}
-
 export type CollectionAttempt =
   | (ProductMutationResponse & { verification?: undefined })
   | { verification: CollectionVerification; diagnostics: UnknownRecord }
@@ -132,15 +127,19 @@ export async function inspectCollectionVerification(verification: CollectionVeri
 
 export async function collectProduct(
   form: CollectForm,
-  credentials: TransientCollectCredentials = {},
 ): Promise<CollectionAttempt> {
   const url = form.productUrl.trim()
   if (!url) throw new Error('请先输入商品链接。')
+  if (form.mode === 'api') {
+    const hostname = new URL(normalizeCollectUrl(url)).hostname
+    if (hostname !== '1688.com' && !hostname.endsWith('.1688.com')) throw new Error('请输入 1688 商品详情链接。')
+    const response = await apiClient.post('/api/collect-1688', { url, mode: 'api' })
+    return normalizeCollectionAttempt(response.data)
+  }
   const path = form.platform.toLowerCase() === '1688' ? '/api/collect-1688' : '/api/collect-source'
   const response = await apiClient.post(path, {
     url,
     mode: form.mode,
-    ...collectCredentialsPayload(credentials),
     platform: form.platform === 'unknown' ? '' : form.platform,
   })
   return normalizeCollectionAttempt(response.data)
@@ -148,12 +147,10 @@ export async function collectProduct(
 
 export async function collectBatch(
   form: CollectForm,
-  credentials: TransientCollectCredentials = {},
 ): Promise<{ rows: CollectBatchResultRow[]; productsIndex: ProductIndexItem[] }> {
   const response = await apiClient.post('/api/collect-batch', {
     urls: form.productUrls,
     mode: form.mode,
-    ...collectCredentialsPayload(credentials),
     platform: ['manual', 'unknown'].includes(form.platform) ? '' : form.platform,
   })
   const data = asRecord(response.data)
@@ -222,12 +219,9 @@ export async function claimProducts(productIds: string[], targets: MarketplaceTa
 
 export async function saveCollectSettings(
   form: CollectForm,
-  credentials: TransientCollectCredentials = {},
 ): Promise<void> {
-  const alibabaCookie = String(credentials.alibabaCookie || '').trim()
   const response = await apiClient.post('/api/save-settings', {
     appConfig: {
-      ...(alibabaCookie ? { alibaba_cookie: alibabaCookie } : {}),
       collect_output_dir: form.outputDir,
     },
   })

@@ -508,6 +508,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="用户停止入口，向 Pydantic 原生取消令牌传递信号，不作为模型工具。",
     ),
     AiCapabilityCoverageEntry(
+        method="POST", path="/api/v1/ai-chat/manage", business_domain="AI 会话运输",
+        disposition="excluded", reason="由用户置顶、命名或删除自己的对话。",
+    ),
+    AiCapabilityCoverageEntry(
         method="POST",
         path="/api/v1/ai-chat/queue",
         business_domain="AI 会话运输",

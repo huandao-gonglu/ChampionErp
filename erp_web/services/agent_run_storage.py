@@ -108,7 +108,7 @@ class AgentRunStorage:
         availability = operation_availability(get_context().config.load_app_config(), connection_id=self.desktop_connection)
         reason = availability["desktop_reason"]
         platform = (f"本次操作没有可用的本机执行器。{reason} "
-                    "按链接采集可使用 HTTP 或已配置的 API；需要本机的步骤请说明原因。"
+                    "1688 商品链接可通过已授权的 API 采集。浏览器采集需要桌面端。"
                     if reason else "本次操作可以调用发起请求的桌面端。")
         return "\n".join(filter(None, (page_context_instructions(self.page_context), platform,
                                       *availability["blocked_use_cases"].values())))

@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { mount } from '@vue/test-utils'
+import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import DraftSkuPanel from '@/components/domain/DraftSkuPanel.vue'
 import SkuImagePicker from '@/components/domain/SkuImagePicker.vue'
 import { createEmptyDraftDetail } from '@/constants/initialState'
 import type { ProductSku } from '@/types/workflow'
+
+enableAutoUnmount(afterEach)
 
 const facts: ProductSku[] = [{
   id: 'red-s', source_sku_id: 'supplier-red-s', name: '红色 S', options: { 颜色: '红', 尺码: 'S' },
@@ -24,12 +26,13 @@ describe('草稿 SKU 选品', () => {
     const draft = reactive(createEmptyDraftDetail('ozon'))
     draft.draftId = 'draft-stock'
     draft.skuItems = [{ sku_id: 'red-s', sku: 'SELL-RED', selected: true, stock: '', overrides: {}, attributes_by_target: {}, pricing: {}, publications: {} }]
-    const wrapper = mount(DraftSkuPanel, { props: { draft, skus: facts, loading: false } })
+    const skus = facts.map(sku => ({ ...sku, active: true }))
+    const wrapper = mount(DraftSkuPanel, { props: { draft, skus, loading: false } })
     const stocks = wrapper.findAll<HTMLInputElement>('input[aria-label="可售库存"]')
     expect(stocks.map(input => input.element.value)).toEqual(['500', '900'])
     await stocks[0]!.setValue('12')
     await stocks[1]!.setValue('0')
-    await wrapper.setProps({ skus: facts.map(sku => ({ ...sku, supplier_stock: '1000' })) })
+    await wrapper.setProps({ skus: skus.map(sku => ({ ...sku, supplier_stock: '1000' })) })
     expect(stocks.map(input => input.element.value)).toEqual(['12', '0'])
     expect(facts.map(sku => sku.supplier_stock)).toEqual(['500', '900'])
   })
@@ -42,17 +45,17 @@ describe('草稿 SKU 选品', () => {
     expect(wrapper.get<HTMLInputElement>('input[aria-label="可售库存"]').element.value).toBe('0')
   })
 
-  it('恢复已保存的选品并列出新增规格，全选不会启用来源停用规格', async () => {
+  it('恢复已保存的选品，停用规格不补入草稿', async () => {
     const draft = reactive(createEmptyDraftDetail('ozon'))
     draft.draftId = 'draft-one'
     draft.skuItems = [{ sku_id: 'red-s', sku: 'SELL-RED', selected: true, stock: '0', overrides: {}, attributes_by_target: {}, pricing: {}, publications: {} }]
     const wrapper = mount(DraftSkuPanel, { props: { draft, skus: facts, loading: false } })
-    expect(draft.skuItems).toHaveLength(2)
+    expect(draft.skuItems).toHaveLength(1)
     expect(draft.skuItems[0]?.selected).toBe(true)
-    expect(wrapper.get('input[aria-label="发布 蓝色 L"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('input[aria-label="发布 蓝色 L"]').exists()).toBe(false)
     expect(wrapper.get('input[aria-label="可售库存"]').element).toHaveProperty('value', '0')
     await wrapper.findAll('button').find(button => button.text() === '全选启用规格')!.trigger('click')
-    expect(draft.skuItems.map(row => row.selected)).toEqual([true, false])
+    expect(draft.skuItems.map(row => row.selected)).toEqual([true])
     expect(facts[1]?.active).toBe(false)
   })
 
@@ -61,7 +64,7 @@ describe('草稿 SKU 选品', () => {
     const skus = [facts[0]!, { ...facts[0]!, id: 'green', name: '绿色 S' }, facts[1]!]
     const wrapper = mount(DraftSkuPanel, { props: { draft, skus, loading: false } })
     const parent = wrapper.get<HTMLInputElement>('input[aria-label="全选启用 SKU"]')
-    expect(draft.skuItems.map(row => row.selected)).toEqual([true, true, false])
+    expect(draft.skuItems.map(row => row.selected)).toEqual([true, true])
     expect(parent.element.checked).toBe(true)
     expect(parent.element.indeterminate).toBe(false)
     expect(wrapper.text()).toContain('已选择 2 / 2')
@@ -70,29 +73,43 @@ describe('草稿 SKU 选品', () => {
     expect(parent.element.checked).toBe(false)
     expect(parent.element.indeterminate).toBe(true)
     await parent.setValue(true)
-    expect(draft.skuItems.map(row => row.selected)).toEqual([true, true, false])
+    expect(draft.skuItems.map(row => row.selected)).toEqual([true, true])
     await parent.setValue(false)
     expect(draft.skuItems.every(row => !row.selected)).toBe(true)
     expect(parent.element.indeterminate).toBe(false)
 
     await wrapper.setProps({ skus: [...skus, { ...facts[0]!, id: 'new', name: '新增规格' }] })
-    expect(draft.skuItems.map(row => row.selected)).toEqual([false, false, false, true])
+    expect(draft.skuItems.map(row => row.selected)).toEqual([false, false, true])
     expect(parent.element.indeterminate).toBe(true)
     await wrapper.setProps({ loading: true })
     expect(parent.attributes('disabled')).toBeDefined()
   })
 
-  it('没有启用规格时父复选框禁用，停用空记录显示明确名称', () => {
+  it('只有停用规格时不加入草稿并显示空状态', () => {
     const draft = reactive(createEmptyDraftDetail('ozon'))
-    const wrapper = mount(DraftSkuPanel, { props: {
-      draft, skus: [{ ...facts[1]!, name: '' }], loading: false,
-    } })
-    const parent = wrapper.get<HTMLInputElement>('input[aria-label="全选启用 SKU"]')
-    expect(parent.element.checked).toBe(false)
-    expect(parent.element.indeterminate).toBe(false)
-    expect(parent.attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('无规格信息')
-    expect(wrapper.text()).toContain('已停用')
+    const wrapper = mount(DraftSkuPanel, { props: { draft, skus: [facts[1]!], loading: false } })
+    expect(draft.skuItems).toHaveLength(0)
+    expect(wrapper.find('table').exists()).toBe(false)
+    expect(wrapper.text()).toContain('暂无启用的 SKU')
+    expect(wrapper.text()).not.toContain('已停用')
+  })
+
+  it('已有停用规格静默隐藏并取消发布，保留历史回执；重新启用后恢复显示但不自动勾选', async () => {
+    const draft = reactive(createEmptyDraftDetail('ozon'))
+    const publications = { 'ozon:global': { status: 'published', external_id: 'remote-blue' } }
+    draft.skuItems = [{ sku_id: 'blue-l', sku: 'SELL-BLUE', selected: true, stock: '12', overrides: {}, attributes_by_target: {}, pricing: {}, publications }]
+    const wrapper = mount(DraftSkuPanel, { props: { draft, skus: facts, loading: false } })
+    expect(wrapper.find('input[aria-label="发布 蓝色 L"]').exists()).toBe(false)
+    expect(draft.skuItems[0]!.selected).toBe(false)
+    expect(draft.skuItems[0]!.publications).toEqual(publications)
+    await wrapper.setProps({ skus: facts.map(sku => ({ ...sku, active: true })) })
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="发布 蓝色 L"]').element.checked).toBe(false)
+    expect(draft.skuItems[0]!.stock).toBe('12')
+    await wrapper.get('input[aria-label="发布 蓝色 L"]').setValue(true)
+    await wrapper.setProps({ skus: facts })
+    expect(wrapper.find('input[aria-label="发布 蓝色 L"]').exists()).toBe(false)
+    expect(draft.skuItems[0]!.selected).toBe(false)
+    expect(draft.skuItems[0]!.publications).toEqual(publications)
   })
 
   it('草稿只读显示成本并定位商品 SKU 编辑', async () => {

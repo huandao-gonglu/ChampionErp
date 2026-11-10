@@ -19,7 +19,7 @@ onBeforeUnmount(() => { disposed = true })
 const currentId = computed(() => props.input.templateSource?.id || '')
 const currentTemplate = computed(() => settings.value.items.find(item => item.id === currentId.value))
 const missingTemplate = computed(() => !!currentId.value && !currentTemplate.value)
-const initialParameters = JSON.stringify(pricingTemplateParameters(props.input))
+const initialParameters = JSON.stringify(pricingTemplateParameters(props.input, true))
 const managerOpen = ref(false)
 const saveOpen = ref(false)
 const busy = ref(false)
@@ -54,8 +54,13 @@ async function load() {
     settings.value = loaded
     templatesLoaded.value = true
     const template = settings.value.items.find(item => item.id === settings.value.default_template_id)
-    if (props.useDefault && !currentId.value && template && JSON.stringify(pricingTemplateParameters(props.input)) === initialParameters) useTemplate(template)
-  } catch (exc) { error.value = exc instanceof Error ? exc.message : '读取核价模板失败' }
+    if (props.useDefault && !currentId.value && template && JSON.stringify(pricingTemplateParameters(props.input, true)) === initialParameters) useTemplate(template)
+  } catch (exc) {
+    if (disposed) return
+    error.value = exc instanceof Error ? exc.message : '读取核价模板失败'
+    if (props.useDefault && !currentId.value) return
+  }
+  emit('ready')
 }
 function openSave(template: PricingTemplate | null = null) {
   editing.value = template
@@ -122,7 +127,7 @@ async function remove(template: PricingTemplate) {
   } catch (exc) { error.value = exc instanceof Error ? exc.message : '删除核价模板失败' }
   finally { busy.value = false }
 }
-onMounted(async () => { await load(); emit('ready') })
+onMounted(load)
 </script>
 
 <template>
@@ -137,10 +142,13 @@ onMounted(async () => { await load(); emit('ready') })
           <option v-for="template in settings.items" :key="template.id" :value="template.id">{{ currentId === template.id ? input.templateSource?.name : template.name }}{{ template.id === settings.default_template_id ? ' · 默认' : '' }}</option>
         </select>
       </label>
-      <WorkspaceHint label="核价模板说明" content="保存草稿或应用售价时保存模板来源与当前参数；再次打开沿用草稿参数，模板修改或删除不会覆盖它们。默认模板仅在新草稿首次核价时填入。" />
+      <WorkspaceHint label="核价模板说明" content="保存草稿或应用售价时保存模板来源与当前参数；再次打开沿用草稿参数，模板修改或删除不会覆盖它们。草稿尚无核价配置时，人工和 AI 核价都会使用默认模板。" />
     </div>
-    <div class="mt-3 flex items-center justify-between gap-2">
+    <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
       <button type="button" class="pricing-text-button mr-auto" :disabled="disabled || busy" @click="managerOpen = true">管理模板</button>
+      <button v-if="currentTemplate" type="button" class="pricing-text-button" :disabled="disabled || busy" @click="changeDefault(currentId === settings.default_template_id ? '' : currentId)">
+        <PhStar :size="15" :weight="currentId === settings.default_template_id ? 'fill' : 'regular'" />{{ currentId === settings.default_template_id ? '取消默认' : '设为默认' }}
+      </button>
       <button v-if="currentTemplate" type="button" class="pricing-text-button" :disabled="disabled || busy" @click="saveCurrent"><PhFloppyDisk :size="15" />保存</button>
       <button type="button" class="pricing-text-button" :disabled="disabled || busy" @click="openSave()">{{ settings.items.length ? '另存模板' : '保存为模板' }}</button>
     </div>

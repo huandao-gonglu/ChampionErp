@@ -134,7 +134,7 @@ GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
 的 Deferred metadata，审批窗口、后台扫描和微信连接的启动端都不能换设备。
 
 `source_collect_workflows.collect_browser_url` 调用本机 `collect.read`，后端才读目标商品、
-规范化、登记图片并经 `ProductStore` 保存。采集页仅提供 URL 单链接与批量入口，浏览器标签页采集和手动/HTML 导入已下线。
+规范化、登记图片并经 `ProductStore` 保存。商品采集仅接受浏览器与 API 两种方式。浏览器模式支持单链接和批量队列。API 采集通过 `/api/collect-1688` 提交商品链接及 `mode=api`，后端从链接解析商品编号并使用当前账号授权。
 `/api/collect-verification` 检查原页面验证，`/api/collect-resume` 在验证完成后沿用原桌面连接读取该商品页。
 采集素材逐张交接，`desktop_asset_service` 复用图片服务生成后端引用。
 Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model / Direct / Factory 不变。
@@ -224,7 +224,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
 
 - `source_sites.py` 的采集质量门槛与核价/发布条件分开：1688 有标题和图片且未被验证拦截即可入库。缺失包装长宽高、重量通过 `collect_helpers.py` 的 `missing_fields` / `next_action` 提示在 SKU 页补齐，不触发采集失败；有规格时逐 SKU 判断包装完整性，不用首项资料代表整组。
-- `front/src/views/workflow/CollectView.vue` 仅组织 URL 采集，`CollectBatchManager.vue` 负责 URL 增删改、状态筛选和失败重试。网页在提交实际采集时交接链接、队列与操作范围，桌面恢复并确认接收后直接执行，页面查看和编辑不触发交接。
+- `front/src/views/workflow/CollectView.vue` 组织浏览器采集（URL 批量）和 1688 API 采集，`CollectBatchManager.vue` 负责 URL 增删改、状态筛选和失败重试。网页在提交 URL 批量采集时交接链接、队列与操作范围，桌面恢复并确认接收后直接执行，页面查看和编辑不触发交接。
 - 批量列表状态为 `pending`（未开始）、`running`（正在采集）、`waiting_verification`（等待验证）、`success`（完成）、`failed`（失败）。部分结果保留资料提示并显示失败。
 - `front/src/stores/workflow/actions/collection.ts` 逐条提交 `/api/collect-batch`。遇到登录或验证码，后端在解析、下载、商品写入之前返回 `waiting_verification`；其 `verification` 契约由 `schemas/collection.py` 定义，仅含标签 ID、原商品 URL、平台。
 - `/api/collect-verification` 由 `collect_routes` → `collect_facade` → `source_collect_verification.inspect_collection_verification` 只读检查原标签。前端每两秒检查一次，不导航、不刷新；验证完成后用原标签 ID 和 URL 调用 `/api/collect-resume`，再次验证页面身份并采集，然后继续后续链接。标签被关闭、离开商品或无法读取时返回可操作提示，不改采集目标。
@@ -872,7 +872,7 @@ AI Work 选中普通对话后，直接使用本次 `/ui-messages` 响应绑定�
 历史响应必须仍匹配当前选择，旧会话回调不得断开当前订阅；业务 Agent 执行记录仍只读展示。
 
 气泡与 AI Work 默认入口统一由 `AiChatStore.restoreConversation` 恢复上次选中的普通对话。
-`/resume` 在聊天窗口分页选择账号内的全局对话，复用原生历史和事件订阅。
+`/resume` 在聊天窗口分页选择账号内的全局对话，复用原生历史和事件订阅。AI Work 左侧历史对话列表提供图钉、改名和删除入口。置顶在分页前排序；`POST /api/v1/ai-chat/manage` 处理置顶、手动命名与删除，手动名称优先于后台命名。删除覆盖同一对话的并行回复，保留业务回执。
 `services/chat_titles.py` 使用首条用户输入作为展示标题，后台按会话领取一次中文命名任务，结果写入账号独立的标题索引；列表读取旧历史首句不会触发模型。
 浏览器只记住会话 ID，首次发送或选中历史时更新；消息、运行状态和审批仍读取服务端历史并重新订阅。
 恢复中禁止发送，失败展示重试，不自动创建新会话或选择最近的任务记录；明确历史链接优先于默认恢复。
@@ -1141,6 +1141,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   默认模板由 `draft_pricing.price_draft` 统一装配，页面、AI 与市场准备均适用：仅当草稿没有已保存的
   公共/市场核价参数、模板来源、核价时间和 SKU 报价，且请求没有显式模板来源（含 null 清除）时初始化。
   本次明确参数（包括零值）和 SKU 覆盖优先于模板；已有草稿沿用自己的参数快照。
+  核价页可将当前选中的模板设为个人默认。普通草稿保存和发布前保存仅在费用、规则或模板来源有改动时写入表单参数，避免仅编辑商品资料就跳过首次默认模板。
   页面在首次显示时预填默认模板，传入完整参数和来源；保存过参数但尚无报价的草稿也不得重新套默认模板。
   预览不持久化模板，应用售价才保存参数与来源；自动采用的默认模板在计算期间变化会拒绝结果，
   预览后有效参数或来源变化则要求重新核价，不能把旧报价应用到新模板参数上。

@@ -9,7 +9,7 @@ import {
 } from '@/api/workflow/catalog'
 import { fetchState } from '@/api/workflow/state'
 import { createDefaultCollectDiagnostics, createDefaultCollectForm, createEmptyProduct } from '@/constants/initialState'
-import type { CollectBatchRow, CollectionVerification, TransientCollectCredentials } from '@/types/workflow'
+import type { CollectBatchRow, CollectionVerification } from '@/types/workflow'
 import { sanitizePublicAppConfig } from '@/utils/configSecurity'
 import {
 
@@ -147,7 +147,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     addLog('已清空采集表单。')
   }
 
-  async function collectProduct(credentials: TransientCollectCredentials = {}) {
+  async function collectProduct() {
     if (loading.value) return
     if (!collectForm.value.productUrl.trim()) {
       setError('请先输入商品链接。')
@@ -163,7 +163,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
       lastSourceUrl: collectForm.value.productUrl,
     }
     try {
-      const result = await completeCollectionAttempt(await collectProductApi(collectForm.value, credentials))
+      const result = await completeCollectionAttempt(await collectProductApi(collectForm.value))
       product.value = result.product
       applyMutationIndexes(result)
       syncCollectDiagnosticsFromProduct('采集完成。', result.diagnostics)
@@ -190,7 +190,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     if (!loading.value) collectBatchRows.value = rows
   }
 
-  async function collectBatch(credentials: TransientCollectCredentials = {}, rowIds?: string[]) {
+  async function collectBatch(rowIds?: string[]) {
     if (loading.value) return
     const requested = rowIds ? new Set(rowIds) : null
     const rows = collectBatchRows.value.filter((row) => requested ? requested.has(row.id) && row.status !== 'running' : ['pending', 'waiting_verification'].includes(row.status))
@@ -218,7 +218,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
           // 复用后端批量采集能力，每次提交一条，收到实际结果后才推进列表。
           const result = row.verification
             ? { rows: [row], productsIndex: productsIndex.value }
-            : await collectBatchApi({ ...form, productUrls: row.url }, credentials)
+            : await collectBatchApi({ ...form, productUrls: row.url })
           let collected = result.rows.find((item) => item.url === row.url)
           if (!collected) throw new Error('服务端未返回该链接的采集结果。')
           if (collected.verification) {
@@ -285,12 +285,12 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     addLog('已清空当前商品。')
   }
 
-  async function saveCollectSettings(credentials: TransientCollectCredentials = {}) {
+  async function saveCollectSettings() {
     loading.value = true
     setError('')
     try {
-      await saveCollectSettingsApi(collectForm.value, credentials)
-      addLog(`采集设置已保存：模式 ${collectForm.value.mode}，输出目录 ${collectForm.value.outputDir || '默认目录'}。`)
+      await saveCollectSettingsApi(collectForm.value)
+      addLog(`已保存采集输出目录 ${collectForm.value.outputDir || '默认目录'}。`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '保存采集设置失败')
     } finally {

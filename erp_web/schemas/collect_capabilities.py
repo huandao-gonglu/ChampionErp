@@ -2,11 +2,10 @@ from __future__ import annotations
 
 """采集、认领与商品研究的 Capability 契约。
 
-采集类 Capability 不接受模型提供的 Cookie / API 密钥；凭据一律来自已保存
-配置（由 Scope provider 在可信边界内解析）。
+浏览器采集使用桌面会话，1688 API 采集使用当前账号授权。
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, model_validator
 
@@ -18,7 +17,7 @@ class SourceCollectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     url: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=2000)]
-    mode: Annotated[TrimmedText, StringConstraints(max_length=40)] = "browser"
+    mode: Literal["browser", "api"] = "browser"
     platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     claim_platforms: tuple[str, ...] = ()
 
@@ -39,7 +38,7 @@ class CollectBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     urls: Annotated[tuple[str, ...], Field(min_length=1)]
-    mode: Annotated[TrimmedText, StringConstraints(max_length=40)] = "browser"
+    mode: Literal["browser", "api"] = "browser"
     platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     claim_platforms: tuple[str, ...] = ()
 

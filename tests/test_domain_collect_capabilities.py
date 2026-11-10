@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 
 from erp_web.context import get_context
-from erp_web.facades import agent_capability_facade
 from erp_web.runtime_units.collect_capabilities import (
     CollectCapabilityScope,
     claim_products,
@@ -277,27 +276,6 @@ def test_claim_products_with_real_store_and_failure_mapping() -> None:
             execution=_execution(),
         )
     assert error.value.code == "CLAIM_PRODUCTS_FAILED"
-
-
-def test_collect_credentials_resolve_from_saved_config_only(monkeypatch) -> None:
-    context = get_context()
-    assert agent_capability_facade._resolved_collect_cookie(context) == ""
-    assert agent_capability_facade._saved_1688_api_config(context) is None
-
-    config = context.config.load_app_config()
-    config["alibaba_cookie"] = "saved-cookie"
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_KEY", "12345")
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_SECRET", "secret-1")
-    context.config.save_app_config(config)
-
-    assert agent_capability_facade._resolved_collect_cookie(context) == "saved-cookie"
-    assert agent_capability_facade._saved_1688_api_config(context) is None
-    from erp_web.services.alibaba_credentials import application_fingerprint
-    context.config.update_alibaba_credentials({"authorization": {
-        "access_token": "buyer-token", "application_fingerprint": application_fingerprint(context.config.alibaba_application())}})
-    api = agent_capability_facade._saved_1688_api_config(context)
-    assert api is not None
-    assert api["app_key"] == "12345"
 
 
 # ---------------------------------------------------------------- 研究

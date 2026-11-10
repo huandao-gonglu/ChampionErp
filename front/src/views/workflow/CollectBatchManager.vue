@@ -4,7 +4,7 @@ import { computed, ref } from 'vue'
 import type { CollectBatchRow, CollectBatchStatus } from '@/types/workflow'
 import { appendCollectUrls, collectBatchStatusLabels, createCollectBatchRow, normalizeCollectUrl } from '@/utils/collectQueue'
 
-const props = defineProps<{ rows: CollectBatchRow[]; loading: boolean; browserMode?: boolean }>()
+const props = defineProps<{ rows: CollectBatchRow[]; loading: boolean }>()
 const emit = defineEmits<{ update: [rows: CollectBatchRow[]]; collect: [rowIds?: string[]] }>()
 const input = ref('')
 const message = ref('')
@@ -17,11 +17,8 @@ const counts = computed(() => props.rows.reduce((total, row) => {
   return total
 }, { pending: 0, running: 0, waiting_verification: 0, success: 0, failed: 0 }))
 const desktopReason = computed(desktopOperationReason)
-function runnable(row: CollectBatchRow) {
-  return !desktopReason.value || (!props.browserMode && !row.verification)
-}
-const pendingRows = computed(() => props.rows.filter(row => ['pending', 'waiting_verification'].includes(row.status) && runnable(row)))
-const retryRows = computed(() => props.rows.filter(row => row.status === 'failed' && runnable(row)))
+const pendingRows = computed(() => props.rows.filter(row => ['pending', 'waiting_verification'].includes(row.status)))
+const retryRows = computed(() => props.rows.filter(row => row.status === 'failed'))
 const visibleRows = computed(() => props.rows.filter((row) => !filter.value || row.status === filter.value))
 const badgeClasses: Record<CollectBatchStatus, string> = {
   waiting_verification: 'bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200',
@@ -94,9 +91,9 @@ function removeRow(id: string) {
     </div>
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex flex-wrap gap-2">
-        <span v-if="desktopReason && (browserMode || props.rows.some(row => row.verification))" role="status" class="muted">{{ desktopReason }}</span>
-        <button class="btn btn-primary" :disabled="props.loading || !pendingRows.length || !!editingId" @click="emit('collect', pendingRows.map(row => row.id))">{{ props.loading && counts.waiting_verification ? '等待验证…' : counts.running ? '正在采集…' : `开始采集（${pendingRows.length}）` }}</button>
-        <button class="btn btn-outline" :disabled="props.loading || !retryRows.length || !!editingId" @click="emit('collect', retryRows.map(row => row.id))">重试失败项</button>
+        <span v-if="desktopReason" role="status" class="muted">{{ desktopReason }}</span>
+        <button class="btn btn-primary" :disabled="props.loading || !!desktopReason || !pendingRows.length || !!editingId" @click="emit('collect', pendingRows.map(row => row.id))">{{ props.loading && counts.waiting_verification ? '等待验证…' : counts.running ? '正在采集…' : `开始采集（${pendingRows.length}）` }}</button>
+        <button class="btn btn-outline" :disabled="props.loading || !!desktopReason || !retryRows.length || !!editingId" @click="emit('collect', retryRows.map(row => row.id))">重试失败项</button>
       </div>
       <button class="btn btn-ghost text-sm" :disabled="props.loading || !counts.success || !!editingId" @click="emit('update', props.rows.filter((row) => row.status !== 'success'))">移除已完成</button>
     </div>
@@ -133,7 +130,7 @@ function removeRow(id: string) {
               <div class="flex flex-wrap gap-x-3 gap-y-2">
                 <button class="text-primary-700 disabled:opacity-40 dark:text-primary-300" :disabled="props.loading || !!editingId" @click="editRow(row)">编辑</button>
                 <button class="text-rose-600 disabled:opacity-40 dark:text-rose-300" :disabled="props.loading" @click="removeRow(row.id)">删除</button>
-                <button v-if="row.status === 'failed'" class="text-primary-700 disabled:opacity-40 dark:text-primary-300" :disabled="props.loading || !!editingId || !runnable(row)" @click="emit('collect', [row.id])">重试</button>
+                <button v-if="row.status === 'failed'" class="text-primary-700 disabled:opacity-40 dark:text-primary-300" :disabled="props.loading || !!editingId || !!desktopReason" @click="emit('collect', [row.id])">重试</button>
               </div>
             </td>
           </tr>

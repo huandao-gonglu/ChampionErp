@@ -66,7 +66,7 @@ describe('统一草稿核价 API', () => {
     draft.skuItems[0]!.pricing = { applied: false, targets: {} }
     input.templateSource = { id: 'new', name: '新模板' }
     const before = JSON.stringify(draft)
-    const saved = draftWithPricingInput(draft, input)
+    const saved = draftWithPricingInput(draft, input, createDefaultPricingInput())
     expect(saved.pricing).toMatchObject({
       template_source: { id: 'new', name: '新模板' },
       common: { domestic_freight_cny: 20 },

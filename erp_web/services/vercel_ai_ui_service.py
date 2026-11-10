@@ -156,10 +156,11 @@ class VercelAiUiService(ChatConversationService):
         call_store,
         approval_session=None,
         empty_owner_reader=None,
+        deleted_reader=None,
         queue_progress=None,
     ):
         super().__init__(chat_service=chat_service, claim_store=claim_store,
-                         run_registry=run_registry, call_store=call_store, empty_owner_reader=empty_owner_reader)
+                         run_registry=run_registry, call_store=call_store, empty_owner_reader=empty_owner_reader, deleted_reader=deleted_reader)
         self.approval_session = approval_session
         self.queue_progress = queue_progress
 
@@ -310,6 +311,7 @@ class VercelAiUiService(ChatConversationService):
         history = self.chat_service.message_store.get(conversation_id)
         claim = self.claim_store.find_for_conversation(conversation_id)
         if history is None and claim is None:
+            self._require_live_id(conversation_id)
             raise VercelUiProtocolError(
                 404, "PYDANTIC_MESSAGE_HISTORY_NOT_FOUND", "Pydantic 对话不存在。"
             )

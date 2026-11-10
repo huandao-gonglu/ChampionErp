@@ -142,7 +142,7 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
   try {
     const state = handoff.state.workflow as DesktopWorkflowState
     if (state.collect) {
-      Object.assign(collectForm.value, state.collect)
+      Object.assign(collectForm.value, state.collect, { mode: state.collect.mode === 'api' ? 'api' : 'browser' })
       if (state.batchRows) collectBatchRows.value = state.batchRows
     }
     if (state.draft?.draftId && state.draftContext) {
@@ -165,7 +165,7 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
     }
     await acknowledgeDesktopHandoff(handoff.requestId, 'workflow')
     if (state.collectAction?.type === 'single') await store.collectProduct()
-    else if (state.collectAction?.type === 'batch') await store.collectBatch({}, state.collectAction.rowIds)
+    else if (state.collectAction?.type === 'batch') await store.collectBatch(state.collectAction.rowIds)
   } catch (cause) {
     activityStore.setError(cause instanceof Error ? cause.message : '桌面页面恢复失败，请回网页重试。')
   } finally { restoringHandoff = '' }

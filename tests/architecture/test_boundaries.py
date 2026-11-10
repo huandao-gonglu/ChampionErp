@@ -219,9 +219,14 @@ def test_ogl_calculation_has_no_network_store_or_runtime_dependency() -> None:
     assert '/v2/warehouse/list' not in retired
 
 
-def test_alibaba_business_facades_use_authorization_owner() -> None:
-    for name in ("alibaba_self_purchase_facade", "order_procurement_facade", "order_notification_facade", "agent_capability_facade"):
-        tree = parse_python(f"erp_web/facades/{name}.py")
+def test_alibaba_business_entries_use_authorization_owner() -> None:
+    for path in (
+        "erp_web/facades/alibaba_self_purchase_facade.py",
+        "erp_web/facades/order_procurement_facade.py",
+        "erp_web/facades/order_notification_facade.py",
+        "erp_web/runtime_units/source_collect_1688_api.py",
+    ):
+        tree = parse_python(path)
         calls = [dotted_name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)]
         assert "alibaba_runtime_config" in calls
         assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)

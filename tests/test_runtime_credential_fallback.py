@@ -1,58 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
-
-from erp_web.context import get_context
-from erp_web.facades import collect_facade
 from erp_web.runtime_units import source_collect_1688_api
 from erp_web.services import config_service
-
-
-def test_collect_cookie_uses_saved_value_when_request_is_empty_or_masked(
-    monkeypatch,
-) -> None:
-    saved_cookie = "saved-cookie-private-value"
-    captured: list[str] = []
-
-    monkeypatch.setattr(
-        get_context().config,
-        "load_app_config",
-        lambda: {"alibaba_cookie": saved_cookie},
-    )
-    monkeypatch.setattr(
-        get_context().products,
-        "load_products_index",
-        lambda: [],
-    )
-
-    def fake_collect(
-        _url: str,
-        _mode: str,
-        cookie: str,
-        _platform: str,
-        _platforms: list[str] | None,
-        _api_config: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        captured.append(cookie)
-        return {"ok": True}
-
-    monkeypatch.setattr(
-        collect_facade,
-        "collect_source_product",
-        fake_collect,
-    )
-    masked_cookie = config_service.mask_secret(saved_cookie)
-
-    for body in (
-        {"url": "https://example.test/empty"},
-        {"url": "https://example.test/masked", "cookie": masked_cookie},
-    ):
-        result, status = collect_facade.collect_source_payload({**body, "mode": "http"})
-        assert status == 200
-        assert result["ok"] is True
-
-    assert captured == [saved_cookie, saved_cookie]
-    assert masked_cookie not in captured
 
 
 def test_1688_config_uses_saved_truth_instead_of_public_masks(

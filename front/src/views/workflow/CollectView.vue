@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { desktopOperationReason, hasLocalOperations } from '@/utils/desktop'
+import { hasLocalOperations } from '@/utils/desktop'
 import { launchDesktop, useDesktopHandoffContext, type DesktopWorkflowState } from '@/utils/desktopHandoff'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import CollectBatchManager from './CollectBatchManager.vue'
-import type { CollectBatchRow, CollectDiagnostics, CollectForm, Product, TransientCollectCredentials } from '@/types/workflow'
+import type { CollectBatchRow, CollectDiagnostics, CollectForm, Product } from '@/types/workflow'
 
 const props = defineProps<{
   form: CollectForm
@@ -16,18 +16,16 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  collect: [credentials?: TransientCollectCredentials]
-  batchCollect: [credentials?: TransientCollectCredentials, rowIds?: string[]]
+  collect: []
+  batchCollect: [rowIds?: string[]]
   updateBatchRows: [rows: CollectBatchRow[]]
   cancelVerification: []
   clearProduct: []
-  saveSettings: [credentials?: TransientCollectCredentials]
+  saveSettings: []
 }>()
 
 const localOperations = hasLocalOperations()
-const desktopReason = computed(desktopOperationReason)
 const advancedOpen = ref(false)
-const transientAlibabaCookie = ref('')
 function collectionHandoff(collectAction?: DesktopWorkflowState['collectAction']) {
   return {
     target: '/?tab=collect',
@@ -48,10 +46,21 @@ const panelStyle = {
   panelLabelClass: 'text-slate-500 dark:text-accent-300',
   panelValueClass: 'text-slate-950 dark:text-white',
 }
-const urlCollectModes = [
-  { value: 'browser', label: '浏览器会话' },
-  { value: 'http', label: 'HTTP 抓取' },
+const collectTabs = [
+  { mode: 'browser', label: '浏览器采集' },
+  { mode: 'api', label: 'API 采集' },
 ] as const
+
+function navigateCollectTabs(event: KeyboardEvent) {
+  if (props.loading || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  let mode: CollectForm['mode'] = props.form.mode === 'browser' ? 'api' : 'browser'
+  if (event.key === 'Home') mode = 'browser'
+  if (event.key === 'End') mode = 'api'
+  props.form.mode = mode
+  document.getElementById(`collect-tab-${mode}`)?.focus()
+}
+
 const collectStatusLabel = computed(() => {
   if (props.diagnostics.status === 'success') return '采集完成'
   if (props.diagnostics.status === 'failed') return '采集失败'
@@ -65,30 +74,18 @@ function openDebugFile(path: string) {
 function copyDiagnostics() {
   void navigator.clipboard?.writeText(JSON.stringify(props.diagnostics.raw || {}, null, 2))
 }
-function takeTransientCollectCredentials(): TransientCollectCredentials {
-  const credentials = { alibabaCookie: transientAlibabaCookie.value.trim() }
-  transientAlibabaCookie.value = ''
-  return credentials
-}
-function collectProduct() {
-  if (props.form.mode === 'browser' && !localOperations) { void launchDesktop(collectionHandoff({ type: 'single' })); return }
-  emit('collect', takeTransientCollectCredentials())
-}
 function collectBatch(rowIds?: string[]) {
-  if (!localOperations && (props.form.mode === 'browser' || props.batchRows.some(row => row.verification && (!rowIds || rowIds.includes(row.id))))) {
+  if (!localOperations) {
     void launchDesktop(collectionHandoff({ type: 'batch', ...(rowIds ? { rowIds } : {}) }))
     return
   }
-  emit('batchCollect', takeTransientCollectCredentials(), rowIds)
-}
-function saveSettings() {
-  emit('saveSettings', takeTransientCollectCredentials())
+  emit('batchCollect', rowIds)
 }
 </script>
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="采集商品" description="输入商品链接，逐条采集到采集箱。">
+    <PageHeader title="采集商品" description="输入商品链接，采集到采集箱。">
       <template #actions>
         <span class="rounded-full bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-700 ring-1 ring-primary-100 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30">{{ collectStatusLabel }}</span>
         <button class="btn btn-outline" :disabled="props.loading" @click="emit('clearProduct')">清空当前商品</button>
@@ -102,29 +99,32 @@ function saveSettings() {
     <section class="grid gap-6 2xl:grid-cols-[minmax(0,1fr)_320px]">
       <main class="space-y-6">
         <section data-testid="collect-active-card" class="card space-y-5">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <label class="flex items-center gap-3 text-sm font-medium">
-              采集模式
-              <select v-model="props.form.mode" :disabled="props.loading" class="input w-auto">
-                <option v-for="mode in urlCollectModes" :key="mode.value" :value="mode.value" :disabled="mode.value === 'browser' && !!desktopReason">{{ mode.label }}</option>
-              </select>
+          <nav class="flex gap-1 border-b border-accent-200 dark:border-dark-700" role="tablist" aria-label="采集方式" @keydown="navigateCollectTabs">
+            <button
+              v-for="tab in collectTabs" :id="`collect-tab-${tab.mode}`" :key="tab.mode"
+              type="button" role="tab" :aria-controls="`collect-panel-${tab.mode}`"
+              :aria-selected="props.form.mode === tab.mode" :tabindex="props.form.mode === tab.mode ? 0 : -1"
+              :disabled="props.loading" class="border-b-2 px-4 py-2.5 text-sm font-semibold"
+              :class="props.form.mode === tab.mode ? 'border-primary-500 text-primary-700 dark:text-primary-200' : 'border-transparent text-accent-600 dark:text-accent-300'"
+              @click="props.form.mode = tab.mode"
+            >{{ tab.label }}</button>
+          </nav>
+          <form v-show="props.form.mode === 'api'" id="collect-panel-api" role="tabpanel" aria-labelledby="collect-tab-api" class="space-y-4" @submit.prevent="emit('collect')">
+            <label class="block">
+              <span class="text-sm font-semibold">1688 商品详情链接</span>
+              <input v-model.trim="props.form.productUrl" type="url" required :disabled="props.loading" class="input mt-2" placeholder="https://detail.1688.com/offer/..." />
             </label>
-            <button type="button" class="btn btn-outline py-2 text-sm" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen">高级选项：Cookie / 保存位置 {{ advancedOpen ? '−' : '+' }}</button>
-          </div>
-          <div v-if="advancedOpen" class="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-dark-700 dark:bg-dark-900">
-            <label class="block"><span class="text-xs font-semibold">1688 Cookie</span><textarea v-model="transientAlibabaCookie" :disabled="props.loading" data-testid="transient-alibaba-cookie" class="input mt-1 min-h-24 font-mono" placeholder="复制浏览器请求 Cookie；提交后立即清空" /></label>
-            <label class="block"><span class="text-xs font-semibold">保存位置</span><input v-model="props.form.outputDir" :disabled="props.loading" class="input mt-1" placeholder="data/images/source" /></label>
-            <button type="button" class="btn btn-outline" :disabled="props.loading" @click="saveSettings">保存 Cookie / 设置</button>
-          </div>
-          <CollectBatchManager :browser-mode="props.form.mode === 'browser'" :rows="props.batchRows" :loading="props.loading" @update="emit('updateBatchRows', $event)" @collect="collectBatch" />
-          <details class="rounded-xl border border-slate-200 p-4 dark:border-dark-700">
-            <summary class="cursor-pointer text-sm font-semibold">单链接快捷采集</summary>
-            <div class="mt-4 space-y-3">
-              <label class="block"><span class="text-xs font-semibold">来源平台</span><select v-model="props.form.platform" class="input mt-1" :disabled="props.loading"><option value="unknown">自动识别</option><option value="1688">1688</option><option value="amazon">Amazon</option></select></label>
-              <label class="block"><span class="text-xs font-semibold">单个商品链接</span><input v-model="props.form.productUrl" :disabled="props.loading" class="input mt-1" placeholder="https://detail.1688.com/offer/..." /></label>
-              <button class="btn btn-primary" :disabled="props.loading || !props.form.productUrl.trim() || (props.form.mode === 'browser' && !!desktopReason)" @click="collectProduct">采集单链接</button>
+            <p class="muted">使用已授权的 1688 采购账号读取商品详情。</p>
+            <button class="btn btn-primary" :disabled="props.loading || !props.form.productUrl.trim()">开始 API 采集</button>
+          </form>
+          <section v-show="props.form.mode === 'browser'" id="collect-panel-browser" role="tabpanel" aria-labelledby="collect-tab-browser" class="space-y-4">
+            <button type="button" class="btn btn-outline py-2 text-sm" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen">保存位置 {{ advancedOpen ? '−' : '+' }}</button>
+            <div v-if="advancedOpen" class="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+              <label class="block"><span class="text-xs font-semibold">保存位置</span><input v-model="props.form.outputDir" :disabled="props.loading" class="input mt-1" placeholder="data/images/source" /></label>
+              <button type="button" class="btn btn-outline" :disabled="props.loading" @click="emit('saveSettings')">保存设置</button>
             </div>
-          </details>
+            <CollectBatchManager :rows="props.batchRows" :loading="props.loading" @update="emit('updateBatchRows', $event)" @collect="collectBatch" />
+          </section>
         </section>
       </main>
 
@@ -177,7 +177,7 @@ function saveSettings() {
             下一步：{{ props.diagnostics.nextAction }}
           </div>
           <div v-if="props.diagnostics.antiBotWarning" class="rounded-2xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
-            检测到安全验证或反爬，请登录浏览器会话、更新 Cookie 后重试当前链接。
+            检测到安全验证或反爬，请在采集浏览器中完成验证后重试。
           </div>
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-outline py-1.5" :disabled="!props.diagnostics.screenshotPath" @click="openDebugFile(props.diagnostics.screenshotPath)">打开截图</button>

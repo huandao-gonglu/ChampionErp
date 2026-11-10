@@ -32,7 +32,7 @@ async function choose(mode: AiToolApprovalMode): Promise<void> {
   <div ref="root" class="relative" @keydown.esc.stop="open = false">
     <button
       type="button"
-      class="flex h-9 items-center gap-1.5 rounded-xl px-2 text-xs font-bold hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] focus-visible:ring-2 focus-visible:ring-primary-400 dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)]"
+      class="flex h-9 items-center gap-1.5 rounded-xl px-2 text-xs font-bold hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-primary-400 dark:hover:bg-dark-700"
       :class="store.mode === 'full' ? 'text-orange-600 dark:text-orange-400' : 'text-slate-600 dark:text-accent-200'"
       aria-label="操作确认设置"
       aria-haspopup="menu"
@@ -48,7 +48,7 @@ async function choose(mode: AiToolApprovalMode): Promise<void> {
     <div
       v-if="open"
       role="menu"
-      class="absolute bottom-full left-0 z-30 mb-2 w-64 max-w-[calc(100vw-4rem)] rounded-xl border border-slate-200 bg-white/[var(--ai-chat-surface-opacity,1)] p-1.5 shadow-xl dark:border-dark-600 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
+      class="absolute bottom-full left-0 z-30 mb-2 w-64 max-w-[calc(100vw-4rem)] rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl dark:border-dark-600 dark:bg-dark-800"
       data-testid="ai-approval-mode-menu"
     >
       <button
@@ -58,7 +58,7 @@ async function choose(mode: AiToolApprovalMode): Promise<void> {
         role="menuitemradio"
         :aria-checked="store.mode === option.mode"
         :disabled="store.busy || store.mode === null"
-        class="flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] disabled:opacity-50 dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)]"
+        class="flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-dark-700"
         :data-testid="`ai-approval-mode-${option.mode}`"
         @click="choose(option.mode)"
       >
@@ -70,7 +70,7 @@ async function choose(mode: AiToolApprovalMode): Promise<void> {
       </button>
       <p class="px-3 py-2 text-xs leading-5 text-slate-500 dark:text-accent-300">适用于所有对话；完全授权也会处理尚未决定的审批。已批准的操作不因切换而撤销。</p>
     </div>
-    <p v-if="store.error" role="alert" class="absolute bottom-full left-0 z-40 mb-2 w-64 rounded-lg bg-rose-50/[var(--ai-chat-surface-opacity,1)] p-3 text-xs text-rose-700 dark:bg-rose-950/[var(--ai-chat-surface-opacity,1)] dark:text-rose-200">
+    <p v-if="store.error" role="alert" class="absolute bottom-full left-0 z-40 mb-2 w-64 rounded-lg bg-rose-50 p-3 text-xs text-rose-700 dark:bg-rose-950 dark:text-rose-200">
       {{ store.error }} <button type="button" class="underline" :disabled="store.busy" @click="store.refresh">重试</button>
     </p>
   </div>

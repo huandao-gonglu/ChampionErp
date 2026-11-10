@@ -101,6 +101,17 @@ def handle_queue_action(handler: JsonRequestHandler) -> None:
     handler.send_json(result, 200)
 
 
+def handle_chat_manage(handler: JsonRequestHandler) -> None:
+    payload, _ = safe_json_body_with_raw(handler)
+    payload = validate_request_payload(payload, endpoint=handler.path)
+    try:
+        result = ai_chat_facade.manage_conversation(payload["id"], payload["action"], payload.get("title"))
+    except VercelUiProtocolError as exc:
+        handler.send_json({"ok": False, "error": str(exc), "error_code": exc.code}, exc.status_code)
+        return
+    handler.send_json(result, 200)
+
+
 def handle_chat_fork(handler: JsonRequestHandler) -> None:
     payload, _ = safe_json_body_with_raw(handler)
     payload = validate_request_payload(payload, endpoint=handler.path)
@@ -113,6 +124,7 @@ def handle_chat_fork(handler: JsonRequestHandler) -> None:
 
 
 POST_HANDLERS = {
+    "/api/v1/ai-chat/manage": handle_chat_manage,
     "/api/v1/ai-chat/queue": handle_queue_action,
     CHAT_RUNS_PATH: handle_chat_run,
     CHAT_CANCEL_PATH: handle_chat_cancel,

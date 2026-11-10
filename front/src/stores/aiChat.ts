@@ -76,10 +76,21 @@ export const useAiChatStore = defineStore('aiChat', () => {
     if (!chars.length) return opening ? '图片对话' : ''
     return chars.slice(0, 24).join('') + (chars.length > 24 ? '…' : '')
   })
+  const conversationListVersion = ref(0)
+  function applyConversationChange(id: string, action: string, title?: string) {
+    if (id === activeConversationId.value) {
+      if (action === 'rename' && title) savedTitle.value = { id, title }
+      if (action === 'delete') {
+        input.value = ''
+        startConversation()
+      }
+    }
+    conversationListVersion.value++
+  }
   const savedTitle = ref<{ id: string; title: string }>()
   const activeTitle = computed(() => (savedTitle.value?.id === activeConversationId.value && savedTitle.value?.title)
     || firstLine.value || '新对话')
-  watch([activeConversationId, firstLine, historyVersion], ([id, opening, version], _, cleanup) => {
+  watch([activeConversationId, firstLine, historyVersion, conversationListVersion], ([id, opening, version], _, cleanup) => {
     if (!id || (!opening && !version)) return
     let active = true
     let timer: ReturnType<typeof setTimeout>
@@ -90,7 +101,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
       try {
         const result = await fetchConversationTitle(key)
         if (!active) return
-        if (result.title && !(opening && result.title === '新对话')) savedTitle.value = { id: key, title: result.title }
+        if (result.title && (result.title_manual || !(opening && result.title === '新对话'))) savedTitle.value = { id: key, title: result.title }
         retry = result.title_pending || !result.title || (!version && result.title === '新对话')
       } catch { retry = true }
       if (active && retry && Date.now() < until) timer = setTimeout(() => void readTitle(key), 2500)
@@ -136,6 +147,11 @@ export const useAiChatStore = defineStore('aiChat', () => {
         openConversation(detail)
       } catch (cause) {
         if (requestGeneration !== generation) return
+        if ((cause as AiChatError)?.code === 'CHAT_DELETED') {
+          rememberConversation(null)
+          finishRestore()
+          return
+        }
         restoreError.value = `恢复上次对话失败：${cause instanceof Error ? cause.message : String(cause)}`
       } finally {
         if (requestGeneration === generation) restoring.value = false
@@ -207,8 +223,12 @@ export const useAiChatStore = defineStore('aiChat', () => {
       receivedNotice.value = ''
       if (!parallelActive.value) connectEvents(conversationId)
       if (!parallelActive.value && (pendingToolCalls.value.length || (runActive.value && typeof EventSource === 'undefined'))) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
-    } catch {
+    } catch (cause) {
       if (requestGeneration !== generation || activeConversationId.value !== conversationId) return
+      if ((cause as AiChatError)?.code === 'CHAT_DELETED') {
+        applyConversationChange(conversationId, 'delete')
+        return
+      }
       if (attempt < 3) retryTimer = setTimeout(() => void resyncFromServer(conversationId, attempt + 1), 500 * 2 ** attempt)
       else {
         if (stopping.value) {
@@ -531,7 +551,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     await submitApproval(reply.conversation_id, reply.messages, id, approved)
   }
   function clearError(): void { localError.value = undefined; chat.value?.clearError() }
-  return { images, resumeOpen, openResume, activeTitle, activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
+  return { images, resumeOpen, openResume, activeTitle, conversationListVersion, applyConversationChange, activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
     error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
     restoring, restoreError, restoreConversation, actOnQueue, queueAction, queueRows, parallelReplies, stopParallelReply, respondToParallelApproval,
     sendMessage, stopStreaming, respondToApproval, answerQuestion, clearError, openConversation, connectEvents, disconnectEvents,

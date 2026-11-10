@@ -3151,6 +3151,23 @@ describe('workflow store live API flow', () => {
     expect(store.pricingInput.targets[0].manualPrice).toBeNull()
   })
 
+  it('首次核价前只保存草稿资料时，保留套用默认模板的条件', async () => {
+    const store = useWorkflowStore()
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'unpriced-draft'
+    draft.site = 'global'
+    draft.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'CNY' }]
+    store.acceptLoadedDraft(draftMutation(draft))
+    store.currentDraft.title = '修改后的标题'
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async saved => draftMutation(JSON.parse(JSON.stringify(saved))))
+
+    expect(await store.saveCurrentDraft()).toBe(true)
+    expect(vi.mocked(workflowApi.saveDraft).mock.calls[0]![0].pricing).toEqual(draft.pricing)
+    store.pricingInput.packagingCostCny = 5
+    expect(await store.saveCurrentDraft()).toBe(true)
+    expect(vi.mocked(workflowApi.saveDraft).mock.calls[1]![0].pricing.common).toMatchObject({ packaging_cost_cny: 5 })
+  })
+
   it('选择模板后普通保存草稿，重新打开恢复模板名称和当前费用，无需先应用售价', async () => {
     const store = useWorkflowStore()
     const draft = createEmptyDraftDetail('yandex')
@@ -3448,7 +3465,7 @@ describe('URL 采集列表执行与验证续采', () => {
     expect(store.collectDiagnostics).toMatchObject({ status: 'failed', progress: 100 })
     expect(store.collectDiagnostics.message).toContain('2 条完成，1 条失败')
     vi.mocked(catalogApi.collectBatch).mockResolvedValueOnce(result(1, true))
-    await store.collectBatch({}, [initial[1].id])
+    await store.collectBatch([initial[1].id])
     expect(vi.mocked(catalogApi.collectBatch).mock.calls[3][0].productUrls).toBe(initial[1].url)
     expect(store.collectBatchRows.map((row) => row.status)).toEqual(['success', 'success', 'success'])
   })

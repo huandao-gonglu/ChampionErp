@@ -128,12 +128,13 @@ def test_new_claimed_drafts_select_active_skus_and_preserve_saved_deselection(tm
         product["drafts"] = {}
         product = app.products.save_product(product)
         initialized = apply_claimed_platform_drafts(product, ["ozon"])
-        assert [row["selected"] for row in initialized["drafts"]["ozon"]["sku_items"]] == [True, False]
+        assert [row["selected"] for row in initialized["drafts"]["ozon"]["sku_items"]] == [True]
 
         first = claim_products_to_platforms([product["product_id"]], ["ozon"])
         second = claim_products_to_platforms([product["product_id"]], ["ozon"])
         drafts = [app.db.load_draft_model(result["items"][0]["draft_ids"][0]) for result in (first, second)]
-        assert all([row["selected"] for row in draft["sku_items"]] == [True, False] for draft in drafts)
+        assert all([row["selected"] for row in draft["sku_items"]] == [True] for draft in drafts)
+        assert all([row["sku_id"] for row in draft["sku_items"]] == ["fact-0"] for draft in drafts)
         assert drafts[0]["sku_items"][0]["sku"] != drafts[1]["sku_items"][0]["sku"]
         drafts[0]["sku_items"][0]["selected"] = False
         saved, error, status = app.products.save_draft_detail(drafts[0])

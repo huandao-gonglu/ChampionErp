@@ -129,7 +129,7 @@ onBeforeUnmount(() => {
         role="region"
         aria-label="AI 助手"
         data-testid="ai-work-floating-panel"
-        class="ai-floating-panel flex h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/[0.7843] text-slate-900 dark:border-dark-700 dark:bg-dark-900/[0.7843] dark:text-white"
+        class="flex h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 dark:border-dark-700 dark:bg-dark-900 dark:text-white"
       >
         <header class="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-dark-700">
           <div class="min-w-0">
@@ -149,9 +149,9 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
+              class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100 dark:hover:bg-dark-800"
               :class="isPinned
-                ? 'bg-primary-50/[var(--ai-chat-surface-opacity,1)] text-primary-600 dark:bg-primary-500/[min(0.15,var(--ai-chat-surface-opacity,1))] dark:text-primary-300'
+                ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/15 dark:text-primary-300'
                 : 'text-slate-400 hover:text-slate-700 dark:hover:text-white'"
               :aria-label="isPinned ? '取消钉住浮动对话' : '钉住浮动对话'"
               :aria-pressed="isPinned"
@@ -163,7 +163,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] hover:text-slate-700 dark:hover:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:hover:text-white"
+              class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-dark-800 dark:hover:text-white"
               aria-label="收起浮动对话"
               data-testid="ai-work-floating-close"
               @click="chatStore.closeFloating()"
@@ -201,8 +201,8 @@ onBeforeUnmount(() => {
           role="status"
           class="border-b border-slate-200 px-4 py-2 text-xs font-bold dark:border-dark-700"
           :class="terminalNotice.kind === 'failure'
-            ? 'bg-rose-50/[var(--ai-chat-surface-opacity,1)] text-rose-700 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200'
-            : 'bg-emerald-50/[var(--ai-chat-surface-opacity,1)] text-emerald-700 dark:bg-emerald-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-emerald-200'"
+            ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200'
+            : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200'"
           data-testid="ai-work-terminal-notice"
         >
           {{ terminalNotice.text }}
@@ -257,37 +257,3 @@ onBeforeUnmount(() => {
     </RouterLink>
   </div>
 </template>
-
-<style scoped>
-.ai-floating-panel {
-  /* 外框 Alpha 为 200/255，内部底色更淡，避免嵌套叠加后遮住页面。 */
-  --ai-chat-surface-opacity: 0.12;
-  --ai-chat-user-color: theme('colors.slate.900');
-}
-
-.dark .ai-floating-panel {
-  --ai-chat-user-color: white;
-}
-
-.ai-floating-panel :deep(.ai-chat-composer),
-.ai-floating-panel :deep(.ai-chat-composer-surface) {
-  background-color: transparent;
-}
-
-.ai-floating-panel :deep(.btn) {
-  background-image: none;
-  background-color: transparent;
-  box-shadow: none;
-}
-
-.ai-floating-panel :deep(.btn-primary) {
-  background-color: rgb(var(--color-primary-600) / 0.12);
-  color: var(--ai-chat-user-color);
-}
-
-.ai-floating-panel :deep(.shadow-sm),
-.ai-floating-panel :deep(.shadow-lg),
-.ai-floating-panel :deep(.shadow-xl) {
-  box-shadow: none;
-}
-</style>

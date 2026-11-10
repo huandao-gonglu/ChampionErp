@@ -292,7 +292,7 @@ export type WorkflowStatus =
   | 'published'
   | 'failed'
 
-export type CollectMode = 'browser' | 'http'
+export type CollectMode = 'browser' | 'api'
 
 export type UnknownRecord = Record<string, unknown>
 
@@ -728,10 +728,6 @@ export interface CollectForm {
   platform: string
   mode: CollectMode
   outputDir: string
-}
-
-export interface TransientCollectCredentials {
-  alibabaCookie?: string
 }
 
 export interface CollectDiagnostics {

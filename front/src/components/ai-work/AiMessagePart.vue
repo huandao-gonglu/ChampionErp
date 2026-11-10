@@ -36,19 +36,19 @@ const toolError = computed(() => tool.value.errorText || businessResult.value?.e
 const toolStatusClass = computed(() => {
   switch (status.value) {
     case 'failed':
-      return 'bg-rose-50/[var(--ai-chat-surface-opacity,1)] text-rose-700 ring-rose-200 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200 dark:ring-rose-500/30'
+      return 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30'
     case 'unknown':
     case 'partial':
     case 'input':
     case 'approval':
     case 'denied':
-      return 'bg-amber-50/[var(--ai-chat-surface-opacity,1)] text-amber-800 ring-amber-200 dark:bg-amber-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-amber-100 dark:ring-amber-500/30'
+      return 'bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-100 dark:ring-amber-500/30'
     case 'completed':
-      return 'bg-emerald-50/[var(--ai-chat-surface-opacity,1)] text-emerald-700 ring-emerald-200 dark:bg-emerald-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-emerald-200 dark:ring-emerald-500/30'
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-500/30'
     case 'script_error':
-      return 'bg-slate-100/[var(--ai-chat-surface-opacity,1)] text-slate-600 ring-slate-200 dark:bg-dark-700/[var(--ai-chat-surface-opacity,1)] dark:text-accent-200 dark:ring-dark-600'
+      return 'bg-slate-100 text-slate-600 ring-slate-200 dark:bg-dark-700 dark:text-accent-200 dark:ring-dark-600'
     default:
-      return 'bg-sky-50/[var(--ai-chat-surface-opacity,1)] text-sky-700 ring-sky-200 dark:bg-sky-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-sky-200 dark:ring-sky-500/30'
+      return 'bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-200 dark:ring-sky-500/30'
   }
 })
 
@@ -198,7 +198,7 @@ const statusLabels: Record<string, string> = {
   <!-- 来源链接 / 来源文档 -->
   <div
     v-else-if="partType === 'source-url' || partType === 'source-document'"
-    class="rounded-lg border border-slate-200 bg-slate-50/[var(--ai-chat-surface-opacity,1)] px-3 py-2 text-xs dark:border-dark-700 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
+    class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-dark-700 dark:bg-dark-800"
     data-testid="ai-part-source"
   >
     <a
@@ -214,7 +214,7 @@ const statusLabels: Record<string, string> = {
   <!-- 文件 -->
   <div
     v-else-if="partType === 'file'"
-    class="rounded-lg border border-slate-200 bg-slate-50/[var(--ai-chat-surface-opacity,1)] px-3 py-2 text-xs dark:border-dark-700 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)]"
+    class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-dark-700 dark:bg-dark-800"
     data-testid="ai-part-file"
   >
     <img

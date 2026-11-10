@@ -1,6 +1,7 @@
 """主 Agent 的领域工具、原生会话与后台 Job 组合根。"""
 
 from erp_web.context import get_context
+from erp_web.schemas.chat_conversations import is_global_id, reply_prefix
 from erp_web.services.chat_titles import chat_titles, schedule_chat_title
 from erp_web.facades.agent_capability_facade import (
     build_global_chat_toolset,
@@ -31,9 +32,41 @@ def build_global_chat_service(context=None):
 
 def named_conversations(limit, offset, chats_only):
     context = get_context()
-    rows = context.db.list_pydantic_message_histories(limit=limit, chats_only=chats_only, offset=offset)
+    pins = context.conversation_titles.pinned_ids()
+    rows = context.db.list_pydantic_message_histories(limit=limit, chats_only=chats_only, offset=offset, pinned_ids=pins)
     titles = chat_titles(context, [row["conversation_id"] for row in rows])
-    return [{**row, **titles.get(row["conversation_id"], {})} for row in rows]
+    return [{**row, **titles.get(row["conversation_id"], {}), "pinned": row["conversation_id"] in pins} for row in rows]
+
+
+def manage_conversation(key, action, title=None):
+    if not is_global_id(key) or action not in ("pin", "unpin", "rename", "delete"):
+        raise VercelUiProtocolError(400, "CHAT_ACTION_INVALID", "对话或操作无效。")
+    if action == "rename":
+        title = (title or "").strip()
+        if not 1 <= len(title) <= 80:
+            raise VercelUiProtocolError(400, "CHAT_TITLE_INVALID", "请输入 1 至 80 个字的对话名称。")
+    context = get_context()
+    titles = context.conversation_titles
+    with context.chat_runs.input_guard():
+        if not context.pydantic_messages.get_version(key):
+            if action == "delete" and titles.is_deleted(key):
+                return {"ok": True}
+            raise VercelUiProtocolError(404, "CHAT_NOT_FOUND", "对话已删除或不存在。")
+        if action == "delete":
+            if context.wechat_store.state()["conversation_id"] == key:
+                raise VercelUiProtocolError(409, "CHAT_CHANNEL_ACTIVE", "请先在微信切换对话，再删除这段历史。")
+            scopes = [key, *context.agent_calls.parallel_runs(key)]
+            if any(context.chat_runs.is_active(scope) for scope in scopes) or not context.db.delete_idle_chat(
+                key, reply_prefix(key) + "*", titles.path,
+            ):
+                raise VercelUiProtocolError(409, "CHAT_STILL_ACTIVE", "对话中还有任务或待处理消息，请先完成或停止后再删除。")
+            for scope in scopes:
+                context.agent_calls.notify_changed(scope)
+        elif action == "rename":
+            titles.rename(key, title)
+        else:
+            titles.set_pin(key, action == "pin")
+    return {"ok": True}
 
 
 def conversation_title(key):
@@ -47,6 +80,7 @@ def build_conversation_service(context=None):
     return ChatConversationService(
         chat_service=build_global_chat_service(active), claim_store=active.chat_turn_claims,
         run_registry=active.chat_runs, call_store=active.agent_calls,
+        deleted_reader=active.conversation_titles.is_deleted,
         empty_owner_reader=active.wechat_store.owns_conversation,
         empty_owner_writer=active.wechat_store.reserve_conversation,
     )
@@ -71,6 +105,7 @@ def build_ui_service(context=None):
         run_registry=active.chat_runs,
         call_store=active.agent_calls,
         approval_session=active.approval_session,
+        deleted_reader=active.conversation_titles.is_deleted,
         empty_owner_reader=active.wechat_store.owns_conversation,
     )
 

@@ -145,6 +145,6 @@ def test_1688_detail_failure_does_not_report_complete_collection(monkeypatch) ->
 
 
 def test_1688_detail_url_rejects_non_official_host_before_request(monkeypatch) -> None:
-    monkeypatch.setattr(html_extract_service, "fetch_url_html", lambda *_args: pytest.fail("不得请求非官方详情地址"))
+    monkeypatch.setattr(html_extract_service, "managed_urlopen", lambda *_args, **_kwargs: pytest.fail("不得请求非官方详情地址"))
     with pytest.raises(ValueError, match="官方域名"):
         html_extract_service.fetch_1688_detail_html("https://localhost/private")

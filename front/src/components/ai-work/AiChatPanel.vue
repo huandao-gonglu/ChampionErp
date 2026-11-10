@@ -173,10 +173,10 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
             <!-- 空状态 -->
             <div
               v-if="!messages.length"
-              class="rounded-2xl border border-dashed border-primary-300 bg-primary-50/[min(0.6,var(--ai-chat-surface-opacity,1))] px-6 py-10 text-center dark:border-primary-500/40 dark:bg-primary-500/[min(0.1,var(--ai-chat-surface-opacity,1))]"
+              class="rounded-2xl border border-dashed border-primary-300 bg-primary-50/60 px-6 py-10 text-center dark:border-primary-500/40 dark:bg-primary-500/10"
               data-testid="ai-chat-empty"
             >
-              <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-500/[var(--ai-chat-surface-opacity,1)] text-xl text-[color:var(--ai-chat-user-color,white)] shadow-lg shadow-primary-500/20">
+              <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-500 text-xl text-white shadow-lg shadow-primary-500/20">
                 ✦
               </div>
               <h3 class="mt-4 text-base font-black">一切尽在掌握中</h3>
@@ -209,7 +209,7 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
             <p
               v-if="error"
               role="alert"
-              class="rounded-xl bg-rose-50/[var(--ai-chat-surface-opacity,1)] p-4 text-sm text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/[min(0.1,var(--ai-chat-surface-opacity,1))] dark:text-rose-200 dark:ring-rose-500/30"
+              class="rounded-xl bg-rose-50 p-4 text-sm text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30"
               data-testid="ai-chat-error"
             >
               {{ error }}
@@ -219,7 +219,7 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
         <button
           v-if="showJumpToLatest"
           type="button"
-          class="absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-slate-300 bg-white/[var(--ai-chat-surface-opacity,1)] text-slate-700 shadow-md transition-colors hover:bg-slate-100/[var(--ai-chat-surface-opacity,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:border-dark-600 dark:bg-dark-800/[var(--ai-chat-surface-opacity,1)] dark:text-accent-100 dark:hover:bg-dark-700/[var(--ai-chat-surface-opacity,1)]"
+          class="absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-700 shadow-md transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:border-dark-600 dark:bg-dark-800 dark:text-accent-100 dark:hover:bg-dark-700"
           aria-label="跳转到最新消息"
           title="跳转到最新消息"
           data-testid="ai-chat-jump-to-latest"

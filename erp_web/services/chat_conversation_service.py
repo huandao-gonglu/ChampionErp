@@ -95,18 +95,20 @@ class ChatConversationRun:
 
 class ChatConversationService:
     def __init__(self, *, chat_service, claim_store, run_registry, call_store,
-                 empty_owner_reader=None, empty_owner_writer=None):
+                 empty_owner_reader=None, empty_owner_writer=None, deleted_reader=None):
         self.chat_service = chat_service
         self.claim_store = claim_store
         self.run_registry = run_registry
         self.call_store = call_store
         self.empty_owner_reader = empty_owner_reader
         self.empty_owner_writer = empty_owner_writer
+        self.deleted_reader = deleted_reader
 
     def create_conversation(self, conversation_id: str | None = None) -> str:
         """预留有可信归属的空会话，不伪造用户消息、模型回复或运行记录。"""
         conversation_id = self._validate_conversation_id(conversation_id or "conversation_global_chat_" + uuid4().hex)
         with self.run_registry.input_guard():
+            self._require_live_id(conversation_id)
             if self.chat_service.message_store.get(conversation_id) is not None:
                 self._verify_history_ownership(conversation_id)
                 return conversation_id
@@ -205,9 +207,14 @@ class ChatConversationService:
             )
         return conversation_id
 
+    def _require_live_id(self, conversation_id):
+        if self.deleted_reader and self.deleted_reader(reply_root(conversation_id) or conversation_id):
+            raise ChatConversationError(410, "CHAT_DELETED", "这段对话已删除，请切换对话。")
+
     def _verify_history_ownership(self, conversation_id: str) -> None:
         """已有历史必须归属 global.chat profile；否则拒绝继续运行。"""
 
+        self._require_live_id(conversation_id)
         try:
             history = self.chat_service.message_store.get(conversation_id)
         except PydanticMessageStoreError as exc:

@@ -18,8 +18,14 @@ export async function fetchPydanticConversations(
   return response.data
 }
 
+export type ChatManagementAction = 'pin' | 'unpin' | 'rename' | 'delete'
+
+export async function manageConversation(id: string, action: ChatManagementAction, title?: string) {
+  await apiClient.post('/api/v1/ai-chat/manage', { id, action, title })
+}
+
 export async function fetchConversationTitle(id: string) {
-  const response = await apiClient.get<{ title: string; title_pending: boolean }>(
+  const response = await apiClient.get<{ title: string; title_pending: boolean; title_manual?: boolean }>(
     `${CONVERSATIONS_PATH}/${encodeURIComponent(id)}/title`,
   )
   return response.data

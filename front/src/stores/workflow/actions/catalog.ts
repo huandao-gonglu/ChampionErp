@@ -21,7 +21,6 @@ import {
 } from '@/api/workflow/catalog'
 import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow/catalog'
 import type { DraftMutationResponse } from '@/api/workflow/normalizers'
-import { draftWithPricingInput } from '@/api/workflow/publishing'
 import { assignUpc as assignUpcApi } from '@/api/workflow/settings'
 import { listingLanguageValue } from '@/constants/locales'
 import { withAiForeground } from '@/services/withAiForeground'
@@ -56,7 +55,7 @@ type WorkflowCatalogActionsPort = Pick<
   | 'imagePrompt'
   | 'fillFormFromState'
   | 'pricingResult'
-  | 'pricingInput'
+  | 'draftForSave'
   | 'categoryResults'
   | 'categoryRecommendations'
   | 'categoryAutoMatchProductName'
@@ -93,7 +92,7 @@ type DraftTargetSelectionSource = Pick<DraftDetail, 'draftId' | 'language' | 'ta
 export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort) {
   const {
     product, productsIndex, draftsIndex, selectedProductIds, currentDraft,
-    currentDraftProductContext, imagePrompt, fillFormFromState, pricingResult, pricingInput,
+    currentDraftProductContext, imagePrompt, fillFormFromState, pricingResult, draftForSave,
     categoryResults, categoryRecommendations, categoryAutoMatchProductName, categoryPrecheck, precheck, precheckResults,
     payloadPreview, copyGenerating, activeMarketplace, appConfig, storeConfig, loading,
     addLog, setError, currentStage, mergeTargetDetails, persistActiveTargetListingFields,
@@ -641,7 +640,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     setError('')
     try {
       persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
-      const result = await saveDraftApi(draftWithPricingInput(currentDraft.value, pricingInput.value))
+      const result = await saveDraftApi(draftForSave())
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       activeMarketplace.value = result.draft.platform

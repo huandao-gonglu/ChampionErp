@@ -3,8 +3,7 @@ from __future__ import annotations
 """URL 采集与目标平台认领 Capability。
 
 领域逻辑由 ``source_collect_workflows`` 与 ``collect_helpers`` 拥有。
-Capability 提供类型化编排，Cookie 与 1688 API
-凭据一律由 Scope provider 从已保存配置解析，模型不得提供。
+浏览器使用桌面会话，1688 API 使用当前账号授权。
 """
 
 from collections.abc import Callable
@@ -184,7 +183,7 @@ def collect_batch(
 
 @ai_tool(
     name=COLLECT_1688_TOOL,
-    description="采集 1688 商品，或清洗粘贴的 1688 页面文本并保存到商品。",
+    description="通过桌面浏览器采集指定链接的 1688 商品。",
     permission="collect.write",
     side_effect="write",
     approval_required=False,

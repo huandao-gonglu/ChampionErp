@@ -50,7 +50,7 @@ UPLOADS = FieldRule("uploads")
 BOOLEAN = FieldRule("boolean")
 LIMIT = FieldRule("integer", minimum=1, maximum=500)
 PORT = FieldRule("integer", minimum=1, maximum=65535)
-COLLECT_MODE = FieldRule("enum", choices=frozenset({"browser", "http", "api", "playwright", "browser-session", "browser_session", "fetch", "request", "requests"}))
+COLLECT_MODE = FieldRule("enum", choices=frozenset({"browser", "api", "playwright", "browser-session", "browser_session"}))
 IMAGE_ACTION = FieldRule(
     "enum",
     choices=frozenset({"upload", "sort", "delete", "replace", "set_main", "filter"}),
@@ -395,6 +395,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     ),
     "/api/v1/ai-chat/cancel": _contract(
         fields={"id": STRING, "message_id": STRING}, required=("id", "message_id"),
+    ),
+    "/api/v1/ai-chat/manage": _contract(
+        fields={"id": STRING, "action": STRING, "title": STRING}, required=("id", "action"),
     ),
     "/api/v1/ai-chat/queue": _contract(
         fields={"id": STRING, "message_id": STRING, "action": STRING}, required=("id", "message_id", "action"),
