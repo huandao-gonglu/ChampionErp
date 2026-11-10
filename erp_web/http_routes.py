@@ -11,6 +11,7 @@ from .services.desktop_connection_service import desktop_request
 from .services.account_request import CALLBACK_POST_PATHS
 from .http_route_units import (
     account_routes,
+    business_query_routes,
     task_queue_routes,
     wechat_routes,
     ai_chat_routes,
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 FRONTEND_PAGE_ROUTES = get_routes.FRONTEND_PAGE_ROUTES
 GET_ROUTE_UNITS = (
     account_routes,
+    business_query_routes,
     alibaba_authorization_routes,
     task_queue_routes,
     wechat_routes,

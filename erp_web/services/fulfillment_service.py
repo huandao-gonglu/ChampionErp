@@ -8,7 +8,7 @@ import time
 from .desktop_connection_service import server_worker_context
 
 from erp_web.release_guard import release_guard
-from erp_web.schemas.fulfillment import FulfillmentCommand, FulfillmentError, FulfillmentRule, FulfillmentView, LabelInput
+from erp_web.schemas.fulfillment import FulfillmentCommand, FulfillmentError, FulfillmentRule, FulfillmentRuleView, FulfillmentView, LabelInput
 from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
 from erp_web.services.fulfillment_packages import parcel_payloads, domestic_waybill_key
 from erp_web.services.fulfillment_routing import consolidation_reason, handover_target, is_yandex_section, validate_services
@@ -162,6 +162,8 @@ class FulfillmentService:
     def settings(self):
         credentials = self.client.credentials()
         accounts = self.accounts_provider()
+        identity = self.client.identity()
+        catalog = self.store.setting("catalog", {})
         choices = {}
         for order in self.store.snapshots(accounts):
             d = order.delivery
@@ -170,8 +172,9 @@ class FulfillmentService:
             key = (order.platform, order.account_id, order_model(order), d.warehouse_id, d.method_id, d.country)
             choices[key] = {"platform": order.platform, "account_id": order.account_id, "fulfillment": order_model(order), "platform_warehouse_id": d.warehouse_id, "platform_warehouse_name": d.warehouse_name, "delivery_method_id": d.method_id, "delivery_method_name": d.method_name or d.carrier or d.method_id, "country": d.country}
         return {"ok": True, "authorized": bool(self.client.identity()), "secret_configured": bool(credentials.get("client_secret")), "user_name": credentials.get("user_name", ""), "expires_at": credentials.get("expires_at", 0),
-                "catalog": self.store.setting("catalog", {}) if self.store.setting("catalog", {}).get("identity") == self.client.identity() else {},
-                "rules": [r for r in self.store.rules() if accounts.get(r["platform"]) == r["account_id"] and r.get("bus_identity") == self.client.identity()], "delivery_choices": list(choices.values())}
+                "catalog": {key: catalog[key] for key in ('sections', 'checked_at') if key in catalog} if catalog.get("identity") == identity else {},
+                "rules": [FulfillmentRuleView.model_validate(r).model_dump(mode='json') for r in self.store.rules()
+                          if accounts.get(r["platform"]) == r["account_id"] and r.get("bus_identity") == identity], "delivery_choices": list(choices.values())}
 
     def save_rule(self, body):
         rule = FulfillmentRule.model_validate(body).model_dump()

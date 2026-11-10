@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from erp_web.http_route_units import (
     account_routes,
+    business_query_routes,
     task_queue_routes,
     wechat_routes,
     alibaba_authorization_routes,
@@ -78,6 +79,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
     endpoints: set[tuple[str, str]] = set()
     endpoints.update(("GET", path) for path in account_routes.GET_API_ROUTES)
+    endpoints.update(("GET", path) for path in business_query_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in task_queue_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in wechat_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in alibaba_authorization_routes.GET_HANDLED_PATHS)
@@ -97,9 +99,11 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="GET", path="/api/business-data/catalog", business_domain="业务数据", disposition="capability", capability_names=("business_data_catalog",)),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="业务数据", disposition="capability", capability_names=("business_data_read",)) for method, path in (
-        ("POST", "/api/business-data/read"), ("GET", "/api/shipping/tariffs"),
-        ("GET", "/api/shipping/tariffs/rules"), ("GET", "/api/yandex/warehouses"), ("GET", "/api/pricing/templates"),
+        ("POST", "/api/business-data/read"),
     )),
+    *(AiCapabilityCoverageEntry(method="GET", path=path, business_domain="业务查询", disposition="capability",
+                                capability_names=("business_data_read",))
+      for path in sorted(business_query_routes.GET_API_ROUTES)),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="共享设置与运费表", disposition="internal_only",
         reason="管理员维护共享企业凭据、汇率 API 与默认运费，用户显式导入个人表或确认覆盖；模型只消费生效配置。")
       for method, path in (
@@ -201,13 +205,11 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/fulfillment/cancel", business_domain="跨境履约", disposition="capability", capability_names=("order_fulfillment_update",)),
     AiCapabilityCoverageEntry(method="GET", path="/api/crossborderbus/services", business_domain="跨境履约", disposition="capability", capability_names=("order_fulfillment_services",)),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="物流设置", disposition="internal_only", reason="用户维护合作仓收货地址并确认承接规则；承接能力不能由模型猜测或自动确认。") for method, path in (
-        ("GET", "/api/logistics/settings"),
         ("POST", "/api/logistics/refresh"),
         ("POST", "/api/logistics/address"),
         ("POST", "/api/logistics/parse-address"),
     )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="跨境履约", disposition="internal_only", reason="物流授权、全局承接规则维护及本地文件上传保留可信界面入口；单笔订单处理已通过领域工具开放。") for method, path in (
-        ("GET", "/api/crossborderbus/settings"),
         ("POST", "/api/crossborderbus/authorize"),
         ("POST", "/api/crossborderbus/catalog"),
         ("POST", "/api/crossborderbus/save-rule"),

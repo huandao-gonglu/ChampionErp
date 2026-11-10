@@ -5,10 +5,9 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from erp_web.business_data_composition import build_business_data_catalog
+from erp_web.business_query_composition import build_business_data_catalog
 from erp_web.context import get_context
-from erp_web.facades.business_data_facade import business_data_payload
-from erp_web.facades.managed_settings_facade import tariff_rules_payload
+from erp_web.facades.business_data_facade import business_data_payload, business_query_payload
 from erp_web.product_model import default_product_model
 from erp_web.runtime_units.business_data_capabilities import BusinessDataScope, business_data_read
 from erp_web.schemas.ai_trace import AiExecutionContext
@@ -76,7 +75,7 @@ def test_page_and_ai_share_tariff_source_without_exposing_secrets(monkeypatch):
     app = get_context()
     data = {'ok': True, 'version': 'v1', 'rules': [{'name': '物流', 'max_edge_cm': '60'}]}
     monkeypatch.setattr(type(app), 'tariffs', property(lambda _: SimpleNamespace(rules=lambda _: deepcopy(data))))
-    expected, status = tariff_rules_payload({'platform': ['yandex']})
+    expected, status = business_query_payload('shipping.tariff_rules', {'platform': ['yandex']})
     assert status == 200
     result = business_data_read(DataReadRequest(resource='shipping.tariff_rules', params={'platform': 'yandex'}, path='rules'),
                                 BusinessDataScope(lambda: build_business_data_catalog(app)), execution())

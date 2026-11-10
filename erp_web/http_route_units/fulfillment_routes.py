@@ -30,8 +30,7 @@ POST_HANDLERS = {
     **{f"/api/orders/fulfillment/{action}": _command(action) for action in ("fetch-label", "label", "parcels", "plan", "pause", "resume", "submit", "sync", "associate", "retry", "cancel")},
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
-GET_HANDLERS = {"/api/orders/receiving-warehouse": facade.receiving_warehouse, "/api/crossborderbus/settings": facade.settings, "/api/crossborderbus/services": facade.services, "/api/orders/fulfillment": facade.detail}
-GET_HANDLERS['/api/logistics/settings'] = facade.logistics_settings
+GET_HANDLERS = {"/api/orders/receiving-warehouse": facade.receiving_warehouse, "/api/crossborderbus/services": facade.services, "/api/orders/fulfillment": facade.detail}
 GET_API_ROUTES = frozenset(GET_HANDLERS)
 
 
@@ -49,9 +48,7 @@ def handle_get(handler, parsed):
         return False
     query = {k: values[0] for k, values in parse_qs(parsed.query, keep_blank_values=True).items()}
     try:
-        if parsed.path in {"/api/crossborderbus/settings", '/api/logistics/settings'}:
-            result = action()
-        elif parsed.path == '/api/orders/receiving-warehouse':
+        if parsed.path == '/api/orders/receiving-warehouse':
             if {'carrier', 'shipping_service'} & query.keys():
                 raise ValueError('平台物流商由订单决定，不能在采购选仓时修改')
             result = action(order_id=query.get('order_id', ''))

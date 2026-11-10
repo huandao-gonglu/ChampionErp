@@ -1312,9 +1312,16 @@ def test_shared_business_queries_are_domain_independent_and_not_ai_specific():
     engine = ROOT / 'erp_web/services/business_data.py'
     targets = {target for _, target in imported_targets([engine])}
     assert not any('runtime_units' in target or 'pydantic_ai' in target or 'facades' in target for target in targets)
-    for relative in ('erp_web/facades/managed_settings_facade.py', 'erp_web/facades/pricing_workspace_facade.py',
-                     'erp_web/facades/business_data_facade.py', 'erp_web/facades/agent_capability_facade.py'):
+    for relative in ('erp_web/facades/business_data_facade.py', 'erp_web/facades/agent_capability_facade.py'):
         assert 'build_business_data_catalog' in (ROOT / relative).read_text()
+    from erp_web.business_query_composition import BUSINESS_QUERIES
+    from erp_web.http_route_units import business_query_routes
+    from erp_web.http_routes import GET_ROUTE_UNITS
+    assert business_query_routes in GET_ROUTE_UNITS
+    assert set(BUSINESS_QUERIES.http_queries) == set(business_query_routes.GET_HANDLERS)
+    for route_unit in GET_ROUTE_UNITS:
+        if route_unit is not business_query_routes:
+            assert not set(BUSINESS_QUERIES.http_queries).intersection(getattr(route_unit, 'GET_API_ROUTES', ()))
     from erp_web.ai_capability_composition import GLOBAL_CHAT_CAPABILITIES
     assert {'business_data_catalog', 'business_data_read'} <= GLOBAL_CHAT_CAPABILITIES
     assert not any(name.startswith('shipping_tariff_') for name in GLOBAL_CHAT_CAPABILITIES)

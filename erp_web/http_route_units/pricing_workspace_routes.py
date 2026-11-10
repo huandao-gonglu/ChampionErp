@@ -66,9 +66,6 @@ POST_HANDLERS = {"/api/business-data/read": handle_business_data,
                  "/api/pricing/templates/delete": handle_delete}
 GET_HANDLERS = {"/api/business-data/catalog": lambda handler, parsed: handler.send_json(*business_data_facade.business_data_payload(query=parse_qs(parsed.query, keep_blank_values=True))),
                 "/api/admin/settings": lambda handler, parsed: handler.send_json(*managed_settings_facade.managed_settings_payload()),
-                "/api/shipping/tariffs/rules": lambda handler, parsed: handler.send_json(*managed_settings_facade.tariff_rules_payload(parse_qs(parsed.query, keep_blank_values=True))),
-                "/api/shipping/tariffs": lambda handler, parsed: handler.send_json(*managed_settings_facade.tariff_settings_payload()),
-                "/api/yandex/warehouses": lambda handler, parsed: handler.send_json(*facade.yandex_warehouses_payload()), "/api/pricing/templates": lambda handler, parsed: handler.send_json(*facade.pricing_templates_payload()),
                 "/api/pricing/exchange-rates": handle_rates}
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_API_ROUTES = frozenset(GET_HANDLERS)

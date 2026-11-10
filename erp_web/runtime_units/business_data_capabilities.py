@@ -15,7 +15,7 @@ class BusinessDataScope:
     catalog: Callable[[], BusinessDataCatalog]
 
 
-@ai_tool(name='business_data_catalog', permission='business.read', description='发现普通业务数据目录：运费规则、尺寸重量限制、仓库配置、核价模板、草稿和 SKU 明细。先列目录，指定 resource 读取参数 Schema；无需为每种分析寻找专用工具。')
+@ai_tool(name='business_data_catalog', permission='business.read', description='发现普通业务查询目录，包括运费限制、仓库与报单货代配置、核价模板、草稿和 SKU 明细。目录由普通查询自动生成，先列目录，指定 resource 读取参数 Schema；无需为每种分析寻找专用工具。')
 def business_data_catalog(request: DataCatalogRequest, scope: Annotated[BusinessDataScope, Injected()],
                           execution: Annotated[AiExecutionContext, Injected()]) -> DataCatalogResult:
     try:

@@ -72,6 +72,35 @@ def test_public_session_and_all_business_entries_require_login(accounts_http):
     assert runtime._contexts == {}
 
 
+def test_shared_forwarder_queries_use_the_authenticated_space_for_page_and_ai_reads(accounts_http, monkeypatch):
+    from erp_web.schemas.logistics import LogisticsAddressRequest
+    from tests.receiving_warehouse_support import ADDRESS
+    url, runtime, login = accounts_http
+    user = register(url)
+    admin, ordinary = login(), login('user@example.com')
+    for owner, label in ((runtime.store.admin(), '管理员收货仓'), (user, '个人收货仓')):
+        owner = next(row for row in runtime.store.users() if row['id'] == owner['id'])
+        context = runtime.context_for(owner)
+        context.config.save_integration_credentials('crossborderbus', {'client_secret': '测试密钥', 'app_uid': '同一货代账号'})
+        service = context.fulfillment
+        identity = service.client.identity()
+        service.store.set_setting('catalog', {'identity': identity, 'sections': []})
+        service.receiving.logistics.store.save(LogisticsAddressRequest(revision=0, warehouse_id=10, name=label,
+            address=ADDRESS, is_default=True, rules=[{'carrier': 'UNI'}]), identity, label, '', service.client.identity)
+        monkeypatch.setattr(service.client, 'catalog', lambda: pytest.fail('读取配置不得刷新远端'))
+    for client, label in ((admin, '管理员收货仓'), (ordinary, '个人收货仓')):
+        page = client.get(url + '/api/logistics/settings', timeout=5)
+        assert page.status_code == 200
+        result = client.post(url + '/api/business-data/read', json={'resource': 'logistics.settings', 'path': '$'}, timeout=5)
+        assert result.status_code == 200 and result.json()['data'] == page.json()
+        assert [row['name'] for row in page.json()['addresses']] == [label]
+        directory = client.get(url + '/api/business-data/catalog?keyword=报单', timeout=5).json()
+        assert {'logistics.settings', 'fulfillment.settings'} <= {row['name'] for row in directory['resources']}
+        assert client.get(url + '/api/logistics/settings?owner=other', timeout=5).status_code == 400
+    assert requests.get(url + '/api/logistics/settings', timeout=5).status_code == 401
+    assert requests.get(url + '/api/crossborderbus/settings', timeout=5).status_code == 401
+
+
 def test_registration_contract_and_normalized_email(accounts_http):
     url, runtime, login = accounts_http
     response = requests.post(url + "/api/account/register", json={"email": "First@Example.com ", "display_name": " 小明 ", "password": PASSWORD, "role": "admin", "email_code": "625317"})

@@ -8,8 +8,8 @@ from erp_web.context import get_context
 from erp_web.facades.pricing_workspace_facade import (
     mutate_pricing_template_payload,
     pricing_exchange_rates_payload,
-    pricing_templates_payload,
 )
+from erp_web.facades.business_data_facade import business_query_payload
 from erp_web.http_route_units import pricing_workspace_routes
 from erp_web.schemas.requests import REQUEST_CONTRACTS, validate_request_payload
 
@@ -32,7 +32,7 @@ def test_templates_persist_without_product_facts_and_default_can_be_removed():
     assert saved["name"] == "日常直发"
     assert saved["parameters"]["common"]["exchange_rate_overrides"] == {}
     assert "commission_percent" not in saved["parameters"]["targets"]["ozon:global"]
-    listed, _ = pricing_templates_payload()
+    listed, _ = business_query_payload('pricing.templates')
     assert listed["items"] == first["items"]
     assert get_context().config.load_app_config()["pricing_templates"]["items"] == first["items"]
     updated, status = save("日常直发 · 调整", id=identity, set_default=False)

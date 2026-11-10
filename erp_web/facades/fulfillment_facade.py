@@ -20,10 +20,6 @@ def create_service(context):
         image_delivery=lambda url: deliver_platform_image(context.config.load_app_config(), url))
 
 
-def settings():
-    return get_context().fulfillment.settings()
-
-
 def detail(order_id):
     return get_context().fulfillment.detail(order_id)
 
@@ -40,10 +36,6 @@ def services(section_id, warehouse_id):
 
 def receiving_warehouse(order_id):
     return get_context().fulfillment.receiving.detail(order_id)
-
-
-def logistics_settings():
-    return get_context().fulfillment.receiving.logistics.detail()
 
 
 def command(action, body):
