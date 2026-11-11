@@ -1,0 +1,193 @@
+{
+  "version": "1.2.60",
+  "server_revision": "18ea55ae3338",
+  "server_release": "20261111t005830z-18ea55ae3338",
+  "configuration_parity": [
+    "shipping.tariff_versions",
+    "yandex.warehouses",
+    "pricing.templates",
+    "logistics.settings",
+    "fulfillment.settings",
+    "settings.system",
+    "settings.forbidden_categories",
+    "settings.image_hosting",
+    "settings.models",
+    "settings.model_bindings",
+    "settings.product_research",
+    "settings.store",
+    "settings.collection",
+    "settings.pricing_defaults",
+    "settings.approval"
+  ],
+  "bounded_samples": [
+    {
+      "resource": "operations.availability",
+      "returned": 1,
+      "limited": false
+    },
+    {
+      "resource": "products.index",
+      "returned": 2,
+      "limited": false
+    },
+    {
+      "resource": "drafts.index",
+      "returned": 2,
+      "limited": false
+    },
+    {
+      "resource": "publish.logs",
+      "returned": 2,
+      "limited": false
+    },
+    {
+      "resource": "publish.jobs",
+      "returned": 2,
+      "limited": false
+    }
+  ],
+  "business_unchanged": true,
+  "structured_cases": [
+    {
+      "case": "forwarders",
+      "conversation_id": "conversation_global_chat_b2658fdf38bb44429bce999d91bde4c8",
+      "passed": true,
+      "peak_input_tokens": 10526,
+      "sum_input_tokens": 38667,
+      "model_requests": 4,
+      "seconds": 15.97,
+      "unexpected_resources": []
+    },
+    {
+      "case": "system",
+      "conversation_id": "conversation_global_chat_f5bc0cca26d247cdb2af30874854f811",
+      "passed": true,
+      "peak_input_tokens": 9367,
+      "sum_input_tokens": 27318,
+      "model_requests": 3,
+      "seconds": 15.53,
+      "unexpected_resources": []
+    },
+    {
+      "case": "hosting",
+      "conversation_id": "conversation_global_chat_117f81b52f7d4052b41d3b198aed8f4f",
+      "passed": true,
+      "peak_input_tokens": 10295,
+      "sum_input_tokens": 28954,
+      "model_requests": 3,
+      "seconds": 11.33,
+      "unexpected_resources": []
+    },
+    {
+      "case": "models",
+      "conversation_id": "conversation_global_chat_696a13e5cdf84a4c8da11274b406b684",
+      "passed": true,
+      "peak_input_tokens": 10919,
+      "sum_input_tokens": 29607,
+      "model_requests": 3,
+      "seconds": 11.42,
+      "unexpected_resources": []
+    },
+    {
+      "case": "research",
+      "conversation_id": "conversation_global_chat_3a1df4ea25344083bc22cde824396dc0",
+      "passed": true,
+      "peak_input_tokens": 9988,
+      "sum_input_tokens": 37404,
+      "model_requests": 4,
+      "seconds": 12.88,
+      "unexpected_resources": []
+    },
+    {
+      "case": "warehouse_roles",
+      "conversation_id": "conversation_global_chat_18ce7198c7164bd38d5e8ba14f82c376",
+      "passed": true,
+      "peak_input_tokens": 12297,
+      "sum_input_tokens": 43778,
+      "model_requests": 4,
+      "seconds": 13.73,
+      "unexpected_resources": []
+    }
+  ],
+  "failed_trials": [
+    {
+      "case": "warehouse_roles",
+      "conversation_id": "conversation_global_chat_06aae2a6d4224726b8f76cfd8d577ad0",
+      "passed": false,
+      "peak_input_tokens": 18678,
+      "sum_input_tokens": 89985,
+      "model_requests": 7,
+      "seconds": 36.47,
+      "unexpected_resources": [
+        "draft.pricing",
+        "drafts.index"
+      ],
+      "phase": "initial_scope",
+      "error_fields": []
+    },
+    {
+      "case": "warehouse_roles",
+      "conversation_id": "conversation_global_chat_5027b067727544cf902ede01edb42358",
+      "passed": false,
+      "peak_input_tokens": 18000,
+      "sum_input_tokens": 69742,
+      "model_requests": 5,
+      "seconds": 31.94,
+      "unexpected_resources": [
+        "draft.pricing",
+        "drafts.index"
+      ],
+      "phase": "ambiguous_current_vs_history",
+      "error_fields": [
+        "pricing_route_ids"
+      ]
+    }
+  ],
+  "natural_cases": [
+    {
+      "case": "forwarders",
+      "conversation_id": "conversation_global_chat_9bf3761c1f2a4d4b8ef1d56c205ae92f",
+      "passed": null,
+      "peak_input_tokens": 10834,
+      "sum_input_tokens": 28857,
+      "model_requests": 3,
+      "seconds": 17.3,
+      "unexpected_resources": [],
+      "reviewed_by": "Codex",
+      "review_passed": true
+    },
+    {
+      "case": "configuration_details",
+      "conversation_id": "conversation_global_chat_4ff2e1ac781948d98b5712ebe723e8b0",
+      "passed": null,
+      "peak_input_tokens": 11143,
+      "sum_input_tokens": 29561,
+      "model_requests": 3,
+      "seconds": 16.95,
+      "unexpected_resources": [],
+      "reviewed_by": "Codex",
+      "review_passed": true
+    },
+    {
+      "case": "rules_and_forwarders",
+      "conversation_id": "conversation_global_chat_10cddc0c5ed54e0aa6bdd0d57ecdedd2",
+      "passed": null,
+      "peak_input_tokens": 14820,
+      "sum_input_tokens": 47112,
+      "model_requests": 4,
+      "seconds": 35.81,
+      "unexpected_resources": [],
+      "reviewed_by": "Codex",
+      "review_passed": true
+    }
+  ],
+  "instruction_section_chars": {
+    "execution": 3433,
+    "business": 1853,
+    "system": 4450,
+    "user": 0,
+    "response": 1093
+  },
+  "initial_native_tool_contract_chars": 5945,
+  "initial_native_tool_count": 5
+}

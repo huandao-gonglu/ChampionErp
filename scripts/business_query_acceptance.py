@@ -30,8 +30,8 @@ class Case:
 CASES = (
     Case('forwarders', '查看已保存报单货代配置，区分启用、停用、默认标记和默认规则；不要把可选目录当成已配置。',
          'enabled_address_ids:启用收货点ID数组；disabled_address_ids:停用ID数组；enabled_carriers:启用承运商代码数组；default_address_ids:启用且默认的ID数组；fulfillment_rule_count:默认报单规则数量；no_forwarder_configured:是否完全没有启用的承接配置；realtime_verified:是否实际核验远端'),
-    Case('warehouse_roles', '核对报单收货仓与 Yandex 核价发布仓的分工，读取实际核价路线。',
-         'local_receiving_filters_pricing:本地报单地址是否参与核价候选筛选；pricing_route_ids:当前核价路线的发布仓ID数组；realtime_verified:是否实际核验远端'),
+    Case('warehouse_roles', '仅查询当前保存的配置：报单收货地址是否参与核价候选筛选？列出当前配置中可参与比价的全部 Yandex 发布仓，不查询商品、草稿、订单或历史执行记录。',
+         'local_receiving_filters_pricing:本地报单地址是否参与核价候选筛选；configured_pricing_warehouse_ids:当前配置中可参与比价的全部发布仓ID数组；realtime_verified:是否实际核验远端'),
     Case('system', '查询订单自动同步间隔和图片水印样式，只读取已有设置。',
          'orders_auto_sync_interval_hours:同步间隔小时；watermark:包含text、opacity、size_percent、density、color的对象'),
     Case('hosting', '查询图片托管默认目标和保存的配置状态，不执行上传或联网测试。',
@@ -62,10 +62,10 @@ def expected_facts(pages):
             'enabled_carriers': sorted({rule['carrier'] for row in enabled for rule in row['rules']}),
             'default_address_ids': [row['id'] for row in enabled if row['is_default']],
             'fulfillment_rule_count': len(fulfillment['rules']),
-            'no_forwarder_configured': not any(row['rules'] for row in enabled), 'realtime_verified': False,
+            'no_forwarder_configured': not (any(row['rules'] for row in enabled) or any(rule.get('confirmed') for rule in fulfillment['rules'])), 'realtime_verified': False,
         },
         'warehouse_roles': {'local_receiving_filters_pricing': False,
-            'pricing_route_ids': sorted({str(row['publish_warehouse_id']) for row in pages['yandex.warehouses']['pricing_options']}),
+            'configured_pricing_warehouse_ids': sorted({str(row['publish_warehouse_id']) for row in pages['yandex.warehouses']['pricing_options']}),
             'realtime_verified': False},
         'system': {'orders_auto_sync_interval_hours': pages['settings.system']['orders_auto_sync_interval_hours'],
             'watermark': {key: pages['settings.system']['watermark'][key] for key in ('text', 'opacity', 'size_percent', 'density', 'color')}},
@@ -103,7 +103,7 @@ def compare_answer(answer, expected):
     errors = []
     for key, value in expected.items():
         actual = answer.get(key)
-        if key == 'pricing_route_ids' and isinstance(actual, list):
+        if key == 'configured_pricing_warehouse_ids' and isinstance(actual, list):
             actual = [str(item) for item in actual]
         if key not in answer or type(actual) is not type(value) or canonical(actual) != canonical(value):
             errors.append({'field': key, 'expected': value, 'actual': actual})
@@ -155,6 +155,8 @@ def unexpected_business_reads(calls):
                 args = json.loads(args)
             except ValueError:
                 continue
+        if not isinstance(args, dict):
+            continue
         resource = args.get('resource', '')
         if resource and not resource.startswith(allowed):
             unexpected.add(resource)
@@ -273,7 +275,7 @@ print(json.dumps({key:len(value) for key,value in service.instruction_sections()
                 answer=None;errors=[{'format':str(exc)}]
             metrics=context_metrics(history)
             forbidden=[c['name'] for c in metrics['tool_calls'] if c['name'] not in {'business_data_read','business_data_catalog','run_code','search_tools'}]
-            item={'case':case.name,'conversation_id':conversation,'seconds':round(time.monotonic()-started,2),
+            item={'case':case.name,'question':prompt,'conversation_id':conversation,'seconds':round(time.monotonic()-started,2),
                   'answer':answer,'answer_text':''.join(chunks),'expected':expected.get(case.name),'errors':errors,'stream_errors':stream_errors,
                   'unexpected_tools':forbidden,'unexpected_resources':unexpected_business_reads(metrics['all_tool_calls']), **metrics}
             item['completed_without_error']=bool(chunks) and not (stream_errors or forbidden or item['unexpected_resources'])
@@ -282,6 +284,7 @@ print(json.dumps({key:len(value) for key,value in service.instruction_sections()
             (folder/(case.name+'.json')).write_text(json.dumps(item,ensure_ascii=False,indent=2))
             print(json.dumps({key:item[key] for key in ('case','conversation_id','passed','peak_input_tokens','model_requests','instruction_chars','seconds','errors')},ensure_ascii=False),flush=True)
         report['business_unchanged']=before==digest()
+        report['case_selection']=args.case or []
         report['requires_manual_review']=args.natural
         report['completed_without_error']=bool(report['cases']) and report['business_unchanged'] and all(case['completed_without_error'] for case in report['cases'])
         report['passed']=None if args.natural else report['completed_without_error'] and all(case['passed'] for case in report['cases'])

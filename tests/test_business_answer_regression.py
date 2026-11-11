@@ -45,6 +45,7 @@ def test_correct_complete_answers_are_checked_against_current_page_facts(pages):
     ('forwarders', 'default_address_ids', ['disabled']),
     ('forwarders', 'realtime_verified', True),
     ('warehouse_roles', 'local_receiving_filters_pricing', True),
+    ('warehouse_roles', 'configured_pricing_warehouse_ids', ['12']),
     ('hosting', 'realtime_verified', True),
     ('models', 'enabled_model_ids', ['api', 'disabled']),
     ('system', 'orders_auto_sync_interval_hours', 5),
@@ -85,3 +86,11 @@ def test_configuration_scope_rejects_unrequested_history_reads_including_python(
             'args': '{"resource":"draft.pricing","params":{"draft_id":"one"}}'}}}}]}])
     assert unexpected_business_reads(metrics['all_tool_calls']) == ['draft.pricing']
     assert unexpected_business_reads([{'name': 'business_data_read', 'args': {'resource': 'settings.system'}}]) == []
+
+
+def test_confirmed_global_forwarder_rules_are_configuration_even_without_local_address_rules(pages):
+    pages['logistics.settings']['addresses'] = []
+    pages['fulfillment.settings']['rules'] = [{'confirmed': True}]
+    assert expected_facts(pages)['forwarders']['no_forwarder_configured'] is False
+    pages['fulfillment.settings']['rules'] = [{'confirmed': False}]
+    assert expected_facts(pages)['forwarders']['no_forwarder_configured'] is True
