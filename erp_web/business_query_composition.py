@@ -20,13 +20,13 @@ def product_skus(context, request):
 
 
 BUSINESS_QUERIES = BusinessQueries((
-    BusinessQuery('shipping.tariff_rules', '国际物流运费表、渠道尺寸重量货值限制、电池准入和费率；按 platform 查询。', TariffRulesQuery,
+    BusinessQuery('shipping.tariff_rules', '国际物流运费表：轻小件 Extra Small、普通件 Other 的尺寸重量售价限制、电池准入和费率；按 platform 查询。', TariffRulesQuery,
                   lambda context, request: context.tariffs.rules(request), 'rules',
                   ('id', 'carrier', 'service', 'group', 'max_g', 'max_edge_cm', 'max_sum_cm', 'price_max',
                    'price_currency', 'fixed', 'per_g', 'currency', 'step_g', 'battery', 'liquid'), permission='pricing.read', http_path='/api/shipping/tariffs/rules'),
     BusinessQuery('shipping.tariff_versions', '当前国际物流运费表来源、版本与更新状态。', NoDataParameters,
                   lambda context, _: context.tariffs.detail(), 'items', permission='pricing.read', http_path='/api/shipping/tariffs'),
-    BusinessQuery('yandex.warehouses', 'Yandex 已配置发布仓、运输模式及可比价物流方案；只读本地目录，不刷新远端。', NoDataParameters,
+    BusinessQuery('yandex.warehouses', 'Yandex 核价/刊登使用的远端发布仓、运输模式与比价物流方案。核价候选来自此处，不由本地报单收货地址决定；只读缓存，不刷新远端。', NoDataParameters,
                   lambda context, _: context.yandex_logistics.detail(), 'pricing_options', permission='pricing.read', http_path='/api/yandex/warehouses'),
     BusinessQuery('pricing.templates', '已有核价模板、固定费用及定价配置。', NoDataParameters,
                   lambda context, _: {'ok': True, **context.config.load_app_config()['pricing_templates']}, permission='pricing.read', http_path='/api/pricing/templates'),
@@ -37,7 +37,7 @@ BUSINESS_QUERIES = BusinessQueries((
                   ('sku_id', 'target_key', 'applied_price', 'current_package', 'shipping_summary'), permission='pricing.read'),
     BusinessQuery('product.skus', '商品全部规格事实、成本及包装尺寸重量；读取不修改资料。', ProductDataParameters,
                   product_skus, 'rows', ('id', 'package_dimensions'), permission='product.read'),
-    BusinessQuery('logistics.settings', '报单货代、采购收货仓及地址配置；包含启用/默认状态和已确认物流商承接规则。warehouses 为合作仓目录，carriers 为可配置枚举，不代表已经配置。只读本地缓存，不刷新远端。', NoDataParameters,
+    BusinessQuery('logistics.settings', '报单货代、采购收货仓及地址配置；包含启用/默认状态和已确认物流商承接规则；用于采购/报单，不参与核价选渠道。缺少本地收货点不能据此排除核价渠道，核价发布仓见 yandex.warehouses。warehouses 为合作仓目录，carriers 为可配置枚举，不代表已经配置。只读本地缓存，不刷新远端。', NoDataParameters,
                   lambda context, _: context.fulfillment.receiving.logistics.detail(), 'addresses',
                   ('id', 'name', 'warehouse_id', 'warehouse_name', 'enabled', 'is_default', 'rules', 'remark'),
                   permission='order.read', http_path='/api/logistics/settings'),

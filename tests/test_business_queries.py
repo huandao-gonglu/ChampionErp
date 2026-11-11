@@ -89,7 +89,8 @@ def test_forwarder_configuration_is_same_public_fact_and_does_not_refresh_or_cro
     assert business_data_read(DataReadRequest(resource='logistics.settings'), scope, execution('order.read')).data == []
     full = business_data_read(DataReadRequest(resource='fulfillment.settings', path='$'), scope, execution('order.read')).data
     assert full['rules'] == [] and full['catalog'] == {}
-    assert catalog.describe(DataCatalogRequest(keyword='报单'), permissions={'pricing.read'}).resources == []
+    names = {row.name for row in catalog.describe(DataCatalogRequest(keyword='报单'), permissions={'pricing.read'}).resources}
+    assert names.isdisjoint({'logistics.settings', 'fulfillment.settings'})
 
 
 @pytest.mark.parametrize('use_python', [False, True])
