@@ -93,3 +93,5 @@ Python 两条读取路径。物流回归覆盖实际排除事实、指定渠道�
 架构守卫防止通用查询引擎反向依赖领域或 Agent。
 
 发布环境的真实业务问答、上下文测量和回归结果见[验收记录](business-data-verification.md)。
+
+普通查询统一入口与报单配置的发布实测见[1.2.59 验收记录](business-query-entry-verification.md)。
