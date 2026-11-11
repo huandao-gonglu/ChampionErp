@@ -76,3 +76,12 @@ def test_context_metrics_keep_actual_usage_separate_from_character_counts():
     assert metrics['peak_input_tokens'] == 120 and metrics['sum_input_tokens'] == 220
     assert metrics['instruction_chars'] == 4 and metrics['model_requests'] == 2
     assert metrics['message_part_chars']['tool-return'] > 0
+
+
+def test_configuration_scope_rejects_unrequested_history_reads_including_python():
+    from scripts.business_query_acceptance import unexpected_business_reads
+    metrics = context_metrics([{'parts': [{'part_kind': 'tool-return', 'metadata': {
+        'code_mode': True, 'tool_calls': {'1': {'tool_name': 'business_data_read',
+            'args': '{"resource":"draft.pricing","params":{"draft_id":"one"}}'}}}}]}])
+    assert unexpected_business_reads(metrics['all_tool_calls']) == ['draft.pricing']
+    assert unexpected_business_reads([{'name': 'business_data_read', 'args': {'resource': 'settings.system'}}]) == []

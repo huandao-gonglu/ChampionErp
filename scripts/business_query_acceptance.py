@@ -112,7 +112,7 @@ def compare_answer(answer, expected):
 
 def context_metrics(history):
     """实际 usage 与可重现的消息体量分开计量，不虚构分项精确 token。"""
-    inputs, outputs, tool_sizes, calls = [], [], [], []
+    inputs, outputs, tool_sizes, calls, nested_calls = [], [], [], [], []
     parts_chars = Counter()
     instructions = set()
     errors = []
@@ -124,6 +124,11 @@ def context_metrics(history):
             inputs.append(usage.get('input_tokens', 0)); outputs.append(usage.get('output_tokens', 0))
         for part in message.get('parts', []):
             kind = part.get('part_kind', 'unknown')
+            metadata = part.get('metadata') or {}
+            if metadata.get('code_mode'):
+                for nested in metadata.get('tool_calls', {}).values():
+                    if isinstance(nested, dict):
+                        nested_calls.append({'name': nested.get('tool_name'), 'args': nested.get('args')})
             parts_chars[kind] += len(json.dumps(part, ensure_ascii=False, separators=(',', ':')))
             if kind == 'tool-call':
                 calls.append({'name': part['tool_name'], 'args': part.get('args')})
@@ -134,7 +139,26 @@ def context_metrics(history):
     return {'peak_input_tokens': max(inputs, default=0), 'sum_input_tokens': sum(inputs),
             'sum_output_tokens': sum(outputs), 'model_requests': len(inputs),
             'instruction_chars': max(map(len, instructions), default=0), 'message_part_chars': dict(parts_chars),
-            'max_tool_result_chars': max(tool_sizes, default=0), 'tool_calls': calls, 'business_errors': errors}
+            'max_tool_result_chars': max(tool_sizes, default=0), 'tool_calls': calls, 'all_tool_calls': [*calls,*nested_calls], 'business_errors': errors}
+
+
+def unexpected_business_reads(calls):
+    """配置题不扫描商品、草稿和历史订单，避免答案虽对却无限扩展取数。"""
+    allowed = ('settings.', 'shipping.', 'yandex.', 'logistics.', 'fulfillment.', 'pricing.')
+    unexpected = set()
+    for call in calls:
+        if call.get('name') != 'business_data_read':
+            continue
+        args = call.get('args') or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                continue
+        resource = args.get('resource', '')
+        if resource and not resource.startswith(allowed):
+            unexpected.add(resource)
+    return sorted(unexpected)
 
 
 def run_live(args):
@@ -164,7 +188,7 @@ print(json.dumps({'token':token,'csrf':session.csrf_token,'hash':session.token_h
     def read(path, body=None):
         response = client.get(args.url + path, timeout=45) if body is None else client.post(args.url + path, json=body, timeout=45)
         response.raise_for_status(); return response.json()
-    report = {'cases': [], 'page_parity': [], 'skipped_large_fields': [], 'business_unchanged': False}
+    report = {'cases': [], 'page_parity': [], 'skipped_large_fields': [], 'bounded_samples': [], 'business_unchanged': False}
     try:
         before = digest()
         report['instruction_sections_chars'] = remote("""import json
@@ -185,6 +209,14 @@ print(json.dumps({key:len(value) for key,value in service.instruction_sections()
                 continue
             if name not in paths:
                 raise AssertionError('线上资源在本地验收版本中不存在：'+name)
+            if not name.startswith(('settings.', 'shipping.', 'yandex.', 'logistics.', 'fulfillment.', 'pricing.')):
+                sample=read('/api/business-data/read', {'resource':name,'limit':2})
+                report['bounded_samples'].append({'resource':name,'total':sample['total'],
+                    'returned':len(sample['data']) if isinstance(sample['data'],list) else int(sample['data'] is not None),
+                    'limited':sample['limited']})
+                print('有界读取检查：'+name,flush=True)
+                continue
+            print('正在核对配置：'+name,flush=True)
             page = pages.get(name) if name in pages else read(paths[name])
             def verify(path, value):
                 offset = 0
@@ -215,6 +247,7 @@ print(json.dumps({key:len(value) for key,value in service.instruction_sections()
                         assert not chunk['limited'] and chunk['data'] == value, (name,path)
             verify('$', page)
             report['page_parity'].append(name)
+            print('配置同源通过：'+name,flush=True)
         expected=expected_facts(pages)
         for case in (NATURAL_CASES if args.natural else CASES):
             if args.case and case.name not in args.case: continue
@@ -242,8 +275,8 @@ print(json.dumps({key:len(value) for key,value in service.instruction_sections()
             forbidden=[c['name'] for c in metrics['tool_calls'] if c['name'] not in {'business_data_read','business_data_catalog','run_code','search_tools'}]
             item={'case':case.name,'conversation_id':conversation,'seconds':round(time.monotonic()-started,2),
                   'answer':answer,'answer_text':''.join(chunks),'expected':expected.get(case.name),'errors':errors,'stream_errors':stream_errors,
-                  'unexpected_tools':forbidden, **metrics}
-            item['completed_without_error']=bool(chunks) and not (stream_errors or forbidden)
+                  'unexpected_tools':forbidden,'unexpected_resources':unexpected_business_reads(metrics['all_tool_calls']), **metrics}
+            item['completed_without_error']=bool(chunks) and not (stream_errors or forbidden or item['unexpected_resources'])
             item['passed']=None if args.natural else item['completed_without_error'] and not errors
             report['cases'].append(item)
             (folder/(case.name+'.json')).write_text(json.dumps(item,ensure_ascii=False,indent=2))

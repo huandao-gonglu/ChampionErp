@@ -29,7 +29,7 @@ BUSINESS_QUERIES = BusinessQueries((
                    'price_currency', 'fixed', 'per_g', 'currency', 'step_g', 'battery', 'liquid'), permission='pricing.read', http_path='/api/shipping/tariffs/rules'),
     BusinessQuery('shipping.tariff_versions', '当前国际物流运费表来源、版本与更新状态。', NoDataParameters,
                   lambda context, _: context.tariffs.detail(), 'items', permission='pricing.read', http_path='/api/shipping/tariffs'),
-    BusinessQuery('yandex.warehouses', 'Yandex 核价/刊登使用的远端发布仓、运输模式与比价物流方案。核价候选来自此处，不由本地报单收货地址决定；只读缓存，不刷新远端。', NoDataParameters,
+    BusinessQuery('yandex.warehouses', 'Yandex 核价/刊登使用的远端发布仓、运输模式与比价物流方案。默认 pricing_options 已列出全部当前配置候选，不由本地报单收货地址决定；核对当前配置无需读取历史草稿。只读缓存，不刷新远端。', NoDataParameters,
                   lambda context, _: context.yandex_logistics.detail(), 'pricing_options', permission='pricing.read', http_path='/api/yandex/warehouses'),
     BusinessQuery('pricing.templates', '已有核价模板、固定费用及定价配置。', NoDataParameters,
                   lambda context, _: {'ok': True, **context.config.load_app_config()['pricing_templates']}, permission='pricing.read', http_path='/api/pricing/templates'),
