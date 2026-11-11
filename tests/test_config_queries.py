@@ -19,6 +19,8 @@ def test_every_saved_config_section_and_get_has_an_explicit_reading_owner():
     paths = {entry.path for entry in AI_CAPABILITY_COVERAGE_MANIFEST if entry.method == 'GET' and entry.path.startswith('/api/')}
     rows = audit_query_coverage(paths, BUSINESS_QUERIES)
     assert len(rows) == len(paths) - 1
+    from erp_web.http_routes import GET_API_ROUTES
+    audit_query_coverage({path for path in GET_API_ROUTES if path.startswith('/api/')}, BUSINESS_QUERIES)
     with pytest.raises(ValueError, match='new-settings'):
         audit_query_coverage(paths | {'/api/new-settings'}, BUSINESS_QUERIES)
 

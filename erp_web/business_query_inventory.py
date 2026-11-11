@@ -36,6 +36,8 @@ RETAINED_GET_READS = {
     '/api/state': ('受信组合视图', '包含审批凭据、目录和媒体传输引用；普通配置及索引从其统一查询读取。'),
     '/api/system-settings/user-agents': ('用户规则', '用户独有规则由原生指令装配读取，仅受信设置界面可编辑，不提供自主改写入口。'),
     '/api/pricing/exchange-rates': ('显式刷新', 'refresh 参数可访问远端并更新缓存，保留独立刷新入口；缓存配置见 settings.pricing_defaults。'),
+    '/api/v1/product-research/hot-products/runs': ('领域任务', '选品任务的当前/最近/指定快照，已有 research_run_status_query 覆盖其领域读取。'),
+    '/api/v1/product-research/source-registry': ('凭据视图', '完整数据源编辑配置带凭据占位；普通配置见 settings.product_research。'),
 }
 
 

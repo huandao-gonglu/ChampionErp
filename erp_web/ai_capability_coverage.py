@@ -34,7 +34,7 @@ from erp_web.http_route_units import (
     fulfillment_routes,
     external_request_routes,
 )
-from erp_web.http_routes import POST_API_ROUTES
+from erp_web.http_routes import GET_API_ROUTES, POST_API_ROUTES
 
 
 Disposition = Literal["capability", "internal_only", "excluded"]
@@ -78,6 +78,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     """
 
     endpoints: set[tuple[str, str]] = set()
+    endpoints.update(("GET", path) for path in GET_API_ROUTES)
     endpoints.update(("GET", path) for path in account_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in business_query_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in task_queue_routes.GET_API_ROUTES)
@@ -97,6 +98,8 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    AiCapabilityCoverageEntry(method="GET", path="/api/v1/product-research/hot-products/runs", business_domain="选品任务", disposition="capability", capability_names=("research_run_status_query",)),
+    AiCapabilityCoverageEntry(method="GET", path="/api/v1/product-research/source-registry", business_domain="选品设置", disposition="excluded", reason="受信编辑视图包含数据源凭据占位；普通配置元数据由 settings.product_research 提供。"),
     AiCapabilityCoverageEntry(method="GET", path="/api/business-data/catalog", business_domain="业务数据", disposition="capability", capability_names=("business_data_catalog",)),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="业务数据", disposition="capability", capability_names=("business_data_read",)) for method, path in (
         ("POST", "/api/business-data/read"),

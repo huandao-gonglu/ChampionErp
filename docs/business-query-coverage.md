@@ -87,6 +87,8 @@
 | `/api/v1/ai-work/conversations/<conversation_id>/image-batch` | 原生对话协议 | 原生历史、事件订阅及对话投影，保留专门协议。 |
 | `/api/v1/ai-work/conversations/<conversation_id>/title` | 原生对话协议 | 原生历史、事件订阅及对话投影，保留专门协议。 |
 | `/api/v1/ai-work/conversations/<conversation_id>/ui-messages` | 原生对话协议 | 原生历史、事件订阅及对话投影，保留专门协议。 |
+| `/api/v1/product-research/hot-products/runs` | 领域任务 | 选品任务的当前/最近/指定快照，已有 research_run_status_query 覆盖其领域读取。 |
+| `/api/v1/product-research/source-registry` | 凭据视图 | 完整数据源编辑配置带凭据占位；普通配置见 settings.product_research。 |
 | `/api/wechat/status` | 身份协议 | 登录、用户管理、配对或授权协议，不是普通业务配置读取。 |
 | `/api/yandex/warehouses` | 统一查询 | yandex.warehouses |
 
