@@ -50,10 +50,6 @@ def load_app_config() -> dict[str, Any]:
     return get_context().config.load_app_config()
 
 
-def system_settings_payload() -> dict:
-    return get_context().config.system_settings()
-
-
 def user_agents_payload() -> ResponseWithStatus:
     try:
         return get_context().config.user_agents(), 200
@@ -70,10 +66,6 @@ def save_user_agents_payload(body: dict) -> ResponseWithStatus:
         return {"ok": False, "error": "请提供有效的内容和版本号，userAgents.md 须为 UTF-8 且不超过 32 KiB。"}, 400
     except (ValueError, OSError) as exc:
         return {"ok": False, "error": str(exc)}, 400
-
-
-def forbidden_categories_payload() -> dict:
-    return get_context().config.forbidden_categories()
 
 
 def import_forbidden_categories_payload(body: dict) -> ResponseWithStatus:
@@ -441,7 +433,6 @@ def clear_store_auth_payload(body: dict[str, Any]) -> ResponseWithStatus:
 __all__ = [
     "user_agents_payload",
     "save_user_agents_payload",
-    "forbidden_categories_payload",
     "import_forbidden_categories_payload",
     "append_ml_auth_test_log",
     "auth_next_action",
@@ -461,7 +452,6 @@ __all__ = [
     "refresh_mercadolibre_token_from_body",
     "run_mercadolibre_07d_test",
     "save_app_config",
-    "system_settings_payload",
     "watermark_preview_payload",
     "save_system_settings_payload",
     "save_store_config",

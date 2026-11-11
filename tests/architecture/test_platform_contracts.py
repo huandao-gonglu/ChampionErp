@@ -40,7 +40,8 @@ def test_forbidden_category_rules_are_shared_and_settings_owned():
     for file in ("erp_web/facades/category_facade.py", "erp_web/runtime_units/publish_validation.py"):
         imports = {target for _, target in imported_targets([ROOT / file])}
         assert "erp_web.services.forbidden_category_service.forbidden_category_issue" in imports
-    endpoints = {("GET", "/api/system-settings/forbidden-categories"), ("POST", "/api/system-settings/forbidden-categories/import")}
+    endpoints = {("POST", "/api/system-settings/forbidden-categories/import")}
+    assert any(e.path == "/api/system-settings/forbidden-categories" and e.method == "GET" and e.capability_names == ("business_data_read",) for e in AI_CAPABILITY_COVERAGE_MANIFEST)
     assert {(e.method, e.path) for e in AI_CAPABILITY_COVERAGE_MANIFEST if e.disposition == "internal_only"} >= endpoints
 
 

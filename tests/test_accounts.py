@@ -187,8 +187,10 @@ def test_two_users_have_concurrent_independent_business_files_and_config(account
             context.config.save_system_settings({"orders_auto_sync_interval_hours": 9 if name == "甲" else 6})
         context.paths.images_dir.mkdir(parents=True, exist_ok=True)
         (context.paths.images_dir / "private.png").write_bytes(name.encode())
+    for index, client in enumerate(clients):
+        assert client.get(url + "/api/products-index?user_id=" + (b if index == 0 else a)["id"]).status_code == 400
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [(index, pool.submit(clients[index % 2].get, url + "/api/products-index?user_id=" + (b if index % 2 == 0 else a)["id"])) for index in range(16)]
+        futures = [(index, pool.submit(clients[index % 2].get, url + "/api/products-index")) for index in range(16)]
         for index, future in futures:
             response = future.result()
             assert response.status_code == 200, response.text

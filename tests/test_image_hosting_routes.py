@@ -4,7 +4,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from erp_web.context import get_context
-from erp_web.http_route_units import image_hosting_routes
+from erp_web.http_route_units import image_hosting_routes, business_query_routes
 from tests.image_hosting_test_utils import profile
 
 
@@ -39,7 +39,7 @@ def test_config_routes_do_not_send_network_and_never_return_credentials(monkeypa
     assert post("default", {"id": ""})[1] == 200
     assert post("delete", {"id": identity})[0]["image_hosting"]["profiles"] == []
     handler = _Handler("/api/image-hosting")
-    assert image_hosting_routes.handle_get(handler, urlsplit(handler.path))
+    assert business_query_routes.handle_get(handler, urlsplit(handler.path))
     assert handler.response == ({"ok": True, "image_hosting": {"default_profile_id": "", "profiles": []}}, 200)
     assert "test-secret-key" not in str(get_context().db.load_runtime_secrets("app_config"))
 
@@ -55,4 +55,4 @@ def test_unsaved_default_and_unknown_routes_are_rejected():
     assert post("default", {"id": "missing"})[1] == 400
     handler = _Handler("/api/not-image-hosting", {})
     assert not image_hosting_routes.handle_post(handler, urlsplit(handler.path))
-    assert not image_hosting_routes.handle_get(handler, urlsplit(handler.path))
+    assert not business_query_routes.handle_get(handler, urlsplit(handler.path))

@@ -51,7 +51,6 @@ def test_one_normal_query_declaration_provides_http_and_ai_without_extra_registr
         business_data_read(DataReadRequest(resource='sample.detail', params={'item_id': 'one'}),
                            BusinessDataScope(lambda: catalog), execution())
     from erp_web.facades import agent_capability_facade
-    monkeypatch.setattr(agent_capability_facade, 'BUSINESS_QUERIES', queries)
     assert 'sample.read' in agent_capability_facade.global_chat_permissions()
 
 

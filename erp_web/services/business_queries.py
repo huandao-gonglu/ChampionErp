@@ -9,6 +9,7 @@ from erp_web.services.business_data import BusinessDataCatalog, BusinessResource
 @dataclass(frozen=True)
 class BusinessQuery(BusinessResource):
     http_path: str = ''
+    not_found_status: int = 400
 
     @property
     def path(self):

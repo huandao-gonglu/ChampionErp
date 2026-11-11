@@ -27,7 +27,6 @@ def handle_test(handler: JsonRequestHandler) -> None:
 POST_HANDLERS = {"/api/image-hosting/save": handle_save, "/api/image-hosting/default": handle_default,
                  "/api/image-hosting/delete": handle_delete, "/api/image-hosting/test": handle_test}
 HANDLED_PATHS = frozenset(POST_HANDLERS)
-GET_API_ROUTES = frozenset({"/api/image-hosting"})
 
 
 def handle_post(handler: JsonRequestHandler, parsed: object) -> bool:
@@ -38,9 +37,4 @@ def handle_post(handler: JsonRequestHandler, parsed: object) -> bool:
     return True
 
 
-def handle_get(handler: JsonRequestHandler, parsed: object) -> bool:
-    if parsed.path not in GET_API_ROUTES:
-        return False
-    result, status = image_hosting_facade.list_image_hosting()
-    handler.send_json(result, status)
-    return True
+GET_API_ROUTES = frozenset()

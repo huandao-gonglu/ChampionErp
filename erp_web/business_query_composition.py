@@ -1,8 +1,11 @@
 """普通业务查询组合根：只声明一次，自动生成页面路由及 AI 可发现的数据目录。"""
-from erp_web.schemas.business_data import DraftDataParameters, NoDataParameters, PricingDataParameters, ProductDataParameters
+from erp_web.schemas.business_data import DraftDataParameters, DraftIndexParameters, NoDataParameters, PricingDataParameters, ProductDataParameters
 from erp_web.schemas.managed_settings import TariffRulesQuery
 from erp_web.services.business_queries import BusinessQueries, BusinessQuery
 from erp_web.services.pricing_data import draft_pricing_data
+from erp_web.services import config_queries
+from erp_web.services.operation_availability import operation_availability
+from erp_web.schemas.platform_query_capabilities import PublishJobsQueryRequest, PublishJobStatusQueryRequest, PublishLogsQueryRequest
 
 
 def draft_content(context, request):
@@ -45,6 +48,47 @@ BUSINESS_QUERIES = BusinessQueries((
                   lambda context, _: context.fulfillment.settings(), '',
                   ('authorized', 'secret_configured', 'user_name', 'expires_at', 'rules'),
                   permission='order.read', http_path='/api/crossborderbus/settings'),
+    BusinessQuery('settings.system', '系统设置：订单自动同步间隔、图片水印、微信转发类型；水印图片内容可展开，默认仅读取文字和样式。', NoDataParameters,
+                  lambda context, _: context.config.system_settings(), '',
+                  ('orders_auto_sync_interval_hours', 'watermark.text', 'watermark.opacity', 'watermark.size_percent', 'watermark.density', 'watermark.color', 'wechat_forward_types'),
+                  http_path='/api/system-settings'),
+    BusinessQuery('settings.forbidden_categories', '共享 Yandex 禁售类目名单及导入来源；按 categories 分页，未列出不等于平台允许发布。', NoDataParameters,
+                  lambda context, _: context.config.forbidden_categories(), 'categories', ('category_id', 'name'), http_path='/api/system-settings/forbidden-categories'),
+    BusinessQuery('settings.image_hosting', '图片托管配置、默认目标、公开域名与最近保存的测试结果。密钥只提供是否配置，历史测试不代表当前实时连通。', NoDataParameters,
+                  lambda context, _: {'ok': True, 'image_hosting': context.config.public_image_hosting()}, 'image_hosting',
+                  ('default_profile_id', 'profiles'), http_path='/api/image-hosting'),
+    BusinessQuery('settings.models', '已配置 AI 模型名称、启用状态、模型类型及功能绑定；不读取密钥、命令、浏览器配置或本机文件。', NoDataParameters,
+                  config_queries.model_settings, 'models', ('id', 'name', 'enabled', 'model', 'connection_type', 'capabilities')),
+    BusinessQuery('settings.model_bindings', 'AI 功能与模型的绑定及生成参数；未显式绑定的功能不代表没有可用模型，运行时按模型能力选择。', NoDataParameters,
+                  lambda context, request: config_queries.model_settings(context, request)['bindings']),
+    BusinessQuery('settings.product_research', '选品搜索市场、数据源、启用状态、搜索策略、限额与缓存配置；不执行搜索或提供数据源密钥。', NoDataParameters,
+                  config_queries.research_settings, '', ('search_defaults', 'provider_runtime', 'target_markets')),
+    BusinessQuery('settings.store', '店铺名称、平台/站点、业务仓标识、刊登默认值及本地授权状态。实际发布币种以各店铺 currency_configuration 为准，listing 只是全局默认值；不刷新授权，不提供凭据。', NoDataParameters,
+                  config_queries.store_settings, 'stores'),
+    BusinessQuery('settings.collection', '1688 采集自动识别偏好、Cookie 是否保存及 API 超时；配置状态不代表授权实时有效。', NoDataParameters,
+                  config_queries.collection_settings),
+    BusinessQuery('settings.pricing_defaults', '核价默认费用、利润率、汇率接口超时和缓存时长；不返回可能含凭据的接口地址。', NoDataParameters,
+                  config_queries.pricing_defaults, permission='pricing.read'),
+    BusinessQuery('settings.approval', '业务工具审批模式：ask 为询问审批，full 为完全授权；只读当前保存偏好，不代表任何额外业务授权。', NoDataParameters,
+                  lambda context, _: {'mode': context.config.ai_tool_approval_mode()}),
+    BusinessQuery('operations.availability', '当前请求的模型与桌面能力限制；仅描述本次连接，不代表其他设备都不可用。', NoDataParameters,
+                  lambda context, _: {'ok': True, **operation_availability(context.config.load_app_config())}, http_path='/api/operation-availability'),
+    BusinessQuery('products.index', '当前空间商品索引，按需分页读取；按列表位置选择商品仍使用带快照的商品查询能力。', NoDataParameters,
+                  lambda context, _: {'ok': True, 'items': context.products.load_products_index()}, 'items',
+                  ('id', 'product_id', 'name', 'title', 'updated_at'), permission='product.read', http_path='/api/products-index'),
+    BusinessQuery('drafts.index', '草稿索引；scope 指定活动、归档或全部，按位置引用仍使用带快照的草稿查询能力。', DraftIndexParameters,
+                  lambda context, request: {'ok': True, 'items': context.products.load_drafts_index(request.scope)}, 'items',
+                  ('draft_id', 'product_id', 'platform', 'title', 'updated_at'), permission='draft.read', http_path='/api/drafts-index'),
+    BusinessQuery('publish.logs', '本地发布日志；只读历史，日志不代表平台实时状态。', PublishLogsQueryRequest,
+                  lambda context, request: {'ok': True, 'items': context.db.list_publish_logs(limit=request.limit)}, 'items',
+                  permission='publish.read', http_path='/api/publish-logs'),
+    BusinessQuery('publish.jobs', '发布任务分页列表，状态与平台过滤；读取不重试、不发布、不轮询。', PublishJobsQueryRequest,
+                  lambda context, request: {'ok': True, **context.publishing_bus.list_jobs(**request.model_dump())}, 'items',
+                  ('job_id', 'product_name', 'status', 'updated_at'),
+                  permission='publish.read', http_path='/api/publish-bus/jobs'),
+    BusinessQuery('publish.job', '指定发布任务的公开状态；读取不推进或重试任务。', PublishJobStatusQueryRequest,
+                  lambda context, request: {'ok': True, 'job': context.publishing_bus.get_public_status(request.job_id)},
+                  permission='publish.read', http_path='/api/publish-bus/status', not_found_status=404),
 ))
 
 

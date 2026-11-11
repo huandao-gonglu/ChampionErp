@@ -59,7 +59,6 @@ GET_ROUTE_UNITS = (
     external_request_routes,
     fulfillment_routes,
     order_routes,
-    image_hosting_routes,
     online_product_routes,
     get_routes,
     ai_work_routes,

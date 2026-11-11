@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from erp_web import business_query_composition
 from typing import Collection
 from erp_web.runtime_units.business_data_capabilities import BUSINESS_DATA_CAPABILITIES
 from erp_web.runtime_units.conversation_fact_capabilities import (
@@ -248,7 +249,7 @@ def application_capability_permissions() -> frozenset[str]:
     return frozenset(
         tool.definition.required_permission
         for tool in APPLICATION_CAPABILITY_CATALOG.tools.values()
-    )
+    ) | frozenset(query.permission for query in business_query_composition.BUSINESS_QUERIES.definitions)
 
 
 def validate_capability_exposure() -> None:

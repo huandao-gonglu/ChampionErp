@@ -638,12 +638,14 @@ def test_publish_bus_status_get_is_a_pure_status_read(
     bus = SimpleNamespace(
         get_public_status=lambda job_id: calls.append(job_id) or terminal_job
     )
-    monkeypatch.setattr(get_routes, "get_publishing_bus", lambda: bus)
+    from erp_web.facades import business_data_facade
+    from erp_web.http_route_units import business_query_routes
+    monkeypatch.setattr(business_data_facade, 'get_context', lambda: SimpleNamespace(publishing_bus=bus))
     handler = StaticHandler()
     sent: list[tuple[dict[str, Any], int]] = []
     handler.send_json = lambda payload, status=200: sent.append((payload, status))  # type: ignore[attr-defined]
 
-    get_routes.handle_publish_bus_status(
+    business_query_routes.handle_get(
         handler,
         urllib.parse.urlparse("/api/publish-bus/status?job_id=job-1"),
     )
@@ -663,12 +665,14 @@ def test_publish_bus_jobs_get_lists_filtered_summaries(
     bus = SimpleNamespace(
         list_jobs=lambda **kwargs: calls.append(kwargs) or result,
     )
-    monkeypatch.setattr(get_routes, "get_publishing_bus", lambda: bus)
+    from erp_web.facades import business_data_facade
+    from erp_web.http_route_units import business_query_routes
+    monkeypatch.setattr(business_data_facade, 'get_context', lambda: SimpleNamespace(publishing_bus=bus))
     handler = StaticHandler()
     sent: list[tuple[dict[str, Any], int]] = []
     handler.send_json = lambda payload, status=200: sent.append((payload, status))  # type: ignore[attr-defined]
 
-    get_routes.handle_publish_bus_jobs(
+    business_query_routes.handle_get(
         handler,
         urllib.parse.urlparse(
             "/api/publish-bus/jobs?limit=25&cursor=job-3&status=failed"

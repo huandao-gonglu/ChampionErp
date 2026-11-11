@@ -54,7 +54,7 @@ def test_mixed_sku_and_image_query_discovers_reader_in_full_catalog(tmp_path, vi
 
 
 @pytest.mark.parametrize("native_search", [False, True])
-def test_full_catalog_starts_small_and_restores_only_discovered_tools(tmp_path, native_search):
+def test_full_catalog_starts_small_and_restores_only_discovered_tools(tmp_path, native_search, record_property):
     requests = []
     async def model(messages, info):
         names = {tool.name for tool in info.function_tools}
@@ -62,7 +62,12 @@ def test_full_catalog_starts_small_and_restores_only_discovered_tools(tmp_path, 
         if len(requests) == 1:
             assert names <= {"search_tools", "run_code", "request_user_input", "business_data_catalog", "business_data_read"}
             assert sum(len(t.description or "") + len(json.dumps(t.parameters_json_schema)) for t in info.function_tools) < 7000
-            assert len(info.instructions or "") < 18000
+            assert len(info.instructions or "") < 14000
+            record_property('initial_instruction_chars', len(info.instructions or ''))
+            record_property('initial_tool_contract_chars', len(json.dumps([
+                {'name': tool.name, 'description': tool.description, 'parameters': tool.parameters_json_schema}
+                for tool in info.function_tools], ensure_ascii=False, separators=(',', ':'))))
+            record_property('initial_tool_count', len(info.function_tools))
             yield {0: DeltaToolCall(name="search_tools", json_args='{"queries":["product_publish_validate"]}', tool_call_id="find-validate")}
         else:
             assert "product_publish_validate" in names

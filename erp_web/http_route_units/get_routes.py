@@ -6,23 +6,18 @@ from typing import Callable
 
 from erp_web.context import get_context
 from erp_web.services import config_service
-from erp_web.services.operation_availability import operation_availability
 from erp_web.schemas.api import API_SCHEMA_VERSION, validate_app_state_response
 from erp_web.http_route_units import static_routes
-from erp_web.facades.auth_config_facade import system_settings_payload, forbidden_categories_payload, user_agents_payload
+from erp_web.facades.auth_config_facade import user_agents_payload
 from .common import JsonRequestHandler
 from ..facades.get_facade import (
     current_generated_images,
     current_image_pool,
     current_source_images,
     exchange_mercadolibre_callback,
-    get_publishing_bus,
     html_page,
     load_app_config,
-    load_drafts_index,
     load_product,
-    load_products_index,
-    load_publish_logs,
     load_store_config,
     marketplace_options,
     mask_secret,
@@ -55,15 +50,7 @@ FRONTEND_PAGE_ROUTES = {
 
 GET_API_ROUTES = {
     "/api/system-settings/user-agents",
-    "/api/system-settings/forbidden-categories",
-    "/api/system-settings",
     "/api/ai-config",
-    "/api/operation-availability",
-    "/api/drafts-index",
-    "/api/products-index",
-    "/api/publish-bus/jobs",
-    "/api/publish-bus/status",
-    "/api/publish-logs",
     "/api/state",
 }
 
@@ -113,29 +100,6 @@ def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
     handler.send_json(validate_app_state_response(state))
 
 
-def handle_products_index(handler: JsonRequestHandler, parsed: object) -> None:
-    handler.send_json({"ok": True, "items": load_products_index()})
-
-
-def handle_drafts_index(handler: JsonRequestHandler, parsed: object) -> None:
-    params = urllib.parse.parse_qs(parsed.query)
-    scope = str((params.get("scope") or ["active"])[0] or "active")
-    handler.send_json({"ok": True, "items": load_drafts_index(scope)})
-
-
-
-
-def handle_publish_logs(handler: JsonRequestHandler, parsed: object) -> None:
-    params = urllib.parse.parse_qs(parsed.query)
-    try:
-        limit = int((params.get("limit") or ["200"])[0] or 200)
-    except ValueError:
-        limit = 200
-    handler.send_json({"ok": True, "items": load_publish_logs(limit=limit)})
-
-
-
-
 def handle_ai_config(handler: JsonRequestHandler, parsed: object) -> None:
     app_dir = get_context().paths.app_dir
     handler.send_json(
@@ -144,39 +108,6 @@ def handle_ai_config(handler: JsonRequestHandler, parsed: object) -> None:
             "config": config_service.public_ai_config(app_dir, load_app_config()),
         }
     )
-
-
-def handle_publish_bus_status(handler: JsonRequestHandler, parsed: object) -> None:
-    params = urllib.parse.parse_qs(parsed.query)
-    job_id = str((params.get("job_id") or [""])[0]).strip()
-    if not job_id:
-        handler.send_json({"ok": False, "error": "缺少 job_id"}, 400)
-        return
-    try:
-        handler.send_json(
-            {"ok": True, "job": get_publishing_bus().get_public_status(job_id)}
-        )
-    except Exception as exc:
-        handler.send_json({"ok": False, "error": str(exc)}, 404)
-
-
-def handle_publish_bus_jobs(handler: JsonRequestHandler, parsed: object) -> None:
-    params = urllib.parse.parse_qs(parsed.query)
-    try:
-        limit = int((params.get("limit") or ["50"])[0] or 50)
-    except ValueError:
-        limit = 50
-    try:
-        result = get_publishing_bus().list_jobs(
-            limit=limit,
-            cursor=str((params.get("cursor") or [""])[0]),
-            status=str((params.get("status") or [""])[0]),
-            platform=str((params.get("platform") or [""])[0]),
-            product_id=str((params.get("product_id") or [""])[0]),
-        )
-        handler.send_json({"ok": True, **result})
-    except Exception as exc:
-        handler.send_json({"ok": False, "error": str(exc)}, 400)
 
 
 def handle_file(handler: JsonRequestHandler, parsed: object) -> None:
@@ -216,19 +147,9 @@ def handle_mercadolibre_callback(handler: JsonRequestHandler, parsed: object) ->
 
 GET_HANDLERS: dict[str, GetHandler] = {
     "/api/system-settings/user-agents": lambda handler, parsed: handler.send_json(*user_agents_payload()),
-    "/api/operation-availability": lambda handler, parsed: handler.send_json(
-        {"ok": True, **operation_availability(load_app_config())}
-    ),
     "/licenses/THIRD-PARTY-NOTICES.txt": handle_assets,
-    "/api/system-settings": lambda handler, parsed: handler.send_json(system_settings_payload()),
-    "/api/system-settings/forbidden-categories": lambda handler, parsed: handler.send_json(forbidden_categories_payload()),
     "/api/state": handle_state,
-    "/api/products-index": handle_products_index,
-    "/api/drafts-index": handle_drafts_index,
-    "/api/publish-logs": handle_publish_logs,
     "/api/ai-config": handle_ai_config,
-    "/api/publish-bus/jobs": handle_publish_bus_jobs,
-    "/api/publish-bus/status": handle_publish_bus_status,
     "/file": handle_file,
     "/auth/mercadolibre": handle_mercadolibre_auth_page,
     "/auth/ozon": handle_ozon_auth_page,

@@ -15,10 +15,6 @@ from erp_web.services.image_public_access import _check_image
 from erp_web.services.s3_image_storage import S3ImageStorage
 
 
-def list_image_hosting() -> tuple[dict, int]:
-    return {"ok": True, "image_hosting": get_context().config.public_image_hosting()}, 200
-
-
 def mutate_image_hosting(body: dict, action: str) -> tuple[dict, int]:
     try:
         store = get_context().config
@@ -92,4 +88,4 @@ def test_image_hosting(body: dict) -> tuple[dict, int]:
     return {"ok": result.upload_ok and result.public_access_ok, "result": value}, 200
 
 
-__all__ = ["list_image_hosting", "mutate_image_hosting", "test_image_hosting"]
+__all__ = ["mutate_image_hosting", "test_image_hosting"]

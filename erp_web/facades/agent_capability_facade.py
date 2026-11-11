@@ -10,7 +10,7 @@ from typing import Any
 
 
 from erp_web.context import AppContext, get_context
-from erp_web.business_query_composition import BUSINESS_QUERIES, build_business_data_catalog
+from erp_web.business_query_composition import build_business_data_catalog
 from erp_web.runtime_units.business_data_capabilities import BusinessDataScope
 from erp_web.facades import alibaba_self_purchase_facade, order_procurement_facade, order_notification_facade
 from erp_web.runtime_units.order_capability_support import OrderCapabilityScope
@@ -99,7 +99,7 @@ GLOBAL_CHAT_TOOLSET_ID = "global.chat"
 def global_chat_permissions() -> frozenset[str]:
     """主 Agent Execution Profile 的可信权限集合。"""
 
-    return application_capability_permissions() | frozenset(query.permission for query in BUSINESS_QUERIES.definitions)
+    return application_capability_permissions()
 
 
 def _create_research_run(

@@ -54,7 +54,10 @@ Store/service，发现时不执行 loader；不扫描包或依赖装饰器注册
 与 `business_data_catalog` / `business_data_read` 共用同一目录，权限与空间由可信作用域决定。
 报单货代配置 `logistics.settings`、`fulfillment.settings` 与设置页共用本地查询；枚举/合作
 目录不等于已保存承接规则。公开业务结果不包含内部授权身份指纹，读取不刷新远端。
-首批覆盖运费表、仓库、模板、草稿内容、核价明细和 SKU 事实，非全业务覆盖声明。
+原运费/仓库/核价与报单查询之外，普通设置及索引/发布只读入口也已迁移；原生 Agent Profile 与 ToolSet 的查询权限均从同一组合根推导。
+`business_query_inventory.py` 对每个配置段及 GET 记录查询 owner 或保留边界，见
+[覆盖清单](business-query-coverage.md)。`services/config_queries.py` 由原 Store 生成不含凭据
+及本机连接的公开业务视图，不刷新远端。
 `services/pricing_data.py` 读取已保存和短期预览的原始核价结果，不触发模型或重新核价。
 Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不推测补造。
 开发边界、字段展开、预算与验证见[共用业务数据读取](business-data-access.md)。
@@ -1870,3 +1873,8 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 - 前端页面背景只包含现有页面；`schemas/ai_page_context.py` 保留历史 `pending` 页面快照的读取与校验，不作为当前导航入口。
 
 账号业务上下文通过 `AccountRuntime.context_for` 在原有个人模型目录中加入两条 New API 系统模型，保留个人连接及功能绑定。系统模型复用模型管理、测试和推理入口，服务端校验其 ID 与连接信息；运行时只有这两条记录从显式绑定的用户上下文取得托管令牌。
+
+
+业务问答验收脚本 `scripts/business_query_acceptance.py` 从普通页面建立事实基准，
+检查模型的结构化答案及原生 usage。`GlobalAgentChatService.instruction_sections`
+仅分项计量执行规则、业务提示、系统规则、用户偏好和回答风格；完整持久化历史不裁剪。

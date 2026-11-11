@@ -140,7 +140,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="禁售类目设置", disposition="internal_only",
         reason="受信系统设置界面维护禁售名单；模型预检和发布使用当前名单，不能通过工具修改禁售规则。") for method, path in (
-        ("GET", "/api/system-settings/forbidden-categories"),
         ("POST", "/api/system-settings/forbidden-categories/import"),
     )),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="任务队列", disposition="internal_only",
@@ -216,10 +215,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         ("POST", "/api/crossborderbus/delete-rule"),
         ("POST", "/api/orders/fulfillment/upload-label"),
     )),
-    AiCapabilityCoverageEntry(method="GET", path="/api/image-hosting", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
+
     *(AiCapabilityCoverageEntry(method=method, path="/api/system-settings/user-agents", business_domain="配置基础设施", disposition="excluded",
         reason="仅用户在系统设置中读取和编辑自己的全局偏好；不提供 Agent 自主写入入口。") for method in ("GET", "POST")),
-    AiCapabilityCoverageEntry(method="GET", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面读取同步间隔与水印，不作为模型业务工具。"),
+
     AiCapabilityCoverageEntry(method="POST", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面保存同步间隔与水印，不作为模型业务工具。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/system-settings/watermark-preview", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面预览当前水印表单，不保存配置、不上传图片。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/image-hosting/save", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面管理托管目标、凭据与显式网络测试；发布工具通过统一交付服务使用已配置目标。"),
@@ -365,20 +364,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/ozon/notifications", business_domain="订单通知", disposition="excluded", reason="Ozon 外部通知协议入口。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/yandex/notifications", business_domain="订单通知", disposition="excluded", reason="Yandex 外部通知协议入口。"),
     # -------------------------------------------------- 平台查询（GET）
-    AiCapabilityCoverageEntry(
-        method="GET",
-        path="/api/products-index",
-        business_domain="商品与草稿",
-        disposition="capability",
-        capability_names=("products_index_query",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="GET",
-        path="/api/drafts-index",
-        business_domain="商品与草稿",
-        disposition="capability",
-        capability_names=("drafts_query",),
-    ),
+
+
     AiCapabilityCoverageEntry(
         method="GET",
         path="/api/orders",
@@ -386,35 +373,9 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="capability",
         capability_names=("platform_orders_query",),
     ),
-    AiCapabilityCoverageEntry(
-        method="GET",
-        path="/api/publish-logs",
-        business_domain="发布",
-        disposition="capability",
-        capability_names=("publish_logs_query",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="GET",
-        path="/api/publish-bus/jobs",
-        business_domain="发布",
-        disposition="capability",
-        capability_names=("publish_jobs_query",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="GET",
-        path="/api/publish-bus/status",
-        business_domain="发布",
-        disposition="capability",
-        capability_names=("publish_job_status_query",),
-    ),
+
     # -------------------------------------------------- 基础设施（GET）
-    AiCapabilityCoverageEntry(
-        method="GET",
-        path="/api/operation-availability",
-        business_domain="客户端能力",
-        disposition="internal_only",
-        reason="向当前客户端提供操作限制，AI 通过绑定工具和运行上下文获得相同判断。",
-    ),
+
     AiCapabilityCoverageEntry(
         method="GET",
         path="/api/state",

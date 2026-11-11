@@ -11,7 +11,9 @@ from erp_web.schemas.business_data import DataCatalogRequest, DataCatalogResult,
 def at_path(value, path):
     if path in ('', '$'):
         return value
-    for key in path.split('.'):
+    # JSON Pointer 能访问 global.chat 等自身含点号的业务键，原点路径继续可读。
+    keys = [key.replace('~1', '/').replace('~0', '~') for key in path[1:].split('/')] if path.startswith('/') else path.split('.')
+    for key in keys:
         if isinstance(value, dict) and key in value:
             value = value[key]
         elif isinstance(value, list) and key.isdigit() and int(key) < len(value):
@@ -35,6 +37,15 @@ def project(row, fields, *, optional=False):
                 raise
             result[field] = None
     return result
+
+
+def parameter_hints(model):
+    """目录带最小定位参数，避免为已知读取反复获取整份 Schema。"""
+    schema = model.model_json_schema()
+    required = set(schema.get('required', []))
+    return {name: {**({'required': True} if name in required else {}),
+                   **({'enum': field['enum']} if 'enum' in field else {})}
+            for name, field in schema.get('properties', {}).items() if name in required or 'enum' in field}
 
 
 @dataclass(frozen=True)
@@ -74,6 +85,7 @@ class BusinessDataCatalog:
         return DataCatalogResult(resources=[DataResourceInfo(
             name=r.name, description=r.description, default_path=r.default_path,
             default_fields=list(r.default_fields), permission=r.permission, parameters=r.parameters.model_json_schema() if request.resource else {},
+            parameter_hints=parameter_hints(r.parameters),
         ) for r in matched[request.offset:end]], total=len(matched), next_offset=end if end < len(matched) else None)
 
     def read(self, request: DataReadRequest, *, permissions=None):
@@ -84,7 +96,9 @@ class BusinessDataCatalog:
         path = request.path or resource.default_path
         value = at_path(full, path)
         fields = request.fields or (list(resource.default_fields) if not request.path else [])
-        metadata = {key: full[key] for key in ('version', 'source', 'filename', 'imported_at', 'effective_date', 'warnings', 'calculation_notes', 'updated_at', 'preview_id', 'state') if isinstance(full, dict) and key in full}
+        metadata = {key: full[key] for key in ('version', 'source', 'filename', 'imported_at', 'effective_date', 'warnings', 'calculation_notes', 'updated_at', 'preview_id', 'state', 'next_cursor', 'pagination', 'coverage') if isinstance(full, dict) and key in full}
+        if isinstance(full, dict):
+            metadata['root_fields'] = list(full)[:100]
         if len(json.dumps(metadata, ensure_ascii=False)) > 2000:
             metadata = {'notice': '元数据较大，请用 path=$ 和 fields 单独读取所需字段。'}
         if isinstance(value, str):

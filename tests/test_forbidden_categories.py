@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from xml.sax.saxutils import escape
 from zipfile import ZipFile
 
+from erp_web.facades.business_data_facade import business_query_payload
+from erp_web.http_route_units import business_query_routes
+
 import pytest
 
 from erp_web.context import get_context
@@ -91,11 +94,11 @@ def test_duplicate_rows_type_row_and_numeric_ids_are_normalized_then_replaced():
 def test_import_route_contract_and_get_expose_same_configuration():
     endpoint = "/api/system-settings/forbidden-categories/import"
     assert endpoint in auth_config_routes.HANDLED_PATHS
-    assert "/api/system-settings/forbidden-categories" in get_routes.HANDLED_PATHS
+    assert "/api/system-settings/forbidden-categories" in business_query_routes.GET_API_ROUTES
     with pytest.raises(RequestValidationError):
         validate_request_payload({"platform": "ozon"}, endpoint=endpoint)
     expected = save_list()
-    assert auth_config_facade.forbidden_categories_payload() == expected
+    assert business_query_payload('settings.forbidden_categories')[0] == expected
 
 
 def test_http_import_and_read_handlers_use_validated_configuration():
@@ -108,7 +111,7 @@ def test_http_import_and_read_handlers_use_validated_configuration():
     assert auth_config_routes.handle_post(handler, SimpleNamespace(path=endpoint)) is True
     imported, status = received.pop()
     assert status == 200 and len(imported["categories"]) == 555
-    get_routes.GET_HANDLERS["/api/system-settings/forbidden-categories"](handler, None)
+    business_query_routes.handle_get(handler, SimpleNamespace(path='/api/system-settings/forbidden-categories', query=''))
     assert received.pop() == (imported, 200)
 
 

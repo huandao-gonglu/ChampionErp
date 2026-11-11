@@ -14,7 +14,10 @@ def business_query_payload(name, query=None):
     try:
         values = {key: items[0] if len(items) == 1 else items for key, items in (query or {}).items()}
         return build_business_data_catalog(get_context()).load(name, values), 200
-    except (ValidationError, ValueError, FileNotFoundError) as exc:
+    except FileNotFoundError as exc:
+        status = build_business_data_catalog(get_context()).resource(name).not_found_status
+        return {'ok': False, 'error': str(exc), 'error_code': 'BUSINESS_DATA_QUERY_INVALID'}, status
+    except (ValidationError, ValueError) as exc:
         return {'ok': False, 'error': str(exc), 'error_code': 'BUSINESS_DATA_QUERY_INVALID'}, 400
 
 
