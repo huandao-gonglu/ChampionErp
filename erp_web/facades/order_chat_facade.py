@@ -8,6 +8,7 @@ def create_service(context=None):
     context = context or get_context()
     return OrderChatService(
         context.order_procurement.store.order, context.config.load_store_config(),
+        accounts=context.order_notifications.accounts(),
     )
 
 

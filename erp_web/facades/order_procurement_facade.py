@@ -27,10 +27,13 @@ def create_service(context):
         if not cursor:
             break
 
-    def identity(platform):
+    def identity(platform, account_id=""):
         try:
+            config = context.config.load_store_config()
+            if platform == "yandex" and account_id:
+                config = {**config, "yandex": {**config["yandex"], "campaign_id": account_id}}
             return resolve_publish_store_binding(
-                platform, context.config.load_store_config()
+                platform, config
             ).identity
         except ValueError:
             return ""
@@ -40,16 +43,24 @@ def create_service(context):
     def yandex_images(account_id, offer_ids):
         config = context.config.load_store_config().get("yandex") or {}
         business = str(config.get("business_id") or "")
-        campaign = str(config.get("campaign_id") or "")
-        if not business or campaign != account_id:
+        from erp_web.schemas.orders import account_in_scope
+        if not business or not account_in_scope(orders.accounts(), "yandex", account_id):
             return {}
+        # 在线目录缓存以企业和所选发布店铺标识；商品图片本身属于企业商品。
+        campaign = str(config.get("campaign_id") or "")
         return online.thumbnails("yandex", f"{business}:{campaign}", offer_ids)
 
     return OrderProcurementService(store, orders.accounts, identity, yandex_images_provider=yandex_images)
 
 
 def detail(order_id=""):
-    return get_context().order_procurement.detail(order_id)
+    context = get_context()
+    result = context.order_procurement.detail(order_id)
+    order = result["order"]
+    order["shop_name"] = next((shop.name for shop in context.order_notifications.shops()
+                               if shop.platform == order["platform"] and shop.account_id == order["account_id"]),
+                              order["account_id"])
+    return result
 
 
 def query_purchase(body, *, context=None):

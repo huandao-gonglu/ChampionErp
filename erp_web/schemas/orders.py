@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
@@ -16,6 +16,26 @@ from erp_web.schemas.alibaba_orders import PurchaseTrackingSummary
 
 Platform = Literal["mercadolibre", "ozon", "yandex"]
 PLATFORMS = ("mercadolibre", "ozon", "yandex")
+OrderAccounts = Mapping[str, str | tuple[str, ...]]
+
+
+def account_pairs(accounts: OrderAccounts) -> list[tuple[str, str]]:
+    """将各平台的单账号或多店铺范围展开为精确身份，不使用通配范围。"""
+    return [(platform, account) for platform, values in accounts.items()
+            for account in ((values,) if isinstance(values, str) else values)]
+
+
+def account_in_scope(accounts: OrderAccounts, platform: str, account: str) -> bool:
+    values = accounts.get(platform, ())
+    return account == values if isinstance(values, str) else account in values
+
+
+class OrderShop(BaseModel):
+    platform: Platform
+    account_id: str
+    name: str
+
+
 OrderState = Literal[
     "pending_shipment", "processing", "shipped", "delivered", "cancelled", "unknown"
 ]
@@ -131,6 +151,7 @@ def configured_accounts(config: dict[str, Any]) -> dict[str, str]:
 class OrderView(OrderSnapshot):
     id: str
     checked_at: str
+    shop_name: str = ""
     fulfillment_summary: FulfillmentSummary | None = None
     purchase_tracking: PurchaseTrackingSummary | None = None
 
@@ -173,6 +194,7 @@ class OrdersPage(BaseModel):
     alerts: list[OrderAlert]
     unread: int
     latest_alert_id: int
+    shops: list[OrderShop] = Field(default_factory=list)
 
 
 class OrderDataError(ValueError):

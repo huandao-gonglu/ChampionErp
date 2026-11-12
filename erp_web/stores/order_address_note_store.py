@@ -3,7 +3,7 @@
 import hashlib
 
 from erp_web.schemas.order_address_notes import AddressNoteConflict, AddressNoteView, AddressNoteWrite
-from erp_web.schemas.orders import OrderSnapshot, utc_iso
+from erp_web.schemas.orders import account_in_scope, account_pairs, OrderSnapshot, utc_iso
 from erp_web.stores.order_notification_store import OrderNotificationStore
 
 
@@ -22,7 +22,7 @@ class OrderAddressNoteStore:
         if not row:
             raise ValueError("订单不存在")
         order = OrderSnapshot.model_validate_json(row[0])
-        if accounts.get(order.platform) != order.account_id:
+        if not account_in_scope(accounts, order.platform, order.account_id):
             raise ValueError("订单不属于当前店铺")
         shipments = order.handover.shipments if order.handover else []
         matched = [item for item in shipments if item.shipment_id == shipment_id]

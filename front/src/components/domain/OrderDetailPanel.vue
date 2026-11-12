@@ -151,7 +151,7 @@ onBeforeUnmount(() => { disposed = true; generation++; clearTimeout(poll) })
           </span>
           <h2>{{ detail?.order.order_id || orderId }}</h2>
           <span v-if="detail" class="order-muted">
-            {{ orderPlatformNames[detail.order.platform] }} · {{ detail.order.delivery?.fulfillment_model || detail.order.fulfillment || '履约未提供' }}
+            {{ orderPlatformNames[detail.order.platform] }} · {{ detail.order.shop_name || detail.order.account_id }} · {{ detail.order.delivery?.fulfillment_model || detail.order.fulfillment || '履约未提供' }}
           </span>
           <span
             v-if="detail"

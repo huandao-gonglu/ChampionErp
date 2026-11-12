@@ -30,9 +30,8 @@ const tabs = computed(() => [
   })),
 ])
 const syncing = computed(() =>
-  store.page.notifications.some(
+  (store.page.sync_status || []).some(
     (event) =>
-      event.topic === 'sync' &&
       ['queued', 'running'].includes(event.status) &&
       (!store.platform || event.platform === store.platform)
   )

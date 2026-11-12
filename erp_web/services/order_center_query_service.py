@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from itertools import batched
 from zoneinfo import ZoneInfo
 
+from erp_web.schemas.orders import account_pairs, account_in_scope
 from erp_web.schemas.order_center import validate_order_center_filters
 from erp_web.schemas.order_procurement import order_line_key
 from erp_web.schemas.receiving_warehouse import delivery_carrier
@@ -117,7 +118,7 @@ def _source_search_values(order, saved, bindings):
         if not key or counts[key] != 1:
             continue
         selection = resolve_source_selection(line, key, line_signature(line),
-            saved.get((order.id, key)), bindings.get((order.platform, line.sku), []))
+            saved.get((order.id, key)), bindings.get((order.platform, order.account_id, line.sku), []))
         if selection.status == 'confirmed':
             values.extend(_source_values(selection.source))
         for candidate in selection.candidates:
@@ -136,13 +137,22 @@ class OrderCenterQueryService:
         now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(filters.get('time_zone') or 'UTC'))
         accounts = self.notifications.accounts()
         scoped = {key: value for key, value in accounts.items() if not platform or key == platform}
+        shop = filters.pop('shop', '')
+        if shop:
+            shop_platform, separator, account = shop.partition(':')
+            if not separator or not account_in_scope(accounts, shop_platform, account):
+                raise ValueError('所选店铺不属于当前授权账号，请刷新后重新选择')
+            scoped = {shop_platform: account} if not platform or platform == shop_platform else {}
         # 无需跨领域关联时直接在数据库分页，常规轮询不扫描整库采购和报单。
         if not q and not any(value for key, value in filters.items() if key != 'time_zone'):
-            result = self.notifications.store.read(accounts, platform=platform, state=state, limit=limit, offset=offset)
-            if platform:
-                result['counts'] = self.notifications.store.read(scoped, limit=0)['counts']
+            result = self.notifications.store.read(scoped, platform=platform, state=state, limit=limit, offset=offset)
+            if scoped != accounts:
+                # 店铺仅筛选订单；通知抽屉及已读游标仍覆盖完整授权范围。
+                notices = self.notifications.store.read(accounts, limit=0)
+                for key in ('notifications', 'alerts', 'unread', 'latest_alert_id'):
+                    result[key] = notices[key]
             return result
-        identities = {key: self.procurement.identity_provider(key) for key in scoped}
+        identities = {(p, account): self.procurement.identity_provider(p, account) for p, account in account_pairs(scoped)}
         # 通知和提醒沿用原有读取入口；订单本身由领域事实分批筛选，最后分页。
         result = self.notifications.store.read(accounts, limit=0)
         counts, items, total = Counter(), [], 0

@@ -9,7 +9,7 @@ from .desktop_connection_service import server_worker_context
 
 from erp_web.release_guard import release_guard
 from erp_web.schemas.fulfillment import FulfillmentCommand, FulfillmentError, FulfillmentRule, FulfillmentRuleView, FulfillmentView, LabelInput
-from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
+from erp_web.schemas.orders import account_in_scope, OrderSnapshot, OrderView, utc_iso
 from erp_web.services.fulfillment_packages import parcel_payloads, domestic_waybill_key
 from erp_web.services.fulfillment_routing import consolidation_reason, handover_target, is_yandex_section, validate_services
 from erp_web.services.external_request_context import request_operation
@@ -146,7 +146,7 @@ class FulfillmentService:
             _, reserved = self.store.receiving.purchase_state(conn, order_id)
         restartable = (self.store.can_restart_cancelled(value, self.client.identity())
                        and order.state == 'pending_shipment' and not reserved
-                       and self.accounts_provider().get(order.platform) == order.account_id)
+                       and account_in_scope(self.accounts_provider(), order.platform, order.account_id))
         label_reason = self.label_provider.unsupported_reason(order) if self.label_provider else "当前平台尚未接入面单获取。"
         response = {"ok": True, **value, "delivery": order.delivery.model_dump(), "country": country,
                 "receiving_binding_stale": receiving_binding_stale,
@@ -174,11 +174,11 @@ class FulfillmentService:
         return {"ok": True, "authorized": bool(self.client.identity()), "secret_configured": bool(credentials.get("client_secret")), "user_name": credentials.get("user_name", ""), "expires_at": credentials.get("expires_at", 0),
                 "catalog": {key: catalog[key] for key in ('sections', 'checked_at') if key in catalog} if catalog.get("identity") == identity else {},
                 "rules": [FulfillmentRuleView.model_validate(r).model_dump(mode='json') for r in self.store.rules()
-                          if accounts.get(r["platform"]) == r["account_id"] and r.get("bus_identity") == identity], "delivery_choices": list(choices.values())}
+                          if account_in_scope(accounts, r["platform"], r["account_id"]) and r.get("bus_identity") == identity], "delivery_choices": list(choices.values())}
 
     def save_rule(self, body):
         rule = FulfillmentRule.model_validate(body).model_dump()
-        if self.accounts_provider().get(rule["platform"]) != rule["account_id"] or not rule["confirmed"]:
+        if not account_in_scope(self.accounts_provider(), rule["platform"], rule["account_id"]) or not rule["confirmed"]:
             raise FulfillmentError("请选择当前授权店铺，并确认合作仓的承接范围。")
         source_keys = ("platform", "account_id", "fulfillment", "platform_warehouse_id", "delivery_method_id")
         if not any(all(choice[k] == rule[k] for k in source_keys) for choice in self.settings()["delivery_choices"]):
@@ -296,7 +296,7 @@ class FulfillmentService:
                         row = conn.execute("SELECT snapshot FROM orders WHERE id=?", (request.order_id,)).fetchone()
                         latest = OrderSnapshot.model_validate_json(row[0]) if row else None
                         if (latest is None or latest.identity != order.identity or latest.state != 'pending_shipment'
-                                or self.accounts_provider().get(order.platform) != order.account_id
+                                or not account_in_scope(self.accounts_provider(), order.platform, order.account_id)
                                 or self.client.identity() != identity):
                             raise FulfillmentError("订单或账号已变化，请重新确认收货仓")
                         if receiving:
@@ -350,7 +350,7 @@ class FulfillmentService:
         order, _ = self.order_detail(order_id)
         value = self.store.ensure(order)
         if (order.platform != "yandex" or order.identity != order_id
-                or self.accounts_provider().get(order.platform) != order.account_id
+                or not account_in_scope(self.accounts_provider(), order.platform, order.account_id)
                 or value["revision"] != revision or value["busy"]):
             raise FulfillmentError("订单身份或履约版本已变化，请刷新后再关联。")
         if (not value["crossborderbus_order_id"] or value["create_unknown"] or value["cancel_requested"]
@@ -384,7 +384,7 @@ class FulfillmentService:
             fresh = self.store.get(order_id)
             if (fresh["revision"] != value["revision"] or fresh["cancel_requested"]
                     or current_order.state == "cancelled" or self.stop_event.is_set()
-                    or self.accounts_provider().get(order.platform) != order.account_id):
+                    or not account_in_scope(self.accounts_provider(), order.platform, order.account_id)):
                 raise FulfillmentError("订单状态或授权在查询期间已变化，已停止关联。")
             sent = True
             result = self.client.request("/erpapi/orderassociation/association_order_account",
@@ -440,7 +440,7 @@ class FulfillmentService:
                     or fresh_order.identity != order.identity or fresh["revision"] != value["revision"]
                     or fresh["cancel_requested"] or fresh["fulfillment_status"] in LOCKED_STATES
                     or fresh.get("warehouse_locked") or fresh["create_unknown"]
-                    or self.accounts_provider().get(order.platform) != order.account_id):
+                    or not account_in_scope(self.accounts_provider(), order.platform, order.account_id)):
                 raise FulfillmentError("订单或履约状态在获取期间发生变化，已停止保存面单，请刷新核对。")
             if fresh["bus_identity"] and fresh["bus_identity"] != self.client.identity():
                 raise FulfillmentError("跨境巴士授权已变化，已停止保存面单。")
@@ -524,7 +524,7 @@ class FulfillmentService:
                 raise FulfillmentError("跨境巴士授权账号已变化，请恢复原账号后处理此履约单。")
             if action == "create":
                 order, detail = self.order_detail(value["erp_order_id"])
-                if self.accounts_provider().get(order.platform) != order.account_id:
+                if not account_in_scope(self.accounts_provider(), order.platform, order.account_id):
                     raise FulfillmentError("店铺授权账号已切换，本次预报停止。")
                 rule = self.rule_for(order, value["country"])
                 self.validate_plan(value["plan"], rule, refresh=True, order=order)
@@ -532,7 +532,7 @@ class FulfillmentService:
                 # 合作仓和服务读取期间可能同步了新地址或取消订单，发送前再次读取。
                 order, detail = self.order_detail(value["erp_order_id"])
                 fresh = self.store.get(value["erp_order_id"])
-                if (fresh["revision"] != value["revision"] or self.accounts_provider().get(order.platform) != order.account_id
+                if (fresh["revision"] != value["revision"] or not account_in_scope(self.accounts_provider(), order.platform, order.account_id)
                         or self.readiness(order, detail, value, rule, value["plan"])):
                     raise FulfillmentError("提交前订单或资料已变化，预报已停止。")
                 order_data = {
@@ -590,7 +590,7 @@ class FulfillmentService:
                     packages = self.delivery_packages(value)
                     fresh = self.store.get(value["erp_order_id"])
                     if (fresh["revision"] != value["revision"] or fresh["cancel_requested"]
-                            or self.stop_event.is_set() or self.accounts_provider().get(order.platform) != order.account_id):
+                            or self.stop_event.is_set() or not account_in_scope(self.accounts_provider(), order.platform, order.account_id)):
                         raise FulfillmentError("图片准备期间订单状态或资料已变化，已停止更新。")
                     self.client.request("/erpapi/order/updateOrderSheet", {"order_number": value["order_number"], "sheet": value["platform_label"], "sheet_order_sn": value["platform_tracking_number"]}, expected_identity=value["bus_identity"])
                     self.client.request("/erpapi/order/updateOrderPackage", {"order_id": value["crossborderbus_order_id"], "package_list": packages}, expected_identity=value["bus_identity"])

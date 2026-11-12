@@ -2,6 +2,7 @@ import type { BackendOrderCenterFilters, BackendPurchaseProgressView, BackendPur
 export type OrderCenterFilters = BackendOrderCenterFilters
 export function emptyOrderCenterFilters(): Required<Omit<OrderCenterFilters, 'time_zone'>> {
   return {
+    shop: '',
     procurement_status: '', declaration_status: '', warehouse_status: '', has_waybill: '',
     domestic_status: '', domestic_carrier: '', receiving_warehouse: '', platform_carrier: '',
     exception_type: '', deadline_from: '', deadline_to: '', deadline_status: '',
@@ -27,6 +28,7 @@ export interface OrderLine extends OrderAmount {
   image_url?: string
 }
 export interface OrderSnapshot extends OrderAmount {
+  shop_name?: string
   delivery?: import('./fulfillment').DeliverySource
   handover?: OrderHandoverSnapshot | null
   id: string
@@ -71,6 +73,7 @@ export interface OrderSyncStatus {
   next_attempt: number
 }
 export interface OrdersPage {
+  shops?: { platform: OrderPlatform; account_id: string; name: string }[]
   sync_status?: OrderSyncStatus[]
   ok: boolean
   items: OrderSnapshot[]

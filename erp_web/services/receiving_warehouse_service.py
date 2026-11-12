@@ -1,7 +1,7 @@
 """采购前确定收货仓；人工确认承接范围，复用仓库收货资料。"""
 import json
 
-from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
+from erp_web.schemas.orders import account_in_scope, OrderSnapshot, OrderView, utc_iso
 from erp_web.schemas.receiving_warehouse import ReceivingWarehouseRequest, ReceivingWarehouseView, delivery_carrier, delivery_key, platform_carrier
 from erp_web.services.fulfillment_routing import is_yandex_section
 from erp_web.services.logistics_settings_service import LogisticsSettingsService
@@ -17,7 +17,7 @@ class ReceivingWarehouseService:
 
     def order(self, order_id):
         order = OrderView.model_validate(self.detail_provider(order_id)['order'])
-        if self.accounts_provider().get(order.platform) != order.account_id:
+        if not account_in_scope(self.accounts_provider(), order.platform, order.account_id):
             raise ValueError('订单不属于当前店铺')
         return order
 
@@ -117,7 +117,7 @@ class ReceivingWarehouseService:
             row = conn.execute('SELECT snapshot FROM orders WHERE id=?', (req.order_id,)).fetchone()
             latest = OrderSnapshot.model_validate_json(row[0]) if row else None
             if (not latest or latest.identity != req.order_id or latest.state != 'pending_shipment'
-                    or self.accounts_provider().get(latest.platform) != latest.account_id
+                    or not account_in_scope(self.accounts_provider(), latest.platform, latest.account_id)
                     or self.client.identity() != identity or delivery_key(latest) != req.delivery_key):
                 raise ValueError('订单物流方案、状态或账号已变化，请刷新后重试')
             old = self.store.read(conn, req.order_id)

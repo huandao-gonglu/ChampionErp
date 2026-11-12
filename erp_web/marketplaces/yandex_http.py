@@ -516,6 +516,33 @@ def fetch_yandex_campaign(
     return campaign
 
 
+def fetch_yandex_shop_names(api_token: str, business_id: str, *, request=None) -> dict[str, str]:
+    """完整读取当前凭据可访问的本企业店铺目录，排除其他企业。"""
+    request = request or request_yandex_json
+    names = {}
+    query = {"limit": 100}
+    seen = set()
+    while True:
+        page = request("GET", "/v2/campaigns", api_token, query=query.copy())
+        rows = page.get("campaigns")
+        if not isinstance(rows, list):
+            raise ValueError("Yandex 店铺目录缺少店铺列表")
+        for row in rows:
+            if str((row.get("business") or {}).get("id")) != str(business_id):
+                continue
+            campaign = str(row.get("id") or "")
+            if not campaign.isascii() or not campaign.isdigit() or int(campaign) <= 0:
+                raise ValueError("Yandex 店铺目录包含无效店铺编号")
+            names[campaign] = str(row.get("domain") or campaign)
+        cursor = str((page.get("paging") or {}).get("nextPageToken") or "")
+        if not cursor:
+            return names
+        if cursor in seen or not rows:
+            raise ValueError("Yandex 店铺目录分页未前进")
+        seen.add(cursor)
+        query["pageToken"] = cursor
+
+
 def fetch_yandex_business_settings(
     api_token: str,
     business_id: str,
@@ -999,6 +1026,7 @@ __all__ = [
     "YANDEX_PUBLISH_SCOPES",
     "YandexApiError",
     "fetch_yandex_business_settings",
+    "fetch_yandex_shop_names",
     "fetch_yandex_campaign",
     "fetch_yandex_campaign_offer",
     "fetch_yandex_category_parameters",

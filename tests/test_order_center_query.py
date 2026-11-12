@@ -21,7 +21,7 @@ from tests.test_order_query_service import bind, save_order
 def center(setup):
     procurement, fulfillment, body, _, run = setup
     notifications = SimpleNamespace(
-        store=procurement.store.orders, accounts=procurement.accounts_provider, sync_status=lambda: [],
+        store=procurement.store.orders, accounts=procurement.accounts_provider, sync_status=lambda: [], shops=lambda: [],
     )
     query = OrderCenterQueryService(procurement, notifications, fulfillment.store)
     order = procurement.store.order(body['order_id'], procurement.accounts_provider())

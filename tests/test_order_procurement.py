@@ -76,7 +76,7 @@ def domain(tmp_path):
     orders.save_snapshot(claim, value, now=now)
     orders.finish(claim, now=now)
     service = OrderProcurementService(
-        store, lambda: {"yandex": "4"}, lambda platform: "shop-a",
+        store, lambda: {"yandex": "4"}, lambda platform, account_id="": "shop-a",
         yandex_images_provider=lambda account, ids: {},
     )
     return service, value, order_line_key(line)
@@ -163,7 +163,7 @@ def test_other_shop_and_ambiguous_sources_never_auto_match(domain):
             }
         )
     other = OrderProcurementService(
-        service.store, lambda: {"yandex": "another"}, lambda p: "shop-a",
+        service.store, lambda: {"yandex": "another"}, lambda p, account_id="": "shop-a",
         yandex_images_provider=lambda account, ids: {},
     )
     with pytest.raises(ValueError):
@@ -280,7 +280,7 @@ def test_source_binding_survives_restart(domain):
     other = OrderProcurementService(
         OrderProcurementStore(OrderNotificationStore(service.store.orders.path)),
         lambda: {"yandex": "4"},
-        lambda p: "shop-a",
+        lambda p, account_id="": "shop-a",
         yandex_images_provider=lambda account, ids: {},
     )
     result = other.detail(order.identity)

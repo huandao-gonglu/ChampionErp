@@ -77,6 +77,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(props.page.total / ORDER_
             </td>
             <td>
               <p class="order-cell-primary">{{ orderPlatformNames[order.platform] }}</p>
+              <p class="order-muted" :title="order.shop_name || order.account_id">{{ order.shop_name || order.account_id }}</p>
               <p class="order-muted">{{ order.delivery?.fulfillment_model || order.fulfillment || '未提供' }}</p>
             </td>
             <td class="order-numeric" :title="amountLabel(order, order.platform)">

@@ -5,7 +5,7 @@ import json
 import re
 
 from erp_web.schemas.order_procurement import ProcurementSource, order_line_key
-from erp_web.schemas.orders import PLATFORMS, utc_iso
+from erp_web.schemas.orders import PLATFORMS, account_pairs, utc_iso
 from erp_web.schemas.platform_query_capabilities import OrderQueryCoverage, PlatformOrdersQueryRequest
 from erp_web.services.order_source_resolution import resolve_source_selection
 from erp_web.stores.order_procurement_store import line_signature
@@ -19,7 +19,7 @@ class OrderQueryService:
     def query(self, request: PlatformOrdersQueryRequest):
         requested = [request.platform] if request.platform else list(PLATFORMS)
         accounts = {p: account for p, account in self.notifications.accounts().items() if p in requested}
-        identities = {p: self.procurement.identity_provider(p) for p in accounts}
+        identities = {(p, account): self.procurement.identity_provider(p, account) for p, account in account_pairs(accounts)}
         terms = tuple(dict.fromkeys(request.article_numbers)) or ((request.q,) if request.q else ())
         patterns = {term: re.compile(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", re.I) for term in request.article_numbers}
 
@@ -48,7 +48,7 @@ class OrderQueryService:
                         evidence.append({"kind": "order_line", "field": field, "value": value, "certainty": "verified"})
                 has_source = False
                 if key and counts[key] == 1:
-                    selection = resolve_source_selection(line, key, signature, saved.get((order.id, key)), bindings.get((order.platform, line.sku), []))
+                    selection = resolve_source_selection(line, key, signature, saved.get((order.id, key)), bindings.get((order.platform, order.account_id, line.sku), []))
                     if selection.status == "confirmed":
                         has_source = True
                         evidence.extend(_source_evidence("confirmed_source", selection.source, revision=selection.revision))

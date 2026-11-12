@@ -36,15 +36,19 @@ def create_order_notification_service(context, *, start_worker=True):
         adapters={
             "mercadolibre": MercadoLibreOrderAdapter,
             "ozon": OzonOrderAdapter,
-            "yandex": YandexOrderAdapter,
+            "yandex": lambda config: YandexOrderAdapter(config,
+                shops={row.account_id: row.name for row in service.shops(config) if row.platform == "yandex"},
+                on_shops=lambda names: service.save_yandex_shops(config, names)),
         },
         parser=parse_notification,
         external_store=context.external_requests.store,
         request_scopes=order_request_scopes,
         progress_sync=refresh_progress,
         auto_sync_interval_provider=lambda: context.config.system_settings()["orders_auto_sync_interval_hours"] * 3600,
-        start_worker=start_worker,
+        start_worker=False,
     )
+    if start_worker:
+        service.start_workers()
     return service
 
 
@@ -91,6 +95,11 @@ def read_orders(*, platform="", state="", limit=50, offset=0, q="", **filters):
         }
         for order in orders
     ]
+    shops = service.shops()
+    names = {(shop.platform, shop.account_id): shop.name for shop in shops}
+    for order in result["items"]:
+        order["shop_name"] = names.get((order["platform"], order["account_id"]), order["account_id"])
+    result["shops"] = [row.model_dump(mode="json") for row in shops]
     result["sync_status"] = [row.model_dump(mode="json") for row in _sync_status(service)]
     result["pagination"] = {
         "limit": max(1, min(int(limit), 100)),

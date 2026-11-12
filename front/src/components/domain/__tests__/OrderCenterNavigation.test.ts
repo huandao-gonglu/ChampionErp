@@ -76,6 +76,48 @@ async function render() {
   return { wrapper, router }
 }
 describe('紧凑订单列表', () => {
+  it('默认查看全部店铺，切换店铺后搜索和分页保留范围，切换平台清除店铺', async () => {
+    const store = useOrderNotificationsStore()
+    vi.mocked(fetchOrders).mockResolvedValue({
+      ok: true, items: orders, total: 18, counts: { pending_shipment: 18 },
+      notifications: [], alerts: [], unread: 0, latest_alert_id: 0,
+      shops: [
+        { platform: 'yandex', account_id: '4', name: 'GUOO-Economy' },
+        { platform: 'yandex', account_id: '6', name: 'GUOO-Express' },
+        { platform: 'ozon', account_id: 'shop', name: 'Ozon 店铺' },
+      ],
+    })
+    const { wrapper } = await render()
+    const select = wrapper.get('select[aria-label="店铺筛选"]')
+    expect((select.element as HTMLSelectElement).value).toBe('')
+    expect(select.text()).toContain('GUOO-Express')
+    expect(fetchOrders).toHaveBeenLastCalledWith(expect.not.objectContaining({ shop: expect.anything() }))
+    await select.setValue('yandex:6'); await flushPromises()
+    expect(fetchOrders).toHaveBeenLastCalledWith(expect.objectContaining({ shop: 'yandex:6', offset: 0 }))
+    await store.filter(store.platform, store.state, 9)
+    expect(fetchOrders).toHaveBeenLastCalledWith(expect.objectContaining({ shop: 'yandex:6', offset: 9 }))
+    await wrapper.get('input[type="search"]').setValue('SKU')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(fetchOrders).toHaveBeenLastCalledWith(expect.objectContaining({ shop: 'yandex:6', q: 'SKU', offset: 0 }))
+    await wrapper.get('select[aria-label="平台筛选"]').setValue('ozon'); await flushPromises()
+    expect(store.filters.shop).toBeUndefined()
+    expect(select.text()).not.toContain('GUOO-Express')
+    expect(select.text()).toContain('Ozon 店铺')
+    expect(orderCommand).not.toHaveBeenCalled()
+  })
+
+  it('订单显示真实店名，筛选另一店铺时仍显示平台级同步进度', async () => {
+    vi.mocked(fetchOrders).mockResolvedValue({
+      ok: true, items: [{ ...orders[0]!, shop_name: '快线店' }], total: 1,
+      counts: { pending_shipment: 1 }, notifications: [], alerts: [], unread: 0, latest_alert_id: 0,
+      sync_status: [{ platform: 'ozon', status: 'running', error: '', last_success_at: '', next_attempt: 0 }],
+    })
+    const { wrapper } = await render()
+    expect(wrapper.get('tbody').text()).toContain('快线店')
+    const sync = wrapper.findAll('button').find(button => button.text() === '同步中…')!
+    expect(sync.attributes('disabled')).toBeDefined()
+  })
+
   it('挂载、焦点恢复和本地刷新不外发同步，手动按钮仍可同步', async () => {
     vi.useFakeTimers()
     const store = useOrderNotificationsStore()

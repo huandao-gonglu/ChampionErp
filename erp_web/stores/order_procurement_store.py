@@ -15,7 +15,7 @@ from erp_web.schemas.order_procurement import (
     SalesSkuBinding,
     order_line_key,
 )
-from erp_web.schemas.orders import OrderSnapshot, OrderView, utc_iso
+from erp_web.schemas.orders import account_in_scope, account_pairs, OrderSnapshot, OrderView, utc_iso
 from erp_web.stores.order_notification_store import OrderNotificationStore
 from erp_web.stores.purchase_progress_store import PurchaseProgressStore
 from erp_web.stores.receiving_warehouse_store import ReceivingWarehouseStore
@@ -73,7 +73,7 @@ class OrderProcurementStore:
         if not row:
             raise ValueError("订单不存在")
         snapshot = OrderSnapshot.model_validate_json(row["snapshot"])
-        if accounts.get(snapshot.platform) != snapshot.account_id:
+        if not account_in_scope(accounts, snapshot.platform, snapshot.account_id):
             raise ValueError("订单不属于当前店铺")
         return OrderView(
             **snapshot.model_dump(), id=order_id, checked_at=row["checked_at"]
@@ -92,8 +92,8 @@ class OrderProcurementStore:
 
     def iter_query_facts(self, accounts, identities, *, state=""):
         """同一读事务分批读取订单及可信来源；按账号、发布店铺双重隔离。"""
-        where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
-        args = tuple(value for pair in accounts.items() for value in pair)
+        where = " OR ".join("(platform=? AND account_id=?)" for _ in account_pairs(accounts)) or "0"
+        args = tuple(value for pair in account_pairs(accounts) for value in pair)
         with self.orders.connect() as conn:
             conn.execute("BEGIN")
             cursor = conn.execute(
@@ -116,19 +116,20 @@ class OrderProcurementStore:
                             purchases.setdefault((row["order_id"], item["line_key"]), []).append({
                                 **item, "record_id": row["id"], "purchase_order_number": record["purchase_order_number"]})
                 bindings = {}
-                for platform in {order.platform for order in orders}:
-                    identity = identities.get(platform)
+                for platform, account in {(order.platform, order.account_id) for order in orders}:
+                    identity = identities.get((platform, account))
                     if not identity:
                         continue
-                    skus = json.dumps(list({line.sku for order in orders if order.platform == platform for line in order.items if line.sku}))
+                    skus = json.dumps(list({line.sku for order in orders if order.platform == platform and order.account_id == account
+                                           for line in order.items if line.sku}))
                     for row in conn.execute(
                         "SELECT id,binding_json FROM sales_sku_bindings WHERE platform=? AND store_identity=? "
                         "AND seller_sku IN (SELECT value FROM json_each(?))", (platform, identity, skus),
                     ):
                         binding = SalesSkuBinding.model_validate_json(row["binding_json"]).model_copy(update={"id": row["id"]})
-                        bindings.setdefault((platform, binding.seller_sku), []).append(binding)
+                        bindings.setdefault((platform, account, binding.seller_sku), []).append(binding)
                 for order in orders:
-                    if accounts.get(order.platform) == order.account_id:
+                    if account_in_scope(accounts, order.platform, order.account_id):
                         yield order, sources, purchases, bindings
 
     def checked_purchase(self, conn, order_id, record_id, accounts):

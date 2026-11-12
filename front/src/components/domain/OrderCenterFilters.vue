@@ -8,6 +8,18 @@ const store = useOrderNotificationsStore()
 const searchText = ref(store.query)
 const draft = reactive({ ...emptyOrderCenterFilters(), ...store.filters })
 const appliedCount = computed(() => Object.entries(store.filters).filter(([key, value]) => key !== 'time_zone' && !!value).length)
+const shops = computed(() => (store.page.shops || []).filter(shop => !store.platform || shop.platform === store.platform))
+
+function filterPlatform(value: string) {
+  draft.shop = ''
+  delete store.filters.shop
+  void store.filter(value, store.state)
+}
+function filterShop(value: string) {
+  draft.shop = value
+  store.filters = { ...store.filters, shop: value }
+  void store.filter(store.platform, store.state)
+}
 
 function search() {
   store.query = searchText.value.trim()
@@ -38,10 +50,19 @@ function reset() {
       <button class="order-button" type="button" @click="reset">清空筛选</button>
       <select
         class="order-input platform" aria-label="平台筛选" :value="store.platform"
-        @change="store.filter(($event.target as HTMLSelectElement).value, store.state)"
+        @change="filterPlatform(($event.target as HTMLSelectElement).value)"
       >
         <option value="">全部平台</option>
         <option v-for="(label, key) in orderPlatformNames" :key="key" :value="key">{{ label }}</option>
+      </select>
+      <select
+        class="order-input shop" aria-label="店铺筛选" :value="store.filters.shop || ''"
+        @change="filterShop(($event.target as HTMLSelectElement).value)"
+      >
+        <option value="">全部店铺</option>
+        <option v-for="shop in shops" :key="`${shop.platform}:${shop.account_id}`" :value="`${shop.platform}:${shop.account_id}`">
+          {{ store.platform ? shop.name : `${orderPlatformNames[shop.platform]} · ${shop.name}` }}
+        </option>
       </select>
       <span class="order-muted result-count">{{ store.page.total }} 个订单<span v-if="appliedCount"> · 已筛选 {{ appliedCount }} 项</span></span>
     </div>
@@ -111,6 +132,7 @@ function reset() {
 .search-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .keyword { flex: 1 1 300px; min-width: 180px; }
 .platform { width: 150px; }
+.shop { width: 200px; max-width: 100%; }
 .result-count { margin-left: auto; white-space: nowrap; }
 .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .filter-grid label { display: flex; flex-direction: column; gap: 4px; color: var(--order-muted); font-size: 12px; }

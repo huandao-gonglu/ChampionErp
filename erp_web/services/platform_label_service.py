@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from erp_web.marketplaces.yandex_http import YandexApiError, request_yandex_json, request_yandex_pdf
 from erp_web.schemas.fulfillment import FulfillmentError, LabelInput
+from erp_web.schemas.orders import account_in_scope, configured_accounts
 from erp_web.services.fulfillment_label_service import deliver_label_bytes, validate_label_pdf
 from erp_web.services.image_hosting_config import default_profile
 
 
 class PlatformLabelService:
-    def __init__(self, store_config_provider, app_config_provider):
+    def __init__(self, store_config_provider, app_config_provider, *, accounts_provider=None):
         self.store_config_provider = store_config_provider
         self.app_config_provider = app_config_provider
+        self.accounts_provider = accounts_provider
 
     @staticmethod
     def unsupported_reason(order):
@@ -24,8 +26,10 @@ class PlatformLabelService:
         return ""
 
     def credentials(self, order):
-        config = self.store_config_provider().get("yandex", {})
-        if str(config.get("campaign_id") or "") != order.account_id or not config.get("api_token"):
+        stores = self.store_config_provider()
+        config = stores.get("yandex", {})
+        accounts = self.accounts_provider() if self.accounts_provider else configured_accounts(stores)
+        if not account_in_scope(accounts, "yandex", order.account_id) or not config.get("api_token"):
             raise FulfillmentError("Yandex 店铺授权已变化，请重新同步订单后获取面单。")
         return dict(config)
 

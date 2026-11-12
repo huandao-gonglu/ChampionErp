@@ -69,12 +69,14 @@ def normalize_yandex_shipment(delivery):
 
 
 class YandexOrderAdapter:
-    def __init__(self, config):
+    def __init__(self, config, *, shops=None, on_shops=None):
         self.store = config["yandex"]
         self.account = identifier(self.store["campaign_id"])
         self.business = identifier(self.store["business_id"])
+        self.shops = dict(shops) if shops is not None else {self.account: str(self.store.get("shop_name") or self.account)}
+        self.on_shops = on_shops
 
-    def pages(self, body):
+    def pages(self, body, *, campaigns):
         cursor = ""
         seen = set()
         while True:
@@ -82,16 +84,23 @@ class YandexOrderAdapter:
                 "POST",
                 f"/v1/businesses/{self.business}/orders",
                 self.store["api_token"],
-                {"campaignIds": [int(self.account)], **body},
+                {"campaignIds": [int(account) for account in campaigns], **body},
                 query={"limit": 50, "pageToken": cursor},
             )
             rows = data.get("orders")
             if not isinstance(rows, list):
                 raise OrderDataError("Yandex 订单响应缺少 orders")
-            yield from enrich_yandex_handover(
-                [self.normalize(row) for row in rows],
-                account=self.account, api_token=self.store["api_token"], request=request_yandex_json,
-            )
+            snapshots = [self.normalize(row) for row in rows]
+            if any(row.account_id not in campaigns for row in snapshots):
+                raise OrderDataError("Yandex 订单不属于本次查询店铺")
+            # 同页跨店铺时，交货批次仍按真实 campaign 合批，不能借用默认发布店铺。
+            enriched = {}
+            for account in dict.fromkeys(row.account_id for row in snapshots):
+                enriched.update((row.identity, row) for row in enrich_yandex_handover(
+                    [row for row in snapshots if row.account_id == account],
+                    account=account, api_token=self.store["api_token"], request=request_yandex_json,
+                ))
+            yield from (enriched[row.identity] for row in snapshots)
             cursor = str((data.get("paging") or {}).get("nextPageToken") or "")
             if not cursor:
                 return
@@ -102,7 +111,8 @@ class YandexOrderAdapter:
     def normalize(self, row):
         delivery = row.get("delivery") or {}
         country = str(delivery.get("countryCode") or "").upper()
-        if str(row.get("campaignId") or "") != self.account:
+        account = str(row.get("campaignId") or "")
+        if account not in self.shops:
             raise OrderDataError("Yandex 订单不属于当前店铺")
         status = str(row.get("status") or "")
         model = str(row.get("programType") or "")
@@ -138,7 +148,7 @@ class YandexOrderAdapter:
         ]
         return OrderSnapshot(
             platform="yandex",
-            account_id=self.account,
+            account_id=account,
             order_id=identifier(row.get("orderId")),
             fulfillment=model,
             title=items[0].title if items else "",
@@ -159,11 +169,22 @@ class YandexOrderAdapter:
         )
 
     def read(self, event):
-        rows = list(self.pages({"orderIds": [int(event.resource)]}))
+        if event.account_id not in self.shops:
+            raise OrderDataError("Yandex 订单不属于当前授权店铺")
+        rows = list(self.pages({"orderIds": [int(event.resource)]}, campaigns=[event.account_id]))
         if len(rows) != 1 or rows[0].order_id != event.resource:
             raise OrderNotReadyError("Yandex 尚未返回所请求的订单")
         yield from rows
 
     def sync(self):
-        # 当前接口默认最近 30 天；窗口外的本地未完成订单由服务逐单核对。
-        yield from self.pages({})
+        from erp_web.marketplaces.yandex_http import fetch_yandex_shop_names
+
+        self.shops = fetch_yandex_shop_names(self.store["api_token"], self.business, request=request_yandex_json)
+        if not self.shops:
+            raise OrderDataError("Yandex 当前企业没有可读取的店铺")
+        if self.on_shops:
+            self.on_shops(self.shops)
+        # 官方 campaignIds 上限为 50，同一企业合批查询全部店铺。
+        campaigns = list(self.shops)
+        for start in range(0, len(campaigns), 50):
+            yield from self.pages({}, campaigns=campaigns[start:start + 50])

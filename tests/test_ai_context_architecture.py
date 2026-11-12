@@ -1165,6 +1165,17 @@ def test_orders_have_one_persistent_pipeline_and_thin_routes():
     for path in [root / 'services/order_notification_service.py', root / 'stores/order_notification_store.py']:
         assert 'pydantic_ai' not in path.read_text()
     assert '/api/mercadolibre/orders' not in (ROOT / 'front/src/api/orders.ts').read_text()
+    # 店铺发现只属于后台平台适配器；页面与账号范围读取不得外发请求。
+    shops = service.split('    def shops(', 1)[1].split('    def save_yandex_shops(', 1)[0]
+    assert 'self.store.setting(' in shops
+    assert 'fetch_yandex' not in shops and 'request_yandex' not in shops
+    for unit, dependency in [
+        ('runtime_units/orders_yandex.py', 'erp_web.marketplaces.yandex_http.fetch_yandex_shop_names'),
+        ('runtime_units/online_yandex.py', 'erp_web.marketplaces.yandex_http'),
+    ]:
+        targets = imported_targets([root / unit])
+        assert any(target == dependency for _, target in targets)
+        assert 'fetch_yandex_shop_names(' in (root / unit).read_text()
     ozon = (root / 'runtime_units/orders_ozon.py').read_text()
     assert '/v3/posting/fbs/list' not in ozon
     assert '/v2/posting/fbo/list' not in ozon

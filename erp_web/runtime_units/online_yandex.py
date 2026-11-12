@@ -46,24 +46,8 @@ class YandexOnlineAdapter:
 
     def shop_names(self) -> dict[str, str]:
         """按账号合批读取店名，列表提示与仓库名称分别取值。"""
-        names = {}
-        query = {"limit": 100}
-        seen = set()
-        while True:
-            page = self.request("/v2/campaigns", query=query.copy(), method="GET")
-            rows = page.get("campaigns")
-            if not isinstance(rows, list):
-                raise ValueError("Yandex 店铺目录缺少店铺列表")
-            for row in rows:
-                if str(row.get("business", {}).get("id")) == self.business and row.get("id") and row.get("domain"):
-                    names[str(row["id"])] = row["domain"]
-            token = (page.get("paging") or {}).get("nextPageToken")
-            if not token:
-                return names
-            if token in seen:
-                raise ValueError("Yandex 店铺目录分页游标重复")
-            seen.add(token)
-            query["pageToken"] = token
+        return api.fetch_yandex_shop_names(self.token, self.business,
+            request=lambda method, path, token, **kwargs: self.request(path, method=method, **kwargs))
 
     def attribute_names(self, category_id: str):
         """一次适配器运行中按类目共用名称查询；定义仍由 Catalog 缓存管理。"""

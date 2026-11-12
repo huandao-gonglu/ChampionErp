@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from erp_web.schemas.orders import OrderEvent, configured_accounts, timestamp, utc_iso
+from erp_web.schemas.orders import OrderEvent, account_in_scope, account_pairs, configured_accounts, timestamp, utc_iso
 
 OZON_TOPICS = frozenset(
     {
@@ -45,7 +45,7 @@ def identifier(value: Any) -> str:
     return result
 
 
-def parse_notification(platform: str, body: dict[str, Any], config: dict[str, Any]):
+def parse_notification(platform: str, body: dict[str, Any], config: dict[str, Any], *, accounts=None):
     account = configured_accounts(config).get(platform)
     if not account:
         raise ValueError("请先配置并授权该平台账号")
@@ -97,7 +97,8 @@ def parse_notification(platform: str, body: dict[str, Any], config: dict[str, An
         response = {"version": "1.0.0", "name": "Champion ERP", "time": utc_iso()}
         if topic == "PING":
             return None, response
-        if str(body.get("campaignId") or "") != account:
+        account = str(body.get("campaignId") or "")
+        if not account_in_scope(accounts if accounts is not None else configured_accounts(config), platform, account):
             raise ValueError("Yandex 回调店铺与当前账号不一致")
         if topic not in YANDEX_TOPICS:
             return None, response
@@ -124,14 +125,14 @@ def parse_notification(platform: str, body: dict[str, Any], config: dict[str, An
     ), response
 
 
-def order_request_scopes(config):
+def order_request_scopes(config, *, accounts=None):
     """与平台读取适配器相同的账号、凭据和接口范围；不包含回调密钥。"""
     from erp_web.schemas.external_requests import RequestContext
     from erp_web.schemas.orders import configured_accounts
     from erp_web.services.external_request_context import credential_fingerprint
 
     paths = {
-        "yandex": ["/v1/businesses/:id/orders", "/v2/campaigns/:id/first-mile/shipments"],
+        "yandex": ["/v1/businesses/:id/orders", "/v2/campaigns/:id/first-mile/shipments", "/v2/campaigns"],
         "ozon": ["/v4/posting/fbs/list", "/v3/posting/fbo/list", "/v3/posting/fbs/get", "/v2/posting/fbo/get"],
         "mercadolibre": ["/orders/search/recent", "/orders/:id", "/shipments/:id", "/shipments/:id/sla", "/marketplace/shipments/:id/sla"],
     }
@@ -147,4 +148,11 @@ def order_request_scopes(config):
             credential_id=credential_fingerprint(secret), semantics="read", source="orders",
             quota_key=("campaigns:"+account if path == "/v2/campaigns/:id/first-mile/shipments" else "businesses:"+external_account) if platform == "yandex" else "business:"+external_account,
         ) for path in paths[platform]]
+        if platform == "yandex" and accounts is not None:
+            from dataclasses import replace
+            shipment = result[platform][1]
+            result[platform] = [ctx for ctx in result[platform] if ctx.interface != shipment.interface] + [
+                replace(shipment, quota_key="campaigns:" + campaign)
+                for key, campaign in account_pairs(accounts) if key == platform
+            ]
     return result

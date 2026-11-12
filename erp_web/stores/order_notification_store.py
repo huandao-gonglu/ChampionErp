@@ -10,6 +10,9 @@ from uuid import uuid4
 
 from erp_web.schemas.orders import (
     PLATFORMS,
+    OrderAccounts,
+    account_pairs,
+    account_in_scope,
     OrderEvent,
     OrderSnapshot,
     OrdersPage,
@@ -118,12 +121,12 @@ class OrderNotificationStore:
             conn.commit()
 
     def schedule(
-        self, accounts: dict[str, str], *, now: float, automatic: bool = False, automatic_interval_seconds: int = 5 * 3600
+        self, accounts: OrderAccounts, *, now: float, automatic: bool = False, automatic_interval_seconds: int = 5 * 3600
     ) -> list[str]:
         operation_ids = []
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            for platform, account in accounts.items():
+            for platform, account in account_pairs(accounts):
                 if automatic:
                     key = f"auto_sync_at:{platform}:{account}"
                     previous = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -155,7 +158,7 @@ class OrderNotificationStore:
             conn.commit()
         return operation_ids
 
-    def claim(self, accounts: dict[str, str], *, now: float):
+    def claim(self, accounts: OrderAccounts, *, now: float):
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             # 历史主动同步重试和中断的查询不再自动恢复，等待页面或按钮重新发起。
@@ -164,9 +167,9 @@ class OrderNotificationStore:
                 WHERE topic='sync' AND (status='retry' OR (status='running' AND lease_until<=?))""", (now,))
             # 每个账号同一时刻只处理一个任务；回调失效租约可重领，claim fencing 拒绝迟到提交。
             scope = (
-                " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
+                " OR ".join("(platform=? AND account_id=?)" for _ in account_pairs(accounts)) or "0"
             )
-            args = tuple(value for pair in accounts.items() for value in pair)
+            args = tuple(value for pair in account_pairs(accounts) for value in pair)
             rows = conn.execute(
                 f"""SELECT * FROM inbox WHERE ({scope}) AND (
                 (status IN ('queued','retry') AND next_attempt<=?) OR (status='running' AND lease_until<=?))
@@ -174,7 +177,7 @@ class OrderNotificationStore:
                 (*args, now, now),
             ).fetchall()
             for row in rows:
-                if accounts.get(row["platform"]) != row["account_id"]:
+                if not account_in_scope(accounts, row["platform"], row["account_id"]):
                     continue
                 busy = conn.execute(
                     "SELECT 1 FROM inbox WHERE platform=? AND account_id=? AND status='running' AND lease_until>?",
@@ -284,12 +287,12 @@ class OrderNotificationStore:
             )
             conn.commit()
 
-    def retry(self, event_id: int, accounts: dict[str, str]) -> None:
+    def retry(self, event_id: int, accounts: OrderAccounts) -> None:
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT platform,account_id,status FROM inbox WHERE id=?", (event_id,)
             ).fetchone()
-            if not row or accounts.get(row["platform"]) != row["account_id"]:
+            if not row or not account_in_scope(accounts, row["platform"], row["account_id"]):
                 raise ValueError("通知不存在或不属于当前账号")
             if row["status"] not in ("retry", "failed"):
                 raise ValueError("只有失败或等待重试的通知可以重试")
@@ -301,8 +304,8 @@ class OrderNotificationStore:
 
     def read_notifications(self, accounts):
         """仅在明确请求通知时读取当前平台账号的最近事件。"""
-        where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
-        args = tuple(value for pair in accounts.items() for value in pair)
+        where = " OR ".join("(platform=? AND account_id=?)" for _ in account_pairs(accounts)) or "0"
+        args = tuple(value for pair in account_pairs(accounts) for value in pair)
         with self.connect() as conn:
             return [dict(row) for row in conn.execute(
                 f"SELECT id,platform,topic,status,attempts,error,received_at,next_attempt FROM inbox WHERE ({where}) ORDER BY id DESC LIMIT 50", args,
@@ -310,7 +313,7 @@ class OrderNotificationStore:
 
     def read(
         self,
-        accounts: dict[str, str],
+        accounts: OrderAccounts,
         *,
         platform: str = "",
         state: str = "",
@@ -318,7 +321,7 @@ class OrderNotificationStore:
         limit: int = 50,
         query: str = "",
     ):
-        scopes = list(accounts.items())
+        scopes = account_pairs(accounts)
         where = " OR ".join("(platform=? AND account_id=?)" for _ in scopes) or "0"
         args = tuple(value for pair in scopes for value in pair)
         with self.connect() as conn:
@@ -386,7 +389,7 @@ class OrderNotificationStore:
     def sync_status(self, accounts):
         result = []
         with self.connect() as conn:
-            for platform, account in accounts.items():
+            for platform, account in account_pairs(accounts):
                 latest = conn.execute("SELECT id,status,error,next_attempt,completed_at FROM inbox WHERE platform=? AND account_id=? AND topic='sync' ORDER BY id DESC LIMIT 1", (platform,account)).fetchone()
                 success = conn.execute("SELECT completed_at FROM inbox WHERE platform=? AND account_id=? AND topic='sync' AND status='done' ORDER BY completed_at DESC LIMIT 1", (platform,account)).fetchone()
                 result.append({"platform": platform, "status": latest["status"] if latest else "idle",
@@ -397,8 +400,8 @@ class OrderNotificationStore:
 
     def summary(self, accounts):
         page = self.read(accounts, limit=5)
-        where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
-        args = tuple(value for pair in accounts.items() for value in pair)
+        where = " OR ".join("(platform=? AND account_id=?)" for _ in account_pairs(accounts)) or "0"
+        args = tuple(value for pair in account_pairs(accounts) for value in pair)
         with self.connect() as conn:
             attention = conn.execute(
                 f"SELECT COUNT(*) FROM inbox WHERE ({where}) AND status IN ('failed','retry')",
@@ -436,9 +439,9 @@ class OrderNotificationStore:
             ).fetchall()
         return [OrderSnapshot.model_validate_json(row[0]) for row in rows]
 
-    def acknowledge(self, through_id: int, accounts: dict[str, str]):
+    def acknowledge(self, through_id: int, accounts: OrderAccounts):
         with self.connect() as conn:
-            for platform, account in accounts.items():
+            for platform, account in account_pairs(accounts):
                 conn.execute(
                     "UPDATE alerts SET read_at=? WHERE platform=? AND account_id=? AND id<=? AND read_at=''",
                     (utc_iso(), platform, account, through_id),

@@ -47,6 +47,21 @@ def test_yandex_downloads_pdf_and_box_barcode_without_using_response_url(label_d
                      ("UPLOAD", order.identity, PDF)]
 
 
+def test_authorized_second_shop_uses_its_own_campaign_and_rejects_outsider(label_domain):
+    service, order, config, _, calls = label_domain
+    service.accounts_provider = lambda: {"yandex": ("4", "6")}
+    second = order.model_copy(update={"account_id": "6"})
+    assert service.fetch(second).tracking_number == "123-1"
+    assert calls[0][1] == "/v2/campaigns/6/orders/123/delivery/labels/data"
+    assert calls[1][1] == "/v2/campaigns/6/orders/123/delivery/labels"
+    assert calls[2][1] == second.identity
+    assert config["yandex"]["campaign_id"] == "4"
+    calls.clear()
+    with pytest.raises(FulfillmentError, match="授权已变化"):
+        service.fetch(order.model_copy(update={"account_id": "99"}))
+    assert calls == []
+
+
 @pytest.mark.parametrize("change,reason", [
     ({"orderId": 456}, "不一致"),
     ({"parcelBoxLabels": []}, "尚未生成"),

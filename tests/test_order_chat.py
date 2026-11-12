@@ -59,6 +59,24 @@ def test_no_chat_returns_empty_without_creation(domain):
     assert domain.request.call_count == 1
 
 
+def test_second_shop_chat_uses_true_campaign_without_changing_selected_shop(domain):
+    accounts = {"yandex": ("4", "6")}
+    second = domain.order.model_copy(update={"account_id": "6", "id": "yandex:6:FBS:123"})
+    domain.reader.return_value = second
+    context = {**CONTEXT, "campaignId": 6}
+    domain.request.side_effect = [result(chats=[{**chat(), "context": context}]),
+                                  result(context=context, messages=[message(1)])]
+    service = OrderChatService(domain.reader, domain.config, accounts=accounts, request=domain.request)
+    assert service.history(second.id)["messages"][0]["id"] == "1"
+    domain.reader.assert_called_once_with(second.id, accounts)
+    assert domain.config["yandex"]["campaign_id"] == "4"
+    domain.request.reset_mock()
+    domain.reader.return_value = second.model_copy(update={"account_id": "99"})
+    with pytest.raises(ValueError, match="不属于"):
+        service.history(second.id)
+    domain.request.assert_not_called()
+
+
 def test_send_creates_order_context_and_sends_once_without_history(domain):
     domain.request.side_effect = [result(chatId=17), {"status": "OK"}]
     assert domain.service.send(domain.order.id, "您好\n订单说明") == {"ok": True, "chat_id": "17"}

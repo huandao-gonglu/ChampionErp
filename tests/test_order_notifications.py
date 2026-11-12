@@ -318,7 +318,9 @@ def test_ozon_fbs_fbo_mapping_and_list_pagination(monkeypatch):
 def test_yandex_current_business_contract_and_page_token(monkeypatch):
     calls = []
 
-    def request(method, path, token, body, **kwargs):
+    def request(method, path, token, body=None, **kwargs):
+        if method == "GET":
+            return {"campaigns": [{"id": 4, "domain": "测试店铺", "business": {"id": 5}}]}
         calls.append((method, path, body, kwargs))
         cursor = kwargs["query"].get("pageToken")
         return {

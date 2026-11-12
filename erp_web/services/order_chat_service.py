@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 from erp_web.marketplaces.yandex_http import request_yandex_json
 from erp_web.schemas.order_chat import OrderChatHistory, OrderChatMessage, OrderChatSent
+from erp_web.schemas.orders import account_in_scope, configured_accounts
 from erp_web.services.external_request_context import request_operation
 
 
@@ -16,16 +17,17 @@ def _identifier(value):
 
 
 class OrderChatService:
-    def __init__(self, order_reader, config, *, request=request_yandex_json):
+    def __init__(self, order_reader, config, *, accounts=None, request=request_yandex_json):
         self.order_reader = order_reader
         self.config = config
         self.request = request
+        self.accounts = accounts
 
     def _target(self, order_id):
         store = self.config.get("yandex") or {}
-        campaign = _identifier(store.get("campaign_id"))
-        order = self.order_reader(order_id, {"yandex": campaign})
-        if order.platform != "yandex" or order.account_id != campaign:
+        accounts = self.accounts if self.accounts is not None else configured_accounts(self.config)
+        order = self.order_reader(order_id, accounts)
+        if order.platform != "yandex" or not account_in_scope(accounts, "yandex", order.account_id):
             raise ValueError("订单不属于当前 Yandex 店铺")
         business = _identifier(store.get("business_id"))
         token = str(store.get("api_token") or "").strip()

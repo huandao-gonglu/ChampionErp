@@ -10,6 +10,7 @@ from erp_web.schemas.fulfillment import FulfillmentStatus
 
 
 class OrderCenterFilters(TypedDict, total=False):
+    shop: str
     procurement_status: Literal["", "unpurchased", "partial", "purchased", "unknown"]
     declaration_status: Literal["", "unsubmitted", "submitting", "unknown", "created", "error", "cancelled"]
     warehouse_status: Literal[""] | FulfillmentStatus

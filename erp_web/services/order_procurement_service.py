@@ -76,7 +76,7 @@ class OrderProcurementService:
         order = self.present_orders([self.store.order(order_id, accounts)])[0]
         counts = Counter(order_line_key(line) for line in order.items)
         lines = []
-        identity = self.identity_provider(order.platform)
+        identity = self.identity_provider(order.platform, order.account_id)
         for line in order.items:
             key = order_line_key(line)
             selection = SourceSelection(line_key=key)

@@ -1722,6 +1722,7 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 - 后台处理：`erp_web/services/order_notification_service.py`，领域任务领取、平台隔离和回调重试；不参与 Agent 生命周期。导航进入订单中心时检查自动同步；`useOrderCenterEntrySync` 只监听实际导航进入，初次挂载、焦点恢复、详情参数变化和本地轮询不触发。后端订单库 `settings` 按平台账号原子保存自动同步尝试时间，间隔由系统设置指定（默认及最低 5 小时），失败也计入且跨窗口/重启生效；手动同步不受该间隔限制。主动同步失败不自动重试，历史重试和过期执行记录转为失败；后台不再创建定期对账任务，旧 `sync_schedule` 表不再读取。
 - 持久化：`erp_web/stores/order_notification_store.py`，独立订单库中的收件箱、快照、租约和未读提醒；`order_notification_migration.py` 仅执行主库历史通知的幂等导入。
 - 共享契约：`erp_web/schemas/orders.py`。AI `platform_orders_query` 与界面读取同一份本地快照，不触发同步远端查询，不获取回调凭据。
+- 店铺范围：`OrderNotificationService.shops/accounts` 从本地订单领域库读取当前授权店铺；`schemas/orders.py::account_pairs/account_in_scope` 展开并校验精确身份。Yandex 后台同步与在线商品共用 `marketplaces/yandex_http.py::fetch_yandex_shop_names`，按企业及凭据指纹保存完整目录、每批最多 50 个 campaign 查询，订单与交货批次保留实际 campaign。平台同步任务沿用既有身份；页面默认全部店铺，`shop` 仅限定读取与计数，不更改发布配置。采购、回调、履约、收货仓、面单和聊天共用该范围；采购来源按实际店铺身份匹配。回归入口为 `tests/test_order_multishop.py`。
 - 金额：`orders_yandex.py::normalize_yandex_amount` 负责订单及 SKU 行的十进制金额归一化，`OrderAmountBreakdown` 保留付款、补贴和积分抵扣。`OrderAmountDetails.vue` 明确商品金额与旧付款快照的口径，不将其标成净到账；明细按平台行小计展示，不再乘数量。
 - 发货日期：Yandex 保留 `delivery.shipment` 的日期/时间精度，Mercado Libre 读取卖家发货 SLA，Ozon 使用 `shipment_date`；`orderPresentation.ts::deadline` 仅对带时区时间计算倒计时。
 - 前端：`front/src/stores/orderNotifications.ts`、`OrderSummaryCard.vue`、`OrderCenterPanel.vue`、`OrderDetailPanel.vue` 和 `OrderAlertBanner.vue`；原发布 store 中的单平台订单状态已移除。
@@ -1764,7 +1765,7 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知读取时调用 `services/order_handover_service.py`，按订单页批量查询并严格验证批次归属；`schemas/order_handover.py` 的结果随 `OrderSnapshot.handover` 一起持久化，由普通订单详情返回。`OrderHandoverPanel.vue` 只展示本地快照，不独立外发或刷新。批次分页失败走订单任务的失败与重试，保留旧快照；旧数据缺少该字段仍可读取。外部管理器仅把确切的批次搜索 PUT 归为只读，订单请求范围包含其 campaign 配额。
 地址备注由 `facades/order_address_note_facade.py` → `stores/order_address_note_store.py` 在订单领域库独立持久化；契约见 `schemas/order_address_notes.py`，GET/POST `/api/orders/address-note` 只读写本地。按平台、店铺和原地址匹配，平台同步不覆盖；保存校验订单地址与备注版本。`OrderAddressNote.vue` 提供点击展开、关闭自动保存的气泡，复用完整遮罩指针手势并向外层订单传播锁定状态。
 
-- Yandex 订单列表、详情和跨境报单统一使用已同步在线商品的图片。`order_procurement_facade` 按当前授权的 business + campaign 装配图片读取，`OnlineProductStore.thumbnails` 批量读取对应远端 SKU 的 HTTPS 缩略图；`OrderProcurementService.present_orders` 校验订单账号与 SKU 身份后补充图片，不发起远端请求、不改写原始订单快照。未同步、身份不符或图片缺失时显示占位，不回退到本地发布图片或 1688 采购图片。包裹编辑可从这些商品带入说明及图片，保存后为独立资料；已创建远端报单不因页面读取而自动更新。
+- Yandex 订单列表、详情和跨境报单统一使用已同步在线商品的图片。`order_procurement_facade` 校验订单所属店铺在当前授权企业范围内，使用企业与所选发布 campaign 标识的既有在线目录缓存；图片属于企业商品，可供同企业其他店铺读取，采购来源仍按各店铺身份隔离。`OnlineProductStore.thumbnails` 批量读取对应远端 SKU 的 HTTPS 缩略图；`OrderProcurementService.present_orders` 校验订单账号与 SKU 身份后补充图片，不发起远端请求、不改写原始订单快照。未同步、身份不符或图片缺失时显示占位，不回退到本地发布图片或 1688 采购图片。包裹编辑可从这些商品带入说明及图片，保存后为独立资料；已创建远端报单不因页面读取而自动更新。
 - 其他平台仍由 `order_source_bindings.py::published_sku_image` 从冻结 SKU 图片覆盖/事实引用或公共主图解析缩略图。历史采购绑定继续保留读取与补齐能力，图片不参与绑定身份，也不影响已确认采购来源。
 - `OrderThumbnail.vue` 统一商品缩略图及加载失败占位；`OrderProcurementLine.vue` 按 SKU 卡片承载来源确认与采购操作，`OrderPurchaseRecords.vue` 展示可展开的采购历史，`OrderSourceDialog.vue` 和 `OrderPurchaseDialog.vue` 分别负责来源编辑、采购登记。所有弹窗、抽屉共用 `WorkspaceDialog.vue` 与完整遮罩手势校验。
 - `OrderIntegrationSettings.vue` 承载设置页回调接入。未验证的平台规格链接只能作为商品链接展示，修改来源规格或链接后必须重新核验直达能力。

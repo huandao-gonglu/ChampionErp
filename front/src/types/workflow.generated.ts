@@ -167,6 +167,7 @@ export interface BackendWechatChannelStatus {
 }
 
 export interface BackendOrderCenterFilters {
+  shop?: string
   procurement_status?: "" | "unpurchased" | "partial" | "purchased" | "unknown"
   declaration_status?: "" | "unsubmitted" | "submitting" | "unknown" | "created" | "error" | "cancelled"
   warehouse_status?: "" | "NEW" | "FULFILLMENT_CREATED" | "WAITING_DOMESTIC_SHIPMENT" | "WAREHOUSE_RECEIVED" | "PACKING" | "SHIPPED" | "COMPLETED" | "EXCEPTION" | "CANCELLED"

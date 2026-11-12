@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -19,6 +20,9 @@ from erp_web.schemas.orders import (
     OrderDataError,
     OrderEvent,
     OrderSnapshot,
+    OrderShop,
+    account_pairs,
+    account_in_scope,
     configured_accounts,
 )
 from erp_web.stores.order_notification_store import OrderNotificationStore
@@ -36,10 +40,7 @@ class OrderNotificationService:
         config_store,
         owner_id: str = "",
         adapters: dict[str, Callable[[dict[str, Any]], OrderAdapter]],
-        parser: Callable[
-            [str, dict[str, Any], dict[str, Any]],
-            tuple[OrderEvent | None, dict[str, Any]],
-        ],
+        parser: Callable[..., tuple[OrderEvent | None, dict[str, Any]]],
         external_store=None,
         request_scopes=None,
         progress_sync: Callable[[str, Callable[[], None]], bool] | None = None,
@@ -59,18 +60,55 @@ class OrderNotificationService:
         self.stop_event = threading.Event()
         self.workers = []
         if start_worker:
-            for platform in PLATFORMS:
-                worker = threading.Thread(
-                    target=server_worker_context().run,
-                    args=(self._run, platform),
-                    name=f"orders-{platform}",
-                    daemon=True,
-                )
-                self.workers.append(worker)
-                worker.start()
+            self.start_workers()
 
-    def accounts(self) -> dict[str, str]:
-        return configured_accounts(self.config_provider())
+    def start_workers(self):
+        """装配依赖后再启动，避免后台提前调用尚未绑定的适配器。"""
+        if self.workers:
+            return
+        for platform in PLATFORMS:
+            worker = threading.Thread(
+                target=server_worker_context().run,
+                args=(self._run, platform),
+                name=f"orders-{platform}",
+                daemon=True,
+            )
+            self.workers.append(worker)
+            worker.start()
+
+    @staticmethod
+    def _shops_key(config):
+        from erp_web.services.external_request_context import credential_fingerprint
+        store = config.get("yandex") or {}
+        return f"shops:yandex:{store.get('business_id', '')}:{credential_fingerprint(store.get('api_token', ''))}"
+
+    def shops(self, config=None) -> list[OrderShop]:
+        config = self.config_provider() if config is None else config
+        shops = []
+        for platform, account in configured_accounts(config).items():
+            if platform == "yandex":
+                saved = self.store.setting(self._shops_key(config))
+                if saved:
+                    shops.extend(OrderShop.model_validate(row) for row in json.loads(saved))
+                    continue
+            store = config[platform]
+            shops.append(OrderShop(platform=platform, account_id=account,
+                                   name=str(store.get("shop_name") or store.get("nickname") or account)))
+        return shops
+
+    def save_yandex_shops(self, config, names):
+        if self._shops_key(config) != self._shops_key(self.config_provider()):
+            raise InterruptedError("Yandex 授权已变化，请重新同步订单")
+        self.store.set_setting(self._shops_key(config), json.dumps([
+            OrderShop(platform="yandex", account_id=account, name=name).model_dump()
+            for account, name in names.items()
+        ], ensure_ascii=False))
+
+    def accounts(self):
+        result = {}
+        for shop in self.shops():
+            result.setdefault(shop.platform, []).append(shop.account_id)
+        return {platform: tuple(ids) for platform, ids in result.items()}
 
     def receive(
         self, platform: str, token: str, body: dict[str, Any]
@@ -78,12 +116,12 @@ class OrderNotificationService:
         expected = self.config_store.order_notification_token(platform)
         if not expected or not secrets.compare_digest(expected.encode("utf-8"), token.encode("utf-8")):
             raise PermissionError("订单回调凭据无效")
-        event, response = self.parser(platform, body, self.config_provider())
+        event, response = self.parser(platform, body, self.config_provider(), accounts=self.accounts())
         self.store.receive(platform, event)
         return response
 
     def integrations(self) -> dict[str, Any]:
-        accounts = self.accounts()
+        accounts = configured_accounts(self.config_provider())
         base = self.config_store.order_notification_public_url()
         return {
             "ok": True,
@@ -124,7 +162,8 @@ class OrderNotificationService:
         return self.integrations()
 
     def sync(self, platform: str = "", *, automatic: bool = False) -> dict[str, Any]:
-        accounts = self.accounts()
+        # 同步是平台级任务；沿用既有任务身份，适配器在后台发现并读取全部店铺。
+        accounts = configured_accounts(self.config_provider())
         if platform:
             accounts = {
                 key: value for key, value in accounts.items() if key == platform
@@ -138,7 +177,7 @@ class OrderNotificationService:
     def _blocks(self, config, platform):
         if self.external_store is None or self.request_scopes is None:
             return []
-        return self.external_store.matching_blocks(self.request_scopes(config).get(platform, []))
+        return self.external_store.matching_blocks(self.request_scopes(config, accounts=self.accounts()).get(platform, []))
 
     def sync_status(self):
         config = self.config_provider()
@@ -156,7 +195,7 @@ class OrderNotificationService:
     def process_one(self, platform: str = "", *, now: float | None = None) -> bool:
         now = time.time() if now is None else now
         config = self.config_provider()
-        accounts = configured_accounts(config)
+        accounts = self.accounts()
         if platform:
             accounts = {
                 key: value for key, value in accounts.items() if key == platform
@@ -169,8 +208,10 @@ class OrderNotificationService:
         refreshed = set()
 
         def checkpoint():
-            if self.stop_event.is_set() or self.accounts().get(event.platform) != event.account_id:
+            if self.stop_event.is_set() or not account_in_scope(self.accounts(), event.platform, event.account_id):
                 raise InterruptedError("订单同步已停止或平台账号已切换")
+            if event.platform == "yandex" and self._shops_key(config) != self._shops_key(self.config_provider()):
+                raise InterruptedError("Yandex 授权已变化，本次任务停止")
             if not self.store.renew_claim(job, now=time.time()):
                 raise InterruptedError("订单处理租约已失效")
 
@@ -183,13 +224,11 @@ class OrderNotificationService:
             )
             with request_operation("orders", operation_id=f"orders:{job['id']}", trigger="background"):
                 for snapshot in snapshots:
-                    if self.stop_event.is_set():
-                        raise InterruptedError("订单同步已停止，下次启动继续处理")
-                    if self.accounts().get(event.platform) != event.account_id:
-                        raise ValueError("平台账号已切换，本次任务停止")
+                    checkpoint()
                     if (
                         snapshot.platform != event.platform
-                        or snapshot.account_id != event.account_id
+                        or not account_in_scope(self.accounts(), snapshot.platform, snapshot.account_id)
+                        or (event.topic != "sync" and snapshot.account_id != event.account_id)
                     ):
                         raise ValueError("订单快照越过账号范围")
                     if not self.store.save_snapshot(job, snapshot, now=time.time()):
@@ -237,11 +276,12 @@ class OrderNotificationService:
     def _sync_snapshots(
         self, adapter: OrderAdapter, event: OrderEvent
     ) -> Iterable[OrderSnapshot]:
-        tracked = self.store.tracked(event.platform, event.account_id)
         seen = set()
         for snapshot in adapter.sync():
             seen.add(snapshot.identity)
             yield snapshot
+        tracked = [snapshot for platform, account in account_pairs(self.accounts()) if platform == event.platform
+                   for snapshot in self.store.tracked(platform, account)]
         # 时间窗口外仍未完成的订单逐单核对；列表中未出现不能解释为已取消。
         for snapshot in tracked:
             if snapshot.identity in seen:
@@ -260,7 +300,7 @@ class OrderNotificationService:
             yield from adapter.read(
                 OrderEvent(
                     platform=event.platform,
-                    account_id=event.account_id,
+                    account_id=snapshot.account_id,
                     topic=topic,
                     resource=resource,
                 )

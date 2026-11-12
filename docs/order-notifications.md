@@ -17,6 +17,18 @@
 - `erp_web/stores/order_notification_store.py`：独立领域库 `data/order-notifications.sqlite3` 的唯一写入入口；SQLite 事务不跨网络等待。
 - `front/src/stores/orderNotifications.ts`：订单前端状态；发布 store 不再持有订单数据。
 
+## 店铺范围与筛选
+
+订单中心默认展示当前授权范围内的全部店铺，顶部「店铺筛选」仅改变列表及状态计数的查看范围。列表、详情保留真实店铺名称和账号；搜索和翻页保留所选店铺，切换平台或清空筛选时清除店铺条件。筛选不会修改发布配置，也不会缩小平台同步范围。
+
+Yandex 在后台同步时通过 `marketplaces/yandex_http.py::fetch_yandex_shop_names` 完整读取店铺目录，仅接受当前 API-Key 可访问且属于所配置 Business ID 的 campaign，与在线商品复用同一目录协议。店铺目录由订单领域库 `settings` 按 Business ID 与凭据指纹保存；页面轮询只读本地目录。首次发现之前仅显示现有已配置店铺，完成发现后纳入全部店铺；更换企业或凭据不沿用旧授权目录。
+
+订单查询按企业合批，每批最多 50 个 campaign，并完整读取分页。每笔订单使用平台返回的真实 `campaignId` 入库，交货批次仍按实际店铺分别批量查询。平台级同步任务沿用既有持久化任务身份，不为每个店铺重复拉取同一企业订单。回调、采购、收货仓、履约、面单与买家聊天统一校验精确的平台与店铺范围；采购来源按各店铺发布身份匹配，不能因销售 SKU 相同而跨店铺关联。Yandex 商品图片继续读取同一企业的已同步在线商品目录。
+
+多店铺不会扩大平台订单的历史查询窗口。Yandex 单号查询仍受默认创建日期窗口限制；读取不到历史未完成订单时保留原快照并记录失败，不推断为取消。
+
+2026-11-12 多店铺验证：覆盖目录分页与企业隔离、50 店铺合批、真实店铺归属、重启读取、回调、跨店铺同 SKU 来源隔离、店铺筛选及分页、非默认店铺面单与聊天。订单及架构专项 224 项、筛选补充回归 29 项、前端订单页面 34 项通过；Python 编译、前端类型契约检查、相关 ESLint 与生产构建通过。后端全量 4346 项及 53 个子测试通过，另有既有的 `test_business_endpoints_are_capability_or_internal_only` 失败（选品 `source-registry` 被标为 `excluded`，相关实现与检查未修改）。此次未部署线上。
+
 这是平台订单领域任务，不涉及模型调用、Agent 暂停/恢复、审批或消息历史，因此不适用 Pydantic AI Deferred Tools。没有新增 Agent loop 或自研 AI 协议。AI 的 `platform_orders_query` 直接查询同一份本地订单快照，支持三个平台；回调接入凭据不进入模型输出。
 
 ## 接收与处理
@@ -54,7 +66,7 @@ Yandex 的订单和 SKU 行主金额 `amount` 为同币种 `payment + subsidy + 
 | `POST /api/mercadolibre/notifications` | 接收 `orders_v2`、`shipments` |
 | `POST /api/ozon/notifications` | 握手、FBS/FBO 发运单及订单变更；订单级事件触发列表核对 |
 | `POST /api/yandex/notifications` | `PING` 与订单创建、更新、取消等通知 |
-| `GET /api/orders` | 本地快照，支持 `platform`、`state`、`q`、`offset`、`limit`（最多 100） |
+| `GET /api/orders` | 本地快照，支持 `platform`、`shop`（`平台:账号`）、`state`、`q`、`offset`、`limit`（最多 100）及订单中心组合筛选 |
 | `GET /api/orders/summary` | 仪表盘摘要，独立于订单列表筛选；异常计数覆盖完整收件箱 |
 | `GET /api/orders/address-note` | 根据本地订单、批次及原地址读取共享备注，不请求平台 |
 | `POST /api/orders/address-note` | 保存或清空该地址的备注，校验地址未变及备注版本 |
@@ -68,7 +80,7 @@ Yandex 的订单和 SKU 行主金额 `amount` 为同币种 `payment + subsidy + 
 | `POST /api/orders/retry` | `event_id`：重新处理当前账号的失败事件 |
 | `POST /api/orders/acknowledge` | `through_id`：标记该游标以内的当前账号提醒已读 |
 
-订单列表返回 `items`、`total`、`pagination`；`counts` 为当前全部已配置账号的本地状态总数，与列表分页和筛选无关。`notifications` 为最近 50 条处理记录；`alerts` 为最近 50 条未读提醒，`unread` 为完整未读总数，`latest_alert_id` 用于有界确认。公开输出不含平台原始响应、买家个人资料或店铺密钥。
+订单列表返回 `items`、`total`、`pagination`、`shops`；每行的 `shop_name` 来自本地店铺目录。`counts` 为当前平台、店铺和组合筛选范围的本地状态总数，不受分页和所选状态页签影响。`notifications` 为最近 50 条处理记录；`alerts` 为最近 50 条未读提醒，`unread` 为完整未读总数，`latest_alert_id` 用于有界确认。公开输出不含平台原始响应、买家个人资料或店铺密钥。
 
 旧 `GET /api/mercadolibre/orders`、专用 runtime/facade、前端旧类型与刷新路径已删除。主库历史 `order_notifications` 表仅作为持久化导入源保留，不再写入；有明确账号归属的历史事件单次幂等导入，原库不删除，无可靠账号身份的历史行不猜测归属。
 

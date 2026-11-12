@@ -177,7 +177,9 @@ def test_sync_and_notifications_persist_handover_and_detail_reads_stay_local(tmp
     batch = shipment()
     failure = None
 
-    def request(method, path, token, body, **kwargs):
+    def request(method, path, token, body=None, **kwargs):
+        if method == "GET":
+            return {"campaigns": [{"id": 4, "business": {"id": 5}}]}
         calls.append(path)
         if method == "POST":
             return {"orders": [deepcopy(row)]}

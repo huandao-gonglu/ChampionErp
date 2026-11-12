@@ -83,7 +83,7 @@ def domain(tmp_path):
         orders.finish(job, now=time.time())
     snapshot(order)
     accounts = {"yandex": "4"}
-    procurement = OrderProcurementService(OrderProcurementStore(orders), lambda: accounts, lambda p: "shop-a",
+    procurement = OrderProcurementService(OrderProcurementStore(orders), lambda: accounts, lambda p, account_id="": "shop-a",
         yandex_images_provider=lambda account, ids: {"SKU-1": "https://platform.example/yandex-sku.jpg"})
     key = order_line_key(line)
     procurement.select_source({"order_id": order.identity, "line_key": key, "revision": 0, "source": {"supplier": "供应商", "source_platform": "1688", "product_url": "https://detail.1688.com/offer/123.html", "source_sku_id": "source-1", "specification": "银色"}})
