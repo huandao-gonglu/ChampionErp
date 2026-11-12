@@ -8,7 +8,16 @@ const store = useOrderNotificationsStore()
 const searchText = ref(store.query)
 const draft = reactive({ ...emptyOrderCenterFilters(), ...store.filters })
 const appliedCount = computed(() => Object.entries(store.filters).filter(([key, value]) => key !== 'time_zone' && !!value).length)
-const shops = computed(() => (store.page.shops || []).filter(shop => !store.platform || shop.platform === store.platform))
+const shops = computed(() => (store.page.shops || [])
+  .filter(shop => !store.platform || shop.platform === store.platform)
+  .map(shop => ({
+    ...shop,
+    label: shop.name.trim() && shop.name.trim() !== shop.account_id
+      ? shop.name.trim() : `店铺账号 ${shop.account_id}`,
+  })))
+const shopGroups = computed(() => Object.entries(orderPlatformNames)
+  .map(([platform, label]) => ({ platform, label, shops: shops.value.filter(shop => shop.platform === platform) }))
+  .filter(group => group.shops.length))
 
 function filterPlatform(value: string) {
   draft.shop = ''
@@ -48,22 +57,37 @@ function reset() {
       />
       <button class="order-button order-primary" type="submit">搜索</button>
       <button class="order-button" type="button" @click="reset">清空筛选</button>
-      <select
-        class="order-input platform" aria-label="平台筛选" :value="store.platform"
-        @change="filterPlatform(($event.target as HTMLSelectElement).value)"
-      >
-        <option value="">全部平台</option>
-        <option v-for="(label, key) in orderPlatformNames" :key="key" :value="key">{{ label }}</option>
-      </select>
-      <select
-        class="order-input shop" aria-label="店铺筛选" :value="store.filters.shop || ''"
-        @change="filterShop(($event.target as HTMLSelectElement).value)"
-      >
-        <option value="">全部店铺</option>
-        <option v-for="shop in shops" :key="`${shop.platform}:${shop.account_id}`" :value="`${shop.platform}:${shop.account_id}`">
-          {{ store.platform ? shop.name : `${orderPlatformNames[shop.platform]} · ${shop.name}` }}
-        </option>
-      </select>
+      <label class="scope-filter">
+        <span>平台</span>
+        <select
+          class="order-input platform" aria-label="平台筛选" :value="store.platform"
+          @change="filterPlatform(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">全部平台</option>
+          <option v-for="(label, key) in orderPlatformNames" :key="key" :value="key">{{ label }}</option>
+        </select>
+      </label>
+      <label class="scope-filter">
+        <span>店铺</span>
+        <select
+          class="order-input shop" aria-label="店铺筛选" :value="store.filters.shop || ''"
+          @change="filterShop(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">全部店铺</option>
+          <template v-if="store.platform">
+            <option v-for="shop in shops" :key="`${shop.platform}:${shop.account_id}`" :value="`${shop.platform}:${shop.account_id}`">
+              {{ shop.label }}
+            </option>
+          </template>
+          <template v-else>
+            <optgroup v-for="group in shopGroups" :key="group.platform" :label="group.label">
+              <option v-for="shop in group.shops" :key="`${shop.platform}:${shop.account_id}`" :value="`${shop.platform}:${shop.account_id}`">
+                {{ shop.label }}
+              </option>
+            </optgroup>
+          </template>
+        </select>
+      </label>
       <span class="order-muted result-count">{{ store.page.total }} 个订单<span v-if="appliedCount"> · 已筛选 {{ appliedCount }} 项</span></span>
     </div>
     <div class="filter-grid common-filters">
@@ -131,6 +155,8 @@ function reset() {
 .order-center-filters { padding: 12px; margin-bottom: 12px; border-radius: 7px; background: var(--order-surface); }
 .search-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .keyword { flex: 1 1 300px; min-width: 180px; }
+.scope-filter { display: flex; align-items: center; gap: 6px; max-width: 100%; color: var(--order-muted); font-size: 12px; }
+.scope-filter .order-input { color: var(--order-text); min-width: 0; }
 .platform { width: 150px; }
 .shop { width: 200px; max-width: 100%; }
 .result-count { margin-left: auto; white-space: nowrap; }

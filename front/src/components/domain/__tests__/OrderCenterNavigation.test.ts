@@ -85,12 +85,17 @@ describe('紧凑订单列表', () => {
         { platform: 'yandex', account_id: '4', name: 'GUOO-Economy' },
         { platform: 'yandex', account_id: '6', name: 'GUOO-Express' },
         { platform: 'ozon', account_id: 'shop', name: 'Ozon 店铺' },
+        { platform: 'mercadolibre', account_id: 'ml-shop', name: 'Mercado 旗舰店' },
       ],
     })
     const { wrapper } = await render()
     const select = wrapper.get('select[aria-label="店铺筛选"]')
     expect((select.element as HTMLSelectElement).value).toBe('')
     expect(select.text()).toContain('GUOO-Express')
+    expect(select.findAll('optgroup').map(group => group.attributes('label'))).toEqual(['Mercado Libre', 'Ozon', 'Yandex'])
+    expect(select.get('optgroup[label="Yandex"]').findAll('option').map(option => option.text())).toEqual(['GUOO-Economy', 'GUOO-Express'])
+    expect(select.findAll('option').map(option => option.text())).not.toContain('Yandex')
+    expect(select.get('option[value="mercadolibre:ml-shop"]').text()).toBe('Mercado 旗舰店')
     expect(fetchOrders).toHaveBeenLastCalledWith(expect.not.objectContaining({ shop: expect.anything() }))
     await select.setValue('yandex:6'); await flushPromises()
     expect(fetchOrders).toHaveBeenLastCalledWith(expect.objectContaining({ shop: 'yandex:6', offset: 0 }))
@@ -103,7 +108,28 @@ describe('紧凑订单列表', () => {
     expect(store.filters.shop).toBeUndefined()
     expect(select.text()).not.toContain('GUOO-Express')
     expect(select.text()).toContain('Ozon 店铺')
+    expect(select.findAll('optgroup')).toHaveLength(0)
+    expect(select.findAll('option').map(option => option.text())).toEqual(['全部店铺', 'Ozon 店铺'])
+    await wrapper.findAll('button').find(button => button.text() === '清空筛选')!.trigger('click')
+    await flushPromises()
+    expect(select.findAll('optgroup')).toHaveLength(3)
+    expect((select.element as HTMLSelectElement).value).toBe('')
     expect(orderCommand).not.toHaveBeenCalled()
+  })
+
+  it('店名缺失时明确显示店铺账号，不以裸编号或平台名代替店名', async () => {
+    vi.mocked(fetchOrders).mockResolvedValue({
+      ok: true, items: [], total: 0, counts: {}, notifications: [], alerts: [], unread: 0, latest_alert_id: 0,
+      shops: [
+        { platform: 'ozon', account_id: '5220791', name: '5220791' },
+        { platform: 'yandex', account_id: '4', name: '  ' },
+      ],
+    })
+    const { wrapper } = await render()
+    const select = wrapper.get('select[aria-label="店铺筛选"]')
+    expect(select.findAll('optgroup').map(group => group.attributes('label'))).toEqual(['Ozon', 'Yandex'])
+    expect(select.get('option[value="ozon:5220791"]').text()).toBe('店铺账号 5220791')
+    expect(select.get('option[value="yandex:4"]').text()).toBe('店铺账号 4')
   })
 
   it('订单显示真实店名，筛选另一店铺时仍显示平台级同步进度', async () => {
