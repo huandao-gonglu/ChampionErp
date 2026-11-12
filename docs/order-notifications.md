@@ -29,6 +29,8 @@ Yandex 在后台同步时通过 `marketplaces/yandex_http.py::fetch_yandex_shop_
 
 2026-11-12 多店铺验证：覆盖目录分页与企业隔离、50 店铺合批、真实店铺归属、重启读取、回调、跨店铺同 SKU 来源隔离、店铺筛选及分页、非默认店铺面单与聊天。订单及架构专项 224 项、筛选补充回归 29 项、前端订单页面 34 项通过；Python 编译、前端类型契约检查、相关 ESLint 与生产构建通过。后端全量 4346 项及 53 个子测试通过，另有既有的 `test_business_endpoints_are_capability_or_internal_only` 失败（选品 `source-registry` 被标为 `excluded`，相关实现与检查未修改）。此次未部署线上。
 
+2026-11-12 后续发布验收：1.2.65（`4b372d37f23f`）已上线，独立发布版本的后端相关检查 509 项、前端 1191 项与桌面 27 项通过。真实 HTTP 查询确认 4 个 Yandex 店铺共 12 笔订单，各店铺筛选计数之和等于汇总；订单 `64348262851` 已同步到 GUOO-Express，列表、详情保留实际 campaign 和店名。历史未完成订单的日期窗口读取仍报错，已导入的新订单不受影响。备份及发布记录见[服务器部署](server-deployment.md#当前公网部署2026-11-12)。
+
 这是平台订单领域任务，不涉及模型调用、Agent 暂停/恢复、审批或消息历史，因此不适用 Pydantic AI Deferred Tools。没有新增 Agent loop 或自研 AI 协议。AI 的 `platform_orders_query` 直接查询同一份本地订单快照，支持三个平台；回调接入凭据不进入模型输出。
 
 ## 接收与处理
