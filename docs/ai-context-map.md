@@ -82,7 +82,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 `ConfigStore` 统一持有应用、店铺、跨境巴士、订单回调和微信绑定的授权读写入口；
 密钥本体集中于主库 `store_auth` / `runtime_secrets`，业务 Store 不保存重复凭据。
-1688 跨境 ERP 服务商应用及跨境巴士企业密钥由管理员在「系统设置 → 管理员共享设置」维护，保存至根库
+1688 企业自用应用、跨境 ERP 服务商应用及跨境巴士企业密钥由管理员在「系统设置 → 管理员共享设置」维护，保存至根库
 `runtime_secrets / enterprise_applications / active`；尚未保存时可读取后端环境变量或既有根库凭据。
 `ConfigStore.crossborderbus_credentials/save_crossborderbus_credentials` 负责企业密钥与用户授权绑定，
 首次管理员保存会显式接管当前配置。凭据变化使用新的配置代次，旧 Token、待完成授权及 `app_uid` 失效，换回旧密钥也须重新授权。已有主库密钥保留读取及同值配置升级能力。
@@ -117,8 +117,9 @@ GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
 `AlibabaSettingsPanel.vue` 打开浏览器授权，在等待期间查询服务器状态，并显示完成授权的账号名称。
 管理员可将完整回调地址 POST 到 `/api/alibaba/authorization/complete`。该接口绑定登录管理员的业务空间，复用同一组单次 state 和授权码交换校验。
 新采购归属按应用与官方买家身份固定，刷新 Token 不改变历史范围；旧 Token 的范围摘要原样保留。
-商品查询、采购和物流共用当前客户的跨境 ERP 授权（生产 AppKey 4848173）。旧客户端的跨境授权路径映射到同一服务。
-已退役的企业自用凭据仅归档，旧采购归属不会被新的应用接管。商品详情通过 `product.search.queryProductDetail` 读取。
+根库 `enterprise_applications / active` 的 `alibaba_api_application` 由管理员统一选择 `alibaba`（企业自用，原 AppKey 1938727）或 `alibaba_crossborder`（跨境 ERP，原 AppKey 4848173）；未设置时恢复企业自用应用。应用选择纳入共享配置 revision，旧客户端省略该字段时保留当前选择。
+商品查询、采购、支付和物流经 `alibaba_runtime_config` 使用所选应用及当前客户的对应授权；旧客户端的跨境授权路径也遵循管理员选择。两套凭据分别保存在 `credentials:alibaba / state` 和 `/ crossborder`，切换不更换凭据代次、不覆盖另一套授权，归档的自用授权恢复按原指纹核验。更改任一应用凭据仍生成新代次，迟到回执须复核当前选择、应用及授权快照。
+旧采购归属不会被另一应用接管；未决采购继续阻止重复下单。企业自用商详使用 `alibaba.product.get`，跨境商详使用 `product.search.queryProductDetail`，均经同一固定网关及签名客户端处理。
 部署、迁移限制、协议依据及验证见 [1688 授权](alibaba-authorization.md)。
 
 ### 桌面与统一业务后端

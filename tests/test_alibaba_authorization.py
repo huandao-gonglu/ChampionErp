@@ -21,7 +21,8 @@ LEGACY = {'app_key': '12345', 'app_secret': 'old-app-secret', 'access_token': 'o
 
 @pytest.fixture
 def service(monkeypatch):
-    for key in ('ERP_ALIBABA_CROSSBORDER_APP_KEY', 'ERP_ALIBABA_CROSSBORDER_APP_SECRET', 'ERP_ALIBABA_CROSSBORDER_REDIRECT_URI'):
+    for key in ('ERP_ALIBABA_CROSSBORDER_APP_KEY', 'ERP_ALIBABA_CROSSBORDER_APP_SECRET', 'ERP_ALIBABA_CROSSBORDER_REDIRECT_URI',
+                'ERP_ALIBABA_APP_KEY', 'ERP_ALIBABA_APP_SECRET', 'ERP_ALIBABA_REDIRECT_URI'):
         monkeypatch.delenv(key, raising=False)
     return oauth.AlibabaAuthorizationService(get_context().config)
 
@@ -34,6 +35,7 @@ def save_legacy():
 
 
 def configure(monkeypatch):
+    get_context().db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': 'alibaba_crossborder'})
     monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_APP_KEY', '12345')
     monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_APP_SECRET', 'enterprise-secret')
     monkeypatch.setenv('ERP_ALIBABA_CROSSBORDER_REDIRECT_URI', 'https://erp.example.test/auth/alibaba/callback')
@@ -47,11 +49,13 @@ def token(member='buyer-a', **extra):
     return {'access_token': 'buyer-token', 'refresh_token': 'refresh-1', 'expires_in': 36000, 'memberId': member, **extra}
 
 
-def test_retired_credentials_are_archived_and_never_used(service, monkeypatch):
+def test_self_application_is_default_and_restores_archived_authorization(service, monkeypatch):
     save_legacy()
     monkeypatch.setenv('ERP_ALIBABA_APP_KEY', LEGACY['app_key'])
     monkeypatch.setenv('ERP_ALIBABA_APP_SECRET', LEGACY['app_secret'])
-    assert not service.runtime_config()['access_token']
+    assert service.runtime_config()['access_token'] == LEGACY['access_token']
+    assert service.runtime_config()['application_type'] == 'alibaba'
+    assert service.status()['authorized']
     assert not service.status()['can_authorize']
     archived = service.store.archive_legacy_alibaba_credentials()
     assert archived['authorization']['account_scope'] == legacy_account_scope(LEGACY)
@@ -59,6 +63,29 @@ def test_retired_credentials_are_archived_and_never_used(service, monkeypatch):
     configure(monkeypatch)
     assert service.status()['can_authorize']
     assert not service.status()['authorized']
+
+
+def test_archived_managed_self_grant_keeps_its_generation_and_purchase_scope(service):
+    from erp_web.services.alibaba_credentials import application_fingerprint
+
+    application = {'app_key': '1938727', 'app_secret': 'saved-secret',
+        'redirect_uri': 'https://erp.example/auth/alibaba/callback', 'credential_generation': 'original-generation'}
+    grant = {'access_token': 'saved-token', 'member_id': 'original-buyer',
+        'application_fingerprint': application_fingerprint(application), 'account_scope': 'original-purchase-scope'}
+    service.store._db.set_runtime_secret('enterprise_applications', 'active', {'alibaba': application})
+    service.store._db.set_runtime_secret('credentials:alibaba', 'state', {'authorization': grant})
+    assert service.status()['authorized']
+    config = service.runtime_config()
+    assert config['access_token'] == 'saved-token'
+    assert account_scope(config) == 'original-purchase-scope'
+    public = service.store.managed_settings()
+    body = {key: public[key] for key in ('revision', 'exchange_rates', 'alibaba_api_application')}
+    for provider in ('alibaba', 'alibaba_crossborder'):
+        body[provider] = {key: public[provider][key] for key in ('app_key', 'redirect_uri')}
+    service.store.save_managed_settings(body)
+    assert service.store.alibaba_application()['credential_generation'] == 'original-generation'
+    assert service.status()['authorized']
+    assert service.store.alibaba_credentials()['authorization'] == grant
 
 
 def test_public_settings_cannot_read_or_replace_application_and_user_credentials(service):
@@ -238,12 +265,12 @@ def test_interrupted_migration_reuses_persisted_authorization(service, monkeypat
     monkeypatch.setattr(service.store, 'save_app_config', interrupted)
     with pytest.raises(OSError): service.store.alibaba_credentials()
     monkeypatch.setattr(service.store, 'save_app_config', original_save)
-    assert not service.runtime_config()['access_token']
+    assert service.runtime_config()['access_token'] == LEGACY['access_token']
     assert service.store.archive_legacy_alibaba_credentials()['authorization']['account_scope'] == legacy_account_scope(LEGACY)
     assert not service.store.load_app_config()['1688_api']['access_token']
 
 
-def test_retired_pending_state_cannot_replace_service_provider_grant(service, monkeypatch):
+def test_other_application_pending_state_cannot_replace_selected_grant(service, monkeypatch):
     from erp_web.facades.alibaba_authorization_facade import authorization_payload
 
     configure(monkeypatch)
@@ -255,3 +282,22 @@ def test_retired_pending_state_cannot_replace_service_provider_grant(service, mo
     assert authorization_payload('callback', {'state': old, 'code': 'code'})[1] == 400
     assert authorization_payload('callback', {'state': state, 'code': 'code'})[1] == 200
     assert oauth.alibaba_runtime_config(service.store)['access_token'] == 'buyer-token'
+
+
+def test_application_switch_during_exchange_preserves_both_grants(service, monkeypatch):
+    configure(monkeypatch)
+    original = service.store.alibaba_application()
+    state = start_state(service)
+    before = service.store.alibaba_credentials()
+
+    def switch_during_exchange(*args):
+        service.store._db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': 'alibaba'})
+        return token()
+
+    monkeypatch.setattr(service, '_token', switch_during_exchange)
+    with pytest.raises(ValueError, match='已变化'):
+        service.callback('one-use-code', state)
+    assert not service.store.alibaba_credentials().get('authorization')
+    service.store._db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': 'alibaba_crossborder'})
+    assert service.store.alibaba_application() == original
+    assert service.store.alibaba_credentials().get('authorization') == before.get('authorization')

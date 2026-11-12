@@ -18,6 +18,7 @@ from erp_web.schemas.external_requests import ExternalRequestBlocked
 
 
 PRODUCT_DETAIL = "product.search.queryProductDetail"
+SELF_PRODUCT_DETAIL = "alibaba.product.get"
 ORDER_DETAIL = "alibaba.trade.get.buyerView"
 LOGISTICS_INFO = "alibaba.trade.getLogisticsInfos.buyerView"
 LOGISTICS_TRACE = "alibaba.trade.getLogisticsTraceInfo.buyerView"
@@ -26,6 +27,10 @@ _NAMESPACES = {
     LOGISTICS_INFO: "com.alibaba.logistics",
     LOGISTICS_TRACE: "com.alibaba.logistics",
 }
+
+
+def product_detail_method(config):
+    return SELF_PRODUCT_DETAIL if config.get('application_type') == 'alibaba' else PRODUCT_DETAIL
 
 
 class AlibabaApiError(ValueError):
@@ -56,6 +61,7 @@ def validate_order_number(value: str) -> str:
 
 class AlibabaApiClient:
     def __init__(self, config: dict):
+        self.product_detail_method = product_detail_method(config)
         self.app_key = str(config.get("app_key") or "").strip()
         self.app_secret = str(config.get("app_secret") or "").strip()
         self.access_token = str(config.get("access_token") or "").strip()
@@ -78,10 +84,17 @@ class AlibabaApiClient:
         return self._request(api, params, namespace=_NAMESPACES[api], semantics="read")
 
     def product_detail(self, offer_id: str) -> dict:
-        payload = self._request(PRODUCT_DETAIL, {"offerDetailParam": {"offerId": int(offer_id), "country": "en"}},
-                                namespace="com.alibaba.fenxiao.crossborder", semantics="read")
-        product = payload.get("result")
-        if not isinstance(product, dict) or str(product.get("offerId", "")) != offer_id:
+        if self.product_detail_method == SELF_PRODUCT_DETAIL:
+            payload = self._request(SELF_PRODUCT_DETAIL, {"productID": int(offer_id), "webSite": "1688"},
+                                    namespace="com.alibaba.product", semantics="read")
+            product = payload.get("productInfo")
+            identity = (product.get("productID") or product.get("productId")) if isinstance(product, dict) else None
+        else:
+            payload = self._request(PRODUCT_DETAIL, {"offerDetailParam": {"offerId": int(offer_id), "country": "en"}},
+                                    namespace="com.alibaba.fenxiao.crossborder", semantics="read")
+            product = payload.get("result")
+            identity = product.get("offerId") if isinstance(product, dict) else None
+        if not isinstance(product, dict) or str(identity) != offer_id:
             raise AlibabaApiError("1688 返回的商品详情与请求不符")
         return product
 
@@ -136,6 +149,10 @@ class AlibabaApiClient:
         if api == PRODUCT_DETAIL and isinstance(payload, dict) and isinstance(payload.get("result"), dict):
             payload = payload["result"]
         success = payload.get("success") if isinstance(payload, dict) else None
+        # 企业自用商详按官方契约直接返回 productInfo，没有 success 字段。
+        if (api == SELF_PRODUCT_DETAIL and isinstance(payload, dict) and success is None
+                and isinstance(payload.get("productInfo"), dict) and not payload.get("errorCode")):
+            return payload
         if not (success is True or success == "true"):
             # 官方物流接口用 500_2 表达尚未发货；保留原始业务码，并归一为空物流列表。
             if api == LOGISTICS_INFO and isinstance(payload, dict) and payload.get("errorCode") == "500_2":

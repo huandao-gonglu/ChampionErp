@@ -29,6 +29,7 @@ export interface BackendDesktopReply {
 
 export interface BackendAlibabaAuthorizationStatus {
   ok: boolean
+  application_type: "alibaba" | "alibaba_crossborder"
   application_configured: boolean
   can_authorize: boolean
   authorized: boolean
@@ -70,6 +71,7 @@ export interface BackendManagedSettings {
   exchange_rates: BackendPublicExchangeRateSettings
   alibaba: BackendPublicEnterpriseApplication
   alibaba_crossborder: BackendPublicEnterpriseApplication
+  alibaba_api_application: "alibaba" | "alibaba_crossborder"
   crossborderbus_secret_configured: boolean
 }
 

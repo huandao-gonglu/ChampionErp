@@ -66,7 +66,7 @@ class AlibabaAuthorizationService:
                 attempt = 'expired'
             else:
                 attempt = 'waiting'
-        return {'ok': True, 'application_configured': _configured(application), 'can_authorize': can_authorize,
+        return {'ok': True, 'application_type': application['application_type'], 'application_configured': _configured(application), 'can_authorize': can_authorize,
                 'authorized': bool(auth.get('access_token') and _configured(application)),
                 'member_id': auth.get('member_id', ''), 'account_name': auth.get('account_name') or auth.get('member_id', ''),
                 'attempt': attempt, 'expires_at': expires,

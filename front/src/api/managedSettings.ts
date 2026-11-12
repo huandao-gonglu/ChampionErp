@@ -21,6 +21,7 @@ export async function fetchManagedSettings(): Promise<ManagedSettings> {
   return (await apiClient.get('/api/admin/settings')).data
 }
 export async function saveManagedSettings(settings: Omit<ManagedSettings, 'ok' | 'alibaba' | 'alibaba_crossborder' | 'crossborderbus_secret_configured'> & {
+  alibaba: Omit<ApplicationSettings, 'secret_configured'> & { app_secret?: string }
   alibaba_crossborder: Omit<ApplicationSettings, 'secret_configured'> & { app_secret?: string }
   crossborderbus_client_secret?: string
 }): Promise<ManagedSettings> {

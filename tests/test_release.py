@@ -169,6 +169,68 @@ def test_public_verification_identifies_release_client_and_checks_asset_digest(t
         worker.join(timeout=5)
 
 
+@pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder'])
+@pytest.mark.parametrize('leak_secret', [False, True])
+def test_server_smoke_checks_selected_application_and_revokes_session(tmp_path, monkeypatch, provider, leak_secret):
+    from contextlib import redirect_stdout
+    from io import StringIO
+    from types import SimpleNamespace
+    from urllib.error import HTTPError
+    import urllib.request
+    from erp_web.stores import account_store
+
+    revoked = []
+    store = SimpleNamespace(admin=lambda: {'id': 'admin', 'status': 'enabled', 'password_hash': 'hash'},
+        create_session=lambda *args: ('temporary-token', SimpleNamespace(csrf_token='csrf', token_hash='token-hash')),
+        revoke_session=revoked.append)
+    monkeypatch.setattr(account_store, 'AccountStore', lambda path: store)
+    applications = {key: {'app_key': value, 'secret_configured': True}
+                    for key, value in [('alibaba', '1938727'), ('alibaba_crossborder', '4848173')]}
+    if leak_secret:
+        applications[provider]['app_secret'] = 'must-not-be-public'
+    replies = {
+        '/api/account/session': {'user': {'role': 'admin'}},
+        '/api/admin/settings': {'ok': True, 'revision': 'revision',
+            'exchange_rates': {'exchange_rate_api_url': 'https://rates.example'},
+            'alibaba_api_application': provider, **applications},
+        '/api/alibaba/authorization': {'ok': True, 'application_type': provider, 'authorized': True, 'can_authorize': True},
+        '/api/shipping/tariffs': {'items': [{'platform': name, 'version': '', 'rules_count': 0, 'source': 'shared'}
+                                          for name in ('yandex', 'ozon')]},
+        '/api/system-settings/forbidden-categories': {'categories': []},
+        '/api/account/logout': {},
+    }
+    requests = []
+
+    def fetch(request, timeout):
+        path = request.full_url.removeprefix('http://127.0.0.1:5050')
+        requests.append(path)
+        if not request.has_header('Cookie'):
+            raise HTTPError(request.full_url, 401, '请先登录', {}, None)
+        response = BytesIO(json.dumps(replies[path]).encode())
+        response.status = 200
+        return response
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fetch)
+    monkeypatch.setenv('ERP_APP_DIR', str(tmp_path))
+
+    def execute(command, **kwargs):
+        output = StringIO()
+        with redirect_stdout(output):
+            exec(compile(command[-1], '<发布验收>', 'exec'), {})
+        return output.getvalue()
+
+    monkeypatch.setattr(release_server.subprocess, 'check_output', execute)
+    if leak_secret:
+        with pytest.raises(AssertionError):
+            release_server.smoke_check(tmp_path)
+    else:
+        result = release_server.smoke_check(tmp_path)
+        assert result['alibaba'] == {'application': provider, 'authorized': True,
+            'app_key': applications[provider]['app_key'], 'can_authorize': True}
+        assert result['anonymous_admin_denied']
+    assert revoked == ['token-hash'] and requests[-1] == '/api/account/logout'
+
+
 def test_resume_refuses_when_another_server_release_is_active(tmp_path, monkeypatch):
     archive = tmp_path / 'server.tar.gz'
     archive.write_bytes(b'original package')

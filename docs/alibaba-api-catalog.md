@@ -1,12 +1,12 @@
 # 1688 跨境 ERP 解决方案 API 与消息目录
 
-适用方案为「跨境ERP/独立站SaaS数字化解决方案」（方案编号 `1697015308755`）。本项目使用服务商应用 `4848173`。清单整理自 2026-11-07 提供的平台列表，接口权限以该应用在相应环境下的「已获得能力」为准。[1688 官方 API 和消息列表](https://open.1688.com/solution/solutionDetail.htm?solutionKey=1697015308755#apiAndMessageList)
+适用方案为「跨境ERP/独立站SaaS数字化解决方案」（方案编号 `1697015308755`），对应服务商应用 `4848173`。本项目也支持管理员切换回企业自用应用 `1938727`；本目录的跨境方案清单不代表自用应用获得同等权限。清单整理自 2026-11-07 提供的平台列表，接口权限以所选应用在相应环境下的「已获得能力」为准。[1688 官方 API 和消息列表](https://open.1688.com/solution/solutionDetail.htm?solutionKey=1697015308755#apiAndMessageList)
 
 按标识去重，清单包含 **198 个 API** 和 **41 种消息**。同一分类内完全相同的行合并展示，跨分类条目和同一标识的不同名称均保留。
 
 ## ERP 已接入的接口
 
-项目使用以下 11 个业务 API。表中链接可打开官方接口文档，查看请求参数和响应字段。[授权配置](alibaba-authorization.md) · [商品、订单与物流客户端](../erp_web/services/alibaba_api_client.py) · [采购与支付客户端](../erp_web/services/alibaba_self_purchase_client.py)
+跨境应用使用以下 11 个业务 API；企业自用应用的商品详情改用 `com.alibaba.product / alibaba.product.get`，其他采购、支付及物流接口沿用表中协议。表中链接可打开官方接口文档，查看请求参数和响应字段。[授权配置](alibaba-authorization.md) · [商品、订单与物流客户端](../erp_web/services/alibaba_api_client.py) · [采购与支付客户端](../erp_web/services/alibaba_self_purchase_client.py)
 
 | 业务 | API 标识 | 官方文档 |
 | --- | --- | --- |

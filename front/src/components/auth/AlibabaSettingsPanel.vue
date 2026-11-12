@@ -119,7 +119,9 @@ onUnmounted(() => {
       <h3 class="font-semibold text-accent-950 dark:text-white">1688 账号授权</h3>
       <span v-if="status" aria-live="polite">{{ (status.authorized && !status.needs_reauthorization ? '已连接' : '未连接') }}</span>
     </div>
-    <p class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号，即可查询商品、采购订单和物流。</p>
+    <p v-if="status" class="text-sm text-accent-500">当前应用：{{ status.application_type === 'alibaba' ? '企业自用应用' : '跨境 ERP 服务商应用' }}。</p>
+    <p v-if="status?.application_type === 'alibaba_crossborder'" class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号，即可查询商品、采购订单和物流。</p>
+    <p v-else class="text-sm text-accent-500">连接当前应用下的 1688 采购账号，即可查询商品、采购订单和物流。</p>
     <p v-if="status && !status.application_configured" role="status">授权服务暂未配置，请联系管理员。</p>
     <p v-else-if="status && !status.can_authorize" role="status">暂时无法发起登录授权，请联系管理员配置授权服务。</p>
     <p v-if="status?.needs_reauthorization" role="status">授权已过期或应用配置已变化，请重新连接账号。</p>

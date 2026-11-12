@@ -31,7 +31,7 @@ RETAINED_GET_READS = {
         '/api/online-products', '/api/online-products/yandex-shop-names', '/api/online-products/source-images',
         '/api/online-products/attributes', '/api/external-requests/status',
     )},
-    '/api/admin/settings': ('凭据视图', '企业凭据维护与可能携带访问参数的汇率地址；业务默认配置见 settings.pricing_defaults/settings.collection。'),
+    '/api/admin/settings': ('凭据视图', '企业凭据维护、1688 企业自用/跨境应用选择与可能携带访问参数的汇率地址；业务默认配置见 settings.pricing_defaults/settings.collection。'),
     '/api/orders/integrations': ('凭据视图', '包含带回调凭据的地址；普通店铺及本地授权状态见 settings.store。'),
     '/api/ai-config': ('本机连接协议', '完整模型设置带本机连接桥接；模型和绑定业务元数据见 settings.models/settings.model_bindings。'),
     '/api/state': ('受信组合视图', '包含审批凭据、目录和媒体传输引用；普通配置及索引从其统一查询读取。'),

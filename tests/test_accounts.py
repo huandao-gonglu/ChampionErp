@@ -338,11 +338,14 @@ def test_callbacks_select_owner_and_still_verify_domain_credentials(accounts_htt
     assert requests.post(url + f"/api/yandex/notifications?token={old_token}", json={"notificationType": "PING"}).status_code == 200
 
 
-def test_oauth_callback_routes_and_consumes_state_in_correct_space(accounts_http, monkeypatch):
+@pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder'])
+def test_oauth_callback_routes_and_consumes_state_in_correct_space(accounts_http, monkeypatch, provider):
     url, runtime, login = accounts_http
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_KEY", "123456")
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_SECRET", "deployment-application-secret")
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_REDIRECT_URI", url + "/auth/alibaba/callback")
+    runtime.root.db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': provider})
+    prefix = 'ERP_ALIBABA_' if provider == 'alibaba' else 'ERP_ALIBABA_CROSSBORDER_'
+    monkeypatch.setenv(prefix + "APP_KEY", "123456")
+    monkeypatch.setenv(prefix + "APP_SECRET", "deployment-application-secret")
+    monkeypatch.setenv(prefix + "REDIRECT_URI", url + "/auth/alibaba/callback")
     from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
     monkeypatch.setattr(AlibabaAuthorizationService, "_token", staticmethod(lambda application, values: {
         "access_token": "buyer-token-" + values["code"], "memberId": values["code"], "expires_in": 3600,
@@ -369,14 +372,17 @@ def test_oauth_callback_routes_and_consumes_state_in_correct_space(accounts_http
             assert context.config.alibaba_credentials()["authorization"]["member_id"] == str(index)
 
 
-def test_admin_pastes_1688_callback_into_own_space(accounts_http, monkeypatch):
+@pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder'])
+def test_admin_pastes_1688_callback_into_own_space(accounts_http, monkeypatch, provider):
     from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
 
-    origin, _, login = accounts_http
+    origin, runtime, login = accounts_http
+    runtime.root.db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': provider})
     redirect = 'http://localhost:5050/auth/alibaba/callback'
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_KEY", "4848173")
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_SECRET", "secret")
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_REDIRECT_URI", redirect)
+    prefix = 'ERP_ALIBABA_' if provider == 'alibaba' else 'ERP_ALIBABA_CROSSBORDER_'
+    monkeypatch.setenv(prefix + "APP_KEY", "1938727" if provider == 'alibaba' else "4848173")
+    monkeypatch.setenv(prefix + "APP_SECRET", "secret")
+    monkeypatch.setenv(prefix + "REDIRECT_URI", redirect)
     exchanges = []
 
     def exchange(app, values):
