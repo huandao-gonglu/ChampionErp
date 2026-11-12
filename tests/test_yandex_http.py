@@ -1349,3 +1349,16 @@ def test_price_quarantine_large_filter_uses_full_page(harness):
     request = harness.requests[-1]
     assert 'limit=200' in request.full_url
     assert harness.body(request) == {'offerIds': ids}
+
+
+def test_offer_cards_read_preserves_content_warnings(monkeypatch):
+    harness = _YandexHarness()
+    harness.install(monkeypatch)
+    cards = [{'offerId': 'SKU-1', 'cardStatus': 'HAS_CARD_CAN_UPDATE_ERRORS',
+              'warnings': [{'message': 'Недопустимые символы'}]}]
+    harness.route('POST /v2/businesses/123/offer-cards', {'status': 'OK', 'result': {'offerCards': cards}})
+    assert yandex_http.fetch_yandex_offer_cards(API_TOKEN, '123', ['SKU-1']) == cards
+    request = harness.request()
+    assert request.get_header('Api-key') == API_TOKEN
+    assert harness.body(request) == {'offerIds': ['SKU-1']}
+    assert harness.query(request) == {}

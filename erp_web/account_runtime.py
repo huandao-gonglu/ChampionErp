@@ -120,7 +120,7 @@ class AccountRuntime:
                             self.newapi.sync()
                 except Exception:
                     logger.exception("New API 账号同步暂未完成。")
-                next_newapi_sync = time.monotonic() + 30
+                next_newapi_sync = time.monotonic() + self.root.config.sync_policy("newapi_account")["interval"]
             with self._lock:
                 contexts = list(self._contexts.items())
             for identity, context in contexts:

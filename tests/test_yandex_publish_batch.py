@@ -157,3 +157,58 @@ def test_group_retry_keeps_completed_steps_and_persists_before_batch_dispatch(na
     assert len(writes) == 5
     assert writes[3][1].endswith('/offer-prices/updates') and writes[4][1].endswith('/offers/stocks/update')
     assert all(state['result']['result']['checkpoint']['completed_steps'] == ['offer_mapping', 'campaign_offer', 'price', 'stock'] for state in result['sku_results'])
+
+
+@pytest.mark.parametrize('card_count', [4, 201])
+def test_warning_details_are_batched_and_keep_per_sku_outcomes(native, monkeypatch, card_count):
+    payloads, config, writes, _, _, _ = native
+    results = []
+    for i in range(card_count):
+        plan = batch.leaf._publish_plan({**deepcopy(payloads[0]), 'offer_id': f'SKU-{i}'})
+        checkpoint = batch.leaf.YandexPublishCheckpoint(offer_id=f'SKU-{i}', business_id='222', campaign_id='333',
+            phase='confirmation', completed_steps=['offer_mapping', 'campaign_offer', 'price', 'stock'])
+        results.append(batch.leaf._pending_result(plan, checkpoint))
+    monkeypatch.setattr(batch.api, 'fetch_yandex_offer_mapping', lambda token, business, ids, **kw:
+        [{'offer': {'offerId': sku, 'cardStatus': 'HAS_CARD_CAN_UPDATE_ERRORS'}} for sku in ids])
+    monkeypatch.setattr(batch.api, 'fetch_yandex_campaign_offer', lambda token, campaign, *, offer_ids, **kw:
+        [{'offerId': sku, 'status': 'PUBLISHED'} for sku in offer_ids])
+    monkeypatch.setattr(batch.api, 'fetch_yandex_price_quarantine', lambda *a, **kw: [])
+    calls = []
+    warning = {'message': 'Недопустимые символы'}
+    def cards(token, business, ids, **kw):
+        calls.append((business, ids))
+        return [{'offerId': sku, 'cardStatus': 'HAS_CARD_CAN_UPDATE_ERRORS', 'warnings': [warning],
+                 'errors': [{'message': '真实错误'}] if sku == 'SKU-1' else []}
+                for sku in reversed(ids) if sku != 'SKU-2']
+    monkeypatch.setattr(batch.api, 'fetch_yandex_offer_cards', cards)
+    confirmed = batch.confirm_many(results, config)
+    assert [len(ids) for _, ids in calls] == ([4] if card_count == 4 else [200, 1])
+    assert all(scope == '222' for scope, _ in calls)
+    assert confirmed[0]['status'] == 'real_publish_success'
+    assert confirmed[0]['warnings'] == [warning]
+    assert confirmed[1]['status'] == 'real_publish_failed'
+    assert confirmed[2]['check_error'] and confirmed[2]['status'] == results[2]['status']
+    assert all(row['status'] == 'real_publish_success' for row in confirmed[3:])
+    assert not writes
+
+
+def test_retry_card_failure_only_restores_confirmation_without_replaying_writes(native, monkeypatch):
+    from erp_web.context import get_context
+    from erp_web.runtime_units.publish_adapter import YandexPublishingAdapter
+    from erp_web.runtime_units.sku_publish_adapter import SkuGroupPublishingAdapter
+    payloads, config, writes, _, _, _ = native
+    plan = batch.leaf._publish_plan(payloads[0])
+    checkpoint = batch.leaf.YandexPublishCheckpoint(offer_id='SKU-0', business_id='222', campaign_id='333',
+        phase='confirmation', completed_steps=['offer_mapping', 'campaign_offer', 'price', 'stock'])
+    failure = batch.leaf._terminal_failure(plan, checkpoint, {'error_code': 'YANDEX_CARD_UPDATE_REJECTED'})
+    previous = {'sku_id': 'fact-0', 'sku': 'SKU-0', 'fingerprint': 'original', 'status': 'failed', 'result': failure}
+    saved = []
+    store = get_context().products
+    monkeypatch.setattr(store, 'sku_publication', lambda *args: deepcopy(previous))
+    monkeypatch.setattr(store, 'save_sku_publication', lambda *args: saved.append(deepcopy(args[-1])))
+    envelope = {'draft_id': 'native-draft', 'target_key': 'yandex:global', 'grouping': {'mode': 'independent'},
+        'items': [{**previous, 'payload': payloads[0]}]}
+    restored = SkuGroupPublishingAdapter(YandexPublishingAdapter()).publish_payload(envelope, config)
+    assert restored['status'] == 'pending_confirmation'
+    assert restored['sku_results'][0]['result']['result']['checkpoint']['completed_steps'] == checkpoint.completed_steps
+    assert not writes

@@ -329,7 +329,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/orders/chat/send": RequestContract(fields={"order_id": STRING, "message": STRING}, required=("order_id", "message")),
     "/api/orders/sync": RequestContract(fields={"platform": STRING, "automatic": BOOLEAN}),
     "/api/system-settings/user-agents": RequestContract(fields={"content": FieldRule("string", allow_empty=True), "expected_revision": STRING}, required=("content", "expected_revision")),
-    "/api/system-settings": RequestContract(fields={"orders_auto_sync_interval_hours": FieldRule("integer", minimum=5), "watermark": OBJECT, "wechat_forward_types": FieldRule("string_array", allow_empty=True)}, required_any=(("orders_auto_sync_interval_hours", "watermark", "wechat_forward_types"),)),
+    "/api/system-settings": RequestContract(fields={"sync_policies": OBJECT, "orders_auto_sync_interval_hours": FieldRule("integer", minimum=5), "watermark": OBJECT, "wechat_forward_types": FieldRule("string_array", allow_empty=True)}, required_any=(("orders_auto_sync_interval_hours", "watermark", "wechat_forward_types", "sync_policies"),)),
     "/api/system-settings/watermark-preview": RequestContract(fields={"watermark": OBJECT}, required=("watermark",)),
     "/api/orders/retry": RequestContract(fields={"event_id": FieldRule("integer", minimum=1)}, required=("event_id",)),
     "/api/orders/acknowledge": RequestContract(fields={"through_id": FieldRule("integer", minimum=0)}, required=("through_id",)),

@@ -11,9 +11,9 @@ const result = (url = 'data:image/png;base64,cHJldmlldw=='): WatermarkPreview =>
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
-  vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark: { ...watermark }, wechat_forward_types: [] })
+  vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark: { ...watermark }, wechat_forward_types: [], sync_policies: {} })
   vi.mocked(previewWatermark).mockResolvedValue(result())
-  vi.mocked(saveSystemSettings).mockImplementation(async change => ({ orders_auto_sync_interval_hours: 12, watermark: change.watermark!, wechat_forward_types: [] }))
+  vi.mocked(saveSystemSettings).mockImplementation(async change => ({ orders_auto_sync_interval_hours: 12, watermark: change.watermark!, wechat_forward_types: [], sync_policies: {} }))
 })
 afterEach(() => vi.useRealTimers())
 const open = () => mount(WatermarkSettingsPanel, { global: {  } })
@@ -39,7 +39,7 @@ describe('图片水印设置', () => {
   })
 
   it('允许文字和图片同时保存，清空两者后也可保存并自动预览原图', async () => {
-    vi.mocked(fetchSystemSettings).mockResolvedValueOnce({ orders_auto_sync_interval_hours: 12, watermark: { ...watermark, text: '品牌', image_data_url: 'data:image/png;base64,cG5n' }, wechat_forward_types: [] })
+    vi.mocked(fetchSystemSettings).mockResolvedValueOnce({ orders_auto_sync_interval_hours: 12, watermark: { ...watermark, text: '品牌', image_data_url: 'data:image/png;base64,cG5n' }, wechat_forward_types: [], sync_policies: {} })
     const wrapper = open(); await updatePreview()
     expect(wrapper.get('textarea').element.value).toBe('品牌')
     expect(wrapper.find('img[alt="已上传的水印图片"]').exists()).toBe(true)

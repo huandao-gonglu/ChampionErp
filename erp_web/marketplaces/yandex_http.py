@@ -733,6 +733,25 @@ def fetch_yandex_offer_mapping(
     return [item for item in mappings if isinstance(item, dict)]
 
 
+def fetch_yandex_offer_cards(
+    api_token: str,
+    business_id: str,
+    offer_ids: list[str],
+    *,
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+) -> list[dict[str, Any]]:
+    """只读获取指定商品的卡片错误与警告；每批最多 200 个 SKU。"""
+    body = request_yandex_json(
+        "POST",
+        f"/v2/businesses/{urllib.parse.quote(str(business_id or '').strip())}/offer-cards",
+        api_token,
+        {"offerIds": offer_ids},
+        timeout_seconds=timeout_seconds,
+    )
+    result = body.get("result") or {}
+    return [row for row in result.get("offerCards", []) if isinstance(row, dict)]
+
+
 def update_yandex_campaign_offer(
     api_token: str,
     campaign_id: str,
@@ -985,6 +1004,7 @@ __all__ = [
     "fetch_yandex_category_parameters",
     "fetch_yandex_category_tree",
     "fetch_yandex_offer_mapping",
+    "fetch_yandex_offer_cards",
     "fetch_yandex_partner_warehouses",
     "fetch_yandex_price_quarantine",
     "fetch_yandex_token_info",

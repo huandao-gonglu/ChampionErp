@@ -26,8 +26,8 @@ beforeEach(() => {
   vi.mocked(fetchUserAgents).mockResolvedValue({ content: '<!-- 交流偏好 -->', revision: 'a'.repeat(64) })
   vi.mocked(fetchForbiddenCategories).mockResolvedValue({ platform: 'yandex', filename: '', imported_at: '', categories: [] })
   const watermark = { text: '', image_data_url: '', opacity: 25, size_percent: 30, density: 5, color: '#737373' }
-  vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5, watermark, wechat_forward_types: [] })
-  vi.mocked(saveSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark, wechat_forward_types: [] })
+  vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5, watermark, wechat_forward_types: [], sync_policies: {} })
+  vi.mocked(saveSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark, wechat_forward_types: [], sync_policies: {} })
   vi.mocked(fetchRequestControl).mockResolvedValue({ ok: true, server_time: 1800000000, total: 0, cleanup_before: 1800000000, clearable_count: 0, blocks: [], history: [] })
   vi.mocked(fetchYandexWarehouses).mockResolvedValue({ ok: true, account: { business_id: '', campaign_id: '', placement_type: '', stock_update_mode: '' }, revision: 0, bindings: [], binding_warnings: [], modes: [], warehouses: [], routes: [], carriers: [], checked_at: '', error: '' })
 })

@@ -46,7 +46,7 @@ class TaskQueueService:
 
     def _plan(self, task):
         plan = self.store.ensure(task, submitted_at=task_timestamp(task["_submitted_at"]),
-            policy=confirmation_policy(task["source"], task["platform"], task["operation"], len(task["_result"].get("sku_results") or [1])),
+            policy=confirmation_policy(task["source"], task["platform"], task["operation"], len(task["_result"].get("sku_results") or [1]), settings=self.context.config.system_settings()["sync_policies"]),
             legacy_checks=task["_legacy_checks"])
         if not task["_can_query"]:
             self.store.stop(task["id"], "没有可定位原请求的远端回执，请在平台后台核对")

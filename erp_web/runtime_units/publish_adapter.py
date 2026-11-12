@@ -43,6 +43,7 @@ from .publish_validation import validate_mercadolibre_draft
 from .publish_validation import validate_ozon_draft
 from .publish_validation import validate_yandex_draft, validate_prepared_yandex_draft
 from .publish_yandex import (
+    _step_interval_seconds,
     build_yandex_publish_payload,
     map_yandex_publish_error,
     poll_yandex_publish_status,
@@ -468,7 +469,7 @@ class YandexPublishingAdapter:
 
     def submission_step_interval_seconds(self, config: dict[str, Any]) -> float:
         store = config.get(self.platform) if isinstance(config.get(self.platform), dict) else {}
-        return min(30.0, max(0.5, float(store.get("publish_step_interval_seconds") or 2.0)))
+        return _step_interval_seconds(config)
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         from .runtime_api import publish_product
@@ -516,7 +517,7 @@ def build_publishing_bus(context: AppContext) -> PublishingBus:
     return PublishingBus(
         context.db,
         adapters=dict(_PUBLISHERS),
-        config_provider=context.config.load_store_config,
+        config_provider=context.config.publishing_config,
         terminal_callback=lambda state: (
             persist_publish_bus_terminal_results(
                 state,

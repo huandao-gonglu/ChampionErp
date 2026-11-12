@@ -33,12 +33,14 @@ from erp_web.marketplaces.yandex_http import (
     YandexApiError,
     fetch_yandex_campaign_offer,
     fetch_yandex_offer_mapping,
+    fetch_yandex_offer_cards,
     fetch_yandex_price_quarantine,
     update_yandex_campaign_offer,
     update_yandex_offer_mapping,
     update_yandex_price,
     update_yandex_stock,
 )
+from erp_web.schemas.sync_policies import policy_values
 from erp_web.schemas.category_constraints import category_attribute_constraint_error
 from erp_web.schemas.category import (
     category_attribute_text_format_error,
@@ -78,7 +80,7 @@ _NO_STOCKS_CAMPAIGN_STATUS = "NO_STOCKS"
 _CARD_STATUS_ACCEPTED = frozenset(
     {"HAS_CARD_CAN_UPDATE", "HAS_CARD_CAN_NOT_UPDATE"}
 )
-# «Изменения не приняты» / «Не создана из-за ошибки»：本次变更被拒绝。
+# 错误枚举；已在售且仅含内容警告的情况由确认回读结合详情单独处理。
 _CARD_STATUS_FAILED = frozenset(
     {"HAS_CARD_CAN_UPDATE_ERRORS", "NO_CARD_ERRORS"}
 )
@@ -91,9 +93,9 @@ _CARD_STATUS_PROCESSING = frozenset(
     }
 )
 
-DEFAULT_STEP_RETRY_LIMIT = 8
-DEFAULT_STEP_INTERVAL_SECONDS = 2.0
-MAX_STEP_INTERVAL_SECONDS = 30.0
+_SUBMISSION_DEFAULTS = policy_values({}, "yandex_submission")
+DEFAULT_STEP_RETRY_LIMIT = _SUBMISSION_DEFAULTS["max_retries"]
+DEFAULT_STEP_INTERVAL_SECONDS = _SUBMISSION_DEFAULTS["interval"]
 MAX_PICTURES = 30
 
 
@@ -813,7 +815,7 @@ def _timeout_seconds(config: dict[str, Any]) -> float:
 def _step_interval_seconds(config: dict[str, Any]) -> float:
     store = _yandex_store(config)
     return min(
-        MAX_STEP_INTERVAL_SECONDS,
+        float(store.get("publish_step_max_delay_seconds") or _SUBMISSION_DEFAULTS["max_delay"]),
         max(0.5, float(store.get("publish_step_interval_seconds") or DEFAULT_STEP_INTERVAL_SECONDS)),
     )
 
@@ -826,7 +828,7 @@ def _step_retry_limit(config: dict[str, Any]) -> int:
 def _backoff_at(checkpoint: YandexPublishCheckpoint, config: dict[str, Any]) -> float:
     interval = _step_interval_seconds(config)
     factor = 2 ** min(max(0, checkpoint.retries), 5)
-    return time.time() + min(MAX_STEP_INTERVAL_SECONDS, interval * factor)
+    return time.time() + min(float(_yandex_store(config).get("publish_step_max_delay_seconds") or _SUBMISSION_DEFAULTS["max_delay"]), interval * factor)
 
 
 def _pending_result(
@@ -1194,9 +1196,23 @@ def _confirmation_readback(
         "checked_at": collect_time_iso(),
     }
 
-    # cardStatus 先于 Campaign 状态裁决：编辑存量商品时 Campaign 可以一直
-    # 保持 PUBLISHED，而本次变更被拒绝（HAS_CARD_CAN_UPDATE_ERRORS），
-    # 仅凭 Campaign 状态会把失败的修改误报为成功。
+    # 在售商品的卡片错误枚举也可能只包含内容警告，必须读取详情再裁决。
+    # 真实 errors 仍然阻断确认，不能仅凭在售状态认定本次内容全部生效。
+    if campaign_status == _SUCCESS_CAMPAIGN_STATUS and card_status == "HAS_CARD_CAN_UPDATE_ERRORS":
+        cards = facts["cards"] if facts is not None else fetch_yandex_offer_cards(
+            api_token, checkpoint.business_id, [checkpoint.offer_id], timeout_seconds=timeout,
+        )
+        card = next((row for row in cards if row.get("offerId") == checkpoint.offer_id), None)
+        if card is None or card.get("cardStatus") != card_status:
+            raise ValueError("Yandex 未返回一致的卡片详情，保留原发布状态，请稍后查询。")
+        checkpoint.evidence["confirmation"]["card_details"] = deepcopy(card)
+        if not card.get("errors") and card.get("warnings"):
+            for warning in card["warnings"]:
+                if warning not in checkpoint.warnings:
+                    checkpoint.warnings.append(deepcopy(warning))
+            checkpoint.phase = "terminal"
+            return _terminal_success(plan, checkpoint, campaign_status=campaign_status, card_status=card_status)
+
     if card_status in _CARD_STATUS_FAILED:
         return _terminal_failure(
             plan,

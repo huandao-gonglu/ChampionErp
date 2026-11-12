@@ -207,6 +207,9 @@ class _Recorder:
         # 表示卡片可编辑、本次变更被接受。
         self.card_status = "HAS_CARD_CAN_UPDATE"
         self.quarantine: list[dict[str, Any]] = []
+        self.card_errors = [{"message": "内容被拒绝"}]
+        self.card_warnings = []
+        self.cards_missing = False
 
     def count(self, name: str) -> int:
         return len(self.calls.get(name, []))
@@ -248,6 +251,11 @@ class _Recorder:
         self._record("fetch_yandex_price_quarantine", *args)
         return deepcopy(self.quarantine)
 
+    def fetch_cards(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        self._record("fetch_yandex_offer_cards", *args)
+        return [] if self.cards_missing else [{"offerId": "SKU-001", "cardStatus": self.card_status,
+            "errors": deepcopy(self.card_errors), "warnings": deepcopy(self.card_warnings)}]
+
 
 @pytest.fixture()
 def remote(monkeypatch):
@@ -259,6 +267,7 @@ def remote(monkeypatch):
     monkeypatch.setattr(publish_yandex, "fetch_yandex_offer_mapping", recorder.fetch_mapping)
     monkeypatch.setattr(publish_yandex, "fetch_yandex_campaign_offer", recorder.fetch_campaign_offer)
     monkeypatch.setattr(publish_yandex, "fetch_yandex_price_quarantine", recorder.fetch_quarantine)
+    monkeypatch.setattr(publish_yandex, "fetch_yandex_offer_cards", recorder.fetch_cards)
     return recorder
 
 
@@ -886,7 +895,7 @@ def test_confirmation_pending_remains_pending(remote) -> None:
 
 def test_confirmation_edit_rejected_by_card_status_despite_published(remote) -> None:
     """编辑存量商品：Campaign 保持 PUBLISHED，但官方 cardStatus
-    HAS_CARD_CAN_UPDATE_ERRORS 表示“修改未接受”，必须判定失败。"""
+    卡片详情包含真实错误时，不能仅凭在售状态确认成功。"""
 
     remote.mapping_status = "PUBLISHED"
     remote.card_status = "HAS_CARD_CAN_UPDATE_ERRORS"
@@ -1862,3 +1871,27 @@ def test_payload_uses_selected_warehouse_campaign_and_keeps_authorization_identi
     changed = deepcopy(payload)
     changed['campaign_id'] = '111'
     assert any('发布店铺与核价仓库' in error for error in validate_yandex_publish_payload(changed, _config()))
+
+
+def test_published_card_with_only_warnings_succeeds_and_preserves_evidence(remote):
+    remote.card_status = 'HAS_CARD_CAN_UPDATE_ERRORS'
+    remote.card_errors = []
+    remote.card_warnings = [{'message': 'Недопустимые символы', 'comment': '请使用俄文字母'}]
+    config = _config()
+    payload = build_yandex_publish_payload(_product(), config, _record())
+    terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
+    assert terminal['status'] == 'real_publish_success'
+    assert terminal['external_id'] == 'SKU-001'
+    assert remote.card_warnings[0] in terminal['warnings']
+    details = terminal['checkpoint']['evidence']['confirmation']['card_details']
+    assert details['errors'] == [] and details['warnings'] == remote.card_warnings
+    assert remote.count('fetch_yandex_offer_cards') == 1
+
+
+def test_missing_card_details_does_not_confirm_success_or_failure(remote):
+    remote.card_status = 'HAS_CARD_CAN_UPDATE_ERRORS'
+    remote.cards_missing = True
+    config = _config()
+    payload = build_yandex_publish_payload(_product(), config, _record())
+    with pytest.raises(ValueError, match='未返回一致的卡片详情'):
+        _drive_to_terminal(publish_yandex_payload(payload, config), config)

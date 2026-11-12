@@ -1,6 +1,7 @@
 """普通读取覆盖账本：新配置和新增 GET 必须落入统一查询或明确的领域/协议边界。"""
 
 # 值是公开业务视图；含凭据的字段仅提供配置状态，不能读取原值。
+# system_settings.sync_policies 由 settings.system 读取，字段与有效值目录由 settings.sync_policies 派生 GET。
 APP_CONFIG_READS = {
     'system_settings': 'settings.system', 'forbidden_categories': 'settings.forbidden_categories',
     'image_hosting': 'settings.image_hosting', 'ai_tool_approval_mode': 'settings.approval',

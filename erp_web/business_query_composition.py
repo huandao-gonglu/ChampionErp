@@ -23,6 +23,8 @@ def product_skus(context, request):
 
 
 BUSINESS_QUERIES = BusinessQueries((
+    BusinessQuery('settings.sync_policies', '后台同步与重试策略的完整目录、当前值和可编辑范围。', NoDataParameters,
+                  lambda context, _: context.config.sync_policy_catalog(), 'items'),
     BusinessQuery('shipping.tariff_rules', '国际物流运费表：轻小件 Extra Small、普通件 Other 的尺寸重量售价限制、电池准入和费率；按 platform 查询。', TariffRulesQuery,
                   lambda context, request: context.tariffs.rules(request), 'rules',
                   ('id', 'carrier', 'service', 'group', 'max_g', 'max_edge_cm', 'max_sum_cm', 'price_max',
@@ -48,9 +50,9 @@ BUSINESS_QUERIES = BusinessQueries((
                   lambda context, _: context.fulfillment.settings(), '',
                   ('authorized', 'secret_configured', 'user_name', 'expires_at', 'rules'),
                   permission='order.read', http_path='/api/crossborderbus/settings'),
-    BusinessQuery('settings.system', '系统设置：订单自动同步间隔、图片水印、微信转发类型；水印图片内容可展开，默认仅读取文字和样式。', NoDataParameters,
+    BusinessQuery('settings.system', '系统设置：同步重试策略、订单自动同步间隔、图片水印、微信转发类型；水印图片内容可展开，默认仅读取文字和样式。', NoDataParameters,
                   lambda context, _: context.config.system_settings(), '',
-                  ('orders_auto_sync_interval_hours', 'watermark.text', 'watermark.opacity', 'watermark.size_percent', 'watermark.density', 'watermark.color', 'wechat_forward_types'),
+                  ('orders_auto_sync_interval_hours', 'watermark.text', 'watermark.opacity', 'watermark.size_percent', 'watermark.density', 'watermark.color', 'wechat_forward_types', 'sync_policies'),
                   http_path='/api/system-settings'),
     BusinessQuery('settings.forbidden_categories', '共享 Yandex 禁售类目名单及导入来源；按 categories 分页，未列出不等于平台允许发布。', NoDataParameters,
                   lambda context, _: context.config.forbidden_categories(), 'categories', ('category_id', 'name'), http_path='/api/system-settings/forbidden-categories'),

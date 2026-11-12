@@ -60,7 +60,9 @@ def trusted_base_url(value: str) -> str:
 
 class WechatChannelService:
     def __init__(self, *, store, conversations, api=None, conversation_factory=None,
-                 forward_types_reader=None, forward_types_writer=None):
+                 forward_types_reader=None, forward_types_writer=None, policy_reader=None):
+        from erp_web.schemas.sync_policies import policy_values
+        self._policy_reader = policy_reader or (lambda key: policy_values({}, key))
         self.store = store
         self.conversations = conversations
         self.conversation_factory = conversation_factory
@@ -414,7 +416,7 @@ class WechatChannelService:
             )
             if retry:
                 try:
-                    await asyncio.wait_for(self._wake_event.wait(), 1)
+                    await asyncio.wait_for(self._wake_event.wait(), self._policy_reader("wechat_delivery")["retry_delay"])
                 except TimeoutError:
                     pass
             else:

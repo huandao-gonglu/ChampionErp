@@ -9,7 +9,7 @@ from erp_web.runtime_units import publish_yandex as leaf
 
 
 LIMITS = {'offer_mapping': 100, 'campaign_offer': 500, 'price': 500, 'stock': 2000}
-READ_LIMITS = {'mappings': 100, 'offers': 200, 'quarantine': 200}
+READ_LIMITS = {'mappings': 100, 'offers': 200, 'quarantine': 200, 'cards': 200}
 
 
 def _send(step, entries, token, config):
@@ -146,7 +146,34 @@ def confirm_many(results, config):
             except Exception as exc:
                 for index in batch:
                     values[index] = {**values[index], 'check_error': str(exc)}
+    # 仅对在售且卡片报错的成员补查详情，按 Business 合批，禁止逐 SKU 请求。
+    card_groups = defaultdict(list)
+    for index, (_, checkpoint, _) in enumerate(loaded):
+        fact = facts[index]
+        if set(fact) != {'mappings', 'offers', 'quarantine'}:
+            continue
+        mapping = next(iter(fact['mappings']), {}).get('offer', {})
+        offer = next(iter(fact['offers']), {})
+        if not fact['quarantine'] and mapping.get('cardStatus') == 'HAS_CARD_CAN_UPDATE_ERRORS' and offer.get('status') == 'PUBLISHED':
+            card_groups[checkpoint.business_id].append(index)
+    for business, indices in card_groups.items():
+        for start in range(0, len(indices), READ_LIMITS['cards']):
+            batch = indices[start:start + READ_LIMITS['cards']]
+            ids = list(dict.fromkeys(loaded[index][1].offer_id for index in batch))
+            try:
+                rows = api.fetch_yandex_offer_cards(loaded[batch[0]][2], business, ids, timeout_seconds=timeout)
+                indexed = {row['offerId']: row for row in rows}
+                for index in batch:
+                    oid = loaded[index][1].offer_id
+                    facts[index]['cards'] = [indexed[oid]] if oid in indexed else []
+            except Exception as exc:
+                for index in batch:
+                    values[index] = {**values[index], 'check_error': str(exc)}
+                    facts[index] = {}
     for index, (plan, checkpoint, token) in enumerate(loaded):
-        if set(facts[index]) == {'mappings', 'offers', 'quarantine'}:
-            values[index] = leaf._confirmation_readback(plan, checkpoint, token, config, facts=facts[index])
+        if {'mappings', 'offers', 'quarantine'} <= set(facts[index]):
+            try:
+                values[index] = leaf._confirmation_readback(plan, checkpoint, token, config, facts=facts[index])
+            except Exception as exc:
+                values[index] = {**values[index], 'check_error': str(exc)}
     return values

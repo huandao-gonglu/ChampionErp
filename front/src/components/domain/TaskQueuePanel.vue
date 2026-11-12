@@ -32,6 +32,13 @@ const results = computed(() => {
   const markets = record(result.publication).markets
   return Array.isArray(markets) ? markets.map(record) : []
 })
+function publishWarnings(item: Record<string, unknown>): string[] {
+  const warnings = record(item.result).warnings
+  return Array.isArray(warnings) ? warnings.map(warning => {
+    const row = record(warning)
+    return [row.message, row.comment].filter(Boolean).map(String).join('：') || String(warning)
+  }) : []
+}
 const publishProgress = computed(() => {
   if (selected.value?.task.source !== 'publish' || !Array.isArray(record(selected.value.detail.result).sku_results)) return null
   const counts = { completed: 0, waiting: 0, pending: 0, unknown: 0, failed: 0, attention: 0 }
@@ -249,7 +256,7 @@ const statusLabels: Record<string, string> = {
         <div v-if="onlineJob && Object.keys(changes).length" class="mt-4 overflow-auto"><table class="w-full table-fixed text-left text-xs"><thead><tr><th class="w-1/4">修改项</th><th>目标值</th><th>平台当前值</th></tr></thead><tbody><tr v-for="(value, field) in changes" :key="field"><td class="break-all p-2 align-top">{{ field }}</td><td class="p-2"><pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all">{{ display(value) }}</pre></td><td class="p-2"><pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all">{{ display(onlineJob.result.evidence?.observed?.[field]) }}</pre></td></tr></tbody></table></div>
         <ul v-if="onlineJob?.result.platform_errors?.length" class="mt-4 space-y-2 text-sm text-red-700 dark:text-red-300"><li v-for="(item, index) in onlineJob.result.platform_errors" :key="index" class="whitespace-pre-wrap break-words">{{ display(item) }}</li></ul>
         <p v-if="publishProgress" class="mt-4 text-sm" role="status">{{ `已发布 ${publishProgress.completed} · 待确认 ${publishProgress.waiting} · 待提交 ${publishProgress.pending} · 结果未知 ${publishProgress.unknown} · 失败 ${publishProgress.failed} · 需处理 ${publishProgress.attention}` }}</p>
-        <ul v-if="results.length" class="mt-4 space-y-2"><li v-for="(item, index) in results" :key="index" class="rounded border border-accent-200 p-3 text-sm dark:border-dark-700"><p>{{ item.sku || item.site_id || item.sku_id }} · {{ statusLabel(item.status) }}</p><p v-if="item.error" class="mt-1 break-words text-red-600 dark:text-red-300">{{ display(item.error) }}</p></li></ul>
+        <ul v-if="results.length" class="mt-4 space-y-2"><li v-for="(item, index) in results" :key="index" class="rounded border border-accent-200 p-3 text-sm dark:border-dark-700"><p>{{ item.sku || item.site_id || item.sku_id }} · {{ statusLabel(item.status) }}</p><p v-if="item.error" class="mt-1 break-words text-red-600 dark:text-red-300">{{ display(item.error) }}</p><p v-for="(warning, warningIndex) in publishWarnings(item)" :key="warningIndex" class="mt-1 whitespace-pre-wrap break-words text-amber-700 dark:text-amber-300">{{ `内容警告：${warning}` }}</p></li></ul>
         <details class="mt-5 text-xs"><summary class="cursor-pointer text-accent-500">查看平台回执</summary><pre class="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-all">{{ display(selected.detail) }}</pre></details>
       </template>
     </WorkspaceDialog>

@@ -31,6 +31,21 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.clearAllMocks(); vi.useRealTimers() })
 
 describe('统一任务队列', () => {
+  it('已完成发布保留逐 SKU 内容警告且不显示失败', async () => {
+    vi.mocked(fetchTask).mockResolvedValue({ ok: true, task: { ...task, status: 'completed', business_status: 'success' },
+      detail: { result: { sku_results: [{ sku: 'SKU-1', status: 'published', result: {
+        warnings: [{ message: 'Недопустимые символы', comment: '请使用俄文字母' }],
+      } }] } } })
+    wrapper = render({ initialTaskId: task.id })
+    await flushPromises()
+    const dialog = wrapper.get('dialog')
+    expect(dialog.text()).toContain('已发布 1')
+    expect(dialog.text()).toContain('失败 0')
+    expect(dialog.text()).toContain('内容警告：Недопустимые символы：请使用俄文字母')
+    expect(checkTask).not.toHaveBeenCalled()
+    expect(retryPublishTask).not.toHaveBeenCalled()
+  })
+
   it('中断发布仅在点击后重试原任务，展示执行次数与逐项错误', async () => {
     const interrupted = { ...task, status: 'interrupted', business_status: 'interrupted', can_retry: true, confirmation: null }
     const stopped = { ok: true, task: interrupted, detail: { attempts: 1, result: { sku_results: [

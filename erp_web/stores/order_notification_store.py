@@ -258,12 +258,14 @@ class OrderNotificationStore:
             conn.commit()
             return True
 
-    def finish(self, job, *, error: str = "", retryable: bool = False, now: float, next_attempt: float | None = None):
+    def finish(self, job, *, error: str = "", retryable: bool = False, now: float, next_attempt: float | None = None, retry_policy: dict | None = None):
+        from erp_web.schemas.sync_policies import policy_values
+        policy = retry_policy or policy_values({}, 'order_callback')
         status = (
             "done"
             if not error
             else "retry"
-            if retryable and (job["attempts"] < 8 or next_attempt is not None)
+            if retryable and (job["attempts"] < policy["max_attempts"] or next_attempt is not None)
             else "failed"
         )
         with self.connect() as conn:
@@ -273,7 +275,7 @@ class OrderNotificationStore:
                 (
                     status,
                     error[:500],
-                    next_attempt if next_attempt is not None else now + min(1800, 5 * 2 ** min(job["attempts"], 9)),
+                    next_attempt if next_attempt is not None else now + min(policy["max_delay"], policy["base_delay"] * 2 ** min(job["attempts"], 30)),
                     utc_iso(),
                     job["id"],
                     job["claim"],

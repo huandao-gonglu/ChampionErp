@@ -90,7 +90,7 @@ class TaskConfirmationStore:
                 conn.execute("UPDATE confirmations SET state='needs_attention',next_check_at=0,owner='',lease_until=0,error=? WHERE id=?",
                              (AUTOMATIC_CONFIRMATION_ENDED, task_id))
                 return None, "budget_exhausted"
-            if row["last_checked_at"] and now < row["last_checked_at"] + 30:
+            if row["last_checked_at"] and now < row["last_checked_at"] + policy.cooldown:
                 return None, "cooldown"
             # 已过期的 checking 租约可以重新领取，不能让进程中断永久停止自动确认。
             if not manual and (row["state"] not in {"waiting", "checking"} or now < row["next_check_at"]):
