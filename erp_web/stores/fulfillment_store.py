@@ -7,7 +7,7 @@ import json
 import time
 from uuid import uuid4
 
-from erp_web.schemas.orders import OrderSnapshot, utc_iso
+from erp_web.schemas.orders import OrderAccounts, OrderSnapshot, account_pairs, utc_iso
 from erp_web.stores.receiving_warehouse_store import ReceivingWarehouseStore
 from erp_web.schemas.fulfillment import FulfillmentSummary, normalize_bus_catalog
 
@@ -74,9 +74,10 @@ class FulfillmentStore:
             conn.execute("DELETE FROM fulfillment_rules WHERE id=?", (rule_id,))
             conn.commit()
 
-    def snapshots(self, accounts):
-        where = " OR ".join("(platform=? AND account_id=?)" for _ in accounts) or "0"
-        args = tuple(v for pair in accounts.items() for v in pair)
+    def snapshots(self, accounts: OrderAccounts) -> list[OrderSnapshot]:
+        scopes = account_pairs(accounts)
+        where = " OR ".join("(platform=? AND account_id=?)" for _ in scopes) or "0"
+        args = tuple(value for pair in scopes for value in pair)
         with self.orders.connect() as conn:
             rows = conn.execute(f"SELECT snapshot FROM orders WHERE {where}", args).fetchall()
         return [OrderSnapshot.model_validate_json(row[0]) for row in rows]
