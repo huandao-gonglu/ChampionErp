@@ -15,6 +15,7 @@ from dataclasses import replace
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
 from erp_web.schemas.external_requests import ExternalRequestBlocked
+from erp_web.services.onebound_api_transport import OneBoundApiError, OneBoundApiRejected, request_onebound
 
 
 PRODUCT_DETAIL = "product.search.queryProductDetail"
@@ -61,13 +62,18 @@ def validate_order_number(value: str) -> str:
 
 class AlibabaApiClient:
     def __init__(self, config: dict):
+        self.config = dict(config)
+        self.onebound = config.get('application_type') == 'onebound'
         self.product_detail_method = product_detail_method(config)
         self.app_key = str(config.get("app_key") or "").strip()
         self.app_secret = str(config.get("app_secret") or "").strip()
         self.access_token = str(config.get("access_token") or "").strip()
-        if not (self.app_key and self.app_secret and self.access_token):
+        if self.onebound:
+            if not (config.get('api_key') and config.get('api_secret') and self.access_token):
+                raise AlibabaApiError('当前方案的 1688 账号尚未连接，请联系管理员')
+        elif not (self.app_key and self.app_secret and self.access_token):
             raise AlibabaApiError("请先在授权配置的「1688 授权」中连接采购账号；服务未配置时请联系管理员")
-        if not re.fullmatch(r"[0-9]+", self.app_key):
+        if not self.onebound and not re.fullmatch(r"[0-9]+", self.app_key):
             raise AlibabaApiError("1688 AppKey 格式无效")
         try:
             self.timeout = max(3, min(30, int(config.get("timeout_seconds") or 20)))
@@ -99,6 +105,14 @@ class AlibabaApiClient:
         return product
 
     def _request(self, api, values, *, namespace, semantics):
+        if self.onebound:
+            try:
+                payload = request_onebound(self.config, api, values, namespace=namespace, semantics=semantics, timeout=self.timeout)
+            except OneBoundApiRejected as exc:
+                raise AlibabaApiRejected(str(exc)) from None
+            except OneBoundApiError as exc:
+                raise AlibabaApiError(str(exc)) from None
+            return self._parse_response(api, payload)
         path = f"param2/1/{namespace}/{api}/{self.app_key}"
         params = {key: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                   if isinstance(value, (dict, list, bool)) else str(value) for key, value in values.items()}
@@ -145,6 +159,10 @@ class AlibabaApiClient:
             payload = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
             raise AlibabaApiError("1688 返回了无法解析的响应") from None
+        return self._parse_response(api, payload)
+
+    @staticmethod
+    def _parse_response(api, payload):
         # 订单详情实测返回字符串 "true"，物流接口返回 JSON 布尔值。
         if api == PRODUCT_DETAIL and isinstance(payload, dict) and isinstance(payload.get("result"), dict):
             payload = payload["result"]

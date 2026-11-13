@@ -78,8 +78,9 @@ try:
     assert read('/api/account/session')['user']['role'] == 'admin'
     settings = read('/api/admin/settings')
     assert settings['ok'] and settings['revision'] and settings['exchange_rates']['exchange_rate_api_url']
-    assert settings['alibaba_api_application'] in ('alibaba', 'alibaba_crossborder')
+    assert settings['alibaba_api_application'] in ('alibaba', 'alibaba_crossborder', 'onebound')
     assert all('app_secret' not in settings[provider] for provider in ('alibaba', 'alibaba_crossborder'))
+    assert 'api_secret' not in settings['onebound']
     authorization = read('/api/alibaba/authorization')
     assert authorization['ok'] and authorization['application_type'] == settings['alibaba_api_application']
     tariffs = read('/api/shipping/tariffs')
@@ -98,7 +99,7 @@ try:
         raise AssertionError('匿名访问管理员设置未被拒绝')
     print(json.dumps({'admin_settings': True, 'alibaba': {
         'application': authorization['application_type'], 'authorized': authorization['authorized'],
-        'app_key': settings[authorization['application_type']]['app_key'],
+        'app_key': settings[authorization['application_type']].get('app_key', ''),
         'can_authorize': authorization['can_authorize']}, 'tariffs': {item['platform']: {
         'version': item['version'], 'rules_count': item['rules_count'], 'source': item['source']
     } for item in tariffs['items']}, 'forbidden_categories': len(categories['categories']),

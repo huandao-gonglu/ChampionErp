@@ -169,7 +169,7 @@ def test_public_verification_identifies_release_client_and_checks_asset_digest(t
         worker.join(timeout=5)
 
 
-@pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder'])
+@pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder', 'onebound'])
 @pytest.mark.parametrize('leak_secret', [False, True])
 def test_server_smoke_checks_selected_application_and_revokes_session(tmp_path, monkeypatch, provider, leak_secret):
     from contextlib import redirect_stdout
@@ -186,8 +186,9 @@ def test_server_smoke_checks_selected_application_and_revokes_session(tmp_path, 
     monkeypatch.setattr(account_store, 'AccountStore', lambda path: store)
     applications = {key: {'app_key': value, 'secret_configured': True}
                     for key, value in [('alibaba', '1938727'), ('alibaba_crossborder', '4848173')]}
+    applications['onebound'] = {'api_key': 'vendor-key', 'secret_configured': True}
     if leak_secret:
-        applications[provider]['app_secret'] = 'must-not-be-public'
+        applications[provider]['api_secret' if provider == 'onebound' else 'app_secret'] = 'must-not-be-public'
     replies = {
         '/api/account/session': {'user': {'role': 'admin'}},
         '/api/admin/settings': {'ok': True, 'revision': 'revision',
@@ -226,7 +227,7 @@ def test_server_smoke_checks_selected_application_and_revokes_session(tmp_path, 
     else:
         result = release_server.smoke_check(tmp_path)
         assert result['alibaba'] == {'application': provider, 'authorized': True,
-            'app_key': applications[provider]['app_key'], 'can_authorize': True}
+            'app_key': applications[provider].get('app_key', ''), 'can_authorize': True}
         assert result['anonymous_admin_denied']
     assert revoked == ['token-hash'] and requests[-1] == '/api/account/logout'
 

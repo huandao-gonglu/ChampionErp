@@ -32,6 +32,7 @@ def settings_body(client, url):
         data.pop(key)
     for key in ('alibaba', 'alibaba_crossborder'):
         data[key].pop('secret_configured')
+    data['onebound'].pop('secret_configured')
     return data
 
 

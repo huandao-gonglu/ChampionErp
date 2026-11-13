@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useAccountStore } from '@/stores/account'
-import { completeAlibabaAuthorization, fetchAlibabaAuthorization, startAlibabaAuthorization } from '@/api/alibabaAuthorization'
+import { bindOneBoundAuthorization, completeAlibabaAuthorization, fetchAlibabaAuthorization, startAlibabaAuthorization } from '@/api/alibabaAuthorization'
 import { hasLocalOperations } from '@/utils/desktop'
 import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generated'
 
 const account = useAccountStore()
 const callbackUrl = ref('')
+const oneboundSession = ref('')
 const completing = ref(false)
 const manualError = ref('')
 const status = ref<BackendAlibabaAuthorizationStatus | null>(null)
@@ -28,6 +29,9 @@ async function refresh() {
   try {
     const next = await fetchAlibabaAuthorization()
     if (current !== revision) return
+    if (status.value?.application_type !== next.application_type) {
+      oneboundSession.value = callbackUrl.value = manualError.value = browserError.value = ''
+    }
     status.value = next
     waiting.value = next.attempt === 'waiting' && !browserError.value
     error.value = ''
@@ -102,6 +106,22 @@ async function complete() {
   }
 }
 
+async function bindOneBound() {
+  if (!account.isAdmin || status.value?.application_type !== 'onebound' || !oneboundSession.value.trim() || completing.value) return
+  revision++
+  reading = false
+  completing.value = true
+  manualError.value = ''
+  try {
+    status.value = await bindOneBoundAuthorization(oneboundSession.value.trim())
+    oneboundSession.value = error.value = ''
+  } catch (exc) {
+    manualError.value = exc instanceof Error ? exc.message : '1688 授权绑定失败'
+  } finally {
+    completing.value = false
+  }
+}
+
 onMounted(() => {
   void refresh()
   window.addEventListener('focus', refresh)
@@ -119,21 +139,29 @@ onUnmounted(() => {
       <h3 class="font-semibold text-accent-950 dark:text-white">1688 账号授权</h3>
       <span v-if="status" aria-live="polite">{{ (status.authorized && !status.needs_reauthorization ? '已连接' : '未连接') }}</span>
     </div>
-    <p v-if="status" class="text-sm text-accent-500">当前应用：{{ status.application_type === 'alibaba' ? '企业自用应用' : '跨境 ERP 服务商应用' }}。</p>
+    <p v-if="status" class="text-sm text-accent-500">当前应用：{{ { alibaba: '企业自用应用', alibaba_crossborder: '跨境 ERP 服务商应用', onebound: '万邦 1688 API' }[status.application_type] }}。</p>
     <p v-if="status?.application_type === 'alibaba_crossborder'" class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号，即可查询商品、采购订单和物流。</p>
-    <p v-else class="text-sm text-accent-500">连接当前应用下的 1688 采购账号，即可查询商品、采购订单和物流。</p>
+    <p v-else-if="status?.application_type !== 'onebound'" class="text-sm text-accent-500">连接当前应用下的 1688 采购账号，即可查询商品、采购订单和物流。</p>
     <p v-if="status && !status.application_configured" role="status">授权服务暂未配置，请联系管理员。</p>
+    <p v-else-if="status?.application_type === 'onebound'" role="status">1688 在线授权暂未开放，请联系管理员。</p>
     <p v-else-if="status && !status.can_authorize" role="status">暂时无法发起登录授权，请联系管理员配置授权服务。</p>
     <p v-if="status?.needs_reauthorization" role="status">授权已过期或应用配置已变化，请重新连接账号。</p>
     <p v-if="status?.account_name">当前账号：{{ status.account_name }}</p>
     <p v-else-if="status?.authorized" class="text-sm">已保留原有授权；重新登录后可显示账号并自动续期。</p>
     <p v-if="status?.expires_at" class="text-sm">授权到期时间：{{ new Date(status.expires_at * 1000).toLocaleString() }} <span v-if="status.refreshable">使用时自动续期。</span></p>
-    <button data-testid="connect-1688" class="btn btn-primary" :disabled="opening || completing || !status?.can_authorize" @click="connect">
+    <button v-if="status?.application_type !== 'onebound'" data-testid="connect-1688" class="btn btn-primary" :disabled="opening || completing || !status?.can_authorize" @click="connect">
       {{ (status?.authorized || waiting ? '重新授权' : '连接 1688 账号') }}
     </button>
     <p v-if="waiting" role="status">等待浏览器完成授权…</p>
     <p v-else-if="status?.attempt === 'failed' || status?.attempt === 'expired'" role="status">本次授权未完成，请重新授权。</p>
-    <div v-if="account.isAdmin" class="space-y-2">
+    <div v-if="account.isAdmin && status?.application_type === 'onebound'" class="space-y-2">
+      <p class="text-sm">仅绑定当前管理员账号。在万邦控制台完成 1688 授权后，填入该授权的 Session；更换 Session 后，历史采购仍需使用原授权处理。</p>
+      <label class="block text-sm" for="onebound-session">1688 授权 Session</label>
+      <input id="onebound-session" v-model="oneboundSession" type="password" maxlength="4096" autocomplete="off" class="input w-full" :disabled="completing || !status.application_configured" @keydown.enter.prevent="bindOneBound" />
+      <button type="button" class="btn btn-secondary" :disabled="completing || !status.application_configured || !oneboundSession.trim()" @click="bindOneBound">{{ completing ? '正在核验…' : '核验并绑定 1688 授权' }}</button>
+      <p v-if="manualError" role="alert" class="text-red-600">{{ manualError }}</p>
+    </div>
+    <div v-else-if="account.isAdmin && status?.application_type !== 'onebound'" class="space-y-2">
       <label class="block text-sm" for="alibaba-callback-url">授权后的完整回调地址</label>
       <input
         id="alibaba-callback-url" v-model="callbackUrl" type="password" maxlength="16384" autocomplete="off"

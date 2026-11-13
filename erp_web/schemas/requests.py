@@ -179,7 +179,9 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/business-data/read": _contract(fields={"resource": STRING, "params": OBJECT, "path": FieldRule("string", allow_empty=True), "fields": STRING_ARRAY, "filters": OBJECT, "offset": FieldRule("integer", minimum=0), "limit": LIMIT}, required=("resource",)),
     "/api/admin/settings": _contract(fields={"revision": STRING, "exchange_rates": OBJECT, "alibaba": OBJECT,
-        "alibaba_crossborder": OBJECT, "crossborderbus_client_secret": STRING},
+        "alibaba_crossborder": OBJECT, "onebound": OBJECT,
+        "alibaba_api_application": FieldRule('enum', choices=frozenset({'alibaba', 'alibaba_crossborder', 'onebound'})),
+        "crossborderbus_client_secret": STRING},
         required=("revision", "exchange_rates", "alibaba_crossborder")),
     "/api/shipping/tariffs/import": _contract(fields={"platform": STRING, "scope": STRING, "filename": STRING,
         "content_base64": STRING, "effective_date": STRING, "expected_version": FieldRule("string", allow_empty=True), "preview": BOOLEAN},
@@ -352,6 +354,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/alibaba/crossborder/authorization/start": _EMPTY,
     "/api/alibaba/authorization/start": _EMPTY,
     "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING}, required=("callback_url",)),
+    "/api/alibaba/authorization/onebound": RequestContract({"session": STRING}, required=("session",)),
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(
         # 人工确认摘要指纹：HTTP 边界声明字符串类型；业务判空与绑定校验

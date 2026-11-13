@@ -7,7 +7,7 @@ import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generat
 
 const account = vi.hoisted(() => ({ isAdmin: false }))
 vi.mock('@/stores/account', () => ({ useAccountStore: () => account }))
-vi.mock('@/api/alibabaAuthorization', () => ({ completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
+vi.mock('@/api/alibabaAuthorization', () => ({ bindOneBoundAuthorization: vi.fn(), completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
 vi.mock('@/utils/desktop', () => ({ hasLocalOperations: vi.fn() }))
 enableAutoUnmount(afterEach)
 const status: BackendAlibabaAuthorizationStatus = {
@@ -37,6 +37,28 @@ afterEach(() => {
 })
 
 describe('1688 浏览器授权', () => {
+  it('普通用户在万邦方案下不显示企业配置、Session 或控制台入口', async () => {
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'onebound', can_authorize: false, authorized: false })
+    const wrapper = await panel()
+    expect(wrapper.text()).toContain('1688 在线授权暂未开放')
+    expect(wrapper.find('input, a, button').exists()).toBe(false)
+    expect(wrapper.text()).not.toMatch(/Key|Secret|Session|控制台/)
+    expect(api.startAlibabaAuthorization).not.toHaveBeenCalled()
+  })
+
+  it('管理员只为当前账号绑定 Session，成功后清空凭据输入', async () => {
+    account.isAdmin = true
+    const next = { ...status, application_type: 'onebound' as const, can_authorize: false }
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue(next)
+    vi.mocked(api.bindOneBoundAuthorization).mockResolvedValue(next)
+    const wrapper = await panel()
+    await wrapper.get('#onebound-session').setValue('private-session')
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(api.bindOneBoundAuthorization).toHaveBeenCalledWith('private-session')
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('')
+    expect(window.open).not.toHaveBeenCalled()
+  })
+
   it('自用应用显示独立的授权说明', async () => {
     vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'alibaba' })
     const wrapper = await panel()

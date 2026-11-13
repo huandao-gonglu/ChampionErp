@@ -12,3 +12,6 @@ export async function startAlibabaAuthorization(): Promise<{ ok: boolean; url: s
 export async function completeAlibabaAuthorization(callbackUrl: string): Promise<BackendAlibabaAuthorizationStatus> {
   return (await apiClient.post(authPath + '/complete', { callback_url: callbackUrl })).data
 }
+export async function bindOneBoundAuthorization(session: string): Promise<BackendAlibabaAuthorizationStatus> {
+  return (await apiClient.post(authPath + '/onebound', { session })).data
+}

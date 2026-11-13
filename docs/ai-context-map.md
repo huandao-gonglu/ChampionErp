@@ -116,11 +116,16 @@ GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
 及 GET `/auth/alibaba/callback`；仅该回调的顶层 GET 导航允许跨站，仍必须校验服务端单次 state。
 `AlibabaSettingsPanel.vue` 打开浏览器授权，在等待期间查询服务器状态，并显示完成授权的账号名称。
 管理员可将完整回调地址 POST 到 `/api/alibaba/authorization/complete`。该接口绑定登录管理员的业务空间，复用同一组单次 state 和授权码交换校验。
-新采购归属按应用与官方买家身份固定，刷新 Token 不改变历史范围；旧 Token 的范围摘要原样保留。
-根库 `enterprise_applications / active` 的 `alibaba_api_application` 由管理员统一选择 `alibaba`（企业自用，原 AppKey 1938727）或 `alibaba_crossborder`（跨境 ERP，原 AppKey 4848173）；未设置时恢复企业自用应用。应用选择纳入共享配置 revision，旧客户端省略该字段时保留当前选择。
-商品查询、采购、支付和物流经 `alibaba_runtime_config` 使用所选应用及当前客户的对应授权；旧客户端的跨境授权路径也遵循管理员选择。两套凭据分别保存在 `credentials:alibaba / state` 和 `/ crossborder`，切换不更换凭据代次、不覆盖另一套授权，归档的自用授权恢复按原指纹核验。更改任一应用凭据仍生成新代次，迟到回执须复核当前选择、应用及授权快照。
+官方应用的新采购归属按应用与买家身份固定，刷新 Token 不改变历史范围；旧 Token 的范围摘要原样保留。万邦的独立采购范围见下文。
+根库 `enterprise_applications / active` 的 `alibaba_api_application` 由管理员统一选择 `alibaba`（企业自用，原 AppKey 1938727）、`alibaba_crossborder`（跨境 ERP，原 AppKey 4848173）或 `onebound`（万邦）；未设置时恢复企业自用应用。应用选择纳入共享配置 revision，旧客户端省略该字段时保留当前选择。
+商品查询、采购、支付和物流经 `alibaba_runtime_config` 使用所选应用及当前客户的对应授权；旧客户端的跨境授权路径也遵循管理员选择。官方两套凭据分别保存在 `credentials:alibaba / state` 和 `/ crossborder`，切换不更换凭据代次、不覆盖另一套授权，归档的自用授权恢复按原指纹核验。更改任一应用凭据仍生成新代次，迟到回执须复核当前选择、应用及授权快照。
 旧采购归属不会被另一应用接管；未决采购继续阻止重复下单。企业自用商详使用 `alibaba.product.get`，跨境商详使用 `product.search.queryProductDetail`，均经同一固定网关及签名客户端处理。
 部署、迁移限制、协议依据及验证见 [1688 授权](alibaba-authorization.md)。
+
+万邦企业 Key/Secret 仅由管理员维护，独立 Session 留在个人 `credentials:alibaba / onebound`。
+`onebound_api_transport.py` 只适配固定 HTTPS 网关和回执包装；商品、采购、支付和物流继续共用原业务生命周期，GET 写入仍禁止自动重试，不隐式切回官方。
+POST `/api/alibaba/authorization/onebound` 仅管理员可为当前账号只读核验并绑定已有 Session，公开状态不返回凭据，也不宣称已核实买家身份。
+普通用户不显示企业或 Session 入口；万邦未提供 ERP 买家授权回调协议，在线授权暂未开放。官方两套应用的授权保持现有入口，三套授权及采购范围独立，切换不迁移历史。
 
 ### 桌面与统一业务后端
 

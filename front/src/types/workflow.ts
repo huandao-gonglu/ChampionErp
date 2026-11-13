@@ -11,6 +11,7 @@ export {
   type BackendForbiddenCategory,
   type BackendForbiddenCategories,
   type BackendPublicEnterpriseApplication,
+  type BackendPublicOneBoundApplication,
   type BackendPublicExchangeRateSettings,
   type BackendManagedSettings,
   type BackendTariffVersion,

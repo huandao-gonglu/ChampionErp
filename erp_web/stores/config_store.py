@@ -518,10 +518,13 @@ class ConfigStore:
         if self.shared_config is not self:
             return self.shared_config.enterprise_application(provider)
         saved = self._db.runtime_secret("enterprise_applications", "active", {})
-        if provider not in {"alibaba", "alibaba_crossborder", "crossborderbus"}:
+        if provider not in {"alibaba", "alibaba_crossborder", "onebound", "crossborderbus"}:
             raise ValueError("不支持的企业应用")
         if provider in saved:
             return dict(saved[provider])
+        if provider == "onebound":
+            return {"api_key": os.environ.get("ERP_ONEBOUND_API_KEY", "").strip(),
+                    "api_secret": os.environ.get("ERP_ONEBOUND_API_SECRET", "").strip()}
         if provider == "crossborderbus":
             secret = os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
             return {"client_secret": secret or self.integration_credentials("crossborderbus").get("client_secret", "")}
@@ -540,13 +543,15 @@ class ConfigStore:
     def managed_settings(self) -> dict:
         owner = self.shared_config
         applications = {provider: owner.enterprise_application(provider)
-                        for provider in ("alibaba", "alibaba_crossborder", "crossborderbus")}
+                        for provider in ("alibaba", "alibaba_crossborder", "onebound", "crossborderbus")}
         rates = {key: owner.load_app_config()["pricing_defaults"][key] for key in EXCHANGE_RATE_FIELDS}
         selected = owner.alibaba_api_application()
         revision = hashlib.sha256(json.dumps([applications, rates, selected], sort_keys=True).encode()).hexdigest()
         public = {provider: {"app_key": value.get("app_key", ""), "redirect_uri": value.get("redirect_uri", ""),
                              "secret_configured": bool(value.get("app_secret"))}
-                  for provider, value in applications.items() if provider != "crossborderbus"}
+                  for provider, value in applications.items() if provider in {"alibaba", "alibaba_crossborder"}}
+        public["onebound"] = {"api_key": applications["onebound"].get("api_key", ""),
+                              "secret_configured": bool(applications["onebound"].get("api_secret"))}
         return {"ok": True, "revision": revision, "exchange_rates": rates, **public,
                 "alibaba_api_application": selected,
                 "crossborderbus_secret_configured": bool(applications["crossborderbus"].get("client_secret"))}
@@ -559,7 +564,7 @@ class ConfigStore:
                 raise RequestValidationError("共享设置已更新，请重新读取后保存。", status_code=409)
             previous = owner._db.runtime_secret("enterprise_applications", "active", {})
             applications = dict(previous)
-            for provider in ("alibaba", "alibaba_crossborder", "crossborderbus"):
+            for provider in ("alibaba", "alibaba_crossborder", "onebound", "crossborderbus"):
                 old = owner.enterprise_application(provider)
                 if provider == "crossborderbus":
                     changes = {"client_secret": request.crossborderbus_client_secret}
@@ -569,7 +574,10 @@ class ConfigStore:
                         continue
                     changes = settings.model_dump()
                 value = {**old, **{key: val for key, val in changes.items() if val is not None}}
-                if provider != "crossborderbus" and value != old and any(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
+                if provider == "onebound" and value != old and any(value.get(key) for key in ("api_key", "api_secret")):
+                    if not all(value.get(key) for key in ("api_key", "api_secret")):
+                        raise ValueError("万邦 API Key 和 Secret 须填写完整")
+                if provider in {"alibaba", "alibaba_crossborder"} and value != old and any(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
                     if not all(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
                         raise ValueError("1688 应用编号、密钥和回调地址须填写完整")
                 if value != old:
@@ -595,6 +603,8 @@ class ConfigStore:
         self._db.set_runtime_secret("credentials:" + provider, record_id, None)
 
     def alibaba_credentials(self) -> dict:
+        if self.alibaba_api_application() == "onebound":
+            return self._db.runtime_secret("credentials:alibaba", "onebound", {})
         if self.alibaba_api_application() == "alibaba":
             return self.archive_legacy_alibaba_credentials()
         legacy = self.load_app_config().get("1688_api", {})
@@ -637,7 +647,7 @@ class ConfigStore:
             if application is not None and self.alibaba_application() != application:
                 raise ValueError("1688 应用配置已变化，请重新授权")
             state.update(update)
-            record_id = "state" if self.alibaba_api_application() == "alibaba" else "crossborder"
+            record_id = {"alibaba": "state", "alibaba_crossborder": "crossborder", "onebound": "onebound"}[self.alibaba_api_application()]
             self._db.set_runtime_secret("credentials:alibaba", record_id, state)
             return state
 

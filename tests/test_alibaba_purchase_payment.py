@@ -235,3 +235,22 @@ def test_multi_sku_group_pays_once_for_the_whole_order(batch, channel):
     assert len(purchase.items) == 2
     service.pay(body)
     assert len([n for n, _ in client.calls if n == PAY]) == 1
+
+def test_unconfirmed_vendor_write_is_not_replayed_by_purchase_service(payment, monkeypatch):
+    from erp_web.services import onebound_api_transport as transport
+    config = {"application_type": "onebound", "api_key": "key", "api_secret": "secret", "access_token": "session"}
+    service, client, _, body = payment
+    service.client_factory = lambda config: client
+    original = client.call
+    calls = []
+    def call(api, values):
+        if api != PAY:
+            return original(api, values)
+        calls.append(values)
+        return AlibabaSelfPurchaseClient(config).call(api, values)
+    client.call = call
+    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: io.BytesIO(b'{"error_code":"4017","error":"timeout"}'))
+    first = service.pay(body)['record']
+    assert first['payment']['state'] == 'unknown'
+    assert service.pay(body)['record']['payment'] == first['payment']
+    assert len(calls) == 1

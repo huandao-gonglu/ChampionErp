@@ -11,6 +11,7 @@ const saved: ManagedSettings = {
   exchange_rates: { exchange_rate_api_url: 'https://rates.example/api', exchange_rate_timeout_seconds: '10', exchange_rate_cache_ttl_seconds: '3600' },
   alibaba: { app_key: '123', redirect_uri: 'https://erp.example/auth/alibaba/callback', secret_configured: true },
   alibaba_crossborder: { app_key: '', redirect_uri: '', secret_configured: false },
+  onebound: { api_key: '', secret_configured: false },
   crossborderbus_secret_configured: true,
 }
 beforeEach(() => {
@@ -29,8 +30,22 @@ it('管理员读取仅展示配置状态，空密钥保存时沿用已有值', a
   expect(payload.alibaba_crossborder).not.toHaveProperty('secret_configured')
   expect(payload.alibaba).toEqual({ app_key: saved.alibaba.app_key, redirect_uri: saved.alibaba.redirect_uri })
   expect(payload.alibaba_api_application).toBe('alibaba')
+  expect(payload.onebound).toEqual({ api_key: '' })
   expect(payload).not.toHaveProperty('crossborderbus_client_secret')
   expect(wrapper.text()).toContain('共享设置已保存')
+})
+
+it('管理员可以选择万邦并保存独立企业凭据', async () => {
+  const wrapper = mount(ManagedSettingsPanel); await flushPromises()
+  await wrapper.get('select').setValue('onebound')
+  const section = wrapper.get('[aria-label="万邦企业配置"]')
+  await section.get('input[autocomplete="off"]').setValue('vendor-key')
+  await section.get('input[type="password"]').setValue('vendor-secret')
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(saveManagedSettings).toHaveBeenCalledWith(expect.objectContaining({
+    alibaba_api_application: 'onebound', onebound: { api_key: 'vendor-key', api_secret: 'vendor-secret' },
+  }))
+  expect((section.get('input[type="password"]').element as HTMLInputElement).value).toBe('')
 })
 
 it('管理员可切换应用并分别保存两套凭据', async () => {

@@ -26,7 +26,7 @@ def offer_id(url):
 
 
 def account_scope(config):
-    # 新授权以已验证买家身份隔离，刷新 Token 不改变归属；旧记录保留原摘要。
+    # 官方授权按买家身份、万邦按 Key/Session 隔离；旧记录保留原摘要。
     return config.get("account_scope") or hashlib.sha256(json.dumps([config.get("app_key"), config.get("access_token")]).encode()).hexdigest()
 
 

@@ -4,7 +4,7 @@ import { fetchManagedSettings, saveManagedSettings, type ManagedSettings } from 
 import { testApiConfig } from '@/api/workflow/settings'
 
 const settings = ref<ManagedSettings | null>(null)
-const secrets = ref({ alibaba: '', alibaba_crossborder: '', crossborderbus: '' })
+const secrets = ref({ alibaba: '', alibaba_crossborder: '', onebound: '', crossborderbus: '' })
 const applications = [
   { key: 'alibaba', title: '1688 企业自用应用' },
   { key: 'alibaba_crossborder', title: '1688 跨境 ERP 服务商应用' },
@@ -37,9 +37,13 @@ async function save() {
         app_key: value.alibaba_crossborder.app_key, redirect_uri: value.alibaba_crossborder.redirect_uri,
         ...(secrets.value.alibaba_crossborder.trim() ? { app_secret: secrets.value.alibaba_crossborder.trim() } : {}),
       },
+      onebound: {
+        api_key: value.onebound.api_key,
+        ...(secrets.value.onebound.trim() ? { api_secret: secrets.value.onebound.trim() } : {}),
+      },
       ...(secrets.value.crossborderbus.trim() ? { crossborderbus_client_secret: secrets.value.crossborderbus.trim() } : {}),
     })
-    secrets.value = { alibaba: '', alibaba_crossborder: '', crossborderbus: '' }
+    secrets.value = { alibaba: '', alibaba_crossborder: '', onebound: '', crossborderbus: '' }
     notice.value = '共享设置已保存'
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '共享设置保存失败' }
   finally { busy.value = false }
@@ -82,9 +86,10 @@ onMounted(load)
         <label class="block text-sm">当前使用的应用
           <select v-model="settings.alibaba_api_application" class="input mt-2 w-full" aria-label="当前使用的 1688 应用">
             <option v-for="application in applications" :key="application.key" :value="application.key">{{ application.title }}</option>
+            <option value="onebound">万邦 1688 API</option>
           </select>
         </label>
-        <p class="muted text-sm">所有账号的商品采集、采购、支付和物流查询使用所选应用。两套应用的账号授权分别保留，切换后使用对应授权；历史采购归属不变。</p>
+        <p class="muted text-sm">所有账号的商品采集、采购、支付和物流查询使用所选方案。三套方案的账号授权分别保留，历史采购归属不变。</p>
       </section>
       <p class="text-sm text-amber-700 dark:text-amber-300">更换企业应用凭据后，对应的用户授权将失效，需要重新连接账号。已保存的密钥留空可继续使用。</p>
       <section v-for="application in applications" :key="application.key" class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
@@ -92,6 +97,12 @@ onMounted(load)
         <label class="block text-sm">应用编号<input v-model="settings[application.key].app_key" maxlength="256" autocomplete="off" class="input mt-2 w-full" /></label>
         <label class="block text-sm">应用密钥<input v-model="secrets[application.key]" type="password" maxlength="4096" autocomplete="new-password" :placeholder="settings[application.key].secret_configured ? '已配置，填写可更换' : '尚未配置'" class="input mt-2 w-full" /></label>
         <label class="block text-sm">授权回调地址<input v-model="settings[application.key].redirect_uri" type="url" placeholder="https://你的ERP域名/auth/alibaba/callback" maxlength="2048" class="input mt-2 w-full" /></label>
+      </section>
+      <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700" aria-label="万邦企业配置">
+        <h4 class="font-semibold">万邦 1688 API</h4>
+        <p class="muted text-sm">Key 和 Secret 由管理员统一维护。买家授权需使用万邦对应的 1688 授权，不能复用官方应用的 Token。买家授权回调尚未接入。</p>
+        <label class="block text-sm">API Key<input v-model="settings.onebound.api_key" maxlength="256" autocomplete="off" class="input mt-2 w-full" /></label>
+        <label class="block text-sm">API Secret<input v-model="secrets.onebound" type="password" maxlength="4096" autocomplete="new-password" :placeholder="settings.onebound.secret_configured ? '已配置，填写可更换' : '尚未配置'" class="input mt-2 w-full" /></label>
       </section>
       <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
         <h4 class="font-semibold">跨境巴士企业应用</h4>
