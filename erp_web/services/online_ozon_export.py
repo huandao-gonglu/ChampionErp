@@ -33,7 +33,9 @@ def _model_defaults(listings: list[OnlineListing]) -> dict[tuple[str, str], str]
     sources = {}
     for listing in listings:
         identity = _model_identity(listing)
-        titles.setdefault(identity, set()).add(listing.title.strip() if listing.details_state == "ready" else "")
+        # 列表快照也带有 offer.name，unloaded 只表示尚未读取管理详情。
+        title = listing.title.strip() if listing.details_state in {"ready", "unloaded"} else ""
+        titles.setdefault(identity, set()).add(title)
         sources[identity] = _model_source(listing)
     candidates = {}
     for identity, values in titles.items():
@@ -127,15 +129,15 @@ def _row(listing: OnlineListing, template: OzonCategoryTemplate, changes: dict[s
         else:
             warnings.append("模板未包含完整品牌字典，请在 Ozon 确认该品牌可选；无品牌商品请填写“" + template.no_brand + "”")
     if "model" in template.field_columns and CJK.search(fields["model"]):
-        errors.append("型号名称含中文，请填写同组一致的俄文型号名称；不能直接使用中文分组名称")
+        errors.append("型号名称含中文。请在“编辑”中填写同组共用的俄文名称或字母数字型号。")
     if "model" in template.field_columns and len(fields["model"]) > 255:
         errors.append("型号名称不能超过 255 个字符")
     if "model" in template.field_columns and "model" not in changes and model != _model_source(listing):
         warnings.append("中文型号名称已使用同组一致的俄文商品名称，请核对合卡分组")
-    if listing.details_state != "ready":
-        errors.append("商品详情尚未同步完整，请先完成同步")
-    if listing.sale_state != "active":
-        errors.append("当前商品不是在售状态，请核对后重新选择")
+    if listing.details_state == "pending":
+        errors.append("商品基础资料正在同步，请在同步完成后重新检查")
+    elif listing.details_state == "failed":
+        errors.append("商品资料读取失败，请重试同步后重新检查")
     if template.category == "圣诞装饰品" and not re.search(r"圣诞|新年|новогод|рождеств|christmas|new year", listing.title + " " + str(offer.get("groupId") or ""), re.I):
         warnings.append("请核对所选商品是否符合圣诞装饰品类目")
     if "price" in template.field_columns and "price" not in changes and base and base.currency != template.currency:

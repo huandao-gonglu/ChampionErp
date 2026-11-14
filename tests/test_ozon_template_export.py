@@ -192,6 +192,39 @@ def test_rejects_incompatible_or_populated_templates(kwargs, message):
     with pytest.raises(ValueError, match=message): OzonCategoryTemplate(template_bytes(**kwargs))
 
 
+@pytest.mark.parametrize("sale_state", ["unknown", "paused", "active"])
+def test_list_snapshot_exports_by_template_fields_without_opening_details(exporter, sale_state):
+    service, body = exporter
+    body["template_base64"] = base64.b64encode(template_bytes(
+        category="17030271", category_name="海绵", type_id="96009")).decode()
+    for listing_id in body["listing_ids"]:
+        listing = service.store.get(listing_id)
+        listing.details_state, listing.sale_state = "unloaded", sale_state
+        listing.title = "Губка для посуды"
+        service.store.save(listing)
+    preview = service.preview(body)
+    assert preview["summary"]["ready"] == 2
+    result = service.download({**body, "preview_fingerprint": preview["preview_fingerprint"]})
+    cells, _ = read_cells(base64.b64decode(result["file_base64"]))
+    assert cells["S5"] == cells["S6"] == "Губка для посуды"
+    assert cells["W5"] == "海绵"
+    listing.snapshot["offer"]["weightDimensions"].pop("weight")
+    service.store.save(listing)
+    assert "缺少毛重" in service.preview(body)["rows"][1]["errors"]
+
+
+@pytest.mark.parametrize("state,message", [("pending", "正在同步"), ("failed", "读取失败")])
+def test_unavailable_basic_data_still_blocks_export(exporter, state, message):
+    service, body = exporter
+    listing = service.store.get(body["listing_ids"][0])
+    listing.details_state = state
+    service.store.save(listing)
+    preview = service.preview(body)
+    assert any(message in error for error in preview["rows"][0]["errors"])
+    with pytest.raises(ValueError, match="必填资料"):
+        service.download({**body, "preview_fingerprint": preview["preview_fingerprint"]})
+
+
 def test_explicit_edits_are_export_only_and_missing_values_block_generation(exporter):
     service, body = exporter
     original = service.store.get("listing-0").model_dump()
