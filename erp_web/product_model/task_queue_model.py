@@ -4,6 +4,9 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 
+from erp_web.product_model.sku_model import record
+from erp_web.schemas.yandex import YANDEX_PUBLISH_STEPS
+
 
 PENDING_RESULTS = frozenset({"pending_confirmation", "waiting_confirmation", "outcome_unknown", "needs_attention"})
 
@@ -43,17 +46,68 @@ def task_display_status(status: str) -> str:
     return "failed"
 
 
+def yandex_submission_receipt(row: dict) -> dict:
+    result = record(row.get("result"))
+    inner = record(result.get("result")) or result
+    plan = record(inner.get("plan"))
+    checkpoint = record(inner.get("checkpoint"))
+    if (plan.get("business_id") and plan.get("campaign_id") and plan.get("offer_id")
+            and all(plan.get(key) == checkpoint.get(key) for key in ("business_id", "campaign_id", "offer_id"))):
+        return checkpoint
+    return {}
+
+
+def sku_submission_status(row: dict) -> str:
+    # 旧回执把明确未发送的价格/库存请求记为失败，保留原错误与已完成步骤。
+    status = row.get("status", "")
+    if status == "failed" and record(row.get("result")).get("error_code") in {
+        "EXTERNAL_REQUEST_DEADLINE", "EXTERNAL_REQUEST_CANCELLED",
+    } and yandex_submission_receipt(row):
+        return "submission_paused"
+    return status
+
+
+def completed_yandex_submission(row: dict) -> bool:
+    steps = yandex_submission_receipt(row).get("completed_steps") or []
+    return all(step in steps for step in YANDEX_PUBLISH_STEPS)
+
+
+def sku_can_retry(row: dict) -> bool:
+    return (sku_submission_status(row) in {"queued", "failed", "pending_submission", "submission_paused"}
+            and not completed_yandex_submission(row))
+
+
+def sku_can_check(row: dict) -> bool:
+    status = sku_submission_status(row)
+    if status == "outcome_unknown":
+        return bool(row.get("task_id") or row.get("task_ids") or
+                    "campaign_offer" in yandex_submission_receipt(row).get("completed_steps", []))
+    if status in {"failed", "submission_paused", "pending_submission"}:
+        return "campaign_offer" in yandex_submission_receipt(row).get("completed_steps", [])
+    return status in {"pending_confirmation", "needs_attention"} and has_query_identity(row)
+
+
+def project_publish_submission(item: dict) -> None:
+    """将旧的发送前超时回执投影为可手动续提的中断，不在读取时写库。"""
+    result = item.get("result") or {}
+    rows = result.get("sku_results") or []
+    for row in rows:
+        if isinstance(row, dict):
+            row["status"] = sku_submission_status(row)
+    if item.get("status") in {"failed", "partial"} and any(record(row).get("status") == "submission_paused" for row in rows):
+        item.update(status="needs_attention", stage="needs_attention")
+        result.update(status="needs_attention", ok=False)
+
+
+def can_check_publish_status(status: str, result: dict) -> bool:
+    if status in PENDING_RESULTS or (result.get("sku_results") and status in {"failed", "partial", "interrupted"}):
+        return has_query_identity(result)
+    return False
+
+
 def has_query_identity(result: dict) -> bool:
     if result.get("sku_results"):
-        for row in result["sku_results"]:
-            if not isinstance(row, dict):
-                continue
-            if row.get("status") == "outcome_unknown":
-                if row.get("task_id") or row.get("task_ids"):
-                    return True
-            elif row.get("status") in {"pending_confirmation", "needs_attention"} and has_query_identity(row):
-                return True
-        return False
+        return any(sku_can_check(row) for row in result["sku_results"] if isinstance(row, dict))
     if result.get("task_id") or any(result.get("task_ids") or []):
         return True
     checkpoint = result.get("checkpoint")
@@ -70,8 +124,12 @@ def publish_can_retry(status: str, result: dict) -> bool:
         return False
     rows = result.get("sku_results")
     if rows:
-        return any(row.get("status") in {"queued", "failed", "pending_submission"} for row in rows)
+        return any(sku_can_retry(row) for row in rows if isinstance(row, dict))
     return status in {"failed", "interrupted"} and result.get("status") != "outcome_unknown"
 
 
-__all__ = ["PENDING_RESULTS", "task_timestamp", "task_display_status", "has_query_identity", "task_account_key", "publish_can_retry"]
+__all__ = [
+    "PENDING_RESULTS", "can_check_publish_status", "has_query_identity", "project_publish_submission",
+    "publish_can_retry", "sku_can_check", "sku_can_retry", "sku_submission_status",
+    "task_account_key", "task_display_status", "task_timestamp",
+]

@@ -13,6 +13,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+YANDEX_PUBLISH_STEPS = ("offer_mapping", "campaign_offer", "price", "stock")
+
+
 YandexPublishPhase = Literal[
     "offer_mapping",
     "campaign_offer",
@@ -208,6 +211,7 @@ class YandexPublishResult(BaseModel):
 
 
 __all__ = [
+    "YANDEX_PUBLISH_STEPS",
     "YandexCampaignInfo",
     "YandexCategoryParameter",
     "YandexCategoryParameterUnit",

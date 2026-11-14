@@ -48,7 +48,7 @@ from erp_web.schemas.category import (
     category_attribute_value_mode,
 )
 from erp_web.product_model.category_model import unresolved_required_attributes_in_draft
-from erp_web.schemas.yandex import YandexPublishCheckpoint
+from erp_web.schemas.yandex import YANDEX_PUBLISH_STEPS, YandexPublishCheckpoint
 from erp_web.stores.product_store import normalize_product_fields
 
 from .collect_helpers import collect_time_iso
@@ -58,14 +58,6 @@ from .publish_helpers import (
     _selected_price_and_currency,
 )
 
-
-# 远端写步骤顺序；confirmation 是只读回读，不属于 mutation。
-YANDEX_PUBLISH_STEPS: tuple[str, ...] = (
-    "offer_mapping",
-    "campaign_offer",
-    "price",
-    "stock",
-)
 
 _SUCCESS_CAMPAIGN_STATUS = "PUBLISHED"
 _PENDING_CAMPAIGN_STATUSES = frozenset({"CHECKING", "CREATING_CARD", ""})
@@ -1025,6 +1017,8 @@ def _execute_mutation(
             failed = _terminal_failure(plan, checkpoint, mapped)
             failed.update(status="outcome_unknown", outcome_unknown=True, details={"http_status": status, "step": step})
             return failed
+        if exc.code in {"EXTERNAL_REQUEST_DEADLINE", "EXTERNAL_REQUEST_CANCELLED"}:
+            return {**_terminal_failure(plan, checkpoint, mapped), "status": "submission_paused"}
         if isinstance(exc, YandexApiError) and exc.retryable and checkpoint.retries < _step_retry_limit(config):
             checkpoint.retries += 1
             checkpoint.next_poll_at = _backoff_at(checkpoint, config)

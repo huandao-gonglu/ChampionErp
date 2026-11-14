@@ -235,6 +235,26 @@ def test_alibaba_business_entries_use_authorization_owner() -> None:
                        for node in ast.walk(tree))
 
 
+def test_onebound_transport_and_authorization_keep_existing_owners():
+    """万邦只适配网关，不持有业务状态或另建下单、支付生命周期。"""
+    from erp_web.schemas.alibaba_authorization import OneBoundAuthorizationRequest
+    from erp_web.schemas.requests import REQUEST_CONTRACTS
+    from erp_web.ai_capability_coverage import AI_CAPABILITY_COVERAGE_MANIFEST
+
+    path = ROOT / 'erp_web/services/onebound_api_transport.py'
+    imports = {target for _, target in imported_targets([path])}
+    assert not any(target.startswith(('erp_web.stores', 'erp_web.runtime_units', 'sqlite3')) for target in imports)
+    assert not forbidden_calls([path], {'urlopen', 'save_product', 'claim_payment', 'claim'})
+    calls = {dotted_name(node.func) for node in ast.walk(parse_python(str(path))) if isinstance(node, ast.Call)}
+    assert 'managed_urlopen' in calls
+    endpoint = '/api/alibaba/authorization/onebound'
+    assert set(REQUEST_CONTRACTS[endpoint].fields) == {'session'}
+    assert set(OneBoundAuthorizationRequest.model_fields) == {'session'}
+    assert OneBoundAuthorizationRequest.model_config['extra'] == 'forbid'
+    entries = [row for row in AI_CAPABILITY_COVERAGE_MANIFEST if row.path == endpoint]
+    assert len(entries) == 1 and entries[0].disposition == 'excluded'
+
+
 def test_desktop_runtime_has_no_business_initialization_or_backend_packaging():
     """执行器仅依赖共享纯模块；后端也不能重新导入本机实现。"""
     paths = [*python_files('desktop_runtime'), *python_files('erp_shared')]

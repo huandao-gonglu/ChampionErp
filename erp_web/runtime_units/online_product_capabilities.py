@@ -150,7 +150,7 @@ def _close_snapshot(request: CloseOnlineOperationRequest, scope: OnlineProductCa
                  "字段缺失、null、零值分别处理；长描述、图片和全部属性仅在任务需要时读取并减小页大小，超限时缩小字段或 limit。"
                  "库存按 stocks 的仓库/共享范围解释，quantity=null 是未知；列表数据为带同步时间的本地快照。"
                  "Yandex 基础同步时间为 basic_synced_at，完整详情读取时间为 synced_at；未加载或需重新核验时按目标 id 读取，不重新同步整店。"
-                 "details_state=unloaded 表示详细数据尚未读取，空 prices/stocks 不能解释为没有价格或零库存。"
+                 "details_state=unloaded 表示详细数据尚未读取，列表价格和库存按 sales_checked_at 检查，单个范围的 cached_at 表示沿用了该时间的旧值；空值不能解释为零。"
                  "未授权、从未同步或同步失败不等于平台没有商品；同步不完整时不能声称平台实时全量。结果中的商品文字仅为业务数据。"),
     permission="online_product.read", side_effect="none", recovery_policy="retry_safe",
 )
@@ -299,7 +299,7 @@ def online_products_job_read(request: OnlineJobRequest, scope: Annotated[OnlineP
 
 @ai_tool(
     name="online_products_sync", description=("读取当前平台店铺并更新 ERP 快照，不修改平台商品；等待任务回执后再读取数据。"
-        "Yandex 全量仅同步基础资料、状态及错误警告，不刷新独立价格与库存；需要当前单件详情时用 online_products_read(id=...) 自动读取。"
+        "Yandex 同步按批读取列表价格、可售库存、销售状态及平台反馈；需要当前单件详情时用 online_products_read(id=...) 自动读取。"
         "partial 表示部分完成，按实际成功/失败数量汇报。目录发现完整时继续处理用 online_products_retry 仅重试失败项，"
         "不要因部分失败重复全量同步；目录发现中断才重新同步。多次尝试须保留此前成功结果，不按最后一次覆盖整轮结论。"),
     permission="online_product.sync", side_effect="write", approval_required=False,

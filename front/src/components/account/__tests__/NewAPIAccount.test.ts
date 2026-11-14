@@ -2,12 +2,13 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import NewAPIAccount from '../NewAPIAccount.vue'
+import PersonalAccountView from '@/views/account/PersonalAccountView.vue'
 import { useAccountStore } from '@/stores/account'
-import { authorizeNewAPI, fetchNewAPIInfo, previewNewAPI, launchNewAPI } from '@/api/accounts'
+import { authorizeNewAPI, fetchNewAPIInfo, previewNewAPI, launchNewAPI, logoutAccount } from '@/api/accounts'
 
 const route = vi.hoisted(() => ({ query: {} as Record<string, string> }))
 vi.mock('vue-router', () => ({ useRoute: () => route }))
-vi.mock('@/api/accounts', () => ({ authorizeNewAPI: vi.fn(), fetchNewAPIInfo: vi.fn(), previewNewAPI: vi.fn(), launchNewAPI: vi.fn() }))
+vi.mock('@/api/accounts', () => ({ authorizeNewAPI: vi.fn(), fetchNewAPIInfo: vi.fn(), previewNewAPI: vi.fn(), launchNewAPI: vi.fn(), logoutAccount: vi.fn() }))
 beforeEach(() => {
   route.query = {}
   setActivePinia(createPinia())
@@ -62,5 +63,20 @@ it('同步尚未完成时展示待重试状态', async () => {
   vi.mocked(fetchNewAPIInfo).mockResolvedValue({ configured: true, url: 'http://localhost:13000/sign-in', sync_pending: true })
   const view = render(); await flushPromises()
   expect(view.text()).toContain('同步待重试')
+  view.unmount()
+})
+
+it('退出未确认时在个人账号页显示错误并允许再次点击退出', async () => {
+  vi.mocked(logoutAccount).mockRejectedValue(new Error('未收到 New API 的退出确认，ERP 仍保持登录，请重新退出。'))
+  const view = mount(PersonalAccountView, { global: { stubs: { RouterLink: true, NewAPIAccount: true } } })
+  const button = view.findAll('button').find(item => item.text() === '退出登录')!
+  await button.trigger('click')
+  await flushPromises()
+  expect(view.get('[role="alert"]').text()).toContain('ERP 仍保持登录')
+  expect(useAccountStore().user?.id).toBe('a')
+  expect(button.element.disabled).toBe(false)
+  await button.trigger('click')
+  await flushPromises()
+  expect(logoutAccount).toHaveBeenCalledTimes(2)
   view.unmount()
 })

@@ -235,3 +235,44 @@ def test_multi_sku_group_pays_once_for_the_whole_order(batch, channel):
     assert len(purchase.items) == 2
     service.pay(body)
     assert len([n for n, _ in client.calls if n == PAY]) == 1
+
+def test_unconfirmed_vendor_write_is_not_replayed_by_purchase_service(payment, monkeypatch):
+    from erp_web.services import onebound_api_transport as transport
+    config = {"application_type": "onebound", "api_key": "key", "api_secret": "secret", "access_token": "session"}
+    service, client, _, body = payment
+    service.client_factory = lambda config: client
+    original = client.call
+    calls = []
+    def call(api, values):
+        if api != PAY:
+            return original(api, values)
+        calls.append(values)
+        return AlibabaSelfPurchaseClient(config).call(api, values)
+    client.call = call
+    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: io.BytesIO(b'{"error_code":"4017","error":"timeout"}'))
+    first = service.pay(body)['record']
+    assert first['payment']['state'] == 'unknown'
+    assert service.pay(body)['record']['payment'] == first['payment']
+    assert len(calls) == 1
+
+
+def test_old_scope_and_unknown_payment_survive_buyer_merge_and_restart(payment):
+    service, client, config, body = payment
+    client.payment_error = TimeoutError('模拟未确认回执')
+    first = service.pay(body)['record']
+    old_scope = account_scope(config)
+    assert first['payment']['state'] == 'unknown'
+    # 模拟既有 v3 库升级，不丢失支付意图与原请求编号。
+    with service.store.connect() as conn:
+        conn.execute('DROP TABLE alibaba_purchase_accounts')
+        conn.execute('PRAGMA user_version=3')
+        conn.commit()
+    service.store = AlibabaSelfPurchaseStore(service.store.path)
+    service.store.merge_account_scopes('shared-buyer', [old_scope], 'buyer-a')
+    config.update(account_scope='shared-buyer', account_scope_aliases=[old_scope], member_id='buyer-a')
+    service.store = AlibabaSelfPurchaseStore(service.store.path)
+    assert service.store.get(body['preview_id'], old_scope)['payment'] == first['payment']
+    assert service.pay(body)['record']['payment'] == first['payment']
+    assert len([name for name, _ in client.calls if name == PAY]) == 1
+    with pytest.raises(ValueError, match='不能合并到其他'):
+        service.store.merge_account_scopes('other-buyer', [old_scope], 'buyer-b')

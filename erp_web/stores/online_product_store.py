@@ -32,7 +32,7 @@ class OnlineProductStore:
         if full_snapshot:
             listing.synced_at = utc_now()
             if listing.platform == "yandex":
-                listing.basic_synced_at = listing.synced_at
+                listing.sales_checked_at = listing.basic_synced_at = listing.synced_at
             if listing.details_state == "ready" and not listing.errors:
                 listing.status_checked_at = datetime.now(timezone.utc).isoformat()
         with self.db._connect() as conn:
@@ -53,28 +53,43 @@ class OnlineProductStore:
             (listing.id, listing.platform, listing.account_id, listing.remote_id,
              listing.version, listing.model_dump_json(), listing.synced_at))
 
+    @staticmethod
+    def _retain_price_permissions(listing, previous):
+        prices = {p.id: p for p in previous.prices}
+        for price in listing.prices:
+            if old := prices.get(price.id):
+                price.writable, price.reason = old.writable, old.reason
+
+    @staticmethod
+    def _preserve_missing_sales(listing, previous):
+        """仅替换本次缺失范围的展示值，旧值始终携带当时的成功读取时间。"""
+        last_read = previous.sales_checked_at or previous.synced_at
+        prices = {p.id: p for p in previous.prices}
+        for price in listing.prices:
+            old = prices.get(price.id)
+            if price.read_error and old and old.amount is not None and last_read:
+                price.amount, price.currency = old.amount, old.currency
+                price.cached_at = old.cached_at or old.observed_at or last_read
+        stocks = {s.id: s for s in previous.stocks}
+        for stock in listing.stocks:
+            old = stocks.get(stock.id)
+            if stock.read_error and old and old.quantity is not None and last_read:
+                stock.quantity = old.quantity
+                stock.cached_at = old.cached_at or old.observed_at or last_read
+
     def save_basic(self, listing: OnlineListing, *, lease: dict[str, Any]) -> OnlineListing:
-        """基础同步不覆盖已缓存的价格、库存或其读取时间。"""
+        """合并列表读取与已有完整详情，独立保存销售数据检查时间。"""
         with self.db._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_lease(conn, lease)
             row = conn.execute("SELECT snapshot_json FROM online_listings WHERE id=?", (listing.id,)).fetchone()
             if row:
                 previous = OnlineListing.model_validate_json(row[0])
-                if previous.synced_at:
-                    listing.prices, listing.stocks = previous.prices, previous.stocks
+                self._preserve_missing_sales(listing, previous)
                 listing.synced_at = previous.synced_at
                 listing.snapshot = {**previous.snapshot, **listing.snapshot}
-                if listing.platform == 'yandex':
-                    for stock in listing.stocks:
-                        warehouse = next((row for row in listing.snapshot.get('warehouse_catalog', []) if row['id'] == stock.id), None)
-                        if warehouse:
-                            stock.campaign_id = warehouse['campaign_id']
-                            market = next((market for market in listing.markets if market.id == stock.campaign_id), None)
-                            stock.raw_status = market.raw_status if market else ''
-                            stock.sale_state = ('paused' if listing.snapshot.get('hidden_campaigns', {}).get(stock.campaign_id)
-                                                else 'active' if stock.raw_status == 'PUBLISHED' and not listing.archived else 'unknown')
                 if previous.details_state == "ready" and previous.synced_at:
+                    self._retain_price_permissions(listing, previous)
                     listing.details_state = "ready"
                     for operation in ("price", "stock", "content"):
                         if operation in previous.capabilities:
@@ -86,7 +101,7 @@ class OnlineProductStore:
                     for attribute in listing.content.get("attributes", []):
                         if name := names.get(str(attribute.get("id"))):
                             attribute["name"] = name
-            listing.basic_synced_at = utc_now()
+            listing.sales_checked_at = listing.basic_synced_at = utc_now()
             listing.status_checked_at = datetime.now(timezone.utc).isoformat()
             self._write_listing(conn, listing)
             conn.commit()
@@ -103,16 +118,68 @@ class OnlineProductStore:
             if row is None:
                 raise OnlineConflict("商品记录已变化，请重新打开详情")
             current = OnlineListing.model_validate_json(row[0])
-            if (current.version, current.synced_at, current.basic_synced_at, current.status_checked_at) != (before.version, before.synced_at, before.basic_synced_at, before.status_checked_at):
+            if (current.version, current.synced_at, current.basic_synced_at, current.status_checked_at, current.sales_checked_at, current.prices, current.stocks) != (before.version, before.synced_at, before.basic_synced_at, before.status_checked_at, before.sales_checked_at, before.prices, before.stocks):
                 raise OnlineConflict("查询期间商品已更新，请重新打开详情")
+            if detail.platform == "yandex":
+                self._preserve_missing_sales(detail, current)
             detail.desired_sale_state = current.desired_sale_state
             detail.details_state = "ready"
             detail.synced_at = utc_now()
             detail.basic_synced_at = detail.synced_at if detail.platform == "yandex" else current.basic_synced_at
+            if detail.platform == "yandex":
+                detail.sales_checked_at = detail.synced_at
             detail.status_checked_at = datetime.now(timezone.utc).isoformat()
             self._write_listing(conn, detail)
             conn.commit()
         return self.get(before.id)
+
+    def sales_targets(self, account, ids):
+        marks = ",".join("?" for _ in ids)
+        with self.db._connect() as conn:
+            rows = conn.execute(f"SELECT snapshot_json FROM online_listings WHERE platform='yandex' AND account_id=? AND id IN ({marks})",
+                                (account, *ids)).fetchall()
+            if len(rows) != len(ids):
+                raise ValueError("所选商品不属于当前在线店铺")
+            records = [OnlineListing.model_validate_json(row[0]) for row in rows]
+            if any(row["status"] in ("queued", "running") for row in self._resource_jobs(conn, "yandex", account, "*", "status")):
+                raise OnlineConflict("当前店铺有同步或修改进行中，列表将保留已保存的数据")
+        return records
+
+    def update_sales(self, before, sales):
+        """仅合并售价和库存，读取期间的详情、状态或修改回执优先。"""
+        if (before.id, before.remote_id, before.account_id, before.platform) != (sales.id, sales.remote_id, sales.account_id, sales.platform):
+            raise ValueError("销售数据与当前商品身份不一致")
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_status_refreshable(conn, before)
+            row = conn.execute("SELECT snapshot_json FROM online_listings WHERE id=?", (before.id,)).fetchone()
+            if not row:
+                return
+            current = OnlineListing.model_validate_json(row[0])
+            if (current.version, current.basic_synced_at, current.status_checked_at, current.sales_checked_at) != (
+                    before.version, before.basic_synced_at, before.status_checked_at, before.sales_checked_at):
+                return
+            # 同值库存写回也有新回执时间，旧的网络响应不得倒灌。
+            if current.stocks != before.stocks or current.prices != before.prices:
+                return
+            self._preserve_missing_sales(sales, current)
+            self._retain_price_permissions(sales, current)
+            old_stocks = {stock.id: stock for stock in current.stocks}
+            for stock in sales.stocks:
+                old = old_stocks.get(stock.id)
+                if old and old.campaign_id == stock.campaign_id:
+                    stock.raw_status, stock.sale_state = old.raw_status, old.sale_state
+                else:
+                    stock.raw_status, stock.sale_state = "", "unknown"
+            current.prices, current.stocks = sales.prices, sales.stocks
+            prices = {p.id: p for p in sales.prices}
+            for market in current.markets:
+                price = prices.get("campaign:" + market.id)
+                if price:
+                    market.price, market.currency = price.amount, price.currency
+            current.sales_checked_at = utc_now()
+            self._write_listing(conn, current)
+            conn.commit()
 
     def get(self, listing_id: str) -> OnlineListing:
         with self.db._connect() as conn:
@@ -444,12 +511,22 @@ class OnlineProductStore:
         if not row or row["owner"] != job["lease_token"] or row["lease_until"] <= time.time():
             raise OnlineConflict("任务执行租约已失效，禁止过期执行者提交结果")
 
-    def update_job(self, job_id: str, status: str, result: dict[str, Any], *, owner: str, dispatched: bool = False, lease_until: float | None = None) -> None:
+    def update_job(self, job_id: str, status: str, result: dict[str, Any], *, owner: str, dispatched: bool = False, lease_until: float | None = None,
+                   confirmed_stock: tuple[str, str, int] | None = None) -> None:
         with self.db._connect() as conn:
             cursor = conn.execute("UPDATE online_jobs SET status=?,result_json=?,dispatched=MAX(dispatched,?),lease_until=?,updated_at=? WHERE id=? AND owner=? AND lease_until>?",
                          (status, json.dumps(result, ensure_ascii=False), int(dispatched), 0 if status in {"submitted", "waiting_confirmation"} else lease_until or time.time()+900, utc_now(), job_id, owner, time.time()))
             if cursor.rowcount != 1:
                 raise OnlineConflict("任务执行租约已失效，禁止过期执行者提交结果")
+            if confirmed_stock:
+                # 目标仓库存与平台成功回执在同一事务提交。
+                listing_id, scope_id, quantity = confirmed_stock
+                row = conn.execute("SELECT snapshot_json FROM online_listings WHERE id=?", (listing_id,)).fetchone()
+                current = OnlineListing.model_validate_json(row[0])
+                stock = next(s for s in current.stocks if s.id == scope_id)
+                stock.quantity, stock.observed_at = quantity, utc_now()
+                stock.read_error = stock.cached_at = ""
+                self._write_listing(conn, current)
             conn.commit()
 
     def claim_reconcile(self, job_id: str, *, lease_until: float | None = None) -> dict[str, Any]:

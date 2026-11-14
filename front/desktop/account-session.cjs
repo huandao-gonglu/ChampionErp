@@ -43,7 +43,7 @@ function proxyBackendRequest(req, res, baseUrl, { session, client = '', connecti
     delete forwarded['set-cookie']
     const status = response.statusCode || 502
     if (status === 401 && revision === session.revision) { session.clear(); onLogout() }
-    if (req.method === 'POST' && ['/api/account/logout', '/api/account/password'].includes(requestPath.pathname) && status === 200) {
+    if (req.method === 'POST' && ['/api/account/logout', '/api/account/password'].includes(requestPath.pathname) && status === 200 && revision === session.revision) {
       session.clear(); onLogout(requestPath.pathname)
     }
     if (isLogin && status === 200) {

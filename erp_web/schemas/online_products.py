@@ -59,6 +59,9 @@ class OnlineYandexAttributeValue(BaseModel):
 
 
 class PriceScope(BaseModel):
+    read_error: str = ""
+    cached_at: str = ""
+    observed_at: str = ""
     id: str
     label: str
     amount: str | None = None
@@ -69,6 +72,9 @@ class PriceScope(BaseModel):
 
 
 class StockScope(BaseModel):
+    read_error: str = ""
+    cached_at: str = ""
+    observed_at: str = ""
     id: str
     label: str
     quantity: int | None = None
@@ -149,6 +155,7 @@ class OnlineProduct(BaseModel):
     capabilities: dict[str, Capability] = Field(default_factory=dict)
     version: str = ""
     synced_at: str = ""
+    sales_checked_at: str = ""
     basic_synced_at: str = ""
     status_checked_at: str = ""
     errors: list[str] = Field(default_factory=list)
@@ -361,6 +368,10 @@ def snapshot_version(listing: OnlineListing) -> str:
     facts = {key: data[key] for key in (
         "remote_id", "model", "title", "sale_state", "raw_status", "raw_sub_status", "markets", "prices", "stocks", "content",
     )}
+    for scope in (*facts['prices'], *facts['stocks']):
+        scope.pop('observed_at', None)
+        scope.pop('read_error', None)
+        scope.pop('cached_at', None)
     for market in facts['markets']:
         market.pop('name', None)
     for stock in facts['stocks']:

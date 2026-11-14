@@ -32,6 +32,7 @@ def settings_body(client, url):
         data.pop(key)
     for key in ('alibaba', 'alibaba_crossborder'):
         data[key].pop('secret_configured')
+    data['onebound'].pop('secret_configured')
     return data
 
 
@@ -131,12 +132,14 @@ def test_rates_and_forbidden_categories_are_shared_and_user_cannot_overwrite(acc
     assert raw['pricing_defaults']['exchange_rate_api_url'] != 'https://shared.example/rates'
 
 
-def test_enterprise_rotation_invalidates_each_users_authorization_even_when_reverted(accounts_http):
+@pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder'])
+def test_enterprise_rotation_invalidates_each_users_authorization_even_when_reverted(accounts_http, provider):
     url, runtime, login = accounts_http
     admin = login()
     user = register(url)
     body = settings_body(admin, url)
-    body['alibaba_crossborder'] = dict(app_key='123', app_secret='secret-a', redirect_uri='https://erp.example/auth/alibaba/callback')
+    body[provider] = dict(app_key='123', app_secret='secret-a', redirect_uri='https://erp.example/auth/alibaba/callback')
+    body['alibaba_api_application'] = provider
     body['crossborderbus_client_secret'] = 'bus-secret-a'
     public = post_settings(admin, url, body)
     assert 'secret-a' not in json.dumps(public)
@@ -151,7 +154,7 @@ def test_enterprise_rotation_invalidates_each_users_authorization_even_when_reve
     late_bus_receipt = store.crossborderbus_credentials()
     for app_secret, bus_secret in [('secret-b', 'bus-secret-b'), ('secret-a', 'bus-secret-a')]:
         body = settings_body(admin, url)
-        body['alibaba_crossborder']['app_secret'] = app_secret
+        body[provider]['app_secret'] = app_secret
         body['crossborderbus_client_secret'] = bus_secret
         post_settings(admin, url, body)
         assert not AlibabaAuthorizationService(store).status()['authorized']
@@ -160,6 +163,69 @@ def test_enterprise_rotation_invalidates_each_users_authorization_even_when_reve
             store.save_crossborderbus_credentials(late_bus_receipt)
     assert store.alibaba_credentials()['authorization']['access_token'] == 'private-token'
     assert runtime.root.config.alibaba_credentials().get('authorization', {}) == {}
+
+
+def test_admin_application_switch_is_shared_and_preserves_separate_buyer_grants(accounts_http):
+    from erp_web.services.alibaba_credentials import buyer_scope
+    from erp_web.services.alibaba_self_purchase_service import account_scope
+
+    url, runtime, login = accounts_http
+    admin = login()
+    user = register(url)
+    client = login('user@example.com')
+    body = settings_body(admin, url)
+    assert body['alibaba_api_application'] == 'alibaba'
+    for provider, key in [('alibaba', '1938727'), ('alibaba_crossborder', '4848173')]:
+        body[provider] = dict(app_key=key, app_secret=provider + '-secret', redirect_uri='https://erp.example/auth/alibaba/callback')
+    public = post_settings(admin, url, body)
+    store = runtime.context_for(next(row for row in runtime.store.users() if row['id'] == user['id'])).config
+    grants = {}
+    scopes = {}
+    for provider in ('alibaba', 'alibaba_crossborder'):
+        body = settings_body(admin, url)
+        body['alibaba_api_application'] = provider
+        post_settings(admin, url, body)
+        assert client.get(url + '/api/alibaba/authorization').json()['application_type'] == provider
+        application = store.alibaba_application()
+        scopes[provider] = buyer_scope(application['app_key'], 'same-buyer')
+        grants[provider] = {'access_token': provider + '-token', 'member_id': 'same-buyer',
+            'application_fingerprint': application_fingerprint(application), 'account_scope': scopes[provider]}
+        store.update_alibaba_credentials({'authorization': grants[provider]})
+        assert account_scope(AlibabaAuthorizationService(store).runtime_config()) == scopes[provider]
+    assert scopes['alibaba'] != scopes['alibaba_crossborder']
+    late_application = store.alibaba_application()
+    late_state = store.alibaba_credentials()
+    stale_settings = settings_body(admin, url)
+    body = deepcopy(stale_settings)
+    body['alibaba_api_application'] = 'alibaba'
+    switched = post_settings(admin, url, body)
+    assert switched['revision'] != stale_settings['revision']
+    assert admin.post(url + '/api/admin/settings', json=stale_settings).status_code == 409
+    with pytest.raises(ValueError, match='已变化'):
+        store.update_alibaba_credentials({'authorization': {'access_token': 'late-token'}}, expected=late_state, application=late_application)
+    assert store.alibaba_credentials()['authorization'] == grants['alibaba']
+    assert store.alibaba_application() == runtime.root.config.alibaba_application()
+    assert store.alibaba_application()['credential_generation']
+    assert AlibabaAuthorizationService(store).status()['authorized']
+    # 旧客户端省略选择与自用配置时，保留管理员的现有选择和原密钥。
+    body = settings_body(admin, url)
+    body.pop('alibaba_api_application')
+    body.pop('alibaba')
+    assert post_settings(admin, url, body)['alibaba_api_application'] == 'alibaba'
+    body = settings_body(admin, url)
+    body['alibaba_api_application'] = 'alibaba_crossborder'
+    final = post_settings(admin, url, body)
+    assert store.alibaba_credentials()['authorization'] == grants['alibaba_crossborder']
+    assert AlibabaAuthorizationService(store).status()['authorized']
+    assert not runtime.root.config.alibaba_credentials().get('authorization')
+    assert public['alibaba'] == final['alibaba']
+    assert public['alibaba_crossborder'] == final['alibaba_crossborder']
+    for value in (public, switched, final):
+        assert not any(secret in json.dumps(value) for secret in ('alibaba-secret', 'alibaba_crossborder-secret', 'late-token'))
+    body = settings_body(admin, url)
+    body['alibaba_api_application'] = 'unknown'
+    assert admin.post(url + '/api/admin/settings', json=body).status_code == 400
+    assert client.post(url + '/api/admin/settings', json=body).status_code == 403
 
 
 def test_managed_settings_compare_revision_and_never_echo_validation_secrets(accounts_http):

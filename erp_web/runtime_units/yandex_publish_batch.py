@@ -113,10 +113,13 @@ def confirm_many(results, config):
     loaded, facts = [], {}
     for index, result in enumerate(results):
         plan, checkpoint, token = leaf._load_submission(result, config)
-        if leaf._next_pending_step(checkpoint) is not None:
-            raise ValueError('仍有未完成的提交步骤，确认查询不能执行写入')
         loaded.append((plan, checkpoint, token))
         facts[index] = {}
+        if leaf._next_pending_step(checkpoint) is not None:
+            if 'campaign_offer' not in checkpoint.completed_steps:
+                raise ValueError('此 SKU 尚无店铺上架条件回执')
+            groups[('offers', checkpoint.campaign_id)].append(index)
+            continue
         groups[('mappings', checkpoint.business_id)].append(index)
         groups[('offers', checkpoint.campaign_id)].append(index)
         level = plan['price']['level']
@@ -171,7 +174,18 @@ def confirm_many(results, config):
                     values[index] = {**values[index], 'check_error': str(exc)}
                     facts[index] = {}
     for index, (plan, checkpoint, token) in enumerate(loaded):
-        if {'mappings', 'offers', 'quarantine'} <= set(facts[index]):
+        if leaf._next_pending_step(checkpoint) is not None and 'offers' in facts[index]:
+            # 已在售也不能证明本次批准的价格、库存已提交。仅记录平台观察值。
+            offer = next(iter(facts[index]['offers']), {})
+            if offer and not offer.get('status'):
+                values[index]['check_error'] = '平台未返回店铺商品状态，请稍后查询。'
+                continue
+            inner = values[index].get('result') or values[index]
+            inner['checkpoint']['evidence']['campaign_observation'] = {
+                'status': offer.get('status') or 'NO_RECORD', 'at': leaf.collect_time_iso(),
+            }
+            values[index].pop('check_error', None)
+        elif {'mappings', 'offers', 'quarantine'} <= set(facts[index]):
             try:
                 values[index] = leaf._confirmation_readback(plan, checkpoint, token, config, facts=facts[index])
             except Exception as exc:

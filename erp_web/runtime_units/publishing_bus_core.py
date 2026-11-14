@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol
 
 from erp_web.release_guard import release_guard
 from erp_web.marketplaces.publisher import PublishAdapterError
-from erp_web.product_model.task_queue_model import publish_can_retry
+from erp_web.product_model.task_queue_model import project_publish_submission, publish_can_retry
 from erp_web.schemas.publish import (
     PublishJobPlatformSummary,
     PublishJobMarketResultSummary,
@@ -901,6 +901,8 @@ class PublishingBus:
             if not states:
                 break
             for state in states:
+                for item in state.get("platforms", {}).values():
+                    project_publish_submission(item)
                 summary = _publish_job_summary(state)
                 if status and summary["status"] != status:
                     continue
@@ -1198,6 +1200,9 @@ class PublishingBus:
             error="",
             attempts=attempts,
         )
+        previous = state["platforms"][platform].get("result") or {}
+        if attempts > 1 and payload.get("kind") == "sku_group" and previous.get("sku_results"):
+            return adapter.retry_submission(payload, previous, config)
         return adapter.publish_payload(copy.deepcopy(payload), config)
 
     @staticmethod
@@ -1355,6 +1360,8 @@ class PublishingBus:
         state = self.store.load_publish_job(job_id)
         if not state:
             raise FileNotFoundError(f"发布任务不存在：{job_id}")
+        for item in state.get("platforms", {}).values():
+            project_publish_submission(item)
         return state
 
     def _write_state(self, job_id: str, state: dict[str, Any]) -> None:

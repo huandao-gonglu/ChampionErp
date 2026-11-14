@@ -12,10 +12,13 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request
+from pydantic import ValidationError
 
-from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt
+from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt, OneBoundAuthorizationRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
-from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope
+from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, onebound_scope
+from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ADDRESSES
+from erp_web.services.alibaba_purchase_address import saved_addresses
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
 
@@ -23,6 +26,8 @@ _AUTH_LOCK = threading.RLock()
 
 
 def _configured(application):
+    if application.get('application_type') == 'onebound':
+        return bool(application.get('api_key') and application.get('api_secret'))
     return bool(re.fullmatch(r'[0-9]+', application.get('app_key', '')) and application.get('app_secret'))
 
 
@@ -39,6 +44,9 @@ def _authorization(state, application):
     auth = state.get('authorization') or {}
     if auth.get('application_fingerprint') != application_fingerprint(application):
         return {}
+    # 企业 Key 默认买家不代表当前用户获得了个人授权。
+    if application.get('application_type') == 'onebound' and not auth.get('access_token'):
+        return {}
     return auth
 
 
@@ -51,11 +59,13 @@ class AlibabaAuthorizationService:
         application = self.store.alibaba_application()
         state = self.store.alibaba_credentials()
         auth = _authorization(state, application)
-        try:
-            _redirect(application)
-            can_authorize = _configured(application)
-        except ValueError:
-            can_authorize = False
+        can_authorize = False
+        if application['application_type'] != 'onebound':
+            try:
+                _redirect(application)
+                can_authorize = _configured(application)
+            except ValueError:
+                pass
         expires = auth.get('expires_at', 0)
         pending = state.get('pending') or {}
         attempt: AuthorizationAttempt = 'idle'
@@ -66,7 +76,7 @@ class AlibabaAuthorizationService:
                 attempt = 'expired'
             else:
                 attempt = 'waiting'
-        return {'ok': True, 'application_configured': _configured(application), 'can_authorize': can_authorize,
+        return {'ok': True, 'application_type': application['application_type'], 'application_configured': _configured(application), 'can_authorize': can_authorize,
                 'authorized': bool(auth.get('access_token') and _configured(application)),
                 'member_id': auth.get('member_id', ''), 'account_name': auth.get('account_name') or auth.get('member_id', ''),
                 'attempt': attempt, 'expires_at': expires,
@@ -77,6 +87,8 @@ class AlibabaAuthorizationService:
     def start(self):
         with _AUTH_LOCK:
             application = self.store.alibaba_application()
+            if application['application_type'] == 'onebound':
+                raise ValueError('万邦个人 1688 在线授权尚未接入，请联系管理员')
             if not _configured(application):
                 raise ValueError('1688 授权服务暂未配置，请联系管理员')
             redirect = _redirect(application)
@@ -149,6 +161,11 @@ class AlibabaAuthorizationService:
             application = self.store.alibaba_application()
             snapshot = self.store.alibaba_credentials()
             auth = _authorization(snapshot, application)
+            if application['application_type'] == 'onebound':
+                if not (_configured(application) and auth.get('access_token')):
+                    raise ValueError('当前方案的 1688 账号尚未连接，请联系管理员')
+                return {**application, 'access_token': auth['access_token'], 'account_scope': auth['account_scope'],
+                        'timeout_seconds': self.store.load_app_config().get('1688_api', {}).get('timeout_seconds', '20')}
             if auth.get('expires_at') and auth['expires_at'] <= time.time() + 300:
                 if not auth.get('refresh_token'):
                     raise ValueError('1688 账号授权已到期，请重新连接账号')
@@ -159,6 +176,24 @@ class AlibabaAuthorizationService:
             timeout = self.store.load_app_config().get('1688_api', {}).get('timeout_seconds', '20')
             return {'timeout_seconds': timeout, **application, 'access_token': auth.get('access_token', ''),
                     'member_id': auth.get('member_id', ''), 'account_scope': auth.get('account_scope', '')}
+
+    def bind_onebound(self, body):
+        try:
+            request = OneBoundAuthorizationRequest.model_validate(body)
+        except ValidationError:
+            raise ValueError('请填写有效的万邦 1688 授权 Session（最多 4096 字符）') from None
+        application = self.store.alibaba_application()
+        if application['application_type'] != 'onebound' or not _configured(application):
+            raise ValueError('请先由管理员选择并配置万邦方案')
+        snapshot = self.store.alibaba_credentials()
+        config = {**application, 'access_token': request.session}
+        # 绑定只读核验，不创建订单，不发起支付；不冒充已识别的买家身份。
+        saved_addresses(AlibabaSelfPurchaseClient(config).call(ADDRESSES, {}))
+        auth = {'access_token': request.session, 'account_name': '万邦采购账号',
+                'account_scope': onebound_scope(application['api_key'], request.session),
+                'application_fingerprint': application_fingerprint(application)}
+        self.store.update_alibaba_credentials({'authorization': auth, 'pending': {}}, expected=snapshot, application=application)
+        return self.status()
 
     @staticmethod
     def _parse_token(application, payload, previous=None):

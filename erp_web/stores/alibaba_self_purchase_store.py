@@ -21,7 +21,7 @@ class AlibabaSelfPurchaseStore:
         os.close(descriptor)
         self.path.chmod(0o600)
         with self.connect() as conn:
-            if conn.execute("PRAGMA user_version").fetchone()[0] not in (0, 1, 2, 3):
+            if conn.execute("PRAGMA user_version").fetchone()[0] not in (0, 1, 2, 3, 4):
                 raise ValueError("采购记录库版本不受支持")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute('''CREATE TABLE IF NOT EXISTS alibaba_self_purchases (
@@ -35,7 +35,8 @@ class AlibabaSelfPurchaseStore:
             if "payment" not in columns:
                 conn.execute("ALTER TABLE alibaba_self_purchases ADD COLUMN payment TEXT NOT NULL DEFAULT '{}'")
             conn.execute("CREATE INDEX IF NOT EXISTS alibaba_self_purchase_target ON alibaba_self_purchases(target_key,account,state)")
-            conn.execute("PRAGMA user_version=3")
+            conn.execute('CREATE TABLE IF NOT EXISTS alibaba_purchase_accounts (alias TEXT PRIMARY KEY, account TEXT NOT NULL, buyer_id TEXT NOT NULL)')
+            conn.execute("PRAGMA user_version=4")
             conn.commit()
 
     @contextmanager
@@ -56,6 +57,7 @@ class AlibabaSelfPurchaseStore:
 
     def get(self, ident, account):
         with self._preview_lock, self.connect() as conn:
+            account = self._account(conn, account)
             row = conn.execute("SELECT * FROM alibaba_self_purchases WHERE id=? AND account=?", (ident, account)).fetchone()
             if row is not None:
                 return self.decode(row)
@@ -79,11 +81,13 @@ class AlibabaSelfPurchaseStore:
 
     def records(self, target_key, account):
         with self.connect() as conn:
+            account = self._account(conn, account)
             rows = conn.execute("SELECT * FROM alibaba_self_purchases WHERE target_key=? AND account=? AND state NOT IN ('preview','expired') ORDER BY created_at DESC LIMIT 30", (target_key, account)).fetchall()
         return [self.decode(row) for row in rows]
 
     def batch_records(self, order_id, account):
         with self.connect() as conn:
+            account = self._account(conn, account)
             rows = conn.execute("""SELECT * FROM alibaba_self_purchases
                 WHERE account=? AND json_extract(payload,'$.binding.order_id')=?
                 AND json_type(payload,'$.items')='array' AND state NOT IN ('preview','expired')
@@ -93,6 +97,7 @@ class AlibabaSelfPurchaseStore:
     def preview(self, target_key, account, payload):
         ident, now = uuid4().hex, utc_iso()
         with self._preview_lock, self.connect() as conn:
+            account = self._account(conn, account)
             self._check_pending(conn, target_key, account, targets=payload.get('targets'))
             self._prune_previews()
             # 新预览使所有交叠订单行的旧预览失效，防止单条与批量入口交叉提交。
@@ -120,6 +125,7 @@ class AlibabaSelfPurchaseStore:
     def claim(self, ident, account, channel):
         with self._preview_lock, self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            account = self._account(conn, account)
             saved = conn.execute("SELECT * FROM alibaba_self_purchases WHERE id=? AND account=?", (ident, account)).fetchone()
             if saved is not None:
                 row = self.decode(saved)
@@ -143,6 +149,7 @@ class AlibabaSelfPurchaseStore:
 
     def finish(self, ident, account, state, result):
         with self.connect() as conn:
+            account = self._account(conn, account)
             conn.execute("UPDATE alibaba_self_purchases SET state=?,result=?,updated_at=? WHERE id=? AND account=?", (state, json.dumps(result, ensure_ascii=False), utc_iso(), ident, account))
             conn.commit()
         return self.get(ident, account)
@@ -151,6 +158,7 @@ class AlibabaSelfPurchaseStore:
         """支付意图先落库；创建回执与支付回执独立更新，查询不得覆盖支付占位。"""
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            account = self._account(conn, account)
             row = self.decode(conn.execute("SELECT * FROM alibaba_self_purchases WHERE id=? AND account=?", (ident, account)).fetchone())
             if row['payment']:
                 return row, False
@@ -167,6 +175,7 @@ class AlibabaSelfPurchaseStore:
 
     def finish_payment(self, ident, account, request_id, state, message):
         with self.connect() as conn:
+            account = self._account(conn, account)
             # 只更新仍待确认的支付；晚到的异常不能覆盖查询已确认的结果。
             conn.execute("""UPDATE alibaba_self_purchases
                 SET payment=json_set(payment,'$.state',?,'$.message',?)
@@ -175,3 +184,32 @@ class AlibabaSelfPurchaseStore:
                 (state, message, ident, account, request_id))
             conn.commit()
         return self.get(ident, account)
+
+    @staticmethod
+    def _account(conn, account):
+        row = conn.execute('SELECT account FROM alibaba_purchase_accounts WHERE alias=?', (account,)).fetchone()
+        return row['account'] if row else account
+
+    def merge_account_scopes(self, account, aliases, buyer_id):
+        """只合并上层已核验同一买家的归属；别名让网络中旧请求的回执仍可保存。"""
+        if not buyer_id or not account:
+            raise ValueError('采购归属迁移缺少已核验买家')
+        aliases = sorted({account, *(value for value in aliases if value)})
+        with self._preview_lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            rows = conn.execute('SELECT alias,account,buyer_id FROM alibaba_purchase_accounts WHERE alias IN (SELECT value FROM json_each(?))',
+                                (json.dumps(aliases),)).fetchall()
+            if any(row['buyer_id'] != buyer_id for row in rows):
+                raise ValueError('采购归属不能合并到其他 1688 买家')
+            previous = sorted({*aliases, *(row['account'] for row in rows)})
+            if any(row['account'] not in aliases for row in rows):
+                raise ValueError('采购归属存在未核验关联，请重新连接买家账号')
+            conn.execute('UPDATE alibaba_self_purchases SET account=? WHERE account IN (SELECT value FROM json_each(?)) AND account!=?',
+                         (account, json.dumps(previous), account))
+            conn.executemany('INSERT INTO alibaba_purchase_accounts(alias,account,buyer_id) VALUES (?,?,?) '
+                             'ON CONFLICT(alias) DO UPDATE SET account=excluded.account',
+                             [(alias, account, buyer_id) for alias in aliases])
+            conn.commit()
+            for row in self._previews.values():
+                if row['account'] in previous:
+                    row['account'] = account

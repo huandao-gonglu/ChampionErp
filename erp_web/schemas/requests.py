@@ -179,7 +179,9 @@ _PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/business-data/read": _contract(fields={"resource": STRING, "params": OBJECT, "path": FieldRule("string", allow_empty=True), "fields": STRING_ARRAY, "filters": OBJECT, "offset": FieldRule("integer", minimum=0), "limit": LIMIT}, required=("resource",)),
     "/api/admin/settings": _contract(fields={"revision": STRING, "exchange_rates": OBJECT, "alibaba": OBJECT,
-        "alibaba_crossborder": OBJECT, "crossborderbus_client_secret": STRING},
+        "alibaba_crossborder": OBJECT, "onebound": OBJECT,
+        "alibaba_api_application": FieldRule('enum', choices=frozenset({'alibaba', 'alibaba_crossborder', 'onebound'})),
+        "crossborderbus_client_secret": STRING},
         required=("revision", "exchange_rates", "alibaba_crossborder")),
     "/api/shipping/tariffs/import": _contract(fields={"platform": STRING, "scope": STRING, "filename": STRING,
         "content_base64": STRING, "effective_date": STRING, "expected_version": FieldRule("string", allow_empty=True), "preview": BOOLEAN},
@@ -243,6 +245,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/online-products/ozon-export/preview": _contract(fields={"account_id": STRING, "listing_ids": STRING_ARRAY, "template_name": STRING, "template_base64": STRING, "overrides": OBJECT, "preview_fingerprint": STRING}, required=("account_id", "listing_ids", "template_name", "template_base64")),
     "/api/online-products/ozon-export/download": _contract(fields={"account_id": STRING, "listing_ids": STRING_ARRAY, "template_name": STRING, "template_base64": STRING, "overrides": OBJECT, "preview_fingerprint": STRING}, required=("account_id", "listing_ids", "template_name", "template_base64", "preview_fingerprint")),
     "/api/online-products/sync": _contract(fields={"platform": FieldRule("enum", choices=frozenset({"mercadolibre", "ozon", "yandex"})), "catalog": FieldRule("enum", choices=frozenset({"current", "archived"})), "idempotency_key": STRING}, required=("platform", "idempotency_key")),
+    "/api/online-products/refresh-sales": _contract(fields={"account_id": STRING, "listing_ids": STRING_ARRAY}, required=("account_id", "listing_ids")),
     "/api/online-products/refresh-status": _contract(fields={"listing_id": STRING}, required=("listing_id",)),
     "/api/online-products/refresh-detail": _contract(fields={"listing_id": STRING}, required=("listing_id",)),
     "/api/online-products/change": _contract(fields={"listing_id": STRING, "version": STRING, "operation": STRING, "scope_id": STRING, "changes": OBJECT, "idempotency_key": STRING}, required=("listing_id", "version", "operation", "changes", "idempotency_key")),
@@ -352,6 +355,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/alibaba/crossborder/authorization/start": _EMPTY,
     "/api/alibaba/authorization/start": _EMPTY,
     "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING}, required=("callback_url",)),
+    "/api/alibaba/authorization/onebound": RequestContract({"session": STRING}, required=("session",)),
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(
         # 人工确认摘要指纹：HTTP 边界声明字符串类型；业务判空与绑定校验

@@ -383,3 +383,15 @@ def test_completed_sku_attribute_does_not_inherit_stale_common_review():
     assert done.target["validation_errors"] == ["brand"]
     assert missing.draft["validation_errors"] == [review, "brand"]
     assert context.draft["validation_errors"] == [review, "brand"]
+
+
+def test_old_confirmation_keeps_newer_draft_receipt(tmp_path):
+    with temp_app_context(tmp_path) as app:
+        app.products.save_product(product_fixture())
+        key = ("sku-draft", "fact-0", "ozon:global")
+        pending = {"status": "pending_confirmation", "fingerprint": "original", "result": {"task_id": "remote-1"}}
+        newer = {**pending, "status": "outcome_unknown"}
+        app.products.save_sku_publication(*key, pending)
+        app.products.save_sku_publication(*key, newer)
+        app.products.save_sku_publication(*key, {**pending, "status": "published"}, expected=pending)
+        assert app.products.sku_publication(*key) == newer

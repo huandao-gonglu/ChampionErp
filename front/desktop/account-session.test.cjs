@@ -45,8 +45,9 @@ test('主进程接收 Secure Cookie，渲染页面只取得用户和 CSRF，后�
 })
 
 test('退出、改密及 401 清除主进程会话并断开本机连接', async t => {
+  let logoutConfirmed = false
   const backend = http.createServer((req, res) => {
-    res.statusCode = req.url === '/api/state' ? 401 : 200
+    res.statusCode = req.url === '/api/state' ? 401 : req.url === '/api/account/logout' && !logoutConfirmed ? 503 : 200
     res.end('{}')
   })
   const base = await listen(backend)
@@ -55,6 +56,14 @@ test('退出、改密及 401 清除主进程会话并断开本机连接', async 
   const proxy = http.createServer((req, res) => proxyBackendRequest(req, res, base, { session, onLogout: () => { disconnected++ } }))
   const local = await listen(proxy)
   t.after(() => { proxy.closeAllConnections(); proxy.close(); backend.closeAllConnections(); backend.close() })
+  session.cookie = 'champion_session=old'
+  session.csrf = 'old-csrf'
+  const failed = await fetch(local + '/api/account/logout', { method: 'POST' })
+  assert.equal(failed.status, 503)
+  assert.equal(session.cookie, 'champion_session=old')
+  assert.equal(session.csrf, 'old-csrf')
+  assert.equal(disconnected, 0)
+  logoutConfirmed = true
   for (const path of ['/api/account/logout', '/api/account/password', '/api/state']) {
     session.cookie = 'champion_session=old'
     session.csrf = 'old-csrf'

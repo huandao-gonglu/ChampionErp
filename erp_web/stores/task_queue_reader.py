@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from erp_web.product_model.online_operation_model import effective_job_status
-from erp_web.product_model.task_queue_model import PENDING_RESULTS, has_query_identity, task_display_status, publish_can_retry
+from erp_web.product_model.task_queue_model import PENDING_RESULTS, can_check_publish_status, project_publish_submission, task_display_status, publish_can_retry
 
 
 class TaskQueueReader:
@@ -36,6 +36,7 @@ class TaskQueueReader:
         tasks = []
         for row in publishes:
             item = json.loads(row["item"])
+            project_publish_submission(item)
             result = item.get("result") or {}
             status = str(item.get("status") or "")
             tasks.append({"id": f"publish:{row['job_id']}:{row['platform']}", "job_id": row["job_id"], "source": "publish",
@@ -45,7 +46,7 @@ class TaskQueueReader:
                 "created_at": row["created_at"], "updated_at": item.get("updated_at") or row["updated_at"],
                 "error": row["persistence_error"] or item.get("error") or item.get("confirmation", {}).get("check_error") or "", "protection": "禁止重复发布" if status in PENDING_RESULTS or status in {"queued", "running"} or row["persistence_error"] else "",
                 "can_retry": bool(row["approval"]) and publish_can_retry(status, result), "confirmation": None, "_result": result, "_submitted_at": item.get("confirmation", {}).get("submitted_at") or item.get("created_at") or row["created_at"],
-                "_can_query": has_query_identity(result), "_legacy_checks": int(item.get("confirmation", {}).get("checks_used") or 0),
+                "_can_query": can_check_publish_status(status, result), "_legacy_checks": int(item.get("confirmation", {}).get("checks_used") or 0),
                 "_attention": status == "needs_attention" or bool(item.get("confirmation", {}).get("requires_attention"))})
         for raw in online:
             row = dict(raw)

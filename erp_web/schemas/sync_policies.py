@@ -58,7 +58,7 @@ POLICIES = {
             field('max_delay', '最长退避', 30, .5, 300, step=.5), field('max_retries', '最多额外重试次数', 8, 1, 100, unit='次')]),
     'wechat_delivery': dict(title='微信消息投递重试', description='已授权消息尚未交付时持续重试，直到交付或解绑；保留原投递编号，不重新执行已完成的业务操作。',
         effect='下一次投递等待生效', fields=[field('retry_delay', '投递重试间隔', 1, 1, 300)]),
-    'newapi_account': dict(title='New API 账号状态同步', description='登录撤销、改密和账号启停等待同步事实持续重试，直到同步完成。由管理员统一维护。',
+    'newapi_account': dict(title='New API 账号状态同步', description='改密和账号启停通知失败后按此间隔重试，直到同步完成。由管理员统一维护。',
         effect='下一轮账号扫描生效', shared=True, fields=[field('interval', '同步间隔', 30, 5, 3600)]),
 }
 

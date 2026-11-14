@@ -149,10 +149,6 @@ class AccountStore:
 
     def revoke_session(self, token_hash):
         with self._connection() as db:
-            row = db.execute("SELECT user_id FROM sessions WHERE token_hash=?", (token_hash,)).fetchone()
-            if row:
-                db.execute("INSERT INTO newapi_sync(user_id,session_ref,action) VALUES (?,?,?)",
-                           (row["user_id"], self.newapi_session_ref(token_hash), "revoke"))
             db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
 
     def session_valid(self, token_hash):
@@ -246,9 +242,13 @@ class AccountStore:
         with self._connection() as db:
             return db.execute("SELECT 1 FROM users WHERE id=? AND status='enabled'", (user_id,)).fetchone() is not None
 
-    def newapi_pending(self):
+    def newapi_pending(self, user_id=None):
         with self._connection() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM newapi_sync ORDER BY id LIMIT 100")]
+            if user_id is None:
+                rows = db.execute("SELECT * FROM newapi_sync ORDER BY id LIMIT 100")
+            else:
+                rows = db.execute("SELECT * FROM newapi_sync WHERE user_id=? ORDER BY id LIMIT 100", (user_id,))
+            return [dict(row) for row in rows]
 
     def newapi_ack(self, identity):
         with self._connection() as db:

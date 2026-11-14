@@ -18,7 +18,14 @@ def _complete(handler):
     handler.send_json(payload, status)
 
 
+def _onebound(handler):
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    payload, status = authorization_payload('onebound', body)
+    handler.send_json(payload, status)
+
+
 POST_HANDLERS = {
+    '/api/alibaba/authorization/onebound': _onebound,
     '/api/alibaba/authorization/complete': _complete,
     '/api/alibaba/authorization/start': _start,
     '/api/alibaba/crossborder/authorization/start': _start,

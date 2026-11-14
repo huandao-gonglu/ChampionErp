@@ -6,7 +6,7 @@ import time
 
 def _snapshot_key(listing):
     return (listing.version, listing.synced_at, listing.basic_synced_at,
-            listing.status_checked_at, listing.details_state, tuple(listing.errors))
+            listing.sales_checked_at, listing.status_checked_at, listing.details_state, tuple(listing.errors))
 
 
 class OnlineProductDetailReader:

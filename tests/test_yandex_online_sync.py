@@ -41,7 +41,7 @@ class Platform:
         if name == "hidden-offers":
             return {"result": {"hiddenOffers": [{"offerId": "sku-1"}] if not query.get("offer_id") else []}}
         if name == "offers":
-            return {"result": {"offers": [{"offerId": sku, "status": "CHECKING", "campaignPrice": {"value": 15, "currencyId": "CNY"}} for sku in ids]}}
+            return {"result": {"offers": [{"offerId": sku, "status": "CHECKING", "basicPrice": {"value": 12, "currencyId": "CNY"}, "campaignPrice": {"value": 15, "currencyId": "CNY"}} for sku in ids]}}
         if name == "offer-cards":
             if self.fail_cards:
                 raise TimeoutError("卡片服务超时")
@@ -65,7 +65,7 @@ def adapter(platform):
     return result
 
 
-def test_201_goods_sync_only_basic_status_and_feedback_without_price_or_stock():
+def test_201_goods_sync_sales_in_three_batches_without_per_sku_detail():
     platform = Platform()
     platform.rows[-1]["offer"]["archived"] = False
     batches = list(adapter(platform).sync())
@@ -75,11 +75,11 @@ def test_201_goods_sync_only_basic_status_and_feedback_without_price_or_stock():
     assert all(row.details_state == "pending" and not any(c.enabled for c in row.capabilities.values()) for row in catalog)
     assert all(row.details_state == "unloaded" for row in details)
     assert details[1].sale_state == "paused"
-    assert all(row.stocks == [] and row.prices == [] for row in details)
+    assert all(row.stocks[0].quantity == 5 and [p.amount for p in row.prices] == ["12", "15"] for row in details)
     assert Counter(call[0] for call in platform.calls) == {
-        "offer-mappings": 3, "hidden-offers": 1, "offers": 3, "offer-cards": 3,
+        "offer-mappings": 3, "hidden-offers": 1, "offers": 3, "offer-cards": 3, "stocks": 3,
     }
-    assert len(platform.calls) == 10
+    assert len(platform.calls) == 13
     assert all(not call[1].get("offerIds") for call in platform.calls if call[0] == "offer-mappings")
     assert any(body["offerIds"] == ["sku-200"] for name, body, _, _ in platform.calls if name == "offer-cards")
     assert [batch.phase for batch in batches[:4]] == ["catalog", "basic", "catalog", "basic"]

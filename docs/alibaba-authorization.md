@@ -1,32 +1,41 @@
-# 1688 跨境 ERP 授权
+# 1688 授权与服务商接入
 
-生产环境使用跨境 ERP 服务商应用（AppKey 4848173）。商品采集、采购、订单、支付和物流共用同一应用，每位客户的买家授权保存在自己的 ERP 空间。企业自用应用 1938727 已退出 ERP 业务。
+## 目标与当前边界
 
-方案提供的接口、消息类型及 ERP 已接入的 11 个业务接口见 [1688 API 与消息目录](alibaba-api-catalog.md)。
+目标是每个用户从同一个「1688 授权」入口连接自己的采购账号。企业自用、跨境方案及万邦由管理员选择和配置，切换接入后仍应操作当前用户自己的账号。
 
-## 管理员配置与客户使用
+当前尚未完成三种接入方式的个人授权衔接。两套官方应用各自执行 OAuth 和续期，尚无依据证明可以互换 Token；万邦企业配置和业务接口适配已接入，个人授权的发起、回调与续期尚待正式协议。界面保留同一个授权区域，万邦明确显示个人在线授权待接入，不提供 Session 输入、默认买家绑定或跨应用登录的假完成路径。
 
-管理员在「系统设置 → 管理员共享设置 → 1688 跨境 ERP 服务商应用」维护 AppKey、AppSecret 和回调地址。首次保存前可通过后端环境变量 `ERP_ALIBABA_CROSSBORDER_APP_KEY`、`ERP_ALIBABA_CROSSBORDER_APP_SECRET` 和 `ERP_ALIBABA_CROSSBORDER_REDIRECT_URI` 提供初始值。密钥仅保存在服务端。
+## 管理员配置与个人凭据
 
-按跨境 ERP 方案完成资质、订购和上架审核，使用平台认可的聚石塔应用回调地址。将审核通过的服务订购地址提供给客户。客户先订购，再到「授权配置 → 1688 授权」打开浏览器，登录自己的 1688 账号。ERP 服务端收到回调后校验一次性 state、交换授权码，并在发起授权的客户空间保存 Token。页面自动显示授权账号。
+「系统设置 → 管理员共享设置 → 1688 API」维护两套官方 AppKey、AppSecret、回调地址及万邦 Key、Secret，并选择业务接入。企业凭据归根库 `enterprise_applications / active`，普通用户不能读取或修改。密钥留空沿用原值，配置 revision 拒绝覆盖并发更新；更换企业凭据使对应旧授权失效。
 
-管理员本机调试时，可先在 ERP 发起授权，登录 1688 后从浏览器地址栏复制完整回调 URL（包含 `code` 和 `state`），粘回「1688 授权」并点击「完成授权」。即使 localhost 页面无法连接也可复制。服务端仅解析该 URL，校验回调地址与管理员自己的待完成授权并向 1688 换码。普通账号使用自动回调。
+尚未保存时可读取 `ERP_ALIBABA_*`、`ERP_ALIBABA_CROSSBORDER_*`、`ERP_ONEBOUND_API_KEY`、`ERP_ONEBOUND_API_SECRET`。个人 `credentials:alibaba` 的 `state`、`crossborder`、`onebound` 保留原通道凭据，不借其他用户或其他应用的 Token 补齐当前通道。
 
-## 已有客户与采购记录
+`AlibabaAuthorizationService` 持有公开状态、官方 OAuth 和续期。GET 状态只读本地；state、owner、回调、应用代次和迟到回执继续校验。商品、采购和物流通过 `alibaba_runtime_config` 获取当前通道的个人凭据。企业 Key 存在不代表用户已授权，运行时不能仅凭 Key 自动接入默认买家。
 
-共享应用沿用根库 `enterprise_applications / active` 下的 `alibaba_crossborder`，客户授权沿用各自数据库的 `credentials:alibaba / crossborder`。已有跨境授权、配置代次和当前授权请求继续有效。只连接过企业自用应用的客户需要订购并重新授权。旧的数据库授权和采购记录保留原归属，自用凭据不会参与发起授权、换码、查询或支付。
+## 万邦协议证据与缺口
 
-历史桌面客户端的两组授权接口都连接同一个服务商应用。当前版本只显示一个授权入口。查询账号状态不发送远程请求。业务调用在到期前五分钟刷新 Token，刷新结果校验买家身份。
+[万邦 custom 文档](https://open.onebound.cn/help/api/1688.custom.html) 列有 `session` 参数，解释为授权换取的 `session_id`。该页没有给出 ERP 发起个人授权、接收回调及换取/续期凭据的完整协议，也没有确认既有官方应用授权可以直接传入使用。
 
-商品详情经多语言商详接口读取，保留原文标题和 SKU 规格。请求固定发送到 1688 官方网关并使用服务端签名。[1688 官方商详接口定义](https://open.1688.com/api/data/getApiDetail.json?namespace=com.alibaba.fenxiao.crossborder&name=product.search.queryProductDetail&version=1)
+项目原始 Word 的「1.2.1 认证授权」写的是登录万邦控制台、点击 1688 授权、到服务市场订购后返回万邦完成授权；采购调用示例只传企业 Key、Secret 和业务参数。内嵌截图的授权管理表有独立的 `session(token)`、`Key` 两列，表明后台保存了授权记录，但正文和截图均未交代 ERP 回调或多买家凭据选择协议。不能由该文档推出万邦仅支持一个买家，也不能推出可沿用现有官方 OAuth。
 
-## 协议依据与验证
+2026-11-13 的只读连通测试中，万邦 Key 不传 Session 即可读取后台默认买家，其身份与当时管理员的官方授权一致。补充对照测试对同一个买家基本信息接口分别使用不传 Session、无效 Session、现有官方 Token，三者均返回同一买家。因此，调用成功不足以证明传入凭据被使用，更不能证明跨用户授权成立。线上授权、配置和接入选择均未修改，未创建订单或付款。
 
-核对日期：2026-11-04。
+下一步需要万邦确认并提供：
 
-- [1688 官方 getToken 定义](https://open.1688.com/api/data/getApiDetail.json?namespace=system.oauth2&name=getToken&version=1&_input_charset=UTF-8)
-- [1688 官方测试工具](https://open.1688.com/api/apiTool.htm)及其
-  [授权实现](https://g.alicdn.com/b2b-open-platform/ocean-apifactory-assets/1.8.7/gw_api_tool.js?v=1)：
-  签名授权链接 `https://auth.1688.com/auth/authorize.htm`，site=china；
-  换取和刷新使用 `/openapi/http/1/system.oauth2/getToken/{AppKey}`，表单提交，刷新使用
-  grant_type=refresh_token。读取官方响应的 memberId、access_token、refresh_token、expires_in。
+1. ERP 用户登录自己的 1688 的授权链接生成方式、回调参数和账号关联规则。
+2. 回调换取的买家凭据、有效期、续期和撤销协议，以及同一企业 Key 下多个买家的选择方式。
+3. 是否支持已有官方应用授权；如支持，提供明确的交换或透传协议。
+
+验收必须用两个不同买家的只读结果交叉核对，并以无效凭据作负向对照，不能只看默认账号能返回数据。取得可信的个人授权后，用户界面仍只开放 1688 登录，不要求用户处理企业密钥或复制凭据。
+
+## 历史接口与数据
+
+已发布的管理员专用 POST `/api/alibaba/authorization/onebound` 保留兼容，仍要求显式传入既有凭据；它不代表普通用户在线授权已完成。已保存的旧凭据和原采购归属继续读取，默认 Key 绑定不视为个人授权。移除未发布的 `/authorization/verify` 及自动跨通道归并流程。
+
+采购库保留 v4 别名表以及 v1/v2/v3 读取迁移能力，兼容可能已写入的本地数据；当前授权流程不再自动创建归并。旧归属仍可保存网络中请求的回执，原订单号、支付意图和未知写入不删除或重放。个人授权库中其他字段原样保留。
+
+`onebound_api_transport.py` 保留固定 HTTPS 网关、关闭缓存与重定向、错误脱敏和已验证的回执归一。网关用 GET 下单或付款时仍按写请求处理，不能自动重试或隐式切回官方。官方订单列表不含 `success` 时，仅接受完整的 `result`/`totalRecord` 形状。
+
+测试入口：`test_onebound_user_authorization.py` 验证企业 Key 不代替个人授权；`test_onebound_api.py` 验证协议、错误和读写语义；授权、采购和支付测试保留各应用凭据、旧库读取和未知请求防重回归。

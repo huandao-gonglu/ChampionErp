@@ -11,7 +11,7 @@ vi.mock('@/api/alibabaAuthorization', () => ({ completeAlibabaAuthorization: vi.
 vi.mock('@/utils/desktop', () => ({ hasLocalOperations: vi.fn() }))
 enableAutoUnmount(afterEach)
 const status: BackendAlibabaAuthorizationStatus = {
-  ok: true, application_configured: true, can_authorize: true, authorized: true, member_id: 'buyer-a',
+  ok: true, application_type: 'alibaba_crossborder', application_configured: true, can_authorize: true, authorized: true, member_id: 'buyer-a',
   account_name: '采购甲', attempt: 'idle', expires_at: 0, refreshable: true, needs_reauthorization: false,
 }
 const url = 'https://auth.1688.com/auth/authorize.htm?state=opaque'
@@ -37,6 +37,25 @@ afterEach(() => {
 })
 
 describe('1688 浏览器授权', () => {
+  it.each([false, true])('万邦个人授权待接入，管理员身份 %s 不开放凭据或默认买家绑定', async (isAdmin) => {
+    account.isAdmin = isAdmin
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'onebound', can_authorize: false, authorized: false })
+    const wrapper = await panel()
+    expect(wrapper.text()).toContain('个人 1688 在线授权尚未接入')
+    expect(wrapper.find('input, a').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="connect-1688"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toMatch(/Key|Secret|Session|控制台/)
+    expect(api.startAlibabaAuthorization).not.toHaveBeenCalled()
+    expect(window.open).not.toHaveBeenCalled()
+  })
+
+  it('自用应用显示独立的授权说明', async () => {
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'alibaba' })
+    const wrapper = await panel()
+    expect(wrapper.text()).toContain('当前应用：企业自用应用')
+    expect(wrapper.text()).not.toContain('请先在 1688 订购本服务')
+  })
+
   it('服务器完成回调后自动更新账号', async () => {
     const wrapper = await panel()
     expect(wrapper.text()).toContain('采购甲')

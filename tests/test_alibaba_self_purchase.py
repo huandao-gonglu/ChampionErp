@@ -427,7 +427,7 @@ def test_legacy_receipt_database_migrates_without_losing_data(tmp_path):
     with pytest.raises(ValueError, match="旧预览已失效"):
         store.claim("old", "account", "shegou")
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_order_cancelled_during_preflight_does_not_create(setup_purchase):
@@ -674,3 +674,22 @@ def test_address_parser_keeps_mobile_and_landline_independently(phone, expected)
     assert result['address']['mobile'] == '13800138000'
     assert result['address']['phone'] == expected
     assert not result['warnings']
+
+
+def test_inflight_create_receipt_uses_old_scope_after_verified_buyer_merge(setup_purchase):
+    service, client, config, _ = setup_purchase
+    record = preview(service)
+    old_scope = account_scope(config)
+    original = client.call
+    def call(api, values):
+        if api == CREATE:
+            service.store.merge_account_scopes('shared-buyer', [old_scope], 'buyer-a')
+        return original(api, values)
+    client.call = call
+    created = create(service, record)
+    assert created['state'] == 'created' and created['purchase_record_id']
+    assert create(service, record)['order_numbers'] == [NUMBER]
+    assert len([name for name, _ in client.calls if name == CREATE]) == 1
+    assert service.store.get(record['id'], old_scope)['account'] == 'shared-buyer'
+    reopened = AlibabaSelfPurchaseStore(service.store.path)
+    assert reopened.get(record['id'], 'shared-buyer')['result']['order_numbers'] == [NUMBER]

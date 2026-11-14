@@ -5,6 +5,7 @@ from dataclasses import replace
 import time
 from typing import Any
 
+from erp_web.product_model.task_queue_model import sku_can_check, sku_can_retry, sku_submission_status
 from erp_web.schemas.publish import PublishPreparationObserver
 from erp_web.context import get_context
 from erp_web.stores.product_store import normalize_product_fields
@@ -24,7 +25,7 @@ SUCCESS = {"published", "imported", "real_publish_success", "success"}
 
 def remote_status(result: dict[str, Any]) -> str:
     status = text(result.get("status")).lower()
-    if status == "pending_submission":
+    if status in {"pending_submission", "submission_paused"}:
         return status
     if status in PENDING:
         return "pending_confirmation"
@@ -174,10 +175,13 @@ class SkuGroupPublishingAdapter:
                 errors.append('同一商品的所选 SKU 必须使用同一个发布仓库，请统一重新核价')
         return errors
 
-    def _save(self, envelope: dict[str, Any], item: dict[str, Any], result: dict[str, Any], status: str | None = None) -> dict[str, Any]:
+    def _save(self, envelope: dict[str, Any], item: dict[str, Any], result: dict[str, Any], status: str | None = None, *, confirming=False) -> dict[str, Any]:
         state = {"sku_id": item["sku_id"], "sku": item["sku"], "fingerprint": item["fingerprint"], "status": status or remote_status(result),
                  **remote_identity(result), "task_ids": remote_task_ids(result), "result": deepcopy(result), "error": text(result.get("error")), "updated_at": collect_time_iso()}
-        get_context().products.save_sku_publication(envelope["draft_id"], item["sku_id"], envelope["target_key"], state)
+        state["status"] = sku_submission_status(state)
+        store = get_context().products
+        store.save_sku_publication(envelope["draft_id"], item["sku_id"], envelope["target_key"], state,
+                                   expected=item if confirming else None)
         return state
 
     def saved_publish_result(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -233,6 +237,35 @@ class SkuGroupPublishingAdapter:
             states.append(self._save(payload, item, result))
         return self._aggregate(payload, states)
 
+    def retry_submission(self, payload, result, config):
+        """原任务只续提明确可执行的成员；草稿进度变化或丢失时禁止回放。"""
+        rows = {row["sku_id"]: row for row in result["sku_results"]}
+        if len(rows) != len(result["sku_results"]) or set(rows) != {item["sku_id"] for item in payload["items"]}:
+            raise ValueError("原任务的 SKU 回执与批准清单不一致，需先核对。")
+        retry_items = []
+        for item in payload["items"]:
+            row = rows[item["sku_id"]]
+            if not sku_can_retry(row):
+                continue
+            saved = get_context().products.sku_publication(payload["draft_id"], item["sku_id"], payload["target_key"])
+            if saved and (saved.get("fingerprint") != item["fingerprint"] or saved.get("sku") != item["sku"]):
+                raise ValueError("SKU 已有其他发布内容，请核对最新任务。")
+            if row["status"] != "queued" and (
+                not saved or sku_submission_status(saved) != sku_submission_status(row)
+                or saved.get("result") != row.get("result")
+            ):
+                raise ValueError("SKU 的发布回执已变更，请核对最新任务。")
+            retry_items.append(item)
+        if not retry_items:
+            raise ValueError("没有可继续的提交步骤。")
+        resumed = self.publish_payload({**payload, "items": retry_items}, config)
+        rows.update({row["sku_id"]: row for row in resumed["sku_results"]})
+        states = [rows[item["sku_id"]] for item in payload["items"]]
+        aggregate = self._aggregate(payload, states)
+        if resumed["status"] == "needs_attention":
+            aggregate.update(ok=False, status="needs_attention")
+        return aggregate
+
     def advance_submission(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         if callable(getattr(self.item_adapter, 'advance_submissions', None)):
             states = deepcopy(result['sku_results'])
@@ -269,14 +302,20 @@ class SkuGroupPublishingAdapter:
     def poll_publish_status(self, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         if callable(getattr(self.item_adapter, 'poll_publish_statuses', None)):
             states = deepcopy(result['sku_results'])
-            indices = [index for index, state in enumerate(states) if state['status'] == 'pending_confirmation'
-                       or state['status'] == 'needs_attention' and result.get('status') == 'needs_attention']
+            indices = [index for index, state in enumerate(states) if sku_can_check(state)
+                       and (state['status'] != 'needs_attention' or result.get('status') == 'needs_attention')]
             values = self.item_adapter.poll_publish_statuses([states[index]['result'] for index in indices], config)
             errors = []
             for index, value in zip(indices, values, strict=True):
                 if value.get('check_error'):
                     errors.append(f"{states[index]['sku']}：{value['check_error']}")
-                states[index] = self._save(result['envelope'], states[index], value)
+                    continue
+                previous = states[index]
+                if previous['status'] == 'outcome_unknown' and remote_status(value) not in {'published', 'outcome_unknown'}:
+                    # 在售观察不能证明结果未知的价格或库存写入生效。
+                    states[index] = self._save(result['envelope'], previous, value, 'outcome_unknown', confirming=True)
+                else:
+                    states[index] = self._save(result['envelope'], previous, value, confirming=True)
             return {**self._aggregate(result['envelope'], states), 'check_error': '；'.join(errors)}
         states, errors = [], []
         envelope = result["envelope"]
@@ -298,7 +337,7 @@ class SkuGroupPublishingAdapter:
                 errors.append(f"{state['sku']}：{exc}")
                 states.append(state)
                 continue
-            states.append(self._save(envelope, state, polled))
+            states.append(self._save(envelope, state, polled, confirming=True))
         return {**self._aggregate(envelope, states), "check_error": "；".join(errors)}
 
     def _publish_native_batch(self, payload, config):
@@ -308,7 +347,7 @@ class SkuGroupPublishingAdapter:
             status = previous.get('status')
             if status in {'dispatching', 'outcome_unknown', 'pending_confirmation', 'pending_submission', 'needs_attention'} or status == 'published' and previous.get('fingerprint') == item['fingerprint']:
                 states.append({**previous, 'status': 'outcome_unknown' if status == 'dispatching' else status})
-            elif status == 'failed' and record(previous.get('result')).get('plan') and record(previous.get('result')).get('checkpoint'):
+            elif status in {'failed', 'submission_paused'} and record(previous.get('result')).get('plan') and record(previous.get('result')).get('checkpoint'):
                 restored = self.item_adapter.restore_publish_result({**previous['result'], 'status': 'pending_submission'})
                 states.append(self._save(payload, item, restored))
             else:
@@ -326,13 +365,17 @@ class SkuGroupPublishingAdapter:
                 index = indices[position]
                 self._save(envelope, states[index], states[index].get('result', {}), 'dispatching')
 
+        received = set()
+
         def saved(position, value):
+            received.add(position)
             index = indices[position]
             states[index] = self._save(envelope, states[index], value)
 
         results = execute(values, config, on_dispatch=dispatch, on_result=saved)
         for position, value in enumerate(results):
-            saved(position, value)
+            if position not in received:
+                saved(position, value)
         aggregate = self._aggregate(envelope, states)
         if any(state['status'] in ('failed', 'outcome_unknown', 'needs_attention') for state in states) and any(state['status'] == 'pending_submission' for state in states):
             aggregate.update(ok=False, status='needs_attention')
@@ -340,7 +383,15 @@ class SkuGroupPublishingAdapter:
 
     def _aggregate(self, envelope: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any]:
         statuses = {state["status"] for state in states}
-        status = "pending_submission" if "pending_submission" in statuses else "published" if statuses == {"published"} else "pending_confirmation" if "pending_confirmation" in statuses else "needs_attention" if "needs_attention" in statuses else "outcome_unknown" if "outcome_unknown" in statuses else "partial" if "published" in statuses else "failed"
+        if "submission_paused" in statuses:
+            status = "needs_attention"
+        elif "pending_submission" in statuses:
+            status = "pending_submission"
+        elif statuses == {"published"}:
+            status = "published"
+        else:
+            status = next((value for value in ("pending_confirmation", "needs_attention", "outcome_unknown")
+                           if value in statuses), "partial" if "published" in statuses else "failed")
         grouping = deepcopy(envelope["grouping"])
         group_ids = [text(state.get("siteless_family_id") or state.get("group_id")) for state in states]
         grouping["status"] = "not_requested" if grouping["mode"] != "combined" or len(states) == 1 else "confirmed" if all(group_ids) and len(set(group_ids)) == 1 else "mismatch" if len(set(filter(None, group_ids))) > 1 else "awaiting_remote_confirmation"

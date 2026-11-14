@@ -23,6 +23,8 @@ class NewAPIBridge:
         self.internal_url = os.environ.get("NEWAPI_INTERNAL_URL", "").rstrip("/")
         self.secret = os.environ.get("NEWAPI_SERVICE_SECRET", "")
         self._sync_lock = Lock()
+        self._logout_lock = Lock()
+        self._logging_out = set()
         if any((self.public_url, self.internal_url, self.secret)):
             for value in (self.public_url, self.internal_url):
                 parsed = urlsplit(value)
@@ -97,19 +99,49 @@ class NewAPIBridge:
         self.call("/api/internal/erp/authorize", {"flow_id": flow["flow_id"], "challenge": flow["challenge"], "ticket": ticket})
         return {"ok": True}
 
-    def sync(self):
+    def session_active(self, user_id, session_ref):
+        # New API 签发网页登录后会再核验一次，退出期间不能建立新的关联登录。
+        with self._logout_lock:
+            if session_ref in self._logging_out:
+                return False
+        return self.store.newapi_session_active(user_id, session_ref)
+
+    def logout(self, session):
+        if not self.configured:
+            self.store.revoke_session(session.token_hash)
+            return
+        ref = self.store.newapi_session_ref(session.token_hash)
+        with self._logout_lock:
+            if ref in self._logging_out:
+                raise AccountError("本次登录正在退出，请稍候。", status_code=409)
+            self._logging_out.add(ref)
+        try:
+            body = {"user_id": session.user["id"], "session_ref": ref, "action": "revoke"}
+            try:
+                acknowledged = self.call("/api/internal/erp/sync", body).get("success") is True
+            except AccountError:
+                acknowledged = False
+            if not acknowledged:
+                raise AccountError("未收到 New API 的退出确认，ERP 仍保持登录，请重新退出。",
+                                   status_code=503, error_code="NEWAPI_LOGOUT_UNCONFIRMED")
+            self.store.revoke_session(session.token_hash)
+        finally:
+            with self._logout_lock:
+                self._logging_out.remove(ref)
+
+    def sync(self, user_id=None):
         """按账号库中的顺序重试，失败保留原记录；网络等待不持有数据库事务。"""
         if not self.configured:
             return False
         if not self._sync_lock.acquire(blocking=False):
-            return bool(self.store.newapi_pending())
+            return bool(self.store.newapi_pending(user_id))
         try:
-            for item in self.store.newapi_pending():
+            for item in self.store.newapi_pending(user_id):
                 try:
                     self.call("/api/internal/erp/sync", {key: item[key] for key in ("user_id", "session_ref", "action")})
                 except AccountError:
                     return True
                 self.store.newapi_ack(item["id"])
-            return bool(self.store.newapi_pending())
+            return bool(self.store.newapi_pending(user_id))
         finally:
             self._sync_lock.release()

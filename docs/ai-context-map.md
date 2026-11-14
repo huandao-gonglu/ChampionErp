@@ -70,7 +70,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 - `schemas/accounts.py`、`stores/account_store.py`、`services/account_service.py` 分别持有账号形状、SQLite 事实与 Argon2/限流业务。账号路由经 `account_facade.py` 编排，不加入模型工具清单。
 - 公开注册发码由 `services/registration_verification.py` 校验 Turnstile 后发送 SMTP 邮件，账号库在建号事务内消费验证码；管理员建号仍走独立的角色校验入口。
 - `schemas/newapi.py` 持有交接的共享形状；`services/newapi_bridge.py` 处理固定 New API 服务的自动登录票据、敏感验证与账号联动；`newapi_http.py` 是不记录凭据或票据的账号控制面传输，不使用业务请求历史。普通入口经当前会话与 CSRF 签发 60 秒票据，通过来源绑定的表单 POST 自动建立原生会话；Electron 主进程经本机一次性页面交接。敏感操作仍需重新验证 ERP 密码，已有 New API MFA 不降级。
-- New API 票据和待同步撤销保存在账号库；退出只关联当前设备，改密撤销全部关联会话，启停保持顺序重试。网络失败不撤销已完成的 ERP 操作，HTTP 返回 `newapi_sync_pending`，账号扫描器每 30 秒重试。内部交换、会话核验和运营绑定查询只接受独立服务凭据，不接受浏览器 Cookie；不实例化个人业务上下文。
+- 普通退出和已登录时切换账号先核实当前会话的 New API 撤销回执，成功才结束 ERP 登录；失败保留本次登录，由用户重试。未配置 New API 时只执行本地退出。普通退出不入队。改密和启停通知以及升级前遗留的待办仍由账号扫描器重试（默认 30 秒）。个人账号页面只读取本人待同步状态。内部交换、会话核验和运营绑定查询只接受独立服务凭据，不接受浏览器 Cookie；不实例化个人业务上下文。
 - `server.py::ERPHTTPServer` 为网页并行请求保留连接接入队列，账号 HTTP 回归复用同一入口。`Handler` → `services/account_request.py` 先检查来源、会话、CSRF 与角色，再由 `account_runtime.py::AccountRuntime` 取得业务上下文。客户端业务 ID、owner 和桌面连接标识不能选择空间；账号操作和外部回调不消费业务 presentation reservation。
 - `context.py::bind_context` 用 ContextVar 绑定请求及后台执行，线程、线程池和 detached AI 协程延续原空间。默认上下文用于启动与离线入口，不在并发用户间切换。`AccountRuntime` 统一恢复与关闭资源，注册不启动领域 worker。
 - 新用户只使用 `assets/account-defaults/` 的公开模板，不读取管理员 `.env` 或个人模型环境密钥。`workspace_files.py` 限制素材和模板路径；文件、AI 流、图片上传均受当前空间约束。
@@ -82,7 +82,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 `ConfigStore` 统一持有应用、店铺、跨境巴士、订单回调和微信绑定的授权读写入口；
 密钥本体集中于主库 `store_auth` / `runtime_secrets`，业务 Store 不保存重复凭据。
-1688 跨境 ERP 服务商应用及跨境巴士企业密钥由管理员在「系统设置 → 管理员共享设置」维护，保存至根库
+1688 企业自用应用、跨境 ERP 服务商应用及跨境巴士企业密钥由管理员在「系统设置 → 管理员共享设置」维护，保存至根库
 `runtime_secrets / enterprise_applications / active`；尚未保存时可读取后端环境变量或既有根库凭据。
 `ConfigStore.crossborderbus_credentials/save_crossborderbus_credentials` 负责企业密钥与用户授权绑定，
 首次管理员保存会显式接管当前配置。凭据变化使用新的配置代次，旧 Token、待完成授权及 `app_uid` 失效，换回旧密钥也须重新授权。已有主库密钥保留读取及同值配置升级能力。
@@ -105,21 +105,13 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 - 前端入口为系统设置 `settings_section=managed`（仅管理员）和 `settings_section=tariffs`（所有账号）；`TariffUpdateNotice` 在核价页提示个人表可升级。禁售名单所有账号只读，原导入入口单独校验管理员角色。
 - 真实双账号权限、共享读取、凭据换回仍失效、导入校验和升级冲突见 `tests/test_managed_settings.py`。
 
-### 1688 应用与账号授权
+### 1688 授权与接入方式
 
-`ConfigStore.alibaba_credentials/alibaba_application/update_alibaba_credentials` 管理应用凭据、买家授权和一次性登录请求，
-首次读取保留并迁移旧 `1688_api` 凭据；通用配置和采集入参不能覆盖凭据或网关。
-`services/alibaba_authorization_service.py` 独占官方登录链接、授权码交换、买家身份核验和 Token 刷新；
-采购、订单物流及 API 采集经 `alibaba_runtime_config` 取用。公共状态不发起远程请求。
-`facades/alibaba_authorization_facade.py` / `http_route_units/alibaba_authorization_routes.py` 提供
-GET `/api/alibaba/authorization`、POST `/api/alibaba/authorization/start`
-及 GET `/auth/alibaba/callback`；仅该回调的顶层 GET 导航允许跨站，仍必须校验服务端单次 state。
-`AlibabaSettingsPanel.vue` 打开浏览器授权，在等待期间查询服务器状态，并显示完成授权的账号名称。
-管理员可将完整回调地址 POST 到 `/api/alibaba/authorization/complete`。该接口绑定登录管理员的业务空间，复用同一组单次 state 和授权码交换校验。
-新采购归属按应用与官方买家身份固定，刷新 Token 不改变历史范围；旧 Token 的范围摘要原样保留。
-商品查询、采购和物流共用当前客户的跨境 ERP 授权（生产 AppKey 4848173）。旧客户端的跨境授权路径映射到同一服务。
-已退役的企业自用凭据仅归档，旧采购归属不会被新的应用接管。商品详情通过 `product.search.queryProductDetail` 读取。
-部署、迁移限制、协议依据及验证见 [1688 授权](alibaba-authorization.md)。
+`ConfigStore` 持有管理员所选方案、企业凭据及个人通道授权；`AlibabaAuthorizationService` 负责官方 OAuth、续期和本地公开状态。两套官方应用各自取得授权。万邦企业配置及接口适配已接入，个人在线授权仍待协议；企业 Key 不能代替用户凭据，不从其他应用登录推断万邦已授权。
+
+商品、采购、支付和物流经 `alibaba_runtime_config` 使用当前通道的个人凭据。密钥只由管理员配置，用户界面只保留 1688 授权区域，万邦暂显示个人在线授权待接入。旧管理员专用绑定接口及已存凭据保留兼容。未发布的默认买家绑定、跨通道核验和自动归并流程已撤除。
+
+`onebound_api_transport.py` 保留固定网关、真实读写语义及展开响应适配；采购库 v4 别名表保留旧数据和网络中请求的回执读取能力，当前流程不自动归并。负向对照已证明同一接口传无效 Session 仍可能返回默认买家，不能将调用成功当作个人授权验收。协议缺口与后续双买家验收见 [1688 授权与接入](alibaba-authorization.md)。
 
 ### 桌面与统一业务后端
 
@@ -290,12 +282,13 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
   `PUBLISHED` + `HAS_CARD_CAN_UPDATE_ERRORS` 仅在 `/offer-cards` 返回无 errors 且有 warnings 时确认成功，
   逐 SKU 保存详情证据和警告，任务抽屉显示内容警告；真实错误仍阻断，详情缺失或读取失败保留原结果。
   `yandex_publish_batch.confirm_many` 按 Business 为这些候选合批补查（每批最多 200），不逐 SKU 请求。
-  历史卡片失败任务沿用显式重试及原检查点，写步骤全部完成时仅恢复只读确认，不重复提交。
+  历史卡片失败任务中已完成写步骤的 SKU 可直接通过「查询平台结果」核对，查询次数单独统计。
 - 查询结果回写原业务任务；发布终态回填暂时失败时后台仅恢复本地持久化，不重新请求平台。旧记录全部进入列表，旧确认标记不启动新的自动预算。自动查询中断后可重新领取过期租约，已停止的计划不会因人工查询或重启而恢复。过期任务可显式查询或在平台后台核对，在线修改人工结束继续使用原证据与版本校验。
 - 旧发布列表/详情/分页 Store、页面专用 API 封装、展示类型及旧测试已移除；导航和入队不再额外加载旧发布队列。公开确认入口统一经过任务队列，不保留缺少队列时直接查询的分支。领域层只保留业务互斥、版本和证据校验，不再另设查询冷却或查询占位；历史提交状态、查询字段和回执继续读取。
 - 在线商品页旧「操作记录」列表、详情及专用读取封装已移除，提交、同步进度和冲突提示通过 `open-task` 进入统一队列，`task_id` / `source` 查询参数定位原任务。同步进度仅读原任务，不进入确认调度；失败项重试和人工核对复用原领域接口。已有较新修改的旧失败任务不显示重试入口。
-- 发布提交重启后仅标记 `interrupted`，不自动继续写入。`server.py` → `publish_adapter.mark_interrupted_publish_jobs` → `PublishingBus.mark_interrupted_jobs` 只更新本地中断状态和已有回填；已完整提交的任务继续原只读确认。任务页「重试未完成提交」通过 `POST /api/publish-bus/retry` → `publish_facade` / `publish_workflows` → `PublishingBus.retry` 显式继续原批准内容，累计执行次数并保留每次重试的日志；查询次数与执行次数分开。
+- 发布提交重启后仅标记 `interrupted`，不自动继续写入。`server.py` → `publish_adapter.mark_interrupted_publish_jobs` → `PublishingBus.mark_interrupted_jobs` 只更新本地中断状态和已有回填；已完整提交的任务继续原只读确认。任务页「继续提交未完成步骤」通过 `POST /api/publish-bus/retry` → `publish_facade` / `publish_workflows` → `PublishingBus.retry` 显式继续原批准内容，累计执行次数并保留每次重试的日志；查询次数与执行次数分开。
 - `SkuGroupPublishingAdapter` 逐 SKU 保存后续写步骤的发送边界和结果；中断时从真实 owner 的最新记录重建任务进度，结果未知项不重发。单项异常保留原计划、检查点及其他 SKU 结果；已受理项可独立只读核验，剩余明确未完成项等待用户重试。重试重新校验原批准绑定，不重置已有结果确认预算或截止时间。业务回归见 `tests/test_publish_manual_retry.py`。
+- Yandex 在发送前超时或取消时保留已受理的步骤，兼容原先记作失败的逐 SKU 回执。「查询平台结果」按店铺批量读取状态，即使价格、库存尚未提交也可独立核对在售情况。平台在售和本次批准内容是否全部完成分别记录。所有写步骤已有回执的 SKU 只开放结果查询；「继续提交未完成步骤」以原任务和当前草稿回执限定续提范围。
 - 查询策略数值与回归入口见 [任务队列](task-queue.md)。Ozon 在线写入、采购/支付/履约及未开放的 Mercado 商品族编辑不在本次接入范围。
 
 ## 在线商品管理
@@ -343,9 +336,10 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
   `refresh_status` 直接查询单件状态；`POST /api/online-products/refresh-status` 不入同步队列，返回更新后的公开商品。
   `stores/online_product_store.py::update_status` 校验并发版本后合并状态、平台反馈及 `status_checked_at`，保留价格、库存、内容和完整同步时间。
   `services/online_product_sync.py` 消费 `OnlineSyncBatch`、保存目录记录与详情进度，详情失败保留旧业务快照。
-  Yandex 的 `basic` 批次通过 `OnlineProductStore.save_basic` 保存基础资料、销售状态及卡片/店铺错误警告，保留旧价格、库存及其读取时间。
+  Yandex 的 `basic` 批次通过 `OnlineProductStore.save_basic` 保存基础资料、销售状态及卡片/店铺错误警告，同步列表价格、库存，读取异常按价格或仓库范围保留旧值和原时间。
   `basic_synced_at` 标识基础资料读取时间，`synced_at` 标识完整详情读取时间；新商品为 `details_state=unloaded`，不伪造零库存。
-  旧快照缺少新时间字段仍可读取，完整快照原时间保持含义；同步只读基础接口，不增加自动重试或失败回退查询。
+  旧快照缺少新时间字段仍可读取，完整快照原时间保持含义；页面按服务端返回的到期 SKU 调用 `POST /api/online-products/refresh-sales`。
+  `OnlineProductSalesReader` 合并进行中的 SKU 读取，15 分钟内复用结果，按批最多 100 件，仅合并销售字段；GET 和 AI 列表仍只读本地。
   同步请求与持久任务保存 `catalog=current/archived`，默认普通商品；Yandex 每次只发现该目录，页面确认、最新进度和失败重试保持同一范围。
   指定 SKU 重试不混传平台禁止的归档过滤条件，读取目标目录身份后排除已移出原目录的商品；单件修改前读取与批量写入校验仍按明确 SKU 读取，不受页面目录限制。
   `services/online_product_changes.py` 负责确定性变更校验与字段回读比较；详情未完整同步时禁止修改。

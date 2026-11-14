@@ -20,8 +20,10 @@ export interface TariffImport {
 export async function fetchManagedSettings(): Promise<ManagedSettings> {
   return (await apiClient.get('/api/admin/settings')).data
 }
-export async function saveManagedSettings(settings: Omit<ManagedSettings, 'ok' | 'alibaba' | 'alibaba_crossborder' | 'crossborderbus_secret_configured'> & {
+export async function saveManagedSettings(settings: Omit<ManagedSettings, 'ok' | 'alibaba' | 'alibaba_crossborder' | 'onebound' | 'crossborderbus_secret_configured'> & {
+  alibaba: Omit<ApplicationSettings, 'secret_configured'> & { app_secret?: string }
   alibaba_crossborder: Omit<ApplicationSettings, 'secret_configured'> & { app_secret?: string }
+  onebound?: { api_key: string; api_secret?: string }
   crossborderbus_client_secret?: string
 }): Promise<ManagedSettings> {
   return (await apiClient.post('/api/admin/settings', settings)).data

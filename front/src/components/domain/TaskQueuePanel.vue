@@ -23,7 +23,7 @@ const statuses = ['queued', 'running', 'waiting', 'interrupted', 'needs_attentio
 const operations = ['publish', 'sync', 'price', 'stock', 'content', 'sale_state', 'archive']
 const plan = computed(() => selected.value?.task.confirmation)
 const onlineJob = computed(() => selected.value?.task.source === 'online' ? selected.value.detail as unknown as OnlineJob : null)
-const canCheck = computed(() => selected.value && ['waiting', 'needs_attention'].includes(selected.value.task.status))
+const canCheck = computed(() => selected.value?.task.can_check)
 const changes = computed(() => onlineJob.value?.result.changes || onlineJob.value?.request.changes as Record<string, unknown> || {})
 function record(value: unknown): Record<string, unknown> { return value && typeof value === 'object' ? value as Record<string, unknown> : {} }
 const results = computed(() => {
@@ -39,6 +39,24 @@ function publishWarnings(item: Record<string, unknown>): string[] {
     return [row.message, row.comment].filter(Boolean).map(String).join('：') || String(warning)
   }) : []
 }
+const stepLabels: Record<string, string> = { offer_mapping: '商品资料', campaign_offer: '上架条件', price: '价格', stock: '库存' }
+function checkpoint(item: Record<string, unknown>) {
+  const result = record(item.result)
+  return record(record(result.result).checkpoint || result.checkpoint)
+}
+function submissionProgress(item: Record<string, unknown>) {
+  const steps = checkpoint(item).completed_steps
+  if (!Array.isArray(steps) || !steps.length) return ''
+  return '已提交' + steps.map(step => stepLabels[String(step)] || String(step)).join('、')
+}
+function campaignStatus(item: Record<string, unknown>) {
+  const evidence = record(checkpoint(item).evidence)
+  return String(record(evidence.confirmation).campaign_status || record(evidence.campaign_observation).status || '')
+}
+const observedSales = computed(() => {
+  const observed = results.value.map(campaignStatus).filter(Boolean)
+  return observed.length ? { total: observed.length, active: observed.filter(status => status === 'PUBLISHED').length } : null
+})
 const publishProgress = computed(() => {
   if (selected.value?.task.source !== 'publish' || !Array.isArray(record(selected.value.detail.result).sku_results)) return null
   const counts = { completed: 0, waiting: 0, pending: 0, unknown: 0, failed: 0, attention: 0 }
@@ -46,7 +64,7 @@ const publishProgress = computed(() => {
     const status = String(row.status)
     if (['published', 'success', 'real_publish_success', 'imported'].includes(status)) counts.completed++
     else if (['pending_confirmation', 'publish_pending_confirmation'].includes(status)) counts.waiting++
-    else if (['queued', 'pending_submission'].includes(status)) counts.pending++
+    else if (['queued', 'pending_submission', 'submission_paused'].includes(status)) counts.pending++
     else if (['outcome_unknown', 'dispatching'].includes(status)) counts.unknown++
     else if (status === 'needs_attention') counts.attention++
     else counts.failed++
@@ -59,6 +77,7 @@ function formatTime(value: string | number) {
 }
 function display(value: unknown) { return value == null ? '—' : typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value) }
 function statusLabel(value: unknown) {
+  if (value === 'submission_paused') return '等待手动续提'
   if (value === 'pending_submission') return '待提交'
   if (value === 'outcome_unknown') return '结果未知'
   const aliases: Record<string, string> = { success: 'completed', published: 'completed', confirmed: 'completed', submitted: 'completed', pending_confirmation: 'waiting', waiting_confirmation: 'waiting', outcome_unknown: 'needs_attention' }
@@ -117,7 +136,7 @@ async function check() {
     const response = await checkTask(id)
     if (disposed || id !== selectedId.value) return
     selected.value = response
-    notice.value = response.checked ? '已查询，任务结果已更新' : checkMessages[response.resolution]
+    notice.value = checkMessages[response.resolution] || (response.checked ? '已查询，任务结果已更新' : '')
   } catch (e) { if (!disposed) error.value = e instanceof Error ? e.message : '读取任务失败' }
   finally { checking.value = false }
   if (!disposed) await load(true)
@@ -168,6 +187,7 @@ const sourceLabels: Record<string, string> = {
 }
 
 const checkMessages: Record<string, string> = {
+  query_failed: '部分或全部结果尚未查明，请查看查询回执',
   cooldown: '刚刚查询过，请稍后再查',
   checking: '已有结果查询正在执行',
   budget_exhausted: '自动确认已停止，可手动查询平台结果或在平台后台核对',
@@ -250,13 +270,14 @@ const statusLabels: Record<string, string> = {
         <p v-if="selected.task.error" class="mt-3 whitespace-pre-wrap break-words text-sm text-red-700 dark:text-red-300">{{ selected.task.error }}</p>
         <dl v-if="plan" class="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm"><dt>最近查询</dt><dd>{{ formatTime(plan.last_checked_at) }}</dd><dt>下次查询</dt><dd>{{ formatTime(plan.next_check_at) }}</dd><dt>自动查询剩余轮数</dt><dd>{{ plan.checks_remaining }}</dd><dt>自动查询剩余请求数</dt><dd>{{ plan.requests_remaining }}</dd><dt>自动确认截止时间</dt><dd>{{ formatTime(plan.deadline_at) }}</dd></dl>
         <p v-if="plan?.error" class="mt-3 text-sm text-amber-700 dark:text-amber-300">{{ plan.error }}</p>
-        <div class="mt-4 flex flex-wrap gap-2"><button v-if="canCheck" class="btn btn-outline" :disabled="checking || plan?.state === 'checking'" @click="check">{{ checking ? '正在查询…' : '查询平台结果' }}</button><OnlineOperationRecovery v-if="onlineJob && onlineJob.operation !== 'sync'" :job="onlineJob" :disabled="checking" @updated="load()" /><button v-if="selected.task.can_retry" class="btn btn-outline" :disabled="checking" @click="retry">{{ (selected.task.source === 'publish' ? '重试未完成提交' : '仅重试失败项') }}</button></div>
+        <div class="mt-4 flex flex-wrap gap-2"><button v-if="canCheck" class="btn btn-outline" :disabled="checking || plan?.state === 'checking'" @click="check">{{ checking ? '正在查询…' : '查询平台结果' }}</button><OnlineOperationRecovery v-if="onlineJob && onlineJob.operation !== 'sync'" :job="onlineJob" :disabled="checking" @updated="load()" /><button v-if="selected.task.can_retry" class="btn btn-outline" :disabled="checking || plan?.state === 'checking'" @click="retry">{{ (selected.task.source === 'publish' ? '继续提交未完成步骤' : '仅重试失败项') }}</button></div>
         <p v-if="onlineJob?.operation === 'sync'" role="status" class="mt-4 text-sm">{{ `已发现 ${onlineJob.result.discovered ?? '—'} 件 · 成功 ${onlineJob.result.completed || 0} 件 · 失败 ${onlineJob.result.failed || 0} 件` }}</p>
         <ul v-if="onlineJob?.operation === 'sync'" class="mt-3 max-h-80 space-y-2 overflow-auto text-sm"><li v-for="item in onlineJob.result.items?.filter(item => item.status === 'failed')" :key="item.remote_id">{{ item.remote_id }}：{{ item.error }}</li></ul>
         <div v-if="onlineJob && Object.keys(changes).length" class="mt-4 overflow-auto"><table class="w-full table-fixed text-left text-xs"><thead><tr><th class="w-1/4">修改项</th><th>目标值</th><th>平台当前值</th></tr></thead><tbody><tr v-for="(value, field) in changes" :key="field"><td class="break-all p-2 align-top">{{ field }}</td><td class="p-2"><pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all">{{ display(value) }}</pre></td><td class="p-2"><pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all">{{ display(onlineJob.result.evidence?.observed?.[field]) }}</pre></td></tr></tbody></table></div>
         <ul v-if="onlineJob?.result.platform_errors?.length" class="mt-4 space-y-2 text-sm text-red-700 dark:text-red-300"><li v-for="(item, index) in onlineJob.result.platform_errors" :key="index" class="whitespace-pre-wrap break-words">{{ display(item) }}</li></ul>
         <p v-if="publishProgress" class="mt-4 text-sm" role="status">{{ `已发布 ${publishProgress.completed} · 待确认 ${publishProgress.waiting} · 待提交 ${publishProgress.pending} · 结果未知 ${publishProgress.unknown} · 失败 ${publishProgress.failed} · 需处理 ${publishProgress.attention}` }}</p>
-        <ul v-if="results.length" class="mt-4 space-y-2"><li v-for="(item, index) in results" :key="index" class="rounded border border-accent-200 p-3 text-sm dark:border-dark-700"><p>{{ item.sku || item.site_id || item.sku_id }} · {{ statusLabel(item.status) }}</p><p v-if="item.error" class="mt-1 break-words text-red-600 dark:text-red-300">{{ display(item.error) }}</p><p v-for="(warning, warningIndex) in publishWarnings(item)" :key="warningIndex" class="mt-1 whitespace-pre-wrap break-words text-amber-700 dark:text-amber-300">{{ `内容警告：${warning}` }}</p></li></ul>
+        <p v-if="observedSales" class="mt-1 text-sm">平台在售 {{ observedSales.active }} · 已查到店铺状态 {{ observedSales.total }}</p>
+        <ul v-if="results.length" class="mt-4 space-y-2"><li v-for="(item, index) in results" :key="index" class="rounded border border-accent-200 p-3 text-sm dark:border-dark-700"><p>{{ item.sku || item.site_id || item.sku_id }} · {{ statusLabel(item.status) }}</p><p v-if="submissionProgress(item)" class="mt-1 text-xs">{{ submissionProgress(item) }}</p><p v-if="campaignStatus(item)" class="mt-1 text-xs">店铺状态 · {{ campaignStatus(item) === 'PUBLISHED' ? '在售' : campaignStatus(item) }}</p><p v-if="item.error" class="mt-1 break-words text-red-600 dark:text-red-300">{{ display(item.error) }}</p><p v-for="(warning, warningIndex) in publishWarnings(item)" :key="warningIndex" class="mt-1 whitespace-pre-wrap break-words text-amber-700 dark:text-amber-300">{{ `内容警告：${warning}` }}</p></li></ul>
         <details class="mt-5 text-xs"><summary class="cursor-pointer text-accent-500">查看平台回执</summary><pre class="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-all">{{ display(selected.detail) }}</pre></details>
       </template>
     </WorkspaceDialog>

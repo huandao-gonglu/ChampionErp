@@ -6,10 +6,10 @@ from contextvars import copy_context
 from threading import Event
 
 from erp_web.marketplaces.online_sync import raise_if_access_blocked
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
-from erp_web.runtime_units.online_yandex_snapshot import basic_listing, build_listing, build_stocks, catalog_listing, with_warehouses
-from erp_web.schemas.online_products import OnlineSyncBatch
+from erp_web.runtime_units.online_yandex_snapshot import build_listing, build_stocks, catalog_listing, with_warehouses
+from erp_web.schemas.online_products import Capability, OnlineSyncBatch
 
 BATCH_SIZE = 100
 MAX_REQUESTS = 3
@@ -84,21 +84,26 @@ def stock_result(adapter, path, body):
         if not isinstance(warehouse, dict) or not isinstance(warehouse.get("offers"), list):
             raise ValueError("Yandex 库存响应缺少商品列表")
         index_rows(warehouse["offers"], allowed=set(body["offerIds"]))
+    if "partnerWarehouseId" not in body:
+        ids = [warehouse.get("warehouseId") for warehouse in warehouses]
+        if any(not wid for wid in ids) or len(ids) != len(set(ids)):
+            raise ValueError("Yandex 库存仓库身份缺失或重复")
     return result
 
 
-def detail_requests(adapter, ids):
-    """只有显式详情读取才构造独立价格、仓库及库存请求。"""
-    requests = {
-        "prices": lambda: index_rows([row for page in pages(adapter,
-            f"/v2/businesses/{adapter.business}/offer-prices", "offers", {"offerIds": ids}) for row in page], allowed=set(ids)),
-    }
+def account_prices(adapter, ids):
+    path = f"/v2/businesses/{adapter.business}/offer-prices"
+    return index_rows([row for page in pages(adapter, path, "offers", {"offerIds": ids}) for row in page], allowed=set(ids))
+
+
+def stock_requests(adapter, ids):
+    requests = {}
     if adapter.mode == "business":
         for warehouse in adapter.warehouses:
             wid = str(warehouse["id"])
             requests["stock:" + wid] = lambda wid=wid: stock_result(adapter,
                 f"/v3/businesses/{adapter.business}/offers/stocks", {"partnerWarehouseId": int(wid), "offerIds": ids})
-    elif adapter.mode == "campaign_warehouses":
+    elif adapter.mode in ("campaign_warehouses", "platform_warehouses"):
         requests["stock:campaign"] = lambda: stock_result(adapter,
             f"/v2/campaigns/{adapter.campaign}/offers/stocks", {"offerIds": ids})
     return requests
@@ -106,7 +111,7 @@ def detail_requests(adapter, ids):
 
 def request_results(requests):
     """每个已声明接口只执行一次；复用有限并发及访问受阻时的取消边界。"""
-    responses, errors = {}, []
+    responses, errors = {}, {}
     stopped = Event()
     def run(request):
         if stopped.is_set():
@@ -133,12 +138,37 @@ def request_results(requests):
                         pending.cancel()
                 raise_if_access_blocked(exc)
                 label = {"campaign": "店铺状态", "hidden": "店铺隐藏状态", "cards": "商品卡片", "prices": "价格"}.get(name.split(':', 1)[0], "库存")
-                errors.append(f"{label}：{exc}")
+                errors[name] = f"{label}：{exc}"
     return responses, errors
 
 
-def read_batch(adapter, mappings, hidden: set[str], *, full=True) -> OnlineSyncBatch:
-    """基础同步只读店铺和卡片；修改前校验仍按明确目标读取完整事实。"""
+def list_prices(adapter, mappings, campaign_ids, responses):
+    """复用同批目录与店铺响应，只为缺少账号基础价的 SKU 发起补查。"""
+    prices, missing = {}, []
+    for mapping in mappings:
+        sku = mapping["offer"]["offerId"]
+        offers = [mapping["offer"]]
+        offers.extend(responses["campaign:" + cid].get(sku, {}) for cid in sorted(campaign_ids))
+        price = next((offer["basicPrice"] for offer in offers
+                      if (offer.get("basicPrice") or {}).get("value") is not None), None)
+        if price is None:
+            missing.append(sku)
+        else:
+            prices[sku] = price
+    if not missing:
+        return prices, {}
+    try:
+        for sku, row in account_prices(adapter, missing).items():
+            prices[sku] = row.get("price") or {}
+    except Exception as exc:
+        raise_if_access_blocked(exc)
+        return prices, {"prices": f"价格：{exc}"}
+    return prices, {}
+
+
+def read_batch(adapter, mappings, hidden, *, scope: Literal["details", "list", "sales", "status"] = "details") -> OnlineSyncBatch:
+    """同批复用店铺商品响应；页面销售刷新跳过目录、卡片、隐藏清单和属性。"""
+    full = scope == "details"
     ids = [row["offer"]["offerId"] for row in mappings]
 
     def rows(path, key):
@@ -148,36 +178,43 @@ def read_batch(adapter, mappings, hidden: set[str], *, full=True) -> OnlineSyncB
     campaign_ids = {str(model['campaignId']) for warehouse in warehouses for model in warehouse.get('models', [])
                     if model.get('placementType') == 'FBS' and model.get('campaignId')} | {adapter.campaign}
     hidden = hidden if isinstance(hidden, dict) else {adapter.campaign: hidden}
-    requests = {
-        "cards": lambda: rows(f"/v2/businesses/{adapter.business}/offer-cards", "offerCards"),
-    }
+    requests = {}
+    if scope != "sales":
+        requests["cards"] = lambda: rows(f"/v2/businesses/{adapter.business}/offer-cards", "offerCards")
     for campaign_id in sorted(campaign_ids):
         requests['campaign:' + campaign_id] = lambda cid=campaign_id: rows(f'/v2/campaigns/{cid}/offers', 'offers')
-        if campaign_id not in hidden:
+        if scope != "sales" and campaign_id not in hidden:
             requests['hidden:' + campaign_id] = lambda cid=campaign_id: hidden_ids(adapter, ids[0] if len(ids) == 1 else '', campaign_id=cid)
+    if scope != "status":
+        requests.update(stock_requests(adapter, ids))
     if full:
-        requests.update(detail_requests(adapter, ids))
+        requests["prices"] = lambda: account_prices(adapter, ids)
     responses, errors = request_results(requests)
     result = OnlineSyncBatch("details" if full else "basic")
-    if errors:
-        result.errors = {remote_id: "；".join(errors) for remote_id in ids}
+    blocking = [error for key, error in errors.items() if full or not key.startswith("stock:")]
+    if blocking:
+        result.errors = {remote_id: "；".join(blocking) for remote_id in ids}
         return result
+    prices = {sku: row.get("price") or {} for sku, row in responses.get("prices", {}).items()}
+    if scope in ("list", "sales"):
+        prices, price_errors = list_prices(adapter, mappings, campaign_ids, responses)
+        errors.update(price_errors)
     stocks = {name.removeprefix("stock:"): value for name, value in responses.items() if name.startswith("stock:")}
     hidden = {**hidden, **{name.removeprefix('hidden:'): value for name, value in responses.items() if name.startswith('hidden:')}}
+    # 列表只展示平台返回的币种与金额，只有管理详情需要账号级修改设置。
+    settings = adapter.settings if full else {}
     for mapping in mappings:
         remote_id = mapping["offer"]["offerId"]
         try:
-            if remote_id not in responses["cards"]:
-                raise ValueError("平台未返回该商品的卡片信息，已保留原记录")
-            card = responses["cards"][remote_id]
             campaigns = {cid: responses['campaign:' + cid].get(remote_id, {}) for cid in campaign_ids}
-            if not full:
-                listing = basic_listing(mapping, campaigns[adapter.campaign],
-                    remote_id in hidden[adapter.campaign], card, account_id=adapter.account_id, campaign_id=adapter.campaign)
-                result.listings.append(with_warehouses(listing, warehouses, campaigns, hidden))
-                continue
+            if scope == "sales":
+                card = {}
+            elif remote_id in responses["cards"]:
+                card = responses["cards"][remote_id]
+            else:
+                raise ValueError("平台未返回该商品的卡片信息，已保留原记录")
             names, names_error = {}, ""
-            if card.get("parameterValues"):
+            if full and card.get("parameterValues"):
                 category_id = str(mapping["offer"].get("marketCategoryId") or
                                   card.get("mapping", {}).get("marketCategoryId") or
                                   mapping.get("mapping", {}).get("marketCategoryId") or "")
@@ -185,12 +222,28 @@ def read_batch(adapter, mappings, hidden: set[str], *, full=True) -> OnlineSyncB
                     names, names_error = adapter.attribute_names(category_id)
                 else:
                     names_error = "平台未返回类目编号，暂时无法关联属性名称"
-            listing = build_listing(mapping, campaigns[adapter.campaign], remote_id in hidden[adapter.campaign],
-                card, responses["prices"].get(remote_id, {}).get("price", {}),
-                build_stocks(adapter.mode, adapter.warehouses, stocks, remote_id),
-                account_id=adapter.account_id, campaign_id=adapter.campaign, settings=adapter.settings,
+            listing = build_listing(mapping, campaigns[adapter.campaign], remote_id in hidden.get(adapter.campaign, set()),
+                card, prices.get(remote_id, {}),
+                build_stocks(adapter.mode, warehouses, stocks, remote_id) if scope != "status" else [],
+                account_id=adapter.account_id, campaign_id=adapter.campaign, settings=settings,
                 attribute_names=names, attribute_names_error=names_error)
-            result.listings.append(with_warehouses(listing, warehouses, campaigns, hidden, settings=adapter.settings))
+            with_warehouses(listing, warehouses, campaigns, hidden, settings=settings)
+            if not full:
+                listing.details_state = "unloaded"
+                for operation in ("price", "stock", "content"):
+                    listing.capabilities[operation] = Capability(reason="打开商品详情后核验当前资料")
+            if scope != "status":
+                for price in listing.prices:
+                    if price.id == "business" and remote_id not in prices:
+                        price.read_error = errors.get("prices", "平台未返回该 SKU 的账号基础价")
+                    elif price.id != "business":
+                        cid = adapter.campaign if price.id == "campaign" else price.id.removeprefix("campaign:")
+                        if not campaigns.get(cid):
+                            price.read_error = "平台未返回该 SKU 的店铺商品记录"
+                for stock in listing.stocks:
+                    if stock.quantity is None:
+                        stock.read_error = errors.get("stock:" + stock.id, "平台未返回可确认的可售库存")
+            result.listings.append(listing)
         except Exception as exc:
             result.errors[remote_id] = str(exc)
     return result
@@ -210,7 +263,7 @@ def sync_yandex(adapter, ids=None, *, catalog="current", full=False) -> Iterator
                 campaigns = {str(model['campaignId']) for warehouse in (adapter.warehouses if adapter.mode == 'business' else [])
                              for model in warehouse.get('models', []) if model.get('placementType') == 'FBS' and model.get('campaignId')} | {adapter.campaign}
                 hidden = {cid: hidden_ids(adapter, campaign_id=cid) for cid in sorted(campaigns)}
-            yield read_batch(adapter, page, hidden, full=full)
+            yield read_batch(adapter, page, hidden, scope="details" if full else "list")
     yield OnlineSyncBatch(phase, discovery_complete=True)
     if ids is not None:
         missing = set(ids) - discovered

@@ -36,6 +36,7 @@ async function perform(action: () => Promise<unknown>) {
           <button class="btn btn-secondary" :disabled="busy" @click="perform(account.logout)">退出登录</button>
         </template>
       </PageHeader>
+      <p v-if="error" role="alert" class="text-sm text-danger-600 dark:text-danger-300">{{ error }}</p>
       <section class="rounded-2xl border border-accent-200 bg-white p-6 dark:border-white/10 dark:bg-dark-900">
         <h2 class="text-lg font-bold">{{ account.user?.display_name }}</h2>
         <p class="mt-2 text-sm">{{ account.user?.email }}</p>
@@ -45,7 +46,6 @@ async function perform(action: () => Promise<unknown>) {
       <form class="space-y-5 rounded-2xl border border-accent-200 bg-white p-6 dark:border-white/10 dark:bg-dark-900" @submit.prevent="changePassword">
         <h2 class="text-lg font-bold">修改密码</h2>
         <p class="text-sm text-accent-500 dark:text-accent-300">使用 15 至 128 个字符，可直接粘贴密码管理器生成的密码。 密码变更后，所有设备需要重新登录。</p>
-        <p v-if="error" role="alert" class="text-sm text-danger-600 dark:text-danger-300">{{ error }}</p>
         <label class="block text-sm font-semibold">原密码<input v-model="current" type="password" autocomplete="current-password" required maxlength="128" class="input mt-2 w-full" :disabled="busy" /></label>
         <label class="block text-sm font-semibold">新密码<input v-model="password" type="password" autocomplete="new-password" required minlength="15" maxlength="128" class="input mt-2 w-full" :disabled="busy" /></label>
         <label class="block text-sm font-semibold">确认密码<input v-model="confirmation" type="password" autocomplete="new-password" required minlength="15" maxlength="128" class="input mt-2 w-full" :disabled="busy" /></label>

@@ -129,9 +129,8 @@ def build_desktop_update(args, source, folder, version, log, environment):
     run([sys.executable, 'scripts/build_desktop_runtime.py'], cwd=source, log=log, env=environment)
     run(['pnpm', 'build:desktop'], cwd=source / 'front', log=log, env=environment)
     targets = ['dmg', 'zip'] if args.signed_desktop else ['dmg']
-    signing = [] if args.signed_desktop else ['--config.mac.identity=-', '--config.mac.hardenedRuntime=false']
     run(['pnpm', 'exec', 'electron-builder', '--mac', *targets, '--publish', 'never',
-         *signing, '--config.directories.output=' + str(folder / 'desktop')],
+         '--config.directories.output=' + str(folder / 'desktop')],
         cwd=source / 'front', log=log, env=environment)
     apps = list((folder / 'desktop').glob('*/*.app'))
     if len(apps) != 1:
@@ -290,7 +289,8 @@ def release(args):
     record_path = folder / 'release.json'
     write_record(record_path, record)
     environment = {key: value for key, value in os.environ.items() if not key.startswith(('ERP_', 'VITE_', 'CHAMPION_ERP_'))}
-    environment['CSC_IDENTITY_AUTO_DISCOVERY'] = 'true' if args.signed_desktop else 'false'
+    environment['ERP_DESKTOP_SIGNING_MODE'] = 'developer-id' if args.signed_desktop else 'local'
+    environment['CSC_IDENTITY_AUTO_DISCOVERY'] = 'true'
     try:
         if args.desktop_update:
             origin = package['desktopUpdateOrigin']

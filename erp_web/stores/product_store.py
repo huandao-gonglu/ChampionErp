@@ -1785,7 +1785,7 @@ class ProductStore:
 
     @product_mutation("draft")
     def save_sku_publication(
-        self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any]
+        self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any], *, expected: dict | None = None
     ) -> None:
         """仅供平台发布适配器保存远端 SKU 身份与执行结果。"""
         draft = self._db.load_draft_model(draft_id)
@@ -1796,7 +1796,7 @@ class ProductStore:
         if target_key not in targets:
             raise ValueError("SKU 发布目标不属于当前草稿")
         self._db.update_sku_publication(
-            draft_id, sku_id, target_key, deepcopy(publication)
+            draft_id, sku_id, target_key, deepcopy(publication), expected=expected
         )
 
     def sku_publication(

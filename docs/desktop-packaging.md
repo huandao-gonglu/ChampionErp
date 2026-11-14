@@ -72,15 +72,19 @@ pnpm desktop:dist
 
 `build:runtime` 在仓库外创建独立构建环境。`requirements-desktop-build.txt` 引用执行器运行依赖并锁定打包工具，构建优先从本机 wheel 缓存安装，缺项时自动补齐。`scripts/desktop_runtime.spec` 仅收集 `desktop_runtime`、`erp_shared` 和所需依赖，明确排除 `erp_web`、SQLite 与业务 SDK。输出为 `front/.desktop-runtime/champion-erp-runtime`，安装包资源目录为 ASAR 外的 `runtime`。
 
-前端输出到 `front/dist-desktop`，发行产物位于 `front/release`。第三方声明及 Electron 官方许可证继续通过 `extraResources` 放在 `licenses`，关于页通过固定 IPC 打开目录。macOS 签名、公证仍需发行环境配置。
+前端输出到 `front/dist-desktop`，发行产物位于 `front/release`。第三方声明及 Electron 官方许可证继续通过 `extraResources` 放在 `licenses`，关于页通过固定 IPC 打开目录。
+
+macOS 普通打包和统一发布共用 `front/electron-builder.config.mjs`，默认使用固定自签代码签名证书 `gongluERP Local Signing`。配置按证书 SHA-1 指纹选择原证书，不按同名新证书替换；构建机须持有原证书及私钥并允许代码签名。缺失时直接报错，不生成临时签名包。原证书及私钥应加密导出为 `.p12`，备份在仓库外；换构建机时导入同一身份，不重新创建。证书过期或更换身份需要单独安排切换及重新授权。
+
+签名由 electron-builder 处理应用、Helper 和内嵌本机执行器；签名后复核主应用标识、固定证书及执行器签名。自签包不执行 Apple 公证或网络时间戳，沿用关闭强化运行时的本机测试配置。保持相同证书和应用标识可让系统识别跨版本身份，但不能保证所有隐私权限都不再提示；临时签名首次切换到固定证书仍可能需要重新允许。签名身份依据见 [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)。
 
 ## 客户端获取更新
 
 自 1.2.8 起，正式包在启动本机执行器前检查发行站点，运行期间每 30 分钟检查一次，也可从“文件 → 检查桌面更新”立即检查。检查只按操作系统和 CPU 架构选包。版本策略与业务登录独立，发行站点不可达时沿用最后成功取得的策略。尚未取得过策略时仍可启动，接入已发布最低版本策略的业务后端后，新请求会再经服务端检查。
 
-用户确认后才下载。Mac 客户端校验 DMG 的长度及 SHA-256，启动阶段打开安装包，使用期间只在 Finder 中定位下载文件。无 Apple 开发者证书时，统一发布脚本使用免费的本机临时签名，未经 Apple 公证，其他 Mac 上首次打开可能遇到系统安全提示。退出旧程序后用 DMG 内的应用替换原应用；原安装名称若为 `Champion ERP.app`，替换时请保留此名称，避免留下两个桌面入口。Windows 对应 NSIS 安装包，Linux 定位已校验的 AppImage。可选更新允许稍后使用原版本。低于最低版本时，新启动不能跳过更新进入业务；使用中的客户端仍保留当前会话和本机调用回执。
+用户确认后才下载。Mac 客户端校验 DMG 的长度及 SHA-256，启动阶段打开安装包，使用期间只在 Finder 中定位下载文件。默认自签包未经 Apple 公证，其他 Mac 上首次打开可能遇到系统安全提示。退出旧程序后用 DMG 内的应用替换原应用；原安装名称若为 `Champion ERP.app`，替换时请保留此名称，避免留下两个桌面入口。Windows 对应 NSIS 安装包，Linux 定位已校验的 AppImage。可选更新允许稍后使用原版本。低于最低版本时，新启动不能跳过更新进入业务；使用中的客户端仍保留当前会话和本机调用回执。
 
-已有 Developer ID 和公证配置时，在统一发布命令追加 `--signed-desktop`，将验证签名和公证票据，发布 DMG 并额外提供原生更新 ZIP。已签名的 Mac 客户端在启动阶段可使用 Electron 的 `autoUpdater` 安装并重启，也可选择下载 DMG。首次从缺少签名的客户端切到已签名版本仍走安装包。Apple 会员与签名配置见 [Apple Developer ID](https://developer.apple.com/developer-id/)，原生更新要求见 [Electron autoUpdater](https://www.electronjs.org/docs/latest/api/auto-updater#macos)。
+已有 Developer ID 和公证配置时，在统一发布命令追加 `--signed-desktop`；脚本设置 `ERP_DESKTOP_SIGNING_MODE=developer-id`，启用强化运行时及公证，验证 Developer ID 签名和公证票据，发布 DMG 并额外提供原生更新 ZIP。单独使用 `pnpm desktop:dist` 构建正式签名包时也需显式设置该环境变量。使用 Developer ID 签名的 Mac 客户端在启动阶段可使用 Electron 的 `autoUpdater` 安装并重启，也可选择下载 DMG。首次从临时或自签身份切到 Developer ID 仍走安装包。Apple 会员与签名配置见 [Apple Developer ID](https://developer.apple.com/developer-id/)，原生更新要求见 [Electron autoUpdater](https://www.electronjs.org/docs/latest/api/auto-updater#macos)。
 
 ## 旧桌面数据迁移
 

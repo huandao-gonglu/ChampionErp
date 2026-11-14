@@ -212,8 +212,8 @@ def test_http_purchase_query_contract_and_blocked_response(registered, monkeypat
     context = get_context()
     context._order_procurement = service
     from erp_web.services.alibaba_credentials import application_fingerprint
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_KEY", CONFIG["app_key"])
-    monkeypatch.setenv("ERP_ALIBABA_CROSSBORDER_APP_SECRET", CONFIG["app_secret"])
+    monkeypatch.setenv("ERP_ALIBABA_APP_KEY", CONFIG["app_key"])
+    monkeypatch.setenv("ERP_ALIBABA_APP_SECRET", CONFIG["app_secret"])
     context.config.update_alibaba_credentials({"authorization": {
         "access_token": CONFIG["access_token"],
         "application_fingerprint": application_fingerprint(context.config.alibaba_application())}})

@@ -83,8 +83,10 @@ def test_stock_write_targets_selected_warehouse_and_finishes_on_success_receipt(
     assert path == '/v3/businesses/1/offers/stocks/update'
     assert payload == {'skuItems': [{'sku': 'sku-0', 'partnerWarehouseId': 2412479, 'count': target}]}
     assert service.store.job(job['id'])['status'] == 'confirmed'
-    # 成功回执完成本次操作；本地旧快照留待按需同步，不要求回读才能完成。
-    assert service.store.get(listing.id).stocks[0].quantity == initial
+    # 成功回执更新目标仓，无需额外平台回读。
+    saved = service.store.get(listing.id)
+    assert saved.stocks[0].quantity == target and saved.stocks[0].observed_at
+    assert saved.sales_checked_at == listing.sales_checked_at
     with pytest.raises(ValueError):
         service.reconcile_once(job['id'])
     assert len(calls) == 1

@@ -348,13 +348,9 @@ def persist_publish_bus_terminal_results(
         source_product_id = str(draft.get("source_product_id") or stored_product_id).strip()
         target_platform = str(platform).strip().lower()
         target_site = str(item.get("site") or "").strip().lower()
-        allowed_target_keys = {
-            (
-                str(target.get("platform") or "").strip().lower(),
-                str(target.get("site") or "").strip().lower(),
-            )
-            for target in draft_publish_targets(draft)
-        }
+        targets = draft_publish_targets(draft)
+        bound_target = next((target for target in targets
+                             if target["platform"] == target_platform and target["site"].lower() == target_site), None)
         if (
             stored_product_id != target_product_id
             or source_product_id != target_product_id
@@ -365,12 +361,19 @@ def persist_publish_bus_terminal_results(
                 f"expected_product={target_product_id}, "
                 f"actual_product={stored_product_id}/{source_product_id}"
             )
-        if not target_site or (target_platform, target_site) not in allowed_target_keys:
+        if not target_site or bound_target is None:
             raise RuntimeError(
                 "发布任务目标不属于绑定草稿："
                 f"job={job_state.get('job_id') or ''}, draft={draft_id}, "
                 f"target={target_platform}/{target_site or '-'}"
             )
+        last_job_id = (bound_target.get("last_publish_task") or {}).get("job_id")
+        if item.get("reconciliation") and last_job_id and last_job_id != job_state["job_id"]:
+            last_job = runtime_context.db.load_publish_job(last_job_id)
+            if last_job and (last_job.get("created_at", ""), last_job_id) > (job_state.get("created_at", ""), job_state["job_id"]):
+                # 核对旧任务可更新其日志，草稿继续展示较新的发布任务。
+                append_publish_bus_terminal_log(product, draft, job_state, str(platform), item, context=runtime_context)
+                continue
         draft = apply_publish_bus_result_to_draft(
             draft,
             job_state,

@@ -7,9 +7,9 @@ import { useAiPageContextStore } from '@/stores/aiPageContext'
 import OnlineProductsPanel from '../OnlineProductsPanel.vue'
 import OzonExportDialog from '../OzonExportDialog.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
-import { fetchYandexShopNames, fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, previewOnlineBatch, submitOnlineBatch, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
+import { fetchYandexShopNames, refreshOnlineSales, fetchOnlineDetail, fetchOnlineProducts, fetchOnlineSourceImages, onlineAction, previewOnlineBatch, submitOnlineBatch, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlinePage } from '@/api/onlineProducts'
 
-vi.mock('@/api/onlineProducts', () => ({ fetchYandexShopNames: vi.fn(), fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), previewOnlineBatch:vi.fn(), submitOnlineBatch:vi.fn(), refreshOnlineDetail: vi.fn(), refreshOnlineStatus: vi.fn() }))
+vi.mock('@/api/onlineProducts', () => ({ fetchYandexShopNames: vi.fn(), refreshOnlineSales: vi.fn(), fetchOnlineDetail: vi.fn(), fetchOnlineProducts: vi.fn(), fetchOnlineSourceImages: vi.fn(), onlineAction: vi.fn(), previewOnlineBatch:vi.fn(), submitOnlineBatch:vi.fn(), refreshOnlineDetail: vi.fn(), refreshOnlineStatus: vi.fn() }))
 const item: OnlineListing = {
   id: 'remote-1', platform: 'mercadolibre', account_id: 'shop-1', remote_id: 'CBT123', model: 'traditional_global_items',
   details_state: 'ready', buyer_links: [], title: '店铺同步商品', seller_sku: 'seller-sku', thumbnail: '', raw_status: 'active', sale_state: 'active', raw_sub_status: [], version: 'v1', synced_at: '', status_checked_at: '', errors: [], desired_sale_state: '',
@@ -822,6 +822,29 @@ describe('在线商品页面',()=>{
 })
 
 describe('Yandex 基础与单件详情', () => {
+  it('折叠的组合显示价格区间和已知库存，后台按页刷新后显示零库存', async () => {
+    const first = yandexItem({id:'sku-1', details_state:'unloaded'})
+    const second = yandexItem({id:'sku-2', prices:[{...first.prices[0],amount:'18'}], stocks:[{...first.stocks[0],quantity:null}]})
+    const page = {...groupedResponse(), account_id:'1:2', items:[first,second], sales_due_ids:[second.id]}
+    page.groups[0].item_ids = [first.id, second.id]
+    page.groups[0].total_count = 2
+    let finish!: () => void
+    vi.mocked(refreshOnlineSales).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ok:true}) }))
+    render(); await flushPromises()
+    vi.mocked(fetchOnlineProducts).mockResolvedValue(page)
+    await click('Yandex Market')
+    expect(wrapper!.get('[data-testid="online-group"]').text()).toContain('USD 12–18')
+    expect(wrapper!.get('[data-testid="online-group"]').text()).toContain('仅合计已知库存')
+    expect(refreshOnlineSales).toHaveBeenCalledWith('1:2', ['sku-2'])
+    vi.mocked(fetchOnlineProducts).mockResolvedValue({...page, sales_due_ids:[], items:[first,{...second,stocks:[{...second.stocks[0],quantity:0}]}]})
+    finish(); await flushPromises()
+    expect(wrapper!.get('[data-testid="online-group"]').text()).not.toContain('仅合计已知库存')
+    await wrapper!.get('[data-testid="toggle-group"]').trigger('click')
+    expect(wrapper!.findAll('[data-testid="stock-summary"]')[1].text()).toBe('0')
+    expect(refreshOnlineSales).toHaveBeenCalledTimes(1)
+    expect(refreshOnlineDetail).not.toHaveBeenCalled()
+  })
+
   it('列表和展开组合不读取详细数据，打开当前 SKU 才读取一次', async () => {
     const row = yandexItem({details_state:'unloaded',synced_at:'',basic_synced_at:'2026-11-01T01:00:00Z',prices:[],stocks:[],
       platform_issues:[{severity:'warning',source:'card',code:'W',message:'已有平台警告',comment:''}]})
@@ -830,7 +853,7 @@ describe('Yandex 基础与单件详情', () => {
     vi.mocked(refreshOnlineDetail).mockReturnValueOnce(new Promise(resolve=>{done=resolve}))
     render(); await flushPromises(); await click('Yandex Market')
     expect(refreshOnlineDetail).not.toHaveBeenCalled()
-    expect(wrapper!.text()).toContain('详细数据尚未读取')
+    expect(wrapper!.text()).not.toContain('详细数据尚未读取')
     await click('管理 →')
     expect(refreshOnlineDetail).toHaveBeenCalledTimes(1)
     expect(refreshOnlineDetail).toHaveBeenCalledWith(row.id)

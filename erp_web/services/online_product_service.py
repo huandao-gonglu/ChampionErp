@@ -1,6 +1,7 @@
 """在线商品领域任务：持久化队列、有限只读确认与人工对账。"""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 import threading
 import time
@@ -20,6 +21,7 @@ from erp_web.product_model.online_attribute_model import yandex_category_id
 from erp_web.services.online_product_changes import confirmation, observed_changes, validate_changes
 from erp_web.services.online_product_listing import listing_page, listing_summary_page, project_listing_fields, warehouse_projection
 from erp_web.services.online_product_images import OnlineProductImages
+from erp_web.services.online_product_sales import OnlineProductSalesReader, SALES_MAX_AGE, sales_due
 from erp_web.services.online_product_detail import OnlineProductDetailReader
 from erp_web.services.online_ozon_export import OnlineOzonExportService
 from erp_web.services.online_product_sync import run_sync
@@ -46,6 +48,7 @@ class OnlineProductService:
         self.adapter_factories = adapter_factories
         self.store = OnlineProductStore(context.db)
         self.images = OnlineProductImages(context)
+        self.sales = OnlineProductSalesReader(self.store, self._config, self._adapter)
         self.details = OnlineProductDetailReader(self.store, self._config, self._adapter)
         self.ozon_export = OnlineOzonExportService(self.store, lambda: self._config("yandex")[1])
         self.owner = uuid4().hex
@@ -123,7 +126,12 @@ class OnlineProductService:
     def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1, catalog: str = "current", warehouse_id: str = "") -> dict[str, Any]:
         records, context = self._list_context(platform, catalog, warehouse_id)
         jobs = self.store.jobs(platform, context["account_id"]) if context["account_id"] else []
-        return {**context, **listing_page(records, query=query, status=status, market=market, page=page),
+        result = listing_page(records, query=query, status=status, market=market, page=page)
+        if platform == "yandex":
+            visible = {row["id"] for row in result["items"]}
+            cutoff = datetime.now(timezone.utc) - SALES_MAX_AGE
+            result["sales_due_ids"] = [row.id for row in records if row.id in visible and sales_due(row, cutoff)]
+        return {**context, **result,
                 "jobs": jobs, "latest_sync": next((job for job in jobs if job["operation"] == "sync" and (catalog == "all" or job["request"].get("catalog", "all") in (catalog, "all"))), None)}
 
     def read_page(self, platform: str, *, query: str = "", status: str = "", market: str = "",
@@ -316,7 +324,10 @@ class OnlineProductService:
                 self.store.sale_intent(before.id, before.desired_sale_state, lease=job)
             elif status in {"submitted", "confirmed"} and request.operation == "sale_state":
                 self.store.sale_intent(before.id, request.changes["state"], lease=job)
-            self._update(job, status, result, dispatched=True)
+            confirmed_stock = None
+            if status == "confirmed" and job["platform"] == "yandex" and request.operation == "stock":
+                confirmed_stock = (before.id, request.scope_id, request.changes["quantity"])
+            self._update(job, status, result, dispatched=True, confirmed_stock=confirmed_stock)
         except Exception as exc:
             code = int(exc.details.get("http_status") or 0) if isinstance(exc, PublishAdapterError) else 0
             # 回读阶段的 4xx 不能证明之前的修改未执行。
@@ -364,6 +375,11 @@ class OnlineProductService:
         result["confirmation"] = checked
         result["read_errors"] = fresh.errors
         if not fresh.errors:
+            if fresh.platform == "yandex" and request.operation in ("price", "stock"):
+                scopes = fresh.prices if request.operation == "price" else fresh.stocks
+                scope = next(item for item in scopes if item.id == request.scope_id)
+                scope.observed_at = utc_now()
+                scope.cached_at = scope.read_error = ""
             fresh = self.store.save(fresh, lease=job, full_snapshot=False)
         # 展示尚未更新不撤销明确受理；只有真实异步处理或写入未知才保留等待。
         status = "confirmed" if checked and all(checked.values()) else (

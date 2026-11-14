@@ -39,10 +39,10 @@ def build_stocks(mode, warehouses, stock_results, remote_id):
     if mode == "business":
         for warehouse in warehouses:
             wid = str(warehouse.get("id") or "")
-            response = stock_results[wid]
-            if str(response.get("partnerWarehouseId")) != wid or not isinstance(response.get("offers"), list):
+            response = stock_results.get(wid)
+            if response is not None and (str(response.get("partnerWarehouseId")) != wid or not isinstance(response.get("offers"), list)):
                 raise ValueError("Yandex 库存范围响应不匹配")
-            stock_offer = next((r for r in response["offers"] if r.get("offerId") == remote_id), {})
+            stock_offer = next((r for r in (response or {}).get("offers", []) if r.get("offerId") == remote_id), {})
             quantity = available_stock(stock_offer.get("stocks", []))
             writable = any(m.get("apiAvailability") == "AVAILABLE" and m.get("placementType") != "FBY" for m in warehouse.get("models", []))
             # 设置绝对库存无需已有数量；平台未返回数量时保留未知值，不影响仓库写入权限。
@@ -50,14 +50,23 @@ def build_stocks(mode, warehouses, stock_results, remote_id):
             stocks.append(StockScope(id=wid, label=str(warehouse.get("name") or f"卖家仓 {wid}"), warehouse_id=wid,
                 campaign_id=next(iter(campaign_ids)) if len(campaign_ids) == 1 else '',
                 quantity=quantity, writable=writable, reason="" if writable else "仓库当前不允许写入"))
-    elif mode == "campaign_warehouses":
-        response = stock_results["campaign"]
-        warehouses = response.get("warehouses")
+    elif mode in ("campaign_warehouses", "platform_warehouses"):
+        response = stock_results.get("campaign")
+        warehouses = response.get("warehouses") if response is not None else []
         if not isinstance(warehouses, list):
             raise ValueError("Yandex 仓库组库存响应无效")
-        quantities = [available_stock(o.get("stocks", [])) for w in warehouses for o in w.get("offers", []) if o.get("offerId") == remote_id]
-        stocks.append(StockScope(id="campaign", label="当前店铺仓库组（共享）", quantity=quantities[0] if len(quantities)==1 else None,
-            writable=len(quantities)==1, reason="多仓返回无法当作一个库存数写回" if len(quantities)!=1 else ""))
+        quantities = []
+        matched = 0
+        for warehouse in warehouses:
+            offer = next((row for row in warehouse["offers"] if row["offerId"] == remote_id), {})
+            if offer:
+                matched += 1
+            quantities.append(available_stock(offer.get("stocks", [])))
+        quantity = sum(quantities) if quantities and all(q is not None for q in quantities) else None
+        writable = mode == "campaign_warehouses" and len(warehouses) == matched == 1
+        label = "平台仓库合计" if mode == "platform_warehouses" else "当前店铺仓库组（共享）"
+        stocks.append(StockScope(id="campaign", label=label, quantity=quantity, writable=writable,
+            reason="" if writable else "库存由平台管理或无法定位单个可写仓库"))
     return stocks
 
 
@@ -88,18 +97,6 @@ def build_listing(mapping, campaign, hidden, card, default_price, stocks, *, acc
             "stock": Capability(enabled=any(s.writable for s in stocks), scope="所选卖家仓 / 仓库组"),
             "content": Capability(enabled=True, scope="账号商品内容（全部店铺）", fields=["title","description","pictures","guarantee_period"]+(["attributes"] if attrs else [])),
             "sale_state": Capability(enabled=bool(campaign), scope="当前店铺", reason="隐藏 / 恢复仅影响当前店铺；归档商品需先恢复归档，恢复销售不绕过平台审核")})
-
-
-def basic_listing(mapping, campaign, hidden, card, *, account_id, campaign_id):
-    """保留基础接口已返回的内容及反馈，不伪造价格、库存或完整详情就绪状态。"""
-    listing = build_listing(mapping, campaign, hidden, card, {}, [], account_id=account_id,
-                            campaign_id=campaign_id, settings={})
-    listing.prices = []
-    listing.snapshot.pop("default_price", None)
-    listing.details_state = "unloaded"
-    for operation in ("price", "stock", "content"):
-        listing.capabilities[operation] = Capability(reason="打开商品详情后读取当前资料")
-    return listing
 
 
 def with_warehouses(listing, warehouses, campaigns, hidden, *, settings=None):

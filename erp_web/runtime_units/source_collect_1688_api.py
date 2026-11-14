@@ -7,7 +7,7 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result, parse_dimensions_text
-from erp_web.services.alibaba_api_client import AlibabaApiClient, PRODUCT_DETAIL
+from erp_web.services.alibaba_api_client import AlibabaApiClient, product_detail_method
 from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 
 from .collect_helpers import (
@@ -40,13 +40,13 @@ def extract_1688_offer_id(url_or_id: str) -> str:
 
 
 def resolve_1688_api_config(config: dict[str, Any] | None = None) -> dict:
-    """仅使用当前客户在跨境服务商应用下的授权。"""
+    """仅使用管理员所选应用及当前客户的对应授权。"""
     return alibaba_runtime_config(get_context().config)
 
 
 def request_1688_product_detail(config: dict, offer_id: str) -> dict:
     product = AlibabaApiClient(config).product_detail(offer_id)
-    return {"http_status": 200, "raw": product, "request": {"method": PRODUCT_DETAIL, "offer_id": offer_id}}
+    return {"http_status": 200, "raw": product, "request": {"method": product_detail_method(config), "offer_id": offer_id}}
 
 
 def first_text(*values: Any) -> str:
@@ -221,7 +221,7 @@ def collect_1688_product_via_api(
             "platform_detected": "1688",
             "started_at": started_at,
             "api_offer_id": offer_id,
-            "api_method": PRODUCT_DETAIL,
+            "api_method": product_detail_method(api_config),
         }
     )
     try:

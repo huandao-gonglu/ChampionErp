@@ -1,4 +1,5 @@
 """通过真实 ERP HTTP 边界验证交接、二次验证及可重试撤销。"""
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
@@ -39,6 +40,10 @@ def bridge_http(accounts_http):
                     status, result = 503, {"success": False}
                 else:
                     state["synced"].append(body)
+                    if state.pop("lose_ack", False):
+                        # 平台已执行撤销，但在发送回执前连接中断。
+                        self.close_connection = True
+                        return
             else:
                 raise AssertionError(self.path)
             raw = json.dumps(result).encode()
@@ -117,22 +122,80 @@ def test_sensitive_flow_requires_fresh_password_without_sending_it_to_newapi(bri
     assert response.json()["reauthenticated"] is True
 
 
-def test_sync_failure_keeps_erp_logout_effective_and_retries_same_device(bridge_http):
+def test_logout_requires_ack_and_only_retries_the_current_session(bridge_http, monkeypatch):
     url, runtime, login, peer = bridge_http
     a, b = login(), login()
     session = runtime.store.session(a.cookies.get("champion_session"))
-    peer["fail_sync"] = True
+    ref = runtime.store.newapi_session_ref(session.token_hash)
+    payload = {"user_id": session.user["id"], "session_ref": ref, "action": "revoke"}
+    peer["lose_ack"] = True
     response = a.post(url + "/api/account/logout", json={})
-    assert response.status_code == 200 and response.json()["newapi_sync_pending"] is True
+    assert response.status_code == 503 and response.json()["error_code"] == "NEWAPI_LOGOUT_UNCONFIRMED"
+    assert a.get(url + "/api/account/session").json()["user"]["id"] == session.user["id"]
+    assert runtime.store.newapi_pending() == []
+    reached, release = threading.Event(), threading.Event()
+    call = runtime.newapi.call
+
+    def await_reply(path, body):
+        result = call(path, body)
+        reached.set()
+        assert release.wait(4)
+        return result
+
+    with monkeypatch.context() as patch, ThreadPoolExecutor(1) as pool:
+        patch.setattr(runtime.newapi, "call", await_reply)
+        logout = pool.submit(a.post, url + "/api/account/logout", json={})
+        try:
+            assert reached.wait(4)
+            # 回执尚未收到时 ERP 仍然有效，但新交接不能在远端撤销之后建立关联登录。
+            assert runtime.store.session_valid(session.token_hash)
+            check = requests.post(url + "/api/internal/newapi/session",
+                                  headers={"Authorization": "Bearer " + SECRET},
+                                  json={"user_id": session.user["id"], "session_ref": ref}, timeout=3)
+            assert check.json()["active"] is False
+        finally:
+            release.set()
+        assert logout.result().status_code == 200
     assert a.get(url + "/api/account/session").json()["user"] is None
-    assert b.get(url + "/api/account/session").json()["user"] is not None
-    pending = runtime.store.newapi_pending()
-    assert len(pending) == 1
-    assert pending[0]["session_ref"] == runtime.store.newapi_session_ref(session.token_hash)
-    peer["fail_sync"] = False
+    assert b.get(url + "/api/account/session").json()["user"]["id"] == session.user["id"]
+    assert peer["synced"] == [payload, payload]
+    assert runtime.store.newapi_pending() == []
+
+
+def test_account_page_and_logout_do_not_process_others_pending_notifications(bridge_http):
+    url, runtime, login, peer = bridge_http
+    user = register(url)
+    admin = login()
+    client = login("user@example.com")
+    session = runtime.store.session(client.cookies.get("champion_session"))
+    old = {"user_id": user["id"], "session_ref": "old-session", "action": "revoke"}
+    with runtime.store._connection() as db:
+        db.execute("INSERT INTO newapi_sync(user_id,session_ref,action) VALUES (?,?,?)", tuple(old.values()))
+    assert admin.get(url + "/api/account/newapi").json()["sync_pending"] is False
+    assert client.get(url + "/api/account/newapi").json()["sync_pending"] is True
+    assert peer["synced"] == []
+    assert client.post(url + "/api/account/logout", json={}).status_code == 200
+    assert peer["synced"] == [{"user_id": user["id"], "action": "revoke",
+                               "session_ref": runtime.store.newapi_session_ref(session.token_hash)}]
     assert runtime.newapi.sync() is False
-    assert not runtime.store.newapi_pending()
-    assert peer["synced"] == [{"action": "revoke", "user_id": session.user["id"], "session_ref": pending[0]["session_ref"]}]
+    assert peer["synced"][-1] == old
+
+
+def test_switch_account_requires_old_session_logout_ack(bridge_http):
+    url, runtime, login, peer = bridge_http
+    user = register(url)
+    client = login()
+    original = client.get(url + "/api/account/session").json()["user"]["id"]
+    credentials = {"email": "user@example.com", "password": PASSWORD}
+    peer["fail_sync"] = True
+    assert client.post(url + "/api/account/login", json=credentials).status_code == 503
+    assert client.get(url + "/api/account/session").json()["user"]["id"] == original
+    with runtime.store._connection() as db:
+        assert db.execute("SELECT count(*) FROM sessions WHERE user_id=?", (user["id"],)).fetchone()[0] == 0
+    peer["fail_sync"] = False
+    assert client.post(url + "/api/account/login", json=credentials).status_code == 200
+    assert client.get(url + "/api/account/session").json()["user"]["id"] == user["id"]
+    assert runtime.store.newapi_pending() == []
 
 
 def test_disable_and_password_change_enqueue_revocations_atomically(bridge_http):

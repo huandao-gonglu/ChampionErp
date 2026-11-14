@@ -65,6 +65,8 @@ def mutate(action: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
             result = service.reconcile(body["job_id"])
         elif action == "close":
             result = service.close_operation(body)
+        elif action == "refresh-sales":
+            result = service.sales.refresh(body["account_id"], body["listing_ids"])
         elif action == "refresh-status":
             result = service.refresh_status(RefreshStatusRequest.model_validate(body).listing_id)
         elif action == "refresh-detail":

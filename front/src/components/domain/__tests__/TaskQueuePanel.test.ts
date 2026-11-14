@@ -11,7 +11,7 @@ const task: BackendQueueTask = {
   id: 'publish:job-1:ozon', job_id: 'job-1', source: 'publish', origin: 'page', platform: 'ozon',
   account_id: 'store-1', operation: 'publish', title: '测试商品', target_id: 'product-1',
   status: 'waiting', business_status: 'pending_confirmation', created_at: '2026-10-30T10:00:00Z', updated_at: '2026-10-30T10:01:00Z',
-  error: '', protection: '禁止重复发布', can_retry: false, confirmation: {
+  error: '', protection: '禁止重复发布', can_retry: false, can_check: true, confirmation: {
     state: 'waiting', checks_used: 1, checks_remaining: 9, requests_used: 2, requests_remaining: 78,
     last_checked_at: Date.now() / 1000 - 60, next_check_at: Date.now() / 1000 + 60, deadline_at: Date.now() / 1000 + 900, error: '',
   },
@@ -46,6 +46,25 @@ describe('统一任务队列', () => {
     expect(retryPublishTask).not.toHaveBeenCalled()
   })
 
+  it('显示平台在售及未完成的价格步骤，查询不会续提', async () => {
+    const receipt = { ...detail, task: { ...task, status: 'needs_attention', can_retry: true }, detail: { attempts: 1,
+      result: { sku_results: [{ sku: 'A', status: 'submission_paused', result: { checkpoint: {
+        completed_steps: ['offer_mapping', 'campaign_offer'], evidence: { campaign_observation: { status: 'PUBLISHED' } },
+      } } }] } } }
+    vi.mocked(fetchTask).mockResolvedValue(receipt)
+    vi.mocked(checkTask).mockResolvedValue({ ...receipt, checked: true, resolution: 'needs_attention' })
+    wrapper = render({ initialTaskId: task.id })
+    await flushPromises()
+    const dialog = wrapper.get('dialog')
+    expect(dialog.text()).toContain('平台在售 1')
+    expect(dialog.text()).toContain('已提交商品资料、上架条件')
+    expect(dialog.text()).toContain('待提交 1')
+    await dialog.findAll('button').find(button => button.text() === '查询平台结果')!.trigger('click')
+    await flushPromises()
+    expect(checkTask).toHaveBeenCalledWith(task.id)
+    expect(retryPublishTask).not.toHaveBeenCalled()
+  })
+
   it('中断发布仅在点击后重试原任务，展示执行次数与逐项错误', async () => {
     const interrupted = { ...task, status: 'interrupted', business_status: 'interrupted', can_retry: true, confirmation: null }
     const stopped = { ok: true, task: interrupted, detail: { attempts: 1, result: { sku_results: [
@@ -65,7 +84,7 @@ describe('统一任务队列', () => {
     expect(retryPublishTask).not.toHaveBeenCalled()
     expect(checkTask).not.toHaveBeenCalled()
     vi.mocked(fetchTask).mockResolvedValue({ ...stopped, detail: { ...stopped.detail, attempts: 2 } })
-    await wrapper.findAll('button').find(button => button.text() === '重试未完成提交')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '继续提交未完成步骤')!.trigger('click')
     await flushPromises()
     expect(retryPublishTask).toHaveBeenCalledOnce()
     expect(retryPublishTask).toHaveBeenCalledWith(task.job_id, task.platform)
@@ -202,7 +221,7 @@ describe('统一任务队列', () => {
   it('同步任务展示进度与失败项，显式重试后选中新任务', async () => {
     const sync: BackendQueueTask = { ...task, id: 'online:sync-1', job_id: 'sync-1', source: 'online',
       operation: 'sync', title: '同步店铺商品', target_id: '*', status: 'partial', business_status: 'partial',
-      protection: '', confirmation: null, can_retry: true }
+      protection: '', confirmation: null, can_retry: true, can_check: false }
     const syncJob: OnlineJob = { id: 'sync-1', operation: 'sync', platform: 'mercadolibre', status: 'partial',
       created_at: '', updated_at: '', target_id: '*', request: {},
       result: { completed: 2, failed: 1, discovered: 3, items: [{ remote_id: 'SKU-3', status: 'failed', error: '商品详情读取失败' }] } }

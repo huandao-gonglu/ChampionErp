@@ -1,12 +1,12 @@
 # 1688 跨境 ERP 解决方案 API 与消息目录
 
-适用方案为「跨境ERP/独立站SaaS数字化解决方案」（方案编号 `1697015308755`）。本项目使用服务商应用 `4848173`。清单整理自 2026-11-07 提供的平台列表，接口权限以该应用在相应环境下的「已获得能力」为准。[1688 官方 API 和消息列表](https://open.1688.com/solution/solutionDetail.htm?solutionKey=1697015308755#apiAndMessageList)
+适用方案为「跨境ERP/独立站SaaS数字化解决方案」（方案编号 `1697015308755`），对应服务商应用 `4848173`。本项目也支持管理员切换回企业自用应用 `1938727`；本目录的跨境方案清单不代表自用应用获得同等权限。清单整理自 2026-11-07 提供的平台列表，接口权限以所选应用在相应环境下的「已获得能力」为准。[1688 官方 API 和消息列表](https://open.1688.com/solution/solutionDetail.htm?solutionKey=1697015308755#apiAndMessageList)
 
 按标识去重，清单包含 **198 个 API** 和 **41 种消息**。同一分类内完全相同的行合并展示，跨分类条目和同一标识的不同名称均保留。
 
 ## ERP 已接入的接口
 
-项目使用以下 11 个业务 API。表中链接可打开官方接口文档，查看请求参数和响应字段。[授权配置](alibaba-authorization.md) · [商品、订单与物流客户端](../erp_web/services/alibaba_api_client.py) · [采购与支付客户端](../erp_web/services/alibaba_self_purchase_client.py)
+跨境应用使用以下 11 个业务 API；企业自用应用的商品详情改用 `com.alibaba.product / alibaba.product.get`，其他采购、支付及物流接口沿用表中协议。表中链接可打开官方接口文档，查看请求参数和响应字段。[授权配置](alibaba-authorization.md) · [商品、订单与物流客户端](../erp_web/services/alibaba_api_client.py) · [采购与支付客户端](../erp_web/services/alibaba_self_purchase_client.py)
 
 | 业务 | API 标识 | 官方文档 |
 | --- | --- | --- |
@@ -23,6 +23,8 @@
 | 发起免密支付 | `alibaba.trade.pay.protocolPay.preparePay` | [接口详情](https://open.1688.com/api/apidocdetail.htm?id=com.alibaba.trade:alibaba.trade.pay.protocolPay.preparePay-1) |
 
 ## API 分类索引
+
+万邦为独立接入方案，不增加官方应用权限。`1688/custom` 转发商品、采购、支付及物流，收银台使用 `alibaba.alipay.url.get`；买家基本信息使用 `com.alibaba.account / alibaba.account.basic`。企业凭据仅由管理员维护，业务使用当前用户已有的通道凭据；万邦个人在线授权待正式协议接入，Key 的默认买家连通不代表用户已授权，见 [1688 授权与接入](alibaba-authorization.md)。
 
 [会员](#api-会员) · [工具](#api-工具) · [商机](#api-商机) · [类目](#api-类目) · [商品](#api-商品) · [国内ERP](#api-国内erp) · [选品铺货](#api-选品铺货) · [跨境选品助手](#api-跨境选品助手) · [产品开发](#api-产品开发) · [订单](#api-订单) · [支付](#api-支付) · [物流](#api-物流) · [官方退上门取件](#api-官方退上门取件) · [CPS](#api-cps) · [采购金支付](#api-采购金支付) · [回传数据](#api-回传数据) · [退货退款](#api-退货退款) · [消息](#api-消息) · [铺货agent](#api-铺货agent) · [询盘](#api-询盘) · [88生意通](#api-88生意通) · [发票](#api-发票)
 

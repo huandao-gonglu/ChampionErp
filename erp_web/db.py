@@ -1145,7 +1145,7 @@ class ErpDatabase:
             return cursor.rowcount > 0
 
     def update_sku_publication(
-        self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any]
+        self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any], *, expected: dict | None = None
     ) -> None:
         """可信发布流程原子更新一行，保留同时编辑的内容和其他 SKU 的发布进度。"""
         with self._connect() as conn:
@@ -1166,8 +1166,16 @@ class ErpDatabase:
             )
             if not row:
                 raise ValueError("发布 SKU 不存在")
+            current = row.get("publications", {}).get(target_key, {})
+            if expected is not None:
+                # 除旧超时状态的展示迁移外，必须仍是查询开始时的回执。
+                if any(current.get(key) != expected.get(key) for key in ("updated_at", "fingerprint", "result")):
+                    return
+                if current.get("status") != expected.get("status") and not (
+                    current.get("status") == "failed" and expected.get("status") == "submission_paused"
+                ):
+                    return
             if publication.get("status") == "dispatching":
-                current = row.get("publications", {}).get(target_key, {})
                 if current.get("status") in {
                     "dispatching",
                     "outcome_unknown",

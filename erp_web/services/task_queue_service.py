@@ -59,6 +59,7 @@ class TaskQueueService:
         return self.store.get(task["id"])
 
     def _project(self, task):
+        task["can_check"] = bool(task["_can_query"] and (task["source"] == "publish" or task["business_status"] in PENDING_RESULTS))
         if task["business_status"] in PENDING_RESULTS:
             plan = self._plan(task)
             task["confirmation"] = self.store.summary(plan)
@@ -66,7 +67,7 @@ class TaskQueueService:
                 task["status"] = "needs_attention"
         else:
             task["confirmation"] = self.store.summary(self.store.get(task["id"]))
-            if task["confirmation"]:
+            if task["confirmation"] and task["confirmation"]["state"] != "checking":
                 task["confirmation"]["state"] = "done"
                 task["confirmation"]["next_check_at"] = 0
         return {key: value for key, value in task.items() if not key.startswith("_")}
@@ -116,7 +117,8 @@ class TaskQueueService:
         task = self.reader.task(task_id)
         if task is None:
             raise ValueError("任务不存在")
-        if task["business_status"] not in PENDING_RESULTS:
+        manual_publish = trigger == "manual" and task["source"] == "publish" and task["_can_query"]
+        if task["business_status"] not in PENDING_RESULTS and not manual_publish:
             return {"checked": False, "resolution": "terminal_or_submitting", **self.detail(task_id)}
         self._plan(task)
         if not task["_can_query"]:

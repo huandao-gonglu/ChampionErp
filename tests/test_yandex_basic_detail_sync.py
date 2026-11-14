@@ -40,15 +40,17 @@ def test_basic_sync_includes_feedback_and_attributes_without_detail_requests():
     platform = feedback_platform()
     client = adapter(platform)
     client.attribute_names = lambda _: pytest.fail("基础同步不得读取类目名称")
+    del client.settings  # 测试适配器没有有效凭据，列表路径不能隐式查询账号价格设置。
     service = service_for(client)
     try:
         job = sync(service)
         assert job["status"] == "confirmed" and job["result"]["completed"] == 2
-        assert job["result"]["data_scope"] == "basic"
-        assert {call[0] for call in platform.calls} == {"offer-mappings", "hidden-offers", "offers", "offer-cards"}
+        assert job["result"]["data_scope"] == "listing"
+        assert {call[0] for call in platform.calls} == {"offer-mappings", "hidden-offers", "offers", "offer-cards", "stocks"}
         for row in service.store.listings("yandex", "1:2"):
             assert row.basic_synced_at and row.status_checked_at and row.synced_at == ""
-            assert row.details_state == "unloaded" and row.prices == row.stocks == []
+            assert row.details_state == "unloaded" and row.sales_checked_at == row.basic_synced_at
+            assert row.stocks[0].quantity == 5 and row.prices[0].amount == "12"
             assert row.content["attributes"][0]["value"] == "红色"
             assert {(issue.source, issue.code) for issue in row.platform_issues} == {("card", "CARD_WARNING"), ("campaign", "SHOP_ERROR")}
             assert not row.capabilities["stock"].enabled
@@ -103,7 +105,8 @@ def test_basic_resync_preserves_detail_values_and_original_read_time():
         current = service.store.get(before.id)
         assert current.title == "平台新标题" and current.basic_synced_at > previous.basic_synced_at
         assert (current.synced_at, current.prices, current.stocks) == (previous.synced_at, previous.prices, previous.stocks)
-        assert not {"offer-prices", "stocks"} & {name for name, *_ in platform.calls}
+        assert Counter(name for name, *_ in platform.calls)["stocks"] == 1
+        assert not any(name == "offer-prices" for name, *_ in platform.calls)
     finally:
         service.close()
 
@@ -209,3 +212,109 @@ def test_ai_detail_resource_calls_same_service_for_only_selected_sku():
             "offer-mappings": 1, "hidden-offers": 1, "offers": 1, "offer-cards": 1, "offer-prices": 1, "stocks": 1}
     finally:
         service.close()
+
+
+def test_one_warehouse_failure_and_missing_sku_keep_only_their_own_cached_values():
+    platform = Platform(3)
+    client = adapter(platform)
+    client.mode = "business"
+    client.warehouses = [{"id": wid, "models": [{"placementType": "FBS", "campaignId": 2}]} for wid in (10, 20)]
+    original = client.request
+    phase = 1
+    def request(path, body=None, **kwargs):
+        if not path.endswith("/stocks"):
+            return original(path, body, **kwargs)
+        wid = body["partnerWarehouseId"]
+        if phase == 2 and wid == 10:
+            raise TimeoutError("仓库 10 超时")
+        ids = body["offerIds"] if phase == 1 else ["sku-0"]
+        return {"result": {"partnerWarehouseId": wid, "offers": [
+            {"offerId": sku, "stocks": [{"type": "AVAILABLE", "count": wid if phase == 1 else 0}]} for sku in ids]}}
+    client.request = request
+    service = service_for(client)
+    try:
+        assert sync(service)["status"] == "confirmed"
+        first = {row.id: row for row in service.store.listings("yandex", "1:2")}
+        phase = 2
+        assert sync(service)["status"] == "partial"
+        for row in service.store.listings("yandex", "1:2"):
+            stale, other = row.stocks
+            assert stale.quantity == 10 and stale.cached_at == first[row.id].sales_checked_at < row.sales_checked_at
+            if row.remote_id == "sku-0":
+                assert other.quantity == 0 and not other.cached_at and not other.read_error
+            else:
+                assert other.quantity == 20 and other.cached_at == first[row.id].sales_checked_at
+        assert sync(service)["status"] == "partial"
+        assert all(row.stocks[0].cached_at == first[row.id].sales_checked_at for row in service.store.listings("yandex", "1:2"))
+    finally:
+        service.close()
+
+
+def test_visible_sales_refresh_batches_only_due_skus_and_reuses_concurrent_reads():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    platform = Platform(4)
+    client = adapter(platform)
+    service = service_for(client)
+    entered, release = Event(), Event()
+    original = client.request
+    calls = []
+    def request(path, body=None, **kwargs):
+        calls.append((path, body))
+        result = original(path, body, **kwargs)
+        if path.endswith("/offers"):
+            for row in result["result"]["offers"]:
+                if row["offerId"] == "sku-0":
+                    row.pop("basicPrice")
+                else:
+                    row["basicPrice"]["value"] = 42
+            entered.set()
+            assert release.wait(3)
+        return result
+    try:
+        sync(service)
+        rows = {row.remote_id: row for row in service.store.listings("yandex", "1:2")}
+        ids = [rows[sku].id for sku in ("sku-0", "sku-1")]
+        for sku in ("sku-0", "sku-1"):
+            rows[sku].sales_checked_at = "2020-01-01T00:00:00Z"
+            service.store.save(rows[sku], full_snapshot=False)
+        assert set(service.list("yandex")["sales_due_ids"]) == set(ids)
+        client.request = request
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(service.sales.refresh, "1:2", ids)
+            assert entered.wait(3)
+            second = pool.submit(service.sales.refresh, "1:2", [*ids, rows["sku-2"].id])
+            release.set()
+            assert first.result()["ok"] and second.result()["ok"]
+        assert Counter(path.rsplit("/", 1)[1] for path, _ in calls) == {"offers": 1, "stocks": 1, "offer-prices": 1}
+        assert next(body for path, body in calls if path.endswith("/offer-prices")) == {"offerIds": ["sku-0"]}
+        assert service.list("yandex")["sales_due_ids"] == []
+        assert service.store.get(ids[1]).prices[0].amount == "42"
+        for sku in ("sku-0", "sku-1"):
+            updated = service.store.get(rows[sku].id)
+            assert updated.details_state == "unloaded" and updated.content == rows[sku].content
+            assert updated.basic_synced_at == rows[sku].basic_synced_at and updated.synced_at == ""
+        assert service.store.get(rows["sku-2"].id) == rows["sku-2"]
+        with pytest.raises(OnlineConflict):
+            service.sales.refresh("other:2", ids)
+    finally:
+        release.set()
+        service.close()
+
+
+def test_platform_warehouse_sales_are_readable_across_warehouses_and_never_writable():
+    from erp_web.runtime_units.online_yandex import YandexOnlineAdapter
+
+    client = YandexOnlineAdapter({"yandex": {"api_token": "test", "business_id": "1", "campaign_id": "2",
+                                            "stock_update_mode": "none", "placement_type": "FBY"}})
+    client.settings = {}
+    platform = Platform(2)
+    def request(path, body=None, **kwargs):
+        if path.endswith("/stocks"):
+            return {"result": {"warehouses": [{"warehouseId": wid, "offers": [
+                {"offerId": "sku-0", "stocks": [{"type": "AVAILABLE", "count": wid}]}]} for wid in (7, 3)]}}
+        return platform.request(path, body, **kwargs)
+    client.request = request
+    sales = client.read_sales(["sku-0"]).listings[0]
+    assert sales.stocks[0].quantity == 10 and not sales.stocks[0].writable

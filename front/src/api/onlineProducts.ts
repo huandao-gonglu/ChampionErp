@@ -3,8 +3,8 @@ import type { YandexGuaranteePeriod } from '@/utils/yandexWarranty'
 
 export type OnlinePlatform = 'mercadolibre' | 'ozon' | 'yandex'
 export type OnlineOperation = 'price' | 'stock' | 'content' | 'sale_state' | 'archive'
-export interface PriceScope { id: string; label: string; amount: string | null; currency: string; kind: string; writable: boolean; reason: string }
-export interface StockScope { id: string; label: string; quantity: number | null; writable: boolean; reason: string; campaign_id?: string; raw_status?: string; sale_state?: string }
+export interface PriceScope { cached_at?: string; observed_at?: string; read_error?: string; id: string; label: string; amount: string | null; currency: string; kind: string; writable: boolean; reason: string }
+export interface StockScope { cached_at?: string; observed_at?: string; read_error?: string; id: string; label: string; quantity: number | null; writable: boolean; reason: string; campaign_id?: string; raw_status?: string; sale_state?: string }
 export interface BuyerLink { label: string; url: string; site_id: string }
 export interface PlatformIssue { severity: 'error' | 'warning'; source: string; code: string; message: string; comment: string }
 export interface SourceImageOption {
@@ -17,6 +17,7 @@ export interface OnlineListing {
   id: string; platform: OnlinePlatform; account_id: string; remote_id: string; model: string; seller_sku: string; title: string; thumbnail: string
   buyer_links: BuyerLink[]
   details_state: 'pending' | 'unloaded' | 'ready' | 'failed'
+  sales_checked_at?: string
   basic_synced_at?: string
   raw_status: string; sale_state: string; raw_sub_status: string[]; prices: PriceScope[]; stocks: StockScope[]; version: string; synced_at: string; status_checked_at: string; errors: string[]; desired_sale_state: string
   platform_issues: PlatformIssue[]
@@ -42,6 +43,7 @@ export interface OnlineProductGroup {
   feedback_summary: OnlineFeedbackSummary
 }
 export interface OnlinePage {
+  sales_due_ids?: string[]
   warehouses?: Array<{id:string; name:string; campaign_id:string}>
   items: OnlineListing[]; groups: OnlineProductGroup[]; total: number; listing_total: number; page: number; per_page: number; account_id: string; store_name: string; state: string; markets: string[]; statuses: string[]
   summary: { total: number; active: number; paused: number; attention: number }; latest_sync: OnlineJob | null; jobs: OnlineJob[]
@@ -84,6 +86,9 @@ export async function fetchOnlineAttributes(listingId: string, version: string, 
 export async function fetchOnlineAttributeValues(listingId: string, version: string, attributeId: string, query = '', cursor = '') {
   return checked((await apiClient.get<AttributeResponse<AttributeValuePage>>('/api/online-products/attributes',
     {params: {listing_id: listingId, version, attribute_id: attributeId, query, cursor, limit: 50}})).data)
+}
+export async function refreshOnlineSales(accountId: string, listingIds: string[]) {
+  return checked((await apiClient.post('/api/online-products/refresh-sales', {account_id: accountId, listing_ids: listingIds})).data)
 }
 export async function refreshOnlineStatus(listingId: string): Promise<OnlineListing> {
   return checked<{item: OnlineListing}>((await apiClient.post('/api/online-products/refresh-status', {listing_id: listingId})).data).item

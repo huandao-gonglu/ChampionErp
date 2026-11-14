@@ -29,6 +29,7 @@ export interface BackendDesktopReply {
 
 export interface BackendAlibabaAuthorizationStatus {
   ok: boolean
+  application_type: "alibaba" | "alibaba_crossborder" | "onebound"
   application_configured: boolean
   can_authorize: boolean
   authorized: boolean
@@ -58,6 +59,11 @@ export interface BackendPublicEnterpriseApplication {
   secret_configured: boolean
 }
 
+export interface BackendPublicOneBoundApplication {
+  api_key: string
+  secret_configured: boolean
+}
+
 export interface BackendPublicExchangeRateSettings {
   exchange_rate_api_url: string
   exchange_rate_timeout_seconds: string
@@ -70,6 +76,8 @@ export interface BackendManagedSettings {
   exchange_rates: BackendPublicExchangeRateSettings
   alibaba: BackendPublicEnterpriseApplication
   alibaba_crossborder: BackendPublicEnterpriseApplication
+  onebound: BackendPublicOneBoundApplication
+  alibaba_api_application: "alibaba" | "alibaba_crossborder" | "onebound"
   crossborderbus_secret_configured: boolean
 }
 
@@ -1229,6 +1237,7 @@ export interface BackendQueueTask {
   error: string
   protection: string
   confirmation: BackendTaskConfirmationSummary | null
+  can_check: boolean
   can_retry: boolean
 }
 

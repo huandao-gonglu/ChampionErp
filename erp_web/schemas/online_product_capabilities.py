@@ -114,6 +114,7 @@ class OnlineListingSummary(BaseModel):
     prices: list[PriceScope]
     stocks: list[StockScope]
     synced_at: str
+    sales_checked_at: str = ""
     basic_synced_at: str = ""
     details_state: Literal["pending", "unloaded", "ready", "failed"]
 
@@ -130,6 +131,7 @@ class OnlineProductFields(BaseModel):
     version: str
     synced_at: str
     status_checked_at: str
+    sales_checked_at: str = ""
     basic_synced_at: str = ""
     details_state: Literal["pending", "unloaded", "ready", "failed"]
     errors: list[str]

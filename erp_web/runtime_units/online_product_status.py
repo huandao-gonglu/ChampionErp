@@ -17,7 +17,7 @@ def yandex_status(adapter, listing):
     archived = mappings[0]["offer"].get("archived", False)
     if type(archived) is not bool:
         raise ValueError("Yandex 商品归档状态无效，已保留原记录")
-    result = read_batch(adapter, mappings, {}, full=False)
+    result = read_batch(adapter, mappings, {}, scope="status")
     if result.errors or not result.listings or not result.listings[0].raw_status:
         raise ValueError(result.errors.get(remote_id) or "Yandex 未返回该商品的店铺状态，已保留原记录")
     fresh = result.listings[0]

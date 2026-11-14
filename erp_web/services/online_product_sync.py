@@ -11,7 +11,7 @@ def run_sync(service, job, adapter, result):
     discovered, pending = set(), set()
     result.update(phase="catalog", discovered=0, discovery_complete=False)
     if job["platform"] == "yandex":
-        result["data_scope"] = "basic"
+        result["data_scope"] = "listing"
     service._update(job, "running", result)
 
     def failure(remote_id, error):
@@ -56,6 +56,12 @@ def run_sync(service, job, adapter, result):
                     continue
                 if batch.phase == "basic":
                     service.store.save_basic(listing, lease=job)
+                    sales_errors = list(dict.fromkeys(s.read_error for s in (*listing.prices, *listing.stocks) if s.read_error))
+                    if sales_errors:
+                        pending.discard(remote_id)
+                        result["failed"] += 1
+                        result["items"].append({"remote_id": remote_id, "status": "failed", "error": "；".join(sales_errors)})
+                        continue
                 else:
                     listing.details_state = "ready"
                     service.store.save(listing, lease=job)

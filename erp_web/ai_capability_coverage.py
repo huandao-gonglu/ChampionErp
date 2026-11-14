@@ -133,11 +133,12 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason='网页与同账号桌面之间的短期页面交接和确认，不提供业务执行或设备授权。')
       for suffix in ('create', 'status', 'resolve', 'acknowledge', 'installers')),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
-        reason="1688 买家 OAuth 状态、官方登录及一次性回调只供受信界面与授权服务使用，不向模型开放凭据操作。") for method, path in (
+        reason="1688 买家授权状态、官方登录、一次性回调及管理员万邦 Session 绑定只供受信界面与授权服务使用，不向模型开放凭据操作。") for method, path in (
         ("GET", "/api/alibaba/crossborder/authorization"),
         ("POST", "/api/alibaba/crossborder/authorization/start"),
         ("GET", "/api/alibaba/authorization"), ("GET", "/auth/alibaba/callback"),
         ("POST", "/api/alibaba/authorization/start"), ("POST", "/api/alibaba/authorization/complete"),
+        ("POST", "/api/alibaba/authorization/onebound"),
     )),
     AiCapabilityCoverageEntry(method="POST", path="/api/publish-bus/retry", business_domain="商品发布", disposition="internal_only",
         reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),
@@ -352,6 +353,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="GET", path="/api/online-products/attributes", business_domain="在线商品", disposition="capability", capability_names=("online_products_attributes",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/sync", business_domain="在线商品", disposition="capability", capability_names=("online_products_sync",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/refresh-status", business_domain="在线商品", disposition="capability", capability_names=("online_products_refresh_status",)),
+    AiCapabilityCoverageEntry(method="POST", path="/api/online-products/refresh-sales", business_domain="在线商品", disposition="internal_only",
+        reason="在线列表按当前可见范围刷新已过期的销售数据；AI 复用同步与商品读取入口。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/refresh-detail", business_domain="在线商品", disposition="capability", capability_names=("online_products_refresh_detail",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/change", business_domain="在线商品", disposition="capability", capability_names=("online_products_change",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/reconcile", business_domain="在线商品", disposition="capability", capability_names=("online_products_reconcile",)),

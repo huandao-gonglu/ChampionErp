@@ -518,28 +518,42 @@ class ConfigStore:
         if self.shared_config is not self:
             return self.shared_config.enterprise_application(provider)
         saved = self._db.runtime_secret("enterprise_applications", "active", {})
-        if provider not in {"alibaba_crossborder", "crossborderbus"}:
+        if provider not in {"alibaba", "alibaba_crossborder", "onebound", "crossborderbus"}:
             raise ValueError("不支持的企业应用")
         if provider in saved:
             return dict(saved[provider])
+        if provider == "onebound":
+            return {"api_key": os.environ.get("ERP_ONEBOUND_API_KEY", "").strip(),
+                    "api_secret": os.environ.get("ERP_ONEBOUND_API_SECRET", "").strip()}
         if provider == "crossborderbus":
             secret = os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
             return {"client_secret": secret or self.integration_credentials("crossborderbus").get("client_secret", "")}
-        return {name: os.environ.get("ERP_ALIBABA_CROSSBORDER_" + name.upper(), "").strip()
-                for name in ("app_key", "app_secret", "redirect_uri")}
+        prefix = "ERP_ALIBABA_CROSSBORDER_" if provider == "alibaba_crossborder" else "ERP_ALIBABA_"
+        application = {} if provider == "alibaba_crossborder" else dict(self.archive_legacy_alibaba_credentials().get("application", {}))
+        key, secret = (os.environ.get(prefix + name, "").strip() for name in ("APP_KEY", "APP_SECRET"))
+        if provider == "alibaba_crossborder" or key or secret:
+            application = {"app_key": key, "app_secret": secret}
+        application["redirect_uri"] = os.environ.get(prefix + "REDIRECT_URI", application.get("redirect_uri", "")).strip()
+        return application
+
+    def alibaba_api_application(self) -> str:
+        """管理员统一选择应用；未设置时恢复企业自用应用，不自动切换。"""
+        return self.shared_config._db.runtime_secret("enterprise_applications", "active", {}).get("alibaba_api_application", "alibaba")
 
     def managed_settings(self) -> dict:
         owner = self.shared_config
         applications = {provider: owner.enterprise_application(provider)
-                        for provider in ("alibaba_crossborder", "crossborderbus")}
+                        for provider in ("alibaba", "alibaba_crossborder", "onebound", "crossborderbus")}
         rates = {key: owner.load_app_config()["pricing_defaults"][key] for key in EXCHANGE_RATE_FIELDS}
-        revision = hashlib.sha256(json.dumps([applications, rates], sort_keys=True).encode()).hexdigest()
+        selected = owner.alibaba_api_application()
+        revision = hashlib.sha256(json.dumps([applications, rates, selected], sort_keys=True).encode()).hexdigest()
         public = {provider: {"app_key": value.get("app_key", ""), "redirect_uri": value.get("redirect_uri", ""),
                              "secret_configured": bool(value.get("app_secret"))}
-                  for provider, value in applications.items() if provider != "crossborderbus"}
-        # 已发行的桌面端读取此字段，退役应用只返回空占位。
-        public["alibaba"] = {"app_key": "", "redirect_uri": "", "secret_configured": False}
+                  for provider, value in applications.items() if provider in {"alibaba", "alibaba_crossborder"}}
+        public["onebound"] = {"api_key": applications["onebound"].get("api_key", ""),
+                              "secret_configured": bool(applications["onebound"].get("api_secret"))}
         return {"ok": True, "revision": revision, "exchange_rates": rates, **public,
+                "alibaba_api_application": selected,
                 "crossborderbus_secret_configured": bool(applications["crossborderbus"].get("client_secret"))}
 
     def save_managed_settings(self, incoming: dict) -> dict:
@@ -550,19 +564,26 @@ class ConfigStore:
                 raise RequestValidationError("共享设置已更新，请重新读取后保存。", status_code=409)
             previous = owner._db.runtime_secret("enterprise_applications", "active", {})
             applications = dict(previous)
-            for provider in ("alibaba_crossborder", "crossborderbus"):
+            for provider in ("alibaba", "alibaba_crossborder", "onebound", "crossborderbus"):
                 old = owner.enterprise_application(provider)
                 if provider == "crossborderbus":
                     changes = {"client_secret": request.crossborderbus_client_secret}
                 else:
-                    changes = getattr(request, provider).model_dump()
+                    settings = getattr(request, provider)
+                    if settings is None:
+                        continue
+                    changes = settings.model_dump()
                 value = {**old, **{key: val for key, val in changes.items() if val is not None}}
-                if provider != "crossborderbus" and any(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
+                if provider == "onebound" and value != old and any(value.get(key) for key in ("api_key", "api_secret")):
+                    if not all(value.get(key) for key in ("api_key", "api_secret")):
+                        raise ValueError("万邦 API Key 和 Secret 须填写完整")
+                if provider in {"alibaba", "alibaba_crossborder"} and value != old and any(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
                     if not all(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
                         raise ValueError("1688 应用编号、密钥和回调地址须填写完整")
                 if value != old:
                     value["credential_generation"] = uuid4().hex
                 applications[provider] = value
+            applications["alibaba_api_application"] = request.alibaba_api_application or owner.alibaba_api_application()
             config = owner.load_app_config()
             # 旧汇率表没有来源字段，接管配置时先归属到原 API，避免换地址后复用。
             owner._db.set_runtime_secret("exchange_rates", "source", config["pricing_defaults"]["exchange_rate_api_url"], only_if_missing=True)
@@ -581,7 +602,12 @@ class ConfigStore:
             raise ValueError("无效的集成授权记录")
         self._db.set_runtime_secret("credentials:" + provider, record_id, None)
 
-    def alibaba_credentials(self) -> dict:
+    def alibaba_credentials(self, provider=None) -> dict:
+        provider = provider or self.alibaba_api_application()
+        if provider == "onebound":
+            return self._db.runtime_secret("credentials:alibaba", "onebound", {})
+        if provider == "alibaba":
+            return self.archive_legacy_alibaba_credentials()
         legacy = self.load_app_config().get("1688_api", {})
         if any(legacy.get(key) for key in ("app_key", "app_secret", "access_token")):
             self.archive_legacy_alibaba_credentials()
@@ -609,19 +635,21 @@ class ConfigStore:
                 self.save_app_config(config)
             return state
 
-    def alibaba_application(self) -> dict:
-        return self.enterprise_application("alibaba_crossborder")
+    def alibaba_application(self, provider=None) -> dict:
+        selected = provider or self.alibaba_api_application()
+        return {**self.enterprise_application(selected), "application_type": selected}
 
-    def update_alibaba_credentials(self, update, *, expected=None, application=None) -> dict:
+    def update_alibaba_credentials(self, update, *, expected=None, application=None, provider=None) -> dict:
         """网络操作后短锁校验，防止迟到的授权/刷新回执覆盖新账号。"""
-        with self._save_lock:
-            state = self.alibaba_credentials()
+        with self._save_lock, self.shared_config._save_lock:
+            state = self.alibaba_credentials(provider)
             if expected is not None and state != expected:
                 raise ValueError("1688 授权已变化，请重新操作")
-            if application is not None and self.alibaba_application() != application:
+            if application is not None and self.alibaba_application(provider) != application:
                 raise ValueError("1688 应用配置已变化，请重新授权")
             state.update(update)
-            self._db.set_runtime_secret("credentials:alibaba", "crossborder", state)
+            record_id = {"alibaba": "state", "alibaba_crossborder": "crossborder", "onebound": "onebound"}[provider or self.alibaba_api_application()]
+            self._db.set_runtime_secret("credentials:alibaba", record_id, state)
             return state
 
     def order_notification_token(self, platform: str) -> str:

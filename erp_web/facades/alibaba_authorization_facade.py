@@ -14,6 +14,8 @@ def authorization_payload(action, body=None):
             return service.start(), 200
         if action == 'complete':
             return service.complete_from_url(body['callback_url']), 200
+        if action == 'onebound':
+            return service.bind_onebound(body), 200
         if action == 'callback':
             return service.callback((body or {}).get('code', ''), (body or {}).get('state', '')), 200
         raise ValueError('不支持的 1688 授权操作')

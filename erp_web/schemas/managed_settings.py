@@ -8,11 +8,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 EXCHANGE_RATE_FIELDS = (
     "exchange_rate_api_url", "exchange_rate_timeout_seconds", "exchange_rate_cache_ttl_seconds",
 )
+AlibabaApplicationType = Literal['alibaba', 'alibaba_crossborder', 'onebound']
 
 
 class PublicEnterpriseApplication(TypedDict):
     app_key: str
     redirect_uri: str
+    secret_configured: bool
+
+
+class PublicOneBoundApplication(TypedDict):
+    api_key: str
     secret_configured: bool
 
 
@@ -28,6 +34,8 @@ class ManagedSettings(TypedDict):
     exchange_rates: PublicExchangeRateSettings
     alibaba: PublicEnterpriseApplication
     alibaba_crossborder: PublicEnterpriseApplication
+    onebound: PublicOneBoundApplication
+    alibaba_api_application: AlibabaApplicationType
     crossborderbus_secret_configured: bool
 
 
@@ -147,12 +155,20 @@ class AlibabaApplicationSettings(BaseModel):
         return value
 
 
+class OneBoundApplicationSettings(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    api_key: str = Field(max_length=256)
+    api_secret: str | None = Field(default=None, max_length=4096)
+
+
 class ManagedSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     revision: str
     exchange_rates: ExchangeRateSettings
-    alibaba: AlibabaApplicationSettings | None = None  # 旧桌面端可能提交，服务端忽略。
+    alibaba: AlibabaApplicationSettings | None = None
     alibaba_crossborder: AlibabaApplicationSettings
+    onebound: OneBoundApplicationSettings | None = None
+    alibaba_api_application: AlibabaApplicationType | None = None
     crossborderbus_client_secret: str | None = Field(default=None, max_length=4096)
 
 
@@ -181,7 +197,7 @@ class TariffUpgradeRequest(BaseModel):
     expected_version: str = Field(min_length=1, max_length=80)
 
 
-__all__ = ["EXCHANGE_RATE_FIELDS", "ManagedSettings", "PublicExchangeRateSettings", "PublicEnterpriseApplication",
+__all__ = ["EXCHANGE_RATE_FIELDS", "AlibabaApplicationType", "ManagedSettings", "PublicExchangeRateSettings", "PublicEnterpriseApplication", "PublicOneBoundApplication", "OneBoundApplicationSettings",
            "TariffRule", "TariffRulesResponse", "TariffRulesQuery",
            "TariffVersion", "TariffSettings", "TariffSettingsResponse", "TariffDiff", "TariffFieldChange", "TariffRuleChange", "ExchangeRateSettings", "AlibabaApplicationSettings",
            "ManagedSettingsRequest", "TariffImportRequest", "TariffUpgradeRequest"]

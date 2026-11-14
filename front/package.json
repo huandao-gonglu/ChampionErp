@@ -1,7 +1,7 @@
 {
   "name": "champion-erp-front",
   "productName": "gongluErp",
-  "version": "1.2.67",
+  "version": "1.2.74",
   "desktopUpdateOrigin": "https://hdgl.cc.cd",
   "private": true,
   "type": "module",
@@ -62,8 +62,15 @@
     "vue-tsc": "^2.2.12"
   },
   "build": {
-    "protocols": [{ "name": "gongluErp", "schemes": ["champion-erp"] }],
-    "extends": "./electron-download.mjs",
+    "protocols": [
+      {
+        "name": "gongluErp",
+        "schemes": [
+          "champion-erp"
+        ]
+      }
+    ],
+    "extends": "./electron-builder.config.mjs",
     "appId": "com.champion.erp.front",
     "icon": "desktop/assets/icon.png",
     "directories": {
@@ -77,8 +84,14 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": ".desktop-runtime/champion-erp-runtime", "to": "runtime" },
-      { "from": "dist-desktop/licenses", "to": "licenses" }
+      {
+        "from": ".desktop-runtime/champion-erp-runtime",
+        "to": "runtime"
+      },
+      {
+        "from": "dist-desktop/licenses",
+        "to": "licenses"
+      }
     ],
     "mac": {
       "icon": "desktop/assets/icon.icns",

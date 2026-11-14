@@ -28,6 +28,9 @@ async function refresh() {
   try {
     const next = await fetchAlibabaAuthorization()
     if (current !== revision) return
+    if (status.value?.application_type !== next.application_type) {
+      callbackUrl.value = manualError.value = browserError.value = ''
+    }
     status.value = next
     waiting.value = next.attempt === 'waiting' && !browserError.value
     error.value = ''
@@ -119,8 +122,11 @@ onUnmounted(() => {
       <h3 class="font-semibold text-accent-950 dark:text-white">1688 账号授权</h3>
       <span v-if="status" aria-live="polite">{{ (status.authorized && !status.needs_reauthorization ? '已连接' : '未连接') }}</span>
     </div>
-    <p class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号，即可查询商品、采购订单和物流。</p>
+    <p v-if="status" class="text-sm text-accent-500">当前应用：{{ { alibaba: '企业自用应用', alibaba_crossborder: '跨境 ERP 服务商应用', onebound: '万邦 1688 API' }[status.application_type] }}。</p>
+    <p v-if="status?.application_type === 'alibaba_crossborder'" class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号，即可查询商品、采购订单和物流。</p>
+    <p v-else-if="status?.application_type !== 'onebound'" class="text-sm text-accent-500">连接当前应用下的 1688 采购账号，即可查询商品、采购订单和物流。</p>
     <p v-if="status && !status.application_configured" role="status">授权服务暂未配置，请联系管理员。</p>
+    <p v-else-if="status?.application_type === 'onebound'" role="status">当前接入的个人 1688 在线授权尚未接入，请联系管理员。</p>
     <p v-else-if="status && !status.can_authorize" role="status">暂时无法发起登录授权，请联系管理员配置授权服务。</p>
     <p v-if="status?.needs_reauthorization" role="status">授权已过期或应用配置已变化，请重新连接账号。</p>
     <p v-if="status?.account_name">当前账号：{{ status.account_name }}</p>
@@ -131,7 +137,7 @@ onUnmounted(() => {
     </button>
     <p v-if="waiting" role="status">等待浏览器完成授权…</p>
     <p v-else-if="status?.attempt === 'failed' || status?.attempt === 'expired'" role="status">本次授权未完成，请重新授权。</p>
-    <div v-if="account.isAdmin" class="space-y-2">
+    <div v-if="account.isAdmin && status?.application_type !== 'onebound'" class="space-y-2">
       <label class="block text-sm" for="alibaba-callback-url">授权后的完整回调地址</label>
       <input
         id="alibaba-callback-url" v-model="callbackUrl" type="password" maxlength="16384" autocomplete="off"

@@ -32,6 +32,8 @@ class YandexOnlineAdapter:
             raise ValueError("请先验证 Yandex 店铺授权")
         self.account_id = self.business+":"+self.campaign
         self.mode = str(self.config.get("stock_update_mode") or "none")
+        if self.mode == "none" and str(self.config.get("placement_type") or "").upper() == "FBY":
+            self.mode = "platform_warehouses"
 
     @cached_property
     def settings(self):
@@ -64,6 +66,10 @@ class YandexOnlineAdapter:
 
     def sync(self, ids=None, *, catalog="current"):
         return sync_yandex(self, ids, catalog=catalog)
+
+    def read_sales(self, ids):
+        """只读当前页的销售数据，商品身份由已保存的刊登提供。"""
+        return read_batch(self, [{"offer": {"offerId": sku}} for sku in ids], {}, scope="sales")
 
     def read_status(self, listing):
         return yandex_status(self, listing)

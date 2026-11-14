@@ -6,7 +6,7 @@ import copy
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
-from erp_web.product_model.task_queue_model import has_query_identity
+from erp_web.product_model.task_queue_model import can_check_publish_status, has_query_identity
 
 from .publish_confirmation import resolve_publish_store_binding
 
@@ -49,7 +49,7 @@ class PublishResultConfirmation:
             if not isinstance(item, dict):
                 raise ValueError("发布任务不包含此平台。")
             status = item.get("status")
-            if status not in CONFIRMABLE_STATUSES:
+            if status not in CONFIRMABLE_STATUSES and not can_check_publish_status(status, item.get("result") or {}):
                 return self._response(job_id, platform, False, "terminal_or_submitting")
             confirmation = dict(item.get("confirmation") or {})
             confirmation.pop("next_check_at", None)
