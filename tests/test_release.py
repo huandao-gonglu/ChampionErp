@@ -99,7 +99,8 @@ def test_new_desktop_version_checked_before_switch(monkeypatch):
             release.check_new_desktop_version(update)
 
 
-def test_server_timeout_can_resume_and_failed_smoke_restores_previous_service(tmp_path, monkeypatch, release_guard_dir):
+@pytest.mark.parametrize('failure', ['backup', 'verify', 'smoke'])
+def test_server_timeout_can_resume_and_failed_check_restores_previous_service(tmp_path, monkeypatch, release_guard_dir, failure):
     base = tmp_path / 'server'
     previous = base / 'releases/previous'
     previous.mkdir(parents=True)
@@ -115,30 +116,69 @@ def test_server_timeout_can_resume_and_failed_smoke_restores_previous_service(tm
     with tarfile.open(archive, 'w:gz') as package:
         package.add(manifest, arcname=manifest.name)
     monkeypatch.setattr(release_server, 'BASE', base)
-    monkeypatch.setattr(release_server, 'BACKUPS', tmp_path / 'backups')
+    backups = tmp_path / 'backups'
+    old_backup = backups / '20261113t034159z-c87d897ac01d'
+    old_backup.mkdir(parents=True)
+    (old_backup / 'accounts.tar.gz').write_bytes(b'previous')
+    (old_backup / 'previous-release.json').write_text('{}')
+    monkeypatch.setattr(release_server, 'BACKUPS', backups)
     monkeypatch.setattr(release_server, 'PYTHON_OVERRIDE', override)
     monkeypatch.setattr(release_server.os, 'geteuid', lambda: 0)
     calls = []
     active = {'server', 'active', '商品提交'}
     monkeypatch.setattr(release_server, 'in_use', lambda directory, name: name in active)
-    monkeypatch.setattr(release_server, 'run', lambda *args: calls.append(args))
+    def run(*command):
+        calls.append(command)
+        if '--archive' in command:
+            assert old_backup.is_dir()
+            if command[2] == failure:
+                raise RuntimeError('发布检查失败')
+            if command[2] == 'backup':
+                (backups / args.release_id / 'accounts.tar.gz').write_bytes(b'current')
+
+    monkeypatch.setattr(release_server, 'run', run)
     monkeypatch.setattr(release_server, 'wait_ready', lambda: None)
     def failed(path):
-        raise RuntimeError('HTTP 验证失败')
+        assert not old_backup.exists()
+        assert (backups / args.release_id / 'accounts.tar.gz').read_bytes() == b'current'
+        raise RuntimeError('发布检查失败')
     monkeypatch.setattr(release_server, 'smoke_check', failed)
     args = argparse.Namespace(archive=archive, sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
-        release_id='release-1', revision='new-revision', expected_current=str(previous), wait_tasks_seconds=0)
+        release_id='20261114t074137z-b7ea0ac50729', revision='new-revision', expected_current=str(previous), wait_tasks_seconds=0)
     with pytest.raises(TimeoutError, match='商品提交'):
         release_server.deploy(args)
     assert json.loads((staging / 'server-result.json').read_text())['status'] == 'prepared'
     assert not any(call[0] == 'systemctl' for call in calls)
     active.remove('active')
-    with pytest.raises(RuntimeError, match='HTTP 验证失败'):
+    with pytest.raises(RuntimeError, match='发布检查失败'):
         release_server.deploy(args)
+    if failure != 'smoke':
+        assert (old_backup / 'accounts.tar.gz').read_bytes() == b'previous'
     assert (base / 'current').resolve() == previous
     assert override.read_text() == 'previous-python'
     assert json.loads((staging / 'server-result.json').read_text())['status'] == 'rolled_back'
     assert calls[-1] == ('systemctl', 'start', release_server.SERVICE)
+
+
+def test_release_backup_cleanup_preserves_manual_files_and_symlinks(tmp_path):
+    current = tmp_path / '20261114t075316z-b7ea0ac50729'
+    current.mkdir()
+    manual = tmp_path / '手动备份'
+    manual.mkdir()
+    mixed = tmp_path / '20261113t000000z-000000000000'
+    mixed.mkdir()
+    for directory in (current, manual, mixed):
+        (directory / 'accounts.tar.gz').write_bytes(b'data')
+        (directory / 'previous-release.json').write_text('{}')
+    (mixed / '人工恢复说明').touch()
+    link = tmp_path / '20261113t000001z-000000000000'
+    link.symlink_to(manual, target_is_directory=True)
+    release_server.prune_release_backups(current)
+    assert link.is_symlink()
+    assert (mixed / '人工恢复说明').is_file()
+    for directory in (current, manual, mixed):
+        assert (directory / 'accounts.tar.gz').read_bytes() == b'data'
+        assert (directory / 'previous-release.json').is_file()
 
 
 def test_public_verification_identifies_release_client_and_checks_asset_digest(tmp_path):

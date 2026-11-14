@@ -36,7 +36,7 @@ def _xml(data: bytes) -> ET.Element:
 
 
 class OzonCategoryTemplate:
-    """首版仅映射已核对的圣诞装饰品契约，其他类目显式拒绝。"""
+    """从工作簿的类目元数据、表头和类型字典解析导出字段。"""
 
     def __init__(self, data: bytes):
         self.data = data
@@ -68,17 +68,18 @@ class OzonCategoryTemplate:
             self.title_row = int(config["PRODUCTS_TITLE_ROW_INDEX"])
             self.path = sheets[self.info["additional_column_by_name"]["list_name"]]
             cells = self._cells(self.path)
-            self.columns = {re.sub(r"\*\s*$", "", value).strip(): re.sub(r"\d+$", "", ref)
-                            for ref, value in cells.items() if re.search(r"\d+$", ref).group() == str(self.title_row)}
-            self.required = [re.sub(r"\*\s*$", "", value).strip() for ref, value in cells.items()
-                             if re.search(r"\d+$", ref).group() == str(self.title_row) and value.endswith("*")]
+            headers = {ref.removesuffix(str(self.title_row)): value.strip() for ref, value in cells.items()
+                       if re.fullmatch(rf"[A-Z]+{self.title_row}", ref) and value.strip()}
+            self.headers = {col: title.rstrip("*").strip() for col, title in headers.items()}
+            self.columns = {name: col for col, name in self.headers.items()}
+            required = {col for col, title in headers.items() if title.endswith("*")}
             self.styles = {re.sub(r"\d+$", "", c.get("r", "")): c.get("s")
                            for c in _xml(self.parts[self.path]).findall(f'm:sheetData/m:row[@r="{self.first_row}"]/m:c', NS)}
             offer_col = self.info["additional_column_by_name"]["offer_id"]
             if any(ref.startswith(self.columns[offer_col]) and re.fullmatch(self.columns[offer_col]+r"\d+", ref)
                    and int(re.search(r"\d+$", ref).group()) >= self.first_row and value for ref, value in cells.items()):
                 raise ValueError("请上传空白类目模板，避免覆盖已有商品")
-            self._validate_contract()
+            self._read_fields(required, cells)
         except (KeyError, IndexError, TypeError, AttributeError, RuntimeError, ValueError, zipfile.BadZipFile, ET.ParseError) as exc:
             if isinstance(exc, ValueError) and not isinstance(exc, (binascii.Error, ET.ParseError, json.JSONDecodeError)):
                 raise
@@ -95,45 +96,68 @@ class OzonCategoryTemplate:
             result[cell.get("r", "")] = value
         return result
 
-    def _validate_contract(self) -> None:
-        if self.category_id != "43429543" or self.info.get("name") != "圣诞装饰品":
-            raise ValueError("当前支持圣诞装饰品类目，请使用该类目的官方模板")
+    def _read_fields(self, required: set[str], cells: dict[str, str]) -> None:
+        self.category = self.info["name"].strip()
+        if not self.category or not self.category_id.strip():
+            raise ValueError("模板缺少类目信息，请重新下载官方类目模板")
         if self.currency != "CNY":
             raise ValueError("当前支持 CNY 模板，请下载人民币模板；不会自动换汇")
-        if self.first_row != 5 or self.title_row != 2:
-            raise ValueError("模板表头版本不受支持，请重新下载当前类目模板")
-        metadata_required = {str(key) for key, value in self.info["attributes"].items() if value.get("IsRequired")}
-        if metadata_required != {"85", "9048", "8229"}:
-            raise ValueError("模板必填属性已变化，需先更新字段映射")
+        if not 0 < self.title_row < self.first_row:
+            raise ValueError("模板未标明有效的表头和商品起始行")
+
         names = self.info["additional_column_by_name"]
-        self.no_brand = names["no_brand"].strip()
-        if not self.no_brand:
-            raise ValueError("模板缺少无品牌选项，请重新下载官方模板")
-        brand = self.info["attributes"]["85"]
-        self.brand_values = {str(value["Value"]) for value in brand.get("LookupData", {}).get("Values", {}).values()}
+        attributes = self.info["attributes"]
+        brand = attributes.get("85", {})
+        self.no_brand = names.get("no_brand", "").strip()
+        self.brand_values = {str(v["Value"]) for v in brand.get("LookupData", {}).get("Values", {}).values()}
         self.brand_dictionary_complete = bool(self.brand_values) and not brand.get("IsOversized", False)
-        self.field_columns = {}
-        for key, name in {"offer_id": names["offer_id"], "title": names["name"], "price": names["price"],
-                          "barcode": names["barcode"], "weight_g": names["weight"], "width_mm": names["width"],
-                          "height_mm": names["height"], "length_mm": names["depth"], "main_image": names["picture"],
-                          "images": names["pictures"], "brand": self.info["attributes"]["85"]["Name"],
-                          "model": self.info["attributes"]["9048"]["Name"], "type": names["desc_type"],
-                          "review_promo": names["review_promo"]}.items():
-            self.field_columns[key] = self.columns[name]
-        known_required = {"offer_id", "price", "weight_g", "width_mm", "height_mm", "length_mm", "main_image", "brand", "model", "type"}
-        required_columns = {self.columns[name] for name in self.required}
-        self.required_fields = [key for key, column in self.field_columns.items() if column in required_columns]
-        if set(self.required_fields) != known_required or len(self.required) != len(known_required):
-            raise ValueError("模板必填字段已变化，需先更新字段映射")
-        types = self.info["attributes"]["8229"]["LookupData"]["Values"]
-        if not any(str(v.get("ID")) == "95421" and v.get("Value") == "圣诞装饰品" for v in types.values()):
-            raise ValueError("模板商品类型与圣诞装饰品不匹配")
-        self.promotion_no = names["promotion_no"]
-        self.optional_columns = {key: self.columns[name] for key, name in {"variant": "颜色名称", "size_cm": "长度，厘米"}.items() if name in self.columns}
+        self.promotion_no = names.get("promotion_no", "")
+        common = {"offer_id": "offer_id", "title": "name", "price": "price", "barcode": "barcode",
+                  "weight_g": "weight", "width_mm": "width", "height_mm": "height", "length_mm": "depth",
+                  "main_image": "picture", "images": "pictures", "type": "desc_type", "review_promo": "review_promo"}
+        labels = {key: names.get(source) for key, source in common.items()}
+        labels.update(brand=brand.get("Name"), model=attributes.get("9048", {}).get("Name"))
+        self.field_columns = {key: self.columns[label] for key, label in labels.items() if label in self.columns}
+        if "review_promo" in self.field_columns and not self.promotion_no:
+            raise ValueError("模板缺少关闭加速评价收集的选项")
+        # 同时读取星号和隐藏属性。部分模板只在元数据里声明必填。
+        for attr_id, attr in attributes.items():
+            if attr.get("IsRequired"):
+                column = self.columns.get(attr.get("LongName")) or self.columns.get(attr.get("Name"))
+                if attr_id == "8229":
+                    column = self.field_columns.get("type", column)
+                if not column:
+                    raise ValueError(f"模板中的必填属性“{attr.get('Name') or attr_id}”缺少对应表头")
+                required.add(column)
+
+        self.type_options = list(dict.fromkeys(
+            v["Value"] for v in attributes.get("8229", {}).get("LookupData", {}).get("Values", {}).values()
+            if v.get("Value")))
+        type_col = self.field_columns.get("type")
+        default = cells.get(f"{type_col}{self.first_row}", "").strip()
+        self.product_type = default if default and (not self.type_options or default in self.type_options) else ""
+        if not self.product_type and len(self.type_options) == 1:
+            self.product_type = self.type_options[0]
+
+        known = {col: key for key, col in self.field_columns.items()}
+        self.required_fields = {known.get(col, col): name for col, name in self.headers.items() if col in required}
+        self.extra_fields = {col: self.headers[col] for col in self.headers if col in required and col not in known}
+        optional = {"variant": "颜色名称", "size_cm": "长度，厘米"}
+        self.optional_columns = {key: self.columns[name] for key, name in optional.items()
+                                 if name in self.columns and self.columns[name] not in required}
+        # 多种类型可以逐 SKU 选择；单一类型或官方预填值直接用于预览。
+        if type_col and (len(self.type_options) > 1 or not self.product_type):
+            self.extra_fields["type"] = self.headers[type_col]
+        self.extra_numeric = {}
+        for attr in attributes.values():
+            column = self.columns.get(attr.get("LongName")) or self.columns.get(attr.get("Name"))
+            if column in self.extra_fields and attr.get("Type") in {"Integer", "Decimal"} and not attr.get("IsCollection"):
+                self.extra_numeric[column] = attr["Type"]
 
     def describe(self) -> OzonExportTemplate:
-        return {"category": self.info["name"], "category_id": self.category_id, "currency": self.currency,
-                "required_fields": self.required}
+        return {"category": self.category, "category_id": self.category_id, "currency": self.currency,
+                "required_fields": list(self.required_fields.values()), "extra_fields": self.extra_fields,
+                "type_options": self.type_options if "type" in self.extra_fields else []}
 
     def fill(self, rows: list[dict[str, str]]) -> bytes:
         source = self.parts[self.path].decode("utf-8")
@@ -146,13 +170,15 @@ class OzonCategoryTemplate:
             raise ValueError("模板说明行不完整")
         data_rows = []
         numeric = {"price", "weight_g", "width_mm", "height_mm", "length_mm", "size_cm"}
+        columns = {**self.optional_columns, **self.field_columns}
+        columns.update({col: col for col in self.extra_fields if col != "type"})
+        if "№" in self.columns:
+            columns["sequence"] = self.columns["№"]
+        ordered_columns = sorted(columns.items(), key=lambda pair: _column_number(pair[1]))
         for index, fields in enumerate(rows, self.first_row):
             row = ET.Element("row", {"r": str(index)})
-            columns = {**self.field_columns, **self.optional_columns}
-            values = {**fields, "type": "圣诞装饰品", "review_promo": self.promotion_no}
-            columns["sequence"] = "A"
-            values["sequence"] = str(index - self.first_row + 1)
-            for key, column in sorted(columns.items(), key=lambda pair: _column_number(pair[1])):
+            values = {**fields, "review_promo": self.promotion_no, "sequence": str(index - self.first_row + 1)}
+            for key, column in ordered_columns:
                 value = values.get(key, "")
                 if not value:
                     continue
@@ -160,7 +186,7 @@ class OzonCategoryTemplate:
                 if self.styles.get(column):
                     attrs["s"] = self.styles[column]
                 cell = ET.SubElement(row, "c", attrs)
-                if key in numeric or key == "sequence":
+                if key in numeric or key in self.extra_numeric or key == "sequence":
                     ET.SubElement(cell, "v").text = str(Decimal(value))
                 else:
                     cell.set("t", "inlineStr")

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -126,6 +127,27 @@ def switch_link(target):
     temporary.replace(BASE / 'current')
 
 
+def prune_release_backups(current_backup_dir):
+    """新备份验证通过后，只清理统一发布脚本生成的历史备份目录。"""
+    removed = 0
+    for directory in current_backup_dir.parent.iterdir():
+        if directory == current_backup_dir or not re.fullmatch(r'[0-9]{8}t[0-9]{6}z-[0-9a-f]{12}', directory.name):
+            continue
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        files = {path.name: path for path in directory.iterdir()}
+        required = {'accounts.tar.gz', 'previous-release.json'}
+        if not required <= files.keys() <= required | {'release-python.conf'}:
+            continue
+        if any(path.is_symlink() or not path.is_file() for path in files.values()):
+            continue
+        for path in files.values():
+            path.unlink()
+        directory.rmdir()
+        removed += 1
+    print(f'已保留本次发布备份，清理了 {removed} 个历史发布备份目录。', flush=True)
+
+
 def prepare_guard(directory):
     """协调文件跨版本保留，服务组可加锁，只有发布账号可替换文件。"""
     group = grp.getgrnam('champion-erp').gr_gid
@@ -237,6 +259,7 @@ def deploy(args):
             backup_script = release / 'deploy/backup_accounts.py'
             run(python, backup_script, 'backup', '--archive', result['backup'])
             run(python, backup_script, 'verify', '--archive', result['backup'])
+            prune_release_backups(backup_dir)
             switch_link(release)
             PYTHON_OVERRIDE.parent.mkdir(parents=True, exist_ok=True)
             PYTHON_OVERRIDE.write_text(

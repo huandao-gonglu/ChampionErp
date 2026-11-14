@@ -128,13 +128,23 @@ const hasLoadedCategoryDefinition = computed(() => Boolean(
   && props.category.platform === props.target.platform
   && props.category.fetchedAt,
 ))
-const categoryAttributeState = computed<'empty' | 'loading' | 'ready' | 'error'>(() => {
+const categoryAttributeState = computed<'empty' | 'idle' | 'loading' | 'ready' | 'error'>(() => {
   if (!hasSelectedCategory.value) return 'empty'
   if (props.categoryAttributeLoading) return 'loading'
   if (hasLoadedCategoryDefinition.value) return 'ready'
-  return 'error'
+  return props.categoryAttributeError ? 'error' : 'idle'
 })
-const categoryAttributeErrorMessage = computed(() => props.categoryAttributeError || '平台属性定义尚未加载，请重新加载后再编辑属性。')
+const filledAttributes = computed(() => {
+  if (props.skuScope || categoryAttributeState.value === 'ready' || !hasSelectedCategory.value) return []
+  if (props.category && props.category.categoryId !== activeDraft.value.categoryId.trim()) return []
+  return Object.entries(activeDraft.value.attributes).flatMap(([id, value]) => {
+    let text: string
+    if (typeof value === 'string') text = value
+    else if ('values' in value) text = value.values.map(option => option.value).join('、')
+    else text = value.value.trim() ? [value.value, value.unit].filter(Boolean).join(' ') : ''
+    return text.trim() ? [{ id, text }] : []
+  })
+})
 
 const blockingIssues = computed(() => props.precheck?.errorItems || [])
 const warningIssues = computed(() => props.precheck?.warningItems || [])
@@ -734,7 +744,7 @@ function targetLabel(target: MarketplaceTargetSite) {
           <span v-if="modelOperationReason('text.translate')" role="status" class="muted">{{ modelOperationReason('text.translate') }}</span>
           <button v-desktop="'text.translate'" class="btn btn-outline" :disabled="!!modelOperationReason('text.translate') || props.loading || props.categoryResultTranslating || !props.categoryResults.length" @click="emit('translateCategoryResults')">翻译候选类目</button>
         </div>
-        <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ props.loading ? '正在请求当前平台实时类目接口...' : '候选类目来自当前平台实时搜索；选中类目后再读取并保存平台属性定义。' }}</p>
+        <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ props.loading ? '正在请求当前平台实时类目接口...' : '候选类目来自当前平台实时搜索。' }}</p>
         <p v-if="props.categoryAutoMatchTargetError" class="mt-2 text-xs text-amber-700 dark:text-amber-300">本目标站点自动匹配未完成：{{ props.categoryAutoMatchTargetError }}</p>
         <div class="mt-4 flex gap-2">
           <input :value="props.categoryQuery" class="input" placeholder="类目关键词" @input="emit('updateCategoryQuery', ($event.target as HTMLInputElement).value)" @keyup.enter="emit('searchCategory')" />
@@ -774,26 +784,36 @@ function targetLabel(target: MarketplaceTargetSite) {
           <input v-model="activeDraft.categoryPath" class="input mt-1" />
         </label>
         <div class="mt-4 flex flex-wrap gap-2">
-          <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory" @click="emit('applyCategory')">刷新平台属性</button>
+          <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory" @click="emit('applyCategory')">{{ hasLoadedCategoryDefinition ? '刷新平台属性' : '编辑平台属性' }}</button>
           <span v-if="modelOperationReason('text.translate')" role="status" class="muted">{{ modelOperationReason('text.translate') }}</span>
           <button v-desktop="'text.translate'" class="btn btn-outline" :disabled="!!modelOperationReason('text.translate') || props.loading || props.categoryAttributeTranslating || categoryAttributeState !== 'ready'" @click="emit('translateCategoryAttributes')">翻译平台属性</button>
-          <button v-if="!props.skuScope" class="btn btn-outline" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('categoryPrecheck')">类目预检</button>
+          <button v-if="!props.skuScope" class="btn btn-outline" :disabled="props.loading || !hasSelectedCategory || props.category?.categoryId !== activeDraft.categoryId.trim()" @click="emit('categoryPrecheck')">类目预检</button>
         </div>
 
         <div v-if="categoryAttributeState === 'empty'" class="mt-4 rounded-lg border border-dashed border-accent-300 bg-white p-4 text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">
           请先从候选结果中选择类目。
         </div>
         <div v-else-if="categoryAttributeState === 'loading'" class="mt-4 rounded-lg border border-brand-200 bg-brand-50 p-4 text-sm text-brand-700 dark:border-primary-500/40 dark:bg-primary-950/20 dark:text-brand-300">
-          正在读取并保存平台属性定义...
+          正在读取平台属性定义…
         </div>
         <div v-else-if="categoryAttributeState === 'error'" class="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
           <div class="font-semibold">平台属性定义未加载</div>
-          <p class="mt-1">{{ categoryAttributeErrorMessage }}</p>
+          <p class="mt-1">{{ props.categoryAttributeError }}</p>
           <button class="btn btn-outline mt-3" :disabled="props.loading || props.categoryAttributeLoading" type="button" @click="emit('applyCategory')">重新加载</button>
         </div>
-        <div v-else class="mt-4 flex flex-wrap gap-2">
+        <div v-else-if="categoryAttributeState === 'ready'" class="mt-4 flex flex-wrap gap-2">
           <span class="badge-muted">必填属性 {{ requiredAttributeFields.length }} 个</span>
           <span class="badge-muted">可选属性 {{ optionalAttributeFields.length }} 个</span>
+        </div>
+
+        <div v-if="filledAttributes.length" class="mt-4">
+          <h4 class="text-sm font-semibold">已填属性</h4>
+          <dl class="mt-2 grid gap-2 text-sm">
+            <div v-for="attribute in filledAttributes" :key="attribute.id" class="grid grid-cols-2 gap-3">
+              <dt class="break-words text-accent-500">{{ attribute.id }}</dt>
+              <dd class="whitespace-pre-wrap break-words">{{ attribute.text }}</dd>
+            </div>
+          </dl>
         </div>
 
         <p v-if="skuVariantCount" class="mt-3 text-sm text-brand-700">此类目还有 {{ skuVariantCount }} 个 SKU 差异字段，请在 SKU 页的“属性 / 详情”中按规格填写。</p>
@@ -1080,7 +1100,7 @@ function targetLabel(target: MarketplaceTargetSite) {
             </label>
           </div>
         </div>
-        <CategoryPrecheckPanel :result="props.categoryPrecheck" @locate-attribute="focusAttribute" />
+        <CategoryPrecheckPanel :result="props.categoryPrecheck" :can-locate-attribute="hasLoadedCategoryDefinition" @locate-attribute="focusAttribute" />
       </article>
     </div>
   </section>

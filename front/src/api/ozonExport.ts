@@ -8,7 +8,7 @@ export interface OzonExportRequest {
   listing_ids: string[]
   template_name: string
   template_base64: string
-  overrides: Record<string, Record<string, string>>
+  overrides: Record<string, Record<string, string | Record<string, string>>>
   preview_fingerprint?: string
 }
 function checked<T extends { ok: boolean }>(data: T & { error?: string }): T {

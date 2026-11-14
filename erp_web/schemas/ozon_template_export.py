@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class OzonExportOverride(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    template_fields: dict[str, str] = Field(default_factory=dict)
     title: str | None = Field(default=None, max_length=500)
     price: str | None = Field(default=None, max_length=64)
     brand: str | None = Field(default=None, max_length=255)
@@ -41,6 +42,8 @@ class OzonExportTemplate(TypedDict):
     category_id: str
     currency: str
     required_fields: list[str]
+    extra_fields: dict[str, str]
+    type_options: list[str]
 
 
 class OzonExportRow(TypedDict):

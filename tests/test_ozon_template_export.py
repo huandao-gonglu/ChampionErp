@@ -15,16 +15,20 @@ from erp_web.services.ozon_category_template import MAIN, OzonCategoryTemplate
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
 
 
-def template_bytes(*, category="43429543", currency="CNY", populated=False, changed_required=False, brand_values=None, oversized=False, no_brand="无品牌"):
+def template_bytes(*, category="43429543", category_name="圣诞装饰品", type_id="95421", currency="CNY", populated=False, changed_required=False, type_options=None, default_type=None, brand_values=None, oversized=False, no_brand="无品牌"):
     names = {"list_name": "模板", "offer_id": "货号", "name": "商品名称", "price": "非促销最高价格，CNY",
              "barcode": "条形码（序列号/EAN）", "weight": "毛重，克", "width": "包装宽度，毫米",
              "height": "包装高度，毫米", "depth": "包装长度，毫米", "picture": "主图链接",
              "pictures": "附加图片链接", "desc_type": "类型", "review_promo": "加速评价收集", "promotion_no": "否", "no_brand": no_brand}
-    info = {"name": "圣诞装饰品", "additional_column_by_name": names,
+    info = {"name": category_name, "additional_column_by_name": names,
             "attributes": {"85": {"Name": "品牌", "IsRequired": True, "IsOversized": oversized,
                                    "LookupData": {"Values": {str(i): {"Value": value} for i, value in enumerate(brand_values or [])}}},
                            "9048": {"Name": "型号名称（针对合并为一张商品卡片）", "IsRequired": True},
-                           "8229": {"IsRequired": True, "LookupData": {"Values": {"95421": {"ID": 95421, "Value": "圣诞装饰品"}}}}}}
+                           "8229": {"IsRequired": True, "LookupData": {"Values": {type_id: {"ID": int(type_id), "Value": category_name}}}}}}
+    if type_options is not None:
+        info["attributes"]["8229"]["LookupData"]["Values"] = {str(i): {"ID": i, "Value": value} for i, value in enumerate(type_options)}
+    if changed_required:
+        info["attributes"]["123"] = {"Name": "套装件数", "IsRequired": True, "Type": "Integer"}
     encoded = base64.b64encode(json.dumps(info, ensure_ascii=False).encode()).decode()
     def sheet(rows, *, main=False):
         root = ET.Element("worksheet", {"xmlns": MAIN})
@@ -45,12 +49,18 @@ def template_bytes(*, category="43429543", currency="CNY", populated=False, chan
                "F": names["review_promo"], "G": "SKU", "H": names["barcode"], "J": names["weight"]+"*",
                "K": names["width"]+"*", "L": names["height"]+"*", "M": names["depth"]+"*", "N": names["picture"]+"*",
                "O": names["pictures"], "Q": "品牌*", "R": "型号名称（针对合并为一张商品卡片）*", "S": "长度，厘米",
-               "U": "颜色名称", "W": names["desc_type"]+"*", "AU": "缺点"+("*" if changed_required else "")}
+               "U": "颜色名称", "W": names["desc_type"]+"*", "AT": "材料*" if changed_required else "材料", "AU": "套装件数" if changed_required else "缺点"}
+    if category_name == "海绵":
+        # 海绵模板在促销列后多一列，实际品牌、型号及条码等字段均随之右移。
+        shifted = {"G": "H", "H": "I", "J": "K", "K": "L", "L": "M", "M": "N",
+                   "N": "O", "O": "P", "Q": "R", "R": "S", "U": "T"}
+        headers = {shifted.get(column, column): value for column, value in headers.items() if column != "S"}
+        headers["G"] = "收集首批评价"
     configs = [{"A": key, "B": value} for key, value in {
         "CURRENCY": currency, "DESCRIPTION_CATEGORY_ID": category, "PRODUCTS_FIRST_DATA_ROW_INDEX": "5", "PRODUCTS_TITLE_ROW_INDEX": "2"}.items()]
     parts = {"xl/workbook.xml": f'<workbook xmlns="{MAIN}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="模板" sheetId="1" r:id="r1"/><sheet name="configs" sheetId="2" r:id="r2" state="hidden"/><sheet name="info" sheetId="3" r:id="r3" state="hidden"/><sheet name="validation" sheetId="4" r:id="r4" state="hidden"/></sheets><definedNames><definedName name="name5">validation!$F$1:$F$3</definedName><definedName localSheetId="0" name="_xlnm._FilterDatabase">模板!$A$4:$AU$5</definedName></definedNames></workbook>'.encode(),
              "xl/_rels/workbook.xml.rels": b'<Relationships>'+b''.join(f'<Relationship Id="r{i}" Target="worksheets/sheet{i}.xml"/>'.encode() for i in range(1, 5))+b'</Relationships>',
-             "xl/worksheets/sheet1.xml": sheet([{"B": "官方说明"}, headers, {"B": "必填字段"}, {"B": "填写帮助"}, {"B": "", "D": "", "F": "Да", "W": "圣诞装饰品", **({"B": "已有商品"} if populated else {})}], main=True),
+             "xl/worksheets/sheet1.xml": sheet([{"B": "官方说明"}, headers, {"B": "必填字段"}, {"B": "填写帮助"}, {"B": "", "D": "", "F": "Да", "W": category_name if default_type is None else default_type, **({"B": "已有商品"} if populated else {})}], main=True),
              "xl/worksheets/sheet2.xml": sheet(configs),
              "xl/worksheets/sheet3.xml": sheet([{"A": encoded[:80], "B": encoded[80:]}]),
              "xl/worksheets/sheet4.xml": sheet([{"F": ""}, {"F": "是"}, {"F": "否"}]),
@@ -123,7 +133,61 @@ def test_selected_single_and_multiple_export_preserve_official_contract_and_sour
     assert [service.store.get(i).model_dump() for i in body["listing_ids"]] == originals
 
 
-@pytest.mark.parametrize("kwargs,message", [({"category": "other"}, "类目"), ({"currency": "RUB"}, "CNY"), ({"populated": True}, "空白"), ({"changed_required": True}, "必填字段")])
+def test_sponge_template_uses_its_columns_type_and_original_titles(exporter):
+    service, body = exporter
+    row = service.store.get("listing-0")
+    row.title = "Губка для посуды 20×20 см"
+    row.snapshot["offer"]["groupId"] = "Sponge"
+    service.store.save(row)
+    body.update(listing_ids=[row.id], template_base64=base64.b64encode(template_bytes(
+        category="17030271", category_name="海绵", type_id="96009")).decode())
+    preview = service.preview(body)
+    assert preview["template"]["category"] == "海绵"
+    assert preview["summary"]["ready"] == 1 and not preview["rows"][0]["title_changed"]
+    assert preview["rows"][0]["fields"]["type"] == "海绵"
+    result = service.download({**body, "preview_fingerprint": preview["preview_fingerprint"]})
+    assert result["filename"].startswith("Ozon_海绵_1个SKU_")
+    cells, _ = read_cells(base64.b64decode(result["file_base64"]))
+    assert (cells["C5"], cells["R5"], cells["S5"], cells["W5"]) == (row.title, "诚实", "Sponge", "海绵")
+    assert cells["K5"] == "181" and cells["F5"] == "否"
+    assert not {"G5", "H5", "T5"} & cells.keys()
+
+
+def test_new_category_with_extra_fields_and_multiple_types(exporter):
+    service, body = exporter
+    body.update(listing_ids=["listing-0"], template_base64=base64.b64encode(template_bytes(
+        category="888", category_name="餐具", type_options=["汤勺", "餐叉"],
+        default_type="", changed_required=True)).decode())
+    preview = service.preview(body)
+    assert preview["template"]["extra_fields"] == {"AT": "材料", "AU": "套装件数", "type": "类型"}
+    assert preview["template"]["type_options"] == ["汤勺", "餐叉"]
+    assert {"缺少材料", "缺少套装件数", "缺少类型"} <= set(preview["rows"][0]["errors"])
+    with pytest.raises(ValueError, match="必填"):
+        service.download({**body, "preview_fingerprint": preview["preview_fingerprint"]})
+    extra = {"AT": "钢", "AU": "1.5", "type": "其他"}
+    body["overrides"] = {"listing-0": {"template_fields": extra}}
+    assert {"套装件数须为整数", "请选择模板字典中的商品类型"} <= set(service.preview(body)["rows"][0]["errors"])
+    extra.update(AU="2", type="餐叉")
+    preview = service.preview(body)
+    assert preview["summary"]["ready"] == 1
+    result = service.download({**body, "preview_fingerprint": preview["preview_fingerprint"]})
+    cells, _ = read_cells(base64.b64decode(result["file_base64"]))
+    assert (cells["AT5"], cells["AU5"], cells["W5"]) == ("钢", "2", "餐叉")
+    extra["B"] = "错误货号"
+    with pytest.raises(ValueError, match="当前模板"):
+        service.preview(body)
+
+
+@pytest.mark.parametrize("choices,default,expected", [
+    (["茶杯", "马克杯"], "马克杯", "马克杯"), (["马克杯"], "", "马克杯"),
+    (["茶杯", "马克杯"], "无效", ""), ([], "", "")])
+def test_product_type_comes_from_template_not_category(choices, default, expected):
+    template = OzonCategoryTemplate(template_bytes(category="998", category_name="杯具",
+        type_options=choices, default_type=default))
+    assert template.product_type == expected
+
+
+@pytest.mark.parametrize("kwargs,message", [({"currency": "RUB"}, "CNY"), ({"populated": True}, "空白")])
 def test_rejects_incompatible_or_populated_templates(kwargs, message):
     with pytest.raises(ValueError, match=message): OzonCategoryTemplate(template_bytes(**kwargs))
 
@@ -172,7 +236,7 @@ def test_currency_category_and_image_problems_are_visible_before_export(exporter
     service.store.save(row)
     preview = service.preview(body)
     errors = preview["rows"][0]["errors"]
-    assert any("币种" in message for message in errors) and any("类目" in message for message in errors) and "缺少主图" in errors
+    assert any("币种" in message for message in errors) and any("类目" in message for message in preview["rows"][0]["warnings"]) and "缺少主图" in errors
 
 
 def test_rejects_wrong_platform_other_account_and_unselected_overrides(exporter):

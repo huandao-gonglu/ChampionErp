@@ -5,7 +5,7 @@ import { generateOzonExport, previewOzonExport, type OzonExportPreview } from '@
 
 vi.mock('@/api/ozonExport', () => ({ generateOzonExport: vi.fn(), previewOzonExport: vi.fn() }))
 const preview: OzonExportPreview = {
-  ok: true, template: { category: '圣诞装饰品', category_id: '43429543', currency: 'CNY', required_fields: ['货号', '价格'] },
+  ok: true, template: { category: '圣诞装饰品', category_id: '43429543', currency: 'CNY', required_fields: ['货号', '价格'], extra_fields: {}, type_options: [] },
   rows: [{ listing_id: 'one', seller_sku: 'SKU-01', version: 'v1', title_before: '原名称20×20', title_changed: true,
     fields: { title: '修正名称25×25', price: '37', weight_g: '180', width_mm: '260', height_mm: '20', length_mm: '260', brand: '诚实', model: '圣诞组合', barcode: '', main_image: 'https://images.example.com/one.jpg', variant: 'EE031', size_cm: '25' }, errors: [], warnings: ['未提供条码，将留空'] }],
   summary: { total: 1, ready: 1, missing: 0, barcode_missing: 1, title_changed: 1 }, preview_fingerprint: 'preview-v1',
@@ -67,14 +67,25 @@ describe('Ozon 模板导出弹窗', () => {
     expect(generateOzonExport).toHaveBeenCalledWith(expect.objectContaining({ preview_fingerprint: 'edited-v2' }))
   })
   it('缺少必填资料时阻止生成，错误模板可重新选择', async () => {
-    vi.mocked(previewOzonExport).mockRejectedValueOnce(new Error('当前支持圣诞装饰品类目'))
-    await upload(); expect(wrapper.get('[role="alert"]').text()).toContain('圣诞装饰品')
+    vi.mocked(previewOzonExport).mockRejectedValueOnce(new Error('请上传空白类目模板'))
+    await upload(); expect(wrapper.get('[role="alert"]').text()).toContain('空白类目模板')
     expect(wrapper.findAll('button').find(b=>b.text()==='下一步：检查商品')!.attributes('disabled')).toBeDefined()
     vi.mocked(previewOzonExport).mockResolvedValue({ ...preview, rows: [{ ...preview.rows[0], errors: ['缺少价格'] }], summary: { ...preview.summary, ready: 0, missing: 1 } })
     await upload(); await button('下一步：检查商品')
     expect(wrapper.get('[data-testid="ozon-export-row"]').text()).toContain('缺少价格')
     expect(wrapper.findAll('button').find(b=>b.text()==='生成 1 个 SKU 文件')!.attributes('disabled')).toBeDefined()
     expect(generateOzonExport).not.toHaveBeenCalled()
+  })
+  it('新类目可按模板补充必填属性并选择商品类型', async () => {
+    vi.mocked(previewOzonExport).mockResolvedValue({ ...preview, template: { ...preview.template,
+      category: '餐具', extra_fields: { AT: '材料', type: '类型' }, type_options: ['汤勺', '餐叉'] } })
+    await upload(); await button('下一步：检查商品'); await button('编辑')
+    await wrapper.get('input[aria-label="材料"]').setValue('钢')
+    await wrapper.get('select[aria-label="类型"]').setValue('餐叉')
+    await button('保存并检查')
+    expect(previewOzonExport).toHaveBeenLastCalledWith(expect.objectContaining({
+      overrides: { one: { template_fields: { AT: '钢', type: '餐叉' } } },
+    }))
   })
   it('店铺切换后丢弃迟到的旧模板检查结果', async () => {
     let finish!: (result: OzonExportPreview)=>void

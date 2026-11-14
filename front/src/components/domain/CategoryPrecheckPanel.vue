@@ -2,9 +2,10 @@
 import { computed } from 'vue'
 import type { CategoryPrecheckResult } from '@/types/workflow'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   result: CategoryPrecheckResult | null
-}>()
+  canLocateAttribute?: boolean
+}>(), { canLocateAttribute: true })
 
 const emit = defineEmits<{
   locateAttribute: [attributeId: string]
@@ -34,7 +35,7 @@ function attributeIdFromIssue(issue: string) {
     <ul v-if="issues.length" class="mt-2 list-inside list-disc">
       <li v-for="item in issues" :key="item">
         <button
-          v-if="attributeIdFromIssue(item)"
+          v-if="props.canLocateAttribute && attributeIdFromIssue(item)"
           class="rounded px-1 text-left underline decoration-dotted underline-offset-2 transition hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400"
           type="button"
           :title="`定位到属性 ${attributeIdFromIssue(item)}`"

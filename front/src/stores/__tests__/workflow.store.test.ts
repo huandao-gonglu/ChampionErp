@@ -1,6 +1,7 @@
 import { apiClient } from '@/api/client'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
+import DraftCategoryWorkspace from '@/views/workflow/DraftCategoryWorkspace.vue'
 import DraftPublishPrecheckWorkspace from '@/views/workflow/DraftPublishPrecheckWorkspace.vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct } from '@/constants/initialState'
@@ -537,6 +538,44 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.publishPrecheck).toHaveBeenCalledOnce()
     expect(store.currentDraft.draftId).toBe('draft-next-precheck')
     expect(store.targetEditors[1].state.precheck).toBeNull()
+  })
+
+  it('打开类目标签直接显示各平台已填内容，点击编辑才读取该平台定义', async () => {
+    const store = useWorkflowStore()
+    const draft = multiMarketCategoryDraft()
+    draft.targetSites[0].categoryPath = '家居 / 清洁用具'
+    draft.targetSites[1].attributes = {
+      color: { values: [{ dictionaryValueId: '123', value: '白色' }, { value: '米色' }] },
+      width: { value: '12', unit: 'cm' },
+    }
+    store.currentDraft = draft
+    const wrapper = mount(DraftCategoryWorkspace)
+    try {
+      await flushPromises()
+      const [yandex, ozon] = wrapper.findAll('[data-testid="category-target-editor"]')
+      const fields = yandex.findAll('input').map(input => input.element.value)
+      expect(fields).toContain('yandex-old')
+      expect(fields).toContain('家居 / 清洁用具')
+      expect(yandex.text()).toContain('棉')
+      expect(ozon.text()).toContain('白色、米色')
+      expect(ozon.text()).toContain('12 cm')
+      expect(ozon.text()).not.toContain('棉')
+      expect(wrapper.text()).not.toContain('平台属性定义未加载')
+      expect(wrapper.text()).not.toContain('正在处理该平台')
+      expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
+      expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+
+      vi.mocked(workflowApi.fetchCategoryAttrs).mockRejectedValueOnce(new Error('平台接口超时'))
+      await ozon.findAll('button').find(button => button.text() === '编辑平台属性')!.trigger('click')
+      await flushPromises()
+      expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledOnce()
+      expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('ozon', 'ozon-old', 'global')
+      expect(ozon.text()).toContain('平台接口超时')
+      expect(ozon.text()).toContain('白色、米色')
+      expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('多平台类目区不切换当前平台即可独立搜索和编辑', async () => {
@@ -2794,7 +2833,7 @@ describe('workflow store live API flow', () => {
     expect(store.category?.fetchedAt).toBeUndefined()
     expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
 
-    // 进入类目/属性页时经实时接口瞬时加载定义，只保留在编辑态。
+    // 用户主动读取平台定义后，完整字段进入编辑态。
     await store.loadCategoryAttributes()
 
     expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('mercadolibre', 'MLM-NEW', 'MLM')

@@ -1260,6 +1260,8 @@ export interface BackendOzonExportTemplate {
   category_id: string
   currency: string
   required_fields: Array<string>
+  extra_fields: Record<string, string>
+  type_options: Array<string>
 }
 
 export interface BackendOzonExportRow {

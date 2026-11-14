@@ -308,7 +308,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
   `online_product_facade.export_ozon` → `OnlineOzonExportService`；只读取当前 Yandex 店铺快照，
   不调用平台 API、不修改在线商品或草稿、不进入发布队列。
   `ozon_category_template.py` 解析官方 XLSX 的隐藏元数据并替换商品数据区，保留字典、校验和样式；
-  当前仅支持已核对的中文圣诞装饰品 CNY 模板，其他类目或必填契约变化显式拒绝。
+  类目和类型字典取自上传的 CNY 模板，按表头和属性元数据识别必填字段，额外字段由导出编辑逐 SKU 补充。
   生成时重建预览并检查 `preview_fingerprint`，编辑只作用于本次请求的导出覆盖值。
   无品牌值取自模板元数据；中文型号只在整个已同步分组的俄文标题一致且无跨组重名时自动复用标题，
   不以选中子集决定型号。中文型号、完整字典中的无效品牌阻止导出；品牌字典不完整时提示到平台核对。

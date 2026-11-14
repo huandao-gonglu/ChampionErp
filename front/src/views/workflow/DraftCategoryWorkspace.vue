@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import CategoryAttributesPanel from '@/components/domain/CategoryAttributesPanel.vue'
 import { useWorkflowStore } from '@/stores/workflow'
@@ -33,17 +33,6 @@ useAiPageContext(() => {
     attribute_id: focusedAttribute.value || undefined,
   }
 }, 10)
-
-let active = true
-onBeforeUnmount(() => { active = false })
-onMounted(async () => {
-  for (const editor of targetEditors.value) {
-    if (!active) break
-    if (editor.draft.categoryId && (!editor.state.category?.fetchedAt || editor.state.category.categoryId !== editor.draft.categoryId)) {
-      await editor.run(editor.actions.loadCategoryAttributes)
-    }
-  }
-})
 </script>
 
 <template>
