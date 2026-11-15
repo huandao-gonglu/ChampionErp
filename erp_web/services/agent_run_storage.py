@@ -125,7 +125,7 @@ class AgentRunStorage:
                                       *availability["blocked_use_cases"].values())))
 
     def code_failure_instructions(self, messages: list) -> str:
-        """脚本异常后补充已有业务回执，避免把整段脚本当作从未执行。"""
+        """脚本异常时提示复用已有结果，有写入时附实际回执。"""
         if not messages or not isinstance(messages[-1], ModelRequest):
             return ""
         prefixes = tuple(
@@ -136,9 +136,11 @@ class AgentRunStorage:
             return ""
         rows = [row for row in self.store.current_turn_receipts(self.conversation_id)
                 if row["tool_call_id"].startswith(prefixes)]
+        recovery = ("先核对脚本报错前的工具回执和标准输出。已有证据足够时直接作答；"
+                    "缺少模块时使用支持的内置函数，只补尚缺的计算。")
         if not rows:
-            return ""
-        lines = ["刚才脚本的实际写回执如下。脚本报错不会撤销已完成操作；只处理未完成部分，禁止整段重放。"]
+            return recovery
+        lines = [recovery, "刚才脚本的实际写回执如下。脚本报错不会撤销已完成操作；只处理未完成部分，禁止整段重放。"]
         size = 0
         for index, row in enumerate(rows):
             output = row["output"] or {}

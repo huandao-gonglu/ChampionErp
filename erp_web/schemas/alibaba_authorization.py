@@ -1,6 +1,6 @@
 """1688 授权状态的公开契约，不含应用密钥或买家 Token。"""
 from typing import Literal, TypedDict
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from erp_web.schemas.managed_settings import AlibabaApplicationType
 
 AuthorizationAttempt = Literal["idle", "waiting", "expired", "failed"]
@@ -8,12 +8,20 @@ AuthorizationAttempt = Literal["idle", "waiting", "expired", "failed"]
 
 class OneBoundAuthorizationRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
-    session: str = Field(min_length=1, max_length=4096)
+    access_token: str | None = Field(default=None, min_length=1, max_length=4096)
+    session: str | None = Field(default=None, min_length=1, max_length=4096)
+
+    @model_validator(mode='after')
+    def one_credential(self):
+        if bool(self.access_token) == bool(self.session):
+            raise ValueError('请只提供一种万邦买家凭据')
+        return self
 
 
 class AlibabaAuthorizationStatus(TypedDict):
     ok: bool
     application_type: AlibabaApplicationType
+    active: bool
     application_configured: bool
     can_authorize: bool
     authorized: bool

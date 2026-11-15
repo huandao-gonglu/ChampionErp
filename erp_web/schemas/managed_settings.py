@@ -1,6 +1,6 @@
 """管理员共享设置及国际物流导入的请求契约。"""
 from datetime import date
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, get_args
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -9,6 +9,7 @@ EXCHANGE_RATE_FIELDS = (
     "exchange_rate_api_url", "exchange_rate_timeout_seconds", "exchange_rate_cache_ttl_seconds",
 )
 AlibabaApplicationType = Literal['alibaba', 'alibaba_crossborder', 'onebound']
+ALIBABA_APPLICATION_TYPES = frozenset(get_args(AlibabaApplicationType))
 
 
 class PublicEnterpriseApplication(TypedDict):
@@ -197,7 +198,7 @@ class TariffUpgradeRequest(BaseModel):
     expected_version: str = Field(min_length=1, max_length=80)
 
 
-__all__ = ["EXCHANGE_RATE_FIELDS", "AlibabaApplicationType", "ManagedSettings", "PublicExchangeRateSettings", "PublicEnterpriseApplication", "PublicOneBoundApplication", "OneBoundApplicationSettings",
+__all__ = ["ALIBABA_APPLICATION_TYPES", "EXCHANGE_RATE_FIELDS", "AlibabaApplicationType", "ManagedSettings", "PublicExchangeRateSettings", "PublicEnterpriseApplication", "PublicOneBoundApplication", "OneBoundApplicationSettings",
            "TariffRule", "TariffRulesResponse", "TariffRulesQuery",
            "TariffVersion", "TariffSettings", "TariffSettingsResponse", "TariffDiff", "TariffFieldChange", "TariffRuleChange", "ExchangeRateSettings", "AlibabaApplicationSettings",
            "ManagedSettingsRequest", "TariffImportRequest", "TariffUpgradeRequest"]

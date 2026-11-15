@@ -1,6 +1,6 @@
 /** 仅用于显示；文本标签不改变原生消息、工具执行或历史。 */
 export interface AssistantTextSegment {
-  kind: 'text' | 'thinking' | 'unseparated'
+  kind: 'text' | 'thinking' | 'unseparated' | 'tool-markup'
   text: string
 }
 
@@ -15,7 +15,8 @@ export function splitAssistantText(text: string, streaming = false): AssistantTe
     }
     // 只处理开头的标签块；正文提及标签或代码示例不做解释。
     if (!prefix.startsWith('<think>')) {
-      segments.push({ kind: 'text', text: rest })
+      const toolMarkup = /^<run_code>\s*<code>|^<[｜|]{1,2}DSML[｜|]{1,2}\s*(?:function_calls|invoke)\b/i.test(prefix)
+      segments.push({ kind: toolMarkup ? 'tool-markup' : 'text', text: rest })
       break
     }
     const end = prefix.indexOf('</think>', '<think>'.length)

@@ -125,12 +125,13 @@ class BusinessDataCatalog:
             result.data = [*selected, candidate]
             if len(result.model_dump_json()) > result.max_chars - 700:
                 result.limited = True
-                result.notice = '本页达到上下文预算。data 只含当前页，不能用 total 直接索引；按 next_offset 继续，或用 fields 缩小字段。path 展开单项明细。'
+                result.notice = ('本页达到上下文预算，按 next_offset 继续读取。' if selected else
+                                 f'位置 {request.offset} 的单项超过预算，尚未读取。请在同一 offset 用 fields 缩小字段，或用 path 展开明细。')
                 break
             selected.append(candidate)
         result.data = selected if isinstance(value, list) else (selected[0] if selected else None)
         end = request.offset + len(selected)
-        result.next_offset = end if end < len(rows) else None
+        result.next_offset = end if selected and end < len(rows) else None
         return result
 
 

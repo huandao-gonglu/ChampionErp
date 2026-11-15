@@ -137,10 +137,11 @@ const statusLabels: Record<string, string> = {
   <template v-if="partType === 'text'">
     <template v-for="(segment, index) in textSegments" :key="index">
       <p v-if="segment.kind === 'text'" class="whitespace-pre-wrap break-words text-sm leading-6" data-testid="ai-part-text">{{ segment.text }}</p>
-      <details v-else class="group/reasoning min-w-0" :data-testid="segment.kind === 'thinking' ? 'ai-part-reasoning' : 'ai-part-unseparated'" @toggle="toggleDetails($event, `segment-${index}`)">
+      <details v-else class="group/reasoning min-w-0" :data-testid="segment.kind === 'thinking' ? 'ai-part-reasoning' : `ai-part-${segment.kind}`" @toggle="toggleDetails($event, `segment-${index}`)">
         <summary class="flex cursor-pointer list-none items-center gap-2 py-1 text-xs text-slate-500 focus-visible:outline-primary-500 dark:text-accent-300 [&::-webkit-details-marker]:hidden">
           <PhBrain :size="16" class="shrink-0" aria-hidden="true" />
-          {{ (reasoningStreaming ? '正在思考…' : (segment.kind === 'thinking' ? '思考过程' : '查看回复原文（含思考内容）')) }}
+          <template v-if="segment.kind === 'tool-markup'">查看未执行的工具文本</template>
+          <template v-else>{{ reasoningStreaming ? '正在思考…' : (segment.kind === 'thinking' ? '思考过程' : '查看回复原文（含思考内容）') }}</template>
           <PhCaretRight :size="12" class="shrink-0 transition-transform group-open/reasoning:rotate-90" aria-hidden="true" />
         </summary>
         <template v-if="expanded[`segment-${index}`]">

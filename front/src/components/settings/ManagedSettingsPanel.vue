@@ -89,7 +89,7 @@ onMounted(load)
             <option value="onebound">万邦 1688 API</option>
           </select>
         </label>
-        <p class="muted text-sm">商品采集、采购、支付和物流查询使用所选方案及当前用户对应的买家授权。切换方案不会替用户取得新的授权。</p>
+        <p class="muted text-sm">商品采集、采购、支付和物流查询使用所选方案及当前用户对应的买家授权。每套方案可在「1688 授权」中单独管理，切换时保留各方案的授权。</p>
       </section>
       <p class="text-sm text-amber-700 dark:text-amber-300">更换企业应用凭据后，对应的用户授权将失效，需要重新连接账号。已保存的密钥留空可继续使用。</p>
       <section v-for="application in applications" :key="application.key" class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
@@ -100,7 +100,7 @@ onMounted(load)
       </section>
       <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700" aria-label="万邦企业配置">
         <h4 class="font-semibold">万邦 1688 API</h4>
-        <p class="muted text-sm">Key 和 Secret 仅由管理员维护。企业密钥配置完成不代表用户已连接自己的 1688 账号；万邦个人在线授权尚待协议接入。</p>
+        <p class="muted text-sm">API Key 和 API Secret 用于企业接入万邦。每位用户的 1688 买家授权单独保存。</p>
         <label class="block text-sm">API Key<input v-model="settings.onebound.api_key" maxlength="256" autocomplete="off" class="input mt-2 w-full" /></label>
         <label class="block text-sm">API Secret<input v-model="secrets.onebound" type="password" maxlength="4096" autocomplete="new-password" :placeholder="settings.onebound.secret_configured ? '已配置，填写可更换' : '尚未配置'" class="input mt-2 w-full" /></label>
       </section>

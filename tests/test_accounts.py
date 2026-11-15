@@ -377,7 +377,7 @@ def test_admin_pastes_1688_callback_into_own_space(accounts_http, monkeypatch, p
     from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
 
     origin, runtime, login = accounts_http
-    runtime.root.db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': provider})
+    runtime.root.db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': 'onebound'})
     redirect = 'http://localhost:5050/auth/alibaba/callback'
     prefix = 'ERP_ALIBABA_' if provider == 'alibaba' else 'ERP_ALIBABA_CROSSBORDER_'
     monkeypatch.setenv(prefix + "APP_KEY", "1938727" if provider == 'alibaba' else "4848173")
@@ -397,25 +397,29 @@ def test_admin_pastes_1688_callback_into_own_space(accounts_http, monkeypatch, p
     complete = auth + '/complete'
 
     def callback(client):
-        link = client.post(auth + '/start', json={}).json()['url']
+        link = client.post(auth + '/start', json={'provider': provider}).json()['url']
         state = parse_qs(urlsplit(link).query)['state'][0]
         return redirect + '?code=private%2Bcode&state=' + state
 
     admin_url = callback(admin)
     user_url = callback(user)
-    body = {'callback_url': admin_url}
+    body = {'callback_url': admin_url, 'provider': provider}
     assert requests.post(complete, json=body).status_code == 401
     assert user.post(complete, json=body).status_code == 403
     assert admin.post(complete, json=body, headers={'X-CSRF-Token': ''}).status_code == 403
     for invalid in (user_url, admin_url.replace('localhost', 'example.com'), admin_url.replace('/callback', '/other'),
                     admin_url + '&code=b', admin_url + '&state=b', admin_url.replace('code=', 'x=')):
-        result = admin.post(complete, json={'callback_url': invalid})
+        result = admin.post(complete, json={'callback_url': invalid, 'provider': provider})
         assert result.status_code == 400 and 'private' not in result.text
     assert not exchanges
     result = admin.post(complete, json=body)
     assert result.status_code == 200 and result.json()['account_name'] == '买家甲'
     assert 'hidden-token' not in result.text and 'private' not in result.text
-    assert admin.get(auth).json()['authorized'] and not user.get(auth).json()['authorized']
+    assert admin.get(auth, params={'provider': provider}).json()['authorized']
+    assert not user.get(auth, params={'provider': provider}).json()['authorized']
+    assert admin.get(auth).json()['application_type'] == 'onebound'
+    assert not admin.get(auth).json()['authorized']
+    assert admin.get(auth, params={'provider': 'invalid'}).status_code == 400
     assert admin.post(complete, json=body).status_code == 400
     assert exchanges == [(redirect, 'private+code')]
 

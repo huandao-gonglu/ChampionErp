@@ -5,6 +5,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+from erp_web.schemas.managed_settings import ALIBABA_APPLICATION_TYPES
+
 
 class RequestValidationError(ValueError):
     """HTTP 请求不满足公开契约，并携带稳定的 HTTP 错误状态。"""
@@ -50,6 +52,7 @@ UPLOADS = FieldRule("uploads")
 BOOLEAN = FieldRule("boolean")
 LIMIT = FieldRule("integer", minimum=1, maximum=500)
 PORT = FieldRule("integer", minimum=1, maximum=65535)
+ALIBABA_PROVIDER = FieldRule('enum', choices=ALIBABA_APPLICATION_TYPES)
 COLLECT_MODE = FieldRule("enum", choices=frozenset({"browser", "api", "playwright", "browser-session", "browser_session"}))
 IMAGE_ACTION = FieldRule(
     "enum",
@@ -180,7 +183,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/business-data/read": _contract(fields={"resource": STRING, "params": OBJECT, "path": FieldRule("string", allow_empty=True), "fields": STRING_ARRAY, "filters": OBJECT, "offset": FieldRule("integer", minimum=0), "limit": LIMIT}, required=("resource",)),
     "/api/admin/settings": _contract(fields={"revision": STRING, "exchange_rates": OBJECT, "alibaba": OBJECT,
         "alibaba_crossborder": OBJECT, "onebound": OBJECT,
-        "alibaba_api_application": FieldRule('enum', choices=frozenset({'alibaba', 'alibaba_crossborder', 'onebound'})),
+        "alibaba_api_application": ALIBABA_PROVIDER,
         "crossborderbus_client_secret": STRING},
         required=("revision", "exchange_rates", "alibaba_crossborder")),
     "/api/shipping/tariffs/import": _contract(fields={"platform": STRING, "scope": STRING, "filename": STRING,
@@ -353,9 +356,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/mercadolibre/real-auth-test": _PRODUCT,
     "/api/mercadolibre/refresh-token": _EMPTY,
     "/api/alibaba/crossborder/authorization/start": _EMPTY,
-    "/api/alibaba/authorization/start": _EMPTY,
-    "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING}, required=("callback_url",)),
-    "/api/alibaba/authorization/onebound": RequestContract({"session": STRING}, required=("session",)),
+    "/api/alibaba/authorization/start": RequestContract({"provider": ALIBABA_PROVIDER}),
+    "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING, "provider": ALIBABA_PROVIDER}, required=("callback_url",)),
+    "/api/alibaba/authorization/onebound": RequestContract({"access_token": STRING, "session": STRING}, required_any=(("access_token", "session"),)),
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(
         # 人工确认摘要指纹：HTTP 边界声明字符串类型；业务判空与绑定校验

@@ -6,11 +6,11 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from erp_web.services import onebound_api_transport as transport
-from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, AlibabaApiRejected, ORDER_DETAIL, LOGISTICS_INFO
+from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, AlibabaApiRejected, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, _parse_response
 from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_URL, PAY_STATUS, PAY
 
 
-CONFIG = {'application_type': 'onebound', 'api_key': 'vendor-key', 'api_secret': 'vendor-secret', 'access_token': 'buyer-session'}
+CONFIG = {'application_type': 'onebound', 'api_key': 'vendor-key', 'api_secret': 'vendor-secret', 'access_token': 'buyer-token'}
 
 
 def response(value):
@@ -31,21 +31,22 @@ def test_custom_transport_preserves_arguments_and_write_semantics(monkeypatch, a
     parsed = urlsplit(request.full_url)
     params = parse_qs(parsed.query)
     assert (parsed.scheme, parsed.netloc, parsed.path) == ('https', 'api-gw.onebound.cn', '/1688/custom')
-    assert params['key'] == ['vendor-key'] and params['secret'] == ['vendor-secret'] and params['session'] == ['buyer-session']
+    assert params['key'] == ['vendor-key'] and params['secret'] == ['vendor-secret'] and 'session' not in params
     method = 'alibaba.alipay.url.get' if api == PAY_URL else api
     assert params['method'] == ['com.alibaba.trade/' + method]
-    assert json.loads(params['_o_args'][0]) == ({'orderIdList': [123]} if api == PAY_URL else values)
+    assert json.loads(params['_o_args'][0]) == {**({'orderIdList': [123]} if api == PAY_URL else values), 'access_token': 'buyer-token'}
     assert params['cache'] == ['no'] and '_aop_signature' not in params
     context = kwargs['request_context']
     assert context.semantics == ('write' if api in {CREATE, PAY} else 'read')
     assert context.max_attempts == 1 and not kwargs['follow_redirects']
-    assert not any(secret in repr(context) for secret in ('vendor-key', 'vendor-secret', 'buyer-session'))
+    assert not any(secret in repr(context) for secret in ('vendor-key', 'vendor-secret', 'buyer-token'))
 
 
 def test_product_order_and_logistics_use_same_explicit_provider(monkeypatch):
     calls = []
     def send(request, **kwargs):
         params = parse_qs(urlsplit(request.full_url).query)
+        assert json.loads(params['_o_args'][0])['access_token'] == 'buyer-token'
         calls.append(params['method'][0])
         if 'queryProductDetail' in calls[-1]:
             return response({'response': {'result': {'success': True, 'result': {'offerId': 123}}}})
@@ -55,18 +56,20 @@ def test_product_order_and_logistics_use_same_explicit_provider(monkeypatch):
     assert client.product_detail('123')['offerId'] == 123
     client.query(ORDER_DETAIL, '123')
     client.query(LOGISTICS_INFO, '123')
+    client.query(LOGISTICS_TRACE, '123', logistics_id='456')
     assert calls == ['com.alibaba.fenxiao.crossborder/product.search.queryProductDetail',
-                     'com.alibaba.trade/' + ORDER_DETAIL, 'com.alibaba.logistics/' + LOGISTICS_INFO]
+                     'com.alibaba.trade/' + ORDER_DETAIL, 'com.alibaba.logistics/' + LOGISTICS_INFO,
+                     'com.alibaba.logistics/' + LOGISTICS_TRACE]
 
 
 @pytest.mark.parametrize('code,rejected', [('4005', True), ('4016', True), ('4001', False), ('4017', False), ('5000', False)])
 def test_vendor_failures_are_safe_and_do_not_claim_network_writes_failed(monkeypatch, code, rejected):
     monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: response({
-        'error_code': code, 'error': 'vendor-secret buyer-session', 'call_args': CONFIG}))
+        'error_code': code, 'error': 'vendor-secret buyer-token', 'call_args': CONFIG}))
     with pytest.raises(AlibabaApiError) as error:
         AlibabaSelfPurchaseClient(CONFIG).call(CREATE, {})
     assert isinstance(error.value, AlibabaApiRejected) is rejected
-    assert 'vendor-secret' not in str(error.value) and 'buyer-session' not in str(error.value)
+    assert 'vendor-secret' not in str(error.value) and 'buyer-token' not in str(error.value)
 
 
 def configure(store):
@@ -93,10 +96,29 @@ def test_flattened_business_errors_remain_rejections(monkeypatch, value):
 ])
 def test_official_order_list_does_not_accept_failed_or_incomplete_payload(payload):
     with pytest.raises(AlibabaApiError):
-        AlibabaApiClient._parse_response(ORDER_LIST, payload)
+        _parse_response(ORDER_LIST, payload)
 
 
 @pytest.mark.parametrize('rows', [[], [{'baseInfo': {'buyerID': 'buyer-a'}}]])
 def test_official_order_list_accepts_actual_response_without_success_flag(rows):
     payload = {'result': rows, 'totalRecord': len(rows)}
-    assert AlibabaApiClient._parse_response(ORDER_LIST, payload) == payload
+    assert _parse_response(ORDER_LIST, payload) == payload
+
+
+def test_same_enterprise_uses_each_buyers_token_for_paginated_query(monkeypatch):
+    sent = []
+    def send(request, **kwargs):
+        params = parse_qs(urlsplit(request.full_url).query)
+        sent.append((params['key'], json.loads(params['_o_args'][0])))
+        return response({'response': []})
+    monkeypatch.setattr(transport, 'managed_urlopen', send)
+    values = {'page': 2, 'pageSize': 20, 'access_token': 'untrusted-argument'}
+    for buyer in ('buyer-a', 'buyer-b'):
+        AlibabaSelfPurchaseClient({**CONFIG, 'access_token': buyer}).call(ORDER_LIST, values)
+    assert sent == [(['vendor-key'], {**values, 'access_token': buyer}) for buyer in ('buyer-a', 'buyer-b')]
+    assert values['access_token'] == 'untrusted-argument'
+
+
+def test_unknown_provider_fails_before_any_request():
+    with pytest.raises(AlibabaApiError, match='不支持的 1688 接入方案'):
+        AlibabaApiClient({**CONFIG, 'application_type': 'missing'})

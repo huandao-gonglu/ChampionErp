@@ -7,17 +7,17 @@ import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generat
 
 const account = vi.hoisted(() => ({ isAdmin: false }))
 vi.mock('@/stores/account', () => ({ useAccountStore: () => account }))
-vi.mock('@/api/alibabaAuthorization', () => ({ completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
+vi.mock('@/api/alibabaAuthorization', () => ({ bindOneBoundBuyerToken: vi.fn(), completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
 vi.mock('@/utils/desktop', () => ({ hasLocalOperations: vi.fn() }))
 enableAutoUnmount(afterEach)
 const status: BackendAlibabaAuthorizationStatus = {
-  ok: true, application_type: 'alibaba_crossborder', application_configured: true, can_authorize: true, authorized: true, member_id: 'buyer-a',
+  ok: true, active: true, application_type: 'alibaba_crossborder', application_configured: true, can_authorize: true, authorized: true, member_id: 'buyer-a',
   account_name: '采购甲', attempt: 'idle', expires_at: 0, refreshable: true, needs_reauthorization: false,
 }
 const url = 'https://auth.1688.com/auth/authorize.htm?state=opaque'
 const tab = { location: { replace: vi.fn() }, close: vi.fn(), opener: window }
-async function panel() {
-  const wrapper = mount(AlibabaSettingsPanel)
+async function panel(provider: BackendAlibabaAuthorizationStatus['application_type'] = 'alibaba_crossborder') {
+  const wrapper = mount(AlibabaSettingsPanel, { props: { provider } })
   await flushPromises()
   return wrapper
 }
@@ -37,22 +37,32 @@ afterEach(() => {
 })
 
 describe('1688 浏览器授权', () => {
-  it.each([false, true])('万邦个人授权待接入，管理员身份 %s 不开放凭据或默认买家绑定', async (isAdmin) => {
-    account.isAdmin = isAdmin
+  it('普通用户能看到万邦自己的授权状态', async () => {
     vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'onebound', can_authorize: false, authorized: false })
-    const wrapper = await panel()
-    expect(wrapper.text()).toContain('个人 1688 在线授权尚未接入')
-    expect(wrapper.find('input, a').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="connect-1688"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).not.toMatch(/Key|Secret|Session|控制台/)
+    const wrapper = await panel('onebound')
+    expect(wrapper.text()).toContain('暂未接入万邦的买家登录')
+    expect(wrapper.find('input, button').exists()).toBe(false)
+    expect(api.fetchAlibabaAuthorization).toHaveBeenCalledWith('onebound')
+  })
+
+  it('管理员在万邦卡片绑定自己的买家 Token', async () => {
+    account.isAdmin = true
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'onebound', active: false, can_authorize: false, authorized: false })
+    vi.mocked(api.bindOneBoundBuyerToken).mockResolvedValue({ ...status, application_type: 'onebound', authorized: true })
+    const wrapper = await panel('onebound')
+    await wrapper.get('input').setValue('personal-token')
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+    expect(api.bindOneBoundBuyerToken).toHaveBeenCalledWith('personal-token')
+    expect(wrapper.text()).toContain('已连接')
+    expect(wrapper.get('input').element.value).toBe('')
     expect(api.startAlibabaAuthorization).not.toHaveBeenCalled()
-    expect(window.open).not.toHaveBeenCalled()
   })
 
   it('自用应用显示独立的授权说明', async () => {
     vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'alibaba' })
-    const wrapper = await panel()
-    expect(wrapper.text()).toContain('当前应用：企业自用应用')
+    const wrapper = await panel('alibaba')
+    expect(wrapper.text()).toContain('企业自用应用 · 1688 授权')
     expect(wrapper.text()).not.toContain('请先在 1688 订购本服务')
   })
 
@@ -62,7 +72,7 @@ describe('1688 浏览器授权', () => {
     expect(wrapper.findAll('button')).toHaveLength(1)
     await wrapper.get('button').trigger('click')
     await flushPromises()
-    expect(api.startAlibabaAuthorization).toHaveBeenCalledWith()
+    expect(api.startAlibabaAuthorization).toHaveBeenCalledWith('alibaba_crossborder')
     expect(tab.opener).toBeNull()
     expect(tab.location.replace).toHaveBeenCalledWith(url)
     expect(wrapper.find('a, input, form').exists()).toBe(false)
@@ -71,7 +81,7 @@ describe('1688 浏览器授权', () => {
     expect(wrapper.text()).toContain('等待浏览器完成授权')
     vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, account_name: '采购乙' })
     await vi.advanceTimersByTimeAsync(2500)
-    expect(api.fetchAlibabaAuthorization).toHaveBeenLastCalledWith()
+    expect(api.fetchAlibabaAuthorization).toHaveBeenLastCalledWith('alibaba_crossborder')
     expect(wrapper.text()).toContain('采购乙')
     expect(wrapper.text()).not.toContain('等待浏览器完成授权')
     await vi.advanceTimersByTimeAsync(5000)
@@ -85,9 +95,9 @@ describe('1688 浏览器授权', () => {
     const input = wrapper.get('input')
     await input.setValue(callback)
     vi.mocked(api.completeAlibabaAuthorization).mockResolvedValue({ ...status, account_name: '管理员买家' })
-    await wrapper.get('button[type="button"]').trigger('click')
+    await wrapper.get('input').trigger('keydown.enter')
     await flushPromises()
-    expect(api.completeAlibabaAuthorization).toHaveBeenCalledWith(callback)
+    expect(api.completeAlibabaAuthorization).toHaveBeenCalledWith(callback, 'alibaba_crossborder')
     expect(wrapper.text()).toContain('管理员买家')
     expect((input.element as HTMLInputElement).value).toBe('')
     expect(window.open).not.toHaveBeenCalled()

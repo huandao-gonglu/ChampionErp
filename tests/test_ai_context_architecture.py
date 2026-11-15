@@ -551,7 +551,8 @@ def test_online_completion_reuses_native_validation_without_another_agent_loop()
     for forbidden in ("Agent(", "run_sync(", "run_stream", "sqlite3", "while ", "re.search", "re.match"):
         assert forbidden not in source
     chat = (ROOT / "erp_web/services/global_agent_chat_service.py").read_text()
-    assert "output_validator=validate_online_completion" in chat
+    assert "output_validator=validate_chat_output" in chat
+    assert "return validate_online_completion(ctx, output)" in chat
     for file in ("ai_agent_factory.py", "ai_tool_runtime.py", "ai_tool_catalog.py", "ai_tool_declaration.py"):
         assert "online_product_completion" not in (ROOT / "erp_web/services" / file).read_text()
 

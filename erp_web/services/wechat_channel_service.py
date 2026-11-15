@@ -16,22 +16,12 @@ from wechatbot.errors import ApiError
 from wechatbot.protocol import DEFAULT_BASE_URL, ILinkApi
 
 from erp_web.release_guard import release_guard
+from erp_web.services.chat_reply_text import visible_reply
 from erp_web.schemas.wechat_channel import WECHAT_FORWARD_TYPES, WechatChannelStatus
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
 from erp_web.services.desktop_connection_service import server_worker_context
 from erp_web.services.chat_conversation_service import ChatConversationError, ChatConversationRun
 from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnAlreadyAcceptedError
-
-
-def visible_reply(text: str) -> str:
-    """与网页一致，只隐藏开头的思考标签；不改写原生历史。"""
-    while text.lstrip().startswith("<think>"):
-        text = text.lstrip()
-        end = text.find("</think>", len("<think>"))
-        if end < 0:
-            return ""
-        text = text[end + len("</think>"):]
-    return text.strip()
 
 
 def text_chunks(text: str, limit: int = 3500) -> list[str]:

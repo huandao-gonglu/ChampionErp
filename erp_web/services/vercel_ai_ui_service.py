@@ -6,12 +6,12 @@ import asyncio
 import json
 import queue
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Sequence
 from uuid import uuid4
 
 from pydantic import ValidationError
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelResponse, ToolCallPart, ToolReturnPart, RetryPromptPart
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, ModelResponse, TextPart, ThinkingPart, ToolCallPart, ToolReturnPart, RetryPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import (
     FileUIPart,
@@ -48,6 +48,27 @@ def new_event_stream(conversation_id: str) -> VercelAIEventStream:
     return VercelAIEventStream(
         SubmitMessage(id=conversation_id, messages=[]), sdk_version=VERCEL_SDK_VERSION
     )
+
+
+def _display_history(messages: Sequence[ModelMessage]) -> list[ModelMessage]:
+    """原生输出校验的重试提示只发给模型；网页和分支共用相同的消息映射。"""
+    visible = []
+    for message in messages:
+        if "image_batch_item" in (message.metadata or {}):
+            continue
+        if isinstance(message, ModelRequest):
+            parts = [part for part in message.parts if not (isinstance(part, RetryPromptPart) and part.tool_name is None)]
+            if len(parts) != len(message.parts):
+                previous = visible[-1] if visible else None
+                if (isinstance(previous, ModelResponse) and previous.run_id == message.run_id
+                        and not (previous.metadata or {}).get("chat_final")
+                        and all(isinstance(part, (TextPart, ThinkingPart)) for part in previous.parts)):
+                    visible.pop()
+                if not parts:
+                    continue
+                message = replace(message, parts=parts)
+        visible.append(message)
+    return visible
 
 
 def _pending_tool_calls(pending, history):
@@ -317,7 +338,7 @@ class VercelAiUiService(ChatConversationService):
             )
         native_history = history.model_messages() if history else []
         ui = VercelAIAdapter.dump_messages(
-            [message for message in native_history if "image_batch_item" not in (message.metadata or {})],
+            _display_history(native_history),
             sdk_version=VERCEL_SDK_VERSION
         )
         script_receipts = self.call_store.script_write_receipts(conversation_id)
@@ -398,7 +419,8 @@ class VercelAiUiService(ChatConversationService):
         if history is None:
             raise VercelUiProtocolError(404, "AI_CHAT_BRANCH_SOURCE_MISSING", "原对话不存在。")
         messages = history.model_messages()
-        ui = VercelAIAdapter.dump_messages(messages, sdk_version=VERCEL_SDK_VERSION)
+        display = _display_history(messages)
+        ui = VercelAIAdapter.dump_messages(display, sdk_version=VERCEL_SDK_VERSION)
         matches = [i for i, item in enumerate(ui) if item.id == message_id and item.role == "assistant"]
         if len(matches) != 1:
             raise VercelUiProtocolError(409, "AI_CHAT_BRANCH_MESSAGE_INVALID", "回复尚未保存或已变化，请刷新后重试。")
@@ -412,8 +434,8 @@ class VercelAiUiService(ChatConversationService):
         # 官方 ID 回调提供 UI 消息与原生消息的对应关系，不反向重建工具历史。
         positions = {id(message): index for index, message in enumerate(messages)}
         indexed = VercelAIAdapter.dump_messages(
-            messages, sdk_version=VERCEL_SDK_VERSION,
-            generate_message_id=lambda message, role, index: str(positions[id(message)]),
+            display, sdk_version=VERCEL_SDK_VERSION,
+            generate_message_id=lambda message, role, index: str(positions[id(message)]) if role == "assistant" else str(index),
         )
         prefix = messages[:int(indexed[target].id) + 1]
         outstanding: set[str] = set()

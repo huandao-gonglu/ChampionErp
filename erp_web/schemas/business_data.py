@@ -41,7 +41,7 @@ class DataReadRequest(DataModel):
     resource: str = Field(min_length=1, max_length=100)
     params: dict[str, JsonValue] = Field(default_factory=dict, description='资源定位参数；按目录 parameter_hints 可直接读取，只有参数不明确时才获取完整 Schema。')
     path: str = Field(default='', max_length=300, description='留空读取默认集合，$ 为根；点路径展开字段/下标，含点号的键用 JSON Pointer，例如 /global.chat/model_id。')
-    fields: list[str] = Field(default_factory=list, max_length=30, description='返回字段，支持点分隔路径；留空使用默认摘要，path 非空时读取该处完整内容。')
+    fields: list[str] = Field(default_factory=list, max_length=30, description='返回字段，用原字段路径作为结果键；例如 fields=["a.b"] 时按 row["a.b"] 取值。留空使用默认摘要，path 非空时读取该处完整内容。')
     filters: dict[str, JsonValue] = Field(default_factory=dict, description='对集合按字段精确匹配，支持点分隔路径。')
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=10, ge=1, le=50)
@@ -69,7 +69,7 @@ class DataReadResult(DataModel):
     data: JsonValue
     total: int
     offset: int
-    next_offset: int | None = None
+    next_offset: int | None = Field(default=None, description='同一查询可继续的下一位置。为空且 limited=true 时，按 notice 在当前 offset 缩小字段后读取。')
     available_fields: list[str] = Field(default_factory=list)
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
     limited: bool = False

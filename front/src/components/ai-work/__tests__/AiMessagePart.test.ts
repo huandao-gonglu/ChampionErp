@@ -25,6 +25,17 @@ describe('AiMessagePart', () => {
     expect(details.text()).toContain('内部分析')
   })
 
+  it('工具调用标记仅作未执行原文展示', async () => {
+    const original = '<think>核对报价</think><run_code>\n<code>sum(costs)</code></run_code>'
+    const wrapper = mountPart({ type: 'text', text: original, state: 'streaming' })
+    expect(wrapper.find('[data-testid="ai-part-text"]').exists()).toBe(false)
+    const details = wrapper.get<HTMLDetailsElement>('[data-testid="ai-part-tool-markup"]')
+    expect(details.get('summary').text()).toBe('查看未执行的工具文本')
+    expect(details.text()).not.toContain('sum(costs)')
+    await expand(details)
+    expect(details.text()).toContain('sum(costs)')
+  })
+
   it('未闭合标签整段折叠保留，包括混在其中的业务答复', async () => {
     const original = '<think>内部分析。Final response in Chinese.库存修改没有提交。'
     const wrapper = mountPart({ type: 'text', text: original, state: 'done' })

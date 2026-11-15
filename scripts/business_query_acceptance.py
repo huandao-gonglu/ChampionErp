@@ -303,7 +303,7 @@ def main():
     parser.add_argument('--output',type=Path)
     parser.add_argument('--natural',action='store_true',help='执行原始自然语言题并保留待人工复核结果，不自动判定准确性通过')
     parser.add_argument('--url',default='https://hdgl.cc.cd')
-    parser.add_argument('--ssh-host',default='root@107.174.48.241')
+    parser.add_argument('--ssh-host',default='root@107.174.48.238')
     parser.add_argument('--ssh-port',type=int,default=22)
     parser.add_argument('--ssh-identity',type=Path,default=Path.home()/'.ssh/id_ed25519')
     parser.add_argument('--case',action='append',choices=sorted({case.name for case in (*CASES,*NATURAL_CASES)}))

@@ -7,8 +7,8 @@ from erp_web.schemas.requests import validate_request_payload
 
 
 def _start(handler):
-    validate_request_payload(handler.read_body(), endpoint=handler.path)
-    payload, status = authorization_payload('start')
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    payload, status = authorization_payload('start', body)
     handler.send_json(payload, status)
 
 
@@ -45,7 +45,11 @@ def handle_post(handler, parsed):
 
 def handle_get(handler, parsed):
     if parsed.path in GET_API_ROUTES:
-        payload, status = authorization_payload('status')
+        providers = parse_qs(parsed.query, keep_blank_values=True).get('provider', [])
+        if len(providers) > 1 or providers == ['']:
+            handler.send_json({'ok': False, 'error': '请指定唯一的 1688 接入方案'}, 400)
+            return True
+        payload, status = authorization_payload('status', {'provider': providers[0]} if providers else {})
         handler.send_json(payload, status)
         return True
     if parsed.path != '/auth/alibaba/callback':

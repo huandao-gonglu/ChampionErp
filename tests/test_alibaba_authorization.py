@@ -288,16 +288,49 @@ def test_application_switch_during_exchange_preserves_both_grants(service, monke
     configure(monkeypatch)
     original = service.store.alibaba_application()
     state = start_state(service)
-    before = service.store.alibaba_credentials()
 
     def switch_during_exchange(*args):
         service.store._db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': 'alibaba'})
         return token()
 
     monkeypatch.setattr(service, '_token', switch_during_exchange)
-    with pytest.raises(ValueError, match='已变化'):
-        service.callback('one-use-code', state)
+    completed = service.callback('one-use-code', state)
+    assert completed['authorized'] and not completed['active']
+    assert completed['application_type'] == 'alibaba_crossborder'
     assert not service.store.alibaba_credentials().get('authorization')
     service.store._db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': 'alibaba_crossborder'})
     assert service.store.alibaba_application() == original
-    assert service.store.alibaba_credentials().get('authorization') == before.get('authorization')
+    assert service.runtime_config()['access_token'] == 'buyer-token'
+
+
+def test_explicit_provider_grants_survive_business_switch_and_out_of_order_callbacks(service, monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setenv('ERP_ALIBABA_APP_KEY', '1938727')
+    monkeypatch.setenv('ERP_ALIBABA_APP_SECRET', 'self-secret')
+    redirect = 'https://erp.example.test/auth/alibaba/callback'
+    monkeypatch.setenv('ERP_ALIBABA_REDIRECT_URI', redirect)
+    monkeypatch.setattr(service, '_token', lambda app, _: token(access_token='token-' + app['app_key']))
+    store = service.store
+
+    def select(provider):
+        store._db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': provider})
+
+    pending = {}
+    for provider, key in [('alibaba', '1938727'), ('alibaba_crossborder', '12345')]:
+        query = parse_qs(urlsplit(service.start(provider)['url']).query)
+        assert query['client_id'] == [key]
+        pending[provider] = query['state'][0]
+    assert service.status('alibaba')['attempt'] == service.status('alibaba_crossborder')['attempt'] == 'waiting'
+
+    select('onebound')
+    callback = redirect + '?' + urlencode({'code': 'code', 'state': pending['alibaba']})
+    with pytest.raises(ValueError, match='不匹配'):
+        service.complete_from_url(callback, 'alibaba_crossborder')
+    assert service.callback('code', pending['alibaba_crossborder'])['application_type'] == 'alibaba_crossborder'
+    assert service.complete_from_url(callback, 'alibaba')['application_type'] == 'alibaba'
+    assert not service.status('onebound')['authorized']
+    for provider, key in [('alibaba', '1938727'), ('alibaba_crossborder', '12345'), ('alibaba', '1938727')]:
+        select(provider)
+        assert service.status(provider)['active']
+        assert service.runtime_config()['access_token'] == 'token-' + key
+        assert all(service.status(p)['authorized'] for p in pending)

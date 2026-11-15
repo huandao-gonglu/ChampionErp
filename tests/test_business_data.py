@@ -53,7 +53,7 @@ def test_large_records_are_not_silently_truncated_and_can_be_expanded():
     catalog = BusinessDataCatalog((BusinessResource('sample', '测试', NoDataParameters,
         lambda _: {'rows': [{'id': 1, 'text': '事实' * 20000}]}, 'rows'),))
     result = read(catalog, resource='sample')
-    assert result.limited and result.data == [] and result.next_offset == 0
+    assert result.limited and result.data == [] and result.next_offset is None and "同一 offset" in result.notice
     assert len(result.model_dump_json()) <= result.max_chars
     assert read(catalog, resource='sample', fields=['id']).data == [{'id': 1}]
     start = read(catalog, resource='sample', path='rows.0.text')
@@ -225,3 +225,27 @@ def test_code_mode_type_result_is_json_safe_without_changing_kernel_state(tmp_pa
     assert b'"type":"error"' not in b''.join(chunks)
     assert '内核状态均正常' in b''.join(chunks).decode()
     assert ui.chat_service.trusted_history(CONVERSATION)
+
+
+def test_large_publish_job_returns_linked_draft_in_default_read():
+    job = {'job_id': 'j1', 'draft_id': 'd1', 'status': 'completed', 'platforms': {'yandex': '详情' * 10000}}
+    context = SimpleNamespace(publishing_bus=SimpleNamespace(get_public_status=lambda job_id: job))
+    catalog = build_business_data_catalog(context)
+    request = {'resource': 'publish.job', 'params': {'job_id': 'j1'}}
+    result = read(catalog, **request)
+    assert result.data['job.draft_id'] == 'd1' and result.data['job.status'] == 'completed'
+    assert not result.limited and result.next_offset is None
+    assert read(catalog, **request, path='job.draft_id').data == 'd1'
+    assert catalog.load('publish.job', request['params']) == {'ok': True, 'job': job}
+
+
+def test_filtered_oversized_row_after_first_page_can_resume_with_narrower_fields():
+    rows = [{'id': 0, 'use': False}, {'id': 1, 'use': True},
+            {'id': 2, 'use': True, 'text': '大' * 15000}, {'id': 3, 'use': True}]
+    catalog = BusinessDataCatalog((BusinessResource('sample', '测试', NoDataParameters, lambda _: rows),))
+    request = {'resource': 'sample', 'filters': {'use': True}}
+    first = read(catalog, **request)
+    assert first.next_offset == 1 and first.data == [rows[1]]
+    blocked = read(catalog, offset=first.next_offset, **request)
+    assert blocked.limited and blocked.next_offset is None and '位置 1' in blocked.notice
+    assert read(catalog, offset=blocked.offset, fields=['id'], **request).data == [{'id': 2}, {'id': 3}]

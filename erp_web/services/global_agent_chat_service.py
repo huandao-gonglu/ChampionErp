@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable
 
-from pydantic_ai import DeferredToolRequests
+from pydantic_ai import DeferredToolRequests, ModelRetry, RunContext
+from erp_web.services.ai_agent_dependencies import AiAgentDependencies
+from erp_web.services.chat_reply_text import is_tool_call_text
 from erp_web.ai_capability_composition import application_capability_permissions
 from erp_web.services.ai_agent_factory import AiAgentExecutionProfile, AiAgentFactory
 from erp_web.services.ai_prompt_templates import load_ai_use_case_prompt_pair
@@ -48,7 +50,7 @@ NATIVE_INSTRUCTIONS = """缺少用户资料或需要选择时调用 request_user
 缺字段先检查同域详情、字段与分页；搜索未命中不能证明数据不存在。只在用户要求关联或同域缺少必要事实且有可信关联时跨域读取。
 一段 run_code 完成连续统计、差异、保存和回执核对，只在需要模型判断新资料或处理错误时返回；复用当前 run 的 REPL 数据，不按属性反复读取整批 SKU。
 按用户指定规则检查所有已填/未填值，旧值不是正确答案；编码提取只保留匹配本体，不带紧邻中文、尺寸或包装说明。核对覆盖及边界，确有歧义再问。
-Python 先 import，末行在分支外返回字典/列表及实际回执，不用 json.dumps；TypedDict 列表可声明真实类型。检查 ok=false，异常/取消后停止，不重放成功或未知写入。一次 draft_changes_apply 失败不保存；多次写不是事务。独立读取可 asyncio.gather；跨用户回合或后台恢复后重新读取。
+Python 仅支持部分标准库；计数、合计、范围直接用 len/sum/min/max，无需 import statistics。末行在分支外返回字典/列表及实际回执，不用 json.dumps；TypedDict 列表可声明真实类型。检查 ok=false；异常后先核对已有回执，取消后停止，不重放成功或未知写入。一次 draft_changes_apply 失败不保存；多次写不是事务。独立读取可 asyncio.gather；跨用户回合或后台恢复后重新读取。
 Python 不访问宿主文件、数据库、环境变量、任意网络或第三方包；数据来自业务函数。审批和后台任务在脚本外调用。
 在线批改先固定完整 SKU、操作与仓库范围，按 next_page 读齐后用 online_products_changes_apply 同操作合批，超限按明确子集分批并核对整组；单项用 online_products_change。提交统计以 total/accepted_count/failed_count 为准；警告用 Python 完整去重计数。
 恢复时按实际回执处理；partial/failed/confirmed/submitted/closed_unconfirmed 不是待解锁状态，不 close 终态。旧任务结束后读新版本继续原授权；版本过期先重读，不能原样重试。按整组覆盖推进，说明等待/失败/未知；已入队职责完成，不主动轮询。
@@ -83,6 +85,13 @@ GLOBAL_RESPONSE_INSTRUCTIONS = """全局回答规则，适用于查询、执行�
 执行任务说明实际完成范围和状态；批量任务先汇报总数、完成数及异常范围，同类失败合并说明，并保留识别受影响对象所需的信息。必须保留影响结论的失败、未完成、未知结果、过期数据和其他限制，不能用“已完成”概括部分成功。纯解释或分析不附带没有发生的操作汇报。
 附带发现只有影响当前结论、所请求操作的正确性或确需用户处理时才简要提示，不据此扩大修复范围。执行中只提示有意义的进展、阻塞或范围变化；最终回答不重述计划，不重复总结已清楚表达的结论，不例行附加“如需我继续……”或无关建议。
 """
+
+
+def validate_chat_output(ctx: RunContext[AiAgentDependencies], output: Any):
+    if isinstance(output, str) and is_tool_call_text(output):
+        raise ModelRetry("刚才返回的是工具调用标记，未执行。已有回执足以回答时，请直接给用户结论；"
+                         "仍缺数据时通过原生工具调用补查，不要重放已完成的操作。")
+    return validate_online_completion(ctx, output)
 
 
 class GlobalAgentChatService:
@@ -159,7 +168,7 @@ class GlobalAgentChatService:
         async with self.factory.open_stream_run(
             profile=GLOBAL_CHAT_PROFILE,
             instructions=self.instructions(),
-            output_validator=validate_online_completion,
+            output_validator=validate_chat_output,
             toolset=self.toolset,
             conversation_id=conversation_id,
             message_history=messages,

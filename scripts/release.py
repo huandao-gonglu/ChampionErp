@@ -362,7 +362,7 @@ def release(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--ssh-host', default='root@107.174.48.241', help='服务器 SSH 登录目标')
+    parser.add_argument('--ssh-host', default='root@107.174.48.238', help='服务器 SSH 登录目标')
     parser.add_argument('--ssh-port', type=int, default=22)
     parser.add_argument('--ssh-identity', type=Path, default=Path.home() / '.ssh/id_ed25519')
     parser.add_argument('--public-url', default='https://hdgl.cc.cd', help='升级后验证的公网地址')

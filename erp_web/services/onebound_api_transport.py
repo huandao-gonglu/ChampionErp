@@ -21,12 +21,21 @@ def request_onebound(config, api, values, *, namespace, semantics, timeout):
     # 万邦文档使用支付宝支付链接接口，参数名与官方组合收银台不同。
     if api == 'alibaba.trade.grouppay.url.get':
         api, values = 'alibaba.alipay.url.get', {'orderIdList': values['orderIds']}
+    token = config.get('access_token')
+    if not token:
+        raise OneBoundApiRejected('请先连接当前方案的 1688 采购账号')
+    # 买家凭据只取自当前授权。历史 Session 仍按原协议发送。
+    arguments = dict(values)
+    arguments.pop('access_token', None)
+    legacy_session = config.get('credential_type') == 'session'
+    if not legacy_session:
+        arguments['access_token'] = token
     params = {'key': config['api_key'], 'secret': config['api_secret'],
               'method': namespace + '/' + api,
-              '_o_args': json.dumps(values, ensure_ascii=False, separators=(',', ':')),
+              '_o_args': json.dumps(arguments, ensure_ascii=False, separators=(',', ':')),
               'cache': 'no', 'result_type': 'json', 'lang': 'zh-CN'}
-    if config.get('access_token'):
-        params['session'] = config['access_token']
+    if legacy_session:
+        params['session'] = token
     url = 'https://api-gw.onebound.cn/1688/custom?' + urlencode(params)
     request = Request(url, method='GET', headers={'Accept': 'application/json'})
     # 万邦示例用 GET 执行写入，必须显式声明写语义，禁止自动重试。
@@ -34,7 +43,7 @@ def request_onebound(config, api, values, *, namespace, semantics, timeout):
                               account_id='key:' + credential_fingerprint(config['api_key']),
                               source='万邦1688接口', semantics=semantics)
     context = replace(context, interface=namespace + '/' + api,
-                      credential_id=credential_fingerprint(config.get('access_token') or config['api_secret']))
+                      credential_id=credential_fingerprint(token))
     try:
         with managed_urlopen(request, timeout=timeout, request_context=context, follow_redirects=False) as response:
             payload = json.loads(response.read())
@@ -66,6 +75,9 @@ def normalize_onebound_response(api, value):
             return {'success': False, 'errorCode': code or value.get('errorCode') or value.get('error_code') or 'ONEBOUND_BUSINESS_ERROR'}
         value = {k: v for k, v in value.items() if k != 'error'}
         if 'success' in value:
+            return value
+        # 保留订单列表的分页包装，交由统一客户端校验 totalRecord 和订单字段。
+        if api == 'alibaba.trade.getBuyerOrderList' and ('totalRecord' in value or 'result' in value):
             return value
     # getBuyerOrderList 的数组被网关转换为数字键对象；拒绝缺号或混杂字段。
     if api in {'alibaba.trade.getBuyerOrderList', 'alibaba.trade.getLogisticsInfos.buyerView'}:

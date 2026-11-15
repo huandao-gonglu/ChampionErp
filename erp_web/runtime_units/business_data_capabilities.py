@@ -24,7 +24,7 @@ def business_data_catalog(request: DataCatalogRequest, scope: Annotated[Business
         raise BusinessCapabilityError('BUSINESS_DATA_QUERY_INVALID', str(exc)) from exc
 
 
-@ai_tool(name='business_data_read', permission='business.read', description='按目录读取与页面共用的业务数据，不重新核价、不修改配置。params 填资源参数；默认摘要和分页，fields 选择字段、filters 精确筛选、path 展开字段或数组下标（$ 为根）。返回 available_fields 和 next_offset。询问为何选择物流时读取 draft.pricing 与 shipping.tariff_rules；检查历史依据和仓库配置，不能将当前规则冒充历史原因。多项比较用 Python 处理后只输出结论所需数据。')
+@ai_tool(name='business_data_read', permission='business.read', description='按目录读取与页面共用的业务数据，不重新核价、不修改配置。params 填资源参数；默认摘要和分页，fields 投影保留原路径作键（如 row["a.b"]）、filters 精确筛选、path 展开字段或数组下标（$ 为根）。返回 available_fields 和 next_offset。解释历史选仓先读 draft.pricing 的已存决策；需要对照当前费率或准入规则时再查 shipping.tariff_rules。多项比较用 Python 处理后只输出结论所需数据。')
 def business_data_read(request: DataReadRequest, scope: Annotated[BusinessDataScope, Injected()],
                        execution: Annotated[AiExecutionContext, Injected()]) -> DataReadResult:
     try:

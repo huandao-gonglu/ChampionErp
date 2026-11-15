@@ -2228,7 +2228,11 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
         </section>
 
         <template v-if="activeAuthSettingsTab === 'alibaba'">
-          <AlibabaSettingsPanel />
+          <div class="space-y-4">
+            <AlibabaSettingsPanel provider="alibaba" />
+            <AlibabaSettingsPanel provider="alibaba_crossborder" />
+            <AlibabaSettingsPanel provider="onebound" />
+          </div>
         </template>
 
         <section v-if="activeAuthSettingsTab === 'image_hosting'">

@@ -469,3 +469,64 @@ def test_run_code_stops_unbounded_computation(tmp_path, monkeypatch):
     asyncio.run(ui.prepare_run(body()).stream(lambda _: None))
     assert time.monotonic() - started < 3
     assert retries and "max_duration_secs" in str(retries[0].content)
+
+
+def test_script_error_then_literal_tool_text_recovers_with_existing_evidence(tmp_path):
+    executions = []
+    final = "三个候选方案中，经济陆运的总运费最低。"
+    invalid = "<run_code>\n<code>\nawait quote_read(draft_id='d1')\n</｜｜DSML｜｜ invoke>"
+
+    async def model(messages, info):
+        retries = [p for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+        if not retries:
+            # 跳过导入的静态诊断，复现线上已经输出报价后才发生的运行时错误。
+            yield {0: code_delta("r = await quote_read(draft_id='d1')\nprint(r['totals'])\nimport statistics  # type: ignore")}
+        elif retries[-1].tool_name == "run_code":
+            assert "ModuleNotFoundError" in str(retries[-1].content)
+            assert "2928" in str(retries[-1].content)
+            assert "标准输出" in info.instructions
+            yield invalid
+        else:
+            assert "未执行" in retries[-1].content
+            yield final
+
+    read = binding("quote_read", lambda args, ctx: executions.append(args) or {"totals": [2928, 4114, 5703]})
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(read))
+    asyncio.run(ui.prepare_run(body("为什么选择这个物流？")).stream(lambda _: None))
+    native = ui.chat_service.trusted_history(CONVERSATION)
+    assert len(executions) == 1
+    finals = [m for m in native if (m.metadata or {}).get("chat_final")]
+    assert len(finals) == 1 and finals[0].parts[-1].content == final
+    visible = ui.dump_ui_messages(CONVERSATION)["messages"]
+    assert [m["role"] for m in visible].count("user") == 1
+    texts = [p["text"] for m in visible for p in m["parts"] if p["type"] == "text"]
+    assert invalid not in texts and texts[-1] == final
+    assert any(getattr(part, "content", None) == invalid for m in native for part in m.parts)
+    branch = ui.fork_conversation(CONVERSATION, visible[-1]["id"])
+    assert final in str(branch["messages"])
+
+
+@pytest.mark.parametrize("text", [
+    "用 <run_code> 示意调用。",
+    "```xml\n<run_code><code>示例</code></run_code>\n```",
+])
+def test_tool_markup_in_explanation_is_displayable(text):
+    from erp_web.services.chat_reply_text import is_tool_call_text
+    assert not is_tool_call_text(text)
+    assert is_tool_call_text("<think>计划</think>\n<｜DSML｜function_calls>")
+
+
+def test_repeated_tool_markup_exhausts_native_retries_without_executing(tmp_path):
+    calls, executions = [], []
+
+    async def model(messages, info):
+        calls.append(1)
+        yield "<｜DSML｜function_calls><｜DSML｜invoke name=\"update_row\">"
+
+    update = binding("update_row", lambda args, ctx: executions.append(args), write=True)
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(update))
+    asyncio.run(ui.prepare_run(body()).stream(lambda _: None))
+    assert len(calls) == global_agent_chat_service.GLOBAL_CHAT_PROFILE.retries + 1
+    assert ui.dump_ui_messages(CONVERSATION)["run_status"] == "failed"
+    assert not executions
+    assert not any((m.metadata or {}).get("chat_final") for m in ui.chat_service.trusted_history(CONVERSATION))

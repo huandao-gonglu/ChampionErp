@@ -233,7 +233,7 @@ ERP 与本机桌面已通过统一脚本发布为 **1.2.6**，应用代码提交
 | ERP | <https://hdgl.cc.cd/> | `127.0.0.1:5050` |
 | New API | <https://hdgl.cc.cd:8443/> | `127.0.0.1:3000` |
 
-DNSHE 将 `hdgl.cc.cd` 委派给 `damien.ns.cloudflare.com` 和 `emerie.ns.cloudflare.com`。Cloudflare Free 的根域 A 记录代理到 `107.174.48.241`，回源模式为 Full (strict)。域名证书由 Let's Encrypt 签发，位于 `/etc/letsencrypt/live/champion-erp-domain/`，模拟续期通过。用户经旧 IP 打开网页会转到对应端口的域名。
+DNSHE 将 `hdgl.cc.cd` 委派给 `damien.ns.cloudflare.com` 和 `emerie.ns.cloudflare.com`。Cloudflare Free 的根域 A 记录代理到 `107.174.48.238`，回源模式为 Full (strict)。域名证书由 Let's Encrypt 签发，位于 `/etc/letsencrypt/live/champion-erp-domain/`，模拟续期通过。用户经旧 IP 打开网页会转到对应端口的域名。
 
 ERP 运行提交为 `af05c4fdb6b6d584eab28e31dfde2203ffde1208`，New API 镜像为 `champion/new-api:89bda6caa5664f4cc0fc2abf0f634dc0ad4518a8`。两端数据备份及变更前的运行配置位于 `/srv/champion-erp/backups/20261106T122451Z-domain/`。对应 New API 镜像归档位于 `/opt/new-api/artifacts/new-api-89bda6ca-linux-amd64.tar.gz`，SHA256 为 `874bc8177c828774c437651d34a28d32b6ca886793a3eceb32003b014fecbb2b`。
 

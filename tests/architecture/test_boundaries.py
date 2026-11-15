@@ -220,6 +220,11 @@ def test_ogl_calculation_has_no_network_store_or_runtime_dependency() -> None:
 
 
 def test_alibaba_business_entries_use_authorization_owner() -> None:
+    from erp_web.schemas.managed_settings import ALIBABA_APPLICATION_TYPES
+    from erp_web.services.alibaba_api_client import AlibabaProvider, _PROVIDERS
+
+    assert set(_PROVIDERS) == ALIBABA_APPLICATION_TYPES
+    assert all(issubclass(provider, AlibabaProvider) for provider in _PROVIDERS.values())
     for path in (
         "erp_web/facades/alibaba_self_purchase_facade.py",
         "erp_web/facades/order_procurement_facade.py",
@@ -248,8 +253,8 @@ def test_onebound_transport_and_authorization_keep_existing_owners():
     calls = {dotted_name(node.func) for node in ast.walk(parse_python(str(path))) if isinstance(node, ast.Call)}
     assert 'managed_urlopen' in calls
     endpoint = '/api/alibaba/authorization/onebound'
-    assert set(REQUEST_CONTRACTS[endpoint].fields) == {'session'}
-    assert set(OneBoundAuthorizationRequest.model_fields) == {'session'}
+    assert set(REQUEST_CONTRACTS[endpoint].fields) == {'session', 'access_token'}
+    assert set(OneBoundAuthorizationRequest.model_fields) == {'session', 'access_token'}
     assert OneBoundAuthorizationRequest.model_config['extra'] == 'forbid'
     entries = [row for row in AI_CAPABILITY_COVERAGE_MANIFEST if row.path == endpoint]
     assert len(entries) == 1 and entries[0].disposition == 'excluded'

@@ -90,6 +90,7 @@ BUSINESS_QUERIES = BusinessQueries((
                   permission='publish.read', http_path='/api/publish-bus/jobs'),
     BusinessQuery('publish.job', '指定发布任务的公开状态；读取不推进或重试任务。', PublishJobStatusQueryRequest,
                   lambda context, request: {'ok': True, 'job': context.publishing_bus.get_public_status(request.job_id)},
+                  default_fields=('job.job_id', 'job.draft_id', 'job.product_id', 'job.product_name', 'job.status', 'job.display_status'),
                   permission='publish.read', http_path='/api/publish-bus/status', not_found_status=404),
 ))
 

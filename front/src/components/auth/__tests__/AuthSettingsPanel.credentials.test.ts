@@ -275,7 +275,8 @@ describe('AuthSettingsPanel credential lifecycle', () => {
   it('1688 使用独立账号连接面板，普通配置不再提交企业密钥或 Token', async () => {
     const wrapper = mountPanel()
     await wrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
-    expect(wrapper.findAll('alibaba-settings-panel-stub')).toHaveLength(1)
+    expect(wrapper.findAll('alibaba-settings-panel-stub').map(card => card.attributes('provider')))
+      .toEqual(['alibaba', 'alibaba_crossborder', 'onebound'])
     expect(wrapper.find('[data-testid="transient-1688-access-token"]').exists()).toBe(false)
     const payload = await save(wrapper)
     expect(payload).not.toHaveProperty('1688_api')

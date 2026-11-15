@@ -30,6 +30,7 @@ export interface BackendDesktopReply {
 export interface BackendAlibabaAuthorizationStatus {
   ok: boolean
   application_type: "alibaba" | "alibaba_crossborder" | "onebound"
+  active: boolean
   application_configured: boolean
   can_authorize: boolean
   authorized: boolean
