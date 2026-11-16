@@ -167,6 +167,7 @@ def collect_browser_url(
             text,
             title,
             detect_slider=True,
+            expected_product_url=product_url,
         )
         diagnostics.update(page_diagnostics)
         waiting = waiting_verification_result(snapshot, product_url or final_url, platform_detected, diagnostics, error_reason)

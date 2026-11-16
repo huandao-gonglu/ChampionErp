@@ -179,7 +179,10 @@ def _read_target(config, target, product_url, tab_url, platform_hint, open_url):
             raise _page_error(snapshot['url'])
         detected = detect_source_site(expected_url or snapshot['url'])
         platform = detected if detected != 'generic' else platform_hint or detected
-        _, reason = source_site(platform).diagnose(snapshot['url'], snapshot['html'], snapshot['text'], snapshot['title'], detect_slider=True)
+        _, reason = source_site(platform).diagnose(
+            snapshot['url'], snapshot['html'], snapshot['text'], snapshot['title'],
+            detect_slider=True, expected_product_url=expected_url or snapshot['url'],
+        )
         if reason in VERIFICATION_REASONS:
             return snapshot, [], True
         if expected_url and not same_collection_page(expected_url, snapshot['url']):
@@ -221,7 +224,11 @@ def inspect_verification(config, browser_tab_id, source_url):
         cdp.close()
     if page.get('ready') != 'complete':
         return {'ok': True, 'status': 'loading', 'message': '正在等待原商品页加载完成…'}
-    _, reason = source_site(detect_source_site(source_url)).diagnose(str(page.get('url') or ''), str(page.get('html') or ''), str(page.get('text') or ''), str(page.get('title') or ''), detect_slider=True)
+    _, reason = source_site(detect_source_site(source_url)).diagnose(
+        str(page.get('url') or ''), str(page.get('html') or ''),
+        str(page.get('text') or ''), str(page.get('title') or ''),
+        detect_slider=True, expected_product_url=source_url,
+    )
     if reason in VERIFICATION_REASONS:
         return {'ok': True, 'status': 'waiting_verification', 'message': WAIT_MESSAGE}
     if not same_collection_page(source_url, page['url']):

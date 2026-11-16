@@ -75,7 +75,7 @@ def navigation(monkeypatch, tmp_path):
     monkeypatch.setattr(collection, 'finish_browser_session', finish)
     monkeypatch.setattr(collection, 'browser_status', lambda _: {'connected': True})
 
-    def read(pages, *, snapshot_url=None):
+    def read(pages, *, snapshot_url=None, html='<script>{"buyerModel":{"userId":42}}</script>'):
         pending = iter(pages)
         current = ''
         def evaluate(method, params=None, **kwargs):
@@ -86,7 +86,7 @@ def navigation(monkeypatch, tmp_path):
                 value = {'url': current, 'ready': 'complete', 'text': '', 'title': ''}
             elif 'outerHTML' in expression:
                 value = {'url': snapshot_url or current, 'title': '测试页', 'text': '测试页',
-                         'html': '<html>测试页</html>', 'image_urls': []}
+                         'html': html, 'image_urls': []}
             else:
                 return {}
             return {'result': {'value': value}}
@@ -122,3 +122,17 @@ def test_timeout_or_navigation_during_read_keeps_window(navigation, first_url, f
     assert 'secret' not in str(failure.value)
     finish.assert_not_called()
     cdp.close.assert_called_once()
+
+
+def test_guest_offer_with_skus_does_not_close_or_download(navigation, monkeypatch):
+    read, finish, _ = navigation
+    download = Mock(side_effect=AssertionError('访客商品不能下载素材'))
+    monkeypatch.setattr(collection, '_fetch', download)
+    page = ('<h1>商品标题</h1><img src="https://example.com/cover.jpg">'
+            '<script>{"buyerModel":{"lastLoginId":"旧账号"},"sellerModel":{"userId":123},'
+            '"dataJson":{"skuModel":{"skuInfoMap":{"红":{"skuId":"1","price":30}}}}}</script>')
+    result = read([URL], html=page)
+    assert result['snapshot']['browser_tab_id'] == 'new'
+    assert result['assets'] == []
+    finish.assert_not_called()
+    download.assert_not_called()

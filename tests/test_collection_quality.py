@@ -52,7 +52,7 @@ def test_batch_saves_skus_without_package_and_returns_success_with_followup(monk
     source = {'title': '休闲鞋', 'source_url': url, 'source_platform': '1688', 'price': '20', 'currency': 'CNY', 'images': ['https://example.test/shoe.jpg'],
               'skus': [{'id': 'red-39', 'name': '红色 / 39', 'price': '20', 'package_dimensions': {}}, {'id': 'black-40', 'name': '黑色 / 40', 'price': '25', 'package_dimensions': {}}]}
     monkeypatch.setattr(workflows, 'parse_source_snapshot', lambda *_: {'source': source})
-    monkeypatch.setattr(workflows, 'call_desktop', lambda *_args, **_kwargs: {'snapshot': {'html': '<html><body>休闲鞋</body></html>', 'url': url}, 'browserStatus': {'connected': True}})
+    monkeypatch.setattr(workflows, 'call_desktop', lambda *_args, **_kwargs: {'snapshot': {'html': '<html><body>休闲鞋</body><script>{"buyerModel":{"userId":42}}</script></html>', 'url': url}, 'browserStatus': {'connected': True}})
     monkeypatch.setattr(workflows, 'normalize_collect_source_images', lambda source, *_args: source)
     result = workflows.collect_batch_products([url], platforms=[])
     row = result['items'][0]

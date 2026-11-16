@@ -10,7 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from erp_shared.collection import same_collection_page
 from erp_shared.html import html_to_text
+from erp_shared.source_parser import has_1688_signed_in_buyer
 
 VERIFY_MARKERS = (
     "安全验证",
@@ -107,6 +109,7 @@ class SourceSiteSpec:
         title: str,
         *,
         detect_slider: bool = False,
+        expected_product_url: str = "",
     ) -> tuple[dict[str, bool], str]:
         login = self.login_check(url, html, text, title)
         captcha = self.captcha_check(url, html, text, title)
@@ -119,6 +122,9 @@ class SourceSiteSpec:
                 reason = "SLIDER"
             elif captcha:
                 reason = "CAPTCHA"
+            elif same_collection_page(expected_product_url, url) and not has_1688_signed_in_buyer(html):
+                login = True
+                reason = "LOGIN"
         elif captcha:
             reason = "ROBOT"
         elif login:

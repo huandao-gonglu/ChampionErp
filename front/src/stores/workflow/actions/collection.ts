@@ -72,11 +72,11 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     try {
       while (true) {
         cancelled()
-        if (row) Object.assign(row, { status: 'waiting_verification', verification, error: '', nextAction: '请在采集浏览器的原商品页完成验证，完成后自动继续。' })
+        if (row) Object.assign(row, { status: 'waiting_verification', verification, error: '', nextAction: '请在原商品页完成登录或验证。登录后若仍在等待，请刷新原商品页。' })
         collectDiagnostics.value = {
           ...collectDiagnostics.value, status: 'waiting_verification', errorCode: '',
           message: '等待人工验证', antiBotWarning: false, lastSourceUrl: verification.sourceUrl,
-          nextAction: '请在采集浏览器的原商品页完成登录或验证码，完成后自动继续。请保持应用和原标签页打开。',
+          nextAction: '请在采集浏览器完成登录或验证码，返回原商品页后会自动继续。若仍在等待，请刷新原商品页。',
         }
         // 等待只做只读检查，不重新发起 URL 采集，也不刷新目标页面。
         await new Promise<void>((resolve, reject) => {

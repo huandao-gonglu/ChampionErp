@@ -87,6 +87,19 @@ def _json_object_after(text: str, marker: str) -> dict[str, Any]:
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
+def has_1688_signed_in_buyer(html: str) -> bool:
+    """只认本次商品页买家模型里的当前用户，卖家和上次登录信息不能证明已登录。"""
+    marker = re.search(r'"buyerModel"\s*:\s*(?=\{)', html)
+    if not marker:
+        return False
+    try:
+        buyer, _ = json.JSONDecoder().raw_decode(html, marker.end())
+    except ValueError:
+        return False
+    user_id = str(buyer.get("userId") or "")
+    return bool(re.fullmatch(r"[1-9][0-9]*", user_id))
+
+
 class _AttributeTableParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
