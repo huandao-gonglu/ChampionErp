@@ -6,9 +6,9 @@ from copy import deepcopy
 from erp_web.schemas.alibaba_orders import PurchaseSyncRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.schemas.orders import utc_iso
-from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, validate_order_number
+from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, ORDER_DETAIL, LOGISTICS_INFO, validate_order_number
 from erp_web.services.alibaba_purchase_assignment import propose_parcels, supported
-from erp_web.services.alibaba_purchase_query_service import normalize_order, normalize_products, normalize_parcels, attach_traces
+from erp_web.services.alibaba_purchase_query_service import normalize_order, normalize_products, normalize_parcels, query_parcel_traces
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +100,11 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
             logistics_checked_at = utc_iso()
         except (AlibabaApiError, ExternalRequestBlocked) as exc:
             logistics = None
-            reason = "请求已中断，请到授权配置的「中断与恢复」查看原因" if isinstance(exc, ExternalRequestBlocked) else str(exc)
-            warning = "物流查询失败：" + reason
-        if logistics is not None and parcels:
-            try:
-                attach_traces(parcels, client.query(LOGISTICS_TRACE, number), number)
-            except (AlibabaApiError, ExternalRequestBlocked):
-                warning = "已获取运单，物流轨迹暂不可用，可稍后刷新"
+            warning = f"物流查询失败：{exc}"
+            if isinstance(exc, ExternalRequestBlocked):
+                warning += "（可在授权配置的「中断与恢复」查看）"
+        if logistics is not None:
+            warning = query_parcel_traces(parcels, client, number)
         if config_provider() != config:
             raise AlibabaApiError("1688 授权已变化，请重新刷新采购进度")
         value["data"] = {"ok": True, "record_id": record_id, "order_number": number, "checked_at": checked_at,
@@ -117,8 +115,8 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
         else:
             _merge_parcels(procurement, fulfillment, order_id, record_id, generation, record, logistics, parcels, value)
         value["error"] = ""
-    except ExternalRequestBlocked:
-        value.update(state="error", error="1688 请求已中断，请到授权配置的「中断与恢复」查看原因", message="本次同步未完成")
+    except ExternalRequestBlocked as exc:
+        value.update(state="error", error=f"1688 请求已中断：{exc}（可在授权配置的「中断与恢复」查看）", message="本次同步未完成")
     except ValueError as exc:
         value.update(state="error", error=str(exc), message="本次同步未完成")
     except Exception:

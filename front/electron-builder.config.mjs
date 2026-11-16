@@ -22,14 +22,24 @@ export function verifyDesktopSignature(context, mode, execute = execFileSync) {
   const anchor = mode === 'local'
     ? `anchor = H"${LOCAL_SIGNING_CERTIFICATE.sha1}"`
     : 'anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
-  for (const [target, requirement] of [
-    [app, `${anchor} and identifier "${context.packager.appInfo.id}"`],
-    [path.join(app, 'Contents/Resources/runtime/champion-erp-runtime'), anchor],
+  for (const [target, identifier] of [
+    [app, context.packager.appInfo.id],
+    [path.join(app, 'Contents/Resources/runtime/champion-erp-runtime'), 'champion-erp-runtime'],
   ]) {
     try {
+      const requirement = `${anchor} and identifier "${identifier}"`
       execute('/usr/bin/codesign', ['--verify', '--deep', '--strict', '-R', `=${requirement}`, target], { stdio: 'pipe' })
+      if (mode === 'local') {
+        // 签名证书正确仍不足以保证身份稳定，还要核对签名中供系统识别应用的规则。
+        const description = execute('/usr/bin/codesign', ['--display', '-r-', target], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        const designated = description.match(/^designated => (.+)$/m)?.[1]
+        const expected = `identifier "${identifier}" and certificate leaf = H"${LOCAL_SIGNING_CERTIFICATE.sha1.toLowerCase()}"`
+        if (designated !== expected) {
+          throw new Error('授权身份规则必须只绑定应用标识和固定证书，不能绑定文件指纹、版本号或其他条件。')
+        }
+      }
     } catch (cause) {
-      throw new Error(`桌面签名校验失败：${target}，请检查应用及本机执行器是否使用预期证书签名。`, { cause })
+      throw new Error(`桌面签名校验失败：${target}。${cause.message}`, { cause })
     }
   }
 }

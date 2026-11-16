@@ -53,3 +53,72 @@ def test_collection_does_not_turn_into_remote_local_file_or_script_access(monkey
     with pytest.raises(ValueError, match='HTTP/HTTPS'):
         collection.target_for_url(LocalConfig(tmp_path), url)
     launch.assert_not_called()
+
+
+@pytest.fixture
+def navigation(monkeypatch, tmp_path):
+    """通过正常采集入口驱动同一标签的跳转和超时，不操作用户浏览器。"""
+    clock = Mock()
+    now = 0
+
+    def advance(seconds):
+        nonlocal now
+        now += seconds
+
+    clock.monotonic.side_effect = lambda: now
+    clock.sleep.side_effect = advance
+    monkeypatch.setattr(collection, 'time', clock)
+    cdp, finish = Mock(), Mock()
+    target = {'id': 'new', 'url': 'about:blank', 'webSocketDebuggerUrl': 'ws://local/new'}
+    monkeypatch.setattr(collection, 'target_for_url', lambda *_: target)
+    monkeypatch.setattr(collection, 'CdpWebSocket', lambda _: cdp)
+    monkeypatch.setattr(collection, 'finish_browser_session', finish)
+    monkeypatch.setattr(collection, 'browser_status', lambda _: {'connected': True})
+
+    def read(pages, *, snapshot_url=None):
+        pending = iter(pages)
+        current = ''
+        def evaluate(method, params=None, **kwargs):
+            nonlocal current
+            expression = (params or {}).get('expression', '')
+            if 'document.readyState' in expression:
+                current = next(pending, current)
+                value = {'url': current, 'ready': 'complete', 'text': '', 'title': ''}
+            elif 'outerHTML' in expression:
+                value = {'url': snapshot_url or current, 'title': '测试页', 'text': '测试页',
+                         'html': '<html>测试页</html>', 'image_urls': []}
+            else:
+                return {}
+            return {'result': {'value': value}}
+        cdp.call.side_effect = evaluate
+        return collection.read_collection(LocalConfig(tmp_path), product_url=URL, open_url=True)
+
+    return read, finish, cdp
+
+
+@pytest.mark.parametrize('final_url, keep', [(URL + '?verified=1', False), ('https://login.1688.com/member/signin.htm', True)])
+def test_waits_through_blank_and_redirect_before_reading(navigation, final_url, keep):
+    read, finish, cdp = navigation
+    result = read(['about:blank', 'https://detail.1688.com/redirect', final_url])
+    assert result['snapshot']['url'] == final_url
+    assert result['snapshot']['browser_tab_id'] == 'new'
+    assert result['assets'] == []
+    assert finish.called is (not keep)
+    cdp.close.assert_called_once()
+
+
+@pytest.mark.parametrize('first_url, final_url', [
+    ('about:blank', 'about:blank'),
+    ('chrome-error://chromewebdata/', 'chrome-error://chromewebdata/'),
+    ('https://detail.1688.com/offer/456.html?secret=1', 'https://detail.1688.com/offer/456.html?secret=1'),
+    (URL, 'https://detail.1688.com/offer/456.html?secret=1'),
+])
+def test_timeout_or_navigation_during_read_keeps_window(navigation, first_url, final_url):
+    read, finish, cdp = navigation
+    with pytest.raises(collection.LocalOperationError) as failure:
+        read([first_url], snapshot_url=final_url)
+    assert failure.value.code == 'TAB_NOT_ACCESSIBLE'
+    assert final_url.split('?')[0].split('://')[-1] in str(failure.value)
+    assert 'secret' not in str(failure.value)
+    finish.assert_not_called()
+    cdp.close.assert_called_once()

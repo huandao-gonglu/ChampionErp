@@ -168,6 +168,18 @@ def attach_traces(parcels: list[AlibabaParcel], payload: dict, order_number: str
         ]
 
 
+def query_parcel_traces(parcels, client, number):
+    """补充轨迹，保留运单，并将轨迹失败原因交给页面及采购快照。"""
+    if parcels:
+        try:
+            attach_traces(parcels, client.query(LOGISTICS_TRACE, number), number)
+        except ExternalRequestBlocked as exc:
+            return f"已获取运单，轨迹查询已中断。{exc}（可在授权配置的「中断与恢复」查看）"
+        except AlibabaApiError as exc:
+            return f"已获取运单，未能更新轨迹。{exc}"
+    return ""
+
+
 def query_purchase(procurement, config: dict, body: dict, *, client_factory=AlibabaApiClient) -> AlibabaPurchaseQueryResult:
     request = PurchaseQueryRequest.model_validate(body)
     record = procurement.store.purchase_record(request.order_id, request.record_id, procurement.accounts_provider())
@@ -185,11 +197,7 @@ def query_purchase(procurement, config: dict, body: dict, *, client_factory=Alib
         result["products"] = normalize_products(payload)
     else:
         parcels = normalize_parcels(client.query(LOGISTICS_INFO, number))
-        if parcels:
-            try:
-                attach_traces(parcels, client.query(LOGISTICS_TRACE, number), number)
-            except (AlibabaApiError, ExternalRequestBlocked):
-                result["logistics_warning"] = "已获取运单，但本次物流轨迹查询失败，可稍后重试；若持续失败，请检查物流轨迹接口权限及中断与恢复。"
+        result["logistics_warning"] = query_parcel_traces(parcels, client, number)
         result["logistics"] = parcels
     # 查询期间可能作废记录或切换店铺，返回前重新验证归属与有效性。
     procurement.store.purchase_record(request.order_id, request.record_id, procurement.accounts_provider())

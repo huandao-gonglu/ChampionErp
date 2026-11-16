@@ -33,7 +33,7 @@ _NAMESPACES = {
 
 
 class AlibabaApiError(ValueError):
-    """可向用户展示的固定错误，不包含上游原文或请求凭据。"""
+    """可向用户展示的业务错误，不携带请求凭据或完整回执。"""
 
 
 class AlibabaApiRejected(AlibabaApiError):
@@ -58,7 +58,31 @@ def validate_order_number(value: str) -> str:
     return value
 
 
-def _parse_response(api, payload):
+def _response_error(api, payload, credentials):
+    """只从买家查询的业务错误字段提取原因，不回显请求、网关地址或附加数据。"""
+    rejection = _known_rejection(payload, api)
+    if api not in _NAMESPACES or not isinstance(payload, dict):
+        return AlibabaApiRejected(rejection) if rejection else None
+    code = payload.get("errorCode") or payload.get("error_code")
+    code = str(code) if isinstance(code, (str, int)) and not isinstance(code, bool) else ""
+    if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,79}", code) or any(s and s in code for s in credentials):
+        code = ""
+    message = payload.get("errorMessage") or payload.get("error_message")
+    message = message.strip() if isinstance(message, str) else ""
+    for secret in credentials:
+        if secret:
+            message = message.replace(secret, "***")
+    # 某些网关用消息字段回显整段请求或响应，只保留其错误码。
+    if re.search(r"[\r\n{}<>]|https?://|(?:token|secret|signature|session|authorization)\s*[:=]", message, re.I):
+        message = ""
+    if rejection:
+        return AlibabaApiRejected(f"{rejection}。{message[:300]}" if message else rejection)
+    reason = " ".join(part for part in (code, message[:300]) if part)
+    label = {ORDER_DETAIL: "订单详情", LOGISTICS_INFO: "运单", LOGISTICS_TRACE: "物流轨迹"}[api]
+    return AlibabaApiError(f"1688 {label}查询失败：{reason}") if reason else None
+
+
+def _parse_response(api, payload, *, credentials=()):
     # 订单详情实测返回字符串 "true"，物流接口返回 JSON 布尔值。
     if (api == PRODUCT_DETAIL and isinstance(payload, dict) and "success" not in payload
             and isinstance(payload.get("result"), dict)):
@@ -79,9 +103,9 @@ def _parse_response(api, payload):
         # 官方物流接口用 500_2 表达尚未发货；保留原始业务码，并归一为空物流列表。
         if api == LOGISTICS_INFO and isinstance(payload, dict) and payload.get("errorCode") == "500_2":
             return {**payload, "result": []}
-        rejected = _known_rejection(payload, api)
-        if rejected:
-            raise AlibabaApiRejected(rejected)
+        error = _response_error(api, payload, credentials)
+        if error:
+            raise error
         raise AlibabaApiError("1688 未返回成功结果，请检查请求参数、账号归属及接口权限")
     return payload
 
@@ -149,13 +173,14 @@ class OfficialAlibabaProvider(AlibabaProvider):
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             try:
-                rejected = _known_rejection(json.loads(exc.read()), api)
+                payload = json.loads(exc.read())
             except (ValueError, UnicodeDecodeError):
-                rejected = None
+                payload = None
             finally:
                 exc.close()
-            if rejected:
-                raise AlibabaApiRejected(rejected) from None
+            error = _response_error(api, payload, (self.access_token, self.app_secret, params["_aop_signature"]))
+            if error:
+                raise error from None
             if exc.code == 401:
                 raise AlibabaApiError("1688 用户授权无效或已过期，请重新连接账号后重试") from None
             if exc.code == 403:
@@ -238,6 +263,8 @@ class AlibabaApiClient:
         except (ValueError, TypeError):
             timeout = 20
         self.provider = _provider_class(config)(config, timeout)
+        self._credentials = tuple(str(config.get(key) or "").strip() for key in
+                                  ("access_token", "app_secret", "api_key", "api_secret"))
 
     def query(self, api: str, order_number: str, *, logistics_id: str = "") -> dict:
         if api not in _NAMESPACES:
@@ -256,4 +283,4 @@ class AlibabaApiClient:
 
     def _request(self, api, values, *, namespace, semantics):
         payload = self.provider.request(api, values, namespace=namespace, semantics=semantics)
-        return _parse_response(api, payload)
+        return _parse_response(api, payload, credentials=self._credentials)

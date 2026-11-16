@@ -1,10 +1,12 @@
 """采购同步快照、归属证据、人工冲突、锁定和并发失效。"""
 
 from copy import deepcopy
+import io
+import json
 
 import pytest
 
-from erp_web.services.alibaba_api_client import ORDER_DETAIL, LOGISTICS_INFO, AlibabaApiError
+from erp_web.services.alibaba_api_client import ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, AlibabaApiClient, AlibabaApiError
 from erp_web.services.alibaba_purchase_sync_service import sync_purchase
 from erp_web.services.fulfillment_service import FulfillmentService
 from erp_web.stores.fulfillment_store import FulfillmentStore
@@ -42,6 +44,34 @@ def setup(domain):
 
 def progress(detail):
     return detail["purchases"][0]['progress']
+
+
+@pytest.mark.parametrize("method,code,message", [
+    (ORDER_DETAIL, "PEMISSION_ERROR", "没有权限访问该订单详情(买家)。"),
+    (LOGISTICS_TRACE, "order.nopermission.buyer", "你没有权限获取该订单详情(买家端)"),
+])
+def test_remote_denial_reaches_saved_order_detail(setup, monkeypatch, method, code, message):
+    procurement, _, body, client, run = setup
+    previous = progress(run())["data"]
+    raw = json.dumps({"success": False, "errorCode": code, "errorMessage": message}).encode()
+    monkeypatch.setattr("erp_web.services.alibaba_api_client.managed_urlopen", lambda *a, **k: io.BytesIO(raw))
+    original = client.query
+
+    def query(self, api, number):
+        if api == method:
+            return AlibabaApiClient(CONFIG).query(api, number)
+        return original(self, api, number)
+
+    monkeypatch.setattr(client, "query", query)
+    value = progress(run())
+    assert progress(procurement.detail(body["order_id"])) == value
+    if method == ORDER_DETAIL:
+        assert value["data"] == previous
+        reason = value["error"]
+    else:
+        assert not value["error"] and value["data"]["logistics"][0]["tracking_number"] == "YT1"
+        reason = value["data"]["logistics_warning"]
+    assert code in reason and message in reason
 
 
 def test_persist_auto_fill_and_idempotent_refresh(setup):

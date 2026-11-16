@@ -87,6 +87,14 @@ def test_flattened_business_errors_remain_rejections(monkeypatch, value):
         AlibabaSelfPurchaseClient(CONFIG).call(CREATE, {})
 
 
+def test_forwarded_query_denial_keeps_business_reason_and_masks_buyer_token(monkeypatch):
+    payload = {'error': {'code': 'order.nopermission.buyer', 'message': '无权读取订单 buyer-token'}}
+    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: response({'response': payload}))
+    with pytest.raises(AlibabaApiError) as error:
+        AlibabaApiClient(CONFIG).query(LOGISTICS_TRACE, '123')
+    assert str(error.value) == '1688 物流轨迹查询失败：order.nopermission.buyer 无权读取订单 ***'
+
+
 @pytest.mark.parametrize('payload', [
     {'success': False, 'result': [], 'totalRecord': 0},
     {'errorCode': 'gw.APIACLDecline', 'result': [], 'totalRecord': 0},

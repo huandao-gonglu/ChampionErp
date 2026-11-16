@@ -80,7 +80,7 @@ def test_trace_failure_preserves_waybill_and_returns_warning(registered):
     service, body = registered
     result = query_purchase(service, CONFIG, {**body, "kind": "logistics"}, client_factory=Failing)
     assert result["logistics"][0]["tracking_number"] == "YT001"
-    assert result["logistics_warning"] and not result["logistics"][0]["steps"]
+    assert "物流轨迹无权限" in result["logistics_warning"] and not result["logistics"][0]["steps"]
 
 
 def test_no_waybills_does_not_request_traces(registered):
@@ -188,6 +188,18 @@ def test_http_auth_failure_is_safe_and_closes_response(monkeypatch):
     with pytest.raises(api.AlibabaApiError, match="重新连接账号") as error:
         api.AlibabaApiClient(CONFIG).query(api.ORDER_DETAIL, NUMBER)
     assert "test-token" not in str(error.value) and stream.closed
+
+
+def test_http_query_failure_keeps_unknown_business_code_and_masks_credentials(monkeypatch):
+    stream = io.BytesIO(json.dumps({"error_code": "ORDER_CHECK_FAILED", "error_message": "查询失败 test-token",
+                                    "extra": CONFIG}).encode())
+    def send(*args, **kwargs):
+        raise HTTPError("https://example.invalid", 400, "", {}, stream)
+    monkeypatch.setattr(api, "managed_urlopen", send)
+    with pytest.raises(api.AlibabaApiError) as error:
+        api.AlibabaApiClient(CONFIG).query(api.ORDER_DETAIL, NUMBER)
+    assert str(error.value) == "1688 订单详情查询失败：ORDER_CHECK_FAILED 查询失败 ***"
+    assert stream.closed
 
 
 def test_public_settings_cannot_replace_saved_authorization():

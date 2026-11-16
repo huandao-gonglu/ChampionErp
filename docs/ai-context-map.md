@@ -247,7 +247,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - 用户可以取消等待，未开始的链接保持原状。`collectQueue.ts` 本地保留等待项的标签 ID 和 URL，刷新应用或取消后点击开始采集可恢复；采集应用关闭后不承诺后台执行。不保存凭据或整份商品。正在实际采集时刷新仍标记结果未确认，避免假报成功。删除列表行不删除入库商品。
 - 浏览器标签页选择与独立保存 HTML/截图的操作已移除；URL 采集仅使用指定商品页，验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
-- `desktop_runtime.collection.target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。打开操作直接返回目标句柄，采集不重复查找或强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
+- `desktop_runtime.collection.target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。打开操作直接返回目标句柄，在原标签内等待商品或验证页，初始空白页与临时跳转继续等待。读取失败保留窗口，地址不匹配时提示实际域名和路径。读取不强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
 - 1688 采集与浏览器 AI 共用 `desktop_runtime.browser_debug_service.ensure_browser_debug_session`：检测连接、查找本机 Chrome/Edge、使用指定资料目录启动并等待调试端口。调用方分别提供目录和端口；Gemini 默认使用 `browser_profile/ai/gemini/<profile>`，不共用 1688 登录资料，也不依赖 BitBrowser。
   同一调试端口的任务与收尾串行。采集读取完成后关闭已消费的任务标签；还有其他网页时保留实例，人工验证及正在操作的登录窗口保留原页。最后一个任务页完成后退出专用浏览器。托管网页 AI 在整次本机调用结束时关闭，人工登录例外；退出桌面执行器回收本次持有的实例。关闭前核对 Profile 的实例标识，确认退出后只清网页、代码和图形缓存，保留登录、站点存储与扩展。外部浏览器的生命周期由用户管理。
   `browser_connection_config` 纯校验代理地址；浏览器 AI 的可选 `browser_proxy` 只在专用浏览器启动时生效，修改后需关闭专用窗口再重开，不更改采集或后端网络配置。
@@ -1773,7 +1773,7 @@ Yandex 交货信息由 `runtime_units/orders_yandex.py` 在订单同步及通知
 - POST `/api/orders/purchase-query` → `order_procurement_facade.query_purchase` → `services/alibaba_purchase_query_service.py`。请求只接受销售订单 ID、采购记录 ID 和查询种类；服务端读取冻结采购单号，网络前后校验店铺归属和记录未作废，不跨网络持有事务。请求与返回形状见 `schemas/alibaba_orders.py`。
 - `order_notification_facade.py` 向 `OrderNotificationService` 显式注入 `services/order_progress_sync_service.py`：导航进入订单中心且满足 5 小时自动同步间隔、点击同步订单及平台通知保存快照后，按最新平台状态和当前报单阶段查询。平台已发货或已送达时，不再查询 1688 采购状态/国内物流和仓库报单；平台尚未发货且当前报单已有远端编号时，只刷新仓库状态；当前报单尚未确认成功时，刷新有效采购及创建待核实的仓库单。仅配置方案、提交中、失败、结果待核实和已归档的旧报单不算当前报单成功。单轮同订单去重，每笔网络请求前续租并验证账号与停止状态；查询期间不持数据库锁。单笔失败继续其他查询，各领域保留旧快照和错误，订单任务汇总部分失败且不自动重试附属查询。单笔人工查询入口仍可按需刷新。
 - 列表、详情及履约页签定时刷新只读取数据库；详情编辑和提交期间暂停替换内容，旧响应不得覆盖较新的手动结果。采购与仓库单笔刷新入口保留。
-- `services/alibaba_api_client.py` 固定 1688 HTTPS AOP 网关及三个买家只读接口，以 HMAC-SHA1 签名，通过 `managed_urlopen` 发送，显式声明 read 语义和 token 指纹，禁止重定向，不自动刷新 Token。物流先查运单，再按订单一次查询轨迹并按物流 ID 匹配；轨迹失败保留运单并返回警告。
+- `services/alibaba_api_client.py` 固定 1688 HTTPS AOP 网关及三个买家只读接口，以 HMAC-SHA1 签名，通过 `managed_urlopen` 发送，显式声明 read 语义和 token 指纹，禁止重定向，不自动刷新 Token。买家查询失败时从回执提取业务错误码和脱敏原因，随采购进度展示。物流先查运单，再按订单一次查询轨迹并按物流 ID 匹配。轨迹失败时保留运单，采购刷新和单独查询共用同一条带原因的警告。
 - POST `/api/orders/purchase-sync` → `order_procurement_facade.sync_purchase` → `alibaba_purchase_sync_service.py`。登记成功后自动同步一次，幂等登记不重复查询；失败保留采购登记和最近成功快照。`purchase_progress_store.py` 持久化同步快照、代次与短期占位，网络不持锁，写入前重新核对有效采购、账号与代次。
 - 手动刷新按整笔采购单执行一次订单、物流及轨迹查询；多商品结果以 `products` 保存。批量采购产生多个采购单时通过 `PurchaseProgressStore.begin_many` 在短事务中统一占位，查询不持锁，失败保留原快照。成功查询可补齐采购单实际商品，已有可信销售关联按供应商商品及 SKU 精确保留。
 - 订单状态与物流分别记录更新时间。物流接口的 `500_2` 按官方定义表示未发货，归一为空物流；其他物流失败只返回警告，仍保存成功读取的订单状态，保留旧运单及其原始更新时间，不触发包裹合并。授权变化与采购作废仍拒绝写入。

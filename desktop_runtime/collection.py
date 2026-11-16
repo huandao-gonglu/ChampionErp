@@ -56,17 +56,16 @@ def _snapshot(cdp, target):
         check_cancellation()
         cdp.call('Runtime.evaluate', {'expression': 'window.scrollTo(0, document.body ? document.body.scrollHeight : 0)'})
         time.sleep(0.6)
-    expressions = {
-        'html': "document.documentElement ? document.documentElement.outerHTML : ''",
-        'text': "document.body ? document.body.innerText : ''",
-        'title': "document.title || ''", 'url': "location.href || ''",
-        'image_urls': "[...new Set([...document.images].map(img => img.currentSrc || img.src || '').filter(Boolean))].slice(0,80)",
-    }
-    result = {}
-    for key, expression in expressions.items():
-        check_cancellation()
-        response = cdp.call('Runtime.evaluate', {'expression': expression, 'returnByValue': True}, timeout=30)
-        result[key] = response.get('result', {}).get('value', [] if key == 'image_urls' else '')
+    # 同一次求值绑定网址、正文和素材，避免跳转途中拼入另一页的内容。
+    expression = """({
+        url: document.documentURI,
+        html: document.documentElement?.outerHTML || '',
+        text: document.body?.innerText || '',
+        title: document.title,
+        image_urls: [...new Set([...document.images].map(img => img.currentSrc || img.src || '').filter(Boolean))].slice(0,80)
+    })"""
+    response = cdp.call('Runtime.evaluate', {'expression': expression, 'returnByValue': True}, timeout=30)
+    result = response.get('result', {}).get('value') or {}
     if not result.get('html'):
         raise LocalOperationError('TAB_NOT_ACCESSIBLE', 'TAB_NOT_ACCESSIBLE：页面没有可读取的 HTML。')
     result['final_url'] = result['url']
@@ -96,27 +95,19 @@ def read_collection(config, *, tab_url='', platform_hint='', product_url='', bro
     if open_url:
         _require_web_url(product_url or tab_url)
     with browser_operation(config.browser_port):
-        target = None
-        keep_page = not open_url
-        page_url = product_url or tab_url
-        try:
-            if open_url:
-                target = target_for_url(config, product_url or tab_url)
-            else:
-                target = _select_target(config, browser_tab_id, product_url, tab_url, platform_hint)
-            if not target:
-                raise LocalOperationError('NO_PRODUCT_TAB_FOUND', 'NO_PRODUCT_TAB_FOUND：未找到指定的商品标签页。')
-            snapshot, assets, verification = _read_target(
-                config, target, product_url, tab_url, platform_hint, open_url,
-            )
-            # 人工验证继续使用原商品页，完成后正常关闭本次会话。
-            page_url = snapshot.get('url') or page_url
-            keep_page = verification
-        finally:
-            if not keep_page and (target or open_url):
-                finish_browser_session(config.browser_port, config.browser_profile,
-                                       completed_page=(str((target or {}).get('id') or ''), page_url),
-                                       landing_page=('', ''))
+        if open_url:
+            target = target_for_url(config, product_url or tab_url)
+        else:
+            target = _select_target(config, browser_tab_id, product_url, tab_url, platform_hint)
+        if not target:
+            raise LocalOperationError('NO_PRODUCT_TAB_FOUND', 'NO_PRODUCT_TAB_FOUND：未找到指定的商品标签页。')
+        snapshot, assets, verification = _read_target(
+            config, target, product_url, tab_url, platform_hint, open_url,
+        )
+        # 只有成功读完的商品页可以回收；人工验证和读取失败都保留现场。
+        if not verification:
+            finish_browser_session(config.browser_port, config.browser_profile,
+                                   completed_page=(str(target['id']), snapshot.get('url') or product_url or tab_url))
         return {'snapshot': snapshot, 'assets': assets, 'browserStatus': browser_status(config)}
 
 
@@ -134,30 +125,65 @@ def _select_target(config, browser_tab_id, product_url, tab_url, platform_hint):
     return None
 
 
+def _page_error(url):
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme in {'http', 'https'}:
+        location = f'{parsed.hostname}{parsed.path}'
+    elif parsed.scheme in {'about', 'chrome', 'chrome-error', 'edge', 'edge-error'}:
+        location = parsed._replace(query='', fragment='').geturl()
+    else:
+        location = '未取得有效网页地址'
+    return LocalOperationError('TAB_NOT_ACCESSIBLE', f'TAB_NOT_ACCESSIBLE：未能读取目标商品页，当前页面为 {location}。请检查采集窗口后重试。')
+
+
+def _wait_for_product_page(cdp, expected_url, site):
+    # 空白页同样可能报告 complete；等待原商品或可识别的人工验证页。
+    expression = """({
+        url: document.documentURI, ready: document.readyState, title: document.title,
+        text: /^https?:$/.test(location.protocol) ? document.body?.innerText || '' : ''
+    })"""
+    deadline = time.monotonic() + 25
+    page = {}
+    url = ''
+    while (remaining := deadline - time.monotonic()) > 0:
+        check_cancellation()
+        response = cdp.call('Runtime.evaluate', {'expression': expression, 'returnByValue': True},
+                            timeout=remaining)
+        page = response.get('result', {}).get('value') or {}
+        url = page.get('url') or ''
+        if page.get('ready') == 'complete':
+            if same_collection_page(expected_url, url):
+                return
+            if urllib.parse.urlsplit(url).scheme in {'http', 'https'}:
+                _, reason = site.diagnose(url, '', page.get('text', ''), page.get('title', ''), detect_slider=True)
+                if reason in VERIFICATION_REASONS:
+                    return
+        time.sleep(max(0, min(1, deadline - time.monotonic())))
+    # 商品文档已可读时，个别资源未加载完成仍沿用原采集行为。
+    if page.get('ready') == 'interactive' and same_collection_page(expected_url, url):
+        return
+    raise _page_error(url)
+
+
 def _read_target(config, target, product_url, tab_url, platform_hint, open_url):
-    if open_url:
-        # 新页面仍沿用原来的 complete 等待上限。
-        with_cdp = CdpWebSocket(target['webSocketDebuggerUrl'])
-        try:
-            for _ in range(25):
-                check_cancellation()
-                state = with_cdp.call('Runtime.evaluate', {'expression': 'document.readyState', 'returnByValue': True})
-                if state.get('result', {}).get('value') == 'complete':
-                    break
-                time.sleep(1)
-        finally:
-            with_cdp.close()
-    _require_web_url(str(target.get('url') or product_url or tab_url))
+    expected_url = product_url or tab_url
+    _require_web_url(expected_url or str(target.get('url') or ''))
     cdp = CdpWebSocket(target['webSocketDebuggerUrl'])
     try:
+        if open_url:
+            platform = detect_source_site(expected_url)
+            site = source_site(platform_hint if platform == 'generic' else platform)
+            _wait_for_product_page(cdp, expected_url, site)
         snapshot = _snapshot(cdp, target)
-        detected = detect_source_site(product_url or snapshot['url'])
+        if urllib.parse.urlsplit(snapshot['url']).scheme not in {'http', 'https'}:
+            raise _page_error(snapshot['url'])
+        detected = detect_source_site(expected_url or snapshot['url'])
         platform = detected if detected != 'generic' else platform_hint or detected
         _, reason = source_site(platform).diagnose(snapshot['url'], snapshot['html'], snapshot['text'], snapshot['title'], detect_slider=True)
         if reason in VERIFICATION_REASONS:
-            return snapshot, [], reason in VERIFICATION_REASONS
-        if (product_url or tab_url) and not same_collection_page(product_url or tab_url, snapshot['url']):
-            raise LocalOperationError('TAB_NOT_ACCESSIBLE', 'TAB_NOT_ACCESSIBLE：原标签页已离开目标商品，请返回商品页后重试。')
+            return snapshot, [], True
+        if expected_url and not same_collection_page(expected_url, snapshot['url']):
+            raise _page_error(snapshot['url'])
         assets = []
         context = extract_1688_context_data(snapshot['html']) if platform == '1688' else {}
         detail_url = context.get('detail_url')

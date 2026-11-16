@@ -127,6 +127,13 @@ def test_alibaba_acl_rejection_is_diagnosable_and_isolated():
     assert audit["items"][1]["result"]["platform_error_codes"] == ["gw.APIACLDecline"]
 
 
+def test_buyer_trace_permission_code_is_kept_in_request_audit():
+    manager = get_context().external_requests
+    send(manager, context(interface=alibaba.LOGISTICS_TRACE),
+         {"success": False, "errorCode": "order.nopermission.buyer"}).close()
+    assert manager.store.query()["items"][0]["result"]["platform_error_codes"] == ["order.nopermission.buyer"]
+
+
 @pytest.mark.parametrize("platform,payload", [
     (PLATFORM, {"success": False, "errorCode": "TOO_MANY_REQUESTS"}),
     ("yandex", {"status": "ERROR", "errors": [{"code": "TOO_MANY_REQUESTS"}]}),

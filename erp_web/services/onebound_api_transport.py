@@ -72,7 +72,9 @@ def normalize_onebound_response(api, value):
         error = value.get('error')
         if error or value.get('errorCode') or value.get('error_code'):
             code = error.get('code') if isinstance(error, dict) else ''
-            return {'success': False, 'errorCode': code or value.get('errorCode') or value.get('error_code') or 'ONEBOUND_BUSINESS_ERROR'}
+            message = error.get('message') if isinstance(error, dict) else ''
+            return {'success': False, 'errorCode': code or value.get('errorCode') or value.get('error_code') or 'ONEBOUND_BUSINESS_ERROR',
+                    'errorMessage': message or value.get('errorMessage') or value.get('error_message')}
         value = {k: v for k, v in value.items() if k != 'error'}
         if 'success' in value:
             return value

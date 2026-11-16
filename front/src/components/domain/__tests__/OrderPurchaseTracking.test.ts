@@ -93,6 +93,18 @@ it('未发货的空物流显示无运单，保留查询成功的时间', () => {
   expect(wrapper.text()).toContain('物流更新时间')
 })
 
+it('同时展示本次订单拒绝原因和上次运单快照的轨迹警告', () => {
+  const value = persisted()
+  const saved = value.progress!
+  saved.state = 'error'
+  saved.error = '1688 订单详情查询失败：PEMISSION_ERROR 没有权限访问该订单详情(买家)。'
+  saved.data!.logistics_warning = '已获取运单，未能更新轨迹。1688 物流轨迹查询失败：order.nopermission.buyer 你没有权限获取该订单详情(买家端)'
+  const wrapper = render(value)
+  expect(wrapper.get('[role="alert"]').text()).toContain(saved.error)
+  expect(wrapper.text()).toContain(saved.data!.logistics_warning)
+  expect(wrapper.text()).toContain('YT001')
+})
+
 
 it('读取采购图片快照并可打开原图，刷新失败仍保留；作废记录只读展示', async () => {
   const value = persisted()

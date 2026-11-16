@@ -29,7 +29,7 @@ def platform_error_codes(raw, *, platform=""):
                    (row.get("errorCode") if platform == "gw.open.1688.com" else "") or "")
         allowed = re.fullmatch(r"(?:-?\d{1,8}|[A-Z][A-Z_0-9.]{1,63})", code)
         if platform == "gw.open.1688.com":
-            allowed = allowed or re.fullmatch(r"(?:\d{1,8}_\d{1,8}|gw\.[A-Za-z][A-Za-z0-9]{1,60})", code)
+            allowed = allowed or re.fullmatch(r"(?:\d{1,8}_\d{1,8}|gw\.[A-Za-z][A-Za-z0-9]{1,60}|order(?:\.[a-z]{1,24}){1,3})", code)
         if allowed and code not in codes:
             codes.append(code)
     return codes[:8]
