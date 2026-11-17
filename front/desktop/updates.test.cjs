@@ -18,7 +18,15 @@ async function setup(t) {
   const state = { manifest: policy, answer: 1, messages: [], opened: [], revealed: [], native: false, fetched: [] }
   const native = new EventEmitter()
   native.setFeedURL = ({ url }) => { state.feed = url }
-  native.checkForUpdates = () => queueMicrotask(() => native.emit('update-downloaded'))
+  native.checkForUpdates = async () => {
+    try {
+      const response = await fetch(state.feed)
+      state.nativeFeed = await response.json()
+      state.nativeBytes = Buffer.from(await (await fetch(state.nativeFeed.url)).arrayBuffer())
+      if (state.nativeError) native.emit('error', new Error(state.nativeError))
+      else native.emit('update-downloaded')
+    } catch (error) { native.emit('error', error) }
+  }
   native.quitAndInstall = () => { state.installed = true }
   const create = () => createDesktopUpdates({
     platform: 'darwin', arch: 'arm64', origin: 'https://release.example', autoUpdater: native,
@@ -30,7 +38,7 @@ async function setup(t) {
     fetcher: async (url, options) => {
       state.fetched.push(url.href)
       assert.equal(options.redirect, 'error')
-      if (url.pathname.endsWith('.dmg')) return new Response(bytes)
+      if (/\.(dmg|zip)$/.test(url.pathname)) return new Response(bytes)
       if (!state.manifest) throw new Error('离线')
       return Response.json(state.manifest)
     },
@@ -66,15 +74,36 @@ test('未签名 Mac 启动时校验并打开安装包，在业务会话中只定
   assert.equal(state.fetched.at(-1), 'https://release.example/desktop-updates/darwin-arm64/1.10.0/installer.dmg')
 })
 
-test('已签名 Mac 仅在业务启动前交给 Electron 安装签名 ZIP', async t => {
+test('已签名 Mac 启动前校验 ZIP，再由本机来源交给 Electron 安装', async t => {
   const { create, state } = await setup(t)
   state.native = true
   state.answer = 0
   state.manifest = { ...policy, macZip: { ...packageInfo, file: 'update.zip' } }
   assert.equal(await create().startup(), 'installing')
-  assert.equal(state.feed, 'https://release.example/desktop-updates/darwin-arm64/1.10.0/native.json')
+  assert.match(state.feed, /^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{48}\/feed$/)
+  assert.deepEqual(state.nativeBytes, bytes)
+  assert.equal(state.nativeFeed.sha256, checksum)
+  assert.equal(state.fetched.at(-1), 'https://release.example/desktop-updates/darwin-arm64/1.10.0/update.zip')
   assert.equal(state.installed, true)
   assert.equal(state.opened.length, 0)
+  await assert.rejects(fetch(state.feed))
+})
+
+test('自动更新拒绝摘要错误或原生签名拒绝，不退出或静默改为安装其他包', async t => {
+  const { create, state } = await setup(t)
+  state.native = true
+  state.answer = 0
+  state.manifest = { ...policy, macZip: { ...packageInfo, file: 'update.zip', sha256: '0'.repeat(64) } }
+  assert.equal(await create().startup(), true)
+  assert.match(state.messages.at(-1).detail, /校验失败/)
+  assert.equal(state.feed, undefined)
+  state.manifest.macZip.sha256 = checksum
+  state.nativeError = '更新包签名不匹配'
+  assert.equal(await create().startup(), true)
+  assert.match(state.messages.at(-1).detail, /签名不匹配/)
+  assert.equal(state.installed, undefined)
+  assert.equal(state.opened.length, 0)
+  await assert.rejects(fetch(state.feed))
 })
 
 test('拒绝错误架构、任意下载地址和包内容损坏；保留原有文件', async t => {

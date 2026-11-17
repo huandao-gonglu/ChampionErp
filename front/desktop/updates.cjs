@@ -5,6 +5,7 @@ const { createHash } = require('node:crypto')
 const { createWriteStream } = require('node:fs')
 const { Readable, Transform } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
+const { createNativeUpdateFeed } = require('./native-update-feed.cjs')
 
 const SUFFIXES = { darwin: '.dmg', win32: '.exe', linux: '.AppImage' }
 const MAX_MANIFEST_BYTES = 16 * 1024
@@ -118,31 +119,35 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
     }
   }
 
-  async function installNative(feed) {
-    await new Promise((resolve, reject) => {
-      function cleanup() {
-        autoUpdater.removeListener('error', failed)
-        autoUpdater.removeListener('update-not-available', unavailable)
-        autoUpdater.removeListener('update-downloaded', done)
-      }
-      function failed(error) { cleanup(); reject(error) }
-      function done() { cleanup(); resolve() }
-      function unavailable() { failed(new Error('签名更新包尚不可用。')) }
-      autoUpdater.once('error', failed)
-      autoUpdater.once('update-not-available', unavailable)
-      autoUpdater.once('update-downloaded', done)
-      try { autoUpdater.setFeedURL({ url: feed.href }); autoUpdater.checkForUpdates() } catch (error) { failed(error) }
-    })
+  async function installNative(manifest, versionUrl) {
+    const archive = await getPackage(manifest, versionUrl, manifest.macZip, '.zip')
+    const feed = await createNativeUpdateFeed(archive, manifest.macZip, manifest.version)
+    try {
+      await new Promise((resolve, reject) => {
+        function cleanup() {
+          autoUpdater.removeListener('error', failed)
+          autoUpdater.removeListener('update-not-available', unavailable)
+          autoUpdater.removeListener('update-downloaded', done)
+        }
+        function failed(error) { cleanup(); reject(error) }
+        function done() { cleanup(); resolve() }
+        function unavailable() { failed(new Error('签名更新包尚不可用。')) }
+        autoUpdater.once('error', failed)
+        autoUpdater.once('update-not-available', unavailable)
+        autoUpdater.once('update-downloaded', done)
+        try { autoUpdater.setFeedURL({ url: feed.url }); autoUpdater.checkForUpdates() } catch (error) { failed(error) }
+      })
+    } finally { await feed.close() }
     autoUpdater.quitAndInstall()
   }
 
-  async function getPackage(manifest, versionUrl) {
+  async function getPackage(manifest, versionUrl, asset = manifest.installer, suffix = SUFFIXES[platform]) {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 })
-    const destination = path.join(directory, 'ERP-' + manifest.version + SUFFIXES[platform])
+    const destination = path.join(directory, 'ERP-' + manifest.version + suffix)
     const task = new AbortController()
     const progress = showProgress(() => task.abort())
     try {
-      await downloadInstaller(new URL(manifest.installer.file, versionUrl), manifest.installer, destination,
+      await downloadInstaller(new URL(asset.file, versionUrl), asset, destination,
         AbortSignal.any([task.signal, AbortSignal.timeout(20 * 60 * 1000)]), progress.update, fetcher)
       if (platform === 'linux') await fs.chmod(destination, 0o700)
       return destination
@@ -173,7 +178,7 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
     if (response.response < 0 || response.response === buttons.length - 1) return !(startup && required)
     try {
       if (native && response.response === 0) {
-        await installNative(new URL('native.json', versionUrl))
+        await installNative(manifest, versionUrl)
         return 'installing'
       }
       const destination = await getPackage(manifest, versionUrl)

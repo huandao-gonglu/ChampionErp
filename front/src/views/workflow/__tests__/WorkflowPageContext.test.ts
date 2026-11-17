@@ -105,7 +105,7 @@ it('重新加载草稿后，图片编辑和 SKU 详情都使用该次返回的�
   const workflow = useWorkflowStore()
   vi.spyOn(workflow, 'loadState').mockResolvedValue(undefined)
   vi.spyOn(workflow, 'hydrateTab').mockResolvedValue(undefined)
-  const loadProduct = vi.spyOn(workflow, 'loadProduct').mockResolvedValue(undefined)
+  const loadProduct = vi.spyOn(workflow, 'loadProduct').mockResolvedValue(true)
   const item = { draft_id: 'draft-1', product_id: 'product-1', platform: 'yandex' }
   function response(imageId: string) {
     const sku = { id: 'sku-1', name: '15 升', active: true, image_asset_id: 'old',

@@ -40,12 +40,14 @@ def save_product_payload(body: dict[str, Any]) -> ApiResponse:
     }
 
 
-def load_product_payload(body: dict[str, Any]) -> ApiResponse:
+def load_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
     products = get_context().products
-    product = products.load_product_from_index(
+    product = products.find_indexed_product(
         body.get("product_id", ""),
         body.get("product_file_path", ""),
     )
+    if not product:
+        return {"ok": False, "error": "商品不存在，请刷新采集箱后重试。"}, 404
     return {
         "ok": True,
         "product": product,
@@ -53,7 +55,7 @@ def load_product_payload(body: dict[str, Any]) -> ApiResponse:
         "draftsIndex": products.load_drafts_index(scope="all"),
         "imagePool": current_image_pool(product),
         "sourceImages": current_source_images(product),
-    }
+    }, 200
 
 
 def load_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:

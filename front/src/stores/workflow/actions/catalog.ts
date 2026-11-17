@@ -127,11 +127,18 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     }
   }
 
+  let productLoadSequence = 0
   async function loadProduct(item: ProductIndexItem) {
+    const sequence = ++productLoadSequence
     loading.value = true
     setError('')
     try {
       const result = await loadProductApi(item.productId, item.productFilePath)
+      if (sequence !== productLoadSequence) return false
+      const expectedId = item.productId || item.productFilePath?.match(/^sqlite:\/\/products\/([^/]+)$/)?.[1]
+      if (!expectedId || result.product.productId !== expectedId) {
+        throw new Error('返回的商品与所选商品不一致，请刷新采集箱后重试。')
+      }
       product.value = result.product
       restoreCategoryFromProduct()
       restorePrecheckFromProduct()
@@ -140,10 +147,14 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       syncCollectDiagnosticsFromProduct('已加载采集箱中的商品。')
       syncPricingInputFromProduct()
       addLog(`已加载商品：${product.value.source.title || product.value.name || item.productId}`)
+      return true
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '加载商品失败')
+      if (sequence === productLoadSequence) {
+        setError(exc instanceof Error ? `加载商品失败：${exc.message}` : '加载商品失败')
+      }
+      return false
     } finally {
-      loading.value = false
+      if (sequence === productLoadSequence) loading.value = false
     }
   }
 

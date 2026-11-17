@@ -55,11 +55,10 @@ def handle_save_product(handler: JsonRequestHandler) -> None:
 
 
 def handle_load_product(handler: JsonRequestHandler) -> None:
-    handler.send_json(
-        product_facade.load_product_payload(
-            validate_request_payload(handler.read_body(), endpoint=handler.path)
-        )
+    result, status = product_facade.load_product_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
     )
+    handler.send_json(result, status)
 
 
 def handle_load_draft(handler: JsonRequestHandler) -> None:

@@ -10,7 +10,7 @@
 
 默认执行后端、前端和桌面全量测试。需要跳过这三套测试时，显式传入 `--skip-tests`。此参数也可与 `--server-only` 合用。第三方声明、生成契约、构建和发布验收仍会执行，测试选项会保存在 `release.json` 中。
 
-Mac 桌面默认使用固定的 `gongluERP Local Signing` 自签证书，普通打包和统一发布共用同一指纹配置，构建机必须保留原证书及私钥；缺失或签名不符时停止构建，不退回临时签名。Developer ID 及公证仍通过 `--signed-desktop` 显式启用。证书备份、迁移与首次授权说明见[桌面打包](desktop-packaging.md#客户端获取更新)。
+Mac 桌面默认使用固定的 `gongluERP Local Signing` 自签证书，普通打包和统一发布共用同一指纹配置，构建机必须保留原证书及私钥；缺失或签名不符时停止构建，不退回临时签名。两种签名方式均构建并分发 DMG 与原生更新 ZIP，1.2.89 及以后客户端支持自签版启动时自动替换。Developer ID 及公证仍通过 `--signed-desktop` 显式启用。证书备份、迁移与首次授权说明见[桌面打包](desktop-packaging.md#客户端获取更新)。
 
 ```sh
 .venv/bin/python scripts/release.py --skip-tests

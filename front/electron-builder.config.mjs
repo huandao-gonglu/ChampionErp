@@ -1,12 +1,10 @@
 import checksums from 'electron/checksums.json' with { type: 'json' }
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
+import updateSignature from './desktop/update-signature.cjs'
 
 // 固定证书指纹，防止同名证书被重新创建后悄然改变应用身份；不包含私钥。
-export const LOCAL_SIGNING_CERTIFICATE = {
-  name: 'gongluERP Local Signing',
-  sha1: 'C2028A6A705F9DE02487824CC44F07E9B7E8D400',
-}
+export const LOCAL_SIGNING_CERTIFICATE = updateSignature.LOCAL_SIGNING_CERTIFICATE
 
 export function checkLocalSigningCertificate(context, execute = execFileSync) {
   if (context.electronPlatformName !== 'darwin') return

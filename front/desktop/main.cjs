@@ -1,9 +1,8 @@
 const { app, BaseWindow, BrowserWindow, WebContentsView, session: electronSession, dialog, ipcMain, Menu, shell, safeStorage, autoUpdater } = require('electron')
 const fs = require('node:fs')
 const { randomBytes } = require('node:crypto')
-const { execFile } = require('node:child_process')
-const { promisify } = require('node:util')
 const { createDesktopUpdates } = require('./updates.cjs')
+const { canUseNativeUpdates } = require('./update-signature.cjs')
 const http = require('node:http')
 const path = require('node:path')
 const { URL } = require('node:url')
@@ -411,13 +410,7 @@ app.whenReady().then(async () => {
   if (app.isPackaged) {
     updates = createDesktopUpdates({ app, dialog, shell, autoUpdater, origin: desktopUpdateOrigin,
       showProgress: showDownloadProgress, parentWindow: () => mainWindow,
-      nativeSigned: async () => {
-        if (process.platform !== 'darwin') return false
-        try {
-          const { stderr } = await promisify(execFile)('/usr/bin/codesign', ['-dv', '--verbose=2', process.execPath])
-          return /^Authority=Developer ID Application:/m.test(stderr)
-        } catch { return false }
-      },
+      nativeSigned: () => canUseNativeUpdates(path.resolve(process.resourcesPath, '../..')),
     })
     const result = await updates.startup()
     if (result === 'installing') return

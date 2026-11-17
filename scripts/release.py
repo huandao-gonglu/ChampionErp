@@ -111,7 +111,7 @@ def desktop_release_artifacts(folder, app, version, args):
         raise RuntimeError('请为每个桌面架构单独构建和发布安装包')
     record = {'platform': 'darwin', 'arch': arch, 'version': version, 'policy': args.desktop_update,
               'notes': args.update_notes, 'public_url': args.public_url.rstrip('/')}
-    for key, extension in [('installer', '.dmg'), *([('mac_zip', '.zip')] if args.signed_desktop else [])]:
+    for key, extension in [('installer', '.dmg'), ('mac_zip', '.zip')]:
         files = list((folder / 'desktop').glob('*' + extension))
         if len(files) != 1:
             raise RuntimeError(f'本次构建应产生唯一的 {extension} 桌面安装包')
@@ -128,8 +128,7 @@ def build_desktop_update(args, source, folder, version, log, environment):
     print('构建并验证桌面更新包', flush=True)
     run([sys.executable, 'scripts/build_desktop_runtime.py'], cwd=source, log=log, env=environment)
     run(['pnpm', 'build:desktop'], cwd=source / 'front', log=log, env=environment)
-    targets = ['dmg', 'zip'] if args.signed_desktop else ['dmg']
-    run(['pnpm', 'exec', 'electron-builder', '--mac', *targets, '--publish', 'never',
+    run(['pnpm', 'exec', 'electron-builder', '--mac', 'dmg', 'zip', '--publish', 'never',
          '--config.directories.output=' + str(folder / 'desktop')],
         cwd=source / 'front', log=log, env=environment)
     apps = list((folder / 'desktop').glob('*/*.app'))

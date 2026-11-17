@@ -235,10 +235,13 @@ function syncPricingPackageDimension(field: PackageDimensionField, value: string
   pricingInput.value[field] = normalizedValue && Number.isFinite(parsedValue) ? parsedValue : 0
 }
 
-async function openProductEditor(item?: ProductIndexItem) {
+async function openProductEditor(item?: ProductIndexItem, mode: 'text' | 'images' = 'text') {
+  if (item) {
+    editorOpen.value = false
+    if (!await store.loadProduct(item)) return
+  }
   focusProductSku.value = ''
-  if (item) await store.loadProduct(item)
-  editorMode.value = 'text'
+  editorMode.value = mode
   imageEditorTitle.value = '采集箱图片编辑'
   editorOpen.value = true
 }
@@ -267,8 +270,7 @@ async function saveProductFacts() {
 }
 
 async function openProductImageEditor(item?: ProductIndexItem) {
-  await openProductEditor(item)
-  editorMode.value = 'images'
+  await openProductEditor(item, 'images')
 }
 
 const imageWorkbench = useDraftImageWorkbench({

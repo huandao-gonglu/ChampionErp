@@ -125,3 +125,23 @@ def test_save_draft_rejects_unresolvable_ozon_type_id(monkeypatch) -> None:
     assert status == 400
     assert result["error_code"] == "OZON_CATEGORY_PAIR_RESOLVE_FAILED"
     assert products.saved == {}
+
+
+def test_library_load_returns_only_the_requested_product():
+    products = product_facade.get_context().products
+    first = products.save_product({"product_id": "library-first", "name": "第一件商品"})
+    second = products.save_product({"product_id": "library-second", "name": "第二件商品"})
+    for body, expected in [
+        ({"product_id": first["product_id"]}, first),
+        ({"product_file_path": "sqlite://products/library-second"}, second),
+    ]:
+        result, status = product_facade.load_product_payload(body)
+        assert status == 200
+        assert result["product"]["product_id"] == expected["product_id"]
+
+    result, status = product_facade.load_product_payload(
+        {"product_id": "library-missing", "product_file_path": "sqlite://products/library-first"}
+    )
+    assert status == 404
+    assert not result["ok"] and "商品不存在" in result["error"]
+    assert "product" not in result

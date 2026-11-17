@@ -1,0 +1,31 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs/promises')
+const path = require('node:path')
+const os = require('node:os')
+const { createNativeUpdateFeed } = require('./native-update-feed.cjs')
+
+test('本机更新来源仅提供本次随机地址对应的包，关闭后不再接受请求', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'erp-native-feed-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const file = path.join(directory, 'verified.zip')
+  const bytes = Buffer.from('已校验更新包')
+  await fs.writeFile(file, bytes)
+  const asset = { size: bytes.length, sha256: 'a'.repeat(64) }
+  const feed = await createNativeUpdateFeed(file, asset, '1.2.89')
+  let closed = false
+  t.after(async () => { if (!closed) await feed.close() })
+  const address = new URL(feed.url)
+  assert.equal(address.hostname, '127.0.0.1')
+  const manifest = await (await fetch(feed.url)).json()
+  assert.equal(manifest.name, '1.2.89')
+  assert.equal(manifest.sha256, asset.sha256)
+  assert.equal(new URL(manifest.url).origin, address.origin)
+  assert.deepEqual(Buffer.from(await (await fetch(manifest.url)).arrayBuffer()), bytes)
+  assert.equal((await fetch(address.origin + '/')).status, 404)
+  assert.equal((await fetch(address.origin + '/wrong/update.zip')).status, 404)
+  assert.equal((await fetch(feed.url, { method: 'POST' })).status, 405)
+  await feed.close()
+  closed = true
+  await assert.rejects(fetch(feed.url))
+})

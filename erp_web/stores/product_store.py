@@ -1029,7 +1029,7 @@ class ProductStore:
             "error": "" if deleted_count else "草稿不存在或已被删除。",
         }
 
-    def load_product_from_index(
+    def find_indexed_product(
         self, product_id: str = "", file_path: str = ""
     ) -> dict[str, Any]:
         product_id = str(product_id or "").strip()
@@ -1041,7 +1041,12 @@ class ProductStore:
             loaded = self._db.load_product_model(sqlite_product_id)
             if loaded:
                 return normalize_persisted_product_fields(loaded)
-        return self.load_product()
+        return {}
+
+    def load_product_from_index(
+        self, product_id: str = "", file_path: str = ""
+    ) -> dict[str, Any]:
+        return self.find_indexed_product(product_id, file_path) or self.load_product()
 
     def load_required_product_from_body(
         self, body: dict[str, Any]

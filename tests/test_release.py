@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import plistlib
 from io import BytesIO
 import tarfile
 import threading
@@ -12,6 +13,28 @@ import pytest
 from erp_web.release_guard import locked_file, release_guard
 from deploy import release_server
 from scripts import release
+
+
+@pytest.mark.parametrize('official', [False, True])
+def test_desktop_release_always_includes_native_zip(tmp_path, monkeypatch, official):
+    desktop = tmp_path / 'desktop'
+    app = desktop / 'mac-arm64/gongluErp.app'
+    (app / 'Contents').mkdir(parents=True)
+    (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': 'gongluErp'}))
+    (desktop / 'erp.dmg').write_bytes(b'installer')
+    archive = desktop / 'erp.zip'
+    archive.write_bytes(b'signed native update')
+    monkeypatch.setattr(release, 'output', lambda *args: 'arm64')
+    monkeypatch.setattr(release.subprocess, 'check_output', lambda *args, **kwargs: 'Authority=Developer ID Application: test')
+    calls = []
+    monkeypatch.setattr(release.subprocess, 'run', lambda *args, **kwargs: calls.append(args[0]))
+    args = argparse.Namespace(signed_desktop=official, desktop_update='optional', update_notes='', public_url='https://erp.example')
+    record = release.desktop_release_artifacts(tmp_path, app, '1.2.89', args)
+    assert record['mac_zip'] == {'name': 'erp.zip', 'sha256': release.digest(archive)}
+    assert calls == ([['xcrun', 'stapler', 'validate', app]] if official else [])
+    archive.unlink()
+    with pytest.raises(RuntimeError, match='唯一的 .zip'):
+        release.desktop_release_artifacts(tmp_path, app, '1.2.89', args)
 
 
 @pytest.mark.parametrize(('flags', 'policy'), [

@@ -90,9 +90,19 @@ macOS 普通打包和统一发布共用 `front/electron-builder.config.mjs`，�
 
 自 1.2.8 起，正式包在启动本机执行器前检查发行站点，运行期间每 30 分钟检查一次，也可从“文件 → 检查桌面更新”立即检查。检查只按操作系统和 CPU 架构选包。版本策略与业务登录独立，发行站点不可达时沿用最后成功取得的策略。尚未取得过策略时仍可启动，接入已发布最低版本策略的业务后端后，新请求会再经服务端检查。
 
-用户确认后才下载。Mac 客户端校验 DMG 的长度及 SHA-256，启动阶段打开安装包，使用期间只在 Finder 中定位下载文件。默认自签包未经 Apple 公证，其他 Mac 上首次打开可能遇到系统安全提示。退出旧程序后用 DMG 内的应用替换原应用；原安装名称若为 `Champion ERP.app`，替换时请保留此名称，避免留下两个桌面入口。Windows 对应 NSIS 安装包，Linux 定位已校验的 AppImage。可选更新允许稍后使用原版本。低于最低版本时，新启动不能跳过更新进入业务；使用中的客户端仍保留当前会话和本机调用回执。
+用户确认后才下载。自 1.2.89 起，固定自签证书和 Developer ID 签名的 Mac 客户端均可在启动阶段选择「安装并重启」。`desktop/update-signature.cjs` 对当前应用执行完整签名检查，接受原自签证书或 Developer ID，拒绝临时签名、其他自签证书和损坏的应用。发布默认同时构建 DMG 与 ZIP，并将 `macZip` 写入更新清单。
 
-已有 Developer ID 和公证配置时，在统一发布命令追加 `--signed-desktop`；脚本设置 `ERP_DESKTOP_SIGNING_MODE=developer-id`，启用强化运行时及公证，验证 Developer ID 签名和公证票据，发布 DMG 并额外提供原生更新 ZIP。单独使用 `pnpm desktop:dist` 构建正式签名包时也需显式设置该环境变量。使用 Developer ID 签名的 Mac 客户端在启动阶段可使用 Electron 的 `autoUpdater` 安装并重启，也可选择下载 DMG。首次从临时或自签身份切到 Developer ID 仍走安装包。Apple 会员与签名配置见 [Apple Developer ID](https://developer.apple.com/developer-id/)，原生更新要求见 [Electron autoUpdater](https://www.electronjs.org/docs/latest/api/auto-updater#macos)。
+`updates.cjs` 先下载 ZIP 并验证长度和 SHA-256，再由 `native-update-feed.cjs` 通过仅绑定 `127.0.0.1`、带随机地址的临时来源交给 Electron 原生更新器。来源只提供这一个已校验文件，成功或失败后均关闭。原生更新器继续核验新版是否满足旧版的签名身份，之后由 Squirrel 在退出后替换并重启；不另写应用复制、解压和替换脚本。校验失败保留旧版并报告错误，不自动改为其他安装方式。业务启动后检查更新仍只下载安装包，不直接退出正在工作的执行器。
+
+没有原生更新入口的旧客户端须先手动安装一次该功能版，之后才能使用自动替换。默认自签包未经 Apple 公证，其他 Mac 上首次打开或替换应用仍可能需要系统授权；自动替换也不会消除自签版的钥匙串提示。用户可主动选择 DMG 手工安装：退出旧程序后用安装包中的应用替换原应用，并保持原应用文件名，避免两个桌面入口。Windows 对应 NSIS 安装包，Linux 定位已校验的 AppImage。可选更新允许稍后使用原版本；低于最低版本时，新启动不能跳过更新进入业务，使用中的客户端仍保留原有会话和本机回执。
+
+已有 Developer ID 和公证配置时，在统一发布命令追加 `--signed-desktop`；脚本设置 `ERP_DESKTOP_SIGNING_MODE=developer-id`，启用强化运行时及公证，额外验证 Developer ID 签名和公证票据。单独使用 `pnpm desktop:dist` 构建正式签名包时也需显式设置该环境变量。首次从临时或自签身份切到 Developer ID 仍走安装包。Apple 会员与签名配置见 [Apple Developer ID](https://developer.apple.com/developer-id/)，原生更新要求见 [Electron autoUpdater](https://www.electronjs.org/docs/latest/api/auto-updater#macos)。
+
+### 自动替换的原生验收
+
+在配置了原自签证书的 Mac 上执行 `.venv/bin/python scripts/test_desktop_auto_update.py`。脚本构建两个独立 Electron 应用，使用随机 Bundle ID、仓库外临时目录、`~/Applications` 下独立测试目录和本机发行服务。无浏览器窗口、不读取 ERP 账号或钥匙串，不替换正式应用；结束后回收测试更新服务、缓存及应用。
+
+2026-11-17 在 macOS 27 / Apple 芯片、Electron 43.0.0 上使用真实 `autoUpdater` / Squirrel 完成四项验收：摘要错误、损坏 ZIP、临时签名替换包均被拒绝且保留 1.0.0；正确自签包从 1.0.0 自动替换为 1.0.1，并验证新版进程在同一安装路径重新启动。发行网络使用本机服务，未向生产更新站点发布，也不代表所有 Mac 的安装授权都可跳过。
 
 ## 旧桌面数据迁移
 

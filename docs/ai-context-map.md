@@ -168,7 +168,10 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 
 统一发布默认分发可选桌面更新，构建用 Mac 同样通过客户端升级。`--server-only` 跳过桌面打包和分发。
 桌面版本发布由 `scripts/release.py` 和 `deploy/publish_desktop.py` 写入同一套平台/架构清单，Nginx 独立提供安装包。
-`front/desktop/updates.cjs` 负责启动检查与下载，`services/desktop_version_policy.py` 在已上报版本的桌面新提交上执行最低版本规则。
+`front/desktop/updates.cjs` 负责启动检查与下载；`update-signature.cjs` 共用固定自签身份并核验原生更新资格，
+`native-update-feed.cjs` 只向原生更新器提供已校验的本机 ZIP，退出替换和重启由 Electron / Squirrel 负责。
+自签和 Developer ID 均分发 DMG 与 ZIP，自动替换只在业务启动前触发；原生隔离验收入口为 `scripts/test_desktop_auto_update.py`。
+`services/desktop_version_policy.py` 在已上报版本的桌面新提交上执行最低版本规则。
 桌面回执和网页继续使用原入口。发布与撤回见[桌面更新发布服务](server-deployment.md#桌面更新发布服务)。
 
 部署、配置、迁移门禁和隔离验收见 [桌面与统一后端](desktop-packaging.md)；当前服务器、访问通道及备份位置见 [服务器部署记录](server-deployment.md)。
@@ -236,6 +239,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 
 - 1688 图片由 `source_collect_parsers.py` 优先读取 `gallery.fields.mainImage`，再通过 `html_extract_service.fetch_1688_detail_html` 读取独立 `description.fields.detailUrl` 的详情内容；SKU 图仅由规格关联入池。`collect_helpers.normalize_collect_source_images` 统一下载全部公共图和规格图，以原 URL 保留稳定资产身份，不再截断前五张，也不重复保存本地路径和远程 URL。详情读取失败显式报告采集失败，不能以已有 SKU 图片假报完整采集。
 
+- 采集箱详情通过 `/api/load-product` 按商品 ID 或已有 `sqlite://products/…` 引用精确读取；所选商品已不存在时返回 404。
 - 采集箱推到草稿统一从 `/api/claim-products` → `collect_facade.claim_products_payload` → `collect_helpers.claim_products_to_platforms`，请求必须显式携带 `product_ids` 与 `targets`（平台、销售市场、注册语言）。每个商品按语言创建一份独立草稿，市场只包含该语言下勾选的项目；美客多销售市场按授权物流操作归入 CBT 的 `sites_to_sell`。响应的 `claimed_count` 统计成功商品数，`draft_count` 统计实际创建草稿数。
 - 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
 
