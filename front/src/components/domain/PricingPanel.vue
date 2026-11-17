@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { draftListTitle } from '@/utils/draftDisplayTitle'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useAiChatStore } from '@/stores/aiChat'
@@ -199,7 +198,7 @@ onBeforeUnmount(() => { disposed = true })
     <div v-if="!selectionLocked" class="pricing-card mb-4 flex flex-wrap items-center gap-3 p-4"><label class="min-w-48 flex-1"><span class="sr-only">草稿</span><select class="pricing-input w-full" :disabled="loading || !draftItems.length" :value="draftId" @change="emit('selectDraft', ($event.target as HTMLSelectElement).value)"><option value="">选择草稿</option><option v-for="item in draftItems" :key="item.draftId" :value="item.draftId">{{ draftListTitle(item) }}</option></select></label><button type="button" class="pricing-button" :disabled="loading" @click="emit('refreshDrafts')">刷新草稿</button><button type="button" class="pricing-button" :disabled="loading || !draftId" @click="emit('editDraft')">编辑草稿</button></div>
     <section class="pricing-scope-bar pricing-card" aria-label="当前核价范围"><div class="pricing-scope-count"><PhPackage :size="22" class="shrink-0 text-primary-600" /><div><p class="font-semibold">{{ selectedSkus.length }} 个 SKU</p><p class="pricing-subtle mt-1 text-[11px]">{{ issues.some(entry => pricingFactsIssues(entry.cost, entry.dimensions).length) ? '部分采购或包装资料待补充' : '采购成本与包装按规格读取' }}</p></div></div><div class="min-w-0 flex-1"><div class="flex flex-wrap gap-2"><span v-for="target in targets" :key="target.targetKey" class="pricing-tag">{{ marketName(target) }} · {{ marketSite(target) }}</span><span v-if="!targets.length" class="pricing-subtle text-xs">未选择核价市场</span></div><p class="pricing-subtle mt-2 text-[11px]">按当前店铺物流配置与运输属性匹配可用渠道</p></div><button type="button" class="pricing-button" :disabled="applying || !draftId" @click="scopeOpen = true"><PhSlidersHorizontal :size="16" />修改核价范围</button></section>
     <div v-if="draftId && missingSizeIds.length" class="mb-3 flex flex-wrap items-center gap-3">
-      <button v-desktop="'global.chat'" type="button" class="pricing-button" :disabled="loading || requestActive || !!modelOperationReason('global.chat')" @click="estimateDimensions">AI 估算包装尺寸（{{ missingSizeIds.length }} 个 SKU）</button>
+      <button type="button" class="pricing-button" :disabled="loading || requestActive || !!modelOperationReason('global.chat')" @click="estimateDimensions">AI 估算包装尺寸（{{ missingSizeIds.length }} 个 SKU）</button>
       <span class="pricing-subtle text-xs">{{ modelOperationReason('global.chat') || '确认建议值后保存至商品资料。' }}</span>
     </div>
     <PricingExchangeRates ref="rates" :input="input" :disabled="loading || requestActive" @ready="ratesReady = true" @rates="referenceUsdCnyRate = $event.usd_cny_rate" @refresh-start="invalidateQuote" />

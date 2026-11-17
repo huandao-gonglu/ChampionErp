@@ -4,6 +4,8 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import * as catalogApi from '@/api/workflow/catalog'
 import * as draftImagesApi from '@/api/draftImages'
+import * as desktopApi from '@/api/desktopHandoff'
+import { receivedDesktopHandoff } from '@/utils/desktopHandoff'
 import { normalizeDraftMutation } from '@/api/workflow/normalizers'
 import WorkflowView from '../WorkflowView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
@@ -152,4 +154,39 @@ it('重新加载草稿后，图片编辑和 SKU 详情都使用该次返回的�
     expect(wrapper.get('img[alt="15 升 的销售图片"]').attributes('src')).toBe('/generated.jpg')
     expect(loadProduct).not.toHaveBeenCalled()
   } finally { wrapper.unmount() }
+})
+
+it('桌面工作台恢复草稿的修图确认框和修改要求，等待用户提交', async () => {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const workflow = useWorkflowStore()
+  vi.spyOn(workflow, 'loadState').mockResolvedValue(undefined)
+  vi.spyOn(workflow, 'hydrateTab').mockResolvedValue(undefined)
+  const saved = normalizeDraftMutation({
+    draft: { draft_id: 'draft-edit', product_id: 'p', platform: 'yandex', images: [{ asset_id: 'cover', order: 0, role: 'main' }] },
+    productContext: { product_id: 'p', image_pool: [{ id: 'cover', preview_url: '/cover.jpg' }] },
+  })
+  vi.spyOn(catalogApi, 'loadDraft').mockResolvedValue(saved)
+  vi.spyOn(draftImagesApi, 'fetchDraftImageState').mockResolvedValue({ ...saved, product: createEmptyProduct(), imagePool: saved.productContext.imagePool, batch: null })
+  const process = vi.spyOn(draftImagesApi, 'processDraftImages')
+  const confirm = vi.spyOn(desktopApi, 'confirmDesktopHandoff').mockResolvedValue(undefined)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'WorkflowHome', component: WorkflowView }] })
+  await router.push('/?tab=drafts')
+  const wrapper = shallowMount(WorkflowView, { global: { plugins: [pinia, router], stubs: {
+    DraftWorkspacePanel: false, DraftImageWorkbench: false, WorkspaceDialog: false, Teleport: true,
+  } } })
+  try {
+    receivedDesktopHandoff.value = { requestId: 'draft-image-edit', target: '/?tab=drafts', state: { workflow: {
+      draft: saved.draft, draftContext: saved.productContext, draftTab: 'images',
+      draftImageAction: { action: 'edit', imageIds: ['cover'], prompt: '保留原色' },
+    } } }
+    await flushPromises()
+    expect(wrapper.get('dialog[open] textarea').element).toHaveProperty('value', '保留原色')
+    expect(wrapper.get('input[aria-label="选择处理图片 cover"]').element).toHaveProperty('checked', true)
+    expect(confirm).toHaveBeenCalledWith('draft-image-edit')
+    expect(process).not.toHaveBeenCalled()
+  } finally {
+    receivedDesktopHandoff.value = null
+    wrapper.unmount()
+  }
 })

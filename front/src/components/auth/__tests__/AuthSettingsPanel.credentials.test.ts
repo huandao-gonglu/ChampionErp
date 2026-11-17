@@ -2,8 +2,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as settingsApi from '@/api/workflow/settings'
 import AuthSettingsPanel from '../AuthSettingsPanel.vue'
-import { launchDesktop } from '@/utils/desktopHandoff'
-vi.mock('@/utils/desktopHandoff', async importOriginal => ({ ...await importOriginal<object>(), launchDesktop: vi.fn() }))
+import { launchDesktop, receivedDesktopHandoff } from '@/utils/desktopHandoff'
+vi.mock('@/utils/desktopHandoff', async importOriginal => ({ ...await importOriginal<object>(), launchDesktop: vi.fn(), acknowledgeDesktopHandoff: vi.fn() }))
 
 const defaultPlatformOptions = [
   {
@@ -140,7 +140,7 @@ describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
   const apiModel = { id: 'existing', name: '已有模型', connection_type: 'api', provider_id: 'openai', capabilities: [] }
   it('网页版保留本机模型入口，操作时直接交接到桌面设置', async () => {
     vi.stubGlobal('championDesktop', undefined)
-    const wrapper = mountPanel({ ai_models: [preset.model, apiModel], browser_presets: [preset] })
+    const wrapper = mountPanel({ ai_models: [apiModel], browser_presets: [preset] })
     expect(wrapper.find('[data-testid="add-web-model"]').exists()).toBe(true)
     expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="add-web-model"]').setValue('gemini_canvas')
@@ -148,6 +148,52 @@ describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
     expect(wrapper.emitted('saveAi')).toBeUndefined()
     await wrapper.findAll('button').find(button => button.text().includes('已有模型'))!.trigger('click')
     expect(wrapper.get('fieldset.ai-model-form').attributes('disabled')).toBeUndefined()
+  })
+
+  it('网页定位已有预置和保存功能绑定均不受选中的本机模型影响', async () => {
+    vi.stubGlobal('championDesktop', undefined)
+    vi.mocked(launchDesktop).mockClear()
+    const wrapper = mountPanel({ ai_models: [apiModel, preset.model], browser_presets: [preset],
+      ai_use_cases: [{ id: 'image.translate', label: '图片翻译', required_capabilities: ['image_edit'], desktop_capability: 'image_edit' }] })
+    await wrapper.get('[data-testid="add-web-model"]').setValue(preset.id)
+    expect(wrapper.get('[data-testid="ai-connection-type"]').element).toHaveProperty('value', 'browser')
+    await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
+    await wrapper.get('[data-testid="save-ai-bindings"]').trigger('click')
+    expect(launchDesktop).not.toHaveBeenCalled()
+    expect(wrapper.emitted('saveAi')).toEqual([[{ ai_use_case_bindings: {} }]])
+  })
+
+  it('只有改绑到本机模型时才交接，桌面恢复待保存的绑定', async () => {
+    vi.stubGlobal('championDesktop', undefined)
+    vi.mocked(launchDesktop).mockClear()
+    const config = {
+      ai_models: [apiModel, { ...preset.model, capabilities: ['image_edit'] }],
+      ai_use_cases: [{ id: 'image.translate', label: '图片翻译', required_capabilities: ['image_edit'], desktop_capability: 'image_edit' }],
+    }
+    const web = mountPanel(config)
+    await web.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
+    const fields = web.get('[data-testid="save-ai-bindings"]').element.closest('section')!
+    const select = web.findAll('select').find(item => fields.contains(item.element))!
+    await select.setValue(preset.model.id)
+    await web.get('[data-testid="save-ai-bindings"]').trigger('click')
+    const context = vi.mocked(launchDesktop).mock.calls[0][0]!
+    expect(context.state?.modelSettings?.bindings).toMatchObject({ 'image.translate': { model_id: preset.model.id } })
+    expect(web.emitted('saveAi')).toBeUndefined()
+    web.unmount()
+
+    vi.stubGlobal('championDesktop', { localOperations: true })
+    const desktop = mountPanel(config)
+    try {
+      receivedDesktopHandoff.value = { requestId: 'binding', target: context.target!, state: context.state! }
+      await flushPromises()
+      expect(desktop.get('[data-testid="auth-settings-tab-ai_bindings"]').attributes('aria-selected')).toBe('true')
+      await desktop.get('[data-testid="save-ai-bindings"]').trigger('click')
+      expect(desktop.emitted('saveAi')?.[0][0]).toEqual({ ai_use_case_bindings: context.state?.modelSettings?.bindings })
+      expect(launchDesktop).toHaveBeenCalledOnce()
+    } finally {
+      receivedDesktopHandoff.value = null
+      desktop.unmount()
+    }
   })
 
   it('查看本机模型和说明留在网页，点击编辑字段时才交接桌面', async () => {

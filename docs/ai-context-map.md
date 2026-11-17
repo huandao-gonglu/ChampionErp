@@ -131,7 +131,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 当前端可用性由 `services/operation_availability.py` 按实际模型绑定和当前请求的桌面连接计算。
 `GET /api/operation-availability` 返回限制原因及需要桌面的模型用例。网页通过
-`utils/desktopHandoff.ts`、`desktopHandoffDirective.ts` 接管原功能入口并直接唤起桌面，配置问题在原地展示。
+`utils/desktopHandoff.ts`、`desktopHandoffDirective.ts` 在提交有效的本机操作时唤起桌面。模型配置错误在原地展示，桌面已打开但执行器断连时提示恢复连接。草稿和商品的修图确认框可随工作台恢复所选图片和修改要求。
 新增本机动作继续经 `call_desktop` 投递。业务工具需要按端筛选时，在应用装配的
 `AiToolBinding.unavailable_reason` 声明依赖；原生工具发现和运行时复核共用该判断。
 混合工具按参数检查，例如链接采集仅在浏览器模式需要桌面。后台长任务在创建前检查，
@@ -150,7 +150,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 的 Deferred metadata，审批窗口、后台扫描和微信连接的启动端都不能换设备。
 
 `source_collect_workflows.collect_browser_url` 调用本机 `collect.read`，后端才读目标商品、
-规范化、登记图片并经 `ProductStore` 保存。商品采集仅接受浏览器与 API 两种方式。浏览器模式支持单链接和批量队列。API 采集通过 `/api/collect-1688` 提交商品链接及 `mode=api`，后端从链接解析商品编号并使用当前账号授权。
+规范化、登记图片并经 `ProductStore` 保存。采集页面按已保存 URL 的方式执行。浏览器采集由桌面打开商品页，1688 API 采集由后端解析商品编号并使用当前账号授权。独立接口 `/api/collect-1688` 仍支持显式提交 URL 与模式。
 `/api/collect-verification` 检查原页面验证，`/api/collect-resume` 在验证完成后沿用原桌面连接读取该商品页。
 采集素材逐张交接，`desktop_asset_service` 复用图片服务生成后端引用。
 Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model / Direct / Factory 不变。
@@ -244,11 +244,10 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
 
 - `source_sites.py` 的采集质量门槛与核价/发布条件分开：1688 有标题和图片且未被验证拦截即可入库。缺失包装长宽高、重量通过 `collect_helpers.py` 的 `missing_fields` / `next_action` 提示在 SKU 页补齐，不触发采集失败；有规格时逐 SKU 判断包装完整性，不用首项资料代表整组。
-- `front/src/views/workflow/CollectView.vue` 组织浏览器采集（URL 批量）和 1688 API 采集，`CollectBatchManager.vue` 负责 URL 增删改、状态筛选和失败重试。网页在提交 URL 批量采集时交接链接、队列与操作范围，桌面恢复并确认接收后直接执行，页面查看和编辑不触发交接。
-- 批量列表状态为 `pending`（未开始）、`running`（正在采集）、`waiting_verification`（等待验证）、`success`（完成）、`failed`（失败）。部分结果保留资料提示并显示失败。
-- `front/src/stores/workflow/actions/collection.ts` 逐条提交 `/api/collect-batch`。遇到登录或验证码，后端在解析、下载、商品写入之前返回 `waiting_verification`；其 `verification` 契约由 `schemas/collection.py` 定义，仅含标签 ID、原商品 URL、平台。
-- `/api/collect-verification` 由 `collect_routes` → `collect_facade` → `source_collect_verification.inspect_collection_verification` 只读检查原标签。前端每两秒检查一次；验证完成后用原标签 ID 和 URL 调用 `/api/collect-resume`，再次验证页面身份并采集，然后继续后续链接。标签被关闭、离开商品或无法读取时返回可操作提示，不改采集目标。
-- 用户可以取消等待，未开始的链接保持原状。`collectQueue.ts` 本地保留等待项的标签 ID 和 URL，刷新应用或取消后点击开始采集可恢复；采集应用关闭后不承诺后台执行。不保存凭据或整份商品。正在实际采集时刷新仍标记结果未确认，避免假报成功。删除列表行不删除入库商品。
+- 采集页由 `CollectView.vue` 组织左侧 URL 列表和右侧所选链接详情。浏览器和 1688 API 链接共用个人空间 `stores/collection_links.py` 的 SQLite 清单；规范化 URL 唯一，保留商品查询参数。商品原文、SKU 与图片继续归 ProductStore。
+- `collection.links` 与 `collection.history` 为页面与 AI 共用只读查询。前端进入页面、恢复焦点和页面可见期间刷新清单；旧浏览器队列按账号导入，成功后清除旧缓存。编辑、移除和启动均携带链接版本；删除记录不删除采集箱商品。换 URL 时清除原链接的结果和日志。
+- `/api/collection-links/manage` 管理链接，`/run` 只执行指定版本的单条链接。桌面交接仅传本次选择的 ID 和版本。网页可直接执行 API 采集。后台先持久化本条结果，再返回完成回执。前端短时断线只查询原回执。后台异常中断的执行保留为待确认，不参与失败项批量重试。
+- `/api/collection-links/verify` 按链接版本检查服务端保存的原验证标签。正常完成后继续原页，关闭原标签则记录失败。取消等待或关闭页面保留验证状态和后续未开始链接；后续条目仍由打开的客户端逐条派发。
 - 浏览器标签页选择与独立保存 HTML/截图的操作已移除；URL 采集仅使用指定商品页，验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
 - `front/desktop/embedded-browser.cjs` 持有 1688 和 Gemini Canvas 的内置网页。桌面执行器经私有进程管道操作当前 ERP 账号的页面。站点存储按后端、账号、服务和会话名称持久化，退出 ERP 后同一账号可以继续使用有效登录。

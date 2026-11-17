@@ -92,6 +92,8 @@ class AccountRuntime:
                     online = db.execute("SELECT 1 FROM online_jobs WHERE status IN ('queued','running') LIMIT 1").fetchone()
                     publish = db.execute("SELECT 1 FROM publish_jobs LIMIT 1").fetchone()
                     agent = db.execute("SELECT 1 FROM ai_deferred_requests LIMIT 1").fetchone()
+                if (context.paths.data_dir / "collection-links.sqlite3").exists():
+                    context.collection_links.mark_interrupted()
                 if publish:
                     from erp_web.runtime_units.publish_adapter import mark_interrupted_publish_jobs
                     mark_interrupted_publish_jobs()

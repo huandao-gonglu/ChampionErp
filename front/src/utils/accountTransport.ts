@@ -26,7 +26,7 @@ export function clearBusinessStorage() {
     const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
     for (const key of keys) {
       if (!key) continue
-      if (key.startsWith('ai-chat-selected-conversation') || key.startsWith('draft-image-request:') || key.startsWith('champion-erp.collect-queue.v1')) {
+      if (key.startsWith('ai-chat-selected-conversation') || key.startsWith('draft-image-request:') || key === 'champion-erp.collect-queue.v1') {
         localStorage.removeItem(key)
       }
     }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { hasLocalOperations } from '@/utils/desktop'
 import { useRouter } from 'vue-router'
 import { useAccountStore } from '@/stores/account'
 import { desktopBackendOrigin, fetchDesktopInstallers, resolveDesktopHandoff } from '@/api/desktopHandoff'
@@ -8,6 +9,7 @@ import { fetchUiMessages } from '@/api/aiWork'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { desktopLaunch, receivedDesktopHandoff, dismissDesktopLaunch, retryDesktopLaunch, resetDesktopHandoff, acknowledgeDesktopHandoff, type DesktopHandoffState } from '@/utils/desktopHandoff'
 
+const desktopShell = hasLocalOperations()
 const router = useRouter()
 const account = useAccountStore()
 const chat = useAiChatStore()
@@ -16,6 +18,7 @@ const installers = ref<{ label: string; version: string; url: string }[]>([])
 const downloadError = ref('')
 const loading = ref(false)
 const receiveError = ref('')
+const canRetryReceive = ref(false)
 const pending = ref('')
 const receiveAttempt = ref(0)
 let unsubscribe: (() => void) | undefined
@@ -42,9 +45,12 @@ watch([receiveAttempt, () => account.user?.id, () => router.currentRoute.value.m
   const id = pending.value
   if (!id || !account.user || router.currentRoute.value.meta.public) return
   receiveError.value = ''
+  canRetryReceive.value = false
+  let resolved = false
   try {
     const data = await resolveDesktopHandoff(id)
     if (token !== generation) return
+    resolved = true
     if (data.opened) {
       await window.championDesktop?.finishHandoff?.(id)
       if (receivedDesktopHandoff.value?.requestId === id) receivedDesktopHandoff.value = null
@@ -69,7 +75,10 @@ watch([receiveAttempt, () => account.user?.id, () => router.currentRoute.value.m
     // 工作台负责恢复商品/草稿，会话页负责恢复输入；普通设置页在路由完成后即可确认。
     if (!data.state.workflow && !data.state.chat && !data.state.modelSettings) await acknowledgeDesktopHandoff(id)
   } catch (error) {
-    if (token === generation) receiveError.value = error instanceof Error ? error.message : '页面接收失败，请回网页重试。'
+    if (token !== generation) return
+    const failure = error as { status?: number; code?: string } | null
+    canRetryReceive.value = !resolved && (!failure?.status || failure.status >= 500 || failure.code === 'DESKTOP_UNAVAILABLE')
+    receiveError.value = error instanceof Error ? error.message : '页面接收失败，请回网页重试。'
   }
 })
 onMounted(async () => {
@@ -82,7 +91,7 @@ onBeforeUnmount(() => { ++generation; unsubscribe?.() })
 </script>
 
 <template>
-  <aside v-if="desktopLaunch && !downloadsOpen" role="status" aria-label="打开桌面端" class="fixed bottom-5 right-5 z-[100] max-w-sm rounded-xl border border-accent-200 bg-white p-4 shadow-lg dark:border-dark-700 dark:bg-dark-900">
+  <aside v-if="!desktopShell && desktopLaunch && !downloadsOpen" role="status" aria-label="打开桌面端" class="fixed bottom-5 right-5 z-[100] max-w-sm rounded-xl border border-accent-200 bg-white p-4 shadow-lg dark:border-dark-700 dark:bg-dark-900">
     <div class="flex items-start justify-between gap-4">
       <p>{{ desktopLaunch.status === 'opened' ? '已在桌面端打开' : desktopLaunch.status === 'opening' ? '正在打开桌面端…' : desktopLaunch.error || '没有打开？可以重试或下载安装。' }}</p>
       <button type="button" class="text-accent-500" aria-label="关闭打开提示" @click="dismissDesktopLaunch">×</button>
@@ -93,7 +102,11 @@ onBeforeUnmount(() => { ++generation; unsubscribe?.() })
     </div>
   </aside>
   <aside v-if="receiveError" role="alert" class="fixed bottom-5 right-5 z-[100] max-w-sm rounded-xl border bg-white p-4 shadow-lg dark:bg-dark-900">
-    <p>{{ receiveError }}</p><button class="btn btn-outline mt-3" @click="receiveError = ''">关闭</button>
+    <p>{{ receiveError }}</p>
+    <div class="mt-3 flex gap-3">
+      <button v-if="canRetryReceive" class="btn btn-primary" @click="receiveAttempt++">重试</button>
+      <button class="btn btn-outline" @click="receiveError = ''">关闭</button>
+    </div>
   </aside>
   <WorkspaceDialog :open="downloadsOpen" title="安装桌面端" @close="downloadsOpen = false">
     <div class="space-y-4">

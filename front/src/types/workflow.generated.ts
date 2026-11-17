@@ -495,6 +495,37 @@ export interface BackendCollectionVerificationStatus {
   message: string
 }
 
+export interface BackendCollectionLink {
+  id: string
+  revision: number
+  url: string
+  mode: "browser" | "api"
+  status: "pending" | "running" | "waiting_verification" | "success" | "failed" | "unconfirmed"
+  platform: string
+  updatedAt: string
+  title?: string
+  productId?: string
+  image?: string
+  price?: string
+  currency?: string
+  skuCount?: number
+  imageCount?: number
+  partial?: boolean
+  error?: string
+  errorCode?: string
+  message?: string
+  nextAction?: string
+  screenshot?: string
+  snapshot?: string
+}
+
+export interface BackendCollectionLinkEvent {
+  at: string
+  status: "pending" | "running" | "waiting_verification" | "success" | "failed" | "unconfirmed"
+  message: string
+  code: string
+}
+
 export interface BackendAiCapabilityProfile {
   version?: number
   tested?: boolean

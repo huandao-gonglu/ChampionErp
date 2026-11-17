@@ -23,7 +23,7 @@ export function desktopOperationReason(): string {
 
 export function modelOperationReason(useCase: string): string {
   if (!availability.value) return pendingReason.value
-  if (modelRequiresDesktop(useCase)) return ''
+  if (availability.value.desktop_use_cases?.includes(useCase)) return desktopOperationReason()
   return availability.value.blocked_use_cases[useCase] || ''
 }
 

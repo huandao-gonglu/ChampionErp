@@ -1,142 +1,90 @@
 <script setup lang="ts">
-import { desktopOperationReason } from '@/utils/desktop'
-import { computed, ref } from 'vue'
-import type { CollectBatchRow, CollectBatchStatus } from '@/types/workflow'
-import { appendCollectUrls, collectBatchStatusLabels, createCollectBatchRow, normalizeCollectUrl } from '@/utils/collectQueue'
+import { computed, ref, watch } from 'vue'
+import { PhLink, PhMagnifyingGlass, PhListBullets, PhPlay, PhArrowClockwise } from '@phosphor-icons/vue'
+import { collectBatchStatusLabels } from '@/utils/collectQueue'
+import type { CollectionLink } from '@/api/workflow/collectionLinks'
+import type { CollectBatchStatus } from '@/types/workflow'
 
-const props = defineProps<{ rows: CollectBatchRow[]; loading: boolean }>()
-const emit = defineEmits<{ update: [rows: CollectBatchRow[]]; collect: [rowIds?: string[]] }>()
-const input = ref('')
-const message = ref('')
-const error = ref('')
-const editingId = ref('')
-const editingUrl = ref('')
-const filter = ref<CollectBatchStatus | ''>('')
-const counts = computed(() => props.rows.reduce((total, row) => {
-  total[row.status]++
-  return total
-}, { pending: 0, running: 0, waiting_verification: 0, success: 0, failed: 0 }))
-const desktopReason = computed(desktopOperationReason)
-const pendingRows = computed(() => props.rows.filter(row => ['pending', 'waiting_verification'].includes(row.status)))
-const retryRows = computed(() => props.rows.filter(row => row.status === 'failed'))
-const visibleRows = computed(() => props.rows.filter((row) => !filter.value || row.status === filter.value))
-const badgeClasses: Record<CollectBatchStatus, string> = {
-  waiting_verification: 'bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200',
-  pending: 'bg-slate-100 text-slate-600 dark:bg-dark-700 dark:text-accent-200',
-  running: 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-200',
-  success: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200',
-  failed: 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
-}
-
-function addUrls() {
-  if (props.loading) return
-  error.value = ''
-  try {
-    const result = appendCollectUrls(props.rows, input.value)
-    emit('update', result.rows)
-    input.value = ''
-    filter.value = ''
-    message.value = `已添加 ${result.added} 条${result.duplicates ? `，跳过 ${result.duplicates} 条重复链接` : ''}。`
-  } catch (exc) {
-    message.value = ''
-    error.value = (exc as Error).message
-  }
-}
-
-function editRow(row: CollectBatchRow) {
-  editingId.value = row.id
-  editingUrl.value = row.url
-  error.value = ''
-}
-
-function saveEdit() {
-  if (props.loading) return
-  error.value = ''
-  try {
-    const url = normalizeCollectUrl(editingUrl.value)
-    if (props.rows.some((row) => row.id !== editingId.value && row.url === url)) throw new Error('此 URL 已在列表中，请勿重复添加。')
-    emit('update', props.rows.map((row) => row.id === editingId.value && row.url !== url ? createCollectBatchRow(url, row.id) : row))
-    editingId.value = ''
-    message.value = '链接已保存；修改后的链接将重新等待采集。'
-  } catch (exc) { error.value = (exc as Error).message }
-}
-
-function removeRow(id: string) {
-  if (props.loading) return
-  emit('update', props.rows.filter((row) => row.id !== id))
-  if (editingId.value === id) editingId.value = ''
-  message.value = '已从采集列表移除，已入库的商品保留。'
-}
+const props = defineProps<{ rows: CollectionLink[]; selectedId: string; busy: boolean; ready: boolean }>()
+const emit = defineEmits<{ select: [id: string]; run: [rows: CollectionLink[]]; add: []; openProduct: [id: string] }>()
+const search = ref('')
+const status = ref<CollectBatchStatus | ''>('')
+const matching = computed(() => {
+  const term = search.value.trim().toLowerCase()
+  return props.rows.filter(row => !term || (row.title || '').toLowerCase().includes(term) || row.url.toLowerCase().includes(term))
+})
+const visible = computed(() => matching.value.filter(row => !status.value || row.status === status.value))
+const pending = computed(() => visible.value.filter(row => ['pending', 'waiting_verification'].includes(row.status)))
+const failed = computed(() => visible.value.filter(row => row.status === 'failed'))
+const counts = computed(() => {
+  const result: Partial<Record<CollectBatchStatus, number>> = {}
+  for (const row of matching.value) result[row.status] = (result[row.status] || 0) + 1
+  return result
+})
+watch([visible, () => props.selectedId], () => {
+  if (!visible.value.some(row => row.id === props.selectedId)) emit('select', visible.value[0]?.id || '')
+}, { immediate: true })
+function hostname(url: string) { return new URL(url).hostname }
 </script>
 
 <template>
-  <section data-testid="collect-batch-manager" class="space-y-5">
-    <div>
-      <h3 class="card-title">批量 URL 管理</h3>
-      <p class="muted mt-1">添加链接后逐条采集，自动识别来源平台。列表保存在本机浏览器；采集时请保持应用打开。来源缺少包装资料仍可入库，核价和发布前需在 SKU 页补齐。</p>
-    </div>
-    <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-dark-700 dark:bg-dark-900/60">
-      <label for="batch-url-input" class="text-sm font-semibold">添加商品链接</label>
-      <textarea id="batch-url-input" v-model="input" :disabled="props.loading" class="input mt-2 min-h-24 font-mono text-sm" placeholder="每行一个 http:// 或 https:// 商品链接，自动去重" />
-      <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <span class="muted text-xs">支持一次粘贴多个 URL，添加后可逐条编辑或删除。</span>
-        <button class="btn btn-secondary" :disabled="props.loading || !input.trim()" @click="addUrls">添加到列表</button>
-      </div>
-    </div>
-    <p v-if="error" role="alert" class="rounded-xl bg-rose-50 p-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">{{ error }}</p>
-    <p v-else-if="message" role="status" class="text-sm text-slate-600 dark:text-accent-300">{{ message }}</p>
-    <div class="flex flex-wrap items-center gap-2" aria-label="按采集状态筛选">
-      <button class="rounded-lg px-3 py-2 text-sm ring-1 ring-slate-200 dark:ring-dark-700" :class="!filter ? 'bg-primary-50 font-semibold text-primary-700 dark:bg-primary-500/15 dark:text-primary-200' : ''" :aria-pressed="!filter" @click="filter = ''">全部 {{ props.rows.length }}</button>
-      <button v-for="(label, status) in collectBatchStatusLabels" :key="status" class="rounded-lg px-3 py-2 text-sm" :class="[badgeClasses[status], filter === status ? 'ring-2 ring-primary-500' : '']" :aria-pressed="filter === status" @click="filter = filter === status ? '' : status">{{ label }} {{ counts[status] }}</button>
-    </div>
+  <section class="min-w-0">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex flex-wrap gap-2">
-        <span v-if="desktopReason" role="status" class="muted">{{ desktopReason }}</span>
-        <button class="btn btn-primary" :disabled="props.loading || !!desktopReason || !pendingRows.length || !!editingId" @click="emit('collect', pendingRows.map(row => row.id))">{{ props.loading && counts.waiting_verification ? '等待验证…' : counts.running ? '正在采集…' : `开始采集（${pendingRows.length}）` }}</button>
-        <button class="btn btn-outline" :disabled="props.loading || !!desktopReason || !retryRows.length || !!editingId" @click="emit('collect', retryRows.map(row => row.id))">重试失败项</button>
-      </div>
-      <button class="btn btn-ghost text-sm" :disabled="props.loading || !counts.success || !!editingId" @click="emit('update', props.rows.filter((row) => row.status !== 'success'))">移除已完成</button>
+      <h2 class="flex items-baseline gap-2 text-lg font-bold">URL 列表 <span class="text-sm font-normal text-slate-500">{{ rows.length }}</span></h2>
+      <label class="relative w-full sm:w-64">
+        <PhMagnifyingGlass aria-hidden="true" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+        <input v-model="search" type="search" aria-label="搜索 URL 或商品名称" placeholder="搜索 URL 或商品名称" class="input !py-2 !pl-9 text-sm" />
+      </label>
     </div>
-    <div v-if="!props.rows.length" class="rounded-2xl border border-dashed border-slate-300 px-6 py-12 text-center dark:border-dark-600">
-      <p class="font-semibold">还没有待采集的链接</p>
-      <p class="muted mt-2">在上方添加 URL，即可在这里管理链接并查看采集状态。</p>
+    <nav class="mt-3 flex gap-4 overflow-x-auto border-b border-slate-200 text-sm dark:border-dark-700" aria-label="按状态筛选">
+      <button class="filter-tab" :aria-pressed="status === ''" @click="status = ''">全部 {{ matching.length }}</button>
+      <button v-for="(label, key) in collectBatchStatusLabels" :key="key" class="filter-tab" :aria-pressed="status === key" @click="status = key">{{ label }} {{ counts[key] || 0 }}</button>
+    </nav>
+    <div class="my-4 flex flex-wrap gap-2">
+      <button class="btn btn-primary" :disabled="busy || !pending.length" @click="emit('run', pending)"><PhPlay weight="fill" />开始待采集（{{ pending.length }}）</button>
+      <button class="btn btn-outline" :disabled="busy || !failed.length" @click="emit('run', failed)"><PhArrowClockwise />重试失败（{{ failed.length }}）</button>
     </div>
-    <div v-else class="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-700">
-      <table class="w-full min-w-[620px] text-left text-sm">
-        <caption class="sr-only">批量采集链接、状态与操作</caption>
-        <thead class="bg-slate-50 text-xs text-slate-500 dark:bg-dark-900 dark:text-accent-300">
-          <tr><th scope="col" class="p-3">商品 / URL</th><th scope="col" class="w-28 p-3">状态</th><th scope="col" class="w-44 p-3">操作</th></tr>
+    <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-700">
+      <table class="w-full table-fixed text-left text-sm">
+        <caption class="sr-only">采集链接和状态</caption>
+        <thead class="bg-slate-50 text-xs text-slate-600 dark:bg-dark-900 dark:text-accent-300">
+          <tr><th class="px-4 py-3">商品 / URL</th><th class="hidden w-16 sm:table-cell">方式</th><th class="w-24">状态</th><th class="w-16">操作</th></tr>
         </thead>
         <tbody>
-          <tr v-for="row in visibleRows" :key="row.id" :data-row-id="row.id" class="border-t border-slate-200 align-top dark:border-dark-700">
-            <td class="max-w-lg p-3">
-              <form v-if="editingId === row.id" class="space-y-2" @submit.prevent="saveEdit">
-                <input v-model="editingUrl" aria-label="编辑 URL" class="input text-sm" :disabled="props.loading" @keydown.esc="editingId = ''" />
-                <div class="flex gap-2"><button class="btn btn-primary py-1 text-xs" :disabled="props.loading">保存</button><button type="button" class="btn btn-outline py-1 text-xs" @click="editingId = ''">取消</button></div>
-              </form>
-              <div v-else class="flex items-start gap-3">
-                <img v-if="row.image" :src="row.image" alt="商品主图" class="size-12 shrink-0 rounded-lg object-cover" loading="lazy" />
-                <div class="min-w-0">
-                  <div v-if="row.title" class="mb-1 font-medium">{{ row.title }}</div>
-                  <a :href="row.url" target="_blank" rel="noopener noreferrer" class="break-all text-primary-700 hover:underline dark:text-primary-300">{{ row.url }}</a>
-                  <p v-if="row.platform" class="muted mt-1 text-xs">{{ row.platform }}</p>
-                  <p v-if="row.error" class="mt-2 break-words text-xs text-rose-600 dark:text-rose-300">{{ row.error }}</p>
-                  <p v-if="row.nextAction" class="muted mt-1 text-xs">{{ row.nextAction }}</p>
-                </div>
-              </div>
+          <tr v-for="row in visible" :key="row.id" class="cursor-pointer border-t border-slate-200 hover:bg-slate-50 dark:border-dark-700 dark:hover:bg-dark-800" :class="{ 'selected-row': selectedId === row.id }" @click="emit('select', row.id)">
+            <td class="px-3 py-2.5">
+              <button class="flex w-full items-center gap-3 text-left" :aria-pressed="selectedId === row.id" @click.stop="emit('select', row.id)">
+                <img v-if="row.image" :src="row.image" alt="" class="size-11 shrink-0 rounded-md bg-white object-cover" loading="lazy" />
+                <span v-else class="grid size-11 shrink-0 place-items-center rounded-md bg-slate-100 text-slate-400 dark:bg-dark-700"><PhLink :size="21" /></span>
+                <span class="min-w-0"><strong class="block truncate">{{ row.title || hostname(row.url) }}</strong><span class="mt-1 block truncate text-xs text-slate-500 dark:text-accent-300">{{ row.url }}</span></span>
+              </button>
             </td>
-            <td class="p-3"><span class="inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium" :class="badgeClasses[row.status]"><span v-if="row.status === 'running'" class="mr-1.5 self-center size-2 animate-pulse rounded-full bg-current" />{{ collectBatchStatusLabels[row.status] }}</span></td>
-            <td class="p-3">
-              <div class="flex flex-wrap gap-x-3 gap-y-2">
-                <button class="text-primary-700 disabled:opacity-40 dark:text-primary-300" :disabled="props.loading || !!editingId" @click="editRow(row)">编辑</button>
-                <button class="text-rose-600 disabled:opacity-40 dark:text-rose-300" :disabled="props.loading" @click="removeRow(row.id)">删除</button>
-                <button v-if="row.status === 'failed'" class="text-primary-700 disabled:opacity-40 dark:text-primary-300" :disabled="props.loading || !!editingId || !!desktopReason" @click="emit('collect', [row.id])">重试</button>
-              </div>
+            <td class="hidden text-xs text-slate-500 dark:text-accent-300 sm:table-cell">{{ row.mode === 'api' ? 'API' : '浏览器' }}</td>
+            <td><span class="link-status" :data-status="row.status">{{ collectBatchStatusLabels[row.status] }}</span></td>
+            <td>
+              <button v-if="row.status === 'success' && row.productId" class="row-action" :disabled="busy" @click.stop="emit('openProduct', row.productId)">查看商品</button>
+              <button v-else-if="row.status !== 'running'" class="row-action" :disabled="busy" @click.stop="emit('select', row.id); emit('run', [row])">{{ row.status === 'pending' ? '采集' : row.status === 'waiting_verification' ? '继续' : '重试' }}</button>
+              <span v-else class="text-slate-400">进行中</span>
             </td>
           </tr>
-          <tr v-if="!visibleRows.length"><td colspan="3" class="p-8 text-center text-slate-500">没有符合此状态的链接。</td></tr>
         </tbody>
       </table>
+      <div v-if="!visible.length" class="grid justify-items-center gap-2 px-4 py-12 text-center">
+        <PhListBullets :size="32" class="text-slate-400" />
+        <p class="font-semibold">{{ !ready ? '正在读取采集列表' : rows.length ? '没有匹配的链接' : '还没有采集链接' }}</p>
+        <button v-if="ready && !rows.length" class="row-action" @click="emit('add')">添加商品链接</button>
+      </div>
     </div>
   </section>
 </template>
+<style scoped>
+.filter-tab { @apply shrink-0 border-b-2 border-transparent py-2.5 text-slate-500 dark:text-accent-300; }
+.filter-tab[aria-pressed=true] { @apply border-emerald-500 font-semibold text-emerald-700 dark:text-emerald-300; }
+.selected-row { @apply bg-emerald-50 dark:bg-emerald-500/10; box-shadow: inset 3px 0 #10b981; }
+.row-action { @apply text-xs font-semibold text-emerald-700 hover:underline disabled:opacity-50 dark:text-emerald-300; }
+.link-status { @apply inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600 dark:bg-dark-700 dark:text-accent-200; }
+.link-status[data-status=success] { @apply bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300; }
+.link-status[data-status=failed] { @apply bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300; }
+.link-status[data-status=running] { @apply bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300; }
+.link-status[data-status=waiting_verification], .link-status[data-status=unconfirmed] { @apply bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300; }
+</style>

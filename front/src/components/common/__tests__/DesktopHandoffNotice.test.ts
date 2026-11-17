@@ -11,12 +11,11 @@ vi.mock('@/api/desktopHandoff', () => ({ resolveDesktopHandoff: vi.fn(), confirm
 
 const user = { id: 'owner', email: 'owner@example.test', display_name: '测试账号', role: 'user' as const, status: 'enabled' as const, created_at: 1, updated_at: 1 }
 const finish = vi.fn()
-let receive: (id: string) => void
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal('championDesktop', { localOperations: true, pendingHandoff: async () => 'ticket', finishHandoff: finish,
-    onHandoff: (callback: typeof receive) => { receive = callback; return () => {} } })
+    onHandoff: () => () => {} })
   vi.mocked(resolveDesktopHandoff).mockResolvedValue({ ok: true, target: '/?tab=collect', state: {}, opened: false })
 })
 afterEach(() => { resetDesktopHandoff(); vi.unstubAllGlobals() })
@@ -56,8 +55,9 @@ it('工作台完成内容恢复前不回传打开确认，登录后的失败请�
   account.user = user
   await flushPromises()
   expect(wrapper.text()).toContain('暂时连接失败')
-  receive('ticket')
+  await wrapper.get('[role="alert"] button.btn-primary').trigger('click')
   await flushPromises()
+  expect(vi.mocked(resolveDesktopHandoff).mock.calls).toEqual([['ticket'], ['ticket']])
   expect(receivedDesktopHandoff.value?.state.workflow).toBeDefined()
   expect(confirmDesktopHandoff).not.toHaveBeenCalled()
   await acknowledgeDesktopHandoff('ticket', 'workflow')

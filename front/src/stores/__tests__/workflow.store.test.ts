@@ -3461,122 +3461,15 @@ describe('workflow store live API flow', () => {
   })
 })
 
-describe('URL 采集列表执行与验证续采', () => {
+describe('单链接采集验证续采', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(catalogApi.collectBatch).mockReset()
     vi.mocked(catalogApi.resumeCollection).mockReset()
     localStorage.clear()
     setActivePinia(createPinia())
   })
 
-
-
-
-
-  it('逐条呈现真实进度，失败继续执行，重试只处理指定失败项', async () => {
-    const { appendCollectUrls } = await import('@/utils/collectQueue')
-    const store = useWorkflowStore()
-    store.updateCollectBatchRows(appendCollectUrls([], 'https://example.com/a https://example.com/b https://example.com/c').rows)
-    const initial = store.collectBatchRows.map((row) => ({ ...row }))
-    type BatchResult = Awaited<ReturnType<typeof catalogApi.collectBatch>>
-    let finishFirst!: (value: BatchResult) => void
-    let finishSecond!: (value: BatchResult) => void
-    const result = (index: number, ok: boolean): BatchResult => ({
-      rows: [{ ...initial[index], status: ok ? 'success' : 'failed', ok, error: ok ? '' : '商品资料无法解析' }], productsIndex: [],
-    })
-    vi.mocked(catalogApi.collectBatch)
-      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve }))
-      .mockImplementationOnce(() => new Promise((resolve) => { finishSecond = resolve }))
-      .mockResolvedValueOnce(result(2, true))
-    const run = store.collectBatch()
-    expect(store.collectBatchRows.map((row) => row.status)).toEqual(['running', 'pending', 'pending'])
-    await store.collectBatch()
-    expect(catalogApi.collectBatch).toHaveBeenCalledTimes(1)
-    store.updateCollectBatchRows([])
-    expect(store.collectBatchRows).toHaveLength(3)
-    finishFirst(result(0, true))
-    await Promise.resolve()
-    expect(store.collectBatchRows.map((row) => row.status)).toEqual(['success', 'running', 'pending'])
-    finishSecond(result(1, false))
-    await run
-    expect(store.collectBatchRows.map((row) => row.status)).toEqual(['success', 'failed', 'success'])
-    expect(store.collectDiagnostics).toMatchObject({ status: 'failed', progress: 100 })
-    expect(store.collectDiagnostics.message).toContain('2 条完成，1 条失败')
-    vi.mocked(catalogApi.collectBatch).mockResolvedValueOnce(result(1, true))
-    await store.collectBatch([initial[1].id])
-    expect(vi.mocked(catalogApi.collectBatch).mock.calls[3][0].productUrls).toBe(initial[1].url)
-    expect(store.collectBatchRows.map((row) => row.status)).toEqual(['success', 'success', 'success'])
-  })
-
   afterEach(() => { vi.useRealTimers() })
-
-  async function waitingBatch() {
-    vi.useFakeTimers()
-    const { appendCollectUrls } = await import('@/utils/collectQueue')
-    const store = useWorkflowStore()
-    store.updateCollectBatchRows(appendCollectUrls([], 'https://detail.1688.com/offer/123.html https://example.com/b').rows)
-    const verification = { browserTabId: 'original-tab', sourceUrl: store.collectBatchRows[0].url, platform: '1688' }
-    vi.mocked(catalogApi.inspectCollectionVerification).mockReset()
-    vi.mocked(catalogApi.collectBatch).mockResolvedValueOnce({
-      rows: [{ ...store.collectBatchRows[0], status: 'waiting_verification', verification }], productsIndex: [],
-    }).mockResolvedValueOnce({ rows: [{ ...store.collectBatchRows[1], status: 'success', ok: true }], productsIndex: [] })
-    return { store, verification }
-  }
-
-  it('等待验证时不推进链接，验证完成后只读取原标签并自动继续', async () => {
-    const { store, verification } = await waitingBatch()
-    vi.mocked(catalogApi.inspectCollectionVerification)
-      .mockResolvedValueOnce({ status: 'waiting_verification', message: '请完成验证' })
-      .mockResolvedValueOnce({ status: 'ready', message: '已完成验证' })
-    vi.mocked(catalogApi.resumeCollection).mockResolvedValueOnce({ ...mutation(collectedProduct()) })
-    const run = store.collectBatch()
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(store.collectBatchRows.map(row => row.status)).toEqual(['waiting_verification', 'pending'])
-    expect(store.collectDiagnostics.status).toBe('waiting_verification')
-    expect(store.loading).toBe(true)
-    expect(catalogApi.collectBatch).toHaveBeenCalledTimes(1)
-    expect(catalogApi.resumeCollection).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(2000)
-    await run
-    expect(catalogApi.resumeCollection).toHaveBeenCalledWith(verification)
-    expect(store.collectBatchRows.map(row => row.status)).toEqual(['success', 'success'])
-    expect(store.collectBatchRows[0].verification).toBeUndefined()
-    expect(catalogApi.collectBatch).toHaveBeenCalledTimes(2)
-    expect(store.product.productId).toBe('real-product-1')
-  })
-
-  it('取消等待会结束检查并保留未开始链接，恢复时不重新访问商品 URL', async () => {
-    const { store } = await waitingBatch()
-    const run = store.collectBatch()
-    await vi.advanceTimersByTimeAsync(0)
-    store.cancelCollectionVerification()
-    await run
-    expect(store.collectBatchRows.map(row => row.status)).toEqual(['waiting_verification', 'pending'])
-    expect(store.collectDiagnostics.status).toBe('idle')
-    expect(store.collectBatchRows[0].nextAction).toContain('已取消等待')
-    expect(store.loading).toBe(false)
-    await vi.advanceTimersByTimeAsync(6000)
-    expect(catalogApi.inspectCollectionVerification).not.toHaveBeenCalled()
-    expect(catalogApi.collectBatch).toHaveBeenCalledTimes(1)
-    vi.mocked(catalogApi.inspectCollectionVerification).mockResolvedValueOnce({ status: 'ready', message: '' })
-    vi.mocked(catalogApi.resumeCollection).mockResolvedValueOnce({ ...mutation(collectedProduct()) })
-    const resumed = store.collectBatch()
-    await vi.advanceTimersByTimeAsync(2000)
-    await resumed
-    expect(store.collectBatchRows.map(row => row.status)).toEqual(['success', 'success'])
-    expect(catalogApi.collectBatch).toHaveBeenCalledTimes(2)
-  })
-
-  it('等待时原标签关闭会提示原因，不尝试采集其他标签', async () => {
-    const { store } = await waitingBatch()
-    vi.mocked(catalogApi.inspectCollectionVerification).mockResolvedValueOnce({ status: 'unavailable', message: '原商品标签页已关闭' })
-    const run = store.collectBatch()
-    await vi.advanceTimersByTimeAsync(2000)
-    await run
-    expect(store.collectBatchRows[0]).toMatchObject({ status: 'failed', error: '原商品标签页已关闭' })
-    expect(catalogApi.resumeCollection).not.toHaveBeenCalled()
-  })
 
   it('单链接采集等待验证后自动继续', async () => {
     vi.useFakeTimers()
@@ -3595,20 +3488,5 @@ describe('URL 采集列表执行与验证续采', () => {
     expect(store.product.productId).toBe('real-product-1')
     expect(store.loading).toBe(false)
   })
-
-  it('网络失败后保留失败项，后续链接照常采集，部分结果不标成完成', async () => {
-    const { appendCollectUrls } = await import('@/utils/collectQueue')
-    const store = useWorkflowStore()
-    store.updateCollectBatchRows(appendCollectUrls([], 'https://example.com/a https://example.com/b').rows)
-    vi.mocked(catalogApi.collectBatch).mockRejectedValueOnce(new Error('网络超时')).mockResolvedValueOnce({
-      rows: [{ ...store.collectBatchRows[1], status: 'partial', ok: false, product: collectedProduct() }], productsIndex: [],
-    })
-    await store.collectBatch()
-    expect(store.collectBatchRows.map((row) => row.status)).toEqual(['failed', 'failed'])
-    expect(store.collectBatchRows[0].error).toBe('网络超时')
-    expect(store.collectBatchRows[1].error).toContain('部分资料')
-    expect(store.loading).toBe(false)
-  })
-
 
 })

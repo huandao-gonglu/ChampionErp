@@ -1,5 +1,6 @@
 """普通业务查询组合根：只声明一次，自动生成页面路由及 AI 可发现的数据目录。"""
 from erp_web.schemas.business_data import DraftDataParameters, DraftIndexParameters, NoDataParameters, PricingDataParameters, ProductDataParameters
+from erp_web.schemas.collection import CollectionLinkQuery
 from erp_web.schemas.managed_settings import TariffRulesQuery
 from erp_web.services.business_queries import BusinessQueries, BusinessQuery
 from erp_web.services.pricing_data import draft_pricing_data
@@ -75,6 +76,11 @@ BUSINESS_QUERIES = BusinessQueries((
                   lambda context, _: {'mode': context.config.ai_tool_approval_mode()}),
     BusinessQuery('operations.availability', '当前请求的模型与桌面能力限制；仅描述本次连接，不代表其他设备都不可用。', NoDataParameters,
                   lambda context, _: {'ok': True, **operation_availability(context.config.load_app_config())}, http_path='/api/operation-availability'),
+    BusinessQuery('collection.links', '个人空间的采集 URL、方式、最近状态与商品结果。', NoDataParameters,
+                  lambda context, _: context.collection_links.list(), 'items',
+                  ('id', 'url', 'mode', 'status', 'title', 'productId'), permission='product.read'),
+    BusinessQuery('collection.history', '指定采集链接的实际操作时间、结果和错误记录。', CollectionLinkQuery,
+                  lambda context, request: context.collection_links.history(request.id), 'items', permission='product.read'),
     BusinessQuery('products.index', '当前空间商品索引，按需分页读取；按列表位置选择商品仍使用带快照的商品查询能力。', NoDataParameters,
                   lambda context, _: {'ok': True, 'items': context.products.load_products_index()}, 'items',
                   ('id', 'product_id', 'name', 'title', 'updated_at'), permission='product.read', http_path='/api/products-index'),

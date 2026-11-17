@@ -1,4 +1,5 @@
 import { apiClient, type AiPresentationTransport } from '@/api/client'
+import { submitCollection } from './collectionReceipt'
 import { normalizeCollectUrl } from '@/utils/collectQueue'
 import { listingLanguageValue } from '@/constants/locales'
 import type {
@@ -148,7 +149,7 @@ export async function collectProduct(
 export async function collectBatch(
   form: CollectForm,
 ): Promise<{ rows: CollectBatchResultRow[]; productsIndex: ProductIndexItem[] }> {
-  const response = await apiClient.post('/api/collect-batch', {
+  const response = await submitCollection('/api/collect-batch', {
     urls: form.productUrls,
     mode: form.mode,
     platform: ['manual', 'unknown'].includes(form.platform) ? '' : form.platform,
@@ -179,7 +180,7 @@ export async function collectBatch(
 
 /** 验证完成后只读取原商品页，沿用原采集连接。 */
 export async function resumeCollection(verification: CollectionVerification): Promise<CollectionAttempt> {
-  const response = await apiClient.post('/api/collect-resume', {
+  const response = await submitCollection('/api/collect-resume', {
     browser_tab_id: verification.browserTabId,
     source_url: verification.sourceUrl,
     platform: verification.platform,

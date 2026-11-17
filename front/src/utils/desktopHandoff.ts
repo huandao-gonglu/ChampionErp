@@ -1,10 +1,18 @@
 import { onScopeDispose, shallowRef } from 'vue'
 import { createDesktopHandoff, fetchDesktopHandoffStatus, confirmDesktopHandoff, desktopBackendOrigin } from '@/api/desktopHandoff'
 import { hasLocalOperations, modelRequiresDesktop } from './desktop'
-import type { CollectBatchRow, DraftDetail, DraftProductContext, PricingInput, Product, UnknownRecord } from '@/types/workflow'
+import type { DraftDetail, DraftProductContext, PricingInput, Product, UnknownRecord } from '@/types/workflow'
 import type { FileUIPart } from 'ai'
 
+export interface DesktopImageAction {
+  action: 'edit' | 'translate'
+  imageIds: string[]
+  prompt: string
+}
+
 export interface DesktopWorkflowState {
+  draftImageAction?: DesktopImageAction
+  productImageAction?: DesktopImageAction
   draft?: DraftDetail
   draftContext?: DraftProductContext
   draftTab?: 'text' | 'category' | 'images' | 'pricing' | 'skus' | 'precheck'
@@ -12,8 +20,7 @@ export interface DesktopWorkflowState {
   product?: Product
   editorMode?: 'text' | 'images'
   collect?: { mode: string; productUrl: string; platform: string }
-  batchRows?: CollectBatchRow[]
-  collectAction?: { type: 'single' } | { type: 'batch'; rowIds?: string[] }
+  collectAction?: { type: 'single' } | { type: 'batch'; targets: { id: string; revision: number }[] }
 }
 
 export interface DesktopHandoffContext {
@@ -30,7 +37,7 @@ export interface DesktopChatState {
 export interface DesktopHandoffState extends Record<string, unknown> {
   workflow?: DesktopWorkflowState
   chat?: DesktopChatState
-  modelSettings?: { selectedModelId?: string; model?: UnknownRecord; connectionType?: string | boolean; browserPresetId?: string }
+  modelSettings?: { selectedModelId?: string; model?: UnknownRecord; connectionType?: string | boolean; browserPresetId?: string; bindings?: UnknownRecord }
 }
 export interface ReceivedDesktopHandoff {
   requestId: string
@@ -111,6 +118,7 @@ export async function launchDesktop(context: DesktopHandoffContext = {}) {
 }
 
 export function retryDesktopLaunch() {
+  if (hasLocalOperations()) return
   const current = desktopLaunch.value
   if (current?.url && current.status !== 'error') {
     window.location.assign(current.url)

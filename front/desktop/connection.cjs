@@ -12,9 +12,10 @@ function normalizeBackendUrl(value) {
 function requestJson(baseUrl, pathname, data, connectionId = '', timeoutMs = 25000, signal, session, client = '') {
   const url = new URL(pathname, baseUrl)
   return new Promise((resolve, reject) => {
-    const raw = JSON.stringify(data)
+    const raw = data === undefined ? undefined : JSON.stringify(data)
     const request = (url.protocol === 'https:' ? https : http).request(url, {
-      method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw),
+      method: raw === undefined ? 'GET' : 'POST', signal, headers: {
+        ...(raw === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw) }),
         ...session?.headers(),
         ...(client ? { 'X-Champion-Client': client } : {}),
         ...(connectionId ? { 'X-Champion-Desktop': connectionId } : {}) },
@@ -101,4 +102,73 @@ async function connectDesktop(baseUrl, runtime, { onDisconnected = () => {}, ses
   return connection
 }
 
-module.exports = { normalizeBackendUrl, requestJson, connectDesktop }
+// 一个 ERP 登录会话只维护一个连接。只重建传输通道，已经发出的业务操作不重放。
+function createAccountConnection(baseUrl, runtime, { session, client, onChange }) {
+  const headers = session.headers()
+  const auth = { headers: () => headers }
+  let current, pending, timer, stopped = false, retryMs = 1000
+
+  function retry(error) {
+    if (stopped || timer || [401, 403, 426].includes(error?.status)) return
+    timer = setTimeout(() => {
+      timer = undefined
+      ensure().catch(() => {})
+    }, retryMs)
+    timer.unref()
+    retryMs = Math.min(retryMs * 2, 15000)
+  }
+
+  async function restore(validate) {
+    const previous = current
+    if (previous?.id && validate) {
+      try {
+        await requestJson(baseUrl, '/api/operation-availability', undefined, previous.id, 5000, undefined, auth, client)
+      } catch (error) {
+        if (error.status !== 409 || error.code !== 'DESKTOP_UNAVAILABLE') throw error
+        current = undefined
+        await previous.stop()
+      }
+    }
+    if (stopped) throw new Error('桌面会话已结束。')
+    if (current?.id) return
+    const link = await connectDesktop(baseUrl, runtime, { session: auth, client,
+      onDisconnected(error) {
+        if (stopped || current !== link) return
+        current = undefined
+        onChange()
+        retry(error)
+      },
+    })
+    if (stopped) {
+      await link.stop()
+      throw new Error('桌面会话已结束。')
+    }
+    current = link
+    retryMs = 1000
+    onChange()
+  }
+
+  function ensure(validate = false) {
+    if (stopped) return Promise.reject(new Error('桌面会话已结束。'))
+    if (pending) return pending
+    if (!validate && current?.id) return Promise.resolve()
+    clearTimeout(timer)
+    timer = undefined
+    pending = restore(validate).catch(error => { retry(error); throw error })
+      .finally(() => { pending = undefined })
+    return pending
+  }
+
+  return {
+    get id() { return current?.id || '' },
+    ensure,
+    async stop() {
+      stopped = true
+      clearTimeout(timer)
+      await current?.stop()
+      await pending?.catch(() => {})
+    },
+  }
+}
+
+module.exports = { normalizeBackendUrl, requestJson, connectDesktop, createAccountConnection }

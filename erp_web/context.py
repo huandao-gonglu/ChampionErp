@@ -172,8 +172,26 @@ class AppContext:
         self._image_batches = None
         self._desktop_connections = None
         self._desktop_handoffs = None
+        self._collection_links = None
+        self._collection_receipts = None
         self._wechat = None
         self._wechat_store = None
+
+    @property
+    def collection_links(self):
+        with self._lazy_lock:
+            if self._collection_links is None:
+                from erp_web.stores.collection_links import CollectionLinks
+                self._collection_links = CollectionLinks(self.paths.data_dir / 'collection-links.sqlite3')
+            return self._collection_links
+
+    @property
+    def collection_receipts(self):
+        with self._lazy_lock:
+            if self._collection_receipts is None:
+                from erp_web.services.collection_receipts import CollectionReceipts
+                self._collection_receipts = CollectionReceipts()
+            return self._collection_receipts
 
     @property
     def desktop_handoffs(self):

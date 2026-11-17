@@ -60,6 +60,8 @@ export {
   type BackendDraftClaimTarget,
   type BackendCollectionVerification,
   type BackendCollectionVerificationStatus,
+  type BackendCollectionLink,
+  type BackendCollectionLinkEvent,
   type BackendAiCapabilityProfile,
   type BackendAiModelConfig,
   type BackendAiReasoningSettings,
@@ -735,7 +737,7 @@ export interface CollectForm {
 }
 
 export interface CollectDiagnostics {
-  status: 'idle' | 'running' | 'waiting_verification' | 'success' | 'failed'
+  status: 'idle' | 'running' | 'waiting_verification' | 'success' | 'failed' | 'unconfirmed'
   progress: number
   message: string
   downloadedImages: number
@@ -769,12 +771,7 @@ export interface CollectBatchResultRow {
   product?: Product
 }
 
-export type CollectBatchStatus = 'pending' | 'running' | 'waiting_verification' | 'success' | 'failed'
-
-export interface CollectBatchRow extends CollectBatchResultRow {
-  id: string
-  status: CollectBatchStatus
-}
+export type CollectBatchStatus = import('./workflow.generated').BackendCollectionLink['status']
 
 
 

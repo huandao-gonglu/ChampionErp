@@ -1,15 +1,15 @@
 import {
 
-  collectBatch as collectBatchApi,
   resumeCollection,
   collectProduct as collectProductApi,
   inspectCollectionVerification,
   type CollectionAttempt,
   saveCollectSettings as saveCollectSettingsApi,
 } from '@/api/workflow/catalog'
+import { CollectionResultUnconfirmed } from '@/api/workflow/collectionReceipt'
 import { fetchState } from '@/api/workflow/state'
 import { createDefaultCollectDiagnostics, createDefaultCollectForm, createEmptyProduct } from '@/constants/initialState'
-import type { CollectBatchRow, CollectionVerification } from '@/types/workflow'
+import type { CollectionVerification } from '@/types/workflow'
 import { sanitizePublicAppConfig } from '@/utils/configSecurity'
 import {
 
@@ -19,10 +19,8 @@ import {
 type WorkflowCollectionActionsPort = Pick<
   WorkflowRuntime,
   | 'product'
-  | 'productsIndex'
   | 'collectForm'
   | 'collectDiagnostics'
-  | 'collectBatchRows'
   | 'fillFormFromState'
   | 'pricingResult'
   | 'category'
@@ -48,8 +46,8 @@ type WorkflowCollectionActionsPort = Pick<
 
 export function createWorkflowCollectionActions(runtime: WorkflowCollectionActionsPort) {
   const {
-    product, productsIndex, collectForm, collectDiagnostics,
-    collectBatchRows, fillFormFromState, pricingResult, category,
+    product, collectForm, collectDiagnostics,
+    fillFormFromState, pricingResult, category,
     precheck, payloadPreview, publishJob,
     platformOptions, appConfig, aiConfig, storeConfig, storeAuthSummary,
     mercadolibreAuthChecklist, loading, addLog, setError,
@@ -64,7 +62,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     if (collectDiagnostics.value.status === 'waiting_verification') verificationController?.abort()
   }
 
-  async function waitForVerification(initial: CollectionVerification, row?: Pick<CollectBatchRow, 'status' | 'verification' | 'error' | 'nextAction'>) {
+  async function waitForVerification(initial: CollectionVerification) {
     let verification = initial
     const controller = new AbortController()
     verificationController = controller
@@ -72,7 +70,6 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     try {
       while (true) {
         cancelled()
-        if (row) Object.assign(row, { status: 'waiting_verification', verification, error: '', nextAction: '请在原商品页完成登录或验证。登录后若仍在等待，请刷新原商品页。' })
         collectDiagnostics.value = {
           ...collectDiagnostics.value, status: 'waiting_verification', errorCode: '',
           message: '等待人工验证', antiBotWarning: false, lastSourceUrl: verification.sourceUrl,
@@ -89,12 +86,10 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
         cancelled()
         if (state.status === 'unavailable') throw new Error(state.message)
         if (state.status !== 'ready') continue
-        if (row) row.status = 'running'
         collectDiagnostics.value = { ...collectDiagnostics.value, status: 'running', message: '验证已完成，正在继续采集原商品页…', nextAction: '' }
         const result = await resumeCollection(verification)
         cancelled()
         if (result.verification) { verification = result.verification; continue }
-        if (row) row.verification = undefined
         return result
       }
     } catch (error) {
@@ -175,95 +170,12 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
       const message = exc instanceof Error ? exc.message : '采集失败'
       collectDiagnostics.value = {
         ...collectDiagnostics.value,
-        status: 'failed',
+        status: exc instanceof CollectionResultUnconfirmed ? 'unconfirmed' : 'failed',
         progress: 0,
         message,
         antiBotWarning: message.includes('安全验证') || message.includes('Cookie') || message.includes('反爬') || message.includes('验证码'),
       }
       setError(message)
-    } finally {
-      loading.value = false
-    }
-  }
-
-  function updateCollectBatchRows(rows: CollectBatchRow[]) {
-    if (!loading.value) collectBatchRows.value = rows
-  }
-
-  async function collectBatch(rowIds?: string[]) {
-    if (loading.value) return
-    const requested = rowIds ? new Set(rowIds) : null
-    const rows = collectBatchRows.value.filter((row) => requested ? requested.has(row.id) && row.status !== 'running' : ['pending', 'waiting_verification'].includes(row.status))
-    if (!rows.length) {
-      setError('列表中没有待采集的链接，请先添加 URL 或重试失败项。')
-      return
-    }
-    // 固定本轮参数，避免切换页面或修改表单影响尚未开始的链接。
-    const form = { ...collectForm.value, platform: 'unknown' }
-    loading.value = true
-    setError('')
-    collectDiagnostics.value = { ...createDefaultCollectDiagnostics(), status: 'running', message: '正在准备批量采集…' }
-    let completed = 0
-    let succeeded = 0
-    let cancelled = false
-    try {
-      for (const row of rows) {
-        Object.assign(row, { status: 'running', ok: false, error: '', errorCode: '', nextAction: '' })
-        collectDiagnostics.value = {
-          ...collectDiagnostics.value, status: 'running',
-          progress: Math.round(completed / rows.length * 100),
-          message: `正在采集第 ${completed + 1} / ${rows.length} 条`, lastSourceUrl: row.url,
-        }
-        try {
-          // 复用后端批量采集能力，每次提交一条，收到实际结果后才推进列表。
-          const result = row.verification
-            ? { rows: [row], productsIndex: productsIndex.value }
-            : await collectBatchApi({ ...form, productUrls: row.url })
-          let collected = result.rows.find((item) => item.url === row.url)
-          if (!collected) throw new Error('服务端未返回该链接的采集结果。')
-          if (collected.verification) {
-            const resumed = await waitForVerification(collected.verification, row)
-            applyMutationIndexes(resumed)
-            const nextProduct = resumed.product
-            collected = {
-              ...collected, verification: undefined, ok: true, status: 'success', error: '', errorCode: '',
-              nextAction: String(resumed.diagnostics?.next_action || ''), product: nextProduct,
-              productId: nextProduct.productId, title: nextProduct.source.title || nextProduct.name,
-              image: nextProduct.source.imagePool[0]?.previewUrl || nextProduct.source.imagePool[0]?.url || '',
-            }
-          } else applyMutationIndexes(result)
-          Object.assign(row, collected, { status: collected.ok ? 'success' : 'failed', verification: undefined })
-          if (collected.status === 'partial') row.error = collected.error || '仅采集到部分资料，请检查采集箱并补充或重试。'
-          if (!collected.ok && !row.error) row.error = '采集未完成，请查看失败原因或重试。'
-          if (collected.ok) {
-            succeeded++
-            if (collected.product) {
-              product.value = collected.product
-              syncPricingInputFromProduct()
-              currentStage.value = 1
-            }
-          }
-        } catch (exc) {
-          if (exc instanceof VerificationCancelled) {
-            row.nextAction = '已取消等待；保留原商品页，点击开始采集可继续。'
-            cancelled = true
-            break
-          }
-          row.verification = undefined
-          row.status = 'failed'
-          row.error = exc instanceof Error ? exc.message : '采集失败'
-          row.nextAction = '请检查失败原因后重试当前链接。'
-        }
-        completed++
-      }
-      if (cancelled) { showVerificationCancelled(); return }
-      const message = `本轮采集结束：${succeeded} 条完成，${completed - succeeded} 条失败。`
-      collectDiagnostics.value = {
-        ...collectDiagnostics.value, status: succeeded === completed ? 'success' : 'failed',
-        progress: Math.round(completed / rows.length * 100), message,
-        nextAction: succeeded < completed ? '查看列表中的失败原因，可编辑链接后重试。' : '可前往采集箱检查采集结果。',
-      }
-      addLog(message)
     } finally {
       loading.value = false
     }
@@ -301,6 +213,6 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
 
   return {
     cancelCollectionVerification,
-    loadState, resetForm, collectProduct, collectBatch, updateCollectBatchRows, clearCollectedProduct, saveCollectSettings,
+    loadState, resetForm, collectProduct, clearCollectedProduct, saveCollectSettings,
   }
 }

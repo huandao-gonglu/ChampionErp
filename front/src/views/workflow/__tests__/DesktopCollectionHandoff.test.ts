@@ -7,7 +7,6 @@ import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { receivedDesktopHandoff, type DesktopWorkflowState } from '@/utils/desktopHandoff'
-import { createCollectBatchRow } from '@/utils/collectQueue'
 import WorkflowView from '../WorkflowView.vue'
 
 beforeEach(() => {
@@ -35,7 +34,7 @@ async function setup(state: DesktopWorkflowState, busy = false) {
   vi.spyOn(workflow, 'loadState').mockResolvedValue(undefined)
   vi.spyOn(workflow, 'hydrateTab').mockResolvedValue(undefined)
   const single = vi.spyOn(workflow, 'collectProduct').mockResolvedValue(undefined)
-  const batch = vi.spyOn(workflow, 'collectBatch').mockResolvedValue(undefined)
+  const batch = vi.spyOn(collection, 'runLinks').mockResolvedValue(undefined)
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { path: '/', name: 'WorkflowHome', component: WorkflowView },
   ] })
@@ -64,21 +63,17 @@ it('恢复链接后直接开始单链接采集，并确认已接收', async () =
 })
 
 it('已打开的客户端忙碌时等待，空闲后仅采集网页指定的重试项', async () => {
-  const rows = [createCollectBatchRow('https://example.com/1'), createCollectBatchRow('https://example.com/2')]
-  rows[0].status = 'success'
-  rows[1].status = 'failed'
-  const { wrapper, collection, activity, single, batch } = await setup({
-    collect: { mode: 'browser', productUrl: '', platform: 'unknown' }, batchRows: rows,
-    collectAction: { type: 'batch', rowIds: [rows[1].id] },
+  const targets = [{ id: 'link-to-retry', revision: 4 }]
+  const { wrapper, activity, single, batch } = await setup({
+    collectAction: { type: 'batch', targets },
   }, true)
   try {
     expect(batch).not.toHaveBeenCalled()
     expect(handoffApi.confirmDesktopHandoff).not.toHaveBeenCalled()
     activity.loading = false
     await flushPromises()
-    expect(collection.collectBatchRows).toEqual(rows)
     expect(batch).toHaveBeenCalledOnce()
-    expect(batch).toHaveBeenCalledWith([rows[1].id])
+    expect(batch).toHaveBeenCalledWith(targets)
     expect(single).not.toHaveBeenCalled()
   } finally { wrapper.unmount() }
 })

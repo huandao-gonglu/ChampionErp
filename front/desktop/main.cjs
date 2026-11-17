@@ -9,7 +9,7 @@ const { URL } = require('node:url')
 const { createEmbeddedBrowser } = require('./embedded-browser.cjs')
 const { mountLayout } = require('./verification/layout.cjs')
 const { runtimeExecutable, startRuntime } = require('./runtime.cjs')
-const { normalizeBackendUrl, connectDesktop } = require('./connection.cjs')
+const { normalizeBackendUrl, createAccountConnection } = require('./connection.cjs')
 const { registerLocalConfig } = require('./local-config.cjs')
 const { registerLicenseDirectory } = require('./licenses.cjs')
 const { SavedLogin, registerSavedLogin } = require('./saved-login.cjs')
@@ -214,18 +214,38 @@ function serveFrontend(req, res, requestUrl, frontendRoot) {
 }
 
 async function connectAccount(backendBaseUrl) {
-  await desktopConnection?.stop()
-  desktopConnection = await connectDesktop(backendBaseUrl, runtime, {
-    session: accountSession, client: desktopClient,
-    onDisconnected: error => {
-      notifyConnectionChanged()
-      if (!quitting && accountSession.cookie) dialog.showErrorBox(`${productName} 本机连接已断开`, `${error.message}。请重新登录后重试。`)
-    },
+  const previous = desktopConnection
+  const link = createAccountConnection(backendBaseUrl, runtime, {
+    session: accountSession, client: desktopClient, onChange: notifyConnectionChanged,
   })
-  notifyConnectionChanged()
+  desktopConnection = link
+  await previous?.stop()
+  try { await link.ensure() } catch (error) {
+    if ([401, 403, 426].includes(error.status) || desktopConnection !== link) throw error
+    // 后端已经接受 ERP 登录。临时断网由当前会话继续重连。
+  }
 }
 
-function proxyToBackend(req, res, backendBaseUrl) {
+async function proxyToBackend(req, res, backendBaseUrl) {
+  const path = new URL(req.url, 'http://desktop.invalid').pathname
+  const link = desktopConnection
+  // 休眠或服务重启后，当前连接标识可能仍在本地，但服务器已经释放它。
+  if (link && accountSession.cookie && req.method === 'POST' && ['/api/desktop-handoff/resolve', '/api/collect-batch', '/api/collect-source'].includes(path)) {
+    try {
+      await link.ensure(true)
+    } catch (error) {
+      if (!res.destroyed) send(res, error.status || 503, JSON.stringify({
+        ok: false, error: [401, 403, 426].includes(error.status) ? error.message : '暂时无法连接桌面服务，请稍后重试。',
+        error_code: error.code || 'DESKTOP_UNAVAILABLE',
+      }), 'application/json; charset=utf-8')
+      return
+    }
+    if (res.destroyed) return
+    if (desktopConnection !== link) {
+      send(res, 409, JSON.stringify({ ok: false, error: 'ERP 登录会话已切换，请重新发起操作。' }), 'application/json; charset=utf-8')
+      return
+    }
+  }
   proxyBackendRequest(req, res, backendBaseUrl, {
     session: accountSession, client: desktopClient,
     connectionId: () => desktopConnection?.id || '',
@@ -301,6 +321,8 @@ async function createWindow() {
     Object.assign(accountSession, { cookie: saved.cookie, csrf: saved.csrf, email: saved.email })
     try { await connectAccount(backendBaseUrl) }
     catch (error) {
+      void desktopConnection?.stop()
+      desktopConnection = undefined
       accountSession.clear()
       if (error.status === 401 || error.status === 403 || error.status === 426) vault.forgetSession()
     }

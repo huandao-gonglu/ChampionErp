@@ -602,7 +602,26 @@ function useCaseBindingGenerationPayload(binding: UnknownRecord): UnknownRecord 
   return Object.keys(payload).length ? payload : null
 }
 
-function aiPayload(): UnknownRecord {
+function bindingPayload() {
+  return Object.fromEntries(
+    Object.entries(aiUseCaseBindings.value)
+      .filter(([useCaseId]) => bindableUseCases.value.some((useCase) => String(useCase.id || '') === useCaseId))
+      .map(([useCaseId, binding]) => [
+        useCaseId,
+        {
+          model_id: firstText(binding.model_id),
+          timeout_override_seconds: firstText(binding.timeout_override_seconds),
+          ...(useCaseBindingGenerationPayload(binding) ? { generation: useCaseBindingGenerationPayload(binding) } : {}),
+        },
+      ])
+      .filter(([, binding]) => {
+        const record = asRecord(binding)
+        return Boolean(firstText(record.model_id, record.timeout_override_seconds) || Object.keys(asRecord(record.generation)).length)
+      }),
+  )
+}
+
+function aiPayload(bindings: UnknownRecord): UnknownRecord {
   return {
     ai_models: aiModels.value.map((model, index) => {
       const row = normalizeAiModelRow(model, index)
@@ -670,22 +689,7 @@ function aiPayload(): UnknownRecord {
       }
       return modelForServer(row)
     }),
-    ai_use_case_bindings: Object.fromEntries(
-      Object.entries(aiUseCaseBindings.value)
-        .filter(([useCaseId]) => bindableUseCases.value.some((useCase) => String(useCase.id || '') === useCaseId))
-        .map(([useCaseId, binding]) => [
-          useCaseId,
-          {
-            model_id: firstText(binding.model_id),
-            timeout_override_seconds: firstText(binding.timeout_override_seconds),
-            ...(useCaseBindingGenerationPayload(binding) ? { generation: useCaseBindingGenerationPayload(binding) } : {}),
-          },
-        ])
-        .filter(([, binding]) => {
-          const record = asRecord(binding)
-          return Boolean(firstText(record.model_id, record.timeout_override_seconds) || Object.keys(asRecord(record.generation)).length)
-        }),
-    ),
+    ai_use_case_bindings: bindings,
   }
 }
 
@@ -768,16 +772,34 @@ function ensureBrowserProviderSelected(model?: UnknownRecord): boolean {
   return true
 }
 
-function emitAiSettings() {
-  if (!ensureBrowserProviderSelected()) return
-  const payload = aiPayload()
-  emit('saveAi', payload)
-}
-
-function saveAiSettings() {
-  if (!desktopShell && !selectedAiModelIsApi.value) { void launchDesktop(); return }
-  if (aiControlsLocked.value || !commitCustomRequestBody()) return
-  emitAiSettings()
+function saveAiSettings(section: 'models' | 'bindings') {
+  if (aiControlsLocked.value) return
+  const bindings = bindingPayload()
+  const savedBindings = normalizeUseCaseBindings(props.aiConfig.ai_use_case_bindings || props.appConfig.ai_use_case_bindings)
+  const changedLocalBinding = Object.entries(bindings).some(([id, value]) => {
+    const modelId = asRecord(value).model_id
+    const model = aiModels.value.find(row => row.id === modelId)
+    return model && modelId !== savedBindings[id]?.model_id && model.connection_type !== API_CONNECTION_TYPE
+  })
+  if (!desktopShell && changedLocalBinding) {
+    void launchDesktop({ target: '/?tab=auth&auth_section=ai_bindings', state: { modelSettings: { bindings } } })
+    return
+  }
+  // 新增模型尚未保存时，沿用同一次提交建立模型和绑定。
+  const referencesNewModel = Object.values(bindings).some(binding => {
+    const id = asRecord(binding).model_id
+    return id && aiModels.value.some(row => row.id === id) && !lastIncomingAiModels.some(row => row.id === id)
+  })
+  if (section === 'bindings' && !referencesNewModel) {
+    emit('saveAi', { ai_use_case_bindings: bindings })
+    return
+  }
+  const savedModel = lastIncomingAiModels.find(model => model.id === selectedAiModel.value?.id)
+  if (!desktopShell && !selectedAiModelIsApi.value && JSON.stringify(selectedAiModel.value) !== JSON.stringify(savedModel)) {
+    void launchDesktop()
+    return
+  }
+  if (commitCustomRequestBody() && ensureBrowserProviderSelected()) emit('saveAi', aiPayload(bindings))
 }
 
 function modelField(field: string, fallback = ''): string {
@@ -1161,11 +1183,6 @@ function addBrowserModel(event: Event) {
 function addBrowserPreset(id: string) {
   const preset = browserPresets.value.find(item => item.id === id)
   if (!preset || aiControlsLocked.value) return
-  if (!desktopShell) {
-    void launchDesktop({ target: '/?tab=auth&auth_section=ai_models', state: { modelSettings: { browserPresetId: preset.id } } })
-    return
-  }
-  if (!localOperations.value) return
   const existingIndex = aiModels.value.findIndex(model =>
     model.connection_type === BROWSER_CONNECTION_TYPE
     && model.browser_provider === preset.model.browser_provider
@@ -1175,6 +1192,11 @@ function addBrowserPreset(id: string) {
     selectedAiModelIndex.value = existingIndex
     return
   }
+  if (!desktopShell) {
+    void launchDesktop({ target: '/?tab=auth&auth_section=ai_models', state: { modelSettings: { browserPresetId: preset.id } } })
+    return
+  }
+  if (!localOperations.value) return
   aiModels.value.push(normalizeAiModelRow({
     ...preset.model,
     id: aiModels.value.some(model => model.id === preset.model.id)
@@ -1602,7 +1624,8 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
   restoringModelHandoff = handoff.requestId
   try {
     const state = handoff.state.modelSettings
-    activeAuthSettingsTab.value = 'ai_models'
+    activeAuthSettingsTab.value = state.bindings ? 'ai_bindings' : 'ai_models'
+    if (state.bindings) aiUseCaseBindings.value = normalizeUseCaseBindings(state.bindings)
     let index = aiModels.value.findIndex(model => model.id === state.selectedModelId)
     if (state.model) {
       const model = normalizeAiModelRow(state.model, index >= 0 ? index : aiModels.value.length)
@@ -1680,7 +1703,7 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
               </select>
               <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel || localModelBlocked" @click="duplicateSelectedAiModel">复制当前模型</button>
               <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || localModelBlocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
-              <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存 AI 设置</button>
+              <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings('models')">保存 AI 设置</button>
             </div>
           </div>
 
@@ -1922,7 +1945,7 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
               <h3 class="font-semibold text-accent-950 dark:text-white">功能绑定</h3>
               <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">功能声明所需能力；这里只显示满足能力要求的模型，并可单独覆盖超时。</p>
             </div>
-            <button data-testid="save-ai-bindings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存功能绑定</button>
+            <button data-testid="save-ai-bindings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings('bindings')">保存功能绑定</button>
           </div>
           <div v-if="bindableUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2">
             <div v-for="useCase in bindableUseCases" :key="String(useCase.id)" class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">

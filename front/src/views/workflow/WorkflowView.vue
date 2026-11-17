@@ -67,8 +67,6 @@ const {
 const imageSaveState = useDraftImageSaveState(currentDraft, () => store.saveCurrentDraft())
 const {
   collectForm,
-  collectDiagnostics,
-  collectBatchRows,
 } = storeToRefs(collectionStore)
 const {
   pricingInput,
@@ -114,6 +112,8 @@ watch(draftWorkspaceOpen, (open, _previous, onCleanup) => {
   document.body.style.overflow = 'hidden'
   onCleanup(() => { document.body.style.overflow = previousOverflow })
 })
+const draftImageEditor = ref<InstanceType<typeof DraftImageWorkbench>>()
+const productImageEditor = ref<InstanceType<typeof ProductImageEditorPanel>>()
 const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
 useDesktopHandoffContext(() => {
   if (route.path !== '/') return null
@@ -122,28 +122,28 @@ useDesktopHandoffContext(() => {
     workflow.draft = currentDraft.value
     workflow.draftContext = currentDraftProductContext.value
     workflow.draftTab = draftWorkspaceTab.value
+    workflow.draftImageAction = draftImageEditor.value?.pendingImageAction()
     workflow.pricingInput = pricingInput.value
   }
   if (editorOpen.value) {
     workflow.product = product.value
     workflow.editorMode = editorMode.value
+    workflow.productImageAction = productImageEditor.value?.pendingImageAction()
   }
   if (activeNav.value === 'collect') {
     workflow.collect = { mode: collectForm.value.mode, productUrl: collectForm.value.productUrl, platform: collectForm.value.platform }
-    workflow.batchRows = collectBatchRows.value
   }
   return { target: route.fullPath, state: Object.keys(workflow).length ? { workflow } : {} }
 })
 let restoringHandoff = ''
-watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading], async ([handoff, loaded]) => {
+watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading, () => collectionStore.running], async ([handoff, loaded]) => {
   if (!handoff || !loaded || route.fullPath !== handoff.target || !handoff.state.workflow || restoringHandoff === handoff.requestId) return
-  if (handoff.state.workflow.collectAction && loading.value) return
+  if (handoff.state.workflow.collectAction && (loading.value || collectionStore.running)) return
   restoringHandoff = handoff.requestId
   try {
     const state = handoff.state.workflow as DesktopWorkflowState
     if (state.collect) {
       Object.assign(collectForm.value, state.collect, { mode: state.collect.mode === 'api' ? 'api' : 'browser' })
-      if (state.batchRows) collectBatchRows.value = state.batchRows
     }
     if (state.draft?.draftId && state.draftContext) {
       const saved = await loadDraftForHandoff(state.draft.draftId)
@@ -163,9 +163,15 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
       editorMode.value = state.editorMode || 'text'
       editorOpen.value = true
     }
+    if (state.draftImageAction || state.productImageAction) {
+      await nextTick()
+      if (receivedDesktopHandoff.value?.requestId !== handoff.requestId) return
+      if (state.draftImageAction) draftImageEditor.value?.restoreImageAction(state.draftImageAction)
+      if (state.productImageAction) productImageEditor.value?.restoreImageAction(state.productImageAction)
+    }
     await acknowledgeDesktopHandoff(handoff.requestId, 'workflow')
     if (state.collectAction?.type === 'single') await store.collectProduct()
-    else if (state.collectAction?.type === 'batch') await store.collectBatch(state.collectAction.rowIds)
+    else if (state.collectAction?.type === 'batch') await collectionStore.runLinks(state.collectAction.targets)
   } catch (cause) {
     activityStore.setError(cause instanceof Error ? cause.message : '桌面页面恢复失败，请回网页重试。')
   } finally { restoringHandoff = '' }
@@ -235,7 +241,7 @@ function syncPricingPackageDimension(field: PackageDimensionField, value: string
   pricingInput.value[field] = normalizedValue && Number.isFinite(parsedValue) ? parsedValue : 0
 }
 
-async function openProductEditor(item?: ProductIndexItem, mode: 'text' | 'images' = 'text') {
+async function openProductEditor(item?: Pick<ProductIndexItem, 'productId' | 'productFilePath'>, mode: 'text' | 'images' = 'text') {
   if (item) {
     editorOpen.value = false
     if (!await store.loadProduct(item)) return
@@ -466,16 +472,10 @@ watch(
           <CollectView
             v-else-if="activeNav === 'collect'"
             :form="collectForm"
-            :diagnostics="collectDiagnostics"
-            :product="product"
             :loading="loading"
             :error="error"
-            :batch-rows="collectBatchRows"
-            @collect="store.collectProduct"
-            @batch-collect="store.collectBatch"
-            @cancel-verification="store.cancelCollectionVerification"
-            @update-batch-rows="store.updateCollectBatchRows"
-            @clear-product="store.clearCollectedProduct"
+            @open-product="id => openProductEditor({ productId: id, productFilePath: '' })"
+            @open-library="navigate('library')"
             @save-settings="store.saveCollectSettings"
           />
 
@@ -605,6 +605,7 @@ watch(
         />
         <ProductImageEditorPanel
           v-else
+          ref="productImageEditor"
           :title="imageEditorTitle"
           :product="product"
           :images="imagePool"
@@ -673,6 +674,7 @@ watch(
 
           <template #images>
             <DraftImageWorkbench
+              ref="draftImageEditor"
               :draft="currentDraft"
               :product-context="currentDraftProductContext"
               :loading="draftWorkspaceLoading"

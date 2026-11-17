@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import type { DesktopImageAction } from '@/utils/desktopHandoff'
+import { computed, ref } from 'vue'
 import { skuImageAssignments, type SkuImageBatchChange } from '@/utils/draftImages'
 import ImagePoolPanel from '@/components/domain/ImagePoolPanel.vue'
 import type { ImageAsset, Product } from '@/types/workflow'
@@ -29,6 +30,12 @@ const emit = defineEmits<{
   saveSkuImages: []
 }>()
 
+const imagePool = ref<InstanceType<typeof ImagePoolPanel>>()
+defineExpose({
+  pendingImageAction: () => imagePool.value?.pendingImageAction(),
+  restoreImageAction: (state: DesktopImageAction) => imagePool.value?.restoreImageAction(state),
+})
+
 const skuAssignments = computed(() => skuImageAssignments(props.product.skuItems))
 
 function assignSkus(changes: SkuImageBatchChange[]) {
@@ -57,6 +64,7 @@ function assignSkus(changes: SkuImageBatchChange[]) {
       <p v-if="error" role="alert" class="mt-3 text-sm text-rose-600">{{ error }}</p>
     </section>
     <ImagePoolPanel
+      ref="imagePool"
       :images="images"
       :loading="loading"
       :show-translate-action="showTranslateAction === true"

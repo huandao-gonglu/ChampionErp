@@ -162,9 +162,9 @@ function mountPricing(rows: DraftSku[], localInput = reactive(structuredClone(in
 }
 
 describe('PricingPanel 对齐 Penpot 核价原型', () => {
-  it('只为已选且缺少边长的 SKU 发起估算，单缺重量的规格不计入', async () => {
+  it.each([false, true])('估算总是先准备缺少边长的 SKU，本机对话模型为 %s', async localChat => {
     setActivePinia(createPinia())
-    setOperationAvailability({ desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ desktop_use_cases: localChat ? ['global.chat'] : [], desktop_reason: '', blocked_use_cases: {} })
     const chat = vi.spyOn(useAiChatStore(), 'estimatePackageDimensions').mockImplementation(() => {})
     const rows = [skuRow('缺长度'), skuRow('缺重量'), { ...skuRow('未选择'), selected: false }]
     const context = productContext(rows)

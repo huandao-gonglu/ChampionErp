@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectScope } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
 import { desktopLaunch, dismissDesktopLaunch, launchDesktop, receivedDesktopHandoff, acknowledgeDesktopHandoff, retryDesktopLaunch, useDesktopHandoffContext } from '../desktopHandoff'
-import { setOperationAvailability } from '../desktop'
+import { modelOperationReason, setOperationAvailability } from '../desktop'
 import { vDesktop } from '../desktopHandoffDirective'
 import * as api from '@/api/desktopHandoff'
 
@@ -36,6 +36,28 @@ describe('网页直接打开桌面并等待客户端确认', () => {
     expect(desktopLaunch.value?.status).toBe('opened')
     await vi.advanceTimersByTimeAsync(4000)
     expect(desktopLaunch.value).toBeNull()
+  })
+
+  it.each([true, false])('桌面版保持在当前窗口，执行器连接状态为 %s', async connected => {
+    window.championDesktop = { localOperations: true, openLicenses: vi.fn() }
+    setOperationAvailability({
+      desktop_reason: connected ? '' : '请从桌面端发起。',
+      blocked_use_cases: connected ? {} : { 'copy.generate': '请从桌面端发起。' },
+      desktop_use_cases: connected ? [] : ['copy.generate'],
+    })
+    const reason = modelOperationReason('copy.generate')
+    if (connected) expect(reason).toBe('')
+    else expect(reason).toContain('重新登录')
+    const action = vi.fn()
+    const wrapper = mount({ directives: { desktop: vDesktop }, template: `<button v-desktop="'copy.generate'" :disabled="!!reason" @click="action">生成</button>`, setup: () => ({ reason, action }) })
+    wrapper.get('button').element.click()
+    expect(action).toHaveBeenCalledTimes(connected ? 1 : 0)
+    await launchDesktop()
+    desktopLaunch.value = { requestId: 'old', url: 'champion-erp://continue', status: 'waiting' }
+    retryDesktopLaunch()
+    expect(api.createDesktopHandoff).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('重复点击只创建一次请求，关闭后迟到的响应不能重新唤起', async () => {

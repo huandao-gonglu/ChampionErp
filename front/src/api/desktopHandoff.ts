@@ -8,7 +8,7 @@ export async function fetchDesktopHandoffStatus(requestId: string) {
   return (await apiClient.post<BackendDesktopHandoffStatus>('/api/desktop-handoff/status', { request_id: requestId }, { timeout: 10000 })).data
 }
 export async function resolveDesktopHandoff(requestId: string) {
-  return (await apiClient.post<BackendDesktopHandoffResolved>('/api/desktop-handoff/resolve', { request_id: requestId }, { timeout: 10000 })).data
+  return (await apiClient.post<BackendDesktopHandoffResolved>('/api/desktop-handoff/resolve', { request_id: requestId }, { timeout: 45000 })).data
 }
 export async function confirmDesktopHandoff(requestId: string) {
   await apiClient.post('/api/desktop-handoff/acknowledge', { request_id: requestId }, { timeout: 10000 })

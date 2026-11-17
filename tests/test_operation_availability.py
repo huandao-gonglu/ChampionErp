@@ -90,6 +90,19 @@ def test_model_and_collection_rules_follow_current_connection_and_actual_binding
     assert catalog.get('image_edit').unavailable_reason(None)
 
 
+@pytest.mark.parametrize(('model_changes', 'reason'), [
+    ({'enabled': False}, '未启用'),
+    ({'capabilities': []}, '不满足能力要求'),
+])
+def test_unusable_local_binding_reports_configuration_error_without_desktop_handoff(model_changes, reason):
+    config = local_config()
+    config['ai_models'][0].update(model_changes)
+    config['ai_use_case_bindings'] = {'image.translate': {'model_id': 'canvas'}}
+    availability = operation_availability(config, connection_id='')
+    assert reason in availability['blocked_use_cases']['image.translate']
+    assert 'image.translate' not in availability['desktop_use_cases']
+
+
 def test_image_workbench_rejects_before_batch_registration_and_keeps_saved_result(monkeypatch):
     context = get_context()
     product, draft = seeded()

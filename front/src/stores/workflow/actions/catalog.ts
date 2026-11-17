@@ -128,7 +128,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
   }
 
   let productLoadSequence = 0
-  async function loadProduct(item: ProductIndexItem) {
+  async function loadProduct(item: Pick<ProductIndexItem, 'productId' | 'productFilePath'>) {
     const sequence = ++productLoadSequence
     loading.value = true
     setError('')

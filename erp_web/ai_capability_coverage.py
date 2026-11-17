@@ -657,6 +657,22 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         capability_names=("claim_products",),
     ),
     AiCapabilityCoverageEntry(
+        method="POST", path="/api/collection-links/manage", business_domain="采集与认领", disposition="internal_only",
+        reason="采集页面维护个人 URL 清单，读取通过共用业务目录。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/collection-links/run", business_domain="采集与认领", disposition="internal_only",
+        reason="页面按选中链接的版本执行采集，沿用采集回执。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/collection-links/verify", business_domain="采集与认领", disposition="internal_only",
+        reason="页面检查该链接绑定的原商品页人工验证状态。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/collect-receipt", business_domain="采集与认领", disposition="internal_only",
+        reason="桌面采集界面查询本次请求回执，避免断线时重复采集。",
+    ),
+    AiCapabilityCoverageEntry(
         method="POST", path="/api/collect-resume", business_domain="采集与认领", disposition="internal_only",
         reason="URL 采集验证码完成后读取同一桌面上的原商品页，沿用原请求身份。",
     ),

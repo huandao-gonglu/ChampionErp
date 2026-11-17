@@ -4,9 +4,12 @@ import { computed, reactive, ref } from 'vue'
 import DraftImageWorkbench from '../DraftImageWorkbench.vue'
 import { createEmptyDraftDetail, createEmptyDraftProductContext } from '@/constants/initialState'
 import { setOperationAvailability } from '@/utils/desktop'
+import { launchDesktop } from '@/utils/desktopHandoff'
 import type { DraftImageWorkbenchController } from '@/composables/useDraftImageWorkbench'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import type { ImageAsset } from '@/types/workflow'
+
+vi.mock('@/utils/desktopHandoff', () => ({ launchDesktop: vi.fn() }))
 
 enableAutoUnmount(afterEach)
 function button(wrapper: { findAll(selector: string): DOMWrapper<Element>[] }, text: string) { return wrapper.findAll('button').find(item => item.text() === text)! }
@@ -29,6 +32,28 @@ function fixture() {
 }
 
 describe('草稿图片 V2 工作台', () => {
+  it('图片模型使用桌面端时，网页仍可移出和添加共用图', async () => {
+    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    const { wrapper, controller } = fixture()
+    await wrapper.get('input[aria-label="选择处理图片 common"]').setValue(true)
+    await button(wrapper, '移出共用区（1）').trigger('click')
+    await button(wrapper, '移出共用区').trigger('click')
+    expect(controller.remove).toHaveBeenCalledWith(['common'])
+
+    await button(wrapper, '添加图片').trigger('click')
+    await wrapper.get('input[aria-label="添加共用图片 red"]').setValue(true)
+    await button(wrapper, '添加 1 张').trigger('click')
+    expect(controller.add).toHaveBeenCalledWith(['red'])
+    expect(launchDesktop).not.toHaveBeenCalled()
+
+    await wrapper.get('input[aria-label="选择处理图片 common"]').setValue(true)
+    await button(wrapper, '翻译图片').trigger('click')
+    expect(launchDesktop).not.toHaveBeenCalled()
+    await button(wrapper, '开始处理 1 张').trigger('click')
+    expect(launchDesktop).toHaveBeenCalledTimes(1)
+    expect(controller.start).not.toHaveBeenCalled()
+    expect(wrapper.vm.pendingImageAction()).toEqual({ action: 'translate', imageIds: ['common'], prompt: '' })
+  })
   it('按绑定分别限制修图和套图规划，已有素材仍可选中', async () => {
     const { wrapper, draft } = fixture()
     await wrapper.get('[data-region="sku"] input[aria-label="选择处理图片 red"]').setValue(true)

@@ -1,218 +1,144 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { hasLocalOperations } from '@/utils/desktop'
-import { launchDesktop, useDesktopHandoffContext, type DesktopWorkflowState } from '@/utils/desktopHandoff'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { PhArrowRight, PhArrowsClockwise, PhGearSix, PhPlus } from '@phosphor-icons/vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import { manageLinks, type CollectionLink, type LinkMode } from '@/api/workflow/collectionLinks'
+import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
+import { desktopOperationReason, hasLocalOperations } from '@/utils/desktop'
+import { launchDesktop } from '@/utils/desktopHandoff'
+import { normalizeCollectUrl } from '@/utils/collectQueue'
+import type { CollectForm } from '@/types/workflow'
 import CollectBatchManager from './CollectBatchManager.vue'
-import type { CollectBatchRow, CollectDiagnostics, CollectForm, Product } from '@/types/workflow'
+import CollectLinkDetail from './CollectLinkDetail.vue'
 
-const props = defineProps<{
-  form: CollectForm
-  diagnostics: CollectDiagnostics
-  product: Product
-  loading: boolean
-  error: string
-  batchRows: CollectBatchRow[]
-}>()
+const props = defineProps<{ form: CollectForm; loading: boolean; error: string }>()
+const emit = defineEmits<{ openLibrary: []; openProduct: [id: string]; saveSettings: [] }>()
+const store = useWorkflowCollectionStore()
+const selectedId = ref('')
+const selected = computed(() => store.links.find(row => row.id === selectedId.value))
+const dialog = ref<'' | 'add' | 'edit' | 'remove' | 'settings'>('')
+const original = ref<CollectionLink>()
+const urlInput = ref('')
+const mode = ref<LinkMode>('browser')
+const saving = ref(false)
+const busy = computed(() => saving.value || store.running || props.loading)
+const dialogError = ref('')
+const notice = ref('')
+const actionError = ref('')
+let timer: ReturnType<typeof setInterval> | undefined
+let refreshing = false
 
-const emit = defineEmits<{
-  collect: []
-  batchCollect: [rowIds?: string[]]
-  updateBatchRows: [rows: CollectBatchRow[]]
-  cancelVerification: []
-  clearProduct: []
-  saveSettings: []
-}>()
-
-const localOperations = hasLocalOperations()
-const advancedOpen = ref(false)
-function collectionHandoff(collectAction?: DesktopWorkflowState['collectAction']) {
-  return {
-    target: '/?tab=collect',
-    state: { workflow: {
-      collect: { mode: props.form.mode, productUrl: props.form.productUrl, platform: props.form.platform },
-      batchRows: props.batchRows,
-      ...(collectAction ? { collectAction } : {}),
-    } },
-  }
+async function refresh() {
+  if (refreshing) return
+  refreshing = true
+  try { await store.refreshLinks() } catch { /* 状态栏显示同步错误。 */ }
+  finally { refreshing = false }
 }
-useDesktopHandoffContext(() => collectionHandoff())
-
-const panelStyle = {
-  titleClass: 'text-slate-950 dark:text-white',
-  subtitleClass: 'text-slate-500 dark:text-accent-300',
-  badgeClass: 'bg-primary-50 text-primary-700 ring-primary-200 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30',
-  panelClass: 'bg-slate-50 ring-slate-200 dark:bg-dark-900/80 dark:ring-dark-700',
-  panelLabelClass: 'text-slate-500 dark:text-accent-300',
-  panelValueClass: 'text-slate-950 dark:text-white',
-}
-const collectTabs = [
-  { mode: 'browser', label: '浏览器采集' },
-  { mode: 'api', label: 'API 采集' },
-] as const
-
-function navigateCollectTabs(event: KeyboardEvent) {
-  if (props.loading || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-  event.preventDefault()
-  let mode: CollectForm['mode'] = props.form.mode === 'browser' ? 'api' : 'browser'
-  if (event.key === 'Home') mode = 'browser'
-  if (event.key === 'End') mode = 'api'
-  props.form.mode = mode
-  document.getElementById(`collect-tab-${mode}`)?.focus()
-}
-
-const collectStatusLabel = computed(() => {
-  if (props.diagnostics.status === 'success') return '采集完成'
-  if (props.diagnostics.status === 'failed') return '采集失败'
-  if (props.diagnostics.status === 'waiting_verification') return '等待人工验证'
-  if (props.diagnostics.status === 'running') return '正在采集'
-  return '未开始'
+function refreshVisible() { if (!document.hidden) void refresh() }
+onMounted(() => {
+  void refresh()
+  timer = setInterval(refreshVisible, 5000)
+  window.addEventListener('focus', refreshVisible)
+  document.addEventListener('visibilitychange', refreshVisible)
 })
-function openDebugFile(path: string) {
-  if (path) window.open(`/file?path=${encodeURIComponent(path)}`, '_blank')
+onBeforeUnmount(() => {
+  clearInterval(timer)
+  window.removeEventListener('focus', refreshVisible)
+  document.removeEventListener('visibilitychange', refreshVisible)
+})
+
+function show(kind: 'add' | 'edit' | 'remove' | 'settings') {
+  original.value = selected.value
+  mode.value = kind === 'edit' && original.value ? original.value.mode : props.form.mode === 'api' ? 'api' : 'browser'
+  urlInput.value = kind === 'edit' ? original.value?.url || '' : ''
+  dialogError.value = ''
+  dialog.value = kind
 }
-function copyDiagnostics() {
-  void navigator.clipboard?.writeText(JSON.stringify(props.diagnostics.raw || {}, null, 2))
+async function save() {
+  if (saving.value) return
+  saving.value = true
+  dialogError.value = ''
+  try {
+    const row = original.value
+    if (dialog.value === 'add') {
+      const entries = urlInput.value.trim().split(/\s+/).map((value, i) => {
+        try { return { url: normalizeCollectUrl(value), mode: mode.value } }
+        catch (e) { throw new Error(`第 ${i + 1} 个链接无效：${(e as Error).message}`) }
+      })
+      const result = await manageLinks({ action: 'add', items: entries })
+      notice.value = `已添加 ${result.added} 条，跳过 ${result.duplicates} 条重复链接。`
+    } else if (row && dialog.value === 'edit') {
+      await manageLinks({ action: 'edit', id: row.id, revision: row.revision, url: normalizeCollectUrl(urlInput.value), mode: mode.value })
+      notice.value = '已保存链接设置。'
+    } else if (row && dialog.value === 'remove') {
+      await manageLinks({ action: 'remove', id: row.id, revision: row.revision })
+      notice.value = '已移除链接。'
+    }
+    dialog.value = ''
+    await store.refreshLinks().catch(() => undefined)
+  } catch (e) {
+    dialogError.value = (e as Error).message
+    if ((e as { status?: number }).status === 409) await refresh()
+  } finally { saving.value = false }
 }
-function collectBatch(rowIds?: string[]) {
-  if (!localOperations) {
-    void launchDesktop(collectionHandoff({ type: 'batch', ...(rowIds ? { rowIds } : {}) }))
-    return
+
+function run(rows: CollectionLink[]) {
+  if (busy.value || !rows.length) return
+  actionError.value = ''
+  notice.value = ''
+  const targets = rows.map(({ id, revision }) => ({ id, revision }))
+  if (rows.some(row => row.mode === 'browser')) {
+    if (!hasLocalOperations()) {
+      void launchDesktop({ target: '/?tab=collect', state: { workflow: { collectAction: { type: 'batch', targets } } } })
+      return
+    }
+    actionError.value = desktopOperationReason()
+    if (actionError.value) return
   }
-  emit('batchCollect', rowIds)
+  void store.runLinks(targets)
 }
 </script>
 
 <template>
-  <div class="space-y-6">
-    <PageHeader title="采集商品" description="输入商品链接，采集到采集箱。">
-      <template #actions>
-        <span class="rounded-full bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-700 ring-1 ring-primary-100 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30">{{ collectStatusLabel }}</span>
-        <button class="btn btn-outline" :disabled="props.loading" @click="emit('clearProduct')">清空当前商品</button>
-      </template>
+  <div class="space-y-4">
+    <PageHeader title="采集商品">
+      <template #actions><button class="btn btn-outline" @click="emit('openLibrary')">采集箱 <PhArrowRight /></button></template>
     </PageHeader>
-    <div v-if="props.diagnostics.status === 'waiting_verification'" role="status" class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
-      <div><p class="font-semibold">正在等待你完成验证</p><p class="mt-1">请在采集浏览器的原商品页完成验证。完成后会自动采集这一项，再继续后面的链接。</p></div>
-      <button class="btn btn-outline shrink-0" @click="emit('cancelVerification')">取消等待</button>
+    <div class="rounded-xl border border-slate-200 bg-white dark:border-dark-700 dark:bg-dark-800">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-slate-200 px-4 py-3 dark:border-dark-700">
+        <label class="flex items-center gap-2 text-sm"><span>默认方式</span><select v-model="form.mode" class="input !w-auto !py-1.5 text-sm"><option value="browser">浏览器采集</option><option value="api">API 采集</option></select></label>
+        <button class="inline-flex items-center gap-1.5 text-sm text-slate-600 dark:text-accent-300" @click="show('settings')"><PhGearSix />采集设置</button>
+        <button class="btn btn-primary ml-auto" :disabled="saving || !store.ready" @click="show('add')"><PhPlus weight="bold" />添加链接</button>
+      </div>
+      <div v-if="error || store.syncError || store.runError || actionError" role="alert" class="mx-4 mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-800 dark:bg-rose-500/10 dark:text-rose-200">{{ actionError || store.runError || store.syncError || error }}</div>
+      <div v-if="store.waitingId" role="status" class="mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-200"><span>请在原商品页完成验证，完成后会继续采集。</span><button class="underline" @click="store.cancelWait">取消等待</button></div>
+      <div class="grid items-start gap-5 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(250px,30%)] xl:p-5">
+        <CollectBatchManager :rows="store.links" :ready="store.ready" :selected-id="selectedId" :busy="busy" @select="selectedId = $event" @run="run" @add="show('add')" @open-product="emit('openProduct', $event)" />
+        <CollectLinkDetail :row="selected" :busy="busy" @edit="show('edit')" @remove="show('remove')" @open-product="emit('openProduct', $event)" />
+      </div>
+      <footer class="flex items-center justify-between gap-2 border-t border-slate-200 px-4 py-2 text-xs text-slate-500 dark:border-dark-700 dark:text-accent-300">
+        <span role="status">{{ notice || (store.syncError ? '同步失败' : store.ready ? '链接已同步到当前账号' : '正在同步链接…') }}</span>
+        <button class="flex items-center gap-1.5 p-1" @click="refresh"><PhArrowsClockwise />刷新</button>
+      </footer>
     </div>
-    <div v-if="props.error" role="alert" class="rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700 ring-1 ring-rose-200">{{ props.error }}</div>
-    <section class="grid gap-6 2xl:grid-cols-[minmax(0,1fr)_320px]">
-      <main class="space-y-6">
-        <section data-testid="collect-active-card" class="card space-y-5">
-          <nav class="flex gap-1 border-b border-accent-200 dark:border-dark-700" role="tablist" aria-label="采集方式" @keydown="navigateCollectTabs">
-            <button
-              v-for="tab in collectTabs" :id="`collect-tab-${tab.mode}`" :key="tab.mode"
-              type="button" role="tab" :aria-controls="`collect-panel-${tab.mode}`"
-              :aria-selected="props.form.mode === tab.mode" :tabindex="props.form.mode === tab.mode ? 0 : -1"
-              :disabled="props.loading" class="border-b-2 px-4 py-2.5 text-sm font-semibold"
-              :class="props.form.mode === tab.mode ? 'border-primary-500 text-primary-700 dark:text-primary-200' : 'border-transparent text-accent-600 dark:text-accent-300'"
-              @click="props.form.mode = tab.mode"
-            >{{ tab.label }}</button>
-          </nav>
-          <form v-show="props.form.mode === 'api'" id="collect-panel-api" role="tabpanel" aria-labelledby="collect-tab-api" class="space-y-4" @submit.prevent="emit('collect')">
-            <label class="block">
-              <span class="text-sm font-semibold">1688 商品详情链接</span>
-              <input v-model.trim="props.form.productUrl" type="url" required :disabled="props.loading" class="input mt-2" placeholder="https://detail.1688.com/offer/..." />
-            </label>
-            <p class="muted">使用已授权的 1688 采购账号读取商品详情。</p>
-            <button class="btn btn-primary" :disabled="props.loading || !props.form.productUrl.trim()">开始 API 采集</button>
-          </form>
-          <section v-show="props.form.mode === 'browser'" id="collect-panel-browser" role="tabpanel" aria-labelledby="collect-tab-browser" class="space-y-4">
-            <button type="button" class="btn btn-outline py-2 text-sm" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen">保存位置 {{ advancedOpen ? '−' : '+' }}</button>
-            <div v-if="advancedOpen" class="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-dark-700 dark:bg-dark-900">
-              <label class="block"><span class="text-xs font-semibold">保存位置</span><input v-model="props.form.outputDir" :disabled="props.loading" class="input mt-1" placeholder="data/images/source" /></label>
-              <button type="button" class="btn btn-outline" :disabled="props.loading" @click="emit('saveSettings')">保存设置</button>
-            </div>
-            <CollectBatchManager :rows="props.batchRows" :loading="props.loading" @update="emit('updateBatchRows', $event)" @collect="collectBatch" />
-          </section>
-        </section>
-      </main>
-
-      <aside class="space-y-6 min-w-0 2xl:sticky 2xl:top-6 2xl:self-start">
-        <section data-testid="collect-diagnostics-card" class="card space-y-4">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <h3 class="text-base font-semibold" :class="panelStyle.titleClass">采集进度 / 诊断</h3>
-              <p class="mt-1 text-sm" :class="panelStyle.subtitleClass">状态、错误码、调试截图和 HTML 快照。</p>
-            </div>
-            <span
-              class="badge shrink-0 whitespace-nowrap"
-              :class="{
-                'bg-slate-100 text-slate-600 ring-1 ring-slate-200 dark:bg-dark-800 dark:text-accent-300 dark:ring-dark-600': props.diagnostics.status === 'idle',
-                'bg-primary-50 text-primary-700 ring-1 ring-primary-200 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30': ['running', 'waiting_verification'].includes(props.diagnostics.status),
-                'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-500/30': props.diagnostics.status === 'success',
-                'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30': props.diagnostics.status === 'failed',
-              }"
-            >
-              {{ collectStatusLabel }}
-            </span>
-          </div>
-
-          <div>
-            <div class="mb-2 flex justify-between text-sm font-medium" :class="panelStyle.subtitleClass">
-              <span>{{ props.diagnostics.message }}</span>
-              <span>{{ props.diagnostics.progress }}%</span>
-            </div>
-            <div class="h-2 rounded-full bg-white/70 ring-1 dark:bg-dark-900" :class="panelStyle.panelClass">
-              <div class="h-2 rounded-full bg-brand-600 transition-all" :style="{ width: `${props.diagnostics.progress}%` }" />
-            </div>
-          </div>
-
-          <dl class="grid grid-cols-2 gap-3 text-sm">
-            <div class="col-span-2 rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
-              <dt :class="panelStyle.panelLabelClass">图片数量</dt>
-              <dd class="mt-1 text-xl font-bold" :class="panelStyle.panelValueClass">{{ props.diagnostics.downloadedImages }}</dd>
-            </div>
-            <div class="col-span-2 rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
-              <dt :class="panelStyle.panelLabelClass">错误码</dt>
-              <dd class="mt-1 break-all font-mono text-sm" :class="panelStyle.panelValueClass">{{ props.diagnostics.errorCode || '-' }}</dd>
-            </div>
-            <div class="col-span-2 rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
-              <dt :class="panelStyle.panelLabelClass">来源</dt>
-              <dd class="mt-1 break-all text-sm font-medium" :class="panelStyle.panelValueClass">{{ props.diagnostics.lastSourceUrl || '-' }}</dd>
-            </div>
-          </dl>
-
-          <div v-if="props.diagnostics.nextAction" class="rounded-2xl bg-primary-50 p-3 text-sm text-primary-800 ring-1 ring-primary-200 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30">
-            下一步：{{ props.diagnostics.nextAction }}
-          </div>
-          <div v-if="props.diagnostics.antiBotWarning" class="rounded-2xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
-            检测到安全验证或反爬，请在采集浏览器中完成验证后重试。
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button class="btn btn-outline py-1.5" :disabled="!props.diagnostics.screenshotPath" @click="openDebugFile(props.diagnostics.screenshotPath)">打开截图</button>
-            <button class="btn btn-outline py-1.5" :disabled="!props.diagnostics.htmlSnapshotPath" @click="openDebugFile(props.diagnostics.htmlSnapshotPath)">打开 HTML</button>
-            <button class="btn btn-outline py-1.5" @click="copyDiagnostics">复制日志</button>
-          </div>
-        </section>
-
-        <section data-testid="collect-result-card" class="card">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 class="text-base font-semibold" :class="panelStyle.titleClass">当前采集结果</h3>
-              <p class="mt-1 text-sm" :class="panelStyle.subtitleClass">后续文案、图片、核价、上架都基于这份数据。</p>
-            </div>
-            <span class="rounded-full px-2.5 py-1 text-xs font-semibold ring-1" :class="panelStyle.badgeClass">{{ props.product.source.sourcePlatform || '未采集' }}</span>
-          </div>
-          <div class="mt-5 space-y-3">
-            <div class="rounded-2xl p-4 ring-1" :class="panelStyle.panelClass">
-              <p class="text-xs font-semibold" :class="panelStyle.panelLabelClass">商品标题</p>
-              <p class="mt-2 text-base font-bold" :class="panelStyle.panelValueClass">{{ props.product.source.title || props.product.name || '待采集' }}</p>
-            </div>
-            <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-              <div class="rounded-2xl p-4 ring-1" :class="panelStyle.panelClass">
-                <p class="text-xs font-semibold" :class="panelStyle.panelLabelClass">价格</p>
-                <p class="mt-2 text-base font-bold" :class="panelStyle.panelValueClass">{{ props.product.source.price || '-' }} {{ props.product.source.currency }}</p>
-              </div>
-              <div class="rounded-2xl p-4 ring-1" :class="panelStyle.panelClass">
-                <p class="text-xs font-semibold" :class="panelStyle.panelLabelClass">规格</p>
-                <p class="mt-2 text-sm font-semibold" :class="panelStyle.panelValueClass">{{ props.product.source.dimensions.lengthCm || '-' }} × {{ props.product.source.dimensions.widthCm || '-' }} × {{ props.product.source.dimensions.heightCm || '-' }} cm</p>
-                <p class="mt-1 text-sm text-slate-600 dark:text-accent-300">{{ props.product.source.weightKg || '-' }} kg</p>
-              </div>
-            </div>
-          </div>
-        </section>
-      </aside>
-    </section>
+    <WorkspaceDialog v-if="dialog" :open="true" :title="({ add: '添加链接', edit: '编辑链接', remove: '移除链接', settings: '采集设置' })[dialog]" width="32rem" :close-disabled="saving" @close="dialog = ''">
+      <form v-if="dialog === 'settings'" class="space-y-4" @submit.prevent="emit('saveSettings'); dialog = ''">
+        <label class="block text-sm">采集输出目录<input v-model="form.outputDir" class="input mt-2" placeholder="使用默认目录" /></label>
+        <button class="btn btn-primary" :disabled="loading">保存设置</button>
+      </form>
+      <form v-else class="space-y-4" @submit.prevent="save">
+        <template v-if="dialog !== 'remove'">
+          <label class="block text-sm font-medium">商品 URL
+            <textarea v-if="dialog === 'add'" v-model="urlInput" required class="input mt-2 min-h-32" placeholder="每行一个商品链接" />
+            <input v-else v-model="urlInput" type="url" required class="input mt-2" />
+          </label>
+          <label class="block text-sm">采集方式<select v-model="mode" class="input mt-2"><option value="browser">浏览器采集</option><option value="api">1688 API 采集</option></select></label>
+        </template>
+        <div v-else class="space-y-2 text-sm"><p>移除链接及其采集日志？已入库的商品会保留。</p><p class="break-all text-slate-500">{{ original?.url }}</p></div>
+        <p v-if="dialogError" role="alert" class="text-sm text-rose-600">{{ dialogError }}</p>
+        <div class="flex justify-end gap-2"><button type="button" class="btn btn-outline" :disabled="saving" @click="dialog = ''">取消</button><button class="btn btn-primary" :disabled="saving || (dialog !== 'remove' && !urlInput.trim())">{{ saving ? '正在保存…' : dialog === 'remove' ? '确认移除' : dialog === 'add' ? '添加到列表' : '保存' }}</button></div>
+      </form>
+    </WorkspaceDialog>
   </div>
 </template>

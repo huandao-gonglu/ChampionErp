@@ -156,7 +156,7 @@ function applySelection() {
           <div class="flex flex-wrap gap-2"><img v-for="id in page.source_image_ids" :key="id" :src="byId.has(id) ? imageUrl(byId.get(id)!) : ''" alt="本页参考素材" class="h-16 w-16 rounded object-contain" /></div>
         </article>
         <p class="muted">生成 {{ plan.pages.length }} 张新图（共用 {{ plan.pages.filter(page => page.scope !== 'sku').length }} 张，SKU {{ plan.pages.filter(page => page.scope === 'sku').length }} 张），不立即替换当前草稿图片。</p>
-        <div class="flex justify-end gap-3"><button class="btn btn-outline" type="button" :disabled="busy" @click="plan = null">返回调整</button><button v-desktop="'image.translate'" class="btn btn-primary" type="submit" :disabled="busy || !!generateReason">{{ busy ? '正在提交…' : `开始生成 ${plan.pages.length} 张` }}</button></div>
+        <div class="flex justify-end gap-3"><button class="btn btn-outline" type="button" :disabled="busy" @click="plan = null">返回调整</button><button class="btn btn-primary" type="submit" :disabled="busy || !!generateReason">{{ busy ? '正在提交…' : `开始生成 ${plan.pages.length} 张` }}</button></div>
       </form>
       <form v-else v-desktop="includeCommon ? 'image.plan' : false" class="space-y-5" @submit.prevent="prepare">
         <fieldset :disabled="busy" class="space-y-5">
