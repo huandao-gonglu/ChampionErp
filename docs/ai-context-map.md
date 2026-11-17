@@ -247,12 +247,12 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - `front/src/views/workflow/CollectView.vue` 组织浏览器采集（URL 批量）和 1688 API 采集，`CollectBatchManager.vue` 负责 URL 增删改、状态筛选和失败重试。网页在提交 URL 批量采集时交接链接、队列与操作范围，桌面恢复并确认接收后直接执行，页面查看和编辑不触发交接。
 - 批量列表状态为 `pending`（未开始）、`running`（正在采集）、`waiting_verification`（等待验证）、`success`（完成）、`failed`（失败）。部分结果保留资料提示并显示失败。
 - `front/src/stores/workflow/actions/collection.ts` 逐条提交 `/api/collect-batch`。遇到登录或验证码，后端在解析、下载、商品写入之前返回 `waiting_verification`；其 `verification` 契约由 `schemas/collection.py` 定义，仅含标签 ID、原商品 URL、平台。
-- `/api/collect-verification` 由 `collect_routes` → `collect_facade` → `source_collect_verification.inspect_collection_verification` 只读检查原标签。前端每两秒检查一次，不导航、不刷新；验证完成后用原标签 ID 和 URL 调用 `/api/collect-resume`，再次验证页面身份并采集，然后继续后续链接。标签被关闭、离开商品或无法读取时返回可操作提示，不改采集目标。
+- `/api/collect-verification` 由 `collect_routes` → `collect_facade` → `source_collect_verification.inspect_collection_verification` 只读检查原标签。前端每两秒检查一次；验证完成后用原标签 ID 和 URL 调用 `/api/collect-resume`，再次验证页面身份并采集，然后继续后续链接。标签被关闭、离开商品或无法读取时返回可操作提示，不改采集目标。
 - 用户可以取消等待，未开始的链接保持原状。`collectQueue.ts` 本地保留等待项的标签 ID 和 URL，刷新应用或取消后点击开始采集可恢复；采集应用关闭后不承诺后台执行。不保存凭据或整份商品。正在实际采集时刷新仍标记结果未确认，避免假报成功。删除列表行不删除入库商品。
 - 浏览器标签页选择与独立保存 HTML/截图的操作已移除；URL 采集仅使用指定商品页，验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
 - `front/desktop/embedded-browser.cjs` 持有 1688 和 Gemini Canvas 的内置网页。桌面执行器经私有进程管道操作当前 ERP 账号的页面。站点存储按后端、账号、服务和会话名称持久化，退出 ERP 后同一账号可以继续使用有效登录。
-- `desktop_runtime/embedded_collection.py` 将 1688 首次读取、验证轮询和恢复绑定到同一商品及页面。只有商品页包含当前买家 ID 且通过验证检查才继续；等待期间只返回页面标识和原因。其他采集站点沿用外部浏览器。
+- `desktop_runtime/embedded_collection.py` 将 1688 首次读取、验证轮询和恢复绑定到同一商品及页面。只有商品页包含当前买家 ID 且通过验证检查才继续；等待期间只返回页面标识和原因。内置 1688 商品页确认需要登录后，桌面端尝试一次点击可见的官网登录入口；随后在同一网页中局部显示登录或人机验证面板。桌面验证窗口位于 `front/desktop/verification/`。其他采集站点沿用外部浏览器。
 
 ## 草稿描述
 

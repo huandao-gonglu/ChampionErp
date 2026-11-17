@@ -50,7 +50,7 @@ def target_for_url(config, url):
 
 
 # 嵌入验证页的文字不在商品正文里。只看可见 frame 的位置和地址，不读取表单内容。
-VERIFICATION_FRAME_DETAILS = r"""(() => {
+_VERIFICATION_FRAME = r"""(() => {
     for (const frame of document.querySelectorAll('iframe[src]')) {
         const rect = frame.getBoundingClientRect();
         if (rect.width < 80 || rect.height < 40 || rect.right <= 0 || rect.bottom <= 0 ||
@@ -59,18 +59,12 @@ VERIFICATION_FRAME_DETAILS = r"""(() => {
         let url;
         try { url = new URL(frame.src); } catch { continue; }
         if (!/(^|\.)(1688|taobao|alibaba|tmall|alicdn|alipay)\.com$/.test(url.hostname)) continue;
-        const login = /^(login|passport)\./.test(url.hostname);
-        const captcha = /^(slide|captcha)\./.test(url.hostname) ||
-            /captcha|_____tmd_____|\/(?:punish|verify)(?:[/.]|$)/i.test(url.pathname);
-        if (login || captcha) {
-            const box = (frame.closest('dialog,[role="dialog"]') || frame).getBoundingClientRect();
-            return {reason: login ? 'LOGIN' : 'CAPTCHA', host: url.hostname,
-                x: box.x, y: box.y, width: box.width, height: box.height};
-        }
+        if (/^(login|passport)\./.test(url.hostname)) return 'LOGIN';
+        if (/^(slide|captcha)\./.test(url.hostname) ||
+            /captcha|_____tmd_____|\/(?:punish|verify)(?:[/.]|$)/i.test(url.pathname)) return 'CAPTCHA';
     }
-    return null;
+    return '';
 })()"""
-_VERIFICATION_FRAME = '(' + VERIFICATION_FRAME_DETAILS + '?.reason || "")'
 
 
 def _snapshot(cdp, target, scroll=True):

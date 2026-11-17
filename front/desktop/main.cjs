@@ -7,6 +7,7 @@ const http = require('node:http')
 const path = require('node:path')
 const { URL } = require('node:url')
 const { createEmbeddedBrowser } = require('./embedded-browser.cjs')
+const { mountLayout } = require('./verification/layout.cjs')
 const { runtimeExecutable, startRuntime } = require('./runtime.cjs')
 const { normalizeBackendUrl, connectDesktop } = require('./connection.cjs')
 const { registerLocalConfig } = require('./local-config.cjs')
@@ -108,7 +109,7 @@ async function initializeDesktop() {
   const backendOrigin = getBackendBaseUrl()
   const browserOwner = () => accountSession.email && JSON.stringify([backendOrigin, accountSession.email])
   embeddedBrowser = createEmbeddedBrowser({ BaseWindow, WebContentsView, session: electronSession,
-    parent: () => mainWindow, account: browserOwner })
+    parent: () => mainWindow, account: browserOwner, layoutVerificationWindow: mountLayout })
   const options = { browser: embeddedBrowser, browserOwner, onUnexpectedExit: (error) => {
     void desktopConnection?.stop()
     notifyConnectionChanged()

@@ -1,6 +1,9 @@
 // 浏览器仅由本机执行器通过私有管道操作，不向网页开放 IPC、调试端口或 ERP 登录凭据。
 const { createHash, randomUUID } = require('node:crypto')
 
+const { openLoginEntry } = require('./verification/login-entry.cjs')
+const { panelExpression } = require('./verification/login-panel.cjs')
+
 const domains = {
   '1688': ['1688.com', 'taobao.com', 'tmall.com', 'alibaba.com', 'alipay.com'],
   gemini: ['google.com'],
@@ -132,7 +135,7 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
         const [width, height] = win.getContentSize()
         page.view.setBounds({ x: 0, y: 0, width, height })
       }
-      if (layoutVerificationWindow) layoutVerificationWindow(win, page.view)
+      if (layoutVerificationWindow && page.kind === '1688') layoutVerificationWindow(win, page.view)
       else {
         resize()
         win.on('resize', resize)
@@ -158,7 +161,20 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       page.callId = call.id
       return
     }
-    if (action === 'show') { show(page); return }
+    if (action === 'show') {
+      show(page)
+      if (page.kind === '1688' && data.reason === 'LOGIN' && !page.loginEntryHandled && !page.popups.size) {
+        const product = new URL(page.url)
+        if (product.origin === 'https://detail.1688.com' && /^\/offer\/\d+\.html$/.test(product.pathname)) {
+          // 并发轮询共用一次点击；异步加载的入口留到下次检查，手动关闭后不再弹出。
+          page.loginEntryHandled = true
+          const expression = `(${openLoginEntry})(${JSON.stringify(product.origin + product.pathname)}, ${panelExpression}.box)`
+          const result = await page.contents.executeJavaScript(expression, true).catch(() => 'interrupted')
+          if (result === 'waiting') page.loginEntryHandled = false
+        }
+      }
+      return
+    }
     if (action === 'hide') {
       for (const popup of page.popups) popup.hide()
       page.window?.hide()

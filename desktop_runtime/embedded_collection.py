@@ -50,7 +50,7 @@ def read(*, product_url='', tab_url='', browser_tab_id='', open_url=False, **_):
                 raise
             time.sleep(0.25)
     if verification:
-        page.show()
+        page.show(snapshot['verification_reason'])
         # 验证页可能包含一次性登录参数，后端只需要原标签、页面位置和等待原因。
         location = urlsplit(snapshot['url'])._replace(query='', fragment='').geturl()
         snapshot = {'url': location, 'browser_tab_id': page_id, 'verification_reason': snapshot['verification_reason']}
@@ -76,6 +76,8 @@ def verify(browser_tab_id, source_url):
             (result['status'] == 'unavailable' and tab.get('visited_login'))):
         if request('return_to_product', page=browser_tab_id, reason=reason):
             return {'ok': True, 'status': 'loading', 'message': '正在返回原商品页确认登录状态…'}
-    if result['status'] == 'ready':
+    if result['status'] == 'waiting_verification':
+        page.show(reason)
+    elif result['status'] == 'ready':
         page.hide()
     return result

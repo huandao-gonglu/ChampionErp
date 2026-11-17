@@ -42,7 +42,7 @@ def test_guest_waits_and_resumes_same_offer(tmp_path, monkeypatch):
     result = dispatcher.dispatch(config, "collect.read", {"product_url": PRODUCT, "open_url": True})
     assert result["snapshot"] == {"url": "https://login.taobao.com/", "browser_tab_id": TAB, "verification_reason": "LOGIN"}
     assert "ticket" not in str(result)
-    assert ("show", {"page": TAB}) in events
+    assert ("show", {"page": TAB, "reason": "LOGIN"}) in events
     assert not any(name == "close" for name, _ in events)
     verify = {"source_url": PRODUCT, "browser_tab_id": TAB}
     assert dispatcher.dispatch(config, "collect.verify", verify)["status"] == "waiting_verification"

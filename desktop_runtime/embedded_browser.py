@@ -95,8 +95,8 @@ class EmbeddedPage:
             raise OSError(str(error)) from error
         return base64.b64decode(result['data'], validate=True), result['mime']
 
-    def show(self):
-        request('show', page=self.id)
+    def show(self, reason=''):
+        request('show', page=self.id, reason=reason)
 
     def hide(self):
         request('hide', page=self.id)

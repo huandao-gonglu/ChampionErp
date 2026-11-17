@@ -100,3 +100,16 @@ test('登录跳到 1688 首页后只返回一次，继续读取原商品', async
   contents.url = 'https://www.1688.com/'
   assert.equal(await call('return_to_product', { page }), false)
 })
+
+test('1688 等到需要登录且入口可用后只触发一次，验证轮询不会重复点击', async () => {
+  const { call, views } = fixture()
+  const page = await call('open', product)
+  let attempts = 0
+  views[0].webContents.executeJavaScript = async () => ++attempts === 1 ? 'waiting' : 'opened'
+  await call('show', { page, reason: 'CAPTCHA' })
+  assert.equal(attempts, 0)
+  await call('show', { page, reason: 'LOGIN' })
+  await Promise.all([call('show', { page, reason: 'LOGIN' }), call('show', { page, reason: 'LOGIN' })])
+  await call('show', { page, reason: 'LOGIN' })
+  assert.equal(attempts, 2)
+})
