@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell, safeStorage, autoUpdater } = require('electron')
+const { app, BaseWindow, BrowserWindow, WebContentsView, session: electronSession, dialog, ipcMain, Menu, shell, safeStorage, autoUpdater } = require('electron')
 const fs = require('node:fs')
 const { randomBytes } = require('node:crypto')
 const { execFile } = require('node:child_process')
@@ -7,6 +7,7 @@ const { createDesktopUpdates } = require('./updates.cjs')
 const http = require('node:http')
 const path = require('node:path')
 const { URL } = require('node:url')
+const { createEmbeddedBrowser } = require('./embedded-browser.cjs')
 const { runtimeExecutable, startRuntime } = require('./runtime.cjs')
 const { normalizeBackendUrl, connectDesktop } = require('./connection.cjs')
 const { registerLocalConfig } = require('./local-config.cjs')
@@ -53,6 +54,8 @@ let starting = true
 let frontendServer
 let newapiBridge
 let runtime
+let embeddedBrowser
+let mainWindow
 let vault
 let desktopConnection
 let quitting = false
@@ -61,9 +64,7 @@ const accountSession = new AccountSession()
 const desktopClient = app.isPackaged ? `${process.platform}-${process.arch}/${app.getVersion()}` : ''
 
 function notifyConnectionChanged() {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('desktop:connection-changed')
-  }
+  mainWindow?.webContents.send('desktop:connection-changed')
 }
 
 let pendingHandoff = ''
@@ -71,8 +72,8 @@ let pendingLinkError = ''
 function receiveDesktopLink(value) {
   try {
     pendingHandoff = parseDesktopLink(value, getBackendBaseUrl())
-    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('desktop:handoff', pendingHandoff)
-    const win = BrowserWindow.getAllWindows()[0]
+    mainWindow?.webContents.send('desktop:handoff', pendingHandoff)
+    const win = mainWindow
     if (win) {
       if (win.isMinimized()) win.restore()
       win.show()
@@ -95,7 +96,7 @@ if (ownsInstance && initialLink) receiveDesktopLink(initialLink)
 app.on('second-instance', (_event, argv) => {
   const link = desktopLinkArgument(argv)
   if (link) receiveDesktopLink(link)
-  const win = BrowserWindow.getAllWindows()[0]
+  const win = mainWindow
   if (win) {
     if (win.isMinimized()) win.restore()
     win.focus()
@@ -105,7 +106,11 @@ app.on('second-instance', (_event, argv) => {
 async function initializeDesktop() {
   // 沿用原桌面资料根目录，浏览器登录资料不搬入统一后端。
   const dataDir = path.join(app.getPath('userData'), 'backend')
-  const options = { onUnexpectedExit: (error) => {
+  const backendOrigin = getBackendBaseUrl()
+  const browserOwner = () => accountSession.email && JSON.stringify([backendOrigin, accountSession.email])
+  embeddedBrowser = createEmbeddedBrowser({ BaseWindow, WebContentsView, session: electronSession,
+    parent: () => mainWindow, account: browserOwner })
+  const options = { browser: embeddedBrowser, browserOwner, onUnexpectedExit: (error) => {
     void desktopConnection?.stop()
     notifyConnectionChanged()
     dialog.showErrorBox(`${productName} 本机执行器已停止`, error.message)
@@ -225,10 +230,12 @@ function proxyToBackend(req, res, backendBaseUrl) {
     session: accountSession, client: desktopClient,
     connectionId: () => desktopConnection?.id || '',
     onLogin: async () => {
+      embeddedBrowser.reset()
       vault.write({})
       await connectAccount(backendBaseUrl)
     },
     onLogout: reason => {
+      embeddedBrowser.reset()
       vault.forgetSession(reason === '/api/account/password')
       void desktopConnection?.stop()
       desktopConnection = undefined
@@ -313,6 +320,8 @@ async function createWindow() {
     },
   })
 
+  mainWindow = win
+  win.once('closed', () => { mainWindow = undefined; embeddedBrowser.reset() })
   win.webContents.session.webRequest.onBeforeSendHeaders({ urls: [url + '*'] }, (details, callback) => {
     if (details.webContentsId === win.webContents.id) details.requestHeaders['X-ERP-Local-Window'] = localRequestKey
     callback({ requestHeaders: details.requestHeaders })
@@ -401,7 +410,7 @@ app.whenReady().then(async () => {
   if (pendingLinkError) dialog.showErrorBox('无法打开桌面页面', pendingLinkError)
   if (app.isPackaged) {
     updates = createDesktopUpdates({ app, dialog, shell, autoUpdater, origin: desktopUpdateOrigin,
-      showProgress: showDownloadProgress, parentWindow: () => BrowserWindow.getAllWindows()[0],
+      showProgress: showDownloadProgress, parentWindow: () => mainWindow,
       nativeSigned: async () => {
         if (process.platform !== 'darwin') return false
         try {
@@ -436,6 +445,6 @@ app.on('before-quit', (event) => {
   if (runtime && !quitting) {
     event.preventDefault()
     quitting = true
-    void (async () => { await desktopConnection?.stop(); await runtime.stop() })().finally(() => app.quit())
+    void (async () => { await desktopConnection?.stop(); await runtime.stop(); await embeddedBrowser.flush() })().finally(() => app.quit())
   }
 })

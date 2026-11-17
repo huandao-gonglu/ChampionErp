@@ -81,7 +81,7 @@ def test_full_collection_over_http_shares_backend_product_and_asset():
             'url': 'https://example.test/product.png', 'data': base64.b64encode(png()).decode(), 'mime': 'image/png',
         }}, connection)
         post('/api/desktop/result', {'id': call['id'], 'ok': True, 'result': {
-            'snapshot': {'url': URL, 'title': '采集测试商品', 'html': '<title>采集测试商品</title><img src="https://example.test/product.png">',
+            'snapshot': {'url': URL, 'title': '采集测试商品', 'html': '<title>采集测试商品</title><script>{"buyerModel":{"userId":42}}</script><img src="https://example.test/product.png">',
                          'text': '采集测试商品', 'image_urls': ['https://example.test/product.png'], 'browser_tab_id': 'original'},
             'browserStatus': {'connected': True},
         }}, connection)

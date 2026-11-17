@@ -1,14 +1,15 @@
 """Gemini 专用浏览器的无窗口运行与交互登录，不发送模型请求。"""
 
 from contextlib import contextmanager
-import logging
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
+
+from erp_shared.browser_connection_config import normalize_browser_proxy
+from .embedded_browser import EmbeddedPage, is_navigation_error, request
 
 from . import browser_ai_runtime
 from .operation import check_cancellation
 
-logger = logging.getLogger(__name__)
 LOGIN_WAIT_SECONDS = 300
 
 _AUTH_SCRIPT = """(() => {
@@ -23,13 +24,25 @@ _AUTH_SCRIPT = """(() => {
             && (u.pathname.includes('ServiceLogin') || u.pathname.includes('/signin/')); }
         catch { return false; }
     });
-    return {signedIn: location.hostname === 'gemini.google.com' && account,
-        loginRequired: location.hostname === 'accounts.google.com' || signIn};
+    const challenge = location.pathname.startsWith('/sorry/') ||
+        [...document.querySelectorAll('iframe[src*="recaptcha"]')].some(frame => {
+            const rect = frame.getBoundingClientRect()
+            return !frame.closest('.grecaptcha-badge') && frame.checkVisibility({opacityProperty: true, visibilityProperty: true})
+                && rect.width > 100 && rect.height > 50 && rect.right > 0 && rect.bottom > 0
+                && rect.left < innerWidth && rect.top < innerHeight
+        });
+    return {signedIn: !challenge && location.hostname === 'gemini.google.com' && account,
+        loginRequired: challenge || location.hostname === 'accounts.google.com' || signIn};
 })()"""
 
 
 def _auth_state(cdp) -> str:
-    value = browser_ai_runtime._evaluate(cdp, _AUTH_SCRIPT, timeout=5)
+    try:
+        value = browser_ai_runtime._evaluate(cdp, _AUTH_SCRIPT, timeout=5)
+    except RuntimeError as error:
+        if is_navigation_error(error):
+            return "loading"
+        raise
     if isinstance(value, dict):
         if value.get("signedIn"):
             return "signed_in"
@@ -54,47 +67,28 @@ def _wait_auth_state(
         time.sleep(0.5)
 
 
-def _interactive_login(app_dir, model, timeout: int) -> None:
-    """使用专用 Profile 显示登录入口；成功后由调用方打开隐藏页。"""
-    url = browser_ai_runtime.browser_ai_url(model)
-    # 首次配置直接显示登录入口，不先等待隐藏的 Canvas 页面完成加载。
-    login_model = {
-        **model,
-        "browser_url": "https://accounts.google.com/ServiceLogin?continue=" + quote(url, safe=""),
-    }
-    with browser_ai_runtime.connect_browser_ai_page(app_dir, login_model, timeout, headless=False) as cdp:
-        # 登录在同一个专用 Profile 内由用户完成，程序不读取或填写凭据。
-        cdp.call("Page.bringToFront", timeout=5)
-        logger.info("已显示 Gemini 专用登录窗口，等待登录完成后自动继续。")
-        try:
-            _wait_auth_state(cdp, LOGIN_WAIT_SECONDS, wait_for_login=True)
-        except TimeoutError:
-            raise
-        except (OSError, RuntimeError) as exc:
-            check_cancellation()
-            raise RuntimeError("Google 登录窗口已关闭或连接中断，本次尚未发送修图请求。") from exc
-
-
 @contextmanager
 def connect_gemini_page(app_dir, model, timeout: int = 45, *, force_login: bool = False):
-    managed = browser_ai_runtime.normalize_browser_mode(model.get("browser_mode")) == "managed_profile"
-    if not managed:
-        with browser_ai_runtime.connect_browser_ai_page(app_dir, model, timeout) as cdp:
-            if force_login or _wait_auth_state(cdp, timeout) != "signed_in":
-                raise RuntimeError("请在已连接的 Gemini 浏览器中完成 Google 登录后重试。")
-            yield cdp
-        return
-    if not force_login:
-        with browser_ai_runtime.connect_browser_ai_page(app_dir, model, timeout, headless=True) as cdp:
-            if _wait_auth_state(cdp, timeout) == "signed_in":
-                yield cdp
-                return
-    _interactive_login(app_dir, model, timeout)
-    check_cancellation()
-    with browser_ai_runtime.connect_browser_ai_page(app_dir, model, timeout, headless=True) as cdp:
-        if _wait_auth_state(cdp, timeout) != "signed_in":
-            raise RuntimeError("Google 登录状态未能保留，本次尚未发送修图请求。")
-        yield cdp
+    url = browser_ai_runtime.browser_ai_url(model)
+    page_id = request('open', kind='gemini', url=url, profile=model.get('browser_profile') or 'default',
+                      proxy=normalize_browser_proxy(model.get('browser_proxy')), timeout=timeout)
+    page = EmbeddedPage(page_id)
+    # 页面由本次管道调用持有，异常、取消和执行器退出均由桌面端释放。
+    if force_login:
+        page.show()
+        request('navigate', page=page_id, url='https://accounts.google.com/ServiceLogin?continue=' + quote(url, safe=''))
+    if force_login or _wait_auth_state(page, timeout) != 'signed_in':
+        if not force_login:
+            page.show()
+        _wait_auth_state(page, LOGIN_WAIT_SECONDS, wait_for_login=True)
+        current = urlsplit(browser_ai_runtime._evaluate(page, 'location.href'))
+        wanted = urlsplit(url)
+        if (current.netloc, current.path) != (wanted.netloc, wanted.path):
+            request('navigate', page=page_id, url=url)
+            _wait_auth_state(page, LOGIN_WAIT_SECONDS, wait_for_login=True)
+        page.hide()
+    yield page
+    request('close', page=page_id)
 
 
 __all__ = ["connect_gemini_page"]

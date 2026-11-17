@@ -534,6 +534,8 @@ useDesktopHandoffContext(() => authRoute?.path === '/' && authRoute.query.tab ==
   state: { modelSettings: { selectedModelId: modelField('id'), model: selectedAiModel.value } },
 } : null)
 
+const selectedCanvas = computed(() => selectedAiModelConnectionType.value === 'browser' &&
+  ['google', 'gemini', 'bard', 'gemini.google.com'].includes(String(selectedAiModel.value?.browser_provider || '').toLowerCase()))
 const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value === CLI_CONNECTION_TYPE)
 const selectedModelThinkingSupported = computed(() => firstText(asRecord(derivedGenerationCapabilities(selectedAiModel.value).reasoning).status) === 'supported')
 const selectedModelThinkingExplicit = computed(() => typeof selectedAiModel.value?.thinking_enabled === 'boolean')
@@ -1868,24 +1870,24 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
                     </label>
                   </div>
                   <div v-else class="mt-3 grid gap-3 md:grid-cols-2">
-                    <label class="block">
+                    <label v-if="!selectedCanvas" class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器模式</span>
                       <select class="input" :value="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE)" :disabled="aiControlsLocked || (desktopShell && !localOperations)" @change="setSelectedModelField('browser_mode', eventText($event))">
                         <option v-for="option in browserModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                       </select>
                     </label>
                     <label class="block">
-                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器 Profile</span>
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">{{ selectedCanvas ? '登录会话名称' : '浏览器 Profile' }}</span>
                       <input class="input" :value="modelField('browser_profile')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="留空使用 default" @input="setSelectedModelField('browser_profile', eventText($event))" />
                     </label>
-                    <label class="block">
+                    <label v-if="!selectedCanvas" class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">远程调试端口</span>
                       <input class="input" :value="modelField('browser_port')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="可选" @input="setSelectedModelField('browser_port', eventText($event))" />
                     </label>
-                    <label v-if="modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE) === BROWSER_MODE_MANAGED_PROFILE" class="block md:col-span-2">
+                    <label v-if="selectedCanvas || modelField('browser_mode', BROWSER_MODE_MANAGED_PROFILE) === BROWSER_MODE_MANAGED_PROFILE" class="block md:col-span-2">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器代理</span>
                       <input class="input" :value="modelField('browser_proxy')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" placeholder="可选，例如 http://127.0.0.1:7890" @input="setSelectedModelField('browser_proxy', eventText($event))" />
-                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅用于此专用浏览器，支持 HTTP、HTTPS 和 SOCKS5。地址中不填写账号密码；修改后需关闭专用浏览器，再重新测试连接。</span>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">支持 HTTP、HTTPS 和 SOCKS5，地址中不填写账号密码。修改后请重新测试连接。</span>
                     </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页 URL</span>

@@ -101,10 +101,10 @@ def test_collection_keeps_intermediate_page_and_reports_final_status(
     assert result["browserStatus"]["connected"] is not should_close
 
 
-@pytest.mark.parametrize("mode, fail, should_close", [
-    ("managed_profile", False, True), ("managed_profile", True, True), ("existing_browser", False, False),
+@pytest.mark.parametrize("mode, fail", [
+    ("managed_profile", False), ("managed_profile", True), ("existing_browser", False),
 ])
-def test_canvas_dispatch_disposes_only_managed_sessions(tmp_path, monkeypatch, mode, fail, should_close):
+def test_canvas_dispatch_leaves_external_browsers_alone(tmp_path, monkeypatch, mode, fail):
     config = LocalConfig(tmp_path)
     config.update({"canvas": {"browser_mode": mode, "browser_profile": "canvas"}})
     close = Mock()
@@ -116,7 +116,7 @@ def test_canvas_dispatch_disposes_only_managed_sessions(tmp_path, monkeypatch, m
             dispatcher.dispatch(config, "canvas.check", {"model": model})
     else:
         assert dispatcher.dispatch(config, "canvas.check", {"model": model})["ok"]
-    assert close.called is should_close
+    close.assert_not_called()
 
 
 def test_user_navigated_away_from_completed_tab(owned, monkeypatch):

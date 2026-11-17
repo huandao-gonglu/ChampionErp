@@ -23,8 +23,8 @@ def verification_snapshot():
 
 
 @pytest.mark.parametrize('entry', ['url', 'browser', 'batch'])
-@pytest.mark.parametrize('guest', [False, True])
-def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry, guest):
+@pytest.mark.parametrize('page', ['captcha', 'guest', 'embedded'])
+def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry, page):
     context = get_context()
     before = context.products.save_product({'name': '原商品', 'source': {'title': '原商品'}})
     index_before = context.products.load_products_index()
@@ -33,7 +33,9 @@ def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry
     monkeypatch.setattr(workflows, 'parse_source_snapshot', parse)
     monkeypatch.setattr(workflows, 'normalize_collect_source_images', images)
     snapshot = verification_snapshot()
-    if guest:
+    if page == 'embedded':
+        snapshot = {'url': 'https://login.taobao.com/member/', 'browser_tab_id': 'original', 'verification_reason': 'LOGIN'}
+    elif page == 'guest':
         snapshot.update(title='商品标题', text='商品标题 规格一 ￥12', html=(
             '<img src="https://example.test/item.jpg"><script>{"buyerModel":{"gradeLevel":0},'
             '"sellerModel":{"userId":123},"dataJson":{"skuModel":{"skuInfoMap":{"红":{"price":12}}}}}</script>'
@@ -63,6 +65,8 @@ def test_verification_never_parses_downloads_or_saves_product(monkeypatch, entry
     ({'url': 'https://login.1688.com/member/signin.htm', 'title': '登录', 'ready': 'complete'}, 'waiting_verification'),
     ({'url': URL, 'title': '商品', 'html': '<script>{"buyerModel":{"lastLoginId":"旧账号"}}</script>', 'ready': 'complete'}, 'waiting_verification'),
     ({'url': URL, 'title': '商品', 'html': '<script>{"buyerModel":null,"sellerModel":{"userId":42}}</script>', 'ready': 'complete'}, 'waiting_verification'),
+    ({'url': URL, 'html': '<script>{"buyerModel":{"userId":42}}</script>', 'frame_reason': 'CAPTCHA',
+      'ready': 'complete'}, 'waiting_verification'),
     ({'url': URL, 'ready': 'loading'}, 'loading'),
     ({'url': URL + '?verified=1', 'title': '产品', 'text': '登录 产品信息', 'html': '<script>captcha.verify()</script><script>{"buyerModel":{"userId":42}}</script>', 'ready': 'complete'}, 'ready'),
     ({'url': 'https://detail.1688.com/offer/456.html', 'ready': 'complete'}, 'unavailable'),

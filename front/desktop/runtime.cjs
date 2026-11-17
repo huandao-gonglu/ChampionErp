@@ -15,7 +15,7 @@ function runtimeExecutable(resourcesPath) {
   return path.join(resourcesPath, 'runtime', process.platform === 'win32' ? 'champion-erp-runtime.exe' : 'champion-erp-runtime')
 }
 
-function startRuntime(executable, dataDir, { args = [], cwd = dataDir, onUnexpectedExit = () => {}, timeoutMs = 30000 } = {}) {
+function startRuntime(executable, dataDir, { args = [], cwd = dataDir, onUnexpectedExit = () => {}, browser, browserOwner, timeoutMs = 30000 } = {}) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
   const logPath = path.join(dataDir, 'desktop-runtime.log')
   const log = fs.openSync(logPath, 'a', 0o600)
@@ -37,6 +37,7 @@ function startRuntime(executable, dataDir, { args = [], cwd = dataDir, onUnexpec
       exited = true
       clearTimeout(timer)
       rejectReady(error)
+      browser?.reset()
       for (const call of pending.values()) call.reject(error)
       pending.clear()
       resolve()
@@ -57,6 +58,19 @@ function startRuntime(executable, dataDir, { args = [], cwd = dataDir, onUnexpec
       }
       const call = pending.get(reply.id)
       if (!call) return
+      if (reply.browser_request) {
+        const respond = (fields) => {
+          if (!exited && !stopping && pending.get(reply.id) === call)
+            send({ browser_reply: reply.browser_request, ...fields })
+        }
+        Promise.resolve().then(() => {
+          if (!browser || call.cancelled || call.generation !== browser.generation) throw new Error('内置网页调用已结束。')
+          return browser.handle(reply.action, reply.payload, call.owner, {
+            id: reply.id, active: () => !stopping && !call.cancelled && call.generation === browser.generation && pending.get(reply.id) === call,
+          })
+        }).then(value => respond({ value }), error => respond({ error: error.message }))
+        return
+      }
       if (reply.asset) {
         call.assets = call.assets.then(() => call.onAsset(reply.asset))
         // 异步上传失败在最终回执中统一报告，避免未处理的 Promise 拒绝。
@@ -66,6 +80,9 @@ function startRuntime(executable, dataDir, { args = [], cwd = dataDir, onUnexpec
       if (typeof reply.ok !== 'boolean' || (reply.ok && (!reply.result || typeof reply.result !== 'object' || Array.isArray(reply.result)))) {
         throw new Error('本机执行器回执无效。')
       }
+      const snapshot = reply.result?.snapshot
+      const waitingPage = reply.ok && !call.cancelled && snapshot?.verification_reason && snapshot.browser_tab_id
+      browser?.finish(reply.id, waitingPage)
       pending.delete(reply.id)
       call.assets.then(() => call.resolve(reply), call.reject)
     } catch (error) {
@@ -82,12 +99,15 @@ function startRuntime(executable, dataDir, { args = [], cwd = dataDir, onUnexpec
   function perform(message, onAsset = async () => {}) {
     if (!ready || pending.has(message.id)) return Promise.reject(new Error('本机执行器未就绪或调用重复。'))
     return new Promise((resolve, reject) => {
-      pending.set(message.id, { resolve, reject, onAsset, assets: Promise.resolve() })
-      try { send(message) } catch (error) { pending.delete(message.id); reject(error) }
+      pending.set(message.id, { resolve, reject, onAsset, owner: browserOwner?.(), generation: browser?.generation, assets: Promise.resolve() })
+      try { send({ id: message.id, operation: message.operation, params: message.params, timeout: message.timeout }) } catch (error) { pending.delete(message.id); reject(error) }
     })
   }
   function cancel(id) {
     if (exited || stopping) return
+    const call = pending.get(id)
+    if (call) call.cancelled = true
+    browser?.finish(id)
     send({ id, cancel: true })
   }
   function stop() {

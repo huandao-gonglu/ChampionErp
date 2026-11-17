@@ -7,31 +7,21 @@ API 模型仍由 Pydantic Direct Model 执行，不增加 API 旁路，不自动
 ## 最小接入
 
 在 AI 模型设置中选择“添加网页模型 → Gemini Canvas”。项目自动填写公开分享页
-`https://gemini.google.com/share/a3adc37e7008`、网页服务商 `gemini`、托管浏览器和 `canvas` Profile，
-调试端口留空使用默认值，模型留空使用 `gemini-3.1-flash-image-preview`。
+`https://gemini.google.com/share/a3adc37e7008`、网页服务商 `gemini`、内置浏览器和 `canvas` 登录会话，
+模型留空使用 `gemini-3.1-flash-image-preview`。
 按需填写自己的代理，勾选“图像编辑”并确认测试，测试通过后自动保存当前模型与能力回执，再在图片处理功能绑定中选择该模型。
 单独修改模型字段不会自动保存；其他模型的未保存修改不随本次测试提交。
 预置不会提前伪造已通过的能力测试，也不包含用户账号、代理地址或登录资料。
 删除模型后可通过同一入口重新添加；重复选择已添加项只定位现有配置，不覆盖个人设置。
-首次点击图像编辑能力测试时直接显示专用 Google 登录窗口，完成登录后再加载 Canvas 并执行测试。
+点击图像编辑能力测试时先检查当前会话。需要登录或人机验证时才显示网页，完成后继续测试。
 新增模型不自动打开窗口；删除模型条目不会清除独立浏览器目录中的登录资料。
 普通使用者无需在各自账号里重新创建应用。
 “网页服务商”使用预置目录生成的下拉选项，以固定服务商 ID 选择适配器；修改显示名称不改变连接。
 手动切换到网页接入时需要明确选择服务商，不再在界面中默认填入 ChatGPT。
 切换服务商会带入所选服务的默认网页设置，并清除原能力测试结果；个人代理保持原值。
-项目自动查找本机 Chrome/Edge，使用 `browser_profile/ai/gemini/canvas` 保存登录状态；
-Gemini 默认调试端口为 `9335`，与 1688 的目录和端口分开。不要求安装 BitBrowser。
-托管模式下，Canvas 修图默认启动无窗口 Chrome。检测到需要 Google 登录时，
-项目使用同一个 Profile 显示专用登录窗口；完成后自动恢复无窗口模式并继续原任务。
-不会复制日常浏览器或 BitBrowser 的登录资料。
-也保留显式连接已打开浏览器的能力，但不作为托管模式失败后的自动回退。
-如果正常使用 Gemini 需要独立网络配置，在高级连接设置的“浏览器代理”中填写
-`http://地址:端口`、`https://地址:端口` 或 `socks5://地址:端口`。
-该设置仅在项目托管浏览器启动时生效，不影响 ERP 后端或 1688；修改后关闭 Gemini 专用窗口，
-再测试连接。地址不能包含账号密码；HTTP 代理认证由浏览器的正常认证流程处理，
-需要认证的 SOCKS5 应先由本机代理客户端转发为可用端口，Chrome 不支持 SOCKS5 认证。
-实现直接使用 Chrome 原生 `--proxy-server`，不增加直连回退或指纹伪装；协议能力依据
-[Chromium 官方代理文档](https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md)。
+桌面内置浏览器按 ERP 账号和会话名称保存 Google 站点数据；重启后复用仍有效的登录。
+首次切换到内置浏览器时可能需要重新登录。
+如需独立代理，在高级连接设置填写 HTTP、HTTPS 或 SOCKS5 地址及端口。修改后重新测试连接即可。
 项目自动打开配置的 Canvas 应用预览；普通 Gemini 首页不能替代应用预览。
 图像编辑能力测试会用随应用发布的红色测试图发起一次真实修图；通过后绑定到图片处理用例。
 
@@ -57,23 +47,11 @@ Google Canvas 默认执行环境，调用 Google 注入的模型转发函数；�
 
 ## 边界
 
-- 1688 与 Gemini 共用 `desktop_runtime.browser_debug_service.ensure_browser_debug_session` 的浏览器发现、启动和连接等待。
-  `desktop_runtime/browser_ai_runtime` 负责 AI 独立资料目录与页面连接；创建页面使用 `PUT /json/new`，
-  Canvas 只复用配置地址对应的页面，不借用其他对话或空白标签。
-  普通 Chrome/Edge 已提供独立资料目录和 CDP，无需额外浏览器框架或指纹内核；
-  [Chrome 136 起的远程调试要求](https://developer.chrome.com/blog/remote-debugging-port)也要求非默认资料目录。
-  `desktop_runtime/gemini_browser_session` 负责登录检查、最长五分钟的交互登录等待及恢复原任务；
-  1688 和其他浏览器调用保持其显式显示方式，“连接已打开浏览器”模式由用户管理窗口。
-  Profile 不改变网络出口或地区资格，产品运行时不自动创建 Canvas。
-- 隐藏执行使用 Chrome 原生 `--headless`，登录显示与隐藏之间顺序重启同一个专用 Profile，
-  不复制 Cookie。项目通过本机资料目录中的浏览器 WebSocket 实例身份记录核对归属，
-  不自动关闭未登记的浏览器实例；首次从旧版本升级时需先关闭旧专用浏览器。
-  这是对原生浏览器进程生命周期的适配，不创建 Agent、消息或领域任务协议。
-  [Chrome 无窗口模式](https://developer.chrome.com/docs/automation-and-testing/headless)与有窗口模式共用内核，
-  不需要额外安装浏览器内核；只有项目需要安排登录显示与请求继续。
+- 1688 与 Gemini Canvas 都由桌面主进程创建独立网页，两者的登录数据分开。验证窗口承载任务原页，完成验证后继续使用该页。
+- `desktop_runtime/gemini_browser_session.py` 负责登录检查和最长五分钟的人工等待，`gemini_canvas_runtime.py` 负责校验分享页和模型通道。
 - 输入支持本地 PNG/JPEG/WebP，每张不超过 20 MB；首版每张原图返回一份图片结果。
   Canvas 原生配置决定生成规格，当前不映射 API 的质量、尺寸参数。
-- 同一浏览器端口的图片任务顺序执行；不持有商品锁跨模型等待。
+- 同一登录会话的图片任务顺序执行；不持有商品锁跨模型等待。
 - 仅在真实二进制图片成功解码后交给原有图片服务生成独立资产，保留来源 ID；
   文本描述、空回执和不匹配的 MIME 均不能作为成功。
 - 请求前和登录等待期间检查取消；登录超时、关闭登录窗口或取消时，不发送图片请求，
@@ -86,7 +64,7 @@ Google Canvas 默认执行环境，调用 Google 注入的模型转发函数；�
 
 ## 验证
 
-真实验证已完成：由项目图片处理入口调用自建 Canvas 公开分享页的原生通道，
+旧版外部浏览器的历史验证：由项目图片处理入口调用自建 Canvas 公开分享页的原生通道，
 将红色测试 PNG 修改为蓝色，取回并解码 1024×1024 JPEG（146,254 字节）。
 Chrome 使用 Gemini 独立 Profile，接入本机已有的 SSH SOCKS5 代理；
 重启专用浏览器后登录状态保持有效，不需要 BitBrowser 进程或其登录资料。

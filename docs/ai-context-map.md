@@ -205,7 +205,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
   `not_sent` 本地拒绝，释放租约且不触发写入结果未知阻断；平台错误由 `schemas/platform_errors.py` 持有。
 - `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传与采集请求均接入。
-  本机 Chrome 的版本检查、标签页查询/创建及采集验证轮询统一经 `desktop_runtime/browser_debug_http.py`；
+  外部 Chrome 的版本检查、标签页查询/创建及外部标签验证轮询统一经 `desktop_runtime/browser_debug_http.py`；
   只访问固定回环地址的 CDP 接口，禁用代理与重定向，保留任务取消、期限及响应大小限制。
   这些本地控制请求不读写外部请求审计或阻断；已有历史记录保留，但不再影响浏览器连接。
   远端网页和图片下载仍经外部请求管理器，不按 IP 对业务请求作通用豁免。
@@ -247,10 +247,8 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - 用户可以取消等待，未开始的链接保持原状。`collectQueue.ts` 本地保留等待项的标签 ID 和 URL，刷新应用或取消后点击开始采集可恢复；采集应用关闭后不承诺后台执行。不保存凭据或整份商品。正在实际采集时刷新仍标记结果未确认，避免假报成功。删除列表行不删除入库商品。
 - 浏览器标签页选择与独立保存 HTML/截图的操作已移除；URL 采集仅使用指定商品页，验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
-- `desktop_runtime.collection.target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。1688 商品页须从本次页面的买家模型确认有效用户 ID；访客即使能读到标题、图、价格和 SKU 也继续等待。首次读取、原标签轮询、恢复读取和后端入库共用该判定。打开操作直接返回目标句柄，在原标签内等待商品或验证页，初始空白页与临时跳转继续等待。读取失败保留窗口，地址不匹配时提示实际域名和路径。读取不强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
-- 1688 采集与浏览器 AI 共用 `desktop_runtime.browser_debug_service.ensure_browser_debug_session`：检测连接、查找本机 Chrome/Edge、使用指定资料目录启动并等待调试端口。调用方分别提供目录和端口；Gemini 默认使用 `browser_profile/ai/gemini/<profile>`，不共用 1688 登录资料，也不依赖 BitBrowser。
-  同一调试端口的任务与收尾串行。采集读取完成后关闭已消费的任务标签；还有其他网页时保留实例，人工验证及正在操作的登录窗口保留原页。最后一个任务页完成后退出专用浏览器。托管网页 AI 在整次本机调用结束时关闭，人工登录例外；退出桌面执行器回收本次持有的实例。关闭前核对 Profile 的实例标识，确认退出后只清网页、代码和图形缓存，保留登录、站点存储与扩展。外部浏览器的生命周期由用户管理。
-  `browser_connection_config` 纯校验代理地址；浏览器 AI 的可选 `browser_proxy` 只在专用浏览器启动时生效，修改后需关闭专用窗口再重开，不更改采集或后端网络配置。
+- `front/desktop/embedded-browser.cjs` 持有 1688 和 Gemini Canvas 的内置网页。桌面执行器经私有进程管道操作当前 ERP 账号的页面。站点存储按后端、账号、服务和会话名称持久化，退出 ERP 后同一账号可以继续使用有效登录。
+- `desktop_runtime/embedded_collection.py` 将 1688 首次读取、验证轮询和恢复绑定到同一商品及页面。只有商品页包含当前买家 ID 且通过验证检查才继续；等待期间只返回页面标识和原因。其他采集站点沿用外部浏览器。
 
 ## 草稿描述
 
@@ -502,12 +500,7 @@ Responses 流经 `services/ai_responses_stream.py` 校验 SDK 已解码的错误
 浏览器 AI 不属于 API Provider，继续使用独立适配器。
 Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独立执行；
 复用浏览器连接和页面原生模型转发，不进入 API Direct Model，也不创建 Agent loop。
-`desktop_runtime/gemini_browser_session` 仅编排托管 Chrome 的隐藏执行、交互登录与请求前恢复；
-浏览器进程切换由共享调试服务核对实例归属后完成，沿用同一 Profile，不读取或复制凭据。
-登录等待期间图片领域任务保持执行中，未通过登录检查不发送图片；不另建 Deferred 或任务恢复协议。
-首次图像编辑能力测试（尚未启用该能力）直接显示专用 Google 登录入口，不先等待隐藏 Canvas 页面；
-登录完成后恢复隐藏连接并测试，新增模型本身不打开浏览器。
-浏览器目标已由查找或创建标签页入口确定，连接准备只等待加载，不重复导航打断 Google 登录重定向。
+`desktop_runtime/gemini_browser_session` 在配置的 Canvas 页面检查登录。需要登录或人机验证时显示原页，验证后隐藏并继续。模型测试和图片编辑复用同一持久化会话；等待期间不发送图片。
 “添加网页模型”的预置目录由 `ai_model_config.browser_model_presets` 经公共 AI 配置的
 `browser_presets` 提供，形状见 `schemas/config.py::AiBrowserPreset`，不混入 API Provider Catalog。
 预置独立于已保存模型，删除后可以重新添加；不携带用户代理、登录资料或已验证的能力回执，能力仍需实测启用。

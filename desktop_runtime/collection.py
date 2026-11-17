@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import time
+from functools import partial
 import urllib.parse
 import urllib.request
 
@@ -48,16 +49,35 @@ def target_for_url(config, url):
     return browser_debug_json(config.browser_port, '/json/new?' + urllib.parse.quote(url, safe=''), method='PUT')
 
 
-def _snapshot(cdp, target):
+# 嵌入验证页的文字不在商品正文里。只看可见 frame 的位置和地址，不读取表单内容。
+_VERIFICATION_FRAME = r"""(() => {
+    for (const frame of document.querySelectorAll('iframe[src]')) {
+        const rect = frame.getBoundingClientRect();
+        if (rect.width < 80 || rect.height < 40 || rect.right <= 0 || rect.bottom <= 0 ||
+            rect.left >= innerWidth || rect.top >= innerHeight ||
+            !frame.checkVisibility({opacityProperty: true, visibilityProperty: true})) continue;
+        let url;
+        try { url = new URL(frame.src); } catch { continue; }
+        if (!/(^|\.)(1688|taobao|alibaba|tmall|alicdn|alipay)\.com$/.test(url.hostname)) continue;
+        if (/^(login|passport)\./.test(url.hostname)) return 'LOGIN';
+        if (/^(slide|captcha)\./.test(url.hostname) ||
+            /captcha|_____tmd_____|\/(?:punish|verify)(?:[/.]|$)/i.test(url.pathname)) return 'CAPTCHA';
+    }
+    return '';
+})()"""
+
+
+def _snapshot(cdp, target, scroll=True):
     cdp.call('Page.enable')
     cdp.call('Runtime.enable')
     # 保留原有滚动加载，不刷新人工完成验证后的页面。
-    for _ in range(3):
+    for _ in range(3 if scroll else 0):
         check_cancellation()
         cdp.call('Runtime.evaluate', {'expression': 'window.scrollTo(0, document.body ? document.body.scrollHeight : 0)'})
         time.sleep(0.6)
     # 同一次求值绑定网址、正文和素材，避免跳转途中拼入另一页的内容。
     expression = """({
+        frame_reason: """ + _VERIFICATION_FRAME + """,
         url: document.documentURI,
         html: document.documentElement?.outerHTML || '',
         text: document.body?.innerText || '',
@@ -139,6 +159,7 @@ def _page_error(url):
 def _wait_for_product_page(cdp, expected_url, site):
     # 空白页同样可能报告 complete；等待原商品或可识别的人工验证页。
     expression = """({
+        frame_reason: """ + _VERIFICATION_FRAME + """,
         url: document.documentURI, ready: document.readyState, title: document.title,
         text: /^https?:$/.test(location.protocol) ? document.body?.innerText || '' : ''
     })"""
@@ -151,12 +172,12 @@ def _wait_for_product_page(cdp, expected_url, site):
                             timeout=remaining)
         page = response.get('result', {}).get('value') or {}
         url = page.get('url') or ''
-        if page.get('ready') == 'complete':
-            if same_collection_page(expected_url, url):
+        if page.get('ready') in {'interactive', 'complete'}:
+            if page.get('ready') == 'complete' and same_collection_page(expected_url, url):
                 return
             if urllib.parse.urlsplit(url).scheme in {'http', 'https'}:
                 _, reason = site.diagnose(url, '', page.get('text', ''), page.get('title', ''), detect_slider=True)
-                if reason in VERIFICATION_REASONS:
+                if reason in VERIFICATION_REASONS or (site.key == '1688' and page.get('frame_reason')):
                     return
         time.sleep(max(0, min(1, deadline - time.monotonic())))
     # 商品文档已可读时，个别资源未加载完成仍沿用原采集行为。
@@ -170,11 +191,21 @@ def _read_target(config, target, product_url, tab_url, platform_hint, open_url):
     _require_web_url(expected_url or str(target.get('url') or ''))
     cdp = CdpWebSocket(target['webSocketDebuggerUrl'])
     try:
-        if open_url:
-            platform = detect_source_site(expected_url)
-            site = source_site(platform_hint if platform == 'generic' else platform)
-            _wait_for_product_page(cdp, expected_url, site)
-        snapshot = _snapshot(cdp, target)
+        return _read_connected_target(cdp, target, product_url, tab_url, platform_hint, open_url)
+    finally:
+        cdp.close()
+
+
+def _read_connected_target(cdp, target, product_url, tab_url, platform_hint, open_url, fetch=None):
+    expected_url = product_url or tab_url
+    if open_url:
+        platform = detect_source_site(expected_url)
+        site = source_site(platform_hint if platform == 'generic' else platform)
+        _wait_for_product_page(cdp, expected_url, site)
+    # 内置页先检查登录和验证，人工操作期间保留网站原来的滚动位置。
+    check_before_scroll = detect_source_site(expected_url) == '1688'
+    for scroll in ((False, True) if check_before_scroll else (True,)):
+        snapshot = _snapshot(cdp, target, scroll)
         if urllib.parse.urlsplit(snapshot['url']).scheme not in {'http', 'https'}:
             raise _page_error(snapshot['url'])
         detected = detect_source_site(expected_url or snapshot['url'])
@@ -183,30 +214,32 @@ def _read_target(config, target, product_url, tab_url, platform_hint, open_url):
             snapshot['url'], snapshot['html'], snapshot['text'], snapshot['title'],
             detect_slider=True, expected_product_url=expected_url or snapshot['url'],
         )
+        if platform == '1688' and snapshot.get('frame_reason'):
+            reason = snapshot['frame_reason']
         if reason in VERIFICATION_REASONS:
+            snapshot['verification_reason'] = reason
             return snapshot, [], True
-        if expected_url and not same_collection_page(expected_url, snapshot['url']):
-            raise _page_error(snapshot['url'])
-        assets = []
-        context = extract_1688_context_data(snapshot['html']) if platform == '1688' else {}
-        detail_url = context.get('detail_url')
-        if detail_url:
-            detail_url = validated_1688_detail_url(detail_url)
-            raw, _ = _fetch(cdp, detail_url, snapshot['url'], 10 * 1024 * 1024)
-            snapshot['detail_html'] = raw.decode('utf-8', errors='replace')
-        urls = list(context.get('main_image_urls') or []) or collect_product_image_urls(snapshot['html'], snapshot['url'], snapshot['image_urls'], limit=20)
-        urls.extend(extract_1688_detail_images(snapshot.get('detail_html', ''), detail_url) if detail_url else [])
-        urls.extend(row.get('image') for row in context.get('skus', []) if row.get('image'))
-        for url in dict.fromkeys(urls):
-            try:
-                raw, mime = _fetch(cdp, url, snapshot['url'], 20 * 1024 * 1024)
-                assets.append({'url': url, 'mime': mime, 'data': base64.b64encode(raw).decode('ascii')})
-            except (OSError, ValueError) as exc:
-                # 后端仍可下载公开素材；无法下载的资料由原完整性规则判断。
-                assets.append({'url': url, 'error': str(exc)})
-        return snapshot, assets, False
-    finally:
-        cdp.close()
+    if expected_url and not same_collection_page(expected_url, snapshot['url']):
+        raise _page_error(snapshot['url'])
+    fetch = fetch or partial(_fetch, cdp)
+    assets = []
+    context = extract_1688_context_data(snapshot['html']) if platform == '1688' else {}
+    detail_url = context.get('detail_url')
+    if detail_url:
+        detail_url = validated_1688_detail_url(detail_url)
+        raw, _ = fetch(detail_url, snapshot['url'], 10 * 1024 * 1024)
+        snapshot['detail_html'] = raw.decode('utf-8', errors='replace')
+    urls = list(context.get('main_image_urls') or []) or collect_product_image_urls(snapshot['html'], snapshot['url'], snapshot['image_urls'], limit=20)
+    urls.extend(extract_1688_detail_images(snapshot.get('detail_html', ''), detail_url) if detail_url else [])
+    urls.extend(row.get('image') for row in context.get('skus', []) if row.get('image'))
+    for url in dict.fromkeys(urls):
+        try:
+            raw, mime = fetch(url, snapshot['url'], 20 * 1024 * 1024)
+            assets.append({'url': url, 'mime': mime, 'data': base64.b64encode(raw).decode('ascii')})
+        except (OSError, ValueError) as exc:
+            # 后端仍可下载公开素材；无法下载的资料由原完整性规则判断。
+            assets.append({'url': url, 'error': str(exc)})
+    return snapshot, assets, False
 
 
 def inspect_verification(config, browser_tab_id, source_url):
@@ -216,12 +249,16 @@ def inspect_verification(config, browser_tab_id, source_url):
         return {'ok': True, 'status': 'unavailable', 'message': '原商品标签页已关闭，请重新开始采集。'}
     cdp = CdpWebSocket(target['webSocketDebuggerUrl'])
     try:
-        result = cdp.call('Runtime.evaluate', {
-            'expression': "({url:location.href,title:document.title,text:document.body?.innerText||'',html:document.documentElement?.outerHTML||'',ready:document.readyState})", 'returnByValue': True,
-        }, timeout=10)
-        page = result.get('result', {}).get('value') or {}
+        return _inspect_page(cdp, source_url)
     finally:
         cdp.close()
+
+
+def _inspect_page(cdp, source_url, *, report_reason=False):
+    result = cdp.call('Runtime.evaluate', {
+        'expression': "({frame_reason:" + _VERIFICATION_FRAME + ",url:location.href,title:document.title,text:document.body?.innerText||'',html:document.documentElement?.outerHTML||'',ready:document.readyState})", 'returnByValue': True,
+    }, timeout=10)
+    page = result.get('result', {}).get('value') or {}
     if page.get('ready') != 'complete':
         return {'ok': True, 'status': 'loading', 'message': '正在等待原商品页加载完成…'}
     _, reason = source_site(detect_source_site(source_url)).diagnose(
@@ -229,8 +266,13 @@ def inspect_verification(config, browser_tab_id, source_url):
         str(page.get('text') or ''), str(page.get('title') or ''),
         detect_slider=True, expected_product_url=source_url,
     )
+    if detect_source_site(source_url) == '1688' and page.get('frame_reason'):
+        reason = page['frame_reason']
     if reason in VERIFICATION_REASONS:
-        return {'ok': True, 'status': 'waiting_verification', 'message': WAIT_MESSAGE}
+        waiting = {'ok': True, 'status': 'waiting_verification', 'message': WAIT_MESSAGE}
+        if report_reason:
+            waiting['reason'] = reason
+        return waiting
     if not same_collection_page(source_url, page['url']):
         return {'ok': True, 'status': 'unavailable', 'message': '原标签页已离开目标商品，请返回原商品页后重新采集。'}
     return {'ok': True, 'status': 'ready', 'message': '验证已完成，继续采集原商品页。'}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from erp_shared.collection import same_collection_page
 from erp_shared.html import html_to_text
@@ -48,13 +49,13 @@ def _never(_url: str, _html: str, _text: str, _title: str) -> bool:
 
 def _login_1688(url: str, html: str, text: str, title: str) -> bool:
     # 商品页导航中的“登录”入口和脚本不能让人工验证永远无法结束。
-    return (_contains(("login.1688.com",), url)
+    return (urlsplit(url).hostname in {"login.1688.com", "login.taobao.com", "passport.alibaba.com"}
             or _contains(("登录",), title)
             or _contains(("帐号密码登录", "账号密码登录", "短信登录", "请登录后继续"), text or html_to_text(html)))
 
 
 def _captcha_1688(url: str, html: str, text: str, title: str) -> bool:
-    return _contains(tuple(VERIFY_MARKERS) + ("滑块", "安全验证"), url, title, text or html_to_text(html))
+    return _contains(tuple(VERIFY_MARKERS) + ("滑块", "安全验证", "/_____tmd_____/punish"), url, title, text or html_to_text(html))
 
 
 def _login_amazon(url: str, _html: str, text: str, title: str) -> bool:

@@ -7,7 +7,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from erp_shared.desktop import LocalImageEditRequest, validate_action
-from . import browser_ai_runtime, collection
+from . import browser_ai_runtime, collection, embedded_collection
 from .browser_debug_service import browser_operation, finish_browser_session, open_auth_link_in_browser
 from .cli import _cli_command_parts, _run_codex_cli_text
 from .gemini_canvas_runtime import GeminiCanvasProvider, check_canvas_connection
@@ -22,11 +22,21 @@ def dispatch(config, operation, params):
     if operation == 'config.write':
         return config.update(params['models'])
     if operation == 'browser.status':
-        return collection.browser_status(config)
+        embedded = embedded_collection.status()
+        external = collection.browser_status(config)
+        if not external['connected']:
+            return embedded
+        tabs = embedded['current_tabs'] + external['current_tabs']
+        return {**external, 'current_tabs': tabs, 'tabs_count': len(tabs)}
     if operation == 'collect.read':
+        if embedded_collection.is_1688_url(params['product_url'] or params['tab_url']):
+            with browser_operation(config.browser_port):
+                return embedded_collection.read(**params)
         return collection.read_collection(config, **params)
     if operation == 'collect.verify':
         with browser_operation(config.browser_port):
+            if embedded_collection.is_1688_url(params['source_url']):
+                return embedded_collection.verify(**params)
             return collection.inspect_verification(config, **params)
     if operation == 'auth.open':
         if urlsplit(params['url']).scheme not in {'http', 'https'}:
@@ -42,6 +52,8 @@ def dispatch(config, operation, params):
         if params['probe_image']:
             text = _inline_cli_probe_image(text, config.directory)
         return {'text': text}
+    if operation in {'canvas.check', 'canvas.edit'}:
+        return _dispatch_browser_ai(config, operation, params, model, timeout)
     port = browser_ai_runtime.browser_ai_port(model)
     profile = browser_ai_runtime.browser_ai_profile_dir(config.directory, model)
     managed = browser_ai_runtime.normalize_browser_mode(model.get('browser_mode')) == 'managed_profile'
@@ -66,8 +78,7 @@ def _dispatch_browser_ai(config, operation, params, model, timeout):
         return asdict(browser_ai_runtime.run_browser_ai_chat(config.directory, model, params['prompt'], timeout=timeout))
     if operation == 'canvas.check':
         check_canvas_connection(config.directory, model, timeout, force_login=params['force_login'])
-        return {'ok': True, 'profile_dir': str(browser_ai_runtime.browser_ai_profile_dir(config.directory, model)),
-                'browser_url': browser_ai_runtime.browser_ai_url(model), 'port': browser_ai_runtime.browser_ai_port(model)}
+        return {'ok': True, 'profile_dir': '', 'browser_url': browser_ai_runtime.browser_ai_url(model), 'port': 0}
     if operation == 'canvas.edit':
         with tempfile.TemporaryDirectory(prefix='champion-canvas-') as directory:
             images = []

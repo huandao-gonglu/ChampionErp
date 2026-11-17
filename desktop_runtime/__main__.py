@@ -13,6 +13,7 @@ import sys
 from threading import Event, Lock
 
 from .browser_debug_service import close_runtime_browsers
+from .embedded_browser import BrowserPipe, bind_browser
 from .config import LocalConfig
 from .dispatcher import dispatch
 from .operation import bind_operation
@@ -37,6 +38,8 @@ def main():
             output.write(raw + '\n')
             output.flush()
 
+    browser_pipe = BrowserPipe(emit)
+
     def stop(*_):
         stopped.set()
         with lock:
@@ -49,7 +52,7 @@ def main():
     def execute(message, cancel):
         call_id = message['id']
         try:
-            with bind_operation(cancel, message['timeout']):
+            with bind_operation(cancel, message['timeout']), bind_browser(browser_pipe, call_id):
                 result = dispatch(config, message['operation'], message['params'])
                 # 大量图片逐张交接，不把整件商品的图片塞进一个 HTTP 请求。
                 for asset in result.pop('assets', []):
@@ -74,6 +77,9 @@ def main():
                 message = {}
                 try:
                     message = json.loads(line)
+                    if 'browser_reply' in message:
+                        browser_pipe.deliver(message)
+                        continue
                     if message.get('cancel'):
                         with lock:
                             if message.get('id') in running:

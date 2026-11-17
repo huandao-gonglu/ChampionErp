@@ -2,7 +2,7 @@
 
 桌面安装包包含 Electron、同一套 Vue 前端和独立 Python 本机执行器。业务后端单独部署，同一账号在网页与桌面读取相同的商品、草稿、订单、任务和消息历史；不同账号分别使用自己的业务空间。桌面退出关闭本次执行器并断开本机调用连接，业务后端及其 worker 继续运行。
 
-浏览器采集、Browser AI、Gemini Canvas 和 CLI 在用户电脑执行；需要本机 Chrome / Edge 或已安装并登录的 Codex CLI。API 模型继续由后端执行，不自动切换连接方式。
+1688 网页采集和 Gemini Canvas 使用桌面内置浏览器。其他网页采集和浏览器模型使用本机 Chrome / Edge，CLI 使用本机已安装并登录的工具。API 模型继续由后端执行，不自动切换连接方式。
 
 ## 启动与连接
 
@@ -45,7 +45,7 @@ AI 在后端运行。桌面的用户输入可以对原设备发起本机调用�
 macOS 沿用 `~/Library/Application Support/Champion ERP/backend` 作为本机目录；Windows/Linux 使用系统应用数据目录下的同名目录。保留目录名是为了沿用已有浏览器登录资料，不代表继续启动本地业务后端。
 
 - `config/desktop-connections.json` 保存 CLI 路径/Profile、浏览器模式、资料目录名、端口、网页 URL 和代理。
-- 采集资料位于 `browser_profile/1688`；AI 资料位于 `browser_profile/ai/<provider>/<profile>`，两者分开。
+- 1688 和 Gemini Canvas 的登录数据保存在桌面应用数据目录的 `Partitions` 下。分区按后端、ERP 账号、服务和会话名称隔离。升级到内置浏览器后首次使用可能需要登录；外部浏览器资料保留在原目录。
 - 本机设置通过受限 preload IPC 保存。主进程校验主窗口、主 frame、来源和字段；业务后端不能通过调用通道改写命令或本机路径。
 - 后端模型配置只保存业务模型、能力、用例绑定和 `local_connection_id` / 配置指纹。执行时核验实际本机配置，变更后重新测试，旧能力证明不能沿用。
 - 不携带店铺凭据、业务数据库、开发 `.env`、业务 worker、API 模型 SDK 或开发浏览器资料。

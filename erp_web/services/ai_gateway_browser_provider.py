@@ -199,14 +199,7 @@ class BrowserAiProvider(AiChatProvider):
         connection_model = local_models_view([model])[0]
         canvas = is_canvas_model(model)
         if canvas:
-            connection = check_canvas_connection(
-                app_dir, model, min(timeout, 45),
-                force_login=(
-                    probe_requested
-                    and browser_ai_runtime.normalize_browser_mode(connection_model.get("browser_mode")) == "managed_profile"
-                    and ai_model_config.CAP_IMAGE_EDIT not in ai_model_config.normalize_capabilities(model.get("capabilities"))
-                ),
-            )
+            connection = check_canvas_connection(app_dir, model, min(timeout, 45))
             page = browser_ai_runtime.BrowserAiRunResult(
                 text="", image_urls=[], provider="gemini", browser_url=connection.get("browser_url") or browser_ai_runtime.browser_ai_url(connection_model),
                 profile_dir=connection["profile_dir"],

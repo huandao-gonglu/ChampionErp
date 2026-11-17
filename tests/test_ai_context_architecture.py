@@ -145,7 +145,7 @@ def test_gemini_login_wait_is_browser_lifecycle_not_an_agent_or_job_protocol():
                  "erp_web.runtime_units", "erp_web.services.ai_agent_factory")
     assert not any(target.startswith(forbidden) for target in targets)
     source = path.read_text()
-    assert "connect_browser_ai_page" in source
+    assert "EmbeddedPage" in source and "connect_browser_ai_page" not in source
     assert "generateContent" not in source and "create_task" not in source
 
 

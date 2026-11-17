@@ -23,7 +23,7 @@ from .operation import check_cancellation
 
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
-_session_locks: dict[int, Lock] = {}
+_session_locks: dict[str, Lock] = {}
 _locks_guard = Lock()
 
 
@@ -104,9 +104,9 @@ def _canvas_context(cdp, timeout: float = 15) -> tuple[str, int]:
 def _connection(app_dir, model, timeout, force_login=False):
     check_cancellation()
     expected = _canvas_url(model)
-    port = browser_ai_runtime.browser_ai_port(model)
+    profile = str(model.get("browser_profile") or "default")
     with _locks_guard:
-        lock = _session_locks.setdefault(port, Lock())
+        lock = _session_locks.setdefault(profile, Lock())
     deadline = time.monotonic() + max(1, timeout) + gemini_browser_session.LOGIN_WAIT_SECONDS
     while not lock.acquire(timeout=0.5):
         check_cancellation()

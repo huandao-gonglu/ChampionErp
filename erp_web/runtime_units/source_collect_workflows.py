@@ -12,6 +12,7 @@ from erp_web.product_model import (
 from erp_web.services.desktop_connection_service import call_desktop, DesktopUnavailable
 from erp_web.services.desktop_collection_service import apply_uploaded_assets
 from .source_collect_1688_api import collect_1688_product_via_api
+from erp_shared.collection import VERIFICATION_REASONS
 from .source_collect_verification import same_collection_page, waiting_verification_result
 from .source_sites import parse_source_snapshot, source_site
 from .collect_helpers import (
@@ -169,6 +170,11 @@ def collect_browser_url(
             detect_slider=True,
             expected_product_url=product_url,
         )
+        if snapshot.get("verification_reason") in VERIFICATION_REASONS:
+            error_reason = snapshot["verification_reason"]
+            page_diagnostics["is_login_page"] = error_reason == "LOGIN"
+            page_diagnostics["is_captcha_page"] = error_reason in {"CAPTCHA", "SLIDER", "ROBOT"}
+            page_diagnostics["is_security_check_page"] = error_reason != "LOGIN"
         diagnostics.update(page_diagnostics)
         waiting = waiting_verification_result(snapshot, product_url or final_url, platform_detected, diagnostics, error_reason)
         if waiting:
