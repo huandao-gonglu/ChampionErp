@@ -7,7 +7,7 @@ import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generat
 
 const account = vi.hoisted(() => ({ isAdmin: false }))
 vi.mock('@/stores/account', () => ({ useAccountStore: () => account }))
-vi.mock('@/api/alibabaAuthorization', () => ({ bindOneBoundBuyerToken: vi.fn(), completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
+vi.mock('@/api/alibabaAuthorization', () => ({ bindOneBoundBuyerToken: vi.fn(), bindSelfUseToken: vi.fn(), completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
 vi.mock('@/utils/desktop', () => ({ hasLocalOperations: vi.fn() }))
 enableAutoUnmount(afterEach)
 const status: BackendAlibabaAuthorizationStatus = {
@@ -64,6 +64,20 @@ describe('1688 浏览器授权', () => {
     const wrapper = await panel('alibaba')
     expect(wrapper.text()).toContain('企业自用应用 · 1688 授权')
     expect(wrapper.text()).not.toContain('请先在 1688 订购本服务')
+  })
+
+  it('管理员在企业自用卡验证 Token，提交成功后清空输入', async () => {
+    account.isAdmin = true
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'alibaba' })
+    vi.mocked(api.bindSelfUseToken).mockResolvedValue({ ...status, application_type: 'alibaba', authorized: true })
+    const wrapper = await panel('alibaba')
+    const input = wrapper.get('#alibaba-buyer-token')
+    await input.setValue('self-use-token')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+    expect(api.bindSelfUseToken).toHaveBeenCalledWith('self-use-token')
+    expect(api.completeAlibabaAuthorization).not.toHaveBeenCalled()
+    expect((input.element as HTMLInputElement).value).toBe('')
   })
 
   it('服务器完成回调后自动更新账号', async () => {

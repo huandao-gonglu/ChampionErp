@@ -175,6 +175,64 @@ def test_wrong_member_refresh_is_rejected_without_replacing_token(service, monke
     assert service.store.alibaba_credentials()['authorization'] == before
 
 
+@pytest.fixture
+def self_use(service, monkeypatch):
+    monkeypatch.setenv('ERP_ALIBABA_APP_KEY', '12345')
+    monkeypatch.setenv('ERP_ALIBABA_APP_SECRET', 'self-use-secret')
+    monkeypatch.setenv('ERP_ALIBABA_REDIRECT_URI', 'http://localhost:5050/auth/alibaba/callback')
+    return service
+
+
+@pytest.mark.parametrize('expires', ['0', -1])
+def test_self_use_callback_verifies_actual_token_when_lifetime_is_nonpositive(self_use, monkeypatch, expires):
+    monkeypatch.setattr(self_use, '_token', lambda *args: token(expires_in=expires))
+    calls = []
+    def verify(client, method, values):
+        calls.append((method, client.provider.access_token))
+        return {'success': True, 'result': {'receiveAddressItems': []}}
+    monkeypatch.setattr(oauth.AlibabaSelfPurchaseClient, 'call', verify)
+    callback = 'http://localhost:5050/auth/alibaba/callback?' + urlencode({'state': start_state(self_use), 'code': 'once'})
+    status = self_use.complete_from_url(callback, 'alibaba')
+    assert calls == [(oauth.ADDRESSES, 'buyer-token')]
+    assert status['authorized'] and status['member_id'] == 'buyer-a' and status['expires_at'] == 0
+    assert self_use.runtime_config()['access_token'] == 'buyer-token'
+    with pytest.raises(ValueError, match='失效或不匹配'):
+        self_use.complete_from_url(callback, 'alibaba')
+
+
+def test_manual_self_use_token_checks_current_credential_and_preserves_grant_on_failure(self_use, monkeypatch):
+    monkeypatch.setattr(self_use, '_token', lambda *args: token())
+    self_use.callback('once', start_state(self_use))
+    original = self_use.store.alibaba_credentials()['authorization']
+    def verify(client, method, values):
+        assert method == oauth.ADDRESSES
+        if client.provider.access_token == 'bad':
+            raise ValueError('1688 拒绝访问')
+        return {'result': {'receiveAddressItems': []}}
+    monkeypatch.setattr(oauth.AlibabaSelfPurchaseClient, 'call', verify)
+    with pytest.raises(ValueError, match='拒绝访问'):
+        self_use.bind_self_use_token('bad')
+    monkeypatch.setattr(self_use, '_token', lambda *args: token(access_token='bad', expires_in='-1'))
+    with pytest.raises(ValueError, match='-1 秒.*拒绝访问'):
+        self_use.callback('new-code', start_state(self_use))
+    assert self_use.store.alibaba_credentials()['authorization'] == original
+    status = self_use.bind_self_use_token('  permanent-token  ')
+    assert status['authorized'] and not status['member_id'] and status['attempt'] == 'idle'
+    assert not status['refreshable'] and status['expires_at'] == 0
+    assert 'permanent-token' not in json.dumps(status)
+    cfg = self_use.runtime_config()
+    assert cfg['access_token'] == 'permanent-token' and cfg['account_scope'] != original['account_scope']
+
+
+def test_crossborder_expired_grant_never_uses_self_use_verification(service, monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setattr(service, '_token', lambda *args: token(expires_in=0))
+    monkeypatch.setattr(service, '_verify_self_use_token', lambda *args: pytest.fail('不应验证企业自用 Token'))
+    with pytest.raises(ValueError, match='0 秒'):
+        service.callback('once', start_state(service))
+    assert not service.status()['authorized']
+
+
 def test_token_exchange_uses_managed_fixed_gateway_and_no_redirects(service, monkeypatch):
     configure(monkeypatch)
     calls = []
@@ -199,6 +257,40 @@ def test_only_oauth_document_navigation_bypasses_cross_site_rejection():
         with pytest.raises(RequestValidationError): validate_request_metadata(handler)
     handler.path = '/auth/alibaba/callback'; handler.command = 'POST'
     with pytest.raises(RequestValidationError): validate_request_metadata(handler)
+
+
+def test_manual_self_use_binding_http_is_admin_only(self_use, monkeypatch):
+    from http.server import ThreadingHTTPServer
+    from threading import Thread
+    import requests
+    from erp_web.http_handler import Handler
+    from erp_web.schemas.accounts import SESSION_COOKIE
+    from tests.account_test_utils import authenticated_headers
+
+    calls = []
+    def read_addresses(client, method, values):
+        calls.append((method, client.provider.access_token))
+        return {'result': {'receiveAddressItems': []}}
+    monkeypatch.setattr(oauth.AlibabaSelfPurchaseClient, 'call', read_addresses)
+    with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+        admin_headers = authenticated_headers(server)
+        accounts = server.account_runtime.store
+        user = accounts.create_user('buyer@example.test', '采购员', 'test-hash')
+        cookie, session = accounts.create_session(user['id'], user['password_hash'])
+        endpoint = f'http://127.0.0.1:{server.server_port}/api/alibaba/authorization/self-use-token'
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            body = {'access_token': 'private-token'}
+            headers = {'Cookie': f'{SESSION_COOKIE}={cookie}', 'X-CSRF-Token': session.csrf_token}
+            assert requests.post(endpoint, headers=headers, json=body, timeout=3).status_code == 403
+            assert requests.post(endpoint, headers=admin_headers, json={}, timeout=3).status_code == 400
+            response = requests.post(endpoint, headers=admin_headers, json=body, timeout=3)
+            assert response.status_code == 200 and response.json()['authorized']
+            assert 'private-token' not in response.text and calls == [(oauth.ADDRESSES, 'private-token')]
+        finally:
+            server.shutdown()
+            thread.join(timeout=3)
 
 
 def test_http_callback_completes_once_and_never_returns_credentials(service, monkeypatch):

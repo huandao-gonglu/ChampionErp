@@ -15,7 +15,7 @@ function allowedNavigation(kind, address) {
   } catch { return false }
 }
 
-function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, account }) {
+function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, account, layoutVerificationWindow }) {
   let generation = 0
   const pages = new Map()
   const stores = new Set()
@@ -132,8 +132,11 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
         const [width, height] = win.getContentSize()
         page.view.setBounds({ x: 0, y: 0, width, height })
       }
-      resize()
-      win.on('resize', resize)
+      if (layoutVerificationWindow) layoutVerificationWindow(win, page.view)
+      else {
+        resize()
+        win.on('resize', resize)
+      }
       win.on('closed', () => { page.window = null; close(page) })
       page.contents.on('did-navigate', (_event, url) => {
         if (!win.isDestroyed()) win.setTitle('登录与验证 · ' + new URL(url).origin)

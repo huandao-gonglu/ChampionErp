@@ -24,7 +24,14 @@ def _onebound(handler):
     handler.send_json(payload, status)
 
 
+def _self_use_token(handler):
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    payload, status = authorization_payload('self-use-token', body)
+    handler.send_json(payload, status)
+
+
 POST_HANDLERS = {
+    '/api/alibaba/authorization/self-use-token': _self_use_token,
     '/api/alibaba/authorization/onebound': _onebound,
     '/api/alibaba/authorization/complete': _complete,
     '/api/alibaba/authorization/start': _start,

@@ -358,6 +358,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/alibaba/crossborder/authorization/start": _EMPTY,
     "/api/alibaba/authorization/start": RequestContract({"provider": ALIBABA_PROVIDER}),
     "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING, "provider": ALIBABA_PROVIDER}, required=("callback_url",)),
+    "/api/alibaba/authorization/self-use-token": RequestContract({"access_token": STRING}, required=("access_token",)),
     "/api/alibaba/authorization/onebound": RequestContract({"access_token": STRING, "session": STRING}, required_any=(("access_token", "session"),)),
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(

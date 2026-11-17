@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt, OneBoundAuthorizationRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
-from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, onebound_scope
+from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, legacy_account_scope, onebound_scope
 from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ADDRESSES
 from erp_web.services.alibaba_purchase_address import saved_addresses
 from erp_web.services.external_request_context import credential_fingerprint, request_context
@@ -192,6 +192,34 @@ class AlibabaAuthorizationService:
             return {'timeout_seconds': timeout, **application, 'access_token': auth.get('access_token', ''),
                     'member_id': auth.get('member_id', ''), 'account_scope': auth.get('account_scope', '')}
 
+    @staticmethod
+    def _verify_self_use_token(application, token):
+        # 该买家接口要求应用签名和个人 Token；仅校验回执形状，空地址簿也代表调用成功。
+        client = AlibabaSelfPurchaseClient({**application, 'access_token': token})
+        result = client.call(ADDRESSES, {}).get('result')
+        if not isinstance(result, dict) or not isinstance(result.get('receiveAddressItems'), list):
+            raise ValueError('1688 未返回有效的买家授权验证结果')
+
+    def bind_self_use_token(self, token):
+        token = token.strip() if isinstance(token, str) else ''
+        if not token or len(token) > 4096 or any(c.isspace() for c in token) or '://' in token:
+            raise ValueError('请粘贴企业自用应用「授权配置」中的已授权 Token')
+        application = self.store.alibaba_application('alibaba')
+        if not _configured(application):
+            raise ValueError('请先配置 1688 企业自用应用')
+        snapshot = self.store.alibaba_credentials('alibaba')
+        self._verify_self_use_token(application, token)
+        previous = _authorization(snapshot, application)
+        # 平台的永久 Token 未附带账号资料；仅对同一应用的同一凭据保留已核实的账号身份。
+        auth = {'access_token': token, 'app_key': application['app_key'],
+                'application_fingerprint': application_fingerprint(application),
+                'account_scope': legacy_account_scope({**application, 'access_token': token})}
+        if previous.get('access_token') == token:
+            auth.update({k: previous[k] for k in ('account_scope', 'member_id', 'account_name') if previous.get(k)})
+        self.store.update_alibaba_credentials({'authorization': auth, 'pending': {}}, expected=snapshot,
+                                             application=application, provider='alibaba')
+        return self.status('alibaba')
+
     def bind_onebound(self, body):
         try:
             request = OneBoundAuthorizationRequest.model_validate(body)
@@ -212,8 +240,7 @@ class AlibabaAuthorizationService:
         self.store.update_alibaba_credentials({'authorization': auth, 'pending': {}}, expected=snapshot, application=application, provider='onebound')
         return self.status('onebound')
 
-    @staticmethod
-    def _parse_token(application, payload, previous=None):
+    def _parse_token(self, application, payload, previous=None):
         previous = previous or {}
         token = payload.get('access_token')
         member = str(payload.get('memberId') or payload.get('member_id') or previous.get('member_id') or '')
@@ -221,16 +248,25 @@ class AlibabaAuthorizationService:
             raise ValueError('1688 未返回完整的账号授权，请重新连接账号')
         if previous.get('member_id') and member != previous['member_id']:
             raise ValueError('1688 刷新回执的账号不一致，已停止使用该回执')
+        raw_expires = payload.get('expires_in')
+        if isinstance(raw_expires, bool) or not isinstance(raw_expires, (str, int)):
+            raise ValueError('1688 未返回有效授权期限，请重新连接账号')
         try:
-            expires = int(payload['expires_in'])
-        except (KeyError, ValueError, TypeError):
+            expires = int(raw_expires)
+        except ValueError:
             raise ValueError('1688 未返回有效授权期限，请重新连接账号') from None
         if expires <= 0:
-            raise ValueError('1688 授权已失效，请重新连接账号')
+            if application.get('application_type') != 'alibaba':
+                raise ValueError(f'1688 返回的授权有效期为 {expires} 秒，请重新连接账号')
+            try:
+                self._verify_self_use_token(application, token)
+            except (ValueError, ExternalRequestBlocked) as exc:
+                raise ValueError(f'1688 返回的授权有效期为 {expires} 秒，凭据验证失败：{exc}。'
+                                 '可使用企业自用应用「授权配置」中的已授权 Token 连接。') from None
         refresh = payload.get('refresh_token') or previous.get('refresh_token', '')
         if not isinstance(refresh, str):
             raise ValueError('1688 返回的刷新凭据无效，请重新连接账号')
-        return {'access_token': token, 'refresh_token': refresh, 'expires_at': time.time() + expires,
+        return {'access_token': token, 'refresh_token': refresh, 'expires_at': time.time() + expires if expires > 0 else 0,
                 'refresh_token_timeout': payload.get('refresh_token_timeout', previous.get('refresh_token_timeout', '')),
                 'account_name': str(payload.get('resource_owner') or previous.get('account_name') or member),
                 'member_id': member, 'app_key': application['app_key'],
