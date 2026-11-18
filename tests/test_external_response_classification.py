@@ -52,10 +52,9 @@ def test_unshipped_orders_pass_real_client_and_manager_without_tripping_circuit(
 
     # 只替换最底层传输，保留签名、响应解析、审计和熔断判断的完整调用链。
     monkeypatch.setattr(urllib.request, "build_opener", lambda *args: SimpleNamespace(open=transport))
-    client = alibaba.AlibabaApiClient({"app_key": "123", "app_secret": "fake", "access_token": "fake"})
+    client = alibaba.alibaba_provider({"app_key": "123", "app_secret": "fake", "access_token": "fake"})
     for _ in range(6):
-        result = client.query(alibaba.LOGISTICS_INFO, "12345")
-        assert result["result"] == [] and result["errorCode"] == "500_2"
+        assert client.get_shipments("12345") == []
     store = get_context().external_requests.store
     assert len(calls) == 6 and store.blocks() == []
     audit = store.query(platform=PLATFORM)

@@ -140,6 +140,9 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         ("POST", "/api/alibaba/authorization/start"), ("POST", "/api/alibaba/authorization/complete"),
         ("POST", "/api/alibaba/authorization/onebound"), ("POST", "/api/alibaba/authorization/self-use-token"),
     )),
+    AiCapabilityCoverageEntry(method="GET", path="/api/admin/alibaba/onebound/shop-bindings",
+        business_domain="授权基础设施", disposition="excluded",
+        reason="万邦企业授权店铺目录仅供管理员查询。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/publish-bus/retry", business_domain="商品发布", disposition="internal_only",
         reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="禁售类目设置", disposition="internal_only",
@@ -656,9 +659,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="capability",
         capability_names=("claim_products",),
     ),
+    # 管理入口只把新增动作开放给 AI。编辑、移除及旧清单导入仍由页面执行。
     AiCapabilityCoverageEntry(
-        method="POST", path="/api/collection-links/manage", business_domain="采集与认领", disposition="internal_only",
-        reason="采集页面维护个人 URL 清单，读取通过共用业务目录。",
+        method="POST", path="/api/collection-links/manage", business_domain="采集与认领", disposition="capability",
+        capability_names=("collection_links_add",),
     ),
     AiCapabilityCoverageEntry(
         method="POST", path="/api/collection-links/run", business_domain="采集与认领", disposition="internal_only",

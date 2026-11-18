@@ -3,10 +3,12 @@ from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 import pytest
 
+from tests.alibaba_test_provider import AlibabaFixtureProvider
+
 from erp_web.schemas.orders import OrderLine
 from erp_web.schemas.order_procurement import SalesSkuBinding, order_line_key
 from erp_web.services.alibaba_api_client import AlibabaApiRejected, ORDER_DETAIL, LOGISTICS_INFO
-from erp_web.services.alibaba_self_purchase_client import PREVIEW, CREATE, ORDER_LIST
+from erp_web.services.alibaba_api_client import PREVIEW, CREATE, ORDER_LIST
 from erp_web.services.alibaba_self_purchase_service import account_scope
 from erp_web.stores.alibaba_self_purchase_store import AlibabaSelfPurchaseStore
 from tests.test_alibaba_self_purchase import setup_purchase, domain, preview_payload, preview, create, NUMBER
@@ -33,7 +35,7 @@ def batch(setup_purchase):
         binding = original.model_copy(update={'id': '', 'seller_sku': f'SALE-{index}', 'remote_id': f'SALE-{index}', 'sku_id': f'internal-{index}', 'source': source})
         service.procurement.store.add_bindings([binding])
         service.procurement.select_source({'order_id': order.identity, 'line_key': keys[index-1], 'revision': 0, 'candidate_id': binding.identity})
-    class Client:
+    class Client(AlibabaFixtureProvider):
         calls = []
         fail_offer = ''
         reject_offer = ''
@@ -225,7 +227,7 @@ def test_multi_sku_waybills_backfill_only_corresponding_lines(batch, shared_wayb
     created = create(service, record)
     store = FulfillmentStore(service.procurement.store.orders)
     fulfillment = FulfillmentService(store, Bus(store), service.procurement.accounts_provider, service.procurement.detail, start_worker=False)
-    class LogisticsClient:
+    class LogisticsClient(AlibabaFixtureProvider):
         calls = []
         def __init__(self, config): pass
         def query(self, api, number):
@@ -366,7 +368,7 @@ def grouped_sync(batch):
     fulfillment = FulfillmentService(store, Bus(store), service.procurement.accounts_provider,
                                      service.procurement.detail, start_worker=False)
 
-    class Query:
+    class Query(AlibabaFixtureProvider):
         calls = []
         status = 'waitbuyerpay'
         callback = None

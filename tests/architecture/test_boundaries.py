@@ -226,6 +226,14 @@ def test_alibaba_business_entries_use_authorization_owner() -> None:
     assert set(_PROVIDERS) == ALIBABA_APPLICATION_TYPES
     assert all(issubclass(provider, AlibabaProvider) for provider in _PROVIDERS.values())
     for path in (
+        "erp_web/services/alibaba_self_purchase_service.py",
+        "erp_web/services/alibaba_purchase_query_service.py",
+        "erp_web/services/alibaba_purchase_sync_service.py",
+    ):
+        tree = parse_python(path)
+        assert not any(isinstance(node, ast.Call) and dotted_name(node.func) in {"client.call", "client.query", "client._request"}
+                       for node in ast.walk(tree))
+    for path in (
         "erp_web/facades/alibaba_self_purchase_facade.py",
         "erp_web/facades/order_procurement_facade.py",
         "erp_web/facades/order_notification_facade.py",

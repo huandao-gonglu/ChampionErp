@@ -10,7 +10,7 @@ import pytest
 
 from erp_web.services import alibaba_api_client as api
 from erp_web.services.alibaba_purchase_payment import payment_agreement, payment_receipt
-from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, PAY, PAY_STATUS
+from erp_web.services.alibaba_api_client import alibaba_provider, PAY, PAY_STATUS
 from erp_web.services.alibaba_self_purchase_service import account_scope
 from erp_web.stores.alibaba_self_purchase_store import AlibabaSelfPurchaseStore
 from tests.test_alibaba_self_purchase import setup_purchase, domain, preview, create, NUMBER, CONFIG
@@ -195,9 +195,9 @@ def test_transport_signs_payment_as_non_retrying_write(monkeypatch, channel):
         calls.append((req, kwargs))
         return io.BytesIO(b'{"success":true,"result":{}}')
     monkeypatch.setattr(api, 'managed_urlopen', send)
-    client = AlibabaSelfPurchaseClient(CONFIG)
+    client = alibaba_provider(CONFIG)
     value = {'orderId': int(NUMBER), 'payChannel': channel, 'payAmount': 1580, 'opRequestId': 'fixed'}
-    client.call(PAY, {'tradeWithholdPreparePayParam': value})
+    client._request(PAY, {'tradeWithholdPreparePayParam': value}, semantics="write")
     request, kwargs = calls[0]
     assert kwargs['request_context'].semantics == 'write'
     assert kwargs['request_context'].max_attempts == 1
@@ -205,7 +205,7 @@ def test_transport_signs_payment_as_non_retrying_write(monkeypatch, channel):
     form = parse_qs(request.data.decode())
     assert json.loads(form['tradeWithholdPreparePayParam'][0]) == value
     assert form['_aop_signature']
-    client.call(PAY_STATUS, {})
+    client._request(PAY_STATUS, {})
     assert calls[1][1]['request_context'].semantics == 'read'
 
 
@@ -236,24 +236,16 @@ def test_multi_sku_group_pays_once_for_the_whole_order(batch, channel):
     service.pay(body)
     assert len([n for n, _ in client.calls if n == PAY]) == 1
 
-def test_unconfirmed_vendor_write_is_not_replayed_by_purchase_service(payment, monkeypatch):
+def test_unsupported_vendor_payment_is_recorded_as_rejected(payment, monkeypatch):
     from erp_web.services import onebound_api_transport as transport
     config = {"application_type": "onebound", "api_key": "key", "api_secret": "secret", "access_token": "session"}
     service, client, _, body = payment
-    service.client_factory = lambda config: client
-    original = client.call
-    calls = []
-    def call(api, values):
-        if api != PAY:
-            return original(api, values)
-        calls.append(values)
-        return AlibabaSelfPurchaseClient(config).call(api, values)
-    client.call = call
-    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: io.BytesIO(b'{"error_code":"4017","error":"timeout"}'))
+    client.pay_order = alibaba_provider(config).pay_order
+    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: pytest.fail("不应发送万邦付款请求"))
     first = service.pay(body)['record']
-    assert first['payment']['state'] == 'unknown'
+    assert first['payment']['state'] == 'rejected'
+    assert '万邦免密支付' in first['payment']['message']
     assert service.pay(body)['record']['payment'] == first['payment']
-    assert len(calls) == 1
 
 
 def test_old_scope_and_unknown_payment_survive_buyer_merge_and_restart(payment):

@@ -5,6 +5,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request
 
+from erp_web.schemas.alibaba_authorization import OneBoundShopBindingPage
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
 
@@ -18,9 +19,6 @@ class OneBoundApiRejected(OneBoundApiError):
 
 
 def request_onebound(config, api, values, *, namespace, semantics, timeout):
-    # 万邦文档使用支付宝支付链接接口，参数名与官方组合收银台不同。
-    if api == 'alibaba.trade.grouppay.url.get':
-        api, values = 'alibaba.alipay.url.get', {'orderIdList': values['orderIds']}
     token = config.get('access_token')
     if not token:
         raise OneBoundApiRejected('请先连接当前方案的 1688 采购账号')
@@ -28,22 +26,35 @@ def request_onebound(config, api, values, *, namespace, semantics, timeout):
     arguments = dict(values)
     arguments.pop('access_token', None)
     legacy_session = config.get('credential_type') == 'session'
-    if not legacy_session:
-        arguments['access_token'] = token
     params = {'key': config['api_key'], 'secret': config['api_secret'],
               'method': namespace + '/' + api,
-              '_o_args': json.dumps(arguments, ensure_ascii=False, separators=(',', ':')),
               'cache': 'no', 'result_type': 'json', 'lang': 'zh-CN'}
     if legacy_session:
         params['session'] = token
-    url = 'https://api-gw.onebound.cn/1688/custom?' + urlencode(params)
+    elif api in {'alibaba.account.basic', 'alibaba.trade.getBuyerOrderList'}:
+        # 这两个接口的实测协议用网关外层的买家 Token。
+        params['access_token'] = token
+    else:
+        arguments['access_token'] = token
+    if arguments or api != 'alibaba.trade.getBuyerOrderList':
+        params['_o_args'] = json.dumps(arguments, ensure_ascii=False, separators=(',', ':'))
+    payload = _request_gateway(config, '/1688/custom', params, interface=namespace + '/' + api,
+                               credential=token, semantics=semantics, timeout=timeout)
+    _validate_gateway_result(payload)
+    result = payload.get('response')
+    if not isinstance(result, (dict, list)):
+        raise OneBoundApiError('万邦未返回有效的 1688 接口回执')
+    return normalize_onebound_response(api, result)
+
+
+def _request_gateway(config, path, params, *, interface, credential, semantics, timeout):
+    url = 'https://api-gw.onebound.cn' + path + '?' + urlencode(params)
     request = Request(url, method='GET', headers={'Accept': 'application/json'})
     # 万邦示例用 GET 执行写入，必须显式声明写语义，禁止自动重试。
     context = request_context(url, method='GET', timeout=timeout, platform='onebound',
                               account_id='key:' + credential_fingerprint(config['api_key']),
                               source='万邦1688接口', semantics=semantics)
-    context = replace(context, interface=namespace + '/' + api,
-                      credential_id=credential_fingerprint(token))
+    context = replace(context, interface=interface, credential_id=credential_fingerprint(credential))
     try:
         with managed_urlopen(request, timeout=timeout, request_context=context, follow_redirects=False) as response:
             payload = json.loads(response.read())
@@ -54,16 +65,41 @@ def request_onebound(config, api, values, *, namespace, semantics, timeout):
         raise OneBoundApiError('万邦未返回有效响应，请查询原请求，勿重复下单或支付') from None
     if not isinstance(payload, dict):
         raise OneBoundApiError('万邦接口响应格式无效')
+    return payload
+
+
+def _validate_gateway_result(payload):
     code = str(payload.get('error_code') or '')
     if payload.get('error') or code not in {'', '0', '0000'}:
         # 网络、超时、服务端错误不能证明底层写入未发生。
         if code in {'4003', '4004', '4005', '4006', '4007', '4008', '4010', '4012', '4013', '4014', '4015', '4016'}:
             raise OneBoundApiRejected('万邦拒绝调用，请核对接入配置、买家授权、接口权限及可用额度')
         raise OneBoundApiError('万邦未确认接口结果，请查询原请求，勿重复下单或支付')
-    result = payload.get('response')
-    if not isinstance(result, (dict, list)):
-        raise OneBoundApiError('万邦未返回有效的 1688 接口回执')
-    return normalize_onebound_response(api, result)
+
+
+def list_onebound_shop_bindings(config, *, nick: str, page: int) -> OneBoundShopBindingPage:
+    """读取企业授权店铺目录，投影可展示的字段。"""
+    params = {'key': config['api_key'], 'secret': config['api_secret'], 'nick': nick, 'page': page,
+              'cache': 'no', 'result_type': 'json', 'lang': 'zh-CN'}
+    payload = _request_gateway(config, '/sys/shop_bind_list/', params, interface='sys/shop_bind_list',
+                               credential=config['api_secret'], semantics='read', timeout=20)
+    if str(payload.get('error_code')) == '2000':
+        return {'ok': True, 'items': [], 'page': page, 'total': 0, 'page_count': 0}
+    _validate_gateway_result(payload)
+    result = payload.get('items')
+    try:
+        rows = result['item']
+        page, total, pages = (int(result[key]) for key in ('page', 'total_results', 'pagecount'))
+    except (KeyError, TypeError, ValueError):
+        raise OneBoundApiError('万邦未返回有效的授权店铺分页') from None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows) or page < 1 or total < len(rows) or pages < 0:
+        raise OneBoundApiError('万邦未返回有效的授权店铺分页')
+    public_fields = {'id': 'shop_bind_id', 'nick': 'nick', 'status': 'status', 'expires_at': 'exp_time'}
+    shops = [
+        {field: str(row[key]) if type(row.get(key)) in {str, int} else '' for field, key in public_fields.items()}
+        for row in rows
+    ]
+    return {'ok': True, 'items': shops, 'page': page, 'total': total, 'page_count': pages}
 
 
 def normalize_onebound_response(api, value):

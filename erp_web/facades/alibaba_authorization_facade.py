@@ -1,4 +1,4 @@
-"""1688 授权的 HTTP 装配；只返回状态或一次性的官方登录链接。"""
+"""1688 授权的 HTTP 装配；转发各授权操作的结构化结果。"""
 from erp_web.context import get_context
 from erp_web.schemas.managed_settings import ALIBABA_APPLICATION_TYPES
 from erp_web.schemas.external_requests import ExternalRequestBlocked
@@ -12,6 +12,8 @@ def authorization_payload(action, body=None):
     try:
         if provider is not None and provider not in ALIBABA_APPLICATION_TYPES:
             raise ValueError('不支持的 1688 接入方案')
+        if action == 'onebound-shops':
+            return service.list_onebound_shops(nick=body['nick'], page=body['page']), 200
         if action == 'status':
             return service.status(provider), 200
         if action == 'start':

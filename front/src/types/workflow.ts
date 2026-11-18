@@ -8,6 +8,8 @@ export {
   type BackendDesktopCall,
   type BackendDesktopReply,
   type BackendAlibabaAuthorizationStatus,
+  type BackendOneBoundShopBinding,
+  type BackendOneBoundShopBindingPage,
   type BackendForbiddenCategory,
   type BackendForbiddenCategories,
   type BackendPublicEnterpriseApplication,

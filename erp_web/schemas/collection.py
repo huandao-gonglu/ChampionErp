@@ -1,7 +1,7 @@
 """采集验证与商品推送的边界契约，不包含凭据或浏览器连接地址。"""
 from typing import Literal, NotRequired, TypedDict
 
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
 
 
 class DraftClaimTarget(TypedDict):
@@ -54,6 +54,14 @@ class LegacyCollectionLink(CollectionLinkInput):
     errorCode: str = ''
     nextAction: str = ''
     verification: dict[str, str] | None = None
+
+
+class CollectionLinksAddResult(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True)
+
+    added: int = Field(ge=0, description='本次新加入待采集列表的链接数。')
+    duplicates: int = Field(ge=0, description='跳过的重复链接数，已有记录保留原方式和状态。')
+    urls: tuple[str, ...] = Field(description='规范化后的去重地址，包含已存在的链接。')
 
 
 class CollectionLinkQuery(BaseModel):

@@ -1,8 +1,7 @@
 """1688 免密支付官方回执解析；不猜测失败原因，不切换支付渠道。"""
-from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
-from erp_web.services.alibaba_api_client import AlibabaApiError
+from erp_web.services.alibaba_api_errors import AlibabaApiError
 
 
 def payment_label(channel):
@@ -49,13 +48,10 @@ def payment_agreement(payload, channel):
                 message=f'{label}免密支付已开通' if signed and bound else f'请先在 1688 完成{label}免密签约及绑定，再刷新状态')
 
 
-def check_payment_amount(payload, expected_fen):
-    # buyerView.totalAmount 单位元；preparePay.payAmount 单位分。
-    try:
-        value = Decimal(str(payload['result']['baseInfo']['totalAmount'])) * 100
-    except (KeyError, TypeError, InvalidOperation):
-        raise AlibabaApiError('订单未返回有效应付金额，不能发起支付') from None
-    if not value.is_finite() or value != expected_fen:
+def check_payment_amount(amount_fen, expected_fen):
+    if amount_fen is None:
+        raise AlibabaApiError('订单未返回有效应付金额，不能发起支付')
+    if not amount_fen.is_finite() or amount_fen != expected_fen:
         raise AlibabaApiError('1688 订单应付金额与已确认预览不同，请在 1688 核对后处理')
 
 

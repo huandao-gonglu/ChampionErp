@@ -7,7 +7,7 @@ import unicodedata
 from pydantic import ValidationError
 
 from erp_web.schemas.alibaba_self_purchase import PurchaseAddress
-from erp_web.services.alibaba_api_client import AlibabaApiError
+from erp_web.services.alibaba_api_errors import AlibabaApiError
 
 
 def address_text(address):

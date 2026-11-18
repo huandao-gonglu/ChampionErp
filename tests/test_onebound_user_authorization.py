@@ -3,7 +3,7 @@ import pytest
 
 from erp_web.context import get_context
 from erp_web.services import alibaba_api_client as official, onebound_api_transport as transport
-from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError
+from erp_web.services.alibaba_api_client import alibaba_provider, AlibabaApiError
 from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
 from erp_web.services.alibaba_credentials import application_fingerprint
 from tests.test_onebound_api import configure
@@ -61,14 +61,14 @@ def test_previously_saved_personal_onebound_credential_remains_readable():
 
 def test_business_client_requires_personal_credential_even_with_enterprise_key():
     with pytest.raises(AlibabaApiError, match='尚未连接'):
-        AlibabaApiClient({'application_type': 'onebound', 'api_key': 'vendor-key', 'api_secret': 'vendor-secret'})
+        alibaba_provider({'application_type': 'onebound', 'api_key': 'vendor-key', 'api_secret': 'vendor-secret'})
 
 
 @pytest.mark.parametrize('field', ['access_token', 'session'])
 def test_binding_and_switching_preserve_wire_credential(monkeypatch, field):
     import json
     from urllib.parse import parse_qs, urlsplit
-    from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ORDER_LIST
+    from erp_web.services.alibaba_api_client import alibaba_provider, ORDER_LIST
     from tests.test_onebound_api import response
 
     store = get_context().config
@@ -92,12 +92,14 @@ def test_binding_and_switching_preserve_wire_credential(monkeypatch, field):
     assert not service.status()['authorized']
     store._db.set_runtime_secret('enterprise_applications', 'active', saved)
 
-    client = AlibabaSelfPurchaseClient(service.runtime_config())
-    assert client.call(ORDER_LIST, {}) == {'result': [], 'totalRecord': 0}
+    client = alibaba_provider(service.runtime_config())
+    assert client.find_order_numbers('external-id') == []
     for params in sent:
         assert params['key'] == ['vendor-key'] and params['secret'] == ['vendor-secret']
         assert params.get('session') == ([token] if field == 'session' else None)
-        assert json.loads(params['_o_args'][0]) == ({'access_token': token} if field == 'access_token' else {})
+        order_list = params['method'] == ['com.alibaba.trade/' + ORDER_LIST]
+        assert params.get('access_token') == ([token] if field == 'access_token' and order_list else None)
+        assert json.loads(params['_o_args'][0]).get('access_token') == (token if field == 'access_token' and not order_list else None)
     assert len(sent) == 2
 
 

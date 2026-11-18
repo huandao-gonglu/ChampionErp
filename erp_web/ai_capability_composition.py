@@ -221,6 +221,7 @@ _WRITE_CAPABILITIES = frozenset(
         "draft_images_prepare",
         "upc_assign",
         "upc_import",
+        "collection_links_add",
         "source_collect",
         "collect_batch",
         "collect_1688",

@@ -17,15 +17,35 @@ vi.mock('@/utils/desktopHandoff', () => ({ launchDesktop: vi.fn() }))
 const browser: api.CollectionLink = { id: 'a', url: 'https://example.com/item', mode: 'browser', revision: 1, platform: 'generic', status: 'pending', updatedAt: '' }
 const apiRow: api.CollectionLink = { ...browser, id: 'b', url: 'https://detail.1688.com/offer/1.html', mode: 'api', revision: 4, platform: '1688', status: 'failed', title: '扳手', error: '资料不完整' }
 
+function mockViewport(initialWidth: number) {
+  let width = initialWidth
+  const queries: MediaQueryList[] = []
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => {
+    const minimum = Number(query.match(/min-width: (\d+)px/)?.[1] ?? Infinity)
+    const media = Object.defineProperties(new EventTarget(), {
+      matches: { get: () => width >= minimum },
+      media: { value: query },
+    }) as MediaQueryList
+    queries.push(media)
+    return media
+  })
+  return (nextWidth: number) => {
+    width = nextWidth
+    for (const media of queries) media.dispatchEvent(Object.assign(new Event('change'), { matches: media.matches }))
+  }
+}
+let resizeViewport: ReturnType<typeof mockViewport>
+
 beforeEach(() => {
   const values = new Map<string, string>()
   vi.stubGlobal('localStorage', { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) })
   vi.resetAllMocks()
+  resizeViewport = mockViewport(1920)
   setActivePinia(createPinia())
   vi.mocked(api.listLinks).mockResolvedValue([browser, apiRow])
   vi.mocked(api.linkHistory).mockResolvedValue([])
 })
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); setAccountIdentity('') })
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); setAccountIdentity('') })
 
 it('切换链接时结果与日志归属于所选 URL，API 直接执行，浏览器只交接指定版本', async () => {
   const store = useWorkflowCollectionStore()
@@ -45,6 +65,7 @@ it('切换链接时结果与日志归属于所选 URL，API 直接执行，浏�
     await wrapper.get('input[type=search]').setValue('example.com')
     expect(wrapper.get('aside').text()).not.toContain('资料不完整')
     expect(wrapper.get('aside a').attributes('href')).toBe(browser.url)
+    expect(btn('重试失败').attributes('disabled')).toBeDefined()
   } finally { wrapper.unmount() }
 })
 
@@ -103,10 +124,13 @@ it('添加与编辑等待写入回执，错误时保留输入；移除操作只�
     await flushPromises()
     const btn = (s: string) => wrapper.findAll('button').find(b => b.text().trim() === s)!
     await btn('添加链接').trigger('click')
+    expect(wrapper.get<HTMLButtonElement>('dialog header button[type=submit]').element.form).toBe(wrapper.get('form').element)
+    vi.mocked(api.manageLinks).mockRejectedValueOnce(new Error('第 2 个链接无效'))
     await wrapper.get('textarea').setValue(browser.url + '\njavascript:invalid')
     await wrapper.get('form').trigger('submit')
+    await flushPromises()
     expect(wrapper.get('dialog [role=alert]').text()).toContain('第 2 个链接无效')
-    expect(api.manageLinks).not.toHaveBeenCalled()
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(browser.url + '\njavascript:invalid')
     await wrapper.get('textarea').setValue(browser.url)
     vi.mocked(api.manageLinks).mockRejectedValueOnce(new Error('保存失败')).mockResolvedValueOnce({ added: 0, duplicates: 1 })
     await wrapper.get('form').trigger('submit')
@@ -126,5 +150,105 @@ it('添加与编辑等待写入回执，错误时保留输入；移除操作只�
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(api.manageLinks).toHaveBeenLastCalledWith({ action: 'remove', id: browser.id, revision: 1 })
+  } finally { wrapper.unmount() }
+})
+
+it.each([1366, 1440, 1920, 2560])('%i px 视口使用嵌入式详情，关闭时归还列表宽度', async width => {
+  resizeViewport(width)
+  const wrapper = mount(CollectView, { props: { form: createDefaultCollectForm(), loading: false, error: '' } })
+  try {
+    await flushPromises()
+    expect(wrapper.get('.collection-panes').classes()).toContain('collection-panes--split')
+    expect(wrapper.get('[aria-label="采集链接列表"]').isVisible()).toBe(true)
+    expect(wrapper.get('[aria-label="链接详情"]').isVisible()).toBe(true)
+    expect(wrapper.get('header').text()).toContain('开始待采集')
+    await wrapper.get('[aria-label="关闭详情"]').trigger('click')
+    expect(wrapper.get('.collection-panes').classes()).not.toContain('collection-panes--split')
+    expect(wrapper.find('aside').exists()).toBe(false)
+  } finally { wrapper.unmount() }
+})
+
+it('窄窗口返回列表时恢复筛选、排序、勾选、当前条目和滚动', async () => {
+  resizeViewport(1279)
+  const first = { ...apiRow, title: 'B 扳手' }
+  const second = { ...apiRow, id: 'c', url: 'https://detail.1688.com/offer/2.html', title: 'A 积木', error: '' }
+  vi.mocked(api.listLinks).mockResolvedValue([browser, first, second])
+  const run = vi.spyOn(useWorkflowCollectionStore(), 'runLinks').mockResolvedValue(undefined)
+  const wrapper = mount(CollectView, { attachTo: document.body, props: { form: createDefaultCollectForm(), loading: false, error: '' } })
+  const btn = (s: string) => wrapper.findAll('button').find(button => button.text().includes(s))!
+  const list = () => wrapper.get<HTMLElement>('[aria-label="采集链接列表"]')
+  const titles = () => list().findAll('tbody strong').map(item => item.text())
+  try {
+    await flushPromises()
+    expect(wrapper.find('aside').exists()).toBe(false)
+    await list().get('input[type=search]').setValue('detail.1688.com')
+    await btn('失败 2').trigger('click')
+    await wrapper.get('[aria-label="按商品名称或 URL 排序"]').trigger('click')
+    await list().get('input[aria-label="选择 B 扳手"]').setValue(true)
+    expect(titles()).toEqual(['A 积木', 'B 扳手'])
+    list().element.scrollTop = 240
+    await btn('A 积木').trigger('click')
+    await flushPromises()
+    expect(list().isVisible()).toBe(false)
+    expect(wrapper.get('aside a').attributes('href')).toBe(second.url)
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    expect(document.activeElement).toBe(btn('返回列表').element)
+
+    list().element.scrollTop = 0
+    await btn('返回列表').trigger('click')
+    await flushPromises()
+    expect(list().isVisible()).toBe(true)
+    expect(wrapper.find('aside').exists()).toBe(false)
+    expect(list().get<HTMLInputElement>('input[type=search]').element.value).toBe('detail.1688.com')
+    expect(btn('失败 2').attributes('aria-pressed')).toBe('true')
+    expect(list().get('th[aria-sort]').attributes('aria-sort')).toBe('ascending')
+    expect(titles()).toEqual(['A 积木', 'B 扳手'])
+    expect(list().get<HTMLInputElement>('input[aria-label="选择 B 扳手"]').element.checked).toBe(true)
+    expect(btn('A 积木').attributes('aria-pressed')).toBe('true')
+    expect(list().element.scrollTop).toBe(240)
+    expect(document.activeElement).toBe(btn('A 积木').element)
+    await btn('重试失败（1）').trigger('click')
+    expect(run).toHaveBeenCalledWith([{ id: first.id, revision: first.revision }])
+  } finally { wrapper.unmount() }
+})
+
+it('跨 1280 px 切换时保留用户打开的详情', async () => {
+  resizeViewport(1280)
+  const wrapper = mount(CollectView, { attachTo: document.body, props: { form: createDefaultCollectForm(), loading: false, error: '' } })
+  try {
+    await flushPromises()
+    expect(wrapper.get('.collection-panes').classes()).toContain('collection-panes--split')
+    await wrapper.findAll('[data-collect-row]')[1].trigger('click')
+    resizeViewport(1279)
+    await flushPromises()
+    expect(wrapper.get('[aria-label="采集链接列表"]').isVisible()).toBe(false)
+    expect(wrapper.get('aside a').attributes('href')).toBe(apiRow.url)
+    resizeViewport(1280)
+    await flushPromises()
+    expect(wrapper.get('.collection-panes').classes()).toContain('collection-panes--split')
+    expect(wrapper.get('[aria-label="采集链接列表"]').isVisible()).toBe(true)
+    expect(wrapper.get('aside a').attributes('href')).toBe(apiRow.url)
+  } finally { wrapper.unmount() }
+})
+
+it.each(['browser', 'api'] as const)('%s 模式添加时提交完整分享文案并显示转换后的待采集链接', async mode => {
+  const share = '【水壶】复制￥test￥，打开【手机阿里】查看：https\\://qr.1688.com/s/Example CZ1387'
+  const row = { ...apiRow, mode, url: 'https://detail.1688.com/offer/826923188477.html', title: undefined, status: 'pending' as const }
+  vi.mocked(api.listLinks).mockResolvedValueOnce([]).mockResolvedValue([row])
+  vi.mocked(api.manageLinks).mockResolvedValue({ added: 1, duplicates: 0 })
+  const wrapper = mount(CollectView, {
+    props: { form: createDefaultCollectForm(), loading: false, error: '' },
+    global: { stubs: { Teleport: true } },
+  })
+  try {
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text().trim() === '添加链接')!.trigger('click')
+    if (mode === 'api') await wrapper.get('dialog select').setValue('api')
+    await wrapper.get('textarea').setValue(share)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.manageLinks).toHaveBeenCalledWith({ action: 'add', items: [{ url: share, mode }] })
+    expect(wrapper.text()).toContain(row.url)
+    expect(api.runLink).not.toHaveBeenCalled()
   } finally { wrapper.unmount() }
 })

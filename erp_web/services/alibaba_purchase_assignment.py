@@ -19,25 +19,23 @@ def quantity(value):
         return None
 
 
-def parcel_quantity(rows, order_number):
+def parcel_quantity(shipments, order_number):
     """只累计该运单的明确商品件数；重复子项去重，归属或数量冲突时留空。"""
     counts = {}
-    for row_index, row in enumerate(rows):
-        goods = row.get("logisticsOrderGoods")
-        if not isinstance(goods, list) or not goods:
+    for row_index, shipment in enumerate(shipments):
+        logistics_id = shipment.parcel["logistics_id"]
+        if not shipment.items:
             return None
-        for item_index, item in enumerate(goods):
-            if not isinstance(item, dict):
+        for item_index, item in enumerate(shipment.items):
+            count = item.quantity
+            if count is None or (item.order_number and item.order_number != order_number):
                 return None
-            count = quantity(item.get("quantity"))
-            if count is None or (item.get("tradeOrderId") and str(item["tradeOrderId"]) != order_number):
+            if item.logistics_id and logistics_id and item.logistics_id != logistics_id:
                 return None
-            if item.get("logisticsId") and row.get("logisticsId") and str(item["logisticsId"]) != str(row["logisticsId"]):
-                return None
-            identity = (str(row.get("logisticsId") or ""), str(item.get("tradeOrderItemId") or ""))
+            identity = (logistics_id, item.item_id)
             if not all(identity):
                 # 多段回执没有稳定子项身份时，不能判断件数是否重复。
-                if len(rows) > 1:
+                if len(shipments) > 1:
                     return None
                 identity = (row_index, item_index)
             if identity in counts and counts[identity] != count:
@@ -46,12 +44,12 @@ def parcel_quantity(rows, order_number):
     return sum(counts.values()) if counts else None
 
 
-def propose_parcels(record, logistics, normalized):
+def propose_parcels(record, shipments, normalized):
     groups = defaultdict(list)
-    for row, parcel in zip(logistics["result"], normalized, strict=True):
+    for shipment, parcel in zip(shipments, normalized, strict=True):
         bill = parcel["tracking_number"].strip().upper()
         if bill:
-            groups[bill].append((row, parcel))
+            groups[bill].append((shipment, parcel))
     proposals = []
     for bill, group in groups.items():
         carriers = {parcel["company"] for _, parcel in group if parcel["company"]}

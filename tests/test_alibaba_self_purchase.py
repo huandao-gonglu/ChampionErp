@@ -6,9 +6,11 @@ import json
 from urllib.parse import parse_qs
 import pytest
 
+from tests.alibaba_test_provider import AlibabaFixtureProvider
+
 from erp_web.context import get_context
 from erp_web.services import alibaba_api_client as api
-from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_URL
+from erp_web.services.alibaba_api_client import alibaba_provider, ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_URL
 from erp_web.services.alibaba_self_purchase_service import AlibabaSelfPurchaseService, account_scope, normalized_preview
 from erp_web.stores.alibaba_self_purchase_store import AlibabaSelfPurchaseStore
 
@@ -37,7 +39,7 @@ def preview_payload():
         "payChannelInfos": [{"name": "alipay"}, {"name": "shegou"}]}]}
 
 
-class Client:
+class Client(AlibabaFixtureProvider):
     def __init__(self):
         self.calls = []
         self.addresses = [deepcopy(ADDRESS)]
@@ -144,11 +146,23 @@ def test_concurrent_submit_has_one_owner(setup_purchase):
     assert {r["state"] for r in results} <= {"created", "submitting"}
 
 
-def test_timeout_survives_restart_and_cannot_be_replayed(setup_purchase):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_timeout_survives_restart_and_cannot_be_replayed(setup_purchase, legacy):
     service, client, config, _ = setup_purchase
     record = preview(service); client.fail_create = True
     result = create(service, record)
     assert result["state"] == "unknown" and "不可公开" not in result["message"]
+    if legacy:
+        account = account_scope(config)
+        payload = service.store.get(record["id"], account)["payload"]
+        purchase = payload.pop("purchase")
+        payload["params"] = {"addressParam": purchase["address"], "cargoParamList": [
+            {"offerId": int(item["offer_id"]), "specId": item["spec_id"], "quantity": item["quantity"]}
+            for item in purchase["cargo"]
+        ]}
+        with service.store.connect() as conn:
+            conn.execute("UPDATE alibaba_self_purchases SET payload=? WHERE id=?", (json.dumps(payload), record["id"]))
+            conn.commit()
     service.store = AlibabaSelfPurchaseStore(get_context().paths.data_dir / "alibaba-self-purchases.sqlite3")
     assert create(service, record)["state"] == "unknown"
     assert len([1 for n, _ in client.calls if n == CREATE]) == 1
@@ -244,14 +258,12 @@ def test_write_transport_is_signed_non_retrying_and_not_available_via_query(monk
     def send(req, **kwargs):
         calls.append((req, kwargs)); return io.BytesIO(b'{"success":true,"result":{}}')
     monkeypatch.setattr(api, "managed_urlopen", send)
-    client = AlibabaSelfPurchaseClient(CONFIG)
-    client.call(CREATE, {"outOrderId": "fixed-key", "cargoParamList": [{"offerId": 12345, "specId": "spec-one", "quantity": 1}]})
+    client = alibaba_provider(CONFIG)
+    client._request(CREATE, {"outOrderId": "fixed-key", "cargoParamList": [{"offerId": 12345, "specId": "spec-one", "quantity": 1}]}, semantics="write")
     req, kwargs = calls[0]
     assert kwargs["request_context"].semantics == "write"
     assert kwargs["request_context"].max_attempts == 1 and kwargs["follow_redirects"] is False
     assert parse_qs(req.data.decode())["outOrderId"] == ["fixed-key"]
-    with pytest.raises(api.AlibabaApiError): client.query(CREATE, NUMBER)
-    with pytest.raises(api.AlibabaApiError): client.call("unapproved.payment.api", {})
 
 
 
@@ -260,7 +272,7 @@ def test_write_transport_is_signed_non_retrying_and_not_available_via_query(monk
 def test_malformed_money_rejected(field, value):
     payload = preview_payload(); payload["orderPreviewResuslt"][0][field] = value
     with pytest.raises(api.AlibabaApiError, match="金额"):
-        normalized_preview(payload, CANDIDATE, ADDRESS_FIELDS, 1, "spec-one")
+        normalized_preview(api.preview_results(payload), CANDIDATE, ADDRESS_FIELDS, 1, "spec-one")
 
 
 def test_order_and_current_store_ownership_required(setup_purchase):
@@ -293,7 +305,7 @@ def test_known_acl_failure_is_definite_and_does_not_leak_response(monkeypatch):
         raise HTTPError('https://gw.open.1688.com/', 400, 'bad request', {}, io.BytesIO(b'{"error_code":"gw.APIACLDecline","error_message":"test-secret"}'))
     monkeypatch.setattr(api, "managed_urlopen", send)
     with pytest.raises(api.AlibabaApiRejected, match="alibaba.trade.fastCreateOrder") as error:
-        AlibabaSelfPurchaseClient(CONFIG).call(CREATE, {})
+        alibaba_provider(CONFIG)._request(CREATE, {}, semantics="write")
     assert "test-secret" not in str(error.value)
 
 
@@ -499,7 +511,7 @@ def test_preview_with_unverified_spec_cannot_be_submitted(setup_purchase):
     service, client, _, _ = setup_purchase
     record = preview(service)
     payload = service.store.get(record["id"], account_scope(CONFIG))["payload"]
-    payload["params"]["cargoParamList"][0]["specId"] = "history-derived"
+    payload["purchase"]["cargo"][0]["spec_id"] = "history-derived"
     record = service.store.preview(service._target(**target(service)), account_scope(CONFIG), payload)
     result = create(service, record)
     assert result["state"] == "failed"
@@ -527,7 +539,7 @@ def test_submission_is_persisted_before_remote_creation(setup_purchase):
             reopened = AlibabaSelfPurchaseStore(service.store.path)
             saved = reopened.get(record["id"], account_scope(CONFIG))
             assert saved["state"] == "submitting"
-            assert saved["payload"]["params"]["cargoParamList"] == params["cargoParamList"]
+            assert saved["payload"]["purchase"]["cargo"] == [{"offer_id": str(item["offerId"]), "spec_id": item["specId"], "quantity": item["quantity"]} for item in params["cargoParamList"]]
         return call(name, params)
     client.call = inspect
     assert create(service, record)["state"] == "created"

@@ -148,7 +148,6 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
     if kind in {"1688", "alibaba", "1688_api"}:
         from .source_collect_1688_api import (
             extract_1688_offer_id,
-            parse_1688_api_product,
             request_1688_product_detail,
             resolve_1688_api_config,
         )
@@ -159,9 +158,8 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
         offer_id = extract_1688_offer_id(test_value)
         if not offer_id:
             raise ValueError("请填写 1688 商品 ID 或详情链接")
-        response = request_1688_product_detail(api_config, offer_id)
-        raw = response.get("raw") if isinstance(response.get("raw"), dict) else {}
-        source = parse_1688_api_product(raw, f"https://detail.1688.com/offer/{offer_id}.html", offer_id)
+        response = request_1688_product_detail(api_config, offer_id, f"https://detail.1688.com/offer/{offer_id}.html")
+        source = response["product"]
         return {
             "ok": True,
             "channel": "1688",

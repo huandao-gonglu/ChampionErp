@@ -13,6 +13,17 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints,
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
 
 
+class CollectionLinksAddRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=20000)] = Field(
+        description="要加入采集列表的商品网址、1688 短链或完整分享文案，可传多条。"
+    )
+    mode: Literal["browser", "api"] = Field(
+        default="browser", description="保存的后续采集方式。仅在用户指定 1688 API 采集时选择 api。"
+    )
+
+
 class SourceCollectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -138,6 +149,7 @@ __all__ = [
     "Collect1688Result",
     "CollectBatchRequest",
     "CollectBatchResult",
+    "CollectionLinksAddRequest",
     "ResearchHotProductsSearchRequest",
     "ResearchRunStatusQueryRequest",
     "ResearchRunStatusQueryResult",

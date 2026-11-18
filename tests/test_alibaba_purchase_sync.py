@@ -6,7 +6,9 @@ import json
 
 import pytest
 
-from erp_web.services.alibaba_api_client import ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, AlibabaApiClient, AlibabaApiError
+from tests.alibaba_test_provider import AlibabaFixtureProvider
+
+from erp_web.services.alibaba_api_client import ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, alibaba_provider, AlibabaApiError
 from erp_web.services.alibaba_purchase_sync_service import sync_purchase
 from erp_web.services.fulfillment_service import FulfillmentService
 from erp_web.stores.fulfillment_store import FulfillmentStore
@@ -26,7 +28,7 @@ def setup(domain):
     fulfillment = FulfillmentService(store, Bus(store), procurement.accounts_provider, procurement.detail,
                                     start_worker=False)
     record = procurement.store.purchase_record(body['order_id'], body['record_id'], procurement.accounts_provider())
-    class Client:
+    class Client(AlibabaFixtureProvider):
         calls = []
         order = {'result': {'baseInfo': {'idOfStr': NUMBER, 'status': 'waitbuyerreceive'}, 'productItems': [
             {'productID': '456', 'skuID': record.items[0].source.source_sku_id, 'subItemIDString': 'entry', 'quantity': record.items[0].quantity}]}}
@@ -59,7 +61,7 @@ def test_remote_denial_reaches_saved_order_detail(setup, monkeypatch, method, co
 
     def query(self, api, number):
         if api == method:
-            return AlibabaApiClient(CONFIG).query(api, number)
+            return alibaba_provider(CONFIG)._read_order(api, number)
         return original(self, api, number)
 
     monkeypatch.setattr(client, "query", query)
@@ -214,7 +216,7 @@ def test_shared_purchase_across_orders_keeps_snapshot_without_guessing_parcels(s
 def test_facade_registration_queries_once_and_keeps_purchase_on_failure(setup, monkeypatch):
     from types import SimpleNamespace
     from erp_web.facades import order_procurement_facade as facade
-    from erp_web.services.alibaba_api_client import AlibabaApiClient
+    from erp_web.services.alibaba_api_client import OpenApiAlibabaProvider
     procurement, fulfillment, body, client, _ = setup
     record = procurement.store.purchase_record(**body, accounts=procurement.accounts_provider())
     monkeypatch.setattr(facade, 'alibaba_runtime_config', lambda store: CONFIG)
@@ -224,7 +226,7 @@ def test_facade_registration_queries_once_and_keeps_purchase_on_failure(setup, m
     def fail(*args):
         calls.append(True)
         raise AlibabaApiError('授权已过期')
-    monkeypatch.setattr(AlibabaApiClient, 'query', fail)
+    monkeypatch.setattr(OpenApiAlibabaProvider, 'get_order', fail)
     order = procurement.store.order(body['order_id'], procurement.accounts_provider())
     request = {**purchase_body(order, record.items[0].line_key, quantity=2), 'purchase_order_number': NUMBER}
     result = facade.command('record-purchase', request)

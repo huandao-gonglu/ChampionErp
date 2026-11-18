@@ -80,6 +80,7 @@ from erp_web.ai_capability_composition import (
 from erp_web.services import product_research_service
 from erp_web.services.ai_tool_catalog import AiToolBindingScope
 from erp_web.services.ai_tool_registry import AiToolSet
+from erp_web.services.collection_link_resolution import add_collection_links
 from erp_web.services.desktop_connection_service import desktop_unavailable_reason
 from erp_web.services.chat_images import chat_image_reason
 from erp_web.services.operation_availability import model_platform_reason
@@ -220,6 +221,9 @@ def build_capability_binding_scope(
                 context=context, chat_config=chat_config,
             ),
             CollectCapabilityScope: CollectCapabilityScope(
+                link_adder=lambda entries, before_save: add_collection_links(
+                    entries, store=context.collection_links, before_save=before_save,
+                ),
                 source_collector=(
                     lambda url, mode, platform, claim_platforms: collect_source_product(
                         url,

@@ -17,6 +17,7 @@ from erp_web.runtime_units.source_collect_workflows import (
     collect_source_product,
 )
 from erp_web.schemas.api import ApiResponse
+from erp_web.services.collection_link_resolution import add_collection_links
 
 ResponseWithStatus = tuple[ApiResponse, int]
 
@@ -105,7 +106,11 @@ def collection_verification_payload(body: dict[str, Any]) -> ApiResponse:
 
 def manage_links_payload(body):
     try:
-        return get_context().collection_links.manage(body)
+        store = get_context().collection_links
+        entries = body.get('items')
+        if body['action'] == 'add' and isinstance(entries, list):
+            return add_collection_links(entries, store=store).model_dump(exclude={'urls'})
+        return store.manage(body)
     except ValidationError as exc:
         detail = exc.errors(include_input=False)[0]
         reason = (detail.get('ctx') or {}).get('error')

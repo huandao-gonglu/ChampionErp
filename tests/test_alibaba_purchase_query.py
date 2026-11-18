@@ -8,9 +8,12 @@ from urllib.parse import parse_qs
 
 import pytest
 
+from tests.alibaba_test_provider import AlibabaFixtureProvider
+
 from erp_web.context import get_context
 from erp_web.services import alibaba_api_client as api
-from erp_web.services.alibaba_purchase_query_service import query_purchase, normalize_order
+from erp_web.services.alibaba_purchase_query_service import query_purchase
+from erp_web.services.alibaba_order_payloads import normalize_order, order_result
 from tests.test_order_procurement import domain, confirm, purchase_body
 
 
@@ -29,7 +32,7 @@ def registered(domain):
     return service, {"order_id": order.identity, "record_id": record["id"]}
 
 
-class Client:
+class Client(AlibabaFixtureProvider):
     def __init__(self, config):
         self.calls = []
 
@@ -89,7 +92,9 @@ def test_no_waybills_does_not_request_traces(registered):
     def query(name, number):
         calls.append(name)
         return {"success": True, "result": []}
-    result = query_purchase(service, CONFIG, {**body, "kind": "logistics"}, client_factory=lambda _: SimpleNamespace(query=query))
+    client = Client(CONFIG)
+    client.query = query
+    result = query_purchase(service, CONFIG, {**body, "kind": "logistics"}, client_factory=lambda _: client)
     assert result["logistics"] == [] and calls == [api.LOGISTICS_INFO]
 
 
@@ -131,7 +136,7 @@ def test_missing_credentials_never_send(monkeypatch, missing):
         pytest.fail("缺少凭据不得外发请求")
     monkeypatch.setattr(api, "managed_urlopen", unexpected)
     with pytest.raises(api.AlibabaApiError, match="连接采购账号"):
-        api.AlibabaApiClient({**CONFIG, missing: ""})
+        api.alibaba_provider({**CONFIG, missing: ""})
 
 
 def test_other_procurement_platform_cannot_query_1688(domain):
@@ -153,7 +158,7 @@ def test_aop_request_is_signed_and_uses_fixed_gateway(monkeypatch):
         captured.append((request, kwargs))
         return io.BytesIO(b'{"success":true,"result":{}}')
     monkeypatch.setattr(api, "managed_urlopen", send)
-    api.AlibabaApiClient({**CONFIG, "base_url": "https://untrusted.invalid", "method": "write"}).query(api.ORDER_DETAIL, NUMBER)
+    api.alibaba_provider({**CONFIG, "base_url": "https://untrusted.invalid", "method": "write"})._read_order(api.ORDER_DETAIL, NUMBER)
     request, kwargs = captured[0]
     assert request.full_url == "https://gw.open.1688.com/openapi/param2/1/com.alibaba.trade/alibaba.trade.get.buyerView/12345"
     params = parse_qs(request.data.decode())
@@ -171,13 +176,13 @@ def test_aop_request_is_signed_and_uses_fixed_gateway(monkeypatch):
 def test_invalid_responses_never_expose_upstream_text(monkeypatch, response):
     monkeypatch.setattr(api, "managed_urlopen", lambda *args, **kwargs: io.BytesIO(response))
     with pytest.raises(api.AlibabaApiError) as error:
-        api.AlibabaApiClient(CONFIG).query(api.ORDER_DETAIL, NUMBER)
+        api.alibaba_provider(CONFIG)._read_order(api.ORDER_DETAIL, NUMBER)
     assert "test-token" not in str(error.value)
 
 
 def test_order_api_string_success_is_accepted(monkeypatch):
     monkeypatch.setattr(api, "managed_urlopen", lambda *args, **kwargs: io.BytesIO(b'{"success":"true","result":{}}'))
-    assert api.AlibabaApiClient(CONFIG).query(api.ORDER_DETAIL, NUMBER)["result"] == {}
+    assert api.alibaba_provider(CONFIG)._read_order(api.ORDER_DETAIL, NUMBER)["result"] == {}
 
 
 def test_http_auth_failure_is_safe_and_closes_response(monkeypatch):
@@ -186,7 +191,7 @@ def test_http_auth_failure_is_safe_and_closes_response(monkeypatch):
         raise HTTPError("https://example.invalid/?token=test-token", 401, "test-token", {}, stream)
     monkeypatch.setattr(api, "managed_urlopen", send)
     with pytest.raises(api.AlibabaApiError, match="重新连接账号") as error:
-        api.AlibabaApiClient(CONFIG).query(api.ORDER_DETAIL, NUMBER)
+        api.alibaba_provider(CONFIG)._read_order(api.ORDER_DETAIL, NUMBER)
     assert "test-token" not in str(error.value) and stream.closed
 
 
@@ -197,7 +202,7 @@ def test_http_query_failure_keeps_unknown_business_code_and_masks_credentials(mo
         raise HTTPError("https://example.invalid", 400, "", {}, stream)
     monkeypatch.setattr(api, "managed_urlopen", send)
     with pytest.raises(api.AlibabaApiError) as error:
-        api.AlibabaApiClient(CONFIG).query(api.ORDER_DETAIL, NUMBER)
+        api.alibaba_provider(CONFIG)._read_order(api.ORDER_DETAIL, NUMBER)
     assert str(error.value) == "1688 订单详情查询失败：ORDER_CHECK_FAILED 查询失败 ***"
     assert stream.closed
 
@@ -229,9 +234,9 @@ def test_http_purchase_query_contract_and_blocked_response(registered, monkeypat
     context.config.update_alibaba_credentials({"authorization": {
         "access_token": CONFIG["access_token"],
         "application_fingerprint": application_fingerprint(context.config.alibaba_application())}})
-    def query(self, name, number):
-        return Client(CONFIG).query(name, number)
-    monkeypatch.setattr(api.AlibabaApiClient, "query", query)
+    def get_order(self, number):
+        return order_result(Client(CONFIG).query(api.ORDER_DETAIL, number), number)
+    monkeypatch.setattr(api.OpenApiAlibabaProvider, "get_order", get_order)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     from tests.account_test_utils import authenticated_headers
     client = requests.Session()
@@ -247,7 +252,7 @@ def test_http_purchase_query_contract_and_blocked_response(registered, monkeypat
         assert client.post(url, json={**body, "order_id": "other-order"}, timeout=3).status_code == 400
         def blocked(*args):
             raise ExternalRequestBlocked(RequestFailure("TEST_BLOCK", "已中断"))
-        monkeypatch.setattr(api.AlibabaApiClient, "query", blocked)
+        monkeypatch.setattr(api.OpenApiAlibabaProvider, "get_order", blocked)
         response = client.post(url, json=body, timeout=3)
         assert response.status_code == 409 and "中断与恢复" in response.json()["error"]
     finally:
@@ -261,15 +266,15 @@ def test_unshipped_code_is_empty_only_for_logistics_info(monkeypatch, name):
     payload = {'success': False, 'errorCode': '500_2', 'errorMessage': '订单尚未发货，暂无物流详情，请稍候再试。'}
     monkeypatch.setattr(api, 'managed_urlopen', lambda *a, **k: io.BytesIO(json.dumps(payload).encode()))
     if name == api.LOGISTICS_INFO:
-        result = api.AlibabaApiClient(CONFIG).query(name, NUMBER)
+        result = api.alibaba_provider(CONFIG)._read_order(name, NUMBER)
         assert result['result'] == [] and result['errorCode'] == '500_2'
     else:
-        with pytest.raises(api.AlibabaApiError): api.AlibabaApiClient(CONFIG).query(name, NUMBER)
+        with pytest.raises(api.AlibabaApiError): api.alibaba_provider(CONFIG)._read_order(name, NUMBER)
 
 
 def test_product_image_matches_exact_sku_and_prefers_original():
     from erp_web.schemas.order_procurement import ProcurementSource
-    from erp_web.services.alibaba_purchase_query_service import normalize_product
+    from erp_web.services.alibaba_order_payloads import normalize_product
     source = ProcurementSource(product_url="https://detail.1688.com/offer/123.html", source_sku_id="22", specification="蓝色")
     other = {"productID": 123, "skuID": 11, "productImgUrl": ["https://cbu01.alicdn.com/other.jpg"]}
     selected = {"productID": 123, "skuID": 22, "specId": "spec22", "name": "商品",
@@ -294,7 +299,7 @@ def test_product_image_matches_exact_sku_and_prefers_original():
 @pytest.mark.parametrize("images", [None, [], ["javascript:alert(1)"], ["https://secret:password@example.com/p.jpg"], ["http://[invalid"], [123]])
 def test_missing_or_invalid_product_image_is_not_a_query_failure(images):
     from erp_web.schemas.order_procurement import ProcurementSource
-    from erp_web.services.alibaba_purchase_query_service import normalize_product
+    from erp_web.services.alibaba_order_payloads import normalize_product
     source = ProcurementSource(product_url="https://detail.1688.com/offer/123.html", source_sku_id="22", specification="蓝色")
     product, warning = normalize_product({"result": {"productItems": [{"productID": 123, "skuID": 22, "productImgUrl": images}]}}, source)
     assert product["image_url"] == "" and warning

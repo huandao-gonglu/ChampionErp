@@ -31,6 +31,7 @@ RETAINED_GET_READS = {
         '/api/online-products', '/api/online-products/yandex-shop-names', '/api/online-products/source-images',
         '/api/online-products/attributes', '/api/external-requests/status',
     )},
+    '/api/admin/alibaba/onebound/shop-bindings': ('身份协议', '管理员按页读取万邦企业授权目录，响应省略买家凭据。'),
     '/api/admin/settings': ('凭据视图', '企业凭据维护、1688 企业自用/跨境/万邦方案选择与可能携带访问参数的汇率地址；买家凭据留在个人授权库，万邦个人在线授权待协议接入，业务默认配置见 settings.pricing_defaults/settings.collection。'),
     '/api/orders/integrations': ('凭据视图', '包含带回调凭据的地址；普通店铺及本地授权状态见 settings.store。'),
     '/api/ai-config': ('本机连接协议', '完整模型设置带本机连接桥接；模型和绑定业务元数据见 settings.models/settings.model_bindings。'),

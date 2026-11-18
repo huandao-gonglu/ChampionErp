@@ -1,178 +1,34 @@
 """按已登记的采购记录查询 1688；远端读取不持有数据库事务。"""
 
-import re
-from urllib.parse import urlsplit
-
-from erp_web.schemas.order_procurement import ProcurementSource
-
-from erp_web.schemas.alibaba_orders import AlibabaPurchaseProduct, AlibabaOrderStatus, AlibabaParcel, AlibabaPurchaseQueryResult, PurchaseQueryRequest
+from erp_web.schemas.alibaba_orders import AlibabaParcel, AlibabaPurchaseQueryResult, PurchaseQueryRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.schemas.orders import utc_iso
-from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, validate_order_number
+from erp_web.services.alibaba_api_client import AlibabaApiError, alibaba_provider, validate_order_number
 
 
-_ORDER_STATUSES = {
-    "waitbuyerpay": "等待买家付款", "waitsellersend": "等待卖家发货",
-    "waitbuyerreceive": "等待买家收货", "waitbuyerreceives": "等待买家收货",
-    "confirm_goods": "已收货", "success": "交易成功", "cancel": "交易取消",
-    "terminated": "交易终止",
-}
-_LOGISTICS_STATUSES = {
-    "WAITACCEPT": "等待揽收", "ACCEPT": "已揽收", "TRANSPORT": "运输中",
-    "DELIVERING": "派送中", "SIGN": "已签收", "UNSIGN": "未签收",
-}
+def shipment_parcels(shipments, order=None) -> list[AlibabaParcel]:
+    carriers = order.carrier_names if order else {}
+    return [{**shipment.parcel, "company": shipment.parcel["company"] or carriers.get(
+        (shipment.parcel["tracking_number"], shipment.carrier_id), ""), "steps": []}
+        for shipment in shipments]
 
 
-def normalize_order(payload: dict, order_number: str) -> AlibabaOrderStatus:
-    result = payload.get("result")
-    base = result.get("baseInfo") if isinstance(result, dict) else None
-    if not isinstance(base, dict):
-        raise AlibabaApiError("1688 未返回订单详情")
-    returned_id = str(base.get("idOfStr") or base.get("id") or "")
-    if returned_id != order_number:
-        raise AlibabaApiError("1688 返回的订单号与采购记录不一致")
-    status = str(base.get("status") or "")
-    return {"order_number": returned_id, "status": status,
-            "status_label": _ORDER_STATUSES.get(status, status or "状态未提供")}
-
-
-def normalize_product(payload: dict, source: ProcurementSource) -> tuple[AlibabaPurchaseProduct | None, str]:
-    """按采购时的商品和规格身份取订单图片，禁止按标题或条目顺序猜配。"""
-    url_offer = re.fullmatch(r"/offer/(\d+)\.html", urlsplit(source.product_url).path)
-    offer_id = source.source_offer_id or (url_offer[1] if url_offer else "")
-    if (not offer_id or not (source.source_sku_id or source.source_spec_id)
-            or (url_offer and url_offer[1] != offer_id)):
-        return None, "缺少或存在冲突的商品、SKU 信息，无法匹配采购图片"
-    items = payload.get("result", {}).get("productItems")
-    if not isinstance(items, list):
-        return None, "1688 未返回订单商品明细，暂无法获取采购图片"
-    matches = []
-    for item in items:
-        if not isinstance(item, dict) or str(item.get("productID") or "") != offer_id:
-            continue
-        sku, spec = str(item.get("skuID") or ""), str(item.get("specId") or "")
-        # 至少一个标识命中；其他双方均有值的标识不能冲突。
-        if not ((source.source_sku_id and source.source_sku_id == sku)
-                or (source.source_spec_id and source.source_spec_id == spec)):
-            continue
-        if ((source.source_sku_id and sku and source.source_sku_id != sku)
-                or (source.source_spec_id and spec and source.source_spec_id != spec)):
-            continue
-        matches.append(item)
-    if len(matches) != 1:
-        return None, "订单商品无法与采购 SKU 唯一匹配，暂不展示采购图片"
-    item = matches[0]
-    images = item.get("productImgUrl")
-    images = images if isinstance(images, list) else []
-    image_url = ""
-    # 接口依次返回缩略图与原图，优先保留原图；不拼造图片地址。
-    for value in reversed(images):
-        if not isinstance(value, str):
-            continue
-        try:
-            parsed = urlsplit(value.strip())
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-                continue
-            if parsed.scheme == "http" and parsed.hostname.endswith(".alicdn.com"):
-                parsed = parsed._replace(scheme="https")
-            image_url = parsed.geturl()
-            break
-        except ValueError:
-            continue
-    sku_infos = item.get("skuInfos")
-    specification = "；".join(f"{row.get('name') or ''}：{row.get('value') or ''}" for row in
-                              (sku_infos if isinstance(sku_infos, list) else []) if isinstance(row, dict))
-    return {
-        "item_id": str(item.get("subItemIDString") or item.get("subItemID") or ""),
-        "quantity": _quantity(item.get("quantity")),
-        "offer_id": offer_id, "sku_id": str(item.get("skuID") or ""),
-        "spec_id": str(item.get("specId") or ""), "name": str(item.get("name") or ""),
-        "specification": specification, "image_url": image_url,
-    }, "" if image_url else "1688 未提供该采购商品的有效图片"
-
-
-def _quantity(value):
-    from erp_web.services.alibaba_purchase_assignment import quantity
-    return quantity(value)
-
-
-def normalize_products(payload):
-    """整单商品快照，不依赖销售 SKU；每个远端商品子项单独保留。"""
-    result = []
-    for item in payload.get("result", {}).get("productItems") or []:
-        if not isinstance(item, dict):
-            continue
-        offer = str(item.get("productID") or "")
-        source = ProcurementSource(product_url=f"https://detail.1688.com/offer/{offer}.html",
-            specification=str(item.get("name") or "未提供规格"), source_offer_id=offer,
-            source_sku_id=str(item.get("skuID") or ""), source_spec_id=str(item.get("specId") or ""))
-        product, _ = normalize_product({"result": {"productItems": [item]}}, source)
-        result.append(product or {
-            "item_id": str(item.get("subItemIDString") or item.get("subItemID") or ""),
-            "quantity": _quantity(item.get("quantity")), "offer_id": offer,
-            "sku_id": source.source_sku_id, "spec_id": source.source_spec_id,
-            "name": str(item.get("name") or ""), "specification": "", "image_url": "",
-        })
-    return result
-
-
-def normalize_parcels(payload: dict, order_payload: dict | None = None) -> list[AlibabaParcel]:
-    rows = payload.get("result")
-    if not isinstance(rows, list):
-        raise AlibabaApiError("1688 未返回有效的物流信息")
-    native = (order_payload or {}).get("result", {}).get("nativeLogistics", {})
-    details = native.get("logisticsItems", []) if isinstance(native, dict) else []
-    parcels = []
-    for row in rows:
-        if not isinstance(row, dict):
-            raise AlibabaApiError("1688 物流信息格式无效")
-        status = str(row.get("status") or "")
-        company = str(row.get("logisticsCompanyName") or "")
-        # 两个只读接口的字段完整度不同；仅按同一订单的唯一运单及承运商 ID 合并。
-        if not company and row.get("logisticsBillNo") and isinstance(details, list):
-            matches = [item for item in details if isinstance(item, dict)
-                       and item.get("logisticsBillNo") == row["logisticsBillNo"]
-                       and item.get("logisticsCompanyId") == row.get("logisticsCompanyId")]
-            if len(matches) == 1:
-                company = str(matches[0].get("logisticsCompanyName") or "")
-        parcels.append({
-            "logistics_id": str(row.get("logisticsId") or ""),
-            "company": company,
-            "tracking_number": str(row.get("logisticsBillNo") or ""),
-            "status": status, "status_label": _LOGISTICS_STATUSES.get(status, status or "状态未提供"),
-            "steps": [],
-        })
-    return parcels
-
-
-def attach_traces(parcels: list[AlibabaParcel], payload: dict, order_number: str) -> None:
-    rows = payload.get("logisticsTrace")
-    if not isinstance(rows, list):
-        raise AlibabaApiError("1688 未返回有效的物流轨迹")
-    for row in rows:
-        if not isinstance(row, dict) or str(row.get("orderId") or order_number) != order_number:
+def attach_traces(parcels: list[AlibabaParcel], traces, order_number: str) -> None:
+    for trace in traces:
+        if trace.order_number != order_number:
             raise AlibabaApiError("1688 物流轨迹与采购订单不一致")
-        logistics_id = str(row.get("logisticsId") or "")
-        bill = str(row.get("logisticsBillNo") or "")
-        # 仅凭明确的包裹身份匹配，不能将一个包裹的轨迹挂到其他包裹。
-        matches = [p for p in parcels if (logistics_id and p["logistics_id"] == logistics_id)
-                   or (not logistics_id and bill and p["tracking_number"] == bill)]
-        if len(matches) != 1:
-            continue
-        steps = row.get("logisticsSteps")
-        if not isinstance(steps, list):
-            raise AlibabaApiError("1688 物流轨迹格式无效")
-        matches[0]["steps"] = [
-            {"time": str(step.get("acceptTime") or ""), "description": str(step.get("remark") or "")}
-            for step in steps if isinstance(step, dict)
-        ]
+        matches = [parcel for parcel in parcels if
+                   (trace.logistics_id and parcel["logistics_id"] == trace.logistics_id)
+                   or (not trace.logistics_id and trace.tracking_number and parcel["tracking_number"] == trace.tracking_number)]
+        if len(matches) == 1:
+            matches[0]["steps"] = trace.steps
 
 
 def query_parcel_traces(parcels, client, number):
     """补充轨迹，保留运单，并将轨迹失败原因交给页面及采购快照。"""
     if parcels:
         try:
-            attach_traces(parcels, client.query(LOGISTICS_TRACE, number), number)
+            attach_traces(parcels, client.get_logistics_traces(number), number)
         except ExternalRequestBlocked as exc:
             return f"已获取运单，轨迹查询已中断。{exc}（可在授权配置的「中断与恢复」查看）"
         except AlibabaApiError as exc:
@@ -180,7 +36,7 @@ def query_parcel_traces(parcels, client, number):
     return ""
 
 
-def query_purchase(procurement, config: dict, body: dict, *, client_factory=AlibabaApiClient) -> AlibabaPurchaseQueryResult:
+def query_purchase(procurement, config: dict, body: dict, *, client_factory=alibaba_provider) -> AlibabaPurchaseQueryResult:
     request = PurchaseQueryRequest.model_validate(body)
     record = procurement.store.purchase_record(request.order_id, request.record_id, procurement.accounts_provider())
     if record.source_platform != "1688":
@@ -192,11 +48,11 @@ def query_purchase(procurement, config: dict, body: dict, *, client_factory=Alib
         "order": None, "logistics": None, "logistics_warning": "", "products": [],
     }
     if request.kind == "order":
-        payload = client.query(ORDER_DETAIL, number)
-        result["order"] = normalize_order(payload, number)
-        result["products"] = normalize_products(payload)
+        order = client.get_order(number)
+        result["order"] = order.status
+        result["products"] = order.products
     else:
-        parcels = normalize_parcels(client.query(LOGISTICS_INFO, number))
+        parcels = shipment_parcels(client.get_shipments(number))
         result["logistics_warning"] = query_parcel_traces(parcels, client, number)
         result["logistics"] = parcels
     # 查询期间可能作废记录或切换店铺，返回前重新验证归属与有效性。

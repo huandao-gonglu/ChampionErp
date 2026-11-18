@@ -38,7 +38,8 @@ POST_HANDLERS = {
     '/api/alibaba/crossborder/authorization/start': _start,
 }
 GET_API_ROUTES = frozenset({'/api/alibaba/authorization', '/api/alibaba/crossborder/authorization'})
-GET_HANDLED_PATHS = GET_API_ROUTES | {'/auth/alibaba/callback'}
+ONEBOUND_SHOPS = '/api/admin/alibaba/onebound/shop-bindings'
+GET_HANDLED_PATHS = GET_API_ROUTES | {'/auth/alibaba/callback', ONEBOUND_SHOPS}
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 
 
@@ -51,6 +52,15 @@ def handle_post(handler, parsed):
 
 
 def handle_get(handler, parsed):
+    if parsed.path == ONEBOUND_SHOPS:
+        args = parse_qs(parsed.query, keep_blank_values=True)
+        if set(args) - {'nick', 'page'} or any(len(values) != 1 for values in args.values()):
+            handler.send_json({'ok': False, 'error': '万邦授权店铺查询参数无效'}, 400)
+            return True
+        handler.send_json(*authorization_payload('onebound-shops', {
+            'nick': args.get('nick', [''])[0], 'page': args.get('page', ['1'])[0] or '1',
+        }))
+        return True
     if parsed.path in GET_API_ROUTES:
         providers = parse_qs(parsed.query, keep_blank_values=True).get('provider', [])
         if len(providers) > 1 or providers == ['']:

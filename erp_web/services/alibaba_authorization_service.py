@@ -17,10 +17,10 @@ from pydantic import ValidationError
 from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt, OneBoundAuthorizationRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, legacy_account_scope, onebound_scope
-from erp_web.services.alibaba_self_purchase_client import AlibabaSelfPurchaseClient, ADDRESSES
-from erp_web.services.alibaba_purchase_address import saved_addresses
+from erp_web.services.alibaba_api_client import alibaba_provider
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
+from erp_web.services.onebound_api_transport import list_onebound_shop_bindings
 
 _AUTH_LOCK = threading.RLock()
 
@@ -195,10 +195,7 @@ class AlibabaAuthorizationService:
     @staticmethod
     def _verify_self_use_token(application, token):
         # 该买家接口要求应用签名和个人 Token；仅校验回执形状，空地址簿也代表调用成功。
-        client = AlibabaSelfPurchaseClient({**application, 'access_token': token})
-        result = client.call(ADDRESSES, {}).get('result')
-        if not isinstance(result, dict) or not isinstance(result.get('receiveAddressItems'), list):
-            raise ValueError('1688 未返回有效的买家授权验证结果')
+        alibaba_provider({**application, 'access_token': token}).list_addresses()
 
     def bind_self_use_token(self, token):
         token = token.strip() if isinstance(token, str) else ''
@@ -220,6 +217,14 @@ class AlibabaAuthorizationService:
                                              application=application, provider='alibaba')
         return self.status('alibaba')
 
+    def list_onebound_shops(self, *, nick, page):
+        if len(nick) > 256 or not re.fullmatch(r'[1-9][0-9]{0,8}', page):
+            raise ValueError('请提供有效的店铺昵称和页码')
+        application = self.store.alibaba_application('onebound')
+        if not _configured(application):
+            raise ValueError('请先由管理员配置万邦企业凭据')
+        return list_onebound_shop_bindings(application, nick=nick, page=int(page))
+
     def bind_onebound(self, body):
         try:
             request = OneBoundAuthorizationRequest.model_validate(body)
@@ -233,7 +238,7 @@ class AlibabaAuthorizationService:
         credential = request.access_token or request.session
         config = {**application, 'access_token': credential, 'credential_type': credential_type}
         # 只检查当前凭据能否读取；采购归属沿用凭据范围，不按网关返回的默认买家归并。
-        saved_addresses(AlibabaSelfPurchaseClient(config).call(ADDRESSES, {}))
+        alibaba_provider(config).list_addresses()
         auth = {'access_token': credential, 'credential_type': credential_type, 'account_name': '万邦采购账号',
                 'account_scope': onebound_scope(application['api_key'], credential, credential_type),
                 'application_fingerprint': application_fingerprint(application)}

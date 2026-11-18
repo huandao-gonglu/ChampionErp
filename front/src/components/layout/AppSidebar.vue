@@ -1,15 +1,17 @@
 <script setup lang="ts">
+import {
+  PhBrowsers, PhCaretDoubleLeft, PhCaretDoubleRight, PhFileText, PhGearSix, PhGridFour, PhKey,
+  PhListBullets, PhMagnifyingGlass, PhPackage, PhReceipt, PhTray, PhUser, PhUsers,
+} from '@phosphor-icons/vue'
+import type { Component } from 'vue'
 import { APP_LOGO, APP_NAME, APP_VERSION } from '@/constants/branding'
-import type { WorkflowStep } from '@/types/workflow'
 import type { WorkflowNavItem } from '@/constants/navigation'
 import { useAccountStore } from '@/stores/account'
-const account = useAccountStore()
 
+const account = useAccountStore()
 const props = defineProps<{
   items: WorkflowNavItem[]
   activeKey: string
-  steps: WorkflowStep[]
-  progress: number
   collapsed?: boolean
 }>()
 
@@ -17,100 +19,101 @@ const emit = defineEmits<{
   navigate: [key: string]
   toggleCollapse: []
 }>()
-
-function stepStatus(key: string) {
-  return props.steps.find((step) => step.key === key)?.status || 'pending'
+const navigationIcons: Partial<Record<string, Component>> = {
+  dashboard: PhGridFour,
+  orders: PhReceipt,
+  research: PhMagnifyingGlass,
+  collect: PhListBullets,
+  library: PhTray,
+  drafts: PhFileText,
+  publish: PhBrowsers,
+  onlineProducts: PhPackage,
+  auth: PhKey,
 }
 </script>
 
 <template>
-  <aside
-    class="flex h-full flex-col border-r border-accent-200 bg-white text-accent-700 shadow-card transition-all duration-300 dark:border-primary-500/20 dark:bg-dark-950 dark:text-accent-100 dark:shadow-glass"
-    :class="props.collapsed ? 'w-[84px]' : 'w-[280px]'"
-  >
-    <div class="flex h-[92px] items-center gap-4 border-b border-accent-200 px-5 dark:border-primary-500/15">
-      <div class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-white p-2 shadow-glow">
-        <img :src="APP_LOGO" :alt="APP_NAME" class="size-full" />
+  <aside class="workspace-sidebar" :class="{ 'workspace-sidebar--collapsed': props.collapsed }">
+    <div class="flex h-20 shrink-0 items-center gap-3 border-b border-accent-200 px-4 dark:border-dark-700" :class="{ 'justify-center !px-0': props.collapsed }">
+      <div class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-white p-1.5 shadow-sm">
+        <img :src="APP_LOGO" :alt="props.collapsed ? APP_NAME : ''" class="size-full" />
       </div>
       <div v-if="!props.collapsed" class="min-w-0">
-        <h1 class="truncate text-xl font-black tracking-tight text-accent-950 dark:text-white">{{ APP_NAME }}</h1>
-        <div class="mt-1 inline-flex items-center gap-2 rounded-xl bg-warning-50 px-3 py-1 text-sm font-semibold text-warning-700 ring-1 ring-warning-100 dark:bg-warning-950/70 dark:text-warning-300 dark:ring-0">
-          <span>{{ APP_VERSION }}</span>
-          <span class="size-2 rounded-full bg-warning-400 shadow-glow" />
-        </div>
+        <p class="truncate text-base font-bold text-accent-950 dark:text-white">{{ APP_NAME }}</p>
+        <span class="rounded-md bg-primary-50 px-1.5 py-0.5 text-xs font-semibold text-primary-700 dark:bg-primary-500/15 dark:text-primary-300">{{ APP_VERSION }}</span>
       </div>
     </div>
 
-    <nav class="flex-1 space-y-1.5 overflow-y-auto px-3 py-4">
-      <button
-        v-for="item in props.items.filter(item => item.key !== 'systemSettings')"
-        :key="item.key"
-        type="button"
-        class="group flex h-12 w-full items-center rounded-2xl px-4 text-left text-[15px] font-semibold transition duration-200"
-        :class="[
-          item.key === props.activeKey
-            ? 'bg-primary-50 text-primary-700 shadow-[inset_0_0_0_1px_rgb(var(--color-primary-200)/0.9)] dark:bg-primary-950/70 dark:text-primary-300 dark:shadow-[inset_0_0_0_1px_rgb(var(--color-primary-500)/0.12)]'
-            : 'text-accent-700 hover:bg-accent-50 hover:text-accent-950 dark:text-accent-200 dark:hover:bg-white/5 dark:hover:text-white',
-          props.collapsed ? 'justify-center px-0' : 'gap-3',
-          item.disabled ? 'cursor-not-allowed opacity-60' : '',
-        ]"
-        :disabled="item.disabled"
-        @click="emit('navigate', item.key)"
-      >
-        <span
-          class="relative flex size-7 shrink-0 items-center justify-center text-xl leading-none"
-          :class="item.key === props.activeKey ? 'text-primary-700 dark:text-primary-300' : 'text-accent-500 group-hover:text-accent-950 dark:text-accent-200 dark:group-hover:text-white'"
+    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2.5 py-2">
+      <nav class="space-y-1" aria-label="工作区导航">
+        <button
+          v-for="item in props.items.filter(item => item.key !== 'systemSettings')"
+          :key="item.key"
+          type="button"
+          class="sidebar-item"
+          :aria-current="item.key === props.activeKey ? 'page' : undefined"
+          :aria-label="item.title"
+          :title="props.collapsed ? item.title : undefined"
+          :disabled="item.disabled"
+          @click="emit('navigate', item.key)"
         >
-          {{ item.icon }}
-          <span
-            class="absolute -right-1 -top-1 size-2 rounded-full"
-            :class="{
-              'bg-success-400': stepStatus(item.key) === 'done',
-              'bg-info-400': stepStatus(item.key) === 'active',
-              'bg-danger-400': stepStatus(item.key) === 'blocked',
-              'bg-accent-400 dark:bg-accent-600': stepStatus(item.key) === 'pending',
-            }"
-          />
-        </span>
-        <span v-if="!props.collapsed" class="min-w-0 flex-1">
-          <span class="block truncate">{{ item.title }}</span>
-        </span>
-      </button>
-    </nav>
+          <component :is="navigationIcons[item.key] || PhListBullets" aria-hidden="true" :size="18" class="shrink-0" />
+          <span v-if="!props.collapsed" class="truncate">{{ item.title }}</span>
+        </button>
+      </nav>
 
-    <div class="border-t border-accent-200 px-3 py-3 dark:border-white/10">
-      <RouterLink to="/account" class="flex h-11 items-center gap-3 rounded-2xl px-4 text-sm font-semibold hover:bg-accent-50 dark:hover:bg-white/5" title="个人账号">
-        <span aria-hidden="true">◉</span><span v-if="!props.collapsed" class="truncate">{{ account.user?.display_name || '个人账号' }}</span>
-      </RouterLink>
-      <RouterLink v-if="account.isAdmin" to="/admin/users" class="flex h-11 items-center gap-3 rounded-2xl px-4 text-sm font-semibold hover:bg-accent-50 dark:hover:bg-white/5" title="用户管理">
-        <span aria-hidden="true">♙</span><span v-if="!props.collapsed">用户管理</span>
-      </RouterLink>
-      <button
-        type="button"
-        class="flex h-11 w-full items-center rounded-2xl px-4 text-left text-sm font-semibold"
-        :class="[
-          props.collapsed ? 'justify-center px-0' : 'gap-3',
-          props.activeKey === 'systemSettings'
-            ? 'bg-primary-50 text-primary-700 dark:bg-primary-950/70 dark:text-primary-300'
-            : 'text-accent-700 hover:bg-accent-50 hover:text-accent-950 dark:text-accent-200 dark:hover:bg-white/5 dark:hover:text-white',
-        ]"
-        :aria-current="props.activeKey === 'systemSettings' ? 'page' : undefined"
-        aria-label="系统设置"
-        title="系统设置"
-        @click="emit('navigate', 'systemSettings')"
-      >
-        <span class="flex size-7 items-center justify-center text-lg" aria-hidden="true">⚙</span>
-        <span v-if="!props.collapsed">系统设置</span>
-      </button>
-      <button
-        type="button"
-        class="mt-2 flex h-11 w-full items-center rounded-2xl px-4 text-left text-sm font-semibold text-accent-700 hover:bg-accent-50 hover:text-accent-950 dark:text-accent-200 dark:hover:bg-white/5 dark:hover:text-white"
-        :class="props.collapsed ? 'justify-center px-0' : 'gap-3'"
-        @click="emit('toggleCollapse')"
-      >
-        <span class="flex size-7 items-center justify-center text-lg">{{ props.collapsed ? '≫' : '≪' }}</span>
-        <span v-if="!props.collapsed">收起</span>
-      </button>
+      <nav class="mt-3 space-y-1 border-t border-accent-200 pt-3 dark:border-dark-700" aria-label="账号和设置">
+        <RouterLink to="/account" class="sidebar-item" :aria-label="account.user?.display_name || '个人账号'" title="个人账号">
+          <PhUser aria-hidden="true" :size="18" class="shrink-0" />
+          <span v-if="!props.collapsed" class="truncate">{{ account.user?.display_name || '个人账号' }}</span>
+        </RouterLink>
+        <RouterLink v-if="account.isAdmin" to="/admin/users" class="sidebar-item" aria-label="用户管理" title="用户管理">
+          <PhUsers aria-hidden="true" :size="18" class="shrink-0" />
+          <span v-if="!props.collapsed">用户管理</span>
+        </RouterLink>
+        <button
+          type="button"
+          class="sidebar-item"
+          :aria-current="props.activeKey === 'systemSettings' ? 'page' : undefined"
+          aria-label="系统设置"
+          title="系统设置"
+          @click="emit('navigate', 'systemSettings')"
+        >
+          <PhGearSix aria-hidden="true" :size="18" class="shrink-0" />
+          <span v-if="!props.collapsed">系统设置</span>
+        </button>
+        <button
+          type="button"
+          class="sidebar-item"
+          :aria-label="props.collapsed ? '展开导航' : '收起导航'"
+          :title="props.collapsed ? '展开导航' : '收起导航'"
+          :aria-expanded="!props.collapsed"
+          @click="emit('toggleCollapse')"
+        >
+          <component :is="props.collapsed ? PhCaretDoubleRight : PhCaretDoubleLeft" aria-hidden="true" :size="18" class="shrink-0" />
+          <span v-if="!props.collapsed">收起</span>
+        </button>
+      </nav>
     </div>
   </aside>
 </template>
+
+<style scoped>
+.workspace-sidebar {
+  inline-size: 208px;
+  block-size: 100dvh;
+  @apply flex flex-col border-r border-accent-200 bg-white text-accent-700 dark:border-dark-700 dark:bg-dark-950/35 dark:text-accent-200;
+}
+.workspace-sidebar--collapsed {
+  inline-size: 64px;
+}
+.sidebar-item {
+  @apply flex min-h-10 w-full items-center gap-3 rounded-lg border-l-[3px] border-transparent px-3 text-left text-sm font-medium hover:bg-accent-100 hover:text-accent-950 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary-500 disabled:opacity-50 dark:hover:bg-white/5 dark:hover:text-white;
+}
+.sidebar-item[aria-current='page'] {
+  @apply border-primary-500 bg-primary-50 font-semibold text-primary-700 dark:bg-primary-500/10 dark:text-primary-300;
+}
+.workspace-sidebar--collapsed .sidebar-item {
+  @apply justify-center gap-0 px-0 pr-[3px];
+}
+</style>

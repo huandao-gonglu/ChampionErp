@@ -18,9 +18,12 @@ from erp_web.schemas.collect_capabilities import (
     Collect1688Result,
     CollectBatchRequest,
     CollectBatchResult,
+    CollectionLinksAddRequest,
     SourceCollectRequest,
     SourceCollectResult,
 )
+from erp_web.schemas.collection import CollectionLinksAddResult
+from erp_web.schemas.requests import RequestValidationError
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
 
@@ -77,12 +80,35 @@ class CollectCapabilityScope:
     ]
     online_1688_collector: Callable[[dict[str, Any]], dict[str, Any]]
     claimer: Callable[[list[str], list[dict[str, str]] | None], dict[str, Any]]
+    link_adder: Callable[[list[dict[str, str]], Callable[[], object]], CollectionLinksAddResult]
 
 
 SOURCE_COLLECT_TOOL = "source_collect"
 COLLECT_BATCH_TOOL = "collect_batch"
 COLLECT_1688_TOOL = "collect_1688"
 CLAIM_PRODUCTS_TOOL = "claim_products"
+
+
+@ai_tool(
+    name="collection_links_add",
+    description="按用户要求把商品链接加入个人采集页面的待采集列表。支持标准网址、1688 短链和完整分享文案，自动转换并跳过重复链接。只添加链接，不开始采集商品。",
+    permission="collect.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def collection_links_add(
+    request: CollectionLinksAddRequest,
+    scope: Annotated[CollectCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> CollectionLinksAddResult:
+    try:
+        return scope.link_adder([{"url": request.text, "mode": request.mode}], execution.bounded_timeout_seconds)
+    except RequestValidationError as exc:
+        raise BusinessCapabilityError(exc.error_code, str(exc)) from None
 
 
 @ai_tool(
@@ -285,6 +311,7 @@ def claim_products(
 
 
 COLLECTION_AI_CAPABILITIES = (
+    collection_links_add,
     source_collect,
     collect_batch,
     collect_1688,
@@ -302,5 +329,6 @@ __all__ = [
     "claim_products",
     "collect_1688",
     "collect_batch",
+    "collection_links_add",
     "source_collect",
 ]

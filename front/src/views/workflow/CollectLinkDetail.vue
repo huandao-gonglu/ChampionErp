@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { PhArrowSquareOut, PhLink, PhPencilSimple, PhTrash } from '@phosphor-icons/vue'
+import { PhArrowSquareOut, PhLink, PhPencilSimple, PhTrash, PhX } from '@phosphor-icons/vue'
 import { linkHistory, type CollectionLink, type LinkEvent } from '@/api/workflow/collectionLinks'
 import { collectBatchStatusLabels } from '@/utils/collectQueue'
-const props = defineProps<{ row?: CollectionLink; busy: boolean }>()
-const emit = defineEmits<{ edit: []; remove: []; openProduct: [id: string] }>()
+const props = defineProps<{ row?: CollectionLink; busy: boolean; closable: boolean }>()
+const emit = defineEmits<{ close: []; edit: []; remove: []; openProduct: [id: string] }>()
 const tab = ref<'result' | 'history'>('result')
 const events = ref<LinkEvent[]>([])
 const historyError = ref('')
@@ -27,18 +27,19 @@ function hostname(url: string) { return new URL(url).hostname }
 </script>
 
 <template>
-  <aside class="min-w-0 border-t border-slate-200 pt-5 dark:border-dark-700 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
+  <aside class="min-w-0">
     <div class="flex items-center justify-between gap-2">
       <h2 class="text-lg font-bold">链接详情</h2>
       <div v-if="row" class="flex gap-1">
         <button aria-label="编辑链接" title="编辑链接" class="detail-icon" :disabled="busy || row.status === 'running'" @click="emit('edit')"><PhPencilSimple /></button>
         <button aria-label="移除链接" title="移除链接" class="detail-icon" :disabled="busy || row.status === 'running'" @click="emit('remove')"><PhTrash /></button>
+        <button v-if="closable" type="button" aria-label="关闭详情" title="关闭详情" class="detail-icon" @click="emit('close')"><PhX aria-hidden="true" /></button>
       </div>
     </div>
     <p v-if="!row" class="muted my-6">选择一条链接查看采集详情。</p>
     <template v-else>
       <div class="mt-3 flex flex-wrap items-center gap-2 text-xs">
-        <span class="rounded border border-emerald-400/40 px-2 py-1 text-emerald-700 dark:text-emerald-300">{{ row.platform === 'generic' ? hostname(row.url) : row.platform }}</span>
+        <span class="max-w-full rounded border border-primary-400/40 px-2 py-1 text-primary-700 [overflow-wrap:anywhere] dark:text-primary-300">{{ row.platform === 'generic' ? hostname(row.url) : row.platform }}</span>
         <span>{{ row.mode === 'api' ? 'API 采集' : '浏览器采集' }}</span><span aria-hidden="true">·</span><span>{{ collectBatchStatusLabels[row.status] }}</span>
       </div>
       <a :href="row.url" target="_blank" rel="noopener noreferrer" class="my-4 flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm hover:underline dark:border-dark-700"><PhLink class="mt-0.5 shrink-0" /><span class="min-w-0 grow break-all">{{ row.url }}</span><PhArrowSquareOut class="shrink-0" /></a>
@@ -75,7 +76,7 @@ function hostname(url: string) { return new URL(url).hostname }
   </aside>
 </template>
 <style scoped>
-.detail-icon { @apply grid size-8 place-items-center rounded-md border border-slate-200 disabled:opacity-40 dark:border-dark-700; }
+.detail-icon { @apply grid size-8 shrink-0 place-items-center rounded-lg border border-accent-200 hover:bg-accent-100 disabled:opacity-40 dark:border-dark-700 dark:hover:bg-white/5; }
 .detail-tab { @apply border-b-2 border-transparent pb-2; }
-.detail-tab[aria-pressed=true] { @apply border-emerald-500 font-semibold text-emerald-700 dark:text-emerald-300; }
+.detail-tab[aria-pressed=true] { @apply border-primary-500 font-semibold text-primary-700 dark:text-primary-300; }
 </style>

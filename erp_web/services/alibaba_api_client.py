@@ -13,6 +13,13 @@ import urllib.parse
 import urllib.request
 from dataclasses import replace
 
+from erp_web.schemas.alibaba_provider import BuyerOrder, Cargo, CollectedProduct, PreviewGroup, Shipment, ShipmentTrace
+from erp_web.schemas.alibaba_self_purchase import AlibabaPaymentAgreement, AlibabaPurchaseAddressCandidate, AlibabaPurchaseAddressFields
+from erp_web.services.alibaba_api_errors import AlibabaApiError, AlibabaApiRejected
+from erp_web.services.alibaba_order_payloads import order_result, preview_results, shipment_results, trace_results
+from erp_web.services.alibaba_product_payload import parse_1688_api_product
+from erp_web.services.alibaba_purchase_address import saved_addresses
+from erp_web.services.alibaba_purchase_payment import payment_agreement, payment_receipt
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
 from erp_web.schemas.external_requests import ExternalRequestBlocked
@@ -25,19 +32,18 @@ ORDER_DETAIL = "alibaba.trade.get.buyerView"
 LOGISTICS_INFO = "alibaba.trade.getLogisticsInfos.buyerView"
 LOGISTICS_TRACE = "alibaba.trade.getLogisticsTraceInfo.buyerView"
 BUYER_IDENTITY = 'alibaba.account.basic'
+ADDRESSES = "alibaba.trade.receiveAddress.get"
+PREVIEW = "alibaba.createOrder.preview"
+CREATE = "alibaba.trade.fastCreateOrder"
+ORDER_LIST = "alibaba.trade.getBuyerOrderList"
+PAY_URL = "alibaba.trade.grouppay.url.get"
+PAY_STATUS = "alibaba.trade.pay.protocolPay.isopen"
+PAY = "alibaba.trade.pay.protocolPay.preparePay"
 _NAMESPACES = {
     ORDER_DETAIL: "com.alibaba.trade",
     LOGISTICS_INFO: "com.alibaba.logistics",
     LOGISTICS_TRACE: "com.alibaba.logistics",
 }
-
-
-class AlibabaApiError(ValueError):
-    """可向用户展示的业务错误，不携带请求凭据或完整回执。"""
-
-
-class AlibabaApiRejected(AlibabaApiError):
-    """平台明确拒绝执行请求，不能与网络结果未知混为一谈。"""
 
 
 def _known_rejection(payload, api=""):
@@ -93,7 +99,7 @@ def _parse_response(api, payload, *, credentials=()):
             and isinstance(payload.get("productInfo"), dict) and not payload.get("errorCode")):
         return payload
     # 官方买家订单列表实测直接返回 result 和 totalRecord，不带 success。
-    if (api == 'alibaba.trade.getBuyerOrderList' and isinstance(payload, dict) and success is None
+    if (api == ORDER_LIST and isinstance(payload, dict) and success is None
             and not payload.get('errorCode') and not payload.get('error_code') and not payload.get('error')
             and isinstance(payload.get('result'), list) and type(payload.get('totalRecord')) is int
             and payload['totalRecord'] >= len(payload['result'])
@@ -111,19 +117,152 @@ def _parse_response(api, payload, *, credentials=()):
 
 
 class AlibabaProvider(ABC):
-    """供应商统一返回 ERP 使用的 1688 回执；商品详情按各自的接口协议提取。"""
+    """商品、采购、支付与物流的供应商业务契约。"""
+
+    @abstractmethod
+    def get_product(self, offer_id: str, source_url: str) -> CollectedProduct: ...
+
+    @abstractmethod
+    def get_buyer_id(self) -> str: ...
+
+    @abstractmethod
+    def get_order(self, number: str) -> BuyerOrder: ...
+
+    @abstractmethod
+    def find_order_numbers(self, external_id: str) -> list[str]: ...
+
+    @abstractmethod
+    def get_shipments(self, number: str) -> list[Shipment]: ...
+
+    @abstractmethod
+    def get_logistics_traces(self, number: str) -> list[ShipmentTrace]: ...
+
+    @abstractmethod
+    def list_addresses(self) -> list[tuple[AlibabaPurchaseAddressCandidate, AlibabaPurchaseAddressFields]]: ...
+
+    @abstractmethod
+    def preview_order(self, address: AlibabaPurchaseAddressFields, cargo: list[Cargo]) -> list[PreviewGroup]: ...
+
+    @abstractmethod
+    def create_order(self, address: AlibabaPurchaseAddressFields, cargo: list[Cargo], *, flow: str,
+                     channel: str, external_id: str) -> list[str]: ...
+
+    @abstractmethod
+    def get_cashier_url(self, numbers: list[str]) -> str: ...
+
+    @abstractmethod
+    def get_payment_agreement(self, channel: str) -> AlibabaPaymentAgreement: ...
+
+    @abstractmethod
+    def pay_order(self, number: str, *, channel: str, amount_fen: int, request_id: str) -> tuple[str, str]: ...
+
+
+class OpenApiAlibabaProvider(AlibabaProvider):
+    """使用 1688 开放平台业务协议的共用适配。"""
 
     product_detail_method = PRODUCT_DETAIL
 
     @abstractmethod
-    def request(self, api, values, *, namespace, semantics):
-        """向所选网关发送一次请求。"""
+    def _send(self, api, values, *, namespace, semantics): ...
 
-    def product_detail(self, offer_id):
-        raw = self.request(self.product_detail_method, {"offerDetailParam": {"offerId": int(offer_id), "country": "en"}},
-                           namespace="com.alibaba.fenxiao.crossborder", semantics="read")
-        product = _parse_response(self.product_detail_method, raw).get("result")
-        return _checked_product(product, offer_id, "offerId")
+    def _request(self, api, values, *, namespace="com.alibaba.trade", semantics="read"):
+        payload = self._send(api, values, namespace=namespace, semantics=semantics)
+        return _parse_response(api, payload, credentials=self._credentials)
+
+    def get_product(self, offer_id, source_url):
+        product = self._product_payload(offer_id)
+        return {"product": parse_1688_api_product(product, source_url, offer_id), "http_status": 200,
+                "request": {"method": self.product_detail_method, "offer_id": offer_id}}
+
+    def _product_payload(self, offer_id):
+        result = self._request(PRODUCT_DETAIL, {"offerDetailParam": {"offerId": int(offer_id), "country": "en"}},
+                               namespace="com.alibaba.fenxiao.crossborder").get("result")
+        return _checked_product(result, offer_id, "offerId")
+
+    def get_buyer_id(self):
+        payload = self._request(BUYER_IDENTITY, {}, namespace="com.alibaba.account")
+        result = payload.get("result")
+        identity = str(result.get("memberId") or "") if isinstance(result, dict) else ""
+        if not identity:
+            raise AlibabaApiError("1688 未返回有效的买家身份")
+        return identity
+
+    def _read_order(self, api, number):
+        return self._request(api, {"orderId": validate_order_number(number), "webSite": "1688"}, namespace=_NAMESPACES[api])
+
+    def get_order(self, number):
+        return order_result(self._read_order(ORDER_DETAIL, number), number)
+
+    def find_order_numbers(self, external_id):
+        payload = self._request(ORDER_LIST, {"outOrderId": external_id, "page": 1, "pageSize": 20,
+                                             "needBuyerAddressAndPhone": False})
+        data = payload.get("result")
+        rows = data.get("orderList", []) if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            return []
+        numbers = []
+        for row in rows:
+            base = row.get("baseInfo", {})
+            if str(row.get("exAttributes", {}).get("outOrderId") or base.get("outOrderId") or "") == external_id:
+                numbers.append(base.get("idOfStr") or base.get("id"))
+        return [validate_order_number(numbers[0])] if len(numbers) == 1 else []
+
+    def get_shipments(self, number):
+        return shipment_results(self._read_order(LOGISTICS_INFO, number))
+
+    def get_logistics_traces(self, number):
+        return trace_results(self._read_order(LOGISTICS_TRACE, number), number)
+
+    def list_addresses(self):
+        return saved_addresses(self._request(ADDRESSES, {}))
+
+    def preview_order(self, address, cargo):
+        return preview_results(self._request(PREVIEW, _purchase_arguments(address, cargo)))
+
+    def create_order(self, address, cargo, *, flow, channel, external_id):
+        payload = self._request(CREATE, {**_purchase_arguments(address, cargo), "flow": flow,
+                                "tradeType": "assureTrade", "preSelectPayChannel": channel,
+                                "outOrderId": external_id}, semantics="write")
+        result = payload.get("result", payload)
+        if not isinstance(result, dict):
+            raise AlibabaApiError("创建响应未返回有效订单号，请核验原请求")
+        numbers = result.get("orderIdList")
+        if numbers is None and result.get("orderId"):
+            numbers = [result["orderId"]]
+        if not isinstance(numbers, list) or len(numbers) != 1:
+            raise AlibabaApiError("创建响应未返回唯一订单号，请核验原请求")
+        return [validate_order_number(numbers[0])]
+
+    def get_cashier_url(self, numbers):
+        payload = self._request(PAY_URL, {"orderIds": [int(n) for n in numbers], "payPlatformType": "PC"})
+        return _cashier_url(payload)
+
+    def get_payment_agreement(self, channel):
+        return payment_agreement(self._request(PAY_STATUS, {}), channel)
+
+    def pay_order(self, number, *, channel, amount_fen, request_id):
+        payload = self._request(PAY, {"tradeWithholdPreparePayParam": {
+            "orderId": int(number), "payChannel": channel, "payAmount": amount_fen, "opRequestId": request_id,
+        }}, semantics="write")
+        return payment_receipt(payload, channel)
+
+
+def _purchase_arguments(address, cargo):
+    return {"addressParam": address, "cargoParamList": [
+        {"offerId": int(item["offer_id"]), "specId": item["spec_id"], "quantity": item["quantity"]}
+        for item in cargo
+    ]}
+
+
+def _cashier_url(payload):
+    url = payload.get("payUrl") or payload.get("url") or payload.get("result")
+    if isinstance(url, dict):
+        url = url.get("payUrl") or url.get("url")
+    parsed = urllib.parse.urlsplit(url) if isinstance(url, str) else None
+    if (not parsed or parsed.scheme != "https" or parsed.username or parsed.password
+            or not any(parsed.hostname == h or (parsed.hostname or "").endswith("." + h) for h in ("1688.com", "alipay.com"))):
+        raise AlibabaApiError("1688 未返回有效的官方收银台链接，请到 1688 已买到的货品中处理")
+    return url
 
 
 def _checked_product(product, offer_id, *identity_fields):
@@ -134,19 +273,20 @@ def _checked_product(product, offer_id, *identity_fields):
     raise AlibabaApiError("1688 返回的商品详情与请求不符")
 
 
-class OfficialAlibabaProvider(AlibabaProvider):
+class OfficialAlibabaProvider(OpenApiAlibabaProvider):
 
     def __init__(self, config, timeout):
         self.timeout = timeout
         self.app_key = str(config.get("app_key") or "").strip()
         self.app_secret = str(config.get("app_secret") or "").strip()
         self.access_token = str(config.get("access_token") or "").strip()
+        self._credentials = (self.app_secret, self.access_token)
         if not (self.app_key and self.app_secret and self.access_token):
             raise AlibabaApiError("请先在授权配置的「1688 授权」中连接采购账号；服务未配置时请联系管理员")
         if not re.fullmatch(r"[0-9]+", self.app_key):
             raise AlibabaApiError("1688 AppKey 格式无效")
 
-    def request(self, api, values, *, namespace, semantics):
+    def _send(self, api, values, *, namespace, semantics):
         path = f"param2/1/{namespace}/{api}/{self.app_key}"
         params = {key: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                   if isinstance(value, (dict, list, bool)) else str(value) for key, value in values.items()}
@@ -162,7 +302,7 @@ class OfficialAlibabaProvider(AlibabaProvider):
         )
         context = request_context(
             url, data=request.data, method="POST", timeout=self.timeout,
-            source="1688采购" + ("查询" if semantics == "read" else "支付" if api == "alibaba.trade.pay.protocolPay.preparePay" else "下单"), account_id="app:" + self.app_key, semantics=semantics,
+            source="1688采购" + ("查询" if semantics == "read" else "支付" if api == PAY else "下单"), account_id="app:" + self.app_key, semantics=semantics,
         )
         context = replace(context, interface=api, credential_id=credential_fingerprint(self.access_token))
         try:
@@ -200,35 +340,39 @@ class OfficialAlibabaProvider(AlibabaProvider):
 class SelfUseAlibabaProvider(OfficialAlibabaProvider):
     product_detail_method = SELF_PRODUCT_DETAIL
 
-    def product_detail(self, offer_id):
-        raw = self.request(self.product_detail_method, {"productID": int(offer_id), "webSite": "1688"},
-                           namespace="com.alibaba.product", semantics="read")
-        product = _parse_response(self.product_detail_method, raw).get("productInfo")
-        return _checked_product(product, offer_id, "productID", "productId")
+    def _product_payload(self, offer_id):
+        payload = self._request(SELF_PRODUCT_DETAIL, {"productID": int(offer_id), "webSite": "1688"},
+                                namespace="com.alibaba.product")
+        return _checked_product(payload.get("productInfo"), offer_id, "productID", "productId")
 
 
-class OneBoundAlibabaProvider(AlibabaProvider):
+class OneBoundAlibabaProvider(OpenApiAlibabaProvider):
     def __init__(self, config, timeout):
         if not (config.get('api_key') and config.get('api_secret') and config.get('access_token')):
             raise AlibabaApiError('当前方案的 1688 账号尚未连接，请联系管理员')
         self.config = dict(config)
+        self._credentials = tuple(str(config[key]) for key in ("api_key", "api_secret", "access_token"))
         self.timeout = timeout
         self.expected_buyer = str(config.get('member_id') or '')
         self._buyer_checked = False
 
-    def request(self, api, values, *, namespace, semantics):
+    def create_order(self, address, cargo, *, flow, channel, external_id):
+        raise AlibabaApiRejected("万邦创建采购订单的接口尚未确认")
+
+    def pay_order(self, number, *, channel, amount_fen, request_id):
+        raise AlibabaApiRejected("万邦免密支付的接口尚未确认")
+
+    def get_cashier_url(self, numbers):
+        return _cashier_url(self._request("alibaba.alipay.url.get", {"orderIdList": [int(n) for n in numbers]}))
+
+    def _send(self, api, values, *, namespace, semantics):
+        if semantics == "write":
+            raise AlibabaApiRejected("万邦写入接口尚未确认")
         try:
-            if api != BUYER_IDENTITY and self.expected_buyer and (not self._buyer_checked or semantics == 'write'):
-                try:
-                    identity = request_onebound(self.config, BUYER_IDENTITY, {}, namespace='com.alibaba.account', semantics='read', timeout=self.timeout)
-                    returned = _parse_response(BUYER_IDENTITY, identity).get('result', {}).get('memberId')
-                    if returned != self.expected_buyer:
-                        raise AlibabaApiError('当前接入的 1688 买家已变化，请重新核验')
-                    self._buyer_checked = True
-                except Exception:
-                    if semantics == 'write':
-                        raise AlibabaApiRejected('1688 买家身份核验未通过，尚未发起下单或支付，请重新核验') from None
-                    raise
+            if api != BUYER_IDENTITY and self.expected_buyer and not self._buyer_checked:
+                if self.get_buyer_id() != self.expected_buyer:
+                    raise AlibabaApiError('当前接入的 1688 买家已变化，请重新核验')
+                self._buyer_checked = True
             payload = request_onebound(self.config, api, values, namespace=namespace, semantics=semantics, timeout=self.timeout)
         except OneBoundApiRejected as exc:
             raise AlibabaApiRejected(str(exc)) from None
@@ -244,43 +388,13 @@ _PROVIDERS = {
 }
 
 
-def _provider_class(config):
+def alibaba_provider(config: dict) -> AlibabaProvider:
     # 旧调用方未传应用类型时使用跨境商详契约。
-    name = config.get('application_type', 'alibaba_crossborder')
+    name = config.get("application_type", "alibaba_crossborder")
     if name not in _PROVIDERS:
         raise AlibabaApiError("不支持的 1688 接入方案")
-    return _PROVIDERS[name]
-
-
-def product_detail_method(config):
-    return _provider_class(config).product_detail_method
-
-
-class AlibabaApiClient:
-    def __init__(self, config: dict):
-        try:
-            timeout = max(3, min(30, int(config.get("timeout_seconds") or 20)))
-        except (ValueError, TypeError):
-            timeout = 20
-        self.provider = _provider_class(config)(config, timeout)
-        self._credentials = tuple(str(config.get(key) or "").strip() for key in
-                                  ("access_token", "app_secret", "api_key", "api_secret"))
-
-    def query(self, api: str, order_number: str, *, logistics_id: str = "") -> dict:
-        if api not in _NAMESPACES:
-            raise AlibabaApiError("不支持的 1688 查询接口")
-        order_number = validate_order_number(order_number)
-        params = {"orderId": order_number, "webSite": "1688"}
-        if logistics_id:
-            params["logisticsId"] = logistics_id
-        return self._request(api, params, namespace=_NAMESPACES[api], semantics="read")
-
-    def buyer_identity(self):
-        return self._request(BUYER_IDENTITY, {}, namespace='com.alibaba.account', semantics='read')
-
-    def product_detail(self, offer_id: str) -> dict:
-        return self.provider.product_detail(offer_id)
-
-    def _request(self, api, values, *, namespace, semantics):
-        payload = self.provider.request(api, values, namespace=namespace, semantics=semantics)
-        return _parse_response(api, payload, credentials=self._credentials)
+    try:
+        timeout = max(3, min(30, int(config.get("timeout_seconds") or 20)))
+    except (ValueError, TypeError):
+        timeout = 20
+    return _PROVIDERS[name](config, timeout)

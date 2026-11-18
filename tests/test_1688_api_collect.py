@@ -1,8 +1,8 @@
 from __future__ import annotations
+from erp_web.services.alibaba_product_payload import parse_1688_api_product
 
 from erp_web.runtime_units.source_collect_1688_api import (
     extract_1688_offer_id,
-    parse_1688_api_product,
 )
 
 
@@ -18,10 +18,10 @@ def test_web_api_collection_accepts_detail_url_without_desktop(monkeypatch):
     from erp_web.services import image_service
 
     url = "https://detail.1688.com/offer/735716533861.html?spm=test"
-    def fetch_detail(config, offer_id):
+    def fetch_detail(config, offer_id, source_url):
         assert offer_id == "735716533861"
         assert config == {"access_token": "saved-token"}
-        return {"raw": {"subject": "厨房置物架", "images": ["https://example.test/product.jpg"]}}
+        return {"product": parse_1688_api_product({"subject": "厨房置物架", "images": ["https://example.test/product.jpg"]}, source_url, offer_id)}
 
     monkeypatch.setattr(collector, "alibaba_runtime_config", lambda _: {"access_token": "saved-token"})
     monkeypatch.setattr(collector, "request_1688_product_detail", fetch_detail)
@@ -52,7 +52,7 @@ def test_crossborder_product_request_and_sku_mapping(monkeypatch):
         assert not kwargs['follow_redirects']
         return io.BytesIO(json.dumps({'result': {'success': True, 'result': product}}).encode())
     monkeypatch.setattr(api, 'managed_urlopen', send)
-    result = api.AlibabaApiClient({'app_key': '4848173', 'app_secret': 'secret', 'access_token': 'buyer-token'}).product_detail('123456')
+    result = api.alibaba_provider({'app_key': '4848173', 'app_secret': 'secret', 'access_token': 'buyer-token'}).get_product('123456', 'https://detail.1688.com/offer/123456.html')['product']['api_raw']
     source = parse_1688_api_product(result, 'https://detail.1688.com/offer/123456.html', '123456')
     assert source['skus'][0]['options'] == {'颜色': '蓝色'}
     assert source['skus'][0]['stock'] == '0' and source['skus'][0]['price'] == '4.20'
@@ -79,13 +79,13 @@ def test_self_application_product_request_uses_its_own_api_and_validates_identit
 
     monkeypatch.setattr(api, 'managed_urlopen', send)
     config = {'application_type': 'alibaba', 'app_key': '1938727', 'app_secret': 'secret', 'access_token': 'self-token'}
-    result = request_1688_product_detail(config, '123456')
+    result = request_1688_product_detail(config, '123456', 'https://detail.1688.com/offer/123456.html')
     assert result['request']['method'] == 'alibaba.product.get'
-    assert result['raw'] == product and len(calls) == 1
-    assert parse_1688_api_product(result['raw'], 'https://detail.1688.com/offer/123456.html', '123456')['skus'][0]['id'] == '7'
+    assert result['product']['api_raw'] == product and len(calls) == 1
+    assert result['product']['skus'][0]['id'] == '7'
     product['productID'] = 999999
     with pytest.raises(api.AlibabaApiError, match='商品详情与请求不符'):
-        request_1688_product_detail(config, '123456')
+        request_1688_product_detail(config, '123456', 'https://detail.1688.com/offer/123456.html')
 
 
 def test_parse_1688_api_product_maps_common_fields() -> None:

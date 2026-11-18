@@ -42,6 +42,21 @@ export interface BackendAlibabaAuthorizationStatus {
   needs_reauthorization: boolean
 }
 
+export interface BackendOneBoundShopBinding {
+  id: string
+  nick: string
+  status: string
+  expires_at: string
+}
+
+export interface BackendOneBoundShopBindingPage {
+  ok: boolean
+  items: Array<BackendOneBoundShopBinding>
+  page: number
+  total: number
+  page_count: number
+}
+
 export interface BackendForbiddenCategory {
   category_id: string
   name: string

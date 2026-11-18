@@ -73,7 +73,15 @@ describe('系统设置入口与同步间隔', () => {
     expect(fetchYandexWarehouses).toHaveBeenCalledWith(false)
   })
   it.each([false, true])('侧栏收起=%s 时底部入口仍可导航', async collapsed => {
-    const wrapper = mount(AppSidebar, { props: { items: [], activeKey: 'orders', steps: [], progress: 0, collapsed }, global })
+    const wrapper = mount(AppSidebar, {
+      props: { items: [], activeKey: 'orders', collapsed },
+      global: { stubs: { RouterLink: true } },
+    })
+    expect(wrapper.classes('workspace-sidebar--collapsed')).toBe(collapsed)
+    const toggle = wrapper.get(`[aria-label="${collapsed ? '展开导航' : '收起导航'}"]`)
+    expect(toggle.attributes('aria-expanded')).toBe(String(!collapsed))
+    await toggle.trigger('click')
+    expect(wrapper.emitted('toggleCollapse')).toHaveLength(1)
     expect(fetchSystemSettings).not.toHaveBeenCalled()
     await wrapper.get('[aria-label="系统设置"]').trigger('click'); await flushPromises()
     expect(wrapper.emitted('navigate')).toEqual([['systemSettings']])

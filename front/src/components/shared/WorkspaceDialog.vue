@@ -104,16 +104,19 @@ onBeforeUnmount(() => {
         <slot name="header" :title-id="titleId">
           <h3 :id="titleId" class="text-lg font-bold">{{ title }}</h3>
         </slot>
-        <button
-          type="button"
-          class="btn btn-outline"
-          :disabled="closeDisabled"
-          :aria-label="`关闭${title}`"
-          autofocus
-          @click="requestClose"
-        >
-          <slot name="close">关闭</slot>
-        </button>
+        <div class="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            class="btn btn-outline"
+            :disabled="closeDisabled"
+            :aria-label="`关闭${title}`"
+            autofocus
+            @click="requestClose"
+          >
+            <slot name="close">关闭</slot>
+          </button>
+          <slot name="header-actions" />
+        </div>
       </header>
       <section v-if="$slots.toolbar" class="workspace-dialog-toolbar shrink-0"><slot name="toolbar" /></section>
       <div data-workspace-dialog-body class="min-h-0 overflow-y-auto overscroll-contain p-5"><slot /></div>

@@ -31,3 +31,18 @@ class AlibabaAuthorizationStatus(TypedDict):
     expires_at: float
     refreshable: bool
     needs_reauthorization: bool
+
+
+class OneBoundShopBinding(TypedDict):
+    id: str
+    nick: str
+    status: str
+    expires_at: str
+
+
+class OneBoundShopBindingPage(TypedDict):
+    ok: bool
+    items: list[OneBoundShopBinding]
+    page: int
+    total: int
+    page_count: int

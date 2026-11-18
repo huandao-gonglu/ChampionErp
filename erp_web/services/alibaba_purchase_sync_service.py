@@ -6,14 +6,14 @@ from copy import deepcopy
 from erp_web.schemas.alibaba_orders import PurchaseSyncRequest
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.schemas.orders import utc_iso
-from erp_web.services.alibaba_api_client import AlibabaApiClient, AlibabaApiError, ORDER_DETAIL, LOGISTICS_INFO, validate_order_number
+from erp_web.services.alibaba_api_client import AlibabaApiError, alibaba_provider, validate_order_number
 from erp_web.services.alibaba_purchase_assignment import propose_parcels, supported
-from erp_web.services.alibaba_purchase_query_service import normalize_order, normalize_products, normalize_parcels, query_parcel_traces
+from erp_web.services.alibaba_purchase_query_service import shipment_parcels, query_parcel_traces
 
 logger = logging.getLogger(__name__)
 
 
-def sync_purchases(procurement, fulfillment, config_provider, order_id, record_ids, *, once=False, client_factory=AlibabaApiClient):
+def sync_purchases(procurement, fulfillment, config_provider, order_id, record_ids, *, once=False, client_factory=alibaba_provider):
     """采购回填后的整组同步失败不撤销已完成的采购。"""
     try:
         _sync_records(procurement, fulfillment, config_provider, order_id, record_ids,
@@ -22,7 +22,7 @@ def sync_purchases(procurement, fulfillment, config_provider, order_id, record_i
         logger.error('批量采购已回填，采购进度同步未完成')
 
 
-def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False, client_factory=AlibabaApiClient):
+def sync_purchase(procurement, fulfillment, config_provider, body, *, once=False, client_factory=alibaba_provider):
     """刷新所选 1688 采购单的完整商品及物流快照。"""
     request = PurchaseSyncRequest.model_validate(body)
     _sync_records(procurement, fulfillment, config_provider, request.order_id,
@@ -43,17 +43,26 @@ def _sync_records(procurement, fulfillment, config_provider, order_id, record_id
     results = {}
 
     class GroupQuery:
-        def query(self, api, number):
-            key = (api, number)
+        def _read(self, operation, number):
+            key = (operation, number)
             if key not in results:
                 try:
-                    results[key] = client.query(api, number)
+                    results[key] = operation(number)
                 except Exception as exc:
                     results[key] = exc
             result = results[key]
             if isinstance(result, Exception):
                 raise result
             return deepcopy(result)
+
+        def get_order(self, number):
+            return self._read(client.get_order, number)
+
+        def get_shipments(self, number):
+            return self._read(client.get_shipments, number)
+
+        def get_logistics_traces(self, number):
+            return self._read(client.get_logistics_traces, number)
 
     def query_client(current):
         nonlocal config, client
@@ -85,9 +94,7 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
         config = config_provider()
         client = client_factory(config)
         number = validate_order_number(record.purchase_order_number)
-        order = client.query(ORDER_DETAIL, number)
-        status = normalize_order(order, number)
-        products = normalize_products(order)
+        order = client.get_order(number)
         checked_at = utc_iso()
         previous_data = value.get("data") or {}
         parcels = previous_data.get("logistics")
@@ -95,8 +102,8 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
         logistics = None
         warning = ""
         try:
-            logistics = client.query(LOGISTICS_INFO, number)
-            parcels = normalize_parcels(logistics, order)
+            logistics = client.get_shipments(number)
+            parcels = shipment_parcels(logistics, order)
             logistics_checked_at = utc_iso()
         except (AlibabaApiError, ExternalRequestBlocked) as exc:
             logistics = None
@@ -108,7 +115,7 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
         if config_provider() != config:
             raise AlibabaApiError("1688 授权已变化，请重新刷新采购进度")
         value["data"] = {"ok": True, "record_id": record_id, "order_number": number, "checked_at": checked_at,
-                         "order": status, "products": products, "logistics": parcels, "logistics_warning": warning,
+                         "order": order.status, "products": order.products, "logistics": parcels, "logistics_warning": warning,
                          "logistics_checked_at": logistics_checked_at}
         if logistics is None:
             value.update(state="synced", message="采购订单状态已更新，物流本次未更新", error="")

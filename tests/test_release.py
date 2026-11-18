@@ -426,6 +426,7 @@ def test_resume_after_drain_timeout_uses_staged_build(tmp_path, monkeypatch, des
 
     monkeypatch.setattr(release, 'verify_public', verify)
     monkeypatch.setattr(release, 'publish_desktop_update', publish)
+    monkeypatch.setattr(release, 'cleanup_server_artifacts', lambda *args: {})
     release.resume_release(argparse.Namespace(resume=tmp_path, public_url='https://erp.example'))
     assert calls == ['server', 'public'] + ([desktop['policy']] if desktop else [])
     assert json.loads((tmp_path / 'release.json').read_text())['status'] == 'complete'

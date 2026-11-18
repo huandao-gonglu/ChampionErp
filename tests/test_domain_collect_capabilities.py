@@ -35,6 +35,7 @@ from erp_web.schemas.collect_capabilities import (
     SourceCollectRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.collection_link_resolution import add_collection_links
 
 
 def _execution(operation_key: str = "op-1") -> AiExecutionContext:
@@ -50,6 +51,9 @@ def _execution(operation_key: str = "op-1") -> AiExecutionContext:
 
 def _collect_scope(**overrides: Any) -> CollectCapabilityScope:
     defaults: dict[str, Any] = dict(
+        link_adder=lambda entries, before_save: add_collection_links(
+            entries, store=get_context().collection_links, before_save=before_save,
+        ),
         source_collector=lambda url, mode, platform, claim_platforms: {
             "ok": True,
             "product": {"product_id": "product-collected", "name": "Fan"},

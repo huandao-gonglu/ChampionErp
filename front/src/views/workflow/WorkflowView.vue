@@ -92,7 +92,6 @@ const {
   error,
 } = storeToRefs(activityStore)
 const {
-  workflowSteps,
   progressPercent,
   imagePool,
 } = storeToRefs(store)
@@ -424,27 +423,26 @@ watch(
 </script>
 
 <template>
-  <div class="min-h-screen bg-accent-100 dark:bg-dark-950">
-    <div class="min-h-screen lg:grid" :style="{ gridTemplateColumns: appStore.sidebarCollapsed ? '84px minmax(0,1fr)' : '280px minmax(0,1fr)' }">
-      <AppSidebar
-        class="sticky top-0 hidden h-screen lg:flex"
-        :items="navItems"
-        :active-key="activeNav"
-        :steps="workflowSteps"
-        :progress="progressPercent"
-        :collapsed="appStore.sidebarCollapsed"
-        @navigate="navigate"
-        @toggle-collapse="appStore.setSidebarCollapsed(!appStore.sidebarCollapsed)"
-      />
+  <div class="min-h-dvh bg-accent-100 dark:bg-dark-900">
+    <div class="min-h-dvh items-start md:grid md:grid-cols-[auto_minmax(0,1fr)]">
+      <div class="sticky top-0 hidden md:block">
+        <AppSidebar
+          :items="navItems"
+          :active-key="activeNav"
+          :collapsed="appStore.sidebarCollapsed"
+          @navigate="navigate"
+          @toggle-collapse="appStore.setSidebarCollapsed(!appStore.sidebarCollapsed)"
+        />
+      </div>
 
-      <main class="min-w-0">
-        <div class="sticky top-0 z-20 border-b border-accent-200 bg-white/90 px-4 py-3 backdrop-blur dark:border-dark-700 dark:bg-dark-900/90 lg:hidden">
-          <select :value="activeNav" class="input" @change="navigate(($event.target as HTMLSelectElement).value)">
+      <main class="workflow-main min-w-0" :class="{ 'workflow-main--collect': activeNav === 'collect' }">
+        <div class="workflow-mobile-nav sticky top-0 z-20 flex shrink-0 items-center border-b border-accent-200 bg-white dark:border-dark-700 dark:bg-dark-900 md:hidden">
+          <select :value="activeNav" aria-label="工作区导航" class="input h-9 max-w-sm !py-0" @change="navigate(($event.target as HTMLSelectElement).value)">
             <option v-for="item in navItems" :key="item.key" :value="item.key">{{ item.title }}</option>
           </select>
         </div>
 
-        <div class="px-4 py-6 sm:px-6 lg:px-8">
+        <div class="workflow-content py-4">
           <DashboardView
             v-if="activeNav === 'dashboard'"
             :product="product"
@@ -721,3 +719,31 @@ watch(
     </div>
   </div>
 </template>
+
+<style scoped>
+.workflow-main {
+  --workflow-mobile-nav-height: 0px;
+}
+.workflow-content, .workflow-mobile-nav {
+  padding-inline: 20px;
+}
+.workflow-main--collect {
+  @apply flex min-h-dvh flex-col;
+}
+.workflow-main--collect > .workflow-content {
+  @apply flex min-h-0 flex-1 flex-col;
+}
+@media (width < 768px) {
+  .workflow-main {
+    --workflow-mobile-nav-height: 56px;
+  }
+}
+.workflow-mobile-nav {
+  block-size: var(--workflow-mobile-nav-height);
+}
+@media (height >= 560px) {
+  .workflow-main--collect {
+    block-size: 100dvh;
+  }
+}
+</style>

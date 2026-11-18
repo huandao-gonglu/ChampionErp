@@ -8,7 +8,7 @@ import pytest
 from erp_web.context import get_context
 from erp_web.product_model.sku_model import collected_skus, merge_collected_skus, effective_sku
 from erp_web.product_model.alibaba_purchase_model import frozen_purchase_identity
-from erp_web.runtime_units.source_collect_1688_api import parse_1688_api_product
+from erp_web.services.alibaba_product_payload import parse_1688_api_product
 from erp_web.runtime_units.source_collect_parsers import parse_1688_product
 from erp_web.runtime_units.order_source_bindings import bindings_from_publish_job
 from tests.test_1688_browser_parser import _sample_1688_html

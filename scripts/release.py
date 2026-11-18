@@ -202,6 +202,19 @@ def publish_desktop_update(args, record, folder, source):
     write_record(folder / 'release.json', record)
 
 
+def cleanup_server_artifacts(args, record, source):
+    # 使用本次源码，旧发布记录也能重试清理；清理失败保留 server_published 以便续发。
+    cleanup_script = source / 'deploy/cleanup_releases.py'
+    if not cleanup_script.is_file():
+        cleanup_script = ROOT / 'deploy/cleanup_releases.py'
+    staging = '/srv/champion-erp/staging/' + record['release_id']
+    subprocess.run(['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes',
+                    '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes',
+                    cleanup_script, args.ssh_host + ':' + staging + '/cleanup_releases.py'], check=True)
+    return json.loads(remote_output(args, ['python3', staging + '/cleanup_releases.py',
+        '--release-id', record['release_id'], '--revision', record['revision']]))
+
+
 def finish_release(args, record, folder, source):
     record['public'] = verify_public(args.public_url, source)
     write_record(folder / 'release.json', record)
@@ -209,6 +222,8 @@ def finish_release(args, record, folder, source):
         publish_desktop_update(args, record, folder, source)
     elif record.get('desktop_target'):
         print('旧发布记录没有桌面分发包，本次继续完成服务器和网页发布。', flush=True)
+    print('清理历史程序、桌面安装包及上传副本，仅保留当前版本', flush=True)
+    record['cleanup'] = cleanup_server_artifacts(args, record, source)
     record['status'] = 'complete'
     write_record(folder / 'release.json', record)
     print(f"发布完成，版本 {record['version']}，代码 {record['revision'][:12]}。记录保存在 {folder / 'release.json'}", flush=True)

@@ -112,7 +112,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 商品、采购、支付和物流经 `alibaba_runtime_config` 使用当前通道的个人凭据。每套方案有单独的授权卡，状态与授权操作显式指定方案。回调按发起时的用户及方案验证；切换业务方案保留其他授权。企业自用卡的管理员可通过 `POST /api/alibaba/authorization/self-use-token` 绑定开放平台签发的 Token。企业自用回调返回非正有效期时验证实际凭据后再保存。万邦卡支持管理员绑定自己的 1688 买家 Token，普通用户在线登录待接入，旧 Session 凭据保留原协议。未发布的默认买家绑定、跨通道核验和自动归并流程已撤除。
 
-`alibaba_api_client.py` 按配置集中实例化企业自用、跨境 ERP 或万邦实现。万邦将当前用户的 Token 与业务参数一起放入 `_o_args`，企业 Key、Secret 位于外层。
+`alibaba_provider(config)` 按配置选择企业自用、跨境 ERP 或万邦实现。`AlibabaProvider` 定义商品、采购、支付和物流的业务方法，平台报文在供应商适配内转换，调用方使用 `schemas/alibaba_provider.py` 及既有业务 Schema。采购预览以业务形状保存，已有记录按原字段读取。万邦创建采购订单和免密支付暂未确认，调用直接抛出明确未执行的异常。万邦买家身份和订单列表使用外层 `access_token`，其他已接入接口将个人 Token 放入 `_o_args`，企业 Key、Secret 位于外层。管理员通过 GET `/api/admin/alibaba/onebound/shop-bindings` 按页读取企业授权店铺目录，响应仅含授权状态及分页。
 
 `onebound_api_transport.py` 保留固定网关、真实读写语义及展开响应适配；采购库 v4 别名表保留旧数据和网络中请求的回执读取能力，当前流程不自动归并。负向对照已证明同一接口传无效 Session 仍可能返回默认买家，不能将调用成功当作个人授权验收。协议缺口与后续双买家验收见 [1688 授权与接入](alibaba-authorization.md)。
 
@@ -165,6 +165,9 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 `erp_web/release_guard.py`。新增能启动业务工作的入口须在领取前检查准入；已接工作的异步分支须在提交到线程或队列前登记，
 直到真实工作返回。排队和线程交接期间同样受保护。可恢复的外部确认由原领域服务处理，平台待确认状态本身不占用发布等待。
 运行细节与首次接入步骤见[统一编译与发布](server-deployment.md#统一编译与发布)。
+整次发布的公网及桌面验收通过后，`deploy/cleanup_releases.py` 持有服务器/桌面发布锁，
+校验当前版本与清单后清理旧程序、旧桌面包及 staging 上传副本；发布失败前不清理回退程序。
+当前版、待续发版本、发布记录、业务数据和手工备份保留，清理失败沿用既有发布续发入口重试。
 
 统一发布默认分发可选桌面更新，构建用 Mac 同样通过客户端升级。`--server-only` 跳过桌面打包和分发。
 桌面版本发布由 `scripts/release.py` 和 `deploy/publish_desktop.py` 写入同一套平台/架构清单，Nginx 独立提供安装包。
@@ -245,6 +248,8 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 
 - `source_sites.py` 的采集质量门槛与核价/发布条件分开：1688 有标题和图片且未被验证拦截即可入库。缺失包装长宽高、重量通过 `collect_helpers.py` 的 `missing_fields` / `next_action` 提示在 SKU 页补齐，不触发采集失败；有规格时逐 SKU 判断包装完整性，不用首项资料代表整组。
 - 采集页由 `CollectView.vue` 组织左侧 URL 列表和右侧所选链接详情。浏览器和 1688 API 链接共用个人空间 `stores/collection_links.py` 的 SQLite 清单；规范化 URL 唯一，保留商品查询参数。商品原文、SKU 与图片继续归 ProductStore。
+- 添加链接时，浏览器和 API 模式共用 `collection_link_resolution.py` 从 1688 分享文案提取链接，并通过固定 `qr.1688.com` 短链地址解析商品编号。写入清单前转换短链，按标准商品 URL 保存和去重，同时保留所选采集方式。执行时由既有采集入口读取已保存地址。
+- 主 Agent 的 `collection_links_add` 与页面的「添加链接」共用 `add_collection_links`，只写当前空间的待采集清单，返回规范化链接、新增和重复数量。浏览器模式是默认值，保存链接不需要桌面连接。`source_collect` 和 `collect_batch` 仍用于用户要求实际采集商品的情况。
 - `collection.links` 与 `collection.history` 为页面与 AI 共用只读查询。前端进入页面、恢复焦点和页面可见期间刷新清单；旧浏览器队列按账号导入，成功后清除旧缓存。编辑、移除和启动均携带链接版本；删除记录不删除采集箱商品。换 URL 时清除原链接的结果和日志。
 - `/api/collection-links/manage` 管理链接，`/run` 只执行指定版本的单条链接。桌面交接仅传本次选择的 ID 和版本。网页可直接执行 API 采集。后台先持久化本条结果，再返回完成回执。前端短时断线只查询原回执。后台异常中断的执行保留为待确认，不参与失败项批量重试。
 - `/api/collection-links/verify` 按链接版本检查服务端保存的原验证标签。正常完成后继续原页，关闭原标签则记录失败。取消等待或关闭页面保留验证状态和后续未开始链接；后续条目仍由打开的客户端逐条派发。

@@ -8,6 +8,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 
+from erp_web.services import alibaba_api_client as api
+
 from erp_web.context import get_context
 from erp_web.http_request import validate_request_metadata
 from erp_web.schemas.requests import RequestValidationError
@@ -187,13 +189,13 @@ def self_use(service, monkeypatch):
 def test_self_use_callback_verifies_actual_token_when_lifetime_is_nonpositive(self_use, monkeypatch, expires):
     monkeypatch.setattr(self_use, '_token', lambda *args: token(expires_in=expires))
     calls = []
-    def verify(client, method, values):
-        calls.append((method, client.provider.access_token))
+    def verify(client, method, values, **kwargs):
+        calls.append((method, client.access_token))
         return {'success': True, 'result': {'receiveAddressItems': []}}
-    monkeypatch.setattr(oauth.AlibabaSelfPurchaseClient, 'call', verify)
+    monkeypatch.setattr(api.SelfUseAlibabaProvider, '_send', verify)
     callback = 'http://localhost:5050/auth/alibaba/callback?' + urlencode({'state': start_state(self_use), 'code': 'once'})
     status = self_use.complete_from_url(callback, 'alibaba')
-    assert calls == [(oauth.ADDRESSES, 'buyer-token')]
+    assert calls == [(api.ADDRESSES, 'buyer-token')]
     assert status['authorized'] and status['member_id'] == 'buyer-a' and status['expires_at'] == 0
     assert self_use.runtime_config()['access_token'] == 'buyer-token'
     with pytest.raises(ValueError, match='失效或不匹配'):
@@ -204,12 +206,12 @@ def test_manual_self_use_token_checks_current_credential_and_preserves_grant_on_
     monkeypatch.setattr(self_use, '_token', lambda *args: token())
     self_use.callback('once', start_state(self_use))
     original = self_use.store.alibaba_credentials()['authorization']
-    def verify(client, method, values):
-        assert method == oauth.ADDRESSES
-        if client.provider.access_token == 'bad':
+    def verify(client, method, values, **kwargs):
+        assert method == api.ADDRESSES
+        if client.access_token == 'bad':
             raise ValueError('1688 拒绝访问')
-        return {'result': {'receiveAddressItems': []}}
-    monkeypatch.setattr(oauth.AlibabaSelfPurchaseClient, 'call', verify)
+        return {'success': True, 'result': {'receiveAddressItems': []}}
+    monkeypatch.setattr(api.SelfUseAlibabaProvider, '_send', verify)
     with pytest.raises(ValueError, match='拒绝访问'):
         self_use.bind_self_use_token('bad')
     monkeypatch.setattr(self_use, '_token', lambda *args: token(access_token='bad', expires_in='-1'))
@@ -268,10 +270,10 @@ def test_manual_self_use_binding_http_is_admin_only(self_use, monkeypatch):
     from tests.account_test_utils import authenticated_headers
 
     calls = []
-    def read_addresses(client, method, values):
-        calls.append((method, client.provider.access_token))
-        return {'result': {'receiveAddressItems': []}}
-    monkeypatch.setattr(oauth.AlibabaSelfPurchaseClient, 'call', read_addresses)
+    def read_addresses(client, method, values, **kwargs):
+        calls.append((method, client.access_token))
+        return {'success': True, 'result': {'receiveAddressItems': []}}
+    monkeypatch.setattr(api.SelfUseAlibabaProvider, '_send', read_addresses)
     with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
         admin_headers = authenticated_headers(server)
         accounts = server.account_runtime.store
@@ -287,7 +289,7 @@ def test_manual_self_use_binding_http_is_admin_only(self_use, monkeypatch):
             assert requests.post(endpoint, headers=admin_headers, json={}, timeout=3).status_code == 400
             response = requests.post(endpoint, headers=admin_headers, json=body, timeout=3)
             assert response.status_code == 200 and response.json()['authorized']
-            assert 'private-token' not in response.text and calls == [(oauth.ADDRESSES, 'private-token')]
+            assert 'private-token' not in response.text and calls == [(api.ADDRESSES, 'private-token')]
         finally:
             server.shutdown()
             thread.join(timeout=3)
@@ -426,3 +428,53 @@ def test_explicit_provider_grants_survive_business_switch_and_out_of_order_callb
         assert service.status(provider)['active']
         assert service.runtime_config()['access_token'] == 'token-' + key
         assert all(service.status(p)['authorized'] for p in pending)
+
+
+
+def test_onebound_shop_bindings_route_only_exposes_admin_listing(monkeypatch):
+    from http.server import ThreadingHTTPServer
+    from threading import Thread
+    import requests
+    from erp_web.http_handler import Handler
+    from erp_web.schemas.accounts import SESSION_COOKIE
+    from erp_web.services import onebound_api_transport as transport
+    from tests.account_test_utils import authenticated_headers
+    from tests.test_onebound_api import configure, response
+
+    configure(get_context().config)
+    calls = []
+
+    def send(request, **kwargs):
+        parsed = urlsplit(request.full_url)
+        assert parsed.path == '/sys/shop_bind_list/'
+        params = parse_qs(parsed.query)
+        assert params['nick'] == ['店铺甲'] and params['page'] == ['2']
+        assert params['key'] == ['vendor-key'] and params['secret'] == ['vendor-secret']
+        assert 'access_token' not in params
+        assert not kwargs['follow_redirects'] and kwargs['request_context'].semantics == 'read'
+        calls.append(parsed.path)
+        return response({'error_code': '0000', 'items': {'page': 2, 'total_results': '51', 'pagecount': 2,
+            'item': [{'shop_bind_id': 'shop-1', 'nick': '店铺甲', 'status': '1', 'exp_time': None,
+                      'api_key': 'vendor-key', 'session': 'private-session'}]}})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', send)
+    with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+        headers = authenticated_headers(server)
+        accounts = server.account_runtime.store
+        user = accounts.create_user('shop-reader@example.test', '采购员', 'test-hash')
+        cookie, _ = accounts.create_session(user['id'], user['password_hash'])
+        endpoint = f'http://127.0.0.1:{server.server_port}/api/admin/alibaba/onebound/shop-bindings'
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            assert requests.get(endpoint, timeout=3).status_code == 401
+            assert requests.get(endpoint, cookies={SESSION_COOKIE: cookie}, timeout=3).status_code == 403
+            assert calls == []
+            result = requests.get(endpoint, headers=headers, params={'nick': '店铺甲', 'page': '2'}, timeout=3)
+            assert result.status_code == 200
+            assert result.json() == {'ok': True, 'page': 2, 'total': 51, 'page_count': 2,
+                                     'items': [{'id': 'shop-1', 'nick': '店铺甲', 'status': '1', 'expires_at': ''}]}
+            assert len(calls) == 1
+        finally:
+            server.shutdown()
+            worker.join(timeout=3)

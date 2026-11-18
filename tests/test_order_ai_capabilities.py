@@ -29,7 +29,7 @@ from erp_web.schemas.ai_tools import AiToolExecutionError, AiToolSchemaError, va
 from erp_web.schemas.alibaba_self_purchase import SelfPurchaseCreateRequest, SelfPurchasePayRequest, SelfPurchasePreviewRequest
 from erp_web.schemas.order_capabilities import OrderRequest, OrderFulfillmentRequest, OrderPurchaseRecordRequest, OrderNotificationRequest
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.alibaba_self_purchase_client import CREATE, PAY
+from erp_web.services.alibaba_api_client import CREATE, PAY
 from tests.approval_support import _approved_execution, _execution
 from tests.test_alibaba_self_purchase import setup_purchase, domain, preview, target, NUMBER
 from tests.test_alibaba_purchase_payment import payment
