@@ -32,8 +32,11 @@ watch(registering, async (isRegistering, _, onCleanup) => {
       const saved = await desktop.savedLogin()
       if (active) {
         canRemember.value = saved.available
-        if (!password.value && !email.value && saved.password) {
-          email.value = saved.email; password.value = saved.password; remember.value = true
+        auto.value = saved.available && saved.auto === true
+        if (!password.value && !email.value) {
+          email.value = saved.email
+          password.value = saved.password
+          remember.value = Boolean(saved.password)
         }
       }
     } catch { if (active) canRemember.value = false }

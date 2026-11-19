@@ -10,6 +10,7 @@ import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { desktopLaunch, receivedDesktopHandoff, dismissDesktopLaunch, retryDesktopLaunch, resetDesktopHandoff, acknowledgeDesktopHandoff, type DesktopHandoffState } from '@/utils/desktopHandoff'
 
 const desktopShell = hasLocalOperations()
+const development = import.meta.env.DEV
 const router = useRouter()
 const account = useAccountStore()
 const chat = useAiChatStore()
@@ -93,12 +94,12 @@ onBeforeUnmount(() => { ++generation; unsubscribe?.() })
 <template>
   <aside v-if="!desktopShell && desktopLaunch && !downloadsOpen" role="status" aria-label="打开桌面端" class="fixed bottom-5 right-5 z-[100] max-w-sm rounded-xl border border-accent-200 bg-white p-4 shadow-lg dark:border-dark-700 dark:bg-dark-900">
     <div class="flex items-start justify-between gap-4">
-      <p>{{ desktopLaunch.status === 'opened' ? '已在桌面端打开' : desktopLaunch.status === 'opening' ? '正在打开桌面端…' : desktopLaunch.error || '没有打开？可以重试或下载安装。' }}</p>
+      <p>{{ desktopLaunch.status === 'opened' ? '已在桌面端打开' : desktopLaunch.status === 'opening' ? '正在打开桌面端…' : desktopLaunch.error || (development ? '请在开发桌面登录同一账号。窗口未打开时可以重试。' : '没有打开？可以重试或下载安装。') }}</p>
       <button type="button" class="text-accent-500" aria-label="关闭打开提示" @click="dismissDesktopLaunch">×</button>
     </div>
     <div v-if="desktopLaunch.status === 'waiting' || desktopLaunch.status === 'error'" class="mt-3 flex gap-3">
       <button type="button" class="btn btn-primary" @click="retryDesktopLaunch">重试</button>
-      <button type="button" class="btn btn-outline" @click="showDownloads">下载安装</button>
+      <button v-if="!development" type="button" class="btn btn-outline" @click="showDownloads">下载安装</button>
     </div>
   </aside>
   <aside v-if="receiveError" role="alert" class="fixed bottom-5 right-5 z-[100] max-w-sm rounded-xl border bg-white p-4 shadow-lg dark:bg-dark-900">

@@ -1,7 +1,7 @@
 """图片批次的领域进度；模型消息仍由 Pydantic AI 保存。"""
 
 from typing import Literal, NotRequired, TypedDict
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .image_sets import ImageSetPlan, ImageSetPlanPayload
 
@@ -49,6 +49,16 @@ class ImageBatchItem(BaseModel):
     started_at: str = ""
     finished_at: str = ""
     result_asset_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def classify_unsent_canvas_timeout(self):
+        # 旧桌面执行器将登录和排队超时一律标为结果未知，回执仍保留了尚未发送的明确原因。
+        if self.status == "failed" and self.outcome_unknown and self.error in {
+            "等待 Google 登录超时，本次尚未发送修图请求；登录后可重新执行。",
+            "Gemini 浏览器正在处理另一张图片，本次尚未发送。",
+        }:
+            self.outcome_unknown = False
+        return self
 
 
 class ImageBatch(BaseModel):

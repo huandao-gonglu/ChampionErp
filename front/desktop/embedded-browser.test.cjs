@@ -3,7 +3,7 @@ const { EventEmitter } = require('node:events')
 const { test } = require('node:test')
 const { createEmbeddedBrowser, allowedNavigation } = require('./embedded-browser.cjs')
 
-function fixture() {
+function fixture(development = false) {
   let account = 'erp/first'
   const keys = []
   const windows = []
@@ -29,13 +29,14 @@ function fixture() {
     getContentSize() { return [1100, 800] }
     isVisible() { return !!this.visible }
     show() { this.visible = true }
+    showInactive() { this.visible = true }
     hide() { this.visible = false }
     isDestroyed() { return !!this.closed }
     destroy() { this.closed = true; this.emit('closed') }
     setTitle() {}
   }
   const browser = createEmbeddedBrowser({ BaseWindow: Window, WebContentsView: View, parent: () => undefined,
-    account: () => account, session: { fromPartition(key) {
+    development, account: () => account, session: { fromPartition(key) {
       keys.push(key)
       return { webRequest: { onErrorOccurred(handler) { networkErrors.push(handler) } }, flushStorageData() {}, cookies: { async flushStore() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, async setProxy() {} }
     } } })
@@ -151,9 +152,107 @@ test('主文档中止触发登录核对，资源中止和取消的任务不触�
   networkErrors[0](error)
   assert.equal(await call('recover_login', { page, expression: 'auth-check' }), false)
   networkErrors[0]({ ...error, resourceType: 'mainFrame' })
-  const pending = browser.handle('recover_login', { page, expression: 'auth-check' }, 'erp/first', { active: () => false })
+  const pending = browser.handle('recover_login', { page, expression: 'auth-check' }, 'erp/first', { id: 'request', active: () => false })
   views[1].webContents.executeJavaScript = async () => ({ signedIn: true })
   assert.equal(await pending, false)
   assert.ok(contents.getURL().includes('/challenge/'))
   assert.ok(views[1].webContents.isDestroyed())
+})
+
+test('Canvas 预检和修图复用同一预览，失败和账号切换释放页面', async () => {
+  const { browser, call, views, windows, switchAccount } = fixture()
+  const page = await call('open', canvas, 'check')
+  await call('show', { page, reason: 'CANVAS_PREVIEW' }, 'check')
+  await call('release_canvas', { page }, 'check')
+  browser.finish('check')
+  assert.equal(windows[0].isVisible(), false)
+  assert.equal(await call('open', canvas, 'edit'), page)
+  assert.equal(views.length, 1)
+  await assert.rejects(call('show', { page }, 'check'), /其他操作/)
+  browser.finish('edit')
+  assert.ok(views[0].webContents.isDestroyed())
+  const next = await call('open', canvas)
+  await call('release_canvas', { page: next })
+  switchAccount('erp/second')
+  assert.ok(views[1].webContents.isDestroyed())
+})
+
+test('普通网页读取保留同时到达的预览事件，交给下次通道检查', async () => {
+  const { call, views } = fixture()
+  const page = await call('open', canvas)
+  const control = new EventEmitter()
+  views[0].webContents.debugger = Object.assign(control, {
+    isAttached: () => control.attached, attach() { control.attached = true },
+    async sendCommand(method) {
+      if (method === 'Runtime.evaluate') control.emit('message', {}, 'Target.attachedToTarget', {}, 'preview')
+      return {}
+    },
+  })
+  assert.deepEqual((await call('command', { page, method: 'Runtime.evaluate' })).events, [])
+  const { events } = await call('command', { page, method: 'Page.getFrameTree', collect_events: true })
+  assert.equal(events.length, 1)
+  assert.equal(events[0].sessionId, 'preview')
+})
+
+test('Canvas 目标或代理变化时新开页面，空闲预览到期释放', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { call, views } = fixture()
+  for (const model of [canvas, { ...canvas, url: 'https://gemini.google.com/app/next' },
+    { ...canvas, url: 'https://gemini.google.com/app/next', proxy: 'http://localhost:8080' }]) {
+    const page = await call('open', model)
+    await call('release_canvas', { page })
+  }
+  assert.equal(views.length, 3)
+  assert.ok(views.slice(0, 2).every(view => view.webContents.isDestroyed()))
+  t.mock.timers.tick(60000)
+  assert.ok(views[2].webContents.isDestroyed())
+})
+
+test('开发版显示任务原页和弹窗，登录完成和预览交接后仍然可见', async () => {
+  const { browser, call, windows, views } = fixture(true)
+  const page = await call('open', canvas, 'check')
+  assert.ok(windows[0].isVisible())
+  const popup = new EventEmitter()
+  const popupContents = new EventEmitter()
+  Object.assign(popupContents, { setWindowOpenHandler() {} })
+  Object.assign(popup, { webContents: popupContents, isDestroyed: () => false,
+    hide: () => assert.fail('不应自动隐藏弹窗'), destroy: () => assert.fail('不应提前关闭弹窗') })
+  views[0].webContents.emit('did-create-window', popup)
+  await call('hide', { page }, 'check')
+  await call('release_canvas', { page }, 'check')
+  assert.equal(await call('open', canvas, 'edit'), page)
+  assert.ok(windows[0].isVisible())
+  popup.emit('closed')
+  browser.finish('edit')
+  assert.ok(views[0].webContents.isDestroyed())
+})
+
+test('开发版保留失败的 1688 页面供查看，不会恢复到失败任务', async () => {
+  const { browser, call, windows, views } = fixture(true)
+  const page = await call('open', product)
+  assert.ok(windows[0].isVisible())
+  await call('hide', { page })
+  browser.finish('request', undefined, true)
+  assert.ok(windows[0].isVisible())
+  assert.deepEqual(await call('list', {}), [])
+  await assert.rejects(call('resume', { page }), /已关闭/)
+  await call('open', product, 'next')
+  assert.ok(views[0].webContents.isDestroyed())
+  assert.ok(windows[1].isVisible())
+  browser.reset()
+  assert.ok(windows[1].isDestroyed())
+})
+
+test('开发版显示 Google 登录核对页，核对结束后原窗口仍可见', async () => {
+  const { call, windows, views, networkErrors } = fixture(true)
+  const page = await call('open', canvas)
+  const contents = views[0].webContents
+  contents.url = 'https://accounts.google.com/signin/'
+  networkErrors[0]({ webContentsId: contents.id, resourceType: 'mainFrame', error: 'net::ERR_ABORTED' })
+  const pending = call('recover_login', { page, expression: 'auth-check' })
+  assert.ok(windows[1].isVisible())
+  views[1].webContents.executeJavaScript = async () => ({ signedIn: false })
+  assert.equal(await pending, false)
+  assert.ok(windows[1].isDestroyed())
+  assert.ok(windows[0].isVisible())
 })

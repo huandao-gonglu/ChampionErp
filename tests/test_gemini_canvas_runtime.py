@@ -226,13 +226,42 @@ def test_cold_start_waits_for_canvas_frame_without_sending_a_model_request(monke
     assert methods.count("Page.getFrameTree") == 1
 
 
-def test_absent_canvas_frame_reports_manual_login_or_preview():
+def test_absent_canvas_frame_reports_missing_preview():
     class Cdp:
         def call(self, *args, **kwargs):
             return {}
 
-    with pytest.raises(RuntimeError, match="登录.*预览"):
+    with pytest.raises(RuntimeError, match="未检测到 Canvas 应用预览"):
         canvas._canvas_context(Cdp(), timeout=0)
+
+
+def test_shared_app_confirmation_waits_for_dialog_and_clicks_once_before_preview(monkeypatch):
+    monkeypatch.setattr(canvas.time, "sleep", lambda _: None)
+    confirmations = []
+    polls = []
+    expected = "https://gemini.google.com/share/test"
+
+    class Cdp:
+        def call(self, method, params=None, *, on_event=None, **kwargs):
+            if method == "Runtime.evaluate":
+                if canvas._SHARED_APP_CONTINUE_SCRIPT in params["expression"]:
+                    assert params["expression"].endswith(f"({json.dumps(expected)})")
+                    assert "contextId" not in params
+                    assert kwargs.get("session_id", "") == ""
+                    confirmations.append(params["expression"])
+                    return {"result": {"value": len(confirmations) == 2}}
+                assert "generateContent" not in params["expression"]
+                return {"result": {"value": True}}
+            if method == "Page.getFrameTree":
+                polls.append(method)
+                if len(polls) == 3:
+                    on_event({"method": "Runtime.executionContextCreated", "params": {"context": {
+                        "id": 9, "origin": "https://a.scf.usercontent.goog", "auxData": {"isDefault": True}}}})
+            return {}
+
+    assert canvas._canvas_context(Cdp(), expected_url=expected) == ("", 9)
+    assert len(confirmations) == 2
+    assert len(polls) == 3
 
 
 def test_cdp_frame_events_and_timeout_stay_scoped_to_one_call():
@@ -260,3 +289,65 @@ def test_cdp_frame_events_and_timeout_stay_scoped_to_one_call():
     assert sent[0]["sessionId"] == "canvas"
     assert events[0]["method"] == "Runtime.executionContextCreated"
     assert connection.sock.gettimeout() == 10
+
+
+@pytest.mark.parametrize("ready_after_show", [False, True])
+def test_preview_recovery_on_original_page(monkeypatch, ready_after_show):
+    from unittest.mock import Mock
+    page = Mock()
+    clock = [0.]
+    monkeypatch.setattr(canvas.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(canvas.time, "sleep", lambda _: clock.__setitem__(0, clock[0] + 1))
+
+    def call(method, params=None, *, on_event=None, **kwargs):
+        if method == "Runtime.enable":
+            on_event({"method": "Runtime.executionContextCreated", "params": {"context": {
+                "id": 3, "origin": "https://a.scf.usercontent.goog", "auxData": {"isDefault": True}}}})
+        if method == "Runtime.evaluate":
+            assert "generateContent" not in params["expression"]
+            return {"result": {"value": ready_after_show and page.show.called}}
+        return {}
+
+    page.call.side_effect = call
+    if ready_after_show:
+        assert canvas._canvas_context(page, timeout=10) == ("", 3)
+        page.hide.assert_called_once()
+    else:
+        with pytest.raises(canvas.CanvasPreparationError, match="已检测到 Canvas 预览，但翻译连接未就绪"):
+            canvas._canvas_context(page, timeout=10)
+    page.show.assert_called_once_with("CANVAS_CONNECTION")
+
+
+def test_preflight_disconnect_only_loses_the_check_receipt(monkeypatch):
+    from erp_web.services import gemini_canvas_runtime as remote
+    from erp_web.services.desktop_connection_service import DesktopUnavailable
+
+    def disconnect(operation, params, timeout):
+        assert operation == "canvas.check" and "images" not in params
+        raise DesktopUnavailable("桌面连接中断", outcome_unknown=True)
+
+    monkeypatch.setattr(remote, "call_desktop", disconnect)
+    with pytest.raises(DesktopUnavailable, match="连接检查结果") as failure:
+        remote.check_canvas_connection(".", {})
+    assert not failure.value.outcome_unknown
+
+
+def test_opening_missing_preview_resumes_in_same_window(monkeypatch):
+    from unittest.mock import Mock
+    page = Mock()
+    monkeypatch.setattr(canvas, "PREVIEW_REVEAL_SECONDS", 0)
+    monkeypatch.setattr(canvas.time, "sleep", lambda _: None)
+
+    def call(method, params=None, *, on_event=None, **kwargs):
+        if method == "Page.getFrameTree":
+            page.show.assert_called_once_with("CANVAS_PREVIEW")
+            on_event({"method": "Runtime.executionContextCreated", "params": {"context": {
+                "id": 9, "origin": "https://a.scf.usercontent.goog", "auxData": {"isDefault": True}}}})
+        if method == "Runtime.evaluate":
+            assert "generateContent" not in params["expression"]
+            return {"result": {"value": True}}
+        return {}
+
+    page.call.side_effect = call
+    assert canvas._canvas_context(page) == ("", 9)
+    page.hide.assert_called_once()

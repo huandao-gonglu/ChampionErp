@@ -1,11 +1,12 @@
 const { normalizeBackendUrl } = require('./connection.cjs')
 
 const DESKTOP_SCHEME = 'champion-erp'
+const DEV_DESKTOP_SCHEME = 'champion-erp-dev'
 
-function parseDesktopLink(value, backendUrl) {
+function parseDesktopLink(value, backendUrl, scheme = DESKTOP_SCHEME) {
   if (typeof value !== 'string' || value.length > 4096) throw new Error('桌面链接无效。')
   const url = new URL(value)
-  if (url.protocol !== `${DESKTOP_SCHEME}:` || url.hostname !== 'continue' || url.port || url.username || url.password
+  if (url.protocol !== `${scheme}:` || url.hostname !== 'continue' || url.port || url.username || url.password
       || !['', '/'].includes(url.pathname) || url.hash
       || [...url.searchParams.keys()].some(key => !['request', 'origin'].includes(key))
       || url.searchParams.getAll('request').length !== 1 || url.searchParams.getAll('origin').length !== 1) {
@@ -19,8 +20,8 @@ function parseDesktopLink(value, backendUrl) {
   return request
 }
 
-function desktopLinkArgument(argv) {
-  return argv.find(value => typeof value === 'string' && value.toLowerCase().startsWith(`${DESKTOP_SCHEME}:`))
+function desktopLinkArgument(argv, scheme = DESKTOP_SCHEME) {
+  return argv.find(value => typeof value === 'string' && value.toLowerCase().startsWith(`${scheme}:`))
 }
 
 function registerDesktopHandoff({ ipcMain, win, frontendUrl, pending, finish }) {
@@ -38,4 +39,4 @@ function registerDesktopHandoff({ ipcMain, win, frontendUrl, pending, finish }) 
   })
 }
 
-module.exports = { DESKTOP_SCHEME, parseDesktopLink, desktopLinkArgument, registerDesktopHandoff }
+module.exports = { DESKTOP_SCHEME, DEV_DESKTOP_SCHEME, parseDesktopLink, desktopLinkArgument, registerDesktopHandoff }

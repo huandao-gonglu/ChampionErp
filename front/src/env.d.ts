@@ -22,7 +22,7 @@ interface Window {
     finishHandoff?: (id: string) => Promise<void>;
     onHandoff?: (callback: (id: string) => void) => () => void;
     openAlibabaAuthorization?: (url: string) => Promise<void>;
-    savedLogin?: () => Promise<{ available: boolean; email: string; password: string }>;
+    savedLogin?: () => Promise<{ available: boolean; email: string; password: string; auto?: boolean }>;
     rememberLogin?: (options: { email: string; password: string; remember: boolean; auto: boolean }) => Promise<void>;
      onConnectionChanged?: (callback: () => void) => () => void; configureModels?: (models: Record<string, Record<string, string>>) => Promise<{ models: Record<string, Record<string, string>>; fingerprints: Record<string, string> }>; openNewAPI?: (target: 'keys' | 'wallet' | 'usage') => Promise<void>; openLicenses: () => Promise<void> }
 }

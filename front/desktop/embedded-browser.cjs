@@ -18,7 +18,7 @@ function allowedNavigation(kind, address) {
   } catch { return false }
 }
 
-function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, account, layoutVerificationWindow }) {
+function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, account, layoutVerificationWindow, development = false }) {
   let generation = 0
   const pages = new Map()
   const stores = new Set()
@@ -26,6 +26,7 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     'Target.setAutoAttach'])
   function close(page) {
     if (!pages.delete(page.id)) return
+    clearTimeout(page.idleTimer)
     for (const popup of page.popups) if (!popup.isDestroyed()) popup.destroy()
     if (page.window && !page.window.isDestroyed()) page.window.destroy()
     if (!page.contents.isDestroyed()) page.contents.close()
@@ -84,6 +85,19 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     const { kind, url, profile = '', proxy = '' } = data
     if (!domains[kind] || !allowedNavigation(kind, url)) throw new Error('此网址不属于指定的内置浏览服务。')
     const key = createHash('sha256').update(JSON.stringify([owner, kind, profile])).digest('hex')
+    for (const previous of pages.values()) {
+      if (previous.inspecting && previous.key === key) close(previous)
+    }
+    if (kind === 'gemini') {
+      const ready = [...pages.values()].find(page => page.idleTimer && page.key === key)
+      if (ready && (ready.url !== url || ready.proxy !== proxy)) close(ready)
+      if (ready && pages.has(ready.id) && call.active() && account() === owner) {
+        clearTimeout(ready.idleTimer)
+        ready.idleTimer = null
+        ready.callId = call.id
+        return ready.id
+      }
+    }
     const store = session.fromPartition('persist:erp-browser-' + key)
     if (kind === 'gemini' && !stores.has(store)) {
       store.webRequest.onErrorOccurred(details => {
@@ -101,15 +115,16 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } })
     view.setBounds({ x: 0, y: 0, width: 1100, height: 800 })
     const contents = view.webContents
-    const page = { owner, kind, url, callId: call.id, id: randomUUID(), contents, store, view, events: [], popups: new Set() }
+    const page = { owner, kind, key, proxy, url, callId: call.id, id: randomUUID(), contents, store, view, events: [], popups: new Set() }
     pages.set(page.id, page)
     contents.once('destroyed', () => close(page))
     protect(contents, page)
     try {
+      if (development) show(page, 'BROWSING')
       await navigate(page, url)
       return page.id
     } catch (error) {
-      close(page)
+      if (!development) close(page)
       throw error
     }
   }
@@ -135,7 +150,9 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     return { data: Buffer.concat(chunks).toString('base64'), mime: response.headers.get('content-type')?.split(';')[0] || '' }
   }
 
-  function show(page) {
+  function show(page, reason) {
+    const labels = { BROWSING: page.kind === 'gemini' ? 'Gemini' : '1688', CANVAS_PREVIEW: '请打开 Canvas 应用预览', CANVAS_CONNECTION: '正在等待 Canvas 翻译连接' }
+    page.windowLabel = labels[reason] || '登录与验证'
     if (!page.window) {
       const win = new BaseWindow({ parent: parent(), width: 1100, height: 800, show: false,
         title: page.kind === 'gemini' ? 'Gemini 登录与验证' : '1688 登录与验证' })
@@ -152,10 +169,10 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       }
       win.on('closed', () => { page.window = null; close(page) })
       page.contents.on('did-navigate', (_event, url) => {
-        if (!win.isDestroyed()) win.setTitle('登录与验证 · ' + new URL(url).origin)
+        if (!win.isDestroyed()) win.setTitle(page.windowLabel + ' · ' + new URL(url).origin)
       })
-      win.setTitle('登录与验证 · ' + new URL(page.contents.getURL() || page.url).origin)
     }
+    page.window.setTitle(page.windowLabel + ' · ' + new URL(page.contents.getURL() || page.url).origin)
     if (!page.window.isVisible()) { page.window.show(); page.view.webContents.focus() }
   }
 
@@ -165,14 +182,27 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     page.loginNavigationInterrupted = false
     page.recoveringLogin = true
     // 提交可能已生效；用同一会话读取 Gemini，避免重发验证码表单。
-    const probe = new WebContentsView({ webPreferences: { session: page.store, sandbox: true,
-      contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } }).webContents
+    const probeView = new WebContentsView({ webPreferences: { session: page.store, sandbox: true,
+      contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } })
+    const probe = probeView.webContents
     const check = event => { if (!allowedNavigation('gemini', event.url)) event.preventDefault() }
     probe.on('will-navigate', check)
     probe.on('will-redirect', event => { if (event.isMainFrame) check(event) })
     probe.setWindowOpenHandler(() => ({ action: 'deny' }))
-    let timer
+    let timer, probeWindow
     try {
+      if (development) {
+        probeWindow = new BaseWindow({ parent: page.window, width: 850, height: 600, show: false, title: 'Gemini 登录状态检查' })
+        probeWindow.contentView.addChildView(probeView)
+        const fit = () => {
+          const [width, height] = probeWindow.getContentSize()
+          probeView.setBounds({ x: 0, y: 0, width, height })
+        }
+        fit()
+        probeWindow.on('resize', fit)
+        probeWindow.once('closed', () => { if (!probe.isDestroyed()) probe.close() })
+        probeWindow.showInactive()
+      }
       const state = await Promise.race([
         probe.loadURL('https://gemini.google.com/app').then(() => probe.executeJavaScript(expression)),
         new Promise(resolve => { timer = setTimeout(() => resolve(null), 10000) }),
@@ -184,6 +214,7 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       return false
     } finally {
       clearTimeout(timer)
+      if (probeWindow && !probeWindow.isDestroyed()) probeWindow.destroy()
       if (!probe.isDestroyed()) probe.close()
       page.recoveringLogin = false
     }
@@ -192,18 +223,36 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
   async function handle(action, data, owner, call) {
     if (!owner || account() !== owner) throw new Error('ERP 登录会话已失效。')
     if (action === 'open') return open(data, owner, call)
-    if (action === 'list') return [...pages.values()].filter(p => p.owner === owner && p.kind === '1688')
+    if (action === 'list') return [...pages.values()].filter(p => p.owner === owner && p.kind === '1688' && !p.inspecting)
       .map(p => ({ id: p.id, source_url: p.url, type: 'page', url: p.contents.getURL(), title: p.contents.getTitle(),
         login_popup_closed: !!p.loginPopupClosed, visited_login: !!p.visitedLogin && !p.returnedFromHome }))
     const page = pages.get(data.page)
-    if (!page || page.owner !== owner || page.contents.isDestroyed()) throw new Error('原验证页面已关闭，请重新开始。')
+    if (!page || page.inspecting || page.owner !== owner || page.contents.isDestroyed()) throw new Error('原验证页面已关闭，请重新开始。')
+    if (page.kind === 'gemini' && page.callId !== call.id) throw new Error('此 Canvas 页面属于其他操作。')
+    if (action === 'release_canvas' && page.kind === 'gemini') {
+      // 保留已打开的预览，让预检与后续图片共用它。空闲、切换账号或退出时释放。
+      if (!development) {
+        page.window?.hide()
+        for (const popup of page.popups) if (!popup.isDestroyed()) popup.destroy()
+      }
+      const control = page.contents.debugger
+      if (control?.isAttached()) {
+        control.removeListener('message', page.debuggerListener)
+        control.detach()
+      }
+      page.events.length = 0
+      page.callId = null
+      page.idleTimer = setTimeout(() => close(page), 60000)
+      page.idleTimer.unref()
+      return
+    }
     if (action === 'recover_login' && page.kind === 'gemini') return recoverLogin(page, data.expression, call)
     if (action === 'resume' && page.kind === '1688') {
       page.callId = call.id
       return
     }
     if (action === 'show') {
-      show(page)
+      show(page, data.reason)
       if (page.kind === '1688' && data.reason === 'LOGIN' && !page.loginEntryHandled && !page.popups.size) {
         const product = new URL(page.url)
         if (product.origin === 'https://detail.1688.com' && /^\/offer\/\d+\.html$/.test(product.pathname)) {
@@ -217,8 +266,10 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       return
     }
     if (action === 'hide') {
-      for (const popup of page.popups) popup.hide()
-      page.window?.hide()
+      if (!development) {
+        for (const popup of page.popups) popup.hide()
+        page.window?.hide()
+      }
       await persist(page.store)
       return
     }
@@ -241,13 +292,14 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     const control = page.contents.debugger
     if (!control.isAttached()) {
       control.attach('1.3')
-      control.on('message', (_event, method, params, sessionId) => {
+      page.debuggerListener = (_event, method, params, sessionId) => {
         if (page.kind === 'gemini' && ['Target.attachedToTarget', 'Runtime.executionContextCreated'].includes(method))
           page.events.push({ method, params, sessionId })
-      })
+      }
+      control.on('message', page.debuggerListener)
     }
     const result = await control.sendCommand(data.method, data.params, data.session_id || undefined)
-    return { result, events: page.events.splice(0) }
+    return { result, events: data.collect_events ? page.events.splice(0) : [] }
   }
 
   function reset() {
@@ -263,11 +315,15 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     reset()
     await Promise.all([...stores].map(persist))
   }
-  function finish(callId, keepId) {
+  function finish(callId, keepId, failed = false) {
     for (const page of pages.values()) {
       if (page.callId !== callId) continue
       if (page.id === keepId && page.kind === '1688' && page.window && !page.window.isDestroyed()) page.callId = null
-      else close(page)
+      else if (development && failed && page.window && !page.window.isDestroyed()) {
+        // 留下失败现场供人工查看，后续任务不得接管这个页面。
+        page.callId = null
+        page.inspecting = true
+      } else close(page)
     }
   }
   return { handle, finish, reset, flush, get generation() { return generation } }

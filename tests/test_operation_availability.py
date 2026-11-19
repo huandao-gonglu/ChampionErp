@@ -129,6 +129,9 @@ def test_image_workbench_rejects_before_batch_registration_and_keeps_saved_resul
     new_key = broker.connect()['connection_id']
     with bind_desktop_connection(new_key):
         image_facade.process_draft_images_payload(submission)
+    preflight, = broker.poll(new_key, wait_seconds=2)['calls']
+    assert preflight['operation'] == 'canvas.check' and 'images' not in preflight['params']
+    assert broker.complete(new_key, {'id': preflight['id'], 'ok': True, 'result': {'ok': True}})['accepted']
     result = finish(draft['draft_id'])
     assert result['image_batch']['items'][0]['outcome_unknown']
     restored, status = image_facade.process_draft_images_payload(submission)

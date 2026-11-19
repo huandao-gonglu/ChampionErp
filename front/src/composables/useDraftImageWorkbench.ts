@@ -51,8 +51,7 @@ export function useDraftImageWorkbench(options: {
   let processingLabel = ''
   let acceptedSignature = ''
   let observedBatch = ''
-  const unknown = computed(() => batch.value?.items.some(item => item.outcome_unknown) || false)
-  const busy = computed(() => checking.value || saving.value || Boolean(pending.value) || Boolean(batch.value && (!batch.value.terminal || unknown.value)))
+  const busy = computed(() => checking.value || saving.value || Boolean(pending.value) || Boolean(batch.value && !batch.value.terminal))
   const undoLabel = computed(() => past.value.at(-1)?.label || '')
   const redoLabel = computed(() => future.value.at(-1)?.label || '')
   const storagePrefix = businessStorageKey('draft-image-request')
@@ -80,8 +79,8 @@ export function useDraftImageWorkbench(options: {
     batch.value = next
     if (!next) return
     observedBatch = next.conversation_id
-    if (!next.terminal || next.items.some(item => item.outcome_unknown)) {
-      notice.value = next.items.some(item => item.outcome_unknown) ? '处理结果待核对，请勿重复提交。' : ''
+    if (!next.terminal) {
+      notice.value = ''
       return
     }
     if (processingBefore) {
@@ -94,7 +93,12 @@ export function useDraftImageWorkbench(options: {
     }
     pending.value = ''
     remember(draft.value.draftId, '')
-    notice.value = ''
+    const uncertainCount = next.items.filter(item => item.outcome_unknown).length
+    const unsent = next.items.filter(item => item.status === 'failed' && !item.outcome_unknown && !item.started_at)
+    const summary = []
+    if (uncertainCount) summary.push(`${uncertainCount} 张图片的结果待核对。可选择需要的图片重新处理。`)
+    if (unsent.length) summary.push(`${unsent.length} 张尚未执行。${unsent[0].error}`)
+    notice.value = summary.length ? `本批已结束，${summary.join('')}` : ''
   }
   async function poll(token = epoch) {
     if (!active.value || token !== epoch) return

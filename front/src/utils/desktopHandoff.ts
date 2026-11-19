@@ -71,6 +71,21 @@ export function resetDesktopHandoff() {
   receivedDesktopHandoff.value = null
 }
 
+async function openDesktopLink(url: string) {
+  if (import.meta.env.DEV) {
+    const response = await fetch('/__dev/desktop-handoff', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: new URL(url).searchParams.get('request') }),
+    })
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}))
+      throw new Error(result.error || '无法打开开发桌面，请检查开发服务。')
+    }
+    return
+  }
+  window.location.assign(url)
+}
+
 export async function launchDesktop(context: DesktopHandoffContext = {}) {
   if (hasLocalOperations() || desktopLaunch.value?.status === 'opening') return
   const token = ++revision
@@ -85,9 +100,11 @@ export async function launchDesktop(context: DesktopHandoffContext = {}) {
     const data = await createDesktopHandoff(target, state)
     if (token !== revision) return
     const origin = desktopBackendOrigin()
-    const url = `champion-erp://continue?request=${encodeURIComponent(data.request_id)}&origin=${encodeURIComponent(origin)}`
+    const scheme = import.meta.env.DEV ? 'champion-erp-dev' : 'champion-erp'
+    const url = `${scheme}://continue?request=${encodeURIComponent(data.request_id)}&origin=${encodeURIComponent(origin)}`
     desktopLaunch.value = { requestId: data.request_id, url, status: 'opening' }
-    window.location.assign(url)
+    await openDesktopLink(url)
+    if (token !== revision) return
     const started = Date.now()
     async function check() {
       if (token !== revision) return
@@ -117,11 +134,15 @@ export async function launchDesktop(context: DesktopHandoffContext = {}) {
   }
 }
 
-export function retryDesktopLaunch() {
+export async function retryDesktopLaunch() {
   if (hasLocalOperations()) return
   const current = desktopLaunch.value
   if (current?.url && current.status !== 'error') {
-    window.location.assign(current.url)
+    try { await openDesktopLink(current.url) }
+    catch (error) {
+      if (desktopLaunch.value === current) desktopLaunch.value = { ...current, status: 'error',
+        error: error instanceof Error ? error.message : '暂时无法打开桌面端，请重试。' }
+    }
   } else {
     void launchDesktop(lastContext)
   }

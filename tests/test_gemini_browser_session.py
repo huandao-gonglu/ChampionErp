@@ -30,7 +30,7 @@ def test_valid_login_stays_hidden_in_same_partition(monkeypatch, bridge, tmp_pat
     monkeypatch.setattr(session, "_auth_state", lambda _: "signed_in")
     with session.connect_gemini_page(tmp_path, {**MODEL, "browser_mode": mode}) as page:
         assert page.id == "same-page"
-    assert [name for name, _ in bridge] == ["open", "close"]
+    assert [name for name, _ in bridge] == ["open", "release_canvas"]
     assert bridge[0][1]["profile"] == "canvas"
 
 
@@ -46,9 +46,11 @@ def test_login_returns_to_original_canvas_in_same_page(monkeypatch, bridge, tmp_
 def test_login_timeout_never_submits_or_reopens(monkeypatch, bridge, tmp_path):
     monkeypatch.setattr(session, "_auth_state", lambda _: "login_required")
     monkeypatch.setattr(session, "LOGIN_WAIT_SECONDS", 0)
-    with pytest.raises(TimeoutError, match="尚未发送"):
+    with pytest.raises(session.CanvasPreparationTimeout, match="尚未发送") as failure:
         with session.connect_gemini_page(tmp_path, MODEL):
             pytest.fail("登录超时仍进入了任务")
+    assert failure.value.outcome_unknown is False
+    assert failure.value.code == "CANVAS_REQUEST_NOT_SENT"
     assert [name for name, _ in bridge] == ["open", "show"]
 
 
@@ -74,11 +76,14 @@ def test_capability_check_reuses_existing_login(monkeypatch, bridge, tmp_path, p
         return {"profile_dir": "", "port": 0}
     monkeypatch.setattr(provider, "check_canvas_connection", check)
     monkeypatch.setattr(session, "_auth_state", lambda _: "signed_in")
-    monkeypatch.setattr(canvas, "_canvas_context", lambda _: ("", 1))
+    def canvas_context(_, *, expected_url):
+        assert expected_url == "https://gemini.google.com/share/owned"
+        return "", 1
+    monkeypatch.setattr(canvas, "_canvas_context", canvas_context)
     monkeypatch.setattr(canvas, "_evaluate", lambda *_: MODEL["browser_url"])
     run_probe = Mock(return_value=provider.probe_runtime.empty_capability_probe_report())
     monkeypatch.setattr(provider, "probe_browser_model_capabilities", run_probe)
     model = {**MODEL, "id": "new_canvas", "connection_type": "browser", "capabilities": []}
     provider.BrowserAiProvider().test_model(tmp_path, model, {"probe_capabilities": probe})
-    assert [name for name, _ in bridge] == ["open", "close"]
+    assert [name for name, _ in bridge] == ["open", "release_canvas"]
     assert run_probe.called == probe

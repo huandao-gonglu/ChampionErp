@@ -22,7 +22,7 @@ class SavedLogin {
   }
 
   write(value) {
-    if (!value.password && !value.cookie) { fs.rmSync(this.file, { force: true }); return }
+    if (!value.password && !value.cookie && typeof value.auto !== 'boolean') { fs.rmSync(this.file, { force: true }); return }
     if (!this.available()) throw new Error('系统密码存储不可用。')
     const bytes = this.storage.encryptString(JSON.stringify(value))
     const temp = this.file + '.' + randomUUID()
@@ -34,11 +34,16 @@ class SavedLogin {
 
   forgetSession(forgetPassword = false) {
     const old = this.read()
-    this.write(!forgetPassword && old.password ? { email: old.email, password: old.password } : {})
+    const retained = {}
+    if (!forgetPassword) {
+      if (old.password) Object.assign(retained, { email: old.email, password: old.password })
+      if (typeof old.auto === 'boolean') Object.assign(retained, { email: old.email, auto: old.auto })
+    }
+    this.write(retained)
   }
 }
 
-function registerSavedLogin({ ipcMain, win, url, vault, session }) {
+function registerSavedLogin({ ipcMain, win, url, vault, session, defaultAuto = false }) {
   function trusted(event) {
     const frame = event.senderFrame
     if (!frame || event.sender !== win.webContents || frame !== win.webContents.mainFrame ||
@@ -49,7 +54,8 @@ function registerSavedLogin({ ipcMain, win, url, vault, session }) {
   ipcMain.handle('account:saved-login', event => {
     trusted(event)
     const old = session.cookie ? {} : vault.read()
-    return { available: vault.available(), email: old.email || '', password: old.password || '' }
+    return { available: vault.available(), email: old.email || '', password: old.password || '',
+      auto: typeof old.auto === 'boolean' ? old.auto : Boolean(old.cookie) || defaultAuto }
   })
   ipcMain.handle('account:remember-login', (event, options) => {
     trusted(event)
@@ -57,6 +63,7 @@ function registerSavedLogin({ ipcMain, win, url, vault, session }) {
         typeof options.password !== 'string' || options.password.length > 256) throw new Error('登录状态已变更。')
     vault.write({
       email: session.email, password: options.remember === true ? options.password : '',
+      auto: options.auto === true,
       ...(options.auto === true ? { cookie: session.cookie, csrf: session.csrf } : {}),
     })
   })

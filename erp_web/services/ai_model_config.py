@@ -8,6 +8,7 @@ import os
 from typing import Any
 
 from erp_shared.desktop import LOCAL_MODEL_FIELDS
+from erp_shared.browser_ai import canvas_connection_defaults
 from . import ai_generation_settings, ai_provider_catalog
 from erp_shared.browser_connection_config import normalize_browser_proxy
 from erp_web.schemas.config import AiBrowserPreset
@@ -316,9 +317,7 @@ def browser_model_presets() -> list[AiBrowserPreset]:
         "model": {
             "id": "gemini_canvas_browser", "name": "Gemini Canvas 修图",
             "connection_type": CONNECTION_TYPE_BROWSER, "provider": "Gemini Canvas",
-            "browser_provider": "gemini", "browser_mode": BROWSER_MODE_MANAGED_PROFILE,
-            "browser_profile": "canvas", "browser_port": "", "browser_proxy": "",
-            "browser_url": "https://gemini.google.com/share/a3adc37e7008",
+            "browser_provider": "gemini", **canvas_connection_defaults(),
             "model": "", "timeout_seconds": 180, "capabilities": [], "enabled": True,
         },
     }]

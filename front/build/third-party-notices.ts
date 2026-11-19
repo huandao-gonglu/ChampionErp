@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
@@ -50,6 +50,13 @@ export function thirdPartyNotices(desktop: boolean): Plugin {
   return {
     name: 'third-party-notices',
     configureServer(server) {
+      if (desktop) {
+        for (const [file, text] of Object.entries(licenseFiles(selectNotices(catalog, true), electron))) {
+          const destination = resolve(root, 'dist-desktop', file)
+          mkdirSync(resolve(destination, '..'), { recursive: true })
+          writeFileSync(destination, text)
+        }
+      }
       server.middlewares.use('/licenses/THIRD-PARTY-NOTICES.txt', (_request, response) => {
         response.setHeader('Content-Type', 'text/plain; charset=utf-8')
         response.setHeader('Content-Disposition', 'attachment; filename="THIRD-PARTY-NOTICES.txt"')

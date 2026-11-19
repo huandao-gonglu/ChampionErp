@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from io import BytesIO
 import json
 import re
@@ -18,16 +18,36 @@ from . import browser_ai_runtime, gemini_browser_session
 from erp_shared.desktop import LocalImageEditRequest as AiImageEditRequest
 from pathlib import Path
 CAPABILITY_IMAGE_EDIT = "image_edit"
+from .embedded_browser import is_navigation_error
 from .operation import check_cancellation
 
 
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+PREVIEW_REVEAL_SECONDS = 5
 _session_locks: dict[str, Lock] = {}
 _locks_guard = Lock()
 
+# 只处理当前已配置的 Gemini 共享应用确认框，按钮限定在匹配的可见弹窗内。
+_SHARED_APP_CONTINUE_SCRIPT = r"""(expected => {
+    if (location.origin !== 'https://gemini.google.com' ||
+        location.origin + location.pathname !== expected) return false;
+    const visible = element => element.checkVisibility({opacityProperty: true, visibilityProperty: true});
+    const text = element => (element.textContent || '').replace(/\s+/g, ' ').trim();
+    const dialogs = [...document.querySelectorAll('dialog,[role="dialog"],[aria-modal="true"]')]
+        .filter(dialog => visible(dialog) && text(dialog).includes('此应用是由其他用户创建的') &&
+            text(dialog).includes('应用可能不安全') && text(dialog).includes('不要公开个人信息'));
+    if (dialogs.length !== 1) return false;
+    const buttons = [...dialogs[0].querySelectorAll('button,[role="button"]')]
+        .filter(button => text(button) === '继续' && visible(button) &&
+            !button.closest('[inert],[aria-disabled="true"],:disabled'));
+    if (buttons.length !== 1) return false;
+    buttons[0].click();
+    return true;
+})"""
 
-from erp_shared.browser_ai import is_canvas_model
+
+from erp_shared.browser_ai import CANVAS_PREVIEW_WAIT_SECONDS, is_canvas_model
 
 
 def _canvas_url(model: dict[str, Any]) -> str:
@@ -53,7 +73,12 @@ def _evaluate(cdp, expression: str, *, session_id: str = "", context_id: int | N
     return result.get("result", {}).get("value")
 
 
-def _canvas_context(cdp, timeout: float = 15) -> tuple[str, int]:
+class CanvasPreparationError(RuntimeError):
+    code = "CANVAS_REQUEST_NOT_SENT"
+    outcome_unknown = False
+
+
+def _canvas_context(cdp, timeout: float = CANVAS_PREVIEW_WAIT_SECONDS, *, expected_url: str = "") -> tuple[str, int]:
     """从当前标签关联的 iframe 中选择原生执行环境，禁止使用隔离世界替代。"""
     sessions: list[str] = []
     contexts: list[tuple[str, dict[str, Any]]] = []
@@ -79,31 +104,64 @@ def _canvas_context(cdp, timeout: float = 15) -> tuple[str, int]:
     }, on_event=receive)
     cdp.call("Runtime.enable", on_event=receive)
     enabled_sessions: set[str] = set()
-    deadline = time.monotonic() + max(0, timeout)
+    start = time.monotonic()
+    deadline = start + max(0, timeout)
+    shown_reason = ""
+    consent_clicked = False
     while True:
+        check_cancellation()
+        if expected_url and not consent_clicked:
+            try:
+                consent_clicked = _evaluate(
+                    cdp, f"{_SHARED_APP_CONTINUE_SCRIPT}({json.dumps(expected_url)})",
+                ) is True
+            except RuntimeError as exc:
+                if not is_navigation_error(exc):
+                    raise
         for session in dict.fromkeys(sessions):
             if session not in enabled_sessions:
                 cdp.call("Runtime.enable", session_id=session, on_event=receive)
                 enabled_sessions.add(session)
-        for session, context in contexts:
-            ready = _evaluate(cdp, """(() => Boolean(
-                document.querySelector('script[data-bard-client-injected="true"]') &&
-                Function.prototype.toString.call(window.fetch).includes('requestFetch')
-            ))()""", session_id=session, context_id=context["id"])
+        for session, context in contexts.copy():
+            try:
+                ready = _evaluate(cdp, """(() => Boolean(
+                    document.querySelector('script[data-bard-client-injected="true"]') &&
+                    Function.prototype.toString.call(window.fetch).includes('requestFetch')
+                ))()""", session_id=session, context_id=context["id"])
+            except RuntimeError as exc:
+                if not is_navigation_error(exc):
+                    raise
+                contexts.remove((session, context))
+                continue
             if ready:
+                if shown_reason:
+                    cdp.hide()
                 return session, context["id"]
         if time.monotonic() >= deadline:
             break
+        if time.monotonic() - start >= PREVIEW_REVEAL_SECONDS:
+            reason = "CANVAS_CONNECTION" if contexts else "CANVAS_PREVIEW"
+            if reason != shown_reason:
+                cdp.show(reason)
+                shown_reason = reason
         # 新启动的页面可能先完成主文档，再加载 Canvas；只等待通道，不发送模型请求。
         cdp.call("Page.getFrameTree", on_event=receive)
         time.sleep(0.25)
-    raise RuntimeError("未找到 Gemini Canvas 原生模型通道，请先在已登录的 Gemini 页面打开 Canvas 应用预览。")
+    if contexts:
+        raise CanvasPreparationError("已检测到 Canvas 预览，但翻译连接未就绪。")
+    raise CanvasPreparationError("未检测到 Canvas 应用预览。重试时请在 ERP 弹出的 Gemini 窗口中打开预览。")
+
+
+def _verify_page(cdp, wanted):
+    actual = urlsplit(str(_evaluate(cdp, "location.href")))
+    if (actual.scheme, actual.netloc, actual.path) != (wanted.scheme, wanted.netloc, wanted.path):
+        raise CanvasPreparationError("当前 Gemini 页面与模型配置的 Canvas 地址不一致。")
 
 
 @contextmanager
 def _connection(app_dir, model, timeout, force_login=False):
     check_cancellation()
-    expected = _canvas_url(model)
+    expected = urlsplit(_canvas_url(model))
     profile = str(model.get("browser_profile") or "default")
     with _locks_guard:
         lock = _session_locks.setdefault(profile, Lock())
@@ -111,17 +169,24 @@ def _connection(app_dir, model, timeout, force_login=False):
     while not lock.acquire(timeout=0.5):
         check_cancellation()
         if time.monotonic() >= deadline:
-            raise TimeoutError("Gemini 浏览器正在处理另一张图片，本次尚未发送。")
+            raise gemini_browser_session.CanvasPreparationTimeout("Gemini 浏览器正在处理另一张图片，本次尚未发送。")
     try:
         check_cancellation()
-        with gemini_browser_session.connect_gemini_page(
-            app_dir, model, min(timeout, 45), force_login=force_login,
-        ) as cdp:
-            current = str(_evaluate(cdp, "location.href"))
-            actual, wanted = urlsplit(current), urlsplit(expected)
-            if (actual.scheme, actual.netloc, actual.path) != (wanted.scheme, wanted.netloc, wanted.path):
-                raise RuntimeError("当前 Gemini 标签与配置的 Canvas 地址不一致，请先打开配置的页面。")
-            session, context = _canvas_context(cdp)
+        with ExitStack() as stack:
+            try:
+                cdp = stack.enter_context(gemini_browser_session.connect_gemini_page(
+                    app_dir, model, min(timeout, 45), force_login=force_login,
+                ))
+                _verify_page(cdp, expected)
+                session, context = _canvas_context(
+                    cdp, expected_url=f"{expected.scheme}://{expected.netloc}{expected.path}",
+                )
+                # 人工展开预览时可能导航到其他分享页；提交前再次核对归属。
+                _verify_page(cdp, expected)
+            except (CanvasPreparationError, gemini_browser_session.CanvasPreparationTimeout):
+                raise
+            except Exception as exc:
+                raise CanvasPreparationError(f"Canvas 准备失败，图片尚未发送。{exc}") from exc
             yield cdp, session, context
     finally:
         lock.release()

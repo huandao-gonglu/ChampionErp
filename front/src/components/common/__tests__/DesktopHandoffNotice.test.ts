@@ -5,7 +5,7 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import DesktopHandoffNotice from '../DesktopHandoffNotice.vue'
 import { useAccountStore } from '@/stores/account'
 import { resolveDesktopHandoff, confirmDesktopHandoff } from '@/api/desktopHandoff'
-import { receivedDesktopHandoff, resetDesktopHandoff, acknowledgeDesktopHandoff } from '@/utils/desktopHandoff'
+import { desktopLaunch, receivedDesktopHandoff, resetDesktopHandoff, acknowledgeDesktopHandoff } from '@/utils/desktopHandoff'
 
 vi.mock('@/api/desktopHandoff', () => ({ resolveDesktopHandoff: vi.fn(), confirmDesktopHandoff: vi.fn(), fetchDesktopInstallers: vi.fn(), desktopBackendOrigin: () => 'https://erp.example.test' }))
 
@@ -18,7 +18,7 @@ beforeEach(() => {
     onHandoff: () => () => {} })
   vi.mocked(resolveDesktopHandoff).mockResolvedValue({ ok: true, target: '/?tab=collect', state: {}, opened: false })
 })
-afterEach(() => { resetDesktopHandoff(); vi.unstubAllGlobals() })
+afterEach(() => { resetDesktopHandoff(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
 async function setup(path: string) {
   const pinia = createPinia()
@@ -33,6 +33,16 @@ async function setup(path: string) {
   await flushPromises()
   return { wrapper, router, account: useAccountStore() }
 }
+
+it.each([true, false])('开发模式 %s 使用对应的等待提示与安装入口', async development => {
+  vi.stubEnv('DEV', development)
+  vi.stubGlobal('championDesktop', undefined)
+  desktopLaunch.value = { requestId: 'ticket', url: '', status: 'waiting' }
+  const { wrapper } = await setup('/')
+  expect(wrapper.text().includes('下载安装')).toBe(!development)
+  expect(wrapper.text().includes('开发桌面登录同一账号')).toBe(development)
+  wrapper.unmount()
+})
 
 it('登录页保存启动请求，登录并进入业务页后再恢复，防止登录重载丢失目标页面', async () => {
   const { wrapper, router, account } = await setup('/login')

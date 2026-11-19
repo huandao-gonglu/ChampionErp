@@ -63,7 +63,8 @@ def main():
             logging.exception('本机操作失败：%s', message['operation'])
             emit({'id': call_id, 'ok': False, 'error': str(exc) or '本机操作失败。',
                   'error_code': getattr(exc, 'code', 'CHROME_NOT_FOUND' if isinstance(exc, FileNotFoundError) else 'DESKTOP_EXECUTION_FAILED'),
-                  'outcome_unknown': isinstance(exc, (TimeoutError, OSError)) or '结果未知' in str(exc) or cancel.is_set()})
+                  'outcome_unknown': getattr(exc, 'outcome_unknown',
+                      isinstance(exc, (TimeoutError, OSError)) or '结果未知' in str(exc) or cancel.is_set())})
         finally:
             with lock:
                 running.pop(call_id, None)

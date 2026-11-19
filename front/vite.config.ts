@@ -1,7 +1,9 @@
 import { fileURLToPath, URL } from 'node:url'
+import { createRequire } from 'node:module'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { thirdPartyNotices } from './build/third-party-notices'
+const desktopDevelopmentModule = createRequire(import.meta.url)('./desktop/development.cjs') as typeof import('./desktop/development.cjs')
 
 // Follows the backend ERP_PORT convention (dev.sh exports it); 5050 is the dev.sh default.
 const devProxyTarget =
@@ -11,10 +13,12 @@ const devPort = Number(process.env.VITE_DEV_PORT || 3000)
 
 export default defineConfig(({ mode }) => {
   const isDesktopBuild = mode === 'desktop'
+  const desktopDevelopment = mode === 'desktop-dev' || process.env.ERP_DESKTOP_DEV === '1'
 
   return {
     base: isDesktopBuild ? './' : '/',
-    plugins: [vue(), thirdPartyNotices(isDesktopBuild)],
+    plugins: [vue(), thirdPartyNotices(isDesktopBuild || desktopDevelopment),
+      desktopDevelopmentModule.desktopDevelopment({ enabled: desktopDevelopment, backendUrl: devProxyTarget })],
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -23,6 +27,8 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '127.0.0.1',
       port: devPort,
+      strictPort: true,
+      hmr: { clientPort: devPort },
       proxy: {
         '/api': devProxyTarget,
         '/file': devProxyTarget,

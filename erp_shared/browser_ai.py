@@ -6,6 +6,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .desktop import local_configuration_fingerprint
+
+CANVAS_PREVIEW_WAIT_SECONDS = 95
 BROWSER_AI_MODE_MANAGED_PROFILE = "managed_profile"
 BROWSER_AI_MODE_EXISTING_BROWSER = "existing_browser"
 BROWSER_AI_MODES = (BROWSER_AI_MODE_MANAGED_PROFILE, BROWSER_AI_MODE_EXISTING_BROWSER)
@@ -97,3 +100,21 @@ def _safe_path_segment(value: str, fallback: str) -> str:
 
 def is_canvas_model(model):
     return model.get('connection_type') == 'browser' and normalize_browser_provider(model.get('browser_provider')) == 'gemini'
+
+
+def canvas_connection_defaults() -> dict[str, str]:
+    """桌面执行器和设置页共用的公开预置，不含用户代理和登录资料。"""
+    return {
+        "browser_mode": BROWSER_AI_MODE_MANAGED_PROFILE, "browser_profile": "canvas",
+        "browser_port": "", "browser_proxy": "", "browser_url": "https://gemini.google.com/share/a3adc37e7008",
+    }
+
+
+def resolve_local_settings(model, saved):
+    if saved is not None:
+        return saved
+    if is_canvas_model(model):
+        defaults = canvas_connection_defaults()
+        if model.get("local_config_fingerprint") == local_configuration_fingerprint(defaults):
+            return defaults
+    return {}

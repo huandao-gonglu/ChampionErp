@@ -81,7 +81,7 @@ class EmbeddedPage:
 
     def call(self, method, params=None, timeout=20, *, session_id='', on_event=None):
         response = request('command', timeout=timeout, page=self.id, method=method,
-                           params=params or {}, session_id=session_id)
+                           params=params or {}, session_id=session_id, collect_events=on_event is not None)
         if on_event:
             for event in response['events']:
                 on_event(event)

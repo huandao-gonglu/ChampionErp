@@ -160,6 +160,26 @@ def test_restart_preserves_success_and_marks_unfinished_without_replay(tmp_path)
     assert not batch["items"][2]["outcome_unknown"]
 
 
+def test_terminal_unknown_releases_draft_and_preserves_uncertain_receipts(tmp_path):
+    store = ImageBatchStore(tmp_path / "batches.sqlite3")
+    first = ImageBatch(conversation_id="old", product_id="p", draft_id="d", prompt="翻译",
+                       created_at=utc_now(), updated_at=utc_now(), items=[
+                           ImageBatchItem(index=0, source_id="a"), ImageBatchItem(index=1, source_id="b")])
+    store.create(first)
+    store.update_item("old", 0, status="failed", outcome_unknown=True, error="已发送，回执丢失")
+    with pytest.raises(ValueError, match="正在处理"):
+        store.assert_draft_idle("d")
+    store.update_item("old", 1, status="failed", outcome_unknown=True,
+                      error="等待 Google 登录超时，本次尚未发送修图请求；登录后可重新执行。")
+    snapshot = store.get("old").snapshot()
+    assert snapshot["terminal"] and snapshot["failed"] == 2
+    assert [item["outcome_unknown"] for item in snapshot["items"]] == [True, False]
+    store.assert_draft_idle("d")
+    store.create(first.model_copy(update={"conversation_id": "manual", "created_at": utc_now()}))
+    assert store.latest_for_draft("d").conversation_id == "manual"
+    assert store.get("old").snapshot() == snapshot
+
+
 def test_batch_uses_real_pydantic_direct_and_preserves_all_image_messages(monkeypatch, app_dir):
     raw = ai_model_probe_service._image_edit_probe_bytes()
     source = app_dir / "source.png"
@@ -279,3 +299,21 @@ def test_superseded_image_keeps_provider_result_without_applying_old_request():
     item = result["image_batch"]["items"][0]
     assert item["status"] == "failed"
     assert item["result_urls"] == ["/file?path=old.png"]
+
+
+def test_canvas_stops_remaining_images_and_preserves_completed_receipts():
+    from erp_web.services.capability_errors import BusinessCapabilityError
+
+    entered = []
+    def process(source):
+        entered.append(source["id"])
+        if len(entered) == 2:
+            raise BusinessCapabilityError("CANVAS_REQUEST_NOT_SENT", "已检测到 Canvas 预览，但翻译连接未就绪。")
+        return {"ok": True, "imagePoolItems": [{"id": "translated", "preview_url": "/translated.png"}]}
+
+    snapshot = run_image_batch(**arguments(process, lambda _: None), prepare_workers=lambda: 1)["image_batch"]
+    assert entered == ["0", "1"] and snapshot["terminal"]
+    assert snapshot["items"][0]["result_asset_ids"] == ["translated"]
+    assert snapshot["items"][1]["started_at"]
+    assert all(row["status"] == "failed" and not row["outcome_unknown"] for row in snapshot["items"][1:])
+    assert all(not row["started_at"] and "尚未发送" in row["error"] for row in snapshot["items"][2:])

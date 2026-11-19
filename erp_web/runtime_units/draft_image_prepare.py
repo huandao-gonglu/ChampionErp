@@ -162,7 +162,7 @@ def _generate(request, context, product, draft, targets, fingerprint, batch_id):
     inputs = _generation_inputs(product, draft, reference_ids)
     with image_request_slots:
         check_cancellation()
-        image_translate_service.check_batch_connection(context.paths.app_dir, config)
+        workers = image_translate_service.check_batch_connection(context.paths.app_dir, config)
         check_cancellation()
         common_plan = image_set_service.plan_image_set(
             app_dir=context.paths.app_dir, config=config, messages=context.pydantic_messages,
@@ -200,7 +200,7 @@ def _generate(request, context, product, draft, targets, fingerprint, batch_id):
         product_id=product["product_id"], draft_id=draft_id, request_id=batch_id,
         prompt=f"为草稿生成共用主图和 SKU 套图：{plan.style}",
         sources=[{"id": page.key} for page in plan.pages], process=process, persist=persist,
-        image_set=plan, preparation_fingerprint=fingerprint, before_create=before_create,
+        image_set=plan, preparation_fingerprint=fingerprint, before_create=before_create, max_workers=workers,
     )
     batch = context.image_batches.get(batch_id)
     if any(item.status != "success" or item.outcome_unknown for item in batch.items):

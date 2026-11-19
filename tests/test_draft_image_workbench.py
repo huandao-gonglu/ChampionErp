@@ -155,3 +155,30 @@ def test_upload_merges_latest_pool_and_returns_only_own_asset_ids(monkeypatch):
     assert result['uploaded_image_ids'] == ['uploaded']
     assert {'uploaded', 'other-draft-result', 'red', 'common'} <= {item['id'] for item in result['imagePool']}
     assert context.products.draft_record(draft['draft_id'])['images'] == draft['images']
+
+
+def test_translation_preflight_failure_finishes_all_unsent_and_can_retry(monkeypatch):
+    product, draft = seeded()
+    checks = []
+    submitted = []
+
+    def check(*_):
+        checks.append(True)
+        if len(checks) == 1:
+            raise TimeoutError("未检测到 Canvas 应用预览")
+        return 1
+
+    def translate(*_, image_ids, **kwargs):
+        submitted.extend(image_ids)
+        raise RuntimeError("单张图片处理失败")
+
+    monkeypatch.setattr(image_translate_service, "check_batch_connection", check)
+    monkeypatch.setattr(image_translate_service, "translate_images", translate)
+    body = {**request(product, draft, ["common", "red"]), "operation": "translate"}
+    image_facade.process_draft_images_payload(body)
+    batch = finish(draft["draft_id"])["image_batch"]
+    assert batch["failed"] == 2 and len(checks) == 1 and not submitted
+    assert all(not row["outcome_unknown"] and not row["started_at"] and "预览" in row["error"] for row in batch["items"])
+    image_facade.process_draft_images_payload({**body, "request_id": "retry"})
+    assert finish(draft["draft_id"])["image_batch"]["failed"] == 2
+    assert len(checks) == 2 and set(submitted) == {"common", "red"}

@@ -1,11 +1,20 @@
 const assert = require('node:assert/strict')
 const { test } = require('node:test')
 const { EventEmitter } = require('node:events')
-const { DESKTOP_SCHEME, parseDesktopLink, desktopLinkArgument, registerDesktopHandoff } = require('./deep-links.cjs')
+const { DESKTOP_SCHEME, DEV_DESKTOP_SCHEME, parseDesktopLink, desktopLinkArgument, registerDesktopHandoff } = require('./deep-links.cjs')
 
 const request = 'a'.repeat(43)
 const origin = 'https://erp.example.test'
 const link = `${DESKTOP_SCHEME}://continue?request=${request}&origin=${encodeURIComponent(origin)}`
+
+test('开发和发布客户端只接受各自的链接协议', () => {
+  const developmentLink = link.replace(DESKTOP_SCHEME, DEV_DESKTOP_SCHEME)
+  assert.equal(parseDesktopLink(developmentLink, origin, DEV_DESKTOP_SCHEME), request)
+  assert.throws(() => parseDesktopLink(link, origin, DEV_DESKTOP_SCHEME))
+  assert.throws(() => parseDesktopLink(developmentLink, origin))
+  assert.equal(desktopLinkArgument([link, developmentLink], DEV_DESKTOP_SCHEME), developmentLink)
+  assert.equal(desktopLinkArgument([developmentLink]), undefined)
+})
 
 test('冷启动和 Windows 重复启动参数使用同一个链接解析，站点必须匹配配置', () => {
   assert.equal(desktopLinkArgument(['app.exe', '--flag', link, '--other']), link)

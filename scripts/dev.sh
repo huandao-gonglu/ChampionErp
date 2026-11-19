@@ -93,7 +93,8 @@ wait_for_url() {
   local pid="$3"
   local log_file="$4"
 
-  for _ in {1..60}; do
+  local attempts="${5:-60}"
+  for ((attempt=0; attempt<attempts; attempt++)); do
     if ! kill -0 "$pid" >/dev/null 2>&1; then
       echo "[error] ${label} exited before it became ready." >&2
       echo "[log] Last lines from ${log_file}:" >&2
@@ -130,35 +131,37 @@ fi
 
 cleanup() {
   local code=$?
+  trap - EXIT INT TERM
   echo
-  echo "[stop] Stopping dev servers..."
-  if [ -n "${BACKEND_PID:-}" ] && kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
-    kill "$BACKEND_PID" >/dev/null 2>&1 || true
-  fi
+  echo "[stop] 正在停止开发桌面、前端和后端…"
   if [ -n "${FRONTEND_PID:-}" ] && kill -0 "$FRONTEND_PID" >/dev/null 2>&1; then
     kill "$FRONTEND_PID" >/dev/null 2>&1 || true
-  fi
-  if [ -n "${BACKEND_PID:-}" ]; then
-    wait "$BACKEND_PID" >/dev/null 2>&1 || true
   fi
   if [ -n "${FRONTEND_PID:-}" ]; then
     wait "$FRONTEND_PID" >/dev/null 2>&1 || true
   fi
+  if [ -n "${BACKEND_PID:-}" ] && kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
+    kill "$BACKEND_PID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${BACKEND_PID:-}" ]; then
+    wait "$BACKEND_PID" >/dev/null 2>&1 || true
+  fi
   exit "$code"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 export ERP_PORT="$BACKEND_PORT"
 export ERP_NO_BROWSER="${ERP_NO_BROWSER:-1}"
 export VITE_DEV_PROXY_TARGET="${VITE_DEV_PROXY_TARGET:-http://127.0.0.1:${BACKEND_PORT}}"
 export VITE_DEV_PORT="$FRONTEND_PORT"
+export ERP_DESKTOP_DEV=1
 
-mkdir -p "$ROOT_DIR/data/logs"
-BACKEND_LOG="$ROOT_DIR/data/logs/dev-backend.log"
-FRONTEND_LOG="$ROOT_DIR/data/logs/dev-frontend.log"
-
-# Avoid stale Vite alias/cache errors after refactors.
-rm -rf "$FRONT_DIR/node_modules/.vite"
+LOG_DIR="${ERP_APP_DIR:-$ROOT_DIR}/data/logs"
+mkdir -p "$LOG_DIR"
+BACKEND_LOG="$LOG_DIR/dev-backend.log"
+FRONTEND_LOG="$LOG_DIR/dev-frontend.log"
 
 kill_port_owner "Backend" "$BACKEND_PORT"
 kill_port_owner "Frontend" "$FRONTEND_PORT"
@@ -175,11 +178,13 @@ BACKEND_PID=$!
 wait_for_url "backend" "http://127.0.0.1:${BACKEND_PORT}/" "$BACKEND_PID" "$BACKEND_LOG"
 
 echo "[start] Launching Vue dev server..."
-(cd "$FRONT_DIR" && exec pnpm exec vite --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort --force) >"$FRONTEND_LOG" 2>&1 &
+(cd "$FRONT_DIR" && exec node node_modules/vite/bin/vite.js --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort --force) >"$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
 
 URL="http://127.0.0.1:${FRONTEND_PORT}/"
 wait_for_url "frontend" "$URL" "$FRONTEND_PID" "$FRONTEND_LOG"
+echo "[start] 正在启动开发桌面，首次加载页面可能需要几秒钟…"
+wait_for_url "开发桌面" "${URL}__dev/desktop-ready" "$FRONTEND_PID" "$FRONTEND_LOG" 120
 echo "[ready] Open: $URL"
 if [ "${ERP_SKIP_OPEN_BROWSER:-0}" != "1" ]; then
   if command -v open >/dev/null 2>&1; then
@@ -189,6 +194,10 @@ if [ "${ERP_SKIP_OPEN_BROWSER:-0}" != "1" ]; then
   fi
 fi
 
-echo "[hint] Press Ctrl+C to stop all development services."
-# Keep script alive while either process is running.
-wait "$BACKEND_PID" "$FRONTEND_PID"
+echo "[ready] 网页和开发桌面已就绪，修改 Vue 页面后两端自动更新。"
+echo "[hint] 按 Ctrl+C 停止桌面、前端和后端。"
+while kill -0 "$BACKEND_PID" 2>/dev/null && kill -0 "$FRONTEND_PID" 2>/dev/null; do
+  sleep 1
+done
+echo "[error] 开发服务已退出，正在清理其余进程。" >&2
+exit 1

@@ -82,7 +82,7 @@ class ImageBatchStore:
                 for row in rows:
                     existing = ImageBatch.model_validate_json(row[0])
                     if existing.draft_id == batch.draft_id and self.blocks_changes(existing):
-                        raise RequestValidationError("当前草稿有图片正在处理或结果待确认，请等待原任务。", status_code=409, error_code="DRAFT_IMAGES_BUSY")
+                        raise RequestValidationError("当前草稿有图片正在处理，请等任务结束后再操作。", status_code=409, error_code="DRAFT_IMAGES_BUSY")
             conn.execute("INSERT INTO image_batches VALUES (?, ?)", (batch.conversation_id, batch.model_dump_json()))
 
     def get(self, conversation_id: str) -> ImageBatch | None:
@@ -90,16 +90,31 @@ class ImageBatchStore:
             row = conn.execute("SELECT payload FROM image_batches WHERE conversation_id=?", (conversation_id,)).fetchone()
         return ImageBatch.model_validate_json(row[0]) if row else None
 
-    def update_item(self, conversation_id: str, index: int, **changes) -> None:
+    @contextmanager
+    def _edit_batch(self, conversation_id: str):
         with self.lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT payload FROM image_batches WHERE conversation_id=?", (conversation_id,)).fetchone()
             if not row:
                 raise ValueError("图片批次不存在。")
             batch = ImageBatch.model_validate_json(row[0])
-            batch.items[index] = type(batch.items[index]).model_validate({**batch.items[index].model_dump(), **changes})
             batch.updated_at = utc_now()
+            yield batch
             conn.execute("UPDATE image_batches SET payload=? WHERE conversation_id=?", (batch.model_dump_json(), conversation_id))
+
+    def update_item(self, conversation_id: str, index: int, **changes) -> None:
+        with self._edit_batch(conversation_id) as batch:
+            item = batch.items[index]
+            batch.items[index] = type(item).model_validate({**item.model_dump(), **changes})
+
+    def fail_queued(self, conversation_id: str, reason: str) -> None:
+        """在同一事务中结束未派发项，保留运行中及已有回执的图片。"""
+        with self._edit_batch(conversation_id) as batch:
+            for item in batch.items:
+                if item.status == "queued":
+                    item.status = "failed"
+                    item.error = reason
+                    item.finished_at = batch.updated_at
 
     def preparation(self, batch_id: str, *, arguments: str | None = None) -> DraftImagesPrepareResult | None:
         with self._connect() as conn:
@@ -127,7 +142,7 @@ class ImageBatchStore:
 
     @staticmethod
     def blocks_changes(batch: ImageBatch) -> bool:
-        return any(item.status in ("queued", "running") or item.outcome_unknown for item in batch.items)
+        return any(item.status in ("queued", "running") for item in batch.items)
 
     def latest_for_draft(self, draft_id: str) -> ImageBatch | None:
         with self._connect() as conn:
@@ -139,4 +154,4 @@ class ImageBatchStore:
     def assert_draft_idle(self, draft_id: str) -> None:
         batch = self.latest_for_draft(draft_id)
         if batch and self.blocks_changes(batch):
-            raise RequestValidationError("当前草稿有图片正在处理或结果待确认，请等待原任务。", status_code=409, error_code="DRAFT_IMAGES_BUSY")
+            raise RequestValidationError("当前草稿有图片正在处理，请等任务结束后再操作。", status_code=409, error_code="DRAFT_IMAGES_BUSY")

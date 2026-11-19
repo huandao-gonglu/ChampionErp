@@ -16,11 +16,34 @@ describe('网页直接打开桌面并等待客户端确认', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    vi.stubEnv('DEV', false)
     vi.stubGlobal('window', { location: { pathname: '/', search: '?tab=drafts', href: 'https://erp.example.test/?tab=drafts', assign: navigate } })
     vi.mocked(api.createDesktopHandoff).mockResolvedValue({ ok: true, request_id: 'a'.repeat(43), expires_in: 600 })
     vi.mocked(api.fetchDesktopHandoffStatus).mockResolvedValue({ ok: true, opened: false })
   })
-  afterEach(() => { dismissDesktopLaunch(); receivedDesktopHandoff.value = null; vi.useRealTimers(); vi.unstubAllGlobals() })
+  afterEach(() => { dismissDesktopLaunch(); receivedDesktopHandoff.value = null; vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
+
+  it('开发网页首次唤起和重试均通过本机开发服务', async () => {
+    vi.stubEnv('DEV', true)
+    const fetch = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetch)
+    await launchDesktop()
+    expect(fetch).toHaveBeenCalledWith('/__dev/desktop-handoff', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ request_id: 'a'.repeat(43) }),
+    }))
+    expect(desktopLaunch.value?.url).toMatch(/^champion-erp-dev:/)
+    await retryDesktopLaunch()
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('开发服务不可用时显示错误，保留开发交接方式', async () => {
+    vi.stubEnv('DEV', true)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: '开发桌面已退出' }) }))
+    await launchDesktop()
+    expect(desktopLaunch.value).toMatchObject({ status: 'error', error: '开发桌面已退出' })
+    expect(navigate).not.toHaveBeenCalled()
+  })
 
   it('直接唤起，未确认时提供重试，迟到的确认仍可结束等待', async () => {
     await launchDesktop()

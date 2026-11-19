@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 from threading import RLock
+from erp_shared.browser_ai import resolve_local_settings
 from erp_shared.desktop import LOCAL_MODEL_FIELDS, local_configuration_fingerprint
 
 
@@ -45,8 +46,11 @@ class LocalConfig:
                            'model', 'timeout_seconds', 'capabilities', 'capability_profiles',
                            'local_connection_id', 'local_config_fingerprint', 'enabled'}
         business = {k: v for k, v in model.items() if k in business_fields}
-        local = self.read().get(reference, {})
+        saved = self.read().get(reference)
+        local = resolve_local_settings(business, saved)
         expected = model.get('local_config_fingerprint')
         if expected and expected != local_configuration_fingerprint(local):
+            if saved is None:
+                raise ValueError('当前桌面尚未配置此模型的本机连接，请在系统设置中配置、测试并保存模型。')
             raise ValueError('本机连接配置已变化，请在当前桌面重新测试并保存模型。')
         return {**business, **local}

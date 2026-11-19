@@ -82,7 +82,7 @@ function startRuntime(executable, dataDir, { args = [], cwd = dataDir, onUnexpec
       }
       const snapshot = reply.result?.snapshot
       const waitingPage = reply.ok && !call.cancelled && snapshot?.verification_reason && snapshot.browser_tab_id
-      browser?.finish(reply.id, waitingPage)
+      browser?.finish(reply.id, waitingPage, !reply.ok && !call.cancelled)
       pending.delete(reply.id)
       call.assets.then(() => call.resolve(reply), call.reject)
     } catch (error) {

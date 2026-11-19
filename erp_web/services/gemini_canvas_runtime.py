@@ -2,15 +2,21 @@
 import base64
 from pathlib import Path
 from .ai_provider_contracts import AiImageEditProvider, CAPABILITY_IMAGE_EDIT
-from .desktop_connection_service import call_desktop
+from .desktop_connection_service import DesktopUnavailable, call_desktop
 from . import image_service
 
 
-from erp_shared.browser_ai import is_canvas_model
+from erp_shared.browser_ai import CANVAS_PREVIEW_WAIT_SECONDS, is_canvas_model
 
 
 def check_canvas_connection(app_dir, model, timeout=30, *, force_login=False):
-    return call_desktop('canvas.check', {'model': model, 'force_login': force_login, 'timeout_seconds': timeout}, timeout=timeout + 300)
+    try:
+        return call_desktop('canvas.check', {'model': model, 'force_login': force_login, 'timeout_seconds': timeout},
+                            timeout=timeout + 300 + CANVAS_PREVIEW_WAIT_SECONDS)
+    except DesktopUnavailable as exc:
+        if exc.outcome_unknown:
+            raise DesktopUnavailable("未收到桌面端的 Canvas 连接检查结果，请确认桌面连接后重试。") from exc
+        raise
 
 
 class GeminiCanvasProvider(AiImageEditProvider):
@@ -29,7 +35,7 @@ class GeminiCanvasProvider(AiImageEditProvider):
             images.append({'id': str(item.get('id') or ''), 'data': base64.b64encode(path.read_bytes()).decode('ascii')})
         result = call_desktop('canvas.edit', {'model': request.model, 'prompt': request.prompt,
             'images': images, 'mode': request.mode, 'count': request.count,
-            'combine_references': request.combine_references, 'timeout_seconds': int(request.timeout_seconds)}, timeout=request.timeout_seconds + 300)
+            'combine_references': request.combine_references, 'timeout_seconds': int(request.timeout_seconds)}, timeout=request.timeout_seconds + 300 + CANVAS_PREVIEW_WAIT_SECONDS)
         from io import BytesIO
         from PIL import Image
         outputs = []

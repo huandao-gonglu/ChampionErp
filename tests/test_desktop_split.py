@@ -297,3 +297,30 @@ def test_model_transport_cannot_override_local_browser_url_with_an_alias(tmp_pat
     effective = config.model({'id': 'browser', 'url': 'http://untrusted.test', 'browser_url': 'http://untrusted.test'})
     assert effective['browser_url'] == 'https://gemini.google.com/share/owned'
     assert 'url' not in effective
+
+
+def test_missing_canvas_connection_uses_only_matching_public_preset(tmp_path, monkeypatch):
+    from desktop_runtime.config import LocalConfig
+    from erp_shared.desktop import LOCAL_MODEL_FIELDS, local_configuration_fingerprint
+    from erp_web.services import ai_model_config, desktop_model_config_service as settings
+
+    config = LocalConfig(tmp_path)
+    preset = ai_model_config.browser_model_presets()[0]["model"]
+    fields = {key: preset[key] for key in LOCAL_MODEL_FIELDS if key in preset}
+    binding = {key: value for key, value in preset.items() if key not in LOCAL_MODEL_FIELDS}
+    binding["local_connection_id"] = binding["id"]
+    binding["local_config_fingerprint"] = local_configuration_fingerprint(fields)
+    monkeypatch.setattr(settings, "current_desktop_connection", lambda: "dev")
+    monkeypatch.setattr(settings, "call_desktop", lambda *args, **kwargs: {"models": config.read()})
+
+    assert config.model({**binding, "browser_url": "https://untrusted.test"})["browser_url"] == fields["browser_url"]
+    assert settings.local_models_view([binding])[0]["browser_url"] == fields["browser_url"]
+    assert config.read() == {}
+    custom = {**binding, "local_config_fingerprint": local_configuration_fingerprint({**fields, "browser_profile": "other"})}
+    assert settings.prepare_local_model(custom) == custom
+    assert "browser_url" not in settings.local_models_view([custom])[0]
+    with pytest.raises(ValueError, match="尚未配置"):
+        config.model(custom)
+    config.update({binding["id"]: {"browser_profile": "mine"}})
+    with pytest.raises(ValueError, match="已变化"):
+        config.model(binding)

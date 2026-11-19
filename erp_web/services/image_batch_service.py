@@ -4,7 +4,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import replace
-from threading import BoundedSemaphore, RLock
+from threading import BoundedSemaphore, Event, RLock
 from uuid import uuid4
 
 from pydantic_ai.messages import ModelRequest, UserPromptPart
@@ -31,7 +31,8 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                     image_set: ImageSetPlan | None = None,
                     retained_items: dict[str, ImageBatchItem] | None = None,
                     request_fingerprint: str = "", before_create: Callable[[], None] | None = None,
-                    preparation_fingerprint: str = "") -> dict:
+                    preparation_fingerprint: str = "", prepare_workers: Callable[[], int] | None = None,
+                    max_workers: int = 3) -> dict:
     presentation = current_presentation_context()
     conversation_id = request_id or (presentation.conversation_id if presentation and presentation.is_root_scope
                        else f"conversation_{uuid4().hex}")
@@ -75,8 +76,16 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                                 for message in native]
             messages.save(conversation_id, [initial, *(message for key in sorted(histories) for message in histories[key])])
 
+    stopped = Event()
+
+    def stop_queued(reason):
+        stopped.set()
+        store.fail_queued(conversation_id, f"此图片尚未发送。{reason}")
+
     def work(index, source):
         with image_request_slots:
+            if stopped.is_set():
+                return []
             try:
                 check_cancellation()
                 store.update_item(conversation_id, index, status="running", started_at=utc_now())
@@ -97,12 +106,23 @@ def run_image_batch(*, store, messages, app_dir, product_id: str, prompt: str,
                 error = f"图片服务返回 HTTP {status}。" if status else safe_model_error_text(exc)
                 store.update_item(conversation_id, index, status="failed", finished_at=utc_now(), error=error or "图片处理失败。",
                                   outcome_unknown=bool(getattr(exc, "outcome_unknown", False)))
+                if getattr(exc, "code", "") in {"CANVAS_REQUEST_NOT_SENT", "DESKTOP_UNAVAILABLE"}:
+                    stop_queued(error)
                 return []
 
     def execute():
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="image-batch") as pool:
+        workers = max_workers
+        if prepare_workers and any(item.status == "queued" for item in batch.items):
+            try:
+                with image_request_slots:
+                    check_cancellation()
+                    workers = prepare_workers()
+            except Exception as exc:
+                # 预检只读取连接状态，即使回执丢失也可以确定图片未发送。
+                stop_queued(safe_model_error_text(exc))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="image-batch") as pool:
             futures = [pool.submit(copy_context().run, work, index, source) for index, source in enumerate(sources)
-                       if batch.items[index].status == "queued"]
+                       if not stopped.is_set() and batch.items[index].status == "queued"]
             # 保存发生在每个 worker 内；这里只按原图顺序汇总，不阻挡其他结果落库。
             results = [item for future in futures for item in future.result()]
         snapshot = store.get(conversation_id).snapshot()

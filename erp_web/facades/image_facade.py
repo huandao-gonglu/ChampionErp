@@ -300,6 +300,7 @@ def _run_images_payload(body: dict[str, Any], *, translate: bool, background: bo
         app_dir=_app_dir(), product_id=product_id, prompt=prompt,
         sources=sources, process=process, persist=persist, draft_id=draft_id,
         request_id=str(body.get("request_id") or ""), background=background,
+        prepare_workers=lambda: image_translate_service.check_batch_connection(context.paths.app_dir, config),
         before_create=lambda: require_model_platform(config, "image.translate"),
     )
     result.update(prompt=prompt, platform=platform, mode=str(body.get("mode") or "translate") if translate else "edit",
@@ -465,7 +466,7 @@ def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus
             if context.image_batches.latest_for_draft(draft["draft_id"]).conversation_id != base_id:
                 raise RequestValidationError("套图任务已更新，请重新读取最新结果。", status_code=409)
             if context.image_batches.blocks_changes(base):
-                raise RequestValidationError("原套图尚未结束或结果待核对，不能重做。", status_code=409)
+                raise RequestValidationError("原套图正在生成，请等任务结束后再重做。", status_code=409)
             plan = base.image_set
             retry_ids = body.get("retry_page_ids") or []
             if not retry_ids or not set(retry_ids).issubset({page.key for page in plan.pages}):
@@ -524,6 +525,7 @@ def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus
             prompt=f"生成 {len(plan.pages)} 张套图：{plan.style}",
             sources=[{"id": page.key} for page in plan.pages], process=process, persist=persist,
             background=True, image_set=plan, retained_items=retained,
+            prepare_workers=lambda: image_translate_service.check_batch_connection(context.paths.app_dir, config),
             before_create=lambda: require_model_platform(config, "image.translate"),
         )
         return draft_image_state_payload(body)

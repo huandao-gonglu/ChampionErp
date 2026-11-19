@@ -16,9 +16,18 @@ const { SavedLogin, registerSavedLogin } = require('./saved-login.cjs')
 const { AccountSession, proxyBackendRequest } = require('./account-session.cjs')
 const { registerAlibabaAuthorization } = require('./alibaba-authorization.cjs')
 const { NewAPIBrowserBridge, registerNewAPIBridge } = require('./newapi.cjs')
-const { DESKTOP_SCHEME, parseDesktopLink, desktopLinkArgument, registerDesktopHandoff } = require('./deep-links.cjs')
+const { DESKTOP_SCHEME, DEV_DESKTOP_SCHEME, parseDesktopLink, desktopLinkArgument, registerDesktopHandoff } = require('./deep-links.cjs')
+const { proxyDevelopmentFrontend } = require('./development.cjs')
 
 const { name: packageName, productName, desktopUpdateOrigin } = require('../package.json')
+const desktopScheme = app.isPackaged ? DESKTOP_SCHEME : DEV_DESKTOP_SCHEME
+const desktopName = app.isPackaged ? productName : `${productName} 开发版`
+const developmentFrontend = !app.isPackaged && process.env.CHAMPION_ERP_DEV_FRONTEND_URL
+if (developmentFrontend && !/^http:\/\/127\.0\.0\.1:\d+$/.test(developmentFrontend)) {
+  throw new Error('桌面开发页面必须使用本机 Vite 地址。')
+}
+// Electron 会把应用名写入 User-Agent。中文开发标记只用于窗口标题。
+if (!app.isPackaged) app.setName('gongluErpDev')
 
 // 显示名称可以更新，正式版和开发版各自沿用原有的配置目录。
 app.setPath('userData', path.join(app.getPath('appData'), app.isPackaged ? 'Champion ERP' : packageName))
@@ -71,7 +80,7 @@ let pendingHandoff = ''
 let pendingLinkError = ''
 function receiveDesktopLink(value) {
   try {
-    pendingHandoff = parseDesktopLink(value, getBackendBaseUrl())
+    pendingHandoff = parseDesktopLink(value, getBackendBaseUrl(), desktopScheme)
     mainWindow?.webContents.send('desktop:handoff', pendingHandoff)
     const win = mainWindow
     if (win) {
@@ -90,11 +99,11 @@ app.on('open-url', (event, value) => {
   event.preventDefault()
   receiveDesktopLink(value)
 })
-const initialLink = desktopLinkArgument(process.argv)
+const initialLink = desktopLinkArgument(process.argv, desktopScheme)
 if (ownsInstance && initialLink) receiveDesktopLink(initialLink)
 
 app.on('second-instance', (_event, argv) => {
-  const link = desktopLinkArgument(argv)
+  const link = desktopLinkArgument(argv, desktopScheme)
   if (link) receiveDesktopLink(link)
   const win = mainWindow
   if (win) {
@@ -103,13 +112,24 @@ app.on('second-instance', (_event, argv) => {
   }
 })
 
+if (developmentFrontend) {
+  process.on('message', message => {
+    if (message?.type === 'desktop-handoff') receiveDesktopLink(message.url)
+    if (message?.type === 'desktop-shutdown') app.quit()
+  })
+  // 启动器意外退出也要释放开发桌面及本机执行器。
+  process.on('disconnect', () => app.quit())
+  process.on('SIGINT', () => app.quit())
+  process.on('SIGTERM', () => app.quit())
+}
+
 async function initializeDesktop() {
   // 沿用原桌面资料根目录，浏览器登录资料不搬入统一后端。
   const dataDir = path.join(app.getPath('userData'), 'backend')
   const backendOrigin = getBackendBaseUrl()
   const browserOwner = () => accountSession.email && JSON.stringify([backendOrigin, accountSession.email])
   embeddedBrowser = createEmbeddedBrowser({ BaseWindow, WebContentsView, session: electronSession,
-    parent: () => mainWindow, account: browserOwner, layoutVerificationWindow: mountLayout })
+    parent: () => mainWindow, account: browserOwner, layoutVerificationWindow: mountLayout, development: !app.isPackaged })
   const options = { browser: embeddedBrowser, browserOwner, onUnexpectedExit: (error) => {
     void desktopConnection?.stop()
     notifyConnectionChanged()
@@ -297,7 +317,8 @@ function startFrontendServer() {
       proxyToBackend(req, res, backendBaseUrl)
       return
     }
-    serveFrontend(req, res, requestUrl, frontendRoot)
+    if (developmentFrontend) proxyDevelopmentFrontend(req, res, developmentFrontend)
+    else serveFrontend(req, res, requestUrl, frontendRoot)
   })
 
   return new Promise((resolve, reject) => {
@@ -332,7 +353,7 @@ async function createWindow() {
     height: 960,
     minWidth: 1120,
     minHeight: 720,
-    title: productName,
+    title: desktopName,
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -343,12 +364,13 @@ async function createWindow() {
   })
 
   mainWindow = win
+  if (!app.isPackaged) win.on('page-title-updated', event => { event.preventDefault(); win.setTitle(desktopName) })
   win.once('closed', () => { mainWindow = undefined; embeddedBrowser.reset() })
   win.webContents.session.webRequest.onBeforeSendHeaders({ urls: [url + '*'] }, (details, callback) => {
     if (details.webContentsId === win.webContents.id) details.requestHeaders['X-ERP-Local-Window'] = localRequestKey
     callback({ requestHeaders: details.requestHeaders })
   })
-  registerSavedLogin({ ipcMain, win, url, vault, session: accountSession })
+  registerSavedLogin({ ipcMain, win, url, vault, session: accountSession, defaultAuto: !app.isPackaged })
   registerLocalConfig({ ipcMain, win, frontendUrl: url, runtime })
   registerDesktopHandoff({ ipcMain, win, frontendUrl: url, pending: () => pendingHandoff,
     finish: id => { if (pendingHandoff === id) pendingHandoff = '' } })
@@ -428,7 +450,6 @@ function showDownloadProgress(cancel) {
 app.whenReady().then(async () => {
   if (!ownsInstance) return
   if (app.isPackaged) app.setAsDefaultProtocolClient(DESKTOP_SCHEME)
-  else if (process.platform === 'win32') app.setAsDefaultProtocolClient(DESKTOP_SCHEME, process.execPath, [path.resolve(process.argv[1])])
   if (pendingLinkError) dialog.showErrorBox('无法打开桌面页面', pendingLinkError)
   if (app.isPackaged) {
     updates = createDesktopUpdates({ app, dialog, shell, autoUpdater, origin: desktopUpdateOrigin,
@@ -442,6 +463,7 @@ app.whenReady().then(async () => {
   await initializeDesktop()
   await createWindow()
   starting = false
+  if (developmentFrontend) process.send?.({ type: 'desktop-ready' })
   updates?.watch()
 }).catch((error) => {
   dialog.showErrorBox(`${productName} 启动失败`, error instanceof Error ? error.message : String(error))

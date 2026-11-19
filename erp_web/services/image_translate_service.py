@@ -36,11 +36,13 @@ def service_status() -> dict[str, str]:
     return {"service": "image_translate", "status": "ready"}
 
 
-def check_batch_connection(app_dir: Path, config: dict) -> None:
-    """在规划和逐页派发之前确认当前绑定的 Canvas 通道，不发送生图请求。"""
+def check_batch_connection(app_dir: Path, config: dict) -> int:
+    """预检后返回可并行发送的图片数，同一 Canvas 会话逐张使用。"""
     model = ai_gateway.resolve_model_for_use_case(app_dir, config, "image.translate")
     if gemini_canvas_runtime.is_canvas_model(model):
         gemini_canvas_runtime.check_canvas_connection(app_dir, model)
+        return 1
+    return 3
 
 
 def build_translate_prompt(

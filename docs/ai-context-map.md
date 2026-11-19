@@ -158,7 +158,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 `/api/collect-verification` 检查原页面验证，`/api/collect-resume` 在验证完成后沿用原桌面连接读取该商品页。
 采集素材逐张交接，`desktop_asset_service` 复用图片服务生成后端引用。
 Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model / Direct / Factory 不变。
-`desktop_model_config_service` 维护业务连接引用和指纹，具体命令、资料、代理由本机配置 owner 管理；
+`desktop_model_config_service` 维护业务连接引用和指纹，具体命令、资料、代理由本机配置 owner 管理。新桌面缺少连接记录时，设置读取和执行器仅在指纹完全一致时采用随版本发布的 Canvas 公开预置；
 配置写入只通过来源受限的 preload IPC，后端调用通道不能修改本机命令。
 
 `scripts/build_desktop_runtime.py` 和 `scripts/desktop_runtime.spec` 构建本机执行器。
@@ -512,12 +512,13 @@ Responses 流经 `services/ai_responses_stream.py` 校验 SDK 已解码的错误
 浏览器 AI 不属于 API Provider，继续使用独立适配器。
 Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独立执行；
 复用浏览器连接和页面原生模型转发，不进入 API Direct Model，也不创建 Agent loop。
-`desktop_runtime/gemini_browser_session` 在配置的 Canvas 页面检查登录。 Google 登录主文档跳转中止后，内置浏览器用同一会话的隐藏 Gemini 页面确认登录；仅确认已登录时恢复原目标页，原页再次通过登录检查后才继续。验证码未完成时保留原验证页。需要登录或人机验证时显示原页，验证后隐藏并继续。模型测试和图片编辑复用同一持久化会话；等待期间不发送图片。
+`desktop_runtime/gemini_browser_session` 在配置的 Canvas 页面检查登录。 Google 登录主文档跳转中止后，内置浏览器用同一会话的隐藏 Gemini 页面确认登录；仅确认已登录时恢复原目标页，原页再次通过登录检查后才继续。验证码未完成时保留原验证页。需要登录或人机验证时显示原页，验证后隐藏并继续。工作台翻译、修改及套图在后台检查 Canvas 后逐张派发。预览未就绪时显示原页供用户展开；校验成功的同账号、会话、目标页与代理可短暂复用。预检失败及中途准备失败均由图片批次库一次结算剩余排队项；已发送项保留各自回执。
 “添加网页模型”的预置目录由 `ai_model_config.browser_model_presets` 经公共 AI 配置的
 `browser_presets` 提供，形状见 `schemas/config.py::AiBrowserPreset`，不混入 API Provider Catalog。
 预置独立于已保存模型，删除后可以重新添加；不携带用户代理、登录资料或已验证的能力回执，能力仍需实测启用。
 网页服务商下拉由该目录中的稳定 `model.browser_provider` ID 生成，显示名称不参与适配器选择；
 界面保留已保存但未在目录中开放新增的服务商值，新增连接须明确选择，切换时清除旧能力回执。
+Canvas 预览准备在配置地址的顶层 Google 页面识别中文共享应用确认框，校验标题、风险说明和唯一可见“继续”按钮，每次准备最多点击一次。定位失败继续等待人工处理，逻辑与模型请求分开。
 自有 Canvas 的最小单文件源码在 `erp_web/assets/gemini_canvas_host.html`；维护者创建并分享应用，
 部署时浏览器模型绑定公开 `/share/<分享 ID>` 页面，使用者各自登录 Google。
 私有 `/app/<对话 ID>` 仅作维护入口，不作为跨账号分发地址；不依赖第三方工作台。
@@ -682,7 +683,7 @@ CLI / Browser use case
 - 草稿图片 V2 由 `DraftImageWorkbench.vue` 展示共用主图与区域内去重后的当前 SKU 图片；同一资产可在两区展示，标明关联 SKU 及共用用途，勾选跨区同步，总数和处理提交按资产 ID 去重。`ProductImageEditorPanel.vue` 保留商品素材池入口。页面不做版本分组或 SKU 配图，历史错误加入的共用引用照实展示，不自动清理。
   `useDraftImageWorkbench.ts` 固定提交目标、清空提交选择；移出、添加、排序和撤销/重做经既有草稿保存入口立即持久化，只改图片引用，保留 SKU 独立引用、价格和源文件。上传在短锁内合入最新素材池，回执 `uploaded_image_ids` 只标识本次上传，不能按素材池增量猜测范围而混入另一草稿的结果。
   撤销栈限定本次打开的草稿工作台，切换工作台内标签保留，关闭或刷新后建立新边界；重新加载或外部更新改变图片引用时旧历史失效。一次批次只记录成功项形成的前后引用差异，重做不再生成或计费。保存回执丢失先重读真实状态，不假报撤销成功。
-  `POST /api/draft-images/process` 经 `image_facade` 注册既有 `ImageBatchStore` 批次后异步执行；`POST /api/draft-images/state` 只读查询当前草稿与原批次。批次携带草稿 ID，同草稿只准一批；进度快照必须在草稿读取前固定，避免终态配旧引用。前端断线保留请求 ID，重新打开按草稿恢复查询，不重发模型请求；结果未知保持只读，服务重启仍沿用已有的人工核对边界。
+  `POST /api/draft-images/process` 经 `image_facade` 注册既有 `ImageBatchStore` 批次后异步执行；`POST /api/draft-images/state` 只读查询当前草稿与原批次。批次携带草稿 ID，同草稿只准一批；进度快照必须在草稿读取前固定，避免终态配旧引用。前端断线保留请求 ID，重新打开按草稿恢复查询，不重发模型请求；仅排队或执行中的图片占用草稿。批次结束后释放草稿，已发送但结果未知的图片保留核对提示，可手动重新选择；登录或排队阶段明确未发送的超时计为普通失败。
   `ProductStore.save_draft_content` 通过上下文显式注入的图片任务 guard 阻止冲突图片写入，页面保存入口另在短锁内检查任务；网络与模型调用不占商品锁。处理期间引用被其他路径改动时保留生成资产并拒绝套用到变化后的范围。
   `image_pool_core._pool_display_item` 保留 `derived_from_id`、`source_asset_id`、语言和供应商字段；历史仅有 `source_asset_id` 的前端读取映射继续保留。
   `replace_selected` 只替换当前草稿原有共用位置与 SKU 引用；SKU 专属结果不能追加到共用图集。显式输入 ID 不再受素材池旧勾选或平台标签二次过滤。

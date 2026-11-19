@@ -12,6 +12,13 @@ from .operation import check_cancellation
 
 LOGIN_WAIT_SECONDS = 300
 
+
+class CanvasPreparationTimeout(TimeoutError):
+    """等待登录或会话空闲超时，尚未提交本次修图。"""
+    code = "CANVAS_REQUEST_NOT_SENT"
+    outcome_unknown = False
+
+
 _AUTH_SCRIPT = """(() => {
     const links = [...document.querySelectorAll('a[href]')];
     // 分享页可能收起账号头像；登录判断不能依赖它的布局宽度。
@@ -63,7 +70,7 @@ def _wait_auth_state(
             return state
         if time.monotonic() >= deadline:
             if wait_for_login:
-                raise TimeoutError("等待 Google 登录超时，本次尚未发送修图请求；登录后可重新执行。")
+                raise CanvasPreparationTimeout("等待 Google 登录超时，本次尚未发送修图请求；登录后可重新执行。")
             raise RuntimeError("Gemini 页面未能完成加载，请检查网络和代理；本次尚未发送修图请求。")
         if wait_for_login and state == "login_required":
             request('recover_login', page=cdp.id, expression=_AUTH_SCRIPT)
@@ -91,7 +98,7 @@ def connect_gemini_page(app_dir, model, timeout: int = 45, *, force_login: bool 
             _wait_auth_state(page, LOGIN_WAIT_SECONDS, wait_for_login=True)
         page.hide()
     yield page
-    request('close', page=page_id)
+    request('release_canvas', page=page_id)
 
 
 __all__ = ["connect_gemini_page"]
