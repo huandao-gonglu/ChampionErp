@@ -374,14 +374,14 @@ class OneBoundAlibabaProvider(OpenApiAlibabaProvider):
                 raise AlibabaApiRejected("当前万邦方案不支持此写入接口")
             if (self.config.get('credential_type') != 'session' or self.config.get('directory_verified') is not True
                     or not self.expected_buyer):
-                raise AlibabaApiRejected("万邦下单和免密支付需要已核验的店铺授权，请联系管理员")
+                raise AlibabaApiRejected("万邦下单和免密支付需要已核验的 Session")
         if api != BUYER_IDENTITY and self.expected_buyer and not self._buyer_checked:
             try:
                 if self.get_buyer_id() != self.expected_buyer:
                     raise AlibabaApiError('当前接入的 1688 买家已变化，请重新核验')
             except (AlibabaApiError, ExternalRequestBlocked):
                 if writing:
-                    raise AlibabaApiRejected("万邦买家身份未通过核验，请核对店铺授权") from None
+                    raise AlibabaApiRejected("万邦买家身份未通过核验") from None
                 raise
             self._buyer_checked = True
         try:

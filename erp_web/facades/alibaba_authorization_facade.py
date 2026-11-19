@@ -12,8 +12,6 @@ def authorization_payload(action, body=None):
     try:
         if provider is not None and provider not in ALIBABA_APPLICATION_TYPES:
             raise ValueError('不支持的 1688 接入方案')
-        if action == 'onebound-shops':
-            return service.list_onebound_shops(nick=body['nick'], page=body['page']), 200
         if action == 'status':
             return service.status(provider), 200
         if action == 'start':
@@ -22,8 +20,6 @@ def authorization_payload(action, body=None):
             return service.complete_from_url(body['callback_url'], provider), 200
         if action == 'complete-onebound':
             return service.complete_from_url(body['callback_url'], 'onebound'), 200
-        if action == 'onebound':
-            return service.bind_onebound(body), 200
         if action == 'self-use-token':
             return service.bind_self_use_token(body['access_token']), 200
         if action == 'callback':

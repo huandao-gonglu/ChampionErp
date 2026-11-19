@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useAccountStore } from '@/stores/account'
-import { type AlibabaProvider, bindOneBoundBuyerToken, bindSelfUseToken, completeAlibabaAuthorization, fetchAlibabaAuthorization, startAlibabaAuthorization } from '@/api/alibabaAuthorization'
+import { type AlibabaProvider, bindSelfUseToken, completeAlibabaAuthorization, fetchAlibabaAuthorization, startAlibabaAuthorization } from '@/api/alibabaAuthorization'
 import { hasLocalOperations } from '@/utils/desktop'
 import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generated'
 
@@ -88,7 +88,9 @@ async function connect() {
 
 async function complete(method: 'callback' | 'token') {
   const value = (method === 'token' ? buyerToken : callbackUrl).value.trim()
-  const allowed = account.isAdmin || (method === 'callback' && props.provider === 'onebound' && waiting.value)
+  const allowed = method === 'token'
+    ? account.isAdmin && props.provider === 'alibaba'
+    : props.provider === 'onebound' ? waiting.value : account.isAdmin
   if (!allowed || !value || completing.value || opening.value) return
   window.clearTimeout(timer)
   revision++
@@ -97,8 +99,7 @@ async function complete(method: 'callback' | 'token') {
   manualError.value = ''
   try {
     if (method === 'callback') status.value = await completeAlibabaAuthorization(value, props.provider)
-    else if (props.provider === 'alibaba') status.value = await bindSelfUseToken(value)
-    else status.value = await bindOneBoundBuyerToken(value)
+    else status.value = await bindSelfUseToken(value)
     buyerToken.value = ''
     callbackUrl.value = browserError.value = error.value = ''
     waiting.value = false
@@ -125,14 +126,13 @@ onUnmounted(() => {
   <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" :aria-label="titles[provider] + ' 1688 授权'">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <h3 class="font-semibold text-accent-950 dark:text-white">{{ titles[provider] }} · 1688 授权</h3>
-      <span v-if="status" aria-live="polite">{{ status.binding_pending ? '待核验' : (status.authorized && !status.needs_reauthorization ? '已连接' : '未连接') }}</span>
+      <span v-if="status" aria-live="polite">{{ status.authorized && !status.needs_reauthorization ? '已连接' : '未连接' }}</span>
     </div>
     <p v-if="status?.active" class="text-sm text-accent-500">当前业务使用此方案</p>
     <p v-if="provider === 'alibaba_crossborder'" class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号。</p>
     <p v-if="status && !status.application_configured" role="status">授权服务暂未配置，请联系管理员。</p>
-    <p v-else-if="status?.binding_pending" role="status">万邦买家身份待核验，请联系管理员。</p>
     <p v-else-if="status && !status.can_authorize" role="status">暂时无法发起登录授权，请联系管理员配置授权服务。</p>
-    <p v-if="status?.needs_reauthorization" role="status">授权已过期或应用配置已变化，请重新连接账号。</p>
+    <p v-if="status?.needs_reauthorization" role="status">请重新连接 1688 账号。</p>
     <p v-if="status?.account_name">当前账号：{{ status.account_name }}</p>
     <p v-else-if="status?.authorized" class="text-sm">当前授权未记录账号名称。</p>
     <p v-if="status?.expires_at" class="text-sm">授权到期时间：{{ new Date(status.expires_at * 1000).toLocaleString() }} <span v-if="status.refreshable">使用时自动续期。</span></p>
@@ -153,10 +153,10 @@ onUnmounted(() => {
         {{ (completing ? '正在完成授权…' : '完成授权') }}
       </button>
     </div>
-    <div v-if="account.isAdmin && status?.application_configured && provider !== 'alibaba_crossborder'" class="space-y-2">
-      <label class="block text-sm" :for="provider + '-buyer-token'">{{ provider === 'alibaba' ? '企业自用应用「授权配置」中的已授权 Token' : '万邦应用授权取得的 1688 买家 Token' }}</label>
+    <div v-if="provider === 'alibaba' && account.isAdmin && status?.application_configured" class="space-y-2">
+      <label class="block text-sm" for="alibaba-buyer-token">企业自用应用「授权配置」中的已授权 Token</label>
       <input
-        :id="provider + '-buyer-token'" v-model="buyerToken" class="input w-full" type="password"
+        id="alibaba-buyer-token" v-model="buyerToken" class="input w-full" type="password"
         autocomplete="off" spellcheck="false" maxlength="4096" :disabled="completing" @keydown.enter.prevent="complete('token')"
       />
       <button type="button" class="btn btn-secondary" :disabled="opening || completing || !buyerToken.trim()" @click="complete('token')">

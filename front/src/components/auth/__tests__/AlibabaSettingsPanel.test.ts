@@ -7,7 +7,7 @@ import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generat
 
 const account = vi.hoisted(() => ({ isAdmin: false }))
 vi.mock('@/stores/account', () => ({ useAccountStore: () => account }))
-vi.mock('@/api/alibabaAuthorization', () => ({ bindOneBoundBuyerToken: vi.fn(), bindSelfUseToken: vi.fn(), completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
+vi.mock('@/api/alibabaAuthorization', () => ({ bindSelfUseToken: vi.fn(), completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
 vi.mock('@/utils/desktop', () => ({ hasLocalOperations: vi.fn() }))
 enableAutoUnmount(afterEach)
 const status: BackendAlibabaAuthorizationStatus = {
@@ -37,7 +37,8 @@ afterEach(() => {
 })
 
 describe('1688 浏览器授权', () => {
-  it('普通用户自行打开万邦登录并粘贴回调地址', async () => {
+  it.each([{ isAdmin: false, role: '普通用户' }, { isAdmin: true, role: '管理员' }])('$role 使用回跳地址完成万邦自助授权', async ({ isAdmin }) => {
+    account.isAdmin = isAdmin
     const onebound = { ...status, application_type: 'onebound' as const, refreshable: false }
     const link = 'https://o0b.cn/9vXze?state=vendor-key'
     vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...onebound, authorized: false, account_name: '' })
@@ -52,6 +53,7 @@ describe('1688 浏览器授权', () => {
     expect(api.startAlibabaAuthorization).toHaveBeenCalledWith('onebound')
     expect(tab.location.replace).toHaveBeenCalledWith(link)
     expect(wrapper.text()).toContain('回跳页可能空白')
+    expect(wrapper.findAll('input').map(input => input.attributes('id'))).toEqual(['onebound-callback-url'])
     const callback = 'https://dc.dev.1buyo.com/api/Accredit1688/callback_1688?state=vendor-key&code=return-code'
     const input = wrapper.get('#onebound-callback-url')
     await input.setValue(callback)
@@ -62,22 +64,7 @@ describe('1688 浏览器授权', () => {
     expect(wrapper.text()).toContain('已连接')
     expect(wrapper.text()).toContain('个人买家')
     expect(wrapper.find('input').exists()).toBe(false)
-    expect(api.bindOneBoundBuyerToken).not.toHaveBeenCalled()
-  })
-
-  it('管理员在万邦卡片绑定自己的买家 Token', async () => {
-    account.isAdmin = true
-    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'onebound', active: false, can_authorize: false, authorized: false })
-    vi.mocked(api.bindOneBoundBuyerToken).mockResolvedValue({ ...status, application_type: 'onebound', authorized: true })
-    const wrapper = await panel('onebound')
-    const input = wrapper.get('#onebound-buyer-token')
-    await input.setValue('personal-token')
-    await input.trigger('keydown.enter')
-    await flushPromises()
-    expect(api.bindOneBoundBuyerToken).toHaveBeenCalledWith('personal-token')
-    expect(wrapper.text()).toContain('已连接')
-    expect((input.element as HTMLInputElement).value).toBe('')
-    expect(api.startAlibabaAuthorization).not.toHaveBeenCalled()
+    expect(api.bindSelfUseToken).not.toHaveBeenCalled()
   })
 
   it('自用应用显示独立的授权说明', async () => {

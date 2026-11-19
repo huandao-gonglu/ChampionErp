@@ -118,9 +118,9 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 万邦卡发起授权后，用户粘贴万邦回跳地址至 `POST /api/alibaba/authorization/onebound/complete`。完成入口只使用当前登录账号的待完成记录，按企业配置核对固定回跳地址与 `state`，兑换一次性授权码后用外层 `access_token` 核对 1688 会员 ID 和登录名。核验成功后将 Token、身份和有效期保存至该用户的 `onebound` 凭据。等待网络期间允许发起新授权，迟到回执须通过凭据快照校验才能写入。旧 Session 凭据保留原协议。
 
-`alibaba_provider(config)` 按配置选择企业自用、跨境 ERP 或万邦实现。`AlibabaProvider` 定义商品、采购、支付和物流的业务方法，平台报文在供应商适配内转换，调用方使用 `schemas/alibaba_provider.py` 及既有业务 Schema。采购预览以业务形状保存，已有记录按原字段读取。万邦通过 `1688/custom` 转发 `fastCreateOrder` 和 `preparePay`，使用已核验目录授权的顶层 `session`，沿用现有采购和支付的占位、回执与对账。买家 Token 统一使用外层 `access_token`，`_o_args` 只包含业务参数。
+`alibaba_provider(config)` 按配置选择企业自用、跨境 ERP 或万邦实现。`AlibabaProvider` 定义商品、采购、支付和物流的业务方法，平台报文在供应商适配内转换，调用方使用 `schemas/alibaba_provider.py` 及既有业务 Schema。采购预览以业务形状保存，已有记录按原字段读取。万邦通过 `1688/custom` 转发 `fastCreateOrder` 和 `preparePay`，使用已保存且核验通过的顶层 `session`，沿用现有采购和支付的占位、回执与对账。买家 Token 统一使用外层 `access_token`，`_o_args` 只包含业务参数。
 
-管理员通过 GET `/api/admin/alibaba/onebound/shop-bindings` 按页读取企业授权店铺目录，响应仅含授权状态及分页。「用户管理」使用 GET/POST `/api/admin/users/onebound` 查询及绑定管理员和普通用户的万邦目录授权。服务端重新读取选中记录并核对买家身份，待核验绑定不可用于个人业务。
+管理员维护企业 Key、Secret 和业务接入方案。个人万邦授权在授权卡完成。历史目录绑定的核验结果和采购归属随已存凭据读取，核验失败的旧记录提示用户重新授权。
 
 `onebound_api_transport.py` 持有固定网关、换码、读写语义及展开响应适配。采购库 v4 别名表保留旧数据和网络中请求的回执读取能力。有效的买家核验须使用个人 Token，并与换码昵称核对。无效 Session 的对照请求曾返回企业默认买家。协议与联调状态见 [1688 授权与接入](alibaba-authorization.md)。
 

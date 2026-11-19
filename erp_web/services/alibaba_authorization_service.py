@@ -12,15 +12,14 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request
-from pydantic import ValidationError
 
-from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt, OneBoundAuthorizationRequest, OneBoundUserBinding
+from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.services.alibaba_api_client import OneBoundAlibabaProvider, alibaba_provider
-from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, legacy_account_scope, onebound_buyer_scope, onebound_scope
+from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, legacy_account_scope, onebound_buyer_scope
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
-from erp_web.services.onebound_api_transport import exchange_onebound_buyer_code, list_onebound_shop_bindings, onebound_directory_credential
+from erp_web.services.onebound_api_transport import exchange_onebound_buyer_code
 
 _AUTH_LOCK = threading.RLock()
 _ONEBOUND_AUTHORIZE = 'https://o0b.cn/9vXze'
@@ -89,17 +88,16 @@ class AlibabaAuthorizationService:
                 attempt = 'expired'
             else:
                 attempt = 'waiting'
-        binding_pending = auth.get('directory_verified') is False
+        unverified_directory = auth.get('directory_verified') is False
         return {'ok': True, 'application_type': application['application_type'],
                 'active': application['application_type'] == self.store.alibaba_api_application(),
                 'application_configured': configured, 'can_authorize': can_authorize,
-                'authorized': bool(auth.get('access_token') and configured and not binding_pending
+                'authorized': bool(auth.get('access_token') and configured and not unverified_directory
                                    and not (application['application_type'] == 'onebound' and expired)),
-                **({'binding_pending': True} if binding_pending else {}),
                 'member_id': auth.get('member_id', ''), 'account_name': auth.get('account_name') or auth.get('member_id', ''),
                 'attempt': attempt, 'expires_at': expires,
                 'refreshable': bool(auth.get('refresh_token')),
-                'needs_reauthorization': bool(state.get('authorization') and not auth)
+                'needs_reauthorization': unverified_directory or bool(state.get('authorization') and not auth)
                     or (expired and not bool(auth.get('refresh_token')))}
 
     def start(self, provider=None):
@@ -215,7 +213,7 @@ class AlibabaAuthorizationService:
                 if not (_configured(application) and auth.get('access_token')):
                     raise ValueError('当前方案的 1688 账号尚未连接，请到万邦授权卡连接账号')
                 if auth.get('directory_verified') is False:
-                    raise ValueError('当前万邦买家身份待核验，请联系管理员')
+                    raise ValueError('当前万邦买家身份未通过核验，请重新连接账号')
                 if auth.get('expires_at') and auth['expires_at'] <= time.time():
                     raise ValueError('万邦买家授权已到期，请重新连接账号')
                 return {**application, 'access_token': auth['access_token'], 'account_scope': auth['account_scope'],
@@ -258,68 +256,6 @@ class AlibabaAuthorizationService:
         self.store.update_alibaba_credentials({'authorization': auth, 'pending': {}}, expected=snapshot,
                                              application=application, provider='alibaba')
         return self.status('alibaba')
-
-    def list_onebound_shops(self, *, nick, page):
-        if len(nick) > 256 or not re.fullmatch(r'[1-9][0-9]{0,8}', page):
-            raise ValueError('请提供有效的店铺昵称和页码')
-        application = self.store.alibaba_application('onebound')
-        if not _configured(application):
-            raise ValueError('请先由管理员配置万邦企业凭据')
-        return list_onebound_shop_bindings(application, nick=nick, page=int(page))
-
-    def onebound_binding(self) -> OneBoundUserBinding:
-        application = self.store.alibaba_application('onebound')
-        snapshot = self.store.alibaba_credentials('onebound')
-        saved = snapshot.get('authorization') or {}
-        auth = _authorization(snapshot, application)
-        if not saved.get('access_token'):
-            state = 'unbound'
-        elif not auth or not _configured(application) or (auth.get('expires_at') and auth['expires_at'] <= time.time()):
-            state = 'expired'
-        elif auth.get('directory_verified') is False:
-            state = 'pending'
-        else:
-            state = 'connected'
-        return {'binding_id': saved.get('directory_shop_id', ''), 'account_name': saved.get('account_name', ''),
-                'state': state}
-
-    def bind_onebound_directory(self, *, binding_id: str, page: int) -> OneBoundUserBinding:
-        application = self.store.alibaba_application('onebound')
-        if not _configured(application):
-            raise ValueError('请先由管理员配置万邦企业凭据')
-        snapshot = self.store.alibaba_credentials('onebound')
-        nick, session = onebound_directory_credential(application, binding_id=binding_id, page=page)
-        provider = OneBoundAlibabaProvider({**application, 'access_token': session, 'credential_type': 'session'}, 20)
-        buyer_id, login = provider.get_buyer_profile()
-        verified = bool(buyer_id and login == nick)
-        auth = {'access_token': session, 'credential_type': 'session', 'account_name': nick,
-                'directory_shop_id': binding_id, 'directory_verified': verified,
-                'member_id': buyer_id if verified else '',
-                'account_scope': onebound_scope(application['api_key'], session, 'session'),
-                'application_fingerprint': application_fingerprint(application)}
-        self.store.update_alibaba_credentials({'authorization': auth, 'pending': {}}, expected=snapshot,
-                                             application=application, provider='onebound')
-        return self.onebound_binding()
-
-    def bind_onebound(self, body):
-        try:
-            request = OneBoundAuthorizationRequest.model_validate(body)
-        except ValidationError:
-            raise ValueError('请提供一项有效的万邦买家凭据（最多 4096 字符）') from None
-        application = self.store.alibaba_application('onebound')
-        if not _configured(application):
-            raise ValueError('请先由管理员配置万邦企业凭据')
-        snapshot = self.store.alibaba_credentials('onebound')
-        credential_type = 'access_token' if request.access_token else 'session'
-        credential = request.access_token or request.session
-        config = {**application, 'access_token': credential, 'credential_type': credential_type}
-        # 只检查当前凭据能否读取；采购归属沿用凭据范围，不按网关返回的默认买家归并。
-        alibaba_provider(config).list_addresses()
-        auth = {'access_token': credential, 'credential_type': credential_type, 'account_name': '万邦采购账号',
-                'account_scope': onebound_scope(application['api_key'], credential, credential_type),
-                'application_fingerprint': application_fingerprint(application)}
-        self.store.update_alibaba_credentials({'authorization': auth, 'pending': {}}, expected=snapshot, application=application, provider='onebound')
-        return self.status('onebound')
 
     def _parse_token(self, application, payload, previous=None):
         previous = previous or {}

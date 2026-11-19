@@ -19,14 +19,12 @@ POST_HANDLERS = {
     "/api/admin/users": account_facade.create_user,
     "/api/admin/users/status": account_facade.status,
     "/api/admin/users/password": account_facade.reset_password,
-    "/api/admin/users/onebound": account_facade.bind_onebound_user,
 }
 GET_HANDLERS = {
     "/api/account/registration-config": account_facade.registration_config,
     "/api/account/newapi": account_facade.newapi_info,
     "/api/account/session": account_facade.session,
     "/api/admin/users": account_facade.users,
-    "/api/admin/users/onebound": account_facade.onebound_binding,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_API_ROUTES = frozenset(GET_HANDLERS)

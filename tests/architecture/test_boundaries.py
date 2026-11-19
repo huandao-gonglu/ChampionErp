@@ -250,7 +250,6 @@ def test_alibaba_business_entries_use_authorization_owner() -> None:
 
 def test_onebound_transport_and_authorization_keep_existing_owners():
     """万邦只适配网关，不持有业务状态或另建下单、支付生命周期。"""
-    from erp_web.schemas.alibaba_authorization import OneBoundAuthorizationRequest
     from erp_web.schemas.requests import REQUEST_CONTRACTS
     from erp_web.ai_capability_coverage import AI_CAPABILITY_COVERAGE_MANIFEST
 
@@ -260,10 +259,9 @@ def test_onebound_transport_and_authorization_keep_existing_owners():
     assert not forbidden_calls([path], {'urlopen', 'save_product', 'claim_payment', 'claim'})
     calls = {dotted_name(node.func) for node in ast.walk(parse_python(str(path))) if isinstance(node, ast.Call)}
     assert 'managed_urlopen' in calls
-    endpoint = '/api/alibaba/authorization/onebound'
-    assert set(REQUEST_CONTRACTS[endpoint].fields) == {'session', 'access_token'}
-    assert set(OneBoundAuthorizationRequest.model_fields) == {'session', 'access_token'}
-    assert OneBoundAuthorizationRequest.model_config['extra'] == 'forbid'
+    endpoint = '/api/alibaba/authorization/onebound/complete'
+    assert set(REQUEST_CONTRACTS[endpoint].fields) == {'callback_url'}
+    assert REQUEST_CONTRACTS[endpoint].required == ('callback_url',)
     entries = [row for row in AI_CAPABILITY_COVERAGE_MANIFEST if row.path == endpoint]
     assert len(entries) == 1 and entries[0].disposition == 'excluded'
 

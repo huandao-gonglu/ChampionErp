@@ -205,7 +205,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/account/password": _contract(fields={"current_password": STRING, "password": STRING}, required=("current_password", "password")),
     "/api/admin/users": _contract(fields={"email": STRING, "display_name": STRING, "password": STRING}, required=("email", "display_name", "password")),
     "/api/admin/users/status": _contract(fields={"user_id": STRING, "status": FieldRule("enum", choices=frozenset({"enabled", "disabled"}))}, required=("user_id", "status")),
-    "/api/admin/users/onebound": _contract(fields={"user_id": STRING, "binding_id": STRING, "page": FieldRule("integer", minimum=1, maximum=999999999)}, required=("user_id", "binding_id", "page")),
     "/api/admin/users/password": _contract(fields={"user_id": STRING, "password": STRING}, required=("user_id", "password")),
     '/api/desktop/connect': RequestContract(),
     '/api/desktop-handoff/create': RequestContract(fields={'target': STRING, 'state': OBJECT}, required=('target',)),
@@ -365,7 +364,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING, "provider": ALIBABA_PROVIDER}, required=("callback_url",)),
     "/api/alibaba/authorization/onebound/complete": RequestContract({"callback_url": STRING}, required=("callback_url",)),
     "/api/alibaba/authorization/self-use-token": RequestContract({"access_token": STRING}, required=("access_token",)),
-    "/api/alibaba/authorization/onebound": RequestContract({"access_token": STRING, "session": STRING}, required_any=(("access_token", "session"),)),
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(
         # 人工确认摘要指纹：HTTP 边界声明字符串类型；业务判空与绑定校验

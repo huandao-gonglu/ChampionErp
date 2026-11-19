@@ -118,7 +118,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="个人账号、会话、用户管理及 New API 账号交接仅供受信界面、内部服务和部署命令使用，不向模型提供身份或权限操作。")
       for method, path in (
           ("GET", "/api/account/registration-config"), ("GET", "/api/account/session"), ("GET", "/api/admin/users"),
-          ("GET", "/api/account/newapi"), ("GET", "/api/admin/users/onebound"),
+          ("GET", "/api/account/newapi"),
           *(("POST", path) for path in account_routes.HANDLED_PATHS),
       )),
     *(AiCapabilityCoverageEntry(method="GET", path=path, business_domain="前端页面", disposition="excluded",
@@ -133,17 +133,14 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason='网页与同账号桌面之间的短期页面交接和确认，不提供业务执行或设备授权。')
       for suffix in ('create', 'status', 'resolve', 'acknowledge', 'installers')),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
-        reason="1688 买家授权状态、浏览器登录、一次性回调及管理员绑定买家凭据仅供授权界面使用。") for method, path in (
+        reason="1688 买家授权状态、浏览器登录、一次性回调及企业自用 Token 绑定仅供授权界面使用。") for method, path in (
         ("GET", "/api/alibaba/crossborder/authorization"),
         ("POST", "/api/alibaba/crossborder/authorization/start"),
         ("GET", "/api/alibaba/authorization"), ("GET", "/auth/alibaba/callback"),
         ("POST", "/api/alibaba/authorization/start"), ("POST", "/api/alibaba/authorization/complete"),
         ("POST", "/api/alibaba/authorization/onebound/complete"),
-        ("POST", "/api/alibaba/authorization/onebound"), ("POST", "/api/alibaba/authorization/self-use-token"),
+        ("POST", "/api/alibaba/authorization/self-use-token"),
     )),
-    AiCapabilityCoverageEntry(method="GET", path="/api/admin/alibaba/onebound/shop-bindings",
-        business_domain="授权基础设施", disposition="excluded",
-        reason="万邦企业授权店铺目录仅供管理员查询。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/publish-bus/retry", business_domain="商品发布", disposition="internal_only",
         reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="禁售类目设置", disposition="internal_only",

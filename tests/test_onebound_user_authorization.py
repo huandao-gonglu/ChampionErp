@@ -1,5 +1,6 @@
 """万邦个人买家授权、身份验证和旧凭据读取。"""
 from concurrent.futures import ThreadPoolExecutor
+import json
 from threading import Event
 from urllib.parse import parse_qs, urlsplit
 
@@ -7,7 +8,7 @@ import pytest
 
 from erp_web.context import get_context
 from erp_web.services import alibaba_api_client as official, onebound_api_transport as transport
-from erp_web.services.alibaba_api_client import alibaba_provider, AlibabaApiError
+from erp_web.services.alibaba_api_client import alibaba_provider, AlibabaApiError, ORDER_LIST
 from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
 from erp_web.services.alibaba_credentials import application_fingerprint
 from tests.test_onebound_api import configure, response
@@ -91,7 +92,6 @@ def test_onebound_expired_token_requires_reauthorization_and_renewal_keeps_buyer
     }})
     service = AlibabaAuthorizationService(store)
     assert service.status()['needs_reauthorization'] and not service.status()['authorized']
-    assert service.onebound_binding()['state'] == 'expired'
     with pytest.raises(ValueError, match='已到期'):
         service.runtime_config()
     monkeypatch.setattr('erp_web.services.alibaba_authorization_service.exchange_onebound_buyer_code',
@@ -103,7 +103,6 @@ def test_onebound_expired_token_requires_reauthorization_and_renewal_keeps_buyer
     assert status['authorized'] and not status['needs_reauthorization'] and not status['refreshable']
     assert service.runtime_config()['account_scope'] == 'existing-scope'
     assert service.runtime_config()['access_token'] == 'renewed-token'
-    assert service.onebound_binding()['state'] == 'connected'
 
 
 def test_concurrent_onebound_completion_cannot_replay_or_overwrite_a_new_attempt(monkeypatch):
@@ -169,12 +168,7 @@ def test_business_client_requires_personal_credential_even_with_enterprise_key()
 
 
 @pytest.mark.parametrize('field', ['access_token', 'session'])
-def test_binding_and_switching_preserve_wire_credential(monkeypatch, field):
-    import json
-    from urllib.parse import parse_qs, urlsplit
-    from erp_web.services.alibaba_api_client import alibaba_provider, ORDER_LIST
-    from tests.test_onebound_api import response
-
+def test_switching_providers_preserves_saved_onebound_credential(monkeypatch, field):
     store = get_context().config
     configure(store)
     service = AlibabaAuthorizationService(store)
@@ -183,38 +177,50 @@ def test_binding_and_switching_preserve_wire_credential(monkeypatch, field):
     def send(request, **kwargs):
         params = parse_qs(urlsplit(request.full_url).query)
         sent.append(params)
-        if params['method'] == ['com.alibaba.trade/' + ORDER_LIST]:
-            return response({'response': {'result': [], 'totalRecord': 0}})
-        return response({'response': {'receiveAddressItems': []}})
+        assert params['method'] == ['com.alibaba.trade/' + ORDER_LIST]
+        return response({'response': {'result': [], 'totalRecord': 0}})
 
     monkeypatch.setattr(transport, 'managed_urlopen', send)
     token = 'buyer-a+&=买家'
+    store.update_alibaba_credentials({'authorization': {
+        'access_token': token, 'credential_type': field, 'account_scope': 'existing-scope',
+        'application_fingerprint': application_fingerprint(store.alibaba_application()),
+    }})
     saved = store._db.runtime_secret('enterprise_applications', 'active', {})
     store._db.set_runtime_secret('enterprise_applications', 'active', {**saved, 'alibaba_api_application': 'alibaba_crossborder'})
-    status = service.bind_onebound({field: token})
+    status = service.status('onebound')
     assert status['authorized'] and not status['active'] and token not in repr(status)
     assert not service.status()['authorized']
     store._db.set_runtime_secret('enterprise_applications', 'active', saved)
 
     client = alibaba_provider(service.runtime_config())
     assert client.find_order_numbers('external-id') == []
-    for params in sent:
-        assert params['key'] == ['vendor-key'] and params['secret'] == ['vendor-secret']
-        assert params.get('session') == ([token] if field == 'session' else None)
-        assert params.get('access_token') == ([token] if field == 'access_token' else None)
-        assert 'access_token' not in json.loads(params['_o_args'][0])
-    assert len(sent) == 2
+    params, = sent
+    assert params['key'] == ['vendor-key'] and params['secret'] == ['vendor-secret']
+    assert params.get('session') == ([token] if field == 'session' else None)
+    assert params.get('access_token') == ([token] if field == 'access_token' else None)
+    assert 'access_token' not in json.loads(params['_o_args'][0])
 
 
-@pytest.mark.parametrize('body', [{}, {'session': 'a', 'access_token': 'b'}, {'access_token': ' '}])
-def test_invalid_binding_keeps_current_grant(body):
+@pytest.mark.parametrize('verified', [True, False])
+def test_saved_onebound_directory_session_keeps_its_verification_and_scope(verified):
     store = get_context().config
     configure(store)
     store.update_alibaba_credentials({'authorization': {
-        'access_token': 'original-token', 'credential_type': 'access_token', 'account_scope': 'original-scope',
+        'access_token': 'saved-session', 'credential_type': 'session', 'account_scope': 'existing-scope',
+        'directory_shop_id': 'saved-binding', 'directory_verified': verified, 'account_name': '买家甲',
+        'member_id': 'buyer-a' if verified else '',
         'application_fingerprint': application_fingerprint(store.alibaba_application()),
     }})
     before = store.alibaba_credentials()
-    with pytest.raises(ValueError, match='一项有效的万邦买家凭据'):
-        AlibabaAuthorizationService(store).bind_onebound(body)
+    service = AlibabaAuthorizationService(store)
+    assert service.status()['authorized'] is verified
+    assert service.status()['needs_reauthorization'] is not verified
+    if verified:
+        config = service.runtime_config()
+        assert config['credential_type'] == 'session' and config['directory_verified'] is True
+        assert config['member_id'] == 'buyer-a' and config['account_scope'] == 'existing-scope'
+    else:
+        with pytest.raises(ValueError, match='请重新连接账号'):
+            service.runtime_config()
     assert store.alibaba_credentials() == before

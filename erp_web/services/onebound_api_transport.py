@@ -1,4 +1,4 @@
-"""万邦 1688 custom 固定网关；只转发显式声明的业务请求。"""
+"""万邦 1688 固定网关，负责授权换码和显式声明的业务请求。"""
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
@@ -7,7 +7,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request
 
-from erp_web.schemas.alibaba_authorization import OneBoundShopBindingPage
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
 
@@ -104,56 +103,6 @@ def exchange_onebound_buyer_code(config, code: str) -> tuple[str, str, float]:
     if expires_at <= time.time():
         raise OneBoundApiError('万邦返回的买家授权已到期，请重新授权')
     return token, nick.strip(), expires_at
-
-
-def _onebound_shop_page(config, *, nick, page):
-    params = {'key': config['api_key'], 'secret': config['api_secret'], 'nick': nick, 'page': page,
-              'cache': 'no', 'result_type': 'json', 'lang': 'zh-CN'}
-    payload = _request_gateway(config, '/sys/shop_bind_list/', params, interface='sys/shop_bind_list',
-                               credential=config['api_secret'], semantics='read', timeout=20)
-    if str(payload.get('error_code')) == '2000':
-        return [], page, 0, 0
-    _validate_gateway_result(payload)
-    result = payload.get('items')
-    try:
-        rows = result['item']
-        page, total, pages = (int(result[key]) for key in ('page', 'total_results', 'pagecount'))
-    except (KeyError, TypeError, ValueError):
-        raise OneBoundApiError('万邦未返回有效的授权店铺分页') from None
-    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows) or page < 1 or total < len(rows) or pages < 0:
-        raise OneBoundApiError('万邦未返回有效的授权店铺分页')
-    return rows, page, total, pages
-
-
-def _shop_field(row, name):
-    value = row.get(name)
-    return str(value) if type(value) in {str, int} else ''
-
-
-def _selectable_shop(row):
-    return (_shop_field(row, 'api_type').lower() in {'1688', '1688global', 'alibaba'}
-            and _shop_field(row, 'status') == '1' and bool(_shop_field(row, 'shop_bind_id'))
-            and bool(_shop_field(row, 'nick').strip()) and isinstance(row.get('session'), str)
-            and 0 < len(row['session'].strip()) <= 4096)
-
-
-def list_onebound_shop_bindings(config, *, nick: str, page: int) -> OneBoundShopBindingPage:
-    """读取企业授权店铺目录，投影可展示的字段。"""
-    rows, page, total, pages = _onebound_shop_page(config, nick=nick, page=page)
-    shops = [{'id': _shop_field(row, 'shop_bind_id'), 'nick': _shop_field(row, 'nick'),
-              'status': _shop_field(row, 'status'), 'expires_at': _shop_field(row, 'exp_time'),
-              'selectable': _selectable_shop(row)} for row in rows]
-    return {'ok': True, 'items': shops, 'page': page, 'total': total, 'page_count': pages}
-
-
-def onebound_directory_credential(config, *, binding_id: str, page: int) -> tuple[str, str]:
-    """重新读取选中的一页，凭据仅在服务端传递。"""
-    rows, _, _, _ = _onebound_shop_page(config, nick='', page=page)
-    matches = [row for row in rows if _shop_field(row, 'shop_bind_id') == binding_id]
-    if len(matches) != 1 or not _selectable_shop(matches[0]):
-        raise OneBoundApiRejected('所选万邦授权已变化或不可用，请刷新列表后重选')
-    row = matches[0]
-    return _shop_field(row, 'nick').strip(), row['session'].strip()
 
 
 def normalize_onebound_response(api, value):

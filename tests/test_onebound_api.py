@@ -150,9 +150,9 @@ def test_unknown_provider_fails_before_any_request():
 def test_onebound_writes_require_a_verified_directory_session(monkeypatch, config):
     monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: pytest.fail('未核验的授权不得发起写入'))
     provider = alibaba_provider(config)
-    with pytest.raises(AlibabaApiRejected, match='已核验的店铺授权'):
+    with pytest.raises(AlibabaApiRejected, match='已核验的 Session'):
         provider.create_order({}, [], flow="flow", channel="alipay", external_id="record")
-    with pytest.raises(AlibabaApiRejected, match='已核验的店铺授权'):
+    with pytest.raises(AlibabaApiRejected, match='已核验的 Session'):
         provider.pay_order("123", channel="alipay", amount_fen=100, request_id="payment")
 
 

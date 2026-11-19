@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import { bindUserOneBound, createAccountUser, fetchUserOneBoundBinding, listAccountUsers, listOneBoundBindings, resetAccountUserPassword, setAccountUserStatus, type AccountUser } from '@/api/accounts'
-
-import type { BackendOneBoundShopBinding, BackendOneBoundUserBinding } from '@/types/workflow.generated'
+import { createAccountUser, listAccountUsers, resetAccountUserPassword, setAccountUserStatus, type AccountUser } from '@/api/accounts'
 
 const users = ref<AccountUser[]>([])
 const total = ref(0)
@@ -16,32 +14,12 @@ const syncPending = ref(false)
 const creating = ref(false)
 const resetUser = ref<AccountUser | null>(null)
 const resetPassword = ref('')
-const shops = ref<Array<BackendOneBoundShopBinding & { page: number }>>([])
-const shopLoading = ref(true)
-const shopError = ref('')
-const bindings = ref<Record<string, BackendOneBoundUserBinding>>({})
-const bindingErrors = ref(new Set<string>())
-const bindingStates = { unbound: '', connected: '已连接', pending: '待核验', expired: '需重新绑定' }
 const showActions = computed(() => users.value.some(user => user.role === 'user'))
 const form = reactive({ email: '', display_name: '', password: '' })
-let generation = 0
 async function load() {
-  const revision = ++generation
   const data = await listAccountUsers({ page: page.value, q: query.value })
-  if (revision !== generation) return
   users.value = data.items
   total.value = data.total
-  const results = await Promise.allSettled(data.items.map(user => fetchUserOneBoundBinding(user.id)))
-  if (revision !== generation) return
-  const loaded: Record<string, BackendOneBoundUserBinding> = {}
-  const failed = new Set<string>()
-  results.forEach((result, index) => {
-    const id = data.items[index]!.id
-    if (result.status === 'fulfilled') loaded[id] = result.value
-    else failed.add(id)
-  })
-  bindings.value = loaded
-  bindingErrors.value = failed
 }
 async function perform(action: () => Promise<unknown>, message = '') {
   if (busy.value) return
@@ -71,47 +49,8 @@ async function setStatus(user: AccountUser) {
   syncPending.value = result?.data?.newapi_sync_pending === true
   await load()
 }
-async function loadShops() {
-  shopLoading.value = true
-  shopError.value = ''
-  try {
-    const available = new Map<string, BackendOneBoundShopBinding & { page: number }>()
-    let index = 1
-    let lastPage = 1
-    do {
-      const data = await listOneBoundBindings(index)
-      lastPage = data.page_count
-      for (const shop of data.items) {
-        if (shop.selectable && !available.has(shop.id)) available.set(shop.id, { ...shop, page: data.page })
-      }
-      index++
-    } while (index <= lastPage)
-    shops.value = [...available.values()]
-  } catch (cause) {
-    shopError.value = cause instanceof Error ? cause.message : '万邦授权列表读取失败。'
-  } finally {
-    shopLoading.value = false
-  }
-}
-function currentShopOption(user: AccountUser) {
-  const binding = bindings.value[user.id]
-  if (!binding) return '正在读取绑定…'
-  if (binding.binding_id || binding.account_name) return binding.account_name || binding.binding_id
-  return shopLoading.value ? '正在加载万邦账号…' : shops.value.length ? '请选择万邦账号' : '暂无可用账号'
-}
-async function saveBinding(user: AccountUser, event?: Event) {
-  const select = event?.target as HTMLSelectElement | undefined
-  const selection = select?.value ?? bindings.value[user.id]?.binding_id
-  const shop = shops.value.find(item => item.id === selection)
-  if (busy.value || !shop) return
-  await perform(async () => {
-    bindings.value[user.id] = await bindUserOneBound(user.id, shop.id, shop.page)
-  })
-  if (select) select.value = bindings.value[user.id]?.binding_id ?? ''
-}
 onMounted(() => {
   void perform(load)
-  void loadShops()
 })
 </script>
 
@@ -143,51 +82,25 @@ onMounted(() => {
         <button type="submit" class="btn btn-primary" :disabled="busy">重置密码</button>
         <button type="button" class="btn btn-secondary ml-3" :disabled="busy" @click="resetUser = null; resetPassword = ''">取消</button>
       </form>
-      <div v-if="shopError" class="flex items-center gap-3 text-sm">
-        <span role="status">{{ shopError }}</span>
-        <button type="button" class="font-semibold text-primary-600 dark:text-primary-300" :disabled="shopLoading" @click="loadShops">重试读取万邦账号</button>
-      </div>
       <form class="flex gap-3" @submit.prevent="page = 1; perform(load)">
         <input v-model="query" aria-label="按邮箱或名称查询" placeholder="按邮箱或名称查询" class="input flex-1" maxlength="200" />
         <button type="submit" class="btn btn-secondary" :disabled="busy">查询</button>
       </form>
       <section class="overflow-x-auto rounded-2xl border border-accent-200 bg-white dark:border-white/10 dark:bg-dark-900" :aria-busy="busy">
         <table class="w-full text-left text-sm">
-          <thead class="border-b border-accent-200 dark:border-white/10"><tr><th class="p-4">显示名称</th><th class="p-4">登录邮箱</th><th class="p-4">角色</th><th class="p-4">状态</th><th class="p-4">万邦</th><th v-if="showActions" class="p-4">操作</th></tr></thead>
+          <thead class="border-b border-accent-200 dark:border-white/10"><tr><th class="p-4">显示名称</th><th class="p-4">登录邮箱</th><th class="p-4">角色</th><th class="p-4">状态</th><th v-if="showActions" class="p-4">操作</th></tr></thead>
           <tbody>
             <tr v-for="user in users" :key="user.id" class="border-b border-accent-100 dark:border-white/5">
               <td class="p-4">{{ user.display_name }}</td>
               <td class="p-4">{{ user.email }}</td>
               <td class="whitespace-nowrap p-4">{{ user.role === 'admin' ? '管理员' : '普通用户' }}</td>
               <td class="p-4">{{ user.status === 'enabled' ? '已启用' : '已禁用' }}</td>
-              <td class="min-w-44 p-4">
-                <select
-                  class="input w-full"
-                  :aria-label="`选择 ${user.display_name} 的万邦账号`"
-                  :value="bindings[user.id]?.binding_id || ''"
-                  :disabled="busy || shopLoading || !!shopError || !bindings[user.id] || !shops.length"
-                  @change="saveBinding(user, $event)"
-                >
-                  <option v-if="!shops.some(shop => shop.id === bindings[user.id]?.binding_id)"
-                    :value="bindings[user.id]?.binding_id || ''" disabled>
-                    {{ bindingErrors.has(user.id) ? '绑定状态读取失败' : currentShopOption(user) }}
-                  </option>
-                  <option v-for="shop in shops" :key="shop.id" :value="shop.id">{{ shop.nick }} · {{ shop.id }}</option>
-                </select>
-                <p v-if="bindings[user.id] && bindingStates[bindings[user.id]!.state]"
-                  class="mt-1 text-xs text-accent-500 dark:text-accent-300" role="status">
-                  {{ bindingStates[bindings[user.id]!.state] }}
-                  <button v-if="bindings[user.id]?.state === 'pending' && shops.some(shop => shop.id === bindings[user.id]?.binding_id)"
-                    type="button" class="ml-2 font-semibold text-primary-600 dark:text-primary-300"
-                    :disabled="busy || shopLoading || !!shopError" @click="saveBinding(user)">重新核验</button>
-                </p>
-              </td>
               <td v-if="showActions" class="space-x-3 whitespace-nowrap p-4">
                 <button v-if="user.role === 'user'" class="font-semibold text-primary-600 dark:text-primary-300" :disabled="busy" @click="perform(async () => { await setStatus(user) })">{{ (user.status === 'enabled' ? '禁用' : '启用') }}</button>
                 <button v-if="user.role === 'user'" class="font-semibold text-primary-600 dark:text-primary-300" :disabled="busy" @click="resetUser = user; resetPassword = ''">重置密码</button>
               </td>
             </tr>
-            <tr v-if="!users.length"><td :colspan="showActions ? 6 : 5" class="p-8 text-center text-accent-500 dark:text-accent-300">{{ (busy ? '正在加载…' : '没有匹配的用户。') }}</td></tr>
+            <tr v-if="!users.length"><td :colspan="showActions ? 5 : 4" class="p-8 text-center text-accent-500 dark:text-accent-300">{{ (busy ? '正在加载…' : '没有匹配的用户。') }}</td></tr>
           </tbody>
         </table>
       </section>

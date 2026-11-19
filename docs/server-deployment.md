@@ -66,12 +66,12 @@ python3 /opt/champion-erp/current/deploy/publish_desktop.py --policy-only \
 
 首次安装支持版本检查的客户端需手动下载。Mac Apple 芯片的安装地址形如 `/desktop-updates/darwin-arm64/1.2.8/installer.dmg`。旧客户端未上报桌面版本，网页也不参与桌面最低版本检查。Windows 的 NSIS 安装包和 Linux 的 AppImage 需在对应构建环境生成，再在服务器用同一 `publish_desktop.py` 提供 `--platform win32|linux`、`--arch`、`--version`、`--installer`、`--sha256`、`--public-url` 和 `--policy` 发布。每个已发布架构有独立的清单。
 
-## 当前公网部署（2026-11-13）
+## 公网发布记录（2026-11-13）
 
 万邦 1688 方案版本 **1.2.69** 已发布，代码 `c87d897ac01d`，发布记录
 `20261113t034159z-c87d897ac01d`。代码和发布验收记录位于 `codex/onebound-1688-1.2.69` 分支。
-管理员可在企业自用、跨境 ERP、万邦三套方案中切换；万邦企业凭据及已有 Session 绑定仅管理员可见。
-万邦买家在线授权仍待提供回调协议，未开放给普通用户。
+该版本允许管理员切换企业自用、跨境 ERP、万邦三套方案，并管理万邦企业凭据及 Session 绑定。
+当前代码的授权流程见 [万邦自助授权](alibaba-authorization.md#万邦自助授权)。
 
 - 独立发布版本完成 405 项后端、架构和发布专项检查，前端 135 个文件共 1197 项、桌面 27 项通过；
   第三方声明、生成契约、编译和网页构建通过。原工作区后端全量 4385 项、53 个子测试通过，
