@@ -31,8 +31,8 @@ async function fixture(saved?: ImageBatchSnapshot, withSkus = false) {
   const images: ImageAsset[] = ['source', 'main', 'detail', 'red-original', 'red-result'].map(id => ({ id, url: `/${id}.png`, path: '', previewUrl: '', origin: 'source', usage: 'detail', platforms: [], selected: true, isMain: false, status: 'ready', width: 800, height: 800 }))
   const batch = ref<ImageBatchSnapshot | null>(saved || null), busy = ref(false)
   const controller: DraftImageWorkbenchController = {
-    busy: computed(() => busy.value), batch, notice: ref(''), undoLabel: computed(() => ''), redoLabel: computed(() => ''),
-    start: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
+    busy: computed(() => busy.value), checking: ref(false), batch, notice: ref(''), undoLabel: computed(() => ''), redoLabel: computed(() => ''),
+    start: vi.fn(), resumeTranslation: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
     planSet: vi.fn(async () => ({ ok: true, plan: structuredClone(plan), updated_at: 'planned-version' })), generateSet: vi.fn(), applySet: vi.fn(),
   }
   const skus = withSkus ? ['red-small', 'red-large'].map(skuId => ({ skuId, name: skuId, imageAssetId: 'red-original', inherited: true, selected: true })) : []

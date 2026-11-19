@@ -1,11 +1,16 @@
-"""账号 HTTP 编排；只读取共享账号库，不装配模型工具。"""
+"""账号 HTTP 编排及管理员对个人授权的管理。"""
 from http.cookies import SimpleCookie
 import os
 
+from pydantic import ValidationError
+
+from erp_web.schemas.alibaba_authorization import OneBoundUserBindingRequest
+from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.schemas.accounts import AccountError, SESSION_COOKIE, SESSION_SECONDS, public_user
 from erp_web.schemas.newapi import NewAPIConnectionInfo, NewAPIAuthorizationPreview, NewAPILaunch
 from erp_web.services import registration_verification
 from erp_web.services.account_request import account_runtime, client_ip
+from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
 
 
 def _require_session(handler, *, admin=False):
@@ -96,7 +101,7 @@ def users(handler, query):
             raise ValueError
     except ValueError as exc:
         raise AccountError("分页参数无效。") from exc
-    rows = [public_user(u) for u in account_runtime(handler).store.users() if u["role"] == "user"]
+    rows = [public_user(u) for u in account_runtime(handler).store.users()]
     search = (query.get("q") or [""])[0].strip().casefold()
     if search:
         rows = [u for u in rows if search in u["email"] or search in u["display_name"].casefold()]
@@ -123,6 +128,37 @@ def reset_password(handler, body):
     runtime.service.reset_password(body)
     runtime.disconnect(body["user_id"])
     return {"ok": True, "newapi_sync_pending": runtime.newapi.sync(body["user_id"])}
+
+
+def _user_onebound_service(handler, user_id):
+    _require_session(handler, admin=True)
+    runtime = account_runtime(handler)
+    user = next((item for item in runtime.store.users() if item['id'] == user_id), None)
+    if user is None:
+        raise AccountError('用户不存在。', status_code=404, error_code='USER_NOT_FOUND')
+    return AlibabaAuthorizationService(runtime.context_for(user).config, owner_id=user_id)
+
+
+def onebound_binding(handler, query):
+    values = query.get('user_id', [])
+    if len(values) != 1 or not values[0]:
+        raise AccountError('请选择要管理的用户。')
+    return {'ok': True, 'binding': _user_onebound_service(handler, values[0]).onebound_binding()}
+
+
+def bind_onebound_user(handler, body):
+    try:
+        request = OneBoundUserBindingRequest.model_validate(body)
+    except ValidationError as exc:
+        raise AccountError('请选择有效的用户和万邦授权记录。') from exc
+    service = _user_onebound_service(handler, request.user_id)
+    try:
+        binding = service.bind_onebound_directory(binding_id=request.binding_id, page=request.page)
+    except ExternalRequestBlocked as exc:
+        raise AccountError('万邦核验请求已中断，请在系统设置中查看。', status_code=409) from exc
+    except ValueError as exc:
+        raise AccountError(str(exc)) from exc
+    return {'ok': True, 'binding': binding}
 
 
 def newapi_info(handler, query) -> NewAPIConnectionInfo:

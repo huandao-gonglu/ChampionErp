@@ -31,6 +31,8 @@ class ImageBatchStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_image_preparations_draft ON draft_image_preparations(draft_id)")
             conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_image_preparations_active
                             ON draft_image_preparations(draft_id) WHERE json_extract(result, '$.status')='queued'""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS idx_image_batches_draft_time ON image_batches(
+                json_extract(payload, '$.draft_id'), json_extract(payload, '$.created_at') DESC)""")
             conn.execute("PRAGMA user_version=1")
             # 启动时只结算中断，不重放可能已计费的图片请求。
             for conversation_id, payload in conn.execute("SELECT conversation_id, payload FROM image_batches").fetchall():
@@ -129,10 +131,10 @@ class ImageBatchStore:
 
     def latest_for_draft(self, draft_id: str) -> ImageBatch | None:
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload FROM image_batches").fetchall()
-        batches = [ImageBatch.model_validate_json(row[0]) for row in rows]
-        return max((batch for batch in batches if batch.draft_id == draft_id),
-                   key=lambda batch: batch.created_at, default=None)
+            row = conn.execute("""SELECT payload FROM image_batches
+                WHERE json_extract(payload, '$.draft_id') = ?
+                ORDER BY json_extract(payload, '$.created_at') DESC, rowid LIMIT 1""", (draft_id,)).fetchone()
+        return ImageBatch.model_validate_json(row[0]) if row else None
 
     def assert_draft_idle(self, draft_id: str) -> None:
         batch = self.latest_for_draft(draft_id)

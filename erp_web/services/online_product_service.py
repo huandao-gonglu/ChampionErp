@@ -97,12 +97,12 @@ class OnlineProductService:
         with request_operation("online_products"):
             return adapter.shop_names()
 
-    def _list_context(self, platform: str, catalog: str = "current", warehouse_id: str = ""):
+    def _list_context(self, platform: str, catalog: str = "current", warehouse_id: str = "", *, list_only: bool = False):
         if catalog not in ("current", "archived", "all"):
             raise ValueError("商品目录范围只能为 current、archived 或 all")
         config = self.context.config.load_store_config()
         account = account_identity(platform, config)
-        records = self.store.listings(platform, account) if account else []
+        records = self.store.listings(platform, account, list_only=list_only) if account else []
         if catalog != "all":
             records = [row for row in records if row.archived is (catalog == "archived")]
         warehouses = {}
@@ -123,16 +123,18 @@ class OnlineProductService:
             "store_name": str(config.get(platform, {}).get("shop_name") or account), 'warehouses': list(warehouses.values()),
         }
 
-    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1, catalog: str = "current", warehouse_id: str = "") -> dict[str, Any]:
-        records, context = self._list_context(platform, catalog, warehouse_id)
-        jobs = self.store.jobs(platform, context["account_id"]) if context["account_id"] else []
+    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1, catalog: str = "current", warehouse_id: str = "", list_only: bool = False) -> dict[str, Any]:
+        records, context = self._list_context(platform, catalog, warehouse_id, list_only=list_only)
+        latest_id = (context["latest_sync"] or {}).get("id", "")
+        jobs = []
+        if account := context["account_id"]:
+            jobs = (self.store.list_page_jobs(platform, account, latest_id) if list_only else self.store.jobs(platform, account))
         result = listing_page(records, query=query, status=status, market=market, page=page)
         if platform == "yandex":
             visible = {row["id"] for row in result["items"]}
             cutoff = datetime.now(timezone.utc) - SALES_MAX_AGE
             result["sales_due_ids"] = [row.id for row in records if row.id in visible and sales_due(row, cutoff)]
-        return {**context, **result,
-                "jobs": jobs, "latest_sync": next((job for job in jobs if job["operation"] == "sync" and (catalog == "all" or job["request"].get("catalog", "all") in (catalog, "all"))), None)}
+        return {**context, **result, "jobs": jobs, "latest_sync": next((job for job in jobs if job["id"] == latest_id), None)}
 
     def read_page(self, platform: str, *, query: str = "", status: str = "", market: str = "",
                   page: int = 1, limit: int = 25, view: Literal["groups", "listings"] = "groups",

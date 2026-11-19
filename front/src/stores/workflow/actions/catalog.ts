@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 import { draftContextTitle, draftListTitle } from '@/utils/draftDisplayTitle'
 import {
   claimProducts as claimProductsApi,
@@ -48,6 +49,7 @@ type WorkflowCatalogActionsPort = Pick<
   WorkflowRuntime,
   | 'product'
   | 'productsIndex'
+  | 'libraryRows'
   | 'draftsIndex'
   | 'selectedProductIds'
   | 'currentDraft'
@@ -87,11 +89,11 @@ type WorkflowCatalogActionsPort = Pick<
   | 'syncPricingInputFromProduct'
 >
 
-type DraftTargetSelectionSource = Pick<DraftDetail, 'draftId' | 'language' | 'targetSites'>
+type DraftTargetSelectionSource = DraftIndexItem | DraftDetail
 
 export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort) {
   const {
-    product, productsIndex, draftsIndex, selectedProductIds, currentDraft,
+    product, productsIndex, libraryRows, draftsIndex, selectedProductIds, currentDraft,
     currentDraftProductContext, imagePrompt, fillFormFromState, pricingResult, draftForSave,
     categoryResults, categoryRecommendations, categoryAutoMatchProductName, categoryPrecheck, precheck, precheckResults,
     payloadPreview, copyGenerating, activeMarketplace, appConfig, storeConfig, loading,
@@ -101,29 +103,42 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     syncPricingInputFromProduct,
   } = runtime
 
-  async function refreshProductsIndex() {
-    loading.value = true
+  const productsRefreshing = ref(false)
+  let productsRefreshSequence = 0
+  async function refreshProductsIndex(view: 'full' | 'list' = 'full') {
+    const sequence = ++productsRefreshSequence
+    const previous = productsIndex.value
+    productsRefreshing.value = true
     setError('')
     try {
-      productsIndex.value = await fetchProductsIndex()
-      addLog(`采集箱已刷新：${productsIndex.value.length} 条。`)
+      const rows = await fetchProductsIndex(view)
+      if (sequence !== productsRefreshSequence || previous !== productsIndex.value) return
+      if (view === 'list') libraryRows.value = rows
+      else productsIndex.value = rows
+      addLog(`采集箱已刷新：${rows.length} 条。`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '刷新采集箱失败')
+      if (sequence === productsRefreshSequence) setError(exc instanceof Error ? exc.message : '刷新采集箱失败')
     } finally {
-      loading.value = false
+      if (sequence === productsRefreshSequence) productsRefreshing.value = false
     }
   }
 
+  const draftsRefreshing = ref(false)
+  let draftsRefreshSequence = 0
   async function refreshDraftsIndex(scope = 'all') {
-    loading.value = true
+    const sequence = ++draftsRefreshSequence
+    const previous = draftsIndex.value
+    draftsRefreshing.value = true
     setError('')
     try {
-      draftsIndex.value = await fetchDraftsIndex(scope)
+      const rows = await fetchDraftsIndex(scope)
+      if (sequence !== draftsRefreshSequence || previous !== draftsIndex.value) return
+      draftsIndex.value = rows
       addLog(`草稿箱已刷新：${draftsIndex.value.length} 条。`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '刷新草稿箱失败')
+      if (sequence === draftsRefreshSequence) setError(exc instanceof Error ? exc.message : '刷新草稿箱失败')
     } finally {
-      loading.value = false
+      if (sequence === draftsRefreshSequence) draftsRefreshing.value = false
     }
   }
 
@@ -142,7 +157,6 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       product.value = result.product
       restoreCategoryFromProduct()
       restorePrecheckFromProduct()
-      applyMutationIndexes(result)
       fillFormFromState(appConfig.value)
       syncCollectDiagnosticsFromProduct('已加载采集箱中的商品。')
       syncPricingInputFromProduct()
@@ -171,7 +185,6 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     precheck.value = null
     precheckResults.value = {}
     payloadPreview.value = null
-    applyMutationIndexes(result)
     syncPricingInputFromProduct()
   }
 
@@ -181,10 +194,13 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     setError('')
     try {
       const result = await loadDraftApi(item.draftId)
+      if (result.draft.draftId !== item.draftId) throw new Error('返回的草稿与所选草稿不一致，请刷新后重试。')
       acceptLoadedDraft(result, false)
       addLog(`已加载草稿：${draftListTitle(item)}`)
+      return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '加载草稿失败')
+      return false
     } finally {
       loading.value = false
     }
@@ -206,7 +222,6 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       activeMarketplace.value = result.draft.platform
       syncActivePublishTarget(undefined, true)
       pricingResult.value = null
-      applyMutationIndexes(result)
       syncPricingInputFromProduct()
       currentStage.value = 5
       addLog(`已进入草稿核价：${draftContextTitle(result.productContext, result.draft.draftId)}`)
@@ -290,14 +305,14 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     loading.value = true
     setError('')
     try {
-      const loaded = currentDraft.value.draftId === draftId
+      const loaded = 'skuItems' in item && currentDraft.value.draftId === draftId
         ? { draft: currentDraft.value, productContext: currentDraftProductContext.value }
         : await loadDraftApi(draftId)
       const draftToSave: DraftDetail = {
         ...loaded.draft,
         platform: primaryTarget.platform,
         platforms,
-        targetSites: mergeTargetDetails(validTargets, loaded.draft.targetSites || []),
+        targetSites: configuredSelectedTargets(expectedLanguage, mergeTargetDetails(validTargets, loaded.draft.targetSites || [])),
         site: primaryTarget.site,
         language: primaryTarget.language,
       }
@@ -364,7 +379,6 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
         try {
           const refreshed = await loadProductApi(currentProductId)
           product.value = refreshed.product
-          applyMutationIndexes(refreshed)
           restoreCategoryFromProduct()
           restorePrecheckFromProduct()
           syncPricingInputFromProduct()
@@ -433,7 +447,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
   }
 
   function selectAllProducts(checked: boolean, productIds?: string[]) {
-    const targetIds = (productIds?.length ? productIds : productsIndex.value.map((item) => item.productId)).filter(Boolean)
+    const targetIds = (productIds?.length ? productIds : libraryRows.value.map((item) => item.productId)).filter(Boolean)
     if (!checked) {
       selectedProductIds.value = selectedProductIds.value.filter((id) => !targetIds.includes(id))
       return
@@ -800,7 +814,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
 
   return {
     acceptLoadedDraft,
-    refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, duplicateDraft, updateDraftTargets,
+    productsRefreshing, draftsRefreshing, refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, duplicateDraft, updateDraftTargets,
     updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, toggleProductSelection,
     selectAllProducts, claimProductsToDrafts, generateCopyForSelectedProducts, enqueueSelectedProducts,
     uploadReferenceImages, clearSourceImages, saveCurrentImagePool, setMainImage, deleteImages, editImagesWithPrompt,

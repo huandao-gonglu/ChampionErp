@@ -23,8 +23,8 @@ function fixture() {
   draft.skuItems = product.skuItems.map(sku => ({ sku_id: sku.id, selected: true, overrides: {}, sku: sku.id, stock: '20', pricing: {}, publications: {}, attributes_by_target: {} }))
   const busy = ref(false), batch = ref<ImageBatchSnapshot | null>(null)
   const controller: DraftImageWorkbenchController = {
-    busy: computed(() => busy.value), batch, notice: ref(''), undoLabel: computed(() => 'AI 修改 2 张'), redoLabel: computed(() => ''),
-    start: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
+    busy: computed(() => busy.value), checking: ref(false), batch, notice: ref(''), undoLabel: computed(() => 'AI 修改 2 张'), redoLabel: computed(() => ''),
+    start: vi.fn(), resumeTranslation: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
     planSet: vi.fn(), generateSet: vi.fn(), applySet: vi.fn(),
   }
   const wrapper = mount(DraftImageWorkbench, { attachTo: document.body, props: { draft, productContext: product, loading: false, controller }, global: { stubs: { Teleport: true } } })
@@ -50,9 +50,9 @@ describe('草稿图片 V2 工作台', () => {
     await button(wrapper, '翻译图片').trigger('click')
     expect(launchDesktop).not.toHaveBeenCalled()
     await button(wrapper, '开始处理 1 张').trigger('click')
-    expect(launchDesktop).toHaveBeenCalledTimes(1)
-    expect(controller.start).not.toHaveBeenCalled()
-    expect(wrapper.vm.pendingImageAction()).toEqual({ action: 'translate', imageIds: ['common'], prompt: '' })
+    expect(controller.start).toHaveBeenCalledOnce()
+    expect(controller.start).toHaveBeenCalledWith('translate', ['common'], '')
+    expect(wrapper.vm.pendingImageAction()).toBeUndefined()
   })
   it('按绑定分别限制修图和套图规划，已有素材仍可选中', async () => {
     const { wrapper, draft } = fixture()

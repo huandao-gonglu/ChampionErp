@@ -8,12 +8,14 @@ function fixture() {
   const keys = []
   const windows = []
   const views = []
+  const networkErrors = []
   class View {
     constructor({ webPreferences }) {
       assert.equal(webPreferences.nodeIntegration, false)
       assert.equal(webPreferences.sandbox, true)
       const contents = new EventEmitter()
       this.webContents = Object.assign(contents, {
+        id: views.length + 1,
         loadURL: async url => { contents.url = url }, getURL: () => contents.url, getTitle: () => '',
         setWindowOpenHandler: handler => { contents.openWindow = handler }, focus() {},
         isDestroyed: () => !!contents.closed, close: () => { contents.closed = true },
@@ -35,10 +37,10 @@ function fixture() {
   const browser = createEmbeddedBrowser({ BaseWindow: Window, WebContentsView: View, parent: () => undefined,
     account: () => account, session: { fromPartition(key) {
       keys.push(key)
-      return { flushStorageData() {}, cookies: { async flushStore() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, async setProxy() {} }
+      return { webRequest: { onErrorOccurred(handler) { networkErrors.push(handler) } }, flushStorageData() {}, cookies: { async flushStore() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, async setProxy() {} }
     } } })
   const call = (action, data, id = 'request') => browser.handle(action, data, account, { id, active: () => true })
-  return { browser, windows, views, call, keys, switchAccount(value) { account = value; browser.reset() } }
+  return { browser, windows, views, call, keys, networkErrors, switchAccount(value) { account = value; browser.reset() } }
 }
 
 const product = { kind: '1688', url: 'https://detail.1688.com/offer/1.html' }
@@ -112,4 +114,46 @@ test('1688 等到需要登录且入口可用后只触发一次，验证轮询不
   await Promise.all([call('show', { page, reason: 'LOGIN' }), call('show', { page, reason: 'LOGIN' })])
   await call('show', { page, reason: 'LOGIN' })
   assert.equal(attempts, 2)
+})
+
+test('Google 登录跳转中止后仅在同会话确认登录成功时恢复原页面', async () => {
+  const { call, views } = fixture()
+  const page = await call('open', canvas)
+  const contents = views[0].webContents
+  contents.url = 'https://accounts.google.com/v3/signin/challenge/ipp/verify'
+  assert.equal(await call('recover_login', { page, expression: 'auth-check' }), false)
+  assert.equal(views.length, 1)
+  let prevented = false
+  const interrupt = () => contents.emit('will-redirect', { url: 'https://unrelated.test/', isMainFrame: true,
+    preventDefault() { prevented = true } })
+  interrupt()
+  assert.equal(prevented, true)
+  // 第一次探测仍需验证，原验证码页保留。
+  const pending = call('recover_login', { page, expression: 'auth-check' })
+  views[1].webContents.executeJavaScript = async () => ({ signedIn: false })
+  assert.equal(await pending, false)
+  assert.ok(contents.getURL().includes('/challenge/'))
+  assert.ok(views[1].webContents.isDestroyed())
+  interrupt()
+  const recovered = call('recover_login', { page, expression: 'auth-check' })
+  views[2].webContents.executeJavaScript = async () => ({ signedIn: true })
+  assert.equal(await recovered, true)
+  assert.equal(contents.getURL(), canvas.url)
+  assert.ok(views[2].webContents.isDestroyed())
+})
+
+test('主文档中止触发登录核对，资源中止和取消的任务不触发恢复跳转', async () => {
+  const { browser, call, views, networkErrors } = fixture()
+  const page = await call('open', canvas)
+  const contents = views[0].webContents
+  contents.url = 'https://accounts.google.com/v3/signin/challenge/ipp/verify'
+  const error = { webContentsId: contents.id, error: 'net::ERR_ABORTED', resourceType: 'image' }
+  networkErrors[0](error)
+  assert.equal(await call('recover_login', { page, expression: 'auth-check' }), false)
+  networkErrors[0]({ ...error, resourceType: 'mainFrame' })
+  const pending = browser.handle('recover_login', { page, expression: 'auth-check' }, 'erp/first', { active: () => false })
+  views[1].webContents.executeJavaScript = async () => ({ signedIn: true })
+  assert.equal(await pending, false)
+  assert.ok(contents.getURL().includes('/challenge/'))
+  assert.ok(views[1].webContents.isDestroyed())
 })

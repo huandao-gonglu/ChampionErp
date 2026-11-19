@@ -13,7 +13,7 @@ describe('草稿箱列表加载', () => {
       { draft_id: 'draft-submitted', status: 'published', publish_status: 'pending_confirmation' },
     ] } })
     const rows = await fetchDraftsIndex()
-    expect(apiClient.get).toHaveBeenCalledWith('/api/drafts-index?scope=all')
+    expect(apiClient.get).toHaveBeenCalledWith('/api/drafts-index?scope=all&view=list')
     expect(rows.map(row => row.status)).toEqual(['claimed', 'published'])
     expect(rows[1].publishStatus).toBe('pending_confirmation')
   })

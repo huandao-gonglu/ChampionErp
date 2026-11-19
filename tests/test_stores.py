@@ -202,6 +202,68 @@ def test_product_store_crud_via_context() -> None:
     assert get_context().db.list_product_records() == []
 
 
+def test_library_list_and_editor_skip_unrelated_data(monkeypatch) -> None:
+    from erp_web.facades.business_data_facade import business_query_payload
+    from erp_web.facades.product_facade import load_product_payload
+
+    context = get_context()
+    saved = context.products.save_product(_sample_product())
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("采集箱展示或编辑不应重新构建完整索引")
+
+    monkeypatch.setattr(context.products, "load_products_index", forbidden)
+    monkeypatch.setattr(context.products, "load_drafts_index", forbidden)
+    with monkeypatch.context() as list_only:
+        list_only.setattr(context.db, "_load_drafts", forbidden)
+        page, status = business_query_payload("products.index", {"view": ["list"]})
+    assert status == 200
+    row, = page["items"]
+    assert row["product_id"] == saved["product_id"] and row["title"] == saved["source"]["title"]
+    assert "product_json" not in row and "drafts" not in row
+    detail, status = load_product_payload({"editor_only": True, "product_file_path": row["product_file_path"]})
+    assert status == 200 and set(detail) == {"ok", "product", "imagePool"}
+    assert detail["product"]["product_id"] == saved["product_id"]
+
+
+def test_draft_box_list_and_editor_do_not_expand_other_drafts(monkeypatch) -> None:
+    from erp_web.facades.business_data_facade import business_query_payload
+    from erp_web.facades.product_facade import load_draft_payload
+
+    context = get_context()
+    product = _sample_product()
+    product["drafts"]["mercadolibre"]["target_sites"] = [{
+        "platform": "mercadolibre", "site": "CBT", "language": "es", "attributes": {"brand": "详情属性"},
+        "sites_to_sell": [{"site_id": "MLM", "logistic_type": "remote", "price": "25.99"}],
+    }]
+    saved = context.products.save_product(product)
+    draft_id = saved["drafts"]["mercadolibre"]["draft_id"]
+    context.db.upsert_draft_model(saved["product_id"], "mercadolibre", {"title": "同商品的另一份草稿"})
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("列表与编辑不应加载全库索引或同商品的其他草稿")
+
+    monkeypatch.setattr(context.products, "load_products_index", forbidden)
+    monkeypatch.setattr(context.products, "load_drafts_index", forbidden)
+    monkeypatch.setattr(context.db, "_load_drafts", forbidden)
+    with monkeypatch.context() as list_only:
+        list_only.setattr(context.db, "_draft_from_row", forbidden)
+        payload, status = business_query_payload("drafts.index", {"scope": ["all"], "view": ["list"]})
+    assert status == 200 and len(payload["items"]) == 2
+    row = next(row for row in payload["items"] if row["draft_id"] == draft_id)
+    assert row["product_title"] == product["name"] and row["language"] == "es"
+    assert not {"raw", "description", "sku_items", "pricing", "images"}.intersection(row)
+    assert row["target_sites"] == [{"platform": "mercadolibre", "site": "CBT", "language": "es",
+                                    "sites_to_sell": [{"site_id": "MLM", "logistic_type": "remote"}]}]
+
+    detail, status = load_draft_payload({"draft_id": draft_id, "editor_only": True})
+    assert status == 200 and set(detail) == {"ok", "draft", "productContext"}
+    assert detail["draft"]["target_sites"][0]["attributes"] == {"brand": "详情属性"}
+    assert detail["draft"]["target_sites"][0]["sites_to_sell"][0]["price"] == "25.99"
+    assert detail["productContext"]["product_id"] == saved["product_id"]
+    assert "raw" not in detail["productContext"]
+
+
 def test_save_draft_detail_ignores_client_publish_state_when_content_is_unchanged() -> None:
     saved, reviews = _save_ready_draft_with_server_state()
     existing = saved["drafts"]["mercadolibre"]

@@ -635,3 +635,92 @@ def test_user_agents_http_is_private_and_preserved_across_initialization(account
         assert restored.config.user_agents() == saved.json()
     finally:
         replacement.close()
+
+
+def test_admin_assigns_onebound_directory_credentials_to_selected_user(accounts_http, monkeypatch):
+    from erp_web.services import onebound_api_transport as transport
+    from erp_web.services.alibaba_api_client import alibaba_provider
+    from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
+    from tests.test_onebound_api import configure, response
+
+    url, runtime, login = accounts_http
+    configure(runtime.root.config)
+    first = register(url, 'buyer-a@example.test')
+    second = register(url, 'buyer-b@example.test')
+    admin = login()
+    regular = login(first['email'])
+    endpoint = url + '/api/admin/users/onebound'
+    shops = [
+        {'shop_bind_id': 'binding-a', 'nick': '买家甲', 'status': '1', 'api_type': '1688', 'session': 'private-a'},
+        {'shop_bind_id': 'binding-b', 'nick': '买家乙', 'status': '1', 'api_type': '1688', 'session': 'private-b'},
+    ]
+    calls = []
+    default_buyer = {'memberId': 'member-a', 'loginId': '买家甲'}
+
+    def send(request, **kwargs):
+        parsed = urlsplit(request.full_url)
+        params = parse_qs(parsed.query)
+        calls.append((parsed.path, params.get('session')))
+        if parsed.path == '/sys/shop_bind_list/':
+            return response({'error_code': '0000', 'items': {'page': 1, 'total_results': '2',
+                                                              'pagecount': 1, 'item': shops}})
+        assert params['method'] == ['com.alibaba.account/alibaba.account.basic']
+        return response({'error_code': '0000', 'response': default_buyer})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', send)
+    login_user = admin.get(url + '/api/account/session').json()['user']
+    listed = admin.get(url + '/api/admin/users').json()
+    assert listed['total'] == 3
+    assert {row['id']: row['role'] for row in listed['items']} == {
+        login_user['id']: 'admin', first['id']: 'user', second['id']: 'user',
+    }
+    assert admin.get(url + '/api/admin/users', params={'q': 'admin@'}).json()['items'] == [login_user]
+
+    first_request = {'user_id': first['id'], 'binding_id': 'binding-a', 'page': 1}
+    assert regular.get(endpoint, params={'user_id': first['id']}).status_code == 403
+    assert regular.post(endpoint, json=first_request).status_code == 403
+    assert admin.post(endpoint, json={**first_request, 'session': 'override'}).status_code == 400
+    assert admin.post(endpoint, json={**first_request, 'user_id': 'missing'}).status_code == 404
+    assert calls == []
+
+    result = admin.post(endpoint, json=first_request)
+    assert result.status_code == 200
+    assert result.json()['binding'] == {'binding_id': 'binding-a', 'account_name': '买家甲', 'state': 'connected'}
+    assert 'private-a' not in result.text
+    assert admin.get(endpoint, params={'user_id': first['id']}).json()['binding'] == result.json()['binding']
+    assert admin.get(endpoint, params={'user_id': second['id']}).json()['binding']['state'] == 'unbound'
+
+    result = admin.post(endpoint, json={'user_id': second['id'], 'binding_id': 'binding-b', 'page': 1})
+    assert result.status_code == 200
+    assert result.json()['binding'] == {'binding_id': 'binding-b', 'account_name': '买家乙', 'state': 'pending'}
+    assert 'private-b' not in result.text
+    assert calls == [('/sys/shop_bind_list/', None), ('/1688/custom', ['private-a']),
+                     ('/sys/shop_bind_list/', None), ('/1688/custom', ['private-b'])]
+
+    first_config = runtime.context_for(runtime.store.by_email(first['email'])).config
+    second_config = runtime.context_for(runtime.store.by_email(second['email'])).config
+    assert not runtime.root.config.alibaba_credentials('onebound')
+    first_runtime = AlibabaAuthorizationService(first_config).runtime_config()
+    assert first_runtime['access_token'] == 'private-a' and first_runtime['member_id'] == 'member-a'
+    second_service = AlibabaAuthorizationService(second_config)
+    assert second_service.status('onebound')['binding_pending']
+    assert not second_service.status('onebound')['authorized']
+    with pytest.raises(ValueError, match='待核验'):
+        second_service.runtime_config()
+
+    default_buyer.update(memberId='unexpected-buyer', loginId='其他买家')
+    with pytest.raises(ValueError, match='买家已变化'):
+        alibaba_provider(first_runtime).get_order('123')
+    assert calls[-1] == ('/1688/custom', ['private-a'])
+
+
+    default_buyer.update(memberId='member-b', loginId='买家乙')
+    root_request = {'user_id': login_user['id'], 'binding_id': 'binding-b', 'page': 1}
+    assert regular.post(endpoint, json=root_request).status_code == 403
+    root_result = admin.post(endpoint, json=root_request)
+    assert root_result.status_code == 200
+    assert root_result.json()['binding'] == {'binding_id': 'binding-b', 'account_name': '买家乙', 'state': 'connected'}
+    assert admin.get(endpoint, params={'user_id': login_user['id']}).json()['binding'] == root_result.json()['binding']
+    assert AlibabaAuthorizationService(runtime.root.config).runtime_config()['member_id'] == 'member-b'
+    assert AlibabaAuthorizationService(first_config).runtime_config()['member_id'] == 'member-a'
+    assert second_service.onebound_binding()['state'] == 'pending'

@@ -19,6 +19,7 @@ let timer: ReturnType<typeof setInterval> | undefined
 let debounce: ReturnType<typeof setTimeout> | undefined
 let disposed = false, generation = 0
 let detailGeneration = 0
+let pendingDetailGeneration: number | undefined
 const statuses = ['queued', 'running', 'waiting', 'interrupted', 'needs_attention', 'completed', 'partial', 'failed', 'closed_unconfirmed']
 const operations = ['publish', 'sync', 'price', 'stock', 'content', 'sale_state', 'archive']
 const plan = computed(() => selected.value?.task.confirmation)
@@ -89,6 +90,7 @@ function badge(status: string) {
 }
 async function loadDetail(id: string, quiet = false) {
   const current = ++detailGeneration
+  pendingDetailGeneration = current
   const showLoading = !quiet || !selected.value
   if (showLoading) { detailLoading.value = true; detailError.value = '' }
   try {
@@ -99,6 +101,7 @@ async function loadDetail(id: string, quiet = false) {
       detailError.value = e instanceof Error ? e.message : '读取任务失败'
     }
   } finally {
+    if (current === pendingDetailGeneration) pendingDetailGeneration = undefined
     if (current === detailGeneration) detailLoading.value = false
   }
 }
@@ -108,16 +111,16 @@ function closeDetail() {
   selectedId.value = ''; selected.value = null; detailLoading.value = false; detailError.value = ''; notice.value = ''
   emit('close-task')
 }
-async function load(quiet = false) {
+async function load(quiet = false, refreshDetail = true) {
   if (loading.value || checking.value) return
   const current = ++generation
   loading.value = true
   if (!quiet) error.value = ''
+  if (refreshDetail && selectedId.value && pendingDetailGeneration !== detailGeneration) void loadDetail(selectedId.value, quiet)
   try {
     const response = await fetchTasks({ ...filters, page: page.value })
     if (disposed || current !== generation) return
     tasks.value = response.items; total.value = response.total; accounts.value = response.accounts
-    if (selectedId.value && !detailLoading.value) await loadDetail(selectedId.value, quiet)
   } catch (e) {
     if (!disposed && current === generation) error.value = e instanceof Error ? e.message : '读取任务失败'
   } finally { if (current === generation) loading.value = false }
@@ -139,7 +142,7 @@ async function check() {
     notice.value = checkMessages[response.resolution] || (response.checked ? '已查询，任务结果已更新' : '')
   } catch (e) { if (!disposed) error.value = e instanceof Error ? e.message : '读取任务失败' }
   finally { checking.value = false }
-  if (!disposed) await load(true)
+  if (!disposed) await load(true, false)
 }
 async function retry() {
   const task = selected.value?.task
@@ -159,7 +162,7 @@ async function retry() {
     notice.value = '重试任务已入队'
   } catch (e) { if (!disposed) error.value = e instanceof Error ? e.message : '读取任务失败' }
   finally { checking.value = false }
-  if (!disposed) await load(true)
+  if (!disposed) await load(true, false)
 }
 watch(() => props.initialTaskId, id => {
   detailGeneration++; detailLoading.value = false; detailError.value = ''; notice.value = ''; error.value = ''
@@ -174,7 +177,6 @@ watch(filters, () => {
 })
 onMounted(() => {
   void load()
-  if (selectedId.value) void loadDetail(selectedId.value)
   timer = setInterval(() => { if (!document.hidden) void load(true) }, 5000)
 })
 onBeforeUnmount(() => { disposed = true; detailGeneration++; clearInterval(timer); clearTimeout(debounce) })

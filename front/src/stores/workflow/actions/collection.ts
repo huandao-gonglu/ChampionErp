@@ -109,14 +109,11 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     setError('')
   }
 
-  async function loadState() {
-    loading.value = true
+  async function loadState(settingsOnly = false) {
+    if (!settingsOnly) loading.value = true
     setError('')
     try {
-      const state = await fetchState()
-      product.value = state.product
-      restoreCategoryFromProduct()
-      restorePrecheckFromProduct()
+      const state = await fetchState(settingsOnly)
       platformOptions.value = state.platformOptions
       const publicAppConfig = sanitizePublicAppConfig(state.appConfig)
       appConfig.value = publicAppConfig
@@ -124,6 +121,13 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
       storeAuthSummary.value = state.storeAuthSummary
       mercadolibreAuthChecklist.value = state.mercadolibreAuthChecklist || null
       if (!Array.isArray(aiConfig.value.ai_use_cases)) aiConfig.value = publicAppConfig
+      if (!('product' in state)) {
+        fillFormFromState(publicAppConfig, state.outputDir)
+        return
+      }
+      product.value = state.product
+      restoreCategoryFromProduct()
+      restorePrecheckFromProduct()
       fillFormFromState(publicAppConfig, state.outputDir)
       syncCollectDiagnosticsFromProduct('后端状态已加载。')
       syncPricingInputFromProduct()
@@ -131,7 +135,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '读取后端状态失败')
     } finally {
-      loading.value = false
+      if (!settingsOnly) loading.value = false
     }
   }
 

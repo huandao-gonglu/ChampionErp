@@ -14,7 +14,7 @@ APP_CONFIG_READS = {
 
 RETAINED_GET_READS = {
     **{path: ('身份协议', '登录、用户管理、配对或授权协议，不是普通业务配置读取。') for path in (
-        '/api/account/registration-config', '/api/account/session', '/api/admin/users', '/api/account/newapi',
+        '/api/account/registration-config', '/api/account/session', '/api/admin/users', '/api/admin/users/onebound', '/api/account/newapi',
         '/api/alibaba/crossborder/authorization', '/api/alibaba/authorization', '/api/wechat/status',
     )},
     **{path: ('原生对话协议', '原生历史、事件订阅及对话投影，保留专门协议。') for path in (

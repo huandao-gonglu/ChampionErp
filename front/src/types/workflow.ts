@@ -10,6 +10,7 @@ export {
   type BackendAlibabaAuthorizationStatus,
   type BackendOneBoundShopBinding,
   type BackendOneBoundShopBindingPage,
+  type BackendOneBoundUserBinding,
   type BackendForbiddenCategory,
   type BackendForbiddenCategories,
   type BackendPublicEnterpriseApplication,

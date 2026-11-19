@@ -53,7 +53,7 @@ function checked<T>(data: T & {ok?: boolean; error?: string}): T {
   return data
 }
 export async function fetchOnlineProducts(params: Record<string, string | number>): Promise<OnlinePage> {
-  return checked((await apiClient.get('/api/online-products', {params})).data)
+  return checked((await apiClient.get('/api/online-products', {params: {...params, view: 'list'}})).data)
 }
 export async function fetchYandexShopNames(accountId: string): Promise<Record<string, string>> {
   const { data } = await apiClient.get('/api/online-products/yandex-shop-names', {params: {account_id: accountId}})

@@ -271,6 +271,19 @@ def large_online_group(online):
     return online
 
 
+def test_page_keeps_groups_without_content_or_per_item_sync_receipts(large_online_group, monkeypatch):
+    _, domain, *_ = large_online_group
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("列表不应加载历史任务回执")
+    monkeypatch.setattr(domain.store, "jobs", forbidden)
+    page = domain.list("yandex", list_only=True)
+    assert page["total"] == 1 and len(page["items"]) == page["groups"][0]["total_count"] == 198
+    assert all("description" not in row["content"] and "attributes" not in row["content"] for row in page["items"])
+    assert page["latest_sync"]["result"] == {"discovered": 198, "completed": 198, "failed": 0, "discovery_complete": True}
+    assert domain.detail(page["items"][0]["id"])["item"]["content"]["attributes"]
+
+
 @pytest.mark.parametrize("entry", ["direct", "python"])
 def test_first_online_product_needs_one_bounded_read(large_online_group, tmp_path, monkeypatch, entry):
     app, domain, _, scope, _ = large_online_group

@@ -195,7 +195,7 @@ const changes = computed<Record<string, unknown>>(() => {
 })
 function syncTarget(job: OnlineJob) {
   const name = job.request.catalog === 'archived' ? '归档商品' : job.request.catalog === 'current' ? '普通商品' : '全店商品'
-  return Array.isArray(job.request.ids) ? `${name} · 失败商品（${job.request.ids.length} 件）` : name
+  return typeof job.request.retry_count === 'number' ? `${name} · 失败商品（${job.request.retry_count} 件）` : name
 }
 function showSync() {
   if (otherCatalogSync.value) return
@@ -283,7 +283,6 @@ async function refresh(quiet = false, checkSales = true) {
     const focus = focusedProduct.value
     if (focus && !result.groups.some(group => group.id === focus.group_id
       && (!focus.listing_id || group.item_ids.includes(focus.listing_id)))) focusedProduct.value = null
-    if (selected.value && !modal.value) selected.value = result.items.find(row => row.id === selected.value?.id) || selected.value
     error.value = ''
     if (checkSales && platform.value === 'yandex' && result.sales_due_ids?.length && !hasActive.value && !selected.value && !modal.value) {
       void refreshPageSales(result, ticket)
@@ -308,11 +307,13 @@ async function detail(row: OnlineListing) {
   detailLoading.value = true
   detailError.value = ''
   try {
-    const result = row.platform === 'yandex' ? await refreshOnlineDetail(row.id) : await fetchOnlineDetail(row.id)
+    let result = row.platform === 'yandex' ? await refreshOnlineDetail(row.id) : await fetchOnlineDetail(row.id)
+    const current = page.value?.items.find(item => item.id === row.id)
+    if (current && current.status_checked_at > result.status_checked_at && ticket === detailSequence && !disposed && selected.value?.id === row.id) {
+      result = await fetchOnlineDetail(row.id)
+    }
     if (disposed || ticket !== detailSequence || epoch !== viewEpoch || selected.value?.id !== row.id || page.value?.account_id !== result.account_id) return
-    sequence++
-    const current = page.value.items.find(item => item.id === row.id)
-    selected.value = current && current.status_checked_at > result.status_checked_at ? current : result
+    selected.value = result
     page.value.items = page.value.items.map(item => item.id === result.id ? selected.value! : item)
   } catch(e) {
     if (!disposed && ticket === detailSequence && epoch === viewEpoch && selected.value?.id === row.id)

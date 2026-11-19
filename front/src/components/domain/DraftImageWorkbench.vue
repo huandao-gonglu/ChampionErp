@@ -188,7 +188,7 @@ watch(busy, value => { if (value) dragging.value = '' })
   <WorkspaceDialog :open="previewOpen" title="发布图片预览" @close="previewOpen = false"><DraftSkuImagePreview :draft="draft" :images="productContext.imagePool" :assignments="assignments" /></WorkspaceDialog>
   <DraftImageSetDialog :open="imageSetOpen" :draft="draft" :images="productContext.imagePool" :reference-ids="commonIds.length ? commonIds : currentIds" :controller="controller" :loading="loading" :skus="assignments" @close="imageSetOpen = false" />
   <WorkspaceDialog :open="Boolean(dialog)" :title="dialog === 'edit' ? 'AI 修改' : dialog === 'translate' ? '翻译图片' : dialog === 'remove' ? `移出 ${targets.length} 张共用主图？` : '添加共用图片'" :close-disabled="busy" @close="dialog = null">
-    <form v-desktop="isModelAction ? 'image.translate' : false" class="space-y-5" @submit.prevent="submit">
+    <form v-desktop="dialog === 'edit' ? 'image.translate' : false" class="space-y-5" @submit.prevent="submit">
       <template v-if="dialog === 'add'">
         <button class="btn btn-outline" type="button" :disabled="busy" @click="input?.click()">上传新图片</button>
         <p class="muted">或从商品素材中选择，添加到本草稿共用区。</p>

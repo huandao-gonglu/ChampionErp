@@ -17,6 +17,7 @@ function signature(value: unknown) {
 
 /** 对话提交后读取业务事实；不从模型文本推断写入，也不重放业务操作。 */
 export function useAiDraftSync(options: {
+  active?: Ref<boolean>
   draft: Ref<DraftDetail>
   input: Ref<PricingInput>
   loading: Ref<boolean>
@@ -54,7 +55,7 @@ export function useAiDraftSync(options: {
   }, { immediate: true, flush: 'sync' })
 
   async function refresh(discardEdits = false) {
-    if (disposed || !draft.value.draftId) return false
+    if (disposed || options.active?.value === false || !draft.value.draftId) return false
     if (loading.value || refreshing.value) { queued = true; return false }
     queued = false
     const current = draft.value

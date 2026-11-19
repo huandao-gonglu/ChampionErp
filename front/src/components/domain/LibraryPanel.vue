@@ -9,6 +9,7 @@ const props = defineProps<{
   selectedIds: string[]
   platformOptions: MarketplaceOption[]
   storeConfig: UnknownRecord
+  refreshing?: boolean
   loading: boolean
   error?: string
 }>()
@@ -87,7 +88,7 @@ function statusClass(value: string) {
             已勾选：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ selectedCount }}</span> 个
           </div>
           <div class="flex flex-wrap gap-2">
-            <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refresh')">刷新采集箱</button>
+            <button class="btn btn-outline py-2" :disabled="props.loading || props.refreshing" @click="emit('refresh')">{{ props.refreshing ? '刷新中…' : '刷新采集箱' }}</button>
             <button data-testid="library-claim-selected" class="btn btn-primary py-2" :disabled="props.loading || !selectedCount || !selectedTargets.length" @click="requestClaim(props.selectedIds)">推到草稿<span v-if="selectedCount">（{{ selectedCount }} 个商品）</span></button>
             <button class="btn btn-outline py-2 text-rose-700 dark:text-rose-200" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除</button>
           </div>
@@ -120,7 +121,7 @@ function statusClass(value: string) {
             <tr v-for="item in filteredItems" :key="item.productId" class="whitespace-nowrap align-middle transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
               <td class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选商品" :checked="props.selectedIds.includes(item.productId)" :disabled="props.loading" @change="emit('toggle', item.productId, ($event.target as HTMLInputElement).checked)" /></td>
               <td class="p-2">
-                <img v-if="item.mainImage" :src="item.mainImage" class="size-8 rounded-md object-cover" />
+                <img v-if="item.mainImage" :src="item.mainImage" loading="lazy" decoding="async" class="size-8 rounded-md object-cover" />
                 <div v-else class="flex size-8 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
               </td>
               <td class="min-w-0 p-2">
@@ -148,7 +149,7 @@ function statusClass(value: string) {
                 </div>
               </td>
             </tr>
-            <tr v-if="!filteredItems.length"><td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">当前筛选下暂无商品。可在采集页导入或采集商品后加入采集箱。</td></tr>
+            <tr v-if="!filteredItems.length"><td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">{{ props.refreshing && !props.items.length ? '正在读取采集箱…' : '当前筛选下暂无商品。可在采集页导入或采集商品后加入采集箱。' }}</td></tr>
           </tbody>
         </table>
       </div>

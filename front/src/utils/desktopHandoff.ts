@@ -11,7 +11,7 @@ export interface DesktopImageAction {
 }
 
 export interface DesktopWorkflowState {
-  draftImageAction?: DesktopImageAction
+  draftImageAction?: DesktopImageAction & { translationRequestId?: string }
   productImageAction?: DesktopImageAction
   draft?: DraftDetail
   draftContext?: DraftProductContext

@@ -73,9 +73,9 @@ class TaskQueueService:
         return {key: value for key, value in task.items() if not key.startswith("_")}
 
     def list(self, query):
-        tasks = [self._project(task) for task in self.reader.tasks()]
+        tasks = self.reader.tasks()
         accounts = sorted({task["account_id"] for task in tasks if task["account_id"]})
-        for key in ("source", "origin", "platform", "status", "operation", "account_id"):
+        for key in ("source", "origin", "platform", "operation", "account_id"):
             if query.get(key):
                 tasks = [task for task in tasks if task[key] == query[key]]
         if query.get("q"):
@@ -87,7 +87,19 @@ class TaskQueueService:
                 tasks = [task for task in tasks if compare(task_timestamp(task["created_at"]), bound)]
         tasks.sort(key=lambda task: (task_timestamp(task["created_at"]), task["id"]), reverse=True)
         page = max(1, int(query.get("page") or 1))
-        return {"ok": True, "items": tasks[(page-1)*30:page*30], "total": len(tasks), "page": page, "accounts": accounts}
+        offset = (page - 1) * 30
+        status = query.get("status")
+        total = 0
+        items = []
+        for task in tasks:
+            # 待确认任务的展示状态取决于确认计划，筛选时须先解析。
+            projected = self._project(task) if status and task["business_status"] in PENDING_RESULTS else None
+            if status and (projected or task)["status"] != status:
+                continue
+            if offset <= total < offset + 30:
+                items.append(projected or self._project(task))
+            total += 1
+        return {"ok": True, "items": items, "total": total, "page": page, "accounts": accounts}
 
     def detail(self, task_id):
         task = self.reader.task(task_id)

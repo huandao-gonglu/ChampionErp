@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import type { BackendOneBoundShopBindingPage, BackendOneBoundUserBinding } from '@/types/workflow.generated'
 
 export interface AccountUser {
   id: string
@@ -35,3 +36,13 @@ export const authorizeNewAPI = (body: { code: string; password?: string }) => ap
 
 export interface NewAPILaunch { ok: boolean; url: string; ticket: string; expires_at: number }
 export const launchNewAPI = async (target: 'keys' | 'wallet' | 'usage') => (await apiClient.post<NewAPILaunch>('/api/account/newapi/launch', { target })).data
+
+export const fetchUserOneBoundBinding = async (user_id: string) => (
+  await apiClient.get<{ binding: BackendOneBoundUserBinding }>('/api/admin/users/onebound', { params: { user_id } })
+).data.binding
+export const listOneBoundBindings = async (page: number) => (
+  await apiClient.get<BackendOneBoundShopBindingPage>('/api/admin/alibaba/onebound/shop-bindings', { params: { page } })
+).data
+export const bindUserOneBound = async (user_id: string, binding_id: string, page: number) => (
+  await apiClient.post<{ binding: BackendOneBoundUserBinding }>('/api/admin/users/onebound', { user_id, binding_id, page })
+).data.binding

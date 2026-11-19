@@ -145,6 +145,7 @@ export function createWorkflowRuntime() {
   const {
     product,
     productsIndex,
+    libraryRows,
     draftsIndex,
     selectedProductIds,
     currentDraft,
@@ -343,7 +344,14 @@ export function createWorkflowRuntime() {
     const previousByKey = new Map(previousTargets.map((target) => [targetSiteKey(target), target]))
     return targets.map((target) => {
       const previous = previousByKey.get(targetSiteKey(target))
-      return normalizeDraftTarget({ ...(previous || {}), ...target })
+      // 列表选择只修改市场与语言，类目、属性及核价快照取自已加载的详情。
+      return normalizeDraftTarget(previous ? {
+        ...previous,
+        language: target.language,
+        sitesToSell: target.sitesToSell?.map(destination => previous.sitesToSell?.find(saved =>
+          mercadoLibreDestinationKey(saved.siteId, saved.logisticType) === mercadoLibreDestinationKey(destination.siteId, destination.logisticType),
+        ) ?? destination),
+      } : target)
     })
   }
 
@@ -972,7 +980,7 @@ export function createWorkflowRuntime() {
 
   const imagePool = computed(() => product.value.source.imagePool)
   const selectedImages = computed(() => imagePool.value.filter((image) => image.selected))
-  const selectedProducts = computed(() => productsIndex.value.filter((item) => selectedProductIds.value.includes(item.productId)))
+  const selectedProducts = computed(() => libraryRows.value.filter((item) => selectedProductIds.value.includes(item.productId)))
 
   function draftDetailFromProduct(platform: Marketplace, sourceProduct: Product = product.value): DraftDetail {
     const sourceDraft = sourceProduct.drafts[platform]
@@ -998,7 +1006,7 @@ export function createWorkflowRuntime() {
 
   const workflowSteps = computed<WorkflowStep[]>(() => {
     const hasCollected = Boolean(product.value.source.title || product.value.name)
-    const hasLibrary = productsIndex.value.length > 0
+    const hasLibrary = libraryRows.value.length > 0
     const hasEdit = Boolean(product.value.productId && (product.value.sku || product.value.stock || product.value.upc || product.value.brand || product.value.model))
     const progressDraft = workflowProgressDraft(product.value, currentDraft.value, activeMarketplace.value)
     const hasCopy = Boolean(
@@ -1163,7 +1171,7 @@ export function createWorkflowRuntime() {
 
 
   return {
-    product, productsIndex, draftsIndex, selectedProductIds, currentDraft, currentDraftProductContext,
+    product, productsIndex, libraryRows, draftsIndex, selectedProductIds, currentDraft, currentDraftProductContext,
     imagePrompt, collectForm, collectDiagnostics, fillFormFromState,
     pricingInput, pricingResult, category, categoryQuery, categoryResults, categoryRecommendations,
     categoryAutoMatching, categoryAutoMatchMessage, categoryAutoMatchCurrent, categoryAutoMatchTotal, categoryAutoMatchProductName,

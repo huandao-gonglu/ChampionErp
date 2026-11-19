@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import { normalizeProductMutation, type ProductMutationResponse } from './workflow/normalizers'
+import { normalizeDraftMutation, normalizeProductMutation, type DraftMutationResponse, type ProductMutationResponse } from './workflow/normalizers'
 import type { ImageBatchSnapshot } from './imageBatches'
 import type { DraftDetail } from '@/types/workflow'
 import type { BackendImageSetPlanPayload } from '@/types/workflow.generated'
@@ -10,8 +10,17 @@ export interface DraftImageState extends ProductMutationResponse { batch: ImageB
 function state(data: Record<string, unknown>): DraftImageState {
   return { ...normalizeProductMutation(data), batch: (data.image_batch as ImageBatchSnapshot | null) || null }
 }
-export async function fetchDraftImageState(draftId: string, requestId = '') {
-  const { data } = await apiClient.post('/api/draft-images/state', { draft_id: draftId, request_id: requestId })
+export type DraftImagePoll = DraftImageState | ((DraftMutationResponse | { unchanged: true }) & { batch: ImageBatchSnapshot | null })
+export function fetchDraftImageState(draftId: string, requestId?: string): Promise<DraftImageState>
+export function fetchDraftImageState(draftId: string, requestId: string, version: string): Promise<DraftImagePoll>
+export async function fetchDraftImageState(draftId: string, requestId = '', version = ''): Promise<DraftImagePoll> {
+  const { data } = await apiClient.post('/api/draft-images/state', { draft_id: draftId, request_id: requestId,
+    ...(version ? { known_updated_at: version } : {}) })
+  if (version) {
+    const batch: ImageBatchSnapshot | null = data.image_batch ?? null
+    if (data.unchanged === true) return { unchanged: true, batch }
+    return { ...normalizeDraftMutation(data), batch }
+  }
   return state(data)
 }
 export async function processDraftImages(draft: DraftDetail, operation: 'translate' | 'edit', ids: string[], prompt: string, requestId: string) {

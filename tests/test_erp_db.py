@@ -791,6 +791,8 @@ class ErpDbTests(unittest.TestCase):
                     self.assertEqual([item["draft_id"] for item in published], [draft_id])
                     self.assertEqual(published[0]["status"], "published")
                     self.assertEqual(published[0]["publish_status"], original.get("publish_status", ""))
+                    self.assertEqual([row["draft_id"] for row in reopened.list_draft_rows("published")], [draft_id])
+                    self.assertEqual([row["draft_id"] for row in reopened.list_draft_rows("active", 1)], [sibling_id])
                     self.assertEqual(reopened.load_publish_job(state["job_id"])["status"], status)
                     self.assertEqual([item["draft_id"] for item in reopened.list_draft_records()], [sibling_id])
             db.upsert_draft_model(product_id, "mercadolibre", {**original, "title": "提交后修改"})

@@ -31,6 +31,29 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.clearAllMocks(); vi.useRealTimers() })
 
 describe('统一任务队列', () => {
+  it('通过任务链接进入时，列表返回晚于详情也只读取一次详情', async () => {
+    let finish!: (value: Awaited<ReturnType<typeof fetchTasks>>) => void
+    vi.mocked(fetchTasks).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    wrapper = render({ initialTaskId: task.id })
+    await flushPromises()
+    expect(fetchTask).toHaveBeenCalledOnce()
+    finish({ ok: true, items: [task], total: 1, page: 1, accounts: [] })
+    await flushPromises()
+    expect(fetchTask).toHaveBeenCalledOnce()
+  })
+
+  it('已展开任务的后台详情较慢时，列表继续刷新且不重复请求详情', async () => {
+    wrapper = render({ initialTaskId: task.id })
+    await flushPromises()
+    let finish!: (value: typeof detail) => void
+    vi.mocked(fetchTask).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(fetchTasks).toHaveBeenCalledTimes(3)
+    expect(fetchTask).toHaveBeenCalledTimes(2)
+    finish(detail)
+    await flushPromises()
+  })
+
   it('已完成发布保留逐 SKU 内容警告且不显示失败', async () => {
     vi.mocked(fetchTask).mockResolvedValue({ ok: true, task: { ...task, status: 'completed', business_status: 'success' },
       detail: { result: { sku_results: [{ sku: 'SKU-1', status: 'published', result: {

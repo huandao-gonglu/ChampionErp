@@ -33,7 +33,10 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
 
   function protect(contents, page) {
     function check(event) {
-      if (!allowedNavigation(page.kind, event.url)) event.preventDefault()
+      if (!allowedNavigation(page.kind, event.url)) {
+        event.preventDefault()
+        if (page.kind === 'gemini' && contents === page.contents) page.loginNavigationInterrupted = true
+      }
     }
     let visitedLogin = false
     contents.on('did-navigate', (_event, address) => {
@@ -82,6 +85,13 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     if (!domains[kind] || !allowedNavigation(kind, url)) throw new Error('此网址不属于指定的内置浏览服务。')
     const key = createHash('sha256').update(JSON.stringify([owner, kind, profile])).digest('hex')
     const store = session.fromPartition('persist:erp-browser-' + key)
+    if (kind === 'gemini' && !stores.has(store)) {
+      store.webRequest.onErrorOccurred(details => {
+        if (details.resourceType !== 'mainFrame' || details.error !== 'net::ERR_ABORTED') return
+        const page = [...pages.values()].find(item => item.contents.id === details.webContentsId)
+        if (page?.kind === 'gemini') page.loginNavigationInterrupted = true
+      })
+    }
     stores.add(store)
     store.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
     store.setPermissionCheckHandler(() => false)
@@ -149,6 +159,36 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     if (!page.window.isVisible()) { page.window.show(); page.view.webContents.focus() }
   }
 
+  async function recoverLogin(page, expression, call) {
+    if (!page.loginNavigationInterrupted || page.recoveringLogin ||
+        new URL(page.contents.getURL()).hostname !== 'accounts.google.com') return false
+    page.loginNavigationInterrupted = false
+    page.recoveringLogin = true
+    // 提交可能已生效；用同一会话读取 Gemini，避免重发验证码表单。
+    const probe = new WebContentsView({ webPreferences: { session: page.store, sandbox: true,
+      contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } }).webContents
+    const check = event => { if (!allowedNavigation('gemini', event.url)) event.preventDefault() }
+    probe.on('will-navigate', check)
+    probe.on('will-redirect', event => { if (event.isMainFrame) check(event) })
+    probe.setWindowOpenHandler(() => ({ action: 'deny' }))
+    let timer
+    try {
+      const state = await Promise.race([
+        probe.loadURL('https://gemini.google.com/app').then(() => probe.executeJavaScript(expression)),
+        new Promise(resolve => { timer = setTimeout(() => resolve(null), 10000) }),
+      ])
+      if (!state?.signedIn || !call.active() || account() !== page.owner || !pages.has(page.id)) return false
+      await navigate(page, page.url)
+      return true
+    } catch {
+      return false
+    } finally {
+      clearTimeout(timer)
+      if (!probe.isDestroyed()) probe.close()
+      page.recoveringLogin = false
+    }
+  }
+
   async function handle(action, data, owner, call) {
     if (!owner || account() !== owner) throw new Error('ERP 登录会话已失效。')
     if (action === 'open') return open(data, owner, call)
@@ -157,6 +197,7 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
         login_popup_closed: !!p.loginPopupClosed, visited_login: !!p.visitedLogin && !p.returnedFromHome }))
     const page = pages.get(data.page)
     if (!page || page.owner !== owner || page.contents.isDestroyed()) throw new Error('原验证页面已关闭，请重新开始。')
+    if (action === 'recover_login' && page.kind === 'gemini') return recoverLogin(page, data.expression, call)
     if (action === 'resume' && page.kind === '1688') {
       page.callId = call.id
       return

@@ -63,6 +63,19 @@ def due(queue, task_id):
         expire(queue.context.online_products, task["job_id"])
 
 
+def test_pagination_reads_confirmation_only_for_visible_terminal_tasks(queue, monkeypatch):
+    service, _, _, task_id = queue
+    sample = service.reader.task(task_id)
+    tasks = [{**sample, "id": str(i), "business_status": "published", "status": "completed",
+              "created_at": f"2026-01-01T00:{i // 60:02d}:{i % 60:02d}Z"} for i in range(65)]
+    monkeypatch.setattr(service.reader, "tasks", lambda: tasks)
+    calls = []
+    monkeypatch.setattr(service.store, "get", lambda task_id: calls.append(task_id))
+    response = service.list({"page": 3, "status": "completed"})
+    assert response["total"] == 65
+    assert calls == [row["id"] for row in response["items"]] == ["4", "3", "2", "1", "0"]
+
+
 def test_local_page_reads_do_not_query_and_scheduled_success_updates_original_job(queue):
     service, remote, job_id, task_id = queue
     assert service.list({"source": "publish", "origin": "ai", "q": "测试"})["total"] == 1

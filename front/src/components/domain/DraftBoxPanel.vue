@@ -14,6 +14,8 @@ const props = defineProps<{
   drafts: DraftIndexItem[]
   platformOptions: MarketplaceOption[]
   storeConfig: UnknownRecord
+  openingDraftId?: string
+  refreshing?: boolean
   loading: boolean
   error?: string
 }>()
@@ -108,7 +110,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
             <option value="published">已发布</option>
             <option value="all">全部草稿</option>
           </select>
-          <button class="btn btn-outline" :disabled="props.loading" @click="emit('refresh')">刷新</button>
+          <button class="btn btn-outline" :disabled="props.loading || props.refreshing" @click="emit('refresh')">刷新</button>
         </div>
       </template>
     </PageHeader>
@@ -163,7 +165,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
               <td class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选草稿" :checked="selectedDraftIds.includes(draftIdOf(row))" :disabled="props.loading || !draftIdOf(row)" @change="toggleDraftSelection(row, ($event.target as HTMLInputElement).checked)" /></td>
               <td class="min-w-0 p-2">
                 <div class="flex items-center gap-2">
-                  <img v-if="row.mainImage" :src="row.mainImage" class="size-8 shrink-0 rounded-md object-cover" />
+                  <img v-if="row.mainImage" loading="lazy" decoding="async" :src="row.mainImage" class="size-8 shrink-0 rounded-md object-cover" />
                   <div v-else class="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
                   <div class="min-w-0">
                     <div class="truncate font-semibold text-accent-950 dark:text-white">{{ draftListTitle(row) || '-' }}</div>
@@ -176,7 +178,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
                   compact
                   :language="row.language"
                   :platform-options="props.platformOptions"
-                  :loading="props.loading"
+                  :loading="props.loading || !props.platformOptions.length"
                   @update-language="emit('updateLanguage', row, $event)"
                 />
               </td>
@@ -187,7 +189,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
                   :target-sites="row.targetSites"
                   :platform-options="props.platformOptions"
                   :store-config="props.storeConfig"
-                  :loading="props.loading"
+                  :loading="props.loading || !props.platformOptions.length"
                   @update-targets="emit('updateTargets', row, $event)"
                 />
               </td>
@@ -197,14 +199,14 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
               </td>
               <td class="p-2">
                 <div class="flex flex-nowrap gap-1">
-                  <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('edit', row)">编辑</button>
+                  <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('edit', row)">{{ props.openingDraftId === row.draftId ? '打开中…' : '编辑' }}</button>
                   <button data-testid="duplicate-draft-button" class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" title="创建一份独立草稿副本" @click="emit('duplicateDraft', row)">复制草稿</button>
                   <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
                 </div>
               </td>
             </tr>
             <tr v-if="!draftRows.length">
-              <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="8">暂无草稿。可先从采集箱勾选商品并推到草稿箱。</td>
+              <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="8">{{ props.refreshing ? '正在读取草稿列表…' : '暂无草稿。可先从采集箱勾选商品并推到草稿箱。' }}</td>
             </tr>
           </tbody>
         </table>

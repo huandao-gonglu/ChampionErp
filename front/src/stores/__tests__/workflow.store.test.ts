@@ -3039,6 +3039,28 @@ describe('workflow store live API flow', () => {
     expect(store.draftsIndex[1].platforms).toEqual(['yandex'])
   })
 
+  it('从列表选择市场时读取完整草稿，保留原类目、属性、核价币种与销售条件', async () => {
+    const store = useWorkflowStore()
+    store.platformOptions = [{ key: 'mercadolibre', label: '美客多', sites: [
+      { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
+    ] }]
+    store.storeConfig = { mercadolibre: { account_site_id: 'CBT', listing_model: 'traditional_global_items',
+      marketplace_bindings: [{ site_id: 'MLM', logistic_type: 'remote', pricing_model: 'price', user_product: false }] } }
+    const row = normalizeDraftIndexItem({ draft_id: 'd', platform: 'mercadolibre', language: 'es',
+      target_sites: [{ platform: 'mercadolibre', site: 'CBT', language: 'es', sites_to_sell: [{ site_id: 'MLM', logistic_type: 'remote' }] }] })
+    const draft = createEmptyDraftDetail()
+    draft.draftId = row.draftId
+    const target = { ...row.targetSites[0], listingCurrency: 'USD', currencyFingerprint: 'saved', categoryId: 'cat-123',
+      attributes: { color: '红色' }, sitesToSell: [{ siteId: 'MLM', logisticType: 'remote', price: '25.99', freeShipping: true }] }
+    draft.targetSites = [target]
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+    vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
+    await store.updateDraftTargets(row, row.targetSites)
+    expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
+      targetSites: [expect.objectContaining(target)],
+    }))
+  })
+
   it('通过草稿箱保存市场时拒绝混用 price 与 net_proceeds', async () => {
     const item: DraftIndexItem = {
       draftId: 'draft-cbt-mixed-pricing',

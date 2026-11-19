@@ -276,9 +276,20 @@ class OnlineProductStore:
             conn.commit()
         return cursor.rowcount == 1
 
-    def listings(self, platform: str, account: str) -> list[OnlineListing]:
+    def listings(self, platform: str, account: str, *, list_only: bool = False) -> list[OnlineListing]:
+        # 组合身份、旧归档事实及仓库状态来自原始快照，只投影列表实际使用的路径。
+        projection = """json_set(json_remove(snapshot_json, '$.content', '$.snapshot',
+                     '$.capabilities.content', '$.capabilities.stock', '$.capabilities.price'), '$.snapshot',
+            json_patch('{}', json_object(
+                'offer', json_object('groupId', snapshot_json -> '$.snapshot.offer.groupId',
+                                     'archived', snapshot_json -> '$.snapshot.offer.archived'),
+                'user_product', json_object('family_id', snapshot_json -> '$.snapshot.user_product.family_id'),
+                'warehouse_catalog', snapshot_json -> '$.snapshot.warehouse_catalog',
+                'hidden_campaigns', snapshot_json -> '$.snapshot.hidden_campaigns',
+                'hidden', snapshot_json -> '$.snapshot.hidden'
+            )))""" if list_only else "snapshot_json"
         with self.db._connect() as conn:
-            rows = conn.execute("SELECT snapshot_json,desired_sale_state FROM online_listings WHERE platform=? AND account_id=? ORDER BY synced_at DESC,id", (platform, account)).fetchall()
+            rows = conn.execute(f"SELECT {projection} AS snapshot_json,desired_sale_state FROM online_listings WHERE platform=? AND account_id=? ORDER BY synced_at DESC,id", (platform, account)).fetchall()
         return [OnlineListing.model_validate({**json.loads(row["snapshot_json"]), "desired_sale_state": row["desired_sale_state"]}) for row in rows]
 
     def thumbnails(self, platform: str, account: str, remote_ids: set[str]) -> dict[str, str]:
@@ -365,6 +376,34 @@ class OnlineProductStore:
         with self.db._connect() as conn:
             rows = conn.execute("SELECT * FROM online_jobs WHERE platform=? AND account_id=? ORDER BY created_at DESC LIMIT 100", (platform, account)).fetchall()
         return [self._job(row) for row in rows]
+
+    def list_page_jobs(self, platform: str, account: str, latest_sync_id: str) -> list[dict[str, Any]]:
+        """列表只显示执行中的操作和最近同步的计数，逐项回执按任务 ID 读取。"""
+        with self.db._connect() as conn:
+            rows = conn.execute("""SELECT id,operation,platform,status,target_id,created_at,updated_at,
+                json_extract(request_json,'$.catalog') AS catalog,
+                json_array_length(request_json,'$.ids') AS retry_count,
+                json_extract(result_json,'$.phase') AS phase,
+                json_extract(result_json,'$.discovered') AS discovered,
+                json_extract(result_json,'$.discovery_complete') AS discovery_complete,
+                json_extract(result_json,'$.completed') AS completed,
+                json_extract(result_json,'$.created') AS created,
+                json_extract(result_json,'$.updated') AS updated,
+                json_extract(result_json,'$.failed') AS failed,
+                json_extract(result_json,'$.error') AS error
+                FROM online_jobs WHERE platform=? AND account_id=?
+                AND (status IN ('queued','running') OR id=?) ORDER BY created_at DESC,id DESC""",
+                (platform, account, latest_sync_id)).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["request"] = {key: value for key in ("catalog", "retry_count") if (value := item.pop(key)) is not None}
+            result = {key: value for key in ("phase", "discovered", "discovery_complete", "completed", "created", "updated", "failed", "error")
+                      if (value := item.pop(key)) is not None}
+            if "discovery_complete" in result:
+                result["discovery_complete"] = bool(result["discovery_complete"])
+            items.append({**item, "result": result})
+        return items
 
     def latest_sync_summary(self, platform: str, account: str, *, catalog: str = "current") -> dict[str, Any] | None:
         """查询最新同步的固定进度字段，避免为商品读取加载历史任务及逐项回执。"""

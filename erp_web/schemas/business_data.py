@@ -26,8 +26,12 @@ class ProductDataParameters(DataModel):
     product_id: str = Field(min_length=1, max_length=160)
 
 
-class DraftIndexParameters(DataModel):
-    scope: Literal['active', 'archived', 'all'] = 'active'
+class ProductIndexParameters(DataModel):
+    view: Literal['full', 'list'] = 'full'
+
+
+class DraftIndexParameters(ProductIndexParameters):
+    scope: Literal['active', 'published', 'archived', 'all'] = 'active'
 
 
 class DataCatalogRequest(DataModel):
@@ -78,4 +82,4 @@ class DataReadResult(DataModel):
 
 
 __all__ = ['DataCatalogRequest', 'DataCatalogResult', 'DataReadRequest', 'DataReadResult', 'DataResourceInfo',
-           'DraftDataParameters', 'DraftIndexParameters', 'NoDataParameters', 'PricingDataParameters', 'ProductDataParameters']
+           'DraftDataParameters', 'DraftIndexParameters', 'NoDataParameters', 'PricingDataParameters', 'ProductDataParameters', 'ProductIndexParameters']

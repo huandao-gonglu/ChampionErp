@@ -331,9 +331,6 @@ def image_batch_payload(conversation_id: str) -> dict:
 def draft_image_state_payload(body: dict[str, Any]) -> ResponseWithStatus:
     context = get_context()
     draft_id = str(body.get("draft_id") or "")
-    draft = context.products.draft_record(draft_id)
-    if not draft:
-        return {"ok": False, "error": "草稿不存在。"}, 404
     batch = context.image_batches.latest_for_draft(draft_id)
     request_id = str(body.get("request_id") or "")
     if request_id:
@@ -345,6 +342,11 @@ def draft_image_state_payload(body: dict[str, Any]) -> ResponseWithStatus:
             batch = requested
     # 先固定进度，再读取草稿；终态回执不能搭配最后一次写入前的旧草稿。
     snapshot = batch.snapshot() if batch else None
+    if known_version := body.get("known_updated_at"):
+        if context.db.draft_updated_at(draft_id) == known_version:
+            return {"ok": True, "unchanged": True, "image_batch": snapshot}, 200
+        detail, error, status = context.products.load_draft_detail_from_index(draft_id, editor_only=True)
+        return error or {**detail, "image_batch": snapshot}, status
     draft = context.products.draft_record(draft_id)
     if not draft:
         return {"ok": False, "error": "草稿不存在。"}, 404

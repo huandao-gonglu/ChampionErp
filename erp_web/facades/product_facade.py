@@ -48,6 +48,8 @@ def load_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
     )
     if not product:
         return {"ok": False, "error": "商品不存在，请刷新采集箱后重试。"}, 404
+    if body.get("editor_only") is True:
+        return {"ok": True, "product": product, "imagePool": current_image_pool(product)}, 200
     return {
         "ok": True,
         "product": product,
@@ -61,7 +63,7 @@ def load_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
 def load_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
     products = get_context().products
     result, error, status = products.load_draft_detail_from_index(
-        body.get("draft_id", "") or body.get("draftId", "")
+        body.get("draft_id", "") or body.get("draftId", ""), editor_only=body.get("editor_only") is True,
     )
     return (error or result), status
 

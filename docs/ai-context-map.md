@@ -42,7 +42,11 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 内部业务通过 `ProductStore.load_draft_content` / `save_draft_content` 读取和保存规范化内容；
 后者是草稿保存规则的唯一实现，保留互斥、版本冲突、归一化和发布状态失效检查。
 `load_draft_detail_from_index` / `save_draft_detail` 为页面薄包装，另行生成商品上下文和列表索引。
-属性、图片、文案、核价及 SKU 包装/勾选操作使用内容入口，避免逐项扫描全库页面列表。
+草稿箱通过 `drafts.index(view=list)` 在 SQLite 投影行摘要，默认完整索引与 AI 查询仍可读取完整资料。
+采集箱使用 `products.index(view=list)`，只读商品行和主图。直接进入采集链接队列、采集箱、草稿箱、在线商品、订单、任务或调研页时只初始化配置，各页独立加载数据；需要当前商品的工作区才读取完整状态。
+工作台商品进度按商品和平台批量读取当前草稿摘要。在线商品页使用 `/api/online-products?view=list`，分组及仓库状态来自本地快照，编辑内容及逐项同步回执通过所选刊登或任务的详情读取。
+编辑器通过 `/api/load-draft` 的 `editor_only` 读取所选草稿和商品上下文，省去两份全库索引及商品的其他草稿。
+图片任务检查携带已加载版本，版本一致时只返回批次状态。属性、图片、文案、核价及 SKU 包装/勾选操作使用内容入口。
 
 ## 共用业务数据目录
 
@@ -112,7 +116,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 商品、采购、支付和物流经 `alibaba_runtime_config` 使用当前通道的个人凭据。每套方案有单独的授权卡，状态与授权操作显式指定方案。回调按发起时的用户及方案验证；切换业务方案保留其他授权。企业自用卡的管理员可通过 `POST /api/alibaba/authorization/self-use-token` 绑定开放平台签发的 Token。企业自用回调返回非正有效期时验证实际凭据后再保存。万邦卡支持管理员绑定自己的 1688 买家 Token，普通用户在线登录待接入，旧 Session 凭据保留原协议。未发布的默认买家绑定、跨通道核验和自动归并流程已撤除。
 
-`alibaba_provider(config)` 按配置选择企业自用、跨境 ERP 或万邦实现。`AlibabaProvider` 定义商品、采购、支付和物流的业务方法，平台报文在供应商适配内转换，调用方使用 `schemas/alibaba_provider.py` 及既有业务 Schema。采购预览以业务形状保存，已有记录按原字段读取。万邦创建采购订单和免密支付暂未确认，调用直接抛出明确未执行的异常。万邦买家身份和订单列表使用外层 `access_token`，其他已接入接口将个人 Token 放入 `_o_args`，企业 Key、Secret 位于外层。管理员通过 GET `/api/admin/alibaba/onebound/shop-bindings` 按页读取企业授权店铺目录，响应仅含授权状态及分页。
+`alibaba_provider(config)` 按配置选择企业自用、跨境 ERP 或万邦实现。`AlibabaProvider` 定义商品、采购、支付和物流的业务方法，平台报文在供应商适配内转换，调用方使用 `schemas/alibaba_provider.py` 及既有业务 Schema。采购预览以业务形状保存，已有记录按原字段读取。万邦创建采购订单和免密支付暂未确认，调用直接抛出明确未执行的异常。万邦买家身份和订单列表使用外层 `access_token`，其他已接入接口将个人 Token 放入 `_o_args`，企业 Key、Secret 位于外层。管理员通过 GET `/api/admin/alibaba/onebound/shop-bindings` 按页读取企业授权店铺目录，响应仅含授权状态及分页。「用户管理」使用 GET/POST `/api/admin/users/onebound` 查询及绑定管理员和普通用户的万邦目录授权。服务端重新读取选中记录并核对买家身份，待核验绑定不可用于个人业务。
 
 `onebound_api_transport.py` 保留固定网关、真实读写语义及展开响应适配；采购库 v4 别名表保留旧数据和网络中请求的回执读取能力，当前流程不自动归并。负向对照已证明同一接口传无效 Session 仍可能返回默认买家，不能将调用成功当作个人授权验收。协议缺口与后续双买家验收见 [1688 授权与接入](alibaba-authorization.md)。
 
@@ -242,7 +246,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 
 - 1688 图片由 `source_collect_parsers.py` 优先读取 `gallery.fields.mainImage`，再通过 `html_extract_service.fetch_1688_detail_html` 读取独立 `description.fields.detailUrl` 的详情内容；SKU 图仅由规格关联入池。`collect_helpers.normalize_collect_source_images` 统一下载全部公共图和规格图，以原 URL 保留稳定资产身份，不再截断前五张，也不重复保存本地路径和远程 URL。详情读取失败显式报告采集失败，不能以已有 SKU 图片假报完整采集。
 
-- 采集箱详情通过 `/api/load-product` 按商品 ID 或已有 `sqlite://products/…` 引用精确读取；所选商品已不存在时返回 404。
+- 采集箱详情通过 `/api/load-product` 按商品 ID 或已有 `sqlite://products/…` 引用精确读取；所选商品已不存在时返回 404。编辑入口传 `editor_only`，只返回所选商品和图片池。
 - 采集箱推到草稿统一从 `/api/claim-products` → `collect_facade.claim_products_payload` → `collect_helpers.claim_products_to_platforms`，请求必须显式携带 `product_ids` 与 `targets`（平台、销售市场、注册语言）。每个商品按语言创建一份独立草稿，市场只包含该语言下勾选的项目；美客多销售市场按授权物流操作归入 CBT 的 `sites_to_sell`。响应的 `claimed_count` 统计成功商品数，`draft_count` 统计实际创建草稿数。
 - 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
 
@@ -508,7 +512,7 @@ Responses 流经 `services/ai_responses_stream.py` 校验 SDK 已解码的错误
 浏览器 AI 不属于 API Provider，继续使用独立适配器。
 Gemini Canvas 图片编辑经 `gemini_canvas_runtime.GeminiCanvasProvider` 独立执行；
 复用浏览器连接和页面原生模型转发，不进入 API Direct Model，也不创建 Agent loop。
-`desktop_runtime/gemini_browser_session` 在配置的 Canvas 页面检查登录。需要登录或人机验证时显示原页，验证后隐藏并继续。模型测试和图片编辑复用同一持久化会话；等待期间不发送图片。
+`desktop_runtime/gemini_browser_session` 在配置的 Canvas 页面检查登录。 Google 登录主文档跳转中止后，内置浏览器用同一会话的隐藏 Gemini 页面确认登录；仅确认已登录时恢复原目标页，原页再次通过登录检查后才继续。验证码未完成时保留原验证页。需要登录或人机验证时显示原页，验证后隐藏并继续。模型测试和图片编辑复用同一持久化会话；等待期间不发送图片。
 “添加网页模型”的预置目录由 `ai_model_config.browser_model_presets` 经公共 AI 配置的
 `browser_presets` 提供，形状见 `schemas/config.py::AiBrowserPreset`，不混入 API Provider Catalog。
 预置独立于已保存模型，删除后可以重新添加；不携带用户代理、登录资料或已验证的能力回执，能力仍需实测启用。

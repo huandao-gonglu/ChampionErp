@@ -125,6 +125,19 @@ def test_state_does_not_return_another_drafts_batch(monkeypatch):
     assert status == 200 and result["image_batch"] is None
 
 
+def test_image_poll_reuses_loaded_draft_version(monkeypatch):
+    _, draft = seeded()
+    context = get_context()
+    args = {"draft_id": draft["draft_id"], "known_updated_at": draft["updated_at"]}
+    with monkeypatch.context() as unchanged:
+        unchanged.setattr(context.db, "load_draft_model", lambda *_: pytest.fail("版本一致时不应读取草稿正文"))
+        response, status = image_facade.draft_image_state_payload(args)
+        assert status == 200 and response == {"ok": True, "unchanged": True, "image_batch": None}
+    response, status = image_facade.draft_image_state_payload({**args, "known_updated_at": "旧版本"})
+    assert status == 200 and response["draft"]["draft_id"] == draft["draft_id"]
+    assert set(response) == {"ok", "draft", "productContext", "image_batch"}
+
+
 def test_upload_merges_latest_pool_and_returns_only_own_asset_ids(monkeypatch):
     product, draft = seeded()
     context = get_context()

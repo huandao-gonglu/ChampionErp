@@ -764,7 +764,7 @@ class ProductStore:
     # -- product CRUD ----------------------------------------------------------
 
     def load_product(self) -> dict[str, Any]:
-        records = self._db.list_product_records(limit=1)
+        records = self._db.list_product_records(limit=1, list_only=True)
         if records:
             loaded = self._db.load_product_model(records[0]["product_id"])
             if loaded:
@@ -815,7 +815,7 @@ class ProductStore:
         """重复采集合并同一来源商品；新 URL 从空白商品开始。"""
         identity = str(source_url or "").split("?")[0].rstrip("/")
         if identity:
-            for item in self._db.list_product_records():
+            for item in self._db.list_product_records(list_only=True):
                 if (
                     str(item.get("source_url") or "").split("?")[0].rstrip("/")
                     == identity
@@ -925,8 +925,14 @@ class ProductStore:
     def load_products_index(self) -> list[dict[str, Any]]:
         return self.sanitize_products_index(self._db.list_product_records())
 
+    def load_product_list_rows(self) -> list[dict[str, Any]]:
+        return self.sanitize_products_index(self._db.list_product_records(list_only=True))
+
     def load_drafts_index(self, scope: str = "active") -> list[dict[str, Any]]:
         return self.sanitize_products_index(self._db.list_draft_records(scope=scope))
+
+    def load_draft_list_rows(self, scope: str = "active") -> list[dict[str, Any]]:
+        return self.sanitize_products_index(self._db.list_draft_rows(scope))
 
     def iter_drafts_index(self, scope: str = "active") -> Iterator[dict[str, Any]]:
         """流式读取完整草稿集合；供需要精确 total/count 的服务使用。"""
@@ -1128,11 +1134,15 @@ class ProductStore:
         }
 
     def load_draft_detail_from_index(
-        self, draft_id: str
+        self, draft_id: str, *, editor_only: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
-        result, error, status = self.load_draft_content(draft_id)
+        result, error, status = self.load_draft_content(draft_id, include_product_drafts=not editor_only)
         if error is not None:
             return result, error, status
+        if editor_only:
+            context = self.draft_product_context(result["product"])
+            context.pop("raw")
+            return {"ok": True, "draft": result["draft"], "productContext": context}, None, status
         return self._draft_detail_response(result), None, status
 
     def _draft_detail_response(self, content: dict[str, Any]) -> dict[str, Any]:
@@ -1147,7 +1157,7 @@ class ProductStore:
         return result
 
     def load_draft_content(
-        self, draft_id: str,
+        self, draft_id: str, *, include_product_drafts: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
         """读取规范化草稿及关联商品，供业务能力复用。"""
         draft_id = str(draft_id or "").strip()
@@ -1157,7 +1167,8 @@ class ProductStore:
         if not draft:
             return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
         product = self._db.load_product_model(
-            str(draft.get("source_product_id") or draft.get("product_id") or "")
+            str(draft.get("source_product_id") or draft.get("product_id") or ""),
+            include_drafts=include_product_drafts,
         )
         if not product:
             return (

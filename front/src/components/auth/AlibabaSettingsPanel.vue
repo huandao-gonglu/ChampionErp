@@ -123,11 +123,12 @@ onUnmounted(() => {
   <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" :aria-label="titles[provider] + ' 1688 授权'">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <h3 class="font-semibold text-accent-950 dark:text-white">{{ titles[provider] }} · 1688 授权</h3>
-      <span v-if="status" aria-live="polite">{{ (status.authorized && !status.needs_reauthorization ? '已连接' : '未连接') }}</span>
+      <span v-if="status" aria-live="polite">{{ status.binding_pending ? '待核验' : (status.authorized && !status.needs_reauthorization ? '已连接' : '未连接') }}</span>
     </div>
     <p v-if="status?.active" class="text-sm text-accent-500">当前业务使用此方案</p>
     <p v-if="provider === 'alibaba_crossborder'" class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号。</p>
     <p v-if="status && !status.application_configured" role="status">授权服务暂未配置，请联系管理员。</p>
+    <p v-else-if="status?.binding_pending" role="status">万邦买家身份待核验，请联系管理员。</p>
     <p v-else-if="status && provider === 'onebound' && !status.authorized" role="status">ERP 暂未接入万邦的买家登录。</p>
     <p v-else-if="status && provider !== 'onebound' && !status.can_authorize" role="status">暂时无法发起登录授权，请联系管理员配置授权服务。</p>
     <p v-if="status?.needs_reauthorization" role="status">授权已过期或应用配置已变化，请重新连接账号。</p>

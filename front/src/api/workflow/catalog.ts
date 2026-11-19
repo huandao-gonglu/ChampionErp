@@ -42,15 +42,15 @@ import {
 
 import { imageTranslateTimeoutMs, requiredProductId } from './shared'
 
-export async function fetchProductsIndex(): Promise<ProductIndexItem[]> {
-  const response = await apiClient.get('/api/products-index')
+export async function fetchProductsIndex(view: 'full' | 'list' = 'full'): Promise<ProductIndexItem[]> {
+  const response = await apiClient.get(view === 'list' ? '/api/products-index?view=list' : '/api/products-index')
   const data = asRecord(response.data)
   ensureOk(data, '读取采集箱失败')
   return normalizeProductsIndex(data.items)
 }
 
 export async function fetchDraftsIndex(scope = 'all'): Promise<DraftIndexItem[]> {
-  const params = new URLSearchParams({ scope })
+  const params = new URLSearchParams({ scope, view: 'list' })
   const response = await apiClient.get(`/api/drafts-index?${params.toString()}`)
   const data = asRecord(response.data)
   ensureOk(data, '读取草稿箱失败')
@@ -62,13 +62,15 @@ export async function saveProduct(product: Product): Promise<ProductMutationResp
   return normalizeProductMutation(response.data)
 }
 
-export async function loadProduct(productId: string, productFilePath = ''): Promise<ProductMutationResponse> {
-  const response = await apiClient.post('/api/load-product', { product_id: productId, product_file_path: productFilePath })
-  return normalizeProductMutation(response.data)
+export async function loadProduct(productId: string, productFilePath = ''): Promise<Pick<ProductMutationResponse, 'product'>> {
+  const response = await apiClient.post('/api/load-product', { product_id: productId, product_file_path: productFilePath, editor_only: true })
+  const data = asRecord(response.data)
+  ensureOk(data, '读取商品失败')
+  return { product: normalizeBackendProduct(data.product, data.imagePool) }
 }
 
 export async function loadDraft(draftId: string): Promise<DraftMutationResponse> {
-  const response = await apiClient.post('/api/load-draft', { draft_id: draftId })
+  const response = await apiClient.post('/api/load-draft', { draft_id: draftId, editor_only: true })
   return normalizeDraftMutation(response.data)
 }
 

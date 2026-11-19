@@ -4,6 +4,7 @@ import { modelOperationReason } from '@/utils/desktop'
 import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { useDesktopHandoffContext, receivedDesktopHandoff, acknowledgeDesktopHandoff, type DesktopWorkflowState } from '@/utils/desktopHandoff'
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { until } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -59,6 +60,7 @@ const settingsStore = useWorkflowSettingsStore()
 const {
   product,
   productsIndex,
+  libraryRows,
   draftsIndex,
   selectedProductIds,
   currentDraft,
@@ -138,9 +140,12 @@ let restoringHandoff = ''
 watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading, () => collectionStore.running], async ([handoff, loaded]) => {
   if (!handoff || !loaded || route.fullPath !== handoff.target || !handoff.state.workflow || restoringHandoff === handoff.requestId) return
   if (handoff.state.workflow.collectAction && (loading.value || collectionStore.running)) return
+  if (handoff.state.workflow.draftImageAction?.translationRequestId && loading.value) return
   restoringHandoff = handoff.requestId
   try {
     const state = handoff.state.workflow as DesktopWorkflowState
+    const imageAction = state.draftImageAction
+    const translationId = imageAction?.action === 'translate' && imageAction.translationRequestId
     if (state.collect) {
       Object.assign(collectForm.value, state.collect, { mode: state.collect.mode === 'api' ? 'api' : 'browser' })
     }
@@ -150,9 +155,11 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
       store.acceptLoadedDraft(saved)
       await nextTick()
       // 建立服务端基线后恢复本地编辑，沿用原来的脏状态和版本校验。
-      Object.assign(currentDraft.value, state.draft)
-      if (state.pricingInput) Object.assign(pricingInput.value, state.pricingInput)
-      currentDraftProductContext.value = state.draftContext
+      if (!translationId) {
+        Object.assign(currentDraft.value, state.draft)
+        if (state.pricingInput) Object.assign(pricingInput.value, state.pricingInput)
+        currentDraftProductContext.value = state.draftContext
+      }
       store.setMarketplace(state.draft.platform)
       draftWorkspaceTab.value = state.draftTab || 'text'
       draftWorkspaceOpen.value = true
@@ -165,7 +172,13 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
     if (state.draftImageAction || state.productImageAction) {
       await nextTick()
       if (receivedDesktopHandoff.value?.requestId !== handoff.requestId) return
-      if (state.draftImageAction) draftImageEditor.value?.restoreImageAction(state.draftImageAction)
+      if (translationId && state.draft?.draftId && imageAction) {
+        const draft = state.draft
+        const isCurrent = () => receivedDesktopHandoff.value?.requestId === handoff.requestId
+          && route.fullPath === handoff.target && draftWorkspaceOpen.value && currentDraft.value.draftId === draft.draftId
+        await until(() => !isCurrent() || (!imageWorkbench.checking.value && !loading.value)).toBe(true)
+        if (isCurrent()) await imageWorkbench.resumeTranslation(imageAction.imageIds, translationId, draft.updatedAt)
+      } else if (imageAction) draftImageEditor.value?.restoreImageAction(imageAction)
       if (state.productImageAction) productImageEditor.value?.restoreImageAction(state.productImageAction)
     }
     await acknowledgeDesktopHandoff(handoff.requestId, 'workflow')
@@ -173,9 +186,10 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
     else if (state.collectAction?.type === 'batch') await collectionStore.runLinks(state.collectAction.targets)
   } catch (cause) {
     activityStore.setError(cause instanceof Error ? cause.message : '桌面页面恢复失败，请回网页重试。')
-  } finally { restoringHandoff = '' }
+  } finally { if (restoringHandoff === handoff.requestId) restoringHandoff = '' }
 })
 const draftSync = useAiDraftSync({
+  active: draftWorkspaceOpen,
   draft: currentDraft, input: pricingInput, loading,
   accept: result => store.acceptLoadedDraft(result),
   acceptProductContext: result => {
@@ -296,10 +310,13 @@ const imageWorkbench = useDraftImageWorkbench({
 const imageWorkbenchBusy = imageWorkbench.busy
 const draftWorkspaceLoading = computed(() => loading.value || imageWorkbenchBusy.value)
 
+const openingDraftId = ref('')
 async function openDraftWorkspace(item: DraftIndexItem, tab: DraftWorkspaceTab = 'text') {
   store.setMarketplace(item.platform)
-  await store.loadDraft(item)
-  if (currentDraft.value.draftId !== item.draftId) return
+  openingDraftId.value = item.draftId
+  const loaded = await store.loadDraft(item)
+  openingDraftId.value = ''
+  if (!loaded || activeNav.value !== 'drafts') return
   draftWorkspaceTab.value = tab
   draftWorkspaceOpen.value = true
 }
@@ -340,6 +357,8 @@ function closeDraftWorkspace() {
   if (imageSaveState.dirty.value && !window.confirm('图片设置尚未保存，关闭将放弃这些修改。确认关闭？')) return
   draftWorkspaceOpen.value = false
   resetDraftWorkspaceBackdropPointer()
+  const row = draftsIndex.value.find(item => item.draftId === currentDraft.value.draftId)
+  if (activeNav.value === 'drafts' && row?.updatedAt !== currentDraft.value.updatedAt) void store.refreshDraftsIndex()
 }
 
 const {
@@ -353,18 +372,34 @@ async function copyProductId() {
   await copyToClipboard(product.value.productId)
 }
 
+let settingsLoad: Promise<void> | undefined
+let fullStateLoad: Promise<void> | undefined
+let navigationSequence = 0
 async function refreshDomainForNav(key: string) {
-  await store.hydrateTab(key)
+  const sequence = ++navigationSequence
+  if (['drafts', 'library', 'collect', 'orders', 'onlineProducts', 'publish', 'research'].includes(key)) {
+    const configReady = fullStateLoad ?? (settingsLoad ??= store.loadState(true))
+    await Promise.all([configReady, store.hydrateTab(key)])
+  } else {
+    fullStateLoad ??= settingsLoad
+      ? settingsLoad.then(() => product.value.productId ? undefined : store.loadState())
+      : store.loadState()
+    const earlyLoad = key === 'auth' || key === 'dashboard' ? store.hydrateTab(key) : undefined
+    await fullStateLoad
+    if (sequence !== navigationSequence) return
+    await (earlyLoad ?? store.hydrateTab(key))
+  }
+  if (sequence === navigationSequence) initialStateLoaded.value = true
 }
 
 function navigate(key: string) {
   if (key === 'publish' && activeNav.value === key) return
-  activeNav.value = key
   const nextQuery = key === 'dashboard' ? {} : { tab: key }
   if (route.path !== '/' || String(route.query.tab || '') !== String(nextQuery.tab || '')) {
     void router.push({ name: 'WorkflowHome', query: nextQuery })
+  } else {
+    void refreshDomainForNav(key)
   }
-  void refreshDomainForNav(key)
 }
 
 function openOnlineTask(jobId?: string) {
@@ -390,12 +425,7 @@ function warnUnsavedImages(event: BeforeUnloadEvent) {
 onMounted(async () => {
   window.addEventListener('beforeunload', warnUnsavedImages)
   window.addEventListener('focus', checkDraftUpdates)
-  const initialTab = activeNav.value
-  const modelLoad = initialTab === 'auth' ? refreshDomainForNav(initialTab) : undefined
-  await store.loadState()
-  if (activeNav.value === 'auth' && modelLoad) await modelLoad
-  else await refreshDomainForNav(activeNav.value)
-  initialStateLoaded.value = true
+  await refreshDomainForNav(activeNav.value)
 })
 
 onActivated(() => {
@@ -403,6 +433,7 @@ onActivated(() => {
   if (initialStateLoaded.value && activeNav.value === 'publish') void refreshDomainForNav('publish')
 })
 onBeforeUnmount(() => {
+  draftWorkspaceOpen.value = false
   window.removeEventListener('beforeunload', warnUnsavedImages)
   window.removeEventListener('focus', checkDraftUpdates)
 })
@@ -414,7 +445,7 @@ watch(
     const tab = String(route.query.tab || '')
     const previous = activeNav.value
     activeNav.value = navItems.some((item) => item.key === tab) ? tab : 'dashboard'
-    if (initialStateLoaded.value && previous !== activeNav.value) {
+    if ((settingsLoad || fullStateLoad) && previous !== activeNav.value) {
       void refreshDomainForNav(activeNav.value)
     }
   },
@@ -452,7 +483,7 @@ watch(
             :auth-checklist="mercadolibreAuthChecklist"
             :publish-job="publishJob"
             :logs="logs"
-            :loading="loading"
+            :loading="loading || store.productsRefreshing"
             :error="error"
             @navigate="navigate"
             @refresh-products="store.refreshProductsIndex"
@@ -479,13 +510,14 @@ watch(
 
           <LibraryPanel
             v-else-if="activeNav === 'library'"
-            :items="productsIndex"
+            :items="libraryRows"
             :selected-ids="selectedProductIds"
             :platform-options="platformOptions"
             :store-config="storeConfig"
             :loading="loading"
+            :refreshing="store.productsRefreshing"
             :error="error"
-            @refresh="store.refreshProductsIndex"
+            @refresh="store.refreshProductsIndex('list')"
             @claim="claimAndOpenDrafts"
             @edit="openProductEditor"
             @delete-item="store.deleteProduct"
@@ -497,6 +529,8 @@ watch(
           <div v-else-if="activeNav === 'drafts'" class="space-y-6">
             <DraftBoxPanel
               :drafts="draftsIndex"
+              :refreshing="store.draftsRefreshing"
+              :opening-draft-id="openingDraftId"
               :platform-options="platformOptions"
               :store-config="storeConfig"
               :loading="loading"

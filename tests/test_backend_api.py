@@ -48,6 +48,10 @@ def test_state_contract_is_versioned_and_never_returns_plaintext_secrets(
     )
     state = get_json(backend_server, "/api/state")
 
+    settings = get_json(backend_server, "/api/state?view=settings")
+    assert settings["platformOptions"] == state["platformOptions"]
+    assert settings["storeConfig"] == state["storeConfig"]
+    assert not {"product", "imagePool", "sourceImages", "generatedImages"}.intersection(settings)
     assert state["schemaVersion"] == 1
     assert state["product"]["schema_version"] == 5
     assert state["storeConfig"]["ozon"]["client_id"] == "state-ozon-client"

@@ -38,9 +38,9 @@ def test_login_returns_to_original_canvas_in_same_page(monkeypatch, bridge, tmp_
     monkeypatch.setattr(session, "_auth_state", Mock(side_effect=["login_required", "login_required", "signed_in", "signed_in"]))
     monkeypatch.setattr(session.browser_ai_runtime, "_evaluate", lambda *_: "https://gemini.google.com/app")
     with session.connect_gemini_page(tmp_path, MODEL):
-        assert [name for name, _ in bridge] == ["open", "show", "navigate", "hide"]
+        assert [name for name, _ in bridge] == ["open", "show", "recover_login", "navigate", "hide"]
     assert all(data["page"] == "same-page" for _, data in bridge[1:])
-    assert bridge[2][1]["url"] == MODEL["browser_url"]
+    assert bridge[3][1]["url"] == MODEL["browser_url"]
 
 
 def test_login_timeout_never_submits_or_reopens(monkeypatch, bridge, tmp_path):

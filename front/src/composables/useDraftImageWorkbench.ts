@@ -1,7 +1,7 @@
-import { modelOperationReason } from '@/utils/desktop'
-import { handoffModelOperation } from '@/utils/desktopHandoff'
+import { hasLocalOperations, modelOperationReason, modelRequiresDesktop } from '@/utils/desktop'
+import { handoffModelOperation, launchDesktop } from '@/utils/desktopHandoff'
 import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
-import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImageState, type ImageSetPlan } from '@/api/draftImages'
+import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImagePoll, type ImageSetPlan } from '@/api/draftImages'
 import { saveDraft, uploadImages } from '@/api/workflow/catalog'
 import type { DraftMutationResponse, ProductMutationResponse } from '@/api/workflow/normalizers'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
@@ -69,14 +69,14 @@ export function useDraftImageWorkbench(options: {
     if (signature(before) !== signature(after)) past.value.push({ label, before, after })
     future.value = []
   }
-  function applyState(result: DraftImageState, force = false) {
+  function applyState(result: DraftImagePoll) {
     const next = result.batch
     if (!next && pending.value) {
       notice.value = '提交结果尚未确认，正在查询原任务…'
       return
     }
     const changed = next && (next.conversation_id !== observedBatch || !next.terminal || Boolean(pending.value))
-    if (changed || force || checking.value) accept(result)
+    if (!('unchanged' in result) && (!('product' in result) || changed || checking.value)) accept(result)
     batch.value = next
     if (!next) return
     observedBatch = next.conversation_id
@@ -99,7 +99,7 @@ export function useDraftImageWorkbench(options: {
   async function poll(token = epoch) {
     if (!active.value || token !== epoch) return
     try {
-      const result = await fetchDraftImageState(draft.value.draftId, pending.value)
+      const result = await fetchDraftImageState(draft.value.draftId, pending.value, draft.value.updatedAt)
       if (token !== epoch) return
       if (!saving.value) { applyState(result); checking.value = false }
     } catch {
@@ -136,17 +136,40 @@ export function useDraftImageWorkbench(options: {
     return Boolean(reason)
   }
 
-  async function start(operation: 'translate' | 'edit', ids: string[], prompt = '') {
-    if (busy.value || !ids.length || platformBlocked('image.translate')) return
+  function resumeTranslation(ids: string[], requestId: string, updatedAt: string) {
+    if (!hasLocalOperations() || !active.value || batch.value?.conversation_id === requestId) return
+    if (busy.value) {
+      notice.value = '草稿已有操作进行中，本次翻译尚未提交。'
+      return
+    }
+    if (draft.value.updatedAt !== updatedAt) {
+      notice.value = '草稿已更新，请核对图片和目标语言后重新翻译。'
+      return
+    }
+    return start('translate', ids, '', requestId)
+  }
+
+  async function start(operation: 'translate' | 'edit', ids: string[], prompt = '', confirmedRequestId?: string) {
+    if (busy.value || !ids.length) return
+    const handoff = operation === 'translate' && modelRequiresDesktop('image.translate')
+    if (!handoff && !confirmedRequestId && platformBlocked('image.translate')) return
     const token = epoch
     const targets = [...ids]
     saving.value = true; notice.value = ''
     try {
-      if (!await options.save()) { notice.value = '保存草稿失败，尚未开始处理。'; return }
+      if (!confirmedRequestId && !await options.save()) { notice.value = '保存草稿失败，尚未开始处理。'; return }
       if (token !== epoch) return
+      const requestId = confirmedRequestId || `draft_images_${crypto.randomUUID()}`
+      if (handoff) {
+        await launchDesktop({ state: { workflow: {
+          draft: draft.value, draftContext: options.productContext.value, draftTab: 'images',
+          draftImageAction: { action: 'translate', imageIds: targets, prompt, translationRequestId: requestId },
+        } } })
+        return
+      }
       processingBefore = snapshotDraftImages(draft.value)
       processingLabel = `${operation === 'translate' ? '翻译图片' : 'AI 修改'} ${targets.length} 张`
-      pending.value = `draft_images_${crypto.randomUUID()}`
+      pending.value = requestId
       remember(draft.value.draftId, pending.value)
       future.value = []
       const result = await processDraftImages(draft.value, operation, targets, prompt, pending.value)
@@ -260,7 +283,7 @@ export function useDraftImageWorkbench(options: {
     finally { if (token === epoch) saving.value = false }
   }
   return {
-    busy, batch, notice, undoLabel, redoLabel, start, add, upload, planSet, generateSet,
+    busy, checking, batch, notice, undoLabel, redoLabel, start, resumeTranslation, add, upload, planSet, generateSet,
     applySet: (refs: DraftImageRef[], skuPageKeys: string[] = []) => {
       const current = batch.value
       if (!current?.image_set || (!refs.length && !skuPageKeys.length)) return

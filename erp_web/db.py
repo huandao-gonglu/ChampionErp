@@ -1011,7 +1011,7 @@ class ErpDatabase:
                 ),
             )
 
-    def load_product_model(self, product_id: str) -> dict[str, Any]:
+    def load_product_model(self, product_id: str, *, include_drafts: bool = True) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM products WHERE product_id = ?", (product_id,)
@@ -1029,7 +1029,7 @@ class ErpDatabase:
             product["product_id"] = row["product_id"]
             product["updated_at"] = row["updated_at"]
             product["created_at"] = row["created_at"]
-            product["drafts"] = self._load_drafts(conn, row["product_id"])
+            product["drafts"] = self._load_drafts(conn, row["product_id"]) if include_drafts else {}
             product.setdefault("source", {})
             if isinstance(product["source"], dict):
                 product["source"]["image_pool"] = self._load_media(
@@ -1043,7 +1043,6 @@ class ErpDatabase:
         product_id: str,
     ) -> dict[str, Any]:
         drafts: dict[str, Any] = {}
-        seen_platforms: set[str] = set()
         for row in conn.execute(
             """
             SELECT * FROM platform_drafts
@@ -1052,13 +1051,15 @@ class ErpDatabase:
             """,
             (product_id,),
         ):
+            platform = str(row["platform"])
+            if platform in drafts:
+                continue
             draft = _load_current_draft_json(row["draft_json"])
             draft_id = (
                 row["draft_id"]
                 if "draft_id" in row.keys()
                 else str(draft.get("draft_id") or "")
             )
-            platform = str(row["platform"])
             draft.update(
                 {
                     "draft_id": draft_id,
@@ -1076,9 +1077,7 @@ class ErpDatabase:
                 platform,
                 {"product_id": row["product_id"]},
             )
-            if platform not in seen_platforms:
-                drafts[platform] = draft
-                seen_platforms.add(platform)
+            drafts[platform] = draft
         return drafts
 
     @staticmethod
@@ -1293,12 +1292,13 @@ class ErpDatabase:
             items.append(item)
         return items
 
-    def list_product_records(self, limit: int = 500) -> list[dict[str, Any]]:
+    def list_product_records(self, limit: int = 500, *, list_only: bool = False) -> list[dict[str, Any]]:
         with self._connect() as conn:
+            detail_column = "" if list_only else "p.product_json -> '$.publish_preview.mercadolibre.ok' AS precheck_json,"
             rows = conn.execute(
-                """
+                f"""
                 SELECT p.product_id, p.title, p.source_platform, p.source_url, p.collect_status,
-                       p.created_at, p.updated_at, p.product_json,
+                       p.created_at, p.updated_at, {detail_column}
                        (
                          SELECT preview_url FROM media_assets m
                          WHERE m.product_id = p.product_id
@@ -1311,15 +1311,94 @@ class ErpDatabase:
                 """,
                 (max(1, int(limit or 500)),),
             ).fetchall()
-            records: list[dict[str, Any]] = []
-            for row in rows:
-                records.append(
-                    _record_from_row(
-                        row,
-                        self._load_drafts(conn, row["product_id"]),
-                    )
+            if list_only:
+                return [{**dict(row), "main_image": row["main_image"] or "",
+                         "product_file_path": f"sqlite://products/{row['product_id']}"} for row in rows]
+            # 工作台需要每个平台当前草稿的进度，只为本页商品批量投影进度所用字段。
+            draft_rows = conn.execute("""
+                WITH ranked AS (
+                    SELECT rowid AS draft_row, row_number() OVER (
+                        PARTITION BY product_id, platform
+                        ORDER BY (status='published'), updated_at DESC, rowid
+                    ) AS position FROM platform_drafts WHERE product_id IN (SELECT value FROM json_each(?))
                 )
-            return records
+                SELECT d.product_id, d.platform, d.site, d.status,
+                       d.draft_json -> '$.enabled' AS enabled_json,
+                       json_extract(d.draft_json, '$.title') AS title,
+                       coalesce(nullif(json_extract(d.draft_json, '$.publish_status'), ''),
+                                json_extract(d.draft_json, '$.publishStatus')) AS publish_status,
+                       CASE WHEN d.platform='mercadolibre' THEN d.draft_json -> '$.pricing.targets' END AS pricing_targets,
+                       (SELECT json_object('category_id',
+                                CASE WHEN json_type(t.value, '$.category_id') IS NOT NULL
+                                     THEN json_extract(t.value, '$.category_id') ELSE json_extract(t.value, '$.categoryId') END,
+                                'attributes', t.value -> '$.attributes')
+                        FROM json_each(d.draft_json, CASE WHEN json_type(d.draft_json, '$.target_sites')='array'
+                                    THEN '$.target_sites' ELSE '$.targetSites' END) t
+                        WHERE t.type='object' ORDER BY t.key LIMIT 1) AS primary_target
+                FROM ranked JOIN platform_drafts d ON d.rowid=ranked.draft_row WHERE ranked.position=1
+            """, (json_dumps([row["product_id"] for row in rows]),)).fetchall()
+        drafts_by_product: dict[str, dict[str, Any]] = {}
+        for draft in draft_rows:
+            platform = draft["platform"]
+            summary = normalize_platform_draft({
+                "title": draft["title"], "site": draft["site"], "status": draft["status"],
+                "enabled": json_loads(draft["enabled_json"], True), "publish_status": draft["publish_status"],
+                "pricing": {"targets": json_loads(draft["pricing_targets"], {})},
+                "target_sites": [json_loads(draft["primary_target"], {})],
+            }, platform)
+            drafts_by_product.setdefault(draft["product_id"], {})[platform] = summary
+        return [_record_from_row(row, drafts_by_product.get(row["product_id"], {})) for row in rows]
+
+    def list_draft_rows(self, scope: str = "active", limit: int = 500) -> list[dict[str, Any]]:
+        """草稿箱只投影列表与市场选择所需字段，筛选在截取行数之前进行。"""
+        with self._connect() as conn:
+            rows = conn.execute("""
+                WITH submitted AS (
+                    SELECT DISTINCT product_id, draft_id FROM publish_jobs WHERE draft_id != ''
+                )
+                SELECT d.draft_id, d.product_id, d.platform, d.site, d.created_at, d.updated_at,
+                       CASE WHEN submitted.draft_id IS NOT NULL THEN 'published' ELSE d.status END AS list_status,
+                       coalesce(nullif(p.title, ''), json_extract(p.product_json, '$.name'), '') AS product_title,
+                       p.source_platform, p.source_url,
+                       json_extract(d.draft_json, '$.source_product_id') AS source_product_id,
+                       json_extract(d.draft_json, '$.title') AS title,
+                       json_extract(d.draft_json, '$.publish_status') AS publish_status,
+                       (SELECT m.preview_url FROM media_assets m WHERE m.product_id = d.product_id
+                        ORDER BY m.is_main DESC, m.sort_order, m.id LIMIT 1) AS main_image,
+                       (SELECT json_group_array(json_object(
+                           'platform', json_extract(t.value, '$.platform'),
+                           'site', coalesce(json_extract(t.value, '$.site'), json_extract(t.value, '$.site_id')),
+                           'language', json_extract(t.value, '$.language'),
+                           'sites_to_sell', (SELECT json_group_array(json_object(
+                               'site_id', coalesce(json_extract(m.value, '$.site_id'), json_extract(m.value, '$.siteId')),
+                               'logistic_type', coalesce(json_extract(m.value, '$.logistic_type'), json_extract(m.value, '$.logisticType'))
+                           )) FROM json_each(t.value, CASE WHEN json_type(t.value, '$.sites_to_sell') = 'array'
+                                    THEN '$.sites_to_sell' ELSE '$.sitesToSell' END) m WHERE m.type = 'object')
+                        )) FROM json_each(d.draft_json, CASE WHEN json_type(d.draft_json, '$.target_sites') = 'array'
+                                 THEN '$.target_sites' ELSE '$.targetSites' END) t WHERE t.type = 'object') AS markets
+                FROM platform_drafts d JOIN products p ON p.product_id = d.product_id
+                LEFT JOIN submitted ON submitted.product_id = d.product_id AND submitted.draft_id = d.draft_id
+                WHERE :scope = 'all' OR (lower(list_status) = 'published') = (:scope IN ('published', 'archived'))
+                ORDER BY d.created_at DESC, d.rowid DESC LIMIT :limit
+            """, {"scope": scope, "limit": limit}).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            targets = json_loads(item.pop("markets"), []) or [{"platform": row["platform"], "site": row["site"]}]
+            for target in targets:
+                platform = str(target.get("platform") or row["platform"]).strip().lower()
+                site = marketplace_site(platform, target.get("site") or "")
+                target.update(platform=platform, site=site["code"], language=target.get("language") or site["language"])
+            item.update(status=item.pop("list_status"), language=targets[0]["language"],
+                        target_sites=targets, platforms=_draft_platforms({"target_sites": targets}, row["platform"]),
+                        source_product_id=item["source_product_id"] or item["product_id"])
+            items.append(item)
+        return items
+
+    def draft_updated_at(self, draft_id: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT updated_at FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+            return row["updated_at"] if row else None
 
     def iter_draft_records(
         self,
@@ -2841,16 +2920,8 @@ class ErpDatabase:
 
 
 def _record_from_row(
-    row: sqlite3.Row, loaded_drafts: dict[str, Any] | None = None
+    row: sqlite3.Row, drafts: dict[str, Any]
 ) -> dict[str, Any]:
-    product = json_loads(row["product_json"], {})
-    drafts = (
-        loaded_drafts
-        if isinstance(loaded_drafts, dict)
-        else _dict(product.get("drafts"))
-        if isinstance(product, dict)
-        else {}
-    )
     platforms = [
         platform
         for platform in PLATFORMS
@@ -2896,13 +2967,7 @@ def _record_from_row(
             for item in _dict(_dict(ml_draft.get("pricing")).get("targets")).values()
         )
         else "pending",
-        "precheck_status": (
-            _dict(_dict(product.get("publish_preview")).get("mercadolibre")).get(
-                "ok", "pending"
-            )
-            if isinstance(product, dict)
-            else "pending"
-        ),
+        "precheck_status": json_loads(row["precheck_json"], "pending"),
         "publish_status": ml_draft.get("publish_status") or "not_ready",
         "optimized": draft_statuses.get("mercadolibre")
         in {"copy_ready", "images_ready", "ready_to_publish", "published"},

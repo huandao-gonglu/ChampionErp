@@ -24,7 +24,19 @@ class TaskQueueReader:
                 WHERE (?=0 OR json_extract(s.value,'$.status') IN ('pending_confirmation','outcome_unknown','needs_attention'))
                 AND (?='' OR p.job_id=?) AND (?='' OR s.key=?) AND (?='' OR ?='publish')""",
                 (int(pending_only), job_id, job_id, platform, platform, source, source)).fetchall()
-            online = conn.execute("""SELECT id,platform,account_id,operation,target_id,status,result_json,created_at,updated_at,
+            online = conn.execute("""SELECT id,platform,account_id,operation,target_id,status,created_at,updated_at,
+                CASE WHEN operation='sync' THEN json_object(
+                    'task_origin', json_extract(result_json,'$.task_origin'),
+                    'error', json_extract(result_json,'$.error'),
+                    'submitted_at', json_extract(result_json,'$.submitted_at'),
+                    'polls', json_extract(result_json,'$.polls'),
+                    'platform_confirmation', json_object(
+                        'note', json_extract(result_json,'$.platform_confirmation.note'),
+                        'needs_attention', json_extract(result_json,'$.platform_confirmation.needs_attention')))
+                    ELSE result_json END AS result_json,
+                CASE WHEN operation='sync' AND status IN ('partial','failed') THEN
+                    EXISTS(SELECT 1 FROM json_each(result_json,'$.items') WHERE json_extract(value,'$.status')='failed')
+                    END AS has_failed_items,
                 json_extract(request_json,'$.catalog') AS catalog,
                 (SELECT json_extract(snapshot_json,'$.title') FROM online_listings WHERE id=online_jobs.target_id) AS title,
                 EXISTS(SELECT 1 FROM online_jobs newer WHERE newer.target_id=online_jobs.target_id
@@ -57,7 +69,7 @@ class TaskQueueReader:
             is_sync = row["operation"] == "sync"
             if is_sync:
                 title = "同步归档商品" if row["catalog"] == "archived" else "同步店铺商品"
-                can_retry = status in {"failed", "partial"} and any(item.get("status") == "failed" for item in result.get("items", []))
+                can_retry = bool(row["has_failed_items"])
             else:
                 title = result.get("before", {}).get("title") or row["title"] or row["target_id"]
                 can_retry = status == "failed" and not row["has_newer_change"]

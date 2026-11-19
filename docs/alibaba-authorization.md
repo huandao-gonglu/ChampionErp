@@ -24,6 +24,8 @@
 
 管理员 GET `/api/admin/alibaba/onebound/shop-bindings` 通过企业 `key`、`secret` 调用万邦授权店铺列表，可传 `nick` 和 `page`。返回绑定编号、昵称、状态、到期时间及分页信息。它只读企业目录，买家凭据的归属仍从 ERP 个人授权记录读取。[万邦 shop_bind_list 文档](https://open.onebound.cn/help/api/sys.shop_bind_list.html)
 
+管理员可在「用户管理」中，通过管理员或普通用户行的「万邦」下拉选择有效的 1688 授权，选择后即保存。GET/POST `/api/admin/users/onebound` 读取和保存该用户的绑定。保存时后端按页及绑定编号重新取目录 Session，核对 `alibaba.account.basic` 返回的登录名和买家 ID，结果与目录相符才启用。身份不匹配时保留绑定为待核验，运行时拒绝使用其 Session。启用后供应商每次建立业务客户端时核对买家 ID。目录和绑定响应只返回展示字段。
+
 管理员专用 POST `/api/alibaba/authorization/onebound` 接受 `{"access_token":"<买家 Token>"}`，保存到当前账号的万邦凭据记录。旧请求仍可传 `session`；未标注类型的旧凭据沿用原有的顶层 Session 协议。企业 Key、Secret 仍从管理员设置读取。绑定时只读检查收货地址接口，不能据此证明多买家隔离。
 
 ## 万邦协议证据与缺口

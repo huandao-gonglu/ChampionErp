@@ -179,10 +179,16 @@ class OpenApiAlibabaProvider(AlibabaProvider):
                                namespace="com.alibaba.fenxiao.crossborder").get("result")
         return _checked_product(result, offer_id, "offerId")
 
-    def get_buyer_id(self):
+    def get_buyer_profile(self) -> tuple[str, str]:
         payload = self._request(BUYER_IDENTITY, {}, namespace="com.alibaba.account")
         result = payload.get("result")
-        identity = str(result.get("memberId") or "") if isinstance(result, dict) else ""
+        if not isinstance(result, dict):
+            result = payload
+        return (str(result.get("memberId") or result.get("member_id") or ""),
+                str(result.get("loginId") or result.get("login_id") or "").strip())
+
+    def get_buyer_id(self):
+        identity, _ = self.get_buyer_profile()
         if not identity:
             raise AlibabaApiError("1688 未返回有效的买家身份")
         return identity

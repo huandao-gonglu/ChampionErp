@@ -25,7 +25,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       return
     }
     if (key === 'library') {
-      await combined.refreshProductsIndex()
+      await combined.refreshProductsIndex('list')
       return
     }
     if (key === 'drafts') {
@@ -102,6 +102,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     cancelCollectionVerification: combined.cancelCollectionVerification,
     clearCollectedProduct: combined.clearCollectedProduct,
     saveCollectSettings: combined.saveCollectSettings,
+    productsRefreshing: combined.productsRefreshing,
+    draftsRefreshing: combined.draftsRefreshing,
     refreshProductsIndex: combined.refreshProductsIndex,
     refreshDraftsIndex: combined.refreshDraftsIndex,
     loadProduct: combined.loadProduct,

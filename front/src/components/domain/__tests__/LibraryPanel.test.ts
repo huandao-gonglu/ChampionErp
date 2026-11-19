@@ -24,6 +24,15 @@ function mountPanel(selectedIds: string[] = []) {
 }
 
 describe('采集箱按语言选择目标市场', () => {
+  it('后台刷新保留现有商品的编辑和勾选', async () => {
+    const wrapper = mountPanel()
+    await wrapper.setProps({ refreshing: true })
+    expect(wrapper.findAll('button').find(button => button.text() === '刷新中…')!.element.disabled).toBe(true)
+    await wrapper.get('button[title="编辑商品"]').trigger('click')
+    expect(wrapper.emitted('edit')?.[0]).toEqual([items[0]])
+    expect(wrapper.get('[aria-label="勾选商品"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('语言为父级，市场为子级，同语言跨平台归组且不展示 CBT', async () => {
     const wrapper = mountPanel()
     const spanish = wrapper.get('[data-language="es"]')

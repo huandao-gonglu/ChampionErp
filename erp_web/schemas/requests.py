@@ -205,6 +205,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/account/password": _contract(fields={"current_password": STRING, "password": STRING}, required=("current_password", "password")),
     "/api/admin/users": _contract(fields={"email": STRING, "display_name": STRING, "password": STRING}, required=("email", "display_name", "password")),
     "/api/admin/users/status": _contract(fields={"user_id": STRING, "status": FieldRule("enum", choices=frozenset({"enabled", "disabled"}))}, required=("user_id", "status")),
+    "/api/admin/users/onebound": _contract(fields={"user_id": STRING, "binding_id": STRING, "page": FieldRule("integer", minimum=1, maximum=999999999)}, required=("user_id", "binding_id", "page")),
     "/api/admin/users/password": _contract(fields={"user_id": STRING, "password": STRING}, required=("user_id", "password")),
     '/api/desktop/connect': RequestContract(),
     '/api/desktop-handoff/create': RequestContract(fields={'target': STRING, 'state': OBJECT}, required=('target',)),
@@ -306,7 +307,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/generate-copy": _PRODUCT_OR_DRAFT,
     "/api/generate-copy-batch": _contract(required=("product_ids",)),
     "/api/generate-image-prompts": _PRODUCT,
-    "/api/draft-images/state": _contract(required=("draft_id",)),
+    "/api/draft-images/state": _contract(fields={"known_updated_at": STRING}, required=("draft_id",)),
     "/api/draft-images/plan-set": _contract(
         required=("product_id", "draft_id", "updated_at"),
         required_any=(("source_image_ids", "sku_ids"),),
@@ -323,8 +324,8 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/image-pool/sync-generated": _PRODUCT,
     "/api/image-pool/upload": _contract(required=("product_id", "uploads")),
     "/api/image-translate": _contract(required=("product_id", "source_image_ids")),
-    "/api/load-draft": _DRAFT,
-    "/api/load-product": _contract(required_any=(("product_id", "product_file_path"),)),
+    "/api/load-draft": _contract(fields={"editor_only": BOOLEAN}, required_any=(("draft_id", "draftId"),)),
+    "/api/load-product": _contract(fields={"editor_only": BOOLEAN}, required_any=(("product_id", "product_file_path"),)),
     "/api/mercadolibre/auth-checklist": _EMPTY,
     "/api/mercadolibre/auth-link": _contract(required=("app_id", "redirect_uri")),
     "/api/mercadolibre/exchange-code": _contract(

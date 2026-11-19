@@ -40,6 +40,7 @@ export interface BackendAlibabaAuthorizationStatus {
   expires_at: number
   refreshable: boolean
   needs_reauthorization: boolean
+  binding_pending?: boolean
 }
 
 export interface BackendOneBoundShopBinding {
@@ -47,6 +48,7 @@ export interface BackendOneBoundShopBinding {
   nick: string
   status: string
   expires_at: string
+  selectable: boolean
 }
 
 export interface BackendOneBoundShopBindingPage {
@@ -55,6 +57,12 @@ export interface BackendOneBoundShopBindingPage {
   page: number
   total: number
   page_count: number
+}
+
+export interface BackendOneBoundUserBinding {
+  binding_id: string
+  account_name: string
+  state: "unbound" | "connected" | "pending" | "expired"
 }
 
 export interface BackendForbiddenCategory {

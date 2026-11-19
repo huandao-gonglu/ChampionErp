@@ -65,6 +65,20 @@ describe('图片工作台操作与恢复', () => {
     expect(processDraftImages).not.toHaveBeenCalled()
     expect(generateDraftImageSet).not.toHaveBeenCalled()
   })
+  it('已确认的翻译遇到版本变化或已有其他批次时停止，并说明原因', async () => {
+    window.championDesktop = { localOperations: true, openLicenses: vi.fn() }
+    try {
+      const { work, save, draft } = fixture()
+      await flushPromises()
+      await work.resumeTranslation(['common'], 'draft_images_web', 'v0')
+      expect(work.notice.value).toContain('草稿已更新')
+      work.batch.value = batch()
+      await work.resumeTranslation(['common'], 'draft_images_web', draft.value.updatedAt)
+      expect(work.notice.value).toContain('已有操作进行中')
+      expect(save).not.toHaveBeenCalled()
+      expect(processDraftImages).not.toHaveBeenCalled()
+    } finally { delete window.championDesktop }
+  })
   it('只生成 SKU 图可独立提交，空选择不会创建方案', async () => {
     const { work, draft, save } = fixture()
     await flushPromises()
@@ -226,7 +240,7 @@ describe('图片工作台操作与恢复', () => {
     active.value = false; await nextTick()
     vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, { ...batch(), conversation_id: requestId! }))
     active.value = true; await flushPromises()
-    expect(fetchDraftImageState).toHaveBeenLastCalledWith('d', requestId)
+    expect(fetchDraftImageState).toHaveBeenLastCalledWith('d', requestId, draft.value.updatedAt)
     expect(work.busy.value).toBe(true)
     vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, { ...batch(true), conversation_id: requestId! }))
     await vi.advanceTimersByTimeAsync(2000)

@@ -455,7 +455,7 @@ def test_onebound_shop_bindings_route_only_exposes_admin_listing(monkeypatch):
         calls.append(parsed.path)
         return response({'error_code': '0000', 'items': {'page': 2, 'total_results': '51', 'pagecount': 2,
             'item': [{'shop_bind_id': 'shop-1', 'nick': '店铺甲', 'status': '1', 'exp_time': None,
-                      'api_key': 'vendor-key', 'session': 'private-session'}]}})
+                      'api_key': 'vendor-key', 'session': 'private-session', 'api_type': '1688'}]}})
 
     monkeypatch.setattr(transport, 'managed_urlopen', send)
     with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
@@ -473,7 +473,7 @@ def test_onebound_shop_bindings_route_only_exposes_admin_listing(monkeypatch):
             result = requests.get(endpoint, headers=headers, params={'nick': '店铺甲', 'page': '2'}, timeout=3)
             assert result.status_code == 200
             assert result.json() == {'ok': True, 'page': 2, 'total': 51, 'page_count': 2,
-                                     'items': [{'id': 'shop-1', 'nick': '店铺甲', 'status': '1', 'expires_at': ''}]}
+                                     'items': [{'id': 'shop-1', 'nick': '店铺甲', 'status': '1', 'expires_at': '', 'selectable': True}]}
             assert len(calls) == 1
         finally:
             server.shutdown()

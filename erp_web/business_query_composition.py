@@ -1,5 +1,5 @@
 """普通业务查询组合根：只声明一次，自动生成页面路由及 AI 可发现的数据目录。"""
-from erp_web.schemas.business_data import DraftDataParameters, DraftIndexParameters, NoDataParameters, PricingDataParameters, ProductDataParameters
+from erp_web.schemas.business_data import DraftDataParameters, DraftIndexParameters, NoDataParameters, PricingDataParameters, ProductDataParameters, ProductIndexParameters
 from erp_web.schemas.collection import CollectionLinkQuery
 from erp_web.schemas.managed_settings import TariffRulesQuery
 from erp_web.services.business_queries import BusinessQueries, BusinessQuery
@@ -81,11 +81,13 @@ BUSINESS_QUERIES = BusinessQueries((
                   ('id', 'url', 'mode', 'status', 'title', 'productId'), permission='product.read'),
     BusinessQuery('collection.history', '指定采集链接的实际操作时间、结果和错误记录。', CollectionLinkQuery,
                   lambda context, request: context.collection_links.history(request.id), 'items', permission='product.read'),
-    BusinessQuery('products.index', '当前空间商品索引，按需分页读取；按列表位置选择商品仍使用带快照的商品查询能力。', NoDataParameters,
-                  lambda context, _: {'ok': True, 'items': context.products.load_products_index()}, 'items',
+    BusinessQuery('products.index', '当前空间商品索引，按需分页读取；按列表位置选择商品仍使用带快照的商品查询能力。', ProductIndexParameters,
+                  lambda context, request: {'ok': True, 'items': context.products.load_product_list_rows()
+                      if request.view == 'list' else context.products.load_products_index()}, 'items',
                   ('id', 'product_id', 'name', 'title', 'updated_at'), permission='product.read', http_path='/api/products-index'),
     BusinessQuery('drafts.index', '草稿索引；scope 指定活动、归档或全部，按位置引用仍使用带快照的草稿查询能力。', DraftIndexParameters,
-                  lambda context, request: {'ok': True, 'items': context.products.load_drafts_index(request.scope)}, 'items',
+                  lambda context, request: {'ok': True, 'items': context.products.load_draft_list_rows(request.scope)
+                      if request.view == 'list' else context.products.load_drafts_index('published' if request.scope == 'archived' else request.scope)}, 'items',
                   ('draft_id', 'product_id', 'platform', 'title', 'updated_at'), permission='draft.read', http_path='/api/drafts-index'),
     BusinessQuery('publish.logs', '本地发布日志；只读历史，日志不代表平台实时状态。', PublishLogsQueryRequest,
                   lambda context, request: {'ok': True, 'items': context.db.list_publish_logs(limit=request.limit)}, 'items',

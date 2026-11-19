@@ -118,7 +118,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="个人账号、会话、用户管理及 New API 账号交接仅供受信界面、内部服务和部署命令使用，不向模型提供身份或权限操作。")
       for method, path in (
           ("GET", "/api/account/registration-config"), ("GET", "/api/account/session"), ("GET", "/api/admin/users"),
-          ("GET", "/api/account/newapi"),
+          ("GET", "/api/account/newapi"), ("GET", "/api/admin/users/onebound"),
           *(("POST", path) for path in account_routes.HANDLED_PATHS),
       )),
     *(AiCapabilityCoverageEntry(method="GET", path=path, business_domain="前端页面", disposition="excluded",

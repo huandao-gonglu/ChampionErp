@@ -69,7 +69,7 @@ class CollectionLinks:
 
     def list(self):
         with closing(self._connect()) as db:
-            return {'items': [self._public(row) for row in db.execute('SELECT * FROM links ORDER BY rowid')]}
+            return {'items': [self._public(row) for row in db.execute('SELECT id,url,mode,status,revision,updated,summary FROM links ORDER BY rowid')]}
 
     def history(self, key):
         with closing(self._connect()) as db:

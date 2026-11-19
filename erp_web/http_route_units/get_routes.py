@@ -78,25 +78,26 @@ def handle_frontend_page(handler: JsonRequestHandler, parsed: object) -> None:
 def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
     context = get_context()
     paths = context.paths
-    prod = load_product()
     store_cfg = load_store_config()
     app_cfg = load_app_config()
     state = {
         "schemaVersion": API_SCHEMA_VERSION,
         "ok": True,
-        "product": prod,
         "appConfig": config_service.public_app_config(paths.app_dir, app_cfg),
         "storeConfig": config_service.public_store_config(store_cfg),
         "storeAuthSummary": summarize_store_auth_states(store_cfg),
         "mercadolibreAuthChecklist": mercadolibre_auth_checklist(store_cfg.get("mercadolibre", {})),
-        "imagePool": current_image_pool(prod),
-        "sourceImages": current_source_images(prod),
-        "generatedImages": current_generated_images(),
         "platformOptions": marketplace_options(),
         "outputDir": str(paths.output_dir),
         # 审批凭据只在这里下发给受信 UI；模型工具结果与对话上下文永远拿不到它。
         "approvalToken": context.approval_session.token,
     }
+    if urllib.parse.parse_qs(parsed.query).get("view") == ["settings"]:
+        handler.send_json(state)
+        return
+    prod = load_product()
+    state.update(product=prod, imagePool=current_image_pool(prod), sourceImages=current_source_images(prod),
+                 generatedImages=current_generated_images())
     handler.send_json(validate_app_state_response(state))
 
 

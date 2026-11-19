@@ -58,12 +58,15 @@ def _wait_auth_state(
     while True:
         check_cancellation()
         state = _auth_state(cdp)
+        check_cancellation()
         if state == "signed_in" or (state == "login_required" and not wait_for_login):
             return state
         if time.monotonic() >= deadline:
             if wait_for_login:
                 raise TimeoutError("等待 Google 登录超时，本次尚未发送修图请求；登录后可重新执行。")
             raise RuntimeError("Gemini 页面未能完成加载，请检查网络和代理；本次尚未发送修图请求。")
+        if wait_for_login and state == "login_required":
+            request('recover_login', page=cdp.id, expression=_AUTH_SCRIPT)
         time.sleep(0.5)
 
 
