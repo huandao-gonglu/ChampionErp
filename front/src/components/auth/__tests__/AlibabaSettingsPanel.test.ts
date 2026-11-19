@@ -37,12 +37,32 @@ afterEach(() => {
 })
 
 describe('1688 浏览器授权', () => {
-  it('普通用户能看到万邦自己的授权状态', async () => {
-    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'onebound', can_authorize: false, authorized: false })
+  it('普通用户自行打开万邦登录并粘贴回调地址', async () => {
+    const onebound = { ...status, application_type: 'onebound' as const, refreshable: false }
+    const link = 'https://o0b.cn/9vXze?state=vendor-key'
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...onebound, authorized: false, account_name: '' })
+    vi.mocked(api.startAlibabaAuthorization).mockResolvedValue({ ok: true, url: link })
     const wrapper = await panel('onebound')
-    expect(wrapper.text()).toContain('暂未接入万邦的买家登录')
-    expect(wrapper.find('input, button').exists()).toBe(false)
     expect(api.fetchAlibabaAuthorization).toHaveBeenCalledWith('onebound')
+    expect(wrapper.find('input').exists()).toBe(false)
+    const connect = wrapper.get('[data-testid="connect-1688"]')
+    expect(connect.text()).toBe('连接 1688 账号')
+    await connect.trigger('click')
+    await flushPromises()
+    expect(api.startAlibabaAuthorization).toHaveBeenCalledWith('onebound')
+    expect(tab.location.replace).toHaveBeenCalledWith(link)
+    expect(wrapper.text()).toContain('回跳页可能空白')
+    const callback = 'https://dc.dev.1buyo.com/api/Accredit1688/callback_1688?state=vendor-key&code=return-code'
+    const input = wrapper.get('#onebound-callback-url')
+    await input.setValue(callback)
+    vi.mocked(api.completeAlibabaAuthorization).mockResolvedValue({ ...onebound, account_name: '个人买家' })
+    await input.trigger('keydown.enter')
+    await flushPromises()
+    expect(api.completeAlibabaAuthorization).toHaveBeenCalledWith(callback, 'onebound')
+    expect(wrapper.text()).toContain('已连接')
+    expect(wrapper.text()).toContain('个人买家')
+    expect(wrapper.find('input').exists()).toBe(false)
+    expect(api.bindOneBoundBuyerToken).not.toHaveBeenCalled()
   })
 
   it('管理员在万邦卡片绑定自己的买家 Token', async () => {
@@ -50,12 +70,13 @@ describe('1688 浏览器授权', () => {
     vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue({ ...status, application_type: 'onebound', active: false, can_authorize: false, authorized: false })
     vi.mocked(api.bindOneBoundBuyerToken).mockResolvedValue({ ...status, application_type: 'onebound', authorized: true })
     const wrapper = await panel('onebound')
-    await wrapper.get('input').setValue('personal-token')
-    await wrapper.get('button').trigger('click')
+    const input = wrapper.get('#onebound-buyer-token')
+    await input.setValue('personal-token')
+    await input.trigger('keydown.enter')
     await flushPromises()
     expect(api.bindOneBoundBuyerToken).toHaveBeenCalledWith('personal-token')
     expect(wrapper.text()).toContain('已连接')
-    expect(wrapper.get('input').element.value).toBe('')
+    expect((input.element as HTMLInputElement).value).toBe('')
     expect(api.startAlibabaAuthorization).not.toHaveBeenCalled()
   })
 

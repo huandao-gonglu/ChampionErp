@@ -424,6 +424,88 @@ def test_admin_pastes_1688_callback_into_own_space(accounts_http, monkeypatch, p
     assert exchanges == [(redirect, 'private+code')]
 
 
+def test_ordinary_users_complete_onebound_authorization_in_their_own_accounts(accounts_http, monkeypatch):
+    from datetime import datetime, timezone
+    from erp_web.services import onebound_api_transport as transport
+    from erp_web.services.alibaba_api_client import alibaba_provider
+    from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
+    from tests.test_onebound_api import configure, response
+
+    origin, runtime, login = accounts_http
+    configure(runtime.root.config)
+    a = register(origin, 'onebound-a@example.com')
+    b = register(origin, 'onebound-b@example.com')
+    first, second = login(a['email']), login(b['email'])
+    auth = origin + '/api/alibaba/authorization'
+    complete = auth + '/onebound/complete'
+    redirect = 'https://dc.dev.1buyo.com/api/Accredit1688/callback_1688'
+    exchanges = []
+    identities = []
+
+    def gateway(request, **kwargs):
+        url = urlsplit(request.full_url)
+        params = parse_qs(url.query)
+        assert url.scheme == 'https' and url.netloc == 'api-gw.onebound.cn'
+        assert params['key'] == ['vendor-key'] and params['secret'] == ['vendor-secret']
+        assert not kwargs['follow_redirects'] and params['cache'] == ['no']
+        if url.path == '/1688global/buyer_token_create/':
+            code = params['code'][0]
+            exchanges.append(code)
+            context = kwargs['request_context']
+            assert context.semantics == 'write' and context.max_attempts == 1 and code not in repr(context)
+            return response({'error_code': '0000', 'items': {
+                'session': f'personal-token-{code}', 'nick': f'买家-{code}', 'exp_time': '2099-05-01 10:00:00',
+            }})
+        assert url.path == '/1688/custom' and params['_o_args'] == ['{}'] and 'session' not in params
+        token = params['access_token'][0]
+        assert token.startswith('personal-token-')
+        code = token.removeprefix('personal-token-')
+        if params['method'] == ['com.alibaba.account/alibaba.account.basic']:
+            identities.append(code)
+            return response({'response': {'memberId': f'member-{code}', 'loginId': f'买家-{code}', 'error': None}})
+        assert params['method'] == ['com.alibaba.trade/alibaba.trade.receiveAddress.get']
+        return response({'response': {'receiveAddressItems': []}})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', gateway)
+    body_a = {'callback_url': redirect + '?code=a%2Bcode&state=vendor-key'}
+    assert first.post(auth + '/start', json={'provider': 'onebound'}).json()['url'] == 'https://o0b.cn/9vXze?state=vendor-key'
+    assert requests.post(complete, json=body_a).status_code == 401
+    assert first.post(complete, json=body_a, headers={'X-CSRF-Token': ''}).status_code == 403
+    assert second.post(complete, json=body_a).status_code == 400
+    for address in (body_a['callback_url'].replace('dc.dev.1buyo.com', 'example.com'),
+                    body_a['callback_url'].replace('vendor-key', 'other-key'),
+                    body_a['callback_url'] + '&code=duplicate',
+                    body_a['callback_url'] + '&state=duplicate'):
+        result = first.post(complete, json={'callback_url': address})
+        assert result.status_code == 400 and 'a+code' not in result.text
+    assert first.post(complete, json={**body_a, 'provider': 'alibaba_crossborder'}).status_code == 400
+    assert not exchanges
+
+    bound = first.post(complete, json={**body_a, 'user_id': b['id']})
+    assert bound.status_code == 200, bound.text
+    assert bound.json()['account_name'] == '买家-a+code'
+    assert 'personal-token-' not in bound.text and 'vendor-secret' not in bound.text
+    assert bound.json()['expires_at'] == datetime(2099, 5, 1, 2, tzinfo=timezone.utc).timestamp()
+    assert first.post(complete, json=body_a).status_code == 400
+    assert not second.get(auth, params={'provider': 'onebound'}).json()['authorized']
+    second.post(auth + '/start', json={'provider': 'onebound'}).raise_for_status()
+    result = second.post(complete, json={'callback_url': redirect + '?code=b-code&state=vendor-key'})
+    assert result.status_code == 200 and result.json()['member_id'] == 'member-b-code'
+    assert exchanges == identities == ['a+code', 'b-code']
+
+    scopes = set()
+    for owner, code in ((a, 'a+code'), (b, 'b-code')):
+        context = runtime.context_for(runtime.store.by_email(owner['email']))
+        with bind_context(context):
+            config = AlibabaAuthorizationService(context.config, owner_id=context.user_id).runtime_config()
+            assert config['access_token'] == f'personal-token-{code}' and config['member_id'] == f'member-{code}'
+            assert not config['directory_verified'] and alibaba_provider(config).list_addresses() == []
+            scopes.add(config['account_scope'])
+    assert len(scopes) == 2
+    assert identities == ['a+code', 'b-code', 'a+code', 'b-code']
+    assert runtime.root.config.alibaba_credentials('onebound') == {}
+
+
 def test_background_threads_and_detached_coroutines_keep_original_space(accounts_http, monkeypatch):
     _, runtime, _ = accounts_http
     from erp_web.services import product_research_service
@@ -702,6 +784,7 @@ def test_admin_assigns_onebound_directory_credentials_to_selected_user(accounts_
     assert not runtime.root.config.alibaba_credentials('onebound')
     first_runtime = AlibabaAuthorizationService(first_config).runtime_config()
     assert first_runtime['access_token'] == 'private-a' and first_runtime['member_id'] == 'member-a'
+    assert first_runtime['directory_verified'] is True and first_runtime['credential_type'] == 'session'
     second_service = AlibabaAuthorizationService(second_config)
     assert second_service.status('onebound')['binding_pending']
     assert not second_service.status('onebound')['authorized']

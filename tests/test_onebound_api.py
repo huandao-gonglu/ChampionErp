@@ -7,26 +7,27 @@ import pytest
 
 from erp_web.services import onebound_api_transport as transport
 from erp_web.services.alibaba_api_client import alibaba_provider, AlibabaApiError, AlibabaApiRejected, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, _parse_response
-from erp_web.services.alibaba_api_client import ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_STATUS, PAY
+from erp_web.services.alibaba_api_client import ADDRESSES, BUYER_IDENTITY, PREVIEW, CREATE, ORDER_LIST, PAY_STATUS, PAY
 
 
 CONFIG = {'application_type': 'onebound', 'api_key': 'vendor-key', 'api_secret': 'vendor-secret', 'access_token': 'buyer-token'}
+DIRECTORY_CONFIG = {**CONFIG, 'access_token': 'buyer-session', 'credential_type': 'session',
+                    'directory_verified': True, 'member_id': 'buyer-a'}
 
 
 def response(value):
     return io.BytesIO(json.dumps(value).encode())
 
 
-@pytest.mark.parametrize('api', [ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_STATUS, PAY])
-def test_custom_transport_preserves_arguments_and_write_semantics(monkeypatch, api):
+@pytest.mark.parametrize('api', [ADDRESSES, PREVIEW, ORDER_LIST, PAY_STATUS])
+def test_custom_transport_preserves_read_arguments(monkeypatch, api):
     calls = []
     def send(request, **kwargs):
         calls.append((request, kwargs))
         return response({'response': {'success': True, 'result': {}}})
     monkeypatch.setattr(transport, 'managed_urlopen', send)
     values = {'cargoParamList': [{'offerId': 123, 'specId': '蓝色', 'quantity': 2}]}
-    transport.request_onebound(CONFIG, api, values, namespace='com.alibaba.trade',
-                               semantics='write' if api in {CREATE, PAY} else 'read', timeout=20)
+    transport.request_onebound(CONFIG, api, values, namespace='com.alibaba.trade', semantics='read', timeout=20)
     assert len(calls) == 1
     request, kwargs = calls[0]
     parsed = urlsplit(request.full_url)
@@ -34,12 +35,11 @@ def test_custom_transport_preserves_arguments_and_write_semantics(monkeypatch, a
     assert (parsed.scheme, parsed.netloc, parsed.path) == ('https', 'api-gw.onebound.cn', '/1688/custom')
     assert params['key'] == ['vendor-key'] and params['secret'] == ['vendor-secret'] and 'session' not in params
     assert params['method'] == ['com.alibaba.trade/' + api]
-    expected = values if api == ORDER_LIST else {**values, 'access_token': 'buyer-token'}
-    assert json.loads(params['_o_args'][0]) == expected
-    assert params.get('access_token') == (['buyer-token'] if api == ORDER_LIST else None)
+    assert json.loads(params['_o_args'][0]) == values
+    assert params['access_token'] == ['buyer-token']
     assert params['cache'] == ['no'] and '_aop_signature' not in params
     context = kwargs['request_context']
-    assert context.semantics == ('write' if api in {CREATE, PAY} else 'read')
+    assert context.semantics == 'read'
     assert context.max_attempts == 1 and not kwargs['follow_redirects']
     assert not any(secret in repr(context) for secret in ('vendor-key', 'vendor-secret', 'buyer-token'))
 
@@ -48,7 +48,8 @@ def test_product_order_and_logistics_use_same_explicit_provider(monkeypatch):
     calls = []
     def send(request, **kwargs):
         params = parse_qs(urlsplit(request.full_url).query)
-        assert json.loads(params['_o_args'][0])['access_token'] == 'buyer-token'
+        assert params['access_token'] == ['buyer-token']
+        assert 'access_token' not in json.loads(params['_o_args'][0])
         calls.append(params['method'][0])
         if 'queryProductDetail' in calls[-1]:
             return response({'response': {'result': {'success': True, 'result': {'offerId': 123}}}})
@@ -140,14 +141,69 @@ def test_unknown_provider_fails_before_any_request():
 
 
 
-def test_unconfirmed_onebound_writes_fail_before_network(monkeypatch):
-    monkeypatch.setattr(transport, 'managed_urlopen', lambda *args, **kwargs: pytest.fail("未确认的接口不得发请求"))
-    provider = alibaba_provider(CONFIG)
-    with pytest.raises(AlibabaApiRejected, match="创建采购订单.*尚未确认"):
+@pytest.mark.parametrize('config', [
+    CONFIG,
+    {**CONFIG, 'credential_type': 'session', 'member_id': 'buyer-a'},
+    {**DIRECTORY_CONFIG, 'credential_type': 'access_token'},
+    {**DIRECTORY_CONFIG, 'member_id': ''},
+])
+def test_onebound_writes_require_a_verified_directory_session(monkeypatch, config):
+    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: pytest.fail('未核验的授权不得发起写入'))
+    provider = alibaba_provider(config)
+    with pytest.raises(AlibabaApiRejected, match='已核验的店铺授权'):
         provider.create_order({}, [], flow="flow", channel="alipay", external_id="record")
-    with pytest.raises(AlibabaApiRejected, match="免密支付.*尚未确认"):
+    with pytest.raises(AlibabaApiRejected, match='已核验的店铺授权'):
         provider.pay_order("123", channel="alipay", amount_fen=100, request_id="payment")
 
+
+def test_onebound_write_checks_current_buyer_before_sending(monkeypatch):
+    def send(request, *, request_context, **kwargs):
+        assert request_context.interface == 'com.alibaba.account/' + BUYER_IDENTITY
+        assert request_context.semantics == 'read'
+        return response({'response': {'memberId': 'default-buyer'}})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', send)
+    with pytest.raises(AlibabaApiRejected, match='买家身份未通过核验'):
+        alibaba_provider(DIRECTORY_CONFIG).create_order({}, [], flow='general', channel='alipay', external_id='record')
+
+
+@pytest.mark.parametrize('payment_response', [
+    {'paySuccess': True, 'payChannel': 'SHEGOU'},
+    {'success': True, 'paySuccess': True, 'payChannel': 'SHEGOU'},
+    {'success': True, 'result': {'paySuccess': True, 'payChannel': 'SHEGOU'}},
+])
+def test_onebound_trades_keep_session_parameters_and_write_semantics(monkeypatch, payment_response):
+    number = '9007199254740993'
+    address = {'fullName': '收货人', 'provinceText': '浙江省', 'cityText': '杭州市', 'address': '示例路 10 号'}
+    calls = []
+    replies = {BUYER_IDENTITY: {'memberId': 'buyer-a'},
+               CREATE: {'success': True, 'orderId': number, 'orderList': []}, PAY: payment_response}
+
+    def send(request, *, request_context, follow_redirects, **kwargs):
+        parsed = urlsplit(request.full_url)
+        assert (parsed.scheme, parsed.netloc, parsed.path) == ('https', 'api-gw.onebound.cn', '/1688/custom')
+        params = parse_qs(parsed.query)
+        assert params['session'] == [DIRECTORY_CONFIG['access_token']] and 'access_token' not in params
+        assert params['key'] == [CONFIG['api_key']] and params['secret'] == [CONFIG['api_secret']]
+        assert request.get_method() == 'GET' and params['cache'] == ['no']
+        assert request_context.max_attempts == 1 and not follow_redirects
+        method = params['method'][0]
+        calls.append((method, json.loads(params['_o_args'][0]), request_context.semantics))
+        return response({'response': replies[method.split('/', 1)[1]]})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', send)
+    provider = alibaba_provider(DIRECTORY_CONFIG)
+    cargo = [{'offer_id': '123', 'spec_id': 'spec-a', 'quantity': 2}]
+    assert provider.create_order(address, cargo, flow='general', channel='shegou', external_id='record') == [number]
+    assert provider.pay_order(number, channel='shegou', amount_fen=1580, request_id='payment')[0] == 'succeeded'
+    assert calls == [
+        ('com.alibaba.account/' + BUYER_IDENTITY, {}, 'read'),
+        ('com.alibaba.trade/' + CREATE, {'addressParam': address,
+         'cargoParamList': [{'offerId': 123, 'specId': 'spec-a', 'quantity': 2}], 'flow': 'general',
+         'tradeType': 'assureTrade', 'preSelectPayChannel': 'shegou', 'outOrderId': 'record'}, 'write'),
+        ('com.alibaba.trade/' + PAY, {'tradeWithholdPreparePayParam': {
+            'orderId': int(number), 'payChannel': 'shegou', 'payAmount': 1580, 'opRequestId': 'payment'}}, 'write'),
+    ]
 
 
 def test_buyer_basic_uses_confirmed_top_level_token(monkeypatch):

@@ -184,8 +184,10 @@ class OpenApiAlibabaProvider(AlibabaProvider):
         result = payload.get("result")
         if not isinstance(result, dict):
             result = payload
-        return (str(result.get("memberId") or result.get("member_id") or ""),
-                str(result.get("loginId") or result.get("login_id") or "").strip())
+        member_id = result.get("memberId") or result.get("member_id")
+        login_id = result.get("loginId") or result.get("login_id")
+        return (str(member_id).strip() if type(member_id) in {str, int} else "",
+                login_id.strip() if isinstance(login_id, str) else "")
 
     def get_buyer_id(self):
         identity, _ = self.get_buyer_profile()
@@ -362,23 +364,27 @@ class OneBoundAlibabaProvider(OpenApiAlibabaProvider):
         self.expected_buyer = str(config.get('member_id') or '')
         self._buyer_checked = False
 
-    def create_order(self, address, cargo, *, flow, channel, external_id):
-        raise AlibabaApiRejected("万邦创建采购订单的接口尚未确认")
-
-    def pay_order(self, number, *, channel, amount_fen, request_id):
-        raise AlibabaApiRejected("万邦免密支付的接口尚未确认")
-
     def get_cashier_url(self, numbers):
         return _cashier_url(self._request("alibaba.alipay.url.get", {"orderIdList": [int(n) for n in numbers]}))
 
     def _send(self, api, values, *, namespace, semantics):
-        if semantics == "write":
-            raise AlibabaApiRejected("万邦写入接口尚未确认")
-        try:
-            if api != BUYER_IDENTITY and self.expected_buyer and not self._buyer_checked:
+        writing = semantics == "write"
+        if writing:
+            if namespace != "com.alibaba.trade" or api not in {CREATE, PAY}:
+                raise AlibabaApiRejected("当前万邦方案不支持此写入接口")
+            if (self.config.get('credential_type') != 'session' or self.config.get('directory_verified') is not True
+                    or not self.expected_buyer):
+                raise AlibabaApiRejected("万邦下单和免密支付需要已核验的店铺授权，请联系管理员")
+        if api != BUYER_IDENTITY and self.expected_buyer and not self._buyer_checked:
+            try:
                 if self.get_buyer_id() != self.expected_buyer:
                     raise AlibabaApiError('当前接入的 1688 买家已变化，请重新核验')
-                self._buyer_checked = True
+            except (AlibabaApiError, ExternalRequestBlocked):
+                if writing:
+                    raise AlibabaApiRejected("万邦买家身份未通过核验，请核对店铺授权") from None
+                raise
+            self._buyer_checked = True
+        try:
             payload = request_onebound(self.config, api, values, namespace=namespace, semantics=semantics, timeout=self.timeout)
         except OneBoundApiRejected as exc:
             raise AlibabaApiRejected(str(exc)) from None

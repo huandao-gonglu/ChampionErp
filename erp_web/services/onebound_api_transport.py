@@ -1,6 +1,8 @@
 """万邦 1688 custom 固定网关；只转发显式声明的业务请求。"""
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 import json
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request
@@ -22,20 +24,16 @@ def request_onebound(config, api, values, *, namespace, semantics, timeout):
     token = config.get('access_token')
     if not token:
         raise OneBoundApiRejected('请先连接当前方案的 1688 采购账号')
-    # 买家凭据只取自当前授权。历史 Session 仍按原协议发送。
+    # 买家凭据取自当前授权，通过网关外层传递。_o_args 只包含业务参数。
     arguments = dict(values)
     arguments.pop('access_token', None)
-    legacy_session = config.get('credential_type') == 'session'
     params = {'key': config['api_key'], 'secret': config['api_secret'],
               'method': namespace + '/' + api,
               'cache': 'no', 'result_type': 'json', 'lang': 'zh-CN'}
-    if legacy_session:
+    if config.get('credential_type') == 'session':
         params['session'] = token
-    elif api in {'alibaba.account.basic', 'alibaba.trade.getBuyerOrderList'}:
-        # 这两个接口的实测协议用网关外层的买家 Token。
-        params['access_token'] = token
     else:
-        arguments['access_token'] = token
+        params['access_token'] = token
     if arguments or api != 'alibaba.trade.getBuyerOrderList':
         params['_o_args'] = json.dumps(arguments, ensure_ascii=False, separators=(',', ':'))
     payload = _request_gateway(config, '/1688/custom', params, interface=namespace + '/' + api,
@@ -75,6 +73,37 @@ def _validate_gateway_result(payload):
         if code in {'4003', '4004', '4005', '4006', '4007', '4008', '4010', '4012', '4013', '4014', '4015', '4016'}:
             raise OneBoundApiRejected('万邦拒绝调用，请核对接入配置、买家授权、接口权限及可用额度')
         raise OneBoundApiError('万邦未确认接口结果，请查询原请求，勿重复下单或支付')
+
+
+def exchange_onebound_buyer_code(config, code: str) -> tuple[str, str, float]:
+    params = {'key': config['api_key'], 'secret': config['api_secret'], 'code': code,
+              'cache': 'no', 'result_type': 'json', 'lang': 'zh-CN'}
+    try:
+        payload = _request_gateway(config, '/1688global/buyer_token_create/', params,
+                                   interface='1688global/buyer_token_create', credential=code,
+                                   semantics='write', timeout=20)
+        _validate_gateway_result(payload)
+    except OneBoundApiRejected:
+        raise OneBoundApiRejected('万邦拒绝换取授权，请核对换码接口权限，并重新登录授权') from None
+    except OneBoundApiError:
+        raise OneBoundApiError('万邦换取授权未完成，请重新登录授权') from None
+    item = payload.get('items')
+    if not isinstance(item, dict):
+        raise OneBoundApiError('万邦未返回唯一的买家授权，请重新授权')
+    token, nick = item.get('session'), item.get('nick')
+    if (not isinstance(token, str) or not 0 < len(token) <= 4096 or any(char.isspace() for char in token)
+            or not isinstance(nick, str) or not nick.strip()):
+        raise OneBoundApiError('万邦未返回完整的买家授权，请重新授权')
+    try:
+        expiry = datetime.fromisoformat(item.get('exp_time'))
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone(timedelta(hours=8)))
+        expires_at = expiry.timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        raise OneBoundApiError('万邦未返回有效的授权期限，请重新授权') from None
+    if expires_at <= time.time():
+        raise OneBoundApiError('万邦返回的买家授权已到期，请重新授权')
+    return token, nick.strip(), expires_at
 
 
 def _onebound_shop_page(config, *, nick, page):
@@ -138,6 +167,10 @@ def normalize_onebound_response(api, value):
                     'errorMessage': message or value.get('errorMessage') or value.get('error_message')}
         value = {k: v for k, v in value.items() if k != 'error'}
         if 'success' in value:
+            if api == 'alibaba.trade.pay.protocolPay.preparePay' and 'paySuccess' in value and 'result' not in value:
+                # 支付字段与 success 同层时，恢复共用支付回执所需的结果包装。
+                success = value.pop('success')
+                return {'success': success, 'result': value}
             return value
         # 保留订单列表的分页包装，交由统一客户端校验 totalRecord 和订单字段。
         if api == 'alibaba.trade.getBuyerOrderList' and ('totalRecord' in value or 'result' in value):

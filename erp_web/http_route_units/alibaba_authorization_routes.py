@@ -1,4 +1,4 @@
-"""1688 账号授权；官方回调只接收 code/state，不接收应用凭据。"""
+"""1688 账号授权及官方 code/state 回调。"""
 from html import escape
 from urllib.parse import parse_qs
 
@@ -24,6 +24,12 @@ def _onebound(handler):
     handler.send_json(payload, status)
 
 
+def _complete_onebound(handler):
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    payload, status = authorization_payload('complete-onebound', {'callback_url': body['callback_url']})
+    handler.send_json(payload, status)
+
+
 def _self_use_token(handler):
     body = validate_request_payload(handler.read_body(), endpoint=handler.path)
     payload, status = authorization_payload('self-use-token', body)
@@ -33,6 +39,7 @@ def _self_use_token(handler):
 POST_HANDLERS = {
     '/api/alibaba/authorization/self-use-token': _self_use_token,
     '/api/alibaba/authorization/onebound': _onebound,
+    '/api/alibaba/authorization/onebound/complete': _complete_onebound,
     '/api/alibaba/authorization/complete': _complete,
     '/api/alibaba/authorization/start': _start,
     '/api/alibaba/crossborder/authorization/start': _start,

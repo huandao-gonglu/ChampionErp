@@ -236,16 +236,29 @@ def test_multi_sku_group_pays_once_for_the_whole_order(batch, channel):
     service.pay(body)
     assert len([n for n, _ in client.calls if n == PAY]) == 1
 
-def test_unsupported_vendor_payment_is_recorded_as_rejected(payment, monkeypatch):
+@pytest.mark.parametrize('gateway_reply,state', [
+    ({'error_code': '4010', 'error': 'api-not-found'}, 'rejected'),
+    ({'response': {'success': True, 'paySuccess': False}}, 'unknown'),
+])
+def test_onebound_persists_payment_result_without_repeating(payment, monkeypatch, gateway_reply, state):
     from erp_web.services import onebound_api_transport as transport
-    config = {"application_type": "onebound", "api_key": "key", "api_secret": "secret", "access_token": "session"}
+    from tests.test_onebound_api import DIRECTORY_CONFIG, response
+
     service, client, _, body = payment
-    client.pay_order = alibaba_provider(config).pay_order
-    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: pytest.fail("不应发送万邦付款请求"))
+    client.pay_order = alibaba_provider(DIRECTORY_CONFIG).pay_order
+    calls = []
+
+    def send(request, *, request_context, **kwargs):
+        calls.append(request_context.interface)
+        if request_context.interface == 'com.alibaba.account/' + api.BUYER_IDENTITY:
+            return response({'response': {'memberId': DIRECTORY_CONFIG['member_id']}})
+        return response(gateway_reply)
+
+    monkeypatch.setattr(transport, 'managed_urlopen', send)
     first = service.pay(body)['record']
-    assert first['payment']['state'] == 'rejected'
-    assert '万邦免密支付' in first['payment']['message']
+    assert first['payment']['state'] == state
     assert service.pay(body)['record']['payment'] == first['payment']
+    assert calls == ['com.alibaba.account/' + api.BUYER_IDENTITY, 'com.alibaba.trade/' + PAY]
 
 
 def test_old_scope_and_unknown_payment_survive_buyer_merge_and_restart(payment):

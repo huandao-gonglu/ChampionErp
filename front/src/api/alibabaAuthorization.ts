@@ -11,6 +11,9 @@ export async function startAlibabaAuthorization(provider: AlibabaProvider): Prom
   return (await apiClient.post(authPath + '/start', { provider })).data
 }
 export async function completeAlibabaAuthorization(callbackUrl: string, provider: AlibabaProvider): Promise<BackendAlibabaAuthorizationStatus> {
+  if (provider === 'onebound') {
+    return (await apiClient.post(authPath + '/onebound/complete', { callback_url: callbackUrl })).data
+  }
   return (await apiClient.post(authPath + '/complete', { callback_url: callbackUrl, provider })).data
 }
 export async function bindOneBoundBuyerToken(accessToken: string): Promise<BackendAlibabaAuthorizationStatus> {

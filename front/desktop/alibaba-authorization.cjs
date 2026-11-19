@@ -8,12 +8,15 @@ const official = 'https://auth.1688.com'
 
 async function openAlibabaAuthorization(value, { app, shell, platform = process.platform, execute = run }) {
   const url = new URL(value)
-  if (url.origin !== official || url.pathname !== '/auth/authorize.htm' || url.username || url.password || url.hash) {
+  const officialLogin = url.origin === official && url.pathname === '/auth/authorize.htm'
+  const oneboundLogin = url.origin === 'https://o0b.cn' && url.pathname === '/9vXze'
+    && url.searchParams.size === 1 && !!url.searchParams.get('state')?.trim()
+  if ((!officialLogin && !oneboundLogin) || url.username || url.password || url.hash) {
     throw new Error('1688 授权地址无效，请重新授权。')
   }
   try {
     if (platform === 'darwin') {
-      const browser = await app.getApplicationInfoForProtocol(official)
+      const browser = await app.getApplicationInfoForProtocol(url.origin)
       if (path.basename(browser.path) === 'Google Chrome.app') {
         // 单独启动 Chrome，让它按日常资料目录交接窗口，避免系统选中同应用的无头实例。
         await execute('/usr/bin/open', ['-n', '-a', browser.path, '--args', '--new-window', url.href])

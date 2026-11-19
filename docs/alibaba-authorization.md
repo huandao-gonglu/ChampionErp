@@ -8,19 +8,27 @@
 
 企业自用应用还支持管理员在该卡片粘贴 1688 开放平台「授权配置」提供的已授权 Token。服务端使用该应用的签名和提交的 Token 调用买家只读接口，验证成功后才替换当前用户在此应用的凭据。浏览器回调或续期返回非正有效期时，企业自用应用也通过该接口验证回执中的 Token；有效时保留平台返回的买家身份，到期时间留空。验证失败保留现有授权。
 
-万邦卡展示当前用户在万邦方案下的授权。管理员可以绑定自己通过万邦应用取得的 **1688 买家 access_token**。普通用户在线登录、回调取得买家 Token 和续期仍待接入。
+## 万邦自助授权
+
+在「平台授权 → 1688 授权 → 万邦」点击「连接 1688 账号」。在浏览器登录自己的 1688 并确认授权后，立即复制地址栏中的完整地址，粘贴到万邦卡并点击「完成授权」。回跳页可能空白。ERP 显示核验通过的买家和授权到期时间，到期后可从同一卡片重新授权。
+
+POST `/api/alibaba/authorization/start` 通过 `provider: onebound` 生成万邦授权链接并保存当前用户的待完成记录。万邦使用企业 Key 作为回跳 `state`。POST `/api/alibaba/authorization/onebound/complete` 接收 `callback_url`，验证登录会话和 CSRF Token，以会话确定账号，并核对该用户的待完成记录、万邦回跳地址和应用配置。
+
+后端用固定接口 `/1688global/buyer_token_create/` 一次性交换授权码，从 `items` 读取 `session`、`nick` 和 `exp_time`。随后用该 Token 作为外层 `access_token` 调用 `alibaba.account.basic`。只有 1688 返回的登录名与换码昵称相符，且提供会员 ID，才保存到当前用户。失败保留原授权，成功响应只包含状态、买家和到期时间。已核验的同一买家重新授权时沿用采购归属。换码回执提供到期时间，当前使用重新授权续期。 [万邦买家 Token 文档](https://open.onebound.cn/help/api/1688global.buyer_token_create.html)
 
 ## 管理员配置与个人凭据
 
-「系统设置 → 管理员共享设置 → 1688 API」维护两套官方 AppKey、AppSecret、回调地址及万邦 Key、Secret，并选择业务接入。企业凭据归根库 `enterprise_applications / active`，普通用户不能读取或修改。密钥留空沿用原值，配置 revision 拒绝覆盖并发更新；更换企业凭据使对应旧授权失效。
+「系统设置 → 管理员共享设置 → 1688 API」维护两套官方 AppKey、AppSecret、回调地址及万邦 Key、Secret，并选择业务接入。企业凭据归根库 `enterprise_applications / active`，设置由管理员维护，Secret 留在服务端。密钥留空沿用原值，配置 revision 防止覆盖并发更新。更换企业凭据使对应旧授权失效。
 
 尚未保存时可读取 `ERP_ALIBABA_*`、`ERP_ALIBABA_CROSSBORDER_*`、`ERP_ONEBOUND_API_KEY`、`ERP_ONEBOUND_API_SECRET`。个人 `credentials:alibaba` 的 `state`、`crossborder`、`onebound` 保留原通道凭据，不借其他用户或其他应用的 Token 补齐当前通道。
 
-`AlibabaAuthorizationService` 持有公开状态、官方 OAuth 和续期。GET 状态只读本地；state、owner、回调、应用代次和迟到回执继续校验。商品、采购和物流通过 `alibaba_runtime_config` 获取当前通道的个人凭据。企业 Key 存在不代表用户已授权，运行时不能仅凭 Key 自动接入默认买家。
+`AlibabaAuthorizationService` 负责公开状态、官方 OAuth、万邦自助授权和官方续期。GET 状态只读本地。商品、采购和物流通过 `alibaba_runtime_config` 获取当前通道的个人凭据。万邦运行时要求个人授权，有效期内才可使用。
 
 ## 万邦买家 Token 的传递
 
-万邦业务请求使用管理员保存的企业 Key、Secret 和当前用户在万邦通道保存的 1688 买家 Token。买家身份 `alibaba.account.basic` 和买家订单列表 `alibaba.trade.getBuyerOrderList` 按实测将 Token 放在 URL 查询参数 `access_token`，ERP 对账筛选参数放在 `_o_args`。其他已接入的商品、采购预览和查询、签约查询及物流仍将 Token 和业务参数放入 `_o_args`。创建采购订单及免密支付接口待确认，ERP 会直接拒绝执行这两项操作。
+万邦业务请求使用管理员保存的企业 Key、Secret 和当前用户的万邦买家凭据。买家 Token 统一放在 URL 查询参数 `access_token`，目录或旧 Session 放在外层 `session`。`_o_args` 只包含业务参数。
+
+买家身份、订单列表、收货地址和支付签约状态均已核对外层 Token 传法。支付签约查询在 `_o_args` 中传无效 Token 时曾返回与有效 Token 相同的数据，改走外层后无效 Token 返回错误。
 
 管理员 GET `/api/admin/alibaba/onebound/shop-bindings` 通过企业 `key`、`secret` 调用万邦授权店铺列表，可传 `nick` 和 `page`。返回绑定编号、昵称、状态、到期时间及分页信息。它只读企业目录，买家凭据的归属仍从 ERP 个人授权记录读取。[万邦 shop_bind_list 文档](https://open.onebound.cn/help/api/sys.shop_bind_list.html)
 
@@ -28,28 +36,31 @@
 
 管理员专用 POST `/api/alibaba/authorization/onebound` 接受 `{"access_token":"<买家 Token>"}`，保存到当前账号的万邦凭据记录。旧请求仍可传 `session`；未标注类型的旧凭据沿用原有的顶层 Session 协议。企业 Key、Secret 仍从管理员设置读取。绑定时只读检查收货地址接口，不能据此证明多买家隔离。
 
-## 万邦协议证据与缺口
+## 万邦下单与免密支付
 
-[万邦 custom 文档](https://open.onebound.cn/help/api/1688.custom.html) 列有 `session` 参数，解释为授权换取的 `session_id`。该页没有给出 ERP 发起个人授权、接收回调及换取/续期凭据的完整协议，也没有确认既有官方应用授权可以直接传入使用。
+两项操作均经万邦 `GET /1688/custom` 转发。外层传企业 `key`、`secret`、已核验的目录 `session` 和 `method`，`_o_args` 传业务参数的 JSON。ERP 在使用目录授权执行交易前核对买家 ID。自助授权换得的买家 Token 用于收货地址、订单列表等已支持的查询。 [万邦 custom 文档](https://open.onebound.cn/help/api/1688.custom.html) · [万邦技术示例](https://segmentfault.com/a/1190000047904773)
+
+- 创建采购订单使用 `com.alibaba.trade/alibaba.trade.fastCreateOrder`。业务参数包含 `addressParam`、`cargoParamList`、`flow`、`tradeType`、`preSelectPayChannel` 和用于核验的 `outOrderId`。创建回执须返回唯一订单号。
+- 免密支付使用 `com.alibaba.trade/alibaba.trade.pay.protocolPay.preparePay`。`tradeWithholdPreparePayParam` 包含 `orderId`、`payChannel`、`payAmount`（分）和持久化的 `opRequestId`。ERP 先核对所选渠道签约、订单内容和金额，收到渠道一致的成功回执后记录支付成功。 [采购免密支付接入](alibaba-purchase-payment.md)
+
+两项接口均按写入处理。回执不明确时保留待核验状态，通过原订单核对结果。请求参数和回执由本地替身验证，线上权限和真实交易回执仍待联调。
+
+## 万邦协议验证
+
+联调已用外层 `access_token` 核对买家基本信息、订单列表和收货地址。买家基本信息接口的无效 Token 对照请求返回拒绝。 [万邦 custom 文档](https://open.onebound.cn/help/api/1688.custom.html)
 
 项目原始 Word 的「1.2.1 认证授权」写的是登录万邦控制台、点击 1688 授权、到服务市场订购后返回万邦完成授权；采购调用示例只传企业 Key、Secret 和业务参数。内嵌截图的授权管理表有独立的 `session(token)`、`Key` 两列，表明后台保存了授权记录，但正文和截图均未交代 ERP 回调或多买家凭据选择协议。不能由该文档推出万邦仅支持一个买家，也不能推出可沿用现有官方 OAuth。
 
 2026-11-13 的只读连通测试中，万邦 Key 不传 Session 即可读取后台默认买家，其身份与当时管理员的官方授权一致。该记录测试的是顶层 Session。后续用户补充了顶层 `access_token` 的买家身份与订单列表实测请求。补充对照测试对同一个买家基本信息接口分别使用不传 Session、无效 Session、现有官方 Token，三者均返回同一买家。因此，调用成功不足以证明传入凭据被使用，更不能证明跨用户授权成立。线上授权、配置和接入选择均未修改，未创建订单或付款。
 
-下一步需要万邦确认并提供：
-
-1. ERP 用户登录自己的 1688 的授权链接生成方式、回调参数和账号关联规则。
-2. 回调换取的买家凭据、有效期、续期和撤销协议，以及同一企业 Key 下多个买家的选择方式。
-3. 用两个买家分别为万邦应用授权取得的 1688 Token 复核 `_o_args.access_token` 的实际选取结果，并对无效 Token 作对照。
-
-验收必须用两个不同买家的只读结果交叉核对，并以无效凭据作负向对照，不能只看默认账号能返回数据。普通用户的目标流程是在万邦授权卡登录 1688，由服务端接收凭据。
+ERP 的双账号回归模拟不同买家换码，验证会话隔离、过期处理、回执核对和授权失败保留原凭据。两个真实买家分别通过正式 ERP 页面完成授权并对照只读结果的联调仍待完成。自动续期、撤销和自助授权的交易能力需各自的接口验证。
 
 ## 历史接口与数据
 
-已发布的管理员专用 POST `/api/alibaba/authorization/onebound` 保留兼容，仍要求显式传入既有凭据；它不代表普通用户在线授权已完成。已保存的旧凭据和原采购归属继续读取，默认 Key 绑定不视为个人授权。移除未发布的 `/authorization/verify` 及自动跨通道归并流程。
+已发布的管理员专用 POST `/api/alibaba/authorization/onebound` 保留兼容，仍要求显式传入既有凭据。已保存的旧凭据和原采购归属继续读取，默认 Key 绑定不视为个人授权。移除未发布的 `/authorization/verify` 及自动跨通道归并流程。
 
 采购库保留 v4 别名表以及 v1/v2/v3 读取迁移能力，兼容可能已写入的本地数据；当前授权流程不再自动创建归并。旧归属仍可保存网络中请求的回执，原订单号、支付意图和未知写入不删除或重放。个人授权库中其他字段原样保留。
 
 `onebound_api_transport.py` 保留固定 HTTPS 网关、关闭缓存与重定向、错误脱敏和已验证的回执归一。网关用 GET 下单或付款时仍按写请求处理，不能自动重试或隐式切回官方。官方订单列表不含 `success` 时，仅接受完整的 `result`/`totalRecord` 形状。
 
-测试入口：`test_onebound_user_authorization.py` 验证企业 Key 不代替个人授权；`test_onebound_api.py` 验证协议、错误和读写语义；授权、采购和支付测试保留各应用凭据、旧库读取和未知请求防重回归。
+`test_accounts.py` 覆盖双账号 HTTP 授权和权限，`test_onebound_user_authorization.py` 覆盖回执失败、过期与并发保护，`test_onebound_api.py` 覆盖协议、错误和读写语义。授权、采购和支付测试验证各应用凭据、旧库读取和未知请求防重。

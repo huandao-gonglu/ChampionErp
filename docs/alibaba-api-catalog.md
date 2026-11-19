@@ -24,7 +24,7 @@
 
 ## API 分类索引
 
-万邦为独立接入方案，不增加官方应用权限。`1688/custom` 转发已接入的商品、采购预览及查询、签约查询和物流接口。创建订单和免密支付暂未确认，调用直接报错。收银台使用 `alibaba.alipay.url.get`；买家基本信息使用 `com.alibaba.account / alibaba.account.basic`。企业凭据仅由管理员维护，买家身份和订单列表使用外层 `access_token`，其他已接入接口保留 `_o_args.access_token`；万邦个人在线授权待正式协议接入，Key 的默认买家连通不代表用户已授权，见 [1688 授权与接入](alibaba-authorization.md)。
+万邦通过 `1688/custom` 转发商品、采购、支付和物流接口。创建订单和免密支付使用已核验的目录 Session。收银台使用 `alibaba.alipay.url.get`，买家基本信息使用 `com.alibaba.account / alibaba.account.basic`。企业凭据由管理员维护，用户可自行登录 1688 并粘贴回跳地址，后端通过 `1688global/buyer_token_create` 换取个人买家 Token。 [1688 授权与接入](alibaba-authorization.md)
 
 [会员](#api-会员) · [工具](#api-工具) · [商机](#api-商机) · [类目](#api-类目) · [商品](#api-商品) · [国内ERP](#api-国内erp) · [选品铺货](#api-选品铺货) · [跨境选品助手](#api-跨境选品助手) · [产品开发](#api-产品开发) · [订单](#api-订单) · [支付](#api-支付) · [物流](#api-物流) · [官方退上门取件](#api-官方退上门取件) · [CPS](#api-cps) · [采购金支付](#api-采购金支付) · [回传数据](#api-回传数据) · [退货退款](#api-退货退款) · [消息](#api-消息) · [铺货agent](#api-铺货agent) · [询盘](#api-询盘) · [88生意通](#api-88生意通) · [发票](#api-发票)
 

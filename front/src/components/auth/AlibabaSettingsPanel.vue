@@ -33,6 +33,7 @@ async function refresh() {
     if (current !== revision) return
     status.value = next
     waiting.value = next.attempt === 'waiting' && !browserError.value
+    if (props.provider === 'onebound' && !waiting.value) callbackUrl.value = ''
     error.value = ''
   } catch (exc) {
     if (current !== revision) return
@@ -87,7 +88,8 @@ async function connect() {
 
 async function complete(method: 'callback' | 'token') {
   const value = (method === 'token' ? buyerToken : callbackUrl).value.trim()
-  if (!account.isAdmin || !value || completing.value || opening.value) return
+  const allowed = account.isAdmin || (method === 'callback' && props.provider === 'onebound' && waiting.value)
+  if (!allowed || !value || completing.value || opening.value) return
   window.clearTimeout(timer)
   revision++
   reading = false
@@ -129,18 +131,18 @@ onUnmounted(() => {
     <p v-if="provider === 'alibaba_crossborder'" class="text-sm text-accent-500">请先在 1688 订购本服务，再连接采购账号。</p>
     <p v-if="status && !status.application_configured" role="status">授权服务暂未配置，请联系管理员。</p>
     <p v-else-if="status?.binding_pending" role="status">万邦买家身份待核验，请联系管理员。</p>
-    <p v-else-if="status && provider === 'onebound' && !status.authorized" role="status">ERP 暂未接入万邦的买家登录。</p>
-    <p v-else-if="status && provider !== 'onebound' && !status.can_authorize" role="status">暂时无法发起登录授权，请联系管理员配置授权服务。</p>
+    <p v-else-if="status && !status.can_authorize" role="status">暂时无法发起登录授权，请联系管理员配置授权服务。</p>
     <p v-if="status?.needs_reauthorization" role="status">授权已过期或应用配置已变化，请重新连接账号。</p>
     <p v-if="status?.account_name">当前账号：{{ status.account_name }}</p>
     <p v-else-if="status?.authorized" class="text-sm">当前授权未记录账号名称。</p>
     <p v-if="status?.expires_at" class="text-sm">授权到期时间：{{ new Date(status.expires_at * 1000).toLocaleString() }} <span v-if="status.refreshable">使用时自动续期。</span></p>
-    <button v-if="provider !== 'onebound'" data-testid="connect-1688" type="button" class="btn btn-primary" :disabled="opening || completing || !status?.can_authorize" @click="connect">
-      {{ (status?.authorized || waiting ? '重新授权' : '连接 1688 账号') }}
+    <button data-testid="connect-1688" type="button" class="btn btn-primary" :disabled="opening || completing || !status?.can_authorize" @click="connect">
+      {{ (status?.authorized || status?.needs_reauthorization || waiting ? '重新授权' : '连接 1688 账号') }}
     </button>
-    <p v-if="waiting" role="status">等待浏览器完成授权…</p>
-    <p v-else-if="status?.attempt === 'failed' || status?.attempt === 'expired'" role="status">本次授权未完成，请重新授权。</p>
-    <div v-if="account.isAdmin && status && provider !== 'onebound'" class="space-y-2">
+    <p v-if="waiting && provider !== 'onebound'" role="status">等待浏览器完成授权…</p>
+    <p v-if="!waiting && (status?.attempt === 'failed' || status?.attempt === 'expired')" role="status">本次授权未完成，请重新授权。</p>
+    <div v-if="provider === 'onebound' ? waiting : account.isAdmin && status" class="space-y-2">
+      <p v-if="provider === 'onebound'" class="text-sm text-accent-500">在浏览器登录 1688 并授权后，立即复制地址栏中的完整地址。回跳页可能空白。</p>
       <label class="block text-sm" :for="provider + '-callback-url'">授权后的完整回调地址</label>
       <input
         :id="provider + '-callback-url'" v-model="callbackUrl" type="password" maxlength="16384" autocomplete="off"

@@ -1,7 +1,7 @@
 {
   "name": "champion-erp-front",
   "productName": "gongluErp",
-  "version": "1.2.122",
+  "version": "1.2.125",
   "desktopUpdateOrigin": "https://hdgl.cc.cd",
   "private": true,
   "type": "module",

@@ -20,6 +20,8 @@ def authorization_payload(action, body=None):
             return service.start(provider), 200
         if action == 'complete':
             return service.complete_from_url(body['callback_url'], provider), 200
+        if action == 'complete-onebound':
+            return service.complete_from_url(body['callback_url'], 'onebound'), 200
         if action == 'onebound':
             return service.bind_onebound(body), 200
         if action == 'self-use-token':
