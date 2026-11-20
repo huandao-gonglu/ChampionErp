@@ -1,5 +1,6 @@
 """从固定 Git 版本发布服务器和网页，默认通过更新服务分发 macOS 桌面新版。"""
 import argparse
+from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -10,6 +11,7 @@ import plistlib
 import re
 import selectors
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -40,6 +42,36 @@ def run(args, *, cwd, log, env):
     log.write('\n运行 ' + shlex.join([str(arg) for arg in args]) + '\n')
     log.flush()
     subprocess.run([str(arg) for arg in args], cwd=cwd, stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
+
+
+def _run_to_buffer(args, *, cwd, env):
+    """在独立线程中执行，输出暂存到临时文件；结束后由调用方合并到主日志。"""
+    header = '\n运行 ' + shlex.join([str(arg) for arg in args]) + '\n'
+    with tempfile.TemporaryFile() as buffer:
+        buffer.write(header.encode())
+        subprocess.run([str(arg) for arg in args], cwd=cwd, stdout=buffer, stderr=subprocess.STDOUT, env=env, check=True)
+        buffer.seek(0)
+        return buffer.read()
+
+
+def run_parallel(tasks, *, log):
+    """并发执行互不依赖的子命令，全部通过后将输出按提交顺序追加到 log。
+
+    tasks: [(args, cwd, env), ...]
+    任何一个失败立即取消其余并传播原始异常。
+    """
+    if len(tasks) == 1:
+        args, cwd, env = tasks[0]
+        run(args, cwd=cwd, log=log, env=env)
+        return
+    futures: list[Future] = []
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        for args, cwd, env in tasks:
+            futures.append(pool.submit(_run_to_buffer, args, cwd=cwd, env=env))
+    # 按提交顺序收集结果；第一个异常直接传播。
+    for future in futures:
+        log.write(future.result().decode(errors='replace'))
+        log.flush()
 
 
 def ssh_args(args):
@@ -122,25 +154,6 @@ def desktop_release_artifacts(folder, app, version, args):
             raise RuntimeError('签名发布需要 Developer ID Application 身份')
         subprocess.run(['xcrun', 'stapler', 'validate', app], check=True)
     return record
-
-
-def build_desktop_update(args, source, folder, version, log, environment):
-    print('构建并验证桌面更新包', flush=True)
-    run([sys.executable, 'scripts/build_desktop_runtime.py'], cwd=source, log=log, env=environment)
-    run(['pnpm', 'build:desktop'], cwd=source / 'front', log=log, env=environment)
-    run(['pnpm', 'exec', 'electron-builder', '--mac', 'dmg', 'zip', '--publish', 'never',
-         '--config.directories.output=' + str(folder / 'desktop')],
-        cwd=source / 'front', log=log, env=environment)
-    apps = list((folder / 'desktop').glob('*/*.app'))
-    if len(apps) != 1:
-        raise RuntimeError('桌面构建没有产生唯一的应用包')
-    app = apps[0]
-    subprocess.run(['codesign', '--verify', '--deep', '--strict', app], check=True)
-    with (app / 'Contents/Info.plist').open('rb') as info:
-        if plistlib.load(info)['CFBundleShortVersionString'] != version:
-            raise RuntimeError('桌面安装包版本不一致')
-    check_runtime(app / 'Contents/Resources/runtime/champion-erp-runtime')
-    return desktop_release_artifacts(folder, app, version, args)
 
 
 def desktop_manifest_url(update):
@@ -325,12 +338,21 @@ def release(args):
             with tarfile.open(git_archive) as archive:
                 archive.extractall(source, filter='data')
             git_archive.unlink()
+            # pnpm 安装：复用项目全局 store 避免冷解析。
             print('安装锁定的前端依赖并检查发布输入', flush=True)
-            run(['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts'], cwd=source / 'front', log=log, env=environment)
+            pnpm_store = ROOT / '.pnpm-store'
+            pnpm_install = ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts']
+            if pnpm_store.is_dir():
+                pnpm_install.extend(['--store-dir', str(pnpm_store)])
+            run(pnpm_install, cwd=source / 'front', log=log, env=environment)
             if args.desktop_update:
                 run(['node', 'node_modules/electron/install.js'], cwd=source / 'front', log=log, env=environment)
-            run([sys.executable, 'scripts/generate_third_party_notices.py', '--check'], cwd=source, log=log, env=environment)
-            run(['pnpm', 'types:check'], cwd=source / 'front', log=log, env=environment)
+            # 声明检查与类型检查互不依赖，并行执行。
+            print('检查声明与类型', flush=True)
+            run_parallel([
+                ([sys.executable, 'scripts/generate_third_party_notices.py', '--check'], source, environment),
+                (['pnpm', 'types:check'], source / 'front', environment),
+            ], log=log)
             if args.skip_tests:
                 print('已按 --skip-tests 跳过后端、前端和桌面全量测试', flush=True)
             else:
@@ -338,11 +360,41 @@ def release(args):
                 run([sys.executable, '-m', 'pytest', 'tests', '-q'], cwd=source, log=log, env=environment)
                 run(['pnpm', 'test:run'], cwd=source / 'front', log=log, env=environment)
                 run(['pnpm', 'test:desktop'], cwd=source / 'front', log=log, env=environment)
-            print('编译网页', flush=True)
-            run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
             if args.desktop_update:
-                record['desktop_update'] = build_desktop_update(args, source, folder, version, log, environment)
+                # 网页构建与 Python 桌面执行器构建互不依赖，并行执行。
+                # 网页构建（vue-tsc -b && vite build）完成后，桌面前端只需
+                # vite build --mode desktop，跳过重复 vue-tsc 类型编译。
+                print('编译网页并构建桌面执行器', flush=True)
+                runtime_future: Future | None = None
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    runtime_future = pool.submit(
+                        _run_to_buffer,
+                        [sys.executable, 'scripts/build_desktop_runtime.py'],
+                        cwd=source, env=environment)
+                    # 主线程执行网页构建，CPU 密集任务不额外竞争。
+                    run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
+                log.write(runtime_future.result().decode(errors='replace'))
+                log.flush()
+                # 网页 vue-tsc 已完成增量缓存，桌面前端只需 vite build。
+                print('构建并验证桌面更新包', flush=True)
+                run(['pnpm', 'exec', 'vite', 'build', '--mode', 'desktop'], cwd=source / 'front', log=log, env=environment)
+                run(['pnpm', 'exec', 'electron-builder', '--mac', 'dmg', 'zip', '--publish', 'never',
+                     '--config.directories.output=' + str(folder / 'desktop')],
+                    cwd=source / 'front', log=log, env=environment)
+                apps = list((folder / 'desktop').glob('*/*.app'))
+                if len(apps) != 1:
+                    raise RuntimeError('桌面构建没有产生唯一的应用包')
+                app = apps[0]
+                subprocess.run(['codesign', '--verify', '--deep', '--strict', app], check=True)
+                with (app / 'Contents/Info.plist').open('rb') as info:
+                    if plistlib.load(info)['CFBundleShortVersionString'] != version:
+                        raise RuntimeError('桌面安装包版本不一致')
+                check_runtime(app / 'Contents/Resources/runtime/champion-erp-runtime')
+                record['desktop_update'] = desktop_release_artifacts(folder, app, version, args)
                 check_new_desktop_version(record['desktop_update'])
+            else:
+                print('编译网页', flush=True)
+                run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
             # 只发布 Git 跟踪的公开源码及本次网页构建，排除工作区配置、数据库和依赖缓存。
             tracked = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', '-z', revision], cwd=ROOT).decode().split('\0')
             (source / 'REVISION').write_text(revision + '\n')
@@ -359,10 +411,16 @@ def release(args):
             remote_folder = '/srv/champion-erp/staging/' + release_id
             remote_output(args, ['mkdir', '-p', remote_folder + '/erp_web', remote_folder + '/deploy'])
             scp = ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes', '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes']
+            # 将小文件暂存到本地临时目录，模拟远程布局后一次上传。
+            staging = Path(temporary) / 'staging'
+            (staging / 'deploy').mkdir(parents=True)
+            (staging / 'erp_web').mkdir()
+            shutil.copy2(source / 'deploy/release_server.py', staging / 'deploy/')
+            shutil.copy2(source / 'erp_web/__init__.py', staging / 'erp_web/')
+            shutil.copy2(source / 'erp_web/release_guard.py', staging / 'erp_web/')
             print('上传服务器发布包并执行备份切换', flush=True)
-            run([*scp, archive_path, args.ssh_host + ':' + remote_folder + '/'], cwd=source, log=log, env=environment)
-            run([*scp, source / 'deploy/release_server.py', args.ssh_host + ':' + remote_folder + '/deploy/'], cwd=source, log=log, env=environment)
-            run([*scp, source / 'erp_web/__init__.py', source / 'erp_web/release_guard.py', args.ssh_host + ':' + remote_folder + '/erp_web/'], cwd=source, log=log, env=environment)
+            run([*scp, '-r', archive_path, staging / 'deploy', staging / 'erp_web',
+                 args.ssh_host + ':' + remote_folder + '/'], cwd=source, log=log, env=environment)
             record['status'] = 'server_staged'
             write_record(record_path, record)
             switch_server(args, record, folder, source)
