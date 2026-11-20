@@ -1,7 +1,13 @@
 import { mount, type DOMWrapper } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import type { AiUiPart } from '@/types/aiWork'
+import { launchDesktop } from '@/utils/desktopHandoff'
 import AiMessagePart from '../AiMessagePart.vue'
+
+vi.mock('@/utils/desktopHandoff', async importOriginal => ({
+  ...await importOriginal<typeof import('@/utils/desktopHandoff')>(),
+  launchDesktop: vi.fn(),
+}))
 
 function mountPart(part: Record<string, unknown>) {
   return mount(AiMessagePart, {
@@ -98,6 +104,19 @@ describe('AiMessagePart', () => {
     expect(card.find('pre').exists()).toBe(false)
     await expand(card.get<HTMLDetailsElement>('details'))
     expect(card.text()).toContain('"total": 2')
+  })
+
+  it('网页从图片工具的真实回执交接原操作', async () => {
+    const action = { conversation_id: 'conversation_global_chat_' + '9'.repeat(32), tool_call_id: 'translate' }
+    const wrapper = mountPart({
+      type: 'dynamic-tool', toolName: 'image_translate', toolCallId: 'translate', state: 'output-available',
+      output: { ok: false, error: { code: 'IMAGE_DESKTOP_REQUIRED', message: '请在桌面继续。',
+        details: { desktop_image_action: action } } },
+    })
+    expect(wrapper.text()).toContain('等待桌面')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    await wrapper.get('button').trigger('click')
+    expect(launchDesktop).toHaveBeenCalledWith({ target: '/aiWork', state: { imageOperation: action } })
   })
 
   it('只为安全的 source 与 file URL 创建链接', () => {

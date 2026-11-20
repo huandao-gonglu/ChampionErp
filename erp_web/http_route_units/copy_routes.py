@@ -3,9 +3,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-from erp_web.schemas.requests import validate_request_payload
-
 from .common import JsonRequestHandler
+from .manual_ai import send_manual_ai_result
 from ..facades import copy_facade
 
 
@@ -13,31 +12,19 @@ PostHandler = Callable[[JsonRequestHandler], None]
 
 
 def handle_generate_copy(handler: JsonRequestHandler) -> None:
-    result, status = copy_facade.generate_copy_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
+    send_manual_ai_result(handler, "copy", copy_facade.generate_copy_payload)
 
 
 def handle_generate_copy_batch(handler: JsonRequestHandler) -> None:
-    result, status = copy_facade.generate_copy_batch_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
+    send_manual_ai_result(handler, "copy_batch", copy_facade.generate_copy_batch_payload)
 
 
 def handle_generate_image_prompts(handler: JsonRequestHandler) -> None:
-    result, status = copy_facade.generate_image_prompts_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
+    send_manual_ai_result(handler, "image_prompt", copy_facade.generate_image_prompts_payload)
 
 
 def handle_test_ai_model(handler: JsonRequestHandler) -> None:
-    result, status = copy_facade.test_ai_model_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
+    send_manual_ai_result(handler, "model_test", copy_facade.test_ai_model_payload)
 
 
 POST_HANDLERS: dict[str, PostHandler] = {

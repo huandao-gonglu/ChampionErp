@@ -68,7 +68,7 @@ def test_model_and_collection_rules_follow_current_connection_and_actual_binding
     assert blocked['desktop_reason'] and 'Gemini Canvas' in blocked['blocked_use_cases']['image.translate']
     assert 'Codex CLI' in blocked['blocked_use_cases']['text.translate']
     assert {'image.translate', 'text.translate'} <= set(blocked['desktop_use_cases'])
-    assert catalog.get('image_edit').unavailable_reason(None) == blocked['blocked_use_cases']['image.translate']
+    assert all(catalog.get(name).unavailable_reason is None for name in ('image_translate', 'image_edit', 'draft_images_prepare'))
     batch = catalog.get('collect_batch')
     assert not batch.unavailable_reason(None)
     assert '仅支持浏览器采集和 API 采集' in batch.unavailable_reason({'mode': 'http', 'urls': ['https://example.org/1']})
@@ -79,15 +79,15 @@ def test_model_and_collection_rules_follow_current_connection_and_actual_binding
     assert catalog.get('collect_1688_clean') is None
     assert mixed.unavailable_reason({'url': 'https://detail.1688.com/offer/1'}) == blocked['desktop_reason']
     with bind_desktop_connection(key):
-        assert not catalog.get('image_edit').unavailable_reason(None)
+        assert 'image.translate' not in operation_availability(config)['blocked_use_cases']
         assert not catalog.get('text_translate').unavailable_reason(None)
         assert 'API 模型' in operation_availability(config)['blocked_use_cases']['image.plan']
         context.desktop_connections.disconnect(key)
-        assert '断开' in catalog.get('image_edit').unavailable_reason(None)
+        assert '断开' in operation_availability(config)['blocked_use_cases']['image.translate']
     config['ai_models'].insert(0, {'id': 'api_image', 'connection_type': 'api', 'capabilities': ['image_edit']})
-    assert not catalog.get('image_edit').unavailable_reason(None)
+    assert 'image.translate' not in operation_availability(config)['blocked_use_cases']
     config['ai_use_case_bindings'] = {'image.translate': {'model_id': 'canvas'}}
-    assert catalog.get('image_edit').unavailable_reason(None)
+    assert 'image.translate' in operation_availability(config)['blocked_use_cases']
 
 
 @pytest.mark.parametrize(('model_changes', 'reason'), [
@@ -107,7 +107,7 @@ def test_image_workbench_rejects_before_batch_registration_and_keeps_saved_resul
     context = get_context()
     product, draft = seeded()
     submission = request(product, draft, ['common'])
-    monkeypatch.setattr(image_facade, 'load_app_config', local_config)
+    monkeypatch.setattr(context.config, 'load_app_config', local_config)
     broker = context.desktop_connections
     key = broker.connect()['connection_id']
     with pytest.raises(RequestValidationError) as denied:

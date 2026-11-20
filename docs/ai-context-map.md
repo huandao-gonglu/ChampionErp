@@ -76,7 +76,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 - 公开注册发码由 `services/registration_verification.py` 校验 Turnstile 后发送 SMTP 邮件，账号库在建号事务内消费验证码；管理员建号仍走独立的角色校验入口。
 - `schemas/newapi.py` 持有交接的共享形状；`services/newapi_bridge.py` 处理固定 New API 服务的自动登录票据、敏感验证与账号联动；`newapi_http.py` 是不记录凭据或票据的账号控制面传输，不使用业务请求历史。普通入口经当前会话与 CSRF 签发 60 秒票据，通过来源绑定的表单 POST 自动建立原生会话；Electron 主进程经本机一次性页面交接。敏感操作仍需重新验证 ERP 密码，已有 New API MFA 不降级。
 - 普通退出和已登录时切换账号先核实当前会话的 New API 撤销回执，成功才结束 ERP 登录；失败保留本次登录，由用户重试。未配置 New API 时只执行本地退出。普通退出不入队。改密和启停通知以及升级前遗留的待办仍由账号扫描器重试（默认 30 秒）。个人账号页面只读取本人待同步状态。内部交换、会话核验和运营绑定查询只接受独立服务凭据，不接受浏览器 Cookie；不实例化个人业务上下文。
-- `server.py::ERPHTTPServer` 为网页并行请求保留连接接入队列，账号 HTTP 回归复用同一入口。`Handler` → `services/account_request.py` 先检查来源、会话、CSRF 与角色，再由 `account_runtime.py::AccountRuntime` 取得业务上下文。客户端业务 ID、owner 和桌面连接标识不能选择空间；账号操作和外部回调不消费业务 presentation reservation。
+- `server.py::ERPHTTPServer` 为网页并行请求保留连接接入队列，账号 HTTP 回归复用同一入口。`Handler` → `services/account_request.py` 先检查来源、会话、CSRF 与角色，再由 `account_runtime.py::AccountRuntime` 取得业务上下文。客户端业务 ID、owner 和桌面连接标识不能选择空间。
 - `context.py::bind_context` 用 ContextVar 绑定请求及后台执行，线程、线程池和 detached AI 协程延续原空间。默认上下文用于启动与离线入口，不在并发用户间切换。`AccountRuntime` 统一恢复与关闭资源，注册不启动领域 worker。
 - 新用户只使用 `assets/account-defaults/` 的公开模板，不读取管理员 `.env` 或个人模型环境密钥。`workspace_files.py` 限制素材和模板路径；文件、AI 流、图片上传均受当前空间约束。
 - 新平台回调带 owner 或归属 state，目标空间继续校验 token/state/PKCE；旧回调定位初始管理员。Electron 的 `account-session.cjs` 在主进程管理内存 Cookie，`desktop_connection_service.py` 校验空间和会话，失效时断开，不重放已发送操作。
@@ -122,6 +122,8 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 管理员维护企业 Key、Secret 和业务接入方案。个人万邦授权在授权卡完成。历史目录绑定的核验结果和采购归属随已存凭据读取，核验失败的旧记录提示用户重新授权。
 
+万邦买家身份在自助授权换码后核验。商品、采购、支付和物流请求使用已保存的个人授权，采集每件商品发出一次 `product.search.queryProductDetail` 请求。
+
 `onebound_api_transport.py` 持有固定网关、换码、读写语义及展开响应适配。采购库 v4 别名表保留旧数据和网络中请求的回执读取能力。有效的买家核验须使用个人 Token，并与换码昵称核对。无效 Session 的对照请求曾返回企业默认买家。协议与联调状态见 [1688 授权与接入](alibaba-authorization.md)。
 
 ### 桌面与统一业务后端
@@ -144,6 +146,11 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 `AiToolBinding.unavailable_reason` 声明依赖；原生工具发现和运行时复核共用该判断。
 混合工具按参数检查，例如链接采集仅在浏览器模式需要桌面。后台长任务在创建前检查，
 按已存在的请求 ID 查询或恢复原结果仍可用。
+图片翻译、修图与自动套图的工具定义按会话权限发现。工具执行时才检查实际模型和设备，
+网页需要桌面时返回 `IMAGE_DESKTOP_REQUIRED`。AI Work 通过既有桌面交接携带原调用引用，
+`POST /api/image-processing/continue` 在当前账号内从服务端回执恢复原范围与版本，沿用原批次标识防重，
+以页面操作回执呈现后续结果。手动页面操作与对话复用 `runtime_units/image_processing.py`，
+逐图持久化并按原图 ID 采用，草稿默认仅替换请求中的原图，结果待核对的请求不重发。
 
 网页到桌面的页面交接由 `desktop_routes.py` → `desktop_facade.py` →
 `desktop_handoff_service.py` 管理，POST `/api/desktop-handoff/{create,status,resolve,acknowledge,installers}`
@@ -538,9 +545,7 @@ Canvas 预览准备在配置地址的顶层 Google 页面识别中文共享应�
   根据 Base URL 或模型名猜测厂商。
 - `erp_web/services/ai_direct_request_service.py`：普通 API chat/JSON/stream/typed output/image 的唯一
   Pydantic Direct Model 执行入口，负责公开 Pydantic message/event 转换和项目结果归一化；类型化输出
-  使用 `OutputObjectDefinition` 的 prompted output，不在业务 Prompt 重复字段清单。用户前台请求携带
-  presentation scope 时，由该边界把 Direct Model 原生 `Part*Event` 交给统一 observer，并用
-  `PydanticMessageStore` 保存预留 conversation 的官方 `ModelMessage[]`；无 presentation 时不改变 Provider 契约。
+  使用 `OutputObjectDefinition` 的 prompted output，业务 Prompt 无需复述字段。对话从业务 owner 读取结果回执。
 - `erp_web/services/ai_structured_output.py`：非 Agent 类型化输出的 dependency-light Schema 适配边界；
   从同一个 Pydantic 类型生成 JSON Schema 并验证返回值。CLI/Browser 尚无 Pydantic `Model` 适配器，
   因而仅在这两个非 API 边界附加自动生成的 Schema；适配器就绪后删除该提示式分支。
@@ -607,18 +612,13 @@ Canvas 预览准备在配置地址的顶层 Google 页面识别中文共享应�
   Images API 的 Pydantic `Model`，只能由 `ai_model_factory` 创建，并且只能经 Pydantic Direct
   Request 调用。
 - `front/src/views/AiWorkView.vue`：AI Work 页面。左侧 conversation 列表按 `updated_at` 倒序；
-  右侧按优先级选择数据源——前台 presentation（observe Chat 实时消息）、活动 `global.chat`
-  （共享 `Chat.messages`）或服务端 `/ui-messages` 只读派生历史；“原始消息”辅助标签提供
-  规范 Pydantic JSON 树、Raw JSON 与下载；支持 `conversation_id` / `presentation_id` query 定位。
-  全局对话与草稿箱批量准备共享 `front/src/stores/aiChat.ts`。
+  活动 `global.chat` 使用共享 `Chat.messages`，服务端 `/ui-messages` 从原生历史派生恢复快照。
+  “原始消息”标签提供规范 Pydantic JSON 树、Raw JSON 与下载，支持 `conversation_id` query 定位。
+  工作台、浮窗、页面 AI 操作与草稿箱批量准备共享 `front/src/stores/aiChat.ts`。
   网页聊天通过原生 Deferred 工具 `request_user_input` 等待填写或选择。人工答复按运行范围和调用 ID 与真实用户消息同事务关联。人工提问不投递给后台任务执行器。工作台与浮窗的 `ChatPendingActions.vue` 合并主任务和即时回复的未决提问与审批。
   运行期间网页输入框以 `queue_if_busy` 提交排队消息，前一任务及其审批结束后自动投递。排队行支持逐条删除及立即发送。其他渠道的原生队列将输入加入模型上下文后，`before_model_request` 同事务提交完整原生历史与收件箱状态；输入框上方只展示仍在等待的消息。后台只发送历史版本变更通知，
   前端用官方 Adapter 派生的历史恢复消息，不在浏览器推进 Agent。
-  前台短句 `initialUserMessage` 经 reserve 的 `initial_user_message` 传入 presentation scope，
-  由 `AiAgentFactory` 保存到原生输入 metadata 的 `presentation_user_message`；只用于展示，
-  不替换模型输入、不作为授权证据。`/ui-messages` 在官方转换后逐条恢复短句（空标记隐藏输入）；
-  未标记的用户消息原样保留，不按 conversation ID 过滤。原始消息保留完整输入，
-  历史展示不依赖浏览器缓存或仍然存活的 presentation registry。
+  老版本已保存的 `presentation_user_message` 和图片批次索引仍可通过历史详情读取。
 
 ```text
 API use case
@@ -637,7 +637,9 @@ CLI / Browser use case
 ### Focused 例外登记：专用 Images API
 
 - 完整草稿准备的图片内容入口为 `draft_images_prepare` → `runtime_units/draft_image_prepare.py`，
-  先在图片批次库登记准备任务，返回 `queued` 和批次编号；后台用提交时的原图与 SKU 执行规划、生成、采用。
+  只在需要出图时检查规划 API 模型、重绘模型、桌面连接和可用参考图，通过后才登记准备任务并返回 `queued`。
+  缺少桌面时保留当前图片指纹供继续处理，直到真正提交前不写入失败批次。
+  后台使用提交时的原图与 SKU 执行规划、生成、采用。
   多草稿先提交，主对话继续做文案、属性和核价。商品事实读图默认仅接受来源原图。
   无关资料更新可与规划并行；逐页入池时，内容相同的草稿保留版本，整套采用前复核素材、目标语言和 SKU，再合入最新草稿。规划和逐页生成共用图片请求并发上限。使用 Gemini Canvas 的批次在规划前检查通道，失败即返回原因。
   独立工作完成后，`draft_images_wait` 经 Pydantic AI 原生 Deferred 和领域 Job 读取器等待实际采用结果。
@@ -699,11 +701,10 @@ CLI / Browser use case
   `image_batch_store.py` 在独立 `data/image-batches.sqlite3` 保存排队、执行、成功、失败及结果文件引用；
   不复制模型消息，不改 ERP 主库结构。每张结果在商品短锁内重读最新内容并写回，保存成功才结算成功；
   `replace_all` 仅首张成功时清空目标图集，后续追加，避免并发完成时互相覆盖。
-- `ai_direct_history.capture_direct_history` 只收集真实原生请求和响应；批次内单写者经
-  `PydanticMessageStore` 保存全部原生消息及逐项关联 metadata。图片批次的 UI 投影只展示初始用户说明，
-  逐张进度读取 `GET /api/v1/ai-work/conversations/{id}/image-batch`，不把并发响应混入单个 SSE 流。
-  `AiImageBatchProgress.vue` 在浮窗与 AI Work 共用，按原图编号显示，未结束时轮询只读快照；
-  切换和卸载作废旧读取，重新打开继续读取，终态停止轮询。普通对话的 `run_active` 仍只表示 Agent run。
+- 页面图片操作在普通对话回执中关联原批次 ID，`AiImageBatchProgress.vue` 按原图编号读取
+  `GET /api/v1/ai-work/conversations/{id}/image-batch` 的进度和结果。对话内发起套图时，
+  同一条对话的待办从原生 Deferred 工具关联领域 Job，并在工具卡中展示处理进度。
+  图片卡切换或卸载时作废旧读取，终态停止轮询。
 - 旧同步图片端点随原业务请求收尾；草稿 V2 在同一领域批次登记后后台执行，浏览器重新读取不执行模型。进程重启后保留成功项，将正在执行项标为结果待核对、
   尚未执行项标为中断，不自动重发。旧对话没有批次记录时沿用原生历史展示，不推测缺失的处理结果。
 - 核对依据：安装版本 Pydantic AI 2.44.0 的 `direct.model_request` 和 `ModelMessage.metadata`，
@@ -814,7 +815,8 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 - `erp_web/services/agent_run_storage.py`：原生 hook 到消息 CAS、输入收件箱与副作用检查点的适配。
 - ERP 主 Agent 的固定规则归 `erp_web/assets/systemAgents.md` 和 `services/agent_instructions.py`，功能模板归 `erp_web/assets/prompts/` 和 `services/ai_prompt_templates.py`。文件只从当前发布包加载，不接受用户路径，不回退到实例目录的旧 prompt/agents.md；缺失或无效时明确报错。发布直接更新系统规则，不再向账号复制功能 prompt。
 - 用户补充偏好唯一归 `config/userAgents.md`，`services/user_agents.py` 提供固定路径、UTF-8、32 KiB、原子写入和内容版本校验。`GlobalAgentChatService.instructions()` 在每次新运行及 Deferred 恢复时，沿 `AiAgentFactory` 的原生 instructions 加载系统规则和当前账号偏好；不增加 Agent loop。已核对 Pydantic AI 2.44.0 与[原生指令文档](https://ai.pydantic.dev/agents/#instructions)。用户偏好不替代系统权限、业务校验或本轮明确要求，注释大纲不注入模型。
-- `GET/POST /api/system-settings/user-agents` 经 `auth_config_facade` → `ConfigStore` → `user_agents` 读写当前账号文件；POST 必须携带 expected_revision，冲突返回 409 并保留双方内容。前端「系统设置 → AI 自定义指令」只展示编辑此文件，功能绑定页仅维护模型及生成参数。没有 Agent 自主写入偏好工具，开发过程不得追加业务规则、记忆或任务总结。
+- `GET/POST /api/system-settings/user-agents` 经 `auth_config_facade` → `ConfigStore` → `user_agents` 读写当前账号文件；POST 必须携带 expected_revision，冲突返回 409。前端「系统设置 → AI 自定义指令」编辑此文件，功能绑定页维护模型及生成参数。
+- 主对话的 `user_agents_update` 仅在本轮用户明确要求记忆或更新偏好时提交追加或替换。工具绑定当前账号的 `ConfigStore`，用 [Pydantic AI 原生 Deferred 审批](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/) 确认正文并冻结文件版本。它复用需本人确认的快照，完全授权模式也等待确认；设置页的并发编辑使旧审批失效。保存回执只返回本次规则和版本，开发过程不得追加业务规则或任务总结。
 - `assets/account-defaults/userAgents.md` 只有注释过的编辑大纲，账号首次初始化以排他创建方式复制；存在的文件（包括空文件）不覆盖。实际 `config/userAgents.md` 不入 Git、不随发布写入。旧 app_config 的 ai_use_case_prompts 字段可读后丢弃，旧 prompt/agents.md 文件保留但不再执行；旧内容若需保留为偏好，由用户自行整理到新文件，不自动混入系统或用户指令。回归见 `tests/test_agent_instructions.py`、`test_user_agents.py`、账号 HTTP 及前端指令设置测试。
 - `erp_web/schemas/ai_page_context.py`：主对话页面背景的有界契约与中文指令渲染，只接受页面枚举和资源 ID。`vercel_ai_ui_service.py` 校验请求的 `page_context` 后写入原生消息 metadata，缺省表示本条消息不携带背景；客户端消息 metadata 仍被丢弃。`AgentRunStorage` 随用户输入更新背景，Factory 使用 Pydantic AI 原生动态 `instructions` 注入模型系统上下文，不创建独立系统消息历史或新 Agent loop；Deferred 恢复复用已保存快照，后续关闭开关会清除当前背景。
 - `front/src/stores/aiPageContext.ts`、`useAiPageContext.ts`：可见页面及编辑区域提供定位信息，输入框眼睛开关默认开启并在本机记住选择；普通发送和运行中追加消息均在发送瞬间复制背景。关闭编辑器、切换页面或 KeepAlive 停用时撤销该区域背景，页面背景不作为写权限，也不携带表单未保存值。
@@ -872,13 +874,12 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
   复用 `ProductCapabilityScope` 和草稿详情存储接口，显式进入主 Agent 只读能力集合。
   分类只作查看提示，不生成无采集依据的置信度或认证结论；执行继续使用现有 Pydantic AI 原生工具链。
 
-focused 类目执行返回自己的 AI Work `conversation_id`；高层市场
-准备聚合为 `agent_execution_conversation_ids`，主 Agent 在原生工具结果中取得这些 ID，不复制
-transcript 或 Tool 输出。
+类目匹配等内部 Agent 的技术 trace 沿用父对话 ID。主 Agent 在原生工具结果中取得业务结果，历史由
+主对话的原生运行提交。
 
 ### 原生对话 HTTP 与消息历史
 
-- `POST /api/v1/ai-chat/fork` → `ai_chat_facade.fork_chat_conversation` → `VercelAiUiService.fork_conversation`：验证普通对话归属及已闭合的回复边界，复制原生历史前缀到新会话；不启动 Agent 或复制待办、Job、写权限。分支归属和来源保存在原生应用 metadata，首次发送后的归属仍由 claim 校验。`/ui-messages` 从既有 claim 投影每轮时间到 `metadata.ai_turn`；聊天隐藏推理正文，原始消息不变。展示及适配边界见 [AI Work](aiworkpage.md)。
+- `POST /api/v1/ai-chat/fork` → `ai_chat_facade.fork_chat_conversation` → `VercelAiUiService.fork_conversation`：验证普通对话归属及已闭合的回复边界，复制原生历史前缀到新会话；不启动 Agent 或复制待办、Job、写权限。分支归属和来源保存在原生应用 metadata，首次发送后的归属仍由 claim 校验。`/ui-messages` 从既有 claim 投影每轮时间到 `metadata.ai_turn`；聊天隐藏推理正文，原始消息不变。
 
 - `POST /api/v1/ai-chat/runs`：新用户消息、关联待答问题的用户回复（`answer_to`）或官方 approval-responded 消息。用户消息 ID 幂等领取与输入同事务保存；仅服务端历史参与模型调用。
 - 对话输入框支持粘贴和选择 JPEG、PNG、WebP 图片。服务端按全局 AI 实际绑定的 API 模型校验 `image_understanding`，验证原图后交由 Vercel Adapter 转为原生消息。图片随收件箱和对话历史保存。模型输入投影附上内容 ID，切换文本模型后仅提供附件引用。
@@ -907,7 +908,7 @@ transcript 或 Tool 输出。
 
 AI Work 选中普通对话后，直接使用本次 `/ui-messages` 响应绑定共享 Chat 并显示输入框；
 无需额外点击继续，也不重复读取历史。打开对话只读取历史并订阅更新，发送消息才提交新的 run。
-历史响应必须仍匹配当前选择，旧会话回调不得断开当前订阅；业务 Agent 执行记录仍只读展示。
+历史响应必须仍匹配当前选择，旧会话回调不得断开当前订阅。已保存的独立业务执行记录可通过历史链接只读打开。
 
 气泡与 AI Work 默认入口统一由 `AiChatStore.restoreConversation` 恢复上次选中的普通对话。
 `/resume` 在聊天窗口分页选择账号内的全局对话，复用原生历史和事件订阅。AI Work 左侧历史对话列表提供图钉、改名和删除入口。置顶在分页前排序；`POST /api/v1/ai-chat/manage` 处理置顶、手动命名与删除，手动名称优先于后台命名。删除覆盖同一对话的并行回复，保留业务回执。
@@ -915,8 +916,8 @@ AI Work 选中普通对话后，直接使用本次 `/ui-messages` 响应绑定�
 浏览器只记住会话 ID，首次发送或选中历史时更新；消息、运行状态和审批仍读取服务端历史并重新订阅。
 恢复中禁止发送，失败展示重试，不自动创建新会话或选择最近的任务记录；明确历史链接优先于默认恢复。
 新对话按钮与 `/new` 清除旧选择，未发送的空白对话不生成历史深链；迟到的恢复响应不能覆盖新的选择。
-`AiWorkFloatingButton` 始终显示普通聊天，业务 presentation 通过独立进度卡和详情入口展示，
-开始、失败及结束均不替换聊天面板或聊天入口目标。`aiWorkDisplay` 仅维护任务展示与占用，不再持有聊天/任务切换模式。
+`AiWorkFloatingButton` 与工作台共用普通聊天面板。页面 AI 操作开始时切换到新对话，
+操作回执作为首条用户消息的关联内容显示在同一条消息列表中。
 
 ### 对话停止与框架边界
 
@@ -939,13 +940,17 @@ Agent 取消后保留框架快照，未闭合工具历史在新用户回合由�
 按[浏览器 IME 事件说明](https://developer.mozilla.org/en-US/docs/Web/API/Element/keydown_event#keydown_events_with_ime)
 同时检查组合事件状态、`isComposing` 和 `keyCode === 229`，覆盖 compositionend 先于提交按键的顺序。
 
-### AI Presentation 通用可观测层
+### 页面 AI 操作与普通对话
 
-前台 AI 请求通过 `withAiForeground` 预留展示，HTTP 公共边界以 `X-AI-Presentation-ID`
-关联原业务请求。`AiAgentFactory` / `ai_direct_request_service` 发布原生事件，
-`ai_presentation_service` 使用官方 Vercel 编码；业务结果仍由原接口裁定。
-`ai_presentation_registry` 只保存短期展示缓冲，完整历史归 `PydanticMessageStore`。
-HTTP、单 root/lease、断连及前端接入契约统一见 [AI Work](aiworkpage.md)。
+- `withAiConversation` 创建并打开普通对话，在原业务请求携带 `X-AI-Conversation-ID`。
+  `http_route_units/manual_ai.py` 用于显式接入的 AI 操作。接入的页面操作包括类目匹配，
+  单条/批量文案，文字翻译，图片提示词、翻译、编辑、规划和生成，选品调研及模型能力测试。
+  草稿箱批量准备和包装尺寸估算直接提交普通对话的原生用户消息。
+- `manual_ai_action.py` 与 `AgentCallStore` 在首次业务调用前提交首条原生用户消息和运行领取，
+  通过原业务接口直接执行指定操作。真实回执与历史版本同事务更新；失败及中断沿用现有回执恢复语义。
+  刷新或追问时从同一回执读取业务结果和关联的领域任务状态。独立 HTTP 调用仍可直接取得原接口响应。
+- `AiAgentFactory` 的内部运行复用父对话追踪标识，主对话负责提交原生消息和 Deferred 生命周期。
+  已关闭的旧对话仍按保存的原生历史读取。
 
 已登记的第三方网关适配：部分 Responses 网关在完整增量后发送
 `response.completed.response.output=null`，Pydantic AI 2.44.0 会迭代该空值。
@@ -1113,23 +1118,18 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   输出校验、重试、调用预算和生命周期均直接使用 Pydantic AI 2.43.0 原生能力；
   已核对官方文档：https://pydantic.dev/docs/ai/core-concepts/output/ 与
   https://pydantic.dev/docs/ai/tools-toolsets/tools-advanced/ 。
-  只通过统一 `AiAgentFactory` 的流式 `open_stream_run` 运行（同步执行路径已删除）。
+  `AiAgentFactory.run_sync` 消费原生 `open_stream_run` 事件并返回业务结果。
 - `erp_web/http_route_units/category_routes.py::handle_category_match`：
-  `POST /api/v1/category-match` 同步 focused 入口。类型化业务结果由本接口独占，始终
+  `POST /api/v1/category-match` 同步单目标入口。已执行的匹配
   返回 200 与类型化 `CategoryMatchResult`（`ok=false` 属于业务判断型结果；subject
-  错误仍映射其 4xx）；实时展示关联由 HTTP 公共边界的 `X-AI-Presentation-ID` claim
-  完成，route 不读取 presentation header，不导入 registry/SSE。
-  `category_facade.py::load_category_match_subject` 只做草稿上下文加载；其完整路径为
-  `erp_web/facades/category_facade.py`。
+  错误仍映射其 4xx）。`POST /api/v1/category-match/batch` 复用单目标逻辑，聚合
+  一次点击的全部目标到同一个回执。`category_facade.load_category_match_subject` 装配草稿与目标上下文。
 - `erp_web/assets/prompts/category_product_match.json`：`category.product_match`
   Execution Profile 的可配置 prompt。
-- `front/src/api/workflow/publishing.ts::matchCategory`：经通用 `withAiForeground`
-  wrapper 调用同步 `POST /api/v1/category-match`；presentation ID 通过 axios config
-  `aiPresentationId` 注入并由拦截器转换为 `X-AI-Presentation-ID` header，不进入 JSON
-  body；显式 timeout 为 180 秒，覆盖后端 150 秒 deadline 并留余量；类型化结果适配到现有人工候选 shape。
-- `front/src/stores/workflow/actions/publishing.ts::autoSuggestCategoriesForDraft`：
-  自动匹配唯一入口，逐目标站点调用 `matchCategory`；不包含运行时开关或第二条
-  自动匹配分支。属性填写统一从主对话执行。
+- `front/src/api/workflow/publishing.ts::matchCategories`：关联普通对话，按目标数量选择单目标或
+  批量 API。超时预算覆盖每个目标 150 秒的后端时限。类型化结果在 API 边界转换为现有人工候选结构。
+- `front/src/stores/workflow/actions/category.ts::autoSuggestCategoriesForDraft`：页面自动匹配入口。
+  属性填写从主对话执行。
 - `tests/test_category_match_facade.py`、`tests/test_category_tools.py`：首次上下文裁剪、
   Ozon 逐层导航与有限回退、Mercado Libre 多轮换词、未知 ID、deadline、凭据和工具去重测试。
 - `tests/test_ai_agent_budget.py`：使用原生 FunctionModel/Agent 验证单批和跨批第五次调用不执行、

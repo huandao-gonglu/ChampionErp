@@ -22,6 +22,7 @@ from erp_web.services.ai_agent_factory import (
     AiAgentExecutionProfile,
     AiAgentFactory,
 )
+from erp_web.services.ai_conversation_scope import bind_ai_conversation
 from erp_web.services.ai_model_factory import PydanticModelBinding
 from erp_web.schemas.ai_tools import AiToolDefinition, AiToolExecutionError
 from erp_web.services.ai_tool_registry import AiToolSet, deadline_aware_tool_executor
@@ -73,14 +74,13 @@ def _factory(
         AiAgentFactory(
             app_dir=tmp_path,
             app_config={},
-            message_store=message_store,
             model_binding_factory=binding,
         ),
         message_store,
     )
 
 
-def test_successful_run_saves_result_all_messages(tmp_path: Path) -> None:
+def test_focused_run_uses_parent_id_without_saving_a_separate_history(tmp_path: Path) -> None:
     def model(_messages: list[Any], info: AgentInfo) -> ModelResponse:
         return ModelResponse(
             parts=[
@@ -94,19 +94,21 @@ def test_successful_run_saves_result_all_messages(tmp_path: Path) -> None:
 
     factory, store = _factory(tmp_path, FunctionModel(model))
 
-    outcome = factory.run_sync(
-        profile=PROFILE,
-        instructions="返回结构化答案。",
-        user_prompt="执行测试。",
-        toolset=TOOLSET,
-    )
+    parent = "conversation_global_chat_" + "e" * 32
+    with bind_ai_conversation(parent):
+        outcome = factory.run_sync(
+            profile=PROFILE,
+            instructions="返回结构化答案。",
+            user_prompt="执行测试。",
+            toolset=TOOLSET,
+        )
 
-    history = store.get(outcome.conversation_id)
-    assert history is not None
-    assert history.messages_json == ModelMessagesTypeAdapter.dump_json(outcome.messages)
+    assert outcome.conversation_id == parent
+    assert store.list() == []
+    assert any(isinstance(message, ModelResponse) for message in outcome.messages)
 
 
-def test_failed_run_saves_captured_model_messages(tmp_path: Path) -> None:
+def test_failed_focused_run_creates_no_conversation(tmp_path: Path) -> None:
     def model(_messages: list[Any], _info: AgentInfo) -> ModelResponse:
         raise ModelAPIError("test-model", "provider failure")
 
@@ -121,8 +123,8 @@ def test_failed_run_saves_captured_model_messages(tmp_path: Path) -> None:
         )
 
     history = store.get(caught.value.conversation_id)
-    assert history is not None
-    assert history.model_messages()
+    assert history is None
+    assert caught.value.code == "ModelAPIError"
 
 
 def test_failure_before_any_model_message_does_not_create_empty_conversation(
@@ -137,7 +139,7 @@ def test_failure_before_any_model_message_does_not_create_empty_conversation(
     factory = AiAgentFactory(
         app_dir=tmp_path,
         app_config={},
-        message_store=message_store,
+
         model_binding_factory=broken_binding,
     )
 
@@ -239,7 +241,7 @@ def test_open_tool_call_history_is_stable_across_repeated_reads(
     assert first.model_messages() == second.model_messages()
 
 
-def test_failed_multi_tool_run_persists_a_return_for_every_call(
+def test_failed_focused_multi_tool_run_passes_every_return_to_the_model(
     tmp_path: Path,
 ) -> None:
     def definition(name: str) -> AiToolDefinition:
@@ -292,20 +294,17 @@ def test_failed_multi_tool_run_persists_a_return_for_every_call(
         retries=0,
     )
 
-    model_turns = 0
+    requests = []
 
-    def model(_messages: list[Any], _info: AgentInfo) -> ModelResponse:
-        nonlocal model_turns
-        model_turns += 1
-        if model_turns == 1:
+    def model(messages: list[Any], _info: AgentInfo) -> ModelResponse:
+        requests.append(list(messages))
+        if len(requests) == 1:
             return ModelResponse(
                 parts=[
                     ToolCallPart("first_read", {}, tool_call_id="call-first"),
                     ToolCallPart("second_read", {}, tool_call_id="call-second"),
                 ]
             )
-        # 业务错误已作为 ToolReturn 回到模型；随后发生 Provider 故障，验证
-        # 失败历史仍完整保留上一轮每个并行 tool call 的 return。
         raise ModelAPIError("test-model", "provider unavailable")
 
     factory, store = _factory(tmp_path, FunctionModel(model))
@@ -318,9 +317,9 @@ def test_failed_multi_tool_run_persists_a_return_for_every_call(
             toolset=toolset,
         )
 
-    history = store.get(caught.value.conversation_id)
-    assert history is not None
-    messages = history.model_messages()
+    assert store.get(caught.value.conversation_id) is None
+    assert len(requests) == 2
+    messages = requests[-1]
     call_ids = [
         part.tool_call_id
         for message in messages

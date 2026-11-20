@@ -5,9 +5,14 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import DesktopHandoffNotice from '../DesktopHandoffNotice.vue'
 import { useAccountStore } from '@/stores/account'
 import { resolveDesktopHandoff, confirmDesktopHandoff } from '@/api/desktopHandoff'
+import { continueImageOperation } from '@/api/draftImages'
 import { desktopLaunch, receivedDesktopHandoff, resetDesktopHandoff, acknowledgeDesktopHandoff } from '@/utils/desktopHandoff'
 
 vi.mock('@/api/desktopHandoff', () => ({ resolveDesktopHandoff: vi.fn(), confirmDesktopHandoff: vi.fn(), fetchDesktopInstallers: vi.fn(), desktopBackendOrigin: () => 'https://erp.example.test' }))
+vi.mock('@/api/draftImages', () => ({ continueImageOperation: vi.fn() }))
+vi.mock('@/services/withAiConversation', () => ({
+  withAiConversation: (_title: string, operation: (conversationId: string) => Promise<unknown>) => operation('receipt-chat'),
+}))
 
 const user = { id: 'owner', email: 'owner@example.test', display_name: '测试账号', role: 'user' as const, status: 'enabled' as const, created_at: 1, updated_at: 1 }
 const finish = vi.fn()
@@ -25,6 +30,7 @@ async function setup(path: string) {
   setActivePinia(pinia)
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { path: '/', component: { template: '<div />' } },
+    { path: '/aiWork', component: { template: '<div />' } },
     { path: '/login', component: { template: '<div />' }, meta: { public: true } },
   ] })
   await router.push(path)
@@ -71,6 +77,19 @@ it('工作台完成内容恢复前不回传打开确认，登录后的失败请�
   expect(receivedDesktopHandoff.value?.state.workflow).toBeDefined()
   expect(confirmDesktopHandoff).not.toHaveBeenCalled()
   await acknowledgeDesktopHandoff('ticket', 'workflow')
+  expect(confirmDesktopHandoff).toHaveBeenCalledWith('ticket')
+  wrapper.unmount()
+})
+
+it('桌面接收图片操作后用原调用引用提交，收到回执后确认交接', async () => {
+  const action = { conversation_id: 'original-chat', tool_call_id: 'original-tool' }
+  vi.mocked(resolveDesktopHandoff).mockResolvedValue({ ok: true, target: '/aiWork', state: { imageOperation: action }, opened: false })
+  const { wrapper, router, account } = await setup('/')
+  account.user = user
+  await flushPromises()
+  expect(router.currentRoute.value.fullPath).toBe('/aiWork')
+  expect(continueImageOperation).toHaveBeenCalledTimes(1)
+  expect(continueImageOperation).toHaveBeenCalledWith(action, 'receipt-chat')
   expect(confirmDesktopHandoff).toHaveBeenCalledWith('ticket')
   wrapper.unmount()
 })

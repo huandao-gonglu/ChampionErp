@@ -42,12 +42,6 @@ from erp_web.services.ai_model_errors import (
     map_pydantic_model_error,
 )
 from erp_web.services.ai_pydantic_image_model import OpenAIImagesModel
-from erp_web.services.ai_presentation_context import bind_presentation_context
-from erp_web.services.ai_presentation_registry import AiPresentationRegistry
-from erp_web.services.ai_presentation_service import (
-    claim_presentation_scope,
-    reserve_presentation,
-)
 
 
 def _binding(
@@ -447,133 +441,6 @@ def test_probe_json_rejects_plain_text_with_localized_error(
         )
 
 
-def test_probe_direct_request_publishes_pydantic_stream_to_presentation(
-    tmp_path: Path,
-) -> None:
-    registry = AiPresentationRegistry()
-    reserved = reserve_presentation(registry, display_title="测试 AI 模型")
-    presentation_id = str(reserved["presentation_id"])
-    scope = claim_presentation_scope(
-        registry,
-        presentation_id=presentation_id,
-    )
-    assert scope is not None
-
-    with bind_presentation_context(scope):
-        response = ai_direct_request_service.request_for_probe(
-            app_dir=tmp_path,
-            binding=_binding(
-                output="probe-visible-output",
-                required=("chat",),
-            ),
-            messages=[{"role": "user", "content": "echo probe"}],
-        )
-        second_response = ai_direct_request_service.request_for_probe(
-            app_dir=tmp_path,
-            binding=_binding(
-                output="second-probe-output",
-                required=("chat",),
-            ),
-            messages=[{"role": "user", "content": "second probe"}],
-        )
-
-    assert response.text == "probe-visible-output"
-    assert second_response.text == "second-probe-output"
-    registry.finish_request(presentation_id, request_failed=False)
-    payload = registry.status_payload(presentation_id)
-    assert payload is not None
-    assert payload["status"] == "completed"
-    # Direct Model 不是 Agent；即使产生展示流也不得伪报 Agent run。
-    assert payload["had_agent_run"] is False
-
-    encoded = b"".join(
-        registry.iter_chunks(presentation_id, wait_timeout=0.2)
-    ).decode("utf-8")
-    frames = [
-        json.loads(line[len("data: ") :])
-        for line in encoded.splitlines()
-        if line.startswith("data: ") and line != "data: [DONE]"
-    ]
-    types = [str(frame.get("type")) for frame in frames]
-    assert "start" in types
-    assert "finish" in types
-    assert "error" not in types
-    assert "".join(
-        str(frame.get("delta") or "")
-        for frame in frames
-        if frame.get("type") == "text-delta"
-    ) == "probe-visible-output"
-    # 同一 presentation 最多一条官方根流；后续 Direct 请求不能再发第二个
-    # start/finish 序列，也不能让第一个 DONE 后残留不可消费 chunk。
-    assert "second-probe-output" not in encoded
-    history = get_context().pydantic_messages.get(scope.conversation_id)
-    assert history is not None
-    persisted = history.model_messages()
-    assert len(persisted) == 2
-    assert "echo probe" in str(persisted[0])
-    assert "probe-visible-output" in str(persisted[1])
-    assert "second probe" not in str(persisted)
-
-
-def test_ordinary_direct_chat_publishes_and_persists_when_presentation_is_bound(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        ai_direct_request_service,
-        "create_pydantic_model_binding",
-        lambda *args, **kwargs: _binding(
-            output='{"answer":"visible"}',
-            required=("chat", "json"),
-        ),
-    )
-    registry = AiPresentationRegistry()
-    reserved = reserve_presentation(registry, display_title="生成 AI 文案")
-    presentation_id = str(reserved["presentation_id"])
-    scope = claim_presentation_scope(registry, presentation_id=presentation_id)
-    assert scope is not None
-
-    with bind_presentation_context(scope):
-        result = ai_direct_request_service.chat_json(
-            app_dir=tmp_path,
-            use_case_id="copy.generate",
-            model={"id": "test-model"},
-            required_capabilities=("chat", "json"),
-            messages=[{"role": "user", "content": "生成本地化标题。"}],
-            generation_settings={},
-            temperature=0,
-            max_tokens=64,
-            timeout_seconds=30,
-            response_format=False,
-            stream=False,
-        )
-
-    assert result == {"answer": "visible"}
-    registry.finish_request(presentation_id, request_failed=False)
-    encoded = b"".join(
-        registry.iter_chunks(presentation_id, wait_timeout=0.2)
-    ).decode("utf-8")
-    assert '"type":"start"' in encoded
-    assert '"type":"finish"' in encoded
-    frames = [
-        json.loads(line[len("data: ") :])
-        for line in encoded.splitlines()
-        if line.startswith("data: ") and line != "data: [DONE]"
-    ]
-    assert "".join(
-        str(frame.get("delta") or "")
-        for frame in frames
-        if frame.get("type") == "text-delta"
-    ) == '{"answer":"visible"}'
-
-    history = get_context().pydantic_messages.get(scope.conversation_id)
-    assert history is not None
-    persisted = history.model_messages()
-    assert len(persisted) == 2
-    assert "生成本地化标题" in str(persisted[0])
-    assert '"answer":"visible"' in str(persisted[1])
-
-
 def test_probe_recovers_responses_null_output_after_complete_stream(
     tmp_path: Path,
 ) -> None:
@@ -594,32 +461,19 @@ def test_probe_recovers_responses_null_output_after_complete_stream(
     client = AsyncOpenAI(api_key="isolated-test", http_client=httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"}, content=content)),
     ))
-    registry = AiPresentationRegistry()
-    reserved = reserve_presentation(registry, display_title="测试 AI 模型")
-    presentation_id = str(reserved["presentation_id"])
-    scope = claim_presentation_scope(registry, presentation_id=presentation_id)
-    assert scope is not None
     binding = replace(
         _binding(output="Hello!", required=("chat",)),
         api_style="openai_responses",
         model=OpenAIResponsesModel("test-model", provider=OpenAIProvider(openai_client=client)),
     )
 
-    with bind_presentation_context(scope):
-        actual = ai_direct_request_service.request_for_probe(
-            app_dir=tmp_path,
-            binding=binding,
-            messages=[{"role": "user", "content": "hello"}],
-        )
-
+    actual = ai_direct_request_service._request(
+        app_dir=tmp_path, use_case_id="config.ai_model_probe", binding=binding,
+        messages=[ModelRequest(parts=[UserPromptPart("hello")])],
+        parameters=ModelRequestParameters(), stream=True,
+        emit_text_delta=None, emit_reasoning_delta=None,
+    )
     assert actual.text == "Hello!"
-    registry.finish_request(presentation_id, request_failed=False)
-    encoded = b"".join(
-        registry.iter_chunks(presentation_id, wait_timeout=0.2)
-    ).decode("utf-8")
-    assert '"type":"finish"' in encoded
-    assert '"type":"error"' not in encoded
-    assert "Hello!" in encoded
 
 
 def test_probe_does_not_hide_unrelated_none_iteration_error(
@@ -713,95 +567,6 @@ def test_image_response_is_normalized_from_pydantic_file_part() -> None:
             "b64_json": base64.b64encode(raw).decode("ascii"),
         }
     ]
-
-
-def test_focused_image_request_publishes_completed_response_to_ai_work(
-    tmp_path: Path,
-) -> None:
-    raw = ai_model_probe_service._image_edit_probe_bytes()
-    calls: list[dict[str, object]] = []
-
-    class Images:
-        async def generate(self, **kwargs):
-            calls.append(kwargs)
-            item = type(
-                "ImageItem",
-                (),
-                {"b64_json": base64.b64encode(raw).decode("ascii"), "url": None},
-            )()
-            return type("ImageResponse", (), {"data": [item]})()
-
-    class Client:
-        images = Images()
-
-    class FakeProvider(Provider[object]):
-        _client = Client()
-
-        @property
-        def name(self) -> str:
-            return "test"
-
-        @property
-        def base_url(self) -> str:
-            return "https://api.example.com/v1"
-
-        @property
-        def client(self) -> object:
-            return self._client
-
-    model = OpenAIImagesModel("gpt-image-test", provider=FakeProvider())
-    binding = replace(
-        _binding(required=("image_generation",)),
-        model=model,
-        model_name="gpt-image-test",
-    )
-    registry = AiPresentationRegistry()
-    reserved = reserve_presentation(registry, display_title="生成图片")
-    presentation_id = str(reserved["presentation_id"])
-    scope = claim_presentation_scope(registry, presentation_id=presentation_id)
-    assert scope is not None
-
-    with bind_presentation_context(scope):
-        result = ai_direct_request_service._image_request(
-            app_dir=tmp_path,
-            use_case_id="image.generate",
-            binding=binding,
-            prompt="生成一张商品图",
-            action="generate",
-            result_mode="generate",
-            source=None,
-            source_id="",
-            size="1024x1024",
-            quality="medium",
-            count=1,
-        )
-
-    assert result == [
-        {
-            "provider": "Test",
-            "mode": "generate",
-            "source_id": "",
-            "suffix": ".png",
-            "b64_json": base64.b64encode(raw).decode("ascii"),
-        }
-    ]
-    assert len(calls) == 1
-    assert calls[0]["model"] == "gpt-image-test"
-
-    registry.finish_request(presentation_id, request_failed=False)
-    encoded = b"".join(
-        registry.iter_chunks(presentation_id, wait_timeout=0.2)
-    ).decode("utf-8")
-    assert '"type":"start"' in encoded
-    assert '"type":"finish"' in encoded
-    assert '"type":"file"' in encoded
-
-    history = get_context().pydantic_messages.get(scope.conversation_id)
-    assert history is not None
-    persisted = history.model_messages()
-    assert len(persisted) == 2
-    assert "生成一张商品图" in str(persisted[0])
-    assert raw == persisted[1].files[0].data
 
 
 def test_image_edit_failure_does_not_fallback_to_generation(

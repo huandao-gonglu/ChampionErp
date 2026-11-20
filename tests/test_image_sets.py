@@ -103,7 +103,7 @@ def test_native_planner_sees_all_images_and_retries_invalid_output(monkeypatch, 
         **kwargs, model_binding_factory=lambda *_a, **_k: replace(_binding(), model=streaming_function_model(FunctionModel(model)))
     ))
     sources = image_translate_service.select_source_images(product, ["common", "red"])
-    result = image_set_service.plan_image_set(app_dir=app_dir, config={}, messages=get_context().pydantic_messages,
+    result = image_set_service.plan_image_set(app_dir=app_dir, config={},
         product=product, draft=draft, sources=sources, count=3, prompt="风格统一")
     assert result.model_dump() == expected
     assert len(requests) == 2
@@ -112,9 +112,7 @@ def test_native_planner_sees_all_images_and_retries_invalid_output(monkeypatch, 
     content = next(part.content for message in requests[0] for part in message.parts if isinstance(part, UserPromptPart))
     assert len([item for item in content if isinstance(item, BinaryContent)]) == 2
     assert "目标语言" in content[0]
-    history = get_context().pydantic_messages.list()
-    assert len(history) == 1
-    assert len(get_context().pydantic_messages.get(history[0].conversation_id).model_messages()) >= 4
+    assert get_context().pydantic_messages.list() == []
 
 
 def test_generation_partial_success_preview_recovery_and_single_retry(monkeypatch, app_dir):

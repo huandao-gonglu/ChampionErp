@@ -17,6 +17,7 @@ class ImageBatchItemPayload(TypedDict):
     started_at: str
     finished_at: str
     result_asset_ids: NotRequired[list[str]]
+    error_code: NotRequired[str]
 
 
 class ImageBatchSnapshot(TypedDict):
@@ -45,6 +46,7 @@ class ImageBatchItem(BaseModel):
     status: Literal["queued", "running", "success", "failed"] = "queued"
     result_urls: list[str] = Field(default_factory=list)
     error: str = ""
+    error_code: str = ""
     outcome_unknown: bool = False
     started_at: str = ""
     finished_at: str = ""

@@ -160,6 +160,7 @@ def _post(
     *,
     content_type: str = "application/json",
     raw: bytes | None = None,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     try:
@@ -168,7 +169,7 @@ def _post(
             "POST",
             path,
             body=body,
-            headers={"Content-Type": content_type, **getattr(port, "headers", {})},
+            headers={"Content-Type": content_type, **getattr(port, "headers", {}), **(headers or {})},
         )
         response = conn.getresponse()
         data = response.read()
@@ -299,6 +300,93 @@ def chat_service(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         approval_session=context.approval_session,
     )
     return {"service": service, "model": holder}
+
+
+def test_manual_action_runs_directly_and_continues_in_one_chat(chat_server, monkeypatch):
+    from erp_web.facades import translation_facade
+    from erp_web.services.ai_conversation_scope import current_ai_conversation
+
+    port = chat_server["port"]
+    action_id = "conversation_global_chat_" + "7" * 32
+    detail_url = f"/api/v1/ai-work/conversations/{action_id}/ui-messages"
+    payload = {"target_language": "zh-CN", "content": {"name": "Ventiladores"}}
+    headers = {"X-AI-Conversation-ID": action_id}
+    release, entered = threading.Event(), threading.Event()
+    executed, responses, model_calls = [], [], []
+
+    def translate(language, content):
+        executed.append((language, content, current_ai_conversation()))
+        entered.set()
+        assert release.wait(5)
+        return {"name": "风扇"}
+
+    async def model(messages, info):
+        model_calls.append((messages, info.instructions))
+        yield "翻译结果是风扇。"
+
+    monkeypatch.setattr(translation_facade, "translate_texts", translate)
+    chat_server["model"]["model"] = FunctionModel(stream_function=model)
+    thread = threading.Thread(
+        target=lambda: responses.append(_post(port, "/api/text-translate", payload, headers=headers)),
+    )
+    thread.start()
+    try:
+        assert entered.wait(4)
+        status, raw = _get(port, detail_url)
+        assert status == 200
+        active = json.loads(raw)
+        assert active["run_active"] and active["history_version"] == 1
+        assert active["messages"][0]["metadata"]["manual_ai_action"]["state"] == "running"
+        assert active["received_messages"] == []
+        assert _post(port, "/api/text-translate", payload, headers=headers)[0] == 409
+        assert model_calls == []
+    finally:
+        release.set()
+        thread.join(5)
+
+    assert responses[0][0] == 200
+    assert json.loads(responses[0][2])["translations"] == {"name": "风扇"}
+    status, raw = _get(port, detail_url)
+    finished = json.loads(raw)
+    assert status == 200 and finished["history_version"] == 2 and not finished["run_active"]
+    receipt = finished["messages"][0]["metadata"]["manual_ai_action"]
+    assert receipt["state"] == "completed"
+    assert receipt["result"] == {"translations": {"name": "风扇"}, "source": {"name": "Ventiladores"}}
+    assert _post(port, "/api/text-translate", payload, headers=headers)[0] == 409
+    assert executed == [("zh-CN", payload["content"], action_id)]
+
+    status, _, stream = _post(port, CHAT_PATH, _submit_body(action_id, "manual-followup", "刚才翻译的结果是什么？"))
+    assert status == 200 and "翻译结果是风扇。".encode() in stream
+    assert any("Ventiladores" in (instructions or "") and "风扇" in (instructions or "")
+               for _, instructions in model_calls)
+    status, raw = _get(port, detail_url)
+    assert status == 200
+    continued = json.loads(raw)
+    assert continued["messages"][0]["metadata"]["manual_ai_action"] == receipt
+    assert continued["messages"][-1]["role"] == "assistant"
+    assert [entry.conversation_id for entry in get_context().pydantic_messages.list()] == [action_id]
+
+
+def test_manual_action_failure_preserves_business_error_and_chat(chat_server, monkeypatch):
+    from erp_web.facades import translation_facade
+    from erp_web.runtime_units.text_translation import TranslationRequestError
+
+    def failing_translation(*_args):
+        raise TranslationRequestError("没有待翻译内容。")
+
+    monkeypatch.setattr(translation_facade, "translate_texts", failing_translation)
+    conversation_id = "conversation_global_chat_" + "8" * 32
+    port = chat_server["port"]
+    status, _, raw = _post(
+        port, "/api/text-translate", {"target_language": "zh-CN", "content": {"name": "Fan"}},
+        headers={"X-AI-Conversation-ID": conversation_id},
+    )
+    assert status == 400 and json.loads(raw)["error_code"] == "INVALID_TRANSLATION_REQUEST"
+    status, raw = _get(port, f"/api/v1/ai-work/conversations/{conversation_id}/ui-messages")
+    receipt = json.loads(raw)["messages"][0]["metadata"]["manual_ai_action"]
+    assert status == 200 and receipt["state"] == "failed"
+    assert receipt["message"] == "没有待翻译内容。"
+    assert receipt["error_code"] == "INVALID_TRANSLATION_REQUEST"
 
 
 def test_sse_run_streams_official_chunks_and_persists_history(

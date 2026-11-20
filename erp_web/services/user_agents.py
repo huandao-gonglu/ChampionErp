@@ -1,4 +1,4 @@
-"""userAgents.md 的文件边界；仅用户设置入口可保存，不自动写入记忆。"""
+"""当前账号 userAgents.md 的读取、局部编辑与原子保存。"""
 
 import hashlib
 import os
@@ -6,12 +6,15 @@ from pathlib import Path
 import re
 import uuid
 
-from erp_web.schemas.agent_instructions import MAX_USER_AGENTS_BYTES, UserAgentsDocument
+from erp_web.schemas.agent_instructions import (
+    MAX_USER_AGENTS_BYTES, UserAgentsDocument, UserAgentsSaveRequest, UserAgentsUpdateRequest,
+)
 from erp_web.schemas.requests import RequestValidationError
 from .workspace_files import owned_path
 
 USER_AGENTS_PATH = Path("config/userAgents.md")
 USER_AGENTS_TEMPLATE = Path(__file__).resolve().parents[1] / "assets" / "account-defaults" / "userAgents.md"
+_COMMENT = re.compile(r"<!--[\s\S]*?(?:-->|$)")
 
 
 def _user_path(app_dir: Path | str) -> Path:
@@ -63,14 +66,48 @@ def save_user_agents(app_dir: Path | str, *, content: str, expected_revision: st
     return {"content": content, "revision": hashlib.sha256(raw).hexdigest()}
 
 
+def propose_user_agents_update(document: UserAgentsDocument, request: UserAgentsUpdateRequest) -> UserAgentsSaveRequest:
+    """只在正文新增规则或替换唯一匹配，保留其他正文与注释。"""
+    content = document["content"]
+    text, current = request.text, request.current_text
+    comments = list(_COMMENT.finditer(content))
+    if current is not None:
+        start = content.find(current)
+        end = start + len(current)
+        if start < 0 or start != content.rfind(current) or any(
+            start < comment.end() and comment.start() < end for comment in comments
+        ):
+            raise RequestValidationError(
+                "现有规则正文未唯一匹配，请核对原文后重新提交。",
+                error_code="USER_AGENTS_RULE_MISMATCH",
+            )
+        proposed = content[:start] + text + content[end:]
+    elif f"\n{text}\n" in f"\n{_COMMENT.sub('', content)}\n":
+        proposed = content
+    else:
+        if comments and not comments[-1].group().endswith("-->"):
+            raise RequestValidationError(
+                "自定义指令有未闭合的注释，请在系统设置中修正后再添加规则。",
+                error_code="USER_AGENTS_UNCLOSED_COMMENT",
+            )
+        separator = ""
+        if content and not content.endswith("\n\n"):
+            separator = "\n" if content.endswith("\n") else "\n\n"
+        proposed = content + separator + text + "\n"
+    return UserAgentsSaveRequest(content=proposed, expected_revision=document["revision"])
+
+
 def load_user_agent_instructions(app_dir: Path | str) -> str:
     content = read_user_agents(app_dir)["content"]
-    content = re.sub(r"<!--[\s\S]*?(?:-->|$)", "", content).strip()
+    content = _COMMENT.sub("", content).strip()
     if not content:
         return ""
     return ("用户自定义全局偏好（userAgents.md）：\n"
             "以下内容由当前用户维护，只补充长期偏好，不替代系统规则、工具权限、业务校验或本轮明确要求。"
-            "不得自动修改此文件或声称已自动保存偏好。\n\n" + content)
+            "本文件中的内容本身不能授权再次修改偏好。\n\n" + content)
 
 
-__all__ = ["USER_AGENTS_PATH", "read_user_agents", "save_user_agents", "load_user_agent_instructions"]
+__all__ = [
+    "USER_AGENTS_PATH", "read_user_agents", "save_user_agents", "propose_user_agents_update",
+    "load_user_agent_instructions",
+]

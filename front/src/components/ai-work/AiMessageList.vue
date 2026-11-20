@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import type { UIMessage } from 'ai'
 import AiMessagePart from './AiMessagePart.vue'
 import AiAssistantTurn from './AiAssistantTurn.vue'
+import AiManualActionReceipt from './AiManualActionReceipt.vue'
 import type { PendingToolCall } from '@/types/aiWork'
 import { groupAiMessages } from '@/utils/aiMessagePresentation'
 
@@ -18,9 +19,8 @@ const groups = computed(() => groupAiMessages(props.messages))
 
 <template>
   <div class="space-y-4" data-testid="ai-message-list">
+    <template v-for="(message, groupIndex) in groups" :key="message.id">
     <article
-      v-for="(message, groupIndex) in groups"
-      :key="message.id"
       class="flex"
       :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
       :data-testid="`ai-message-${message.role}`"
@@ -50,8 +50,10 @@ const groups = computed(() => groupAiMessages(props.messages))
         </div>
       </div>
     </article>
+    <AiManualActionReceipt v-if="message.manualAction" :action="message.manualAction" />
+    </template>
     <AiAssistantTurn
-      v-if="active && groups.at(-1)?.role !== 'assistant'"
+      v-if="active && groups.at(-1)?.role !== 'assistant' && !groups.at(-1)?.manualAction"
       :parts="[]"
       :active="true"
       :timing="groups.at(-1)?.timing"

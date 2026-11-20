@@ -28,15 +28,6 @@ from erp_web.runtime_units.category_tools import (
 )
 from erp_web.services.ai_agent_factory import AiAgentExecutionError, AiAgentFactory
 from erp_web.services.ai_model_factory import PydanticModelBinding
-from erp_web.services.ai_presentation_context import bind_presentation_context
-from erp_web.services.ai_presentation_registry import (
-    COMPLETED,
-    AiPresentationRegistry,
-)
-from erp_web.services.ai_presentation_service import (
-    claim_presentation_scope,
-    reserve_presentation,
-)
 from erp_web.services.ai_tool_registry import AiToolSet, deadline_aware_tool_executor
 from erp_web.services.category_match_agent_service import CATEGORY_MATCH_AGENT_PROFILE, run_category_match_agent
 
@@ -91,7 +82,7 @@ def factory_for(model: FunctionModel) -> AiAgentFactory:
     return AiAgentFactory(
         app_dir=context.paths.app_dir,
         app_config={},
-        message_store=context.pydantic_messages,
+
         model_binding_factory=binding,
     )
 
@@ -191,12 +182,8 @@ def test_agent_uses_native_tool_call_and_typed_output() -> None:
     assert result.trace["task_run_id"].startswith("task_")
     assert result.outcome is not None
     assert result.outcome.usage["tool_calls"] == 1
-    history = get_context().pydantic_messages.get(result.outcome.conversation_id)
-    assert history is not None
-    assert history.messages_json == ModelMessagesTypeAdapter.dump_json(
-        result.outcome.messages
-    )
-    persisted = history.model_messages()
+    assert get_context().pydantic_messages.get(result.outcome.conversation_id) is None
+    persisted = result.outcome.messages
     assert "风扇" in str(persisted)
     assert "MLM-FAN" in str(persisted)
     assert any(
@@ -302,10 +289,7 @@ def test_unknown_category_stays_a_stable_agent_error_after_retries() -> None:
     assert "MLM-INVENTED" not in str(captured.value)
     assert searcher.keywords == ["ventilador"]
     history = get_context().pydantic_messages.get(captured.value.conversation_id)
-    assert history is not None
-    transcript = str(history.model_messages())
-    assert "MLM-INVENTED" in transcript
-    assert "selected_category_id 必须来自本次检索工具真实返回的商品类型" in transcript
+    assert history is None
 
 
 def test_abstain_after_one_planned_batch_needs_no_extra_search() -> None:
@@ -545,8 +529,7 @@ def test_provider_api_error_keeps_original_type_and_redacts_secret() -> None:
     assert captured.value.run_id
     assert captured.value.conversation_id
     history = get_context().pydantic_messages.get(captured.value.conversation_id)
-    assert history is not None
-    assert secret not in str(history.model_messages())
+    assert history is None
 
 
 def test_provider_http_error_keeps_status_code_message_and_request_id() -> None:
@@ -582,8 +565,7 @@ def test_provider_http_error_keeps_status_code_message_and_request_id() -> None:
     )
     assert captured.value.retryable is False
     history = get_context().pydantic_messages.get(captured.value.conversation_id)
-    assert history is not None
-    assert history.model_messages()
+    assert history is None
 
 
 def test_empty_provider_response_reports_observed_response_instead_of_schema_error() -> (
@@ -694,104 +676,6 @@ def test_unexpected_category_approval_is_rejected_before_execution() -> None:
 
     assert captured.value.code == "TOOL_APPROVAL_REQUIRED"
     assert executions == 0
-
-
-def test_category_match_run_publishes_presentation_chunks_under_bound_scope() -> None:
-    """同步入口绑定 presentation scope 时自动发布官方展示 chunk（阶段5）。
-
-    业务 HTTP 边界负责 reserve/claim 与 ``finish_request`` 收尾；Agent 运行
-    本身只通过 factory 统一内核把 native events 编码成官方 Vercel chunk 写入
-    registry。业务结果是唯一真相：即使这里不消费展示流，类型化结果照常返回。
-    """
-
-    searcher = Searcher([[candidate("MLM-FAN")]])
-    ledger = CategoryCandidateLedger()
-    toolset = toolset_for(searcher, ledger)
-    turns = 0
-
-    def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
-        nonlocal turns
-        turns += 1
-        if turns == 1:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        "search_categories",
-                        {
-                            "alternative_names": [],
-                            "product_identity": "桌面风扇，有电机和扇叶",
-                            "product_type": "ventilador",
-                            "keywords": ["ventilador"],
-                        },
-                        tool_call_id="search-presentation",
-                    )
-                ]
-            )
-        return final_output(
-            agent_info,
-            {
-                "selected_category_id": "MLM-FAN",
-                "abstained": False,
-                "model_confidence": 0.9,
-                "evidence": ["商品主体一致"],
-            },
-            "final-presentation",
-        )
-
-    registry = AiPresentationRegistry()
-    reserved = reserve_presentation(registry, display_title="AI 匹配类目")
-    presentation_id = str(reserved["presentation_id"])
-    scope = claim_presentation_scope(registry, presentation_id=presentation_id)
-    assert scope is not None
-
-    with bind_presentation_context(scope):
-        result = run_category_match_agent(
-            PAYLOAD,
-            toolset,
-            ledger,
-            timeout_seconds=10,
-            factory=factory_for(FunctionModel(model)),
-        )
-
-    assert result.output["selected_category_id"] == "MLM-FAN"
-    result.finish_business_result({"ok": True})
-    registry.finish_request(presentation_id, request_failed=False)
-
-    payload = registry.status_payload(presentation_id)
-    assert payload is not None
-    assert payload["status"] == COMPLETED
-    assert payload["terminal"] is True
-    assert payload["had_agent_run"] is True
-    assert payload["error_code"] == ""
-    assert payload["display_title"] == "AI 匹配类目"
-    assert payload["conversation_id"] == reserved["conversation_id"]
-
-    text = b"".join(registry.iter_chunks(presentation_id, wait_timeout=0.2)).decode(
-        "utf-8"
-    )
-    frames = [
-        json.loads(line[len("data: ") :])
-        for line in text.splitlines()
-        if line.startswith("data: ") and line != "data: [DONE]"
-    ]
-    types = [str(frame.get("type")) for frame in frames]
-    assert "start" in types
-    assert any(frame_type.startswith("tool-") for frame_type in types)
-    assert "finish" in types
-    assert "error" not in types
-
-    # 未绑定 scope 的同款运行不产生任何 presentation 状态（旧语义不受影响）。
-    turns = 0
-    plain_ledger = CategoryCandidateLedger()
-    ledger = plain_ledger
-    plain = run_category_match_agent(
-        PAYLOAD,
-        toolset_for(Searcher([[candidate("MLM-FAN")]]), plain_ledger),
-        plain_ledger,
-        timeout_seconds=10,
-        factory=factory_for(FunctionModel(model)),
-    )
-    assert plain.output["selected_category_id"] == "MLM-FAN"
 
 
 def test_wrong_script_retries_before_search_and_does_not_spend_tool_budget() -> None:

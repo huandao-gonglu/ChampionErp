@@ -10,6 +10,7 @@ import pytest
 from erp_web.context import get_context
 from erp_web.facades import image_facade, product_facade
 from erp_web.product_model.image_preparation import image_preparation_status
+from erp_web.release_guard import release_guard
 from erp_web.runtime_units.draft_image_prepare import prepare_draft_images
 from erp_web.schemas.image_capabilities import DraftImagesPrepareRequest
 from erp_web.schemas.image_sets import ImageSetPlan
@@ -93,12 +94,13 @@ def test_manual_edit_success_is_visible_as_manual_not_whole_set_completed(monkey
     assert prepare(draft).status == "needs_confirmation"
 
 
-def test_auto_set_generates_common_and_sku_adopts_and_reuses(monkeypatch, app_dir):
+def test_auto_set_generates_common_and_sku_adopts_and_reuses(monkeypatch, app_dir, release_guard_dir):
     product, draft, raw = setup_sources(app_dir)
     context = get_context()
     monkeypatch.setattr(image_set_service, "plan_image_set", lambda **_: ImageSetPlan.model_validate(plan()))
     calls = image_model(monkeypatch, raw)
-    result = prepare(draft)
+    with release_guard.serving(release_guard_dir):
+        result = prepare(draft)
     assert result.status == "generated" and result.generated_count > 3
     after = context.products.draft_record(draft["draft_id"])
     assert len(after["images"]) == 3 and after["images"] != draft["images"]

@@ -64,12 +64,12 @@ describe('选品 API 当前 wire schema', () => {
     })
 
     const result = await createProductResearchHotProductRun(
-      {},
+      {}, 'conversation-research-test',
     )
 
     expect(apiClient.post).toHaveBeenCalledWith(
       '/api/v1/product-research/hot-products/search',
-      {},
+      {}, { aiConversationId: 'conversation-research-test' },
     )
 
     expect(result.run).toEqual(expect.objectContaining({

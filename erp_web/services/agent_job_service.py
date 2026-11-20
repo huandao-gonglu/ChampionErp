@@ -17,6 +17,7 @@ from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_PROFILE
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
 from erp_web.services.chat_conversation_service import ChatConversationRun
 from erp_web.services.ai_run_cancellation import bind_cancellation_token, check_cancellation
+from erp_web.services.ai_conversation_scope import bind_ai_conversation
 from erp_web.services.ai_approval_policy import automatic_approval_results
 
 _logger = logging.getLogger(__name__)
@@ -108,7 +109,12 @@ class AgentJobService:
     def execute_or_reconcile(self, row, token=None):
         from .desktop_connection_service import bind_desktop_connection
         meta = json.loads(row.get("execution_json") or "{}")
-        with bind_desktop_connection(meta.get("desktop_connection", "")), bind_cancellation_token(token or self.ui_service.run_registry.token(row["conversation_id"])):
+        conversation_id = row["conversation_id"]
+        with (
+            bind_desktop_connection(meta.get("desktop_connection", "")),
+            bind_cancellation_token(token or self.ui_service.run_registry.token(conversation_id)),
+            bind_ai_conversation(conversation_id),
+        ):
             return self._execute_or_reconcile(row)
 
     def _execute_or_reconcile(self, row):

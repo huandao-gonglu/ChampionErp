@@ -303,7 +303,7 @@ it('网页确认翻译后桌面等待任务状态再提交，重复唤起复用�
     finishQuery({ unchanged: true, batch: null })
     await flushPromises()
     expect(submit).toHaveBeenCalledOnce()
-    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'translate', updatedAt: 'v2' }), 'translate', ['cover'], '', requestId)
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'translate', updatedAt: 'v2' }), 'translate', ['cover'], '', requestId, expect.stringMatching(/^conversation_global_chat_/))
     expect(confirm).toHaveBeenCalledWith('open-translation')
     expect(wrapper.text()).toContain('正在处理 1 张图片')
     expect(wrapper.find('dialog[open] form').exists()).toBe(false)

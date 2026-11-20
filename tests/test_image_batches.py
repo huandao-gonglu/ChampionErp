@@ -12,7 +12,6 @@ from pydantic_ai.providers import Provider
 
 from erp_web.context import get_context
 from erp_web.schemas.image_batches import ImageBatch, ImageBatchItem
-from erp_web.services.ai_direct_history import current_history_sink
 from erp_web.services.image_batch_service import run_image_batch
 from erp_web.stores.image_batch_store import ImageBatchStore, utc_now
 from erp_web.services import ai_direct_request_service, ai_model_probe_service
@@ -22,7 +21,7 @@ from tests.test_ai_direct_request_service import _binding
 
 def arguments(process, persist, count=6):
     context = get_context()
-    return dict(store=context.image_batches, messages=context.pydantic_messages,
+    return dict(store=context.image_batches,
                 app_dir=context.paths.app_dir, product_id="p", prompt="翻译图片",
                 sources=[{"id": str(i), "url": f"https://example.com/{i}.png"} for i in range(count)],
                 process=process, persist=persist)
@@ -45,8 +44,6 @@ def test_three_parallel_items_queue_and_save_before_slowest_finishes():
         assert release[index].wait(10)
         with lock:
             active -= 1
-        sink = current_history_sink()
-        sink([ModelRequest(parts=[UserPromptPart(f"原图 {index}")]), ModelResponse(parts=[TextPart(f"结果 {index}")])])
         if index == 2:
             raise RuntimeError("图片服务返回 502")
         return {"ok": True, "imagePoolItems": [{"id": str(index), "preview_url": f"/file?path={index}.png"}]}
@@ -55,18 +52,18 @@ def test_three_parallel_items_queue_and_save_before_slowest_finishes():
         saved[int(result["imagePoolItems"][0]["id"])].set()
 
     args = arguments(process, persist)
+    args["request_id"] = "batch-progress"
     with ThreadPoolExecutor(1) as pool:
         future = pool.submit(run_image_batch, **args)
         try:
             assert all(event.wait(5) for event in entered[:3])
-            history = get_context().pydantic_messages.list()[0]
-            live = args["store"].get(history.conversation_id).snapshot()
+            live = args["store"].get(args["request_id"]).snapshot()
             assert (live["running"], live["queued"], live["completed"]) == (3, 3, 0)
             release[1].set()
             assert saved[1].wait(5)
             assert entered[3].wait(5)
             assert not saved[0].is_set()
-            live = args["store"].get(history.conversation_id).snapshot()
+            live = args["store"].get(args["request_id"]).snapshot()
             assert live["items"][1]["status"] == "success"
             assert live["items"][0]["status"] == "running"
         finally:
@@ -80,9 +77,7 @@ def test_three_parallel_items_queue_and_save_before_slowest_finishes():
     assert [row["id"] for row in result["imagePoolItems"]] == ["0", "1", "3", "4", "5"]
     reopened = ImageBatchStore(args["store"].path).get(result["conversation_id"]).snapshot()
     assert reopened == snapshot
-    history = get_context().pydantic_messages.get(result["conversation_id"]).model_messages()
-    assert len(history) == 13
-    assert [m.metadata["image_batch_item"] for m in history[1::2]] == list(range(6))
+    assert get_context().pydantic_messages.get(result["conversation_id"]) is None
 
 
 def test_save_failure_keeps_result_but_never_reports_success():
@@ -180,7 +175,7 @@ def test_terminal_unknown_releases_draft_and_preserves_uncertain_receipts(tmp_pa
     assert store.get("old").snapshot() == snapshot
 
 
-def test_batch_uses_real_pydantic_direct_and_preserves_all_image_messages(monkeypatch, app_dir):
+def test_batch_uses_real_pydantic_direct_without_creating_a_conversation(monkeypatch, app_dir):
     raw = ai_model_probe_service._image_edit_probe_bytes()
     source = app_dir / "source.png"
     source.write_bytes(raw)
@@ -211,9 +206,7 @@ def test_batch_uses_real_pydantic_direct_and_preserves_all_image_messages(monkey
     result = run_image_batch(**arguments(process, lambda result: None, count=4))
     assert result["image_batch"]["success"] == 4
     assert len(calls) == 4
-    history = get_context().pydantic_messages.get(result["conversation_id"]).model_messages()
-    assert len(history) == 9
-    assert all(message.files[0].data == raw for message in history[2::2])
+    assert get_context().pydantic_messages.get(result["conversation_id"]) is None
     assert all(call["n"] == 1 for call in calls)
 
 
@@ -262,13 +255,12 @@ def test_facade_saves_each_result_without_losing_other_images(monkeypatch, app_d
         assert any(ref["asset_id"] == item["id"] for ref in draft["images"])
 
 
-def test_batch_read_route_and_ui_projection_preserve_canonical_history():
+def test_batch_progress_route_uses_domain_record_without_auxiliary_conversation():
     from erp_web.http_route_units import ai_work_routes
     from erp_web.facades.ai_chat_facade import ui_messages_payload
     from urllib.parse import urlparse
 
     def process(source):
-        current_history_sink()([ModelRequest(parts=[UserPromptPart("原图")]), ModelResponse(parts=[TextPart("结果")])])
         return {"ok": True, "imagePoolItems": [{"preview_url": "/file?path=result.png"}]}
     result = run_image_batch(**arguments(process, lambda result: None, count=1))
     conversation_id = result["conversation_id"]
@@ -277,9 +269,8 @@ def test_batch_read_route_and_ui_projection_preserve_canonical_history():
     assert ai_work_routes.handle_get(handler, urlparse(f"/api/v1/ai-work/conversations/{conversation_id}/image-batch"))
     assert responses[0]["image_batch"]["success"] == 1
     ui, status = ui_messages_payload(conversation_id)
-    assert status == 200
-    assert len(ui["messages"]) == 1
-    assert len(get_context().pydantic_messages.get(conversation_id).model_messages()) == 3
+    assert status == 404
+    assert ui["error_code"] == "PYDANTIC_MESSAGE_HISTORY_NOT_FOUND"
 
 
 def test_superseded_image_keeps_provider_result_without_applying_old_request():

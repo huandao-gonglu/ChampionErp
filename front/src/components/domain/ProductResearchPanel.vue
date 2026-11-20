@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { withAiConversation } from '@/services/withAiConversation'
 import {
   createProductResearchHotProductRun,
   fetchActiveProductResearchHotProductRun,
@@ -166,7 +167,7 @@ async function runSearch() {
   error.value = ''
   try {
     const payload = buildPayload()
-    const next = await createProductResearchHotProductRun(payload)
+    const next = await withAiConversation('AI 选品调研', id => createProductResearchHotProductRun(payload, id))
     applyRunResponse(next)
     if (next.run.runId && !isTerminalRunStatus(next.run.status)) {
       startPolling(next.run.runId)

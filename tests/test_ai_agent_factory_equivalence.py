@@ -65,7 +65,6 @@ EMPTY_TOOLSET = AiToolSet.bind(EMPTY_TOOLSET_ID, [], {})
 
 
 def _factory(tmp_path: Path, model: FunctionModel) -> AiAgentFactory:
-    message_store = PydanticMessageStore(ErpDatabase(tmp_path / "erp.sqlite3"))
     streaming_model = streaming_function_model(model)
 
     def binding(*args: Any, **kwargs: Any) -> PydanticModelBinding:
@@ -83,7 +82,7 @@ def _factory(tmp_path: Path, model: FunctionModel) -> AiAgentFactory:
     return AiAgentFactory(
         app_dir=tmp_path,
         app_config={},
-        message_store=message_store,
+
         model_binding_factory=binding,
     )
 
@@ -150,13 +149,7 @@ def test_output_validator_runs_on_native_stream_path(tmp_path: Path) -> None:
     assert model_calls == 2
     assert validator.calls == 2
 
-    # 历史只持久化一次，且包含重试后的完整消息
-    history = factory.message_store.get(outcome.conversation_id)
-    assert history is not None
-    assert history.messages_json == ModelMessagesTypeAdapter.dump_json(
-        outcome.messages
-    )
-    outcome.complete()
+    assert len([message for message in outcome.messages if isinstance(message, ModelResponse)]) == 2
 
 
 def test_persistent_validator_failure_maps_to_validator_error_code(
@@ -194,9 +187,6 @@ def test_persistent_validator_failure_maps_to_validator_error_code(
 
     assert caught.value.code == "GOLDEN_OUTPUT_INVALID"
     assert caught.value.retryable is False
-    history = factory.message_store.get(caught.value.conversation_id)
-    assert history is not None
-    assert history.model_messages()
 
 
 @pytest.mark.parametrize(
@@ -251,9 +241,6 @@ def test_direct_model_error_in_validator_preserves_cause_and_history(
         assert "invalid_request_error" in str(error)
         assert error.details == {"status_code": status, "model_id": "translation"}
     assert calls == 1
-    history = factory.message_store.get(error.conversation_id)
-    assert history is not None
-    assert any(isinstance(message, ModelResponse) for message in history.model_messages())
 
 
 def test_tool_executor_failure_maps_to_safe_error_once(tmp_path: Path) -> None:
@@ -324,6 +311,3 @@ def test_tool_executor_failure_maps_to_safe_error_once(tmp_path: Path) -> None:
     assert str(caught.value) == "工具执行失败，请稍后重试。"
     assert "internal-runtime-secret-token" not in str(caught.value)
     assert executions == 1
-    history = factory.message_store.get(caught.value.conversation_id)
-    assert history is not None
-    assert history.model_messages()

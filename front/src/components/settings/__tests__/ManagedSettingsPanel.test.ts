@@ -36,12 +36,15 @@ it('管理员读取仅展示配置状态，空密钥保存时沿用已有值', a
 })
 
 it('管理员可以选择万邦并保存独立企业凭据', async () => {
-  const wrapper = mount(ManagedSettingsPanel); await flushPromises()
+  const wrapper = mount(ManagedSettingsPanel, { attachTo: document.body })
+  await flushPromises()
   await wrapper.get('select').setValue('onebound')
   const section = wrapper.get('[aria-label="万邦企业配置"]')
   await section.get('input[autocomplete="off"]').setValue('vendor-key')
   await section.get('input[type="password"]').setValue('vendor-secret')
-  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(saveManagedSettings).not.toHaveBeenCalled()
+  await wrapper.get('header button[type="submit"]').trigger('click')
+  await flushPromises()
   expect(saveManagedSettings).toHaveBeenCalledWith(expect.objectContaining({
     alibaba_api_application: 'onebound', onebound: { api_key: 'vendor-key', api_secret: 'vendor-secret' },
   }))
@@ -62,4 +65,39 @@ it('管理员可切换应用并分别保存两套凭据', async () => {
     alibaba_crossborder: expect.objectContaining({ app_secret: 'crossborder-secret' }),
   }))
   expect(passwords.every(input => (input.element as HTMLInputElement).value === '')).toBe(true)
+})
+
+it('顶部保存会提示无效字段，保存失败保留修改并可以重试', async () => {
+  vi.mocked(saveManagedSettings).mockRejectedValueOnce(new Error('共享设置保存失败，请重试'))
+  const wrapper = mount(ManagedSettingsPanel, { attachTo: document.body })
+  const saveButton = wrapper.get('header button[type="submit"]')
+  expect(saveButton.element).toHaveProperty('disabled', true)
+  await flushPromises()
+  const apiUrl = wrapper.get('input[type="url"][required]')
+  await apiUrl.setValue('')
+  await saveButton.trigger('click')
+  expect(saveManagedSettings).not.toHaveBeenCalled()
+  expect(wrapper.get('header [role="alert"]').text()).toContain('请检查表单')
+
+  const updatedUrl = 'https://rates.example/latest'
+  const updated = { ...saved, revision: 'revision-2', exchange_rates: { ...saved.exchange_rates, exchange_rate_api_url: updatedUrl } }
+  vi.mocked(saveManagedSettings).mockResolvedValue(updated)
+  await apiUrl.setValue(updatedUrl)
+  await saveButton.trigger('click')
+  await flushPromises()
+  expect(wrapper.get('header [role="alert"]').text()).toBe('共享设置保存失败，请重试')
+  expect(apiUrl.element).toHaveProperty('value', updatedUrl)
+  await saveButton.trigger('click')
+  await flushPromises()
+  expect(wrapper.get('header [role="status"]').text()).toBe('共享设置已保存')
+  expect(saveManagedSettings).toHaveBeenCalledTimes(2)
+
+  await wrapper.get('select').setValue('alibaba_crossborder')
+  expect(wrapper.find('header [role="status"]').exists()).toBe(false)
+  await saveButton.trigger('click')
+  expect(saveManagedSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+    revision: 'revision-2',
+    alibaba_api_application: 'alibaba_crossborder',
+  }))
+  await flushPromises()
 })

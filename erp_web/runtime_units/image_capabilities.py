@@ -8,6 +8,7 @@ from __future__ import annotations
 """
 
 from dataclasses import dataclass
+from uuid import NAMESPACE_URL, uuid5
 from typing import Annotated, Any
 
 from pydantic_ai import BinaryContent
@@ -33,8 +34,7 @@ from erp_web.schemas.image_capabilities import (
     ImagePoolUploadResult,
     ImageTranslateRequest,
 )
-from erp_web.services import ai_direct_request_service, ai_model_config, image_service, image_translate_service
-from erp_web.services.ai_run_cancellation import check_cancellation
+from erp_web.services import ai_direct_request_service, ai_model_config, image_service
 from erp_web.services.chat_images import user_images
 from erp_web.services.image_content import image_content
 from erp_web.services.image_source import read_source_image, source_image_path
@@ -42,6 +42,9 @@ from erp_web.schemas.image_hosting import ImageHostingError
 from erp_web.schemas.external_requests import ExternalRequestBlocked, ExternalRequestNotSent
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.runtime_units.image_processing import process_selected_images
+from erp_web.services.operation_availability import ImageDesktopRequired
+from erp_web.schemas.requests import RequestValidationError
 from erp_web.runtime_units.image_pool import (
     append_images_to_product_pool,
     apply_service_image_pool,
@@ -366,65 +369,74 @@ def image_pool_sync_generated(
     )
 
 
-def _apply_generated_result(
-    scope: ImageCapabilityScope,
-    request: ImageTranslateRequest | ImageEditRequest,
-    result: dict[str, Any],
-) -> ImageGenerationResult:
-    if not result.get("ok"):
-        raise BusinessCapabilityError(
-            _text(result.get("error_code")) or "IMAGE_GENERATE_FAILED",
-            _text(result.get("error") or result.get("message"))
-            or "图片生成失败。",
-        )
-    items = _dict_rows(result.get("imagePoolItems"))
-    with scope.context.products.mutation_scope({"product_id": request.product_id}):
-        check_cancellation()
-        product = _load_product(scope, request.product_id)
-        updated = append_images_to_product_pool(product, list(items))
-        main_image_id = ""
-        if isinstance(request, ImageEditRequest) and request.set_as_main and items:
-            main_image_id = _text(items[0].get("id"))
-            if not main_image_id:
-                raise BusinessCapabilityError(
-                    "IMAGE_GENERATED_ID_MISSING",
-                    "生成图片缺少稳定 ID，不能设为主图。",
-                )
-            updated = apply_service_image_pool(
-                updated,
-                image_service.set_main_image(
-                    [dict(item) for item in current_image_pool(updated)],
-                    main_image_id,
-                    scope.context.paths.app_dir,
-                ),
-            )
-        saved = _save_product(scope, updated)
-    draft_id = ""
-    if request.apply_to_draft:
-        check_cancellation()
-        draft_result, draft_error, _status = scope.context.products.apply_image_assets_to_draft(
-            request.draft_id,
-            list(items),
-            request.draft_image_strategy or "append",
-        )
-        if draft_error is not None:
-            raise BusinessCapabilityError(
-                _text(draft_error.get("error_code")) or "IMAGE_DRAFT_APPLY_FAILED",
-                _text(draft_error.get("error")) or "图片写入草稿失败。",
-            )
-        draft = (
-            draft_result.get("draft")
-            if isinstance(draft_result.get("draft"), dict)
-            else {}
-        )
-        draft_id = _text(draft.get("draft_id")) or request.draft_id
+def _desktop_action(execution, request, exc):
+    conversation_id = execution.business_scope.get("conversation_id", "")
+    call_id = execution.business_scope.get("tool_call_id", "")
+    details = {}
+    if conversation_id and call_id:
+        details = {
+            "desktop_image_action": {"conversation_id": conversation_id, "tool_call_id": call_id},
+            "request": request,
+        }
+    return BusinessCapabilityError("IMAGE_DESKTOP_REQUIRED", str(exc), details=details)
+
+
+def _generate_selected_images(scope, request, execution):
+    context = scope.context
+    product = _load_product(scope, request.product_id)
+    translate = isinstance(request, ImageTranslateRequest)
+    body = request.model_dump(mode="json")
+    if request.draft_id:
+        draft = context.products.draft_record(request.draft_id)
+        if not draft or draft.get("product_id") != request.product_id:
+            raise BusinessCapabilityError("DRAFT_NOT_FOUND", "目标草稿不存在或不属于当前商品。")
+        if request.platform and request.platform != draft["platform"]:
+            raise BusinessCapabilityError("DRAFT_PLATFORM_MISMATCH", "指定平台与草稿平台不一致。")
+        apply_to_draft = request.apply_to_draft or "apply_to_draft" not in request.model_fields_set
+        body.update(platform=draft["platform"], updated_at=draft["updated_at"], apply_to_draft=apply_to_draft,
+                    draft_image_strategy=request.draft_image_strategy or "replace_selected")
+        if translate:
+            language = request.target_language or draft.get("language")
+            if not language:
+                raise BusinessCapabilityError("IMAGE_LANGUAGE_REQUIRED", "请选择图片翻译的目标语言。")
+            body["target_language"] = language
+    elif translate and not request.target_language:
+        raise BusinessCapabilityError("IMAGE_LANGUAGE_REQUIRED", "请选择图片翻译的目标语言。")
+    if not translate and not request.source_image_ids:
+        if request.draft_id:
+            raise BusinessCapabilityError("IMAGE_SELECTION_REQUIRED", "请明确草稿中要修改的图片。")
+        body["source_image_ids"] = _main_image_ids(product)
+
+    operation_key = execution.idempotency_context.get("operation_key")
+    if operation_key:
+        body["request_id"] = f"ai_image_{uuid5(NAMESPACE_URL, operation_key).hex}"
+    try:
+        result = process_selected_images(context, product, body, translate=translate, actor="ai")
+    except ImageDesktopRequired as exc:
+        raise _desktop_action(execution, body, exc) from None
+    except RequestValidationError as exc:
+        raise BusinessCapabilityError(exc.error_code, str(exc)) from None
+
+    batch = result["image_batch"]
+    items = batch["items"]
+    unknown_count = sum(item["outcome_unknown"] for item in items)
+    if unknown_count or not batch["terminal"]:
+        raise BusinessCapabilityError("IMAGE_BATCH_OUTCOME_UNKNOWN", result["message"], details={
+            "outcome_unknown": True, "batch_id": batch["conversation_id"], "items": items,
+            "success_count": batch["success"], "failed_count": batch["failed"] - unknown_count,
+            "unknown_count": unknown_count,
+        })
+    # 同步单图接口保留明确的业务错误码，批量结果保留逐项回执。
+    if len(items) == 1 and items[0]["status"] == "failed" and items[0]["error_code"]:
+        raise BusinessCapabilityError(items[0]["error_code"], items[0]["error"],
+                                      details={"batch_id": batch["conversation_id"], "items": items})
+    status = ("partial" if batch["success"] and batch["failed"] else "failed" if batch["failed"] else "completed")
     return ImageGenerationResult(
-        product_id=_text(saved.get("product_id")) or request.product_id,
-        generated_count=len(items),
-        image_pool_items=items,
-        draft_id=draft_id,
-        main_image_id=main_image_id,
-        message=_text(result.get("message")),
+        product_id=request.product_id, draft_id=batch["draft_id"], batch_id=batch["conversation_id"],
+        status=status, total=batch["total"], success_count=batch["success"], failed_count=batch["failed"],
+        items=items, image_pool_items=result["imagePoolItems"], message=result["message"],
+        generated_count=sum(len(item["result_asset_ids"]) for item in items),
+        main_image_id=result.get("main_image_id", ""),
     )
 
 
@@ -432,7 +444,7 @@ def _apply_generated_result(
     name=IMAGE_TRANSLATE_TOOL,
     description=(
         "翻译/重绘商品图片文案并写回图片池（AI 生成）。"
-        "仅用于用户明确要求的图片内容处理；必须明确图片范围和目标语言，"
+        "仅用于用户明确要求的图片内容处理；传要处理的图片 ID。指定草稿时默认沿用草稿刊登语言并替换所选图片，"
         "不能因准备发布或图片资源未就绪而自行翻译全部图片。"
     ),
     permission="image.write",
@@ -448,18 +460,7 @@ def image_translate(
     scope: Annotated[ImageCapabilityScope, Injected()],
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> ImageGenerationResult:
-    del execution
-    product = _load_product(scope, request.product_id)
-    result = image_translate_service.translate_images(
-        scope.context.paths.app_dir,
-        product,
-        scope.context.config.load_app_config(),
-        target_language=request.target_language or "es",
-        platform=request.platform or "mercadolibre",
-        image_ids=list(request.source_image_ids),
-        mode=request.mode or "translate",
-    )
-    return _apply_generated_result(scope, request, result)
+    return _generate_selected_images(scope, request, execution)
 
 
 @ai_tool(
@@ -484,22 +485,7 @@ def image_edit(
     scope: Annotated[ImageCapabilityScope, Injected()],
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> ImageGenerationResult:
-    del execution
-    product = _load_product(scope, request.product_id)
-    source_image_ids = (
-        list(request.source_image_ids)
-        if request.source_image_ids
-        else _main_image_ids(product)
-    )
-    result = image_translate_service.edit_images(
-        scope.context.paths.app_dir,
-        product,
-        scope.context.config.load_app_config(),
-        prompt=request.prompt,
-        platform=request.platform or "mercadolibre",
-        image_ids=source_image_ids,
-    )
-    return _apply_generated_result(scope, request, result)
+    return _generate_selected_images(scope, request, execution)
 
 
 @ai_tool(
@@ -518,8 +504,12 @@ def draft_images_prepare(
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> DraftImagesPrepareResult:
     from erp_web.runtime_units.draft_image_prepare import prepare_draft_images
-    return prepare_draft_images(request, context=scope.context,
-                                operation_key=str(execution.idempotency_context.get("operation_key") or ""))
+    try:
+        return prepare_draft_images(request, context=scope.context,
+                                    operation_key=str(execution.idempotency_context.get("operation_key") or ""))
+    except ImageDesktopRequired as exc:
+        raise _desktop_action(execution, {**request.model_dump(mode="json"), "handoff_fingerprint": exc.fingerprint}, exc) from None
+
 
 
 DRAFT_IMAGE_JOB_TYPE = "draft_image_preparation"

@@ -6,12 +6,14 @@ from typing import Callable
 from erp_web.schemas.requests import validate_request_payload
 
 from .common import JsonRequestHandler
+from .manual_ai import send_manual_ai_result
 from ..facades import category_facade
 
 
 PostHandler = Callable[[JsonRequestHandler], None]
 
 CATEGORY_MATCH_PATH = "/api/v1/category-match"
+CATEGORY_MATCH_BATCH_PATH = "/api/v1/category-match/batch"
 
 
 def handle_category_attrs(handler: JsonRequestHandler) -> None:
@@ -36,19 +38,11 @@ def handle_category_search(handler: JsonRequestHandler) -> None:
 
 
 def handle_category_match(handler: JsonRequestHandler) -> None:
-    """同步 focused 类目匹配：类型化业务结果由本接口独占。
-
-    实时展示关联由 HTTP 公共边界（X-AI-Presentation-ID claim）完成；
-    本 route 不读取 presentation header，不导入 registry/SSE。
-    """
-
-    result, status = category_facade.category_match_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
+    send_manual_ai_result(handler, "category", category_facade.category_match_payload)
 
 
-
+def handle_category_match_batch(handler: JsonRequestHandler) -> None:
+    send_manual_ai_result(handler, "category", category_facade.category_match_batch_payload)
 
 def handle_category_precheck(handler: JsonRequestHandler) -> None:
     result, status = category_facade.category_precheck_payload(
@@ -58,9 +52,6 @@ def handle_category_precheck(handler: JsonRequestHandler) -> None:
 
 
 def handle_get(handler: JsonRequestHandler, parsed: object) -> bool:
-    # 类目匹配不再有独立 GET 入口；presentation 流由
-    # /api/v1/ai-presentations 边界统一提供。保留空实现以满足
-    # http_routes.GET_ROUTE_UNITS 的统一分派协议。
     return False
 
 
@@ -69,6 +60,7 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/category-attrs": handle_category_attrs,
     "/api/category-search": handle_category_search,
     CATEGORY_MATCH_PATH: handle_category_match,
+    CATEGORY_MATCH_BATCH_PATH: handle_category_match_batch,
     "/api/category-precheck": handle_category_precheck,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)

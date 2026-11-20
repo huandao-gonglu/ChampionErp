@@ -130,7 +130,7 @@ def _has_chinese_description(text: str) -> bool:
     return han_count > 0 and han_count >= len(other_words)
 
 
-def plan_image_set(*, app_dir, config, messages, product, draft, sources, count, prompt):
+def plan_image_set(*, app_dir, config, product, draft, sources, count, prompt):
     content = reference_content(app_dir, sources)
     allowed_ids = {source["id"] for source in sources}
 
@@ -149,7 +149,7 @@ def plan_image_set(*, app_dir, config, messages, product, draft, sources, count,
             raise ModelRetry(f"请用中文重写{'、'.join(invalid)}。用「」保留要印在图片上的目标语言文案。")
         return plan
 
-    factory = AiAgentFactory(app_dir=app_dir, app_config=config, message_store=messages)
+    factory = AiAgentFactory(app_dir=app_dir, app_config=config)
     pair = ai_prompt_templates.load_ai_use_case_prompt_pair("image.plan")
     outcome = factory.run_sync(
         profile=AiAgentExecutionProfile(
@@ -163,9 +163,7 @@ def plan_image_set(*, app_dir, config, messages, product, draft, sources, count,
         toolset=PLAN_TOOLSET, output_validator=validate_plan,
         business_scope={"product_id": product["product_id"], "draft_id": draft["draft_id"], "platform": draft["platform"]},
     )
-    plan = outcome.output
-    outcome.complete()
-    return plan
+    return outcome.output
 
 
 def generate_page(*, app_dir, config, product, draft, plan, page):

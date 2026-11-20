@@ -61,12 +61,12 @@ export async function fetchMercadoLibreAuthChecklist(): Promise<MercadoLibreAuth
 
 export async function testAiModel(
   model: UnknownRecord,
-  presentationId = '',
+  conversationId?: string,
 ): Promise<AuthResult> {
   const response = await apiClient.post(
     '/api/test-ai-model',
     { model: await prepareLocalModel(model) },
-    { aiPresentationId: presentationId, ...(model.connection_type === 'browser' ? { timeout: 600_000 } : {}) },
+    { aiConversationId: conversationId, ...(model.connection_type === 'browser' ? { timeout: 600_000 } : {}) },
   )
   return normalizeAuthResult(response.data)
 }

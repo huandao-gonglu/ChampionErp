@@ -268,7 +268,7 @@ def test_background_image_batch_keeps_original_desktop_after_page_context_change
         observed.append(current_desktop_connection())
         completed.set()
     with bind_desktop_connection('initiating-desktop'):
-        result = run_image_batch(store=context.image_batches, messages=context.pydantic_messages,
+        result = run_image_batch(store=context.image_batches,
             app_dir=context.paths.app_dir, product_id='product', prompt='修改图片',
             sources=[{'id': 'original'}], process=process, persist=persist, background=True)
     with bind_desktop_connection('another-desktop'):

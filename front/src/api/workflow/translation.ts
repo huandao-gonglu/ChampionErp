@@ -1,36 +1,14 @@
-import { apiClient, type AiPresentationTransport } from '@/api/client'
+import { API_REQUEST_TIMEOUT_MS, apiClient } from '@/api/client'
 import { asRecord, ensureOk } from '@/api/workflow/normalizers'
 
 export type TextTranslationMap = Record<string, string>
-
 const TRANSLATION_BATCH_SIZE = 100
-
-async function translateTextBatch(
-  targetLanguage: string,
-  content: TextTranslationMap,
-  presentation: AiPresentationTransport = {},
-): Promise<TextTranslationMap> {
-  const response = await apiClient.post('/api/text-translate', {
-    target_language: targetLanguage,
-    content,
-  }, { aiPresentationId: presentation.presentationId })
-  const data = asRecord(response.data)
-  ensureOk(data, '翻译文本失败')
-  const rawTranslations = asRecord(data.translations)
-  const expectedKeys = Object.keys(content)
-  if (
-    Object.keys(rawTranslations).length !== expectedKeys.length
-    || expectedKeys.some((key) => typeof rawTranslations[key] !== 'string' || !String(rawTranslations[key]).trim())
-  ) {
-    throw new Error('翻译结果与请求内容不一致')
-  }
-  return Object.fromEntries(expectedKeys.map((key) => [key, String(rawTranslations[key]).trim()]))
-}
 
 export async function translateText(
   targetLanguage: string,
   content: TextTranslationMap,
-  presentation: AiPresentationTransport = {},
+  conversationId?: string,
+  scope?: { draft_id: string; platform: string; site: string; category_id?: string },
 ): Promise<TextTranslationMap> {
   const language = targetLanguage.trim()
   if (!language) throw new Error('缺少目标翻译语言')
@@ -39,18 +17,19 @@ export async function translateText(
   if (entries.some(([key, value]) => !key.trim() || typeof value !== 'string' || !value.trim())) {
     throw new Error('翻译内容必须使用非空 key 和非空字符串 value')
   }
-  const translations: TextTranslationMap = {}
-  for (let index = 0; index < entries.length; index += TRANSLATION_BATCH_SIZE) {
-    Object.assign(
-      translations,
-      await translateTextBatch(
-        language,
-        Object.fromEntries(entries.slice(index, index + TRANSLATION_BATCH_SIZE)),
-        // 一个 presentation 只能 claim 一次；超大翻译的后续批次仍执行，
-        // 首批作为本次手动操作的唯一前台根流。
-        index === 0 ? presentation : {},
-      ),
-    )
+  const batches = Math.ceil(entries.length / TRANSLATION_BATCH_SIZE)
+  const response = await apiClient.post('/api/text-translate', {
+    ...scope, target_language: language, content,
+  }, {
+    aiConversationId: conversationId,
+    ...(batches > 1 ? { timeout: API_REQUEST_TIMEOUT_MS * batches } : {}),
+  })
+  const data = asRecord(response.data)
+  ensureOk(data, '翻译文本失败')
+  const translations = asRecord(data.translations)
+  if (Object.keys(translations).length !== entries.length
+      || entries.some(([key]) => typeof translations[key] !== 'string' || !String(translations[key]).trim())) {
+    throw new Error('翻译结果与请求内容不一致')
   }
-  return translations
+  return Object.fromEntries(entries.map(([key]) => [key, String(translations[key]).trim()]))
 }

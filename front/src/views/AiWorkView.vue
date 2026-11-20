@@ -17,7 +17,7 @@ import AiImageBatchProgress from '@/components/ai-work/AiImageBatchProgress.vue'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { workflowNavItems } from '@/constants/navigation'
-import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
+import { useAiChatStore } from '@/stores'
 import {
   GLOBAL_CHAT_CONVERSATION_PREFIX,
   type PydanticConversationDetailResponse,
@@ -33,7 +33,6 @@ const route = useRoute()
 const router = useRouter()
 useAiPageContext(() => ({ page: 'ai_work' }))
 const chatStore = useAiChatStore()
-const displayStore = useAiWorkDisplayStore()
 
 const conversations = ref<PydanticConversationSummary[]>([])
 const selectedDetail = ref<PydanticConversationDetailResponse | null>(null)
@@ -62,11 +61,6 @@ const requestedConversationId = computed(() => {
   return String(Array.isArray(value) ? value[0] || '' : value || '').trim()
 })
 
-const requestedPresentationId = computed(() => {
-  const value = route.query.presentation_id
-  return String(Array.isArray(value) ? value[0] || '' : value || '').trim()
-})
-
 const workspaceReturnRoute = computed(() => {
   const value = route.query.workspace_tab
   const tab = String(Array.isArray(value) ? value[0] || '' : value || '').trim()
@@ -78,36 +72,7 @@ const workspaceReturnRoute = computed(() => {
   }
 })
 
-const foregroundPresentation = computed(() => displayStore.foregroundPresentation)
-
-// query 期望的选中项：优先 conversation_id；只带 presentation_id 且命中当前前台
-// presentation 时解析为该 presentation 的 conversation。presentation_id 只是导航
-// 提示，不是替代选择条件。
-const requestedSelectionId = computed(() => {
-  const conversationId = requestedConversationId.value
-  if (conversationId) return conversationId
-  const presentation = foregroundPresentation.value
-  if (
-    presentation
-    && requestedPresentationId.value
-    && requestedPresentationId.value === presentation.presentationId
-  ) {
-    return presentation.conversationId
-  }
-  return ''
-})
-
-// query 指向当前活动会话或活动前台 presentation 时在 setup 阶段立即选中，
-// 首帧即绑定实时 Chat（global.chat 或 presentation observe Chat），不等待列表请求。
-const selectedId = ref(
-  requestedSelectionId.value
-  && (
-    chatStore.chat?.id === requestedSelectionId.value
-    || foregroundPresentation.value?.conversationId === requestedSelectionId.value
-  )
-    ? requestedSelectionId.value
-    : '',
-)
+const selectedId = ref(chatStore.chat?.id === requestedConversationId.value ? requestedConversationId.value : '')
 
 const selectedSummary = computed(() => conversations.value.find(
   (conversation) => conversation.conversation_id === selectedId.value,
@@ -128,16 +93,6 @@ const selectedIsActive = computed(() => (
   Boolean(selectedId.value) && chatStore.chat?.id === selectedId.value
 ))
 
-/** 选中的是当前前台 presentation 的 conversation：绑定同一个 observe Chat（只读）。 */
-const selectedIsForegroundPresentation = computed(() => {
-  const presentation = foregroundPresentation.value
-  if (!presentation || !selectedId.value) return false
-  // 只由 selectedId 决定：query 的 presentation_id 仅在导航时解析选中项，
-  // 之后不得作为替代条件——否则 presentation 期间点击其他历史 conversation，
-  // 会在该 conversation 标题下继续展示 presentation 实时消息（串 conversation）。
-  return selectedId.value === presentation.conversationId
-})
-
 const liveErrorText = computed(() => chatStore.error?.message || '')
 
 const isGlobalChatSelected = computed(() => (
@@ -157,25 +112,11 @@ const displayConversations = computed<ConversationListEntry[]>(() => {
       temporary: true,
     })
   }
-  const presentation = foregroundPresentation.value
-  const hasPresentationEntry = entries.some(
-    (entry) => entry.conversation_id === presentation?.conversationId,
-  )
-  if (presentation && !hasPresentationEntry) {
-    entries.unshift({
-      conversation_id: presentation.conversationId,
-      created_at: '',
-      updated_at: '',
-      temporary: true,
-    })
-  }
   return entries.sort((left, right) => Number(!!right.pinned) - Number(!!left.pinned))
 })
 
 function conversationTitle(id: string, saved?: string): string {
   if (id === chatStore.activeConversationId && chatStore.activeTitle !== '新对话') return chatStore.activeTitle
-  if (id === foregroundPresentation.value?.conversationId && foregroundPresentation.value.displayTitle)
-    return foregroundPresentation.value.displayTitle
   return saved || (id.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX) ? '新对话' : '业务任务')
 }
 
@@ -353,17 +294,6 @@ async function loadSelection(conversationId: string): Promise<void> {
     await loadActiveConversationDetail(conversationId)
     return
   }
-  // 活动前台 presentation：直接绑定 observe Chat，不请求尚不存在的服务端历史。
-  const presentation = foregroundPresentation.value
-  if (presentation && presentation.conversationId === conversationId) {
-    historyMessages.value = null
-    uiMessagesError.value = ''
-    loadingUiMessages.value = false
-    detailRequestGeneration += 1
-    selectedDetail.value = null
-    loadingDetail.value = false
-    return
-  }
   await Promise.all([
     loadConversation(conversationId),
     loadUiMessages(conversationId),
@@ -376,7 +306,7 @@ async function selectConversation(conversationId: string): Promise<void> {
   const query: LocationQueryRaw = { ...route.query, conversation_id: conversationId }
   // 空白对话尚无服务端历史，不生成刷新后必然 404 的链接。
   if (chatStore.chat?.id === conversationId && !chatStore.conversationLinkId) delete query.conversation_id
-  if (foregroundPresentation.value?.conversationId !== conversationId) delete query.presentation_id
+  delete query.presentation_id
   await router.replace({ query })
   await selection
 }
@@ -386,7 +316,7 @@ async function refreshConversations(): Promise<void> {
   loadingList.value = true
   listError.value = ''
   try {
-    const response = await fetchPydanticConversations()
+    const response = await fetchPydanticConversations(100, 'chats')
     if (generation !== listRequestGeneration) return
     if (!response?.ok) {
       listError.value = '读取对话列表失败，请稍后重试。'
@@ -396,10 +326,10 @@ async function refreshConversations(): Promise<void> {
       .sort(byUpdatedDesc)
     conversations.value = nextConversations
 
-    const requestedId = requestedSelectionId.value
+    const requestedId = requestedConversationId.value
     const activeId = chatStore.activeConversationId || ''
     let nextId = ''
-    // 选中项尚未/不再出现在服务端列表（活动会话或刚 terminal 的业务 conversation）
+    // 活动会话尚未出现在列表时保持选中。
     // 时保持选中；旧 URL 和未完成的导航不得覆盖用户刚创建的新对话。
     if (selectedId.value) nextId = selectedId.value
     else if (requestedId) nextId = requestedId
@@ -437,15 +367,8 @@ watch(() => chatStore.chat?.id, (conversationId) => {
   }
 }, { flush: 'sync' })
 
-// 前台 presentation terminal（display store 版本变化）：刷新列表与规范 detail；
-// 选中该 presentation conversation 时随后由 loadSelection 用服务端 /ui-messages
-// 替换临时 observe 展示，页面保持只读，不自动跳回 global.chat。
-watch(() => displayStore.presentationVersion, () => {
-  void refreshConversations()
-})
-
-// 支持在页面已挂载时通过 Router 导航切换 conversation（含 presentation_id 解析）。
-watch(requestedSelectionId, (nextValue) => {
+// 支持通过 Router 导航切换对话。
+watch(requestedConversationId, (nextValue) => {
   if (nextValue && nextValue !== selectedId.value) {
     void selectConversation(nextValue)
   }
@@ -453,7 +376,7 @@ watch(requestedSelectionId, (nextValue) => {
 
 onMounted(async () => {
   // 明确选择的历史由页面读取；默认入口与气泡共用同一恢复流程。
-  if (!requestedSelectionId.value) await chatStore.restoreConversation()
+  if (!requestedConversationId.value) await chatStore.restoreConversation()
   if (!disposed) void refreshConversations()
 })
 onBeforeUnmount(() => {
@@ -661,56 +584,15 @@ onBeforeUnmount(() => {
             </div>
           </header>
 
-          <!-- 对话视图：活动前台 presentation 绑定 observe Chat；活动会话绑定共享 Chat；其他历史只读展示 -->
+          <!-- 普通对话使用共享 Chat；旧执行记录仍可通过原链接查看。 -->
           <div data-testid="ai-work-chat-view" class="p-5">
             <AiImageBatchProgress
               v-if="!isGlobalChatSelected"
               :conversation-id="selectedId"
-              :active="selectedIsForegroundPresentation"
               @change="imageBatch = $event"
             />
             <div
-              v-if="!imageBatch && selectedIsForegroundPresentation && foregroundPresentation"
-              class="h-[calc(100vh-320px)] min-h-[480px] overflow-y-auto"
-              data-testid="ai-work-presentation-live"
-            >
-              <p class="mb-3 text-xs text-slate-400" data-testid="ai-work-presentation-live-note">
-                任务进度：{{ foregroundPresentation.displayTitle || 'AI 任务' }}
-                · {{ displayStore.presentationStatusText }}
-              </p>
-
-              <AiMessageList
-                v-if="displayStore.presentationMessages.length"
-                :messages="displayStore.presentationMessages"
-                :active="!displayStore.foregroundIsTerminal"
-              />
-              <div
-                v-else
-                class="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-500 dark:border-dark-600 dark:text-accent-300"
-                data-testid="ai-work-presentation-live-empty"
-              >
-                正在准备…
-              </div>
-
-              <p
-                v-if="displayStore.presentationBusy && displayStore.presentationMessages.at(-1)?.role !== 'assistant'"
-                class="mt-3 text-xs text-slate-400"
-                data-testid="ai-work-presentation-live-streaming"
-              >
-                正在处理…
-              </p>
-              <p
-                v-if="foregroundPresentation.error"
-                role="alert"
-                class="mt-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30"
-                data-testid="ai-work-presentation-live-error"
-              >
-                {{ foregroundPresentation.error.message }}
-              </p>
-            </div>
-
-            <div
-              v-else-if="selectedIsActive"
+              v-if="selectedIsActive"
               class="h-[calc(100vh-320px)] min-h-[480px]"
               data-testid="ai-work-live-chat"
             >

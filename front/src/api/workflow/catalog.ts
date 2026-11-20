@@ -1,4 +1,4 @@
-import { apiClient, type AiPresentationTransport } from '@/api/client'
+import { apiClient } from '@/api/client'
 import { submitCollection } from './collectionReceipt'
 import { normalizeCollectUrl } from '@/utils/collectQueue'
 import { listingLanguageValue } from '@/constants/locales'
@@ -261,7 +261,7 @@ export async function generateCopy(
   product: Product,
   platform: Marketplace,
   options: { draftId?: string; language?: string; mode?: 'rewrite' | 'generate' } = {},
-  presentation: AiPresentationTransport = {},
+  conversationId?: string,
 ): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/generate-copy', {
     product_id: requiredProductId(product, '生成文案'),
@@ -269,19 +269,19 @@ export async function generateCopy(
     ...(options.draftId ? { draft_id: options.draftId } : {}),
     ...(options.language ? { language: options.language } : {}),
     ...(options.mode ? { mode: options.mode } : {}),
-  }, { aiPresentationId: presentation.presentationId })
+  }, { aiConversationId: conversationId })
   return normalizeProductMutation(response.data)
 }
 
 export async function generateCopyBatch(
   productIds: string[],
   platform: Marketplace,
-  presentation: AiPresentationTransport = {},
+  conversationId?: string,
 ): Promise<UnknownRecord> {
   const response = await apiClient.post(
     '/api/generate-copy-batch',
     { product_ids: productIds, platform },
-    { aiPresentationId: presentation.presentationId },
+    { aiConversationId: conversationId },
   )
   const data = asRecord(response.data)
   ensureOk(data, '批量文案失败')
@@ -303,7 +303,7 @@ export async function generateCopyBatch(
   return data
 }
 
-export async function generateImagePrompts(product: Product, platform: Marketplace, targetLanguage = ''): Promise<string> {
+export async function generateImagePrompts(product: Product, platform: Marketplace, targetLanguage = '', conversationId?: string): Promise<string> {
   const listingLanguage = targetLanguage || product.drafts[platform]?.language || listingLanguageValue(platform)
   const response = await apiClient.post('/api/generate-image-prompts', {
     product_id: requiredProductId(product, '生成图片提示词'),
@@ -312,7 +312,7 @@ export async function generateImagePrompts(product: Product, platform: Marketpla
     target_language: listingLanguage,
     selected_image_ids: product.source.imagePool.filter((image) => image.selected).map((image) => image.id),
     include_description: true,
-  })
+  }, { aiConversationId: conversationId })
   const data = asRecord(response.data)
   ensureOk(data, '生成图片提示词失败')
   return getString(data, ['prompt'])
@@ -332,7 +332,7 @@ export async function imageTranslate(
   platform: Marketplace,
   language: string,
   options: ImageTranslateOptions = {},
-  presentation: AiPresentationTransport = {},
+  conversationId?: string,
 ): Promise<ProductMutationResponse> {
   const listingLanguage = language || product.drafts[platform]?.language || listingLanguageValue(platform)
   const selectedImageIds = options.sourceImageIds ?? product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
@@ -348,7 +348,7 @@ export async function imageTranslate(
     source_image_ids: selectedImageIds,
   }, {
     timeout: imageTranslateTimeoutMs(selectedImageIds),
-    aiPresentationId: presentation.presentationId,
+    aiConversationId: conversationId,
   })
   return normalizeProductMutation(response.data)
 }
@@ -358,7 +358,7 @@ export async function imageEdit(
   platform: Marketplace,
   prompt: string,
   options: ImageEditOptions = {},
-  presentation: AiPresentationTransport = {},
+  conversationId?: string,
 ): Promise<ProductMutationResponse> {
   const userPrompt = String(prompt || '').trim()
   if (!userPrompt) throw new Error('请输入图生图提示词')
@@ -374,7 +374,7 @@ export async function imageEdit(
     source_image_ids: selectedImageIds,
   }, {
     timeout: imageTranslateTimeoutMs(selectedImageIds),
-    aiPresentationId: presentation.presentationId,
+    aiConversationId: conversationId,
   })
   return normalizeProductMutation(response.data)
 }

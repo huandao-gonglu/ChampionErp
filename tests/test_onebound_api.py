@@ -6,8 +6,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from erp_web.services import onebound_api_transport as transport
-from erp_web.services.alibaba_api_client import alibaba_provider, AlibabaApiError, AlibabaApiRejected, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, _parse_response
-from erp_web.services.alibaba_api_client import ADDRESSES, BUYER_IDENTITY, PREVIEW, CREATE, ORDER_LIST, PAY_STATUS, PAY
+from erp_web.services.alibaba_api_client import alibaba_provider, AlibabaApiError, AlibabaApiRejected, OneBoundAlibabaProvider, ORDER_DETAIL, LOGISTICS_INFO, LOGISTICS_TRACE, _parse_response
+from erp_web.services.alibaba_api_client import ADDRESSES, PREVIEW, CREATE, ORDER_LIST, PAY_STATUS, PAY
 
 
 CONFIG = {'application_type': 'onebound', 'api_key': 'vendor-key', 'api_secret': 'vendor-secret', 'access_token': 'buyer-token'}
@@ -59,7 +59,7 @@ def test_product_order_and_logistics_use_same_explicit_provider(monkeypatch):
             return response({'response': {'logisticsTrace': []}})
         return response({'response': {'success': True, 'result': []}})
     monkeypatch.setattr(transport, 'managed_urlopen', send)
-    client = alibaba_provider(CONFIG)
+    client = alibaba_provider({**CONFIG, 'member_id': 'buyer-a'})
     assert client.get_product('123', 'https://detail.1688.com/offer/123.html')['product']['api_offer_id'] == '123'
     assert client.get_order('123').status['order_number'] == '123'
     assert client.get_shipments('123') == []
@@ -156,17 +156,6 @@ def test_onebound_writes_require_a_verified_directory_session(monkeypatch, confi
         provider.pay_order("123", channel="alipay", amount_fen=100, request_id="payment")
 
 
-def test_onebound_write_checks_current_buyer_before_sending(monkeypatch):
-    def send(request, *, request_context, **kwargs):
-        assert request_context.interface == 'com.alibaba.account/' + BUYER_IDENTITY
-        assert request_context.semantics == 'read'
-        return response({'response': {'memberId': 'default-buyer'}})
-
-    monkeypatch.setattr(transport, 'managed_urlopen', send)
-    with pytest.raises(AlibabaApiRejected, match='买家身份未通过核验'):
-        alibaba_provider(DIRECTORY_CONFIG).create_order({}, [], flow='general', channel='alipay', external_id='record')
-
-
 @pytest.mark.parametrize('payment_response', [
     {'paySuccess': True, 'payChannel': 'SHEGOU'},
     {'success': True, 'paySuccess': True, 'payChannel': 'SHEGOU'},
@@ -176,8 +165,7 @@ def test_onebound_trades_keep_session_parameters_and_write_semantics(monkeypatch
     number = '9007199254740993'
     address = {'fullName': '收货人', 'provinceText': '浙江省', 'cityText': '杭州市', 'address': '示例路 10 号'}
     calls = []
-    replies = {BUYER_IDENTITY: {'memberId': 'buyer-a'},
-               CREATE: {'success': True, 'orderId': number, 'orderList': []}, PAY: payment_response}
+    replies = {CREATE: {'success': True, 'orderId': number, 'orderList': []}, PAY: payment_response}
 
     def send(request, *, request_context, follow_redirects, **kwargs):
         parsed = urlsplit(request.full_url)
@@ -197,7 +185,6 @@ def test_onebound_trades_keep_session_parameters_and_write_semantics(monkeypatch
     assert provider.create_order(address, cargo, flow='general', channel='shegou', external_id='record') == [number]
     assert provider.pay_order(number, channel='shegou', amount_fen=1580, request_id='payment')[0] == 'succeeded'
     assert calls == [
-        ('com.alibaba.account/' + BUYER_IDENTITY, {}, 'read'),
         ('com.alibaba.trade/' + CREATE, {'addressParam': address,
          'cargoParamList': [{'offerId': 123, 'specId': 'spec-a', 'quantity': 2}], 'flow': 'general',
          'tradeType': 'assureTrade', 'preSelectPayChannel': 'shegou', 'outOrderId': 'record'}, 'write'),
@@ -212,6 +199,6 @@ def test_buyer_basic_uses_confirmed_top_level_token(monkeypatch):
         assert params['method'] == ['com.alibaba.account/alibaba.account.basic']
         assert params['access_token'] == ['buyer-token']
         assert json.loads(params['_o_args'][0]) == {}
-        return response({'response': {'memberId': 'buyer-a'}})
+        return response({'response': {'memberId': 'buyer-a', 'loginId': '买家甲'}})
     monkeypatch.setattr(transport, 'managed_urlopen', send)
-    assert alibaba_provider(CONFIG).get_buyer_id() == 'buyer-a'
+    assert OneBoundAlibabaProvider(CONFIG, 20).get_buyer_profile() == ('buyer-a', '买家甲')

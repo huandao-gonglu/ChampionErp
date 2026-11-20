@@ -13,6 +13,8 @@ from erp_web.facades.category_match_facade import match_category
 from erp_web.product_model import validate_category_precheck
 from erp_web.services.forbidden_category_service import forbidden_category_issue
 from erp_web.services.operation_availability import require_model_platform
+from erp_web.services.ai_run_cancellation import check_cancellation
+from erp_web.schemas.requests import RequestValidationError, validate_request_payload
 from erp_web.runtime_units.category_store import (
     fetch_category_attribute_page,
     fetch_category_attribute_values,
@@ -199,8 +201,7 @@ def load_category_match_subject(
 ) -> tuple[Payload, Payload, Payload, ResponseWithStatus | None]:
     """解析类目匹配 subject：返回 ``(product, draft, target, error)``。
 
-    旧同步 endpoint 删除后，focused start endpoint 继续用同一合同读取
-    商品/草稿与目标站点；``error`` 非空时不得继续启动运行。
+    单目标请求与批量请求共用同一草稿和目标校验。
     """
 
     product, context, platform, site, error, status = _load_category_subject(body)
@@ -223,28 +224,44 @@ def load_category_match_subject(
     return product, draft or {}, target, None
 
 
-
-
-
-
-
-
 def category_match_payload(body: Payload) -> ResponseWithStatus:
-    """同步 focused 类目匹配唯一入口：业务控制与类型化结果。
-
-    复用 ``match_category()`` 共享编排（输入校验、检索装配、Agent 运行、
-    业务终检），同步返回当前类型化 ``CategoryMatchResult``。业务判断型失败
-    保留 ``ok=false`` 的类型化结果（HTTP 200），由 caller 读取
-    failure/status；实时展示由 HTTP 公共边界的 presentation 上下文自动
-    关联，本 facade 不感知 SSE/registry/presentation。
-    """
-
+    """同步匹配一个目标站点，保留候选、证据及终检结果。"""
     product, draft, target, error = load_category_match_subject(body)
     if error is not None:
         return error
     require_model_platform(get_context().config.load_app_config(), "category.product_match")
     result = match_category(product, draft, target)
     return dict(result), 200
+
+
+def category_match_batch_payload(body: Payload) -> ResponseWithStatus:
+    raw_targets = body["targets"]
+    if not 1 <= len(raw_targets) <= 100 or any(not isinstance(target, dict) for target in raw_targets):
+        return {"ok": False, "error": "请选择 1 到 100 个类目匹配目标。"}, 400
+    targets = [
+        validate_request_payload(
+            {"draft_id": body["draft_id"], **{key: target.get(key, "") for key in ("platform", "site", "language")}},
+            endpoint="/api/v1/category-match",
+        )
+        for target in raw_targets
+    ]
+    items = []
+    for target in targets:
+        check_cancellation()
+        try:
+            result, _ = category_match_payload(target)
+        except RequestValidationError as exc:
+            result = {"ok": False, "error": str(exc), "error_code": exc.error_code}
+        if not result.get("ok") and "failure" not in result and result.get("error"):
+            result = {**result, "status": "failed", "failure": {
+                "code": result.get("error_code", "CATEGORY_MATCH_FAILED"),
+                "message": result["error"], "stage": "request", "retryable": False,
+            }}
+        items.append({
+            "target": {key: target[key] for key in ("platform", "site")},
+            **result,
+        })
+    return {"ok": any(item.get("ok") for item in items), "items": items}, 200
 
 
 def category_precheck_payload(body: Payload) -> ResponseWithStatus:
@@ -298,6 +315,7 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
 __all__ = [
     "category_attrs_payload",
     "category_match_payload",
+    "category_match_batch_payload",
     "category_precheck_payload",
     "category_search_payload",
     "load_category_match_subject",

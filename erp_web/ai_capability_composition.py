@@ -34,6 +34,7 @@ from erp_web.runtime_units.draft_pricing_capabilities import DRAFT_PRICING_AI_CA
 from erp_web.runtime_units.upc_capabilities import (
     UPC_AI_CAPABILITIES,
 )
+from erp_web.runtime_units.user_agents_capability import USER_AGENTS_CAPABILITIES, USER_AGENTS_UPDATE
 from erp_web.runtime_units.package_estimate_capabilities import PACKAGE_ESTIMATE_CAPABILITIES
 from erp_web.runtime_units.product_capabilities import PRODUCT_AI_CAPABILITIES
 from erp_web.runtime_units.product_write_capabilities import (
@@ -82,6 +83,7 @@ ALL_AI_CAPABILITIES = (
     *ORDER_FULFILLMENT_AI_CAPABILITIES,
     *ONLINE_PRODUCT_AI_CAPABILITIES,
     *CONVERSATION_FACT_CAPABILITIES,
+    *USER_AGENTS_CAPABILITIES,
     *PRODUCT_CAPABILITIES,
     *PACKAGE_ESTIMATE_CAPABILITIES,
     *PRODUCT_WRITE_CAPABILITIES,
@@ -163,6 +165,7 @@ GLOBAL_CHAT_CAPABILITIES = frozenset(
 #: owner 并膨胀上下文，已从常用 allowlist 移除，只保留为 internal。
 _WRITE_CAPABILITIES = frozenset(
     {
+        USER_AGENTS_UPDATE,
         "orders_sync",
         "order_buyer_chat_send",
         "order_notification_update",

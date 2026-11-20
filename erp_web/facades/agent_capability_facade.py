@@ -19,6 +19,7 @@ from erp_web.facades import order_chat_facade
 from erp_web.facades.agent_draft_scope import authorized_draft_ids
 from erp_web.facades.agent_tool_visibility import prepare_chat_tools
 from erp_web.runtime_units.conversation_fact_capabilities import ConversationFactScope
+from erp_web.runtime_units.user_agents_capability import UserAgentsScope
 from erp_web.runtime_units.online_product_capabilities import ONLINE_PRODUCT_JOB_TYPE, OnlineProductCapabilityScope
 from erp_web.runtime_units.online_product_job_reader import OnlineProductJobReader
 from erp_web.facades.category_match_facade import (
@@ -141,6 +142,7 @@ def build_capability_binding_scope(
             ConversationFactScope: ConversationFactScope(
                 context.agent_calls, context.chat_turn_claims
             ),
+            UserAgentsScope: UserAgentsScope(context.config.user_agents, context.config.save_user_agents),
             ProductCapabilityScope: ProductCapabilityScope(
                 products=context.products,
             ),
@@ -269,7 +271,10 @@ def build_job_status_readers(
     return {
         ONLINE_PRODUCT_JOB_TYPE: OnlineProductJobReader(OnlineProductCapabilityScope(lambda: active_context.online_products).job),
         PRODUCT_RESEARCH_JOB_TYPE: ResearchJobStatusReader(),
-        DRAFT_IMAGE_JOB_TYPE: DraftImageJobStatusReader(lambda key: active_context.image_batches.preparation(key)),
+        DRAFT_IMAGE_JOB_TYPE: DraftImageJobStatusReader(
+            lambda key: active_context.image_batches.preparation(key),
+            lambda key: active_context.image_batches.get(key),
+        ),
     }
 
 
@@ -282,7 +287,6 @@ def build_global_chat_toolset(context: AppContext | None = None, *, chat_config:
 
     # 声明业务工具与执行依赖的关系；工具搜索、直接调用和后台投递共用 binding。
     model_dependencies = {
-        'image_translate': 'image.translate', 'image_edit': 'image.translate',
         'text_translate': 'text.translate', 'copy_generate': 'copy.generate',
         'copy_generate_batch': 'copy.generate', 'category_match': 'category.product_match',
     }

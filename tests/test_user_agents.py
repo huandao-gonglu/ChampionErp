@@ -1,13 +1,21 @@
 """唯一用户指令文件的保存、并发保护与数据隔离。"""
 
+import asyncio
+import json
 from pathlib import Path
 import re
 
 import pytest
+from pydantic_ai.messages import ToolReturnPart, UserPromptPart
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from erp_web.context import get_context
+from erp_web.facades.agent_capability_facade import build_global_chat_toolset
+from erp_web.runtime_units.user_agents_capability import USER_AGENTS_UPDATE
 from erp_web.schemas.requests import RequestValidationError, validate_request_payload
 from erp_web.services.user_agents import read_user_agents, load_user_agent_instructions
+from tests.ai_code_mode_helpers import discover_tools
+from tests.test_native_agent_integration import CONVERSATION, body, service
 
 
 def test_initial_outline_is_comments_only_and_read_does_not_write(app_dir):
@@ -72,3 +80,65 @@ def test_user_agents_symlink_cannot_read_or_overwrite_another_file(app_dir, tmp_
     with pytest.raises(ValueError, match="符号链接"):
         read_user_agents(app_dir)
     assert other.read_text() == "其他账号资料"
+
+
+@pytest.mark.parametrize("decision", ["append", "replace", "duplicate", "deny", "stale"])
+def test_chat_updates_user_agents_only_after_native_confirmation(app_dir, decision):
+    context = get_context()
+    config = context.config
+    original = "<!-- 编辑说明 -->\n\n始终显示单位。\n\n先给结果。\n"
+    initial = config.save_user_agents({"content": original, "expected_revision": config.user_agents()["revision"]})
+    text = "先给结果。" if decision == "duplicate" else "Yandex 托盘缺少形状变体字段时，先确认后再用真实形状和尺寸区分。"
+    arguments = {"text": text}
+    if decision in {"replace", "stale"}:
+        arguments["current_text"] = "先给结果。"
+    receipt = []
+    fresh_instructions = []
+
+    async def model(messages, info):
+        for message in reversed(messages):
+            for part in message.parts:
+                if isinstance(part, ToolReturnPart) and part.tool_name == USER_AGENTS_UPDATE:
+                    receipt.append(part.content)
+                    yield "已收到处理结果。"
+                    return
+                if isinstance(part, UserPromptPart) and part.content == "读取已保存偏好":
+                    fresh_instructions.append(info.instructions)
+                    yield "已读取。"
+                    return
+        call = discover_tools(info, USER_AGENTS_UPDATE) or DeltaToolCall(
+            name=USER_AGENTS_UPDATE, json_args=json.dumps(arguments), tool_call_id="update-rule",
+        )
+        yield {0: call}
+
+    ui = service(app_dir, FunctionModel(stream_function=model), build_global_chat_toolset(context))
+    ui.chat_service.approval_mode_reader = lambda: "full"
+    asyncio.run(ui.prepare_run(body("把这个操作写入记忆")).stream(lambda _: None))
+    assert config.user_agents() == initial
+    part, = [p for m in ui.dump_ui_messages(CONVERSATION)["messages"] for p in m["parts"] if p.get("state") == "approval-requested"]
+    assert part["input"] == arguments
+    if decision == "stale":
+        config.save_user_agents({"content": original + "设置页另存的规则。\n", "expected_revision": initial["revision"]})
+    before = config.user_agents()
+    part["state"] = "approval-responded"
+    part["approval"]["approved"] = decision != "deny"
+    payload = {"id": CONVERSATION, "trigger": "submit-message",
+               "messages": [{"id": "review", "role": "assistant", "parts": [part]}]}
+    asyncio.run(ui.prepare_run(json.dumps(payload).encode(), approval_token="test-token").stream(lambda _: None))
+
+    saved = config.user_agents()
+    if decision in {"deny", "stale", "duplicate"}:
+        assert saved == before
+        if decision == "stale":
+            assert receipt[0]["error"]["code"] == "USER_AGENTS_CHANGED"
+        if decision == "duplicate":
+            assert receipt == [{"changed": False, "text": text, "revision": saved["revision"]}]
+        return
+    expected = original.replace("先给结果。", text) if decision == "replace" else original + "\n" + text + "\n"
+    assert saved["content"] == expected
+    assert receipt == [{"changed": True, "text": text, "revision": saved["revision"]}]
+    fresh_id = "conversation_global_chat_" + "7" * 32
+    fresh = body("读取已保存偏好", "fresh").replace(CONVERSATION.encode(), fresh_id.encode())
+    asyncio.run(ui.prepare_run(fresh).stream(lambda _: None))
+    assert text in fresh_instructions[0] and "始终显示单位。" in fresh_instructions[0]
+    assert "编辑说明" not in fresh_instructions[0]

@@ -10,6 +10,22 @@ import { useAiChatStore } from '@/stores/aiChat'
 describe('原生工具审批卡', () => {
   beforeEach(() => setActivePinia(createPinia()))
   afterEach(() => vi.unstubAllGlobals())
+  it('在确认前展示原规则与将保存的正文', async () => {
+    const store = useAiChatStore()
+    const input = { current_text: '先给结果。', text: '先给结果，再列出失败的 SKU。' }
+    store.chat = new Chat<UIMessage>({ id: 'rule-review', messages: [{ id: 'a', role: 'assistant', parts: [{
+      type: 'tool-user_agents_update', toolCallId: 'rule', input, state: 'approval-requested', approval: { id: 'rule' },
+    }] }] })
+    store.pendingToolCalls = [{ tool_call_id: 'rule', tool_name: 'user_agents_update', kind: 'approval', summary: '确认替换自定义指令' }]
+    const respond = vi.spyOn(store, 'respondToApproval').mockResolvedValue()
+    const wrapper = mount(ChatPendingActions)
+    await wrapper.get('button[aria-expanded]').trigger('click')
+    const card = wrapper.get('[data-testid="native-tool-approvals"]')
+    expect(card.findAll('dd').map(item => item.text())).toEqual([input.current_text, input.text])
+    expect(card.find('details').exists()).toBe(false)
+    await card.get('button.btn-primary').trigger('click')
+    expect(respond).toHaveBeenCalledWith('rule', true, undefined)
+  })
   it('核对每个 SKU 的建议值、区间和依据后，才提交原生确认', async () => {
     const store = useAiChatStore()
     const input = { estimates: [{ sku_id: 's-1', sku_name: '10 L 桶', basis: '按桶身标注预留纸箱空间', dimensions: {

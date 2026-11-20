@@ -21,37 +21,6 @@ from erp_web.services.ai_tool_registry import AiToolSet, deadline_aware_tool_exe
 from tests.test_category_match_agent_service import factory_for
 
 
-def test_nested_agent_failure_also_persists_parent_native_history(monkeypatch):
-    factory = factory_for(FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart("建议值")])))
-    saved = []
-    original_save = factory.message_store.save
-
-    def save(conversation_id, messages, **kwargs):
-        saved.append(conversation_id)
-        return original_save(conversation_id, messages, **kwargs)
-
-    monkeypatch.setattr(factory.message_store, "save", save)
-
-    def review(ctx, output):
-        raise AiAgentExecutionError("REVIEW_FAILED", "子复核失败。", conversation_id="review-child")
-
-    with pytest.raises(AiAgentExecutionError) as captured:
-        factory.run_sync(
-            profile=AiAgentExecutionProfile(
-                use_case_id="test.budget", output_type=str, toolset_id="test.history",
-                permissions=frozenset(), budget_profile="test.budget", timeout_seconds=10,
-                max_model_requests=2, max_tool_calls=1, max_tool_output_bytes=4096,
-            ),
-            instructions="返回建议。", user_prompt="保存父调用上下文。",
-            toolset=AiToolSet("test.history", {}), output_validator=review,
-        )
-    assert captured.value.code == "REVIEW_FAILED"
-    assert len(saved) == 1 and saved[0] != "review-child"
-    history = factory.message_store.get(saved[0]).model_messages()
-    assert "保存父调用上下文。" in str(history)
-    assert "建议值" in str(history)
-
-
 def test_total_deadline_closes_a_model_stream_that_keeps_producing_chunks():
     chunks = []
     closed = []

@@ -115,8 +115,9 @@ function normalizeProductResearchResponse(value: unknown): ProductResearchRespon
 
 export async function createProductResearchHotProductRun(
   payload: UnknownRecord,
+  conversationId?: string,
 ): Promise<ProductResearchResponse> {
-  const response = await apiClient.post('/api/v1/product-research/hot-products/search', payload)
+  const response = await apiClient.post('/api/v1/product-research/hot-products/search', payload, { aiConversationId: conversationId })
   return normalizeProductResearchResponse(response.data)
 }
 

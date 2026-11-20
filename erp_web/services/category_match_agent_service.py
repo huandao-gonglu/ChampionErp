@@ -1,29 +1,13 @@
-"""``category.product_match`` 的唯一 Pydantic Agent service。
-
-同步与流式入口复用同一套 factory 装配语义（``open_stream_run``）：
-
-- ``open_category_match_stream``：focused 流式运行入口，yield opaque session 与
-  渲染好的 user prompt；展示编码由 protocol service 负责，本模块不导入
-  HTTP/SSE/Vercel transport。
-- ``run_category_match_agent``：同步入口（Global Task 等 child 场景），在同一
-  装配下消费 native events 但不建立展示流；子运行不创建独立 SSE。
-"""
+"""通过集中 Agent Factory 执行类目检索和结构化匹配。"""
 
 from __future__ import annotations
 
-import asyncio
-import contextvars
-from collections.abc import AsyncIterator
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 from typing import Annotated, Any, Mapping, Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from pydantic_ai import ModelRetry, RunContext
-from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models import Model
 
 from erp_web.context import get_context
@@ -38,11 +22,9 @@ from erp_web.schemas.category_search_language import category_search_language
 
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_agent_factory import (
-    AiAgentExecutionError,
     AiAgentExecutionProfile,
     AiAgentFactory,
     AiAgentRunOutcome,
-    AiAgentStreamSession,
 )
 from .ai_prompt_templates import load_ai_use_case_prompt_pair, render_prompt_template
 from .ai_tool_registry import AiToolSet
@@ -222,12 +204,6 @@ class CategoryMatchAgentRun:
     trace: CategoryMatchTrace
     outcome: AiAgentRunOutcome[CategoryMatchAgentOutput] | None = None
 
-    def finish_business_result(self, result: Mapping[str, Any]) -> None:
-        del result
-        if self.outcome is None:
-            return
-        self.outcome.complete()
-
 
 def _prompt_payload(payload: Mapping[str, Any]) -> str:
     return json.dumps(dict(payload), ensure_ascii=False, separators=(",", ":"))
@@ -278,7 +254,6 @@ def _prepare_run_params(
     agent_factory = factory or AiAgentFactory(
         app_dir=context.paths.app_dir,
         app_config=app_config,
-        message_store=context.pydantic_messages,
     )
     target = payload.get("target") if isinstance(payload.get("target"), Mapping) else {}
     return _CategoryMatchRunParams(
@@ -290,10 +265,6 @@ def _prepare_run_params(
         },
         factory=agent_factory,
     )
-
-
-def _user_prompt_messages(user_prompt: str) -> list[ModelRequest]:
-    return [ModelRequest(parts=[UserPromptPart(user_prompt)])]
 
 
 def category_match_run_from_outcome(
@@ -313,65 +284,6 @@ def category_match_run_from_outcome(
     )
 
 
-@asynccontextmanager
-async def open_category_match_stream(
-    payload: Mapping[str, Any],
-    toolset: AiToolSet,
-    ledger: CategoryCandidateLedger,
-    *,
-    timeout_seconds: float,
-    conversation_id: str,
-    factory: AiAgentFactory | None = None,
-    model_override: Model | None = None,
-    candidate_detail_loader=None,
-) -> AsyncIterator[
-    tuple[AiAgentStreamSession[CategoryMatchAgentOutput], str]
-]:
-    """Focused 流式运行入口：yield opaque session 与渲染好的 user prompt。
-
-    装配语义与原同步路径完全一致（同一 profile、validator、ToolSet、预算和
-    脱敏）；展示编码与 chunk 发布由调用侧 protocol service 负责。
-    """
-
-    params = _prepare_run_params(payload, factory=factory)
-    async with params.factory.open_stream_run(
-        profile=CATEGORY_MATCH_AGENT_PROFILE,
-        instructions=params.instructions,
-        toolset=toolset,
-        conversation_id=conversation_id,
-        use_case_state=ledger,
-        output_validator=CategoryMatchOutputValidator(ledger, candidate_detail_loader),
-        business_scope=params.business_scope,
-        idempotency_context={"result_version": CATEGORY_MATCH_RESULT_VERSION},
-        timeout_seconds=timeout_seconds,
-        model_override=model_override,
-    ) as session:
-        yield session, params.user_prompt
-
-
-def category_match_prompt_messages(user_prompt: str) -> list[ModelRequest]:
-    """本轮运行的用户消息；prompt 不当作用户聊天气泡展示。"""
-
-    return _user_prompt_messages(user_prompt)
-
-
-def _run_in_fresh_loop(coroutine: Any) -> Any:
-    """在没有（或已有）event loop 的调用线程里安全运行协程。
-
-    已有 event loop 时改在工作线程运行；新线程不继承 contextvars，必须
-    显式复制当前上下文（重构计划 §16：presentation 等 contextvar 不得在
-    线程边界丢失）。
-    """
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coroutine)
-    context = contextvars.copy_context()
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(context.run, asyncio.run, coroutine).result()
-
-
 def run_category_match_agent(
     payload: Mapping[str, Any],
     toolset: AiToolSet,
@@ -382,42 +294,20 @@ def run_category_match_agent(
     model_override: Model | None = None,
     candidate_detail_loader=None,
 ) -> CategoryMatchAgentRun:
-    """同步入口（Global Task 等 child 场景）；不建立展示流。
-
-    内部复用与流式入口完全一致的 ``open_stream_run`` 装配；native events 被
-    消费但不转换为展示 chunk，子运行展示遵循父运行单 SSE 规则。
-    """
-
-    async def _execute() -> CategoryMatchAgentRun:
-        async with open_category_match_stream(
-            payload,
-            toolset,
-            ledger,
-            timeout_seconds=timeout_seconds,
-            conversation_id=f"conversation_{uuid4().hex}",
-            factory=factory,
-            model_override=model_override,
-            candidate_detail_loader=candidate_detail_loader,
-        ) as (session, user_prompt):
-            native = session.events(_user_prompt_messages(user_prompt))
-            try:
-                async for _event in native:
-                    pass
-            finally:
-                await native.aclose()
-            if not session.finalizing:
-                raise AiAgentExecutionError(
-                    "AI_AGENT_STREAM_RESULT_UNAVAILABLE",
-                    "类目匹配运行未产生类型化完成结果。",
-                    conversation_id=session.conversation_id,
-                    task_run_id=session.task_run_id,
-                    run_id=session.run_id,
-                    trace_id=session.trace_id,
-                )
-            outcome = session.require_outcome()
-        return category_match_run_from_outcome(outcome)
-
-    return _run_in_fresh_loop(_execute())
+    params = _prepare_run_params(payload, factory=factory)
+    outcome = params.factory.run_sync(
+        profile=CATEGORY_MATCH_AGENT_PROFILE,
+        instructions=params.instructions,
+        user_prompt=params.user_prompt,
+        toolset=toolset,
+        use_case_state=ledger,
+        output_validator=CategoryMatchOutputValidator(ledger, candidate_detail_loader),
+        business_scope=params.business_scope,
+        idempotency_context={"result_version": CATEGORY_MATCH_RESULT_VERSION},
+        timeout_seconds=timeout_seconds,
+        model_override=model_override,
+    )
+    return category_match_run_from_outcome(outcome)
 
 
 __all__ = [
@@ -429,8 +319,6 @@ __all__ = [
     "CategoryMatchAgentOutput",
     "CategoryMatchAgentRun",
     "CategoryMatchOutputValidator",
-    "category_match_prompt_messages",
     "category_match_run_from_outcome",
-    "open_category_match_stream",
     "run_category_match_agent",
 ]

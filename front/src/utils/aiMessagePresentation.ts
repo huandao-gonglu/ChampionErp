@@ -1,5 +1,5 @@
 import type { UIMessage } from 'ai'
-import type { AiTurnTiming, AiUiPart, PendingToolCall } from '@/types/aiWork'
+import type { AiTurnTiming, AiUiPart, ManualAiAction, PendingToolCall } from '@/types/aiWork'
 
 export interface MessageGroup {
   id: string
@@ -7,6 +7,7 @@ export interface MessageGroup {
   parts: AiUiPart[]
   messageId: string
   timing?: AiTurnTiming
+  manualAction?: ManualAiAction
 }
 
 /** 仅派生展示分组，不改写 SDK 消息；用户补充消息始终构成新的边界。 */
@@ -15,7 +16,7 @@ export function groupAiMessages(messages: UIMessage[]): MessageGroup[] {
   let boundaryId = ''
   let timing: AiTurnTiming | undefined
   for (const message of messages) {
-    const metadata = message.metadata as { ai_turn?: AiTurnTiming } | undefined
+    const metadata = message.metadata as { ai_turn?: AiTurnTiming; manual_ai_action?: ManualAiAction } | undefined
     if (message.role === 'user') timing = metadata?.ai_turn
     else if (metadata?.ai_turn) timing = metadata.ai_turn
     const previous = groups.at(-1)
@@ -30,6 +31,7 @@ export function groupAiMessages(messages: UIMessage[]): MessageGroup[] {
         parts: [...message.parts],
         messageId: message.id,
         timing,
+        manualAction: metadata?.manual_ai_action,
       })
     }
     if (message.role !== 'assistant') boundaryId = message.id
@@ -57,10 +59,20 @@ export function aiToolName(part: AiUiPart): string {
 }
 
 export type ToolDisplayStatus = 'preparing' | 'running' | 'approval' | 'waiting' | 'input'
-  | 'unknown' | 'failed' | 'partial' | 'denied' | 'completed' | 'submitted' | 'script_error'
+  | 'unknown' | 'failed' | 'partial' | 'denied' | 'completed' | 'submitted' | 'script_error' | 'desktop'
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
+export function desktopImageAction(part: AiUiPart) {
+  if (!['image_translate', 'image_edit', 'draft_images_prepare'].includes(aiToolName(part))) return
+  const error = record(record((part as ToolPartView).output).error)
+  const action = record(record(error.details).desktop_image_action)
+  if (error.code === 'IMAGE_DESKTOP_REQUIRED' && typeof action.conversation_id === 'string'
+    && typeof action.tool_call_id === 'string' && action.tool_call_id === (part as ToolPartView).toolCallId) {
+    return { conversation_id: action.conversation_id, tool_call_id: action.tool_call_id }
+  }
 }
 
 /** 未返回的历史调用不等于审批，也不能因为传输已结束就当作成功。 */
@@ -68,6 +80,7 @@ export function aiToolStatus(part: AiUiPart, pendingKind?: PendingToolCall['kind
   const tool = part as ToolPartView
   const output = record(tool.output)
   const error = record(output.error)
+  if (desktopImageAction(part)) return 'desktop'
   if (output.outcome_unknown === true || record(output.details).outcome_unknown === true
     || record(error.details).outcome_unknown === true || output.status === 'unknown') return 'unknown'
   if (tool.state === 'output-denied') return 'denied'
@@ -91,22 +104,24 @@ export function aiToolStatus(part: AiUiPart, pendingKind?: PendingToolCall['kind
 }
 
 export function toolNeedsAttention(status: ToolDisplayStatus): boolean {
-  return ['approval', 'unknown', 'failed', 'partial', 'denied'].includes(status)
+  return ['approval', 'unknown', 'failed', 'partial', 'denied', 'desktop'].includes(status)
 }
 
 export interface DisplayPart {
   key: string
   part: AiUiPart
   pendingKind?: PendingToolCall['kind']
+  progress?: string
 }
 
 /** 实时的多个 step 和历史的多个 response 使用相同规则，保留原始顺序和引用。 */
 export function presentAssistantParts(parts: AiUiPart[], pending: PendingToolCall[] = [], active = false) {
-  const pendingById = new Map(pending.map(call => [call.tool_call_id, call.kind]))
+  const pendingById = new Map(pending.map(call => [call.tool_call_id, call]))
   const entries: DisplayPart[] = parts.filter(part => part.type !== 'step-start').map((part, index) => ({
     key: isAiToolPart(part) && 'toolCallId' in part ? `tool:${part.toolCallId}` : `part:${index}`,
     part,
-    pendingKind: 'toolCallId' in part ? pendingById.get(String(part.toolCallId)) : undefined,
+    pendingKind: 'toolCallId' in part ? pendingById.get(String(part.toolCallId))?.kind : undefined,
+    progress: 'toolCallId' in part ? pendingById.get(String(part.toolCallId))?.progress : undefined,
   }))
   // 待审批或后台执行时仍保留完整时间线；结束后才派生折叠的过程。
   const live = active || entries.some(entry => entry.pendingKind !== undefined)

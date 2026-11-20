@@ -4,7 +4,7 @@ import pytest
 
 from erp_web.context import get_context
 from erp_web.facades import copy_facade
-from erp_web.http_route_units import copy_routes
+from erp_web.http_route_units import copy_routes, manual_ai
 
 
 @pytest.mark.parametrize(
@@ -52,7 +52,7 @@ def test_copy_routes_only_validate_delegate_and_send(
         received.append(body)
         return response, 207
 
-    monkeypatch.setattr(copy_routes, "validate_request_payload", fake_validate)
+    monkeypatch.setattr(manual_ai, "validate_request_payload", fake_validate)
     monkeypatch.setattr(copy_routes.copy_facade, facade_name, fake_facade)
 
     getattr(copy_routes, handler_name)(Handler())

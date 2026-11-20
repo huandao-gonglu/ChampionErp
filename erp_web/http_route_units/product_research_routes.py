@@ -7,6 +7,7 @@ from typing import Callable
 from erp_web.schemas.requests import validate_request_payload
 
 from .common import JsonRequestHandler
+from .manual_ai import send_manual_ai_result
 from ..facades import product_research_facade
 
 
@@ -15,10 +16,7 @@ GetHandler = Callable[[JsonRequestHandler, object], None]
 
 
 def handle_create_hot_product_run(handler: JsonRequestHandler) -> None:
-    result, status = product_research_facade.create_hot_product_run_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
+    send_manual_ai_result(handler, "research", product_research_facade.create_hot_product_run_payload)
 
 
 def handle_save_source_registry(handler: JsonRequestHandler) -> None:

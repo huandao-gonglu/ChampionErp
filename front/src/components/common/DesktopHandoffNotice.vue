@@ -6,6 +6,8 @@ import { useAccountStore } from '@/stores/account'
 import { desktopBackendOrigin, fetchDesktopInstallers, resolveDesktopHandoff } from '@/api/desktopHandoff'
 import { useAiChatStore } from '@/stores/aiChat'
 import { fetchUiMessages } from '@/api/aiWork'
+import { continueImageOperation } from '@/api/draftImages'
+import { withAiConversation } from '@/services/withAiConversation'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { desktopLaunch, receivedDesktopHandoff, dismissDesktopLaunch, retryDesktopLaunch, resetDesktopHandoff, acknowledgeDesktopHandoff, type DesktopHandoffState } from '@/utils/desktopHandoff'
 
@@ -73,12 +75,20 @@ watch([receiveAttempt, () => account.user?.id, () => router.currentRoute.value.m
       chat.restoreDesktopInput(state.chat)
       await acknowledgeDesktopHandoff(id, 'chat')
     }
+    const imageOperation = state.imageOperation
+    if (imageOperation) {
+      await withAiConversation('继续 AI 图片处理', conversationId => continueImageOperation(imageOperation, conversationId))
+      if (token !== generation) return
+    }
     // 工作台负责恢复商品/草稿，会话页负责恢复输入；普通设置页在路由完成后即可确认。
     if (!data.state.workflow && !data.state.chat && !data.state.modelSettings) await acknowledgeDesktopHandoff(id)
   } catch (error) {
     if (token !== generation) return
     const failure = error as { status?: number; code?: string } | null
-    canRetryReceive.value = !resolved && (!failure?.status || failure.status >= 500 || failure.code === 'DESKTOP_UNAVAILABLE')
+    const received = receivedDesktopHandoff.value
+    const canResumeImage = received?.requestId === id && Boolean(received.state.imageOperation)
+    canRetryReceive.value = (!resolved || canResumeImage)
+      && (!failure?.status || failure.status >= 500 || failure.code === 'DESKTOP_UNAVAILABLE')
     receiveError.value = error instanceof Error ? error.message : '页面接收失败，请回网页重试。'
   }
 })

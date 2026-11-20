@@ -74,4 +74,13 @@ export interface PendingToolCall {
   question?: string
   options?: string[]
   summary: string
+  progress?: string
+}
+export interface ManualAiAction {
+  title: string
+  state: 'running' | 'waiting' | 'completed' | 'failed' | 'partial' | 'needs_input' | 'cancelled' | 'unknown'
+  message?: string
+  scope?: Record<string, unknown>
+  result?: Record<string, unknown>
+  job?: { kind: 'image_batch' | 'image_preparation' | 'research'; id: string }
 }

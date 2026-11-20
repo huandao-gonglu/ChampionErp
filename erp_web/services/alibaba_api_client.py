@@ -123,9 +123,6 @@ class AlibabaProvider(ABC):
     def get_product(self, offer_id: str, source_url: str) -> CollectedProduct: ...
 
     @abstractmethod
-    def get_buyer_id(self) -> str: ...
-
-    @abstractmethod
     def get_order(self, number: str) -> BuyerOrder: ...
 
     @abstractmethod
@@ -178,22 +175,6 @@ class OpenApiAlibabaProvider(AlibabaProvider):
         result = self._request(PRODUCT_DETAIL, {"offerDetailParam": {"offerId": int(offer_id), "country": "en"}},
                                namespace="com.alibaba.fenxiao.crossborder").get("result")
         return _checked_product(result, offer_id, "offerId")
-
-    def get_buyer_profile(self) -> tuple[str, str]:
-        payload = self._request(BUYER_IDENTITY, {}, namespace="com.alibaba.account")
-        result = payload.get("result")
-        if not isinstance(result, dict):
-            result = payload
-        member_id = result.get("memberId") or result.get("member_id")
-        login_id = result.get("loginId") or result.get("login_id")
-        return (str(member_id).strip() if type(member_id) in {str, int} else "",
-                login_id.strip() if isinstance(login_id, str) else "")
-
-    def get_buyer_id(self):
-        identity, _ = self.get_buyer_profile()
-        if not identity:
-            raise AlibabaApiError("1688 未返回有效的买家身份")
-        return identity
 
     def _read_order(self, api, number):
         return self._request(api, {"orderId": validate_order_number(number), "webSite": "1688"}, namespace=_NAMESPACES[api])
@@ -361,36 +342,34 @@ class OneBoundAlibabaProvider(OpenApiAlibabaProvider):
         self.config = dict(config)
         self._credentials = tuple(str(config[key]) for key in ("api_key", "api_secret", "access_token"))
         self.timeout = timeout
-        self.expected_buyer = str(config.get('member_id') or '')
-        self._buyer_checked = False
+
+    def get_buyer_profile(self) -> tuple[str, str]:
+        """自助授权换码后核验买家。"""
+        payload = self._request(BUYER_IDENTITY, {}, namespace="com.alibaba.account")
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            result = payload
+        member_id = result.get("memberId") or result.get("member_id")
+        login_id = result.get("loginId") or result.get("login_id")
+        return (str(member_id).strip() if type(member_id) in {str, int} else "",
+                login_id.strip() if isinstance(login_id, str) else "")
 
     def get_cashier_url(self, numbers):
         return _cashier_url(self._request("alibaba.alipay.url.get", {"orderIdList": [int(n) for n in numbers]}))
 
     def _send(self, api, values, *, namespace, semantics):
-        writing = semantics == "write"
-        if writing:
+        if semantics == "write":
             if namespace != "com.alibaba.trade" or api not in {CREATE, PAY}:
                 raise AlibabaApiRejected("当前万邦方案不支持此写入接口")
             if (self.config.get('credential_type') != 'session' or self.config.get('directory_verified') is not True
-                    or not self.expected_buyer):
+                    or not self.config.get('member_id')):
                 raise AlibabaApiRejected("万邦下单和免密支付需要已核验的 Session")
-        if api != BUYER_IDENTITY and self.expected_buyer and not self._buyer_checked:
-            try:
-                if self.get_buyer_id() != self.expected_buyer:
-                    raise AlibabaApiError('当前接入的 1688 买家已变化，请重新核验')
-            except (AlibabaApiError, ExternalRequestBlocked):
-                if writing:
-                    raise AlibabaApiRejected("万邦买家身份未通过核验") from None
-                raise
-            self._buyer_checked = True
         try:
-            payload = request_onebound(self.config, api, values, namespace=namespace, semantics=semantics, timeout=self.timeout)
+            return request_onebound(self.config, api, values, namespace=namespace, semantics=semantics, timeout=self.timeout)
         except OneBoundApiRejected as exc:
             raise AlibabaApiRejected(str(exc)) from None
         except OneBoundApiError as exc:
             raise AlibabaApiError(str(exc)) from None
-        return payload
 
 
 _PROVIDERS = {

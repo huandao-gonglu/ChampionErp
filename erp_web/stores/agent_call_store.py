@@ -295,6 +295,75 @@ class AgentCallStore:
         except sqlite3.IntegrityError:
             raise AiChatTurnAlreadyAcceptedError("本轮消息已经被接收。") from None
 
+    def start_manual_action(
+        self, conversation_id: str, message: ModelMessage, scope: dict[str, Any], *,
+        profile_id: str, actor_id: str, tenant_id: str,
+    ) -> None:
+        """领取页面操作并保存真实用户输入。已接收的操作不会进入模型投递队列。"""
+        encoded = canonical_model_messages_json([message], stored=False)
+        now = utc_now()
+        try:
+            with self.db._connect() as conn, conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if conn.execute("SELECT 1 FROM ai_chat_turn_claims WHERE conversation_id=?",
+                                (conversation_id,)).fetchone():
+                    raise AiChatTurnAlreadyAcceptedError("该对话已接收输入。")
+                conn.execute(
+                    """INSERT INTO pydantic_message_histories
+                    (conversation_id,messages_json,history_version,created_at,updated_at) VALUES(?,?,1,?,?)""",
+                    (conversation_id, encoded, now, now),
+                )
+                conn.execute(
+                    """INSERT INTO ai_chat_turn_claims
+                    (claim_id,conversation_id,client_message_id,profile_id,actor_id,tenant_id,status,claimed_at)
+                    VALUES(?,?,?,?,?,?,'claimed',?)""",
+                    (f"claim_{uuid4().hex}", conversation_id, conversation_id, profile_id, actor_id, tenant_id, now),
+                )
+                draft_ids = [scope["draft_id"]] if scope.get("draft_id") else []
+                conn.execute(
+                    """INSERT INTO ai_chat_inbox
+                    (conversation_id,message_id,messages_json,target_draft_ids,created_at,status)
+                    VALUES(?,?,?,?,?,'applied')""",
+                    (conversation_id, conversation_id, encoded, json.dumps(draft_ids), now),
+                )
+                conn.execute(
+                    """INSERT INTO ai_tool_receipts
+                    (conversation_id,tool_call_id,tool_name,arguments_json,status,updated_at)
+                    VALUES(?,?,'manual_ai_action',?,'executing',?)""",
+                    (conversation_id, conversation_id, json.dumps(scope, ensure_ascii=False), now),
+                )
+        except sqlite3.IntegrityError:
+            raise AiChatTurnAlreadyAcceptedError("该对话已接收输入。") from None
+        self.notify_changed(conversation_id)
+
+    def finish_manual_action(self, conversation_id: str, receipt: dict[str, Any]) -> None:
+        """在同一事务提交回执和普通对话版本，重新打开时可读到完整状态。"""
+        state = receipt["state"]
+        terminal = (
+            "cancelled" if state == "cancelled" else
+            "failed" if state in ("failed", "unknown") else "completed"
+        )
+        now = utc_now()
+        with self.db._connect() as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                """UPDATE ai_tool_receipts SET status='completed',output_json=?,updated_at=?
+                WHERE conversation_id=? AND tool_call_id=? AND tool_name='manual_ai_action' AND status='executing'""",
+                (json.dumps(receipt, ensure_ascii=False), now, conversation_id, conversation_id),
+            ).rowcount
+            if not changed:
+                return
+            conn.execute(
+                """UPDATE ai_chat_turn_claims SET status=?,finished_at=?
+                WHERE conversation_id=? AND client_message_id=? AND status='claimed'""",
+                (terminal, now, conversation_id, conversation_id),
+            )
+            conn.execute(
+                """UPDATE pydantic_message_histories SET history_version=history_version+1,updated_at=?
+                WHERE conversation_id=?""",
+                (now, conversation_id),
+            )
+
     @staticmethod
     def _answer_question(conn, conversation_id, call_id, message_id, messages):
         from erp_web.services.chat_images import prompt_summary

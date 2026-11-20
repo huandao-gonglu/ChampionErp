@@ -441,6 +441,7 @@ def test_ordinary_users_complete_onebound_authorization_in_their_own_accounts(ac
     redirect = 'https://dc.dev.1buyo.com/api/Accredit1688/callback_1688'
     exchanges = []
     identities = []
+    address_reads = []
 
     def gateway(request, **kwargs):
         url = urlsplit(request.full_url)
@@ -464,6 +465,7 @@ def test_ordinary_users_complete_onebound_authorization_in_their_own_accounts(ac
             identities.append(code)
             return response({'response': {'memberId': f'member-{code}', 'loginId': f'买家-{code}', 'error': None}})
         assert params['method'] == ['com.alibaba.trade/alibaba.trade.receiveAddress.get']
+        address_reads.append(code)
         return response({'response': {'receiveAddressItems': []}})
 
     monkeypatch.setattr(transport, 'managed_urlopen', gateway)
@@ -502,7 +504,7 @@ def test_ordinary_users_complete_onebound_authorization_in_their_own_accounts(ac
             assert not config['directory_verified'] and alibaba_provider(config).list_addresses() == []
             scopes.add(config['account_scope'])
     assert len(scopes) == 2
-    assert identities == ['a+code', 'b-code', 'a+code', 'b-code']
+    assert identities == address_reads == ['a+code', 'b-code']
     assert runtime.root.config.alibaba_credentials('onebound') == {}
 
 
@@ -615,20 +617,18 @@ def test_only_loopback_https_proxy_can_supply_rate_limit_ip(monkeypatch):
     assert client_ip(handler) == "127.0.0.1"
 
 
-def test_account_and_callback_requests_cannot_claim_business_presentations(accounts_http, monkeypatch):
+def test_only_explicit_ai_routes_accept_manual_conversation_header(accounts_http):
     url, _, login = accounts_http
-    from erp_web import http_routes
-    claims = []
-    monkeypatch.setattr(http_routes, "_claim_presentation_scope", lambda handler: claims.append(handler.path))
+    conversation_id = "conversation_global_chat_" + "a" * 32
+    headers = {"X-AI-Conversation-ID": conversation_id}
     assert requests.post(url + "/api/account/registration-code", json={"email": "a@example.com", "human_token": "测试验证"}).ok
-    response = requests.post(url + "/api/account/register", json={"email": "a@example.com", "display_name": "甲", "password": PASSWORD, "email_code": "625317"}, headers={"X-AI-Presentation-ID": "another-users-presentation"})
+    response = requests.post(url + "/api/account/register", json={"email": "a@example.com", "display_name": "甲", "password": PASSWORD, "email_code": "625317"}, headers=headers)
     assert response.status_code == 200
     client = login("a@example.com")
-    assert requests.post(url + "/api/yandex/notifications?token=wrong", json={"notificationType": "PING"}, headers={"X-AI-Presentation-ID": "another-users-presentation"}).status_code == 403
-    assert claims == []
-    response = client.post(url + "/api/save-product", json={"product": {"name": "甲", "source": {"title": "甲"}}})
+    assert requests.post(url + "/api/yandex/notifications?token=wrong", json={"notificationType": "PING"}, headers=headers).status_code == 403
+    response = client.post(url + "/api/save-product", json={"product": {"name": "甲", "source": {"title": "甲"}}}, headers=headers)
     assert response.status_code == 200, response.text
-    assert claims == ["/api/save-product"]
+    assert client.get(url + f"/api/v1/ai-work/conversations/{conversation_id}/ui-messages").status_code == 404
 
 
 def test_release_pauses_new_requests_and_preserves_reads_and_desktop_results(accounts_http, release_guard_dir):

@@ -2,7 +2,6 @@ import { preparePublishWithProgress } from './publishPreparationStream'
 import type { BackendPublishPreparationProgress } from '@/types/workflow'
 import { apiClient } from '@/api/client'
 import { selectedPricingTargets } from '@/types/pricing'
-import { withAiForeground } from '@/services/withAiForeground'
 import type {
   CategoryAttributeDefinition,
   CategoryAttributeValuesPage,
@@ -595,37 +594,29 @@ function normalizeCategoryMatchResult(data: UnknownRecord): CategoryMatchResult 
   }
 }
 
-export async function matchCategory(
+export async function matchCategories(
   draft: DraftDetail,
-  target: MarketplaceTargetSite,
-  productLabel = draft.draftId,
-): Promise<CategoryMatchResult> {
-  // 同步 focused 业务 response 是唯一结果事实；withAiForeground 只提供前台
-  // 实时展示（reserve → observe stream → 业务 header 关联）。业务判断失败
-  // （ok=false）仍是合法 200 结果，不抛错，由 caller 读取 failure/status。
-  return withAiForeground(
-    {
-      displayTitle: 'AI 匹配类目',
-      initialUserMessage: `为“${productLabel}”匹配 ${target.platform.toUpperCase()} ${target.site || ''} 类目。`.trim(),
-      successNotice: (result) => (
-        result.status === 'completed'
-          ? '类目匹配完成'
-          : '类目匹配结束，仍需人工确认候选'
-      ),
-    },
-    async ({ presentationId }) => {
-      const response = await apiClient.post(
-        CATEGORY_MATCH_PATH,
-        {
-          ...requiredDraftTarget(draft, target, '匹配类目'),
-          language: target.language,
-        },
-        {
-          aiPresentationId: presentationId,
-          timeout: CATEGORY_MATCH_REQUEST_TIMEOUT_MS,
-        },
-      )
-      return normalizeCategoryMatchResult(asRecord(response.data))
-    },
-  )
+  targets: MarketplaceTargetSite[],
+  conversationId: string,
+): Promise<CategoryMatchResult[]> {
+  const requests = targets.map(target => ({
+    ...requiredDraftTarget(draft, target, '匹配类目'),
+    language: target.language,
+  }))
+  if (requests.length === 1) {
+    const response = await apiClient.post(CATEGORY_MATCH_PATH, requests[0], {
+      aiConversationId: conversationId,
+      timeout: CATEGORY_MATCH_REQUEST_TIMEOUT_MS,
+    })
+    return [normalizeCategoryMatchResult(asRecord(response.data))]
+  }
+  const response = await apiClient.post(`${CATEGORY_MATCH_PATH}/batch`, {
+    draft_id: draft.draftId, targets: requests,
+  }, {
+    aiConversationId: conversationId,
+    timeout: CATEGORY_MATCH_REQUEST_TIMEOUT_MS * requests.length,
+  })
+  const items = asRecord(response.data).items
+  if (!Array.isArray(items) || items.length !== requests.length) throw new Error('类目匹配结果与目标数量不一致')
+  return items.map(item => normalizeCategoryMatchResult(asRecord(item)))
 }

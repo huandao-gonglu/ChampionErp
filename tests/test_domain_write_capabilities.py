@@ -941,8 +941,9 @@ def test_image_edit_uses_trusted_main_image_when_ids_are_omitted(
             "error": "当前图片服务不支持编辑。",
         }
 
+    monkeypatch.setattr("erp_web.services.image_translate_service.check_batch_connection", lambda *_: 1)
     monkeypatch.setattr(
-        "erp_web.runtime_units.image_capabilities.image_translate_service.edit_images",
+        "erp_web.services.image_translate_service.edit_images",
         fake_edit_images,
     )
 
@@ -992,8 +993,9 @@ def test_image_edit_can_persist_generated_image_as_main(
             ],
         }
 
+    monkeypatch.setattr("erp_web.services.image_translate_service.check_batch_connection", lambda *_: 1)
     monkeypatch.setattr(
-        "erp_web.runtime_units.image_capabilities.image_translate_service.edit_images",
+        "erp_web.services.image_translate_service.edit_images",
         fake_edit_images,
     )
 

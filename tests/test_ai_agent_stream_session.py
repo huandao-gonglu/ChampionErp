@@ -69,7 +69,7 @@ def _factory(
         AiAgentFactory(
             app_dir=tmp_path,
             app_config={},
-            message_store=message_store,
+
             model_binding_factory=binding,
         ),
         message_store,
@@ -80,7 +80,7 @@ def _text_model(text: str = "流式回复。") -> TestModel:
     return TestModel(custom_output_text=text, call_tools=[])
 
 
-def test_stream_run_persists_result_messages_on_success(tmp_path: Path) -> None:
+def test_stream_run_only_returns_native_messages_without_storage_owner(tmp_path: Path) -> None:
     factory, store = _factory(tmp_path, _text_model())
 
     async def run() -> None:
@@ -96,18 +96,13 @@ def test_stream_run_persists_result_messages_on_success(tmp_path: Path) -> None:
                 async for event in session.events([_user_message("第一轮")])
             ]
             assert session.completed is True
-            assert session.history_persisted is True
+            assert not session.history_persisted
+            assert any(isinstance(message, ModelResponse) for message in session.require_outcome().messages)
             assert "AgentRunResultEvent" in events
 
     asyncio.run(run())
 
-    history = store.get(CONVERSATION)
-    assert history is not None
-    messages = history.model_messages()
-    assert messages == ModelMessagesTypeAdapter.validate_json(
-        history.messages_json
-    )
-    assert any(isinstance(message, ModelResponse) for message in messages)
+    assert store.get(CONVERSATION) is None
 
 
 def test_second_stream_run_appends_only_the_new_user_turn(
@@ -115,7 +110,7 @@ def test_second_stream_run_appends_only_the_new_user_turn(
 ) -> None:
     factory, store = _factory(tmp_path, _text_model())
 
-    async def run_turn(history: list[Any], text: str) -> None:
+    async def run_turn(history: list[Any], text: str) -> list[Any]:
         async with factory.open_stream_run(
             profile=PROFILE,
             instructions="测试 instructions。",
@@ -125,12 +120,12 @@ def test_second_stream_run_appends_only_the_new_user_turn(
         ) as session:
             async for _event in session.events([_user_message(text)]):
                 pass
+            return session.require_outcome().messages
 
     async def scenario() -> None:
-        await run_turn([], "第一轮")
-        first = store.get(CONVERSATION).model_messages()
-        await run_turn(first, "第二轮")
-        second = store.get(CONVERSATION).model_messages()
+        first = await run_turn([], "第一轮")
+        second = await run_turn(first, "第二轮")
+        assert store.get(CONVERSATION) is None
 
         first_user_texts = _user_texts(first)
         second_user_texts = _user_texts(second)
@@ -153,7 +148,7 @@ def _user_texts(messages: list[Any]) -> list[str]:
     return texts
 
 
-def test_stream_run_maps_model_failure_to_safe_error_and_persists_capture(
+def test_focused_stream_maps_model_failure_to_safe_error_without_history(
     tmp_path: Path,
 ) -> None:
     class FailingModel(TestModel):
@@ -177,9 +172,8 @@ def test_stream_run_maps_model_failure_to_safe_error_and_persists_capture(
 
     error = asyncio.run(run())
     assert isinstance(error, AiAgentExecutionError)
-    history = store.get(CONVERSATION)
-    assert history is not None
-    assert history.model_messages()
+    assert error.code == "ModelAPIError"
+    assert store.get(CONVERSATION) is None
 
 
 def test_stream_run_requires_matching_toolset(tmp_path: Path) -> None:
@@ -222,7 +216,7 @@ def test_stream_session_events_can_only_start_once(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
-def test_early_disconnect_persists_captured_messages_and_releases(
+def test_early_disconnect_does_not_create_focused_history(
     tmp_path: Path,
 ) -> None:
     factory, store = _factory(tmp_path, _text_model())
@@ -242,11 +236,4 @@ def test_early_disconnect_persists_captured_messages_and_releases(
 
     asyncio.run(run())
 
-    history = store.get(CONVERSATION)
-    assert history is not None
-    captured = history.model_messages()
-    assert captured
-    # 断连保存的是已捕获消息，不包含完整助手结果。
-    assert any(
-        isinstance(message, ModelRequest) for message in captured
-    )
+    assert store.get(CONVERSATION) is None

@@ -7,7 +7,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from erp_web.context import get_context
-from erp_web.services import alibaba_api_client as official, onebound_api_transport as transport
+from erp_web.facades.collect_facade import collect_1688_payload
+from erp_web.services import alibaba_api_client as official, image_service, onebound_api_transport as transport
 from erp_web.services.alibaba_api_client import alibaba_provider, AlibabaApiError, ORDER_LIST
 from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
 from erp_web.services.alibaba_credentials import application_fingerprint
@@ -80,6 +81,45 @@ def test_onebound_failure_keeps_current_buyer_and_consumes_attempt(monkeypatch, 
         service.complete_from_url(CALLBACK + 'secret-code', 'onebound')
     assert calls.count('/1688global/buyer_token_create/') == 1
     assert ('/1688/custom' in calls) == (failure in {'identity', 'missing_identity'})
+
+
+def test_onebound_verifies_buyer_at_authorization_then_collects_with_one_request_per_product(monkeypatch):
+    store = get_context().config
+    configure(store)
+    service = AlibabaAuthorizationService(store)
+    calls = []
+    detail = 'com.alibaba.fenxiao.crossborder/product.search.queryProductDetail'
+    identity = 'com.alibaba.account/alibaba.account.basic'
+
+    def gateway(request, *, request_context, **kwargs):
+        method = request_context.interface
+        calls.append(method)
+        if method == '1688global/buyer_token_create':
+            return response({'items': {'session': 'buyer-token', 'nick': '买家甲', 'exp_time': '2099-01-01 00:00:00'}})
+        params = parse_qs(urlsplit(request.full_url).query)
+        assert params['access_token'] == ['buyer-token']
+        if method == identity:
+            return response({'response': {'memberId': 'buyer-a', 'loginId': '买家甲'}})
+        assert method == detail
+        offer_id = json.loads(params['_o_args'][0])['offerDetailParam']['offerId']
+        product = {'offerId': offer_id, 'subject': f'商品 {offer_id}', 'images': ['https://example.test/product.jpg']}
+        return response({'response': {'result': {'success': True, 'result': product}}})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', gateway)
+    monkeypatch.setattr(image_service, 'download_remote_image', lambda _app, url, _product, index: {
+        'id': f'image-{index}', 'url': url, 'status': 'ready',
+    })
+    service.start()
+    assert service.complete_from_url(CALLBACK + 'code', 'onebound')['authorized']
+    assert calls == ['1688global/buyer_token_create', identity]
+    calls.clear()
+
+    for offer_id in (123456, 123457):
+        url = f'https://detail.1688.com/offer/{offer_id}.html'
+        result, status = collect_1688_payload({'url': url, 'mode': 'api'})
+        assert status == 200 and result['ok']
+        assert result['product']['source']['title'] == f'商品 {offer_id}'
+    assert calls == [detail, detail]
 
 
 def test_onebound_expired_token_requires_reauthorization_and_renewal_keeps_buyer_scope(monkeypatch):
@@ -183,7 +223,7 @@ def test_switching_providers_preserves_saved_onebound_credential(monkeypatch, fi
     monkeypatch.setattr(transport, 'managed_urlopen', send)
     token = 'buyer-a+&=买家'
     store.update_alibaba_credentials({'authorization': {
-        'access_token': token, 'credential_type': field, 'account_scope': 'existing-scope',
+        'access_token': token, 'credential_type': field, 'account_scope': 'existing-scope', 'member_id': 'buyer-a',
         'application_fingerprint': application_fingerprint(store.alibaba_application()),
     }})
     saved = store._db.runtime_secret('enterprise_applications', 'active', {})

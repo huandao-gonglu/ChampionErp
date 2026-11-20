@@ -1,5 +1,6 @@
 import { hasLocalOperations, modelOperationReason, modelRequiresDesktop } from '@/utils/desktop'
 import { handoffModelOperation, launchDesktop } from '@/utils/desktopHandoff'
+import { withAiConversation } from '@/services/withAiConversation'
 import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
 import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImagePoll, type ImageSetPlan } from '@/api/draftImages'
 import { saveDraft, uploadImages } from '@/api/workflow/catalog'
@@ -176,7 +177,8 @@ export function useDraftImageWorkbench(options: {
       pending.value = requestId
       remember(draft.value.draftId, pending.value)
       future.value = []
-      const result = await processDraftImages(draft.value, operation, targets, prompt, pending.value)
+      const result = await withAiConversation(processingLabel, id =>
+        processDraftImages(draft.value, operation, targets, prompt, pending.value, id))
       if (token === epoch) applyState(result)
     } catch (error) {
       if (token !== epoch) return
@@ -199,7 +201,8 @@ export function useDraftImageWorkbench(options: {
     try {
       if (!await options.save()) { notice.value = '保存草稿失败，尚未规划套图。'; return }
       if (token !== epoch) return
-      const result = await planDraftImageSet(draft.value, ids, count, prompt, skuIds)
+      const result = await withAiConversation('AI 规划套图', id =>
+        planDraftImageSet(draft.value, ids, count, prompt, skuIds, id))
       if (token === epoch) return result
     } catch (error) {
       if (token === epoch) notice.value = error instanceof Error ? error.message : '套图规划失败，请检查识图模型配置。'
@@ -215,9 +218,10 @@ export function useDraftImageWorkbench(options: {
     try {
       pending.value = `draft_image_set_${crypto.randomUUID()}`
       remember(draft.value.draftId, pending.value)
-      const result = await generateDraftImageSet(draft.value, pending.value, {
-        plan, updatedAt, baseRequestId: plan ? undefined : base!.conversation_id, retryPageIds,
-      })
+      const result = await withAiConversation('AI 生成套图', id =>
+        generateDraftImageSet(draft.value, pending.value, {
+          plan, updatedAt, baseRequestId: plan ? undefined : base!.conversation_id, retryPageIds,
+        }, id))
       if (token === epoch) applyState(result)
     } catch (error) {
       if (token !== epoch) return

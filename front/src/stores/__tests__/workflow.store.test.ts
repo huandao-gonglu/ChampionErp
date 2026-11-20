@@ -12,9 +12,8 @@ import * as publishingApi from '@/api/workflow/publishing'
 import * as settingsApi from '@/api/workflow/settings'
 import * as stateApi from '@/api/workflow/state'
 import * as translationApi from '@/api/workflow/translation'
-import { JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabilityProbe'
 import { applyPricingTemplate, pricingTemplateParameters } from '@/types/pricing'
-import { withAiForeground } from '@/services/withAiForeground'
+import { withAiConversation } from '@/services/withAiConversation'
 import type { AuthResult, DraftDetail, DraftIndexItem, Product } from '@/types/workflow'
 import { normalizeDraftIndexItem } from '@/api/workflow/normalizers/responses'
 
@@ -54,7 +53,7 @@ vi.mock('@/api/workflow/publishing', async (importOriginal) => ({
   publishPrecheck: vi.fn(),
   enqueuePublish: vi.fn(),
   fetchCategoryAttrs: vi.fn(),
-  matchCategory: vi.fn(),
+  matchCategories: vi.fn(),
   searchCategories: vi.fn(),
   previewPublishPayload: vi.fn(),
   runCategoryPrecheck: vi.fn(),
@@ -82,12 +81,12 @@ vi.mock('@/api/workflow/settings', () => ({
   testApiConfig: vi.fn(),
 }))
 
-vi.mock('@/services/withAiForeground', () => ({
-  withAiForeground: vi.fn(async (
-    _options: unknown,
-    operation: (context: { presentationId: string }) => Promise<unknown>,
+vi.mock('@/services/withAiConversation', () => ({
+  withAiConversation: vi.fn(async (
+    _title: string,
+    operation: (id: string) => Promise<unknown>,
   ) => (
-    operation({ presentationId: 'presentation-store-test' })
+    operation('conversation-store-test')
   )),
 }))
 
@@ -631,15 +630,15 @@ describe('workflow store live API flow', () => {
     store.currentDraft = multiMarketCategoryDraft()
     const [yandex, ozon] = store.targetEditors
     vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
-    vi.mocked(workflowApi.matchCategory).mockResolvedValue({
+    vi.mocked(workflowApi.matchCategories).mockResolvedValue([{
       ok: true, status: 'unresolved', selectedCategoryId: '', candidates: [], query: '面罩', failure: null,
       decision: { confidenceBand: 'low', modelConfidence: 0, decisionScore: 0, abstained: true, evidence: [], searchCount: 3 },
       trace: { taskRunId: 'category-ozon' },
-    })
+    }])
     await ozon!.run(ozon!.actions.suggestCategoryByAi)
     expect(ozon!.state.error).toContain('没有找到')
-    expect(workflowApi.matchCategory).toHaveBeenCalledTimes(1)
-    expect(workflowApi.matchCategory).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'draft-multi-category', platform: 'ozon' }), expect.objectContaining({ platform: 'ozon', site: 'global' }), 'draft-multi-category')
+    expect(workflowApi.matchCategories).toHaveBeenCalledTimes(1)
+    expect(workflowApi.matchCategories).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'draft-multi-category', platform: 'ozon' }), [expect.objectContaining({ platform: 'ozon', site: 'global' })], 'conversation-store-test')
     expect(yandex!.state.categoryQuery).toBe('')
     expect(store.selectedPublishTarget.platform).toBe('yandex')
   })
@@ -706,22 +705,19 @@ describe('workflow store live API flow', () => {
       probe_capabilities: true,
     })
 
-    expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayTitle: '测试 AI 模型 · 模型 A',
-        initialUserMessage: 'hello',
-      }),
+    expect(withAiConversation).toHaveBeenCalledWith(
+      '测试 AI 模型 · 模型 A',
       expect.any(Function),
     )
     expect(workflowApi.testAiModel).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'model-a' }),
-      'presentation-store-test',
+      'conversation-store-test',
     )
     expect(store.lastAuthResult).toEqual(result)
     expect(workflowApi.saveAiConfig).not.toHaveBeenCalled()
   })
 
-  it('JSON 能力测试在 presentation 中显示实际 user 消息', async () => {
+  it('JSON 能力测试创建可追问的对话', async () => {
     const result: AuthResult = {
       ok: true,
       message: 'JSON 能力测试通过。',
@@ -740,8 +736,8 @@ describe('workflow store live API flow', () => {
       probe_capabilities: true,
     })
 
-    expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({ initialUserMessage: JSON_PROBE_USER_MESSAGE }),
+    expect(withAiConversation).toHaveBeenCalledWith(
+      '测试 AI 模型 · JSON 模型',
       expect.any(Function),
     )
   })
@@ -779,7 +775,7 @@ describe('workflow store live API flow', () => {
     expect(store.lastAuthResult?.error).toContain('能力测试通过，但自动保存失败')
   })
 
-  it('仅查询模型目录时不占用 AI Work presentation', async () => {
+  it('仅查询模型目录时不创建对话', async () => {
     const result: AuthResult = {
       ok: true,
       message: '模型列表加载完成。',
@@ -798,7 +794,7 @@ describe('workflow store live API flow', () => {
       test_trigger: 'manual_model_list',
     })
 
-    expect(withAiForeground).not.toHaveBeenCalled()
+    expect(withAiConversation).not.toHaveBeenCalled()
     expect(workflowApi.saveAiConfig).not.toHaveBeenCalled()
     expect(workflowApi.testAiModel).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'model-list-a' }),
@@ -1279,7 +1275,7 @@ describe('workflow store live API flow', () => {
     expect(store.progressPercent).toBeGreaterThan(0)
   })
 
-  it('将手动文案生成绑定到 AI Work presentation', async () => {
+  it('将手动文案生成绑定到普通对话', async () => {
     const product = collectedProduct()
     vi.mocked(workflowApi.generateCopy).mockResolvedValue(mutation(product))
     const store = useWorkflowStore()
@@ -1287,18 +1283,15 @@ describe('workflow store live API flow', () => {
 
     await store.generateCopy()
 
-    expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayTitle: '生成 AI 文案',
-        initialUserMessage: '生成 AI 文案：Collected product（mercadolibre）。',
-      }),
+    expect(withAiConversation).toHaveBeenCalledWith(
+      'AI 生成文案',
       expect.any(Function),
     )
     expect(workflowApi.generateCopy).toHaveBeenCalledWith(
       product,
       'mercadolibre',
       {},
-      { presentationId: 'presentation-store-test' },
+      'conversation-store-test',
     )
   })
 
@@ -1320,7 +1313,7 @@ describe('workflow store live API flow', () => {
     }))
   })
 
-  it('将手动图生图绑定到 AI Work presentation', async () => {
+  it('将手动图生图绑定到普通对话', async () => {
     const product = collectedProduct()
     vi.mocked(workflowApi.imageEdit).mockResolvedValue(mutation(product))
     const store = useWorkflowStore()
@@ -1328,11 +1321,8 @@ describe('workflow store live API flow', () => {
 
     await store.editImagesWithPrompt('去除背景', { sourceImageIds: ['img_1'] })
 
-    expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayTitle: 'AI 图生图',
-        initialUserMessage: '去除背景\n处理范围：1 张已选图片。',
-      }),
+    expect(withAiConversation).toHaveBeenCalledWith(
+      'AI 图生图',
       expect.any(Function),
     )
     expect(workflowApi.imageEdit).toHaveBeenCalledWith(
@@ -1340,11 +1330,11 @@ describe('workflow store live API flow', () => {
       'mercadolibre',
       '去除背景',
       { sourceImageIds: ['img_1'] },
-      { presentationId: 'presentation-store-test' },
+      'conversation-store-test',
     )
   })
 
-  it('将手动图片翻译绑定到 AI Work presentation', async () => {
+  it('将手动图片翻译绑定到普通对话', async () => {
     const product = collectedProduct()
     vi.mocked(workflowApi.imageTranslate).mockResolvedValue(mutation(product))
     const store = useWorkflowStore()
@@ -1352,11 +1342,8 @@ describe('workflow store live API flow', () => {
 
     await store.translateImages('es-MX', { sourceImageIds: ['img_1'] })
 
-    expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayTitle: 'AI 翻译/重绘图片',
-        initialUserMessage: '将所选 1 张图片翻译并重绘为 es-MX。',
-      }),
+    expect(withAiConversation).toHaveBeenCalledWith(
+      'AI 翻译/重绘图片',
       expect.any(Function),
     )
     expect(workflowApi.imageTranslate).toHaveBeenCalledWith(
@@ -1364,11 +1351,11 @@ describe('workflow store live API flow', () => {
       'mercadolibre',
       'es-MX',
       { sourceImageIds: ['img_1'] },
-      { presentationId: 'presentation-store-test' },
+      'conversation-store-test',
     )
   })
 
-  it('将手动批量文案生成绑定到 AI Work presentation', async () => {
+  it('将手动批量文案生成绑定到普通对话', async () => {
     vi.mocked(workflowApi.generateCopyBatch).mockResolvedValue({ message: '完成' })
     vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
     const store = useWorkflowStore()
@@ -1376,17 +1363,14 @@ describe('workflow store live API flow', () => {
 
     await store.generateCopyForSelectedProducts()
 
-    expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayTitle: '批量生成 AI 文案',
-        initialUserMessage: '为已选择的 2 个商品批量生成 mercadolibre 平台文案。',
-      }),
+    expect(withAiConversation).toHaveBeenCalledWith(
+      'AI 批量生成文案',
       expect.any(Function),
     )
     expect(workflowApi.generateCopyBatch).toHaveBeenCalledWith(
       ['product-1', 'product-2'],
       'mercadolibre',
-      { presentationId: 'presentation-store-test' },
+      'conversation-store-test',
     )
   })
 
@@ -2178,7 +2162,7 @@ describe('workflow store live API flow', () => {
       { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', listingCurrency: 'MXN' },
     ]
     vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
-    vi.mocked(workflowApi.matchCategory).mockResolvedValue({
+    vi.mocked(workflowApi.matchCategories).mockResolvedValue([{
       ok: true,
       status: 'completed',
       selectedCategoryId: 'MLM-FAN',
@@ -2199,69 +2183,16 @@ describe('workflow store live API flow', () => {
       },
       failure: null,
       trace: { taskRunId: 'task-1' },
-    })
+    }])
 
     const store = useWorkflowStore()
     store.currentDraft = draft
     await store.autoSuggestCategoriesForDraft()
 
-    expect(workflowApi.matchCategory).toHaveBeenCalledOnce()
+    expect(workflowApi.matchCategories).toHaveBeenCalledOnce()
     expect(workflowApi.searchCategories).not.toHaveBeenCalled()
     expect(store.categoryResults[0]?.id).toBe('MLM-FAN')
     expect(store.currentDraft.categoryId).toBe('')
-  })
-
-  it('rejects a second AI business trigger while a foreground presentation is active', async () => {
-    const { useAiWorkDisplayStore } = await import('@/stores/aiWorkDisplay')
-    const display = useAiWorkDisplayStore()
-    display.attachForegroundPresentation(
-      {
-        presentationId: 'presentation_existing',
-        conversationId: 'conversation_existing',
-        displayTitle: 'AI 匹配类目',
-        status: 'running',
-      },
-      { id: 'presentation_existing', messages: [] } as never,
-    )
-
-    const draft = createEmptyDraftDetail('mercadolibre')
-    draft.draftId = 'draft-guard'
-    draft.productId = 'real-product-1'
-    draft.title = 'Ventilador'
-    draft.targetSites = [
-      { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', listingCurrency: 'MXN' },
-    ]
-
-    const store = useWorkflowStore()
-    store.currentDraft = draft
-    const ok = await store.autoSuggestCategoriesForDraft()
-
-    expect(ok).toBe(false)
-    expect(store.error).toContain('已有 AI 任务正在处理')
-    expect(workflowApi.matchCategory).not.toHaveBeenCalled()
-  })
-
-  it('rejects AI business triggers while a foreground start is pending (atomic occupancy)', async () => {
-    const { useAiWorkDisplayStore } = await import('@/stores/aiWorkDisplay')
-    const display = useAiWorkDisplayStore()
-    // 只有启动期同步占用（reserve POST 进行中），尚未 attach。
-    display.beginForegroundStart()
-
-    const draft = createEmptyDraftDetail('mercadolibre')
-    draft.draftId = 'draft-guard'
-    draft.productId = 'real-product-1'
-    draft.title = 'Ventilador'
-    draft.targetSites = [
-      { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', listingCurrency: 'MXN' },
-    ]
-
-    const store = useWorkflowStore()
-    store.currentDraft = draft
-    const ok = await store.autoSuggestCategoriesForDraft()
-
-    expect(ok).toBe(false)
-    expect(store.error).toContain('已有 AI 任务正在处理')
-    expect(workflowApi.matchCategory).not.toHaveBeenCalled()
   })
 
   it('translates category candidates through the generic flat text contract', async () => {
@@ -2269,6 +2200,9 @@ describe('workflow store live API flow', () => {
       'category.0.path': '家居 / 风扇',
     })
     const store = useWorkflowStore()
+    store.currentDraft.draftId = 'draft-category'
+    store.currentDraft.platform = 'mercadolibre'
+    store.currentDraft.site = 'CBT'
     store.categoryResults = [{
       id: 'MLM-FAN',
       name: 'Ventiladores',
@@ -2280,12 +2214,9 @@ describe('workflow store live API flow', () => {
 
     expect(workflowApi.translateText).toHaveBeenCalledWith('zh-CN', {
       'category.0.path': 'Hogar / Ventiladores',
-    }, { presentationId: 'presentation-store-test' })
-    expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayTitle: '翻译候选类目',
-        initialUserMessage: '将当前 1 个候选类目翻译为中文。',
-      }),
+    }, 'conversation-store-test', expect.objectContaining({ platform: 'mercadolibre' }))
+    expect(withAiConversation).toHaveBeenCalledWith(
+      '翻译候选类目',
       expect.any(Function),
     )
     expect(store.categoryResultTranslations).toEqual({
@@ -2300,6 +2231,9 @@ describe('workflow store live API flow', () => {
       'attribute.0.option.0': '通用品牌',
     })
     const store = useWorkflowStore()
+    store.currentDraft.draftId = 'draft-category'
+    store.currentDraft.platform = 'mercadolibre'
+    store.currentDraft.site = 'CBT'
     store.currentDraft.categoryId = 'MLM-FAN'
     store.category = {
       platform: 'mercadolibre',
@@ -2322,12 +2256,9 @@ describe('workflow store live API flow', () => {
       'attribute.0.label': 'Marca',
       'attribute.0.description': 'Indica la marca del producto',
       'attribute.0.option.0': 'Generic',
-    }, { presentationId: 'presentation-store-test' })
-    expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayTitle: '翻译平台属性',
-        initialUserMessage: '将类目 MLM-FAN 的平台属性名称、说明和选项翻译为中文。',
-      }),
+    }, 'conversation-store-test', expect.objectContaining({ platform: 'mercadolibre' }))
+    expect(withAiConversation).toHaveBeenCalledWith(
+      '翻译平台属性',
       expect.any(Function),
     )
     expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()

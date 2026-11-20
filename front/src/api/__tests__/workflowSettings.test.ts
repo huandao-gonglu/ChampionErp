@@ -32,7 +32,7 @@ describe('workflow settings API', () => {
     expect(apiClient.post).toHaveBeenCalledWith(
       '/api/test-ai-model',
       { model },
-      { aiPresentationId: 'presentation-a' },
+      { aiConversationId: 'presentation-a' },
     )
     expect(result.ok).toBe(true)
   })
@@ -42,7 +42,7 @@ describe('workflow settings API', () => {
     const model = { id: 'canvas', connection_type: 'browser' }
     await testAiModel(model, 'canvas-login')
     expect(apiClient.post).toHaveBeenCalledWith('/api/test-ai-model', { model }, {
-      aiPresentationId: 'canvas-login', timeout: 600_000,
+      aiConversationId: 'canvas-login', timeout: 600_000,
     })
   })
 })
@@ -55,6 +55,6 @@ it('桌面先保存本机连接，业务请求只发送引用和指纹', async (
   expect(configureModels).toHaveBeenCalledWith({ canvas: { browser_profile: 'personal', browser_proxy: 'http://127.0.0.1:7890' } })
   expect(apiClient.post).toHaveBeenLastCalledWith('/api/test-ai-model', {
     model: { id: 'canvas', connection_type: 'browser', local_connection_id: 'canvas', local_config_fingerprint: 'actual-config' },
-  }, { aiPresentationId: '', timeout: 600_000 })
+  }, { aiConversationId: undefined, timeout: 600_000 })
   vi.unstubAllGlobals()
 })

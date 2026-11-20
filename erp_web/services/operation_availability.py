@@ -7,13 +7,21 @@ from erp_web.schemas.requests import RequestValidationError
 from erp_web.schemas.api import OperationAvailability
 
 
-def model_platform_reason(config, use_case, *, desktop_reason=None):
+class ImageDesktopRequired(RequestValidationError):
+    """图片模型已选定，须从可用的桌面执行器继续。"""
+
+    def __init__(self, message, *, fingerprint=""):
+        super().__init__(message, status_code=409, error_code="OPERATION_UNAVAILABLE")
+        self.fingerprint = fingerprint
+
+
+def model_platform_reason(config, use_case, *, desktop_reason=None, require_model=False):
     try:
         model = ai_model_config.resolve_ai_model(config, use_case)
     except RuntimeError as exc:
         if use_case == 'image.plan':
             return '套图规划需要具备文本、JSON 和图片理解能力的 API 模型，请在模型设置中测试并绑定。'
-        if ai_model_config.ai_use_case_binding(config, use_case).get('model_id'):
+        if require_model or ai_model_config.ai_use_case_binding(config, use_case).get('model_id'):
             return str(exc)
         return ''
     if ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_API:
@@ -32,9 +40,12 @@ def model_platform_reason(config, use_case, *, desktop_reason=None):
     return ''
 
 
-def require_model_platform(config, use_case):
-    reason = model_platform_reason(config, use_case)
+def require_model_platform(config, use_case, *, require_model=False):
+    reason = model_platform_reason(config, use_case, require_model=require_model)
     if reason:
+        if (use_case == "image.translate" and desktop_unavailable_reason()
+                and not model_platform_reason(config, use_case, desktop_reason="")):
+            raise ImageDesktopRequired(reason)
         raise RequestValidationError(reason, status_code=409, error_code='OPERATION_UNAVAILABLE')
 
 

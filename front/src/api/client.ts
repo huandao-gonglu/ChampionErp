@@ -4,19 +4,10 @@ import axios, { AxiosError } from 'axios'
 import { normalizeApiError } from '@/utils/apiError'
 import { accountHeaders, sessionExpired } from '@/utils/accountTransport'
 
-/** 业务 API 与 AI Work presentation 的纯传输层关联。 */
-export interface AiPresentationTransport {
-  presentationId?: string
-}
-
-/**
- * 仅传输层使用的请求 option：request interceptor 将其转换为
- * `X-AI-Presentation-ID` header，用于把业务请求关联到已预留的 AI 展示。
- * 该字段只存在于 axios config，不进入业务 JSON、日志或持久化。
- */
+/** 手动 AI 操作与新建普通对话的关联。 */
 declare module 'axios' {
   export interface AxiosRequestConfig {
-    aiPresentationId?: string
+    aiConversationId?: string
   }
 }
 
@@ -39,8 +30,8 @@ apiClient.interceptors.request.use((config) => {
   if (hasLocalOperations()) config.baseURL = ''
   config.headers.set('Accept-Language', 'zh-CN,zh;q=0.9')
   config.headers.set('X-Timezone', Intl.DateTimeFormat().resolvedOptions().timeZone)
-  if (config.aiPresentationId) {
-    config.headers.set('X-AI-Presentation-ID', config.aiPresentationId)
+  if (config.aiConversationId) {
+    config.headers.set('X-AI-Conversation-ID', config.aiConversationId)
   }
   return config
 })

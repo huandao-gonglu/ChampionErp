@@ -2,9 +2,8 @@ import { AI_CHAT_SELECTION_KEY } from '@/stores/aiChat'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
-import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
+import { useAiChatStore } from '@/stores'
 import AiWorkView from '../AiWorkView.vue'
 
 beforeEach(() => localStorage.removeItem(AI_CHAT_SELECTION_KEY))
@@ -104,35 +103,13 @@ function setupView() {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useAiChatStore()
-  const display = useAiWorkDisplayStore()
   const mountNow = () => mount(AiWorkView, {
     global: {
       plugins: [pinia],
       stubs: { RouterLink: true },
     },
   })
-  return { store, display, mountNow }
-}
-
-const PRESENTATION_CONVERSATION_ID = 'conversation_presentation_x'
-
-function fakeObserveChat(messages: UIMessage[] = []): Chat<UIMessage> {
-  return new Chat<UIMessage>({ id: 'presentation_x', messages })
-}
-
-function attachPresentation(
-  display: ReturnType<typeof useAiWorkDisplayStore>,
-  messages: UIMessage[] = [],
-): void {
-  display.attachForegroundPresentation(
-    {
-      presentationId: 'presentation_x',
-      conversationId: PRESENTATION_CONVERSATION_ID,
-      displayTitle: 'AI 匹配类目',
-      status: 'running',
-    },
-    fakeObserveChat(messages),
-  )
+  return { store, mountNow }
 }
 
 describe('AiWorkView 对话与历史', () => {
@@ -157,7 +134,7 @@ describe('AiWorkView 对话与历史', () => {
     const { mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
-    expect(mocks.fetchConversations).toHaveBeenCalledWith()
+    expect(mocks.fetchConversations).toHaveBeenCalledWith(100, 'chats')
     expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="ai-work-selected-id"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
@@ -564,140 +541,14 @@ describe('AiWorkView 对话与历史', () => {
 
   })
 
-  describe('前台 presentation 展示', () => {
-    it('query 指向活动前台 presentation 时绑定 observe Chat 实时消息，不请求历史', async () => {
-      const { display, mountNow } = setupView()
-      attachPresentation(display, [
-        {
-          id: 'b1',
-          role: 'assistant',
-          parts: [{ type: 'text', text: '正在检索类目：ventilador' }],
-        },
-      ])
-      mocks.route.query = {
-        conversation_id: PRESENTATION_CONVERSATION_ID,
-        presentation_id: 'presentation_x',
-      }
-
-      const wrapper = mountNow()
-      // 首帧即绑定 presentation observe Chat，不等待列表请求。
-      const live = wrapper.get('[data-testid="ai-work-presentation-live"]')
-      expect(live.text()).toContain('AI 匹配类目')
-      expect(live.text()).toContain('处理中')
-      expect(live.text()).toContain('正在检索类目：ventilador')
-      expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(false)
-
-      await flushPromises()
-
-      // 活动前台 presentation 不请求尚不存在的服务端历史。
-      expect(mocks.fetchUiMessages).not.toHaveBeenCalledWith(PRESENTATION_CONVERSATION_ID)
-      // observe Chat 消息增量继续渲染到同一分支。
-      display.foregroundPresentation!.chat.messages = [
-        {
-          id: 'b1',
-          role: 'assistant',
-          parts: [{ type: 'text', text: '已找到候选：Ventiladores' }],
-        },
-      ] as UIMessage[]
-      await flushPromises()
-      expect(wrapper.get('[data-testid="ai-work-presentation-live"]').text())
-        .toContain('已找到候选：Ventiladores')
-      // 左侧列表出现 presentation 临时条目。
-      expect(wrapper.find('[data-testid="ai-work-conversation-temporary"]').exists()).toBe(true)
-    })
-
-    it('presentation 期间点击其他历史 conversation：展示该历史自身消息，不串显实时消息', async () => {
-      const { display, mountNow } = setupView()
-      attachPresentation(display, [
-        {
-          id: 'b1',
-          role: 'assistant',
-          parts: [{ type: 'text', text: '正在检索类目：ventilador' }],
-        },
-      ])
-      mocks.route.query = {
-        conversation_id: PRESENTATION_CONVERSATION_ID,
-        presentation_id: 'presentation_x',
-      }
-
-      const wrapper = mountNow()
-      await flushPromises()
-      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
-
-      // presentation 期间点击左侧其他历史：选中项与展示必须同步切换。
-      await wrapper.get('[data-testid="ai-work-conversation-conversation-1"]').trigger('click')
-      await flushPromises()
-
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe('conversation-1')
-      // query 残留 presentation_id 不是替代选择条件：不得在该历史标题下串显实时消息。
-      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(false)
-      const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
-      expect(chatView.text()).toContain('派生回答-conversation-1')
-      expect(chatView.text()).not.toContain('正在检索类目')
-      expect(mocks.fetchUiMessages).toHaveBeenCalledWith('conversation-1')
-
-      // 点回 presentation 临时条目：重新绑定 observe Chat 的实时展示。
-      await wrapper.get('[data-testid="ai-work-conversation-temporary"]').trigger('click')
-      await flushPromises()
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id'))
-        .toBe(PRESENTATION_CONVERSATION_ID)
-      expect(wrapper.get('[data-testid="ai-work-presentation-live"]').text())
-        .toContain('正在检索类目：ventilador')
-    })
-
-    it('query 只带 presentation_id 时解析为 presentation conversation，不落到其他历史标题下', async () => {
-      const { display, mountNow } = setupView()
-      attachPresentation(display, [
-        {
-          id: 'b1',
-          role: 'assistant',
-          parts: [{ type: 'text', text: '正在检索类目：ventilador' }],
-        },
-      ])
-      mocks.route.query = { presentation_id: 'presentation_x' }
-
-      const wrapper = mountNow()
-      // 首帧即把 presentation_id 解析为该 presentation 的 conversation 并绑定 observe Chat。
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id'))
-        .toBe(PRESENTATION_CONVERSATION_ID)
-      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
-
-      await flushPromises()
-
-      // 列表刷新后仍保持 presentation conversation 选中，不默认落到其他历史。
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id'))
-        .toBe(PRESENTATION_CONVERSATION_ID)
-      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
-      expect(mocks.fetchUiMessages).not.toHaveBeenCalledWith(PRESENTATION_CONVERSATION_ID)
-    })
-
-    it('presentation terminal 后保持 conversation 只读并切换到服务端历史', async () => {
-      const { display, mountNow } = setupView()
-      attachPresentation(display)
-      mocks.route.query = {
-        conversation_id: PRESENTATION_CONVERSATION_ID,
-        presentation_id: 'presentation_x',
-      }
-
-      const wrapper = mountNow()
-      await flushPromises()
-      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
-
-      display.finishForegroundPresentation({ kind: 'success', text: '类目匹配完成' })
-      await flushPromises()
-
-      // 刷新列表一次，并用服务端派生历史替换临时 observe 展示。
-      expect(mocks.fetchConversations).toHaveBeenCalledTimes(2)
-      expect(mocks.fetchUiMessages).toHaveBeenCalledWith(PRESENTATION_CONVERSATION_ID)
-      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(false)
-      expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id'))
-        .toBe(PRESENTATION_CONVERSATION_ID)
-      const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
-      expect(chatView.text()).toContain(`派生回答-${PRESENTATION_CONVERSATION_ID}`)
-      expect(chatView.text()).toContain('以下为已保存的对话')
-      // 页面不自动跳回 global.chat，也不提供继续此对话入口。
-      expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(false)
-      expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)
-    })
+  it('手动业务记录沿用普通对话和同一个输入框', async () => {
+    const { store, mountNow } = setupView()
+    const id = store.startManualAction('AI 匹配类目')
+    mocks.route.query = { conversation_id: id }
+    const wrapper = mountNow()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ai-work-live-chat"]').text()).toContain('AI 匹配类目')
+    expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
+    expect(mocks.fetchConversations).toHaveBeenCalledWith(100, 'chats')
   })
 })

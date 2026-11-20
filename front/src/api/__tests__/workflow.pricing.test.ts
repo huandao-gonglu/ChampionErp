@@ -23,12 +23,12 @@ describe('generateCopy API mapping', () => {
       },
     })
 
-    await generateCopy(product, 'ozon', {}, { presentationId: 'presentation-copy' })
+    await generateCopy(product, 'ozon', {}, 'presentation-copy')
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/generate-copy', {
       product_id: 'prod-1',
       platform: 'ozon',
-    }, { aiPresentationId: 'presentation-copy' })
+    }, { aiConversationId: 'presentation-copy' })
   })
 
   it('binds copy generation to the current draft and language', async () => {
@@ -54,7 +54,7 @@ describe('generateCopy API mapping', () => {
       draft_id: 'draft-1',
       language: 'ru-RU',
       mode: 'rewrite',
-    }, { aiPresentationId: undefined })
+    }, { aiConversationId: undefined })
   })
 })
 
@@ -578,7 +578,7 @@ describe('imageTranslate API timeout', () => {
       'mercadolibre',
       'Spanish (Mexico)',
       {},
-      { presentationId: 'presentation-image-translate' },
+      'presentation-image-translate',
     )
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
@@ -586,7 +586,7 @@ describe('imageTranslate API timeout', () => {
       source_image_ids: ['img-1', 'img-2'],
     }), {
       timeout: 60000,
-      aiPresentationId: 'presentation-image-translate',
+      aiConversationId: 'presentation-image-translate',
     })
   })
 
@@ -627,7 +627,7 @@ describe('imageEdit API payload', () => {
         draftImageStrategy: 'append',
         sourceImageIds: ['img-2'],
       },
-      { presentationId: 'presentation-image-edit' },
+      'presentation-image-edit',
     )
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-edit', expect.objectContaining({
@@ -640,7 +640,7 @@ describe('imageEdit API payload', () => {
       source_image_ids: ['img-2'],
     }), {
       timeout: 30000,
-      aiPresentationId: 'presentation-image-edit',
+      aiConversationId: 'presentation-image-edit',
     })
   })
 })

@@ -24,9 +24,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     from erp_web.runtime_units.publishing_bus_core import PublishingBus
     from erp_web.runtime_units.pricing_runtime import ExchangeRateService
     from erp_web.services.ai_chat_run_registry import AiChatRunRegistry
-    from erp_web.services.ai_presentation_registry import (
-        AiPresentationRegistry,
-    )
     from erp_web.services.approval_session import ApprovalSession
     from erp_web.services.image_delivery_service import ImageDeliveryService
     from erp_web.services.product_research_service import ProductResearchRunRegistry
@@ -156,7 +153,6 @@ class AppContext:
         self._exchange_rates: "ExchangeRateService | None" = None
         self._image_delivery: "ImageDeliveryService | None" = None
         self._publishing_bus: "PublishingBus | None" = None
-        self._ai_presentations: "AiPresentationRegistry | None" = None
         self._approval_session: "ApprovalSession | None" = None
         self._category_catalog: "CategoryCatalog | None" = None
         self._online_products = None
@@ -511,20 +507,6 @@ class AppContext:
 
                     self._category_catalog = build_category_catalog()
         return self._category_catalog
-
-    @property
-    def ai_presentations(self) -> "AiPresentationRegistry":
-        """进程内通用 presentation registry（reservation/claim/lease/chunk 缓冲）。"""
-
-        if self._ai_presentations is None:
-            with self._lazy_lock:
-                if self._ai_presentations is None:
-                    from erp_web.services.ai_presentation_registry import (
-                        AiPresentationRegistry,
-                    )
-
-                    self._ai_presentations = AiPresentationRegistry()
-        return self._ai_presentations
 
     @property
     def approval_session(self) -> "ApprovalSession":

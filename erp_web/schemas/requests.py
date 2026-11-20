@@ -114,7 +114,6 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "code_or_url": STRING,
     "country": STRING,
     "display_title": STRING,
-    "initial_user_message": STRING,
     "draft_id": STRING,
     "draftId": STRING,
     "html": STRING,
@@ -262,7 +261,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required=("mode",),
     ),
     "/api/ai-config/save": _EMPTY,
-    "/api/v1/ai-presentations": _EMPTY,
     "/api/assign-upc": RequestContract(fields={"product_id": STRING, "sku_ids": STRING_ARRAY}, required=("product_id",)),
     "/api/draft-pricing/preview": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
     "/api/draft-pricing/restore": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
@@ -277,6 +275,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
             ("site", "site_id", "country"),
         ),
     ),
+    "/api/v1/category-match/batch": _contract(fields={"targets": ARRAY}, required=("draft_id", "targets")),
     "/api/category-attribute-values": _contract(
         required=("platform", "category_id", "attribute_id"),
     ),
@@ -323,6 +322,8 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/image-pool/sync-generated": _PRODUCT,
     "/api/image-pool/upload": _contract(required=("product_id", "uploads")),
     "/api/image-translate": _contract(required=("product_id", "source_image_ids")),
+    "/api/image-processing/continue": RequestContract(
+        fields={"conversation_id": STRING, "tool_call_id": STRING}, required=("conversation_id", "tool_call_id")),
     "/api/load-draft": _contract(fields={"editor_only": BOOLEAN}, required_any=(("draft_id", "draftId"),)),
     "/api/load-product": _contract(fields={"editor_only": BOOLEAN}, required_any=(("product_id", "product_file_path"),)),
     "/api/mercadolibre/auth-checklist": _EMPTY,

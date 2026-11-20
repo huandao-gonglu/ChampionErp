@@ -111,14 +111,20 @@ class ResearchJobStatusReader:
 
 
 class DraftImageJobStatusReader:
-    def __init__(self, load: Callable[[str], DraftImagesPrepareResult | None]):
+    def __init__(self, load: Callable[[str], DraftImagesPrepareResult | None], load_batch=None):
         self.load = load
+        self.load_batch = load_batch
 
     def read_job_state(self, job_id: str) -> JobStateSnapshot:
         result = self.load(job_id)
         if result is None:
             return JobStateSnapshot(status="failed", error="未找到套图任务。")
         status = {"queued": "running", "generated": "success"}.get(result.status, "failed")
-        summary = f"草稿 {result.draft_id}：生成 {result.generated_count} 张，失败 {result.failed_count} 张。{result.message}"
+        summary = result.message
+        if status == "running" and self.load_batch is not None:
+            batch = self.load_batch(job_id)
+            if batch is not None:
+                counts = batch.snapshot()
+                summary = f"已处理 {counts['completed']} / {counts['total']} 张，成功 {counts['success']} 张，失败 {counts['failed']} 张。"
         return JobStateSnapshot(status=status, last_external_status=result.status, summary=summary[:500],
                                 error=result.message[:2000] if status == "failed" else "")

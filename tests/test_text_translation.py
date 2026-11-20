@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from erp_web.facades import translation_facade
-from erp_web.http_route_units import translation_routes
+from erp_web.http_route_units import manual_ai, translation_routes
 from erp_web.runtime_units import ai_use_case, text_translation
 from erp_web.schemas.requests import validate_request_payload
 
@@ -130,7 +130,7 @@ def test_text_translation_route_only_validates_delegates_and_sends(monkeypatch) 
             sent.append((payload, status))
 
     monkeypatch.setattr(
-        translation_routes,
+        manual_ai,
         "validate_request_payload",
         lambda body, *, endpoint: validated,
     )

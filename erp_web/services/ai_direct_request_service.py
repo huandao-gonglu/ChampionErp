@@ -8,7 +8,6 @@ from dataclasses import replace
 import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TypeVar
-from uuid import uuid4
 
 from pydantic_ai import direct
 from pydantic_ai.messages import (
@@ -29,15 +28,13 @@ from pydantic_ai.native_tools import ImageGenerationTool, WebSearchTool
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
 
-from erp_web.context import get_context
 
 from . import ai_generation_settings, ai_model_config, image_service
 from .ai_agent_instrumentation import AiAgentInstrumentation
 from erp_shared.ai_parsing import parse_json_text
 from .ai_model_errors import map_pydantic_model_error
 from .ai_model_factory import PydanticModelBinding, create_pydantic_model_binding
-from .ai_presentation_context import current_presentation_context
-from .ai_direct_history import current_history_sink
+from .ai_conversation_scope import current_ai_conversation
 from .ai_run_cancellation import check_cancellation
 from .ai_structured_output import (
     object_json_schema,
@@ -53,31 +50,6 @@ logger = logging.getLogger(__name__)
 
 class AiProbeStructuredOutputError(ValueError):
     """能力探测响应无法按声明的 Pydantic object Schema 读取。"""
-
-
-def _save_presentation_history(
-    conversation_id: str,
-    messages: Sequence[ModelMessage],
-    *,
-    use_case_id: str,
-) -> None:
-    """把 Direct Model 的官方消息保存到 presentation 对应对话。
-
-    展示/历史持久化失败不得改写业务请求结果；消息形状与序列化全部交给
-    ``PydanticMessageStore`` 的官方 ``ModelMessagesTypeAdapter``。
-    """
-
-    normalized_id = str(conversation_id or "").strip()
-    if not normalized_id:
-        return
-    try:
-        get_context().pydantic_messages.save(normalized_id, list(messages))
-    except Exception:
-        logger.warning(
-            "AI Direct Model presentation 历史保存失败：%s",
-            use_case_id,
-            exc_info=True,
-        )
 
 
 def _is_openai_responses_null_output_terminal_error(
@@ -346,44 +318,13 @@ def _request(
     stream: bool,
     emit_text_delta: Callable[[str], None] | None,
     emit_reasoning_delta: Callable[[str], None] | None,
-    publish_native_events: bool = False,
 ) -> ModelResponse:
     check_cancellation()
     instrumentation = _instrumentation(app_dir)
     request_messages = list(messages)
-    history_sink = current_history_sink()
-    presentation = current_presentation_context()
-    publish_to_presentation = False
-    if (
-        publish_native_events
-        and history_sink is None
-        and presentation is not None
-        and presentation.is_root_scope
-    ):
-        candidate_run_id = f"direct_{uuid4().hex}"
-        try:
-            publish_to_presentation = (
-                presentation.observer.claim_root_run(run_id=candidate_run_id)
-                == candidate_run_id
-            )
-        except Exception:
-            logger.warning(
-                "AI Direct Model 展示 root 领取失败，降级为无展示请求：%s",
-                use_case_id,
-                exc_info=True,
-            )
-    effective_stream = stream or publish_to_presentation
-    if publish_to_presentation and presentation is not None:
-        # 先保存输入，模型失败时 AI Work 历史仍能保留本次用户请求。
-        _save_presentation_history(
-            presentation.conversation_id,
-            request_messages,
-            use_case_id=use_case_id,
-        )
-
     async def run() -> ModelResponse:
         async with binding.model:
-            if not effective_stream:
+            if not stream:
                 return await direct.model_request(
                     binding.model,
                     request_messages,
@@ -424,23 +365,7 @@ def _request(
                             use_case_id,
                         )
 
-                source_events = recover_invalid_terminal_output()
-                events = source_events
-                if publish_to_presentation and presentation is not None:
-                    try:
-                        published = presentation.observer.observe_native_events(
-                            source_events
-                        )
-                    except Exception:
-                        logger.warning(
-                            "AI Direct Model 展示事件包装失败，降级为无展示请求：%s",
-                            use_case_id,
-                            exc_info=True,
-                        )
-                    else:
-                        if published is not None:
-                            events = published
-                async for event in events:
+                async for event in recover_invalid_terminal_output():
                     text_delta = ""
                     reasoning_delta = ""
                     if isinstance(event, PartStartEvent) and isinstance(
@@ -466,19 +391,8 @@ def _request(
                 return recovered_response or response_stream.get()
 
     try:
-        if history_sink is not None:
-            history_sink(request_messages)
-        with instrumentation.start_run_span(use_case_id=use_case_id):
-            response = asyncio.run(run())
-        if history_sink is not None:
-            history_sink([*request_messages, response])
-        if publish_to_presentation and presentation is not None:
-            _save_presentation_history(
-                presentation.conversation_id,
-                [*request_messages, response],
-                use_case_id=use_case_id,
-            )
-        return response
+        with instrumentation.start_run_span(use_case_id=use_case_id, conversation_id=current_ai_conversation()):
+            return asyncio.run(run())
     finally:
         instrumentation.force_flush()
         instrumentation.shutdown()
@@ -547,7 +461,6 @@ def _chat_response(
             stream=stream,
             emit_text_delta=emit_text_delta,
             emit_reasoning_delta=None,
-            publish_native_events=True,
         )
     except Exception as exc:
         mapped = map_pydantic_model_error(
@@ -757,7 +670,6 @@ def _image_request(
         stream=False,
         emit_text_delta=None,
         emit_reasoning_delta=None,
-        publish_native_events=True,
     )
     provider_name = str(
         binding.model_config.get("provider")
@@ -922,7 +834,6 @@ def request_for_probe(
     native_tools: list[Any] | None = None,
     function_tools: list[ToolDefinition] | None = None,
     allow_text_output: bool = True,
-    publish_native_events: bool = True,
     output_object: OutputObjectDefinition | None = None,
 ) -> ModelResponse:
     """模型配置页能力探测复用的 Pydantic Direct 请求。"""
@@ -944,7 +855,6 @@ def request_for_probe(
             stream=False,
             emit_text_delta=None,
             emit_reasoning_delta=None,
-            publish_native_events=publish_native_events,
         )
     except Exception as exc:
         mapped = map_pydantic_model_error(

@@ -22,7 +22,7 @@ POST `/api/alibaba/authorization/start` 通过 `provider: onebound` 生成万邦
 
 尚未保存时可读取 `ERP_ALIBABA_*`、`ERP_ALIBABA_CROSSBORDER_*`、`ERP_ONEBOUND_API_KEY`、`ERP_ONEBOUND_API_SECRET`。个人 `credentials:alibaba` 的 `state`、`crossborder`、`onebound` 保留原通道凭据，不借其他用户或其他应用的 Token 补齐当前通道。
 
-`AlibabaAuthorizationService` 负责公开状态、官方 OAuth、万邦自助授权和官方续期。GET 状态只读本地。商品、采购和物流通过 `alibaba_runtime_config` 获取当前通道的个人凭据。万邦运行时要求个人授权，有效期内才可使用。
+`AlibabaAuthorizationService` 负责公开状态、官方 OAuth、万邦自助授权和官方续期。GET 状态只读本地。商品、采购、支付和物流通过 `alibaba_runtime_config` 获取当前通道的个人凭据。万邦只在完成自助授权时查询买家身份，业务请求直接使用有效的个人授权。采集每件商品只请求一次 `product.search.queryProductDetail`。
 
 ## 万邦买家 Token 的传递
 
@@ -32,7 +32,7 @@ POST `/api/alibaba/authorization/start` 通过 `provider: onebound` 生成万邦
 
 ## 万邦下单与免密支付
 
-两项操作均经万邦 `GET /1688/custom` 转发。外层传企业 `key`、`secret`、已保存且核验通过的 `session` 和 `method`，`_o_args` 传业务参数的 JSON。ERP 在执行交易前核对买家 ID。自助授权换得的买家 Token 用于收货地址、订单列表等已支持的查询。 [万邦 custom 文档](https://open.onebound.cn/help/api/1688.custom.html) · [万邦技术示例](https://segmentfault.com/a/1190000047904773)
+两项操作均经万邦 `GET /1688/custom` 转发。外层传企业 `key`、`secret`、已保存且核验通过的 `session` 和 `method`，`_o_args` 传业务参数的 JSON。交易资格根据本地授权中保存的会员 ID、凭据类型和核验结果判断。自助授权换得的买家 Token 用于收货地址、订单列表等已支持的查询。 [万邦 custom 文档](https://open.onebound.cn/help/api/1688.custom.html) · [万邦技术示例](https://segmentfault.com/a/1190000047904773)
 
 - 创建采购订单使用 `com.alibaba.trade/alibaba.trade.fastCreateOrder`。业务参数包含 `addressParam`、`cargoParamList`、`flow`、`tradeType`、`preSelectPayChannel` 和用于核验的 `outOrderId`。创建回执须返回唯一订单号。
 - 免密支付使用 `com.alibaba.trade/alibaba.trade.pay.protocolPay.preparePay`。`tradeWithholdPreparePayParam` 包含 `orderId`、`payChannel`、`payAmount`（分）和持久化的 `opRequestId`。ERP 先核对所选渠道签约、订单内容和金额，收到渠道一致的成功回执后记录支付成功。 [采购免密支付接入](alibaba-purchase-payment.md)

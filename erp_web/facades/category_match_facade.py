@@ -308,7 +308,6 @@ def _result(
     selected_category_id: str | None = None,
     failure: CategoryMatchFailure | None = None,
     trace: CategoryMatchTrace | None = None,
-    agent_run: CategoryMatchAgentRun | None = None,
 ) -> CategoryMatchResult:
     public_candidates: list[CategoryCandidate] = []
     candidates = ledger.candidates()
@@ -328,7 +327,7 @@ def _result(
         if "type_id" in candidate:
             public_candidate["type_id"] = str(candidate.get("type_id") or "")
         public_candidates.append(public_candidate)
-    result: CategoryMatchResult = {
+    return {
         "ok": ok,
         "status": status,
         "target": {
@@ -342,9 +341,6 @@ def _result(
         "failure": failure,
         "trace": trace or {"task_run_id": ""},
     }
-    if agent_run is not None:
-        agent_run.finish_business_result(result)
-    return result
 
 
 def _confidence_band(score: float) -> str:
@@ -462,7 +458,7 @@ def prepare_category_match_input(
     """归一化目标与商品事实；输入不合法时返回失败描述。
 
     返回 ``(normalized_target, facts, failure)``；``failure`` 非空时不得继续
-    启动 Agent。focused start endpoint 在同步阶段执行同一校验。
+    启动 Agent。手动业务请求和对话工具共用同一校验。
     """
 
     platform = _text(target.get("platform"), 80).lower()
@@ -589,7 +585,6 @@ def finalize_category_match(
             decision=decision,
             failure=failure_from_exception(exc, stage="model"),
             trace=trace,
-            agent_run=agent_run,
         )
 
     assert agent_run is not None
@@ -611,7 +606,6 @@ def finalize_category_match(
             decision=decision,
             failure=failure_from_exception(exc, stage="model"),
             trace=trace,
-            agent_run=agent_run,
         )
 
     decision["search_count"] = ledger.search_count
@@ -629,7 +623,6 @@ def finalize_category_match(
                 "retryable": False,
             },
             trace=trace,
-            agent_run=agent_run,
         )
     if ledger.successful_search_count == 0 and ledger.last_error is not None:
         return _result(
@@ -640,7 +633,6 @@ def finalize_category_match(
             decision=decision,
             failure=failure_from_exception(ledger.last_error, stage="search"),
             trace=trace,
-            agent_run=agent_run,
         )
     if not isinstance(model_result, Mapping):
         return _result(
@@ -656,7 +648,6 @@ def finalize_category_match(
                 "retryable": False,
             },
             trace=trace,
-            agent_run=agent_run,
         )
 
     selected_category_id = _text(model_result.get("selected_category_id"), 160)
@@ -703,7 +694,6 @@ def finalize_category_match(
                     "retryable": False,
                 },
                 trace=trace,
-                agent_run=agent_run,
             )
         return _result(
             ok=True,
@@ -718,7 +708,6 @@ def finalize_category_match(
                 "retryable": False,
             },
             trace=trace,
-            agent_run=agent_run,
         )
 
     try:
@@ -740,7 +729,6 @@ def finalize_category_match(
             decision=decision,
             failure=failure,
             trace=trace,
-            agent_run=agent_run,
         )
 
     return _result(
@@ -751,7 +739,6 @@ def finalize_category_match(
         decision=decision,
         selected_category_id=selected_category_id,
         trace=trace,
-        agent_run=agent_run,
     )
 
 
@@ -767,8 +754,7 @@ def match_category(
 ) -> CategoryMatchResult:
     """运行一次同步、支持批量关键词搜索且允许 abstain 的 ``category.match``。
 
-    供 Global Task 等 child 场景使用；用户直接触发的业务根运行走 focused
-    start/stream/result endpoint 并复用同一套共享阶段。
+    页面直接调用和主对话工具复用同一执行流程。
     """
 
     deadline_at = time.monotonic() + CATEGORY_MATCH_DEADLINE_SECONDS

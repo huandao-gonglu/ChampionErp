@@ -722,6 +722,7 @@ export interface BackendImageBatchItemPayload {
   started_at: string
   finished_at: string
   result_asset_ids?: Array<string>
+  error_code?: string
 }
 
 export interface BackendImageBatchSnapshot {

@@ -1,5 +1,7 @@
 """主 Agent 的领域工具、原生会话与后台 Job 组合根。"""
 
+import json
+
 from erp_web.context import get_context
 from erp_web.schemas.chat_conversations import is_global_id, reply_prefix
 from erp_web.services.chat_titles import chat_titles, schedule_chat_title
@@ -88,20 +90,18 @@ def build_conversation_service(context=None):
 
 def build_ui_service(context=None):
     active = context or get_context()
-    def queue_progress(conversation_id, calls):
-        progress = []
-        for call in calls:
-            if call.tool_name in {"draft_images_prepare", "draft_images_wait"}:
-                batch_id = (call.args_as_dict().get("batch_id") if call.tool_name == "draft_images_wait"
-                            else f"draft_image_prepare_{conversation_id}:{call.tool_call_id}")
-                batch = active.image_batches.get(batch_id)
-                if batch:
-                    counts = batch.snapshot()
-                    progress.append({key: counts[key] for key in ("draft_id", "total", "queued", "running", "success", "failed")})
-        return progress
+    job_readers = build_job_status_readers(active)
+
+    def read_job_progress(conversation_id, call_id):
+        receipt = active.agent_calls.receipt(conversation_id, call_id)
+        if not receipt or receipt["status"] != "waiting_job":
+            return ""
+        job = json.loads(receipt["job_json"])
+        reader = job_readers.get(job["job_type"])
+        return reader.read_job_state(job["job_id"]).summary if reader else ""
 
     return VercelAiUiService(
-        queue_progress=queue_progress,
+        job_progress_reader=read_job_progress,
         chat_service=build_global_chat_service(active),
         claim_store=active.chat_turn_claims,
         run_registry=active.chat_runs,

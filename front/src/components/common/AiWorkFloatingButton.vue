@@ -5,26 +5,20 @@ import { PhPushPin } from '@phosphor-icons/vue'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useFloatingDrag } from '@/composables/useFloatingDrag'
-import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
+import { useAiChatStore } from '@/stores'
 
 const route = useRoute()
 const chatStore = useAiChatStore()
-const displayStore = useAiWorkDisplayStore()
 const floatingElement = ref<HTMLElement | null>(null)
 const floatingDrag = useFloatingDrag(floatingElement)
 const pointerWithin = ref(false)
 const focusWithin = ref(false)
 const isPinned = ref(false)
-let noticeTimer: ReturnType<typeof setTimeout> | null = null
 
 // AiWork 页面内置完整对话区域，浮动入口只在其他页面显示。
 const shouldRender = computed(() => route.name !== 'AiWork')
 
-const foregroundPresentation = computed(() => displayStore.foregroundPresentation)
-const presentationError = computed(() => foregroundPresentation.value?.error?.message || '')
-
 const panelError = computed(() => chatStore.error?.message || '')
-const terminalNotice = computed(() => displayStore.terminalNotice)
 
 const workspaceReturnQuery = computed(() => {
   if (route.name !== 'WorkflowHome') return {}
@@ -34,7 +28,6 @@ const workspaceReturnQuery = computed(() => {
     : {}
 })
 
-// 普通入口始终指向聊天；任务详情通过独立卡片进入。
 const aiWorkRoute = computed(() => {
   return {
     name: 'AiWork',
@@ -80,25 +73,11 @@ function togglePinned(): void {
   isPinned.value = !isPinned.value
 }
 
-// 任务结果短暂提示，普通聊天始终保持显示。
-watch(terminalNotice, (notice) => {
-  if (noticeTimer) {
-    clearTimeout(noticeTimer)
-    noticeTimer = null
-  }
-  if (!notice) return
-  noticeTimer = setTimeout(() => {
-    displayStore.clearTerminalNotice()
-    noticeTimer = null
-  }, 4000)
-})
-
 watch(shouldRender, (visible) => {
   if (!visible) chatStore.closeFloating()
 })
 
 onBeforeUnmount(() => {
-  if (noticeTimer) clearTimeout(noticeTimer)
   chatStore.closeFloating()
 })
 </script>
@@ -172,41 +151,6 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </header>
-
-        <aside
-          v-if="foregroundPresentation" aria-label="AI 任务进度"
-          class="shrink-0 border-b border-slate-200 px-4 py-3 text-xs dark:border-dark-700"
-          data-testid="ai-work-task-progress"
-        >
-          <div class="flex items-center justify-between gap-3">
-            <span>{{ foregroundPresentation.displayTitle || 'AI 任务' }} · {{ displayStore.presentationStatusText }}</span>
-            <RouterLink
-              class="shrink-0 font-bold text-primary-600 dark:text-primary-300"
-              data-testid="ai-work-task-details"
-              :to="{ name: 'AiWork', query: { ...workspaceReturnQuery, conversation_id: foregroundPresentation.conversationId, presentation_id: foregroundPresentation.presentationId } }"
-            >
-              查看进度
-            </RouterLink>
-          </div>
-          <p
-            v-if="presentationError" role="alert" class="mt-2 text-rose-600 dark:text-rose-300"
-            data-testid="ai-work-presentation-error"
-          >
-            {{ presentationError }}
-          </p>
-        </aside>
-
-        <p
-          v-if="terminalNotice"
-          role="status"
-          class="border-b border-slate-200 px-4 py-2 text-xs font-bold dark:border-dark-700"
-          :class="terminalNotice.kind === 'failure'
-            ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200'
-            : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200'"
-          data-testid="ai-work-terminal-notice"
-        >
-          {{ terminalNotice.text }}
-        </p>
 
         <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <AiChatPanel

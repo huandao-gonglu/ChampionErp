@@ -1,8 +1,7 @@
 import { draftContextTitle } from '@/utils/draftDisplayTitle'
-import { fetchCategoryAttrs, matchCategory, runCategoryPrecheck, searchCategories } from '@/api/workflow/publishing'
+import { fetchCategoryAttrs, matchCategories, runCategoryPrecheck, searchCategories } from '@/api/workflow/publishing'
 import { translateText, type TextTranslationMap } from '@/api/workflow/translation'
-import { withAiForeground } from '@/services/withAiForeground'
-import { useAiWorkDisplayStore } from '@/stores/aiWorkDisplay'
+import { withAiConversation } from '@/services/withAiConversation'
 import type { CategoryAttributeTranslations, CategoryResultTranslations, CategorySearchResult, CategorySelection, MarketplaceTargetSite } from '@/types/workflow'
 import type { WorkflowRuntime } from '../orchestration/runtime'
 
@@ -169,26 +168,19 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
     const recommendations: Record<string, { query: string; results: CategorySearchResult[]; error: string }> = {}
     let candidateTargetCount = 0
     let completedCount = 0
-    for (const [index, target] of targets.entries()) {
-      categoryAutoMatchMessage.value = `正在为 ${target.platform.toUpperCase()} ${target.site} 运行类目能力（${index + 1}/${targets.length}）…`
-      try {
-        const result = await matchCategory(currentDraft.value, target, categoryAutoMatchProductName.value)
-        recommendations[targetSiteKey(target)] = {
-          query: result.query,
-          results: result.candidates,
-          error: result.status !== 'completed' ? result.failure?.message || 'AI 尚未确认合适类目，请核对候选。' : '',
-        }
-        if (result.candidates.length) candidateTargetCount += 1
-        if (result.status === 'completed') completedCount += 1
-      } catch (exc) {
-        recommendations[targetSiteKey(target)] = {
-          query: '',
-          results: [],
-          error: exc instanceof Error ? exc.message : '类目匹配失败',
-        }
+    categoryAutoMatchMessage.value = `正在匹配 ${targets.length} 个目标站点的类目…`
+    const results = await withAiConversation('AI 匹配类目', id => matchCategories(currentDraft.value, targets, id))
+    targets.forEach((target, index) => {
+      const result = results[index]
+      recommendations[targetSiteKey(target)] = {
+        query: result.query,
+        results: result.candidates,
+        error: result.status !== 'completed' ? result.failure?.message || 'AI 尚未确认合适类目，请核对候选。' : '',
       }
-      categoryAutoMatchCurrent.value = index + 1
-    }
+      if (result.candidates.length) candidateTargetCount += 1
+      if (result.status === 'completed') completedCount += 1
+    })
+    categoryAutoMatchCurrent.value = targets.length
     categoryRecommendations.value = recommendations
     applyCategoryRecommendationForTarget(selectedPublishTarget.value)
     categoryResultTranslations.value = {}
@@ -257,10 +249,6 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
   }
 
   async function autoSuggestCategoriesForDraft() {
-    if (useAiWorkDisplayStore().foregroundOccupied) {
-      setError('已有 AI 任务正在处理，请等待完成后再试。')
-      return false
-    }
     if (!currentDraft.value.draftId) {
       setError('请先从草稿箱选择要匹配类目的草稿。')
       return false
@@ -429,13 +417,9 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
     setError('')
     try {
       const { content, slots } = categoryAttributeTranslationContent(categoryForTranslation)
-      const translated = await withAiForeground(
-        {
-          displayTitle: '翻译平台属性',
-          initialUserMessage: `将类目 ${categoryId} 的平台属性名称、说明和选项翻译为中文。`,
-        },
-        ({ presentationId }) => translateText('zh-CN', content, { presentationId }),
-      )
+      const scope = { draft_id: currentDraft.value.draftId, platform: selectedPublishTarget.value.platform,
+        site: selectedPublishTarget.value.site, category_id: categoryId }
+      const translated = await withAiConversation('翻译平台属性', id => translateText('zh-CN', content, id, scope))
       if (requestId !== requestSequence.categoryAttributeTranslation) return
       categoryAttributeTranslations.value = attributeTranslationsFromText(categoryForTranslation, translated, slots)
       categoryAttributeTranslationsSource.value = 'ai'
@@ -457,13 +441,9 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
     categoryResultTranslating.value = true
     try {
       const { content, categoryIdsByKey } = categoryResultTranslationContent(results)
-      const translated = await withAiForeground(
-        {
-          displayTitle: '翻译候选类目',
-          initialUserMessage: `将当前 ${results.length} 个候选类目翻译为中文。`,
-        },
-        ({ presentationId }) => translateText('zh-CN', content, { presentationId }),
-      )
+      const scope = { draft_id: currentDraft.value.draftId, platform: selectedPublishTarget.value.platform,
+        site: selectedPublishTarget.value.site }
+      const translated = await withAiConversation('翻译候选类目', id => translateText('zh-CN', content, id, scope))
       if (requestId !== requestSequence.categoryResultTranslation) return
       categoryResultTranslations.value = Object.fromEntries(
         Object.entries(translated)

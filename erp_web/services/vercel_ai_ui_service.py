@@ -30,6 +30,7 @@ from erp_web.services.chat_conversation_service import (
 )
 from erp_web.services.ai_chat_detached_runner import get_detached_chat_runner
 from erp_web.services.agent_run_storage import stored_run_error
+from erp_web.services.manual_ai_action import manual_action_with_progress, read_manual_ai_action
 from erp_web.schemas.ai_page_context import AiPageContext
 from erp_web.schemas.ai_work import AiTurnTiming
 from erp_web.services.global_agent_chat_service import (
@@ -178,12 +179,12 @@ class VercelAiUiService(ChatConversationService):
         approval_session=None,
         empty_owner_reader=None,
         deleted_reader=None,
-        queue_progress=None,
+        job_progress_reader=None,
     ):
         super().__init__(chat_service=chat_service, claim_store=claim_store,
                          run_registry=run_registry, call_store=call_store, empty_owner_reader=empty_owner_reader, deleted_reader=deleted_reader)
         self.approval_session = approval_session
-        self.queue_progress = queue_progress
+        self.job_progress_reader = job_progress_reader
 
     def prepare_run(self, body: bytes, *, approval_token: str = ""):
         run_input = self._parse_run_input(body)
@@ -337,6 +338,7 @@ class VercelAiUiService(ChatConversationService):
                 404, "PYDANTIC_MESSAGE_HISTORY_NOT_FOUND", "Pydantic 对话不存在。"
             )
         native_history = history.model_messages() if history else []
+        run_active = self.run_registry.is_active(conversation_id)
         ui = VercelAIAdapter.dump_messages(
             _display_history(native_history),
             sdk_version=VERCEL_SDK_VERSION
@@ -351,6 +353,10 @@ class VercelAiUiService(ChatConversationService):
                 message = message.model_copy(update={"metadata": metadata})
             if message.role == "user":
                 turn = self._turn_display(conversation_id, metadata)
+                action = read_manual_ai_action(self.call_store, metadata, active=run_active)
+                if action is not None:
+                    metadata["manual_ai_action"] = manual_action_with_progress(action, include_image_status=False)
+                    message = message.model_copy(update={"metadata": metadata})
             if message.role in ("user", "assistant") and turn:
                 metadata = {**metadata, "ai_turn": turn}
                 message = message.model_copy(update={"metadata": metadata})
@@ -371,7 +377,13 @@ class VercelAiUiService(ChatConversationService):
             visible.append(message)
         ui = visible
         pending = self.call_store.pending(conversation_id)
-        run_active = self.run_registry.is_active(conversation_id)
+        pending_tools = _pending_tool_calls(pending, native_history)
+        if self.job_progress_reader:
+            for tool in pending_tools:
+                if tool["kind"] == "external":
+                    progress = self.job_progress_reader(conversation_id, tool["tool_call_id"])
+                    if progress:
+                        tool["progress"] = progress
         # metadata 是领域展示摘要；工具 state 与审批 ID 仍由官方 Adapter 提供。
         return {
             "ok": True,
@@ -386,12 +398,15 @@ class VercelAiUiService(ChatConversationService):
                 native_history,
                 claim.client_message_id, claim.error_code,
             )
-            if claim and claim.status == "failed"
+            if claim and claim.status == "failed" and not (
+                claim.client_message_id == conversation_id and native_history
+                and (native_history[0].metadata or {}).get("manual_ai_action")
+            )
             else None,
             "messages": [
                 m.model_dump(mode="json", by_alias=True, exclude_none=True) for m in ui
             ],
-            "pending_tool_calls": _pending_tool_calls(pending, native_history),
+            "pending_tool_calls": pending_tools,
             "received_messages": [
                 {"message_id": r["message_id"],
                  "status": "queued" if pending and not run_active and r["status"] == "received" else r["status"],

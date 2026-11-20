@@ -19,8 +19,7 @@ import {
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
-import { withAiForeground } from '@/services/withAiForeground'
-import { capabilityProbeUserMessage } from '@/constants/aiCapabilityProbe'
+import { withAiConversation } from '@/services/withAiConversation'
 import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 import { sanitizePublicAppConfig } from '@/utils/configSecurity'
 
@@ -130,8 +129,8 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     }
   }
 
-  async function testAndSaveModel(model: UnknownRecord, presentationId?: string): Promise<AuthResult> {
-    const result = await testAiModel(model, presentationId)
+  async function testAndSaveModel(model: UnknownRecord, conversationId: string): Promise<AuthResult> {
+    const result = await testAiModel(model, conversationId)
     if (!result.ok || model.test_trigger !== 'capability_checkbox') return result
     const capability = String(model.probe_only_capability || '')
     const supported = Array.isArray(result.raw?.supported_capabilities) ? result.raw.supported_capabilities : []
@@ -172,21 +171,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
       const modelLabel = String(model.name || model.model || model.id || 'AI 模型').trim()
       const result = model.probe_capabilities === false
         ? await testAiModel(model)
-        : await withAiForeground<AuthResult>(
-          {
-            displayTitle: `测试 AI 模型 · ${modelLabel}`,
-            initialUserMessage: capabilityProbeUserMessage(model),
-            successNotice: (probeResult) => (
-              probeResult.ok
-                ? `${modelLabel} 能力测试通过`
-                : `${modelLabel} 能力测试未通过`
-            ),
-            failureNotice: (error) => (
-              error instanceof Error ? error.message : `${modelLabel} 能力测试失败`
-            ),
-          },
-          ({ presentationId }) => testAndSaveModel(model, presentationId),
-        )
+        : await withAiConversation(`测试 AI 模型 · ${modelLabel}`, id => testAndSaveModel(model, id))
       lastAuthResult.value = result
       activity.addLog(`AI 模型测试：${result.message || result.error || '完成'}`)
     } catch (exc) {

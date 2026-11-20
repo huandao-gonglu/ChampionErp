@@ -7,7 +7,6 @@ import json
 
 from pydantic_ai import PromptedOutput
 
-from erp_web.context import get_context
 from erp_web.schemas.copy import (
     LocalizedCopyOutput,
     MercadoLibreCbtLocalizedCopyOutput,
@@ -205,7 +204,6 @@ def generate_copy(
         factory = AiAgentFactory(
             app_dir=app_dir,
             app_config=app_config,
-            message_store=get_context().pydantic_messages,
             model_binding_factory=lambda *_args, **_kwargs: binding,
         )
         outcome = factory.run_sync(
@@ -231,7 +229,6 @@ def generate_copy(
             },
         )
         result = _normalized_generated_copy(outcome.output)
-        outcome.complete()
     except Exception as exc:
         return {
             "ok": False,

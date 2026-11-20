@@ -83,6 +83,7 @@ const showProgress = computed(() => {
         :key="entry.key"
         :part="entry.part"
         :pending-kind="entry.pendingKind"
+        :progress="entry.progress"
         :active="display.live"
       />
       <p v-if="showProgress" role="status" class="flex items-center gap-2 py-1 text-xs text-slate-500 dark:text-accent-300" data-testid="ai-turn-progress">

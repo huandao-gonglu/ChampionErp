@@ -56,8 +56,11 @@ def task_snapshot(service, conversation_id):
         "等待用户回答": [call.args_as_dict()["title"] for call in remaining.calls
                          if call.tool_name == "request_user_input"] if remaining else [],
     }
-    if external and service.queue_progress:
-        snapshot["业务进度"] = service.queue_progress(conversation_id, external)
+    if external and service.job_progress_reader:
+        snapshot["业务进度"] = [
+            progress for call in external
+            if (progress := service.job_progress_reader(conversation_id, call.tool_call_id))
+        ]
     return snapshot
 
 

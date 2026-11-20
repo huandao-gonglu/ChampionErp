@@ -78,7 +78,7 @@ def test_image_batch_keeps_native_model_boundary_and_domain_only_progress():
     assert "publish_chunk" not in batch.read_text()
     direct = (ROOT / "erp_web/services/ai_direct_request_service.py").read_text()
     assert "direct.model_request(" in direct
-    assert "current_history_sink" in direct
+    assert "pydantic_messages" not in direct and "pydantic_messages" not in batch.read_text()
     from erp_web.http_route_units.ai_work_routes import DYNAMIC_GET_HANDLERS
     assert "/api/v1/ai-work/conversations/<conversation_id>/image-batch" in DYNAMIC_GET_HANDLERS
     from erp_web.http_route_units.image_routes import IMAGE_POST_PATHS
@@ -241,7 +241,9 @@ def test_frontend_backdrops_do_not_close_from_a_single_self_event():
 
 
 def test_agent_instructions_have_separate_system_and_user_owners():
-    """系统规则只能来自发布资源，用户偏好只由设置入口写入。"""
+    """系统规则来自发布资源，设置和对话共用当前账号的用户偏好保存边界。"""
+    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG, _WRITE_CAPABILITIES
+
     consumers = {
         _relative_posix(path)
         for path, target in imported_targets(python_files(ROOT / "erp_web"))
@@ -253,6 +255,9 @@ def test_agent_instructions_have_separate_system_and_user_owners():
     assert not (ROOT / "erp_web/services/agent_memory.py").exists()
     for path in (ROOT / "erp_web/runtime_units").glob("*.py"):
         assert "save_user_agents" not in path.read_text(), path
+    update = APPLICATION_CAPABILITY_CATALOG.tools["user_agents_update"].definition
+    assert update.name in _WRITE_CAPABILITIES
+    assert update.side_effect == "write" and update.approval_required
     assert not (ROOT / "erp_web/assets/account-defaults/prompts").exists()
     assert not (ROOT / "config/agents.md").exists()
 

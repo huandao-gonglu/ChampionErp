@@ -250,15 +250,13 @@ def test_onebound_persists_payment_result_without_repeating(payment, monkeypatch
 
     def send(request, *, request_context, **kwargs):
         calls.append(request_context.interface)
-        if request_context.interface == 'com.alibaba.account/' + api.BUYER_IDENTITY:
-            return response({'response': {'memberId': DIRECTORY_CONFIG['member_id']}})
         return response(gateway_reply)
 
     monkeypatch.setattr(transport, 'managed_urlopen', send)
     first = service.pay(body)['record']
     assert first['payment']['state'] == state
     assert service.pay(body)['record']['payment'] == first['payment']
-    assert calls == ['com.alibaba.account/' + api.BUYER_IDENTITY, 'com.alibaba.trade/' + PAY]
+    assert calls == ['com.alibaba.trade/' + PAY]
 
 
 def test_old_scope_and_unknown_payment_survive_buyer_merge_and_restart(payment):

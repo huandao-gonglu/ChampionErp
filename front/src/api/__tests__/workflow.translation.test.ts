@@ -3,6 +3,7 @@ import { apiClient } from '@/api/client'
 import { translateText } from '@/api/workflow/translation'
 
 vi.mock('@/api/client', () => ({
+  API_REQUEST_TIMEOUT_MS: 180_000,
   apiClient: {
     post: vi.fn(),
   },
@@ -30,7 +31,7 @@ describe('workflow translation API', () => {
         'category.0.path': 'Hogar / Ventiladores',
         'category.1.path': 'Computación / Accesorios',
       },
-      { presentationId: 'presentation-translation' },
+      'conversation-translation',
     )
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/text-translate', {
@@ -39,7 +40,7 @@ describe('workflow translation API', () => {
         'category.0.path': 'Hogar / Ventiladores',
         'category.1.path': 'Computación / Accesorios',
       },
-    }, { aiPresentationId: 'presentation-translation' })
+    }, { aiConversationId: 'conversation-translation' })
     expect(result).toEqual({
       'category.0.path': '家居 / 风扇',
       'category.1.path': '电脑 / 配件',
@@ -57,5 +58,15 @@ describe('workflow translation API', () => {
     await expect(translateText('zh-CN', {
       'attribute.0.label': 'Marca',
     })).rejects.toThrow('翻译结果与请求内容不一致')
+  })
+
+  it('多批文本共用一次请求及对话，按批次数留出处理时间', async () => {
+    const content = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [String(index), 'Fan']))
+    vi.mocked(apiClient.post).mockResolvedValue({ data: { ok: true, translations: content } })
+
+    await expect(translateText('zh-CN', content, 'conversation-translation')).resolves.toEqual(content)
+    expect(apiClient.post).toHaveBeenCalledOnce()
+    expect(apiClient.post).toHaveBeenCalledWith('/api/text-translate', { target_language: 'zh-CN', content },
+      { aiConversationId: 'conversation-translation', timeout: 360_000 })
   })
 })

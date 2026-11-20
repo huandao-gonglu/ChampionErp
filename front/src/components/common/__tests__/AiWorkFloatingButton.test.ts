@@ -2,10 +2,8 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent } from 'vue'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
-import { Chat } from '@ai-sdk/vue'
-import type { UIMessage } from 'ai'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
+import { useAiChatStore } from '@/stores'
 import { AI_CHAT_SELECTION_KEY } from '@/stores/aiChat'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiWorkFloatingButton from '../AiWorkFloatingButton.vue'
@@ -53,26 +51,7 @@ async function mountFloatingButton() {
     attachTo: document.body,
     global: { plugins: [pinia, router] },
   })
-  return { wrapper, store: useAiChatStore(), display: useAiWorkDisplayStore(), router }
-}
-
-function fakeObserveChat(messages: UIMessage[] = []): Chat<UIMessage> {
-  return new Chat<UIMessage>({ id: 'presentation_x', messages })
-}
-
-function attachPresentation(
-  display: ReturnType<typeof useAiWorkDisplayStore>,
-  messages: UIMessage[] = [],
-): void {
-  display.attachForegroundPresentation(
-    {
-      presentationId: 'presentation_x',
-      conversationId: 'conversation_presentation_x',
-      displayTitle: 'AI 匹配类目',
-      status: 'running',
-    },
-    fakeObserveChat(messages),
-  )
+  return { wrapper, store: useAiChatStore(), router }
 }
 
 describe('AiWorkFloatingButton', () => {
@@ -371,54 +350,32 @@ describe('AiWorkFloatingButton', () => {
     expect(wrapper.find('[data-testid="ai-work-floating"]').exists()).toBe(false)
   })
 
-  describe('任务进度与普通聊天独立', () => {
-    it('任务开始、结束均保留同一个聊天面板和输入，任务详情有独立入口', async () => {
-      const { wrapper, store, display } = await mountFloatingButton()
-      const id = store.startConversation()
-      store.chat!.messages = [{ id: 'user', role: 'user', parts: [{ type: 'text', text: '原问题' }] }]
-      store.input = '继续原来的问题'
-      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-      const panel = wrapper.findComponent(AiChatPanel).element
-      attachPresentation(display)
-      await wrapper.vm.$nextTick()
-      expect(wrapper.findComponent(AiChatPanel).element === panel).toBe(true)
-      expect(wrapper.get('[data-testid="ai-chat-input"]').element).toHaveProperty('value', '继续原来的问题')
-      expect(wrapper.get('[data-testid="ai-work-task-progress"]').text()).toContain('AI 匹配类目')
-      expect(wrapper.get('[data-testid="ai-work-floating-toggle"]').attributes('href')).toBe(`/aiWork?conversation_id=${id}`)
-      expect(wrapper.get('[data-testid="ai-work-task-details"]').attributes('href'))
-        .toBe('/aiWork?conversation_id=conversation_presentation_x&presentation_id=presentation_x')
-      display.finishForegroundPresentation({ kind: 'success', text: '类目匹配完成' })
-      await wrapper.vm.$nextTick()
-      expect(wrapper.findComponent(AiChatPanel).element === panel).toBe(true)
-      expect(wrapper.find('[data-testid="ai-work-task-progress"]').exists()).toBe(false)
-      expect(wrapper.get('[data-testid="ai-work-terminal-notice"]').text()).toBe('类目匹配完成')
-      expect(store.activeConversationId).toBe(id)
-      expect(store.input).toBe('继续原来的问题')
-    })
-
-    it('任务流中断只在进度卡提示，不隐藏聊天输入框', async () => {
-      const { wrapper, display } = await mountFloatingButton()
-      attachPresentation(display)
-      display.setForegroundError(new Error('实时展示连接中断，正在等待业务结果…'))
-      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-      expect(wrapper.get('[data-testid="ai-work-presentation-error"]').text()).toContain('实时展示连接中断')
-      expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
-      expect(wrapper.get('[data-testid="ai-work-floating-toggle"]').attributes('href')).toBe('/aiWork')
-    })
-
-    it.each(['success', 'failure'] as const)('任务 %s 结果提示自动清除', async (kind) => {
-      const { wrapper, display } = await mountFloatingButton()
-      attachPresentation(display)
-      await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-      vi.useFakeTimers()
-      try {
-        display.finishForegroundPresentation({ kind, text: '任务结果' })
-        await wrapper.vm.$nextTick()
-        expect(wrapper.get('[data-testid="ai-work-terminal-notice"]').text()).toBe('任务结果')
-        vi.advanceTimersByTime(4500)
-        await wrapper.vm.$nextTick()
-        expect(display.terminalNotice).toBeNull()
-      } finally { vi.useRealTimers() }
-    })
+  it('手动操作自动打开普通对话，完成后仍可在同一浮窗追问', async () => {
+    const { wrapper, store } = await mountFloatingButton()
+    const previous = store.startConversation()
+    store.input = '原对话尚未发送的输入'
+    const id = store.startManualAction('AI 匹配类目')
+    await wrapper.vm.$nextTick()
+    expect(id).not.toBe(previous)
+    expect(wrapper.get('[data-testid="manual-ai-action"]').text()).toContain('处理中')
+    expect(wrapper.get('[data-testid="ai-work-floating-toggle"]').attributes('href')).toBe('/aiWork?conversation_id=' + id)
+    expect(store.input).toBe('')
+    const opened = {
+      ok: true, conversation_id: id, history_version: 2, created_at: '', updated_at: '',
+      messages: [{
+        id, role: 'user' as const, parts: [{ type: 'text' as const, text: 'AI 匹配类目' }],
+        metadata: { manual_ai_action: { title: 'AI 匹配类目', state: 'needs_input', message: '请选择候选类目' } },
+      }],
+    }
+    mocks.fetchUiMessages.mockResolvedValue(opened)
+    store.finishManualAction(id)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="manual-ai-action"]').text()).toContain('请选择候选类目')
+    expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
+    store.input = '为什么选这类？'
+    expect(store.canSend).toBe(true)
+    store.openConversation({ ...opened, conversation_id: previous, messages: [] })
+    expect(store.input).toBe('原对话尚未发送的输入')
+    store.closeFloating()
   })
 })

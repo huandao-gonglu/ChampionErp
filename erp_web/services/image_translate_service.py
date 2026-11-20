@@ -262,6 +262,23 @@ def _store_edited_item(
     return item
 
 
+def _result_sources(generated, selected, *, combine_references=False):
+    by_id = {str(item["id"]): item for item in selected}
+    for index, result in enumerate(generated):
+        if not isinstance(result, dict):
+            continue
+        if len(selected) == 1:
+            # 单图请求的可信来源由调用本身确定，与供应商回传的标识无关。
+            source = selected[0]
+        elif combine_references:
+            source = None
+        else:
+            source = by_id.get(str(result.get("source_id") or ""))
+            if source is None:
+                raise ValueError("图片结果缺少有效原图标识，无法安全对应。")
+        yield index, result, source
+
+
 def translate_images(
     app_dir: Path | str,
     product: dict[str, Any],
@@ -374,10 +391,7 @@ def translate_images(
     platform_values = image_service.normalize_platforms([platform]) or list(image_service.PLATFORMS)
     product_id = str(product.get("product_id") or "translated").strip() or "translated"
     items: list[dict[str, Any]] = []
-    for index, result in enumerate(generated):
-        if not isinstance(result, dict):
-            continue
-        source_item = selected[index] if index < len(selected) else selected[-1]
+    for index, result, source_item in _result_sources(generated, selected):
         items.append(_store_translated_item(app_dir, result, product_id, index, target, platform_values, source_item))
 
     return {
@@ -508,10 +522,7 @@ def edit_images(
     platform_values = image_service.normalize_platforms([platform]) or list(image_service.PLATFORMS)
     product_id = str(product.get("product_id") or "edited").strip() or "edited"
     items: list[dict[str, Any]] = []
-    for index, result in enumerate(generated):
-        if not isinstance(result, dict):
-            continue
-        source_item = selected[index] if index < len(selected) else selected[-1]
+    for index, result, source_item in _result_sources(generated, selected, combine_references=combine_references):
         items.append(_store_edited_item(app_dir, result, product_id, index, platform_values, user_prompt, source_item))
 
     return {

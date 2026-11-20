@@ -155,15 +155,15 @@ class ImageTranslateRequest(BaseModel):
         StringConstraints(min_length=1, max_length=160),
     ]
     platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = (
-        "mercadolibre"
+        ""
     )
-    target_language: Annotated[TrimmedText, StringConstraints(max_length=80)] = "es"
-    source_image_ids: tuple[str, ...] = ()
+    target_language: Annotated[TrimmedText, StringConstraints(max_length=80)] = Field(default="", description="目标语言；指定草稿时可沿用其刊登语言。")
+    source_image_ids: tuple[str, ...] = Field(min_length=1, description="实际要翻译的原图 ID，逐张指定。")
     mode: Annotated[TrimmedText, StringConstraints(max_length=40)] = "translate"
     apply_to_draft: bool = False
     draft_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     draft_image_strategy: Annotated[TrimmedText, StringConstraints(max_length=40)] = (
-        "append"
+        ""
     )
 
 
@@ -176,7 +176,7 @@ class ImageEditRequest(BaseModel):
     ]
     prompt: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=4000)]
     platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = (
-        "mercadolibre"
+        ""
     )
     source_image_ids: tuple[str, ...] = Field(
         default=(),
@@ -189,7 +189,7 @@ class ImageEditRequest(BaseModel):
     apply_to_draft: bool = False
     draft_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     draft_image_strategy: Annotated[TrimmedText, StringConstraints(max_length=40)] = (
-        "append"
+        ""
     )
 
 
@@ -202,6 +202,12 @@ class ImageGenerationResult(BaseModel):
     draft_id: TrimmedText = ""
     main_image_id: TrimmedText = ""
     message: TrimmedText = ""
+    status: Literal["completed", "partial", "failed"] = "completed"
+    batch_id: str = ""
+    total: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    items: tuple[dict[str, JsonValue], ...] = ()
 
 
 __all__ = [

@@ -37,6 +37,7 @@ export interface DesktopChatState {
 export interface DesktopHandoffState extends Record<string, unknown> {
   workflow?: DesktopWorkflowState
   chat?: DesktopChatState
+  imageOperation?: { conversation_id: string; tool_call_id: string }
   modelSettings?: { selectedModelId?: string; model?: UnknownRecord; connectionType?: string | boolean; browserPresetId?: string; bindings?: UnknownRecord }
 }
 export interface ReceivedDesktopHandoff {

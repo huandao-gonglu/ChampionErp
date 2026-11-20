@@ -14,7 +14,8 @@ from erp_web.services import image_set_service, image_translate_service
 from erp_web.services.ai_model_errors import safe_model_error_text
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.image_batch_service import image_request_slots, run_image_batch
-from erp_web.services.operation_availability import require_model_platform
+from erp_web.services.operation_availability import ImageDesktopRequired, require_model_platform
+from erp_web.schemas.requests import RequestValidationError
 from erp_web.services.ai_run_cancellation import check_cancellation
 
 
@@ -78,7 +79,7 @@ def _response(draft_id, fingerprint, status, message, batch=None):
     )
 
 
-def prepare_draft_images(request, *, context, operation_key=""):
+def prepare_draft_images(request, *, context, operation_key="", handoff_fingerprint=""):
     products = context.products
     draft_id = request.draft_id
     store = context.image_batches
@@ -92,6 +93,8 @@ def prepare_draft_images(request, *, context, operation_key=""):
             return recorded
         state = image_preparation_status(product, draft)
         fingerprint = state["fingerprint"]
+        if handoff_fingerprint and handoff_fingerprint != fingerprint:
+            raise BusinessCapabilityError("DRAFT_IMAGES_CHANGED", "交接后草稿图片已变化，请重新核对需要生成的图片。")
         if request.decision != "auto" and request.expected_fingerprint != fingerprint:
             raise BusinessCapabilityError("DRAFT_IMAGES_CHANGED", "当前图片与确认时不一致，请重新读取图片状态后决定。")
         previous_job = store.latest_preparation(draft_id)
@@ -118,6 +121,17 @@ def prepare_draft_images(request, *, context, operation_key=""):
         previous = context.image_batches.latest_for_draft(draft_id)
         if request.decision == "auto" and previous and previous.preparation_fingerprint == fingerprint:
             return _response(draft_id, fingerprint, "failed", "已有本组图片的套图任务，请核对原结果或明确重做；不会自动重新生成或计费。", batch=previous)
+        config = context.config.load_app_config()
+        try:
+            require_model_platform(config, "image.plan")
+            require_model_platform(config, "image.translate", require_model=True)
+        except ImageDesktopRequired as exc:
+            raise ImageDesktopRequired(str(exc), fingerprint=fingerprint) from None
+        except RequestValidationError as exc:
+            raise BusinessCapabilityError(exc.error_code, str(exc)) from None
+        sources = _common_references(context.paths.app_dir, product, draft)
+        if not sources:
+            return _response(draft_id, fingerprint, "needs_selection", "没有可用的共用参考图，请采集或上传一张可读取且不超过 20 MB 的商品图。")
         bindings = image_bindings(product, draft)
         # 每组 SKU 只使用当前独立图片；没有独立图片的规格沿用共用套图。
         sku_ids = [id for id, asset in bindings["skus"] if asset]
@@ -128,30 +142,24 @@ def prepare_draft_images(request, *, context, operation_key=""):
 
     def generate():
         try:
-            result = _generate(request, context, product, draft, targets, fingerprint, batch_id)
+            result = _generate(request, context, product, draft, targets, fingerprint, batch_id, sources, config)
         except Exception as exc:
             result = _response(draft_id, fingerprint, "failed", safe_model_error_text(str(exc)) or "图片准备失败。",
                                batch=store.get(batch_id))
         store.finish_preparation(result.model_copy(update={"batch_id": batch_id}))
 
     try:
-        release_guard.start_thread("草稿套图", "draft-image-prepare", generate)
+        release_guard.start_thread("图片批次", "draft-image-prepare", generate)
     except Exception:
         store.finish_preparation(queued.model_copy(update={"status": "failed", "message": "套图任务未能启动。"}))
         raise
     return queued
 
 
-def _generate(request, context, product, draft, targets, fingerprint, batch_id):
+def _generate(request, context, product, draft, targets, fingerprint, batch_id, sources, config):
     products = context.products
     draft_id = request.draft_id
     check_cancellation()
-    sources = _common_references(context.paths.app_dir, product, draft)
-    if not sources:
-        return _response(draft_id, fingerprint, "needs_selection", "没有可用的共用参考图，请采集或上传一张可读取且不超过 20 MB 的商品图。")
-    config = context.config.load_app_config()
-    require_model_platform(config, "image.plan")
-    require_model_platform(config, "image.translate")
     # 模型、文件读取、并发图片生成均在商品锁之外。
     pool = {item["id"]: item for item in product.get("source", {}).get("image_pool", [])}
     for target in targets:
@@ -165,7 +173,7 @@ def _generate(request, context, product, draft, targets, fingerprint, batch_id):
         workers = image_translate_service.check_batch_connection(context.paths.app_dir, config)
         check_cancellation()
         common_plan = image_set_service.plan_image_set(
-            app_dir=context.paths.app_dir, config=config, messages=context.pydantic_messages,
+            app_dir=context.paths.app_dir, config=config,
             product=product, draft=draft, sources=sources, count=request.count, prompt=request.prompt,
         )
     plan = image_set_service.assemble_image_set(common_plan, targets)
@@ -196,7 +204,7 @@ def _generate(request, context, product, draft, targets, fingerprint, batch_id):
             context.image_batches.assert_draft_idle(draft_id)
 
     run_image_batch(
-        store=context.image_batches, messages=context.pydantic_messages, app_dir=context.paths.app_dir,
+        store=context.image_batches, app_dir=context.paths.app_dir,
         product_id=product["product_id"], draft_id=draft_id, request_id=batch_id,
         prompt=f"为草稿生成共用主图和 SKU 套图：{plan.style}",
         sources=[{"id": page.key} for page in plan.pages], process=process, persist=persist,

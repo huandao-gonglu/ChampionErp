@@ -7,13 +7,20 @@ from pathlib import Path
 import hashlib
 import json
 from typing import Any, Callable
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import ValidationError
 
 from erp_web.context import get_context
+from erp_web.runtime_units.draft_image_prepare import prepare_draft_images
+from erp_web.schemas.chat_conversations import is_global_id, reply_root
+from erp_web.schemas.image_capabilities import DraftImagesPrepareRequest
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.services import image_service, image_translate_service
 from erp_web.services.image_batch_service import run_image_batch
+from erp_web.runtime_units.image_processing import process_selected_images
+from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.desktop_connection_service import desktop_unavailable_reason
 from erp_web.services.operation_availability import require_model_platform
 from erp_web.schemas.image_sets import MAX_IMAGE_SET_REFERENCES, ImageSetPlan
 from erp_web.services import image_set_service
@@ -174,44 +181,6 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _apply_result_to_product(
-    product: dict[str, Any],
-    body: dict[str, Any],
-    result: dict[str, Any],
-) -> ResponseWithStatus:
-    if not result.get("ok"):
-        return {
-            "ok": False,
-            "product": product,
-            "imagePool": current_image_pool(product),
-            **result,
-        }, 200
-    items = result.get("imagePoolItems")
-    items = items if isinstance(items, list) else []
-    for item in items:
-        item["raw"] = {**item.get("raw", {}), "image_content_actor": "user"}
-    saved = save_product(append_images_to_product_pool(product, items))
-    draft_result: dict[str, Any] = {}
-    if _truthy(body.get("apply_to_draft")):
-        draft_result, draft_error, draft_status = apply_image_assets_to_draft(
-            str(body.get("draft_id") or body.get("draftId") or ""),
-            items,
-            str(
-                body.get("draft_image_strategy")
-                or body.get("draftImageStrategy")
-                or "append"
-            ),
-        )
-        if draft_error:
-            return {
-                **result,
-                **draft_error,
-                "product": saved,
-                "productsIndex": load_products_index(),
-            }, draft_status
-    return _generated_image_response(saved, result, draft_result), 200
-
-
 def _generated_image_response(
     saved: dict[str, Any],
     result: dict[str, Any],
@@ -235,78 +204,8 @@ def _run_images_payload(body: dict[str, Any], *, translate: bool, background: bo
     if error:
         return error
     context = get_context()
-    platform = str(body.get("platform") or "mercadolibre")
-    ids = body.get("source_image_ids") or []
-    if not ids:
-        raise RequestValidationError("请先勾选要处理的图片。")
-    sources = image_translate_service.select_source_images(product, ids, platform)
-    if len({str(item["id"]) for item in sources}) != len(set(ids)):
-        raise RequestValidationError("部分源图片不存在或未被选中，请重新选择。")
-    config = load_app_config()
-    language = str(body.get("language") or body.get("target_language") or "es")
-    prompt = (image_translate_service.build_translate_prompt(product, language, app_dir=_app_dir(), app_config=config)
-              if translate else str(body.get("prompt") or "").strip())
-    if not prompt:
-        raise RequestValidationError("图生图提示词不能为空。")
+    result = process_selected_images(context, product, body, translate=translate, background=background)
     product_id = str(product["product_id"])
-    applied_items: list[dict[str, Any]] = []
-    draft_id = str(body.get("draft_id") or "") if _truthy(body.get("apply_to_draft")) else ""
-    if _truthy(body.get("apply_to_draft")):
-        draft = context.products.draft_record(str(body.get("draft_id") or ""))
-        if not draft or draft.get("product_id") != product_id:
-            raise RequestValidationError("目标草稿不存在或不属于当前商品。")
-
-    def bindings(value, current_product):
-        defaults = {sku["id"]: sku.get("image_asset_id", "") for sku in current_product.get("sku_items", [])}
-        return deepcopy([value.get("images", []),
-                         [(row["sku_id"], row.get("overrides", {}).get("image_asset_id", defaults.get(row["sku_id"], "")))
-                          for row in value.get("sku_items", [])]])
-
-    expected_bindings = bindings(draft, product) if draft_id else None
-
-    def process(source):
-        options = {"platform": platform, "image_ids": [source["id"]]}
-        if translate:
-            result = image_translate_service.translate_images(_app_dir(), product, config,
-                target_language=language, mode=str(body.get("mode") or "translate"), **options)
-            # 单张调用内部编号从 0 开始；主图身份仍按原批次确定，不能每张都变主图。
-            for index, item in enumerate(result.get("imagePoolItems") or []):
-                item["is_main"] = source["id"] == sources[0]["id"] and index == 0
-            return result
-        return image_translate_service.edit_images(_app_dir(), product, config, prompt=prompt, **options)
-
-    def persist(result):
-        nonlocal expected_bindings
-        with context.products.mutation_scope({"product_id": product_id}):
-            latest = context.products.load_product_from_index(product_id, "")
-            if latest.get("product_id") != product_id:
-                raise ValueError("商品已不存在，结果未写入素材池。")
-            if draft_id and bindings(context.products.draft_record(draft_id) or {}, latest) != expected_bindings:
-                # 外部编辑不能扩大已提交任务的引用范围，生成文件继续保留。
-                save_product(append_images_to_product_pool(latest, result["imagePoolItems"]))
-                raise RuntimeError("草稿图片已被其他操作修改，未替换当前图片。")
-            apply_body = dict(body)
-            if body.get("draft_image_strategy") == "replace_all" and applied_items:
-                apply_body["draft_image_strategy"] = "append"
-            payload, status = _apply_result_to_product(latest, apply_body, result)
-            if status >= 400 or not payload.get("ok"):
-                raise RuntimeError(payload.get("error") or "图片保存失败。")
-            applied_items.extend(result["imagePoolItems"])
-            if draft_id:
-                expected_bindings = bindings(context.products.draft_record(draft_id), latest)
-
-    result = run_image_batch(
-        store=context.image_batches, messages=context.pydantic_messages,
-        app_dir=_app_dir(), product_id=product_id, prompt=prompt,
-        sources=sources, process=process, persist=persist, draft_id=draft_id,
-        request_id=str(body.get("request_id") or ""), background=background,
-        prepare_workers=lambda: image_translate_service.check_batch_connection(context.paths.app_dir, config),
-        before_create=lambda: require_model_platform(config, "image.translate"),
-    )
-    result.update(prompt=prompt, platform=platform, mode=str(body.get("mode") or "translate") if translate else "edit",
-                  source_image_ids=[item["id"] for item in sources])
-    if translate:
-        result.update(language=language, target_language=language)
     saved = context.products.load_product_from_index(product_id, "")
     draft = context.products.draft_record(str(body.get("draft_id") or "")) if _truthy(body.get("apply_to_draft")) else None
     response = _generated_image_response(saved, result, {
@@ -322,6 +221,43 @@ def translate_images_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 def edit_images_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return _run_images_payload(body, translate=False)
+
+
+def continue_image_operation(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    conversation_id, call_id = body["conversation_id"], body["tool_call_id"]
+    root = reply_root(conversation_id) or conversation_id
+    if not is_global_id(root) or context.conversation_titles.is_deleted(root):
+        raise RequestValidationError("图片操作的原对话不可用。", status_code=404)
+    receipt = context.agent_calls.receipt(conversation_id, call_id)
+    output = json.loads(receipt["output_json"] or "null") if receipt else None
+    error = (output or {}).get("error") or {} if isinstance(output, dict) else {}
+    details = error.get("details") or {}
+    reference = {"conversation_id": conversation_id, "tool_call_id": call_id}
+    if (error.get("code") != "IMAGE_DESKTOP_REQUIRED" or details.get("desktop_image_action") != reference
+            or receipt["tool_name"] not in {"image_translate", "image_edit", "draft_images_prepare"}):
+        raise RequestValidationError("没有找到可继续的图片操作。", status_code=404)
+    if reason := desktop_unavailable_reason():
+        raise RequestValidationError(reason, status_code=409, error_code="DESKTOP_UNAVAILABLE")
+
+    request = dict(details["request"])
+    operation_key = f"{conversation_id}:{call_id}"
+    if receipt["tool_name"] == "draft_images_prepare":
+        fingerprint = request.pop("handoff_fingerprint")
+        try:
+            result = prepare_draft_images(DraftImagesPrepareRequest.model_validate(request), context=context,
+                                          operation_key=operation_key, handoff_fingerprint=fingerprint)
+        except BusinessCapabilityError as exc:
+            raise RequestValidationError(str(exc), status_code=409, error_code=exc.code) from None
+        return {"ok": result.status != "failed", "image_preparation": result.model_dump(), "message": result.message}, 200
+
+    request["request_id"] = f"ai_image_{uuid5(NAMESPACE_URL, operation_key).hex}"
+    product, error_response = _load_request_product(request)
+    if error_response:
+        return error_response
+    result = process_selected_images(context, product, request, translate=receipt["tool_name"] == "image_translate",
+                                     background=True, actor="ai")
+    return {"ok": result["ok"], "image_batch": result["image_batch"], "message": result["message"]}, 200
 
 
 def image_batch_payload(conversation_id: str) -> dict:
@@ -434,7 +370,7 @@ def plan_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus:
         common_plan = None
         if sources:
             common_plan = image_set_service.plan_image_set(
-                app_dir=_app_dir(), config=config, messages=context.pydantic_messages,
+                app_dir=_app_dir(), config=config,
                 product=product, draft=draft, sources=sources, count=body.get("count", 6), prompt=prompt,
             )
         plan = image_set_service.assemble_image_set(common_plan, sku_targets, sku_prompt="" if common_plan else prompt)
@@ -519,7 +455,7 @@ def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus
         if base_id and context.image_batches.latest_for_draft(draft["draft_id"]).conversation_id != base_id:
             raise RequestValidationError("套图任务已更新，请重新读取最新结果。", status_code=409)
         run_image_batch(
-            store=context.image_batches, messages=context.pydantic_messages, app_dir=_app_dir(),
+            store=context.image_batches, app_dir=_app_dir(),
             product_id=product["product_id"], draft_id=draft["draft_id"],
             request_id=body["request_id"], request_fingerprint=fingerprint,
             prompt=f"生成 {len(plan.pages)} 张套图：{plan.style}",
@@ -537,6 +473,7 @@ IMAGE_PAYLOAD_HANDLERS: dict[str, ImagePayloadHandler] = {
     "/api/draft-images/generate-set": generate_draft_image_set_payload,
     "/api/draft-images/state": draft_image_state_payload,
     "/api/draft-images/process": process_draft_images_payload,
+    "/api/image-processing/continue": continue_image_operation,
     "/api/image-pool/upload": upload_images_payload,
     "/api/image-pool/save": save_image_pool_payload,
     "/api/image-pool/action": apply_image_action_payload,

@@ -5,11 +5,16 @@ import type { AiUiPart } from '@/types/aiWork'
 import { describeAiTool } from '@/utils/aiToolLabels'
 import { aiToolIcon } from '@/utils/aiToolIcons'
 import { splitAssistantText } from '@/utils/aiThinkingPresentation'
-import { aiToolName, aiToolStatus, isAiToolPart, toolNeedsAttention, type ToolPartView } from '@/utils/aiMessagePresentation'
+import { aiToolName, aiToolStatus, desktopImageAction, isAiToolPart, toolNeedsAttention, type ToolPartView } from '@/utils/aiMessagePresentation'
+import { launchDesktop } from '@/utils/desktopHandoff'
+import { hasLocalOperations } from '@/utils/desktop'
+import { continueImageOperation } from '@/api/draftImages'
+import { withAiConversation } from '@/services/withAiConversation'
 
 const props = defineProps<{
   part: AiUiPart
   pendingKind?: 'approval' | 'external' | 'input'
+  progress?: string
   active?: boolean
 }>()
 
@@ -31,6 +36,23 @@ const businessResult = computed(() => (
 ))
 const status = computed(() => aiToolStatus(props.part, props.pendingKind, props.active))
 const toolStatusLabel = computed(() => statusLabels[status.value])
+const imageAction = computed(() => desktopImageAction(props.part))
+const continuing = ref(false)
+const continueError = ref('')
+async function continueImage() {
+  const action = imageAction.value
+  if (!action || continuing.value) return
+  continuing.value = true
+  continueError.value = ''
+  try {
+    if (hasLocalOperations()) await withAiConversation('继续 AI 图片处理', id => continueImageOperation(action, id))
+    else await launchDesktop({ target: '/aiWork', state: { imageOperation: action } })
+  } catch (error) {
+    continueError.value = error instanceof Error ? error.message : '暂时无法继续图片处理。'
+  } finally {
+    continuing.value = false
+  }
+}
 // 原生脚本诊断供模型修正和人工展开查看；运行时失败状态仍保留，不能据此断言没有写入。
 const scriptDiagnostic = computed(() => (
   aiToolName(props.part) === 'run_code' && tool.value.state === 'output-error'
@@ -50,6 +72,7 @@ const toolStatusClass = computed(() => {
     case 'partial':
     case 'input':
     case 'approval':
+    case 'desktop':
     case 'denied':
       return 'bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-100 dark:ring-amber-500/30'
     case 'completed':
@@ -129,6 +152,7 @@ const statusLabels: Record<string, string> = {
   completed: '已完成',
   submitted: '已提交',
   script_error: '脚本检查未通过',
+  desktop: '等待桌面',
 }
 </script>
 
@@ -197,7 +221,13 @@ const statusLabels: Record<string, string> = {
         </template>
       </div>
     </details>
-    <p v-if="toolError" class="ml-3 mt-1 break-words text-xs text-rose-700 dark:text-rose-300" role="alert">
+    <p v-if="progress" role="status" class="ml-3 mt-1 text-xs text-slate-500 dark:text-accent-300">{{ progress }}</p>
+    <div v-if="imageAction" class="ml-3 mt-1 space-y-1">
+      <p class="text-xs text-amber-800 dark:text-amber-200">{{ toolError }}</p>
+      <button type="button" class="btn btn-outline btn-sm" :disabled="continuing" @click="continueImage">在桌面继续</button>
+      <p v-if="continueError" role="alert" class="text-xs text-rose-700 dark:text-rose-300">{{ continueError }}</p>
+    </div>
+    <p v-else-if="toolError" class="ml-3 mt-1 break-words text-xs text-rose-700 dark:text-rose-300" role="alert">
       {{ toolError }}
     </p>
     <p v-else-if="toolNeedsAttention(status) && status !== 'approval'" class="ml-3 mt-1 text-xs text-amber-800 dark:text-amber-200">

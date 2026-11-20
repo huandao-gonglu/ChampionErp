@@ -259,7 +259,6 @@ def _probe_capability(
             allow_text_output=True,
             # Function Call 需要两次模型请求；只把完成工具回传后的最终响应
             # 作为 presentation 根流，避免第一段 DONE 留下未闭合工具卡。
-            publish_native_events=False,
         )
         tool_calls = [
             part for part in response.parts if isinstance(part, ToolCallPart)

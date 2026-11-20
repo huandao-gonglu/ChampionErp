@@ -11,6 +11,9 @@ import { setOperationAvailability } from '@/utils/desktop'
 
 vi.mock('@/api/draftImages', () => ({ fetchDraftImageState: vi.fn(), processDraftImages: vi.fn(), planDraftImageSet: vi.fn(), generateDraftImageSet: vi.fn() }))
 vi.mock('@/api/workflow/catalog', () => ({ saveDraft: vi.fn(), uploadImages: vi.fn() }))
+vi.mock('@/services/withAiConversation', () => ({
+  withAiConversation: (_title: string, execute: (id: string) => Promise<unknown>) => execute('conversation-image-test'),
+}))
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const scopes: ReturnType<typeof effectScope>[] = []
 function fixture() {
@@ -86,7 +89,7 @@ describe('图片工作台操作与恢复', () => {
     expect(save).not.toHaveBeenCalled()
     await work.planSet([], undefined, '统一光线', ['red'])
     expect(save).toHaveBeenCalledOnce()
-    expect(planDraftImageSet).toHaveBeenCalledWith(draft.value, [], undefined, '统一光线', ['red'])
+    expect(planDraftImageSet).toHaveBeenCalledWith(draft.value, [], undefined, '统一光线', ['red'], 'conversation-image-test')
   })
   it('套图先保存后规划，生成完成仍保留旧引用；采用与撤销只修改共用图', async () => {
     const { work, draft, response, save } = fixture()
@@ -98,7 +101,7 @@ describe('图片工作台操作与恢复', () => {
     vi.mocked(planDraftImageSet).mockResolvedValue({ ok: true, plan, updated_at: 'v1' })
     expect((await work.planSet(['common', 'shared'], 2, '明亮'))?.plan).toEqual(plan)
     expect(save).toHaveBeenCalledOnce()
-    expect(planDraftImageSet).toHaveBeenCalledWith(draft.value, ['common', 'shared'], 2, '明亮', [])
+    expect(planDraftImageSet).toHaveBeenCalledWith(draft.value, ['common', 'shared'], 2, '明亮', [], 'conversation-image-test')
     const active = { ...batch(), image_set: plan }
     vi.mocked(generateDraftImageSet).mockResolvedValue(response(draft.value, active))
     await work.generateSet(plan, 'v1')
@@ -138,7 +141,7 @@ describe('图片工作台操作与恢复', () => {
     await work.generateSet(undefined, draft.value.updatedAt, ['detail'])
     expect(generateDraftImageSet).toHaveBeenLastCalledWith(draft.value, expect.any(String), {
       updatedAt: draft.value.updatedAt, plan: undefined, baseRequestId: requestId, retryPageIds: ['detail'],
-    })
+    }, 'conversation-image-test')
     expect(generateDraftImageSet).toHaveBeenCalledTimes(2)
   })
   it('共用与 SKU 图同次采用并撤销；失败规格保留原图，SKU 结果不能混入共用图', async () => {

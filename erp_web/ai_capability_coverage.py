@@ -99,7 +99,7 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="GET", path="/api/v1/product-research/hot-products/runs", business_domain="选品任务", disposition="capability", capability_names=("research_run_status_query",)),
-    AiCapabilityCoverageEntry(method="GET", path="/api/v1/product-research/source-registry", business_domain="选品设置", disposition="excluded", reason="受信编辑视图包含数据源凭据占位；普通配置元数据由 settings.product_research 提供。"),
+    AiCapabilityCoverageEntry(method="GET", path="/api/v1/product-research/source-registry", business_domain="配置基础设施", disposition="excluded", reason="受信编辑视图包含数据源凭据占位；普通配置元数据由 settings.product_research 提供。"),
     AiCapabilityCoverageEntry(method="GET", path="/api/business-data/catalog", business_domain="业务数据", disposition="capability", capability_names=("business_data_catalog",)),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="业务数据", disposition="capability", capability_names=("business_data_read",)) for method, path in (
         ("POST", "/api/business-data/read"),
@@ -221,8 +221,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         ("POST", "/api/orders/fulfillment/upload-label"),
     )),
 
-    *(AiCapabilityCoverageEntry(method=method, path="/api/system-settings/user-agents", business_domain="配置基础设施", disposition="excluded",
-        reason="仅用户在系统设置中读取和编辑自己的全局偏好；不提供 Agent 自主写入入口。") for method in ("GET", "POST")),
+    AiCapabilityCoverageEntry(method="GET", path="/api/system-settings/user-agents", business_domain="配置基础设施", disposition="excluded",
+        reason="设置界面读取可编辑文档；当前账号的偏好正文由原生 Agent 指令加载。"),
+    AiCapabilityCoverageEntry(method="POST", path="/api/system-settings/user-agents", business_domain="配置基础设施", disposition="capability",
+        capability_names=("user_agents_update",)),
 
     AiCapabilityCoverageEntry(method="POST", path="/api/system-settings", business_domain="配置基础设施", disposition="excluded", reason="系统设置界面保存同步间隔与水印，不作为模型业务工具。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/system-settings/watermark-preview", business_domain="配置基础设施", disposition="excluded", reason="仅人工设置界面预览当前水印表单，不保存配置、不上传图片。"),
@@ -505,13 +507,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="excluded",
         reason="主 Agent 对话 SSE transport；能力经 global.chat ToolSet 暴露。",
     ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/v1/ai-presentations",
-        business_domain="AI 会话运输",
-        disposition="excluded",
-        reason="AI 演示 SSE transport，协议基础设施。",
-    ),
     # -------------------------------------------------- 全局任务门面（POST）
     # -------------------------------------------------- 商品与草稿（POST）
     AiCapabilityCoverageEntry(
@@ -628,6 +623,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="capability",
         capability_names=("category_match",),
     ),
+    AiCapabilityCoverageEntry(
+        method="POST",
+        path="/api/v1/category-match/batch",
+        business_domain="类目与属性",
+        disposition="capability",
+        capability_names=("category_match",),
+    ),
     # -------------------------------------------------- 采集与认领（POST）
     AiCapabilityCoverageEntry(
         method="POST",
@@ -730,6 +732,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(
         method="POST", path="/api/draft-images/process", business_domain="图片",
         disposition="internal_only", reason="草稿工作台异步受理与幂等边界；模型继续使用 image_translate / image_edit 原生能力入口。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST", path="/api/image-processing/continue", business_domain="图片",
+        disposition="internal_only", reason="桌面继续已验证的原图片工具回执，复用原请求范围与批次标识。",
     ),
     AiCapabilityCoverageEntry(
         method="POST",

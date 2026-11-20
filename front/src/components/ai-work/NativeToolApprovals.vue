@@ -6,12 +6,22 @@ import type { AiWorkUiMessagesResponse } from '@/types/aiWork'
 const props = defineProps<{ reply?: AiWorkUiMessagesResponse; toolCallId: string }>()
 const emit = defineEmits<{ decide: [id: string, approved: boolean] }>()
 const chat = useAiChatStore()
+
+function ruleChange(input: unknown) {
+  if (!input || typeof input !== 'object' || !('text' in input) || typeof input.text !== 'string') return null
+  const current = 'current_text' in input && typeof input.current_text === 'string' ? input.current_text : null
+  return { current, text: input.text }
+}
+
 const approvals = computed(() => (props.reply?.messages ?? chat.messages).flatMap(message => message.parts.flatMap(part => {
   if (!('state' in part) || part.state !== 'approval-requested' || !('approval' in part)) return []
   const callId = 'toolCallId' in part ? String(part.toolCallId) : ''
   if (callId !== props.toolCallId) return []
   const pending = (props.reply?.pending_tool_calls ?? chat.pendingToolCalls).find(call => call.tool_call_id === callId && call.kind === 'approval')
-  return pending ? [{ id: part.approval.id, callId, tool: pending.tool_name, summary: pending.summary, input: 'input' in part ? part.input : {} }] : []
+  if (!pending) return []
+  const input = 'input' in part ? part.input : {}
+  const rule = pending.tool_name === 'user_agents_update' ? ruleChange(input) : null
+  return [{ id: part.approval.id, callId, tool: pending.tool_name, summary: pending.summary, input, rule }]
 })))
 </script>
 <template>
@@ -19,7 +29,15 @@ const approvals = computed(() => (props.reply?.messages ?? chat.messages).flatMa
     <section v-for="approval in approvals" :key="approval.callId" class="space-y-2">
       <p class="whitespace-pre-wrap break-words text-sm">{{ approval.summary }}</p>
       <PackageEstimateReview v-if="approval.tool === 'draft_package_estimates_confirm'" :input="approval.input" />
-      <details class="text-xs"><summary class="cursor-pointer py-1">查看操作参数</summary><pre class="whitespace-pre-wrap break-all">{{ JSON.stringify(approval.input, null, 2) }}</pre></details>
+      <dl v-if="approval.rule" class="space-y-1 text-sm">
+        <template v-if="approval.rule.current">
+          <dt class="font-medium">原规则</dt>
+          <dd class="whitespace-pre-wrap break-words">{{ approval.rule.current }}</dd>
+        </template>
+        <dt class="font-medium">要保存的规则</dt>
+        <dd class="whitespace-pre-wrap break-words">{{ approval.rule.text }}</dd>
+      </dl>
+      <details v-else class="text-xs"><summary class="cursor-pointer py-1">查看操作参数</summary><pre class="whitespace-pre-wrap break-all">{{ JSON.stringify(approval.input, null, 2) }}</pre></details>
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-primary" :disabled="!reply && chat.isBusy" @click="emit('decide', approval.id, true)">批准</button>
         <button class="btn btn-outline" :disabled="!reply && chat.isBusy" @click="emit('decide', approval.id, false)">拒绝</button>

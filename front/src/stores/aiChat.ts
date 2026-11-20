@@ -10,7 +10,7 @@ import { apiClient } from '@/api/client'
 import { matchChatCommand } from '@/services/chatCommands'
 import type { ChatCommandContext } from '@/services/chatCommands'
 import { GLOBAL_CHAT_CONVERSATION_PREFIX } from '@/types/aiWork'
-import type { AiWorkUiMessagesResponse, PendingToolCall } from '@/types/aiWork'
+import type { AiWorkUiMessagesResponse, ManualAiAction, PendingToolCall } from '@/types/aiWork'
 import { useAiPageContextStore } from './aiPageContext'
 import { projectChatMessages } from '@/utils/aiChatMessages'
 import { handoffModelOperation, type DesktopChatState } from '@/utils/desktopHandoff'
@@ -59,6 +59,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   let generation = 0
   let stopRequestVersion = 0
+  const inputDrafts = new Map<string, DesktopChatState>()
   const pendingInputIds = new Set<string>()
   const status = computed(() => chat.value?.status ?? 'ready')
   const conversationLinkId = computed(() => (
@@ -109,9 +110,14 @@ export const useAiChatStore = defineStore('aiChat', () => {
     void readTitle(id)
   })
   const error = computed(() => localError.value ?? chat.value?.error as AiChatError | undefined)
+  const manualAction = computed(() =>
+    (chat.value?.messages[0]?.metadata as { manual_ai_action?: ManualAiAction } | undefined)?.manual_ai_action)
+  const awaitingAction = computed(() => manualAction.value?.state === 'running' && !historyVersion.value)
   const canSend = computed(() => Boolean(input.value.trim() || images.attachments.value.length) && !images.reading.value
-    && !(images.attachments.value.length && images.blocked.value) && !stopping.value && !forking.value && !restoring.value && !restoreError.value)
+    && !(images.attachments.value.length && images.blocked.value) && !stopping.value && !forking.value
+    && !restoring.value && !restoreError.value && !awaitingAction.value)
   const canStop = computed(() => isBusy.value || runActive.value || pendingToolCalls.value.length > 0 || stopping.value)
+  const watchingActionJob = computed(() => manualAction.value?.state === 'waiting' && ['research', 'image_preparation'].includes(manualAction.value.job?.kind || ''))
 
   // 只记住选择，不复制消息；消息与活动运行始终从服务端恢复。
   function rememberConversation(id: string | null): void {
@@ -217,12 +223,16 @@ export const useAiChatStore = defineStore('aiChat', () => {
         return
       }
       stopping.value = false
+      if (!historyVersion.value && detail.history_version > 0 && manualAction.value) {
+        rememberConversation(conversationId)
+        conversationListVersion.value++
+      }
       chat.value.messages = detail.messages
       historyVersion.value = detail.history_version
       localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
       receivedNotice.value = ''
       if (!parallelActive.value) connectEvents(conversationId)
-      if (!parallelActive.value && (pendingToolCalls.value.length || (runActive.value && typeof EventSource === 'undefined'))) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
+      if (!parallelActive.value && (watchingActionJob.value || pendingToolCalls.value.length || (runActive.value && typeof EventSource === 'undefined'))) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
     } catch (cause) {
       if (requestGeneration !== generation || activeConversationId.value !== conversationId) return
       if ((cause as AiChatError)?.code === 'CHAT_DELETED') {
@@ -279,11 +289,11 @@ export const useAiChatStore = defineStore('aiChat', () => {
     })
     return instance
   }
-  function startConversation(): string {
+  function startConversation(keepSelection = false): string {
     finishRestore()
     images.clear()
     // 未发送的空白对话不在服务端存在；刷新后继续保持空白，不恢复上一段。
-    rememberConversation(null)
+    if (!keepSelection) rememberConversation(null)
     localTurnStartedAt.value = ''
     disconnectEvents()
     generation++
@@ -305,6 +315,39 @@ export const useAiChatStore = defineStore('aiChat', () => {
     chat.value = createChat(id, [])
     connectEvents(id)
     return id
+  }
+  function startManualAction(title: string): string {
+    const previous = activeConversationId.value
+    if (previous && (input.value || images.attachments.value.length)) {
+      inputDrafts.set(previous, { text: input.value, attachments: [...images.attachments.value], draftIds: [...targetDraftIds.value] })
+    }
+    const id = startConversation(true)
+    input.value = ''
+    floatingOpen.value = true
+    latestMessageId.value = id
+    runActive.value = true
+    chat.value!.messages = [{
+      id, role: 'user', parts: [{ type: 'text', text: title }],
+      metadata: { manual_ai_action: { title, state: 'running' } satisfies ManualAiAction },
+    }]
+    if (typeof EventSource === 'undefined') retryTimer = setTimeout(() => void resyncFromServer(id), 300)
+    return id
+  }
+  function finishManualAction(id: string, cause?: unknown): void {
+    conversationListVersion.value++
+    if (id !== activeConversationId.value) return
+    if (cause && !historyVersion.value && chat.value?.messages[0]) {
+      const message = chat.value.messages[0]
+      const title = (message.metadata as { manual_ai_action: ManualAiAction }).manual_ai_action.title
+      runActive.value = false
+      chat.value.messages = [{
+        ...message,
+        metadata: { manual_ai_action: {
+          title, state: 'unknown', message: cause instanceof Error ? cause.message : '暂时无法确认操作结果。',
+        } satisfies ManualAiAction },
+      }]
+    }
+    void resyncFromServer(id)
   }
   async function queueMessage(text: string, files: FileUIPart[], targetId?: string): Promise<void> {
     const currentId = activeConversationId.value
@@ -459,6 +502,12 @@ export const useAiChatStore = defineStore('aiChat', () => {
     localTurnStartedAt.value = ''
     images.clear()
     const id = detail.conversation_id
+    const storedInput = inputDrafts.get(id)
+    if (storedInput) {
+      input.value = storedInput.text
+      images.attachments.value = storedInput.attachments
+      inputDrafts.delete(id)
+    }
     // 页面已校验响应并确认仍选中该会话；打开只绑定历史，不提交模型请求。
     generation++
     disconnectEvents()
@@ -471,7 +520,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     latestMessageId.value = detail.latest_message_id ?? null
     pendingToolCalls.value = detail.pending_tool_calls ?? []
     localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
-    targetDraftIds.value = []
+    targetDraftIds.value = storedInput?.draftIds ?? []
     directRunMessageId = null
     receivedMessages.value = detail.received_messages ?? []
     queueAction.value = ''
@@ -479,7 +528,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     receivedNotice.value = ''
     finishRestore()
     connectEvents(id)
-    if (runActive.value || parallelActive.value || pendingToolCalls.value.length) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
+    if (runActive.value || parallelActive.value || pendingToolCalls.value.length || watchingActionJob.value) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
   }
   function estimatePackageDimensions(draftId: string, skuIds: string[], markets: string[]): void {
     startConversation()
@@ -555,6 +604,6 @@ export const useAiChatStore = defineStore('aiChat', () => {
     error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
     restoring, restoreError, restoreConversation, actOnQueue, queueAction, queueRows, parallelReplies, stopParallelReply, respondToParallelApproval,
     sendMessage, stopStreaming, respondToApproval, answerQuestion, clearError, openConversation, connectEvents, disconnectEvents,
-    prepareDrafts, estimatePackageDimensions, restoreDesktopInput, refreshHistory, forking, forkConversation,
+    prepareDrafts, estimatePackageDimensions, restoreDesktopInput, refreshHistory, startManualAction, finishManualAction, forking, forkConversation,
     openFloating: () => { floatingOpen.value = true; void restoreConversation() }, closeFloating: () => { floatingOpen.value = false } }
 })
