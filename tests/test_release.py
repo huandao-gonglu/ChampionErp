@@ -2,10 +2,14 @@
 import argparse
 import hashlib
 import json
+import os
 import plistlib
-from io import BytesIO
+from io import BytesIO, StringIO
+import subprocess
+import sys
 import tarfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -69,6 +73,7 @@ def test_release_cli_runs_selected_checks_before_web_build(tmp_path, monkeypatch
         ('node', '-p', 'process.arch'): 'arm64',
     }[args])
     calls = []
+    parallel_calls = []
     monkeypatch.setattr(release, 'check_new_desktop_version', lambda update: calls.append(('版本预检', update['arch'])))
     monkeypatch.setattr(release, 'remote_output', lambda *args: '/opt/champion-erp/releases/previous')
 
@@ -87,10 +92,19 @@ def test_release_cli_runs_selected_checks_before_web_build(tmp_path, monkeypatch
             raise RuntimeError('测试到达网页构建')
 
     monkeypatch.setattr(release, 'run', capture)
+    def capture_parallel(tasks, *, log):
+        parallel_calls.append([tuple(command) for command, _, _ in tasks])
+        for command, cwd, env in tasks:
+            capture(command, cwd=cwd, env=env, log=log)
+
+    monkeypatch.setattr(release, 'run_parallel', capture_parallel)
     with pytest.raises(RuntimeError, match='测试到达网页构建'):
         release.main()
     expected = [('版本预检', 'arm64')] if desktop else []
-    expected.append(('pnpm', 'install', '--frozen-lockfile', '--ignore-scripts'))
+    install = ('pnpm', 'install', '--frozen-lockfile', '--ignore-scripts')
+    if (release.ROOT / '.pnpm-store').is_dir():
+        install += ('--store-dir', str(release.ROOT / '.pnpm-store'))
+    expected.append(install)
     if desktop:
         expected.append(('node', 'node_modules/electron/install.js'))
     expected.extend([(release.sys.executable, 'scripts/generate_third_party_notices.py', '--check'),
@@ -99,7 +113,137 @@ def test_release_cli_runs_selected_checks_before_web_build(tmp_path, monkeypatch
         expected.extend([(release.sys.executable, '-m', 'pytest', 'tests', '-q'),
                          ('pnpm', 'test:run'), ('pnpm', 'test:desktop')])
     assert calls == [*expected, ('pnpm', 'build')]
+    expected_parallel = [[(release.sys.executable, 'scripts/generate_third_party_notices.py', '--check'),
+                          ('pnpm', 'types:check')]]
+    if desktop:
+        expected_parallel.append([('pnpm', 'build'),
+                                  (release.sys.executable, 'scripts/build_desktop_runtime.py')])
+    assert parallel_calls == expected_parallel
     assert json.loads(next(tmp_path.glob('*/release.json')).read_text())['skip_tests'] is skip
+
+
+def test_parallel_commands_overlap_and_preserve_output(tmp_path):
+    first, second = tmp_path / 'first', tmp_path / 'second'
+    tasks = []
+    for own, other, label in ((first, second, '网页输出'), (second, first, '执行器输出')):
+        code = (
+            'from pathlib import Path; import time\n'
+            f'Path({str(own)!r}).touch()\n'
+            'deadline = time.monotonic() + 3\n'
+            f'while not Path({str(other)!r}).exists():\n'
+            '    assert time.monotonic() < deadline, "两个命令没有并发启动"\n'
+            '    time.sleep(0.01)\n'
+            f'print({label!r})\n'
+        )
+        tasks.append(([sys.executable, '-u', '-c', code], tmp_path, os.environ.copy()))
+    log = StringIO()
+    release.run_parallel(tasks, log=log)
+    assert '网页输出\n' in log.getvalue()
+    assert '执行器输出\n' in log.getvalue()
+
+
+@pytest.mark.parametrize('failure_first', [False, True])
+def test_parallel_failure_preserves_logs_and_stops_descendants(tmp_path, failure_first):
+    ready, child_ready, stopped = (tmp_path / name for name in ('ready', 'child-ready', 'stopped'))
+    child = (
+        'from pathlib import Path; import signal, time\n'
+        'def stop(*_):\n'
+        f'    Path({str(stopped)!r}).touch()\n'
+        '    raise SystemExit(0)\n'
+        'signal.signal(signal.SIGTERM, stop)\n'
+        f'Path({str(child_ready)!r}).touch()\n'
+        'time.sleep(6)\n'
+    )
+    sibling = (
+        'from pathlib import Path; import subprocess, sys, time, signal\n'
+        f'child = subprocess.Popen([sys.executable, "-u", "-c", {child!r}])\n'
+        'signal.signal(signal.SIGTERM, lambda *_: child.wait(timeout=1))\n'
+        'deadline = time.monotonic() + 3\n'
+        f'while not Path({str(child_ready)!r}).exists():\n'
+        '    assert time.monotonic() < deadline\n'
+        '    time.sleep(0.01)\n'
+        'print("另一命令已开始")\n'
+        f'Path({str(ready)!r}).touch()\n'
+        'child.wait()\n'
+    )
+    failed = (
+        'from pathlib import Path; import sys, time\n'
+        'deadline = time.monotonic() + 3\n'
+        f'while not Path({str(ready)!r}).exists():\n'
+        '    assert time.monotonic() < deadline\n'
+        '    time.sleep(0.01)\n'
+        'print("失败前的标准输出")\n'
+        'print("真实构建错误", file=sys.stderr)\n'
+        'sys.exit(7)\n'
+    )
+    codes = [failed, sibling] if failure_first else [sibling, failed]
+    tasks = [([sys.executable, '-u', '-c', code], tmp_path, os.environ.copy()) for code in codes]
+    log = StringIO()
+    started = time.monotonic()
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        release.run_parallel(tasks, log=log)
+    assert raised.value.returncode == 7
+    assert time.monotonic() - started < 4
+    assert stopped.exists(), '取消任务时没有通知其子进程退出'
+    assert '另一命令已开始\n' in log.getvalue()
+    assert '失败前的标准输出\n' in log.getvalue()
+    assert '真实构建错误\n' in log.getvalue()
+
+
+def test_parallel_failure_kills_command_ignoring_termination(tmp_path):
+    ready = tmp_path / 'ready'
+    sibling = (
+        'from pathlib import Path; import signal, time\n'
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+        f'Path({str(ready)!r}).touch()\n'
+        'time.sleep(8)\n'
+    )
+    failed = (
+        'from pathlib import Path; import time\n'
+        'deadline = time.monotonic() + 3\n'
+        f'while not Path({str(ready)!r}).exists():\n'
+        '    assert time.monotonic() < deadline\n'
+        '    time.sleep(0.01)\n'
+        'raise SystemExit(9)\n'
+    )
+    tasks = [([sys.executable, '-u', '-c', code], tmp_path, os.environ.copy()) for code in (sibling, failed)]
+    started = time.monotonic()
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        release.run_parallel(tasks, log=StringIO())
+    assert raised.value.returncode == 9
+    assert time.monotonic() - started < 4
+
+
+@pytest.mark.parametrize('error_type', [FileNotFoundError, KeyboardInterrupt])
+def test_parallel_start_failure_or_interrupt_cleans_started_commands(tmp_path, monkeypatch, error_type):
+    ready = tmp_path / 'ready'
+    code = (
+        'from pathlib import Path; import time\n'
+        'print("启动异常前的输出")\n'
+        f'Path({str(ready)!r}).touch()\n'
+        'time.sleep(8)\n'
+    )
+    original_popen = subprocess.Popen
+    children = []
+
+    def start(*args, **kwargs):
+        if children:
+            deadline = time.monotonic() + 3
+            while not ready.exists():
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            raise error_type('模拟启动失败或人工中断')
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(release.subprocess, 'Popen', start)
+    tasks = [([sys.executable, '-u', '-c', code], tmp_path, os.environ.copy())] * 2
+    log = StringIO()
+    with pytest.raises(error_type):
+        release.run_parallel(tasks, log=log)
+    assert children[0].poll() is not None
+    assert '启动异常前的输出\n' in log.getvalue()
 
 
 def test_new_desktop_version_checked_before_switch(monkeypatch):

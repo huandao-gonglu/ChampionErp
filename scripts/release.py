@@ -1,6 +1,6 @@
 """从固定 Git 版本发布服务器和网页，默认通过更新服务分发 macOS 桌面新版。"""
 import argparse
-from concurrent.futures import ThreadPoolExecutor, Future
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -12,10 +12,12 @@ import re
 import selectors
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -44,34 +46,64 @@ def run(args, *, cwd, log, env):
     subprocess.run([str(arg) for arg in args], cwd=cwd, stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
 
 
-def _run_to_buffer(args, *, cwd, env):
-    """在独立线程中执行，输出暂存到临时文件；结束后由调用方合并到主日志。"""
-    header = '\n运行 ' + shlex.join([str(arg) for arg in args]) + '\n'
-    with tempfile.TemporaryFile() as buffer:
-        buffer.write(header.encode())
-        subprocess.run([str(arg) for arg in args], cwd=cwd, stdout=buffer, stderr=subprocess.STDOUT, env=env, check=True)
-        buffer.seek(0)
-        return buffer.read()
+def _stop_process_groups(processes):
+    """先通知整组退出，超过宽限期后回收仍在运行的命令及其子进程。"""
+    for process in processes:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 2
+    for process in processes:
+        try:
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+    # 命令本身退出后仍可能留下 pnpm / pip 等子进程，继续按原进程组回收。
+    for process in processes:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    for process in processes:
+        process.wait()
 
 
 def run_parallel(tasks, *, log):
-    """并发执行互不依赖的子命令，全部通过后将输出按提交顺序追加到 log。
+    """并发执行独立命令，失败或中断时停止其余进程组，并保留全部输出。
 
     tasks: [(args, cwd, env), ...]
-    任何一个失败立即取消其余并传播原始异常。
+    输出按提交顺序归并；异常退出也保留已产生的 stdout / stderr。
     """
-    if len(tasks) == 1:
-        args, cwd, env = tasks[0]
-        run(args, cwd=cwd, log=log, env=env)
-        return
-    futures: list[Future] = []
-    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-        for args, cwd, env in tasks:
-            futures.append(pool.submit(_run_to_buffer, args, cwd=cwd, env=env))
-    # 按提交顺序收集结果；第一个异常直接传播。
-    for future in futures:
-        log.write(future.result().decode(errors='replace'))
-        log.flush()
+    processes, outputs = [], []
+    with ExitStack() as stack:
+        try:
+            for args, cwd, env in tasks:
+                command = [str(arg) for arg in args]
+                log.write('\n运行 ' + shlex.join(command) + '\n')
+                log.flush()
+                buffer = stack.enter_context(tempfile.TemporaryFile(mode='w+', encoding='utf-8', errors='replace'))
+                outputs.append((command, buffer))
+                processes.append(subprocess.Popen(command, cwd=cwd, stdout=buffer,
+                    stderr=subprocess.STDOUT, env=env, start_new_session=True))
+            while processes:
+                results = [process.poll() for process in processes]
+                for process, result in zip(processes, results):
+                    if result is not None and result != 0:
+                        raise subprocess.CalledProcessError(result, process.args)
+                if all(result is not None for result in results):
+                    break
+                time.sleep(0.05)
+        except BaseException as error:
+            _stop_process_groups(processes)
+            log.write(f'\n并行任务中止：{error}\n')
+            raise
+        finally:
+            for command, buffer in outputs:
+                log.write('\n输出 ' + shlex.join(command) + '\n')
+                buffer.seek(0)
+                shutil.copyfileobj(buffer, log)
+            log.flush()
 
 
 def ssh_args(args):
@@ -365,16 +397,10 @@ def release(args):
                 # 网页构建（vue-tsc -b && vite build）完成后，桌面前端只需
                 # vite build --mode desktop，跳过重复 vue-tsc 类型编译。
                 print('编译网页并构建桌面执行器', flush=True)
-                runtime_future: Future | None = None
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    runtime_future = pool.submit(
-                        _run_to_buffer,
-                        [sys.executable, 'scripts/build_desktop_runtime.py'],
-                        cwd=source, env=environment)
-                    # 主线程执行网页构建，CPU 密集任务不额外竞争。
-                    run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
-                log.write(runtime_future.result().decode(errors='replace'))
-                log.flush()
+                run_parallel([
+                    (['pnpm', 'build'], source / 'front', environment),
+                    ([sys.executable, 'scripts/build_desktop_runtime.py'], source, environment),
+                ], log=log)
                 # 网页 vue-tsc 已完成增量缓存，桌面前端只需 vite build。
                 print('构建并验证桌面更新包', flush=True)
                 run(['pnpm', 'exec', 'vite', 'build', '--mode', 'desktop'], cwd=source / 'front', log=log, env=environment)
