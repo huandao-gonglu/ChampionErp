@@ -42,6 +42,8 @@ def verify(work, installed):
     state = {'asset': None, 'requests': []}
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+
         def log_message(self, *_args):
             pass
 
@@ -133,10 +135,18 @@ def verify(work, installed):
                               'sha256': '0' * 64 if checksum_bad else hashlib.sha256(archive.read_bytes()).hexdigest()}
             (work / 'control.json').write_text(json.dumps({'scenario': scenario}))
             report = work / f'{scenario}.jsonl'
-            executable = plistlib.loads((installed / 'Contents/Info.plist').read_bytes())['CFBundleExecutable']
+            executable_name = plistlib.loads((installed / 'Contents/Info.plist').read_bytes())['CFBundleExecutable']
+            executable = str(installed / 'Contents/MacOS' / executable_name)
             print(f'实测场景：{scenario}', flush=True)
+            if scenario == 'success':
+                with (work / 'prepare.log').open('w') as log:
+                    run([executable, '--prepare-update'], log=log, env=environment, timeout=100)
+                prepared = events(report)
+                assert any(e['event'] == 'dialog' and e['message'] == '更新已下载。' for e in prepared), prepared
+                assert not any(e['event'] in {'downloaded', 'restarted'} for e in prepared), prepared
+                assert sum(p.endswith('/update.zip') for p in state['requests']) == 1, state['requests']
             with (work / f'{scenario}.log').open('w') as log:
-                child = subprocess.Popen([str(installed / 'Contents/MacOS' / executable)], stdout=log, stderr=log, env=environment)
+                child = subprocess.Popen([executable], stdout=log, stderr=log, env=environment)
                 try:
                     deadline = time.monotonic() + 120
                     while time.monotonic() < deadline:
@@ -155,12 +165,14 @@ def verify(work, installed):
                     child.wait(timeout=15)
                 finally:
                     if child.poll() is None:
-                        child.terminate()
-                        child.wait(timeout=10)
+                        child.kill()
+                        child.wait()
             history = events(report)
             actual_version = plistlib.loads((installed / 'Contents/Info.plist').read_bytes())['CFBundleShortVersionString']
             assert actual_version == ('1.0.1' if scenario == 'success' else '1.0.0'), history
-            assert any(e['event'] == 'dialog' and '安装并重启' in e.get('buttons', []) for e in history), history
+            expected_button = '安装并重启' if scenario == 'success' else '下载并安装'
+            assert any(e['event'] == 'dialog' and expected_button in e.get('buttons', []) for e in history), history
+            assert sum(p.endswith('/update.zip') for p in state['requests']) == 1, state['requests']
             if scenario == 'success':
                 restarted = next(e for e in history if e['event'] == 'restarted')
                 assert restarted['version'] == '1.0.1'

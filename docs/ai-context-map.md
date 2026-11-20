@@ -186,7 +186,8 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 
 统一发布默认分发可选桌面更新，构建用 Mac 同样通过客户端升级。`--server-only` 跳过桌面打包和分发。
 桌面版本发布由 `scripts/release.py` 和 `deploy/publish_desktop.py` 写入同一套平台/架构清单，Nginx 独立提供安装包。
-`front/desktop/updates.cjs` 负责启动检查与下载；`update-signature.cjs` 共用固定自签身份并核验原生更新资格，
+`front/desktop/updates.cjs` 负责检查、下载和校验缓存。符合条件的 Mac 可在业务运行中下载 ZIP，重启后直接复用；
+`update-signature.cjs` 共用固定自签身份并核验原生更新资格，
 `native-update-feed.cjs` 只向原生更新器提供已校验的本机 ZIP，退出替换和重启由 Electron / Squirrel 负责。
 自签和 Developer ID 均分发 DMG 与 ZIP，自动替换只在业务启动前触发；原生隔离验收入口为 `scripts/test_desktop_auto_update.py`。
 `services/desktop_version_policy.py` 在已上报版本的桌面新提交上执行最低版本规则。

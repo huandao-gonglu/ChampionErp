@@ -11,6 +11,11 @@ const report = path.join(settings.root, `${control.scenario}.jsonl`)
 function record(event, extra = {}) {
   fs.appendFileSync(report, JSON.stringify({ event, version: app.getVersion(), pid: process.pid, executable: process.execPath, ...extra }) + '\n')
 }
+function fatal(error) {
+  record('fatal', { message: error.stack })
+  app.exit(3)
+}
+process.on('uncaughtException', fatal)
 app.setPath('userData', path.join(settings.root, 'user-data', control.scenario))
 app.on('before-quit', () => record('quit'))
 const watchdog = setTimeout(() => { record('timeout'); app.exit(4) }, 90000)
@@ -37,7 +42,13 @@ app.whenReady().then(async () => {
     // 仅将测试的 HTTPS 发行站点映射到本机服务；下载、摘要及原生更新逻辑均为正式代码。
     fetcher: (url, options) => fetch(new URL(new URL(url).pathname, settings.feedOrigin), options),
   })
+  if (process.argv.includes('--prepare-update')) {
+    await updates.manual()
+    clearTimeout(watchdog)
+    app.quit()
+    return
+  }
   const result = await updates.startup()
   record('result', { result })
   if (result !== 'installing') { clearTimeout(watchdog); app.quit() }
-}).catch(error => { record('fatal', { message: error.stack }); app.exit(3) })
+}).catch(fatal)

@@ -11,11 +11,15 @@ const bytes = Buffer.from('测试安装包')
 const checksum = createHash('sha256').update(bytes).digest('hex')
 const packageInfo = { file: 'installer.dmg', size: bytes.length, sha256: checksum }
 const policy = { platform: 'darwin', arch: 'arm64', minimum: '1.2.0', version: '1.10.0', notes: '发布说明', installer: packageInfo }
+const zipBytes = Buffer.from('测试自动更新包')
+const macZip = { file: 'update.zip', size: zipBytes.length, sha256: createHash('sha256').update(zipBytes).digest('hex') }
+const zipUrl = 'https://release.example/desktop-updates/darwin-arm64/1.10.0/update.zip'
+const installerUrl = 'https://release.example/desktop-updates/darwin-arm64/1.10.0/installer.dmg'
 
 async function setup(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-updates-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
-  const state = { manifest: policy, answer: 1, messages: [], opened: [], revealed: [], native: false, fetched: [] }
+  const state = { manifest: policy, answer: 1, messages: [], opened: [], revealed: [], native: false, fetched: [], downloads: 0 }
   const native = new EventEmitter()
   native.setFeedURL = ({ url }) => { state.feed = url }
   native.checkForUpdates = async () => {
@@ -34,12 +38,13 @@ async function setup(t) {
     app: { getPath: () => directory, getVersion: () => '1.2.8' },
     dialog: { showMessageBox: async value => { state.messages.push(value); return { response: state.answer } } },
     shell: { openPath: async value => { state.opened.push(value); return '' }, showItemInFolder: value => state.revealed.push(value) },
-    showProgress: () => ({ update() {}, close() {} }),
+    showProgress: () => { state.downloads += 1; return { update() {}, close() {} } },
     fetcher: async (url, options) => {
       state.fetched.push(url.href)
       assert.equal(options.redirect, 'error')
-      if (/\.(dmg|zip)$/.test(url.pathname)) return new Response(bytes)
       if (!state.manifest) throw new Error('离线')
+      if (url.href === zipUrl) return new Response(zipBytes)
+      if (url.href === installerUrl) return new Response(bytes)
       return Response.json(state.manifest)
     },
   })
@@ -71,33 +76,76 @@ test('未签名 Mac 启动时校验并打开安装包，在业务会话中只定
   await create().manual()
   assert.equal(state.opened.length, 1)
   assert.equal(state.revealed.length, 1)
-  assert.equal(state.fetched.at(-1), 'https://release.example/desktop-updates/darwin-arm64/1.10.0/installer.dmg')
+  assert.equal(state.revealed[0], state.opened[0])
+  assert.equal(state.fetched.filter(url => url.endsWith('.dmg')).length, 1)
 })
 
 test('已签名 Mac 启动前校验 ZIP，再由本机来源交给 Electron 安装', async t => {
   const { create, state } = await setup(t)
   state.native = true
   state.answer = 0
-  state.manifest = { ...policy, macZip: { ...packageInfo, file: 'update.zip' } }
+  state.manifest = { ...policy, macZip }
   assert.equal(await create().startup(), 'installing')
+  assert.equal(state.messages[0].buttons[0], '下载并安装')
   assert.match(state.feed, /^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{48}\/feed$/)
-  assert.deepEqual(state.nativeBytes, bytes)
-  assert.equal(state.nativeFeed.sha256, checksum)
-  assert.equal(state.fetched.at(-1), 'https://release.example/desktop-updates/darwin-arm64/1.10.0/update.zip')
+  assert.deepEqual(state.nativeBytes, zipBytes)
+  assert.equal(state.nativeFeed.sha256, macZip.sha256)
+  assert.equal(state.fetched.at(-1), zipUrl)
   assert.equal(state.installed, true)
   assert.equal(state.opened.length, 0)
   await assert.rejects(fetch(state.feed))
+})
+
+test('业务运行中下载 ZIP，新进程离线启动仍直接安装且不再次下载', async t => {
+  const { create, state } = await setup(t)
+  state.native = true
+  state.answer = 0
+  state.manifest = { ...policy, macZip }
+  await create().manual()
+  assert.equal(state.messages[0].buttons[0], '下载更新')
+  assert.equal(state.messages.at(-1).message, '更新已下载。')
+  assert.equal(state.feed, undefined)
+  assert.deepEqual(state.revealed, [])
+
+  state.answer = 1
+  await create().manual()
+  assert.equal(state.messages.at(-1).message, '桌面新版 1.10.0 已下载')
+  assert.equal(state.messages.at(-1).buttons[state.messages.at(-1).defaultId], '知道了')
+  state.answer = 0
+  state.manifest = null
+  assert.equal(await create().startup(), 'installing')
+  assert.equal(state.messages.at(-1).buttons[0], '安装并重启')
+  assert.deepEqual(state.fetched.filter(url => /\.(zip|dmg)$/.test(url)), [zipUrl])
+  assert.equal(state.downloads, 1)
+  assert.deepEqual(state.nativeBytes, zipBytes)
+  assert.equal(state.installed, true)
+})
+
+test('缓存 ZIP 大小正确但摘要不符时，启动提示下载并安装', async t => {
+  const { create, state, directory } = await setup(t)
+  state.native = true
+  state.answer = 0
+  state.manifest = { ...policy, macZip }
+  const cacheDirectory = path.join(directory, 'updates', 'darwin-arm64')
+  await fs.mkdir(cacheDirectory, { recursive: true })
+  const archive = path.join(cacheDirectory, 'ERP-1.10.0.zip')
+  await fs.writeFile(archive, Buffer.alloc(macZip.size))
+  assert.equal(await create().startup(), 'installing')
+  assert.equal(state.messages[0].buttons[0], '下载并安装')
+  assert.equal(state.downloads, 1)
+  assert.deepEqual(await fs.readFile(archive), zipBytes)
+  assert.deepEqual(state.nativeBytes, zipBytes)
 })
 
 test('自动更新拒绝摘要错误或原生签名拒绝，不退出或静默改为安装其他包', async t => {
   const { create, state } = await setup(t)
   state.native = true
   state.answer = 0
-  state.manifest = { ...policy, macZip: { ...packageInfo, file: 'update.zip', sha256: '0'.repeat(64) } }
+  state.manifest = { ...policy, macZip: { ...macZip, sha256: '0'.repeat(64) } }
   assert.equal(await create().startup(), true)
   assert.match(state.messages.at(-1).detail, /校验失败/)
   assert.equal(state.feed, undefined)
-  state.manifest.macZip.sha256 = checksum
+  state.manifest.macZip.sha256 = macZip.sha256
   state.nativeError = '更新包签名不匹配'
   assert.equal(await create().startup(), true)
   assert.match(state.messages.at(-1).detail, /签名不匹配/)

@@ -2,7 +2,7 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
-const { createWriteStream } = require('node:fs')
+const { createReadStream, createWriteStream } = require('node:fs')
 const { Readable, Transform } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 const { createNativeUpdateFeed } = require('./native-update-feed.cjs')
@@ -80,6 +80,18 @@ async function downloadInstaller(url, asset, destination, signal, onProgress, fe
   }
 }
 
+async function hasValidPackage(file, asset) {
+  try {
+    const stat = await fs.lstat(file)
+    if (!stat.isFile() || stat.size !== asset.size) return false
+    const hash = createHash('sha256')
+    for await (const chunk of createReadStream(file)) hash.update(chunk)
+    return hash.digest('hex') === asset.sha256
+  } catch {
+    return false
+  }
+}
+
 function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeSigned, platform = process.platform,
   arch = process.arch, fetcher = fetch, showProgress, parentWindow = () => null }) {
   const url = new URL(origin)
@@ -119,8 +131,7 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
     }
   }
 
-  async function installNative(manifest, versionUrl) {
-    const archive = await getPackage(manifest, versionUrl, manifest.macZip, '.zip')
+  async function installNative(manifest, archive) {
     const feed = await createNativeUpdateFeed(archive, manifest.macZip, manifest.version)
     try {
       await new Promise((resolve, reject) => {
@@ -141,16 +152,17 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
     autoUpdater.quitAndInstall()
   }
 
-  async function getPackage(manifest, versionUrl, asset = manifest.installer, suffix = SUFFIXES[platform]) {
+  function packagePath(version, suffix) {
+    return path.join(directory, 'ERP-' + version + suffix)
+  }
+
+  async function downloadPackage(versionUrl, asset, destination) {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 })
-    const destination = path.join(directory, 'ERP-' + manifest.version + suffix)
     const task = new AbortController()
     const progress = showProgress(() => task.abort())
     try {
       await downloadInstaller(new URL(asset.file, versionUrl), asset, destination,
         AbortSignal.any([task.signal, AbortSignal.timeout(20 * 60 * 1000)]), progress.update, fetcher)
-      if (platform === 'linux') await fs.chmod(destination, 0o700)
-      return destination
     } finally {
       progress.close()
     }
@@ -168,20 +180,38 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
     if (!startup && !manual && announced === key) return true
     announced = key
     const versionUrl = new URL(manifest.version + '/', base)
-    const native = startup && manifest.macZip && await nativeSigned()
-    const dismiss = required && startup ? '退出应用' : '稍后'
-    const buttons = native ? ['安装并重启', '下载安装包', dismiss] : [startup ? '下载并安装' : '下载安装包', dismiss]
-    const response = await message({ message: '发现桌面新版 ' + manifest.version,
+    const native = manifest.macZip && await nativeSigned()
+    const archive = native ? packagePath(manifest.version, '.zip') : undefined
+    const prepared = native && await hasValidPackage(archive, manifest.macZip)
+    const awaitingRestart = !startup && prepared
+    const offerNativeAction = native && !awaitingRestart
+    const dismiss = awaitingRestart ? '知道了' : required && startup ? '退出应用' : '稍后'
+    const installOnStartup = '下次启动时可选择「安装并重启」。'
+    const installButton = prepared ? '安装并重启' : '下载并安装'
+    const buttons = [startup && !native ? '下载并安装' : '下载安装包', dismiss]
+    if (offerNativeAction) buttons.unshift(startup ? installButton : '下载更新')
+    const cancelId = buttons.length - 1
+    const response = await message({ message: prepared ? '桌面新版 ' + manifest.version + ' 已下载' : '发现桌面新版 ' + manifest.version,
       detail: [required ? '最低可用版本为 ' + manifest.minimum + '。' : '本次为可选更新。',
-        !startup && (required ? '新的业务提交已暂停。请等当前工作结束后安装。' : '当前工作可继续，工作结束后可安装新版。'),
-        manifest.notes].filter(Boolean).join('\n'), buttons, cancelId: buttons.length - 1, defaultId: 0 })
-    if (response.response < 0 || response.response === buttons.length - 1) return !(startup && required)
+        !startup && (required ? '新的业务提交已暂停。请等当前工作结束后安装。' : '当前工作可继续。'),
+        awaitingRestart && installOnStartup,
+        manifest.notes].filter(Boolean).join('\n'), buttons, cancelId, defaultId: awaitingRestart ? cancelId : 0 })
+    if (response.response < 0 || response.response === cancelId) return !(startup && required)
     try {
-      if (native && response.response === 0) {
-        await installNative(manifest, versionUrl)
-        return 'installing'
+      if (offerNativeAction && response.response === 0) {
+        if (!prepared) await downloadPackage(versionUrl, manifest.macZip, archive)
+        if (startup) {
+          await installNative(manifest, archive)
+          return 'installing'
+        }
+        await message({ message: '更新已下载。', detail: installOnStartup })
+        return true
       }
-      const destination = await getPackage(manifest, versionUrl)
+      const destination = packagePath(manifest.version, SUFFIXES[platform])
+      if (!await hasValidPackage(destination, manifest.installer)) {
+        await downloadPackage(versionUrl, manifest.installer, destination)
+      }
+      if (platform === 'linux') await fs.chmod(destination, 0o700)
       if (startup && platform !== 'linux') {
         const error = await shell.openPath(destination)
         if (error) throw new Error('无法打开安装包，请从更新目录手动安装。')
