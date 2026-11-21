@@ -118,6 +118,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     deleteDrafts: combined.deleteDrafts,
     deleteProduct: combined.deleteProduct,
     deleteSelectedProducts: combined.deleteSelectedProducts,
+    exportSelectedProducts: combined.exportSelectedProducts,
+    importProductsFromJson: combined.importProductsFromJson,
     toggleProductSelection: combined.toggleProductSelection,
     selectAllProducts: combined.selectAllProducts,
     claimProductsToDrafts: combined.claimProductsToDrafts,

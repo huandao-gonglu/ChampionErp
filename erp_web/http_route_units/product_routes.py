@@ -89,6 +89,20 @@ def handle_delete_products(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_export_products(handler: JsonRequestHandler) -> None:
+    result, status = product_facade.export_products_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
+    handler.send_json(result, status)
+
+
+def handle_import_products(handler: JsonRequestHandler) -> None:
+    result, status = product_facade.import_products_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
+    handler.send_json(result, status)
+
+
 def handle_delete_draft(handler: JsonRequestHandler) -> None:
     result, status = product_facade.delete_draft_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -109,6 +123,8 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/duplicate-draft": handle_duplicate_draft,
     "/api/delete-draft": handle_delete_draft,
     "/api/delete-products": handle_delete_products,
+    "/api/products/export": handle_export_products,
+    "/api/products/import": handle_import_products,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 

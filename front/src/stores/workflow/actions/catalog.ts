@@ -5,6 +5,7 @@ import {
   deleteDraft as deleteDraftApi,
   deleteProducts as deleteProductsApi,
   duplicateDraft as duplicateDraftApi,
+  exportProducts as exportProductsApi,
   fetchDraftsIndex,
   fetchProductsIndex,
   generateCopy as generateCopyApi,
@@ -13,6 +14,7 @@ import {
   imagePoolAction,
   imageEdit as imageEditApi,
   imageTranslate as imageTranslateApi,
+  importProducts as importProductsApi,
   loadDraft as loadDraftApi,
   loadProduct as loadProductApi,
   saveDraft as saveDraftApi,
@@ -439,6 +441,57 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     await deleteProductsByIds(selectedProductIds.value)
   }
 
+  async function exportSelectedProducts(productIds: string[]) {
+    const ids = Array.from(new Set(productIds.map((id) => String(id || '').trim()).filter(Boolean)))
+    if (!ids.length) {
+      setError('请先勾选要导出的商品。')
+      return ''
+    }
+    loading.value = true
+    setError('')
+    try {
+      const result = await exportProductsApi(ids)
+      const jsonText = JSON.stringify(result.exportData, null, 2)
+      const blob = new Blob([jsonText], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      try {
+        const link = document.createElement('a')
+        link.href = url
+        link.download = result.filename
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+      const message = result.message || `已导出 ${result.count} 个商品。`
+      addLog(`${message}（${result.filename}）`)
+      return `${message}（${result.filename}）`
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '导出商品失败')
+      return ''
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function importProductsFromJson(payload: Record<string, unknown>) {
+    loading.value = true
+    setError('')
+    try {
+      const result = await importProductsApi(payload)
+      productsIndex.value = result.productsIndex
+      const message = result.message || `已导入 ${result.imported} 个商品到采集箱。`
+      addLog(message)
+      return message
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '导入商品失败')
+      return ''
+    } finally {
+      loading.value = false
+    }
+  }
+
   function toggleProductSelection(productId: string, checked?: boolean) {
     const exists = selectedProductIds.value.includes(productId)
     const shouldAdd = checked ?? !exists
@@ -778,7 +831,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
   return {
     acceptLoadedDraft,
     productsRefreshing, draftsRefreshing, refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, duplicateDraft, updateDraftTargets,
-    updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, toggleProductSelection,
+    updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, exportSelectedProducts, importProductsFromJson, toggleProductSelection,
     selectAllProducts, claimProductsToDrafts, generateCopyForSelectedProducts, enqueueSelectedProducts,
     uploadReferenceImages, clearSourceImages, saveCurrentImagePool, setMainImage, deleteImages, editImagesWithPrompt,
     saveCurrentProduct, saveCurrentDraft, assignUpc, generateCopy, generateImagePromptPack, translateImages,

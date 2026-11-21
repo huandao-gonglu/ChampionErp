@@ -202,3 +202,32 @@ def test_buyer_basic_uses_confirmed_top_level_token(monkeypatch):
         return response({'response': {'memberId': 'buyer-a', 'loginId': '买家甲'}})
     monkeypatch.setattr(transport, 'managed_urlopen', send)
     assert OneBoundAlibabaProvider(CONFIG, 20).get_buyer_profile() == ('buyer-a', '买家甲')
+
+
+@pytest.mark.parametrize('reason, rejected', [
+    ('Request need user authorized 接口文档：https://open.onebound.cn/help/api/1688.custom.html', True),
+    ('item not found', False),
+])
+def test_onebound_2000_error_distinguishes_unauthorized_from_unconfirmed(monkeypatch, reason, rejected):
+    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: response({
+        'error_code': '2000', 'error': 'item-not-found vendor-secret buyer-token', 'reason': reason,
+    }))
+    with pytest.raises(AlibabaApiError) as error:
+        alibaba_provider(CONFIG).get_product('123', 'https://detail.1688.com/offer/123.html')
+    assert isinstance(error.value, AlibabaApiRejected) is rejected
+    assert 'vendor-secret' not in str(error.value) and 'buyer-token' not in str(error.value)
+
+
+def test_onebound_write_never_retries_on_unauthorized(monkeypatch):
+    calls = 0
+    def send(request, **kwargs):
+        nonlocal calls
+        calls += 1
+        return response({'error_code': '2000', 'error': 'item-not-found', 'reason': 'Request need user authorized'})
+    monkeypatch.setattr(transport, 'managed_urlopen', send)
+    synced = []
+    provider = alibaba_provider({**DIRECTORY_CONFIG, '_onebound_token_sync': lambda token: synced.append(token) or 'new-token'})
+    with pytest.raises(AlibabaApiRejected, match='授权已失效'):
+        provider.create_order({'fullName': '收货人'}, [{'offer_id': '123', 'spec_id': 's1', 'quantity': 1}],
+                              flow='general', channel='shegou', external_id='record')
+    assert calls == 1 and synced == []

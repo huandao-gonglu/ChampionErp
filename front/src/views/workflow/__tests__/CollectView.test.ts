@@ -252,3 +252,109 @@ it.each(['browser', 'api'] as const)('%s 模式添加时提交完整分享文案
     expect(api.runLink).not.toHaveBeenCalled()
   } finally { wrapper.unmount() }
 })
+
+it('支持顶部快速粘贴加入、详情内直接重试和勾选批量移除', async () => {
+  const store = useWorkflowCollectionStore()
+  const run = vi.spyOn(store, 'runLinks').mockResolvedValue(undefined)
+  vi.mocked(api.manageLinks).mockResolvedValue({ added: 1, duplicates: 0 })
+  const form = createDefaultCollectForm()
+  const wrapper = mount(CollectView, {
+    props: { form, loading: false, error: '' },
+    global: { stubs: { Teleport: true } },
+  })
+  try {
+    await flushPromises()
+    const btn = (s: string) => wrapper.findAll('button').find(button => button.text().includes(s))!
+    await btn('1688 API').trigger('click')
+    expect(form.mode).toBe('api')
+    const quickInput = wrapper.get('input[aria-label="快速粘贴商品链接或 1688 分享文案"]')
+    await quickInput.setValue('https://detail.1688.com/offer/999.html')
+    await quickInput.trigger('keydown.enter')
+    await flushPromises()
+    expect(api.manageLinks).toHaveBeenCalledWith({
+      action: 'add',
+      items: [{ url: 'https://detail.1688.com/offer/999.html', mode: 'api' }],
+    })
+    expect((quickInput.element as HTMLInputElement).value).toBe('')
+
+    await btn('扳手').trigger('click')
+    await wrapper.get('aside').findAll('button').find(button => button.text().includes('重新采集'))!.trigger('click')
+    expect(run).toHaveBeenCalledWith([{ id: apiRow.id, revision: apiRow.revision }])
+
+    await wrapper.get('input[aria-label="全选当前筛选结果"]').setValue(true)
+    await btn('批量移除').trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.manageLinks).toHaveBeenCalledWith({ action: 'remove', id: browser.id, revision: browser.revision })
+    expect(api.manageLinks).toHaveBeenCalledWith({ action: 'remove', id: apiRow.id, revision: apiRow.revision })
+  } finally { wrapper.unmount() }
+})
+
+it('默认按添加时间最新在前，支持切回最早在前、按采集方式筛选及批量改方式', async () => {
+  const older: api.CollectionLink = { ...browser, id: 'old', title: '旧商品', createdAt: '2026-11-18T08:00:00+00:00' }
+  const newer: api.CollectionLink = { ...apiRow, id: 'new', title: '新商品', createdAt: '2026-11-20T08:00:00+00:00' }
+  vi.mocked(api.listLinks).mockResolvedValue([older, newer])
+  vi.mocked(api.manageLinks).mockResolvedValue({})
+  const wrapper = mount(CollectView, {
+    props: { form: createDefaultCollectForm(), loading: false, error: '' },
+    global: { stubs: { Teleport: true } },
+  })
+  const titles = () => wrapper.findAll('tbody strong').map(item => item.text())
+  const btn = (s: string) => wrapper.findAll('button').find(button => button.text().includes(s))!
+  try {
+    await flushPromises()
+    expect(titles()).toEqual(['新商品', '旧商品'])
+    await wrapper.get('button[aria-label*="按添加时间排序"]').trigger('click')
+    expect(titles()).toEqual(['旧商品', '新商品'])
+
+    await wrapper.get('select[aria-label="按采集方式筛选"]').setValue('browser')
+    expect(titles()).toEqual(['旧商品'])
+
+    await wrapper.get('input[aria-label="全选当前筛选结果"]').setValue(true)
+    await btn('改方式').trigger('click')
+    await wrapper.get('dialog select').setValue('api')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.manageLinks).toHaveBeenCalledWith({
+      action: 'edit', id: older.id, revision: older.revision, url: older.url, mode: 'api',
+    })
+  } finally { wrapper.unmount() }
+})
+
+it('批量移除仅作用于当前筛选中可见的勾选项，不会误删隐藏项', async () => {
+  vi.mocked(api.manageLinks).mockResolvedValue({})
+  const wrapper = mount(CollectView, {
+    props: { form: createDefaultCollectForm(), loading: false, error: '' },
+    global: { stubs: { Teleport: true } },
+  })
+  const btn = (s: string) => wrapper.findAll('button').find(button => button.text().includes(s))!
+  try {
+    await flushPromises()
+    await wrapper.get('input[aria-label="全选当前筛选结果"]').setValue(true)
+    await wrapper.get('select[aria-label="按采集方式筛选"]').setValue('api')
+    await btn('批量移除').trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.manageLinks).toHaveBeenCalledTimes(1)
+    expect(api.manageLinks).toHaveBeenCalledWith({ action: 'remove', id: apiRow.id, revision: apiRow.revision })
+  } finally { wrapper.unmount() }
+})
+
+it('批量采集中调用 stopRun 后在当前条完成后停止后续队列，并维护批次进度', async () => {
+  const first: api.CollectionLink = { ...apiRow, id: 'p1', revision: 1, status: 'pending' }
+  const second: api.CollectionLink = { ...apiRow, id: 'p2', revision: 2, status: 'pending', url: 'https://detail.1688.com/offer/2.html' }
+  vi.mocked(api.listLinks).mockResolvedValue([first, second])
+  const store = useWorkflowCollectionStore()
+  const observed: Array<{ current: number; total: number; status: string }> = []
+  vi.mocked(api.runLink).mockImplementation(async (target) => {
+    const localRow = store.links.find(item => item.id === target.id)!
+    observed.push({ current: store.runProgress!.current, total: store.runProgress!.total, status: localRow.status })
+    store.stopRun()
+    return { ...first, revision: 2, status: 'success' }
+  })
+  await store.runLinks([first, second])
+  expect(observed).toEqual([{ current: 1, total: 2, status: 'running' }])
+  expect(api.runLink).toHaveBeenCalledTimes(1)
+  expect(store.runProgress).toBeNull()
+  expect(store.running).toBe(false)
+})

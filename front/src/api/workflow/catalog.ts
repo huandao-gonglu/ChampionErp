@@ -95,6 +95,46 @@ export async function deleteProducts(productIds: string[]): Promise<DeleteProduc
   return normalizeDeleteProductsResult(response.data)
 }
 
+export interface ExportProductsResult {
+  count: number
+  missingIds: string[]
+  filename: string
+  exportData: UnknownRecord
+  message: string
+}
+
+export interface ImportProductsResult {
+  imported: number
+  importedIds: string[]
+  productsIndex: ProductIndexItem[]
+  message: string
+}
+
+export async function exportProducts(productIds: string[]): Promise<ExportProductsResult> {
+  const response = await apiClient.post('/api/products/export', { product_ids: productIds })
+  const data = asRecord(response.data)
+  ensureOk(data, '导出商品失败')
+  return {
+    count: getNumber(data, ['count']),
+    missingIds: Array.isArray(data.missingIds) ? data.missingIds.map((id) => String(id || '')).filter(Boolean) : [],
+    filename: getString(data, ['filename']) || 'library-products.json',
+    exportData: asRecord(data.exportData),
+    message: getString(data, ['message']),
+  }
+}
+
+export async function importProducts(payload: UnknownRecord): Promise<ImportProductsResult> {
+  const response = await apiClient.post('/api/products/import', payload)
+  const data = asRecord(response.data)
+  ensureOk(data, '导入商品失败')
+  return {
+    imported: getNumber(data, ['imported']),
+    importedIds: Array.isArray(data.importedIds) ? data.importedIds.map((id) => String(id || '')).filter(Boolean) : [],
+    productsIndex: normalizeProductsIndex(data.productsIndex),
+    message: getString(data, ['message']),
+  }
+}
+
 export type CollectionAttempt =
   | (ProductMutationResponse & { verification?: undefined })
   | { verification: CollectionVerification; diagnostics: UnknownRecord }

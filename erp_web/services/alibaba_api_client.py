@@ -23,7 +23,9 @@ from erp_web.services.alibaba_purchase_payment import payment_agreement, payment
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
 from erp_web.schemas.external_requests import ExternalRequestBlocked
-from erp_web.services.onebound_api_transport import OneBoundApiError, OneBoundApiRejected, request_onebound
+from erp_web.services.onebound_api_transport import (
+    OneBoundApiError, OneBoundApiRejected, OneBoundApiUnauthorized, request_onebound,
+)
 
 
 PRODUCT_DETAIL = "product.search.queryProductDetail"
@@ -339,7 +341,9 @@ class OneBoundAlibabaProvider(OpenApiAlibabaProvider):
     def __init__(self, config, timeout):
         if not (config.get('api_key') and config.get('api_secret') and config.get('access_token')):
             raise AlibabaApiError('当前方案的 1688 账号尚未连接，请联系管理员')
-        self.config = dict(config)
+        token_sync = config.get('_onebound_token_sync')
+        self._token_sync = token_sync if callable(token_sync) else None
+        self.config = {key: value for key, value in config.items() if key != '_onebound_token_sync'}
         self._credentials = tuple(str(config[key]) for key in ("api_key", "api_secret", "access_token"))
         self.timeout = timeout
 
@@ -366,6 +370,27 @@ class OneBoundAlibabaProvider(OpenApiAlibabaProvider):
                 raise AlibabaApiRejected("万邦下单和免密支付需要已核验的 Session")
         try:
             return request_onebound(self.config, api, values, namespace=namespace, semantics=semantics, timeout=self.timeout)
+        except OneBoundApiUnauthorized as exc:
+            if (semantics != "read" or self.config.get('credential_type', 'access_token') != 'access_token'
+                    or self._token_sync is None):
+                raise AlibabaApiRejected(str(exc)) from None
+            failed_token = str(self.config['access_token'])
+            try:
+                refreshed_token = self._token_sync(failed_token)
+            except ExternalRequestBlocked:
+                raise
+            except ValueError as sync_exc:
+                raise AlibabaApiRejected(str(sync_exc)) from None
+            if not isinstance(refreshed_token, str) or not refreshed_token or refreshed_token == failed_token:
+                raise AlibabaApiRejected(str(exc)) from None
+            self.config['access_token'] = refreshed_token
+            self._credentials = (*self._credentials, refreshed_token)
+            try:
+                return request_onebound(self.config, api, values, namespace=namespace, semantics=semantics, timeout=self.timeout)
+            except OneBoundApiRejected as retry_exc:
+                raise AlibabaApiRejected(str(retry_exc)) from None
+            except OneBoundApiError as retry_exc:
+                raise AlibabaApiError(str(retry_exc)) from None
         except OneBoundApiRejected as exc:
             raise AlibabaApiRejected(str(exc)) from None
         except OneBoundApiError as exc:

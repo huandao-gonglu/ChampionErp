@@ -301,6 +301,17 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required_any=(("draft_ids", "draftIds", "draft_id", "draftId"),)
     ),
     "/api/delete-products": _contract(required=("product_ids",)),
+    "/api/products/export": _contract(required=("product_ids",)),
+    "/api/products/import": _contract(
+        fields={
+            "format": STRING,
+            "version": FieldRule("integer", minimum=1),
+            "exported_at": STRING,
+            "products": ARRAY,
+            "assets": OBJECT,
+        },
+        required=("products",),
+    ),
     "/api/duplicate-draft": _contract(required=("draft_id",)),
     "/api/generate-copy": _PRODUCT_OR_DRAFT,
     "/api/generate-copy-batch": _contract(required=("product_ids",)),

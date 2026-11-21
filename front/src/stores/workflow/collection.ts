@@ -7,11 +7,19 @@ import { COLLECT_QUEUE_STORAGE_KEY, restoreCollectQueue } from '@/utils/collectQ
 import { listLinks, manageLinks, runLink, verifyLink, type CollectionLink, type LinkTarget } from '@/api/workflow/collectionLinks'
 import { businessStorageKey } from '@/utils/accountTransport'
 
+export interface CollectRunProgress {
+  current: number
+  total: number
+  currentId: string
+}
+
 export const useWorkflowCollectionStore = defineStore('workflow-collection', () => {
   const collectForm = ref<CollectForm>(createDefaultCollectForm())
   const collectDiagnostics = ref<CollectDiagnostics>(createDefaultCollectDiagnostics())
   const links = ref<CollectionLink[]>([])
   const running = ref(false)
+  const runProgress = ref<CollectRunProgress | null>(null)
+  const stopRequested = ref(false)
   const waitingId = ref('')
   const syncError = ref('')
   const runError = ref('')
@@ -52,44 +60,59 @@ export const useWorkflowCollectionStore = defineStore('workflow-collection', () 
     }
   }
 
+  function markLocalRunning(id: string) {
+    const index = links.value.findIndex(item => item.id === id)
+    if (index !== -1 && links.value[index].status !== 'running') {
+      links.value[index] = { ...links.value[index], status: 'running' }
+    }
+  }
+
   async function runLinks(targets: LinkTarget[]) {
     if (running.value || !targets?.length) return
     running.value = true
+    stopRequested.value = false
     runError.value = ''
     controller = new AbortController()
     const { signal } = controller
     try {
       const baseline = await refreshLinks()
-      for (const target of targets) {
+      for (let i = 0; i < targets.length; i++) {
+        if (stopRequested.value || signal.aborted) break
+        const target = targets[i]
         let row = baseline.find(item => item.id === target.id)
         if (!row || row.revision !== target.revision || row.status === 'running') {
           runError.value = '已跳过在其他页面发生变更的链接。'
           continue
         }
+        runProgress.value = { current: i + 1, total: targets.length, currentId: row.id }
         do {
+          if (stopRequested.value || signal.aborted) return
           if (row.status === 'waiting_verification') {
             waitingId.value = row.id
             let state
             do {
               await new Promise(resolve => setTimeout(resolve, 1500))
-              if (signal.aborted) return
+              if (signal.aborted || stopRequested.value) return
               state = await verifyLink(row, signal)
             } while (state === 'waiting_verification' || state === 'loading')
             waitingId.value = ''
             if (state === 'unavailable') break
           }
-          if (signal.aborted) return
+          if (signal.aborted || stopRequested.value) return
+          markLocalRunning(row.id)
           row = await runLink(row)
           // 同一版本只投递一次；后续验证使用后台刚刚保存的版本。
           ++sequence
           const index = links.value.findIndex(item => item.id === target.id)
           if (index !== -1 && links.value[index].revision <= row.revision) links.value[index] = row
-        } while (row.status === 'waiting_verification')
+        } while (row.status === 'waiting_verification' && !stopRequested.value)
       }
     } catch (error) {
       if (!signal.aborted) runError.value = error instanceof Error ? error.message : '采集未完成。'
     } finally {
       waitingId.value = ''
+      runProgress.value = null
+      stopRequested.value = false
       controller = undefined
       running.value = false
       await refreshLinks().catch(() => undefined)
@@ -97,6 +120,12 @@ export const useWorkflowCollectionStore = defineStore('workflow-collection', () 
   }
 
   function cancelWait() { if (waitingId.value) controller?.abort() }
+
+  function stopRun() {
+    if (!running.value) return
+    stopRequested.value = true
+    if (waitingId.value) controller?.abort()
+  }
 
   function fillFormFromState(nextAppConfig: UnknownRecord, outputDir = '') {
     const product = useWorkflowCatalogStore().product
@@ -108,7 +137,8 @@ export const useWorkflowCollectionStore = defineStore('workflow-collection', () 
   return {
     collectForm,
     collectDiagnostics,
-    links, ready, running, waitingId, runError, syncError, refreshLinks, runLinks, cancelWait,
+    links, ready, running, runProgress, stopRequested, waitingId, runError, syncError,
+    refreshLinks, runLinks, cancelWait, stopRun,
     fillFormFromState,
   }
 })

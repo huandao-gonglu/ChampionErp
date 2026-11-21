@@ -81,4 +81,50 @@ describe('采集箱按语言选择目标市场', () => {
     expect(wrapper.get('[data-testid="library-claim-selected"]').attributes('disabled')).toBeDefined()
     expect(wrapper.findAll('[data-testid="library-claim-row"]').every(button => button.attributes('disabled') !== undefined)).toBe(true)
   })
+
+  it('支持按标题搜索、折叠目标市场并通过弹窗确认删除', async () => {
+    const richItems = [
+      { ...items[0], collectStatus: 'success', sourcePlatform: '1688', sourceUrl: 'https://detail.1688.com/offer/1.html' },
+      { ...items[1], collectStatus: 'failed', sourcePlatform: 'generic', sourceUrl: 'https://example.com/2' },
+    ] as ProductIndexItem[]
+    const wrapper = mount(LibraryPanel, {
+      props: { items: richItems, selectedIds: [], platformOptions, storeConfig, loading: false },
+      global: { stubs: { Teleport: true } },
+    })
+    expect(wrapper.text()).toContain('已采集')
+    expect(wrapper.text()).toContain('采集失败')
+
+    await wrapper.get('input[type="search"]').setValue('商品二')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.get('tbody').text()).toContain('商品二')
+
+    await wrapper.findAll('button').find(button => button.text().includes('收起'))!.trigger('click')
+    expect(wrapper.get('[data-language="es"]').isVisible()).toBe(false)
+
+    await wrapper.get('button[title="删除商品"]').trigger('click')
+    await wrapper.findAll('dialog button').find(button => button.text().trim() === '确认删除')!.trigger('click')
+    expect(wrapper.emitted('deleteItem')?.[0]).toEqual([richItems[1]])
+  })
+
+  it('操作下拉支持导出已勾选商品以及选择 JSON 文件导入商品', async () => {
+    const wrapper = mountPanel(['product-1'])
+    await wrapper.get('[data-testid="library-actions-trigger"]').trigger('click')
+    const exportBtn = wrapper.get('[data-testid="library-action-export"]')
+    expect(exportBtn.attributes('disabled')).toBeUndefined()
+    await exportBtn.trigger('click')
+    expect(wrapper.emitted('exportProducts')?.[0]).toEqual([['product-1']])
+
+    const samplePayload = {
+      format: 'champion-erp.library-products',
+      version: 1,
+      products: [{ name: '导入商品', source: { title: '导入商品' } }],
+    }
+    const file = new File([JSON.stringify(samplePayload)], 'products.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: async () => JSON.stringify(samplePayload) })
+    const fileInput = wrapper.get<HTMLInputElement>('input[type="file"]')
+    Object.defineProperty(fileInput.element, 'files', { value: [file], configurable: true })
+    await fileInput.trigger('change')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(wrapper.emitted('importProducts')?.[0]).toEqual([samplePayload])
+  })
 })

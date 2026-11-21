@@ -264,3 +264,102 @@ def test_saved_onebound_directory_session_keeps_its_verification_and_scope(verif
         with pytest.raises(ValueError, match='请重新连接账号'):
             service.runtime_config()
     assert store.alibaba_credentials() == before
+
+
+def test_onebound_stale_access_token_syncs_rotated_buyer_token_and_retries_read(monkeypatch):
+    store = get_context().config
+    configure(store)
+    store.update_alibaba_credentials({'authorization': {
+        'access_token': 'stale-token', 'credential_type': 'access_token',
+        'member_id': 'buyer-a', 'account_name': '买家甲',
+        'expires_at': 4_000_000_000, 'account_scope': 'existing-scope',
+        'application_fingerprint': application_fingerprint(store.alibaba_application()),
+    }})
+    calls = []
+    detail = 'com.alibaba.fenxiao.crossborder/product.search.queryProductDetail'
+    identity = 'com.alibaba.account/alibaba.account.basic'
+
+    def gateway(request, *, request_context, **kwargs):
+        parsed = urlsplit(request.full_url)
+        params = parse_qs(parsed.query)
+        calls.append((request_context.interface, params.get('access_token', [''])[0]))
+        if request_context.interface == 'sys/shop_bind_list':
+            assert params.get('nick') == ['买家甲']
+            return response({'items': {
+                'page': 1, 'page_size': 50, 'total_results': '2', 'pagecount': 1,
+                'item': [
+                    {'shop_bind_id': '1', 'nick': '默认买家', 'session': 'default-token', 'status': '1',
+                     'api_type': '1688', 'memo': 'buyer-default', 'exp_time': '2099-01-01 00:00:00'},
+                    {'shop_bind_id': '2', 'nick': '买家甲', 'session': 'rotated-token', 'status': '1',
+                     'api_type': '1688', 'memo': 'buyer-a', 'exp_time': '2099-01-01 00:00:00'},
+                ],
+            }})
+        token = params['access_token'][0]
+        if token == 'stale-token':
+            return response({'error': 'item-not-found', 'error_code': '2000',
+                             'reason': 'Request need user authorized 接口文档：https://open.onebound.cn/help/api/1688.custom.html'})
+        assert token == 'rotated-token'
+        if request_context.interface == identity:
+            return response({'response': {'memberId': 'buyer-a', 'loginId': '买家甲'}})
+        offer_id = json.loads(params['_o_args'][0])['offerDetailParam']['offerId']
+        return response({'response': {'result': {'success': True, 'result': {
+            'offerId': offer_id, 'subject': f'商品 {offer_id}', 'images': ['https://example.test/p.jpg'],
+        }}}})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', gateway)
+    monkeypatch.setattr(image_service, 'download_remote_image', lambda _app, url, _product, index: {
+        'id': f'image-{index}', 'url': url, 'status': 'ready',
+    })
+    result, status = collect_1688_payload({'url': 'https://detail.1688.com/offer/1028620347857.html', 'mode': 'api'})
+    assert status == 200 and result['ok']
+    assert result['product']['source']['title'] == '商品 1028620347857'
+    assert calls == [
+        (detail, 'stale-token'),
+        ('sys/shop_bind_list', ''),
+        (identity, 'rotated-token'),
+        (detail, 'rotated-token'),
+    ]
+    assert store.alibaba_credentials()['authorization']['access_token'] == 'rotated-token'
+    assert store.alibaba_credentials()['authorization']['account_scope'] == 'existing-scope'
+
+    calls.clear()
+    second, status2 = collect_1688_payload({'url': 'https://detail.1688.com/offer/525488887052.html', 'mode': 'api'})
+    assert status2 == 200 and second['ok']
+    assert calls == [(detail, 'rotated-token')]
+
+
+@pytest.mark.parametrize('scenario', ['missing_member', 'identity_mismatch', 'unchanged_token'])
+def test_onebound_token_sync_rejects_mismatched_or_unchanged_buyer_token(monkeypatch, scenario):
+    store = get_context().config
+    configure(store)
+    initial = {
+        'access_token': 'stale-token', 'credential_type': 'access_token',
+        'member_id': 'buyer-a', 'account_name': '买家甲',
+        'expires_at': 4_000_000_000, 'account_scope': 'existing-scope',
+        'application_fingerprint': application_fingerprint(store.alibaba_application()),
+    }
+    store.update_alibaba_credentials({'authorization': initial})
+
+    def gateway(request, *, request_context, **kwargs):
+        if request_context.interface == 'sys/shop_bind_list':
+            if scenario == 'missing_member':
+                items = [{'shop_bind_id': '1', 'nick': '默认买家', 'session': 'default-token', 'status': '1',
+                          'api_type': '1688', 'memo': 'buyer-default', 'exp_time': '2099-01-01 00:00:00'}]
+            elif scenario == 'unchanged_token':
+                items = [{'shop_bind_id': '2', 'nick': '买家甲', 'session': 'stale-token', 'status': '1',
+                          'api_type': '1688', 'memo': 'buyer-a', 'exp_time': '2099-01-01 00:00:00'}]
+            else:
+                items = [{'shop_bind_id': '2', 'nick': '买家甲', 'session': 'wrong-owner-token', 'status': '1',
+                          'api_type': '1688', 'memo': 'buyer-a', 'exp_time': '2099-01-01 00:00:00'}]
+            return response({'items': {'page': 1, 'page_size': 50, 'total_results': str(len(items)), 'pagecount': 1, 'item': items}})
+        if request_context.interface == 'com.alibaba.account/alibaba.account.basic':
+            return response({'response': {'memberId': 'buyer-default', 'loginId': '默认买家'}})
+        return response({'error': 'item-not-found', 'error_code': '2000',
+                         'reason': 'Request need user authorized 接口文档：https://open.onebound.cn/help/api/1688.custom.html'})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', gateway)
+    with pytest.raises(AlibabaApiError, match='重新连接账号'):
+        alibaba_provider(AlibabaAuthorizationService(store).runtime_config()).get_product(
+            '1028620347857', 'https://detail.1688.com/offer/1028620347857.html',
+        )
+    assert store.alibaba_credentials()['authorization'] == initial

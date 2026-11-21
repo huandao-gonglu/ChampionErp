@@ -42,6 +42,14 @@ def _sync_records(procurement, fulfillment, config_provider, order_id, record_id
     client = None
     results = {}
 
+    def _same_authorization(expected, current):
+        if current == expected:
+            return True
+        client_config = getattr(client, 'config', None)
+        refreshed = client_config.get('access_token') if isinstance(client_config, dict) else ''
+        return bool(refreshed and refreshed != expected.get('access_token')
+                    and {**expected, 'access_token': refreshed} == current)
+
     class GroupQuery:
         def _read(self, operation, number):
             key = (operation, number)
@@ -64,12 +72,17 @@ def _sync_records(procurement, fulfillment, config_provider, order_id, record_id
         def get_logistics_traces(self, number):
             return self._read(client.get_logistics_traces, number)
 
+        def same_authorization(self, expected, current):
+            return _same_authorization(expected, current)
+
     def query_client(current):
         nonlocal config, client
         if config is None:
             config = deepcopy(current)
-        if current != config:
+        elif not _same_authorization(config, current):
             raise ValueError('1688 授权已变化，请重新刷新采购进度')
+        else:
+            config = deepcopy(current)
         if client is None:
             client = client_factory(config)
         return GroupQuery()
@@ -112,7 +125,9 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
                 warning += "（可在授权配置的「中断与恢复」查看）"
         if logistics is not None:
             warning = query_parcel_traces(parcels, client, number)
-        if config_provider() != config:
+        latest_config = config_provider()
+        same_auth = getattr(client, "same_authorization", None)
+        if not (same_auth(config, latest_config) if callable(same_auth) else latest_config == config):
             raise AlibabaApiError("1688 授权已变化，请重新刷新采购进度")
         value["data"] = {"ok": True, "record_id": record_id, "order_number": number, "checked_at": checked_at,
                          "order": order.status, "products": order.products, "logistics": parcels, "logistics_warning": warning,

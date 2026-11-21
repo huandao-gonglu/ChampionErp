@@ -412,9 +412,23 @@ function closeTaskDetail() {
   void router.replace({ query })
 }
 
+const libraryNotice = ref('')
+
 async function claimAndOpenDrafts(productIds: string[], targets: MarketplaceTargetSite[]) {
   const ok = await store.claimProductsToDrafts(productIds, targets)
   if (ok) navigate('drafts')
+}
+
+async function handleExportLibraryProducts(productIds: string[]) {
+  libraryNotice.value = ''
+  const message = await store.exportSelectedProducts(productIds)
+  if (message) libraryNotice.value = message
+}
+
+async function handleImportLibraryProducts(payload: Record<string, unknown>) {
+  libraryNotice.value = ''
+  const message = await store.importProductsFromJson(payload)
+  if (message) libraryNotice.value = message
 }
 
 function warnUnsavedImages(event: BeforeUnloadEvent) {
@@ -517,11 +531,15 @@ watch(
             :loading="loading"
             :refreshing="store.productsRefreshing"
             :error="error"
+            :notice="libraryNotice"
             @refresh="store.refreshProductsIndex('list')"
             @claim="claimAndOpenDrafts"
             @edit="openProductEditor"
             @delete-item="store.deleteProduct"
             @delete-selected="store.deleteSelectedProducts"
+            @export-products="handleExportLibraryProducts"
+            @import-products="handleImportLibraryProducts"
+            @clear-notice="libraryNotice = ''"
             @toggle="store.toggleProductSelection"
             @select-all="store.selectAllProducts"
           />

@@ -10,6 +10,7 @@ from erp_web.runtime_units.image_pool import current_image_pool, current_source_
 from erp_web.schemas.upc_capabilities import UpcAssignRequest
 from erp_web.schemas.api import ApiResponse
 from erp_web.schemas.product import Product
+from erp_web.services import product_transfer_service
 
 ResponseWithStatus = tuple[ApiResponse, int]
 
@@ -104,6 +105,29 @@ def delete_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return result, 200 if result.get("ok") else 400
 
 
+def export_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    product_ids = (
+        body.get("product_ids")
+        if isinstance(body.get("product_ids"), list)
+        else []
+    )
+    return product_transfer_service.export_products(
+        context.products,
+        context.paths.app_dir,
+        product_ids,
+    ), 200
+
+
+def import_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    return product_transfer_service.import_products(
+        context.products,
+        context.paths.app_dir,
+        body,
+    ), 200
+
+
 def delete_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
     products = get_context().products
     draft_ids = body.get("draft_ids")
@@ -133,6 +157,8 @@ __all__ = [
     "delete_draft_payload",
     "delete_products_payload",
     "duplicate_draft_payload",
+    "export_products_payload",
+    "import_products_payload",
     "import_upcs_payload",
     "load_draft_payload",
     "load_product_payload",

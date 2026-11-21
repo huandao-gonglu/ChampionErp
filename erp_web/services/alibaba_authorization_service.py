@@ -19,11 +19,32 @@ from erp_web.services.alibaba_api_client import OneBoundAlibabaProvider, alibaba
 from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, legacy_account_scope, onebound_buyer_scope
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
-from erp_web.services.onebound_api_transport import exchange_onebound_buyer_code
+from erp_web.services.onebound_api_transport import exchange_onebound_buyer_code, fetch_onebound_buyer_token
 
 _AUTH_LOCK = threading.RLock()
 _ONEBOUND_AUTHORIZE = 'https://o0b.cn/9vXze'
 _ONEBOUND_CALLBACK = 'https://dc.dev.1buyo.com/api/Accredit1688/callback_1688'
+
+
+class _OneBoundTokenSync:
+    """绑定当前账号存储的万邦轮换 Token 同步器，支持快照深拷贝和相等比较。"""
+
+    __slots__ = ('_store',)
+
+    def __init__(self, store):
+        self._store = store
+
+    def __call__(self, failed_token: str) -> str:
+        return AlibabaAuthorizationService(self._store).sync_onebound_token(failed_token=failed_token)
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __eq__(self, other):
+        return isinstance(other, _OneBoundTokenSync) and self._store is other._store
+
+    def __repr__(self):
+        return '<OneBoundTokenSync>'
 
 
 def _configured(application):
@@ -204,6 +225,46 @@ class AlibabaAuthorizationService:
                 'account_scope': scope or onebound_buyer_scope(application['api_key'], member_id),
                 'application_fingerprint': application_fingerprint(application)}
 
+    def sync_onebound_token(self, *, failed_token: str) -> str:
+        """同步万邦后台自动轮换后的 1688 买家 Token，并再次核验买家身份。"""
+        with _AUTH_LOCK:
+            application = self.store.alibaba_application('onebound')
+            snapshot = self.store.alibaba_credentials('onebound')
+            auth = _authorization(snapshot, application)
+            if not (_configured(application) and auth.get('access_token')):
+                raise ValueError('当前方案的 1688 账号尚未连接，请到万邦授权卡连接账号')
+            if auth.get('credential_type') != 'access_token' or not auth.get('member_id'):
+                raise ValueError('万邦买家授权已失效，请重新连接账号')
+            if auth.get('expires_at') and auth['expires_at'] <= time.time():
+                raise ValueError('万邦买家授权已到期，请重新连接账号')
+            if auth['access_token'] != failed_token:
+                return auth['access_token']
+            member_id = str(auth['member_id']).strip()
+            account_name = str(auth.get('account_name') or '').strip()
+
+        token, nick, expires_at = fetch_onebound_buyer_token(application, member_id=member_id, account_name=account_name)
+        if token == failed_token:
+            raise ValueError('万邦买家授权已失效，请重新连接账号')
+        client = OneBoundAlibabaProvider({**application, 'access_token': token, 'credential_type': 'access_token'}, 20)
+        verified_member_id, verified_login = client.get_buyer_profile()
+        if verified_member_id != member_id or (nick and verified_login != nick):
+            raise ValueError('万邦授权回执与 1688 买家身份不一致，请重新连接账号')
+        refreshed = {**auth, 'access_token': token, 'account_name': verified_login or account_name, 'expires_at': expires_at}
+        try:
+            self.store.update_alibaba_credentials(
+                {'authorization': refreshed}, expected=snapshot, application=application, provider='onebound',
+            )
+            return token
+        except ValueError:
+            latest_app = self.store.alibaba_application('onebound')
+            latest_auth = _authorization(self.store.alibaba_credentials('onebound'), latest_app)
+            if (latest_app == application and latest_auth.get('credential_type') == 'access_token'
+                    and latest_auth.get('member_id') == member_id
+                    and latest_auth.get('access_token') and latest_auth['access_token'] != failed_token
+                    and not (latest_auth.get('expires_at') and latest_auth['expires_at'] <= time.time())):
+                return latest_auth['access_token']
+            raise
+
     def runtime_config(self):
         with _AUTH_LOCK:
             application = self.store.alibaba_application()
@@ -216,11 +277,16 @@ class AlibabaAuthorizationService:
                     raise ValueError('当前万邦买家身份未通过核验，请重新连接账号')
                 if auth.get('expires_at') and auth['expires_at'] <= time.time():
                     raise ValueError('万邦买家授权已到期，请重新连接账号')
-                return {**application, 'access_token': auth['access_token'], 'account_scope': auth['account_scope'],
-                        'member_id': auth.get('member_id', ''),
-                        'credential_type': auth.get('credential_type', 'session'),
-                        'directory_verified': auth.get('directory_verified') is True,
-                        'timeout_seconds': self.store.load_app_config().get('1688_api', {}).get('timeout_seconds', '20')}
+                credential_type = auth.get('credential_type', 'session')
+                member_id = auth.get('member_id', '')
+                runtime = {**application, 'access_token': auth['access_token'], 'account_scope': auth['account_scope'],
+                           'member_id': member_id,
+                           'credential_type': credential_type,
+                           'directory_verified': auth.get('directory_verified') is True,
+                           'timeout_seconds': self.store.load_app_config().get('1688_api', {}).get('timeout_seconds', '20')}
+                if credential_type == 'access_token' and member_id:
+                    runtime['_onebound_token_sync'] = _OneBoundTokenSync(self.store)
+                return runtime
             if auth.get('expires_at') and auth['expires_at'] <= time.time() + 300:
                 if not auth.get('refresh_token'):
                     raise ValueError('1688 账号授权已到期，请重新连接账号')

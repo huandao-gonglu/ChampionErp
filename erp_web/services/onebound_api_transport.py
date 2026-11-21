@@ -19,6 +19,10 @@ class OneBoundApiRejected(OneBoundApiError):
     """网关明确拒绝调用，业务可释放本次尚未执行的占位。"""
 
 
+class OneBoundApiUnauthorized(OneBoundApiRejected):
+    """买家凭据已失效或未获当前接口授权，网关明确拒绝本次调用。"""
+
+
 def request_onebound(config, api, values, *, namespace, semantics, timeout):
     token = config.get('access_token')
     if not token:
@@ -67,11 +71,27 @@ def _request_gateway(config, path, params, *, interface, credential, semantics, 
 
 def _validate_gateway_result(payload):
     code = str(payload.get('error_code') or '')
+    reason = str(payload.get('reason') or '')
     if payload.get('error') or code not in {'', '0', '0000'}:
+        if code == '2000' and 'request need user authorized' in reason.lower():
+            raise OneBoundApiUnauthorized('万邦买家授权已失效，请重新连接账号或稍后重试')
         # 网络、超时、服务端错误不能证明底层写入未发生。
         if code in {'4003', '4004', '4005', '4006', '4007', '4008', '4010', '4012', '4013', '4014', '4015', '4016'}:
             raise OneBoundApiRejected('万邦拒绝调用，请核对接入配置、买家授权、接口权限及可用额度')
         raise OneBoundApiError('万邦未确认接口结果，请查询原请求，勿重复下单或支付')
+
+
+def _parse_onebound_expiry(raw) -> float:
+    try:
+        expiry = datetime.fromisoformat(raw)
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone(timedelta(hours=8)))
+        expires_at = expiry.timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        raise OneBoundApiError('万邦未返回有效的授权期限，请重新授权') from None
+    if expires_at <= time.time():
+        raise OneBoundApiError('万邦返回的买家授权已到期，请重新授权')
+    return expires_at
 
 
 def exchange_onebound_buyer_code(config, code: str) -> tuple[str, str, float]:
@@ -93,16 +113,70 @@ def exchange_onebound_buyer_code(config, code: str) -> tuple[str, str, float]:
     if (not isinstance(token, str) or not 0 < len(token) <= 4096 or any(char.isspace() for char in token)
             or not isinstance(nick, str) or not nick.strip()):
         raise OneBoundApiError('万邦未返回完整的买家授权，请重新授权')
+    return token, nick.strip(), _parse_onebound_expiry(item.get('exp_time'))
+
+
+_MAX_SHOP_PAGES = 20
+
+
+def _shop_field(row, name):
+    value = row.get(name)
+    return str(value).strip() if type(value) in {str, int} else ''
+
+
+def _onebound_shop_page(config, *, nick: str, page: int) -> tuple[list[dict], int]:
+    params = {'key': config['api_key'], 'secret': config['api_secret'], 'nick': nick, 'page': page,
+              'cache': 'no', 'result_type': 'json', 'lang': 'zh-CN'}
+    payload = _request_gateway(config, '/sys/shop_bind_list/', params, interface='sys/shop_bind_list',
+                               credential=config['api_secret'], semantics='read', timeout=20)
+    if str(payload.get('error_code') or '') == '2000':
+        return [], 0
+    _validate_gateway_result(payload)
+    result = payload.get('items')
     try:
-        expiry = datetime.fromisoformat(item.get('exp_time'))
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone(timedelta(hours=8)))
-        expires_at = expiry.timestamp()
-    except (TypeError, ValueError, OverflowError, OSError):
-        raise OneBoundApiError('万邦未返回有效的授权期限，请重新授权') from None
-    if expires_at <= time.time():
-        raise OneBoundApiError('万邦返回的买家授权已到期，请重新授权')
-    return token, nick.strip(), expires_at
+        rows = result['item']
+        pages = int(result['pagecount'])
+    except (KeyError, TypeError, ValueError):
+        raise OneBoundApiError('万邦未返回有效的授权店铺分页') from None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows) or pages < 0:
+        raise OneBoundApiError('万邦未返回有效的授权店铺分页')
+    return rows, pages
+
+
+def _matching_buyer_rows(config, *, member_id: str, nick: str, require_nick: bool) -> list[dict]:
+    matches = []
+    page = 1
+    while page <= _MAX_SHOP_PAGES:
+        rows, pages = _onebound_shop_page(config, nick=nick, page=page)
+        for row in rows:
+            if (_shop_field(row, 'api_type').lower() in {'1688', '1688global', 'alibaba'}
+                    and _shop_field(row, 'status') == '1'
+                    and _shop_field(row, 'memo') == member_id
+                    and (not require_nick or _shop_field(row, 'nick') == nick)):
+                matches.append(row)
+        if not rows or page >= pages:
+            break
+        page += 1
+    return matches
+
+
+def fetch_onebound_buyer_token(config, *, member_id: str, account_name: str = '') -> tuple[str, str, float]:
+    """按已核验的 1688 会员 ID 读取万邦后台轮换后的最新买家 Token。"""
+    member_id = str(member_id or '').strip()
+    if not member_id:
+        raise OneBoundApiUnauthorized('当前万邦买家身份缺失，请重新连接账号')
+    nick = str(account_name or '').strip()
+    matches = _matching_buyer_rows(config, member_id=member_id, nick=nick, require_nick=bool(nick)) if nick else []
+    if not matches:
+        matches = _matching_buyer_rows(config, member_id=member_id, nick='', require_nick=False)
+    if len(matches) != 1:
+        raise OneBoundApiUnauthorized('未找到唯一有效的万邦买家授权，请重新连接账号')
+    row = matches[0]
+    token = row.get('session')
+    matched_nick = _shop_field(row, 'nick')
+    if not isinstance(token, str) or not 0 < len(token) <= 4096 or any(char.isspace() for char in token):
+        raise OneBoundApiUnauthorized('万邦未返回完整的买家授权，请重新连接账号')
+    return token, matched_nick, _parse_onebound_expiry(row.get('exp_time'))
 
 
 def normalize_onebound_response(api, value):
