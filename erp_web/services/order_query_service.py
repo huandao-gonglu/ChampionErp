@@ -19,7 +19,14 @@ class OrderQueryService:
     def query(self, request: PlatformOrdersQueryRequest):
         requested = [request.platform] if request.platform else list(PLATFORMS)
         accounts = {p: account for p, account in self.notifications.accounts().items() if p in requested}
-        identities = {(p, account): self.procurement.identity_provider(p, account) for p, account in account_pairs(accounts)}
+        identities = {
+            (p, account): (
+                self.procurement.identities_for(p, account)
+                if hasattr(self.procurement, "identities_for")
+                else self.procurement.identity_provider(p, account)
+            )
+            for p, account in account_pairs(accounts)
+        }
         terms = tuple(dict.fromkeys(request.article_numbers)) or ((request.q,) if request.q else ())
         patterns = {term: re.compile(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", re.I) for term in request.article_numbers}
 

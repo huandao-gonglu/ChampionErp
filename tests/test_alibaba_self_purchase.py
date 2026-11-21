@@ -477,7 +477,7 @@ def test_different_sales_orders_do_not_share_purchase_guard(setup_purchase):
 
 @pytest.mark.parametrize("change,reason", [
     ("missing_spec", "specId"), ("wrong_offer", "商品编号"),
-    ("wrong_selection", "规格标识不一致"), ("missing_binding", "已上架商品"),
+    ("wrong_selection", "规格标识不一致"), ("missing_binding", "规格核验"),
     ("changed_options", "颜色、尺寸"),
 ])
 def test_incomplete_or_conflicting_published_identity_blocks_all_remote_calls(setup_purchase, change, reason):

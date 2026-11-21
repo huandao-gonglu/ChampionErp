@@ -10,33 +10,82 @@ from erp_web.schemas.order_procurement import PurchaseRecord
 from erp_web.runtime_units.order_source_bindings import bindings_from_publish_job
 from erp_web.runtime_units.publish_confirmation import resolve_publish_store_binding
 from erp_web.services.order_procurement_service import OrderProcurementService
+from erp_web.services.sku_procurement_service import SkuProcurementService, yandex_business_identity
 from erp_web.stores.order_procurement_store import OrderProcurementStore
 from erp_web.stores.online_product_store import OnlineProductStore
 from erp_web.services.alibaba_purchase_query_service import query_purchase as query_alibaba_purchase
 
 
+def _store_identities(config: dict, platform: str, account_id: str = "") -> tuple[str, ...]:
+    identities: list[str] = []
+    platform_key = str(platform or "").strip().lower()
+    if platform_key == "yandex":
+        yandex_cfg = dict(config.get("yandex") or {})
+        business_id = str(yandex_cfg.get("business_id") or "").strip()
+        campaign_id = str(yandex_cfg.get("campaign_id") or "").strip()
+        if account_id:
+            if ":" in account_id:
+                acc_biz, _, acc_camp = account_id.partition(":")
+                business_id = acc_biz.strip() or business_id
+                campaign_id = acc_camp.strip() or campaign_id
+            else:
+                campaign_id = account_id.strip()
+        if business_id and campaign_id:
+            try:
+                identities.append(
+                    resolve_publish_store_binding(
+                        "yandex",
+                        {**config, "yandex": {**yandex_cfg, "business_id": business_id, "campaign_id": campaign_id}},
+                    ).identity
+                )
+            except ValueError:
+                pass
+        biz_identity = yandex_business_identity(business_id)
+        if biz_identity and biz_identity not in identities:
+            identities.append(biz_identity)
+        return tuple(identities)
+    try:
+        identities.append(resolve_publish_store_binding(platform_key, config).identity)
+    except ValueError:
+        pass
+    return tuple(identities)
+
+
+def _write_store_identity(config: dict, platform: str, account_id: str = "") -> str:
+    platform_key = str(platform or "").strip().lower()
+    if platform_key == "yandex":
+        yandex_cfg = dict(config.get("yandex") or {})
+        business_id = str(yandex_cfg.get("business_id") or "").strip()
+        if account_id and ":" in account_id:
+            acc_biz, _, _ = account_id.partition(":")
+            business_id = acc_biz.strip() or business_id
+        biz_identity = yandex_business_identity(business_id)
+        if biz_identity:
+            return biz_identity
+    identities = _store_identities(config, platform_key, account_id)
+    return identities[0] if identities else ""
+
+
 def create_service(context):
     orders = context.order_notifications
     store = OrderProcurementStore(orders.store)
-    # 历史发布任务已有冻结商品和受信店铺身份，幂等回填，不依赖可编辑草稿。
-    cursor = ""
-    while True:
-        jobs, cursor = context.db.list_publish_jobs(limit=100, cursor=cursor)
-        for job in jobs:
-            store.add_bindings(bindings_from_publish_job(job))
-        if not cursor:
-            break
+    # 仅在首次启用采购库时一次性回填历史发布任务，后续新建上下文不再全表扫描 publish_jobs。
+    if not store.meta("publish_jobs_backfilled_v1"):
+        cursor = ""
+        while True:
+            jobs, cursor = context.db.list_publish_jobs(limit=100, cursor=cursor)
+            for job in jobs:
+                store.add_bindings(bindings_from_publish_job(job))
+            if not cursor:
+                break
+        store.set_meta("publish_jobs_backfilled_v1", "1")
 
     def identity(platform, account_id=""):
-        try:
-            config = context.config.load_store_config()
-            if platform == "yandex" and account_id:
-                config = {**config, "yandex": {**config["yandex"], "campaign_id": account_id}}
-            return resolve_publish_store_binding(
-                platform, config
-            ).identity
-        except ValueError:
-            return ""
+        identities = _store_identities(context.config.load_store_config(), platform, account_id)
+        return identities[0] if identities else ""
+
+    def identities(platform, account_id=""):
+        return _store_identities(context.config.load_store_config(), platform, account_id)
 
     online = OnlineProductStore(context.db)
 
@@ -50,7 +99,13 @@ def create_service(context):
         campaign = str(config.get("campaign_id") or "")
         return online.thumbnails("yandex", f"{business}:{campaign}", offer_ids)
 
-    return OrderProcurementService(store, orders.accounts, identity, yandex_images_provider=yandex_images)
+    return OrderProcurementService(
+        store,
+        orders.accounts,
+        identity,
+        yandex_images_provider=yandex_images,
+        identities_provider=identities,
+    )
 
 
 def detail(order_id=""):
@@ -92,4 +147,45 @@ def command(action, body, *, context=None):
             except Exception:
                 logging.getLogger(__name__).error("采购登记已保存，自动同步未完成")
                 return service.detail(body["order_id"])
+    return result
+
+
+def create_sku_procurement_service(context, *, client_factory=None):
+    kwargs = {}
+    if client_factory is not None:
+        kwargs["client_factory"] = client_factory
+    return SkuProcurementService(
+        context.order_procurement,
+        config_provider=lambda: alibaba_runtime_config(context.config),
+        read_identities_provider=lambda platform, account_id="": _store_identities(
+            context.config.load_store_config(), platform, account_id
+        ),
+        write_identity_provider=lambda platform, account_id="": _write_store_identity(
+            context.config.load_store_config(), platform, account_id
+        ),
+        owner_scope_provider=lambda: str(context.paths.data_dir),
+        **kwargs,
+    )
+
+
+def sku_source_command(action, body, *, context=None):
+    context = context or get_context()
+    service = create_sku_procurement_service(context)
+    result = {
+        "resolve-1688": service.resolve_1688,
+        "query": service.query_sources,
+        "bind": service.bind_source,
+        "set-default": service.set_default,
+        "remove": service.remove_source,
+    }[action](body)
+    if isinstance(result.get("order_detail"), dict):
+        order = result["order_detail"]["order"]
+        order["shop_name"] = next(
+            (
+                shop.name
+                for shop in context.order_notifications.shops()
+                if shop.platform == order["platform"] and shop.account_id == order["account_id"]
+            ),
+            order["account_id"],
+        )
     return result

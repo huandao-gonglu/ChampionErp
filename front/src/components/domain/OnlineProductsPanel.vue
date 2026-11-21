@@ -8,12 +8,14 @@ import OnlinePicturePreview from './OnlinePicturePreview.vue'
 import OnlinePriceCell from './OnlinePriceCell.vue'
 import OnlineBuyerLinks from './OnlineBuyerLinks.vue'
 import OnlineProductDetails from './OnlineProductDetails.vue'
+import SkuSourceManagerDialog from './SkuSourceManagerDialog.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import OnlinePlatformFeedback from './OnlinePlatformFeedback.vue'
 import { onlineAttributeName } from './onlineAttributeDisplay'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
+import type { SalesSkuBinding } from '@/types/orders'
 import { fetchYandexShopNames, refreshOnlineSales, fetchOnlineDetail, fetchOnlineProducts, onlineAction, previewOnlineBatch, submitOnlineBatch, type OnlineBatchPreview, refreshOnlineDetail, refreshOnlineStatus, type OnlineJob, type OnlineListing, type OnlineOperation, type OnlinePage, type OnlinePlatform } from '@/api/onlineProducts'
 
 const emit = defineEmits<{ 'open-task': [jobId?: string] }>()
@@ -147,10 +149,22 @@ const selected = ref<OnlineListing | null>(null)
 const detailLoading = ref(false), detailError = ref('')
 let detailSequence = 0
 const modal = ref<OnlineOperation | 'sync' | ''>('')
-const detailBackdrop = useBackdropDismiss(() => { if (!modal.value) selected.value = null })
+const skuSourceTarget = ref<OnlineListing | null>(null)
+const skuBindingsByListing = ref<Record<string, SalesSkuBinding[]>>({})
+const detailBackdrop = useBackdropDismiss(() => { if (!modal.value && !skuSourceTarget.value) selected.value = null })
 const modalBackdrop = useBackdropDismiss(() => { if (!busy.value) modal.value = '' })
 watch(selected, detailBackdrop.resetBackdropPointer)
 watch(modal, modalBackdrop.resetBackdropPointer)
+function listingSkuBindings(row: OnlineListing): SalesSkuBinding[] | undefined {
+  return skuBindingsByListing.value[row.id]
+}
+function listingDefaultSource(row: OnlineListing): SalesSkuBinding | null {
+  const list = listingSkuBindings(row) || []
+  return list.find(item => item.is_default) || (list.length === 1 ? list[0] : list[0] || null)
+}
+function handleOnlineSkuSourcesUpdated(row: OnlineListing, payload: { bindings: SalesSkuBinding[] }) {
+  skuBindingsByListing.value = { ...skuBindingsByListing.value, [row.id]: payload.bindings }
+}
 useAiPageContext(() => ({
   page: 'onlineProducts', platform: platform.value, catalog: catalog.value,
   group_id: selected.value
@@ -505,7 +519,7 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
               <td v-else><div v-for="inventory in row.stocks" :key="inventory.id"><p>{{ inventory.quantity ?? '未知' }}</p><p class="muted mt-1">{{ inventory.label }}</p></div><p v-if="!row.stocks.length" class="muted">尚未取得库存范围</p></td>
               <td><span :class="badge(listingStatus(row))">{{ label(listingStatus(row)) }}</span><p v-if="detailState(row)" class="mt-1 text-amber-700">{{ detailState(row) }}</p><p v-else-if="row.errors.length" class="mt-1 text-amber-700">读取不完整</p><p v-if="issueSummary(row)" class="mt-1 text-amber-700">{{ issueSummary(row) }}</p></td>
               <td class="muted whitespace-nowrap"><p>{{ row.basic_synced_at ? '基础同步：' : '' }}{{ time(row.basic_synced_at || row.synced_at) }}</p><p v-if="row.sales_checked_at && row.sales_checked_at !== row.basic_synced_at" class="mt-1 text-xs">价格与库存查询：{{ time(row.sales_checked_at) }}</p><p v-if="cachedDetails(row)" class="mt-1 text-xs">价格与库存为缓存 · {{ time(row.synced_at) }}</p><p v-if="row.status_checked_at" class="mt-1 text-xs">状态查询：{{ time(row.status_checked_at) }}</p></td>
-              <td><div class="flex flex-col items-start gap-2"><button class="whitespace-nowrap text-primary-700" @click="detail(row)">管理 →</button><button type="button" data-testid="refresh-status" class="whitespace-nowrap text-primary-700 disabled:opacity-50" :disabled="statusRefreshBlocked(row)" @click="refreshStatus(row)">{{ checkingStatus.has(row.id) ? '查询中…' : '刷新状态' }}</button><p v-if="statusErrors[row.id]" role="alert" class="max-w-64 text-xs text-rose-700">{{ statusErrors[row.id] }}</p><OnlineBuyerLinks :links="row.buyer_links" /></div></td>
+              <td><div class="flex flex-col items-start gap-2"><button class="whitespace-nowrap text-primary-700" @click="detail(row)">管理 →</button><button v-if="row.seller_sku" type="button" data-testid="online-manage-sku-source" class="whitespace-nowrap text-xs text-accent-600 hover:text-primary-700 dark:text-accent-300 dark:hover:text-primary-300" @click.stop="skuSourceTarget = row">{{ listingSkuBindings(row) ? (listingSkuBindings(row)!.length ? `1688 货源（${listingSkuBindings(row)!.length}）` : '未绑 1688 货源') : '1688 货源' }}</button><button type="button" data-testid="refresh-status" class="whitespace-nowrap text-primary-700 disabled:opacity-50" :disabled="statusRefreshBlocked(row)" @click="refreshStatus(row)">{{ checkingStatus.has(row.id) ? '查询中…' : '刷新状态' }}</button><p v-if="statusErrors[row.id]" role="alert" class="max-w-64 text-xs text-rose-700">{{ statusErrors[row.id] }}</p><OnlineBuyerLinks :links="row.buyer_links" /></div></td>
             </tr>
           </template>
         </tbody>
@@ -565,6 +579,25 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
           <p v-for="note in salesNotes([...selected.prices, ...selected.stocks])" :key="note" class="muted text-xs">{{ note }}</p>
           <p v-if="cardNotice" role="status" class="mt-3 text-sm text-amber-700 dark:text-amber-300">{{ cardNotice }}</p>
           <OnlinePlatformFeedback :listing="selected" />
+
+          <section v-if="selected.seller_sku" class="online-card my-4 space-y-2 p-3.5" data-testid="online-sku-source" aria-label="1688 采购货源">
+            <div class="flex items-center justify-between gap-2">
+              <h3 class="text-xs font-semibold text-accent-700 dark:text-accent-200">1688 采购货源</h3>
+              <button type="button" data-testid="online-detail-manage-source" class="text-xs font-medium text-primary-700 hover:underline dark:text-primary-300" @click="skuSourceTarget = selected">
+                {{ listingSkuBindings(selected)?.length ? '更换 / 管理货源' : '查看 / 绑定 1688 规格' }}
+              </button>
+            </div>
+            <template v-if="listingDefaultSource(selected)">
+              <p class="break-words text-sm font-medium text-accent-950 dark:text-white">{{ listingDefaultSource(selected)!.source.specification }}</p>
+              <p class="muted text-xs">
+                <span v-if="listingDefaultSource(selected)!.source.supplier">{{ listingDefaultSource(selected)!.source.supplier }} · </span>
+                Offer {{ listingDefaultSource(selected)!.source.source_offer_id || '—' }} · SKU {{ listingDefaultSource(selected)!.source.source_sku_id || '—' }}
+                <span v-if="(listingSkuBindings(selected)?.length || 0) > 1"> · 另含 {{ listingSkuBindings(selected)!.length - 1 }} 个备选</span>
+              </p>
+            </template>
+            <p v-else-if="listingSkuBindings(selected)" class="muted text-xs">尚未绑定 1688 采购源；提前绑定后，该 SKU 出单即可直接自动采购。</p>
+            <p v-else class="muted text-xs">可提前查看、绑定或更换该在售 SKU 的 1688 默认及备选采购货源，出单时直接匹配自动采购。</p>
+          </section>
 
           <div class="my-5 flex flex-wrap items-start gap-3" data-testid="detail-actions">
             <button v-for="op in ['price','stock','content'] as const" :key="op" class="btn btn-outline" :disabled="checkingStatus.has(selected.id) || detailLoading || !!detailError || selected.details_state!=='ready' || !!selected.errors.length || !selected.capabilities[op]?.enabled" :title="selected.capabilities[op]?.reason" @click="begin(op)">{{ label(op) }}</button>
@@ -646,6 +679,17 @@ onBeforeUnmount(() => {disposed=true; sequence++; clearTimeout(timer); document.
       </div>
     </Teleport>
     <OzonExportDialog v-if="showOzonExport" :open="showOzonExport" :listing-ids="exportListingIds" :account-id="page?.account_id || ''" @close="showOzonExport=false" />
+    <SkuSourceManagerDialog
+      v-if="skuSourceTarget && skuSourceTarget.seller_sku"
+      :platform="skuSourceTarget.platform"
+      :account-id="skuSourceTarget.account_id"
+      :seller-sku="skuSourceTarget.seller_sku"
+      :remote-id="skuSourceTarget.platform === 'yandex' ? '' : skuSourceTarget.remote_id"
+      :title="skuSourceTarget.title || skuSourceTarget.seller_sku"
+      :initial-bindings="listingSkuBindings(skuSourceTarget)"
+      @close="skuSourceTarget = null"
+      @updated="handleOnlineSkuSourcesUpdated(skuSourceTarget!, $event)"
+    />
     <WorkspaceDialog :open="!!batchSelection" :title="batchSelection?.title || '批量操作'" :close-disabled="busy" width="640px" data-testid="online-batch-dialog" @close="batchSelection=null">
       <template v-if="batchSelection">
         <p class="mb-3">共 {{ batchSelection.preview.product_count }} 个商品、{{ batchSelection.preview.items.length }} 个 SKU，作用范围：{{ batchSelection.preview.scope }}。</p>

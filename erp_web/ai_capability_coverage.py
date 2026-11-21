@@ -179,6 +179,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/retry", business_domain="订单采购", disposition="capability", capability_names=("order_notification_update",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/acknowledge", business_domain="订单采购", disposition="capability", capability_names=("order_notification_update",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/select-source", business_domain="订单采购", disposition="capability", capability_names=("order_source_select",)),
+    *(AiCapabilityCoverageEntry(method="POST", path=path, business_domain="订单采购", disposition="internal_only", reason="用户粘贴 1688 链接并点选核验规格绑定或切换销售 SKU 货源映射，须经人工核对实物与规格对应关系，不由模型自动改绑。") for path in (
+        "/api/sku-sources/resolve-1688",
+        "/api/sku-sources/query",
+        "/api/sku-sources/bind",
+        "/api/sku-sources/set-default",
+        "/api/sku-sources/remove",
+    )),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/record-purchase", business_domain="订单采购", disposition="capability", capability_names=("order_purchase_record",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/cancel-purchase", business_domain="订单采购", disposition="capability", capability_names=("order_purchase_cancel",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/purchase-sync", business_domain="订单采购", disposition="capability", capability_names=("order_purchase_sync",)),
@@ -530,6 +537,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="capability",
         capability_names=("product_delete",),
     ),
+    *(AiCapabilityCoverageEntry(
+        method="POST",
+        path=path,
+        business_domain="商品与草稿",
+        disposition="internal_only",
+        reason="采集箱商品 JSON 文件导入导出由界面人工下载/上传文件完成，不经模型传输大体积图片数据。",
+    ) for path in ("/api/products/export", "/api/products/import")),
     AiCapabilityCoverageEntry(
         method="POST",
         path="/api/load-draft",

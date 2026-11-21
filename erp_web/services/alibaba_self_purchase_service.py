@@ -106,19 +106,19 @@ class AlibabaSelfPurchaseService:
             return None, str(exc)
         if not source["source_sku_id"].isascii() or not source["source_sku_id"].isdigit():
             return None, "采购来源缺少有效的 1688 SKU 编号"
-        # 必须命中当前店铺、销售 SKU 的冻结上架证据，人工输入不能代替采集事实。
+        # 必须命中当前店铺、销售 SKU 的可信绑定（采集上架记录或经 1688 API 核验绑定的规格）。
         matches = [c["source"] for c in selection["candidates"]
                    if c["source"]["product_url"] == source["product_url"]
                    and c["source"]["source_sku_id"] == source["source_sku_id"]
                    and c["source"]["specification"] == source["specification"]]
         if not matches:
-            return None, "当前采购来源没有对应的已上架商品记录，或与上架规格不一致，请核对来源"
-        # 同一商品重新采集上架后，使用用户确认的那份完整规格依据；不混用旧版缺失值。
+            return None, "当前采购来源尚未通过采集上架或 1688 规格核验，请先选择已有货源或粘贴 1688 链接绑定规格"
+        # 同一商品重新采集或更换货源后，使用用户确认的那份完整规格依据；不混用旧版缺失值。
         selected = [c for c in matches
                     if c.get("source_offer_id", "") == source.get("source_offer_id", "")
                     and c.get("source_spec_id", "") == source.get("source_spec_id", "")]
         if not selected:
-            return None, "已确认来源与上架记录的规格标识不一致，请重新确认采购来源"
+            return None, "已确认来源与绑定货源的规格标识不一致，请重新确认采购来源"
         identities = {(c.get("source_offer_id", ""), c.get("source_spec_id", ""), c.get("purchase_block_reason", "")) for c in selected}
         if len(identities) != 1:
             return None, "同一销售 SKU 对应多个不同的采购规格，无法确定本次下单规格"
@@ -126,11 +126,11 @@ class AlibabaSelfPurchaseService:
         if reason:
             return None, reason
         if not spec:
-            return None, "采集上架记录缺少下单规格标识（specId），请重新采集并核对上架规格"
+            return None, "当前绑定来源缺少下单规格标识（specId），请粘贴 1688 链接重新绑定规格"
         if saved_offer != offer:
             return None, "采集商品编号与采购链接不一致，请核对来源"
         if source.get("source_offer_id") != saved_offer or source.get("source_spec_id") != spec:
-            return None, "已确认来源与上架记录的规格标识不一致，请重新确认采购来源"
+            return None, "已确认来源与绑定货源的规格标识不一致，请重新确认采购来源"
         return {"candidate": {"id": str(selection["revision"]), "offer_id": offer,
                 "sku_id": source["source_sku_id"], "specification": source["specification"],
                 "product_url": source["product_url"]}, "spec_id": spec}, ""

@@ -40,7 +40,26 @@ CREATE TABLE IF NOT EXISTS order_purchase_reservations (
  id TEXT PRIMARY KEY, order_id TEXT NOT NULL, line_key TEXT NOT NULL,
  quantity INTEGER NOT NULL, binding_json TEXT NOT NULL, state TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS purchases_order ON order_purchases(order_id,status);
+CREATE TABLE IF NOT EXISTS procurement_meta (
+ key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+
+
+def _identity_list(store_identity) -> list[str]:
+    if not store_identity:
+        return []
+    if isinstance(store_identity, str):
+        return [store_identity]
+    return [value for value in dict.fromkeys(store_identity) if value]
+
+
+def _binding_sort_key(binding: SalesSkuBinding):
+    return (
+        1 if binding.is_default else 0,
+        1 if binding.origin == "alibaba_api" else 0,
+        binding.updated_at or "",
+        binding.id or "",
+    )
 
 
 def _tracking_time(value):
@@ -117,14 +136,15 @@ class OrderProcurementStore:
                                 **item, "record_id": row["id"], "purchase_order_number": record["purchase_order_number"]})
                 bindings = {}
                 for platform, account in {(order.platform, order.account_id) for order in orders}:
-                    identity = identities.get((platform, account))
-                    if not identity:
+                    scope_ids = _identity_list(identities.get((platform, account)))
+                    if not scope_ids:
                         continue
                     skus = json.dumps(list({line.sku for order in orders if order.platform == platform and order.account_id == account
                                            for line in order.items if line.sku}))
+                    marks = ",".join("?" for _ in scope_ids)
                     for row in conn.execute(
-                        "SELECT id,binding_json FROM sales_sku_bindings WHERE platform=? AND store_identity=? "
-                        "AND seller_sku IN (SELECT value FROM json_each(?))", (platform, identity, skus),
+                        f"SELECT id,binding_json FROM sales_sku_bindings WHERE platform=? AND store_identity IN ({marks}) "
+                        "AND seller_sku IN (SELECT value FROM json_each(?))", (platform, *scope_ids, skus),
                     ):
                         binding = SalesSkuBinding.model_validate_json(row["binding_json"]).model_copy(update={"id": row["id"]})
                         bindings.setdefault((platform, account, binding.seller_sku), []).append(binding)
@@ -179,6 +199,16 @@ class OrderProcurementStore:
             AND json_extract(i.value,'$.line_key')=? AND json_extract(i.value,'$.line_signature')=?""",
             (order_id, key, signature)).fetchone()[0]
 
+    def meta(self, key: str) -> str:
+        with self.orders.connect() as conn:
+            row = conn.execute("SELECT value FROM procurement_meta WHERE key=?", (key,)).fetchone()
+            return str(row[0]) if row else ""
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self.orders.connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO procurement_meta VALUES (?,?)", (key, str(value)))
+            conn.commit()
+
     def add_bindings(self, bindings: list[SalesSkuBinding]):
         with self.orders.connect() as conn:
             for binding in bindings:
@@ -198,28 +228,186 @@ class OrderProcurementStore:
                 )
             conn.commit()
 
-    def candidates(self, platform, store_identity, line):
-        if not line.sku:
+    @staticmethod
+    def _matches_target(value: SalesSkuBinding, *, remote_id: str = "", variant_id: str = "") -> bool:
+        # 远端身份可消除同 SKU 的歧义；缺少证据不能反过来猜身份。
+        if value.remote_id and remote_id and value.remote_id != remote_id:
+            return False
+        if value.variant_id and variant_id and value.variant_id != variant_id:
+            return False
+        return True
+
+    def list_sku_bindings(
+        self,
+        platform: str,
+        store_identity,
+        seller_sku: str,
+        *,
+        remote_id: str = "",
+        variant_id: str = "",
+    ) -> list[SalesSkuBinding]:
+        scope_ids = _identity_list(store_identity)
+        if not seller_sku or not scope_ids:
             return []
+        marks = ",".join("?" for _ in scope_ids)
         with self.orders.connect() as conn:
             rows = conn.execute(
-                "SELECT id,binding_json FROM sales_sku_bindings WHERE platform=? AND store_identity=? AND seller_sku=?",
-                (platform, store_identity, line.sku),
+                f"SELECT id,binding_json FROM sales_sku_bindings WHERE platform=? AND store_identity IN ({marks}) AND seller_sku=?",
+                (platform, *scope_ids, seller_sku),
             ).fetchall()
         result = []
         for row in rows:
-            value = SalesSkuBinding.model_validate_json(row["binding_json"])
-            # 远端身份可消除同 SKU 的歧义；缺少证据不能反过来猜身份。
-            if value.remote_id and line.remote_id and value.remote_id != line.remote_id:
+            value = SalesSkuBinding.model_validate_json(row["binding_json"]).model_copy(update={"id": row["id"]})
+            if not self._matches_target(value, remote_id=remote_id, variant_id=variant_id):
                 continue
-            if (
-                value.variant_id
-                and line.variant_id
-                and value.variant_id != line.variant_id
-            ):
-                continue
-            result.append(value.model_copy(update={"id": row["id"]}))
+            result.append(value)
+        result.sort(key=_binding_sort_key, reverse=True)
         return result
+
+    def list_sku_bindings_batch(
+        self,
+        platform: str,
+        store_identity,
+        seller_skus: list[str],
+    ) -> dict[str, list[SalesSkuBinding]]:
+        scope_ids = _identity_list(store_identity)
+        unique_skus = [sku for sku in dict.fromkeys(seller_skus) if sku]
+        if not scope_ids or not unique_skus:
+            return {}
+        marks = ",".join("?" for _ in scope_ids)
+        with self.orders.connect() as conn:
+            rows = conn.execute(
+                f"SELECT id,seller_sku,binding_json FROM sales_sku_bindings "
+                f"WHERE platform=? AND store_identity IN ({marks}) AND seller_sku IN (SELECT value FROM json_each(?))",
+                (platform, *scope_ids, json.dumps(unique_skus, ensure_ascii=False)),
+            ).fetchall()
+        grouped: dict[str, list[SalesSkuBinding]] = {}
+        for row in rows:
+            binding = SalesSkuBinding.model_validate_json(row["binding_json"]).model_copy(update={"id": row["id"]})
+            grouped.setdefault(row["seller_sku"], []).append(binding)
+        for items in grouped.values():
+            items.sort(key=_binding_sort_key, reverse=True)
+        return grouped
+
+    def upsert_sku_binding(
+        self,
+        binding: SalesSkuBinding,
+        *,
+        set_default: bool = True,
+        clear_default_identities=(),
+    ) -> SalesSkuBinding:
+        now = utc_iso()
+        target_id = binding.identity
+        scope_ids = _identity_list([binding.store_identity, *_identity_list(clear_default_identities)])
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if set_default and scope_ids:
+                marks = ",".join("?" for _ in scope_ids)
+                existing_rows = conn.execute(
+                    f"SELECT id,binding_json FROM sales_sku_bindings WHERE platform=? AND store_identity IN ({marks}) AND seller_sku=?",
+                    (binding.platform, *scope_ids, binding.seller_sku),
+                ).fetchall()
+                for row in existing_rows:
+                    if row["id"] == target_id:
+                        continue
+                    current = SalesSkuBinding.model_validate_json(row["binding_json"])
+                    if not self._matches_target(current, remote_id=binding.remote_id, variant_id=binding.variant_id):
+                        continue
+                    if current.is_default:
+                        updated_other = current.model_copy(update={"is_default": False})
+                        conn.execute(
+                            "UPDATE sales_sku_bindings SET binding_json=? WHERE id=?",
+                            (updated_other.model_dump_json(), row["id"]),
+                        )
+            old_row = conn.execute("SELECT binding_json FROM sales_sku_bindings WHERE id=?", (target_id,)).fetchone()
+            merged = binding.model_copy(update={"id": target_id, "is_default": set_default, "updated_at": now})
+            if old_row:
+                previous = SalesSkuBinding.model_validate_json(old_row["binding_json"])
+                merged = merged.model_copy(update={
+                    "product_id": merged.product_id or previous.product_id,
+                    "draft_id": merged.draft_id or previous.draft_id,
+                    "sku_id": merged.sku_id or previous.sku_id,
+                    "publication_id": merged.publication_id or previous.publication_id,
+                    "image_url": merged.image_url or previous.image_url,
+                })
+            conn.execute(
+                "INSERT OR REPLACE INTO sales_sku_bindings VALUES (?,?,?,?,?)",
+                (target_id, merged.platform, merged.store_identity, merged.seller_sku, merged.model_dump_json()),
+            )
+            conn.commit()
+            return merged
+
+    def set_default_sku_binding(
+        self,
+        platform: str,
+        store_identity,
+        seller_sku: str,
+        binding_id: str,
+        *,
+        remote_id: str = "",
+        variant_id: str = "",
+    ) -> SalesSkuBinding:
+        scope_ids = _identity_list(store_identity)
+        if not scope_ids or not seller_sku or not binding_id:
+            raise ValueError("缺少必要的销售 SKU 或货源标识")
+        marks = ",".join("?" for _ in scope_ids)
+        now = utc_iso()
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"SELECT id,binding_json FROM sales_sku_bindings WHERE platform=? AND store_identity IN ({marks}) AND seller_sku=?",
+                (platform, *scope_ids, seller_sku),
+            ).fetchall()
+            target: SalesSkuBinding | None = None
+            parsed: list[tuple[str, SalesSkuBinding]] = []
+            for row in rows:
+                item = SalesSkuBinding.model_validate_json(row["binding_json"]).model_copy(update={"id": row["id"]})
+                parsed.append((row["id"], item))
+                if row["id"] == binding_id:
+                    target = item
+            if target is None:
+                raise ValueError("未找到对应的 SKU 采购来源，请刷新后重试")
+            eff_remote = remote_id or target.remote_id
+            eff_variant = variant_id or target.variant_id
+            for row_id, item in parsed:
+                if row_id == binding_id:
+                    updated = item.model_copy(update={"is_default": True, "updated_at": now})
+                    conn.execute("UPDATE sales_sku_bindings SET binding_json=? WHERE id=?", (updated.model_dump_json(), row_id))
+                    target = updated
+                elif item.is_default and self._matches_target(item, remote_id=eff_remote, variant_id=eff_variant):
+                    updated = item.model_copy(update={"is_default": False})
+                    conn.execute("UPDATE sales_sku_bindings SET binding_json=? WHERE id=?", (updated.model_dump_json(), row_id))
+            conn.commit()
+            return target
+
+    def delete_sku_binding(
+        self,
+        platform: str,
+        store_identity,
+        seller_sku: str,
+        binding_id: str,
+    ) -> bool:
+        scope_ids = _identity_list(store_identity)
+        if not scope_ids or not seller_sku or not binding_id:
+            return False
+        marks = ",".join("?" for _ in scope_ids)
+        with self.orders.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                f"DELETE FROM sales_sku_bindings WHERE id=? AND platform=? AND store_identity IN ({marks}) AND seller_sku=?",
+                (binding_id, platform, *scope_ids, seller_sku),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def candidates(self, platform, store_identity, line):
+        return self.list_sku_bindings(
+            platform,
+            store_identity,
+            line.sku,
+            remote_id=line.remote_id,
+            variant_id=line.variant_id,
+        )
 
     def line_state(self, order_id, key, accounts):
         with self.orders.connect() as conn:

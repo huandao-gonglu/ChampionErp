@@ -21,19 +21,41 @@ from erp_web.services.order_source_resolution import resolve_source_selection
 
 class OrderProcurementService:
     def __init__(
-        self, store: OrderProcurementStore, accounts_provider, identity_provider, *, yandex_images_provider
+        self,
+        store: OrderProcurementStore,
+        accounts_provider,
+        identity_provider,
+        *,
+        yandex_images_provider,
+        identities_provider=None,
     ):
         self.store = store
         self.accounts_provider = accounts_provider
         self.identity_provider = identity_provider
         self.yandex_images_provider = yandex_images_provider
+        self.identities_provider = identities_provider
+
+    def _identity(self, platform: str, account_id: str = ""):
+        try:
+            return self.identity_provider(platform, account_id)
+        except TypeError:
+            return self.identity_provider(platform)
+
+    def identities_for(self, platform: str, account_id: str = ""):
+        if self.identities_provider is not None:
+            values = self.identities_provider(platform, account_id)
+            if values:
+                return values
+        single = self._identity(platform, account_id)
+        return (single,) if single else ()
 
     def present_orders(self, orders: list[OrderView]) -> list[OrderView]:
         """为列表和详情补充图片及本地采购进度，不修改平台快照，不发起远端请求。"""
         tracking = self.store.tracking_summaries(orders)
         identities = {
-            platform: self.identity_provider(platform)
-            for platform in {order.platform for order in orders if order.platform != "yandex"}
+            (order.platform, order.account_id): self.identities_for(order.platform, order.account_id)
+            for order in orders
+            if order.platform != "yandex"
         }
         yandex_ids = {}
         for order in orders:
@@ -54,9 +76,9 @@ class OrderProcurementService:
                     image = yandex_images[order.account_id].get(line.remote_id, "") if line.remote_id == line.sku else ""
                     lines.append(line.model_copy(update={"image_url": image}))
                     continue
-                key = (order.platform, line.sku, line.remote_id, line.variant_id)
+                key = (order.platform, order.account_id, line.sku, line.remote_id, line.variant_id)
                 if key not in images:
-                    identity = identities[order.platform]
+                    identity = identities.get((order.platform, order.account_id))
                     candidates = (
                         self.store.candidates(order.platform, identity, line)
                         if identity
@@ -76,7 +98,7 @@ class OrderProcurementService:
         order = self.present_orders([self.store.order(order_id, accounts)])[0]
         counts = Counter(order_line_key(line) for line in order.items)
         lines = []
-        identity = self.identity_provider(order.platform, order.account_id)
+        identity = self.identities_for(order.platform, order.account_id)
         for line in order.items:
             key = order_line_key(line)
             selection = SourceSelection(line_key=key)

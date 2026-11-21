@@ -56,7 +56,6 @@ def test_browser_collection_retains_explicit_spec_id_but_never_derives_it():
 @pytest.mark.parametrize("change,reason", [
     ("missing_spec", "specId"), ("wrong_offer", "商品编号"),
     ("duplicate_sku", "唯一"), ("wrong_spec", "规格标识"),
-    ("changed_options", "上架规格已修改"), ("draft_options", "上架规格已修改"),
 ])
 def test_publication_freezes_incomplete_or_conflicting_identity_reason(change, reason):
     value = frozen_job()
@@ -66,9 +65,15 @@ def test_publication_freezes_incomplete_or_conflicting_identity_reason(change, r
     elif change == "wrong_offer": fact["source_offer_id"] = "999"
     elif change == "duplicate_sku": product["source"]["skus"].append(deepcopy(product["source"]["skus"][0]))
     elif change == "wrong_spec": fact["source_spec_id"] = "spec-blue"
-    elif change == "changed_options": fact["options"]["颜色"] = "蓝色"
-    elif change == "draft_options": product["drafts"] = {"yandex": {"sku_items": [{"sku_id": fact["id"], "overrides": {"options": {"颜色": "蓝色"}}}]}}
     assert reason in bindings_from_publish_job(value)[0].source.purchase_block_reason
+
+
+def test_editing_display_options_does_not_block_auto_purchase():
+    """美化展示用规格名称不影响底层不可变 (offer_id, sku_id, spec_id)，不应阻断自动采购。"""
+    value = frozen_job()
+    fact = value["product"]["sku_items"][0]
+    fact["options"]["颜色"] = "典雅红"
+    assert not bindings_from_publish_job(value)[0].source.purchase_block_reason
 
 
 def test_recollection_updates_purchase_ids_without_carrying_old_spec_forward():
@@ -92,13 +97,13 @@ def test_missing_sku_id_cannot_be_replaced_with_spec_id():
 
 def test_legacy_binding_identity_remains_stable_and_bad_republication_is_distinct():
     legacy = bindings_from_publish_job(job())[0]
-    old = legacy.model_dump(exclude={"publication_id", "id", "image_url"})
+    old = legacy.model_dump(exclude={"publication_id", "id", "image_url", "origin", "is_default", "updated_at"})
     for key in ("source_offer_id", "source_spec_id", "purchase_block_reason"):
         old["source"].pop(key)
     assert legacy.identity == hashlib.sha256(json.dumps(old, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     value = frozen_job()
     good = bindings_from_publish_job(value)[0]
     fact = value["product"]["sku_items"][0]
-    value["product"]["drafts"] = {"yandex": {"sku_items": [{"sku_id": fact["id"], "overrides": {"options": {"颜色": "蓝色"}}}]}}
+    fact["source_spec_id"] = "spec-wrong"
     bad = bindings_from_publish_job(value)[0]
     assert bad.identity != good.identity and bad.source.purchase_block_reason

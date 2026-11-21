@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchOrderDetail, procurementCommand } from '@/api/orders'
-import type { OrderDetail, OrderSnapshot, ProcurementLine } from '@/types/orders'
+import { setDefaultSkuSource } from '@/api/skuSources'
+import type { OrderDetail, OrderSnapshot, ProcurementLine, SalesSkuBinding } from '@/types/orders'
 import OrderSourceDialog from './OrderSourceDialog.vue'
+import SkuSourceManagerDialog from './SkuSourceManagerDialog.vue'
 import OrderAmountDetails from './OrderAmountDetails.vue'
 import { PhDotsThree, PhCaretDown } from '@phosphor-icons/vue'
 import AlibabaSelfPurchaseDialog from './AlibabaSelfPurchaseDialog.vue'
@@ -18,6 +20,7 @@ const error = ref('')
 const notice = ref('')
 const busy = ref(false)
 const sourceEditor = ref(false)
+const skuSourceManagerOpen = ref(false)
 const alibabaPurchaseOpen = ref(false)
 const expanded = ref(false)
 const selection = computed(() => props.item.selection)
@@ -27,8 +30,9 @@ const editable = computed(
     !!selection.value.line_key &&
     !selection.value.reason.includes('缺少唯一身份')
 )
+const canManageSkuSource = computed(() => editable.value && Boolean(props.item.line.sku))
 watch(
-  () => busy.value || alibabaPurchaseOpen.value || sourceEditor.value,
+  () => busy.value || alibabaPurchaseOpen.value || sourceEditor.value || skuSourceManagerOpen.value,
   (value) => emit('lock', value)
 )
 onBeforeUnmount(() => emit('lock', false))
@@ -51,6 +55,39 @@ function select(candidateId: string) {
     revision: selection.value.revision,
     candidate_id: candidateId,
   })
+}
+async function setAsSkuDefault(candidate: SalesSkuBinding) {
+  if (busy.value || !props.item.line.sku) return
+  busy.value = true
+  error.value = ''
+  try {
+    const res = await setDefaultSkuSource({
+      platform: props.order.platform,
+      account_id: props.order.account_id,
+      seller_sku: props.item.line.sku,
+      remote_id: props.item.line.remote_id || '',
+      variant_id: props.item.line.variant_id || '',
+      binding_id: candidate.id,
+      order_id: props.order.id,
+      line_key: selection.value.line_key,
+      revision: selection.value.revision,
+    })
+    if (res.order_detail) emit('updated', res.order_detail)
+    else emit('updated', await fetchOrderDetail(props.order.id))
+    notice.value = '已设为该销售 SKU 默认采购源并确认本单来源'
+  } catch (exc) {
+    error.value = exc instanceof Error ? exc.message : '切换默认采购源失败'
+  } finally {
+    busy.value = false
+  }
+}
+async function handleSkuSourcesUpdated(payload: { bindings: SalesSkuBinding[]; orderDetail?: OrderDetail }) {
+  if (payload.orderDetail) {
+    emit('updated', payload.orderDetail)
+    notice.value = '已更新该销售 SKU 采购源并同步本单'
+    return
+  }
+  await refreshPurchase()
 }
 async function refreshPurchase() {
   try { emit('updated', await fetchOrderDetail(props.order.id)) }
@@ -129,12 +166,21 @@ defineExpose({ showSource: () => { expanded.value = true } })
               1688 采购
             </button>
             <button
+              v-if="canManageSkuSource"
+              class="order-link"
+              data-testid="order-manage-sku-source"
+              :disabled="busy"
+              @click="skuSourceManagerOpen = true"
+            >
+              {{ selection.candidates.length ? '更换 / 管理 1688 货源' : '绑定 1688 规格' }}
+            </button>
+            <button
               v-if="editable"
               class="order-link"
               :disabled="busy"
               @click="sourceEditor = true"
             >
-              {{ selection.source ? '修改来源' : '关联采购来源' }}
+              {{ selection.source ? '手工修改来源' : '手工关联来源' }}
             </button>
             <button class="order-link" @click="expanded = !expanded">
               {{ expanded ? '收起详情' : '来源与金额详情' }}
@@ -170,6 +216,16 @@ defineExpose({ showSource: () => { expanded.value = true } })
             复制规格
           </button>
           <button
+            v-if="canManageSkuSource"
+            type="button"
+            data-testid="order-source-manage-btn"
+            class="order-link"
+            :disabled="busy"
+            @click="skuSourceManagerOpen = true"
+          >
+            {{ selection.candidates.length ? '更换 / 管理 1688 货源' : '绑定 1688 规格' }}
+          </button>
+          <button
             v-if="editable"
             class="order-link"
             :disabled="busy"
@@ -186,23 +242,58 @@ defineExpose({ showSource: () => { expanded.value = true } })
         <p class="order-muted mt-2">
           {{ selection.reason }}
         </p>
-        <button v-if="editable" class="order-button mt-3" @click="sourceEditor = true">
-          关联采购来源
-        </button>
+        <div class="order-actions mt-3">
+          <button
+            v-if="canManageSkuSource"
+            type="button"
+            data-testid="order-bind-1688-source"
+            class="order-button order-primary"
+            :disabled="busy"
+            @click="skuSourceManagerOpen = true"
+          >
+            贴 1688 链接绑定规格
+          </button>
+          <button v-if="editable" class="order-button" @click="sourceEditor = true">
+            手工关联采购来源
+          </button>
+        </div>
       </template>
-      <div v-if="selection.status !== 'confirmed' && editable" class="order-source-confirmation">
-        <p v-if="selection.source" class="order-muted">
+      <div v-if="selection.candidates.length && editable && (selection.status !== 'confirmed' || selection.candidates.length > 1)" class="order-source-confirmation">
+        <p v-if="selection.status !== 'confirmed' && selection.source" class="order-muted">
           核对规格并确认来源后，可以发起采购。
+        </p>
+        <p v-else-if="selection.candidates.length > 1" class="order-muted">
+          该销售 SKU 已配置多个 1688 货源，可一键切换默认货源：
         </p>
         <div v-for="candidate in selection.candidates" :key="candidate.id" class="order-source-candidate">
           <div v-if="selection.candidates.length > 1" class="order-muted">
-            <p>{{ candidate.source.specification }} · 来源 SKU {{ candidate.source.source_sku_id }}</p><a :href="candidate.source.product_url" target="_blank" rel="noopener noreferrer">
+            <p>
+              <strong>{{ candidate.is_default ? '【默认】' : '【备选】' }}</strong>
+              {{ candidate.source.specification }} · 来源 SKU {{ candidate.source.source_sku_id }}
+              <span>（{{ candidate.origin === 'alibaba_api' ? '1688 核验' : '采集发布' }}）</span>
+            </p><a :href="candidate.source.product_url" target="_blank" rel="noopener noreferrer">
               {{ candidate.source.supplier || candidate.source.source_platform }} · 查看候选商品
             </a>
           </div>
-          <button class="order-button order-primary" :disabled="busy" @click="select(candidate.id)">
-            {{ selection.candidates.length > 1 ? '确认此采购来源' : '确认来源' }}
-          </button>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              v-if="selection.status !== 'confirmed'"
+              class="order-button order-primary"
+              :disabled="busy"
+              @click="select(candidate.id)"
+            >
+              {{ selection.candidates.length > 1 ? '仅本单确认' : '确认来源' }}
+            </button>
+            <button
+              v-if="selection.candidates.length > 1 && canManageSkuSource && !candidate.is_default"
+              type="button"
+              class="order-button"
+              :disabled="busy"
+              @click="setAsSkuDefault(candidate)"
+            >
+              设为 SKU 默认并选用
+            </button>
+          </div>
         </div>
       </div>
       <details class="order-line-amount">
@@ -229,6 +320,21 @@ defineExpose({ showSource: () => { expanded.value = true } })
       :order-id="order.id"
       @close="sourceEditor = false"
       @updated="$emit('updated', $event)"
+    />
+    <SkuSourceManagerDialog
+      v-if="skuSourceManagerOpen && item.line.sku"
+      :platform="order.platform"
+      :account-id="order.account_id"
+      :seller-sku="item.line.sku"
+      :remote-id="item.line.remote_id"
+      :variant-id="item.line.variant_id"
+      :title="item.line.title"
+      :initial-bindings="selection.candidates"
+      :order-id="order.id"
+      :line-key="selection.line_key"
+      :revision="selection.revision"
+      @close="skuSourceManagerOpen = false"
+      @updated="handleSkuSourcesUpdated"
     />
   </article>
 </template>

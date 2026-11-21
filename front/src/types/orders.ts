@@ -23,6 +23,8 @@ export interface OrderAmount {
 }
 export interface OrderLine extends OrderAmount {
   sku: string
+  remote_id?: string
+  variant_id?: string
   title: string
   quantity: number
   image_url?: string
@@ -135,12 +137,52 @@ export interface ProcurementSource {
 }
 export interface SalesSkuBinding {
   id: string
+  platform?: OrderPlatform
+  store_identity?: string
   product_id: string
   draft_id: string
   sku_id: string
   seller_sku: string
+  remote_id?: string
+  variant_id?: string
   publication_id: string
+  image_url?: string
+  origin?: 'publish' | 'alibaba_api'
+  is_default?: boolean
+  updated_at?: string
   source: ProcurementSource
+}
+export interface ResolvedAlibabaSku {
+  source_sku_id: string
+  source_offer_id: string
+  source_spec_id: string
+  specification: string
+  price: string
+  stock: string
+  image_url: string
+  can_auto_purchase: boolean
+  block_reason: string
+}
+export interface ResolvedAlibabaProduct {
+  ok: boolean
+  resolve_id: string
+  offer_id: string
+  product_url: string
+  title: string
+  supplier: string
+  image_url: string
+  skus: ResolvedAlibabaSku[]
+}
+export interface SkuSourceTarget {
+  platform: OrderPlatform
+  account_id?: string
+  seller_sku: string
+  remote_id?: string
+  variant_id?: string
+}
+export interface SkuSourceSummary extends SkuSourceTarget {
+  default_binding_id: string
+  bindings: SalesSkuBinding[]
 }
 export interface PurchaseItem {
   id: string

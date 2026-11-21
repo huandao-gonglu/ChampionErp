@@ -59,17 +59,20 @@ class SalesSkuBinding(BaseModel):
     seller_sku: str
     remote_id: str = ""
     variant_id: str = ""
-    product_id: str
-    draft_id: str
-    sku_id: str
+    product_id: str = ""
+    draft_id: str = ""
+    sku_id: str = ""
     source: ProcurementSource
-    publication_id: str
+    publication_id: str = ""
     image_url: str = ""
+    origin: Literal["publish", "alibaba_api"] = "publish"
+    is_default: bool = False
+    updated_at: str = ""
 
     @property
     def identity(self) -> str:
-        # 发布记录号不参与身份；重复发布同一关联不会增加候选。
-        data = self.model_dump(exclude={"publication_id", "id", "image_url"})
+        # 发布记录号及运营元字段不参与身份；同一销售 SKU 与同一采购规格只保留一条映射。
+        data = self.model_dump(exclude={"publication_id", "id", "image_url", "origin", "is_default", "updated_at"})
         # 空的新字段不改变历史关联 ID，避免升级后出现重复候选。
         if not data["source"].get("source_spec_id") or not data["source"].get("purchase_block_reason"):
             data["source"].pop("purchase_block_reason", None)
@@ -181,3 +184,58 @@ def order_line_key(line: OrderLine) -> str:
     if not any(parts):
         return ""
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
+
+
+class ResolveAlibabaSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    url: str = Field(min_length=1, max_length=4000)
+
+
+class SkuTargetRef(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    platform: Platform
+    account_id: str = Field(default="", max_length=200)
+    seller_sku: str = Field(min_length=1, max_length=200)
+    remote_id: str = Field(default="", max_length=200)
+    variant_id: str = Field(default="", max_length=200)
+
+
+class QuerySkuSourcesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[SkuTargetRef] = Field(min_length=1, max_length=200)
+
+
+class BindSkuSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    platform: Platform
+    account_id: str = Field(default="", max_length=200)
+    seller_sku: str = Field(min_length=1, max_length=200)
+    remote_id: str = Field(default="", max_length=200)
+    variant_id: str = Field(default="", max_length=200)
+    resolve_id: str = Field(min_length=1, max_length=120)
+    source_sku_id: str = Field(min_length=1, max_length=200)
+    set_default: bool = True
+    order_id: str = Field(default="", max_length=200)
+    line_key: str = Field(default="", max_length=120)
+    revision: int | None = Field(default=None, ge=0)
+
+
+class SetDefaultSkuSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    platform: Platform
+    account_id: str = Field(default="", max_length=200)
+    seller_sku: str = Field(min_length=1, max_length=200)
+    remote_id: str = Field(default="", max_length=200)
+    variant_id: str = Field(default="", max_length=200)
+    binding_id: str = Field(min_length=1, max_length=120)
+    order_id: str = Field(default="", max_length=200)
+    line_key: str = Field(default="", max_length=120)
+    revision: int | None = Field(default=None, ge=0)
+
+
+class RemoveSkuSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    platform: Platform
+    account_id: str = Field(default="", max_length=200)
+    seller_sku: str = Field(min_length=1, max_length=200)
+    binding_id: str = Field(min_length=1, max_length=120)

@@ -98,6 +98,38 @@ def handle_cancel_purchase(handler):
     _procurement_command(handler, "cancel-purchase")
 
 
+def _sku_source_command(handler, action):
+    try:
+        body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+        handler.send_json(procurement.sku_source_command(action, body))
+    except ExternalRequestBlocked:
+        handler.send_json({"ok": False, "error": "1688 请求已中断，请到授权配置的中断与恢复查看原因"}, 409)
+    except ValidationError:
+        handler.send_json({"ok": False, "error": "SKU 采购来源参数无效，请核对链接与规格后重试"}, 400)
+    except (ValueError, TypeError) as exc:
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
+
+
+def handle_sku_source_resolve_1688(handler):
+    _sku_source_command(handler, "resolve-1688")
+
+
+def handle_sku_source_query(handler):
+    _sku_source_command(handler, "query")
+
+
+def handle_sku_source_bind(handler):
+    _sku_source_command(handler, "bind")
+
+
+def handle_sku_source_set_default(handler):
+    _sku_source_command(handler, "set-default")
+
+
+def handle_sku_source_remove(handler):
+    _sku_source_command(handler, "remove")
+
+
 def handle_purchase_query(handler):
     try:
         body = validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -216,6 +248,11 @@ POST_HANDLERS = {
     "/api/orders/select-source": handle_source,
     "/api/orders/record-purchase": handle_purchase,
     "/api/orders/cancel-purchase": handle_cancel_purchase,
+    "/api/sku-sources/resolve-1688": handle_sku_source_resolve_1688,
+    "/api/sku-sources/query": handle_sku_source_query,
+    "/api/sku-sources/bind": handle_sku_source_bind,
+    "/api/sku-sources/set-default": handle_sku_source_set_default,
+    "/api/sku-sources/remove": handle_sku_source_remove,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {

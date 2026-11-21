@@ -27,9 +27,6 @@ def frozen_purchase_identity(product: dict, fact: dict, platform: str) -> dict:
     snapshot = fact.get("source_snapshot") or {}
     drafts = (product.get("drafts") or {}).get(platform) or {}
     draft_rows = [r for r in drafts.get("sku_items", []) if r.get("sku_id") == fact.get("id")]
-    # 已发布的旧快照仍须校验当时的覆盖值，防止错误采购身份被重新解释。
-    overrides = (draft_rows[0].get("overrides") or {}) if len(draft_rows) == 1 else {}
-    effective_options = {**(fact.get("options") or {}), **(overrides.get("options") or {})}
     if not offer:
         reason = "上架记录中的采购链接不是有效的 1688 商品地址"
     elif not sku.isascii() or not sku.isdigit():
@@ -45,9 +42,6 @@ def frozen_purchase_identity(product: dict, fact: dict, platform: str) -> dict:
           or snapshot.get("source_spec_id") != result["source_spec_id"]
           or snapshot.get("source_offer_id") != offer):
         reason = "采集记录与上架记录的商品或规格标识不一致，请重新核对"
-    elif (effective_options != (rows[0].get("options") or {})
-          or (not effective_options and str(overrides.get("name", fact.get("name")) or "") != str(rows[0].get("name") or ""))):
-        reason = "上架规格已修改，与采集规格不一致，请核对颜色、尺寸等选项"
     elif len(draft_rows) > 1:
         reason = "上架记录重复引用同一 SKU，无法唯一确认销售规格"
     elif fact.get("active") is False:

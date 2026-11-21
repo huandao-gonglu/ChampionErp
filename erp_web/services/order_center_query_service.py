@@ -152,7 +152,14 @@ class OrderCenterQueryService:
                 for key in ('notifications', 'alerts', 'unread', 'latest_alert_id'):
                     result[key] = notices[key]
             return result
-        identities = {(p, account): self.procurement.identity_provider(p, account) for p, account in account_pairs(scoped)}
+        identities = {
+            (p, account): (
+                self.procurement.identities_for(p, account)
+                if hasattr(self.procurement, 'identities_for')
+                else self.procurement.identity_provider(p, account)
+            )
+            for p, account in account_pairs(scoped)
+        }
         # 通知和提醒沿用原有读取入口；订单本身由领域事实分批筛选，最后分页。
         result = self.notifications.store.read(accounts, limit=0)
         counts, items, total = Counter(), [], 0
