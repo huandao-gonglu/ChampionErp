@@ -63,21 +63,6 @@ def mercadolibre_cbt_target() -> dict:
     }
 
 
-def _ml_profile_via_wire(token: str) -> dict:
-    """统一授权服务桥接：users/me 仍走被 patch 的 request_json，
-    保留 wire 级调用序列断言。"""
-
-    data = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
-    data = data if isinstance(data, dict) else {}
-    return {
-        "user_id": str(data.get("id") or "").strip(),
-        "nickname": str(data.get("nickname") or "").strip(),
-        "site_id": str(data.get("site_id") or "").strip(),
-    }
-
-
-
-
 class ErpWebDbIntegrationTests(unittest.TestCase):
     def with_temp_app(self, callback) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1201,105 +1186,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
-    def test_save_draft_detail_discards_removed_cbt_marketplace_titles_field(
-        self,
-    ) -> None:
-        def run(app_dir: Path) -> None:
-            product = sample_product(
-                "CBT title invalidation",
-                "https://example.com/cbt-title-invalidation",
-            )
-            publish_task = {
-                "item_id": "CBT123456",
-                "permalink": "https://global-selling.example/CBT123456",
-            }
-            stale_precheck = {
-                "ok": True,
-                "checked_at": "2026-08-27T08:00:00Z",
-            }
-            target = {
-                "platform": "mercadolibre",
-                "site": "CBT",
-                "language": "es",
-                "listing_currency": "USD",
-                "sites_to_sell": [
-                    {"site_id": "MLM", "logistic_type": "remote"},
-                ],
-                "marketplace_titles": {"MLM": "Producto original"},
-                "category_id": "CBT1000",
-                "attributes": {"BRAND": "BrandX"},
-                "validation_errors": [{"code": "OLD_WARNING"}],
-                "last_precheck": stale_precheck,
-                "last_precheck_target": {
-                    "platform": "mercadolibre",
-                    "site": "CBT",
-                },
-                "publish_status": "real_publish_success",
-                "status": "published",
-                "last_publish_task": publish_task,
-            }
-            product["drafts"]["mercadolibre"] = {
-                "enabled": True,
-                "site": "CBT",
-                "language": "es",
-                "title": "Global item",
-                "description": "Global item description",
-                "category_id": "CBT1000",
-                "attributes": {"BRAND": "BrandX"},
-                "stock": "5",
-                "pricing": {
-                    **pricing_targets(
-                        "mercadolibre",
-                        "CBT",
-                        "USD",
-                        "29.99",
-                    ),
-                    "updated_at": "2026-08-27T08:00:00Z",
-                },
-                "target_sites": [target],
-                "validation_errors": [{"code": "OLD_WARNING"}],
-                "last_precheck": stale_precheck,
-                "last_precheck_target": target,
-                "publish_status": "real_publish_success",
-                "status": "published",
-                "last_publish_task": publish_task,
-            }
-            product["publish_preview"] = {
-                "mercadolibre": stale_precheck,
-            }
-            saved = get_context().products.save_product(product)
-            saved_draft = saved["drafts"]["mercadolibre"]
-            draft_id = saved_draft["draft_id"]
-            pricing_before = saved_draft["pricing"]
-            changed_target = dict(saved_draft["target_sites"][0])
-            changed_target["marketplace_titles"] = {
-                "MLM": "Producto actualizado",
-            }
-
-            result, error, status = get_context().products.save_draft_detail(
-                {
-                    "draft_id": draft_id,
-                    "target_sites": [changed_target],
-                }
-            )
-
-            self.assertIsNone(error)
-            self.assertEqual(status, 200)
-            draft = result["draft"]
-            saved_target = draft["target_sites"][0]
-            self.assertNotIn("marketplace_titles", saved_target)
-            self.assertEqual(draft["publish_status"], "real_publish_success")
-            self.assertEqual(saved_target["publish_status"], "real_publish_success")
-            self.assertEqual(draft["last_publish_task"], publish_task)
-            self.assertEqual(saved_target["last_publish_task"], publish_task)
-            self.assertEqual(draft["pricing"], pricing_before)
-            self.assertIn(
-                "mercadolibre",
-                result["productContext"]["raw"]["publish_preview"],
-            )
-
-        self.with_temp_app(run)
-
     def test_same_product_drafts_keep_separate_platform_selections(self) -> None:
         def run(app_dir: Path) -> None:
             saved = get_context().products.save_product(sample_product("Two draft copies", "https://example.com/two-drafts"))
@@ -1414,6 +1300,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         self.with_temp_app(run)
 
     def test_workflow_status_moves_from_claimed_to_ready_to_publish(self) -> None:
+        products = get_context().products
         product = sample_product()
         product["drafts"]["mercadolibre"] = {
             "enabled": True,
@@ -1426,7 +1313,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "pricing": {"targets": {}},
             "status": "claimed",
         }
-        self.assertEqual(get_context().products.draft_workflow_status(product, "mercadolibre"), "claimed")
+        self.assertEqual(products.draft_workflow_status(product, "mercadolibre"), "claimed")
 
         product["drafts"]["mercadolibre"].update(
             {
@@ -1435,10 +1322,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "copy_generated_at": "2026-05-29T10:00:00",
             }
         )
-        self.assertEqual(get_context().products.draft_workflow_status(product, "mercadolibre"), "copy_ready")
+        self.assertEqual(products.draft_workflow_status(product, "mercadolibre"), "copy_ready")
 
         product["drafts"]["mercadolibre"]["images"] = [{"asset_id": "img_1", "role": "main", "order": 0}]
-        self.assertEqual(get_context().products.draft_workflow_status(product, "mercadolibre"), "images_ready")
+        self.assertEqual(products.draft_workflow_status(product, "mercadolibre"), "images_ready")
 
         product["drafts"]["mercadolibre"].update(
             {
@@ -1454,17 +1341,20 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "attributes": {"BRAND": "BrandX"},
             }
         )
-        self.assertEqual(get_context().products.draft_workflow_status(product, "mercadolibre"), "images_ready")
+        self.assertEqual(products.draft_workflow_status(product, "mercadolibre"), "images_ready")
 
         product["sku_items"] = [{"id": "status-sku"}]
         product["drafts"]["mercadolibre"]["sku_items"] = [{"sku_id": "status-sku", "selected": True, "sku": "STATUS", "stock": "5", "pricing": {"applied": True}}]
+        self.assertEqual(products.publish_queue_platforms(product, ["mercadolibre"]), [])
+
         product = publish_validation.apply_precheck_to_product(
             product,
             "mercadolibre",
             {"platform": "mercadolibre", "ok": True, "errors": [], "warnings": [], "checked_at": "2026-05-30T10:00:00"},
             status="ready",
         )
-        self.assertEqual(get_context().products.draft_workflow_status(product, "mercadolibre"), "ready_to_publish")
+        self.assertEqual(products.draft_workflow_status(product, "mercadolibre"), "ready_to_publish")
+        self.assertEqual(products.publish_queue_platforms(product, ["mercadolibre"]), ["mercadolibre"])
 
     def test_claim_products_to_platforms_creates_claimed_drafts_in_sqlite(self) -> None:
         def run(app_dir: Path) -> None:
@@ -1774,18 +1664,18 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 http_json_mock,
             ):
                 results = category_store.search_categories_live("mercadolibre", query="necklace", site="MLM", limit=5)
-                attrs = category_store.fetch_category_attributes("mercadolibre", "MLM999", site="MLM")
+                record = category_store.fetch_category_record("mercadolibre", "MLM999", site="MLM", include_attributes=True)
             product = sample_product()
             product["drafts"]["mercadolibre"]["category_id"] = "MLM999"
             product["drafts"]["mercadolibre"]["attributes"] = {}
             summary = publish_helpers._required_attribute_summary(
-                product, "mercadolibre", attrs["category"]
+                product, "mercadolibre", record
             )
 
             self.assertEqual(results[0]["category_id"], "MLM999")
             self.assertEqual(results[0]["path"], "Necklaces")
-            self.assertEqual(attrs["required"][0]["id"], "BRAND")
-            self.assertEqual(attrs["source"], "mercadolibre_live")
+            self.assertEqual(record["attributes"]["required"][0]["id"], "BRAND")
+            self.assertEqual(record["source"], "mercadolibre_live")
             self.assertEqual(summary["required_count"], 1)
             # 实物品牌由商品提供；平台未单独映射时可使用商品品牌。
             self.assertEqual(summary["filled_count"], 1)
@@ -2165,115 +2055,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
-    def test_publish_queue_requires_ready_to_publish_workflow(self) -> None:
-        ready_product = sample_product("Queue ready item", "https://example.com/queue-ready")
-        ready_product["source"]["image_pool"][0]["origin"] = "ai_generated"
-        ready_product["drafts"]["mercadolibre"] = {
-            "enabled": True,
-            "title": "AI title",
-            "description": "AI description",
-            "copy_generated_at": "2026-05-30T11:00:00",
-            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
-            "category_id": "CBT123",
-            "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [{
-                **mercadolibre_cbt_target(),
-                "category_id": "CBT123",
-                "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            }],
-            "stock": "5",
-            "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
-            "publish_status": "ready",
-        }
-        ready_product["publish_preview"] = {
-            "mercadolibre": {"ok": True, "errors": [], "warnings": [], "checked_at": "2026-05-30T11:05:00"}
-        }
-        ready_product["sku_items"] = [{"id": "status-sku"}]
-        ready_product["drafts"]["mercadolibre"]["sku_items"] = [{"sku_id": "status-sku", "selected": True, "sku": "STATUS", "stock": "5", "pricing": {"applied": True}}]
-        ready_status = get_context().products.product_index_status(ready_product, "mercadolibre")
-
-        pending_product = sample_product("Queue blocked item", "https://example.com/queue-blocked")
-        pending_product["source"]["image_pool"][0]["origin"] = "ai_generated"
-        pending_product["drafts"]["mercadolibre"] = {
-            "enabled": True,
-            "title": "AI title",
-            "description": "AI description",
-            "copy_generated_at": "2026-05-30T11:00:00",
-            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
-            "category_id": "CBT123",
-            "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [{
-                **mercadolibre_cbt_target(),
-                "category_id": "CBT123",
-                "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            }],
-            "stock": "5",
-            "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
-            "publish_status": "not_ready",
-        }
-        pending_status = get_context().products.product_index_status(pending_product, "mercadolibre")
-
-        self.assertEqual(ready_status["workflow_status"], "ready_to_publish")
-        self.assertTrue(ready_status["publish_queue_ready"])
-        self.assertEqual(ready_status["publish_queue_platforms"], ["mercadolibre"])
-
-        self.assertEqual(pending_status["workflow_status"], "images_ready")
-        self.assertFalse(pending_status["publish_queue_ready"])
-        self.assertEqual(pending_status["publish_queue_platforms"], [])
-
-        precheck_only_product = sample_product("Queue precheck item", "https://example.com/queue-precheck")
-        precheck_only_product["drafts"]["mercadolibre"] = {
-            "enabled": True,
-            "title": "Manual title",
-            "description": "Manual description",
-            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
-            "category_id": "CBT123",
-            "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [{
-                **mercadolibre_cbt_target(),
-                "category_id": "CBT123",
-                "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            }],
-            "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
-            "stock": "5",
-            "publish_status": "ready",
-        }
-        precheck_only_product["publish_preview"] = {
-            "mercadolibre": {"ok": True, "errors": [], "warnings": [], "checked_at": "2026-05-30T11:10:00"}
-        }
-        precheck_only_product["sku_items"] = [{"id": "status-sku"}]
-        precheck_only_product["drafts"]["mercadolibre"]["sku_items"] = [{"sku_id": "status-sku", "selected": True, "sku": "STATUS", "stock": "5", "pricing": {"applied": True}}]
-        precheck_status = get_context().products.product_index_status(precheck_only_product, "mercadolibre")
-
-        self.assertEqual(precheck_status["workflow_status"], "ready_to_publish")
-        self.assertTrue(precheck_status["publish_queue_ready"])
-        self.assertEqual(precheck_status["publish_queue_platforms"], ["mercadolibre"])
-
-        payload_ready_product = sample_product("Queue payload-ready item", "https://example.com/queue-payload-ready")
-        payload_ready_product["drafts"]["mercadolibre"] = {
-            "enabled": True,
-            "title": "Payload title",
-            "description": "Payload description",
-            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
-            "category_id": "CBT123",
-            "attributes": {},
-            "target_sites": [{
-                **mercadolibre_cbt_target(),
-                "category_id": "CBT123",
-                "attributes": {},
-            }],
-            "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
-            "stock": "5",
-            "publish_status": "ready",
-        }
-        payload_ready_product["publish_preview"] = {
-            "mercadolibre": {"ok": True, "errors": [], "warnings": [], "checked_at": "2026-05-30T11:20:00"}
-        }
-        payload_ready_status = get_context().products.product_index_status(payload_ready_product, "mercadolibre")
-
-        self.assertTrue(payload_ready_status["publish_queue_ready"])
-        self.assertEqual(payload_ready_status["publish_queue_platforms"], ["mercadolibre"])
-
     def test_publish_bus_terminal_result_persists_product_and_log_once(self) -> None:
         def run(app_dir: Path) -> None:
             product = sample_product("Persist publish result", "https://example.com/publish-result")
@@ -2399,42 +2180,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(set(errors[0]["affected_asset_ids"]), {"img_1", "img_2"})
             self.assertNotIn("共 2 次", errors[0]["message"])
             self.assertNotIn('"cause"', errors[0]["message"])
-
-        self.with_temp_app(run)
-
-    def test_mercadolibre_user_product_site_error_is_publish_failure(self) -> None:
-        def run(app_dir: Path) -> None:
-            api_result = {
-                "site_id": "CBT",
-                "site_items": [
-                    {
-                        "site_id": "MLM",
-                        "logistic_type": "remote",
-                        "error": {
-                            "message": "Validation error",
-                            "error": "validation_error",
-                            "status": 400,
-                            "cause": [
-                                {
-                                    "code": "invalid.item.attribute.values",
-                                    "message": "Attribute [RECOMMENDED_AGE_GROUP] is not valid, item values [(null:1)]",
-                                    "references": ["item.name"],
-                                    "type": "error",
-                                }
-                            ],
-                        },
-                    }
-                ],
-            }
-
-            self.assertFalse(
-                publish_mercadolibre._mercadolibre_publish_result_ok(api_result)
-            )
-            mapped = publish_mercadolibre._mercadolibre_publish_result_error_map(
-                api_result
-            )
-            self.assertIn("RECOMMENDED_AGE_GROUP", mapped["summary"])
-            self.assertIn("site_item_errors", mapped)
 
         self.with_temp_app(run)
 

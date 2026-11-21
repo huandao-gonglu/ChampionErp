@@ -99,16 +99,16 @@ def test_ozon_category_search_and_attributes_use_official_api() -> None:
         patch.object(ozon_category_api, "request_ozon_json", side_effect=request),
     ):
         results = category_store.search_categories_live("ozon", "легковых автомобилей", limit=5)
-        attrs = category_store.fetch_category_attributes("ozon", "94765")
+        record = category_store.fetch_category_record("ozon", "94765", include_attributes=True)
 
     assert len(results) == 1
     assert results[0]["category_id"] == "94765"
     assert results[0]["description_category_id"] == "17027949"
     assert results[0]["path"] == "Шины / Шины для легковых автомобилей"
-    assert attrs["platform"] == "ozon"
-    assert attrs["source"] == "ozon_live"
-    assert attrs["required"][0]["id"] == "85"
-    assert attrs["optional"][0]["id"] == "8229"
+    assert record["platform"] == "ozon"
+    assert record["source"] == "ozon_live"
+    assert record["attributes"]["required"][0]["id"] == "85"
+    assert record["attributes"]["optional"][0]["id"] == "8229"
     assert [call[1] for call in calls] == [
         ozon_category_api.OZON_CATEGORY_TREE_URL,
         ozon_category_api.OZON_CATEGORY_ATTRIBUTES_URL,
@@ -175,7 +175,7 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
         patch.object(ozon_category_api, "_load_store_config", _store_config),
         patch.object(ozon_category_api, "request_ozon_json", side_effect=request),
     ):
-        attrs = category_store.fetch_category_attributes("ozon", "94765")
+        record = category_store.fetch_category_record("ozon", "94765", include_attributes=True)
         values = category_store.fetch_category_attribute_values(
             "ozon",
             "94765",
@@ -183,12 +183,12 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
             query="нет бренда",
         )
 
-    brand = attrs["required"][0]
+    brand = record["attributes"]["required"][0]
     assert brand["dictionary_id"] == "28732849"
     assert brand["is_dictionary"] is True
     assert brand["category_dependent"] is True
     assert brand["options"] == []
-    model_name = attrs["required"][1]
+    model_name = record["attributes"]["required"][1]
     assert model_name["dictionary_id"] == ""
     assert model_name["is_dictionary"] is False
     # 枚举公共视图有界化：只保留字典 ID 与值，不再携带 info/picture 元数据。
@@ -676,25 +676,11 @@ def test_ozon_category_force_refresh_bypasses_fresh_cache(
             return_value=OZON_TREE,
         ) as request,
     ):
-        _, info = ozon_category_api.refresh_ozon_category_corpus()
+        _, info = ozon_category_api.load_ozon_category_corpus(force_refresh=True)
 
     assert info["cache_source"] == "remote_cache"
     request.assert_called_once()
 
-
-def test_ozon_category_cache_clear_only_removes_managed_cache_files(
-    tmp_path: Path,
-) -> None:
-    _write_aged_cache(tmp_path, age=timedelta(hours=1))
-    cache_directory = tmp_path / "ozon_categories"
-    unrelated = cache_directory / "keep-me.txt"
-    unrelated.write_text("保留", encoding="utf-8")
-
-    removed = ozon_category_api.clear_ozon_category_tree_cache()
-
-    assert removed == 1
-    assert unrelated.read_text(encoding="utf-8") == "保留"
-    assert not list(cache_directory.glob("*.json.gz"))
 
 def test_unlimited_local_search_retains_all_ozon_candidates_and_binding_ids(monkeypatch):
     records = [{"category_id": str(index), "type_id": str(index), "description_category_id": "10000",

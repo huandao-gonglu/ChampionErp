@@ -22,7 +22,6 @@ from erp_web.runtime_units.category_definition_support import (
 )
 from erp_web.schemas.category import category_attribute_value_is_valid
 from erp_web.schemas.category_definition import (
-    ATTRIBUTE_OPTIONS_PREVIEW_LIMIT,
     CategoryAttributeDefinition,
     CategoryAttributeOptionPreview,
     CategoryAttributePage,
@@ -114,10 +113,6 @@ def test_public_summary_excludes_platform_binding_and_raw() -> None:
     assert {"limit", "cursor", "next_cursor", "has_more"} <= page_fields
     value_page_fields = set(CategoryAttributeValuePage.model_fields)
     assert {"limit", "cursor", "next_cursor", "has_more"} <= value_page_fields
-
-
-def test_options_preview_is_bounded_documented() -> None:
-    assert ATTRIBUTE_OPTIONS_PREVIEW_LIMIT >= 1
 
 
 def test_legacy_projection_preserves_has_more_values() -> None:

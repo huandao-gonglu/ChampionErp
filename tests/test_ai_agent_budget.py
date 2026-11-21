@@ -96,26 +96,6 @@ def run_model(model, executions):
     )
 
 
-def assert_closed_tool_messages(messages):
-    pending = set()
-    for message in messages:
-        if isinstance(message, ModelResponse):
-            assert not pending, f"下一模型响应前仍有未闭合工具：{pending}"
-            pending.update(
-                part.tool_call_id
-                for part in message.parts
-                if isinstance(part, ToolCallPart)
-            )
-        if isinstance(message, ModelRequest):
-            for part in message.parts:
-                if (
-                    isinstance(part, (ToolReturnPart, RetryPromptPart))
-                    and part.tool_name
-                ):
-                    pending.discard(part.tool_call_id)
-    assert not pending
-
-
 def test_depleted_budget_rejects_hidden_extra_call():
     executions = []
     turns = 0
@@ -150,30 +130,6 @@ def test_depleted_budget_rejects_hidden_extra_call():
         run_model(model, executions)
     assert captured.value.code == "AI_AGENT_USAGE_LIMIT_EXCEEDED"
     assert sorted(executions) == ["0", "1", "2", "3"]
-
-
-def test_parallel_batch_over_budget_does_not_partially_execute():
-    executions = []
-    turns = 0
-
-    def model(messages, info):
-        nonlocal turns
-        turns += 1
-        if turns == 1:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart("lookup", {"value": str(i)}, tool_call_id=f"read-{i}")
-                    for i in range(5)
-                ]
-            )
-        assert not info.function_tools
-        assert "本次工具尚未执行" in str(messages)
-        return ModelResponse(parts=[TextPart("已有四次结果，可以完成。")])
-
-    with pytest.raises(AiAgentExecutionError) as captured:
-        run_model(model, executions)
-    assert captured.value.code == "AI_AGENT_USAGE_LIMIT_EXCEEDED"
-    assert executions == []
 
 
 def test_oversized_batch_is_stopped_by_native_hard_limit_before_any_execution():

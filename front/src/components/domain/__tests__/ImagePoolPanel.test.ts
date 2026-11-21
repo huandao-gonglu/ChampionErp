@@ -45,30 +45,22 @@ describe('ImagePoolPanel', () => {
     expect(desktop.emitted('imageEdit')).toEqual([[{ imageIds: ['b'], prompt: '保留颜色' }]])
   })
 
-  it('默认不选择商品素材，只提交本次明确勾选的图片', async () => {
+  it('默认不勾选商品素材，翻译只提交本次选中的图片', async () => {
+    setOperationAvailability({ desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} })
     const wrapper = mount(ImagePoolPanel, {
       attachTo: document.body,
-      props: {
-        images: [image('img-1'), image('img-2')],
-        loading: false,
-        showTranslateAction: true,
-      },
+      props: { images: [image('a'), image('b')], loading: false, showTranslateAction: true },
       global: { stubs: { Teleport: true } },
     })
-    const translateButton = wrapper.findAll('button').find((button) => button.text().includes('AI 翻译/重绘'))
-    const checkboxes = wrapper.findAll('input[aria-label^="选择处理图片"]')
+    const translate = wrapper.findAll<HTMLButtonElement>('button').find(button => button.text().startsWith('AI 翻译/重绘'))!
+    const checkboxes = wrapper.findAll<HTMLInputElement>('input[aria-label^="选择处理图片"]')
+    expect(translate.element.disabled).toBe(true)
+    expect(checkboxes.map(({ element }) => element.checked)).toEqual([false, false])
 
-    expect(translateButton?.attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('已选择 0 张，本次仅处理这些图片')
-    expect(checkboxes.every((checkbox) => !(checkbox.element as HTMLInputElement).checked)).toBe(true)
+    await wrapper.get<HTMLInputElement>('[aria-label="选择处理图片 b"]').setValue(true)
+    expect(translate.element.disabled).toBe(false)
+    await translate.trigger('click')
 
-    await checkboxes[1].setValue(true)
-    expect(wrapper.text()).toContain('已选择 1 张，本次仅处理这些图片')
-
-    await translateButton?.trigger('click')
-    await flushPromises()
-    expect(wrapper.emitted('translate')).toEqual([[['img-2']]])
-    expect(wrapper.emitted('toggleDraftImage')).toBeUndefined()
+    expect(wrapper.emitted('translate')).toEqual([[['b']]])
   })
-
 })

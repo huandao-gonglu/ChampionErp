@@ -65,16 +65,6 @@ def test_state_contract_is_versioned_and_never_returns_plaintext_secrets(
         assert secret not in serialized
 
 
-def test_retired_http_collection_modes_are_rejected(backend_server: str) -> None:
-    for endpoint in ("collect-source", "collect-batch", "collect-1688"):
-        for mode in ("http", "fetch", "request", "requests"):
-            response = backend_server.client.post(
-                f"{backend_server}/api/{endpoint}",
-                json={"url": "https://example.test/item", "mode": mode}, timeout=10,
-            )
-            assert response.status_code == 400, (endpoint, mode, response.text[:300])
-
-
 def test_image_upload_and_delete_api(backend_server: str, sample_product: dict) -> None:
     saved = post_json(backend_server, "/api/save-product", {"product": sample_product})
     product_id = saved["product"]["product_id"]

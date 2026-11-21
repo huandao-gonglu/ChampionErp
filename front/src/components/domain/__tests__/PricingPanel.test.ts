@@ -480,15 +480,6 @@ describe('PricingPanel 对齐 Penpot 核价原型', () => {
     expect(wrapper.find('select[aria-label="国际运费报价币种"]').exists()).toBe(false)
   })
 
-  it('范围只选择 SKU 和市场，运输属性由商品持有', async () => {
-    const wrapper = mountPricing(reactive([skuRow()]))
-    await flushPromises()
-    await wrapper.findAll('button').find(button => button.text() === '修改核价范围')!.trigger('click')
-    const scope = wrapper.findAllComponents(WorkspaceDialog).find(dialog => dialog.props('title') === '核价范围')!
-    expect(scope.text()).not.toContain('含电池')
-    expect(scope.text()).not.toContain('含液体')
-  })
-
   it('明细区分 Mercado 买家售价与期望到账额', async () => {
     const wrapper = mountPricing([skuRow('sku-small', { applied_net_proceeds: { amount: '57.71', currency: 'USD' } })])
     await flushPromises()

@@ -331,16 +331,6 @@ describe('AiWorkFloatingButton', () => {
     expect(router.currentRoute.value.query.conversation_id).toBeUndefined()
   })
 
-  it('悬浮聊天内容中不显示 AiWork 入口按钮', async () => {
-    const { wrapper } = await mountFloatingButton()
-
-    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
-
-    const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
-    expect(panel.find('[data-testid="ai-work-floating-open-full"]').exists()).toBe(false)
-    expect(panel.text()).not.toContain('打开完整对话')
-  })
-
   it('在 AI Work 页面隐藏入口', async () => {
     const { wrapper, router } = await mountFloatingButton()
 

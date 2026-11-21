@@ -60,12 +60,6 @@ def release_guard_dir(tmp_path, monkeypatch):
     return directory
 
 
-@pytest.fixture(scope="session")
-def repo_dir() -> Path:
-    """仓库目录只用于读取源码，不能作为测试运行时数据目录。"""
-    return APP_DIR
-
-
 def _server_ready(base_url: str) -> bool:
     try:
         response = requests.get(f"{base_url}/api/account/session", timeout=3)

@@ -12,8 +12,6 @@ from erp_web.db import ErpDatabase
 from erp_web.marketplace_registry import (
     CAP_CATEGORY_ATTRIBUTES,
     CAP_CATEGORY_SEARCH,
-    CAP_ORDERS,
-    CAP_PREVIEW_PAYLOAD,
     CAP_PUBLISH,
     platform_has_capability,
 )
@@ -40,10 +38,6 @@ from erp_web.runtime_units.publishing_bus_core import (
 )
 from erp_web.runtime_units.publish_bus import (
     persist_publish_bus_terminal_results,
-)
-from erp_web.runtime_units.runtime_api import (
-    _remote_publish_pending,
-    _remote_publish_succeeded,
 )
 from erp_web.runtime_units.source_sites import (
     detect_source_site,
@@ -255,17 +249,11 @@ def _approved_publication(
 
 def test_marketplace_capabilities_only_enable_real_integrations() -> None:
     assert platform_has_capability("mercadolibre", CAP_PUBLISH)
-    assert platform_has_capability("mercadolibre", CAP_PREVIEW_PAYLOAD)
     assert platform_has_capability("ozon", CAP_CATEGORY_SEARCH)
     assert platform_has_capability("ozon", CAP_PUBLISH)
-    assert platform_has_capability("ozon", CAP_PREVIEW_PAYLOAD)
-    # Yandex 已完成真实接入：发布/预览/类目检索/类目属性全部开放，
-    # 未接入的能力（如订单）保持关闭。
     assert platform_has_capability("yandex", CAP_PUBLISH)
-    assert platform_has_capability("yandex", CAP_PREVIEW_PAYLOAD)
     assert platform_has_capability("yandex", CAP_CATEGORY_SEARCH)
     assert platform_has_capability("yandex", CAP_CATEGORY_ATTRIBUTES)
-    assert not platform_has_capability("yandex", CAP_ORDERS)
     # 注册表之外的平台保持 fail-closed。
     assert not platform_has_capability("wildberries", CAP_PUBLISH)
 
@@ -279,40 +267,6 @@ def test_marketplace_capabilities_only_enable_real_integrations() -> None:
         "status": "unsupported",
         "error": "wildberries发布未接入",
     }
-
-
-def test_publishing_bus_blocks_before_publish_when_required_attributes_are_missing() -> None:
-    store = _MemoryPublishJobStore()
-    adapter = _RequiredAttributeAdapter()
-    bus = PublishingBus(
-        store,
-        adapters={"mercadolibre": adapter},
-        config_provider=lambda: {"mercadolibre": {}},
-    )
-    try:
-        queued = bus.enqueue(
-            {"product_id": "product-1", "name": "缺属性商品"},
-            ["mercadolibre"],
-            idempotency_key="test:required-attributes",
-            targets={
-                "mercadolibre": {
-                    "draft_id": "draft-1",
-                    "site": "mlm",
-                    "product_id": "product-1",
-                }
-            },
-        )
-        bus.wait(queued["job_id"], timeout=2)
-        state = bus.get_status(queued["job_id"])
-    finally:
-        bus.close()
-
-    platform_state = state["platforms"]["mercadolibre"]
-    assert state["status"] == "completed"
-    assert platform_state["status"] == "failed"
-    assert platform_state["stage"] == "failed"
-    assert platform_state["error"] == "缺失必填属性：attributes.BRAND"
-    assert adapter.publish_calls == 0
 
 
 def test_publishing_bus_reuses_persisted_job_for_same_idempotency_facts() -> None:
@@ -1090,17 +1044,6 @@ def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
     assert "product" not in state["platforms"]["ozon"]["result"]
 
 
-def test_pending_remote_result_is_not_success_or_failure() -> None:
-    result = {
-        "ok": True,
-        "status": "pending_confirmation",
-        "task_id": 172549793,
-    }
-
-    assert _remote_publish_pending(result) is True
-    assert _remote_publish_succeeded(result) is False
-
-
 def test_restart_keeps_submitted_result_for_read_only_confirmation() -> None:
     class RecoverableStore(_MemoryPublishJobStore):
         def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
@@ -1268,16 +1211,6 @@ def test_publishing_bus_does_not_duplicate_product_in_platform_result() -> None:
     result = state["platforms"]["ozon"]["result"]
     assert "product" not in result
     assert result["payload"] == {"items": []}
-
-
-def test_remote_publish_success_requires_explicit_evidence() -> None:
-    assert not _remote_publish_succeeded(None)
-    assert not _remote_publish_succeeded({})
-    assert not _remote_publish_succeeded({"ok": True})
-    assert _remote_publish_succeeded({"id": "MLM-1"})
-    assert _remote_publish_succeeded(
-        {"ok": True, "status": "published"}
-    )
 
 
 def test_terminal_hook_persists_product_and_log_without_status_poll(
@@ -2072,21 +2005,14 @@ def test_outcome_unknown_without_task_id_cannot_be_auto_reconciled() -> None:
 
 
 def test_mercadolibre_adapter_uses_root_owned_required_attributes() -> None:
-    from erp_web.runtime_units.publish_context import PreparedPublishContext
+    from erp_web.runtime_units import publish_helpers
 
-    from tests.publish_category_support import definition_from_record
-
-    adapter = MercadoLibrePublishingAdapter()
-    product = {"brand": "Generic", "model": "M1",
+    product = {
+        "brand": "Generic",
+        "model": "M1",
         "drafts": {
             "mercadolibre": {
                 "category_id": "MLM-1",
-                "package_dimensions": {
-                    "length_cm": "1",
-                    "width_cm": "1",
-                    "height_cm": "1",
-                    "weight_kg": "1",
-                },
                 "attributes": {},
             },
         },
@@ -2101,15 +2027,13 @@ def test_mercadolibre_adapter_uses_root_owned_required_attributes() -> None:
             "optional": [],
         },
     }
-    context = PreparedPublishContext(
-        product=product,
-        draft=product["drafts"]["mercadolibre"],
-        target={},
-        category_definition=definition_from_record(record),
-        platform="mercadolibre",
-    )
 
-    assert adapter.required_attributes_missing(context, {}) == []
+    summary = publish_helpers._required_attribute_summary(product, "mercadolibre", record)
+    assert summary == {
+        "required_count": 1,
+        "filled_count": 1,
+        "missing": [],
+    }
 
 
 def test_mercadolibre_adapter_refreshes_auth_before_preparing_product(

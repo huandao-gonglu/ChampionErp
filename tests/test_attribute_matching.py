@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-from erp_web.product_model.attribute_matching import source_package_dimensions
-
 import pytest
 
 from erp_web.product_model import (
     apply_category_selection,
     default_product_model,
 )
-from erp_web.product_model.attribute_matching import (
-    infer_source_attribute_matches,
-    source_package_dimensions,
-)
+from erp_web.product_model.attribute_matching import infer_source_attribute_matches
 from erp_web.product_model.common import parse_dimensions_text
 
 
@@ -109,20 +104,6 @@ def test_keeps_product_and_package_dimensions_as_separate_matches() -> None:
     }
 
 
-def test_source_package_dimensions_does_not_fall_back_to_product_dimensions() -> None:
-    matches = infer_source_attribute_matches({"外观尺寸": "60*55*155"})
-    source = {
-        "dimensions": {"length_cm": "6", "width_cm": "5.5", "height_cm": "15.5"},
-        "attribute_matches": matches,
-    }
-
-    assert source_package_dimensions(source) == {
-        "length_cm": "",
-        "width_cm": "",
-        "height_cm": "",
-    }
-
-
 @pytest.mark.parametrize(
     ("value", "default_unit", "expected"),
     [
@@ -197,11 +178,6 @@ def test_category_selection_keeps_only_current_platform_schema_values() -> None:
     }
     assert selected["source"]["attributes"]["产地"] == "广东"
     assert "package_dimensions" not in draft
-    assert source_package_dimensions(selected["source"]) == {
-        "length_cm": "5.5",
-        "width_cm": "6",
-        "height_cm": "16",
-    }
 
 
 def test_ozon_category_change_drops_previous_description_category_id() -> None:

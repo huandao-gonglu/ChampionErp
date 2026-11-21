@@ -122,14 +122,6 @@ it('读取采购图片快照并可打开原图，刷新失败仍保留；作废�
   expect(wrapper.find('button').exists()).toBe(false)
 })
 
-it('图片匹配失败给出原因，旧快照无图片仍正常展示状态', () => {
-  const value = persisted()
-  value.progress!.data!.products = []
-  const wrapper = render(value)
-  expect(wrapper.find('img').exists()).toBe(false)
-  expect(render(persisted()).text()).toContain('等待买家收货')
-})
-
 it('作废采购单缺少商品图片时，仍可只读查看历史物流和轨迹', () => {
   const value = persisted()
   value.status = 'cancelled'

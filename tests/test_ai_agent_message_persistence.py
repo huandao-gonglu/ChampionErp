@@ -182,38 +182,6 @@ def test_store_accepts_complete_tool_call_pair(tmp_path: Path) -> None:
     assert saved.model_messages() == messages
 
 
-def test_open_tool_call_history_is_preserved_without_synthesis(
-    tmp_path: Path,
-) -> None:
-    """Deferred 开口历史合法且必须保留；读取不得补造 tool return。"""
-
-    store = PydanticMessageStore(ErpDatabase(tmp_path / "erp.sqlite3"))
-    incomplete = [
-        ModelResponse(
-            parts=[
-                ToolCallPart(
-                    "lookup_item",
-                    {"item_id": "sku-1"},
-                    tool_call_id="orphan-call",
-                )
-            ]
-        )
-    ]
-
-    saved = store.save("conversation-incomplete", incomplete)
-    reloaded = saved.model_messages()
-    returns = [
-        part
-        for message in reloaded
-        if isinstance(message, ModelRequest)
-        for part in message.parts
-        if isinstance(part, ToolReturnPart)
-    ]
-
-    assert returns == []
-    assert reloaded == incomplete
-
-
 def test_open_tool_call_history_is_stable_across_repeated_reads(
     tmp_path: Path,
 ) -> None:

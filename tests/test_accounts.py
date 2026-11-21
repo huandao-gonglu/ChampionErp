@@ -162,6 +162,9 @@ def test_change_reset_and_disable_revoke_all_sessions(accounts_http):
     assert login("user@example.com").get(url + "/api/account/session").json()["user"]["id"] == user["id"]
     admin_id = admin.get(url + "/api/account/session").json()["user"]["id"]
     assert admin.post(url + "/api/admin/users/password", json={"user_id": admin_id, "password": PASSWORD}).status_code == 403
+    users = admin.get(url + "/api/admin/users").json()
+    assert users["total"] == 2
+    assert {row["role"] for row in users["items"]} == {"admin", "user"}
 
 
 def test_expired_session_and_login_rate_limit(accounts_http):
@@ -717,18 +720,3 @@ def test_user_agents_http_is_private_and_preserved_across_initialization(account
         assert restored.config.user_agents() == saved.json()
     finally:
         replacement.close()
-
-
-def test_retired_onebound_admin_endpoints_are_unavailable(accounts_http):
-    origin, _, login = accounts_http
-    buyer = register(origin, 'buyer@example.test')
-    admin = login()
-    users = admin.get(origin + '/api/admin/users').json()
-    assert users['total'] == 2
-    assert {row['role'] for row in users['items']} == {'admin', 'user'}
-
-    binding = origin + '/api/admin/users/onebound'
-    assert admin.get(binding, params={'user_id': buyer['id']}).status_code == 404
-    assert admin.get(origin + '/api/admin/alibaba/onebound/shop-bindings').status_code == 404
-    assert admin.post(binding).status_code == 404
-    assert admin.post(origin + '/api/alibaba/authorization/onebound').status_code == 404

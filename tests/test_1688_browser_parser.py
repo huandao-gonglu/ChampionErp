@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from erp_web.product_model.attribute_matching import source_package_dimensions
-
-from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result, normalize_product_model
+from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result
 from erp_web.runtime_units.source_collect_parsers import extract_1688_attributes, parse_1688_product
 
 
@@ -154,52 +152,6 @@ def test_parse_1688_product_defaults_unitless_dimensions_to_millimetres() -> Non
     assert match["raw_value"] == "220*92*85"
     assert match["unit"] == "mm"
     assert match["unit_inferred"] is True
-
-
-def test_product_dimension_match_does_not_fill_package_dimensions() -> None:
-    product = normalize_product_model(
-        {
-            "source": {
-                "attributes": {"外观尺寸": "220*92*85"},
-            }
-        }
-    )
-
-    assert product["source"]["dimensions"] == {"length_cm": "22", "width_cm": "9.2", "height_cm": "8.5"}
-    assert "package_dimensions" not in product["drafts"]["mercadolibre"]
-    assert source_package_dimensions(product["source"]) == {
-        "length_cm": "",
-        "width_cm": "",
-        "height_cm": "",
-    }
-
-
-def test_package_volume_match_fills_package_dimensions_without_replacing_product_dimensions() -> None:
-    product = normalize_product_model(
-        {
-            "source": {
-                "attributes": {
-                    "外观尺寸": "60*55*155",
-                    "包装体积": "55*60*160mm",
-                },
-                "weight_kg": "0.182",
-            }
-        }
-    )
-
-    assert product["source"]["dimensions"] == {
-        "length_cm": "6",
-        "width_cm": "5.5",
-        "height_cm": "15.5",
-    }
-    assert "package_dimensions" not in product["drafts"]["mercadolibre"]
-    assert source_package_dimensions(product["source"]) == {
-        "length_cm": "5.5",
-        "width_cm": "6",
-        "height_cm": "16",
-    }
-    assert product["drafts"]["mercadolibre"]["attributes"] == {}
-    assert product["source"]["attributes"]["外观尺寸"] == "60*55*155"
 
 
 def test_merge_source_partial_result_keeps_browser_1688_attributes_and_skus() -> None:

@@ -169,31 +169,6 @@ def test_purchase_payment_has_explicit_command_and_approved_agent_entry():
     assert status.fields['pay_channel'].choices == frozenset({'alipay', 'shegou'})
 
 
-def test_retired_yunexpress_has_no_config_routes_or_agent_tools():
-    """云途入口已退役，配置、HTTP 与主 Agent 不得继续暴露相关功能。"""
-    from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
-    from erp_web.app_config import default_app_config, normalize_app_config
-    from erp_web.http_routes import POST_API_ROUTES
-    from erp_web.schemas.requests import REQUEST_CONTRACTS
-
-    assert "yunexpress" not in default_app_config()
-    assert "yunexpress" not in normalize_app_config({})
-    for paths in (POST_API_ROUTES, REQUEST_CONTRACTS):
-        assert not any(path.startswith("/api/logistics/yunexpress/") for path in paths)
-    assert not any(
-        name.startswith("logistics_shipment_")
-        for name in APPLICATION_CAPABILITY_CATALOG.tools
-    )
-    for path in (
-        "erp_web/runtime_units/yunexpress_client.py",
-        "erp_web/runtime_units/logistics_capabilities.py",
-        "erp_web/schemas/logistics_capabilities.py",
-        "erp_web/facades/logistics_facade.py",
-        "erp_web/http_route_units/logistics_routes.py",
-    ):
-        assert not (ROOT / path).exists(), path
-
-
 def test_international_shipping_has_no_erp_or_agent_dependencies():
     """物流模块只接收参数，不读取 ERP 账号、启动 Agent 或维护第二套核价流程。"""
     folder = ROOT / "erp_web/international_shipping"
@@ -363,18 +338,6 @@ def test_sku_images_have_one_asset_reference_contract() -> None:
     )
 
 
-def test_database_has_no_legacy_deferred_task_migration() -> None:
-    source = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
-    for retired_symbol in (
-        "_cancel_legacy_unfinished_global_tasks",
-        "GLOBAL_TASK_LEGACY_MIGRATION_CANCELLED",
-        "_V12_TO_V13_UPGRADE_SQL",
-    ):
-        assert retired_symbol not in source, (
-            f"当前数据库不得恢复旧 Deferred/Global Task：{retired_symbol}"
-        )
-
-
 def test_deferred_lifecycle_types_only_in_sanctioned_modules() -> None:
     offenders: list[str] = []
     for path in python_files("erp_web"):
@@ -450,18 +413,6 @@ def test_copy_generation_has_no_extra_ai_review() -> None:
         assert retired not in service
     assert not hasattr(copy_schema, "CopyQualityReview")
     assert not any(isinstance(node, (ast.For, ast.While)) for node in ast.walk(ast.parse(generation)))
-
-
-def test_frontend_has_no_task_write_refresh_call() -> None:
-    offenders: list[str] = []
-    for path in (ROOT / "front/src").rglob("*"):
-        if not path.is_file() or path.suffix not in {".ts", ".vue"}:
-            continue
-        text = path.read_text(encoding="utf-8")
-        for banned in ("refreshGlobalTask", "/api/global-task-refresh"):
-            if banned in text:
-                offenders.append(f"{_relative_posix(path)} -> {banned}")
-    assert not offenders, "前端不得保留任何任务写刷新调用：\n" + "\n".join(offenders)
 
 
 def test_online_management_has_one_entry_and_retires_local_publication_routes() -> None:

@@ -8,7 +8,6 @@ from erp_web.schemas.ai_tools import (
     AiToolCommand,
     AiToolDefinition,
     AiToolExecutionError,
-    AiToolRequiredInput,
     AiToolResult,
     AiToolSchemaError,
 )
@@ -48,40 +47,6 @@ def tool_definition(
         idempotency="required" if side_effect == "write" else "none",
         idempotency_keys=("operation_id",) if side_effect == "write" else (),
     )
-
-
-def test_required_input_migrates_persisted_string_options_to_current_shape() -> None:
-    required_input = AiToolRequiredInput.model_validate(
-        {
-            "key": "category_id",
-            "label": "平台类目",
-            "reason": "请选择一个候选类目。",
-            "input_type": "select",
-            "options": ["MLM194177"],
-        }
-    )
-
-    assert required_input.model_dump(mode="json")["options"] == [
-        {"value": "MLM194177", "label": "MLM194177"}
-    ]
-
-
-def test_required_input_accepts_multi_select_with_stable_options() -> None:
-    required_input = AiToolRequiredInput.model_validate(
-        {
-            "key": "sales_target",
-            "label": "销售国家与物流方式",
-            "reason": "请选择一个或多个销售目标。",
-            "input_type": "multi_select",
-            "options": ["MLB:remote", "MLM:remote"],
-        }
-    )
-
-    assert required_input.input_type == "multi_select"
-    assert [option.value for option in required_input.options] == [
-        "MLB:remote",
-        "MLM:remote",
-    ]
 
 
 def tool_command(
@@ -125,7 +90,6 @@ def runtime(
     permissions: frozenset[str] = frozenset({"catalog.read"}),
     max_tool_calls: int = 4,
     expired: bool = False,
-    before_executor=None,
     side_effect: str = "none",
 ) -> AiToolRuntime:
     definition = tool_definition(side_effect=side_effect)
@@ -142,7 +106,6 @@ def runtime(
             allow_write=side_effect == "write",
         ),
         max_tool_calls=max_tool_calls,
-        before_executor=before_executor,
     )
 
 
@@ -275,66 +238,6 @@ def test_runtime_deduplicates_ids_but_new_calls_read_fresh_data() -> None:
     assert repeated_arguments.deduplicated is False
     assert repeated_arguments.call_id == "call_2"
     assert executions == ["sku-1", "sku-1"]
-
-
-def test_runtime_persists_execution_checkpoint_only_immediately_before_executor() -> (
-    None
-):
-    checkpoints: list[str] = []
-    executions: list[str] = []
-
-    tool_runtime = runtime(
-        lambda arguments, context: (
-            executions.append(arguments["item_id"]) or {"item_id": arguments["item_id"]}
-        ),
-        before_executor=lambda command: checkpoints.append(command.call_id),
-        side_effect="write",
-    )
-
-    invalid = tool_runtime.execute(
-        AiToolCommand(
-            call_id="invalid",
-            tool_name="lookup_item",
-            tool_version="1",
-            arguments={},
-            round=1,
-        )
-    )
-    assert invalid.error["code"] == "TOOL_INPUT_SCHEMA_INVALID"
-    assert checkpoints == []
-
-    assert tool_runtime.execute(tool_command()).ok is True
-    assert tool_runtime.execute(tool_command()).deduplicated is True
-    assert checkpoints == ["call_1"]
-    assert executions == ["sku-1"]
-
-
-def test_runtime_aborts_before_side_effect_when_checkpoint_persistence_fails() -> None:
-    executions = 0
-
-    def executor(arguments, context):
-        nonlocal executions
-        del arguments, context
-        executions += 1
-        return {"item_id": "sku-1"}
-
-    def fail_checkpoint(command: AiToolCommand) -> None:
-        del command
-        raise OSError("不得泄露的存储错误")
-
-    result = runtime(
-        executor,
-        before_executor=fail_checkpoint,
-        side_effect="write",
-    ).execute(tool_command())
-
-    assert result.ok is False
-    assert result.error == {
-        "code": "TOOL_EXECUTION_CHECKPOINT_FAILED",
-        "message": "工具执行前检查点无法持久化",
-        "retryable": True,
-    }
-    assert executions == 0
 
 
 def test_runtime_preserves_public_execution_error_without_code_enumeration() -> None:

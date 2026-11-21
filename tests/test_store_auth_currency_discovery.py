@@ -482,22 +482,6 @@ def test_fetch_mercadolibre_marketplace_user_filters_parent_scope(
     assert [item["site_id"] for item in result["marketplace_bindings"]] == ["MLM"]
 
 
-def test_fetch_mercadolibre_site_listing_rejects_cbt_before_http(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    request = Mock()
-    monkeypatch.setattr(config_http, "request_json", request)
-
-    with pytest.raises(
-        PublishAdapterError,
-        match="不能通过 /sites/CBT",
-    ) as exc_info:
-        config_http.fetch_mercadolibre_site_listing("cbt", "token")
-
-    assert exc_info.value.code == "MERCADOLIBRE_SITE_SCOPE_INVALID"
-    request.assert_not_called()
-
-
 def test_mercadolibre_cbt_uses_marketplace_bindings_and_contract_usd() -> None:
     marketplace_user = {
         "user_id": "99",

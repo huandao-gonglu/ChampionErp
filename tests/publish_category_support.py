@@ -54,42 +54,7 @@ def definition_from_record(record: dict[str, Any]) -> CategoryDefinition:
     )
 
 
-class StaticDefinitionCatalog:
-    """按 (platform, category_id) 提供固定定义的测试 Catalog。"""
-
-    def __init__(self, definitions: dict[tuple[str, str], CategoryDefinition]) -> None:
-        self.definitions = definitions
-        self.calls: list[tuple[str, str]] = []
-
-    @classmethod
-    def from_records(cls, *records: dict[str, Any]) -> "StaticDefinitionCatalog":
-        definitions = {
-            (
-                str(record.get("platform") or "").lower(),
-                str(record.get("category_id") or ""),
-            ): definition_from_record(record)
-            for record in records
-        }
-        return cls(definitions)
-
-    def attribute_definitions(
-        self,
-        platform: str,
-        category_id: str,
-        *,
-        site: str = "",
-        timeout_seconds: float | None = None,
-    ) -> CategoryDefinition:
-        key = (str(platform or "").strip().lower(), str(category_id or "").strip())
-        self.calls.append(key)
-        definition = self.definitions.get(key)
-        if definition is None:
-            raise RuntimeError(f"测试 Catalog 未定义类目：{key}")
-        return definition
-
-
 __all__ = [
-    "StaticDefinitionCatalog",
     "definition_from_record",
     "record_from_schema",
 ]

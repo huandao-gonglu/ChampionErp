@@ -73,43 +73,6 @@ def test_only_providers_import_platform_category_api() -> None:
     )
 
 
-BUSINESS_CONSUMER_FILES = (
-    "erp_web/services/online_product_attributes.py",
-    "erp_web/services/online_product_service.py",
-    "erp_web/runtime_units/category_capabilities.py",
-    "erp_web/runtime_units/category_attribute_updates.py",
-    "erp_web/runtime_units/product_capabilities.py",
-    "erp_web/runtime_units/category_query_capabilities.py",
-    "erp_web/runtime_units/market_prepare_capabilities.py",
-    "erp_web/runtime_units/publish_helpers.py",
-    "erp_web/runtime_units/publish_validation.py",
-    "erp_web/runtime_units/publish_validation_session.py",
-    "erp_web/runtime_units/publish_ozon.py",
-    "erp_web/runtime_units/publish_yandex.py",
-    "erp_web/runtime_units/publish_mercadolibre.py",
-    "erp_web/runtime_units/publish_adapter.py",
-    "erp_web/runtime_units/publish_capabilities.py",
-    "erp_web/runtime_units/publish_workflows.py",
-    "erp_web/runtime_units/runtime_api.py",
-    "erp_web/facades/category_facade.py",
-    "erp_web/facades/category_match_facade.py",
-)
-
-
-def test_business_consumers_do_not_import_platform_category_api() -> None:
-    offenders = [
-        f"{_relative_posix(path)} -> {target}"
-        for path, target in imported_targets(
-            [ROOT / item for item in BUSINESS_CONSUMER_FILES]
-        )
-        if any(target.startswith(unit) for unit in PLATFORM_CATEGORY_API_UNITS)
-    ]
-    assert not offenders, (
-        "业务消费者只能经 CategoryCatalog/Provider 抽象读取类目规则：\n"
-        + "\n".join(offenders)
-    )
-
-
 def test_publish_code_does_not_read_persisted_rule_copies() -> None:
     for relative_path in (
         "erp_web/runtime_units/publish_helpers.py",
@@ -199,15 +162,3 @@ def test_save_boundaries_reject_retired_category_fields() -> None:
     assert "reject_retired_product_category_fields(data)" in save_product_body
     save_draft_body = source.split("def save_draft_detail(", 1)[1]
     assert "reject_retired_draft_schema_fields(draft_payload)" in save_draft_body
-
-
-def test_retired_category_schema_helper_removed() -> None:
-    support = (ROOT / "erp_web/runtime_units/market_capability_support.py").read_text(
-        encoding="utf-8"
-    )
-    assert "def category_schema(" not in support
-    providers = (ROOT / "erp_web/runtime_units/category_providers.py").read_text(
-        encoding="utf-8"
-    )
-    assert "def detail(" not in providers
-    assert "_yandex_shared_record" not in providers

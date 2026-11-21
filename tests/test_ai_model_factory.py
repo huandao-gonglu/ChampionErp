@@ -269,11 +269,6 @@ def test_factory_resolves_environment_credentials(
     assert "env-secret-value" not in repr(binding)
 
 
-def test_factory_rejects_retired_provider_retry_override() -> None:
-    with pytest.raises(AiModelFactoryError, match="provider_max_retries 已退役"):
-        create_pydantic_model_binding(model_config(extra={"provider_max_retries": 3}))
-
-
 def test_factory_uses_curated_deepseek_provider() -> None:
     binding = create_pydantic_model_binding(
         model_config(

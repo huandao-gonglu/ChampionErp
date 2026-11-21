@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any
 
 from erp_web.runtime_units.domain_job_readers import ResearchJobStatusReader
 
@@ -50,15 +50,3 @@ def test_research_reader_is_failed_for_missing_or_cleaned_run() -> None:
     snapshot = reader.read_job_state("prr-gone")
     assert snapshot.status == "failed"
     assert snapshot.error == "选品研究运行不存在或已被清理。"
-
-
-def test_research_reader_survives_restart_via_persisted_loader() -> None:
-    # 重启后运行记录仍来自 SQLite 持久层：读取器只信任 loader 返回的终态，
-    # 不依赖任何进程内内存状态。
-    persisted = {"prr-1": {"status": "completed"}}
-
-    def loader_after_restart(run_id: str) -> Mapping[str, Any] | None:
-        return persisted.get(run_id)
-
-    reader = ResearchJobStatusReader(run_loader=loader_after_restart)
-    assert reader.read_job_state("prr-1").status == "success"

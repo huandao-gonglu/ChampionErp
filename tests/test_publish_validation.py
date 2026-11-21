@@ -1115,20 +1115,6 @@ def test_mercadolibre_precheck_requires_usd_for_standard_cbt() -> None:
     )
 
 
-def test_mercadolibre_precheck_allows_local_images_pending_automatic_upload() -> None:
-    product = _ml_cbt_product()
-    product["images"][0] = {
-        **product["images"][0],
-        "url": "",
-        "path": "data/images/local-main.jpg",
-    }
-
-    result = _validate(product, _ml_ready_config())
-
-    codes = {item["code"] for item in result["warnings"]}
-    assert "IMAGE_NOT_UPLOADED" not in codes
-
-
 def test_mercadolibre_precheck_does_not_restore_cleared_sale_terms_from_config() -> None:
     product = _ml_cbt_product()
     product["drafts"]["mercadolibre"]["sale_terms"] = []

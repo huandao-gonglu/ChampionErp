@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createEmptyDraftDetail } from '@/constants/initialState'
 import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail } from '@/api/workflow/normalizers'
-import type { DraftDetail } from '@/types/workflow'
 
 describe('类目 Schema 分离（废弃字段不再读写）', () => {
   it('逐 SKU 平台枚举 ID 与单位保存后原样往返，保留大整数 ID', () => {
@@ -69,94 +67,6 @@ describe('类目 Schema 分离（废弃字段不再读写）', () => {
     const backend = toBackendDraft(normalized)
     expect(backend.description_category_id).toBe('17039635')
     expect((backend.target_sites as Array<Record<string, unknown>>)[0]?.description_category_id).toBe('17039635')
-  })
-
-  it('忽略历史 category_attribute_schema，保存 payload 不再包含该字段', () => {
-    const normalized = normalizeDraftDetail({
-      draft_id: 'draft-1',
-      product_id: 'product-1',
-      platform: 'mercadolibre',
-      platforms: ['mercadolibre'],
-      site: 'MLM',
-      language: 'es-MX',
-      currency: 'MXN',
-      category_attribute_schema: {
-        platform: 'mercadolibre',
-        category_id: 'MLM-ROOT',
-      },
-      target_sites: [{
-        platform: 'mercadolibre',
-        site: 'MLM',
-        language: 'es-MX',
-        currency: 'MXN',
-        category_id: 'MLM-NEW',
-        category_path: '家居 / 新类目',
-        category_attribute_schema: {
-          platform: 'mercadolibre',
-          site: 'MLM',
-          category_id: 'MLM-NEW',
-          category_path: '家居 / 新类目',
-          source: 'mercadolibre_live',
-          fetched_at: '2026-07-25T12:00:00Z',
-          required: [{
-            id: 'BRAND',
-            name: 'Brand',
-            required: true,
-            options: ['Brand A'],
-            value_type: 'list',
-          }],
-          optional: [],
-        },
-        attributes: { BRAND: 'Brand A' },
-      }],
-    })
-
-    // 历史 schema 读取时被忽略：编辑态定义改由 /api/category-attrs 瞬时加载。
-    expect(normalized.targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
-    expect(normalized.targetSites[0]?.categoryId).toBe('MLM-NEW')
-
-    const draft: DraftDetail = {
-      ...createEmptyDraftDetail('mercadolibre'),
-      ...normalized,
-      raw: {
-        sale_price: '旧价格',
-        future_draft_field: '不得回写',
-      },
-    }
-    const backend = toBackendDraft(draft)
-    const target = (backend.target_sites as Array<Record<string, unknown>>)[0]
-    expect(backend).not.toHaveProperty('category_attribute_schema')
-    expect(target).not.toHaveProperty('category_attribute_schema')
-    expect(target?.attributes).toEqual({ BRAND: 'Brand A' })
-    expect(backend).not.toHaveProperty('sale_price')
-    expect(target).not.toHaveProperty('publish_logs')
-
-    const backendDetail = toBackendDraftDetail(draft)
-    expect(backendDetail).not.toHaveProperty('category_attribute_schema')
-    expect((backendDetail.target_sites as Array<Record<string, unknown>>)[0]).not.toHaveProperty('category_attribute_schema')
-    expect(backendDetail).not.toHaveProperty('sale_price')
-    expect(backendDetail).not.toHaveProperty('future_draft_field')
-  })
-
-  it('不会从旧 camelCase 草稿字段静默回捞数据', () => {
-    const normalized = normalizeDraftDetail({
-      draftId: 'legacy-draft',
-      productId: 'legacy-product',
-      platform: 'mercadolibre',
-      site_id: 'MLM',
-      categoryId: 'MLM-OLD',
-      sale_price: '999',
-      packageDimensions: {
-        lengthCm: '10',
-      },
-    })
-
-    expect(normalized.draftId).toBe('')
-    expect(normalized.productId).toBe('')
-    expect(normalized.categoryId).toBe('')
-    expect(normalized.pricing).toEqual({})
-    expect(normalized).not.toHaveProperty('packageDimensions')
-    expect(normalized.targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
   })
 
   it('目标站点明确清空后不会恢复草稿根级属性和待复核提示', () => {

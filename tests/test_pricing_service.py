@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import pytest
 
 from erp_web.services import pricing_service
@@ -21,14 +20,6 @@ def official_rates(monkeypatch):
 def _shipping_quote(_common: dict, _target: dict) -> dict:
     """纯核价测试提供已取得的物流报价，不依赖旧内置费率表。"""
     return {"amount": "4", "currency": "USD", "billable_g": "300", "minimum_price_cny": "0", "evidence": {}, "candidates": []}
-
-
-def _assert_finite_positive(result: dict, *keys: str) -> None:
-    for key in keys:
-        value = result.get(key)
-        assert value not in (None, "")
-        assert not (isinstance(value, float) and math.isnan(value))
-        assert float(value) > 0
 
 
 def test_batch_pricing_keeps_live_rates_when_common_rates_are_empty() -> None:

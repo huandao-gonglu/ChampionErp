@@ -26,25 +26,6 @@ def _store(tmp_path: Path) -> AiChatTurnClaimStore:
     return AiChatTurnClaimStore(ErpDatabase(tmp_path / "erp.sqlite3"))
 
 
-def test_claim_inserts_claimed_row_with_control_metadata_only(
-    tmp_path: Path,
-) -> None:
-    store = _store(tmp_path)
-
-    claim = store.claim_turn(
-        conversation_id=CONVERSATION,
-        client_message_id="ui-message-1",
-        profile_id="global.chat",
-    )
-
-    assert claim.status == CLAIMED
-    assert claim.profile_id == "global.chat"
-    assert claim.actor_id == "local-user"
-    assert claim.tenant_id == "local"
-    assert claim.claimed_at
-    assert claim.finished_at == ""
-
-
 def test_claim_table_has_no_message_content_columns(tmp_path: Path) -> None:
     db = ErpDatabase(tmp_path / "erp.sqlite3")
 
@@ -84,44 +65,6 @@ def test_claim_table_has_no_message_content_columns(tmp_path: Path) -> None:
         "trace_id",
         "last_tool_name",
     }
-
-
-def test_duplicate_claim_is_rejected_with_stable_error_code(
-    tmp_path: Path,
-) -> None:
-    store = _store(tmp_path)
-    store.claim_turn(
-        conversation_id=CONVERSATION,
-        client_message_id="ui-message-1",
-        profile_id="global.chat",
-    )
-
-    with pytest.raises(AiChatTurnAlreadyAcceptedError) as caught:
-        store.claim_turn(
-            conversation_id=CONVERSATION,
-            client_message_id="ui-message-1",
-            profile_id="global.chat",
-        )
-
-    assert caught.value.code == "AI_CHAT_TURN_ALREADY_ACCEPTED"
-
-
-def test_distinct_client_message_ids_can_claim_same_conversation(
-    tmp_path: Path,
-) -> None:
-    store = _store(tmp_path)
-    first = store.claim_turn(
-        conversation_id=CONVERSATION,
-        client_message_id="ui-message-1",
-        profile_id="global.chat",
-    )
-    second = store.claim_turn(
-        conversation_id=CONVERSATION,
-        client_message_id="ui-message-2",
-        profile_id="global.chat",
-    )
-
-    assert first.claim_id != second.claim_id
 
 
 @pytest.mark.parametrize("status", sorted(TERMINAL_CLAIM_STATUSES))

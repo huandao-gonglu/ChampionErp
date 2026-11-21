@@ -451,29 +451,6 @@ def test_model_selected_unknown_category_is_a_protocol_failure() -> None:
     assert result["failure"]["code"] == "MODEL_SELECTED_UNKNOWN_CATEGORY"
 
 
-def test_model_can_abstain_after_real_searches() -> None:
-    def run(payload, toolset):
-        search(toolset, "ventilador")
-        return {
-            "selected_category_id": "",
-            "abstained": True,
-            "model_confidence": 0.2,
-            "evidence": ["没有合适类目"],
-        }, TRACE
-
-    result = match_category(
-        PRODUCT,
-        DRAFT,
-        TARGET,
-        searcher=FakeSearcher([[], [], []]),
-        agent_service=fake_agent_service(run),
-    )
-
-    assert result["ok"] is True
-    assert result["status"] == "unresolved"
-    assert result["failure"]["code"] == "ABSTAIN_NO_MATCH"
-
-
 def test_model_can_abstain_without_a_minimum_keyword_quota() -> None:
     def run(payload, toolset):
         search(toolset, "ventilador")

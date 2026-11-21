@@ -61,26 +61,10 @@ def test_198_skus_share_ogl_tariff_but_keep_distinct_quotes(batch_setup, monkeyp
     assert len(set(amounts)) == 198
     assert "198/198" in caplog.text
     assert result["metrics"]["duration_ms"] >= result["metrics"]["ozon_discovery_ms"] >= 0
+    assert all(row["result"]["results"][0]["calculation_basis"]["shipping_evidence"]["carrier"] == "OGL" for row in result["items"])
     # OGL 核价不需要查询旧 rFBS 仓库配送渠道。
     calculate_sku_prices(batch(1))
     assert not counts
-
-
-def test_ogl_does_not_depend_on_retired_warehouse_endpoints(batch_setup, monkeypatch):
-    calls = []
-
-    def fail(client, path, **kwargs):
-        calls.append(path)
-        raise ValueError("Ozon 物流接口不可用或响应无效")
-
-    monkeypatch.setattr(PlatformClient, "call", fail)
-    result = calculate_sku_prices(batch())
-    assert calls == []
-    assert result['metrics']['failed_sku_count'] == 0
-    for row in result['items']:
-        ozon, yandex = row['result']['results']
-        assert ozon['ok'] and yandex['ok']
-        assert ozon['calculation_basis']['shipping_evidence']['carrier'] == 'OGL'
 
 
 def test_rates_are_fetched_once_even_with_force_refresh(batch_setup, monkeypatch):

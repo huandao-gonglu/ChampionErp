@@ -52,8 +52,6 @@ def test_write_capabilities_declare_idempotency_and_recovery() -> None:
 def test_business_catalog_compiled_only_in_composition_root() -> None:
     allowed = {
         APP_ROOT / "erp_web" / "ai_capability_composition.py",
-        # 任务控制 ToolSet 是控制面 Catalog，不含业务能力。
-        APP_ROOT / "erp_web" / "runtime_units" / "global_ai_control_tools.py",
     }
     offenders: list[str] = []
     for path in sorted((APP_ROOT / "erp_web").rglob("*.py")):
@@ -65,46 +63,6 @@ def test_business_catalog_compiled_only_in_composition_root() -> None:
     assert offenders == [], f"业务 Catalog 只允许在组合根编译：{offenders}"
     # 组合根必须显式组合全部领域 tuple，不扫描包、不动态发现。
     assert len(ALL_AI_CAPABILITIES) == len(APPLICATION_CAPABILITY_CATALOG.tools)
-
-
-# -- P1-1：审批入口不得进入模型可绑定 ToolSet -------------------------------
-
-
-def test_approval_level_is_not_model_controlled_and_retired_debug_surface_is_absent() -> (
-    None
-):
-    all_model_schemas = repr(
-        {
-            name: tool.definition.input_schema
-            for catalog in (APPLICATION_CAPABILITY_CATALOG,)
-            for name, tool in catalog.tools.items()
-        }
-    )
-    assert "task_approval_mode" not in all_model_schemas
-
-    retired_files = (
-        APP_ROOT / "erp_web" / "debug_autonomy_gate.py",
-        APP_ROOT / "erp_web" / "facades" / "debug_autonomy_facade.py",
-        APP_ROOT / "erp_web" / "http_route_units" / "debug_autonomy_routes.py",
-        APP_ROOT / "erp_web" / "schemas" / "debug_autonomy.py",
-        APP_ROOT / "erp_web" / "services" / "debug_autonomy_service.py",
-        APP_ROOT / "front" / "src" / "api" / "debugAutonomy.ts",
-        APP_ROOT / "front" / "src" / "stores" / "debugAutonomy.ts",
-    )
-    assert not [path for path in retired_files if path.exists()]
-
-    retired_command = "/" + "allow"
-    retired_endpoint = "/api/v1/" + "debug-autonomy"
-    guarded_files = (
-        APP_ROOT / "erp_web" / "assets" / "prompts" / "global_chat.json",
-        APP_ROOT / "erp_web" / "http_routes.py",
-        APP_ROOT / "erp_web" / "services" / "vercel_ai_ui_service.py",
-        APP_ROOT / "front" / "src" / "stores" / "aiChat.ts",
-    )
-    for path in guarded_files:
-        source = path.read_text(encoding="utf-8")
-        assert retired_command not in source, path
-        assert retired_endpoint not in source, path
 
 
 def test_product_index_query_supports_snapshot_bound_position_resolution() -> None:

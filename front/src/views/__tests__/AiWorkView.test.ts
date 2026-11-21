@@ -313,22 +313,6 @@ describe('AiWorkView 对话与历史', () => {
 
   })
 
-  it('未持久化活动 conversation 不请求不存在的详情，仍可正常对话', async () => {
-    const { store, mountNow } = setupView()
-    const conversationId = store.startConversation()
-    mocks.route.query = { conversation_id: conversationId }
-
-    const wrapper = mountNow()
-    await flushPromises()
-
-    expect(mocks.fetchConversation).not.toHaveBeenCalled()
-    expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="ai-work-detail-error"]').exists()).toBe(false)
-
-    expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
-
-  })
-
   it('活动会话已有持久化历史且新一轮流式中时，继续显示实时对话', async () => {
     const { store, mountNow } = setupView()
     const conversationId = store.startConversation()

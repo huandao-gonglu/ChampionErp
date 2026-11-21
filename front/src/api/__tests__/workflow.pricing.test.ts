@@ -3,6 +3,7 @@ import { generateCopy, imageEdit, imageTranslate, publishPrecheck, runCategoryPr
 import { apiClient } from '@/api/client'
 import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
 import { PRODUCT_SCHEMA_VERSION, normalizeBackendProduct, normalizeProductsIndex, normalizePublishPrecheck, toBackendProduct } from '@/api/workflow/normalizers'
+import type { ImageAsset } from '@/types/workflow'
 
 vi.mock('@/api/client', () => ({
   API_REQUEST_TIMEOUT_MS: 30000,
@@ -560,49 +561,41 @@ describe('publishPrecheck API mapping', () => {
   })
 })
 
-describe('imageTranslate API timeout', () => {
-  it('scales the request timeout by selected image count', async () => {
-    const product = createEmptyProduct()
-    product.productId = 'prod-1'
-    product.source.imagePool = [
-      { id: 'img-1', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'main', platforms: ['mercadolibre'], isMain: true, selected: true, status: 'ready', width: 1000, height: 1000 },
-      { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: true, status: 'ready', width: 1000, height: 1000 },
-      { id: 'img-3', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
-    ]
-    vi.mocked(apiClient.post).mockResolvedValueOnce({
-      data: { ok: true, product: toBackendProduct(createEmptyProduct()), productsIndex: [] },
-    })
+it('图片翻译请求按实际处理的图片数增加超时', async () => {
+  const product = createEmptyProduct()
+  product.productId = 'prod-1'
+  product.source.imagePool = [true, true, false].map<ImageAsset>((selected, index) => ({
+    id: `img-${index + 1}`,
+    url: '',
+    path: '',
+    previewUrl: '',
+    origin: 'upload',
+    usage: 'detail',
+    platforms: ['mercadolibre'],
+    isMain: false,
+    selected,
+    status: 'ready',
+    width: 1000,
+    height: 1000,
+  }))
+  const response = { data: { ok: true, product: toBackendProduct(product) } }
+  vi.mocked(apiClient.post).mockResolvedValueOnce(response).mockResolvedValueOnce(response)
 
-    await imageTranslate(
-      product,
-      'mercadolibre',
-      'Spanish (Mexico)',
-      {},
-      'presentation-image-translate',
-    )
+  await imageTranslate(product, 'mercadolibre', 'es-MX', {}, 'presentation-image-translate')
 
-    expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
-      product_id: 'prod-1',
-      source_image_ids: ['img-1', 'img-2'],
-    }), {
-      timeout: 60000,
-      aiConversationId: 'presentation-image-translate',
-    })
+  expect(apiClient.post).toHaveBeenLastCalledWith('/api/image-translate', expect.objectContaining({
+    product_id: 'prod-1',
+    source_image_ids: ['img-1', 'img-2'],
+  }), {
+    timeout: 60000,
+    aiConversationId: 'presentation-image-translate',
   })
 
-  it('rejects the request when no images are selected', async () => {
-    vi.mocked(apiClient.post).mockClear()
-    const product = createEmptyProduct()
-    product.productId = 'prod-1'
-    product.source.imagePool = [
-      { id: 'img-1', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'main', platforms: ['mercadolibre'], isMain: true, selected: false, status: 'ready', width: 1000, height: 1000 },
-      { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
-      { id: 'img-3', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
-    ]
-    await expect(imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)'))
-      .rejects.toThrow('请先勾选要翻译/重绘的图片')
-    expect(apiClient.post).not.toHaveBeenCalled()
-  })
+  await imageTranslate(product, 'mercadolibre', 'es-MX', { sourceImageIds: ['img-3'] })
+
+  expect(apiClient.post).toHaveBeenLastCalledWith('/api/image-translate', expect.objectContaining({
+    source_image_ids: ['img-3'],
+  }), { timeout: 30000, aiConversationId: undefined })
 })
 
 describe('imageEdit API payload', () => {

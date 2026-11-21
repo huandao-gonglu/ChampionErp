@@ -146,48 +146,13 @@ def test_ai_managed_profile_passes_its_proxy_to_shared_browser_manager(monkeypat
     ensure.assert_called_once_with(ai.browser_ai_port(model), ai.browser_ai_profile_dir(tmp_path, model), 30, proxy_server="http://localhost:7890", headless=None)
 
 
-def test_hidden_browser_launch_records_its_instance_identity(monkeypatch, tmp_path):
-    connected = iter([False, True])
-    monkeypatch.setattr(browser, "browser_debug_connected", lambda _: next(connected))
-    monkeypatch.setattr(browser, "_browser_version", lambda _: {"webSocketDebuggerUrl": "ws://localhost/new"})
-    monkeypatch.setattr(browser, "find_chrome_path", lambda: "chrome")
-    launch = Mock()
-    monkeypatch.setattr(browser.subprocess, "Popen", launch)
-    browser.ensure_browser_debug_session(9335, tmp_path, headless=True)
-    assert "--headless" in launch.call_args.args[0]
-    assert "--start-maximized" not in launch.call_args.args[0]
-    assert json.loads((tmp_path / browser._SESSION_FILE).read_text()) == {
-        "websocket": "ws://localhost/new", "headless": True, "proxy_server": "",
-    }
-
-
-def test_switching_to_hidden_only_closes_the_recorded_managed_instance(monkeypatch, tmp_path):
-    version = {"webSocketDebuggerUrl": "ws://localhost/owned"}
-    (tmp_path / browser._SESSION_FILE).write_text(json.dumps({
-        "websocket": version["webSocketDebuggerUrl"], "headless": False, "proxy_server": "",
-    }))
-    monkeypatch.setattr(browser, "browser_debug_connected", lambda _: True)
-    monkeypatch.setattr(browser, "_browser_version", lambda _: version)
-    monkeypatch.setattr(browser, "find_chrome_path", lambda: "chrome")
-    close = Mock()
-    launch = Mock()
-    monkeypatch.setattr(browser, "_close_managed_browser", close)
-    monkeypatch.setattr(browser.subprocess, "Popen", launch)
-    browser.ensure_browser_debug_session(9335, tmp_path, headless=True)
-    close.assert_called_once_with(9335, tmp_path, version, 15)
-    assert "--headless" in launch.call_args.args[0]
-
-
-def test_unknown_browser_instance_is_not_closed_or_hidden(monkeypatch, tmp_path):
+def test_managed_browser_does_not_attach_to_another_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(browser, "browser_debug_connected", lambda _: True)
     monkeypatch.setattr(browser, "_browser_version", lambda _: {"webSocketDebuggerUrl": "ws://localhost/not-ours"})
-    close = Mock()
     launch = Mock()
-    monkeypatch.setattr(browser, "_close_managed_browser", close)
     monkeypatch.setattr(browser.subprocess, "Popen", launch)
     with pytest.raises(RuntimeError, match="其他会话"):
-        browser.ensure_browser_debug_session(9335, tmp_path, headless=True)
-    close.assert_not_called()
+        browser.ensure_browser_debug_session(9335, tmp_path)
     launch.assert_not_called()
 
 

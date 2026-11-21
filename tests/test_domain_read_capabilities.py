@@ -270,6 +270,37 @@ def test_category_search_attributes_and_values_queries() -> None:
     assert dict(values.values[0])["name"] == "Champion"
 
 
+def test_category_attribute_values_query_preserves_page_size_and_cursor() -> None:
+    candidates = [{"id": str(30_000_000 + index), "value": f"候选{index}"} for index in range(600)]
+
+    def load_values(*_args: Any, cursor: str, limit: int, **_kwargs: Any) -> dict[str, Any]:
+        start = int(cursor or "0")
+        end = start + limit
+        return {
+            "values": candidates[start:end],
+            "next_cursor": str(end) if end < len(candidates) else "",
+            "has_more": end < len(candidates),
+        }
+
+    scope = _category_scope(attribute_values_loader=load_values)
+    execution = _execution()
+    request = CategoryAttributeValuesQueryRequest(category_id="MLB123", attribute_id="BRAND", limit=50)
+    first = category_attribute_values_query(request, scope=scope, execution=execution)
+    assert first.values == tuple(candidates[:50])
+    assert first.next_cursor == "50"
+    assert first.has_more is True
+    assert len(first.model_dump_json().encode("utf-8")) < 32_768
+
+    second = category_attribute_values_query(
+        request.model_copy(update={"cursor": first.next_cursor, "limit": 25}),
+        scope=scope,
+        execution=execution,
+    )
+    assert second.values == tuple(candidates[50:75])
+    assert second.next_cursor == "75"
+    assert second.has_more is True
+
+
 def test_category_query_wraps_live_api_failures() -> None:
     def broken(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("network down")

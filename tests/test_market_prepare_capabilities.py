@@ -308,18 +308,6 @@ def _category_record(*_args, **_kwargs) -> dict:
     }
 
 
-def _set_projection_attributes(
-    product: dict,
-    platform: str,
-    attributes: dict,
-) -> dict:
-    updated = deepcopy(product)
-    draft = updated["drafts"][platform]
-    draft["attributes"] = deepcopy(attributes)
-    draft["target_sites"][0]["attributes"] = deepcopy(attributes)
-    return updated
-
-
 def test_finalize_readiness_uses_trusted_publish_state_writer() -> None:
     draft = _draft("draft-finalize", site="CBT", currency="USD")
     draft.update(
@@ -357,16 +345,6 @@ def test_finalize_readiness_uses_trusted_publish_state_writer() -> None:
         assert item["last_precheck"] == {}
         assert item["publish_status"] == ""
         assert item["status"] == "images_ready"
-
-
-def test_prepare_for_market_sales_target_rejects_legacy_scalar_selector() -> None:
-    with pytest.raises(ValueError):
-        DraftPrepareForMarketRequest(
-            draft_id="draft-cbt",
-            target_platform="mercadolibre",
-            site="CBT",
-            sales_target="MLM:remote",  # type: ignore[arg-type]
-        )
 
 
 def test_cbt_existing_pricing_is_not_usable_without_saved_sales_target() -> None:
@@ -994,78 +972,6 @@ def test_cbt_ready_copy_does_not_generate_per_market_copy() -> None:
     assert saved["title"] == "Portable fan"
     assert saved["description"] == "Portable fan description"
     assert "marketplace_titles" not in saved_target
-    assert products.save_draft_calls == 0
-
-
-def test_cbt_fully_ready_copy_does_not_call_generator_or_save() -> None:
-    draft = _draft("draft-cbt")
-    draft.update(
-        {
-            "copy_source": "ai",
-            "copy_generated_at": "2026-08-27T00:00:00Z",
-        }
-    )
-    target = draft["target_sites"][0]
-    target["sites_to_sell"] = [
-        {"site_id": "MLM", "logistic_type": "remote"},
-        {"site_id": "MLC", "logistic_type": "remote"},
-    ]
-    products = _Products([draft])
-
-    _prepare_copy(
-        DraftPrepareForMarketRequest(
-            draft_id="draft-cbt",
-            target_platform="mercadolibre",
-        ),
-        target_draft_id="draft-cbt",
-        product_store=products,
-        copy_generator=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("完整文案不应再次调用模型")
-        ),
-        app_config_loader=lambda: (_ for _ in ()).throw(
-            AssertionError("完整文案不应加载模型配置")
-        ),
-        copy_operation_key="",
-    )
-
-    assert products.save_draft_calls == 0
-
-
-def test_cbt_ready_copy_does_not_depend_on_listing_model() -> None:
-    draft = _draft("draft-cbt")
-    draft.update(
-        {
-            "copy_source": "ai",
-            "copy_generated_at": "2026-08-27T00:00:00Z",
-        }
-    )
-    draft["target_sites"][0]["sites_to_sell"] = [
-        {"site_id": "MLM", "logistic_type": "remote"},
-        {"site_id": "MLC", "logistic_type": "remote"},
-    ]
-    products = _Products([draft])
-
-    def stop_after_copy(*_args, **_kwargs):
-        raise BusinessCapabilityError("TEST_STOP", "copy 步骤之后停止测试。")
-
-    with pytest.raises(BusinessCapabilityError) as exc_info:
-        prepare_draft_for_market(
-            DraftPrepareForMarketRequest(
-                draft_id="draft-cbt",
-                target_platform="mercadolibre",
-            ),
-            product_store=products,
-            copy_generator=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("已完成的当前语言文案不应再次生成")
-            ),
-            app_config_loader=lambda: (_ for _ in ()).throw(
-                AssertionError("已完成的当前语言文案不应加载模型配置")
-            ),
-            image_capability=stop_after_copy,
-        )
-
-    assert exc_info.value.code == "TEST_STOP"
-    assert "marketplace_titles" not in products.drafts["draft-cbt"]["target_sites"][0]
     assert products.save_draft_calls == 0
 
 

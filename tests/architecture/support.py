@@ -3,11 +3,10 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 def python_files(relative_path: str) -> list[Path]:
@@ -34,25 +33,6 @@ def dotted_name(node: ast.AST) -> str:
         prefix = dotted_name(node.value)
         return f"{prefix}.{node.attr}" if prefix else node.attr
     return ""
-
-
-def scoped_walk(root: FunctionNode) -> Iterator[ast.AST]:
-    stack: list[ast.AST] = [root]
-    while stack:
-        node = stack.pop()
-        yield node
-        for child in reversed(list(ast.iter_child_nodes(node))):
-            if child is not root and isinstance(
-                child,
-                (
-                    ast.FunctionDef,
-                    ast.AsyncFunctionDef,
-                    ast.ClassDef,
-                    ast.Lambda,
-                ),
-            ):
-                continue
-            stack.append(child)
 
 
 def imported_targets(

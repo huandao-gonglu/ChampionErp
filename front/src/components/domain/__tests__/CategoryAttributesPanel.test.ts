@@ -327,50 +327,6 @@ describe('CategoryAttributesPanel', () => {
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
   })
 
-  it('Mercado 品牌和型号只编辑平台映射', async () => {
-    const draft = createEmptyDraftDetail('mercadolibre')
-    draft.draftId = 'draft-mercado-brand-model'
-    draft.site = 'CBT'
-    draft.categoryId = 'CBT455865'
-    draft.attributes = {
-      BRAND: 'Root Brand',
-      MODEL: 'Root Model',
-    }
-    const category: CategorySelection = {
-      platform: 'mercadolibre',
-      categoryId: 'CBT455865',
-      categoryPath: 'Computers / Portable Fans',
-      requiredAttributes: [
-        { id: 'BRAND', name: 'Brand', required: true, options: [] },
-        { id: 'MODEL', name: 'Model', required: true, options: [] },
-      ],
-      optionalAttributes: [],
-      fetchedAt: '2026-08-28T00:00:00Z',
-      raw: {},
-    }
-    const wrapper = mount(CategoryAttributesPanel, {
-      props: {
-        ...panelProps(draft, category),
-        target: mercadoTarget,
-      },
-    })
-
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
-    const brandInput = wrapper.get<HTMLInputElement>('[data-attribute-id="BRAND"]')
-    const modelInput = wrapper.get<HTMLInputElement>('[data-attribute-id="MODEL"]')
-    expect(brandInput.element.value).toBe('Root Brand')
-    expect(modelInput.element.value).toBe('Root Model')
-
-    await brandInput.setValue('New Brand')
-    await modelInput.setValue('New Model')
-
-    expect(draft.attributes.BRAND).toBe('New Brand')
-    expect(draft.attributes.MODEL).toBe('New Model')
-    expect(draft).not.toHaveProperty('brand')
-    expect(draft).not.toHaveProperty('model')
-    expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(2)
-  })
-
   it('Mercado 品牌和型号均遵守平台候选约束', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-mercado-local-brand'

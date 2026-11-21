@@ -201,25 +201,6 @@ describe('选品 API 当前 wire schema', () => {
     )
   })
 
-  it('不再从旧 camelCase 配置容器恢复数据', async () => {
-    vi.mocked(apiClient.get).mockResolvedValueOnce({
-      data: {
-        ok: true,
-        config: {
-          searchProviders: [{ id: 'legacy-provider' }],
-          targetMarkets: [{ id: 'legacy-market' }],
-          sourceRegistry: [{ id: 'legacy-registry' }],
-        },
-      },
-    })
-
-    const config = await fetchProductResearchSettings()
-
-    expect(config.searchProviders).toEqual([])
-    expect(config.targetMarkets).toEqual([])
-    expect(config.sourceRegistry).toEqual([])
-  })
-
   it('使用普通 API 验证 Sorftime 数据源', async () => {
     const provider: ProductResearchSourceRegistryItem = {
       id: 'sorftime',

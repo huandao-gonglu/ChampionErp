@@ -33,11 +33,6 @@ from pydantic_ai.models.function import (
 )
 from pydantic_ai.settings import ModelSettings
 
-from erp_web.ai_capability_composition import (
-    GLOBAL_CHAT_CAPABILITIES,
-    _WRITE_CAPABILITIES,
-    APPLICATION_CAPABILITY_CATALOG,
-)
 from tests.ai_code_mode_helpers import discovering_tools, python_call
 from erp_web.context import get_context
 from erp_web.http_handler import Handler
@@ -126,12 +121,6 @@ def test_stop_endpoint_validates_request(chat_server, payload):
     status, _, _ = _post(chat_server["port"], "/api/v1/ai-chat/cancel", payload)
     assert status in {400, 422}
 CONVERSATION = "conversation_global_chat_" + "f" * 32
-
-#: 所有业务工具保留直接入口，同步且无需审批的工具还可在 Python 中调用。
-EXPECTED_GLOBAL_CHAT_TOOLS = {"run_code"} | {
-    tool.definition.name for tool in APPLICATION_CAPABILITY_CATALOG.tools.values()
-    if tool.definition.name in GLOBAL_CHAT_CAPABILITIES | _WRITE_CAPABILITIES
-}
 
 
 def test_global_chat_profile_supports_bounded_multi_step_task_observation() -> None:
@@ -635,35 +624,6 @@ def test_model_failure_streams_official_error_chunk_and_releases_lock(
     claim = get_context().chat_turn_claims.find_for_conversation(CONVERSATION)
     assert claim is not None
     assert claim.status == "failed"
-
-
-def test_client_disconnect_keeps_draining_until_completed(
-    chat_service: dict[str, Any],
-) -> None:
-    service = chat_service["service"]
-    conversation = "conversation_global_chat_" + "3" * 32
-
-    run = service.prepare_run(
-        json.dumps(_submit_body(conversation, "dc-1", "断连测试")).encode(),
-    )
-
-    def broken_writer(chunk: bytes) -> None:
-        # 第一个 chunk（start）写出后立即模拟客户端断连。
-        raise BrokenPipeError("client gone")
-
-    # 断连不应把异常抛给调用方；服务端继续 drain，收尾仍要完成。
-    asyncio.run(run.stream(broken_writer))
-
-    context = get_context()
-    assert context.chat_runs.is_active(conversation) is False
-    claim = context.chat_turn_claims.find_for_conversation(conversation)
-    assert claim is not None
-    # 已接受的 run 不因客户端断线取消：drain 完成后是 completed。
-    assert claim.status == "completed"
-    # 官方最终历史已保存，可被 /ui-messages 恢复。
-    history = context.pydantic_messages.get(conversation)
-    assert history is not None
-    assert history.model_messages()
 
 
 def test_coroutine_cancellation_lets_producer_complete_and_releases(

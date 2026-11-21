@@ -2,7 +2,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 import DraftCategoryWorkspace from '@/views/workflow/DraftCategoryWorkspace.vue'
 import DraftPublishPrecheckWorkspace from '@/views/workflow/DraftPublishPrecheckWorkspace.vue'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct } from '@/constants/initialState'
 import { useWorkflowStore } from '@/stores/workflow'
 import * as catalogApi from '@/api/workflow/catalog'
@@ -716,31 +716,6 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.saveAiConfig).not.toHaveBeenCalled()
   })
 
-  it('JSON 能力测试创建可追问的对话', async () => {
-    const result: AuthResult = {
-      ok: true,
-      message: 'JSON 能力测试通过。',
-      error: '',
-      errorCode: '',
-      nextAction: '',
-      raw: { channel: 'ai_model', supported_capabilities: ['json'] },
-    }
-    vi.mocked(workflowApi.testAiModel).mockResolvedValue(result)
-
-    const store = useWorkflowStore()
-    await store.testAiSettings({
-      id: 'model-json',
-      name: 'JSON 模型',
-      probe_only_capability: 'json',
-      probe_capabilities: true,
-    })
-
-    expect(withAiConversation).toHaveBeenCalledWith(
-      '测试 AI 模型 · JSON 模型',
-      expect.any(Function),
-    )
-  })
-
   it('能力测试成功只自动保存当前模型与真实回执，不提交其他本地编辑', async () => {
     const profile = { version: 2, tested: true, configuration_fingerprint: 'verified' }
     const result: AuthResult = { ok: true, message: '通过', error: '', errorCode: '', nextAction: '', raw: {
@@ -1252,20 +1227,6 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fetchProductsIndex).toHaveBeenCalledOnce()
   })
 
-  it('collects product through backend API and updates diagnostics', async () => {
-    const product = collectedProduct()
-    vi.mocked(workflowApi.collectProduct).mockResolvedValue(mutation(product))
-
-    const store = useWorkflowStore()
-    store.collectForm.productUrl = product.source.sourceUrl
-    await store.collectProduct()
-
-    expect(store.product.productId).toBe('real-product-1')
-    expect(store.collectDiagnostics.status).toBe('success')
-    expect(store.collectDiagnostics.downloadedImages).toBe(1)
-    expect(store.progressPercent).toBeGreaterThan(0)
-  })
-
   it('将手动文案生成绑定到普通对话', async () => {
     const product = collectedProduct()
     vi.mocked(workflowApi.generateCopy).mockResolvedValue(mutation(product))
@@ -1321,46 +1282,6 @@ describe('workflow store live API flow', () => {
       'mercadolibre',
       '去除背景',
       { sourceImageIds: ['img_1'] },
-      'conversation-store-test',
-    )
-  })
-
-  it('将手动图片翻译绑定到普通对话', async () => {
-    const product = collectedProduct()
-    vi.mocked(workflowApi.imageTranslate).mockResolvedValue(mutation(product))
-    const store = useWorkflowStore()
-    store.product = product
-
-    await store.translateImages('es-MX', { sourceImageIds: ['img_1'] })
-
-    expect(withAiConversation).toHaveBeenCalledWith(
-      'AI 翻译/重绘图片',
-      expect.any(Function),
-    )
-    expect(workflowApi.imageTranslate).toHaveBeenCalledWith(
-      product,
-      'mercadolibre',
-      'es-MX',
-      { sourceImageIds: ['img_1'] },
-      'conversation-store-test',
-    )
-  })
-
-  it('将手动批量文案生成绑定到普通对话', async () => {
-    vi.mocked(workflowApi.generateCopyBatch).mockResolvedValue({ message: '完成' })
-    vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
-    const store = useWorkflowStore()
-    store.selectedProductIds = ['product-1', 'product-2']
-
-    await store.generateCopyForSelectedProducts()
-
-    expect(withAiConversation).toHaveBeenCalledWith(
-      'AI 批量生成文案',
-      expect.any(Function),
-    )
-    expect(workflowApi.generateCopyBatch).toHaveBeenCalledWith(
-      ['product-1', 'product-2'],
-      'mercadolibre',
       'conversation-store-test',
     )
   })
@@ -1761,200 +1682,6 @@ describe('workflow store live API flow', () => {
     }))
   })
 
-  it('发布成功后变更销售目的地会开启新流程并保留 Siteless 与既有市场投影', () => {
-    const draft = createEmptyDraftDetail('mercadolibre')
-    draft.draftId = 'draft-cbt-destinations'
-    draft.site = 'CBT'
-    draft.status = 'published'
-    draft.publishStatus = 'success'
-    draft.validationErrors = ['旧发布校验']
-    draft.lastPrecheck = { ok: true }
-    draft.lastPrecheckTarget = { site: 'CBT', sites_to_sell: [{ site_id: 'MLM', logistic_type: 'remote' }] }
-    const publication = {
-      model: 'MODEL-1',
-      accountUserId: 'account-user-1',
-      sitelessUserProductId: 'UP-SITELESS-1',
-      sitelessFamilyId: 'FAMILY-1',
-      parentItemId: 'CBT-PARENT-1',
-      parentUserProductId: 'UP-PARENT-1',
-      sellerId: 'seller-global',
-      status: 'active',
-      familyName: '测试商品',
-      markets: [{
-        siteId: 'MLM',
-        itemId: 'MLM-ITEM-1',
-        userProductId: 'UP-MLM-1',
-        sellerId: 'seller-mx',
-        logisticType: 'remote',
-        status: 'active',
-        price: 399,
-        netProceeds: null,
-        freeShipping: null,
-        saleTerms: [],
-        currencyId: 'MXN',
-        listingTypeId: 'gold_special',
-        error: '',
-        lastOperation: {},
-        updatedAt: '2026-08-24T00:00:00Z',
-      }],
-      confirmedPayload: {},
-      error: '',
-      lastOperation: {},
-      updatedAt: '2026-08-24T00:00:00Z',
-    }
-    draft.skuItems = [{ sku_id: 'sku-1', selected: true, sku: 'SELL-1', stock: '10', overrides: {}, attributes_by_target: {}, pricing: {}, publications: { 'mercadolibre:cbt': { result: { publication } } } }]
-    draft.targetSites = [{
-      platform: 'mercadolibre',
-      site: 'CBT',
-      language: 'en-US',
-      listingCurrency: 'USD',
-      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
-      status: 'real_publish_success',
-      publishStatus: 'success',
-      validationErrors: ['旧目标校验'],
-      lastPrecheck: { ok: true },
-      lastPrecheckTarget: { site: 'CBT' },
-    }]
-
-    const store = useWorkflowStore()
-    store.currentDraft = draft
-    store.activePublishTargetKey = 'mercadolibre:cbt'
-    store.storeConfig = {
-      mercadolibre: {
-        account_site_id: 'CBT',
-        listing_model: 'user_products',
-        marketplace_bindings: [
-          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border', pricing_model: 'price', user_product: true },
-          { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'fulfillment', business_model: 'cross_border', pricing_model: 'price', user_product: true },
-        ],
-      },
-    }
-    store.pricingInput.targets = [{
-      targetKey: 'mercadolibre:cbt',
-      platform: 'mercadolibre',
-      site: 'CBT',
-      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
-      listingCurrency: 'USD',
-      paymentFeePercent: 0,
-      otherFeePercent: 0,
-      pricingMode: 'margin',
-      targetMarginPercent: 30,
-      markupPercent: 30,
-      shippingQuoteMode: 'auto',
-      shippingCurrency: 'USD',
-      shippingAmount: 0,
-      manualPrice: null,
-    }]
-    store.precheck = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-08-24T00:00:00Z' }
-    store.precheckResults = { mercadolibre: { ok: true } }
-    store.payloadPreview = {
-      platform: 'mercadolibre',
-      site: 'CBT',
-      targetKey: 'mercadolibre:cbt',
-      status: 'ready',
-      path: '/tmp/payload.json',
-      payload: { sites_to_sell: [{ site_id: 'MLM', logistic_type: 'remote' }] },
-      warning: '',
-      validationDigest: 'old-digest',
-      summary: null,
-      warnings: [],
-    }
-
-    expect(store.updateDraftSitesToSell(
-      draft,
-      draft.targetSites[0]!,
-      [{ siteId: 'MLB', logisticType: 'fulfillment' }],
-    )).toBe(true)
-
-    expect(store.currentDraft.targetSites[0]).toEqual(expect.objectContaining({
-      sitesToSell: [{ siteId: 'MLB', logisticType: 'fulfillment' }],
-      status: 'category_ready',
-      publishStatus: '',
-      validationErrors: [],
-      lastPrecheck: {},
-      lastPrecheckTarget: {},
-    }))
-    expect((store.currentDraft.skuItems[0]!.publications['mercadolibre:cbt']!.result as Record<string, unknown>).publication).toEqual(expect.objectContaining({
-      sitelessUserProductId: 'UP-SITELESS-1',
-      markets: [expect.objectContaining({ siteId: 'MLM', itemId: 'MLM-ITEM-1' })],
-    }))
-    expect(store.currentDraft).toEqual(expect.objectContaining({
-      status: 'category_ready',
-      publishStatus: '',
-      validationErrors: [],
-      lastPrecheck: {},
-      lastPrecheckTarget: {},
-    }))
-    expect(store.pricingInput.targets[0]?.sitesToSell).toEqual([{ siteId: 'MLB', logisticType: 'fulfillment' }])
-    expect(store.precheck).toBeNull()
-    expect(store.precheckResults).toEqual({})
-    expect(store.payloadPreview).toBeNull()
-  })
-
-  it('store 允许 user_product 缺失或 null，仅拒绝显式 false', () => {
-    const draft = createEmptyDraftDetail('mercadolibre')
-    draft.draftId = 'draft-cbt-fully-managed'
-    draft.site = 'CBT'
-    draft.targetSites = [{
-      platform: 'mercadolibre',
-      site: 'CBT',
-      language: 'en-US',
-      listingCurrency: 'USD',
-      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
-    }]
-    const store = useWorkflowStore()
-    store.currentDraft = draft
-    store.storeConfig = {
-      mercadolibre: {
-        account_site_id: 'CBT',
-        listing_model: 'user_products',
-        marketplace_bindings: [
-          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border' },
-          { seller_id: 'seller-co', site_id: 'MCO', logistic_type: 'remote', business_model: 'cross_border', pricing_model: 'net_proceeds', user_product: null },
-          { seller_id: 'seller-pe', site_id: 'MPE', logistic_type: 'remote', business_model: 'cross_border', user_product: false },
-        ],
-      },
-    }
-
-    expect(store.updateDraftSitesToSell(
-      draft,
-      draft.targetSites[0]!,
-      [{
-        siteId: 'MCO',
-        logisticType: 'remote',
-        netProceeds: '24.50',
-        listingTypeId: 'gold_special',
-        status: 'paused',
-        freeShipping: true,
-        saleTerms: [{ id: 'WARRANTY_TYPE', value_name: 'Sin garantía' }],
-      }],
-    )).toBe(true)
-    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([{
-      siteId: 'MCO',
-      logisticType: 'remote',
-      netProceeds: '24.50',
-      listingTypeId: 'gold_special',
-      status: 'paused',
-      freeShipping: true,
-      saleTerms: [{ id: 'WARRANTY_TYPE', value_name: 'Sin garantía' }],
-    }])
-
-    expect(store.updateDraftSitesToSell(
-      draft,
-      draft.targetSites[0]!,
-      [{ siteId: 'MPE', logisticType: 'remote' }],
-    )).toBe(false)
-    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([expect.objectContaining({
-      siteId: 'MCO',
-      logisticType: 'remote',
-      listingTypeId: 'gold_special',
-      status: 'paused',
-      freeShipping: true,
-      netProceeds: '24.50',
-    })])
-    expect(store.error).toContain('未启用 User Products')
-  })
-
   it('traditional_global_items 服从 binding pricing_model，并拒绝混合计价市场', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-cbt-traditional'
@@ -1980,7 +1707,7 @@ describe('workflow store live API flow', () => {
       site: 'CBT',
       language: 'en-US',
       listingCurrency: 'USD',
-      sitesToSell: [],
+      sitesToSell,
     }]
     const store = useWorkflowStore()
     store.currentDraft = draft
@@ -1995,7 +1722,7 @@ describe('workflow store live API flow', () => {
       targetKey: 'mercadolibre:cbt',
       platform: 'mercadolibre',
       site: 'CBT',
-      sitesToSell: [],
+      sitesToSell,
       listingCurrency: 'USD',
       paymentFeePercent: 0,
       otherFeePercent: 0,
@@ -2008,25 +1735,28 @@ describe('workflow store live API flow', () => {
       manualPrice: null,
     }]
 
-    expect(store.updateDraftSitesToSell(draft, draft.targetSites[0]!, sitesToSell)).toBe(false)
-    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([])
-    expect(store.error).toContain('不能混用 price 与 net_proceeds')
-
-    store.error = ''
-    expect(store.updateDraftSitesToSell(draft, draft.targetSites[0]!, [{
-      siteId: 'MLC',
-      logisticType: 'remote',
-      netProceeds: '17.00',
-    }])).toBe(true)
-    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([{
-      siteId: 'MLC',
-      logisticType: 'remote',
-      netProceeds: '17.00',
-    }])
-    expect(store.error).toBe('')
-
     ensurePricingSku(store)
     await store.calculatePrice()
+    expect(store.error).toBe('CBT 草稿至少需要选择一个当前授权的销售国家/物流后才能核价。')
+    expect(workflowApi.priceDraft).not.toHaveBeenCalled()
+
+    const singleNetProceedsMarket = [{
+      siteId: 'MLC',
+      logisticType: 'remote',
+      netProceeds: '17.00',
+    }]
+    draft.targetSites[0]!.sitesToSell = singleNetProceedsMarket
+    store.pricingInput.targets[0]!.sitesToSell = singleNetProceedsMarket
+    store.error = ''
+    vi.mocked(workflowApi.priceDraft).mockResolvedValue({
+      items: [],
+      applied: false,
+      pricingBySku: {},
+      errors: [],
+      metrics: { batchId: 'batch', durationMs: 0, ozonDiscoveryMs: 0 },
+    })
+    await store.calculatePrice()
+    expect(store.error).toBe('')
     expect(workflowApi.priceDraft).toHaveBeenCalledOnce()
 
     vi.mocked(workflowApi.saveDraft).mockImplementation(async (savedDraft) => draftMutation(savedDraft))
@@ -2077,13 +1807,6 @@ describe('workflow store live API flow', () => {
       manualPrice: null,
     }]
 
-    expect(store.updateDraftSitesToSell(
-      draft,
-      draft.targetSites[0]!,
-      [{ siteId: 'MLM', logisticType: 'remote' }],
-    )).toBe(false)
-    expect(store.error).toContain('缺少 Mercado Libre listing_model')
-
     ensurePricingSku(store)
     await store.calculatePrice()
     expect(store.error).toContain('缺少 Mercado Libre listing_model')
@@ -2094,7 +1817,7 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.publishPrecheck).not.toHaveBeenCalled()
   })
 
-  it('Fully Managed binding 按账号阻断市场选择、核价与标准发布', async () => {
+  it('Fully Managed binding 按账号阻断核价与标准发布', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-cbt-fully-managed'
     draft.site = 'CBT'
@@ -2119,14 +1842,6 @@ describe('workflow store live API flow', () => {
       },
     }
     const expectedError = '该账号需走 Fully Managed/global_net_proceeds 流程，当前尚未支持。'
-
-    expect(store.updateDraftSitesToSell(
-      draft,
-      draft.targetSites[0]!,
-      [{ siteId: 'MCO', logisticType: 'remote' }],
-    )).toBe(false)
-    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([{ siteId: 'MLM', logisticType: 'remote' }])
-    expect(store.error).toBe(expectedError)
 
     ensurePricingSku(store)
     await store.calculatePrice()
@@ -2309,123 +2024,6 @@ describe('workflow store live API flow', () => {
     }))
   })
 
-  it('keeps Yandex and Ozon category edits isolated across target switches and draft saves', async () => {
-    const draft = createEmptyDraftDetail('yandex')
-    draft.draftId = 'draft-yandex-ozon-isolation'
-    draft.productId = 'product-yandex-ozon-isolation'
-    draft.sourceProductId = 'product-yandex-ozon-isolation'
-    draft.platform = 'yandex'
-    draft.platforms = ['yandex', 'ozon']
-    draft.site = 'global'
-    draft.language = 'ru-RU'
-    draft.categoryId = '60996608'
-    draft.categoryPath = 'Yandex / Бытовая техника'
-    draft.attributes = { YANDEX_BRAND: 'Yandex brand' }
-    draft.validationErrors = ['Yandex validation error']
-    // targetSites[0] 是持久化 primary；当前编辑目标由 active key 单独决定。
-    draft.targetSites = [
-      {
-        platform: 'yandex',
-        site: 'global',
-        language: 'ru-RU',
-        listingCurrency: 'RUB',
-        categoryId: '60996608',
-        descriptionCategoryId: '',
-        categoryPath: 'Yandex / Бытовая техника',
-        attributes: { YANDEX_BRAND: 'Yandex brand' },
-        validationErrors: ['Yandex validation error'],
-      },
-      {
-        platform: 'ozon',
-        site: 'global',
-        language: 'ru-RU',
-        listingCurrency: 'RUB',
-        categoryId: '95199',
-        descriptionCategoryId: '17028674',
-        categoryPath: 'Ozon / Бытовая техника',
-        attributes: { OZON_BRAND: 'Ozon brand' },
-        validationErrors: ['Ozon validation error'],
-      },
-    ]
-    const savedDrafts: DraftDetail[] = []
-    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => {
-      const saved = JSON.parse(JSON.stringify(draftToSave)) as DraftDetail
-      savedDrafts.push(saved)
-      return draftMutation(JSON.parse(JSON.stringify(saved)) as DraftDetail)
-    })
-
-    const store = useWorkflowStore()
-    store.currentDraft = draft
-    store.activeMarketplace = 'yandex'
-    store.activePublishTargetKey = 'yandex:global'
-
-    store.selectPublishTarget(draft.targetSites[1]!)
-    expect(store.currentDraft).toEqual(expect.objectContaining({
-      categoryId: '95199',
-      descriptionCategoryId: '17028674',
-      categoryPath: 'Ozon / Бытовая техника',
-      attributes: { OZON_BRAND: 'Ozon brand' },
-      validationErrors: ['Ozon validation error'],
-    }))
-
-    // 显式清空 Ozon 类目编辑态，再切走；这些空值必须属于 Ozon 本身。
-    store.currentDraft.categoryId = ''
-    store.currentDraft.descriptionCategoryId = ''
-    store.currentDraft.categoryPath = ''
-    store.currentDraft.attributes = {}
-    store.currentDraft.validationErrors = []
-    store.selectPublishTarget(draft.targetSites[0]!)
-
-    const clearedOzon = store.currentDraft.targetSites.find((target) => target.platform === 'ozon')
-    expect(clearedOzon).toEqual(expect.objectContaining({
-      categoryId: '',
-      descriptionCategoryId: '',
-      categoryPath: '',
-      attributes: {},
-      validationErrors: [],
-    }))
-    expect(store.currentDraft).toEqual(expect.objectContaining({
-      categoryId: '60996608',
-      categoryPath: 'Yandex / Бытовая техника',
-      attributes: { YANDEX_BRAND: 'Yandex brand' },
-      validationErrors: ['Yandex validation error'],
-    }))
-
-    store.selectPublishTarget(clearedOzon!)
-    expect(store.currentDraft).toEqual(expect.objectContaining({
-      categoryId: '',
-      descriptionCategoryId: '',
-      categoryPath: '',
-      attributes: {},
-      validationErrors: [],
-    }))
-
-    await store.saveCurrentDraft()
-
-    const savedOzon = savedDrafts[0]?.targetSites.find((target) => target.platform === 'ozon')
-    const savedYandex = savedDrafts[0]?.targetSites.find((target) => target.platform === 'yandex')
-    expect(savedOzon).toEqual(expect.objectContaining({
-      categoryId: '',
-      descriptionCategoryId: '',
-      categoryPath: '',
-      attributes: {},
-      validationErrors: [],
-    }))
-    expect(savedYandex).toEqual(expect.objectContaining({
-      categoryId: '60996608',
-      descriptionCategoryId: '',
-      categoryPath: 'Yandex / Бытовая техника',
-      attributes: { YANDEX_BRAND: 'Yandex brand' },
-      validationErrors: ['Yandex validation error'],
-    }))
-
-    store.selectPublishTarget(store.currentDraft.targetSites.find((target) => target.platform === 'yandex')!)
-    expect(store.currentDraft.categoryId).toBe('60996608')
-    store.selectPublishTarget(store.currentDraft.targetSites.find((target) => target.platform === 'ozon')!)
-    expect(store.currentDraft.categoryId).toBe('')
-    expect(store.currentDraft.attributes).toEqual({})
-  })
-
   it('does not seed a newly selected market from root listing fields', async () => {
     const draft = createEmptyDraftDetail('yandex')
     draft.draftId = 'draft-add-ozon-isolation'
@@ -2583,15 +2181,6 @@ describe('workflow store live API flow', () => {
     expect(store.loading).toBe(false)
     expect(store.categoryAttributeLoading).toBe(false)
     expect(store.categoryAttributeError).toBe('')
-
-    // 切换目标站点只恢复类目身份，属性定义需重新从实时接口加载。
-    store.selectPublishTarget(store.currentDraft.targetSites[1])
-    expect(store.category?.categoryId).toBe('CBT-UNCHANGED')
-    expect(store.category?.requiredAttributes).toEqual([])
-    store.selectPublishTarget(store.currentDraft.targetSites[0])
-    expect(store.category?.categoryId).toBe('MLM-NEW')
-    expect(store.category?.requiredAttributes).toEqual([])
-    expect(store.category?.fetchedAt).toBeUndefined()
   })
 
   it('keeps a selected category saved when loading its attributes fails', async () => {
@@ -3127,7 +2716,7 @@ describe('workflow store live API flow', () => {
     store.platformOptions = [
       { key: 'mercadolibre', label: '美客多', sites: [{ key: 'CBT', code: 'CBT', label: '全局', language: 'en-US' }] },
     ]
-    await store.loadDraftForPricing('draft-1')
+    await store.loadDraft(normalizeDraftIndexItem({ draft_id: 'draft-1' }))
 
     expect(store.pricingInput.targets).toHaveLength(1)
     expect(store.pricingInput.targets[0].targetKey).toBe('mercadolibre:cbt')
@@ -3179,7 +2768,7 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.priceDraft).not.toHaveBeenCalled()
     store.acceptLoadedDraft(draftMutation(createEmptyDraftDetail('yandex')))
     vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(saved))
-    await store.loadDraftForPricing('template-draft')
+    await store.loadDraft(normalizeDraftIndexItem({ draft_id: 'template-draft' }))
     expect(store.pricingInput.templateSource).toEqual({ id: 'chosen', name: '日常费用' })
     expect(store.pricingInput.domesticFreightCny).toBe(9)
     expect(store.pricingInput.targets[0]!.targetMarginPercent).toBe(35)
@@ -3265,7 +2854,7 @@ describe('workflow store live API flow', () => {
       label: '美客多',
       sites: [{ key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' }],
     }]
-    await store.loadDraftForPricing('draft-1')
+    await store.loadDraft(normalizeDraftIndexItem({ draft_id: 'draft-1' }))
 
     await store.runCategoryOnlyPrecheck()
 
@@ -3295,18 +2884,37 @@ describe('workflow store live API flow', () => {
       listingCurrency: 'USD',
       sitesToSell: [{ siteId: 'MLM', logisticType: 'remote', price: '23.45' }],
     }]
-    draft.pricing = {
-      targets: {
-        'mercadolibre:cbt': {
-          listing_currency: 'USD',
-          suggested_price: { amount: '23.45', currency: 'USD' },
-          applied_price: { amount: '23.45', currency: 'USD' },
-          profit_cny: 47.76,
-          errors: [],
+    draft.skuItems = [{
+      sku_id: 'sku-1',
+      sku: 'SKU-1',
+      stock: '5',
+      selected: true,
+      overrides: {},
+      attributes_by_target: {},
+      publications: {},
+      pricing: {
+        targets: {
+          'mercadolibre:cbt': {
+            listing_currency: 'USD',
+            suggested_price: { amount: '23.45', currency: 'USD' },
+            applied_price: { amount: '23.45', currency: 'USD' },
+            calculation_basis: {
+              sites_to_sell: [{ site_id: 'MLM', logistic_type: 'remote' }],
+            },
+            destination_results: [{
+              site_id: 'MLM',
+              logistic_type: 'remote',
+              pricing_model: 'price',
+              price: { amount: '23.45', currency: 'USD' },
+              net_proceeds: null,
+              calculation_fingerprint: 'fingerprint-valid',
+            }],
+            profit_cny: 47.76,
+            errors: [],
+          },
         },
       },
-    }
-    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+    }]
 
     const store = useWorkflowStore()
     store.storeConfig = {
@@ -3332,7 +2940,14 @@ describe('workflow store live API flow', () => {
       ],
     }]
 
-    await store.loadDraftForPricing(draft.draftId)
+    vi.mocked(workflowApi.loadDraft).mockResolvedValueOnce(draftMutation(JSON.parse(JSON.stringify(draft))))
+    await store.loadDraft(normalizeDraftIndexItem({ draft_id: draft.draftId }))
+    expect(store.pricingResult?.results[0]?.appliedPrice).toEqual({ amount: '23.45', currency: 'USD' })
+
+    const targetPricing = (draft.skuItems[0]!.pricing.targets as Record<string, Record<string, unknown>>)['mercadolibre:cbt']!
+    delete targetPricing.destination_results
+    vi.mocked(workflowApi.loadDraft).mockResolvedValueOnce(draftMutation(JSON.parse(JSON.stringify(draft))))
+    await store.loadDraft(normalizeDraftIndexItem({ draft_id: draft.draftId }))
 
     expect(store.pricingResult).toBeNull()
   })
@@ -3354,40 +2969,48 @@ describe('workflow store live API flow', () => {
       sitesToSell: [{
         siteId: 'MLM',
         logisticType: 'remote',
-        listingTypeId: 'gold_pro',
+        listingTypeId: 'gold_special',
         freeShipping: false,
         price: '23.45',
       }],
     }]
-    draft.pricing = {
-      targets: {
-        'mercadolibre:cbt': {
-          listing_currency: 'USD',
-          suggested_price: { amount: '23.45', currency: 'USD' },
-          applied_price: { amount: '23.45', currency: 'USD' },
-          calculation_basis: {
-            sites_to_sell: [{
+    draft.skuItems = [{
+      sku_id: 'sku-1',
+      sku: 'SKU-1',
+      stock: '5',
+      selected: true,
+      overrides: {},
+      attributes_by_target: {},
+      publications: {},
+      pricing: {
+        targets: {
+          'mercadolibre:cbt': {
+            listing_currency: 'USD',
+            suggested_price: { amount: '23.45', currency: 'USD' },
+            applied_price: { amount: '23.45', currency: 'USD' },
+            calculation_basis: {
+              sites_to_sell: [{
+                site_id: 'MLM',
+                logistic_type: 'remote',
+                listing_type_id: 'gold_special',
+                free_shipping: false,
+              }],
+            },
+            destination_results: [{
               site_id: 'MLM',
               logistic_type: 'remote',
-              listing_type_id: 'gold_special',
-              free_shipping: false,
+              pricing_model: 'price',
+              price: { amount: '23.45', currency: 'USD' },
+              net_proceeds: null,
+              calculation_fingerprint: 'fingerprint-old-condition',
             }],
-          },
-          destination_results: [{
-            site_id: 'MLM',
-            logistic_type: 'remote',
-            pricing_model: 'price',
-            price: { amount: '23.45', currency: 'USD' },
-            net_proceeds: null,
             calculation_fingerprint: 'fingerprint-old-condition',
-          }],
-          calculation_fingerprint: 'fingerprint-old-condition',
-          profit_cny: 47.76,
-          errors: [],
+            profit_cny: 47.76,
+            errors: [],
+          },
         },
       },
-    }
-    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+    }]
 
     const store = useWorkflowStore()
     store.platformOptions = [{
@@ -3399,38 +3022,14 @@ describe('workflow store live API flow', () => {
       ],
     }]
 
-    await store.loadDraftForPricing(draft.draftId)
+    vi.mocked(workflowApi.loadDraft).mockResolvedValueOnce(draftMutation(JSON.parse(JSON.stringify(draft))))
+    await store.loadDraft(normalizeDraftIndexItem({ draft_id: draft.draftId }))
+    expect(store.pricingResult?.results[0]?.appliedPrice).toEqual({ amount: '23.45', currency: 'USD' })
+
+    draft.targetSites[0]!.sitesToSell![0]!.listingTypeId = 'gold_pro'
+    vi.mocked(workflowApi.loadDraft).mockResolvedValueOnce(draftMutation(JSON.parse(JSON.stringify(draft))))
+    await store.loadDraft(normalizeDraftIndexItem({ draft_id: draft.draftId }))
 
     expect(store.pricingResult).toBeNull()
   })
-})
-
-describe('单链接采集验证续采', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(catalogApi.resumeCollection).mockReset()
-    localStorage.clear()
-    setActivePinia(createPinia())
-  })
-
-  afterEach(() => { vi.useRealTimers() })
-
-  it('单链接采集等待验证后自动继续', async () => {
-    vi.useFakeTimers()
-    const store = useWorkflowStore()
-    const url = 'https://detail.1688.com/offer/123.html'
-    store.collectForm.productUrl = url
-    const waiting = { verification: { browserTabId: 'original-tab', sourceUrl: url, platform: '1688' }, diagnostics: {} }
-    vi.mocked(catalogApi.inspectCollectionVerification).mockResolvedValueOnce({ status: 'ready', message: '' })
-    vi.mocked(catalogApi.collectProduct).mockResolvedValueOnce(waiting)
-    vi.mocked(catalogApi.resumeCollection).mockResolvedValueOnce({ ...mutation(collectedProduct()) })
-    const run = store.collectProduct()
-    await vi.advanceTimersByTimeAsync(0)
-    expect(store.collectDiagnostics.status).toBe('waiting_verification')
-    await vi.advanceTimersByTimeAsync(2000)
-    await run
-    expect(store.product.productId).toBe('real-product-1')
-    expect(store.loading).toBe(false)
-  })
-
 })

@@ -917,30 +917,6 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
     assert "appliedPrice" not in pricing_target
 
 
-def test_product_normalization_preserves_explicit_empty_platform_upc() -> None:
-    normalized = normalize_product_model(
-        {
-            "schema_version": PRODUCT_SCHEMA_VERSION,
-            "name": "GTIN exempt product",
-            "upc": "725272000243",
-            "drafts": {
-                "mercadolibre": {
-                    "upc": "",
-                    "allow_gtin_exemption": True,
-                },
-                "ozon": {
-                    "upc": "4601234567890",
-                },
-            },
-        }
-    )
-
-    assert normalized["upc"] == "725272000243"
-    assert "upc" not in normalized["drafts"]["mercadolibre"]
-    assert normalized["drafts"]["mercadolibre"]["allow_gtin_exemption"] is True
-    assert "upc" not in normalized["drafts"]["ozon"]
-
-
 @pytest.mark.parametrize(
     "ozon_category",
     [

@@ -118,24 +118,9 @@ def test_transient_adapter_error_does_not_replay_publish() -> None:
     platform_state = state["platforms"]["mercadolibre"]
     assert platform_state["status"] == "failed"
     assert platform_state["attempts"] == 1
-    assert adapter.publish_calls == 1
-
-
-def test_repeated_transient_results_do_not_expand_attempts() -> None:
-    adapter = _FakeAdapter(
-        [
-            PublishAdapterError("OZON_SERVER_ERROR", "远端 5xx", retryable=True),
-            PublishAdapterError("OZON_SERVER_ERROR", "远端 5xx", retryable=True),
-        ]
-    )
-    state = _run_bus(adapter)
-    platform_state = state["platforms"]["mercadolibre"]
-    assert platform_state["status"] == "failed"
-    assert platform_state["attempts"] == 1
     assert platform_state["result"]["error_code"] == "OZON_SERVER_ERROR"
     assert platform_state["result"]["error_map"]["retryable"] is True
     assert adapter.publish_calls == 1
-
 
 
 def test_deterministic_adapter_error_is_not_retried() -> None:

@@ -24,12 +24,6 @@ export const MARKETPLACE_LISTING_LOCALES: Record<Marketplace, ListingLocaleOptio
   },
 }
 
-export const LISTING_LANGUAGE_OPTIONS: ListingLocaleOption[] = [
-  MARKETPLACE_LISTING_LOCALES.mercadolibre,
-  { value: 'pt-BR', label: 'Portuguese (Brazil)', marketplaceLabel: 'Mercado Livre Brazil' },
-  MARKETPLACE_LISTING_LOCALES.yandex,
-]
-
 export function listingLocaleForMarketplace(platform: Marketplace): ListingLocaleOption {
   return MARKETPLACE_LISTING_LOCALES[platform] || MARKETPLACE_LISTING_LOCALES.mercadolibre
 }

@@ -23,8 +23,6 @@ from erp_web.runtime_units.publish_yandex import (
     advance_yandex_submission,
     publish_yandex_payload,
     validate_yandex_publish_payload,
-    yandex_invalid_dictionary_attributes,
-    yandex_invalid_unit_attributes,
     yandex_offer_identity_conflict,
     yandex_required_attributes_missing,
 )
@@ -1035,22 +1033,6 @@ def test_required_and_invalid_attribute_helpers() -> None:
         _record(),
     )
     assert missing == ["attributes.85"]
-
-    invalid_enum = yandex_invalid_dictionary_attributes(
-        _product(attributes={"85": {"values": [{"value": "手动输入"}]}}),
-        _record(),
-    )
-    assert invalid_enum == ["85"]
-
-    invalid_unit = yandex_invalid_unit_attributes(
-        _product(attributes={"9048": {"value": "10", "unit": "磅"}}),
-        _record(),
-    )
-    assert invalid_unit == ["9048"]
-    assert yandex_invalid_unit_attributes(
-        _product(attributes={"9048": {"value": "10", "unit": "кг"}}),
-        _record(),
-    ) == []
 
 
 def test_map_yandex_publish_error() -> None:

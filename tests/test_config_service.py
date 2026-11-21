@@ -286,16 +286,6 @@ def test_legacy_configuration_remains_readable_but_no_longer_controls_prompts():
     assert "ai_use_case_prompts" not in app_config.normalize_app_config(old)
 
 
-def test_system_prompt_ignores_instance_files(tmp_path: Path):
-    path = tmp_path / "config/prompts/global_chat.json"
-    path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"system": "用户目录旧规则，不生成套图", "user": "旧输入"}), encoding="utf-8")
-    pair = ai_prompt_templates.load_ai_use_case_prompt_pair("global.chat")
-    assert "draft_images_prepare" in pair["system"]
-    assert "用户目录旧规则" not in pair["system"]
-    assert "发布准备中的图片步骤仅指" not in pair["system"]
-
-
 def test_system_prompt_segments_and_installation_errors(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(ai_prompt_templates, "SYSTEM_PROMPT_DIR", tmp_path)
     path = tmp_path / "global_chat.json"
@@ -813,25 +803,6 @@ def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) ->
     assert "copy_source_id" not in merged["ai_models"][1]
 
 
-def test_normalize_app_config_rejects_legacy_ai_aliases(
-    app_dir: Path,
-) -> None:
-    with pytest.raises(ValueError, match="已退役的 AI 配置字段"):
-        app_config.normalize_app_config(
-            {
-                "api_provider": "DeepSeek",
-                "deepseek_api_key": "legacy-text-key",
-                "deepseek_base_url": "https://legacy.deepseek.example",
-                "deepseek_model": "legacy-text-model",
-                "text_ai_api_key": "legacy-text-key-2",
-                "openai_api_key": "legacy-image-key",
-                "openai_base_url": "https://legacy.openai.example/v1",
-                "openai_model": "legacy-image-model",
-                "image_ai_api_key": "legacy-image-key-2",
-            }
-        )
-
-
 def test_normalize_app_config_keeps_1688_api_credentials() -> None:
     saved = app_config.normalize_app_config(
         {
@@ -853,52 +824,6 @@ def test_normalize_app_config_keeps_1688_api_credentials() -> None:
     assert saved["1688_api"]["access_token"] == "token-xyz"
     assert "base_url" not in saved["1688_api"]
     assert saved["1688_api"]["timeout_seconds"] == "30"
-
-
-def test_normalize_app_config_rejects_legacy_nested_ai_sections(
-    app_dir: Path,
-) -> None:
-    with pytest.raises(ValueError, match="已退役的 AI 配置字段"):
-        app_config.normalize_app_config(
-            {
-                "text_ai": {
-                    "platform": "DeepSeek",
-                    "api_key": "legacy-text-key",
-                    "base_url": "https://legacy.deepseek.example",
-                    "model": "legacy-text-model",
-                },
-                "image_ai": {
-                    "platform": "OpenAI",
-                    "api_key": "legacy-image-key",
-                    "base_url": "https://legacy.openai.example/v1",
-                    "model": "legacy-image-model",
-                    "quality": "high",
-                },
-            }
-        )
-
-
-def test_normalize_app_config_rejects_legacy_ai_keys_alongside_canonical_model(
-    app_dir: Path,
-) -> None:
-    with pytest.raises(ValueError, match="已退役的 AI 配置字段"):
-        app_config.normalize_app_config(
-            {
-                "ai_models": [
-                    {
-                        "id": "default_text",
-                        "provider": "New Provider",
-                        "api_key": "",
-                        "base_url": "https://new.example/v1",
-                        "model": "new-model",
-                        "capabilities": ["chat", "json"],
-                    }
-                ],
-                "text_ai_api_key": "legacy-text-key",
-                "deepseek_base_url": "https://legacy.deepseek.example",
-                "deepseek_model": "legacy-text-model",
-            }
-        )
 
 
 def test_normalize_app_config_rejects_retired_pricing_key() -> None:

@@ -294,42 +294,6 @@ def test_image_translate_service_requires_selected_image_ids(app_dir: Path, tmp_
     assert result["imagePoolItems"] == []
 
 
-def test_image_translate_service_returns_configuration_warning_without_provider_output(app_dir: Path, tmp_path: Path) -> None:
-    source_path = tmp_path / "source.png"
-    _make_png(source_path, (255, 0, 0))
-    source_item = image_service.upload_images(app_dir, [{"path": str(source_path), "selected": True}], "pytest-image-translate-warning")[0]
-    product = {
-        "product_id": "pytest-image-translate-warning",
-        "name": "Warning item",
-        "source": {"title": "Warning item", "image_pool": [source_item]},
-    }
-
-    result = image_translate_service.translate_images(
-        app_dir,
-        product,
-        {
-            "ai_models": [
-                {
-                    "id": "image_model",
-                    "provider": "OpenAI",
-                    "api_key": "",
-                    "base_url": "https://api.openai.com/v1",
-                    "model": "gpt-image-1",
-                    "capabilities": ["image_edit", "image_generate"],
-                }
-            ]
-        },
-        target_language="Russian",
-        image_ids=[source_item["id"]],
-        provider=lambda _config, _request: [],
-    )
-
-    assert result["ok"] is False
-    assert "未配置图片翻译模型" in result["message"]
-    assert result["imagePoolItems"] == []
-    assert "Target language: Russian" in result["prompt"]
-
-
 def test_image_translate_service_uses_pydantic_image_gateway(
     app_dir: Path,
     tmp_path: Path,

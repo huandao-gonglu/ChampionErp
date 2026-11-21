@@ -192,21 +192,6 @@ describe('PublishPrecheckPanel', () => {
     }
   })
 
-  it('只渲染发布预检，不包含类目属性编辑模块', () => {
-    const wrapper = mount(PublishPrecheckPanel, {
-      props: panelProps(),
-    })
-
-    expect(wrapper.findAll('button')).toHaveLength(0)
-    expect(wrapper.findAll('input, select')).toHaveLength(0)
-    expect(wrapper.text()).toContain('预检结果')
-    expect(wrapper.text()).toContain('Payload 预览')
-    expect(wrapper.text()).not.toContain('类目候选与手动搜索')
-    expect(wrapper.text()).not.toContain('当前类目 / 平台属性')
-    expect(wrapper.text()).not.toContain('AI 填充属性')
-    expect(wrapper.text()).not.toContain('类目预检')
-  })
-
   it('直接展示目标名称，不提供目标切换控件', () => {
     const wrapper = mount(PublishPrecheckPanel, { props: panelProps() })
     expect(wrapper.get('h3').text()).toContain('ozon')
