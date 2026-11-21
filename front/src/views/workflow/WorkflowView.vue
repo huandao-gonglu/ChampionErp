@@ -7,6 +7,17 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch
 import { until } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
+import {
+  PhArrowLeft,
+  PhArrowSquareOut,
+  PhCheck,
+  PhCheckCircle,
+  PhCopy,
+  PhFloppyDisk,
+  PhImage,
+  PhWarningCircle,
+  PhX,
+} from '@phosphor-icons/vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AuthSettingsPanel from '@/components/auth/AuthSettingsPanel.vue'
 import DraftCategoryWorkspace from '@/views/workflow/DraftCategoryWorkspace.vue'
@@ -36,7 +47,6 @@ import { useDraftImageSaveState } from '@/composables/useDraftImageSaveState'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import { aiPageLabels } from '@/types/aiPageContext'
 import { useClipboard } from '@/composables/useClipboard'
-import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import { useOrderCenterEntrySync } from '@/composables/useOrderCenterEntrySync'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
@@ -106,13 +116,13 @@ const activeNav = ref('dashboard')
 const initialStateLoaded = ref(false)
 const editorOpen = ref(false)
 const focusProductSku = ref('')
+const productEditorTab = ref<'basic' | 'skus' | 'attributes' | 'images'>('basic')
+const productAttributesValid = ref(true)
+const productEditorSnapshot = ref('')
+const productEditorNotice = ref('')
 const draftWorkspaceOpen = ref(false)
-watch(draftWorkspaceOpen, (open, _previous, onCleanup) => {
-  if (!open) return
-  const previousOverflow = document.body.style.overflow
-  document.body.style.overflow = 'hidden'
-  onCleanup(() => { document.body.style.overflow = previousOverflow })
-})
+let listScrollBeforeEditor = 0
+let listScrollBeforeDraft = 0
 const draftImageEditor = ref<InstanceType<typeof DraftImageWorkbench>>()
 const productImageEditor = ref<InstanceType<typeof ProductImageEditorPanel>>()
 const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
@@ -215,7 +225,31 @@ async function reloadDraft() {
 function checkDraftUpdates() {
   if (draftWorkspaceOpen.value) void draftSync.refresh()
 }
-const editorMode = ref<'text' | 'images'>('text')
+const editorMode = computed<'text' | 'images'>({
+  get: () => (productEditorTab.value === 'images' ? 'images' : 'text'),
+  set: (value) => { productEditorTab.value = value === 'images' ? 'images' : 'basic' },
+})
+const productEditorDirty = computed(() => Boolean(editorOpen.value && productEditorSnapshot.value && JSON.stringify(product.value) !== productEditorSnapshot.value))
+const productEditorMainImage = computed(() => {
+  const pool = imagePool.value
+  const main = pool.find((img) => img.isMain) || pool[0]
+  return main ? (main.previewUrl || main.url || '') : ''
+})
+const productEditorMissingSkuCount = computed(() => product.value.skuItems.filter((sku) => {
+  if (!sku.active) return false
+  const positive = (v: unknown) => { const n = Number(String(v ?? '').trim()); return Number.isFinite(n) && n > 0 }
+  return !positive(sku.cost_cny)
+    || !positive(sku.package_dimensions?.length_cm)
+    || !positive(sku.package_dimensions?.width_cm)
+    || !positive(sku.package_dimensions?.height_cm)
+    || !positive(sku.package_dimensions?.weight_kg)
+}).length)
+const productEditorAttributeCount = computed(() => Object.keys(product.value.attributes || {}).length + Object.keys(product.value.source.attributes || {}).length)
+const productEditorBackLabel = computed(() => {
+  if (draftWorkspaceOpen.value) return '返回草稿编辑'
+  const current = navItems.find((item) => item.key === activeNav.value)
+  return current ? `返回${current.title}` : '返回列表'
+})
 const imageEditorTitle = ref('采集箱图片编辑')
 const navItems = workflowNavItems
 
@@ -254,15 +288,24 @@ function syncPricingPackageDimension(field: PackageDimensionField, value: string
   pricingInput.value[field] = normalizedValue && Number.isFinite(parsedValue) ? parsedValue : 0
 }
 
+function scrollWindowTo(y: number) {
+  if (window.scrollY !== y) window.scrollTo(0, y)
+}
+
 async function openProductEditor(item?: Pick<ProductIndexItem, 'productId' | 'productFilePath'>, mode: 'text' | 'images' = 'text') {
   if (item) {
     editorOpen.value = false
     if (!await store.loadProduct(item)) return
   }
+  listScrollBeforeEditor = window.scrollY
   focusProductSku.value = ''
-  editorMode.value = mode
+  productEditorTab.value = mode === 'images' ? 'images' : 'basic'
+  productEditorNotice.value = ''
+  productEditorSnapshot.value = JSON.stringify(product.value)
   imageEditorTitle.value = '采集箱图片编辑'
   editorOpen.value = true
+  await nextTick()
+  scrollWindowTo(0)
 }
 
 async function editDraftProduct(skuId: string) {
@@ -272,16 +315,26 @@ async function editDraftProduct(skuId: string) {
   try {
     const result = await loadProductForEditor(currentDraft.value.productId)
     if (currentDraft.value.draftId !== draftId) return
+    listScrollBeforeEditor = window.scrollY
     product.value = result.product
     focusProductSku.value = skuId
-    editorMode.value = 'text'
+    productEditorTab.value = 'skus'
+    productEditorNotice.value = ''
+    productEditorSnapshot.value = JSON.stringify(product.value)
     editorOpen.value = true
+    await nextTick()
+    scrollWindowTo(0)
   } catch (cause) { activityStore.setError(cause instanceof Error ? cause.message : '读取商品资料失败') }
   finally { loading.value = false }
 }
 async function saveProductFacts() {
+  productEditorNotice.value = ''
   const input = structuredClone(JSON.parse(JSON.stringify(pricingInput.value)))
   const saved = await store.saveCurrentProduct()
+  if (saved) {
+    productEditorSnapshot.value = JSON.stringify(product.value)
+    productEditorNotice.value = '商品资料已保存。'
+  }
   if (draftWorkspaceOpen.value) {
     pricingInput.value = input
     if (saved) await draftSync.refresh()
@@ -317,8 +370,11 @@ async function openDraftWorkspace(item: DraftIndexItem, tab: DraftWorkspaceTab =
   const loaded = await store.loadDraft(item)
   openingDraftId.value = ''
   if (!loaded || activeNav.value !== 'drafts') return
+  listScrollBeforeDraft = window.scrollY
   draftWorkspaceTab.value = tab
   draftWorkspaceOpen.value = true
+  await nextTick()
+  scrollWindowTo(0)
 }
 
 async function translateEditorImages(imageIds: string[]) {
@@ -343,29 +399,22 @@ async function deleteDrafts(items: DraftIndexItem[]) {
 }
 
 function closeProductEditor() {
+  if (productEditorDirty.value && !window.confirm('商品资料有未保存修改，离开将放弃这些更改。确认返回？')) return false
   editorOpen.value = false
-  resetProductEditorBackdropPointer()
+  productEditorNotice.value = ''
+  productEditorSnapshot.value = ''
+  void nextTick(() => scrollWindowTo(listScrollBeforeEditor))
+  return true
 }
-
-const {
-  recordBackdropPointer: recordProductEditorBackdropPointer,
-  dismissFromBackdrop: closeProductEditorFromBackdrop,
-  resetBackdropPointer: resetProductEditorBackdropPointer,
-} = useBackdropDismiss(closeProductEditor)
 
 function closeDraftWorkspace() {
-  if (imageSaveState.dirty.value && !window.confirm('图片设置尚未保存，关闭将放弃这些修改。确认关闭？')) return
+  if (imageSaveState.dirty.value && !window.confirm('图片设置尚未保存，离开将放弃这些修改。确认返回？')) return false
   draftWorkspaceOpen.value = false
-  resetDraftWorkspaceBackdropPointer()
   const row = draftsIndex.value.find(item => item.draftId === currentDraft.value.draftId)
   if (activeNav.value === 'drafts' && row?.updatedAt !== currentDraft.value.updatedAt) void store.refreshDraftsIndex()
+  void nextTick(() => scrollWindowTo(listScrollBeforeDraft))
+  return true
 }
-
-const {
-  recordBackdropPointer: recordDraftWorkspaceBackdropPointer,
-  dismissFromBackdrop: closeDraftWorkspaceFromBackdrop,
-  resetBackdropPointer: resetDraftWorkspaceBackdropPointer,
-} = useBackdropDismiss(closeDraftWorkspace)
 
 async function copyProductId() {
   if (!product.value.productId) return
@@ -393,6 +442,8 @@ async function refreshDomainForNav(key: string) {
 }
 
 function navigate(key: string) {
+  if (editorOpen.value && !closeProductEditor()) return
+  if (draftWorkspaceOpen.value && !closeDraftWorkspace()) return
   if (key === 'publish' && activeNav.value === key) return
   const nextQuery = key === 'dashboard' ? {} : { tab: key }
   if (route.path !== '/' || String(route.query.tab || '') !== String(nextQuery.tab || '')) {
@@ -459,8 +510,10 @@ watch(
     const tab = String(route.query.tab || '')
     const previous = activeNav.value
     activeNav.value = navItems.some((item) => item.key === tab) ? tab : 'dashboard'
-    if ((settingsLoad || fullStateLoad) && previous !== activeNav.value) {
-      void refreshDomainForNav(activeNav.value)
+    if (previous !== activeNav.value) {
+      editorOpen.value = false
+      draftWorkspaceOpen.value = false
+      if (settingsLoad || fullStateLoad) void refreshDomainForNav(activeNav.value)
     }
   },
   { immediate: true },
@@ -480,7 +533,7 @@ watch(
         />
       </div>
 
-      <main class="workflow-main min-w-0" :class="{ 'workflow-main--collect': activeNav === 'collect' }">
+      <main class="workflow-main min-w-0" :class="{ 'workflow-main--collect': activeNav === 'collect' && !editorOpen && !draftWorkspaceOpen }">
         <div class="workflow-mobile-nav sticky top-0 z-20 flex shrink-0 items-center border-b border-accent-200 bg-white dark:border-dark-700 dark:bg-dark-900 md:hidden">
           <select :value="activeNav" aria-label="工作区导航" class="input h-9 max-w-sm !py-0" @change="navigate(($event.target as HTMLSelectElement).value)">
             <option v-for="item in navItems" :key="item.key" :value="item.key">{{ item.title }}</option>
@@ -488,286 +541,391 @@ watch(
         </div>
 
         <div class="workflow-content py-4">
-          <DashboardView
-            v-if="activeNav === 'dashboard'"
-            :product="product"
-            :products-index="productsIndex"
-            :selected-ids="selectedProductIds"
-            :progress-percent="progressPercent"
-            :auth-checklist="mercadolibreAuthChecklist"
-            :publish-job="publishJob"
-            :logs="logs"
-            :loading="loading || store.productsRefreshing"
-            :error="error"
-            @navigate="navigate"
-            @refresh-products="store.refreshProductsIndex"
-            @open-product="openProductEditor"
-            @edit-images="openProductImageEditor"
-            @collect="navigate('collect')"
-            @publish-selected="store.enqueueSelectedProducts"
-          />
+          <!-- 主导航视图层（进入商品/草稿编辑时通过 v-show 隐藏，返回时完整保留列表筛选、勾选与状态） -->
+          <div
+            v-show="!editorOpen && !draftWorkspaceOpen"
+            :class="activeNav === 'collect' ? 'flex min-h-0 flex-1 flex-col' : ''"
+          >
+            <DashboardView
+              v-if="activeNav === 'dashboard'"
+              :product="product"
+              :products-index="productsIndex"
+              :selected-ids="selectedProductIds"
+              :progress-percent="progressPercent"
+              :auth-checklist="mercadolibreAuthChecklist"
+              :publish-job="publishJob"
+              :logs="logs"
+              :loading="loading || store.productsRefreshing"
+              :error="error"
+              @navigate="navigate"
+              @refresh-products="store.refreshProductsIndex"
+              @open-product="openProductEditor"
+              @edit-images="openProductImageEditor"
+              @collect="navigate('collect')"
+              @publish-selected="store.enqueueSelectedProducts"
+            />
 
-          <div v-else-if="activeNav === 'research'" class="space-y-6">
-            <PageHeader title="选品调研" description="目标市场需求、相近市场参考、数据源质量和机会评分。" />
-            <ProductResearchPanel />
-          </div>
+            <div v-else-if="activeNav === 'research'" class="space-y-6">
+              <PageHeader title="选品调研" description="目标市场需求、相近市场参考、数据源质量和机会评分。" />
+              <ProductResearchPanel />
+            </div>
 
-          <CollectView
-            v-else-if="activeNav === 'collect'"
-            :form="collectForm"
-            :loading="loading"
-            :error="error"
-            @open-product="id => openProductEditor({ productId: id, productFilePath: '' })"
-            @open-library="navigate('library')"
-            @save-settings="store.saveCollectSettings"
-          />
-
-          <LibraryPanel
-            v-else-if="activeNav === 'library'"
-            :items="libraryRows"
-            :selected-ids="selectedProductIds"
-            :platform-options="platformOptions"
-            :store-config="storeConfig"
-            :loading="loading"
-            :refreshing="store.productsRefreshing"
-            :error="error"
-            :notice="libraryNotice"
-            @refresh="store.refreshProductsIndex('list')"
-            @claim="claimAndOpenDrafts"
-            @edit="openProductEditor"
-            @delete-item="store.deleteProduct"
-            @delete-selected="store.deleteSelectedProducts"
-            @export-products="handleExportLibraryProducts"
-            @import-products="handleImportLibraryProducts"
-            @clear-notice="libraryNotice = ''"
-            @toggle="store.toggleProductSelection"
-            @select-all="store.selectAllProducts"
-          />
-
-          <div v-else-if="activeNav === 'drafts'" class="space-y-6">
-            <DraftBoxPanel
-              :drafts="draftsIndex"
-              :refreshing="store.draftsRefreshing"
-              :opening-draft-id="openingDraftId"
-              :platform-options="platformOptions"
-              :store-config="storeConfig"
+            <CollectView
+              v-else-if="activeNav === 'collect'"
+              :form="collectForm"
               :loading="loading"
               :error="error"
-              @refresh="store.refreshDraftsIndex"
-              @update-language="store.updateDraftLanguage"
-              @edit="openDraftWorkspace"
-              @duplicate-draft="store.duplicateDraft"
-              @delete-draft="deleteDraft"
-              @delete-drafts="deleteDrafts"
-              @update-targets="store.updateDraftTargets"
+              @open-product="id => openProductEditor({ productId: id, productFilePath: '' })"
+              @open-library="navigate('library')"
+              @save-settings="store.saveCollectSettings"
             />
+
+            <LibraryPanel
+              v-else-if="activeNav === 'library'"
+              :items="libraryRows"
+              :selected-ids="selectedProductIds"
+              :platform-options="platformOptions"
+              :store-config="storeConfig"
+              :loading="loading"
+              :refreshing="store.productsRefreshing"
+              :error="error"
+              :notice="libraryNotice"
+              @refresh="store.refreshProductsIndex('list')"
+              @claim="claimAndOpenDrafts"
+              @edit="openProductEditor"
+              @delete-item="store.deleteProduct"
+              @delete-selected="store.deleteSelectedProducts"
+              @export-products="handleExportLibraryProducts"
+              @import-products="handleImportLibraryProducts"
+              @clear-notice="libraryNotice = ''"
+              @toggle="store.toggleProductSelection"
+              @select-all="store.selectAllProducts"
+            />
+
+            <div v-else-if="activeNav === 'drafts'" class="space-y-6">
+              <DraftBoxPanel
+                :drafts="draftsIndex"
+                :refreshing="store.draftsRefreshing"
+                :opening-draft-id="openingDraftId"
+                :platform-options="platformOptions"
+                :store-config="storeConfig"
+                :loading="loading"
+                :error="error"
+                @refresh="store.refreshDraftsIndex"
+                @update-language="store.updateDraftLanguage"
+                @edit="openDraftWorkspace"
+                @duplicate-draft="store.duplicateDraft"
+                @delete-draft="deleteDraft"
+                @delete-drafts="deleteDrafts"
+                @update-targets="store.updateDraftTargets"
+              />
+            </div>
+
+            <TaskQueuePanel v-else-if="activeNav === 'publish'" :initial-task-id="String(route.query.task_id || '')" :initial-source="String(route.query.source || '')" @close-task="closeTaskDetail" />
+
+            <SystemSettingsPanel v-else-if="activeNav === 'systemSettings'" />
+            <OrderCenterPanel v-else-if="activeNav === 'orders'" />
+            <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" @open-task="openOnlineTask" />
+
+            <div v-else-if="activeNav === 'auth'" class="space-y-6">
+              <AuthSettingsPanel
+                :app-config="appConfig"
+                :ai-config="aiConfig"
+                :models-reading="modelsReading"
+                :models-saving="modelsSaving"
+                :store-config="storeConfig"
+                :store-auth-summary="storeAuthSummary"
+                :platform-options="platformOptions"
+                :mercadolibre-checklist="mercadolibreAuthChecklist"
+                :last-result="lastAuthResult"
+                :auth-link="authLink"
+                :loading="loading"
+                @save-ai="store.saveAiSettings"
+                @test-ai="store.testAiSettings"
+                @test-api="store.testPlatformApiConfig"
+                @save-store="store.saveStoreConfig"
+                @save-currency="store.saveStoreCurrency"
+                @test-auth="store.testAuth"
+                @refresh-checklist="store.loadMercadoLibreChecklist"
+                @generate-ml-link="store.generateMercadoLibreAuthLink"
+                @open-ml-link="store.openMercadoLibreAuth"
+                @refresh-ml-token="store.refreshMercadoLibreAuthToken"
+                @real-ml-test="store.runMercadoLibreAuthTest"
+                @exchange-ml-code="store.exchangeMlCode"
+                @clear-auth="store.clearPlatformAuth"
+              />
+              <OrderIntegrationSettings />
+            </div>
           </div>
 
-          <TaskQueuePanel v-else-if="activeNav === 'publish'" :initial-task-id="String(route.query.task_id || '')" :initial-source="String(route.query.source || '')" @close-task="closeTaskDetail" />
+          <!-- 原地商品编辑工作台（占满主区宽度，无全屏遮罩弹窗） -->
+          <section
+            v-if="editorOpen"
+            aria-label="商品编辑工作台"
+            class="flex min-w-0 flex-col rounded-2xl border border-accent-200/90 bg-accent-50/70 shadow-sm dark:border-dark-700 dark:bg-dark-900/70"
+          >
+            <header class="product-editor-sticky border-b border-accent-200/90 bg-white/95 px-4 pt-3.5 backdrop-blur-sm dark:border-dark-700 dark:bg-dark-900/95 sm:px-5">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex min-w-0 flex-1 items-center gap-3">
+                  <button
+                    type="button"
+                    data-testid="product-editor-back"
+                    class="btn btn-outline !min-h-9 shrink-0 !rounded-xl !px-3 !py-1.5 text-sm"
+                    @click="closeProductEditor"
+                  >
+                    <PhArrowLeft :size="15" aria-hidden="true" />{{ productEditorBackLabel }}
+                  </button>
+                  <span class="h-5 w-px shrink-0 bg-accent-200 dark:bg-dark-700" aria-hidden="true" />
+                  <img
+                    v-if="productEditorMainImage"
+                    :src="productEditorMainImage"
+                    alt=""
+                    class="size-10 shrink-0 rounded-xl border border-accent-200 object-cover dark:border-dark-700"
+                  />
+                  <div v-else class="grid size-10 shrink-0 place-items-center rounded-xl border border-accent-200 bg-accent-100 text-accent-400 dark:border-dark-700 dark:bg-dark-800">
+                    <PhImage :size="18" aria-hidden="true" />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <h2 class="truncate text-base font-bold text-accent-950 dark:text-white" :title="product.source.title || product.name || product.productId || '商品编辑'">
+                      {{ product.source.title || product.name || product.productId || '商品编辑' }}
+                    </h2>
+                    <div class="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-accent-500 dark:text-accent-400">
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-md bg-accent-100 px-1.5 py-0.5 font-mono text-[11px] text-accent-600 transition hover:bg-accent-200/70 hover:text-accent-900 disabled:opacity-50 dark:bg-dark-800 dark:text-accent-300 dark:hover:bg-dark-700"
+                        :disabled="!product.productId"
+                        :title="product.productId || '当前商品暂无 ID'"
+                        @click="copyProductId"
+                      >
+                        <span>{{ product.productId || '无商品 ID' }}</span>
+                        <PhCheck v-if="productIdCopied" :size="11" class="text-primary-600 dark:text-primary-400" aria-hidden="true" />
+                        <PhCopy v-else :size="11" aria-hidden="true" />
+                      </button>
+                      <a
+                        v-if="product.source.sourceUrl"
+                        :href="product.source.sourceUrl"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-flex items-center gap-1 text-[11px] text-accent-500 transition hover:text-primary-700 hover:underline dark:text-accent-400 dark:hover:text-primary-300"
+                      >
+                        来源链接 <PhArrowSquareOut :size="11" aria-hidden="true" />
+                      </a>
+                      <span v-if="productEditorDirty" class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
+                        有未保存修改
+                      </span>
+                    </div>
+                  </div>
+                </div>
 
-          <SystemSettingsPanel v-else-if="activeNav === 'systemSettings'" />
-          <OrderCenterPanel v-else-if="activeNav === 'orders'" />
-          <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" @open-task="openOnlineTask" />
+                <div class="flex shrink-0 flex-wrap items-center gap-2">
+                  <button
+                    v-if="productEditorTab !== 'images'"
+                    type="button"
+                    class="btn btn-primary !min-h-9 !rounded-xl !px-3.5 !py-1.5 text-sm"
+                    :disabled="loading || !productAttributesValid"
+                    @click="saveProductFacts"
+                  >
+                    <PhFloppyDisk :size="15" aria-hidden="true" />保存商品
+                  </button>
+                </div>
+              </div>
 
-          <div v-else-if="activeNav === 'auth'" class="space-y-6">
-            <AuthSettingsPanel
-              :app-config="appConfig"
-              :ai-config="aiConfig"
-              :models-reading="modelsReading"
-              :models-saving="modelsSaving"
-              :store-config="storeConfig"
-              :store-auth-summary="storeAuthSummary"
-              :platform-options="platformOptions"
-              :mercadolibre-checklist="mercadolibreAuthChecklist"
-              :last-result="lastAuthResult"
-              :auth-link="authLink"
-              :loading="loading"
-              @save-ai="store.saveAiSettings"
-              @test-ai="store.testAiSettings"
-              @test-api="store.testPlatformApiConfig"
-              @save-store="store.saveStoreConfig"
-              @save-currency="store.saveStoreCurrency"
-              @test-auth="store.testAuth"
-              @refresh-checklist="store.loadMercadoLibreChecklist"
-              @generate-ml-link="store.generateMercadoLibreAuthLink"
-              @open-ml-link="store.openMercadoLibreAuth"
-              @refresh-ml-token="store.refreshMercadoLibreAuthToken"
-              @real-ml-test="store.runMercadoLibreAuthTest"
-              @exchange-ml-code="store.exchangeMlCode"
-              @clear-auth="store.clearPlatformAuth"
-            />
-            <OrderIntegrationSettings />
+              <!-- 4 分区工作台导航 -->
+              <nav class="mt-3 flex gap-1 overflow-x-auto" role="tablist" aria-label="商品编辑选项">
+                <button
+                  type="button"
+                  role="tab"
+                  :aria-selected="productEditorTab === 'basic'"
+                  class="product-editor-tab"
+                  @click="productEditorTab = 'basic'"
+                >
+                  基础资料
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  :aria-selected="productEditorTab === 'skus'"
+                  class="product-editor-tab"
+                  @click="productEditorTab = 'skus'"
+                >
+                  规格与 SKU
+                  <span class="product-editor-badge tabular-nums">{{ product.skuItems.length }}</span>
+                  <span
+                    v-if="productEditorMissingSkuCount"
+                    class="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-amber-800 tabular-nums dark:bg-amber-500/20 dark:text-amber-200"
+                  >
+                    缺 {{ productEditorMissingSkuCount }}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  :aria-selected="productEditorTab === 'attributes'"
+                  class="product-editor-tab"
+                  @click="productEditorTab = 'attributes'"
+                >
+                  商品属性
+                  <span class="product-editor-badge tabular-nums">{{ productEditorAttributeCount }}</span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  :aria-selected="productEditorTab === 'images'"
+                  class="product-editor-tab"
+                  @click="productEditorTab = 'images'"
+                >
+                  图片素材
+                  <span class="product-editor-badge tabular-nums">{{ imagePool.length }}</span>
+                </button>
+              </nav>
+            </header>
+
+            <div v-if="error || productEditorNotice" class="space-y-2 px-4 pt-3 sm:px-5">
+              <div
+                v-if="error"
+                role="alert"
+                class="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
+              >
+                <PhWarningCircle :size="17" weight="fill" class="mt-0.5 shrink-0 text-rose-500 dark:text-rose-400" aria-hidden="true" />
+                <span class="min-w-0 break-words">{{ error }}</span>
+              </div>
+              <div
+                v-else-if="productEditorNotice"
+                role="status"
+                class="flex items-center justify-between gap-2 rounded-xl border border-primary-200/80 bg-primary-50/80 px-3.5 py-2 text-xs font-medium text-primary-800 dark:border-primary-500/25 dark:bg-primary-500/10 dark:text-primary-200"
+              >
+                <span class="inline-flex items-center gap-2"><PhCheckCircle :size="15" weight="fill" class="text-primary-600 dark:text-primary-400" aria-hidden="true" />{{ productEditorNotice }}</span>
+                <button type="button" aria-label="关闭保存提示" class="rounded p-0.5 opacity-70 hover:opacity-100" @click="productEditorNotice = ''">
+                  <PhX :size="13" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+
+            <div class="min-w-0 p-4 sm:p-5">
+              <ProductEditorPanel
+                v-if="productEditorTab !== 'images'"
+                embedded
+                :active-section="productEditorTab"
+                :product="product"
+                :loading="loading"
+                :focus-sku-id="focusProductSku"
+                @validity-change="productAttributesValid = $event"
+                @save="saveProductFacts"
+                @assign-upc="store.assignUpc"
+              />
+              <ProductImageEditorPanel
+                v-else
+                ref="productImageEditor"
+                embedded
+                :title="imageEditorTitle"
+                :product="product"
+                :images="imagePool"
+                :loading="loading"
+                :error="error"
+                @translate="translateEditorImages"
+                @image-edit="editEditorImages"
+                @upload="store.uploadReferenceImages"
+                @save="store.saveCurrentImagePool"
+                @save-sku-images="store.saveCurrentProduct"
+                @set-main="store.setMainImage"
+                @delete="store.deleteImages"
+                @clear="store.clearSourceImages"
+              />
+            </div>
+          </section>
+
+          <!-- 原地草稿编辑工作台（占满主区宽度；从草稿内跳转补商品 SKU 时通过 v-show 保留上下文） -->
+          <div v-if="draftWorkspaceOpen" v-show="!editorOpen">
+            <DraftWorkspacePanel
+              :active-tab="draftWorkspaceTab"
+              :draft-title="draftWorkspaceTitle"
+              :draft-id="currentDraft.draftId"
+              :sync-message="draftSyncMessage"
+              :error-message="['pricing', 'images'].includes(draftWorkspaceTab) ? '' : error"
+              :refreshing="draftRefreshing"
+              :reload-disabled="loading || imageWorkbenchBusy"
+              :editing-disabled="imageWorkbenchBusy"
+              @reload="reloadDraft"
+              @update-active-tab="draftWorkspaceTab = $event"
+              @close="closeDraftWorkspace"
+            >
+              <template #actions>
+                <span v-if="draftWorkspaceTab === 'text' && modelOperationReason('copy.generate')" role="status" class="muted">{{ modelOperationReason('copy.generate') }}</span>
+                <button v-if="draftWorkspaceTab === 'text'" v-desktop="'copy.generate'" class="btn btn-outline !min-h-9 !rounded-xl !px-3 !py-1.5 text-sm" :disabled="draftWorkspaceLoading || !!modelOperationReason('copy.generate') || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
+                  {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
+                </button>
+                <button class="btn btn-primary !min-h-9 !rounded-xl !px-3.5 !py-1.5 text-sm" :disabled="loading || imageWorkbenchBusy || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="imageSaveState.save">{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}</button>
+              </template>
+
+              <template #text>
+                <DraftEditorPanel
+                  embedded
+                  :draft="currentDraft"
+                  :product-context="currentDraftProductContext"
+                  :platform-options="platformOptions"
+                  :store-config="storeConfig"
+                  :loading="draftWorkspaceLoading"
+                  @update-language="store.updateDraftLanguage"
+                  @update-targets="store.updateDraftTargets"
+                />
+              </template>
+
+              <template #skus>
+                <DraftSkuPanel :categories="Object.fromEntries(store.targetEditors.map(editor => [editor.key, editor.state.category]))" :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="currentDraftProductContext.imagePool" :loading="draftWorkspaceLoading" @edit-product="editDraftProduct">
+                  <template #attributes="{ row, sku, targetKey }">
+                    <DraftSkuAttributesEditor :sku-id="row.sku_id" :sku="sku" :target-key="targetKey" />
+                  </template>
+                </DraftSkuPanel>
+              </template>
+
+              <template #images>
+                <DraftImageWorkbench
+                  ref="draftImageEditor"
+                  :draft="currentDraft"
+                  :product-context="currentDraftProductContext"
+                  :loading="draftWorkspaceLoading"
+                  :controller="imageWorkbench"
+                />
+              </template>
+
+              <template #category>
+                <DraftCategoryWorkspace :key="currentDraft.draftId" @update-package-dimension="syncPricingPackageDimension" />
+              </template>
+
+              <template #pricing>
+                <div class="grid min-w-0 gap-6">
+                  <PricingPanel
+                    :key="currentDraft.draftId"
+                    :sku-items="currentDraft.skuItems"
+                    selection-locked
+                    :input="pricingInput"
+                    :result="pricingResult"
+                    :draft-items="pricingDraftItems"
+                    :draft-id="currentDraft.draftId"
+                    :draft-version="currentDraft.updatedAt"
+                    :saved-pricing="currentDraft.pricing"
+                    :draft-title="draftWorkspaceTitle"
+                    :product-context="currentDraftProductContext"
+                    :platform-options="platformOptions"
+                    :loading="draftWorkspaceLoading"
+                    :store-config="storeConfig"
+                    :error="error"
+                    :refresh-product="() => draftSync.refresh()"
+                    @edit-product="editDraftProduct"
+                    @calculate="store.calculatePrice"
+                    @restore="store.restorePricingPreview"
+                    @apply="store.applyPrice"
+                  />
+                </div>
+              </template>
+
+              <template #precheck>
+                <DraftPublishPrecheckWorkspace :key="currentDraft.draftId" />
+              </template>
+            </DraftWorkspacePanel>
           </div>
         </div>
       </main>
-    </div>
-    <div
-      v-if="editorOpen"
-      class="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm"
-      @pointerdown="recordProductEditorBackdropPointer"
-      @pointerup="closeProductEditorFromBackdrop"
-      @pointercancel="resetProductEditorBackdropPointer"
-    >
-      <div class="w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
-        <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ product.source.title || product.name || product.productId || '商品编辑' }}</h2>
-            <p class="mt-1 text-sm text-slate-500 dark:text-accent-300">{{ product.productId || '在同一工作台完成文本与图片编辑' }}</p>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button class="btn btn-outline" :disabled="!product.productId" :title="product.productId || '当前商品暂无 ID'" @click="copyProductId">
-              {{ productIdCopied ? '已复制' : '复制id' }}
-            </button>
-            <button class="btn btn-outline" @click="closeProductEditor">关闭</button>
-          </div>
-        </div>
-        <nav class="mb-5 grid gap-2 rounded-2xl border border-accent-200 bg-accent-50/70 p-2 dark:border-dark-700 dark:bg-dark-950/70 sm:grid-cols-2" aria-label="商品编辑选项">
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="editorMode === 'text'"
-            class="rounded-xl border px-4 py-3 text-left transition"
-            :class="editorMode === 'text' ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/60 dark:bg-dark-800 dark:text-primary-200' : 'border-transparent text-accent-600 hover:bg-white/70 dark:text-accent-300 dark:hover:bg-dark-800/70'"
-            @click="editorMode = 'text'"
-          >
-            <span class="block font-semibold">编辑文本</span>
-            <span class="mt-1 block text-xs opacity-75">标题、描述和商品属性</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="editorMode === 'images'"
-            class="rounded-xl border px-4 py-3 text-left transition"
-            :class="editorMode === 'images' ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/60 dark:bg-dark-800 dark:text-primary-200' : 'border-transparent text-accent-600 hover:bg-white/70 dark:text-accent-300 dark:hover:bg-dark-800/70'"
-            @click="editorMode = 'images'"
-          >
-            <span class="block font-semibold">编辑图片</span>
-            <span class="mt-1 block text-xs opacity-75">翻译、处理和管理商品图片</span>
-          </button>
-        </nav>
-        <ProductEditorPanel
-          v-if="editorMode === 'text'"
-          :product="product"
-          :loading="loading"
-          :focus-sku-id="focusProductSku"
-          @save="saveProductFacts"
-          @assign-upc="store.assignUpc"
-        />
-        <ProductImageEditorPanel
-          v-else
-          ref="productImageEditor"
-          :title="imageEditorTitle"
-          :product="product"
-          :images="imagePool"
-          :loading="loading"
-          :error="error"
-          @translate="translateEditorImages"
-          @image-edit="editEditorImages"
-          @upload="store.uploadReferenceImages"
-          @save="store.saveCurrentImagePool"
-          @save-sku-images="store.saveCurrentProduct"
-          @set-main="store.setMainImage"
-          @delete="store.deleteImages"
-          @clear="store.clearSourceImages"
-        />
-      </div>
-    </div>
-    <div
-      v-if="draftWorkspaceOpen"
-      class="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-slate-950/50 p-2 backdrop-blur-sm sm:p-4"
-      @pointerdown="recordDraftWorkspaceBackdropPointer"
-      @pointerup="closeDraftWorkspaceFromBackdrop"
-      @pointercancel="resetDraftWorkspaceBackdropPointer"
-    >
-      <div role="dialog" aria-modal="true" :aria-label="draftWorkspaceTitle" class="h-full min-h-0 w-full max-w-[96rem] overflow-hidden rounded-2xl bg-white p-3 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-5">
-        <DraftWorkspacePanel
-          :active-tab="draftWorkspaceTab"
-          :draft-title="draftWorkspaceTitle"
-          :draft-id="currentDraft.draftId"
-          :sync-message="draftSyncMessage"
-          :error-message="['pricing', 'images'].includes(draftWorkspaceTab) ? '' : error"
-          :refreshing="draftRefreshing"
-          :reload-disabled="loading || imageWorkbenchBusy"
-          :editing-disabled="imageWorkbenchBusy"
-          @reload="reloadDraft"
-          @update-active-tab="draftWorkspaceTab = $event"
-          @close="closeDraftWorkspace"
-        >
-          <template #actions>
-            <span v-if="draftWorkspaceTab === 'text' && modelOperationReason('copy.generate')" role="status" class="muted">{{ modelOperationReason('copy.generate') }}</span>
-            <button v-if="draftWorkspaceTab === 'text'" v-desktop="'copy.generate'" class="btn btn-outline" :disabled="draftWorkspaceLoading || !!modelOperationReason('copy.generate') || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
-              {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
-            </button>
-            <button class="btn btn-primary" :disabled="loading || imageWorkbenchBusy || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="imageSaveState.save">{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}</button>
-          </template>
-
-          <template #text>
-            <DraftEditorPanel
-              embedded
-              :draft="currentDraft"
-              :product-context="currentDraftProductContext"
-              :platform-options="platformOptions"
-              :store-config="storeConfig"
-              :loading="draftWorkspaceLoading"
-              @update-language="store.updateDraftLanguage"
-              @update-targets="store.updateDraftTargets"
-            />
-          </template>
-
-          <template #skus>
-            <DraftSkuPanel :categories="Object.fromEntries(store.targetEditors.map(editor => [editor.key, editor.state.category]))" :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="currentDraftProductContext.imagePool" :loading="draftWorkspaceLoading" @edit-product="editDraftProduct">
-              <template #attributes="{ row, sku, targetKey }">
-                <DraftSkuAttributesEditor :sku-id="row.sku_id" :sku="sku" :target-key="targetKey" />
-              </template>
-            </DraftSkuPanel>
-          </template>
-
-          <template #images>
-            <DraftImageWorkbench
-              ref="draftImageEditor"
-              :draft="currentDraft"
-              :product-context="currentDraftProductContext"
-              :loading="draftWorkspaceLoading"
-              :controller="imageWorkbench"
-            />
-          </template>
-
-          <template #category>
-            <DraftCategoryWorkspace :key="currentDraft.draftId" @update-package-dimension="syncPricingPackageDimension" />
-          </template>
-
-          <template #pricing>
-            <div class="grid min-w-0 gap-6">
-              <PricingPanel
-                :key="currentDraft.draftId"
-                :sku-items="currentDraft.skuItems"
-                selection-locked
-                :input="pricingInput"
-                :result="pricingResult"
-                :draft-items="pricingDraftItems"
-                :draft-id="currentDraft.draftId"
-                :draft-version="currentDraft.updatedAt"
-                :saved-pricing="currentDraft.pricing"
-                :draft-title="draftWorkspaceTitle"
-                :product-context="currentDraftProductContext"
-                :platform-options="platformOptions"
-                :loading="draftWorkspaceLoading"
-                :store-config="storeConfig"
-                :error="error"
-                :refresh-product="() => draftSync.refresh()"
-                @edit-product="editDraftProduct"
-                @calculate="store.calculatePrice"
-                @restore="store.restorePricingPreview"
-                @apply="store.applyPrice"
-              />
-            </div>
-          </template>
-
-          <template #precheck>
-            <DraftPublishPrecheckWorkspace :key="currentDraft.draftId" />
-          </template>
-        </DraftWorkspacePanel>
-      </div>
     </div>
   </div>
 </template>
@@ -797,5 +955,24 @@ watch(
   .workflow-main--collect {
     block-size: 100dvh;
   }
+}
+.product-editor-sticky {
+  position: sticky;
+  inset-block-start: var(--workflow-mobile-nav-height, 0px);
+  z-index: 20;
+  border-top-left-radius: 1rem;
+  border-top-right-radius: 1rem;
+}
+.product-editor-tab {
+  @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-xs font-medium text-accent-600 transition hover:text-accent-950 dark:text-accent-300 dark:hover:text-white;
+}
+.product-editor-tab[aria-selected='true'] {
+  @apply border-primary-500 font-semibold text-primary-700 dark:text-primary-300;
+}
+.product-editor-badge {
+  @apply inline-flex min-w-5 items-center justify-center rounded-full bg-accent-100 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent-600 dark:bg-dark-800 dark:text-accent-300;
+}
+.product-editor-tab[aria-selected='true'] .product-editor-badge {
+  @apply bg-primary-100 text-primary-800 dark:bg-primary-500/20 dark:text-primary-200;
 }
 </style>

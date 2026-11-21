@@ -100,4 +100,34 @@ describe('商品来源属性编辑', () => {
     expect(wrapper.get('button.btn-primary').attributes('disabled')).toBeUndefined()
     expect(wrapper.findAll('[data-testid="product-attribute-row"]')).toHaveLength(3)
   })
+
+  it('可将来源参考尺寸一键同步到空白 SKU 且不覆盖已有尺寸', async () => {
+    const current = reactive(normalizeBackendProduct({
+      schema_version: PRODUCT_SCHEMA_VERSION,
+      product_id: 'product-dims',
+      source: {
+        title: '测试杯',
+        dimensions: { length_cm: '18', width_cm: '9', height_cm: '9' },
+        weight_kg: '0.45',
+      },
+      sku_items: [
+        { id: 'sku-blank', name: '空白规格', active: true, package_dimensions: {} },
+        { id: 'sku-filled', name: '已填规格', active: true, package_dimensions: { length_cm: '25', weight_kg: '0.8' } },
+      ],
+    }))
+    const wrapper = mount(ProductEditorPanel, { props: { product: current, loading: false } })
+    await wrapper.findAll('button').find((button) => button.text().includes('同步到空白 SKU'))!.trigger('click')
+    expect(current.skuItems[0].package_dimensions).toEqual({
+      length_cm: '18',
+      width_cm: '9',
+      height_cm: '9',
+      weight_kg: '0.45',
+    })
+    expect(current.skuItems[1].package_dimensions).toEqual({
+      length_cm: '25',
+      width_cm: '9',
+      height_cm: '9',
+      weight_kg: '0.8',
+    })
+  })
 })

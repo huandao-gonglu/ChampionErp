@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { DesktopImageAction } from '@/utils/desktopHandoff'
 import { computed, ref } from 'vue'
+import { PhWarningCircle } from '@phosphor-icons/vue'
 import { skuImageAssignments, type SkuImageBatchChange } from '@/utils/draftImages'
 import ImagePoolPanel from '@/components/domain/ImagePoolPanel.vue'
 import type { ImageAsset, Product } from '@/types/workflow'
@@ -17,6 +18,7 @@ const props = defineProps<{
   loading: boolean
   error?: string
   showTranslateAction?: boolean
+  embedded?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -53,16 +55,18 @@ function assignSkus(changes: SkuImageBatchChange[]) {
   // 商品批量关联在全部修改后仅保存一次。
   if (changed) emit('saveSkuImages')
 }
-
 </script>
 
 <template>
-  <div class="space-y-5">
-    <section class="card">
-      <h2 class="card-title">{{ title || '采集箱图片编辑' }}</h2>
-      <p class="muted mt-1">{{ product.source.title || product.name || product.productId }}</p>
-      <p v-if="error" role="alert" class="mt-3 text-sm text-rose-600">{{ error }}</p>
-    </section>
+  <div class="space-y-4">
+    <div
+      v-if="error && !embedded"
+      role="alert"
+      class="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
+    >
+      <PhWarningCircle :size="17" weight="fill" class="mt-0.5 shrink-0 text-rose-500 dark:text-rose-400" aria-hidden="true" />
+      <span>{{ error }}</span>
+    </div>
     <ImagePoolPanel
       ref="imagePool"
       :images="images"

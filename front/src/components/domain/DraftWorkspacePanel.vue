@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { PhArrowLeft, PhArrowsClockwise, PhWarningCircle } from '@phosphor-icons/vue'
+
 export type DraftWorkspaceTab = 'text' | 'images' | 'category' | 'skus' | 'pricing' | 'precheck'
 
 const props = defineProps<{
@@ -29,47 +31,103 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
 </script>
 
 <template>
-  <section class="flex h-full min-h-0 flex-col gap-5">
-    <div class="shrink-0 space-y-3">
+  <section class="flex min-w-0 flex-col rounded-2xl border border-accent-200/90 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-900">
+    <!-- 吸顶工作台顶栏：返回导航 + 标题 + 操作 + 6 分区标签 -->
+    <div class="draft-workspace-sticky border-b border-accent-200/90 bg-white/95 px-4 pt-3.5 backdrop-blur-sm dark:border-dark-700 dark:bg-dark-900/95 sm:px-5">
       <header class="flex flex-wrap items-center justify-between gap-3">
-        <div class="min-w-0 flex-1 basis-64">
-          <h2 class="truncate text-base font-bold text-slate-950 dark:text-white" :title="props.draftTitle">{{ props.draftTitle || '草稿编辑' }}</h2>
+        <div class="flex min-w-0 flex-1 basis-64 items-center gap-3">
+          <button
+            type="button"
+            class="btn btn-outline !min-h-9 shrink-0 !rounded-xl !px-3 !py-1.5 text-sm"
+            @click="emit('close')"
+          >
+            <PhArrowLeft :size="15" aria-hidden="true" />返回草稿箱
+          </button>
+          <span class="h-5 w-px shrink-0 bg-accent-200 dark:bg-dark-700" aria-hidden="true" />
+          <div class="min-w-0 flex-1">
+            <h2 class="truncate text-base font-bold text-accent-950 dark:text-white" :title="props.draftTitle">
+              {{ props.draftTitle || '草稿编辑' }}
+            </h2>
+            <p v-if="props.draftId" class="truncate font-mono text-[11px] text-accent-500 dark:text-accent-400">
+              {{ props.draftId }}
+            </p>
+          </div>
         </div>
-        <div class="flex flex-wrap items-center gap-2">
+        <div class="flex shrink-0 flex-wrap items-center gap-2">
           <slot name="actions" />
-          <button v-if="!props.syncMessage" class="btn btn-outline" :disabled="props.refreshing || props.reloadDisabled || !props.draftId" @click="emit('reload')">{{ props.refreshing ? '正在加载…' : '重新加载最新数据' }}</button>
-          <button class="btn btn-outline" @click="emit('close')">关闭</button>
+          <button
+            v-if="!props.syncMessage"
+            type="button"
+            class="btn btn-outline !min-h-9 !rounded-xl !px-3 !py-1.5 text-sm"
+            :disabled="props.refreshing || props.reloadDisabled || !props.draftId"
+            @click="emit('reload')"
+          >
+            <PhArrowsClockwise :size="15" :class="{ 'animate-spin': props.refreshing }" aria-hidden="true" />{{ props.refreshing ? '正在加载…' : '重新加载最新数据' }}
+          </button>
         </div>
       </header>
 
-      <div v-if="props.syncMessage" role="alert" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+      <div
+        v-if="props.syncMessage"
+        role="alert"
+        class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+      >
         <p class="min-w-0 flex-1">{{ props.syncMessage }}</p>
-        <button type="button" class="btn btn-outline shrink-0" :disabled="props.refreshing || props.reloadDisabled || !props.draftId" @click="emit('reload')">{{ props.refreshing ? '正在加载…' : '重新加载最新数据' }}</button>
+        <button
+          type="button"
+          class="btn btn-outline !min-h-8 shrink-0 !rounded-lg !px-3 !py-1 text-xs"
+          :disabled="props.refreshing || props.reloadDisabled || !props.draftId"
+          @click="emit('reload')"
+        >
+          {{ props.refreshing ? '正在加载…' : '重新加载最新数据' }}
+        </button>
       </div>
 
-      <nav class="flex gap-1 overflow-x-auto border-b border-accent-200 dark:border-dark-700" role="tablist" aria-label="草稿编辑功能">
+      <p
+        v-if="props.errorMessage"
+        role="alert"
+        class="mt-3 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
+      >
+        <PhWarningCircle :size="17" weight="fill" class="mt-0.5 shrink-0 text-rose-500 dark:text-rose-400" aria-hidden="true" />
+        <span class="min-w-0 break-words">{{ props.errorMessage }}</span>
+      </p>
+
+      <nav class="mt-3 flex gap-1 overflow-x-auto" role="tablist" aria-label="草稿编辑功能">
         <button
           v-for="tab in tabs"
           :key="tab.key"
-          class="shrink-0 rounded-t-lg px-4 py-2.5 text-sm transition"
+          type="button"
+          class="draft-workspace-tab"
           :title="tab.summary"
-          :class="props.activeTab === tab.key
-            ? 'border border-primary-200 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-dark-900 dark:text-primary-100'
-            : 'border border-transparent text-accent-600 hover:bg-white/80 hover:text-accent-950 dark:text-accent-300 dark:hover:bg-dark-900 dark:hover:text-white'"
           role="tab"
           :aria-selected="props.activeTab === tab.key"
           @click="emit('updateActiveTab', tab.key)"
         >
-          <span class="font-semibold">{{ tab.label }}</span>
+          {{ tab.label }}
         </button>
       </nav>
-      <p v-if="props.errorMessage" role="alert" class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">{{ props.errorMessage }}</p>
     </div>
 
-    <div :key="props.activeTab" role="tabpanel" class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+    <div :key="props.activeTab" role="tabpanel" class="min-w-0 p-4 sm:p-5">
       <div :inert="props.editingDisabled && props.activeTab !== 'images' ? true : undefined">
         <slot :name="props.activeTab" />
       </div>
     </div>
   </section>
 </template>
+
+<style scoped>
+.draft-workspace-sticky {
+  position: sticky;
+  inset-block-start: var(--workflow-mobile-nav-height, 0px);
+  z-index: 20;
+  border-top-left-radius: 1rem;
+  border-top-right-radius: 1rem;
+}
+.draft-workspace-tab {
+  @apply shrink-0 whitespace-nowrap border-b-2 border-transparent px-3.5 py-2.5 text-xs font-medium text-accent-600 transition hover:text-accent-950 dark:text-accent-300 dark:hover:text-white;
+}
+.draft-workspace-tab[aria-selected='true'] {
+  @apply border-primary-500 font-semibold text-primary-700 dark:text-primary-300;
+}
+</style>
