@@ -64,6 +64,7 @@ Store/service，发现时不执行 loader；不扫描包或依赖装饰器注册
 [覆盖清单](business-query-coverage.md)。`services/config_queries.py` 由原 Store 生成不含凭据
 及本机连接的公开业务视图，不刷新远端。
 `services/pricing_data.py` 读取已保存和短期预览的原始核价结果，不触发模型或重新核价。
+`services/dashboard_analytics.py` 提供 `dashboard.analytics`（`/api/business-queries/dashboard.analytics`），仅从本地 SQLite 聚合三平台订单履约分布、近 7/14/30 天订单与商品产出趋势、在线商品与任务概览，不刷新远端。
 Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不推测补造。
 开发边界、字段展开、预算与验证见[共用业务数据读取](business-data-access.md)。
 

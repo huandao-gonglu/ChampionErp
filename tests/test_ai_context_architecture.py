@@ -1132,7 +1132,7 @@ def test_order_procurement_keeps_routes_thin_and_dashboard_summary_only():
     route = ROOT / "erp_web/http_route_units/order_routes.py"
     assert not any(target.startswith("erp_web.runtime_units") for _, target in imported_targets([route]))
     dashboard = (ROOT / "front/src/views/workflow/DashboardView.vue").read_text()
-    assert "OrderSummaryCard" in dashboard
+    assert "fetchDashboardAnalytics" in dashboard
     assert "OrderCenterPanel" not in dashboard
     assert not (ROOT / "front/src/components/domain/OrderNotificationsPanel.vue").exists()
     source = (ROOT / "erp_web/runtime_units/order_source_bindings.py").read_text()

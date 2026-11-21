@@ -34,6 +34,11 @@ class DraftIndexParameters(ProductIndexParameters):
     scope: Literal['active', 'published', 'archived', 'all'] = 'active'
 
 
+class DashboardAnalyticsParameters(DataModel):
+    days: int = Field(default=14, ge=7, le=30)
+    time_zone: str = Field(default='UTC', max_length=64)
+
+
 class DataCatalogRequest(DataModel):
     keyword: str = Field(default='', max_length=100)
     resource: str = Field(default='', max_length=100, description='指定资源时返回其参数 Schema 和默认字段。')
@@ -81,5 +86,5 @@ class DataReadResult(DataModel):
     max_chars: int = 12000
 
 
-__all__ = ['DataCatalogRequest', 'DataCatalogResult', 'DataReadRequest', 'DataReadResult', 'DataResourceInfo',
+__all__ = ['DashboardAnalyticsParameters', 'DataCatalogRequest', 'DataCatalogResult', 'DataReadRequest', 'DataReadResult', 'DataResourceInfo',
            'DraftDataParameters', 'DraftIndexParameters', 'NoDataParameters', 'PricingDataParameters', 'ProductDataParameters', 'ProductIndexParameters']

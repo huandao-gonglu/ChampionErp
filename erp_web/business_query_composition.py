@@ -1,8 +1,9 @@
 """普通业务查询组合根：只声明一次，自动生成页面路由及 AI 可发现的数据目录。"""
-from erp_web.schemas.business_data import DraftDataParameters, DraftIndexParameters, NoDataParameters, PricingDataParameters, ProductDataParameters, ProductIndexParameters
+from erp_web.schemas.business_data import DashboardAnalyticsParameters, DraftDataParameters, DraftIndexParameters, NoDataParameters, PricingDataParameters, ProductDataParameters, ProductIndexParameters
 from erp_web.schemas.collection import CollectionLinkQuery
 from erp_web.schemas.managed_settings import TariffRulesQuery
 from erp_web.services.business_queries import BusinessQueries, BusinessQuery
+from erp_web.services.dashboard_analytics import build_dashboard_analytics
 from erp_web.services.pricing_data import draft_pricing_data
 from erp_web.services import config_queries
 from erp_web.services.operation_availability import operation_availability
@@ -100,6 +101,11 @@ BUSINESS_QUERIES = BusinessQueries((
                   lambda context, request: {'ok': True, 'job': context.publishing_bus.get_public_status(request.job_id)},
                   default_fields=('job.job_id', 'job.draft_id', 'job.product_id', 'job.product_name', 'job.status', 'job.display_status'),
                   permission='publish.read', http_path='/api/publish-bus/status', not_found_status=404),
+    BusinessQuery('dashboard.analytics', '运营大屏聚合分析：三平台订单履约分布、近 7/14/30 天订单与商品产出趋势、在线商品与任务概览；仅读取本地快照，不刷新远端。',
+                  DashboardAnalyticsParameters,
+                  lambda context, request: build_dashboard_analytics(context, days=request.days, time_zone=request.time_zone),
+                  '', ('window_days', 'order_summary', 'platform_breakdown', 'catalog_summary', 'online_summary', 'trends'),
+                  permission='order.read'),
 ))
 
 
