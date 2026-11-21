@@ -1,9 +1,10 @@
 """从固定 Git 版本发布服务器和网页，默认通过更新服务分发 macOS 桌面新版。"""
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -28,6 +30,14 @@ if __package__:
 else:
     from release_tunnel import desktop_tunnel
 RELEASE_HEADERS = {'User-Agent': 'gongluErp-release', 'Cache-Control': 'no-cache'}
+RELEASE_ID_RE = re.compile(r'[0-9]{8}t[0-9]{6}z-[0-9a-f]{12}')
+SERVER_PACKAGE_PREFIXES = ('erp_web/', 'erp_shared/', 'deploy/', 'config/')
+SERVER_PACKAGE_FILES = {'requirements.txt', 'LICENSE', 'scripts/install_release_dependencies.py'}
+LARGE_ASSET_THRESHOLD = 512 * 1024
+LOCAL_KEEP_COMPLETED = 2
+
+_SSH_CONTROL_LOCK = threading.Lock()
+_SSH_CONTROL_PATH = None
 
 
 def digest(path):
@@ -111,13 +121,115 @@ def run_parallel(tasks, *, log):
             log.flush()
 
 
+def _ssh_common_options():
+    options = [
+        '-o', 'BatchMode=yes',
+        '-o', 'ForwardAgent=no',
+        '-o', 'StrictHostKeyChecking=yes',
+        '-o', 'ConnectTimeout=15',
+        '-o', 'ServerAliveInterval=20',
+        '-o', 'ServerAliveCountMax=3',
+    ]
+    with _SSH_CONTROL_LOCK:
+        control_path = _SSH_CONTROL_PATH
+    if control_path is not None:
+        options.extend([
+            '-o', 'ControlMaster=auto',
+            '-o', f'ControlPath={control_path}',
+            '-o', 'ControlPersist=600',
+        ])
+    return options
+
+
 def ssh_args(args):
-    return ['ssh', '-p', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes',
-            '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=15', args.ssh_host]
+    return ['ssh', '-p', str(args.ssh_port), '-i', str(args.ssh_identity),
+            *_ssh_common_options(), args.ssh_host]
+
+
+def scp_args(args):
+    return ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity),
+            *_ssh_common_options()]
+
+
+@contextmanager
+def ssh_session(args):
+    """在单次发布期间复用同一条 SSH ControlMaster 连接，减少弱网下的重复握手与断连。"""
+    global _SSH_CONTROL_PATH
+    if not getattr(args, 'ssh_host', None) or not getattr(args, 'ssh_identity', None):
+        yield
+        return
+    # macOS Unix Socket 路径上限 104 字节，放 /tmp 下保持路径简短。
+    with tempfile.TemporaryDirectory(dir='/tmp', prefix='erp-ssh-') as work:
+        sock = Path(work) / 'mux.sock'
+        with _SSH_CONTROL_LOCK:
+            previous = _SSH_CONTROL_PATH
+            _SSH_CONTROL_PATH = str(sock)
+        try:
+            yield
+        finally:
+            if sock.exists():
+                subprocess.run(
+                    ['ssh', '-S', str(sock), '-O', 'exit', args.ssh_host],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                )
+            with _SSH_CONTROL_LOCK:
+                _SSH_CONTROL_PATH = previous
+
+
+def _retry_ssh(action, *, attempts=3):
+    for attempt in range(1, attempts + 1):
+        try:
+            return action()
+        except subprocess.CalledProcessError as error:
+            if error.returncode != 255 or attempt >= attempts:
+                raise
+            time.sleep(2 * attempt)
 
 
 def remote_output(args, command):
-    return output(*ssh_args(args), shlex.join([str(arg) for arg in command]))
+    joined = shlex.join([str(arg) for arg in command])
+    return _retry_ssh(lambda: output(*ssh_args(args), joined))
+
+
+def select_server_files(tracked):
+    """仅挑选服务器运行与依赖安装所需文件，排除前端源码、测试、文档与本机执行器源码。"""
+    selected = []
+    for name in filter(None, tracked):
+        if (name.startswith(SERVER_PACKAGE_PREFIXES)
+                or name in SERVER_PACKAGE_FILES
+                or (name.startswith('scripts/migrate_') and name.endswith('.py'))):
+            selected.append(name)
+    return selected
+
+
+def detect_reusable_server_assets(args, source, selected):
+    """检查服务器上已存在的同摘要大体积静态资产，避免每次发布经 SCP 重复上传。"""
+    candidates = {}
+    for rel in selected:
+        if not rel.startswith('erp_web/assets/'):
+            continue
+        path = source / rel
+        if path.is_file() and not path.is_symlink() and path.stat().st_size >= LARGE_ASSET_THRESHOLD:
+            candidates[rel] = digest(path)
+    if not candidates:
+        return {}
+    probe = (
+        'import hashlib, json, sys; from pathlib import Path; '
+        'items = json.loads(sys.argv[1]); '
+        'shared = Path("/opt/champion-erp/shared-assets"); '
+        'current = Path("/opt/champion-erp/current"); '
+        'def ok(p, h): '
+        '    return p.is_file() and not p.is_symlink() and hashlib.file_digest(p.open("rb"), "sha256").hexdigest() == h; '
+        'print(json.dumps([k for k, h in items.items() if ok(shared / h, h) or ok(current / k, h)]))'
+    )
+    try:
+        raw = remote_output(args, ['python3', '-c', probe, json.dumps(candidates)])
+        reusable = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(reusable, list):
+        return {}
+    return {rel: candidates[rel] for rel in reusable if rel in candidates}
 
 
 def check_runtime(executable):
@@ -193,6 +305,56 @@ def desktop_release_artifacts(folder, app, version, args):
     return record
 
 
+def prune_desktop_build_intermediates(desktop_dir):
+    """桌面安装包校验完成后，立即回收未打包的 .app 中间目录与无用 blockmap/debug 文件。"""
+    if not desktop_dir.is_dir():
+        return
+    for entry in desktop_dir.iterdir():
+        if entry.is_symlink():
+            continue
+        if entry.is_dir() and entry.name.startswith('mac'):
+            shutil.rmtree(entry, ignore_errors=True)
+        elif entry.is_file() and (entry.name.endswith('.blockmap') or entry.name == 'builder-debug.yml'):
+            entry.unlink(missing_ok=True)
+
+
+def cleanup_local_releases(output_dir, current_release_id, *, keep_completed=LOCAL_KEEP_COMPLETED):
+    """发布完成后回收本机历史构建产物，仅保留最近若干已完成版本安装包与全部日志/记录。"""
+    if not output_dir.is_dir() or not RELEASE_ID_RE.fullmatch(current_release_id):
+        return {'removed_paths': []}
+    completed = []
+    older_failed = []
+    removed = []
+    for entry in sorted(output_dir.iterdir(), key=lambda p: p.name, reverse=True):
+        if entry.is_symlink() or not entry.is_dir() or not RELEASE_ID_RE.fullmatch(entry.name):
+            continue
+        if entry.name > current_release_id:
+            continue
+        prune_desktop_build_intermediates(entry / 'desktop')
+        record_path = entry / 'release.json'
+        status = ''
+        if record_path.is_file() and not record_path.is_symlink():
+            try:
+                status = json.loads(record_path.read_text()).get('status', '')
+            except (OSError, ValueError):
+                status = ''
+        if status == 'complete':
+            completed.append(entry)
+        elif entry.name < current_release_id:
+            older_failed.append(entry)
+    targets = completed[max(1, keep_completed):] + older_failed
+    for directory in targets:
+        for artifact in (directory / 'desktop', directory / 'server.tar.gz'):
+            if artifact.is_symlink() or not artifact.exists():
+                continue
+            if artifact.is_dir():
+                shutil.rmtree(artifact)
+            else:
+                artifact.unlink()
+            removed.append(str(artifact))
+    return {'removed_paths': removed}
+
+
 def desktop_manifest_url(update):
     return f"{update['public_url']}/desktop-updates/{update['platform']}-{update['arch']}/latest.json"
 
@@ -234,45 +396,7 @@ def upload_server_files(command, log):
         raise subprocess.CalledProcessError(result, argv)
 
 
-def pull_desktop_files(args, staging, files, artifacts, log):
-    command = 'cd ' + shlex.quote(staging) + ' && exec python3 -u pull_desktop.py'
-    with subprocess.Popen([*ssh_args(args), command], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          text=True) as process, ExitStack() as stack:
-        try:
-            # 先查询远端的实际文件，所有包均已校验时无需启动隧道。
-            request = {'artifacts': artifacts, 'interactive': sys.stdout.isatty()
-                       and shutil.get_terminal_size().columns >= 80}
-            process.stdin.write(json.dumps(request) + '\n')
-            process.stdin.flush()
-            state = process.stdout.readline().strip()
-            if state == 'download':
-                print('正在建立桌面包 HTTPS 传输隧道', flush=True)
-                url = stack.enter_context(desktop_tunnel(files))
-                process.stdin.write(url + '\n')
-                process.stdin.flush()
-            elif state != 'cached':
-                raise RuntimeError('服务器未能准备桌面包传输，请检查 SSH 输出')
-            process.stdin.close()
-            for line in process.stdout:
-                print(line, end='', flush=True)
-                log.write(re.sub(r'\x1b\[\d+[AK]', '', line))
-                log.flush()
-            if process.wait():
-                raise RuntimeError('桌面包传输未完成，可用 --resume 继续')
-        finally:
-            if process.poll() is None:
-                process.kill()
-
-
-def publish_desktop_update(args, record, folder, source):
-    update = record.get('desktop_update')
-    if not update or update.get('published'):
-        return
-    if args.public_url.rstrip('/') != update['public_url']:
-        raise RuntimeError('续发目标与桌面包的更新服务地址不一致')
-    staging = '/srv/champion-erp/staging/' + record['release_id']
-    scp = ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes',
-           '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes']
+def prepare_desktop_transfer_inputs(update, folder, staging):
     files, artifacts = {}, {}
     command = ['python3', staging + '/publish_desktop.py', '--public-url', update['public_url'],
                '--platform', update['platform'], '--arch', update['arch'], '--version', update['version'],
@@ -290,11 +414,115 @@ def publish_desktop_update(args, record, folder, source):
             files[remote_name] = artifact
             artifacts[remote_name] = {'size': artifact.stat().st_size, 'sha256': update[key]['sha256']}
             command.extend([path_flag, destination, digest_flag, update[key]['sha256']])
-    # 拉取端与当前编排脚本配套，续发旧版本时仍使用旧包自带的发布程序。
-    subprocess.run([*scp, source / 'deploy/publish_desktop.py', ROOT / 'deploy/pull_desktop.py',
-                    args.ssh_host + ':' + staging + '/'], check=True)
-    with (folder / 'build.log').open('a') as log:
-        pull_desktop_files(args, staging, files, artifacts, log)
+    return files, artifacts, command
+
+
+def pull_desktop_files(args, staging, files, artifacts, log, *, display_gate=None, cancel_event=None):
+    command = 'cd ' + shlex.quote(staging) + ' && exec python3 -u pull_desktop.py'
+    first_name = next(iter(artifacts))
+    for attempt in range(1, 4):
+        if cancel_event and cancel_event.is_set():
+            return
+        stderr_lines = []
+        with subprocess.Popen([*ssh_args(args), command], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True) as process, ExitStack() as stack:
+            def _drain_stderr():
+                for err_line in process.stderr:
+                    stderr_lines.append(err_line)
+
+            stderr_reader = threading.Thread(target=_drain_stderr, daemon=True)
+            stderr_reader.start()
+            watcher_stop = threading.Event()
+            if cancel_event is not None:
+                def _watch_cancel():
+                    while not watcher_stop.is_set():
+                        if cancel_event.is_set() and process.poll() is None:
+                            process.kill()
+                            return
+                        watcher_stop.wait(0.1)
+                threading.Thread(target=_watch_cancel, daemon=True).start()
+            try:
+                # 先查询远端的实际文件，所有包均已校验时无需启动隧道。
+                request = {'artifacts': artifacts, 'interactive': sys.stdout.isatty()
+                           and shutil.get_terminal_size().columns >= 80}
+                process.stdin.write(json.dumps(request) + '\n')
+                process.stdin.flush()
+                state = process.stdout.readline().strip()
+                if state == 'download':
+                    if display_gate is None or display_gate.is_set():
+                        print('正在建立桌面包 HTTPS 传输隧道', flush=True)
+                    url = stack.enter_context(desktop_tunnel(files))
+                    if cancel_event and cancel_event.is_set():
+                        return
+                    process.stdin.write(url + '\n')
+                    process.stdin.flush()
+                elif state != 'cached':
+                    process.stdin.close()
+                    code = process.wait()
+                    stderr_reader.join(timeout=2)
+                    detail = ''.join(stderr_lines).strip()
+                    if detail:
+                        log.write(f'\nSSH 准备桌面包传输失败（exit={code}）：{detail}\n')
+                        log.flush()
+                    if code == 255 and attempt < 3 and not (cancel_event and cancel_event.is_set()):
+                        time.sleep(2 * attempt)
+                        continue
+                    message = '服务器未能准备桌面包传输，请检查 SSH 输出'
+                    if detail:
+                        message += f'：{detail.splitlines()[-1]}'
+                    raise RuntimeError(message)
+                process.stdin.close()
+                printed_to_terminal = display_gate is None
+                for line in process.stdout:
+                    cleaned = re.sub(r'\x1b\[\d+[AK]', '', line)
+                    log.write(cleaned)
+                    log.flush()
+                    if display_gate is None:
+                        print(line, end='', flush=True)
+                    elif display_gate.is_set():
+                        if not printed_to_terminal:
+                            if not cleaned.startswith(first_name + ' '):
+                                continue
+                            # 首次接管终端输出时去掉上移光标，避免覆写服务器切换日志。
+                            print(re.sub(r'^\x1b\[\d+A', '', line), end='', flush=True)
+                            printed_to_terminal = True
+                        else:
+                            print(line, end='', flush=True)
+                exit_code = process.wait()
+                stderr_reader.join(timeout=2)
+                if cancel_event and cancel_event.is_set():
+                    return
+                if exit_code:
+                    detail = ''.join(stderr_lines).strip()
+                    if detail:
+                        log.write(f'\n桌面包传输异常退出（exit={exit_code}）：{detail}\n')
+                        log.flush()
+                    raise RuntimeError('桌面包传输未完成，可用 --resume 继续')
+                return
+            finally:
+                watcher_stop.set()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                stderr_reader.join(timeout=2)
+
+
+def publish_desktop_update(args, record, folder, source, *, already_pulled=False, upload_helpers=True):
+    update = record.get('desktop_update')
+    if not update or update.get('published'):
+        return
+    if args.public_url.rstrip('/') != update['public_url']:
+        raise RuntimeError('续发目标与桌面包的更新服务地址不一致')
+    staging = '/srv/champion-erp/staging/' + record['release_id']
+    files, artifacts, command = prepare_desktop_transfer_inputs(update, folder, staging)
+    if not already_pulled:
+        if upload_helpers:
+            # 拉取端与当前编排脚本配套，续发旧版本时仍使用旧包自带的发布程序。
+            _retry_ssh(lambda: subprocess.run(
+                [*scp_args(args), source / 'deploy/publish_desktop.py', ROOT / 'deploy/pull_desktop.py',
+                 args.ssh_host + ':' + staging + '/'], check=True))
+        with (folder / 'build.log').open('a') as log:
+            pull_desktop_files(args, staging, files, artifacts, log)
     print(remote_output(args, command), flush=True)
     manifest_url = desktop_manifest_url(update)
     with urlopen(Request(manifest_url, headers=RELEASE_HEADERS), timeout=30) as response:
@@ -308,30 +536,41 @@ def publish_desktop_update(args, record, folder, source):
     write_record(folder / 'release.json', record)
 
 
-def cleanup_server_artifacts(args, record, source):
+def cleanup_server_artifacts(args, record, source, *, upload_helper=True):
     # 使用本次源码，旧发布记录也能重试清理；清理失败保留 server_published 以便续发。
-    cleanup_script = source / 'deploy/cleanup_releases.py'
-    if not cleanup_script.is_file():
-        cleanup_script = ROOT / 'deploy/cleanup_releases.py'
     staging = '/srv/champion-erp/staging/' + record['release_id']
-    subprocess.run(['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes',
-                    '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes',
-                    cleanup_script, args.ssh_host + ':' + staging + '/cleanup_releases.py'], check=True)
+    if upload_helper:
+        cleanup_script = source / 'deploy/cleanup_releases.py'
+        if not cleanup_script.is_file():
+            cleanup_script = ROOT / 'deploy/cleanup_releases.py'
+        _retry_ssh(lambda: subprocess.run(
+            [*scp_args(args), cleanup_script, args.ssh_host + ':' + staging + '/cleanup_releases.py'], check=True))
     return json.loads(remote_output(args, ['python3', staging + '/cleanup_releases.py',
         '--release-id', record['release_id'], '--revision', record['revision']]))
 
 
-def finish_release(args, record, folder, source):
-    record['public'] = verify_public(args.public_url, source)
-    write_record(folder / 'release.json', record)
+def finish_release(args, record, folder, source, *, desktop_already_pulled=False, upload_helpers=True, public_verified=False):
+    if not public_verified:
+        record['public'] = verify_public(args.public_url, source)
+        write_record(folder / 'release.json', record)
     if record.get('desktop_update'):
-        publish_desktop_update(args, record, folder, source)
+        if desktop_already_pulled or not upload_helpers:
+            publish_desktop_update(args, record, folder, source,
+                                   already_pulled=desktop_already_pulled, upload_helpers=upload_helpers)
+        else:
+            publish_desktop_update(args, record, folder, source)
     elif record.get('desktop_target'):
         print('旧发布记录没有桌面分发包，本次继续完成服务器和网页发布。', flush=True)
     print('清理历史程序、桌面安装包及上传副本，仅保留当前版本', flush=True)
-    record['cleanup'] = cleanup_server_artifacts(args, record, source)
+    if upload_helpers:
+        record['cleanup'] = cleanup_server_artifacts(args, record, source)
+    else:
+        record['cleanup'] = cleanup_server_artifacts(args, record, source, upload_helper=False)
     record['status'] = 'complete'
     write_record(folder / 'release.json', record)
+    output_dir = getattr(args, 'output_dir', None)
+    if output_dir and record.get('release_id'):
+        cleanup_local_releases(output_dir, record['release_id'])
     print(f"发布完成，版本 {record['version']}，代码 {record['revision'][:12]}。记录保存在 {folder / 'release.json'}", flush=True)
 
 
@@ -374,21 +613,22 @@ def resume_release(args):
     archive = folder / 'server.tar.gz'
     if digest(archive) != record['archive_sha256']:
         raise RuntimeError('已有服务器发布包摘要发生变化')
-    if not staged:
-        verify_server_release(args, record)
-    try:
-        with tempfile.TemporaryDirectory(prefix='erp-release-resume-') as temporary:
-            source = Path(temporary)
-            with tarfile.open(archive) as package:
-                package.extractall(source, filter='data')
-            if staged:
-                switch_server(args, record, folder, source)
-                verify_server_release(args, record)
-            finish_release(args, record, folder, source)
-    except BaseException:
-        record['status'] = 'failed_after_' + record['status'].removeprefix('failed_after_')
-        write_record(folder / 'release.json', record)
-        raise
+    with ssh_session(args):
+        if not staged:
+            verify_server_release(args, record)
+        try:
+            with tempfile.TemporaryDirectory(prefix='erp-release-resume-') as temporary:
+                source = Path(temporary)
+                with tarfile.open(archive) as package:
+                    package.extractall(source, filter='data')
+                if staged:
+                    switch_server(args, record, folder, source)
+                    verify_server_release(args, record)
+                finish_release(args, record, folder, source)
+        except BaseException:
+            record['status'] = 'failed_after_' + record['status'].removeprefix('failed_after_')
+            write_record(folder / 'release.json', record)
+            raise
 
 
 def release(args):
@@ -414,106 +654,164 @@ def release(args):
     environment['ERP_DESKTOP_SIGNING_MODE'] = 'developer-id' if args.signed_desktop else 'local'
     environment['CSC_IDENTITY_AUTO_DISCOVERY'] = 'true'
     try:
-        if args.desktop_update:
-            origin = package['desktopUpdateOrigin']
-            if origin != args.public_url.rstrip('/'):
-                raise RuntimeError('桌面包的发行站点必须与发布目标一致')
-            check_new_desktop_version({'public_url': origin, 'platform': 'darwin',
-                                       'arch': output('node', '-p', 'process.arch'), 'version': version})
-        current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
-        if not current.startswith('/opt/champion-erp/releases/'):
-            raise RuntimeError('服务器当前版本路径不符合部署约定')
-        record['previous_server_release'] = current
-        with tempfile.TemporaryDirectory(prefix='erp-release-source-') as temporary, (folder / 'build.log').open('w') as log:
-            source = Path(temporary) / 'source'
-            source.mkdir()
-            git_archive = folder / 'source.tar'
-            with git_archive.open('wb') as archive:
-                subprocess.run(['git', 'archive', revision], cwd=ROOT, stdout=archive, check=True)
-            with tarfile.open(git_archive) as archive:
-                archive.extractall(source, filter='data')
-            git_archive.unlink()
-            # pnpm 安装：复用项目全局 store 避免冷解析。
-            print('安装锁定的前端依赖并检查发布输入', flush=True)
-            pnpm_store = ROOT / '.pnpm-store'
-            pnpm_install = ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts']
-            if pnpm_store.is_dir():
-                pnpm_install.extend(['--store-dir', str(pnpm_store)])
-            run(pnpm_install, cwd=source / 'front', log=log, env=environment)
+        with ssh_session(args):
             if args.desktop_update:
-                run(['node', 'node_modules/electron/install.js'], cwd=source / 'front', log=log, env=environment)
-            # 声明检查与类型检查互不依赖，并行执行。
-            print('检查声明与类型', flush=True)
-            run_parallel([
-                ([sys.executable, 'scripts/generate_third_party_notices.py', '--check'], source, environment),
-                (['pnpm', 'types:check'], source / 'front', environment),
-            ], log=log)
-            if args.skip_tests:
-                print('已按 --skip-tests 跳过后端、前端和桌面全量测试', flush=True)
-            else:
-                print('运行后端、前端及桌面回归检查', flush=True)
-                run([sys.executable, '-m', 'pytest', 'tests', '-q'], cwd=source, log=log, env=environment)
-                run(['pnpm', 'test:run'], cwd=source / 'front', log=log, env=environment)
-                run(['pnpm', 'test:desktop'], cwd=source / 'front', log=log, env=environment)
-            if args.desktop_update:
-                # 网页构建与 Python 桌面执行器构建互不依赖，并行执行。
-                # 网页构建（vue-tsc -b && vite build）完成后，桌面前端只需
-                # vite build --mode desktop，跳过重复 vue-tsc 类型编译。
-                print('编译网页并构建桌面执行器', flush=True)
-                run_parallel([
-                    (['pnpm', 'build'], source / 'front', environment),
-                    ([sys.executable, 'scripts/build_desktop_runtime.py'], source, environment),
-                ], log=log)
-                # 网页 vue-tsc 已完成增量缓存，桌面前端只需 vite build。
-                print('构建并验证桌面更新包', flush=True)
-                run(['pnpm', 'exec', 'vite', 'build', '--mode', 'desktop'], cwd=source / 'front', log=log, env=environment)
-                run(['pnpm', 'exec', 'electron-builder', '--mac', 'dmg', 'zip', '--publish', 'never',
-                     '--config.directories.output=' + str(folder / 'desktop')],
-                    cwd=source / 'front', log=log, env=environment)
-                apps = list((folder / 'desktop').glob('*/*.app'))
-                if len(apps) != 1:
-                    raise RuntimeError('桌面构建没有产生唯一的应用包')
-                app = apps[0]
-                subprocess.run(['codesign', '--verify', '--deep', '--strict', app], check=True)
-                with (app / 'Contents/Info.plist').open('rb') as info:
-                    if plistlib.load(info)['CFBundleShortVersionString'] != version:
-                        raise RuntimeError('桌面安装包版本不一致')
-                check_runtime(app / 'Contents/Resources/runtime/champion-erp-runtime')
-                record['desktop_update'] = desktop_release_artifacts(folder, app, version, args)
-                check_new_desktop_version(record['desktop_update'])
-            else:
-                print('编译网页', flush=True)
-                run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
-            # 只发布 Git 跟踪的公开源码及本次网页构建，排除工作区配置、数据库和依赖缓存。
-            tracked = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', '-z', revision], cwd=ROOT).decode().split('\0')
-            (source / 'REVISION').write_text(revision + '\n')
-            write_record(source / 'release-manifest.json', {'revision': revision, 'version': version, 'release_id': release_id})
-            archive_path = folder / 'server.tar.gz'
-            with tarfile.open(archive_path, 'w:gz') as archive:
-                for name in filter(None, tracked):
-                    archive.add(source / name, arcname=name, recursive=False)
-                archive.add(source / 'erp_web/static/dist', arcname='erp_web/static/dist')
-                for name in ('REVISION', 'release-manifest.json'):
-                    archive.add(source / name, arcname=name)
-            record.update(status='built', archive_sha256=digest(archive_path))
-            write_record(record_path, record)
-            remote_folder = '/srv/champion-erp/staging/' + release_id
-            remote_output(args, ['mkdir', '-p', remote_folder + '/erp_web', remote_folder + '/deploy'])
-            scp = ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes', '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes']
-            # 将小文件暂存到本地临时目录，模拟远程布局后一次上传。
-            staging = Path(temporary) / 'staging'
-            (staging / 'deploy').mkdir(parents=True)
-            (staging / 'erp_web').mkdir()
-            shutil.copy2(source / 'deploy/release_server.py', staging / 'deploy/')
-            shutil.copy2(source / 'erp_web/__init__.py', staging / 'erp_web/')
-            shutil.copy2(source / 'erp_web/release_guard.py', staging / 'erp_web/')
-            print('上传服务器发布包并执行备份切换', flush=True)
-            upload_server_files([*scp, '-r', archive_path, staging / 'deploy', staging / 'erp_web',
-                                 args.ssh_host + ':' + remote_folder + '/'], log)
-            record['status'] = 'server_staged'
-            write_record(record_path, record)
-            switch_server(args, record, folder, source)
-            finish_release(args, record, folder, source)
+                origin = package['desktopUpdateOrigin']
+                if origin != args.public_url.rstrip('/'):
+                    raise RuntimeError('桌面包的发行站点必须与发布目标一致')
+                check_new_desktop_version({'public_url': origin, 'platform': 'darwin',
+                                           'arch': output('node', '-p', 'process.arch'), 'version': version})
+            current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
+            if not current.startswith('/opt/champion-erp/releases/'):
+                raise RuntimeError('服务器当前版本路径不符合部署约定')
+            record['previous_server_release'] = current
+            with tempfile.TemporaryDirectory(prefix='erp-release-source-') as temporary:
+                source = Path(temporary) / 'source'
+                source.mkdir()
+                with (folder / 'build.log').open('w') as log:
+                    git_archive = folder / 'source.tar'
+                    with git_archive.open('wb') as archive:
+                        subprocess.run(['git', 'archive', revision], cwd=ROOT, stdout=archive, check=True)
+                    with tarfile.open(git_archive) as archive:
+                        archive.extractall(source, filter='data')
+                    git_archive.unlink()
+                    # pnpm 安装：复用项目全局 store 避免冷解析。
+                    print('安装锁定的前端依赖并检查发布输入', flush=True)
+                    pnpm_store = ROOT / '.pnpm-store'
+                    pnpm_install = ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts']
+                    if pnpm_store.is_dir():
+                        pnpm_install.extend(['--store-dir', str(pnpm_store)])
+                    run(pnpm_install, cwd=source / 'front', log=log, env=environment)
+                    if args.desktop_update:
+                        run(['node', 'node_modules/electron/install.js'], cwd=source / 'front', log=log, env=environment)
+                    # 声明检查与类型检查互不依赖，并行执行。
+                    print('检查声明与类型', flush=True)
+                    run_parallel([
+                        ([sys.executable, 'scripts/generate_third_party_notices.py', '--check'], source, environment),
+                        (['pnpm', 'types:check'], source / 'front', environment),
+                    ], log=log)
+                    if args.skip_tests:
+                        print('已按 --skip-tests 跳过后端、前端和桌面全量测试', flush=True)
+                    else:
+                        print('运行后端、前端及桌面回归检查', flush=True)
+                        run([sys.executable, '-m', 'pytest', 'tests', '-q'], cwd=source, log=log, env=environment)
+                        run(['pnpm', 'test:run'], cwd=source / 'front', log=log, env=environment)
+                        run(['pnpm', 'test:desktop'], cwd=source / 'front', log=log, env=environment)
+                    if args.desktop_update:
+                        # 网页构建与 Python 桌面执行器构建互不依赖，并行执行。
+                        # 网页构建（vue-tsc -b && vite build）完成后，桌面前端只需
+                        # vite build --mode desktop，跳过重复 vue-tsc 类型编译。
+                        print('编译网页并构建桌面执行器', flush=True)
+                        run_parallel([
+                            (['pnpm', 'build'], source / 'front', environment),
+                            ([sys.executable, 'scripts/build_desktop_runtime.py'], source, environment),
+                        ], log=log)
+                        # 网页 vue-tsc 已完成增量缓存，桌面前端只需 vite build。
+                        print('构建并验证桌面更新包', flush=True)
+                        run(['pnpm', 'exec', 'vite', 'build', '--mode', 'desktop'], cwd=source / 'front', log=log, env=environment)
+                        run(['pnpm', 'exec', 'electron-builder', '--mac', 'dmg', 'zip', '--publish', 'never',
+                             '--config.directories.output=' + str(folder / 'desktop')],
+                            cwd=source / 'front', log=log, env=environment)
+                        apps = list((folder / 'desktop').glob('*/*.app'))
+                        if len(apps) != 1:
+                            raise RuntimeError('桌面构建没有产生唯一的应用包')
+                        app = apps[0]
+                        # electron-builder 的 afterSign 钩子已完成严格的 --verify --deep --strict -R 签名复核。
+                        with (app / 'Contents/Info.plist').open('rb') as info:
+                            if plistlib.load(info)['CFBundleShortVersionString'] != version:
+                                raise RuntimeError('桌面安装包版本不一致')
+                        check_runtime(app / 'Contents/Resources/runtime/champion-erp-runtime')
+                        record['desktop_update'] = desktop_release_artifacts(folder, app, version, args)
+                        prune_desktop_build_intermediates(folder / 'desktop')
+                        check_new_desktop_version(record['desktop_update'])
+                    else:
+                        print('编译网页', flush=True)
+                        run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
+                    # 只打包服务器运行所需源码、本次网页构建与未在服务器缓存的静态资产，排除前端源码/测试/文档。
+                    tracked = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', '-z', revision], cwd=ROOT).decode().split('\0')
+                    selected = select_server_files(tracked)
+                    shared_assets = detect_reusable_server_assets(args, source, selected)
+                    (source / 'REVISION').write_text(revision + '\n')
+                    manifest_payload = {'revision': revision, 'version': version, 'release_id': release_id}
+                    if shared_assets:
+                        manifest_payload['shared_assets'] = shared_assets
+                    write_record(source / 'release-manifest.json', manifest_payload)
+                    archive_path = folder / 'server.tar.gz'
+                    with tarfile.open(archive_path, 'w:gz', compresslevel=1) as archive:
+                        for name in selected:
+                            if name in shared_assets:
+                                continue
+                            archive.add(source / name, arcname=name, recursive=False)
+                        archive.add(source / 'erp_web/static/dist', arcname='erp_web/static/dist')
+                        for name in ('REVISION', 'release-manifest.json'):
+                            archive.add(source / name, arcname=name)
+                    record.update(status='built', archive_sha256=digest(archive_path))
+                    write_record(record_path, record)
+                    remote_folder = '/srv/champion-erp/staging/' + release_id
+                    remote_output(args, ['mkdir', '-p', remote_folder + '/erp_web', remote_folder + '/deploy'])
+                    # 将全部发布辅助脚本一次性随服务器包上传，减少重复 SCP 往返。
+                    staging = Path(temporary) / 'staging'
+                    (staging / 'deploy').mkdir(parents=True)
+                    (staging / 'erp_web').mkdir()
+                    shutil.copy2(source / 'deploy/release_server.py', staging / 'deploy/')
+                    shutil.copy2(source / 'erp_web/__init__.py', staging / 'erp_web/')
+                    shutil.copy2(source / 'erp_web/release_guard.py', staging / 'erp_web/')
+                    extra_helpers = [staging / 'cleanup_releases.py']
+                    shutil.copy2(source / 'deploy/cleanup_releases.py', staging / 'cleanup_releases.py')
+                    if record.get('desktop_update'):
+                        shutil.copy2(source / 'deploy/publish_desktop.py', staging / 'publish_desktop.py')
+                        shutil.copy2(ROOT / 'deploy/pull_desktop.py', staging / 'pull_desktop.py')
+                        extra_helpers.extend([staging / 'publish_desktop.py', staging / 'pull_desktop.py'])
+                    print('上传服务器发布包并执行备份切换', flush=True)
+                    _retry_ssh(lambda: upload_server_files(
+                        [*scp_args(args), '-r', archive_path, staging / 'deploy', staging / 'erp_web',
+                         *extra_helpers, args.ssh_host + ':' + remote_folder + '/'], log))
+                    record['status'] = 'server_staged'
+                    write_record(record_path, record)
+                # 服务器切换与桌面包隧道预拉取并行执行，缩短整体等待时间。
+                pull_thread = None
+                pull_error = []
+                pull_log = io.StringIO()
+                display_gate = threading.Event()
+                cancel_event = threading.Event()
+                if record.get('desktop_update'):
+                    desktop_files, desktop_artifacts, _ = prepare_desktop_transfer_inputs(
+                        record['desktop_update'], folder, remote_folder)
+
+                    def _pull_worker():
+                        try:
+                            pull_desktop_files(
+                                args, remote_folder, desktop_files, desktop_artifacts, pull_log,
+                                display_gate=display_gate, cancel_event=cancel_event,
+                            )
+                        except BaseException as exc:
+                            pull_error.append(exc)
+
+                    pull_thread = threading.Thread(target=_pull_worker, daemon=True)
+                    pull_thread.start()
+                try:
+                    switch_server(args, record, folder, source)
+                    record['public'] = verify_public(args.public_url, source)
+                    write_record(record_path, record)
+                except BaseException:
+                    if pull_thread is not None:
+                        cancel_event.set()
+                        pull_thread.join(timeout=15)
+                    raise
+                desktop_already_pulled = False
+                if pull_thread is not None:
+                    print('服务器已切换，继续完成桌面包传输', flush=True)
+                    display_gate.set()
+                    pull_thread.join()
+                    if pull_log.getvalue():
+                        with (folder / 'build.log').open('a') as build_log:
+                            build_log.write(pull_log.getvalue())
+                    if pull_error:
+                        raise pull_error[0]
+                    desktop_already_pulled = True
+                finish_release(args, record, folder, source,
+                               desktop_already_pulled=desktop_already_pulled,
+                               upload_helpers=False, public_verified=True)
     except BaseException:
         record['status'] = 'failed_after_' + record['status']
         write_record(record_path, record)

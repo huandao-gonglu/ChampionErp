@@ -575,3 +575,147 @@ def test_resume_after_drain_timeout_uses_staged_build(tmp_path, monkeypatch, des
     release.resume_release(argparse.Namespace(resume=tmp_path, public_url='https://erp.example'))
     assert calls == ['server', 'public'] + ([desktop['policy']] if desktop else [])
     assert json.loads((tmp_path / 'release.json').read_text())['status'] == 'complete'
+
+
+def test_select_server_files_excludes_non_runtime_directories():
+    tracked = [
+        'erp_web/server.py',
+        'erp_web/assets/fonts/NotoSansCJKsc-Regular.otf',
+        'erp_shared/models.py',
+        'deploy/release_server.py',
+        'config/presets/platforms.json',
+        'requirements.txt',
+        'LICENSE',
+        'scripts/install_release_dependencies.py',
+        'scripts/migrate_credentials.py',
+        'scripts/eval_agent_python.py',
+        'front/src/App.vue',
+        'tests/test_release.py',
+        'docs/server-deployment.md',
+        'desktop_runtime/main.py',
+        'AGENTS.md',
+    ]
+    selected = release.select_server_files(tracked)
+    assert selected == [
+        'erp_web/server.py',
+        'erp_web/assets/fonts/NotoSansCJKsc-Regular.otf',
+        'erp_shared/models.py',
+        'deploy/release_server.py',
+        'config/presets/platforms.json',
+        'requirements.txt',
+        'LICENSE',
+        'scripts/install_release_dependencies.py',
+        'scripts/migrate_credentials.py',
+    ]
+
+
+def test_sync_shared_assets_and_prepare_venv_reuse(tmp_path, monkeypatch):
+    base = tmp_path / 'server'
+    monkeypatch.setattr(release_server, 'BASE', base)
+    current = base / 'releases/current-rel'
+    font = current / 'erp_web/assets/fonts/NotoSansCJKsc-Regular.otf'
+    font.parent.mkdir(parents=True)
+    payload = b'font-data-' * 70000
+    font.write_bytes(payload)
+    font_sha = hashlib.sha256(payload).hexdigest()
+
+    new_rel = base / 'releases/new-rel'
+    new_rel.mkdir(parents=True)
+    release_server.sync_shared_assets(new_rel, current, {'shared_assets': {'erp_web/assets/fonts/NotoSansCJKsc-Regular.otf': font_sha}})
+    assert (new_rel / 'erp_web/assets/fonts/NotoSansCJKsc-Regular.otf').read_bytes() == payload
+    assert (base / 'shared-assets' / font_sha).is_file()
+
+    (new_rel / 'requirements.txt').write_text('example==1.0\n')
+    runs = []
+
+    def fake_run(*args):
+        runs.append(args)
+        if args[1:3] == ('-m', 'venv'):
+            venv_dir = args[3]
+            (venv_dir / 'bin').mkdir(parents=True, exist_ok=True)
+            (venv_dir / 'bin/python').write_text('#!/bin/sh\n')
+
+    monkeypatch.setattr(release_server, 'run', fake_run)
+    release_server.prepare_venv(new_rel)
+    assert len(runs) == 3
+    assert (new_rel / '.venv').is_symlink()
+
+    second_rel = base / 'releases/second-rel'
+    second_rel.mkdir(parents=True)
+    (second_rel / 'requirements.txt').write_text('example==1.0\n')
+    runs.clear()
+    release_server.prepare_venv(second_rel)
+    assert runs == []
+    assert (second_rel / '.venv').resolve() == (new_rel / '.venv').resolve()
+
+
+def test_local_release_cleanup_prunes_old_artifacts_and_preserves_records(tmp_path):
+    ids = [
+        '20261118t000000z-' + 'a' * 12,
+        '20261119t000000z-' + 'b' * 12,
+        '20261120t000000z-' + 'c' * 12,
+        '20261121t000000z-' + 'd' * 12,
+    ]
+    statuses = ['failed_after_preparing', 'complete', 'complete', 'complete']
+    for rel_id, status in zip(ids, statuses):
+        folder = tmp_path / rel_id
+        (folder / 'desktop/mac-arm64/gongluErp.app').mkdir(parents=True)
+        (folder / 'desktop/mac-arm64/gongluErp.app/bin').write_bytes(b'app')
+        (folder / 'desktop/app.dmg').write_bytes(b'dmg')
+        (folder / 'desktop/app.dmg.blockmap').write_bytes(b'bm')
+        (folder / 'desktop/builder-debug.yml').write_text('debug')
+        (folder / 'server.tar.gz').write_bytes(b'tar')
+        (folder / 'build.log').write_text('log')
+        release.write_record(folder / 'release.json', {'release_id': rel_id, 'status': status})
+    manual = tmp_path / 'manual-notes'
+    manual.mkdir()
+    (manual / 'note.txt').write_text('keep')
+
+    release.cleanup_local_releases(tmp_path, ids[-1], keep_completed=2)
+    # 所有目录的 mac-arm64 中间目录与 blockmap 均被移除。
+    for rel_id in ids:
+        assert not (tmp_path / rel_id / 'desktop/mac-arm64').exists()
+        assert not (tmp_path / rel_id / 'desktop/app.dmg.blockmap').exists()
+        assert (tmp_path / rel_id / 'release.json').is_file()
+        assert (tmp_path / rel_id / 'build.log').is_file()
+    # 旧失败版和超出保留数的旧成功版清理了 desktop/ 与 server.tar.gz。
+    for rel_id in ids[:2]:
+        assert not (tmp_path / rel_id / 'desktop').exists()
+        assert not (tmp_path / rel_id / 'server.tar.gz').exists()
+    # 最近 2 个成功版保留安装包和 server.tar.gz，人工目录保留。
+    for rel_id in ids[2:]:
+        assert (tmp_path / rel_id / 'desktop/app.dmg').is_file()
+        assert (tmp_path / rel_id / 'server.tar.gz').is_file()
+    assert (manual / 'note.txt').read_text() == 'keep'
+
+
+def test_backup_single_pass_and_streaming_verify(tmp_path):
+    import sqlite3
+    from deploy import backup_accounts
+
+    app_dir = tmp_path / 'app'
+    (app_dir / 'data/images').mkdir(parents=True)
+    (app_dir / 'data/images/sample.jpg').write_bytes(b'\xff\xd8\xff' + b'0' * 4096)
+    (app_dir / 'backups').mkdir()
+    (app_dir / 'backups/skip.tar.gz').write_bytes(b'ignored')
+    with sqlite3.connect(app_dir / 'erp.sqlite3') as db:
+        db.execute('CREATE TABLE items (id TEXT PRIMARY KEY)')
+        db.execute("INSERT INTO items VALUES ('ok-1')")
+    env_file = tmp_path / 'newapi.env'
+    env_file.write_text('TOKEN=secret\n')
+    archive = tmp_path / 'out/accounts.tar.gz'
+
+    backup_accounts.backup(app_dir, env_file, archive)
+    backup_accounts.verify(archive)
+
+    # 篡改包内图片后应被流式校验检出。
+    tampered = tmp_path / 'out/tampered.tar.gz'
+    with tarfile.open(archive, 'r:gz') as src, tarfile.open(tampered, 'w:gz') as dst:
+        for member in src:
+            data = src.extractfile(member).read() if member.isfile() else None
+            if member.name == 'app/data/images/sample.jpg':
+                data = b'corrupted'
+                member.size = len(data)
+            dst.addfile(member, BytesIO(data) if data is not None else None)
+    with pytest.raises(RuntimeError, match='摘要不一致'):
+        backup_accounts.verify(tampered)

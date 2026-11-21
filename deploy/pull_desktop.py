@@ -49,16 +49,19 @@ class Download:
             self.partial.unlink()
 
     async def fetch(self, base_url):
-        for attempt in range(1, 5):
+        last_error = ''
+        for attempt in range(1, 6):
             self.status = '续传' if self.received() else '传输中'
-            # 通过标准输入传入带临时凭据的 URL，不在进程命令行显示。
+            # 通过标准输入传入带临时凭据的 URL，不在进程命令行显示；
+            # 捕获 stderr 避免重试期间的 curl 报错打乱终端进度条光标位置。
             process = await asyncio.create_subprocess_exec(
                 'curl', '--disable', '--fail', '--silent', '--show-error', '--connect-timeout', '15',
                 '--speed-limit', '1', '--speed-time', '30', '--continue-at', '-', '--output',
-                str(self.partial), '--config', '-', stdin=asyncio.subprocess.PIPE)
+                str(self.partial), '--config', '-',
+                stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             try:
                 url = base_url + '/' + self.target.name
-                await process.communicate(('url = ' + json.dumps(url) + '\n').encode())
+                _, stderr_bytes = await process.communicate(('url = ' + json.dumps(url) + '\n').encode())
             finally:
                 if process.returncode is None:
                     process.kill()
@@ -67,13 +70,17 @@ class Download:
                 self.partial.replace(self.target)
                 self.status = '校验通过'
                 return
+            if stderr_bytes:
+                last_error = stderr_bytes.decode(errors='replace').strip().splitlines()[-1]
             # 校验失败或对端拒绝 Range 时，从头获取一次完整内容。
             if process.returncode in (0, 33) or self.received() >= self.size:
                 self.partial.unlink(missing_ok=True)
-            if attempt < 4:
+            if attempt < 5:
                 self.status = f'等待第 {attempt + 1} 次尝试'
-                await asyncio.sleep(2 ** attempt)
-        raise RuntimeError(f'{self.target.name} 传输或校验失败，可用 --resume 继续')
+                # 首次重试多为新隧道 DNS/边缘路由未就绪，使用 1s 短等待即可。
+                await asyncio.sleep(1 if attempt == 1 else min(16, 2 ** (attempt - 1)))
+        detail = f'（{last_error}）' if last_error else ''
+        raise RuntimeError(f'{self.target.name} 传输或校验失败{detail}，可用 --resume 继续')
 
 
 async def transfer(downloads, base_url, interactive):

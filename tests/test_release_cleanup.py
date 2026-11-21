@@ -83,6 +83,49 @@ def test_cleanup_keeps_current_pending_manual_data_and_records(installation, tmp
     assert cleaner.cleanup(current, 'b' * 40)['directories'] == []
 
 
+def test_cleanup_removes_orphan_failed_staging_unused_venvs_and_shared_assets(installation):
+    base, staging, desktop, (old, current, future) = installation
+    # 中途失败、未写 server-result.json 的旧暂存目录应被整体回收。
+    orphan = '20261116t060000z-' + 'e' * 12
+    (staging / orphan / 'deploy').mkdir(parents=True)
+    (staging / orphan / 'deploy/release_server.py').write_text('script')
+    (staging / orphan / 'server.tar.gz').write_bytes(b'leaked-tar')
+    # 含人工文件的无记录暂存目录必须保留。
+    manual_staging = '20261116t070000z-' + 'f' * 12
+    (staging / manual_staging).mkdir(parents=True)
+    (staging / manual_staging / 'server.tar.gz').write_bytes(b'tar')
+    (staging / manual_staging / '人工保留.txt').write_text('keep')
+    # 辅助脚本副本应在清理时一并回收。
+    (staging / current / 'deploy').mkdir(parents=True)
+    (staging / current / 'publish_desktop.py').write_text('pub')
+    # 共享 venv 与共享大静态资产：当前版在用的保留，过时的清理。
+    active_venv = base / 'venvs/py3.12-1111111111111111'
+    stale_venv = base / 'venvs/py3.12-2222222222222222'
+    for venv in (active_venv, stale_venv):
+        venv.mkdir(parents=True)
+        (venv / '.ready').write_text('ok')
+    (base / 'releases' / current / '.venv').symlink_to(active_venv)
+    active_asset = '1' * 64
+    stale_asset = '2' * 64
+    (base / 'shared-assets').mkdir(parents=True)
+    (base / 'shared-assets' / active_asset).write_bytes(b'active')
+    (base / 'shared-assets' / stale_asset).write_bytes(b'stale')
+    record(base / 'releases' / current / 'release-manifest.json', {
+        'release_id': current, 'revision': 'b' * 40,
+        'shared_assets': {'erp_web/assets/fonts/font.otf': active_asset},
+    })
+
+    cleaner.cleanup(current, 'b' * 40)
+    assert not (staging / orphan).exists()
+    assert (staging / manual_staging / '人工保留.txt').is_file()
+    assert not (staging / current / 'deploy').exists()
+    assert not (staging / current / 'publish_desktop.py').exists()
+    assert (staging / current / 'server-result.json').is_file()
+    assert active_venv.is_dir() and not stale_venv.exists()
+    assert (base / 'shared-assets' / active_asset).is_file()
+    assert not (base / 'shared-assets' / stale_asset).exists()
+
+
 @pytest.mark.parametrize('damage', ['current', 'result', 'manifest', 'installer', 'digest'])
 def test_invalid_current_state_prevents_any_deletion(installation, damage):
     base, staging, desktop, (old, current, future) = installation

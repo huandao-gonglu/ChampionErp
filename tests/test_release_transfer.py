@@ -110,6 +110,56 @@ def test_parallel_resume_progress_checksum_and_reuse(tmp_path, monkeypatch):
     assert log.getvalue().count('已复用') == 2
 
 
+def test_pull_desktop_captures_curl_stderr_and_display_gate_avoids_cursor_overwrite(tmp_path, monkeypatch, capsys):
+    staging = tmp_path / 'staging'
+    staging.mkdir()
+    shutil.copy(release.ROOT / 'deploy/pull_desktop.py', staging)
+    monkeypatch.setattr(release, 'ssh_args', lambda args: ['sh', '-c'])
+    payload = b'desktop-installer-data' * 1024
+    artifact = tmp_path / 'installer.dmg'
+    artifact.write_bytes(payload)
+    artifacts = {'installer.dmg': {'size': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}}
+    attempts = 0
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                self.send_error(503)
+                return
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    @contextmanager
+    def tunnel(_files):
+        with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+            worker = threading.Thread(target=server.serve_forever)
+            worker.start()
+            try:
+                yield f'http://127.0.0.1:{server.server_port}'
+            finally:
+                server.shutdown()
+                worker.join()
+
+    monkeypatch.setattr(release, 'desktop_tunnel', tunnel)
+    gate = threading.Event()
+    gate.set()
+    log = io.StringIO()
+    release.pull_desktop_files(None, str(staging), {'installer.dmg': artifact}, artifacts, log, display_gate=gate)
+    captured = capsys.readouterr()
+    assert attempts == 2
+    assert 'curl:' not in captured.err
+    assert 'curl:' not in captured.out
+    assert not captured.out.startswith('\x1b[')
+    assert (staging / 'installer.dmg').read_bytes() == payload
+
+
 def test_server_upload_shows_terminal_progress_with_redirected_output(tmp_path):
     log = tmp_path / 'build.log'
     program = """import os, sys

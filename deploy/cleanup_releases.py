@@ -14,7 +14,12 @@ STAGING = Path('/srv/champion-erp/staging')
 DESKTOP = Path('/var/www/champion-erp/desktop-updates')
 RELEASE_ID = re.compile(r'[0-9]{8}t[0-9]{6}z-[0-9a-f]{12}')
 VERSION = re.compile(r'(?:0|[1-9][0-9]{0,7})(?:\.(?:0|[1-9][0-9]{0,7})){2}')
+VENV_KEY = re.compile(r'py\d+\.\d+-[0-9a-f]{16}')
+ASSET_HASH = re.compile(r'[0-9a-f]{64}')
 UPLOADS = ('server.tar.gz', 'installer.dmg', 'update.zip', 'installer.dmg.https.part', 'update.zip.https.part')
+STAGING_HELPER_FILES = ('publish_desktop.py', 'pull_desktop.py', 'cleanup_releases.py', '.desktop-transfer.lock')
+STAGING_HELPER_DIRS = ('deploy', 'erp_web')
+KNOWN_STAGING_ENTRIES = set(UPLOADS) | set(STAGING_HELPER_FILES) | set(STAGING_HELPER_DIRS)
 
 
 def read_record(path):
@@ -59,20 +64,76 @@ def cleanup_plan(base, staging, desktop, release_id, revision):
             pending.add(directory.name)
         if directory.name > release_id or directory.name in pending:
             continue
-        if (record.get('release') != str(releases / directory.name)
-                or not release_matches(record, directory.name)):
-            continue
-        for name in UPLOADS:
-            path = directory / name
-            if path.is_file() and not path.is_symlink():
-                files.append(path)
+        has_valid_record = (record.get('release') == str(releases / directory.name)
+                            and release_matches(record, directory.name))
+        if has_valid_record:
+            for name in UPLOADS:
+                path = directory / name
+                if path.is_file() and not path.is_symlink():
+                    files.append(path)
+            # 清理已不需要的临时辅助脚本和副本，仅保留 server-result.json 审计记录。
+            for name in STAGING_HELPER_FILES:
+                if directory.name == release_id and name == 'cleanup_releases.py':
+                    continue
+                path = directory / name
+                if path.is_file() and not path.is_symlink():
+                    files.append(path)
+            for name in STAGING_HELPER_DIRS:
+                path = directory / name
+                if path.is_dir() and not path.is_symlink():
+                    directories.append(path)
+        elif directory.name < release_id and not (directory / 'server-result.json').exists():
+            # 在写入 server-result.json 前即中断的旧暂存目录，只要不含未知/人工文件即可整体回收。
+            entries = list(directory.iterdir())
+            if all(not entry.is_symlink() and entry.name in KNOWN_STAGING_ENTRIES for entry in entries):
+                directories.append(directory)
+    kept_releases = []
     for directory in releases.iterdir():
-        if (directory.is_symlink() or not directory.is_dir() or not RELEASE_ID.fullmatch(directory.name)
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        if (not RELEASE_ID.fullmatch(directory.name)
                 or directory.name >= release_id or directory.name in pending):
+            kept_releases.append(directory)
             continue
         record = read_record(directory / 'release-manifest.json')
         if record.get('release_id') == directory.name and release_matches(record, directory.name):
             directories.append(directory)
+        else:
+            kept_releases.append(directory)
+    venvs = base / 'venvs'
+    if venvs.is_dir() and not venvs.is_symlink():
+        active_venvs = set()
+        for rel_dir in kept_releases:
+            venv_path = rel_dir / '.venv'
+            if venv_path.exists():
+                try:
+                    active_venvs.add(venv_path.resolve(strict=True))
+                except OSError:
+                    pass
+        for entry in venvs.iterdir():
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            if (VENV_KEY.fullmatch(entry.name) or entry.name.startswith('.building-')) and entry.resolve() not in active_venvs:
+                directories.append(entry)
+    shared_assets = base / 'shared-assets'
+    if shared_assets.is_dir() and not shared_assets.is_symlink():
+        active_assets = set()
+        for rel_dir in kept_releases:
+            rel_manifest = read_record(rel_dir / 'release-manifest.json')
+            for sha in (rel_manifest.get('shared_assets') or {}).values():
+                if isinstance(sha, str) and ASSET_HASH.fullmatch(sha):
+                    active_assets.add(sha)
+            assets_dir = rel_dir / 'erp_web/assets'
+            if assets_dir.is_dir():
+                for asset_file in assets_dir.rglob('*'):
+                    if asset_file.is_file() and not asset_file.is_symlink() and asset_file.stat().st_size >= 512 * 1024:
+                        with asset_file.open('rb') as stream:
+                            active_assets.add(hashlib.file_digest(stream, 'sha256').hexdigest())
+        for entry in shared_assets.iterdir():
+            if entry.is_symlink() or not entry.is_file():
+                continue
+            if ASSET_HASH.fullmatch(entry.name) and entry.name not in active_assets:
+                files.append(entry)
     if desktop.exists():
         for target in desktop.iterdir():
             if (target.is_symlink() or not target.is_dir()

@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -26,6 +27,7 @@ BACKUPS = Path('/srv/champion-erp/backups')
 SERVICE = 'champion-erp.service'
 PYTHON_OVERRIDE = Path('/etc/systemd/system/champion-erp.service.d/release-python.conf')
 LOCAL_URL = 'http://127.0.0.1:5050'
+LARGE_ASSET_THRESHOLD = 512 * 1024
 
 
 def run(*args):
@@ -36,6 +38,105 @@ def write_json(path, value):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
     temporary.replace(path)
+
+
+def file_sha256(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def _atomic_store_asset(source, target):
+    target.parent.mkdir(parents=True, mode=0o755, exist_ok=True)
+    temporary = target.with_name(f'.{target.name}.{os.getpid()}.tmp')
+    try:
+        shutil.copy2(source, temporary)
+        temporary.chmod(0o644)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def sync_shared_assets(release, current, manifest):
+    """按 SHA-256 还原本次省略上传的共享静态资产，并将新上传的大资产写入共享缓存。"""
+    shared_root = BASE / 'shared-assets'
+    shared = manifest.get('shared_assets') or {}
+    if not isinstance(shared, dict):
+        raise ValueError('发布清单 shared_assets 格式无效')
+    for rel_path, expected_sha in shared.items():
+        if (not isinstance(rel_path, str) or not rel_path.startswith('erp_web/assets/')
+                or '..' in Path(rel_path).parts or not isinstance(expected_sha, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', expected_sha)):
+            raise ValueError(f'共享静态资产声明无效：{rel_path}')
+        cached = shared_root / expected_sha
+        if not (cached.is_file() and not cached.is_symlink() and file_sha256(cached) == expected_sha):
+            fallback = current / rel_path
+            if fallback.is_file() and not fallback.is_symlink() and file_sha256(fallback) == expected_sha:
+                _atomic_store_asset(fallback, cached)
+            else:
+                raise RuntimeError(f'服务器缺少共享静态资产 {rel_path} ({expected_sha[:12]})，请完整重传发布包')
+        destination = release / rel_path
+        destination.parent.mkdir(parents=True, mode=0o755, exist_ok=True)
+        if destination.exists() or destination.is_symlink():
+            destination.unlink()
+        try:
+            os.link(cached, destination)
+        except OSError:
+            shutil.copy2(cached, destination)
+            destination.chmod(0o644)
+    assets_dir = release / 'erp_web/assets'
+    if assets_dir.is_dir():
+        for path in assets_dir.rglob('*'):
+            if path.is_symlink() or not path.is_file() or path.stat().st_size < LARGE_ASSET_THRESHOLD:
+                continue
+            digest = file_sha256(path)
+            cached = shared_root / digest
+            if not cached.is_file():
+                _atomic_store_asset(path, cached)
+
+
+def prepare_venv(release):
+    """requirements.txt 摘要不变时复用共享只读 .venv，避免每次发布重复安装全部依赖。"""
+    requirements = release / 'requirements.txt'
+    if not requirements.is_file():
+        print('准备服务器独立依赖环境', flush=True)
+        run('/usr/bin/python3', '-m', 'venv', release / '.venv')
+        python = release / '.venv/bin/python'
+        run(python, release / 'scripts/install_release_dependencies.py', requirements)
+        run(python, '-m', 'pip', 'check')
+        return
+    req_hash = file_sha256(requirements)[:16]
+    venv_key = f'py{sys.version_info.major}.{sys.version_info.minor}-{req_hash}'
+    venvs_root = BASE / 'venvs'
+    shared_venv = venvs_root / venv_key
+    ready_marker = shared_venv / '.ready'
+    if ready_marker.is_file() and (shared_venv / 'bin/python').is_file():
+        print(f'复用服务器 Python 依赖环境：{venv_key}', flush=True)
+    else:
+        print(f'准备服务器独立依赖环境：{venv_key}', flush=True)
+        venvs_root.mkdir(parents=True, mode=0o755, exist_ok=True)
+        building = venvs_root / f'.building-{venv_key}-{os.getpid()}'
+        if building.exists():
+            shutil.rmtree(building)
+        try:
+            run('/usr/bin/python3', '-m', 'venv', building)
+            python = building / 'bin/python'
+            run(python, release / 'scripts/install_release_dependencies.py', requirements)
+            run(python, '-m', 'pip', 'check')
+            building.chmod(0o755)
+            (building / '.ready').write_text(req_hash + '\n')
+            if shared_venv.exists():
+                shutil.rmtree(shared_venv)
+            building.replace(shared_venv)
+        except BaseException:
+            if building.exists():
+                shutil.rmtree(building, ignore_errors=True)
+            raise
+    venv_link = release / '.venv'
+    if venv_link.is_symlink() or venv_link.is_file():
+        venv_link.unlink()
+    elif venv_link.is_dir():
+        shutil.rmtree(venv_link)
+    venv_link.symlink_to(shared_venv)
 
 
 def request_json(path, token=''):
@@ -128,7 +229,7 @@ def switch_link(target):
 
 
 def prune_release_backups(current_backup_dir):
-    """新备份验证通过后，只清理统一发布脚本生成的历史备份目录。"""
+    """新备份验证通过后，只清理统一发布脚本生成的历史备份目录（含中途失败留下的不完整备份）。"""
     removed = 0
     for directory in current_backup_dir.parent.iterdir():
         if directory == current_backup_dir or not re.fullmatch(r'[0-9]{8}t[0-9]{6}z-[0-9a-f]{12}', directory.name):
@@ -136,8 +237,9 @@ def prune_release_backups(current_backup_dir):
         if directory.is_symlink() or not directory.is_dir():
             continue
         files = {path.name: path for path in directory.iterdir()}
-        required = {'accounts.tar.gz', 'previous-release.json'}
-        if not required <= files.keys() <= required | {'release-python.conf'}:
+        required = {'previous-release.json'}
+        allowed = {'accounts.tar.gz', 'previous-release.json', 'release-python.conf'}
+        if not required <= files.keys() <= allowed:
             continue
         if any(path.is_symlink() or not path.is_file() for path in files.values()):
             continue
@@ -199,8 +301,7 @@ def deploy(args):
     if os.geteuid() != 0:
         raise RuntimeError('服务器发布须由具有服务管理权限的账号执行')
     archive = args.archive.resolve()
-    with archive.open('rb') as source:
-        actual = hashlib.file_digest(source, 'sha256').hexdigest()
+    actual = file_sha256(archive)
     if actual != args.sha256:
         raise RuntimeError('上传的发布包摘要不一致')
     # 发布 ID 由本地脚本生成，只允许单层目录名。
@@ -236,10 +337,8 @@ def deploy(args):
         manifest = json.loads((release / 'release-manifest.json').read_text())
         if manifest['revision'] != args.revision:
             raise RuntimeError('发布包代码版本不一致')
-        print('准备服务器独立依赖环境', flush=True)
-        run('/usr/bin/python3', '-m', 'venv', release / '.venv')
-        run(python, release / 'scripts/install_release_dependencies.py', release / 'requirements.txt')
-        run(python, '-m', 'pip', 'check')
+        sync_shared_assets(release, current, manifest)
+        prepare_venv(release)
         run(python, '-m', 'compileall', '-q', release / 'erp_web', release / 'erp_shared')
         run('runuser', '-u', 'champion-erp', '--', 'test', '-r', release / 'erp_web/static/dist/index.html')
         backup_dir.mkdir(parents=True, mode=0o700)

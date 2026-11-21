@@ -9,12 +9,40 @@ import tarfile
 import tempfile
 
 
+DB_SUFFIXES = {".sqlite3", ".sqlite", ".db"}
+
+
+class _HashingReader:
+    """在写入归档的同时单遍计算 SHA-256，避免每个文件重复读取两次磁盘。"""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._digest = hashlib.sha256()
+
+    def read(self, size=-1):
+        chunk = self._stream.read(size)
+        if chunk:
+            self._digest.update(chunk)
+        return chunk
+
+    def hexdigest(self):
+        return self._digest.hexdigest()
+
+
 def digest_file(path):
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _add_and_digest(archive, source, arcname):
+    info = archive.gettarinfo(str(source), arcname=arcname)
+    with source.open("rb") as stream:
+        reader = _HashingReader(stream)
+        archive.addfile(info, reader)
+        return reader.hexdigest()
 
 
 def backup(app_dir, service_env, output):
@@ -29,7 +57,8 @@ def backup(app_dir, service_env, output):
         manifest = {}
         with output.open("xb") as raw:
             output.chmod(0o600)
-            with tarfile.open(fileobj=raw, mode="w:gz", dereference=False) as archive:
+            # compresslevel=1 兼容标准 .tar.gz，大幅缩短停服期间大量已压缩图片的打包耗时。
+            with tarfile.open(fileobj=raw, mode="w:gz", compresslevel=1, dereference=False) as archive:
                 for source in sorted(app_dir.rglob("*")):
                     relative = source.relative_to(app_dir)
                     parts = relative.parts
@@ -49,35 +78,60 @@ def backup(app_dir, service_env, output):
                     if not source.is_file():
                         continue
                     stored = source
-                    if source.suffix in {".sqlite3", ".sqlite", ".db"}:
+                    if source.suffix in DB_SUFFIXES:
                         stored = snapshots / relative
                         stored.parent.mkdir(parents=True, exist_ok=True)
-                        with sqlite3.connect(source.as_uri()+"?mode=ro", uri=True) as original, sqlite3.connect(stored) as target:
+                        with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as original, sqlite3.connect(stored) as target:
                             original.backup(target)
                             if target.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                                 raise RuntimeError("业务数据库完整性检查失败")
-                    archive.add(stored, arcname=name, recursive=False)
-                    manifest[name] = digest_file(stored)
+                    manifest[name] = _add_and_digest(archive, stored, name)
                 if service_env.exists():
-                    archive.add(service_env, arcname="service/newapi.env", recursive=False)
-                    manifest["service/newapi.env"] = digest_file(service_env)
+                    manifest["service/newapi.env"] = _add_and_digest(archive, service_env, "service/newapi.env")
                 manifest_path = snapshots / "manifest.json"
                 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
                 archive.add(manifest_path, arcname="manifest.json")
 
 
 def verify(path):
+    """流式校验全部文件摘要；仅将 SQLite 库落盘执行 PRAGMA quick_check，减少大量素材的重复读写。"""
     with tempfile.TemporaryDirectory(prefix="erp-account-restore-") as temporary, tarfile.open(path, "r:gz") as archive:
         root = Path(temporary)
-        archive.extractall(root, filter="data")
-        for name, digest in json.loads((root / "manifest.json").read_text()).items():
-            restored = root / name
-            if digest_file(restored) != digest:
+        actual = {}
+        manifest = None
+        db_files = []
+        for member in archive:
+            if not member.isfile():
+                continue
+            stream = archive.extractfile(member)
+            if stream is None:
+                continue
+            with stream:
+                if member.name == "manifest.json":
+                    manifest = json.loads(stream.read().decode("utf-8"))
+                    continue
+                digest = hashlib.sha256()
+                suffix = Path(member.name).suffix
+                if suffix in DB_SUFFIXES:
+                    restored = root / f"db-{len(db_files)}{suffix}"
+                    with restored.open("wb") as output_file:
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                            output_file.write(chunk)
+                    db_files.append(restored)
+                else:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                actual[member.name] = digest.hexdigest()
+        if not isinstance(manifest, dict):
+            raise RuntimeError("备份缺少 manifest.json")
+        for name, expected in manifest.items():
+            if actual.get(name) != expected:
                 raise RuntimeError("恢复文件与备份摘要不一致")
-            if restored.suffix in {".sqlite3", ".sqlite", ".db"}:
-                with sqlite3.connect(restored) as db:
-                    if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                        raise RuntimeError("恢复数据库完整性检查失败")
+        for restored in db_files:
+            with sqlite3.connect(restored) as db:
+                if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise RuntimeError("恢复数据库完整性检查失败")
         print("ERP 恢复验证通过：账号、各业务库及文件摘要一致。")
 
 

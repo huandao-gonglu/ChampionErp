@@ -18,23 +18,26 @@ def install(requirements: Path) -> None:
     local_env = {**os.environ, 'PIP_CONFIG_FILE': os.devnull, 'PIP_FIND_LINKS': ''}
     local = ['--no-index', '--only-binary=:all:', '--find-links', str(cache)]
     if any(cache.glob('*.whl')):
-        # 先离线解析。安装本身的权限、磁盘等错误应直接报出。
-        resolved = subprocess.run([*pip, 'install', '--dry-run', *local, *inputs],
-                                  env=local_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if resolved.returncode == 0:
-            print(f'从本机缓存安装 Python 依赖：{cache}', flush=True)
-            subprocess.run([*pip, 'install', *local, *inputs], check=True, env=local_env)
+        # 直接离线安装，避免 --dry-run 重复解析；pip 在落盘前完成全量依赖解析，缺项时转入补齐。
+        print(f'从本机缓存安装 Python 依赖：{cache}', flush=True)
+        offline = subprocess.run([*pip, 'install', *local, *inputs], env=local_env)
+        if offline.returncode == 0:
             return
 
     print(f'本机缓存缺少所需依赖，正在补齐：{cache}', flush=True)
     with tempfile.TemporaryDirectory(dir=cache) as temporary:
-        # pip 可将仅提供源码的依赖构建为 wheel。先安装验证，再逐文件原子写入共享缓存。
+        # pip 可将仅提供源码的依赖构建为 wheel。先安装验证，再原子写入并清理过时缓存包。
         subprocess.run([*pip, 'wheel', '--find-links', str(cache), '--wheel-dir', temporary,
                         *inputs], check=True)
         subprocess.run([*pip, 'install', '--no-index', '--only-binary=:all:',
                         '--find-links', temporary, *inputs], check=True, env=local_env)
+        current_wheels = set()
         for wheel in Path(temporary).glob('*.whl'):
+            current_wheels.add(wheel.name)
             os.replace(wheel, cache / wheel.name)
+        for stale in cache.glob('*.whl'):
+            if stale.name not in current_wheels:
+                stale.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':
