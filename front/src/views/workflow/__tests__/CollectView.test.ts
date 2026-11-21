@@ -14,7 +14,7 @@ vi.mock('@/api/workflow/collectionLinks', () => ({
 }))
 vi.mock('@/utils/desktopHandoff', () => ({ launchDesktop: vi.fn() }))
 
-const browser: api.CollectionLink = { id: 'a', url: 'https://example.com/item', mode: 'browser', revision: 1, platform: 'generic', status: 'pending', updatedAt: '' }
+const browser: api.CollectionLink = { id: 'a', url: 'https://example.com/item', mode: 'browser', revision: 1, platform: 'generic', status: 'pending', createdAt: null, updatedAt: '' }
 const apiRow: api.CollectionLink = { ...browser, id: 'b', url: 'https://detail.1688.com/offer/1.html', mode: 'api', revision: 4, platform: '1688', status: 'failed', title: '扳手', error: '资料不完整' }
 
 function mockViewport(initialWidth: number) {

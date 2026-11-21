@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import pty
 import re
 import selectors
 import shlex
@@ -22,6 +23,10 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+if __package__:
+    from .release_tunnel import desktop_tunnel
+else:
+    from release_tunnel import desktop_tunnel
 RELEASE_HEADERS = {'User-Agent': 'gongluErp-release', 'Cache-Control': 'no-cache'}
 
 
@@ -211,6 +216,54 @@ def check_new_desktop_version(update):
                            '请提高桌面版本号，或用 --server-only 仅发布服务器和网页')
 
 
+def upload_server_files(command, log):
+    """为 SCP 保留终端进度表，同时写入发布日志。"""
+    argv = [str(arg) for arg in command]
+    log.write('\n运行 ' + shlex.join(argv) + '\n')
+    log.flush()
+
+    def show_progress(fd):
+        data = os.read(fd, 8192)
+        lines = data.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+        log.write(lines.decode(errors='replace'))
+        log.flush()
+        return data if sys.stdout.isatty() else lines
+
+    result = os.waitstatus_to_exitcode(pty.spawn(argv, master_read=show_progress))
+    if result:
+        raise subprocess.CalledProcessError(result, argv)
+
+
+def pull_desktop_files(args, staging, files, artifacts, log):
+    command = 'cd ' + shlex.quote(staging) + ' && exec python3 -u pull_desktop.py'
+    with subprocess.Popen([*ssh_args(args), command], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          text=True) as process, ExitStack() as stack:
+        try:
+            # 先查询远端的实际文件，所有包均已校验时无需启动隧道。
+            request = {'artifacts': artifacts, 'interactive': sys.stdout.isatty()
+                       and shutil.get_terminal_size().columns >= 80}
+            process.stdin.write(json.dumps(request) + '\n')
+            process.stdin.flush()
+            state = process.stdout.readline().strip()
+            if state == 'download':
+                print('正在建立桌面包 HTTPS 传输隧道', flush=True)
+                url = stack.enter_context(desktop_tunnel(files))
+                process.stdin.write(url + '\n')
+                process.stdin.flush()
+            elif state != 'cached':
+                raise RuntimeError('服务器未能准备桌面包传输，请检查 SSH 输出')
+            process.stdin.close()
+            for line in process.stdout:
+                print(line, end='', flush=True)
+                log.write(re.sub(r'\x1b\[\d+[AK]', '', line))
+                log.flush()
+            if process.wait():
+                raise RuntimeError('桌面包传输未完成，可用 --resume 继续')
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+
 def publish_desktop_update(args, record, folder, source):
     update = record.get('desktop_update')
     if not update or update.get('published'):
@@ -220,7 +273,7 @@ def publish_desktop_update(args, record, folder, source):
     staging = '/srv/champion-erp/staging/' + record['release_id']
     scp = ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity), '-o', 'BatchMode=yes',
            '-o', 'ForwardAgent=no', '-o', 'StrictHostKeyChecking=yes']
-    subprocess.run([*scp, source / 'deploy/publish_desktop.py', args.ssh_host + ':' + staging + '/'], check=True)
+    files, artifacts = {}, {}
     command = ['python3', staging + '/publish_desktop.py', '--public-url', update['public_url'],
                '--platform', update['platform'], '--arch', update['arch'], '--version', update['version'],
                '--policy', update['policy'], '--notes', update['notes']]
@@ -230,17 +283,25 @@ def publish_desktop_update(args, record, folder, source):
     ):
         if key in update:
             artifact = folder / 'desktop' / update[key]['name']
-            if digest(artifact) != update[key]['sha256']:
+            if (artifact.parent != folder / 'desktop' or artifact.is_symlink() or not artifact.is_file()
+                    or digest(artifact) != update[key]['sha256']):
                 raise RuntimeError('桌面分发包摘要发生变化，请重新构建')
             destination = staging + '/' + remote_name
-            subprocess.run([*scp, artifact, args.ssh_host + ':' + destination], check=True)
+            files[remote_name] = artifact
+            artifacts[remote_name] = {'size': artifact.stat().st_size, 'sha256': update[key]['sha256']}
             command.extend([path_flag, destination, digest_flag, update[key]['sha256']])
+    # 拉取端与当前编排脚本配套，续发旧版本时仍使用旧包自带的发布程序。
+    subprocess.run([*scp, source / 'deploy/publish_desktop.py', ROOT / 'deploy/pull_desktop.py',
+                    args.ssh_host + ':' + staging + '/'], check=True)
+    with (folder / 'build.log').open('a') as log:
+        pull_desktop_files(args, staging, files, artifacts, log)
     print(remote_output(args, command), flush=True)
     manifest_url = desktop_manifest_url(update)
     with urlopen(Request(manifest_url, headers=RELEASE_HEADERS), timeout=30) as response:
         manifest = json.load(response)
         if (response.geturl() != manifest_url or manifest['version'] != update['version']
                 or manifest['installer']['sha256'] != update['installer']['sha256']
+                or ('mac_zip' in update and manifest.get('macZip', {}).get('sha256') != update['mac_zip']['sha256'])
                 or (update['policy'] == 'required' and manifest['minimum'] != update['version'])):
             raise RuntimeError('公网桌面更新清单与本次发布不一致')
     update['published'] = True
@@ -333,6 +394,8 @@ def resume_release(args):
 def release(args):
     if args.desktop_update and sys.platform != 'darwin':
         raise RuntimeError('构建 macOS 更新包需要 Mac，仅发布服务器和网页可使用 --server-only')
+    if args.desktop_update and not shutil.which('cloudflared'):
+        raise RuntimeError('桌面发布需要 cloudflared，请先在构建机安装')
     if output('git', 'status', '--porcelain', '--untracked-files=normal'):
         raise RuntimeError('请先提交本次代码修改，发布仅使用干净的 Git 版本')
     if not args.ssh_identity.is_file():
@@ -445,8 +508,8 @@ def release(args):
             shutil.copy2(source / 'erp_web/__init__.py', staging / 'erp_web/')
             shutil.copy2(source / 'erp_web/release_guard.py', staging / 'erp_web/')
             print('上传服务器发布包并执行备份切换', flush=True)
-            run([*scp, '-r', archive_path, staging / 'deploy', staging / 'erp_web',
-                 args.ssh_host + ':' + remote_folder + '/'], cwd=source, log=log, env=environment)
+            upload_server_files([*scp, '-r', archive_path, staging / 'deploy', staging / 'erp_web',
+                                 args.ssh_host + ':' + remote_folder + '/'], log)
             record['status'] = 'server_staged'
             write_record(record_path, record)
             switch_server(args, record, folder, source)

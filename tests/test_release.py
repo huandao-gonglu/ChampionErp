@@ -67,6 +67,7 @@ def test_release_cli_runs_selected_checks_before_web_build(tmp_path, monkeypatch
         flags.append('--signed-desktop')
     monkeypatch.setattr(release.sys, 'argv', ['release.py', *flags])
     monkeypatch.setattr(release.sys, 'platform', 'darwin')
+    monkeypatch.setattr(release.shutil, 'which', lambda name: '/usr/bin/' + name)
     monkeypatch.setattr(release, 'output', lambda *args: {
         ('git', 'status', '--porcelain', '--untracked-files=normal'): '',
         ('git', 'rev-parse', 'HEAD'): 'revision',

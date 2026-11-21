@@ -80,6 +80,7 @@ class CollectionLink(TypedDict):
     mode: Literal['browser', 'api']
     status: CollectionStatus
     platform: str
+    createdAt: str | None
     updatedAt: str
     title: NotRequired[str]
     productId: NotRequired[str]

@@ -14,7 +14,7 @@ STAGING = Path('/srv/champion-erp/staging')
 DESKTOP = Path('/var/www/champion-erp/desktop-updates')
 RELEASE_ID = re.compile(r'[0-9]{8}t[0-9]{6}z-[0-9a-f]{12}')
 VERSION = re.compile(r'(?:0|[1-9][0-9]{0,7})(?:\.(?:0|[1-9][0-9]{0,7})){2}')
-UPLOADS = ('server.tar.gz', 'installer.dmg', 'update.zip')
+UPLOADS = ('server.tar.gz', 'installer.dmg', 'update.zip', 'installer.dmg.https.part', 'update.zip.https.part')
 
 
 def read_record(path):

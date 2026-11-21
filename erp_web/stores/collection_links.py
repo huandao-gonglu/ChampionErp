@@ -34,11 +34,16 @@ class CollectionLinks:
                 id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, mode TEXT NOT NULL,
                 status TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
                 summary TEXT NOT NULL DEFAULT '{}', verification TEXT NOT NULL DEFAULT '{}',
-                updated TEXT NOT NULL)""")
+                updated TEXT NOT NULL, created TEXT)""")
             db.execute("""CREATE TABLE IF NOT EXISTS events (
                 link_id TEXT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
                 status TEXT NOT NULL, message TEXT NOT NULL, code TEXT NOT NULL, at TEXT NOT NULL)""")
             db.execute("CREATE INDEX IF NOT EXISTS events_link ON events(link_id)")
+            if 'created' not in {column['name'] for column in db.execute('PRAGMA table_info(links)')}:
+                db.execute('ALTER TABLE links ADD COLUMN created TEXT')
+                db.execute("""UPDATE links SET created = (
+                    SELECT CASE WHEN message IN ('已添加链接', '从本机采集列表导入') THEN at END
+                    FROM events WHERE link_id = links.id ORDER BY rowid LIMIT 1)""")
 
     def mark_interrupted(self):
         """仅在统一后端启动恢复阶段调用，普通页面读取不会改变运行状态。"""
@@ -64,12 +69,14 @@ class CollectionLinks:
     @staticmethod
     def _public(row) -> CollectionLink:
         return {**json.loads(row['summary']), 'id': row['id'], 'url': row['url'], 'mode': row['mode'],
-                'status': row['status'], 'revision': row['revision'], 'updatedAt': row['updated'],
+                'status': row['status'], 'revision': row['revision'],
+                'createdAt': row['created'], 'updatedAt': row['updated'],
                 'platform': detect_source_site(row['url'])}
 
     def list(self):
         with closing(self._connect()) as db:
-            return {'items': [self._public(row) for row in db.execute('SELECT id,url,mode,status,revision,updated,summary FROM links ORDER BY rowid')]}
+            return {'items': [self._public(row) for row in db.execute(
+                'SELECT id,url,mode,status,revision,created,updated,summary FROM links ORDER BY rowid')]}
 
     def history(self, key):
         with closing(self._connect()) as db:
@@ -106,9 +113,10 @@ class CollectionLinks:
                                             'platform': detect_source_site(item.url)}
                         else:
                             status = 'pending'
-                inserted = db.execute("""INSERT INTO links(id,url,mode,status,summary,verification,updated)
-                    VALUES(?,?,?,?,?,?,?) ON CONFLICT(url) DO NOTHING""",
-                    (key, item.url, item.mode, status, json.dumps(summary), json.dumps(verification), _now()))
+                now = _now()
+                inserted = db.execute("""INSERT INTO links(id,url,mode,status,summary,verification,updated,created)
+                    VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(url) DO NOTHING""",
+                    (key, item.url, item.mode, status, json.dumps(summary), json.dumps(verification), now, now))
                 if inserted.rowcount:
                     added += 1
                     self._event(db, key, status, '从本机采集列表导入' if legacy else '已添加链接')

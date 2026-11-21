@@ -1,8 +1,10 @@
 """URL 清单跨请求同步、断线执行及原标签验证。"""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from io import BytesIO
 import json
+import sqlite3
 from threading import Event
 from time import monotonic, sleep
 from urllib.error import HTTPError
@@ -18,6 +20,7 @@ from erp_web.facades import collect_facade
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.services import collection_link_resolution
+from erp_web.stores import collection_links
 from erp_web.stores.collection_links import CollectionLinks
 from tests.ai_code_mode_helpers import business_returns, discover_tools
 from tests.test_native_agent_integration import body, service
@@ -40,16 +43,45 @@ def test_management_http_persistence_and_conflict(backend_server):
 
     row, = rows()
     assert row['url'] == url and row['status'] == 'pending'
+    assert row['createdAt'] == row['updatedAt']
     target = {'id': row['id'], 'revision': row['revision']}
     edit = {'action': 'edit', **target, 'url': 'https://detail.1688.com/offer/123.html', 'mode': 'api'}
     assert server.client.post(path, json=edit).status_code == 200
     assert server.client.post(path, json={'action': 'remove', **target}).status_code == 409
     updated, = rows()
     assert updated['url'] == edit['url'] and updated['mode'] == 'api'
+    assert updated['createdAt'] == row['createdAt']
     events = server.client.get(f'{server}/api/business-queries/collection.history', params={'id': row['id']}).json()
     assert [e['message'] for e in events['items']] == ['已更新链接设置']
     assert server.client.post(path, json={'action': 'remove', **target, 'revision': updated['revision']}).ok
     assert not rows()
+
+
+def test_migration_recovers_creation_time_only_from_original_add_events(tmp_path, monkeypatch):
+    path = tmp_path / 'links.sqlite3'
+    links = CollectionLinks(path)
+    added_at = '2026-11-19T01:30:00+00:00'
+    later_at = '2026-11-20T01:30:00+00:00'
+    monkeypatch.setattr(collection_links, '_now', lambda: added_at)
+    links.add([{'url': 'https://example.test/collected'}, {'url': 'https://example.test/edited'}])
+    links.add([{'url': 'https://example.test/imported'}], legacy=True)
+    collected, edited, _ = links.list()['items']
+
+    monkeypatch.setattr(collection_links, '_now', lambda: later_at)
+    running = links.begin(collected['id'], collected['revision'])
+    receipt = links.finish(collected['id'], running, 'success', {'productId': 'p1'})
+    assert receipt['createdAt'] == added_at and receipt['updatedAt'] == later_at
+    links.manage({'action': 'edit', 'id': edited['id'], 'revision': edited['revision'],
+                  'url': 'https://example.test/replaced'})
+
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute('ALTER TABLE links DROP COLUMN created')
+
+    migrated = CollectionLinks(path).list()['items']
+    assert [(row['createdAt'], row['updatedAt']) for row in migrated] == [
+        (added_at, later_at), (None, later_at), (added_at, added_at),
+    ]
+    assert CollectionLinks(path).list()['items'] == migrated
 
 
 @pytest.mark.parametrize('mode', ['browser', 'api'])

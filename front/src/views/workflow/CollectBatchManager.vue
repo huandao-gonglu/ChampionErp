@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { PhArrowsDownUp, PhListBullets, PhMagnifyingGlass, PhSortAscending, PhSortDescending } from '@phosphor-icons/vue'
 import { collectBatchStatusLabels } from '@/utils/collectQueue'
+import { formatDateTime } from '@/utils/format'
 import type { CollectionLink } from '@/api/workflow/collectionLinks'
 import type { CollectBatchStatus } from '@/types/workflow'
 
@@ -56,8 +57,8 @@ function hostname(url: string) { return new URL(url).hostname }
       <button type="button" class="row-action" @click="emit('clearChecks')">清空勾选</button>
     </div>
 
-    <div class="mt-4 overflow-clip rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full table-fixed text-left text-sm">
+    <div class="mt-4 overflow-x-auto rounded-lg border border-accent-200 dark:border-dark-700">
+      <table class="w-full min-w-[28rem] table-fixed text-left text-sm sm:min-w-[32rem]">
         <caption class="sr-only">采集链接和状态</caption>
         <thead class="bg-accent-50 text-xs font-semibold text-accent-700 dark:bg-dark-900 dark:text-accent-200">
           <tr>
@@ -76,6 +77,7 @@ function hostname(url: string) { return new URL(url).hostname }
             </th>
             <th scope="col" class="hidden w-20 sm:table-cell">方式</th>
             <th scope="col" class="w-24">状态</th>
+            <th scope="col" class="w-36 pr-2">添加时间</th>
             <th scope="col" class="w-[72px]">操作</th>
           </tr>
         </thead>
@@ -95,6 +97,10 @@ function hostname(url: string) { return new URL(url).hostname }
             </td>
             <td class="hidden text-xs text-accent-600 dark:text-accent-300 sm:table-cell">{{ row.mode === 'api' ? 'API' : '浏览器' }}</td>
             <td><span class="link-status" :data-status="row.status">{{ collectBatchStatusLabels[row.status] }}</span></td>
+            <td class="pr-2 text-xs tabular-nums text-accent-600 dark:text-accent-300">
+              <time v-if="row.createdAt" :datetime="row.createdAt">{{ formatDateTime(row.createdAt) }}</time>
+              <span v-else>-</span>
+            </td>
             <td>
               <button v-if="row.status === 'success' && row.productId" type="button" class="row-action" :disabled="busy" @click.stop="emit('openProduct', row.productId)">查看商品</button>
               <button v-else-if="row.status !== 'running'" type="button" class="row-action" :disabled="busy" @click.stop="emit('run', row)">{{ row.status === 'pending' ? '采集' : row.status === 'waiting_verification' ? '继续' : '重试' }}</button>

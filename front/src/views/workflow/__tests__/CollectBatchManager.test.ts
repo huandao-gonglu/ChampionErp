@@ -4,8 +4,8 @@ import CollectBatchManager from '../CollectBatchManager.vue'
 import type { CollectionLink } from '@/api/workflow/collectionLinks'
 
 const rows: CollectionLink[] = [
-  { id: 'a', revision: 4, url: 'https://example.com/1', title: '扳手', mode: 'browser', status: 'failed', platform: 'generic', updatedAt: '' },
-  { id: 'b', revision: 1, url: 'https://example.com/2', title: '积木', mode: 'browser', status: 'pending', platform: 'generic', updatedAt: '' },
+  { id: 'a', revision: 4, url: 'https://example.com/1', title: '扳手', mode: 'browser', status: 'failed', platform: 'generic', createdAt: '2026-11-19T01:30:00+00:00', updatedAt: '2026-11-20T01:30:00+00:00' },
+  { id: 'b', revision: 1, url: 'https://example.com/2', title: '积木', mode: 'browser', status: 'pending', platform: 'generic', createdAt: null, updatedAt: '2026-11-20T01:30:00+00:00' },
 ]
 const listProps = {
   total: rows.length, counts: { failed: 1, pending: 1 }, selectedId: 'b', checkedIds: new Set<string>(),
@@ -19,6 +19,16 @@ it('商品列表仅显示名称和 URL，即使采集结果含有主图', () => 
   expect(productCell.text()).toContain(row.title)
   expect(productCell.text()).toContain(row.url)
   expect(productCell.find('img').exists()).toBe(false)
+})
+
+it('添加时间列显示记录的添加时间，旧记录缺失时显示占位符', () => {
+  const wrapper = mount(CollectBatchManager, { props: { ...listProps, rows } })
+  const columnIndex = wrapper.findAll('th').findIndex(header => header.text() === '添加时间')
+  expect(columnIndex).toBeGreaterThan(-1)
+  const [known, unknown] = wrapper.findAll('tbody tr').map(row => row.findAll('td')[columnIndex])
+  expect(known.get('time').attributes('datetime')).toBe(rows[0].createdAt)
+  expect(known.text()).toBe(new Date(rows[0].createdAt!).toLocaleString())
+  expect(unknown.text()).toBe('-')
 })
 
 it('列表将搜索、排序和勾选交给页面，逐条采集只提交当前行', async () => {

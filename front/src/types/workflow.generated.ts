@@ -502,6 +502,7 @@ export interface BackendCollectionLink {
   mode: "browser" | "api"
   status: "pending" | "running" | "waiting_verification" | "success" | "failed" | "unconfirmed"
   platform: string
+  createdAt: string | null
   updatedAt: string
   title?: string
   productId?: string
