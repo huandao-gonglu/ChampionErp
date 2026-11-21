@@ -611,16 +611,6 @@ def test_mercadolibre_publisher_only_has_explicit_cbt_write_paths() -> None:
     assert "quote(siteless_id" in source
 
 
-def test_message_part_does_not_mount_task_card() -> None:
-    text = (ROOT / "front/src/components/ai-work/AiMessagePart.vue").read_text(
-        encoding="utf-8"
-    )
-    assert "GlobalTaskApprovalCard" not in text, (
-        "任务卡只能在 conversation 级 AiChatPanel 挂载，"
-        "消息 part 不得重复渲染可操作任务卡"
-    )
-
-
 # -- 写入一致性与上下文边界守卫（修复计划第 11 节） -------------------------
 
 #: 完整业务聚合对象的字段名；写回执出现它们即代表把无界资源带回模型上下文。

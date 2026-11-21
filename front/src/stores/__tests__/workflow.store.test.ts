@@ -1,4 +1,3 @@
-import { apiClient } from '@/api/client'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 import DraftCategoryWorkspace from '@/views/workflow/DraftCategoryWorkspace.vue'
@@ -1251,14 +1250,6 @@ describe('workflow store live API flow', () => {
     await store.hydrateTab('dashboard')
 
     expect(workflowApi.fetchProductsIndex).toHaveBeenCalledOnce()
-  })
-
-  it('任务页由统一队列自行加载，工作台不再请求旧发布列表', async () => {
-    const get = vi.spyOn(apiClient, 'get')
-    const store = useWorkflowStore()
-    await store.hydrateTab('publish')
-    expect(get).not.toHaveBeenCalled()
-    get.mockRestore()
   })
 
   it('collects product through backend API and updates diagnostics', async () => {

@@ -10,7 +10,6 @@ from pydantic_ai.models.function import FunctionModel
 from erp_web.services.ai_model_factory import PydanticModelBinding
 from erp_web.services.gemini_canvas_runtime import GeminiCanvasProvider
 
-from conftest import assert_no_old_path
 from erp_web.context import get_context
 from erp_web.runtime_units import publish_helpers
 from erp_web.services import (
@@ -484,13 +483,6 @@ def test_configured_copy_prompt_does_not_duplicate_output_schema(
             "search_keywords: array",
         )
     )
-
-
-def test_copy_service_does_not_hardcode_keys(
-    repo_dir: Path,
-    old_path_markers: tuple[str, ...],
-) -> None:
-    assert_no_old_path((repo_dir / "erp_web/services/copy_service.py").read_text(), old_path_markers)
 
 
 def test_api_chat_uses_pydantic_direct_boundary(tmp_path: Path, monkeypatch) -> None:

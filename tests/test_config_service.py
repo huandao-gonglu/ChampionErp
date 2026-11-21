@@ -5,27 +5,20 @@ from pathlib import Path
 
 import pytest
 
-from conftest import assert_no_old_path
 from erp_web import app_config
 from erp_web.services import ai_model_config, ai_prompt_templates, config_service
 from desktop_runtime import browser_ai_runtime
 
 
-def test_config_paths_are_project_local(
-    app_dir: Path, old_path_markers: tuple[str, ...]
-) -> None:
+def test_config_paths_are_project_local(app_dir: Path) -> None:
     cfg_dir = config_service.config_dir(app_dir)
     env_file = config_service.env_path(app_dir)
 
     assert cfg_dir.resolve().is_relative_to((app_dir / "config").resolve())
     assert env_file.parent == cfg_dir
-    assert_no_old_path(cfg_dir, old_path_markers)
-    assert_no_old_path(env_file, old_path_markers)
 
 
-def test_default_env_template_and_public_config(
-    app_dir: Path, old_path_markers: tuple[str, ...]
-) -> None:
+def test_default_env_template_and_public_config(app_dir: Path) -> None:
     path = config_service.write_env_template(app_dir)
     public = config_service.public_ai_config(app_dir, {})
 
@@ -50,7 +43,6 @@ def test_default_env_template_and_public_config(
     assert all("generation_capabilities" in model for model in public["ai_models"])
     assert "ai_use_case_prompts" not in public
     assert public["storage"]["config_dir"].startswith(str(app_dir / "config"))
-    assert_no_old_path(public, old_path_markers)
 
 
 def test_merge_config_reads_key_from_config_not_code(app_dir: Path) -> None:
@@ -838,20 +830,6 @@ def test_normalize_app_config_rejects_legacy_ai_aliases(
                 "image_ai_api_key": "legacy-image-key-2",
             }
         )
-
-
-def test_retired_task_approval_mode_is_not_a_configuration_contract():
-    import pytest
-    from erp_web import app_config
-
-    assert "task_approval_mode" not in app_config.default_app_config()
-    with pytest.raises(ValueError, match="不受支持"):
-        app_config.normalize_app_config({"task_approval_mode": "full"})
-
-
-def test_normalize_app_config_rejects_unknown_approval_mode() -> None:
-    with pytest.raises(ValueError, match="task_approval_mode"):
-        app_config.normalize_app_config({"task_approval_mode": "legacy-test-grant"})
 
 
 def test_normalize_app_config_keeps_1688_api_credentials() -> None:

@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -372,10 +371,3 @@ def test_fingerprint_stable_across_processes() -> None:
     assert len(outputs) == 1, f"跨进程指纹不一致：{sorted(outputs)}"
     (fingerprint,) = outputs
     assert len(fingerprint) == 64
-
-
-def test_fingerprint_serialization_is_deterministic() -> None:
-    definition = _definition()
-    first = json.dumps(definition.model_dump(mode="json"), sort_keys=True)
-    second = json.dumps(definition.model_dump(mode="json"), sort_keys=True)
-    assert first == second

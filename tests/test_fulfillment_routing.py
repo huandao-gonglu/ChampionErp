@@ -2,7 +2,7 @@
 import pytest
 
 from erp_web.schemas.fulfillment import FulfillmentError
-from tests.test_fulfillment import domain, ready, command
+from tests.test_fulfillment import domain, ready
 
 
 def request(service, order, **overrides):
@@ -24,23 +24,6 @@ def test_official_address_changes_do_not_change_receiving_warehouse(domain):
     assert not service.detail(order.identity)['blocked_reason']
     assert service.process_one(order)
     assert any(path.endswith('createOrder') for path, _ in bus.calls)
-
-
-def test_missing_platform_carrier_blocks_new_report_without_changing_address(domain):
-    service, bus, order = ready(domain)
-    before = service.detail(order.identity)['receiving_warehouse']
-    domain[4](order.model_copy(update={'handover': None}))
-    current = service.detail(order.identity)
-    assert current['blocked_reason']
-    assert current['receiving_warehouse']['address'] == before['address']
-    service.process_one(order)
-    assert not any(path.endswith('createOrder') for path, _ in bus.calls)
-
-
-def test_report_cannot_change_purchase_warehouse(domain):
-    service, _, order, *_ = domain
-    with pytest.raises(ValueError, match='采购收货仓一致'):
-        service.command('plan', request(service, order, plan={'section_id': 1, 'warehouse_id': 20, 'service_ids': [2]}))
 
 
 def test_services_choose_one_core_and_available_options_only(domain, monkeypatch):

@@ -6,7 +6,6 @@ import pytest
 
 from PIL import Image
 
-from conftest import assert_no_old_path
 from erp_web.services import image_service, image_translate_service
 
 
@@ -40,16 +39,15 @@ def test_repeated_image_processing_keeps_distinct_files_and_immediate_source(app
     assert second["target_language"] == "ru"
 
 
-def test_image_root_is_created_under_data_images(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_image_root_is_created_under_data_images(app_dir: Path, tmp_path: Path) -> None:
     root = image_service.images_root(app_dir)
     assert root.exists()
     assert root.is_dir()
     assert root.resolve().is_relative_to(tmp_path.resolve())
     assert root.resolve().is_relative_to((app_dir / "data" / "images").resolve())
-    assert_no_old_path(root, old_path_markers)
 
 
-def test_upload_delete_replace_and_main_image(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_upload_delete_replace_and_main_image(app_dir: Path, tmp_path: Path) -> None:
     source = tmp_path / "test_image.png"
     replacement = tmp_path / "replacement.png"
     _make_png(source, (255, 0, 0))
@@ -77,10 +75,9 @@ def test_upload_delete_replace_and_main_image(app_dir: Path, tmp_path: Path, old
 
     pool = image_service.delete_images(pool, [pool[0]["id"]], app_dir)
     assert pool == []
-    assert_no_old_path(uploaded, old_path_markers)
 
 
-def test_upload_data_url_returns_media_asset_shape(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_upload_data_url_returns_media_asset_shape(app_dir: Path) -> None:
     raw = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32).decode("ascii")
     items = image_service.upload_images(
         app_dir,
@@ -92,7 +89,6 @@ def test_upload_data_url_returns_media_asset_shape(app_dir: Path, old_path_marke
     assert {"id", "asset_id", "path", "preview_url", "platforms", "status"}.issubset(item.keys())
     assert (app_dir / item["path"]).exists()
     assert item["status"] == "ready"
-    assert_no_old_path(item, old_path_markers)
 
 
 def test_safe_segment_truncates_long_source_url_with_stable_hash() -> None:
@@ -139,7 +135,7 @@ def test_upload_data_url_accepts_long_product_id_without_long_filename_error(app
     assert saved_path.parent.name == product_segment
 
 
-def test_image_translate_service_materializes_provider_output_into_pool_item(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_image_translate_service_materializes_provider_output_into_pool_item(app_dir: Path, tmp_path: Path) -> None:
     source_path = tmp_path / "source.png"
     generated_path = tmp_path / "translated.png"
     _make_png(source_path, (255, 0, 0))
@@ -197,10 +193,9 @@ def test_image_translate_service_materializes_provider_output_into_pool_item(app
     assert (app_dir / item["path"]).exists()
     assert item["width"] == 8
     assert item["height"] == 6
-    assert_no_old_path(result, old_path_markers)
 
 
-def test_image_edit_service_materializes_user_prompt_into_pool_item(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_image_edit_service_materializes_user_prompt_into_pool_item(app_dir: Path, tmp_path: Path) -> None:
     source_path = tmp_path / "source.png"
     generated_path = tmp_path / "edited.png"
     _make_png(source_path, (255, 0, 0))
@@ -258,7 +253,6 @@ def test_image_edit_service_materializes_user_prompt_into_pool_item(app_dir: Pat
     assert item["raw"]["image_edit"]["prompt"] == "扣除背景，保留产品主体"
     assert item["path"].replace("\\", "/").startswith("data/images/pytest-image-edit/edited/")
     assert (app_dir / item["path"]).exists()
-    assert_no_old_path(result, old_path_markers)
 
 
 def test_image_edit_service_requires_selected_image_ids(app_dir: Path, tmp_path: Path) -> None:

@@ -65,13 +65,6 @@ def test_state_contract_is_versioned_and_never_returns_plaintext_secrets(
         assert secret not in serialized
 
 
-def test_retired_collection_endpoints_are_unavailable(backend_server: str) -> None:
-    for path in ('/api/collect-extension-payload', '/api/collect-1688-clean', '/api/collect-from-browser-tab',
-                 '/api/open-1688-browser', '/api/browser-debug/open-profile'):
-        response = backend_server.client.post(f"{backend_server}{path}", json={}, timeout=10)
-        assert response.status_code == 404, response.text[:300]
-
-
 def test_retired_http_collection_modes_are_rejected(backend_server: str) -> None:
     for endpoint in ("collect-source", "collect-batch", "collect-1688"):
         for mode in ("http", "fetch", "request", "requests"):

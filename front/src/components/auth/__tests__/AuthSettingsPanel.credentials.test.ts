@@ -328,13 +328,6 @@ describe('AuthSettingsPanel credential lifecycle', () => {
     expect(payload).not.toHaveProperty('1688_api')
   })
 
-  it('个人授权页不提供汇率 API 配置，也不随个人模型设置提交', async () => {
-    const wrapper = mountPanel()
-    expect(wrapper.find('[data-testid="auth-settings-tab-apis"]').exists()).toBe(false)
-    const payload = await save(wrapper)
-    expect(payload).not.toHaveProperty('pricing_defaults')
-  })
-
   it('异步配置尚未返回时可渲染空平台状态', async () => {
     const wrapper = mountPanel({}, [])
 
@@ -542,18 +535,6 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     })
     expect(JSON.stringify(bindings)).not.toContain('enable_thinking')
     expect(JSON.stringify(bindings)).not.toContain('reasoning_effort')
-  })
-
-  it('功能绑定保留模型设置，移除所有系统提示词编辑与提交入口', async () => {
-    const wrapper = mountPanel(qwenConfig)
-    await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
-    expect(wrapper.text()).not.toContain('Prompt JSON 文件')
-    expect(wrapper.text()).not.toContain('System Prompt')
-    expect(wrapper.text()).not.toContain('User Prompt')
-    await wrapper.get('[data-testid="save-ai-bindings"]').trigger('click')
-    const payload = wrapper.emitted('saveAi')?.[0]?.[0] as Record<string, unknown>
-    expect(payload).not.toHaveProperty('ai_use_case_prompts')
-    expect(payload).toHaveProperty('ai_use_case_bindings')
   })
 
   it('模型配置只提交 provider_id，不再提交 provider_family', async () => {

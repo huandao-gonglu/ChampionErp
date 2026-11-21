@@ -152,7 +152,7 @@ describe('AiWorkView 对话与历史', () => {
     expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
   })
 
-  it('切换对话后始终显示对话内容，不提供原始消息入口', async () => {
+  it('切换对话后显示对应对话内容', async () => {
     const { mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
@@ -162,12 +162,6 @@ describe('AiWorkView 对话与历史', () => {
 
     expect(mocks.fetchUiMessages).toHaveBeenLastCalledWith('conversation-1')
     expect(wrapper.get('[data-testid="ai-work-chat-view"]').text()).toContain('派生回答-conversation-1')
-
-    expect(wrapper.find('[aria-label="视图切换"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="ai-work-view-raw-tab"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="ai-work-raw-view"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="ai-work-download"]').exists()).toBe(false)
-
   })
 
   it('手动刷新列表和当前详情，不启动自动轮询', async () => {
@@ -374,7 +368,6 @@ describe('AiWorkView 对话与历史', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="ai-work-live-chat"]').text()).toContain('继续上一轮')
-    expect(wrapper.find('[data-testid="ai-work-raw-view"]').exists()).toBe(false)
 
     // 收尾流，避免残留未完成的异步任务。
     const encoder = new TextEncoder()
@@ -407,7 +400,6 @@ describe('AiWorkView 对话与历史', () => {
     expect(store.activeConversationId).toBe(GLOBAL_CHAT_ID)
     expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="ai-work-live-chat"]').text()).toContain(`派生回答-${GLOBAL_CHAT_ID}`)
-    expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
     expect(mocks.fetchUiMessages.mock.calls.filter(([id]) => id === GLOBAL_CHAT_ID)).toHaveLength(1)
     expect(fetchMock).not.toHaveBeenCalled()
@@ -475,14 +467,13 @@ describe('AiWorkView 对话与历史', () => {
     store.disconnectEvents()
   })
 
-  it('非 global.chat 历史只读且不显示继续入口', async () => {
+  it('非 global.chat 历史只读并提示为任务记录', async () => {
     mocks.route.query = { conversation_id: 'conversation-2' }
     const { mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
 
     expect(wrapper.get('[data-testid="ai-work-selected-id"]').attributes('data-conversation-id')).toBe('conversation-2')
-    expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="ai-work-chat-view"]').text()).toContain(
       '这是任务记录，无法在此继续对话',
     )

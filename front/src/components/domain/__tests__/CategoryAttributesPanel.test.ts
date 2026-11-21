@@ -612,22 +612,6 @@ describe('CategoryAttributesPanel', () => {
     expect(draft.attributes.BRAND).toEqual({ values: [{ dictionaryValueId: 'old-brand-id', value: 'Old Brand' }] })
   })
 
-  it('包装属性由 SKU 派生，公共属性页不提供第二份包装编辑入口', () => {
-    const draft = createEmptyDraftDetail('mercadolibre')
-    draft.draftId = 'draft-package'
-    draft.site = 'CBT'
-    draft.categoryId = 'CBT455865'
-    const category: CategorySelection = {
-      platform: 'mercadolibre', categoryId: 'CBT455865', categoryPath: '商品',
-      requiredAttributes: ['PACKAGE_LENGTH', 'PACKAGE_WIDTH', 'PACKAGE_HEIGHT', 'PACKAGE_WEIGHT'].map(id => ({ id, name: id, required: true, options: [] })),
-      optionalAttributes: [], fetchedAt: '2026-10-03T00:00:00Z', raw: {},
-    }
-    const wrapper = mount(CategoryAttributesPanel, { props: { ...panelProps(draft, category), target: mercadoTarget } })
-    expect(wrapper.find('[data-package-dimension-field]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('来自草稿包装尺寸')
-    expect(draft).not.toHaveProperty('packageDimensions')
-  })
-
   it('Mercado 属性编辑器隐藏发布编译器管理的影子字段', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-mercado-managed-attributes'

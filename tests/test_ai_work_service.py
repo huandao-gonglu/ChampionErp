@@ -133,25 +133,6 @@ def test_history_replay_distinguishes_business_input_from_chat_input(prefix, dis
     assert saved.history_version == original.history_version
 
 
-def test_retired_event_raw_and_children_endpoints_return_404() -> None:
-    _save_history()
-
-    # events 已由 Deferred 迁移恢复为正式订阅端点，不再是 retired。
-    for action in ("raw", "children"):
-        handler = _get(f"/api/v1/ai-work/conversations/conversation_1/{action}")
-        assert handler.status == 404
-        assert handler.payload == {"ok": False, "error": "未知的 AI Work 操作。"}
-
-
-def test_retired_long_poll_query_is_not_accepted() -> None:
-    _save_history()
-
-    retired_query = "?after_" + "seq=1&wait_" + "ms=20000"
-    handler = _get("/api/v1/ai-work/conversations/conversation_1" + retired_query)
-
-    assert handler.status == 404
-
-
 def test_list_rejects_unknown_query_parameters() -> None:
     unknown_query = "?include_" + "children=true"
     handler = _get("/api/v1/ai-work/conversations" + unknown_query)

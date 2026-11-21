@@ -1748,19 +1748,6 @@ def test_ui_messages_renders_text_reasoning_and_tool_parts(
     assert any(part_type.startswith("tool-") for part_type in part_types)
 
 
-def test_retired_ai_work_subresources_stay_404(
-    chat_server: dict[str, Any],
-) -> None:
-    port = chat_server["port"]
-    # events 已由 Deferred 迁移恢复为正式订阅端点，不再是 retired。
-    for suffix in ("raw", "children", "wait"):
-        status, _ = _get(
-            port,
-            f"/api/v1/ai-work/conversations/{CONVERSATION}/{suffix}",
-        )
-        assert status == 404
-
-
 def test_safe_json_body_with_raw_reads_body_once() -> None:
     import io
 

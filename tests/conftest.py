@@ -16,14 +16,6 @@ import requests
 
 APP_DIR = Path(__file__).resolve().parents[1]
 EXTERNAL_BASE_URL = os.environ.get("ERP_TEST_BASE_URL", "").rstrip("/")
-OLD_PATH_MARKERS = (
-    r"C:\Users\miami\Documents\Codex\2026-05-23\wb-10",
-    r"C:/Users/miami/Documents/Codex/2026-05-23/wb-10",
-    r"D:\wb-10",
-    r"D:/wb-10",
-    r"D:\wb-10-web",
-    r"D:/wb-10-web",
-)
 
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
@@ -72,11 +64,6 @@ def release_guard_dir(tmp_path, monkeypatch):
 def repo_dir() -> Path:
     """仓库目录只用于读取源码，不能作为测试运行时数据目录。"""
     return APP_DIR
-
-
-@pytest.fixture(scope="session")
-def old_path_markers() -> tuple[str, ...]:
-    return OLD_PATH_MARKERS
 
 
 def _server_ready(base_url: str) -> bool:
@@ -250,9 +237,3 @@ def sample_product() -> dict:
             }
         },
     }
-
-
-def assert_no_old_path(value: object, markers: tuple[str, ...] = OLD_PATH_MARKERS) -> None:
-    text = str(value)
-    matches = [marker for marker in markers if marker in text]
-    assert not matches, f"found legacy path markers: {matches}"

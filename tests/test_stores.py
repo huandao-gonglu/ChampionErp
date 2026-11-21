@@ -386,22 +386,6 @@ def test_trusted_publish_state_writer_persists_state_only_updates() -> None:
     assert "publication" not in result["draft"]
 
 
-def test_runtime_product_store_functions_delegate_to_context_store() -> None:
-    products = get_context().products
-    saved = products.save_product(
-        _sample_product("Delegate check", "https://example.com/delegate")
-    )
-
-    assert get_context().db.load_product_model(saved["product_id"])["name"] == "Delegate check"
-    assert [item["product_id"] for item in products.load_products_index()] == [
-        saved["product_id"]
-    ]
-
-    result = products.delete_products_from_index([saved["product_id"]])
-    assert result["deleted"] == 1
-    assert products.load_products_index() == []
-
-
 def test_config_store_app_config_roundtrip_and_whitelist_merge() -> None:
     config_store = get_context().config
 

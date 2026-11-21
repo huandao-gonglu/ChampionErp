@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
-import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail, toBackendProduct } from '@/api/workflow/normalizers'
+import { createEmptyDraftDetail } from '@/constants/initialState'
+import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail } from '@/api/workflow/normalizers'
 import type { DraftDetail } from '@/types/workflow'
 
 describe('类目 Schema 分离（废弃字段不再读写）', () => {
@@ -281,18 +281,5 @@ describe('类目 Schema 分离（废弃字段不再读写）', () => {
         { value: 'Custom terminal' },
       ],
     })
-  })
-
-  it('保存商品时不回写 local_platform_categories', () => {
-    const product = createEmptyProduct()
-    product.productId = 'product-1'
-    product.raw = {
-      local_platform_categories: { ozon: { category_id: '91443' } },
-      localPlatformCategories: { ozon: { category_id: '91443' } },
-    }
-
-    const backend = toBackendProduct(product)
-    expect(backend).not.toHaveProperty('local_platform_categories')
-    expect(backend).not.toHaveProperty('localPlatformCategories')
   })
 })

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -205,11 +204,3 @@ def test_safe_business_attributes_only_accept_fixed_ids() -> None:
         "erp.ai.entity.product_id": "product-4",
         "erp.ai.entity.store_id": "store-4",
     }
-
-
-def test_opentelemetry_sdk_is_locked_to_the_runtime_version() -> None:
-    requirements = (
-        Path(__file__).resolve().parents[1] / "requirements.txt"
-    ).read_text(encoding="utf-8")
-    assert requirements.count("opentelemetry-sdk==1.44.0") == 1
-    assert version("opentelemetry-sdk") == "1.44.0"

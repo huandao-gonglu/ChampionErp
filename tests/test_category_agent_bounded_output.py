@@ -26,7 +26,7 @@ from erp_web.schemas.category_query_capabilities import (
     CategoryAttributeValuesQueryRequest,
 )
 
-from tests.category_schema_regression import TOOL_OUTPUT_LIMIT_BYTES
+TOOL_OUTPUT_LIMIT_BYTES = 262_144
 
 
 def _execution(deadline_seconds: float = 60):

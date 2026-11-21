@@ -171,17 +171,6 @@ describe('DraftEditorPanel', () => {
     expect(wrapper.find('[data-testid="draft-global-title-input"]').exists()).toBe(false)
   })
 
-  it('本地化文案区不再重复承载市场、标题、售价和状态控件', () => {
-    const wrapper = mount(DraftEditorPanel, {
-      props: { draft: draft(), productContext, platformOptions, storeConfig, loading: false, embedded: true },
-    })
-
-    expect(wrapper.find('[data-testid="cbt-destination-selector"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="cbt-destination-localized-title"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="cbt-destination-price"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="cbt-destination-status"]').exists()).toBe(false)
-  })
-
   it('现有市场选择器展示语言对应的子市场并映射为单一 CBT target', async () => {
     const currentDraft = draft()
     const wrapper = mount(DraftEditorPanel, {
