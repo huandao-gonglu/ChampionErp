@@ -149,24 +149,33 @@ function triggerExportSelected() {
   emit('exportProducts', [...props.selectedIds])
 }
 
+const EXPORT_FORMAT = 'champion-erp.library-products'
+const SUPPORTED_EXPORT_VERSION = 1
+
 function normalizeImportedJson(parsed: unknown): UnknownRecord {
-  if (Array.isArray(parsed)) {
-    return { products: parsed }
-  }
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('JSON 文件内容必须是对象或商品数组。')
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('不支持的导入文件格式，请选择从采集箱导出的商品 JSON 文件。')
   }
   const record = parsed as UnknownRecord
-  if (Array.isArray(record.products)) {
-    return record
+  if (record.format !== EXPORT_FORMAT) {
+    throw new Error('不支持的导入文件格式，请选择从采集箱导出的商品 JSON 文件。')
   }
-  if (record.product && typeof record.product === 'object') {
-    return { products: [record.product], assets: record.assets && typeof record.assets === 'object' ? record.assets : {} }
+  if (typeof record.version !== 'number' || !Number.isInteger(record.version) || record.version < 1) {
+    throw new Error('导入文件缺少有效的格式版本号（version）。')
   }
-  if (record.source || record.name || record.product_id || record.sku_items) {
-    return { products: [record] }
+  if (record.version > SUPPORTED_EXPORT_VERSION) {
+    throw new Error(`导入文件格式版本（v${record.version}）高于当前系统支持的版本（v${SUPPORTED_EXPORT_VERSION}），请先升级后再导入。`)
   }
-  throw new Error('未在 JSON 文件中找到有效的商品数据（products）。')
+  if (record.version !== SUPPORTED_EXPORT_VERSION) {
+    throw new Error(`导入文件格式版本（v${record.version}）不受支持，请重新导出。`)
+  }
+  if (typeof record.product_schema_version !== 'number' || !Number.isInteger(record.product_schema_version) || record.product_schema_version < 1) {
+    throw new Error('导入文件缺少有效的商品数据结构版本（product_schema_version）。')
+  }
+  if (!Array.isArray(record.products) || !record.products.length) {
+    throw new Error('导入 JSON 中缺少有效的商品列表（products）。')
+  }
+  return record
 }
 
 async function handleImportFile(event: Event) {

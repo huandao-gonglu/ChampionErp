@@ -6,7 +6,9 @@ import pytest
 from erp_web.context import AppContext, AppPaths, bind_context
 from erp_web.db import ErpDatabase
 from erp_web.facades.product_facade import export_products_payload, import_products_payload
+from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
 from erp_web.schemas.requests import RequestValidationError, validate_request_payload
+from erp_web.services.product_transfer_service import EXPORT_FORMAT, EXPORT_VERSION
 
 
 PNG_1X1 = (
@@ -23,6 +25,19 @@ def _make_context(root: Path, user_id: str) -> AppContext:
     ctx = AppContext(paths, ErpDatabase(paths.db_path))
     ctx.user_id = user_id
     return ctx
+
+
+def _envelope(products: list[dict], **overrides) -> dict:
+    payload = {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "product_schema_version": PRODUCT_SCHEMA_VERSION,
+        "app_version": "1.2.100",
+        "products": products,
+        "assets": {},
+    }
+    payload.update(overrides)
+    return payload
 
 
 def test_export_and_import_products_roundtrip_with_local_images(tmp_path: Path) -> None:
@@ -84,17 +99,22 @@ def test_export_and_import_products_roundtrip_with_local_images(tmp_path: Path) 
             assert exported["count"] == 1
             assert exported["filename"] == "不锈钢保温杯.json"
             export_data = exported["exportData"]
-            assert export_data["format"] == "champion-erp.library-products"
+            assert export_data["format"] == EXPORT_FORMAT
+            assert export_data["version"] == EXPORT_VERSION
+            assert export_data["product_schema_version"] == PRODUCT_SCHEMA_VERSION
+            assert isinstance(export_data["app_version"], str) and export_data["app_version"]
             assert len(export_data["assets"]) == 1
             exported_item = export_data["products"][0]
+            assert exported_item["schema_version"] == PRODUCT_SCHEMA_VERSION
             assert "drafts" not in exported_item
             pool_item = exported_item["source"]["image_pool"][0]
             assert "platform_picture_id" not in pool_item
             assert pool_item["path"] == ""
             assert pool_item["export_asset_key"] in export_data["assets"]
 
-            # 在同一账号重复导入时生成新 ID，不覆盖原商品
-            dup_body = validate_request_payload(export_data, endpoint="/api/products/import")
+            # 在同一账号重复导入时生成新 ID，不覆盖原商品；不同 app_version 不拦截
+            dup_payload = {**export_data, "app_version": "0.9.0"}
+            dup_body = validate_request_payload(dup_payload, endpoint="/api/products/import")
             dup_result, dup_status = import_products_payload(dup_body)
             assert dup_status == 200
             assert dup_result["imported"] == 1
@@ -140,36 +160,62 @@ def test_export_and_import_products_roundtrip_with_local_images(tmp_path: Path) 
         target_ctx.close()
 
 
-def test_import_products_rejects_foreign_local_paths_and_empty_payload(tmp_path: Path) -> None:
+def test_import_products_validates_versions_integrity_and_atomic_precheck(tmp_path: Path) -> None:
     ctx = _make_context(tmp_path, "user-c")
+    valid_product = {
+        "schema_version": PRODUCT_SCHEMA_VERSION,
+        "name": "外链测试商品",
+        "source": {
+            "title": "外链测试商品",
+            "image_pool": [
+                {
+                    "id": "bad-local",
+                    "path": "/etc/passwd",
+                    "preview_url": "/file?path=/etc/passwd",
+                },
+                {
+                    "id": "ok-remote",
+                    "url": "https://img.example.com/a.jpg",
+                },
+            ],
+        },
+    }
     try:
         with bind_context(ctx):
-            with pytest.raises(RequestValidationError):
-                import_products_payload({"products": []})
+            # 1. 错误 format 拒绝
+            with pytest.raises(RequestValidationError, match="不支持的导入文件格式"):
+                import_products_payload(_envelope([valid_product], format="other.format"))
 
-            result, status = import_products_payload(
-                {
-                    "products": [
-                        {
-                            "name": "外链测试商品",
-                            "source": {
-                                "title": "外链测试商品",
-                                "image_pool": [
-                                    {
-                                        "id": "bad-local",
-                                        "path": "/etc/passwd",
-                                        "preview_url": "/file?path=/etc/passwd",
-                                    },
-                                    {
-                                        "id": "ok-remote",
-                                        "url": "https://img.example.com/a.jpg",
-                                    },
-                                ],
-                            },
-                        }
-                    ]
-                }
-            )
+            # 2. 更高导出包版本拒绝
+            with pytest.raises(RequestValidationError, match="高于当前系统支持的版本"):
+                import_products_payload(_envelope([valid_product], version=EXPORT_VERSION + 1))
+
+            # 3. 不兼容的顶层 product_schema_version 拒绝
+            with pytest.raises(RequestValidationError, match="高于当前系统支持的版本"):
+                import_products_payload(
+                    _envelope([valid_product], product_schema_version=PRODUCT_SCHEMA_VERSION + 1)
+                )
+
+            # 4. 第 2 个商品版本错误或内嵌资产缺失时，全量预校验拦截，第 1 个商品也不会写入
+            bad_schema_product = {**valid_product, "schema_version": PRODUCT_SCHEMA_VERSION - 1}
+            with pytest.raises(RequestValidationError, match="第 2 个商品校验失败"):
+                import_products_payload(_envelope([valid_product, bad_schema_product]))
+            assert ctx.products.load_products_index() == []
+
+            missing_asset_product = {
+                "schema_version": PRODUCT_SCHEMA_VERSION,
+                "name": "缺图商品",
+                "source": {
+                    "title": "缺图商品",
+                    "image_pool": [{"id": "img-x", "export_asset_key": "asset_missing.png"}],
+                },
+            }
+            with pytest.raises(RequestValidationError, match="引用的内嵌图片资产缺失"):
+                import_products_payload(_envelope([valid_product, missing_asset_product]))
+            assert ctx.products.load_products_index() == []
+
+            # 5. 合法包导入成功，且过滤掉外来本地路径
+            result, status = import_products_payload(_envelope([valid_product]))
             assert status == 200
             saved = ctx.products.find_indexed_product(result["importedIds"][0])
             pool = saved["source"]["image_pool"]

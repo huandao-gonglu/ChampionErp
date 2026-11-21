@@ -117,7 +117,8 @@ describe('采集箱按语言选择目标市场', () => {
     const samplePayload = {
       format: 'champion-erp.library-products',
       version: 1,
-      products: [{ name: '导入商品', source: { title: '导入商品' } }],
+      product_schema_version: 5,
+      products: [{ schema_version: 5, name: '导入商品', source: { title: '导入商品' } }],
     }
     const file = new File([JSON.stringify(samplePayload)], 'products.json', { type: 'application/json' })
     Object.defineProperty(file, 'text', { value: async () => JSON.stringify(samplePayload) })
@@ -126,5 +127,15 @@ describe('采集箱按语言选择目标市场', () => {
     await fileInput.trigger('change')
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(wrapper.emitted('importProducts')?.[0]).toEqual([samplePayload])
+
+    // 高版本或不匹配格式在前端预校验阶段即拦截提示
+    const futurePayload = { ...samplePayload, version: 99 }
+    const badFile = new File([JSON.stringify(futurePayload)], 'future.json', { type: 'application/json' })
+    Object.defineProperty(badFile, 'text', { value: async () => JSON.stringify(futurePayload) })
+    Object.defineProperty(fileInput.element, 'files', { value: [badFile], configurable: true })
+    await fileInput.trigger('change')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(wrapper.emitted('importProducts')).toHaveLength(1)
+    expect(wrapper.get('[role="alert"]').text()).toContain('高于当前系统支持的版本')
   })
 })

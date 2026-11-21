@@ -260,7 +260,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - 1688 图片由 `source_collect_parsers.py` 优先读取 `gallery.fields.mainImage`，再通过 `html_extract_service.fetch_1688_detail_html` 读取独立 `description.fields.detailUrl` 的详情内容；SKU 图仅由规格关联入池。`collect_helpers.normalize_collect_source_images` 统一下载全部公共图和规格图，以原 URL 保留稳定资产身份，不再截断前五张，也不重复保存本地路径和远程 URL。详情读取失败显式报告采集失败，不能以已有 SKU 图片假报完整采集。
 
 - 采集箱详情通过 `/api/load-product` 按商品 ID 或已有 `sqlite://products/…` 引用精确读取；所选商品已不存在时返回 404。编辑入口传 `editor_only`，只返回所选商品和图片池。
-- 采集箱支持通过 `POST /api/products/export` 与 `POST /api/products/import`（`product_routes.py` → `product_facade.py` → `services/product_transfer_service.py`）将勾选商品导出为 JSON 文件及重新导入。导出剥离草稿与平台上传身份，并将当前账号空间内的本地图片内嵌为 `assets`；导入时校验并剥离外来本地路径、将内嵌图片写入目标账号 `data/images`，遇到已有商品 ID 自动分配新 ID，不覆盖原商品。
+- 采集箱支持通过 `POST /api/products/export` 与 `POST /api/products/import`（`product_routes.py` → `product_facade.py` → `services/product_transfer_service.py`）将勾选商品导出为 JSON 文件及重新导入。导出剥离草稿与平台上传身份，写入 `format`/`version`/`product_schema_version` 及溯源用 `app_version`，并将当前账号空间内的本地图片内嵌为 `assets`；导入前先全量预校验外层格式与版本、商品 `schema_version`、退役字段及内嵌图片引用完整性（不以 `app_version` 拦截），全部通过后再还原图片至目标账号 `data/images` 并入库，遇到已有商品 ID 自动分配新 ID，不覆盖原商品。
 - 采集箱推到草稿统一从 `/api/claim-products` → `collect_facade.claim_products_payload` → `collect_helpers.claim_products_to_platforms`，请求必须显式携带 `product_ids` 与 `targets`（平台、销售市场、注册语言）。每个商品按语言创建一份独立草稿，市场只包含该语言下勾选的项目；美客多销售市场按授权物流操作归入 CBT 的 `sites_to_sell`。响应的 `claimed_count` 统计成功商品数，`draft_count` 统计实际创建草稿数。
 - 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
 
