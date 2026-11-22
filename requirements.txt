@@ -1,6 +1,6 @@
 openai>=3.8.0
 httpx2==2.9.1
-pydantic-ai-slim[openai]==2.44.0
+pydantic-ai-slim[openai,anthropic,google]==2.44.0
 pydantic-ai-harness[codemode]==0.34.0
 pydantic-monty==0.0.23
 opentelemetry-sdk==1.44.0

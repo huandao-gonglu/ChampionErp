@@ -22,7 +22,11 @@ async def _list_remote_models(
     timeout: int | float,
 ) -> list[dict[str, str]]:
     spec = ai_provider_catalog.provider_spec(provider_id)
-    if spec.discovery_strategy != "openai_models":
+    if spec.discovery_strategy not in {
+        "openai_models",
+        "anthropic_models",
+        "google_models",
+    }:
         raise AiModelDiscoveryError(
             f"AI Provider {spec.label} 不提供远端模型目录，请手动填写模型 ID。"
         )
@@ -31,20 +35,50 @@ async def _list_remote_models(
         base_url=base_url,
         api_key=api_key,
     )
-    async with provider:
-        models_api = getattr(provider.client, "models", None)
-        if models_api is None or not callable(getattr(models_api, "list", None)):
-            raise AiModelDiscoveryError(
-                f"AI Provider {spec.label} 不提供远端模型目录，请手动填写模型 ID。"
-            )
-        response = await models_api.list(
-            timeout=float(timeout),
-        )
-    items = response.data if isinstance(getattr(response, "data", None), list) else []
     options: list[dict[str, str]] = []
     seen: set[str] = set()
-    for item in items:
-        model_id = str(getattr(item, "id", "") or "").strip()
+    async with provider:
+        if spec.discovery_strategy == "google_models":
+            aio_client = getattr(provider.client, "aio", None)
+            models_api = getattr(aio_client, "models", None)
+            if models_api is None or not callable(getattr(models_api, "list", None)):
+                raise AiModelDiscoveryError(
+                    f"AI Provider {spec.label} 不提供远端模型目录，请手动填写模型 ID。"
+                )
+
+            async def _collect_google_models() -> list[str]:
+                ids: list[str] = []
+                pager = await models_api.list()
+                async for item in pager:
+                    raw_name = str(getattr(item, "name", "") or "").strip()
+                    if raw_name.startswith("models/"):
+                        raw_name = raw_name.split("/", 1)[1]
+                    if raw_name:
+                        ids.append(raw_name)
+                return ids
+
+            model_ids = await asyncio.wait_for(
+                _collect_google_models(),
+                timeout=float(timeout),
+            )
+        else:
+            models_api = getattr(provider.client, "models", None)
+            if models_api is None or not callable(getattr(models_api, "list", None)):
+                raise AiModelDiscoveryError(
+                    f"AI Provider {spec.label} 不提供远端模型目录，请手动填写模型 ID。"
+                )
+            response = await models_api.list(
+                timeout=float(timeout),
+            )
+            items = (
+                response.data
+                if isinstance(getattr(response, "data", None), list)
+                else []
+            )
+            model_ids = [
+                str(getattr(item, "id", "") or "").strip() for item in items
+            ]
+    for model_id in model_ids:
         if not model_id or model_id in seen:
             continue
         seen.add(model_id)

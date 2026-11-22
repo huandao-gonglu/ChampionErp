@@ -271,6 +271,10 @@ def web_search_request_mode(binding: PydanticModelBinding) -> str:
         frozenset(),
     )
     if WebSearchTool in supported_native_tools:
+        if binding.provider_family == ai_generation_settings.PROVIDER_FAMILY_ANTHROPIC:
+            return "anthropic_web_search"
+        if binding.provider_family == ai_generation_settings.PROVIDER_FAMILY_GOOGLE:
+            return "google_web_search"
         return "openai_tools"
     capability_profiles = (
         binding.model_config.get("capability_profiles")

@@ -30,7 +30,7 @@ def query_parcel_traces(parcels, client, number):
         try:
             attach_traces(parcels, client.get_logistics_traces(number), number)
         except ExternalRequestBlocked as exc:
-            return f"已获取运单，轨迹查询已中断。{exc}（可在授权配置的「中断与恢复」查看）"
+            return f"已获取运单，轨迹查询已暂停。{exc}"
         except AlibabaApiError as exc:
             return f"已获取运单，未能更新轨迹。{exc}"
     return ""

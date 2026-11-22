@@ -9,13 +9,11 @@ import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
 import { fetchUserAgents } from '@/api/userAgents'
 vi.mock('@/api/userAgents', () => ({ fetchUserAgents: vi.fn(), saveUserAgents: vi.fn() }))
-import { fetchRequestControl } from '@/api/externalRequests'
 import { fetchYandexWarehouses } from '@/api/yandexWarehouses'
 import { fetchForbiddenCategories } from '@/api/forbiddenCategories'
 vi.mock('@/api/forbiddenCategories', () => ({ fetchForbiddenCategories: vi.fn(), importForbiddenCategories: vi.fn() }))
 vi.mock('@/api/yandexWarehouses', () => ({ fetchYandexWarehouses: vi.fn(), saveYandexWarehouses: vi.fn() }))
 vi.mock('@/api/systemSettings', () => ({ fetchSystemSettings: vi.fn(), saveSystemSettings: vi.fn() }))
-vi.mock('@/api/externalRequests', () => ({ fetchRequestControl: vi.fn(), recoverRequestBlock: vi.fn(), clearRequestHistory: vi.fn() }))
 enableAutoUnmount(afterEach)
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -28,7 +26,6 @@ beforeEach(() => {
   const watermark = { text: '', image_data_url: '', opacity: 25, size_percent: 30, density: 5, color: '#737373' }
   vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5, watermark, wechat_forward_types: [], sync_policies: {} })
   vi.mocked(saveSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark, wechat_forward_types: [], sync_policies: {} })
-  vi.mocked(fetchRequestControl).mockResolvedValue({ ok: true, server_time: 1800000000, total: 0, cleanup_before: 1800000000, clearable_count: 0, blocks: [], history: [] })
   vi.mocked(fetchYandexWarehouses).mockResolvedValue({ ok: true, account: { business_id: '', campaign_id: '', placement_type: '', stock_update_mode: '' }, revision: 0, bindings: [], binding_warnings: [], modes: [], warehouses: [], routes: [], carriers: [], checked_at: '', error: '' })
 })
 afterEach(() => {
@@ -110,34 +107,12 @@ describe('系统设置入口与同步间隔', () => {
     expect(reopened.get('#settings-color-mode').element).toHaveProperty('value', 'light')
     persist.mockRestore()
   })
-  it('默认展示通用设置，切换中断页后返回保留输入并停止中断轮询', async () => {
-    vi.useFakeTimers()
+  it('默认展示通用设置，不挂载已退役的中断与恢复页签', async () => {
     const wrapper = mount(SystemSettingsPanel, { global }); await flushPromises()
     expect(wrapper.text()).not.toContain('物流设置')
+    expect(wrapper.text()).not.toContain('中断与恢复')
+    expect(wrapper.find('#system-settings-tab-interruptions').exists()).toBe(false)
     expect(wrapper.get('#system-settings-tab-general').attributes('aria-selected')).toBe('true')
-    expect(fetchRequestControl).not.toHaveBeenCalled()
-    await wrapper.get('input').setValue(12)
-    await wrapper.get('#system-settings-tab-interruptions').trigger('click'); await flushPromises()
-    expect(wrapper.get('#system-settings-tab-interruptions').attributes('aria-selected')).toBe('true')
-    expect(wrapper.find('[aria-label="平台请求中断与恢复"]').exists()).toBe(true)
-    expect(wrapper.get('#system-settings-form').isVisible()).toBe(false)
-    expect(fetchRequestControl).toHaveBeenCalledTimes(1)
-    await wrapper.get('#system-settings-tab-general').trigger('click'); await flushPromises()
-    expect(wrapper.find('[aria-label="平台请求中断与恢复"]').exists()).toBe(false)
-    expect(wrapper.get('input').element).toHaveProperty('value', '12')
-    await vi.advanceTimersByTimeAsync(6000)
-    expect(fetchRequestControl).toHaveBeenCalledTimes(1)
-  })
-  it('深链打开中断与恢复并保留平台定位，路由切换可返回通用设置', async () => {
-    const route = reactive({ query: { settings_section: 'interruptions', request_platform: ['ozon'] } })
-    const wrapper = mount(SystemSettingsPanel, { global: { ...global, provide: { [routeLocationKey as symbol]: route } } })
-    await flushPromises()
-    expect(wrapper.get('#system-settings-tab-interruptions').attributes('aria-selected')).toBe('true')
-    expect(wrapper.text()).toContain('Ozon 当前没有活动阻断')
-    route.query.settings_section = 'general'
-    await flushPromises()
-    expect(wrapper.get('#system-settings-tab-general').attributes('aria-selected')).toBe('true')
-    expect(wrapper.find('[aria-label="平台请求中断与恢复"]').exists()).toBe(false)
   })
   it('关于支持深链打开，读取设置失败也能查看公司与协议', async () => {
     vi.mocked(fetchSystemSettings).mockRejectedValue(new Error('后端离线'))

@@ -368,7 +368,7 @@ class AlibabaSelfPurchaseService:
             not_sent = isinstance(exc, AlibabaApiRejected) or (isinstance(exc, ExternalRequestBlocked) and exc.details.get("definitively_rejected"))
             unknown = sent and not not_sent
             message = ("创建结果待核验，请查询原请求，勿重复下单" if unknown else
-                       str(exc) if isinstance(exc, (ValueError, AlibabaApiError)) else "提交前检查失败，请检查授权配置或中断与恢复")
+                       str(exc) if isinstance(exc, (ValueError, AlibabaApiError)) else "提交前检查失败，请检查授权配置后重试")
             if not unknown:
                 self.procurement.store.release_purchases(self._reservation_ids(row))
             result["message"] = message
@@ -458,7 +458,7 @@ class AlibabaSelfPurchaseService:
             rejected = isinstance(exc, AlibabaApiRejected) or (isinstance(exc, ExternalRequestBlocked) and exc.details.get('definitively_rejected'))
             state = 'rejected' if rejected else 'unknown'
             message = str(exc) if isinstance(exc, AlibabaApiRejected) else (
-                '1688 已拒绝本次支付，请检查授权配置的中断与恢复' if rejected else
+                '1688 已拒绝本次支付，请检查授权配置后重试' if rejected else
                 f'{payment_label(channel)}未取得确认回执，请查询原订单，勿重复支付')
         row = self.store.finish_payment(row['id'], scope, payment['request_id'], state, message)
         return {'ok': True, 'record': public_record(row)}

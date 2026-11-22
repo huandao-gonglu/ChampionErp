@@ -7,7 +7,7 @@
 - `erp_web/services/global_agent_chat_service.py` 在主对话的固定 Execution Profile 中声明 `python_tools=True`；其他 focused Agent 继续使用其专属工具。
 - `erp_web/services/ai_agent_factory.py` 是唯一 Agent 装配入口；`erp_web/services/ai_code_mode.py` 只配置官方能力及边界适配。
 - 已绑定的业务工具保留原生直接入口；其中无需审批、可同步完成的工具另外成为脚本函数。两种入口都经过 Pydantic ToolManager → `PydanticToolBridge` → `AiToolRuntime` → 原有业务函数，沿用参数校验、权限、所选对象范围、保存逻辑、取消检查和写回执。一次操作只选择一种入口，不重复执行。
-- 发布、删除及持久 Job 留在脚本外，继续使用原生 Approval / Deferred。整对象 `draft_save`、`product_save` 仍为内部能力，不因 Python 被公开。
+- 发布、删除、持久 Job 及声明 `direct_only=True` 的桌面交接图片工具（`draft_images_prepare` / `image_translate` / `image_edit`）留在脚本外，继续使用原生顶层调用、Approval / Deferred 或桌面交接。整对象 `draft_save`、`product_save` 仍为内部能力，不因 Python 被公开。
 - `run_code` 的输入和结果使用原生消息及 Vercel 事件；嵌套调用保存在官方 `ToolReturnPart.metadata`，各次写入继续有数据库回执。脚本不承担事务，已完成写入不会因后续异常自动撤销。
 - 官方脚本普通异常重试不包含完整嵌套回执，因此 `AgentRunStorage` 在下一次动态 instructions 中附加该失败脚本已保存的写回执摘要，防止成功操作被整段重放；不增加执行状态或新消息协议。
 - 官方 Vercel Adapter 不展开 CodeMode 的嵌套 metadata。`/ui-messages` 因此在消息的 `metadata.business_write_receipts` 中附加实际落盘的脚本写回执，供现有表单按字段和版本更新；即使脚本后半段失败，已保存的前半段仍能显示。工具状态和流式事件仍全部由官方 Adapter 负责。
@@ -27,7 +27,7 @@
 
 两种入口并存有上下文成本：2026-09-25 对完整主对话工具集的隔离测量中，原来的 Python 入口方案为 8 个顶层工具，工具名称、说明和参数 Schema 的 JSON 共 52,338 字符；并存后为 60 个、99,283 字符。仅直接入口为 59 个、50,305 字符。这里是字符数，不是 token 或实际网络请求大小；不同模型的编码与缓存会影响真实费用和延迟。恢复直接调用减少了简单操作写脚本的必要性，但不保证总耗时下降。当前保留完整的参数、业务规则和 Python 返回类型说明，未通过删减校验契约来压缩上下文。
 
-2026-10-25 改为原生按需发现：主对话 ToolSet 设置 `defer_loading`，原生 Tool Search 管理发现及恢复；已发现的工具保留两种入口，审批和后台工具仍只直接调用。Harness 的 `dynamic_catalog` 仅将已发现函数的类型与签名加入指令。Core 的默认关键词匹配仅支持 ASCII，且全名也召回相关工具，因此 `ai_tool_discovery.py` 只补充精确名称和中文关键词匹配；原生匹配支持这两点后可移除，不能用搜索结果扩大原有 allowlist。
+2026-10-25 改为原生按需发现：主对话 ToolSet 设置 `defer_loading`，原生 Tool Search 管理发现及恢复；已发现的工具保留两种入口，审批、后台和 `direct_only` 工具仍只直接调用。Harness 的 `dynamic_catalog` 仅将已发现函数的类型与签名加入指令。Core 的默认关键词匹配仅支持 ASCII、全名会召回提及该名称的其他工具，且自定义 strategy 需自行把未发现工具排在已发现工具之前；`ai_tool_discovery.py` 补齐精确名称、英文名优先的逐词评分、中文关键词匹配与未发现优先排序，`ToolSearch` 沿用官方默认 `max_results=10`，原生匹配支持这些能力后可移除，不能用搜索结果扩大原有 allowlist。
 
 同日使用当前完整目录、隔离 FunctionModel 和无原生服务端搜索的 Provider profile 测量：首轮从 91 个工具、196,537 字符降至 `search_tools` / `run_code` 两个工具、3,466 字符，下降约 98.2%；这里只统计工具定义，不包含系统指令、历史或模型输出。发现预检工具后只增加该工具与相应 Python 类型。首次发现会增加一次模型往返，不承诺每项任务固定请求数或费用降幅。
 

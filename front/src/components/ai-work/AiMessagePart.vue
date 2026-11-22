@@ -37,6 +37,15 @@ const businessResult = computed(() => (
 const status = computed(() => aiToolStatus(props.part, props.pendingKind, props.active))
 const toolStatusLabel = computed(() => statusLabels[status.value])
 const imageAction = computed(() => desktopImageAction(props.part))
+const imageTargetLabel = computed(() => {
+  if (!imageAction.value) return ''
+  const input = tool.value.input && typeof tool.value.input === 'object' ? tool.value.input as Record<string, unknown> : undefined
+  const output = tool.value.output && typeof tool.value.output === 'object'
+    ? tool.value.output as { error?: { details?: { request?: Record<string, unknown> } } }
+    : undefined
+  const draftId = input?.draft_id ?? output?.error?.details?.request?.draft_id
+  return typeof draftId === 'string' && draftId.trim() ? `草稿 ${draftId.trim()}` : ''
+})
 const continuing = ref(false)
 const continueError = ref('')
 async function continueImage() {
@@ -198,7 +207,7 @@ const statusLabels: Record<string, string> = {
     <details data-testid="ai-tool-details" class="group/tool" @toggle="toggleDetails($event, 'tool')">
       <summary class="flex cursor-pointer list-none items-center gap-2 rounded py-1 text-xs focus-visible:outline-primary-500 [&::-webkit-details-marker]:hidden">
         <component :is="toolIcon" :size="16" class="shrink-0 text-slate-500 dark:text-accent-300" aria-hidden="true" />
-        <span class="min-w-0 break-words text-slate-600 dark:text-accent-200">{{ toolName }}</span>
+        <span class="min-w-0 break-words text-slate-600 dark:text-accent-200">{{ toolName }}<template v-if="imageTargetLabel"> · {{ imageTargetLabel }}</template></span>
         <span
           class="shrink-0 rounded px-1.5 py-0.5 text-[10px]"
           :class="toolStatusClass"

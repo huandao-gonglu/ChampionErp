@@ -7,7 +7,10 @@ from typing import Any
 
 from .ai_provider_catalog import (
     PROVIDER_FAMILY_ALIBABA,
+    PROVIDER_FAMILY_ANTHROPIC,
+    PROVIDER_FAMILY_DEEPSEEK,
     PROVIDER_FAMILY_GENERIC_OPENAI,
+    PROVIDER_FAMILY_GOOGLE,
     PROVIDER_FAMILY_OPENAI,
     PROVIDER_FAMILY_OMLX,
     provider_family_for_model,
@@ -181,7 +184,34 @@ def generation_capabilities(model: dict[str, Any]) -> dict[str, Any]:
             "modes": list(REASONING_MODES),
             "efforts": ["minimal", "low", "medium", "high", "xhigh"],
             "supports_budget_tokens": False,
-            "note": "参数会按当前 API 协议转换；具体模型是否接受该强度仍由 OpenAI 校验。",
+            "note": "参数会按当前 API 协议转换；具体模型是否接受该强度仍由服务商校验。",
+        }
+        return base
+    if family == PROVIDER_FAMILY_ANTHROPIC:
+        base["reasoning"] = {
+            "status": "supported",
+            "modes": list(REASONING_MODES),
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"],
+            "supports_budget_tokens": True,
+            "note": "由 Pydantic AI 原生 Anthropic 协议转换思考开关、强度或预算（budget_tokens）。",
+        }
+        return base
+    if family == PROVIDER_FAMILY_GOOGLE:
+        base["reasoning"] = {
+            "status": "supported",
+            "modes": list(REASONING_MODES),
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"],
+            "supports_budget_tokens": True,
+            "note": "由 Pydantic AI 原生 Gemini 协议按模型转换为 thinking_level 或 thinking_budget。",
+        }
+        return base
+    if family == PROVIDER_FAMILY_DEEPSEEK:
+        base["reasoning"] = {
+            "status": "supported",
+            "modes": list(REASONING_MODES),
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"],
+            "supports_budget_tokens": False,
+            "note": "由 Pydantic AI 统一 Thinking 转换为 reasoning_effort；具体模型是否支持关闭思考由模型档案校验。",
         }
         return base
     if family == PROVIDER_FAMILY_OMLX:
@@ -223,11 +253,18 @@ def _validate_reasoning_mapping(
         )
     effort = str(reasoning.get("effort") or "").strip().lower()
     budget_tokens = reasoning.get("budget_tokens")
-    if family == PROVIDER_FAMILY_OPENAI:
+    if family in {PROVIDER_FAMILY_OPENAI, PROVIDER_FAMILY_DEEPSEEK}:
+        label = "DeepSeek" if family == PROVIDER_FAMILY_DEEPSEEK else "OpenAI"
         if budget_tokens is not None:
-            raise ValueError("OpenAI 映射不支持统一的 reasoning.budget_tokens。")
+            raise ValueError(f"{label} 映射不支持统一的 reasoning.budget_tokens。")
         if effort == "max":
-            raise ValueError("OpenAI 映射不支持 max 推理强度。")
+            raise ValueError(f"{label} 映射不支持 max 推理强度。")
+    elif family in {PROVIDER_FAMILY_ANTHROPIC, PROVIDER_FAMILY_GOOGLE}:
+        label = "Anthropic" if family == PROVIDER_FAMILY_ANTHROPIC else "Google Gemini"
+        if effort == "max":
+            raise ValueError(f"{label} 映射不支持 max 推理强度。")
+        if effort and budget_tokens is not None:
+            raise ValueError(f"{label} 映射不能同时设置推理强度和推理预算，请二选一。")
     elif family == PROVIDER_FAMILY_OMLX:
         if effort or budget_tokens is not None:
             raise ValueError("oMLX 当前只支持推理开关，不支持统一推理强度或预算。")
@@ -309,8 +346,11 @@ def pydantic_model_settings_payload(
         for field in (
             "reasoning",
             "reasoning_effort",
+            "thinking",
             "enable_thinking",
             "thinking_budget",
+            "anthropic_thinking",
+            "google_thinking_config",
         ):
             extra_body.pop(field, None)
         if family == PROVIDER_FAMILY_OMLX:
@@ -334,6 +374,16 @@ def pydantic_model_settings_payload(
                         else effort
                     )
                 }
+        elif family == PROVIDER_FAMILY_ANTHROPIC and mode == REASONING_MODE_ENABLED and budget_tokens is not None:
+            payload["anthropic_thinking"] = {
+                "type": "enabled",
+                "budget_tokens": budget_tokens,
+            }
+        elif family == PROVIDER_FAMILY_GOOGLE and mode == REASONING_MODE_ENABLED and budget_tokens is not None:
+            payload["google_thinking_config"] = {
+                "include_thoughts": True,
+                "thinking_budget": budget_tokens,
+            }
         elif mode == REASONING_MODE_DISABLED:
             payload["thinking"] = False
         elif reasoning.get("effort"):
@@ -346,29 +396,119 @@ def pydantic_model_settings_payload(
     return payload
 
 
+def _probed_profile_overrides(
+    capability_profiles: dict[str, Any] | None,
+    *,
+    api_style: str,
+) -> dict[str, Any]:
+    """把真实探测到的协议行为覆写到 Pydantic AI 原生 OpenAIModelProfile。
+
+    用于填补中转网关、新模型别名或本地模型不在 SDK 静态名称表中的盲区；
+    不替代或重写 Pydantic AI 的原生协议适配，上游识别后覆写自动无副作用。
+    """
+    profiles = capability_profiles if isinstance(capability_profiles, dict) else {}
+    overrides: dict[str, Any] = {}
+    tool_profile = profiles.get("tool_calling")
+    if isinstance(tool_profile, dict) and tool_profile.get("supports_tool_choice_required") is False:
+        overrides["openai_supports_tool_choice_required"] = False
+    if any(
+        isinstance(item, dict) and item.get("observed_thinking") is True
+        for item in profiles.values()
+    ):
+        overrides["supports_thinking"] = True
+        overrides["openai_reasoning_enabled_by_default"] = True
+        if api_style == API_STYLE_OPENAI_RESPONSES:
+            overrides["openai_supports_reasoning"] = True
+    return overrides
+
+
+def _is_deepseek_flash_model(model_name: str) -> bool:
+    normalized = str(model_name or "").strip().lower()
+    if normalized.startswith("deepseek/"):
+        normalized = normalized.split("/", 1)[1]
+    return normalized == "deepseek-flash"
+
+
 def pydantic_openai_chat_profile_payload(
     provider_family: str,
+    model_name: str = "",
+    *,
+    capability_profiles: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """返回 Chat Model 的公开 profile 覆盖，同时集中厂商 wire 字段语义。"""
 
     family = str(provider_family or "").strip().lower()
-    if family == PROVIDER_FAMILY_OPENAI:
-        return {}
-    return {"openai_chat_supports_max_completion_tokens": False}
+    payload: dict[str, Any] = {}
+    if family != PROVIDER_FAMILY_OPENAI:
+        payload["openai_chat_supports_max_completion_tokens"] = False
+    if (
+        family in {PROVIDER_FAMILY_DEEPSEEK, PROVIDER_FAMILY_OPENAI}
+        and _is_deepseek_flash_model(model_name)
+    ):
+        # Pydantic AI 2.44.0 的 DeepSeekProvider.model_profile 仅按 deepseek-v4-* 识别，
+        # 尚未收录默认思考别名 deepseek-flash；上游原生支持后可移除此条补齐。
+        payload.update(
+            {
+                "supports_thinking": True,
+                "openai_reasoning_enabled_by_default": True,
+                "openai_supports_forced_tool_choice_with_thinking": False,
+            }
+        )
+    payload.update(
+        _probed_profile_overrides(
+            capability_profiles, api_style=API_STYLE_OPENAI_COMPATIBLE
+        )
+    )
+    return payload
 
 
 def pydantic_openai_responses_profile_payload(
     provider_family: str,
     model_name: str,
+    *,
+    capability_profiles: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """返回 Responses Model 的厂商能力覆盖。"""
 
     family = str(provider_family or "").strip().lower()
     normalized_model = str(model_name or "").strip().lower()
+    payload: dict[str, Any] = {}
     if family == PROVIDER_FAMILY_ALIBABA and normalized_model.startswith("qwen"):
         # 百炼 Qwen 思考模式只接受 tool_choice=auto/none。声明不支持强制
         # tool choice 后，Pydantic AI 会把严格工具输出所需的 required 降级为 auto。
-        return {"openai_supports_tool_choice_required": False}
+        payload["openai_supports_tool_choice_required"] = False
+    if (
+        family in {PROVIDER_FAMILY_DEEPSEEK, PROVIDER_FAMILY_OPENAI}
+        and _is_deepseek_flash_model(model_name)
+    ):
+        # 与 Chat 一致，补齐 Pydantic AI 2.44.0 尚未收录的 deepseek-flash 思考档案。
+        payload.update(
+            {
+                "supports_thinking": True,
+                "openai_supports_reasoning": True,
+                "openai_reasoning_enabled_by_default": True,
+                "openai_supports_forced_tool_choice_with_thinking": False,
+            }
+        )
+    payload.update(
+        _probed_profile_overrides(
+            capability_profiles, api_style=API_STYLE_OPENAI_RESPONSES
+        )
+    )
+    return payload
+
+
+def pydantic_native_model_profile_payload(
+    capability_profiles: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """为原生 Anthropic / Google 模型提供基于探测观测的最小 profile 覆盖。"""
+
+    profiles = capability_profiles if isinstance(capability_profiles, dict) else {}
+    if any(
+        isinstance(item, dict) and item.get("observed_thinking") is True
+        for item in profiles.values()
+    ):
+        return {"supports_thinking": True}
     return {}
 
 
@@ -377,6 +517,7 @@ __all__ = [
     "generation_capabilities",
     "normalize_generation_settings",
     "pydantic_model_settings_payload",
+    "pydantic_native_model_profile_payload",
     "pydantic_openai_chat_profile_payload",
     "pydantic_openai_responses_profile_payload",
     "validate_generation_settings_for_model",

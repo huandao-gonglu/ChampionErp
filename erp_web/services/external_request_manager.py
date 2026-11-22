@@ -1,4 +1,4 @@
-"""外部 API 的唯一发送控制；不编排业务或 Agent 生命周期。"""
+"""外部 API 的唯一发送控制；纯内存并发/退避保险丝 + 纯观测审计。"""
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -11,9 +11,21 @@ import urllib.error
 import urllib.request
 
 from erp_web.context import get_context
-from erp_web.services.platform_request_policy import classify_response, platform_error_codes, response_quota_pause
-from erp_web.schemas.external_requests import ExternalRequestBlocked, ExternalRequestNotSent, ExternalRequestOutcomeUnknown, RequestFailure
-from erp_web.services.external_request_context import request_context, note_request_rejection
+from erp_web.schemas.external_requests import (
+    ExternalRequestBlocked,
+    ExternalRequestNotSent,
+    ExternalRequestOutcomeUnknown,
+    RequestContext,
+    RequestFailure,
+)
+from erp_web.services.external_request_context import request_context
+from erp_web.services.external_request_limiter import ExternalRequestLimiter
+from erp_web.services.platform_request_policy import (
+    classify_response,
+    platform_error_codes,
+    response_quota_pause,
+    response_rate_pause,
+)
 
 
 class BufferedResponse(io.BytesIO):
@@ -37,57 +49,108 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class ExternalRequestManager:
-    def __init__(self, store):
+    def __init__(
+        self,
+        store,
+        *,
+        limiter: ExternalRequestLimiter | None = None,
+        on_auth_block=None,
+        persisted_auth_check=None,
+    ):
         self.store = store
+        self.limiter = limiter or ExternalRequestLimiter()
+        self._on_auth_block = on_auth_block
+        self._persisted_auth_check = persisted_auth_check
 
-    def start(self, ctx, method, *, parent_id="", attempt=1):
-        return self.store.begin(ctx,method,parent_id=parent_id,attempt=attempt)
+    def start(self, ctx: RequestContext, method: str, *, parent_id="", attempt=1) -> str:
+        return self.store.begin(ctx, method, parent_id=parent_id, attempt=attempt)
 
-    def check(self, request_id, ctx, deadline):
-        if ctx.cancellation_check is not None:
-            try:
-                ctx.cancellation_check()
-            except BaseException:
-                self.store.finish(request_id,decision="cancelled",result={"code":"EXTERNAL_REQUEST_CANCELLED"})
-                raise
-        if ctx.cancel is not None and ctx.cancel.is_set():
-            failure = RequestFailure("EXTERNAL_REQUEST_CANCELLED", "请求已取消，尚未发送")
-            self.store.finish(request_id,decision="cancelled",result=asdict(failure))
-            raise ExternalRequestBlocked(failure)
-        if time.time() >= deadline:
-            failure = RequestFailure("EXTERNAL_REQUEST_DEADLINE", "请求等待超过任务时间边界，尚未发送")
-            self.store.finish(request_id,decision="cancelled",result=asdict(failure))
-            raise ExternalRequestBlocked(failure)
-        failure, delay = self.store.acquire(request_id,ctx,deadline)
-        if failure:
-            note_request_rejection(failure)
-            self.store.finish(request_id,decision="rejected",result=asdict(failure))
-            raise ExternalRequestBlocked(failure)
-        return delay
+    def clear_auth_block(self, platform: str, account_id: str, *, credential_id: str | None = None) -> None:
+        self.limiter.clear_auth_block(platform, account_id, credential_id=credential_id)
 
-    def result(self, request_id, ctx, status, headers, raw, *, method=""):
-        failure = classify_response(ctx.platform,status,headers,raw,method=method,interface=ctx.interface)
-        pause = failure or response_quota_pause(ctx.platform,headers)
-        if pause:
-            if self.store.block(ctx,pause):
-                logging.getLogger(__name__).warning("外部请求已阻断：平台=%s，账号=%s，范围=%s，原因=%s",ctx.platform,ctx.account_id,pause.scope,pause.code)
+    def matching_status(self, contexts: list[RequestContext]) -> list[dict]:
+        return self.limiter.matching_status(contexts, persisted_auth_check=self._persisted_auth_check)
+
+    def result(self, request_id: str, ctx: RequestContext, status: int, headers, raw: bytes, *, method="", sent_at: float | None = None):
+        failure = classify_response(ctx.platform, status, headers, raw, method=method, interface=ctx.interface)
+        quota_pause = None if failure else response_quota_pause(ctx.platform, headers)
+        rate_pause_until = None if failure else response_rate_pause(ctx.platform, headers)
+        effective = failure
+        if failure is not None:
+            effective = self.limiter.record_failure(
+                ctx,
+                request_id,
+                failure,
+                sent_at=time.time() if sent_at is None else sent_at,
+                has_prior_cred_read_success=lambda: self.store.has_credential_read_success(
+                    ctx.platform, ctx.account_id, ctx.credential_id, ctx.interface
+                ),
+            )
+            if effective.scope in {"account", "credential"}:
+                logging.getLogger(__name__).warning(
+                    "外部请求已熔断：平台=%s，账号=%s，范围=%s，原因=%s",
+                    ctx.platform, ctx.account_id, effective.scope, effective.code,
+                )
+                if self._on_auth_block is not None:
+                    try:
+                        self._on_auth_block(ctx, effective)
+                    except Exception:
+                        logging.getLogger(__name__).exception("回写店铺授权异常状态失败")
+        else:
+            self.limiter.record_success(
+                ctx,
+                request_id,
+                rate_pause_until=rate_pause_until,
+                quota_pause=quota_pause,
+            )
         # 不保存错误原文、URL 参数、请求体或任意响应字段。
         request_id_header = str(headers.get("X-Request-Id") or headers.get("Request-Id") or "")
-        request_id_header = request_id_header if re.fullmatch(r"[a-zA-Z0-9_-]{1,100}",request_id_header) else ""
-        self.store.finish(request_id,result={"http_status":status,"platform_request_id":request_id_header,"platform_error_codes":platform_error_codes(raw,platform=ctx.platform) if failure else [],
-            "outcome":"failed" if failure else "success", "failure":asdict(failure) if failure else None,"next_request_pause":asdict(pause) if pause and not failure else None})
-        if failure:
-            self.store.record_failure_streak(ctx)
-        return failure
+        request_id_header = request_id_header if re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", request_id_header) else ""
+        self.store.finish(
+            request_id,
+            result={
+                "http_status": status,
+                "platform_request_id": request_id_header,
+                "platform_error_codes": platform_error_codes(raw, platform=ctx.platform) if effective else [],
+                "outcome": "failed" if effective else "success",
+                "failure": asdict(effective) if effective else None,
+                "next_request_pause": asdict(quota_pause) if quota_pause else None,
+            },
+        )
+        return effective
 
-    def network_error(self, request_id, ctx, *, cancelled=False):
-        result = {"outcome":"outcome_unknown" if ctx.semantics == "write" else "cancelled" if cancelled else "network_error", "cancelled":cancelled,
-                  "code":"EXTERNAL_NETWORK_INTERRUPTED"}
+    def network_error(self, request_id: str, ctx: RequestContext, *, cancelled=False):
+        result = {
+            "outcome": "outcome_unknown" if ctx.semantics == "write" else "cancelled" if cancelled else "network_error",
+            "cancelled": cancelled,
+            "code": "EXTERNAL_NETWORK_INTERRUPTED",
+        }
         self.store.finish(request_id, result=result)
-        if not cancelled:
-            self.store.record_failure_streak(ctx)
-        if ctx.semantics == "write":
-            self.store.block(ctx, RequestFailure("EXTERNAL_WRITE_OUTCOME_UNKNOWN", "同一操作的写入结果未知，请先查询业务回执", "request"))
+        self.limiter.record_network_error(ctx, request_id, cancelled=cancelled)
+
+    def _acquire_or_reject(self, request_id: str, ctx: RequestContext, deadline: float):
+        if ctx.semantics == "write" and self.store.has_unknown_write(ctx):
+            failure = RequestFailure("EXTERNAL_WRITE_OUTCOME_UNKNOWN", "同一操作的写入结果未知，请先查询业务回执", "request")
+            self.store.finish(request_id, decision="rejected", result=asdict(failure))
+            raise ExternalRequestBlocked(failure)
+        try:
+            return self.limiter.acquire(
+                request_id,
+                ctx,
+                deadline,
+                persisted_auth_check=self._persisted_auth_check,
+            )
+        except ExternalRequestBlocked as exc:
+            cancelled = exc.code in {"EXTERNAL_REQUEST_CANCELLED", "EXTERNAL_REQUEST_DEADLINE"}
+            self.store.finish(
+                request_id,
+                decision="cancelled" if cancelled else "rejected",
+                result={"code": exc.code, "message": str(exc), **exc.details},
+            )
+            raise
+        except BaseException:
+            self.store.finish(request_id, decision="cancelled", result={"code": "EXTERNAL_REQUEST_CANCELLED"})
+            raise
 
     def open(self, request, *, timeout=30, request_context_value=None, transport=None, source="external", follow_redirects=True, cookie_jar=None, **kwargs):
         if not follow_redirects or cookie_jar is not None:
@@ -99,72 +162,89 @@ class ExternalRequestManager:
             if cookie_jar is not None:
                 handlers.append(urllib.request.HTTPCookieProcessor(cookie_jar))
             transport = urllib.request.build_opener(*handlers).open
-        if isinstance(request,str):
+        if isinstance(request, str):
             request = urllib.request.Request(request)
-        ctx = request_context_value or request_context(request.full_url,dict(request.header_items()),data=request.data,
-                                         method=request.get_method(),timeout=timeout,source=source)
-        deadline = min(time.time()+min(timeout,ctx.timeout),ctx.deadline_at or float("inf"))
+        ctx = request_context_value or request_context(
+            request.full_url,
+            dict(request.header_items()),
+            data=request.data,
+            method=request.get_method(),
+            timeout=timeout,
+            source=source,
+        )
+        deadline = min(time.time() + min(timeout, ctx.timeout), ctx.deadline_at or float("inf"))
         parent = ""
-        for attempt in range(1, max(1,ctx.max_attempts if ctx.semantics == "read" else 1)+1):
-            request_id = self.start(ctx,request.get_method(),parent_id=parent,attempt=attempt)
+        for attempt in range(1, max(1, ctx.max_attempts if ctx.semantics == "read" else 1) + 1):
+            request_id = self.start(ctx, request.get_method(), parent_id=parent, attempt=attempt)
             parent = parent or request_id
-            while delay := self.check(request_id,ctx,deadline):
-                if ctx.cancel:
-                    ctx.cancel.wait(delay)
-                else:
-                    time.sleep(delay)
-            if ctx.before_send is not None:
-                try:
-                    ctx.before_send(ctx)
-                except ExternalRequestBlocked as exc:
-                    self.store.finish(request_id, decision="rejected", not_sent=True, result={"code": exc.code, "outcome": "not_sent"})
-                    raise
+            lease = self._acquire_or_reject(request_id, ctx, deadline)
             try:
-                with (transport or urllib.request.urlopen)(request,timeout=max(.001,deadline-time.time()),**kwargs) as response:
-                    raw = response.read(32 * 1024 * 1024 + 1)
-                    if len(raw) > 32 * 1024 * 1024:
-                        raise ValueError("外部响应超过 32 MiB 上限")
-                    status = getattr(response,"status",None) or getattr(response,"code",None) or 200
-                    headers = getattr(response,"headers",None)
-                    if headers is None:
-                        headers = {}
-                    failure = self.result(request_id,ctx,status,headers,raw,method=request.get_method())
-                    if failure and failure.scope and failure.scope != "request":
-                        raise ExternalRequestBlocked(failure,sent=True)
-                    return BufferedResponse(raw,headers=headers,status=status,url=request.full_url)
-            except urllib.error.HTTPError as exc:
+                if ctx.before_send is not None:
+                    try:
+                        ctx.before_send(ctx)
+                    except ExternalRequestBlocked as exc:
+                        self.limiter.refund_operation_budget(ctx)
+                        self.store.finish(request_id, decision="rejected", not_sent=True, result={"code": exc.code, "outcome": "not_sent"})
+                        raise
+                self.store.mark_sent(request_id, lease.sent_at)
                 try:
-                    raw = exc.read(32 * 1024 * 1024)
-                finally:
-                    exc.close()
-                failure = self.result(request_id,ctx,exc.code,exc.headers or {},raw,method=request.get_method())
-                if ctx.semantics == "write" and (exc.code >= 500 or exc.code == 408):
-                    self.network_error(request_id, ctx)
-                    raise ExternalRequestOutcomeUnknown(http_status=exc.code) from exc
-                if not (failure and failure.retryable and ctx.semantics == "read" and attempt < ctx.max_attempts and time.time()+ctx.retry_delay < deadline):
-                    raise urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers, io.BytesIO(raw)) from exc
-            except ExternalRequestNotSent as exc:
-                self.store.finish(request_id, decision="rejected", not_sent=True,
-                                  result={**asdict(exc.failure), "outcome": "not_sent"})
-                raise
-            except ExternalRequestBlocked:
-                raise
-            except BaseException as exc:
-                self.network_error(request_id,ctx)
-                if ctx.semantics == "write" and isinstance(exc, Exception):
-                    raise ExternalRequestOutcomeUnknown() from exc
-                if not (isinstance(exc, (OSError, http.client.HTTPException)) and ctx.semantics == "read"
-                        and attempt < ctx.max_attempts and time.time()+ctx.retry_delay < deadline):
+                    with (transport or urllib.request.urlopen)(request, timeout=max(0.001, deadline - time.time()), **kwargs) as response:
+                        raw = response.read(32 * 1024 * 1024 + 1)
+                        if len(raw) > 32 * 1024 * 1024:
+                            raise ValueError("外部响应超过 32 MiB 上限")
+                        status = getattr(response, "status", None) or getattr(response, "code", None) or 200
+                        headers = getattr(response, "headers", None)
+                        if headers is None:
+                            headers = {}
+                        failure = self.result(request_id, ctx, status, headers, raw, method=request.get_method(), sent_at=lease.sent_at)
+                        if failure and failure.scope and failure.scope != "request":
+                            raise ExternalRequestBlocked(failure, sent=True)
+                        return BufferedResponse(raw, headers=headers, status=status, url=request.full_url)
+                except urllib.error.HTTPError as exc:
+                    try:
+                        raw = exc.read(32 * 1024 * 1024)
+                    finally:
+                        exc.close()
+                    failure = self.result(request_id, ctx, exc.code, exc.headers or {}, raw, method=request.get_method(), sent_at=lease.sent_at)
+                    if ctx.semantics == "write" and (exc.code >= 500 or exc.code == 408):
+                        self.network_error(request_id, ctx)
+                        raise ExternalRequestOutcomeUnknown(http_status=exc.code) from exc
+                    if not (failure and failure.retryable and ctx.semantics == "read" and attempt < ctx.max_attempts and time.time() + ctx.retry_delay < deadline):
+                        rebuilt = urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers, io.BytesIO(raw))
+                        if failure and failure.resume_at is not None:
+                            rebuilt.external_resume_at = failure.resume_at
+                        raise rebuilt from exc
+                except ExternalRequestNotSent as exc:
+                    self.limiter.refund_operation_budget(ctx)
+                    self.store.finish(
+                        request_id,
+                        decision="rejected",
+                        not_sent=True,
+                        result={**asdict(exc.failure), "outcome": "not_sent"},
+                    )
                     raise
+                except ExternalRequestBlocked:
+                    raise
+                except BaseException as exc:
+                    self.network_error(request_id, ctx)
+                    if ctx.semantics == "write" and isinstance(exc, Exception):
+                        raise ExternalRequestOutcomeUnknown() from exc
+                    if not (isinstance(exc, (OSError, http.client.HTTPException)) and ctx.semantics == "read"
+                            and attempt < ctx.max_attempts and time.time() + ctx.retry_delay < deadline):
+                        raise
+            finally:
+                self.limiter.release(lease)
             # 默认不重试；显式只读预算内的服务端失败才会进入此分支。
-            until = time.time()+ctx.retry_delay
+            until = time.time() + ctx.retry_delay
             while time.time() < until:
-                if ctx.cancel and ctx.cancel.wait(min(.05,until-time.time())):
+                if ctx.cancel and ctx.cancel.wait(min(0.05, until - time.time())):
                     break
                 if not ctx.cancel:
-                    time.sleep(min(.05,max(0,until-time.time())))
+                    time.sleep(min(0.05, max(0.0, until - time.time())))
         raise AssertionError("请求预算已耗尽")
 
 
 def managed_urlopen(request, *, timeout=30, request_context=None, transport=None, source="external", **kwargs):
-    return get_context().external_requests.open(request,timeout=timeout,request_context_value=request_context,transport=transport,source=source,**kwargs)
+    return get_context().external_requests.open(
+        request, timeout=timeout, request_context_value=request_context, transport=transport, source=source, **kwargs
+    )

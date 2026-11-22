@@ -161,7 +161,14 @@ class AiToolRuntime:
         with self._cache_lock:
             lock = self._call_locks.setdefault(command.call_id, threading.Lock())
         execution = execution_context or self.execution_context
-        with lock, request_operation("ai_tool:"+command.tool_name, operation_id=execution.task_run_id, trigger="agent_tool",deadline_at=execution.deadline_at.timestamp(),cancellation_check=execution.cancellation_check):
+        with lock, request_operation(
+            "ai_tool:" + command.tool_name,
+            operation_id=execution.task_run_id,
+            trigger="agent_tool",
+            deadline_at=execution.deadline_at.timestamp(),
+            cancellation_check=execution.cancellation_check,
+            max_operation_requests=40,
+        ):
             return self._execute(command, execution)
 
     def _execute(

@@ -53,7 +53,14 @@ CAP_TOOL_CALLING = "tool_calling"
 
 API_STYLE_OPENAI_COMPATIBLE = "openai_compatible"
 API_STYLE_OPENAI_RESPONSES = "openai_responses"
-AI_API_STYLES = (API_STYLE_OPENAI_COMPATIBLE, API_STYLE_OPENAI_RESPONSES)
+API_STYLE_ANTHROPIC_MESSAGES = "anthropic_messages"
+API_STYLE_GOOGLE_GEMINI = "google_gemini"
+AI_API_STYLES = (
+    API_STYLE_OPENAI_COMPATIBLE,
+    API_STYLE_OPENAI_RESPONSES,
+    API_STYLE_ANTHROPIC_MESSAGES,
+    API_STYLE_GOOGLE_GEMINI,
+)
 AI_IMAGE_QUALITY_OPTIONS = ("auto", "low", "medium", "high")
 
 AI_MODEL_CAPABILITIES = (
@@ -65,6 +72,15 @@ AI_MODEL_CAPABILITIES = (
     CAP_IMAGE_EDIT,
     CAP_TOOL_CALLING,
 )
+AI_CAPABILITY_LABELS = {
+    CAP_CHAT: "文本",
+    CAP_JSON: "JSON 模式",
+    CAP_WEB_SEARCH: "联网搜索",
+    CAP_IMAGE_UNDERSTANDING: "图片理解",
+    CAP_IMAGE_GENERATE: "图像生成",
+    CAP_IMAGE_EDIT: "图像编辑",
+    CAP_TOOL_CALLING: "Function Call",
+}
 AI_HTTP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -190,6 +206,9 @@ def normalize_capability_profiles(value: Any) -> dict[str, dict[str, Any]]:
                 )
             else:
                 profile["provider_id"] = raw_provider_id
+        for key in ("supports_tool_choice_required", "observed_thinking"):
+            if isinstance(raw_profile.get(key), bool):
+                profile[key] = raw_profile[key]
         result[capability] = profile
     return result
 
@@ -208,9 +227,15 @@ def default_cli_command(cli_tool: str) -> str:
     return AI_CLI_TOOL_DEFAULT_COMMANDS.get(normalize_cli_tool(cli_tool), "")
 
 
-def normalize_api_style(value: Any) -> str:
+def normalize_api_style(
+    value: Any,
+    *,
+    default: str = API_STYLE_OPENAI_COMPATIBLE,
+) -> str:
     text = str(value or "").strip().lower()
-    return text if text in AI_API_STYLES else API_STYLE_OPENAI_COMPATIBLE
+    if text in AI_API_STYLES:
+        return text
+    return default if default in AI_API_STYLES else API_STYLE_OPENAI_COMPATIBLE
 
 
 def normalize_browser_mode(value: Any) -> str:
@@ -229,8 +254,8 @@ def default_ai_models() -> list[dict[str, Any]]:
             "id": "default_text",
             "name": "默认文本模型",
             "connection_type": CONNECTION_TYPE_API,
-            "provider_id": ai_provider_catalog.PROVIDER_ID_DEEPSEEK,
-            "api_style": "openai_compatible",
+            "provider_id": ai_provider_catalog.PROVIDER_ID_OPENAI,
+            "api_style": API_STYLE_OPENAI_COMPATIBLE,
             "base_url": "https://api.deepseek.com",
             "base_url_env": "DEEPSEEK_BASE_URL",
             "api_key": "",
@@ -377,8 +402,12 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         "connection_type": connection_type,
         "provider": provider,
         "api_style": normalize_api_style(
-            raw.get("api_style")
-            or (provider_spec.default_api_style if provider_spec is not None else "")
+            raw.get("api_style"),
+            default=(
+                provider_spec.default_api_style
+                if provider_spec is not None
+                else API_STYLE_OPENAI_COMPATIBLE
+            ),
         ),
         "base_url": base_url,
         "base_url_env": base_url_env,
@@ -649,11 +678,31 @@ def model_configuration_fingerprint(model: dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def model_has_capabilities(model: dict[str, Any], required: list[str] | tuple[str, ...] | set[str]) -> bool:
-    if CAP_IMAGE_UNDERSTANDING in required and model_connection_type(model) != CONNECTION_TYPE_API:
-        return False
+def missing_model_capabilities(
+    model: dict[str, Any],
+    required: list[str] | tuple[str, ...] | set[str],
+) -> list[str]:
     capabilities = set(normalize_capabilities(model.get("capabilities")))
-    return all(item in capabilities for item in required)
+    missing: list[str] = []
+    for item in required:
+        if item == CAP_IMAGE_UNDERSTANDING and model_connection_type(model) != CONNECTION_TYPE_API:
+            missing.append(item)
+        elif item not in capabilities:
+            missing.append(item)
+    return missing
+
+
+def model_has_capabilities(model: dict[str, Any], required: list[str] | tuple[str, ...] | set[str]) -> bool:
+    return not missing_model_capabilities(model, required)
+
+
+def _format_capability_names(capabilities: list[str]) -> str:
+    return ", ".join(
+        f"{AI_CAPABILITY_LABELS[item]}（{item}）"
+        if item in AI_CAPABILITY_LABELS
+        else item
+        for item in capabilities
+    )
 
 
 def resolve_ai_model(
@@ -671,14 +720,18 @@ def resolve_ai_model(
     if preferred_id:
         for model in candidates:
             if str(model.get("id") or "") == preferred_id:
-                if required and not model_has_capabilities(model, required):
-                    raise RuntimeError(f"AI 模型 {preferred_id} 不满足能力要求: {', '.join(required)}")
+                missing = missing_model_capabilities(model, required) if required else []
+                if missing:
+                    label = str(model.get("name") or preferred_id).strip()
+                    raise RuntimeError(
+                        f"AI 模型「{label}」不满足能力要求，缺少：{_format_capability_names(missing)}"
+                    )
                 return model
         raise RuntimeError(f"AI 模型不存在或未启用: {preferred_id}")
     for model in candidates:
         if not required or model_has_capabilities(model, required):
             return model
-    raise RuntimeError(f"没有可用 AI 模型满足能力要求: {', '.join(required)}")
+    raise RuntimeError(f"没有可用 AI 模型满足能力要求：{_format_capability_names(required)}")
 
 
 def validate_ai_use_case_generation_bindings(

@@ -10,12 +10,13 @@ from openai import AsyncOpenAI
 from PIL import Image, ImageChops
 import pytest
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import ModelResponse, TextPart, ThinkingPart, ToolCallPart
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from erp_web.services import ai_gateway_probe, ai_model_probe_service, ai_provider_catalog
 from erp_web.services import ai_gateway_browser_provider, ai_gateway_cli_provider
+from erp_web.services.ai_model_errors import AIHTTPError
 from erp_web.services.ai_model_factory import PydanticModelBinding
 
 
@@ -333,7 +334,7 @@ def test_function_call_probe_requires_a_complete_exact_round_trip(
     def request_for_probe(**kwargs):
         nonlocal calls
         calls += 1
-        assert kwargs["allow_text_output"] is True
+        assert kwargs["allow_text_output"] is (calls > 1)
         schema = kwargs["function_tools"][0].parameters_json_schema
         assert schema == {
             "type": "object",
@@ -369,6 +370,82 @@ def test_function_call_probe_requires_a_complete_exact_round_trip(
     assert calls == 2
     assert result["status"] == "supported"
     assert result["capability_profile"]["strategy"] == "function_tool_round_trip"
+    assert result["capability_profile"]["supports_tool_choice_required"] is True
+
+
+def test_function_call_probe_falls_back_on_http_400_and_records_profile_facts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model = _model()
+    _install_probe_binding(monkeypatch, model)
+    calls: list[bool] = []
+    token = "thinking-fallback-token"
+    monkeypatch.setattr(ai_gateway_probe.secrets, "token_hex", lambda _: token)
+
+    def request_for_probe(**kwargs):
+        allow_text = bool(kwargs["allow_text_output"])
+        calls.append(allow_text)
+        if len(calls) == 1:
+            assert allow_text is False
+            raise AIHTTPError(
+                status_code=400,
+                reason="Bad Request",
+                detail="Thinking mode does not support this tool_choice",
+                model_id="probe-model",
+                model_name="probe-model",
+                api_style="openai_compatible",
+                endpoint="https://models.example.invalid/v1",
+            )
+        if len(calls) == 2:
+            assert allow_text is True
+            return ModelResponse(
+                parts=[
+                    ThinkingPart(content="need to call noop"),
+                    ToolCallPart(
+                        tool_name="noop",
+                        args={"probe_token": token},
+                        tool_call_id="probe-call",
+                    ),
+                ]
+            )
+        assert allow_text is True
+        return ModelResponse(parts=[TextPart(f"probe-complete:{token}")])
+
+    monkeypatch.setattr(
+        ai_model_probe_service.ai_direct_request_service,
+        "request_for_probe",
+        request_for_probe,
+    )
+
+    report = _run(tmp_path, model, "tool_calling")
+
+    result = report["results"]["tool_calling"]
+    assert calls == [False, True, True]
+    assert result["status"] == "supported"
+    assert result["capability_profile"]["supports_tool_choice_required"] is False
+    assert result["capability_profile"]["observed_thinking"] is True
+
+
+def test_chat_probe_records_observed_thinking_when_thinking_part_is_present(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model = _model()
+    _install_probe_binding(monkeypatch, model)
+    monkeypatch.setattr(
+        ai_model_probe_service.ai_direct_request_service,
+        "request_for_probe",
+        lambda **kwargs: ModelResponse(
+            parts=[ThinkingPart(content="greeting user"), TextPart("Hello!")]
+        ),
+    )
+
+    report = _run(tmp_path, model, "chat")
+
+    result = report["results"]["chat"]
+    assert result["status"] == "supported"
+    assert result["capability_profile"]["observed_thinking"] is True
 
 
 def test_wrong_function_tool_name_is_not_a_false_positive(
@@ -463,6 +540,37 @@ def test_transient_provider_failure_is_inconclusive_instead_of_unsupported(
     assert result["status"] == "inconclusive"
     assert result["retryable"] is True
     assert "conversation_id" not in result
+
+
+def test_payment_required_402_is_inconclusive_non_retryable_not_unsupported(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model = _model()
+    _install_probe_binding(monkeypatch, model)
+
+    def fail(**kwargs):
+        raise ModelHTTPError(
+            402,
+            "probe-model",
+            {"error": {"message": "Insufficient Balance"}},
+        )
+
+    monkeypatch.setattr(
+        ai_model_probe_service.ai_direct_request_service,
+        "request_for_probe",
+        fail,
+    )
+
+    report = _run(tmp_path, model, "chat")
+
+    result = report["results"]["chat"]
+    assert report["unsupported"] == []
+    assert report["inconclusive"] == ["chat"]
+    assert result["status"] == "inconclusive"
+    assert result["error_code"] == "CAPABILITY_PROBE_PAYMENT_REQUIRED"
+    assert result["retryable"] is False
+    assert "余额不足" in result["error"]
 
 
 def test_provider_error_keeps_safe_diagnostics_in_result_and_log(
@@ -567,3 +675,74 @@ def test_image_understanding_reads_two_ordered_pngs_via_provider(
         assert result["status"] == "supported", result
         assert result["capability_profile"]["operation"] == "model.request.image_input"
         assert result["capability_profile"]["configuration_fingerprint"]
+
+
+def test_list_remote_models_supports_anthropic_and_google_providers(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from erp_web.services import ai_model_discovery
+
+    class FakeAnthropicProvider:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        class _Models:
+            async def list(self, *, timeout):
+                assert timeout == 15.0
+                return SimpleNamespace(
+                    data=[SimpleNamespace(id="claude-sonnet-4-6"), SimpleNamespace(id="claude-opus-4-6")]
+                )
+
+        client = SimpleNamespace(models=_Models())
+
+    class FakeGooglePager:
+        def __init__(self, items):
+            self._items = iter(items)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._items)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    class FakeGoogleProvider:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        class _Models:
+            async def list(self):
+                return FakeGooglePager(
+                    [
+                        SimpleNamespace(name="models/gemini-2.5-flash"),
+                        SimpleNamespace(name="models/gemini-2.5-pro"),
+                    ]
+                )
+
+        client = SimpleNamespace(aio=SimpleNamespace(models=_Models()))
+
+    def fake_create(provider_id, *, base_url, api_key):
+        del base_url, api_key
+        return FakeAnthropicProvider() if provider_id == "anthropic" else FakeGoogleProvider()
+
+    monkeypatch.setattr(ai_provider_catalog, "create_pydantic_provider", fake_create)
+
+    assert ai_model_discovery.list_remote_models(
+        "anthropic", "https://api.anthropic.com", "sk-ant", 15
+    ) == [
+        {"id": "claude-sonnet-4-6", "name": "claude-sonnet-4-6"},
+        {"id": "claude-opus-4-6", "name": "claude-opus-4-6"},
+    ]
+    assert ai_model_discovery.list_remote_models(
+        "google", "https://generativelanguage.googleapis.com", "gk-test", 15
+    ) == [
+        {"id": "gemini-2.5-flash", "name": "gemini-2.5-flash"},
+        {"id": "gemini-2.5-pro", "name": "gemini-2.5-pro"},
+    ]

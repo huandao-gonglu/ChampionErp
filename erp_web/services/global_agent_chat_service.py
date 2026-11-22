@@ -57,7 +57,7 @@ Python 不访问宿主文件、数据库、环境变量、任意网络或第三�
 恢复时按实际回执处理；partial/failed/confirmed/submitted/closed_unconfirmed 不是待解锁状态，不 close 终态。旧任务结束后读新版本继续原授权；版本过期先重读，不能原样重试。按整组覆盖推进，说明等待/失败/未知；已入队职责完成，不主动轮询。
 完整准备覆盖文案、类目、共用主图、已选 SKU 套图、公共/差异属性、库存、核价及发布预检；仅处理选定目标，发布需明确要求。
 先确定草稿/SKU，读 draft_read.image_preparation，需套图时同轮用 draft_images_prepare(decision="auto") 提交。generated/kept 复用；queued 后并行准备文案、类目和属性，用来源原图核对规格。缺毛重只阻塞相关核价，继续其他目标并集中询问。
-needs_confirmation 时询问保留/重做，默认保留；keep/regenerate 传最新 fingerprint。直接调用 image_translate/image_edit 处理选定草稿图片。端点由工具判断，要求桌面时提示点击“在桌面继续”。
+needs_confirmation 时询问保留/重做，默认保留；keep/regenerate 传最新 fingerprint。直接调用 draft_images_prepare/image_translate/image_edit 处理草稿图片（不在 run_code 中调用），端点由工具判断，要求桌面时提示点击“在桌面继续”。
 输入确定后按指定模板核价一次，有效的已应用售价可复用，依据变化再算。独立工作后同轮 draft_images_wait 核对原批次；仅全批成功并采用才算套图完成，失败/未知保留原图，不自动重做。
 资料和图片齐备后 product_publish_prepare 准备水印、上传与链接，按预检合并修复。IMAGE_NOT_PREPARED/IMAGE_PUBLIC_URL_STALE/IMAGE_DELIVERY_STALE 是交付问题，无需重绘；缺选图请用户选择。
 商品共用事实可以复用，平台类目、售价、币种和销售目标必须按站点范围处理。模型猜测不能成为用户决定；来源引用只能来自真实用户消息或已保存事实。

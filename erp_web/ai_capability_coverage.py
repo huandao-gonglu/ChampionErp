@@ -32,7 +32,6 @@ from erp_web.http_route_units import (
     online_product_routes,
     order_routes,
     fulfillment_routes,
-    external_request_routes,
 )
 from erp_web.http_routes import GET_API_ROUTES, POST_API_ROUTES
 
@@ -88,7 +87,6 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
     endpoints.update(("GET", path) for path in ai_work_routes.HANDLED_PATHS)
     endpoints.update(("GET", path) for path in online_product_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in order_routes.GET_API_ROUTES)
-    endpoints.update(("GET", path) for path in external_request_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in fulfillment_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in image_hosting_routes.GET_API_ROUTES)
     endpoints.update(("GET", path) for path in pricing_workspace_routes.GET_API_ROUTES)
@@ -375,9 +373,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     AiCapabilityCoverageEntry(method="POST", path="/api/online-products/ozon-export/download", business_domain="在线商品", disposition="internal_only", reason="界面确认预览后生成本次 XLSX 文件；当前文件上传与下载流程仅面向可信界面，不开放 AI 工具。"),
     AiCapabilityCoverageEntry(method="GET", path="/api/orders/integrations", business_domain="授权基础设施", disposition="internal_only", reason="本机可信界面读取回调地址，含专用接入凭据，不向模型提供。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/configure", business_domain="授权基础设施", disposition="internal_only", reason="用户配置公网回调接入地址。"),
-    AiCapabilityCoverageEntry(method="GET", path="/api/external-requests/status", business_domain="平台授权", disposition="internal_only", reason="本机授权页读取外部请求中断及恢复状态。"),
-    AiCapabilityCoverageEntry(method="POST", path="/api/external-requests/recover", business_domain="平台授权", disposition="internal_only", reason="用户在授权页显式恢复指定中断。"),
-    AiCapabilityCoverageEntry(method="POST", path="/api/external-requests/history/clear", business_domain="平台授权", disposition="internal_only", reason="用户在授权页确认清理已处理的历史中断，不改变请求保护。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/ozon/notifications", business_domain="订单通知", disposition="excluded", reason="Ozon 外部通知协议入口。"),
     AiCapabilityCoverageEntry(method="POST", path="/api/yandex/notifications", business_domain="订单通知", disposition="excluded", reason="Yandex 外部通知协议入口。"),
     # -------------------------------------------------- 平台查询（GET）

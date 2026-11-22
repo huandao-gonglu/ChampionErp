@@ -11,7 +11,7 @@ from erp_web.context import get_context
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.facades.image_facade import continue_image_operation
 from erp_web.runtime_units.draft_image_prepare import prepare_draft_images
-from erp_web.schemas.image_capabilities import DraftImagesPrepareRequest
+from erp_web.schemas.image_capabilities import DraftImagesPrepareRequest, DraftImagesPrepareResult
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.services import ai_direct_request_service, image_set_service
 from erp_web.services.desktop_connection_service import bind_desktop_connection
@@ -47,17 +47,23 @@ def test_web_chat_translates_only_requested_draft_images(monkeypatch, app_dir, d
         monkeypatch.setattr(ai_direct_request_service, "_image_request", generate)
 
     async def chat_model(messages, info):
+        instructions = info.instructions or ""
+        assert "本次操作没有可用的本机执行器" not in instructions
+        assert "当前操作需要本机执行器" not in instructions
         tools = {tool.name for tool in info.function_tools}
         if "image_translate" not in tools:
             yield {0: DeltaToolCall(name="search_tools", json_args='{"queries":["image_translate"]}', tool_call_id="find")}
         elif not business_returns(messages):
+            assert "async def image_translate(" not in instructions
             yield {0: DeltaToolCall(name="image_translate", tool_call_id="translate",
                                     json_args=json.dumps({"product_id": product["product_id"], "draft_id": draft["draft_id"],
                                                           "source_image_ids": ["common", "red"]}))}
         else:
             yield "按图片处理回执报告实际结果。"
 
-    ui = service(app_dir, FunctionModel(stream_function=chat_model), build_global_chat_toolset(context))
+    toolset = build_global_chat_toolset(context)
+    assert all(toolset.get(name).direct_only for name in ("draft_images_prepare", "image_translate", "image_edit"))
+    ui = service(app_dir, FunctionModel(stream_function=chat_model), toolset)
     chunks = []
     asyncio.run(ui.prepare_run(body("翻译当前草稿中包含中文的图片")).stream(chunks.append))
     assert b'"type":"error"' not in b"".join(chunks)
@@ -131,3 +137,63 @@ def test_automatic_image_preparation_checks_endpoint_before_creating_job(monkeyp
                                   handoff_fingerprint=blocked.value.fingerprint)
     assert queued.status == "queued"
     assert wait_result(queued).status == "generated"
+
+
+def test_draft_images_prepare_runs_direct_not_in_python_and_hands_off_on_web(monkeypatch, app_dir):
+    from pydantic_ai.messages import RetryPromptPart
+
+    _, draft, raw = setup_sources(app_dir)
+    context = get_context()
+    config = context.config.load_app_config()
+    config["ai_models"].insert(0, local_config()["ai_models"][0])
+    config["ai_use_case_bindings"]["image.translate"] = {"model_id": "canvas"}
+    monkeypatch.setattr(context.config, "load_app_config", lambda: config)
+    retries = []
+
+    async def chat_model(messages, info):
+        instructions = info.instructions or ""
+        assert "本次操作没有可用的本机执行器" not in instructions
+        tools = {tool.name for tool in info.function_tools}
+        script_errors = [p for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+        if "draft_images_prepare" not in tools:
+            yield {0: DeltaToolCall(name="search_tools", json_args='{"queries":["draft_images_prepare"]}', tool_call_id="find")}
+        elif not script_errors:
+            assert "async def draft_images_prepare(" not in instructions
+            yield {0: DeltaToolCall(
+                name="run_code",
+                json_args=json.dumps({"code": f"await draft_images_prepare(draft_id={draft['draft_id']!r}, decision='auto')"}),
+                tool_call_id="bad-script",
+            )}
+        elif not business_returns(messages):
+            retries.extend(script_errors)
+            yield {0: DeltaToolCall(
+                name="draft_images_prepare",
+                json_args=json.dumps({"draft_id": draft["draft_id"], "decision": "auto"}),
+                tool_call_id="prep-direct",
+            )}
+        else:
+            yield "请在图片操作提示处点击“在桌面继续”。"
+
+    ui = service(app_dir, FunctionModel(stream_function=chat_model), build_global_chat_toolset(context))
+    chunks = []
+    asyncio.run(ui.prepare_run(body("准备草稿套图", target_draft_ids=[draft["draft_id"]])).stream(chunks.append))
+    assert retries and "draft_images_prepare" in str(retries[-1].content)
+    assert b"IMAGE_DESKTOP_REQUIRED" in b"".join(chunks)
+    ui_messages = ui.dump_ui_messages(CONVERSATION)["messages"]
+    direct_parts = [
+        part for message in ui_messages for part in message.get("parts", [])
+        if part.get("toolCallId") == "prep-direct"
+    ]
+    assert len(direct_parts) == 1
+    action = direct_parts[0]["output"]["error"]["details"]["desktop_image_action"]
+    assert action == {"conversation_id": CONVERSATION, "tool_call_id": "prep-direct"}
+    # 桌面恢复继续同一草稿套图操作。
+    config["ai_use_case_bindings"]["image.translate"] = {"model_id": "vision-test"}
+    monkeypatch.setattr(image_set_service, "plan_image_set",
+                        lambda **_: image_set_service.ImageSetPlan.model_validate(plan()))
+    image_model(monkeypatch, raw)
+    key = context.desktop_connections.connect()["connection_id"]
+    with bind_desktop_connection(key):
+        resumed, status = continue_image_operation(action)
+    assert status == 200 and resumed["image_preparation"]["status"] == "queued"
+    assert wait_result(DraftImagesPrepareResult.model_validate(resumed["image_preparation"])).status == "generated"

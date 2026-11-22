@@ -37,14 +37,12 @@ def test_browser_recovers_after_repeated_disconnects_without_external_audit(monk
     assert browser.browser_debug_connected(9222) is True
     assert send.call_count == 7
     assert store.query()["items"] == []
-    assert store.blocks() == []
 
 
 def test_old_loopback_blocks_do_not_affect_browser_but_business_requests_stay_blocked(monkeypatch, tmp_path):
     manager = get_context().external_requests
     ctx = request_context("http://127.0.0.1:9222/json/version")
-    manager.store.block(ctx, RequestFailure("EXTERNAL_API_DISABLED", "已有阻断", "account"))
-    original_blocks = manager.store.blocks()
+    manager.limiter.record_failure(ctx, "req-1", RequestFailure("EXTERNAL_API_DISABLED", "已有阻断", "account"), sent_at=0.0)
     target = {"id": "original", "type": "page", "url": "https://detail.1688.com/offer/123.html",
               "webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/original"}
     def send(request, **kwargs):
@@ -59,7 +57,6 @@ def test_old_loopback_blocks_do_not_affect_browser_but_business_requests_stay_bl
     assert ai._page_targets(9222) == [target]
     assert collection.target_for_url(config, target["url"]) == target
     assert manager.store.query()["items"] == []
-    assert manager.store.blocks() == original_blocks
     network = Mock(side_effect=AssertionError("已有业务阻断不能绕过"))
     with pytest.raises(ExternalRequestBlocked):
         manager.open("http://127.0.0.1:9222/json/version", transport=network)

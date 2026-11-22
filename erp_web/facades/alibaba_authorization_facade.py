@@ -25,7 +25,7 @@ def authorization_payload(action, body=None):
         if action == 'callback':
             return service.callback((body or {}).get('code', ''), (body or {}).get('state', '')), 200
         raise ValueError('不支持的 1688 授权操作')
-    except ExternalRequestBlocked:
-        return {'ok': False, 'error': '1688 授权请求已中断，请查看系统设置的「中断与恢复」'}, 409
+    except ExternalRequestBlocked as exc:
+        return {'ok': False, 'error': f'1688 授权请求已暂停：{exc}，请检查授权配置后重试'}, 409
     except ValueError as exc:
         return {'ok': False, 'error': str(exc)}, 400

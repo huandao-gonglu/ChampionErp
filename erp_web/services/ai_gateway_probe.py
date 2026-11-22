@@ -137,7 +137,10 @@ def run_capability_probes(
                 "status": status,
                 "error_code": code,
                 "error": error_text,
-                "retryable": status == PROBE_STATUS_INCONCLUSIVE,
+                "retryable": (
+                    status == PROBE_STATUS_INCONCLUSIVE
+                    and code != "CAPABILITY_PROBE_PAYMENT_REQUIRED"
+                ),
             }
             if isinstance(exc, (AIHTTPError, ModelHTTPError)):
                 logger.warning(
@@ -180,6 +183,8 @@ def _capability_error_status(exc: Exception) -> tuple[str, str]:
     if isinstance(exc, (AIHTTPError, ModelHTTPError)):
         status_code = int(exc.status_code)
     if status_code is not None:
+        if status_code == 402:
+            return PROBE_STATUS_INCONCLUSIVE, "CAPABILITY_PROBE_PAYMENT_REQUIRED"
         if status_code in {401, 403, 404, 408, 409, 425, 429} or status_code >= 500:
             return PROBE_STATUS_INCONCLUSIVE, "CAPABILITY_PROBE_PROVIDER_ERROR"
         return PROBE_STATUS_UNSUPPORTED, "CAPABILITY_PROBE_PROTOCOL_REJECTED"
@@ -242,6 +247,8 @@ def build_capability_profile(
     *,
     strategy: str,
     request_mode: str = "",
+    supports_tool_choice_required: bool | None = None,
+    observed_thinking: bool | None = None,
 ) -> dict[str, Any]:
     connection_type = ai_model_config.model_connection_type(model)
     if connection_type == ai_model_config.CONNECTION_TYPE_API:
@@ -268,6 +275,10 @@ def build_capability_profile(
         )
     if request_mode:
         profile["request_mode"] = request_mode
+    if isinstance(supports_tool_choice_required, bool):
+        profile["supports_tool_choice_required"] = supports_tool_choice_required
+    if isinstance(observed_thinking, bool):
+        profile["observed_thinking"] = observed_thinking
     return profile
 
 
@@ -528,10 +539,16 @@ def _capability_error_text(exc: Exception) -> str:
     if isinstance(exc, CapabilityProbeError):
         return str(exc)
     if isinstance(exc, AIHTTPError):
-        return f"HTTP {exc.status_code}: {exc.detail or exc.reason}".strip()
+        text = f"HTTP {exc.status_code}: {exc.detail or exc.reason}".strip()
+        if int(exc.status_code) == 402:
+            return f"AI Provider 余额不足或计费配置不可用。{text}"
+        return text
     if isinstance(exc, ModelHTTPError):
         detail = model_http_error_detail(exc)
-        return f"HTTP {exc.status_code}: {detail}".strip()
+        text = f"HTTP {exc.status_code}: {detail}".strip()
+        if int(exc.status_code) == 402:
+            return f"AI Provider 余额不足或计费配置不可用。{text}"
+        return text
     if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
         # 无终态事件的可观测性：超时探测明确标注错误码，而不是只留一句 timed out。
         detail = str(exc).strip()

@@ -346,7 +346,10 @@ def _read_yandex_response(request, token, path, timeout):
             http_status=int(exc.code),
             errors=errors,
             warnings=warnings,
-            details={"next_action": next_action, "resume_at": retry_after(exc.headers or {})},
+            details={
+                "next_action": next_action,
+                "resume_at": getattr(exc, "external_resume_at", None) or retry_after(exc.headers or {}),
+            },
         ) from exc
     except PublishAdapterError:
         raise

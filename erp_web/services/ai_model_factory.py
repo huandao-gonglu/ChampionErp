@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from pydantic_ai.models import Model
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.settings import ModelSettings
 
@@ -204,15 +207,61 @@ def _build_pydantic_model_binding(
                 model_name,
                 provider=provider,
             )
+        elif api_style == ai_model_config.API_STYLE_ANTHROPIC_MESSAGES:
+            if "anthropic" not in provider_spec.supported_model_kinds:
+                raise AiModelFactoryError(
+                    f"AI Provider {provider_spec.label} 未接入 Anthropic Model。"
+                )
+            native_profile_payload = (
+                ai_generation_settings.pydantic_native_model_profile_payload(
+                    model.get("capability_profiles")
+                )
+            )
+            native_profile = (
+                ModelProfile(**native_profile_payload)
+                if native_profile_payload
+                else None
+            )
+            pydantic_model = AnthropicModel(
+                model_name,
+                provider=provider,
+                profile=native_profile,
+            )
+        elif api_style == ai_model_config.API_STYLE_GOOGLE_GEMINI:
+            if "google" not in provider_spec.supported_model_kinds:
+                raise AiModelFactoryError(
+                    f"AI Provider {provider_spec.label} 未接入 Google Gemini Model。"
+                )
+            native_profile_payload = (
+                ai_generation_settings.pydantic_native_model_profile_payload(
+                    model.get("capability_profiles")
+                )
+            )
+            native_profile = (
+                ModelProfile(**native_profile_payload)
+                if native_profile_payload
+                else None
+            )
+            pydantic_model = GoogleModel(
+                model_name,
+                provider=provider,
+                profile=native_profile,
+            )
         elif api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
             if "responses" not in provider_spec.supported_model_kinds:
                 raise AiModelFactoryError(
                     f"AI Provider {provider_spec.label} 未接入 Responses Model。"
                 )
+            upstream_profile = ai_provider_catalog.custom_gateway_model_profile(
+                provider_id,
+                base_url=base_url,
+                model_name=model_name,
+            )
             profile_payload = (
                 ai_generation_settings.pydantic_openai_responses_profile_payload(
                     provider_family,
                     model_name,
+                    capability_profiles=model.get("capability_profiles"),
                 )
             )
             if (provider_id == ai_provider_catalog.PROVIDER_ID_OPENAI
@@ -220,19 +269,36 @@ def _build_pydantic_model_binding(
                 # 自定义 Responses 网关可能把 additional_tools 的命名空间拼入函数名。
                 # 由 SDK 在普通工具列表中声明本地搜索揭示的函数，历史按同一名字回传。
                 profile_payload["tool_addition_mode"] = None
-            profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
+            override_profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
+            profile = (
+                merge_profile(upstream_profile, override_profile)
+                if upstream_profile or override_profile
+                else None
+            )
             pydantic_model: Model = CheckedOpenAIResponsesModel(
                 model_name,
                 provider=provider,
                 profile=profile,
             )
         else:
+            upstream_profile = ai_provider_catalog.custom_gateway_model_profile(
+                provider_id,
+                base_url=base_url,
+                model_name=model_name,
+            )
             profile_payload = (
                 ai_generation_settings.pydantic_openai_chat_profile_payload(
-                    provider_family
+                    provider_family,
+                    model_name,
+                    capability_profiles=model.get("capability_profiles"),
                 )
             )
-            profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
+            override_profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
+            profile = (
+                merge_profile(upstream_profile, override_profile)
+                if upstream_profile or override_profile
+                else None
+            )
             pydantic_model = OpenAIChatModel(
                 model_name,
                 provider=provider,
@@ -307,8 +373,18 @@ def create_pydantic_probe_binding(
         raise AiModelFactoryError(
             f"未知 AI 能力：{str(probe_capability or '').strip() or 'empty'}。"
         )
+    normalized_model = ai_model_config.normalize_ai_model(model_config)
+    # 复测某项能力时排除该项旧探测结论，确保重新验证真实的协议行为。
+    existing_profiles = normalized_model.get("capability_profiles")
+    if isinstance(existing_profiles, dict) and normalized[0] in existing_profiles:
+        normalized_model = {
+            **normalized_model,
+            "capability_profiles": {
+                k: v for k, v in existing_profiles.items() if k != normalized[0]
+            },
+        }
     return _build_pydantic_model_binding(
-        ai_model_config.normalize_ai_model(model_config),
+        normalized_model,
         generation_settings=generation_settings,
         timeout_seconds=timeout_seconds,
         operation_capabilities=normalized,

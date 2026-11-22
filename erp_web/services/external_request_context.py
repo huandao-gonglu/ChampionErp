@@ -13,16 +13,29 @@ from erp_web.context import get_context
 from erp_web.schemas.external_requests import RequestContext
 
 _operation = ContextVar("external_operation", default=None)
-_rejections = ContextVar("external_request_rejections", default=None)
 
 
 @contextmanager
-def request_operation(source, *, operation_id="", trigger="manual", cancel=None, deadline_at=None, cancellation_check=None, before_send=None):
+def request_operation(
+    source,
+    *,
+    operation_id="",
+    trigger="manual",
+    cancel=None,
+    deadline_at=None,
+    cancellation_check=None,
+    before_send=None,
+    bypass_auth_block=False,
+    max_operation_requests=None,
+):
     parent = _operation.get()
     if parent:
-        # 领域子操作可以收紧期限，不能覆盖上层 AI/HTTP 的期限或停止检查。
+        # 领域子操作可以收紧期限与请求上限，不能覆盖上层 AI/HTTP 的期限或停止检查。
         deadlines = [value for value in (deadline_at, parent["deadline_at"]) if value is not None]
         deadline_at = min(deadlines) if deadlines else None
+        limits = [value for value in (max_operation_requests, parent["max_operation_requests"]) if value is not None]
+        max_operation_requests = min(limits) if limits else None
+        bypass_auth_block = bool(bypass_auth_block or parent["bypass_auth_block"])
         checks = tuple(check for check in (parent["cancellation_check"], cancellation_check) if check is not None)
         if checks:
             def check_cancellation():
@@ -34,12 +47,24 @@ def request_operation(source, *, operation_id="", trigger="manual", cancel=None,
         inherited_before_send = parent.get("before_send")
         if inherited_before_send is not None:
             child_before_send = before_send
+
             def apply_before_send(ctx):
                 inherited_before_send(ctx)
                 if child_before_send is not None:
                     child_before_send(ctx)
+
             before_send = apply_before_send
-    value = {"source": source, "operation_id": operation_id or uuid4().hex, "trigger": trigger, "cancel": cancel, "deadline_at":deadline_at,"cancellation_check":cancellation_check,"before_send":before_send}
+    value = {
+        "source": source,
+        "operation_id": operation_id or uuid4().hex,
+        "trigger": trigger,
+        "cancel": cancel,
+        "deadline_at": deadline_at,
+        "cancellation_check": cancellation_check,
+        "before_send": before_send,
+        "bypass_auth_block": bool(bypass_auth_block),
+        "max_operation_requests": max_operation_requests,
+    }
     token = _operation.set(value)
     try:
         yield
@@ -53,15 +78,15 @@ def credential_fingerprint(value):
 
 def request_context(url, headers=None, *, data=None, method="GET", timeout=30, source="http_client", platform="", account_id="", semantics=None):
     parsed = urllib.parse.urlsplit(url)
-    headers = {k.lower():v for k,v in (headers or {}).items()}
+    headers = {k.lower(): v for k, v in (headers or {}).items()}
     host = parsed.hostname or "external"
-    platform = platform or ({"api-seller.ozon.ru":"ozon", "api.mercadolibre.com":"mercadolibre", "api.partner.market.yandex.ru":"yandex"}.get(host)) or host
+    platform = platform or ({"api-seller.ozon.ru": "ozon", "api.mercadolibre.com": "mercadolibre", "api.partner.market.yandex.ru": "yandex"}.get(host)) or host
     secret = headers.get("api-key") or headers.get("authorization") or headers.get("token") or ""
     credential_id = credential_fingerprint(secret)
     if platform == "ozon":
         account_id = account_id or headers.get("client-id", "")
-    elif platform in {"mercadolibre","yandex"}:
-        store = get_context().config.load_store_config().get(platform,{})
+    elif platform in {"mercadolibre", "yandex"}:
+        store = get_context().config.load_store_config().get(platform, {})
         saved = str(store.get("access_token" if platform == "mercadolibre" else "api_token") or "")
         actual = secret.removeprefix("Bearer ")
         if actual and actual == saved:
@@ -70,13 +95,13 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
             form = urllib.parse.parse_qs((data or b"").decode("utf-8"))
             credential_id = credential_fingerprint(form.get("refresh_token") or form.get("code"))
             account_id = account_id or str(store.get("user_id") or (form.get("client_id") or [""])[0])
-    account_id = account_id or ("credential:"+credential_id)
+    account_id = account_id or ("credential:" + credential_id)
     # POST 查询由平台契约列举；未声明的请求保守按写入处理。
     read_post = platform == "ozon" and any(part in parsed.path for part in ("/info", "/list", "/tree", "/attribute", "/seller/info", "/posting/fbs/get", "/posting/fbo/get")) and not any(part in parsed.path for part in ("/update", "/import", "/delete"))
     if platform == "ozon" and parsed.path == "/v1/product/import/info":
         read_post = True
     if platform == "yandex":
-        read_post = method.upper() == "POST" and not any(part in parsed.path for part in ("/update","/delete","/create")) and not parsed.path.endswith(("/hidden-offers", "/archive", "/unarchive"))
+        read_post = method.upper() == "POST" and not any(part in parsed.path for part in ("/update", "/delete", "/create")) and not parsed.path.endswith(("/hidden-offers", "/archive", "/unarchive"))
         # 聊天 POST 同时包含查询与写入，按确切路径区分，防止发送未知时被当作只读重放。
         if re.fullmatch(r"/v2/businesses/[1-9][0-9]*/chats(?:/.*)?", parsed.path):
             read_post = method.upper() == "POST" and bool(re.fullmatch(r"/v2/businesses/[1-9][0-9]*/chats(?:/history)?", parsed.path))
@@ -85,34 +110,25 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
     # 接口标识去掉 URL 参数与动态数字 ID，避免敏感查询进入日志。
     interface = re.sub(r"/[0-9]+(?=/|$)", "/:id", (parsed.path or "/"))[:240]
     known_ai_path = any(parsed.path.endswith(path) for path in ("/chat/completions", "/responses", "/embeddings", "/images/generations", "/images/edits"))
-    if platform not in {"ozon","mercadolibre","yandex"} and not (platform.startswith("ai:") and known_ai_path):
-        interface = "/resource/"+credential_fingerprint(parsed.path or "/")
+    if platform not in {"ozon", "mercadolibre", "yandex"} and not (platform.startswith("ai:") and known_ai_path):
+        interface = "/resource/" + credential_fingerprint(parsed.path or "/")
     elif platform.startswith("ai:"):
         interface = next(path for path in ("/chat/completions", "/responses", "/embeddings", "/images/generations", "/images/edits") if parsed.path.endswith(path))
     quota_match = re.search(r"/(campaigns|businesses)/([0-9]+)", parsed.path)
-    quota_key = (quota_match.group(1)+":"+quota_match.group(2)) if platform == "yandex" and quota_match else "business:"+account_id
-    ctx = RequestContext(platform=platform, account_id=account_id[:128],credential_id=credential_id,
-        interface=interface,source=source,timeout=timeout,quota_key=quota_key,
-        fingerprint=hashlib.sha256(method.encode()+url.encode()+(data or b"")).hexdigest(),
-        semantics=semantics or ("read" if method.upper() in {"GET","HEAD"} or read_post or read_put else "write"))
+    quota_key = (quota_match.group(1) + ":" + quota_match.group(2)) if platform == "yandex" and quota_match else "business:" + account_id
+    ctx = RequestContext(
+        platform=platform,
+        account_id=account_id[:128],
+        credential_id=credential_id,
+        interface=interface,
+        source=source,
+        timeout=timeout,
+        quota_key=quota_key,
+        fingerprint=hashlib.sha256(method.encode() + url.encode() + (data or b"")).hexdigest(),
+        semantics=semantics or ("read" if method.upper() in {"GET", "HEAD"} or read_post or read_put else "write"),
+    )
     operation = _operation.get()
-    return replace(ctx,**{**operation,"source":operation["source"]+":"+source}) if operation else ctx
-
-
-@contextmanager
-def capture_request_rejections():
-    notices = []
-    token = _rejections.set(notices)
-    try:
-        yield notices
-    finally:
-        _rejections.reset(token)
-
-
-def note_request_rejection(failure):
-    notices = _rejections.get()
-    if notices is not None and failure.scope:
-        notices.append(failure.code)
+    return replace(ctx, **{**operation, "source": operation["source"] + ":" + source}) if operation else ctx
 
 
 def current_operation_id():

@@ -347,8 +347,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/mercadolibre/notifications": _EMPTY,
     "/api/ozon/notifications": _EMPTY,
     "/api/yandex/notifications": _EMPTY,
-    "/api/external-requests/recover": RequestContract(fields={"block_id": STRING, "reason": STRING}, required=("block_id",)),
-    "/api/external-requests/history/clear": RequestContract(fields={"before": FieldRule("integer", minimum=1)}, required=("before",)),
     "/api/orders/chat/history": RequestContract(fields={"order_id": STRING}, required=("order_id",)),
     "/api/orders/chat/send": RequestContract(fields={"order_id": STRING, "message": STRING}, required=("order_id", "message")),
     "/api/orders/sync": RequestContract(fields={"platform": STRING, "automatic": BOOLEAN}),

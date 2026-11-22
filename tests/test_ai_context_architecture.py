@@ -714,6 +714,7 @@ def test_python_execution_uses_official_code_mode_at_one_boundary() -> None:
     assert "CodeMode(" in source and "check_before_tool_call" in source
     assert "definition.approval_required" in source
     assert 'definition.execution_mode != "persistent_job"' in source
+    assert "binding.direct_only" in source
     assert not any(name in source for name in ("exec(", "eval(", "subprocess", "sqlite3", "runtime_units", "draft_id", "sku_id"))
     # 两种入口只调整可见工具，不能重新实现官方执行、重试或 REPL 生命周期。
     tree = parse_python(ROOT / "erp_web/services/ai_code_mode.py")
@@ -734,7 +735,7 @@ def test_history_projection_uses_official_model_request_hook() -> None:
 
 def test_tool_discovery_and_result_projection_keep_generic_boundaries() -> None:
     factory = (ROOT / "erp_web/services/ai_agent_factory.py").read_text(encoding="utf-8")
-    assert "ToolSearch(strategy=match_tool_queries, max_results=3)" in factory
+    assert "ToolSearch(strategy=match_tool_queries, max_results=10)" in factory
     bridge = (ROOT / "erp_web/services/ai_tool_bridge.py").read_text(encoding="utf-8")
     assert "tool.defer_loading = self.toolset.defer_loading" in bridge
     assert "native.prepared(toolset.prepare_tools)" in bridge
@@ -1189,18 +1190,36 @@ def test_buyer_chat_capabilities_reuse_domain_service_and_native_approval():
     assert "OrderChatCapabilityScope(service=lambda: order_chat_facade.create_service(context))" in source
 
 
-def test_request_recovery_is_owned_by_system_settings_and_never_replays_business():
-    route = ROOT / 'erp_web/http_route_units/external_request_routes.py'
-    assert not any(target.startswith(('erp_web.runtime_units', 'erp_web.services', 'erp_web.stores')) for _, target in imported_targets([route]))
-    service = ROOT / 'erp_web/services/external_request_control_service.py'
-    assert not any(target.startswith(('erp_web.runtime_units', 'erp_web.marketplaces', 'urllib', 'httpx', 'pydantic_ai')) for _, target in imported_targets([service]))
-    from erp_web.http_routes import POST_API_ROUTES
-    assert '/api/external-requests/recover' in POST_API_ROUTES
-    assert '/api/external-requests/history/clear' in POST_API_ROUTES
+def test_external_request_protection_uses_memory_limiter_and_auth_settings():
+    """限流、并发与退避留在纯内存；鉴权恢复归授权配置，已退役的中断控制台不得重建。"""
+    for retired in (
+        'erp_web/http_route_units/external_request_routes.py',
+        'erp_web/facades/external_request_facade.py',
+        'erp_web/services/external_request_control_service.py',
+        'erp_web/schemas/external_request_control.py',
+        'scripts/migrate_external_request_audit.py',
+        'front/src/components/settings/ExternalRequestControlPanel.vue',
+        'front/src/components/common/ExternalRequestNotice.vue',
+        'front/src/utils/externalRequestNotices.ts',
+        'front/src/api/externalRequests.ts',
+    ):
+        assert not (ROOT / retired).exists(), f'已退役模块不得残留：{retired}'
+    limiter = ROOT / 'erp_web/services/external_request_limiter.py'
+    assert not any(
+        target.startswith(('erp_web.runtime_units', 'erp_web.stores', 'sqlite3', 'urllib', 'httpx', 'pydantic_ai'))
+        for _, target in imported_targets([limiter])
+    )
+    from erp_web.http_routes import GET_API_ROUTES, POST_API_ROUTES
+    assert '/api/external-requests/status' not in GET_API_ROUTES
+    assert '/api/external-requests/recover' not in POST_API_ROUTES
+    assert '/api/external-requests/history/clear' not in POST_API_ROUTES
     assert '/api/orders/recover-sync' not in POST_API_ROUTES
-    assert 'ExternalRequestControlPanel' in (ROOT / 'front/src/components/domain/SystemSettingsPanel.vue').read_text()
+    assert 'ExternalRequestControlPanel' not in (ROOT / 'front/src/components/domain/SystemSettingsPanel.vue').read_text()
     assert 'ExternalRequestControlPanel' not in (ROOT / 'front/src/components/auth/AuthSettingsPanel.vue').read_text()
-    assert 'recover-sync' not in (ROOT / 'front/src/components/domain/OrderSyncStatusPanel.vue').read_text()
+    assert 'ExternalRequestNotice' not in (ROOT / 'front/src/App.vue').read_text()
+    order_sync = (ROOT / 'front/src/components/domain/OrderSyncStatusPanel.vue').read_text()
+    assert 'recover-sync' not in order_sync and 'interruptions' not in order_sync
+    assert "tab: 'auth'" in order_sync
 
 
 def test_order_progress_sync_is_explicitly_composed_and_not_a_read_side_effect():

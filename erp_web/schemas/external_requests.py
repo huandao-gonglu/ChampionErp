@@ -29,15 +29,18 @@ class RequestContext:
     before_send: Callable[["RequestContext"], None] | None = field(default=None, repr=False, compare=False)
     max_attempts: int = 1
     retry_delay: float = 1
-
+    bypass_auth_block: bool = False
+    max_operation_requests: int | None = None
 
     def __post_init__(self):
         for key in ("platform", "account_id", "interface", "source", "operation_id"):
-            value = getattr(self,key)
-            if not isinstance(value,str) or not value or len(value) > 512 or "\n" in value:
+            value = getattr(self, key)
+            if not isinstance(value, str) or not value or len(value) > 512 or "\n" in value:
                 raise ValueError(f"外部请求 {key} 必须是有界的非空标识")
         if not math.isfinite(self.timeout) or self.timeout <= 0 or not 1 <= self.max_attempts <= 3 or self.retry_delay < 0:
             raise ValueError("请求时间与次数预算无效")
+        if self.max_operation_requests is not None and (isinstance(self.max_operation_requests, bool) or self.max_operation_requests < 1):
+            raise ValueError("单轮外部请求预算必须是正整数")
 
 
 @dataclass(frozen=True)
@@ -48,26 +51,16 @@ class RequestFailure:
     resume_at: float | None = None
     status: int = 0
     retryable: bool = False
-    cooldown_seconds: int = 0
-    probe_id: str = ""
-    probe_until: float = 0
-
-
-def is_definite_request_rejection(scope: str, code: str) -> bool:
-    """只允许明确拒绝的原请求人工恢复，不按范围推测写入结果。"""
-    return scope == "request" and (
-        code.endswith("_REQUEST_INVALID")
-        or (code.startswith("AI_") and code.endswith("_PAYMENT_REQUIRED"))
-        or code in {"IMAGE_HOSTING_PUBLIC_AUTH_REQUIRED", "IMAGE_HOSTING_PUBLIC_ACCESS_DENIED"}
-    )
 
 
 class ExternalRequestBlocked(PublishAdapterError):
     def __init__(self, failure: RequestFailure, *, sent: bool = False):
         unknown = failure.code == "EXTERNAL_WRITE_OUTCOME_UNKNOWN"
         super().__init__(failure.code, failure.message, retryable=False, details={
-            "http_status": failure.status, "scope": failure.scope,
-            "resume_at": failure.resume_at, "local_rejection": not sent,
+            "http_status": failure.status,
+            "scope": failure.scope,
+            "resume_at": failure.resume_at,
+            "local_rejection": not sent,
             "definitively_rejected": not sent and not unknown,
             **({"outcome_unknown": True, "remote_write_dispatched": True} if unknown else {}),
         })

@@ -1,4 +1,3 @@
-import { observeExternalOperations } from '@/utils/externalRequestNotices'
 import { hasLocalOperations, OPERATION_AVAILABILITY_CHANGED } from '@/utils/desktop'
 import axios, { AxiosError } from 'axios'
 import { normalizeApiError } from '@/utils/apiError'
@@ -45,13 +44,11 @@ function observePlatformRejection(path?: string, code?: unknown) {
 apiClient.interceptors.response.use(
   (response) => {
     observePlatformRejection(response.config.url, response.data?.error_code)
-    observeExternalOperations(response.headers, response.config.method, response.config.url)
     return response
   },
   (error: AxiosError) => {
     const publicAccount = ['/api/account/login', '/api/account/register', '/api/account/session'].includes(error.config?.url || '')
     if (error.response?.status === 401 && !publicAccount) sessionExpired()
-    if (error.response) observeExternalOperations(error.response.headers, error.config?.method, error.config?.url)
     const data = error.response?.data as Record<string, unknown> | undefined
     observePlatformRejection(error.config?.url, data?.error_code)
     const normalized = normalizeApiError(

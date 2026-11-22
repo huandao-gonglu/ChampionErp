@@ -641,7 +641,7 @@ class AiAgentFactory:
             toolsets=[build_pydantic_toolset(toolset)],
             name=profile.use_case_id.replace(".", "_"),
             capabilities=[
-                ToolSearch(strategy=match_tool_queries, max_results=3),
+                ToolSearch(strategy=match_tool_queries, max_results=10),
                 Hooks(before_node_run=receive_user_updates, before_model_request=checkpoint_model_inputs,
                       model_request=project_model_request),
                 HandleDeferredToolCalls(handler=handle_configured_tool_approvals),

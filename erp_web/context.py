@@ -158,6 +158,7 @@ class AppContext:
         self._online_products = None
         self._task_queue = None
         self._external_requests = None
+        self._external_request_limiter = None
         self._order_notifications = None
         self._order_procurement = None
         self._alibaba_self_purchases = None
@@ -344,10 +345,80 @@ class AppContext:
         if self._external_requests is None:
             with self._lazy_lock:
                 if self._external_requests is None:
+                    from erp_web.schemas.external_requests import RequestFailure
+                    from erp_web.services.external_request_context import credential_fingerprint
+                    from erp_web.services.external_request_limiter import ExternalRequestLimiter
                     from erp_web.services.external_request_manager import ExternalRequestManager
                     from erp_web.stores.external_request_store import ExternalRequestStore
 
-                    self._external_requests = ExternalRequestManager(ExternalRequestStore(self.paths.data_dir / "external-requests.sqlite3"))
+                    store = ExternalRequestStore(self.paths.data_dir / "external-requests.sqlite3")
+                    account_keys = {"ozon": ("client_id", "api_key"), "yandex": ("business_id", "api_token"), "mercadolibre": ("user_id", "access_token")}
+
+                    def _sync_account_block(platform: str, account_id: str, code: str, message: str, *, scope: str = "account", credential_id: str = "") -> None:
+                        if platform not in account_keys:
+                            return
+                        if platform == "mercadolibre" and scope == "credential":
+                            return
+                        acc_key, secret_key = account_keys[platform]
+                        saved = self.config.load_store_config().get(platform)
+                        if not isinstance(saved, dict):
+                            return
+                        if str(saved.get(acc_key) or "").strip() != account_id:
+                            return
+                        if scope == "credential" and credential_id and credential_fingerprint(str(saved.get(secret_key) or "").strip()) != credential_id:
+                            return
+                        if str(saved.get("auth_status") or "").strip().lower() == "failed" and str(saved.get("auth_error_code") or "").strip() == code:
+                            return
+                        self.config.update_store_config_fields(platform, {
+                            "auth_status": "failed",
+                            "auth_error_code": code,
+                            "auth_error_message": message,
+                            "auth_next_action": "请在授权配置核对账号状态或更换凭据后重新测试连接",
+                        })
+
+                    for migrated in store.migrated_account_blocks:
+                        _sync_account_block(
+                            migrated["platform"],
+                            migrated["account_id"],
+                            migrated["code"],
+                            migrated["message"] or "平台已停用该账号的 API，请在授权配置核对并重新测试连接",
+                        )
+
+                    def _on_auth_block(ctx, failure) -> None:
+                        if ctx.bypass_auth_block:
+                            return
+                        _sync_account_block(
+                            ctx.platform,
+                            ctx.account_id,
+                            failure.code,
+                            failure.message,
+                            scope=failure.scope,
+                            credential_id=ctx.credential_id,
+                        )
+
+                    def _persisted_auth_check(ctx):
+                        if ctx.platform not in account_keys:
+                            return None
+                        acc_key, _ = account_keys[ctx.platform]
+                        saved = self.config.load_store_config().get(ctx.platform)
+                        if not isinstance(saved, dict):
+                            return None
+                        if str(saved.get(acc_key) or "").strip() != ctx.account_id:
+                            return None
+                        status = str(saved.get("auth_status") or "").strip().lower()
+                        code = str(saved.get("auth_error_code") or "").strip()
+                        if status in {"failed", "error", "测试失败"} and code.upper().endswith("_ACCOUNT_DISABLED"):
+                            message = str(saved.get("auth_error_message") or "").strip() or "平台已停用该账号的 API，请在授权配置核对并重新测试连接"
+                            return RequestFailure(code, message, "account", status=403)
+                        return None
+
+                    limiter = self._external_request_limiter or ExternalRequestLimiter()
+                    self._external_requests = ExternalRequestManager(
+                        store,
+                        limiter=limiter,
+                        on_auth_block=_on_auth_block,
+                        persisted_auth_check=_persisted_auth_check,
+                    )
         return self._external_requests
 
     @property

@@ -8,7 +8,7 @@
     "scripts/legal-notices/supplements.json",
     "scripts/legal-notices/python-supplements.json"
   ],
-  "inputDigest": "23ce374118969f5d3ea2e5c76c66b8e446df33c79d64f334143e32a5c8387b99",
+  "inputDigest": "a6d4423f043866147c4854fb30a19c68edd08325452e495660e15cdc89229857",
   "incompleteNotices": [],
   "packages": [
     {
@@ -122,6 +122,65 @@
             {
               "kind": "license",
               "text": "fe2a9817987f862eaced"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
+      "name": "anthropic",
+      "version": "2.12.0",
+      "ecosystem": "Python",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/anthropics/anthropic-sdk-python",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "anthropic-2.12.0.dist-info/licenses/LICENSE",
+          "parts": [
+            {
+              "kind": "license",
+              "text": "59d8f0ba87ad9a2f1a43"
+            },
+            {
+              "kind": "notice",
+              "text": "b5bf53262d5b4a2fb9e6"
+            }
+          ]
+        },
+        {
+          "source": "anthropic-2.12.0.dist-info/licenses/LICENSE-MIT",
+          "parts": [
+            {
+              "kind": "notice",
+              "text": "36fba79fcfa128724d6b"
+            },
+            {
+              "kind": "license",
+              "text": "fe2a9817987f862eaced"
+            }
+          ]
+        },
+        {
+          "source": "anthropic/_vendor/httpx_aiohttp/LICENSE",
+          "parts": [
+            {
+              "kind": "notice",
+              "text": "938458a20dca530349c0"
+            },
+            {
+              "kind": "license",
+              "text": "a11806f5afda85b2ec10"
+            }
+          ]
+        },
+        {
+          "source": "anthropic/_vendor/httpx_aiohttp/NOTICE.md",
+          "parts": [
+            {
+              "kind": "notice",
+              "text": "c0216bf1f44b0cf2df96"
             }
           ]
         }
@@ -424,6 +483,54 @@
       "paths": []
     },
     {
+      "name": "distro",
+      "version": "1.9.0",
+      "ecosystem": "Python",
+      "license": "Apache License, Version 2.0",
+      "homepage": "https://github.com/python-distro/distro",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "distro-1.9.0.dist-info/LICENSE",
+          "parts": [
+            {
+              "kind": "license",
+              "text": "59d8f0ba87ad9a2f1a43"
+            },
+            {
+              "kind": "notice",
+              "text": "4e5444fa28b1ccf3e99c"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
+      "name": "docstring_parser",
+      "version": "0.18.0",
+      "ecosystem": "Python",
+      "license": "MIT",
+      "homepage": "https://github.com/rr-/docstring_parser",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "docstring_parser-0.18.0.dist-info/licenses/LICENSE.md",
+          "parts": [
+            {
+              "kind": "notice",
+              "text": "e008c046e37f33d67fca"
+            },
+            {
+              "kind": "license",
+              "text": "fe2a9817987f862eaced"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
       "name": "frozenlist",
       "version": "1.8.0",
       "ecosystem": "Python",
@@ -465,6 +572,54 @@
             {
               "kind": "license",
               "text": "fe2a9817987f862eaced"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
+      "name": "google-auth",
+      "version": "2.63.1",
+      "ecosystem": "Python",
+      "license": "Apache 2.0",
+      "homepage": "https://github.com/googleapis/google-cloud-python/tree/main/packages/google-auth",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "google_auth-2.63.1.dist-info/licenses/LICENSE",
+          "parts": [
+            {
+              "kind": "license",
+              "text": "59d8f0ba87ad9a2f1a43"
+            },
+            {
+              "kind": "notice",
+              "text": "41f1bd529bd8998ddd00"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
+      "name": "google-genai",
+      "version": "3.6.1",
+      "ecosystem": "Python",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/googleapis/python-genai",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "google_genai-3.6.1.dist-info/licenses/LICENSE",
+          "parts": [
+            {
+              "kind": "license",
+              "text": "59d8f0ba87ad9a2f1a43"
+            },
+            {
+              "kind": "notice",
+              "text": "41f1bd529bd8998ddd00"
             }
           ]
         }
@@ -1130,6 +1285,54 @@
       "paths": []
     },
     {
+      "name": "pyasn1",
+      "version": "0.6.5",
+      "ecosystem": "Python",
+      "license": "BSD-2-Clause",
+      "homepage": "https://github.com/pyasn1/pyasn1",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "pyasn1-0.6.5.dist-info/licenses/LICENSE.rst",
+          "parts": [
+            {
+              "kind": "notice",
+              "text": "43862bfa37d3c9fe325e"
+            },
+            {
+              "kind": "license",
+              "text": "2d2bc4fe9ba8ff979db2"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
+      "name": "pyasn1_modules",
+      "version": "0.4.2",
+      "ecosystem": "Python",
+      "license": "BSD",
+      "homepage": "https://github.com/pyasn1/pyasn1-modules",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "pyasn1_modules-0.4.2.dist-info/licenses/LICENSE.txt",
+          "parts": [
+            {
+              "kind": "notice",
+              "text": "43862bfa37d3c9fe325e"
+            },
+            {
+              "kind": "license",
+              "text": "2d2bc4fe9ba8ff979db2"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
       "name": "pycparser",
       "version": "3.12",
       "ecosystem": "Python",
@@ -1577,6 +1780,30 @@
       "paths": []
     },
     {
+      "name": "tenacity",
+      "version": "9.1.4",
+      "ecosystem": "Python",
+      "license": "Apache 2.0",
+      "homepage": "https://github.com/jd/tenacity",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "tenacity-9.1.4.dist-info/licenses/LICENSE",
+          "parts": [
+            {
+              "kind": "license",
+              "text": "59d8f0ba87ad9a2f1a43"
+            },
+            {
+              "kind": "notice",
+              "text": "41f1bd529bd8998ddd00"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
       "name": "tiktoken",
       "version": "0.13.0",
       "ecosystem": "Python",
@@ -1711,6 +1938,30 @@
             {
               "kind": "license",
               "text": "fe2a9817987f862eaced"
+            }
+          ]
+        }
+      ],
+      "paths": []
+    },
+    {
+      "name": "websockets",
+      "version": "17.4",
+      "ecosystem": "Python",
+      "license": "BSD-3-Clause",
+      "homepage": "https://github.com/python-websockets/websockets",
+      "noticeStatus": "included",
+      "notices": [
+        {
+          "source": "websockets-17.4.dist-info/licenses/LICENSE",
+          "parts": [
+            {
+              "kind": "notice",
+              "text": "c908451dcc6199799cac"
+            },
+            {
+              "kind": "license",
+              "text": "a11806f5afda85b2ec10"
             }
           ]
         }
@@ -3795,6 +4046,7 @@
     "23691bb97c506ebe1471": "ISC License\n\nCopyright (c) 2021-2024 Oleksii Raspopov, Kostiantyn Denysov, Anton Verinov",
     "24eeda9cda172b680680": "Credits\n*******\n\nThis driver is based on excellent Mark Leisher's bdf library.  If you\nfind something good in this driver you should probably thank him, not\nme.\n```\n\nThe following license details are part of `src/pcf/README`:\n\n```\nLicense\n*******\n\nCopyright (C) 2000 by Francesco Zappa Nardelli",
     "25c953b23430c4f0b3e8": "MIT License\n\nCopyright (c) Jordan Harband and contributors",
+    "2d2bc4fe9ba8ff979db2": "Redistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n  * Redistributions of source code must retain the above copyright notice, \n    this list of conditions and the following disclaimer.\n\n  * Redistributions in binary form must reproduce the above copyright notice,\n    this list of conditions and the following disclaimer in the documentation\n    and/or other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\nAND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE \nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE \nARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE\nLIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR\nCONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF\nSUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS\nINTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN\nCONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)\nARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE\nPOSSIBILITY OF SUCH DAMAGE.",
     "2d6fcd397a225b866cee": "Copyright © 2026 to present Pydantic Services Inc. and individual contributors.\nCopyright © 2019, [Encode OSS Ltd](https://www.encode.io/).\nAll rights reserved.",
     "2dd769101e8e7e060f1e": "Copyright (c) 2014, Saurabh Kumar (python-dotenv), 2013, Ted Tieken (django-dotenv-rw), 2013, Jacob Kaplan-Moss (django-dotenv)",
     "2e2b94025b4c2fdb1864": "Apache License\n                           Version 2.0, January 2004\n                        https://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n\n      \"License\" shall mean the terms and conditions for use, reproduction,\n      and distribution as defined by Sections 1 through 9 of this document.\n\n      \"Licensor\" shall mean the copyright owner or entity authorized by\n      the copyright owner that is granting the License.\n\n      \"Legal Entity\" shall mean the union of the acting entity and all\n      other entities that control, are controlled by, or are under common\n      control with that entity. For the purposes of this definition,\n      \"control\" means (i) the power, direct or indirect, to cause the\n      direction or management of such entity, whether by contract or\n      otherwise, or (ii) ownership of fifty percent (50%) or more of the\n      outstanding shares, or (iii) beneficial ownership of such entity.\n\n      \"You\" (or \"Your\") shall mean an individual or Legal Entity\n      exercising permissions granted by this License.\n\n      \"Source\" form shall mean the preferred form for making modifications,\n      including but not limited to software source code, documentation\n      source, and configuration files.\n\n      \"Object\" form shall mean any form resulting from mechanical\n      transformation or translation of a Source form, including but\n      not limited to compiled object code, generated documentation,\n      and conversions to other media types.\n\n      \"Work\" shall mean the work of authorship, whether in Source or\n      Object form, made available under the License, as indicated by a\n      copyright notice that is included in or attached to the work\n      (an example is provided in the Appendix below).\n\n      \"Derivative Works\" shall mean any work, whether in Source or Object\n      form, that is based on (or derived from) the Work and for which the\n      editorial revisions, annotations, elaborations, or other modifications\n      represent, as a whole, an original work of authorship. For the purposes\n      of this License, Derivative Works shall not include works that remain\n      separable from, or merely link (or bind by name) to the interfaces of,\n      the Work and Derivative Works thereof.\n\n      \"Contribution\" shall mean any work of authorship, including\n      the original version of the Work and any modifications or additions\n      to that Work or Derivative Works thereof, that is intentionally\n      submitted to Licensor for inclusion in the Work by the copyright owner\n      or by an individual or Legal Entity authorized to submit on behalf of\n      the copyright owner. For the purposes of this definition, \"submitted\"\n      means any form of electronic, verbal, or written communication sent\n      to the Licensor or its representatives, including but not limited to\n      communication on electronic mailing lists, source code control systems,\n      and issue tracking systems that are managed by, or on behalf of, the\n      Licensor for the purpose of discussing and improving the Work, but\n      excluding communication that is conspicuously marked or otherwise\n      designated in writing by the copyright owner as \"Not a Contribution.\"\n\n      \"Contributor\" shall mean Licensor and any individual or Legal Entity\n      on behalf of whom a Contribution has been received by Licensor and\n      subsequently incorporated within the Work.\n\n   2. Grant of Copyright License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      copyright license to reproduce, prepare Derivative Works of,\n      publicly display, publicly perform, sublicense, and distribute the\n      Work and such Derivative Works in Source or Object form.\n\n   3. Grant of Patent License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      (except as stated in this section) patent license to make, have made,\n      use, offer to sell, sell, import, and otherwise transfer the Work,\n      where such license applies only to those patent claims licensable\n      by such Contributor that are necessarily infringed by their\n      Contribution(s) alone or by combination of their Contribution(s)\n      with the Work to which such Contribution(s) was submitted. If You\n      institute patent litigation against any entity (including a\n      cross-claim or counterclaim in a lawsuit) alleging that the Work\n      or a Contribution incorporated within the Work constitutes direct\n      or contributory patent infringement, then any patent licenses\n      granted to You under this License for that Work shall terminate\n      as of the date such litigation is filed.\n\n   4. Redistribution. You may reproduce and distribute copies of the\n      Work or Derivative Works thereof in any medium, with or without\n      modifications, and in Source or Object form, provided that You\n      meet the following conditions:\n\n      (a) You must give any other recipients of the Work or\n          Derivative Works a copy of this License; and\n\n      (b) You must cause any modified files to carry prominent notices\n          stating that You changed the files; and\n\n      (c) You must retain, in the Source form of any Derivative Works\n          that You distribute, all copyright, patent, trademark, and\n          attribution notices from the Source form of the Work,\n          excluding those notices that do not pertain to any part of\n          the Derivative Works; and\n\n      (d) If the Work includes a \"NOTICE\" text file as part of its\n          distribution, then any Derivative Works that You distribute must\n          include a readable copy of the attribution notices contained\n          within such NOTICE file, excluding those notices that do not\n          pertain to any part of the Derivative Works, in at least one\n          of the following places: within a NOTICE text file distributed\n          as part of the Derivative Works; within the Source form or\n          documentation, if provided along with the Derivative Works; or,\n          within a display generated by the Derivative Works, if and\n          wherever such third-party notices normally appear. The contents\n          of the NOTICE file are for informational purposes only and\n          do not modify the License. You may add Your own attribution\n          notices within Derivative Works that You distribute, alongside\n          or as an addendum to the NOTICE text from the Work, provided\n          that such additional attribution notices cannot be construed\n          as modifying the License.\n\n      You may add Your own copyright statement to Your modifications and\n      may provide additional or different license terms and conditions\n      for use, reproduction, or distribution of Your modifications, or\n      for any such Derivative Works as a whole, provided Your use,\n      reproduction, and distribution of the Work otherwise complies with\n      the conditions stated in this License.\n\n   5. Submission of Contributions. Unless You explicitly state otherwise,\n      any Contribution intentionally submitted for inclusion in the Work\n      by You to the Licensor shall be under the terms and conditions of\n      this License, without any additional terms or conditions.\n      Notwithstanding the above, nothing herein shall supersede or modify\n      the terms of any separate license agreement you may have executed\n      with Licensor regarding such Contributions.\n\n   6. Trademarks. This License does not grant permission to use the trade\n      names, trademarks, service marks, or product names of the Licensor,\n      except as required for reasonable and customary use in describing the\n      origin of the Work and reproducing the content of the NOTICE file.\n\n   7. Disclaimer of Warranty. Unless required by applicable law or\n      agreed to in writing, Licensor provides the Work (and each\n      Contributor provides its Contributions) on an \"AS IS\" BASIS,\n      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or\n      implied, including, without limitation, any warranties or conditions\n      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A\n      PARTICULAR PURPOSE. You are solely responsible for determining the\n      appropriateness of using or redistributing the Work and assume any\n      risks associated with Your exercise of permissions under this License.\n\n   8. Limitation of Liability. In no event and under no legal theory,\n      whether in tort (including negligence), contract, or otherwise,\n      unless required by applicable law (such as deliberate and grossly\n      negligent acts) or agreed to in writing, shall any Contributor be\n      liable to You for damages, including any direct, indirect, special,\n      incidental, or consequential damages of any character arising as a\n      result of this License or out of the use or inability to use the\n      Work (including but not limited to damages for loss of goodwill,\n      work stoppage, computer failure or malfunction, or any and all\n      other commercial damages or losses), even if such Contributor\n      has been advised of the possibility of such damages.\n\n   9. Accepting Warranty or Additional Liability. While redistributing\n      the Work or Derivative Works thereof, You may choose to offer,\n      and charge a fee for, acceptance of support, warranty, indemnity,\n      or other liability obligations and/or rights consistent with this\n      License. However, in accepting such obligations, You may act only\n      on Your own behalf and on Your sole responsibility, not on behalf\n      of any other Contributor, and only if You agree to indemnify,\n      defend, and hold each Contributor harmless for any liability\n      incurred by, or claims asserted against, such Contributor by reason\n      of your accepting any such warranty or additional liability.\n\n   END OF TERMS AND CONDITIONS",
@@ -3803,6 +4055,7 @@
     "338e007edce45a23290a": "Redistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions\nare met:\n\n  1. Redistributions of source code must retain the above copyright notice,\n     this list of conditions and the following disclaimer.\n  2. Redistributions in binary form must reproduce the above copyright notice,\n     this list of conditions and the following disclaimer in the documentation\n     and/or other materials provided with the distribution.\n  3. Neither the name of the Snowball project nor the names of its contributors\n     may be used to endorse or promote products derived from this software\n     without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR\nANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON\nANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
     "361bb8e2373f701d374f": "Dojo is available under *either* the terms of the BSD 3-Clause \"New\" License *or* the\nAcademic Free License version 2.1. As a recipient of Dojo, you may choose which\nlicense to receive this code under (except as noted in per-module LICENSE\nfiles). Some modules may not be the copyright of the Dojo Foundation. These\nmodules contain explicit declarations of copyright in both the LICENSE files in\nthe directories in which they reside and in the code itself. No external\ncontributions are allowed under licenses which are fundamentally incompatible\nwith the AFL-2.1 OR and BSD-3-Clause licenses that Dojo is distributed under.\n\nThe text of the AFL-2.1 and BSD-3-Clause licenses is reproduced below. \n\n-------------------------------------------------------------------------------\nBSD 3-Clause \"New\" License:\n**********************\n\nCopyright (c) 2005-2015, The Dojo Foundation\nAll rights reserved.",
     "36f928ad8608229c03a6": "Copyright (c) 2001, Dr Martin Porter\nCopyright (c) 2004,2005, Richard Boulton\nCopyright (c) 2013, Yoshiki Shibukawa\nCopyright (c) 2006-2025, Olly Betts\nAll rights reserved.",
+    "36fba79fcfa128724d6b": "This repository changed its license from the MIT License to the Apache License, Version 2.0 (see LICENSE) in version 2.0.0. The MIT License below still applies to every version published under it, and to third-party contributions merged into this repository before the change.\n\n--------------------------------------------------------------------------------\n\nCopyright 2023 Anthropic, PBC.",
     "372d06a38ce9937e4044": "The MIT License\n\nCopyright (C) 2016-2018 Rob Wu <rob@robwu.nl>",
     "386c2c59c8d71830aa23": "Bundle of CA Root Certificates\n==============================\n\n***** BEGIN LICENSE BLOCK *****\nThis Source Code Form is subject to the terms of the\nMozilla Public License, v. 2.0. If a copy of the MPL\nwas not distributed with this file, You can obtain\none at http://mozilla.org/MPL/2.0/.\n\n***** END LICENSE BLOCK *****",
     "38a8876fcbb97d6ade90": "MIT License\n\nCopyright (c) 2020 Phosphor Icons",
@@ -3814,6 +4067,7 @@
     "3f9aea86b5b3d26c01f9": "BSD 3-Clause License\n\nCopyright (c) 2004 Infrae. All rights reserved.",
     "400c1ef5c775d3fc9a82": "The MIT License (MIT)\n\nCopyright (c) 2016 Alex Indigo",
     "41f1bd529bd8998ddd00": "APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"[]\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright [yyyy] [name of copyright owner]\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.",
+    "43862bfa37d3c9fe325e": "Copyright (c) 2005-2020, Ilya Etingof <etingof@gmail.com>\nAll rights reserved.",
     "444deefa17ff054193c0": "Redistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this\n   list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice,\n   this list of conditions and the following disclaimer in the documentation\n   and/or other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR\nANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND\nON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
     "45bfadf336a08b61dec2": "APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"[]\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright 2020 Matthew Barnett\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.",
     "47cfde79ddc67e24e100": "MIT License\n\nCopyright (c) Pydantic Services Inc. 2025 to present",
@@ -3823,6 +4077,7 @@
     "4959c990bb2abbe8ca0f": "APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"{}\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright aio-libs contributors\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.",
     "4a1f874982676b882da4": "Redistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n    * Redistributions of source code must retain the above copyright notice,\n      this list of conditions and the following disclaimer.\n    * Redistributions in binary form must reproduce the above copyright notice,\n      this list of conditions and the following disclaimer in the documentation\n      and/or other materials provided with the distribution.\n    * Neither the package name nor the names of its contributors may be\n      used to endorse or promote products derived from this software without\n      specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE \nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR\nANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON\nANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
     "4a7faabf914ace00234c": "Copyright (C) 2012-2014 by various contributors (see AUTHORS)",
+    "4e5444fa28b1ccf3e99c": "APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"{}\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright {yyyy} {name of copyright owner}\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.",
     "4edddd18c87a95bad573": "The MIT License (MIT)\n\nCopyright (c) 2019-present Eduardo San Martin Morote",
     "4f4fd87ffbe747437528": "MIT License\n\nCopyright (c) 2026 CoreSpeed and contributors",
     "50ca3910580d22af432b": "MIT License\n\nCopyright (c) 2025 Colin McDonnell",
@@ -3888,6 +4143,7 @@
     "b0f097a32f5ace2b5890": "MIT License\n\nCopyright (c) 2020 Jordan Harband",
     "b11f9e8e44bbe37c5246": "Copyright (c) 2012 Felix Geisendörfer (felix@debuggable.com) and contributors",
     "b4f9adb7c568904834d0": "Copyright 2023 Vercel, Inc.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.",
+    "b5bf53262d5b4a2fb9e6": "APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"[]\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright 2023 Anthropic, PBC.\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.",
     "b5ca961ec84fc51985a0": "This package contains a modified version of ca-bundle.crt:\n\nca-bundle.crt -- Bundle of CA Root Certificates\n\nThis is a bundle of X.509 certificates of public Certificate Authorities\n(CA). These were automatically extracted from Mozilla's root certificates\nfile (certdata.txt).  This file can be found in the mozilla source tree:\nhttps://hg.mozilla.org/mozilla-central/file/tip/security/nss/lib/ckfw/builtins/certdata.txt\nIt contains the certificates in PEM format and therefore\ncan be directly used with curl / libcurl / php_curl, or with\nan Apache+mod_ssl webserver for SSL client authentication.\nJust configure this file as the SSLCACertificateFile.#\n\n***** BEGIN LICENSE BLOCK *****\nThis Source Code Form is subject to the terms of the Mozilla Public License,\nv. 2.0. If a copy of the MPL was not distributed with this file, You can obtain\none at http://mozilla.org/MPL/2.0/.\n\n***** END LICENSE BLOCK *****\n@(#) $RCSfile: certdata.txt,v $ $Revision: 1.80 $ $Date: 2011/11/03 15:11:58 $",
     "b5dfb2e34a4fc2250a3a": "Redistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are\nmet:\n\n  * Redistributions of source code must retain the above copyright\n    notice, this list of conditions and the following disclaimer.\n\n  * Redistributions in binary form must reproduce the above copyright\n    notice, this list of conditions and the following disclaimer in\n    the documentation and/or other materials provided with the\n    distribution.\n\n  * Neither the name of Google nor the names of its contributors may\n    be used to endorse or promote products derived from this software\n    without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n\"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\nLIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\nA PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT\nHOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,\nSPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT\nLIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,\nDATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY\nTHEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
     "b71e5af8e38b522eb3b2": "primp-2.0.1/crates/primp-rustls/rustls/LICENSE\n\nRustls is distributed under the following three licenses:\n\n- Apache License version 2.0.\n- MIT license.\n- ISC license.\n\nThese are included as LICENSE-APACHE, LICENSE-MIT and LICENSE-ISC\nrespectively.  You may use this software under the terms of any\nof these licenses, at your option.",
@@ -3900,10 +4156,12 @@
     "bda27518e475611a5c35": "The MIT License (MIT)\n\nCopyright (c) 2022 the contributors",
     "bf65bc04f05adaf066a8": "Copyright 2014 Pallets",
     "bf7aeb8f119df3405c8e": "Redistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n    * Redistributions of source code must retain the above copyright notice,\n      this list of conditions and the following disclaimer.\n    * Redistributions in binary form must reproduce the above copyright notice,\n      this list of conditions and the following disclaimer in the documentation\n      and/or other materials provided with the distribution.\n    * Neither the name of the copyright holder nor the names of its\n      contributors may be used to endorse or promote products derived from\n      this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n\"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\nLIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\nA PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR\nCONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,\nEXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,\nPROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR\nPROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF\nLIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING\nNEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+    "c0216bf1f44b0cf2df96": "# httpx_aiohttp (vendored)\n\nThis directory contains a vendored copy of **httpx-aiohttp**, which provides the\naiohttp-backed transport behind this SDK's `DefaultAioHttpClient`.\n\n- **Library:** httpx-aiohttp (<https://github.com/karpetrosyan/httpx-aiohttp>)\n- **Version:** 0.2.0\n- **Copyright:** © 2025, Karen Petrosyan\n- **License:** BSD-3-Clause — full text in `LICENSE` in this directory\n- **Source:** the `httpx2` variant only — `src/httpx_aiohttp/httpx2/{__init__,client,transport}.py`\n  from the published `httpx_aiohttp-0.2.0.tar.gz` sdist\n  (sha256 `d4796b981f04734f1d1db9b4d9326ea16bc994f126460b93b69036262cd4a9d8`).\n  The upstream package's httpx-1.x variant is not vendored.\n- **Integrity:** the hashes of the files in that sdist are\n  `__init__.py` sha256 `f1925ca049c372847b66b7842408ba7dd603751ccf07a3af97cc19e1f4a72aa5` (305 bytes),\n  `client.py` sha256 `c7f6cb750732322ef8bbc18ae129d74076e45b0245ebfb09ce2425d2b1461fa8` (1,805 bytes),\n  `transport.py` sha256 `d87ff5540bd66964700e29c1e69ca0c0cdef9780facf530c17050f22d564f93c` (7,109 bytes).\n  Below the header added at the top of each, `__init__.py` and `client.py` are\n  byte-identical to them, and `transport.py` differs only as listed under\n  Modifications.\n- **Modifications:** Anthropic PBC added a provenance header to each file in 2026,\n  and changed two entries of `AIOHTTP_EXC_MAP` in `transport.py`, so that a\n  connection that fails without timing out is not reported as a timeout:\n  - `aiohttp.ClientConnectionError` maps to `httpx.ConnectError` (upstream:\n    `httpx.ConnectTimeout`).\n  - `aiohttp.ConnectionTimeoutError` maps to `httpx.ConnectTimeout` (upstream has no\n    entry), so that a connect timeout keeps the type upstream gives it.\n\nThe code is vendored rather than depended on so the `aiohttp` extra resolves from\nany package index. It is excluded from this SDK's own linting and type-checking\n(see the `_vendor` entries in `pyproject.toml`) so it stays easy to compare with\nupstream. To update, re-copy from upstream and re-apply any modification above\nthat upstream still lacks. Record any other edit under Modifications.\n\nAttribution here records provenance only. Nothing in this SDK is endorsed or\npromoted by the authors of httpx-aiohttp.",
     "c0fd1bfc122746bdf274": "MIT License\n\nCopyright (c) 2022 deedy5",
     "c5cdb1a329e5bff310b8": "The MIT License (MIT)\n\nCopyright (c) 2018-2024 Jukka Kurkela",
     "c642c19e66bc5f0e2678": "MIT License\n\nCopyright (c) 2025 Jordan Harband",
     "c8c6abc4ac5c5d090419": "The MIT License (MIT)\n\nCopyright (c) 2022 to present Samuel Colvin",
+    "c908451dcc6199799cac": "Copyright (c) Aymeric Augustin and contributors",
     "c9b424ce0df15e05d0e9": "------------------------------------------------------------------------------\n\nFiles: third_party/iccjpeg/*\n\nIn plain English:\n\n1. We don't promise that this software works.  (But if you find any bugs,\n   please let us know!)\n2. You can use this software for whatever you want.  You don't have to pay us.\n3. You may not pretend that you wrote this software.  If you use it in a\n   program, you must acknowledge somewhere in your documentation that\n   you've used the IJG code.\n\nIn legalese:\n\nThe authors make NO WARRANTY or representation, either express or implied,\nwith respect to this software, its quality, accuracy, merchantability, or\nfitness for a particular purpose.  This software is provided \"AS IS\", and you,\nits user, assume the entire risk as to its quality and accuracy.\n\nThis software is copyright (C) 1991-2013, Thomas G. Lane, Guido Vollbeding.\nAll Rights Reserved except as specified below.\n\nPermission is hereby granted to use, copy, modify, and distribute this\nsoftware (or portions thereof) for any purpose, without fee, subject to these\nconditions:\n(1) If any part of the source code for this software is distributed, then this\nREADME file must be included, with this copyright and no-warranty notice\nunaltered; and any additions, deletions, or changes to the original files\nmust be clearly indicated in accompanying documentation.\n(2) If only executable code is distributed, then the accompanying\ndocumentation must state that \"this software is based in part on the work of\nthe Independent JPEG Group\".\n(3) Permission for use of this software is granted only if the user accepts\nfull responsibility for any undesirable consequences; the authors accept\nNO LIABILITY for damages of any kind.\n\nThese conditions apply to any software derived from or based on the IJG code,\nnot just to the unmodified library.  If you use our work, you ought to\nacknowledge us.\n\nPermission is NOT granted for the use of any IJG author's name or company name\nin advertising or publicity relating to this software or products derived from\nit.  This software may be referred to only as \"the Independent JPEG Group's\nsoftware\".\n\nWe specifically permit and encourage the use of this software as the basis of\ncommercial products, provided that all warranty or liability claims are\nassumed by the product vendor.\n\n\nThe Unix configuration script \"configure\" was produced with GNU Autoconf.\nIt is copyright by the Free Software Foundation but is freely distributable.\nThe same holds for its supporting scripts (config.guess, config.sub,\nltmain.sh).  Another support script, install-sh, is copyright by X Consortium\nbut is also freely distributable.\n\nThe IJG distribution formerly included code to read and write GIF files.\nTo avoid entanglement with the Unisys LZW patent, GIF reading support has\nbeen removed altogether, and the GIF writer has been simplified to produce\n\"uncompressed GIFs\".  This technique does not use the LZW algorithm; the\nresulting GIF files are larger than usual, but are readable by all standard\nGIF decoders.\n\nWe are required to state that\n    \"The Graphics Interchange Format(c) is the Copyright property of\n    CompuServe Incorporated.  GIF(sm) is a Service Mark property of\n    CompuServe Incorporated.\"\n\n------------------------------------------------------------------------------\n\nFiles: contrib/gdk-pixbuf/*\n\nCopyright 2020 Emmanuel Gil Peyrot. All rights reserved.",
     "ca9fec2cddff5d2d6579": "Copyright (c) Felix Böhm\nAll rights reserved.",
     "cb8aab8b758a086eaf46": "MIT License\n\nCopyright (c) 2024 Colin McDonnell",
@@ -3919,6 +4177,7 @@
     "da93d48cbbdf6c38d806": "MIT License\n\nCopyright (c) 2020 Ethan Arrowood",
     "dcc004fdb7c188f77eca": "Permission to use, copy, modify, and distribute this software and its\ndocumentation for any purpose and without fee is hereby granted,\nprovided that the above copyright notice appear in all copies and that\nboth that copyright notice and this permission notice appear in\nsupporting documentation, and that the name of Stichting Mathematisch\nCentrum or CWI not be used in advertising or publicity pertaining to\ndistribution of the software without specific, written prior\npermission.\n\nSTICHTING MATHEMATISCH CENTRUM DISCLAIMS ALL WARRANTIES WITH REGARD TO\nTHIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND\nFITNESS, IN NO EVENT SHALL STICHTING MATHEMATISCH CENTRUM BE LIABLE\nFOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES\nWHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN\nACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT\nOF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.",
     "dea40f573a6c4f811841": "MIT License\n\nCopyright (c) Matteo Collina and Undici contributors",
+    "e008c046e37f33d67fca": "The MIT License (MIT)\n\nCopyright (c) 2018 Marcin Kurczewski",
     "e0d047cdba609cd20780": "This software is made available under the terms of *either* of the\nlicenses found in LICENSE.APACHE2 or LICENSE.MIT. Contributions to are\nmade under the terms of *both* these licenses.",
     "e1267fccb2a9abde540e": "The MIT License (MIT)\n\nCopyright (c) 2021 Hynek Schlawack and the argon2-cffi-bindings contributors",
     "e2a077dffa81574b5675": "The MIT License (MIT)\n\nCopyright (c) Pydantic Services Inc. 2024 to present",

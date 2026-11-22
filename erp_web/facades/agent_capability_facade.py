@@ -419,6 +419,9 @@ def build_global_chat_toolset(context: AppContext | None = None, *, chat_config:
 
         return replace(binding, executor=execute)
 
+    # 图片处理工具在网页端可能返回桌面交接按钮，必须走顶层直接调用，不放入 run_code 沙箱。
+    direct_only_tools = frozenset({'draft_images_prepare', 'image_translate', 'image_edit'})
+
     return AiToolSet(
         toolset_id=toolset.toolset_id,
         defer_loading=True,
@@ -427,6 +430,7 @@ def build_global_chat_toolset(context: AppContext | None = None, *, chat_config:
             name: replace(
                 guarded(binding) if binding.definition.side_effect == "write" else binding,
                 unavailable_reason=availability(name),
+                direct_only=name in direct_only_tools,
             )
             for name, binding in toolset.bindings.items()
         },

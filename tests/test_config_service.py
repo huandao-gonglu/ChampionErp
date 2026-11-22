@@ -31,13 +31,15 @@ def test_default_env_template_and_public_config(app_dir: Path) -> None:
     assert public["image_quality_options"] == ["auto", "low", "medium", "high"]
     assert {item["id"] for item in public["providers"]} == {
         "openai",
-        "deepseek",
+        "anthropic",
+        "google",
         "alibaba",
         "omlx",
     }
     assert all(item["supported_api_styles"] for item in public["providers"])
     assert all(
-        item["model_discovery"] in {"openai_models", "manual"}
+        item["model_discovery"]
+        in {"openai_models", "anthropic_models", "google_models", "manual"}
         for item in public["providers"]
     )
     assert all("generation_capabilities" in model for model in public["ai_models"])
@@ -243,10 +245,38 @@ def test_ai_use_case_binding_normalizes_generation_overrides() -> None:
     }
 
 
-def test_merge_ai_config_rejects_reasoning_for_unmapped_deepseek_profile(
+def test_merge_ai_config_accepts_deepseek_reasoning_and_rejects_unsupported_fields(
     app_dir: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="无法安全转换推理参数"):
+    merged = config_service.merge_ai_config(
+        app_dir,
+        {},
+        {
+            "ai_models": [
+                {
+                    "id": "deepseek_model",
+                    "connection_type": "api",
+                    "provider": "DeepSeek",
+                    "provider_id": "deepseek",
+                    "model": "deepseek-flash",
+                    "capabilities": ["chat", "json"],
+                    "thinking_enabled": False,
+                }
+            ],
+            "ai_use_case_bindings": {
+                "text.translate": {
+                    "model_id": "deepseek_model",
+                    "generation": {"reasoning": {"mode": "disabled"}},
+                }
+            },
+        },
+    )
+    assert merged["ai_models"][0]["thinking_enabled"] is False
+    assert merged["ai_use_case_bindings"]["text.translate"]["generation"] == {
+        "reasoning": {"mode": "disabled"}
+    }
+
+    with pytest.raises(ValueError, match="DeepSeek 映射不支持统一的 reasoning.budget_tokens"):
         config_service.merge_ai_config(
             app_dir,
             {},
@@ -257,14 +287,14 @@ def test_merge_ai_config_rejects_reasoning_for_unmapped_deepseek_profile(
                         "connection_type": "api",
                         "provider": "DeepSeek",
                         "provider_id": "deepseek",
-                        "model": "deepseek-reasoner",
+                        "model": "deepseek-flash",
                         "capabilities": ["chat", "json"],
                     }
                 ],
                 "ai_use_case_bindings": {
                     "text.translate": {
                         "model_id": "deepseek_model",
-                        "generation": {"reasoning": {"mode": "disabled"}},
+                        "generation": {"reasoning": {"mode": "enabled", "budget_tokens": 512}},
                     }
                 },
             },
@@ -489,11 +519,13 @@ def test_normalize_ai_models_seeds_defaults_only_for_empty_config() -> None:
 
     assert seeded[0]["id"] == "default_text"
     assert seeded[0]["connection_type"] == "api"
-    assert seeded[0]["provider"] == "DeepSeek"
+    assert seeded[0]["provider_id"] == "openai"
+    assert seeded[0]["provider"] == "OpenAI（官方 / 兼容协议）"
     assert seeded[0]["model"] == "deepseek-chat"
     assert seeded[1]["id"] == "default_image"
     assert seeded[1]["connection_type"] == "api"
-    assert seeded[1]["provider"] == "OpenAI"
+    assert seeded[1]["provider_id"] == "openai"
+    assert seeded[1]["provider"] == "OpenAI（官方 / 兼容协议）"
     assert seeded[1]["model"] == "gpt-image-1"
 
 

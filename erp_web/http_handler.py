@@ -12,7 +12,6 @@ from typing import Any
 from erp_web.release_guard import release_guard
 from . import http_routes
 from .http_request import safe_json_body
-from .services.external_request_context import capture_request_rejections, current_operation_id
 from .services.desktop_version_policy import minimum_update
 from .services.account_request import CALLBACK_GET_PATHS, authenticated_request
 
@@ -167,23 +166,6 @@ class Handler(BaseHTTPRequestHandler):
         raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        if getattr(self, "external_rejections", None):
-            self.send_header("X-External-Request-Blocked", "1")
-        if getattr(self, "command", "") == "POST":
-            operation_ids = [current_operation_id()]
-            if isinstance(data, dict):
-                operation_ids.extend(data.get("operation_ids", []) if isinstance(data.get("operation_ids"), list) else [])
-                operation_ids.append(data.get("job_id", ""))
-                run = data.get("run")
-                if isinstance(run, dict):
-                    operation_ids.append(run.get("run_id", ""))
-                job = data.get("job")
-                if isinstance(job, dict):
-                    operation_ids.append(job.get("id", ""))
-            values = [v for v in operation_ids if isinstance(v, str) and re.fullmatch(r"[a-zA-Z0-9:_-]{1,128}", v)]
-            if values:
-                self.send_header("X-External-Operation-Since", str(getattr(self, "request_started", time.time())))
-                self.send_header("X-External-Operation-Ids", ",".join(dict.fromkeys(values[:20])))
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -235,35 +217,33 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         with authenticated_request(self, public_pages=http_routes.FRONTEND_PAGE_ROUTES) as allowed:
             if allowed:
-                with capture_request_rejections() as self.external_rejections:
-                    if urllib.parse.urlsplit(self.path).path in CALLBACK_GET_PATHS:
-                        self._dispatch_business_request(http_routes.handle_get)
-                    else:
-                        http_routes.handle_get(self)
+                if urllib.parse.urlsplit(self.path).path in CALLBACK_GET_PATHS:
+                    self._dispatch_business_request(http_routes.handle_get)
+                else:
+                    http_routes.handle_get(self)
 
     def do_POST(self) -> None:
         self.request_started = time.time()
         with authenticated_request(self, public_pages=http_routes.FRONTEND_PAGE_ROUTES) as allowed:
             if allowed:
-                with capture_request_rejections() as self.external_rejections:
-                    path = urllib.parse.urlsplit(self.path).path
-                    client = self.headers.get("X-Champion-Client")
-                    if client and (path == "/api/desktop/connect" or
-                                   path not in _DRAIN_ALLOWED_POST_PATHS | _CONFIRMATION_READS):
-                        try:
-                            floor = minimum_update(client)
-                        except ValueError:
-                            self.send_json({"ok": False, "error": "桌面版本标识无效。"}, 400)
-                            return
-                        except (OSError, KeyError, RuntimeError, TypeError):
-                            self.send_json({"ok": False, "error": "桌面版本策略暂时不可用。"}, 503)
-                            return
-                        if floor:
-                            self.send_json({"ok": False, "error_code": "DESKTOP_UPDATE_REQUIRED",
-                                            "error": f"请升级到 {floor} 或更高版本后继续。"}, 426)
-                            return
-                    if path in _DRAIN_ALLOWED_POST_PATHS:
-                        http_routes.handle_post(self)
-                    else:
-                        activity = None if path in _CONFIRMATION_READS else "业务请求"
-                        self._dispatch_business_request(http_routes.handle_post, activity=activity)
+                path = urllib.parse.urlsplit(self.path).path
+                client = self.headers.get("X-Champion-Client")
+                if client and (path == "/api/desktop/connect" or
+                               path not in _DRAIN_ALLOWED_POST_PATHS | _CONFIRMATION_READS):
+                    try:
+                        floor = minimum_update(client)
+                    except ValueError:
+                        self.send_json({"ok": False, "error": "桌面版本标识无效。"}, 400)
+                        return
+                    except (OSError, KeyError, RuntimeError, TypeError):
+                        self.send_json({"ok": False, "error": "桌面版本策略暂时不可用。"}, 503)
+                        return
+                    if floor:
+                        self.send_json({"ok": False, "error_code": "DESKTOP_UPDATE_REQUIRED",
+                                        "error": f"请升级到 {floor} 或更高版本后继续。"}, 426)
+                        return
+                if path in _DRAIN_ALLOWED_POST_PATHS:
+                    http_routes.handle_post(self)
+                else:
+                    activity = None if path in _CONFIRMATION_READS else "业务请求"
+                    self._dispatch_business_request(http_routes.handle_post, activity=activity)

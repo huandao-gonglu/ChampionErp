@@ -18,8 +18,8 @@ const needsAttention = (status: string) => ['failed', 'retry', 'blocked', 'coold
     <article v-for="row in rows" :key="row.platform" class="order-section">
       <div class="order-row">
         <strong>{{ orderPlatformNames[row.platform] }} · {{ labels[row.status] }}</strong>
-        <RouterLink v-if="needsAttention(row.status)" class="order-button" :to="{ path: '/', query: { tab: 'systemSettings', settings_section: 'interruptions' } }">
-          前往中断与恢复
+        <RouterLink v-if="needsAttention(row.status)" class="order-button" :to="{ path: '/', query: { tab: 'auth' } }">
+          前往授权配置
         </RouterLink>
       </div>
       <p v-if="needsAttention(row.status)" role="alert" class="order-error">{{ row.error }} 订单可能尚未更新。</p>

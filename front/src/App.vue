@@ -4,7 +4,6 @@ import { RouterView } from 'vue-router'
 import ChatResumeDialog from '@/components/ai-work/ChatResumeDialog.vue'
 import AiWorkFloatingButton from '@/components/common/AiWorkFloatingButton.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
-import ExternalRequestNotice from '@/components/common/ExternalRequestNotice.vue'
 import Toast from '@/components/common/Toast.vue'
 import DesktopHandoffNotice from '@/components/common/DesktopHandoffNotice.vue'
 import { useAccountStore } from '@/stores/account'
@@ -53,6 +52,5 @@ onUnmounted(() => {
   <ChatResumeDialog v-if="account.user" />
   <Toast />
   <DesktopHandoffNotice />
-  <ExternalRequestNotice v-if="account.user" />
   <OrderAlertBanner v-if="account.user" />
 </template>

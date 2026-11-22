@@ -541,6 +541,8 @@ export interface BackendAiCapabilityProfile {
   tested_at?: string
   probe_version?: string
   configuration_fingerprint?: string
+  supports_tool_choice_required?: boolean
+  observed_thinking?: boolean
 }
 
 export interface BackendAiModelConfig {

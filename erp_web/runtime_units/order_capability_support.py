@@ -38,8 +38,8 @@ class OrderCapabilityScope:
 def call(function, *args, **kwargs):
     try:
         return function(*args, **kwargs)
-    except ExternalRequestBlocked:
-        raise BusinessCapabilityError("ORDER_REQUEST_BLOCKED", "请求已中断，请到系统设置的中断与恢复核对；不要重复提交。") from None
+    except ExternalRequestBlocked as exc:
+        raise BusinessCapabilityError("ORDER_REQUEST_BLOCKED", f"请求已暂停：{exc}，请核对授权配置或原回执，不要重复提交。") from None
     except AlibabaApiError as exc:
         raise BusinessCapabilityError("ORDER_PLATFORM_ERROR", str(exc)) from None
     except (ValueError, PermissionError) as exc:

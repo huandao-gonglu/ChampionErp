@@ -21,6 +21,8 @@ class AiCapabilityProfile(TypedDict, total=False):
     tested_at: str
     probe_version: str
     configuration_fingerprint: str
+    supports_tool_choice_required: bool
+    observed_thinking: bool
 
 
 class AiModelConfig(TypedDict, total=False):

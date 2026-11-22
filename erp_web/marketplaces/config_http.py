@@ -65,9 +65,12 @@ def _typed_http_failure(
     message: str,
     status_code: int,
     response_headers=None,
+    resume_at_override: float | None = None,
 ) -> PublishAdapterError:
     details: dict[str, Any] = {"http_status": int(status_code)}
-    if response_headers:
+    if resume_at_override is not None:
+        details["resume_at"] = resume_at_override
+    elif response_headers:
         details["resume_at"] = retry_after(response_headers)
     if status_code in (401, 403):
         code = f"{platform_prefix}_AUTH_FAILED"
@@ -221,6 +224,7 @@ def request_json(
             message=f"{method} {url} failed: {exc.code} {detail}",
             status_code=exc.code,
             response_headers=exc.headers,
+            resume_at_override=getattr(exc, "external_resume_at", None),
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise _typed_network_failure(
@@ -274,6 +278,7 @@ def upload_mercadolibre_picture(path: str | Path, token: str) -> dict[str, Any]:
             message=f"POST Mercado Libre picture upload failed: {exc.code} {detail}",
             status_code=exc.code,
             response_headers=exc.headers,
+            resume_at_override=getattr(exc, "external_resume_at", None),
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise _typed_network_failure(
@@ -417,6 +422,7 @@ def request_ozon_json(
             message=f"{method} {url} failed: {exc.code} {detail}",
             status_code=exc.code,
             response_headers=exc.headers,
+            resume_at_override=getattr(exc, "external_resume_at", None),
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise _typed_network_failure(

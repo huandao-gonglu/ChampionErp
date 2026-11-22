@@ -175,7 +175,9 @@ def test_tariff_bad_request_is_not_retried_or_mistaken_for_permission_failure(ha
     assert error.value.http_status == 400
     assert 'Forbidden to use "campaignId"' in str(error.value)
     assert len(harness.requests) == 1
-    assert [block["scope"] for block in get_context().external_requests.store.blocks()] == ["request"]
+    audit = get_context().external_requests.store.query(platform="yandex")["items"][0]
+    assert audit["result"]["failure"]["scope"] == "request"
+    assert audit["result"]["failure"]["code"] == "YANDEX_REQUEST_INVALID"
 
 
 @pytest.mark.parametrize(

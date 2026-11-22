@@ -51,16 +51,6 @@ describe('工作流顶级导航', () => {
     expect(workspace.text()).toContain('发布预检')
   })
   it.each([
-    '/settings?settings_section=interruptions',
-    '/auth?auth_section=interruptions',
-    '/settings?auth_section=interruptions',
-    '/?tab=auth&auth_section=interruptions',
-  ])('中断入口 %s 打开系统设置并保留平台定位', async entry => {
-    await router.push(`${entry}&request_platform=ozon&request_platform=yandex`)
-    expect(router.currentRoute.value.path).toBe('/')
-    expect(router.currentRoute.value.query).toEqual({ tab: 'systemSettings', settings_section: 'interruptions', request_platform: ['ozon', 'yandex'] })
-  })
-  it.each([
     '/auth?auth_section=crossborderbus&bus_section=rules',
     '/settings?settings_section=logistics',
     '/settings?auth_section=logistics',

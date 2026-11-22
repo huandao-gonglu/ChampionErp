@@ -34,6 +34,7 @@ const groups = computed(() => groupAiMessages(props.messages))
         <AiAssistantTurn
           v-if="message.role === 'assistant'"
           :parts="message.parts"
+          :write-receipts="message.writeReceipts"
           :pending-tool-calls="pendingToolCalls"
           :active="active && groupIndex === groups.length - 1"
           :timing="message.timing"

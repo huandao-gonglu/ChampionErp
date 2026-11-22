@@ -103,6 +103,25 @@ def test_unusable_local_binding_reports_configuration_error_without_desktop_hand
     assert 'image.translate' not in availability['desktop_use_cases']
 
 
+def test_operation_availability_reports_only_missing_capabilities_with_model_name():
+    config = {
+        'ai_models': [{
+            'id': 'ai_model_1794105748486_10',
+            'name': 'pniccDeepSeek',
+            'connection_type': 'api',
+            'provider_id': 'openai',
+            'capabilities': ['chat', 'json'],
+        }],
+        'ai_use_case_bindings': {'global.chat': {'model_id': 'ai_model_1794105748486_10'}},
+    }
+    availability = operation_availability(config, connection_id='')
+    reason = availability['blocked_use_cases']['global.chat']
+    assert 'pniccDeepSeek' in reason
+    assert 'Function Call' in reason
+    assert '文本' not in reason
+    assert 'chat' not in reason
+
+
 def test_image_workbench_rejects_before_batch_registration_and_keeps_saved_result(monkeypatch):
     context = get_context()
     product, draft = seeded()

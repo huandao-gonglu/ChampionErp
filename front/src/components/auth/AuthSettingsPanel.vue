@@ -83,14 +83,17 @@ const BROWSER_CONNECTION_TYPE = 'browser'
 const BROWSER_MODE_MANAGED_PROFILE = 'managed_profile'
 const BROWSER_MODE_EXISTING_BROWSER = 'existing_browser'
 const PROVIDER_ID_OPENAI = 'openai'
+const PROVIDER_ID_ANTHROPIC = 'anthropic'
+const PROVIDER_ID_GOOGLE = 'google'
 const PROVIDER_ID_DEEPSEEK = 'deepseek'
 const PROVIDER_ID_ALIBABA = 'alibaba'
 const PROVIDER_ID_OMLX = 'omlx'
 const fallbackProviders = [
-  { id: PROVIDER_ID_OPENAI, label: 'OpenAI', description: 'OpenAI 服务预设；代理可修改 Base URL，API 协议可选 Chat Completions 或 Responses', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
-  { id: PROVIDER_ID_OMLX, label: 'oMLX（本地模型）', description: '通过 OpenAI 兼容接口连接 oMLX，默认使用 Chat Completions，支持模型 Thinking 开关', provider_family: 'omlx', default_base_url: 'http://127.0.0.1:8000/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
-  { id: PROVIDER_ID_DEEPSEEK, label: 'DeepSeek', description: '连接 DeepSeek 模型', provider_family: 'generic_openai', default_base_url: 'https://api.deepseek.com', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible'], model_discovery: 'openai_models', base_url_editable: false },
-  { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '连接通义千问模型', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
+  { id: PROVIDER_ID_OPENAI, label: 'OpenAI（官方 / 兼容协议）', description: '连接 OpenAI 官方，或 DeepSeek、New API、OpenRouter、硅基流动、vLLM 等任意 OpenAI 兼容服务；API 协议可选 Chat Completions 或 Responses。', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
+  { id: PROVIDER_ID_ANTHROPIC, label: 'Anthropic（Claude）', description: '使用 Pydantic AI 原生 Anthropic 协议连接 Claude 官方或 Anthropic 兼容代理。', provider_family: 'anthropic', default_base_url: 'https://api.anthropic.com', default_api_style: 'anthropic_messages', supported_api_styles: ['anthropic_messages'], model_discovery: 'anthropic_models', base_url_editable: true },
+  { id: PROVIDER_ID_GOOGLE, label: 'Google Gemini', description: '使用 Pydantic AI 原生 Google Gemini 协议连接 AI Studio 或自定义代理。', provider_family: 'google', default_base_url: 'https://generativelanguage.googleapis.com', default_api_style: 'google_gemini', supported_api_styles: ['google_gemini'], model_discovery: 'google_models', base_url_editable: true },
+  { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '使用 Pydantic AI 的 AlibabaProvider，支持百炼原生 Thinking 与联网参数。', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
+  { id: PROVIDER_ID_OMLX, label: 'oMLX（本地模型）', description: '通过 OpenAI 兼容接口连接 oMLX，默认使用 Chat Completions，支持模型 Thinking 开关。', provider_family: 'omlx', default_base_url: 'http://127.0.0.1:8000/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
 ]
 const modelListDependencyFields = new Set(['provider_id', 'api_style', 'base_url', 'base_url_env', 'api_key', 'api_key_env'])
 const capabilityProbeDependencyFields = new Set([...modelListDependencyFields, 'model', 'connection_type', 'cli_tool', 'command', 'profile', 'sandbox', 'browser_provider', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy'])
@@ -203,7 +206,9 @@ function normalizeProviderId(value: unknown): string {
 }
 
 function providerLabel(providerId: string): string {
-  if (providerId === PROVIDER_ID_OPENAI) return 'OpenAI'
+  if (providerId === PROVIDER_ID_OPENAI) return 'OpenAI（官方 / 兼容协议）'
+  if (providerId === PROVIDER_ID_ANTHROPIC) return 'Anthropic（Claude）'
+  if (providerId === PROVIDER_ID_GOOGLE) return 'Google Gemini'
   if (providerId === PROVIDER_ID_OMLX) return 'oMLX（本地模型）'
   if (providerId === PROVIDER_ID_DEEPSEEK) return 'DeepSeek'
   if (providerId === PROVIDER_ID_ALIBABA) return '阿里云百炼 / Qwen'
@@ -211,7 +216,17 @@ function providerLabel(providerId: string): string {
 }
 
 function providerDefaultApiStyle(providerId: string): string {
-  return providerId === PROVIDER_ID_OPENAI ? 'openai_responses' : 'openai_compatible'
+  if (providerId === PROVIDER_ID_OPENAI) return 'openai_responses'
+  if (providerId === PROVIDER_ID_ANTHROPIC) return 'anthropic_messages'
+  if (providerId === PROVIDER_ID_GOOGLE) return 'google_gemini'
+  return 'openai_compatible'
+}
+
+function apiStyleLabel(apiStyle: string): string {
+  if (apiStyle === 'openai_responses') return 'Responses'
+  if (apiStyle === 'anthropic_messages') return 'Anthropic Messages'
+  if (apiStyle === 'google_gemini') return 'Google Gemini'
+  return 'Chat Completions'
 }
 
 function maskSecret(value: unknown): string {
@@ -540,9 +555,16 @@ const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value 
 const selectedModelThinkingSupported = computed(() => firstText(asRecord(derivedGenerationCapabilities(selectedAiModel.value).reasoning).status) === 'supported')
 const selectedModelThinkingExplicit = computed(() => typeof selectedAiModel.value?.thinking_enabled === 'boolean')
 const selectedProviderSpec = computed(() => providerOptions.value.find((item) => item.id === modelField('provider_id')))
-const selectedProviderApiStyleOptions = computed(() => selectedProviderSpec.value?.supportedApiStyles || ['openai_compatible'])
-const selectedProviderBaseUrlEditable = computed(() => selectedProviderSpec.value?.baseUrlEditable !== false)
-const selectedProviderSupportsModelDiscovery = computed(() => selectedProviderSpec.value?.modelDiscovery === 'openai_models')
+const selectedProviderIsListed = computed(() => Boolean(selectedProviderSpec.value))
+const selectedProviderApiStyleOptions = computed(() => selectedProviderSpec.value?.supportedApiStyles || [providerDefaultApiStyle(modelField('provider_id'))])
+const selectedProviderBaseUrlEditable = computed(() => {
+  if (selectedProviderSpec.value) return selectedProviderSpec.value.baseUrlEditable !== false
+  return modelField('provider_id') !== PROVIDER_ID_DEEPSEEK
+})
+const selectedProviderSupportsModelDiscovery = computed(() => (
+  ['openai_models', 'anthropic_models', 'google_models'].includes(selectedProviderSpec.value?.modelDiscovery || '')
+  || modelField('provider_id') === PROVIDER_ID_DEEPSEEK
+))
 const capabilityProbeLabel = computed(() => capabilityLabelByValue[capabilityProbeDialog.capability] || capabilityProbeDialog.capability || '能力')
 const selectedCliToolStatus = computed(() => cliToolOptions.value.find((tool) => tool.value === modelField('cli_tool', 'codex')) || cliToolOptions.value[0])
 const selectedCliStatusText = computed(() => {
@@ -1012,8 +1034,8 @@ function derivedGenerationCapabilities(model: UnknownRecord | null): UnknownReco
   }
   const providerId = normalizeProviderId(model.provider_id)
   const providerSpec = providerOptions.value.find((item) => item.id === providerId)
-  const providerFamily = providerSpec?.providerFamily || 'generic_openai'
-  const apiStyle = firstText(model.api_style, 'openai_compatible')
+  const providerFamily = providerSpec?.providerFamily || (providerId === PROVIDER_ID_DEEPSEEK ? 'deepseek' : 'generic_openai')
+  const apiStyle = firstText(model.api_style, providerDefaultApiStyle(providerId))
   const saved = asRecord(model.generation_capabilities)
   if (
     firstText(saved.provider_id) === providerId
@@ -1029,7 +1051,13 @@ function derivedGenerationCapabilities(model: UnknownRecord | null): UnknownReco
   if (providerFamily === 'generic_openai') {
     base.reasoning = { status: 'unknown', modes: [], efforts: [], supports_budget_tokens: false, note: '通用兼容接口没有统一的推理字段；请先选择准确厂商。' }
   } else if (providerFamily === 'openai') {
-    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], supports_budget_tokens: false, note: '参数会按所选 API 协议转换，模型是否接受该强度由厂商校验。' }
+    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], supports_budget_tokens: false, note: '参数会按所选 API 协议转换，模型是否接受该强度由服务商校验。' }
+  } else if (providerFamily === 'anthropic') {
+    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], supports_budget_tokens: true, note: '由 Pydantic AI 原生 Anthropic 协议转换思考开关、强度或预算（budget_tokens）。' }
+  } else if (providerFamily === 'google') {
+    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], supports_budget_tokens: true, note: '由 Pydantic AI 原生 Gemini 协议按模型转换为 thinking_level 或 thinking_budget。' }
+  } else if (providerFamily === 'deepseek') {
+    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], supports_budget_tokens: false, note: '由 Pydantic AI 统一 Thinking 转换为 reasoning_effort；是否支持关闭思考由模型决定。' }
   } else if (providerFamily === 'omlx') {
     base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: [], supports_budget_tokens: false, note: 'oMLX 支持通过模型聊天模板开启或关闭 Thinking。' }
   } else if (apiStyle === 'openai_responses') {
@@ -1746,13 +1774,14 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">服务商</span>
                   <select data-testid="ai-provider-id" class="input" :value="modelField('provider_id')" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('provider_id', eventText($event))">
                     <option value="" disabled>请选择服务商</option>
+                    <option v-if="modelField('provider_id') && !selectedProviderIsListed" :value="modelField('provider_id')" disabled>{{ providerLabel(modelField('provider_id')) }}（已保存配置）</option>
                     <option v-for="option in providerOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
                   </select>
                 </label>
                 <label v-if="selectedAiModelIsApi" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API 协议</span>
-                  <select data-testid="ai-api-style" class="input" :value="modelField('api_style', 'openai_compatible')" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
-                    <option v-for="apiStyle in selectedProviderApiStyleOptions" :key="apiStyle" :value="apiStyle">{{ apiStyle === 'openai_responses' ? 'Responses' : 'Chat Completions' }}</option>
+                  <select data-testid="ai-api-style" class="input" :value="modelField('api_style', providerDefaultApiStyle(modelField('provider_id')))" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
+                    <option v-for="apiStyle in selectedProviderApiStyleOptions" :key="apiStyle" :value="apiStyle">{{ apiStyleLabel(apiStyle) }}</option>
                   </select>
                 </label>
                 <label v-else-if="selectedAiModelIsCli" class="block">
@@ -1842,7 +1871,7 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
                       能力探测直接使用此设置；正式请求可由功能绑定覆盖。更改后请重新探测能力。
                     </template>
                   </p>
-                  <p v-if="modelField('provider_id') === PROVIDER_ID_OPENAI" class="mt-1 text-xs text-accent-500 dark:text-accent-400">OpenAI 的推理参数取决于模型支持情况；连接 oMLX 时请选择“oMLX（本地模型）”服务商。</p>
+                  <p v-if="modelField('provider_id') === PROVIDER_ID_OPENAI" class="mt-1 text-xs text-accent-500 dark:text-accent-400">OpenAI / 兼容协议的推理参数取决于模型支持情况；连接阿里云百炼或 oMLX 时请选择对应服务商。</p>
                   <p v-if="modelField('provider_id') === PROVIDER_ID_OMLX && modelField('api_style') === 'openai_responses'" class="mt-1 text-xs text-amber-700 dark:text-amber-300">部分 oMLX 版本的 Responses 流会在关闭思考后仍把正文标为思考；建议使用 Chat Completions。</p>
                 </div>
                 <details class="md:col-span-2 rounded-lg border border-dashed border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">

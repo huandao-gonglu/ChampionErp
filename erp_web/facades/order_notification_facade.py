@@ -41,7 +41,7 @@ def create_order_notification_service(context, *, start_worker=True):
                 on_shops=lambda names: service.save_yandex_shops(config, names)),
         },
         parser=parse_notification,
-        external_store=context.external_requests.store,
+        external_manager=context.external_requests,
         request_scopes=order_request_scopes,
         progress_sync=refresh_progress,
         auto_sync_interval_provider=lambda: context.config.system_settings()["orders_auto_sync_interval_hours"] * 3600,

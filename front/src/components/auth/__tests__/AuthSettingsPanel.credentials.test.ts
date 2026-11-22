@@ -489,9 +489,11 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
       'text.translate': { path: 'config/prompts/text_translate.json' },
     },
     providers: [
-      { id: 'openai', label: 'OpenAI', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'] },
-      { id: 'deepseek', label: 'DeepSeek', provider_family: 'generic_openai', default_base_url: 'https://api.deepseek.com', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible'], base_url_editable: false },
-      { id: 'alibaba', label: '阿里云百炼 / Qwen', provider_family: 'alibaba', supported_api_styles: ['openai_compatible', 'openai_responses'] },
+      { id: 'openai', label: 'OpenAI（官方 / 兼容协议）', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models' },
+      { id: 'anthropic', label: 'Anthropic（Claude）', provider_family: 'anthropic', default_base_url: 'https://api.anthropic.com', default_api_style: 'anthropic_messages', supported_api_styles: ['anthropic_messages'], model_discovery: 'anthropic_models' },
+      { id: 'google', label: 'Google Gemini', provider_family: 'google', default_base_url: 'https://generativelanguage.googleapis.com', default_api_style: 'google_gemini', supported_api_styles: ['google_gemini'], model_discovery: 'google_models' },
+      { id: 'alibaba', label: '阿里云百炼 / Qwen', provider_family: 'alibaba', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models' },
+      { id: 'omlx', label: 'oMLX（本地模型）', provider_family: 'omlx', default_base_url: 'http://127.0.0.1:8000/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models' },
     ],
   }
 
@@ -503,9 +505,11 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     expect(wrapper.text()).not.toContain('自定义服务')
     expect(wrapper.get('[data-testid="ai-provider-id"]').findAll('option').map((item) => item.text())).toEqual([
       '请选择服务商',
-      'OpenAI',
-      'DeepSeek',
+      'OpenAI（官方 / 兼容协议）',
+      'Anthropic（Claude）',
+      'Google Gemini',
       '阿里云百炼 / Qwen',
+      'oMLX（本地模型）',
     ])
     expect(wrapper.get('[data-testid="ai-api-style"]').findAll('option').map((item) => item.text())).toEqual([
       'Chat Completions',
@@ -647,17 +651,51 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     expect(payload.capabilities).toEqual(['chat', 'json'])
   })
 
-  it('DeepSeek 未建模的推理参数不会被开放', async () => {
-    const genericConfig = JSON.parse(JSON.stringify(qwenConfig))
-    genericConfig.ai_models[0].provider_id = 'deepseek'
-    genericConfig.ai_models[0].generation_capabilities = {
-      ...genericConfig.ai_models[0].generation_capabilities,
-      provider_id: 'deepseek',
-      reasoning: { status: 'unknown', modes: [], efforts: [], supports_budget_tokens: false },
-    }
-    const wrapper = mountPanel(genericConfig)
-    await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
+  it('切换为 Anthropic 或 Google Gemini 时自动匹配原生协议并开放 Thinking', async () => {
+    const wrapper = mountPanel(qwenConfig)
 
+    await wrapper.get('[data-testid="ai-provider-id"]').setValue('anthropic')
+    expect(wrapper.get('[data-testid="ai-api-style"]').findAll('option').map((item) => item.text())).toEqual([
+      'Anthropic Messages',
+    ])
+    expect((wrapper.get('[data-testid="ai-api-style"]').element as HTMLSelectElement).value).toBe('anthropic_messages')
+    expect(wrapper.get('[data-testid="ai-model-thinking"]').attributes('disabled')).toBeUndefined()
+
+    await wrapper.get('[data-testid="ai-provider-id"]').setValue('google')
+    expect(wrapper.get('[data-testid="ai-api-style"]').findAll('option').map((item) => item.text())).toEqual([
+      'Google Gemini',
+    ])
+    expect((wrapper.get('[data-testid="ai-api-style"]').element as HTMLSelectElement).value).toBe('google_gemini')
+    expect(wrapper.get('[data-testid="ai-model-thinking"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('已保存的 DeepSeek 旧配置继续展示并开放 Thinking 勾选框与推理参数', async () => {
+    const deepseekConfig = JSON.parse(JSON.stringify(qwenConfig))
+    deepseekConfig.ai_models[0].provider_id = 'deepseek'
+    deepseekConfig.ai_models[0].api_style = 'openai_compatible'
+    delete deepseekConfig.ai_models[0].generation_capabilities
+    const wrapper = mountPanel(deepseekConfig)
+
+    expect(wrapper.get('[data-testid="ai-provider-id"]').findAll('option').map((item) => item.text())).toContain('DeepSeek（已保存配置）')
+    await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
+    expect(wrapper.get('[data-testid="generation-reasoning-mode-text.translate"]').attributes('disabled')).toBeUndefined()
+
+    await wrapper.get('[data-testid="auth-settings-tab-ai_models"]').trigger('click')
+    const thinkingToggle = wrapper.get('[data-testid="ai-model-thinking"]')
+    expect(thinkingToggle.attributes('disabled')).toBeUndefined()
+    await thinkingToggle.setValue(true)
+    const saved = await save(wrapper)
+    expect((saved.ai_models as Array<Record<string, unknown>>)[0].thinking_enabled).toBe(true)
+  })
+
+  it('未选择服务商时禁用 Thinking 勾选框和功能绑定推理参数', async () => {
+    const unknownConfig = JSON.parse(JSON.stringify(qwenConfig))
+    unknownConfig.ai_models[0].provider_id = ''
+    delete unknownConfig.ai_models[0].generation_capabilities
+    const wrapper = mountPanel(unknownConfig)
+
+    expect(wrapper.get('[data-testid="ai-model-thinking"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
     expect(wrapper.get('[data-testid="generation-reasoning-mode-text.translate"]').attributes('disabled')).toBeDefined()
   })
 

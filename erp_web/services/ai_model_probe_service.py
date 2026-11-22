@@ -12,10 +12,18 @@ from typing import Any
 from PIL import Image, ImageDraw
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import BinaryContent
-from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import (
+    ModelRequest,
+    ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.tools import ToolDefinition
 
 from . import ai_direct_request_service, ai_gateway_probe, ai_model_config
+from .ai_model_errors import AIHTTPError
 from .ai_model_discovery import list_remote_models
 from .ai_model_factory import (
     AiModelFactoryError,
@@ -98,6 +106,10 @@ def _probe_image_understanding(
 def _json_probe_strategy(binding: PydanticModelBinding) -> str:
     if binding.api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
         return "responses_prompted_json"
+    if binding.api_style == ai_model_config.API_STYLE_ANTHROPIC_MESSAGES:
+        return "anthropic_prompted_json"
+    if binding.api_style == ai_model_config.API_STYLE_GOOGLE_GEMINI:
+        return "google_prompted_json"
     if binding.model.profile.get("supports_json_object_output", False):
         return "json_object"
     return "prompted_json"
@@ -145,6 +157,30 @@ def _validate_api_image_results(
         )
 
 
+def _has_thinking_part(response: Any) -> bool:
+    return any(isinstance(part, ThinkingPart) for part in getattr(response, "parts", ()))
+
+
+def _is_http_400(exc: Exception) -> bool:
+    return isinstance(exc, (AIHTTPError, ModelHTTPError)) and int(exc.status_code) == 400
+
+
+def _profile_attempts_forced_tool_choice(binding: PydanticModelBinding) -> bool:
+    profile = getattr(binding.model, "profile", None) or {}
+    if not profile.get("openai_supports_tool_choice_required", True):
+        return False
+    if not profile.get("openai_supports_forced_tool_choice_with_thinking", True):
+        thinking = binding.model_settings.get("thinking")
+        reasoning_on = (
+            thinking is not False
+            if thinking is not None
+            else bool(profile.get("openai_reasoning_enabled_by_default", False))
+        )
+        if reasoning_on:
+            return False
+    return True
+
+
 def _probe_capability(
     context: ai_gateway_probe.CapabilityProbeContext,
 ) -> dict[str, Any]:
@@ -188,6 +224,7 @@ def _probe_capability(
             model,
             capability,
             strategy="pydantic_direct_text",
+            observed_thinking=True if _has_thinking_part(response) else None,
         )
     if capability == ai_model_config.CAP_JSON:
         messages = ai_gateway_probe._json_probe_default_messages()
@@ -249,17 +286,32 @@ def _probe_capability(
                 ),
             }
         ]
-        response = ai_direct_request_service.request_for_probe(
-            app_dir=app_dir,
-            binding=binding,
-            messages=messages,
-            function_tools=[tool],
-            # Qwen 思考模式不接受 tool_choice=required/object；允许文本会让
-            # Pydantic 发送 tool_choice=auto，是否真的调用工具仍由下方严格校验。
-            allow_text_output=True,
-            # Function Call 需要两次模型请求；只把完成工具回传后的最终响应
-            # 作为 presentation 根流，避免第一段 DONE 留下未闭合工具卡。
-        )
+        # 先按强制工具输出（allow_text_output=False）测试，与结构化输出 Agent 契约一致；
+        # 若服务端在当前配置下以 HTTP 400 拒绝强制 tool_choice，再回退到 allow_text_output=True
+        # 验证真实工具往返，并把 supports_tool_choice_required=False 记入能力档案供原生降级。
+        supports_tool_choice_required: bool | None = None
+        forced_attempted = _profile_attempts_forced_tool_choice(binding)
+        try:
+            response = ai_direct_request_service.request_for_probe(
+                app_dir=app_dir,
+                binding=binding,
+                messages=messages,
+                function_tools=[tool],
+                allow_text_output=False,
+            )
+            if forced_attempted:
+                supports_tool_choice_required = True
+        except Exception as exc:
+            if not _is_http_400(exc):
+                raise
+            supports_tool_choice_required = False
+            response = ai_direct_request_service.request_for_probe(
+                app_dir=app_dir,
+                binding=binding,
+                messages=messages,
+                function_tools=[tool],
+                allow_text_output=True,
+            )
         tool_calls = [
             part for part in response.parts if isinstance(part, ToolCallPart)
         ]
@@ -307,10 +359,13 @@ def _probe_capability(
             raise ai_gateway_probe.CapabilityProbeUnsupported(
                 "模型未能消费工具结果并完成 Function Call 往返。"
             )
+        observed_thinking = _has_thinking_part(response) or _has_thinking_part(final_response)
         return ai_gateway_probe.build_capability_profile(
             model,
             capability,
             strategy="function_tool_round_trip",
+            supports_tool_choice_required=supports_tool_choice_required,
+            observed_thinking=True if observed_thinking else None,
         )
     if capability == ai_model_config.CAP_IMAGE_GENERATE:
         prompt = "single small blue square"

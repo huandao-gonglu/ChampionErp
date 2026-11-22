@@ -78,6 +78,8 @@ const toolLabels: Record<string, string> = {
   chat_images_save_to_product: '保存对话图片到商品',
   image_translate: '翻译图片',
   image_edit: '编辑图片',
+  draft_images_prepare: '准备草稿套图',
+  draft_images_wait: '等待草稿套图',
   products_index_query: '查询采集箱',
   platform_orders_query: '查询平台订单',
   publish_logs_query: '查询发布记录',

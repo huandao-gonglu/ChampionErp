@@ -121,8 +121,6 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
         except (AlibabaApiError, ExternalRequestBlocked) as exc:
             logistics = None
             warning = f"物流查询失败：{exc}"
-            if isinstance(exc, ExternalRequestBlocked):
-                warning += "（可在授权配置的「中断与恢复」查看）"
         if logistics is not None:
             warning = query_parcel_traces(parcels, client, number)
         latest_config = config_provider()
@@ -138,7 +136,7 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
             _merge_parcels(procurement, fulfillment, order_id, record_id, generation, record, logistics, parcels, value)
         value["error"] = ""
     except ExternalRequestBlocked as exc:
-        value.update(state="error", error=f"1688 请求已中断：{exc}（可在授权配置的「中断与恢复」查看）", message="本次同步未完成")
+        value.update(state="error", error=f"1688 请求已暂停：{exc}", message="本次同步未完成")
     except ValueError as exc:
         value.update(state="error", error=str(exc), message="本次同步未完成")
     except Exception:

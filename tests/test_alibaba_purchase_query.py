@@ -254,7 +254,7 @@ def test_http_purchase_query_contract_and_blocked_response(registered, monkeypat
             raise ExternalRequestBlocked(RequestFailure("TEST_BLOCK", "已中断"))
         monkeypatch.setattr(api.OpenApiAlibabaProvider, "get_order", blocked)
         response = client.post(url, json=body, timeout=3)
-        assert response.status_code == 409 and "中断与恢复" in response.json()["error"]
+        assert response.status_code == 409 and "授权配置" in response.json()["error"]
     finally:
         server.shutdown()
         server.server_close()

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { PhCaretRight, PhCheck, PhCopy, PhGitBranch } from '@phosphor-icons/vue'
-import type { AiTurnTiming, AiUiPart, PendingToolCall } from '@/types/aiWork'
+import type { AiTurnTiming, AiUiPart, BusinessWriteReceipt, PendingToolCall } from '@/types/aiWork'
 import { presentAssistantParts } from '@/utils/aiMessagePresentation'
 import { visibleAssistantText } from '@/utils/aiThinkingPresentation'
 import AiMessagePart from './AiMessagePart.vue'
 
 const props = defineProps<{
   parts: AiUiPart[]
+  writeReceipts?: BusinessWriteReceipt[]
   active?: boolean
   pendingToolCalls?: PendingToolCall[]
   timing?: AiTurnTiming
@@ -18,7 +19,7 @@ const processOpen = ref(false)
 function toggleProcess(event: Event) {
   processOpen.value = (event.target as HTMLDetailsElement).open
 }
-const display = computed(() => presentAssistantParts(props.parts, props.pendingToolCalls, props.active))
+const display = computed(() => presentAssistantParts(props.parts, props.pendingToolCalls, props.active, props.writeReceipts))
 const timeline = computed(() => display.value.timeline.filter(entry => entry.part.type !== 'reasoning'))
 const process = computed(() => display.value.process.filter(entry => entry.part.type !== 'reasoning'))
 const now = ref(Date.now())

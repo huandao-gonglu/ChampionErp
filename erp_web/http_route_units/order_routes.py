@@ -80,8 +80,8 @@ def _procurement_command(handler, action):
     try:
         body = validate_request_payload(handler.read_body(), endpoint=handler.path)
         handler.send_json(procurement.command(action, body))
-    except ExternalRequestBlocked:
-        handler.send_json({"ok": False, "error": "1688 请求已中断，请到系统设置的中断与恢复查看原因"}, 409)
+    except ExternalRequestBlocked as exc:
+        handler.send_json({"ok": False, "error": f"1688 请求已暂停：{exc}，请检查授权配置后重试"}, 409)
     except (ValueError, TypeError) as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 400)
 
@@ -102,8 +102,8 @@ def _sku_source_command(handler, action):
     try:
         body = validate_request_payload(handler.read_body(), endpoint=handler.path)
         handler.send_json(procurement.sku_source_command(action, body))
-    except ExternalRequestBlocked:
-        handler.send_json({"ok": False, "error": "1688 请求已中断，请到授权配置的中断与恢复查看原因"}, 409)
+    except ExternalRequestBlocked as exc:
+        handler.send_json({"ok": False, "error": f"1688 请求已暂停：{exc}，请检查授权配置后重试"}, 409)
     except ValidationError:
         handler.send_json({"ok": False, "error": "SKU 采购来源参数无效，请核对链接与规格后重试"}, 400)
     except (ValueError, TypeError) as exc:
@@ -138,8 +138,8 @@ def handle_purchase_query(handler):
     try:
         body = validate_request_payload(handler.read_body(), endpoint=handler.path)
         handler.send_json(procurement.query_purchase(body))
-    except ExternalRequestBlocked:
-        handler.send_json({"ok": False, "error": "1688 请求已中断，请到授权配置的「中断与恢复」查看原因并处理"}, 409)
+    except ExternalRequestBlocked as exc:
+        handler.send_json({"ok": False, "error": f"1688 请求已暂停：{exc}，请检查授权配置后重试"}, 409)
     except (ValueError, TypeError) as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 400)
 
@@ -169,8 +169,8 @@ def _self_purchase(handler, action):
     try:
         body = validate_request_payload(handler.read_body(), endpoint=handler.path)
         handler.send_json(alibaba_self_purchase_facade.command(action, body))
-    except ExternalRequestBlocked:
-        handler.send_json({"ok": False, "error": "1688 请求已中断，请到授权配置的中断与恢复查看"}, 409)
+    except ExternalRequestBlocked as exc:
+        handler.send_json({"ok": False, "error": f"1688 请求已暂停：{exc}，请检查授权配置后重试"}, 409)
     except ValidationError:
         handler.send_json({"ok": False, "error": "采购参数无效，请核对数量、地址及确认状态"}, 400)
     except (ValueError, TypeError) as exc:

@@ -8,11 +8,16 @@ import pytest
 from pydantic_ai import Agent, FunctionToolset, RunContext, Tool
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models import ModelRequestParameters
+from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.native_tools import WebSearchTool
 from pydantic_ai.providers.alibaba import AlibabaProvider
+from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.deepseek import DeepSeekProvider
+from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
 
@@ -52,12 +57,14 @@ def test_public_provider_catalog_does_not_expose_generic_adapter_as_second_opena
         item["id"]: item for item in ai_provider_catalog.public_provider_catalog()
     }
 
-    assert set(providers) == {"openai", "deepseek", "alibaba", "omlx"}
-    assert providers["openai"]["label"] == "OpenAI"
+    assert set(providers) == {"openai", "anthropic", "google", "alibaba", "omlx"}
+    assert providers["openai"]["label"] == "OpenAI（官方 / 兼容协议）"
     assert providers["openai"]["supported_api_styles"] == [
         "openai_compatible",
         "openai_responses",
     ]
+    assert providers["anthropic"]["supported_api_styles"] == ["anthropic_messages"]
+    assert providers["google"]["supported_api_styles"] == ["google_gemini"]
 
 
 def test_pydantic_ai_dependency_is_locked_to_verified_public_api() -> None:
@@ -67,13 +74,17 @@ def test_pydantic_ai_dependency_is_locked_to_verified_public_api() -> None:
         .splitlines()
     )
 
-    assert requirements.count("pydantic-ai-slim[openai]==2.44.0") == 1
+    assert requirements.count("pydantic-ai-slim[openai,anthropic,google]==2.44.0") == 1
     assert version("pydantic-ai-slim") == "2.44.0"
     assert all(
         item is not None
         for item in (
             Agent,
+            AnthropicModel,
+            AnthropicProvider,
             FunctionToolset,
+            GoogleModel,
+            GoogleProvider,
             RunContext,
             Tool,
             FunctionModel,
@@ -415,19 +426,288 @@ def test_factory_rejects_invalid_config_without_leaking_secret(
         create_pydantic_model_binding(model_config(api_key="", api_key_env=""))
 
 
-def test_factory_rejects_unmapped_deepseek_reasoning_instead_of_silent_downgrade() -> (
-    None
-):
-    with pytest.raises(AiModelFactoryError, match="无法安全转换推理参数"):
+def _forced_tool_request_parameters() -> ModelRequestParameters:
+    return ModelRequestParameters(
+        function_tools=[
+            ToolDefinition(
+                name="search_categories",
+                parameters_json_schema={"type": "object"},
+            )
+        ],
+        output_mode="tool",
+        output_tools=[
+            ToolDefinition(
+                name="final_result",
+                parameters_json_schema={"type": "object"},
+            )
+        ],
+        allow_text_output=False,
+    )
+
+
+def test_factory_maps_deepseek_thinking_and_downgrades_forced_tool_choice() -> None:
+    request_parameters = _forced_tool_request_parameters()
+
+    # deepseek-flash 默认开启思考：强制 tool_choice 自动降级为 auto。
+    default_binding = create_pydantic_model_binding(
+        model_config(
+            provider="DeepSeek",
+            provider_id="deepseek",
+            base_url="https://api.deepseek.com",
+            model="deepseek-flash",
+        )
+    )
+    assert isinstance(default_binding.model, OpenAIChatModel)
+    assert isinstance(default_binding.model.provider, DeepSeekProvider)
+    assert default_binding.model.profile["supports_thinking"] is True
+    assert default_binding.model.profile["openai_reasoning_enabled_by_default"] is True
+    assert default_binding.model.profile["openai_supports_forced_tool_choice_with_thinking"] is False
+    _, default_tool_choice = default_binding.model._get_tool_choice(
+        default_binding.model_settings, request_parameters
+    )
+    assert default_tool_choice == "auto"
+
+    # deepseek-flash 关闭思考：下发 reasoning_effort='none'，并恢复强制 tool_choice='required'。
+    off_binding = create_pydantic_model_binding(
+        model_config(
+            provider="DeepSeek",
+            provider_id="deepseek",
+            base_url="https://api.deepseek.com",
+            model="deepseek-flash",
+            thinking_enabled=False,
+        )
+    )
+    assert off_binding.model_settings["thinking"] is False
+    off_settings, off_params = off_binding.model.prepare_request(
+        off_binding.model_settings, request_parameters
+    )
+    assert off_binding.model._translate_thinking(off_settings or {}, off_params) == "none"
+    _, off_tool_choice = off_binding.model._get_tool_choice(off_settings or {}, off_params)
+    assert off_tool_choice == "required"
+
+    # deepseek-flash 指定推理强度：走原生 thinking 并维持 tool_choice='auto'。
+    low_binding = create_pydantic_model_binding(
+        model_config(
+            provider="DeepSeek",
+            provider_id="deepseek",
+            base_url="https://api.deepseek.com",
+            model="deepseek-flash",
+        ),
+        generation_settings={"reasoning": {"mode": "enabled", "effort": "low"}},
+    )
+    assert low_binding.model_settings["thinking"] == "low"
+    low_settings, low_params = low_binding.model.prepare_request(
+        low_binding.model_settings, request_parameters
+    )
+    assert low_binding.model._translate_thinking(low_settings or {}, low_params) == "low"
+    _, low_tool_choice = low_binding.model._get_tool_choice(low_settings or {}, low_params)
+    assert low_tool_choice == "auto"
+
+    # deepseek-reasoner 原生始终开启思考：允许开启，拒绝关闭，且降级 tool_choice。
+    reasoner_on = create_pydantic_model_binding(
+        model_config(
+            provider="DeepSeek",
+            provider_id="deepseek",
+            base_url="https://api.deepseek.com",
+            model="deepseek-reasoner",
+            thinking_enabled=True,
+        )
+    )
+    _, reasoner_tool_choice = reasoner_on.model._get_tool_choice(
+        reasoner_on.model_settings, request_parameters
+    )
+    assert reasoner_tool_choice == "auto"
+
+    with pytest.raises(AiModelFactoryError, match="不支持关闭 Thinking"):
         create_pydantic_model_binding(
             model_config(
                 provider="DeepSeek",
                 provider_id="deepseek",
                 base_url="https://api.deepseek.com",
                 model="deepseek-reasoner",
-            ),
-            generation_settings={"reasoning": {"mode": "enabled", "effort": "medium"}},
+                thinking_enabled=False,
+            )
         )
+
+
+def test_factory_reuses_deepseek_profile_on_custom_openai_gateway_like_newapi() -> None:
+    request_parameters = _forced_tool_request_parameters()
+    newapi_dsflash = create_pydantic_model_binding(
+        model_config(
+            provider="OpenAI",
+            provider_id="openai",
+            base_url="http://127.0.0.1:3000/v1",
+            model="deepseek-flash",
+        )
+    )
+    assert isinstance(newapi_dsflash.model, OpenAIChatModel)
+    assert newapi_dsflash.model.profile["openai_chat_thinking_field"] == "reasoning_content"
+    assert newapi_dsflash.model.profile["openai_chat_send_back_thinking_parts"] == "field"
+    assert newapi_dsflash.model.profile["supports_thinking"] is True
+    assert newapi_dsflash.model.profile["openai_reasoning_enabled_by_default"] is True
+    assert newapi_dsflash.model.profile["openai_supports_forced_tool_choice_with_thinking"] is False
+    _, tool_choice = newapi_dsflash.model._get_tool_choice(
+        newapi_dsflash.model_settings, request_parameters
+    )
+    assert tool_choice == "auto"
+
+    # 在 New API 托管的 deepseek-flash 上显式关闭 Thinking 也应正常工作。
+    newapi_off = create_pydantic_model_binding(
+        model_config(
+            provider="OpenAI",
+            provider_id="openai",
+            base_url="http://127.0.0.1:3000/v1",
+            model="deepseek-flash",
+            thinking_enabled=False,
+        )
+    )
+    off_settings, off_params = newapi_off.model.prepare_request(
+        newapi_off.model_settings, request_parameters
+    )
+    assert newapi_off.model._translate_thinking(off_settings or {}, off_params) == "none"
+    _, off_tool_choice = newapi_off.model._get_tool_choice(off_settings or {}, off_params)
+    assert off_tool_choice == "required"
+
+
+def test_factory_applies_probed_profile_overrides_and_probe_ignores_stale_target() -> None:
+    request_parameters = _forced_tool_request_parameters()
+    cfg = model_config(
+        provider="OpenAI",
+        provider_id="openai",
+        base_url="https://proxy.example.invalid/v1",
+        model="custom-thinking-v1",
+        capability_profiles={
+            "chat": {"tested": True, "version": 2, "observed_thinking": True},
+            "tool_calling": {
+                "tested": True,
+                "version": 2,
+                "supports_tool_choice_required": False,
+            },
+        },
+    )
+    binding = create_pydantic_model_binding(cfg)
+    assert binding.model.profile["openai_supports_tool_choice_required"] is False
+    assert binding.model.profile["supports_thinking"] is True
+    assert binding.model.profile["openai_reasoning_enabled_by_default"] is True
+    _, tool_choice = binding.model._get_tool_choice(
+        binding.model_settings, request_parameters
+    )
+    assert tool_choice == "auto"
+
+    # 重测 tool_calling 时必须忽略旧的 tool_calling 档案，以便重新探测服务端真实行为。
+    probe_binding = create_pydantic_probe_binding(cfg, probe_capability="tool_calling")
+    assert probe_binding.model.profile.get("openai_supports_tool_choice_required") is not False
+    assert probe_binding.model.profile["supports_thinking"] is True
+
+
+def test_factory_builds_native_anthropic_and_google_models_with_thinking() -> None:
+    anthropic_binding = create_pydantic_model_binding(
+        model_config(
+            provider="Anthropic（Claude）",
+            provider_id="anthropic",
+            api_style="anthropic_messages",
+            base_url="https://proxy.example.invalid/anthropic",
+            model="claude-sonnet-4-6",
+            thinking_enabled=True,
+        )
+    )
+    assert isinstance(anthropic_binding.model, AnthropicModel)
+    assert isinstance(anthropic_binding.model.provider, AnthropicProvider)
+    assert anthropic_binding.model_settings["thinking"] is True
+
+    anthropic_budget = create_pydantic_model_binding(
+        model_config(
+            provider_id="anthropic",
+            api_style="anthropic_messages",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-6",
+        ),
+        generation_settings={"reasoning": {"mode": "enabled", "budget_tokens": 4096}},
+    )
+    assert anthropic_budget.model_settings["anthropic_thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 4096,
+    }
+
+    google_binding = create_pydantic_model_binding(
+        model_config(
+            provider="Google Gemini",
+            provider_id="google",
+            api_style="google_gemini",
+            base_url="https://proxy.example.invalid/gemini",
+            model="gemini-2.5-flash",
+            thinking_enabled=False,
+        )
+    )
+    assert isinstance(google_binding.model, GoogleModel)
+    assert isinstance(google_binding.model.provider, GoogleProvider)
+    assert google_binding.model_settings["thinking"] is False
+
+    google_budget = create_pydantic_model_binding(
+        model_config(
+            provider_id="google",
+            api_style="google_gemini",
+            base_url="https://generativelanguage.googleapis.com",
+            model="gemini-2.5-flash",
+        ),
+        generation_settings={"reasoning": {"mode": "enabled", "budget_tokens": 2048}},
+    )
+    assert google_budget.model_settings["google_thinking_config"] == {
+        "include_thoughts": True,
+        "thinking_budget": 2048,
+    }
+
+    with pytest.raises(AiModelFactoryError, match="不支持关闭 Thinking"):
+        create_pydantic_model_binding(
+            model_config(
+                provider_id="google",
+                api_style="google_gemini",
+                base_url="https://generativelanguage.googleapis.com",
+                model="gemini-2.5-pro",
+                thinking_enabled=False,
+            )
+        )
+
+
+def test_custom_openai_gateway_reuses_pydantic_family_profiles_safely() -> None:
+    kimi = create_pydantic_model_binding(
+        model_config(
+            provider_id="openai",
+            base_url="https://gateway.example.invalid/v1",
+            model="moonshotai/kimi-k2.5",
+            thinking_enabled=True,
+        )
+    )
+    assert kimi.model.profile["supports_thinking"] is True
+
+    qwen_coder = create_pydantic_model_binding(
+        model_config(
+            provider_id="openai",
+            base_url="https://gateway.example.invalid/v1",
+            model="qwen-3-coder-plus",
+        )
+    )
+    assert qwen_coder.model.profile["openai_supports_tool_choice_required"] is False
+
+    for proxy_model in ("grok-3", "anthropic/claude-sonnet-4-6", "google/gemini-2.5-flash"):
+        binding = create_pydantic_model_binding(
+            model_config(
+                provider_id="openai",
+                base_url="https://gateway.example.invalid/v1",
+                model=proxy_model,
+            )
+        )
+        assert binding.model.profile["supports_thinking"] is True
+        assert WebSearchTool not in binding.model.profile.get("supported_native_tools", frozenset())
+
+    grok4 = create_pydantic_model_binding(
+        model_config(
+            provider_id="openai",
+            base_url="https://gateway.example.invalid/v1",
+            model="grok-4",
+        )
+    )
+    assert WebSearchTool not in grok4.model.profile.get("supported_native_tools", frozenset())
 
 
 def test_image_plan_selects_a_vision_model_and_preserves_an_explicit_binding(tmp_path):

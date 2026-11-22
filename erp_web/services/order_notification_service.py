@@ -41,13 +41,13 @@ class OrderNotificationService:
         owner_id: str = "",
         adapters: dict[str, Callable[[dict[str, Any]], OrderAdapter]],
         parser: Callable[..., tuple[OrderEvent | None, dict[str, Any]]],
-        external_store=None,
+        external_manager=None,
         request_scopes=None,
         progress_sync: Callable[[str, Callable[[], None]], bool] | None = None,
         auto_sync_interval_provider: Callable[[], int] = lambda: 5 * 3600,
         start_worker: bool = True,
     ):
-        self.external_store = external_store
+        self.external_manager = external_manager
         self.request_scopes = request_scopes
         self.progress_sync = progress_sync
         self.auto_sync_interval_provider = auto_sync_interval_provider
@@ -175,9 +175,9 @@ class OrderNotificationService:
         return {"ok": True, "operation_ids": operation_ids}
 
     def _blocks(self, config, platform):
-        if self.external_store is None or self.request_scopes is None:
+        if self.external_manager is None or self.request_scopes is None:
             return []
-        return self.external_store.matching_blocks(self.request_scopes(config, accounts=self.accounts()).get(platform, []))
+        return self.external_manager.matching_status(self.request_scopes(config, accounts=self.accounts()).get(platform, []))
 
     def sync_status(self):
         config = self.config_provider()
@@ -186,10 +186,13 @@ class OrderNotificationService:
             blocks = self._blocks(config, row["platform"])
             if not blocks:
                 continue
-            hard = [b for b in blocks if b["failure"].get("resume_at") is None]
-            chosen = (hard or sorted(blocks, key=lambda b: b["failure"].get("resume_at") or 0, reverse=True))[0]["failure"]
-            row.update(status="blocked" if hard else "cooldown", error=chosen["message"],
-                       next_attempt=0 if hard else max(row["next_attempt"], chosen.get("resume_at") or 0, chosen.get("probe_until") or 0))
+            hard = [b for b in blocks if b["hard"]]
+            chosen = (hard or sorted(blocks, key=lambda b: b.get("resume_at") or 0, reverse=True))[0]
+            row.update(
+                status="blocked" if hard else "cooldown",
+                error=chosen["message"],
+                next_attempt=0 if hard else max(row["next_attempt"], chosen.get("resume_at") or 0),
+            )
         return rows
 
     def process_one(self, platform: str = "", *, now: float | None = None) -> bool:
@@ -256,12 +259,12 @@ class OrderNotificationService:
                 else f"订单读取失败（{code}），请检查平台授权、请求记录或网络后重试。"
             )
             blocks = self._blocks(config, event.platform)
-            timed = [b["failure"] for b in blocks if b["failure"].get("resume_at") is not None]
-            hard = any(b["failure"].get("resume_at") is None for b in blocks)
+            timed = [b for b in blocks if not b["hard"] and b.get("resume_at") is not None]
+            hard = any(b["hard"] for b in blocks)
             next_attempt = None
             if timed and not hard:
                 retryable = True
-                next_attempt = max(time.time()+1, *(max(b["resume_at"], b.get("probe_until") or 0) for b in timed))
+                next_attempt = max(time.time() + 1, *(b["resume_at"] for b in timed))
                 message = "平台订单同步暂时暂停，将在冷却结束后自动重试。"
             if event.topic == "sync":
                 retryable, next_attempt = False, None

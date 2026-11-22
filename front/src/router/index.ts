@@ -95,11 +95,6 @@ router.beforeEach(async (to) => {
   if (!to.meta.public && !account.user) return { name: 'AccountLogin', query: { redirect: to.fullPath } }
   if (to.meta.admin && !account.isAdmin) return { name: 'WorkflowHome' }
   if (to.meta.public && account.user) return accountDestination(to.query.redirect)
-  if (to.name === 'WorkflowHome' && to.query.auth_section === 'interruptions') {
-    const query: LocationQueryRaw = { ...to.query, tab: 'systemSettings', settings_section: 'interruptions' }
-    delete query.auth_section
-    return { name: 'WorkflowHome', query, hash: to.hash, replace: true }
-  }
   if (to.name === 'WorkflowHome' && (to.query.settings_section === 'logistics' || to.query.auth_section === 'logistics')) {
     const query: LocationQueryRaw = { ...to.query, tab: 'auth', auth_section: 'crossborderbus', bus_section: 'rules' }
     delete query.settings_section

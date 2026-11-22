@@ -297,9 +297,10 @@ def test_ozon_request_classifies_http_and_network_errors(monkeypatch) -> None:
     def patch_urlopen(exc: Exception) -> None:
         # 分类用例相互隔离；共享阻断的验收在 test_external_requests。
         from erp_web.context import get_context
+        from erp_web.services.external_request_limiter import ExternalRequestLimiter
         manager = get_context().external_requests
-        for block in manager.store.blocks():
-            manager.store.recover(block["platform"],block["account_id"],block["scope"],block["scope_key"],reason="离线用例切换")
+        manager.limiter = ExternalRequestLimiter()
+
         def fake_urlopen(*_args: Any, **_kwargs: Any) -> Any:
             raise exc
 

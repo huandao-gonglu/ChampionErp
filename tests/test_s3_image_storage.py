@@ -110,7 +110,6 @@ def test_pdf_delivery_shares_operation_for_probe_upload_verification_and_public_
         assert [call["method"] for call in remote.calls] == ["HEAD", "PUT", "HEAD"]
         assert labels.deliver_label_bytes(get_context().config.load_app_config(), "order-123", pdf) == result
     assert len(remote.uploads) == 1
-    assert get_context().external_requests.store.blocks() == []
     audit = get_context().external_requests.store.query(operation_id="same-pdf-operation")
     assert audit["stats"]["network_attempts"] == 7
     assert all(item["result"]["outcome"] == "success" for item in audit["items"])

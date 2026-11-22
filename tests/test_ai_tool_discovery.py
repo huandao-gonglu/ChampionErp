@@ -26,6 +26,69 @@ def test_matching_prefers_exact_names_and_supports_chinese():
     assert match_tool_queries(None, ["unknown_tool"], corpus) == []
 
 
+def test_matching_deprioritizes_already_discovered_tools_and_ranks_name_hits():
+    class FakeCtx:
+        discovered_tool_names = frozenset({"draft_attributes_read"})
+
+    corpus = [
+        ToolDefinition(
+            name="draft_attributes_read",
+            description="读取草稿和类目属性，先用 draft_read，配合 category_match、draft_pricing_preview、draft_sku_variants_check",
+        ),
+        ToolDefinition(name="draft_read", description="读取单份草稿详情"),
+        ToolDefinition(name="category_match", description="自动匹配平台类目"),
+        ToolDefinition(name="copy_generate", description="生成平台文案标题与描述"),
+    ]
+    ranked = match_tool_queries(
+        FakeCtx(),
+        ["draft read image preparation", "draft category match", "draft copy title generate"],
+        corpus,
+    )
+    assert ranked[:3] == ["category_match", "copy_generate", "draft_read"] or set(ranked[:3]) == {
+        "draft_read", "category_match", "copy_generate",
+    }
+    assert ranked[-1] == "draft_attributes_read"
+
+
+def test_batch_search_discovers_more_than_three_tools_without_repeating_discovered(tmp_path):
+    queries_round_1 = [
+        "draft read image preparation",
+        "draft images prepare",
+        "draft images wait",
+        "draft attributes read",
+        "draft category match",
+        "product publish prepare",
+        "draft pricing preview",
+    ]
+    queries_round_2 = [
+        "draft_attributes_read",
+        "draft changes apply",
+        "sku variants check",
+        "copy generate title description",
+    ]
+    requests = []
+
+    async def model(messages, info):
+        names = {tool.name for tool in info.function_tools}
+        requests.append(names)
+        if len(requests) == 1:
+            yield {0: DeltaToolCall(name="search_tools", json_args=json.dumps({"queries": queries_round_1}), tool_call_id="s1")}
+        elif len(requests) == 2:
+            yield {0: DeltaToolCall(name="search_tools", json_args=json.dumps({"queries": queries_round_2}), tool_call_id="s2")}
+        else:
+            yield "已完成批量工具发现。"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model, profile={"supported_native_tools": frozenset()}),
+                 build_global_chat_toolset(get_context()))
+    asyncio.run(ui.prepare_run(body("完整准备草稿")).stream(lambda _: None))
+    assert len(requests) == 3
+    assert {
+        "draft_images_prepare", "draft_images_wait", "draft_attributes_read",
+        "product_publish_prepare", "draft_pricing_preview", "draft_read", "category_match",
+    } <= requests[1]
+    assert {"draft_changes_apply", "draft_sku_variants_check", "copy_generate"} <= requests[2]
+
+
 @pytest.mark.parametrize("vision", [False, True])
 def test_mixed_sku_and_image_query_discovers_reader_in_full_catalog(tmp_path, vision):
     queries = ["draft sku read", "product image read", "product_sku_facts_update", "draft images"]

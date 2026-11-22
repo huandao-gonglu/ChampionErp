@@ -93,12 +93,14 @@ class PythonToolBudget(AbstractCapability[AiAgentDependencies]):
 def build_python_capabilities(
     toolset: AiToolSet, *, max_tool_calls: int, retries: int, max_output_bytes: int,
 ) -> list[AbstractCapability[AiAgentDependencies]]:
-    """保留所有直接工具；同步且无需审批的工具另外可在 Python 中调用。"""
+    """保留所有直接工具；同步、无需审批且非仅直接调用的工具另外可在 Python 中调用。"""
     code_mode = DirectAndPythonCodeMode(
         dynamic_catalog=toolset.defer_loading,
         tools=[
             definition.name
-            for definition in toolset.definitions
+            for binding in toolset.bindings.values()
+            if not binding.direct_only
+            for definition in (binding.definition,)
             if not definition.approval_required
             and definition.execution_mode != "persistent_job"
         ],

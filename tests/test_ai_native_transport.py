@@ -43,10 +43,9 @@ def install_network(monkeypatch, respond):
 def test_native_retries_ignore_business_blocks_and_never_write_request_audit(monkeypatch, provider_id, base_url):
     manager = get_context().external_requests
     context = RequestContext(platform="ai:" + provider_id, account_id="old-account", interface="/chat/completions", source="历史记录")
-    manager.store.block(context, RequestFailure("EXTERNAL_REPEATED_FAILURE", "历史阻断", "account"))
-    manager.store.configure(context.platform, requests_per_minute=1, concurrency=1)
-    before = manager.store.blocks()
-    for method in ("start", "check", "result", "network_error"):
+    manager.limiter.record_failure(context, "hist-1", RequestFailure("EXTERNAL_ACCOUNT_DISABLED", "历史阻断", "account"), sent_at=0.0)
+    manager.limiter.set_limit(context.platform, concurrency=1, rps=1.0)
+    for method in ("start", "result", "network_error"):
         monkeypatch.setattr(manager, method, lambda *a, **kw: pytest.fail("AI 推理不应接入业务请求管理器"))
     calls = []
 
@@ -68,7 +67,6 @@ def test_native_retries_ignore_business_blocks_and_never_write_request_audit(mon
     asyncio.run(invoke())
     assert len(calls) == 3
     assert manager.store.query()["items"] == []
-    assert manager.store.blocks() == before
 
 
 def test_exhausted_native_retry_budget_does_not_block_next_model_request(monkeypatch):
@@ -91,7 +89,7 @@ def test_exhausted_native_retry_budget_does_not_block_next_model_request(monkeyp
             assert result.choices[0].message.content == "完成"
     asyncio.run(invoke())
     assert len(calls) == 4
-    assert get_context().external_requests.store.blocks() == []
+    assert get_context().external_requests.store.query()["items"] == []
 
 
 def test_responses_api_recovers_before_response_headers(monkeypatch):

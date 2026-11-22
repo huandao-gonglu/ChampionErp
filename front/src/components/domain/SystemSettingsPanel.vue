@@ -4,7 +4,6 @@ import { routeLocationKey } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAccountStore } from '@/stores/account'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import ExternalRequestControlPanel from '@/components/settings/ExternalRequestControlPanel.vue'
 import SyncPolicySettingsPanel from '@/components/settings/SyncPolicySettingsPanel.vue'
 import AboutSettingsPanel from '@/components/settings/AboutSettingsPanel.vue'
 import YandexWarehouseSettings from '@/components/settings/YandexWarehouseSettings.vue'
@@ -34,14 +33,13 @@ const tabs = computed(() => [
   { key: 'tariffs', label: '国际物流运费表', summary: 'FBS 默认费率、个人导入与版本升级' },
   ...(account.isAdmin ? [{ key: 'managed', label: '管理员共享设置', summary: '企业应用凭据与汇率 API' }] as const : []),
   { key: 'yandex_warehouses', label: 'Yandex 发布仓库', summary: '同步远端仓库并指定运输模式' },
-  { key: 'interruptions', label: '中断与恢复', summary: '全部请求中断、冷却时间与手动恢复' },
   { key: 'about', label: '关于', summary: '版本信息、开源许可证、软件许可与服务协议、隐私政策' },
 ] as const)
-const section = ref<'sync_policies' | 'general' | 'user_agents' | 'wechat' | 'watermark' | 'forbidden_categories' | 'tariffs' | 'managed' | 'yandex_warehouses' | 'interruptions' | 'about'>('general')
+const section = ref<'sync_policies' | 'general' | 'user_agents' | 'wechat' | 'watermark' | 'forbidden_categories' | 'tariffs' | 'managed' | 'yandex_warehouses' | 'about'>('general')
 const route = inject(routeLocationKey, undefined)
 watch(() => route?.query.settings_section, value => {
   if (value === 'managed') section.value = account.isAdmin ? 'managed' : 'general'
-  else section.value = value === 'sync_policies' || value === 'user_agents' || value === 'wechat' || value === 'interruptions' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' || value === 'tariffs' ? value : 'general'
+  else section.value = value === 'sync_policies' || value === 'user_agents' || value === 'wechat' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' || value === 'tariffs' ? value : 'general'
 }, { immediate: true })
 const activeTab = computed(() => tabs.value.find(tab => tab.key === section.value) || tabs.value[0])
 
@@ -118,9 +116,6 @@ onMounted(load)
       </section>
       <section v-if="section === 'managed' && account.isAdmin" id="system-settings-panel-managed" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-managed">
         <ManagedSettingsPanel />
-      </section>
-      <section v-if="section === 'interruptions'" id="system-settings-panel-interruptions" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-interruptions">
-        <ExternalRequestControlPanel />
       </section>
       <section v-if="section === 'about'" id="system-settings-panel-about" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-about">
         <AboutSettingsPanel />

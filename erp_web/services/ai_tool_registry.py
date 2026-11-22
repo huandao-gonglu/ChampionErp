@@ -53,6 +53,8 @@ class AiToolBinding:
     arguments_validator: Callable[[dict[str, Any]], None] | None = None
     # 参数为空时用于发现工具，执行时依据实际参数复核；由应用装配提供。
     unavailable_reason: Callable[[dict[str, Any] | None], str] | None = None
+    # 需要顶层原生工具交互（如桌面交接）的能力仅保留直接调用，不暴露进 Python 沙箱。
+    direct_only: bool = False
 
     def __post_init__(self) -> None:
         if not callable(self.executor):

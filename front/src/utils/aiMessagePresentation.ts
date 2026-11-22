@@ -1,5 +1,5 @@
 import type { UIMessage } from 'ai'
-import type { AiTurnTiming, AiUiPart, ManualAiAction, PendingToolCall } from '@/types/aiWork'
+import type { AiTurnTiming, AiUiPart, BusinessWriteReceipt, ManualAiAction, PendingToolCall } from '@/types/aiWork'
 
 export interface MessageGroup {
   id: string
@@ -8,6 +8,7 @@ export interface MessageGroup {
   messageId: string
   timing?: AiTurnTiming
   manualAction?: ManualAiAction
+  writeReceipts?: BusinessWriteReceipt[]
 }
 
 /** 仅派生展示分组，不改写 SDK 消息；用户补充消息始终构成新的边界。 */
@@ -16,12 +17,18 @@ export function groupAiMessages(messages: UIMessage[]): MessageGroup[] {
   let boundaryId = ''
   let timing: AiTurnTiming | undefined
   for (const message of messages) {
-    const metadata = message.metadata as { ai_turn?: AiTurnTiming; manual_ai_action?: ManualAiAction } | undefined
+    const metadata = message.metadata as {
+      ai_turn?: AiTurnTiming
+      manual_ai_action?: ManualAiAction
+      business_write_receipts?: BusinessWriteReceipt[]
+    } | undefined
+    const receipts = Array.isArray(metadata?.business_write_receipts) ? metadata.business_write_receipts : []
     if (message.role === 'user') timing = metadata?.ai_turn
     else if (metadata?.ai_turn) timing = metadata.ai_turn
     const previous = groups.at(-1)
     if (message.role === 'assistant' && previous?.role === 'assistant') {
       previous.parts.push(...message.parts)
+      if (receipts.length) previous.writeReceipts = [...(previous.writeReceipts ?? []), ...receipts]
       previous.messageId = message.id
       previous.timing = timing
     } else {
@@ -32,6 +39,7 @@ export function groupAiMessages(messages: UIMessage[]): MessageGroup[] {
         messageId: message.id,
         timing,
         manualAction: metadata?.manual_ai_action,
+        ...(receipts.length ? { writeReceipts: [...receipts] } : {}),
       })
     }
     if (message.role !== 'assistant') boundaryId = message.id
@@ -65,14 +73,46 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {}
 }
 
-export function desktopImageAction(part: AiUiPart) {
-  if (!['image_translate', 'image_edit', 'draft_images_prepare'].includes(aiToolName(part))) return
-  const error = record(record((part as ToolPartView).output).error)
+const DESKTOP_IMAGE_TOOLS = new Set(['image_translate', 'image_edit', 'draft_images_prepare'])
+
+function desktopImageActionFromOutput(toolName: string, toolCallId: string | undefined, output: unknown) {
+  if (!DESKTOP_IMAGE_TOOLS.has(toolName)) return
+  const error = record(record(output).error)
   const action = record(record(error.details).desktop_image_action)
   if (error.code === 'IMAGE_DESKTOP_REQUIRED' && typeof action.conversation_id === 'string'
-    && typeof action.tool_call_id === 'string' && action.tool_call_id === (part as ToolPartView).toolCallId) {
+    && typeof action.tool_call_id === 'string' && action.tool_call_id === toolCallId) {
     return { conversation_id: action.conversation_id, tool_call_id: action.tool_call_id }
   }
+}
+
+export function desktopImageAction(part: AiUiPart) {
+  const tool = part as ToolPartView
+  return desktopImageActionFromOutput(aiToolName(part), tool.toolCallId, tool.output)
+}
+
+function desktopImageReceiptParts(receipts: BusinessWriteReceipt[], seenToolCallIds: Set<string>): DisplayPart[] {
+  const deduped = new Map<string, DisplayPart>()
+  for (const receipt of receipts) {
+    if (seenToolCallIds.has(receipt.tool_call_id)) continue
+    if (!desktopImageActionFromOutput(receipt.tool_name, receipt.tool_call_id, receipt.output)) continue
+    const details = record(record(record(receipt.output).error).details)
+    const request = details.request
+    const key = request && typeof request === 'object'
+      ? JSON.stringify([receipt.tool_name, request])
+      : receipt.tool_call_id
+    deduped.set(key, {
+      key: `receipt:${receipt.tool_call_id}`,
+      part: {
+        type: 'dynamic-tool',
+        toolName: receipt.tool_name,
+        toolCallId: receipt.tool_call_id,
+        state: 'output-available',
+        ...(request !== undefined ? { input: request } : {}),
+        output: receipt.output,
+      } as unknown as AiUiPart,
+    })
+  }
+  return [...deduped.values()]
 }
 
 /** 未返回的历史调用不等于审批，也不能因为传输已结束就当作成功。 */
@@ -115,7 +155,12 @@ export interface DisplayPart {
 }
 
 /** 实时的多个 step 和历史的多个 response 使用相同规则，保留原始顺序和引用。 */
-export function presentAssistantParts(parts: AiUiPart[], pending: PendingToolCall[] = [], active = false) {
+export function presentAssistantParts(
+  parts: AiUiPart[],
+  pending: PendingToolCall[] = [],
+  active = false,
+  writeReceipts: BusinessWriteReceipt[] = [],
+) {
   const pendingById = new Map(pending.map(call => [call.tool_call_id, call]))
   const entries: DisplayPart[] = parts.filter(part => part.type !== 'step-start').map((part, index) => ({
     key: isAiToolPart(part) && 'toolCallId' in part ? `tool:${part.toolCallId}` : `part:${index}`,
@@ -123,9 +168,15 @@ export function presentAssistantParts(parts: AiUiPart[], pending: PendingToolCal
     pendingKind: 'toolCallId' in part ? pendingById.get(String(part.toolCallId))?.kind : undefined,
     progress: 'toolCallId' in part ? pendingById.get(String(part.toolCallId))?.progress : undefined,
   }))
+  const seenToolCallIds = new Set(
+    entries
+      .filter(entry => isAiToolPart(entry.part) && 'toolCallId' in entry.part && typeof entry.part.toolCallId === 'string')
+      .map(entry => String((entry.part as ToolPartView).toolCallId)),
+  )
+  const receiptActions = desktopImageReceiptParts(writeReceipts, seenToolCallIds)
   // 待审批或后台执行时仍保留完整时间线；结束后才派生折叠的过程。
   const live = active || entries.some(entry => entry.pendingKind !== undefined)
-  const timeline = entries.filter(({ part }) => part.type !== 'text' || part.text.trim())
+  const timeline = [...entries.filter(({ part }) => part.type !== 'text' || part.text.trim()), ...receiptActions]
   // 不按文本内容猜测“最终答案”，也不丢弃中途问题、附件或来源。
   let lastTool = -1
   entries.forEach((entry, index) => { if (isAiToolPart(entry.part)) lastTool = index })
@@ -150,5 +201,6 @@ export function presentAssistantParts(parts: AiUiPart[], pending: PendingToolCal
       process.push(entry)
     }
   }
+  attention.push(...receiptActions)
   return { live, timeline, process, attention, response, hasActiveTool }
 }

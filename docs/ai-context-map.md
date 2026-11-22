@@ -147,8 +147,8 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 `AiToolBinding.unavailable_reason` 声明依赖；原生工具发现和运行时复核共用该判断。
 混合工具按参数检查，例如链接采集仅在浏览器模式需要桌面。后台长任务在创建前检查，
 按已存在的请求 ID 查询或恢复原结果仍可用。
-图片翻译、修图与自动套图的工具定义按会话权限发现。工具执行时才检查实际模型和设备，
-网页需要桌面时返回 `IMAGE_DESKTOP_REQUIRED`。AI Work 通过既有桌面交接携带原调用引用，
+图片翻译、修图与自动套图的工具定义按会话权限发现，且通过 `AiToolBinding.direct_only` 排除出 `run_code` 沙箱，强制走顶层直接调用；动态背景指令不提前向模型声明当前无本机执行器，避免模型在网页端跳过图片工具直接拒绝。工具执行时才检查实际模型和设备，
+网页需要桌面时返回 `IMAGE_DESKTOP_REQUIRED`；前端同时兼容历史脚本 `business_write_receipts` 中的嵌套 `IMAGE_DESKTOP_REQUIRED` 回执，在关注区展示「在桌面继续」。AI Work 通过既有桌面交接携带原调用引用，
 `POST /api/image-processing/continue` 在当前账号内从服务端回执恢复原范围与版本，沿用原批次标识防重，
 以页面操作回执呈现后续结果。手动页面操作与对话复用 `runtime_units/image_processing.py`，
 逐图持久化并按原图 ID 采用，草稿默认仅替换请求中的原图，结果待核对的请求不重发。
@@ -223,31 +223,25 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 
 自动查询、延迟确认、失败重试及仅本地轮询的逐项审核清单见 [外部 API 查询审核](external-api-query-audit.md)。
 
-- `schemas/external_requests.py` 定义 RequestContext、阻断与写入未知契约；
-  `ExternalRequestNotSent` 表示传输层确认尚未发送 HTTP 请求。管理器将它记录为
-  `not_sent` 本地拒绝，释放租约且不触发写入结果未知阻断；平台错误由 `schemas/platform_errors.py` 持有。
-- `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool 的来源与取消/时间边界，仅读本地账号绑定。
+- `schemas/external_requests.py` 定义 RequestContext（含授权测试穿透 `bypass_auth_block` 与 AI 单轮请求上限 `max_operation_requests`）、阻断与写入未知契约；
+  `ExternalRequestNotSent` 表示传输层确认尚未发送 HTTP 请求，记为 `not_sent` 且退回预算、不触发写入未知。平台错误由 `schemas/platform_errors.py` 持有。
+- `services/external_request_context.py` 关联 HTTP、领域 Job、AI Tool（默认单轮上限 40 次真实外发）的来源与取消/时间边界，仅读本地账号绑定。
+- `services/external_request_limiter.py` 是进程内纯内存并发闸门、令牌桶、共享背压退避（429/420 按轮次 2s→5s→15s→60s，并发在途不重复升级）、5xx 内存短熔断与鉴权/账号熔断；Ozon 默认 3 并发 / 15 RPS，Yandex 默认按 `quota_key` 4 并发，Mercado 默认 4 并发。零 SQLite 轮询写锁。
 - `services/external_request_manager.py` 是 urllib API 外发唯一入口；普通 JSON、表单、图片上传与采集请求均接入。
   外部 Chrome 的版本检查、标签页查询/创建及外部标签验证轮询统一经 `desktop_runtime/browser_debug_http.py`；
   只访问固定回环地址的 CDP 接口，禁用代理与重定向，保留任务取消、期限及响应大小限制。
-  这些本地控制请求不读写外部请求审计或阻断；已有历史记录保留，但不再影响浏览器连接。
-  远端网页和图片下载仍经外部请求管理器，不按 IP 对业务请求作通用豁免。
+  这些本地控制请求不读写外部请求审计或限流；远端网页和图片下载仍经外部请求管理器。
   AI 推理经 `ai_provider_catalog.py` 使用原生 Provider/SDK 客户端，不接入业务请求排队、限流、熔断或写入未知阻断。
   SDK 使用原生有限重试，模型超时、Agent 总任务期限与取消仍有效；AI 调用的业务工具仍经过业务请求管理器。
-  专项传输诊断已退役，保留常规运行错误与原生消息历史；既有请求审计和诊断历史仍可读取。
   AI HTTP 402 按 `*_PAYMENT_REQUIRED` 记录余额或计费问题，不自动重试。
   Pydantic AI 仍独占模型/Agent 生命周期，不新增模型请求旁路。
-- `services/platform_request_policy.py` 按平台响应信封与具体接口纯解析 HTTP 和业务拒绝，不通用推断任意 JSON 的 `success` / `status`。
-  1688 物流查询 HTTP 200 的 `500_2` 为正常空物流；请求级业务拒绝只保护原请求，不累计接口故障熔断。
-  未声明的业务协议由原适配器解释，传输审计成功不代表业务成功；HTTP 限流、权限与服务故障仍统一处理。
-  `stores/external_request_store.py` 用独立
-  `external-requests.sqlite3` 保存尝试、限额、阻断与恢复，不改变 ERP 主库版本。
-  放行与租约分配在短事务内完成；账号停用跨模块、重启及换 Key 保留，接口拒绝只影响该接口。
-  `image_hosting:public` 的匿名 401/403 仅拒绝本次请求，不认定 S3 凭据失效；
-  用户修正桶公开权限后可再次显式检查。
+- `services/platform_request_policy.py` 优先按 HTTP 状态码与平台结构化业务 `code` 纯解析拒绝、限流与响应配额头（Ozon `Ratelimit-Remaining`、Yandex `X-RateLimit-Resource-Remaining/Until`），不通用推断任意 JSON 的 `success` / `status`。
+  1688 物流查询 HTTP 200 的 `500_2` 为正常空物流；请求级业务拒绝仅在内存中保护同操作原参数，不累计接口故障熔断。
+  Ozon 403 `code 7` 默认仅单接口短防重撞，不锁整店；命中 `/v1/seller/info`、明确停用文案、同凭据曾成功的只读接口突报 403 或 10 分钟内无成功且 ≥3 不同接口 403 时，升级为整号熔断并持久化到店铺 `auth_status`。401/账号受限统一在「授权配置 → 测试连接」验证通过后自动恢复。
+- `stores/external_request_store.py` 用独立 `external-requests.sqlite3`（schema v3，单表 `external_attempts`）做纯观测审计、24 小时写入 `outcome_unknown` 跨重启防重放与同凭据只读历史核验；v1/v2 旧库自动无损迁入 v3，并将旧账号封禁承接到店铺 `auth_status`。
 - 默认不自动重试；显式只读预算最多 3 次，写入未知禁止重放。平台适配器解释业务，管理器不推进领域任务。
-- `scripts/external_requests.py` 提供 query/blocks/configure/recover/recoveries；恢复不发送探测请求。
-  具体范围、平台依据、保留策略及 01–11 项验收见 [实施与运维说明](external-request-management.md)。
+- `scripts/external_requests.py` 提供只读 `query` 统计；已退役独立「中断与恢复」控制台、观察头及 v16 主库一次性迁出脚本。
+  具体边界见 [外部请求管理与限流边界](external-request-management.md)。
 
 ## 草稿操作后的继续保存
 
@@ -294,10 +288,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - 完整 v16 库使用 `scripts/migrate_online_operations.py <数据库>` 升级到 v17：锁定写入并创建权限
   0600 的一致性备份后，仅将在线商品唯一占用索引缩小到 `queued/running`。不修改商品、历史任务、回执或幂等键。
 - `upc_pool.json` 是已购买 UPC 的显式资产导入，不属于 schema 迁移。
-- 2026-09-28 请求管理开发中间版本曾将 `external_*` 审计表写入 v16 主库。
-  `scripts/migrate_external_request_audit.py <主库>` 仅识别这套完整遗留结构：先保存权限 0600 的
-  一致性备份，再迁到独立审计库；目标提交成功后才移除主库审计表，并升级在线占用索引到 v17；业务数据不变。
-  运行时不会自动迁移；结构拒绝信息列出多余、缺失或定义不一致的对象，不再把同版本结构差异误报为版本过旧。
+- 结构拒绝信息列出多余、缺失或定义不一致的对象，不再把同版本结构差异误报为版本过旧。
 
 ## 统一任务队列
 
@@ -545,8 +536,7 @@ Canvas 预览准备在配置地址的顶层 Google 页面识别中文共享应�
 - `erp_web/services/ai_gateway_providers.py`：业务调用编排和 `AiProviderClient`；API 分支直接进入
   `ai_direct_request_service`，非 API 注册表只包含 CLI/Browser。
 - `erp_web/services/ai_provider_catalog.py`：产品已正式接入的 Provider Catalog、旧配置迁移和
-  Pydantic Provider 公共构造器的唯一 owner。前端只消费 Catalog，不扫描 Pydantic 包，也不
-  根据 Base URL 或模型名猜测厂商。
+  Pydantic Provider 公共构造器的唯一 owner。公开下拉目录收口为 5 项（OpenAI 官方/兼容协议、Anthropic、Google Gemini、阿里云百炼/Qwen、oMLX），已保存的 `deepseek` 配置以未列示兼容项保留无损读取与运行。前端只消费 Catalog，不扫描 Pydantic 包，也不根据 Base URL 或模型名猜测厂商；仅当 OpenAI 兼容网关使用非官方地址时，通过 `custom_gateway_model_profile` 复用 Pydantic AI 内置家族档案（DeepSeek、Qwen、Moonshot/Kimi、Grok、Claude、Gemini）并过滤非 OpenAI 原生工具标记。
 - `erp_web/services/ai_direct_request_service.py`：普通 API chat/JSON/stream/typed output/image 的唯一
   Pydantic Direct Model 执行入口，负责公开 Pydantic message/event 转换和项目结果归一化；类型化输出
   使用 `OutputObjectDefinition` 的 prompted output，业务 Prompt 无需复述字段。对话从业务 owner 读取结果回执。
@@ -560,7 +550,7 @@ Canvas 预览准备在配置地址的顶层 Google 页面识别中文共享应�
   图片提示词和素材全部由系统提供，请求只选择待测能力；设置页展示固定测试说明并等待确认。
 - `erp_web/services/ai_model_probe_service.py`：API 模型能力探测 adapter；chat、JSON、联网、
   Function Call、图片理解、图片生成和图片编辑全部使用独立 probe binding。图片理解用两张随机图形的原生二进制输入核验识别结果及顺序。探测不读取待测 capability
-  声明，Function Call 必须完成 tool call → tool result → final response 的完整往返。
+  声明与该能力的旧探测档案；Function Call 必须完成 tool call → tool result → final response 的完整往返，先按强制工具选择（`allow_text_output=False`）探测，遇 HTTP 400 回退到 `allow_text_output=True` 并记录 `supports_tool_choice_required=False`，chat/Function Call 观测到 `ThinkingPart` 时记录 `observed_thinking=True`。
 - `erp_web/services/ai_model_config.py`：保存带 `configuration_fingerprint` 的 v2 能力证明；Provider、
   Base URL、模型名、API style、模型 Thinking 开关、transport 配置或受控 `extra` 改变后，规范化阶段会移除失效证明及
   对应 capability，旧版无指纹配置仍可读取并通过重新探测升级。
@@ -573,11 +563,11 @@ Canvas 预览准备在配置地址的顶层 Google 页面识别中文共享应�
 - `erp_web/services/ai_gateway_provider_types.py`：Provider 共享请求 shape。
 - `erp_web/services/ai_generation_settings.py`：模型 Thinking 默认值、功能绑定统一生成配置的
   归一化、能力描述与 Pydantic `ModelSettings`/受控 `extra_body` 映射；功能绑定覆盖模型默认，
-  模型默认覆盖高级请求 JSON。oMLX 通过显式 Catalog 项映射 `chat_template_kwargs.enable_thinking`，
-  能力探测和正式请求共享映射；业务层不得直接拼接 `reasoning_effort`、`enable_thinking` 等厂商字段。
+  模型默认覆盖高级请求 JSON。OpenAI、Anthropic、Google Gemini 与 DeepSeek 统一走 Pydantic AI 原生 `ModelSettings(thinking=...)`（Anthropic / Google 的 `budget_tokens` 分别映射为原生 `anthropic_thinking` / `google_thinking_config`），oMLX 通过显式 Catalog 项映射 `chat_template_kwargs.enable_thinking`，
+  能力探测和正式请求共享映射；业务层不得直接拼接 `reasoning_effort`、`enable_thinking` 等厂商字段。`pydantic_openai_*_profile_payload` 与 `pydantic_native_model_profile_payload` 将探测到的 `supports_tool_choice_required` / `observed_thinking` 合入原生模型 Profile，并暂保留 Pydantic AI 2.44.0 尚未收录的 `deepseek-flash` 思考档案补齐（上游支持后可移除）。
 - `erp_web/services/ai_model_factory.py`：Pydantic AI Model/Provider 的唯一创建入口；正式业务
   使用 `create_pydantic_model_binding` 并校验已启用能力，能力发现使用
-  `create_pydantic_probe_binding`，只根据待测操作选择 Chat/Responses/Images Model，不允许用
+  `create_pydantic_probe_binding`，只根据待测操作选择 Chat/Responses/Anthropic/Google/Images Model，不允许用
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
   timeout、模型类型与密钥脱敏规则。显式 Thinking 设置若会被原生模型 profile 忽略，
   Factory 在请求前报配置错误，防止界面选择关闭后仍发送默认请求。
@@ -1831,16 +1821,10 @@ AI 保存报单方案时，`order_fulfillment_update` 先复核审批快照，�
 Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创建及创建待确认的预报号不变。`POST /api/orders/fulfillment/associate` 通过官方关联接口读取跨境巴士已同步的店铺订单；`FulfillmentService.associate` 复用占位和版本校验，预先核实远端 ID、仓库、渠道和待打包状态。`platform_link_state/error` 独立于仓库状态；失败不重建报单，未知结果不重放，GET 与只读同步不触发关联。官方查询不返回店铺订单栏全部明细，成功回执不等于该栏逐项验收。
 协议、产品闭环、核实限制和验收见 [跨境履约说明](crossborder-fulfillment.md)。
 
-### 平台请求中断与恢复
+### 订单同步状态与授权联动
 
-- `http_route_units/external_request_routes.py` → `facades/external_request_facade.py` → `services/external_request_control_service.py` 为系统设置统一中断查询与恢复入口；契约在 `schemas/external_request_control.py`。恢复只改变外部请求 Store 的放行条件，不执行业务请求。
-  `POST /api/external-requests/history/clear` 在用户确认后清理历史中断；使用页面快照的时间上界，Store 在短事务内重查当前保护范围。
-  保留当前阻断的已发送依据、最近十分钟控制窗口、未完成请求、尚未确认恢复的未知写入、重试父记录、成功审计及恢复记录；旧的重复本地拦截可清理，阻断计数不变。人工恢复按范围和时间关联历史，已确认恢复的未知写入也可清理；后续新阻断不得重新保护在其创建前已确认处理的旧记录，本轮故障依据仍保留。系统检查记录不视为人工确认。审计库 v2 保留 v1 迁移能力。
-  请求级明确拒绝与未知写入分开展示：前者只限制原操作中的原请求，填写处理原因可解除；后者须核对业务回执。服务与 Store 共用 `schemas/external_requests.py` 的明确拒绝判定，存储事务校验故障及创建时间，旧快照不能解除重新产生的同类故障。
-  系统设置内同类明确拒绝按平台、真实账号、审计关联接口与完整拒绝状态分组；组身份绑定所有成员快照。聚合只影响展示与明确恢复选择，不扩大实际阻断范围，恢复在同一事务内逐条留审计。
-- `stores/external_request_store.py` 在短事务中持久化冷却、唯一探测租约、退避及恢复记录；只读临时故障可自愈，明确平台限制与未知写入不得隐式解除。旧永久阻断仅凭完整只读临时失败审计迁入冷却。
-- `http_handler.py` 与 `external_request_context.py` 仅收集真实请求拒绝和领域操作关联；前端 `ExternalRequestNotice.vue` 提示用户发起的操作受阻并直达「系统设置 → 中断与恢复」，`components/settings/ExternalRequestControlPanel.vue` 负责统一倒计时、记录及人工恢复。提示不替代业务结果，不创建第二套任务协议。
-- 订单同步状态从完整历史和当前账号的真实外发范围汇总，不受最近 50 条通知限制。Yandex 订单归属 campaign，外部请求阻断归属 business；不得混用。详情见 [外部请求管理](external-request-management.md)。
+- 原「系统设置 → 中断与恢复」控制台及全局请求受阻悬浮窗已退役；401/账号受限统一回写店铺 `auth_status`，并在「授权配置 → 测试连接」验证通过后恢复。
+- 订单同步状态从完整历史和当前账号的真实外发范围读取内存冷却与店铺授权状态，不受最近 50 条通知限制。Yandex 订单归属 campaign，外部请求控制归属 business；不得混用。详情见 [外部请求管理](external-request-management.md)。
 
 
 ### 1688 订单采购

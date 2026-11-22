@@ -1153,8 +1153,11 @@ def _test_store_auth_unlocked(
     if is_preview and _store_credentials_unchanged(saved_config, config, platform):
         # 提交的凭据与已保存配置一致：等价于测试持久化配置，落库可信状态。
         is_preview = False
+    from erp_web.services.external_request_context import request_operation
+
     try:
-        extra = tester(config, scope)
+        with request_operation("auth_test", bypass_auth_block=True):
+            extra = tester(config, scope)
     except Exception as exc:
         if is_preview:
             raise _auth_test_failure_exception(str(exc)) from exc
@@ -1214,6 +1217,11 @@ def _test_store_auth_unlocked(
     )
     if not is_preview:
         get_context().config.save_store_config(config)
+        account_id = str(
+            store.get({"ozon": "client_id", "yandex": "business_id", "mercadolibre": "user_id"}.get(platform, "")) or ""
+        ).strip()
+        if account_id:
+            get_context().external_requests.clear_auth_block(platform, account_id)
     response = {
         "ok": True,
         "platform": platform,

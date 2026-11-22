@@ -2,7 +2,13 @@ import { mount, type DOMWrapper } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
 import type { AiUiPart, PendingToolCall } from '@/types/aiWork'
+import { launchDesktop } from '@/utils/desktopHandoff'
 import AiMessageList from '../AiMessageList.vue'
+
+vi.mock('@/utils/desktopHandoff', async importOriginal => ({
+  ...await importOriginal<typeof import('@/utils/desktopHandoff')>(),
+  launchDesktop: vi.fn(),
+}))
 
 const text = (value: string): AiUiPart => ({ type: 'text', text: value })
 async function expand(details: Pick<DOMWrapper<HTMLDetailsElement>, 'element' | 'trigger'>) {
@@ -281,5 +287,51 @@ describe('AI 对话按轮次展示', () => {
     await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]'))
     expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('已提交')
     expect(wrapper.text()).not.toContain('已完成')
+  })
+
+  it('历史 run_code 嵌套的桌面图片交接回执展示在关注区并去重，可点击在桌面继续', async () => {
+    vi.mocked(launchDesktop).mockClear()
+    const conversationId = 'conversation_global_chat_' + '5'.repeat(32)
+    const makeReceipt = (toolCallId: string, draftId: string) => ({
+      tool_call_id: toolCallId,
+      tool_name: 'draft_images_prepare',
+      output: {
+        ok: false,
+        error: {
+          code: 'IMAGE_DESKTOP_REQUIRED',
+          message: '图片翻译/重绘使用本机模型「Gemini Canvas 修图」。当前操作需要本机执行器，请从桌面端发起。',
+          details: {
+            desktop_image_action: { conversation_id: conversationId, tool_call_id: toolCallId },
+            request: { draft_id: draftId, decision: 'auto', handoff_fingerprint: `fp-${draftId}` },
+          },
+        },
+      },
+    })
+    const messages: UIMessage[] = [
+      user('u1', '准备所选草稿'),
+      {
+        ...reply('r1', [{ type: 'tool-run_code', toolCallId: 'script-1', state: 'output-available', input: {}, output: {} } as AiUiPart]),
+        metadata: { business_write_receipts: [makeReceipt('script-1__1', 'draft-a'), makeReceipt('script-1__2', 'draft-b')] },
+      },
+      {
+        ...reply('r2', [{ type: 'tool-run_code', toolCallId: 'script-2', state: 'output-available', input: {}, output: {} } as AiUiPart, text('请在图片操作提示处点击“在桌面继续”。')]),
+        metadata: { business_write_receipts: [makeReceipt('script-2__1', 'draft-a')] },
+      },
+    ]
+    const saved = JSON.stringify(messages)
+    const wrapper = mount(AiMessageList, { props: { messages } })
+    const attention = wrapper.get('[data-testid="ai-turn-attention"]')
+    expect(attention.element.closest('details')).toBeNull()
+    expect(attention.text()).toContain('准备草稿套图 · 草稿 draft-a')
+    expect(attention.text()).toContain('准备草稿套图 · 草稿 draft-b')
+    expect(attention.text()).toContain('等待桌面')
+    const buttons = attention.findAll('button')
+    expect(buttons).toHaveLength(2)
+    await buttons[0].trigger('click')
+    expect(launchDesktop).toHaveBeenCalledWith({
+      target: '/aiWork',
+      state: { imageOperation: { conversation_id: conversationId, tool_call_id: 'script-2__1' } },
+    })
+    expect(JSON.stringify(messages)).toBe(saved)
   })
 })

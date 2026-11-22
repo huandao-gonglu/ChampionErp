@@ -50,7 +50,6 @@
 | `/api/crossborderbus/services` | 领域读取 | 已有领域查询包含对象归属、快照、分页或远端只读操作，继续复用其领域能力。 |
 | `/api/crossborderbus/settings` | 统一查询 | fulfillment.settings |
 | `/api/drafts-index` | 统一查询 | drafts.index |
-| `/api/external-requests/status` | 领域读取 | 已有领域查询包含对象归属、快照、分页或远端只读操作，继续复用其领域能力。 |
 | `/api/image-hosting` | 统一查询 | settings.image_hosting |
 | `/api/logistics/settings` | 统一查询 | logistics.settings |
 | `/api/online-products` | 领域读取 | 已有领域查询包含对象归属、快照、分页或远端只读操作，继续复用其领域能力。 |

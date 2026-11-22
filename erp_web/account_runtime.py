@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 class AccountRuntime:
     def __init__(self, root: AppContext):
         self.root = root
+        from erp_web.services.external_request_limiter import ExternalRequestLimiter
+        self.external_request_limiter = ExternalRequestLimiter()
+        self.root._external_request_limiter = self.external_request_limiter
         self.store = AccountStore(root.paths.app_dir / "accounts.sqlite3")
         self.service = AccountService(self.store)
         self.newapi = NewAPIBridge(self.store, self.service)
@@ -64,6 +67,7 @@ class AccountRuntime:
                             pass
                 context.user_id = user["id"]
                 context.shared_paths = self.root.paths
+                context._external_request_limiter = self.external_request_limiter
                 context.config.shared_config = self.root.config
                 context.allow_environment_credentials = workspace == "."
                 context.account_store = self.store

@@ -29,7 +29,7 @@ RETAINED_GET_READS = {
         '/api/orders/receiving-warehouse', '/api/orders/fulfillment', '/api/orders/alibaba-purchase',
         '/api/orders/alibaba-purchase/batch', '/api/orders/alibaba-purchase/addresses', '/api/crossborderbus/services',
         '/api/online-products', '/api/online-products/yandex-shop-names', '/api/online-products/source-images',
-        '/api/online-products/attributes', '/api/external-requests/status',
+        '/api/online-products/attributes',
     )},
     '/api/admin/settings': ('凭据视图', '企业凭据、1688 接入方案选择和可能携带访问参数的汇率地址。买家凭据通过个人授权保存，业务默认配置见 settings.pricing_defaults/settings.collection。'),
     '/api/orders/integrations': ('凭据视图', '包含带回调凭据的地址；普通店铺及本地授权状态见 settings.store。'),
