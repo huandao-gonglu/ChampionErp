@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from erp_web.stores.product_description_migration import migrate_draft_description, migrate_product_description
-from erp_web.product_model.sku_model import retain_sku_publications
+from erp_web.product_model.sku_model import retain_sku_publications, sku_fingerprint
 from erp_web.product_model.source_facts import migrate_source_facts, invalidate_source_changes
 from erp_web.marketplace_registry import PLATFORMS, marketplace_site
 from erp_web.product_model.merge_model import (
@@ -789,6 +789,10 @@ class ErpDatabase:
         product_id = product_identity(product)
         previous_row = conn.execute("SELECT product_json FROM products WHERE product_id = ?", (product_id,)).fetchone()
         previous = json_loads(previous_row[0], {}) if previous_row else None
+        if previous is not None and previous.get("in_library") is False and "in_library" not in product_input:
+            # 已移出采集箱的商品主档在草稿侧补录 SKU 资料时保持移出状态，不重新塞回采集箱。
+            stored_product["in_library"] = False
+            product["in_library"] = False
         product["product_id"] = product_id
         stored_product["product_id"] = product_id
         conn.execute(
@@ -1136,10 +1140,28 @@ class ErpDatabase:
         if not draft_id:
             return False
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             draft_id = _slug(draft_id)
+            row = conn.execute(
+                "SELECT product_id FROM platform_drafts WHERE draft_id = ?", (draft_id,)
+            ).fetchone()
             cursor = conn.execute(
                 "DELETE FROM platform_drafts WHERE draft_id = ?", (draft_id,)
             )
+            if cursor.rowcount > 0 and row:
+                product_id = str(row["product_id"] or "")
+                product_row = conn.execute(
+                    "SELECT product_json FROM products WHERE product_id = ?", (product_id,)
+                ).fetchone()
+                if product_row and json_loads(product_row["product_json"], {}).get("in_library") is False:
+                    remaining_drafts = conn.execute(
+                        "SELECT COUNT(*) FROM platform_drafts WHERE product_id = ?", (product_id,)
+                    ).fetchone()[0]
+                    remaining_jobs = conn.execute(
+                        "SELECT COUNT(*) FROM publish_jobs WHERE product_id = ?", (product_id,)
+                    ).fetchone()[0]
+                    if remaining_drafts == 0 and remaining_jobs == 0:
+                        conn.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
             conn.commit()
             return cursor.rowcount > 0
 
@@ -1204,13 +1226,46 @@ class ErpDatabase:
             return ""
         draft_id = draft_identity(draft)
         draft["draft_id"] = draft_id
-        draft = normalize_platform_draft(
-            draft,
-            platform,
-            {"product_id": product_id},
-        )
+        explicit_skus = {
+            str(item.get("sku_id") or "").strip(): str(item.get("sku") or "").strip()
+            for item in _list(draft.get("sku_items"))
+            if isinstance(item, dict)
+        }
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            product_row = conn.execute(
+                "SELECT product_json FROM products WHERE product_id = ?",
+                (product_id,),
+            ).fetchone()
+            product_sku_items = (
+                _list(_dict(json_loads(product_row["product_json"], {})).get("sku_items"))
+                if product_row
+                else []
+            )
+            draft = normalize_platform_draft(
+                draft,
+                platform,
+                {"product_id": product_id, "sku_items": product_sku_items},
+            )
+            # 跨平台默认共用同一 master_sku；同平台若已有其他草稿占用该编码则自动避让，防止同店撞 SKU。
+            other_rows = conn.execute(
+                "SELECT draft_json FROM platform_drafts WHERE product_id = ? AND platform = ? AND draft_id != ?",
+                (product_id, platform, draft_id),
+            ).fetchall()
+            taken_skus = {
+                str(item.get("sku") or "").strip()
+                for row in other_rows
+                for item in _list(_load_current_draft_json(row["draft_json"]).get("sku_items"))
+                if isinstance(item, dict) and str(item.get("sku") or "").strip()
+            }
+            if taken_skus:
+                for item in _list(draft.get("sku_items")):
+                    if not isinstance(item, dict):
+                        continue
+                    sku_id = str(item.get("sku_id") or "").strip()
+                    current_sku = str(item.get("sku") or "").strip()
+                    if not explicit_skus.get(sku_id) and current_sku in taken_skus:
+                        item["sku"] = "SKU-" + sku_fingerprint([draft_id, sku_id])[:20].upper()
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
             declared_product_id = str(
@@ -1306,6 +1361,7 @@ class ErpDatabase:
                          LIMIT 1
                        ) AS main_image
                 FROM products p
+                WHERE COALESCE(json_extract(p.product_json, '$.in_library'), 1) != 0
                 ORDER BY p.updated_at DESC
                 LIMIT ?
                 """,
@@ -1518,6 +1574,43 @@ class ErpDatabase:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def remove_product_from_library(self, product_id: str) -> dict[str, Any]:
+        """从采集箱移除商品：无关联草稿时物理删除，有关联草稿时仅移出采集箱以保护草稿与素材。"""
+        product_id = str(product_id or "").strip()
+        if not product_id:
+            return {"removed": False, "mode": "missing", "draft_count": 0}
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT product_json FROM products WHERE product_id = ?", (product_id,)
+                ).fetchone()
+                if not row:
+                    conn.commit()
+                    return {"removed": False, "mode": "missing", "draft_count": 0}
+                payload = json_loads(row["product_json"], {})
+                if isinstance(payload, dict) and payload.get("in_library") is False:
+                    conn.commit()
+                    return {"removed": False, "mode": "already_removed", "draft_count": 0}
+                draft_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM platform_drafts WHERE product_id = ?", (product_id,)
+                    ).fetchone()[0]
+                    or 0
+                )
+                if draft_count > 0:
+                    updated = dict(payload) if isinstance(payload, dict) else {}
+                    updated["in_library"] = False
+                    conn.execute(
+                        "UPDATE products SET product_json = ?, updated_at = ? WHERE product_id = ?",
+                        (json_dumps(updated), utc_now(), product_id),
+                    )
+                    conn.commit()
+                    return {"removed": True, "mode": "detached", "draft_count": draft_count}
+                conn.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
+                conn.commit()
+                return {"removed": True, "mode": "deleted", "draft_count": 0}
 
     # -- store_auth ----------------------------------------------------------
 

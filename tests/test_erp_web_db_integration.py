@@ -89,18 +89,27 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
     def test_delete_products_from_index_removes_selected_sqlite_products(self) -> None:
         def run(app_dir: Path) -> None:
-            first = get_context().products.save_product(sample_product("Delete me", "https://example.com/delete-me"))
+            plain = sample_product("Delete plain", "https://example.com/delete-plain")
+            plain["drafts"] = {}
+            first = get_context().products.save_product(plain)
+            with_draft = get_context().products.save_product(sample_product("Detach drafted", "https://example.com/detach-drafted"))
             second = get_context().products.save_product(sample_product("Keep me", "https://example.com/keep-me"))
 
-            result = get_context().products.delete_products_from_index([first["product_id"]])
+            result = get_context().products.delete_products_from_index([first["product_id"], with_draft["product_id"]])
 
             self.assertTrue(result["ok"])
-            self.assertEqual(result["deleted"], 1)
-            self.assertEqual(result["deletedIds"], [first["product_id"]])
+            self.assertEqual(result["deleted"], 2)
+            self.assertEqual(result["deletedIds"], [first["product_id"], with_draft["product_id"]])
+            self.assertEqual(result["detachedIds"], [with_draft["product_id"]])
             remaining = get_context().db.list_product_records()
             self.assertEqual([item["product_id"] for item in remaining], [second["product_id"]])
             self.assertEqual(result["productsIndex"][0]["product_id"], second["product_id"])
+            # 无草稿商品物理删除；有关联草稿的商品安全保留草稿与商品主档，仅移出采集箱。
             self.assertEqual(get_context().db.load_product_model(first["product_id"]), {})
+            preserved = get_context().db.load_product_model(with_draft["product_id"])
+            self.assertEqual(preserved["product_id"], with_draft["product_id"])
+            self.assertFalse(preserved.get("in_library", True))
+            self.assertTrue(bool(preserved.get("drafts")))
 
         self.with_temp_app(run)
 

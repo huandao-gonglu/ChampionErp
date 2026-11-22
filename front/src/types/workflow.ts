@@ -362,6 +362,7 @@ export interface ProductSource {
 
 export interface ProductSku extends UnknownRecord {
   id: string
+  master_sku?: string
   source_sku_id: string
   source_offer_id?: string
   source_spec_id?: string

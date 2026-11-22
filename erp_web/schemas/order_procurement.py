@@ -66,13 +66,15 @@ class SalesSkuBinding(BaseModel):
     publication_id: str = ""
     image_url: str = ""
     origin: Literal["publish", "alibaba_api"] = "publish"
+    scope: Literal["store", "master"] = "store"
+    master_sku: str = ""
     is_default: bool = False
     updated_at: str = ""
 
     @property
     def identity(self) -> str:
         # 发布记录号及运营元字段不参与身份；同一销售 SKU 与同一采购规格只保留一条映射。
-        data = self.model_dump(exclude={"publication_id", "id", "image_url", "origin", "is_default", "updated_at"})
+        data = self.model_dump(exclude={"publication_id", "id", "image_url", "origin", "scope", "master_sku", "is_default", "updated_at"})
         # 空的新字段不改变历史关联 ID，避免升级后出现重复候选。
         if not data["source"].get("source_spec_id") or not data["source"].get("purchase_block_reason"):
             data["source"].pop("purchase_block_reason", None)
@@ -215,6 +217,8 @@ class BindSkuSourceRequest(BaseModel):
     resolve_id: str = Field(min_length=1, max_length=120)
     source_sku_id: str = Field(min_length=1, max_length=200)
     set_default: bool = True
+    shared_across_platforms: bool = True
+    master_sku: str = Field(default="", max_length=200)
     order_id: str = Field(default="", max_length=200)
     line_key: str = Field(default="", max_length=120)
     revision: int | None = Field(default=None, ge=0)
@@ -228,6 +232,9 @@ class SetDefaultSkuSourceRequest(BaseModel):
     remote_id: str = Field(default="", max_length=200)
     variant_id: str = Field(default="", max_length=200)
     binding_id: str = Field(min_length=1, max_length=120)
+    scope: Literal["store", "master"] = "store"
+    shared_across_platforms: bool = False
+    master_sku: str = Field(default="", max_length=200)
     order_id: str = Field(default="", max_length=200)
     line_key: str = Field(default="", max_length=120)
     revision: int | None = Field(default=None, ge=0)
@@ -239,3 +246,13 @@ class RemoveSkuSourceRequest(BaseModel):
     account_id: str = Field(default="", max_length=200)
     seller_sku: str = Field(min_length=1, max_length=200)
     binding_id: str = Field(min_length=1, max_length=120)
+    scope: Literal["store", "master"] = "store"
+    master_sku: str = Field(default="", max_length=200)
+
+
+class LinkMasterSkuRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    platform: Platform
+    account_id: str = Field(default="", max_length=200)
+    seller_sku: str = Field(min_length=1, max_length=200)
+    master_sku: str = Field(default="", max_length=200)

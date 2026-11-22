@@ -148,6 +148,8 @@ export interface SalesSkuBinding {
   publication_id: string
   image_url?: string
   origin?: 'publish' | 'alibaba_api'
+  scope?: 'store' | 'master'
+  master_sku?: string
   is_default?: boolean
   updated_at?: string
   source: ProcurementSource
@@ -181,6 +183,8 @@ export interface SkuSourceTarget {
   variant_id?: string
 }
 export interface SkuSourceSummary extends SkuSourceTarget {
+  master_sku?: string
+  linked_master_sku?: string
   default_binding_id: string
   bindings: SalesSkuBinding[]
 }

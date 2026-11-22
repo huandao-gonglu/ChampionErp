@@ -20,6 +20,7 @@ class ProductSku(TypedDict, total=False):
     """商品规格的默认图片仅引用商品图片池资产，采集地址保留在 source.skus。"""
 
     id: str
+    master_sku: str
     source_sku_id: str
     source_offer_id: str
     source_spec_id: str
@@ -170,6 +171,7 @@ class Product(TypedDict, total=False):
     collect_status: str
     collect_logs: list[Any]
     workflow_statuses: dict[str, str]
+    in_library: bool
     created_at: str
     updated_at: str
 

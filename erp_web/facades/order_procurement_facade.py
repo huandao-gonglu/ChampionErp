@@ -7,6 +7,7 @@ from erp_web.context import get_context
 from erp_web.services.alibaba_purchase_sync_service import sync_purchase as sync_alibaba_purchase
 from erp_web.services.alibaba_purchase_assignment import supported
 from erp_web.schemas.order_procurement import PurchaseRecord
+from erp_web.schemas.orders import configured_accounts
 from erp_web.runtime_units.order_source_bindings import bindings_from_publish_job
 from erp_web.runtime_units.publish_confirmation import resolve_publish_store_binding
 from erp_web.services.order_procurement_service import OrderProcurementService
@@ -14,6 +15,20 @@ from erp_web.services.sku_procurement_service import SkuProcurementService, yand
 from erp_web.stores.order_procurement_store import OrderProcurementStore
 from erp_web.stores.online_product_store import OnlineProductStore
 from erp_web.services.alibaba_purchase_query_service import query_purchase as query_alibaba_purchase
+
+
+def _stable_account_identity(config: dict, platform: str, account_id: str = "") -> str:
+    platform_key = str(platform or "").strip().lower()
+    if platform_key not in {"mercadolibre", "ozon"}:
+        return ""
+    value = str(account_id or "").strip() or str(configured_accounts(config).get(platform_key) or "").strip()
+    if not value:
+        store = config.get(platform_key) if isinstance(config.get(platform_key), dict) else {}
+        if platform_key == "mercadolibre":
+            value = str(store.get("user_id") or store.get("seller_id") or "").strip()
+        elif platform_key == "ozon":
+            value = str(store.get("client_id") or store.get("seller_id") or "").strip()
+    return f"{platform_key}:acc:{value}" if value else ""
 
 
 def _store_identities(config: dict, platform: str, account_id: str = "") -> tuple[str, ...]:
@@ -44,10 +59,16 @@ def _store_identities(config: dict, platform: str, account_id: str = "") -> tupl
         if biz_identity and biz_identity not in identities:
             identities.append(biz_identity)
         return tuple(identities)
+    # 兼容历史发布哈希标识与稳定的原生账号标识，避免重授权补全字段时货源映射失联。
     try:
-        identities.append(resolve_publish_store_binding(platform_key, config).identity)
+        legacy_hash = resolve_publish_store_binding(platform_key, config).identity
+        if legacy_hash:
+            identities.append(legacy_hash)
     except ValueError:
         pass
+    stable_acc = _stable_account_identity(config, platform_key, account_id)
+    if stable_acc and stable_acc not in identities:
+        identities.append(stable_acc)
     return tuple(identities)
 
 
@@ -62,6 +83,9 @@ def _write_store_identity(config: dict, platform: str, account_id: str = "") -> 
         biz_identity = yandex_business_identity(business_id)
         if biz_identity:
             return biz_identity
+    stable_acc = _stable_account_identity(config, platform_key, account_id)
+    if stable_acc:
+        return stable_acc
     identities = _store_identities(config, platform_key, account_id)
     return identities[0] if identities else ""
 
@@ -177,6 +201,7 @@ def sku_source_command(action, body, *, context=None):
         "bind": service.bind_source,
         "set-default": service.set_default,
         "remove": service.remove_source,
+        "link-master": service.link_master_sku,
     }[action](body)
     if isinstance(result.get("order_detail"), dict):
         order = result["order_detail"]["order"]

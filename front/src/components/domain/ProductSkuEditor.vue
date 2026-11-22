@@ -385,8 +385,12 @@ function add() {
             </tr>
             <tr v-if="expanded === row.id">
               <td colspan="11" class="bg-accent-50/70 p-4 dark:bg-dark-950/70">
-                <div class="grid gap-3 md:grid-cols-2">
+                <div class="grid gap-3 md:grid-cols-3">
                   <SkuImagePicker v-model="row.image_asset_id" :images="images" :disabled="disabled" :label="`${row.name} 的图片`" />
+                  <label class="block text-xs font-medium text-accent-700 dark:text-accent-200">
+                    统一货号（跨平台共享）
+                    <input v-model="row.master_sku" class="input mt-1.5 h-9 !rounded-lg font-mono text-xs" placeholder="保存后自动生成稳定货号" :disabled="disabled" />
+                  </label>
                   <label class="block text-xs font-medium text-accent-700 dark:text-accent-200">
                     商品条码（UPC / EAN）
                     <input v-model="row.barcode" class="input mt-1.5 h-9 !rounded-lg font-mono text-xs" placeholder="未分配条码" :disabled="disabled" />

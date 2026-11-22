@@ -185,6 +185,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         "/api/sku-sources/bind",
         "/api/sku-sources/set-default",
         "/api/sku-sources/remove",
+        "/api/sku-sources/link-master",
     )),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/record-purchase", business_domain="订单采购", disposition="capability", capability_names=("order_purchase_record",)),
     AiCapabilityCoverageEntry(method="POST", path="/api/orders/cancel-purchase", business_domain="订单采购", disposition="capability", capability_names=("order_purchase_cancel",)),

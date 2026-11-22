@@ -68,6 +68,8 @@ async function setAsSkuDefault(candidate: SalesSkuBinding) {
       remote_id: props.item.line.remote_id || '',
       variant_id: props.item.line.variant_id || '',
       binding_id: candidate.id,
+      scope: candidate.scope || 'store',
+      master_sku: candidate.master_sku || '',
       order_id: props.order.id,
       line_key: selection.value.line_key,
       revision: selection.value.revision,

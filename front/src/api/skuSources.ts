@@ -10,6 +10,8 @@ import type {
 
 export interface SkuSourceMutationResponse {
   ok: boolean
+  master_sku?: string
+  linked_master_sku?: string
   binding?: SalesSkuBinding
   removed?: boolean
   bindings: SalesSkuBinding[]
@@ -45,6 +47,8 @@ export async function bindSkuSource(body: {
   resolve_id: string
   source_sku_id: string
   set_default?: boolean
+  shared_across_platforms?: boolean
+  master_sku?: string
   order_id?: string
   line_key?: string
   revision?: number
@@ -59,6 +63,9 @@ export async function setDefaultSkuSource(body: {
   remote_id?: string
   variant_id?: string
   binding_id: string
+  scope?: 'store' | 'master'
+  shared_across_platforms?: boolean
+  master_sku?: string
   order_id?: string
   line_key?: string
   revision?: number
@@ -71,6 +78,17 @@ export async function removeSkuSource(body: {
   account_id?: string
   seller_sku: string
   binding_id: string
+  scope?: 'store' | 'master'
+  master_sku?: string
 }): Promise<SkuSourceMutationResponse> {
   return (await apiClient.post<SkuSourceMutationResponse>('/api/sku-sources/remove', body, { timeout: 15000 })).data
+}
+
+export async function linkMasterSku(body: {
+  platform: OrderPlatform
+  account_id?: string
+  seller_sku: string
+  master_sku: string
+}): Promise<SkuSourceMutationResponse> {
+  return (await apiClient.post<SkuSourceMutationResponse>('/api/sku-sources/link-master', body, { timeout: 15000 })).data
 }

@@ -28,6 +28,11 @@ def sku_fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def default_master_sku(sku_id: str) -> str:
+    """商品级稳定主货号：仅与物理商品 SKU 身份绑定，不随草稿改变。"""
+    return "SKU-" + sku_fingerprint([sku_id])[:16].upper()
+
+
 def positive_measurement(value: Any) -> Decimal | None:
     """来源与旧数据允许空串或无效文本；只有有限正数可作包装事实。"""
     try:
@@ -59,6 +64,7 @@ def normalize_product_skus(value: Any) -> list[dict[str, Any]]:
                      and positive_measurement(estimate.get("suggested")) == value}
         result.append({
             "id": sku_id,
+            "master_sku": text(raw.get("master_sku")) or default_master_sku(sku_id),
             "source_sku_id": text(raw.get("source_sku_id")),
             "source_offer_id": text(raw.get("source_offer_id")),
             "source_spec_id": text(raw.get("source_spec_id")),
@@ -126,6 +132,8 @@ def merge_collected_skus(existing: Any, source: dict[str, Any]) -> list[dict[str
             # 用户编辑过的事实保留；新来源事实仍完整写入 source_snapshot 供核对。
             if (field in snapshot and old.get(field) != snapshot.get(field)) or (field in {"battery", "liquid"} and field not in snapshot):
                 row[field] = deepcopy(old[field])
+        if old.get("master_sku"):
+            row["master_sku"] = text(old.get("master_sku")) or row["master_sku"]
         if old.get("package_estimates"):
             row["package_estimates"] = deepcopy(old["package_estimates"])
         row["active"] = old["active"]
@@ -150,10 +158,12 @@ def normalize_draft_skus(value: Any, product_skus: Any, draft_id: str) -> list[d
         if facts and sku_id not in facts:
             raise ValueError("草稿引用的 SKU 不属于当前商品：" + sku_id)
         seen.add(sku_id)
+        fact = facts.get(sku_id, {})
+        default_sku = text(fact.get("master_sku")) or (default_master_sku(sku_id) if fact else "SKU-" + sku_fingerprint([draft_id, sku_id])[:20].upper())
         result.append({
             "sku_id": sku_id, "selected": raw.get("selected") is True,
-            "sku": text(raw.get("sku")) or "SKU-" + sku_fingerprint([draft_id, sku_id])[:20].upper(),
-            "stock": text(raw.get("stock")) or text(facts.get(sku_id, {}).get("supplier_stock")),
+            "sku": text(raw.get("sku")) or default_sku,
+            "stock": text(raw.get("stock")) or text(fact.get("supplier_stock")),
             "overrides": {key: deepcopy(value) for key, value in record(raw.get("overrides")).items() if key == "image_asset_id"},
             "attributes_by_target": deepcopy(record(raw.get("attributes_by_target"))),
             "source_option_translations": deepcopy(record(raw.get("source_option_translations"))),
@@ -237,4 +247,4 @@ def retain_sku_publications(previous: dict[str, Any], incoming: dict[str, Any]) 
     return result
 
 
-__all__ = ["single_sku_publish_draft", "retain_sku_publications", "PACKAGE_FIELDS", "positive_measurement", "SKU_FACT_FIELDS", "collected_skus", "effective_sku", "editable_selected_skus", "merge_collected_skus", "new_draft_sku_rows", "normalize_draft_skus", "normalize_product_skus", "selected_skus", "sku_fingerprint"]
+__all__ = ["default_master_sku", "single_sku_publish_draft", "retain_sku_publications", "PACKAGE_FIELDS", "positive_measurement", "SKU_FACT_FIELDS", "collected_skus", "effective_sku", "editable_selected_skus", "merge_collected_skus", "new_draft_sku_rows", "normalize_draft_skus", "normalize_product_skus", "selected_skus", "sku_fingerprint"]

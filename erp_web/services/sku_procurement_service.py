@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from erp_web.product_model.alibaba_purchase_model import alibaba_offer_id
 from erp_web.schemas.order_procurement import (
     BindSkuSourceRequest,
+    LinkMasterSkuRequest,
     ProcurementSource,
     QuerySkuSourcesRequest,
     RemoveSkuSourceRequest,
@@ -205,6 +206,10 @@ class SkuProcurementService:
             key: self.procurement.store.list_sku_bindings_batch(key[0], key[1], skus)
             for key, skus in grouped.items()
         }
+        master_cache: dict[tuple[str, tuple[str, ...]], dict[str, tuple[str, str]]] = {
+            key: self.procurement.store.resolve_master_skus_batch(key[0], key[1], skus)
+            for key, skus in grouped.items()
+        }
         results = []
         for item, identities in target_identities:
             raw_list = cache.get((item.platform, identities), {}).get(item.seller_sku, [])
@@ -215,6 +220,9 @@ class SkuProcurementService:
                     binding, remote_id=item.remote_id, variant_id=item.variant_id
                 )
             ]
+            master_sku, linked_master_sku = master_cache.get((item.platform, identities), {}).get(
+                item.seller_sku, (item.seller_sku, "")
+            )
             default_binding = next((b for b in matched if b.is_default), matched[0] if len(matched) == 1 else None)
             results.append({
                 "platform": item.platform,
@@ -222,6 +230,8 @@ class SkuProcurementService:
                 "seller_sku": item.seller_sku,
                 "remote_id": item.remote_id,
                 "variant_id": item.variant_id,
+                "master_sku": master_sku,
+                "linked_master_sku": linked_master_sku,
                 "default_binding_id": default_binding.id if default_binding else "",
                 "bindings": [b.model_dump(mode="json") for b in matched],
             })
@@ -270,24 +280,48 @@ class SkuProcurementService:
             purchase_block_reason="",
             specification=sku["specification"],
         )
-        # 在订单/在线商品主动绑定时，按 (platform, store_identity, seller_sku) 绑定，
-        # 仅当存在明确 variant_id 时附加变体隔离；避免过度限制 remote_id 导致同 SKU 多市场不命中。
-        binding = SalesSkuBinding(
-            platform=req.platform,
-            store_identity=write_identity,
-            seller_sku=req.seller_sku,
-            remote_id="" if req.platform == "yandex" else req.remote_id,
-            variant_id=req.variant_id,
-            source=source,
-            image_url=sku["image_url"] or resolved["image_url"],
-            origin="alibaba_api",
-            is_default=req.set_default,
+        effective_master, linked_master = self.procurement.store.resolve_master_sku(
+            req.platform, read_identities, req.seller_sku
         )
-        saved = self.procurement.store.upsert_sku_binding(
-            binding,
-            set_default=req.set_default,
-            clear_default_identities=read_identities,
-        )
+        target_master = req.master_sku or effective_master
+        if req.master_sku and req.master_sku != effective_master:
+            target_master, linked_master = self.procurement.store.set_master_sku_link(
+                req.platform,
+                write_identity,
+                req.seller_sku,
+                req.master_sku,
+                clear_identities=read_identities,
+            )
+        if req.shared_across_platforms:
+            saved = self.procurement.store.upsert_master_source(
+                target_master,
+                source,
+                image_url=sku["image_url"] or resolved["image_url"],
+                origin="alibaba_api",
+                set_default=req.set_default,
+                platform=req.platform,
+                store_identities=read_identities,
+                seller_sku=req.seller_sku,
+            )
+        else:
+            binding = SalesSkuBinding(
+                platform=req.platform,
+                store_identity=write_identity,
+                seller_sku=req.seller_sku,
+                remote_id="" if req.platform == "yandex" else req.remote_id,
+                variant_id=req.variant_id,
+                source=source,
+                image_url=sku["image_url"] or resolved["image_url"],
+                origin="alibaba_api",
+                scope="store",
+                master_sku=target_master,
+                is_default=req.set_default,
+            )
+            saved = self.procurement.store.upsert_sku_binding(
+                binding,
+                set_default=req.set_default,
+                clear_default_identities=read_identities,
+            )
         bindings = self.procurement.store.list_sku_bindings(
             req.platform,
             read_identities,
@@ -297,6 +331,8 @@ class SkuProcurementService:
         )
         response = {
             "ok": True,
+            "master_sku": target_master,
+            "linked_master_sku": linked_master,
             "binding": saved.model_dump(mode="json"),
             "bindings": [b.model_dump(mode="json") for b in bindings],
         }
@@ -309,14 +345,38 @@ class SkuProcurementService:
         read_identities = list(self.read_identities_provider(req.platform, req.account_id))
         if not read_identities:
             raise ValueError("当前店铺尚未完成授权，无法切换默认采购来源")
-        updated = self.procurement.store.set_default_sku_binding(
-            req.platform,
-            read_identities,
-            req.seller_sku,
-            req.binding_id,
-            remote_id=req.remote_id,
-            variant_id=req.variant_id,
+        effective_master, linked_master = self.procurement.store.resolve_master_sku(
+            req.platform, read_identities, req.seller_sku
         )
+        target_master = req.master_sku or effective_master
+        if req.scope == "master" or req.binding_id.startswith("ms:"):
+            updated = self.procurement.store.set_default_master_source(
+                target_master,
+                req.binding_id,
+                platform=req.platform,
+                store_identities=read_identities,
+                seller_sku=req.seller_sku,
+            )
+        else:
+            updated = self.procurement.store.set_default_sku_binding(
+                req.platform,
+                read_identities,
+                req.seller_sku,
+                req.binding_id,
+                remote_id=req.remote_id,
+                variant_id=req.variant_id,
+            )
+            if req.shared_across_platforms:
+                updated = self.procurement.store.upsert_master_source(
+                    target_master,
+                    updated.source,
+                    image_url=updated.image_url,
+                    origin=updated.origin,
+                    set_default=True,
+                    platform=req.platform,
+                    store_identities=read_identities,
+                    seller_sku=req.seller_sku,
+                )
         bindings = self.procurement.store.list_sku_bindings(
             req.platform,
             read_identities,
@@ -326,6 +386,8 @@ class SkuProcurementService:
         )
         response = {
             "ok": True,
+            "master_sku": target_master,
+            "linked_master_sku": linked_master,
             "binding": updated.model_dump(mode="json"),
             "bindings": [b.model_dump(mode="json") for b in bindings],
         }
@@ -338,12 +400,19 @@ class SkuProcurementService:
         read_identities = list(self.read_identities_provider(req.platform, req.account_id))
         if not read_identities:
             raise ValueError("当前店铺尚未完成授权，无法删除采购来源")
-        removed = self.procurement.store.delete_sku_binding(
-            req.platform,
-            read_identities,
-            req.seller_sku,
-            req.binding_id,
+        effective_master, linked_master = self.procurement.store.resolve_master_sku(
+            req.platform, read_identities, req.seller_sku
         )
+        target_master = req.master_sku or effective_master
+        if req.scope == "master" or req.binding_id.startswith("ms:"):
+            removed = self.procurement.store.delete_master_source(target_master, req.binding_id)
+        else:
+            removed = self.procurement.store.delete_sku_binding(
+                req.platform,
+                read_identities,
+                req.seller_sku,
+                req.binding_id,
+            )
         if not removed:
             raise ValueError("采购来源不存在或已被删除")
         bindings = self.procurement.store.list_sku_bindings(
@@ -354,6 +423,33 @@ class SkuProcurementService:
         return {
             "ok": True,
             "removed": True,
+            "master_sku": target_master,
+            "linked_master_sku": linked_master,
+            "bindings": [b.model_dump(mode="json") for b in bindings],
+        }
+
+    def link_master_sku(self, body: dict) -> dict:
+        req = LinkMasterSkuRequest.model_validate(body)
+        write_identity = self.write_identity_provider(req.platform, req.account_id)
+        if not write_identity:
+            raise ValueError("当前店铺尚未完成授权，无法关联统一货号")
+        read_identities = list(self.read_identities_provider(req.platform, req.account_id))
+        master_sku, linked_master_sku = self.procurement.store.set_master_sku_link(
+            req.platform,
+            write_identity,
+            req.seller_sku,
+            req.master_sku,
+            clear_identities=read_identities,
+        )
+        bindings = self.procurement.store.list_sku_bindings(
+            req.platform,
+            read_identities,
+            req.seller_sku,
+        )
+        return {
+            "ok": True,
+            "master_sku": master_sku,
+            "linked_master_sku": linked_master_sku,
             "bindings": [b.model_dump(mode="json") for b in bindings],
         }
 

@@ -818,6 +818,7 @@ export interface BackendConfirmedEdgeEstimate {
 
 export interface BackendProductSku {
   id?: string
+  master_sku?: string
   source_sku_id?: string
   source_offer_id?: string
   source_spec_id?: string
@@ -965,6 +966,7 @@ export interface BackendProduct {
   collect_status?: string
   collect_logs?: Array<unknown>
   workflow_statuses?: Record<string, string>
+  in_library?: boolean
   created_at?: string
   updated_at?: string
 }

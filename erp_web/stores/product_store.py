@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterator
 
 from pydantic import ValidationError
 
-from erp_web.db import ErpDatabase, product_identity
+from erp_web.db import ErpDatabase, new_draft_id, product_identity
 from erp_web.schemas.product import ConfirmedEdgeEstimate
 from erp_web.schemas.product_facts import ProductSkuFactsUpdateRequest
 from erp_web.stores.product_mutation import product_mutation, product_resource_locks
@@ -37,6 +37,7 @@ from erp_web.product_model import (
 )
 from erp_web.product_model.common import normalize_list
 from erp_web.product_model.sku_image_model import replace_draft_sku_images
+from erp_web.product_model.sku_model import sku_fingerprint
 from erp_web.product_model.source_facts import validate_draft_facts
 from erp_web.runtime_units.image_pool_core import (
     _display_image_ref,
@@ -956,26 +957,38 @@ class ProductStore:
             }
 
         deleted_ids: list[str] = []
+        detached_ids: list[str] = []
+        preserved_draft_count = 0
         missing_ids: list[str] = []
         for product_id in ids:
-            deleted = self._db.delete_product_model(product_id)
-            if deleted:
+            outcome = self._db.remove_product_from_library(product_id)
+            if outcome["removed"]:
                 deleted_ids.append(product_id)
+                if outcome["mode"] == "detached":
+                    detached_ids.append(product_id)
+                    preserved_draft_count += int(outcome["draft_count"] or 0)
             else:
                 missing_ids.append(product_id)
 
         products_index = self.load_products_index()
         product = self.load_product()
+        message = (
+            f"已从采集箱移除 {len(deleted_ids)} 个商品（已安全保留 {len(detached_ids)} 个商品关联的 {preserved_draft_count} 份草稿及商品主档）。"
+            if detached_ids
+            else f"已删除 {len(deleted_ids)} 个商品。"
+        )
 
         return {
             "ok": True,
             "deleted": len(deleted_ids),
             "deletedIds": deleted_ids,
+            "detachedIds": detached_ids,
+            "preservedDraftCount": preserved_draft_count,
             "missingIds": missing_ids,
             "productsIndex": products_index,
             "product": product,
             "imagePool": current_image_pool(product),
-            "message": f"已删除 {len(deleted_ids)} 个商品。",
+            "message": message,
         }
 
     @product_mutation("draft")
@@ -1274,11 +1287,15 @@ class ProductStore:
                 target["sites_to_sell"] = operations
             targets.append(target)
         duplicated["target_sites"] = targets
+        duplicated_draft_id = new_draft_id()
+        duplicated["draft_id"] = duplicated_draft_id
         for sku in duplicated.get("sku_items", []):
             sku["publications"] = {}
             # 核价依据属于商品成本和销售条件，不绑定草稿或卖家身份。
             # 保留已应用报价，发布预检继续核对币种、成本、包装及费用是否变化。
-            sku["sku"] = ""
+            # 同平台复制草稿属于独立新刊登（如 AB 测/多链接），须使用区别于原草稿的卖家编码避免平台冲突。
+            sku_id = str(sku.get("sku_id") or "").strip()
+            sku["sku"] = "SKU-" + sku_fingerprint([duplicated_draft_id, sku_id])[:20].upper()
 
         # 同一商品可能保留原草稿的发布预览；副本状态只能按自身内容重新计算。
         product_for_status = deepcopy(product)

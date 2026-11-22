@@ -11,6 +11,7 @@ import {
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import {
   bindSkuSource,
+  linkMasterSku,
   querySkuSources,
   removeSkuSource,
   resolveAlibabaSource,
@@ -42,6 +43,11 @@ const emit = defineEmits<{
 }>()
 
 const bindings = ref<SalesSkuBinding[]>(props.initialBindings ? [...props.initialBindings] : [])
+const masterSku = ref(props.sellerSku)
+const linkedMasterSku = ref('')
+const masterSkuDraft = ref('')
+const editingMasterSku = ref(false)
+const sharedAcrossPlatforms = ref(true)
 const loadingBindings = ref(false)
 const busy = ref(false)
 const resolving = ref(false)
@@ -96,6 +102,9 @@ async function refreshBindings() {
     ])
     if (items[0]) {
       bindings.value = items[0].bindings || []
+      masterSku.value = items[0].master_sku || props.sellerSku
+      linkedMasterSku.value = items[0].linked_master_sku || ''
+      masterSkuDraft.value = linkedMasterSku.value || masterSku.value
       if (!props.orderId) emit('updated', { bindings: bindings.value })
     }
   } catch (exc) {
@@ -141,13 +150,18 @@ async function saveBinding(setDefault: boolean) {
       resolve_id: resolved.value.resolve_id,
       source_sku_id: selectedResolvedSku.value.source_sku_id,
       set_default: setDefault,
+      shared_across_platforms: sharedAcrossPlatforms.value,
+      master_sku: masterSku.value,
       ...(props.orderId && props.lineKey && setDefault
         ? { order_id: props.orderId, line_key: props.lineKey, revision: props.revision }
         : {}),
     })
     bindings.value = res.bindings || []
+    if (res.master_sku) masterSku.value = res.master_sku
     notice.value = setDefault
-      ? '已设为该销售 SKU 默认采购源，后续新订单将自动使用此货源。'
+      ? (sharedAcrossPlatforms.value
+        ? `已设为统一货号 ${masterSku.value} 的全平台默认采购源，后续各平台新订单将自动使用此货源。`
+        : '已设为当前店铺默认采购源，后续新订单将自动使用此货源。')
       : '已添加为备选采购源。'
     resolved.value = null
     selectedSkuId.value = ''
@@ -173,15 +187,47 @@ async function switchDefault(binding: SalesSkuBinding) {
       remote_id: props.remoteId || '',
       variant_id: props.variantId || '',
       binding_id: binding.id,
+      scope: binding.scope || 'store',
+      master_sku: binding.master_sku || masterSku.value,
       ...(props.orderId && props.lineKey
         ? { order_id: props.orderId, line_key: props.lineKey, revision: props.revision }
         : {}),
     })
     bindings.value = res.bindings || []
-    notice.value = '已切换为该销售 SKU 默认采购源。'
+    notice.value = binding.scope === 'master'
+      ? `已切换为统一货号 ${masterSku.value} 的全平台默认采购源。`
+      : '已切换为该销售 SKU 默认采购源。'
     emit('updated', { bindings: bindings.value, orderDetail: res.order_detail })
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : '切换默认采购源失败'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function saveMasterSkuLink() {
+  if (busy.value) return
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const res = await linkMasterSku({
+      platform: props.platform,
+      account_id: props.accountId || '',
+      seller_sku: props.sellerSku,
+      master_sku: masterSkuDraft.value.trim(),
+    })
+    masterSku.value = res.master_sku || props.sellerSku
+    linkedMasterSku.value = res.linked_master_sku || ''
+    masterSkuDraft.value = linkedMasterSku.value || masterSku.value
+    bindings.value = res.bindings || []
+    editingMasterSku.value = false
+    notice.value = linkedMasterSku.value
+      ? `已关联至统一货号 ${masterSku.value}，将共享该货号下的全平台 1688 采购源。`
+      : '已恢复默认货号关联。'
+    emit('updated', { bindings: bindings.value })
+  } catch (exc) {
+    error.value = exc instanceof Error ? exc.message : '更新统一货号关联失败'
   } finally {
     busy.value = false
   }
@@ -198,6 +244,8 @@ async function removeBinding(binding: SalesSkuBinding) {
       account_id: props.accountId || '',
       seller_sku: props.sellerSku,
       binding_id: binding.id,
+      scope: binding.scope || 'store',
+      master_sku: binding.master_sku || masterSku.value,
     })
     bindings.value = res.bindings || []
     notice.value = '已移除该采购源（不影响历史采购记录）。'
@@ -223,11 +271,41 @@ onMounted(() => {
     @close="emit('close')"
   >
     <div class="space-y-5 text-sm text-accent-800 dark:text-accent-100">
-      <div class="rounded-xl border border-accent-200/90 bg-accent-50/80 px-3.5 py-2.5 dark:border-dark-700 dark:bg-dark-800/70">
+      <div class="space-y-2 rounded-xl border border-accent-200/90 bg-accent-50/80 px-3.5 py-2.5 dark:border-dark-700 dark:bg-dark-800/70">
         <p class="font-semibold text-accent-950 dark:text-white">{{ title || sellerSku }}</p>
-        <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">
-          {{ platformNames[platform] }} · 销售 SKU：<span class="font-mono text-accent-700 dark:text-accent-200">{{ sellerSku }}</span>
-        </p>
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-accent-500 dark:text-accent-400">
+          <p>
+            {{ platformNames[platform] }} · 销售 SKU：<span class="font-mono text-accent-700 dark:text-accent-200">{{ sellerSku }}</span>
+            <span class="mx-1.5 text-accent-300 dark:text-dark-600">|</span>
+            统一货号：<span class="font-mono font-medium text-primary-700 dark:text-primary-300" data-testid="sku-source-master-sku">{{ masterSku }}</span>
+          </p>
+          <button
+            type="button"
+            data-testid="sku-source-edit-master"
+            class="text-xs font-medium text-primary-700 hover:underline dark:text-primary-300"
+            @click="editingMasterSku = !editingMasterSku"
+          >
+            {{ editingMasterSku ? '收起' : '关联统一货号' }}
+          </button>
+        </div>
+        <form v-if="editingMasterSku" class="flex flex-wrap items-center gap-2 border-t border-accent-200/70 pt-2 dark:border-dark-700" @submit.prevent="saveMasterSkuLink">
+          <input
+            v-model="masterSkuDraft"
+            data-testid="sku-source-master-input"
+            type="text"
+            class="input h-8 min-w-0 flex-1 !rounded-lg !py-0 font-mono text-xs"
+            placeholder="输入跨平台共享的统一货号（留空恢复使用当前销售 SKU）"
+            :disabled="busy"
+          />
+          <button
+            type="submit"
+            data-testid="sku-source-master-save"
+            class="btn btn-outline !min-h-8 shrink-0 !rounded-lg !px-2.5 text-xs"
+            :disabled="busy"
+          >
+            保存关联
+          </button>
+        </form>
       </div>
 
       <p v-if="error" role="alert" class="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
@@ -283,6 +361,14 @@ onMounted(() => {
                   </span>
                   <span class="rounded-full bg-accent-100 px-2 py-0.5 text-[11px] text-accent-600 dark:bg-dark-800 dark:text-accent-300">
                     {{ bindingOriginLabel(binding) }}
+                  </span>
+                  <span
+                    class="rounded-full px-2 py-0.5 text-[11px]"
+                    :class="binding.scope === 'master'
+                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200'
+                      : 'bg-accent-100 text-accent-600 dark:bg-dark-800 dark:text-accent-300'"
+                  >
+                    {{ binding.scope === 'master' ? '全平台共享' : '仅本店铺' }}
                   </span>
                   <span v-if="binding.source.supplier" class="truncate text-xs text-accent-500 dark:text-accent-400">
                     {{ binding.source.supplier }}
@@ -429,25 +515,37 @@ onMounted(() => {
             </label>
           </div>
 
-          <div class="flex flex-wrap items-center justify-end gap-2 pt-1">
-            <button
-              type="button"
-              data-testid="sku-source-save-backup"
-              class="btn btn-outline !min-h-9 !rounded-xl !px-3 text-xs"
-              :disabled="busy || !selectedResolvedSku || !selectedResolvedSku.can_auto_purchase"
-              @click="saveBinding(false)"
-            >
-              仅存为备选货源
-            </button>
-            <button
-              type="button"
-              data-testid="sku-source-save-default"
-              class="btn btn-primary !min-h-9 !rounded-xl !px-3.5 text-xs"
-              :disabled="busy || !selectedResolvedSku || !selectedResolvedSku.can_auto_purchase"
-              @click="saveBinding(true)"
-            >
-              {{ busy ? '保存中…' : '绑定并设为默认货源' }}
-            </button>
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs text-accent-700 dark:text-accent-200">
+              <input
+                v-model="sharedAcrossPlatforms"
+                data-testid="sku-source-shared-toggle"
+                type="checkbox"
+                class="size-4 accent-primary-600"
+                :disabled="busy"
+              />
+              同步应用到全平台同货号 SKU（<span class="font-mono">{{ masterSku }}</span>）
+            </label>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-testid="sku-source-save-backup"
+                class="btn btn-outline !min-h-9 !rounded-xl !px-3 text-xs"
+                :disabled="busy || !selectedResolvedSku || !selectedResolvedSku.can_auto_purchase"
+                @click="saveBinding(false)"
+              >
+                仅存为备选货源
+              </button>
+              <button
+                type="button"
+                data-testid="sku-source-save-default"
+                class="btn btn-primary !min-h-9 !rounded-xl !px-3.5 text-xs"
+                :disabled="busy || !selectedResolvedSku || !selectedResolvedSku.can_auto_purchase"
+                @click="saveBinding(true)"
+              >
+                {{ busy ? '保存中…' : '绑定并设为默认货源' }}
+              </button>
+            </div>
           </div>
         </div>
       </section>

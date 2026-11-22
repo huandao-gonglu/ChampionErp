@@ -114,6 +114,7 @@ it('粘贴 1688 链接解析规格并绑定为默认采购源，同时支持切�
       resolve_id: 'res-1',
       source_sku_id: '2001',
       set_default: true,
+      shared_across_platforms: true,
       order_id: 'order-1',
       line_key: 'line-1',
     }))

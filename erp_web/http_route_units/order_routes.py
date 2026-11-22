@@ -130,6 +130,10 @@ def handle_sku_source_remove(handler):
     _sku_source_command(handler, "remove")
 
 
+def handle_sku_source_link_master(handler):
+    _sku_source_command(handler, "link-master")
+
+
 def handle_purchase_query(handler):
     try:
         body = validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -253,6 +257,7 @@ POST_HANDLERS = {
     "/api/sku-sources/bind": handle_sku_source_bind,
     "/api/sku-sources/set-default": handle_sku_source_set_default,
     "/api/sku-sources/remove": handle_sku_source_remove,
+    "/api/sku-sources/link-master": handle_sku_source_link_master,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 GET_HANDLERS = {

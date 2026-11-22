@@ -6,8 +6,9 @@ from erp_web.schemas.order_procurement import ProcurementSource, SourceSelection
 def _candidate_rank(candidate):
     return (
         1 if getattr(candidate, "is_default", False) else 0,
-        1 if getattr(candidate, "origin", "publish") == "alibaba_api" else 0,
         str(getattr(candidate, "updated_at", "") or ""),
+        1 if getattr(candidate, "origin", "publish") == "alibaba_api" else 0,
+        1 if getattr(candidate, "scope", "store") == "master" else 0,
     )
 
 
@@ -30,12 +31,18 @@ def resolve_source_selection(line, key, signature, saved, candidates):
     if saved:
         selection.revision = saved["revision"]
     defaults = [candidate for candidate in ordered if getattr(candidate, "is_default", False)]
+    selected_default = (
+        defaults[0]
+        if len(defaults) == 1
+        or (len(defaults) > 1 and (defaults[0].updated_at or "") > (defaults[1].updated_at or ""))
+        else None
+    )
     if saved and saved["line_signature"] == signature:
         selection.status = "confirmed"
         selection.source = ProcurementSource.model_validate_json(saved["source_json"])
-    elif len(defaults) == 1:
+    elif selected_default is not None:
         selection.status = "matched"
-        selection.source = defaults[0].source
+        selection.source = selected_default.source
         selection.reason = (
             "已匹配该 SKU 默认采购源，核对后可确认采购或切换备选"
             if len(ordered) > 1

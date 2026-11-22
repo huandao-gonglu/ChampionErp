@@ -240,3 +240,118 @@ def test_backfill_marker_avoids_rescanning_publish_jobs(monkeypatch):
     from erp_web.facades.order_procurement_facade import create_service
     create_service(context)
     assert called["count"] == 0
+
+
+def test_cross_platform_master_sku_shares_1688_source_and_survives_reauth(monkeypatch):
+    """跨平台同 master_sku / 关联不同名老 SKU 共享 1688 货源，且 Ozon/Mercado 重授权补齐字段不失联。"""
+    context = get_context()
+    store_cfg = context.config.load_store_config()
+    store_cfg["yandex"] = {
+        **(store_cfg.get("yandex") or {}),
+        "business_id": "9988",
+        "campaign_id": "1001",
+        "api_token": "tok",
+    }
+    store_cfg["ozon"] = {
+        **(store_cfg.get("ozon") or {}),
+        "client_id": "oz-client-1",
+        "api_key": "oz-key",
+        "shop_name": "Ozon 店铺",
+    }
+    store_cfg["mercadolibre"] = {
+        **(store_cfg.get("mercadolibre") or {}),
+        "seller_id": "ml-seller-9",
+        "access_token": "ml-tok",
+        "shop_name": "ML 店铺",
+    }
+    context.config.save_store_config(store_cfg)
+    monkeypatch.setattr(context.order_notifications, "accounts", lambda: {"yandex": ["1001"], "ozon": ["oz-client-1"], "mercadolibre": ["ml-seller-9"]})
+    monkeypatch.setattr(context.order_procurement, "accounts_provider", lambda: {"yandex": ["1001"], "ozon": ["oz-client-1"], "mercadolibre": ["ml-seller-9"]})
+
+    # 1. 新商品认领到 Yandex 与 Ozon 时，自动共享同一个稳定 master_sku
+    saved_product = context.products.save_product({
+        "schema_version": 5,
+        "name": "跨平台测试商品",
+        "source": {
+            "source_platform": "1688",
+            "source_url": "https://detail.1688.com/offer/888999.html",
+            "title": "跨平台测试商品",
+            "skus": [{"id": "s1", "offer_id": "888999", "spec_id": "sp1", "name": "黑色"}],
+        },
+        "sku_items": [
+            {"id": "phys-sku-1", "master_sku": "M-SHARED-001", "source_sku_id": "s1", "source_offer_id": "888999", "source_spec_id": "sp1", "name": "黑色", "active": True},
+        ],
+    })
+    pid = saved_product["product_id"]
+    draft_y_id = context.db.upsert_draft_model(pid, "yandex", {"platform": "yandex", "site": "RU", "sku_items": [{"sku_id": "phys-sku-1", "selected": True}]})
+    draft_o_id = context.db.upsert_draft_model(pid, "ozon", {"platform": "ozon", "site": "RU", "sku_items": [{"sku_id": "phys-sku-1", "selected": True}]})
+    draft_y = context.db.load_draft_model(draft_y_id)
+    draft_o = context.db.load_draft_model(draft_o_id)
+    assert draft_y["sku_items"][0]["sku"] == "M-SHARED-001"
+    assert draft_o["sku_items"][0]["sku"] == "M-SHARED-001"
+
+    # 2. 在采集箱移除已建草稿的商品时，不级联毁掉草稿与商品主档；删完所有草稿后自动清理孤儿主档
+    removal = context.products.delete_products_from_index([pid])
+    assert removal["ok"] is True
+    assert removal["detachedIds"] == [pid]
+    assert removal["preservedDraftCount"] == 2
+    assert all(row["product_id"] != pid for row in context.products.load_products_index())
+    assert context.db.load_draft_model(draft_y["draft_id"])["draft_id"] == draft_y["draft_id"]
+    assert context.db.load_product_model(pid)["product_id"] == pid
+
+    # 删掉全部草稿后，已移出采集箱的孤儿商品主档自动回收
+    context.db.delete_draft_model(draft_y["draft_id"])
+    assert context.db.load_product_model(pid)["product_id"] == pid
+    context.db.delete_draft_model(draft_o["draft_id"])
+    assert context.db.load_product_model(pid) == {}
+
+    # 3. 绑定跨平台共享 1688 货源到 M-SHARED-001：Yandex 绑定一次，Ozon 同货号订单自动命中！
+    fake_client = FakeProductAlibabaClient({
+        "888999": {
+            "result": {
+                "productID": 888999,
+                "subject": "跨平台共享货源",
+                "sellerName": "源头工厂",
+                "skuInfos": [{"skuId": "9001", "specId": "spec-shared", "skuName": "黑色", "price": "12.0", "stock": 999}],
+            }
+        }
+    })
+    sku_service = create_sku_procurement_service(context, client_factory=lambda _: fake_client)
+    resolved = sku_service.resolve_1688({"url": "https://detail.1688.com/offer/888999.html"})
+    sku_service.bind_source({
+        "platform": "yandex",
+        "account_id": "1001",
+        "seller_sku": "M-SHARED-001",
+        "resolve_id": resolved["resolve_id"],
+        "source_sku_id": "9001",
+        "set_default": True,
+        "shared_across_platforms": True,
+    })
+
+    ozon_order = _save_order(context, order_id="OZ-1", account_id="oz-client-1", sku="M-SHARED-001", platform="ozon")
+    ozon_detail = context.order_procurement.detail(ozon_order.identity)
+    assert ozon_detail["lines"][0]["selection"]["status"] == "matched"
+    assert ozon_detail["lines"][0]["selection"]["source"]["source_spec_id"] == "spec-shared"
+
+    # 4. 老店不同名 SKU（Mercado 上的 OLD-ML-SKU）显式关联到 M-SHARED-001 后立刻共享同一货源
+    linked = sku_service.link_master_sku({
+        "platform": "mercadolibre",
+        "account_id": "ml-seller-9",
+        "seller_sku": "OLD-ML-SKU",
+        "master_sku": "M-SHARED-001",
+    })
+    assert linked["master_sku"] == "M-SHARED-001"
+    assert len(linked["bindings"]) == 1
+
+    ml_order = _save_order(context, order_id="ML-1", account_id="ml-seller-9", sku="OLD-ML-SKU", platform="mercadolibre")
+    ml_detail = context.order_procurement.detail(ml_order.identity)
+    assert ml_detail["lines"][0]["selection"]["status"] == "matched"
+    assert ml_detail["lines"][0]["selection"]["source"]["source_offer_id"] == "888999"
+
+    # 5. 3-A 验证：Mercado 重授权补齐 user_id（导致旧 store_identity 哈希变化）时，按稳定 account_id 仍不失联！
+    store_cfg["mercadolibre"]["user_id"] = "ml-seller-9"
+    store_cfg["mercadolibre"]["shop_name"] = "ML 改名新店"
+    context.config.save_store_config(store_cfg)
+    ml_detail_after_reauth = context.order_procurement.detail(ml_order.identity)
+    assert ml_detail_after_reauth["lines"][0]["selection"]["status"] == "matched"
+    assert ml_detail_after_reauth["lines"][0]["selection"]["source"]["source_spec_id"] == "spec-shared"

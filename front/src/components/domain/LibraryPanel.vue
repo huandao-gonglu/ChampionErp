@@ -714,10 +714,10 @@ function confirmDeleteAction() {
         <div class="flex items-start gap-2.5 rounded-xl border border-rose-200/80 bg-rose-50/70 p-3 text-rose-900 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-200">
           <PhTrash :size="17" class="mt-0.5 shrink-0 text-rose-600 dark:text-rose-400" aria-hidden="true" />
           <p v-if="deleteTarget === 'batch'">
-            确认删除已勾选的 <strong>{{ selectedCount }}</strong> 个商品吗？删除后不可恢复。
+            确认从采集箱移除已勾选的 <strong>{{ selectedCount }}</strong> 个商品吗？关联的草稿与商品主档将安全保留；未建草稿的商品会被彻底删除。
           </p>
           <p v-else>
-            确认删除商品「<strong>{{ deleteTarget.title || deleteTarget.productId || '该商品' }}</strong>」吗？删除后不可恢复。
+            确认从采集箱移除商品「<strong>{{ deleteTarget.title || deleteTarget.productId || '该商品' }}</strong>」吗？关联的草稿与商品主档将安全保留；未建草稿的商品会被彻底删除。
           </p>
         </div>
       </div>

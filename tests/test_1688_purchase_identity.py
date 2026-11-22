@@ -97,7 +97,7 @@ def test_missing_sku_id_cannot_be_replaced_with_spec_id():
 
 def test_legacy_binding_identity_remains_stable_and_bad_republication_is_distinct():
     legacy = bindings_from_publish_job(job())[0]
-    old = legacy.model_dump(exclude={"publication_id", "id", "image_url", "origin", "is_default", "updated_at"})
+    old = legacy.model_dump(exclude={"publication_id", "id", "image_url", "origin", "scope", "master_sku", "is_default", "updated_at"})
     for key in ("source_offer_id", "source_spec_id", "purchase_block_reason"):
         old["source"].pop(key)
     assert legacy.identity == hashlib.sha256(json.dumps(old, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
