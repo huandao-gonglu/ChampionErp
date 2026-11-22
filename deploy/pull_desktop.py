@@ -1,13 +1,31 @@
-"""在发布暂存目录并行拉取桌面包，向 SSH 终端报告实际落盘进度。"""
+"""在发布暂存目录并行接收或拉取桌面包，向 SSH 终端报告实际落盘进度。"""
+import argparse
 import asyncio
+from contextlib import ExitStack
 from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import sys
 import time
+
+ALLOWED_ARTIFACTS = {'installer.dmg', 'update.zip'}
+SHA256_RE = re.compile(r'[0-9a-f]{64}')
+RECEIVE_CHUNK_SIZE = 256 * 1024
+
+
+def file_sha256(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def format_speed(bytes_per_second):
+    if bytes_per_second >= 1048576:
+        return f'{bytes_per_second / 1048576:.2f} MiB/s'
+    return f'{bytes_per_second / 1024:.1f} KiB/s'
 
 
 @dataclass
@@ -30,18 +48,19 @@ class Download:
             return 0
 
     def verified(self, path):
-        if not path.is_file() or path.stat().st_size != self.size:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size != self.size:
             return False
-        with path.open('rb') as source:
-            return hashlib.file_digest(source, 'sha256').hexdigest() == self.sha256
+        return file_sha256(path) == self.sha256
 
     def prepare(self):
         if self.verified(self.target):
             self.status = '已复用'
             return
-        # 旧版 SCP 中断后，部分数据可能位于正式文件名下。
-        if self.target.exists() and not self.partial.exists() and self.target.stat().st_size < self.size:
-            self.target.replace(self.partial)
+        # 复用旧版 SCP 或直连 SSH 中断遗留的部分文件。
+        for legacy in (self.target.with_name(self.target.name + '.ssh.part'), self.target):
+            if legacy.is_file() and not legacy.is_symlink() and not self.partial.exists() and legacy.stat().st_size < self.size:
+                legacy.replace(self.partial)
+                break
         if self.verified(self.partial):
             self.partial.replace(self.target)
             self.status = '已复用'
@@ -105,7 +124,7 @@ async def transfer(downloads, base_url, interactive):
                 bar = '#' * (percent // 10) + '-' * (10 - percent // 10)
                 lines.append(f'{item.target.name} [{bar}] {percent:3d}% '
                              f'{count / 1048576:.1f}/{item.size / 1048576:.1f} MiB '
-                             f'{speed / 1024:.1f} KiB/s  {status}')
+                             f'{format_speed(speed)}  {status}')
                 previous[i] = count
             if interactive and rendered:
                 print(f'\033[{len(lines)}A', end='')
@@ -118,11 +137,123 @@ async def transfer(downloads, base_url, interactive):
             await asyncio.wait(tasks, timeout=1)
 
 
-async def main():
+def _validate_artifact(name, size, sha256):
+    if name not in ALLOWED_ARTIFACTS:
+        raise ValueError('桌面包名称无效')
+    if not isinstance(size, int) or size <= 0:
+        raise ValueError('桌面包大小无效')
+    if not isinstance(sha256, str) or not SHA256_RE.fullmatch(sha256):
+        raise ValueError('桌面包摘要格式无效')
+
+
+def probe_ssh():
+    """检查目标暂存目录中的成品和断点文件，供直连 SSH 续传前核对前缀摘要。"""
     request = json.loads(sys.stdin.readline())
     artifacts = request['artifacts']
-    allowed = {'installer.dmg', 'update.zip'}
-    if not artifacts or not artifacts.keys() <= allowed:
+    if not artifacts or not artifacts.keys() <= ALLOWED_ARTIFACTS:
+        raise ValueError('桌面包名称无效')
+    result = {}
+    with ExitStack() as stack:
+        dir_lock = stack.enter_context(open('.desktop-transfer.lock', 'a'))
+        fcntl.flock(dir_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        for name, item in artifacts.items():
+            size, sha256 = item['size'], item['sha256']
+            _validate_artifact(name, size, sha256)
+            file_lock = stack.enter_context(open(f'.desktop-transfer.{name}.lock', 'a'))
+            fcntl.flock(file_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            target = Path(name)
+            partial = Path(name + '.ssh.part')
+            if target.is_file() and not target.is_symlink() and target.stat().st_size == size and file_sha256(target) == sha256:
+                partial.unlink(missing_ok=True)
+                result[name] = {'status': 'cached', 'offset': size}
+                continue
+            if not partial.exists():
+                for legacy in (Path(name + '.https.part'), target):
+                    if legacy.is_file() and not legacy.is_symlink() and legacy.stat().st_size < size:
+                        legacy.replace(partial)
+                        break
+            if partial.is_file() and not partial.is_symlink():
+                current_size = partial.stat().st_size
+                if current_size == size and file_sha256(partial) == sha256:
+                    partial.replace(target)
+                    result[name] = {'status': 'cached', 'offset': size}
+                elif 0 < current_size < size:
+                    result[name] = {
+                        'status': 'partial',
+                        'offset': current_size,
+                        'prefix_sha256': file_sha256(partial),
+                    }
+                else:
+                    partial.unlink(missing_ok=True)
+                    result[name] = {'status': 'pending', 'offset': 0}
+            else:
+                result[name] = {'status': 'pending', 'offset': 0}
+    print(json.dumps(result), flush=True)
+
+
+def receive_ssh(name, offset, size, sha256):
+    """通过标准输入接收单个桌面包的原始字节流，实时回报落盘进度并在完成后校验替换。"""
+    _validate_artifact(name, size, sha256)
+    if offset < 0 or offset >= size:
+        raise ValueError('续传偏移量无效')
+    with ExitStack() as stack:
+        dir_lock = stack.enter_context(open('.desktop-transfer.lock', 'a'))
+        fcntl.flock(dir_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        file_lock = stack.enter_context(open(f'.desktop-transfer.{name}.lock', 'a'))
+        fcntl.flock(file_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        target = Path(name)
+        partial = Path(name + '.ssh.part')
+        if target.is_file() and not target.is_symlink() and target.stat().st_size == size and file_sha256(target) == sha256:
+            partial.unlink(missing_ok=True)
+            print(f'VERIFIED {size}', flush=True)
+            return 0
+        if offset == 0:
+            open_mode = 'wb'
+        else:
+            if not partial.is_file() or partial.is_symlink() or partial.stat().st_size < offset:
+                raise RuntimeError('断点文件缺失或小于声明偏移量')
+            open_mode = 'r+b'
+        with partial.open(open_mode) as stream:
+            if offset > 0:
+                stream.truncate(offset)
+                stream.seek(offset)
+            print(f'READY {offset}', flush=True)
+            written = offset
+            last_report_time = time.monotonic()
+            last_report_bytes = written
+            reader = sys.stdin.buffer
+            while True:
+                chunk = reader.read(RECEIVE_CHUNK_SIZE)
+                if not chunk:
+                    break
+                if written + len(chunk) > size:
+                    raise ValueError('接收字节数超出声明大小')
+                stream.write(chunk)
+                written += len(chunk)
+                now = time.monotonic()
+                if now - last_report_time >= 0.4 or written - last_report_bytes >= 2 * 1024 * 1024:
+                    stream.flush()
+                    print(f'PROGRESS {written}', flush=True)
+                    last_report_time = now
+                    last_report_bytes = written
+            stream.flush()
+        print(f'PROGRESS {written}', flush=True)
+        if written != size:
+            print(f'INCOMPLETE {written}', flush=True)
+            return 1
+        if file_sha256(partial) != sha256:
+            partial.unlink(missing_ok=True)
+            print('CHECKSUM_MISMATCH', flush=True)
+            return 2
+        partial.replace(target)
+        print(f'VERIFIED {size}', flush=True)
+        return 0
+
+
+async def pull_tunnel_main():
+    request = json.loads(sys.stdin.readline())
+    artifacts = request['artifacts']
+    if not artifacts or not artifacts.keys() <= ALLOWED_ARTIFACTS:
         raise ValueError('桌面包名称无效')
     downloads = [Download(Path(name), item['size'], item['sha256']) for name, item in artifacts.items()]
     if any(item.size <= 0 for item in downloads):
@@ -139,5 +270,24 @@ async def main():
         await transfer(downloads, url, request['interactive'])
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--probe', action='store_true', help='探测暂存目录中桌面包的完成与断点状态')
+    mode.add_argument('--receive', metavar='NAME', help='从标准输入接收单个桌面包并校验落盘')
+    parser.add_argument('--offset', type=int, default=0)
+    parser.add_argument('--size', type=int)
+    parser.add_argument('--sha256')
+    args = parser.parse_args()
+    if args.probe:
+        probe_ssh()
+    elif args.receive:
+        if args.size is None or not args.sha256:
+            parser.error('--receive 需要同时提供 --size 和 --sha256')
+        sys.exit(receive_ssh(args.receive, args.offset, args.size, args.sha256))
+    else:
+        asyncio.run(pull_tunnel_main())
+
+
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()

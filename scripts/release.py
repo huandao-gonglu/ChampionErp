@@ -121,7 +121,7 @@ def run_parallel(tasks, *, log):
             log.flush()
 
 
-def _ssh_common_options():
+def _ssh_common_options(*, multiplex=True):
     options = [
         '-o', 'BatchMode=yes',
         '-o', 'ForwardAgent=no',
@@ -130,25 +130,33 @@ def _ssh_common_options():
         '-o', 'ServerAliveInterval=20',
         '-o', 'ServerAliveCountMax=3',
     ]
-    with _SSH_CONTROL_LOCK:
-        control_path = _SSH_CONTROL_PATH
-    if control_path is not None:
-        options.extend([
-            '-o', 'ControlMaster=auto',
-            '-o', f'ControlPath={control_path}',
-            '-o', 'ControlPersist=600',
-        ])
+    if multiplex:
+        with _SSH_CONTROL_LOCK:
+            control_path = _SSH_CONTROL_PATH
+        if control_path is not None:
+            options.extend([
+                '-o', 'ControlMaster=auto',
+                '-o', f'ControlPath={control_path}',
+                '-o', 'ControlPersist=600',
+            ])
     return options
 
 
 def ssh_args(args):
     return ['ssh', '-p', str(args.ssh_port), '-i', str(args.ssh_identity),
-            *_ssh_common_options(), args.ssh_host]
+            *_ssh_common_options(multiplex=True), args.ssh_host]
+
+
+def direct_ssh_args(args):
+    # 桌面包直连传输使用独立非压缩 SSH 连接，避免复用通道限速与跨阶段闲置断连。
+    return ['ssh', '-p', str(args.ssh_port), '-i', str(args.ssh_identity),
+            *_ssh_common_options(multiplex=False), '-o', 'Compression=no', args.ssh_host]
 
 
 def scp_args(args):
+    # 大文件 SCP 使用独立连接，避免跨构建阶段闲置或复用通道限速。
     return ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity),
-            *_ssh_common_options()]
+            *_ssh_common_options(multiplex=False)]
 
 
 @contextmanager
@@ -202,6 +210,21 @@ def select_server_files(tracked):
     return selected
 
 
+_REUSABLE_ASSET_PROBE = '\n'.join([
+    'import hashlib, json, sys',
+    'from pathlib import Path',
+    'items = json.loads(sys.argv[1])',
+    'shared = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("/opt/champion-erp/shared-assets")',
+    'current = Path(sys.argv[3]) if len(sys.argv) > 3 else Path("/opt/champion-erp/current")',
+    'def ok(p, h):',
+    '    if not p.is_file() or p.is_symlink():',
+    '        return False',
+    '    with p.open("rb") as source:',
+    '        return hashlib.file_digest(source, "sha256").hexdigest() == h',
+    'print(json.dumps([k for k, h in items.items() if ok(shared / h, h) or ok(current / k, h)]))',
+])
+
+
 def detect_reusable_server_assets(args, source, selected):
     """检查服务器上已存在的同摘要大体积静态资产，避免每次发布经 SCP 重复上传。"""
     candidates = {}
@@ -213,17 +236,8 @@ def detect_reusable_server_assets(args, source, selected):
             candidates[rel] = digest(path)
     if not candidates:
         return {}
-    probe = (
-        'import hashlib, json, sys; from pathlib import Path; '
-        'items = json.loads(sys.argv[1]); '
-        'shared = Path("/opt/champion-erp/shared-assets"); '
-        'current = Path("/opt/champion-erp/current"); '
-        'def ok(p, h): '
-        '    return p.is_file() and not p.is_symlink() and hashlib.file_digest(p.open("rb"), "sha256").hexdigest() == h; '
-        'print(json.dumps([k for k, h in items.items() if ok(shared / h, h) or ok(current / k, h)]))'
-    )
     try:
-        raw = remote_output(args, ['python3', '-c', probe, json.dumps(candidates)])
+        raw = remote_output(args, ['python3', '-c', _REUSABLE_ASSET_PROBE, json.dumps(candidates)])
         reusable = json.loads(raw)
     except Exception:
         return {}
@@ -507,6 +521,355 @@ def pull_desktop_files(args, staging, files, artifacts, log, *, display_gate=Non
                 stderr_reader.join(timeout=2)
 
 
+def _prefix_digest(path, length):
+    hasher = hashlib.sha256()
+    remaining = length
+    with path.open('rb') as source:
+        while remaining > 0:
+            chunk = source.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise RuntimeError('桌面包文件大小异常，无法计算断点前缀摘要')
+            hasher.update(chunk)
+            remaining -= len(chunk)
+    return hasher.hexdigest()
+
+
+def _format_transfer_speed(bytes_per_second):
+    if bytes_per_second >= 1048576:
+        return f'{bytes_per_second / 1048576:.2f} MiB/s'
+    return f'{bytes_per_second / 1024:.1f} KiB/s'
+
+
+def _probe_remote_desktop(args, staging, artifacts, log, *, cancel_event=None):
+    command = 'cd ' + shlex.quote(staging) + ' && exec python3 -u pull_desktop.py --probe'
+    payload = json.dumps({'artifacts': artifacts}) + '\n'
+    for attempt in range(1, 4):
+        if cancel_event and cancel_event.is_set():
+            return None
+        result = subprocess.run(
+            [*direct_ssh_args(args), command],
+            input=payload, capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        detail = result.stderr.strip()
+        if detail:
+            log.write(f'\nSSH 探测桌面包断点状态失败（exit={result.returncode}）：{detail}\n')
+            log.flush()
+        if result.returncode == 255 and attempt < 3 and not (cancel_event and cancel_event.is_set()):
+            if cancel_event:
+                cancel_event.wait(2 * attempt)
+            else:
+                time.sleep(2 * attempt)
+            continue
+        message = '服务器未能准备直连桌面包传输，请检查 SSH 输出'
+        if detail:
+            message += f'：{detail.splitlines()[-1]}'
+        raise RuntimeError(message)
+    return None
+
+
+def push_desktop_files(args, staging, files, artifacts, log, *, display_gate=None, cancel_event=None,
+                       stall_timeout=45, chunk_size=256 * 1024):
+    """通过多条独立直连 SSH 管道并行推送桌面包，支持前缀摘要校验续传、卡死重连与实时进度。"""
+    probed = _probe_remote_desktop(args, staging, artifacts, log, cancel_event=cancel_event)
+    if probed is None:
+        return
+    lock = threading.Lock()
+    items = []
+    now = time.monotonic()
+    for name, meta in artifacts.items():
+        state = probed.get(name, {'status': 'pending', 'offset': 0})
+        size = meta['size']
+        path = files[name]
+        if state.get('status') == 'cached':
+            offset, status, done = size, '已复用', True
+        else:
+            candidate = int(state.get('offset', 0))
+            if (state.get('status') == 'partial' and 0 < candidate < size
+                    and state.get('prefix_sha256') == _prefix_digest(path, candidate)):
+                offset, status, done = candidate, '续传', False
+            else:
+                offset, status, done = 0, '等待传输', False
+        items.append({
+            'name': name, 'path': path, 'size': size, 'sha256': meta['sha256'],
+            'offset': offset, 'received': offset, 'status': status, 'done': done,
+            'last_progress_at': now, 'active_process': None, 'error': None,
+        })
+
+    interactive = sys.stdout.isatty() and shutil.get_terminal_size().columns >= 80
+    previous = [item['received'] for item in items]
+    last_change = [now] * len(items)
+    last_sample = now
+    rendered_on_terminal = False
+
+    def _render_frame(sample_now):
+        nonlocal last_sample, rendered_on_terminal
+        dt = max(sample_now - last_sample, 0.001)
+        lines = []
+        with lock:
+            snapshot = [(item['name'], item['size'], item['received'], item['status']) for item in items]
+        for i, (name, size, count, status) in enumerate(snapshot):
+            speed = max(0, count - previous[i]) / dt
+            if count != previous[i]:
+                last_change[i] = sample_now
+            idle = int(sample_now - last_change[i])
+            shown_status = f'停滞 {idle}s' if idle >= 3 and status in ('续传', '传输中') else status
+            percent = min(100, count * 100 // size)
+            bar = '#' * (percent // 10) + '-' * (10 - percent // 10)
+            lines.append(f'{name} [{bar}] {percent:3d}% '
+                         f'{count / 1048576:.1f}/{size / 1048576:.1f} MiB '
+                         f'{_format_transfer_speed(speed)}  {shown_status}')
+            previous[i] = count
+        for line in lines:
+            log.write(line + '\n')
+        log.flush()
+        if display_gate is None or display_gate.is_set():
+            if interactive and rendered_on_terminal:
+                print(f'\033[{len(lines)}A', end='')
+            for line in lines:
+                print(('\033[2K' if interactive else '') + line, flush=True)
+            rendered_on_terminal = True
+        last_sample = sample_now
+
+    pending = [item for item in items if not item['done']]
+    if not pending:
+        _render_frame(time.monotonic())
+        return
+
+    def _upload_one(item):
+        name = item['name']
+        size = item['size']
+        sha256 = item['sha256']
+        path = item['path']
+        last_error = ''
+        for attempt in range(1, 6):
+            if cancel_event and cancel_event.is_set():
+                return
+            if attempt > 1:
+                try:
+                    reprobed = _probe_remote_desktop(
+                        args, staging, {name: {'size': size, 'sha256': sha256}}, log, cancel_event=cancel_event)
+                except Exception as exc:
+                    reprobed = None
+                    last_error = str(exc)
+                if cancel_event and cancel_event.is_set():
+                    return
+                if reprobed is None:
+                    if attempt < 5:
+                        with lock:
+                            item['status'] = f'等待第 {attempt + 1} 次尝试'
+                        wait_s = min(8, 2 ** (attempt - 1))
+                        if cancel_event:
+                            cancel_event.wait(wait_s)
+                        else:
+                            time.sleep(wait_s)
+                        continue
+                    break
+                state = reprobed.get(name, {'status': 'pending', 'offset': 0})
+                if state.get('status') == 'cached':
+                    with lock:
+                        item['received'] = size
+                        item['status'] = '校验通过'
+                        item['done'] = True
+                    return
+                candidate = int(state.get('offset', 0))
+                if (state.get('status') == 'partial' and 0 < candidate < size
+                        and state.get('prefix_sha256') == _prefix_digest(path, candidate)):
+                    offset = candidate
+                else:
+                    offset = 0
+                with lock:
+                    item['offset'] = offset
+                    item['received'] = offset
+            else:
+                with lock:
+                    offset = item['offset']
+
+            with lock:
+                item['status'] = '续传' if offset else '传输中'
+                item['last_progress_at'] = time.monotonic()
+
+            remote_cmd = (
+                'cd ' + shlex.quote(staging) + ' && exec '
+                + shlex.join(['python3', '-u', 'pull_desktop.py', '--receive', name,
+                              '--offset', str(offset), '--size', str(size), '--sha256', sha256])
+            )
+            ready_event = threading.Event()
+            verified_event = threading.Event()
+            protocol_errors = []
+            stderr_chunks = []
+
+            process = subprocess.Popen(
+                [*direct_ssh_args(args), remote_cmd],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            with lock:
+                item['active_process'] = process
+
+            def _read_stdout():
+                for raw in process.stdout:
+                    line = raw.decode(errors='replace').strip()
+                    if line.startswith('READY '):
+                        ready_event.set()
+                    elif line.startswith('PROGRESS '):
+                        try:
+                            received = int(line.split(' ', 1)[1])
+                        except ValueError:
+                            continue
+                        with lock:
+                            if received > item['received']:
+                                item['received'] = min(size, received)
+                            item['last_progress_at'] = time.monotonic()
+                    elif line.startswith('VERIFIED '):
+                        with lock:
+                            item['received'] = size
+                            item['last_progress_at'] = time.monotonic()
+                        verified_event.set()
+                        ready_event.set()
+                    elif line == 'CHECKSUM_MISMATCH':
+                        protocol_errors.append('校验和不一致')
+                    elif line.startswith('INCOMPLETE '):
+                        protocol_errors.append('传输提前中断')
+
+            def _read_stderr():
+                for raw in process.stderr:
+                    stderr_chunks.append(raw.decode(errors='replace'))
+
+            stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
+            stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
+
+            try:
+                ready_deadline = time.monotonic() + 30
+                while not ready_event.is_set() and process.poll() is None:
+                    if (cancel_event and cancel_event.is_set()) or time.monotonic() >= ready_deadline:
+                        process.kill()
+                        break
+                    ready_event.wait(0.1)
+                if ready_event.is_set() and not verified_event.is_set() and process.poll() is None:
+                    with path.open('rb') as source:
+                        source.seek(offset)
+                        remaining = size - offset
+                        while remaining > 0:
+                            if cancel_event and cancel_event.is_set():
+                                process.kill()
+                                break
+                            data = source.read(min(chunk_size, remaining))
+                            if not data:
+                                break
+                            try:
+                                process.stdin.write(data)
+                            except (BrokenPipeError, OSError):
+                                break
+                            remaining -= len(data)
+                try:
+                    process.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+                exit_code = process.wait()
+                stdout_thread.join(timeout=5)
+                stderr_thread.join(timeout=2)
+            finally:
+                with lock:
+                    if item['active_process'] is process:
+                        item['active_process'] = None
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                stdout_thread.join(timeout=2)
+                stderr_thread.join(timeout=2)
+
+            if cancel_event and cancel_event.is_set():
+                return
+            if exit_code == 0 and verified_event.is_set():
+                with lock:
+                    item['received'] = size
+                    item['status'] = '校验通过'
+                    item['done'] = True
+                return
+            stderr_text = ''.join(stderr_chunks).strip()
+            if stderr_text:
+                last_error = stderr_text.splitlines()[-1]
+                log.write(f'\n{name} 直连上传异常（exit={exit_code}）：{stderr_text}\n')
+                log.flush()
+            elif protocol_errors:
+                last_error = protocol_errors[-1]
+            else:
+                last_error = f'连接中断（exit={exit_code}）'
+            if attempt < 5:
+                with lock:
+                    item['status'] = f'等待第 {attempt + 1} 次尝试'
+                wait_s = min(8, 2 ** (attempt - 1))
+                if cancel_event:
+                    cancel_event.wait(wait_s)
+                else:
+                    time.sleep(wait_s)
+
+        detail = f'（{last_error}）' if last_error else ''
+        with lock:
+            item['error'] = RuntimeError(
+                f'{name} 直连上传或校验失败{detail}，可用 --resume 继续，或改用 --desktop-transfer tunnel'
+            )
+            item['status'] = '失败'
+            item['done'] = True
+
+    workers = [threading.Thread(target=_upload_one, args=(item,), daemon=True) for item in pending]
+    for worker in workers:
+        worker.start()
+
+    try:
+        while True:
+            if cancel_event and cancel_event.is_set():
+                with lock:
+                    active = [item['active_process'] for item in items if item['active_process'] is not None]
+                for process in active:
+                    if process.poll() is None:
+                        process.kill()
+                for worker in workers:
+                    worker.join(timeout=5)
+                return
+            tick = time.monotonic()
+            with lock:
+                stalled = [
+                    item['active_process'] for item in items
+                    if item['active_process'] is not None
+                    and item['status'] in ('续传', '传输中')
+                    and tick - item['last_progress_at'] >= stall_timeout
+                ]
+            for process in stalled:
+                if process.poll() is None:
+                    process.kill()
+            _render_frame(tick)
+            if not any(worker.is_alive() for worker in workers):
+                break
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if (cancel_event and cancel_event.is_set()) or not any(worker.is_alive() for worker in workers):
+                    break
+                time.sleep(0.05)
+    finally:
+        for worker in workers:
+            worker.join(timeout=5)
+
+    if cancel_event and cancel_event.is_set():
+        return
+    for item in items:
+        if item['error'] is not None:
+            raise item['error']
+
+
+def transfer_desktop_files(args, staging, files, artifacts, log, *, display_gate=None, cancel_event=None):
+    method = getattr(args, 'desktop_transfer', 'ssh')
+    if method == 'tunnel':
+        pull_desktop_files(args, staging, files, artifacts, log,
+                           display_gate=display_gate, cancel_event=cancel_event)
+    else:
+        push_desktop_files(args, staging, files, artifacts, log,
+                           display_gate=display_gate, cancel_event=cancel_event)
+
+
 def publish_desktop_update(args, record, folder, source, *, already_pulled=False, upload_helpers=True):
     update = record.get('desktop_update')
     if not update or update.get('published'):
@@ -522,7 +885,7 @@ def publish_desktop_update(args, record, folder, source, *, already_pulled=False
                 [*scp_args(args), source / 'deploy/publish_desktop.py', ROOT / 'deploy/pull_desktop.py',
                  args.ssh_host + ':' + staging + '/'], check=True))
         with (folder / 'build.log').open('a') as log:
-            pull_desktop_files(args, staging, files, artifacts, log)
+            transfer_desktop_files(args, staging, files, artifacts, log)
     print(remote_output(args, command), flush=True)
     manifest_url = desktop_manifest_url(update)
     with urlopen(Request(manifest_url, headers=RELEASE_HEADERS), timeout=30) as response:
@@ -610,6 +973,11 @@ def resume_release(args):
     staged = record['status'] in {'server_staged', 'failed_after_server_staged'}
     if not staged and record['status'] not in {'server_published', 'failed_after_server_published'}:
         raise RuntimeError('只有已上传或已发布的版本可以继续')
+    update = record.get('desktop_update')
+    if (update and not update.get('published')
+            and getattr(args, 'desktop_transfer', 'ssh') == 'tunnel'
+            and not shutil.which('cloudflared')):
+        raise RuntimeError('桌面隧道发布需要 cloudflared，请先在构建机安装，或改用 --desktop-transfer ssh')
     archive = folder / 'server.tar.gz'
     if digest(archive) != record['archive_sha256']:
         raise RuntimeError('已有服务器发布包摘要发生变化')
@@ -634,8 +1002,8 @@ def resume_release(args):
 def release(args):
     if args.desktop_update and sys.platform != 'darwin':
         raise RuntimeError('构建 macOS 更新包需要 Mac，仅发布服务器和网页可使用 --server-only')
-    if args.desktop_update and not shutil.which('cloudflared'):
-        raise RuntimeError('桌面发布需要 cloudflared，请先在构建机安装')
+    if args.desktop_update and getattr(args, 'desktop_transfer', 'ssh') == 'tunnel' and not shutil.which('cloudflared'):
+        raise RuntimeError('桌面隧道发布需要 cloudflared，请先在构建机安装，或改用 --desktop-transfer ssh')
     if output('git', 'status', '--porcelain', '--untracked-files=normal'):
         raise RuntimeError('请先提交本次代码修改，发布仅使用干净的 Git 版本')
     if not args.ssh_identity.is_file():
@@ -654,79 +1022,81 @@ def release(args):
     environment['ERP_DESKTOP_SIGNING_MODE'] = 'developer-id' if args.signed_desktop else 'local'
     environment['CSC_IDENTITY_AUTO_DISCOVERY'] = 'true'
     try:
-        with ssh_session(args):
-            if args.desktop_update:
-                origin = package['desktopUpdateOrigin']
-                if origin != args.public_url.rstrip('/'):
-                    raise RuntimeError('桌面包的发行站点必须与发布目标一致')
-                check_new_desktop_version({'public_url': origin, 'platform': 'darwin',
-                                           'arch': output('node', '-p', 'process.arch'), 'version': version})
-            current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
-            if not current.startswith('/opt/champion-erp/releases/'):
-                raise RuntimeError('服务器当前版本路径不符合部署约定')
-            record['previous_server_release'] = current
-            with tempfile.TemporaryDirectory(prefix='erp-release-source-') as temporary:
-                source = Path(temporary) / 'source'
-                source.mkdir()
-                with (folder / 'build.log').open('w') as log:
-                    git_archive = folder / 'source.tar'
-                    with git_archive.open('wb') as archive:
-                        subprocess.run(['git', 'archive', revision], cwd=ROOT, stdout=archive, check=True)
-                    with tarfile.open(git_archive) as archive:
-                        archive.extractall(source, filter='data')
-                    git_archive.unlink()
-                    # pnpm 安装：复用项目全局 store 避免冷解析。
-                    print('安装锁定的前端依赖并检查发布输入', flush=True)
-                    pnpm_store = ROOT / '.pnpm-store'
-                    pnpm_install = ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts']
-                    if pnpm_store.is_dir():
-                        pnpm_install.extend(['--store-dir', str(pnpm_store)])
-                    run(pnpm_install, cwd=source / 'front', log=log, env=environment)
-                    if args.desktop_update:
-                        run(['node', 'node_modules/electron/install.js'], cwd=source / 'front', log=log, env=environment)
-                    # 声明检查与类型检查互不依赖，并行执行。
-                    print('检查声明与类型', flush=True)
+        if args.desktop_update:
+            origin = package['desktopUpdateOrigin']
+            if origin != args.public_url.rstrip('/'):
+                raise RuntimeError('桌面包的发行站点必须与发布目标一致')
+            check_new_desktop_version({'public_url': origin, 'platform': 'darwin',
+                                       'arch': output('node', '-p', 'process.arch'), 'version': version})
+        current = remote_output(args, ['readlink', '-f', '/opt/champion-erp/current'])
+        if not current.startswith('/opt/champion-erp/releases/'):
+            raise RuntimeError('服务器当前版本路径不符合部署约定')
+        record['previous_server_release'] = current
+        with tempfile.TemporaryDirectory(prefix='erp-release-source-') as temporary:
+            source = Path(temporary) / 'source'
+            source.mkdir()
+            with (folder / 'build.log').open('w') as log:
+                git_archive = folder / 'source.tar'
+                with git_archive.open('wb') as archive:
+                    subprocess.run(['git', 'archive', revision], cwd=ROOT, stdout=archive, check=True)
+                with tarfile.open(git_archive) as archive:
+                    archive.extractall(source, filter='data')
+                git_archive.unlink()
+                # pnpm 安装：复用项目全局 store 避免冷解析。
+                print('安装锁定的前端依赖并检查发布输入', flush=True)
+                pnpm_store = ROOT / '.pnpm-store'
+                pnpm_install = ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts']
+                if pnpm_store.is_dir():
+                    pnpm_install.extend(['--store-dir', str(pnpm_store)])
+                run(pnpm_install, cwd=source / 'front', log=log, env=environment)
+                if args.desktop_update:
+                    run(['node', 'node_modules/electron/install.js'], cwd=source / 'front', log=log, env=environment)
+                # 声明检查与类型检查互不依赖，并行执行。
+                print('检查声明与类型', flush=True)
+                run_parallel([
+                    ([sys.executable, 'scripts/generate_third_party_notices.py', '--check'], source, environment),
+                    (['pnpm', 'types:check'], source / 'front', environment),
+                ], log=log)
+                if args.skip_tests:
+                    print('已按 --skip-tests 跳过后端、前端和桌面全量测试', flush=True)
+                else:
+                    print('运行后端、前端及桌面回归检查', flush=True)
+                    run([sys.executable, '-m', 'pytest', 'tests', '-q'], cwd=source, log=log, env=environment)
+                    run(['pnpm', 'test:run'], cwd=source / 'front', log=log, env=environment)
+                    run(['pnpm', 'test:desktop'], cwd=source / 'front', log=log, env=environment)
+                if args.desktop_update:
+                    # 网页构建与 Python 桌面执行器构建互不依赖，并行执行。
+                    # 网页构建（vue-tsc -b && vite build）完成后，桌面前端只需
+                    # vite build --mode desktop，跳过重复 vue-tsc 类型编译。
+                    print('编译网页并构建桌面执行器', flush=True)
                     run_parallel([
-                        ([sys.executable, 'scripts/generate_third_party_notices.py', '--check'], source, environment),
-                        (['pnpm', 'types:check'], source / 'front', environment),
+                        (['pnpm', 'build'], source / 'front', environment),
+                        ([sys.executable, 'scripts/build_desktop_runtime.py'], source, environment),
                     ], log=log)
-                    if args.skip_tests:
-                        print('已按 --skip-tests 跳过后端、前端和桌面全量测试', flush=True)
-                    else:
-                        print('运行后端、前端及桌面回归检查', flush=True)
-                        run([sys.executable, '-m', 'pytest', 'tests', '-q'], cwd=source, log=log, env=environment)
-                        run(['pnpm', 'test:run'], cwd=source / 'front', log=log, env=environment)
-                        run(['pnpm', 'test:desktop'], cwd=source / 'front', log=log, env=environment)
-                    if args.desktop_update:
-                        # 网页构建与 Python 桌面执行器构建互不依赖，并行执行。
-                        # 网页构建（vue-tsc -b && vite build）完成后，桌面前端只需
-                        # vite build --mode desktop，跳过重复 vue-tsc 类型编译。
-                        print('编译网页并构建桌面执行器', flush=True)
-                        run_parallel([
-                            (['pnpm', 'build'], source / 'front', environment),
-                            ([sys.executable, 'scripts/build_desktop_runtime.py'], source, environment),
-                        ], log=log)
-                        # 网页 vue-tsc 已完成增量缓存，桌面前端只需 vite build。
-                        print('构建并验证桌面更新包', flush=True)
-                        run(['pnpm', 'exec', 'vite', 'build', '--mode', 'desktop'], cwd=source / 'front', log=log, env=environment)
-                        run(['pnpm', 'exec', 'electron-builder', '--mac', 'dmg', 'zip', '--publish', 'never',
-                             '--config.directories.output=' + str(folder / 'desktop')],
-                            cwd=source / 'front', log=log, env=environment)
-                        apps = list((folder / 'desktop').glob('*/*.app'))
-                        if len(apps) != 1:
-                            raise RuntimeError('桌面构建没有产生唯一的应用包')
-                        app = apps[0]
-                        # electron-builder 的 afterSign 钩子已完成严格的 --verify --deep --strict -R 签名复核。
-                        with (app / 'Contents/Info.plist').open('rb') as info:
-                            if plistlib.load(info)['CFBundleShortVersionString'] != version:
-                                raise RuntimeError('桌面安装包版本不一致')
-                        check_runtime(app / 'Contents/Resources/runtime/champion-erp-runtime')
-                        record['desktop_update'] = desktop_release_artifacts(folder, app, version, args)
-                        prune_desktop_build_intermediates(folder / 'desktop')
-                        check_new_desktop_version(record['desktop_update'])
-                    else:
-                        print('编译网页', flush=True)
-                        run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
+                    # 网页 vue-tsc 已完成增量缓存，桌面前端只需 vite build。
+                    print('构建并验证桌面更新包', flush=True)
+                    run(['pnpm', 'exec', 'vite', 'build', '--mode', 'desktop'], cwd=source / 'front', log=log, env=environment)
+                    run(['pnpm', 'exec', 'electron-builder', '--mac', 'dmg', 'zip', '--publish', 'never',
+                         '--config.directories.output=' + str(folder / 'desktop')],
+                        cwd=source / 'front', log=log, env=environment)
+                    apps = list((folder / 'desktop').glob('*/*.app'))
+                    if len(apps) != 1:
+                        raise RuntimeError('桌面构建没有产生唯一的应用包')
+                    app = apps[0]
+                    # electron-builder 的 afterSign 钩子已完成严格的 --verify --deep --strict -R 签名复核。
+                    with (app / 'Contents/Info.plist').open('rb') as info:
+                        if plistlib.load(info)['CFBundleShortVersionString'] != version:
+                            raise RuntimeError('桌面安装包版本不一致')
+                    check_runtime(app / 'Contents/Resources/runtime/champion-erp-runtime')
+                    record['desktop_update'] = desktop_release_artifacts(folder, app, version, args)
+                    prune_desktop_build_intermediates(folder / 'desktop')
+                    check_new_desktop_version(record['desktop_update'])
+                else:
+                    print('编译网页', flush=True)
+                    run(['pnpm', 'build'], cwd=source / 'front', log=log, env=environment)
+            # 本地构建完成后再建立 SSH ControlMaster，避免长耗时构建期间连接闲置失效。
+            with ssh_session(args):
+                with (folder / 'build.log').open('a') as log:
                     # 只打包服务器运行所需源码、本次网页构建与未在服务器缓存的静态资产，排除前端源码/测试/文档。
                     tracked = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', '-z', revision], cwd=ROOT).decode().split('\0')
                     selected = select_server_files(tracked)
@@ -768,7 +1138,7 @@ def release(args):
                          *extra_helpers, args.ssh_host + ':' + remote_folder + '/'], log))
                     record['status'] = 'server_staged'
                     write_record(record_path, record)
-                # 服务器切换与桌面包隧道预拉取并行执行，缩短整体等待时间。
+                # 服务器切换与桌面包传输并行执行，缩短整体等待时间。
                 pull_thread = None
                 pull_error = []
                 pull_log = io.StringIO()
@@ -780,7 +1150,7 @@ def release(args):
 
                     def _pull_worker():
                         try:
-                            pull_desktop_files(
+                            transfer_desktop_files(
                                 args, remote_folder, desktop_files, desktop_artifacts, pull_log,
                                 display_gate=display_gate, cancel_event=cancel_event,
                             )
@@ -800,7 +1170,10 @@ def release(args):
                     raise
                 desktop_already_pulled = False
                 if pull_thread is not None:
-                    print('服务器已切换，继续完成桌面包传输', flush=True)
+                    if pull_thread.is_alive():
+                        print('服务器已切换，继续完成桌面包传输', flush=True)
+                    else:
+                        print('服务器已切换，桌面包已完成传输', flush=True)
                     display_gate.set()
                     pull_thread.join()
                     if pull_log.getvalue():
@@ -830,6 +1203,8 @@ def main():
     mode.add_argument('--desktop-update', choices=['optional', 'required'], help='发布桌面升级，默认 optional，可显式指定 required')
     mode.add_argument('--server-only', action='store_true', help='仅发布服务器和网页，跳过桌面打包和分发')
     parser.add_argument('--skip-tests', action='store_true', help='跳过后端、前端和桌面全量测试，继续执行构建检查与发布验收')
+    parser.add_argument('--desktop-transfer', choices=['ssh', 'tunnel'], default='ssh',
+                        help='桌面包传输方式：默认 ssh（直连多路独立 SSH 可续传），直连拥塞时可改为 tunnel（Cloudflare QUIC 隧道）')
     parser.add_argument('--update-notes', default='', help='向用户展示的更新说明')
     parser.add_argument('--signed-desktop', action='store_true', help='使用 Developer ID 签名及公证构建原生更新 ZIP')
     parser.add_argument('--wait-tasks-seconds', type=int, default=3600, help='服务器等待已接任务安全停机的最长秒数')

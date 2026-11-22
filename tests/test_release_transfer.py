@@ -211,3 +211,102 @@ time.sleep(60)
         os.kill(int(pid), 0)
     with pytest.raises(OSError):
         urlopen(url, timeout=2)
+
+
+def test_direct_ssh_push_parallel_resume_corrupted_reset_and_reuse(tmp_path, monkeypatch):
+    staging = tmp_path / '发布 暂存'
+    staging.mkdir()
+    shutil.copy(release.ROOT / 'deploy/pull_desktop.py', staging)
+    monkeypatch.setattr(release, 'direct_ssh_args', lambda args: ['sh', '-c'])
+
+    files = {name: tmp_path / name for name in ('installer.dmg', 'update.zip')}
+    payloads = {name: os.urandom(256 * 1024) for name in files}
+    for name, content in payloads.items():
+        files[name].write_bytes(content)
+    artifacts = {name: {'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+                 for name, data in payloads.items()}
+
+    # 一个来自 tunnel 的有效断点（跨模式续传），一个损坏的 ssh 断点（应重置从 0 重传）。
+    (staging / 'installer.dmg.https.part').write_bytes(payloads['installer.dmg'][:65536])
+    (staging / 'update.zip.ssh.part').write_bytes(b'x' * 65536)
+
+    seen_offsets = {}
+    real_popen = subprocess.Popen
+
+    def spy_popen(cmd, *args, **kwargs):
+        shell_cmd = cmd[-1]
+        if '--receive' in shell_cmd:
+            m = re.search(r'--receive\s+(\S+)\s+--offset\s+(\d+)', shell_cmd)
+            if m:
+                seen_offsets[m.group(1)] = int(m.group(2))
+        return real_popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, 'Popen', spy_popen)
+    log = io.StringIO()
+    release.push_desktop_files(None, str(staging), files, artifacts, log, chunk_size=32 * 1024)
+
+    assert seen_offsets == {'installer.dmg': 65536, 'update.zip': 0}
+    for name in files:
+        assert (staging / name).read_bytes() == payloads[name]
+    assert not list(staging.glob('*.part'))
+    assert '100%' in log.getvalue() and '校验通过' in log.getvalue()
+
+    # 第二次直接复用，不应再触发 --receive。
+    seen_offsets.clear()
+    log2 = io.StringIO()
+    release.push_desktop_files(None, str(staging), files, artifacts, log2)
+    assert seen_offsets == {}
+    assert log2.getvalue().count('已复用') == 2
+
+
+def test_direct_ssh_push_retries_partial_disconnect_and_honors_display_gate(tmp_path, monkeypatch, capsys):
+    staging = tmp_path / 'staging'
+    staging.mkdir()
+    shutil.copy(release.ROOT / 'deploy/pull_desktop.py', staging)
+    monkeypatch.setattr(release, 'direct_ssh_args', lambda args: ['sh', '-c'])
+
+    payload = os.urandom(192 * 1024)
+    artifact = tmp_path / 'installer.dmg'
+    artifact.write_bytes(payload)
+    artifacts = {'installer.dmg': {'size': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}}
+
+    receive_calls = []
+    real_popen = subprocess.Popen
+
+    def flaky_popen(cmd, *args, **kwargs):
+        shell_cmd = cmd[-1]
+        if '--receive' in shell_cmd:
+            m = re.search(r'--offset\s+(\d+)', shell_cmd)
+            offset = int(m.group(1))
+            receive_calls.append(offset)
+            if len(receive_calls) == 1:
+                # 首次连接写入前 64 KiB 后模拟远端连接中断，保留部分文件供续传。
+                (staging / 'installer.dmg.ssh.part').write_bytes(payload[:65536])
+                return real_popen(['sh', '-c', 'echo "READY 0"; echo "PROGRESS 65536"; echo "INCOMPLETE 65536"; exit 1'],
+                                  *args, **kwargs)
+        return real_popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, 'Popen', flaky_popen)
+    monkeypatch.setattr(release.time, 'sleep', lambda *_: None)
+
+    gate = threading.Event()  # 未打开时不应输出到终端
+    log = io.StringIO()
+    release.push_desktop_files(None, str(staging), {'installer.dmg': artifact}, artifacts, log, display_gate=gate)
+    captured = capsys.readouterr()
+    assert receive_calls == [0, 65536]
+    assert captured.out == ''
+    assert (staging / 'installer.dmg').read_bytes() == payload
+    assert '校验通过' in log.getvalue()
+
+
+def test_tunnel_download_prepare_adopts_ssh_partial_file(tmp_path, monkeypatch):
+    from deploy import pull_desktop
+
+    monkeypatch.chdir(tmp_path)
+    payload = b'0123456789abcdef' * 1024
+    (tmp_path / 'installer.dmg.ssh.part').write_bytes(payload[:4096])
+    item = pull_desktop.Download(tmp_path / 'installer.dmg', len(payload), hashlib.sha256(payload).hexdigest())
+    item.prepare()
+    assert not (tmp_path / 'installer.dmg.ssh.part').exists()
+    assert (tmp_path / 'installer.dmg.https.part').read_bytes() == payload[:4096]
+    assert item.received() == 4096

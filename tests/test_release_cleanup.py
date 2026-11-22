@@ -95,9 +95,11 @@ def test_cleanup_removes_orphan_failed_staging_unused_venvs_and_shared_assets(in
     (staging / manual_staging).mkdir(parents=True)
     (staging / manual_staging / 'server.tar.gz').write_bytes(b'tar')
     (staging / manual_staging / '人工保留.txt').write_text('keep')
-    # 辅助脚本副本应在清理时一并回收。
+    # 辅助脚本副本及断点锁文件应在清理时一并回收。
     (staging / current / 'deploy').mkdir(parents=True)
     (staging / current / 'publish_desktop.py').write_text('pub')
+    (staging / current / '.desktop-transfer.installer.dmg.lock').touch()
+    (staging / current / 'installer.dmg.ssh.part').write_bytes(b'part')
     # 共享 venv 与共享大静态资产：当前版在用的保留，过时的清理。
     active_venv = base / 'venvs/py3.12-1111111111111111'
     stale_venv = base / 'venvs/py3.12-2222222222222222'
@@ -120,6 +122,8 @@ def test_cleanup_removes_orphan_failed_staging_unused_venvs_and_shared_assets(in
     assert (staging / manual_staging / '人工保留.txt').is_file()
     assert not (staging / current / 'deploy').exists()
     assert not (staging / current / 'publish_desktop.py').exists()
+    assert not (staging / current / '.desktop-transfer.installer.dmg.lock').exists()
+    assert not (staging / current / 'installer.dmg.ssh.part').exists()
     assert (staging / current / 'server-result.json').is_file()
     assert active_venv.is_dir() and not stale_venv.exists()
     assert (base / 'shared-assets' / active_asset).is_file()

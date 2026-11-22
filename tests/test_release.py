@@ -609,6 +609,100 @@ def test_select_server_files_excludes_non_runtime_directories():
     ]
 
 
+def test_detect_reusable_server_assets_probe_runs_via_shell_and_filters_matches(tmp_path, monkeypatch):
+    import shlex
+
+    source = tmp_path / 'source'
+    shared = tmp_path / 'shared-assets'
+    current = tmp_path / 'current'
+    shared.mkdir()
+    current.mkdir()
+
+    def write_asset(rel, payload):
+        path = source / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        return hashlib.sha256(payload).hexdigest()
+
+    size = release.LARGE_ASSET_THRESHOLD
+    sha_shared = write_asset('erp_web/assets/fonts/shared.otf', b'S' * size)
+    sha_current = write_asset('erp_web/assets/fonts/current.otf', b'C' * size)
+    sha_mismatch = write_asset('erp_web/assets/fonts/mismatch.otf', b'M' * size)
+    sha_symlink = write_asset('erp_web/assets/fonts/symlink.otf', b'L' * size)
+    write_asset('erp_web/assets/small.png', b'tiny')
+
+    (shared / sha_shared).write_bytes(b'S' * size)
+    cur_file = current / 'erp_web/assets/fonts/current.otf'
+    cur_file.parent.mkdir(parents=True, exist_ok=True)
+    cur_file.write_bytes(b'C' * size)
+    (shared / sha_mismatch).write_bytes(b'X' * size)
+    real_target = tmp_path / 'outside.otf'
+    real_target.write_bytes(b'L' * size)
+    (shared / sha_symlink).symlink_to(real_target)
+
+    def fake_remote(args, command):
+        assert command[0] == 'python3' and command[1] == '-c'
+        joined = shlex.join([sys.executable, *command[1:], str(shared), str(current)])
+        return subprocess.check_output(['sh', '-c', joined], text=True).strip()
+
+    monkeypatch.setattr(release, 'remote_output', fake_remote)
+    selected = [
+        'erp_web/assets/fonts/shared.otf',
+        'erp_web/assets/fonts/current.otf',
+        'erp_web/assets/fonts/mismatch.otf',
+        'erp_web/assets/fonts/symlink.otf',
+        'erp_web/assets/small.png',
+    ]
+    reusable = release.detect_reusable_server_assets(argparse.Namespace(), source, selected)
+    assert reusable == {
+        'erp_web/assets/fonts/shared.otf': sha_shared,
+        'erp_web/assets/fonts/current.otf': sha_current,
+    }
+
+
+def test_ssh_session_multiplexes_ssh_but_keeps_scp_dedicated(tmp_path):
+    identity = tmp_path / 'id_ed25519'
+    identity.touch()
+    args = argparse.Namespace(ssh_host='root@example', ssh_port=22, ssh_identity=identity)
+    with release.ssh_session(args):
+        ssh_cmd = release.ssh_args(args)
+        direct_cmd = release.direct_ssh_args(args)
+        scp_cmd = release.scp_args(args)
+        assert 'ControlMaster=auto' in ssh_cmd
+        assert any(opt.startswith('ControlPath=') for opt in ssh_cmd)
+        assert 'ControlMaster=auto' not in direct_cmd
+        assert not any(opt.startswith('ControlPath=') for opt in direct_cmd)
+        assert 'Compression=no' in direct_cmd
+        assert 'ControlMaster=auto' not in scp_cmd
+        assert not any(opt.startswith('ControlPath=') for opt in scp_cmd)
+
+
+@pytest.mark.parametrize(('flags', 'expected'), [
+    ([], 'ssh'),
+    (['--desktop-transfer', 'ssh'], 'ssh'),
+    (['--desktop-transfer', 'tunnel'], 'tunnel'),
+])
+def test_release_cli_selects_desktop_transfer_mode(flags, expected, tmp_path, monkeypatch):
+    options = []
+    monkeypatch.setattr(release.sys, 'argv', ['release.py', '--output-dir', str(tmp_path), *flags])
+    monkeypatch.setattr(release, 'release', options.append)
+    release.main()
+    assert options[0].desktop_transfer == expected
+
+
+def test_release_requires_cloudflared_only_in_tunnel_mode(tmp_path, monkeypatch):
+    identity = tmp_path / 'id'
+    identity.touch()
+    monkeypatch.setattr(release.sys, 'platform', 'darwin')
+    monkeypatch.setattr(release.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(release, 'output', lambda *args: 'dirty')
+    base = dict(ssh_identity=identity, desktop_update='optional', output_dir=tmp_path)
+    with pytest.raises(RuntimeError, match='cloudflared'):
+        release.release(argparse.Namespace(**base, desktop_transfer='tunnel'))
+    with pytest.raises(RuntimeError, match='提交本次代码修改'):
+        release.release(argparse.Namespace(**base, desktop_transfer='ssh'))
+
+
 def test_sync_shared_assets_and_prepare_venv_reuse(tmp_path, monkeypatch):
     base = tmp_path / 'server'
     monkeypatch.setattr(release_server, 'BASE', base)

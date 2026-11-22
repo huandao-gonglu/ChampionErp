@@ -16,8 +16,15 @@ RELEASE_ID = re.compile(r'[0-9]{8}t[0-9]{6}z-[0-9a-f]{12}')
 VERSION = re.compile(r'(?:0|[1-9][0-9]{0,7})(?:\.(?:0|[1-9][0-9]{0,7})){2}')
 VENV_KEY = re.compile(r'py\d+\.\d+-[0-9a-f]{16}')
 ASSET_HASH = re.compile(r'[0-9a-f]{64}')
-UPLOADS = ('server.tar.gz', 'installer.dmg', 'update.zip', 'installer.dmg.https.part', 'update.zip.https.part')
-STAGING_HELPER_FILES = ('publish_desktop.py', 'pull_desktop.py', 'cleanup_releases.py', '.desktop-transfer.lock')
+UPLOADS = (
+    'server.tar.gz', 'installer.dmg', 'update.zip',
+    'installer.dmg.https.part', 'update.zip.https.part',
+    'installer.dmg.ssh.part', 'update.zip.ssh.part',
+)
+STAGING_HELPER_FILES = (
+    'publish_desktop.py', 'pull_desktop.py', 'cleanup_releases.py',
+    '.desktop-transfer.lock', '.desktop-transfer.installer.dmg.lock', '.desktop-transfer.update.zip.lock',
+)
 STAGING_HELPER_DIRS = ('deploy', 'erp_web')
 KNOWN_STAGING_ENTRIES = set(UPLOADS) | set(STAGING_HELPER_FILES) | set(STAGING_HELPER_DIRS)
 
