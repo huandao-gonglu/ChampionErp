@@ -270,8 +270,7 @@ class OrderNotificationService:
                 retryable, next_attempt = False, None
                 if timed and not hard:
                     message = "平台订单同步暂时暂停，请在冷却结束后点击同步订单。"
-            self.store.finish(job, error=message, retryable=retryable, now=time.time(), next_attempt=next_attempt,
-                              retry_policy=self.config_store.sync_policy("order_callback"))
+            self.store.finish(job, error=message, retryable=retryable, now=time.time(), next_attempt=next_attempt)
         else:
             self.store.finish(job, now=time.time(), error="平台订单已更新，部分采购或仓库状态未更新，请到订单详情查看后手动刷新。" if progress_failed else "")
         return True

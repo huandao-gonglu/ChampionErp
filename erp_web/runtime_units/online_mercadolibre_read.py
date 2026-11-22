@@ -1,4 +1,4 @@
-"""Mercado 目录先行，完整商品详情最多三路并发；不丢弃站点映射和净收入。"""
+"""Mercado 目录先行，完整商品详情最多四路并发；不丢弃站点映射和净收入。"""
 from contextvars import copy_context
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from urllib.parse import quote, urlencode
@@ -6,7 +6,7 @@ from urllib.parse import quote, urlencode
 from erp_web.marketplaces.online_sync import catalog_listing, raise_if_access_blocked
 from erp_web.schemas.online_products import OnlineSyncBatch
 
-MAX_REQUESTS = 3
+MAX_REQUESTS = 4
 
 
 def catalog_pages(adapter):
@@ -41,6 +41,38 @@ def catalog_pages(adapter):
         cursors.add(cursor)
 
 
+def _stream_details(adapter, targets, *, phase):
+    # 窗口只放四个商品，不预先提交全店；生成器关闭后不再启动新请求。
+    remaining = iter(targets)
+    with ThreadPoolExecutor(max_workers=MAX_REQUESTS, thread_name_prefix="mercado-sync-read") as pool:
+        pending = {}
+
+        def submit():
+            remote_id = next(remaining, None)
+            if remote_id is not None:
+                pending[pool.submit(copy_context().run, adapter.read, remote_id)] = remote_id
+
+        try:
+            for _ in range(MAX_REQUESTS):
+                submit()
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                batch = OnlineSyncBatch(phase)
+                for future in done:
+                    remote_id = pending.pop(future)
+                    try:
+                        batch.listings.append(future.result())
+                    except Exception as exc:
+                        raise_if_access_blocked(exc)
+                        batch.errors[remote_id] = str(exc)
+                yield batch
+                for _ in done:
+                    submit()
+        finally:
+            for future in pending:
+                future.cancel()
+
+
 def sync_mercado(adapter, ids=None):
     discovered = []
     pages = [list(dict.fromkeys(ids))] if ids is not None else catalog_pages(adapter)
@@ -50,28 +82,12 @@ def sync_mercado(adapter, ids=None):
         discovered.extend(page)
         yield OnlineSyncBatch("catalog", [catalog_listing(adapter.platform, adapter.account_id, key, model="pending") for key in page])
     yield OnlineSyncBatch("details", discovery_complete=True)
-    # 窗口只放三个商品，不预先提交全店；生成器关闭后不再启动新请求。
-    remaining = iter(discovered)
-    with ThreadPoolExecutor(max_workers=MAX_REQUESTS, thread_name_prefix="mercado-sync-read") as pool:
-        pending = {}
+    yield from _stream_details(adapter, discovered, phase="details")
 
-        def submit():
-            remote_id = next(remaining, None)
-            if remote_id is not None:
-                pending[pool.submit(copy_context().run, adapter.read, remote_id)] = remote_id
 
-        for _ in range(MAX_REQUESTS):
-            submit()
-        while pending:
-            done, _ = wait(pending, return_when=FIRST_COMPLETED)
-            batch = OnlineSyncBatch("details")
-            for future in done:
-                remote_id = pending.pop(future)
-                try:
-                    batch.listings.append(future.result())
-                except Exception as exc:
-                    raise_if_access_blocked(exc)
-                    batch.errors[remote_id] = str(exc)
-            yield batch
-            for _ in done:
-                submit()
+def sync_mercado_hot(adapter, remote_ids):
+    """热数据快刷：跳过全店 items/search 扫描，直接按 4 路并发刷新本地已有 CBT 商品。"""
+    targets = [key for key in dict.fromkeys(remote_ids) if isinstance(key, str) and key.startswith("CBT") and key[3:].isdigit()]
+    if not targets:
+        return
+    yield from _stream_details(adapter, targets, phase="hot")

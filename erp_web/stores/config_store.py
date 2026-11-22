@@ -793,34 +793,6 @@ class ConfigStore:
     def system_settings(self) -> dict:
         return self.load_app_config()["system_settings"]
 
-    def sync_policy(self, key: str) -> dict:
-        from erp_web.schemas.sync_policies import POLICIES, policy_values
-        owner = self.shared_config if POLICIES[key].get('shared') else self
-        settings = owner.system_settings()
-        values = policy_values(settings['sync_policies'], key)
-        if key == 'yandex_submission':
-            # 已持久化的店铺级参数保留读取；显式保存新设置后由新值接管。
-            store = publisher.load_store_config(self._store_config_path).get('yandex', {})
-            overrides = settings['sync_policies'].get(key, {})
-            for name, old in (('interval', 'publish_step_interval_seconds'), ('max_retries', 'publish_step_retry_limit')):
-                if name not in overrides and store.get(old):
-                    values[name] = (min(30, max(.5, float(store[old]))) if name == 'interval'
-                                    else max(1, int(store[old])))
-        return values
-
-    def sync_policy_catalog(self) -> dict:
-        from erp_web.schemas.sync_policies import POLICIES
-        return {'items': [dict(key=key, title=spec['title'], description=spec['description'],
-            effect=spec['effect'], fields=deepcopy(spec['fields']), values=self.sync_policy(key),
-            editable=not spec.get('shared') or self.shared_config is self) for key, spec in POLICIES.items()]}
-
-    def publishing_config(self) -> dict:
-        config = self.load_store_config()
-        policy = self.sync_policy('yandex_submission')
-        config.setdefault('yandex', {}).update(publish_step_interval_seconds=policy['interval'],
-            publish_step_retry_limit=policy['max_retries'], publish_step_max_delay_seconds=policy['max_delay'])
-        return config
-
     def user_agents(self) -> dict:
         from erp_web.services.user_agents import read_user_agents
         return read_user_agents(self._app_dir)
@@ -853,15 +825,6 @@ class ConfigStore:
             changes["watermark"] = validate_watermark(changes["watermark"])
         with self._save_lock:
             config = self.load_app_config()
-            if 'sync_policies' in changes:
-                from erp_web.schemas.sync_policies import POLICIES, validate_combined
-                if self.shared_config is not self and any(POLICIES[key].get('shared') for key in changes['sync_policies']):
-                    raise ValueError('账号同步策略只能由管理员编辑')
-                combined = deepcopy(config['system_settings']['sync_policies'])
-                for key, values in changes['sync_policies'].items():
-                    combined[key] = {**combined.get(key, {}), **values}
-                validate_combined(combined)
-                changes['sync_policies'] = combined
             validated = {**config["system_settings"], **changes}
             self.save_app_config({**config, "system_settings": validated})
             return validated

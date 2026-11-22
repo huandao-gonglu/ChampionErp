@@ -4,7 +4,6 @@ import { routeLocationKey } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAccountStore } from '@/stores/account'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import SyncPolicySettingsPanel from '@/components/settings/SyncPolicySettingsPanel.vue'
 import AboutSettingsPanel from '@/components/settings/AboutSettingsPanel.vue'
 import YandexWarehouseSettings from '@/components/settings/YandexWarehouseSettings.vue'
 import WatermarkSettingsPanel from '@/components/settings/WatermarkSettingsPanel.vue'
@@ -24,7 +23,6 @@ const colorMode = computed({
   },
 })
 const tabs = computed(() => [
-  { key: 'sync_policies', label: '同步与重试策略', summary: '自动重试与结果确认的间隔、次数和截止期限' },
   { key: 'general', label: '通用设置', summary: '颜色与订单自动同步' },
   { key: 'user_agents', label: 'AI 自定义指令', summary: '你的长期偏好与业务习惯，升级时保留' },
   { key: 'wechat', label: '微信连接', summary: '扫码绑定微信与 ERP 对话' },
@@ -35,11 +33,11 @@ const tabs = computed(() => [
   { key: 'yandex_warehouses', label: 'Yandex 发布仓库', summary: '同步远端仓库并指定运输模式' },
   { key: 'about', label: '关于', summary: '版本信息、开源许可证、软件许可与服务协议、隐私政策' },
 ] as const)
-const section = ref<'sync_policies' | 'general' | 'user_agents' | 'wechat' | 'watermark' | 'forbidden_categories' | 'tariffs' | 'managed' | 'yandex_warehouses' | 'about'>('general')
+const section = ref<'general' | 'user_agents' | 'wechat' | 'watermark' | 'forbidden_categories' | 'tariffs' | 'managed' | 'yandex_warehouses' | 'about'>('general')
 const route = inject(routeLocationKey, undefined)
 watch(() => route?.query.settings_section, value => {
   if (value === 'managed') section.value = account.isAdmin ? 'managed' : 'general'
-  else section.value = value === 'sync_policies' || value === 'user_agents' || value === 'wechat' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' || value === 'tariffs' ? value : 'general'
+  else section.value = value === 'user_agents' || value === 'wechat' || value === 'about' || value === 'yandex_warehouses' || value === 'watermark' || value === 'forbidden_categories' || value === 'tariffs' ? value : 'general'
 }, { immediate: true })
 const activeTab = computed(() => tabs.value.find(tab => tab.key === section.value) || tabs.value[0])
 
@@ -96,9 +94,6 @@ onMounted(load)
           <span class="font-semibold">{{ tab.label }}</span>
         </button>
       </nav>
-      <section v-if="section === 'sync_policies'" id="system-settings-panel-sync_policies" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-sync_policies">
-        <SyncPolicySettingsPanel />
-      </section>
       <section v-if="section === 'user_agents'" id="system-settings-panel-user_agents" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-user_agents">
         <UserAgentsSettingsPanel />
       </section>

@@ -1202,6 +1202,8 @@ def test_external_request_protection_uses_memory_limiter_and_auth_settings():
         'front/src/components/common/ExternalRequestNotice.vue',
         'front/src/utils/externalRequestNotices.ts',
         'front/src/api/externalRequests.ts',
+        'erp_web/schemas/sync_policies.py',
+        'front/src/components/settings/SyncPolicySettingsPanel.vue',
     ):
         assert not (ROOT / retired).exists(), f'已退役模块不得残留：{retired}'
     limiter = ROOT / 'erp_web/services/external_request_limiter.py'
@@ -1214,7 +1216,11 @@ def test_external_request_protection_uses_memory_limiter_and_auth_settings():
     assert '/api/external-requests/recover' not in POST_API_ROUTES
     assert '/api/external-requests/history/clear' not in POST_API_ROUTES
     assert '/api/orders/recover-sync' not in POST_API_ROUTES
-    assert 'ExternalRequestControlPanel' not in (ROOT / 'front/src/components/domain/SystemSettingsPanel.vue').read_text()
+    assert '/api/business-queries/settings.sync_policies' not in GET_API_ROUTES
+    system_settings_panel = (ROOT / 'front/src/components/domain/SystemSettingsPanel.vue').read_text()
+    assert 'ExternalRequestControlPanel' not in system_settings_panel
+    assert 'SyncPolicySettingsPanel' not in system_settings_panel
+    assert 'sync_policies' not in system_settings_panel
     assert 'ExternalRequestControlPanel' not in (ROOT / 'front/src/components/auth/AuthSettingsPanel.vue').read_text()
     assert 'ExternalRequestNotice' not in (ROOT / 'front/src/App.vue').read_text()
     order_sync = (ROOT / 'front/src/components/domain/OrderSyncStatusPanel.vue').read_text()

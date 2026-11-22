@@ -77,6 +77,7 @@ def validate_online_fields(fields: list[str]) -> list[str]:
 class OnlineSyncRequest(OnlineRequest):
     platform: Platform
     catalog: Literal["current", "archived"] = Field(default="current", description="只同步所选目录：current 普通商品，archived 归档商品（目前仅 Yandex）；跟随用户当前页面目录，不同时同步两类。")
+    mode: Literal["full", "hot"] = Field(default="full", description="full 为全量目录与详情同步；hot 跳过全店目录扫描，直接并发刷新本地已有 SKU（Yandex 同时跳过目录图文与卡片反馈，仅刷新价格、库存与状态）。")
 
 
 class OnlineJobRequest(OnlineRequest):

@@ -2,6 +2,7 @@ import { onScopeDispose, shallowRef } from 'vue'
 import { createDesktopHandoff, fetchDesktopHandoffStatus, confirmDesktopHandoff, desktopBackendOrigin } from '@/api/desktopHandoff'
 import { hasLocalOperations, modelRequiresDesktop } from './desktop'
 import type { DraftDetail, DraftProductContext, PricingInput, Product, UnknownRecord } from '@/types/workflow'
+import type { BackendImageSetPlanPayload } from '@/types/workflow.generated'
 import type { FileUIPart } from 'ai'
 
 export interface DesktopImageAction {
@@ -10,8 +11,17 @@ export interface DesktopImageAction {
   prompt: string
 }
 
+export interface DesktopImageSetAction {
+  requestId: string
+  updatedAt: string
+  plan?: BackendImageSetPlanPayload
+  baseRequestId?: string
+  retryPageIds?: string[]
+}
+
 export interface DesktopWorkflowState {
   draftImageAction?: DesktopImageAction & { translationRequestId?: string }
+  draftImageSetAction?: DesktopImageSetAction
   productImageAction?: DesktopImageAction
   draft?: DraftDetail
   draftContext?: DraftProductContext

@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import random
 import threading
 import time
 from datetime import datetime
@@ -48,11 +49,15 @@ def trusted_base_url(value: str) -> str:
     return value.rstrip("/")
 
 
+DELIVERY_BACKOFF_STEPS = (1.0, 2.0, 5.0, 15.0, 30.0, 60.0)
+
+
 class WechatChannelService:
     def __init__(self, *, store, conversations, api=None, conversation_factory=None,
-                 forward_types_reader=None, forward_types_writer=None, policy_reader=None):
-        from erp_web.schemas.sync_policies import policy_values
-        self._policy_reader = policy_reader or (lambda key: policy_values({}, key))
+                 forward_types_reader=None, forward_types_writer=None,
+                 retry_backoff_steps=DELIVERY_BACKOFF_STEPS, jitter=None):
+        self._retry_backoff_steps = tuple(retry_backoff_steps) or DELIVERY_BACKOFF_STEPS
+        self._jitter = jitter or (lambda delay: random.uniform(0.0, delay * 0.2))
         self.store = store
         self.conversations = conversations
         self.conversation_factory = conversation_factory
@@ -376,11 +381,17 @@ class WechatChannelService:
             await asyncio.wait_for(self.api.send_message(creds["base_url"], creds["token"], msg), 20)
             self.store.delivered(row["sequence"])
 
+    def _delivery_retry_delay(self, failure_streak: int) -> float:
+        index = min(max(0, failure_streak - 1), len(self._retry_backoff_steps) - 1)
+        base = float(self._retry_backoff_steps[index])
+        return base + max(0.0, float(self._jitter(base)))
+
     async def _pump_loop(self):
+        failure_streak = 0
         while True:
             self._wake_event.clear()
             state = self.store.state()
-            retry = False
+            failed = False
             try:
                 if state["credentials"] and self._expired_generation != state["generation"]:
                     with release_guard.admit("微信渠道") as allowed:
@@ -388,25 +399,31 @@ class WechatChannelService:
                             self.transfer_inputs(state)
                             self.collect_replies(self.store.state())
                             await self.send_pending(self.store.state())
+                failure_streak = 0
             except ChatConversationError:
+                failure_streak = 0
                 self._set_status("conversation_missing", "绑定的对话已失效，请在微信发送 /new。", generation=state["generation"])
             except ApiError as exc:
                 if exc.is_session_expired:
+                    failure_streak = 0
                     self._expired_generation = state["generation"]
                     self._set_status("expired", "微信授权已失效，请重新绑定。", generation=state["generation"])
                 else:
-                    retry = True
+                    failed = True
+                    failure_streak += 1
                     self._set_status("reconnecting", "消息尚未交付，正在重试。", generation=state["generation"])
             except Exception:
-                retry = True
+                failed = True
+                failure_streak += 1
                 self._set_status("reconnecting", "消息尚未交付，正在重试。", generation=state["generation"])
             current = self.store.state()
-            retry = retry or bool(self.store.inbox(current["generation"])) or bool(
+            has_remaining = bool(self.store.inbox(current["generation"])) or bool(
                 current["context_token"] and self.store.pending(current["generation"])
             )
-            if retry:
+            if failed or has_remaining:
+                delay = self._delivery_retry_delay(failure_streak) if failed else 1.0
                 try:
-                    await asyncio.wait_for(self._wake_event.wait(), self._policy_reader("wechat_delivery")["retry_delay"])
+                    await asyncio.wait_for(self._wake_event.wait(), delay)
                 except TimeoutError:
                     pass
             else:

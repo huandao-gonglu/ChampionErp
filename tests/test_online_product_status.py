@@ -254,6 +254,14 @@ def test_yandex_missing_target_card_does_not_turn_unknown_feedback_into_empty_fe
         adapter.read_status(listing('sku-1'))
 
 
+def test_yandex_deleted_sku_reports_missing_message_instead_of_archive_error():
+    adapter = object.__new__(YandexOnlineAdapter)
+    adapter.business, adapter.campaign, adapter.account_id, adapter.mode = '1', '2', '1:2', 'none'
+    adapter.request = lambda path, *args, **kwargs: {'result': {'offerMappings': []}}
+    with pytest.raises(ValueError, match='未找到该商品.*删除.*已保留原记录'):
+        adapter.read_status(listing('sku-deleted'))
+
+
 @pytest.mark.parametrize("archived", [False, True])
 def test_ozon_status_only_uses_one_product_info_request(archived):
     adapter = object.__new__(OzonOnlineAdapter)

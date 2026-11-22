@@ -38,6 +38,8 @@ class TaskQueueReader:
                     EXISTS(SELECT 1 FROM json_each(result_json,'$.items') WHERE json_extract(value,'$.status')='failed')
                     END AS has_failed_items,
                 json_extract(request_json,'$.catalog') AS catalog,
+                json_extract(request_json,'$.mode') AS sync_mode,
+                json_extract(request_json,'$.source') AS sync_source,
                 (SELECT json_extract(snapshot_json,'$.title') FROM online_listings WHERE id=online_jobs.target_id) AS title,
                 EXISTS(SELECT 1 FROM online_jobs newer WHERE newer.target_id=online_jobs.target_id
                     AND newer.platform=online_jobs.platform AND newer.account_id=online_jobs.account_id
@@ -68,7 +70,12 @@ class TaskQueueReader:
                 continue
             is_sync = row["operation"] == "sync"
             if is_sync:
-                title = "同步归档商品" if row["catalog"] == "archived" else "同步店铺商品"
+                if row["sync_source"] == "publish":
+                    title = "新发商品自动入库"
+                elif row["sync_mode"] == "hot":
+                    title = "快速刷新归档价格与库存" if row["catalog"] == "archived" else "快速刷新价格与库存"
+                else:
+                    title = "同步归档商品" if row["catalog"] == "archived" else "同步店铺商品"
                 can_retry = bool(row["has_failed_items"])
             else:
                 title = result.get("before", {}).get("title") or row["title"] or row["target_id"]

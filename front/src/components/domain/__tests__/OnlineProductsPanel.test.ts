@@ -32,6 +32,7 @@ beforeEach(() => {setActivePinia(createPinia());vi.useFakeTimers(); vi.resetAllM
 afterEach(() => {wrapper?.unmount();wrapper=undefined;document.body.innerHTML='';apiClient.defaults.adapter=defaultAdapter;vi.useRealTimers()})
 function render(){wrapper=mount(OnlineProductsPanel,{attachTo:document.body,global:{stubs:{Teleport:true,OzonExportDialog:true}}});return wrapper}
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button, text).toBeDefined();await button!.trigger('click');await flushPromises()}
+async function selectCatalog(value: 'current' | 'archived'){await wrapper!.get('[aria-label="商品目录"]').setValue(value);await flushPromises()}
 
 describe('在线商品页面',()=>{
   it('价格列只显示有金额的报价，真实店铺名称放在提示中', async () => {
@@ -94,7 +95,7 @@ describe('在线商品页面',()=>{
     await click('预览变更'); await click('确认提交')
     expect(onlineAction).toHaveBeenLastCalledWith('change',expect.objectContaining({operation:'archive',scope_id:'business',changes:{archived:true}}))
     expect(wrapper!.find('[data-testid="online-listing"]').exists()).toBe(false)
-    await click('归档商品')
+    await selectCatalog('archived')
     expect(fetchOnlineProducts).toHaveBeenLastCalledWith(expect.objectContaining({catalog:'archived'}))
     expect(useAiPageContextStore().current).toMatchObject({catalog:'archived'})
     expect(useAiPageContextStore().current?.listing_id).toBeUndefined()
@@ -104,7 +105,7 @@ describe('在线商品页面',()=>{
     await click('恢复归档'); await click('预览变更'); await click('确认提交')
     expect(onlineAction).toHaveBeenLastCalledWith('change',expect.objectContaining({operation:'archive',scope_id:'business',changes:{archived:false}}))
     expect(wrapper!.find('[data-testid="online-listing"]').exists()).toBe(false)
-    await click('普通商品')
+    await selectCatalog('current')
     expect(wrapper!.find('[data-testid="online-listing"]').exists()).toBe(true)
     expect(wrapper!.get('[data-testid="online-listing"]').text()).not.toContain('已归档')
     expect(row.stocks[0].quantity).toBe(7)
@@ -125,7 +126,7 @@ describe('在线商品页面',()=>{
     const jobs: OnlineJob[] = all.map(row=>({id:row.listing_id,operation,platform:'yandex',status:'queued',target_id:row.listing_id,created_at:'',updated_at:'',request:{},result:{}}))
     vi.mocked(submitOnlineBatch).mockRejectedValueOnce(new Error('提交连接中断')).mockResolvedValueOnce(jobs)
     render(); await flushPromises(); await click('Yandex Market')
-    if ('archived' in changes && !changes.archived) await click('归档商品')
+    if ('archived' in changes && !changes.archived) await selectCatalog('archived')
     for (const checkbox of wrapper!.findAll('[data-testid="select-online-group"]')) await checkbox.setValue(true)
     await wrapper!.get('[data-testid="online-actions"]').trigger('click'); await click(title)
     expect(previewOnlineBatch).toHaveBeenCalledWith(expect.objectContaining({group_ids:['group-0','group-1'],listing_ids:['variant-0','variant-1'],operation,changes}))
@@ -163,7 +164,7 @@ describe('在线商品页面',()=>{
     await wrapper!.get('[data-testid="online-actions"]').trigger('click'); await click('恢复所选商品销售')
     expect(wrapper!.get('[data-testid="online-batch-dialog"] [role="alert"]').text()).toContain('SKU-1：库存为零')
     expect(wrapper!.findAll('button').find(button=>button.text()==='确认恢复所选商品销售')!.attributes('disabled')).toBeDefined()
-    await wrapper!.get('[aria-label="关闭恢复所选商品销售"]').trigger('click'); await click('归档商品')
+    await wrapper!.get('[aria-label="关闭恢复所选商品销售"]').trigger('click'); await selectCatalog('archived')
     await wrapper!.get('[data-testid="online-actions"]').trigger('click')
     expect(wrapper!.get('#online-product-actions').text()).not.toContain('停售')
     expect(submitOnlineBatch).not.toHaveBeenCalled()
@@ -759,7 +760,7 @@ describe('在线商品页面',()=>{
     const job: OnlineJob = {id:'sync-catalog',operation:'sync',platform:'yandex',status:'queued',created_at:'',updated_at:'',target_id:'*',request:{catalog},result:{}}
     vi.mocked(onlineAction).mockRejectedValueOnce(new Error('网络中断')).mockResolvedValue(job)
     render();await flushPromises();await click('Yandex Market')
-    if (catalog==='archived') await click('归档商品')
+    if (catalog==='archived') await selectCatalog('archived')
     await click('↻ 同步商品')
     const dialog = wrapper!.get('[aria-label="同步商品"]')
     expect(dialog.text()).toContain(catalog==='archived' ? '仅同步当前账号的归档商品' : '仅同步当前账号的普通商品')
@@ -778,7 +779,7 @@ describe('在线商品页面',()=>{
     render();await flushPromises();await click('Yandex Market')
     expect(wrapper!.findAll('button').find(b=>b.text()==='其他目录同步中')!.attributes('disabled')).toBeDefined()
     expect(wrapper!.text()).not.toContain('最近同步 · 归档商品')
-    await click('归档商品')
+    await selectCatalog('archived')
     expect(wrapper!.text()).toContain('最近同步 · 归档商品')
     await click('查看同步进度')
     expect(wrapper!.emitted('open-task')).toEqual([['archived-sync']])
@@ -964,4 +965,163 @@ it('单仓查看及打开详情后，状态和库存仍按选中仓库展示', a
   await click('管理 →')
   expect(wrapper!.get('[data-testid="stock-summary"]').text()).toBe('10')
   expect(wrapper!.get('[data-testid="online-listing"]').text()).toContain('缺货')
+})
+
+it('后台刷新可见商品价格库存时遇同步冲突静默让步，不弹出页面错误条', async () => {
+  const row = yandexItem({id: 'sku-due', details_state: 'unloaded'})
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(), account_id: '1:2', items: [row], sales_due_ids: [row.id]})
+  vi.mocked(refreshOnlineSales).mockRejectedValueOnce(Object.assign(new Error('当前店铺有同步或修改进行中'), {raw: {error_code: 'ONLINE_CONFLICT'}}))
+  render(); await flushPromises(); await click('Yandex Market')
+  expect(refreshOnlineSales).toHaveBeenCalledTimes(1)
+  expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
+})
+
+it('全量同步不误标为失败商品（0 件），仅失败项重试展示数量，同步完成不重复提示已处理', async () => {
+  const fullJob: OnlineJob = {id: 'sync-full', operation: 'sync', platform: 'yandex', status: 'confirmed', created_at: '', updated_at: '2026-11-22T12:00:00Z', target_id: '*', request: {catalog: 'current', retry_count: 0}, result: {completed: 442, created: 0, updated: 442, failed: 0, discovery_complete: true}}
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(), latest_sync: fullJob, jobs: [fullJob]})
+  render(); await flushPromises(); await click('Yandex Market')
+  const bar = wrapper!.get('[data-testid="online-sync-bar"]')
+  expect(bar.text()).toContain('最近同步 · 普通商品 · 同步完成')
+  expect(bar.text()).not.toContain('失败商品（0 件）')
+  expect(bar.text()).not.toContain('已处理 442 件')
+
+  const retryJob: OnlineJob = {...fullJob, id: 'sync-retry', status: 'running', request: {catalog: 'current', retry_count: 3}, result: {phase: 'basic', completed: 1, failed: 0}}
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(), latest_sync: retryJob, jobs: [retryJob]})
+  await selectCatalog('archived'); await selectCatalog('current')
+  expect(wrapper!.get('[data-testid="online-sync-bar"]').text()).toContain('失败商品（3 件）')
+})
+
+it('多项价格读取异常在列表折成单行摘要并收入提示气泡，缩略图加载失败降级为占位块，同步栏展示清理数', async () => {
+  const row = yandexItem({
+    thumbnail: 'https://broken.trycloudflare.com/assets/missing.jpg',
+    prices: [
+      {id: 'business', label: '账号基础价（全部店铺）', amount: '200', currency: 'CNY', kind: 'base_price', writable: true, reason: '', cached_at: '2026-10-01T02:14:54Z', read_error: '平台未返回该 SKU 的账号基础价'},
+      {id: 'campaign:1', label: '仓A 独立价', amount: null, currency: '', kind: 'sale_price', writable: false, reason: '店铺仅使用账号基础价', read_error: '平台未返回该 SKU 的店铺商品记录'},
+      {id: 'campaign:2', label: '仓B 独立价', amount: null, currency: '', kind: 'sale_price', writable: false, reason: '店铺仅使用账号基础价', read_error: '平台未返回该 SKU 的店铺商品记录'},
+    ],
+  })
+  const cleanJob: OnlineJob = {id: 'sync-clean', operation: 'sync', platform: 'yandex', status: 'confirmed', created_at: '', updated_at: '2026-11-22T12:00:00Z', target_id: '*', request: {catalog: 'current'}, result: {completed: 442, created: 0, updated: 442, removed: 3, moved: 1, failed: 0, discovery_complete: true}}
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(), items: [row], latest_sync: cleanJob, jobs: [cleanJob]})
+  render(); await flushPromises(); await click('Yandex Market')
+
+  const bar = wrapper!.get('[data-testid="online-sync-bar"]')
+  expect(bar.text()).toContain('已清理 3')
+  expect(bar.text()).toContain('调整目录 1')
+
+  const note = wrapper!.get('[data-testid="price-sales-note"]')
+  expect(note.text()).toBe('沿用旧价 · 2 项未返回')
+  expect(wrapper!.findAll('[data-testid="price-sales-note"]')).toHaveLength(1)
+  const cell = wrapper!.getComponent({name: 'OnlinePriceCell'})
+  await cell.get('button').trigger('focus')
+  const tooltip = cell.get('[role="tooltip"]').text()
+  expect(tooltip).toContain('账号基础价（全部店铺）沿用')
+  expect(tooltip).toContain('仓A 独立价：平台未返回该 SKU 的店铺商品记录')
+
+  const img = wrapper!.get('[data-testid="online-listing"] img')
+  await img.trigger('error')
+  expect(wrapper!.find('[data-testid="online-listing"] img').exists()).toBe(false)
+  expect(wrapper!.find('[data-testid="thumbnail-placeholder"]').exists()).toBe(true)
+})
+
+it('三平台已有本地商品时均提供一键热数据快刷（mode=hot），空店铺隐藏按钮，状态条展示快刷进度', async () => {
+  const row = yandexItem()
+  const mlHotJob: OnlineJob = {
+    id: 'sync-hot-ml', operation: 'sync', platform: 'mercadolibre', status: 'queued',
+    created_at: '', updated_at: '2026-11-22T12:00:00Z', target_id: '*',
+    request: {catalog: 'current', mode: 'hot'},
+    result: {phase: 'hot', data_scope: 'hot', discovered: 1, completed: 0, failed: 0, discovery_complete: true},
+  }
+  const hotJob: OnlineJob = {
+    id: 'sync-hot-1', operation: 'sync', platform: 'yandex', status: 'running',
+    created_at: '', updated_at: '2026-11-22T12:00:00Z', target_id: '*',
+    request: {catalog: 'current', mode: 'hot'},
+    result: {phase: 'hot', data_scope: 'hot', discovered: 442, completed: 200, failed: 0, discovery_complete: true},
+  }
+  // 无本地商品时隐藏快刷按钮。
+  vi.mocked(fetchOnlineProducts).mockResolvedValueOnce({...response(), items: [], groups: [], summary: {total: 0, active: 0, paused: 0, attention: 0}})
+  render(); await flushPromises()
+  expect(wrapper!.find('[data-testid="hot-refresh-btn"]').exists()).toBe(false)
+
+  // Mercado Libre 已有商品时支持一键快刷。
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(), summary: {total: 12, active: 10, paused: 2, attention: 0}})
+  vi.mocked(onlineAction).mockResolvedValueOnce(mlHotJob)
+  await click('Ozon'); await click('Mercado Libre')
+  await wrapper!.get('[data-testid="hot-refresh-btn"]').trigger('click'); await flushPromises()
+  expect(onlineAction).toHaveBeenLastCalledWith('sync', expect.objectContaining({platform: 'mercadolibre', catalog: 'current', mode: 'hot'}))
+
+  // Ozon 已有商品时同样支持一键快刷。
+  vi.mocked(onlineAction).mockResolvedValueOnce({...mlHotJob, id: 'sync-hot-ozon', platform: 'ozon'})
+  await click('Ozon')
+  await wrapper!.get('[data-testid="hot-refresh-btn"]').trigger('click'); await flushPromises()
+  expect(onlineAction).toHaveBeenLastCalledWith('sync', expect.objectContaining({platform: 'ozon', catalog: 'current', mode: 'hot'}))
+
+  // Yandex 已有商品时支持一键快刷并展示进度。
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(), items: [row], summary: {total: 442, active: 360, paused: 0, attention: 82}})
+  vi.mocked(onlineAction).mockResolvedValueOnce(hotJob)
+  await click('Yandex Market')
+  const hotBtn = wrapper!.get('[data-testid="hot-refresh-btn"]')
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({...response(), items: [row], summary: {total: 442, active: 360, paused: 0, attention: 82}, latest_sync: hotJob, jobs: [hotJob]})
+  await hotBtn.trigger('click'); await flushPromises()
+  expect(onlineAction).toHaveBeenLastCalledWith('sync', expect.objectContaining({platform: 'yandex', catalog: 'current', mode: 'hot'}))
+  const bar = wrapper!.get('[data-testid="online-sync-bar"]')
+  expect(bar.text()).toContain('价格与库存快刷')
+  expect(bar.text()).toContain('正在快速刷新价格、库存与销售状态，已处理 200 / 442 件')
+})
+
+it('不混入发布动态卡片，普通/归档收归表格筛选栏并支持多维组合筛选、概览快捷筛选与一键清空', async () => {
+  const ingestJob: OnlineJob = {
+    id: 'ingest-1', operation: 'sync', platform: 'yandex', status: 'running',
+    created_at: '', updated_at: '2026-11-22T12:00:00Z', target_id: '*',
+    request: {catalog: 'current', source: 'publish', ingest_count: 2},
+    result: {phase: 'basic', discovered: 2, completed: 0, failed: 0},
+  }
+  vi.mocked(fetchOnlineProducts).mockResolvedValue({
+    ...response(),
+    items: [yandexItem()],
+    warehouses: warehouseOptions,
+    statuses: ['PUBLISHED', 'NO_STOCKS'],
+    summary: {total: 445, active: 361, paused: 0, attention: 84},
+    jobs: [ingestJob],
+  })
+  render(); await flushPromises(); await click('Yandex Market')
+
+  // 不在在线页塞入发布状态列表，仅保留正在执行的定向入库进度条。
+  expect(wrapper!.find('[data-testid="online-publish-items"]').exists()).toBe(false)
+  expect(wrapper!.get('[data-testid="online-ingest-bar"]').text()).toContain('新发商品入库（2 件）执行中')
+  // 顶栏不再放普通/归档标签，全部筛选维度集中在表格上方筛选区。
+  expect(wrapper!.findAll('[role="tablist"]')).toHaveLength(1)
+  const filterRow = wrapper!.get('[data-testid="online-filter-row"]')
+  expect(filterRow.find('[data-testid="filter-catalog"]').exists()).toBe(true)
+  expect(filterRow.find('[data-testid="filter-stock"]').exists()).toBe(true)
+  expect(filterRow.find('[data-testid="filter-issue"]').exists()).toBe(true)
+  expect(filterRow.find('[data-testid="filter-price"]').exists()).toBe(true)
+  expect(filterRow.find('[data-testid="filter-kind"]').exists()).toBe(true)
+
+  // 组合筛选：库存 + 反馈 + 价格 + 形态 + 目录。
+  await wrapper!.get('[data-testid="filter-stock"]').setValue('out_of_stock'); await flushPromises()
+  await wrapper!.get('[data-testid="filter-issue"]').setValue('error'); await flushPromises()
+  await wrapper!.get('[data-testid="filter-price"]').setValue('missing'); await flushPromises()
+  await wrapper!.get('[data-testid="filter-kind"]').setValue('group'); await flushPromises()
+  expect(fetchOnlineProducts).toHaveBeenLastCalledWith(expect.objectContaining({
+    platform: 'yandex',
+    catalog: 'current',
+    stock_state: 'out_of_stock',
+    issue_state: 'error',
+    price_state: 'missing',
+    group_kind: 'group',
+  }))
+
+  // 清空筛选一次恢复全部默认条件。
+  expect(wrapper!.get('[data-testid="reset-filters"]').text()).toContain('4')
+  await wrapper!.get('[data-testid="reset-filters"]').trigger('click'); await flushPromises()
+  const resetCall = vi.mocked(fetchOnlineProducts).mock.calls.at(-1)![0]
+  expect(resetCall).toMatchObject({platform: 'yandex', catalog: 'current', status: ''})
+  expect(resetCall).not.toHaveProperty('stock_state')
+  expect(resetCall).not.toHaveProperty('issue_state')
+  expect(resetCall).not.toHaveProperty('price_state')
+  expect(resetCall).not.toHaveProperty('group_kind')
+
+  // 点击顶部“需关注”指标快捷切到 issue_state=attention。
+  await wrapper!.get('[data-testid="summary-attention"]').trigger('click'); await flushPromises()
+  expect(fetchOnlineProducts).toHaveBeenLastCalledWith(expect.objectContaining({issue_state: 'attention'}))
 })

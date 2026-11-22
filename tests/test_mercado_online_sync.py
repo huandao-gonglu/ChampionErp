@@ -58,9 +58,9 @@ def test_full_catalog_is_emitted_before_any_detail_and_includes_all_statuses():
     assert all(len(row.markets) == 1 and row.prices[1].kind == "net_proceeds" and row.prices[1].amount == "10" for row in rows)
 
 
-def test_parallel_window_is_three_and_closing_does_not_queue_entire_store():
+def test_parallel_window_is_four_and_closing_does_not_queue_entire_store():
     platform = Platform(30); a = adapter(platform)
-    original = a.get; barrier = Barrier(3); lock = Lock()
+    original = a.get; barrier = Barrier(4); lock = Lock()
     active = peak = started = 0
     def get(path):
         nonlocal active, peak, started
@@ -79,7 +79,7 @@ def test_parallel_window_is_three_and_closing_does_not_queue_entire_store():
     next(stream); next(stream); batch = next(stream)
     assert batch.listings
     stream.close()
-    assert peak == 3 and started == 3
+    assert peak == 4 and started == 4
 
 
 @pytest.mark.parametrize("status", [401, 403, 429])
@@ -92,7 +92,7 @@ def test_account_rejection_or_rate_limit_stops_the_remaining_store(status):
     a.get = get
     with pytest.raises(PublishAdapterError):
         list(a.sync(platform.ids))
-    assert 1 <= len(calls) <= 3
+    assert 1 <= len(calls) <= 4
 
 
 def test_early_empty_catalog_page_is_failure_not_complete():
@@ -151,5 +151,69 @@ def test_failed_child_preserves_snapshot_and_retry_only_reads_failed_parent():
         retry = service.retry(job["id"], uuid4().hex)["job"]; service.run_once()
         assert service.store.job(retry["id"])["status"] == "confirmed"
         assert platform.calls == ["/marketplace/items/CBT1", "/marketplace/items/MLM1"]
+    finally:
+        service.close()
+
+
+def test_mercado_parallel_user_product_and_children_and_hot_sync_skips_catalog():
+    """验证单品内 mapping/user-product 并发、多站点子项并发保序，以及 mode=hot 跳过 /items/search 扫描。"""
+    a = adapter(Platform(4))
+    up_barrier = Barrier(2)
+    child_barrier = Barrier(3)
+    calls = []
+    price_override = {"MLM1": 11, "MLB1": 12, "MLC1": 13}
+
+    def get(path, **kwargs):
+        calls.append(path)
+        if "/items/search?" in path:
+            return {"seller_id": "seller", "results": ["CBT1"], "paging": {"total": 1}}
+        if path == "/marketplace/items/CBT1":
+            return {"id": "CBT1", "site_id": "CBT", "seller_id": "seller", "status": "active", "user_product_id": "U10"}
+        if path == "/marketplace/user-products/U10/mapping":
+            up_barrier.wait(timeout=5)
+            return [{"siteless_user_product_id": "U10", "owner_id": "seller", "item_id": "CBT1", "user_product_id": "U10",
+                     "site_items": [
+                         {"item_id": "MLM1", "site_id": "MLM", "user_id": "m1", "logistic_type": "cross_docking"},
+                         {"item_id": "MLB1", "site_id": "MLB", "user_id": "m2", "logistic_type": "cross_docking"},
+                         {"item_id": "MLC1", "site_id": "MLC", "user_id": "m3", "logistic_type": "cross_docking"},
+                     ]}]
+        if path == "/user-products/U10":
+            up_barrier.wait(timeout=5)
+            return {"id": "U10", "family_name": "多站点商品", "family_id": "fam", "available_quantity": 9}
+        key = path.rsplit("/", 1)[-1]
+        child_barrier.wait(timeout=5)
+        site = key[:3]
+        return {"id": key, "seller_id": {"MLM": "m1", "MLB": "m2", "MLC": "m3"}[site], "site_id": site,
+                "cbt_item_id": "CBT1", "status": "active",
+                "net_proceeds": {"amount": price_override[key], "currency_id": "USD"},
+                "shipping": {"logistic_type": "cross_docking"}}
+
+    a.get = get
+    context = SimpleNamespace(db=get_context().db, config=SimpleNamespace(load_store_config=lambda: {"mercadolibre": {"user_id": "seller"}}))
+    service = OnlineProductService(context, adapter_factories={"mercadolibre": lambda _: a}, start_worker=False)
+    try:
+        full_job = service.sync("mercadolibre", uuid4().hex)["job"]
+        assert service.run_once()
+        assert service.store.job(full_job["id"])["status"] == "confirmed"
+        saved = service.store.listings("mercadolibre", "seller")[0]
+        # 并发读取子站点后仍严格保持 mapping 顺序。
+        assert [m.id for m in saved.markets] == ["MLM1", "MLB1", "MLC1"]
+        assert [p.amount for p in saved.prices] == ["11", "12", "13"]
+
+        # 热刷跳过 /items/search，并发更新最新价格并保留停售意图。
+        with service.store.db._connect() as conn:
+            conn.execute("UPDATE online_listings SET desired_sale_state='paused' WHERE id=?", (saved.id,))
+            conn.commit()
+        calls.clear()
+        up_barrier.reset()
+        child_barrier.reset()
+        price_override["MLM1"] = 19
+        hot_job = service.sync("mercadolibre", uuid4().hex, mode="hot")["job"]
+        assert service.run_once()
+        assert service.store.job(hot_job["id"])["status"] == "confirmed"
+        assert not any("/items/search?" in p for p in calls)
+        updated = service.store.get(saved.id)
+        assert [p.amount for p in updated.prices] == ["19", "12", "13"]
+        assert updated.desired_sale_state == "paused"
     finally:
         service.close()

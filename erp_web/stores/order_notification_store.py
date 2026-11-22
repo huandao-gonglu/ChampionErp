@@ -20,6 +20,11 @@ from erp_web.schemas.orders import (
     utc_iso,
 )
 
+CALLBACK_MAX_ATTEMPTS = 8
+CALLBACK_BASE_DELAY_SECONDS = 10
+CALLBACK_MAX_DELAY_SECONDS = 1800
+CALLBACK_MAX_LIFETIME_SECONDS = 24 * 3600
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS inbox (
@@ -261,16 +266,23 @@ class OrderNotificationStore:
             conn.commit()
             return True
 
-    def finish(self, job, *, error: str = "", retryable: bool = False, now: float, next_attempt: float | None = None, retry_policy: dict | None = None):
-        from erp_web.schemas.sync_policies import policy_values
-        policy = retry_policy or policy_values({}, 'order_callback')
-        status = (
-            "done"
-            if not error
-            else "retry"
-            if retryable and (job["attempts"] < policy["max_attempts"] or next_attempt is not None)
-            else "failed"
-        )
+    def finish(self, job, *, error: str = "", retryable: bool = False, now: float, next_attempt: float | None = None):
+        received_at = timestamp(job.get("received_at"))
+        expired = bool(received_at and now - received_at >= CALLBACK_MAX_LIFETIME_SECONDS)
+        if error and retryable and expired:
+            status = "failed"
+            error = "订单回调重试已超过 24 小时期限，请手动重试或同步订单。"
+            scheduled_next = 0.0
+        elif not error:
+            status = "done"
+            scheduled_next = 0.0
+        elif retryable and (job["attempts"] < CALLBACK_MAX_ATTEMPTS or next_attempt is not None):
+            status = "retry"
+            backoff = min(CALLBACK_MAX_DELAY_SECONDS, CALLBACK_BASE_DELAY_SECONDS * (2 ** min(max(0, job["attempts"] - 1), 30)))
+            scheduled_next = next_attempt if next_attempt is not None else now + backoff
+        else:
+            status = "failed"
+            scheduled_next = 0.0
         with self.connect() as conn:
             conn.execute(
                 """UPDATE inbox SET status=?,error=?,next_attempt=?,lease_until=0,completed_at=?
@@ -278,7 +290,7 @@ class OrderNotificationStore:
                 (
                     status,
                     error[:500],
-                    next_attempt if next_attempt is not None else now + min(policy["max_delay"], policy["base_delay"] * 2 ** min(job["attempts"], 30)),
+                    scheduled_next,
                     utc_iso(),
                     job["id"],
                     job["claim"],

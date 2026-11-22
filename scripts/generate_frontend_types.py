@@ -30,7 +30,6 @@ SCHEMA_MODULES = (
     "erp_web.schemas.api",
     "erp_web.schemas.collection",
     "erp_web.schemas.config",
-    "erp_web.schemas.sync_policies",
     "erp_web.schemas.image",
     "erp_web.schemas.image_batches",
     "erp_web.schemas.image_sets",

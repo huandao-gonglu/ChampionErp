@@ -138,7 +138,13 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     canonical["ai_tool_approval_mode"] = normalize_ai_tool_approval_mode(
         incoming.get("ai_tool_approval_mode", "ask")
     )
-    canonical["system_settings"] = SystemSettingsRequest.model_validate(incoming.get("system_settings", {})).model_dump()
+    raw_system = incoming.get("system_settings")
+    if isinstance(raw_system, dict):
+        # 已退役的 sync_policies 允许既有配置无损读取，重新保存时自然剥离。
+        raw_system = {key: value for key, value in raw_system.items() if key != "sync_policies"}
+    else:
+        raw_system = {}
+    canonical["system_settings"] = SystemSettingsRequest.model_validate(raw_system).model_dump()
     canonical["forbidden_categories"] = ForbiddenCategoryConfiguration.model_validate(incoming.get("forbidden_categories", {})).model_dump()
     canonical["auto_ai_recognition"] = str(
         canonical.get("auto_ai_recognition") or defaults["auto_ai_recognition"]

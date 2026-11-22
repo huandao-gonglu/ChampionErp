@@ -32,9 +32,15 @@ class OnlineProductJobReader:
         if job["operation"] == "sync":
             if result.get("data_scope") == "basic":
                 summary += "（基础资料、状态与错误警告；价格和库存未刷新）"
+            elif result.get("data_scope") == "hot":
+                summary += "（价格、可售库存及销售状态快刷；目录图文保持原快照）"
             elif result.get("data_scope") == "listing":
                 summary += "（商品资料、价格、可售库存及平台反馈）"
             summary += f"；成功 {result.get('completed', 0)}，失败 {result.get('failed', 0)}"
+            if result.get("removed"):
+                summary += f"，已清理已删 {result['removed']} 件"
+            if result.get("moved"):
+                summary += f"，已调整目录 {result['moved']} 件"
             if result.get("completed", 0):
                 summary += "；成功项已保存，后续尝试失败不会撤销这些更新。"
             if status in ("partial", "failed"):

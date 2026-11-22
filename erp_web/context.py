@@ -238,7 +238,6 @@ class AppContext:
                     store=self.wechat_store,
                     conversations=build_conversation_service(self),
                     conversation_factory=lambda: build_conversation_service(self),
-                    policy_reader=self.config.sync_policy,
                     forward_types_reader=lambda: self.config.system_settings()["wechat_forward_types"],
                     forward_types_writer=lambda values: self.config.save_system_settings({"wechat_forward_types": values}),
                 )

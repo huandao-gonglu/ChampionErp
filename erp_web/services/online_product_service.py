@@ -1,7 +1,9 @@
 """在线商品领域任务：持久化队列、有限只读确认与人工对账。"""
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import logging
 import threading
 import time
@@ -29,6 +31,8 @@ from erp_web.services.online_product_batch import preview_batch, submit_batch, r
 from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
 
 logger = logging.getLogger(__name__)
+SHOP_NAMES_TTL_SECONDS = 900.0
+WAREHOUSES_TTL_SECONDS = 900.0
 
 
 def account_identity(platform: str, config: dict[str, Any]) -> str:
@@ -48,10 +52,14 @@ class OnlineProductService:
         self.adapter_factories = adapter_factories
         self.store = OnlineProductStore(context.db)
         self.images = OnlineProductImages(context)
-        self.sales = OnlineProductSalesReader(self.store, self._config, self._adapter)
+        self.sales = OnlineProductSalesReader(self.store, self._config, self._adapter, on_adapter_done=self._remember_yandex_warehouses)
         self.details = OnlineProductDetailReader(self.store, self._config, self._adapter)
         self.ozon_export = OnlineOzonExportService(self.store, lambda: self._config("yandex")[1])
         self.owner = uuid4().hex
+        self._shop_names_lock = threading.Lock()
+        self._shop_names_cache: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
+        self._warehouses_lock = threading.Lock()
+        self._warehouses_cache: dict[tuple[str, str, str], tuple[float, list[dict[str, Any]]]] = {}
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread = threading.Thread(target=server_worker_context().run, args=(self._loop,), name="online-products", daemon=True)
@@ -82,7 +90,22 @@ class OnlineProductService:
             raise OnlineConflict("店铺身份缺失或已切换，请重新同步当前店铺")
         return config, current
 
-    def _adapter(self, platform: str, account: str):
+    def _warehouses_cache_key(self, adapter) -> tuple[str, str, str] | None:
+        if getattr(adapter, "platform", "") != "yandex" or getattr(adapter, "mode", "") != "business":
+            return None
+        token_key = hashlib.sha256(str(getattr(adapter, "token", "")).encode("utf-8")).hexdigest()
+        return (str(getattr(adapter, "account_id", "")), token_key, "business")
+
+    def _remember_yandex_warehouses(self, adapter) -> None:
+        key = self._warehouses_cache_key(adapter)
+        if key is None or "warehouses" not in getattr(adapter, "__dict__", {}):
+            return
+        warehouses = adapter.__dict__["warehouses"]
+        if isinstance(warehouses, list):
+            with self._warehouses_lock:
+                self._warehouses_cache[key] = (time.monotonic() + WAREHOUSES_TTL_SECONDS, deepcopy(warehouses))
+
+    def _adapter(self, platform: str, account: str, *, refresh_warehouses: bool = False):
         config, _ = self._config(platform, account)
         adapter_type = self.adapter_factories.get(platform)
         if adapter_type is None:
@@ -90,12 +113,30 @@ class OnlineProductService:
         adapter = adapter_type(config)
         if adapter.account_id != account:
             raise OnlineConflict("授权刷新后店铺身份变化，操作已停止")
+        if not refresh_warehouses and "warehouses" not in getattr(adapter, "__dict__", {}):
+            key = self._warehouses_cache_key(adapter)
+            if key is not None:
+                now = time.monotonic()
+                with self._warehouses_lock:
+                    cached = self._warehouses_cache.get(key)
+                if cached is not None and now < cached[0]:
+                    adapter.__dict__["warehouses"] = deepcopy(cached[1])
         return adapter
 
     def yandex_shop_names(self, account: str) -> dict[str, str]:
         adapter = self._adapter("yandex", account)
+        token_key = hashlib.sha256(str(getattr(adapter, "token", "")).encode("utf-8")).hexdigest()
+        cache_key = (account, token_key)
+        now = time.monotonic()
+        with self._shop_names_lock:
+            cached = self._shop_names_cache.get(cache_key)
+            if cached is not None and now < cached[0]:
+                return dict(cached[1])
         with request_operation("online_products"):
-            return adapter.shop_names()
+            names = adapter.shop_names()
+        with self._shop_names_lock:
+            self._shop_names_cache[cache_key] = (time.monotonic() + SHOP_NAMES_TTL_SECONDS, dict(names))
+        return dict(names)
 
     def _list_context(self, platform: str, catalog: str = "current", warehouse_id: str = "", *, list_only: bool = False):
         if catalog not in ("current", "archived", "all"):
@@ -123,13 +164,13 @@ class OnlineProductService:
             "store_name": str(config.get(platform, {}).get("shop_name") or account), 'warehouses': list(warehouses.values()),
         }
 
-    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1, catalog: str = "current", warehouse_id: str = "", list_only: bool = False) -> dict[str, Any]:
+    def list(self, platform: str, *, query: str = "", status: str = "", market: str = "", page: int = 1, catalog: str = "current", warehouse_id: str = "",
+             stock_state: str = "", issue_state: str = "", price_state: str = "", group_kind: str = "", list_only: bool = False) -> dict[str, Any]:
         records, context = self._list_context(platform, catalog, warehouse_id, list_only=list_only)
         latest_id = (context["latest_sync"] or {}).get("id", "")
-        jobs = []
-        if account := context["account_id"]:
-            jobs = (self.store.list_page_jobs(platform, account, latest_id) if list_only else self.store.jobs(platform, account))
-        result = listing_page(records, query=query, status=status, market=market, page=page)
+        jobs = (self.store.list_page_jobs(platform, account, latest_id) if list_only else self.store.jobs(platform, account)) if (account := context["account_id"]) else []
+        result = listing_page(records, query=query, status=status, market=market, page=page,
+                              stock_state=stock_state, issue_state=issue_state, price_state=price_state, group_kind=group_kind)
         if platform == "yandex":
             visible = {row["id"] for row in result["items"]}
             cutoff = datetime.now(timezone.utc) - SALES_MAX_AGE
@@ -230,15 +271,24 @@ class OnlineProductService:
         listing = self.details.read(listing_id, read_scope=read_scope, expires_at=expires_at)
         return {"ok": True, "item": listing.model_dump(exclude={"snapshot"})}
 
-    def sync(self, platform: str, key: str, *, ids: list[str] | None = None, catalog: str = "current") -> dict[str, Any]:
+    def sync(self, platform: str, key: str, *, ids: list[str] | None = None, catalog: str = "current", mode: str = "full") -> dict[str, Any]:
         if not 8 <= len(key.strip()) <= 128:
             raise ValueError("同步提交键长度必须为 8–128 字符")
         if catalog not in ("current", "archived"):
             raise ValueError("同步目录只能为 current 或 archived")
+        if mode not in ("full", "hot"):
+            raise ValueError("同步模式只能为 full 或 hot")
         if catalog == "archived" and platform != "yandex":
             raise ValueError("该平台暂不支持单独同步归档目录")
         _, account = self._config(platform)
-        job = self.store.enqueue(platform, account, "sync", "*", {"ids": ids, "catalog": catalog}, key)
+        if mode == "hot" and ids is None:
+            existing = [row for row in self.store.listings(platform, account, list_only=True) if row.archived is (catalog == "archived")]
+            if not existing:
+                raise ValueError("当前目录还没有本地商品快照，请先同步目录与图文")
+        payload: dict[str, Any] = {"ids": ids, "catalog": catalog}
+        if mode == "hot":
+            payload["mode"] = "hot"
+        job = self.store.enqueue(platform, account, "sync", "*", payload, key)
         self._wake.set()
         return {"ok": True, "job": job}
 
@@ -279,9 +329,15 @@ class OnlineProductService:
         write_returned = False
         result: dict[str, Any] = job["result"] if dispatched else {"items": [], "completed": 0, "failed": 0, "created": 0, "updated": 0}
         try:
-            adapter = self._adapter(job["platform"], job["account_id"])
+            refresh_warehouses = job["operation"] == "sync" and job["request"].get("mode", "full") != "hot"
+            adapter = self._adapter(job["platform"], job["account_id"], refresh_warehouses=refresh_warehouses)
             if job["operation"] == "sync":
-                run_sync(self, job, adapter, result)
+                # 同步全部为只读查询，为瞬时网络抖动和 5xx 启用有限重试预算；写操作仍严格为单次发送。
+                try:
+                    with request_operation("online_products", operation_id=job["id"], trigger="background", cancel=self._stop, read_max_attempts=3):
+                        run_sync(self, job, adapter, result)
+                finally:
+                    self._remember_yandex_warehouses(adapter)
                 return True
             request = ChangeRequest.model_validate(job["request"])
             before = self.store.get(request.listing_id)
@@ -341,7 +397,7 @@ class OnlineProductService:
             status = "outcome_unknown" if dispatched and not rejected else "failed"
             if rejected and job["operation"] == "sale_state" and result.get("before"):
                 self.store.sale_intent(job["target_id"], result["before"].get("desired_sale_state", ""), lease=job)
-            if job["operation"] == "sync" and (result["completed"] or result.get("discovered")):
+            if job["operation"] == "sync" and result["completed"]:
                 status = "partial"
             self._update(job, status, result, dispatched=dispatched)
         return True
@@ -451,7 +507,7 @@ class OnlineProductService:
             ids = [row["remote_id"] for row in job["result"].get("items", []) if row["status"] == "failed"]
             if not ids:
                 raise ValueError("没有已识别的失败商品；发现阶段失败请重新同步店铺")
-            return self.sync(job["platform"], key, ids=ids, catalog=job["request"].get("catalog", "current"))
+            return self.sync(job["platform"], key, ids=ids, catalog=job["request"].get("catalog", "current"), mode=job["request"].get("mode", "full"))
         changes = dict(job["request"]["changes"])
         checks = job["result"].get("confirmation", {})
         if job["status"] == "partial":

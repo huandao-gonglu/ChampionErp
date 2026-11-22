@@ -307,7 +307,7 @@ def online_products_job_read(request: OnlineJobRequest, scope: Annotated[OnlineP
 )
 def online_products_sync(request: OnlineSyncRequest, scope: Annotated[OnlineProductCapabilityScope, Injected()],
                          execution: Annotated[AiExecutionContext, Injected()]) -> JobReferenceResult:
-    return _reference(_call(scope.service().sync, request.platform, _key(execution), catalog=request.catalog))
+    return _reference(_call(scope.service().sync, request.platform, _key(execution), catalog=request.catalog, mode=request.mode))
 
 
 @ai_tool(

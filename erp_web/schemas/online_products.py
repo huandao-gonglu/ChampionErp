@@ -273,12 +273,13 @@ class CloseOnlineOperationRequest(BaseModel):
 
 @dataclass
 class OnlineSyncBatch:
-    """平台同步的领域批次；目录、基础或完整详情及失败分别落库。"""
+    """平台同步的领域批次；目录、基础、热数据或完整详情及失败分别落库。"""
 
-    phase: Literal["catalog", "basic", "details"]
+    phase: Literal["catalog", "basic", "details", "hot"]
     listings: list[OnlineListing] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
     discovery_complete: bool = False
+    missing_candidates: list[str] = field(default_factory=list)
 
 
 class OnlineFeedbackSummary(BaseModel):

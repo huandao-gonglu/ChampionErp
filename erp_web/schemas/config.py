@@ -113,19 +113,10 @@ class WatermarkSettingsRequest(BaseModel):
 class SystemSettings(TypedDict):
     orders_auto_sync_interval_hours: int
     watermark: WatermarkSettings
-    sync_policies: dict[str, dict[str, int | float]]
     wechat_forward_types: list[WechatForwardType]
 
 
 class SystemSettingsRequest(BaseModel):
-    sync_policies: dict[str, dict[str, int | float]] = Field(default_factory=dict)
-
-    @field_validator('sync_policies', mode='before')
-    @classmethod
-    def validate_sync_policies(cls, value):
-        from .sync_policies import validate_overrides
-        return validate_overrides(value)
-
     model_config = ConfigDict(extra="forbid")
     orders_auto_sync_interval_hours: int = Field(default=5, ge=5, strict=True)
     watermark: WatermarkSettingsRequest = Field(default_factory=WatermarkSettingsRequest)

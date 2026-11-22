@@ -27,6 +27,7 @@ def request_operation(
     before_send=None,
     bypass_auth_block=False,
     max_operation_requests=None,
+    read_max_attempts=None,
 ):
     parent = _operation.get()
     if parent:
@@ -35,6 +36,8 @@ def request_operation(
         deadline_at = min(deadlines) if deadlines else None
         limits = [value for value in (max_operation_requests, parent["max_operation_requests"]) if value is not None]
         max_operation_requests = min(limits) if limits else None
+        attempts = [value for value in (read_max_attempts, parent.get("read_max_attempts")) if value is not None]
+        read_max_attempts = min(attempts) if attempts else None
         bypass_auth_block = bool(bypass_auth_block or parent["bypass_auth_block"])
         checks = tuple(check for check in (parent["cancellation_check"], cancellation_check) if check is not None)
         if checks:
@@ -64,6 +67,7 @@ def request_operation(
         "before_send": before_send,
         "bypass_auth_block": bool(bypass_auth_block),
         "max_operation_requests": max_operation_requests,
+        "read_max_attempts": read_max_attempts,
     }
     token = _operation.set(value)
     try:
@@ -128,7 +132,13 @@ def request_context(url, headers=None, *, data=None, method="GET", timeout=30, s
         semantics=semantics or ("read" if method.upper() in {"GET", "HEAD"} or read_post or read_put else "write"),
     )
     operation = _operation.get()
-    return replace(ctx, **{**operation, "source": operation["source"] + ":" + source}) if operation else ctx
+    if not operation:
+        return ctx
+    overrides = {key: value for key, value in operation.items() if key != "read_max_attempts"}
+    overrides["source"] = operation["source"] + ":" + source
+    if ctx.semantics == "read" and operation.get("read_max_attempts") is not None:
+        overrides["max_attempts"] = operation["read_max_attempts"]
+    return replace(ctx, **overrides)
 
 
 def current_operation_id():

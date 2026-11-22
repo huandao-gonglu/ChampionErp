@@ -1,5 +1,5 @@
 import { hasLocalOperations, modelOperationReason, modelRequiresDesktop } from '@/utils/desktop'
-import { handoffModelOperation, launchDesktop } from '@/utils/desktopHandoff'
+import { handoffModelOperation, launchDesktop, type DesktopImageSetAction } from '@/utils/desktopHandoff'
 import { withAiConversation } from '@/services/withAiConversation'
 import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
 import { fetchDraftImageState, generateDraftImageSet, planDraftImageSet, processDraftImages, type DraftImagePoll, type ImageSetPlan } from '@/api/draftImages'
@@ -209,14 +209,56 @@ export function useDraftImageWorkbench(options: {
     } finally { if (token === epoch) saving.value = false }
   }
 
-  async function generateSet(plan?: ImageSetPlan, updatedAt = draft.value.updatedAt, retryPageIds?: string[]) {
-    if (busy.value || platformBlocked('image.translate')) return
+  async function resumeImageSet(action: DesktopImageSetAction) {
+    if (!hasLocalOperations() || !active.value || batch.value?.conversation_id === action.requestId) return
+    if (busy.value) {
+      notice.value = '草稿已有操作进行中，本次套图尚未提交。'
+      return
+    }
+    if (!action.plan && action.baseRequestId && batch.value?.conversation_id !== action.baseRequestId) {
+      await poll()
+      if (!active.value || batch.value?.conversation_id === action.requestId) return
+      if (busy.value) {
+        notice.value = '草稿已有操作进行中，本次套图尚未提交。'
+        return
+      }
+    }
+    if (draft.value.updatedAt !== action.updatedAt) {
+      notice.value = '草稿已更新，请核对套图方案后重新生成。'
+      return
+    }
+    if (action.plan) {
+      return generateSet(action.plan, action.updatedAt, undefined, action.requestId)
+    }
+    if (!action.baseRequestId || !action.retryPageIds?.length) return
+    if (!batch.value?.image_set || batch.value.conversation_id !== action.baseRequestId) {
+      notice.value = '套图任务已更新，请重新读取最新结果。'
+      return
+    }
+    return generateSet(undefined, action.updatedAt, action.retryPageIds, action.requestId)
+  }
+
+  async function generateSet(plan?: ImageSetPlan, updatedAt = draft.value.updatedAt, retryPageIds?: string[], confirmedRequestId?: string) {
+    if (busy.value) return
+    const handoff = !confirmedRequestId && modelRequiresDesktop('image.translate')
+    if (!handoff && !confirmedRequestId && platformBlocked('image.translate')) return
     const base = batch.value
     if (!plan && (!base?.image_set || !retryPageIds?.length)) return
     const token = epoch
     saving.value = true; notice.value = ''
     try {
-      pending.value = `draft_image_set_${crypto.randomUUID()}`
+      const requestId = confirmedRequestId || `draft_image_set_${crypto.randomUUID()}`
+      if (handoff) {
+        const action: DesktopImageSetAction = plan
+          ? { requestId, updatedAt, plan: clone(plan) }
+          : { requestId, updatedAt, baseRequestId: base!.conversation_id, retryPageIds: [...retryPageIds!] }
+        await launchDesktop({ state: { workflow: {
+          draft: draft.value, draftContext: options.productContext.value, draftTab: 'images',
+          draftImageSetAction: action,
+        } } })
+        return
+      }
+      pending.value = requestId
       remember(draft.value.draftId, pending.value)
       const result = await withAiConversation('AI 生成套图', id =>
         generateDraftImageSet(draft.value, pending.value, {
@@ -291,7 +333,7 @@ export function useDraftImageWorkbench(options: {
     finally { if (token === epoch) saving.value = false }
   }
   return {
-    busy, checking, batch, notice, undoLabel, redoLabel, start, resumeTranslation, add, upload, planSet, generateSet,
+    busy, checking, batch, notice, undoLabel, redoLabel, start, resumeTranslation, resumeImageSet, add, upload, planSet, generateSet,
     applySet: (refs: DraftImageRef[], skuPageKeys: string[] = []) => {
       const current = batch.value
       if (!current?.image_set || (!refs.length && !skuPageKeys.length)) return

@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from erp_web.db import ErpDatabase, utc_now
+from erp_web.product_model.online_listing_summary import summarize_yandex_status, yandex_issues
 from erp_web.product_model.online_operation_model import UNRESOLVED_STATUSES, blocks_modification, effective_job_status, submission_status
 from erp_web.schemas.online_products import BuyerLink, MarketSnapshot, OnlineListing, OnlineStatus, snapshot_version
 from erp_web.services.external_request_context import current_task_origin
@@ -43,6 +44,47 @@ class OnlineProductStore:
             conn.commit()
         return self.get(listing.id)
 
+    def save_many(self, listings: list[OnlineListing], *, lease: dict[str, Any] | None = None, full_snapshot: bool = True) -> list[OnlineListing]:
+        """按批单事务落库目录或完整详情快照，避免三平台全量同步逐 SKU 触发数百次磁盘提交。"""
+        if not listings:
+            return []
+        now = utc_now()
+        status_now = datetime.now(timezone.utc).isoformat()
+        for item in listings:
+            if full_snapshot:
+                item.synced_at = now
+                if item.platform == "yandex":
+                    item.sales_checked_at = item.basic_synced_at = now
+                if item.details_state == "ready" and not item.errors:
+                    item.status_checked_at = status_now
+        for offset in range(0, len(listings), 500):
+            chunk = listings[offset:offset + 500]
+            with self.db._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if lease:
+                    self._assert_lease(conn, lease)
+                for item in chunk:
+                    self._write_listing(conn, item)
+                conn.commit()
+        return listings
+
+    def sync_state_many(self, listing_ids: list[str], state: str, errors: list[str], *, lease: dict[str, Any]) -> None:
+        """按批单事务更新详情状态（如目录发现阶段批量标记 pending），保持既有业务快照与版本。"""
+        if not listing_ids:
+            return
+        for offset in range(0, len(listing_ids), 500):
+            chunk = listing_ids[offset:offset + 500]
+            marks = ",".join("?" for _ in chunk)
+            with self.db._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._assert_lease(conn, lease)
+                rows = conn.execute(f"SELECT id,snapshot_json FROM online_listings WHERE id IN ({marks})", chunk).fetchall()
+                for row in rows:
+                    listing = OnlineListing.model_validate_json(row["snapshot_json"])
+                    listing.details_state, listing.errors = state, list(errors)
+                    conn.execute("UPDATE online_listings SET snapshot_json=? WHERE id=?", (listing.model_dump_json(), row["id"]))
+                conn.commit()
+
     @staticmethod
     def _write_listing(conn, listing):
         listing.version = snapshot_version(listing)
@@ -61,6 +103,17 @@ class OnlineProductStore:
                 price.writable, price.reason = old.writable, old.reason
 
     @staticmethod
+    def _strip_unused_campaign_price_errors(listing, previous):
+        """未启用独立价且无历史独立价的店铺，不在 HTTP 200 未返回记录时重复挂载噪音错误。"""
+        old_prices = {p.id: p for p in previous.prices}
+        for price in listing.prices:
+            if price.id == "business" or price.read_error != "平台未返回该 SKU 的店铺商品记录":
+                continue
+            old = old_prices.get(price.id)
+            if not price.writable and (old is None or old.amount is None):
+                price.read_error = ""
+
+    @staticmethod
     def _preserve_missing_sales(listing, previous):
         """仅替换本次缺失范围的展示值，旧值始终携带当时的成功读取时间。"""
         last_read = previous.sales_checked_at or previous.synced_at
@@ -76,6 +129,65 @@ class OnlineProductStore:
             if stock.read_error and old and old.quantity is not None and last_read:
                 stock.quantity = old.quantity
                 stock.cached_at = old.cached_at or old.observed_at or last_read
+        if listing.platform == "yandex":
+            failed_cids = {
+                price.id.removeprefix("campaign:")
+                for price in listing.prices
+                if price.read_error and price.id.startswith("campaign:")
+                and not listing.snapshot.get("campaigns", {}).get(price.id.removeprefix("campaign:"))
+            }
+            if failed_cids:
+                old_campaigns = previous.snapshot.get("campaigns", {})
+                old_markets = {market.id: market for market in previous.markets}
+                restored = False
+                for cid in failed_cids:
+                    old_camp = old_campaigns.get(cid)
+                    if old_camp:
+                        listing.snapshot.setdefault("campaigns", {})[cid] = old_camp
+                        listing.platform_issues.extend(yandex_issues(old_camp, source="campaign"))
+                        restored = True
+                    old_market = old_markets.get(cid)
+                    if old_market:
+                        for market in listing.markets:
+                            if market.id == cid:
+                                market.raw_status = old_market.raw_status
+                                market.raw_sub_status = list(old_market.raw_sub_status)
+                                if market.price is None and old_market.price is not None:
+                                    market.price, market.currency = old_market.price, old_market.currency
+                                restored = True
+                    for stock in listing.stocks:
+                        if stock.campaign_id == cid and (old_stock := stocks.get(stock.id)):
+                            stock.raw_status = old_stock.raw_status
+                            stock.sale_state = old_stock.sale_state
+                            restored = True
+                if restored:
+                    summarize_yandex_status(listing)
+
+    def _merge_basic_in_conn(self, conn, listing: OnlineListing, existing_row, now: str, status_now: str) -> OnlineListing:
+        if existing_row:
+            previous = OnlineListing.model_validate_json(existing_row["snapshot_json"])
+            if previous.details_state == "ready" and previous.synced_at:
+                self._retain_price_permissions(listing, previous)
+            self._strip_unused_campaign_price_errors(listing, previous)
+            self._preserve_missing_sales(listing, previous)
+            listing.synced_at = previous.synced_at
+            listing.snapshot = {**previous.snapshot, **listing.snapshot}
+            if previous.details_state == "ready" and previous.synced_at:
+                listing.details_state = "ready"
+                for operation in ("price", "stock", "content"):
+                    if operation in previous.capabilities:
+                        listing.capabilities[operation] = previous.capabilities[operation]
+            previous_category = previous.snapshot.get("offer", {}).get("marketCategoryId") or previous.snapshot.get("mapping", {}).get("marketCategoryId")
+            category = listing.snapshot.get("offer", {}).get("marketCategoryId") or listing.snapshot.get("mapping", {}).get("marketCategoryId")
+            if category == previous_category:
+                names = {str(a.get("id")): a.get("name") for a in previous.content.get("attributes", []) if a.get("name")}
+                for attribute in listing.content.get("attributes", []):
+                    if name := names.get(str(attribute.get("id"))):
+                        attribute["name"] = name
+        listing.sales_checked_at = listing.basic_synced_at = now
+        listing.status_checked_at = status_now
+        self._write_listing(conn, listing)
+        return listing
 
     def save_basic(self, listing: OnlineListing, *, lease: dict[str, Any]) -> OnlineListing:
         """合并列表读取与已有完整详情，独立保存销售数据检查时间。"""
@@ -83,29 +195,123 @@ class OnlineProductStore:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_lease(conn, lease)
             row = conn.execute("SELECT snapshot_json FROM online_listings WHERE id=?", (listing.id,)).fetchone()
-            if row:
-                previous = OnlineListing.model_validate_json(row[0])
-                self._preserve_missing_sales(listing, previous)
-                listing.synced_at = previous.synced_at
-                listing.snapshot = {**previous.snapshot, **listing.snapshot}
-                if previous.details_state == "ready" and previous.synced_at:
-                    self._retain_price_permissions(listing, previous)
-                    listing.details_state = "ready"
-                    for operation in ("price", "stock", "content"):
-                        if operation in previous.capabilities:
-                            listing.capabilities[operation] = previous.capabilities[operation]
-                previous_category = previous.snapshot.get("offer", {}).get("marketCategoryId") or previous.snapshot.get("mapping", {}).get("marketCategoryId")
-                category = listing.snapshot.get("offer", {}).get("marketCategoryId") or listing.snapshot.get("mapping", {}).get("marketCategoryId")
-                if category == previous_category:
-                    names = {str(a.get("id")): a.get("name") for a in previous.content.get("attributes", []) if a.get("name")}
-                    for attribute in listing.content.get("attributes", []):
-                        if name := names.get(str(attribute.get("id"))):
-                            attribute["name"] = name
-            listing.sales_checked_at = listing.basic_synced_at = utc_now()
-            listing.status_checked_at = datetime.now(timezone.utc).isoformat()
-            self._write_listing(conn, listing)
+            self._merge_basic_in_conn(conn, listing, row, utc_now(), datetime.now(timezone.utc).isoformat())
             conn.commit()
         return self.get(listing.id)
+
+    def save_basic_many(self, listings: list[OnlineListing], *, lease: dict[str, Any]) -> list[OnlineListing]:
+        """按批单事务合并基础同步快照，避免逐 SKU 提交触发数百次磁盘同步。"""
+        if not listings:
+            return []
+        saved: list[OnlineListing] = []
+        now = utc_now()
+        status_now = datetime.now(timezone.utc).isoformat()
+        for offset in range(0, len(listings), 500):
+            chunk = listings[offset:offset + 500]
+            ids = [row.id for row in chunk]
+            marks = ",".join("?" for _ in ids)
+            with self.db._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._assert_lease(conn, lease)
+                existing = {
+                    row["id"]: row
+                    for row in conn.execute(f"SELECT id,snapshot_json FROM online_listings WHERE id IN ({marks})", ids).fetchall()
+                }
+                for item in chunk:
+                    merged = self._merge_basic_in_conn(conn, item, existing.get(item.id), now, status_now)
+                    saved.append(merged)
+                conn.commit()
+        return saved
+
+    def _merge_hot_in_conn(self, conn, hot: OnlineListing, existing_row, now: str, status_now: str) -> OnlineListing | None:
+        if existing_row is None:
+            return None
+        if hot.platform != "yandex":
+            # Ozon / Mercado Libre 热刷跳过目录翻页，直接拉取最新完整商品快照；保留本地停售意图。
+            hot.desired_sale_state = existing_row["desired_sale_state"]
+            hot.details_state = "ready"
+            hot.synced_at = now
+            hot.sales_checked_at = now
+            if not hot.errors:
+                hot.status_checked_at = status_now
+            self._write_listing(conn, hot)
+            return hot
+        previous = OnlineListing.model_validate_json(existing_row["snapshot_json"])
+        previous.desired_sale_state = existing_row["desired_sale_state"]
+        has_fresh_campaign = (
+            bool(hot.snapshot.get("campaign"))
+            or any(bool(camp) for camp in hot.snapshot.get("campaigns", {}).values())
+        )
+        has_fresh_sales = (
+            has_fresh_campaign
+            or any(p.amount is not None for p in hot.prices)
+            or any(s.quantity is not None for s in hot.stocks)
+        )
+        self._retain_price_permissions(hot, previous)
+        self._strip_unused_campaign_price_errors(hot, previous)
+        self._preserve_missing_sales(hot, previous)
+        if not has_fresh_sales:
+            previous.prices = hot.prices
+            previous.sales_checked_at = now
+            self._write_listing(conn, previous)
+            return previous
+        previous.prices = hot.prices
+        previous.stocks = hot.stocks
+        if hot.markets:
+            previous.markets = hot.markets
+        for key in ("warehouse_catalog", "campaigns", "campaign", "hidden_campaigns", "hidden"):
+            if key in hot.snapshot:
+                previous.snapshot[key] = hot.snapshot[key]
+        if hot.snapshot.get("default_price"):
+            previous.snapshot["default_price"] = hot.snapshot["default_price"]
+        card_issues = [issue for issue in previous.platform_issues if issue.source != "campaign"]
+        campaign_issues = [issue for issue in hot.platform_issues if issue.source == "campaign"]
+        previous.platform_issues = card_issues + campaign_issues
+        summarize_yandex_status(previous)
+        previous.sales_checked_at = now
+        previous.status_checked_at = status_now
+        self._write_listing(conn, previous)
+        return previous
+
+    def save_hot(self, hot: OnlineListing, *, lease: dict[str, Any]) -> OnlineListing | None:
+        """热数据快刷：只更新价格、可售库存、销售/隐藏状态与店铺级反馈，保留既有目录图文、卡片反馈与详情状态。"""
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_lease(conn, lease)
+            row = conn.execute("SELECT snapshot_json,desired_sale_state FROM online_listings WHERE id=?", (hot.id,)).fetchone()
+            merged = self._merge_hot_in_conn(conn, hot, row, utc_now(), datetime.now(timezone.utc).isoformat())
+            if merged is None:
+                return None
+            conn.commit()
+        return self.get(hot.id)
+
+    def save_hot_many(self, hots: list[OnlineListing], *, lease: dict[str, Any]) -> dict[str, OnlineListing]:
+        """按批单事务落库热数据快刷，保持短锁同时将数百次逐条提交压为 1 次提交。"""
+        if not hots:
+            return {}
+        saved: dict[str, OnlineListing] = {}
+        now = utc_now()
+        status_now = datetime.now(timezone.utc).isoformat()
+        for offset in range(0, len(hots), 500):
+            chunk = hots[offset:offset + 500]
+            ids = [row.id for row in chunk]
+            marks = ",".join("?" for _ in ids)
+            with self.db._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._assert_lease(conn, lease)
+                existing = {
+                    row["id"]: row
+                    for row in conn.execute(
+                        f"SELECT id,snapshot_json,desired_sale_state FROM online_listings WHERE id IN ({marks})",
+                        ids,
+                    ).fetchall()
+                }
+                for item in chunk:
+                    merged = self._merge_hot_in_conn(conn, item, existing.get(item.id), now, status_now)
+                    if merged is not None:
+                        saved[merged.id] = merged
+                conn.commit()
+        return saved
 
     def update_detail(self, before: OnlineListing, detail: OnlineListing) -> OnlineListing:
         """单件详情读取后以版本及读取时间核对并发，网络请求不占用写事务。"""
@@ -162,16 +368,41 @@ class OnlineProductStore:
             # 同值库存写回也有新回执时间，旧的网络响应不得倒灌。
             if current.stocks != before.stocks or current.prices != before.prices:
                 return
-            self._preserve_missing_sales(sales, current)
+            has_fresh_campaign = (
+                bool(sales.snapshot.get("campaign"))
+                or any(bool(camp) for camp in sales.snapshot.get("campaigns", {}).values())
+            )
+            has_fresh_sales = (
+                has_fresh_campaign
+                or any(p.amount is not None for p in sales.prices)
+                or any(s.quantity is not None for s in sales.stocks)
+            )
             self._retain_price_permissions(sales, current)
+            self._strip_unused_campaign_price_errors(sales, current)
+            self._preserve_missing_sales(sales, current)
+            if not has_fresh_sales:
+                # 平台对全部店铺、价格和仓库均未返回该 SKU（如已在平台删除或目录已变动）：
+                # 保留原有库存结构与销售状态，仅在基础价上保留读取异常与旧值时间，避免把既有状态降级为“待核实”。
+                current.prices = sales.prices
+                current.sales_checked_at = utc_now()
+                self._write_listing(conn, current)
+                conn.commit()
+                return
             old_stocks = {stock.id: stock for stock in current.stocks}
+            known_markets = {market.id for market in current.markets}
+            fresh_campaigns = sales.snapshot.get("campaigns", {})
+            merged_stocks = []
             for stock in sales.stocks:
                 old = old_stocks.get(stock.id)
                 if old and old.campaign_id == stock.campaign_id:
                     stock.raw_status, stock.sale_state = old.raw_status, old.sale_state
-                else:
+                    merged_stocks.append(stock)
+                elif not stock.campaign_id or stock.campaign_id in known_markets or stock.quantity is not None or fresh_campaigns.get(stock.campaign_id):
                     stock.raw_status, stock.sale_state = "", "unknown"
-            current.prices, current.stocks = sales.prices, sales.stocks
+                    merged_stocks.append(stock)
+            if merged_stocks:
+                current.stocks = merged_stocks
+            current.prices = sales.prices
             prices = {p.id: p for p in sales.prices}
             for market in current.markets:
                 price = prices.get("campaign:" + market.id)
@@ -199,6 +430,33 @@ class OnlineProductStore:
                 snapshot_json,'$.details_state',?,'$.errors',json(?)) WHERE id=?""",
                 (state, json.dumps(errors, ensure_ascii=False), listing_id))
             conn.commit()
+
+    def prune_missing_ids(self, platform: str, account: str, listing_ids: list[str], *, lease: dict[str, Any]) -> list[str]:
+        """全量目录完整发现或热刷幽灵复核后清理已移出目录的旧快照；存在未结束任务时保留，保护回读与人工结单。"""
+        if not listing_ids:
+            return []
+        removed: list[str] = []
+        with self.db._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_lease(conn, lease)
+            for listing_id in listing_ids:
+                unresolved = [
+                    row for row in self._resource_jobs(conn, platform, account, listing_id, "sync")
+                    if row["id"] != lease["id"]
+                ]
+                if unresolved:
+                    continue
+                cursor = conn.execute(
+                    "DELETE FROM online_listings WHERE id=? AND platform=? AND account_id=?",
+                    (listing_id, platform, account),
+                )
+                if cursor.rowcount:
+                    removed.append(listing_id)
+            conn.commit()
+        return removed
+
+    def prune_missing(self, platform: str, account: str, listing_ids: list[str], *, lease: dict[str, Any]) -> int:
+        return len(self.prune_missing_ids(platform, account, listing_ids, lease=lease))
 
     @staticmethod
     def _assert_status_refreshable(conn, listing: OnlineListing):
@@ -382,13 +640,21 @@ class OnlineProductStore:
         with self.db._connect() as conn:
             rows = conn.execute("""SELECT id,operation,platform,status,target_id,created_at,updated_at,
                 json_extract(request_json,'$.catalog') AS catalog,
-                json_array_length(request_json,'$.ids') AS retry_count,
+                json_extract(request_json,'$.mode') AS mode,
+                json_extract(request_json,'$.source') AS source,
+                CASE WHEN json_type(request_json,'$.ids')='array' AND COALESCE(json_extract(request_json,'$.source'),'')!='publish'
+                     THEN json_array_length(request_json,'$.ids') END AS retry_count,
+                CASE WHEN json_type(request_json,'$.ids')='array' AND json_extract(request_json,'$.source')='publish'
+                     THEN json_array_length(request_json,'$.ids') END AS ingest_count,
                 json_extract(result_json,'$.phase') AS phase,
+                json_extract(result_json,'$.data_scope') AS data_scope,
                 json_extract(result_json,'$.discovered') AS discovered,
                 json_extract(result_json,'$.discovery_complete') AS discovery_complete,
                 json_extract(result_json,'$.completed') AS completed,
                 json_extract(result_json,'$.created') AS created,
                 json_extract(result_json,'$.updated') AS updated,
+                json_extract(result_json,'$.removed') AS removed,
+                json_extract(result_json,'$.moved') AS moved,
                 json_extract(result_json,'$.failed') AS failed,
                 json_extract(result_json,'$.error') AS error
                 FROM online_jobs WHERE platform=? AND account_id=?
@@ -397,8 +663,8 @@ class OnlineProductStore:
         items = []
         for row in rows:
             item = dict(row)
-            item["request"] = {key: value for key in ("catalog", "retry_count") if (value := item.pop(key)) is not None}
-            result = {key: value for key in ("phase", "discovered", "discovery_complete", "completed", "created", "updated", "failed", "error")
+            item["request"] = {key: value for key in ("catalog", "mode", "source", "retry_count", "ingest_count") if (value := item.pop(key)) is not None}
+            result = {key: value for key in ("phase", "data_scope", "discovered", "discovery_complete", "completed", "created", "updated", "removed", "moved", "failed", "error")
                       if (value := item.pop(key)) is not None}
             if "discovery_complete" in result:
                 result["discovery_complete"] = bool(result["discovery_complete"])
@@ -415,6 +681,7 @@ class OnlineProductStore:
                 json_extract(result_json,'$.discovery_complete') AS discovery_complete,
                 COALESCE(json_extract(result_json,'$.error_code'),'') AS error_code
                 FROM online_jobs WHERE platform=? AND account_id=? AND operation='sync'
+                AND COALESCE(json_extract(request_json,'$.source'),'')!='publish'
                 AND (?='all' OR COALESCE(json_extract(request_json,'$.catalog'),'all') IN (?, 'all'))
                 ORDER BY created_at DESC,id DESC LIMIT 1""", (platform, account, catalog, catalog)).fetchone()
         return dict(row) if row is not None else None

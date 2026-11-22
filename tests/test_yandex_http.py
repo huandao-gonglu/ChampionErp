@@ -517,6 +517,20 @@ def test_fetch_offer_mapping_returns_nested_offer(harness) -> None:
     assert mappings[0]["offer"]["cardStatus"] == "HAS_CARD_CAN_UPDATE"
 
 
+def test_offer_mappings_uses_longer_default_timeout_than_regular_endpoints(monkeypatch) -> None:
+    captured: list[tuple[str, float]] = []
+
+    def fake_urlopen(request: Any, timeout: float | None = None) -> _FakeResponse:
+        captured.append((urllib.parse.urlparse(request.full_url).path, float(timeout or 0)))
+        return _FakeResponse({"status": "OK", "result": {"offerMappings": [], "paging": {}}})
+
+    monkeypatch.setattr(yandex_http.urllib.request, "urlopen", fake_urlopen)
+    request_yandex_json("POST", "/v2/businesses/222/offer-mappings", API_TOKEN, {"archived": False})
+    request_yandex_json("POST", "/v2/businesses/222/offer-cards", API_TOKEN, {"offerIds": ["SKU-1"]})
+    assert captured[0][0] == "/v2/businesses/222/offer-mappings" and captured[0][1] > 45.0
+    assert captured[1][0] == "/v2/businesses/222/offer-cards" and captured[1][1] <= 30.0
+
+
 # ---------------------------------------------------------- campaign offers
 
 

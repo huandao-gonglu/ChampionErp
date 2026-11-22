@@ -42,6 +42,8 @@ YANDEX_ALL_METHODS_SCOPE = "ALL_METHODS"
 
 _RETRYABLE_HTTP_STATUSES = frozenset({420, 423, 429, 500, 502, 503, 504})
 _DEFAULT_TIMEOUT_SECONDS = 30.0
+# 目录分页响应体积大、跨境耗时常在 15–35 秒，单独放宽单次读取超时。
+_OFFER_MAPPINGS_TIMEOUT_SECONDS = 60.0
 
 
 class YandexApiError(PublishAdapterError):
@@ -385,7 +387,7 @@ def request_yandex_json(
     payload: dict[str, Any] | list[Any] | None = None,
     *,
     query: dict[str, Any] | None = None,
-    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
     check_business_status: bool = True,
 ) -> dict[str, Any]:
     """向 Yandex Market Seller API 发起一次 JSON 请求。
@@ -420,7 +422,16 @@ def request_yandex_json(
         else (b"{}" if method.upper() in {"POST", "PUT"} else None)
     )
     request = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
-    timeout = max(0.1, float(timeout_seconds))
+    effective_timeout = (
+        timeout_seconds
+        if timeout_seconds is not None
+        else (
+            _OFFER_MAPPINGS_TIMEOUT_SECONDS
+            if method.upper() == "POST" and normalized_path.endswith("/offer-mappings")
+            else _DEFAULT_TIMEOUT_SECONDS
+        )
+    )
+    timeout = max(0.1, float(effective_timeout))
     raw = _read_yandex_response(request, token, normalized_path, timeout).decode("utf-8", errors="replace")
     try:
         body = json.loads(raw) if raw else {}

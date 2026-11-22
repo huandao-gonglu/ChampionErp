@@ -32,7 +32,7 @@ async function fixture(saved?: ImageBatchSnapshot, withSkus = false) {
   const batch = ref<ImageBatchSnapshot | null>(saved || null), busy = ref(false)
   const controller: DraftImageWorkbenchController = {
     busy: computed(() => busy.value), checking: ref(false), batch, notice: ref(''), undoLabel: computed(() => ''), redoLabel: computed(() => ''),
-    start: vi.fn(), resumeTranslation: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
+    start: vi.fn(), resumeTranslation: vi.fn(), resumeImageSet: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
     planSet: vi.fn(async () => ({ ok: true, plan: structuredClone(plan), updated_at: 'planned-version' })), generateSet: vi.fn(), applySet: vi.fn(),
   }
   const skus = withSkus ? ['red-small', 'red-large'].map(skuId => ({ skuId, name: skuId, imageAssetId: 'red-original', inherited: true, selected: true })) : []
@@ -106,7 +106,7 @@ describe('共用套图规划与采用', () => {
     ]) }), 'planned-version')
     expect(controller.applySet).not.toHaveBeenCalled()
   })
-  it('设计内容缺失时不唤起桌面，补全后确认生成才交接', async () => {
+  it('设计内容缺失时不提交套图，补全后确认生成交由工作台交接桌面', async () => {
     setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
     const { wrapper, controller } = await fixture()
     await wrapper.get('form').trigger('submit')
@@ -115,11 +115,23 @@ describe('共用套图规划与采用', () => {
     expect(wrapper.get('form').element.checkValidity()).toBe(false)
     await button(wrapper, '开始生成 2 张').trigger('click')
     expect(launchDesktop).not.toHaveBeenCalled()
+    expect(controller.generateSet).not.toHaveBeenCalled()
     await wrapper.findAll('textarea')[1].setValue('保留商品颜色')
     expect(wrapper.get('form').element.checkValidity()).toBe(true)
     await button(wrapper, '开始生成 2 张').trigger('click')
-    expect(launchDesktop).toHaveBeenCalledOnce()
-    expect(controller.generateSet).not.toHaveBeenCalled()
+    expect(launchDesktop).not.toHaveBeenCalled()
+    expect(controller.generateSet).toHaveBeenCalledOnce()
+    expect(controller.generateSet).toHaveBeenCalledWith(expect.objectContaining({
+      pages: expect.arrayContaining([expect.objectContaining({ prompt: '保留商品颜色' })]),
+    }), 'planned-version')
+  })
+  it('结果页单张重做在网页需要桌面时交由工作台携带参数交接，不裸唤桌面', async () => {
+    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
+    const { wrapper, controller } = await fixture(snapshot())
+    await wrapper.get('button[aria-label="重做 主图"]').trigger('click')
+    expect(launchDesktop).not.toHaveBeenCalled()
+    expect(controller.generateSet).toHaveBeenCalledOnce()
+    expect(controller.generateSet).toHaveBeenCalledWith(undefined, 'version', ['main'])
   })
   it('恢复已有结果，调整采用顺序，单张重做使用原任务', async () => {
     const { wrapper, controller } = await fixture(snapshot())

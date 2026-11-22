@@ -614,7 +614,6 @@ export interface BackendWatermarkPreview {
 export interface BackendSystemSettings {
   orders_auto_sync_interval_hours: number
   watermark: BackendWatermarkSettings
-  sync_policies: Record<string, Record<string, number>>
   wechat_forward_types: Array<"reply" | "progress" | "approval" | "error" | "command">
 }
 
@@ -637,30 +636,6 @@ export interface BackendStoreConfig {
   mercadolibre?: Record<string, unknown>
   yandex?: Record<string, unknown>
   ozon?: Record<string, unknown>
-}
-
-export interface BackendSyncPolicyField {
-  key: string
-  label: string
-  default: number
-  minimum: number
-  maximum: number
-  step: number
-  unit: string
-}
-
-export interface BackendSyncPolicyItem {
-  key: string
-  title: string
-  description: string
-  effect: string
-  editable: boolean
-  fields: Array<BackendSyncPolicyField>
-  values: Record<string, number>
-}
-
-export interface BackendSyncPolicyCatalog {
-  items: Array<BackendSyncPolicyItem>
 }
 
 export interface BackendImageItem {

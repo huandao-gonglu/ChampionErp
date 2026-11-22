@@ -172,12 +172,16 @@ class ExternalRequestManager:
             timeout=timeout,
             source=source,
         )
-        deadline = min(time.time() + min(timeout, ctx.timeout), ctx.deadline_at or float("inf"))
+        attempt_timeout = min(timeout, ctx.timeout)
+        attempts = max(1, ctx.max_attempts if ctx.semantics == "read" else 1)
+        outer_deadline = ctx.deadline_at or float("inf")
         parent = ""
-        for attempt in range(1, max(1, ctx.max_attempts if ctx.semantics == "read" else 1) + 1):
+        for attempt in range(1, attempts + 1):
+            attempt_deadline = min(time.time() + attempt_timeout, outer_deadline)
             request_id = self.start(ctx, request.get_method(), parent_id=parent, attempt=attempt)
             parent = parent or request_id
-            lease = self._acquire_or_reject(request_id, ctx, deadline)
+            lease = self._acquire_or_reject(request_id, ctx, attempt_deadline)
+            retry_wait = ctx.retry_delay * attempt
             try:
                 if ctx.before_send is not None:
                     try:
@@ -188,7 +192,7 @@ class ExternalRequestManager:
                         raise
                 self.store.mark_sent(request_id, lease.sent_at)
                 try:
-                    with (transport or urllib.request.urlopen)(request, timeout=max(0.001, deadline - time.time()), **kwargs) as response:
+                    with (transport or urllib.request.urlopen)(request, timeout=max(0.001, attempt_deadline - time.time()), **kwargs) as response:
                         raw = response.read(32 * 1024 * 1024 + 1)
                         if len(raw) > 32 * 1024 * 1024:
                             raise ValueError("外部响应超过 32 MiB 上限")
@@ -209,7 +213,7 @@ class ExternalRequestManager:
                     if ctx.semantics == "write" and (exc.code >= 500 or exc.code == 408):
                         self.network_error(request_id, ctx)
                         raise ExternalRequestOutcomeUnknown(http_status=exc.code) from exc
-                    if not (failure and failure.retryable and ctx.semantics == "read" and attempt < ctx.max_attempts and time.time() + ctx.retry_delay < deadline):
+                    if not (failure and failure.retryable and ctx.semantics == "read" and attempt < attempts and time.time() + retry_wait < outer_deadline):
                         rebuilt = urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers, io.BytesIO(raw))
                         if failure and failure.resume_at is not None:
                             rebuilt.external_resume_at = failure.resume_at
@@ -230,13 +234,15 @@ class ExternalRequestManager:
                     if ctx.semantics == "write" and isinstance(exc, Exception):
                         raise ExternalRequestOutcomeUnknown() from exc
                     if not (isinstance(exc, (OSError, http.client.HTTPException)) and ctx.semantics == "read"
-                            and attempt < ctx.max_attempts and time.time() + ctx.retry_delay < deadline):
+                            and attempt < attempts and time.time() + retry_wait < outer_deadline):
                         raise
             finally:
                 self.limiter.release(lease)
-            # 默认不重试；显式只读预算内的服务端失败才会进入此分支。
-            until = time.time() + ctx.retry_delay
+            # 默认不重试；显式只读预算内的服务端或网络故障才会进入此分支，按退避等待并尊重取消。
+            until = min(time.time() + retry_wait, outer_deadline)
             while time.time() < until:
+                if ctx.cancellation_check is not None:
+                    ctx.cancellation_check()
                 if ctx.cancel and ctx.cancel.wait(min(0.05, until - time.time())):
                     break
                 if not ctx.cancel:

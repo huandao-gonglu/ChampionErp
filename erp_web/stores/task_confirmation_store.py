@@ -82,7 +82,7 @@ class TaskConfirmationStore:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM confirmations WHERE id=?", (task_id,)).fetchone()
-            policy = ConfirmationPolicy(**json.loads(row["policy"]))
+            policy = ConfirmationPolicy.from_dict(json.loads(row["policy"]))
             if row["lease_until"] > now:
                 return None, "checking"
             exhausted = self._exhausted(row, policy, now)
@@ -99,10 +99,10 @@ class TaskConfirmationStore:
             if conn.execute("SELECT 1 FROM confirmations WHERE account_key=? AND lease_until>? AND id<>?",
                             (row["account_key"], now, task_id)).fetchone():
                 return None, "checking"
-            # 自动确认停止后，每次显式人工查询只有单轮额度；不重置累计用量或自动期限。
+            # 自动确认停止后，每次显式人工查询仅授单轮请求额度；不重置累计用量或自动期限。
             stopped = manual and (exhausted or row["state"] == "needs_attention")
             deadline = now + policy.round_timeout if stopped else min(row["deadline_at"], now + policy.round_timeout)
-            request_limit = row["requests_used"] + policy.max_requests if stopped else policy.max_requests
+            request_limit = row["requests_used"] + policy.manual_round_requests() if stopped else policy.max_requests
             # 停止状态继续持久化，实际占位由租约表示；人工查询中断也不能重启自动计划。
             conn.execute("UPDATE confirmations SET state=?,owner=?,lease_until=?,next_check_at=?,checks_used=checks_used+1,last_checked_at=? WHERE id=?",
                          ("needs_attention" if stopped else "checking", token, deadline + 30,
@@ -127,7 +127,7 @@ class TaskConfirmationStore:
             row = conn.execute("SELECT * FROM confirmations WHERE id=? AND owner=?", (task_id, token)).fetchone()
             if not row:
                 return
-            policy = ConfirmationPolicy(**json.loads(row["policy"]))
+            policy = ConfirmationPolicy.from_dict(json.loads(row["policy"]))
             exhausted = self._exhausted(row, policy, now)
             stopped = row["state"] == "needs_attention"
             state = "done" if done else "needs_attention" if attention or exhausted or stopped else "waiting"
@@ -135,15 +135,16 @@ class TaskConfirmationStore:
                 error = AUTOMATIC_CONFIRMATION_ENDED
             elif stopped and not done and not error:
                 error = row["error"]
+            next_at = min(now + policy.next_interval(row["checks_used"]), row["deadline_at"]) if state == "waiting" else 0
             conn.execute("UPDATE confirmations SET state=?,next_check_at=?,error=?,owner='',lease_until=0 WHERE id=? AND owner=?",
-                         (state, min(now + policy.interval, row["deadline_at"]) if state == "waiting" else 0, error, task_id, token))
+                         (state, next_at, error, task_id, token))
 
     @staticmethod
     def summary(row):
         if not row:
             return None
         now = time.time()
-        policy = ConfirmationPolicy(**json.loads(row["policy"]))
+        policy = ConfirmationPolicy.from_dict(json.loads(row["policy"]))
         summary = {key: row[key] for key in ("state", "checks_used", "requests_used", "last_checked_at", "next_check_at", "deadline_at", "error")}
         if row["lease_until"] > now:
             summary["state"] = "checking"

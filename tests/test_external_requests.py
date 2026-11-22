@@ -737,3 +737,44 @@ def test_uncertain_writes_trip_failure_limit_without_becoming_definite_rejection
     with pytest.raises(ExternalRequestBlocked, match="连续失败"):
         request(manager, context(semantics="write", fingerprint="write-fp-3"), send)
     assert manager.store.query()["stats"]["network_attempts"] == 2
+
+
+def test_read_max_attempts_applies_only_to_reads_and_resets_per_attempt_timeout():
+    import http.client
+    from erp_web.services.external_request_context import request_context
+
+    manager = get_context().external_requests
+    with request_operation("online_products", operation_id="sync-op", trigger="background", read_max_attempts=3):
+        read_ctx = request_context("https://api.partner.market.yandex.ru/v2/businesses/1/offer-mappings", method="POST")
+        write_ctx = request_context("https://api.partner.market.yandex.ru/v2/businesses/1/offer-mappings/update", method="POST")
+    assert read_ctx.semantics == "read" and read_ctx.max_attempts == 3
+    assert write_ctx.semantics == "write" and write_ctx.max_attempts == 1
+
+    # 首轮耗尽单次超时后，第二轮仍获得完整 per-attempt 超时并在瞬时中断后恢复。
+    seen_timeouts = []
+
+    def flaky(req, timeout=None, **kw):
+        seen_timeouts.append(timeout)
+        if len(seen_timeouts) == 1:
+            time.sleep(0.06)
+            raise http.client.IncompleteRead(b"partial")
+        if len(seen_timeouts) == 2:
+            raise TimeoutError("瞬时读超时")
+        return Response()
+
+    ctx = context(max_attempts=3, timeout=0.05, retry_delay=0.01)
+    request(manager, ctx, flaky).close()
+    assert len(seen_timeouts) == 3
+    assert all(t >= 0.03 for t in seen_timeouts)
+
+    # 存在外层 deadline_at 时不得越界继续重试。
+    attempts = []
+
+    def always_timeout(req, timeout=None, **kw):
+        attempts.append(1)
+        time.sleep(0.04)
+        raise TimeoutError("超时")
+
+    with pytest.raises(TimeoutError):
+        request(manager, context(max_attempts=3, timeout=0.05, retry_delay=0.05, deadline_at=time.time() + 0.06), always_timeout)
+    assert len(attempts) == 1

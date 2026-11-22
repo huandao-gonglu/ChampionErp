@@ -358,8 +358,11 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
   Yandex 的 `basic` 批次通过 `OnlineProductStore.save_basic` 保存基础资料、销售状态及卡片/店铺错误警告，同步列表价格、库存，读取异常按价格或仓库范围保留旧值和原时间。
   `basic_synced_at` 标识基础资料读取时间，`synced_at` 标识完整详情读取时间；新商品为 `details_state=unloaded`，不伪造零库存。
   旧快照缺少新时间字段仍可读取，完整快照原时间保持含义；页面按服务端返回的到期 SKU 调用 `POST /api/online-products/refresh-sales`。
-  `OnlineProductSalesReader` 合并进行中的 SKU 读取，15 分钟内复用结果，按批最多 100 件，仅合并销售字段；GET 和 AI 列表仍只读本地。
+  `OnlineProductSalesReader` 合并进行中的 SKU 读取，60 分钟内复用结果，按批最多 100 件，仅合并销售字段；GET 和 AI 列表仍只读本地。
   同步请求与持久任务保存 `catalog=current/archived`，默认普通商品；Yandex 每次只发现该目录，页面确认、最新进度和失败重试保持同一范围。
+  三平台同步均支持 `mode=hot`（`sync_hot` → `OnlineProductStore.save_hot_many`）与按批单事务落库（`save_many` / `save_basic_many` / `save_hot_many`）：Yandex 跳过 `offer-mappings`/`offer-cards`、按窗口扁平并发多仓店铺与隐藏清单并流水线并行库存/合并价格（仓库目录 15 分钟 TTL 缓存、全量刷新）并保留冷数据快照；Ozon 跳过 `/v3/product/list` 并以 3 批并发（同批普通/归档价格并行）刷新，缺项经 `/v3/product/info/list` 定向复核清理；Mercado Libre 跳过 `/items/search` 并以 4 路商品并发 + 单品内并发读取 `mapping`/`user-products` 及多站点子 Item。
+  发布终态落库（`runtime_units/publish_bus.py::persist_publish_bus_terminal_results`）对确认已发布的 SKU 最佳努力入队 `source=publish` 的定向在线入库任务（不覆盖 `latest_sync_summary`）；发布任务状态留在任务队列，不混入在线商品页。
+  列表查询经 `services/online_product_listing.py::_matching_groups` 统一执行多维筛选（关键词、目录、仓库/市场、销售状态、库存状态、平台反馈、价格状态、商品形态）。
   指定 SKU 重试不混传平台禁止的归档过滤条件，读取目标目录身份后排除已移出原目录的商品；单件修改前读取与批量写入校验仍按明确 SKU 读取，不受页面目录限制。
   `services/online_product_changes.py` 负责确定性变更校验与字段回读比较；详情未完整同步时禁止修改。
   `services/online_product_images.py` 按发布记录中的远端身份和账号精确关联源草稿，
@@ -1851,16 +1854,11 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 
 ### 系统设置
 
-- 「同步与重试策略」（`settings_section=sync_policies`）编辑任务的等待、轮数、请求预算、退避和期限。
-  `schemas/sync_policies.py::POLICIES` 是字段、默认值和范围的唯一目录；`ConfigStore.sync_policy`
-  合成实际值，`settings.sync_policies` 统一业务查询派生页面 GET 和 AI 读取，保存复用 `/api/system-settings`。
-  覆盖三组发布/在线修改确认、订单回调重试、Yandex 分步提交、微信消息投递和 New API 账号待同步重试；
-  普通页面刷新、缓存有效期、SDK 重试、微信长轮询和本地 worker 扫描不属于任务重试编辑项。
-  New API 使用根配置，仅根管理员可修改；其他策略按账号空间保存。现有订单同步间隔仍保留原字段和通用设置入口。
-  新确认计划冻结当时策略；已有确认计划的次数、用量、截止时间及已停止状态不因编辑设置重置。
-  Yandex 旧店铺级步骤参数继续读取，显式保存新策略后接管；其他运行中任务在下一次退避计算/等待时读取新值。
-  微信投递与账号待同步当前持续重试，首期只开放间隔，不新增次数或停止协议。
-  回归见 `tests/test_sync_policies.py` 和 `SyncPolicySettingsPanel.test.ts`。
+- 原「同步与重试策略」32 项底层参数页（`SyncPolicySettingsPanel.vue`、`schemas/sync_policies.py`、`settings.sync_policies` 及 `system_settings.sync_policies`）已退役，与外部请求限流器保持一致极简边界：旧持久化 `app_config.json` 中的 `sync_policies` 读取时自动剥离，写入接口拒绝该字段。
+  - 异步结果确认（`schemas/task_queue.py::ConfirmationPolicy`）改用内置渐进退避序列（Yandex 发布/内容 `30→60→120→300→600→1800s` 至 24h；价格与 Ozon/Mercado 异步 `15→30→45→60→90→120→150→180s` 至 15m），按真实合批大小派生总预算与手动单轮额度，兼容读取旧持久确认记录。
+  - Yandex 发布分步执行（`publish_yandex.py`、`publishing_bus_core.py`）内置 2s 步骤间隔与针对 423 资源锁定的短退避（`2→4→8→16s`，最多 4 次），按实际 `next_poll_at` 可中断等待且仅状态变化时落库，不空转写库或阻塞停机。
+  - 订单回调失败重试（`order_notification_store.py`）内置 `10→20→40…→1800s` 指数退避（最多 8 次），并为限流延后重试增加 24 小时总存活期上限；微信投递（`wechat_channel_service.py`）内置带抖动指数退避 `1→2→5→15→30→60s`；New API 账号待同步（`account_runtime.py`）空闲 30s 巡检、失败内置 `10→30→60→180→300s` 退避。
+  - 业务侧唯一同步频率偏好「订单自动同步间隔（小时）」继续保留于通用设置（`orders_auto_sync_interval_hours`）。回归见 `tests/test_builtin_sync_retry_policies.py`。
 
 - 界面语言设置与 `vue-i18n` 已退役；前端文案、路由标题及业务 HTTP 的语言头固定为中文，不读取历史设备语言偏好。刊登语言与图片翻译目标语言仍由各自业务契约维护。
 

@@ -1,7 +1,10 @@
 """Mercado 在线商品读取与字段级修改；按商品事实明确区分两种刊登模型。"""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from copy import deepcopy
+from threading import Event
 from typing import Any
 
 from erp_web.runtime_units.online_change_confirmation import mercado_change
@@ -13,7 +16,7 @@ from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.marketplaces.online_buyer_links import mercado_buyer_links
 from erp_web.product_model import canonicalize_mercadolibre_siteless_user_product_id
 from erp_web.marketplaces.online_sync import raise_if_access_blocked
-from erp_web.runtime_units.online_mercadolibre_read import sync_mercado
+from erp_web.runtime_units.online_mercadolibre_read import sync_mercado, sync_mercado_hot
 from erp_web.runtime_units.online_product_status import mercado_status
 from erp_web.schemas.online_products import Capability, MarketSnapshot, OnlineListing, PriceScope, StockScope, listing_identity
 from erp_web.marketplaces.mercadolibre_mapping import validate_user_product_mapping
@@ -44,6 +47,10 @@ class MercadoOnlineAdapter:
             raise ValueError("该平台暂不支持单独同步归档目录")
         return sync_mercado(self, ids)
 
+    def sync_hot(self, ids: list[str]):
+        """热数据快刷：跳过全店 /items/search 扫描，直接并发刷新本地已有 CBT 商品及其多站点价格、库存与状态。"""
+        return sync_mercado_hot(self, ids)
+
     def read_status(self, listing):
         return mercado_status(self, listing)
 
@@ -58,12 +65,21 @@ class MercadoOnlineAdapter:
         model = "user_products" if up_id else "traditional_global_items"
         up: dict[str, Any] = {}
         if up_id:
-            mapping = validate_user_product_mapping(self.get(f"/marketplace/user-products/{quote(up_id, safe='')}/mapping"),
-                {"siteless_user_product_id": up_id, "account_user_id": self.account_id})
+            # mapping 与 user-products 详情互不依赖，并发读取减少一次往返。
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="mercado-up-read") as pool:
+                map_fut = pool.submit(copy_context().run, self.get, f"/marketplace/user-products/{quote(up_id, safe='')}/mapping")
+                up_fut = pool.submit(copy_context().run, self.get, f"/user-products/{quote(up_id, safe='')}", version=True)
+                try:
+                    raw_mapping = map_fut.result()
+                    up = up_fut.result()
+                except BaseException:
+                    map_fut.cancel()
+                    up_fut.cancel()
+                    raise
+            mapping = validate_user_product_mapping(raw_mapping, {"siteless_user_product_id": up_id, "account_user_id": self.account_id})
             if mapping["parent_item_id"] != remote_id:
                 raise ValueError("Mercado mapping 父 Item 与搜索结果不一致")
             refs = mapping["site_items"]
-            up = self.get(f"/user-products/{quote(up_id, safe='')}", version=True)
             if not isinstance(up, dict) or canonicalize_mercadolibre_siteless_user_product_id(up.get("id")) != up_id:
                 raise ValueError("Mercado User Product 详情身份不一致")
         markets, prices, children, errors = [], [], {}, []
@@ -72,6 +88,9 @@ class MercadoOnlineAdapter:
             item_id = str(ref.get("item_id") or "")
             if not item_id or ref.get("parent_id", remote_id) != remote_id or str(ref.get("parent_user_id", self.account_id)) != self.account_id:
                 raise ValueError("Mercado 市场映射不属于当前父商品")
+
+        def _fetch_child(ref: dict[str, Any]) -> tuple[dict[str, Any] | None, Exception | None]:
+            item_id = str(ref.get("item_id") or "")
             try:
                 child = self.get("/marketplace/items/"+quote(item_id, safe=""))
                 if child.get("id") != item_id or child.get("site_id") != ref.get("site_id"):
@@ -80,22 +99,53 @@ class MercadoOnlineAdapter:
                     raise ValueError("市场卖家身份不一致")
                 if child.get("cbt_item_id") and child["cbt_item_id"] != remote_id:
                     raise ValueError("市场详情 CBT 父身份不一致")
-                children[item_id] = child
-                markets.append(MarketSnapshot(id=item_id, site_id=str(child["site_id"]), seller_id=str(child.get("seller_id") or ""),
-                    logistic_type=str(ref.get("logistic_type") or ""), raw_status=str(child.get("status") or ""),
-                    raw_sub_status=child.get("sub_status") or [], price=amount(child.get("price")), currency=str(child.get("currency_id") or "")))
-                net_value = child.get("net_proceeds")
-                net = net_value.get("amount") if isinstance(net_value, dict) else net_value
-                currency = str(net_value.get("currency_id") or "") if isinstance(net_value, dict) else ("USD" if net is not None else str(child.get("currency_id") or ""))
-                prices.append(PriceScope(id=item_id, label=f"{child['site_id']} · {ref.get('logistic_type', '')}",
-                    amount=amount(net if net is not None else child.get("price")), currency=currency,
-                    kind="net_proceeds" if net is not None else "sale_price",
-                    writable=active and child.get("status") in ("active", "paused") and bool(currency) and (not up_id or net is not None),
-                    reason="" if not up_id or net is not None else "尚未取得可核对的净收入报价"))
+                return child, None
             except Exception as exc:
                 raise_if_access_blocked(exc)
+                return None, exc
+
+        if len(refs) <= 1:
+            child_results = [_fetch_child(ref) for ref in refs]
+        else:
+            stopped = Event()
+            def _fetch_child_guarded(ref: dict[str, Any]):
+                if stopped.is_set():
+                    raise RuntimeError("本批次已因访问受阻而停止")
+                try:
+                    return _fetch_child(ref)
+                except Exception:
+                    stopped.set()
+                    raise
+            with ThreadPoolExecutor(max_workers=min(4, len(refs)), thread_name_prefix="mercado-child-read") as pool:
+                futs = [pool.submit(copy_context().run, _fetch_child_guarded, ref) for ref in refs]
+                child_results = []
+                try:
+                    for fut in futs:
+                        child_results.append(fut.result())
+                except BaseException:
+                    stopped.set()
+                    for fut in futs:
+                        fut.cancel()
+                    raise
+
+        for ref, (child, exc) in zip(refs, child_results, strict=True):
+            item_id = str(ref.get("item_id") or "")
+            if exc is not None or child is None:
                 errors.append(f"{item_id}：{exc}")
                 markets.append(MarketSnapshot(id=item_id, site_id=str(ref.get("site_id") or ""), logistic_type=str(ref.get("logistic_type") or "")))
+                continue
+            children[item_id] = child
+            markets.append(MarketSnapshot(id=item_id, site_id=str(child["site_id"]), seller_id=str(child.get("seller_id") or ""),
+                logistic_type=str(ref.get("logistic_type") or ""), raw_status=str(child.get("status") or ""),
+                raw_sub_status=child.get("sub_status") or [], price=amount(child.get("price")), currency=str(child.get("currency_id") or "")))
+            net_value = child.get("net_proceeds")
+            net = net_value.get("amount") if isinstance(net_value, dict) else net_value
+            currency = str(net_value.get("currency_id") or "") if isinstance(net_value, dict) else ("USD" if net is not None else str(child.get("currency_id") or ""))
+            prices.append(PriceScope(id=item_id, label=f"{child['site_id']} · {ref.get('logistic_type', '')}",
+                amount=amount(net if net is not None else child.get("price")), currency=currency,
+                kind="net_proceeds" if net is not None else "sale_price",
+                writable=active and child.get("status") in ("active", "paused") and bool(currency) and (not up_id or net is not None),
+                reason="" if not up_id or net is not None else "尚未取得可核对的净收入报价"))
         base = up or parent
         stocks = []
         remote = any(m.logistic_type == "remote" for m in markets)

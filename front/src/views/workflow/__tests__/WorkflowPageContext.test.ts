@@ -318,3 +318,248 @@ it('网页确认翻译后桌面等待任务状态再提交，重复唤起复用�
     wrapper.unmount()
   }
 })
+
+it('网页规划并编辑套图后交接桌面，桌面等待状态后打开套图抽屉并自动提交，重复唤起复用原批次', async () => {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const workflow = useWorkflowStore()
+  const saved = normalizeDraftMutation({
+    draft: { draft_id: 'set-draft', product_id: 'p', platform: 'yandex', updated_at: 'v1', language: 'ru',
+      images: [{ asset_id: 'cover', order: 0, role: 'main' }, { asset_id: 'other', order: 1, role: 'detail' }] },
+    productContext: { product_id: 'p', image_pool: [{ id: 'cover' }, { id: 'other' }] },
+    draftsIndex: [{ draft_id: 'set-draft', product_id: 'p', platform: 'yandex' }],
+  })
+  const planned: draftImagesApi.ImageSetPlan = { style: '统一白底', pages: [
+    { key: 'main', title: '主图', role: 'main', prompt: '原主图方案', source_image_ids: ['cover'] },
+    { key: 'detail', title: '细节', role: 'detail', prompt: '原细节方案', source_image_ids: ['other'] },
+  ] }
+  vi.spyOn(workflow, 'loadState').mockResolvedValue(undefined)
+  vi.spyOn(workflow, 'hydrateTab').mockResolvedValue(undefined)
+  vi.spyOn(catalogApi, 'fetchDraftsIndex').mockResolvedValue(saved.draftsIndex)
+  vi.spyOn(catalogApi, 'fetchProductsIndex').mockResolvedValue([])
+  vi.spyOn(catalogApi, 'loadDraft').mockResolvedValue(saved)
+  vi.spyOn(workflow, 'saveCurrentDraft').mockResolvedValue(true)
+  vi.spyOn(draftImagesApi, 'planDraftImageSet').mockResolvedValue({ ok: true, plan: structuredClone(planned), updated_at: 'v1' })
+  const oldFailedBatch = {
+    conversation_id: 'old-translate-batch', product_id: 'p', draft_id: 'set-draft', prompt: '旧翻译', created_at: '', updated_at: '',
+    total: 1, queued: 0, running: 0, completed: 1, success: 0, failed: 1, terminal: true,
+    items: [{ index: 0, source_id: 'cover', source_url: '', status: 'failed' as const, error: '桌面连接已断开', outcome_unknown: false, result_urls: [], started_at: '', finished_at: '' }],
+  }
+  const query = vi.spyOn(draftImagesApi, 'fetchDraftImageState').mockResolvedValue({ unchanged: true, batch: oldFailedBatch })
+  const submit = vi.spyOn(draftImagesApi, 'generateDraftImageSet').mockImplementation(async (_draft, requestId, options) => ({
+    ...saved, product: createEmptyProduct(), imagePool: saved.productContext.imagePool,
+    batch: { conversation_id: requestId, product_id: 'p', draft_id: 'set-draft', prompt: '', created_at: '', updated_at: '',
+      total: 2, queued: 2, running: 0, completed: 0, success: 0, failed: 0, terminal: false, image_set: options.plan || planned,
+      items: (options.plan || planned).pages.map((page, index) => ({ index, source_id: page.key, source_url: '', status: 'queued' as const, error: '', outcome_unknown: false, result_urls: [], started_at: '', finished_at: '' })) },
+  }))
+  const create = vi.spyOn(desktopApi, 'createDesktopHandoff').mockRejectedValue(new Error('测试中通过交接状态模拟桌面接收'))
+  const confirm = vi.spyOn(desktopApi, 'confirmDesktopHandoff').mockResolvedValue(undefined)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'WorkflowHome', component: WorkflowView }] })
+  await router.push('/?tab=drafts')
+  const mountView = () => shallowMount(WorkflowView, { attachTo: document.body, global: { plugins: [pinia, router], stubs: {
+    DraftWorkspacePanel: false, DraftImageWorkbench: false, DraftImageSetDialog: false, WorkspaceDialog: false, Teleport: true,
+  } } })
+  let wrapper = mountView()
+  try {
+    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    await flushPromises()
+    wrapper.getComponent(DraftBoxPanel).vm.$emit('edit', saved.draftsIndex[0], 'images')
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '生成套图')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '自动规划套图')!.trigger('submit')
+    await flushPromises()
+    await wrapper.get('[data-testid="image-set-dialog"] textarea').setValue('极简浅灰棚拍')
+    await wrapper.findAll('button').find(b => b.text() === '开始生成 2 张')!.trigger('click')
+    await flushPromises()
+    expect(submit).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledOnce()
+    const [target, state] = create.mock.calls[0]
+    const handoff = { requestId: 'open-image-set', target, state: state as DesktopHandoffState }
+    const action = handoff.state.workflow!.draftImageSetAction!
+    expect(action.requestId).toMatch(/^draft_image_set_/)
+    expect(action.updatedAt).toBe('v1')
+    expect(action.plan?.style).toBe('极简浅灰棚拍')
+    wrapper.unmount()
+
+    window.championDesktop = { localOperations: true, openLicenses: vi.fn() }
+    let finishQuery!: (value: draftImagesApi.DraftImagePoll) => void
+    query.mockImplementationOnce(() => new Promise(resolve => { finishQuery = resolve }))
+    wrapper = mountView()
+    receivedDesktopHandoff.value = handoff
+    await flushPromises()
+    expect(submit).not.toHaveBeenCalled()
+    expect(confirm).not.toHaveBeenCalled()
+    finishQuery({ unchanged: true, batch: oldFailedBatch })
+    await flushPromises()
+    expect(submit).toHaveBeenCalledOnce()
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({ draftId: 'set-draft', updatedAt: 'v1' }),
+      action.requestId,
+      expect.objectContaining({ updatedAt: 'v1', plan: expect.objectContaining({ style: '极简浅灰棚拍' }) }),
+      expect.stringMatching(/^conversation_global_chat_/),
+    )
+    expect(confirm).toHaveBeenCalledWith('open-image-set')
+    expect(wrapper.get('[data-testid="image-set-dialog"]').text()).toContain('正在生成套图')
+    expect(wrapper.get('[data-testid="image-set-dialog"]').text()).toContain('极简浅灰棚拍')
+
+    // 重复收到同一交接不重复提交，仍停留在套图结果/进度视图。
+    receivedDesktopHandoff.value = { ...handoff }
+    await flushPromises()
+    expect(submit).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="image-set-dialog"]').text()).toContain('正在生成套图')
+  } finally {
+    receivedDesktopHandoff.value = null
+    delete window.championDesktop
+    dismissDesktopLaunch()
+    wrapper.unmount()
+  }
+})
+
+it('套图交接期间草稿已更新时保留规划方案在抽屉中，核对后可按最新版本手动提交', async () => {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const workflow = useWorkflowStore()
+  const webDraft = normalizeDraftMutation({
+    draft: { draft_id: 'set-stale', product_id: 'p', platform: 'yandex', updated_at: 'v1', language: 'ru',
+      images: [{ asset_id: 'cover', order: 0, role: 'main' }] },
+    productContext: { product_id: 'p', image_pool: [{ id: 'cover' }] },
+    draftsIndex: [{ draft_id: 'set-stale', product_id: 'p', platform: 'yandex' }],
+  })
+  const newerDraft = normalizeDraftMutation({
+    draft: { draft_id: 'set-stale', product_id: 'p', platform: 'yandex', updated_at: 'v2', language: 'ru',
+      images: [{ asset_id: 'cover', order: 0, role: 'main' }] },
+    productContext: { product_id: 'p', image_pool: [{ id: 'cover' }] },
+    draftsIndex: [{ draft_id: 'set-stale', product_id: 'p', platform: 'yandex' }],
+  })
+  const plan: draftImagesApi.ImageSetPlan = { style: '已编辑套图风格', pages: [
+    { key: 'main', title: '主图', role: 'main', prompt: '保留颜色重新构图', source_image_ids: ['cover'] },
+  ] }
+  vi.spyOn(workflow, 'loadState').mockResolvedValue(undefined)
+  vi.spyOn(workflow, 'hydrateTab').mockResolvedValue(undefined)
+  vi.spyOn(catalogApi, 'fetchDraftsIndex').mockResolvedValue(newerDraft.draftsIndex)
+  vi.spyOn(catalogApi, 'fetchProductsIndex').mockResolvedValue([])
+  vi.spyOn(catalogApi, 'loadDraft').mockResolvedValue(newerDraft)
+  vi.spyOn(draftImagesApi, 'fetchDraftImageState').mockResolvedValue({ unchanged: true, batch: null })
+  const submit = vi.spyOn(draftImagesApi, 'generateDraftImageSet').mockResolvedValue({
+    ...newerDraft, product: createEmptyProduct(), imagePool: newerDraft.productContext.imagePool,
+    batch: { conversation_id: 'manual-set', product_id: 'p', draft_id: 'set-stale', prompt: '', created_at: '', updated_at: '',
+      total: 1, queued: 1, running: 0, completed: 0, success: 0, failed: 0, terminal: false, image_set: plan,
+      items: [{ index: 0, source_id: 'main', source_url: '', status: 'queued', error: '', outcome_unknown: false, result_urls: [], started_at: '', finished_at: '' }] },
+  })
+  const confirm = vi.spyOn(desktopApi, 'confirmDesktopHandoff').mockResolvedValue(undefined)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'WorkflowHome', component: WorkflowView }] })
+  await router.push('/?tab=drafts')
+  window.championDesktop = { localOperations: true, openLicenses: vi.fn() }
+  setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+  const wrapper = shallowMount(WorkflowView, { attachTo: document.body, global: { plugins: [pinia, router], stubs: {
+    DraftWorkspacePanel: false, DraftImageWorkbench: false, DraftImageSetDialog: false, WorkspaceDialog: false, Teleport: true,
+  } } })
+  try {
+    receivedDesktopHandoff.value = {
+      requestId: 'stale-image-set', target: '/?tab=drafts',
+      state: { workflow: {
+        draft: webDraft.draft, draftContext: webDraft.productContext, draftTab: 'images',
+        draftImageSetAction: { requestId: 'draft_image_set_stale', updatedAt: 'v1', plan },
+      } },
+    }
+    await flushPromises()
+    expect(submit).not.toHaveBeenCalled()
+    expect(confirm).toHaveBeenCalledWith('stale-image-set')
+    const dialog = wrapper.get('[data-testid="image-set-dialog"]')
+    expect(dialog.text()).toContain('草稿已更新，请核对套图方案后重新生成')
+    expect((dialog.get('textarea').element as HTMLTextAreaElement).value).toBe('已编辑套图风格')
+    await wrapper.findAll('button').find(b => b.text() === '开始生成 1 张')!.trigger('click')
+    await flushPromises()
+    expect(submit).toHaveBeenCalledOnce()
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({ draftId: 'set-stale', updatedAt: 'v2' }),
+      expect.stringMatching(/^draft_image_set_/),
+      expect.objectContaining({ updatedAt: 'v2', plan: expect.objectContaining({ style: '已编辑套图风格' }) }),
+      expect.stringMatching(/^conversation_global_chat_/),
+    )
+  } finally {
+    receivedDesktopHandoff.value = null
+    delete window.championDesktop
+    dismissDesktopLaunch()
+    wrapper.unmount()
+  }
+})
+
+it('网页端套图结果页点击单页重做，桌面端等待原批次后按固定 requestId 自动提交', async () => {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const workflow = useWorkflowStore()
+  const saved = normalizeDraftMutation({
+    draft: { draft_id: 'retry-draft', product_id: 'p', platform: 'yandex', updated_at: 'v1', language: 'ru',
+      images: [{ asset_id: 'cover', order: 0, role: 'main' }] },
+    productContext: { product_id: 'p', image_pool: [{ id: 'cover' }, { id: 'gen-1' }] },
+    draftsIndex: [{ draft_id: 'retry-draft', product_id: 'p', platform: 'yandex' }],
+  })
+  const plan: draftImagesApi.ImageSetPlan = { style: '统一风格', pages: [
+    { key: 'main', title: '主图', role: 'main', prompt: '主图设计', source_image_ids: ['cover'] },
+  ] }
+  const existingBatch = {
+    conversation_id: 'set-base', product_id: 'p', draft_id: 'retry-draft', prompt: '', created_at: '', updated_at: '',
+    total: 1, queued: 0, running: 0, completed: 1, success: 1, failed: 0, terminal: true, image_set: plan,
+    items: [{ index: 0, source_id: 'main', source_url: '', status: 'success' as const, error: '', outcome_unknown: false, result_asset_ids: ['gen-1'], result_urls: ['/gen-1.png'], started_at: '', finished_at: '' }],
+  }
+  vi.spyOn(workflow, 'loadState').mockResolvedValue(undefined)
+  vi.spyOn(workflow, 'hydrateTab').mockResolvedValue(undefined)
+  vi.spyOn(catalogApi, 'fetchDraftsIndex').mockResolvedValue(saved.draftsIndex)
+  vi.spyOn(catalogApi, 'fetchProductsIndex').mockResolvedValue([])
+  vi.spyOn(catalogApi, 'loadDraft').mockResolvedValue(saved)
+  vi.spyOn(draftImagesApi, 'fetchDraftImageState').mockResolvedValue({ unchanged: true, batch: existingBatch })
+  const submit = vi.spyOn(draftImagesApi, 'generateDraftImageSet').mockImplementation(async (_draft, requestId) => ({
+    ...saved, product: createEmptyProduct(), imagePool: saved.productContext.imagePool,
+    batch: { ...existingBatch, conversation_id: requestId, terminal: false, completed: 0, success: 0, queued: 1,
+      items: [{ ...existingBatch.items[0], status: 'queued' as const, result_asset_ids: [], result_urls: [] }] },
+  }))
+  const create = vi.spyOn(desktopApi, 'createDesktopHandoff').mockRejectedValue(new Error('测试中通过交接状态模拟桌面接收'))
+  const confirm = vi.spyOn(desktopApi, 'confirmDesktopHandoff').mockResolvedValue(undefined)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'WorkflowHome', component: WorkflowView }] })
+  await router.push('/?tab=drafts')
+  const mountView = () => shallowMount(WorkflowView, { attachTo: document.body, global: { plugins: [pinia, router], stubs: {
+    DraftWorkspacePanel: false, DraftImageWorkbench: false, DraftImageSetDialog: false, WorkspaceDialog: false, Teleport: true,
+  } } })
+  let wrapper = mountView()
+  try {
+    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    await flushPromises()
+    wrapper.getComponent(DraftBoxPanel).vm.$emit('edit', saved.draftsIndex[0], 'images')
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '查看套图')!.trigger('click')
+    await flushPromises()
+    await wrapper.get('button[aria-label="重做 主图"]').trigger('click')
+    await flushPromises()
+    expect(submit).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledOnce()
+    const [target, state] = create.mock.calls[0]
+    const handoff = { requestId: 'retry-image-set', target, state: state as DesktopHandoffState }
+    const action = handoff.state.workflow!.draftImageSetAction!
+    expect(action).toEqual({
+      requestId: expect.stringMatching(/^draft_image_set_/),
+      updatedAt: 'v1', baseRequestId: 'set-base', retryPageIds: ['main'],
+    })
+    wrapper.unmount()
+
+    window.championDesktop = { localOperations: true, openLicenses: vi.fn() }
+    wrapper = mountView()
+    receivedDesktopHandoff.value = handoff
+    await flushPromises()
+    expect(submit).toHaveBeenCalledOnce()
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({ draftId: 'retry-draft', updatedAt: 'v1' }),
+      action.requestId,
+      { plan: undefined, updatedAt: 'v1', baseRequestId: 'set-base', retryPageIds: ['main'] },
+      expect.stringMatching(/^conversation_global_chat_/),
+    )
+    expect(confirm).toHaveBeenCalledWith('retry-image-set')
+    expect(wrapper.get('[data-testid="image-set-dialog"]').text()).toContain('正在生成套图')
+  } finally {
+    receivedDesktopHandoff.value = null
+    delete window.championDesktop
+    dismissDesktopLaunch()
+    wrapper.unmount()
+  }
+})

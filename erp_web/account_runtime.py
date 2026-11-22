@@ -18,6 +18,9 @@ from erp_web.services.newapi_bridge import NewAPIBridge
 
 logger = logging.getLogger(__name__)
 
+NEWAPI_IDLE_SCAN_INTERVAL = 30.0
+NEWAPI_FAILURE_BACKOFF_STEPS = (10.0, 30.0, 60.0, 180.0, 300.0)
+
 
 class AccountRuntime:
     def __init__(self, root: AppContext):
@@ -116,17 +119,27 @@ class AccountRuntime:
         self._worker = Thread(target=server_worker_context().run, args=(self._scan,), name="erp-account-jobs", daemon=True)
         self._worker.start()
 
+    def _next_newapi_delay(self, pending: bool, failure_streak: int) -> tuple[float, int]:
+        if not pending:
+            return NEWAPI_IDLE_SCAN_INTERVAL, 0
+        index = min(failure_streak, len(NEWAPI_FAILURE_BACKOFF_STEPS) - 1)
+        return NEWAPI_FAILURE_BACKOFF_STEPS[index], failure_streak + 1
+
     def _scan(self):
         next_newapi_sync = 0.0
+        newapi_failures = 0
         while not self._stop.wait(1):
             if time.monotonic() >= next_newapi_sync:
+                pending = False
                 try:
                     with release_guard.admit("账号同步") as allowed:
                         if allowed:
-                            self.newapi.sync()
+                            pending = bool(self.newapi.sync())
                 except Exception:
+                    pending = True
                     logger.exception("New API 账号同步暂未完成。")
-                next_newapi_sync = time.monotonic() + self.root.config.sync_policy("newapi_account")["interval"]
+                delay, newapi_failures = self._next_newapi_delay(pending, newapi_failures)
+                next_newapi_sync = time.monotonic() + delay
             with self._lock:
                 contexts = list(self._contexts.items())
             for identity, context in contexts:

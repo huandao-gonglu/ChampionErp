@@ -24,7 +24,7 @@ function fixture() {
   const busy = ref(false), batch = ref<ImageBatchSnapshot | null>(null)
   const controller: DraftImageWorkbenchController = {
     busy: computed(() => busy.value), checking: ref(false), batch, notice: ref(''), undoLabel: computed(() => 'AI 修改 2 张'), redoLabel: computed(() => ''),
-    start: vi.fn(), resumeTranslation: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
+    start: vi.fn(), resumeTranslation: vi.fn(), resumeImageSet: vi.fn(), add: vi.fn(), upload: vi.fn(), remove: vi.fn(), reorder: vi.fn(), undo: vi.fn(), redo: vi.fn(),
     planSet: vi.fn(), generateSet: vi.fn(), applySet: vi.fn(),
   }
   const wrapper = mount(DraftImageWorkbench, { attachTo: document.body, props: { draft, productContext: product, loading: false, controller }, global: { stubs: { Teleport: true } } })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DesktopImageAction } from '@/utils/desktopHandoff'
+import type { DesktopImageAction, DesktopImageSetAction } from '@/utils/desktopHandoff'
 import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { modelOperationReason } from '@/utils/desktop'
 import { computed, ref, watch } from 'vue'
@@ -15,6 +15,7 @@ const selected = ref<string[]>([])
 const preview = ref<ImageAsset | null>(null)
 const previewOpen = ref(false)
 const imageSetOpen = ref(false)
+const imageSetDialog = ref<InstanceType<typeof DraftImageSetDialog>>()
 const imageReason = computed(() => modelOperationReason('image.translate'))
 const planReason = computed(() => modelOperationReason('image.plan'))
 const dialog = ref<'edit' | 'translate' | 'remove' | 'add' | null>(null)
@@ -88,7 +89,11 @@ function restoreImageAction(state: DesktopImageAction) {
   prompt.value = state.prompt
   dialog.value = state.action
 }
-defineExpose({ pendingImageAction, restoreImageAction })
+function restoreImageSetAction(action: DesktopImageSetAction) {
+  imageSetDialog.value?.restoreAction(action)
+  imageSetOpen.value = true
+}
+defineExpose({ pendingImageAction, restoreImageAction, restoreImageSetAction })
 
 function submit() {
   if (busy.value) return
@@ -186,7 +191,7 @@ watch(busy, value => { if (value) dragging.value = '' })
   </section>
   <WorkspaceDialog :open="Boolean(preview)" title="图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" alt="图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
   <WorkspaceDialog :open="previewOpen" title="发布图片预览" @close="previewOpen = false"><DraftSkuImagePreview :draft="draft" :images="productContext.imagePool" :assignments="assignments" /></WorkspaceDialog>
-  <DraftImageSetDialog :open="imageSetOpen" :draft="draft" :images="productContext.imagePool" :reference-ids="commonIds.length ? commonIds : currentIds" :controller="controller" :loading="loading" :skus="assignments" @close="imageSetOpen = false" />
+  <DraftImageSetDialog ref="imageSetDialog" :open="imageSetOpen" :draft="draft" :images="productContext.imagePool" :reference-ids="commonIds.length ? commonIds : currentIds" :controller="controller" :loading="loading" :skus="assignments" @close="imageSetOpen = false" />
   <WorkspaceDialog :open="Boolean(dialog)" :title="dialog === 'edit' ? 'AI 修改' : dialog === 'translate' ? '翻译图片' : dialog === 'remove' ? `移出 ${targets.length} 张共用主图？` : '添加共用图片'" :close-disabled="busy" @close="dialog = null">
     <form v-desktop="dialog === 'edit' ? 'image.translate' : false" class="space-y-5" @submit.prevent="submit">
       <template v-if="dialog === 'add'">

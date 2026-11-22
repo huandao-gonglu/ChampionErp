@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
 from erp_web.context import get_context
 from erp_web.runtime_units.order_source_bindings import bindings_from_publish_job
+from erp_web.runtime_units.publish_confirmation import resolve_publish_store_binding
+from erp_web.schemas.online_products import digest
+from erp_web.services.online_product_service import account_identity
+from erp_web.stores.online_product_store import OnlineConflict, OnlineProductStore
 from erp_web.stores.order_notification_store import OrderNotificationStore
 from erp_web.stores.order_procurement_store import OrderProcurementStore
+
+logger = logging.getLogger(__name__)
 
 from .collect_helpers import collect_time_iso
 from .draft_publish_context import (
@@ -406,9 +413,111 @@ def persist_publish_bus_terminal_results(
             runtime_context.paths.data_dir / "order-notifications.sqlite3"
         )
         OrderProcurementStore(orders).add_bindings(bindings)
+    _schedule_published_online_ingest(job_state, context=runtime_context)
     if persisted_drafts:
         job_state["persisted_drafts"] = persisted_drafts
     return job_state
+
+
+def _extract_remote_id_for_platform(platform: str, row: dict[str, Any]) -> str:
+    """从逐 SKU 或单件发布回执中提取在线商品列表使用的远端刊登身份。"""
+    identity = remote_publish_identity(row.get("result") if isinstance(row.get("result"), dict) else row)
+    if platform == "yandex":
+        return str(row.get("offer_id") or identity.get("offer_id") or row.get("sku") or "").strip()
+    if platform == "ozon":
+        for candidate in (row.get("product_id"), identity.get("product_id"), row.get("external_id"), identity.get("external_id")):
+            text = str(candidate or "").strip()
+            if text.isascii() and text.isdigit() and int(text) > 0:
+                return text
+        return ""
+    if platform == "mercadolibre":
+        nested = row.get("result") if isinstance(row.get("result"), dict) else {}
+        publication = nested.get("publication") if isinstance(nested.get("publication"), dict) else {}
+        for candidate in (
+            publication.get("parent_item_id"),
+            row.get("item_id"),
+            row.get("external_id"),
+            identity.get("item_id"),
+            identity.get("external_id"),
+        ):
+            text = str(candidate or "").strip()
+            if text.startswith("CBT") and text[3:].isdigit():
+                return text
+    return ""
+
+
+def published_online_remote_ids(job_state: dict[str, Any]) -> list[tuple[str, str, list[str]]]:
+    """收集本次发布任务已确认成功的远端商品 ID（按平台与发布店铺身份分组）。"""
+    platforms = job_state.get("platforms") if isinstance(job_state.get("platforms"), dict) else {}
+    approvals = job_state.get("approved_publications") if isinstance(job_state.get("approved_publications"), dict) else {}
+    collected: list[tuple[str, str, list[str]]] = []
+    for platform, item in platforms.items():
+        if platform not in {"yandex", "ozon", "mercadolibre"} or not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if status not in {"success", "published", "real_publish_success", "partial"}:
+            continue
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        remote_ids: list[str] = []
+        sku_results = result.get("sku_results")
+        if isinstance(sku_results, list) and sku_results:
+            for row in sku_results:
+                if not isinstance(row, dict) or str(row.get("status") or "").strip().lower() != "published":
+                    continue
+                if remote_id := _extract_remote_id_for_platform(platform, row):
+                    remote_ids.append(remote_id)
+        elif status != "partial":
+            if remote_id := _extract_remote_id_for_platform(platform, result):
+                remote_ids.append(remote_id)
+        unique_ids = list(dict.fromkeys(remote_ids))
+        if unique_ids:
+            approval = approvals.get(platform) if isinstance(approvals.get(platform), dict) else {}
+            store_identity = str(approval.get("store_identity") or "").strip()
+            collected.append((platform, store_identity, unique_ids))
+    return collected
+
+
+def _schedule_published_online_ingest(job_state: dict[str, Any], *, context: "AppContext") -> None:
+    """发布成功后只针对新发 SKU 入队定向同步，秒级写入在线商品列表，绝不阻塞或影响发布终态落库。"""
+    targets = published_online_remote_ids(job_state)
+    if not targets:
+        return
+    job_id = str(job_state.get("job_id") or "").strip()
+    if not job_id:
+        return
+    try:
+        store_config = context.config.load_store_config()
+    except Exception as exc:
+        logger.warning("新发商品自动入库读取店铺配置失败（不影响发布结果）：%s", exc)
+        return
+    online_store = OnlineProductStore(context.db)
+    enqueued = False
+    for platform, store_identity, remote_ids in targets:
+        try:
+            account = account_identity(platform, store_config)
+            if not account:
+                continue
+            if store_identity:
+                current_identity = resolve_publish_store_binding(platform, store_config).identity
+                if current_identity != store_identity:
+                    continue
+            key = f"publish-ingest:{job_id}:{platform}:{digest(sorted(remote_ids))[:12]}"
+            online_store.enqueue(
+                platform,
+                account,
+                "sync",
+                "*",
+                {"ids": remote_ids, "catalog": "current", "source": "publish", "publish_job_id": job_id},
+                key,
+            )
+            enqueued = True
+        except OnlineConflict:
+            # 店铺当前正在同步或执行修改时跳过自动入库，不干扰发布终态。
+            continue
+        except Exception as exc:
+            logger.warning("新发商品自动入库排队失败（platform=%s, job=%s）：%s", platform, job_id, exc)
+    if enqueued and context._online_products is not None:
+        context._online_products._wake.set()
 
 
 __all__ = [
@@ -418,4 +527,5 @@ __all__ = [
     "persist_publish_bus_terminal_results",
     "publish_bus_log_exists",
     "publish_bus_terminal_status",
+    "published_online_remote_ids",
 ]

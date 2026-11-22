@@ -12,8 +12,10 @@ def yandex_status(adapter, listing):
     remote_id = listing.remote_id
 
     mappings = [row for page in catalog_pages(adapter, [remote_id]) for row in page]
+    if not mappings:
+        raise ValueError("Yandex 平台未找到该商品，可能已在商家后台删除，请同步目录清理；已保留原记录")
     if len(mappings) != 1 or mappings[0]["offer"]["offerId"] != remote_id:
-        raise ValueError("Yandex 未返回该商品的归档状态，已保留原记录")
+        raise ValueError("Yandex 返回的商品身份异常，无法确认归档状态，已保留原记录")
     archived = mappings[0]["offer"].get("archived", False)
     if type(archived) is not bool:
         raise ValueError("Yandex 商品归档状态无效，已保留原记录")

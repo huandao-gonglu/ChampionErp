@@ -24,8 +24,8 @@ beforeEach(() => {
   vi.mocked(fetchUserAgents).mockResolvedValue({ content: '<!-- 交流偏好 -->', revision: 'a'.repeat(64) })
   vi.mocked(fetchForbiddenCategories).mockResolvedValue({ platform: 'yandex', filename: '', imported_at: '', categories: [] })
   const watermark = { text: '', image_data_url: '', opacity: 25, size_percent: 30, density: 5, color: '#737373' }
-  vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5, watermark, wechat_forward_types: [], sync_policies: {} })
-  vi.mocked(saveSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark, wechat_forward_types: [], sync_policies: {} })
+  vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5, watermark, wechat_forward_types: [] })
+  vi.mocked(saveSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark, wechat_forward_types: [] })
   vi.mocked(fetchYandexWarehouses).mockResolvedValue({ ok: true, account: { business_id: '', campaign_id: '', placement_type: '', stock_update_mode: '' }, revision: 0, bindings: [], binding_warnings: [], modes: [], warehouses: [], routes: [], carriers: [], checked_at: '', error: '' })
 })
 afterEach(() => {
@@ -107,11 +107,13 @@ describe('系统设置入口与同步间隔', () => {
     expect(reopened.get('#settings-color-mode').element).toHaveProperty('value', 'light')
     persist.mockRestore()
   })
-  it('默认展示通用设置，不挂载已退役的中断与恢复页签', async () => {
+  it('默认展示通用设置，不挂载已退役的中断与恢复及同步策略页签', async () => {
     const wrapper = mount(SystemSettingsPanel, { global }); await flushPromises()
     expect(wrapper.text()).not.toContain('物流设置')
     expect(wrapper.text()).not.toContain('中断与恢复')
+    expect(wrapper.text()).not.toContain('同步与重试策略')
     expect(wrapper.find('#system-settings-tab-interruptions').exists()).toBe(false)
+    expect(wrapper.find('#system-settings-tab-sync_policies').exists()).toBe(false)
     expect(wrapper.get('#system-settings-tab-general').attributes('aria-selected')).toBe('true')
   })
   it('关于支持深链打开，读取设置失败也能查看公司与协议', async () => {

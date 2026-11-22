@@ -44,9 +44,58 @@ def _group_identity(listing: OnlineListing) -> str:
     return "group-" + digest([listing.platform, listing.account_id, str(value)])[:32]
 
 
+_STOCK_STATES = frozenset({"", "in_stock", "out_of_stock", "unknown"})
+_ISSUE_STATES = frozenset({"", "attention", "error", "warning", "clean"})
+_PRICE_STATES = frozenset({"", "priced", "missing", "read_error"})
+_GROUP_KINDS = frozenset({"", "group", "single"})
+
+
+def _matches_stock_state(listing: OnlineListing, stock_state: str) -> bool:
+    if not stock_state:
+        return True
+    known = [scope.quantity for scope in listing.stocks if scope.quantity is not None]
+    if stock_state == "unknown":
+        return not known
+    if stock_state == "in_stock":
+        return bool(known) and sum(known) > 0
+    return bool(known) and sum(known) == 0
+
+
+def _matches_issue_state(listing: OnlineListing, issue_state: str) -> bool:
+    if not issue_state:
+        return True
+    if issue_state == "attention":
+        return listing.sale_state not in ("active", "paused") or bool(listing.errors) or bool(listing.platform_issues)
+    if issue_state == "error":
+        return bool(listing.errors) or any(item.severity == "error" for item in listing.platform_issues)
+    if issue_state == "warning":
+        return any(item.severity == "warning" for item in listing.platform_issues)
+    return not listing.errors and not listing.platform_issues
+
+
+def _matches_price_state(listing: OnlineListing, price_state: str) -> bool:
+    if not price_state:
+        return True
+    has_price = any(bool((scope.amount or "").strip()) for scope in listing.prices)
+    if price_state == "priced":
+        return has_price
+    if price_state == "missing":
+        return not has_price
+    return any(bool(scope.read_error) for scope in listing.prices)
+
+
 def _matching_groups(records: list[OnlineListing], *, query: str, status: str, market: str,
-                     group_id: str = "") -> list[tuple[OnlineProductGroup, list[OnlineListing]]]:
+                     group_id: str = "", stock_state: str = "", issue_state: str = "",
+                     price_state: str = "", group_kind: str = "") -> list[tuple[OnlineProductGroup, list[OnlineListing]]]:
     """页面与工具共用组合身份、顺序和筛选，避免两种入口解释不同的第一项。"""
+    if stock_state not in _STOCK_STATES:
+        raise ValueError("库存状态筛选参数无效")
+    if issue_state not in _ISSUE_STATES:
+        raise ValueError("平台反馈筛选参数无效")
+    if price_state not in _PRICE_STATES:
+        raise ValueError("价格状态筛选参数无效")
+    if group_kind not in _GROUP_KINDS:
+        raise ValueError("商品形态筛选参数无效")
     groups: dict[str, list[OnlineListing]] = {}
     for listing in records:
         key = _group_identity(listing) or "single-" + listing.id
@@ -57,15 +106,21 @@ def _matching_groups(records: list[OnlineListing], *, query: str, status: str, m
     for key, members in groups.items():
         if group_id and key != group_id:
             continue
+        kind: Literal["group", "single"] = "group" if len(members) > 1 else "single"
+        if group_kind and kind != group_kind:
+            continue
         matched = [row for row in members
                    if (not needle or needle in f"{row.title} {row.seller_sku} {row.remote_id}".casefold())
                    and (not status or row.raw_status == status)
-                   and (not market or any(m.site_id == market for m in row.markets))]
+                   and (not market or any(m.site_id == market for m in row.markets))
+                   and _matches_stock_state(row, stock_state)
+                   and _matches_issue_state(row, issue_state)
+                   and _matches_price_state(row, price_state)]
         if not matched:
             continue
         first = members[0]
         group = OnlineProductGroup(id=key, title=first.title or first.remote_id,
-                                   kind="group" if len(members) > 1 else "single",
+                                   kind=kind,
                                    item_ids=[row.id for row in matched], total_count=len(members),
                                    feedback_summary=OnlineFeedbackSummary(
                                        affected_sku_count=sum(bool(row.platform_issues) for row in members),
@@ -76,8 +131,11 @@ def _matching_groups(records: list[OnlineListing], *, query: str, status: str, m
 
 
 def listing_page(records: list[OnlineListing], *, query: str, status: str, market: str,
-                 page: int, per_page: int = 25) -> dict[str, Any]:
-    matched_groups = _matching_groups(records, query=query, status=status, market=market)
+                 page: int, per_page: int = 25, stock_state: str = "", issue_state: str = "",
+                 price_state: str = "", group_kind: str = "") -> dict[str, Any]:
+    matched_groups = _matching_groups(records, query=query, status=status, market=market,
+                                      stock_state=stock_state, issue_state=issue_state,
+                                      price_state=price_state, group_kind=group_kind)
     page = max(1, page)
     selected = matched_groups[(page - 1) * per_page:page * per_page]
     return {

@@ -40,7 +40,6 @@ from erp_web.marketplaces.yandex_http import (
     update_yandex_price,
     update_yandex_stock,
 )
-from erp_web.schemas.sync_policies import policy_values
 from erp_web.schemas.category_constraints import category_attribute_constraint_error
 from erp_web.schemas.category import (
     category_attribute_text_format_error,
@@ -85,9 +84,9 @@ _CARD_STATUS_PROCESSING = frozenset(
     }
 )
 
-_SUBMISSION_DEFAULTS = policy_values({}, "yandex_submission")
-DEFAULT_STEP_RETRY_LIMIT = _SUBMISSION_DEFAULTS["max_retries"]
-DEFAULT_STEP_INTERVAL_SECONDS = _SUBMISSION_DEFAULTS["interval"]
+DEFAULT_STEP_INTERVAL_SECONDS = 2.0
+DEFAULT_STEP_MAX_DELAY_SECONDS = 16.0
+DEFAULT_STEP_RETRY_LIMIT = 4
 MAX_PICTURES = 30
 
 
@@ -804,10 +803,15 @@ def _timeout_seconds(config: dict[str, Any]) -> float:
     return max(1.0, float(store.get("publish_timeout_seconds") or 30))
 
 
+def _step_max_delay_seconds(config: dict[str, Any]) -> float:
+    store = _yandex_store(config)
+    return max(0.5, float(store.get("publish_step_max_delay_seconds") or DEFAULT_STEP_MAX_DELAY_SECONDS))
+
+
 def _step_interval_seconds(config: dict[str, Any]) -> float:
     store = _yandex_store(config)
     return min(
-        float(store.get("publish_step_max_delay_seconds") or _SUBMISSION_DEFAULTS["max_delay"]),
+        _step_max_delay_seconds(config),
         max(0.5, float(store.get("publish_step_interval_seconds") or DEFAULT_STEP_INTERVAL_SECONDS)),
     )
 
@@ -819,8 +823,19 @@ def _step_retry_limit(config: dict[str, Any]) -> int:
 
 def _backoff_at(checkpoint: YandexPublishCheckpoint, config: dict[str, Any]) -> float:
     interval = _step_interval_seconds(config)
-    factor = 2 ** min(max(0, checkpoint.retries), 5)
-    return time.time() + min(float(_yandex_store(config).get("publish_step_max_delay_seconds") or _SUBMISSION_DEFAULTS["max_delay"]), interval * factor)
+    factor = 2 ** min(max(0, checkpoint.retries - 1), 5)
+    return time.time() + min(_step_max_delay_seconds(config), interval * factor)
+
+
+def next_yandex_submission_delay(result: dict[str, Any], config: dict[str, Any], *, now: float | None = None) -> float:
+    """按 checkpoint.next_poll_at 返回下一次推进所需等待秒数，避免退避期间空转唤醒。"""
+    inner = result.get("result") if isinstance(result.get("result"), dict) else result
+    checkpoint = inner.get("checkpoint") if isinstance(inner, dict) and isinstance(inner.get("checkpoint"), dict) else {}
+    next_poll_at = float(checkpoint.get("next_poll_at") or 0)
+    if next_poll_at > 0:
+        current = time.time() if now is None else now
+        return max(0.0, next_poll_at - current)
+    return _step_interval_seconds(config)
 
 
 def _pending_result(
@@ -1390,6 +1405,7 @@ __all__ = [
     "build_yandex_publish_payload",
     "map_yandex_publish_error",
     "advance_yandex_submission",
+    "next_yandex_submission_delay",
     "restore_yandex_publish_result",
     "poll_yandex_publish_status",
     "publish_yandex_payload",

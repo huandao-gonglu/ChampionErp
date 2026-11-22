@@ -120,7 +120,7 @@ def test_failed_basic_feedback_read_preserves_previous_warnings_without_retry():
         platform.fail_cards = True
         platform.calls.clear()
         result = sync(service)
-        assert result["status"] == "partial" and result["result"]["failed"] == 2
+        assert result["status"] == "failed" and result["result"]["failed"] == 2
         current = service.store.get(previous.id)
         assert (current.platform_issues, current.basic_synced_at, current.content) == (previous.platform_issues, previous.basic_synced_at, previous.content)
         assert Counter(name for name, *_ in platform.calls)["offer-cards"] == 1
@@ -222,6 +222,11 @@ def test_one_warehouse_failure_and_missing_sku_keep_only_their_own_cached_values
     original = client.request
     phase = 1
     def request(path, body=None, **kwargs):
+        if path.endswith("/offers"):
+            res = original(path, body, **kwargs)
+            for row in res["result"]["offers"]:
+                row["status"] = "PUBLISHED"
+            return res
         if not path.endswith("/stocks"):
             return original(path, body, **kwargs)
         wid = body["partnerWarehouseId"]
@@ -236,7 +241,7 @@ def test_one_warehouse_failure_and_missing_sku_keep_only_their_own_cached_values
         assert sync(service)["status"] == "confirmed"
         first = {row.id: row for row in service.store.listings("yandex", "1:2")}
         phase = 2
-        assert sync(service)["status"] == "partial"
+        assert sync(service)["status"] == "failed"
         for row in service.store.listings("yandex", "1:2"):
             stale, other = row.stocks
             assert stale.quantity == 10 and stale.cached_at == first[row.id].sales_checked_at < row.sales_checked_at
@@ -244,7 +249,7 @@ def test_one_warehouse_failure_and_missing_sku_keep_only_their_own_cached_values
                 assert other.quantity == 0 and not other.cached_at and not other.read_error
             else:
                 assert other.quantity == 20 and other.cached_at == first[row.id].sales_checked_at
-        assert sync(service)["status"] == "partial"
+        assert sync(service)["status"] == "failed"
         assert all(row.stocks[0].cached_at == first[row.id].sales_checked_at for row in service.store.listings("yandex", "1:2"))
     finally:
         service.close()

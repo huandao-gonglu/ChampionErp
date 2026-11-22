@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 from erp_web.marketplaces.config_http import request_ozon_json
-from erp_web.runtime_units.online_ozon_read import read_batch, sync_ozon
+from erp_web.runtime_units.online_ozon_read import read_batch, reconcile_ozon_missing, sync_ozon, sync_ozon_hot
 from erp_web.runtime_units.online_ozon_snapshot import CONTRACT_BLOCK
 from erp_web.runtime_units.online_product_status import ozon_status
 from erp_web.schemas.online_products import OnlineListing
@@ -28,6 +28,13 @@ class OzonOnlineAdapter:
         if catalog != "current":
             raise ValueError("该平台暂不支持单独同步归档目录")
         return sync_ozon(self, ids)
+
+    def sync_hot(self, ids: list[str]):
+        """热数据快刷：跳过全店 /v3/product/list 目录扫描，直接按批并发刷新已有商品详情与价格。"""
+        return sync_ozon_hot(self, ids)
+
+    def reconcile_missing(self, remote_ids: list[str], *, catalog: str = "current") -> tuple[list[str], dict[str, bool]]:
+        return reconcile_ozon_missing(self, remote_ids)
 
     def read_status(self, listing):
         return ozon_status(self, listing)

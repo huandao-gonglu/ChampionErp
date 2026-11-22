@@ -12,7 +12,7 @@ from erp_web.runtime_units.online_change_confirmation import yandex_change
 from erp_web.marketplaces import yandex_http as api
 from erp_web.marketplaces.yandex_currency import yandex_wire_currency
 from erp_web.schemas.online_products import OnlineListing
-from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, read_batch, sync_yandex
+from erp_web.runtime_units.online_yandex_read import catalog_pages, hidden_ids, read_batch, sync_yandex, sync_yandex_hot
 from erp_web.runtime_units.online_product_status import yandex_status
 from erp_web.runtime_units.category_catalog import get_category_catalog
 from erp_web.product_model.online_attribute_model import merge_yandex_attributes, yandex_category_id
@@ -67,6 +67,10 @@ class YandexOnlineAdapter:
     def sync(self, ids=None, *, catalog="current"):
         return sync_yandex(self, ids, catalog=catalog)
 
+    def sync_hot(self, ids: list[str]):
+        """热数据快刷：只批量刷新已有 SKU 的价格、可售库存和销售状态，不重新拉取目录图文。"""
+        return sync_yandex_hot(self, ids)
+
     def read_sales(self, ids):
         """只读当前页的销售数据，商品身份由已保存的刊登提供。"""
         return read_batch(self, [{"offer": {"offerId": sku}} for sku in ids], {}, scope="sales")
@@ -76,13 +80,31 @@ class YandexOnlineAdapter:
 
     def read(self, remote_id: str) -> OnlineListing:
         # 修改前与回读确认始终读取当下事实，不复用同步期间的缓存。
-        mappings = list(catalog_pages(self, [remote_id]))
-        if len(mappings) != 1 or len(mappings[0]) != 1:
+        mappings = [row for page in catalog_pages(self, [remote_id]) for row in page]
+        if not mappings:
+            raise ValueError("Yandex 平台未找到该商品，可能已在商家后台删除，请同步目录清理")
+        if len(mappings) != 1 or mappings[0]["offer"]["offerId"] != remote_id:
             raise ValueError("Yandex 目录商品身份无法确认")
-        result = read_batch(self, mappings[0], hidden_ids(self, remote_id))
+        result = read_batch(self, mappings, hidden_ids(self, remote_id))
         if result.errors:
             raise ValueError(result.errors.get(remote_id) or "Yandex 商品读取不完整")
         return result.listings[0]
+
+    def reconcile_missing(self, remote_ids: list[str], *, catalog: str) -> tuple[list[str], dict[str, bool]]:
+        """全量目录对账二次复核：按 offerIds 批量核实缺失 SKU 是已删除还是已切换归档目录。"""
+        if not remote_ids:
+            return [], {}
+        found: dict[str, bool] = {}
+        for page in catalog_pages(self, remote_ids, catalog=None):
+            for row in page:
+                offer = row.get("offer", {})
+                sku = offer.get("offerId")
+                if sku:
+                    found[sku] = offer.get("archived") is True
+        expected_archived = catalog == "archived"
+        removed = [sku for sku in remote_ids if sku not in found]
+        moved = {sku: archived for sku, archived in found.items() if archived is not expected_archived}
+        return removed, moved
 
     def read_confirmation(self, listing, request):
         return yandex_change(self, listing, request)

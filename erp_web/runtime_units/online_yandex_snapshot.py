@@ -5,17 +5,13 @@ from typing import Any
 
 from erp_web.marketplaces.online_buyer_links import yandex_buyer_links
 from erp_web.marketplaces.yandex_currency import yandex_internal_currency
-from erp_web.product_model.online_listing_summary import summarize_yandex_status
-from erp_web.schemas.online_products import Capability, MarketSnapshot, OnlineListing, PlatformIssue, PriceScope, StockScope, listing_identity
+from erp_web.product_model.online_listing_summary import summarize_yandex_status, yandex_issues
+from erp_web.schemas.online_products import Capability, MarketSnapshot, OnlineListing, PriceScope, StockScope, listing_identity
 
 
 def card_issues(card, *, source="card"):
     """保留平台错误和警告的原文及说明，不把警告推断成商品不可售。"""
-    return [PlatformIssue(severity=severity, source=source, code=str(row.get("code") or ""),
-                          message=str(row.get("message") or row.get("comment") or "平台未提供反馈说明"),
-                          comment=str(row.get("comment") or ""))
-            for field, severity in (("errors", "error"), ("warnings", "warning"))
-            for row in card.get(field, []) or [] if isinstance(row, dict)]
+    return yandex_issues(card, source=source)
 
 
 def card_attributes(card, names=None):

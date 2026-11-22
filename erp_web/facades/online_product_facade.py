@@ -19,7 +19,20 @@ def read(query: dict[str, str]) -> dict[str, Any]:
         page = max(1, int(query.get("page") or 1))
     except ValueError:
         page = 1
-    return service.list(query.get("platform") or "mercadolibre", query=query.get("q", ""), status=query.get("status", ""), market=query.get("market", ""), page=page, catalog=query.get("catalog", "current"), warehouse_id=query.get('warehouse_id', ''), list_only=query.get('view') == 'list')
+    return service.list(
+        query.get("platform") or "mercadolibre",
+        query=query.get("q", ""),
+        status=query.get("status", ""),
+        market=query.get("market", ""),
+        page=page,
+        catalog=query.get("catalog", "current"),
+        warehouse_id=query.get("warehouse_id", ""),
+        stock_state=query.get("stock_state", ""),
+        issue_state=query.get("issue_state", ""),
+        price_state=query.get("price_state", ""),
+        group_kind=query.get("group_kind", ""),
+        list_only=query.get("view") == "list",
+    )
 
 
 def read_yandex_shop_names(query: dict[str, str]) -> dict[str, Any]:
@@ -54,7 +67,7 @@ def mutate(action: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
     service = get_context().online_products
     try:
         if action == "sync":
-            result = service.sync(body["platform"], body["idempotency_key"], catalog=body.get("catalog", "current"))
+            result = service.sync(body["platform"], body["idempotency_key"], catalog=body.get("catalog", "current"), mode=body.get("mode", "full"))
         elif action == "change":
             result = service.change(body)
         elif action == "change-batch/preview":

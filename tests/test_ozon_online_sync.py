@@ -147,7 +147,7 @@ def test_missing_catalog_cursor_does_not_skip_later_pages():
 
 
 def test_batch_timeout_is_not_replayed_and_auth_rejection_stops_later_batches():
-    platform = Platform(); a = adapter(platform); calls = []
+    platform = Platform(600); a = adapter(platform); calls = []
     def timeout(path, body):
         calls.append(path)
         raise TimeoutError("平台超时")
@@ -160,7 +160,8 @@ def test_batch_timeout_is_not_replayed_and_auth_rejection_stops_later_batches():
     a.request = forbidden; calls.clear()
     with pytest.raises(PublishAdapterError):
         list(a.sync([str(key) for key in platform.ids]))
-    assert calls == ["/v3/product/info/list"]
+    # 最多 3 路并行窗口，403 后立即停止后续批次（不提交第 4–6 批）。
+    assert 1 <= len(calls) <= 3 and all(path == "/v3/product/info/list" for path in calls)
 
 
 def test_single_read_and_batch_have_same_business_version():
@@ -190,5 +191,68 @@ def test_failure_preserves_old_snapshot_and_retry_does_not_rescan_directory():
         assert service.store.job(retry["id"])["status"] == "confirmed"
         assert len(platform.calls) == 2
         assert platform.calls[0] == ("/v3/product/info/list", {"product_id": [1]})
+    finally:
+        service.close()
+
+
+def test_ozon_hot_sync_skips_catalog_runs_three_batches_concurrently_and_prunes_deleted():
+    """Ozon 热刷跳过 /v3/product/list，最多 3 批并发且同批内普通/归档价格并行，已删商品自动复核清理。"""
+    from threading import Barrier, Lock
+
+    platform = Platform(300)
+    platform.archived = {150}
+    a = adapter(platform)
+    original = platform.request
+    batch_barrier = Barrier(3)
+    price_barrier = Barrier(2)
+    lock = Lock()
+    active = peak = 0
+    deleted_ids: set[int] = set()
+
+    def request(path, body):
+        nonlocal active, peak
+        if path == "/v3/product/info/list":
+            if len(body["product_id"]) == 100:
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                try:
+                    batch_barrier.wait(timeout=5)
+                    res = original(path, body)
+                finally:
+                    with lock:
+                        active -= 1
+            else:
+                res = original(path, body)
+            res["items"] = [row for row in res["items"] if row["id"] not in deleted_ids]
+            return res
+        if path == "/v5/product/info/prices" and 150 in body["filter"]["product_id"] or (
+            path == "/v5/product/info/prices" and body["filter"]["visibility"] == "ALL" and 101 in body["filter"]["product_id"]
+        ):
+            price_barrier.wait(timeout=5)
+        return original(path, body)
+
+    a.request = request
+    context = SimpleNamespace(db=get_context().db, config=SimpleNamespace(load_store_config=lambda: {"ozon": {"client_id": "seller"}}))
+    service = OnlineProductService(context, adapter_factories={"ozon": lambda _: a}, start_worker=False)
+    try:
+        # 先全量同步 300 件（走 3 批并发 + 批量落库）。
+        full_job = service.sync("ozon", uuid4().hex)["job"]
+        assert service.run_once()
+        assert service.store.job(full_job["id"])["status"] == "confirmed"
+        assert peak == 3
+
+        # 模拟商品 1 在 Ozon 后台被删除，触发 mode="hot"：0 次 /v3/product/list，自动清理已删商品。
+        deleted_ids.add(1)
+        platform.calls.clear()
+        batch_barrier.reset()
+        price_barrier.reset()
+        hot_job = service.sync("ozon", uuid4().hex, mode="hot")["job"]
+        assert service.run_once()
+        res = service.store.job(hot_job["id"])
+        assert res["status"] == "confirmed" and res["result"]["failed"] == 0
+        assert res["result"]["completed"] == 299 and res["result"]["removed"] == 1
+        assert not any(path == "/v3/product/list" for path, _ in platform.calls)
+        assert len(service.store.listings("ozon", "seller")) == 299
     finally:
         service.close()

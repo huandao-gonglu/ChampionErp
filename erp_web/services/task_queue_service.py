@@ -45,18 +45,28 @@ class TaskQueueService:
             self._stop.wait(2)
 
     def _plan(self, task):
-        plan = self.store.ensure(task, submitted_at=task_timestamp(task["_submitted_at"]),
-            policy=confirmation_policy(task["source"], task["platform"], task["operation"], len(task["_result"].get("sku_results") or [1]), settings=self.context.config.system_settings()["sync_policies"]),
-            legacy_checks=task["_legacy_checks"])
-        if not task["_can_query"]:
-            self.store.stop(task["id"], "没有可定位原请求的远端回执，请在平台后台核对")
-        elif task["origin"] == "unknown":
-            self.store.stop(task["id"], "历史任务未启用新的自动查询；请核对平台结果")
-        elif task["_attention"]:
-            self.store.stop(task["id"], task["error"] or "平台要求处理，请核对详情")
-        elif time.time() >= plan["deadline_at"]:
-            self.store.stop(task["id"], "自动确认期限已到，平台结果尚未确认；可手动查询平台结果或核对平台后台")
-        return self.store.get(task["id"])
+        plan = self.store.get(task["id"])
+        if plan is None:
+            plan = self.store.ensure(
+                task,
+                submitted_at=task_timestamp(task["_submitted_at"]),
+                policy=confirmation_policy(task["source"], task["platform"], task["operation"], len(task["_result"].get("sku_results") or [1])),
+                legacy_checks=task["_legacy_checks"],
+            )
+        if plan["state"] != "needs_attention":
+            if not task["_can_query"]:
+                self.store.stop(task["id"], "没有可定位原请求的远端回执，请在平台后台核对")
+                return self.store.get(task["id"])
+            if task["origin"] == "unknown":
+                self.store.stop(task["id"], "历史任务未启用新的自动查询；请核对平台结果")
+                return self.store.get(task["id"])
+            if task["_attention"]:
+                self.store.stop(task["id"], task["error"] or "平台要求处理，请核对详情")
+                return self.store.get(task["id"])
+            if time.time() >= plan["deadline_at"]:
+                self.store.stop(task["id"], "自动确认期限已到，平台结果尚未确认；可手动查询平台结果或核对平台后台")
+                return self.store.get(task["id"])
+        return plan
 
     def _project(self, task):
         task["can_check"] = bool(task["_can_query"] and (task["source"] == "publish" or task["business_status"] in PENDING_RESULTS))

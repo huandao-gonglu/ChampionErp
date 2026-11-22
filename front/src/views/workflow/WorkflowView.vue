@@ -150,11 +150,12 @@ let restoringHandoff = ''
 watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading, () => collectionStore.running], async ([handoff, loaded]) => {
   if (!handoff || !loaded || route.fullPath !== handoff.target || !handoff.state.workflow || restoringHandoff === handoff.requestId) return
   if (handoff.state.workflow.collectAction && (loading.value || collectionStore.running)) return
-  if (handoff.state.workflow.draftImageAction?.translationRequestId && loading.value) return
+  if ((handoff.state.workflow.draftImageAction?.translationRequestId || handoff.state.workflow.draftImageSetAction) && loading.value) return
   restoringHandoff = handoff.requestId
   try {
     const state = handoff.state.workflow as DesktopWorkflowState
     const imageAction = state.draftImageAction
+    const imageSetAction = state.draftImageSetAction
     const translationId = imageAction?.action === 'translate' && imageAction.translationRequestId
     if (state.collect) {
       Object.assign(collectForm.value, state.collect, { mode: state.collect.mode === 'api' ? 'api' : 'browser' })
@@ -165,7 +166,7 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
       store.acceptLoadedDraft(saved)
       await nextTick()
       // 建立服务端基线后恢复本地编辑，沿用原来的脏状态和版本校验。
-      if (!translationId) {
+      if (!translationId && !imageSetAction) {
         Object.assign(currentDraft.value, state.draft)
         if (state.pricingInput) Object.assign(pricingInput.value, state.pricingInput)
         currentDraftProductContext.value = state.draftContext
@@ -179,7 +180,7 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
       editorMode.value = state.editorMode || 'text'
       editorOpen.value = true
     }
-    if (state.draftImageAction || state.productImageAction) {
+    if (state.draftImageAction || state.draftImageSetAction || state.productImageAction) {
       await nextTick()
       if (receivedDesktopHandoff.value?.requestId !== handoff.requestId) return
       if (translationId && state.draft?.draftId && imageAction) {
@@ -189,6 +190,16 @@ watch([receivedDesktopHandoff, initialStateLoaded, () => route.fullPath, loading
         await until(() => !isCurrent() || (!imageWorkbench.checking.value && !loading.value)).toBe(true)
         if (isCurrent()) await imageWorkbench.resumeTranslation(imageAction.imageIds, translationId, draft.updatedAt)
       } else if (imageAction) draftImageEditor.value?.restoreImageAction(imageAction)
+      if (imageSetAction && state.draft?.draftId) {
+        const draft = state.draft
+        const isCurrent = () => receivedDesktopHandoff.value?.requestId === handoff.requestId
+          && route.fullPath === handoff.target && draftWorkspaceOpen.value && currentDraft.value.draftId === draft.draftId
+        await until(() => !isCurrent() || (!imageWorkbench.checking.value && !loading.value)).toBe(true)
+        if (isCurrent()) {
+          draftImageEditor.value?.restoreImageSetAction(imageSetAction)
+          await imageWorkbench.resumeImageSet(imageSetAction)
+        }
+      }
       if (state.productImageAction) productImageEditor.value?.restoreImageAction(state.productImageAction)
     }
     await acknowledgeDesktopHandoff(handoff.requestId, 'workflow')

@@ -448,6 +448,7 @@ class PublishingBus:
         self.terminal_callback = terminal_callback
         self.task_queue = task_queue
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="PublishingBus")
+        self._stop = threading.Event()
         self._lock = threading.RLock()
         self._futures: dict[str, list[Future[Any]]] = {}
         self.confirmation = PublishResultConfirmation(self)
@@ -871,6 +872,7 @@ class PublishingBus:
         return state
 
     def close(self) -> None:
+        self._stop.set()
         self.executor.shutdown(wait=True)
 
     def check_publish_result(self, job_id: str, platform: str, *, trigger: str = "manual") -> dict[str, Any]:
@@ -1033,12 +1035,26 @@ class PublishingBus:
                 self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
                 result = adapter.publish(product, platform, config)
 
+            last_persisted: dict[str, Any] | None = None
             while isinstance(result, dict) and result.get("status") == "pending_submission":
                 # 仅推进已批准且未完成的写步骤；结果确认不得进入此路径。
                 stored_result = self._persisted_platform_result(result)
-                self._set_platform(job_id, platform, status="running", stage="submitting_steps", result=stored_result, attempts=attempts)
-                interval = adapter.submission_step_interval_seconds(config)
-                time.sleep(max(0.05, float(interval)))
+                if stored_result != last_persisted:
+                    self._set_platform(job_id, platform, status="running", stage="submitting_steps", result=stored_result, attempts=attempts)
+                    last_persisted = stored_result
+                wait_fn = getattr(adapter, "next_submission_wait_seconds", None)
+                delay = wait_fn(result, config) if callable(wait_fn) else adapter.submission_step_interval_seconds(config)
+                if self._stop.wait(max(0.05, float(delay))):
+                    self._set_platform(
+                        job_id,
+                        platform,
+                        status="interrupted",
+                        stage="interrupted",
+                        error="服务正在停止，发布提交已暂停；请稍后手动重试未完成的提交。",
+                        result=stored_result,
+                        attempts=attempts,
+                    )
+                    return
                 result = adapter.advance_submission(result, config)
 
             if self._is_pending_publish_result(result):

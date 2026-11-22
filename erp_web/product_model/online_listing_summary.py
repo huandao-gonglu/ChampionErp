@@ -1,4 +1,25 @@
 """在线商品在当前仓库范围内的状态汇总，不发起请求或改写持久记录。"""
+from __future__ import annotations
+
+from erp_web.schemas.online_products import PlatformIssue
+
+
+def yandex_issues(payload, *, source: str = "card") -> list[PlatformIssue]:
+    """保留平台错误和警告的原文及说明，不把警告推断成商品不可售。"""
+    if not isinstance(payload, dict):
+        return []
+    return [
+        PlatformIssue(
+            severity=severity,
+            source=source,
+            code=str(row.get("code") or ""),
+            message=str(row.get("message") or row.get("comment") or "平台未提供反馈说明"),
+            comment=str(row.get("comment") or ""),
+        )
+        for field, severity in (("errors", "error"), ("warnings", "warning"))
+        for row in payload.get(field, []) or []
+        if isinstance(row, dict)
+    ]
 
 
 _YANDEX_STATUS_PRIORITY = {

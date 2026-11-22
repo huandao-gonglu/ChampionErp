@@ -84,7 +84,7 @@ def save_system_settings_payload(body: dict) -> ResponseWithStatus:
     try:
         return get_context().config.save_system_settings(body), 200
     except ValidationError:
-        return {"ok": False, "error": "系统设置无效：请检查同步策略字段、间隔范围及水印设置"}, 400
+        return {"ok": False, "error": "系统设置无效：请检查订单自动同步间隔及水印设置"}, 400
     except ValueError as exc:
         return {"ok": False, "error": f"系统设置无效：{exc}"}, 400
 

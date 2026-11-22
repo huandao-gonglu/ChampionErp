@@ -6,7 +6,7 @@ from threading import Lock
 from erp_web.services.external_request_context import request_operation
 
 
-SALES_MAX_AGE = timedelta(minutes=15)
+SALES_MAX_AGE = timedelta(minutes=60)
 SALES_BATCH_SIZE = 100
 
 
@@ -21,8 +21,9 @@ def sales_due(listing, cutoff):
 
 
 class OnlineProductSalesReader:
-    def __init__(self, store, config, adapter):
+    def __init__(self, store, config, adapter, *, on_adapter_done=None):
         self.store, self.config, self.adapter = store, config, adapter
+        self._on_adapter_done = on_adapter_done
         self._lock = Lock()
         self._pending = {}
 
@@ -40,9 +41,12 @@ class OnlineProductSalesReader:
             waits = {row.id: self._pending[row.id] for row in due}
         if owned:
             try:
+                adapter = None
                 with request_operation("online_products"):
                     adapter = self.adapter("yandex", account)
                     batch = adapter.read_sales([row.remote_id for row in owned])
+                if adapter is not None and self._on_adapter_done is not None:
+                    self._on_adapter_done(adapter)
                 self.config("yandex", account)
                 fresh = {row.id: row for row in batch.listings}
                 for row in owned:

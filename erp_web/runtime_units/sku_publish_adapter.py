@@ -407,6 +407,21 @@ class SkuGroupPublishingAdapter:
     def submission_step_interval_seconds(self, config: dict[str, Any]) -> float:
         return self.item_adapter.submission_step_interval_seconds(config)
 
+    def next_submission_wait_seconds(self, result: dict[str, Any], config: dict[str, Any]) -> float:
+        now = time.time()
+        deadlines: list[float] = []
+        for state in result.get("sku_results") or []:
+            if not isinstance(state, dict) or state.get("status") != "pending_submission":
+                continue
+            item_result = record(state.get("result"))
+            inner = record(item_result.get("result")) or item_result
+            next_poll_at = float(record(inner.get("checkpoint")).get("next_poll_at") or 0)
+            if next_poll_at > 0:
+                deadlines.append(next_poll_at)
+        if deadlines:
+            return max(0.0, min(deadlines) - now)
+        return self.submission_step_interval_seconds(config)
+
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         from .runtime_api import publish_product
         return publish_product(product, platform, config)

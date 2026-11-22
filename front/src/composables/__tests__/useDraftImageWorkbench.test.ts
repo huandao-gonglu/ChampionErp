@@ -8,6 +8,12 @@ import type { DraftMutationResponse } from '@/api/workflow/normalizers'
 import type { ImageBatchSnapshot } from '@/api/imageBatches'
 import { useDraftImageWorkbench } from '../useDraftImageWorkbench'
 import { setOperationAvailability } from '@/utils/desktop'
+import { launchDesktop } from '@/utils/desktopHandoff'
+
+vi.mock('@/utils/desktopHandoff', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/utils/desktopHandoff')>()
+  return { ...actual, launchDesktop: vi.fn() }
+})
 
 vi.mock('@/api/draftImages', () => ({ fetchDraftImageState: vi.fn(), processDraftImages: vi.fn(), planDraftImageSet: vi.fn(), generateDraftImageSet: vi.fn() }))
 vi.mock('@/api/workflow/catalog', () => ({ saveDraft: vi.fn(), uploadImages: vi.fn() }))
@@ -356,5 +362,85 @@ describe('图片工作台操作与恢复', () => {
     await work.start('translate', ['common'])
     expect(processDraftImages).not.toHaveBeenCalled()
     expect(work.notice.value).toContain('尚未开始处理')
+  })
+  it('网页端需要桌面执行修图时，套图生成和单页重做携带完整动作交接桌面', async () => {
+    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    const { work, draft } = fixture()
+    await flushPromises()
+    const plan: ImageSetPlan = { style: '简洁白底', pages: [
+      { key: 'main', title: '主图', role: 'main', prompt: '主图展示', source_image_ids: ['common'] },
+    ] }
+    await work.generateSet(plan, 'v1')
+    expect(generateDraftImageSet).not.toHaveBeenCalled()
+    expect(launchDesktop).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(launchDesktop).mock.calls[0][0]).toEqual({
+      state: {
+        workflow: expect.objectContaining({
+          draft: draft.value,
+          draftTab: 'images',
+          draftImageSetAction: {
+            requestId: expect.stringMatching(/^draft_image_set_/),
+            updatedAt: 'v1',
+            plan,
+          },
+        }),
+      },
+    })
+
+    work.batch.value = { ...batch(true), conversation_id: 'set-base', image_set: plan }
+    await work.generateSet(undefined, 'v1', ['main'])
+    expect(generateDraftImageSet).not.toHaveBeenCalled()
+    expect(launchDesktop).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(launchDesktop).mock.calls[1][0]).toEqual({
+      state: {
+        workflow: expect.objectContaining({
+          draftTab: 'images',
+          draftImageSetAction: {
+            requestId: expect.stringMatching(/^draft_image_set_/),
+            updatedAt: 'v1',
+            baseRequestId: 'set-base',
+            retryPageIds: ['main'],
+          },
+        }),
+      },
+    })
+  })
+  it('桌面端恢复套图遇到版本变化、忙碌或旧批次变化时停止并说明，重做过期缓存时先刷新', async () => {
+    window.championDesktop = { localOperations: true, openLicenses: vi.fn() }
+    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    try {
+      const { work, draft, response } = fixture()
+      await flushPromises()
+      const plan: ImageSetPlan = { style: '简洁白底', pages: [
+        { key: 'main', title: '主图', role: 'main', prompt: '主图展示', source_image_ids: ['common'] },
+      ] }
+
+      await work.resumeImageSet({ requestId: 'draft_image_set_web', updatedAt: 'v0', plan })
+      expect(work.notice.value).toContain('草稿已更新')
+      expect(generateDraftImageSet).not.toHaveBeenCalled()
+
+      work.batch.value = batch()
+      await work.resumeImageSet({ requestId: 'draft_image_set_web', updatedAt: draft.value.updatedAt, plan })
+      expect(work.notice.value).toContain('已有操作进行中')
+      expect(generateDraftImageSet).not.toHaveBeenCalled()
+
+      work.batch.value = { ...batch(true), conversation_id: 'draft_image_set_web', image_set: plan }
+      await work.resumeImageSet({ requestId: 'draft_image_set_web', updatedAt: draft.value.updatedAt, plan })
+      expect(generateDraftImageSet).not.toHaveBeenCalled()
+
+      // 本地仍是更早批次时，单页重做先拉一次最新状态再校验并提交。
+      work.batch.value = { ...batch(true), conversation_id: 'old-translate' }
+      const refreshedBase = { ...batch(true), conversation_id: 'set-base', image_set: plan }
+      vi.mocked(fetchDraftImageState).mockResolvedValueOnce(response(draft.value, refreshedBase))
+      vi.mocked(generateDraftImageSet).mockResolvedValueOnce(response(draft.value, { ...batch(), conversation_id: 'draft_image_set_retry', image_set: plan }))
+      await work.resumeImageSet({
+        requestId: 'draft_image_set_retry', updatedAt: draft.value.updatedAt,
+        baseRequestId: 'set-base', retryPageIds: ['main'],
+      })
+      expect(generateDraftImageSet).toHaveBeenCalledOnce()
+      expect(generateDraftImageSet).toHaveBeenCalledWith(draft.value, 'draft_image_set_retry', {
+        plan: undefined, updatedAt: draft.value.updatedAt, baseRequestId: 'set-base', retryPageIds: ['main'],
+      }, 'conversation-image-test')
+    } finally { delete window.championDesktop }
   })
 })

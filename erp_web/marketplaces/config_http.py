@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import mimetypes
 import os
@@ -226,7 +227,7 @@ def request_json(
             response_headers=exc.headers,
             resume_at_override=getattr(exc, "external_resume_at", None),
         ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         raise _typed_network_failure(
             platform_prefix="MERCADOLIBRE",
             method=method,
@@ -424,7 +425,7 @@ def request_ozon_json(
             response_headers=exc.headers,
             resume_at_override=getattr(exc, "external_resume_at", None),
         ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         raise _typed_network_failure(
             platform_prefix="OZON",
             method=method,

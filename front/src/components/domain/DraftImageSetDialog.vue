@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { modelOperationReason } from '@/utils/desktop'
+import type { DesktopImageSetAction } from '@/utils/desktopHandoff'
 import { computed, ref, watch } from 'vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { imageUrl, type SkuImageAssignment } from '@/utils/draftImages'
@@ -114,6 +115,17 @@ function applySelection() {
   if (selectedSkuKeys.value.length) void props.controller.applySet(selectedRefs.value, selectedSkuKeys.value)
   else void props.controller.applySet(selectedRefs.value)
 }
+function restoreAction(action: DesktopImageSetAction) {
+  if (action.plan && batch.value?.conversation_id !== action.requestId) {
+    planningNew.value = true
+    plan.value = JSON.parse(JSON.stringify(action.plan)) as ImageSetPlan
+    planVersion.value = props.draft.updatedAt
+  } else {
+    planningNew.value = false
+    plan.value = null
+  }
+}
+defineExpose({ restoreAction })
 </script>
 
 <template>
@@ -140,7 +152,7 @@ function applySelection() {
               <label v-if="result.asset" class="mr-auto flex items-center gap-2 text-sm"><input type="checkbox" :checked="chosen.includes(result.page.key)" :disabled="busy" :aria-label="`采用 ${result.page.title}`" @change="toggle(result.page.key, ($event.target as HTMLInputElement).checked)" />采用</label>
               <button v-if="result.asset && chosen.includes(result.page.key) && result.page.scope !== 'sku'" class="btn btn-outline px-2" type="button" :disabled="busy || commonOrder.indexOf(result.page.key) === 0" :aria-label="`前移 ${result.page.title}`" @click="move(result.page.key, -1)">←</button>
               <button v-if="result.asset && chosen.includes(result.page.key) && result.page.scope !== 'sku'" class="btn btn-outline px-2" type="button" :disabled="busy || commonOrder.indexOf(result.page.key) === commonOrder.length - 1" :aria-label="`后移 ${result.page.title}`" @click="move(result.page.key, 1)">→</button>
-              <button v-desktop="'image.translate'" class="btn btn-outline" type="button" :disabled="busy || !!generateReason" :aria-label="`重做 ${result.page.title}`" @click="controller.generateSet(undefined, draft.updatedAt, [result.page.key])">重做此图</button>
+              <button class="btn btn-outline" type="button" :disabled="busy || !!generateReason" :aria-label="`重做 ${result.page.title}`" @click="controller.generateSet(undefined, draft.updatedAt, [result.page.key])">重做此图</button>
             </div>
           </article>
         </div>
@@ -148,7 +160,7 @@ function applySelection() {
         <p v-if="selectedSkuKeys.length" class="muted">采用 {{ selectedSkuKeys.length }} 张 SKU 图，更新对应规格；未采用或生成失败的规格继续使用当前图片。</p>
         <div class="flex justify-end gap-3"><button type="button" class="btn btn-outline" @click="emit('close')">关闭</button><button type="button" class="btn btn-primary" :disabled="busy || !selectedCount" @click="applySelection">{{ selectedSkuKeys.length ? `采用 ${selectedCount} 张并更新图片` : `采用 ${selectedRefs.length} 张并替换共用图` }}</button></div>
       </template>
-      <form v-else-if="plan" v-desktop="'image.translate'" class="space-y-5" @submit.prevent="controller.generateSet(plan, planVersion)">
+      <form v-else-if="plan" class="space-y-5" @submit.prevent="controller.generateSet(plan, planVersion)">
         <label class="block text-sm font-medium">统一视觉风格<textarea v-model="plan.style" class="input mt-2" rows="3" maxlength="2000" required :disabled="busy" /></label>
         <article v-for="(page, index) in plan.pages" :key="page.key" class="space-y-3 rounded-xl border border-slate-200 p-4 dark:border-dark-700">
           <label class="block text-sm font-medium">第 {{ index + 1 }} 张 · {{ targetLabel(page) }}{{ page.role === 'main' ? ' · 主图' : '' }}<input v-model="page.title" class="input mt-2" maxlength="100" required :disabled="busy" /></label>
