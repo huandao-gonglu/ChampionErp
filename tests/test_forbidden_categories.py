@@ -16,7 +16,11 @@ from erp_web.facades import auth_config_facade, category_facade
 from erp_web.http_route_units import auth_config_routes, get_routes
 from erp_web.runtime_units.publish_validation_session import PublishValidationSession
 from erp_web.schemas.requests import RequestValidationError, validate_request_payload
-from erp_web.services.forbidden_category_service import forbidden_category_issue
+from erp_web.services.forbidden_category_service import (
+    forbidden_category_issue,
+    forbidden_category_match,
+    forbidden_category_reason,
+)
 from erp_web.stores.config_store import ConfigStore
 
 
@@ -145,3 +149,194 @@ def test_session_loads_once_and_next_validation_reads_replaced_list(monkeypatch)
     save_list("123", "另一类目")
     assert "91596" not in PublishValidationSession().forbidden_categories
     assert len(calls) == 2
+
+
+def test_ancestor_id_upward_matching_picks_closest_ancestor_and_ignores_other_platforms():
+    categories = {"90401": "根类目", "13793701": "Удобрения и уход за растениями"}
+    match = forbidden_category_match(
+        "yandex", "60491375", categories, ancestor_ids=("90401", "90719", "13793701", "6433382"),
+    )
+    assert match == {
+        "category_id": "60491375",
+        "matched_category_id": "13793701",
+        "matched_category_name": "Удобрения и уход за растениями",
+        "is_ancestor": True,
+    }
+    assert "上级类目 13793701（Удобрения и уход за растениями）" in forbidden_category_reason(
+        "yandex", "60491375", categories, ancestor_ids=("90401", "90719", "13793701", "6433382"),
+    )
+    issue = forbidden_category_issue(
+        "yandex", "60491375", categories, ancestor_ids=("90401", "90719", "13793701", "6433382"),
+    )
+    assert issue["code"] == "CATEGORY_FORBIDDEN"
+    assert "60491375" in issue["message"] and "13793701" in issue["message"]
+    assert forbidden_category_issue("ozon", "60491375", categories, ancestor_ids=("13793701",)) is None
+
+
+def test_yandex_tree_records_ancestor_ids_and_annotates_search_results(monkeypatch):
+    from erp_web.runtime_units import yandex_category_api
+
+    save_list("13793701", "Удобрения и уход за растениями")
+    tree = [{
+        "id": 90401, "name": "Все товары", "children": [
+            {"id": 90719, "name": "Дача, сад и огород", "children": [
+                {"id": 13793701, "name": "Удобрения и уход за растениями", "children": [
+                    {"id": 6433382, "name": "Отпугиватели и ловушки", "children": [
+                        {"id": 60491375, "name": "Отпугиватели птиц/грызунов"},
+                    ]},
+                ]},
+            ]},
+            {"id": 90800, "name": "Товары для дома", "children": [
+                {"id": 74873567, "name": "Отпугиватели ультразвуковые бытовые"},
+            ]},
+        ],
+    }]
+    records = yandex_category_api._flatten_leaf_categories(tree)
+    by_id = {row["category_id"]: row for row in records}
+    assert by_id["60491375"]["ancestor_ids"] == ["90401", "90719", "13793701", "6433382"]
+    assert by_id["74873567"]["ancestor_ids"] == ["90401", "90800"]
+
+    monkeypatch.setattr(
+        yandex_category_api,
+        "load_yandex_category_corpus",
+        lambda **kwargs: (records, {"cache_source": "persistent_cache"}),
+    )
+    results = yandex_category_api.search_yandex_categories("отпугиватели", limit=10)
+    assert [row["category_id"] for row in results] == ["74873567", "60491375"]
+    assert results[0]["forbidden"] is False and results[0]["forbidden_reason"] == ""
+    assert results[1]["forbidden"] is True
+    assert "13793701" in results[1]["forbidden_reason"]
+
+
+def test_category_precheck_uses_trusted_server_ancestors_not_client_record(monkeypatch):
+    save_list("13793701", "Удобрения и уход за растениями")
+    context = {"product": {"drafts": {"yandex": {"category_id": "60491375"}}},
+               "draft": {"draft_id": "draft-yandex"}, "platform": "yandex", "site": "global"}
+    monkeypatch.setattr(category_facade, "load_required_draft_publish_context", lambda body: (context, None, 200))
+    monkeypatch.setattr(category_facade, "validate_category_precheck", lambda *args: [])
+    monkeypatch.setattr(
+        get_context().category_catalog.provider_for("yandex"),
+        "cached_category_ancestor_map",
+        lambda **kw: {"60491375": ("90401", "90719", "13793701", "6433382")},
+    )
+    saved = {}
+    monkeypatch.setattr(category_facade, "save_draft_target_listing_result", lambda context, patch: saved.update(patch) or {})
+    # 客户端伪造空 ancestor_ids 无法绕过服务端祖先链拦截。
+    result, status = category_facade.category_precheck_payload({
+        "draft_id": "draft-yandex",
+        "platform": "yandex",
+        "category_id": "60491375",
+        "category_record": {"category_id": "60491375", "ancestor_ids": []},
+    })
+    assert status == 200
+    assert saved["category_precheck"]["ok"] is False
+    assert any("13793701" in item and "禁售" in item for item in result["missing_fields"])
+
+
+def test_ai_category_precheck_and_publish_validation_block_forbidden_ancestor(monkeypatch):
+    from erp_web.runtime_units import category_query_capabilities as cq
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+    from erp_web.schemas.ai_trace import AiExecutionContext
+    from erp_web.schemas.category_query_capabilities import CategoryPrecheckRequest
+    from tests.test_yandex_publish import _config, _record, _validatable_product
+
+    save_list("13793701", "Удобрения и уход за растениями")
+    ancestors = ("90401", "90719", "13793701", "6433382")
+    scope = cq.CategoryQueryCapabilityScope(
+        searcher=lambda *a, **kw: [],
+        attributes_loader=lambda *a, **kw: {},
+        attribute_values_loader=lambda *a, **kw: {},
+        record_loader=lambda *a, **kw: {
+            "category_id": "60491375",
+            "category_path": "Все товары / Дача / Удобрения и уход за растениями / Отпугиватели",
+            "ancestor_ids": list(ancestors),
+            "attributes": {"required": [], "optional": []},
+        },
+        draft_context_loader=lambda body: (
+            {"product": {"drafts": {"yandex": {"category_id": "60491375"}}}, "platform": "yandex", "site": "global"},
+            None,
+            200,
+        ),
+        product_loader=lambda body: ({}, None, 200),
+    )
+    ai_res = cq.category_precheck(
+        CategoryPrecheckRequest(draft_id="d1", platform="yandex", site="global", category_id="60491375"),
+        scope,
+        AiExecutionContext.create(timeout_seconds=10, budget_profile="main.chat", permissions={"category.read"}),
+    )
+    assert any("13793701" in item and "禁售" in item for item in ai_res.missing_fields)
+
+    monkeypatch.setattr(
+        get_context().category_catalog.provider_for("yandex"),
+        "cached_category_ancestor_map",
+        lambda **kw: {"60491375": ancestors},
+    )
+    product = _validatable_product(category_id="60491375")
+    pub_res = validate_yandex_draft(product, _config(), _record(category_id="60491375"), image_stage="source")
+    assert pub_res["ok"] is False
+    issue = next(item for item in pub_res["errors"] if item["code"] == "CATEGORY_FORBIDDEN")
+    assert "60491375" in issue["message"] and "13793701" in issue["message"]
+
+
+def test_ai_category_match_capability_handles_forbidden_only_and_direct_id():
+    from erp_web.runtime_units import category_capabilities as cap
+    from erp_web.schemas.market_prepare_capabilities import CategoryMatchRequest
+    from erp_web.services.capability_errors import BusinessCapabilityError, CapabilityInputRequired
+
+    save_list("13793701", "Удобрения и уход за растениями")
+
+    class FakeStore:
+        def load_draft_content(self, draft_id):
+            draft = {
+                "draft_id": draft_id,
+                "product_id": "prod-1",
+                "platform": "yandex",
+                "site": "global",
+                "title": "驱赶器",
+                "target_sites": [{"platform": "yandex", "site": "global", "language": "ru-RU"}],
+            }
+            product = {"product_id": "prod-1", "title": "驱赶器", "drafts": {"yandex": draft}}
+            return {"draft": draft, "product": product}, None, 200
+
+    with pytest.raises(BusinessCapabilityError) as err:
+        cap.match_category(
+            CategoryMatchRequest(draft_id="d1", target_platform="yandex", site="global"),
+            product_store=FakeStore(),
+            matcher=lambda *args: {
+                "ok": True,
+                "status": "unresolved",
+                "candidates": [{"category_id": "60491375", "name": "Отпугиватели", "forbidden": True}],
+                "failure": {"code": "CATEGORY_FORBIDDEN_NO_ALTERNATIVE", "message": "唯一匹配类目属于禁售范围"},
+            },
+        )
+    assert err.value.code == "CATEGORY_FORBIDDEN_NO_ALTERNATIVE"
+
+    with pytest.raises(CapabilityInputRequired) as ask:
+        cap.match_category(
+            CategoryMatchRequest(draft_id="d1", target_platform="yandex", site="global"),
+            product_store=FakeStore(),
+            matcher=lambda *args: {
+                "ok": True,
+                "status": "unresolved",
+                "candidates": [
+                    {"category_id": "60491375", "name": "Отпугиватели", "forbidden": True},
+                    {"category_id": "74873567", "name": "合规类目", "forbidden": False},
+                ],
+                "failure": {"code": "ABSTAIN_NO_MATCH", "message": "需人工确认"},
+            },
+        )
+    assert [opt.value for opt in ask.value.options] == ["74873567"]
+
+    with pytest.raises(BusinessCapabilityError) as direct_err:
+        cap.match_category(
+            CategoryMatchRequest(draft_id="d1", target_platform="yandex", site="global", category_id="60491375"),
+            product_store=FakeStore(),
+            matcher=lambda *args: {},
+            category_record_loader=lambda *a, **kw: {
+                "category_id": "60491375",
+                "category_path": "Удобрения / Отпугиватели",
+                "ancestor_ids": ["90401", "13793701"],
+                "attributes": {"required": [], "optional": []},
+            },
+        )
+    assert direct_err.value.code == "CATEGORY_FORBIDDEN"

@@ -928,3 +928,68 @@ def test_format_retry_and_changed_candidate_path_review_share_native_budget():
     assert result.output["selected_category_id"] == "night"
     assert turns == 5
     assert loaded == ["part", "night"]
+
+
+def test_validator_retries_forbidden_selection_so_model_can_pick_compliant_alternative():
+    """模棱两可商品首次误选禁售候选时，原生重试引导模型改选合规替代类目。"""
+    ledger = CategoryCandidateLedger()
+    candidates = [
+        {
+            **candidate("60491375"),
+            "platform": "yandex",
+            "site": "global",
+            "path_segments": ["Дача", "Удобрения и уход за растениями", "Отпугиватели"],
+            "forbidden": True,
+            "forbidden_reason": "上级类目 13793701（Удобрения и уход за растениями）在禁售名单中",
+        },
+        {
+            **candidate("74873567"),
+            "platform": "yandex",
+            "site": "global",
+            "path_segments": ["Товары для дома", "Бытовая техника", "Устройства защиты"],
+        },
+    ]
+    searcher = Searcher([candidates])
+    yandex_toolset = build_category_match_toolset(
+        platform="yandex",
+        site="global",
+        searcher=searcher,
+        ledger=ledger,
+    ).toolset
+    yandex_payload = {
+        "target": {"platform": "yandex", "site": "global", "language": "ru-RU"},
+        "product": {"source": {"title": "太阳能超声波驱赶器"}, "target": {"title": "Ультразвуковой отпугиватель"}},
+    }
+    turns = 0
+
+    def model(messages, info):
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            return ModelResponse(parts=[ToolCallPart("search_categories", {
+                "product_identity": "通用超声波驱赶设备", "product_type": "отпугиватель",
+                "alternative_names": [], "keywords": ["отпугиватель"],
+            }, tool_call_id="search")])
+        if turns == 2:
+            return final_output(info, {
+                "selected_category_id": "60491375",
+                "selected_category_path": candidates[0]["path_segments"],
+                "abstained": False,
+                "model_confidence": 0.9,
+                "evidence": ["首次误选禁售类目"],
+            }, "final-forbidden")
+        assert "13793701" in str(messages)
+        return final_output(info, {
+            "selected_category_id": "74873567",
+            "selected_category_path": candidates[1]["path_segments"],
+            "abstained": False,
+            "model_confidence": 0.85,
+            "evidence": ["避开禁售类目 60491375，改选同样兼容的合规类目 74873567"],
+        }, "final-compliant")
+
+    result = run_category_match_agent(
+        yandex_payload, yandex_toolset, ledger, timeout_seconds=10,
+        factory=factory_for(FunctionModel(model)),
+    )
+    assert result.output["selected_category_id"] == "74873567"
+    assert turns == 3

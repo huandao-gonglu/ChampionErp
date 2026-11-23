@@ -145,6 +145,11 @@ def _candidate(
         value = str(record.get(field_name) or "").strip()
         if value:
             candidate[field_name] = value
+    if record.get("forbidden"):
+        candidate["forbidden"] = True
+        reason = str(record.get("forbidden_reason") or "").strip()[:300]
+        if reason:
+            candidate["forbidden_reason"] = reason
     return candidate
 
 

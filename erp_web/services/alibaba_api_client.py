@@ -337,6 +337,20 @@ class SelfUseAlibabaProvider(OfficialAlibabaProvider):
         return _checked_product(payload.get("productInfo"), offer_id, "productID", "productId")
 
 
+def onebound_trade_ready(config: dict) -> bool:
+    """校验万邦凭据是否具备下单与支付资格（已核验买家身份的自助授权 Token 或历史已核验 Session）。"""
+    if not isinstance(config, dict):
+        return False
+    if not config.get('access_token') or not str(config.get('member_id') or '').strip():
+        return False
+    credential_type = config.get('credential_type')
+    if credential_type == 'access_token':
+        return True
+    if credential_type == 'session':
+        return config.get('directory_verified') is True
+    return False
+
+
 class OneBoundAlibabaProvider(OpenApiAlibabaProvider):
     def __init__(self, config, timeout):
         if not (config.get('api_key') and config.get('api_secret') and config.get('access_token')):
@@ -365,9 +379,8 @@ class OneBoundAlibabaProvider(OpenApiAlibabaProvider):
         if semantics == "write":
             if namespace != "com.alibaba.trade" or api not in {CREATE, PAY}:
                 raise AlibabaApiRejected("当前万邦方案不支持此写入接口")
-            if (self.config.get('credential_type') != 'session' or self.config.get('directory_verified') is not True
-                    or not self.config.get('member_id')):
-                raise AlibabaApiRejected("万邦下单和免密支付需要已核验的 Session")
+            if not onebound_trade_ready(self.config):
+                raise AlibabaApiRejected("万邦下单和免密支付需要已核验的买家授权，请重新完成万邦自助授权")
         try:
             return request_onebound(self.config, api, values, namespace=namespace, semantics=semantics, timeout=self.timeout)
         except OneBoundApiUnauthorized as exc:

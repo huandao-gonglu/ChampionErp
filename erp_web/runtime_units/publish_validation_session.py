@@ -14,6 +14,9 @@ class PublishValidationSession:
     sku_inputs_checked: bool = False
     images: ImageInspectionCache = field(default_factory=ImageInspectionCache)
     logistics_errors: dict[str, str] = field(default_factory=dict)
+    _yandex_ancestors_by_token: dict[str, dict[str, tuple[str, ...]]] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
 
     @cached_property
     def store_config(self) -> dict[str, Any]:
@@ -23,6 +26,35 @@ class PublishValidationSession:
     def forbidden_categories(self) -> dict[str, str]:
         settings = get_context().config.forbidden_categories()
         return {item["category_id"]: item["name"] for item in settings["categories"]}
+
+    def yandex_ancestor_ids(
+        self,
+        category_id: str,
+        *,
+        api_token: str = "",
+        category_record: dict[str, Any] | None = None,
+    ) -> tuple[str, ...]:
+        cid = str(category_id or "").strip()
+        if not cid:
+            return ()
+        if cid.isascii() and cid.isdigit():
+            cid = str(int(cid))
+        token = str(api_token or "").strip()
+        if token not in self._yandex_ancestors_by_token:
+            self._yandex_ancestors_by_token[token] = (
+                get_context().category_catalog.cached_category_ancestor_map(
+                    "yandex",
+                    api_token=token,
+                )
+            )
+        ancestor_map = self._yandex_ancestors_by_token[token]
+        if cid in ancestor_map:
+            return ancestor_map[cid]
+        if isinstance(category_record, dict):
+            raw = category_record.get("ancestor_ids")
+            if isinstance(raw, (list, tuple)):
+                return tuple(str(item).strip() for item in raw if str(item).strip())
+        return ()
 
     @cached_property
     def tariff_versions(self) -> dict[str, str]:

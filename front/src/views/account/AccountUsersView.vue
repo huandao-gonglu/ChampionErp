@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, useId } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import { createAccountUser, listAccountUsers, resetAccountUserPassword, setAccountUserStatus, type AccountUser } from '@/api/accounts'
+import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import {
+  createAccountUser,
+  listAccountUsers,
+  resetAccountUserPassword,
+  setAccountUserOneBoundQuota,
+  setAccountUserStatus,
+  type AccountUser,
+} from '@/api/accounts'
 
 const users = ref<AccountUser[]>([])
 const total = ref(0)
@@ -14,8 +22,23 @@ const syncPending = ref(false)
 const creating = ref(false)
 const resetUser = ref<AccountUser | null>(null)
 const resetPassword = ref('')
-const showActions = computed(() => users.value.some(user => user.role === 'user'))
+const quotaUser = ref<AccountUser | null>(null)
+const quotaTarget = ref<string | number>('')
+const quotaNote = ref('')
+const quotaError = ref('')
+const quotaFormId = useId()
+const showActions = computed(() => users.value.some(user => user.role === 'user' || Boolean(user.onebound_quota?.authorized)))
 const form = reactive({ email: '', display_name: '', password: '' })
+const quotaPreview = computed(() => {
+  const current = quotaUser.value?.onebound_quota?.balance
+  if (current === null || current === undefined) return null
+  const raw = String(quotaTarget.value ?? '').trim()
+  if (!/^\d+$/.test(raw)) return null
+  const target = Number(raw)
+  if (!Number.isSafeInteger(target) || target < 0 || target > 10_000_000) return null
+  return { target, delta: target - current }
+})
+
 async function load() {
   const data = await listAccountUsers({ page: page.value, q: query.value })
   users.value = data.items
@@ -48,6 +71,65 @@ async function setStatus(user: AccountUser) {
   const result = await setAccountUserStatus(user.id, user.status === 'enabled' ? 'disabled' : 'enabled')
   syncPending.value = result?.data?.newapi_sync_pending === true
   await load()
+}
+function openQuotaDialog(user: AccountUser) {
+  const quota = user.onebound_quota
+  if (!quota?.authorized || quota.balance === null) return
+  quotaUser.value = user
+  quotaTarget.value = String(Math.max(0, quota.balance))
+  quotaNote.value = ''
+  quotaError.value = ''
+}
+function closeQuotaDialog() {
+  if (busy.value) return
+  quotaUser.value = null
+  quotaTarget.value = ''
+  quotaNote.value = ''
+  quotaError.value = ''
+}
+async function submitQuota() {
+  const user = quotaUser.value
+  const quota = user?.onebound_quota
+  if (!user || !quota?.authorized || quota.balance === null || busy.value) return
+  const preview = quotaPreview.value
+  if (!preview) {
+    quotaError.value = '请输入 0 至 10000000 之间的整数目标余额。'
+    return
+  }
+  busy.value = true
+  quotaError.value = ''
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await setAccountUserOneBoundQuota({
+      user_id: user.id,
+      target_balance: preview.target,
+      expected_balance: quota.balance,
+      note: quotaNote.value.trim(),
+    })
+    quotaUser.value = null
+    quotaTarget.value = ''
+    quotaNote.value = ''
+    await load()
+    const buyerName = result.account_name || result.member_id
+    if (!result.changed) {
+      notice.value = `买家 ${buyerName} 的万邦余额已为 ${result.balance} 次，无需调整。`
+    } else {
+      const sign = result.delta > 0 ? `+${result.delta}` : String(result.delta)
+      notice.value = `已将买家 ${buyerName} 的万邦余额调整为 ${result.balance} 次（${sign}）。`
+    }
+  } catch (cause) {
+    quotaError.value = cause instanceof Error ? cause.message : '调整万邦额度失败，请重试。'
+    if ((cause as { status?: number })?.status === 409) {
+      await load().catch(() => undefined)
+      const latest = users.value.find(row => row.id === user.id)
+      if (latest?.onebound_quota?.authorized && latest.onebound_quota.balance !== null) {
+        quotaUser.value = latest
+      }
+    }
+  } finally {
+    busy.value = false
+  }
 }
 onMounted(() => {
   void perform(load)
@@ -88,19 +170,43 @@ onMounted(() => {
       </form>
       <section class="overflow-x-auto rounded-2xl border border-accent-200 bg-white dark:border-white/10 dark:bg-dark-900" :aria-busy="busy">
         <table class="w-full text-left text-sm">
-          <thead class="border-b border-accent-200 dark:border-white/10"><tr><th class="p-4">显示名称</th><th class="p-4">登录邮箱</th><th class="p-4">角色</th><th class="p-4">状态</th><th v-if="showActions" class="p-4">操作</th></tr></thead>
+          <thead class="border-b border-accent-200 dark:border-white/10">
+            <tr>
+              <th class="p-4">显示名称</th>
+              <th class="p-4">登录邮箱</th>
+              <th class="p-4">角色</th>
+              <th class="p-4">状态</th>
+              <th class="p-4">万邦额度</th>
+              <th v-if="showActions" class="p-4">操作</th>
+            </tr>
+          </thead>
           <tbody>
             <tr v-for="user in users" :key="user.id" class="border-b border-accent-100 dark:border-white/5">
               <td class="p-4">{{ user.display_name }}</td>
               <td class="p-4">{{ user.email }}</td>
               <td class="whitespace-nowrap p-4">{{ user.role === 'admin' ? '管理员' : '普通用户' }}</td>
               <td class="p-4">{{ user.status === 'enabled' ? '已启用' : '已禁用' }}</td>
+              <td class="p-4">
+                <template v-if="user.onebound_quota?.authorized && user.onebound_quota.balance !== null">
+                  <div class="font-semibold tabular-nums" :class="user.onebound_quota.balance <= 0 ? 'text-danger-600 dark:text-danger-300' : ''">
+                    {{ user.onebound_quota.balance }} 次
+                  </div>
+                  <div class="text-xs text-accent-500 dark:text-accent-300">
+                    {{ user.onebound_quota.account_name || user.onebound_quota.member_id }}
+                    <span v-if="user.onebound_quota.shared_user_count > 1" class="ml-1 text-warning-700 dark:text-warning-300">
+                      （{{ user.onebound_quota.shared_user_count }} 人共用）
+                    </span>
+                  </div>
+                </template>
+                <span v-else class="text-xs text-accent-500 dark:text-accent-300">未授权</span>
+              </td>
               <td v-if="showActions" class="space-x-3 whitespace-nowrap p-4">
+                <button v-if="user.onebound_quota?.authorized && user.onebound_quota.balance !== null" class="font-semibold text-primary-600 dark:text-primary-300" :disabled="busy" @click="openQuotaDialog(user)">调整额度</button>
                 <button v-if="user.role === 'user'" class="font-semibold text-primary-600 dark:text-primary-300" :disabled="busy" @click="perform(async () => { await setStatus(user) })">{{ (user.status === 'enabled' ? '禁用' : '启用') }}</button>
                 <button v-if="user.role === 'user'" class="font-semibold text-primary-600 dark:text-primary-300" :disabled="busy" @click="resetUser = user; resetPassword = ''">重置密码</button>
               </td>
             </tr>
-            <tr v-if="!users.length"><td :colspan="showActions ? 5 : 4" class="p-8 text-center text-accent-500 dark:text-accent-300">{{ (busy ? '正在加载…' : '没有匹配的用户。') }}</td></tr>
+            <tr v-if="!users.length"><td :colspan="showActions ? 6 : 5" class="p-8 text-center text-accent-500 dark:text-accent-300">{{ (busy ? '正在加载…' : '没有匹配的用户。') }}</td></tr>
           </tbody>
         </table>
       </section>
@@ -112,5 +218,68 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <WorkspaceDialog
+      :open="Boolean(quotaUser)"
+      title="调整万邦调用额度"
+      width="30rem"
+      :close-disabled="busy"
+      @close="closeQuotaDialog"
+    >
+      <form v-if="quotaUser && quotaUser.onebound_quota" :id="quotaFormId" class="space-y-4" @submit.prevent="submitQuota">
+        <div class="space-y-1 rounded-xl border border-accent-200 bg-accent-50/70 p-3 text-sm dark:border-dark-700 dark:bg-dark-800/60">
+          <div>ERP 账号：<strong>{{ quotaUser.display_name }}</strong>（{{ quotaUser.email }}）</div>
+          <div>1688 买家：<strong>{{ quotaUser.onebound_quota.account_name || quotaUser.onebound_quota.member_id }}</strong>（{{ quotaUser.onebound_quota.member_id }}）</div>
+          <div class="tabular-nums">当前余额：<strong>{{ quotaUser.onebound_quota.balance }}</strong> 次</div>
+        </div>
+        <p
+          v-if="quotaUser.onebound_quota.shared_user_count > 1"
+          role="status"
+          class="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+        >
+          当前共有 {{ quotaUser.onebound_quota.shared_user_count }} 个 ERP 账号授权了同一个 1688 买家，本次调整将同步生效于这些账号。
+        </p>
+        <label class="block text-sm">
+          目标余额（次）
+          <input
+            v-model="quotaTarget"
+            data-testid="quota-target-input"
+            type="number"
+            min="0"
+            max="10000000"
+            step="1"
+            required
+            class="input mt-2 w-full tabular-nums"
+            :disabled="busy"
+          />
+        </label>
+        <p v-if="quotaPreview" class="text-xs text-accent-600 tabular-nums dark:text-accent-300">
+          <template v-if="quotaPreview.delta === 0">与当前余额一致，提交后不会写入新流水。</template>
+          <template v-else-if="quotaPreview.delta > 0">系统将自动记入 <strong>+{{ quotaPreview.delta }}</strong> 次调整流水。</template>
+          <template v-else>系统将自动记入 <strong>{{ quotaPreview.delta }}</strong> 次调整流水。</template>
+        </p>
+        <label class="block text-sm">
+          调整备注（可选）
+          <input
+            v-model="quotaNote"
+            data-testid="quota-note-input"
+            type="text"
+            maxlength="200"
+            placeholder="例如：手工补发初始采集额度"
+            class="input mt-2 w-full"
+            :disabled="busy"
+          />
+        </label>
+        <p v-if="quotaError" role="alert" class="text-sm text-danger-600 dark:text-danger-300">{{ quotaError }}</p>
+      </form>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn btn-secondary" :disabled="busy" @click="closeQuotaDialog">取消</button>
+          <button type="submit" :form="quotaFormId" class="btn btn-primary" :disabled="busy || !quotaPreview">
+            {{ busy ? '保存中…' : '确认调整' }}
+          </button>
+        </div>
+      </template>
+    </WorkspaceDialog>
   </main>
 </template>

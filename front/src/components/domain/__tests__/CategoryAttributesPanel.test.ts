@@ -1154,3 +1154,47 @@ describe('草稿属性的官方值限制', () => {
     wrapper.unmount()
   })
 })
+
+describe('禁售类目候选展示与防选', () => {
+  it('标红展示禁售候选及上级原因且禁止点选，同时保留合规候选可选', async () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-forbidden-ui'
+    const forbiddenItem = {
+      id: '60491375',
+      name: 'Отпугиватели птиц/грызунов',
+      path: 'Все товары / Дача / Удобрения и уход за растениями / Отпугиватели птиц/грызунов',
+      forbidden: true,
+      forbiddenReason: '上级类目 13793701（Удобрения и уход за растениями）在禁售名单中',
+      raw: { forbidden: true, forbidden_reason: '上级类目 13793701（Удобрения и уход за растениями）在禁售名单中' },
+    }
+    const compliantItem = {
+      id: '74873567',
+      name: 'Лампы от насекомых',
+      path: 'Все товары / Товары для дома / Лампы от насекомых',
+      forbidden: false,
+      forbiddenReason: '',
+      raw: { forbidden: false },
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: {
+        ...panelProps(draft, null),
+        target: yandexTarget,
+        categoryResults: [compliantItem, forbiddenItem],
+      },
+    })
+
+    const forbiddenButton = wrapper.get('button[data-forbidden="true"]')
+    expect(forbiddenButton.attributes('disabled')).toBeDefined()
+    expect(forbiddenButton.text()).toContain('禁售')
+    expect(forbiddenButton.text()).toContain('13793701')
+    await forbiddenButton.trigger('click')
+    expect(wrapper.emitted('selectCategory')).toBeUndefined()
+
+    const compliantButton = wrapper.findAll('button').find(button => button.text().includes('74873567'))
+    expect(compliantButton).toBeDefined()
+    expect(compliantButton!.attributes('disabled')).toBeUndefined()
+    await compliantButton!.trigger('click')
+    expect(wrapper.emitted('selectCategory')).toEqual([[compliantItem]])
+    wrapper.unmount()
+  })
+})

@@ -37,9 +37,17 @@ def test_forbidden_category_rules_are_shared_and_settings_owned():
     service = ROOT / "erp_web/services/forbidden_category_service.py"
     targets = {target for _, target in imported_targets([service])}
     assert not any(target.startswith(("erp_web.context", "erp_web.stores", "erp_web.runtime_units", "erp_web.http_route_units")) for target in targets)
-    for file in ("erp_web/facades/category_facade.py", "erp_web/runtime_units/publish_validation.py"):
+    for file in (
+        "erp_web/facades/category_facade.py",
+        "erp_web/facades/category_match_facade.py",
+        "erp_web/runtime_units/category_capabilities.py",
+        "erp_web/runtime_units/category_query_capabilities.py",
+        "erp_web/runtime_units/publish_validation.py",
+    ):
         imports = {target for _, target in imported_targets([ROOT / file])}
         assert "erp_web.services.forbidden_category_service.forbidden_category_issue" in imports
+    yandex_imports = {target for _, target in imported_targets([ROOT / "erp_web/runtime_units/yandex_category_api.py"])}
+    assert "erp_web.services.forbidden_category_service.forbidden_category_match" in yandex_imports
     endpoints = {("POST", "/api/system-settings/forbidden-categories/import")}
     assert any(e.path == "/api/system-settings/forbidden-categories" and e.method == "GET" and e.capability_names == ("business_data_read",) for e in AI_CAPABILITY_COVERAGE_MANIFEST)
     assert {(e.method, e.path) for e in AI_CAPABILITY_COVERAGE_MANIFEST if e.disposition == "internal_only"} >= endpoints

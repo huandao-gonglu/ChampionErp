@@ -32,11 +32,15 @@ from erp_web.marketplaces.yandex_http import (
 )
 from erp_web.schemas.category import CategoryCorpusInfo
 from erp_web.russian_text import normalize_russian_word, text_words
+from erp_web.services.forbidden_category_service import (
+    forbidden_category_match,
+    forbidden_category_reason,
+)
 
 logger = logging.getLogger(__name__)
 
 
-YANDEX_CATEGORY_CACHE_SCHEMA = "yandex.category-corpus.v1"
+YANDEX_CATEGORY_CACHE_SCHEMA = "yandex.category-corpus.v2"
 # 类目树变化频率低；新鲜窗口设长一些，避免触发每小时限额。
 YANDEX_CATEGORY_CACHE_FRESH_TTL = timedelta(hours=6)
 YANDEX_CATEGORY_CACHE_MAX_AGE = timedelta(days=7)
@@ -44,7 +48,7 @@ YANDEX_CATEGORY_PARAMETERS_TTL_SECONDS = 15 * 60
 
 _CACHE_DIRECTORY_NAME = "yandex_categories"
 _CACHE_FILE_PATTERN = re.compile(
-    r"^corpus-v1-([0-9a-f]{64})-([A-Z]{2}(?:-[A-Za-z0-9]{2})?)\.json\.gz$"
+    r"^corpus-v[12]-([0-9a-f]{64})-([A-Z]{2}(?:-[A-Za-z0-9]{2})?)\.json\.gz$"
 )
 
 
@@ -181,7 +185,7 @@ def _cache_path(
     return (
         Path(cache_root)
         / _CACHE_DIRECTORY_NAME
-        / f"corpus-v1-{digest}-{_language_key(language)}.json.gz"
+        / f"corpus-v2-{digest}-{_language_key(language)}.json.gz"
     )
 
 
@@ -211,12 +215,17 @@ def _node_is_leaf(node: dict[str, Any]) -> bool:
 
 
 def _flatten_leaf_categories(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """展平类目树，只保留叶子类目（发布只能选择叶子）。"""
+    """展平类目树，只保留叶子类目（发布只能选择叶子），并记录祖先 ID 链。"""
 
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def walk(node: dict[str, Any], names: list[str], parent_id: str) -> None:
+    def walk(
+        node: dict[str, Any],
+        names: list[str],
+        ancestor_ids: list[str],
+        parent_id: str,
+    ) -> None:
         name = _text(
             node.get("name") or node.get("title") or node.get("category_name")
         )
@@ -227,7 +236,7 @@ def _flatten_leaf_categories(tree: list[dict[str, Any]]) -> list[dict[str, Any]]
         path = [*names, name] if name else list(names)
         if not category_id:
             for child in _node_children(node):
-                walk(child, path, parent_id)
+                walk(child, path, ancestor_ids, parent_id)
             return
         if _node_is_leaf(node):
             if category_id not in seen:
@@ -246,6 +255,7 @@ def _flatten_leaf_categories(tree: list[dict[str, Any]]) -> list[dict[str, Any]]
                         "category_path": " / ".join(path or [name or category_id]),
                         "path_original": path or [name or category_id],
                         "parent_id": parent_id,
+                        "ancestor_ids": list(ancestor_ids),
                         "level": len(path or [name or category_id]),
                         "is_leaf": True,
                         "keywords": [item for item in (*path, category_id) if item],
@@ -253,11 +263,12 @@ def _flatten_leaf_categories(tree: list[dict[str, Any]]) -> list[dict[str, Any]]
                     }
                 )
             return
+        next_ancestors = [*ancestor_ids, category_id]
         for child in _node_children(node):
-            walk(child, path, category_id)
+            walk(child, path, next_ancestors, category_id)
 
     for root in tree:
-        walk(root, [], "")
+        walk(root, [], [], "")
     return records
 
 
@@ -272,6 +283,15 @@ def _stable_corpus_hash(records: list[dict[str, Any]]) -> str:
                     for item in (
                         record.get("path_original")
                         if isinstance(record.get("path_original"), list)
+                        else []
+                    )
+                    if _text(item)
+                ],
+                "ancestor_ids": [
+                    _text(item)
+                    for item in (
+                        record.get("ancestor_ids")
+                        if isinstance(record.get("ancestor_ids"), list)
                         else []
                     )
                     if _text(item)
@@ -633,13 +653,93 @@ def _search_score(record: dict[str, Any], terms: list[str]) -> tuple[int, list[s
     return (60, matched) if query <= path else (0, [])
 
 
+def _load_forbidden_categories() -> dict[str, str]:
+    from erp_web.context import get_context
+
+    settings = get_context().config.forbidden_categories()
+    rows = settings.get("categories") if isinstance(settings, dict) else []
+    return {
+        _text(item.get("category_id")): _text(item.get("name"))
+        for item in (rows if isinstance(rows, list) else [])
+        if isinstance(item, dict) and _text(item.get("category_id"))
+    }
+
+
+def _ancestor_tuple(record: dict[str, Any]) -> tuple[str, ...]:
+    raw = record.get("ancestor_ids")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(_text(item) for item in raw if _text(item))
+
+
+def cached_yandex_category_ancestor_map(
+    *,
+    api_token: str = "",
+    language: str = "RU",
+) -> dict[str, tuple[str, ...]]:
+    """仅读取本地内存或磁盘 v2 类目树缓存中的祖先 ID 链，不发起远端请求。"""
+
+    token = _text(api_token)
+    if not token:
+        try:
+            config = _load_store_config()
+            yandex = config.get("yandex") if isinstance(config.get("yandex"), dict) else {}
+            token = _text(yandex.get("api_token"))
+        except Exception:
+            return {}
+    if not token:
+        return {}
+    resolved_language = _language_key(language)
+    scope_hash = _credential_scope_hash(token)
+    cache_key = f"{scope_hash}:{resolved_language}"
+    records: list[dict[str, Any]] | None = None
+    with _corpus_load_lock:
+        cached = _corpus_cache.get(cache_key)
+        if isinstance(cached, dict) and isinstance(cached.get("entry"), YandexCategoryCacheEntry):
+            records = cached["entry"].records
+        else:
+            persistent = _read_persistent_entry(
+                _category_cache_root(),
+                scope_hash,
+                resolved_language,
+                now=_utc_now(),
+            )
+            if persistent is not None:
+                records = persistent.records
+    if not records:
+        return {}
+    return {
+        cid: _ancestor_tuple(record)
+        for record in records
+        if (cid := _text(record.get("category_id")))
+    }
+
+
+def yandex_category_ancestor_ids(
+    category_id: str,
+    *,
+    api_token: str = "",
+    language: str = "RU",
+) -> tuple[str, ...]:
+    """从本地类目缓存反查指定叶子的可信祖先 ID 链；缺失时返回空元组。"""
+
+    cid = _text(category_id)
+    if not cid:
+        return ()
+    if cid.isascii() and cid.isdigit():
+        cid = str(int(cid))
+    return cached_yandex_category_ancestor_map(
+        api_token=api_token, language=language,
+    ).get(cid, ())
+
+
 def search_yandex_categories(
     query: str,
     limit: int | None = 20,
     *,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
-    """本地缓存树上的规范化匹配；不为每次输入发远端请求。"""
+    """本地缓存树上的规范化匹配；不为每次输入发远端请求，并实时标注禁售。"""
 
     query = _text(query)
     terms = _normalize_query(query)
@@ -648,12 +748,25 @@ def search_yandex_categories(
     records, corpus_info = load_yandex_category_corpus(
         timeout_seconds=timeout_seconds
     )
+    forbidden_map = _load_forbidden_categories()
     matches: list[dict[str, Any]] = []
     for record in records:
         score, matched_terms = _search_score(record, terms)
         if not score:
             continue
         result = deepcopy(record)
+        ancestors = _ancestor_tuple(result)
+        match = forbidden_category_match(
+            "yandex", result["category_id"], forbidden_map, ancestor_ids=ancestors,
+        )
+        forbidden = match is not None
+        forbidden_reason = (
+            forbidden_category_reason(
+                "yandex", result["category_id"], forbidden_map, ancestor_ids=ancestors,
+            )
+            if forbidden
+            else ""
+        )
         result.update(
             {
                 "id": result["category_id"],
@@ -663,11 +776,20 @@ def search_yandex_categories(
                 "matched_terms": matched_terms,
                 "source": "yandex_category_tree",
                 "cache_source": corpus_info.get("cache_source"),
+                "forbidden": forbidden,
+                "forbidden_reason": forbidden_reason,
             }
         )
+        if match is not None:
+            result["forbidden_matched_category_id"] = match["matched_category_id"]
+            result["forbidden_matched_category_name"] = match["matched_category_name"]
         matches.append(result)
     matches.sort(
-        key=lambda item: (-int(item.get("score") or 0), str(item.get("category_path") or ""))
+        key=lambda item: (
+            bool(item.get("forbidden")),
+            -int(item.get("score") or 0),
+            str(item.get("category_path") or ""),
+        )
     )
     return matches if limit is None else matches[: max(1, min(50, int(limit or 20)))]
 
@@ -830,6 +952,7 @@ __all__ = [
     "YANDEX_CATEGORY_CACHE_SCHEMA",
     "YANDEX_CATEGORY_PARAMETERS_TTL_SECONDS",
     "YandexCategoryCacheEntry",
+    "cached_yandex_category_ancestor_map",
     "clear_yandex_category_cache",
     "fetch_yandex_category_parameter_definitions",
     "fetch_yandex_category_tree_summary",
@@ -837,5 +960,6 @@ __all__ = [
     "load_yandex_category_corpus",
     "refresh_yandex_category_corpus",
     "search_yandex_categories",
+    "yandex_category_ancestor_ids",
     "yandex_credential_scope_hash",
 ]

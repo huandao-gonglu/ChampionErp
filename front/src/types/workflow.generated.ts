@@ -45,10 +45,11 @@ export interface BackendAlibabaAuthorizationStatus {
 export interface BackendOneBoundQuotaEntry {
   id: string
   member_id: string
-  kind: "grant" | "earn" | "spend"
+  kind: "grant" | "earn" | "spend" | "adjust"
   category: "" | "trade" | "auth" | "collect"
   amount: number
   ref: string
+  note: string
   created: number
 }
 
@@ -58,10 +59,20 @@ export interface BackendOneBoundBuyerQuota {
   balance: number
   granted: number
   earned: number
+  adjusted: number
   spent_total: number
   spent_trade: number
   spent_auth: number
   spent_collect: number
+}
+
+export interface BackendUserOneBoundQuotaSummary {
+  configured: boolean
+  authorized: boolean
+  member_id: string
+  account_name: string
+  balance: number | null
+  shared_user_count: number
 }
 
 export interface BackendOneBoundKeyQuotaStatus {
@@ -391,6 +402,83 @@ export interface BackendAlibabaBatchPurchaseOptions {
   ok: boolean
   lines: Array<BackendAlibabaBatchPurchaseLine>
   records: Array<BackendAlibabaSelfPurchaseRecord>
+}
+
+export interface BackendDirectPurchaseResolvedSku {
+  sku_id: string
+  spec_id: string
+  specification: string
+  price: string
+  stock: string
+  image: string
+  purchasable: boolean
+  block_reason: string
+}
+
+export interface BackendDirectPurchaseResolvedProduct {
+  ok: boolean
+  resolve_token: string
+  offer_id: string
+  product_url: string
+  title: string
+  supplier: string
+  main_image: string
+  skus: Array<BackendDirectPurchaseResolvedSku>
+}
+
+export interface BackendDirectPurchasePreviewItem {
+  offer_id: string
+  sku_id: string
+  spec_id: string
+  specification: string
+  price: string
+  image: string
+  quantity: number
+}
+
+export interface BackendDirectPurchasePreviewView {
+  offer_id: string
+  product_url: string
+  title: string
+  supplier: string
+  main_image: string
+  items: Array<BackendDirectPurchasePreviewItem>
+  total_quantity: number
+  recipient: string
+  phone: string
+  address: string
+  goods_fen: number
+  shipping_fen: number
+  total_fen: number
+  flow: string
+  pay_channels: Array<string>
+  expires_at: number
+}
+
+export interface BackendDirectPurchaseRecord {
+  id: string
+  state: string
+  preview: BackendDirectPurchasePreviewView
+  payment: BackendAlibabaPurchasePayment | null
+  order_numbers: Array<string>
+  order_status: string
+  order_status_code: string
+  message: string
+  pay_channel: string
+  quota_credited: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface BackendDirectPurchaseState {
+  ok: boolean
+  configured: boolean
+  authorized: boolean
+  session_ready: boolean
+  member_id: string
+  account_name: string
+  blocked_reason: string
+  records: Array<BackendDirectPurchaseRecord>
 }
 
 export interface BackendAlibabaOrderStatus {

@@ -195,6 +195,32 @@ def ensure_buyer_grant(
     return store.ensure_initial_grant(fp, buyer, initial_grant=initial_grant, now=now)
 
 
+def set_buyer_target_balance(
+    store: OneBoundQuotaStore,
+    api_key: str,
+    member_id: str,
+    target_balance: int,
+    *,
+    expected_balance: int | None = None,
+    note: str = "",
+    initial_grant: int = DEFAULT_INITIAL_GRANT,
+    now: float | None = None,
+) -> dict:
+    fp = key_fingerprint(api_key)
+    buyer = str(member_id or "").strip()
+    if not fp or not buyer:
+        raise ValueError("万邦企业配置或 1688 买家身份缺失")
+    return store.set_target_balance(
+        fp,
+        buyer,
+        target_balance,
+        expected_balance=expected_balance,
+        note=note,
+        initial_grant=initial_grant,
+        now=now,
+    )
+
+
 def credit_paid_order(
     store: OneBoundQuotaStore,
     config: dict,
@@ -333,4 +359,5 @@ __all__ = [
     "observe_api_info",
     "parse_api_info",
     "restore_key",
+    "set_buyer_target_balance",
 ]

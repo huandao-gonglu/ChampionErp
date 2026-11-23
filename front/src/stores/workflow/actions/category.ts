@@ -280,6 +280,10 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
   }
 
   async function selectCategory(item: CategorySearchResult) {
+    if (item.forbidden || item.raw.forbidden) {
+      setError(String(item.forbiddenReason || item.raw.forbidden_reason || '该类目在禁售名单中，不能选择。'))
+      return
+    }
     const target = { ...selectedPublishTarget.value }
     const previousCategoryId = String(target.categoryId || '').trim()
     const categoryId = String(item.id).trim()

@@ -109,6 +109,7 @@ class SkuProcurementService:
         write_identity_provider,
         owner_scope_provider,
         client_factory=alibaba_provider,
+        read_cache=None,
     ):
         self.procurement = procurement
         self.config_provider = config_provider
@@ -116,6 +117,7 @@ class SkuProcurementService:
         self.write_identity_provider = write_identity_provider
         self.owner_scope_provider = owner_scope_provider
         self.client_factory = client_factory
+        self.read_cache = read_cache
 
     def _scope_key(self) -> str:
         return f"{self.owner_scope_provider()}:{account_scope(self.config_provider())}"
@@ -124,8 +126,14 @@ class SkuProcurementService:
         req = ResolveAlibabaSourceRequest.model_validate(body)
         product_url, offer_id = _resolve_1688_url_and_offer_id(req.url)
         config = self.config_provider()
-        scope_key = f"{self.owner_scope_provider()}:{account_scope(config)}"
-        payload = self.client_factory(config).get_product(offer_id, product_url)
+        scope = account_scope(config)
+        scope_key = f"{self.owner_scope_provider()}:{scope}"
+        provider_type = str(config.get("application_type") or "alibaba_crossborder")
+        payload = self.read_cache.get_product(provider_type, scope, offer_id) if self.read_cache is not None else None
+        if payload is None:
+            payload = self.client_factory(config).get_product(offer_id, product_url)
+            if self.read_cache is not None and isinstance(payload, dict):
+                self.read_cache.set_product(provider_type, scope, offer_id, payload)
         product = payload.get("product") if isinstance(payload, dict) else {}
         if not isinstance(product, dict):
             raise ValueError("1688 未返回有效商品信息，请稍后重试")

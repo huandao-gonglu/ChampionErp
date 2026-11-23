@@ -35,6 +35,7 @@ import SystemSettingsPanel from '@/components/domain/SystemSettingsPanel.vue'
 import OrderCenterPanel from '@/components/domain/OrderCenterPanel.vue'
 import OrderIntegrationSettings from '@/components/domain/OrderIntegrationSettings.vue'
 import OnlineProductsPanel from '@/components/domain/OnlineProductsPanel.vue'
+import AlibabaDirectPurchaseView from '@/views/workflow/AlibabaDirectPurchaseView.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
 import ProductImageEditorPanel from '@/components/domain/ProductImageEditorPanel.vue'
@@ -437,7 +438,7 @@ let fullStateLoad: Promise<void> | undefined
 let navigationSequence = 0
 async function refreshDomainForNav(key: string) {
   const sequence = ++navigationSequence
-  if (['drafts', 'library', 'collect', 'orders', 'onlineProducts', 'publish', 'research'].includes(key)) {
+  if (['drafts', 'library', 'collect', 'orders', 'onlineProducts', 'publish', 'research', 'directPurchase'].includes(key)) {
     const configReady = fullStateLoad ?? (settingsLoad ??= store.loadState(true))
     await Promise.all([configReady, store.hydrateTab(key)])
   } else {
@@ -637,6 +638,7 @@ watch(
             <SystemSettingsPanel v-else-if="activeNav === 'systemSettings'" />
             <OrderCenterPanel v-else-if="activeNav === 'orders'" />
             <OnlineProductsPanel v-else-if="activeNav === 'onlineProducts'" @open-task="openOnlineTask" />
+            <AlibabaDirectPurchaseView v-else-if="activeNav === 'directPurchase'" @open-auth="navigate('auth')" />
 
             <div v-else-if="activeNav === 'auth'" class="space-y-6">
               <AuthSettingsPanel

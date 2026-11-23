@@ -39,9 +39,9 @@ async function run(action: () => Promise<void>) {
   catch (exc) { error.value = exc instanceof Error ? exc.message : '地址读取失败，请重试' }
   finally { loading.value = false }
 }
-async function load() {
+async function load(refresh = false) {
   await run(async () => {
-    const response = await selfPurchaseAddresses(props.orderId, props.lineKey)
+    const response = await selfPurchaseAddresses(props.orderId, props.lineKey, refresh)
     items.value = response.items; notice.value = response.notice
     if (!selectedId.value) {
       const defaults = items.value.filter(item => item.is_default && !item.blocked_reason)
@@ -65,7 +65,7 @@ onMounted(() => { emit('change', null); void load() })
   <section aria-label="收货地址" class="space-y-3 rounded-xl border border-accent-200 p-4 dark:border-dark-600">
     <div class="flex items-center justify-between gap-3">
       <h3 class="font-semibold">收货地址</h3>
-      <button type="button" class="btn btn-outline" :disabled="disabled || loading" @click="load">刷新地址</button>
+      <button type="button" class="btn btn-outline" :disabled="disabled || loading" @click="load(true)">刷新地址</button>
     </div>
     <p v-if="loading" role="status" class="text-sm">正在读取地址…</p>
     <p v-if="notice" class="text-sm text-amber-700 dark:text-amber-300">{{ notice }}</p>

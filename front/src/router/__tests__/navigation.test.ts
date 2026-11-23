@@ -27,6 +27,7 @@ describe('工作流顶级导航', () => {
     expect(navKeys).toContain('orders')
     expect(navKeys).toContain('drafts')
     expect(navKeys).toContain('publish')
+    expect(navKeys).toContain('directPurchase')
     expect(router.resolve({ name: 'WorkflowHome' }).meta.keepAlive).toBe(true)
 
     await router.push('/settings')

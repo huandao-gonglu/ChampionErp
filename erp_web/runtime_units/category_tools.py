@@ -43,6 +43,8 @@ _AI_CANDIDATE_SCHEMA = {
             "items": {"type": "string", "maxLength": 500},
             "maxItems": 20,
         },
+        "forbidden": {"type": "boolean"},
+        "forbidden_reason": {"type": "string", "maxLength": 500},
     },
     "additionalProperties": False,
 }

@@ -192,7 +192,7 @@ onUnmounted(() => {
           </span>
         </div>
         <p class="text-xs text-accent-600 tabular-nums dark:text-accent-400">
-          基础额度 {{ quota.buyer.granted }} · 下单收入 {{ quota.buyer.earned }} · 累计支出 {{ quota.buyer.spent_total }}（交易 {{ quota.buyer.spent_trade }} / 授权 {{ quota.buyer.spent_auth }} / 采集 {{ quota.buyer.spent_collect }}）
+          基础额度 {{ quota.buyer.granted }} · 下单收入 {{ quota.buyer.earned }}<template v-if="quota.buyer.adjusted !== 0"> · 人工调整 {{ quota.buyer.adjusted > 0 ? `+${quota.buyer.adjusted}` : quota.buyer.adjusted }}</template> · 累计支出 {{ quota.buyer.spent_total }}（交易 {{ quota.buyer.spent_trade }} / 授权 {{ quota.buyer.spent_auth }} / 采集 {{ quota.buyer.spent_collect }}）
         </p>
       </div>
       <div v-if="quota.key && account.isAdmin" class="space-y-1.5 border-t border-accent-200/70 pt-2 dark:border-dark-700">

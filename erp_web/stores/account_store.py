@@ -211,7 +211,7 @@ class AccountStore:
         challenge = hashlib.sha256(body["verifier"].encode()).hexdigest()
         with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT t.*,u.id AS user_id,u.display_name FROM newapi_tickets t "
+            row = db.execute("SELECT t.*,u.id AS user_id,u.display_name,u.email FROM newapi_tickets t "
                              "JOIN sessions s ON s.token_hash=t.session_hash JOIN users u ON u.id=s.user_id "
                              "WHERE t.ticket_hash=? AND t.flow_id=? AND t.challenge=? AND t.target=? "
                              "AND t.expires_at>? AND s.expires_at>? AND u.status='enabled'", (
@@ -219,7 +219,7 @@ class AccountStore:
             if not row:
                 raise AccountError("交接已过期、已使用或与浏览器不匹配。", status_code=401)
             db.execute("DELETE FROM newapi_tickets WHERE ticket_hash=?", (digest,))
-            return {"user_id": row["user_id"], "display_name": row["display_name"],
+            return {"user_id": row["user_id"], "display_name": row["display_name"], "erp_email": row["email"],
                     "session_ref": self.newapi_session_ref(row["session_hash"]), "reauthenticated": bool(row["reauthenticated"])}
 
     def newapi_session_active(self, user_id, session_ref):
@@ -238,9 +238,12 @@ class AccountStore:
                                                "flow_id": row["flow_id"], "target": row["target"]})
         return {**identity, "target": row["target"]}
 
-    def newapi_user_active(self, user_id):
+    def newapi_user_info(self, user_id):
         with self._connection() as db:
-            return db.execute("SELECT 1 FROM users WHERE id=? AND status='enabled'", (user_id,)).fetchone() is not None
+            row = db.execute("SELECT email FROM users WHERE id=? AND status='enabled'", (user_id,)).fetchone()
+            if not row:
+                return {"active": False}
+            return {"active": True, "erp_email": row["email"]}
 
     def newapi_pending(self, user_id=None):
         with self._connection() as db:

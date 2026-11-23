@@ -609,3 +609,80 @@ def test_model_deadline_error_keeps_code() -> None:
     )
 
     assert result["failure"]["code"] == "TASK_DEADLINE_EXCEEDED"
+
+
+def test_yandex_forbidden_candidate_is_rejected_by_final_validation() -> None:
+    from tests.test_forbidden_categories import save_list
+
+    save_list("13793701", "Удобрения и уход за растениями")
+
+    def run(payload, toolset):
+        search(toolset, "отпугиватель")
+        return selected("60491375"), TRACE
+
+    forbidden_cand = {
+        **candidate("60491375", platform="yandex", site="global"),
+        "forbidden": True,
+        "forbidden_reason": "上级类目 13793701（Удобрения и уход за растениями）在禁售名单中",
+    }
+    result = match_category(
+        PRODUCT,
+        {"title": "Отпугиватель животных", "language": "ru-RU"},
+        {"platform": "yandex", "site": "global", "language": "ru-RU"},
+        searcher=FakeSearcher([[forbidden_cand]], source="yandex_cache"),
+        agent_service=fake_agent_service(run),
+        detail_loader=lambda *args, **kwargs: {
+            "category_id": "60491375",
+            "platform": "yandex",
+            "site": "global",
+            "name_original": "Отпугиватели птиц/грызунов",
+            "ancestor_ids": ["90401", "13793701"],
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "CATEGORY_FORBIDDEN"
+    assert result["candidates"][0]["forbidden"] is True
+
+
+def test_yandex_abstain_forbidden_only_returns_dedicated_code_only_with_forbidden_evidence() -> None:
+    forbidden_cand = {
+        **candidate("60491375", platform="yandex", site="global"),
+        "name": "Отпугиватели птиц/грызунов",
+        "forbidden": True,
+        "forbidden_reason": "上级类目 13793701（Удобрения и уход за растениями）在禁售名单中",
+    }
+
+    def run_abstain(payload, toolset):
+        search(toolset, "отпугиватель")
+        return {
+            "selected_category_id": "",
+            "abstained": True,
+            "abstain_reason": "forbidden_only",
+            "model_confidence": 0.9,
+            "evidence": ["唯一对口类目 60491375 命中禁售分支 13793701"],
+        }, TRACE
+
+    forbidden_result = match_category(
+        PRODUCT,
+        {"title": "Отпугиватель животных", "language": "ru-RU"},
+        {"platform": "yandex", "site": "global", "language": "ru-RU"},
+        searcher=FakeSearcher([[forbidden_cand]], source="yandex_cache"),
+        agent_service=fake_agent_service(run_abstain),
+    )
+    assert forbidden_result["ok"] is True
+    assert forbidden_result["status"] == "unresolved"
+    assert forbidden_result["failure"]["code"] == "CATEGORY_FORBIDDEN_NO_ALTERNATIVE"
+    assert "60491375" in forbidden_result["failure"]["message"]
+
+    # 账本中并无禁售候选时，不采信模型编造的 forbidden_only，退回普通 ABSTAIN_NO_MATCH。
+    normal_result = match_category(
+        PRODUCT,
+        {"title": "Отпугиватель животных", "language": "ru-RU"},
+        {"platform": "yandex", "site": "global", "language": "ru-RU"},
+        searcher=FakeSearcher([[candidate("74873567", platform="yandex", site="global")]], source="yandex_cache"),
+        agent_service=fake_agent_service(run_abstain),
+    )
+    assert normal_result["status"] == "unresolved"
+    assert normal_result["failure"]["code"] == "ABSTAIN_NO_MATCH"

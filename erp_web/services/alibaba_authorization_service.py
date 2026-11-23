@@ -7,6 +7,7 @@ import hmac
 import json
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from urllib.error import HTTPError, URLError
@@ -14,11 +15,13 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request
 
 from erp_web.context import peek_context
+from erp_web.schemas.accounts import AccountError
 from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt
 from erp_web.schemas.external_requests import ExternalRequestBlocked
-from erp_web.schemas.onebound_quota import DEFAULT_INITIAL_GRANT
+from erp_web.schemas.onebound_quota import DEFAULT_INITIAL_GRANT, UserOneBoundQuotaSummary
 from erp_web.services import onebound_quota_service
-from erp_web.services.alibaba_api_client import OneBoundAlibabaProvider, alibaba_provider
+from erp_web.stores.onebound_quota_store import QuotaBalanceConflictError
+from erp_web.services.alibaba_api_client import OneBoundAlibabaProvider, alibaba_provider, onebound_trade_ready
 from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, legacy_account_scope, onebound_buyer_scope
 from erp_web.services.external_request_context import credential_fingerprint, request_context
 from erp_web.services.external_request_manager import managed_urlopen
@@ -296,9 +299,9 @@ class AlibabaAuthorizationService:
                 return latest_auth['access_token']
             raise
 
-    def runtime_config(self):
+    def runtime_config(self, provider=None):
         with _AUTH_LOCK:
-            resolved = self.business_provider()
+            resolved = self._require_provider(provider) if provider else self.business_provider()
             application = self.store.alibaba_application(resolved)
             snapshot = self.store.alibaba_credentials(resolved)
             auth = _authorization(snapshot, application)
@@ -431,6 +434,44 @@ def alibaba_runtime_config(config_store):
     return AlibabaAuthorizationService(config_store).runtime_config()
 
 
+def alibaba_onebound_runtime_config(config_store):
+    """强制按万邦企业 Key + 当前账号万邦买家授权解析运行时配置（供独立 1688 直购使用）。"""
+    return AlibabaAuthorizationService(config_store).runtime_config('onebound')
+
+
+def onebound_direct_purchase_status(config_store) -> dict:
+    """只读检查当前账号的万邦 1688 直购可用状态与买家身份，不触碰 ERP 主业务方案。"""
+    service = AlibabaAuthorizationService(config_store)
+    status = service.status('onebound')
+    application = config_store.alibaba_application('onebound')
+    auth = _authorization(config_store.alibaba_credentials('onebound'), application)
+    configured = bool(status['application_configured'])
+    authorized = bool(status['authorized'])
+    candidate = {
+        **auth,
+        'credential_type': auth.get('credential_type', 'session'),
+        'directory_verified': auth.get('directory_verified') is True,
+    }
+    session_ready = bool(authorized and onebound_trade_ready(candidate))
+    if not configured:
+        blocked_reason = '万邦企业 API 尚未配置，请联系管理员在平台授权中配置企业 Key'
+    elif not authorized:
+        blocked_reason = '请先在「平台授权 → 万邦 1688」完成个人 1688 买家自助授权'
+    elif not session_ready:
+        blocked_reason = '当前万邦授权缺少已核验的买家身份，请到「平台授权 → 万邦 1688」重新完成自助授权'
+    else:
+        blocked_reason = ''
+    return {
+        'configured': configured,
+        'authorized': authorized,
+        'session_ready': session_ready,
+        'member_id': str(status['member_id'] or ''),
+        'account_name': str(status['account_name'] or ''),
+        'account_scope': str(auth.get('account_scope') or ''),
+        'blocked_reason': blocked_reason,
+    }
+
+
 def onebound_quota_view(context):
     service = AlibabaAuthorizationService(context.config, owner_id=context.user_id)
     status = service.status('onebound')
@@ -444,3 +485,156 @@ def onebound_quota_view(context):
         member_id=status['member_id'],
         account_name=status['account_name'],
     )
+
+
+def _read_user_onebound_state(runtime, user: dict) -> dict:
+    """只读读取指定账号的万邦授权记录，绝不给从未登录的新账号创建业务库。"""
+    workspace = str(user.get('workspace') or '')
+    if workspace == '.' and user.get('role') == 'admin':
+        return runtime.root.config.alibaba_credentials('onebound')
+    with runtime._lock:
+        existing = runtime._contexts.get(user['id'])
+    if existing is not None:
+        return existing.config.alibaba_credentials('onebound')
+    if workspace != f"users/{user['id']}":
+        return {}
+    users_root = (runtime.root.paths.app_dir / 'users').resolve()
+    directory = (runtime.root.paths.app_dir / workspace).resolve()
+    if not directory.is_relative_to(users_root):
+        return {}
+    db_path = directory / 'erp.sqlite3'
+    if not db_path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True, timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT secret_json FROM runtime_secrets WHERE namespace='credentials:alibaba' AND secret_path='onebound'"
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row or not row[0]:
+            return {}
+        data = json.loads(row[0])
+        return data if isinstance(data, dict) else {}
+    except (sqlite3.Error, ValueError, OSError):
+        return {}
+
+
+def _valid_onebound_binding(state: dict, application: dict, *, now: float) -> tuple[str, str]:
+    auth = _authorization(state, application)
+    if not auth or not auth.get('access_token') or auth.get('directory_verified') is False:
+        return '', ''
+    expires = auth.get('expires_at', 0)
+    if expires and expires <= now:
+        return '', ''
+    member_id = str(auth.get('member_id') or '').strip()
+    if not member_id:
+        return '', ''
+    account_name = str(auth.get('account_name') or member_id).strip()
+    return member_id, account_name
+
+
+def admin_users_onebound_quotas(runtime, users: list[dict]) -> dict[str, UserOneBoundQuotaSummary]:
+    """为管理员用户列表附带各账号绑定的万邦 1688 买家与当前余额。"""
+    application = runtime.root.config.alibaba_application('onebound')
+    configured = _configured(application)
+    if not configured:
+        return {
+            u['id']: {
+                'configured': False,
+                'authorized': False,
+                'member_id': '',
+                'account_name': '',
+                'balance': None,
+                'shared_user_count': 0,
+            }
+            for u in users
+        }
+    now = time.time()
+    all_users = runtime.store.users()
+    bindings: dict[str, tuple[str, str]] = {}
+    member_counts: dict[str, int] = {}
+    for row in all_users:
+        member_id, account_name = _valid_onebound_binding(_read_user_onebound_state(runtime, row), application, now=now)
+        bindings[row['id']] = (member_id, account_name)
+        if member_id:
+            member_counts[member_id] = member_counts.get(member_id, 0) + 1
+    key_fp = onebound_quota_service.key_fingerprint(application['api_key'])
+    initial_grant = application.get('initial_grant', DEFAULT_INITIAL_GRANT)
+    store = runtime.root.onebound_quota
+    balance_cache: dict[str, int] = {}
+    result: dict[str, UserOneBoundQuotaSummary] = {}
+    for row in users:
+        member_id, account_name = bindings.get(row['id'], ('', ''))
+        if not member_id:
+            result[row['id']] = {
+                'configured': True,
+                'authorized': False,
+                'member_id': '',
+                'account_name': '',
+                'balance': None,
+                'shared_user_count': 0,
+            }
+            continue
+        if member_id not in balance_cache:
+            balance_cache[member_id] = store.read_buyer_summary(
+                key_fp, member_id, account_name=account_name, initial_grant=initial_grant,
+            )['balance']
+        result[row['id']] = {
+            'configured': True,
+            'authorized': True,
+            'member_id': member_id,
+            'account_name': account_name,
+            'balance': balance_cache[member_id],
+            'shared_user_count': member_counts.get(member_id, 1),
+        }
+    return result
+
+
+def admin_set_user_onebound_balance(
+    runtime,
+    user_id: str,
+    target_balance: int,
+    *,
+    expected_balance: int | None = None,
+    note: str = '',
+) -> dict:
+    """管理员按目标余额调整指定用户所授权 1688 买家的万邦额度。"""
+    user = next((row for row in runtime.store.users() if row['id'] == user_id), None)
+    if user is None:
+        raise AccountError('账号不存在。', status_code=404, error_code='USER_NOT_FOUND')
+    application = runtime.root.config.alibaba_application('onebound')
+    if not _configured(application):
+        raise AccountError('万邦企业 API 尚未配置，暂无法调整额度。', status_code=400, error_code='ONEBOUND_NOT_CONFIGURED')
+    now = time.time()
+    member_id, account_name = _valid_onebound_binding(_read_user_onebound_state(runtime, user), application, now=now)
+    if not member_id:
+        raise AccountError('该账号尚未完成有效的万邦 1688 授权，暂无法调整额度。', status_code=400, error_code='ONEBOUND_NOT_AUTHORIZED')
+    shared_count = sum(
+        1 for row in runtime.store.users()
+        if _valid_onebound_binding(_read_user_onebound_state(runtime, row), application, now=now)[0] == member_id
+    )
+    try:
+        outcome = onebound_quota_service.set_buyer_target_balance(
+            runtime.root.onebound_quota,
+            application['api_key'],
+            member_id,
+            target_balance,
+            expected_balance=expected_balance,
+            note=note,
+            initial_grant=application.get('initial_grant', DEFAULT_INITIAL_GRANT),
+            now=now,
+        )
+    except QuotaBalanceConflictError as exc:
+        raise AccountError(str(exc), status_code=409, error_code='QUOTA_BALANCE_CHANGED') from None
+    except ValueError as exc:
+        raise AccountError(str(exc), status_code=400, error_code='INVALID_QUOTA_TARGET') from None
+    return {
+        'ok': True,
+        'user_id': user_id,
+        'member_id': member_id,
+        'account_name': account_name,
+        'shared_user_count': shared_count,
+        **outcome,
+    }

@@ -279,6 +279,15 @@ def test_unshipped_order_persists_status_without_creating_parcels(setup):
     assert value['data']['order']['status'] == 'waitbuyerpay'
     assert value['data']['logistics'] == []
     assert not value['error'] and not value['data']['logistics_warning']
+    assert client.calls == [ORDER_DETAIL]
+    assert not fulfillment.detail(body['order_id'])['parcels']
+
+    client.calls.clear()
+    client.order['result']['baseInfo']['status'] = 'waitsellersend'
+    value = progress(run())
+    assert value['data']['order']['status'] == 'waitsellersend'
+    assert value['data']['logistics'] == []
+    assert not value['error'] and not value['data']['logistics_warning']
     assert client.calls == [ORDER_DETAIL, LOGISTICS_INFO]
     assert not fulfillment.detail(body['order_id'])['parcels']
 

@@ -169,6 +169,11 @@ class CategoryKeywordBatchSearch:
                 "path_segments": list(row.get("path_segments") or []),
                 "matched_keywords": row["matched_keywords"],
             }
+            if row.get("forbidden"):
+                candidate["forbidden"] = True
+                reason = str(row.get("forbidden_reason") or "").strip()
+                if reason:
+                    candidate["forbidden_reason"] = reason
             if self.include_binding_ids:
                 candidate.update({key: row[key] for key in ("description_category_id", "type_id") if key in row})
             item = category_id if repeated else candidate

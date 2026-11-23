@@ -144,16 +144,38 @@ def test_unknown_provider_fails_before_any_request():
 @pytest.mark.parametrize('config', [
     CONFIG,
     {**CONFIG, 'credential_type': 'session', 'member_id': 'buyer-a'},
-    {**DIRECTORY_CONFIG, 'credential_type': 'access_token'},
+    {**CONFIG, 'credential_type': 'access_token', 'member_id': ''},
     {**DIRECTORY_CONFIG, 'member_id': ''},
 ])
-def test_onebound_writes_require_a_verified_directory_session(monkeypatch, config):
+def test_onebound_writes_require_a_verified_buyer_credential(monkeypatch, config):
     monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: pytest.fail('未核验的授权不得发起写入'))
     provider = alibaba_provider(config)
-    with pytest.raises(AlibabaApiRejected, match='已核验的 Session'):
+    with pytest.raises(AlibabaApiRejected, match='已核验的买家授权'):
         provider.create_order({}, [], flow="flow", channel="alipay", external_id="record")
-    with pytest.raises(AlibabaApiRejected, match='已核验的 Session'):
+    with pytest.raises(AlibabaApiRejected, match='已核验的买家授权'):
         provider.pay_order("123", channel="alipay", amount_fen=100, request_id="payment")
+
+
+def test_onebound_self_auth_access_token_supports_trades_without_write_retry(monkeypatch):
+    number = '9007199254740994'
+    address = {'fullName': '收货人', 'provinceText': '浙江省', 'cityText': '杭州市', 'address': '示例路 10 号'}
+    self_auth_config = {**CONFIG, 'credential_type': 'access_token', 'member_id': 'buyer-self'}
+    calls = []
+    replies = {CREATE: {'success': True, 'orderId': number}, PAY: {'success': True, 'paySuccess': True, 'payChannel': 'ALIPAY'}}
+
+    def send(request, *, request_context, follow_redirects, **kwargs):
+        params = parse_qs(urlsplit(request.full_url).query)
+        assert params['access_token'] == ['buyer-token'] and 'session' not in params
+        assert request_context.semantics == 'write' and request_context.max_attempts == 1 and not follow_redirects
+        method = params['method'][0]
+        calls.append(method)
+        return response({'response': replies[method.split('/', 1)[1]]})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', send)
+    provider = alibaba_provider(self_auth_config)
+    assert provider.create_order(address, [{'offer_id': '123', 'spec_id': 'spec-a', 'quantity': 1}], flow='general', channel='alipay', external_id='r1') == [number]
+    assert provider.pay_order(number, channel='alipay', amount_fen=100, request_id='p1')[0] == 'succeeded'
+    assert calls == ['com.alibaba.trade/' + CREATE, 'com.alibaba.trade/' + PAY]
 
 
 @pytest.mark.parametrize('payment_response', [

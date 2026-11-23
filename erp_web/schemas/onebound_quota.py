@@ -5,11 +5,12 @@ from typing import Literal, TypedDict
 
 DEFAULT_INITIAL_GRANT = 200
 MAX_INITIAL_GRANT = 100_000
+MAX_TARGET_BALANCE = 10_000_000
 DAILY_RESERVE_MIN = 50
 DAILY_RESERVE_RATIO = 0.05
 SHOP_BIND_THROTTLE_SECONDS = 600.0
 
-OneBoundQuotaEntryKind = Literal["grant", "earn", "spend"]
+OneBoundQuotaEntryKind = Literal["grant", "earn", "spend", "adjust"]
 OneBoundQuotaCategory = Literal["", "trade", "auth", "collect"]
 
 
@@ -20,6 +21,7 @@ class OneBoundQuotaEntry(TypedDict):
     category: OneBoundQuotaCategory
     amount: int
     ref: str
+    note: str
     created: float
 
 
@@ -29,10 +31,20 @@ class OneBoundBuyerQuota(TypedDict):
     balance: int
     granted: int
     earned: int
+    adjusted: int
     spent_total: int
     spent_trade: int
     spent_auth: int
     spent_collect: int
+
+
+class UserOneBoundQuotaSummary(TypedDict):
+    configured: bool
+    authorized: bool
+    member_id: str
+    account_name: str
+    balance: int | None
+    shared_user_count: int
 
 
 class OneBoundKeyQuotaStatus(TypedDict):
@@ -71,6 +83,7 @@ __all__ = [
     "DAILY_RESERVE_RATIO",
     "DEFAULT_INITIAL_GRANT",
     "MAX_INITIAL_GRANT",
+    "MAX_TARGET_BALANCE",
     "SHOP_BIND_THROTTLE_SECONDS",
     "OneBoundBuyerQuota",
     "OneBoundKeyQuotaStatus",
@@ -78,4 +91,5 @@ __all__ = [
     "OneBoundQuotaEntry",
     "OneBoundQuotaEntryKind",
     "OneBoundQuotaView",
+    "UserOneBoundQuotaSummary",
 ]

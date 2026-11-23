@@ -55,6 +55,7 @@ def fetch_category_record(
         ]
         or ([detail.name] if detail.name else []),
         "parent_id": detail.parent_id,
+        "ancestor_ids": list(detail.ancestor_ids),
         "description_category_id": "",
         "is_leaf": detail.is_leaf,
         "source": f"{platform}_live",

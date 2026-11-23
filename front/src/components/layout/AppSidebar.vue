@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {
   PhBrowsers, PhCaretDoubleLeft, PhCaretDoubleRight, PhFileText, PhGearSix, PhGridFour, PhKey,
-  PhListBullets, PhMagnifyingGlass, PhPackage, PhReceipt, PhTray, PhUser, PhUsers,
+  PhListBullets, PhMagnifyingGlass, PhPackage, PhReceipt, PhShoppingCart, PhTray, PhUser, PhUsers,
 } from '@phosphor-icons/vue'
 import type { Component } from 'vue'
 import { APP_LOGO, APP_NAME, APP_VERSION } from '@/constants/branding'
@@ -28,6 +28,7 @@ const navigationIcons: Partial<Record<string, Component>> = {
   drafts: PhFileText,
   publish: PhBrowsers,
   onlineProducts: PhPackage,
+  directPurchase: PhShoppingCart,
   auth: PhKey,
 }
 </script>

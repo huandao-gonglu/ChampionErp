@@ -43,8 +43,11 @@ class NewAPIBridge:
             raise AccountError("New API 尚未配置。", status_code=503)
         return post_newapi(self.internal_url, self.secret, path, body)
 
-    def model_key(self, user_id, display_name):
-        result = self.call("/api/internal/erp/model-key", {"user_id": user_id, "display_name": display_name})
+    def model_key(self, user_id, display_name, erp_email=""):
+        payload = {"user_id": user_id, "display_name": display_name}
+        if erp_email:
+            payload["erp_email"] = erp_email
+        result = self.call("/api/internal/erp/model-key", payload)
         key = result.get("key")
         if not isinstance(key, str) or not key.startswith("sk-erp.v1."):
             raise AccountError("New API 返回的账号凭据无效。", status_code=502)

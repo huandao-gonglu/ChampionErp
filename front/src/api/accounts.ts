@@ -1,4 +1,7 @@
 import { apiClient } from './client'
+import type { BackendUserOneBoundQuotaSummary } from '@/types/workflow.generated'
+
+export type UserOneBoundQuotaSummary = BackendUserOneBoundQuotaSummary
 
 export interface AccountUser {
   id: string
@@ -8,6 +11,18 @@ export interface AccountUser {
   status: 'enabled' | 'disabled'
   created_at: number
   updated_at: number
+  onebound_quota?: UserOneBoundQuotaSummary
+}
+export interface AdjustOneBoundQuotaResponse {
+  ok: boolean
+  user_id: string
+  member_id: string
+  account_name: string
+  shared_user_count: number
+  changed: boolean
+  previous_balance: number
+  delta: number
+  balance: number
 }
 export interface AccountSessionResponse {
   ok: boolean
@@ -28,6 +43,12 @@ export const listAccountUsers = async (params: { page: number; q: string }) => (
 export const createAccountUser = (body: CreateAccount) => apiClient.post('/api/admin/users', body)
 export const setAccountUserStatus = (user_id: string, status: AccountUser['status']) => apiClient.post('/api/admin/users/status', { user_id, status })
 export const resetAccountUserPassword = (user_id: string, password: string) => apiClient.post('/api/admin/users/password', { user_id, password })
+export const setAccountUserOneBoundQuota = async (body: {
+  user_id: string
+  target_balance: number
+  expected_balance?: number
+  note?: string
+}) => (await apiClient.post<AdjustOneBoundQuotaResponse>('/api/admin/users/onebound-quota', body)).data
 
 export const fetchNewAPIInfo = async () => (await apiClient.get<{ configured: boolean; url: string; sync_pending: boolean }>('/api/account/newapi')).data
 export const previewNewAPI = async (code: string) => (await apiClient.post<{ code: string; target: 'keys' | 'wallet' | 'usage' | 'proof'; expires_at: number }>('/api/account/newapi/preview', { code })).data

@@ -13,6 +13,7 @@ def create_service(context):
     return AlibabaSelfPurchaseService(context.alibaba_self_purchases,
         lambda: alibaba_runtime_config(context.config), context.order_procurement,
         address_notes=OrderAddressNoteStore(context.order_notifications.store), receiving=context.fulfillment.receiving,
+        read_cache=context.alibaba_read_cache,
         quota_credit=lambda config, order_number, total_fen: credit_paid_order(
             context.onebound_quota, config, order_number, total_fen,
         ))
@@ -23,7 +24,8 @@ def options(query):
 
 
 def addresses(query):
-    return create_service(get_context()).addresses(str(query.get("order_id") or ""), str(query.get("line_key") or ""))
+    refresh = str(query.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
+    return create_service(get_context()).addresses(str(query.get("order_id") or ""), str(query.get("line_key") or ""), refresh=refresh)
 
 
 def batch_options(query):

@@ -25,10 +25,12 @@ POST `/api/alibaba/authorization/start` 通过 `provider: onebound` 生成万邦
 企业共享额度库位于根空间 `data/onebound-quota.sqlite3`（WAL、`0600`，由 `stores/onebound_quota_store.py` 与 `services/onebound_quota_service.py` 维护），分两层治理：
 
 - **平台层（企业万邦 Key 指纹）**：响应体 `api_info` 按白名单解析 `today`、`max`、`expires` 更新 `key_snapshots`；结合快照之后本地发出的次数估算 `today_estimated`，每日保留额度为 `max(50, max × 5%)`（`trade` 与 `auth` 可使用保留额度，`collect` 达到 `max - reserve` 即本地拦截）；`expires` 在 7 天内提示管理员，过期则整 Key 拒绝。
-- **用户层（企业 Key 指纹 + 1688 买家 `member_id`）**：同一买家被多个 ERP 用户授权时共用一份余额。新买家首次获得一次默认基础额度（`grant`）；经万邦自采购下单并确认付款后（免密支付成功回执或对账确认已付款状态）按 `floor(实付元) × 2` 幂等入账（`earn`，按订单号去重，取消/退款不扣回）；所有万邦请求在 `RequestContext.before_send` 原子先扣后发（`spend`，发出即计消耗）。
+- **用户层（企业 Key 指纹 + 1688 买家 `member_id`）**：同一买家被多个 ERP 用户授权时共用一份余额。新买家首次获得一次默认基础额度（`grant`）；经万邦自采购下单并确认付款后（免密支付成功回执或对账确认已付款状态）按 `floor(实付元) × 2` 幂等入账（`earn`，按订单号去重，取消/退款不扣回）；管理员可在「用户管理」页查看各账号绑定的万邦买家与当前余额，并按目标余额调整（`POST /api/admin/users/onebound-quota`，带预期余额并发校验，差值记为 `adjust` 流水及备注）；所有万邦请求在 `RequestContext.before_send` 原子先扣后发（`spend`，发出即计消耗）。
 - **调用分级**：交易接口（`trade`）与授权接口（`auth`）在买家余额不足时仍照常放行并记账（余额可为负），避免无法下单导致额度死锁；`shop_bind_list` 对同一买家 10 分钟内最多触发 1 次；商详采集及未列出的接口按 `collect` 处理，余额不足时本地拒绝并提示用户可改用浏览器采集（不自动切换）。
 - **错误码与跨重启恢复**：`platform_request_policy.py` 识别万邦 HTTP 200 的 `error_code`：4013 进入北京时间次日 00:00 冷却并持久化 `exhausted_until`；4016（余额不足）/ 4007（账户停用）/ 4005（Key 或签名无效）内存熔断并持久写入 `key_state`，管理员充值或修正后通过 `POST /api/alibaba/onebound/key/restore`（不发探测请求）人工恢复；4008 走纯内存退避；4006 / 4012 单接口 60 秒防重撞；4009 维护中对写入保留结果未知语义；网关明确拒绝（4013/4016/4007/4005/4008/4006/4012/4003 等）仍转换为 `OneBoundApiRejected`，保证下单占位可安全释放。
 - **统一只读查询**：`BusinessQuery` `alibaba.onebound_quota`（`/api/business-queries/alibaba.onebound_quota`）供万邦授权卡、采集面板预估和 AI 共用。普通用户仅见自己授权买家的余额、构成与流水；管理员额外可见 Key 用量、到期日、停用状态和全部买家，并可按 `entries` 分页读取流水。
+- **独立 1688 万邦直购**：工作台左侧独立 Tab「1688 直购」（所有登录用户可见，`/api/alibaba/direct-purchase/*`）通过 `alibaba_onebound_runtime_config` 强制走万邦企业 Key 与当前用户已核验买家身份的万邦授权（兼容自助授权 `access_token` 及历史已核验 `session`，即便管理员 ERP 主业务设为企业自用或跨境应用），支持粘贴链接/短链解析、复选多 SKU 设数量、选取 1688 地址或手动输入/解析地址、预览下单、打开 1688 收银台付款或可选免密支付。直购记录保存在独立库 `data/alibaba-direct-purchases.sqlite3`，不进入采集箱、草稿箱、销售订单、采购记录或 AI 数据目录；刷新订单状态或免密支付确认付款后同样按 `floor(实付元) × 2` 幂等入账。
+- **1688 只读缓存与调用节约**：`services/alibaba_read_cache.py`（挂载于 `AppContext.alibaba_read_cache`，地址缓存持久化在当前空间的 `data/alibaba-read-cache.sqlite3`）按 `account_scope` 隔离三类只读缓存：① 1688 收货地址列表（`receiveAddress.get`）持久化缓存 24 小时，直购与 ERP 自采购地址加载及下单预览优先复用，页面手动「刷新地址」透传 `refresh=1` 强制拉取；② 免密支付签约状态（`protocolPay.isopen`）仅在 `ready=True` 时内存缓存 6 小时（未签约不缓存），免密支付遭遇远端明确拒绝时即时失效，手动刷新签约透传 `refresh=true` 穿透；③ 商详接口（`queryProductDetail`）内存缓存 10 分钟，跨 1688 API 采集、SKU 货源绑定解析与 1688 直购共享（直购支持 `refresh=true` 穿透）。此外，下单提交距本次预览 ≤ 60 秒时跳过重复的二次预览（本地校验、占位与超时重验保留）；采购物流同步在订单处于未付款/已取消/已关闭（`waitbuyerpay` / `cancel` / `terminated`）或首次自动同步（`once=True`）仍为 `waitsellersend` 且无承运商信息时跳过 `getLogisticsInfos` / 轨迹查询。
 
 尚未保存时可读取 `ERP_ALIBABA_*`、`ERP_ALIBABA_CROSSBORDER_*`、`ERP_ONEBOUND_API_KEY`、`ERP_ONEBOUND_API_SECRET`。个人 `credentials:alibaba` 的 `state`、`crossborder`、`onebound` 保留原通道凭据，不借其他用户或其他应用的 Token 补齐当前通道。
 
@@ -42,7 +44,7 @@ POST `/api/alibaba/authorization/start` 通过 `provider: onebound` 生成万邦
 
 ## 万邦下单与免密支付
 
-两项操作均经万邦 `GET /1688/custom` 转发。外层传企业 `key`、`secret`、已保存且核验通过的 `session` 和 `method`，`_o_args` 传业务参数的 JSON。交易资格根据本地授权中保存的会员 ID、凭据类型和核验结果判断。自助授权换得的买家 Token 用于收货地址、订单列表等已支持的查询。 [万邦 custom 文档](https://open.onebound.cn/help/api/1688.custom.html) · [万邦技术示例](https://segmentfault.com/a/1190000047904773)
+两项操作均经万邦 `GET /1688/custom` 转发。外层传企业 `key`、`secret`、当前已核验买家身份的 `access_token`（或历史已核验 `session`）和 `method`，`_o_args` 传业务参数的 JSON。交易资格由 `onebound_trade_ready` 统一校验（要求具备已核验的 `member_id`，自助授权 `access_token` 与历史已核验 `session` 均放行，未核验凭据禁止写入）。 [万邦 custom 文档](https://open.onebound.cn/help/api/1688.custom.html) · [万邦技术示例](https://segmentfault.com/a/1190000047904773)
 
 - 创建采购订单使用 `com.alibaba.trade/alibaba.trade.fastCreateOrder`。业务参数包含 `addressParam`、`cargoParamList`、`flow`、`tradeType`、`preSelectPayChannel` 和用于核验的 `outOrderId`。创建回执须返回唯一订单号。
 - 免密支付使用 `com.alibaba.trade/alibaba.trade.pay.protocolPay.preparePay`。`tradeWithholdPreparePayParam` 包含 `orderId`、`payChannel`、`payAmount`（分）和持久化的 `opRequestId`。ERP 先核对所选渠道签约、订单内容和金额，收到渠道一致的成功回执后记录支付成功。 [采购免密支付接入](alibaba-purchase-payment.md)

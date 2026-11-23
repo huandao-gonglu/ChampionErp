@@ -1,12 +1,14 @@
-"""读取禁售类目 XLSX；只根据表内类目 ID 匹配，不推测名称或父子关系。"""
+"""读取禁售类目 XLSX；按类目 ID 及可信类目树祖先 ID 链匹配，不按名称推测。"""
 from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 import posixpath
+from typing import Any
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
@@ -123,17 +125,100 @@ def import_configuration(body: dict) -> dict:
     ).model_dump()
 
 
-def forbidden_category_issue(platform: str, category_id: str, categories: dict[str, str]) -> dict | None:
-    if platform != "yandex":
-        return None
-    category_id = str(category_id or "").strip()
+def _normalize_category_id(value: Any) -> str:
+    category_id = str(value or "").strip()
     if category_id.isascii() and category_id.isdigit():
-        category_id = str(int(category_id))
-    if category_id not in categories:
+        return str(int(category_id))
+    return category_id
+
+
+def forbidden_category_match(
+    platform: str,
+    category_id: str,
+    categories: dict[str, str],
+    *,
+    ancestor_ids: Iterable[str] = (),
+) -> dict[str, Any] | None:
+    """按自身 ID 与由近及远的祖先 ID 链匹配禁售名单；纯函数无副作用。"""
+    if str(platform or "").strip().lower() != "yandex" or not categories:
         return None
-    return {"code": "CATEGORY_FORBIDDEN", "field": "category_id", "severity": "error",
-            "message": f"Yandex 类目 {category_id}（{categories[category_id]}）在禁售名单中，不能通过预检",
-            "next_action": "停止发布此类商品；如名单有误，请联系管理员核实禁售类目"}
+    normalized_id = _normalize_category_id(category_id)
+    if not normalized_id:
+        return None
+    if normalized_id in categories:
+        return {
+            "category_id": normalized_id,
+            "matched_category_id": normalized_id,
+            "matched_category_name": categories[normalized_id],
+            "is_ancestor": False,
+        }
+    seen = {normalized_id}
+    for raw_ancestor in reversed(tuple(ancestor_ids)):
+        ancestor_id = _normalize_category_id(raw_ancestor)
+        if not ancestor_id or ancestor_id in seen:
+            continue
+        seen.add(ancestor_id)
+        if ancestor_id in categories:
+            return {
+                "category_id": normalized_id,
+                "matched_category_id": ancestor_id,
+                "matched_category_name": categories[ancestor_id],
+                "is_ancestor": True,
+            }
+    return None
 
 
-__all__ = ["parse_categories", "import_configuration", "forbidden_category_issue"]
+def forbidden_category_reason(
+    platform: str,
+    category_id: str,
+    categories: dict[str, str],
+    *,
+    ancestor_ids: Iterable[str] = (),
+) -> str:
+    match = forbidden_category_match(
+        platform, category_id, categories, ancestor_ids=ancestor_ids,
+    )
+    if match is None:
+        return ""
+    matched_id = match["matched_category_id"]
+    matched_name = match["matched_category_name"]
+    if match["is_ancestor"]:
+        return f"上级类目 {matched_id}（{matched_name}）在禁售名单中"
+    return f"类目 {matched_id}（{matched_name}）在禁售名单中"
+
+
+def forbidden_category_issue(
+    platform: str,
+    category_id: str,
+    categories: dict[str, str],
+    *,
+    ancestor_ids: Iterable[str] = (),
+) -> dict | None:
+    match = forbidden_category_match(
+        platform, category_id, categories, ancestor_ids=ancestor_ids,
+    )
+    if match is None:
+        return None
+    normalized_id = match["category_id"]
+    matched_id = match["matched_category_id"]
+    matched_name = match["matched_category_name"]
+    if match["is_ancestor"]:
+        message = f"Yandex 类目 {normalized_id} 的上级类目 {matched_id}（{matched_name}）在禁售名单中，不能通过预检"
+    else:
+        message = f"Yandex 类目 {normalized_id}（{matched_name}）在禁售名单中，不能通过预检"
+    return {
+        "code": "CATEGORY_FORBIDDEN",
+        "field": "category_id",
+        "severity": "error",
+        "message": message,
+        "next_action": "换选合规类目或停止发布此类商品；如名单有误，请联系管理员核实禁售类目",
+    }
+
+
+__all__ = [
+    "parse_categories",
+    "import_configuration",
+    "forbidden_category_match",
+    "forbidden_category_reason",
+    "forbidden_category_issue",
+]

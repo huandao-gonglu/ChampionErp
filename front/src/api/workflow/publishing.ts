@@ -528,6 +528,8 @@ export async function searchCategories(platform: Marketplace, query: string, sit
         id: getString(record, ['id', 'category_id']),
         name: getString(record, ['name', 'title']),
         path: getString(record, ['path', 'category_path'], getString(record, ['name', 'title'])),
+        forbidden: getBoolean(record, ['forbidden']),
+        forbiddenReason: getString(record, ['forbidden_reason', 'forbiddenReason']),
         raw: record,
       }
     })
@@ -553,6 +555,8 @@ function normalizeCategoryMatchResult(data: UnknownRecord): CategoryMatchResult 
         id: getString(record, ['category_id']),
         name: getString(record, ['name']),
         path: pathSegments.join(' / ') || getString(record, ['name']),
+        forbidden: getBoolean(record, ['forbidden']),
+        forbiddenReason: getString(record, ['forbidden_reason', 'forbiddenReason']),
         raw: { ...record, aiRecommended: getString(record, ['category_id']) === selectedCategoryId && data.status === 'completed',
           matchEvidence: getString(record, ['category_id']) === selectedCategoryId ? stringList(asRecord(data.decision).evidence) : [] },
       }
@@ -561,6 +565,7 @@ function normalizeCategoryMatchResult(data: UnknownRecord): CategoryMatchResult 
   candidates.sort((left, right) => {
     if (left.id === selectedCategoryId) return -1
     if (right.id === selectedCategoryId) return 1
+    if (Boolean(left.forbidden) !== Boolean(right.forbidden)) return left.forbidden ? 1 : -1
     return 0
   })
   const decision = asRecord(data.decision)

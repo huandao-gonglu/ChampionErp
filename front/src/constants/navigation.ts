@@ -14,6 +14,7 @@ export const workflowNavItems: WorkflowNavItem[] = [
   { key: 'drafts', title: '草稿箱', subtitle: '平台草稿、继续编辑' },
   { key: 'publish', title: '任务队列', subtitle: '任务状态、日志' },
   { key: 'onlineProducts', title: '在线商品', subtitle: '店铺商品、价格与库存' },
+  { key: 'directPurchase', title: '1688 直购', subtitle: '经万邦自购下单，不进入 ERP 业务流程' },
   { key: 'auth', title: '平台授权', subtitle: '授权、AI、汇率' },
   { key: 'systemSettings', title: '系统设置', subtitle: '应用偏好' },
 ]

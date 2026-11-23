@@ -77,7 +77,7 @@ class AccountRuntime:
                 context.config.managed_models = managed_newapi_models(
                     self.newapi.internal_url, context.config.load_app_config()["ai_models"],
                 )
-                context.model_key = partial(self.newapi.model_key, user["id"], user["display_name"])
+                context.model_key = partial(self.newapi.model_key, user["id"], user["display_name"], user["email"])
                 self._contexts[user["id"]] = context
             return context
 

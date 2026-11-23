@@ -223,3 +223,114 @@ def test_import_products_validates_versions_integrity_and_atomic_precheck(tmp_pa
             assert pool[0]["url"] == "https://img.example.com/a.jpg"
     finally:
         ctx.close()
+
+
+def test_import_preserves_distinct_pool_assets_sharing_identical_file_bytes(tmp_path: Path) -> None:
+    """主图与 SKU 图 URL 不同但图片二进制内容相同时，导出共享内嵌资产，导入仍保留各自资产 ID 与文件。"""
+    from erp_web.product_model.sku_image_model import sku_image_asset
+
+    source_ctx = _make_context(tmp_path, "user-same-src")
+    target_ctx = _make_context(tmp_path, "user-same-dst")
+
+    img_dir = source_ctx.paths.app_dir / "data" / "images" / "prod_same_bytes"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    main_file = img_dir / "remote_1.png"
+    sku_file = img_dir / "remote_6.png"
+    main_file.write_bytes(PNG_1X1)
+    sku_file.write_bytes(PNG_1X1)
+    rel_main = str(main_file.relative_to(source_ctx.paths.app_dir))
+    rel_sku = str(sku_file.relative_to(source_ctx.paths.app_dir))
+
+    try:
+        with bind_context(source_ctx):
+            source_ctx.products.save_product(
+                {
+                    "product_id": "prod_same_bytes",
+                    "name": "纯手工草鞋",
+                    "sku_items": [
+                        {
+                            "id": "sku-yellow-26",
+                            "name": "黄色 / 26",
+                            "cost_cny": "12.52",
+                            "image_asset_id": "src_sku_same",
+                            "options": {"颜色": "黄色", "尺码": "26"},
+                        },
+                        {
+                            "id": "sku-yellow-27",
+                            "name": "黄色 / 27",
+                            "cost_cny": "12.52",
+                            "image_asset_id": "src_sku_same",
+                            "options": {"颜色": "黄色", "尺码": "27"},
+                        },
+                    ],
+                    "source": {
+                        "title": "纯手工草鞋",
+                        "source_platform": "1688",
+                        "source_url": "https://detail.1688.com/offer/1028620347857.html",
+                        "collect_status": "success",
+                        "images": [rel_main, rel_sku],
+                        "image_pool": [
+                            {
+                                "id": "src_main_same",
+                                "path": rel_main,
+                                "local_path": rel_main,
+                                "url": "https://img.example.com/main.png",
+                                "origin": "1688",
+                                "usage": "main",
+                                "is_main": True,
+                                "selected": True,
+                                "status": "ready",
+                            },
+                            {
+                                "id": "src_sku_same",
+                                "path": rel_sku,
+                                "local_path": rel_sku,
+                                "url": "https://img.example.com/sku.png",
+                                "origin": "1688",
+                                "usage": "other",
+                                "is_main": False,
+                                "is_sku": True,
+                                "selected": False,
+                                "status": "ready",
+                            },
+                        ],
+                    },
+                },
+                preserve_platform_facts=False,
+            )
+            exported, status = export_products_payload(
+                validate_request_payload({"product_ids": ["prod_same_bytes"]}, endpoint="/api/products/export")
+            )
+            assert status == 200
+            export_data = exported["exportData"]
+            # 导出包仍按内容哈希去重内嵌资产以控制体积
+            assert len(export_data["assets"]) == 1
+            exported_pool = export_data["products"][0]["source"]["image_pool"]
+            assert len(exported_pool) == 2
+            assert exported_pool[0]["export_asset_key"] == exported_pool[1]["export_asset_key"]
+
+        with bind_context(target_ctx):
+            imported, import_status = import_products_payload(
+                validate_request_payload(export_data, endpoint="/api/products/import")
+            )
+            assert import_status == 200
+            restored = target_ctx.products.find_indexed_product(imported["importedIds"][0])
+            restored_pool = restored["source"]["image_pool"]
+            assert [item["id"] for item in restored_pool] == ["src_main_same", "src_sku_same"]
+            assert restored_pool[0]["path"] != restored_pool[1]["path"]
+            assert restored_pool[1].get("is_sku") is True
+            for item in restored_pool:
+                file_path = target_ctx.paths.app_dir / item["path"]
+                assert file_path.exists()
+                assert file_path.read_bytes() == PNG_1X1
+            # 所有 SKU 的 image_asset_id 都能在图片池中正常解析
+            for sku in restored["sku_items"]:
+                assert sku["image_asset_id"] == "src_sku_same"
+                resolved = sku_image_asset(restored, sku)
+                assert resolved is not None and resolved["id"] == "src_sku_same"
+            # 导入目录下只生成 2 个文件，不因 source.images 额外产生孤儿文件
+            imported_files = list((target_ctx.paths.app_dir / "data" / "images" / restored["product_id"]).iterdir())
+            assert len(imported_files) == 2
+    finally:
+        source_ctx.close()
+        target_ctx.close()

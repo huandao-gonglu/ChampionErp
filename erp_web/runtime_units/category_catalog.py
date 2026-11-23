@@ -92,6 +92,37 @@ class CategoryCatalog:
             timeout_seconds=timeout_seconds,
         )
 
+    def cached_category_ancestor_map(
+        self,
+        platform: str,
+        *,
+        site: str = "",
+        api_token: str = "",
+    ) -> dict[str, tuple[str, ...]]:
+        """读取平台本地类目树缓存的祖先 ID 链映射；不触发远端请求。"""
+        provider = self._providers.get(str(platform or "").strip().lower())
+        if provider is None:
+            return {}
+        return provider.cached_category_ancestor_map(site=site, api_token=api_token)
+
+    def cached_category_ancestor_ids(
+        self,
+        platform: str,
+        category_id: str,
+        *,
+        site: str = "",
+        api_token: str = "",
+    ) -> tuple[str, ...]:
+        """从平台本地类目树缓存反查指定类目的可信祖先 ID 链；不触发远端请求。"""
+        provider = self._providers.get(str(platform or "").strip().lower())
+        if provider is None:
+            return ()
+        return provider.cached_category_ancestor_ids(
+            category_id,
+            site=site,
+            api_token=api_token,
+        )
+
     def attribute_definitions(
         self,
         platform: str,

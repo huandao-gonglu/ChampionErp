@@ -373,7 +373,7 @@ it('万邦采集额度不足时在开始前本地拦截提示，不启动队列�
   vi.mocked(api.listLinks).mockResolvedValue([api1, api2])
   vi.mocked(alibabaApi.fetchOneBoundQuota).mockResolvedValue({
     ok: true, configured: true, is_admin: false, active_provider: 'onebound', authorized: true,
-    buyer: { member_id: 'buyer-a', account_name: '买家甲', balance: 1, granted: 1, earned: 0, spent_total: 0, spent_trade: 0, spent_auth: 0, spent_collect: 0 },
+    buyer: { member_id: 'buyer-a', account_name: '买家甲', balance: 1, granted: 1, earned: 0, adjusted: 0, spent_total: 0, spent_trade: 0, spent_auth: 0, spent_collect: 0 },
     buyers: [], key: null, entries: [],
   })
   const store = useWorkflowCollectionStore()

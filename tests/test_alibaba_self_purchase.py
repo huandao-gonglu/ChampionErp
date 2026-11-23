@@ -174,10 +174,18 @@ def test_timeout_survives_restart_and_cannot_be_replayed(setup_purchase, legacy)
     assert read["state"] == "created" and read["order_numbers"] == [NUMBER]
 
 
+def _age_preview(service, record_id, seconds=120):
+    with service.store._preview_lock:
+        if record_id in service.store._previews:
+            service.store._previews[record_id]["payload"]["previewed_at"] -= seconds
+
+
 @pytest.mark.parametrize("change", ["price", "flow", "channel", "source"])
 def test_changed_preview_never_creates(setup_purchase, change):
     service, client, _, (order, key) = setup_purchase
     record = preview(service)
+    if change != "source":
+        _age_preview(service, record["id"])
     if change == "price":
         client.pre["orderPreviewResuslt"][0].update(sumPaymentNoCarriage=1080, sumPayment=1680)
     elif change == "flow": client.pre["orderPreviewResuslt"][0]["flowFlag"] = "general"
@@ -393,6 +401,7 @@ def test_unknown_purchase_reserves_quantity_and_source_until_reconciled(setup_pu
 def test_definite_preflight_failure_releases_quantity(setup_purchase):
     service, client, _, (order, key) = setup_purchase
     record = preview(service, quantity=2)
+    _age_preview(service, record["id"])
     client.pre["orderPreviewResuslt"][0]["flowFlag"] = "general"
     assert create(service, record)["state"] == "failed"
     service.procurement.record_purchase({**purchase_body(order, key, quantity=2)})
@@ -445,6 +454,7 @@ def test_legacy_receipt_database_migrates_without_losing_data(tmp_path):
 def test_order_cancelled_during_preflight_does_not_create(setup_purchase):
     service, client, _, (order, key) = setup_purchase
     record = preview(service)
+    _age_preview(service, record["id"])
     call = client.call
     def change_order(name, params):
         if name == PREVIEW:

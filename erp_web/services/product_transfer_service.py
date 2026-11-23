@@ -410,8 +410,9 @@ def _write_imported_asset(
     app_dir: Path,
     product_id: str,
     restored_cache: dict[str, tuple[str, str, int, int]],
+    reuse_cached: bool = True,
 ) -> tuple[str, str, int, int] | None:
-    if asset_key in restored_cache:
+    if reuse_cached and asset_key in restored_cache:
         return restored_cache[asset_key]
     entry = decoded_assets.get(asset_key)
     if entry is None:
@@ -423,18 +424,29 @@ def _write_imported_asset(
         app_dir=app_dir,
     )
     target_dir.mkdir(parents=True, exist_ok=True)
-    filename = image_service.safe_filename(original_name, suffix)
-    dest = owned_path(target_dir / filename, app_dir=app_dir)
-    with NamedTemporaryFile(dir=target_dir, delete=False) as pending:
-        pending.write(raw)
-        pending_path = pending.name
-    os.replace(pending_path, dest)
+    dest = owned_path(target_dir / image_service.safe_filename(original_name, suffix), app_dir=app_dir)
+    while dest.exists():
+        dest = owned_path(target_dir / image_service.safe_filename(original_name, suffix), app_dir=app_dir)
+
+    pending_path = ""
+    try:
+        with NamedTemporaryFile(dir=target_dir, delete=False) as pending:
+            pending.write(raw)
+            pending_path = pending.name
+        os.replace(pending_path, dest)
+    except Exception:
+        if pending_path:
+            try:
+                os.unlink(pending_path)
+            except OSError:
+                pass
+        raise
 
     width, height = image_service.image_dimensions(dest)
     rel_path = image_service.relative_to_app(dest, app_dir)
     preview = image_service.file_url(dest)
     result = (rel_path, preview, width, height)
-    restored_cache[asset_key] = result
+    restored_cache.setdefault(asset_key, result)
     return result
 
 
@@ -462,6 +474,7 @@ def _prepare_product_for_import(
         source["collect_status"] = "success" if (source.get("title") or item.get("name")) else "pending"
 
     restored_cache: dict[str, tuple[str, str, int, int]] = {}
+    restored_pool_assets: dict[tuple[str, str], tuple[str, str, int, int]] = {}
     pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
     restored_pool: list[dict[str, Any]] = []
     for raw_img in pool:
@@ -472,13 +485,23 @@ def _prepare_product_for_import(
             img.pop(key, None)
         asset_key = str(img.pop("export_asset_key", "") or "").strip()
         if asset_key and asset_key in decoded_assets:
-            restored = _write_imported_asset(
-                asset_key,
-                decoded_assets,
-                app_dir=app_dir,
-                product_id=target_id,
-                restored_cache=restored_cache,
-            )
+            pool_asset_id = str(img.get("id") or img.get("asset_id") or "").strip()
+            pool_cache_key = (pool_asset_id, asset_key) if pool_asset_id else None
+            # 不同图片池资产即使二进制内容相同（共享 export_asset_key），
+            # 也必须落盘到独立路径，避免 normalize_image_pool 按 path 去重时裁掉 SKU 图或删图误伤。
+            if pool_cache_key and pool_cache_key in restored_pool_assets:
+                restored = restored_pool_assets[pool_cache_key]
+            else:
+                restored = _write_imported_asset(
+                    asset_key,
+                    decoded_assets,
+                    app_dir=app_dir,
+                    product_id=target_id,
+                    restored_cache=restored_cache,
+                    reuse_cached=False,
+                )
+                if restored and pool_cache_key:
+                    restored_pool_assets[pool_cache_key] = restored
             if restored:
                 rel_path, preview, width, height = restored
                 img["path"] = rel_path

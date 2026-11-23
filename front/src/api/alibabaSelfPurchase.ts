@@ -5,8 +5,8 @@ export type SelfPurchaseOptions = BackendAlibabaSelfPurchaseOptions
 export type PurchaseAddressFields = BackendAlibabaPurchaseAddressFields
 export type PurchaseAddressSelection = { receiving_revision: number } | { address_id: string } | { address: PurchaseAddressFields; address_confirmed: true }
 
-export async function selfPurchaseAddresses(orderId: string, lineKey: string): Promise<BackendAlibabaPurchaseAddresses> {
-  return (await apiClient.get<BackendAlibabaPurchaseAddresses>('/api/orders/alibaba-purchase/addresses', { params: { order_id: orderId, line_key: lineKey }, timeout: 35000 })).data
+export async function selfPurchaseAddresses(orderId: string, lineKey: string, refresh = false): Promise<BackendAlibabaPurchaseAddresses> {
+  return (await apiClient.get<BackendAlibabaPurchaseAddresses>('/api/orders/alibaba-purchase/addresses', { params: { order_id: orderId, line_key: lineKey, ...(refresh ? { refresh: '1' } : {}) }, timeout: 35000 })).data
 }
 export async function parsePurchaseAddress(orderId: string, lineKey: string, text: string): Promise<BackendAlibabaParsedPurchaseAddress> {
   return (await apiClient.post<BackendAlibabaParsedPurchaseAddress>('/api/orders/alibaba-purchase/parse-address', { order_id: orderId, line_key: lineKey, text })).data
@@ -30,8 +30,8 @@ export async function createSelfPurchase(previewId: string, payChannel: string):
   return record
 }
 export type PaymentAgreement = import('@/types/workflow.generated').BackendAlibabaPaymentAgreement
-export async function selfPurchasePaymentStatus(payChannel: string): Promise<PaymentAgreement> {
-  return (await apiClient.post<{ agreement: PaymentAgreement }>('/api/orders/alibaba-purchase/payment-status', { pay_channel: payChannel }, { timeout: 35000 })).data.agreement
+export async function selfPurchasePaymentStatus(payChannel: string, refresh = false): Promise<PaymentAgreement> {
+  return (await apiClient.post<{ agreement: PaymentAgreement }>('/api/orders/alibaba-purchase/payment-status', refresh ? { pay_channel: payChannel, refresh: true } : { pay_channel: payChannel }, { timeout: 35000 })).data.agreement
 }
 export async function paySelfPurchase(previewId: string, confirmedTotalFen: number): Promise<SelfPurchaseRecord> {
   return (await apiClient.post<{ record: SelfPurchaseRecord }>('/api/orders/alibaba-purchase/pay', { preview_id: previewId, confirmed_total_fen: confirmedTotalFen }, { timeout: 110000 })).data.record

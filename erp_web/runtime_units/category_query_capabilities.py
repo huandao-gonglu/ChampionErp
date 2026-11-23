@@ -6,9 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Any
 
+from erp_web.context import get_context
 from erp_web.product_model import validate_category_precheck
 from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
 from erp_web.runtime_units.category_attribute_access import attribute_write_scope
+from erp_web.services.forbidden_category_service import forbidden_category_issue
 from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category_search_language import category_search_language
 from erp_web.schemas.ai_trace import AiExecutionContext
@@ -121,6 +123,7 @@ class _CategoryQuerySearcher:
         "关键词使用目标市场固定语言：Yandex/Ozon 俄语、美客多巴西葡语、其他本地站西语、CBT 英语。禁止中文或换语言试搜。"
         "先根据商品实物规划主要相关搜索方向，首轮通过 keywords 列表一次批量查询；"
         "已有合适候选直接选择，只有具体缺口才补查。结果按类目 ID 去重，"
+        "带有 forbidden=true 的候选属于禁售类目，严禁选择；若商品兼容多个类目应优先选非禁售候选，无合规替代时不得硬选。"
         "matched_keywords 标明命中词，errors 按词报告失败；默认按回执字节预算分页，limit 可主动缩小本页。"
         "has_more=true 时保持关键词不变，以 next_offset 作为 offset 继续查询；total_candidate_count 是去重命中总量，query_candidate_counts 为每词取回数量（远端预测不代表全库）。"
     ),
@@ -326,6 +329,30 @@ def category_precheck(
     except Exception as exc:
         raise _live_api_error(exc) from exc
     missing = validate_category_precheck(product, platform, record)
+    if platform == "yandex":
+        settings = get_context().config.forbidden_categories()
+        categories = {item["category_id"]: item["name"] for item in settings["categories"]}
+        draft_category_id = _text(
+            (product.get("drafts") or {}).get(platform, {}).get("category_id")
+            if isinstance(product.get("drafts"), dict)
+            else ""
+        )
+        record_ancestors = tuple(
+            _text(item)
+            for item in (record.get("ancestor_ids") or ())
+            if _text(item)
+        ) if isinstance(record, dict) else ()
+        for checked_id in dict.fromkeys((draft_category_id, request.category_id)):
+            ancestors = (
+                record_ancestors
+                if checked_id == request.category_id and record_ancestors
+                else get_context().category_catalog.cached_category_ancestor_ids(platform, checked_id)
+            )
+            if issue := forbidden_category_issue(
+                platform, checked_id, categories, ancestor_ids=ancestors,
+            ):
+                missing.append(issue["message"])
+        missing = list(dict.fromkeys(missing))
     path_value = record.get("category_path") if isinstance(record, dict) else ""
     if not (_text(path_value)):
         raw_path = (

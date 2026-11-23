@@ -226,8 +226,8 @@ def test_fixed_models_use_only_current_account_credentials(accounts_http, monkey
     url, runtime, login = accounts_http
     monkeypatch.setattr(runtime.newapi, "internal_url", "http://127.0.0.1:3000")
     calls = []
-    def issue(user_id, name):
-        calls.append(user_id)
+    def issue(user_id, name, erp_email=""):
+        calls.append((user_id, erp_email))
         return "sk-erp.v1.test-" + user_id
     monkeypatch.setattr(runtime.newapi, "model_key", issue)
     for email in ("admin@example.com", "client@example.com"):
@@ -276,7 +276,7 @@ def test_fixed_models_use_only_current_account_credentials(accounts_http, monkey
                 assert ai_model_config.model_api_key(model) == "sk-erp.v1.test-" + user["id"]
                 with pytest.raises(ValueError, match="当前账号"):
                     ai_model_config.model_api_key({**model, "base_url": "https://example.org/v1"})
-        assert calls == [user["id"], user["id"]]
+        assert calls == [(user["id"], email), (user["id"], email)]
         calls.clear()
         with pytest.raises(ValueError, match="当前账号"):
             ai_model_config.model_api_key(model)

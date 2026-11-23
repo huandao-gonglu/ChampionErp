@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+PREVIEW_RECHECK_AFTER_SECONDS = 60.0
 _PAID_ORDER_STATUSES = frozenset({'waitsellersend', 'waitbuyerreceive', 'waitbuyerreceives', 'confirm_goods', 'success'})
 
 from erp_web.product_model.alibaba_purchase_model import alibaba_offer_id
@@ -79,12 +80,39 @@ def _frozen_purchase(payload):
 
 
 class AlibabaSelfPurchaseService:
-    def __init__(self, store, config_provider, procurement, *, address_notes, receiving, client_factory=alibaba_provider, quota_credit=None):
+    def __init__(self, store, config_provider, procurement, *, address_notes, receiving, client_factory=alibaba_provider, read_cache=None, quota_credit=None):
         self.store, self.config_provider, self.procurement = store, config_provider, procurement
         self.client_factory = client_factory
         self.address_notes = address_notes
         self.receiving = receiving
+        self.read_cache = read_cache
         self.quota_credit = quota_credit
+
+    def _load_saved_addresses(self, config, *, refresh=False):
+        scope = account_scope(config)
+        if self.read_cache is not None and not refresh:
+            cached = self.read_cache.get_addresses(scope)
+            if cached is not None:
+                return cached
+        saved = self.client_factory(config).list_addresses()
+        if scope != account_scope(self.config_provider()):
+            raise ValueError("授权已变化，请刷新地址列表")
+        if self.read_cache is not None:
+            self.read_cache.set_addresses(scope, saved)
+        return saved
+
+    def _get_agreement(self, config, channel, *, refresh=False):
+        scope = account_scope(config)
+        if self.read_cache is not None and not refresh:
+            cached = self.read_cache.get_payment_agreement(scope, channel)
+            if cached is not None:
+                return cached
+        agreement = self.client_factory(config).get_payment_agreement(channel)
+        if scope != account_scope(self.config_provider()):
+            raise ValueError('授权已切换，请重新查询免密签约状态')
+        if self.read_cache is not None:
+            self.read_cache.set_payment_agreement(scope, channel, agreement)
+        return agreement
 
     def _credit_quota(self, config, order_number, total_fen):
         if not callable(self.quota_credit) or not order_number or total_fen is None:
@@ -220,15 +248,17 @@ class AlibabaSelfPurchaseService:
         if account_scope(config) != account_scope(self.config_provider()) or self.receiving.checked(req.order_id) != receiving:
             raise ValueError('授权或收货仓已变化，请重新预览')
         records = []
+        previewed_at = time.time()
         for group, view in groups:
             targets = [self._target(req.order_id, item['binding']['line_key']) for item in group]
             target = 'batch:' + hashlib.sha256(json.dumps(targets).encode()).hexdigest()
             payload = {'binding': {'order_id': req.order_id, 'receiving_warehouse': receiving}, 'items': group,
-                       'targets': targets, 'purchase': {'address': address, 'cargo': group_cargo(group)}, 'view': view}
+                       'targets': targets, 'purchase': {'address': address, 'cargo': group_cargo(group)}, 'view': view,
+                       'previewed_at': previewed_at}
             records.append(public_record(self.store.preview(target, account_scope(config), payload)))
         return {'ok': True, 'records': records}
 
-    def addresses(self, order_id, line_key):
+    def addresses(self, order_id, line_key, *, refresh=False):
         self._binding(order_id, line_key)
         accounts = self.procurement.accounts_provider()
         order = self.procurement.store.order(order_id, accounts)
@@ -236,9 +266,7 @@ class AlibabaSelfPurchaseService:
         config = self.config_provider()
         notice = ""
         try:
-            saved = self.client_factory(config).list_addresses()
-            if account_scope(config) != account_scope(self.config_provider()):
-                raise ValueError("授权已变化，请刷新地址列表")
+            saved = self._load_saved_addresses(config, refresh=refresh)
             items = [candidate for candidate, _ in saved] + items
         except (AlibabaApiError, ExternalRequestBlocked):
             notice = "1688 地址读取失败，可重试或填写本次收货地址"
@@ -289,8 +317,13 @@ class AlibabaSelfPurchaseService:
         elif req.address is not None:
             address = req.address.model_dump()
         else:
-            matches = [(candidate, fields) for candidate, fields in client.list_addresses()
+            saved = self._load_saved_addresses(config, refresh=False)
+            matches = [(candidate, fields) for candidate, fields in saved
                        if candidate["id"] == req.address_id]
+            if len(matches) != 1 and self.read_cache is not None:
+                saved = self._load_saved_addresses(config, refresh=True)
+                matches = [(candidate, fields) for candidate, fields in saved
+                           if candidate["id"] == req.address_id]
             if len(matches) != 1:
                 raise ValueError("收货地址已变化，请刷新地址列表并重新选择")
             selected, address = matches[0]
@@ -306,7 +339,7 @@ class AlibabaSelfPurchaseService:
             if self.receiving.checked(req.order_id) != receiving:
                 raise ValueError('收货仓库已变化，请重新预览')
             binding['receiving_warehouse'] = receiving
-        row = self.store.preview(self._target(req.order_id, req.line_key), account_scope(config), {"purchase": {"address": address, "cargo": cargo}, "view": view, "binding": binding})
+        row = self.store.preview(self._target(req.order_id, req.line_key), account_scope(config), {"purchase": {"address": address, "cargo": cargo}, "view": view, "binding": binding, "previewed_at": time.time()})
         return {"ok": True, "record": public_record(row)}
 
     def _record(self, ident, config):
@@ -345,16 +378,20 @@ class AlibabaSelfPurchaseService:
             binding = row["payload"]["binding"]
             purchase = _frozen_purchase(row['payload'])
             address, cargo = purchase['address'], purchase['cargo']
+            needs_repreview = (time.time() - float(row['payload'].get('previewed_at') or 0.0)) > PREVIEW_RECHECK_AFTER_SECONDS
             if row['payload'].get('items'):
                 items = row['payload']['items']
                 self._check_batch_items(items)
                 self.procurement.store.reserve_purchases(
                     [(ident, item['binding'], item['quantity']) for ident, item in zip(self._reservation_ids(row), items, strict=True)],
                     self.procurement.accounts_provider())
-                groups = preview_groups(client.preview_order(address, cargo), items, address)
-                if len(groups) != 1:
-                    raise ValueError('1688 分单方案已变化，请重新预览')
-                current = groups[0][1]
+                if needs_repreview:
+                    groups = preview_groups(client.preview_order(address, cargo), items, address)
+                    if len(groups) != 1:
+                        raise ValueError('1688 分单方案已变化，请重新预览')
+                    current = groups[0][1]
+                    if any(current[k] != view[k] for k in ("goods_fen", "shipping_fen", "total_fen", "flow", "pay_channels")):
+                        raise ValueError("价格、运费或可用交易方式已变化，请重新预览后确认")
             else:
                 candidate = self._candidate(binding['order_id'], binding['line_key'], view['candidate']['id'], view['quantity'])
                 self.procurement.store.reserve_purchase(row['id'], binding, view['quantity'], self.procurement.accounts_provider())
@@ -362,9 +399,10 @@ class AlibabaSelfPurchaseService:
                     raise ValueError('采购来源已变化，请重新预览')
                 if binding['source'].get('source_spec_id') != cargo[0].get('spec_id'):
                     raise ValueError('旧预览缺少上架规格依据，请重新预览')
-                current = normalized_preview(client.preview_order(address, cargo), candidate, address, view['quantity'], cargo[0]['spec_id'])
-            if any(current[k] != view[k] for k in ("goods_fen", "shipping_fen", "total_fen", "flow", "pay_channels")):
-                raise ValueError("价格、运费或可用交易方式已变化，请重新预览后确认")
+                if needs_repreview:
+                    current = normalized_preview(client.preview_order(address, cargo), candidate, address, view['quantity'], cargo[0]['spec_id'])
+                    if any(current[k] != view[k] for k in ("goods_fen", "shipping_fen", "total_fen", "flow", "pay_channels")):
+                        raise ValueError("价格、运费或可用交易方式已变化，请重新预览后确认")
             if scope != account_scope(self.config_provider()):
                 raise ValueError("授权已变化，请重新预览")
             if binding.get('receiving_warehouse') and self.receiving.checked(binding['order_id']) != binding['receiving_warehouse']:
@@ -428,9 +466,7 @@ class AlibabaSelfPurchaseService:
     def payment_status(self, body):
         req = SelfPurchasePaymentStatusRequest.model_validate(body)
         config = self.config_provider()
-        agreement = self.client_factory(config).get_payment_agreement(req.pay_channel)
-        if account_scope(config) != account_scope(self.config_provider()):
-            raise ValueError('授权已切换，请重新查询免密签约状态')
+        agreement = self._get_agreement(config, req.pay_channel, refresh=req.refresh)
         return {'ok': True, 'agreement': agreement}
 
     def pay(self, body):
@@ -448,7 +484,7 @@ class AlibabaSelfPurchaseService:
         if req.confirmed_total_fen != row['payload']['view']['total_fen']:
             raise ValueError('确认金额与采购预览不同，请重新核对')
         client = self.client_factory(config)
-        agreement = client.get_payment_agreement(channel)
+        agreement = self._get_agreement(config, channel, refresh=False)
         if not agreement['ready']:
             raise ValueError(agreement['message'])
         number = row['result']['order_numbers'][0]
@@ -471,6 +507,8 @@ class AlibabaSelfPurchaseService:
                                               amount_fen=payment['amount_fen'], request_id=payment['request_id'])
         except Exception as exc:
             rejected = isinstance(exc, AlibabaApiRejected) or (isinstance(exc, ExternalRequestBlocked) and exc.details.get('definitively_rejected'))
+            if rejected and self.read_cache is not None:
+                self.read_cache.invalidate_payment_agreement(scope, channel)
             state = 'rejected' if rejected else 'unknown'
             message = str(exc) if isinstance(exc, AlibabaApiRejected) else (
                 '1688 已拒绝本次支付，请检查授权配置后重试' if rejected else

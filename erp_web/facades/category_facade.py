@@ -269,6 +269,7 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
     product, context, platform, site, error, status = _load_category_subject(body)
     if error:
         return error, status
+    supplied_record = isinstance(body.get("category_record"), dict)
     record, record_error = _category_record(body, platform, site)
     if record_error:
         return record_error
@@ -277,8 +278,20 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
         settings = get_context().config.forbidden_categories()
         categories = {item["category_id"]: item["name"] for item in settings["categories"]}
         draft_category_id = str(product.get("drafts", {}).get(platform, {}).get("category_id") or "")
+        trusted_record_ancestors = (
+            tuple(str(item).strip() for item in (record.get("ancestor_ids") or ()) if str(item).strip())
+            if not supplied_record and isinstance(record, dict)
+            else ()
+        )
         for checked_id in dict.fromkeys((draft_category_id, category_id)):
-            if issue := forbidden_category_issue(platform, checked_id, categories):
+            ancestors = (
+                trusted_record_ancestors
+                if checked_id == category_id and trusted_record_ancestors
+                else get_context().category_catalog.cached_category_ancestor_ids(platform, checked_id)
+            )
+            if issue := forbidden_category_issue(
+                platform, checked_id, categories, ancestor_ids=ancestors,
+            ):
                 missing_fields.append(issue["message"])
         missing_fields = list(dict.fromkeys(missing_fields))
     category_precheck = {

@@ -291,3 +291,33 @@ def test_desktop_transport_routes_use_contracts_and_do_not_become_ai_tools():
     entries = [entry for entry in AI_CAPABILITY_COVERAGE_MANIFEST if entry.path in HANDLED_PATHS]
     assert {entry.path for entry in entries} == HANDLED_PATHS
     assert all(entry.disposition == 'excluded' for entry in entries)
+
+
+def test_alibaba_direct_purchase_stays_isolated_from_erp_workflow() -> None:
+    """1688 万邦直购独立于 ERP 商品/草稿/订单/履约流程，且固定经授权服务解析万邦配置。"""
+    files = [
+        ROOT / "erp_web/stores/alibaba_direct_purchase_store.py",
+        ROOT / "erp_web/services/alibaba_direct_purchase_service.py",
+        ROOT / "erp_web/facades/alibaba_direct_purchase_facade.py",
+        ROOT / "erp_web/http_route_units/alibaba_direct_purchase_routes.py",
+    ]
+    forbidden_modules = (
+        "product_store",
+        "order_procurement",
+        "order_notification",
+        "fulfillment",
+        "alibaba_self_purchase_store",
+        "publishing_bus",
+        "pydantic_ai",
+    )
+    offenders = [
+        (str(path.relative_to(ROOT)), target)
+        for path, target in imported_targets(files)
+        if any(name in target for name in forbidden_modules)
+    ]
+    assert not offenders, f"1688 万邦直购不得耦合 ERP 主业务流或 Agent：{offenders}"
+
+    facade_tree = parse_python("erp_web/facades/alibaba_direct_purchase_facade.py")
+    calls = {dotted_name(node.func) for node in ast.walk(facade_tree) if isinstance(node, ast.Call)}
+    assert "alibaba_onebound_runtime_config" in calls
+    assert "onebound_direct_purchase_status" in calls

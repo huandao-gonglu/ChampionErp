@@ -20,7 +20,7 @@ CODE = "ABCDEF123456"
 @pytest.fixture
 def bridge_http(accounts_http):
     url, runtime, login = accounts_http
-    state = {"target": "keys", "ticket": None, "fail_sync": False, "synced": []}
+    state = {"target": "keys", "ticket": None, "fail_sync": False, "synced": [], "model_key_requests": []}
 
     class Peer(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -44,6 +44,9 @@ def bridge_http(accounts_http):
                         # 平台已执行撤销，但在发送回执前连接中断。
                         self.close_connection = True
                         return
+            elif self.path == "/api/internal/erp/model-key":
+                state["model_key_requests"].append(body)
+                result = {"key": "sk-erp.v1.test-" + body["user_id"]}
             else:
                 raise AssertionError(self.path)
             raw = json.dumps(result).encode()
@@ -91,6 +94,7 @@ def test_ticket_requires_browser_service_session_and_is_one_use(bridge_http):
     assert result.status_code == 200
     identity = result.json()
     assert identity["user_id"] == a["id"] and identity["user_id"] != b["id"]
+    assert identity["erp_email"] == "a@example.com"
     assert not {"password", "password_hash", "email", "csrf_token", "role"} & identity.keys()
     assert identity["session_ref"] != client.cookies.get("champion_session")
     assert exchange(url, ticket).status_code == 401
@@ -236,6 +240,7 @@ def test_auto_launch_is_bound_to_current_user_origin_and_one_use(bridge_http):
     result = requests.post(endpoint, json={"ticket": launch["ticket"], "origin": url}, headers=headers)
     assert result.status_code == 200
     assert result.json()["user_id"] == user["id"] and result.json()["target"] == "wallet"
+    assert result.json()["erp_email"] == "auto@example.com"
     assert not {"password", "role", "email", "csrf_token"} & result.json().keys()
     assert requests.post(endpoint, json={"ticket": launch["ticket"], "origin": url}, headers=headers).status_code == 401
     assert runtime._contexts == {}
@@ -253,3 +258,25 @@ def test_auto_launch_desktop_origin_expiry_and_logout(bridge_http):
         else:
             assert client.post(url + "/api/account/logout", json={}).status_code == 200
         assert requests.post(url + "/api/internal/newapi/launch", json={"ticket": launch["ticket"], "origin": "http://127.0.0.1:43210"}, headers={"Authorization": "Bearer " + SECRET}).status_code == 401
+
+
+def test_internal_user_info_and_model_key_forward_erp_email(bridge_http):
+    url, runtime, login, peer = bridge_http
+    user = register(url, "buyer@example.com")
+    admin = login()
+    headers = {"Authorization": "Bearer " + SECRET}
+    info = requests.post(url + "/api/internal/newapi/user", json={"user_id": user["id"]}, headers=headers, timeout=5)
+    assert info.status_code == 200
+    assert info.json() == {"active": True, "erp_email": "buyer@example.com"}
+
+    context = runtime.context_for(runtime.store.by_email("buyer@example.com"))
+    assert context.model_key() == "sk-erp.v1.test-" + user["id"]
+    assert peer["model_key_requests"] == [{
+        "user_id": user["id"],
+        "display_name": user["display_name"],
+        "erp_email": "buyer@example.com",
+    }]
+
+    assert admin.post(url + "/api/admin/users/status", json={"user_id": user["id"], "status": "disabled"}).status_code == 200
+    disabled = requests.post(url + "/api/internal/newapi/user", json={"user_id": user["id"]}, headers=headers, timeout=5)
+    assert disabled.status_code == 200 and disabled.json() == {"active": False}

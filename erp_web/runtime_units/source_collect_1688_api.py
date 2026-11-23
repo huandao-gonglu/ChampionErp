@@ -8,6 +8,7 @@ from erp_web.context import get_context
 from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result
 from erp_web.services.alibaba_api_client import alibaba_provider
 from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
+from erp_web.services.alibaba_self_purchase_service import account_scope
 
 from .collect_helpers import (
     apply_claimed_platform_drafts,
@@ -71,7 +72,14 @@ def collect_1688_product_via_api(
         }
     )
     try:
-        response = request_1688_product_detail(api_config, offer_id, source_url)
+        cache = get_context().alibaba_read_cache
+        provider_type = str(api_config.get("application_type") or "alibaba_crossborder")
+        scope = account_scope(api_config)
+        response = cache.get_product(provider_type, scope, offer_id)
+        if response is None:
+            response = request_1688_product_detail(api_config, offer_id, source_url)
+            if isinstance(response, dict):
+                cache.set_product(provider_type, scope, offer_id, response)
         source_updates = response["product"]
         source_updates = normalize_collect_source_images(source_updates, "1688", "api", claim_platforms)
         flags = snapshot_field_flags(source_updates)

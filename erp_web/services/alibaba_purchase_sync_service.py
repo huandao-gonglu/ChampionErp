@@ -11,6 +11,7 @@ from erp_web.services.alibaba_purchase_assignment import propose_parcels, suppor
 from erp_web.services.alibaba_purchase_query_service import shipment_parcels, query_parcel_traces
 
 logger = logging.getLogger(__name__)
+_NO_LOGISTICS_STATUSES = frozenset({"waitbuyerpay", "cancel", "terminated"})
 
 
 def sync_purchases(procurement, fulfillment, config_provider, order_id, record_ids, *, once=False, client_factory=alibaba_provider):
@@ -91,7 +92,7 @@ def _sync_records(procurement, fulfillment, config_provider, order_id, record_id
     for record_id, (generation, value) in started.items():
         try:
             _sync_record(procurement, fulfillment, config_provider, order_id, records[record_id],
-                         generation, value, client_factory=query_client)
+                         generation, value, client_factory=query_client, once=once)
         except Exception as exc:
             # 一条记录失效后仍结算其他已占位记录，最后向显式刷新调用方报告失败。
             errors.append(exc)
@@ -99,7 +100,7 @@ def _sync_records(procurement, fulfillment, config_provider, order_id, record_id
         raise errors[0]
 
 
-def _sync_record(procurement, fulfillment, config_provider, order_id, record, generation, value, *, client_factory):
+def _sync_record(procurement, fulfillment, config_provider, order_id, record, generation, value, *, client_factory, once=False):
     record_id = record.id
     accounts = procurement.accounts_provider
     progress = procurement.store.purchase_progress
@@ -114,15 +115,25 @@ def _sync_record(procurement, fulfillment, config_provider, order_id, record, ge
         logistics_checked_at = previous_data.get("logistics_checked_at", previous_data.get("checked_at", "") if parcels is not None else "")
         logistics = None
         warning = ""
-        try:
-            logistics = client.get_shipments(number)
-            parcels = shipment_parcels(logistics, order)
+        status_code = str(order.status.get("status") or "")
+        skip_logistics = (
+            status_code in _NO_LOGISTICS_STATUSES
+            or (once and status_code == "waitsellersend" and not order.carrier_names)
+        )
+        if skip_logistics:
+            logistics = []
+            parcels = []
             logistics_checked_at = utc_iso()
-        except (AlibabaApiError, ExternalRequestBlocked) as exc:
-            logistics = None
-            warning = f"物流查询失败：{exc}"
-        if logistics is not None:
-            warning = query_parcel_traces(parcels, client, number)
+        else:
+            try:
+                logistics = client.get_shipments(number)
+                parcels = shipment_parcels(logistics, order)
+                logistics_checked_at = utc_iso()
+            except (AlibabaApiError, ExternalRequestBlocked) as exc:
+                logistics = None
+                warning = f"物流查询失败：{exc}"
+            if logistics is not None:
+                warning = query_parcel_traces(parcels, client, number)
         latest_config = config_provider()
         same_auth = getattr(client, "same_authorization", None)
         if not (same_auth(config, latest_config) if callable(same_auth) else latest_config == config):

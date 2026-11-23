@@ -162,6 +162,8 @@ class AppContext:
         self._order_notifications = None
         self._order_procurement = None
         self._alibaba_self_purchases = None
+        self._alibaba_direct_purchases = None
+        self._alibaba_read_cache = None
         self._onebound_quota = None
         self._fulfillment = None
         self._yandex_logistics = None
@@ -329,6 +331,30 @@ class AppContext:
 
                     self._alibaba_self_purchases = AlibabaSelfPurchaseStore(self.paths.data_dir / "alibaba-self-purchases.sqlite3")
         return self._alibaba_self_purchases
+
+    @property
+    def alibaba_direct_purchases(self):
+        if self._alibaba_direct_purchases is None:
+            with self._lazy_lock:
+                if self._alibaba_direct_purchases is None:
+                    from erp_web.stores.alibaba_direct_purchase_store import AlibabaDirectPurchaseStore
+
+                    self._alibaba_direct_purchases = AlibabaDirectPurchaseStore(
+                        self.paths.data_dir / "alibaba-direct-purchases.sqlite3"
+                    )
+        return self._alibaba_direct_purchases
+
+    @property
+    def alibaba_read_cache(self):
+        if self._alibaba_read_cache is None:
+            with self._lazy_lock:
+                if self._alibaba_read_cache is None:
+                    from erp_web.services.alibaba_read_cache import AlibabaReadCache
+
+                    self._alibaba_read_cache = AlibabaReadCache(
+                        self.paths.data_dir / "alibaba-read-cache.sqlite3"
+                    )
+        return self._alibaba_read_cache
 
     @property
     def onebound_quota(self):
@@ -619,6 +645,8 @@ class AppContext:
             order_notifications = self._order_notifications
             fulfillment = self._fulfillment
             alibaba_self_purchases = self._alibaba_self_purchases
+            alibaba_direct_purchases = self._alibaba_direct_purchases
+            alibaba_read_cache = self._alibaba_read_cache
             wechat = self._wechat
         if self._desktop_connections is not None:
             self._desktop_connections.close()
@@ -626,6 +654,10 @@ class AppContext:
             wechat.close()
         if task_queue is not None:
             task_queue.close()
+        if alibaba_read_cache is not None:
+            alibaba_read_cache.close()
+        if alibaba_direct_purchases is not None:
+            alibaba_direct_purchases.close()
         if alibaba_self_purchases is not None:
             alibaba_self_purchases.close()
         if fulfillment is not None:

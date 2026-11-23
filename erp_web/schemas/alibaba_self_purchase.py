@@ -104,6 +104,7 @@ class SelfPurchasePayRequest(SelfPurchaseRecordRequest):
 class SelfPurchasePaymentStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     pay_channel: Literal['alipay', 'shegou']
+    refresh: bool = Field(default=False, strict=True)
 
 
 class AlibabaPaymentAgreement(TypedDict):

@@ -128,6 +128,53 @@ describe('类目匹配与普通对话关联', () => {
     expect(String(selected?.raw.description_category_id || '').trim()).toBe('17039878')
   })
 
+  it('保留候选禁售标注并将合规候选排在禁售候选之前', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ...TYPED_RESULT,
+        status: 'unresolved',
+        selected_category_id: null,
+        candidates: [
+          {
+            category_id: '60491375',
+            name: 'Отпугиватели птиц/грызунов',
+            path_segments: ['Дача', 'Удобрения и уход за растениями', 'Отпугиватели птиц/грызунов'],
+            forbidden: true,
+            forbidden_reason: '上级类目 13793701（Удобрения и уход за растениями）在禁售名单中',
+          },
+          {
+            category_id: '74873567',
+            name: '合规候选',
+            path_segments: ['Товары для дома', '合规候选'],
+          },
+        ],
+        failure: {
+          code: 'CATEGORY_FORBIDDEN_NO_ALTERNATIVE',
+          message: '最匹配的类目属于禁售范围，且无合规替代类目',
+          stage: 'decision',
+          retryable: false,
+        },
+      },
+      status: 200,
+    })
+
+    const yandexDraft = createEmptyDraftDetail('yandex')
+    yandexDraft.draftId = 'draft-yandex'
+    yandexDraft.productId = 'product-yandex'
+    const [result] = await matchCategories(yandexDraft, [{
+      platform: 'yandex',
+      site: 'global',
+      language: 'ru-RU',
+      listingCurrency: 'CNY',
+    }], 'conversation-a')
+
+    expect(result.candidates.map(item => item.id)).toEqual(['74873567', '60491375'])
+    expect(result.candidates[0]?.forbidden).toBe(false)
+    expect(result.candidates[1]?.forbidden).toBe(true)
+    expect(result.candidates[1]?.forbiddenReason).toContain('13793701')
+    expect(result.failure?.code).toBe('CATEGORY_FORBIDDEN_NO_ALTERNATIVE')
+  })
+
 })
 
 describe('Mercado 类目属性编辑契约', () => {

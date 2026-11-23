@@ -472,3 +472,140 @@ def test_onebound_quota_business_query_and_shared_buyer_ledger(accounts_http):
     # 普通用户调用管理员恢复 Key 接口返回 403。
     assert client_a.post(origin + "/api/alibaba/onebound/key/restore", json={}).status_code == 403
     assert admin_client.post(origin + "/api/alibaba/onebound/key/restore", json={}).status_code == 200
+
+
+# -- 8. 管理员按目标余额调整万邦额度 + v1→v2 账本迁移 -------------------------
+
+
+def test_quota_store_v1_migration_and_target_balance_adjustments(tmp_path):
+    import sqlite3
+    from erp_web.stores.onebound_quota_store import QuotaBalanceConflictError
+
+    # 模拟一个 v1 旧库并验证无损升级到 v2。
+    db_path = tmp_path / "legacy-v1-quota.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE quota_entries (
+            id TEXT PRIMARY KEY, key_fp TEXT NOT NULL, member_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('grant','earn','spend')),
+            category TEXT NOT NULL DEFAULT '', amount INTEGER NOT NULL,
+            ref TEXT NOT NULL, created REAL NOT NULL, UNIQUE(key_fp, kind, ref)
+        )"""
+    )
+    fp = quota_service.key_fingerprint("vendor-key")
+    conn.execute(
+        "INSERT INTO quota_entries VALUES ('e1', ?, 'buyer-v1', 'grant', '', 200, 'grant:buyer-v1', 1000.0)",
+        (fp,),
+    )
+    conn.execute("PRAGMA user_version=1")
+    conn.commit()
+    conn.close()
+
+    store = OneBoundQuotaStore(db_path)
+    assert store.read_buyer_summary(fp, "buyer-v1")["balance"] == 200
+
+    # 1) 调增至 500，写入 +300 的 adjust 流水和备注。
+    res1 = store.set_target_balance(fp, "buyer-v1", 500, expected_balance=200, note="活动赠送")
+    assert res1 == {"changed": True, "previous_balance": 200, "delta": 300, "balance": 500}
+    summary = store.read_buyer_summary(fp, "buyer-v1")
+    assert summary["balance"] == 500 and summary["adjusted"] == 300 and summary["granted"] == 200
+    entries = store.read_entries(fp, member_id="buyer-v1")
+    assert entries[0]["kind"] == "adjust" and entries[0]["amount"] == 300 and entries[0]["note"] == "活动赠送"
+
+    # 2) 调减至 120，写入 -380 的 adjust 流水。
+    res2 = store.set_target_balance(fp, "buyer-v1", 120, expected_balance=500, note="手工扣减")
+    assert res2 == {"changed": True, "previous_balance": 500, "delta": -380, "balance": 120}
+    assert store.read_buyer_summary(fp, "buyer-v1")["adjusted"] == -80
+    assert store.read_buyer_summary(fp, "buyer-v1")["balance"] == 120
+
+    # 3) 目标余额与当前一致时不写多余流水。
+    count_before = len(store.read_entries(fp, member_id="buyer-v1"))
+    res_same = store.set_target_balance(fp, "buyer-v1", 120, expected_balance=120)
+    assert res_same == {"changed": False, "previous_balance": 120, "delta": 0, "balance": 120}
+    assert len(store.read_entries(fp, member_id="buyer-v1")) == count_before
+
+    # 4) 预期余额不一致时抛出冲突异常且不改账本。
+    with pytest.raises(QuotaBalanceConflictError) as conflict:
+        store.set_target_balance(fp, "buyer-v1", 999, expected_balance=500)
+    assert conflict.value.current_balance == 120
+    assert store.read_buyer_summary(fp, "buyer-v1")["balance"] == 120
+
+    # 5) 尚未落 grant 的新买家先补齐 grant 再调至目标余额，后续首次请求不会再多发一次基础额度。
+    store.set_target_balance(fp, "buyer-fresh", 50, expected_balance=200, initial_grant=200)
+    store.admit_and_spend(fp, "buyer-fresh", "collect", initial_grant=200)
+    assert store.read_buyer_summary(fp, "buyer-fresh")["balance"] == 49
+
+    # 6) 负余额买家（因 trade 透支）可按负 expected_balance 调回目标正余额。
+    store.set_target_balance(fp, "buyer-neg", 0, initial_grant=200)
+    store.admit_and_spend(fp, "buyer-neg", "trade", initial_grant=200)
+    assert store.read_buyer_summary(fp, "buyer-neg")["balance"] == -1
+    res_neg = store.set_target_balance(fp, "buyer-neg", 100, expected_balance=-1, initial_grant=200)
+    assert res_neg == {"changed": True, "previous_balance": -1, "delta": 101, "balance": 100}
+    assert store.read_buyer_summary(fp, "buyer-neg")["balance"] == 100
+
+
+def test_admin_users_lists_onebound_quota_without_creating_dbs_and_adjusts_target_balance(accounts_http):
+    origin, runtime, login = accounts_http
+    configure(runtime.root.config)
+    user_a = register(origin, "adj-a@example.com")
+    user_b = register(origin, "adj-b@example.com")
+    user_new = register(origin, "never-logged-in@example.com")
+    admin_client = login()
+    client_a = login(user_a["email"])
+
+    # user_a 和 user_b 授权同一个 1688 买家，user_new 从未初始化业务空间。
+    app = runtime.root.config.alibaba_application("onebound")
+    app_fp = application_fingerprint(app)
+    for email in (user_a["email"], user_b["email"]):
+        ctx = runtime.context_for(runtime.store.by_email(email))
+        ctx.config.update_alibaba_credentials(
+            {"authorization": {
+                "access_token": f"tok-{email}", "credential_type": "access_token",
+                "member_id": "shared-adj-buyer", "account_name": "共用买家甲", "expires_at": 4_000_000_000,
+                "account_scope": "scope-shared", "application_fingerprint": app_fp,
+            }},
+            provider="onebound",
+        )
+
+    new_db = runtime.root.paths.app_dir / "users" / user_new["id"] / "erp.sqlite3"
+    assert not new_db.exists()
+
+    # 1) GET /api/admin/users 返回每个用户的万邦额度与共用人数，且不给未登录新账号建库。
+    listed = admin_client.get(origin + "/api/admin/users").json()
+    by_id = {row["id"]: row for row in listed["items"]}
+    assert not new_db.exists()
+    assert by_id[user_new["id"]]["onebound_quota"]["authorized"] is False
+    assert by_id[user_new["id"]]["onebound_quota"]["balance"] is None
+    assert by_id[user_a["id"]]["onebound_quota"] == {
+        "configured": True, "authorized": True, "member_id": "shared-adj-buyer",
+        "account_name": "共用买家甲", "balance": 200, "shared_user_count": 2,
+    }
+    assert by_id[user_b["id"]]["onebound_quota"]["shared_user_count"] == 2
+
+    # 2) 普通用户调用调额返回 403；未授权用户调额返回 400。
+    endpoint = origin + "/api/admin/users/onebound-quota"
+    assert client_a.post(endpoint, json={"user_id": user_a["id"], "target_balance": 500}).status_code == 403
+    assert admin_client.post(endpoint, json={"user_id": user_new["id"], "target_balance": 500}).status_code == 400
+
+    # 3) 管理员调额成功，共用同一买家的两个账号同时看到新余额 500，且旧 expected_balance 触发 409。
+    ok_res = admin_client.post(endpoint, json={
+        "user_id": user_a["id"], "target_balance": 500, "expected_balance": 200, "note": "人工补额",
+    })
+    assert ok_res.status_code == 200, ok_res.text
+    payload = ok_res.json()
+    assert (payload["previous_balance"], payload["delta"], payload["balance"], payload["changed"]) == (200, 300, 500, True)
+    assert payload["shared_user_count"] == 2
+
+    conflict_res = admin_client.post(endpoint, json={
+        "user_id": user_b["id"], "target_balance": 600, "expected_balance": 200,
+    })
+    assert conflict_res.status_code == 409
+
+    refreshed = {row["id"]: row for row in admin_client.get(origin + "/api/admin/users").json()["items"]}
+    assert refreshed[user_a["id"]]["onebound_quota"]["balance"] == 500
+    assert refreshed[user_b["id"]]["onebound_quota"]["balance"] == 500
+
+    # 4) BusinessQuery 同步体现 adjusted=300 和 adjust 流水。
+    bq = client_a.get(origin + "/api/business-queries/alibaba.onebound_quota").json()
+    assert bq["buyer"]["balance"] == 500 and bq["buyer"]["adjusted"] == 300
+    assert bq["entries"][0]["kind"] == "adjust" and bq["entries"][0]["note"] == "人工补额"

@@ -72,6 +72,29 @@ class CategoryProvider(ABC):
     ) -> CategoryAttributeValuePage:
         """分页读取属性字典候选值；候选全集不得一次性返回。"""
 
+    def cached_category_ancestor_map(
+        self,
+        *,
+        site: str = "",
+        api_token: str = "",
+    ) -> dict[str, tuple[str, ...]]:
+        """读取当前平台本地类目树缓存中的祖先 ID 链映射；不发起远端请求。"""
+        del site, api_token
+        return {}
+
+    def cached_category_ancestor_ids(
+        self,
+        category_id: str,
+        *,
+        site: str = "",
+        api_token: str = "",
+    ) -> tuple[str, ...]:
+        """从本地类目树缓存反查指定类目的可信祖先 ID 链；不发起远端请求。"""
+        cid = str(category_id or "").strip()
+        if not cid:
+            return ()
+        return self.cached_category_ancestor_map(site=site, api_token=api_token).get(cid, ())
+
 
 @runtime_checkable
 class CategorySearchProvider(Protocol):

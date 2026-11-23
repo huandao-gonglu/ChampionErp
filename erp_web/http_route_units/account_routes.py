@@ -19,6 +19,7 @@ POST_HANDLERS = {
     "/api/admin/users": account_facade.create_user,
     "/api/admin/users/status": account_facade.status,
     "/api/admin/users/password": account_facade.reset_password,
+    "/api/admin/users/onebound-quota": account_facade.set_onebound_quota,
 }
 GET_HANDLERS = {
     "/api/account/registration-config": account_facade.registration_config,

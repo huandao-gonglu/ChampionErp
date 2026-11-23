@@ -188,6 +188,7 @@ def create_sku_procurement_service(context, *, client_factory=None):
             context.config.load_store_config(), platform, account_id
         ),
         owner_scope_provider=lambda: str(context.paths.data_dir),
+        read_cache=context.alibaba_read_cache,
         **kwargs,
     )
 

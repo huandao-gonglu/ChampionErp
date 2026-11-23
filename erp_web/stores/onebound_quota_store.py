@@ -13,9 +13,18 @@ from erp_web.schemas.external_requests import ExternalRequestBlocked, RequestFai
 from erp_web.schemas.onebound_quota import (
     DAILY_RESERVE_MIN,
     DEFAULT_INITIAL_GRANT,
+    MAX_TARGET_BALANCE,
 )
 
 _CST = timezone(timedelta(hours=8))
+
+
+class QuotaBalanceConflictError(ValueError):
+    """管理员调整目标余额时，买家真实余额已发生变化。"""
+
+    def __init__(self, current_balance: int) -> None:
+        self.current_balance = current_balance
+        super().__init__(f"该买家当前余额已变更为 {current_balance} 次，请刷新后重新确认目标余额。")
 
 
 def cst_date(timestamp: float) -> date:
@@ -47,22 +56,20 @@ class OneBoundQuotaStore:
         self.path.chmod(0o600)
         with self._connect() as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError("万邦额度库版本不受支持")
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS quota_entries (
-                    id TEXT PRIMARY KEY,
-                    key_fp TEXT NOT NULL,
-                    member_id TEXT NOT NULL,
-                    kind TEXT NOT NULL CHECK(kind IN ('grant','earn','spend')),
-                    category TEXT NOT NULL DEFAULT '',
-                    amount INTEGER NOT NULL,
-                    ref TEXT NOT NULL,
-                    created REAL NOT NULL,
-                    UNIQUE(key_fp, kind, ref)
-                )"""
-            )
+            if version == 1:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("ALTER TABLE quota_entries RENAME TO quota_entries_v1")
+                self._create_quota_entries_table(conn)
+                conn.execute(
+                    "INSERT INTO quota_entries(id, key_fp, member_id, kind, category, amount, ref, note, created) "
+                    "SELECT id, key_fp, member_id, kind, category, amount, ref, '', created FROM quota_entries_v1"
+                )
+                conn.execute("DROP TABLE quota_entries_v1")
+            else:
+                self._create_quota_entries_table(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_onebound_entries_buyer "
                 "ON quota_entries(key_fp, member_id, created DESC)"
@@ -92,8 +99,25 @@ class OneBoundQuotaStore:
                     exhausted_until REAL
                 )"""
             )
-            conn.execute("PRAGMA user_version=1")
+            conn.execute("PRAGMA user_version=2")
             conn.commit()
+
+    @staticmethod
+    def _create_quota_entries_table(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS quota_entries (
+                id TEXT PRIMARY KEY,
+                key_fp TEXT NOT NULL,
+                member_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('grant','earn','spend','adjust')),
+                category TEXT NOT NULL DEFAULT '',
+                amount INTEGER NOT NULL,
+                ref TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created REAL NOT NULL,
+                UNIQUE(key_fp, kind, ref)
+            )"""
+        )
 
     @contextmanager
     def _connect(self):
@@ -297,6 +321,59 @@ class OneBoundQuotaStore:
             conn.commit()
             return cursor.rowcount > 0
 
+    def set_target_balance(
+        self,
+        key_fp: str,
+        member_id: str,
+        target_balance: int,
+        *,
+        expected_balance: int | None = None,
+        note: str = "",
+        initial_grant: int = DEFAULT_INITIAL_GRANT,
+        now: float | None = None,
+    ) -> dict:
+        """在同一事务内将买家余额调整至指定目标值，差值记为 adjust 流水。"""
+        if not key_fp or not member_id:
+            raise ValueError("缺少万邦企业 Key 或 1688 买家标识")
+        if isinstance(target_balance, bool) or not isinstance(target_balance, int) or not 0 <= target_balance <= MAX_TARGET_BALANCE:
+            raise ValueError(f"目标余额须为 0 至 {MAX_TARGET_BALANCE} 的整数")
+        if expected_balance is not None and (isinstance(expected_balance, bool) or not isinstance(expected_balance, int)):
+            raise ValueError("预期余额必须是整数")
+        clean_note = str(note or "").strip()[:200]
+        now = time.time() if now is None else now
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO quota_entries(id, key_fp, member_id, kind, category, amount, ref, created) "
+                "VALUES (?, ?, ?, 'grant', '', ?, ?, ?)",
+                (uuid4().hex, key_fp, member_id, max(0, int(initial_grant)), f"grant:{member_id}", now),
+            )
+            current_balance = int(
+                conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM quota_entries WHERE key_fp=? AND member_id=?",
+                    (key_fp, member_id),
+                ).fetchone()[0]
+                or 0
+            )
+            if expected_balance is not None and current_balance != expected_balance:
+                conn.rollback()
+                raise QuotaBalanceConflictError(current_balance)
+            delta = target_balance - current_balance
+            if delta != 0:
+                entry_id = uuid4().hex
+                conn.execute(
+                    "INSERT INTO quota_entries(id, key_fp, member_id, kind, category, amount, ref, note, created) "
+                    "VALUES (?, ?, ?, 'adjust', '', ?, ?, ?, ?)",
+                    (entry_id, key_fp, member_id, delta, f"adjust:{entry_id}", clean_note, now),
+                )
+            conn.commit()
+            return {
+                "changed": delta != 0,
+                "previous_balance": current_balance,
+                "delta": delta,
+                "balance": target_balance,
+            }
+
     def observe_snapshot(
         self,
         key_fp: str,
@@ -455,6 +532,7 @@ class OneBoundQuotaStore:
         granted = 0
         has_grant = False
         earned = 0
+        adjusted = 0
         spent_trade = 0
         spent_auth = 0
         spent_collect = 0
@@ -468,6 +546,8 @@ class OneBoundQuotaStore:
                 has_grant = True
             elif kind == "earn":
                 earned += total
+            elif kind == "adjust":
+                adjusted += total
             elif kind == "spend":
                 spent = -total
                 spent_total += spent
@@ -480,13 +560,14 @@ class OneBoundQuotaStore:
         if not has_grant and member_id:
             # 尚未写入 grant 记录时，只读视图按当前默认基础额度投影，不产生写副作用。
             granted = max(0, int(initial_grant))
-        balance = granted + earned - spent_total
+        balance = granted + earned + adjusted - spent_total
         return {
             "member_id": member_id,
             "account_name": account_name or member_id,
             "balance": balance,
             "granted": granted,
             "earned": earned,
+            "adjusted": adjusted,
             "spent_total": spent_total,
             "spent_trade": spent_trade,
             "spent_auth": spent_auth,
@@ -571,13 +652,13 @@ class OneBoundQuotaStore:
         with self._connect() as conn:
             if member_id is None:
                 rows = conn.execute(
-                    "SELECT id, member_id, kind, category, amount, ref, created "
+                    "SELECT id, member_id, kind, category, amount, ref, note, created "
                     "FROM quota_entries WHERE key_fp=? ORDER BY created DESC, rowid DESC LIMIT ?",
                     (key_fp, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id, member_id, kind, category, amount, ref, created "
+                    "SELECT id, member_id, kind, category, amount, ref, note, created "
                     "FROM quota_entries WHERE key_fp=? AND member_id=? ORDER BY created DESC, rowid DESC LIMIT ?",
                     (key_fp, member_id, limit),
                 ).fetchall()
@@ -589,6 +670,7 @@ class OneBoundQuotaStore:
                 "category": str(row["category"] or ""),
                 "amount": int(row["amount"]),
                 "ref": str(row["ref"]),
+                "note": str(row["note"] or ""),
                 "created": float(row["created"]),
             }
             for row in rows
@@ -602,6 +684,7 @@ class OneBoundQuotaStore:
 
 __all__ = [
     "OneBoundQuotaStore",
+    "QuotaBalanceConflictError",
     "cst_date",
     "cst_day_start",
     "next_cst_midnight",

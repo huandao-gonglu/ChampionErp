@@ -110,15 +110,33 @@ def prepare_publish_context(
         from .category_providers import category_provider_for
 
         if category_provider_for(platform) is not None:
+            catalog = get_category_catalog()
+            site = str(draft.get("site") or target.get("site") or "")
             try:
-                definition = get_category_catalog().attribute_definitions(
+                definition = catalog.attribute_definitions(
                     platform,
                     category_id,
-                    site=str(draft.get("site") or target.get("site") or ""),
+                    site=site,
                     timeout_seconds=timeout_seconds,
                 )
             except Exception as exc:  # noqa: BLE001 - 预检必须可解释地继续
                 definition_error = str(exc)
+            if platform == "yandex":
+                normalized_cid = (
+                    str(int(category_id))
+                    if category_id.isascii() and category_id.isdigit()
+                    else category_id
+                )
+                if normalized_cid not in catalog.cached_category_ancestor_map(platform, site=site):
+                    try:
+                        catalog.category_detail(
+                            platform,
+                            category_id,
+                            site=site,
+                            timeout_seconds=timeout_seconds,
+                        )
+                    except Exception:  # noqa: BLE001 - 类目树不可用时仍保留精确 ID 拦截
+                        pass
     return PreparedPublishContext(
         product=product,
         draft=draft,

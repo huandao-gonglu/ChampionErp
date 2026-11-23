@@ -149,6 +149,7 @@ class CategoryDetail(BaseModel):
     name: str = ""
     path: str = ""
     parent_id: str = ""
+    ancestor_ids: tuple[str, ...] = ()
     is_leaf: bool = False
     active: bool = True
 

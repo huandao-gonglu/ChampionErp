@@ -63,6 +63,7 @@ from .ozon_category_api import (
 )
 from .store_credentials import get_mercadolibre_access_token
 from .yandex_category_api import (
+    cached_yandex_category_ancestor_map,
     fetch_yandex_category_parameter_definitions,
     fetch_yandex_leaf_record,
     search_yandex_categories,
@@ -744,6 +745,11 @@ class YandexCategoryProvider(CategoryProvider):
             name=str(record.get("name_original") or category_id),
             path=str(record.get("category_path") or ""),
             parent_id=str(record.get("parent_id") or ""),
+            ancestor_ids=tuple(
+                str(item).strip()
+                for item in (record.get("ancestor_ids") or ())
+                if str(item).strip()
+            ),
             is_leaf=bool(record.get("is_leaf", True)),
             active=True,
         )
@@ -864,6 +870,30 @@ class YandexCategoryProvider(CategoryProvider):
             limit=limit,
             timeout_seconds=timeout_seconds,
         )
+
+    def cached_category_ancestor_map(
+        self,
+        *,
+        site: str = "",
+        api_token: str = "",
+    ) -> dict[str, tuple[str, ...]]:
+        del site
+        return cached_yandex_category_ancestor_map(api_token=api_token)
+
+    def cached_category_ancestor_ids(
+        self,
+        category_id: str,
+        *,
+        site: str = "",
+        api_token: str = "",
+    ) -> tuple[str, ...]:
+        del site
+        cid = str(category_id or "").strip()
+        if not cid:
+            return ()
+        if cid.isascii() and cid.isdigit():
+            cid = str(int(cid))
+        return self.cached_category_ancestor_map(api_token=api_token).get(cid, ())
 
 
 def build_category_provider_registry() -> dict[str, CategoryProvider]:

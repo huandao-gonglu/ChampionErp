@@ -51,6 +51,9 @@ CATEGORY_IDENTITY_INSTRUCTIONS = (
     "例如：挂耳式纺织面罩可与通用的可重复使用防护口罩比较；防晒功能不使它变成医用口罩、套头帽、环形脖套或方形头巾。"
     "“医用与卫生口罩”是并列范围，不能把其下所有通用防护口罩一律认定为医用器械。"
     "evidence 简述实物与路径相符的事实及关键排除依据；真实 ID 只证明存在，不证明适用。"
+    "带有 forbidden=true 的候选属于禁售类目，严禁选择。"
+    "若商品实物结构本身合理兼容多个类目（模棱两可），且存在同样符合实物结构的非禁售候选，优先选择非禁售候选，并在 evidence 中说明避开了哪个禁售候选。"
+    "若唯一与实物结构相符的类目是禁售类目、其他非禁售候选与实物冲突，必须 abstain 并设置 abstain_reason=\"forbidden_only\"，不得为绕过禁售硬选不相关类目。"
     "无法可靠判断时 abstain，不得硬选，也不得声称平台不存在这个类目。"
 )
 
@@ -97,6 +100,10 @@ class CategoryMatchAgentOutput(BaseModel):
     )
     physical_comparison: CategoryPhysicalComparison
     abstained: bool
+    abstain_reason: Literal["", "no_match", "forbidden_only"] = Field(
+        default="",
+        description="abstain 时填写原因：唯一与实物相符的类目属于禁售且无合规替代时填 forbidden_only；其余填 no_match；未 abstain 时为空。",
+    )
     model_confidence: float = Field(ge=0, le=1)
     evidence: list[
         Annotated[
@@ -115,6 +122,8 @@ class CategoryMatchAgentOutput(BaseModel):
             raise ValueError("abstained 时不得携带已选择的类目路径")
         if self.abstained and self.selected_category_id:
             raise ValueError("abstained 时不得同时选择 category_id")
+        if not self.abstained and self.abstain_reason:
+            raise ValueError("未 abstain 时不得填写 abstain_reason")
         if not self.abstained and not self.selected_category_id:
             raise ValueError("未 abstain 时必须选择 category_id")
         return self
@@ -141,10 +150,18 @@ CATEGORY_MATCH_AGENT_PROFILE = AiAgentExecutionProfile(
 class CategoryMatchOutputValidator:
     """把 Ledger 中的确定性约束反馈给模型并在重试耗尽后保留稳定码。"""
 
-    def __init__(self, ledger: CategoryCandidateLedger, candidate_detail_loader=None) -> None:
+    def __init__(
+        self,
+        ledger: CategoryCandidateLedger,
+        candidate_detail_loader=None,
+        *,
+        forbidden_checker=None,
+    ) -> None:
         self.ledger = ledger
         self.candidate_detail_loader = candidate_detail_loader
+        self.forbidden_checker = forbidden_checker
         self.verified_paths = {}
+        self.verified_details = {}
         self.error_code = ""
 
     def _retry(self, code: str, message: str) -> None:
@@ -181,12 +198,31 @@ class CategoryMatchOutputValidator:
                 "selected_category_id 必须来自本次检索工具真实返回的商品类型。",
             )
         candidate = self.ledger.get(output.selected_category_id)
+        if candidate and candidate.get("forbidden"):
+            reason = str(candidate.get("forbidden_reason") or "在禁售名单中").strip()
+            self._retry(
+                "CATEGORY_FORBIDDEN",
+                f"所选类目 {output.selected_category_id} 属于禁售范围（{reason}），严禁选择。"
+                "请改选其他与商品实物结构相符的非禁售候选，或补搜合规类目；"
+                "若无实物相符的非禁售类目，请 abstain 并设置 abstain_reason=\"forbidden_only\"。",
+            )
+        detail = self.verified_details.get(output.selected_category_id)
         if self.candidate_detail_loader and output.selected_category_id not in self.verified_paths:
             detail = self.candidate_detail_loader(output.selected_category_id,
                 timeout_seconds=ctx.deps.execution_context.remaining_seconds())
+            self.verified_details[output.selected_category_id] = detail
             self.verified_paths[output.selected_category_id] = [
                 part.strip() for part in str(detail.get("category_path") or "").split(" / ") if part.strip()
             ]
+        if self.forbidden_checker:
+            issue = self.forbidden_checker(output.selected_category_id, detail)
+            if issue:
+                reason = str(issue.get("message") or "在禁售名单中").strip()
+                self._retry(
+                    "CATEGORY_FORBIDDEN",
+                    f"{reason}。请改选其他与商品实物结构相符的非禁售候选，或补搜合规类目；"
+                    "若无实物相符的非禁售类目，请 abstain 并设置 abstain_reason=\"forbidden_only\"。",
+                )
         path = self.verified_paths.get(output.selected_category_id, list(candidate.get("path_segments") or []))
         if not path or output.selected_category_path != path:
             self._retry("CATEGORY_PATH_REVIEW_REQUIRED", "搜索结果可能只有商品领域名。该 ID 的真实完整类目路径是："
@@ -293,6 +329,7 @@ def run_category_match_agent(
     factory: AiAgentFactory | None = None,
     model_override: Model | None = None,
     candidate_detail_loader=None,
+    forbidden_checker=None,
 ) -> CategoryMatchAgentRun:
     params = _prepare_run_params(payload, factory=factory)
     outcome = params.factory.run_sync(
@@ -301,7 +338,9 @@ def run_category_match_agent(
         user_prompt=params.user_prompt,
         toolset=toolset,
         use_case_state=ledger,
-        output_validator=CategoryMatchOutputValidator(ledger, candidate_detail_loader),
+        output_validator=CategoryMatchOutputValidator(
+            ledger, candidate_detail_loader, forbidden_checker=forbidden_checker,
+        ),
         business_scope=params.business_scope,
         idempotency_context={"result_version": CATEGORY_MATCH_RESULT_VERSION},
         timeout_seconds=timeout_seconds,

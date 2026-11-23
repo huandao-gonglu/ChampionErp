@@ -16,7 +16,12 @@ import re
 import time
 from typing import Any, Callable, Mapping, Protocol
 
+from erp_web.context import get_context
 from erp_web.marketplaces.category_provider import CategorySearcher
+from erp_web.services.forbidden_category_service import (
+    forbidden_category_issue,
+    forbidden_category_reason,
+)
 from erp_web.runtime_units.category_searchers import (
     CategorySearchError,
     create_category_searcher,
@@ -326,6 +331,11 @@ def _result(
             )
         if "type_id" in candidate:
             public_candidate["type_id"] = str(candidate.get("type_id") or "")
+        if candidate.get("forbidden"):
+            public_candidate["forbidden"] = True
+            reason = str(candidate.get("forbidden_reason") or "").strip()
+            if reason:
+                public_candidate["forbidden_reason"] = reason
         public_candidates.append(public_candidate)
     return {
         "ok": ok,
@@ -377,6 +387,35 @@ def _validation_error(
     )
 
 
+def _forbidden_categories_map() -> dict[str, str]:
+    settings = get_context().config.forbidden_categories()
+    rows = settings.get("categories") if isinstance(settings, dict) else []
+    return {
+        str(item.get("category_id") or "").strip(): str(item.get("name") or "").strip()
+        for item in (rows if isinstance(rows, list) else [])
+        if isinstance(item, dict) and str(item.get("category_id") or "").strip()
+    }
+
+
+def _forbidden_issue_for_category(
+    platform: str,
+    category_id: str,
+    detail: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if platform != "yandex":
+        return None
+    categories = _forbidden_categories_map()
+    if not categories:
+        return None
+    raw_ancestors = detail.get("ancestor_ids") if isinstance(detail, Mapping) else None
+    ancestors = (
+        tuple(str(item).strip() for item in raw_ancestors if str(item).strip())
+        if isinstance(raw_ancestors, (list, tuple)) and raw_ancestors
+        else get_context().category_catalog.cached_category_ancestor_ids(platform, category_id)
+    )
+    return forbidden_category_issue(platform, category_id, categories, ancestor_ids=ancestors)
+
+
 def _validate_selected_category(
     *,
     selected_category_id: str,
@@ -399,6 +438,12 @@ def _validate_selected_category(
         raise _validation_error("SITE_RULE_VIOLATION", "候选 site 与当前目标不一致。")
     if not candidate.get("publishable"):
         raise _validation_error("CATEGORY_NOT_PUBLISHABLE", "所选类目当前不可发布。")
+    if candidate.get("forbidden"):
+        reason = str(candidate.get("forbidden_reason") or "在禁售名单中").strip()
+        raise _validation_error(
+            "CATEGORY_FORBIDDEN",
+            f"所选类目 {selected_category_id} 属于禁售范围（{reason}），不能选择。",
+        )
 
     try:
         detail = detail_loader(
@@ -424,6 +469,8 @@ def _validate_selected_category(
             "类目详情已变化或不再可发布。",
             retryable=True,
         )
+    if issue := _forbidden_issue_for_category(platform, selected_category_id, detail):
+        raise _validation_error("CATEGORY_FORBIDDEN", str(issue["message"]))
     detail_platform = str(detail.get("platform") or "").strip().lower()
     detail_site = str(detail.get("site") or "").strip()
     if detail_platform and detail_platform != platform:
@@ -695,6 +742,39 @@ def finalize_category_match(
                 },
                 trace=trace,
             )
+        abstain_reason = _text(model_result.get("abstain_reason"), 40)
+        forbidden_candidates = [
+            row for row in ledger.candidates() if row.get("forbidden")
+        ]
+        if abstain_reason == "forbidden_only" and forbidden_candidates:
+            forbidden_labels = []
+            for row in forbidden_candidates[:3]:
+                cid = str(row.get("category_id") or "").strip()
+                name = str(row.get("name") or "").strip()
+                reason = str(row.get("forbidden_reason") or "").strip()
+                if not reason and platform == "yandex":
+                    reason = forbidden_category_reason(
+                        platform,
+                        cid,
+                        _forbidden_categories_map(),
+                        ancestor_ids=get_context().category_catalog.cached_category_ancestor_ids(platform, cid),
+                    )
+                label = f"{cid}（{name}：{reason}）" if name and reason else f"{cid}（{reason or name or '禁售类目'}）"
+                forbidden_labels.append(label)
+            return _result(
+                ok=True,
+                status="unresolved",
+                target=normalized_target,
+                ledger=ledger,
+                decision=decision,
+                failure={
+                    "code": "CATEGORY_FORBIDDEN_NO_ALTERNATIVE",
+                    "message": f"最匹配的类目属于禁售范围，且无合规替代类目：{'；'.join(forbidden_labels)}",
+                    "stage": "decision",
+                    "retryable": False,
+                },
+                trace=trace,
+            )
         return _result(
             ok=True,
             status="unresolved",
@@ -793,15 +873,22 @@ def match_category(
                 stage="model",
                 retryable=True,
             )
+        agent_kwargs: dict[str, Any] = {
+            "timeout_seconds": remaining_seconds,
+            "candidate_detail_loader": lambda category_id, *, timeout_seconds: detail_loader(
+                normalized_target["platform"], category_id, site=normalized_target["site"],
+                include_attributes=False, timeout_seconds=min(timeout_seconds, remaining_deadline_seconds(deadline_at)),
+            ),
+        }
+        if agent_service is run_category_match_agent:
+            agent_kwargs["forbidden_checker"] = lambda category_id, detail: _forbidden_issue_for_category(
+                normalized_target["platform"], category_id, detail,
+            )
         agent_run = agent_service(
             payload,
             toolset,
             ledger,
-            timeout_seconds=remaining_seconds,
-            candidate_detail_loader=lambda category_id, *, timeout_seconds: detail_loader(
-                normalized_target["platform"], category_id, site=normalized_target["site"],
-                include_attributes=False, timeout_seconds=min(timeout_seconds, remaining_deadline_seconds(deadline_at)),
-            ),
+            **agent_kwargs,
         )
     except Exception as exc:
         return finalize_category_match(

@@ -485,6 +485,8 @@ class CategoryCandidate(TypedDict, total=False):
     description_category_id: str
     type_id: str
     matched_keywords: list[str]
+    forbidden: bool
+    forbidden_reason: str
 
 
 class CategorySearchResult(TypedDict):

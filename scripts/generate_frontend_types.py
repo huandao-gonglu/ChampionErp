@@ -27,6 +27,7 @@ SCHEMA_MODULES = (
     "erp_web.schemas.order_center",
     "erp_web.schemas.order_chat",
     "erp_web.schemas.alibaba_self_purchase",
+    "erp_web.schemas.alibaba_direct_purchase",
     "erp_web.schemas.alibaba_orders",
     "erp_web.schemas.api",
     "erp_web.schemas.collection",

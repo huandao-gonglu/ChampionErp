@@ -7,9 +7,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Annotated, Any
 
+from erp_web.context import get_context
 from erp_web.product_model import apply_category_selection
 from erp_web.runtime_units.category_store import fetch_category_record
 from erp_web.runtime_units.draft_publish_context import draft_for_publish_target
+from erp_web.services.forbidden_category_service import forbidden_category_issue
 from erp_web.runtime_units.market_capability_support import (
     CategoryRecordLoader,
     MarketPrepareStore,
@@ -116,15 +118,22 @@ def match_category(
             else []
         )
         if status == "unresolved":
+            failure_code = text(failure.get("code"))
+            if failure_code == "CATEGORY_FORBIDDEN_NO_ALTERNATIVE":
+                raise BusinessCapabilityError(
+                    failure_code,
+                    text(failure.get("message")) or "最匹配的类目属于禁售范围，且无合规替代类目。",
+                    retryable=False,
+                )
             candidate_options: list[CapabilityInputOption] = []
             for candidate in candidates:
-                if not isinstance(candidate, Mapping):
+                if not isinstance(candidate, Mapping) or candidate.get("forbidden"):
                     continue
                 option = _category_candidate_option(candidate)
                 if option is not None:
                     candidate_options.append(option)
             raise CapabilityInputRequired(
-                text(failure.get("code")) or "CATEGORY_MATCH_UNRESOLVED",
+                failure_code or "CATEGORY_MATCH_UNRESOLVED",
                 text(failure.get("message")) or "类目匹配需要人工确认。",
                 key="category_id",
                 label="平台类目",
@@ -179,6 +188,19 @@ def match_category(
         site=text(target.get("site")),
         selected_category_id=selected_category_id,
     )
+    if platform == "yandex":
+        settings = get_context().config.forbidden_categories()
+        categories = {item["category_id"]: item["name"] for item in settings["categories"]}
+        raw_ancestors = record.get("ancestor_ids") if isinstance(record, Mapping) else None
+        ancestors = (
+            tuple(text(item) for item in raw_ancestors if text(item))
+            if isinstance(raw_ancestors, (list, tuple)) and raw_ancestors
+            else get_context().category_catalog.cached_category_ancestor_ids(platform, selected_category_id)
+        )
+        if issue := forbidden_category_issue(
+            platform, selected_category_id, categories, ancestor_ids=ancestors,
+        ):
+            raise BusinessCapabilityError("CATEGORY_FORBIDDEN", str(issue["message"]), retryable=False)
     projected = product_with_target(product, platform, target_draft)
     updated_product = apply_category_selection(projected, platform, record)
     updated_draft = deepcopy(updated_product["drafts"][platform])

@@ -232,7 +232,10 @@ def test_multi_sku_waybills_backfill_only_corresponding_lines(batch, shared_wayb
         def __init__(self, config): pass
         def query(self, api, number):
             self.calls.append((api, number))
-            if api == ORDER_DETAIL: return client.query(api, number)
+            if api == ORDER_DETAIL:
+                payload = deepcopy(client.query(api, number))
+                payload['result']['baseInfo']['status'] = 'waitbuyerreceive'
+                return payload
             if api == LOGISTICS_INFO:
                 if not shared_waybill:
                     return {'result': [{'logisticsId': f'LP{i}', 'logisticsBillNo': f'YT{i}', 'logisticsCompanyName': '圆通',
@@ -321,6 +324,8 @@ def test_quantity_reservation_transaction_rejects_second_line_and_rolls_back_fir
 def test_cancel_during_group_repreview_prevents_remote_creation(batch):
     service, client, _, order, _ = batch
     record = groups(batch)[0]
+    with service.store._preview_lock:
+        service.store._previews[record['id']]['payload']['previewed_at'] -= 120.0
     def cancel():
         with service.procurement.store.orders.connect() as conn:
             cancelled = order.model_copy(update={'state': 'cancelled'})

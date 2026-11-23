@@ -712,6 +712,14 @@ function targetLabel(target: MarketplaceTargetSite) {
   return `${platformLabel} - ${siteLabel}（${target.site || site?.code || '-'} / ${language || '-'} / ${currency || '-'}）`
 }
 
+function isCategoryForbidden(item: CategorySearchResult) {
+  return Boolean(item.forbidden || item.raw.forbidden)
+}
+
+function categoryForbiddenReason(item: CategorySearchResult) {
+  return String(item.forbiddenReason || item.raw.forbidden_reason || '').trim()
+}
+
 </script>
 
 <template>
@@ -753,13 +761,26 @@ function targetLabel(target: MarketplaceTargetSite) {
           <button class="btn btn-primary shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('searchCategory')">搜索</button>
         </div>
         <div class="mt-4 max-h-80 space-y-2 overflow-y-auto">
-          <button v-for="item in props.categoryResults" :key="item.id" class="w-full rounded-lg border border-accent-200 bg-white p-3 text-left hover:border-brand-300 hover:bg-brand-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-500/60 dark:hover:bg-dark-800" @click="emit('selectCategory', item)">
+          <button
+            v-for="item in props.categoryResults"
+            :key="item.id"
+            type="button"
+            :disabled="isCategoryForbidden(item)"
+            :data-forbidden="isCategoryForbidden(item) ? 'true' : undefined"
+            class="w-full rounded-lg border p-3 text-left"
+            :class="isCategoryForbidden(item)
+              ? 'cursor-not-allowed border-red-200 bg-red-50/70 opacity-85 dark:border-red-900/70 dark:bg-red-950/30'
+              : 'border-accent-200 bg-white hover:border-brand-300 hover:bg-brand-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-500/60 dark:hover:bg-dark-800'"
+            @click="!isCategoryForbidden(item) && emit('selectCategory', item)"
+          >
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="font-semibold text-accent-950 dark:text-white">{{ categoryResultTitle(item) }}</div>
-              <span v-if="item.raw.aiRecommended" class="badge-info">AI 推荐 · 请核对完整路径</span>
+              <span v-if="isCategoryForbidden(item)" class="badge-danger">禁售</span>
+              <span v-else-if="item.raw.aiRecommended" class="badge-info">AI 推荐 · 请核对完整路径</span>
             </div>
             <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ categoryResultSubtitle(item) }}</div>
             <p class="mt-1 text-xs text-accent-500">类目 ID：{{ item.id }}</p>
+            <p v-if="isCategoryForbidden(item)" class="mt-1 text-xs font-medium text-red-700 dark:text-red-300">{{ categoryForbiddenReason(item) || '该类目在禁售名单中，不能选择。' }}</p>
             <p v-for="(reason, index) in (item.raw.matchEvidence as string[] || [])" :key="index" class="mt-1 text-xs text-accent-500">{{ reason }}</p>
             <div v-if="item.raw.site || item.raw.source" class="mt-1 text-xs text-accent-400 dark:text-accent-500">{{ item.raw.site || '' }}{{ item.raw.source ? ` / ${item.raw.source}` : '' }}</div>
           </button>

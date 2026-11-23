@@ -205,6 +205,15 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/admin/users": _contract(fields={"email": STRING, "display_name": STRING, "password": STRING}, required=("email", "display_name", "password")),
     "/api/admin/users/status": _contract(fields={"user_id": STRING, "status": FieldRule("enum", choices=frozenset({"enabled", "disabled"}))}, required=("user_id", "status")),
     "/api/admin/users/password": _contract(fields={"user_id": STRING, "password": STRING}, required=("user_id", "password")),
+    "/api/admin/users/onebound-quota": _contract(
+        fields={
+            "user_id": STRING,
+            "target_balance": FieldRule("integer", minimum=0, maximum=10_000_000),
+            "expected_balance": FieldRule("integer", minimum=-10_000_000, maximum=10_000_000),
+            "note": FieldRule("string", allow_empty=True),
+        },
+        required=("user_id", "target_balance"),
+    ),
     '/api/desktop/connect': RequestContract(),
     '/api/desktop-handoff/create': RequestContract(fields={'target': STRING, 'state': OBJECT}, required=('target',)),
     '/api/desktop-handoff/status': RequestContract(fields={'request_id': STRING}, required=('request_id',)),
@@ -370,7 +379,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/orders/alibaba-purchase/create": RequestContract(fields={"preview_id": STRING, "pay_channel": FieldRule("enum", choices=frozenset({"alipay", "shegou"}))}, required=("preview_id", "pay_channel")),
     "/api/orders/alibaba-purchase/reconcile": RequestContract(fields={"preview_id": STRING}, required=("preview_id",)),
     "/api/orders/alibaba-purchase/cashier": RequestContract(fields={"preview_id": STRING}, required=("preview_id",)),
-    "/api/orders/alibaba-purchase/payment-status": RequestContract(fields={"pay_channel": FieldRule("enum", choices=frozenset({"alipay", "shegou"}))}, required=("pay_channel",)),
+    "/api/orders/alibaba-purchase/payment-status": RequestContract(fields={"pay_channel": FieldRule("enum", choices=frozenset({"alipay", "shegou"})), "refresh": BOOLEAN}, required=("pay_channel",)),
     "/api/orders/alibaba-purchase/pay": RequestContract(fields={"preview_id": STRING, "confirmed_total_fen": FieldRule("integer", minimum=1)}, required=("preview_id", "confirmed_total_fen")),
     "/api/orders/purchase-sync": RequestContract(fields={"order_id": STRING, "record_id": STRING}, required=("order_id", "record_id")),
     "/api/orders/purchase-query": RequestContract(fields={"order_id": STRING, "record_id": STRING, "kind": FieldRule("enum", choices=frozenset({"order", "logistics"}))}, required=("order_id", "record_id")),
@@ -383,6 +392,32 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/alibaba/authorization/onebound/complete": RequestContract({"callback_url": STRING}, required=("callback_url",)),
     "/api/alibaba/authorization/self-use-token": RequestContract({"access_token": STRING}, required=("access_token",)),
     "/api/alibaba/onebound/key/restore": _EMPTY,
+    "/api/alibaba/direct-purchase/resolve": RequestContract(fields={"url": STRING, "refresh": BOOLEAN}, required=("url",)),
+    "/api/alibaba/direct-purchase/parse-address": RequestContract(fields={"text": STRING}, required=("text",)),
+    "/api/alibaba/direct-purchase/preview": RequestContract(
+        fields={
+            "resolve_token": STRING,
+            "items": ARRAY,
+            "address_id": STRING,
+            "address": OBJECT,
+            "address_confirmed": BOOLEAN,
+        },
+        required=("resolve_token", "items"),
+    ),
+    "/api/alibaba/direct-purchase/create": RequestContract(
+        fields={"preview_id": STRING, "pay_channel": FieldRule("enum", choices=frozenset({"alipay", "shegou"}))},
+        required=("preview_id", "pay_channel"),
+    ),
+    "/api/alibaba/direct-purchase/reconcile": RequestContract(fields={"preview_id": STRING}, required=("preview_id",)),
+    "/api/alibaba/direct-purchase/cashier": RequestContract(fields={"preview_id": STRING}, required=("preview_id",)),
+    "/api/alibaba/direct-purchase/payment-status": RequestContract(
+        fields={"pay_channel": FieldRule("enum", choices=frozenset({"alipay", "shegou"})), "refresh": BOOLEAN},
+        required=("pay_channel",),
+    ),
+    "/api/alibaba/direct-purchase/pay": RequestContract(
+        fields={"preview_id": STRING, "confirmed_total_fen": FieldRule("integer", minimum=1)},
+        required=("preview_id", "confirmed_total_fen"),
+    ),
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(
         # 人工确认摘要指纹：HTTP 边界声明字符串类型；业务判空与绑定校验

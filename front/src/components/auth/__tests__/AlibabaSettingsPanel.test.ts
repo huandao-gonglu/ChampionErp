@@ -37,7 +37,7 @@ beforeEach(() => {
   vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue(status)
   vi.mocked(api.fetchOneBoundQuota).mockResolvedValue({
     ok: true, configured: true, is_admin: false, active_provider: 'onebound', authorized: true,
-    buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
+    buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, adjusted: 0, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
     buyers: [], key: null, entries: [],
   })
   vi.mocked(api.startAlibabaAuthorization).mockResolvedValue({ ok: true, url })
@@ -185,7 +185,7 @@ describe('1688 浏览器授权', () => {
     vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue(onebound)
     vi.mocked(api.fetchOneBoundQuota).mockResolvedValue({
       ok: true, configured: true, is_admin: true, active_provider: 'onebound', authorized: true,
-      buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
+      buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, adjusted: 0, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
       buyers: [],
       key: {
         configured: true, today_snapshot: 120, today_estimated: 125, daily_max: 10000, reserve: 500,
@@ -199,7 +199,7 @@ describe('1688 浏览器授权', () => {
       ok: true, restored: true,
       quota: {
         ok: true, configured: true, is_admin: true, active_provider: 'onebound', authorized: true,
-        buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
+        buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, adjusted: 0, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
         buyers: [],
         key: {
           configured: true, today_snapshot: 120, today_estimated: 125, daily_max: 10000, reserve: 500,

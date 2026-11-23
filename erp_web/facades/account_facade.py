@@ -6,6 +6,7 @@ from erp_web.schemas.accounts import AccountError, SESSION_COOKIE, SESSION_SECON
 from erp_web.schemas.newapi import NewAPIConnectionInfo, NewAPIAuthorizationPreview, NewAPILaunch
 from erp_web.services import registration_verification
 from erp_web.services.account_request import account_runtime, client_ip
+from erp_web.services.alibaba_authorization_service import admin_set_user_onebound_balance, admin_users_onebound_quotas
 
 
 def _require_session(handler, *, admin=False):
@@ -96,11 +97,27 @@ def users(handler, query):
             raise ValueError
     except ValueError as exc:
         raise AccountError("分页参数无效。") from exc
-    rows = [public_user(u) for u in account_runtime(handler).store.users()]
+    runtime = account_runtime(handler)
+    raw_rows = runtime.store.users()
     search = (query.get("q") or [""])[0].strip().casefold()
     if search:
-        rows = [u for u in rows if search in u["email"] or search in u["display_name"].casefold()]
-    return {"ok": True, "items": rows[(page - 1)*limit:page*limit], "page": page, "limit": limit, "total": len(rows)}
+        raw_rows = [u for u in raw_rows if search in u["email"] or search in u["display_name"].casefold()]
+    total = len(raw_rows)
+    sliced = raw_rows[(page - 1) * limit:page * limit]
+    quotas = admin_users_onebound_quotas(runtime, sliced)
+    items = [{**public_user(u), "onebound_quota": quotas[u["id"]]} for u in sliced]
+    return {"ok": True, "items": items, "page": page, "limit": limit, "total": total}
+
+
+def set_onebound_quota(handler, body):
+    _require_session(handler, admin=True)
+    return admin_set_user_onebound_balance(
+        account_runtime(handler),
+        body["user_id"],
+        body["target_balance"],
+        expected_balance=body.get("expected_balance"),
+        note=body.get("note", ""),
+    )
 
 
 def create_user(handler, body):
@@ -164,4 +181,4 @@ def newapi_session(handler, body):
 
 
 def newapi_user(handler, body):
-    return {"active": account_runtime(handler).store.newapi_user_active(body["user_id"])}
+    return account_runtime(handler).store.newapi_user_info(body["user_id"])

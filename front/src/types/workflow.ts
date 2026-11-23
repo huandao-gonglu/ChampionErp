@@ -10,6 +10,7 @@ export {
   type BackendAlibabaAuthorizationStatus,
   type BackendOneBoundQuotaEntry,
   type BackendOneBoundBuyerQuota,
+  type BackendUserOneBoundQuotaSummary,
   type BackendOneBoundKeyQuotaStatus,
   type BackendOneBoundQuotaView,
   type BackendForbiddenCategory,
@@ -45,6 +46,12 @@ export {
   type BackendAlibabaSelfPurchaseOptions,
   type BackendAlibabaBatchPurchaseLine,
   type BackendAlibabaBatchPurchaseOptions,
+  type BackendDirectPurchaseResolvedSku,
+  type BackendDirectPurchaseResolvedProduct,
+  type BackendDirectPurchasePreviewItem,
+  type BackendDirectPurchasePreviewView,
+  type BackendDirectPurchaseRecord,
+  type BackendDirectPurchaseState,
   type BackendAlibabaOrderStatus,
   type BackendAlibabaLogisticsStep,
   type BackendAlibabaParcel,
@@ -637,6 +644,8 @@ export interface CategorySearchResult {
   id: string
   name: string
   path: string
+  forbidden?: boolean
+  forbiddenReason?: string
   raw: UnknownRecord
 }
 
